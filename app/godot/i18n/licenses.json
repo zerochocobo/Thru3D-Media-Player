@@ -1,5 +1,11 @@
 [
   {
+    "id": "cjk-brackets",
+    "name": "Noto Sans CJK bracket subset",
+    "license": "SIL Open Font License 1.1",
+    "assets": ["player-licenses/cjk-brackets.txt"]
+  },
+  {
     "id": "godot",
     "name": "Godot 4.7.2",
     "license": "MIT",
@@ -17,7 +23,10 @@
     "license": "GPL-3.0",
     "assets": [
       "mpv/LICENSE.GPL",
-      "mpv/LICENSE.LGPL"
+      "mpv/LICENSE.LGPL",
+      "edge264-mvc/LICENSE.BSD",
+      "bluray/LICENSE.libbluray",
+      "bluray/LICENSE.libudfread"
     ]
   },
   {

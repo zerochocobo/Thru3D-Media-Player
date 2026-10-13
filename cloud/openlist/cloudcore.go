@@ -24,9 +24,9 @@ import (
 
 	"github.com/OpenListTeam/OpenList/v4/cmd/flags"
 	_ "github.com/OpenListTeam/OpenList/v4/drivers/115_open"
+	_ "github.com/OpenListTeam/OpenList/v4/drivers/aliyundrive_open"
 	_ "github.com/OpenListTeam/OpenList/v4/drivers/baidu_netdisk"
 	_ "github.com/OpenListTeam/OpenList/v4/drivers/onedrive"
-	_ "github.com/OpenListTeam/OpenList/v4/drivers/aliyundrive_open"
 	_ "github.com/OpenListTeam/OpenList/v4/drivers/quark_open"
 	_ "github.com/OpenListTeam/OpenList/v4/drivers/webdav"
 	"github.com/OpenListTeam/OpenList/v4/internal/bootstrap"
@@ -49,7 +49,7 @@ var startErr error
 var api *gin.Engine
 var streamBase string
 var admin *model.User
-var requestMu sync.Mutex
+var requestMu = make(chan struct{}, 1)
 
 // Start is lazy and process-scoped. Android owns the database in noBackupFilesDir.
 // No admin HTTP server, WebDAV listener, guest API or discovery service is opened.
@@ -131,6 +131,7 @@ func start(dataDir, keyHex string) (err error) {
 	api.Use(gin.Recovery(), middlewares.StoragesLoaded, middlewares.Auth(false), middlewares.AuthAdmin)
 	api.POST("/list", handles.FsListSplit)
 	deletionRoutes(api)
+	searchRoutes(api)
 	api.GET("/drivers", handles.ListDriverInfo)
 	api.GET("/accounts", handles.ListStorages)
 	api.GET("/account", handles.GetStorage)
@@ -206,16 +207,27 @@ func (s secretField) Scan(ctx context.Context, field *schema.Field, dst reflect.
 // Request is JNI-only. No credentials, admin token or management route is exposed
 // to HTTP clients. Responses containing driver secrets stay in the Android layer.
 func Request(method, route, body string) (string, error) {
-	requestMu.Lock()
-	defer requestMu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	return requestContext(ctx, method, route, body)
+}
+
+func requestContext(ctx context.Context, method, route, body string) (string, error) {
+	select {
+	case requestMu <- struct{}{}:
+		defer func() { <-requestMu }()
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	if api == nil || startErr != nil {
 		return "", errors.New("cloud unavailable")
 	}
 	if !strings.HasPrefix(route, "/") || strings.HasPrefix(route, "//") {
 		return "", errors.New("invalid cloud route")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
-	defer cancel()
 	r := httptest.NewRequest(method, route, strings.NewReader(body)).WithContext(ctx)
 	token, err := common.GenerateToken(admin)
 	if err != nil {
@@ -226,6 +238,9 @@ func Request(method, route, body string) (string, error) {
 	r.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	api.ServeHTTP(w, r)
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	if w.Code != http.StatusOK {
 		return "", errors.New("cloud request failed")
 	}

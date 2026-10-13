@@ -1,0 +1,207 @@
+extends RefCounted
+
+const I18n := preload("res://scripts/i18n.gd")
+const Methods := preload("res://scripts/platform_methods.gd")
+const OPEN := 9400
+const BACK := 9401
+const INPUT := 9402
+const SUBMIT := 9403
+const PREVIOUS := 9404
+const NEXT := 9405
+const REFRESH := 9406
+const SHIFT := 9410
+const SYMBOLS := 9411
+const SPACE := 9412
+const ERASE := 9413
+const PASTE := 9414
+const CLEAR := 9415
+const SCOPE := 9500
+const KIND := 9600
+const KEY := 9700
+const SCOPES := ["current", "tree", "all"]
+const SCOPE_NAMES := ["This folder", "Include subfolders", "Entire cloud drive"]
+const KINDS := ["all", "video", "image", "folder"]
+const KIND_NAMES := ["All", "Videos", "Photos", "Folders"]
+var menu: Node
+var active := false
+var editing := false
+var query := ""
+var scope := "current"
+var kind := "all"
+var scopes: Array = ["current"]
+var path := ""
+var entries: Array = []
+var cursors: Array[String] = [""]
+var page := 0
+var next_cursor := ""
+var pending := 0
+var requested_page := 0
+var request := {}
+var committed_request := {}
+var resolving := false
+var resolve_token := ""
+var limited := false
+var shift := false
+var symbols := false
+
+func _init(owner: Node) -> void: menu = owner
+func supported() -> bool:
+	return Methods.supports(menu.platform, "media_cloud_search") and Methods.supports(menu.platform, "media_cloud_search_resolve")
+func observe(data: Dictionary) -> void:
+	if data.get("search_scopes") is Array: scopes = data.search_scopes.duplicate()
+func cancel() -> void:
+	if pending > 0 and Methods.supports(menu.platform, "media_cloud_cancel"): menu.platform.media_cloud_cancel(pending)
+	pending = 0; request = {}; resolving = false
+func close(redraw: bool = false) -> void:
+	cancel(); active = false; editing = false; entries = []; query = ""; path = ""
+	committed_request = {}
+	page = 0; next_cursor = ""; cursors.assign([""]); limited = false
+	if redraw: menu.status = ""; menu._reset_navigation(); menu.refresh()
+func open() -> void:
+	if not supported() or menu._cloud_stack.is_empty(): return
+	menu.file_actions.reset(); menu._cancel_cloud()
+	active = true; editing = true; path = menu._cloud_path(); query = ""; kind = "all"
+	scope = "all" if menu._cloud_stack.size() == 1 and "all" in scopes else ("tree" if "tree" in scopes else "current")
+	entries = []; cursors.assign([""]); page = 0; next_cursor = ""; shift = false; symbols = false
+	menu.status = ""; menu._reset_navigation(); menu.refresh()
+func submit(index: int = 0, force: bool = false) -> void:
+	if not active or query.strip_edges().is_empty() or scope not in scopes or index < 0 or index >= cursors.size(): return
+	cancel(); query = query.strip_edges(); editing = false; requested_page = index
+	request = {"path": path, "query": query, "scope": scope, "kind": kind, "cursor": cursors[index]}
+	if ["path", "query", "scope", "kind"].any(func(key): return request[key] != committed_request.get(key, "")):
+		entries = []; page = 0; menu.scroll = 0.0
+	pending = menu.platform.media_cloud_search(path, query, scope, kind, cursors[index], force)
+	menu.status = "Loading…" if pending > 0 else "Cloud search failed"
+	menu.refresh()
+func restart(force: bool = false) -> void:
+	cursors.assign([""]); next_cursor = ""; submit(0, force)
+func action(target: int) -> bool:
+	if target == OPEN: open(); return true
+	if not active: return false
+	if target == menu.BACK or target == BACK: close(true); return true
+	if target == INPUT:
+		cancel(); editing = true; menu.status = ""; menu.scroll = 0.0; menu.refresh(); return true
+	if target == SUBMIT: restart(); return true
+	if target == REFRESH or target == menu.REFRESH: restart(true); return true
+	if target in [PREVIOUS, NEXT]:
+		if pending > 0: return true
+		if target == PREVIOUS and page > 0: submit(page - 1)
+		elif target == NEXT and not next_cursor.is_empty():
+			if cursors.size() <= page + 1: cursors.append(next_cursor)
+			else: cursors[page + 1] = next_cursor
+			submit(page + 1)
+		return true
+	if target >= SCOPE and target < SCOPE + SCOPES.size():
+		if SCOPES[target - SCOPE] in scopes:
+			scope = SCOPES[target - SCOPE]
+			if not editing and not query.is_empty(): restart()
+			else: menu.refresh()
+		return true
+	if target >= KIND and target < KIND + KINDS.size():
+		kind = KINDS[target - KIND]
+		if not editing and not query.is_empty(): restart()
+		else: menu.refresh()
+		return true
+	if editing:
+		if target >= KEY and target < KEY + 40:
+			var layer: Array = menu.SYMBOLS if symbols else menu.KEYS
+			var value: String = layer[(target - KEY) / 10][(target - KEY) % 10]
+			query = (query + (value.to_upper() if shift else value)).left(128); shift = false
+		elif target == SHIFT: shift = not shift
+		elif target == SYMBOLS: symbols = not symbols
+		elif target == SPACE: query = (query + " ").left(128)
+		elif target == ERASE: query = query.left(-1)
+		elif target == CLEAR: query = ""
+		elif target == PASTE:
+			var value: String = menu.platform.media_clipboard_text() if Methods.supports(menu.platform, "media_clipboard_text") else DisplayServer.clipboard_get()
+			query = (query + value.replace("\n", " ").replace("\r", " ")).left(128)
+		else: return target >= OPEN
+		menu.refresh(); return true
+	return target >= OPEN
+func rows() -> Array[Dictionary]:
+	var result: Array[Dictionary] = []
+	if editing: return result
+	for item in entries:
+		var location := str(item.get("relative_path", "")).get_base_dir().trim_prefix("/")
+		result.append({"title": str(item.title), "detail": location, "icon": "folder" if item.get("container", false) else ("image" if item.get("kind") == "image" else "video"), "kind": item.get("kind", "video"), "folder": item.get("container", false), "search_result": item})
+	return result
+func choose(row: Dictionary) -> bool:
+	if not active or not row.has("search_result"): return false
+	if pending > 0: return true
+	var item: Dictionary = row.search_result
+	resolve_token = str(item.search_token); resolving = true
+	pending = menu.platform.media_cloud_search_resolve(path, resolve_token)
+	menu.status = "Loading…" if pending > 0 else "Cloud search failed"; menu.refresh(); return true
+func receive(id: int, payload: String) -> bool:
+	if id != pending or pending <= 0: return false
+	pending = 0
+	var parsed: Variant = JSON.parse_string(payload)
+	if not active or menu.section != menu.Section.CLOUD or path != menu._cloud_path(): return true
+	if not parsed is Dictionary:
+		menu.status = "Cloud search failed"; menu.refresh(); return true
+	var data: Dictionary = parsed
+	var valid := str(data.get("path", "")) == path
+	if resolving: valid = valid and str(data.get("token", "")) == resolve_token and str(data.get("source", "")) == "cloud_search_resolve"
+	else:
+		valid = valid and str(data.get("source", "")) == "cloud_search"
+		for key in ["query", "scope", "kind", "cursor"]: valid = valid and str(data.get(key, "")) == str(request.get(key, ""))
+	if not valid or data.get("state") != "ready":
+		menu.status = str(data.get("error", "Cloud search failed")) if valid else "Cloud search failed"
+		resolving = false; menu.refresh(); return true
+	if resolving:
+		if not data.get("entry") is Dictionary: menu.status = "Cloud search failed"; resolving = false; menu.refresh(); return true
+		var entry: Dictionary = data.entry
+		var account_name := str(menu._cloud_stack[0].title)
+		close()
+		var destination := str(entry.id) if entry.get("container", false) else str(entry.id).get_base_dir()
+		if destination != menu._cloud_path():
+			var parts: PackedStringArray = destination.split("/", false)
+			menu._cloud_stack = []
+			var current := ""
+			for index in parts.size():
+				current += "/" + parts[index]
+				menu._cloud_stack.append({"id": current, "title": account_name if index == 0 else parts[index]})
+			menu._cloud_entries = []
+		if entry.get("container", false):
+			menu._load_cloud(); menu.refresh()
+		else: menu._choose(menu._entry_row(entry))
+		return true
+	if not data.get("entries") is Array: menu.status = "Cloud search failed"; menu.refresh(); return true
+	entries = data.entries; page = requested_page; next_cursor = str(data.get("next_cursor", "")); limited = bool(data.get("limited", false))
+	committed_request = request.duplicate()
+	menu.status = "Search result limit reached" if limited else ("No matching files" if entries.is_empty() and next_cursor.is_empty() else "")
+	menu._reset_navigation(); menu.refresh(); return true
+func draw() -> void:
+	menu._button(BACK, "", Vector2(-0.52, 0.46), Vector2(0.09, 0.07), true, "up")
+	menu._button(INPUT, menu._fit_title(query if not query.is_empty() else I18n.t("Search files"), "", 1.12, 21), Vector2(0.19, 0.46), Vector2(1.20, 0.075), true, "", editing)
+	var available_scopes: Array = SCOPES.filter(func(value): return value in scopes)
+	for index in available_scopes.size():
+		var value: String = available_scopes[index]; var width := 1.24 / available_scopes.size()
+		menu._button(SCOPE + SCOPES.find(value), I18n.t(SCOPE_NAMES[SCOPES.find(value)]), Vector2(-0.45 + width * (index + 0.5), 0.31), Vector2(width - 0.02, 0.072), true, "", scope == value)
+	for index in KINDS.size():
+		menu._button(KIND + index, I18n.t(KIND_NAMES[index]), Vector2(-0.295 + index * 0.31, 0.20), Vector2(0.29, 0.068), true, "", kind == KINDS[index])
+	if editing:
+		var layer: Array = menu.SYMBOLS if symbols else menu.KEYS
+		for row in 4:
+			for col in 10:
+				var value: String = layer[row][col]
+				menu._button(KEY + row * 10 + col, value.to_upper() if shift else value, Vector2(-0.40 + col * 0.125, 0.045 - row * 0.071), Vector2(0.114, 0.061))
+		for spec in [[SHIFT,"⇧",-0.36,0.16], [SYMBOLS,"#+=" if not symbols else "abc",-0.16,0.2], [SPACE,"␣",0.15,0.36], [ERASE,"⌫",0.46,0.2], [PASTE,I18n.t("Paste"),0.70,0.22]]:
+			menu._button(int(spec[0]), str(spec[1]), Vector2(float(spec[2]), -0.275), Vector2(float(spec[3]), 0.073))
+		menu._button(CLEAR, "", Vector2(0.02, -0.43), Vector2(0.11, 0.075), not query.is_empty(), "close")
+		menu._button(SUBMIT, I18n.t("Search"), Vector2(0.51, -0.43), Vector2(0.48, 0.075), not query.strip_edges().is_empty(), "search", true)
+	else:
+		menu._draw_rows()
+		for button in menu._buttons:
+			if not menu._row_target(button.target): continue
+			var node: MeshInstance3D = button.node; var title: Label3D = node.get_child(0)
+			title.position.y = 0.018; menu.set_label_size(title, 19)
+			for child in node.get_children():
+				if child is Label3D and child != title:
+					child.position = Vector3(-0.48, -0.027, 0.004); child.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+					child.text = menu._fit_title(child.text, "", 1.03, 14); menu.set_label_size(child, 14)
+		menu._button(PREVIOUS, "‹", Vector2(-0.39, -0.51), Vector2(0.10, 0.07), pending == 0 and page > 0)
+		menu._label(str(page + 1), Vector3(-0.19, -0.51, 0.004), 18)
+		menu._button(NEXT, "›", Vector2(0.01, -0.51), Vector2(0.10, 0.07), pending == 0 and not next_cursor.is_empty())
+		menu._button(REFRESH, "", Vector2(0.73, -0.51), Vector2(0.10, 0.07), pending == 0, "refresh")
+	if not menu.status.is_empty(): menu._label(menu._fit_title(I18n.t(menu.status), "", 1.2, 17), Vector3(0.16, -0.59, 0.004), 17)

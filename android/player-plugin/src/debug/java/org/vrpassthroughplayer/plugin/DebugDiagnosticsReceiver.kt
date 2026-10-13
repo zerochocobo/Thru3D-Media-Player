@@ -42,6 +42,8 @@ class DebugDiagnosticsReceiver : BroadcastReceiver() {
                     } else if (intent.action == "com.wapok.thru3d.DEBUG_SMB_CRYPTO") {
                         report.put("smb", SmbCryptoProbe.run())
                         1
+                    } else if (intent.action == "com.wapok.thru3d.DEBUG_CLOUD_ISO") {
+                        CloudIsoProbe.request(context.applicationContext, request)
                     } else if (intent.action == "com.wapok.thru3d.DEBUG_CLOUD") {
                         val provider = intent.getStringExtra("provider") ?: CloudDrive.P115
                         if (provider == CloudDrive.P115) CloudPlaybackProbe.request(context.applicationContext, request, intent.getBooleanExtra("play", false))
@@ -95,7 +97,7 @@ class DebugDiagnosticsReceiver : BroadcastReceiver() {
                         when (intent.action) {
                         "com.wapok.thru3d.DEBUG_PLAYER_MPV" -> {
                             val operation = intent.getStringExtra("operation") ?: "open"
-                            require(operation in setOf("open", "alpha", "depth", "playing", "seek", "hold_pixels", "observe", "stereo", "profile", "close", "pixels", "subtitle", "display_quality", "sharpness", "cloud_accounts", "cloud_page_probe", "display_menu", "player_menu", "restart_app", "quit_app", "seek_policy_ui", "media_library_ui", "photo_open", "photo_step", "photo_depth", "layer_flip", "layer_order", "menu_layers", "menu_bench"))
+                            require(operation in setOf("open", "alpha", "depth", "playing", "seek", "hold_pixels", "observe", "stereo", "profile", "close", "pixels", "subtitle", "display_quality", "sharpness", "cloud_accounts", "cloud_page_probe", "display_menu", "player_menu", "restart_app", "quit_app", "seek_policy_ui", "media_library_ui", "photo_open", "photo_step", "photo_depth", "layer_flip", "layer_order", "menu_layers", "menu_layer_filter", "menu_layer_holes", "menu_nav", "menu_bench"))
                             val command = JSONObject().put("operation", operation).put("request_key", request)
                                 .put("value", intent.getFloatExtra("value", 0f).toDouble())
                                 .put("benchmark", intent.getBooleanExtra("benchmark", false))
@@ -111,6 +113,7 @@ class DebugDiagnosticsReceiver : BroadcastReceiver() {
                                 .put("position_ms", intent.getIntExtra("position_ms", 0))
                                 .put("hold_seek_ms", intent.getIntExtra("hold_seek_ms", 0).coerceIn(0, 30000))
                                 .put("profile", intent.getStringExtra("profile") ?: "384x216")
+                                .put("target", intent.getStringExtra("target") ?: "")
                                 .put("loop", intent.getBooleanExtra("loop", false))
                                 // 2D->3D: a mono open with depth (stereo=false) or the "depth" operation.
                                 .put("stereo", intent.getBooleanExtra("stereo", true))
@@ -136,7 +139,7 @@ class DebugDiagnosticsReceiver : BroadcastReceiver() {
                             }
                             if (operation == "seek_policy_ui") {
                                 val step = intent.getStringExtra("step")
-                                require(step in setOf("global_speed", "global_exact", "bookmark_global", "bookmark_speed", "bookmark_exact", "bookmark_add", "bookmark_seek", "bookmark_delete"))
+                                require(step in setOf("global_speed", "global_exact", "bookmark_global", "bookmark_speed", "bookmark_exact", "bookmark_add", "bookmark_seek", "bookmark_delete", "timeline_drag"))
                                 val marker = intent.getStringExtra("marker_id").orEmpty()
                                 require(marker.isEmpty() || marker.matches(Regex("[a-f0-9]{32}")))
                                 command.put("step", step).put("marker_id", marker)
@@ -153,7 +156,8 @@ class DebugDiagnosticsReceiver : BroadcastReceiver() {
                                 val network = intent.getStringExtra("uri")
                                 if (network != null) {
                                     // Library network sources (DLNA http, SMB) through the same open path.
-                                    require(network.startsWith("http://") || network.startsWith("https://") || network.startsWith("smb://"))
+                                    require(network.startsWith("http://") || network.startsWith("https://") || network.startsWith("smb://") || network.startsWith("cloud://"))
+                                    if (network.startsWith("cloud://")) CloudPaths.path(network)
                                     command.put("uri", network).put("title", intent.getStringExtra("title") ?: "network")
                                 } else {
                                 val fixture = intent.getStringExtra("fixture") ?: "mp03_frame_identity"

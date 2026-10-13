@@ -83,7 +83,7 @@ internal class MediaServerLibrary(private val context: () -> Context?, private v
                             "browse" -> client.browse(req)
                             "candidates" -> client.candidates(req)
                             "detail" -> JSONObject().put("detail", client.detail(req.getString("scene_id")))
-                            "cover" -> cover(app, account, client, http, req.getString("scene_id"))
+                            "cover" -> cover(app, account, client, http, req)
                             else -> throw MediaServerFailure("Invalid server request")
                         }
                     }
@@ -100,13 +100,21 @@ internal class MediaServerLibrary(private val context: () -> Context?, private v
         return id
     }
     fun cancel(id: Int) { jobs.remove(id)?.let { it.http?.close(); it.future?.cancel(true); it.future?.let(pool::remove) } }
-    private fun cover(app: Context, account: MediaServerAccount, client: MediaLibraryClient, http: MediaServerHttp, id: String): JSONObject {
+    private fun cover(app: Context, account: MediaServerAccount, client: MediaLibraryClient, http: MediaServerHttp, request: JSONObject): JSONObject {
+        val id = request.getString("scene_id")
         mediaRequire(id.matches(Regex("[A-Za-z0-9-]{1,64}")))
+        val type = request.optString("image_type", "Primary"); val index = request.optInt("image_index")
+        val tag = request.optString("image_tag"); val width = request.optInt("max_width", 512)
+        // Validate before consulting the cache, including warm-cache requests.
+        val image = client.image(id, type, index, tag, width)
+        val variant = if (!request.has("image_type")) "" else "-" + java.security.MessageDigest.getInstance("SHA-256")
+            .digest("$type/$index/$tag/$width".toByteArray()).take(12).joinToString("") { "%02x".format(it) }
         val directory = File(app.cacheDir, "media-servers/${account.id}").apply { mkdirs() }
-        val file = File(directory, "$id.jpg")
+        val file = File(directory, "$id$variant.jpg")
         if (!file.isFile || System.currentTimeMillis() - file.lastModified() > 86400000) {
-            val bitmap = runCatching { decodeCover(http.bytes(client.cover(id), 8 * 1024 * 1024)) }.getOrElse { original ->
+            val bitmap = runCatching { decodeCover(http.bytes(image, 8 * 1024 * 1024), maxSize = width) }.getOrElse { original ->
                 if (original is MediaServerFailure && original.code in setOf("Request cancelled", "Server authentication required")) throw original
+                if (request.has("image_type")) throw MediaServerFailure("Cover unavailable")
                 val fallback = client.coverFallback(id) ?: throw MediaServerFailure("Cover unavailable")
                 decodeCover(http.bytes(fallback.uri, 16 * 1024 * 1024), fallback)
             }
@@ -124,14 +132,14 @@ internal class MediaServerLibrary(private val context: () -> Context?, private v
         }
         return JSONObject().put("scene_id", id).put("path", file.absolutePath)
     }
-    private fun decodeCover(bytes: ByteArray, region: MediaCover? = null): Bitmap {
+    private fun decodeCover(bytes: ByteArray, region: MediaCover? = null, maxSize: Int = 512): Bitmap {
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
         mediaRequire(bounds.outWidth in 1..32768 && bounds.outHeight in 1..32768, "Cover unavailable")
         val width = region?.width ?: bounds.outWidth; val height = region?.height ?: bounds.outHeight
         mediaRequire(width.toLong() * height <= 64000000, "Cover too large")
         var sample = 1
-        while (maxOf(width, height) / sample > 512) sample *= 2
+        while (maxOf(width, height) / sample > maxSize) sample *= 2
         val options = BitmapFactory.Options().apply { inSampleSize = sample }
         if (region == null) return BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options) ?: throw MediaServerFailure("Cover unavailable")
         mediaRequire(region.x.toLong() + width <= bounds.outWidth && region.y.toLong() + height <= bounds.outHeight, "Invalid server response")
@@ -149,9 +157,11 @@ internal class MediaServerLibrary(private val context: () -> Context?, private v
             synchronized(MediaServerStore) {
                 mediaRequire(!closed && getAccount(server) == account, "Server changed")
                 val local = streams()
-                val url = local.publish(source, "video")
+                val original = source.original()
+                // Preserve the disc type through opaque server and capability URLs.
+                val url = local.publish(source, if (original.basename.endsWith(".iso", true)) "video.iso" else "video")
                 leases[url] = server to local
-                playback[uri] = Playback(account, scene, source.original(), url)
+                playback[uri] = Playback(account, scene, original, url)
                 return url
             }
         } catch (e: Exception) { source.close(); throw e }

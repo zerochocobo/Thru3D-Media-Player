@@ -14,3 +14,7 @@ Godot, Godot OpenXR Vendors, MNN, ncnn and Maven dependencies are prepared exter
 The repository includes only synthetic test media. Private human-video fixtures and model weights are excluded.
 
 The CodeLibs JCIFS jar is staged by Gradle with unused HTTP/HTTPS NTLM adapters removed. Retained classes/resources keep upstream bytes and notices; SMB functions remain available. The combined binary OpenList obligations are recorded in the licensing scope above.
+
+- edge264-mvc: pinned BSD-3-Clause decoder source recipe and license under third_party/edge264-mvc; player adapters are in native/mpv/mvc.
+- libbluray and libudfread: pinned upstream source recipes and LGPL-2.1-or-later texts under third_party/bluray, linked through the FFmpeg source candidate.
+- Thru3D CJK punctuation: renamed bracket-only subset of Noto Sans CJK SC 2.004 under SIL OFL-1.1; exact source/hash, rebuild script and notices accompany the font under app/godot/assets/fonts.

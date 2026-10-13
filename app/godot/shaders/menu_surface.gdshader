@@ -5,6 +5,9 @@ render_mode unshaded, cull_disabled, depth_draw_never, blend_mix;
 uniform vec4 surface_color : source_color = vec4(0.07, 0.08, 0.10, 0.97);
 uniform vec2 surface_size = vec2(1.0);
 uniform float corner_radius = 0.02;
+// Debug text bands: plates that are partly in the eye buffer and partly in band layers render solid
+// in both, so the two halves match.
+uniform bool solid = false;
 
 void fragment() {
     float radius = min(corner_radius, min(surface_size.x, surface_size.y) * 0.5);
@@ -14,7 +17,8 @@ void fragment() {
     ALBEDO = surface_color.rgb;
     // Dense menu captures use solid plates so their text has full contrast even over video.
     // Other cameras retain the original translucent eye-buffer appearance.
-    bool capture = (CAMERA_VISIBLE_LAYERS & 0xF0000u) != 0u && (CAMERA_VISIBLE_LAYERS & 0xFFFFu) == 0u;
-    float opacity = capture && surface_color.a > 0.0 ? 1.0 : surface_color.a;
+    // Layers 16-19 are the menu slots and 14-15 the text bands.
+    bool capture = (CAMERA_VISIBLE_LAYERS & 0xFC000u) != 0u && (CAMERA_VISIBLE_LAYERS & 0x3FFFu) == 0u;
+    float opacity = (capture || solid) && surface_color.a > 0.0 ? 1.0 : surface_color.a;
     ALPHA = opacity * (1.0 - smoothstep(-edge, edge, distance));
 }

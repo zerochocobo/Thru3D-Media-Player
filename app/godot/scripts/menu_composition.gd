@@ -21,6 +21,9 @@ const SLOT_PREFERENCE := {"panel": [0, 2, 3, 1], "tall": [1, 0, 2, 3], "popup": 
 const HIDDEN_SIZE := Vector2(0.0005, 0.0005)
 ## Layer orders: video/pictures at -8, menu surfaces back-to-front from here, eye buffer at 0.
 const ORDER_BASE := -6
+## Clear after shader video (-10) and subtitles (1), before the menu's eye-buffer UI (10+).
+## Otherwise a nearby 2D->3D screen paints back into the hole over the compositor menu.
+const HOLE_PRIORITY := 5
 ## Surfaces whose offsets along a shared normal differ less than this share one layer plane.
 const PLANE_GAP := 0.015
 ## Popups draw with render priority 30+; they and their children never share a panel's layer.
@@ -36,6 +39,28 @@ const WATCHDOG_SECONDS := 2.0
 const WATCHDOG_FPS_RATIO := 0.5
 const HOLE_SHADER := preload("res://shaders/menu_layer_hole.gdshader")
 const COPY_SHADER := preload("res://shaders/menu_layer_copy.gdshader")
+const SURFACE_SHADER := preload("res://shaders/menu_surface.gdshader")
+const SUPERSAMPLING_PROPERTY := "XR_FB_composition_layer_settings/manual/supersampling_mode"
+const SHARPENING_PROPERTY := "XR_FB_composition_layer_settings/manual/sharpening_mode"
+## Debug text-band prototype: the main panel and the tall side column keep their flat surfaces in
+## the eye buffer; only horizontal bands holding text or icons go to fixed-size layers at the
+## density of the slot they replace. Each plane kind has its own pool and render bit; the pools,
+## the popup slots and the projection/passthrough layers stay under Quest's 16-layer limit.
+## A dense stretch of rows that would need more bands than the pool holds merges into one block
+## layer at the same density (the main panel only; the side column's rows always fit).
+const BAND_POOLS := {
+	"panel": {"pixels": Vector2i(2560, 160), "count": 7, "bit": 1 << (GROUP_BIT - 1), "slot": 0,
+		"block": Vector2i(2560, 960)},
+	"tall": {"pixels": Vector2i(1024, 480), "count": 4, "bit": 1 << (GROUP_BIT - 2), "slot": 1},
+}
+## Render layers stop at bit 19 and slots own 16-19; band bits 14-15 are otherwise unused.
+const BAND_MASK := 3 << (GROUP_BIT - 2)
+## After the panel's own eye-buffer content (priority <= 18), before popups and pointers.
+const BAND_HOLE_PRIORITY := 25
+## Band holes skip the band's top and bottom strips and anything not fully opaque (panel edges,
+## antialiased silhouettes): the eye-buffer panel covers the compositor's quad-edge blending there.
+const BAND_INSET := 0.004
+const BAND_COVERAGE := 0.95
 var menus: Array = []
 var origin: Node3D
 var eye_camera: Camera3D
@@ -58,6 +83,9 @@ var _painted_ms := 0
 var _last_menu: Node3D
 var _watch_time := 0.0
 var _watch_frames := 0
+var bands: Array[Dictionary] = []
+## Planes captured as bands, by kind: {"relative", "rank", "nodes", "width", "overflow"}.
+var banded: Dictionary = {}
 
 func configure(target_origin: Node3D, target_camera: Camera3D, target_display: RefCounted,
 		target_menus: Array, is_low_end: bool, host_capture: bool = false) -> void:
@@ -79,6 +107,16 @@ func configure(target_origin: Node3D, target_camera: Camera3D, target_display: R
 	eye_camera.cull_mask &= ~GROUP_MASK
 	for index in MAX_GROUPS:
 		slots.append(_make_slot(index))
+	if debug_bands:
+		for kind in BAND_POOLS:
+			var pool: Dictionary = BAND_POOLS[kind]
+			for index in pool.count + int(pool.has("block")):
+				var block: bool = index == pool.count
+				var band := _make_capture(_scaled(pool.block if block else pool.pixels), pool.bit,
+					"MenuBand_%s%s" % [kind, "Block" if block else str(index)], BAND_HOLE_PRIORITY)
+				band.hole.material_override.set_shader_parameter("coverage_min", BAND_COVERAGE)
+				band.kind = kind; band.block = block
+				bands.append(band)
 	get_tree().node_added.connect(_node_added)
 	for menu in menus:
 		menu.composition_changed.connect(repaint)
@@ -86,10 +124,22 @@ func configure(target_origin: Node3D, target_camera: Camera3D, target_display: R
 		_watch_children(menu)
 	fallback_reason = ""
 
+func _scaled(pixels: Vector2i) -> Vector2i:
+	var scale := debug_pixel_scale if debug_pixel_scale > 0.0 else (2.0 / 3.0 if low_end else 1.0)
+	if scale == 1.0: return pixels
+	return Vector2i(ceili(pixels.x * scale / 16) * 16, ceili(pixels.y * scale / 16) * 16)
+
 func _make_slot(index: int) -> Dictionary:
+	# The band prototype replaces the panel and tall slots: tiny, and never submitted.
+	var replaced := debug_bands and BAND_POOLS.values().any(func(pool): return pool.slot == index)
+	var pixels := Vector2i(16, 16) if replaced else _scaled(SLOT_PIXELS[index])
+	# With bands, popup slots join the layer list only once a popup first uses them.
+	var slot := _make_capture(pixels, 1 << (GROUP_BIT + index), "Menu%d" % index, HOLE_PRIORITY, not debug_bands)
+	slot.index = index
+	return slot
+
+func _make_capture(pixels: Vector2i, cull: int, layer_name: String, hole_priority: int, submitted: bool = true) -> Dictionary:
 	# Child viewports render before their parent: the capture is complete before the copy.
-	var pixels: Vector2i = SLOT_PIXELS[index]
-	if low_end: pixels = Vector2i(ceili(pixels.x * 2.0 / 3.0 / 16) * 16, ceili(pixels.y * 2.0 / 3.0 / 16) * 16)
 	var submit := SubViewport.new(); submit.size = pixels
 	submit.transparent_bg = true; submit.disable_3d = true; submit.world_2d = World2D.new()
 	submit.render_target_update_mode = SubViewport.UPDATE_DISABLED
@@ -98,7 +148,7 @@ func _make_slot(index: int) -> Dictionary:
 	raw.world_3d = origin.get_viewport().world_3d
 	raw.render_target_update_mode = SubViewport.UPDATE_DISABLED
 	submit.add_child(raw)
-	var camera := Camera3D.new(); camera.cull_mask = 1 << (GROUP_BIT + index)
+	var camera := Camera3D.new(); camera.cull_mask = cull
 	camera.projection = Camera3D.PROJECTION_ORTHOGONAL
 	camera.keep_aspect = Camera3D.KEEP_HEIGHT
 	camera.near = 0.05; camera.far = 0.5
@@ -109,27 +159,53 @@ func _make_slot(index: int) -> Dictionary:
 	copy_material.set_shader_parameter("menu_texture", raw.get_texture())
 	copy.material = copy_material; submit.add_child(copy)
 	var layer := OpenXRCompositionLayerQuad.new()
-	layer.name = "Menu%d" % index
+	layer.name = layer_name
 	layer.alpha_blend = true
 	# The mask follows actual menu coverage instead of clearing the whole rectangle.
 	# Visible for the whole session; without an acquired image Godot skips it.
 	layer.enable_hole_punch = false; layer.visible = not force_capture
 	layer.quad_size = HIDDEN_SIZE
-	origin.add_child(layer); layer.layer_viewport = submit
-	for property in layer.get_property_list():
-		if property.name == "XR_FB_composition_layer_settings/manual/supersampling_mode":
-			layer.set(property.name, 1) # normal: the capture is denser than the display
+	origin.add_child(layer)
+	# A layer without a viewport acquires no image and is never submitted.
+	if submitted: layer.layer_viewport = submit
+	_apply_filter(layer)
 	var hole := MeshInstance3D.new(); hole.mesh = QuadMesh.new()
 	hole.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	var material := ShaderMaterial.new(); material.shader = HOLE_SHADER
-	# First in the transparent pass: later eye-buffer content in front still blends over it.
-	material.render_priority = -128
+	# Clear shader video before exposing the menu layer. Bands also clear panel content
+	# that stays in the eye buffer; opaque input models in front retain depth protection.
+	material.render_priority = hole_priority
 	material.set_shader_parameter("menu_texture", raw.get_texture())
 	hole.material_override = material; hole.visible = false
 	origin.add_child(hole)
-	return {"index": index, "raw": raw, "camera": camera, "submit": submit, "copy": copy, "layer": layer,
+	return {"index": -1, "raw": raw, "camera": camera, "submit": submit, "copy": copy, "layer": layer,
 		"hole": hole, "key": "", "used": false, "relative": Transform3D.IDENTITY, "rect": Rect2(),
 		"nodes": [], "rank": Vector2.ZERO, "tail": 0}
+
+## Compositor filtering of the menu layers (0 off, 1 normal, 2 quality). Normal supersampling:
+## the capture is denser than the display.
+var supersampling := 1
+var sharpening := 0
+## Debug cost split only: skips the eye-buffer coverage pass (the menu then shows behind scene content).
+var debug_hide_holes := false
+## Debug capture-density override (0 = automatic); read before configure().
+var debug_pixel_scale := 0.0
+## Debug text-band prototype for the main panel; read before configure().
+var debug_bands := false
+
+func _apply_filter(layer: OpenXRCompositionLayer) -> void:
+	for property in layer.get_property_list():
+		if property.name == SUPERSAMPLING_PROPERTY: layer.set(property.name, supersampling)
+		elif property.name == SHARPENING_PROPERTY: layer.set(property.name, sharpening)
+
+## Debug comparison of filter cost and legibility; takes effect on the next frame.
+func set_filter(supersampling_mode: int, sharpening_mode: int) -> void:
+	supersampling = clampi(supersampling_mode, 0, 2); sharpening = clampi(sharpening_mode, 0, 2)
+	for slot in slots + bands: _apply_filter(slot.layer)
+
+func set_debug_holes(visible: bool) -> void:
+	debug_hide_holes = not visible
+	for slot in slots + bands: slot.hole.visible = visible and slot.used and slot.rect.has_area()
 
 static func clear_environment() -> Environment:
 	var environment := Environment.new()
@@ -216,10 +292,11 @@ func update() -> void:
 	if dirty:
 		for slot in slots:
 			if slot.used: _measure(slot)
+		for kind in banded: _measure_bands(kind)
 		dirty = false; _painted_ms = now; repaints += 1
 	var root := _root_pose()
 	var any := false
-	for slot in slots:
+	for slot in slots + bands:
 		_place(slot, root)
 		any = any or slot.used
 	if display: display.set_menu_layers(any and not force_capture)
@@ -256,19 +333,31 @@ func _collect() -> void:
 		var key := "%d:%d:%d:%d:%d" % [int(group.popup), roundi(group.normal.x * 50), roundi(group.normal.y * 50), roundi(group.normal.z * 50), roundi(group.first / PLANE_GAP)]
 		group["key"] = key
 	for slot in slots: slot.used = false; slot.nodes = []
+	banded = {}
 	# Slot pixel sizes are fixed, so each surface takes the free slot whose shape fits it best.
 	for group in groups.slice(0, MAX_GROUPS):
-		for index in SLOT_PREFERENCE[_kind(group, inverse)]:
+		var kind := _kind(group, inverse)
+		if debug_bands and BAND_POOLS.has(kind) and not banded.has(kind):
+			_assign_bands(kind, group); continue
+		for index in SLOT_PREFERENCE[kind]:
+			if debug_bands and BAND_POOLS.values().any(func(pool): return pool.slot == index): continue
 			var slot: Dictionary = slots[index]
 			if slot.used: continue
 			if slot.key != group.key: slot.key = group.key; slot.rect = Rect2()
 			_assign(slot, group, root); break
 	# Back to front: popups over panels, then nearer planes.
 	var ordered := slots.filter(func(s): return s.used)
+	for band in bands: band.used = false
+	# A plane's bands never overlap, so they share one order and the menu stays between video and
+	# eye buffer.
+	for kind in banded: ordered.append({"rank": banded[kind].rank, "bands": kind})
 	ordered.sort_custom(func(a, b): return a.rank.x < b.rank.x or (a.rank.x == b.rank.x and a.rank.y < b.rank.y))
 	for index in ordered.size():
-		ordered[index].layer.sort_order = ORDER_BASE + index
-	for slot in slots:
+		if ordered[index].has("bands"):
+			for band in bands:
+				if band.kind == ordered[index].bands: band.layer.sort_order = ORDER_BASE + index
+		else: ordered[index].layer.sort_order = ORDER_BASE + index
+	for slot in slots + bands:
 		if not slot.used: _hide_slot(slot)
 
 static func _kind(group: Dictionary, root_inverse: Transform3D) -> String:
@@ -289,6 +378,7 @@ static func _kind(group: Dictionary, root_inverse: Transform3D) -> String:
 
 func _assign(slot: Dictionary, group: Dictionary, root: Transform3D) -> void:
 	slot.used = true
+	if slot.layer.layer_viewport == null and not force_capture: slot.layer.layer_viewport = slot.submit
 	var plane := (float(group.first) + float(group.last)) * 0.5
 	var basis: Basis = group.basis
 	var local_normal: Vector3 = basis.z
@@ -304,6 +394,111 @@ func _assign(slot: Dictionary, group: Dictionary, root: Transform3D) -> void:
 		originals.append({"node": node, "layers": node.layers})
 		node.layers = bit
 		slot.nodes.append(node)
+
+func _assign_bands(kind: String, group: Dictionary) -> void:
+	var plane := (float(group.first) + float(group.last)) * 0.5
+	var basis: Basis = group.basis
+	var relative := Transform3D(basis, basis.z * plane)
+	var state := {"relative": relative, "rank": Vector2(int(group.popup), relative.origin.z), "nodes": [],
+		"width": 0.0, "overflow": 0}
+	banded[kind] = state
+	for item in group.nodes:
+		var node: VisualInstance3D = item.node
+		var surface: ShaderMaterial = node.material_override if node.material_override is ShaderMaterial else null
+		var solid: bool = surface != null and surface.shader == SURFACE_SHADER
+		originals.append({"node": node, "layers": node.layers, "surface": surface if solid else null})
+		# Drawn in both: the eye buffer keeps the flat panel, the bands capture text rows.
+		node.layers = node.layers | int(BAND_POOLS[kind].bit)
+		if solid: surface.set_shader_parameter("solid", true)
+		state.nodes.append(node)
+
+## Text and icons need the layer density; flat shader surfaces render fine in the eye buffer.
+static func _is_detail(node: VisualInstance3D) -> bool:
+	if node is Label3D: return not (node as Label3D).text.strip_edges().is_empty()
+	if node is GeometryInstance3D and node.material_override is StandardMaterial3D:
+		return (node.material_override as StandardMaterial3D).albedo_texture != null
+	return false
+
+## Covers the text rows of the banded plane with fixed-size bands, top to bottom.
+func _measure_bands(kind: String) -> void:
+	var state: Dictionary = banded[kind]
+	var pool := bands.filter(func(b): return b.kind == kind and not b.block)
+	var blocks := bands.filter(func(b): return b.kind == kind and b.block)
+	var root_inverse := _root_pose().affine_inverse()
+	var frame_inverse: Transform3D = state.relative.affine_inverse()
+	var lo := Vector2(INF, INF); var hi := Vector2(-INF, -INF)
+	var spans: Array[Vector2] = []
+	for node: VisualInstance3D in state.nodes:
+		if not is_instance_valid(node) or not node.is_visible_in_tree(): continue
+		var box := node.get_aabb()
+		if box.size.x <= 0 and box.size.y <= 0: continue
+		var to_frame: Transform3D = frame_inverse * root_inverse * node.global_transform
+		var node_lo := Vector2(INF, INF); var node_hi := Vector2(-INF, -INF)
+		for corner in 8:
+			var point: Vector3 = to_frame * box.get_endpoint(corner)
+			node_lo = node_lo.min(Vector2(point.x, point.y)); node_hi = node_hi.max(Vector2(point.x, point.y))
+		lo = lo.min(node_lo); hi = hi.max(node_hi)
+		if _is_detail(node): spans.append(Vector2(node_lo.y - MARGIN, node_hi.y + MARGIN))
+	if not lo.is_finite(): return
+	lo = ((lo - Vector2.ONE * MARGIN) / GRID).floor() * GRID
+	hi = ((hi + Vector2.ONE * MARGIN) / GRID).ceil() * GRID
+	var width: float = maxf(hi.x - lo.x, state.width)
+	state.width = width
+	var pixels := Vector2(pool[0].raw.size)
+	var height := width * pixels.y / pixels.x
+	spans.sort_custom(func(a, b): return a.y > b.y)
+	var tops := _pack(spans, height)
+	var block_top := INF
+	var block_height := 0.0
+	if tops.size() > pool.size() and not blocks.is_empty():
+		# Merge a dense stretch: among block positions that leave few enough bands, take the one
+		# capturing the fewest pixels; if none fits, the one leaving the fewest bands.
+		block_height = width * float(blocks[0].raw.size.y) / float(blocks[0].raw.size.x)
+		var block_cost := float(blocks[0].raw.size.x * blocks[0].raw.size.y)
+		var band_cost := float(pool[0].raw.size.x * pool[0].raw.size.y)
+		var best := tops
+		var best_cost := INF
+		for candidate in spans:
+			var top: float = candidate.y
+			var rest := spans.filter(func(s): return not (s.y <= top and s.x >= top - block_height))
+			var packed := _pack(rest, height)
+			var cost := block_cost + packed.size() * band_cost
+			if packed.size() > pool.size(): cost = INF
+			if cost < best_cost or (best_cost == INF and packed.size() < best.size()):
+				best = packed; best_cost = cost; block_top = top
+		tops = best
+	state.overflow = maxi(tops.size() - pool.size(), 0)
+	for block in blocks:
+		block.used = block_top != INF
+		block.relative = state.relative
+		if block.used:
+			_capture_band(block, Rect2(Vector2(lo.x, block_top - block_height), Vector2(width, block_height)))
+	for index in pool.size():
+		var band: Dictionary = pool[index]
+		band.used = index < tops.size()
+		band.relative = state.relative
+		if band.used: _capture_band(band, Rect2(Vector2(lo.x, tops[index] - height), Vector2(width, height)))
+
+## Fixed-height bands top to bottom. A row the previous band cuts starts its own band at its top;
+## the overlap keeps the inset strip of the band edge off text.
+static func _pack(spans: Array, height: float) -> Array[float]:
+	var tops: Array[float] = []
+	var covered := INF
+	for span: Vector2 in spans:
+		if span.x >= covered: continue
+		var top := span.y
+		while top > span.x:
+			tops.append(top); top -= height
+		covered = top
+	return tops
+
+func _capture_band(band: Dictionary, rect: Rect2) -> void:
+	band.rect = rect
+	band.hole.material_override.set_shader_parameter("inset_v", BAND_INSET / rect.size.y)
+	band.hole.material_override.set_shader_parameter("erode", Vector2(BAND_INSET / rect.size.x, BAND_INSET / rect.size.y))
+	band.raw.render_target_update_mode = SubViewport.UPDATE_ONCE
+	band.submit.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+	band.tail = 2
 
 func _gather(node: Node, items: Array[Dictionary], inverse: Transform3D, popup: bool) -> void:
 	if node.has_meta("menu_pointer") or node.has_meta("menu_eye_buffer"): return
@@ -363,7 +558,7 @@ func _place(slot: Dictionary, root: Transform3D) -> void:
 	slot.layer.global_transform = pose
 	slot.hole.mesh.size = size
 	slot.hole.global_transform = pose
-	slot.hole.visible = true
+	slot.hole.visible = not debug_hide_holes
 	if slot.tail > 0:
 		slot.tail -= 1
 		if slot.tail == 0:
@@ -373,6 +568,7 @@ func _place(slot: Dictionary, root: Transform3D) -> void:
 func _restore() -> void:
 	for item in originals:
 		if is_instance_valid(item.node): item.node.layers = item.layers
+		if item.get("surface"): item.surface.set_shader_parameter("solid", false)
 	originals.clear()
 
 func _hide_slot(slot: Dictionary) -> void:
@@ -383,7 +579,8 @@ func _hide_slot(slot: Dictionary) -> void:
 	slot.tail = 0
 
 func _hide() -> void:
-	for slot in slots:
+	banded = {}
+	for slot in slots + bands:
 		slot.used = false; slot.nodes = []
 		_hide_slot(slot)
 	if display: display.set_menu_layers(false)
@@ -394,12 +591,16 @@ func snapshot() -> Dictionary:
 		if slot.used: sizes.append([slot.raw.size.x, slot.raw.size.y])
 	return {"enabled": enabled, "active": not sizes.is_empty(), "native": enabled and not force_capture,
 		"fallback": fallback_reason, "layers": sizes.size(), "pixels": sizes,
-		"repaints": repaints}
+		"repaints": repaints, "filter": [supersampling, sharpening],
+		"bands": bands.filter(func(b): return b.used).size() if debug_bands else -1,
+		"band_use": BAND_POOLS.keys().map(func(kind): return bands.filter(func(b): return b.kind == kind and b.used and not b.block).size()) if debug_bands else [],
+		"band_block": bands.any(func(b): return b.block and b.used),
+		"band_overflow": banded.values().reduce(func(total, state): return total + int(state.overflow), 0)}
 
 func _exit_tree() -> void:
 	_restore()
 	if enabled and is_instance_valid(eye_camera): eye_camera.cull_mask = eye_mask
-	for slot in slots:
+	for slot in slots + bands:
 		if is_instance_valid(slot.layer): slot.layer.queue_free()
 		if is_instance_valid(slot.hole): slot.hole.queue_free()
 	if display: display.set_menu_layers(false)

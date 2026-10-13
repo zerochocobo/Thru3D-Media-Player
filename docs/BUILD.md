@@ -97,3 +97,7 @@ Provide the ordinary password through `THRU3D_SIGNING_PASSWORD` or the signing h
 `build/` and `tmp/` are disposable. Keep signing material, unique source inputs and permanent backups outside them.
 
 All public builds use caller-owned keys and identity metadata. No official signing identity, encrypted key archive, password or personal backup is included. Keep unique inputs and backups outside disposable build/tmp directories.
+
+## Blu-ray/MVC source candidate
+
+The updated FFmpeg build includes the adapters in native/mpv/mvc and pinned edge264-mvc/libbluray/libudfread sources. Their preparation and build scripts preserve source hashes and license texts; no compiled dependency is exported in Git. Rebuild with the Linux source workflow and export a matching receipt before assembling the Android plugin. See BLURAY.md for supported media and optional host checks.

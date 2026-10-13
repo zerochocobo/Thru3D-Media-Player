@@ -16,6 +16,39 @@ import java.util.concurrent.atomic.AtomicInteger
 class CloudStreamSourceTest {
     private val bytes = ByteArray(700000) { (it % 251).toByte() }
     private fun localConnection(uri: URI) = uri.toURL().openConnection() as HttpURLConnection
+    @Test fun rangeConnectionsUseTheSelectedLinkWithoutRepeatingMetadataResolution() {
+        val resolutions = AtomicInteger()
+        val requests = AtomicInteger()
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        server.createContext("/file") { exchange ->
+            requests.incrementAndGet()
+            val start = exchange.requestHeaders.getFirst("Range")!!.removePrefix("bytes=").removeSuffix("-").toInt()
+            exchange.responseHeaders.add("Content-Range", "bytes $start-${bytes.lastIndex}/${bytes.size}")
+            exchange.sendResponseHeaders(206, (bytes.size - start).toLong())
+            runCatching { exchange.responseBody.use { it.write(bytes, start, bytes.size - start) } }
+            exchange.close()
+        }
+        server.start()
+        val link = CloudLink("http://127.0.0.1:${server.address.port}/file") { emptyMap() }
+        try {
+            CloudStreamSource(bytes.size.toLong(), { resolutions.incrementAndGet(); link },
+                linkConnection = { uri, selected ->
+                    assertSame(link, selected)
+                    assertEquals(selected.url, uri.toASCIIString())
+                    localConnection(uri)
+                }).use { source ->
+                source.prepare()
+                for (offset in listOf(32768L, 524288L, 0L, 690000L)) source.open().use { reader ->
+                    val buffer = ByteArray(2048)
+                    val count = reader.read(offset, buffer, buffer.size)
+                    assertTrue(count > 0)
+                    assertArrayEquals(bytes.copyOfRange(offset.toInt(), offset.toInt() + count), buffer.copyOf(count))
+                }
+            }
+            assertEquals(4, requests.get())
+            assertEquals(1, resolutions.get())
+        } finally { server.stop(0) }
+    }
     // Android's compile classpath omits jdk.httpserver. Keep the fixture as real sockets.
     private class HttpServer private constructor(bind: InetSocketAddress) {
         private val socket = ServerSocket().apply { bind(bind) }

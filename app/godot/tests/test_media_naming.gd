@@ -78,6 +78,16 @@ func _initialize() -> void:
 	check(not Naming.complete({"geometry": fisheye}, 2048, 2048).stereo, "An unnamed single square fisheye lens stays mono")
 	check(Naming.complete(Naming.from_name("clip_fisheye_HSBS.mp4"), 2048, 2048).stereo, "Explicit half-SBS distinguishes a squeezed pair from a single lens")
 	check(Naming.complete({"geometry": fisheye}, 2048, 2048, {"stereo_mode": "sbs2l"}).stereo, "Container SBS distinguishes two views in a square packed fisheye")
+	for mode in ["HalfSideBySide", "FullSideBySide", "HalfTopAndBottom", "FullTopAndBottom"]:
+		var stated := Naming.from_metadata("film.mp4", {"video_3d_format": mode})
+		var chosen := Naming.complete(stated, 2160, 2160, {}, "film.mp4")
+		check(chosen.stereo and chosen.top_bottom == mode.ends_with("TopAndBottom"), "Emby layout " + mode)
+		check(chosen.stereo_half == mode.begins_with("Half"), "Emby packing " + mode)
+		check(chosen.geometry == flat, "Emby 3D format alone does not infer VR projection " + mode)
+	check(Naming.from_metadata("film_180.mp4", {"video_3d_format": "FullSideBySide"}).geometry == half, "Filename supplies VR180 independently of Emby stereo")
+	check(Naming.from_metadata("film_TB.mp4", {"video_3d_format": "FullSideBySide"}).top_bottom, "Explicit filename axis wins")
+	check(not Naming.from_metadata("film_2D.mp4", {"video_3d_format": "HalfSideBySide"}).stereo, "Explicit mono filename wins over Emby")
+	check(Naming.from_metadata("film.mp4", {"video_3d_format": "MVC"}).is_empty(), "MVC is not treated as SBS")
 	print("media naming checks=%d failures=%d" % [checks, failures.size()])
 	for failure in failures:
 		push_error(failure)

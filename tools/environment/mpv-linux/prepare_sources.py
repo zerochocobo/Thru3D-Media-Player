@@ -117,6 +117,9 @@ def main():
     apply_dovi_patch(base/'ffmpeg')
     from pgs_patch import apply_pgs_patch
     apply_pgs_patch(mpv)
+    from mvc_patch import apply_mvc_patch
+    ffmpeg_record = next(s for s in lock['sources'] if s['name'] == 'ffmpeg')
+    apply_mvc_patch(base/'ffmpeg', args.cache/ffmpeg_record['archive'])
     print("Locked sources, same-render frame patch and Profile 5 RPU patch verified")
 
 

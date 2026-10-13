@@ -163,6 +163,7 @@ var _layer_generation := 0 # video_layer.generation the layer session's surface 
 ## A seek on the layer: its surface keeps the last frame, so it stays shown until the target arrives.
 var _layer_seek_hold := false
 var _hole_material: ShaderMaterial
+var _alignment_border: ShaderMaterial
 var video_layer_shown := false # main renders the eye buffers transparent while true
 var _picture_token := -1 # the 2D->3D pair last copied into the picture layer
 ## Frames to copy the held pair again: a strength change re-warps it in place, asynchronously.
@@ -213,6 +214,9 @@ func _ready() -> void:
 	_hole_material = ShaderMaterial.new()
 	_hole_material.shader = preload("res://shaders/video_layer_hole.gdshader")
 	_hole_material.render_priority = -128
+	_alignment_border = ShaderMaterial.new()
+	_alignment_border.shader = preload("res://shaders/video_layer_border.gdshader")
+	_alignment_border.render_priority = -127
 	# First photo use should not queue behind unrelated video-model cold compilation.
 	_apply_geometry()
 
@@ -440,7 +444,7 @@ func open_local(uri: String, title: String, start_ms: int = 0, restore_mode: boo
 	close_video()
 	# Alpha-packed and Alpha-wanted files say so in their names (PTMediaServer / DeoVR markers).
 	_layout_basename = basename if not basename.is_empty() else (title if not title.is_empty() else uri.uri_decode().get_file())
-	var stated := Naming.from_name(_layout_basename)
+	var stated := Naming.from_metadata(_layout_basename, metadata)
 	if uri.begins_with("medialib://"): stated.erase("alpha")
 	packed_file = bool(stated.get("packed", false))
 	packed_alpha = packed_file
@@ -1306,6 +1310,14 @@ func _apply_stereo_view() -> void:
 	# Native stereo only: mono and generated 2D->3D never inherit these corrections.
 	material.set_shader_parameter("viewing_eye", viewing_eye if stereo_sbs else 0)
 	material.set_shader_parameter("stereo_offset", Vector2(stereo_horizontal, stereo_vertical) * 0.01 if stereo_sbs else Vector2.ZERO)
+	if _hole_material:
+		# No extra full-surface pass during ordinary playback or mono viewing.
+		_hole_material.next_pass = _alignment_border if stereo_sbs and viewing_eye == 0 and stereo_offset_uv() != Vector2.ZERO else null
+		for target in [_hole_material, _alignment_border]:
+			target.set_shader_parameter("stereo_sbs", stereo_sbs)
+			target.set_shader_parameter("viewing_eye", viewing_eye if stereo_sbs else 0)
+			target.set_shader_parameter("stereo_offset", stereo_offset_uv() if stereo_sbs else Vector2.ZERO)
+			target.set_shader_parameter("video_geometry", geometry)
 
 ## The file name left the projection or the layout open: the frame's shape decides (once).
 func _complete_layout() -> void:
@@ -1815,9 +1827,11 @@ func _update_layer() -> void:
 		return
 	var origin := _origin()
 	if _layer_seek_hold and not _waiting_first: _layer_seek_hold = false
+	var layer_size := Vector2(float(media.playback.get("layer_surface_width", VideoLayer.SURFACE_SIZE)), \
+		float(media.playback.get("layer_surface_height", VideoLayer.SURFACE_SIZE)))
 	var shown := (_layer_session or _layer_seek_hold) and media.accepts(media.session_id) \
 		and (media.frame_counter > 0 or _layer_seek_hold) \
-		and media.state != "failed" and origin != null and video_layer.show(self, origin)
+		and media.state != "failed" and origin != null and video_layer.show(self, origin, VideoLayer.SURFACE, layer_size)
 	if not shown and not _layer_session and origin != null:
 		shown = _show_depth_picture(origin)
 	video_layer_shown = shown

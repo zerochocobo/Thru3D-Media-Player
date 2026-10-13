@@ -6,6 +6,9 @@ const KEY := 1400
 const SORTS := ["created_at", "title", "date", "duration", "rating100"]
 const SORT_NAMES := ["Recently added", "Title", "Release date", "Duration", "Rating"]
 const FILTER_NAMES := {"genres": "Genres", "tags": "Tags", "performers": "Performers", "studios": "Studios"}
+const Gallery := preload("res://scripts/media_server_gallery.gd")
+var gallery: RefCounted = Gallery.new(self)
+var actor_name := ""
 var menu: Node
 var view := "servers"
 var server := {}
@@ -58,6 +61,7 @@ func _init(owner: Node) -> void:
 			if value is Array: favorites[id] = value.filter(func(item): return item is Dictionary and str(item.get("uri", "")).begins_with("medialib://" + str(id) + "/scene/")).slice(0, 1000)
 
 func cancel() -> void:
+	gallery.capture.clear()
 	generation += 1
 	if menu.platform:
 		for id in pending: menu.platform.media_server_cancel(int(id))
@@ -82,13 +86,17 @@ func request(action_name: String, extra: Dictionary = {}) -> void:
 
 func open_home() -> void:
 	cancel(); view = "home"; entries = []; home_data = {}; folder_path = []; history.clear()
-	query = {"page": 1, "q": "", "all_tags": true}; labels.clear()
+	query = {"page": 1, "q": "", "all_tags": true}; labels.clear(); actor_name = ""; library_id = ""; gallery.library_start = 0; gallery.recent_start = 0; gallery.home_strip = "libraries"
 	menu._reset_navigation(); request("home", {"library_id": library_id}); menu.refresh()
 
 func browse(reset: bool = true) -> void:
 	cancel()
 	if reset: query.page = 1
-	query.library_id = library_id
+	query.library_id = "" if query.get("all_libraries", false) else library_id
+	if not query.has("mode") and not library_id.is_empty() and not query.get("all_libraries", false) and capabilities.get("home_layout", "") == "libraries":
+		query.mode = "library"
+		for library in home_data.get("libraries", []):
+			if str(library.id) == library_id: query.collection_type = str(library.get("collection_type", ""))
 	view = "scenes"; entries = []; loaded_page = 0; end_reached = false
 	if query.get("favorites", false) and capabilities.get("favorite_scope", "local") != "server":
 		entries = _local_favorites_query(); total = entries.size(); end_reached = true
@@ -112,7 +120,7 @@ func receive(id: int, payload: String) -> bool:
 	if not data is Dictionary or int(data.get("generation", -1)) != generation or data.get("server_id", "") != expected.server_id: return true
 	if expected.action != "cover": busy = false
 	if data.get("state") != "ready":
-		if expected.action == "cover": failed_covers[expected.scene_id] = true
+		if expected.action == "cover": failed_covers[_request_image_key(expected)] = true
 		else: menu.status = str(data.get("error", "Server unavailable"))
 		menu.refresh(); return true
 	if expected.action != "cover": menu.status = ""
@@ -120,7 +128,9 @@ func receive(id: int, payload: String) -> bool:
 		"servers": servers = data.get("servers", [])
 		"home":
 			home_data = data; capabilities = data.get("capabilities", capabilities); library_id = str(data.get("library_id", "")); total = int(data.get("total", 0))
-			entries = []; _append_unique(entries, _resume_entries()); _append_unique(entries, home_data.get("recent", []))
+			entries = []
+			if gallery.home(): _append_unique(entries, home_recent_entries())
+			else: _append_unique(entries, _resume_entries()); _append_unique(entries, home_data.get("recent", []))
 		"browse":
 			var incoming: Array = data.get("entries", [])
 			var page := int(expected.get("page", 1))
@@ -138,13 +148,27 @@ func receive(id: int, payload: String) -> bool:
 			candidate_end = incoming.size() < 48 or candidates.size() >= candidate_total or added == 0
 		"detail":
 			detail = data.get("detail", {}); view = "detail"
+			gallery.image_start = 0; gallery.actor_start = 0; gallery.selected_image = 0
+			gallery.part_start = 0; gallery.selected_part = 0
+			var resume_part := false
 			for local in _local_resume():
 				if local.id == detail.get("id"): detail.position_ms = local.position_ms
+				for index in detail.get("parts", []).size():
+					if local.id == detail.parts[index].get("id"):
+						detail.parts[index].position_ms = local.position_ms
+						if not resume_part:
+							gallery.selected_part = index; gallery.part_start = mini((index / 2) * 2, maxi(0, detail.parts.size() - 2)); resume_part = true
+			if expected.has("recent_position_ms"):
+				if str(detail.get("id", "")) == str(expected.scene_id): detail.position_ms = int(expected.recent_position_ms)
+				for index in detail.get("parts", []).size():
+					if str(detail.parts[index].get("id", "")) == str(expected.scene_id):
+						detail.parts[index].position_ms = int(expected.recent_position_ms)
+						gallery.selected_part = index; gallery.part_start = mini((index / 2) * 2, maxi(0, detail.parts.size() - 2))
 		"favorite":
 			if str(detail.get("id", "")) == str(data.get("scene_id", "")):
 				detail.favorite = bool(data.get("favorite", false))
 				_favorite_changed(str(detail.id), detail.favorite)
-		"cover": covers[str(expected.server_id) + "/" + str(expected.scene_id)] = str(data.get("path", ""))
+		"cover": covers[_request_image_key(expected)] = str(data.get("path", ""))
 		"remove":
 			var removed := str(expected.server_id)
 			saved = saved.filter(func(item): return item is Dictionary and item.get("server_id") != removed)
@@ -167,9 +191,28 @@ func _resume_entries() -> Array:
 	var result: Array = []; _append_unique(result, _local_resume()); _append_unique(result, home_data.get("resume", []))
 	return result.slice(0, 1)
 
+func home_recent_entries() -> Array:
+	var result: Array = []
+	var prefix := "medialib://" + str(server.get("id", "")) + "/scene/"
+	var remote: Array = home_data.get("recent_opened", home_data.get("resume", []))
+	var metadata := {}
+	for node in remote:
+		if node is Dictionary and str(node.get("uri", "")).begins_with(prefix): metadata[str(node.get("id", ""))] = node
+	if menu.catalog:
+		for local in menu.catalog.list_recent():
+			var uri := str(local.get("uri", ""))
+			if not uri.begins_with(prefix) or local.get("kind", "video") == "image": continue
+			var id := uri.trim_prefix(prefix)
+			var node: Dictionary = metadata.get(id, {}).duplicate(true)
+			node.merge(local, true); node.id = id; node.kind = "video"; node.recent_source = "local"
+			_append_unique(result, [node])
+	_append_unique(result, remote.filter(func(node): return node is Dictionary and str(node.get("uri", "")).begins_with(prefix) and not node.get("container", false)))
+	return result.slice(0, 32)
+
 func _remember() -> void:
 	history.append({"view": view, "query": query.duplicate(true), "entries": entries.duplicate(true), "candidates": candidates.duplicate(true), "detail": detail.duplicate(true), "kind": kind,
-		"total": total, "loaded_page": loaded_page, "candidate_page": candidate_page, "candidate_total": candidate_total, "candidate_q": candidate_q, "labels": labels.duplicate(true), "folder_path": folder_path.duplicate(true), "scroll": menu.scroll, "end": end_reached, "candidate_end": candidate_end})
+		"total": total, "loaded_page": loaded_page, "candidate_page": candidate_page, "candidate_total": candidate_total, "candidate_q": candidate_q, "labels": labels.duplicate(true), "folder_path": folder_path.duplicate(true), "scroll": menu.scroll, "end": end_reached, "candidate_end": candidate_end,
+		"library_id": library_id, "actor_name": actor_name, "gallery": gallery.state()})
 	if history.size() > 12: history.pop_front()
 
 func back() -> void:
@@ -179,6 +222,7 @@ func back() -> void:
 		view = previous.view; query = previous.query; entries = previous.entries; candidates = previous.candidates; detail = previous.detail; kind = previous.kind
 		total = previous.total; loaded_page = previous.loaded_page; candidate_page = previous.candidate_page; candidate_total = previous.candidate_total; candidate_q = previous.candidate_q
 		labels = previous.labels; folder_path = previous.folder_path; end_reached = previous.end; candidate_end = previous.candidate_end
+		library_id = str(previous.get("library_id", "")); actor_name = str(previous.get("actor_name", "")); gallery.restore(previous.get("gallery", {}))
 		menu._reset_navigation(); menu.scroll = previous.scroll; menu.status = ""; menu.refresh()
 	elif view == "home": load_servers()
 	elif view in ["remove_servers", "confirm_remove"]: removing = {}; load_servers()
@@ -211,8 +255,12 @@ func rows() -> Array[Dictionary]:
 			result.append({"title": I18n.t("Remove server") + ": " + str(removing.get("name", "")), "detail": menu.account_panel.provider_name(str(removing.get("provider", ""))), "icon": "trash", "confirm_remove": true})
 			result.append({"title": I18n.t("Cancel"), "icon": "up", "cancel_remove": true})
 		"home":
-			for item in _resume_entries(): result.append(_node_row(item).merged({"resume": true}))
-			for item in home_data.get("recent", []).slice(0, 4): result.append(_node_row(item))
+			if gallery.home():
+				for item in home_data.get("libraries", []): result.append({"title": str(item.title), "library": item})
+				for item in home_recent_entries(): result.append(_node_row(item).merged({"recent_opened": true}))
+			else:
+				for item in _resume_entries(): result.append(_node_row(item).merged({"resume": true}))
+				for item in home_data.get("recent", []).slice(0, 4): result.append(_node_row(item))
 		"scenes":
 			for item in entries: result.append(_node_row(item))
 		"libraries":
@@ -238,13 +286,13 @@ func rows() -> Array[Dictionary]:
 			for item in candidates:
 				var id := str(item.id); var included: bool = id in query.get(kind, []); var excluded: bool = id in query.get("exclude_" + kind, [])
 				result.append({"title": str(item.name), "detail": "−" if excluded else ("+" if included else ""), "icon": "check" if included else ("minus" if excluded else "circle"), "selected": included or excluded, "candidate": item})
-		"detail":
+		"detail", "metadata":
 			if not detail.is_empty():
 				result.append({"title": I18n.t("Continue watching" if int(detail.get("position_ms", 0)) > 0 else "Play / resume"), "icon": "play", "play_scene": detail})
 				result.append({"title": I18n.t("Favorited" if _is_favorite(detail) else "Favorite"), "icon": "heart", "favorite": true})
 				for category in capabilities.get("facets", []):
 					for item in detail.get(category, []): result.append({"title": str(item.name), "detail": I18n.t(FILTER_NAMES.get(category, category)), "icon": "plus", "detail_filter": item, "category": category})
-				for marker in detail.get("markers", []): result.append({"title": _time(int(marker.position_ms)) + "  " + str(marker.title), "icon": "seek_forward", "marker": marker})
+				for marker in gallery.playback_node().get("markers", []): result.append({"title": _time(int(marker.position_ms)) + "  " + str(marker.title), "icon": "seek_forward", "marker": marker})
 		"saved":
 			for item in saved:
 				if item is Dictionary and item.get("server_id") == server.get("id") and item.get("query") is Dictionary: result.append({"title": str(item.get("name", "")), "icon": "list", "saved_filter": item})
@@ -275,8 +323,11 @@ func choose(row: Dictionary) -> void:
 	elif row.has("container_node"):
 		_remember(); folder_path.append(row.container_node); query.parent_id = row.container_node.id; query.mode = "folders"; browse()
 	elif row.has("library"):
-		library_id = str(row.library.id); open_home()
+		_remember(); library_id = str(row.library.id); actor_name = ""; labels.clear(); folder_path.clear()
+		query = {"page": 1, "q": "", "mode": "library", "collection_type": str(row.library.get("collection_type", ""))}; browse()
 	elif row.has("facet") or row.has("detail_filter") or row.has("unclassified"):
+		if row.get("category", "") == "performers" and capabilities.get("artwork", false):
+			open_actor(row.get("detail_filter", row.get("facet", {}))); return
 		_remember()
 		if row.has("unclassified"): query.unclassified = row.unclassified
 		else:
@@ -284,12 +335,16 @@ func choose(row: Dictionary) -> void:
 			query[category] = [str(item.id)]; query.erase("exclude_" + category); query.erase("unclassified"); labels[category + "/" + str(item.id)] = str(item.name)
 		query.erase("mode"); query.erase("parent_id"); folder_path.clear(); browse()
 	elif row.has("scene"):
-		_remember(); cancel(); detail = {}; view = "detail"; menu._reset_navigation(); request("detail", {"scene_id": str(row.scene.id)})
+		var args := {"scene_id": str(row.scene.id)}
+		if row.get("recent_opened", false):
+			args.recent_position_ms = int(row.scene.get("position_ms", 0)); entries = home_recent_entries()
+		_remember(); cancel(); detail = {}; view = "detail"; menu._reset_navigation(); request("detail", args)
 	elif row.has("category"):
 		_remember(); cancel(); kind = str(row.category); exclude = false; view = "candidates"; candidate_q = ""; candidate_page = 1; get_candidates()
 	elif row.has("candidate"): set_filter(kind, row.candidate, exclude)
 	elif row.has("play_scene") or row.has("marker"):
-		_play(detail, int(row.marker.position_ms) if row.has("marker") else (int(detail.position_ms) if int(detail.get("position_ms", 0)) > 0 else -1))
+		var node: Dictionary = gallery.playback_node()
+		_play(node, int(row.marker.position_ms) if row.has("marker") else int(node.get("position_ms", -1)))
 	elif row.has("favorite"): _toggle_favorite()
 	elif row.has("saved_filter"):
 		_remember(); query = row.saved_filter.query.duplicate(true); library_id = str(query.get("library_id", library_id)); labels = row.saved_filter.get("labels", {}).duplicate(true); browse()
@@ -316,6 +371,17 @@ func choose(row: Dictionary) -> void:
 func _play(node: Dictionary, position: int) -> void:
 	selection = node.duplicate(true); selection.start_ms = position
 	menu.dismiss(); menu.chosen.emit(str(node.uri), str(node.get("title", "Video")))
+
+func open_actor(actor: Dictionary) -> void:
+	_remember(); actor_name = str(actor.get("name", "")); labels.clear(); folder_path.clear()
+	query = {"page": 1, "q": "", "performers": [str(actor.id)], "all_libraries": true}
+	labels["performers/" + str(actor.id)] = actor_name
+	browse()
+
+func playback_entries() -> Array:
+	var parts: Array = detail.get("parts", [])
+	if parts.any(func(part): return part.get("uri", "") == selection.get("uri", "")): return parts
+	return entries
 
 func _is_favorite(node: Dictionary) -> bool:
 	if capabilities.get("favorite_scope", "local") == "server": return bool(node.get("favorite", false))
@@ -408,7 +474,7 @@ func scroll_changed() -> void:
 	if menu.scroll >= menu._max_scroll() - 2.0: more()
 
 func _navigate(section: String) -> void:
-	history.clear(); labels.clear(); folder_path.clear(); keyboard = ""; candidate_q = ""
+	history.clear(); labels.clear(); folder_path.clear(); keyboard = ""; candidate_q = ""; actor_name = ""
 	query = {"page": 1, "q": "", "all_tags": true}
 	if section == "home": open_home()
 	elif section in FILTER_NAMES:
@@ -424,6 +490,7 @@ func _navigate(section: String) -> void:
 func action(target: int) -> bool:
 	if target < ACTION: return false
 	if not keyboard.is_empty(): return _keyboard_action(target)
+	if gallery.action(target): return true
 	if target >= ACTION + 200 and target < ACTION + 200 + chips.size():
 		var chip: Dictionary = chips[target - ACTION - 200]
 		if chip.key == "unclassified": query.erase("unclassified")
@@ -491,31 +558,52 @@ func _navigation() -> Array:
 
 func cover(row: Dictionary) -> Texture2D:
 	var node: Dictionary = row.get("scene", row.get("container_node", {}))
+	return image_texture(node)
+
+func _image_request(node: Dictionary) -> Dictionary:
+	var image: Dictionary = node.get("cover_image", {})
+	if image.is_empty(): return {"scene_id": str(node.get("id", ""))}
+	return {"scene_id": str(image.get("id", "")), "image_type": str(image.get("image_type", "Primary")), "image_index": int(image.get("image_index", 0)), "image_tag": str(image.get("image_tag", "")), "max_width": int(image.get("max_width", 512))}
+
+func _request_image_key(value: Dictionary) -> String:
+	var key := str(value.get("server_id", server.get("id", ""))) + "/" + str(value.get("scene_id", ""))
+	if value.has("image_type"): key += "/" + JSON.stringify([value.image_type, value.get("image_index", 0), value.get("image_tag", ""), value.get("max_width", 512)])
+	return key
+
+func image_texture(node: Dictionary) -> Texture2D:
 	if node.is_empty() or not node.get("has_cover", true): return null
-	var id := str(node.id); var key := str(server.get("id", "")) + "/" + id
+	var req := _image_request(node)
+	if str(req.scene_id).is_empty(): return null
+	var key := _request_image_key(req)
 	if textures.has(key): return textures[key]
 	if covers.has(key):
 		var image := Image.new()
 		if image.load(str(covers[key])) == OK:
 			var texture := ImageTexture.create_from_image(image)
-			if textures.size() >= 24: textures.erase(textures.keys()[0])
+			var pixels := texture.get_width() * texture.get_height()
+			for held in textures.values(): pixels += held.get_width() * held.get_height()
+			while not textures.is_empty() and (textures.size() >= 24 or pixels > 24 * 512 * 512):
+				var oldest: Variant = textures.keys()[0]
+				pixels -= textures[oldest].get_width() * textures[oldest].get_height(); textures.erase(oldest)
 			textures[key] = texture; return texture
 		covers.erase(key)
 	var active: Array = pending.values().filter(func(p): return p.action == "cover")
-	if menu.visible and not failed_covers.has(id) and active.size() < 2 and not active.any(func(p): return p.scene_id == id): request("cover", {"scene_id": id})
+	if menu.visible and not failed_covers.has(key) and active.size() < 2 and not active.any(func(p): return _request_image_key(p) == key): request("cover", req)
 	return null
 
 func prioritize_covers() -> void:
-	var visible_ids: Array[String] = []
-	if view in ["scenes", "home"]:
+	var nodes: Array = []
+	if gallery.fixed(): nodes = gallery.priority_nodes()
+	elif view in ["scenes", "home"]:
 		var first: int = menu._first_line() * menu._cols()
 		for row in menu.rows.slice(first, first + menu._drawn_slots()):
 			var node: Dictionary = row.get("scene", row.get("container_node", {}))
-			if not node.is_empty(): visible_ids.append(str(node.id))
-	elif view == "detail" and not detail.is_empty(): visible_ids.append(str(detail.id))
+			if not node.is_empty(): nodes.append(node)
+	elif view in ["detail", "metadata"] and not detail.is_empty(): nodes.append(detail)
+	var visible_keys: Array = nodes.map(func(node): return _request_image_key(_image_request(node)))
 	for id in pending.keys():
 		var req: Dictionary = pending[id]
-		if req.action == "cover" and str(req.scene_id) not in visible_ids:
+		if req.action == "cover" and _request_image_key(req) not in visible_keys:
 			if menu.platform: menu.platform.media_server_cancel(int(id))
 			pending.erase(id)
 
@@ -580,9 +668,12 @@ func draw() -> void:
 		if not busy: menu._button(ACTION + 12, "", Vector2(0.79, -0.565), Vector2(0.08, 0.06), true, "refresh")
 	if menu.status == "Server authentication required" and not management:
 		_draw_sign_in_required()
+	elif gallery.home(): gallery.draw_home()
+	elif gallery.rich_detail() and not detail.is_empty(): gallery.draw_detail()
+	elif view == "picture": gallery.draw_picture()
 	elif view == "home": _draw_home()
 	elif view == "filters": _draw_filters()
-	elif view == "detail" and not detail.is_empty(): _draw_detail()
+	elif view in ["detail", "metadata"] and not detail.is_empty(): _draw_detail()
 	else: menu._draw_rows()
 
 func _draw_sign_in_required() -> void:
@@ -594,10 +685,11 @@ func _draw_context() -> void:
 	for library in home_data.get("libraries", []):
 		if str(library.id) == library_id: context = str(library.title)
 	if view in ["facets", "candidates"]: context = I18n.t(FILTER_NAMES.get(kind, kind))
-	elif view == "detail": context = str(detail.get("title", "…"))
+	elif view in ["detail", "metadata", "picture"]: context = str(detail.get("title", "…"))
 	elif view == "filters": context = I18n.t("Filters")
 	elif view == "saved": context = I18n.t("Saved searches")
 	elif query.get("favorites", false): context = I18n.t("Favorites" if capabilities.get("favorite_scope", "local") == "server" else "On-device favorites")
+	elif query.get("all_libraries", false): context = actor_name
 	if not folder_path.is_empty(): context += " / " + " / ".join(folder_path.map(func(node): return str(node.title)))
 	var label: Label3D = menu._label(menu._fit_title(context, "", 1.0, 15), Vector3(-0.48, 0.245, 0.004), 15); label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT; label.modulate = menu.MUTED
 

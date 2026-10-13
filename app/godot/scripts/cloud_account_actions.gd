@@ -17,6 +17,7 @@ func reset() -> void:
 	removing = {}
 
 func changed() -> void:
+	menu.cloud_search.close()
 	menu._cloud_setup = false
 	reset()
 	menu._cancel_cloud()

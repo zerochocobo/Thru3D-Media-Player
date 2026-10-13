@@ -41,7 +41,7 @@ internal object OpenListCloudProbe {
                 val file = selected ?: throw CloudFailure("cloud_file_missing")
                 report.put("stage", "range").put("file_size", file.size)
                 val resolve = { client.resolve(file) }
-                CloudStreamSource(file.size, resolve) { uri -> OpenListBackend.connection(uri, resolve()) }.use { source ->
+                CloudStreamSource(file.size, resolve, linkConnection = OpenListBackend::connection).use { source ->
                     source.prepare()
                     source.open().use { reader ->
                         val buffer = ByteArray(65536)

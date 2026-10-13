@@ -11,6 +11,9 @@ internal class CloudStreamSource(
     private val resolve: () -> CloudLink,
     private val connect: (URI) -> HttpURLConnection = ::openMediaConnection,
 ) : StreamSource {
+    private var linkConnection: ((URI, CloudLink) -> HttpURLConnection)? = null
+    constructor(size: Long, resolve: () -> CloudLink, linkConnection: (URI, CloudLink) -> HttpURLConnection) :
+        this(size, resolve) { this.linkConnection = linkConnection }
     @Volatile private var link: CloudLink? = null
     private var resolvedAt = 0L
     @Volatile private var closed = false
@@ -65,7 +68,7 @@ internal class CloudStreamSource(
                 var target = URI(selected.url)
                 for (redirect in 0..5) {
                     if (closed || done || Thread.currentThread().isInterrupted) throw CloudFailure()
-                    val request = connect(target)
+                    val request = linkConnection?.invoke(target, selected) ?: connect(target)
                     synchronized(this) {
                         if (closed || done) { request.disconnect(); throw CloudFailure() }
                         connection = request

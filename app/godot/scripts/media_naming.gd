@@ -72,6 +72,19 @@ static func from_name(file_name: String) -> Dictionary:
 	return result
 
 ## The marker's lens, snapped to the choices the player offers.
+static func from_metadata(file_name: String, metadata: Dictionary) -> Dictionary:
+	var stated := from_name(file_name)
+	var mode := str(metadata.get("video_3d_format", ""))
+	if mode not in ["HalfSideBySide", "FullSideBySide", "HalfTopAndBottom", "FullTopAndBottom"]: return stated
+	var name := file_name.get_file().get_basename()
+	var explicit_axis := _has(name, _SBS.replace("|3d|", "|")) or _has(name, _RL) or _has(name, _TB) or _has(name, _BT) or _has(name, _MONO)
+	if not explicit_axis:
+		stated.stereo = true
+		stated.top_bottom = mode.ends_with("TopAndBottom")
+		stated.server_stereo = true
+	if not stated.has("stereo_half"): stated.stereo_half = mode.begins_with("Half")
+	return stated
+
 static func _lens_fov(name: String) -> int:
 	var found := RegEx.create_from_string("(?i)" + _EDGE + "(fisheye(\\d{3})?|f180|180f|rf52|mkx200|mkx220|mkx22|vrca220)" + _END).search(name)
 	if not found:
@@ -94,7 +107,7 @@ static func complete(stated: Dictionary, width: int, height: int, format: Dictio
 	var name := file_name.get_file().get_basename()
 	var explicit_axis := _has(name, _SBS.replace("|3d|", "|")) or _has(name, _RL) or _has(name, _TB) or _has(name, _BT) or _has(name, _MONO)
 	var mode := str(format.get("stereo_mode", "")).to_lower()
-	var sbs := mode in ["sbsl", "sbsr", "sbs2l", "sbs2r", "side_by_side", "right_left"]
+	var sbs := mode in ["sbsl", "sbsr", "sbs2l", "sbs2r", "side_by_side", "left_right", "right_left"]
 	var tb := mode in ["abl", "abr", "ab2l", "ab2r", "top_bottom", "bottom_top"]
 	if (sbs or tb) and not explicit_axis and not stated.has("top_bottom"):
 		stated.stereo = true
@@ -107,7 +120,7 @@ static func complete(stated: Dictionary, width: int, height: int, format: Dictio
 	var geometry := int(stated.get("geometry", -1))
 	var stacked := bool(stated.get("top_bottom", false)) or (not stated.has("stereo") and square and width >= 2880 		and geometry != Geometry.Geometry.FISHEYE)
 	if geometry < 0:
-		if stacked and square:
+		if stacked and square and not stated.get("server_stereo", false):
 			geometry = Geometry.Geometry.EQUIRECT_360
 		elif stacked:
 			geometry = Geometry.Geometry.FLAT

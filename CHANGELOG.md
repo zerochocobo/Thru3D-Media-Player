@@ -4,6 +4,19 @@
 
 Newest first, following product release milestones. Some development/source snapshots contained features before their product release. Original APK identifiers `0.2` and `0.4` are retained; `0.4` was also called `0.4.0` in release notes. Availability depends on device, server and media capabilities.
 
+## 0.8.0 — 2026-10-13
+
+This update adds Blu-ray ISO playback and cloud-drive search, improves media-server browsing, and refines display adjustments and file navigation.
+
+- **Blu-ray ISO playback**: Play compatible unencrypted standard and MVC 3D Blu-ray ISOs directly, without extracting or converting them first. Supports audio-track selection, pausing and seeking. See [Blu-ray scope](docs/BLURAY.md).
+- **Improved cloud ISO playback**: Fixed some 115 ISOs failing to open or showing a blank screen, reduced repeated folder requests, improved network reading and seeking, and refined ISO detection for media-server sources.
+- **Cloud-drive search**: Search by keyword and filter videos, photos or folders. Available scopes include the current folder, subfolders or the entire drive, depending on the provider, with paged results and access to their locations.
+- **Upgraded Emby/Jellyfin browsing**: Added poster walls, multiple detail images and actor-related titles. Home screens show libraries and a horizontal Recently Opened row. Select multipart videos directly in their details, ordered by numeric markers such as cd1 and cd2.
+- **Stereo alignment fixes**: Addressed disappearing pictures and reopening failures after alignment adjustments. Existing alignment settings remain usable, with invalid fields reset independently.
+- **Better navigation and menu visibility**: Preserve page and scroll positions when returning to a parent folder, reduce some cloud-folder browsing stalls, restore missing filename brackets, and fix close-up portrait 3D pictures covering settings.
+- **Individual reset controls**: Restore individual color, screen, subtitle, photo and stereo-alignment sliders. Color adjustments also support resetting the current page; resetting strength does not enable a disabled 3D effect.
+- **Simplified color presets**: Keep Original, Warm, Cool and Custom, removing the redundant Daylight preset. Existing Daylight settings return to Original while retaining custom adjustments.
+
 ## 0.7.0 — 2026-10-13
 
 This release collects improvements since 0.6.1, including the 0.7.0 Alpha features and subsequent fixes.

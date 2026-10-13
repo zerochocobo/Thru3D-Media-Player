@@ -25,7 +25,7 @@ static func size_ratio(value: float) -> float:
 
 static func size_row(percent: float) -> Dictionary:
 	return {"key": "subtitle_size", "value": size_ratio(percent / 100.0) * 100.0,
-		"slider": true, "span": Vector3(50, 200, 5), "unit": "%"}
+		"slider": true, "span": Vector3(50, 200, 5), "unit": "%", "reset_value": 100.0}
 
 static func style_row(value: Variant) -> Dictionary:
 	return {"key": "subtitle_style", "value": normalize(value), "choices": PRESETS, "compact": true}

@@ -1,0 +1,7 @@
+Thru3D CJK Punctuation: bracket-only subset of Noto Sans CJK SC Regular 2.004.
+Upstream: https://raw.githubusercontent.com/notofonts/noto-cjk/Sans2.004/Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Regular.otf
+Source SHA256: 2c76254f6fc379fddfce0a7e84fb5385bb135d3e399294f6eeb6680d0365b74b
+License: SIL Open Font License 1.1 (LICENSE.txt). Modified family/PostScript names.
+Included code points: U+3008, U+3009, U+300A, U+300B, U+300C, U+300D, U+300E, U+300F, U+3010, U+3011, U+3014, U+3015, U+3016, U+3017, U+3018, U+3019, U+301A, U+301B, U+FF08, U+FF09, U+FF3B, U+FF3D, U+FF5B, U+FF5D
+Created with fontTools subset; retain bracket glyphs only and rename family/name IDs 1,4,6,16 and CFF family/full/PostScript names.
+Rebuild: python tools/fonts/Prepare-CjkBrackets.py (fontTools required; downloads verified by pinned SHA256).

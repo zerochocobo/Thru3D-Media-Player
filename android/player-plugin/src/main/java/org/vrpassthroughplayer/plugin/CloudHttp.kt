@@ -17,14 +17,24 @@ internal class CloudCancellation : CloudTransport {
     @Volatile var cancelled = false
         private set
     private var active: HttpURLConnection? = null
+    private var cancelAction: (() -> Unit)? = null
+    @Synchronized fun attachAction(action: () -> Unit) {
+        if (cancelled) { action(); throw CloudFailure() }
+        cancelAction = action
+    }
+    @Synchronized fun detachAction() { cancelAction = null }
     @Synchronized fun attach(connection: HttpURLConnection) {
         if (cancelled) { connection.disconnect(); throw CloudFailure() }
         active = connection
     }
     @Synchronized fun detach(connection: HttpURLConnection) { if (active === connection) active = null }
     fun cancel() {
-        val connection = synchronized(this) { cancelled = true; active.also { active = null } }
+        val (connection, action) = synchronized(this) {
+            cancelled = true
+            (active to cancelAction).also { active = null; cancelAction = null }
+        }
         connection?.disconnect()
+        action?.invoke()
     }
     override fun request(url: String, cookie: String, form: Map<String, String>?): CloudResponse {
         if (cancelled) throw CloudFailure()

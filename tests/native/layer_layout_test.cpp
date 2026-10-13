@@ -24,6 +24,17 @@ int main() {
     next = quest::image_layout_next(layout, -1.0f, &tail);
     check(next == &tail, "Unsupported extension is omitted without removing other extensions");
     check(quest::image_layout_next(layout, -1.0f, nullptr) == nullptr, "Unsupported extension has no struct");
+    const float full[] = {0, 0, 4096, 4096};
+    const float negative[] = {-20, 0, 2048, 4096};
+    const float overflow[] = {2049, 0, 2048, 4096};
+    const float vertical[] = {0, 1, 2048, 4096};
+    const float zero[] = {0, 0, 0.1f, 4096};
+    const float huge[] = {0, 0, 1e30f, 4096};
+    const float nan[] = {NAN, 0, 2048, 4096};
+    check(quest::image_rect_valid(full, 4096, 4096), "Full swapchain rectangle is valid");
+    for (const auto* invalid : {negative, overflow, vertical, zero, huge, nan})
+        check(!quest::image_rect_valid(invalid, 4096, 4096), "Unsafe rectangle cannot reach xrEndFrame");
+    check(!quest::image_rect_valid(full, 3840, 1080), "Validate actual picture dimensions, not nominal Surface dimensions");
     std::cout << "Layer layout: " << checks << " checks, " << failures << " failures\n";
     return failures ? 1 : 0;
 }

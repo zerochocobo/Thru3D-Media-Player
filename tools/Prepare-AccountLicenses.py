@@ -17,6 +17,7 @@ def prepare(tool_root: Path):
         "media3.txt": root / "third_party/gradle/LICENSE.txt",
         "jcifs.txt": root / "third_party/mpv/LICENSE.LGPL",
         "panorama-notice.txt": root / "app/godot/backgrounds/NOTICE.txt",
+        "cjk-brackets.txt": root / "app/godot/assets/fonts/LICENSE.txt",
     }
     for name, source in copies.items():
         shutil.copyfile(source, output / name)

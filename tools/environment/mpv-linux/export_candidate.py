@@ -95,6 +95,12 @@ def main():
         'libraries': records, 'export_directory': str(Path(os.environ.get('THRU3D_TOOL_ROOT', str(Path.home() / '.cache/thru3d-toolchain'))) / 'mpv/source-frame/arm64-v8a'),
         'host_packages_sha256': sha(host_packages),
         'build_receipt_sha256': sha(receipt_path), 'meson': receipt['meson'], 'ninja': receipt['ninja'],
+        'mvc_inputs_sha256': {name: digest for name, digest in receipt['inputs'].items()
+                             if name.startswith(('native/mpv/mvc/', 'third_party/edge264-mvc/', 'third_party/bluray/'))
+                             or name in ('tools/environment/Prepare-MvcDecoder.py',
+                                         'tools/environment/Prepare-BluraySources.py',
+                                         'tools/environment/mpv-linux/mvc_patch.py',
+                                         'tools/environment/mpv-linux/build_bluray.sh')},
         'cxx_runtime_policy': 'Use the existing Godot/project libc++_shared; do not package a duplicate; device compatibility pending',
         'license_profile': 'Upstream default GPL MPV and FFmpeg gpl/version3; Debug candidate only',
         'reproducibility': 'Exact sources/options/toolchain recorded; independent second-build byte comparison pending',

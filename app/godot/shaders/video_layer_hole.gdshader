@@ -6,9 +6,16 @@ render_mode unshaded, blend_sub, cull_disabled, depth_draw_never, shadows_disabl
 
 // Surface UV rectangle to clear; the rest of the mesh stays (a photo's soft edge drawn beside it).
 uniform vec4 keep_rect = vec4(0.0, 0.0, 1.0, 1.0);
+#include "res://shaders/video_coordinates.gdshaderinc"
+
+void vertex() {
+	eye_index = int(VIEW_INDEX);
+	media_direction = VERTEX;
+}
 
 void fragment() {
 	if (any(lessThan(UV, keep_rect.xy)) || any(greaterThan(UV, keep_rect.xy + keep_rect.zw))) { discard; }
+	if (outside_alignment(aligned_eye_uv(eye_uv(UV, media_direction)))) { discard; }
 	ALBEDO = vec3(1.0);
 	ALPHA = 1.0;
 }

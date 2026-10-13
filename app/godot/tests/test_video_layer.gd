@@ -80,8 +80,8 @@ func _run() -> void:
 	video.viewing_eye = 0
 	video.offset = Vector2(0.02, 0.0)
 	values = layer.layer_values(video, origin)
-	_check(_near(_rect(_layer(values, 0)).position.x, -0.01 * S / 2) and _near(_rect(_layer(values, 1)).position.x, S / 2 + 0.01 * S / 2),
-		"Stereo alignment moves the eye windows apart like the shader offset")
+	_check(_rect(_layer(values, 0)).position.x == 0 and _rect(_layer(values, 1)).end.x == S,
+		"Positive alignment crops inside each eye instead of submitting out-of-bounds rectangles")
 	video.offset = Vector2.ZERO
 	video.top_bottom = true
 	values = layer.layer_values(video, origin)
@@ -93,6 +93,37 @@ func _run() -> void:
 	video._apply_geometry()
 	values = layer.layer_values(video, origin)
 	_check(_near(_layer(values, 0)[14], TAU), "360 spans the whole circle")
+	# All signs, both packed axes, swapped views, portrait/landscape and every layer
+	# shape. Reconstruct UV at the centre to verify cropping did not scale/flip offsets.
+	for projection in [[0, 0.0], [0, 1.0], [1, 0.0], [3, 0.0]]:
+		video.geometry = projection[0]; video.set_screen_curve(projection[1]); video.stereo_sbs = true
+		video._apply_geometry()
+		for tb in [false, true]:
+			video.top_bottom = tb
+			for swap in [false, true]:
+				video.swap_eyes = swap
+				for offset in [Vector2(-0.05, 0), Vector2(0.05, 0), Vector2(0, -0.05), Vector2(0, 0.05), Vector2(-0.05, 0.05), Vector2(0.05, -0.05)]:
+					video.offset = offset
+					for dimensions in [Vector2(4096, 4096), Vector2(2160, 3840), Vector2(3840, 1080)]:
+						values = layer.layer_values(video, origin, VideoLayer.SURFACE, dimensions)
+						for index in 2:
+							var corrected := _layer(values, index)
+							var rect := _rect(corrected)
+							var source := 1 - index if swap else index
+							var bounds := Rect2(0, source * dimensions.y * 0.5, dimensions.x, dimensions.y * 0.5) if tb else Rect2(source * dimensions.x * 0.5, 0, dimensions.x * 0.5, dimensions.y)
+							_check(bounds.encloses(rect) and rect.has_area(), "Every correction stays inside its own eye and swapchain")
+							_check(corrected[13] > 0 and corrected[14] > 0, "Corrected destination keeps a valid shape")
+							if video.geometry == 3: _check(_near(corrected[14], TAU), "360 alignment wraps without losing the seam")
+	video.offset = Vector2.ZERO; video.swap_eyes = false; video.top_bottom = false
+	for shift in [Vector2(-0.025, -0.025), Vector2(0.025, 0.025), Vector2(-0.0123, 0.0078)]:
+		var source_rect := Rect2(0, 0, 1920, 1080)
+		var mapped := VideoLayer._aligned_layer(source_rect, shift, 0, PackedFloat32Array([2.0, 1.0]), Transform3D.IDENTITY, false)
+		var size := Vector2(mapped.shape[0] / 2.0, mapped.shape[1])
+		var centre := Vector2(mapped.pose.origin.x / 2.0, -mapped.pose.origin.y) + Vector2(0.5, 0.5)
+		var destination := Rect2(centre - size * 0.5, size)
+		var sampled: Vector2 = (mapped.rect.position + (Vector2(0.5, 0.5) - destination.position) / destination.size * mapped.rect.size) / source_rect.size
+		_check(sampled.is_equal_approx(Vector2(0.5, 0.5) + shift), "Quantized crop maps the screen centre to exactly the shader's corrected UV")
+		_check(Rect2(Vector2.ZERO, Vector2.ONE).encloses(destination), "Quantization cannot push the destination past angular/physical limits")
 
 	# Flat mono: one quad of the screen size where the panel stands, relative to the XR origin.
 	video.geometry = Geometry.Geometry.FLAT

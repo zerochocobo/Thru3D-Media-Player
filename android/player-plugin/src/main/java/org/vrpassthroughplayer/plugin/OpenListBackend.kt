@@ -20,10 +20,24 @@ internal object OpenListBackend {
             initialized = true
         } catch (_: Exception) { throw CloudFailure("cloud_store_unavailable") }
     }
-    fun request(method: String, route: String, body: JSONObject? = null): JSONObject {
-        val result = try { JSONObject(Cloudcore.request(method, route, body?.toString() ?: "")) }
+    fun request(method: String, route: String, body: JSONObject? = null, cancellation: CloudCancellation? = null): JSONObject {
+        val result = try {
+            if (cancellation == null) JSONObject(Cloudcore.request(method, route, body?.toString() ?: ""))
+            else {
+                val key = Cloudcore.newRequest()
+                try {
+                    cancellation.attachAction { Cloudcore.cancelRequest(key) }
+                    JSONObject(Cloudcore.requestCancelable(method, route, body?.toString() ?: "", key))
+                } finally { cancellation.detachAction(); Cloudcore.cancelRequest(key) }
+            }
+        }
         catch (_: Exception) { throw CloudFailure() }
-        if (result.optInt("code") != 200) throw CloudFailure()
+        if (result.optInt("code") != 200) {
+            val message = result.optString("message")
+            if (message in setOf("Search expired. Search again", "Search scope unavailable", "Search result limit reached", "Folder too large to search", "Invalid search"))
+                throw IllegalStateException(message)
+            throw CloudFailure()
+        }
         return result
     }
     fun create(credential: OpenListAuth.Credential) = create(credential.provider, credential.addition())
@@ -60,14 +74,14 @@ internal object OpenListBackend {
         }
     }
     fun remove(id: Int) { require(id > 0); request("POST", "/delete?id=$id") }
-    fun client(account: JSONObject): CloudClient {
+    fun client(account: JSONObject): Client {
         if (!supported(account.optString("provider")) || !account.has("mount") || account.optInt("core_id") <= 0)
             throw CloudFailure("cloud_login_required")
         return Client(account.getString("mount"), account.getString("provider"))
     }
 
     internal class Client(private val mount: String, provider: String,
-        private val call: (String, String, JSONObject?) -> JSONObject = ::request) : CloudClient {
+        private val call: (String, String, JSONObject?) -> JSONObject = { method, route, body -> request(method, route, body) }) : CloudClient {
         override val canDelete = provider == CloudDrive.OPEN115
         private val verifiedFolders = java.util.concurrent.ConcurrentHashMap<String, Long>()
         init { require(mount.matches(Regex("/[0-9a-f-]{36}"))) }
@@ -78,7 +92,7 @@ internal object OpenListBackend {
         override fun page(path: String, offset: Int, refresh: Boolean): CloudPage {
             require(offset >= 0 && offset % CloudDrive.PAGE_SIZE == 0 && offset <= Int.MAX_VALUE - CloudDrive.PAGE_SIZE)
             absolutePath(path)
-            if (refresh && offset == 0) verifiedFolders.clear()
+            if (refresh) verifiedFolders.clear()
             if (canDelete && path != "/" && verifiedFolders[path]?.let { it > System.nanoTime() } != true) {
                 // A path cannot select one of several same-name folders (or a file/folder pair).
                 val matches = list(path.substringBeforeLast('/').ifEmpty { "/" })
@@ -90,10 +104,10 @@ internal object OpenListBackend {
                 verifiedFolders[path] = System.nanoTime() + 120_000_000_000L
             }
             val data = if (canDelete) call("POST", "/list115", JSONObject().put("mount", mount).put("path", path)
-                .put("offset", offset).put("refresh", refresh && offset == 0)).getJSONObject("data")
+                .put("offset", offset).put("refresh", refresh)).getJSONObject("data")
             else call("POST", "/list", JSONObject().put("path", absolutePath(path)).put("password", "")
                 .put("page", offset / CloudDrive.PAGE_SIZE + 1).put("per_page", CloudDrive.PAGE_SIZE)
-                .put("refresh", refresh && offset == 0)).getJSONObject("data")
+                .put("refresh", refresh)).getJSONObject("data")
             val items = data.optJSONArray("content") ?: org.json.JSONArray()
             val total = data.getInt("total")
             if (total < 0 || items.length() > CloudDrive.PAGE_SIZE || offset > total ||
@@ -124,6 +138,17 @@ internal object OpenListBackend {
                 offset = page.nextOffset
             }
             throw CloudFailure("cloud_folder_too_large")
+        }
+        fun search(path: String, query: String, scope: String, kind: String, cursor: String, refresh: Boolean, cancellation: CloudCancellation? = null): JSONObject {
+            absolutePath(path)
+            val body = JSONObject().put("mount", mount).put("path", path).put("query", query)
+                .put("scope", scope).put("kind", kind).put("cursor", cursor).put("refresh", refresh)
+            return (if (cancellation == null) call("POST", "/search", body) else request("POST", "/search", body, cancellation)).getJSONObject("data")
+        }
+        fun resolveSearch(path: String, token: String, cancellation: CloudCancellation? = null): JSONObject {
+            absolutePath(path)
+            val body = JSONObject().put("mount", mount).put("token", token)
+            return (if (cancellation == null) call("POST", "/searchresolve", body) else request("POST", "/searchresolve", body, cancellation)).getJSONObject("data")
         }
         override fun find(path: String): CloudFile {
             val matches = list(path.substringBeforeLast('/').ifEmpty { "/" })

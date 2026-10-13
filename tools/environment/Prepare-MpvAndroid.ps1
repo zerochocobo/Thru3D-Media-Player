@@ -6,6 +6,17 @@ if ($Candidate -eq 'SourceFrame') {
     $sourceManifestPath = Join-Path $workspace 'third_party\mpv\source-build.json'
     if (-not (Test-Path -LiteralPath $sourceManifestPath)) { throw 'Compile and export the source-frame candidate first.' }
     $sourceManifest = Get-Content -LiteralPath $sourceManifestPath -Raw | ConvertFrom-Json
+    $mvcNames = @('third_party/edge264-mvc/manifest.json','third_party/bluray/source-lock.json',
+                  'native/mpv/mvc/ffmpeg_bd_mvc.c','native/mpv/mvc/ffmpeg_h264_mvc.c','native/mpv/mvc/edge264mvc_all.c',
+                  'native/mpv/mvc/bluray_clpi_reader.c','tools/environment/Prepare-MvcDecoder.py',
+                  'tools/environment/Prepare-BluraySources.py','tools/environment/mpv-linux/mvc_patch.py',
+                  'tools/environment/mpv-linux/build_bluray.sh')
+    foreach ($name in $mvcNames) {
+        $recorded = $sourceManifest.mvc_inputs_sha256.$name
+        if (-not $recorded -or $recorded -ne (Get-FileHash -LiteralPath (Join-Path $workspace $name)).Hash.ToLowerInvariant()) {
+            throw "Rebuild and export the MVC source candidate for the current input: $name"
+        }
+    }
     $patch = Get-Content (Join-Path $workspace 'native\mpv\patches\source-frame-manifest.json') -Raw | ConvertFrom-Json
     if ($sourceManifest.candidate -ne 'source-frame' -or $sourceManifest.api_version -ne $patch.api_version -or
         $sourceManifest.patch_sha256 -ne $patch.patch_sha256 -or

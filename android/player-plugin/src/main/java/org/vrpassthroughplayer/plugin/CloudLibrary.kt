@@ -114,7 +114,7 @@ internal object CloudLibrary {
             client.resolve(file)
         }
         return if (OpenListBackend.supported(account.getString("provider")))
-            CloudStreamSource(file.size, resolve) { uri -> OpenListBackend.connection(uri, client.resolve(file)) }
+            CloudStreamSource(file.size, resolve, linkConnection = OpenListBackend::connection)
         else CloudStreamSource(file.size, resolve)
     }
 
@@ -145,6 +145,49 @@ internal object CloudLibrary {
     @Synchronized fun stopStreams() { activeStreams.keys.toList().forEach { revoke(it, false) } }
 
     private val sortedPages = HashMap<String, CloudSortedPages>()
+    fun searchScopes(provider: String): JSONArray = JSONArray().put("current").also {
+        if (provider in setOf(CloudDrive.ONEDRIVE, CloudDrive.BAIDU)) it.put("tree")
+        if (provider in setOf(CloudDrive.OPEN115, CloudDrive.ONEDRIVE, CloudDrive.BAIDU)) it.put("all")
+    }
+    fun search(path: String, query: String, scope: String, kind: String, cursor: String, refresh: Boolean, http: CloudTransport = CloudHttp): JSONObject {
+        val (id, remote) = split(path)
+        val account = credentials(id)
+        require(query.isNotBlank() && query.codePointCount(0, query.length) <= 128 && kind in setOf("all", "video", "image", "folder")) { "Invalid search" }
+        require((0 until searchScopes(account.getString("provider")).length()).any { searchScopes(account.getString("provider")).getString(it) == scope }) { "Search scope unavailable" }
+        // Legacy cookie accounts retain current-directory search through their bounded metadata cache.
+        val data = if (OpenListBackend.supported(account.getString("provider"))) {
+            OpenListBackend.start(appContext)
+            OpenListBackend.client(account).search(remote, query.trim(), scope, kind, cursor, refresh, http as? CloudCancellation)
+        } else legacySearch.search(id, identity(account), drive(account, http), remote, query.trim(), kind, cursor, refresh)
+        if (identity(credentials(id)) != identity(account)) throw CloudFailure("cloud_login_required")
+        val entries = JSONArray()
+        val content = data.getJSONArray("content")
+        for (i in 0 until content.length()) {
+            val item = content.getJSONObject(i)
+            val name = item.getString("name")
+            if (!item.getBoolean("is_dir") && !MediaKinds.supportedFileName(name)) continue
+            val remotePath = item.optString("path")
+            val location = if (remotePath.isEmpty()) "" else CloudPaths.child(remotePath.substringBeforeLast('/').ifEmpty { "/" }, name)
+            entries.put(JSONObject().put("title", name).put("container", item.getBoolean("is_dir"))
+                .put("kind", MediaKinds.fileNameKind(name)).put("search_token", item.getString("token"))
+                .put("search_path", path).put("relative_path", location).put("size", item.optLong("size")))
+        }
+        return JSONObject().put("path", path).put("query", query.trim()).put("scope", scope).put("kind", kind)
+            .put("cursor", cursor).put("next_cursor", data.optString("next_cursor")).put("limited", data.optBoolean("limited"))
+            .put("entries", entries).put("search_scopes", searchScopes(account.getString("provider")))
+    }
+    private val legacySearch = CloudDirectorySearch()
+    fun resolveSearch(path: String, token: String, cancellation: CloudCancellation? = null): JSONObject {
+        val (id, remote) = split(path); val account = credentials(id)
+        val data = if (OpenListBackend.supported(account.getString("provider"))) OpenListBackend.client(account).resolveSearch(remote, token, cancellation)
+            else legacySearch.resolve(id, identity(account), token)
+        if (identity(credentials(id)) != identity(account)) throw CloudFailure("cloud_login_required")
+        val name = data.getString("name"); val destination = data.getString("path")
+        require(CloudPaths.child(destination.substringBeforeLast('/').ifEmpty { "/" }, name) == destination)
+        val full = "/$id" + destination
+        return JSONObject().put("title", name).put("id", full).put("container", data.getBoolean("is_dir"))
+            .put("kind", MediaKinds.fileNameKind(name)).put("uri", if (data.getBoolean("is_dir")) "" else CloudPaths.uri(full))
+    }
     fun browse(path: String, refresh: Boolean, offset: Int = 0, http: CloudTransport = CloudHttp, order: String = ""): JSONObject = safe {
         val entries = JSONArray()
         var nextOffset = -1
@@ -178,6 +221,7 @@ internal object CloudLibrary {
         }
         JSONObject().put("path", path).put("offset", offset).put("order", order).put("next_offset", nextOffset)
             .put("total", total).put("page_size", CloudDrive.PAGE_SIZE).put("entries", entries)
+            .apply { if (path.isNotEmpty() && path != "/") put("search_scopes", searchScopes(credentials(split(path).first).getString("provider"))) }
     }
     fun deleteFile(request: JSONObject, inspect: Boolean, prepare: Boolean, authorized: () -> Unit): JSONObject {
         val (id, remote) = split(CloudPaths.path(request.getString("uri")))

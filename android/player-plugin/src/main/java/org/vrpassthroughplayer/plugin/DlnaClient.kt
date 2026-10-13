@@ -331,7 +331,7 @@ internal object DlnaClient {
     }
 
     fun isVideoName(name: String) = name.substringBefore('?').substringAfterLast('.', "").lowercase() in VIDEO_EXTENSIONS
-    val VIDEO_EXTENSIONS = setOf("mp4", "mkv", "mov", "m4v", "webm", "ts", "m2ts", "avi", "wmv", "flv", "mpg", "mpeg")
+    val VIDEO_EXTENSIONS = setOf("mp4", "mkv", "mov", "m4v", "webm", "ts", "m2ts", "iso", "avi", "wmv", "flv", "mpg", "mpeg")
 
     /** Cover picture the server offers for an item: upnp:albumArtURI, else an image resource
      * (DLNA thumbnail). Never derived from the video itself. */

@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "status": "research_candidate; standalone_Quest3_decode_verified; not_in_player_runtime",
+  "upstream": "https://github.com/jens-duttke/edge264-mvc",
+  "revision": "e8f4b3b54e34d752c16760efa1e7ad966307eb2b",
+  "revision_date": "2026-10-07",
+  "api_version": "2.0.0",
+  "license": "BSD-3-Clause",
+  "archive_url": "https://codeload.github.com/jens-duttke/edge264-mvc/tar.gz/e8f4b3b54e34d752c16760efa1e7ad966307eb2b",
+  "archive_sha256": "b404e4ef82c8361cbbc0595934479567ffd9045fe08541beffba5e84d79cdfc8",
+  "archive_bytes": 17304143,
+  "supported_candidate_input": "8-bit progressive 4:2:0 AVC High and two-view MVC Stereo High",
+  "android_candidate": {
+    "abi": "arm64-v8a",
+    "api": 23,
+    "neon": true,
+    "alignment": 16384,
+    "compatibility_header": "benchmarks/native_mvc/android_alloc_compat.h"
+  }
+}

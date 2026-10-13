@@ -73,9 +73,9 @@ std::string seconds_property(mpv_handle* core, const char* key) {
     if (mpv_get_property(core, key, MPV_FORMAT_DOUBLE, &value) < 0 || !std::isfinite(value)) return "";
     return std::to_string(value);
 }
-std::string audio_position(mpv_handle* core) {
+std::string media_position(mpv_handle* core, const char* key) {
     double value = 0;
-    if (mpv_get_property(core, "audio-pts", MPV_FORMAT_DOUBLE, &value) < 0 ||
+    if (mpv_get_property(core, key, MPV_FORMAT_DOUBLE, &value) < 0 ||
         !std::isfinite(value) || std::abs(value) > static_cast<double>(std::numeric_limits<int64_t>::max()/1000000)) return "null";
     // Negative startup values are allowed by MPV's AO-delay-aware property.
     return std::to_string(static_cast<int64_t>(std::llround(value*1000000)));
@@ -215,6 +215,9 @@ struct Source final {
     // playback restart (open, seek) and a few position updates per second publish a frame
     // identity only, so the owner's pair/seek/EOF bookkeeping runs unchanged.
     jobject layer_surface = nullptr; // global reference, deleted with the source
+    bool software_layer = false;
+    bool iso_input = false;
+    int layer_width = 4096, layer_height = 4096;
     JavaVM* vm = nullptr;
     bool layer() const { return layer_surface != nullptr; }
     uint64_t layer_token = 0, layer_frame = 0; // frames_mutex
@@ -225,10 +228,11 @@ struct Source final {
     Source(std::string file, bool hw, bool with_audio, int position,
            std::vector<std::pair<std::string, std::string>> extra_audio = {},
            std::vector<std::pair<std::string, std::string>> extra_subtitles = {}, bool precise_start = true,
-           jobject surface = nullptr, JavaVM* java = nullptr)
+           jobject surface = nullptr, JavaVM* java = nullptr,
+           bool software = false, int surface_width = 4096, int surface_height = 4096, bool disc_input = false)
         : path(std::move(file)), hardware(hw), audio(with_audio), exact_start(precise_start), start_ms(position),
           audio_files(std::move(extra_audio)), subtitle_files(std::move(extra_subtitles)), last_seek_exact(precise_start),
-          layer_surface(surface), vm(java) {
+          layer_surface(surface), software_layer(software), iso_input(disc_input), layer_width(surface_width), layer_height(surface_height), vm(java) {
         require(display != EGL_NO_DISPLAY && owner_context != EGL_NO_CONTEXT,
                 "MPV source must start in the Godot GLES owner context");
     }
@@ -250,6 +254,11 @@ struct Source final {
     void publish_layer(mpv_handle* core, bool restart) {
         double position = 0;
         if (mpv_get_property(core, "time-pos", MPV_FORMAT_DOUBLE, &position) < 0 || !std::isfinite(position) || position < 0) return;
+        if (software_layer) {
+            double shown = 0;
+            if (mpv_get_property(core, "video-pts", MPV_FORMAT_DOUBLE, &shown) >= 0 && std::isfinite(shown) && shown >= 0)
+                position = shown;
+        }
         if (!dimensions.load()) return;
         // Profile 5 / rotated sources show wrong on the layer (green IPT-PQ, sideways): never announce
         // them, so Godot reopens on the eye buffers before any of these frames is shown.
@@ -321,7 +330,7 @@ struct Source final {
         const auto matrix = property(core, "video-params/colormatrix"), range = property(core, "video-params/colorlevels");
         const auto transfer = property(core, "video-params/gamma"), paused = property(core, "pause");
         const auto audio_codec = property(core, "audio-codec"), ao = property(core, "current-ao");
-        const auto audio_pts = audio_position(core), aid = property(core, "current-tracks/audio/id");
+        const auto audio_pts = media_position(core, "audio-pts"), aid = property(core, "current-tracks/audio/id");
         const auto volume = property(core, "volume"), mute = property(core, "mute");
         const auto rate = property(core, "audio-params/samplerate"), channels = property(core, "audio-params/channel-count");
         const auto avsync = property(core, "avsync"), cache_pause = property(core, "paused-for-cache");
@@ -381,7 +390,8 @@ struct Source final {
             ",\"paused\":" + quote(paused) + ",\"color_matrix\":" + quote(matrix) +
             ",\"color_range\":" + quote(range) + ",\"color_transfer\":" + quote(transfer) +
             ",\"audio_codec\":" + quote(audio_codec) + ",\"audio_output\":" + quote(ao) +
-            ",\"audio_pts_us\":" + audio_pts + ",\"audio_clock_available\":" + (audio_pts == "null" ? "false" : "true") +
+            ",\"audio_pts_us\":" + audio_pts + ",\"video_pts_us\":" + media_position(core, "video-pts") +
+            ",\"audio_clock_available\":" + (audio_pts == "null" ? "false" : "true") +
             ",\"audio_track_id\":" + quote(aid) + ",\"audio_tracks\":" + tracks_json +
             ",\"subtitle_tracks\":" + subtitles_json + ",\"subtitle\":" + subtitle_json +
             ",\"pgs_supported\":" + (pgs_read ? "true" : "false") +
@@ -449,9 +459,22 @@ struct Source final {
             core = mpv_create(); require(core != nullptr, "MPV source create failed");
             auto option = [&](const char* key, const char* value) { checked(mpv_set_option_string(core, key, value), key); };
             option("config", "no"); option("load-scripts", "no"); option("terminal", "no");
+            if (iso_input) {
+                option("demuxer", "lavf"); option("demuxer-lavf-format", "bd_mvc");
+                // Blu-ray AVC access points can need recovery frames after a seek.
+                // Pre-roll ordinary titles, then let exact seeking discard frames
+                // before the requested time. Keyframe/speed seeks remain unchanged.
+                if (!software_layer) option("hr-seek-demuxer-offset", "5");
+            }
             if (layer()) {
                 // The decoder renders into the compositor's surface; MPV only paces the releases.
-                option("vo", "mediacodec_embed"); option("hwdec", "mediacodec");
+                if (software_layer) {
+                    option("vo", "gpu"); option("gpu-context", "android"); option("gpu-api", "opengl");
+                    option("hwdec", "no"); option("video-sync", "audio");
+                    option("android-surface-size", (std::to_string(layer_width) + "x" + std::to_string(layer_height)).c_str());
+                } else {
+                    option("vo", "mediacodec_embed"); option("hwdec", "mediacodec");
+                }
                 int64_t wid = static_cast<int64_t>(reinterpret_cast<intptr_t>(layer_surface));
                 checked(mpv_set_option(core, "wid", MPV_FORMAT_INT64, &wid), "wid");
             } else {
@@ -1121,7 +1144,10 @@ struct Source final {
             // software decoder has no surface output. Rotation also needs the RGBA normalization
             // shared by the displayed color, Alpha and depth, so the owner reopens those there.
             ",\"layer\":" + (layer() ? "true" : "false") +
-            ",\"layer_compatible\":" + (!layer() || ((hardware_decoding.load() || dimensions.load() == 0) && !dolby_profile5.load() && source_rotation.load() == 0) ? "true" : "false") +
+            ",\"software_layer\":" + (software_layer ? "true" : "false") +
+            ",\"layer_surface_width\":" + std::to_string(layer_width) +
+            ",\"layer_surface_height\":" + std::to_string(layer_height) +
+            ",\"layer_compatible\":" + (!layer() || ((software_layer || hardware_decoding.load() || dimensions.load() == 0) && !dolby_profile5.load() && source_rotation.load() == 0) ? "true" : "false") +
             ",\"details\":" + snapshot + "}";
     }
 };
@@ -1139,10 +1165,41 @@ void error(JNIEnv* env, const std::exception& failure) {
 
 extern "C" JNIEXPORT jboolean JNICALL
 Java_org_vrpassthroughplayer_plugin_MpvSourceNative_available(JNIEnv*, jclass) { return extension_available() ? JNI_TRUE : JNI_FALSE; }
+extern "C" JNIEXPORT jlongArray JNICALL
+Java_org_vrpassthroughplayer_plugin_MpvSourceNative_probeIso(JNIEnv* env, jclass, jstring path) {
+    try {
+        require(path != nullptr, "Blu-ray image path missing");
+        const char* chars = env->GetStringUTFChars(path, nullptr);
+        require(chars != nullptr, "Blu-ray image path unavailable");
+        std::string file(chars); env->ReleaseStringUTFChars(path, chars);
+        if (file.rfind("fd://", 0) == 0) file = "/proc/self/fd/" + file.substr(5);
+        using Probe = int (*)(const char*, int*, int*, int64_t*, int*);
+        auto probe = reinterpret_cast<Probe>(dlsym(RTLD_DEFAULT, "avformat_thru3d_bd_probe"));
+        require(probe != nullptr, "Blu-ray decoder build unavailable");
+        int width = 0, height = 0, mvc = 0; int64_t duration = 0;
+        const int probe_result = probe(file.c_str(), &width, &height, &duration, &mvc);
+        if (probe_result < 0) {
+            char reason[192] = {};
+            using ErrorText = int (*)(int, char*, size_t);
+            auto error_text = reinterpret_cast<ErrorText>(dlsym(RTLD_DEFAULT, "av_strerror"));
+            if (error_text) error_text(probe_result, reason, sizeof(reason));
+            __android_log_print(ANDROID_LOG_ERROR, "QuestMpvIso", "Preflight failed: %d %s", probe_result, reason);
+            throw std::runtime_error("Blu-ray preflight " + std::to_string(probe_result) + ": " + reason);
+        }
+        require(width > 0 && width <= 8192 && height > 0 && height <= 4320 && duration > 0,
+                "Blu-ray video dimensions invalid");
+        jlong values[] = {width, height, duration, mvc};
+        auto result = env->NewLongArray(4);
+        require(result != nullptr, "Blu-ray preflight allocation failed");
+        env->SetLongArrayRegion(result, 0, 4, values);
+        return result;
+    } catch (const std::exception& failure) { error(env, failure); return nullptr; }
+}
 extern "C" JNIEXPORT jlong JNICALL
 Java_org_vrpassthroughplayer_plugin_MpvSourceNative_create(JNIEnv* env, jclass, jobject context, jstring path, jint start,
                                                          jboolean hardware, jboolean audio, jint max_width, jobjectArray audio_files,
-                                                         jobjectArray subtitle_files, jboolean exact_start, jobject surface) {
+                                                         jobjectArray subtitle_files, jboolean exact_start, jobject surface,
+                                                         jboolean software_layer, jint layer_width, jint layer_height, jboolean iso_input) {
     try {
         require(extension_available(), "MPV source requires the verified private source-frame build");
         require(path && start >= 0, "Invalid MPV local source request");
@@ -1160,6 +1217,8 @@ Java_org_vrpassthroughplayer_plugin_MpvSourceNative_create(JNIEnv* env, jclass, 
             file.find_first_of(" \r\n") == std::string::npos;
         require(local || descriptor || network, "MPV source requires a local path, owned descriptor or HTTP media URL");
         require(max_width >= 0 && max_width <= 8192, "MPV output width cap out of range");
+        require(layer_width > 0 && layer_width <= 8192 && layer_height > 0 && layer_height <= 8192,
+                "Compositor surface dimensions out of range");
         // Alternating location/title; locations follow the same rules as the video itself.
         auto read_tracks = [env](jobjectArray files) {
             std::vector<std::pair<std::string, std::string>> extra;
@@ -1191,7 +1250,8 @@ Java_org_vrpassthroughplayer_plugin_MpvSourceNative_create(JNIEnv* env, jclass, 
         std::shared_ptr<Source> source;
         try {
             source = std::make_shared<Source>(file, hardware == JNI_TRUE, audio == JNI_TRUE, start,
-                read_tracks(audio_files), read_tracks(subtitle_files), exact_start == JNI_TRUE, layer_surface, vm);
+                read_tracks(audio_files), read_tracks(subtitle_files), exact_start == JNI_TRUE, layer_surface, vm,
+                software_layer == JNI_TRUE, layer_width, layer_height, iso_input == JNI_TRUE);
         } catch (...) { if (layer_surface) env->DeleteGlobalRef(layer_surface); throw; }
         source->max_output_width.store(max_width); // before any render; fixed for this source
         std::lock_guard<std::mutex> lock(registry_mutex);

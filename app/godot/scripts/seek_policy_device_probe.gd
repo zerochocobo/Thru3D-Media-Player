@@ -12,7 +12,25 @@ static func tap(menu: Node3D, target: int) -> bool:
 
 func run(host: Node, step: String, marker_id: String) -> Dictionary:
 	var result := {"step": step, "accepted": false, "scope": "Actual production ray-menu software route on Quest; no physical controller injection"}
-	if step in ["global_speed", "global_exact"]:
+	if step == "timeline_drag":
+		host._show_player_menu()
+		var menu: Node3D = host.player_menu
+		menu.section = 0; menu.refresh()
+		var target_ms := clampi(marker_id.right(16).hex_to_int(), 0, int(menu._state.get("duration_ms", 0)))
+		for button in menu._buttons:
+			if button.target != menu.SEEK or not button.enabled or not button.node.visible: continue
+			var direction: Vector3 = -menu.global_basis.z
+			var start: Vector3 = menu.to_global(Vector3(0, button.node.position.y, 1))
+			var x: float = -menu.BAR_SEEK * 0.5 + menu.BAR_SEEK * target_ms / maxf(1.0, float(menu._state.duration_ms))
+			var end: Vector3 = menu.to_global(Vector3(x, button.node.position.y, 1))
+			if menu.press_pointer("left_hand", start, direction, true):
+				menu.update_pointer("left_hand", end, direction, true)
+				result.preview_ms = menu._seek_preview
+				menu.release_pointer("left_hand", end, direction, true)
+				result.accepted = true
+				result.target_ms = target_ms
+			break
+	elif step in ["global_speed", "global_exact"]:
 		host._show_recent_menu()
 		var library: Node3D = host.recent_menu
 		library.section = library.Section.SETTINGS; library.tab = library.VIDEO_TAB; library.refresh()

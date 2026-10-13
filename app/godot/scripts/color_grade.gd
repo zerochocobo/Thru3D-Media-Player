@@ -1,6 +1,6 @@
 extends RefCounted
 ## Display-only grading. Stored custom values survive selecting another preset.
-const PRESETS := ["Original", "Warm", "Daylight", "Cool", "Custom"]
+const PRESETS := ["Original", "Warm", "Cool", "Custom"]
 const DEFAULTS := {"temperature": 6500.0, "tint": 0.0, "exposure": 0.0, "contrast": 1.0,
 	"gamma": 1.0, "saturation": 1.0, "red_gain": 1.0, "green_gain": 1.0, "blue_gain": 1.0,
 	"red_gamma": 1.0, "green_gamma": 1.0, "blue_gamma": 1.0,
@@ -36,7 +36,9 @@ func restore(data: Variant) -> void:
 	preset = "Original"
 	custom = DEFAULTS.duplicate()
 	if not data is Dictionary: return
-	if data.get("preset", "") in PRESETS: preset = data.preset
+	# Old Daylight saves were neutral. Keep their custom values while using the bypass.
+	if data.get("preset", "") == "Daylight": preset = "Original"
+	elif data.get("preset", "") in PRESETS: preset = data.preset
 	var saved: Variant = data.get("custom", {})
 	if saved is Dictionary:
 		for key in DEFAULTS: custom[key] = clean(key, saved.get(key, DEFAULTS[key]))
@@ -47,7 +49,7 @@ func snapshot() -> Dictionary:
 func values() -> Dictionary:
 	if preset == "Custom": return custom.duplicate()
 	var result := DEFAULTS.duplicate()
-	result.temperature = {"Warm": 4000.0, "Daylight": 6500.0, "Cool": 8000.0}.get(preset, 6500.0)
+	result.temperature = {"Warm": 4000.0, "Cool": 8000.0}.get(preset, 6500.0)
 	return result
 
 func select(name: String) -> void:
@@ -63,6 +65,13 @@ func adjust(key: String, value: Variant) -> void:
 func reset_custom() -> void:
 	custom = DEFAULTS.duplicate()
 	preset = "Custom"
+
+func reset_page(page: int) -> bool:
+	if page < 0 or page >= PAGES.size(): return false
+	if preset != "Custom": custom = values()
+	for key in PAGES[page]: custom[key] = DEFAULTS[key]
+	preset = "Custom"
+	return true
 
 static func kelvin(k: float) -> Vector3:
 	var t := k / 100.0

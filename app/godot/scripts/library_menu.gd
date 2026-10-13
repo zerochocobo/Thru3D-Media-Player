@@ -28,6 +28,8 @@ const StorageVolume := preload("res://scripts/storage_volume.gd")
 var server_browser: RefCounted = ServerBrowser.new(self)
 const CloudAccountActions := preload("res://scripts/cloud_account_actions.gd")
 var cloud_accounts: RefCounted = CloudAccountActions.new(self)
+const CloudSearch := preload("res://scripts/cloud_search.gd")
+var cloud_search: RefCounted = CloudSearch.new(self)
 const AccountPanel := preload("res://scripts/account_panel.gd")
 var account_panel: RefCounted = AccountPanel.new(self)
 const Quality := preload("res://scripts/display_quality.gd")
@@ -161,6 +163,9 @@ var _cloud_page_size := 48
 var _cloud_busy := false
 var _cloud_location := ""
 var _cloud_positions := {}
+var _cloud_requested_scroll := 0.0
+var _folder_positions := {}
+var _restore_folder_key := ""
 var _editor := {}                  # SMB or DLNA server; empty when not editing
 var _field := 1
 var _shift := false
@@ -169,6 +174,8 @@ var _side: Node3D                  # navigation column, angled towards the viewe
 var _covers := {}                  # DLNA cover URL -> HTTPRequest while it downloads
 
 func dismiss() -> void:
+	_save_folder_position()
+	cloud_search.close()
 	controls_page.reset()
 	file_actions.reset()
 	choices.reset()
@@ -258,6 +265,8 @@ func press_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: b
 		if int(web_hit.get("target", NONE)) in [AccountPanel.WEB, AccountPanel.WEB_SCROLL]:
 			account_panel.web_press(hand, web_hit.point, int(web_hit.target) == AccountPanel.WEB_SCROLL)
 			return true
+	if section == Section.MEDIA_SERVER and not account_panel.active() and server_browser.gallery.press(hand, origin, direction, tracked):
+		_fling = 0.0; return true
 	if not _drag.is_empty() and _drag.hand != hand: return true
 	update_pointer(hand, origin, direction, tracked)
 	var hit := ray_hit(origin, direction) if tracked else {}
@@ -284,6 +293,7 @@ func press_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: b
 
 func cancel_pointer(hand: String) -> void:
 	choices.cancel(hand)
+	if server_browser.gallery.capture.get("hand", "") == hand: server_browser.gallery.capture.clear()
 	if account_panel.web_hand == hand: account_panel.web_cancel()
 	if not _drag.is_empty() and _drag.hand == hand:
 		_drag = {}
@@ -293,6 +303,7 @@ func cancel_pointer(hand: String) -> void:
 func update_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: bool) -> void:
 	super(hand, origin, direction, tracked)
 	choices.update(hand, origin, direction, tracked)
+	server_browser.gallery.move(hand, origin, direction, tracked)
 	if account_panel.web_hand == hand:
 		var point: Variant = _plane_point(origin, direction) if tracked else null
 		if point == null: account_panel.web_cancel()
@@ -323,6 +334,7 @@ func update_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: 
 		_drag.at_us = now
 
 func release_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: bool) -> void:
+	if server_browser.gallery.release(hand, origin, direction, tracked): return
 	if choices.capture.get("hand", "") == hand:
 		choices.release(hand, origin, direction, tracked); return
 	if account_panel.web_hand == hand:
@@ -345,6 +357,7 @@ func release_pointer(hand: String, origin: Vector3, direction: Vector3, tracked:
 
 ## Thumbstick y (up positive) scrolls the list; it never selects.
 func stick_scroll(y: float, delta: float) -> void:
+	if section == Section.MEDIA_SERVER and not account_panel.active() and server_browser.gallery.fixed(): return
 	if controls_page.active() and not controls_page.pending.is_empty(): return
 	if not choices.capture.is_empty(): return
 	if not file_actions.modal.is_empty(): return
@@ -359,6 +372,10 @@ func stick_scroll(y: float, delta: float) -> void:
 	_fling = 0.0
 	var amount := pow((absf(y) - STICK_DEADZONE) / (1.0 - STICK_DEADZONE), 1.6)
 	_set_scroll(scroll - signf(y) * amount * _lines() * STICK_SPEED * delta)
+
+func stick_scroll_horizontal(x: float, delta: float) -> void:
+	if visible and section == Section.MEDIA_SERVER and not account_panel.active() and file_actions.modal.is_empty() and _editor.is_empty():
+		server_browser.gallery.stick_scroll(x, delta)
 
 func _process(delta: float) -> void:
 	if controls_page.active() and controls_page.modal(): return
@@ -385,7 +402,8 @@ func _set_scroll(value: float) -> void:
 	var redraw := floori(clamped + 0.001) != _first_line()
 	scroll = clamped
 	if redraw:
-		_draw()
+		if _plain_file_grid(): _redraw_file_rows()
+		else: _draw()
 	else:
 		_place_list()
 	if section == Section.MEDIA_SERVER: server_browser.scroll_changed()
@@ -421,6 +439,7 @@ func _place_list() -> void:
 		_bar_thumb.position.y = span.x - travel - thumb * 0.5
 
 func _grid() -> bool:
+	if cloud_search.active: return false
 	if account_panel.active(): return false
 	if section == Section.CLOUD and not cloud_accounts.mode.is_empty(): return false
 	if section == Section.MEDIA_SERVER: return server_browser.grid()
@@ -431,6 +450,7 @@ func _cols() -> int:
 
 ## Visible lines (tile rows or list rows); [scroll] counts lines.
 func _lines() -> int:
+	if cloud_search.active: return 5
 	if controls_page.active(): return 6
 	if account_panel.active(): return VISIBLE_ROWS
 	if section == Section.MEDIA_SERVER: return server_browser.visible_lines()
@@ -447,12 +467,63 @@ func _line_count() -> int:
 
 ## Scrollbar track: top and height.
 func _bar_span() -> Vector2:
+	if cloud_search.active: return Vector2(0.095, 0.54)
 	if controls_page.active(): return Vector2(0.20, 0.60)
 	if section == Section.MEDIA_SERVER and not account_panel.active(): return server_browser.bar_span()
 	return Vector2(GRID_TOP if _grid() else LIST_TOP + 0.05, _lines() * _pitch() - 0.012)
 
 func _max_scroll() -> float:
+	if section == Section.MEDIA_SERVER and not account_panel.active() and server_browser.gallery.fixed(): return 0.0
 	return float(maxi(0, _line_count() - _lines()))
+
+func _folder_key() -> String:
+	var location := ""
+	match section:
+		Section.LOCAL: location = _local_path()
+		Section.SMB: location = str([_smb_server, _smb_path])
+		Section.DLNA: location = str([_dlna_server, _dlna_stack])
+		_: return ""
+	return str([section, location, media_filter, file_actions.order()])
+
+func _save_folder_position() -> void:
+	if cloud_search.active or account_panel.active() or not _editor.is_empty(): return
+	if section == Section.CLOUD:
+		if _cloud_busy or not cloud_accounts.mode.is_empty(): return
+		_cloud_positions[_cloud_location] = {"page": _cloud_page, "offsets": _cloud_offsets.duplicate(),
+			"scroll": scroll, "filter": media_filter, "order": file_actions.cloud_order()}
+		while _cloud_positions.size() > 32: _cloud_positions.erase(_cloud_positions.keys()[0])
+	else:
+		var key := _folder_key()
+		if key.is_empty(): return
+		_folder_positions[key] = scroll
+		while _folder_positions.size() > 64: _folder_positions.erase(_folder_positions.keys()[0])
+
+func _restore_folder_position() -> void:
+	if not _restore_folder_key.is_empty() and _restore_folder_key == _folder_key():
+		scroll = float(_folder_positions.get(_restore_folder_key, 0.0))
+		_restore_folder_key = ""
+
+func _plain_file_grid() -> bool:
+	return section in [Section.RECENT, Section.LOCAL, Section.SMB, Section.DLNA, Section.CLOUD] \
+		and _editor.is_empty() and not account_panel.active() and not cloud_search.active \
+		and cloud_accounts.mode.is_empty() and file_actions.modal.is_empty() and is_instance_valid(_list)
+
+## Scrolling replaces only visible rows. Keep navigation, header, footer and their textures alive.
+func _redraw_file_rows() -> void:
+	_hide_tooltip()
+	for index in range(_buttons.size() - 1, -1, -1):
+		var button: Dictionary = _buttons[index]
+		if _row_target(button.target) or button.target == SCROLLBAR:
+			_tips.erase(button.target)
+			if button.target == SCROLLBAR: button.node.free()
+			_buttons.remove_at(index)
+	for hand in _hover:
+		if _row_target(_hover[hand]) or _hover[hand] == SCROLLBAR: _hover[hand] = NONE
+	_decorations.erase(_list); _list.free()
+	if is_instance_valid(_bar_thumb):
+		_decorations.erase(_bar_thumb); _bar_thumb.free()
+	_draw_rows()
+	composition_layout_changed.emit()
 
 func refresh() -> void:
 	_rebuild_rows()
@@ -478,6 +549,7 @@ func _request(kind: String, id: Variant) -> void:
 		status = "Unavailable"
 
 func _on_media_list(id: int, payload: String) -> void:
+	if cloud_search.receive(id, payload): return
 	if file_actions.receive(id, payload): return
 	if cloud_accounts.receive(id, payload): return
 	# Unsolicited store notifications also work when Quest does not pause/resume VR.
@@ -553,6 +625,7 @@ func _on_media_list(id: int, payload: String) -> void:
 	else:
 		match kind:
 			"cloud":
+				cloud_search.observe(result)
 				file_actions.commit_cloud(str(result.get("order", "")))
 				_cloud_entries = result.get("entries", [])
 				_cloud_page = _cloud_requested_page
@@ -560,11 +633,13 @@ func _on_media_list(id: int, payload: String) -> void:
 				_cloud_total = int(result.get("total", -1))
 				_cloud_page_size = maxi(1, int(result.get("page_size", 48)))
 				_reset_navigation()
+				scroll = _cloud_requested_scroll
 			"local":
 				if str(result.get("path", "")) == _local_path():
 					_local_entries = result.get("entries", [])
 					_local_volumes = result.get("volumes", _local_entries.filter(func(entry): return entry.get("volume",false)) if _local_path().is_empty() else _local_volumes)
 					_local_all_files = bool(result.get("all_files", true))
+					_restore_folder_position()
 					if _local_release_notice:
 						_local_release_notice = false
 						if section == Section.LOCAL: status = "Storage access stopped. You can unplug."
@@ -575,6 +650,7 @@ func _on_media_list(id: int, payload: String) -> void:
 			"smb_browse":
 				if str(result.get("server_id")) == _smb_server and str(result.get("path")) == _smb_path:
 					_smb_entries = result.get("entries", [])
+					_restore_folder_position()
 			"dlna_servers", "dlna_discover", "dlna_save", "dlna_remove":
 				_dlna_servers = result.get("servers", [])
 				if kind in ["dlna_save", "dlna_remove"] and int(_editor.get("request_id", -1)) == id:
@@ -584,6 +660,7 @@ func _on_media_list(id: int, payload: String) -> void:
 				var current_object := str(_dlna_stack.back().id) if not _dlna_stack.is_empty() else "0"
 				if str(result.get("server_id")) == _dlna_server and str(result.get("object_id", current_object)) == current_object:
 					_dlna_entries = result.get("entries", [])
+					_restore_folder_position()
 	if visible:
 		refresh()
 
@@ -705,7 +782,7 @@ func _rebuild_rows() -> void:
 				rows.append(_choice_row("Resolution", "output_width", int(settings.get("output_width", Quality.AUTO_OUTPUT)),
 					[{"value": Quality.AUTO_OUTPUT, "label": "Auto"}, {"value": 0, "label": "Original size"}, {"value": 5760, "label": "6K"}, {"value": 4096, "label": "4K"}], true))
 				rows.append({"title": I18n.t("Alpha passthrough FPS limit"), "key": "alpha_fps", "value": int(settings.get("alpha_fps", 20)),
-					"slider": true, "span": Vector3(10, 40, 1), "unit": " FPS", "hint": "Passthrough uses lots of GPU, so FPS may be lower"})
+					"slider": true, "span": Vector3(10, 40, 1), "unit": " FPS", "reset_value": 20.0, "hint": "Passthrough uses lots of GPU, so FPS may be lower"})
 				rows.append_array(_subtitle_rows(settings))
 			elif tab == GENERAL_TAB:
 				var languages: Array = []
@@ -772,7 +849,8 @@ func _rebuild_rows() -> void:
 					rows.append({"title": I18n.t("Credits"), "icon": "info", "about_page": 2})
 					rows.append({"title": I18n.t("Open source licenses"), "icon": "info", "open_licenses": true})
 		Section.CLOUD:
-			if not cloud_accounts.mode.is_empty(): rows = cloud_accounts.rows()
+			if cloud_search.active: rows = cloud_search.rows()
+			elif not cloud_accounts.mode.is_empty(): rows = cloud_accounts.rows()
 			else:
 				for entry in _cloud_entries:
 					rows.append(_entry_row(entry))
@@ -807,17 +885,19 @@ func _cancel_cloud() -> void:
 func _load_cloud(reset: bool = true, force: bool = false, page: int = 0) -> void:
 	_cancel_cloud()
 	if reset:
-		if not _cloud_entries.is_empty() or _cloud_page > 0:
-			_cloud_positions[_cloud_location] = {"page": _cloud_page, "offsets": _cloud_offsets.duplicate()}
-			while _cloud_positions.size() > 32: _cloud_positions.erase(_cloud_positions.keys()[0])
+		cloud_search.scopes = ["current"]
 		_cloud_location = _cloud_path()
 		var saved_page: Dictionary = _cloud_positions.get(_cloud_location, {})
+		if int(saved_page.get("filter", media_filter)) != media_filter or str(saved_page.get("order", file_actions.cloud_order())) != file_actions.cloud_order(): saved_page = {}
 		_cloud_entries = []
 		_cloud_page = 0
 		_cloud_offsets.assign(saved_page.get("offsets", [0]))
 		page = int(saved_page.get("page", 0))
 		_cloud_next = -1
 		_cloud_total = -1
+		_cloud_requested_scroll = float(saved_page.get("scroll", 0.0))
+	else:
+		_cloud_requested_scroll = scroll if page == _cloud_page else 0.0
 	if not platform or page < 0 or page >= _cloud_offsets.size(): return
 	_cloud_requested_page = page
 	_cloud_busy = true
@@ -871,7 +951,7 @@ func image_queue() -> Array[Dictionary]:
 ## Paged sources include the loaded page only, without fetching across folders or filters.
 func video_queue() -> Array[Dictionary]:
 	var result: Array[Dictionary] = []
-	var source: Array = server_browser.entries if section == Section.MEDIA_SERVER else (_recent_all_rows if section == Section.RECENT and not _recent_all_rows.is_empty() else rows)
+	var source: Array = server_browser.playback_entries() if section == Section.MEDIA_SERVER else (_recent_all_rows if section == Section.RECENT and not _recent_all_rows.is_empty() else rows)
 	for row in source:
 		var uri := str(row.get("uri", ""))
 		var title := str(row.get("title", ""))
@@ -921,6 +1001,7 @@ func _activate(target: int) -> void:
 	if file_actions.action(target): return
 	if choices.action(target): return
 	if account_panel.action(target): return
+	if section == Section.CLOUD and cloud_search.action(target): return
 	if section == Section.CLOUD and cloud_accounts.action(target): return
 	if section == Section.MEDIA_SERVER and server_browser.action(target): return
 	if not _row_target(target) and target != CLEAR_HISTORY:
@@ -937,6 +1018,8 @@ func _activate(target: int) -> void:
 	elif target == QUIT_APP:
 		setting_changed.emit("quit_app", true)
 	elif target >= NAV_BASE and target < NAV_BASE + NAV.size():
+		_save_folder_position()
+		cloud_search.close()
 		controls_page.reset()
 		file_actions.reset()
 		account_panel.close()
@@ -949,6 +1032,8 @@ func _activate(target: int) -> void:
 		status = ""
 		_editor = {}
 		_cache_usage = null
+		_restore_folder_key = _folder_key()
+		if section in [Section.SMB, Section.DLNA]: _restore_folder_position()
 		_load_section()
 		refresh()
 	elif target >= TAB_BASE and target < TAB_BASE + SETTING_TABS.size():
@@ -1012,6 +1097,7 @@ func _activate(target: int) -> void:
 		_editor_input(target)
 
 func _choose(row: Dictionary) -> void:
+	if cloud_search.choose(row): return
 	if file_actions.select(row): return
 	if account_panel.choose(row): return
 	if row.has("open_licenses"):
@@ -1038,6 +1124,7 @@ func _choose(row: Dictionary) -> void:
 		dismiss()
 		chosen.emit(str(row.uri), str(row.title))
 	elif row.has("smb_server"):
+		_save_folder_position()
 		_smb_server = str(row.smb_server)
 		_smb_path = ""
 		_smb_entries = []
@@ -1047,6 +1134,7 @@ func _choose(row: Dictionary) -> void:
 	elif row.has("smb_found"):
 		_open_editor({"name": str(row.smb_found.name), "host": str(row.smb_found.host)})
 	elif row.has("dlna_server"):
+		_save_folder_position()
 		_dlna_server = str(row.dlna_server)
 		_dlna_stack = []
 		_dlna_entries = []
@@ -1055,6 +1143,7 @@ func _choose(row: Dictionary) -> void:
 		refresh()
 	elif row.has("container"):
 		var container: Dictionary = row.container
+		_save_folder_position()
 		scroll = 0.0
 		if section == Section.LOCAL:
 			_local_stack.append(container.duplicate(true))
@@ -1072,6 +1161,7 @@ func _choose(row: Dictionary) -> void:
 			_dlna_stack.append({"id": str(container.id), "title": str(container.title)})
 			_dlna_entries = []
 			_request("dlna_browse", platform.media_dlna_browse(_dlna_server, str(container.id)))
+		_restore_folder_key = _folder_key()
 		refresh()
 	elif row.has("clear_cache"):
 		if bool(row.get("empty", false)):
@@ -1097,6 +1187,8 @@ func _choose(row: Dictionary) -> void:
 		refresh()
 
 func _go_back() -> void:
+	if cloud_search.active: cloud_search.close(true); return
+	_save_folder_position()
 	file_actions.reset()
 	if section == Section.CLOUD and not cloud_accounts.mode.is_empty():
 		cloud_accounts.action(CloudAccountActions.BACK)
@@ -1128,6 +1220,7 @@ func _go_back() -> void:
 			_dlna_stack.pop_back()
 			_dlna_entries = []
 			_request("dlna_browse", platform.media_dlna_browse(_dlna_server, str(_dlna_stack.back().id) if _dlna_stack.size() > 0 else "0"))
+	_restore_folder_key = _folder_key()
 	refresh()
 
 ## Path segments of the current folder, the server (or library) first.
@@ -1161,6 +1254,7 @@ func _go_to(level: int) -> void:
 	var depth := _crumbs().size() - 1
 	if level < 0 or level >= depth:
 		return
+	_save_folder_position()
 	scroll = 0.0
 	status = ""
 	match section:
@@ -1180,6 +1274,7 @@ func _go_to(level: int) -> void:
 			_dlna_stack.resize(level)
 			_dlna_entries = []
 			_request("dlna_browse", platform.media_dlna_browse(_dlna_server, str(_dlna_stack.back().id) if _dlna_stack.size() > 0 else "0"))
+	_restore_folder_key = _folder_key()
 	refresh()
 
 func _refresh_source() -> void:
@@ -1321,6 +1416,9 @@ func _draw() -> void:
 	if account_panel.active():
 		account_panel.draw()
 		return
+	if cloud_search.active:
+		cloud_search.draw()
+		return
 	if not _editor.is_empty():
 		_draw_editor()
 		return
@@ -1355,6 +1453,9 @@ func _draw() -> void:
 		_button(REFRESH, "", Vector2(0.80, 0.46), Vector2(0.09, 0.07), platform != null, "refresh")
 	if section == Section.CLOUD:
 		cloud_accounts.draw()
+		if cloud_accounts.mode.is_empty() and not _cloud_stack.is_empty() and cloud_search.supported():
+			_button(CloudSearch.OPEN, "", Vector2(0.69, 0.46), Vector2(0.09, 0.07), not _cloud_busy, "search")
+			_tips[CloudSearch.OPEN] = I18n.t("Search")
 		if not cloud_managing and _cloud_stack.is_empty():
 			_button(CLOUD_ACCOUNTS, "", Vector2(0.69, 0.46), Vector2(0.09, 0.07), platform != null, "plus")
 			_tips[CLOUD_ACCOUNTS] = I18n.t("Cloud accounts")
@@ -1459,7 +1560,7 @@ func _draw_rows() -> void:
 	_decorations.append(_list)
 	_bar_thumb = null
 	var first := _first_line() * _cols()
-	var row_top: float = server_browser.list_top() if section == Section.MEDIA_SERVER and not account_panel.active() else LIST_TOP
+	var row_top: float = 0.045 if cloud_search.active else (server_browser.list_top() if section == Section.MEDIA_SERVER and not account_panel.active() else LIST_TOP)
 	for i in range(first, mini(rows.size(), first + _drawn_slots())):
 		var row: Dictionary = rows[i]
 		var k := i - first
@@ -1688,6 +1789,7 @@ func _open_licenses() -> void:
 	refresh()
 
 func _desktop_license_text(id: String) -> String:
+	if id == "cjk-brackets": return FileAccess.get_file_as_string("res://assets/fonts/LICENSE.txt")
 	var index: Variant = JSON.parse_string(FileAccess.get_file_as_string("res://i18n/licenses.json"))
 	if not index is Array: return ""
 	for item in index:

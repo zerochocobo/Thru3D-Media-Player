@@ -98,13 +98,15 @@ func field(parent: Node3D, row: Dictionary, centre: Vector2, width: float, heigh
 
 # A wide invisible hit target surrounds the rail; graphics follow the button's plane.
 func _slider(parent: Node3D, row: Dictionary, centre: Vector2, width: float, height: float) -> void:
-	var rail_width := width - 0.15
-	var target := _button({"kind": "slider", "key": row.key, "span": row.span}, "", centre, Vector2(width, height), parent)
+	var field_width := width - (0.08 if row.has("reset_value") else 0.0)
+	var field_centre := centre - Vector2((width - field_width) * 0.5, 0)
+	var rail_width := field_width - 0.15
+	var target := _button({"kind": "slider", "key": row.key, "span": row.span}, "", field_centre, Vector2(field_width, height), parent)
 	var button: Dictionary = menu._buttons.back()
 	button.base_color = Color(menu.TILE, 0)
 	button.node.material_override.set_shader_parameter("surface_color", button.base_color)
 	var node: MeshInstance3D = button.node
-	var left := -width / 2 + 0.015
+	var left := -field_width / 2 + 0.015
 	var y := -0.008 if row.get("midpoint", false) else 0.0
 	var rail: MeshInstance3D = menu._quad(Vector2(rail_width, 0.007), Vector3(left + rail_width / 2, y, 0.004), menu.MUTED, 14)
 	node.add_child(rail)
@@ -118,10 +120,20 @@ func _slider(parent: Node3D, row: Dictionary, centre: Vector2, width: float, hei
 	var knob: MeshInstance3D = menu._quad(Vector2(0.022, 0.022), Vector3(left, y, 0.006), Color.WHITE, 17)
 	node.add_child(knob)
 	var label: Label3D = node.get_child(0)
-	label.position = Vector3(width / 2 - 0.005, 0, 0.006)
+	label.position = Vector3(field_width / 2 - 0.005, 0, 0.006)
 	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	sliders[target] = {"span": row.span, "left": left, "width": rail_width, "fill": fill, "knob": knob,
 		"label": label, "unit": row.unit, "node": node}
+	if row.has("reset_value"):
+		var reset_target := _button({"kind": "reset", "key": row.key, "value": row.reset_value}, "",
+			centre + Vector2(width / 2 - 0.0325, 0), Vector2(0.065, height), parent)
+		var reset: Dictionary = menu._buttons.back()
+		reset.base_color = Color(menu.TILE, 0)
+		reset.node.material_override.set_shader_parameter("surface_color", reset.base_color)
+		menu._icon("refresh", Vector3(0, 0, 0.006), 0.032, menu.MUTED, reset.node)
+		menu._tips[reset_target] = menu.I18n.t("Reset")
+		sliders[target]["reset"] = reset
+		sliders[target]["reset_value"] = row.reset_value
 	# Capture retains the last preview through ordinary menu redraws.
 	var value := float(capture.value) if capture.get("item", {}).get("key", "") == row.key and capture.has("value") else float(row.value)
 	_refresh_slider(target, value)
@@ -136,6 +148,9 @@ func _refresh_slider(target: int, value: float) -> void:
 	slider.fill.material_override.set_shader_parameter("surface_size", slider.fill.mesh.size)
 	slider.knob.position.x = slider.left + fraction * slider.width
 	slider.label.text = ("%.0f" % value if slider.unit in ["%", " FPS"] else ("%+.0f" % value if slider.unit == "°" and value != 0 else ("%.0f" % value if slider.unit == "°" else "%.1f" % value))) + slider.unit
+	if slider.has("reset"):
+		slider.reset.enabled = not same(value, slider.reset_value)
+		slider.reset.node.get_child(1).material_override.albedo_color = menu.ACCENT if slider.reset.enabled else menu.MUTED
 
 func _preview_slider(point: Vector3) -> void:
 	var span: Vector3 = capture.item.span
@@ -214,6 +229,10 @@ func action(target: int) -> bool:
 	if not targets.has(target): return false
 	var item: Dictionary = targets[target]
 	match item.kind:
+		"reset":
+			if not menu._buttons.any(func(button): return button.target == target and button.enabled): return true
+			changed.emit(str(item.key), item.value)
+			menu.refresh()
 		"open":
 			opened = "" if opened == item.key else str(item.key)
 			offset = 0; menu.refresh()

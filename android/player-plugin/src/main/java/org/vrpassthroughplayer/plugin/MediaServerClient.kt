@@ -151,6 +151,11 @@ internal interface MediaLibraryClient {
     fun candidates(request: JSONObject): JSONObject
     fun detail(id: String): JSONObject
     fun cover(id: String): URI
+    fun image(id: String, type: String, index: Int, tag: String, width: Int): URI {
+        mediaRequire(type == "Primary" && index == 0, "Cover unavailable")
+        mediaRequire(tag.length <= 256 && width in 64..1024, "Invalid server request")
+        return cover(id)
+    }
     fun coverFallback(id: String): MediaCover? = null
     fun stream(id: String): MediaStreamLink
     fun subtitles(id: String, stream: MediaStreamLink): List<MediaSubtitleLink> = stream.subtitles

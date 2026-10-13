@@ -58,6 +58,17 @@ class CloudSortedPagesTest {
         assertEquals("2", cache.page(client, "/", 0, false, "name_asc").files.single().id)
         assertEquals(2, client.calls)
     }
+    @Test fun orderedViewIsRebuiltAfterOrderChangesOrRefresh() {
+        val client = Client((1..100).reversed().map { CloudFile("Video$it.mp4", false, it.toLong(), "$it") })
+        val cache = CloudSortedPages()
+        assertEquals("49", cache.page(client, "/", 48, false, "name_asc").files.first().id)
+        assertEquals("52", cache.page(client, "/", 48, false, "name_desc").files.first().id)
+        assertEquals("49", cache.page(client, "/", 48, false, "name_asc").files.first().id)
+        assertEquals(3, client.calls)
+        client.files = listOf(CloudFile("Replacement.mp4", false, 1, "new"))
+        assertEquals("new", cache.page(client, "/", 0, true, "name_asc").files.single().id)
+        assertEquals(4, client.calls)
+    }
     @Test fun folderTimesSortBothWaysWithUnknownsLastAndNaturalNameTies() {
         val files = listOf(
             CloudFile("A10", true, 900, "10", modified = 100),

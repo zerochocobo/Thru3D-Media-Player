@@ -115,6 +115,29 @@ internal class MediaSources(
         return id
     }
     fun cloudCancel(id: Int) = cloudBrowseRequests.cancel(id)
+    fun cloudSearch(path: String, query: String, scope: String, kind: String, cursor: String, refresh: Boolean): Int {
+        val id = nextId()
+        cloudBrowseRequests.submit(id, { cancellation ->
+            val result = try {
+                CloudLibrary.start(context() ?: error("Activity unavailable"))
+                CloudLibrary.search(path, query, scope, kind, cursor, refresh, cancellation).put("state", "ready")
+            } catch (error: Exception) { JSONObject().put("state", "error").put("error", error.message ?: "Cloud search failed") }
+            result.put("source", "cloud_search").put("path", path).put("query", query).put("scope", scope)
+                .put("kind", kind).put("cursor", cursor).toString()
+        }, emit)
+        return id
+    }
+    fun cloudSearchResolve(path: String, token: String): Int {
+        val id = nextId()
+        cloudBrowseRequests.submit(id, { cancellation ->
+            val result = try {
+                CloudLibrary.start(context() ?: error("Activity unavailable"))
+                JSONObject().put("entry", CloudLibrary.resolveSearch(path, token, cancellation)).put("state", "ready")
+            } catch (error: Exception) { JSONObject().put("state", "error").put("error", error.message ?: "Cloud search failed") }
+            result.put("source", "cloud_search_resolve").put("path", path).put("token", token).toString()
+        }, emit)
+        return id
+    }
     fun photoDirectoryPage(path: String, offset: Int, order: String): Int {
         val id = nextId()
         photoDirectoryRequests.submit(id, { cancellation ->

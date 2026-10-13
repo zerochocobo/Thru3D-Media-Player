@@ -31,6 +31,7 @@ const MUTED := Color(0.56, 0.62, 0.69)
 const TEXT_RASTER_SCALE := 2
 const TEXT_PIXEL_SIZE := 0.0012 / TEXT_RASTER_SCALE
 const CHOICE_MARK := "›"
+const BRACKET_FONT := preload("res://assets/fonts/cjk-brackets.otf")
 const POINTER_LINE_PRIORITY := 126
 const POINTER_DOT_PRIORITY := 127
 # File names and the menu are often Chinese/Japanese: fall back to the system CJK font.
@@ -38,6 +39,7 @@ static var FONT: Font = _make_font()
 static var _font_language := I18n.language
 static var _bold_font: Font
 static var _bold_font_language := ""
+static var _title_cache := {}
 static func _make_font(weight: int = 400) -> Font:
 	var font := SystemFont.new()
 	font.font_weight = weight
@@ -53,7 +55,12 @@ static func _make_font(weight: int = 400) -> Font:
 	var fallback := ThemeDB.fallback_font.duplicate() as FontFile
 	fallback.generate_mipmaps = true
 	font.fallbacks = [fallback]
-	return font
+	# Some headset system-font selections report CJK punctuation without drawable
+	# glyphs. Give brackets an explicit, tiny OFL font before the system font chain.
+	var brackets := BRACKET_FONT.duplicate() as FontFile
+	brackets.generate_mipmaps = true
+	brackets.fallbacks = [font]
+	return brackets
 
 static func ui_font() -> Font:
 	if _font_language != I18n.language:
@@ -484,10 +491,12 @@ func _hide_tooltip() -> void:
 		if changed: composition_changed.emit()
 
 func _fit_title(title: String, suffix: String, width: float = 1.32, font_size: int = 26) -> String:
+	var key := str([ui_font().get_instance_id(), I18n.language, title, suffix, width, font_size])
+	if _title_cache.has(key): return _title_cache[key]
 	var fits := func(text: String) -> bool:
 		return text_width(text, font_size) <= width
 	if title.is_empty() or fits.call(title + suffix):
-		return title + suffix
+		return _cache_title(key, title + suffix)
 	# Longest prefix that fits with the ellipsis, by bisection: every measure shapes the text.
 	var low := 0
 	var high := title.length() - 1
@@ -497,7 +506,12 @@ func _fit_title(title: String, suffix: String, width: float = 1.32, font_size: i
 			low = middle
 		else:
 			high = middle - 1
-	return title.left(low) + "…" + suffix
+	return _cache_title(key, title.left(low) + "…" + suffix)
+
+static func _cache_title(key: String, text: String) -> String:
+	_title_cache[key] = text
+	while _title_cache.size() > 256: _title_cache.erase(_title_cache.keys()[0])
+	return text
 
 func text_snapshot() -> String:
 	var lines := PackedStringArray()

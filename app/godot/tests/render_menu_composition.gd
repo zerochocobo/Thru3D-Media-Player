@@ -100,6 +100,21 @@ func run() -> void:
 	check(projection.get_pixel(5, 5).a > 0.99, "Empty margins preserve the background")
 	var centre := camera.unproject_position(menu.to_global(Vector3(0.2, -0.1, 0)))
 	check(projection.get_pixelv(Vector2i(centre)).a < 0.01, "Menu coverage clears the eye buffer")
+	# Shader 2D->3D video uses the transparent pass at -10. A nearby portrait panel
+	# must be cleared after it draws, or it fills the menu hole over the native menu.
+	var video := MeshInstance3D.new(); video.mesh = QuadMesh.new(); video.mesh.size = Vector2(0.45, 1.1)
+	var video_material := StandardMaterial3D.new()
+	video_material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	video_material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	video_material.depth_draw_mode = BaseMaterial3D.DEPTH_DRAW_DISABLED
+	video_material.render_priority = -10; video_material.albedo_color = Color(0.9, 0.1, 0.1, 1.0)
+	video.material_override = video_material; viewport.add_child(video)
+	for distance in [1.5, 1.2, 0.8]:
+		video.position = Vector3(0.2, -0.13, -distance)
+		await frames()
+		projection = viewport.get_texture().get_image()
+		check(projection.get_pixelv(Vector2i(centre)).a < 0.01, "Near portrait shader video cannot refill menu hole at " + str(distance))
+	video.queue_free(); await frames()
 	var controller := MeshInstance3D.new(); controller.mesh = BoxMesh.new(); controller.mesh.size = Vector3(0.12, 0.12, 0.10)
 	controller.position = Vector3(0.2, -0.13, -0.9)
 	var red := StandardMaterial3D.new(); red.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED; red.albedo_color = Color(0.8, 0.1, 0.1)

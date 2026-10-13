@@ -19,14 +19,14 @@
   "build_scripts_sha256": {
     "scripts/mbedtls.sh": "b5ec1bbf8ff077c4d1a97f07b4c8c2d42320586f245286a643b1a3e654ad8b12",
     "scripts/libplacebo.sh": "7cd7f3a6c9f7da6176be5bfc0c6d3c0be39ea5582919f3b6dd2ddb82a6342953",
-    "scripts/ffmpeg.sh": "3d6693d3ef359437ca54cabaadb973901a95198d4d917a4438d8bf285af3f6fe",
+    "scripts/ffmpeg.sh": "9fa7986cc385cbee67a3e3eb3bf7154e2b9049a1c2ed589226e92022c9fc4871",
     "scripts/mpv-android.sh": "33fd2e40e11c45dc3ebd92f6b1bca51aba79339e31abdfc4545cab280fd5e95c",
     "scripts/dav1d.sh": "8717a693b35c5e6100917f9d4dcca5d589c39fec431ff32f09989187b5b2785a",
     "scripts/libxml2.sh": "c1ae9c57f149501539a82348fa07bda1bd83784038835db37280311c9af8649f",
     "scripts/fribidi.sh": "133bc90a43e5ed52049450c690d1e441250354b5ae6f877edae4e579d2081e31",
     "scripts/curl.sh": "9b3a9f5c94db6c346b5ec4ee94a2df6e3b158576433c94641d25bb5e35f466c9",
     "scripts/libass.sh": "030fa9e5893ae3cea8d3dbb1ac35846a26047b4552363c1a8252c259722e6b74",
-    "scripts/mpv.sh": "043338c15fbbd79e505a7f96c3436fc6ba16f81e4cbd41351742e2d65f632853",
+    "scripts/mpv.sh": "45436cb561182ad6fa5a956db1fb962424700cdde34371cb55f4f1e9354713e7",
     "scripts/unibreak.sh": "97748c6438623f0dc48f20cbee500cfbda2a3de361db453a9e911a9b58af5805",
     "scripts/freetype2.sh": "7106e47146cd38ab345bbe1c2e76a2823d8e385728b5ac10ae99a6c1534f97a3",
     "scripts/harfbuzz.sh": "35c1d28835920de6b9e69f00164eae7a3d14987e71fb8871acb0e1bac075c1b2",
@@ -52,9 +52,9 @@
   "libraries": [
     {
       "name": "libmpv.so",
-      "sha256": "d1e0c3c79d55c93e338ebf5c5abca823241eb48f424dd5deac646be555404686",
-      "bytes": 8263512,
-      "built_sha256": "04b2e376d4ab4f0e98d326596f887744541fcebd7646d0a6a12def9f02849552",
+      "sha256": "89ec1073ec7b48aaf1aabe6db066ed17909d9f9f2f1f42647dfd1373a4217be4",
+      "bytes": 8263528,
+      "built_sha256": "4af369ec3596a296c51d242d9d48df4a62c5b8b29e5839f3a9e35b65ce564783",
       "needed": [
         "libm.so",
         "libz.so",
@@ -75,9 +75,9 @@
     },
     {
       "name": "libavcodec.so",
-      "sha256": "28ba89fd0ce15c93bca2347bca43fda4321209e803a8a08fc99057c5c5b6d9d2",
-      "bytes": 12394320,
-      "built_sha256": "edcb57a471c3e0f900c5f0550ff930f113142e26aa1d8c2e3ce3c53bb9444d9e",
+      "sha256": "ec0df1fc19afe5afc040e7a96467902191435e931e60e347a1068685098b11a2",
+      "bytes": 12558808,
+      "built_sha256": "58741ea680b66567298aa0aab943a820dc7e293c9ac029908b35d2a12d056d30",
       "needed": [
         "libswresample.so",
         "libavutil.so",
@@ -91,9 +91,9 @@
     },
     {
       "name": "libavdevice.so",
-      "sha256": "ba250301a6dc6724d5bfbf888beaeb0d9dde9bd4664a6e8176d12bf713163c44",
-      "bytes": 9216,
-      "built_sha256": "d408006fff832b1ef3984302f9daed192924e9bef61e7796944708c0d1567d2e",
+      "sha256": "21ba6e29d4418f31cb597d32c6ae3913974eeae00def6f37c361099f1e903c8a",
+      "bytes": 9264,
+      "built_sha256": "05d4db7b29bc19db8530ee12ca5797a742b18f4aae00a569dc540133b09fe3e0",
       "needed": [
         "libavformat.so",
         "libavutil.so",
@@ -102,9 +102,9 @@
     },
     {
       "name": "libavfilter.so",
-      "sha256": "9960677b40ca15c3c19620322e6b4aa34cff3b5632bedfc024e7fbb4f2d2524f",
-      "bytes": 4300576,
-      "built_sha256": "c7c468e98469a4dabaadc17d9ccf4670bb7fa3826ab8e56a8a478cf7461dcb17",
+      "sha256": "cf56dc6cf0ba851bac2117b67c00d53c5d1883ecafb683d782de24cf3fba28aa",
+      "bytes": 4300640,
+      "built_sha256": "e701f33df292cc09c5eabf43876a43e238cb576c74193d664ea38ee8248fc8af",
       "needed": [
         "libswscale.so",
         "libavformat.so",
@@ -117,22 +117,23 @@
     },
     {
       "name": "libavformat.so",
-      "sha256": "e2bb1f997701a503f73c399aebbe12228dfbbcb899aea949195aa90e87418016",
-      "bytes": 4022832,
-      "built_sha256": "5224d635a81e14edab762ee06d79b0a2102b1add9c66bed8a7d8a73b8deda8a8",
+      "sha256": "fad9146f2716c3fc5661ede7f8becf535e62a63eb6667f0f4af7571680c26edd",
+      "bytes": 4315400,
+      "built_sha256": "22a8fd2ddea20d74edc8cb987d21668ea6b160c41a3d91dd382326c69cbdab53",
       "needed": [
         "libavcodec.so",
         "libavutil.so",
         "libm.so",
         "libz.so",
+        "libdl.so",
         "libc.so"
       ]
     },
     {
       "name": "libavutil.so",
-      "sha256": "18450ee7ce7099ea4638b2622bc30c495e3d1089b89492410204dc10f5b67f30",
-      "bytes": 740376,
-      "built_sha256": "da82fd86ce2a96d97be3f737a6d1d321de08bb0dc4407b61bd68f16ac670ea5e",
+      "sha256": "68b8b1c3e2b96bc590c2dc93203be01e4681a215d7d6f267c35d2abed38f12fc",
+      "bytes": 740424,
+      "built_sha256": "c0466ff850b645539a0807035fae5a907c3970051dccc41a25bc0512efb9947e",
       "needed": [
         "libm.so",
         "libandroid.so",
@@ -142,9 +143,9 @@
     },
     {
       "name": "libswresample.so",
-      "sha256": "a891bfebf8dbf4ccb2c6f5907c784aad086f5ec1d7c5e452806310ad6cbeddcb",
-      "bytes": 100688,
-      "built_sha256": "13fff00d733af3e85b5af0c0d526dcbd9bb095fba4b3eedac590766355ac93f7",
+      "sha256": "ed361b6adef770433aec116311908350f62a3eacf3ce13a9ced260a8c5d91952",
+      "bytes": 100736,
+      "built_sha256": "cffe17c4a14771898be7e68a410f256c354fe05a6598c6b0dbcd92c15808b4ae",
       "needed": [
         "libavutil.so",
         "libm.so",
@@ -153,9 +154,9 @@
     },
     {
       "name": "libswscale.so",
-      "sha256": "3e43471587732fcdef16d01724ed427cb1110decbe06e666de6cf7b13f74f8d5",
-      "bytes": 1246664,
-      "built_sha256": "db8333286787e4092151edd3bccec2d980d35c7ecb792394cdf74709ea5bf3a1",
+      "sha256": "42d11b5a5acc4d041bd33c9e7d38ec8454e918ef0bc5f0fb17e6df8bec72fd6d",
+      "bytes": 1246696,
+      "built_sha256": "16948350263dfe77a388f520db47d7a5ecb14d8a29401bc20099ce067b974eff",
       "needed": [
         "libavutil.so",
         "libm.so",
@@ -164,11 +165,35 @@
     }
   ],
   "host_packages_sha256": "0d42dd4ec021254111a439214a2681bf37ca44ba2af04a9d97af479f2bd1dd33",
-  "build_receipt_sha256": "1af189ab7cf1886b33a93f536eed83ada8f5b80881c67e33f969345d82ef82f6",
+  "build_receipt_sha256": "1dd3abce7b962090bb3126bd939d761e8b1a8496bc15c08d73725efbd926eb26",
   "meson": "1.11.0",
   "ninja": "1.11.1",
+  "mvc_inputs_sha256": {
+    "third_party/edge264-mvc/manifest.json": "59d1c887ed3d5bd1fda6902ee5de0c8343c9a4ff0e93f2941f117aa894e32ebf",
+    "third_party/bluray/source-lock.json": "7eabc13232bc1587c1baf21c836869afc8948fea1dde1f04af826c34a54e84f3",
+    "tools/environment/mpv-linux/mvc_patch.py": "6fed52d4caf2b276062fd3c42a9b6f36fd825ff0f5f95a2dd28283b2233c5416",
+    "tools/environment/Prepare-MvcDecoder.py": "ac33805b5d397d14b8b78e6b9d65abdc7609d0ee375245b160c4968097eac52c",
+    "tools/environment/Prepare-BluraySources.py": "d5988db75da92f8b511a095bae6a5760faeb1618d3d320a1c4f3fab802ed6045",
+    "tools/environment/mpv-linux/build_bluray.sh": "be189cd78bdbb02081ac0b65aee99fc6f16b1650fd3648ae825832c3940e4815",
+    "native/mpv/mvc/bluray_clpi_reader.c": "3b177cbdaeaadfa3221039cbbc04928cddd74603d3fe99b82c5efd76cf9ebc51",
+    "native/mpv/mvc/edge264mvc_all.c": "eef0dcf8a47a264ff2fb4d1ce778da8b9dce17fb636939d50b820dbb284b5407",
+    "native/mpv/mvc/ffmpeg_bd_mvc.c": "3c5525d39729dc5a8005b7bf523c88e42d0813c7f34cb98e3d6f5e20d2a95e09",
+    "native/mpv/mvc/ffmpeg_h264_mvc.c": "08117a1c0ed94f23e3f547131cf532d13a57db82d1f4f1b98a2cbea255a6bb46"
+  },
   "cxx_runtime_policy": "Use the existing Godot/project libc++_shared; do not package a duplicate; device compatibility pending",
   "license_profile": "GPL mpv and FFmpeg with gpl/version3 enabled; used by Debug and Release.",
   "reproducibility": "Exact sources/options/toolchain recorded; independent second-build byte comparison pending",
-  "reference_source_lock_sha256": "906a65cdecc4a1d67bcad34100a06ba0e8c21c27df83f01e2fe2227350c8d16b"
+  "reference_source_lock_sha256": "906a65cdecc4a1d67bcad34100a06ba0e8c21c27df83f01e2fe2227350c8d16b",
+  "reference_mvc_inputs_sha256": {
+    "third_party/edge264-mvc/manifest.json": "59d1c887ed3d5bd1fda6902ee5de0c8343c9a4ff0e93f2941f117aa894e32ebf",
+    "third_party/bluray/source-lock.json": "7eabc13232bc1587c1baf21c836869afc8948fea1dde1f04af826c34a54e84f3",
+    "tools/environment/mpv-linux/mvc_patch.py": "6fed52d4caf2b276062fd3c42a9b6f36fd825ff0f5f95a2dd28283b2233c5416",
+    "tools/environment/Prepare-MvcDecoder.py": "ac33805b5d397d14b8b78e6b9d65abdc7609d0ee375245b160c4968097eac52c",
+    "tools/environment/Prepare-BluraySources.py": "d5988db75da92f8b511a095bae6a5760faeb1618d3d320a1c4f3fab802ed6045",
+    "tools/environment/mpv-linux/build_bluray.sh": "276e35a7ccf1dff02cd6e317fe839e2afee9cbf7e644601bc05bf6469db3b3cd",
+    "native/mpv/mvc/bluray_clpi_reader.c": "3b177cbdaeaadfa3221039cbbc04928cddd74603d3fe99b82c5efd76cf9ebc51",
+    "native/mpv/mvc/edge264mvc_all.c": "eef0dcf8a47a264ff2fb4d1ce778da8b9dce17fb636939d50b820dbb284b5407",
+    "native/mpv/mvc/ffmpeg_bd_mvc.c": "3c5525d39729dc5a8005b7bf523c88e42d0813c7f34cb98e3d6f5e20d2a95e09",
+    "native/mpv/mvc/ffmpeg_h264_mvc.c": "08117a1c0ed94f23e3f547131cf532d13a57db82d1f4f1b98a2cbea255a6bb46"
+  }
 }

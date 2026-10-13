@@ -32,6 +32,7 @@ const VOLUME_SPAN := Vector2(0.2, 0.44)
 const VOLUME_MUTE := 3
 const DepthStrength := preload("res://scripts/depth_strength.gd")
 const DEPTH := 161
+const DEPTH_RESET := 162
 const DEPTH_X := 0.32
 const DEPTH_SPAN := Vector2(0.2, 0.44)
 const LENS_FOVS := [180, 190, 200, 220]
@@ -46,6 +47,8 @@ const SUBTITLE_APPEARANCE := 293
 const PLAYBACK_SETTINGS := 470
 const ROTATION_RESET := 471
 const SPEED_RESET := 472
+const SLIDER_RESET_BASE := 6000
+const GRADE_PAGE_RESET := 441
 const StereoView := preload("res://scripts/stereo_view.gd")
 const VIEWING_EYE := 480
 const EYE_SWAP := 483
@@ -360,7 +363,7 @@ func _subtitle_controls() -> Array:
 		rows.append({"title": "Horizontal position" if int(_state.get("subtitle_direction", 0)) == 1 else "Subtitle position", "field": SubtitleDepth.slider_row("subtitle_position", float(_state.get("subtitle_position", 0.0)))})
 		rows.append({"title": "Distance", "field": SubtitleDepth.slider_row("subtitle_distance", float(_state.get("subtitle_distance", 5.0)))})
 	else:
-		rows.append({"title": "Vertical position", "field": {"key": "subtitle_flat_position", "value": _state.get("subtitle_flat_position", 0.0), "slider": true, "span": Vector3(0, 100, 1), "unit": "%"}})
+		rows.append({"title": "Vertical position", "field": {"key": "subtitle_flat_position", "value": _state.get("subtitle_flat_position", 0.0), "slider": true, "span": Vector3(0, 100, 1), "unit": "%", "reset_value": 0.0}})
 	rows.append({"title": "Subtitle size", "field": SubtitleStyle.size_row(float(_state.get("subtitle_size", 100.0)))})
 	rows.append({"title": "Subtitle color style", "field": SubtitleStyle.style_row(_state.get("subtitle_style", SubtitleStyle.DEFAULT))})
 	return rows
@@ -487,7 +490,7 @@ func _press_quick_icon(hand: String, target: int) -> bool:
 func _draw_depth() -> void:
 	var height := DEPTH_SPAN.y - DEPTH_SPAN.x
 	var middle := (DEPTH_SPAN.x + DEPTH_SPAN.y) / 2
-	var panel := _quad(Vector2(0.13, height + 0.13), Vector3(DEPTH_X, middle + 0.025, 0.001), Color(PANEL, 0.94), 10)
+	var panel := _quad(Vector2(0.13, height + 0.19), Vector3(DEPTH_X, middle, 0.001), Color(PANEL, 0.94), 10)
 	panel.material_override.set_shader_parameter("corner_radius", 0.05)
 	add_child(panel)
 	_decorations.append(panel)
@@ -504,6 +507,7 @@ func _draw_depth() -> void:
 	_depth_knob.material_override.set_shader_parameter("corner_radius", 0.015)
 	_depth_knob.material_override.render_priority = 14
 	_depth_label = _label("", Vector3(DEPTH_X, DEPTH_SPAN.y + 0.045, 0.004), 16)
+	_glyph(DEPTH_RESET, "refresh", Vector2(DEPTH_X, DEPTH_SPAN.x - 0.055), 0.06, false, I18n.t("Reset"))
 	_refresh_depth()
 
 func _depth_maximum() -> float:
@@ -522,6 +526,10 @@ func _refresh_depth() -> void:
 	_depth_fill.material_override.set_shader_parameter("surface_size", _depth_fill.mesh.size)
 	_depth_knob.position.y = DEPTH_SPAN.x + height * fraction
 	_depth_label.text = _depth_caption()
+	for button in _buttons:
+		if button.target != DEPTH_RESET: continue
+		button.enabled = _can_depth() and _state.get("depth_requested", false) and not is_equal_approx(float(_state.get("depth_strength", DepthStrength.DEFAULT)), DepthStrength.DEFAULT)
+		button.node.get_child(1).material_override.albedo_color = ACCENT if button.enabled else MUTED
 
 func _set_depth_at(y: float) -> void:
 	var fraction := (y - DEPTH_SPAN.x) / (DEPTH_SPAN.y - DEPTH_SPAN.x)
@@ -910,6 +918,8 @@ func _activate_hit(hit: Dictionary) -> void:
 
 func _activate(target: int) -> void:
 	if _activate_footer(target): return
+	if _activate_slider_reset(target): return
+	if _activate_depth_reset(target): return
 	if _state.get("spatial_video", false) and (target in range(MODE_PROJECTION, MODE_PROJECTION + 4) \
 		or target in [MODE_STEREO, MODE_STEREO + 1, MODE_STEREO + 3, MODE_STEREO + 4, MODE_STEREO + 5, MODE_STEREO + 6] \
 		or target in range(MODE_LENS, MODE_LENS + LENS_FOVS.size())): return
@@ -1234,8 +1244,9 @@ func _draw_adjustments() -> void:
 	_label(I18n.t("Color grading"), Vector3(0, 0.51, 0.004), 24)
 	_place_device_status(Vector2(0, -0.66))
 	if _adjustment == "color_grade":
+		var preset_width := 1.4 / Grade.PRESETS.size()
 		for i in Grade.PRESETS.size():
-			_button(410 + i, I18n.t(Grade.PRESETS[i]), Vector2(-0.56 + i * 0.28, 0.38), Vector2(0.25, 0.075))
+			_button(410 + i, I18n.t(Grade.PRESETS[i]), Vector2(-0.7 + (i + 0.5) * preset_width, 0.38), Vector2(preset_width - 0.03, 0.075))
 			_preset_buttons[Grade.PRESETS[i]] = _buttons.back()
 		for i in 3:
 			_button(430 + i, I18n.t(["Basic", "RGB gain", "RGB gamma / offset"][i]), Vector2(-0.46 + i * 0.46, 0.275), Vector2(0.44, 0.065))
@@ -1243,7 +1254,8 @@ func _draw_adjustments() -> void:
 		var keys: Array = Grade.PAGES[_grade_page]
 		for i in keys.size():
 			_adjustment_row(450 + i, keys[i], Grade.NAMES[keys[i]], Grade.limits(keys[i]), 0.16 - i * 0.105)
-		_button(440, I18n.t("Reset custom"), Vector2(0, -0.505), Vector2(0.4, 0.075))
+		_button(GRADE_PAGE_RESET, I18n.t("Reset page"), Vector2(-0.26, -0.505), Vector2(0.46, 0.075), _grade_page_needs_reset())
+		_button(440, I18n.t("Reset custom"), Vector2(0.26, -0.505), Vector2(0.46, 0.075))
 	_refresh_adjustments()
 
 func _draw_stereo_view() -> void:
@@ -1285,7 +1297,52 @@ func _adjustment_row(target: int, key: String, title: String, span: Vector3, y: 
 	fill.material_override.render_priority = 13
 	var knob := _decoration(Vector2(0.025, 0.025), Vector2(0.03, y), Color.WHITE)
 	knob.material_override.render_priority = 14
-	_adjust_rows[target] = {"key": key, "span": span, "label": value, "fill": fill, "knob": knob}
+	_adjust_rows[target] = {"key": key, "span": span, "label": value, "fill": fill, "knob": knob, "button": _buttons.back()}
+	var default_value: Variant = _adjustment_default(key)
+	# Rotation and speed already have named reset buttons; keep those familiar labels.
+	if default_value != null and key not in ["screen_rotation", "playback_speed"]:
+		_glyph(SLIDER_RESET_BASE + target, "refresh", Vector2(0.715, y), 0.065, false, I18n.t("Reset"))
+		var reset: Dictionary = _buttons.back()
+		reset["reset_slider"] = target
+		reset["reset_value"] = float(default_value)
+		_adjust_rows[target]["reset"] = reset
+
+func _adjustment_default(key: String) -> Variant:
+	if Grade.DEFAULTS.has(key): return Grade.DEFAULTS[key]
+	return {"screen_distance": Surface.SCREEN_DISTANCE, "screen_scale": 100.0,
+		"screen_rotation": 0.0, "playback_speed": 1.0, "alpha_fps": 20.0,
+		"stereo_horizontal": 0.0, "stereo_vertical": 0.0}.get(key)
+
+func _activate_slider_reset(target: int) -> bool:
+	for button in _buttons:
+		if button.target != target or not button.has("reset_slider"): continue
+		if button.enabled and _adjust_rows.has(button.reset_slider):
+			_finish_adjustment()
+			adjustment_requested.emit(str(_adjust_rows[button.reset_slider].key), button.reset_value)
+			adjustment_committed.emit()
+			refresh_values()
+		return true
+	return false
+
+func _activate_depth_reset(target: int) -> bool:
+	if target != DEPTH_RESET: return false
+	refresh_values()
+	if _can_depth() and _state.get("depth_requested", false) and _buttons.any(func(button): return button.target == target and button.enabled):
+		depth_strength_requested.emit(DepthStrength.DEFAULT)
+		depth_strength_committed.emit()
+		refresh_values()
+	return true
+
+func _grade_page_needs_reset() -> bool:
+	var values: Dictionary = _state.get("grade_values", Grade.DEFAULTS)
+	return _state.get("has_video", false) and Grade.PAGES[_grade_page].any(func(key): return not is_equal_approx(float(values.get(key, Grade.DEFAULTS[key])), Grade.DEFAULTS[key]))
+
+func _refresh_slider_resets() -> void:
+	for row in _adjust_rows.values():
+		if not row.has("reset"): continue
+		var button: Dictionary = row.reset
+		button.enabled = row.button.enabled and not is_equal_approx(float(row.get("value", button.reset_value)), button.reset_value)
+		button.node.get_child(1).material_override.albedo_color = ACCENT if button.enabled else MUTED
 
 func _inline_reset(target: int, title: String, key: String, default_value: float, y: float) -> void:
 	_button(target, "", Vector2(-0.315, y), Vector2(0.22, 0.065))
@@ -1302,6 +1359,7 @@ func _refresh_adjustments() -> void:
 		var position: bool = row.key == "subtitle_position"
 		var defaults := {"screen_scale": 100.0, "screen_rotation": 0.0, "playback_speed": 1.0, "alpha_fps": 20.0, "stereo_horizontal": 0.0, "stereo_vertical": 0.0}
 		var value := float(_state.get(row.key, defaults[row.key])) if defaults.has(row.key) else (float(_state.get(row.key, 5.0 if row.key == "subtitle_distance" else Surface.SCREEN_DISTANCE)) if distance else (float(_state.get(row.key, SubtitleDepth.DEFAULT_POSITION)) if position else float(values.get(row.key, Grade.DEFAULTS[row.key]))))
+		row["value"] = value
 		var fraction := clampf((value - row.span.x) / (row.span.y - row.span.x), 0, 1)
 		if row.key == "subtitle_distance": fraction = SubtitleDepth.slider_fraction(value)
 		row.label.text = "%.1f m" % value if distance else ("%+.0f°" % value if position else ("%d K" % value if row.key == "temperature" else ("%+.2f EV" % value if row.key == "exposure" else "%.3f" % value)))
@@ -1315,10 +1373,14 @@ func _refresh_adjustments() -> void:
 		row.fill.position.x = 0.03 + fraction * 0.3
 		row.fill.material_override.set_shader_parameter("surface_size", row.fill.mesh.size)
 		row.knob.position.x = 0.03 + fraction * 0.6
+	_refresh_slider_resets()
 	var selected := str(_state.get("color_grade", {}).get("preset", "Original"))
 	for name in _preset_buttons:
 		_preset_buttons[name].base_color = SELECTED if name == selected else TILE
 	for button in _buttons:
+		if button.target == GRADE_PAGE_RESET:
+			button.enabled = _grade_page_needs_reset()
+			button.node.get_child(0).modulate = button.foreground if button.enabled else MUTED
 		if not button.has("reset_key"): continue
 		var shown: bool = _state.get("has_video", false) and not is_equal_approx(float(_state.get(button.reset_key, button.reset_value)), button.reset_value)
 		button.enabled = shown
@@ -1353,12 +1415,15 @@ func _activate_adjustment(target: int) -> void:
 		adjustment_requested.emit("screen_rotation", 0.0)
 		adjustment_committed.emit()
 	elif _adjustment == "color_grade":
-		if target >= 410 and target < 415:
+		if target >= 410 and target < 410 + Grade.PRESETS.size():
 			adjustment_requested.emit("grade_preset", Grade.PRESETS[target - 410])
 			adjustment_committed.emit()
 		elif target >= 430 and target < 433:
 			_grade_page = target - 430
 		elif target == 440:
 			adjustment_requested.emit("grade_reset", true)
+			adjustment_committed.emit()
+		elif target == GRADE_PAGE_RESET and _grade_page_needs_reset():
+			adjustment_requested.emit("grade_reset_page", _grade_page)
 			adjustment_committed.emit()
 	refresh()

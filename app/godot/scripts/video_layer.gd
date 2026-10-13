@@ -200,29 +200,35 @@ func layer_values(surface: Node3D, origin: Node3D, source_kind: int = SURFACE, i
 			lower = (0.5 - (pano.y + pano.w)) * PI
 			pose.basis = pose.basis * Basis(Vector3.UP, -(pano.x + pano.z * 0.5 - 0.5) * TAU)
 		shape = PackedFloat32Array([surface.SPHERE_RADIUS * scale.x, span, upper, lower])
-	var quat := pose.basis.get_rotation_quaternion()
-	var head := PackedFloat32Array([0.0, 0.0, pose.origin.x, pose.origin.y, pose.origin.z, quat.x, quat.y, quat.z, quat.w])
 	for eye in ([0] if not sbs else [1, 2]):
 		var source := 0
 		if sbs:
 			var view: int = eye - 1 if viewing == 0 else viewing - 1
 			source = 1 - view if surface.swap_eyes else view
 		var rect := Rect2(Vector2.ZERO, image)
+		var shift := Vector2.ZERO
 		if sbs:
 			var offset: Vector2 = surface.stereo_offset_uv() if viewing == 0 and surface.has_method("stereo_offset_uv") else Vector2.ZERO
 			var sign := -0.5 if eye == 1 else 0.5
+			shift = sign * offset
 			if top_bottom:
 				rect = Rect2(0, source * image.y * 0.5, image.x, image.y * 0.5)
 			else:
 				rect = Rect2(source * image.x * 0.5, 0, image.x * 0.5, image.y)
-			rect.position += sign * offset * rect.size
 		if surface.geometry == Geometry.Geometry.FLAT and inset != Vector2.ZERO:
 			rect = Rect2(rect.position + rect.size * inset, rect.size * (Vector2.ONE - 2.0 * inset))
-		var values := head.duplicate()
-		values[0] = type
-		values[1] = eye
+		var pixel_start := Vector2(roundf(rect.position.x), roundf(rect.position.y))
+		rect = Rect2(pixel_start, Vector2(roundf(rect.end.x), roundf(rect.end.y)) - pixel_start)
+		# UV shifts cannot move imageRect outside its eye or the swapchain. Crop valid
+		# pixels and move/shrink their destination geometry instead. 360 longitude wraps
+		# by rotating the full eye image, without dropping the seam or adding a layer.
+		var aligned := _aligned_layer(rect, shift, type, shape, pose, surface.geometry == Geometry.Geometry.EQUIRECT_360)
+		rect = aligned.rect
+		var eye_pose: Transform3D = aligned.pose
+		var quat := eye_pose.basis.get_rotation_quaternion()
+		var values := PackedFloat32Array([float(type), float(eye), eye_pose.origin.x, eye_pose.origin.y, eye_pose.origin.z, quat.x, quat.y, quat.z, quat.w])
 		values.append_array(PackedFloat32Array([rect.position.x, rect.position.y, rect.size.x, rect.size.y]))
-		values.append_array(shape)
+		values.append_array(aligned.shape)
 		values.resize(STRIDE)
 		# Our GL picture textures are top-first. An Android Surface has a producer/runtime
 		# convention of its own; never apply the uploaded-picture rule to it unconditionally.
@@ -237,6 +243,39 @@ func layer_values(surface: Node3D, origin: Node3D, source_kind: int = SURFACE, i
 	for values in layers:
 		packed.append_array(values)
 	return packed
+
+static func _aligned_layer(eye_rect: Rect2, shift: Vector2, type: int, shape: PackedFloat32Array,
+		pose: Transform3D, wrap: bool) -> Dictionary:
+	if shift == Vector2.ZERO:
+		return {"rect": eye_rect, "shape": shape, "pose": pose}
+	var crop_shift := Vector2(0.0 if wrap else shift.x, shift.y)
+	var destination := Rect2(Vector2.ZERO, Vector2.ONE).intersection(Rect2(-crop_shift, Vector2.ONE))
+	var start := eye_rect.position + (destination.position + crop_shift) * eye_rect.size
+	var end := eye_rect.position + (destination.end + crop_shift) * eye_rect.size
+	# Integer pixel endpoints keep independent rounding from overflowing a swapchain,
+	# while the destination follows the actual quantized source window (no rescaling drift).
+	start = Vector2(ceilf(start.x), ceilf(start.y))
+	end = Vector2(floorf(end.x), floorf(end.y))
+	var rect := Rect2(start, end - start)
+	destination = Rect2((start - eye_rect.position) / eye_rect.size - crop_shift, rect.size / eye_rect.size)
+	var centre := destination.get_center() - Vector2(0.5, 0.5)
+	var mapped := shape.duplicate()
+	if type == 0:
+		pose.origin += pose.basis * Vector3(centre.x * shape[0], -centre.y * shape[1], 0)
+		mapped[0] *= destination.size.x
+		mapped[1] *= destination.size.y
+	elif type == 1:
+		var height := shape[0] * shape[1] / shape[2]
+		pose.origin += pose.basis * Vector3(0, -centre.y * height, 0)
+		pose.basis *= Basis(Vector3.UP, -centre.x * shape[1])
+		mapped[1] *= destination.size.x
+		mapped[2] *= destination.size.x / destination.size.y
+	else:
+		pose.basis *= Basis(Vector3.UP, shift.x * shape[1] if wrap else -centre.x * shape[1])
+		mapped[1] *= destination.size.x
+		mapped[2] = shape[2] - destination.position.y * (shape[2] - shape[3])
+		mapped[3] = shape[2] - destination.end.y * (shape[2] - shape[3])
+	return {"rect": rect, "shape": mapped, "pose": pose}
 
 func _apply(count: int, values: PackedFloat32Array) -> bool:
 	if not _provider:

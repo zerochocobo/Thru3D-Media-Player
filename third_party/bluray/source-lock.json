@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "libraries": [
+    {
+      "name": "libbluray",
+      "version": "1.4.1",
+      "archive": "libbluray-1.4.1.tar.xz",
+      "url": "https://download.videolan.org/pub/videolan/libbluray/1.4.1/libbluray-1.4.1.tar.xz",
+      "bytes": 468052,
+      "sha256": "76b5dc40097f28dca4ebb009c98ed51321b2927453f75cc72cf74acd09b9f449",
+      "license": "LGPL-2.1-or-later"
+    },
+    {
+      "name": "libudfread",
+      "version": "1.2.0",
+      "archive": "libudfread-1.2.0.tar.xz",
+      "url": "https://download.videolan.org/pub/videolan/libudfread/libudfread-1.2.0.tar.xz",
+      "bytes": 28732,
+      "sha256": "bb477cbd4cfbfc7787d9d05b71ee5e70430f5cfebf1297497f7e83547958050f",
+      "license": "LGPL-2.1-or-later"
+    }
+  ],
+  "build_policy": "Static PIC inside the existing FFmpeg library set; BD-J, menus and decryption are not player features"
+}

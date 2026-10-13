@@ -34,6 +34,48 @@ class MediaServerClientTest {
         } } }
         override fun close() { socket.close(); pool.shutdownNow() }
     }
+    @Test fun isoTypeSurvivesOpaqueServerUrlsAndRepeatedProxyRanges() {
+        val bytes = ByteArray(700000) { (it % 251).toByte() }
+        for (provider in listOf("emby", "jellyfin", "xbvr")) {
+            val paths = if (provider == "xbvr") listOf("Film.ISO") else listOf("G:\\discs\\Film.ISO", "")
+            for (path in paths) {
+                val metadataRequests = AtomicInteger()
+                Fixture { request, headers, _ ->
+                    val target = URI(request.split(' ')[1]).path
+                    if (target.endsWith("/PlaybackInfo") || target.endsWith("/api/scene/7")) {
+                        metadataRequests.incrementAndGet()
+                        val file = JSONObject().put("Id", "source").put("Protocol", "File")
+                            .put("Size", bytes.size).put("SupportsDirectPlay", true).put("Path", path).put("Container", "iso")
+                        val data = if (provider == "xbvr") JSONObject().put("id", 7).put("file", org.json.JSONArray().put(
+                            JSONObject().put("id", 11).put("type", "video").put("filename", path).put("size", bytes.size).put("video_width", 1920)))
+                        else JSONObject().put("MediaSources", org.json.JSONArray().put(file))
+                        Reply(body = data.toString().toByteArray())
+                    } else {
+                        val range = headers.getValue("range").removePrefix("bytes=").split('-', limit = 2)
+                        val start = range[0].toInt(); val end = range[1].toIntOrNull() ?: bytes.lastIndex
+                        Reply(206, "Content-Range: bytes $start-$end/${bytes.size}\r\nContent-Type: application/octet-stream\r\n",
+                            bytes.copyOfRange(start, end + 1))
+                    }
+                }.use { fixture -> LocalStreamServer().use { local ->
+                    val account = MediaServerAccount("iso-fixture", "Test", fixture.url, "", provider, "user1")
+                    val library = MediaServerLibrary({ null }, { local }, { 1 }, emit = { _, _ -> }, getAccount = { account })
+                    try {
+                        val url = library.playable(MediaLibraryUri.scene(account.id, if (provider == "xbvr") "7" else "1"))
+                        assertTrue(URI(url).path.endsWith("/video.iso"))
+                        for (offset in listOf(32768, 524288, 0)) {
+                            val c = URI(url).toURL().openConnection() as java.net.HttpURLConnection
+                            try {
+                                c.setRequestProperty("Range", "bytes=$offset-${offset + 2047}")
+                                assertEquals(206, c.responseCode)
+                                assertArrayEquals(bytes.copyOfRange(offset, offset + 2048), c.inputStream.use { it.readBytes() })
+                            } finally { c.disconnect() }
+                        }
+                        assertEquals(1, metadataRequests.get())
+                    } finally { library.close() }
+                } }
+            }
+        }
+    }
     @Test fun identityRejectsSecretsAndPreservesServerScope() {
         val uri = MediaLibraryUri.scene("abc-123", "89")
         assertEquals("abc-123" to "89", MediaLibraryUri.parse(uri))

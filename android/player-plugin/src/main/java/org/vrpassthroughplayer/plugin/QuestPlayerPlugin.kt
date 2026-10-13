@@ -246,6 +246,13 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     @UsedByGodot fun media_photo_directory_cancel(id: Int) = sources.photoDirectoryCancel(id)
     @UsedByGodot fun media_cloud_page(path: String, offset: Int, refresh: Boolean): Int = if (closed.get()) -1 else sources.cloudBrowse(path, refresh, offset)
     @UsedByGodot fun media_cloud_sorted_page(path: String, offset: Int, refresh: Boolean, order: String): Int = if (closed.get()) -1 else sources.cloudBrowse(path, refresh, offset, order)
+    @UsedByGodot fun media_cloud_search(path: String, query: String, scope: String, kind: String, cursor: String, refresh: Boolean): Int = if (closed.get()) -1 else sources.cloudSearch(path, query, scope, kind, cursor, refresh)
+    @UsedByGodot fun media_cloud_search_resolve(path: String, token: String): Int = if (closed.get()) -1 else sources.cloudSearchResolve(path, token)
+    @UsedByGodot fun media_clipboard_text(): String = runCatching {
+        val host = activity ?: return@runCatching ""
+        val clipboard = host.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+        clipboard.primaryClip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.text?.toString()?.take(128) ?: ""
+    }.getOrDefault("")
     @UsedByGodot fun media_file_management_enabled(enabled: Boolean) { if (!closed.get()) sources.setFileManagement(enabled) }
     @UsedByGodot fun media_file_delete(json: String): Int = if (closed.get()) -1 else sources.deleteFile(json)
     @UsedByGodot fun media_file_rename_prepare(json: String): Int = if (closed.get()) -1 else sources.renameFile(json, true)

@@ -3,7 +3,8 @@ package org.vrpassthroughplayer.plugin
 /** Sort the entire directory metadata before slicing. Never label a sorted single page a directory sort.
  * Bounded snapshots contain no stream URLs or credentials, expire after two minutes, and are account-local. */
 internal class CloudSortedPages(private val now: () -> Long = { System.nanoTime() / 1_000_000 }) {
-    private data class Snapshot(val files: List<CloudFile>, val expires: Long)
+    private data class Snapshot(val files: List<CloudFile>, val expires: Long,
+        var order: String = "", var ordered: List<CloudFile> = emptyList())
     private val snapshots = LinkedHashMap<String, Snapshot>(4, .75f, true)
 
     @Synchronized fun page(client: CloudClient, path: String, offset: Int, refresh: Boolean, order: String): CloudPage {
@@ -33,7 +34,13 @@ internal class CloudSortedPages(private val now: () -> Long = { System.nanoTime(
             snapshots[path] = snapshot
             while (snapshots.size > 4 || snapshots.values.sumOf { it.files.size } > MAX_FILES * 2) snapshots.remove(snapshots.keys.first())
         }
-        val sorted = snapshot.files.sortedWith(comparator(order))
+        // Paging the same directory/order must not sort thousands of names again.
+        // Keep one ordered view per bounded snapshot; a new order/refresh recomputes it.
+        if (snapshot.order != order) {
+            snapshot.ordered = snapshot.files.sortedWith(comparator(order))
+            snapshot.order = order
+        }
+        val sorted = snapshot.ordered
         if (offset > sorted.size) throw CloudFailure()
         val end = minOf(offset + CloudDrive.PAGE_SIZE, sorted.size)
         return CloudPage(sorted.subList(offset, end), if (end < sorted.size) end else -1, sorted.size)

@@ -20,6 +20,8 @@ $source = Join-Path $cache "OpenList-$revision"
 $output = Join-Path $workspace 'app\godot\addons\quest_player\bin\cloudcore.aar'
 $adapters = @(Get-ChildItem (Join-Path $workspace 'cloud\openlist') -Filter '*.go' | Where-Object { $_.Name -notlike '*_test.go' } | Sort-Object Name)
 $adapterHashes = ($adapters | ForEach-Object { "$($_.Name):$((Get-FileHash $_.FullName -Algorithm SHA256).Hash)" }) -join '/'
+$searchAdapters = @(Get-ChildItem (Join-Path $workspace 'cloud\openlist\search') -Filter '*.go' -Recurse | Sort-Object FullName)
+$adapterHashes += '/' + (($searchAdapters | ForEach-Object { "$($_.Directory.Name)/$($_.Name):$((Get-FileHash $_.FullName -Algorithm SHA256).Hash)" }) -join '/')
 $fingerprint = "$revision/$mobileVersion/$adapterHashes/$((Get-FileHash $PSCommandPath -Algorithm SHA256).Hash)"
 $stamp = Join-Path $cache 'build.stamp'
 if (!$Force -and (Test-Path $output) -and (Test-Path $stamp) -and (Get-Content $stamp -Raw).Trim() -eq $fingerprint) { return }
@@ -44,6 +46,7 @@ $env:GOTOOLCHAIN = 'local'
 $env:GOFLAGS = '-mod=mod'
 New-Item -ItemType Directory -Force "$source\cloudcore", "$source\public\dist" | Out-Null
 foreach ($adapter in $adapters) { Copy-Item -LiteralPath $adapter.FullName -Destination "$source\cloudcore\$($adapter.Name)" -Force }
+foreach ($adapter in $searchAdapters) { Copy-Item -LiteralPath $adapter.FullName -Destination (Join-Path $source "drivers\$($adapter.Directory.Name)\$($adapter.Name)") -Force }
 $storageModel = Join-Path $source 'internal\model\storage.go'
 $modelText = Get-Content $storageModel -Raw
 $originalTag = 'json:"addition" gorm:"type:text"'

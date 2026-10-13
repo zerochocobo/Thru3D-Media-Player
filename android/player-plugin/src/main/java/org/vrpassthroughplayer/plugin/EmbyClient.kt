@@ -28,6 +28,7 @@ internal class EmbyClient(private val account: MediaServerAccount, private val h
         facets = listOf("genres", "tags", "performers", "studios"), navigation = listOf("genres", "tags", "folders"),
         filters = listOf("watched", "min_rating"), favoriteScope = "server", tree = true,
         excludes = if (account.provider == "emby") listOf("tags") else emptyList(), unclassified = listOf("genres", "tags"))
+        .put("home_layout", "libraries").put("artwork", true)
     fun login(username: String, password: String): MediaServerAccount {
         val auth = get("Users/AuthenticateByName", body = JSONObject().put("Username", username).put("Pw", password))
         val token = auth.getString("AccessToken")
@@ -44,28 +45,45 @@ internal class EmbyClient(private val account: MediaServerAccount, private val h
     }
     override fun home(request: JSONObject): JSONObject {
         val libraries = get("Users/${user()}/Views").getJSONArray("Items").objects()
-            .filter { it.optString("CollectionType") !in setOf("music", "books", "games", "livetv", "channels") }
-        val requested = request.optString("library_id")
-        mediaRequire(requested.isBlank() || libraries.any { it.getString("Id") == requested }, "Video unavailable")
-        val library = if (requested.isNotBlank()) requested else libraries.singleOrNull()?.getString("Id").orEmpty()
-        val q = JSONObject().put("library_id", library).put("page", 1).put("sort", "created_at")
-        val recent = browse(q)
-        val args = browseArgs(q).apply { put("Filters", "IsResumable"); put("Limit", 4); put("SortBy", "DatePlayed") }
-        val resume = get("Users/${user()}/Items", args).getJSONArray("Items").objects().map(::summary)
-        return JSONObject().put("capabilities", capabilities()).put("total", recent.optInt("total"))
-            .put("recent", JSONArray(recent.getJSONArray("entries").objects().take(4))).put("resume", JSONArray(resume))
-            .put("libraries", JSONArray(libraries.map(::summary))).put("library_id", library)
+            .filter { it.optString("CollectionType") !in setOf("music", "books", "games", "livetv", "channels", "photos", "audiobooks") }
+        val home = JSONObject().put("capabilities", capabilities()).put("total", libraries.size)
+            .put("recent", JSONArray()).put("resume", JSONArray()).put("recent_opened", JSONArray())
+            .put("libraries", JSONArray(libraries.map(::summary))).put("library_id", "")
+        try {
+            val args = linkedMapOf<String, Any>("Recursive" to true, "IncludeItemTypes" to "Movie,Episode,Video",
+                "Limit" to 16, "StartIndex" to 0, "SortBy" to "DatePlayed", "SortOrder" to "Descending",
+                "Fields" to "MediaSources,MediaStreams,PrimaryImageAspectRatio", "EnableUserData" to true, "EnableImages" to true)
+            val watched = get("Users/${user()}/Items", args).getJSONArray("Items").objects().filter { item ->
+                val state = item.optJSONObject("UserData") ?: JSONObject()
+                state.optLong("PlaybackPositionTicks") > 0 || state.optInt("PlayCount") > 0 || state.optBoolean("Played") ||
+                    state.optString("LastPlayedDate").isNotBlank()
+            }.map(::summary).filter { !it.optBoolean("container") }
+            home.put("recent_opened", JSONArray(watched))
+                .put("resume", JSONArray(watched.filter { it.optLong("position_ms") > 0 &&
+                    (it.optLong("duration_ms") <= 0 || it.optLong("position_ms") < it.optLong("duration_ms") - 1000) }))
+        } catch (error: Exception) {
+            if (error is MediaServerFailure && error.code in setOf("Request cancelled", "Server authentication required")) throw error
+            // A failed optional history query must not hide the libraries or local history.
+            home.put("recent_error", (error as? MediaServerFailure)?.code ?: "Invalid server response")
+        }
+        return home
     }
     private fun browseArgs(request: JSONObject): LinkedHashMap<String, Any> {
         val page = request.optInt("page", 1).coerceIn(1, 100000)
         val folders = request.optString("mode") == "folders"
+        val libraryTypes = when (request.optString("collection_type")) {
+            "tvshows" -> "Series"
+            "movies" -> "Movie,Video,BoxSet"
+            else -> "Movie,Series,Video,BoxSet"
+        }
         val args = linkedMapOf<String, Any>("Recursive" to !folders, "IncludeItemTypes" to if (folders)
-            "CollectionFolder,Folder,Series,Season,Movie,Episode,Video,BoxSet,Playlist" else "Movie,Episode,Video",
+            "CollectionFolder,Folder,Series,Season,Movie,Episode,Video,BoxSet,Playlist"
+            else if (request.optString("mode") == "library") libraryTypes else "Movie,Episode,Video",
             "StartIndex" to (page - 1) * 48, "Limit" to 48, "EnableTotalRecordCount" to true,
             "Fields" to "MediaSources,MediaStreams,Overview,People,Genres,Studios,Chapters,Tags,ParentId,ChildCount,PrimaryImageAspectRatio",
             "SortBy" to (mapOf("title" to "SortName", "date" to "PremiereDate", "duration" to "Runtime", "rating100" to "CommunityRating")[request.optString("sort")] ?: "DateCreated"),
             "SortOrder" to if (request.optString("direction") == "ASC") "Ascending" else "Descending")
-        val parent = request.optString("parent_id").ifBlank { request.optString("library_id") }
+        val parent = if (request.optBoolean("all_libraries")) "" else request.optString("parent_id").ifBlank { request.optString("library_id") }
         if (parent.isNotBlank()) args["ParentId"] = mediaId(parent)
         val q = request.optString("q").take(200)
         if (q.isNotBlank()) args["SearchTerm"] = q
@@ -149,7 +167,13 @@ internal class EmbyClient(private val account: MediaServerAccount, private val h
         val nodes = (data.optJSONArray(objects) ?: JSONArray()).objects().take(100).mapNotNull {
             val name = it.optString("Name").take(256)
             val id = if (nameIdentity) name else it.optString("Id")
-            if (name.isBlank() || id.isBlank()) null else JSONObject().put("id", id).put("name", name)
+            if (name.isBlank() || id.isBlank()) null else JSONObject().put("id", id).put("name", name).apply {
+                if (objects == "People") {
+                    put("role", it.optString("Role").take(150)); put("type", it.optString("Type"))
+                    if (it.optString("PrimaryImageTag").isNotBlank()) put("cover_image", imageNode(id, "Primary", 0, it.getString("PrimaryImageTag")))
+                    put("has_cover", has("cover_image"))
+                }
+            }
         }
         if (nodes.isNotEmpty()) return JSONArray(nodes)
         val values = data.optJSONArray(strings) ?: JSONArray()
@@ -159,45 +183,113 @@ internal class EmbyClient(private val account: MediaServerAccount, private val h
     private fun summary(data: JSONObject): JSONObject {
         val id = mediaId(data.getString("Id"))
         val sources = data.optJSONArray("MediaSources") ?: JSONArray()
-        val source = if (sources.length() == 1) sources.getJSONObject(0) else JSONObject()
+        val source = directSource(sources) ?: JSONObject()
         val video = (source.optJSONArray("MediaStreams") ?: data.optJSONArray("MediaStreams") ?: JSONArray()).objects().firstOrNull { it.optString("Type") == "Video" }
         val container = data.optBoolean("IsFolder") || data.optString("Type") in setOf("CollectionFolder", "Folder", "Series", "Season", "BoxSet", "Playlist")
         val userData = data.optJSONObject("UserData") ?: JSONObject()
         val result = JSONObject().put("id", id).put("kind", if (container) "container" else "video").put("container", container)
             .put("title", data.optString("Name", "Video").take(256)).put("duration_ms", data.optLong("RunTimeTicks").coerceAtLeast(0) / 10000)
-            .put("basename", source.optString("Path").substringAfterLast('/').substringAfterLast('\\'))
+            .put("basename", source.optString("Path").ifBlank { data.optString("Path").ifBlank { data.optString("FileName") } }.substringAfterLast('/').substringAfterLast('\\'))
             .put("width", video?.optInt("Width") ?: 0).put("height", video?.optInt("Height") ?: 0)
             .put("description", data.optString("Overview").take(2000)).put("rating", (data.optDouble("CommunityRating", 0.0) * 10).toInt())
             .put("year", data.optInt("ProductionYear")).put("type", data.optString("Type"))
+            .put("collection_type", data.optString("CollectionType"))
+            .put("part_count", data.optInt("PartCount", 1).coerceAtLeast(1))
+            .put("video_3d_format", source.optString("Video3DFormat").ifBlank { data.optString("Video3DFormat") })
             .put("child_count", data.optInt("ChildCount", -1)).put("favorite", userData.optBoolean("IsFavorite"))
             .put("watched", userData.optBoolean("Played")).put("position_ms", userData.optLong("PlaybackPositionTicks").coerceAtLeast(0) / 10000)
             .put("genres", facets(data, "GenreItems", "Genres", true)).put("tags", facets(data, "TagItems", "Tags", true))
             .put("performers", facets(data, "People", "", false)).put("studios", facets(data, "Studios", "", false))
-            .put("has_cover", !container || data.optJSONObject("ImageTags")?.has("Primary") == true)
+        val tags = data.optJSONObject("ImageTags") ?: JSONObject()
+        val coverType = listOf("Primary", "Thumb", "Backdrop").firstOrNull { tags.optString(it).isNotBlank() ||
+            (it == "Backdrop" && (data.optJSONArray("BackdropImageTags")?.length() ?: 0) > 0) }
+        result.put("has_cover", coverType != null)
+        if (coverType != null) result.put("cover_image", imageNode(id, coverType, 0,
+            if (coverType == "Backdrop") data.optJSONArray("BackdropImageTags")?.optString(0).orEmpty() else tags.optString(coverType)))
         if (!container) result.put("uri", MediaLibraryUri.scene(account.id, id))
         return result
     }
     override fun detail(id: String): JSONObject {
         val data = item(id)
-        val markers = (data.optJSONArray("Chapters") ?: JSONArray()).objects().take(500).map {
-            JSONObject().put("title", it.optString("Name").take(150)).put("position_ms", it.optLong("StartPositionTicks").coerceAtLeast(0) / 10000)
+        val result = summary(data).put("markers", chapterMarkers(data)).put("images", images(data))
+        if (result.optInt("part_count") > 1 || partMarker.containsMatchIn(result.optString("basename"))) {
+            val additional = get("Videos/${mediaId(id)}/AdditionalParts", mapOf("UserId" to user(), "Fields" to "MediaSources,MediaStreams,Path,Chapters", "EnableImages" to true))
+                .getJSONArray("Items").objects()
+            mediaRequire(additional.size <= 128, "Server response too large")
+            val parts = (listOf(data) + additional).distinctBy { it.getString("Id") }.map { raw ->
+                summary(raw).put("markers", chapterMarkers(raw)).apply {
+                    val thumb = raw.optJSONObject("ImageTags")?.optString("Thumb").orEmpty()
+                    val backdrop = raw.optJSONArray("BackdropImageTags")?.optString(0).orEmpty()
+                    if (thumb.isNotBlank()) put("part_image", imageNode(getString("id"), "Thumb", 0, thumb)).put("has_cover", true)
+                    else if (backdrop.isNotBlank()) put("part_image", imageNode(getString("id"), "Backdrop", 0, backdrop)).put("has_cover", true)
+                }
+            }
+            parts.forEachIndexed { index, part ->
+                val marker = partMarker.findAll(part.optString("basename")).lastOrNull()
+                    ?: partMarker.findAll(part.optString("title")).lastOrNull()
+                val label = marker?.groupValues?.get(1)?.lowercase() ?: "#${index + 1}"
+                marker?.groupValues?.get(2)?.toLongOrNull()?.let { part.put("part_number", it) }
+                part.put("part_label", label).put("title", result.getString("title") + " · " + label)
+            }
+            // Emby can return the main file and additional parts out of sequence. Missing
+            // markers stay at the end in their original order; numeric ties are stable too.
+            val ordered = parts.sortedBy { it.optLong("part_number", Long.MAX_VALUE) }
+            result.put("parts", JSONArray(ordered)).put("part_count", ordered.size)
         }
-        return summary(data).put("markers", JSONArray(markers))
+        return result.put("actors", JSONArray(result.getJSONArray("performers").objects().filter { it.optString("type") in setOf("", "Actor", "GuestStar") }))
+    }
+    private fun chapterMarkers(data: JSONObject) = JSONArray((data.optJSONArray("Chapters") ?: JSONArray()).objects().take(500).map {
+        JSONObject().put("title", it.optString("Name").take(150)).put("position_ms", it.optLong("StartPositionTicks").coerceAtLeast(0) / 10000)
+    })
+    private val partMarker = Regex("(?:^|[ ._-])((?:cd|part|pt|disc|disk)[ ._-]?([0-9]{1,9}))(?=[ ._-]|$)", RegexOption.IGNORE_CASE)
+    private fun imageNode(id: String, type: String, index: Int, tag: String = "") = JSONObject()
+        .put("id", id).put("image_type", type).put("image_index", index).put("image_tag", tag.take(256))
+    private fun images(data: JSONObject): JSONArray {
+        val id = mediaId(data.getString("Id")); val tags = data.optJSONObject("ImageTags") ?: JSONObject()
+        val images = linkedMapOf<String, JSONObject>()
+        fun add(type: String, index: Int) {
+            if (type !in setOf("Primary", "Thumb", "Backdrop", "Screenshot", "Art", "Banner") || index !in 0..9999) return
+            val tag = if (type == "Backdrop") data.optJSONArray("BackdropImageTags")?.optString(index).orEmpty() else tags.optString(type)
+            images["$type/$index"] = imageNode(id, type, index, tag)
+        }
+        for (type in listOf("Primary", "Thumb", "Art", "Banner")) if (tags.optString(type).isNotBlank()) add(type, 0)
+        for (index in 0 until minOf(128, data.optJSONArray("BackdropImageTags")?.length() ?: 0)) add("Backdrop", index)
+        try {
+            val raw = http.bytes(account.endpoint("Items/$id/Images"), 1024 * 1024)
+            JSONArray(String(raw, Charsets.UTF_8)).objects().take(128).forEach { add(it.optString("ImageType"), it.optInt("ImageIndex", 0)) }
+        } catch (error: Exception) {
+            if (error is MediaServerFailure && error.code in setOf("Request cancelled", "Server authentication required")) throw error
+            // A server without image enumeration still supplies its tagged images.
+        }
+        return JSONArray(images.values.take(128))
     }
     override fun cover(id: String): URI = account.endpoint("Items/${mediaId(id)}/Images/Primary?maxWidth=512&quality=85")
+    override fun image(id: String, type: String, index: Int, tag: String, width: Int): URI {
+        mediaRequire(type in setOf("Primary", "Thumb", "Backdrop", "Screenshot", "Art", "Banner") && index in 0..9999, "Cover unavailable")
+        mediaRequire(tag.length <= 256 && width in 64..1024, "Invalid server request")
+        val args = linkedMapOf<String, Any>("maxWidth" to width, "maxHeight" to width, "quality" to 85)
+        if (tag.isNotBlank()) args["tag"] = tag
+        return account.endpoint("Items/${mediaId(id)}/Images/$type/$index?" + mediaQuery(args))
+    }
+    private fun directSource(sources: JSONArray): JSONObject? = sources.objects().firstOrNull {
+        it.optBoolean("SupportsDirectPlay", true) && it.optString("Protocol", "File") == "File" && !it.optBoolean("IsRemote") && !it.optBoolean("RequiresOpening")
+    }
     override fun stream(id: String): MediaStreamLink {
         val data = get("Items/${mediaId(id)}/PlaybackInfo", mapOf("UserId" to user()))
         val sources = data.optJSONArray("MediaSources") ?: throw MediaServerFailure("Video unavailable")
         // Direct play preserves the file and enables true byte seeking through our proxy.
-        val source = sources.objects().firstOrNull { it.optBoolean("SupportsDirectPlay", true) &&
-            it.optString("Protocol", "File") == "File" && !it.optBoolean("IsRemote") && !it.optBoolean("RequiresOpening") }
+        val source = directSource(sources)
             ?: throw MediaServerFailure("Original stream unavailable")
         val sourceId = source.getString("Id")
         mediaRequire(sourceId.length in 1..256)
         val args = mapOf("Static" to true, "MediaSourceId" to sourceId,
             "PlaySessionId" to data.optString("PlaySessionId").ifBlank { UUID.randomUUID().toString().replace("-", "") })
+        val basename = source.optString("Path").ifBlank { source.optString("FileName") }
+            .substringAfterLast('/').substringAfterLast('\\').ifBlank {
+                if (source.optString("Container").equals("iso", true)) "video.iso" else ""
+            }
         return MediaStreamLink(account.endpoint("Videos/${mediaId(id)}/stream?" + mediaQuery(args)),
-            sourceId + ":" + source.optLong("Size") + ":" + source.optString("ETag"), runCatching { subtitleLinks(id, source) }.getOrDefault(emptyList()), runCatching { audioLinks(source) }.getOrDefault(emptyList()))
+            sourceId + ":" + source.optLong("Size") + ":" + source.optString("ETag"), runCatching { subtitleLinks(id, source) }.getOrDefault(emptyList()), runCatching { audioLinks(source) }.getOrDefault(emptyList()), basename)
     }
     private fun audioLinks(source: JSONObject): List<MediaAudioLink> {
         val video = source.optString("Path").substringAfterLast('/').substringAfterLast('\\')

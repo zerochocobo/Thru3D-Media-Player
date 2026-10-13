@@ -49,10 +49,13 @@ class MediaLibraryPresentationTest {
                 MediaServerHttp(account).use { http ->
                     val client = EmbyClient(account, http)
                     val home = client.home(JSONObject())
-                    assertEquals("lib1", home.getString("library_id"))
-                    assertEquals(250, home.getInt("total"))
-                    assertEquals(4, home.getJSONArray("recent").length())
-                    assertEquals(30000L, home.getJSONArray("resume").getJSONObject(0).getLong("position_ms"))
+                    assertEquals("", home.getString("library_id"))
+                    assertEquals(1, home.getInt("total"))
+                    assertEquals(0, home.getJSONArray("recent").length())
+                    assertEquals(1, home.getJSONArray("resume").length())
+                    assertEquals(30000L, home.getJSONArray("recent_opened").getJSONObject(0).getLong("position_ms"))
+                    assertEquals("lib1", home.getJSONArray("libraries").getJSONObject(0).getString("id"))
+                    assertEquals("libraries", home.getJSONObject("capabilities").getString("home_layout"))
                     assertTrue(home.getJSONObject("capabilities").getBoolean("folders"))
                     val ids = mutableSetOf<String>()
                     for (page in 1..6) {
@@ -108,8 +111,9 @@ class MediaLibraryPresentationTest {
         MediaServerHttp(account).use { http ->
             val client = EmbyClient(account, http)
             val home = client.home(JSONObject())
-            val library = home.getString("library_id")
-            val count = home.getInt("total")
+            assumeTrue(home.getJSONArray("libraries").length() > 0)
+            val library = home.getJSONArray("libraries").getJSONObject(0).getString("id")
+            val count = client.browse(JSONObject().put("library_id", library)).getInt("total")
             val ids = mutableSetOf<String>()
             for (page in 1..maxOf(1, (count + 47) / 48)) {
                 val result = client.browse(JSONObject().put("page", page).put("library_id", library))

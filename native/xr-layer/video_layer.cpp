@@ -207,6 +207,13 @@ Java_org_vrpassthroughplayer_plugin_VideoLayerNative_setLayers(JNIEnv* env, jcla
                 (source == XR_NULL_HANDLE ? "missing" : "still acquired"));
             return JNI_FALSE;
         }
+        if (!quest::image_rect_valid(v.data() + i * kStride + 9,
+                                    picture ? state.image_width : state.width,
+                                    picture ? state.image_height : state.height)) {
+            state.count = 0; // never leave a previously submitted unsafe layer visible
+            log(ANDROID_LOG_WARN, "setLayers: image rectangle outside swapchain");
+            return JNI_FALSE;
+        }
     }
     for (int i = 0; i < count; ++i) {
         const float* p = v.data() + i * kStride;

@@ -13,6 +13,9 @@ HAND_BUFFER_PINS = {
     'app/godot/models/hands/LeftHandHumanoid.bin': '05f96e5aae870c8f2fde8a1fea337b060c7fde3e659b124a5ed979f0ffa1222a',
     'app/godot/models/hands/RightHandHumanoid.bin': '89468a6868afbd6a9d5e545e7fdd5dadd7d7abab6d4389d8acc14a7804901e41',
 }
+FONT_PINS = {
+    'app/godot/assets/fonts/cjk-brackets.otf': 'e63dc18bc1615fcdf509de72a18799271d5f66959296cd6bf9caa20d5d6dd7fa',
+}
 PATTERNS = {
     'private machine path': re.compile(r'(?i)(?:[CG]:[/\\]+(?:Users[/\\]+dennis|devtools|GIT|code[/\\]+VRPassthroughPlayer)|/mnt/' + r'g/|/opt/' + r'quest-mpv)'),
     'GitHub credential': re.compile(r'\b(?:gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{50,})\b'),
@@ -30,6 +33,9 @@ def check_files(files):
         if path.is_absolute() or '..' in path.parts or '\\' in name or ':' in name:
             errors.append(f'{name}: unsafe path')
         approved_mesh = name in HAND_BUFFER_PINS
+        approved_font = name in FONT_PINS
+        if approved_font and (len(data) != 6844 or hashlib.sha256(data).hexdigest() != FONT_PINS[name]):
+            errors.append(f'{name}: font differs from reviewed OFL subset')
         if approved_mesh and (len(data) != 38584 or hashlib.sha256(data).hexdigest() != HAND_BUFFER_PINS[name]):
             errors.append(f'{name}: hand mesh differs from reviewed MIT asset')
         if FORBIDDEN_PARTS.intersection(part.lower() for part in path.parts) or (path.suffix.lower() in FORBIDDEN_SUFFIXES and not approved_mesh):
@@ -47,12 +53,17 @@ def check_files(files):
         try:
             value = data.decode('utf-8')
         except UnicodeDecodeError:
-            if path.suffix.lower() not in {'.png', '.jpg', '.jpeg', '.webp', '.mp4', '.jar'} and not approved_mesh:
+            if path.suffix.lower() not in {'.png', '.jpg', '.jpeg', '.webp', '.mp4', '.jar'} and not approved_mesh and not approved_font:
                 errors.append(f'{name}: unreviewed binary type')
             continue
         for label, pattern in PATTERNS.items():
             if pattern.search(value):
                 errors.append(f'{name}: {label}')  # Never print the matched credential.
+    if FONT_PINS.keys() & files.keys():
+        for name in ('LICENSE.txt', 'NOTICE.txt'):
+            asset = 'app/godot/assets/fonts/' + name
+            if asset not in files:
+                errors.append(f'{asset}: font license/source notice missing')
     if HAND_BUFFER_PINS.keys() & files.keys():
         for name in ('LICENSE.txt', 'NOTICE.txt', 'hand.png', 'LeftHandHumanoid.gltf', 'RightHandHumanoid.gltf'):
             asset = 'app/godot/models/hands/' + name

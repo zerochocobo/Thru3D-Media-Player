@@ -58,6 +58,19 @@ func _normalize_value(value: Dictionary) -> Dictionary:
 	result.geometry = int(result.geometry)
 	return result
 
+func _recover_saved_value(value: Variant) -> Variant:
+	if _valid_value(value): return _normalize_value(value)
+	# Only display alignment may be repaired. Preserve the projection/layout and all
+	# other valid per-file choices; other stores derived from this class keep strict reads.
+	if _value_field() != "mode" or not value is Dictionary: return null
+	var repaired: Dictionary = value.duplicate(true)
+	for field in ["viewing_eye", "stereo_horizontal", "stereo_vertical"]: repaired.erase(field)
+	if not valid_mode(repaired): return null
+	for field in ["viewing_eye", "stereo_horizontal", "stereo_vertical"]:
+		if value.has(field):
+			repaired[field] = value[field] if StereoView.valid({field: value[field]}) else 0
+	return _normalize_value(repaired)
+
 static func _decode(text: String) -> Variant:
 	var parser := JSON.new()
 	return parser.data if parser.parse(text) == OK else null
@@ -89,13 +102,15 @@ func _read_bank(path: String) -> Dictionary:
 	for key in payload.entries:
 		var entry: Variant = payload.entries[key]
 		if not key is String or key.length() != 64 or not key.is_valid_hex_number(false) \
-			or not entry is Dictionary or not _valid_value(entry.get(_value_field())):
+			or not entry is Dictionary:
 			continue
+		var recovered: Variant = _recover_saved_value(entry.get(_value_field()))
+		if recovered == null: continue
 		var updated: Variant = entry.get("updated")
 		if not (updated is int or updated is float) or not is_finite(float(updated)) \
 			or float(updated) != floorf(float(updated)) or float(updated) < 1 or float(updated) > float(serial):
 			continue
-		result[key] = {_value_field(): _normalize_value(entry[_value_field()]), "updated": int(updated)}
+		result[key] = {_value_field(): recovered, "updated": int(updated)}
 	return {"sequence": int(serial), "entries": result}
 
 func load_saved() -> void:

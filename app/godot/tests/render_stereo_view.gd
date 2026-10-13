@@ -96,6 +96,29 @@ func _run() -> void:
 		material.set_shader_parameter("test_direction", Vector3(0.001, 0, 1))
 		var seam := await _pixel(1)
 		check(seam.b > 0.7 and seam.r < 0.02 and seam.a > 0.99, variant + " 360 wraps longitude inside the selected eye")
+	# Compile and sample the actual compositor mask/border shaders as well. A corrected
+	# packed eye's exposed edge is black; mono viewing and 360 wrapping have no border.
+	for variant in ["video_layer_hole", "video_layer_border"]:
+		var code := FileAccess.get_file_as_string("res://shaders/" + variant + ".gdshader") \
+			.replace('#include "res://shaders/video_coordinates.gdshaderinc"', FileAccess.get_file_as_string("res://shaders/video_coordinates.gdshaderinc")) \
+			.replace("varying flat int eye_index;", "uniform int test_eye = 0;\nuniform vec2 test_uv = vec2(0.5);\nuniform vec3 test_direction = vec3(0.0, 0.0, -1.0);\nvarying flat int eye_index;") \
+			.replace("eye_index = int(VIEW_INDEX);", "eye_index = test_eye;") \
+			.replace("media_direction = VERTEX;", "media_direction = test_direction;") \
+			.replace("eye_uv(UV, media_direction)", "eye_uv(test_uv, media_direction)")
+		var shader := Shader.new(); shader.code = code
+		material = ShaderMaterial.new(); material.shader = shader; quad.material_override = material
+		material.set_shader_parameter("stereo_sbs", true)
+		material.set_shader_parameter("stereo_offset", Vector2(0.04, 0.04))
+		for edge_uv in [Vector2(0.99, 0.5), Vector2(0.5, 0.99)]:
+			material.set_shader_parameter("test_uv", edge_uv)
+			var edge := await _pixel(1)
+			check(edge.a > 0.99 if variant == "video_layer_border" else edge.a < 0.01, variant + " handles corrected horizontal and vertical edges")
+		material.set_shader_parameter("viewing_eye", 1)
+		check((await _pixel(1)).a < 0.01, variant + " mono suspends correction border")
+		material.set_shader_parameter("viewing_eye", 0)
+		material.set_shader_parameter("video_geometry", 3)
+		material.set_shader_parameter("test_direction", Vector3(0.001, 0, 1))
+		check((await _pixel(1)).a < 0.01, variant + " 360 seam wraps without border")
 	viewport.queue_free()
 	await process_frame
 	print("Stereo viewing render checks=%d failures=%d" % [checks, failures.size()])

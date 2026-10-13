@@ -99,6 +99,6 @@ internal class XbvrClient(private val account: MediaServerAccount, private val h
                 extra.getLong("id").toString() + ":" + extra.optLong("size") + ":" + extra.optString("updated_at"), SidecarAudio.title(file.optString("filename"), name))
         }
         return MediaStreamLink(account.endpoint("api/dms/file/${file.getLong("id")}?dnt=1"),
-            file.getLong("id").toString() + ":" + file.optLong("size") + ":" + file.optString("updated_at"), captions, audio)
+            file.getLong("id").toString() + ":" + file.optLong("size") + ":" + file.optString("updated_at"), captions, audio, file.optString("filename"))
     }
 }

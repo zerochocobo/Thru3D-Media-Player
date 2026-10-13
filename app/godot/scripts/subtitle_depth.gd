@@ -32,7 +32,8 @@ static func slider_row(key: String, value: float) -> Dictionary:
 	var is_position := key == "subtitle_position"
 	return {"key": key, "value": position(value) if is_position else distance(value),
 		"slider": true, "span": Vector3(POSITION_LIMITS.x, POSITION_LIMITS.y, 1) if is_position else Vector3(LIMITS.x, LIMITS.y, 0.1),
-		"unit": "°" if is_position else " m", "midpoint": is_position}
+		"unit": "°" if is_position else " m", "midpoint": is_position,
+		"reset_value": DEFAULT_POSITION if is_position else DEFAULT}
 
 static func distance(value: float) -> float:
 	return clampf(value, LIMITS.x, LIMITS.y) if is_finite(value) else DEFAULT

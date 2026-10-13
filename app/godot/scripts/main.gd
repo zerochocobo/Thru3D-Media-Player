@@ -263,6 +263,9 @@ func _ready() -> void:
 	add_child(photo_menu)
 	menu_composition = MenuComposition.new()
 	add_child(menu_composition)
+	if OS.is_debug_build(): # capture-density experiments; applies at launch
+		menu_composition.debug_pixel_scale = float(settings.get_value("debug", "menu_layer_scale", 0.0))
+		menu_composition.debug_bands = bool(settings.get_value("debug", "menu_layer_bands", false))
 	menu_composition.configure(origin, camera, display, [recent_menu, video_menu, photo_menu], low_end_gpu)
 	background = Background.new()
 	background.choice = str(settings.get_value("appearance", "background", "belfast"))
@@ -762,6 +765,8 @@ func _process_sticks(left: Vector2, right: Vector2, delta: float) -> void:
 	if menu and (menu != player_menu or photo_active or not player_menu.allows_playback_sticks()):
 		stick_controls.suspend()
 		# Either stick scrolls a list, never selects or controls playback at the same time.
+		if menu.has_method("stick_scroll_horizontal"):
+			menu.stick_scroll_horizontal(left.x if absf(left.x) > absf(right.x) else right.x, delta)
 		if menu.has_method("stick_scroll") and (menu != player_menu or not player_menu.has_pointer_capture()):
 			menu.stick_scroll(left.y if absf(left.y) > absf(right.y) else right.y, delta)
 		_update_controls_visibility(menu)
@@ -2224,6 +2229,8 @@ func _on_playback_adjustment(key: String, value: Variant) -> void:
 		video.color_grade.select(str(value))
 	elif key == "grade_reset":
 		video.color_grade.reset_custom()
+	elif key == "grade_reset_page":
+		video.color_grade.reset_page(int(value))
 	else:
 		video.color_grade.adjust(key, value)
 	video.color_grade.apply(video.material)
@@ -2311,6 +2318,14 @@ func _on_display_debug_command(_id: int, payload: String) -> void:
 		video.video_layer._provider.debug_order = int(command.get("value", 0))
 	elif operation == "menu_layers" and OS.is_debug_build() and menu_composition:
 		menu_composition.set_active(bool(command.get("enabled", false)))
+	elif operation == "menu_layer_filter" and OS.is_debug_build() and menu_composition:
+		# value = supersampling + 10 * sharpening (0 off, 1 normal, 2 quality each).
+		var code := int(command.get("value", 1))
+		menu_composition.set_filter(code % 10, code / 10 % 10)
+	elif operation == "menu_layer_holes" and OS.is_debug_build() and menu_composition:
+		menu_composition.set_debug_holes(bool(command.get("enabled", true)))
+	elif operation == "menu_nav" and OS.is_debug_build():
+		_debug_menu_nav(str(command.get("target", "")))
 	elif operation == "menu_bench" and OS.is_debug_build():
 		var bench := preload("res://scripts/menu_bench_probe.gd").new()
 		add_child(bench)
@@ -2319,6 +2334,30 @@ func _on_display_debug_command(_id: int, payload: String) -> void:
 		photo.set_depth(bool(command.get("enabled", false)))
 	elif operation == "photo_step" and OS.is_debug_build() and photo_active:
 		photo.navigate(1 if float(command.get("value", 1.0)) >= 0.0 else -1)
+
+## Debug navigation for device menu probes: "section:N", "tab:N", "scroll:F", "click:TEXT" (first
+## button whose labels contain TEXT) or "list" (logs the visible button labels).
+func _debug_menu_nav(target: String) -> void:
+	if not recent_menu.visible: _show_recent_menu()
+	var parts := target.split(":", true, 1)
+	var argument := parts[1] if parts.size() > 1 else ""
+	var buttons: Array = []
+	for button in recent_menu._buttons:
+		if not is_instance_valid(button.node): continue
+		var texts := PackedStringArray()
+		for label in button.node.find_children("*", "Label3D", true, false):
+			if not label.text.is_empty(): texts.append(label.text)
+		buttons.append({"target": button.target, "text": " ".join(texts)})
+	match parts[0]:
+		"section": recent_menu._activate(recent_menu.NAV_BASE + int(argument))
+		"tab": recent_menu._activate(recent_menu.TAB_BASE + int(argument))
+		"scroll":
+			recent_menu.scroll = float(argument); recent_menu.refresh()
+		"click":
+			for button in buttons:
+				if argument in button.text:
+					recent_menu._activate(button.target); break
+		"list": print("MENU_NAV ", JSON.stringify(buttons.map(func(b): return b.text).filter(func(t): return not t.is_empty())))
 
 var _finishing_app := false
 func _finish_app(restart: bool) -> void:

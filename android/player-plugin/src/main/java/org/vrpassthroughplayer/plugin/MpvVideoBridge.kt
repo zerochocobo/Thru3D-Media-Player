@@ -217,6 +217,16 @@ internal class MpvVideoBridge(
                     "fd://${fd.fd}"
                 }
                 host.markStartup("source_resolved_ms")
+                val iso = Uri.parse(path).path.orEmpty().lowercase().endsWith(".iso") ||
+                    source.path.orEmpty().lowercase().endsWith(".iso") ||
+                    (source.scheme == "content" && app.contentResolver.query(source,
+                        arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use {
+                            it.moveToFirst() && it.getString(0).orEmpty().lowercase().endsWith(".iso")
+                        } == true)
+                val disc = if (iso) MpvSourceNative.probeIso(path) else null
+                val nativePath = if (iso && path.startsWith("fd://")) "/proc/self/fd/${path.removePrefix("fd://")}" else path
+                val surfaceWidth = disc?.get(0)?.toInt() ?: LAYER_SURFACE_SIZE
+                val surfaceHeight = disc?.get(1)?.toInt() ?: LAYER_SURFACE_SIZE
                 // Extra audio is optional: a failed lookup plays the video without it.
                 val extra = if (audio) sidecarAudio(uri) else emptyList()
                 host.markStartup("audio_sidecars_resolved_ms")
@@ -232,15 +242,15 @@ internal class MpvVideoBridge(
                         host.owner = EGL14.eglGetCurrentContext()
                         host.markStartup("native_create_started_ms")
                         if (host.layerRequested) {
-                            host.layerSurface = runCatching { VideoLayerNative.createSurface(LAYER_SURFACE_SIZE, LAYER_SURFACE_SIZE) }
+                            host.layerSurface = runCatching { VideoLayerNative.createSurface(surfaceWidth, surfaceHeight) }
                                 .onFailure { android.util.Log.w("QuestPlayer", "Video layer surface unavailable", it) }.getOrNull()
                             host.layer = host.layerSurface != null
                             if (host.layer) currentLayerSurface = host.layerSurface
                         }
-                        host.handle = MpvSourceNative.create(app, path, startMs, hardware, audio, host.maxWidth,
+                        host.handle = MpvSourceNative.create(app, nativePath, startMs, hardware, audio, host.maxWidth,
                             extra.flatMap { listOf(it.location, it.title) }.toTypedArray(),
                             captions.flatMap { listOf(it.location, it.title) }.toTypedArray(), host.exactStart,
-                            if (host.layer) host.layerSurface else null)
+                            if (host.layer) host.layerSurface else null, disc?.get(3) == 1L, surfaceWidth, surfaceHeight, iso)
                         check(host.handle > 0)
                         host.markStartup("native_created_ms")
                         synchronized(host) { check(MpvSourceNative.setSpeed(host.handle, host.speed)) }

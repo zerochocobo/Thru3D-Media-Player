@@ -61,6 +61,7 @@ func TestBrowseAndRangeStream(t *testing.T) {
 		}
 		return out
 	}
+	assertCloudSearchCore(t, call)
 	addition, _ := json.Marshal(map[string]any{"address": upstream.URL, "username": "fixture", "password": "private-secret", "root_folder_path": "/", "vendor": "other"})
 	created := call("POST", "/create", map[string]any{"mount_path": "/fixture", "driver": "WebDav", "addition": string(addition), "web_proxy": true, "cache_expiration": 5})
 	id := int(created["data"].(map[string]any)["id"].(float64))
