@@ -12,6 +12,8 @@ The public checker examines tracked files for excluded binary types, credentials
 
 `Test-Source.ps1` runs the Godot GDScript host suite without activating the Android toolchain. It includes localization, media-library/menu interaction, controller/hand logic, projection/eye-order, preferences and image/depth handling. An OpenXR loader can be absent during headless tests; XR/device behavior is not part of their result.
 
+The thumbnail capture test requires a desktop OpenGL renderer. The Windows runner starts that test with a hidden rendering window and requires its completion summary; a headless dummy-renderer timeout is not counted as a pass. The other host scripts run headlessly.
+
 The native depth stabilizer can also be tested with a C++17 compiler:
 
 ```bash
