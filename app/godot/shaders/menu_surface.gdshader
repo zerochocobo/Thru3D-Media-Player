@@ -12,5 +12,9 @@ void fragment() {
     float distance = length(max(q, vec2(0.0))) + min(max(q.x, q.y), 0.0) - radius;
     float edge = max(fwidth(distance), 0.0003);
     ALBEDO = surface_color.rgb;
-    ALPHA = surface_color.a * (1.0 - smoothstep(-edge, edge, distance));
+    // Dense menu captures use solid plates so their text has full contrast even over video.
+    // Other cameras retain the original translucent eye-buffer appearance.
+    bool capture = (CAMERA_VISIBLE_LAYERS & 0xF0000u) != 0u && (CAMERA_VISIBLE_LAYERS & 0xFFFFu) == 0u;
+    float opacity = capture && surface_color.a > 0.0 ? 1.0 : surface_color.a;
+    ALPHA = opacity * (1.0 - smoothstep(-edge, edge, distance));
 }

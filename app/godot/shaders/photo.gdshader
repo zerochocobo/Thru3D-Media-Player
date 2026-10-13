@@ -26,8 +26,14 @@ uniform vec4 depth_rect = vec4(0.0, 0.0, 1.0, 1.0);
 uniform int test_eye = -1;
 uniform vec2 edge_feather = vec2(0.0);
 uniform float presentation_opacity = 1.0;
+uniform float reveal_progress = 1.0;
+#include "res://shaders/photo_reveal.gdshaderinc"
+// Compatibility fields for the shared photo API; full photos no longer draw a target frame.
 uniform int target_state = 0;
 uniform vec2 target_width = vec2(0.008);
+// Surface UV rectangle shown by the compositor picture layer (zero size: none).
+// The feathered edge around it remains in the eye buffers.
+uniform vec4 layer_cut = vec4(0.0);
 
 vec4 photo_color(vec2 p) {
 	if (photo_stereo) {
@@ -40,6 +46,7 @@ vec4 photo_color(vec2 p) {
 
 void vertex() { eye_index = test_eye >= 0 ? test_eye : int(VIEW_INDEX); media_direction = VERTEX; }
 void fragment() {
+	if (layer_cut.z > 0.0 && all(greaterThanEqual(UV, layer_cut.xy)) && all(lessThanEqual(UV, layer_cut.xy + layer_cut.zw))) { discard; }
 	vec3 direction = media_direction;
 	if (detail_projection) {
 		// Match the 0.8 x 0.5 m window at 1.4 m: 1x shows its natural angular coverage.
@@ -86,12 +93,5 @@ void fragment() {
 		mask_uv.x = (mask_uv.x + float(eye_index)) * 0.5;
 		ALPHA *= outside ? 0.0 : smoothstep(0.02, 0.98, texture(portrait_texture, mask_uv).r);
 	}
-	if (video_geometry == 0 && !detail_projection && !portrait_enabled && target_state > 0) {
-		vec2 edge = min(UV, vec2(1.0) - UV);
-		if (edge.x < target_width.x || edge.y < target_width.y) {
-			ALBEDO = target_state == 2 ? vec3(1.0, 0.88, 0.55) : vec3(0.15, 0.95, 1.0);
-			ALPHA = 1.0;
-		}
-	}
-	ALPHA *= presentation_opacity;
+	ALPHA *= presentation_opacity * photo_reveal_clear(UV, reveal_progress);
 }

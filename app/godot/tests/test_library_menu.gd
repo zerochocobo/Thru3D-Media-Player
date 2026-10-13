@@ -1,6 +1,7 @@
 extends SceneTree
 
 const Menu := preload("res://scripts/library_menu.gd")
+const SubtitleDepth := preload("res://scripts/subtitle_depth.gd")
 var checks := 0
 var failures: Array[String] = []
 var chosen: Array = []
@@ -108,7 +109,10 @@ func titles(menu: Node) -> Array:
 	return menu.rows.map(func(r): return str(r.title))
 
 func choose_setting(menu: Node, key: String, value: Variant) -> void:
-
+	for index in menu.rows.size():
+		if menu.rows[index].get("key", "") == key:
+			menu._set_scroll(maxf(0, index - menu._lines() + 1))
+			break
 	for target in menu.choices.sliders:
 		if menu.choices.targets[target].key != key: continue
 		var slider: Dictionary = menu.choices.sliders[target]
@@ -240,9 +244,11 @@ func _run() -> void:
 	menu._activate(Menu.ROW_BASE)
 	await settle()
 	check(titles(menu) == ["Video"] and menu._header_title() == "NAS", "Server lists shares")
+	check(menu._buttons.any(func(button): return button.target == Menu.EDIT), "SMB server root keeps connection editing")
 	menu._activate(Menu.ROW_BASE)
 	await settle()
 	check(menu._header_title() == "NAS / Video" and titles(menu) == ["8k.mp4"], "Share lists videos")
+	check(not menu._buttons.any(func(button): return button.target == Menu.EDIT) and menu._buttons.any(func(button): return button.target == Menu.REFRESH), "SMB folders hide connection editing while keeping refresh")
 	menu._activate(Menu.ROW_BASE)
 	check(chosen.back()[0] == "smb://srv1/Video/8k.mp4", "SMB video emits a stable smb:// URI")
 	menu.toggle()
@@ -301,18 +307,24 @@ func _run() -> void:
 	choose_setting(menu, "show_fps", true)
 	check(settings_events.back() == ["show_fps", true], "FPS display can be switched on from Display settings")
 	menu._activate(Menu.TAB_BASE + Menu.SUBTITLES_TAB)
-	check(menu.rows.size() == 3 and menu.rows[0].slider and menu.rows[0].value == 5.0,
+	check(menu.tab == Menu.VIDEO_TAB and menu.rows.size() == 8 and menu.rows[5].slider and menu.rows[5].value == 5.0,
 		"Subtitle distance is a slider, 5 m by default")
-	check(menu.rows[2].key == "subtitle_position" and menu.rows[2].slider and menu.rows[2].value == 0,
+	check(menu.rows[7].key == "subtitle_position" and menu.rows[7].slider and menu.rows[7].value == 0,
 		"Global subtitle angle defaults to the marked centre")
-	check(menu.rows[1].key == "subtitle_direction" and menu.rows[1].value == 0 and menu.rows[1].choices.size() == 2,
+	check(menu.rows[6].key == "subtitle_direction" and menu.rows[6].value == 0 and menu.rows[6].choices.size() == 2,
 		"Direction control is above position, horizontal by default")
+	check(menu.rows[3].key == "subtitle_size" and menu.rows[3].value == 100 and menu.rows[3].span == Vector3(50, 200, 5), "Global text size covers 50 to 200 percent")
+	check(menu.rows[4].key == "subtitle_style" and menu.rows[4].choices.size() == 5 and menu.rows[4].compact, "Global subtitle styles are five direct visual choices")
+	choose_setting(menu, "subtitle_size", 150)
+	check(settings_events.back() == ["subtitle_size", 150.0], "Global size slider applies on release")
+	choose_setting(menu, "subtitle_style", "yellow_black")
+	check(settings_events.back() == ["subtitle_style", "yellow_black"], "Visual sample selects the subtitle style")
 	choose_setting(menu, "subtitle_direction", 1)
 	check(settings_events.back() == ["subtitle_direction", 1], "Global settings can choose vertical")
 	choose_setting(menu, "subtitle_position", -60)
 	check(settings_events.back() == ["subtitle_position", -60.0], "Global angle slider reaches lower endpoint")
-	choose_setting(menu, "subtitle_distance", 10.0)
-	check(settings_events.back() == ["subtitle_distance", 10.0], "Distance slider reaches 10 m")
+	choose_setting(menu, "subtitle_distance", SubtitleDepth.LIMITS.y)
+	check(settings_events.back()[0] == "subtitle_distance" and is_equal_approx(settings_events.back()[1], SubtitleDepth.LIMITS.y), "Distance slider reaches its 5 m maximum: %s" % str(settings_events.back()))
 	choose_setting(menu, "subtitle_distance", 0.1)
 	check(settings_events.back()[0] == "subtitle_distance" and is_equal_approx(settings_events.back()[1], 0.1), "Distance slider reaches 0.1 m: %s" % str(settings_events.back()))
 	menu._activate(Menu.TAB_BASE + Menu.ABOUT_TAB)

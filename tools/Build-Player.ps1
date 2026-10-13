@@ -8,7 +8,11 @@ param([string]$ToolRoot = $(if ($env:THRU3D_TOOL_ROOT) { $env:THRU3D_TOOL_ROOT }
     # Dedicated device diagnostics only; normal Debug APKs contain no test media/oracles.
     [switch]$IncludeDiagnostics,
     # Version-matched assets imported with tools/Import-ModelAssets.ps1.
-    [switch]$UsePreparedModelAssets)
+    [switch]$UsePreparedModelAssets,
+    # A worktree has no keystore of its own: point at the main checkout's keystore/signing.
+    [string]$SigningDirectory = '',
+    # A separate package keeps emulator Debug diagnostics apart from an installed Release.
+    [ValidateSet('','com.wapok.thru3d.emulator')][string]$DebugApplicationId = '')
 $ErrorActionPreference = 'Stop'
 if (-not $ApkName) {
     $ApkName = if ($BuildType -eq 'Release') {
@@ -34,6 +38,10 @@ if ($XrVendor -eq 'OpenXR') {
     Write-Output 'Experimental standard OpenXR target: device runtime, full controller input and passthrough require device validation.'
 }
 $applicationId = 'com.wapok.thru3d'
+if ($DebugApplicationId) {
+    if ($BuildType -ne 'Debug' -or $XrVendor -ne 'Pico') { throw 'The emulator application id is limited to PICO Debug builds.' }
+    $applicationId = $DebugApplicationId
+}
 function Convert-HexString([byte[]]$Bytes) { -join ($Bytes | ForEach-Object { $_.ToString('X2') }) }
 $workspace = Split-Path -Parent $PSScriptRoot
 # Gradle outputs, Godot's import cache and evidence paths belong to one checkout.
@@ -61,15 +69,20 @@ try {
     (@($originalSigningEnvironment['ORG_GRADLE_PROJECT_android.jetifier.ignorelist'], 'bcprov-jdk18on') | Where-Object { $_ }) -join ',', 'Process')
 if ($BuildType -eq 'Release') {
     if ($IncludeDiagnostics) { throw 'Distribution Release builds cannot include diagnostic models/media.' }
-    & "$PSScriptRoot\environment\Prepare-ReleaseSigning.ps1" -ToolRoot $ToolRoot
+    & "$PSScriptRoot\environment\Prepare-ReleaseSigning.ps1" -ToolRoot $ToolRoot -SigningDirectory $SigningDirectory
 } else {
-    & "$PSScriptRoot\environment\Prepare-DebugSigning.ps1" -ToolRoot $ToolRoot
+    & "$PSScriptRoot\environment\Prepare-DebugSigning.ps1" -ToolRoot $ToolRoot -SigningDirectory $SigningDirectory
 }
 $projectDirectory = Join-Path $workspace 'app\godot'
 $appVersion = [regex]::Match((Get-Content (Join-Path $projectDirectory 'project.godot') -Raw), '(?m)^config/version="([^"]+)"').Groups[1].Value
-if ($IncludeDiagnostics) {
+if ($DebugApplicationId) {
     $originalExportPresets = [IO.File]::ReadAllBytes($exportPresetsPath)
-    $diagnosticPresets = [Text.Encoding]::UTF8.GetString($originalExportPresets).Replace('exclude_filter="tests/*,media/*"', 'exclude_filter="tests/*"').Replace('include_filter="i18n/*.json,', 'include_filter="media/*.mp4,i18n/*.json,')
+    $emulatorPresets = [Text.Encoding]::UTF8.GetString($originalExportPresets).Replace('package/unique_name="com.wapok.thru3d"', 'package/unique_name="' + $applicationId + '"')
+    [IO.File]::WriteAllText($exportPresetsPath, $emulatorPresets, [Text.UTF8Encoding]::new($false))
+}
+if ($IncludeDiagnostics) {
+    if ($null -eq $originalExportPresets) { $originalExportPresets = [IO.File]::ReadAllBytes($exportPresetsPath) }
+    $diagnosticPresets = [IO.File]::ReadAllText($exportPresetsPath).Replace('exclude_filter="tests/*,media/*"', 'exclude_filter="tests/*"').Replace('include_filter="i18n/*.json,', 'include_filter="media/*.mp4,i18n/*.json,')
     [IO.File]::WriteAllText($exportPresetsPath, $diagnosticPresets, [Text.UTF8Encoding]::new($false))
 }
 $artifactDirectory = Join-Path $workspace 'build/output'
@@ -122,9 +135,15 @@ if ((Get-Content (Join-Path $logDirectory 'godot-import.log') -Raw) -match '(?m)
 $apkPath = Join-Path $artifactDirectory $ApkName
 $exportArguments = @('--headless','--xr-mode','off','--path',$projectDirectory)
 $androidBuildScript = Join-Path $projectDirectory 'android\build\build.gradle'
-if (-not (Test-Path -LiteralPath $androidBuildScript)) {
+$androidTemplateVersion = Join-Path $projectDirectory 'android\.build_version'
+if (-not (Test-Path -LiteralPath $androidBuildScript) -or -not (Test-Path -LiteralPath $androidTemplateVersion)) {
     & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --install-android-build-template --editor --quit-after 600 2>&1 | Out-File (Join-Path $logDirectory 'android-template.log') -Encoding utf8
-    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $androidBuildScript)) { throw 'Android build template installation failed.' }
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $androidBuildScript) -or -not (Test-Path -LiteralPath $androidTemplateVersion)) { throw 'Android build template installation failed.' }
+}
+if ($XrVendor -eq 'Pico') {
+    # Stock selection remains first; the extra candidate path is gated to the PICO ranchu emulator.
+    & (Join-Path $workspace '.venv\Scripts\python.exe') (Join-Path $PSScriptRoot 'environment\prepare_pico_emulator_egl.py') --workspace $workspace --tool-root $ToolRoot
+    if ($LASTEXITCODE -ne 0) { throw 'PICO emulator EGL compatibility overlay failed.' }
 }
 # These are desktop OSGi manifests in multi-release jars, not Android runtime code.
 # BC and jspecify both provide them; keep the dependency classes and license resources.
@@ -416,6 +435,7 @@ $buildManifest = [ordered]@{
     build_type = $BuildType
     stage = 'MP04_MPV_shared_RVM_player_integration_development'
     engine = $engineVersion
+    engine_java_compatibility = if ($XrVendor -eq 'Pico') { 'PICO ranchu-only EGL config fallback; stock native engine' } else { 'stock' }
     vendors = '5.1.0-stable'
     apk = $apkPath
     apk_sha256 = (Get-FileHash -LiteralPath $apkPath -Algorithm SHA256).Hash.ToLowerInvariant()

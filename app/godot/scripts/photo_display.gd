@@ -101,8 +101,9 @@ const DEFAULT_MAGNIFICATION := 2.0
 var inspect_magnification := DEFAULT_MAGNIFICATION
 const IMMERSIVE_SIZE := Vector2(3.8, 2.6)
 const SOFT_EDGE_METRES := 0.07
+const LAYER_OVERLAP_METRES := 0.01
 const TRANSITION_SECONDS := 0.24
-const REVEAL_SECONDS := 0.12
+const REVEAL_SECONDS := 0.30
 var _departing: MeshInstance3D
 var _transition_time := 0.0
 var _transition_direction := 0
@@ -114,6 +115,24 @@ var _placeholder_size := Vector2(3.8, 2.1375)
 var _transition_active := false
 var _reveal_seconds := 0.0
 var _swipe_offset := 0.0
+## Compositor picture layer (shared with the video player): the full photo goes to the compositor
+## in slices across frames, mipmapped on the GPU, instead of one long full-resolution texture upload
+## on the render thread. Godot keeps a small proxy for transitions; the full texture is made only
+## when the shader needs it (magnifier, depth/portrait, unsupported projections).
+const VideoLayer := preload("res://scripts/video_layer.gd")
+const PROXY_SIZE := 1024
+const UPLOAD_BYTES := 3 * 1024 * 1024 # per frame: one band texture upload plus a GPU copy
+var video_layer: VideoLayer
+var layer_enabled := true
+var layer_shown := false # main renders the eye buffers transparent while true
+var _full_image: Image # source of a later full texture while _texture is the proxy
+var _texture_full := true
+var _upload := {} # {"key", "image", "data", "row", "channels"} while slices remain
+var _layer_key := "" # the picture in the layer swapchain: "color:<request>" or "stereo:<request>:<strength>"
+var _depth_textures_pending := false # depth data kept for the shader, its textures made on demand
+var _hole: MeshInstance3D
+var _hole_material: ShaderMaterial
+var _logged_key := ""
 
 func _init() -> void:
 	gallery.photo = self
@@ -133,8 +152,9 @@ func restore_view_settings(settings: ConfigFile) -> void:
 	inspect_magnification = clampf(zoom, INSPECT_LIMITS.x, INSPECT_LIMITS.y) if is_finite(zoom) else DEFAULT_MAGNIFICATION
 	gallery.restore_settings(settings)
 
-func set_target_feedback(state: int) -> void:
-	if material: material.set_shader_parameter("target_state", 0 if portrait_requested else state)
+func set_target_feedback(_state: int) -> void:
+	# Full photographs keep their feathered edge; only overview cards have selection outlines.
+	if material: material.set_shader_parameter("target_state", 0)
 
 func set_screen_distance(value: float) -> void:
 	if not is_finite(value): return
@@ -234,6 +254,13 @@ func _ready() -> void:
 	_inspect_dot.material_override = _inspect_pointer_material
 	_inspect_dot.visible = false
 	add_child(_inspect_dot)
+	_hole = MeshInstance3D.new()
+	_hole_material = ShaderMaterial.new()
+	_hole_material.shader = preload("res://shaders/video_layer_hole.gdshader")
+	_hole_material.render_priority = -128
+	_hole.material_override = _hole_material
+	_hole.visible = false
+	add_child(_hole)
 	if OS.get_name() == "Android" and Engine.has_singleton("QuestPlayer"):
 		platform = Engine.get_singleton("QuestPlayer")
 		platform.connect("photo_ready", _on_ready)
@@ -431,6 +458,7 @@ func _size_placeholder(target: int, info: Dictionary) -> void:
 	else:
 		var quad := QuadMesh.new(); quad.size = _placeholder_size; _placeholder.mesh = quad
 	_placeholder_material.set_shader_parameter("surface_size", _placeholder_size)
+	_placeholder_material.set_shader_parameter("feather_metres", SOFT_EDGE_METRES)
 	if _transition_active: _update_transition()
 	else: _placeholder.transform = flat_pose
 
@@ -449,8 +477,10 @@ func _show_placeholder(target: int, info: Dictionary) -> void:
 	elif _texture != null and geometry == Geometry.Geometry.FLAT and panel.visible: _copy_departing(panel)
 	_size_placeholder(target, info)
 	_placeholder.visible = true
+	_placeholder_material.set_shader_parameter("reveal_progress", -1.0)
 	_placeholder.transform = flat_pose
 	material.set_shader_parameter("presentation_opacity", 0.0)
+	material.set_shader_parameter("reveal_progress", 1.0)
 	_detail.visible = false; inspect = false; hide_inspect_pointer()
 	_reveal_seconds = 0.0; _swipe_offset = 0.0
 	_transition_direction = _requested_direction
@@ -464,6 +494,7 @@ func _restore_display() -> void:
 	_placeholder.visible = false
 	_reveal_seconds = 0.0; _swipe_offset = 0.0
 	material.set_shader_parameter("presentation_opacity", 1.0)
+	material.set_shader_parameter("reveal_progress", 1.0)
 
 func preview_navigation(offset: float) -> void:
 	if portrait_requested: return
@@ -512,12 +543,29 @@ static func _decode(job: Dictionary) -> Dictionary:
 		var ratio := 384.0 / maxf(image.get_width(), image.get_height())
 		thumbnail.resize(maxi(1, int(image.get_width() * ratio)), maxi(1, int(image.get_height() * ratio)), Image.INTERPOLATE_BILINEAR)
 	else: Info.orient(thumbnail, int(info.get("orientation", 1)))
+	# RGBA here, off the render thread: the picture layer copies RGBA bands on the GPU (RGB textures
+	# cannot be copied into its RGBA swapchain), and RGBA textures upload without conversion.
+	if image.get_format() != Image.FORMAT_RGBA8: image.convert(Image.FORMAT_RGBA8)
+	# A small display proxy: the picture layer shows the full image, the eye buffers only need this
+	# for slides and the first frames (an upload a tenth of the full one).
+	var proxy: Image = null
+	if maxi(image.get_width(), image.get_height()) > PROXY_SIZE:
+		proxy = image.duplicate() as Image
+		var scale := float(PROXY_SIZE) / maxi(image.get_width(), image.get_height())
+		proxy.resize(maxi(1, int(image.get_width() * scale)), maxi(1, int(image.get_height() * scale)), Image.INTERPOLATE_CUBIC)
+		proxy.generate_mipmaps()
 	# Mipmaps improve stability when the source is much larger than its angular screen size.
 	image.generate_mipmaps()
-	return {"image": image, "thumbnail": thumbnail, "info": info}
+	# The library picture encoded here too: the render thread only writes the file.
+	return {"image": image, "proxy": proxy, "thumbnail": thumbnail, "thumbnail_jpg": Thumbnails.encode(thumbnail), "info": info}
 
+var _catalog_save_ms := 0
 func _process(delta: float) -> void:
+	if _catalog_save_ms > 0 and Time.get_ticks_msec() >= _catalog_save_ms and catalog:
+		_catalog_save_ms = 0
+		catalog.save()
 	_process_portrait()
+	_process_layer()
 	if not _directory_result.is_empty() and not loading and not _thread: _replace_directory()
 	_process_depth_jobs()
 	if _depth_rebuild_seconds > 0:
@@ -548,7 +596,10 @@ func _process(delta: float) -> void:
 					entry["info"] = result.info
 					queue[int(_decoding.index)]["photo_info"] = result.info
 				if result.has("image") and result.image.get_data_size() <= CACHE_IMAGE_BYTES: entry["result"] = result
-				if result.has("thumbnail") and Thumbnails.store(str(queue[int(_decoding.index)].uri), result.thumbnail):
+				var prefetched_uri := str(queue[int(_decoding.index)].uri)
+				if result.has("thumbnail_jpg") and Thumbnails.store_encoded(prefetched_uri, result.thumbnail_jpg):
+					result["thumbnail_cached"] = true
+				elif not result.has("thumbnail_jpg") and result.has("thumbnail") and Thumbnails.store(prefetched_uri, result.thumbnail):
 					result["thumbnail_cached"] = true
 		elif _decoding.serial == _serial and _decoding.id == _request:
 			_prepare_display(result, _decoding)
@@ -575,9 +626,9 @@ func _process(delta: float) -> void:
 		_update_transition()
 	if _reveal_seconds > 0:
 		_reveal_seconds = maxf(0, _reveal_seconds - delta)
-		var opacity := 1.0 - _reveal_seconds / REVEAL_SECONDS
-		material.set_shader_parameter("presentation_opacity", opacity)
-		_placeholder_material.set_shader_parameter("presentation_opacity", 1.0 - opacity)
+		var progress := 1.0 - _reveal_seconds / REVEAL_SECONDS
+		material.set_shader_parameter("reveal_progress", progress)
+		_placeholder_material.set_shader_parameter("reveal_progress", progress)
 		if _reveal_seconds == 0: _placeholder.visible = false
 	if not portrait_requested and not loading and not _transition_active and _reveal_seconds == 0 and not gallery.overview(): _pump_prefetch()
 
@@ -735,12 +786,24 @@ func _fail_pending_depth() -> void:
 	_request = _display_request
 	changed.emit()
 
+var _accept_timing := {}
+func _mark(stage: String, since: int) -> int:
+	var now := Time.get_ticks_usec()
+	_accept_timing[stage] = now - since
+	return now
+
 func _accept(result: Dictionary, job: Dictionary) -> void:
+	_accept_timing = {}
+	var accept_started := Time.get_ticks_usec()
+	var mark := accept_started
 	loading = false
+	_hide_layer() # before the departing copy of the material: it slides out whole, in the eye buffers
 	if result.has("error"):
 		error = str(result.error); _restore_display(); changed.emit(); return
-	var had_placeholder := placeholder_visible()
+	var had_placeholder := placeholder_visible() or (gallery.focus == int(job.index) and not gallery.returning)
 	var placeholder_time := _transition_time
+	if gallery.focus == int(job.index) and not gallery.returning and gallery.progress >= 1:
+		placeholder_time = maxf(placeholder_time, TRANSITION_SECONDS)
 	var previous_index := index
 	var previous_request := _display_request
 	var previous_info := _display_info
@@ -760,17 +823,30 @@ func _accept(result: Dictionary, job: Dictionary) -> void:
 	display_name = str(queue[index].get("title", local_uri.get_file()))
 	_metadata = result.info
 	queue[index]["photo_info"] = result.info
-	_texture = ImageTexture.create_from_image(result.image)
+	var mode := _resolved_mode(index, _metadata)
+	_hide_layer()
+	_upload = {}
+	_layer_key = ""
+	_depth_textures_pending = false
+	mark = _mark("before_texture", mark)
+	var proxy: Image = result.get("proxy")
+	if proxy and _layer_possible(int(mode.geometry)):
+		_texture = ImageTexture.create_from_image(proxy)
+		_full_image = result.image
+		_texture_full = false
+	else:
+		_texture = ImageTexture.create_from_image(result.image)
+		_full_image = null
+		_texture_full = true
+	mark = _mark("texture", mark)
 	_size = Vector2(result.image.get_width(), result.image.get_height())
 	_depth_texture = null; _stereo_texture = null; depth_requested = false; depth_enabled = false; _depth_busy = false; depth_error = ""
-	var mode := _resolved_mode(index, _metadata)
 	geometry = int(mode.geometry); stereo_sbs = bool(mode.stereo_sbs)
 	top_bottom = stereo_sbs and bool(mode.top_bottom); swap_eyes = bool(mode.swap_eyes); fisheye_fov = int(mode.fisheye_fov)
 	_display_depth_data = result.get("depth_data", {}) if geometry == Geometry.Geometry.FLAT and not stereo_sbs else {}
 	if not _display_depth_data.is_empty():
-		_depth_texture = ImageTexture.create_from_image(_display_depth_data.image)
 		_depth_rect = _display_depth_data.rect
-		if _display_depth_data.has("stereo_image"): _stereo_texture = ImageTexture.create_from_image(_display_depth_data.stereo_image)
+		_use_depth_textures()
 		depth_requested = auto_depth; depth_enabled = auto_depth
 	_display_info = result.info
 	_display_result = result if geometry == Geometry.Geometry.FLAT and result.image.get_data_size() <= CACHE_IMAGE_BYTES else {}
@@ -799,10 +875,13 @@ func _accept(result: Dictionary, job: Dictionary) -> void:
 			_update_transition()
 		else:
 			finish_transition()
+			_placeholder.visible = true
 			_placeholder.transform = flat_pose
 			_placeholder_material.set_shader_parameter("presentation_opacity", 1.0)
 			_reveal_seconds = REVEAL_SECONDS
-			material.set_shader_parameter("presentation_opacity", 0.0)
+			_placeholder_material.set_shader_parameter("reveal_progress", 0.0)
+			material.set_shader_parameter("presentation_opacity", 1.0)
+			material.set_shader_parameter("reveal_progress", 0.0)
 	elif previous_flat and geometry == Geometry.Geometry.FLAT and previous_index != index:
 		_departing = old_surface
 		_departing.material_override.render_priority = -11
@@ -815,13 +894,22 @@ func _accept(result: Dictionary, job: Dictionary) -> void:
 		_update_transition()
 	elif old_surface != null:
 		old_surface.free()
+	mark = _mark("display", mark)
 	if auto_depth and geometry == 0 and not stereo_sbs: set_depth(true)
+	mark = _mark("depth", mark)
 	if not result.get("thumbnail_cached", false) or not Thumbnails.has(local_uri):
-		if Thumbnails.store(local_uri, result.thumbnail): result["thumbnail_cached"] = true
+		var stored := Thumbnails.store_encoded(local_uri, result.thumbnail_jpg) if result.has("thumbnail_jpg") \
+			else Thumbnails.store(local_uri, result.thumbnail)
+		if stored: result["thumbnail_cached"] = true
+	mark = _mark("thumbnail", mark)
 	if catalog and history_enabled:
 		catalog.opened(local_uri, display_name, false, "image")
-		catalog.save()
+		_catalog_save_ms = Time.get_ticks_msec() + 1000 # not in the frame that shows the photo
+	mark = _mark("catalog", mark)
 	changed.emit()
+	mark = _mark("changed", mark)
+	_accept_timing["total"] = Time.get_ticks_usec() - accept_started
+	DiagnosticLog.record("photo_accept_timing", _accept_timing)
 
 func _update_transition() -> void:
 	var fraction := clampf(_transition_time / TRANSITION_SECONDS, 0.0, 1.0)
@@ -838,6 +926,10 @@ func _update_transition() -> void:
 	if fraction >= 1.0: finish_transition()
 
 func finish_transition() -> void:
+	if _reveal_seconds > 0:
+		_reveal_seconds = 0.0
+		if _placeholder: _placeholder.visible = false
+	if material: material.set_shader_parameter("reveal_progress", 1.0)
 	if is_instance_valid(_departing):
 		_departing.free()
 		_departing = null
@@ -848,8 +940,16 @@ func finish_transition() -> void:
 	if material: material.set_shader_parameter("presentation_opacity", 0.0 if loading and placeholder_visible() else 1.0)
 
 func set_flat_world_pose(pose: Transform3D) -> void:
+	_set_flat_world_pose(pose, true)
+
+func apply_focus_world_pose(pose: Transform3D) -> void:
+	# Animation reapplies a world-stable pose without recapturing a turned head's offset.
+	_set_flat_world_pose(pose, false)
+
+func _set_flat_world_pose(pose: Transform3D, remember_viewing: bool) -> void:
 	var previous := flat_pose
 	super.set_flat_world_pose(pose)
+	if geometry == 0 and remember_viewing: gallery.remember_focus_pose(pose)
 	var movement := flat_pose * previous.affine_inverse()
 	if is_instance_valid(_departing):
 		_departing_pose = movement * _departing_pose
@@ -1143,7 +1243,9 @@ func set_depth(enabled: bool) -> bool:
 	if enabled != depth_requested: _unlock_mode()
 	auto_depth = enabled
 	depth_requested = enabled
-	depth_enabled = enabled and _depth_texture != null and (not Methods.supports(platform, "prepare_photo_3d") or _stereo_texture != null)
+	# Textures, or data whose textures the layer path makes only on demand.
+	depth_enabled = enabled and (_depth_texture != null or _display_depth_data.has("image")) \
+		and (not Methods.supports(platform, "prepare_photo_3d") or _stereo_texture != null or _display_depth_data.has("stereo_image"))
 	depth_error = ""
 	if enabled and (not depth_enabled or (Methods.supports(platform, "prepare_photo_3d") and
 		 not is_equal_approx(float(_display_depth_data.get("strength", -1)), depth_strength))) and not _depth_busy:
@@ -1240,9 +1342,8 @@ func _finish_depth(id: int, data: Dictionary, background: bool) -> void:
 func _commit_depth_data(data: Dictionary) -> void:
 	_display_depth_data = data
 	if not _display_result.is_empty(): _display_result["depth_data"] = data
-	_depth_texture = ImageTexture.create_from_image(data.image)
 	_depth_rect = data.rect
-	_stereo_texture = ImageTexture.create_from_image(data.stereo_image) if data.has("stereo_image") else null
+	_use_depth_textures()
 	depth_enabled = depth_requested and geometry == 0 and not stereo_sbs
 
 func _on_depth(id: int, payload: String) -> void:
@@ -1310,7 +1411,7 @@ func snapshot() -> Dictionary:
 	var position := pending_index if pending_index >= 0 else index
 	var title := str(queue[position].get("title", "")) if position >= 0 and position < queue.size() else display_name
 	return {"has_image": _texture != null, "loading": loading, "placeholder": placeholder_visible(), "preparing_depth": not _pending_display.is_empty(), "title": title, "index": position, "count": queue.size(),
-		"layout": gallery.mode, "gallery_scale": gallery.view_scale, "gallery_distance": gallery.view_distance, "gallery_swapping": gallery._swap_phase != 0, "gallery_focus": gallery.focus, "directory_loading": directory.loading, "directory_error": directory_error, "queue_complete": queue_complete,
+		"source_uri": local_uri, "layout": gallery.mode, "wall_rows": gallery.wall_rows, "gallery_scale": gallery.view_scale, "gallery_distance": gallery.view_distance, "gallery_swapping": gallery._swap_phase != 0, "gallery_focus": gallery.focus, "directory_loading": directory.loading, "directory_error": directory_error, "queue_complete": queue_complete,
 		"can_background": can_background(),
 		"can_previous": not portrait_requested and queue.size() > 1 and (((geometry == Geometry.Geometry.FLAT or gallery.mode != 0) and queue_complete) or position > 0),
 		"can_next": not portrait_requested and queue.size() > 1 and (((geometry == Geometry.Geometry.FLAT or gallery.mode != 0) and queue_complete) or (position >= 0 and position < queue.size() - 1)),
@@ -1363,6 +1464,9 @@ func release_storage(volume: Dictionary) -> bool:
 	return false
 
 func close_image(notify: bool = true) -> void:
+	if _catalog_save_ms > 0 and catalog:
+		_catalog_save_ms = 0
+		catalog.save()
 	if portrait_requested: set_portrait(false)
 	_portrait_texture = null; _portrait_strength = -1.0; portrait_error = ""; _portrait_next = {}
 	directory.cancel(); _directory_result = {}; queue_complete = true; directory_error = ""
@@ -1384,6 +1488,8 @@ func close_image(notify: bool = true) -> void:
 		if _display_request > 0: _release_photo(_display_request)
 		if Methods.supports(platform, "release_photo_depth_runtime"): platform.release_photo_depth_runtime()
 	_request = 0; _display_request = 0; _next_decode = {}
+	_hide_layer(); _upload = {}; _layer_key = ""; _full_image = null; _texture_full = true; _depth_textures_pending = false
+	if Methods.supports(platform, "destroy_layer_image"): platform.destroy_layer_image()
 	_texture = null; _depth_texture = null; _stereo_texture = null; _depth_busy = false; depth_requested = false; depth_enabled = false
 	material.set_shader_parameter("photo_texture", null); material.set_shader_parameter("depth_texture", null)
 	_detail_material.set_shader_parameter("sharpness", sharpness)
@@ -1486,3 +1592,165 @@ func _process_portrait() -> void:
 		_portrait_job = _portrait_next; _portrait_next = {}; _portrait_thread = Thread.new()
 		if _portrait_thread.start(_read_portrait.bind(_portrait_job.payload)) != OK:
 			_portrait_thread = null; set_portrait(false); portrait_error = "Portrait unavailable"; changed.emit()
+
+## The layer can show this projection at all on this runtime.
+func _layer_possible(projection: int) -> bool:
+	return layer_enabled and video_layer != null and video_layer.available() and Methods.supports(platform, "copy_layer_band") \
+		and projection != Geometry.Geometry.FISHEYE and video_layer.supports(projection, screen_curve > 0.0)
+
+## What the layer shows now: the generated stereo pair while 3D is on, else the photo itself.
+func _layer_source() -> Dictionary:
+	if depth_enabled and _display_depth_data.has("stereo_image"):
+		return {"key": "stereo:%d:%.3f" % [_display_request, float(_display_depth_data.get("strength", 0))],
+			"image": _display_depth_data.stereo_image, "stereo": 1}
+	if depth_enabled:
+		return {} # the shader's own depth parallax
+	return {"key": "color:%d" % _display_request, "image": _full_image, "stereo": -1}
+
+## The layer can show the photo as the shader would now: no shader-only effects or transitions.
+func _layer_eligible() -> bool:
+	return _display_request > 0 and _texture != null and panel.visible and not loading and error.is_empty() \
+		and not gallery.overview() and not _transition_active and _reveal_seconds == 0 and not placeholder_visible() \
+		and not portrait_enabled and not portrait_requested and not bool(_metadata.get("native_stereo", false)) \
+		and _layer_possible(geometry)
+
+func _origin() -> XROrigin3D:
+	return view_camera.get_parent() as XROrigin3D if view_camera else null
+
+var _diagnosed_request := 0
+func _process_layer() -> void:
+	var source := _layer_source()
+	if _display_request != _diagnosed_request and _display_request > 0 and not loading:
+		_diagnosed_request = _display_request
+		DiagnosticLog.record("photo_layer_inputs", {"request": _display_request, "video_layer": video_layer != null,
+			"available": video_layer != null and video_layer.available(), "possible": _layer_possible(geometry),
+			"eligible": _layer_eligible(), "source": str(source.get("key", "")), "texture_full": _texture_full,
+			"full_image": _full_image != null, "geometry": geometry, "curve": screen_curve, "depth": depth_enabled,
+			"panel": panel.visible, "transition": _transition_active, "placeholder": placeholder_visible()})
+	var eligible: bool = _layer_eligible() and not source.is_empty() and source.image != null
+	if eligible and _layer_key != source.key and str(_upload.get("key", "")) != source.key:
+		_upload = {"key": source.key, "image": source.image, "row": 0} # replaces an unfinished other picture
+	if not _upload.is_empty():
+		_continue_upload()
+	var origin := _origin()
+	var shown: bool = origin != null and eligible and _layer_key == str(source.key)
+	if shown:
+		var flat := geometry == Geometry.Geometry.FLAT
+		# A flat photo's soft edge stays in the eye buffers: the layer shows the inner part.
+		var inset := Vector2.ONE * SOFT_EDGE_METRES / _flat.size if flat else Vector2.ZERO
+		# The opaque edge covers the layer's outer rim: the compositor's filtered quad edge and the
+		# antialiased hole edge are both part transparent, and meeting on one line they showed a
+		# see-through frame between the soft edge and the picture.
+		var keep := inset + Vector2.ONE * LAYER_OVERLAP_METRES / _flat.size if flat else Vector2.ZERO
+		var cut := Vector4(keep.x, keep.y, 1.0 - 2.0 * keep.x, 1.0 - 2.0 * keep.y)
+		var pano := Info.panorama_rect(_metadata) if geometry == Geometry.Geometry.EQUIRECT_360 and not stereo_sbs else Vector4(0, 0, 1, 1)
+		var picture: Image = source.image
+		shown = video_layer.show(self, origin, VideoLayer.PICTURE, Vector2(picture.get_width(), picture.get_height()), int(source.stereo), inset, pano)
+		if shown:
+			_hole.mesh = panel.mesh
+			_hole.transform = panel.transform
+			_hole_material.set_shader_parameter("keep_rect", cut if flat else Vector4(0, 0, 1, 1))
+			_hole.visible = true
+			material.set_shader_parameter("layer_cut", cut if flat else Vector4(0, 0, 1, 1))
+	if not shown:
+		_hide_layer()
+		# Off the layer the shader shows the photo: the full picture, once nothing transient is on.
+		# Only for a picture on show: the wall overview keeps its previews and the proxy.
+		if (not _texture_full or _depth_textures_pending) and panel.visible and not loading and not _transition_active and _reveal_seconds == 0 \
+			and _upload.is_empty():
+			_ensure_full_texture()
+	elif inspect:
+		_ensure_full_texture() # the magnifier samples the full picture
+	if shown != layer_shown or (shown and str(_upload.get("key", "")) == "" and _layer_key != _logged_key):
+		_logged_key = _layer_key if shown else ""
+		DiagnosticLog.record("photo_layer", layer_snapshot().merged({"shown": shown, "eligible": eligible,
+			"source": str(source.get("key", "")), "panel": panel.visible, "loading": loading, "placeholder": placeholder_visible(),
+			"transition": _transition_active, "reveal": _reveal_seconds, "overview": gallery.overview(), "origin": origin != null}))
+	layer_shown = shown
+
+func _hide_layer() -> void:
+	layer_shown = false
+	if _hole: _hole.visible = false
+	if material: material.set_shader_parameter("layer_cut", Vector4.ZERO)
+	if video_layer: video_layer.hide(self)
+
+func _ensure_full_texture() -> void:
+	if not _texture_full and _full_image != null:
+		_texture = ImageTexture.create_from_image(_full_image)
+		_texture_full = true
+		material.set_shader_parameter("photo_texture", _texture)
+		_detail_material.set_shader_parameter("photo_texture", _texture)
+	if _depth_textures_pending:
+		_create_depth_textures()
+		_apply_geometry()
+
+## The small depth map is made at once: while the layer shows the stereo pair, the feathered edge
+## left in the eye buffers needs it to stand at the pair's depth. Without it the edge took one
+## uniform disparity and framed the picture in front of its own 3D. Only the large pair waits.
+func _use_depth_textures() -> void:
+	if _texture_full:
+		_create_depth_textures()
+		return
+	_depth_texture = ImageTexture.create_from_image(_display_depth_data.image) if _display_depth_data.has("image") else null
+	_stereo_texture = null
+	_depth_textures_pending = true
+
+func _create_depth_textures() -> void:
+	_depth_textures_pending = false
+	_depth_texture = ImageTexture.create_from_image(_display_depth_data.image) if _display_depth_data.has("image") else null
+	_stereo_texture = ImageTexture.create_from_image(_display_depth_data.stereo_image) if _display_depth_data.has("stereo_image") else null
+
+## One slice of the full picture per frame into the static layer image; the last one mipmaps it.
+func _continue_upload() -> void:
+	var image: Image = _upload.image
+	var width := image.get_width()
+	var height := image.get_height()
+	if not _upload.has("started"):
+		if image.get_format() != Image.FORMAT_RGBA8:
+			image = image.duplicate() as Image
+			image.clear_mipmaps()
+			image.convert(Image.FORMAT_RGBA8)
+			_upload.image = image
+		var levels := int(floor(log(maxf(width, height)) / log(2.0))) + 1
+		var started := Time.get_ticks_usec()
+		var created: bool = platform.create_layer_image(width, height, levels, true)
+		var created_us := Time.get_ticks_usec() - started
+		video_layer.invalidate()
+		started = Time.get_ticks_usec()
+		var acquired: int = platform.acquire_layer_image() if created else 0
+		_upload.timing = {"create_us": created_us, "acquire_us": Time.get_ticks_usec() - started, "slices": 0,
+			"slice_max_us": 0, "slice_total_us": 0, "get_data_us": 0}
+		DiagnosticLog.record("photo_layer_upload", {"key": str(_upload.key), "size": [width, height], "levels": levels,
+			"created": created, "acquired": acquired > 0})
+		if acquired <= 0:
+			_upload = {}
+			return
+		_upload.started = true
+	var rows := clampi(UPLOAD_BYTES / (width * 4), 1, height - int(_upload.row))
+	var slice_started := Time.get_ticks_usec()
+	# A band of rows as a small Godot texture (the engine's own upload), then a GPU copy into place.
+	var band := ImageTexture.create_from_image(image.get_region(Rect2i(0, int(_upload.row), width, rows)))
+	var uploaded: bool = platform.copy_layer_band(RenderingServer.texture_get_native_handle(band.get_rid()), int(_upload.row), rows)
+	var slice_us := Time.get_ticks_usec() - slice_started
+	_upload.timing.slices = int(_upload.timing.slices) + 1
+	_upload.timing.slice_total_us = int(_upload.timing.slice_total_us) + slice_us
+	_upload.timing.slice_max_us = maxi(int(_upload.timing.slice_max_us), slice_us)
+	if not uploaded:
+		platform.destroy_layer_image()
+		video_layer.invalidate()
+		_upload = {}
+		return
+	_upload.row = int(_upload.row) + rows
+	if int(_upload.row) >= height:
+		var release_started := Time.get_ticks_usec()
+		var released: bool = platform.release_layer_image(true)
+		_upload.timing.release_us = Time.get_ticks_usec() - release_started
+		if released: _layer_key = str(_upload.key)
+		DiagnosticLog.record("photo_layer_uploaded", {"key": str(_upload.key), "released": released, "timing": _upload.timing})
+		_upload = {}
+
+## Debug report: where the photo is shown.
+func layer_snapshot() -> Dictionary:
+	return {"shown": layer_shown, "texture_full": _texture_full, "uploading": not _upload.is_empty(),
+		"layer_key": _layer_key, "display_request": _display_request, "depth_textures_pending": _depth_textures_pending,
+		"texture_size": [_texture.get_width(), _texture.get_height()] if _texture else [], "size": [_size.x, _size.y]}

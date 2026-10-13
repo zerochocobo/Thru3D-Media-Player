@@ -34,6 +34,8 @@ func _process(delta: float) -> void:
 		return
 	var target := int(sample.get("target", 0))
 	text = "%s %.1f%s · %s FPS" % ["Alpha" if target > 0 else "Video", video, " / %d" % target if target > 0 else "", render]
+	# Compositor layer (L) or eye buffers (E): the path decides most of the GPU cost.
+	if sample.has("path"): text += " " + str(sample.path)
 
 func set_shown(shown: bool) -> void:
 	visible = shown

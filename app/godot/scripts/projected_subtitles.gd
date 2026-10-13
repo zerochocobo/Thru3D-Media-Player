@@ -1,12 +1,18 @@
 extends Node
-## Live soft-caption patch, composed in the video's spherical coordinates like tool_subembed.
+## One cached caption canvas, projected from each physical eye onto a shared video-anchored plane.
 ## Only cue changes redraw the canvas. Distance/pose changes update shader parameters.
 const PATCH_SIZE := 700
+const PROJECTION_RADIUS := 50.0
+var plane_pose := Transform3D.IDENTITY
+var anchor_basis := Basis.IDENTITY
 var viewport: SubViewport
 var label: Label
 var _text := ""
 var _vertical := false
 var _size := 1.0
+var _style := ""
+const SubtitleStyle := preload("res://scripts/subtitle_style.gd")
+const SubtitleDepth := preload("res://scripts/subtitle_depth.gd")
 var vertical_text: Control
 const VerticalText := preload("res://scripts/vertical_subtitle_text.gd")
 
@@ -35,12 +41,17 @@ func _ready() -> void:
 func clear(target: ShaderMaterial) -> void:
 	if target: target.set_shader_parameter("subtitle_enabled", false)
 
-func update_patch(caption: Label3D, target: ShaderMaterial, anchor: Basis, distance: float, ipd: float, vertical: bool = false, text_size: float = 1.0) -> void:
+func update_patch(caption: Label3D, target: ShaderMaterial, anchor: Basis, distance: float, vertical: bool = false, text_size: float = 1.0, text_style: String = SubtitleStyle.DEFAULT, surface_pose: Transform3D = Transform3D.IDENTITY, viewer_position: Vector3 = Vector3.ZERO, world_scale: float = 1.0) -> void:
 	if not viewport or not caption.visible or caption.text.is_empty():
 		clear(target)
 		return
-	if _text != caption.text or _vertical != vertical or not is_equal_approx(_size, text_size):
+	text_style = SubtitleStyle.normalize(text_style)
+	if _text != caption.text or _vertical != vertical or not is_equal_approx(_size, text_size) or _style != text_style:
 		_size = text_size
+		_style = text_style
+		var appearance := SubtitleStyle.colors(_style)
+		label.add_theme_color_override("font_color", appearance.text_color)
+		label.add_theme_color_override("font_outline_color", appearance.outline_color)
 		label.add_theme_font_size_override("font_size", roundi(40 * _size))
 		label.add_theme_constant_override("outline_size", maxi(2, roundi(8 * _size)))
 		_text = caption.text
@@ -48,16 +59,25 @@ func update_patch(caption: Label3D, target: ShaderMaterial, anchor: Basis, dista
 		label.visible = not vertical
 		vertical_text.visible = vertical
 		if vertical:
-			vertical_text.set_text(_text, preload("res://scripts/ray_menu.gd").ui_font(), _size)
+			vertical_text.set_text(_text, preload("res://scripts/ray_menu.gd").ui_font(), _size, appearance.text_color, appearance.outline_color)
 		else:
 			label.text = _text
 		viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
 	target.set_shader_parameter("subtitle_texture", viewport.get_texture())
 	target.set_shader_parameter("subtitle_enabled", true)
-	target.set_shader_parameter("subtitle_anchor_inverse", anchor.transposed())
-	# The reference moves the right-eye patch left by this complete angular separation.
-	# Do not add it to a separate stereo-projected text plane as well.
-	target.set_shader_parameter("subtitle_parallax", 2.0 * atan(ipd / (2.0 * distance)))
+	anchor_basis = anchor
+	plane_pose = projection_plane(surface_pose, anchor, distance, viewer_position, world_scale)
+	target.set_shader_parameter("subtitle_world_to_patch", plane_pose.affine_inverse())
+
+static func projection_plane(surface_pose: Transform3D, anchor: Basis, distance: float, viewer_position: Vector3, world_scale: float = 1.0) -> Transform3D:
+	# Move the reference plane along its central viewing ray: preserve its video position,
+	# orientation and angular size through zoom, while giving it an actual distance in metres.
+	# Viewer orientation is deliberately absent; turning the head never moves the anchor.
+	var reference_basis := surface_pose.basis * anchor
+	var reference_center := surface_pose.origin + reference_basis * Vector3.FORWARD * PROJECTION_RADIUS
+	var offset := reference_center - viewer_position
+	var scale := SubtitleDepth.distance(distance) * maxf(world_scale, 0.0001) / maxf(offset.length(), 0.0001)
+	return Transform3D(reference_basis.scaled(Vector3.ONE * PROJECTION_RADIUS * scale), viewer_position + offset * scale)
 
 static func runtime_ipd() -> float:
 	var xr := XRServer.primary_interface

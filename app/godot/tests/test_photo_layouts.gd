@@ -68,12 +68,37 @@ func _run() -> void:
 	photo.set_screen_scale(4.0); await load_previews(photo)
 	check(photo.gallery.cards.values().all(func(card): return card.node.visible), "Enlarging the main photo never hides the side rail")
 	for card in photo.gallery.cards.values():
-		var direction: Vector3 = card.pose.origin - photo.gallery.anchor.origin
-		check(absf(atan2(direction.x, -direction.z)) < 0.7, "Side rail stays within the user's front view after enlargement")
+		var local: Transform3D = photo.gallery.anchor.affine_inverse() * card.pose
+		var edge: Vector3 = photo.screen_corner(1)
+		var half := atan(card.size.x * .5 / Vector2(local.origin.x,local.origin.z).length())
+		check(absf(atan2(local.origin.x,-local.origin.z))-half > atan2(absf(edge.x),photo.screen_distance-edge.z), "Every side preview remains outside the enlarged photo's projected edge")
+		var ray: Vector3 = (card.pose.origin - camera.global_position).normalized()
+		check(photo.gallery.ray_hit(camera.global_position, ray).get("index", -1) == photo.gallery.cards.find_key(card), "An enlarged photo cannot steal the ray to a visible side preview")
 	photo.set_screen_scale(1.0)
 	photo.set_layout_mode(2); await load_previews(photo)
 	check(not photo.panel.visible and photo.gallery.cards.has(0) and photo.gallery.cards.has(95) and photo.gallery.cards.has(1), "Wall overview includes first, real last and second images")
+	for card in photo.gallery.cards.values():
+		check(card.node.material_override.get_shader_parameter("edge_feather").is_equal_approx(Vector2.ONE * photo.SOFT_EDGE_METRES / card.size) and not card.rim.visible, "Every unselected wall photo has a soft physical edge and no outline")
 	check(photo.gallery.cards[95].pose.origin.x < 0 and photo.gallery.cards[1].pose.origin.x > 0, "First photo's left neighbour is the directory last")
+	for row_count in [2, 3]:
+		photo.gallery.set_wall_rows(row_count); await load_previews(photo)
+		var heights := {}
+		for card in photo.gallery.cards.values():
+			var local: Vector3 = photo.gallery.anchor.affine_inverse() * card.pose.origin
+			heights[snappedf(local.y, 0.01)] = true
+		check(heights.size() == row_count and photo.gallery.cards.size() <= photo.gallery.MAX_CARDS, "Wall creates the requested rows within its texture budget")
+		var card_height: float = photo.gallery.cards.values()[0].size.y
+		check(heights.keys().min() - card_height * 0.5 >= -photo.gallery.WALL_FLOOR_MARGIN - 0.01, "Multi-row wall keeps its lowest edge within the floor margin")
+		check(heights.keys().min() + heights.keys().max() >= -0.01, "Multi-row wall stays centred unless it must rise")
+		check(photo.gallery.cards.values().all(func(card): return is_equal_approx(card.size.y, photo.gallery.cards.values()[0].size.y)), "Every wall row shares one photo height")
+		var shown: Array = photo.gallery.cards.keys()
+		check(shown.filter(func(index): return not shown.has(posmod(index + 1, photo.queue.size()))).size() == 1, "A multi-row wall shows one unbroken run of photos")
+		check(photo.gallery.cards.values().all(func(card): return photo.gallery.cards.values().all(func(other): return absf(card.pose.origin.y - other.pose.origin.y) < 0.01 or absf(card.pose.origin.y - other.pose.origin.y) > (card.size.y + other.size.y) * 0.5)), "Different wall rows never overlap vertically")
+		var row_settings := ConfigFile.new(); photo.gallery.save_settings(row_settings)
+		var restored_gallery := Photo.Gallery.new(); restored_gallery.restore_settings(row_settings)
+		check(restored_gallery.wall_rows == row_count, "Selected row count survives settings serialization")
+		restored_gallery.free()
+	photo.gallery.set_wall_rows(1); await load_previews(photo)
 	var wall_poses := {}
 	for index in photo.gallery.cards: wall_poses[index] = photo.gallery.cards[index].pose
 	var wall_anchor: Transform3D = photo.gallery.anchor
@@ -149,6 +174,7 @@ func _run() -> void:
 	check(photo.gallery.cards.keys().all(func(index): return index not in old_batch), "A large album prefers previously unseen memories")
 	check(photo.gallery.cards.values().map(func(card): return card.pose) != old_shapes, "New batch randomizes its arrangement and shape")
 	check(photo.gallery._swap_phase == 0 and photo.gallery._swap_alpha == 1, "New memories finish appearing")
+	await _focus_drag_checks(photo, camera)
 	photo.set_layout_mode(0)
 	check(photo.panel.visible and photo.gallery.cards.is_empty(), "Switching back preserves the current photo in single mode")
 	photo.set_layout_mode(2); photo.gallery._process(0.01); photo.set_layout_mode(1)
@@ -187,6 +213,79 @@ func _directory_checks() -> void:
 	check(cloud.cancelled.has(4), "Leaving an album cancels its pending page request")
 	directory.queue_free(); await process_frame
 
+func _focus_drag_checks(photo: Node3D, camera: Camera3D) -> void:
+	for layout in [2,3]:
+		camera.transform = Transform3D(Basis.IDENTITY, Vector3(0,1.6,0))
+		photo.set_layout_mode(layout); photo.gallery.recenter(); await load_previews(photo)
+		var slots := {}
+		for index in photo.gallery.cards: slots[index] = photo.gallery.cards[index].pose
+		var first: int = photo.gallery.cards.keys()[0]
+		photo.gallery.activate(first); await settle(photo); photo.gallery._process(1)
+		var original: Transform3D = photo.gallery.focus_pose
+		var origin := camera.global_position
+		var direction := (original.origin-origin).normalized()
+		var off_centre := (original * Vector3(.3,.1,0)-origin).normalized()
+		photo.gallery.press_pointer("drag",origin,off_centre)
+		photo.gallery.update_pointer("drag",origin,off_centre)
+		check(not photo.gallery.capture.moved and photo.gallery.focus_pose.is_equal_approx(original), "Pressing a curved photograph away from its centre does not jump onto the drag plane")
+		photo.gallery.cancel_pointer("drag")
+		check(photo.gallery.press_pointer("drag",origin,direction), "Expanded photo accepts its own pointer capture")
+		photo.gallery.update_pointer("drag",origin+Vector3(0.01,0,0),direction)
+		check(not photo.gallery.capture.moved and photo.gallery.focus_pose.is_equal_approx(original), "Pointer jitter below the drag threshold leaves placement unchanged")
+		photo.gallery.cancel_pointer("drag")
+		check(not photo.gallery.release_pointer("drag",origin,direction) and not photo.gallery.returning, "Cancelled capture cannot become a collapse click")
+		photo.gallery.press_pointer("drag",origin,direction)
+		var displacement := Vector3(0.24,0.11,0)
+		photo.gallery.update_pointer("drag",origin+displacement,direction)
+		var moved: Transform3D = photo.gallery.focus_pose
+		var radius := original.origin.distance_to(origin)
+		check(is_equal_approx(moved.origin.distance_to(origin),radius) and moved.origin.x>original.origin.x and moved.origin.y>original.origin.y, "Dragging moves around the eyes while preserving the original viewing distance")
+		check((-moved.basis.z).dot((moved.origin-origin).normalized())>.999, "Dragged photo keeps the same eye-facing orientation as single-photo mode")
+		photo.gallery._process(0.1)
+		check(photo.panel.global_position.distance_to(moved.origin)<0.001, "Gallery animation cannot overwrite the dragged position")
+		photo.gallery.release_pointer("drag",origin+displacement,direction)
+		check(photo.gallery.focus == first and not photo.gallery.returning, "Releasing a drag keeps the full photo open")
+		for step in 12:
+			photo.gallery.press_pointer("drag",origin,(photo.gallery.focus_pose.origin-origin).normalized())
+			photo.gallery.update_pointer("drag",origin,(photo.gallery.focus_pose.origin-origin).normalized().rotated(Vector3.UP,.04))
+			photo.gallery.release_pointer("drag",origin,(photo.gallery.focus_pose.origin-origin).normalized())
+			check(is_equal_approx(photo.gallery.focus_pose.origin.distance_to(origin),radius), "Repeated horizontal moves never increase viewing distance")
+		moved = photo.gallery.focus_pose
+		photo.gallery.press_pointer("drag",origin,(moved.origin-origin).normalized())
+		photo.gallery.update_pointer("drag",origin+Vector3(3,0,0),(moved.origin-origin).normalized())
+		check(photo.gallery.capture.is_empty() and photo.gallery.focus_pose.is_equal_approx(moved) and not photo.gallery.returning, "A tracking jump cancels capture without teleporting or collapsing the photo")
+		check(photo.material.get_shader_parameter("target_state") == 0 and not photo.gallery.cards[first].rim.visible, "Opened photo never acquires a hard selection frame")
+		var relative: Transform3D = camera.global_transform.affine_inverse() * moved
+		camera.position.x += 0.35; camera.rotation = Vector3(.12,.8,-.06)
+		for frame in 4: photo.gallery._process(.1)
+		check(photo.gallery.focus_pose.is_equal_approx(moved) and photo.panel.global_transform.is_equal_approx(moved), "An opened photo remains world-stable while the head turns or moves")
+		photo.gallery.return_focus(); photo.gallery._process(1)
+		for index in slots: check(photo.gallery.cards[index].pose.is_equal_approx(slots[index]), "Dragging the full photo never moves original album slots")
+		var second: int = photo.gallery.cards.keys().filter(func(index):return index != first)[0]
+		photo.gallery.activate(second); await settle(photo); photo.gallery._process(1)
+		var expected := camera.global_transform * relative
+		check(photo.gallery.focus_pose.is_equal_approx(expected), "Another photo restores the dragged offset relative to the current head, including pitch and roll")
+		check(is_equal_approx(photo.gallery.focus_pose.origin.distance_to(camera.global_position),radius), "Reopening preserves viewing distance after head movement")
+		camera.rotation.y += PI
+		photo.select_image(first); await settle(photo); photo.gallery._process(1)
+		expected = camera.global_transform * relative
+		check(photo.gallery.focus_pose.is_equal_approx(expected), "Menu image navigation places the next photo in the current view after turning around")
+		photo.set_layout_mode(0); photo.set_layout_mode(layout); await load_previews(photo)
+		photo.gallery.activate(first); await settle(photo); photo.gallery._process(1)
+		check(photo.gallery.focus_pose.is_equal_approx(expected), "Returning to the layout restores its head-relative session offset")
+		var invalid := expected; invalid.origin.x = NAN
+		photo.gallery.remember_focus_pose(invalid)
+		check(photo.gallery.focus_pose.is_equal_approx(expected), "Invalid placement cannot poison subsequent views")
+		photo.gallery.set_focus_distance(2.4)
+		relative = camera.global_transform.affine_inverse() * photo.gallery.focus_pose
+		photo.gallery.return_focus(); photo.gallery._process(1)
+		camera.position.z += .3; camera.rotation.y -= .6
+		photo.gallery.activate(second); await settle(photo); photo.gallery._process(1)
+		check(photo.gallery.focus_pose.is_equal_approx(camera.global_transform * relative) and is_equal_approx(photo.gallery.focus_pose.origin.distance_to(camera.global_position),2.4), "Distance adjustments update the remembered offset for the next head orientation")
+		photo.gallery.recenter(); photo.gallery._process(1)
+		check(not photo.gallery.focus_pose.is_equal_approx(camera.global_transform * relative), "Recenter resets the saved viewing position")
+		photo.gallery.return_focus(); photo.gallery._process(1)
+
 func _input_checks() -> void:
 	var app := Harness.new(); app.settings_path = folder.path_join("app.cfg"); root.add_child(app)
 	app.set_process(false); app.recent_menu.dismiss()
@@ -222,6 +321,23 @@ func _input_checks() -> void:
 	app._on_photo_adjustment("screen_distance",2.2); app.photo.gallery._process(1)
 	check(is_equal_approx(app.photo.panel.global_position.distance_to(app.xr_camera.global_position),2.2), "Expanded memory distance survives gallery refresh")
 	app.photo_menu.dismiss()
+	var before_drag: Transform3D = app.photo.gallery.focus_pose
+	var drag_origin := app.xr_camera.global_position
+	var drag_direction := (before_drag.origin-drag_origin).normalized()
+	app.rays["left_hand"] = [drag_origin,drag_direction]
+	var pinch := {"source":"hand","tracked":true,"down":true,"pressed":true,"position":drag_origin}
+	app._dispatch_hand_input({"left_hand":pinch})
+	check(app.photo.gallery.capture.get("focus_drag",false) and app.photo_hands.owners.is_empty(), "Main routes one optical pinch on a full photo to gallery dragging")
+	app.rays["left_hand"] = [drag_origin+Vector3(.2,.1,0),drag_direction]
+	app.photo.gallery.update_pointer("left_hand",app.rays.left_hand[0],drag_direction)
+	pinch = pinch.duplicate(); pinch.pressed = false; pinch.down = false; pinch.released = true
+	app._dispatch_hand_input({"left_hand":pinch})
+	check(app.photo.gallery.focus == index and is_equal_approx(app.photo.gallery.focus_pose.origin.distance_to(drag_origin),before_drag.origin.distance_to(drag_origin)), "Optical release retains constant viewing distance without collapsing or swiping")
+	var grip_pose: Transform3D = app.photo.gallery.focus_pose
+	app.interface_move.begin("right_hand","grip_click",Transform3D.IDENTITY,[{"node":app.photo,"kind":"screen","pose":grip_pose,"key":"photo"}])
+	app.interface_move.update(Transform3D(Basis.IDENTITY,Vector3(.08,-.04,0)),app.xr_camera.global_transform,app.view_follow)
+	app.interface_move.cancel(); app.photo.gallery._process(.1)
+	check(app.photo.gallery.focus_pose.origin.distance_to(grip_pose.origin+Vector3(.08,-.04,0))<.001, "Grip movement also updates the full-photo animation target")
 	var zoom_inputs := {"left_hand":{"source":"hand","tracked":true,"down":true,"pressed":true,"position":Vector3(-0.15,1.2,-0.5)},"right_hand":{"source":"hand","tracked":true,"down":true,"pressed":true,"position":Vector3(0.15,1.2,-0.5)}}
 	app._dispatch_hand_input(zoom_inputs)
 	zoom_inputs.left_hand.pressed=false;zoom_inputs.right_hand.pressed=false;zoom_inputs.left_hand.position.x=-0.20;zoom_inputs.right_hand.position.x=0.20
@@ -244,6 +360,11 @@ func _input_checks() -> void:
 	check(layout_button.base_color.a == 1.0, "Layout action uses the same solid round tile as adjacent actions")
 	app.photo_menu._activate(app.photo_menu.PHOTO_LAYOUT_BASE)
 	check(app.photo.gallery.mode == 0 and app.photo.panel.visible, "Ray menu can return to existing single mode")
+	app.photo_menu._activate(app.photo_menu.PHOTO_LAYOUT)
+	app.photo_menu._activate(app.photo_menu.PHOTO_LAYOUT_BASE + 2)
+	check(app.photo_menu._wall_rows_open and app.photo.gallery.mode == 0 and app.photo_menu._buttons.any(func(button): return button.target == app.photo_menu.PHOTO_WALL_ROWS + 3), "Choosing the wall opens its row sub-menu before changing layout")
+	app.photo_menu._activate(app.photo_menu.PHOTO_WALL_ROWS + 3)
+	check(app.photo.gallery.mode == 2 and app.photo.gallery.wall_rows == 3 and not app.photo_menu._layout_open, "Three-row choice applies and dismisses the selector")
 	app._on_photo_action("photo_layout_1"); app.photo_menu.dismiss(); await load_previews(app.photo)
 	var side_pose: Transform3D = app.photo.flat_pose
 	var side_anchor: Transform3D = app.photo.gallery.anchor
@@ -282,7 +403,51 @@ func _input_checks() -> void:
 	check(app.photo_menu._tips[app.photo_menu.PHOTO_NEXT] == app.photo_menu.I18n.t("Next group"), "Wall arrows clearly identify group navigation")
 	app.photo_menu._activate(app.photo_menu.PHOTO_NEXT)
 	check(app.photo.gallery._swap_phase == 1, "Production menu arrows page the wall instead of advancing one image")
+	app.photo.gallery._process(.5); app.photo.gallery._process(.5)
+	await _close_shortcut_checks(app)
 	app.queue_free(); await process_frame
+
+func _close_shortcut_checks(app: Node3D) -> void:
+	const Bindings := preload("res://scripts/controller_bindings.gd")
+	app.photo_menu.dismiss(); app.recent_menu.dismiss(); app.rays.clear()
+	app.photo_hands.cancel(); app.photo.gallery.cancel_all()
+	for layout in [2,3]:
+		app.photo.set_layout_mode(layout); await load_previews(app.photo)
+		var index: int = app.photo.gallery.cards.keys()[0]
+		app.photo.gallery.activate(index); await settle(app.photo); app.photo.gallery._process(1)
+		var original: Transform3D = app.photo.gallery.cards[index].pose
+		app._show_player_menu()
+		app._on_controller_button("by_button","right_hand"); app._on_controller_release("by_button","right_hand")
+		check(not app.photo_menu.visible and not app.photo.gallery.returning, "B still closes photo controls without collapsing the image")
+		app._on_controller_button("ax_button","right_hand"); app._on_controller_release("ax_button","right_hand")
+		check(app.photo.gallery.returning and not app.recent_menu.visible, "A collapses a wall or fragment photo without a ray or opening the library")
+		app.photo.gallery._process(1)
+		check(app.photo.gallery.focus == -1 and app.photo.gallery.cards[index].pose.is_equal_approx(original), "Shortcut returns the photo to its original overview slot")
+		app._on_controller_button("ax_button","right_hand"); app._on_controller_release("ax_button","right_hand")
+		check(app.photo.gallery.focus == -1 and not app.recent_menu.visible, "A in the overview does not close the album or open another panel")
+		app.photo.gallery.activate(index); await settle(app.photo); app.photo.gallery._process(1)
+		app._show_player_menu()
+		app._on_controller_button("ax_button","right_hand"); app._on_controller_release("ax_button","right_hand")
+		check(app.photo.gallery.returning and app.photo_menu.visible, "A also collapses the expanded photo with ordinary photo controls visible")
+		app.photo.gallery._process(1); app.photo_menu.dismiss()
+		check(app.controller_bindings.assign("photo_close", Bindings.bind("left_hand","by_button")).ok, "Expanded-photo close can be rebound to left Y")
+		app._on_setting_changed("controller_bindings",app.controller_bindings.snapshot())
+		var config := ConfigFile.new(); config.load(app.settings_path)
+		var restored := Bindings.new(); restored.restore(config.get_value("input","controller_bindings",{}))
+		check(restored.resolve("left_hand","by_button","photo") == "photo_close" and restored.resolve("right_hand","ax_button","photo").is_empty(), "The replacement close key survives settings save and reload")
+		app.photo.gallery.activate(index); await settle(app.photo); app.photo.gallery._process(1)
+		app._on_controller_button("ax_button","right_hand"); app._on_controller_release("ax_button","right_hand")
+		check(not app.photo.gallery.returning, "Former A binding no longer closes after remapping")
+		app.photo.gallery.press_pointer("drag",app.xr_camera.global_position,(app.photo.gallery.focus_pose.origin-app.xr_camera.global_position).normalized())
+		app._on_controller_button("by_button","left_hand"); app._on_controller_release("by_button","left_hand")
+		check(not app.photo.gallery.returning and app.photo.gallery.has_capture(), "Closing cannot interrupt an active photo drag")
+		app.photo.gallery.cancel_all()
+		app._on_controller_button("by_button","left_hand"); app._on_controller_release("by_button","left_hand")
+		check(app.photo.gallery.returning, "The configured Y key closes after capture ends")
+		app.photo.gallery._process(1); app.controller_bindings.restore_all()
+	app.photo.set_layout_mode(0)
+	app._on_controller_button("ax_button","right_hand"); app._on_controller_release("ax_button","right_hand")
+	check(not app.photo.local_uri.is_empty() and not app.recent_menu.visible, "Expanded-photo close leaves the original single-photo mode intact")
 
 func _directory_reindex_checks() -> void:
 	var photo := Photo.new(); photo.history_enabled = false

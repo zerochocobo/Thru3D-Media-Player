@@ -16,8 +16,20 @@ var ticket: Dictionary = {}
 ## instead of the color, with no shader parallax.
 var warped := false
 
+## The picture of a layer pair is on the compositor's video layer: nothing to bind here.
+var layer := false
+
 func bind(target: ShaderMaterial, pair: Dictionary) -> bool:
-	if material or not target or not _valid(pair):
+	if material or not target:
+		return false
+	if str(pair.get("color_target", "")) == "layer":
+		if not _valid_identity(pair):
+			return false
+		layer = true
+		material = target
+		ticket = pair.duplicate(true)
+		return true
+	if not _valid(pair):
 		return false
 	warped = int(pair.get("warp_texture_id", 0)) > 0 and not bool(pair.stereo_sbs)
 	var decoder := str(pair.get("color_target", "")) == "external" and not warped
@@ -72,6 +84,11 @@ func unbind() -> Dictionary:
 		RenderingServer.material_set_param(material.get_rid(), "alpha_texture", null)
 	material = null
 	warped = false
+	layer = false
+	# The slot retires after this and destroys its EGLImage. Forget it: ExternalTexture.size
+	# rebinds the remembered image on a size change, and a dead image leaves GL_INVALID_OPERATION.
+	if _decoder_color:
+		_decoder_color.set_external_buffer_id(0)
 	_free_wrappers()
 	var previous := ticket
 	ticket = {}
@@ -98,6 +115,15 @@ func _free_wrappers() -> void:
 			RenderingServer.free_rid(rid)
 	color_rid = RID()
 	alpha_rid = RID()
+
+static func _valid_identity(pair: Dictionary) -> bool:
+	for key in ["session_id", "logical_session_id", "generation", "frame_id", "pts_us", "slot_token", "width", "height"]:
+		if not pair.has(key):
+			return false
+	for key in ["session_id", "logical_session_id", "generation", "slot_token", "width", "height"]:
+		if int(pair[key]) <= 0:
+			return false
+	return int(pair.frame_id) >= 0 and int(pair.pts_us) >= 0 and pair.get("source_pts_verified", false)
 
 static func _valid(pair: Dictionary) -> bool:
 	for key in ["session_id", "logical_session_id", "generation", "frame_id", "pts_us", "format_revision",

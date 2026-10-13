@@ -100,9 +100,10 @@ func choose(row: Dictionary) -> bool:
 func draw() -> void:
 	var available: bool = menu.platform != null and request_id == 0
 	if mode.is_empty():
+		if not menu._cloud_stack.is_empty(): return
 		menu._button(EDIT, "", Vector2(0.47, 0.46), Vector2(0.09, 0.07), available, "edit")
 		menu._tips[EDIT] = I18n.t("Edit")
-		menu._button(REMOVE, "", Vector2(0.58, 0.46), Vector2(0.09, 0.07), available and menu.PlatformMethods.supports(menu.platform, "media_cloud_remove") and (not menu._cloud_entries.is_empty() or not menu._cloud_stack.is_empty()), "trash")
+		menu._button(REMOVE, "", Vector2(0.58, 0.46), Vector2(0.09, 0.07), available and menu.PlatformMethods.supports(menu.platform, "media_cloud_remove") and not menu._cloud_entries.is_empty(), "trash")
 		menu._tips[REMOVE] = I18n.t("Remove account")
 	else:
 		menu._button(BACK, "", Vector2(-0.52, 0.46), Vector2(0.09, 0.07), request_id == 0, "up")

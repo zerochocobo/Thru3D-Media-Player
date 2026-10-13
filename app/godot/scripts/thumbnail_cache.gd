@@ -64,6 +64,29 @@ static func store(key: String, image: Image) -> bool:
 	prune(MAX_IMAGES, MAX_BYTES, path)
 	return true
 
+## Fills SIZE and encodes it: safe on a worker thread (no cache or file access).
+static func encode(image: Image) -> PackedByteArray:
+	if not image or image.is_empty(): return PackedByteArray()
+	return fit(image).save_jpg_to_buffer(0.85)
+
+static var _stores_since_prune := 0
+## Stores a picture encode() made off the render thread; prunes the directory every few stores.
+static func store_encoded(key: String, jpg: PackedByteArray) -> bool:
+	if key.is_empty() or jpg.is_empty():
+		return false
+	DirAccess.make_dir_recursive_absolute(DIRECTORY)
+	var path := path_for(key)
+	_textures.erase(path)
+	var file := FileAccess.open(path, FileAccess.WRITE)
+	if not file: return false
+	file.store_buffer(jpg)
+	file.close()
+	_stores_since_prune += 1
+	if _stores_since_prune >= 16:
+		_stores_since_prune = 0
+		prune(MAX_IMAGES, MAX_BYTES, path)
+	return true
+
 ## Evict only generated SHA1 JPEG names inside the thumbnail directory.
 static func prune(max_images: int = MAX_IMAGES, max_bytes: int = MAX_BYTES, keep: String = "") -> void:
 	var dir := DirAccess.open(DIRECTORY)

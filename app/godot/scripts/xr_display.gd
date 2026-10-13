@@ -13,6 +13,36 @@ var error_code := ""
 var render_scale := 1.0
 var scenery: Sky
 var scenery_rotation := Vector3.ZERO
+## The video is on a compositor layer beneath the eye buffers: they render transparent (only then does
+## Godot's blending keep correct alpha over the hole) and the backdrop draws the sky instead.
+var video_layer := false
+var menu_layers := false
+var backdrop: MeshInstance3D
+const BACKDROP_RADIUS := 900.0
+
+## parent: the XR camera, so the backdrop sphere stays centred on the eyes.
+func attach_backdrop(parent: Node3D) -> void:
+	backdrop = MeshInstance3D.new()
+	var sphere := SphereMesh.new()
+	sphere.radius = BACKDROP_RADIUS
+	sphere.height = BACKDROP_RADIUS * 2.0
+	backdrop.mesh = sphere
+	var material := ShaderMaterial.new()
+	material.shader = preload("res://shaders/layer_backdrop.gdshader")
+	backdrop.material_override = material
+	backdrop.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	backdrop.visible = false
+	parent.add_child(backdrop)
+
+func set_video_layer(active: bool) -> void:
+	if active == video_layer: return
+	video_layer = active
+	if environment: _set_background(applied_passthrough)
+
+func set_menu_layers(active: bool) -> void:
+	if active == menu_layers: return
+	menu_layers = active
+	if environment: _set_background(applied_passthrough)
 
 func set_scenery(value: Sky, yaw_degrees: float = 0.0) -> void:
 	scenery = value
@@ -80,13 +110,22 @@ func _apply_requested_mode() -> bool:
 	return true
 
 func _set_background(transparent: bool) -> void:
-	viewport.transparent_bg = transparent
-	environment.sky = null if transparent else scenery
+	var layer := (video_layer or menu_layers) and not preview
+	viewport.transparent_bg = transparent or layer
+	environment.sky = null if transparent or layer else scenery
 	environment.sky_rotation = scenery_rotation
 	# Meta reconstruction passthrough needs a transparent environment color too.
 	# BG_CLEAR_COLOR inherits the project's opaque dark clear color.
-	environment.background_mode = Environment.BG_SKY if scenery and not transparent else Environment.BG_COLOR
-	environment.background_color = Color(0, 0, 0, 0) if transparent else Color(0.035, 0.045, 0.06, 1.0)
+	environment.background_mode = Environment.BG_SKY if scenery and not transparent and not layer else Environment.BG_COLOR
+	environment.background_color = Color(0, 0, 0, 0) if transparent or layer else Color(0.035, 0.045, 0.06, 1.0)
+	if backdrop:
+		backdrop.visible = layer and not transparent
+		var material := backdrop.material_override as ShaderMaterial
+		var panorama: Texture2D = scenery.sky_material.panorama if scenery and scenery.sky_material is PanoramaSkyMaterial else null
+		material.set_shader_parameter("has_panorama", panorama != null)
+		material.set_shader_parameter("panorama", panorama)
+		# Godot samples the sky with the inverse sky rotation applied to the world direction.
+		material.set_shader_parameter("orientation", Basis.from_euler(scenery_rotation).inverse())
 
 func _on_session_event(event: String) -> void:
 	session_state = event
@@ -140,6 +179,7 @@ func capabilities() -> Dictionary:
 		"performance_levels": performance_levels,
 		"foveation_level": foveation_level,
 		"render_scale": render_scale,
+		"menu_layers": menu_layers,
 		# Vendors can shrink the actual render region without changing the allocated eye buffers.
 		"meta_dynamic_resolution_enabled": bool(ProjectSettings.get_setting("xr/openxr/extensions/meta/dynamic_resolution", true)),
 		"render_target_size_scope": "allocated_eye_buffer",

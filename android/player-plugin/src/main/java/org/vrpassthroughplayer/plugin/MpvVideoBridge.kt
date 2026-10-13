@@ -55,12 +55,28 @@ internal class MpvVideoBridge(
     /** Debug A/B only: MPV renders an 8K RGBA copy instead of handing over the decoder's image. */
     internal fun debugDirect(enabled: Boolean) { if (BuildConfig.DEBUG) debugDirectDisabled = !enabled }
     /** Alpha pairs show the decoder's own YUV image (no full-resolution RGBA render); needs borrowing. */
-    private fun direct(session: Session) = session.alpha && session.vulkan && !debugBorrowDisabled && !debugDirectDisabled &&
-        !debugZeroCopyDisabled
+    private fun direct(session: Session) = if (session.alpha) session.vulkan && !debugBorrowDisabled && !debugDirectDisabled &&
+        !debugZeroCopyDisabled else normalDirect(session)
+    /** Normal playback shows the decoder image as well: no 8K RGBA render or bridge copy per frame.
+     * A capped output width keeps MPV's scaled RGBA path, whose size the cap chose. */
+    private fun normalDirect(session: Session) = !session.inference && session.normalFastPath && session.host.maxWidth == 0 &&
+        !session.host.debugRgba && !debugBorrowDisabled && !debugDirectDisabled && !debugNormalDirectDisabled
+    @Volatile private var debugNormalDirectDisabled = false
+    /** Debug A/B only: normal playback renders and copies MPV's RGBA color instead of the decoder image. */
+    internal fun debugNormalDirect(enabled: Boolean) { if (BuildConfig.DEBUG) debugNormalDirectDisabled = !enabled }
     private var audioFocus: MpvAudioFocus? = null // worker only
     @Volatile private var audioFocusState = "none"
 
-    private inner class Host(val uri: String, val startMs: Int, val hardware: Boolean, val audio: Boolean, val exactStart: Boolean) {
+    private inner class Host(val uri: String, val startMs: Int, val hardware: Boolean, val audio: Boolean, val exactStart: Boolean,
+                             val maxWidth: Int, val layerRequested: Boolean = false) {
+        /** MPV decodes into a compositor layer surface; set when that surface was created. */
+        @Volatile var layer = false
+        @Volatile var layerSurface: android.view.Surface? = null
+        /** Debug A/B for a whole playback: adb shell setprop debug.vrpp.mpv.normal_direct 0 keeps the RGBA copy path. */
+        val debugRgba = BuildConfig.DEBUG && try {
+            Class.forName("android.os.SystemProperties").getMethod("get", String::class.java)
+                .invoke(null, "debug.vrpp.mpv.normal_direct") == "0"
+        } catch (_: Throwable) { false }
         private val openNs = System.nanoTime()
         val startup = ConcurrentHashMap<String, Double>()
         fun markStartup(stage: String) { startup.putIfAbsent(stage, (System.nanoTime() - openNs) / 1_000_000.0) }
@@ -175,11 +191,12 @@ internal class MpvVideoBridge(
     }
     @Synchronized fun open(uri: String, startMs: Int, stereo: Boolean, profile: String,
                            alpha: Boolean, vulkan: Boolean, hardware: Boolean = true, audio: Boolean = true,
-                           depth: Boolean = false, topBottom: Boolean = false, exactSeek: Boolean = false): Int {
+                           depth: Boolean = false, topBottom: Boolean = false, exactSeek: Boolean = false, layer: Boolean = false): Int {
         if (!supported() || sessions.size >= 2 || startMs < 0 || profile !in RvmProfiles.keys || (depth && (alpha || stereo)) ||
             Uri.parse(uri).scheme !in setOf("content", "file", "smb", "cloud", "medialib", "http", "https")) return -1
         val id = gate.begin(); if (id <= 0) return -1
-        val host = Host(uri, startMs, hardware, audio, exactSeek)
+        // Compositor layers carry normal playback only: Alpha and 2D->3D compose in Godot's shader.
+        val host = Host(uri, startMs, hardware, audio, exactSeek, outputWidthCap, layer && hardware && !alpha && !depth)
         val session = Session(gate.current(id) ?: return -1, host, stereo, profile, alpha, vulkan, debugNormalFastPath, depth,
             stereo && topBottom)
         sessions[id] = session; hosts.add(host)
@@ -214,9 +231,16 @@ internal class MpvVideoBridge(
                     try {
                         host.owner = EGL14.eglGetCurrentContext()
                         host.markStartup("native_create_started_ms")
-                        host.handle = MpvSourceNative.create(app, path, startMs, hardware, audio, outputWidthCap,
+                        if (host.layerRequested) {
+                            host.layerSurface = runCatching { VideoLayerNative.createSurface(LAYER_SURFACE_SIZE, LAYER_SURFACE_SIZE) }
+                                .onFailure { android.util.Log.w("QuestPlayer", "Video layer surface unavailable", it) }.getOrNull()
+                            host.layer = host.layerSurface != null
+                            if (host.layer) currentLayerSurface = host.layerSurface
+                        }
+                        host.handle = MpvSourceNative.create(app, path, startMs, hardware, audio, host.maxWidth,
                             extra.flatMap { listOf(it.location, it.title) }.toTypedArray(),
-                            captions.flatMap { listOf(it.location, it.title) }.toTypedArray(), host.exactStart)
+                            captions.flatMap { listOf(it.location, it.title) }.toTypedArray(), host.exactStart,
+                            if (host.layer) host.layerSurface else null)
                         check(host.handle > 0)
                         host.markStartup("native_created_ms")
                         synchronized(host) { check(MpvSourceNative.setSpeed(host.handle, host.speed)) }
@@ -235,8 +259,26 @@ internal class MpvVideoBridge(
         if (session.depth) {
             // Depth never ends the session: until (or unless) the model runs, frames show in 2D.
             session.depthModel = DepthVideoProbe(session.scope, context, { token -> release(session, token) },
-                { if (active(session)) event("mpv_state", session, JSONObject().put("state", "effect_ready")) },
-                { pair, left, right -> deliver(session, pair, left, right) })
+                {
+                    if (active(session)) {
+                        // The first paused color can arrive before depth is ready and skip input
+                        // staging. Re-render that same frame now; do not resume playback or seek.
+                        render(Runnable {
+                            if (active(session) && session.host.handle > 0 && !session.host.layer)
+                                MpvSourceNative.requestFrame(session.host.handle)
+                        })
+                        event("mpv_state", session, JSONObject().put("state", "effect_ready"))
+                    }
+                },
+                { pair, left, right -> deliver(session, pair, left, right) },
+                {
+                    // Depth's first result is consumed by the next color capture. A paused source
+                    // has none; redraw it once with the map. wantsInput(frameId) prevents a loop.
+                    render(Runnable {
+                        if (active(session) && session.host.handle > 0 && !session.host.layer && !session.host.playing)
+                            MpvSourceNative.requestFrame(session.host.handle)
+                    })
+                })
             session.depthModel!!.start()
             return
         }
@@ -266,14 +308,22 @@ internal class MpvVideoBridge(
         val old = sessions[id] ?: return -1
         if (!active(old) || sessions.size >= 2 || profile !in RvmProfiles.keys || (depth && (alpha || stereo))) return -1
         val host = old.host
+        // A layer host has no frame images for the shader effects; the owner reopens it instead.
+        if (host.layer && (alpha || depth)) return -1
         if (positionMs >= 0 && (host.handle <= 0 || !MpvSourceNative.seek(host.handle, positionMs.toLong(), exactSeek))) return -1
         val next = gate.replace(id); if (next <= 0) return -1
         val session = Session(gate.current(next) ?: return -1, host, stereo, profile, alpha, old.vulkan, old.normalFastPath, depth,
             stereo && topBottom)
+        // A decoder image is exported once: redrawing the current frame for a new direct session yields
+        // nothing to show. Decode that frame again instead (an exact seek to its own timestamp).
+        val redecodeMs = if (positionMs < 0 && !host.layer && direct(old) && direct(session))
+            synchronized(old.lock) { old.pairs[old.drawnToken]?.optLong("pts_us", -1L) ?: -1L }.let { if (it >= 0) it / 1000 else -1L }
+        else -1L
         sessions[next] = session; dispose(old, false); prepareModel(session)
         if (host.handle > 0) MpvSourceNative.setFrameCap(host.handle, frameCap(session))
         if (host.handle > 0) MpvSourceNative.setDirect(host.handle, direct(session))
-        if (host.handle > 0 && positionMs < 0) MpvSourceNative.requestFrame(host.handle)
+        if (host.handle > 0 && positionMs < 0 && (redecodeMs < 0 || !MpvSourceNative.seek(host.handle, redecodeMs, true)))
+            MpvSourceNative.requestFrame(host.handle)
         return next
     }
     fun setPlaying(id: Int, playing: Boolean) {
@@ -361,8 +411,8 @@ internal class MpvVideoBridge(
                 if (session.disposed.get()) { cleanup(session); return@synchronized }
                 if (!active(session) || session.host.handle == 0L) return@synchronized
                 check(session.host.owner == EGL14.eglGetCurrentContext()) { "MPV owner GL context changed" }
-                if (session.renderer > 0) {
-                    pollRetirements(session); finishUploads(session)
+                if (session.renderer > 0 || session.host.layer) {
+                    if (session.renderer > 0) { pollRetirements(session); finishUploads(session) }
                     if (session.display.drawn(session.drawnToken)) {
                         session.ownerDraws++
                         session.pairs[session.drawnToken]?.let { pair ->
@@ -399,6 +449,7 @@ internal class MpvVideoBridge(
                     if (BuildConfig.DEBUG && session.renderer > 0)
                         status.put("bridge", JSONObject(RenderBridgeNative.stats(session.renderer)))
                     status.put("normal_fast_path", !session.inference && session.normalFastPath)
+                        .put("layer_active", session.host.layer)
                         .put("rvm_video_fps_cap", frameCap(session))
                     session.roi?.status()?.forEach { (key, value) -> status.put(key, if (value is List<*>) JSONArray(value) else value) }
                     session.model?.stats()?.forEach { (key, value) -> status.put(key, value) }
@@ -430,11 +481,16 @@ internal class MpvVideoBridge(
             try {
                 if (host.handle == 0L || MpvSourceNative.close(host.handle, host.owner != EGL14.eglGetCurrentContext())) {
                     host.handle = 0; host.closeDescriptors(); hosts.remove(host)
+                    // A newer playback may already own the current swapchain; only the last one destroys it.
+                    if (host.layer && currentLayerSurface === host.layerSurface) {
+                        VideoLayerNative.destroySurface(); currentLayerSurface = null
+                    }
                 }
             } catch (_: Throwable) { /* Preserve ownership and retry; never close a descriptor still used by MPV. */ }
         }
     }
     private fun capture(session: Session, source: JSONObject): Boolean {
+        if (source.optString("color_target") == "layer") return captureLayer(session, source)
         val producer = source.getLong("producer_token")
         var releaseProducer = true
         try {
@@ -454,16 +510,20 @@ internal class MpvVideoBridge(
                     session.zeroCopy = RenderBridgeNative.enableZeroCopy(session.renderer)
                 // Alpha keeps each captured MPV slot for the pair's life instead of copying 8K (~270MB
                 // of bus traffic per frame); MPV has spare slots for the frames in flight.
-                if (session.alpha && !debugBorrowDisabled)
+                // Normal direct playback holds the decoder image (or, for Profile 5/software decode, the MPV
+                // color) the same way, so no frame is copied at all.
+                if ((session.alpha || normalDirect(session)) && !debugBorrowDisabled)
                     session.borrow = RenderBridgeNative.enableBorrowedColor(session.renderer)
                 if (session.roiEnabled && !debugRoiDisabled) session.roi = RoiController(RenderBridgeNative.fullInputRect(session.renderer),
                     session.dims[0], session.dims[1], eyeWidth, eyeHeight)
             }
             val buffer = source.optLong("hardware_buffer", 0L)
-            // A decoder image published for an earlier Alpha session: release it and wait for the next frame.
-            if (buffer != 0L && !(session.alpha && session.borrow)) return true
+            // A decoder image published for an earlier direct session: release it and wait for the next frame.
+            if (buffer != 0L && !(session.borrow && (session.alpha || normalDirect(session)))) return true
             val plan = session.roi?.plan()
-            val token = if (buffer != 0L)
+            val token = if (buffer != 0L && !session.inference)
+                RenderBridgeNative.captureOpaqueBuffer(session.renderer, buffer, source.getInt("buffer_width"), source.getInt("buffer_height"))
+            else if (buffer != 0L)
                 RenderBridgeNative.captureBufferRoi(session.renderer, buffer, source.getInt("buffer_width"), source.getInt("buffer_height"),
                     plan?.rect ?: RenderBridgeNative.fullInputRect(session.renderer), plan?.scout ?: false)
             else if (!session.inference && session.normalFastPath)
@@ -472,7 +532,7 @@ internal class MpvVideoBridge(
                 RenderBridgeNative.captureTextureRoi(session.renderer, source.getInt("color_texture_id"), plan.rect, plan.scout)
             // 2D->3D stages (and later reads back) a model input only when the depth model will take it.
             else RenderBridgeNative.captureTexture(session.renderer, source.getInt("color_texture_id"),
-                session.alpha || (session.depth && session.depthModel?.wantsInput() == true).also { source.put("depth_input_staged", it) })
+                session.alpha || (session.depth && session.depthModel?.wantsInput(source.getLong("frame_id")) == true).also { source.put("depth_input_staged", it) })
             if (token == 0L) {
                 // A full consumer ring must not consume the only remaining EOF
                 // frame. Keep the immutable producer lease and retry next draw.
@@ -504,6 +564,39 @@ internal class MpvVideoBridge(
             if (releaseProducer)
                 check(MpvSourceNative.release(session.host.handle, producer)) { "Producer lease release failed" }
         }
+    }
+    /** Layer frame: an identity only, the picture is already on the compositor's surface. Offered to
+     * Godot like a completed pair so its claim/seek/EOF bookkeeping is unchanged. */
+    private fun captureLayer(session: Session, source: JSONObject): Boolean {
+        val producer = source.getLong("producer_token")
+        val epoch = source.getLong("source_epoch")
+        if (session.sourceEpoch == 0L) session.sourceEpoch = epoch
+        if (epoch < session.sourceEpoch) { MpvSourceNative.release(session.host.handle, producer); return true }
+        session.sourceEpoch = epoch
+        val token = ++layerTokens
+        val width = source.getInt("width"); val height = source.getInt("height")
+        val pair = source.put("slot_token", token).put("mpv_source_handle", session.host.handle)
+            .put("session_id", session.id).put("logical_session_id", session.scope.logicalSessionId).put("generation", session.scope.generation)
+            .put("format_revision", 1).put("effect_revision", 1).put("model_generation", 1)
+            .put("input_width", session.dims[0]).put("input_height", session.dims[1]).put("profile_key", session.profile)
+            .put("model_content_rect", JSONArray(listOf(0.0, 0.0, 1.0, 1.0)))
+            .put("stereo_sbs", session.stereo).put("top_bottom", session.topBottom)
+            .put("source_pts_verified", true).put("source_ticket_origin", "compositor_layer_playback_restart_or_position")
+            .put("alpha_requested", false).put("depth_requested", false).put("inference_ran", false)
+            .put("pair_identity_verified", true).put("alpha_kind", "none_layer").put("alpha_texture_id", 0)
+            .put("alpha_width", session.dims[0] * 2).put("alpha_height", session.dims[1])
+            .put("consumer_copy_fence_ready", true).put("buffer_width", width).put("buffer_height", height)
+        session.leases[token] = Lease(DecodedFrameGate.Ticket(session.scope, source.getLong("frame_id"), source.getLong("pts_us"), 1, 1),
+            pair, NO_PLANES.first, NO_PLANES.second, producer)
+        session.captured++
+        val obsolete = session.display.offer(identity(pair))
+        if (obsolete == token) { retire(session, token); return true }
+        obsolete?.let { retire(session, it) }
+        session.pairs[token] = pair; session.latestPair = pair.toString()
+        val head = session.display.readyToken()
+        if (head != null && (head == token || obsolete != null))
+            session.pairs[head]?.let { emit("mpv_pair_available", session.id, it.toString()) }
+        return true
     }
     private fun finishCopy(session: Session) {
         val copying = session.copying ?: return
@@ -626,6 +719,7 @@ internal class MpvVideoBridge(
      * Its returned copy outlives the old processing session, without a decoder lease. */
     fun freeze(id: Int, token: Long, request: Int): Boolean {
         val session = sessions[id] ?: return false
+        if (session.host.layer) return false // the layer surface keeps showing its frame until the next one
         if (request <= 0 || !freezePending.compareAndSet(false, true)) return false
         synchronized(session.lock) {
             if (!active(session) || !session.display.pin(token)) { freezePending.set(false); return false }
@@ -688,20 +782,22 @@ internal class MpvVideoBridge(
         val session = sessions[id] ?: return false
         synchronized(session.lock) { if (!session.display.detach(token)) return false }
         render(Runnable { synchronized(session.lock) {
-            if (session.renderer > 0 && session.owner == EGL14.eglGetCurrentContext() && !session.display.owns(token)) retire(session, token)
+            if (retirable(session) && !session.display.owns(token)) retire(session, token)
         } })
         return true
     }
     private fun release(session: Session, token: Long) {
         render(Runnable { synchronized(session.lock) {
-            if (session.renderer > 0 && session.owner == EGL14.eglGetCurrentContext() && !session.display.owns(token)) retire(session, token)
+            if (retirable(session) && !session.display.owns(token)) retire(session, token)
         } })
     }
+    private fun retirable(session: Session) =
+        session.host.layer || (session.renderer > 0 && session.owner == EGL14.eglGetCurrentContext())
     private fun retire(session: Session, token: Long) {
         check(!session.display.owns(token)) { "Cannot retire a Godot display claim" }
         val lease = session.leases.remove(token) ?: return
         session.pairs.remove(token)
-        RenderBridgeNative.retire(session.renderer, token); session.retiring.add(token)
+        if (session.renderer > 0) { RenderBridgeNative.retire(session.renderer, token); session.retiring.add(token) }
         // After the bridge fence: the MPV slot may be reused once every draw of this pair completes.
         if (lease.producer > 0) check(MpvSourceNative.release(session.host.handle, lease.producer)) { "Borrowed producer release failed" }
     }
@@ -782,6 +878,7 @@ internal class MpvVideoBridge(
                 pollRetirements(session)
             }
         }
+        if (session.host.layer) session.leases.keys.toList().filter { !session.display.owns(it) }.forEach { retire(session, it) }
         if (session.display.heldClaims() > 0 || session.retiring.isNotEmpty()) return
         if (session.renderer > 0) RenderBridgeNative.close(session.renderer)
         session.renderer = 0; session.buffers.clear(); session.scoutBuffers.clear(); session.leases.clear(); session.pairs.clear()
@@ -816,7 +913,11 @@ internal class MpvVideoBridge(
         // creation has no sessions; UI can reopen the same authorized URI.
         sessions.values.forEach { fail(it, "MPV_GL_CONTEXT_RECREATED", IllegalStateException("Owner context recreated")) }
     }
+    private var layerTokens = 0L // GL thread: layer pair tokens (no bridge slot behind them)
+    @Volatile private var currentLayerSurface: android.view.Surface? = null
     companion object {
+        /** Nominal swapchain size: the decoder sets the buffer size; layer rects are in these units. */
+        const val LAYER_SURFACE_SIZE = 4096
         const val RVM_VIDEO_FPS = 20
         val ALPHA_FPS_RANGE = 10..40
         private val NO_PLANES: Pair<ByteBuffer, ByteBuffer> = ByteBuffer.allocateDirect(0) to ByteBuffer.allocateDirect(0)

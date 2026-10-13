@@ -47,6 +47,17 @@ static func valid_mode(value: Variant) -> bool:
 func _bank_path(bank: int) -> String:
 	return directory.path_join("file_modes_%d.json" % bank)
 
+func _value_field() -> String:
+	return "mode"
+
+func _valid_value(value: Variant) -> bool:
+	return valid_mode(value)
+
+func _normalize_value(value: Dictionary) -> Dictionary:
+	var result := value.duplicate(true)
+	result.geometry = int(result.geometry)
+	return result
+
 static func _decode(text: String) -> Variant:
 	var parser := JSON.new()
 	return parser.data if parser.parse(text) == OK else null
@@ -78,15 +89,13 @@ func _read_bank(path: String) -> Dictionary:
 	for key in payload.entries:
 		var entry: Variant = payload.entries[key]
 		if not key is String or key.length() != 64 or not key.is_valid_hex_number(false) \
-			or not entry is Dictionary or not valid_mode(entry.get("mode")):
+			or not entry is Dictionary or not _valid_value(entry.get(_value_field())):
 			continue
 		var updated: Variant = entry.get("updated")
 		if not (updated is int or updated is float) or not is_finite(float(updated)) \
 			or float(updated) != floorf(float(updated)) or float(updated) < 1 or float(updated) > float(serial):
 			continue
-		var mode: Dictionary = entry.mode.duplicate(true)
-		mode.geometry = int(mode.geometry)
-		result[key] = {"mode": mode, "updated": int(updated)}
+		result[key] = {_value_field(): _normalize_value(entry[_value_field()]), "updated": int(updated)}
 	return {"sequence": int(serial), "entries": result}
 
 func load_saved() -> void:
@@ -107,15 +116,15 @@ func load_saved() -> void:
 
 func lookup(uri: String) -> Dictionary:
 	var value: Dictionary = entries.get(key_for(uri), {})
-	return value.get("mode", {}).duplicate(true)
+	return value.get(_value_field(), {}).duplicate(true)
 
 func remember(uri: String, mode: Dictionary) -> bool:
 	var key := key_for(uri)
-	if key.is_empty() or not valid_mode(mode):
+	if key.is_empty() or not _valid_value(mode):
 		return false
 	if lookup(uri) == mode:
 		return true
-	entries[key] = {"mode": mode.duplicate(true), "updated": sequence + 1}
+	entries[key] = {_value_field(): _normalize_value(mode), "updated": sequence + 1}
 	while entries.size() > LIMIT:
 		var oldest := str(entries.keys()[0])
 		for candidate in entries:

@@ -21,7 +21,9 @@ func point(menu: Node3D, x: float, y: float) -> Vector3:
 
 func _run() -> void:
 	var main := InputMain.new()
-	main.settings_path = "user://photo-adjustments-%d.cfg" % Time.get_ticks_usec()
+	var settings_output := ProjectSettings.globalize_path("res://../../build/output/photo-adjustments-gallery")
+	DirAccess.make_dir_recursive_absolute(settings_output)
+	main.settings_path = settings_output.path_join("settings-%d.cfg" % Time.get_ticks_usec())
 	root.add_child(main)
 	main.set_process(false)
 	main.photo.set_process(false)
@@ -156,7 +158,67 @@ func _run() -> void:
 	check(legacy_photo.screen_distance == 3.0 and legacy_photo.screen_scale == 1.0 and legacy_photo.inspect_magnification == 2.0,
 		"Non-finite preferences fall back to defaults")
 	legacy_photo.free()
+	await gallery_sliders(main, image)
 	main.queue_free(); await process_frame
 	for failure in failures: push_error(failure)
 	print("Photo adjustment regression: %d checks, %d failures" % [checks, failures.size()])
 	quit(0 if failures.is_empty() else 1)
+
+func gallery_sliders(main: Node3D, image: Image) -> void:
+	var photo: Node3D = main.photo
+	var menu: Node3D = main.photo_menu
+	var output := ProjectSettings.globalize_path("res://../../build/output/photo-adjustments-gallery")
+	DirAccess.make_dir_recursive_absolute(output)
+	var items: Array[Dictionary] = []
+	for index in 12:
+		var path := output.path_join("slider-%d.png" % index)
+		image.save_png(path)
+		items.append({"uri":"file://" + path, "title":"slider-%d.png" % index, "kind":"image"})
+	photo.history_enabled = false; photo.auto_depth = false
+	photo.mode_memory = preload("res://scripts/file_mode_memory.gd").new(output.path_join("modes"))
+	menu.dismiss(); photo.set_projection(0); photo.set_screen_scale(1); photo.set_screen_distance(3)
+	photo.set_process(true)
+	photo.open_image(str(items[0].uri), "slider.png", items)
+	var deadline := Time.get_ticks_msec() + 5000
+	while photo.loading and Time.get_ticks_msec() < deadline: await create_timer(.01).timeout
+	check(not photo.loading and photo.error.is_empty(), "Gallery slider fixture loads a real photo")
+	photo.finish_transition(); photo.set_process(false); photo.gallery.set_process(false)
+	for layout in [2,3]:
+		photo.set_layout_mode(layout); photo.gallery._process(.02)
+		for expanded in [false,true]:
+			if expanded:
+				photo.gallery.activate(photo.index); photo.gallery._process(1)
+				check(photo.gallery.focus >= 0 and photo.panel.visible, "Expanded fixture exposes the focused photo controls: layout=%d" % layout)
+			menu.toggle(); menu._activate(Menu.PHOTO_ADJUST)
+			for hand in ["right_hand","left_hand"]:
+				var optical: bool = hand == "left_hand"
+				for target in [450,451]:
+					var row: Dictionary = menu._adjust_rows[target]
+					var y: float = row.knob.position.y
+					var node: Object = row.knob
+					var key: String = row.key
+					var context := "layout=%d expanded=%s hand=%s key=%s" % [layout,expanded,hand,key]
+					main.test_ray = [point(menu,.03,y),-menu.global_basis.z]
+					var hit: Dictionary = menu.ray_hit(main.test_ray[0],main.test_ray[1])
+					check(hit.get("target",-1) == target, "Actual ray reaches the photo adjustment rail: " + context)
+					if hit.get("target",-1) != target: continue
+					var before := commits.size()
+					if optical: main._dispatch_hand_input({hand:{"source":"hand","tracked":true,"down":true,"pressed":true,"position":main.test_ray[0]}})
+					else: main._on_controller_button("trigger_click",hand)
+					check(menu.has_pointer_capture() and menu._adjust_hand == hand and is_equal_approx(float(photo.snapshot()[key]),row.span.x), "Trigger/pinch captures and previews the lower endpoint: " + context)
+					main.test_ray = [point(menu,.63,y),-menu.global_basis.z]
+					main._update_menu_pointer(hand)
+					photo.gallery._process(.02); menu.refresh_values()
+					check(menu.has_pointer_capture() and menu._adjust_rows[target].knob == node and is_equal_approx(float(photo.snapshot()[key]),row.span.y), "Drag and gallery reflow retain capture while reaching the upper endpoint: " + context)
+					check(commits.size() == before, "Live drag does not commit before release: " + context)
+					if optical: main._dispatch_hand_input({hand:{"source":"hand","tracked":true,"down":false,"released":true,"position":main.test_ray[0]}})
+					else: main._on_controller_release("trigger_click",hand)
+					check(not menu.has_pointer_capture() and commits.size() == before + 1, "Release commits the photo adjustment exactly once: " + context)
+					var saved := ConfigFile.new(); saved.load(main.settings_path)
+					var restored := Photo.new(); restored.restore_view_settings(saved)
+					if key.begins_with("gallery_"): restored.gallery.set_mode(layout)
+					check(is_equal_approx(float(restored.snapshot()[key]),row.span.y), "Released adjustment survives configuration reload: " + context)
+					restored.free()
+			menu.dismiss()
+			if expanded: photo.gallery.return_focus(); photo.gallery._process(1)
+	main.test_ray = null

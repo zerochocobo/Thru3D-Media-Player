@@ -77,6 +77,9 @@ func _run() -> void:
 	check(menu._editor.is_empty() and menu.rows[0].title == "PT server", "Successful save uses the server name")
 	menu._activate(Menu.ROW_BASE); await settle()
 	check(not button(menu, Menu.EDIT).is_empty(), "Saved server offers edit while browsing")
+	menu._dlna_stack.append({"id": "folder", "title": "Folder"}); menu.refresh()
+	check(button(menu, Menu.EDIT).is_empty() and not button(menu, Menu.REFRESH).is_empty(), "DLNA subfolders keep refresh and omit connection editing")
+	menu._dlna_stack.clear(); menu.refresh()
 	menu._activate(Menu.EDIT)
 	check(menu._editor.host == "10.2.0.5" and menu._editor.port == "8200" and menu._editor.id == "uuid:remote", "Edit restores IP, port and identity")
 	platform.fail_save = true; menu._editor.host = "bad address"

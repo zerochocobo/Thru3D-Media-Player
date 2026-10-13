@@ -41,7 +41,19 @@ if ($process.ExitCode -ne 0) { throw 'Projected subtitle rendering failed.' }
 $log = (Get-Content $stdout -Raw) + (Get-Content $stderr -Raw)
 if ($log -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)') { throw 'Projected subtitle renderer reported errors.' }
 $render = Get-Content (Join-Path $env:PROJECTED_SUBTITLE_OUTPUT 'verification.json') -Raw | ConvertFrom-Json
-if ($render.state -ne 'passed' -or $render.samples.Count -ne 24 -or $render.motion_samples.Count -ne 36) { throw 'Projected caption pixel evidence incomplete.' }
+if ($render.state -ne 'passed' -or $render.samples.Count -ne 24 -or $render.surface_samples.Count -ne 24 -or $render.motion_samples.Count -ne 36) { throw 'Projected caption pixel evidence incomplete.' }
+$env:SUBTITLE_PROJECTION_OUTPUT = Join-Path $output 'per-eye-glyphs'
+$env:SUBTITLE_PROJECTION_LEGACY_PROBE = '0'
+$arguments[-1] = 'res://tests/render_subtitle_projection.gd'
+$stdout = Join-Path $workspace 'build/output/logs/subtitle-projection-render.log'
+$stderr = Join-Path $workspace 'build/output/logs/subtitle-projection-render-errors.log'
+$process = Start-Process -FilePath $env:GODOT_EXE -ArgumentList $arguments -WindowStyle Hidden -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+if (-not $process.WaitForExit(60000)) { throw "Per-eye subtitle renderer remains active (PID $($process.Id)); inspect before retrying." }
+$process.Refresh()
+$log = (Get-Content $stdout -Raw) + (Get-Content $stderr -Raw)
+if ($process.ExitCode -ne 0 -or $log -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)') { throw 'Per-eye subtitle glyph projection failed.' }
+$render = Get-Content (Join-Path $env:SUBTITLE_PROJECTION_OUTPUT 'verification.json') -Raw | ConvertFrom-Json
+if ($render.state -ne 'passed' -or $render.samples.Count -ne 96) { throw 'Per-eye subtitle glyph evidence incomplete.' }
 $arguments[-1] = 'res://tests/render_bitmap_subtitles.gd'
 $stdout = Join-Path $workspace 'build\output\logs\bitmap-subtitles-render.log'
 $stderr = Join-Path $workspace 'build\output\logs\bitmap-subtitles-render-errors.log'

@@ -27,7 +27,15 @@ func _run() -> void:
 	for angle in [-60.0, 0.0, 60.0]:
 		var direction := Basis(Vector3.RIGHT, Depth.elevation(angle)) * Vector3.FORWARD
 		check(is_equal_approx(direction.y, sin(deg_to_rad(angle))), "Positive angle points up, negative down")
-	check(Depth.distance(15) == 10 and is_equal_approx(Depth.distance(0), 0.1), "Distance bounds")
+	check(Depth.distance(15) == 5 and is_equal_approx(Depth.distance(0.1), 0.1), "Distance bounds are 0.1m to 5m")
+	for old_distance in [-1.0, 0.0, 0.1]:
+		check(is_equal_approx(Depth.distance(old_distance), 0.1) and Depth.slider_fraction(old_distance) == 0, "Values below 0.1m clamp to the lower endpoint")
+	for near_distance in [0.5, 0.99]:
+		check(Depth.distance(near_distance) == near_distance and Depth.slider_fraction(near_distance) > 0, "Submeter distances remain available for projection tests")
+	check(Depth.distance(INF) == Depth.DEFAULT and Depth.distance(NAN) == Depth.DEFAULT, "Non-finite distances restore the default")
+	check(is_equal_approx(Depth.slider_distance(0), 0.1) and Depth.slider_distance(1) == 5 and is_equal_approx(Depth.slider_distance(-1), 0.1), "Distance rail spans 0.1m to 5m")
+	var distance_row := Depth.slider_row("subtitle_distance", 0.1)
+	check(distance_row.span == Vector3(0.1, 5, 0.1) and is_equal_approx(distance_row.value, 0.1), "Shared menu distance row allows the nearest test distance")
 	var menu := Menu.new()
 	menu.state_provider = func(): return state
 	menu.adjustment_requested.connect(func(key, value): state[key] = value)
@@ -35,6 +43,8 @@ func _run() -> void:
 	root.add_child(menu)
 	menu.toggle()
 	menu._activate(110)
+	check(menu.choices.sliders.is_empty() and not menu._subtitle_appearance_open, "CC opens with appearance collapsed")
+	menu._activate(Menu.SUBTITLE_APPEARANCE)
 	check(menu.choices.sliders.size() == 3 and menu.choices.opened.is_empty(), "CC uses angle, distance and text-size sliders")
 	for target in menu.choices.sliders.keys():
 		var slider: Dictionary = menu.choices.sliders[target]

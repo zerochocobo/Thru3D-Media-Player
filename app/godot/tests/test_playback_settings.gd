@@ -2,6 +2,8 @@ extends SceneTree
 const Main := preload("res://scripts/main.gd")
 const Video := preload("res://scripts/mpv_video_display.gd")
 const Menu := preload("res://scripts/player_menu.gd")
+const Library := preload("res://scripts/library_menu.gd")
+const Style := preload("res://scripts/subtitle_style.gd")
 var checks := 0
 var failures: Array[String] = []
 
@@ -175,10 +177,14 @@ func _run() -> void:
 	video._apply_geometry()
 	video.stereo_sbs = true
 	menu.refresh()
-	check(menu._buttons.any(func(b): return b.node.get_children().any(func(n): return n is Label3D and n.text == "Eye order")), "Flat native stereo retains eye order")
+	check(click(menu, 100 + Menu.OPERATIONS[1].find("stereo_view")) and menu._adjustment == "stereo_view"
+		and menu._buttons.any(func(b): return b.target == Menu.EYE_SWAP and b.enabled), "Flat native stereo retains accessible eye-order control")
+	check(click(menu, 400) and menu._adjustment.is_empty(), "Eye-order panel returns to video settings")
 	video.stereo_sbs = false
 	click(menu, 10)
 	click(menu, 110)
+	check(menu.choices.sliders.is_empty() and not menu.choices.targets.values().any(func(item): return item.get("key") == "subtitle_style"), "Flat CC initially hides all appearance controls")
+	check(click(menu, Menu.SUBTITLE_APPEARANCE) and menu._subtitle_open, "Ray opens appearance without closing subtitle selection")
 	check(menu.choices.sliders.size() == 2 and menu.text_snapshot().contains("External subtitles must match the video filename."), "Flat CC provides size, vertical position and naming guidance")
 	video.subtitles.select(2)
 	menu.refresh()
@@ -186,6 +192,61 @@ func _run() -> void:
 	video.subtitles.select(1)
 	menu.refresh()
 	check(menu.choices.sliders.size() == 2, "Text controls return despite PGS also being listed")
+	var saved_size: float = video.subtitle_size
+	check(click(menu, Menu.SUBTITLE_APPEARANCE) and menu.choices.sliders.is_empty() and not menu.choices.targets.values().any(func(item): return item.get("key") == "subtitle_style") and video.subtitle_size == saved_size, "Collapsing hides all appearance controls without resetting settings")
+	check(click(menu, 110) and click(menu, 110) and not menu._subtitle_appearance_open and menu.choices.sliders.is_empty(), "Reopening subtitles starts with appearance collapsed")
+	# The global and playback panels share the same saved appearance and live renderer.
+	var library := Library.new()
+	library.settings_provider = main._library_settings
+	library.setting_changed.connect(main._on_setting_changed)
+	library.setting_previewed.connect(main._on_playback_adjustment)
+	root.add_child(library)
+	library.toggle(); library.section = Library.Section.SETTINGS; library.tab = Library.VIDEO_TAB; library.refresh()
+	check(library.rows.size() == 8 and library.rows[3].value == video.subtitle_size * 100, "Global size reflects playback's current value")
+	main._on_setting_changed("subtitle_size", 125)
+	check(video.subtitle_size == 1.25 and main._menu_state().subtitle_size == 125 and main._library_settings().subtitle_size == 125, "Global and playback size agree")
+	for preset in Style.PRESETS:
+		library.refresh()
+		var target := -1
+		for id in library.choices.targets:
+			if library.choices.targets[id].get("key") == "subtitle_style" and library.choices.targets[id].get("value") == preset.value: target = id
+		check(click(library, target) and video.subtitle_style == preset.value, "Ray selects visual style " + preset.value)
+		video._place_caption()
+		check(video.caption.modulate == preset.text_color and video.caption.outline_modulate == preset.outline_color, "Flat subtitle receives fill and outline " + preset.value)
+		for direction in [0, 1]:
+			video.geometry = 1; video.subtitle_direction = direction; video._apply_geometry(); video._place_caption()
+			check(video.projected_subtitles._style == preset.value and video.projected_subtitles._size == 1.25, "Same immersive cue updates style and size")
+			if direction == 0:
+				check(video.projected_subtitles.label.get_theme_color("font_color") == preset.text_color and video.projected_subtitles.label.get_theme_color("font_outline_color") == preset.outline_color, "Horizontal projected colors")
+			else:
+				check(video.projected_subtitles.vertical_text.text_color == preset.text_color and video.projected_subtitles.vertical_text.outline_color == preset.outline_color, "Vertical projected colors")
+		video.geometry = 0; video._apply_geometry()
+	main._on_player_setting("subtitle_style", "cyan_black")
+	main._save_playback_adjustments()
+	var appearance_saved := ConfigFile.new()
+	check(appearance_saved.load(main.settings_path) == OK and appearance_saved.get_value("subtitles", "style") == "cyan_black" and appearance_saved.get_value("subtitles", "size") == 1.25, "Style and size persist together")
+	video.subtitle_size = 1.0; video.subtitle_style = Style.DEFAULT
+	main.settings = appearance_saved; main._restore_subtitle_settings()
+	check(video.subtitle_size == 1.25 and video.subtitle_style == "cyan_black", "Startup restores the actual saved appearance")
+	for old_distance in [10.0, 0.5, 0.1]:
+		main.settings.set_value("subtitles", "distance", old_distance)
+		main._restore_subtitle_settings()
+		var expected_distance: float = minf(old_distance, 5.0)
+		check(is_equal_approx(video.subtitle_distance, expected_distance) and is_equal_approx(main._menu_state().subtitle_distance, expected_distance) and is_equal_approx(main._library_settings().subtitle_distance, expected_distance), "Startup and both menus honor 0.1m to 5m test limits")
+	main._save_playback_adjustments()
+	var distance_saved := ConfigFile.new()
+	check(distance_saved.load(main.settings_path) == OK and is_equal_approx(float(distance_saved.get_value("subtitles", "distance")), 0.1), "Nearest test distance persists on save")
+	main.settings = distance_saved
+	main._restore_subtitle_settings()
+	check(is_equal_approx(video.subtitle_distance, 0.1), "Nearest test distance survives reload")
+	main.settings.set_value("subtitles", "style", {"bad": true}); main.settings.set_value("subtitles", "size", INF)
+	main._restore_subtitle_settings()
+	check(video.subtitle_style == Style.DEFAULT and video.subtitle_size == 1.0, "Malformed style and non-finite size return to readable defaults")
+	main._on_setting_changed("subtitle_size", 10)
+	check(video.subtitle_size == 0.5, "Global size clamps the minimum")
+	main._on_setting_changed("subtitle_size", 400)
+	check(video.subtitle_size == 2, "Global size clamps the maximum")
+	library.free()
 	menu.free()
 	video.free()
 	main.free()

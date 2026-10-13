@@ -70,11 +70,11 @@ func _run() -> void:
 	photo._process(0.3)
 	var target: int = photo.pending_index
 	photo._accept({"image":image,"thumbnail":image,"info":{}}, {"id":photo._request,"index":target})
-	check(photo._reveal_seconds > 0 and photo.material.get_shader_parameter("presentation_opacity") == 0.0, "Slow decode reveals in place instead of starting a second slide")
-	photo._process(.06)
-	check(is_equal_approx(photo.material.get_shader_parameter("presentation_opacity"), .5), "Loaded photo fades through the frost")
-	photo._process(.07)
-	check(not photo.placeholder_visible() and photo.material.get_shader_parameter("presentation_opacity") == 1.0, "Reveal releases the placeholder")
+	check(photo._reveal_seconds > 0 and photo.material.get_shader_parameter("reveal_progress") == 0.0, "Slow decode starts a reveal in place instead of a second slide")
+	photo._process(Photo.REVEAL_SECONDS * .5)
+	check(is_equal_approx(photo.material.get_shader_parameter("reveal_progress"), .5) and is_equal_approx(photo._placeholder_material.get_shader_parameter("reveal_progress"), .5), "Colour and frost share the same reveal frontier")
+	photo._process(Photo.REVEAL_SECONDS * .5 + .01)
+	check(not photo.placeholder_visible() and photo.material.get_shader_parameter("reveal_progress") == 1.0, "Reveal immediately releases the placeholder at completion")
 	# Cache metadata is used before a foreground transfer can respond.
 	photo.queue[2]["photo_info"] = {"width":4000,"height":6000}
 	photo._select(2)

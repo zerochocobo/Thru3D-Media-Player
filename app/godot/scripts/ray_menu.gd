@@ -2,6 +2,8 @@ extends Node3D
 
 signal session_control_requested(operation: String)
 signal placement_changed
+signal composition_changed
+signal composition_layout_changed
 
 const PAGE_SIZE := 7
 const NONE := -1
@@ -24,18 +26,33 @@ const PANEL := Color(0.065, 0.075, 0.095, 0.98)
 const TILE := Color(0.105, 0.12, 0.15, 1.0)
 const ACCENT := Color(0.54, 0.93, 0.77)
 const MUTED := Color(0.56, 0.62, 0.69)
+## Rasterize twice as large, then prefilter when projected into an eye buffer. The logical
+## typography and physical dimensions stay the same, including labels resized after creation.
+const TEXT_RASTER_SCALE := 2
+const TEXT_PIXEL_SIZE := 0.0012 / TEXT_RASTER_SCALE
+const CHOICE_MARK := "›"
+const POINTER_LINE_PRIORITY := 126
+const POINTER_DOT_PRIORITY := 127
 # File names and the menu are often Chinese/Japanese: fall back to the system CJK font.
 static var FONT: Font = _make_font()
 static var _font_language := I18n.language
-static func _make_font() -> Font:
+static var _bold_font: Font
+static var _bold_font_language := ""
+static func _make_font(weight: int = 400) -> Font:
 	var font := SystemFont.new()
+	font.font_weight = weight
 	var names := ["Noto Sans CJK SC", "Noto Sans SC", "Microsoft YaHei", "PingFang SC"]
 	if I18n.language == "zh_Hant":
 		names = ["Noto Sans CJK TC", "Noto Sans TC", "Microsoft JhengHei", "PingFang TC"]
 	elif I18n.language == "ja":
 		names = ["Noto Sans CJK JP", "Noto Sans JP", "Yu Gothic", "Meiryo", "Hiragino Sans"]
 	font.font_names = PackedStringArray(names + ["sans-serif"])
-	font.fallbacks = [ThemeDB.fallback_font]
+	font.generate_mipmaps = true
+	# Keep the engine's shared font untouched. Missing CJK/Latin characters must use the same
+	# sampling policy as the chosen system font, including Android's theme/system fallback.
+	var fallback := ThemeDB.fallback_font.duplicate() as FontFile
+	fallback.generate_mipmaps = true
+	font.fallbacks = [fallback]
 	return font
 
 static func ui_font() -> Font:
@@ -43,6 +60,19 @@ static func ui_font() -> Font:
 		_font_language = I18n.language
 		FONT = _make_font()
 	return FONT
+
+static func ui_bold_font() -> Font:
+	if _bold_font == null or _bold_font_language != I18n.language:
+		_bold_font_language = I18n.language
+		_bold_font = _make_font(700)
+	return _bold_font
+
+static func set_label_size(label: Label3D, logical_size: int) -> void:
+	label.font_size = logical_size * TEXT_RASTER_SCALE
+	label.pixel_size = TEXT_PIXEL_SIZE
+
+static func text_width(text: String, logical_size: int) -> float:
+	return ui_font().get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, logical_size * TEXT_RASTER_SCALE).x * TEXT_PIXEL_SIZE
 
 var _buttons: Array[Dictionary] = []
 var _labels: Array[Label3D] = []
@@ -76,6 +106,7 @@ func toggle() -> void:
 func dismiss() -> void:
 	visible = false
 	_hover.clear()
+	_hide_tooltip()
 	for pointer in _pointers.values():
 		pointer.line.visible = false
 		pointer.dot.visible = false
@@ -181,6 +212,7 @@ func _set_backdrop(size: Vector2, centre: Vector2 = Vector2.ZERO) -> void:
 	_place_device_status(Vector2(centre.x, centre.y - size.y * 0.5 - 0.085))
 
 func _clear_layout() -> void:
+	composition_layout_changed.emit()
 	for button in _buttons:
 		button.node.free()
 	_buttons.clear()
@@ -213,6 +245,20 @@ func _button(target: int, text: String, centre: Vector2, size: Vector2, enabled:
 			foreground if enabled else MUTED, node)
 	_buttons.append({"target": target, "rect": Rect2(centre - size / 2, size), "enabled": enabled, "node": node,
 		"base_color": base, "foreground": foreground})
+
+## A ray hit area with no surface, material or empty caption. Only the supplied labels render.
+func _text_button(target: int, text: String, centre: Vector2, size: Vector2, enabled: bool = true,
+		parent: Node3D = null) -> void:
+	var node := Node3D.new()
+	node.position = Vector3(centre.x, centre.y, 0.006)
+	(parent if parent else self).add_child(node)
+	var foreground := Color(0.93, 0.95, 0.98)
+	var hover_labels: Array[Label3D] = []
+	if not text.is_empty():
+		var caption := _label(text, Vector3.ZERO, 18, node)
+		caption.modulate = foreground; hover_labels.append(caption)
+	_buttons.append({"target": target, "rect": Rect2(centre - size / 2, size), "enabled": enabled,
+		"node": node, "base_color": Color(TILE, 0), "foreground": foreground, "hover_labels": hover_labels})
 
 ## Icon-only round button (play, floating actions); [tip] names it while a ray hovers it.
 func _round(target: int, icon: String, centre: Vector2, diameter: float, enabled: bool = true,
@@ -325,6 +371,7 @@ func _material(color: Color, priority: int, overlay: bool = false) -> StandardMa
 	material.depth_draw_mode = BaseMaterial3D.DEPTH_DRAW_DISABLED
 	material.no_depth_test = overlay
 	material.render_priority = priority
+	material.texture_filter = BaseMaterial3D.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
 	return material
 
 func _label(text: String, location: Vector3, size: int, parent: Node = self) -> Label3D:
@@ -332,8 +379,8 @@ func _label(text: String, location: Vector3, size: int, parent: Node = self) -> 
 	label.text = text
 	label.font = ui_font()
 	label.language = I18n.language
-	label.font_size = size
-	label.pixel_size = 0.0012
+	set_label_size(label, size)
+	label.texture_filter = BaseMaterial3D.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
 	label.position = location
 	label.no_depth_test = false
 	label.render_priority = 12
@@ -349,36 +396,52 @@ func _pointer(hand: String) -> Dictionary:
 	var color := Color(0.15, 0.9, 1.0) if hand == "left_hand" else Color(1.0, 0.65, 0.15)
 	var line := MeshInstance3D.new()
 	line.mesh = ImmediateMesh.new()
-	line.material_override = _material(color, 14, true)
+	# Interaction feedback must draw after every popup, label and tooltip in the menu.
+	line.material_override = _material(color, POINTER_LINE_PRIORITY, true)
+	line.set_meta("menu_pointer", true)
 	add_child(line)
 	var dot := MeshInstance3D.new()
 	var sphere := SphereMesh.new()
 	sphere.radius = 0.009
 	sphere.height = 0.018
 	dot.mesh = sphere
-	dot.material_override = _material(color, 15, true)
+	dot.material_override = _material(color, POINTER_DOT_PRIORITY, true)
+	dot.set_meta("menu_pointer", true)
 	add_child(dot)
 	_pointers[hand] = {"line": line, "dot": dot}
 	return _pointers[hand]
 
 func _update_highlights() -> void:
+	var changed := false
 	for button in _buttons:
 		var hovered: bool = button.enabled and _hover.values().has(button.target)
+		if button.has("hover_labels"):
+			var ink: Color = ACCENT if hovered else button.foreground
+			if not button.enabled: ink = button.get("disabled_ink", MUTED)
+			for caption: Label3D in button.hover_labels:
+				if caption.modulate != ink: caption.modulate = ink; changed = true
+			continue
 		var color: Color = button.base_color
 		if not button.enabled: color = Color(0.26, 0.44, 0.38) if button.get("hover_disabled", false) and button.base_color == ACCENT else Color(0.085, 0.095, 0.115, button.base_color.a)
 		elif hovered: color = Color(0.67, 1.0, 0.86) if button.base_color == ACCENT else Color(0.23, 0.43, 0.38)
-		button.node.material_override.set_shader_parameter("surface_color", color)
+		if button.node.material_override.get_shader_parameter("surface_color") != color:
+			button.node.material_override.set_shader_parameter("surface_color", color)
+			changed = true
 	_update_tooltip()
+	if changed: composition_changed.emit()
 
 func _update_tooltip() -> void:
 	var shown := {}
+	var tip := ""
 	for button in _buttons:
-		if (button.enabled or button.get("hover_disabled", false)) and _tips.has(button.target) and _hover.values().has(button.target):
+		if not button.node.is_visible_in_tree(): continue
+		var candidate := tooltip_text(_tips.get(button.target))
+		if not candidate.is_empty() and (button.enabled or button.get("hover_disabled", false)) and _hover.values().has(button.target):
 			shown = button
+			tip = candidate
 			break
 	if shown.is_empty():
-		if _tooltip:
-			_tooltip.visible = false
+		_hide_tooltip()
 		return
 	if not _tooltip:
 		_tooltip = _quad(Vector2(0.2, 0.05), Vector3.ZERO, Color(0.02, 0.025, 0.03, 0.92), 16)
@@ -386,18 +449,43 @@ func _update_tooltip() -> void:
 		var text := _label("", Vector3(0, 0, 0.002), 17, _tooltip)
 		text.render_priority = 17
 	var label: Label3D = _tooltip.get_child(0)
-	label.text = str(_tips[shown.target])
-	var width := FONT.get_string_size(label.text, HORIZONTAL_ALIGNMENT_LEFT, -1, 17).x * 0.0012 + 0.04
-	var size := Vector2(width, 0.046)
-	_tooltip.mesh.size = size
-	_tooltip.material_override.set_shader_parameter("surface_size", size)
+	var changed := not _tooltip.visible or label.text != tip
+	if changed:
+		label.text = tip; label.font = ui_font()
+		var width := minf(text_width(tip, 17) + 0.006, 0.86)
+		label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		label.width = width / label.pixel_size
+		var measured := ui_font().get_multiline_string_size(tip, HORIZONTAL_ALIGNMENT_CENTER, label.width, label.font_size, -1, TextServer.BREAK_MANDATORY | TextServer.BREAK_WORD_BOUND | TextServer.BREAK_ADAPTIVE)
+		_tooltip.mesh.size = Vector2(width + 0.04, maxf(0.046, measured.y * label.pixel_size + 0.02))
+		_tooltip.material_override.set_shader_parameter("surface_size", _tooltip.mesh.size)
+	var size: Vector2 = _tooltip.mesh.size
 	var rect: Rect2 = shown.rect
-	_tooltip.position = Vector3(rect.get_center().x, rect.position.y - 0.04 if shown.get("tip_below", false) else rect.end.y + 0.04, 0.012)
+	# List tiles move with their scrolling parent; use their actual menu-space centre.
+	var centre := to_local(shown.node.global_position)
+	var bounds: Vector2 = _backdrop.mesh.size
+	var x := clampf(centre.x, _backdrop.position.x - bounds.x * 0.5 + size.x * 0.5, _backdrop.position.x + bounds.x * 0.5 - size.x * 0.5)
+	_tooltip.position = Vector3(x, centre.y + (-1 if shown.get("tip_below", false) else 1) * (rect.size.y * 0.5 + size.y * 0.5 + 0.017), 0.012)
 	_tooltip.visible = true
+	if changed: composition_layout_changed.emit()
+
+## Dynamic filenames and optional metadata can bypass _round/_glyph's empty-string guard.
+## Decide in the shared renderer so no menu can draw an empty background or stale caption.
+static func tooltip_text(value: Variant) -> String:
+	if not value is String and not value is StringName: return ""
+	var text := str(value).replace("\u200b", "").replace("\ufeff", "").strip_edges()
+	if text.replace("\u00a0", " ").replace("\u3000", " ").strip_edges().is_empty(): return ""
+	return text
+
+func _hide_tooltip() -> void:
+	if _tooltip:
+		var changed := _tooltip.visible
+		_tooltip.visible = false
+		(_tooltip.get_child(0) as Label3D).text = ""
+		if changed: composition_changed.emit()
 
 func _fit_title(title: String, suffix: String, width: float = 1.32, font_size: int = 26) -> String:
 	var fits := func(text: String) -> bool:
-		return ui_font().get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x * 0.0012 <= width
+		return text_width(text, font_size) <= width
 	if title.is_empty() or fits.call(title + suffix):
 		return title + suffix
 	# Longest prefix that fits with the ellipsis, by bisection: every measure shapes the text.

@@ -1,9 +1,11 @@
-param([string]$ToolRoot = $(if ($env:THRU3D_TOOL_ROOT) { $env:THRU3D_TOOL_ROOT } else { Join-Path ([Environment]::GetFolderPath('UserProfile')) '.cache\thru3d-toolchain' }), [switch]$RenderPreview)
+﻿param([string]$ToolRoot = $(if ($env:THRU3D_TOOL_ROOT) { $env:THRU3D_TOOL_ROOT } else { Join-Path ([Environment]::GetFolderPath('UserProfile')) '.cache\thru3d-toolchain' }), [switch]$RenderPreview)
 $ErrorActionPreference = 'Stop'
 $workspace = Split-Path -Parent $PSScriptRoot
 . "$PSScriptRoot\environment\Activate-QuestEnvironment.ps1" -ToolRoot $ToolRoot
 $projectDirectory = Join-Path $workspace 'app\godot'
 New-Item -ItemType Directory -Path (Join-Path $workspace 'build/output') -Force | Out-Null
+& $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_controller_bindings.gd 2>&1 | Tee-Object -FilePath (Join-Path $workspace 'build/output/controller-bindings-host.log')
+if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $workspace 'build/output/controller-bindings-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|ERROR:)') { throw 'Controller bindings regression failed.' }
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_photo_portrait.gd 2>&1 | Tee-Object -FilePath (Join-Path $workspace 'build/output/photo-portrait-host.log')
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $workspace 'build/output/photo-portrait-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|ERROR:)') { throw 'Photo portrait regression failed.' }
 & $env:GODOT_EXE --xr-mode off --rendering-method gl_compatibility --rendering-driver opengl3 --path $projectDirectory --quit-after 1800 --script res://tests/render_photo_portrait.gd 2>&1 | Tee-Object -FilePath (Join-Path $workspace 'build/output/photo-portrait-render.log')
@@ -12,18 +14,20 @@ $logDirectory = Join-Path $workspace 'build\output\logs'
 New-Item -ItemType Directory -Path $logDirectory -Force | Out-Null
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_view_follow.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'view-follow-host.log')
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'view-follow-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)') { throw 'View follow and session footer regression failed.' }
-& $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_photo_layouts.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'photo-layouts-host.log')
-if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'photo-layouts-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|ERROR:)') { throw 'Photo layout regression failed.' }
+& $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 18000 --script res://tests/test_photo_layouts.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'photo-layouts-host.log')
+if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'photo-layouts-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|ERROR:)' -or (Get-Content (Join-Path $logDirectory 'photo-layouts-host.log') -Raw) -notmatch 'Photo layouts: [0-9]+ checks, 0 failures') { throw 'Photo layout regression failed.' }
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_memory_swipe.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'memory-swipe-host.log')
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'memory-swipe-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|ERROR:)') { throw 'Memory displacement swipe regression failed.' }
-& $env:GODOT_EXE --xr-mode off --rendering-method gl_compatibility --rendering-driver opengl3 --path $projectDirectory --quit-after 1800 --script res://tests/render_photo_layouts.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'photo-layouts-render.log')
-if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'photo-layouts-render.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)') { throw 'Photo layout rendering failed.' }
+& $env:GODOT_EXE --xr-mode off --rendering-method gl_compatibility --rendering-driver opengl3 --path $projectDirectory --quit-after 18000 --script res://tests/render_photo_layouts.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'photo-layouts-render.log')
+if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'photo-layouts-render.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)' -or (Get-Content (Join-Path $logDirectory 'photo-layouts-render.log') -Raw) -notmatch 'Photo layout render: [0-9]+ checks, 0 failures') { throw 'Photo layout rendering failed.' }
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_spatial_photos.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'spatial-photos-host.log')
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'spatial-photos-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|ERROR:)') { throw 'Spatial photo regression failed.' }
 & $env:GODOT_EXE --xr-mode off --rendering-method gl_compatibility --rendering-driver opengl3 --path $projectDirectory --quit-after 1800 --script res://tests/render_spatial_photos.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'spatial-photos-render.log')
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'spatial-photos-render.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)') { throw 'Spatial eye/disparity rendering failed.' }
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_photo_loading.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'photo-loading-host.log')
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'photo-loading-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|ERROR:)') { throw 'Photo loading feedback regression failed.' }
+& $env:GODOT_EXE --xr-mode off --rendering-method gl_compatibility --rendering-driver opengl3 --path $projectDirectory --quit-after 1800 --script res://tests/render_photo_loading.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'photo-loading-render.log')
+if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'photo-loading-render.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)') { throw 'Photo loading pixels failed.' }
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_photo_depth_payload.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'photo-depth-payload.log')
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'photo-depth-payload.log') -Raw) -match '(?m)^(SCRIPT ERROR:|ERROR:)') { throw 'Photo depth payload regression failed.' }
 & $env:GODOT_EXE --xr-mode off --rendering-method gl_compatibility --rendering-driver opengl3 --path $projectDirectory --quit-after 1800 --script res://tests/render_photo_depth_resolution.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'photo-depth-resolution.log')
@@ -32,6 +36,14 @@ if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'photo-depth-r
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'input-visuals-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|ERROR:)') { throw 'Input model visibility regression failed.' }
 & $env:GODOT_EXE --xr-mode off --rendering-method gl_compatibility --rendering-driver opengl3 --path $projectDirectory --quit-after 1800 --script res://tests/render_menu_depth.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'menu-depth-render.log')
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'menu-depth-render.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)') { throw 'Menu and input model depth regression failed.' }
+& $env:GODOT_EXE --xr-mode off --rendering-method gl_compatibility --rendering-driver opengl3 --path $projectDirectory --quit-after 1800 --script res://tests/render_menu_text_sampling.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'menu-text-sampling.log')
+if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'menu-text-sampling.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)') { throw 'Menu text sampling regression failed.' }
+& $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_menu_tooltips.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'menu-tooltips.log')
+if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'menu-tooltips.log') -Raw) -match '(?m)^(SCRIPT ERROR:|ERROR:)') { throw 'Menu tooltip regression failed.' }
+& $env:GODOT_EXE --xr-mode off --rendering-method gl_compatibility --rendering-driver opengl3 --path $projectDirectory --quit-after 1800 --script res://tests/render_menu_composition.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'menu-composition.log')
+if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'menu-composition.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)') { throw 'Menu compositor capture regression failed.' }
+& $env:GODOT_EXE --xr-mode off --rendering-method gl_compatibility --rendering-driver opengl3 --path $projectDirectory --quit-after 1800 --script res://tests/render_layer_backdrop.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'layer-backdrop.log')
+if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'layer-backdrop.log') -Raw) -notmatch 'Layer backdrop: [0-9]+ checks, 0 failures') { throw 'Layer backdrop sky regression failed.' }
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_i18n.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'i18n-host.log')
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'i18n-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|ERROR:)') { throw 'UI localization regression failed.' }
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_hand_pointer.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'hand-pointer-host.log')
@@ -53,6 +65,10 @@ if ((Get-Content (Join-Path $logDirectory 'c03-host-regression.log') -Raw) -matc
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_c04_layout.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'c04-host-regression.log')
 if ($LASTEXITCODE -ne 0) { throw 'C04 host regression failed.' }
 if ((Get-Content (Join-Path $logDirectory 'c04-host-regression.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)') { throw 'C04 host regression reported runtime errors.' }
+& $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_video_layer.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'video-layer-host.log')
+if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'video-layer-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)') { throw 'Compositor video layer regression failed.' }
+& $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_mpv_rotation.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'mpv-rotation-host.log')
+if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'mpv-rotation-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)') { throw 'MPV source rotation regression failed.' }
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_c05_playback.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'c05-host-regression.log')
 if ($LASTEXITCODE -ne 0) { throw 'C05 host regression failed.' }
 if ((Get-Content (Join-Path $logDirectory 'c05-host-regression.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)') { throw 'C05 host regression reported runtime errors.' }
@@ -74,6 +90,8 @@ if ((Get-Content (Join-Path $logDirectory 'mpv-subtitles-host.log') -Raw) -match
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_file_mode_memory.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'file-mode-memory-host.log')
 if ($LASTEXITCODE -ne 0) { throw 'File mode memory host regression failed.' }
 if ((Get-Content (Join-Path $logDirectory 'file-mode-memory-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)') { throw 'File mode memory host regression reported runtime errors.' }
+& $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_file_track_memory.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'file-track-memory-host.log')
+if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'file-track-memory-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)') { throw 'Per-file audio and subtitle restoration regression failed.' }
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_player_sticks.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'player-sticks-host.log')
 if ($LASTEXITCODE -ne 0) { throw 'Player stick host regression failed.' }
 if ((Get-Content (Join-Path $logDirectory 'player-sticks-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)') { throw 'Player stick host regression reported runtime errors.' }

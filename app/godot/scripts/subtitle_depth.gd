@@ -2,7 +2,8 @@ extends RefCounted
 
 # Position is elevation in degrees, independent of the subtitle plane distance.
 const DEFAULT := 5.0
-const LIMITS := Vector2(0.1, 10.0)
+# Include near-field distances while verifying the physical per-eye projection.
+const LIMITS := Vector2(0.1, 5.0)
 const DEFAULT_POSITION := 0.0
 const POSITION_LIMITS := Vector2(-60.0, 60.0)
 

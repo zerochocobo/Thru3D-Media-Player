@@ -2,6 +2,7 @@
 
 This directory retains upstream license texts, source locks, checksums and provenance. The application's overall GPL v3 choice does not replace these components' existing terms. See [licensing scope](../docs/LICENSING.md) for the component inventory and binary-release requirements.
 
+- `openxr`: Khronos OpenXR headers used by the native compositor-layer bridge; their Apache-2.0 license text and upstream header notices are retained. Godot supplies the runtime loader.
 - `mpv`: headers/provenance, exact source archives, library reference receipt and GPL/LGPL texts. The project's source-frame modification is in `native/mpv/patches`.
 - `p115rsacipher`: original MIT notice and provenance for the Kotlin 115 RSA adaptation.
 - `gradle`: wrapper Apache-2.0 license and notice.

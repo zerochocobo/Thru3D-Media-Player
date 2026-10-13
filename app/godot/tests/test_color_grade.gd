@@ -71,6 +71,7 @@ func _run() -> void:
 	root.add_child(menu)
 	menu.toggle()
 	menu.section = 0; menu._subtitle_open = true; menu.refresh()
+	menu._activate(Menu.SUBTITLE_APPEARANCE)
 	check(menu.choices.targets.values().any(func(item): return item.get("key") == "subtitle_distance"), "Subtitle popup contains the distance slider")
 	menu.press_pointer("right", distance_origin(menu, 1.0), -menu.global_basis.z, true)
 	check(distance == 10 and commits == 0, "Ray press previews subtitle depth")

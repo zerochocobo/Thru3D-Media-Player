@@ -77,7 +77,8 @@ internal class DlnaLibrary(
                 val uri = entry.getString("uri")
                 references.remove(uri)
                 references[uri] = JSONObject().put("uri", uri).put("object_id", entry.getString("id"))
-                    .put("server", selected.json()).put("subtitles", entry.optJSONArray("subtitles") ?: JSONArray())
+                    .put("server", selected.json()).put("parent_id", objectId).put("subtitle_origin", "directory")
+                    .put("subtitles", entry.optJSONArray("subtitles") ?: JSONArray())
             }
             // Keep every video in the complete displayed directory available for subtitle selection.
             while (references.size > DlnaClient.MAX_BROWSE_ITEMS) references.remove(references.keys.first())
@@ -91,18 +92,58 @@ internal class DlnaLibrary(
         val original = synchronized(this) { references[uri] } ?: return emptyList()
         val reference = JSONObject(original.toString())
         var captions = reference.optJSONArray("subtitles") ?: JSONArray()
-        // Refresh metadata for history replay: added/removed/language tracks can change on the server.
-        runCatching {
-            val selected = server(reference.getJSONObject("server")) ?: return@runCatching
-            val entries = DlnaClient.browse(selected, reference.getString("object_id"), metadata = true)
-            val entry = (0 until entries.length()).map { entries.getJSONObject(it) }.firstOrNull { it.optString("uri") == uri }
-            captions = entry?.optJSONArray("subtitles") ?: JSONArray()
+        var origin = reference.optString("subtitle_origin", "legacy")
+        var captionVideo = uri
+        var parentRequested = false
+        val selected = reference.optJSONObject("server")?.let(::server)
+        val objectId = reference.optString("object_id")
+        fun updateVideo(entry: JSONObject?) {
+            entry?.optString("uri")?.let { DlnaClient.httpUri(it) }?.let { captionVideo = it.toString() }
         }
-        if (captions.length() == 0) captions = runCatching { DlnaClient.captionHeader(uri) }.getOrDefault(JSONArray())
+        fun refreshParent(): Boolean {
+            val parent = reference.optString("parent_id")
+            if (selected == null || objectId.isBlank() || parent.isBlank() || parent == "-1") return false
+            parentRequested = true
+            reference.put("subtitle_directory_fallback", true)
+            return runCatching {
+                val entry = video(DlnaClient.browse(selected, parent), objectId)
+                // A complete parent listing confirms removal as well as added/language tracks.
+                captions = entry?.optJSONArray("subtitles") ?: JSONArray()
+                origin = "directory"
+                updateVideo(entry)
+                true
+            }.getOrDefault(false)
+        }
+        val metadata = if (selected != null && objectId.isNotBlank())
+            runCatching { DlnaClient.browse(selected, objectId, metadata = true) }.getOrNull() else null
+        if (metadata != null) {
+            // Resource URLs can change (signed queries, alternate paths); IDs are server-scoped.
+            val entry = video(metadata, objectId)
+            updateVideo(entry)
+            if (reference.optString("parent_id").isBlank()) {
+                entry?.optString("parent_id")?.takeIf { it.isNotBlank() && it != "-1" && it != objectId }
+                    ?.let { reference.put("parent_id", it) }
+            }
+            val refreshed = entry?.optJSONArray("subtitles")
+            when {
+                refreshed != null && refreshed.length() > 0 -> { captions = refreshed; origin = "metadata" }
+                origin == "header" -> captions = JSONArray() // Header-only servers need a fresh HEAD, not a directory scan.
+                captions.length() > 0 || reference.optBoolean("subtitle_directory_fallback") -> refreshParent()
+                else -> captions = JSONArray()
+            }
+            // An empty/minimal BrowseMetadata response is not proof that old tracks were removed.
+            // If the parent is unavailable, the optional downloader still validates cached links.
+        }
+        if (captions.length() == 0 || (metadata != null && origin == "legacy" && !parentRequested)) {
+            val header = runCatching { DlnaClient.captionHeader(captionVideo) }.getOrDefault(JSONArray())
+            if (header.length() > 0) { captions = header; origin = "header" }
+            else if (captions.length() == 0 && origin == "header" && metadata != null && !parentRequested &&
+                reference.optBoolean("subtitle_directory_fallback")) refreshParent()
+        }
         synchronized(this) {
             if (references[uri] === original) {
                 references.remove(uri)
-                references[uri] = reference.put("subtitles", captions)
+                references[uri] = reference.put("subtitles", captions).put("subtitle_origin", origin)
                 // The selected item must survive restart even if it was early in a large page.
                 runCatching { store() }
             }
@@ -114,6 +155,10 @@ internal class DlnaLibrary(
             if (type.isEmpty()) null else MediaSubtitleLink(url, track.optString("title"), type)
         }.take(8)
     }
+
+    private fun video(entries: JSONArray, objectId: String): JSONObject? = (0 until entries.length())
+        .mapNotNull { entries.optJSONObject(it) }
+        .singleOrNull { it.optString("kind") == "video" && it.optString("id") == objectId }
 
     private fun store() = persist(JSONObject().put("servers", JSONArray(saved.values.toList()))
         .put("references", JSONArray(references.values.toList().takeLast(256))).toString())

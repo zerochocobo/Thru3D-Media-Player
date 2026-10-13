@@ -251,11 +251,20 @@ func _run() -> void:
 	near.fill(Color(.8,0,0))
 	FileAccess.open(host.depth_path, FileAccess.WRITE).store_buffer(near.get_data())
 	main.photo.platform = host
+	main._remember_auto_depth(false)
 	main._on_library_chosen(entries[0].uri, entries[0].title)
 	await settle(main.photo)
 	main.photo_menu._activate(Menu.PHOTO_DEPTH)
+	check(not main.photo.depth_requested and main.photo_menu._depth_open, "Single photo 3D click only opens adjustment")
+	var controls_origin: Vector3 = main.photo_menu.to_global(Vector3(Menu.DEPTH_X, 0.025, 1))
+	main.photo_menu.visible = true
+	main.photo_menu.press_pointer("right_hand", controls_origin, -main.photo_menu.global_basis.z, true)
+	main.photo_menu.release_pointer("right_hand", Vector3.ZERO, Vector3.ZERO, true)
+	main.photo_menu.press_pointer("right_hand", controls_origin, -main.photo_menu.global_basis.z, true)
+	main.photo_menu.release_pointer("right_hand", Vector3.ZERO, Vector3.ZERO, true)
+	main.photo_menu._activate(Menu.PHOTO_DEPTH)
 	await process_frame
-	check(main.photo.depth_requested and main.photo.depth_enabled and main.photo_menu._depth_open, "Photo icon opens slider and prepares one depth map")
+	check(main.photo.depth_requested and main.photo.depth_enabled and main.photo.depth_strength == 1.0 and main.photo_menu._depth_open, "Photo double click prepares one depth map at 100%")
 	var original_knob: Object = main.photo_menu._depth_knob
 	var original_texture: Object = main.photo._depth_texture
 	var y := Menu.DEPTH_SPAN.y

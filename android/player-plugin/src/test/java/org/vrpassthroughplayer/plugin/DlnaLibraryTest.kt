@@ -15,6 +15,172 @@ class DlnaLibraryTest {
         """<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body><u:BrowseResponse xmlns:u="urn:schemas-upnp-org:service:ContentDirectory:1"><u:Result>${escape(didl)}</u:Result><NumberReturned>$returned</NumberReturned><TotalMatches>$total</TotalMatches><UpdateID>$update</UpdateID></u:BrowseResponse></s:Body></s:Envelope>"""
     private val description = """<root><device><friendlyName>PT server</friendlyName><UDN>uuid:pt</UDN><serviceList><service><serviceType>urn:schemas-upnp-org:service:ContentDirectory:1</serviceType><controlURL>/control/cds</controlURL></service></serviceList></device></root>"""
 
+    private inner class CaptionFixture : java.io.Closeable {
+        var mode = "full"
+        var parentCaptions = true
+        var parentAvailable = true
+        var parentInMetadata = false
+        var header = false
+        var downloadAvailable = true
+        var includeOther = false
+        val requests = mutableListOf<String>()
+        val payload = "1\n00:00:00,000 --> 00:00:02,000\nFixture subtitle\n".toByteArray()
+        val fixture = MediaServerClientTest.Fixture { request, _, body ->
+            when {
+                request.startsWith("HEAD ") -> {
+                    requests.add("head")
+                    MediaServerClientTest.Reply(headers = if (header) "CaptionInfo.sec: /movie.srt\r\n" else "", body = byteArrayOf())
+                }
+                request.startsWith("GET ") -> MediaServerClientTest.Reply(if (downloadAvailable) 200 else 404, body = payload)
+                else -> {
+                    val metadata = body.contains("BrowseMetadata")
+                    val id = Regex("<ObjectID>(.*?)</ObjectID>").find(body)!!.groupValues[1]
+                    requests.add((if (metadata) "metadata:" else "children:") + id)
+                    if ((!metadata && !parentAvailable) || (metadata && mode == "http_error"))
+                        MediaServerClientTest.Reply(503, body = byteArrayOf())
+                    else {
+                        fun video(id: String = "v_1", captions: Boolean = true, changed: Boolean = false): String =
+                            """<item id="$id"${if (metadata && parentInMetadata) " parentID=\"0\"" else ""}><dc:title>Movie</dc:title><res protocolInfo="http-get:*:video/mp4:*">/movie.mp4${if (changed) "?token=new" else ""}</res>${if (captions) "<res protocolInfo=\"http-get:*:text/srt:*\">/${if (id == "v_1") "movie" else "other"}.srt</res>" else ""}</item>"""
+                        val entries = if (metadata) when (mode) {
+                            "empty" -> ""
+                            "omits" -> video(captions = false)
+                            "changed_uri" -> video(changed = true)
+                            "wrong_id" -> video(id = "other")
+                            else -> video(captions = parentCaptions)
+                        } else (if (mode == "removed_video") "" else video(captions = parentCaptions)) +
+                            if (includeOther) video(id = "other") else ""
+                        MediaServerClientTest.Reply(body = soap(xml(entries)).toByteArray())
+                    }
+                }
+            }
+        }
+        var state = JSONObject().put("servers", JSONArray().put(DlnaClient.Server("id", "Fixture",
+            fixture.url + "/description.xml", fixture.url + "/cds").json())).toString()
+        fun library() = DlnaLibrary({ state }, { state = it })
+        fun browse(library: DlnaLibrary) = library.browse("id", "0").getJSONObject(0).getString("uri")
+        fun tracks(library: DlnaLibrary, uri: String) = SidecarSubtitles.forDlna(library.subtitles(uri)) { source, name ->
+            val bytes = ByteArray(payload.size)
+            source.open().use { assertEquals(payload.size, it.read(0, bytes, bytes.size)) }
+            assertArrayEquals(payload, bytes)
+            source.close()
+            name
+        }
+        override fun close() = fixture.close()
+    }
+
+    @Test fun omittedMetadataKeepsDirectorySubtitleAfterRestart() {
+        CaptionFixture().use { f ->
+            val uri = f.browse(f.library())
+            f.mode = "omits"
+            val restored = f.library()
+            assertEquals(1, f.tracks(restored, uri).size)
+            assertEquals(listOf("children:0", "metadata:v_1", "children:0"), f.requests)
+            assertEquals("0", JSONObject(f.state).getJSONArray("references").getJSONObject(0).getString("parent_id"))
+        }
+    }
+
+    @Test fun emptyMetadataRevalidatesDirectoryInsteadOfErasingTracks() {
+        CaptionFixture().use { f ->
+            val library = f.library(); val uri = f.browse(library)
+            f.mode = "empty"
+            assertEquals(1, f.tracks(library, uri).size)
+        }
+    }
+
+    @Test fun metadataUsesObjectIdAcrossVideoUrlChangesWithoutExtraDirectoryReads() {
+        CaptionFixture().use { f ->
+            val library = f.library(); val uri = f.browse(library)
+            f.mode = "changed_uri"
+            assertEquals(1, f.tracks(library, uri).size)
+            assertEquals(listOf("children:0", "metadata:v_1"), f.requests)
+        }
+    }
+
+    @Test fun anotherObjectWithTheSameVideoUriCannotSupplyCaptions() {
+        CaptionFixture().use { f ->
+            val library = f.library(); val uri = f.browse(library)
+            f.mode = "wrong_id"
+            assertEquals("/movie.srt", library.subtitles(uri).single().url.path)
+            assertEquals(listOf("children:0", "metadata:v_1", "children:0"), f.requests)
+        }
+    }
+
+    @Test fun confirmedSubtitleRemovalAndLaterAdditionAreReflectedInHistory() {
+        CaptionFixture().use { f ->
+            val uri = f.browse(f.library())
+            f.mode = "omits"; f.parentCaptions = false
+            assertTrue(f.library().subtitles(uri).isEmpty())
+            f.parentCaptions = true
+            assertEquals(1, f.tracks(f.library(), uri).size)
+        }
+    }
+
+    @Test fun removedVideoDoesNotTakeAnotherItemsSubtitleOrItsOwnOldCache() {
+        CaptionFixture().use { f ->
+            val library = f.library(); val uri = f.browse(library)
+            f.mode = "removed_video"; f.parentCaptions = false; f.includeOther = true
+            assertTrue(library.subtitles(uri).isEmpty())
+        }
+    }
+
+    @Test fun failedParentRefreshPreservesValidatedBytesButLaterRemovalClearsThem() {
+        CaptionFixture().use { f ->
+            val library = f.library(); val uri = f.browse(library)
+            f.mode = "omits"; f.parentAvailable = false
+            assertEquals(1, f.tracks(library, uri).size)
+            f.parentAvailable = true; f.parentCaptions = false
+            assertTrue(library.subtitles(uri).isEmpty())
+        }
+    }
+
+    @Test fun legacyReferenceCanLearnParentFromMetadataAndRejectRemovedCaptions() {
+        CaptionFixture().use { f ->
+            val uri = f.browse(f.library())
+            val data = JSONObject(f.state)
+            data.getJSONArray("references").getJSONObject(0).apply { remove("parent_id"); remove("subtitle_origin") }
+            f.state = data.toString()
+            f.mode = "omits"; f.parentInMetadata = true; f.parentCaptions = false
+            assertTrue(f.library().subtitles(uri).isEmpty())
+            assertEquals("0", JSONObject(f.state).getJSONArray("references").getJSONObject(0).getString("parent_id"))
+        }
+    }
+
+    @Test fun legacyReferenceWithoutParentRetainsOnlyReadableSubtitleBytes() {
+        CaptionFixture().use { f ->
+            val uri = f.browse(f.library())
+            val data = JSONObject(f.state)
+            data.getJSONArray("references").getJSONObject(0).apply { remove("parent_id"); remove("subtitle_origin") }
+            f.state = data.toString(); f.mode = "omits"
+            val restored = f.library()
+            assertEquals(1, f.tracks(restored, uri).size)
+            f.downloadAvailable = false
+            assertTrue(f.tracks(restored, uri).isEmpty())
+        }
+    }
+
+    @Test fun headerOnlyServersRefreshTheHeaderWithoutParentBrowseOnReplay() {
+        CaptionFixture().use { f ->
+            f.parentCaptions = false; f.header = true
+            val library = f.library(); val uri = f.browse(library)
+            assertEquals(1, f.tracks(library, uri).size)
+            assertEquals(1, f.tracks(library, uri).size)
+            f.header = false
+            assertTrue(library.subtitles(uri).isEmpty())
+            assertEquals(1, f.requests.count { it == "children:0" })
+            assertEquals(3, f.requests.count { it == "head" })
+        }
+    }
+
+    @Test fun completeMetadataAndHttpFailureKeepTheirExistingFastPaths() {
+        CaptionFixture().use { f ->
+            val library = f.library(); val uri = f.browse(library)
+            assertEquals(1, f.tracks(library, uri).size)
+            f.mode = "http_error"
+            assertEquals(1, f.tracks(library, uri).size)
+            assertEquals(listOf("children:0", "metadata:v_1", "metadata:v_1"), f.requests)
+        }
+    }
+
     @Test fun subtitlePrefixesMissingFromDidlDoNotBreakTheWholeDirectory() {
         val body = """<container id="folder"><dc:title>Folder</dc:title></container>
             <item id="with"><dc:title>Movie with subtitles</dc:title>
@@ -209,7 +375,7 @@ class DlnaLibraryTest {
             assertTrue(restored.subtitles(video).isEmpty())
             header = true
             assertEquals(endpoint + "/subs/movie.srt", restored.subtitles(video).single().url.toString())
-            assertEquals(listOf("children", "metadata", "metadata", "metadata"), flags)
+            assertEquals(listOf("children", "metadata", "metadata", "children", "metadata", "children"), flags)
             assertTrue(restored.subtitles("http://unknown/video.mp4").isEmpty())
         }
     }

@@ -1,17 +1,25 @@
 extends SceneTree
 const Library := preload("res://scripts/library_menu.gd")
+const I18n := preload("res://scripts/i18n.gd")
+const Style := preload("res://scripts/subtitle_style.gd")
+const Player := preload("res://scripts/player_menu.gd")
+var checks := 0
+var failures: Array[String] = []
+func check(ok: bool, message: String) -> void:
+	checks += 1
+	if not ok: failures.append(message)
 func _initialize() -> void: call_deferred("_run")
 func _run() -> void:
 	var output := OS.get_environment("SUBTITLE_SETTINGS_OUTPUT")
 	if output.is_empty(): quit(1); return
 	DirAccess.make_dir_recursive_absolute(output)
 	var viewport := SubViewport.new()
-	viewport.size = Vector2i(1280, 900)
+	viewport.size = Vector2i(1600, 1050)
 	viewport.own_world_3d = true
 	viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
 	root.add_child(viewport)
 	var camera := Camera3D.new()
-	camera.fov = 48
+	camera.fov = 60
 	viewport.add_child(camera)
 	var menu := Library.new()
 	camera.add_child(menu)
@@ -20,18 +28,88 @@ func _run() -> void:
 	menu.toggle()
 	menu._activate(Library.NAV_BASE + Library.Section.SETTINGS)
 	menu._activate(Library.TAB_BASE + Library.SUBTITLES_TAB)
-	for language in ["zh", "en"]:
-		preload("res://scripts/i18n.gd").use(language)
+	for language in ["zh", "zh_Hant", "en", "ja"]:
+		I18n.use(language)
+		state.subtitle_distance = 5.0; state.subtitle_position = 0.0; state.subtitle_direction = 0
+		state.subtitle_size = 125.0; state.subtitle_style = "yellow_black"
+		menu.scroll = 0; menu.refresh()
+		check(menu.rows.size() == 8, "All video and subtitle settings present: " + language)
+		await shot(viewport, output.path_join("video_" + language + ".png"))
+		menu._set_scroll(menu._max_scroll())
+		await shot(viewport, output.path_join("subtitles_" + language + ".png"))
+		var selected := 0; var previews := 0
+		for button in menu._buttons:
+			var item: Dictionary = menu.choices.targets.get(button.target, {})
+			if item.get("key") != "subtitle_style": continue
+			previews += 1
+			var label: Label3D = button.node.get_child(0)
+			var appearance := Style.colors(item.value)
+			check(label.text == ("Aa" if language == "en" else I18n.t("Subtitle sample")) and label.modulate == appearance.text_color and label.outline_modulate == appearance.outline_color and label.outline_size > 0, "Style sample shows actual fill and outline: " + language + " " + item.value)
+			check(label.outline_render_priority < label.render_priority, "Outline stays behind the sample text")
+			check(menu._tips[button.target] == I18n.t(appearance.hint), "Each sample has a localized hover hint")
+			var width := label.font.get_string_size(label.text, HORIZONTAL_ALIGNMENT_LEFT, -1, label.font_size).x * label.pixel_size
+			check(width + label.outline_size * 2 * label.pixel_size < button.rect.size.x, "Style sample fits its hit area")
+			if button.base_color == menu.SELECTED: selected += 1
+		check(previews == 5 and selected == 1, "Five visible styles and exactly one selection")
+		check(menu.text_snapshot().contains(I18n.t("Subtitle direction")), "Explicit subtitle direction visible: " + language)
+		for button in menu._buttons:
+			if str(menu.choices.targets.get(button.target, {}).get("value", "")) != "cyan_black": continue
+			var origin: Vector3 = button.node.to_global(Vector3(0, 0, 1))
+			menu.update_pointer("right_hand", origin, -menu.global_basis.z, true)
+			check(menu._tooltip.visible and menu._tooltip.get_child(0).text == I18n.t("Cyan / black outline"), "Ray hover exposes the style name")
+			await shot(viewport, output.path_join("hover_" + language + ".png"))
+			menu.update_pointer("right_hand", Vector3.ZERO, Vector3.ZERO, false)
+			break
+		# Settings fields beyond the visible list may neither draw nor take ray input.
+		menu._set_scroll(0)
+		for button in menu._buttons:
+			if not button.has("list_row") or int(button.list_row) - Library.ROW_BASE < menu._lines(): continue
+			check(not button.node.visible, "Offscreen setting field stays hidden")
+			var hit: Dictionary = menu.ray_hit(button.node.to_global(Vector3(0, 0, 1)), -menu.global_basis.z)
+			check(hit.get("target") != button.target, "Offscreen setting field cannot capture the ray")
+		menu._set_scroll(menu._max_scroll())
 		for direction in [0, 1]:
 			state.subtitle_direction = direction
 			for angle in [-60.0, 0.0, 60.0]:
 				state.subtitle_position = angle
-				state.subtitle_distance = 0.1 if angle < 0 else (10.0 if angle > 0 else 5.0)
+				state.subtitle_distance = 0.1 if angle < 0 else 5.0
 				menu.refresh()
-				await process_frame
-				await RenderingServer.frame_post_draw
-				await RenderingServer.frame_post_draw
-				viewport.get_texture().get_image().save_png(output.path_join("settings_%s_direction%d_%d.png" % [language, direction, angle]))
+				await shot(viewport, output.path_join("settings_%s_direction%d_%d.png" % [language, direction, angle]))
+	menu.free()
+	var player := Player.new()
+	viewport.add_child(player)
+	player.position = Vector3(0, -0.43, -1.85)
+	player.set_process(false)
+	var player_state := {"has_video": true, "source_uri": "file:///movie.mp4", "title": "影片", "duration_ms": 120000,
+		"subtitle_track": 1, "subtitle_options": [{"id": 1, "codec": "subrip", "title": "简体中文"}, {"id": 2, "codec": "subrip", "title": "English"}],
+		"subtitle_size": 125.0, "subtitle_style": "yellow_black", "text_subtitle_tracks": 2}
+	player.state_provider = func(): return player_state
+	var track_names := {"zh": ["中文字幕", "英文字幕"], "zh_Hant": ["中文字幕", "英文字幕"], "en": ["Chinese subtitles", "English subtitles"], "ja": ["中国語字幕", "英語字幕"]}
+	for language in ["zh", "zh_Hant", "en", "ja"]:
+		I18n.use(language)
+		player_state.title = I18n.t("Video")
+		for index in 2: player_state.subtitle_options[index].title = track_names[language][index]
+		for geometry in [0, 1]:
+			player_state.geometry = geometry
+			player.dismiss(); player.toggle(); player._activate(110)
+			check(player._subtitle_open and not player._subtitle_appearance_open and player.choices.sliders.is_empty(), "Player appearance starts collapsed")
+			await shot(viewport, output.path_join("player_%s_%s_collapsed.png" % [language, "flat" if geometry == 0 else "immersive"]))
+			player._activate(Player.SUBTITLE_APPEARANCE)
+			check(player._subtitle_appearance_open and player.choices.sliders.size() == (2 if geometry == 0 else 3), "Player disclosure opens all appropriate controls")
+			var visual_styles := player.choices.targets.values().filter(func(item): return item.get("key") == "subtitle_style")
+			check(visual_styles.size() == 5, "Player appearance contains the five visual samples")
+			await shot(viewport, output.path_join("player_%s_%s_expanded.png" % [language, "flat" if geometry == 0 else "immersive"]))
+			player._activate(Player.SUBTITLE_APPEARANCE)
+			check(player._subtitle_open and player.choices.sliders.is_empty(), "Player collapse retains subtitle selection panel")
 	viewport.queue_free()
 	await process_frame
-	quit()
+	FileAccess.open(output.path_join("verification.json"), FileAccess.WRITE).store_string(JSON.stringify({"checks": checks, "failures": failures}, "\t"))
+	for failure in failures: push_error(failure)
+	print("Subtitle settings render: %d checks, %d failures" % [checks, failures.size()])
+	quit(0 if failures.is_empty() else 1)
+
+func shot(viewport: SubViewport, path: String) -> void:
+	await process_frame
+	await RenderingServer.frame_post_draw
+	await RenderingServer.frame_post_draw
+	viewport.get_texture().get_image().save_png(path)

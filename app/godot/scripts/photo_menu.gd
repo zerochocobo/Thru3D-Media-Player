@@ -25,7 +25,9 @@ const PHOTO_RETURN := 416
 const PHOTO_SHUFFLE := 417
 const PHOTO_PORTRAIT := 418
 const PHOTO_LAYOUT_BASE := 470
+const PHOTO_WALL_ROWS := 490
 var _layout_open := false
+var _wall_rows_open := false
 const Photo := preload("res://scripts/photo_display.gd")
 const PHOTO_THUMB := 420
 var queue_provider: Callable
@@ -35,12 +37,17 @@ var _gallery_start := 0
 func _depth_maximum() -> float:
 	return DepthStrength.PHOTO_MAX
 
+func _depth_icon_target() -> int:
+	return PHOTO_DEPTH
+
 func _reset_navigation() -> void:
 	super._reset_navigation()
 	_gallery_open = false
 	_layout_open = false
+	_wall_rows_open = false
 
 func refresh_values() -> void:
+	composition_changed.emit()
 	if not visible: return
 	var latest: Dictionary = state_provider.call() if state_provider.is_valid() else {}
 	if _adjustment == "photo_view":
@@ -63,6 +70,7 @@ func refresh_values() -> void:
 			_draw()
 		else:
 			_refresh_depth()
+			_tips[PHOTO_DEPTH] = _depth_tip()
 			if is_instance_valid(_status): _status.text = _photo_status()
 			for button in _buttons:
 				if button.target == PHOTO_STRENGTH:
@@ -91,7 +99,7 @@ func _draw_bar() -> void:
 	_glyph(PHOTO_NEXT, "next", Vector2(0.14, 0.025), 0.085, _state.get("can_next", false) and not swapping, I18n.t("Next group" if groups else "Next image"))
 	_glyph(PHOTO_PORTRAIT, "alpha", Vector2(0.23, 0.025), 0.075, portrait or _state.get("portrait_available",false), I18n.t("Exit portrait" if portrait else "Portrait passthrough"))
 	if int(_state.get("geometry", 0)) == 0:
-		_glyph(PHOTO_DEPTH, "depth", Vector2(DEPTH_X, 0.025), 0.075, _can_depth(), I18n.t("Auto 3D"))
+		_glyph(PHOTO_DEPTH, "depth", Vector2(DEPTH_X, 0.025), 0.075, _can_depth(), _depth_tip())
 	_glyph(MODE, "view_mode", Vector2(0.41, 0.025), 0.075, has and not portrait, I18n.t("Image mode"))
 	_glyph(11, "settings", Vector2(0.5, 0.025), 0.075, has, I18n.t("Settings"))
 	_status = _label(_photo_status(), Vector3(0, -0.075, 0.004), 15)
@@ -120,12 +128,24 @@ func _draw_bar() -> void:
 		_draw_depth()
 
 func _draw_layouts() -> void:
+	if _wall_rows_open:
+		for rows in range(1, 4):
+			_button(PHOTO_WALL_ROWS + rows, I18n.t(["1 row", "2 rows", "3 rows"][rows - 1]), Vector2(-0.29 + (rows - 1) * 0.29, 0.46), Vector2(0.275, 0.13), true, "photo_wall")
+			if rows == int(_state.get("wall_rows", 1)):
+				_buttons.back().base_color = SELECTED
+				_icon("check", Vector3(0.105, 0.040, 0.006), 0.028, ACCENT, _buttons.back().node)
+		return
 	var icons := ["image", "photo_sides", "photo_wall", "memory"]
 	for i in 4:
 		_button(PHOTO_LAYOUT_BASE + i, I18n.t(Photo.Gallery.NAMES[i]), Vector2(-0.435 + i * 0.29, 0.46), Vector2(0.275, 0.13), true, icons[i])
 		if i == int(_state.get("layout", 0)):
 			_buttons.back().base_color = SELECTED
 			_icon("check", Vector3(0.105, 0.040, 0.006), 0.028, ACCENT, _buttons.back().node)
+
+func _adjustment_row(target: int, key: String, title: String, span: Vector3, y: float) -> void:
+	super._adjustment_row(target, key, title, span, y)
+	# The shared video row defaults to has_video; photo sliders use their own content.
+	_buttons.back().enabled = int(_state.get("count", 0)) > 0 if key.begins_with("gallery_") else _state.get("has_image", false)
 
 func _draw_adjustments() -> void:
 	if _adjustment != "photo_view":
@@ -222,11 +242,19 @@ var _scroll_after := 0
 
 func _activate(target: int) -> void:
 	if _activate_footer(target): return
+	if target > PHOTO_WALL_ROWS and target <= PHOTO_WALL_ROWS + 3:
+		_layout_open = false; _wall_rows_open = false
+		action_requested.emit("photo_wall_rows_%d" % (target - PHOTO_WALL_ROWS))
+		refresh(); return
 	if target >= PHOTO_LAYOUT_BASE and target < PHOTO_LAYOUT_BASE + 4:
+		if target == PHOTO_LAYOUT_BASE + 2:
+			_wall_rows_open = true; refresh(); return
 		_layout_open = false
+		_wall_rows_open = false
 		action_requested.emit("photo_layout_%d" % (target - PHOTO_LAYOUT_BASE))
 		refresh(); return
 	if target == PHOTO_LAYOUT:
+		_wall_rows_open = false
 		_layout_open = not _layout_open; _gallery_open = false; _mode_open = false; _close_depth_slider()
 		refresh(); return
 	if target == PHOTO_PORTRAIT:

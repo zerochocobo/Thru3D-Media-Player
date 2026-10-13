@@ -16,6 +16,12 @@ func _run() -> void:
 	var b: RefCounted = menu.server_browser
 	b.server = {"id":"profile", "provider":"emby", "name":"NAS"}; b.view = "home"
 	b.capabilities = {"navigation":["genres","tags","folders"], "facets":["genres","tags"], "filters":["watched"], "search":true}
+	for view in ["home", "scenes", "facets"]:
+		b.view = view; menu.refresh()
+		check(not menu._buttons.any(func(button): return button.target in [Browser.ACTION + 1, Browser.ACTION + 14, Browser.ACTION + 13]), "Opened media server views omit account add/edit/remove")
+	b.view = "servers"; menu.refresh()
+	check(menu._buttons.any(func(button): return button.target == Browser.ACTION + 14), "Server root retains connection editing")
+	b.view = "home"
 	menu.account_panel.open("server")
 	check(is_equal_approx(menu._pitch(), menu.ROW_PITCH) and menu._lines() == menu.VISIBLE_ROWS, "account views use account list geometry, not home-grid spacing")
 	var choices: Array = menu._buttons.filter(func(button): return button.target >= Menu.ROW_BASE + 1 and button.target <= Menu.ROW_BASE + 5)

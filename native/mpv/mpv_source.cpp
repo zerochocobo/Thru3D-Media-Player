@@ -27,6 +27,7 @@
 #include <vector>
 #include "json_quote.h"
 #include "pgs_bitmap.h"
+#include "frame_geometry.h"
 
 void quest_mpv_initialize_android(JNIEnv*, jobject);
 
@@ -37,6 +38,31 @@ void checked(int result, const char* action) {
 }
 std::string quote(const std::string& value) {
     return quest::json_quote(value);
+}
+// libmpv's default User-Agent is a bare "libmpv", which media servers also see from other
+// players' thumbnail probes. Identify the player itself; "libmpv" stays for HTTP-stack matching.
+std::once_flag user_agent_once;
+std::string user_agent = "Thru3D (Android; libmpv)";
+std::string package_version(JNIEnv* env, jobject context) {
+    std::string version;
+    jclass context_class = env->GetObjectClass(context);
+    jobject manager = env->CallObjectMethod(context,
+        env->GetMethodID(context_class, "getPackageManager", "()Landroid/content/pm/PackageManager;"));
+    auto* name = static_cast<jstring>(env->CallObjectMethod(context,
+        env->GetMethodID(context_class, "getPackageName", "()Ljava/lang/String;")));
+    if (!env->ExceptionCheck() && manager && name) {
+        jobject info = env->CallObjectMethod(manager, env->GetMethodID(env->GetObjectClass(manager),
+            "getPackageInfo", "(Ljava/lang/String;I)Landroid/content/pm/PackageInfo;"), name, 0);
+        if (!env->ExceptionCheck() && info) {
+            auto* text = static_cast<jstring>(env->GetObjectField(info,
+                env->GetFieldID(env->GetObjectClass(info), "versionName", "Ljava/lang/String;")));
+            if (!env->ExceptionCheck() && text) {
+                if (const char* chars = env->GetStringUTFChars(text, nullptr)) { version = chars; env->ReleaseStringUTFChars(text, chars); }
+            }
+        }
+    }
+    if (env->ExceptionCheck()) env->ExceptionClear();
+    return version.find_first_of(" \r\n()") == std::string::npos ? version : "";
 }
 std::string property(mpv_handle* core, const char* key) {
     char* text = mpv_get_property_string(core, key);
@@ -119,6 +145,7 @@ struct Source final {
     std::atomic<bool> seek_in_progress{false}, render_in_progress{false};
     std::atomic<uint64_t> stale_seek_frames_discarded{0};
     std::atomic<uint64_t> dimensions{0}, last_epoch{0}, epoch_floor{0};
+    std::atomic<int> source_rotation{0}; // output-frame rotation; RGBA bakes it once, decoder images do not
     std::atomic<uint64_t> rendered{0}, skipped{0}, published{0}, acquired{0}, released{0};
     std::atomic<uint64_t> seeks_started{0}, seeks_completed{0}, invalid_frames{0};
     // The last rejected ticket, so a source that never publishes can be diagnosed.
@@ -183,12 +210,25 @@ struct Source final {
     std::string stereo_mode; // status_mutex; MPV's demuxed stereo-in, never inferred from title
     std::atomic<bool> hardware_decoding{false};
     std::thread control_thread, render_thread;
+    // Layer mode: MediaCodec decodes straight into this OpenXR swapchain surface (vo=mediacodec_embed)
+    // and the runtime compositor shows it. There is no render thread and no frame image: each
+    // playback restart (open, seek) and a few position updates per second publish a frame
+    // identity only, so the owner's pair/seek/EOF bookkeeping runs unchanged.
+    jobject layer_surface = nullptr; // global reference, deleted with the source
+    JavaVM* vm = nullptr;
+    bool layer() const { return layer_surface != nullptr; }
+    uint64_t layer_token = 0, layer_frame = 0; // frames_mutex
+    int64_t layer_pts_us = -1;                 // frames_mutex
+    std::chrono::steady_clock::time_point layer_published_at{}; // control thread
+    double layer_published_position = -1;                       // control thread
 
     Source(std::string file, bool hw, bool with_audio, int position,
            std::vector<std::pair<std::string, std::string>> extra_audio = {},
-           std::vector<std::pair<std::string, std::string>> extra_subtitles = {}, bool precise_start = true)
+           std::vector<std::pair<std::string, std::string>> extra_subtitles = {}, bool precise_start = true,
+           jobject surface = nullptr, JavaVM* java = nullptr)
         : path(std::move(file)), hardware(hw), audio(with_audio), exact_start(precise_start), start_ms(position),
-          audio_files(std::move(extra_audio)), subtitle_files(std::move(extra_subtitles)), last_seek_exact(precise_start) {
+          audio_files(std::move(extra_audio)), subtitle_files(std::move(extra_subtitles)), last_seek_exact(precise_start),
+          layer_surface(surface), vm(java) {
         require(display != EGL_NO_DISPLAY && owner_context != EGL_NO_CONTEXT,
                 "MPV source must start in the Godot GLES owner context");
     }
@@ -196,6 +236,32 @@ struct Source final {
     ~Source() {
         closing.store(true); abandoned.store(true); wake.notify_all();
         if (control_thread.joinable()) control_thread.join();
+        // MPV no longer renders into the surface: the core was destroyed by the control thread.
+        if (layer_surface && vm) {
+            JNIEnv* env = nullptr; bool attached = false;
+            if (vm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6) == JNI_EDETACHED) {
+                attached = vm->AttachCurrentThread(&env, nullptr) == JNI_OK;
+            }
+            if (env) env->DeleteGlobalRef(layer_surface);
+            if (attached) vm->DetachCurrentThread();
+        }
+    }
+    /** Layer mode: announce the frame now on the surface (a new epoch after each seek). */
+    void publish_layer(mpv_handle* core, bool restart) {
+        double position = 0;
+        if (mpv_get_property(core, "time-pos", MPV_FORMAT_DOUBLE, &position) < 0 || !std::isfinite(position) || position < 0) return;
+        if (!dimensions.load()) return;
+        // Profile 5 / rotated sources show wrong on the layer (green IPT-PQ, sideways): never announce
+        // them, so Godot reopens on the eye buffers before any of these frames is shown.
+        if (dolby_profile5.load() || source_rotation.load() != 0) return;
+        std::lock_guard<std::mutex> lock(frames_mutex);
+        // seek() raised the floor before the command ran; the restart that follows starts it.
+        if (!restart && last_epoch.load() < epoch_floor.load()) return;
+        last_epoch.store(std::max<uint64_t>({last_epoch.load(), epoch_floor.load(), 1}));
+        layer_pts_us = static_cast<int64_t>(std::llround(position * 1e6));
+        ++layer_frame; layer_token = ++token_sequence; published.fetch_add(1); rendered.fetch_add(1);
+        int64_t unset = -1; first_published_us.compare_exchange_strong(unset, startup_us());
+        layer_published_at = std::chrono::steady_clock::now(); layer_published_position = position;
     }
     void owner() const {
         require(eglGetCurrentDisplay() == display && eglGetCurrentContext() == owner_context &&
@@ -260,6 +326,8 @@ struct Source final {
         const auto rate = property(core, "audio-params/samplerate"), channels = property(core, "audio-params/channel-count");
         const auto avsync = property(core, "avsync"), cache_pause = property(core, "paused-for-cache");
         const auto decoder_drops = property(core, "decoder-frame-drop-count");
+        // Layer mode has no frame tickets: the frames MPV released to the surface, minus its drops.
+        const auto frame_number = property(core, "estimated-frame-number"), vo_drops = property(core, "frame-drop-count");
         std::string tracks_json = "["; std::vector<int64_t> track_ids;
         std::string subtitles_json = "["; std::vector<int64_t> subtitle_ids;
         OwnedNode tracks;
@@ -320,6 +388,7 @@ struct Source final {
             ",\"playback_speed\":" + quote(property(core, "speed")) + ",\"volume\":" + quote(volume) + ",\"mute\":" + quote(mute) + ",\"audio_samplerate\":" + quote(rate) +
             ",\"audio_channels\":" + quote(channels) + ",\"avsync_seconds\":" + quote(avsync) +
             ",\"paused_for_cache\":" + quote(cache_pause) + ",\"decoder_frame_drop_count\":" + quote(decoder_drops) +
+            ",\"estimated_frame_number\":" + quote(frame_number) + ",\"vo_frame_drop_count\":" + quote(vo_drops) +
             ",\"snapshot_sequence\":" + std::to_string(++snapshot_sequence) +
             ",\"observed_monotonic_ns\":" + std::to_string(observed_ns) +
             ",\"clock_observation_scope\":\"MPV_audio_pts_including_AO_delay;_not_same_render_source_ticket_or_Godot_presentation\",\"eof_reached\":" + quote(eof) + "}";
@@ -348,6 +417,11 @@ struct Source final {
         // hardware decoder/filter chain starts. Retry on the control thread.
         if (w == MPV_ERROR_PROPERTY_UNAVAILABLE || h == MPV_ERROR_PROPERTY_UNAVAILABLE) return false;
         checked(w, "MPV output width"); checked(h, "MPV output height");
+        int64_t rotate = 0;
+        const int rotation_result = mpv_get_property(core, "video-out-params/rotate", MPV_FORMAT_INT64, &rotate);
+        if (rotation_result != MPV_ERROR_PROPERTY_UNAVAILABLE) checked(rotation_result, "MPV output rotation");
+        require(rotate >= -360 && rotate <= 360, "MPV source rotation out of range");
+        const int rotation = quest::frame_rotation(static_cast<int>(rotate));
         require(width > 0 && height > 0 && width <= 8192 && height <= 8192 && width*height <= 8192LL*4320,
                 "MPV source dimensions exceed the current GPU slot contract");
         // Before publishing dimensions: an Alpha session must render converted
@@ -364,6 +438,8 @@ struct Source final {
         { std::lock_guard<std::mutex> lock(status_mutex); pixel_aspect = par; stereo_mode = stereo; }
         const auto previous = dimensions.load();
         require(previous == 0 || previous == size, "MPV midstream size change requires a new format generation");
+        require(previous == 0 || source_rotation.load() == rotation, "MPV midstream rotation change requires a new format generation");
+        source_rotation.store(rotation);
         dimensions.store(size); wake.notify_one();
         return true;
     }
@@ -373,7 +449,15 @@ struct Source final {
             core = mpv_create(); require(core != nullptr, "MPV source create failed");
             auto option = [&](const char* key, const char* value) { checked(mpv_set_option_string(core, key, value), key); };
             option("config", "no"); option("load-scripts", "no"); option("terminal", "no");
-            option("vo", "libmpv"); option("hwdec", hardware ? "mediacodec" : "no"); option("hwdec-codecs", "all");
+            if (layer()) {
+                // The decoder renders into the compositor's surface; MPV only paces the releases.
+                option("vo", "mediacodec_embed"); option("hwdec", "mediacodec");
+                int64_t wid = static_cast<int64_t>(reinterpret_cast<intptr_t>(layer_surface));
+                checked(mpv_set_option(core, "wid", MPV_FORMAT_INT64, &wid), "wid");
+            } else {
+                option("vo", "libmpv"); option("hwdec", hardware ? "mediacodec" : "no");
+            }
+            option("hwdec-codecs", "all");
             option("vd-lavc-spatial-video", "yes");
             // Godot restores the per-eye display aspect. MPV must fill the packed FBO;
             // letterboxing here would change the eye rectangles before the VR shader splits them.
@@ -387,6 +471,11 @@ struct Source final {
             // Network sources: a deep read-ahead absorbs Wi-Fi jitter for 8K bitrates.
             option("cache", "auto"); option("demuxer-max-bytes", "256MiB"); option("demuxer-readahead-secs", "20");
             option("network-timeout", "30");
+            // stream_curl treats a 206 that ends before Content-Range's total as EOF unless it is
+            // issuing bounded requests; servers that answer open ranges in spans (virtual MP4
+            // passthrough) then stop playback a few seconds in. Bounded requests resume at the next byte.
+            option("curl-max-request-size", "32MiB");
+            option("user-agent", user_agent.c_str());
             option("osd-level", "0"); option("sub", "no"); option("sub-visibility", "no"); option("interpolation", "no"); option("dither", "no");
             option("scale", "bilinear"); option("cscale", "bilinear"); option("dscale", "bilinear");
             // Non-Profile-5 sources: one direct OES -> RGBA8 pass instead of an 8K RGBA16F intermediate plus a
@@ -424,11 +513,14 @@ struct Source final {
                 pgs_read = reinterpret_cast<PgsRead>(dlsym(RTLD_DEFAULT, "mpv_quest_get_pgs"));
             initialized_us.store(startup_us());
             checked(mpv_observe_property(core, 41, "sub-text", MPV_FORMAT_STRING), "MPV subtitle text observation");
-            render_thread = std::thread([this, core] { render(core); });
-            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(15);
-            while (!render_ready.load() && !render_failed.load() && !closing.load() && std::chrono::steady_clock::now() < deadline)
-                std::this_thread::sleep_for(std::chrono::milliseconds(2));
-            require(render_ready.load() && !render_failed.load(), "MPV shared renderer failed to initialize");
+            if (layer()) render_ready.store(true);
+            else {
+                render_thread = std::thread([this, core] { render(core); });
+                const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(15);
+                while (!render_ready.load() && !render_failed.load() && !closing.load() && std::chrono::steady_clock::now() < deadline)
+                    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+                require(render_ready.load() && !render_failed.load(), "MPV shared renderer failed to initialize");
+            }
             renderer_ready_us.store(startup_us());
             if (!closing.load()) {
                 // From the beginning, start precisely even in speed mode: an edit list can place the
@@ -540,17 +632,39 @@ struct Source final {
                         __android_log_print(added < 0 ? ANDROID_LOG_WARN : ANDROID_LOG_INFO, "QuestMpvSource",
                             "Extra subtitle track '%s': %s", title.c_str(), mpv_error_string(added));
                     }
+                    if (layer()) {
+                        // The container already names these before the decoder's first output reaches
+                        // the layer surface; VIDEO_RECONFIG would only confirm them after it is shown.
+                        if (property(core, "current-tracks/video/dolby-vision-profile") == "5") dolby_profile5.store(true);
+                        const std::string rotate = property(core, "current-tracks/video/demux-rotation");
+                        if (!rotate.empty() && rotate.find_first_not_of("-0123456789") == std::string::npos && rotate.size() < 6)
+                            source_rotation.store(quest::frame_rotation(std::stoi(rotate)));
+                    }
                     file_loaded_us.store(startup_us());
                     loaded = true; set_state("ready");
                     format_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(15);
                 }
                 else if (event->event_id == MPV_EVENT_VIDEO_RECONFIG) format(core);
                 else if (event->event_id == MPV_EVENT_SEEK) { awaiting_seek_event = false; core_eof.store(false); }
+                else if (event->event_id == MPV_EVENT_PLAYBACK_RESTART && layer() && !awaiting_seek_event) publish_layer(core, true);
                 else if (event->event_id == MPV_EVENT_END_FILE) {
                     const auto* end = static_cast<const mpv_event_end_file*>(event->data);
                     if (end->error < 0) throw std::runtime_error(std::string("MPV playback: ") + mpv_error_string(end->error));
                     set_state(end->reason == MPV_END_FILE_REASON_EOF ? "ended" : "stopped");
                     // Preserve EOF slots and the last source frame until consumer retirement.
+                }
+                if (layer() && loaded) {
+                    // A redraw request re-announces the shown frame (a new processing generation);
+                    // during playback the position advances a few times per second.
+                    std::lock_guard<std::mutex> lock(frames_mutex);
+                    const bool redraw = force_redraw.exchange(false) && layer_frame > 0;
+                    if (redraw) { layer_token = ++token_sequence; published.fetch_add(1); }
+                }
+                if (layer() && loaded && !awaiting_seek_event &&
+                    std::chrono::steady_clock::now() - layer_published_at >= std::chrono::milliseconds(200)) {
+                    double position = 0;
+                    if (mpv_get_property(core, "time-pos", MPV_FORMAT_DOUBLE, &position) >= 0 && std::isfinite(position) &&
+                        std::abs(position - layer_published_position) >= 0.001) publish_layer(core, false);
                 }
                 if (std::chrono::steady_clock::now() >= next_snapshot) {
                     if (loaded && dimensions.load() == 0) {
@@ -559,6 +673,15 @@ struct Source final {
                                 "MPV video output format did not become ready within 15 seconds");
                     }
                     snapshot(core); next_snapshot = std::chrono::steady_clock::now() + std::chrono::milliseconds(100);
+                    if (layer()) {
+                        // EOF names the frame still on the surface: the last one announced.
+                        std::lock_guard<std::mutex> lock(frames_mutex);
+                        final_ticket = {};
+                        if (core_eof.load() && layer_frame > 0) {
+                            final_ticket.source_epoch = last_epoch.load(); final_ticket.frame_id = layer_frame;
+                            final_ticket.media_pts_us = layer_pts_us;
+                        }
+                    }
                 }
             }
             if (render_failed.load()) set_state("failed", "Shared renderer failed; see render_error");
@@ -697,12 +820,9 @@ struct Source final {
                 // transaction. Ordinary client APIs never run under this flag.
                 if (seek_in_progress.load()) continue;
                 const int width = static_cast<int>(packed >> 32), height = static_cast<int>(packed & 0xffffffffu);
-                int out_width = width, out_height = height;
-                const int width_cap = max_output_width.load();
-                if (width_cap > 0 && width > width_cap) {
-                    out_width = width_cap & ~1;
-                    out_height = std::max(2, static_cast<int>(std::lround(static_cast<double>(height) * out_width / width)) & ~1);
-                }
+                const int rotation = source_rotation.load();
+                const auto color_size = quest::frame_color_size(width, height, rotation, max_output_width.load());
+                int out_width = color_size.width, out_height = color_size.height;
                 Slot* target = nullptr;
                 {
                     std::lock_guard<std::mutex> lock(frames_mutex);
@@ -735,7 +855,9 @@ struct Source final {
                 }
                 // Software MV-HEVC has no AImage to export. Render its complete
                 // eye pair at full size, including when Alpha requested direct mode.
-                const bool direct_render = direct.load() && !dolby_profile5.load() && hardware_decoding.load();
+                // Rotated decoder images would leave Alpha/depth inputs sideways. Let MPV's existing
+                // GPU pass normalize them before staging; zero-rotation sources keep direct export.
+                const bool direct_render = direct.load() && rotation == 0 && !dolby_profile5.load() && hardware_decoding.load();
                 if (direct_render) { out_width = 16; out_height = 8; } // MPV still selects and times the frame
                 if (target->color && (target->out_width != out_width || target->out_height != out_height)) {
                     glDeleteFramebuffers(1, &target->fbo); glDeleteTextures(1, &target->color); target->fbo = target->color = 0;
@@ -800,7 +922,7 @@ struct Source final {
                 if (direct_render && !target->image) { target->phase = Phase::free; continue; }
                 const bool default_crop = ticket.crop_x0 == 0 && ticket.crop_y0 == 0 && ticket.crop_x1 == 0 && ticket.crop_y1 == 0;
                 const bool full_crop = ticket.crop_x0 == 0 && ticket.crop_y0 == 0 && ticket.crop_x1 == width && ticket.crop_y1 == height;
-                require(ticket.width == width && ticket.height == height && ticket.rotation_degrees == 0 && (default_crop || full_crop),
+                require(ticket.width == width && ticket.height == height && quest::frame_rotation(ticket.rotation_degrees) == rotation && (default_crop || full_crop),
                         "MPV transformed source needs an explicit format mapping before publication");
                 auto observed_epoch = last_epoch.load();
                 while (observed_epoch < ticket.source_epoch &&
@@ -849,7 +971,28 @@ struct Source final {
         if (library) dlclose(library);
         // The EGL display belongs to Godot: never eglTerminate it here.
     }
+    std::string acquire_layer() {
+        std::lock_guard<std::mutex> lock(frames_mutex);
+        const auto packed = dimensions.load();
+        // The external MediaCodec surface does not share the RGBA rotation contract. Its owner
+        // reopens on the GPU path before displaying anything with an unhandled source rotation.
+        if (closing.load() || source_rotation.load() != 0 || layer_token <= last_acquired_token || !packed || last_epoch.load() < epoch_floor.load()) return "";
+        last_acquired_token = layer_token; acquired.fetch_add(1);
+        double par; std::string stereo;
+        { std::lock_guard<std::mutex> status_lock(status_mutex); par = pixel_aspect; stereo = stereo_mode; }
+        const int width = static_cast<int>(packed >> 32), height = static_cast<int>(packed & 0xffffffffu);
+        return "{\"producer_token\":" + std::to_string(layer_token) + ",\"color_texture_id\":0" +
+            ",\"frame_id\":" + std::to_string(layer_frame) + ",\"pts_us\":" + std::to_string(layer_pts_us) +
+            ",\"source_epoch\":" + std::to_string(last_epoch.load()) + ",\"render_sequence\":0,\"source_flags\":0" +
+            ",\"spatial_video\":false,\"width\":" + std::to_string(width) + ",\"height\":" + std::to_string(height) +
+            ",\"source_width\":" + std::to_string(width) + ",\"source_height\":" + std::to_string(height) +
+            ",\"pixel_aspect\":" + std::to_string(par) + ",\"stereo_mode\":" + quote(stereo) +
+            ",\"rotation_degrees\":0,\"color_target\":\"layer\",\"color_format\":\"surface\"" +
+            ",\"owner_context_shared\":true,\"producer_fence_ready\":true,\"source_ticket_valid\":true" +
+            ",\"immutable_color_frame\":false,\"coords\":\"compositor layer surface\"}";
+    }
     std::string acquire_frame() {
+        if (layer()) return acquire_layer();
         owner(); if (closing.load() || render_failed.load()) return "";
         std::lock_guard<std::mutex> lock(frames_mutex);
         if (closing.load() || render_failed.load()) return "";
@@ -882,9 +1025,10 @@ struct Source final {
             ",\"width\":" + std::to_string(newest->image ? t.width : newest->out_width) +
             ",\"height\":" + std::to_string(newest->image ? t.height : newest->out_height) +
             ",\"source_width\":" + std::to_string(t.width) + ",\"source_height\":" + std::to_string(t.height) +
-            ",\"pixel_aspect\":" + std::to_string(par) + ",\"stereo_mode\":" + quote(stereo) +
+            ",\"pixel_aspect\":" + std::to_string(quest::frame_pixel_aspect(par, quest::frame_rotation(t.rotation_degrees))) +
+            ",\"stereo_mode\":" + quote(quest::frame_stereo_mode(stereo, quest::frame_rotation(t.rotation_degrees))) +
             ",\"source_crop\":[" + std::to_string(t.crop_x0) + "," + std::to_string(t.crop_y0) + "," + std::to_string(t.crop_x1) + "," + std::to_string(t.crop_y1) +
-            "],\"rotation_degrees\":" + std::to_string(t.rotation_degrees) +
+            "],\"rotation_degrees\":0,\"source_rotation_degrees\":" + std::to_string(quest::frame_rotation(t.rotation_degrees)) +
             ",\"color_target\":\"" + std::string(newest->image ? "AHardwareBuffer" : "GL_TEXTURE_2D") +
             "\",\"color_format\":\"" + std::string(newest->image ? "decoder" : "GL_RGBA8") + "\"" +
             // Signed: tagged ARM64 pointers (top byte 0xb4) overflow a JSON reader's Long otherwise.
@@ -894,6 +1038,7 @@ struct Source final {
             "\"source_ticket_valid\":true,\"immutable_color_frame\":true,\"coords\":\"top-left; MPV FLIP_Y=0\"}";
     }
     bool release_frame(uint64_t token) {
+        if (layer()) { released.fetch_add(1); return token > 0; } // nothing is held: the surface keeps its frame
         owner(); std::lock_guard<std::mutex> lock(frames_mutex);
         for (auto& slot : slots) if (slot.token == token && slot.phase == Phase::acquired) {
             // Called after the last consumer command, including a copy or engine draw.
@@ -962,6 +1107,7 @@ struct Source final {
             ",\"audio_commands_applied\":" + std::to_string(audio_commands_applied.load()) +
             ",\"frame_cap_fps\":" + std::to_string(max_fps.load()) +
             ",\"max_output_width\":" + std::to_string(max_output_width.load()) +
+            ",\"source_rotation_degrees\":" + std::to_string(source_rotation.load()) +
             ",\"cadence_skipped\":" + std::to_string(cadence_skipped.load()) +
             ",\"cadence_untimed\":" + std::to_string(cadence_untimed.load()) +
             ",\"cadence_target_ns\":" + (cadence_target_ns.load() ? "true" : "false") +
@@ -970,7 +1116,13 @@ struct Source final {
             ",\"debug_step_images\":" + std::to_string(debug_step_images.load()) +
 #endif
             ",\"eof_source_resolved\":" + (final_copy == "null" ? "false" : "true") + ",\"eof_source_ticket\":" + final_copy +
-            ",\"retiring_slots\":" + std::to_string(retiring) + ",\"details\":" + snapshot + "}";
+            ",\"retiring_slots\":" + std::to_string(retiring) +
+            // Layer mode shows the decoder output as is: Profile 5 needs MPV's HDR conversion and a
+            // software decoder has no surface output. Rotation also needs the RGBA normalization
+            // shared by the displayed color, Alpha and depth, so the owner reopens those there.
+            ",\"layer\":" + (layer() ? "true" : "false") +
+            ",\"layer_compatible\":" + (!layer() || ((hardware_decoding.load() || dimensions.load() == 0) && !dolby_profile5.load() && source_rotation.load() == 0) ? "true" : "false") +
+            ",\"details\":" + snapshot + "}";
     }
 };
 std::mutex registry_mutex;
@@ -990,11 +1142,15 @@ Java_org_vrpassthroughplayer_plugin_MpvSourceNative_available(JNIEnv*, jclass) {
 extern "C" JNIEXPORT jlong JNICALL
 Java_org_vrpassthroughplayer_plugin_MpvSourceNative_create(JNIEnv* env, jclass, jobject context, jstring path, jint start,
                                                          jboolean hardware, jboolean audio, jint max_width, jobjectArray audio_files,
-                                                         jobjectArray subtitle_files, jboolean exact_start) {
+                                                         jobjectArray subtitle_files, jboolean exact_start, jobject surface) {
     try {
         require(extension_available(), "MPV source requires the verified private source-frame build");
         require(path && start >= 0, "Invalid MPV local source request");
         quest_mpv_initialize_android(env, context);
+        std::call_once(user_agent_once, [&] {
+            const auto version = package_version(env, context);
+            if (!version.empty()) user_agent = "Thru3D/" + version + " (Android; libmpv)";
+        });
         const char* utf = env->GetStringUTFChars(path, nullptr); require(utf != nullptr, "MPV local path unavailable");
         std::string file = utf; env->ReleaseStringUTFChars(path, utf);
         const bool local = !file.empty() && file.front() == '/';
@@ -1026,8 +1182,17 @@ Java_org_vrpassthroughplayer_plugin_MpvSourceNative_create(JNIEnv* env, jclass, 
             }
             return extra;
         };
-        auto source = std::make_shared<Source>(file, hardware == JNI_TRUE, audio == JNI_TRUE, start,
-            read_tracks(audio_files), read_tracks(subtitle_files), exact_start == JNI_TRUE);
+        JavaVM* vm = nullptr;
+        jobject layer_surface = nullptr;
+        if (surface) {
+            require(env->GetJavaVM(&vm) == JNI_OK, "Java VM unavailable for the layer surface");
+            layer_surface = env->NewGlobalRef(surface); require(layer_surface != nullptr, "Layer surface reference failed");
+        }
+        std::shared_ptr<Source> source;
+        try {
+            source = std::make_shared<Source>(file, hardware == JNI_TRUE, audio == JNI_TRUE, start,
+                read_tracks(audio_files), read_tracks(subtitle_files), exact_start == JNI_TRUE, layer_surface, vm);
+        } catch (...) { if (layer_surface) env->DeleteGlobalRef(layer_surface); throw; }
         source->max_output_width.store(max_width); // before any render; fixed for this source
         std::lock_guard<std::mutex> lock(registry_mutex);
         require(registry.size() < 2 && next_handle < std::numeric_limits<jlong>::max(), "MPV source capacity exhausted");

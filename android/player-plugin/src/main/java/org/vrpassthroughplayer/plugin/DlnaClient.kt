@@ -236,6 +236,7 @@ internal object DlnaClient {
             val entry = JSONObject().put("id", item.getAttribute("id")).put("title", title(item)).put("container", false)
                 .put("uri", httpUri(res.textContent.trim(), base)?.toString() ?: res.textContent.trim()).put("kind", if (imageItem) "image" else "video")
             if (!imageItem) entry.put("subtitles", subtitles(item, base))
+            item.getAttribute("parentID").takeIf { it.isNotBlank() && it != "-1" }?.let { entry.put("parent_id", it) }
             res.getAttribute("size").toLongOrNull()?.let { entry.put("size", it) }
             parseDuration(res.getAttribute("duration"))?.let { entry.put("duration_ms", it) }
             res.getAttribute("resolution").split('x').mapNotNull { it.toIntOrNull() }.takeIf { it.size == 2 }?.let {

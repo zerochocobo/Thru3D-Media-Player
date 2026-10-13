@@ -31,7 +31,7 @@ static func same(a: Variant, b: Variant) -> bool:
 	if (a is int or a is float) and (b is int or b is float): return is_equal_approx(float(a), float(b))
 	return a == b
 
-func _button(item: Dictionary, label: String, centre: Vector2, size: Vector2, parent: Node3D = null, selected: bool = false) -> int:
+func _button(item: Dictionary, label: String, centre: Vector2, size: Vector2, parent: Node3D = null, selected: bool = false, text_only: bool = false) -> int:
 	var target := BASE + targets.size()
 	targets[target] = item
 	var field_z := 0.0
@@ -41,15 +41,30 @@ func _button(item: Dictionary, label: String, centre: Vector2, size: Vector2, pa
 		var container: Node3D = parent.get_parent()
 		var local: Vector3 = container.to_local(parent.to_global(Vector3(centre.x, centre.y, 0)))
 		centre = Vector2(local.x, local.y); field_z = local.z + 0.004; parent = container
-	menu._button(target, menu._fit_title(label, "", size.x - 0.025, 18), centre, size, true, "", false, parent)
+	if text_only: menu._text_button(target, menu._fit_title(label, "", size.x - 0.025, 18), centre, size, true, parent)
+	else: menu._button(target, menu._fit_title(label, "", size.x - 0.025, 18), centre, size, true, "", false, parent)
 	var button: Dictionary = menu._buttons.back()
 	if field_z > 0: button.node.position.z = field_z
 	button.base_color = menu.SELECTED if selected else menu.TILE
-	button.node.material_override.set_shader_parameter("surface_color", button.base_color)
-	button.node.material_override.render_priority = 13
-	(button.node.get_child(0) as Label3D).font_size = 18
+	if not text_only:
+		button.node.material_override.set_shader_parameter("surface_color", button.base_color)
+		button.node.material_override.render_priority = 13
+	menu.set_label_size(button.node.get_child(0), 18)
 	(button.node.get_child(0) as Label3D).render_priority = 14
 	return target
+
+func _option_label(option: Dictionary) -> String:
+	if option.has("text_color") and menu.I18n.language == "en": return "Aa"
+	return menu.I18n.t(option.label)
+
+func _appearance(option: Dictionary) -> void:
+	if not option.has("text_color"): return
+	var label: Label3D = menu._buttons.back().node.get_child(0)
+	label.modulate = option.text_color
+	label.outline_modulate = option.get("outline_color", Color.BLACK)
+	label.outline_size = 4 * menu.TEXT_RASTER_SCALE
+	label.outline_render_priority = label.render_priority
+	label.render_priority += 1
 
 func field(parent: Node3D, row: Dictionary, centre: Vector2, width: float, height: float = 0.06) -> void:
 	if row.get("slider", false):
@@ -61,15 +76,20 @@ func field(parent: Node3D, row: Dictionary, centre: Vector2, width: float, heigh
 		var cell := (width - 0.014 * (options.size() - 1)) / options.size()
 		for index in options.size():
 			var option: Dictionary = options[index]
-			var target := _button({"kind": "choose", "key": key, "value": option.value}, menu.I18n.t(option.label),
+			var target := _button({"kind": "choose", "key": key, "value": option.value}, _option_label(option),
 				Vector2(centre.x - width/2 + cell/2 + index*(cell+0.014), centre.y), Vector2(cell, height), parent, same(row.value, option.value))
+			_appearance(option)
 			menu._tips[target] = menu.I18n.t(str(option.get("hint", row.get("hint", ""))))
 	else:
 		var label := ""
+		var selected: Dictionary = {}
 		for option in options:
-			if same(row.value, option.value): label = menu.I18n.t(option.label); break
+			if same(row.value, option.value):
+				label = _option_label(option); selected = option; break
 		if label.is_empty(): label = str(row.get("display_value", row.value))
-		var target := _button({"kind": "open", "key": key}, menu._fit_title(label, "  ▾", width - 0.04, 18), centre, Vector2(width, height), parent)
+		var target := _button({"kind": "open", "key": key}, menu._fit_title(label, "  " + menu.CHOICE_MARK, width - 0.025, 18), centre, Vector2(width, height), parent, false, true)
+		_appearance(selected)
+		menu._buttons.back().foreground = (menu._buttons.back().node.get_child(0) as Label3D).modulate
 		menu._tips[target] = menu.I18n.t(str(row.get("hint", "")))
 		if opened == key:
 			popup = row.duplicate(true)
@@ -138,6 +158,16 @@ func present(row: Dictionary, centre: Vector2, vertical_bounds: Vector2) -> void
 	if opened != str(row.key): return
 	popup = row.duplicate(true); anchor = centre; bounds = vertical_bounds
 
+## An owner can lay out a complete dialog while retaining ordinary release/cancel ownership.
+func option(option: Dictionary, centre: Vector2, size: Vector2) -> void:
+	var target := _button({"kind": "choose", "key": opened, "value": option.value}, _option_label(option),
+		centre, size, null, same(popup.value, option.value))
+	var node: MeshInstance3D = menu._buttons.back().node
+	node.position.z = 0.036; node.material_override.render_priority = 31
+	(node.get_child(0) as Label3D).render_priority = 32
+	_appearance(option)
+	menu._tips[target] = menu.I18n.t(str(option.get("hint", "")))
+
 func finish() -> void:
 	if opened.is_empty(): return
 	if popup.is_empty(): reset(); return
@@ -166,14 +196,7 @@ func finish() -> void:
 		var heading: Label3D = menu._label(menu.I18n.t(header), Vector3(x, top - 0.032, 0.039), 20)
 		heading.render_priority = 32
 	for row_index in count:
-		var option: Dictionary = options[offset + row_index]
-		var target := _button({"kind": "choose", "key": opened, "value": option.value}, menu.I18n.t(option.label),
-			Vector2(x, top - header_height - 0.039 - row_index*PITCH), Vector2(width - 0.07, 0.061), null, same(popup.value, option.value))
-		var node: MeshInstance3D = menu._buttons.back().node
-		node.position.z = 0.036
-		node.material_override.render_priority = 31
-		(node.get_child(0) as Label3D).render_priority = 32
-		menu._tips[target] = menu.I18n.t(str(option.get("hint", "")))
+		option(options[offset + row_index], Vector2(x, top - header_height - 0.039 - row_index*PITCH), Vector2(width - 0.07, 0.061))
 	if not footer.is_empty():
 		var hint: Label3D = menu._label(menu.I18n.t(footer), Vector3(x, top-height + footer_height / 2, 0.039), 16)
 		hint.modulate = menu.MUTED; hint.render_priority = 32
@@ -234,7 +257,7 @@ func update(hand: String, origin: Vector3, direction: Vector3, tracked: bool) ->
 		return
 	var delta: Vector2 = Vector2(point.x-capture.point.x, point.y-capture.point.y)
 	if delta.length() > 0.018: capture.moved = true
-	if capture.moved and not opened.is_empty():
+	if capture.moved and not opened.is_empty() and not popup.get("all_visible", false):
 		var next := clampi(int(capture.offset) + roundi(delta.y / PITCH), 0, maxi(0, popup.choices.size()-int(popup.get("rows", POPUP_ROWS))))
 		if next != offset: offset = next; menu.refresh()
 
@@ -265,6 +288,7 @@ func cancel(hand: String) -> void:
 
 func stick_scroll(y: float, delta: float) -> bool:
 	if opened.is_empty(): return false
+	if popup.get("all_visible", false): return true
 	if not capture.is_empty() or not is_finite(y) or absf(y) < 0.3: return true
 	scroll -= y*delta*7
 	if absf(scroll) >= 1:

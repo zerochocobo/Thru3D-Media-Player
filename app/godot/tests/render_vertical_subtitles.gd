@@ -1,6 +1,7 @@
 extends SceneTree
 const Patch := preload("res://scripts/projected_subtitles.gd")
 const Depth := preload("res://scripts/subtitle_depth.gd")
+const Style := preload("res://scripts/subtitle_style.gd")
 var failures: Array[String] = []
 var checks := 0
 func check(ok: bool, message: String) -> void:
@@ -24,7 +25,7 @@ func _run() -> void:
 	var report := {"samples": {}, "checks": 0, "failures": failures}
 	for key in samples:
 		caption.text = samples[key]
-		patch.update_patch(caption, material, Depth.anchor(0, true), 0.1, 0.063, true)
+		patch.update_patch(caption, material, Depth.anchor(0, true), 0.1, true)
 		await process_frame
 		await RenderingServer.frame_post_draw
 		await RenderingServer.frame_post_draw
@@ -62,16 +63,44 @@ func _run() -> void:
 		if key == "wrapped": check(columns.size() > 2, "Long bilingual lines wrap into additional columns")
 		if key == "empty_line": check(columns.size() == 3, "Blank lines retain separation")
 	caption.text = samples.bilingual
-	patch.update_patch(caption, material, Basis(), 5, 0.063, false)
+	patch.update_patch(caption, material, Basis(), 5, false)
 	await process_frame
 	await RenderingServer.frame_post_draw
 	await RenderingServer.frame_post_draw
 	patch.viewport.get_texture().get_image().save_png(output.path_join("horizontal.png"))
 	check(patch.label.visible and not patch.vertical_text.visible, "Direction switch replaces same cue immediately")
+	# Recolor the same cue without waiting for a new subtitle event in either orientation.
+	caption.text = "田田\nABC"
+	for vertical in [false, true]:
+		for preset in Style.PRESETS:
+			patch.update_patch(caption, material, Basis(), 5, vertical, 1.0, preset.value)
+			await process_frame
+			await RenderingServer.frame_post_draw
+			await RenderingServer.frame_post_draw
+			var image := patch.viewport.get_texture().get_image()
+			image.save_png(output.path_join("style_%s_%s.png" % [preset.value, "vertical" if vertical else "horizontal"]))
+			var fill := 0; var outline := 0
+			for y in image.get_height():
+				for x in image.get_width():
+					var color := image.get_pixel(x, y)
+					if color.a < 0.98: continue
+					if close_color(color, preset.text_color): fill += 1
+					if close_color(color, preset.outline_color): outline += 1
+			check(fill > 100 and outline > 100, "Rendered fill and outline match " + preset.value + (" vertical" if vertical else " horizontal"))
+	# A size-only change must refresh the patch, while unchanged frames keep it cached.
+	for vertical in [false, true]:
+		for text_size in [0.5, 2.0]:
+			patch.update_patch(caption, material, Basis(), 5, vertical, text_size, Style.DEFAULT)
+			check(patch._size == text_size and (patch.vertical_text.font_scale == text_size if vertical else patch.label.get_theme_font_size("font_size") == roundi(40 * text_size)), "Projected size changes immediately")
+			patch.viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
+			patch.update_patch(caption, material, Basis(), 5, vertical, text_size, Style.DEFAULT)
+			check(patch.viewport.render_target_update_mode == SubViewport.UPDATE_DISABLED, "Unchanged caption does not redraw")
 	for angle in [-60.0, 0.0, 60.0]:
 		var direction := Depth.anchor(angle, true) * Vector3.FORWARD
 		check(is_equal_approx(direction.x, sin(deg_to_rad(angle))) and is_zero_approx(direction.y), "Vertical slider moves left to right")
-	check(is_equal_approx(2 * atan(0.063 / (2 * Depth.distance(0))), 2 * atan(0.063 / 0.2)), "0.1m disparity reaches shader")
+	patch.update_patch(caption, material, Basis(), 0.1, false)
+	var inverse: Transform3D = material.get_shader_parameter("subtitle_world_to_patch")
+	check(is_equal_approx(inverse.affine_inverse().origin.length(), 0.1), "Direct nearest test input places the shared plane at 0.1m")
 	caption.free()
 	patch.queue_free()
 	await process_frame
@@ -81,3 +110,6 @@ func _run() -> void:
 	for failure in failures: push_error(failure)
 	print("Vertical subtitle render checks=", checks, " failures=", failures.size())
 	quit(0 if failures.is_empty() else 1)
+
+func close_color(a: Color, b: Color) -> bool:
+	return absf(a.r - b.r) < 0.04 and absf(a.g - b.g) < 0.04 and absf(a.b - b.b) < 0.04

@@ -95,7 +95,7 @@ class DebugDiagnosticsReceiver : BroadcastReceiver() {
                         when (intent.action) {
                         "com.wapok.thru3d.DEBUG_PLAYER_MPV" -> {
                             val operation = intent.getStringExtra("operation") ?: "open"
-                            require(operation in setOf("open", "alpha", "depth", "playing", "seek", "hold_pixels", "observe", "stereo", "profile", "close", "pixels", "subtitle", "display_quality", "sharpness", "cloud_accounts", "cloud_page_probe", "display_menu", "player_menu", "restart_app", "quit_app", "seek_policy_ui", "media_library_ui"))
+                            require(operation in setOf("open", "alpha", "depth", "playing", "seek", "hold_pixels", "observe", "stereo", "profile", "close", "pixels", "subtitle", "display_quality", "sharpness", "cloud_accounts", "cloud_page_probe", "display_menu", "player_menu", "restart_app", "quit_app", "seek_policy_ui", "media_library_ui", "photo_open", "photo_step", "photo_depth", "layer_flip", "layer_order", "menu_layers", "menu_bench"))
                             val command = JSONObject().put("operation", operation).put("request_key", request)
                                 .put("value", intent.getFloatExtra("value", 0f).toDouble())
                                 .put("benchmark", intent.getBooleanExtra("benchmark", false))
@@ -105,6 +105,8 @@ class DebugDiagnosticsReceiver : BroadcastReceiver() {
                                 .put("zero_copy", intent.getBooleanExtra("zero_copy", true))
                                 .put("borrow_color", intent.getBooleanExtra("borrow_color", true))
                                 .put("direct_yuv", intent.getBooleanExtra("direct_yuv", true))
+                                .put("normal_direct", intent.getBooleanExtra("normal_direct", true))
+                                .put("layer", intent.getBooleanExtra("layer", true))
                                 .put("enabled", intent.getBooleanExtra("enabled", false))
                                 .put("position_ms", intent.getIntExtra("position_ms", 0))
                                 .put("hold_seek_ms", intent.getIntExtra("hold_seek_ms", 0).coerceIn(0, 30000))
@@ -117,6 +119,13 @@ class DebugDiagnosticsReceiver : BroadcastReceiver() {
                                 val mode = intent.getStringExtra("seek_mode")
                                 require(mode in setOf("speed", "exact"))
                                 command.put("seek_mode", mode)
+                            }
+                            if (operation == "photo_open") {
+                                // Debug photo performance: an image folder and the file to open first.
+                                val folder = intent.getStringExtra("folder").orEmpty()
+                                require(folder.startsWith("/sdcard/") && !folder.contains(".."))
+                                command.put("folder", folder).put("name", intent.getStringExtra("name").orEmpty())
+                                    .put("layout", intent.getIntExtra("layout", -1)) // -1 keeps the viewer's layout
                             }
                             if (operation == "media_library_ui") {
                                 val step = intent.getStringExtra("step") ?: "snapshot"

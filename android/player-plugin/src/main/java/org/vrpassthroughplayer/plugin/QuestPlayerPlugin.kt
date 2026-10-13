@@ -300,7 +300,30 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     @UsedByGodot fun open_mpv_video(uri: String, startMs: Int, stereo: Boolean, profile: String, alpha: Boolean, vulkan: Boolean,
                                     depth: Boolean, topBottom: Boolean, exactSeek: Boolean): Int =
         if (closed.get()) -1 else mpv.open(uri, startMs, stereo, profile, alpha, vulkan, depth = depth, topBottom = topBottom,
-            exactSeek = exactSeek)
+            exactSeek = exactSeek, layer = videoLayer)
+    /** The next open decodes into the compositor video layer (normal playback only). */
+    @Volatile private var videoLayer = false
+    @UsedByGodot fun set_mpv_video_layer(enabled: Boolean) { videoLayer = enabled }
+    /** Godot's OpenXR handles (OpenXRAPIExtension); false when Android-surface swapchains are unavailable. */
+    @UsedByGodot fun bind_video_layer(instance: Long, session: Long, getProcAddr: Long, playSpace: Long): Boolean =
+        VideoLayerNative.bindSession(instance, session, getProcAddr, playSpace)
+    @UsedByGodot fun set_video_layers(count: Int, values: FloatArray): Boolean =
+        runCatching { VideoLayerNative.setLayers(count, values) }.getOrDefault(false)
+    // Picture layer: called on Godot's render thread (its GL context is current there).
+    @UsedByGodot fun create_layer_image(width: Int, height: Int, levels: Int, isStatic: Boolean): Boolean =
+        runCatching { VideoLayerNative.createImage(width, height, levels, isStatic) }.getOrDefault(false)
+    @UsedByGodot fun destroy_layer_image() { runCatching { VideoLayerNative.destroyImage() } }
+    @UsedByGodot fun acquire_layer_image(): Int = runCatching { VideoLayerNative.acquireImage() }.getOrDefault(0)
+    @UsedByGodot fun upload_layer_rows(y: Int, rows: Int, pixels: ByteArray, channels: Int): Boolean =
+        runCatching { VideoLayerNative.uploadRows(y, rows, pixels, channels) }.getOrDefault(false)
+    @UsedByGodot fun copy_layer_texture(texture: Int): Boolean = runCatching { VideoLayerNative.copyTexture(texture) }.getOrDefault(false)
+    @UsedByGodot fun copy_layer_band(texture: Int, y: Int, rows: Int): Boolean =
+        runCatching { VideoLayerNative.copyBand(texture, y, rows) }.getOrDefault(false)
+    @UsedByGodot fun release_layer_image(mipmaps: Boolean): Boolean =
+        runCatching { VideoLayerNative.releaseImage(mipmaps) }.getOrDefault(false)
+    @UsedByGodot fun video_layer_runtime_extensions(): String = runCatching { VideoLayerNative.runtimeExtensions() }.getOrDefault("")
+    @UsedByGodot fun video_layer_count(): Int = runCatching { VideoLayerNative.layerCount() }.getOrDefault(0)
+    @UsedByGodot fun video_layer_address(index: Int): Long = runCatching { VideoLayerNative.layerAddress(index) }.getOrDefault(0L)
     @UsedByGodot fun revise_mpv_video(id: Int, stereo: Boolean, alpha: Boolean, profile: String, positionMs: Int, depth: Boolean,
                                       topBottom: Boolean, exactSeek: Boolean): Int =
         if (closed.get()) -1 else mpv.revise(id, stereo, alpha, profile, positionMs, depth, topBottom, exactSeek)
@@ -345,6 +368,7 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
                 mpv.debugZeroCopy(command.optBoolean("zero_copy", true))
                 mpv.debugBorrowColor(command.optBoolean("borrow_color", true))
                 mpv.debugDirect(command.optBoolean("direct_yuv", true))
+                mpv.debugNormalDirect(command.optBoolean("normal_direct", true))
             }
         }
         val id = requestId.incrementAndGet()

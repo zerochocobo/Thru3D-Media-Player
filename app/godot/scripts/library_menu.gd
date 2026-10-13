@@ -34,9 +34,12 @@ const Quality := preload("res://scripts/display_quality.gd")
 const SeekPolicy := preload("res://scripts/seek_policy.gd")
 const ChoiceFields := preload("res://scripts/choice_fields.gd")
 var choices := ChoiceFields.new(self)
-const SETTING_TABS := ["Video", "VR subtitles", "Background", "About", "Display", "General"]
+const ControlsPage := preload("res://scripts/controls_page.gd")
+var controls_page := ControlsPage.new(self)
+const SETTING_TABS := ["Video", "VR subtitles", "Background", "About", "Display", "General", "Controls"]
 const GENERAL_TAB := 5
-const SETTING_ORDER := [GENERAL_TAB, DISPLAY_TAB, 0, 1, 2, 3]
+const SETTING_ORDER := [GENERAL_TAB, DISPLAY_TAB, 0, 2, 6, 3]
+const CONTROLS_TAB := 6
 const DISPLAY_TAB := 4
 const VIDEO_TAB := 0
 const SUBTITLES_TAB := 1
@@ -46,6 +49,7 @@ const ABOUT_HOME := 36
 var _about_page := 0 # app, credits
 ## VR subtitle distances (metres); the text keeps its angular size at any distance.
 const SubtitleDepth := preload("res://scripts/subtitle_depth.gd")
+const SubtitleStyle := preload("res://scripts/subtitle_style.gd")
 ## Language rows in About: each language named in itself.
 const LANGUAGE_NAMES := I18n.NAMES
 const VISIBLE_ROWS := 7
@@ -165,6 +169,7 @@ var _side: Node3D                  # navigation column, angled towards the viewe
 var _covers := {}                  # DLNA cover URL -> HTTPRequest while it downloads
 
 func dismiss() -> void:
+	controls_page.reset()
 	file_actions.reset()
 	choices.reset()
 	account_panel.close()
@@ -172,9 +177,13 @@ func dismiss() -> void:
 	_cancel_cloud()
 	super()
 
+func _on_choice_changed(key: String, value: Variant) -> void:
+	if controls_page.choose(key, value): return
+	setting_changed.emit(key, value)
+
 func _ready() -> void:
 	super()
-	choices.changed.connect(func(key, value): setting_changed.emit(key, value))
+	choices.changed.connect(_on_choice_changed)
 	choices.previewed.connect(func(key, value): setting_previewed.emit(key, value))
 	_side = Node3D.new()
 	_side.transform = Transform3D(Basis(Vector3.UP, deg_to_rad(24)), Vector3(-0.84, 0, 0.1))
@@ -208,6 +217,7 @@ func _on_android_lifecycle(state: String) -> void:
 		cloud_accounts.changed()
 
 func _reset_navigation() -> void:
+	controls_page.reset()
 	choices.reset()
 	_recent_page = 0
 	_drag = {}
@@ -233,6 +243,8 @@ func _row_target(target: int) -> bool:
 
 ## The list area, gaps between tiles included: a press there can drag the list.
 func _in_list(point: Vector3) -> bool:
+	if controls_page.active() and controls_page.modal(): return false
+	if controls_page.active() and controls_page.mode == 1 and point.x > -0.04: return false
 	var span := _bar_span()
 	return file_actions.modal.is_empty() and _editor.is_empty() and not rows.is_empty() and point.x > -0.56 and point.x < 0.86 \
 		and point.y < span.x + 0.01 and point.y > span.x - span.y - 0.02
@@ -333,6 +345,7 @@ func release_pointer(hand: String, origin: Vector3, direction: Vector3, tracked:
 
 ## Thumbstick y (up positive) scrolls the list; it never selects.
 func stick_scroll(y: float, delta: float) -> void:
+	if controls_page.active() and not controls_page.pending.is_empty(): return
 	if not choices.capture.is_empty(): return
 	if not file_actions.modal.is_empty(): return
 	if section == Section.SETTINGS and choices.stick_scroll(y, delta): return
@@ -348,6 +361,7 @@ func stick_scroll(y: float, delta: float) -> void:
 	_set_scroll(scroll - signf(y) * amount * _lines() * STICK_SPEED * delta)
 
 func _process(delta: float) -> void:
+	if controls_page.active() and controls_page.modal(): return
 	if not file_actions.modal.is_empty(): return
 	if visible: account_panel.tick(delta)
 	if not visible or not _drag.is_empty() or not choices.capture.is_empty() or Time.get_ticks_msec() - _stick_ms < 120:
@@ -394,9 +408,11 @@ func _place_list() -> void:
 		return
 	var fraction := scroll - _first_line()
 	_list.position.y = fraction * _pitch()
+	composition_changed.emit()
 	for button in _buttons:
-		if _row_target(button.target):
-			var line := float((button.target - ROW_BASE) / _cols()) - fraction
+		var row_target := int(button.get("list_row", button.target))
+		if _row_target(row_target):
+			var line := float((row_target - ROW_BASE) / _cols()) - fraction
 			button.node.visible = line > -0.35 and line < _lines() - 0.65
 	if is_instance_valid(_bar_thumb):
 		var span := _bar_span()
@@ -415,11 +431,13 @@ func _cols() -> int:
 
 ## Visible lines (tile rows or list rows); [scroll] counts lines.
 func _lines() -> int:
+	if controls_page.active(): return 6
 	if account_panel.active(): return VISIBLE_ROWS
 	if section == Section.MEDIA_SERVER: return server_browser.visible_lines()
 	return GRID_LINES if _grid() else VISIBLE_ROWS
 
 func _pitch() -> float:
+	if controls_page.active(): return 0.10
 	if account_panel.active(): return ROW_PITCH
 	if section == Section.MEDIA_SERVER: return server_browser.pitch()
 	return GRID_PITCH.y if _grid() else ROW_PITCH
@@ -429,6 +447,7 @@ func _line_count() -> int:
 
 ## Scrollbar track: top and height.
 func _bar_span() -> Vector2:
+	if controls_page.active(): return Vector2(0.20, 0.60)
 	if section == Section.MEDIA_SERVER and not account_panel.active(): return server_browser.bar_span()
 	return Vector2(GRID_TOP if _grid() else LIST_TOP + 0.05, _lines() * _pitch() - 0.012)
 
@@ -675,7 +694,9 @@ func _rebuild_rows() -> void:
 					rows.append(_entry_row(entry))
 		Section.SETTINGS:
 			var settings: Dictionary = settings_provider.call() if settings_provider.is_valid() else {}
-			if tab == VIDEO_TAB:
+			if tab == CONTROLS_TAB:
+				rows.assign(controls_page.items())
+			elif tab == VIDEO_TAB or tab == SUBTITLES_TAB:
 				var seek: String = SeekPolicy.normalize(settings.get("seek_mode", SeekPolicy.SPEED))
 				rows.append(_choice_row("Video time positioning", "seek_mode", seek,
 					[{"value": SeekPolicy.SPEED, "label": "Speed", "hint": "Faster jumps, less precise"},
@@ -685,6 +706,7 @@ func _rebuild_rows() -> void:
 					[{"value": Quality.AUTO_OUTPUT, "label": "Auto"}, {"value": 0, "label": "Original size"}, {"value": 5760, "label": "6K"}, {"value": 4096, "label": "4K"}], true))
 				rows.append({"title": I18n.t("Alpha passthrough FPS limit"), "key": "alpha_fps", "value": int(settings.get("alpha_fps", 20)),
 					"slider": true, "span": Vector3(10, 40, 1), "unit": " FPS", "hint": "Passthrough uses lots of GPU, so FPS may be lower"})
+				rows.append_array(_subtitle_rows(settings))
 			elif tab == GENERAL_TAB:
 				var languages: Array = []
 				for value in I18n.CHOICES: languages.append({"value": value, "label": LANGUAGE_NAMES[value]})
@@ -712,16 +734,6 @@ func _rebuild_rows() -> void:
 				rows.append(_choice_row("Sharpness", "sharpness", float(settings.get("sharpness", Quality.DEFAULT_SHARPNESS)), sharpness_choices, true))
 				rows.append(_choice_row("Show FPS", "show_fps", bool(settings.get("show_fps", false)),
 					[{"value": false, "label": "Off"}, {"value": true, "label": "On"}]))
-			elif tab == SUBTITLES_TAB:
-				for key in ["subtitle_distance", "subtitle_direction", "subtitle_position"]:
-					if key == "subtitle_direction":
-						var direction_row := SubtitleDepth.direction_row(int(settings.get(key, 0)))
-						direction_row.title = I18n.t("Subtitle direction")
-						rows.append(direction_row)
-						continue
-					var row := SubtitleDepth.slider_row(key, float(settings.get(key, SubtitleDepth.DEFAULT if key == "subtitle_distance" else SubtitleDepth.DEFAULT_POSITION)))
-					row.title = I18n.t("Subtitle distance" if key == "subtitle_distance" else ("Horizontal position" if int(settings.get("subtitle_direction", 0)) == 1 else "Subtitle position"))
-					rows.append(row)
 			elif tab == BACKGROUND_TAB:
 				var selected := str(settings.get("background", "belfast"))
 				var backgrounds: Array = []
@@ -905,6 +917,7 @@ func _read_cache_usage() -> Vector2i:
 ## (current, compiling, cold) shown on the Alpha tab change.
 func _activate(target: int) -> void:
 	if _activate_footer(target): return
+	if controls_page.action(target): return
 	if file_actions.action(target): return
 	if choices.action(target): return
 	if account_panel.action(target): return
@@ -924,6 +937,7 @@ func _activate(target: int) -> void:
 	elif target == QUIT_APP:
 		setting_changed.emit("quit_app", true)
 	elif target >= NAV_BASE and target < NAV_BASE + NAV.size():
+		controls_page.reset()
 		file_actions.reset()
 		account_panel.close()
 		cloud_accounts.reset()
@@ -938,7 +952,8 @@ func _activate(target: int) -> void:
 		_load_section()
 		refresh()
 	elif target >= TAB_BASE and target < TAB_BASE + SETTING_TABS.size():
-		tab = target - TAB_BASE
+		controls_page.reset()
+		tab = VIDEO_TAB if target == TAB_BASE + SUBTITLES_TAB else target - TAB_BASE
 		scroll = 0.0
 		_cache_usage = null
 		_load_section()
@@ -1298,10 +1313,11 @@ func _draw() -> void:
 	for position in NAV_ORDER.size():
 		var i: int = NAV_ORDER[position]
 		_nav_button(NAV_BASE + i, I18n.t(NAV[i]), NAV_ICONS[i], Vector2(0, 0.39 - position * 0.13), i == section)
-	_round(RECENTER, "recenter", Vector2(0.01, -0.65), 0.08, true, false, I18n.t("Recenter"))
-	_round(PLAYER, "play", Vector2(0.13, -0.65), 0.08, true, false, I18n.t("Player"))
-	_round(CLOSE, "close", Vector2(0.25, -0.65), 0.08, true, false, I18n.t("Close"))
-	_place_device_status(Vector2(0.13, -0.735))
+	if not controls_page.active():
+		_round(RECENTER, "recenter", Vector2(0.01, -0.65), 0.08, true, false, I18n.t("Recenter"))
+		_round(PLAYER, "play", Vector2(0.13, -0.65), 0.08, true, false, I18n.t("Player"))
+		_round(CLOSE, "close", Vector2(0.25, -0.65), 0.08, true, false, I18n.t("Close"))
+		_place_device_status(Vector2(0.13, -0.735))
 	if account_panel.active():
 		account_panel.draw()
 		return
@@ -1321,11 +1337,14 @@ func _draw() -> void:
 		if section == Section.SETTINGS and tab == ABOUT_TAB and _about_page != 0:
 			tabs = []
 			_label(I18n.t("Open source licenses" if _about_page == 3 else "Credits"), Vector3(0.13, 0.46, 0.004), 24)
-		for position in tabs.size():
+		for position in (SETTING_ORDER.size() if not tabs.is_empty() else 0):
 			var i: int = SETTING_ORDER[position]
 			_button(TAB_BASE + i, I18n.t(tabs[i]), Vector2(-0.40 + position * 0.225, 0.46), Vector2(0.21, 0.07))
-			(_buttons.back().node.get_child(0) as Label3D).font_size = 18
+			set_label_size(_buttons.back().node.get_child(0), 18)
 			_lit(i == tab)
+		if controls_page.active():
+			controls_page.draw()
+			return
 		if section in [Section.RECENT, Section.LOCAL, Section.SMB, Section.DLNA, Section.CLOUD]:
 			var title := _label(I18n.t(NAV[section]), Vector3(-0.42, 0.46, 0.004), 24)
 			title.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
@@ -1336,7 +1355,7 @@ func _draw() -> void:
 		_button(REFRESH, "", Vector2(0.80, 0.46), Vector2(0.09, 0.07), platform != null, "refresh")
 	if section == Section.CLOUD:
 		cloud_accounts.draw()
-		if not cloud_managing:
+		if not cloud_managing and _cloud_stack.is_empty():
 			_button(CLOUD_ACCOUNTS, "", Vector2(0.69, 0.46), Vector2(0.09, 0.07), platform != null, "plus")
 			_tips[CLOUD_ACCOUNTS] = I18n.t("Cloud accounts")
 	if section == Section.LOCAL and not _local_all_files and platform:
@@ -1357,11 +1376,11 @@ func _draw() -> void:
 		if _dlna_server.is_empty():
 			_button(ADD, "", Vector2(0.69, 0.46), Vector2(0.09, 0.07), PlatformMethods.supports(platform, "media_dlna_save"), "plus")
 			_tips[ADD] = I18n.t("Add server")
-		elif _dlna_servers.any(func(server): return str(server.id) == _dlna_server and bool(server.get("manual", false))):
+		elif _dlna_stack.is_empty() and _dlna_servers.any(func(server): return str(server.id) == _dlna_server and bool(server.get("manual", false))):
 			_button(EDIT, "", Vector2(0.69, 0.46), Vector2(0.09, 0.07), true, "edit")
 	if section == Section.SMB and _smb_server.is_empty():
 		_button(ADD, "", Vector2(0.69, 0.46), Vector2(0.09, 0.07), platform != null, "plus")
-	if section == Section.SMB and not _smb_server.is_empty():
+	if section == Section.SMB and not _smb_server.is_empty() and _smb_path.is_empty():
 		_button(EDIT, "", Vector2(0.69, 0.46), Vector2(0.09, 0.07), true, "edit")
 	file_actions.draw_header()
 	_decoration(Vector2(1.28, 0.002), Vector2(0.19, 0.405), Color(0.17, 0.2, 0.24))
@@ -1378,7 +1397,7 @@ func _draw() -> void:
 	elif section != Section.SETTINGS and not cloud_managing:
 		for i in MEDIA_FILTERS.size():
 			_button(FILTER_BASE + i, I18n.t(MEDIA_FILTERS[i]), Vector2(0.36 + i * 0.18, -0.515), Vector2(0.17, 0.06), true, "", media_filter == i)
-			(_buttons.back().node.get_child(0) as Label3D).font_size = 17
+			set_label_size(_buttons.back().node.get_child(0), 17)
 	var cloud_paging := section == Section.CLOUD and not _cloud_stack.is_empty() and not file_actions.editing
 	if section == Section.RECENT:
 		_button(RECENT_PREVIOUS, "‹", Vector2(-0.45, -0.515), Vector2(0.09, 0.07), _recent_page > 0)
@@ -1402,11 +1421,11 @@ func _draw_crumbs(crumbs: Array) -> void:
 	var first := maxi(0, crumbs.size() - (2 if section in [Section.CLOUD, Section.LOCAL] or file_actions.sortable() else 4))
 	for i in range(first, crumbs.size()):
 		var text := _fit_title(str(crumbs[i]), "", 0.24, 19)
-		var width := FONT.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, 19).x * 0.0012 + 0.05
+		var width := text_width(text, 19) + 0.05
 		var current := i == crumbs.size() - 1
 		_button(CRUMB_BASE + i, text, Vector2(x + width * 0.5, 0.46), Vector2(width, 0.065), not current)
 		var label: Label3D = _buttons.back().node.get_child(0)
-		label.font_size = 19
+		set_label_size(label, 19)
 		label.modulate = ACCENT if current else MUTED
 		if current:
 			_buttons.back().base_color = Color(TILE, 0.0)
@@ -1451,7 +1470,7 @@ func _draw_rows() -> void:
 				_tile(ROW_BASE + k, row, Vector2(-0.36 + (k % COLS) * GRID_PITCH.x, GRID_TOP - TILE_SIZE.y * 0.5 - (k / COLS) * GRID_PITCH.y))
 		else:
 			if row.has("choices") or row.get("slider", false):
-				_setting_field(row, Vector2(0.17, row_top - k * _pitch()))
+				_setting_field(row, Vector2(0.17, row_top - k * _pitch()), ROW_BASE + k)
 				continue
 			_row_button(ROW_BASE + k, str(row.title), "" if row.get("about_info", false) else str(row.get("detail", "")), str(row.get("icon", "video")),
 				Vector2(0.17, row_top - k * _pitch()), bool(row.get("selected", false)))
@@ -1461,7 +1480,7 @@ func _draw_rows() -> void:
 				var title: Label3D = node.get_child(0)
 				title.position.y = 0.023
 				title.text = _fit_title(str(row.title), "", 1.08, 21)
-				title.font_size = 21
+				set_label_size(title, 21)
 				# Informational rows use two lines, leaving long contacts and credits readable.
 				var detail := _label(_fit_title(str(row.detail), "", 1.08, 17), Vector3(-0.48, -0.024, 0.004), 17, node)
 				detail.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
@@ -1471,7 +1490,7 @@ func _draw_rows() -> void:
 					node.material_override.set_shader_parameter("surface_color", Color(0, 0, 0, 0))
 					node.get_child(1).visible = false
 					title.position.x = -0.58; detail.position.x = -0.58
-					title.font_size = 19; detail.font_size = 19; detail.modulate = Color.WHITE
+					set_label_size(title, 19); set_label_size(detail, 19); detail.modulate = Color.WHITE
 					title.text = str(row.title); detail.text = str(row.detail)
 	if _max_scroll() > 0:
 		# Scrollbar: the thumb shows position and length; pointing at the track jumps there.
@@ -1487,22 +1506,40 @@ func _draw_rows() -> void:
 	_place_list()
 	choices.finish()
 
-func _setting_field(row: Dictionary, centre: Vector2) -> void:
-	_row_button(ROW_BASE, str(row.title), "", "", centre, false)
+func _setting_field(row: Dictionary, centre: Vector2, target: int) -> void:
+	_row_button(target, str(row.title), "", "", centre, false)
 	var button: Dictionary = _buttons.back()
 	button.enabled = false
 	var node: MeshInstance3D = button.node
 	if node.get_child_count() > 1: node.get_child(1).visible = false
 	var title: Label3D = node.get_child(0)
 	title.position = Vector3(-0.55, 0.014 if not str(row.get("hint", "")).is_empty() else 0, 0.004)
-	title.font_size = 18; title.text = _fit_title(str(row.title), "", 0.43, 18)
+	set_label_size(title, 18); title.text = _fit_title(str(row.title), "", 0.43, 18)
 	if not str(row.get("hint", "")).is_empty():
 		var hint := _label(_fit_title(I18n.t(row.hint), "", 0.43, 13), Vector3(-0.55, -0.022, 0.004), 13, node)
 		hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT; hint.modulate = MUTED
+	var first_field := _buttons.size()
 	choices.field(node, row, Vector2(0.225, 0), 0.72)
+	for index in range(first_field, _buttons.size()): _buttons[index]["list_row"] = target
 
 func _choice_row(title: String, key: String, value: Variant, options: Array, compact: bool = false, hint: String = "") -> Dictionary:
 	return {"title": I18n.t(title), "key": key, "value": value, "choices": options, "compact": compact, "hint": hint}
+
+func _subtitle_rows(settings: Dictionary) -> Array[Dictionary]:
+	var result: Array[Dictionary] = []
+	var size_row := SubtitleStyle.size_row(float(settings.get("subtitle_size", 100.0)))
+	size_row.title = I18n.t("Subtitle size"); result.append(size_row)
+	var style_row := SubtitleStyle.style_row(settings.get("subtitle_style", SubtitleStyle.DEFAULT))
+	style_row.title = I18n.t("Subtitle color style"); result.append(style_row)
+	for key in ["subtitle_distance", "subtitle_direction", "subtitle_position"]:
+		if key == "subtitle_direction":
+			var row := SubtitleDepth.direction_row(int(settings.get(key, 0)))
+			row.title = I18n.t("Subtitle direction"); result.append(row)
+		else:
+			var row := SubtitleDepth.slider_row(key, float(settings.get(key, SubtitleDepth.DEFAULT if key == "subtitle_distance" else SubtitleDepth.DEFAULT_POSITION)))
+			row.title = I18n.t("Subtitle distance" if key == "subtitle_distance" else ("Horizontal position" if int(settings.get("subtitle_direction", 0)) == 1 else "Subtitle position"))
+			result.append(row)
+	return result
 
 ## A folder, video or server as a tile: a large glyph (videos keep a dark picture area with the
 ## length or size in the corner), the name in up to two lines below.
@@ -1515,7 +1552,8 @@ func _tile(target: int, row: Dictionary, centre: Vector2) -> void:
 	button.node.material_override.set_shader_parameter("surface_color", button.base_color)
 	var node: MeshInstance3D = button.node
 	var name: Label3D = node.get_child(0)
-	name.font_size = 18
+	if name.text != str(row.title): _tips[target] = str(row.title)
+	set_label_size(name, 18)
 	name.autowrap_mode = TextServer.AUTOWRAP_ARBITRARY
 	name.width = (TILE_SIZE.x - 0.03) / name.pixel_size
 	name.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -1618,7 +1656,7 @@ func _row_button(target: int, title: String, detail: String, icon: String, centr
 	var label: Label3D = node.get_child(0)
 	label.position.x = -0.48
 	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
-	label.font_size = 22
+	set_label_size(label, 22)
 	_icon(icon, Vector3(-0.565, 0, 0.004), 0.045, _buttons.back().foreground, node)
 	if not detail.is_empty():
 		var info := _label(detail, Vector3(0.58, 0, 0.004), 17, node)

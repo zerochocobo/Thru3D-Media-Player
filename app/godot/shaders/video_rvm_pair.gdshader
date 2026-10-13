@@ -86,6 +86,12 @@ float packed_mask(vec2 full_uv, int eye) {
 void vertex() {
 	eye_index = int(VIEW_INDEX);
 	media_direction = VERTEX;
+	subtitle_patch_position = vec3(0.0);
+	subtitle_patch_eye = vec3(0.0);
+	if (subtitle_enabled && !separate_subtitles) {
+		subtitle_patch_position = (subtitle_world_to_patch * MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
+		subtitle_patch_eye = (subtitle_world_to_patch * INV_VIEW_MATRIX * vec4(EYE_OFFSET, 1.0)).xyz;
+	}
 }
 
 void fragment() {
@@ -133,7 +139,7 @@ void fragment() {
 	// Crop correction borders rather than stretching an edge or reading the other eye.
 	if (outside_alignment(shown_uv)) { ALBEDO = vec3(0.0); ALPHA = alpha_enabled || packed_alpha ? 0.0 : 1.0; }
 	if (!separate_subtitles) {
-	vec4 composed = caption_composite(ALBEDO, ALPHA, projected_caption(media_direction, eye_index));
+	vec4 composed = caption_composite(ALBEDO, ALPHA, projected_caption());
 	composed = caption_composite(composed.rgb, composed.a, bitmap_caption(raw_eye_uv(eye_uv(UV, media_direction))));
 	ALBEDO = composed.rgb;
 	ALPHA = composed.a;

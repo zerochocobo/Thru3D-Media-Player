@@ -123,6 +123,7 @@ func tick(delta: float) -> void:
 				elif web_texture.get_height() != image.get_height(): web_texture.set_image(image)
 				else: web_texture.update(image)
 				if is_instance_valid(web_node): web_node.material_override.albedo_texture = web_texture
+				menu.composition_changed.emit()
 
 func lifecycle(state: String) -> void:
 	paused = state == "pause"
@@ -309,7 +310,7 @@ func draw_fields(enabled: bool) -> void:
 		menu._button(FIELD + i, "", Vector2(0.17, y), Vector2(1.2, 0.077), enabled, "", key == field)
 		var node: MeshInstance3D = menu._buttons.back().node
 		var label: Label3D = node.get_child(0)
-		label.text = I18n.t(names[key]); label.font_size = 16; label.position = Vector3(-0.57, 0.012, 0.004); label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+		label.text = I18n.t(names[key]); menu.set_label_size(label, 16); label.position = Vector3(-0.57, 0.012, 0.004); label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
 		var detail: Label3D = menu._label(menu._fit_title(value, "", 1.1, 19), Vector3(-0.57, -0.018, 0.004), 19, node)
 		detail.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
 		detail.modulate = Color(0.04, 0.10, 0.08) if key == field else Color.WHITE
@@ -416,7 +417,7 @@ func show_license(name: String, text: String) -> void:
 	for original in text.split("\n"):
 		var line := ""
 		for c in original:
-			if menu.ui_font().get_string_size(line + c, HORIZONTAL_ALIGNMENT_LEFT, -1, 19).x * 0.0012 > 1.12:
+			if menu.text_width(line + c, 19) > 1.12:
 				license_lines.append(line); line = ""
 			line += c
 		license_lines.append(line)

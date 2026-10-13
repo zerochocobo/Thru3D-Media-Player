@@ -30,6 +30,15 @@ void check_gl(const char* operation) {
     std::snprintf(message, sizeof(message), "%s: GL error 0x%04x", operation, error);
     throw std::runtime_error(message);
 }
+// Errors raised earlier on the shared context by other GL users (Godot, MPV) are not the
+// bridge's: report and clear them so the bridge's own checks see only its own calls.
+void drain_gl(const char* operation) {
+    for (int i = 0; i < 8; ++i) {
+        const auto error = glGetError();
+        if (error == GL_NO_ERROR) return;
+        __android_log_print(ANDROID_LOG_WARN, "QuestRenderBridge", "Pending GL error 0x%04x before %s", error, operation);
+    }
+}
 // Touch only private objects and unit zero; restore Godot's actual GL state.
 struct State final {
     GLint program, vao, draw_fbo, read_fbo, active, tex2d, oes, sampler, pack, unpack;
@@ -531,7 +540,7 @@ struct Bridge final {
             throw std::runtime_error("Render bridge requires its owner GL thread/context");
     }
     void allocate() {
-        current(); State state;
+        current(); drain_gl("bridge allocation"); State state;
         GLint maximum = 0; glGetIntegerv(GL_MAX_TEXTURE_SIZE, &maximum);
         if (width > maximum || height > maximum) throw std::runtime_error("Source exceeds GL texture limit");
         copy = program(copy_fragment); copy_2d = program(copy_2d_fragment); scale = program(scale_fragment);
@@ -541,7 +550,9 @@ struct Bridge final {
         glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
         glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        check_gl("Render bridge programs");
         image(small, input_width, input_height);
+        check_gl("Render bridge input image");
         const GLsizeiptr bytes = static_cast<GLsizeiptr>(input_width) * input_height * 4;
         for (auto& slot : slots) {
             glGenBuffers(2, slot.pbo.data());
@@ -551,7 +562,7 @@ struct Bridge final {
         const float input_aspect = static_cast<float>(input_width) / input_height;
         if (source_aspect > input_aspect) { content_rect[3] = input_aspect / source_aspect; content_rect[1] = (1.f-content_rect[3])*0.5f; }
         else { content_rect[2] = source_aspect / input_aspect; content_rect[0] = (1.f-content_rect[2])*0.5f; }
-        if (glGetError() != GL_NO_ERROR) throw std::runtime_error("Render bridge allocation GL error");
+        check_gl("Render bridge allocation");
     }
     ~Bridge() {
         if (abandoned || context != eglGetCurrentContext() || thread != std::this_thread::get_id()) return; // Dead context: names must never be deleted in a new one.
@@ -606,7 +617,7 @@ struct Bridge final {
         throw std::runtime_error("Render bridge lease stale/unknown");
     }
     jlong capture(const GLfloat* transform, jlong token) {
-        current(); State state;
+        current(); drain_gl("bridge capture"); State state;
         Slot* free = nullptr;
         // retired() is the owner's acknowledgement of the release fence. A
         // signalled fence alone must not let capture overwrite its old token
@@ -622,9 +633,22 @@ struct Bridge final {
         glDrawArrays(GL_TRIANGLES, 0, 3);
         return stage(*free, token);
     }
+    // Normal playback: a constant full mask, uploaded once per slot and valid with the color fence.
+    void opaque_mask(Slot& slot) {
+        slot.opaque_pending = true;
+        if (!slot.opaque_cached) {
+            if (!slot.alpha) image(slot.alpha, input_width*2, input_height, GL_R8);
+            std::vector<unsigned char> mask(static_cast<size_t>(input_width)*input_height*2, 255);
+            glBindTexture(GL_TEXTURE_2D, slot.alpha);
+            glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, input_width*2, input_height, GL_RED, GL_UNSIGNED_BYTE, mask.data());
+            check_gl("Render bridge opaque mask upload");
+            slot.opaque_cached = true; opaque_uploads++;
+        }
+        opaque_copies++;
+    }
     jlong capture_texture(GLuint source, jlong token, bool inputs, bool opaque = false,
                           const float* window = nullptr, bool scout = false) {
-        current(); State state;
+        current(); drain_gl("bridge texture capture"); State state;
         if (!source || !glIsTexture(source)) throw std::runtime_error("Shared MPV color texture unavailable");
         Slot* free = nullptr;
         for (auto& slot : slots) {
@@ -638,7 +662,7 @@ struct Bridge final {
             free->borrowed = source; borrows++;
         } else {
             free->borrowed = 0;
-            if (!free->color) image(free->color, width, height);
+            if (!free->color) { image(free->color, width, height); check_gl("Render bridge color allocation"); }
             target(free->color, width, height); glUseProgram(copy_2d);
             glBindTexture(GL_TEXTURE_2D, source); glUniform1i(glGetUniformLocation(copy_2d, "source"), 0);
             // The producer lease lasts until a consumer-context fence after this copy.
@@ -648,14 +672,7 @@ struct Bridge final {
         }
         if (opaque) {
             if (inputs) throw std::runtime_error("Opaque capture cannot stage inference inputs");
-            if (!free->opaque_cached) {
-                if (!free->alpha) image(free->alpha, input_width*2, input_height, GL_R8);
-                std::vector<unsigned char> mask(static_cast<size_t>(input_width)*input_height*2, 255);
-                glBindTexture(GL_TEXTURE_2D, free->alpha);
-                glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, input_width*2, input_height, GL_RED, GL_UNSIGNED_BYTE, mask.data());
-                free->opaque_cached = true; opaque_uploads++;
-            }
-            opaque_copies++;
+            opaque_mask(*free);
         }
         free->scout_staged = false;
         if (scout) {
@@ -673,9 +690,10 @@ struct Bridge final {
     }
     // MPV direct mode: the pair shows the decoder's buffer (the owner keeps its MPV lease until this
     // slot retires); the model input is scaled straight from it, YUV sampled as RGB by the GPU.
+    // Opaque (normal playback): no model input, the slot carries the constant full mask instead.
     jlong capture_buffer(AHardwareBuffer* buffer, int buffer_width, int buffer_height, jlong token,
-                         const float* window, bool scout) {
-        current(); State state;
+                         const float* window, bool scout, bool opaque = false) {
+        current(); drain_gl("bridge decoder capture"); State state;
         if (!buffer || buffer_width < width || buffer_height < height) throw std::runtime_error("Decoder buffer invalid");
         const auto& api = egl_image();
         if (!api.available()) throw std::runtime_error("EGLImage/AHardwareBuffer interop unavailable");
@@ -690,11 +708,17 @@ struct Bridge final {
         if (free->decoder_image == EGL_NO_IMAGE_KHR) throw std::runtime_error("Decoder EGLImage creation failed");
         glGenTextures(1, &free->decoder_texture); glBindTexture(GL_TEXTURE_EXTERNAL_OES, free->decoder_texture);
         api.target(GL_TEXTURE_EXTERNAL_OES, static_cast<GLeglImageOES>(free->decoder_image));
+        check_gl("Decoder EGLImage binding");
         glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MIN_FILTER, GL_LINEAR); glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE); glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
         free->uv_scale = {{static_cast<float>(width) / buffer_width, static_cast<float>(height) / buffer_height}};
         decoder_captures++;
         free->scout_staged = false;
+        if (opaque) {
+            if (scout) throw std::runtime_error("ROI scout requires staged inference inputs");
+            opaque_mask(*free);
+            return stage(*free, token, false);
+        }
         if (scout) {
             if (!free->scout_pbo[0]) {
                 glGenBuffers(2, free->scout_pbo.data());
@@ -773,7 +797,7 @@ struct Bridge final {
     jlong stage(Slot& slot, jlong token, bool inputs = true, const float* rect = nullptr) {
         if (inputs && zero_copy) { ensure_shared(slot.zc_out, kOutputUsage); stage_shared(slot, rect ? rect : content_rect.data(), slot.zc_in); }
         else if (inputs) stage_inputs(slot, rect ? rect : content_rect.data(), slot.pbo);
-        if (glGetError() != GL_NO_ERROR) throw std::runtime_error("Render bridge copy/staging GL error");
+        check_gl("Render bridge copy/staging");
         slot.fence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
         if (!slot.fence) throw std::runtime_error("Render bridge copy fence unavailable");
         slot.token = token; slot.phase = Phase::copying; glFlush();
@@ -1302,6 +1326,16 @@ Java_org_vrpassthroughplayer_plugin_RenderBridgeNative_captureOpaqueTexture(JNIE
         std::lock_guard<std::mutex> guard(registry_mutex);
         if (token_sequence == std::numeric_limits<jlong>::max()) throw std::runtime_error("Render bridge lease space exhausted");
         return find(id).capture_texture(static_cast<GLuint>(texture), ++token_sequence, false, true);
+    } catch (const std::exception& e) { error(env, e.what()); return 0; }
+}
+extern "C" JNIEXPORT jlong JNICALL
+Java_org_vrpassthroughplayer_plugin_RenderBridgeNative_captureOpaqueBuffer(JNIEnv* env, jclass, jlong id, jlong buffer,
+    jint buffer_width, jint buffer_height) {
+    try {
+        std::lock_guard<std::mutex> guard(registry_mutex);
+        if (token_sequence == std::numeric_limits<jlong>::max()) throw std::runtime_error("Render bridge lease space exhausted");
+        return find(id).capture_buffer(reinterpret_cast<AHardwareBuffer*>(static_cast<uintptr_t>(buffer)), buffer_width, buffer_height,
+                                       ++token_sequence, nullptr, false, true);
     } catch (const std::exception& e) { error(env, e.what()); return 0; }
 }
 extern "C" JNIEXPORT jstring JNICALL

@@ -71,6 +71,14 @@ func click(menu: Node3D, target: int, hand: String = "right_hand") -> bool:
 			return menu.press_pointer(hand, menu.to_global(Vector3(centre.x, centre.y, 1)), -menu.global_basis.z, true)
 	return false
 
+func double_click(menu: Node3D, target: int, hand: String = "right_hand") -> bool:
+	menu._icon_tap.clear()
+	if not click(menu, target, hand): return false
+	menu.release_pointer(hand, Vector3.ZERO, Vector3.ZERO, true)
+	var result := click(menu, target, hand)
+	menu.release_pointer(hand, Vector3.ZERO, Vector3.ZERO, true)
+	return result
+
 ## Battery and clock pill: text, 12/24 h, low and charging states, no battery on desktop.
 func _check_device_status() -> void:
 	var I18n := preload("res://scripts/i18n.gd")
@@ -209,8 +217,15 @@ func _run() -> void:
 	check(click(menu, 102) and video.requested_play and host.calls.back() == ["play", 7, true], "Right pointer resumes actual player")
 	var shown := func(target: int) -> bool: return menu._buttons.any(func(b): return b.target == target)
 	check(shown.call(112) and shown.call(104) and not click(menu, 104), "Flat screen keeps both effects on the bar, with unsupported Alpha disabled")
-	check(not menu._mode_open and click(menu, 112, "left_hand") and video.depth_requested and video._pending_revision.depth and menu._depth_open,
-		"2D -> 3D opens its strength slider and enables the remembered strength")
+	check(not menu._mode_open and click(menu, 112, "left_hand") and not video.depth_requested and menu._depth_open,
+		"Single 3D click opens adjustment without enabling inference")
+	menu.release_pointer("left_hand", Vector3.ZERO, Vector3.ZERO, true)
+	check(click(menu, 112, "right_hand") and not video.depth_requested, "Two hands cannot combine their clicks into a 3D toggle")
+	menu.release_pointer("right_hand", Vector3.ZERO, Vector3.ZERO, true)
+	menu._icon_tap.time -= Menu.ICON_DOUBLE_CLICK_MS + 1
+	check(click(menu, 112) and not video.depth_requested, "Separated clicks keep ordinary adjustment behavior")
+	check(double_click(menu, 112, "left_hand") and video.depth_requested and video._pending_revision.depth and video.depth_strength == 1.0 and not menu._depth_open, "Double click enables 3D at the 100% initial strength")
+	click(menu, 112)
 	menu.update_pointer("left_hand", Vector3.ZERO, Vector3.ZERO, false)
 	var depth_tile: Dictionary = menu._buttons.filter(func(b): return b.target == 112)[0]
 	check(depth_tile.node.material_override.get_shader_parameter("surface_color") == Menu.SELECTED, "Requested depth lights its primary bar button")
@@ -240,6 +255,11 @@ func _run() -> void:
 	saved_strength.load(main.settings_path)
 	check(saved_strength.get_value("video", "depth_strength") == 2.0 and not saved_strength.get_value("effects", "auto_3d"), "Release persists strength and manual Off")
 	check(click(menu, 112) and not menu._depth_open, "Close disabled depth slider")
+	check(double_click(menu, 112) and video.depth_requested and video.depth_strength == 2.0, "Double click restores the previous 200% choice")
+	check(double_click(menu, 112) and not video.depth_requested and video.depth_strength == 2.0, "Double click disables conversion without erasing its strength")
+	var hint_button: Dictionary = menu._buttons.filter(func(button): return button.target == 112)[0]
+	menu.update_pointer("right_hand", hint_button.node.to_global(Vector3(0, 0, 1)), -menu.global_basis.z, true)
+	check(menu._tooltip.visible and menu._tooltip.get_child(0).text == Menu.I18n.t("Click to adjust · Double-click to enable 3D"), "Ray hover explains the disabled 3D icon's click and double-click behavior")
 	video.depth_enabled = false
 	video.set_projection(1)
 	menu.refresh()
@@ -258,7 +278,7 @@ func _run() -> void:
 	check(not shown.call(Menu.MODE_STEREO + 2) and not shown.call(Menu.MODE_STEREO + 3) and shown.call(112), "Video popup omits duplicate depth and eye-order controls, retaining bar depth")
 	check(menu._buttons.filter(func(b): return b.target >= Menu.MODE_PROJECTION and b.target < Menu.MODE_PROJECTION + 4).map(func(b): return b.target) == [Menu.MODE_PROJECTION, Menu.MODE_PROJECTION + 1, Menu.MODE_PROJECTION + 3, Menu.MODE_PROJECTION + 2], "Projection tiles place Fisheye after 360 without changing stored IDs")
 	check(click(menu, Menu.MODE_PROJECTION + 2) and video.geometry == 2 and not video.stereo_sbs, "Selecting fisheye preserves a mono source")
-	check(click(menu, Menu.MODE_PROJECTION) and click(menu, 112) and video.depth_requested and not menu._mode_open, "Mono depth remains available from the main bar")
+	check(click(menu, Menu.MODE_PROJECTION) and double_click(menu, 112) and video.depth_requested and not menu._mode_open, "Mono depth remains available from the main bar")
 	check(click(menu, Menu.MODE) and click(menu, Menu.MODE_STEREO) and not video.depth_requested, "2D tile ends depth from the bar")
 	check(click(menu, Menu.MODE), "Mode panel closes")
 	video.control.observe(20000, 60000)
@@ -391,8 +411,10 @@ func _run() -> void:
 	check(click(menu, Menu.MODE_PROJECTION + 1) and video.geometry == 1, "Projection tile sets actual video geometry")
 	check(click(menu, 108), "Recenter routed through preview-safe Main")
 	var layout_calls := host.calls.size()
-	check(click(menu, 110) and menu._subtitle_open and menu.choices.sliders.size() == 3,
-		"VR CC popup includes distance, angle and size sliders")
+	check(click(menu, 110) and menu._subtitle_open and menu.choices.sliders.is_empty(),
+		"VR CC popup focuses on subtitle selection with appearance collapsed")
+	check(click(menu, Menu.SUBTITLE_APPEARANCE) and menu._subtitle_open and menu.choices.sliders.size() == 3,
+		"Appearance disclosure opens distance, angle, size and styles")
 	check(choose_setting(menu, "subtitle_position", -60) and video.subtitle_position == -60 and main.settings.get_value("subtitles", "elevation_degrees") == -60 and menu._subtitle_open,
 		"CC angle applies and persists while keeping the popup open")
 	check(choose_setting(menu, "subtitle_distance", 2.0) and is_equal_approx(video.subtitle_distance, 2.0) and menu._subtitle_open,
@@ -441,6 +463,19 @@ func _run() -> void:
 	check(press_at(menu, Menu.VOLUME_X, span.x + (span.y - span.x) * 0.3) and not video.audio_muted and video.audio_volume == 30.0 and menu._sound_icon() == "volume_low", "Raising the slider unmutes")
 	menu.release_pointer("right_hand", Vector3.ZERO, Vector3.ZERO, false)
 	check(click(menu, 109) and not menu._volume_open, "Sound icon closes the slider")
+	check(double_click(menu, 109) and video.audio_muted and video.audio_volume == 30.0, "Sound double click mutes while retaining the level")
+	hint_button = menu._buttons.filter(func(button): return button.target == 109)[0]
+	menu.update_pointer("right_hand", hint_button.node.to_global(Vector3(0, 0, 1)), -menu.global_basis.z, true)
+	check(menu._tooltip.visible and menu._tooltip.get_child(0).text == Menu.I18n.t("Click to adjust · Double-click to unmute"), "Ray hover explains how to restore muted sound")
+	check(double_click(menu, 109) and not video.audio_muted and video.audio_volume == 30.0, "Sound double click restores the last level")
+	main._on_audio_options_changed(video.audio_volume, video.audio_muted); main._notification(Main.NOTIFICATION_APPLICATION_PAUSED)
+	var audio_saved := ConfigFile.new(); audio_saved.load(main.settings_path)
+	var audio_restore := Main.new(); audio_restore.video = Video.new(); audio_restore.settings = audio_saved; audio_restore._restore_audio_preferences()
+	check(audio_restore.video.audio_volume == 30.0 and not audio_restore.video.audio_muted, "Audio selection survives a settings round trip")
+	main._on_audio_options_changed(30.0, true); main._notification(Main.NOTIFICATION_APPLICATION_PAUSED)
+	audio_saved.load(main.settings_path); audio_restore._restore_audio_preferences()
+	check(audio_restore.video.audio_volume == 30.0 and audio_restore.video.audio_muted, "Pausing saves mute separately from the remembered level")
+	audio_restore.video.free(); audio_restore.free()
 	check(click(menu, 11) and click(menu, 12) and menu.section == 2 and menu.text_snapshot().contains("3840 x 1920 | hevc"), "Info tab shows source properties from actual player")
 	check(not click(menu, 100), "Unavailable Android plugin disables device refresh")
 	video.picker_error = "PERMISSION_LOST"
@@ -563,6 +598,7 @@ func _run() -> void:
 	var navigation_calls := host.calls.size()
 	check(not click(menu, 101) and not click(menu, 103) and host.calls.size() == navigation_calls, "A video opened without a browse queue cannot navigate or seek via skip buttons")
 	_check_control_sticks(main, video, menu, host)
+	_check_transport_button(main, video, menu, host)
 	video.free()
 	menu.free()
 	recent.free()
@@ -573,6 +609,87 @@ func _run() -> void:
 	for failure in failures: push_error(failure)
 	print("Player menu host checks: %s (%d), evidence=%s" % [report.state, checks, directory])
 	quit(0 if failures.is_empty() else 1)
+
+## Exercise the real XR button signal path with production menus and mocked native playback.
+func _check_transport_button(main: Node3D, video: Node3D, menu: Node3D, host: RefCounted) -> void:
+	video._waiting_first = false
+	video.requested_play = true
+	video.media.state = "playing"
+	video.control.reject()
+	main.recent_menu.dismiss()
+	menu.dismiss()
+	var tracker := XRControllerTracker.new()
+	tracker.type = XRServer.TRACKER_CONTROLLER
+	tracker.name = "right_hand"
+	tracker.set_input("ax_button", false)
+	XRServer.add_tracker(tracker)
+	var controller := XRController3D.new()
+	controller.tracker = "right_hand"
+	controller.button_pressed.connect(main._on_controller_button.bind("right_hand"))
+	controller.button_released.connect(main._on_controller_release.bind("right_hand"))
+	root.add_child(controller)
+	var calls: int = host.calls.size()
+	tracker.set_input("ax_button", true)
+	check(not video.requested_play and host.calls.back() == ["play", 7, false] and not main.recent_menu.visible, "Right A pauses video without opening the library")
+	for _sample in 3: tracker.set_input("ax_button", true)
+	check(host.calls.size() == calls + 1, "Holding A sends one playback command")
+	tracker.set_input("ax_button", false)
+	tracker.set_input("ax_button", true)
+	tracker.set_input("ax_button", false)
+	check(video.requested_play and host.calls.back() == ["play", 7, true], "Releasing then pressing A resumes video")
+	main._show_player_menu()
+	main._menu_touched_ms = -10000
+	_tap_controller(tracker, "ax_button")
+	check(not video.requested_play and menu.visible and menu._state.playing == false and main._menu_touched_ms >= 0, "A pauses with transport visible and refreshes the bar")
+	_tap_controller(tracker, "ax_button")
+	check(video.requested_play, "A resumes with transport visible")
+	calls = host.calls.size()
+	for property in ["section", "_mode_open", "_subtitle_open", "_adjustment", "_seek_hand", "_volume_hand", "_depth_hand", "_adjust_hand"]:
+		var before: Variant = menu.get(property)
+		menu.set(property, 1 if property == "section" else (true if property.ends_with("_open") else "left_hand"))
+		_tap_controller(tracker, "ax_button")
+		check(host.calls.size() == calls and video.requested_play, "A cannot interrupt settings, popups or either hand's capture: " + property)
+		menu.set(property, before)
+	menu.choices.opened = "audio_track"
+	_tap_controller(tracker, "ax_button")
+	check(host.calls.size() == calls, "Audio list blocks A")
+	menu.choices.opened = ""
+	menu.bookmarks.opened = true
+	_tap_controller(tracker, "ax_button")
+	check(host.calls.size() == calls, "Bookmark list blocks A")
+	menu.bookmarks.opened = false
+	main._show_recent_menu()
+	_tap_controller(tracker, "ax_button")
+	check(main.recent_menu.visible and host.calls.size() == calls, "A neither selects a library row nor changes playback")
+	main.recent_menu.dismiss()
+	main._grab = {"hand": "left_hand", "moved": true}
+	_tap_controller(tracker, "ax_button")
+	check(host.calls.size() == calls, "Other hand's picture drag blocks A with menus hidden")
+	main._grab.clear()
+	main.display.preview = false
+	main.display.session_state = "session_visible"
+	_tap_controller(tracker, "ax_button")
+	check(host.calls.size() == calls, "Unfocused XR session ignores A")
+	main.display.preview = true
+	for hand in ["left_hand", "right_hand"]:
+		main._on_controller_button("grip_click", hand)
+	check(host.calls.size() == calls, "Neither grip button toggles video playback")
+	main.test_rays["right_hand"] = [Vector3(0, 1.6, 0), Vector3.FORWARD]
+	_tap_controller(tracker, "trigger_click")
+	check(menu.visible and host.calls.size() == calls, "Trigger tap still opens controls without pausing video")
+	menu.dismiss()
+	main._on_controller_button("ax_button", "left_hand")
+	check(main.recent_menu.visible and host.calls.size() == calls, "Left X retains the library shortcut without pausing")
+	main.recent_menu.dismiss()
+	video.media.state = "closed"
+	_tap_controller(tracker, "ax_button")
+	check(video.requested_play and host.calls.size() == calls and not main.recent_menu.visible, "A with no active video is a no-op")
+	XRServer.remove_tracker(tracker)
+	controller.free()
+
+func _tap_controller(tracker: XRControllerTracker, action: String) -> void:
+	tracker.set_input(action, true)
+	tracker.set_input(action, false)
 
 ## Feed the production per-frame routing with real menus/video state and a mocked Android backend.
 func _check_control_sticks(main: Node3D, video: Node3D, menu: Node3D, host: RefCounted) -> void:

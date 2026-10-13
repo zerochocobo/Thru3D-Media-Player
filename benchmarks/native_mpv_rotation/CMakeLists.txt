@@ -1,0 +1,16 @@
+cmake_minimum_required(VERSION 3.22)
+project(MpvRotationProbe LANGUAGES CXX)
+set(ROOT "${CMAKE_CURRENT_LIST_DIR}/../..")
+set(LIBS "${ROOT}/android/player-plugin/src/main/jniLibs/arm64-v8a")
+add_subdirectory("${ROOT}/native/mpv" "production-mpv")
+add_executable(rotation_probe rotation_probe.cpp
+    "${ROOT}/native/mpv/mpv_core_probe.cpp" "${ROOT}/native/mpv/mpv_gpu_probe.cpp")
+target_compile_features(rotation_probe PRIVATE cxx_std_17)
+target_compile_options(rotation_probe PRIVATE -Wall -Wextra -Werror)
+target_include_directories(rotation_probe PRIVATE "${ROOT}/native/mpv/include")
+target_link_libraries(rotation_probe PRIVATE "${LIBS}/libmpv.so" "${LIBS}/libavcodec.so"
+    log android EGL GLESv3 dl nativewindow mediandk)
+target_link_options(rotation_probe PRIVATE "-Wl,-z,max-page-size=16384")
+add_executable(frame_geometry_test "${ROOT}/tests/native/frame_geometry_test.cpp")
+target_compile_features(frame_geometry_test PRIVATE cxx_std_17)
+target_compile_options(frame_geometry_test PRIVATE -Wall -Wextra -Werror)

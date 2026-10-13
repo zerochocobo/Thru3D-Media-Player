@@ -39,6 +39,8 @@ func _run() -> void:
 	root.add_child(menu); menu.toggle(); menu.set_process(false)
 	check(menu.rows.filter(func(row): return row.get("key", "") == "language").size() == 1 and menu.rows.any(func(row): return row.get("key", "") == "history"), "One row per setting; language is not five separate rows")
 	var open_id := target(menu, "language", null, "open")
+	var value_button: Dictionary = menu._buttons.filter(func(button): return button.target == open_id)[0]
+	check(not value_button.node is MeshInstance3D and value_button.node.get_child_count() == 1, "Resting choice value uses one label and no dropdown surface")
 	var point := origin(menu, open_id)
 	menu.press_pointer("left_hand", point, -menu.global_basis.z, true)
 	check(menu.choices.opened.is_empty() and not menu.choices.capture.is_empty(), "Dropdown opens only on owning release")
@@ -63,7 +65,8 @@ func _run() -> void:
 	menu._activate(Library.TAB_BASE + Library.VIDEO_TAB)
 	menu.release_pointer("left_hand", point, -menu.global_basis.z, true)
 	check(events.size() == 1 and menu.choices.capture.is_empty() and menu.choices.opened.is_empty(), "Tab switch cancels old dropdown ownership and stale release")
-	check(menu.rows.size() == 3 and menu.rows[0].choices.size() == 2 and menu.rows[1].compact, "Two seek choices and short resolution choices are compact radios")
+	check(menu.rows.size() == 8 and menu.rows[0].choices.size() == 2 and menu.rows[1].compact
+		and menu.rows.any(func(row): return row.get("key", "") == "subtitle_direction"), "Video groups compact playback choices and subtitle controls")
 	check(menu.rows[2].key == "alpha_fps" and menu.rows[2].slider and menu.rows[2].span == Vector3(10, 40, 1) and menu.rows[2].value == 20 and not str(menu.rows[2].hint).is_empty(), "Alpha frame rate is a 10-40 FPS slider defaulting to 20 with a passthrough hint")
 	tap(menu, target(menu, "seek_mode", "exact"))
 	check(state.seek_mode == "exact" and events.back() == ["seek_mode", "exact"], "Radio selection chooses precision directly")

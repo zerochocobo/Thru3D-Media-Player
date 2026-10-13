@@ -59,7 +59,9 @@ try {
     & go install "golang.org/x/mobile/cmd/gobind@$mobileVersion"
     if ($LASTEXITCODE) { throw 'gobind installation failed' }
     & go mod edit "-require=golang.org/x/mobile@$mobileVersion"
-    $pendingOutput = Join-Path $cache ('cloudcore-' + [Guid]::NewGuid().ToString('N') + '.aar')
+    # File.Replace requires source and destination to be on the same volume. The cache may
+    # be a junction to another drive when a managed worktree reuses the dependency runtime.
+    $pendingOutput = Join-Path (Split-Path -Parent $output) ('cloudcore-' + [Guid]::NewGuid().ToString('N') + '.aar')
     & gomobile bind -target=android/arm64 -androidapi 29 -javapkg org.vrpassthroughplayer -ldflags '-s -w -extldflags=-Wl,-z,max-page-size=16384' -o $pendingOutput ./cloudcore
     if ($LASTEXITCODE) { throw 'OpenList Android binding failed' }
     # Read every entry before publishing; a failed/partial archive must not be stamped.

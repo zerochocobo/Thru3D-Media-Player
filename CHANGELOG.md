@@ -4,6 +4,29 @@
 
 Newest first, following product release milestones. Some development/source snapshots contained features before their product release. Original APK identifiers `0.2` and `0.4` are retained; `0.4` was also called `0.4.0` in release notes. Availability depends on device, server and media capabilities.
 
+## 0.7.0 — 2026-10-13
+
+This release collects improvements since 0.6.1, including the 0.7.0 Alpha features and subsequent fixes.
+
+- **More efficient playback and photo viewing**: Reduced GPU overhead for ordinary video playback and improved display efficiency for supported 2D-to-3D content and large photos, reducing loading and switching stalls.
+- **Clearer, more stable menus**: Improved text and icon sampling, added high-resolution menus on supported devices with automatic fallback when frame rates drop, and fixed menu-switching crashes and mirrored backgrounds.
+- **Custom controls and gesture demonstrations**: Assign controller buttons and combinations by media context, restore defaults, and confirm swaps when bindings conflict. Animated guides demonstrate pinching and zooming. Video play/pause defaults to the right A button; menu exit controls remain available.
+- **Configurable interface movement**: Bind a held controller input to move the current panel, the picture with its control bar, or all application panels. Placement is retained within the current session.
+- **Multi-row Photo Wall**: Choose and remember one, two or three rows while retaining photo proportions and continuous groups. Multi-row walls remain centered around the view with a limit on downward placement.
+- **Improved photo browsing and loading feedback**: Added white frosted loading sweeps and soft reveals. Expanded photos support dragging at a constant viewing distance, remembered headset-relative placement and closing with the right A button. Fixed overlapping thumbnails, unavailable adjustment sliders and seams at 3D photo edges.
+- **Double-click shortcuts**: Click the 3D icon to adjust strength or double-click to toggle the effect while retaining its strength. Click the volume icon to adjust or double-click to mute/restore. Volume and mute state persist between launches, with a red muted indicator.
+- **Text subtitle styles**: Choose from five text/outline color presets, expand a compact subtitle appearance section, and find global subtitle options under Video. PGS subtitles retain their source colors and layout.
+- **Improved immersive stereo subtitles**: Updated per-eye projection for VR180, fisheye and other immersive modes, keeping subtitles anchored when you turn your head. Distance is adjustable from 0.1 to 5 meters; near-field comfort depends on the headset and viewing conditions.
+- **Per-video subtitle and audio preferences**: Keep selections when switching between person passthrough, 2D-to-3D and ordinary playback, and restore them when reopening the same video, including subtitles off and automatic audio selection.
+- **Playback fixes**: Addressed missing pictures in some rotated, portrait and fisheye videos, blanking during seeking, opening-time restarts, transient Dolby Vision display errors and paused 3D updates. Undoing an opening-time display setting can restore the more efficient render path. The FPS overlay can identify the active path for troubleshooting.
+- **Library and subtitle compatibility**: Hover over truncated names to read the full filename; connection/account management stays at the appropriate root. Improved DLNA external-subtitle retention when metadata is incomplete or playback addresses change.
+
+## 0.6.1 — 2026-10-11
+
+- Fixed some videos streamed from Thru3D Media Server stopping after a few seconds, improving continuous playback and seeking.
+- Improved connection compatibility for Thru3D Media Server live transcoded streams.
+- Videos with built-in person masks now activate the passthrough background when the video appears, avoiding a premature switch to only your surroundings during loading.
+
 ## 0.6.0 — 2026-10-11
 
 - Added native stereo HEIC/HEIF spatial photos and iPhone MOV/MV-HEVC spatial-video decoding, including supported person-Alpha passthrough. Output is sRGB; compatibility and performance depend on media and device.

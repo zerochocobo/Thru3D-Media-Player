@@ -4,7 +4,7 @@
 
 Standalone Android VR/MR media player for Meta Quest and PICO. Thru3D combines a Godot OpenXR interface, Android media access, a native libmpv renderer, and MNN inference for video matting and depth-based stereo rendering.
 
-Current source version: **0.6.0** (Android versionCode **13**). An experimental standard OpenXR Android export is also available.
+Current source version: **0.7.0** (Android versionCode **18**). An experimental standard OpenXR Android export is also available.
 
 Minimum compatibility targets are **Quest 2** and **PICO Neo3**. Source/build compatibility does not establish hardware performance or interaction acceptance on every device.
 
@@ -23,9 +23,12 @@ Minimum compatibility targets are **Quest 2** and **PICO Neo3**. Source/build co
 - Rendered hands/controllers and display-quality controls, including sharpness and flat-screen adjustments.
 - VR-native account forms and in-app web login; speed-first and precise seek policies.
 - Immersive photo presentation, pinch-drag navigation, adjacent-photo preload and cached 3D conversion; photo stereo strength is adjustable up to 200%.
-
 - Media-server sections, filters, details, continuation pages and capability-dependent favorites; manual DLNA endpoints and exposed external subtitles.
 - Photo distance/size controls and a separate 2–8× magnifier referenced to the displayed image; source-dependent file management.
+- Efficient compositor-layer video/photo presentation and high-resolution menus on supported devices, with fallback for unsupported effects or low menu frame rates.
+- Context-specific controller bindings, combinations, confirmed conflict swaps, interface movement and animated gesture guides.
+- Remembered per-video audio/subtitle selections, five text subtitle styles and anchored immersive stereo subtitles.
+- Double-click 3D/volume shortcuts, persistent volume/mute state and full-filename hover hints.
 
 ## Source release
 
@@ -42,7 +45,7 @@ Godot scenes / GDScript / OpenXR
               │
 Android Kotlin plugin: media libraries, permissions, playback sessions
               │ JNI
-libmpv / FFmpeg → shared GPU video textures → Godot stereo rendering
+libmpv / FFmpeg → decoder Surface or shared textures → OpenXR layers / Godot
               └ MNN OpenCL: recurrent matting and monocular depth
 ```
 
@@ -87,6 +90,8 @@ Rebuildable outputs use `build/output/`; temporary data uses `tmp/`. Formal rele
 
 Open the VR menu with the left Menu button. Point a controller ray at a control and press that controller's trigger. Libraries, settings, list popups and photo menus use thumbsticks only for scrolling. The ordinary video control bar allows seek, volume and immersive zoom shortcuts; pointer capture suppresses them, with a return-to-center gate after capture or lists close. Hand pointing/pinching is also supported. Desktop input is intended for development previews.
 
+The right A button defaults to video play/pause or closing an expanded photo; left X opens the library and B/Y closes menus. Settings → Controls lets you select bindings, configure combinations and interface movement, and view animated gesture guides. Conflicts require a confirmed swap or cancellation; menu exit and ray selection remain available. Click the 3D/volume icons to adjust, or double-click to toggle/mute.
+
 ## Status and limitations
 
 - Early source release; Android ARM64 builds use separate Quest, PICO and experimental standard OpenXR presets.
@@ -106,7 +111,7 @@ The embedded OpenList component is **AGPL-3.0**; its adapter, pinned build recip
 ## Spatial media and photo layouts
 
 - Native stereo HEIC/HEIF spatial photos and iPhone MV-HEVC spatial video playback; spatial video can use the supported people-passthrough path. Spatial-photo output is sRGB, not a native HDR claim.
-- Side thumbnails, Photo Wall and Memory Fragments, with asynchronous loading feedback and remembered layouts.
+- Side thumbnails, one-to-three-row Photo Wall and Memory Fragments, with asynchronous loading feedback, expanded-photo dragging and remembered layouts.
 - Portrait passthrough for selected ordinary flat photos, with 0–200% stereo strength. Native stereo/panorama photos and overview grids are outside this portrait path.
 - Session-scoped head following for flat videos, single photos/portraits and menus; an independent environment-passthrough footer control. No permanent spatial-anchor or full-wall head-lock claim.
 - Stereo/left-view/right-view video display and per-video horizontal/vertical alignment. Both eyes display the selected logical view in single-view mode; it does not disable one panel or alter headset IPD.

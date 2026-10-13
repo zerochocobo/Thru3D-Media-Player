@@ -24,6 +24,7 @@ internal class DepthVideoProbe(
     private val release: (Long) -> Unit,
     private val ready: () -> Unit,
     private val completed: (JSONObject, ByteBuffer, ByteBuffer) -> Boolean,
+    private val mapReady: () -> Unit = {},
 ) : AutoCloseable {
     private val worker = DepthWorker.handler
     private val lock = Any()
@@ -74,8 +75,8 @@ internal class DepthVideoProbe(
         pair.getLong("effect_revision"), pair.getLong("model_generation"), pair.getLong("slot_token"))
 
     /** The next frame's model input would be used: stage it (otherwise the bridge skips the readback). */
-    fun wantsInput(): Boolean = synchronized(lock) {
-        !closed && !busy && handle > 0L && System.nanoTime() - lastStartNs >= intervalNs
+    fun wantsInput(frameId: Long): Boolean = synchronized(lock) {
+        !closed && !busy && handle > 0L && latestFrame != frameId && System.nanoTime() - lastStartNs >= intervalNs
     }
 
     /** [rgb] is the bridge's staged mono input (float32 CHW), valid only during this call; null when
@@ -144,14 +145,16 @@ internal class DepthVideoProbe(
             processMs = processMs * 0.9 + (System.nanoTime() - started) / 1e6 * 0.1
             stabilizeMs = stabilizeMs * 0.9 + kernel.optDouble("stabilize_ms", 0.0) * 0.1
             if (kernel.optString("state") != "ready") return
-            synchronized(lock) {
+            val updated = synchronized(lock) {
                 // A seek while this ran: its scene is gone.
                 if (!closed && frameId <= lastSubmitted && (latestFrame < 0 || frameId >= latestFrame)) {
                     val copy = ByteBuffer.allocateDirect(near.capacity()).order(ByteOrder.LITTLE_ENDIAN)
                         .put(near.duplicate().apply { clear() }).apply { clear() }
                     latest = near to copy; latestFrame = frameId; inferred++
-                }
+                    true
+                } else false
             }
+            if (updated) mapReady()
         } finally {
             synchronized(lock) { busy = false }
         }

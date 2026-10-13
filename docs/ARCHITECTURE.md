@@ -10,6 +10,8 @@ The application includes persistent timestamp-only bookmarks (`bookmark_store`, 
 
 Photo presentation uses immersive screen geometry, adjacent-image preloading and a separate stereo cache. Flat-photo navigation uses a single-hand horizontal pinch drag followed by release; two-hand pinch zoom remains available. Photo stereo strength supports 0–200%, independently of video strength. Selected ordinary flat photos can prepare depth and person matting, with matched color/mask updates before switching the presented pair. `projected_subtitles.gd` and the shader include implement subtitles in the video projection.
 
+Controller configuration is shared between the Controls UI and input dispatch (`controller_bindings.gd`). It preserves menu ray/trigger selection and exit controls, confirms conflicting swaps, and supports held interface movement and same-hand grip → trigger → target combinations. `file_track_memory.gd` persists explicit per-file audio/subtitle preferences and restores them after playback-core changes.
+
 ## Android boundary
 
 `QuestPlayerPlugin.kt` exposes Godot-callable methods and owns Android media selection, libraries and lifecycle. Document grants, file descriptors and HTTP/SMB/cloud sources are managed in Kotlin. Authentication data stays in application-private storage; no account credentials belong in source control.
@@ -29,6 +31,10 @@ These bridges still require device-specific website/input validation.
 ## Rendering and inference
 
 `native/mpv/mpv_source.cpp` connects libmpv's source-frame extension to JNI. `native/render-bridge` owns GPU texture/buffer operations. Frame PTS, generations and fences prevent mismatching image/alpha, showing stale frames after seek, or reusing a texture before GPU ownership is released.
+
+`native/xr-layer` and `video_layer.gd` submit supported decoder Surfaces or prepared stereo/photo images directly to OpenXR compositor layers. Unsupported projections, matting, color effects and decoder formats use the existing rendering path. Photos upload full-resolution images incrementally; selected photo effects can require the full shader path. `menu_composition.gd` groups menus into fixed-size planar layers, redraws when content changes and falls back when its frame-rate watchdog fires. The Khronos header sources and notices are retained under `third_party/openxr`.
+
+Immersive text subtitles intersect each physical eye's viewing ray with a shared video-local plane, rather than using a single-eye longitude offset. The current configurable distance is 0.1–5 m; source tests do not establish near-field headset comfort.
 
 The normal matting backend uses MNN OpenCL with four recurrent states for each eye. ROI decisions are in Kotlin's `RoiController`; the default source snapshot uses the internal 320×320 fast profile. No model/resolution selector is exposed in the normal UI. ncnn/reference paths are retained for dedicated diagnostics; normal playback has no automatic CPU fallback.
 

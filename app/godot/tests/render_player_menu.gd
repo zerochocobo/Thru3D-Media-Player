@@ -221,8 +221,10 @@ func _run() -> void:
 	state.subtitle_direction = 0
 	menu.refresh()
 	if menu._subtitle_ids.values() != [0, 1, 3, 8]: failures.append("Subtitle picker must show Off and real IDs")
+	if not menu.choices.sliders.is_empty(): failures.append("Subtitle appearance starts collapsed")
+	menu._activate(Menu.SUBTITLE_APPEARANCE)
 	if menu.choices.sliders.size() != 3:
-		failures.append("VR subtitle popup must show three sliders")
+		failures.append("Expanded VR subtitle appearance must show position, distance and size")
 	await RenderingServer.frame_post_draw
 	await RenderingServer.frame_post_draw
 	viewport.get_texture().get_image().save_png(output.path_join("subtitles-distance-popup.png"))

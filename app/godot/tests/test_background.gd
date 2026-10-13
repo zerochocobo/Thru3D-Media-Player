@@ -179,8 +179,14 @@ func _run() -> void:
 		check(supported.environment.background_mode == Environment.BG_COLOR and supported.environment.background_color.a == 0.0 and supported.environment.sky == null, "Alpha removes opaque environment with " + choice)
 		check(main.background.choice == choice, "Alpha preserves saved background " + choice)
 	main.video.alpha_requested = false
-	main.video.alpha_enabled = true
+	main.video.packed_file = true
+	main.video.packed_alpha = true
 	main.background.select("belfast")
+	main._update_background()
+	check(not supported.applied_passthrough and not viewport.transparent_bg, "Packed Alpha stays opaque until a frame shows its mask")
+	main.video.packed_file = false
+	main.video.packed_alpha = false
+	main.video.alpha_enabled = true
 	main._update_background()
 	check(supported.applied_passthrough, "Displayed Alpha remains transparent during mode transition")
 	main.video.alpha_enabled = false

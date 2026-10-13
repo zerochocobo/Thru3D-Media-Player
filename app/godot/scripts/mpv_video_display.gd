@@ -18,6 +18,7 @@ const SubtitleState := preload("res://scripts/mpv_subtitle_state.gd")
 const BitmapSubtitles := preload("res://scripts/bitmap_subtitles.gd")
 var bitmap_subtitles := BitmapSubtitles.new()
 const ModeMemory := preload("res://scripts/file_mode_memory.gd")
+const TrackMemory := preload("res://scripts/file_track_memory.gd")
 const StereoView := preload("res://scripts/stereo_view.gd")
 var viewing_eye := 0 # 0 binocular; 1/2 duplicate the logical left/right view after eye swap.
 var stereo_horizontal := 0.0
@@ -70,13 +71,17 @@ var loop_enabled := false
 var requested_play := true
 var audio_track_id := -1
 var audio_volume := 100.0
+signal audio_options_changed(volume: float, muted: bool)
 var audio_muted := false
 var subtitles := SubtitleState.new()
 ## Text subtitles: on the flat screen near its lower edge; in immersive modes floating at
-## a video-local projection with stereo disparity controlled by [subtitle_distance].
+## a video-local plane at [subtitle_distance], projected from each physical XR eye.
 var playback_speed := 1.0
+const SubtitleStyle := preload("res://scripts/subtitle_style.gd")
 var subtitle_size := 1.0:
-	set(value): subtitle_size = clampf(value, 0.5, 2.0) if is_finite(value) else 1.0
+	set(value): subtitle_size = SubtitleStyle.size_ratio(value)
+var subtitle_style := SubtitleStyle.DEFAULT:
+	set(value): subtitle_style = SubtitleStyle.normalize(value)
 var subtitle_flat_position := 0.0:
 	set(value): subtitle_flat_position = clampf(value, 0.0, 1.0) if is_finite(value) else 0.0
 var _subtitle_surface: MeshInstance3D
@@ -100,6 +105,9 @@ const CAPTION_DROP := 0.244 # radians below the line of sight (14 degrees)
 var _subtitle_poll_ms := 0
 var _subtitle_received_ms := 0
 var mode_memory := ModeMemory.new()
+var track_memory := TrackMemory.new()
+var _track_restore: Dictionary = {}
+var _track_choices: Dictionary = {}
 var _remember_file := false
 var recent_files := RecentFiles.new()
 ## Settings: when off, nothing new is recorded and videos start from the beginning.
@@ -141,9 +149,28 @@ var _debug_next_report_us := 0
 var _pixel_request := 0
 var _pixel_request_key := ""
 var _pixel_busy := false
+const VideoLayer := preload("res://scripts/video_layer.gd")
+## Normal playback on the compositor video layer (user setting; the runtime must support it).
+var layer_enabled := true
+var video_layer: VideoLayer
+var _layer_session := false # the native session decodes into the layer surface
+var _eye_buffer_only := false # the next open stays on the eye-buffer path (one-shot)
+## This file left the layer for a shader effect: back on the layer once the effect is off again.
+var _layer_return_uri := ""
+## This file cannot use the layer (Dolby Vision Profile 5, software decode): no automatic return.
+var _layer_blocked_uri := ""
+var _layer_generation := 0 # video_layer.generation the layer session's surface belongs to
+## A seek on the layer: its surface keeps the last frame, so it stays shown until the target arrives.
+var _layer_seek_hold := false
+var _hole_material: ShaderMaterial
+var video_layer_shown := false # main renders the eye buffers transparent while true
+var _picture_token := -1 # the 2D->3D pair last copied into the picture layer
+## Frames to copy the held pair again: a strength change re-warps it in place, asynchronously.
+var _picture_refresh := 0
 
 func _ready() -> void:
 	mode_memory.load_saved()
+	track_memory.load_saved()
 	recent_files.load_saved()
 	initialize_surface(load("res://shaders/video_rvm_pair.gdshader"))
 	color_grade.apply(material)
@@ -181,6 +208,11 @@ func _ready() -> void:
 		platform.connect("mpv_frozen_pair", _on_frozen_pair)
 		if platform.has_signal("rvm_warmup"):
 			platform.connect("rvm_warmup", _on_rvm_warmup)
+		if PlatformMethods.supports(platform, "bind_video_layer"):
+			video_layer = VideoLayer.new(platform)
+	_hole_material = ShaderMaterial.new()
+	_hole_material.shader = preload("res://shaders/video_layer_hole.gdshader")
+	_hole_material.render_priority = -128
 	# First photo use should not queue behind unrelated video-model cold compilation.
 	_apply_geometry()
 
@@ -201,6 +233,7 @@ static func _thumbnail_source(uri: String) -> bool:
 	return not ModeMemory.key_for(uri).is_empty()
 
 func _maybe_capture_thumbnail() -> void:
+	if _binding.layer: return # the picture is only on the compositor layer
 	if _thumb_after_ms < 0 or _thumbnail_busy or _pixel_busy or _waiting_first or not _pending_revision.is_empty() \
 		or media.state not in ["playing", "paused", "ended"] or not _binding.material or media.last_pair.is_empty():
 		return
@@ -451,7 +484,9 @@ func open_local(uri: String, title: String, start_ms: int = 0, restore_mode: boo
 	_thumb_tries = 0
 	_thumbnail_result = {}
 	_thumb_after_ms = -1
-	if _thumbnail_source(uri) and Thumbnails.texture(uri) == null:
+	# A server cover (DLNA albumArt, media servers) is the library picture: no frame is needed.
+	var server_cover := str(metadata.get("cover", recent_files.lookup(uri).get("cover", "")))
+	if _thumbnail_source(uri) and Thumbnails.texture(uri) == null and not RecentFiles.valid_cover(server_cover):
 		_thumb_after_ms = 0
 	local_uri = uri
 	_warm_rvm()
@@ -471,6 +506,20 @@ func open_local(uri: String, title: String, start_ms: int = 0, restore_mode: boo
 	_bookmark_resolve()
 	depth_requested = auto_depth and geometry == Geometry.Geometry.FLAT and not stereo_sbs and not alpha_requested
 	_last_seek_mode = SeekPolicy.normalize(seek_mode)
+	# The cover comes from a displayed frame (never a second decoder). The layer has none to read, so a
+	# layer session leaves it to the next eye-buffer session (Alpha, 3D, effects) instead of switching.
+	var layer := _layer_wanted() and not _eye_buffer_only and uri != _layer_blocked_uri
+	# Opened in the eye buffers only for a setting of the moment (colour grade, 3D, Alpha): go to the
+	# layer once that setting is undone, as a session moved off the layer does.
+	if not layer and not _eye_buffer_only and uri != _layer_blocked_uri and layer_enabled \
+		and video_layer != null and video_layer.available():
+		_layer_return_uri = uri
+	_eye_buffer_only = false
+	_layer_session = false
+	_layer_seek_hold = false
+	if layer: _layer_generation = video_layer.generation
+	if PlatformMethods.supports(platform, "set_mpv_video_layer"):
+		platform.set_mpv_video_layer(layer)
 	var id: int = platform.open_mpv_video(uri, maxi(start_ms, 0), stereo_sbs, profile, alpha_requested, true, depth_requested,
 		stereo_sbs and top_bottom, SeekPolicy.normalize(seek_mode) == SeekPolicy.EXACT)
 	media.begin(id)
@@ -485,6 +534,7 @@ func open_local(uri: String, title: String, start_ms: int = 0, restore_mode: boo
 	_clone_applied = false
 	subtitles.select(0)
 	subtitles.clear(true)
+	_queue_track_restore(track_memory.lookup(uri) if restore_mode else {})
 	bitmap_subtitles.clear(material)
 	if _subtitle_surface: _subtitle_surface.visible = false
 	reset_view() # every video starts straight ahead at its natural size
@@ -531,9 +581,20 @@ func close_video() -> void:
 	cancel_pending_open()
 	if mode_memory.dirty:
 		mode_memory.save()
+	if track_memory.dirty:
+		track_memory.save()
 	if recent_files.dirty:
 		recent_files.save()
 	_unbind()
+	_layer_session = false
+	_layer_seek_hold = false
+	_update_layer()
+	_picture_token = -1
+	if PlatformMethods.supports(platform, "destroy_layer_image"):
+		platform.destroy_layer_image()
+		if video_layer:
+			video_layer.invalidate()
+			video_layer.picture_size = Vector2.ZERO
 	if platform and media.session_id > 0:
 		platform.close_mpv_video(media.session_id)
 	media.close()
@@ -543,6 +604,8 @@ func close_video() -> void:
 	_debug_seek_delay_until_ms = 0
 	_waiting_first = false
 	_audio_pending = false
+	_track_restore.clear()
+	_track_choices.clear()
 	control.close()
 	_remember_file = false
 	subtitles.clear(true)
@@ -600,6 +663,7 @@ func _request_revision(position_ms: int = -1, mode: String = "") -> void:
 	_try_revision()
 
 func _start_seek_freeze() -> bool:
+	if _layer_session: return false # the layer surface keeps its frame until the new one
 	# Capture exactly once before seek/flush; rapid requests share this frame.
 	if _freeze_request == 0 and not _binding.ticket.is_empty() and not _is_frozen():
 		var capable := Engine.has_singleton("QuestPlayer") or platform.has_method("freeze_mpv_pair")
@@ -665,16 +729,22 @@ func _try_revision() -> void:
 	if int(_pending_revision.position_ms) >= 0 and Time.get_ticks_msec() < _debug_seek_delay_until_ms:
 		return
 	var request := _pending_revision
+	if _layer_session and (bool(request.alpha) or bool(request.depth)):
+		_pending_revision = {}
+		_reopen_on_eye_buffer(int(request.position_ms))
+		return
 	var id: int = platform.revise_mpv_video(media.session_id, request.stereo, request.alpha, request.profile, request.position_ms,
 		request.depth, request.top_bottom, request.seek_mode == SeekPolicy.EXACT)
 	if id <= 0:
 		return
-	if int(request.position_ms) < 0 or not _is_frozen(): _unbind()
+	_layer_seek_hold = _layer_session and int(request.position_ms) >= 0 and media.frame_counter > 0
+	if int(request.position_ms) < 0 or not (_is_frozen() or _layer_seek_hold): _unbind()
 	_pending_pair = {}
 	_pending_revision = {}
 	var held_format := media.format.duplicate()
+	_track_choices = _capture_track_choices()
 	media.begin(id)
-	if _is_frozen(): media.format = held_format
+	if _is_frozen() or _layer_seek_hold: media.format = held_format
 	platform.set_mpv_playing(id, false)
 	if int(request.position_ms) >= 0:
 		_last_seek_mode = request.seek_mode
@@ -756,6 +826,7 @@ func set_depth_strength(value: float) -> bool:
 	if depth_requested != (strength > 0.0): set_depth(strength > 0.0)
 	# Nonzero changes only update parallax; never revise/restart the processing session.
 	_send_depth_view()
+	_picture_refresh = 6
 	changed.emit()
 	return true
 
@@ -776,7 +847,7 @@ func toggle_clone_voice() -> bool:
 	if clone <= 0:
 		return false
 	var active := clone_voice_active()
-	if not set_audio_options(-1 if active else clone, audio_volume, audio_muted):
+	if not select_audio_track(-1 if active else clone):
 		return false
 	prefer_clone_voice = not active
 	return true
@@ -806,11 +877,15 @@ func toggle_play() -> void:
 func set_audio_options(track_id: int, volume: float, muted: bool) -> bool:
 	if track_id < -1 or not is_finite(volume) or volume < 0.0 or volume > 100.0 or not platform or not media.accepts(media.session_id):
 		return false
+	if volume == 0.0:
+		volume = audio_volume if audio_volume > 0.0 else 100.0
+		muted = true
 	if not platform.set_mpv_audio(media.session_id, track_id, volume, muted):
 		return false
 	audio_track_id = track_id
 	audio_volume = volume
 	audio_muted = muted
+	audio_options_changed.emit(audio_volume, audio_muted)
 	_audio_pending = false
 	changed.emit()
 	return true
@@ -820,6 +895,7 @@ func select_audio_track(track_id: int) -> bool:
 	if not set_audio_options(track_id, audio_volume, audio_muted): return false
 	_clone_applied = true
 	prefer_clone_voice = clone_voice_track() > 0 and track_id == clone_voice_track()
+	_remember_track("audio", track_id)
 	return true
 
 ## Raising the volume unmutes (a muted slider shows 0, so a silent step up would look ignored);
@@ -841,7 +917,7 @@ func cycle_audio_track(direction: int = 1) -> bool:
 			choices.append(int(track.id))
 	var current := int(details.get("audio_track_id", 0))
 	var index := choices.find(current)
-	return set_audio_options(choices[posmod(index + direction, choices.size())], audio_volume, audio_muted)
+	return select_audio_track(choices[posmod(index + direction, choices.size())])
 
 func seek_absolute(position_ms: int, mode: String = "") -> bool:
 	if not platform or not media.accepts(media.session_id):
@@ -902,7 +978,7 @@ func bookmark_action(operation: String, marker_id: String, scope: String) -> Str
 					return "" if seek_absolute(int(marker.position_ms), SeekPolicy.effective(seek_mode, bookmark_seek_mode)) else "Bookmark jump failed"
 	return ""
 
-func set_subtitle_track(track_id: int) -> bool:
+func set_subtitle_track(track_id: int, remember: bool = true) -> bool:
 	if track_id < -1 or not platform or not media.accepts(media.session_id):
 		return false
 	if track_id > 0 and not subtitle_tracks().any(func(t): return int(t.id) == track_id):
@@ -916,8 +992,48 @@ func set_subtitle_track(track_id: int) -> bool:
 		caption.visible = false
 	if projected_subtitles:
 		projected_subtitles.clear(material)
+	if remember: _remember_track("subtitle", track_id)
 	changed.emit()
 	return true
+
+func _raw_tracks(channel: String) -> Array:
+	return media.playback.get("details", {}).get(channel + "_tracks", [])
+
+func _remember_track(channel: String, id: int) -> void:
+	_track_restore.erase(channel) # A manual choice cancels any delayed restore.
+	var choice := TrackMemory.describe(id, _raw_tracks(channel))
+	if choice.is_empty(): return
+	_track_choices[channel] = choice
+	if not _remember_file: return # Explicit diagnostic opens bypass per-file settings.
+	var saved := track_memory.lookup(local_uri)
+	saved[channel] = choice
+	if track_memory.remember(local_uri, saved) and not track_memory.save():
+		Log.record("file_track_save_failed", {"error": track_memory.last_error})
+
+func _capture_track_choices() -> Dictionary:
+	var choices := _track_choices.duplicate(true)
+	choices.merge(_track_restore, true)
+	for channel in TrackMemory.CHANNELS:
+		if _track_restore.has(channel): continue
+		var id := audio_track_id if channel == "audio" else subtitles.requested_track
+		var choice := TrackMemory.describe(id, _raw_tracks(channel))
+		if not choice.is_empty(): choices[channel] = choice
+	return choices
+
+func _queue_track_restore(choices: Dictionary) -> void:
+	_track_restore = choices.duplicate(true)
+	_track_choices = choices.duplicate(true)
+	if choices.has("audio"): _clone_applied = true # Per-file choice takes priority over global dubbing.
+
+func _restore_tracks() -> void:
+	if not platform or not media.accepts(media.session_id): return
+	for channel in _track_restore.keys():
+		var id := TrackMemory.resolve(_track_restore[channel], _raw_tracks(channel))
+		if id == TrackMemory.UNRESOLVED: continue # External tracks can arrive after FILE_LOADED.
+		var accepted := set_audio_options(id, audio_volume, audio_muted) if channel == "audio" else set_subtitle_track(id, false)
+		if accepted:
+			_track_choices[channel] = TrackMemory.describe(id, _raw_tracks(channel))
+			_track_restore.erase(channel)
 
 func subtitle_tracks() -> Array[Dictionary]:
 	var tracks: Array[Dictionary] = []
@@ -974,6 +1090,9 @@ func _poll_subtitles() -> void:
 	_sync_subtitle_surface()
 
 func _place_caption() -> void:
+	var appearance := SubtitleStyle.colors(subtitle_style)
+	caption.modulate = appearance.text_color
+	caption.outline_modulate = appearance.outline_color
 	if geometry == Geometry.Geometry.FLAT:
 		# Ordinary video captions stay on the screen, independent of immersive preferences.
 		var pose := subtitle_transform()
@@ -997,7 +1116,9 @@ func _place_caption() -> void:
 	# Direction/recenter/zoom move captions with the video; roll is excluded by the independent surface.
 	var anchor_basis := SubtitleDepth.anchor(subtitle_position, subtitle_direction == 1)
 	caption.layers = 0 # The live text patch is drawn only by the video's shader.
-	projected_subtitles.update_patch(caption, material, anchor_basis, subtitle_distance, ProjectedSubtitles.runtime_ipd(), subtitle_direction == 1, subtitle_size)
+	var pose := subtitle_transform()
+	var viewer_position := view_camera.global_position if view_camera and view_camera.is_inside_tree() else pose.origin
+	projected_subtitles.update_patch(caption, material, anchor_basis, subtitle_distance, subtitle_direction == 1, subtitle_size, subtitle_style, pose, viewer_position, XRServer.world_scale)
 
 func seek_relative(delta_ms: int) -> bool:
 	if not platform or not media.accepts(media.session_id):
@@ -1260,6 +1381,7 @@ func _present_pending() -> void:
 		changed.emit()
 		return
 	media.last_pair = claimed
+	if _binding.layer: _layer_session = true
 	media.logical_session_id = int(claimed.logical_session_id)
 	media.generation = int(claimed.generation)
 	media.format_revision = int(claimed.format_revision)
@@ -1270,7 +1392,9 @@ func _present_pending() -> void:
 	media.format = {"width": int(claimed.width), "height": int(claimed.height),
 		"spatial_video": _spatial_video,
 		"pixel_aspect": par if is_finite(par) and par > 0.0 and par <= 16.0 else 1.0,
-		"stereo_mode": str(claimed.get("stereo_mode", "")), "unapplied_rotation_degrees": 0}
+		"stereo_mode": str(claimed.get("stereo_mode", "")), "unapplied_rotation_degrees": 0,
+		"source_rotation_degrees": int(claimed.get("source_rotation_degrees", 0))}
+	_accept_source_rotation(int(claimed.get("source_rotation_degrees", 0)))
 	_rvm_alpha = bool(claimed.alpha_requested) and bool(claimed.inference_ran)
 	depth_enabled = bool(claimed.get("depth_requested", false)) and bool(claimed.get("depth_ran", false))
 	_apply_packed()
@@ -1312,6 +1436,8 @@ func _on_state(id: int, payload: String) -> void:
 	if report.get("audio_focus_change", "") == "loss":
 		requested_play = false
 	media.playback = report
+	_layer_session = bool(report.get("layer_active", false))
+	_accept_source_rotation(int(report.get("source_rotation_degrees", 0)))
 	var details: Dictionary = report.get("details", {})
 	var size := str(details.get("file_size", ""))
 	if not BookmarkStore.integer(_bookmark_metadata.get("size", -1), 1, 9007199254740991) and size.is_valid_int() and BookmarkStore.integer(int(size), 1, 9007199254740991):
@@ -1328,6 +1454,7 @@ func _on_state(id: int, payload: String) -> void:
 		control.observe(position_ms, int(float(details.get("duration_seconds", "-1")) * 1000))
 		media.decoder = str(details.get("codec", "")) + " / " + str(details.get("hwdec_current", ""))
 	media.state = str(report.get("state", "opening"))
+	_restore_tracks()
 	if media.state == "ended":
 		_record_history(true)
 	if _debug_request > 0:
@@ -1361,15 +1488,18 @@ func _on_detach(id: int, _payload: String) -> void:
 func _on_released(id: int, _payload: String) -> void:
 	if id == media.session_id and _recover:
 		_recover = false
-		call_deferred("_reopen_after_context_loss", local_uri, display_name, _recover_ms, _remember_file)
+		call_deferred("_reopen_after_context_loss", local_uri, display_name, _recover_ms, _remember_file, id)
 	_write_debug_report()
 
-func _reopen_after_context_loss(uri: String, title: String, position_ms: int, remember_file: bool) -> void:
+func _reopen_after_context_loss(uri: String, title: String, position_ms: int, remember_file: bool, expected_session: int = 0) -> void:
+	if uri != local_uri or (expected_session > 0 and expected_session != media.session_id): return
 	# Retain live user choices even if the last disk save failed.
 	var persisted := _file_permission_persisted
 	var eye := viewing_eye
 	var alignment := Vector2(stereo_horizontal, stereo_vertical)
+	var tracks := _capture_track_choices()
 	if open_local(uri, title, position_ms, false, alpha_requested):
+		_queue_track_restore(tracks)
 		_remember_file = remember_file
 		_file_permission_persisted = persisted
 		viewing_eye = eye
@@ -1398,6 +1528,7 @@ func _on_debug_command(id: int, payload: String) -> void:
 		depth_requested = bool(command.get("depth", false))
 		auto_depth = depth_requested
 		requested_play = true
+		layer_enabled = bool(command.get("layer", true))
 		open_local(str(command.uri), str(command.title), maxi(int(command.position_ms), 0), false, alpha_requested)
 	elif command.operation == "alpha":
 		set_alpha(bool(command.enabled))
@@ -1507,13 +1638,14 @@ func _source_size() -> Vector2:
 
 func _sync_subtitle_surface() -> void:
 	if not _subtitle_surface or not material: return
-	var separate := not is_zero_approx(screen_rotation)
+	# The layer shows no shader overlays: subtitles go on their own surface above the hole.
+	var separate := not is_zero_approx(screen_rotation) or _layer_session
 	material.set_shader_parameter("separate_subtitles", separate)
 	_subtitle_surface.visible = separate and panel.visible and (material.get_shader_parameter("subtitle_enabled") == true or material.get_shader_parameter("bitmap_subtitle_enabled") == true)
 	if not _subtitle_surface.visible: return
 	_subtitle_surface.mesh = panel.mesh
 	_subtitle_surface.global_transform = subtitle_transform()
-	for key in ["subtitle_texture", "subtitle_enabled", "subtitle_anchor_inverse", "subtitle_parallax", "subtitle_patch_half_extent", "bitmap_subtitle_texture", "bitmap_subtitle_enabled", "bitmap_subtitle_rect", "rotation_degrees"]:
+	for key in ["subtitle_texture", "subtitle_enabled", "subtitle_world_to_patch", "subtitle_patch_half_extent", "bitmap_subtitle_texture", "bitmap_subtitle_enabled", "bitmap_subtitle_rect", "rotation_degrees"]:
 		_subtitle_material.set_shader_parameter(key, material.get_shader_parameter(key))
 
 func _pixel_aspect() -> float:
@@ -1532,7 +1664,8 @@ func _apply_geometry() -> void:
 		if _subtitle_surface: _subtitle_surface.visible = false
 		for track in media.playback.get("details", {}).get("subtitle_tracks", []):
 			if track is Dictionary and int(track.get("id", 0)) == subtitles.requested_track and str(track.get("codec", "")) == "hdmv_pgs_subtitle":
-				set_subtitle_track(0)
+				var choice := TrackMemory.describe(subtitles.requested_track, _raw_tracks("subtitle"))
+				if set_subtitle_track(0, false) and not choice.is_empty(): _track_restore.subtitle = choice
 	_apply_packed()
 	if caption and caption.visible: _place_caption()
 	_sync_subtitle_surface()
@@ -1553,6 +1686,8 @@ func layout_snapshot() -> Dictionary:
 		"alpha_requested": alpha_requested, "alpha_enabled": alpha_enabled, "profile": profile,
 		"depth_requested": depth_requested, "depth_enabled": depth_enabled, "depth_strength": depth_strength, "auto_depth": auto_depth,
 		"screen_rotation": screen_rotation, "playback_speed": playback_speed,
+		"video_layer": {"shown": video_layer_shown, "surface": _layer_session, "picture_token": _picture_token,
+			"warped": _binding.warped},
 		"alpha_ready": alpha_ready(), "backend": "Android_libmpv", "loop_enabled": loop_enabled,
 		"playback_control": playback, "subtitles": {"requested_track": subtitles.requested_track,
 			"cue": subtitles.cue, "text": subtitles.text,
@@ -1565,7 +1700,8 @@ func layout_snapshot() -> Dictionary:
 			"size": subtitle_size, "flat_position": subtitle_flat_position, "rotation_independent": true,
 			"distance_m": subtitle_distance, "position": subtitle_position, "direction": subtitle_direction,
 			"runtime_ipd_m": ProjectedSubtitles.runtime_ipd(),
-			"angular_parallax_rad": material.get_shader_parameter("subtitle_parallax"),
+			"projection": "flat_Label3D" if geometry == Geometry.Geometry.FLAT else "per_eye_ray_plane",
+			"plane_center_world": [] if geometry == Geometry.Geometry.FLAT else [projected_subtitles.plane_pose.origin.x, projected_subtitles.plane_pose.origin.y, projected_subtitles.plane_pose.origin.z],
 			"anchor_space": "screen" if geometry == Geometry.Geometry.FLAT else "video_local",
 			"anchor_direction": _subtitle_anchor_direction(),
 			"source_frame_sync_verified": false, "device_validation": "pending"},
@@ -1593,6 +1729,7 @@ func _can_loop() -> bool:
 		and (not alpha_requested or final_pair.get("inference_ran", false))
 
 func _process(_delta: float) -> void:
+	_restore_tracks()
 	if _audio_pending:
 		set_audio_options(audio_track_id, audio_volume, audio_muted)
 	elif prefer_clone_voice and not _clone_applied and clone_voice_track() > 0:
@@ -1602,10 +1739,160 @@ func _process(_delta: float) -> void:
 	if not _pending_revision.is_empty():
 		_try_revision()
 	_present_pending()
+	_update_layer()
 	_maybe_capture_thumbnail()
 	_poll_subtitles()
 	if _can_loop():
 		seek_absolute(0)
+
+## Video frames shown so far: presented pairs, or on the video layer (whose pairs only mark
+## restarts and positions) the frames MPV released to the layer surface minus its drops.
+func presented_frames() -> int:
+	if not _binding.layer:
+		return media.frame_counter
+	var details: Dictionary = media.playback.get("details", {})
+	return maxi(0, str(details.get("estimated_frame_number", "0")).to_int() - str(details.get("vo_frame_drop_count", "0")).to_int())
+
+## The displayed per-eye UV shift of the stereo alignment (as the shader's stereo_offset).
+func stereo_offset_uv() -> Vector2:
+	return Vector2(stereo_horizontal, stereo_vertical) * 0.01
+
+## Presentation the compositor layer can show exactly: plain decoder colour on a supported shape.
+func _layer_presentation() -> bool:
+	return layer_enabled and video_layer != null and not alpha_requested and not depth_requested and not packed_file \
+		and (local_uri.is_empty() or local_uri != _layer_blocked_uri) \
+		and color_grade.values() == ColorGrade.DEFAULTS and video_layer.supports(geometry, screen_curve > 0.0)
+
+## Short code for the FPS overlay: why playback is in the eye buffers ("" when on the layer).
+func layer_block_reason() -> String:
+	if video_layer_shown: return ""
+	if video_layer == null or not video_layer.available(): return "xr"
+	if alpha_requested: return "alpha"
+	if depth_requested: return "3d"
+	if packed_file: return "packed"
+	if not local_uri.is_empty() and local_uri == _layer_blocked_uri: return "decoder"
+	if color_grade.values() != ColorGrade.DEFAULTS: return "color"
+	if not video_layer.supports(geometry, screen_curve > 0.0): return "shape"
+	return "wait"
+
+## RGBA frames already have their file orientation baked by MPV. Keep manual rotation as an
+## extra adjustment, and never reopen this file on an unnormalized decoder Surface for its cover.
+func _accept_source_rotation(rotation: int) -> void:
+	if rotation == 0: return
+	_layer_blocked_uri = local_uri
+	_layer_return_uri = ""
+
+func _layer_wanted() -> bool:
+	if video_layer: video_layer.update_session()
+	return video_layer != null and video_layer.available() and _layer_presentation()
+
+func _origin() -> XROrigin3D:
+	return view_camera.get_parent() as XROrigin3D if view_camera else null
+
+## Keep the layer, the hole and the subtitles in step with the video surface every frame.
+func _update_layer() -> void:
+	if not video_layer:
+		return
+	video_layer.update_session()
+	if _layer_session and media.accepts(media.session_id) and media.frame_counter > 0 and media.state != "failed" \
+		and _pending_revision.is_empty() and not _layer_presentation():
+		_reopen_on_eye_buffer(-1)
+		return
+	if _layer_session and video_layer.generation != _layer_generation and media.accepts(media.session_id) \
+		and _pending_revision.is_empty():
+		_reopen_at(-1, true) # a new XR session replaced the swapchain MPV decodes into
+		return
+	if _layer_session and media.playback.get("layer_compatible", true) == false:
+		_layer_blocked_uri = local_uri
+		_reopen_on_eye_buffer(-1) # Profile 5, software decode or rotation: MPV must normalize
+		return
+	# Back from a temporary shader effect: the layer again, at the shown position.
+	if not _layer_session and not _layer_return_uri.is_empty() and _layer_return_uri == local_uri \
+		and media.accepts(media.session_id) and media.frame_counter > 0 and _pending_revision.is_empty() \
+		and _freeze_request == 0 and not _waiting_first and _thumb_after_ms < 0 and not _thumbnail_busy and _layer_wanted():
+		_layer_return_uri = ""
+		_reopen_at(-1, true)
+		return
+	var origin := _origin()
+	if _layer_seek_hold and not _waiting_first: _layer_seek_hold = false
+	var shown := (_layer_session or _layer_seek_hold) and media.accepts(media.session_id) \
+		and (media.frame_counter > 0 or _layer_seek_hold) \
+		and media.state != "failed" and origin != null and video_layer.show(self, origin)
+	if not shown and not _layer_session and origin != null:
+		shown = _show_depth_picture(origin)
+	video_layer_shown = shown
+	if not shown:
+		video_layer.hide(self)
+	if shown:
+		panel.visible = true
+		panel.material_override = _hole_material
+	elif panel.material_override == _hole_material:
+		panel.material_override = material
+
+## 2D->3D: the bridge's stereo pair of each frame, copied into the picture layer once per pair.
+## Until the model's first map (shader parallax) the frame stays in the eye buffers.
+func _show_depth_picture(origin: XROrigin3D) -> bool:
+	var ticket := _binding.ticket
+	if not _binding.warped or geometry != Geometry.Geometry.FLAT or not video_layer.available() \
+		or not video_layer.supports(geometry, screen_curve > 0.0) or color_grade.values() != ColorGrade.DEFAULTS \
+		or not PlatformMethods.supports(platform, "copy_layer_texture"):
+		return false
+	var size := Vector2i(int(ticket.width) * 2, int(ticket.height))
+	var token := int(ticket.get("slot_token", 0))
+	if token != _picture_token or _picture_refresh > 0:
+		_picture_refresh = maxi(0, _picture_refresh - 1)
+		var warp := int(ticket.get("warp_texture_id", 0))
+		var created: bool = warp > 0 and platform.create_layer_image(size.x, size.y, 1, false)
+		if created and Vector2i(video_layer.picture_size) != size:
+			video_layer.invalidate() # a new swapchain for this size
+			video_layer.picture_size = Vector2(size)
+		if not created or platform.acquire_layer_image() <= 0:
+			return false
+		var copied: bool = platform.copy_layer_texture(warp)
+		if not platform.release_layer_image(false) or not copied:
+			return false
+		_picture_token = token
+	return video_layer.show(self, origin, VideoLayer.PICTURE, Vector2(size), 1)
+
+## Same file and position, decoded for Godot's shader (Alpha, 2D->3D, fisheye, grading, Profile 5).
+func _reopen_on_eye_buffer(position_ms: int) -> void:
+	if local_uri != _layer_blocked_uri:
+		_layer_return_uri = local_uri
+	_reopen_at(position_ms, false)
+
+## Reopen the shown file at its position (layer: may decode into the compositor layer).
+func _reopen_at(position_ms: int, layer: bool) -> void:
+	if local_uri.is_empty():
+		return
+	var position := position_ms if position_ms >= 0 else maxi(0, int(int(media.last_pair.get("pts_us", control.observed_position_ms * 1000)) / 1000))
+	var remember := _remember_file
+	var persisted := _file_permission_persisted
+	var eye := viewing_eye
+	var alignment := Vector2(stereo_horizontal, stereo_vertical)
+	var view := [_view_basis, view_yaw, view_pitch, view_zoom]
+	var rotation := screen_rotation
+	var speed := playback_speed
+	var tracks := _capture_track_choices()
+	Log.record("video_layer_reopen", {"layer": layer, "position_ms": position, "alpha": alpha_requested,
+		"depth": depth_requested, "geometry": geometry, "compatible": media.playback.get("layer_compatible", true)})
+	_eye_buffer_only = not layer
+	var return_uri := _layer_return_uri
+	if open_local(local_uri, display_name, position, false, alpha_requested):
+		_queue_track_restore(tracks)
+		_remember_file = remember
+		_file_permission_persisted = persisted
+		viewing_eye = eye
+		stereo_horizontal = alignment.x
+		stereo_vertical = alignment.y
+		_view_basis = view[0]
+		view_yaw = view[1]
+		view_pitch = view[2]
+		view_zoom = view[3]
+		screen_rotation = rotation
+		set_playback_speed(speed)
+		_apply_stereo_view()
+		_apply_geometry()
+	_layer_return_uri = return_uri
 
 func _exit_tree() -> void:
 	close_video()

@@ -39,6 +39,8 @@ internal object RenderBridgeNative {
     /** Capture a decoder buffer (MPV direct mode): model input scaled from its YUV; the pair shows it. */
     @JvmStatic external fun captureBufferRoi(handle: Long, buffer: Long, bufferWidth: Int, bufferHeight: Int,
                                              rect: FloatArray, scout: Boolean): Long
+    /** Normal-playback direct mode: the pair shows the decoder buffer with the constant opaque mask. */
+    @JvmStatic external fun captureOpaqueBuffer(handle: Long, buffer: Long, bufferWidth: Int, bufferHeight: Int): Long
     /** EGLImage of a held decoder-buffer slot for Godot's ExternalTexture; 0 for RGBA colors. */
     @JvmStatic external fun colorImage(handle: Long, token: Long): Long
     /** One independent GPU transition copy: {handle, RGBA texture, R8 mask, width, height, copy us}.

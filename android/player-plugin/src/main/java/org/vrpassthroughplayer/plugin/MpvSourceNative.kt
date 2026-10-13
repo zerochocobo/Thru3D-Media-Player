@@ -12,11 +12,14 @@ internal object MpvSourceNative {
     fun supported() = loaded && available()
     @JvmStatic private external fun available(): Boolean
     /** Starts paused; the caller must apply focus policy before setPlaying(true). */
-    /** maxWidth > 0 scales the decoded color down to that width (aspect kept); 0 keeps the source size.
+    /** layerSurface: decode straight into a compositor layer swapchain (VideoLayerNative); frames then
+     * carry only their identity (color_target "layer") and Profile 5/software decode report layer_compatible=false.
+     * maxWidth > 0 scales the decoded color down to that width (aspect kept); 0 keeps the source size.
      * audioFiles: location/title pairs added as unselected audio tracks once the video loads. */
     @JvmStatic external fun create(context: Context, localPath: String, startMs: Int, hardware: Boolean, audio: Boolean,
                                    maxWidth: Int = 0, audioFiles: Array<String> = emptyArray(),
-                                   subtitleFiles: Array<String> = emptyArray(), exactStart: Boolean = true): Long
+                                   subtitleFiles: Array<String> = emptyArray(), exactStart: Boolean = true,
+                                   layerSurface: android.view.Surface? = null): Long
     /** Empty string when no completed image is available. Never waits for the GPU. */
     @JvmStatic external fun acquire(handle: Long): String
     /** Insert consumer-context fence after its last copy/draw; rejects double release. */

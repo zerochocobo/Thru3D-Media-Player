@@ -1,4 +1,5 @@
 extends Node3D
+signal visual_changed
 ## Headset battery and clock in a small pill under a menu, as in SKYBOX. Reads the platform's
 ## device_status() itself; without one (desktop preview) only the clock shows.
 
@@ -45,8 +46,8 @@ func _ready() -> void:
 	_bolt = _icon("bolt", Menu.ACCENT)
 	_label = Label3D.new()
 	_label.font = Menu.ui_font()
-	_label.font_size = FONT_SIZE
-	_label.pixel_size = 0.0012
+	Menu.set_label_size(_label, FONT_SIZE)
+	_label.texture_filter = BaseMaterial3D.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
 	_label.no_depth_test = false
 	_label.render_priority = 12
 	_label.outline_size = 0
@@ -78,7 +79,7 @@ func refresh(force: bool = false) -> void:
 	_fill.visible = has_battery and level > 0
 	_bolt.visible = has_battery and (charging or plugged)
 	_bolt.material_override.albedo_color = Menu.ACCENT if charging else POWER_COLOR
-	var text_width := Menu.FONT.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, FONT_SIZE).x * _label.pixel_size
+	var text_width := Menu.text_width(text, FONT_SIZE)
 	# Leave room for the larger charging glyph, including space from the battery outline.
 	var battery_slot := ICON * 0.5 if has_battery else 0.0
 	var bolt_slot := ICON * 0.55 if _bolt.visible else 0.0
@@ -100,6 +101,7 @@ func refresh(force: bool = false) -> void:
 	_fill.material_override.set_shader_parameter("surface_color", Menu.ACCENT if charging else (LOW_COLOR if low else foreground))
 	_battery.material_override.albedo_color = Menu.ACCENT if charging else (LOW_COLOR if low else foreground)
 	_label.position = Vector3(left + battery_slot + bolt_slot + gap, 0, 0.003)
+	visual_changed.emit()
 
 func clock_text() -> String:
 	var now: Dictionary = clock_provider.call()
@@ -126,6 +128,9 @@ func _icon(key: String, color: Color) -> MeshInstance3D:
 	material.render_priority = 12
 	material.albedo_color = color
 	material.albedo_texture = Icons.texture(key)
+	# Preserve the opaque amber/green core of the tiny solid power mark. Thin outline
+	# icons use mip filtering; blending mip levels here can wash out the status colour.
+	if key == "bolt": material.texture_filter = BaseMaterial3D.TEXTURE_FILTER_LINEAR
 	node.material_override = material
 	add_child(node)
 	return node
