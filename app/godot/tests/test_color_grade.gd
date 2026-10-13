@@ -56,7 +56,7 @@ func _run() -> void:
 	video.subtitle_distance = INF
 	check(video.subtitle_distance == 5, "Invalid subtitle depth defaults to 5m")
 	video.subtitle_distance = 100
-	check(video.subtitle_distance == 10, "Subtitle maximum")
+	check(video.subtitle_distance == 5, "Subtitle maximum")
 	video.free()
 	var menu := Menu.new()
 	menu.state_provider = func(): return {"has_video": true, "geometry": 1, "subtitle_distance": distance, "color_grade": grade.snapshot(), "grade_values": grade.values()}
@@ -74,16 +74,16 @@ func _run() -> void:
 	menu._activate(Menu.SUBTITLE_APPEARANCE)
 	check(menu.choices.targets.values().any(func(item): return item.get("key") == "subtitle_distance"), "Subtitle popup contains the distance slider")
 	menu.press_pointer("right", distance_origin(menu, 1.0), -menu.global_basis.z, true)
-	check(distance == 10 and commits == 0, "Ray press previews subtitle depth")
+	check(distance == 5 and commits == 0, "Ray press previews subtitle depth")
 	menu.update_pointer("left", distance_origin(menu, 0.0), -menu.global_basis.z, true)
-	check(distance == 10, "Other hand cannot move active slider")
+	check(distance == 5, "Other hand cannot move active slider")
 	menu.release_pointer("right", Vector3.ZERO, Vector3.ZERO, true)
 	check(commits == 1 and menu.choices.capture.is_empty(), "Release saves and ends drag")
 	menu.press_pointer("right", distance_origin(menu, 0.0), -menu.global_basis.z, true)
 	check(is_equal_approx(distance, 0.1), "Distance slider reaches near endpoint")
 	menu.release_pointer("right", Vector3.ZERO, Vector3.ZERO, true)
 	menu.press_pointer("right", distance_origin(menu, 0.5), -menu.global_basis.z, true)
-	check(absf(distance - 5.05) < 0.06, "Slider midpoint maps linearly to metres")
+	check(absf(distance - 2.55) < 0.06, "Slider midpoint maps linearly to metres")
 	menu.release_pointer("right", Vector3.ZERO, Vector3.ZERO, true)
 	menu._subtitle_open = false; menu.section = 1; menu.refresh()
 	menu._activate(100 + Menu.OPERATIONS[1].find("color_grade"))
