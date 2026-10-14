@@ -128,7 +128,7 @@ func run() -> void:
 	check(player.global_transform.is_equal_approx(pose) and library.position.is_equal_approx(Vector3(0, 0.72, 0)), "Expansion preserves the moved transport pose")
 	check(not library._side.visible and library._cols() == 3 and library._lines() == 2, "Compact grid has three columns, two rows and no side navigation")
 	check(library._buttons.all(func(item): return item.target < Library.NAV_BASE or item.target >= Library.NAV_BASE + Library.NAV.size()), "Hidden navigation has no ray targets")
-	check(library._buttons.all(func(item): return item.target not in [Library.FOLLOW, Library.TEMP_PASSTHROUGH, Library.CLOSE_MENU]), "Compact browser does not duplicate the transport footer")
+	check(library._buttons.all(func(item): return item.target not in [Library.FOLLOW, Library.TEMP_PASSTHROUGH]), "Compact browser does not duplicate the transport footer")
 	check(library.rows.slice(library._first_line() * library._cols(), (library._first_line() + 1) * library._cols()).any(func(row): return row.get("uri", "") == "file:///disk/15.mp4"), "Layout conversion keeps the prior first item in the first visible grid row")
 	check(not player.allows_playback_sticks(), "Expanded files isolate playback sticks")
 	var playing_before: bool = video.requested_play

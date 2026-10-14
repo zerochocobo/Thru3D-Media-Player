@@ -7,7 +7,7 @@ extends RefCounted
 
 const Geometry := preload("res://scripts/video_geometry.gd")
 const PlatformMethods := preload("res://scripts/platform_methods.gd")
-const STRIDE := 20 # floats per layer, see VideoLayerNative.setLayers
+const STRIDE := 26 # floats per layer, see VideoLayerNative.setLayers
 const SURFACE_SIZE := 4096.0 # nominal swapchain units (MpvVideoBridge.LAYER_SURFACE_SIZE)
 const ORDER := -8 # beneath the menu layers (-6..-3) and eye buffers; the video panel punches the hole
 ## Layer sources: the decoder's surface, or the RGBA picture swapchain (2D->3D pairs, photos).
@@ -43,6 +43,9 @@ var _surface_flip := true
 ## -2 the runtime policy) to observe what a runtime actually does with it.
 var debug_image_layout := -2
 var _settings := false
+## XR_KHR_composition_layer_color_scale_bias, requested by the player plugin's GDExtension: the colour
+## grade stays on the layer as a per-channel scale and bias instead of sending playback to the eye buffers.
+var color_scale_bias := false
 const NORMAL_SUPER_SAMPLING := 1
 const QUALITY_SUPER_SAMPLING := 2
 const NORMAL_SHARPENING := 4
@@ -100,6 +103,12 @@ static func _surface_vertical_flip(runtime_name: String, driver: String, pico_bu
 		return driver == "vulkan"
 	return true
 
+## The layer can show [grade] (a ColorGrade): ungraded, or graded linearly with the extension enabled.
+func grades(grade: RefCounted) -> bool:
+	if grade == null: return true
+	var terms: Dictionary = grade.linear_terms()
+	return not terms.is_empty() and (color_scale_bias or (terms.scale == Vector3.ONE and terms.bias == Vector3.ZERO))
+
 func supports(geometry: int, curved: bool) -> bool:
 	match geometry:
 		Geometry.Geometry.FLAT:
@@ -122,6 +131,7 @@ func update_session() -> void:
 	_space = space
 	_flip = _enabled("OpenXRFbCompositionLayerImageLayoutExtension")
 	_settings = _enabled("OpenXRFbCompositionLayerSettingsExtension")
+	color_scale_bias = PlatformMethods.supports(platform, "video_layer_color_scale_bias") and bool(platform.video_layer_color_scale_bias())
 	bound = platform.bind_video_layer(_api.get_instance(), session, _api.get_instance_proc_addr("xrGetInstanceProcAddr"), space)
 	var xr := XRServer.find_interface("OpenXR") as OpenXRInterface
 	var info := xr.get_system_info() if xr else {}
@@ -133,7 +143,7 @@ func update_session() -> void:
 	_sent_count = -1
 	DiagnosticLog.record("video_layer_bound", {"bound": bound, "types": _types, "vertical_flip": _flip,
 		"surface_vertical_flip": _surface_flip, "runtime": runtime_name, "system": system_name,
-		"pico_build": pico_build, "driver": driver, "settings": _settings})
+		"pico_build": pico_build, "driver": driver, "settings": _settings, "color_scale_bias": color_scale_bias})
 	if PlatformMethods.supports(platform, "video_layer_runtime_extensions"):
 		# Layer features the runtime offers (colour scale, blending, swapchain state...): one short line.
 		var layer_extensions := Array(str(platform.video_layer_runtime_extensions()).split(" ", false)).filter(func(name: String):
@@ -241,11 +251,20 @@ func layer_values(surface: Node3D, origin: Node3D, source_kind: int = SURFACE, i
 		if debug_image_layout != -2: values[17] = debug_image_layout
 		values[18] = filters
 		values[19] = source_kind
+		var color := _color_terms(surface)
+		values[20] = color.scale.x; values[21] = color.scale.y; values[22] = color.scale.z
+		values[23] = color.bias.x; values[24] = color.bias.y; values[25] = color.bias.z
 		layers.append(values)
 	var packed := PackedFloat32Array()
 	for values in layers:
 		packed.append_array(values)
 	return packed
+
+## The surface's colour grade as the layer's linear-light scale/bias; identity when absent or not representable.
+func _color_terms(surface: Node3D) -> Dictionary:
+	var grade: RefCounted = surface.get("color_grade") as RefCounted
+	var terms: Dictionary = grade.layer_terms() if grade and color_scale_bias else {}
+	return terms if not terms.is_empty() else {"scale": Vector3.ONE, "bias": Vector3.ZERO}
 
 static func _aligned_layer(eye_rect: Rect2, shift: Vector2, type: int, shape: PackedFloat32Array,
 		pose: Transform3D, wrap: bool) -> Dictionary:

@@ -5,9 +5,7 @@ extends "res://scripts/ray_menu.gd"
 ## asynchronously through the platform's media_list(id, json) signal. Selection is controller ray + trigger only.
 
 signal chosen(uri: String, title: String)
-signal player_requested
 signal layout_requested
-signal recenter_requested
 signal setting_changed(key: String, value: Variant)
 signal setting_previewed(key: String, value: Variant)
 signal storage_eject_requested(volume: Dictionary)
@@ -71,8 +69,6 @@ const SYMBOLS := [["!", "#", "$", "%", "&", "*", "(", ")", "+", "="], ["/", "\\"
 	["[", "]", "{", "}", "<", ">", "^", "`", ".", "@"], ["-", "_", "0", "1", "2", "3", "4", "5", "6", "7"]]
 
 # Targets (ray_menu reserves negatives).
-const PLAYER := -5
-const RECENTER := -6
 const NAV_BASE := 10
 const TAB_BASE := 20
 const BACK := 30
@@ -1219,11 +1215,6 @@ func _activate(target: int) -> void:
 		_confirm = ""
 	if target == CLOSE:
 		dismiss()
-	elif target == PLAYER:
-		dismiss()
-		player_requested.emit()
-	elif target == RECENTER:
-		recenter_requested.emit()
 	elif target == RESTART_APP:
 		setting_changed.emit("restart_app", true)
 	elif target == QUIT_APP:
@@ -1706,16 +1697,17 @@ func _draw() -> void:
 		var column := _quad(Vector2(0.42, 1.12), Vector3.ZERO, PANEL, 10)
 		_side.add_child(column)
 		_decorations.append(column)
+		# A tap on the column between its buttons is inside the menu, not a tap away.
+		_block_rays(column, Vector2(0.42, 1.12))
 		for position in NAV_ORDER.size():
 			var i: int = NAV_ORDER[position]
 			_nav_button(NAV_BASE + i, I18n.t(NAV[i]), NAV_ICONS[i], Vector2(0, 0.39 - position * 0.13), i == section)
 	if not controls_page.active():
 		var footer_y := -0.80 if section == Section.MEDIA_SERVER and server_browser.focused() else -0.65
-		_round(RECENTER, "recenter", Vector2(0.01, footer_y), 0.08, true, false, I18n.t("Recenter"))
-		_round(PLAYER, "play", Vector2(0.13, footer_y), 0.08, true, false, I18n.t("Player"))
-		_round(CLOSE, "close", Vector2(0.25, footer_y), 0.08, true, false, I18n.t("Close"))
-		if playback_expanded: _round(EXPAND_LIBRARY, "collapse", Vector2(0.37, footer_y), 0.08, true, false, I18n.t("Collapse library"))
-		_place_device_status(Vector2(0.13, footer_y - 0.085))
+		# Closing the menu is the shared footer's job and recentering the player's; only collapse floats here.
+		if playback_expanded: _round(EXPAND_LIBRARY, "collapse", Vector2(0.13, footer_y), 0.08, true, false, I18n.t("Collapse library"))
+		# With no floating row left, the footer takes its place right under the browser.
+		_place_device_status(Vector2(0.13, footer_y + 0.025))
 	if account_panel.active():
 		account_panel.draw()
 		return

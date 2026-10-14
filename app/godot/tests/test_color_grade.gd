@@ -18,6 +18,20 @@ func distance_origin(menu: Node3D, fraction: float) -> Vector3:
 		return slider.node.to_global(Vector3(float(slider.left) + float(slider.width) * fraction, 0, 1))
 	return Vector3.ZERO
 
+## Mean difference (0-255) between the shader grade and the compositor applying layer_terms() in linear light.
+func _layer_error(g) -> float:
+	var shader: Dictionary = g.linear_terms()
+	var layer: Dictionary = g.layer_terms()
+	var total := 0.0
+	var count := 0
+	for step in 33:
+		var x := step / 32.0
+		for channel in 3:
+			var want := clampf(shader.scale[channel] * x + shader.bias[channel], 0.0, 1.0)
+			var got: float = g._to_encoded(layer.scale[channel] * g._to_linear(x) + layer.bias[channel])
+			total += absf(got - want) * 255.0
+			count += 1
+	return total / count
 func _initialize() -> void:
 	call_deferred("_run")
 
@@ -41,6 +55,30 @@ func _run() -> void:
 	grade.restore({"preset": "broken", "custom": {"exposure": INF, "gamma": -3, "red_gain": "bad", "blue_offset": 8}})
 	check(grade.preset == "Original" and grade.custom.exposure == 0 and grade.custom.gamma == 0.7
 		and grade.custom.red_gain == 1 and is_equal_approx(grade.custom.blue_offset, 0.2), "Invalid saved settings clamp safely")
+	# The compositor's per-channel scale/bias reproduces the shader grade while it is linear.
+	grade.reset_custom()
+	grade.select("Custom")
+	for key in ["temperature", "tint", "exposure", "contrast", "red_gain", "blue_offset"]:
+		grade.adjust(key, {"temperature": 5200.0, "tint": 12.0, "exposure": 0.4, "contrast": 1.25, "red_gain": 1.1, "blue_offset": -0.05}[key])
+	var terms: Dictionary = grade.linear_terms()
+	var linear_ok := not terms.is_empty()
+	var p := grade.values()
+	for sample in [Vector3(0.1, 0.5, 0.9), Vector3(0.0, 0.0, 0.0), Vector3(0.7, 0.2, 0.4)]:
+		var shader: Vector3 = (sample * grade.gain() - Vector3.ONE * 0.5) * p.contrast + Vector3.ONE * 0.5 + Vector3(p.red_offset, p.green_offset, p.blue_offset)
+		linear_ok = linear_ok and (sample * terms.scale + terms.bias).is_equal_approx(shader)
+	check(linear_ok, "Linear grade equals the compositor scale and bias")
+	check(_layer_error(grade) < 8.0, "Compositor (linear light) terms stay within a few levels of the shader grade")
+	grade.adjust("saturation", 1.2)
+	check(grade.linear_terms().is_empty(), "Saturation cannot be a per-channel scale")
+	grade.adjust("saturation", 1.0)
+	grade.adjust("gamma", 0.9)
+	check(grade.linear_terms().is_empty(), "Gamma cannot be a per-channel scale")
+	grade.reset_custom()
+	grade.select("Original")
+	check(grade.linear_terms().scale == Vector3.ONE and grade.linear_terms().bias == Vector3.ZERO, "Original is the identity")
+	grade.select("Warm")
+	check(not grade.linear_terms().is_empty() and grade.linear_terms().scale.x > grade.linear_terms().scale.z, "Warm preset stays linear and warmer")
+	check(_layer_error(grade) < 1.5, "Gain-only presets are near exact on the compositor")
 	grade.select("Cool")
 	grade.adjust("contrast", 1.2)
 	check(grade.preset == "Custom" and grade.custom.temperature == 8000, "Editing starts with displayed preset")
@@ -90,10 +128,12 @@ func _run() -> void:
 	check(absf(distance - 2.55) < 0.06, "Slider midpoint maps linearly to metres")
 	menu.release_pointer("right", Vector3.ZERO, Vector3.ZERO, true)
 	menu._subtitle_open = false; menu.section = 1; menu.refresh()
-	menu._activate(100 + Menu.OPERATIONS[1].find("color_grade"))
+	menu._activate(Menu.SETTINGS_TILE + Menu.OPERATIONS[1].find("color_grade"))
 	menu._activate(411)
 	check(grade.preset == "Warm", "Preset selection")
-	menu.press_pointer("right", menu.to_global(Vector3(0.33, -0.05, 1)), -menu.global_basis.z, true)
+	var exposure_row: Dictionary = menu._adjust_rows.values().filter(func(row): return row.key == "exposure")[0]
+	var exposure_at: Vector3 = exposure_row.button.node.position
+	menu.press_pointer("right", menu.to_global(Vector3(exposure_at.x, exposure_at.y, 1)), -menu.global_basis.z, true)
 	check(grade.preset == "Custom", "Dragging exposure selects custom")
 	menu.dismiss()
 	check(commits == 5 and menu._adjust_hand.is_empty(), "Dismiss saves active drag")

@@ -101,3 +101,9 @@ All public builds use caller-owned keys and identity metadata. No official signi
 ## Blu-ray/MVC source candidate
 
 The updated FFmpeg build includes the adapters in native/mpv/mvc and pinned edge264-mvc/libbluray/libudfread sources. Their preparation and build scripts preserve source hashes and license texts; no compiled dependency is exported in Git. Rebuild with the Linux source workflow and export a matching receipt before assembling the Android plugin. See BLURAY.md for supported media and optional host checks.
+
+## OpenXR extension export helper
+
+The Windows application export now also requires Visual Studio 2022 Build Tools with the C++ toolset. Build-Player uses its vcvars64.bat and MSVC to create a disposable editor-only GDExtension stub; Android packages load the native layer library from the player AAR. The extension declaration is added only during export and removed afterward. Host source tests do not require this Android export step.
+
+-QuestStore is limited to QUEST Release and selects a separate application identity; ordinary builds keep their existing package identity. Use your own signing material for either identity. This option supplies packaging support, not a store upload or an official distribution credential.

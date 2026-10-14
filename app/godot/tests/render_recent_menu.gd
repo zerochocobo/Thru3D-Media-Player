@@ -51,7 +51,7 @@ func _run() -> void:
 		var bottom_right := camera.unproject_position(menu.to_global(Vector3(0.775, -0.54, 0)))
 		var footer_bounds: Array[Rect2] = []
 		for button in menu._buttons:
-			if button.target not in [menu.CLOSE_MENU, menu.FOLLOW, menu.TEMP_PASSTHROUGH]: continue
+			if button.target not in [menu.FOLLOW, menu.TEMP_PASSTHROUGH]: continue
 			var rect: Rect2 = button.rect
 			var start := camera.unproject_position(menu.to_global(Vector3(rect.position.x,rect.end.y,0)))
 			var end := camera.unproject_position(menu.to_global(Vector3(rect.end.x,rect.position.y,0)))

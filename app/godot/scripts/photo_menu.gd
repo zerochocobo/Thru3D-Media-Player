@@ -142,6 +142,14 @@ func _draw_layouts() -> void:
 			_buttons.back().base_color = SELECTED
 			_icon("check", Vector3(0.105, 0.040, 0.006), 0.028, ACCENT, _buttons.back().node)
 
+## Photo controls keep their full panels in place of the bar.
+func _settings_popup() -> bool:
+	return false
+
+func _slider_geometry() -> Dictionary:
+	return {"title_x": -0.66, "title_size": 20, "value_x": -0.06, "value_size": 18, "left": 0.03, "width": 0.6, "hit": 0.1,
+		"height": 0.08, "thickness": 0.009, "knob": 0.025, "reset_x": 0.715, "reset_size": 0.065}
+
 func _adjustment_row(target: int, key: String, title: String, span: Vector3, y: float) -> void:
 	super._adjustment_row(target, key, title, span, y)
 	# The shared video row defaults to has_video; photo sliders use their own content.

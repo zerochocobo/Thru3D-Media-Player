@@ -118,6 +118,8 @@ if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'dlna-menu-hos
 if ($LASTEXITCODE -ne 0) { throw 'Library menu host regression failed.' }
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_library_views.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'library-views-host.log')
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'library-views-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|ERROR:)') { throw 'Library view mode and position regression failed.' }
+& $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_library_metadata.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'library-metadata-host.log')
+if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'library-metadata-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|ERROR:)') { throw 'Played video capacity and metadata regression failed.' }
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_compact_library.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'compact-library-host.log')
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'compact-library-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|ERROR:)') { throw 'Playback library expansion, input and placement regression failed.' }
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_library_file_actions.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'library-file-actions-host.log')

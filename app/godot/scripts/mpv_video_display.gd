@@ -1967,7 +1967,7 @@ func stereo_offset_uv() -> Vector2:
 func _layer_presentation() -> bool:
 	return layer_enabled and video_layer != null and not alpha_requested and not depth_requested and not packed_file \
 		and (local_uri.is_empty() or local_uri != _layer_blocked_uri) \
-		and color_grade.values() == ColorGrade.DEFAULTS and video_layer.supports(geometry, screen_curve > 0.0)
+		and video_layer.grades(color_grade) and video_layer.supports(geometry, screen_curve > 0.0)
 
 ## Short code for the FPS overlay: why playback is in the eye buffers ("" when on the layer).
 func layer_block_reason() -> String:
@@ -1977,7 +1977,7 @@ func layer_block_reason() -> String:
 	if depth_requested: return "3d"
 	if packed_file: return "packed"
 	if not local_uri.is_empty() and local_uri == _layer_blocked_uri: return "decoder"
-	if color_grade.values() != ColorGrade.DEFAULTS: return "color"
+	if not video_layer.grades(color_grade): return "color"
 	if not video_layer.supports(geometry, screen_curve > 0.0): return "shape"
 	return "wait"
 
@@ -2042,7 +2042,7 @@ func _update_layer() -> void:
 func _show_depth_picture(origin: XROrigin3D) -> bool:
 	var ticket := _binding.ticket
 	if not _binding.warped or geometry != Geometry.Geometry.FLAT or not video_layer.available() \
-		or not video_layer.supports(geometry, screen_curve > 0.0) or color_grade.values() != ColorGrade.DEFAULTS \
+		or not video_layer.supports(geometry, screen_curve > 0.0) or not video_layer.grades(color_grade) \
 		or not PlatformMethods.supports(platform, "copy_layer_texture"):
 		return false
 	var size := Vector2i(int(ticket.width) * 2, int(ticket.height))

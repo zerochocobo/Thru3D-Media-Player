@@ -95,14 +95,15 @@ func _run() -> void:
 			main._grab = {}
 			menu.section = 1
 			menu.refresh()
-			menu._activate(11)
+			menu._activate(Menu.SCREEN_SETTINGS)
 			check(menu._adjustment == "screen", "%s opens distance editor" % mode)
-			menu.press_pointer("right_hand", menu.to_global(Vector3(0.63, 0.19, 1)), -menu.global_basis.z, true)
+			var distance_y: float = menu._adjust_rows[450].button.node.position.y
+			menu.press_pointer("right_hand", menu.to_global(Vector3(Menu.SLIDER_LEFT + Menu.SLIDER_WIDTH, distance_y, 1)), -menu.global_basis.z, true)
 			check(video.screen_distance == 8 and is_equal_approx(video.panel.global_position.distance_to(eye), 8) and video.screen_scale == 1, "Distance slider moves screen without scaling")
 			menu.release_pointer("right_hand", Vector3.ZERO, Vector3.ZERO, true)
 			var saved := ConfigFile.new()
 			check(saved.load(main.settings_path) == OK and saved.get_value("screen", "distance") == 8, "Distance saves on release")
-			menu.press_pointer("right_hand", menu.to_global(Vector3(0.13, 0.19, 1)), -menu.global_basis.z, true)
+			menu.press_pointer("right_hand", menu.to_global(Vector3(Menu.SLIDER_LEFT + Menu.SLIDER_WIDTH / 6.0, distance_y, 1)), -menu.global_basis.z, true)
 			menu.release_pointer("right_hand", Vector3.ZERO, Vector3.ZERO, true)
 			check(is_equal_approx(video.screen_distance, 2), "2m slider restores default distance")
 			menu.dismiss()
@@ -117,7 +118,7 @@ func _run() -> void:
 	menu.toggle()
 	menu.section = 1
 	menu.refresh()
-	menu._activate(11)
+	menu._activate(Menu.SCREEN_SETTINGS)
 	check(menu._adjustment == "screen" and not menu._adjust_rows.values().any(func(row): return row.key == "screen_distance"), "Immersive projection disables flat distance")
 	main._on_playback_adjustment("screen_distance", 5)
 	check(is_equal_approx(video.screen_distance, distance_before), "Immersive adjustment cannot change flat screen")

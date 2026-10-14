@@ -224,11 +224,9 @@ func _ready() -> void:
 	recent_menu.chosen.connect(_on_library_chosen)
 	recent_menu.storage_eject_requested.connect(_on_storage_eject_requested)
 	recent_menu.storage_removed.connect(_release_storage_readers)
-	recent_menu.player_requested.connect(_show_player_menu)
 	recent_menu.layout_requested.connect(_toggle_library_layout)
 	recent_menu.setting_changed.connect(_on_setting_changed)
 	recent_menu.setting_previewed.connect(_on_playback_adjustment)
-	recent_menu.recenter_requested.connect(_recenter)
 	_connect_session_controls(recent_menu)
 	add_child(recent_menu)
 	if Engine.has_singleton("QuestPlayer"):
@@ -680,12 +678,15 @@ func _on_pointer_button(action: String, hand: String) -> void:
 	if menu:
 		match action:
 			"trigger_click":
-				# Beside the player controls a tap hides them and a drag moves the picture.
-				if not _update_menu_pointer(hand, true) and menu == player_menu:
+				# Beside the player controls a tap hides them and a drag moves the picture;
+				# beside any other menu a tap simply closes it.
+				if not _update_menu_pointer(hand, true):
 					var ray: Variant = _ray(hand)
 					# A slider owned by the other hand rejects this press; it is not a screen drag.
-					if ray != null and menu.ray_hit(ray[0], ray[1]).is_empty():
-						_begin_grab(hand)
+					if menu == player_menu:
+						if ray != null and menu.ray_hit(ray[0], ray[1]).is_empty(): _begin_grab(hand)
+					elif ray != null and menu.grab_hit(ray[0], ray[1]).is_empty():
+						menu.dismiss()
 			"by_button": menu.dismiss()
 		return
 	if photo_active:
@@ -1555,8 +1556,8 @@ func _update_view_follow() -> void:
 
 func _place_menu(menu: Node3D) -> void:
 	if menu == recent_menu and _library_is_attached(): return
-	var drop := (0.45 if player_menu.section == 0 else 0.0) if menu == player_menu else 0.05
-	if menu == player_menu: player_menu.lift_panels = true
+	# The player bar sits low; its popups (settings too) open above it.
+	var drop := 0.45 if menu == player_menu else 0.05
 	var head: Variant = _head_pose()
 	var frame: Variant = InterfaceMove.menu_head(head, view_follow.enabled) if head != null else null
 	var moved: Variant = interface_move.placement(_menu_key(menu), frame)
@@ -1980,6 +1981,9 @@ func _menu_state() -> Dictionary:
 		"subtitle_position": video.subtitle_position,
 		"subtitle_direction": video.subtitle_direction,
 		"grade_values": video.color_grade.values(),
+		# Options that leave the compositor layer carry a warning only where the layer exists.
+		"layer_available": video.video_layer != null and video.video_layer.available(),
+		"grade_on_layer": video.video_layer != null and video.video_layer.color_scale_bias,
 		"depth_error": str(video.media.playback.get("depth_error", "")),
 		"text_subtitle_tracks": text_tracks.size(), "subtitle_options": text_tracks,
 		"subtitle_track": video.subtitles.requested_track, "source_uri": video.local_uri,

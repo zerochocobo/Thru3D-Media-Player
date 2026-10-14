@@ -25,7 +25,7 @@ func capture(viewport: SubViewport, camera: Camera3D, menu: Node3D, name: String
 	await RenderingServer.frame_post_draw
 	var image := viewport.get_texture().get_image()
 	image.save_png(output.path_join(name + ".png"))
-	for target in [Menu.CLOSE_MENU, Menu.FOLLOW, Menu.TEMP_PASSTHROUGH]:
+	for target in [Menu.FOLLOW, Menu.TEMP_PASSTHROUGH]:
 		var item := button(menu,target)
 		if item.is_empty():
 			check(false, name + " control missing"); continue
@@ -51,10 +51,6 @@ func _run() -> void:
 	main.set_process(false); main.video.set_process(false); main.photo.set_process(false); main.report_timer.stop()
 	main.xr_camera.fov = 70
 	await capture(viewport,main.xr_camera,main.recent_menu,"library-off")
-	var close := button(main.recent_menu,Menu.CLOSE_MENU)
-	main.recent_menu.update_pointer("right_hand",close.node.global_position + close.node.global_basis.z * .3,-close.node.global_basis.z,true)
-	await capture(viewport,main.xr_camera,main.recent_menu,"close-menu-tooltip")
-	main.recent_menu.cancel_pointer("right_hand")
 	main._on_session_control("follow")
 	main.xr_camera.transform = Transform3D(Basis.from_euler(Vector3(PI/2,.4,.6)),Vector3(2,.4,1))
 	main._update_view_follow()
@@ -73,10 +69,11 @@ func _run() -> void:
 	main.video.platform = Tests.HostTest.Host.new()
 	main._on_library_chosen("file:///render/person_2D.mp4","人像视频.mp4")
 	main.video.set_alpha(true)
+	# With a video open the library sits compact above the bar, which carries the footer.
 	main._show_recent_menu(); main.recent_menu.refresh()
-	var item := button(main.recent_menu,Menu.TEMP_PASSTHROUGH)
-	main.recent_menu.update_pointer("right_hand",item.node.global_position + item.node.global_basis.z * .3,-item.node.global_basis.z,true)
-	await capture(viewport,main.xr_camera,main.recent_menu,"alpha-disabled-tooltip")
+	var item := button(main.video_menu,Menu.TEMP_PASSTHROUGH)
+	main.video_menu.update_pointer("right_hand",item.node.global_position + item.node.global_basis.z * .3,-item.node.global_basis.z,true)
+	await capture(viewport,main.xr_camera,main.video_menu,"alpha-disabled-tooltip")
 	main.video.close_video(); main.photo_active = true; main.player_menu = main.photo_menu
 	main._show_player_menu()
 	await capture(viewport,main.xr_camera,main.photo_menu,"photo-follow")

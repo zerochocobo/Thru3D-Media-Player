@@ -4,7 +4,7 @@
 
 Standalone Android VR/MR media player for Meta Quest and PICO. Thru3D combines a Godot OpenXR interface, Android media access, a native libmpv renderer, and MNN inference for video matting and depth-based stereo rendering.
 
-Current source version: **0.9.0** (Android versionCode **21**). An experimental standard OpenXR Android export is also available.
+Current source version: **0.9.1** (Android versionCode **22**). An experimental standard OpenXR Android export is also available.
 
 Minimum compatibility targets are **Quest 2** and **PICO Neo3**. Source/build compatibility does not establish hardware performance or interaction acceptance on every device.
 
@@ -38,6 +38,8 @@ Minimum compatibility targets are **Quest 2** and **PICO Neo3**. Source/build co
 - Per-video subtitle synchronization (±10 s, 0.1 s steps), matching-filename auto-loading and flat-screen PGS size/position controls.
 - Supported STRM link playback, remote loading stages/measured read speed and accessible error details.
 - Independent supersampling/sharpness, fixed-distance grip dragging and same-hand thumbstick distance control.
+- Compositor-compatible color adjustments on supported devices, with shader fallback for non-default gamma/saturation.
+- Compact video settings above the playback bar and file/media cards that retain available metadata alongside playback progress.
 
 ## Source release
 
@@ -99,7 +101,7 @@ Rebuildable outputs use `build/output/`; temporary data uses `tmp/`. Formal rele
 
 Open the VR menu with the left Menu button. Point a controller ray at a control and press that controller's trigger. Libraries, settings, list popups and photo menus use thumbsticks only for scrolling. The ordinary video control bar allows seek, volume and immersive zoom shortcuts; pointer capture suppresses them, with a return-to-center gate after capture or lists close. Hand pointing/pinching is also supported. Desktop input is intended for development previews.
 
-The right A button defaults to video play/pause or closing an expanded photo; left X opens the library and B/Y closes menus. Settings → Controls lets you select bindings, configure combinations and interface movement, and view animated gesture guides. Conflicts require a confirmed swap or cancellation; menu exit and ray selection remain available. Click the 3D/volume icons to adjust, or double-click to toggle/mute.
+The right A button defaults to video play/pause or closing an expanded photo; left X opens the library and B/Y closes menus. Point outside a menu and press the trigger to dismiss it. Video settings open above the playback bar; photo settings retain their full-panel layout. Settings → Controls lets you select bindings, configure combinations and interface movement, and view animated gesture guides. Conflicts require a confirmed swap or cancellation; menu exit and ray selection remain available. Click the 3D/volume icons to adjust, or double-click to toggle/mute.
 
 Both grip buttons are reserved for interfaces or the photo magnifier. Grip or trigger plus the same controller's vertical thumbstick adjusts supported targets' distance. Standard menus remain upright; following mode uses head tilt. App/system recentering restores default menu placement, and placement offsets are session-only. The full playback library keeps the control bar available.
 

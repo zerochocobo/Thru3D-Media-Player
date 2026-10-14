@@ -28,10 +28,11 @@
 #include <openxr/openxr.h>
 #include <openxr/openxr_platform.h>
 #include "layer_layout.h"
+#include "layer_extensions.h"
 
 namespace {
 constexpr int kMaxLayers = 2;
-constexpr int kStride = 20; // floats per layer in setLayers()
+constexpr int kStride = 26; // floats per layer in setLayers()
 union Layer {
     XrCompositionLayerBaseHeader base;
     XrCompositionLayerQuad quad;
@@ -52,6 +53,7 @@ struct State {
     // Next-chain structs of each layer (XR_FB extensions Godot's vendors plugin enables on Meta runtimes).
     std::array<XrCompositionLayerImageLayoutFB, kMaxLayers> layouts{};
     std::array<XrCompositionLayerSettingsFB, kMaxLayers> settings{};
+    std::array<XrCompositionLayerColorScaleBiasKHR, kMaxLayers> colors{};
     std::array<uint64_t, kMaxLayers> logged_layout{};
     int count = 0;
     // RGBA picture swapchain (2D->3D pairs, photos).
@@ -186,7 +188,9 @@ Java_org_vrpassthroughplayer_plugin_VideoLayerNative_destroySurface(JNIEnv* env,
  * 0 to explicitly disable flipping, 1 to flip the image vertically
  * (XR_FB_composition_layer_image_layout: determined separately for Surface and GL pictures), 18: XrCompositionLayerSettingsFB
  * flags (supersampling/sharpening, 0 for none). The caller passes those only when the extensions are
- * enabled. 19: source, 0 the decoder surface, 1 the RGBA picture swapchain. count 0 hides the layers. */
+ * enabled. 19: source, 0 the decoder surface, 1 the RGBA picture swapchain. 20-22: colour scale RGB,
+ * 23-25: colour bias RGB (XR_KHR_composition_layer_color_scale_bias, ignored unless Godot enabled it;
+ * identity 1 1 1 / 0 0 0 adds nothing). count 0 hides the layers. */
 extern "C" JNIEXPORT jboolean JNICALL
 Java_org_vrpassthroughplayer_plugin_VideoLayerNative_setLayers(JNIEnv* env, jclass, jint count, jfloatArray values) {
     std::lock_guard<std::mutex> lock(mutex);
@@ -237,6 +241,15 @@ Java_org_vrpassthroughplayer_plugin_VideoLayerNative_setLayers(JNIEnv* env, jcla
             state.settings[i].layerFlags = settings_flags;
             next = &state.settings[i];
         }
+        const bool graded = p[20] != 1.0f || p[21] != 1.0f || p[22] != 1.0f || p[23] != 0.0f || p[24] != 0.0f || p[25] != 0.0f;
+        if (graded && thru3d_color_scale_bias_enabled()) {
+            state.colors[i] = {};
+            state.colors[i].type = XR_TYPE_COMPOSITION_LAYER_COLOR_SCALE_BIAS_KHR;
+            state.colors[i].next = next;
+            state.colors[i].colorScale = {p[20], p[21], p[22], 1.0f};
+            state.colors[i].colorBias = {p[23], p[24], p[25], 0.0f};
+            next = &state.colors[i];
+        }
         Layer& layer = state.layers[i];
         std::memset(&layer, 0, sizeof(layer));
         if (type == 0) {
@@ -266,6 +279,12 @@ extern "C" JNIEXPORT jint JNICALL
 Java_org_vrpassthroughplayer_plugin_VideoLayerNative_layerCount(JNIEnv*, jclass) {
     std::lock_guard<std::mutex> lock(mutex);
     return state.count;
+}
+
+/** Godot created its instance with XR_KHR_composition_layer_color_scale_bias (layer_extensions.cpp). */
+extern "C" JNIEXPORT jboolean JNICALL
+Java_org_vrpassthroughplayer_plugin_VideoLayerNative_colorScaleBias(JNIEnv*, jclass) {
+    return thru3d_color_scale_bias_enabled() ? JNI_TRUE : JNI_FALSE;
 }
 
 /** The runtime's instance extensions, space separated (diagnostics: which layer features exist). */

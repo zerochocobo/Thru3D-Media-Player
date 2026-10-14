@@ -38,7 +38,7 @@ func click(menu: Node3D, target: int) -> bool:
 
 func drag(menu: Node3D, target: int, fraction: float) -> void:
 	var button: Dictionary = menu._buttons.filter(func(row): return row.target == target)[0]
-	var point := Vector3(0.03 + 0.6 * fraction, button.rect.get_center().y, 1)
+	var point := Vector3(menu.SLIDER_LEFT + menu.SLIDER_WIDTH * fraction, button.rect.get_center().y, 1)
 	menu.press_pointer("right", menu.to_global(point), -menu.global_basis.z, true)
 	menu.release_pointer("right", menu.to_global(point), -menu.global_basis.z, true)
 
@@ -84,8 +84,8 @@ func _run() -> void:
 	var bottom_width := camera.unproject_position(menu.to_global(Vector3(0.5, 0, 0))).x - camera.unproject_position(menu.to_global(Vector3(-0.5, 0, 0))).x
 	check(is_equal_approx(top_width, bottom_width), "Upper popup rows are not compressed by menu tilt")
 	menu.toggle()
-	check(click(menu, 11) and menu._adjustment == "screen", "Settings opens Screen directly")
-	check(is_equal_approx(menu.global_position.y, camera.global_position.y), "Full settings rise to eye level")
+	check(click(menu, 11) and menu.section == 1 and menu._adjustment.is_empty() and click(menu, Menu.SCREEN_SETTINGS) and menu._adjustment == "screen", "Settings opens Playback; Screen is the second tab")
+	check(menu._buttons.any(func(b): return b.target == 102), "The bar stays under the settings popup")
 	check(menu._adjust_rows.size() == 3 and menu.text_snapshot().contains("Screen size"), "Flat panel includes distance, size and rotation")
 	check(not menu.text_snapshot().contains("Audio track") and not menu.text_snapshot().contains("Subtitles") and not menu.text_snapshot().contains("3D depth"), "Screen panel contains no duplicate controls")
 	check(not reset_shown(menu, Menu.ROTATION_RESET) and not click(menu, Menu.ROTATION_RESET), "Zero rotation hides and disables reset")
@@ -95,13 +95,13 @@ func _run() -> void:
 		var row: Dictionary = menu._adjust_rows[451]
 		var percent: float = scale * 100
 		check(is_equal_approx(main._menu_state().screen_scale, percent) and row.label.text == "%d%%" % roundi(percent), "Physical scale, menu state and percentage agree")
-		check(is_equal_approx(row.knob.position.x, 0.03 + (percent - 40) / 260 * 0.6), "Screen size thumb matches displayed percentage")
+		check(is_equal_approx(row.knob.position.x, Menu.SLIDER_LEFT + (percent - 40) / 260 * Menu.SLIDER_WIDTH), "Screen size thumb matches displayed percentage")
 	drag(menu, 451, 0)
 	check(is_equal_approx(video.screen_scale, 0.4) and video.screen_distance == 2, "Minimum screen size changes no distance")
-	check(menu._adjust_rows[451].label.text == "40%" and is_equal_approx(menu._adjust_rows[451].knob.position.x, 0.03), "Minimum drag displays 40% at the start")
+	check(menu._adjust_rows[451].label.text == "40%" and is_equal_approx(menu._adjust_rows[451].knob.position.x, Menu.SLIDER_LEFT), "Minimum drag displays 40% at the start")
 	drag(menu, 451, 1)
 	check(video.screen_scale == 3 and is_equal_approx(video._flat.size.x / video._flat.size.y, 16.0 / 9), "Maximum screen size preserves aspect")
-	check(menu._adjust_rows[451].label.text == "300%" and is_equal_approx(menu._adjust_rows[451].knob.position.x, 0.63), "Maximum drag displays 300% at the end")
+	check(menu._adjust_rows[451].label.text == "300%" and is_equal_approx(menu._adjust_rows[451].knob.position.x, Menu.SLIDER_LEFT + Menu.SLIDER_WIDTH), "Maximum drag displays 300% at the end")
 	drag(menu, 452, 1)
 	check(video.screen_rotation == 90 and absf(video.panel.global_basis.x.y) > 0.99, "Rotation slider reaches clockwise 90 degrees")
 	check(reset_shown(menu, Menu.ROTATION_RESET) and is_equal_approx(button(menu, Menu.ROTATION_RESET).rect.get_center().y, button(menu, 452).rect.get_center().y), "Rotation reset appears on its slider row")
@@ -180,11 +180,11 @@ func _run() -> void:
 	video._apply_geometry()
 	video.stereo_sbs = true
 	menu.refresh()
-	check(click(menu, 100 + Menu.OPERATIONS[1].find("stereo_view")) and menu._adjustment == "stereo_view"
+	check(click(menu, Menu.SETTINGS_TILE + Menu.OPERATIONS[1].find("stereo_view")) and menu._adjustment == "stereo_view"
 		and menu._buttons.any(func(b): return b.target == Menu.EYE_SWAP and b.enabled), "Flat native stereo retains accessible eye-order control")
 	check(click(menu, 400) and menu._adjustment.is_empty(), "Eye-order panel returns to video settings")
 	video.stereo_sbs = false
-	click(menu, 10)
+	click(menu, Menu.SETTINGS_CLOSE)
 	click(menu, 110)
 	check(menu.choices.sliders.is_empty() and not menu.choices.targets.values().any(func(item): return item.get("key") == "subtitle_style"), "Flat CC initially hides all appearance controls")
 	check(click(menu, Menu.SUBTITLE_APPEARANCE) and menu._subtitle_open, "Ray opens appearance without closing subtitle selection")

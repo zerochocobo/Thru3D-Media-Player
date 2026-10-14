@@ -86,6 +86,7 @@ static func info(row: Dictionary, catalog: RefCounted = null, recent: bool = fal
 		var year := int(node.get("year", 0))
 		if year > 0: parts.append(str(year))
 		if duration > 0: parts.append(time(duration))
+		if not bytes.is_empty(): parts.append(bytes)
 		if year <= 0 and int(node.get("height", 0)) > 0: parts.append("%dp" % int(node.height))
 	else:
 		if not bytes.is_empty(): parts.append(bytes)
@@ -101,5 +102,11 @@ static func info(row: Dictionary, catalog: RefCounted = null, recent: bool = fal
 			status = time(position_ms) + " / " + time(duration) if duration > 0 else I18n.t("Played to %s") % time(position_ms)
 			if duration > 0: ratio = clampf(float(position_ms) / duration, 0.0, 1.0)
 		elif local.is_empty() and node.get("watched", false): status = I18n.t("Watched")
-	var badge := time(position_ms) if position_ms > 0 and not photo and not folder else (bytes if not bytes.is_empty() else (time(duration) if duration > 0 and not photo and not folder else ""))
-	return {"subtitle": " · ".join(parts), "status": status, "ratio": ratio, "badge": badge, "folder": folder}
+	var badges: Array[String] = []
+	if not bytes.is_empty(): badges.append(bytes)
+	if position_ms > 0 and not photo and not folder: badges.append(time(position_ms))
+	elif badges.is_empty() and duration > 0 and not photo and not folder: badges.append(time(duration))
+	var card_parts := parts.duplicate()
+	if row.has("scene") and not status.is_empty():
+		card_parts.append(time(position_ms) if position_ms > 0 else status)
+	return {"subtitle": " · ".join(parts), "status": status, "ratio": ratio, "badge": " · ".join(badges), "card_detail": " · ".join(card_parts), "folder": folder}

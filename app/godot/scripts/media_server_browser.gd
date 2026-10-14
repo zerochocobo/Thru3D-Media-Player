@@ -716,7 +716,7 @@ func tile(target: int, row: Dictionary, center: Vector2) -> void:
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	var info: Dictionary = menu.Presentation.info(row, menu.catalog)
 	var metadata := str(row.get("detail", ""))
-	if view == "scenes": metadata = str(info.badge) if not str(info.status).is_empty() else str(info.subtitle)
+	if view == "scenes": metadata = str(info.card_detail)
 	var meta: Label3D = menu._label(menu._fit_title(metadata, "", 0.265, 16), Vector3(0, -0.119, 0.006), 16, node); meta.modulate = menu.MUTED
 	menu._progress_on(node, float(info.ratio), Vector2(0, -0.068), 0.265)
 
@@ -733,7 +733,7 @@ func _media_tile(target: int, row: Dictionary, center: Vector2) -> void:
 	var title: Label3D = menu._label(menu._fit_title(str(row.title), "", size.x - 0.025, 20), Vector3(0, -size.y / 2 + 0.034, 0.006), 20, card)
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	var info: Dictionary = menu.Presentation.info(row, menu.catalog)
-	var meta: Label3D = menu._label(menu._fit_title(str(info.badge) if not str(info.status).is_empty() else str(info.subtitle), "", size.x - 0.025, 14), Vector3(0, -size.y / 2 + 0.012, 0.006), 14, card); meta.modulate = menu.MUTED
+	var meta: Label3D = menu._label(menu._fit_title(str(info.card_detail), "", size.x - 0.025, 14), Vector3(0, -size.y / 2 + 0.012, 0.006), 14, card); meta.modulate = menu.MUTED
 	menu._progress_on(card, float(info.ratio), Vector2(0, -size.y / 2 + 0.05), size.x - 0.024)
 	menu._tips[target] = str(row.title)
 

@@ -13,7 +13,6 @@ const CLOSE := -4
 const MAX_RAY_METRES := 5.0
 const FOLLOW := -1001
 const TEMP_PASSTHROUGH := -1002
-const CLOSE_MENU := -1003
 const FOOTER_DIAMETER := 0.09
 const FOOTER_HIT_SIZE := 0.105
 const FOOTER_GAP := 0.025
@@ -230,9 +229,6 @@ func _activate_hit(hit: Dictionary) -> void:
 	_activate(int(hit.target))
 
 func _activate_footer(target: int) -> bool:
-	if target == CLOSE_MENU:
-		dismiss()
-		return true
 	if target not in [FOLLOW, TEMP_PASSTHROUGH]: return false
 	var state := _session_controls()
 	if target == FOLLOW:
@@ -252,7 +248,8 @@ func _set_backdrop(size: Vector2, centre: Vector2 = Vector2.ZERO) -> void:
 func _clear_layout() -> void:
 	composition_layout_changed.emit()
 	for button in _buttons:
-		button.node.free()
+		# A badge nested in another button's tile is freed with it.
+		if is_instance_valid(button.node): button.node.free()
 	_buttons.clear()
 	_ray_blockers.clear()
 	for label in _labels:
@@ -335,18 +332,16 @@ func refresh_session_controls(force: bool = false) -> void:
 	if not force and state == _footer_state: return
 	_footer_state = state.duplicate()
 	for index in range(_buttons.size() - 1, -1, -1):
-		if _buttons[index].target in [CLOSE_MENU, FOLLOW, TEMP_PASSTHROUGH]:
+		if _buttons[index].target in [FOLLOW, TEMP_PASSTHROUGH]:
 			_buttons[index].node.free()
 			_buttons.remove_at(index)
 	var show_passthrough: bool = state.get("passthrough_visible", false)
-	var count := 3 if show_passthrough else 2
+	var count := 2 if show_passthrough else 1
 	var span := count * FOOTER_DIAMETER + (count - 1) * FOOTER_GAP
 	var width := span + FOOTER_GAP + STATUS_WIDTH
 	var left := _footer_centre.x - width * 0.5
 	device_status.position = Vector3(left + span + FOOTER_GAP + STATUS_WIDTH * 0.5, _footer_centre.y, 0.002)
-	_footer_button(CLOSE_MENU, "close", Vector2(left + FOOTER_DIAMETER * 0.5, _footer_centre.y),
-		false, true, I18n.t("Close menu"))
-	_footer_button(FOLLOW, "head_follow", Vector2(left + FOOTER_DIAMETER * 1.5 + FOOTER_GAP, _footer_centre.y),
+	_footer_button(FOLLOW, "head_follow", Vector2(left + FOOTER_DIAMETER * 0.5, _footer_centre.y),
 		state.get("follow", false), true, I18n.t("Disable follow" if state.get("follow", false) else "Enable follow"))
 	if show_passthrough:
 		var alpha: bool = state.get("alpha", false)

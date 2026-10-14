@@ -80,16 +80,57 @@ static func kelvin(k: float) -> Vector3:
 	var b := 255.0 if t >= 66 else 138.5177312231 * log(t - 10) - 305.0447927307
 	return Vector3(clampf(r, 0, 255), clampf(g, 0, 255), clampf(b, 0, 255)) / 255.0
 
-func apply(material: ShaderMaterial) -> void:
-	if not material: return
+## Per-channel gain: white balance (temperature, tint), exposure and the RGB gains.
+func gain() -> Vector3:
 	var p := values()
 	var gains := kelvin(p.temperature) / kelvin(6500)
 	var magenta := maxf(p.tint, 0) / 50.0
 	var green := maxf(-p.tint, 0) / 50.0
 	gains *= Vector3(1 + 0.12 * magenta, 1 + 0.12 * green - 0.08 * magenta, 1 + 0.12 * magenta)
 	gains /= gains.dot(Vector3(0.2126, 0.7152, 0.0722))
+	return gains * pow(2, p.exposure) * Vector3(p.red_gain, p.green_gain, p.blue_gain)
+
+## The grade as one per-channel scale and bias, which the compositor applies to a whole layer
+## (XR_KHR_composition_layer_color_scale_bias): (rgb * gain - 0.5) * contrast + 0.5 + offset.
+## Empty when gamma or saturation make it non-linear.
+func linear_terms() -> Dictionary:
+	if preset == "Original": return {"scale": Vector3.ONE, "bias": Vector3.ZERO}
+	var p := values()
+	if not is_equal_approx(p.saturation, 1.0) or not (Vector3(p.red_gamma, p.green_gamma, p.blue_gamma) * p.gamma).is_equal_approx(Vector3.ONE):
+		return {}
+	return {"scale": gain() * p.contrast,
+		"bias": Vector3.ONE * (0.5 - 0.5 * p.contrast) + Vector3(p.red_offset, p.green_offset, p.blue_offset)}
+
+## linear_terms() for the compositor, which scales and offsets linear light, not the display-encoded
+## values the shader grades. Exact at two encoded levels (0.15, 0.6) per channel: gains (white balance,
+## exposure, presets) come out within ~1/255; contrast and offsets within a few levels, mostly in shadows.
+func layer_terms() -> Dictionary:
+	var terms := linear_terms()
+	if terms.is_empty(): return {}
+	var scale := Vector3.ONE
+	var bias := Vector3.ZERO
+	for channel in 3:
+		var low := _to_linear(clampf(terms.scale[channel] * LAYER_ANCHORS.x + terms.bias[channel], 0.0, 1.0))
+		var high := _to_linear(clampf(terms.scale[channel] * LAYER_ANCHORS.y + terms.bias[channel], 0.0, 1.0))
+		var from := Vector2(_to_linear(LAYER_ANCHORS.x), _to_linear(LAYER_ANCHORS.y))
+		scale[channel] = (high - low) / (from.y - from.x)
+		bias[channel] = low - scale[channel] * from.x
+	return {"scale": scale, "bias": bias}
+
+const LAYER_ANCHORS := Vector2(0.15, 0.6)
+
+static func _to_linear(value: float) -> float:
+	return value / 12.92 if value <= 0.04045 else pow((value + 0.055) / 1.055, 2.4)
+
+static func _to_encoded(value: float) -> float:
+	value = clampf(value, 0.0, 1.0)
+	return value * 12.92 if value <= 0.0031308 else 1.055 * pow(value, 1.0 / 2.4) - 0.055
+
+func apply(material: ShaderMaterial) -> void:
+	if not material: return
+	var p := values()
 	material.set_shader_parameter("grade_enabled", preset != "Original")
-	material.set_shader_parameter("grade_gain", gains * pow(2, p.exposure) * Vector3(p.red_gain, p.green_gain, p.blue_gain))
+	material.set_shader_parameter("grade_gain", gain())
 	material.set_shader_parameter("grade_gamma", Vector3(p.red_gamma, p.green_gamma, p.blue_gamma) * p.gamma)
 	material.set_shader_parameter("grade_offset", Vector3(p.red_offset, p.green_offset, p.blue_offset))
 	material.set_shader_parameter("grade_contrast", p.contrast)

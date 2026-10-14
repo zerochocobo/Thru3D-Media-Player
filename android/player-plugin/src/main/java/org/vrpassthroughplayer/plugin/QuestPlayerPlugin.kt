@@ -329,6 +329,7 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
         runCatching { VideoLayerNative.copyBand(texture, y, rows) }.getOrDefault(false)
     @UsedByGodot fun release_layer_image(mipmaps: Boolean): Boolean =
         runCatching { VideoLayerNative.releaseImage(mipmaps) }.getOrDefault(false)
+    @UsedByGodot fun video_layer_color_scale_bias(): Boolean = runCatching { VideoLayerNative.colorScaleBias() }.getOrDefault(false)
     @UsedByGodot fun video_layer_runtime_extensions(): String = runCatching { VideoLayerNative.runtimeExtensions() }.getOrDefault("")
     @UsedByGodot fun video_layer_count(): Int = runCatching { VideoLayerNative.layerCount() }.getOrDefault(0)
     @UsedByGodot fun video_layer_address(index: Int): Long = runCatching { VideoLayerNative.layerAddress(index) }.getOrDefault(0L)

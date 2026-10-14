@@ -1,0 +1,15 @@
+[configuration]
+
+; OpenXR layer extensions Godot does not request itself (native/xr-layer/layer_extensions.cpp).
+; Build-Player adds this file to the project only for Android exports: the library ships in the player
+; plugin AAR. The editor loads an empty Windows stub built by Build-Player; host tests never see the file.
+entry_symbol = "thru3d_layer_extensions_init"
+compatibility_minimum = "4.5"
+android_aar_plugin = true
+
+[libraries]
+
+android.debug.arm64 = "res://addons/quest_player/bin/android/arm64/libquest_video_layer.so"
+android.release.arm64 = "res://addons/quest_player/bin/android/arm64/libquest_video_layer.so"
+windows.debug.x86_64 = "res://addons/quest_player/bin/windows/layer_extensions_stub.dll"
+windows.release.x86_64 = "res://addons/quest_player/bin/windows/layer_extensions_stub.dll"

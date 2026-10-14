@@ -18,6 +18,13 @@ class QuestPlayerExport extends EditorExportPlugin:
 	func _supports_platform(platform: EditorExportPlatform) -> bool:
 		return platform is EditorExportPlatformAndroid
 
+	# Build-Player declares the layer-extension GDExtension for Android exports only (its library is in
+	# the plugin AAR). Godot lists it in the exported extension list; the declaration itself must ship too.
+	func _export_begin(_features: PackedStringArray, _is_debug: bool, _path: String, _flags: int) -> void:
+		const DECLARATION := "res://addons/quest_player/layer_extensions.gdextension"
+		if FileAccess.file_exists(DECLARATION):
+			add_file(DECLARATION, FileAccess.get_file_as_bytes(DECLARATION), false)
+
 	func _get_android_libraries(_platform: EditorExportPlatform, debug: bool) -> PackedStringArray:
 		return PackedStringArray(["res://addons/quest_player/bin/player-plugin-%s.aar" % ("debug" if debug else "release"), "res://addons/quest_player/bin/cloudcore.aar"])
 

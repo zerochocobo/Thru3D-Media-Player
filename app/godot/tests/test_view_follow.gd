@@ -47,24 +47,22 @@ func placement(main: Node3D, surface: Node3D) -> Transform3D:
 	return main.xr_camera.global_transform.affine_inverse() * (surface.global_transform * surface.flat_pose)
 
 func footer_check(menu: Node3D, name: String) -> void:
-	var close := button(menu, Menu.CLOSE_MENU)
 	var follow := button(menu, Menu.FOLLOW)
 	var pass_button := button(menu, Menu.TEMP_PASSTHROUGH)
 	check(not follow.is_empty() and not pass_button.is_empty(), name + " includes both global footer controls")
 	if follow.is_empty() or pass_button.is_empty(): return
-	check(not close.is_empty() and close.rect.end.x < follow.rect.position.x, name + " has close menu to the left of follow")
 	check(not follow.rect.intersects(pass_button.rect), name + " has separate ray targets")
 	check(follow.node.mesh.size.y > menu.device_status.HEIGHT * 1.8, name + " controls exceed status height")
 	check(follow.node.position.y + Menu.FOOTER_HIT_SIZE / 2 < menu._backdrop.position.y - menu._backdrop.mesh.size.y / 2,
 		name + " controls clear the panel")
 	for other in menu._buttons:
-		if other.target in [Menu.CLOSE_MENU, Menu.FOLLOW, Menu.TEMP_PASSTHROUGH] or other.node.get_parent() != menu: continue
+		if other.target in [Menu.FOLLOW, Menu.TEMP_PASSTHROUGH] or other.node.get_parent() != menu: continue
 		check(not follow.rect.intersects(other.rect) and not pass_button.rect.intersects(other.rect), name + " footer does not overlap target " + str(other.target))
-		if not close.is_empty(): check(not close.rect.intersects(other.rect), name + " close target does not overlap " + str(other.target))
 
+## No close button: a trigger tap away from the menu closes it.
 func close_menu_check(main: Node3D, menu: Node3D, name: String) -> void:
-	var item := button(menu, Menu.CLOSE_MENU)
-	check(not item.is_empty(), name + " close menu is available")
+	var item := button(menu, Menu.FOLLOW)
+	check(not item.is_empty(), name + " footer is available")
 	if item.is_empty(): return
 	var state: bool = main.view_follow.enabled
 	var poses: Dictionary = main.view_follow._poses.duplicate()
@@ -73,15 +71,12 @@ func close_menu_check(main: Node3D, menu: Node3D, name: String) -> void:
 	var video_state: String = main.video.media.state
 	var photo_uri: String = main.photo.local_uri
 	var origin: Vector3 = item.node.global_position + item.node.global_basis.z * .25
-	var direction: Vector3 = -item.node.global_basis.z
-	menu.update_pointer("right_hand",origin,direction,true)
-	check(menu._tooltip.visible and menu._tooltip.get_child(0).text == "关闭菜单", name + " ray tooltip says close menu")
+	var direction: Vector3 = item.node.global_basis.z
+	check(menu.grab_hit(origin,direction).is_empty(), name + " test ray points away from the menu")
 	main.test_ray = [origin,direction]
 	main._on_pointer_button("trigger_click","right_hand")
-	check(not menu.visible and main._active_menu() == null and menu._hover.is_empty(), name + " closes immediately on trigger press")
-	check(main._grab.is_empty(), name + " close press cannot start a screen drag")
 	main._on_pointer_release("trigger_click","right_hand")
-	check(not menu.visible and main._active_menu() == null, name + " trigger release does not reopen menu")
+	check(not menu.visible and main._active_menu() == null, name + " closes on a tap away and the release does not reopen it")
 	check(main.view_follow.enabled == state and main.view_follow._poses == poses and main.temporary_passthrough == passthrough,
 		name + " retains session choices and saved head offsets")
 	check(main.video.media.state == video_state and main.video.alpha_wanted() == alpha and main.photo.local_uri == photo_uri,
@@ -103,7 +98,9 @@ func recenter_menus(main: Node3D) -> void:
 				main.view_follow.capture(main._menu_key(menu), main._head_pose(), world)
 			main.recent_menu.playback_controls_pose = main.video_menu.global_transform
 			if system: main._on_system_recentered()
-			else: check(click(main.recent_menu, main.recent_menu.RECENTER), "The actual library recenter button is clickable after dragging")
+			else:
+				main.video_menu.visible = true; main.video_menu.refresh()
+				check(click(main.video_menu, 108), "The actual player recenter button is clickable after dragging")
 			var frame: Transform3D = main.InterfaceMove.menu_head(main._head_pose(), following)
 			check(main.recent_menu.global_transform.is_equal_approx(frame * Transform3D(Basis.IDENTITY, Vector3(0, -0.05, -1.4))), "Both recenter entry points restore default library position, distance and orientation")
 			check(main.view_follow.enabled == following and main.recent_menu.playback_controls_pose == null, "Recenter preserves the follow switch and discards the expanded-library control-bar cache")
@@ -197,7 +194,7 @@ func _run() -> void:
 	main.video_menu.section = 1; main.video_menu.refresh()
 	main._update_view_follow()
 	var lifted_local: Transform3D = main.xr_camera.global_transform.affine_inverse() * main.video_menu.global_transform
-	check(lifted_local.origin.is_equal_approx(bar_local.origin + Vector3(0,.45,0)), "Settings lift follows menu up axis while lying and is retained in follow")
+	check(lifted_local.is_equal_approx(bar_local), "Settings open above the bar without moving the menu, also while lying and in follow")
 	main.video_menu.section = 0; main.video_menu.refresh()
 	main._update_view_follow()
 	check((main.xr_camera.global_transform.affine_inverse() * main.video_menu.global_transform).is_equal_approx(bar_local), "Returning to playback restores local menu position")

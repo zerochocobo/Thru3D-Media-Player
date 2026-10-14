@@ -10,7 +10,7 @@ var state := {"has_video": true, "geometry": 1, "playing": true, "playback_state
 		{"id": 3, "codec": "ass", "title": "旅行记录.双语.ass"}, {"id": 8, "codec": "webvtt", "title": "Travel.journal.en.vtt"},
 		{"id": 11, "codec": "subrip", "title": "旅行记录.导演评论.srt"}],
 	"title": "中文字幕 😀 旅行记录 " + "界".repeat(40), "source_size": "3840 x 1920", "codec": "hevc",
-	"position_ms": 123456, "duration_ms": 600000, "xr_state": "focused", "error": "PERMISSION_LOST: Please select the video again."}
+	"position_ms": 123456, "duration_ms": 600000, "xr_state": "focused", "layer_available": true, "grade_on_layer": true, "error": "PERMISSION_LOST: Please select the video again."}
 
 func _initialize() -> void:
 	call_deferred("_run")
@@ -34,7 +34,6 @@ func _run() -> void:
 	var menu := Menu.new()
 	menu.state_provider = func(): return state
 	camera.add_child(menu)
-	menu.lift_panels = true
 	menu.position.y = -0.45
 	menu.toggle()
 	var snapshots: Dictionary = {}
@@ -50,7 +49,7 @@ func _run() -> void:
 		await RenderingServer.frame_post_draw
 		await RenderingServer.frame_post_draw
 		var image := viewport.get_texture().get_image()
-		var top_left := camera.unproject_position(menu.to_global(Vector3(-0.775, 0.54, 0)))
+		var top_left := camera.unproject_position(menu.to_global(Vector3(-0.775, 1.3, 0)))
 		var bottom_right := camera.unproject_position(menu.to_global(Vector3(0.775, -0.54, 0)))
 		# The battery and clock pill sits under the panel on purpose.
 		var pill: Node3D = menu.device_status
@@ -59,7 +58,7 @@ func _run() -> void:
 		var pill_max := camera.unproject_position(pill.to_global(Vector3(half.x, -half.y, 0)))
 		var footer_bounds: Array[Rect2] = []
 		for button in menu._buttons:
-			if button.target not in [menu.CLOSE_MENU, menu.FOLLOW, menu.TEMP_PASSTHROUGH]: continue
+			if button.target not in [menu.FOLLOW, menu.TEMP_PASSTHROUGH]: continue
 			var rect: Rect2 = button.rect
 			var start := camera.unproject_position(menu.to_global(Vector3(rect.position.x,rect.end.y,0)))
 			var end := camera.unproject_position(menu.to_global(Vector3(rect.end.x,rect.position.y,0)))
@@ -252,7 +251,7 @@ func _run() -> void:
 	await RenderingServer.frame_post_draw
 	await RenderingServer.frame_post_draw
 	viewport.get_texture().get_image().save_png(output.path_join("settings-simplified.png"))
-	menu._activate(11)
+	menu._activate(Menu.SCREEN_SETTINGS)
 	state.geometry = 1
 	menu.refresh()
 	await RenderingServer.frame_post_draw
@@ -263,7 +262,7 @@ func _run() -> void:
 	await RenderingServer.frame_post_draw
 	await RenderingServer.frame_post_draw
 	viewport.get_texture().get_image().save_png(output.path_join("screen-flat.png"))
-	menu._activate(10)
+	menu._activate(Menu.SETTINGS_CLOSE)
 	menu._activate(110)
 	await RenderingServer.frame_post_draw
 	await RenderingServer.frame_post_draw

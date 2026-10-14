@@ -12,6 +12,7 @@ var checks := 0
 class FakeVideo extends "res://scripts/media_surface.gd":
 	var viewing_eye := 0
 	var offset := Vector2.ZERO
+	var color_grade: RefCounted = null
 	func stereo_offset_uv() -> Vector2:
 		return offset
 
@@ -217,6 +218,26 @@ func _run() -> void:
 	_check(_layer(layer.layer_values(video, origin, VideoLayer.PICTURE), 0)[17] == -1.0,
 		"An unavailable layout extension is never submitted for GL pictures either")
 
+	# Colour grade: a linear grade rides on the layer as scale/bias once the extension is enabled.
+	layer._flip = true
+	var grade = load("res://scripts/color_grade.gd").new()
+	video.set("color_grade", grade)
+	grade.select("Warm")
+	layer.color_scale_bias = false
+	var plain := _layer(layer.layer_values(video, origin), 0)
+	_check(plain.size() == VideoLayer.STRIDE and plain[20] == 1.0 and plain[23] == 0.0, "Without the extension the layer carries no grade")
+	_check(not layer.grades(grade), "Without the extension a graded file needs the eye buffers")
+	layer.color_scale_bias = true
+	_check(layer.grades(grade), "With the extension the warm preset stays on the layer")
+	var warm := _layer(layer.layer_values(video, origin), 0)
+	var terms: Dictionary = grade.layer_terms()
+	_check(_near(warm[20], terms.scale.x) and _near(warm[22], terms.scale.z) and _near(warm[23], terms.bias.x), "The layer carries the grade's scale and bias")
+	grade.select("Custom")
+	grade.adjust("saturation", 1.3)
+	_check(not layer.grades(grade), "Saturation still needs the eye buffers")
+	grade.select("Original")
+	layer.color_scale_bias = false
+	_check(layer.grades(grade), "An ungraded file never needs the extension")
 	for failure in failures:
 		push_error(failure)
 	print("video layer: %d checks, %d failures" % [checks, failures.size()])

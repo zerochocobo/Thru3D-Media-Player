@@ -73,7 +73,7 @@ func _run() -> void:
 		# Bounds: the browser panel with the round actions and status pill under it, and the angled navigation column.
 		var corners: Array[Vector3] = [menu.to_global(Vector3(-0.6, 0.57, 0)), menu.to_global(Vector3(0.87, -0.76, 0))]
 		for button in menu._buttons:
-			if button.target not in [menu.CLOSE_MENU, menu.FOLLOW, menu.TEMP_PASSTHROUGH]: continue
+			if button.target not in [menu.FOLLOW, menu.TEMP_PASSTHROUGH]: continue
 			var rect: Rect2 = button.rect
 			corners.append(menu.to_global(Vector3(rect.position.x,rect.end.y,0)))
 			corners.append(menu.to_global(Vector3(rect.end.x,rect.position.y,0)))

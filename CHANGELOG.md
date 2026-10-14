@@ -4,6 +4,18 @@
 
 Newest first, following product release milestones. Some development/source snapshots contained features before their product release. Original APK identifiers `0.2` and `0.4` are retained; `0.4` was also called `0.4.0` in release notes. Availability depends on device, server and media capabilities.
 
+## 0.9.1 — 2026-10-14
+
+This update improves color-adjustment performance, streamlines playback settings and menus, and keeps media-card information visible alongside viewing progress.
+
+- Compatible exposure, contrast, color-temperature and RGB gain/offset adjustments can remain on the compositor-layer path on supported devices. Non-default gamma or saturation can still require the shader path; this does not establish a fixed performance gain for every headset or video.
+- Video settings, color adjustments and stereo-view controls open in compact panels above the playback bar, keeping playback controls available. Settings opens on the Playback tab; photo settings retain their full-panel layout.
+- Added hoverable performance hints for gamma, saturation and RGB gamma controls that can require additional rendering work.
+- Removed duplicate floating actions and the shared close-menu button. Point outside a menu and press the trigger to dismiss it; recenter remains on the playback bar and Close video retains its × icon.
+- File icons keep available file size alongside playback position and progress bars. Missing metadata remains unknown; this does not add file-size caching to old recent-playback records.
+- Media-server cards retain available year, total duration and other existing metadata alongside playback progress or watched status.
+- Added build support for a dedicated QUEST Store application identity, separate from the ordinary package. This is distribution support, not a new playback feature.
+
 ## 0.9.0 — 2026-10-14
 
 This update adds STRM playback and remote loading feedback, and improves interface movement, menu placement and picture-quality controls.

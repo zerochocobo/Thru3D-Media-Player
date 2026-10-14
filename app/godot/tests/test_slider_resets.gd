@@ -78,7 +78,7 @@ func run() -> void:
 	# A captured slider cannot be reset by the other hand.
 	video.set_stereo_alignment("stereo_horizontal", 2.0); menu.refresh_values()
 	var row := row_for(menu, "stereo_horizontal")
-	var origin: Vector3 = menu.to_global(Vector3(0.5, row.knob.position.y, 1))
+	var origin: Vector3 = menu.to_global(Vector3(menu.SLIDER_LEFT + menu.SLIDER_WIDTH * 0.5, row.knob.position.y, 1))
 	menu.press_pointer("right", origin, -menu.global_basis.z, true)
 	var held: float = video.stereo_horizontal; var before := commits
 	var reset_origin: Vector3 = row.reset.node.to_global(Vector3(0, 0, 1))

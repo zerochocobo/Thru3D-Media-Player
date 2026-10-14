@@ -12,14 +12,19 @@ param([string]$ToolRoot = $(if ($env:THRU3D_TOOL_ROOT) { $env:THRU3D_TOOL_ROOT }
     # A worktree has no keystore of its own: point at the main checkout's keystore/signing.
     [string]$SigningDirectory = '',
     # A separate package keeps emulator Debug diagnostics apart from an installed Release.
-    [ValidateSet('','com.wapok.thru3d.emulator')][string]$DebugApplicationId = '')
+    [ValidateSet('','com.wapok.thru3d.emulator')][string]$DebugApplicationId = '',
+    # Meta Quest Store uses a separate Android application identity.
+    [switch]$QuestStore)
 $ErrorActionPreference = 'Stop'
+if ($QuestStore -and ($BuildType -ne 'Release' -or $XrVendor -ne 'Quest')) {
+    throw 'QuestStore is limited to QUEST Release builds.'
+}
 if (-not $ApkName) {
     $ApkName = if ($BuildType -eq 'Release') {
         switch ($XrVendor) {
             'Pico' { 'Thru3D-PICO-release.apk' }
             'OpenXR' { 'Thru3D-OpenXR-release.apk' }
-            default { 'Thru3D-QUEST-release.apk' }
+            default { if ($QuestStore) { 'Thru3D-QUEST-META-STORE-release.apk' } else { 'Thru3D-QUEST-release.apk' } }
         }
     } else {
         switch ($XrVendor) {
@@ -37,7 +42,7 @@ $exportPreset = switch ($XrVendor) {
 if ($XrVendor -eq 'OpenXR') {
     Write-Output 'Experimental standard OpenXR target: device runtime, full controller input and passthrough require device validation.'
 }
-$applicationId = 'com.wapok.thru3d'
+$applicationId = if ($QuestStore) { 'com.thru3d.quest' } else { 'com.wapok.thru3d' }
 if ($DebugApplicationId) {
     if ($BuildType -ne 'Debug' -or $XrVendor -ne 'Pico') { throw 'The emulator application id is limited to PICO Debug builds.' }
     $applicationId = $DebugApplicationId
@@ -75,10 +80,10 @@ if ($BuildType -eq 'Release') {
 }
 $projectDirectory = Join-Path $workspace 'app\godot'
 $appVersion = [regex]::Match((Get-Content (Join-Path $projectDirectory 'project.godot') -Raw), '(?m)^config/version="([^"]+)"').Groups[1].Value
-if ($DebugApplicationId) {
+if ($DebugApplicationId -or $QuestStore) {
     $originalExportPresets = [IO.File]::ReadAllBytes($exportPresetsPath)
-    $emulatorPresets = [Text.Encoding]::UTF8.GetString($originalExportPresets).Replace('package/unique_name="com.wapok.thru3d"', 'package/unique_name="' + $applicationId + '"')
-    [IO.File]::WriteAllText($exportPresetsPath, $emulatorPresets, [Text.UTF8Encoding]::new($false))
+    $packagePresets = [Text.Encoding]::UTF8.GetString($originalExportPresets).Replace('package/unique_name="com.wapok.thru3d"', 'package/unique_name="' + $applicationId + '"')
+    [IO.File]::WriteAllText($exportPresetsPath, $packagePresets, [Text.UTF8Encoding]::new($false))
 }
 if ($IncludeDiagnostics) {
     if ($null -eq $originalExportPresets) { $originalExportPresets = [IO.File]::ReadAllBytes($exportPresetsPath) }
@@ -122,6 +127,30 @@ New-Item -ItemType Directory -Path $pluginDirectory -Force | Out-Null
 foreach ($variant in @('debug','release')) {
     Copy-Item -LiteralPath "$workspace\android\player-plugin\build\outputs\aar\player-plugin-$variant.aar" -Destination $pluginDirectory -Force
 }
+# OpenXR layer extensions Godot does not request (native/xr-layer/layer_extensions.cpp): a GDExtension
+# declared for this export only. Its Android library ships in the plugin AAR; the editor loads an empty
+# Windows stub, so desktop runs register nothing and the export treats the declaration as valid.
+$layerExtension = Join-Path $projectDirectory 'addons\quest_player\layer_extensions.gdextension'
+$layerSource = Join-Path $workspace 'native\xr-layer'
+$stubDirectory = Join-Path $pluginDirectory 'windows'
+$stubBuild = Join-Path $workspace 'build\layer-extension-stub'
+New-Item -ItemType Directory -Path $stubDirectory, $stubBuild -Force | Out-Null
+$vcvars = 'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat'
+if (-not (Test-Path -LiteralPath $vcvars)) { throw "MSVC Build Tools are required for the editor stub: $vcvars" }
+cmd /c "`"$vcvars`" >nul 2>nul && cl /nologo /LD /std:c++17 /O2 /EHsc /W3 /WX /I`"$layerSource\gdextension`" /Fo`"$stubBuild\\`" /Fe`"$stubBuild\layer_extensions_stub.dll`" `"$layerSource\layer_extensions.cpp`"" 2>&1 | Out-File (Join-Path $logDirectory 'layer-extension-stub.log') -Encoding utf8
+if ($LASTEXITCODE -ne 0) { throw 'Layer extension editor stub failed; inspect build/output/logs/layer-extension-stub.log.' }
+# Only the DLL enters the project: Godot would import MSVC's .obj as a 3D model.
+Copy-Item -LiteralPath (Join-Path $stubBuild 'layer_extensions_stub.dll') -Destination $stubDirectory -Force
+# The declaration names the Android library at a project path, as the vendors addon does.
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+$pluginArchive = [IO.Compression.ZipFile]::OpenRead((Join-Path $pluginDirectory 'player-plugin-release.aar'))
+try {
+    $entry = $pluginArchive.GetEntry('jni/arm64-v8a/libquest_video_layer.so')
+    if (-not $entry) { throw 'The player plugin AAR lacks libquest_video_layer.so.' }
+    New-Item -ItemType Directory -Path (Join-Path $pluginDirectory 'android\arm64') -Force | Out-Null
+    [IO.Compression.ZipFileExtensions]::ExtractToFile($entry, (Join-Path $pluginDirectory 'android\arm64\libquest_video_layer.so'), $true)
+} finally { $pluginArchive.Dispose() }
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'environment\godot\layer_extensions.gdextension') -Destination $layerExtension -Force
 $vendorsDirectory = Join-Path $projectDirectory 'addons\godotopenxrvendors'
 if (-not (Test-Path -LiteralPath $vendorsDirectory)) {
     Copy-Item -LiteralPath (Join-Path $ToolRoot 'openxr-vendors\5.1.0\asset\addons\godotopenxrvendors') -Destination (Split-Path $vendorsDirectory) -Recurse
@@ -129,7 +158,10 @@ if (-not (Test-Path -LiteralPath $vendorsDirectory)) {
 
 # With this fixed Godot/Vendors pair, immediate --import exit crashes on a fresh
 # extension scan. Let the editor finish its background metadata work before exit.
+# Godot warnings arrive on stderr; the exit code and the logged errors below decide.
+$ErrorActionPreference = 'Continue'
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --editor --quit-after 600 2>&1 | Out-File (Join-Path $logDirectory 'godot-import.log') -Encoding utf8
+$ErrorActionPreference = 'Stop'
 if ($LASTEXITCODE -ne 0) { throw 'Godot import failed; inspect build/output/logs/godot-import.log.' }
 if ((Get-Content (Join-Path $logDirectory 'godot-import.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)') { throw 'Godot import reported errors.' }
 $apkPath = Join-Path $artifactDirectory $ApkName
@@ -155,6 +187,7 @@ if (-not $androidBuildText.Contains($osgiExclusion)) {
     [IO.File]::WriteAllText($androidBuildScript, $androidBuildText, [Text.UTF8Encoding]::new($false))
 }
 $exportArguments += @($(if ($BuildType -eq 'Release') { '--export-release' } else { '--export-debug' }),$exportPreset,$apkPath)
+$ErrorActionPreference = 'Continue'
 & $env:GODOT_EXE @exportArguments 2>&1 | ForEach-Object {
     $safeLine = [string]$_
     foreach ($secret in @($env:GODOT_ANDROID_KEYSTORE_DEBUG_PASSWORD,$env:GODOT_ANDROID_KEYSTORE_RELEASE_PASSWORD)) {
@@ -163,6 +196,7 @@ $exportArguments += @($(if ($BuildType -eq 'Release') { '--export-release' } els
     $safeLine
 } | Out-File (Join-Path $logDirectory 'godot-export.log') -Encoding utf8
 $exportExitCode = $LASTEXITCODE
+$ErrorActionPreference = 'Stop'
 if ($exportExitCode -ne 0) { throw 'APK export failed; inspect build/output/logs/godot-export.log.' }
 if ((Get-Content (Join-Path $logDirectory 'godot-export.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)') { throw 'Godot export reported errors.' }
 & "$env:ANDROID_HOME\build-tools\36.1.0\apksigner.bat" verify --verbose $apkPath 2>&1 | Out-File (Join-Path $logDirectory 'apk-signature.log') -Encoding utf8
@@ -174,6 +208,9 @@ if ($LASTEXITCODE -ne 0) { throw 'APK alignment validation failed.' }
 & "$env:ANDROID_HOME\build-tools\36.1.0\aapt2.exe" dump xmltree $apkPath --file AndroidManifest.xml 2>&1 | Out-File (Join-Path $logDirectory 'apk-manifest.txt') -Encoding utf8
 if ($LASTEXITCODE -ne 0) { throw 'APK manifest inspection failed.' }
 $manifestText = Get-Content (Join-Path $logDirectory 'apk-manifest.txt') -Raw
+if ($manifestText -notmatch ('(?m)^\s*A: package="' + [regex]::Escape($applicationId) + '"')) {
+    throw 'APK application id differs from the requested package.'
+}
 if ($manifestText.Contains('android.permission.ACCESS_MEDIA_LOCATION')) {
     throw 'APK requests media GPS metadata access, which the player does not use.'
 }
@@ -427,6 +464,7 @@ $buildManifest = [ordered]@{
     schema_version = 1
     built_utc = [DateTime]::UtcNow.ToString('o')
     application_id = $applicationId
+    distribution_channel = if ($QuestStore) { 'quest_store' } else { 'standard' }
     xr_vendor = $XrVendor
     hand_tracking = 'OpenXR runtime aim/select preferred; joint pinch fallback; physical validation pending'
     app_version = $appVersion
@@ -532,6 +570,7 @@ if ($BuildType -eq 'Release') {
     $releaseDate = Get-Date -Format 'yyyyMMdd'
     $releaseDirectory = Join-Path $workspace ("releases/$appVersion/$releaseDate/" + $buildManifest.apk_sha256.Substring(0,12))
     New-Item -ItemType Directory -Path $releaseDirectory -Force | Out-Null
+    if ($QuestStore) { $platformName = 'QUEST-META-STORE' }
     $releaseApk = Join-Path $releaseDirectory "Thru3D-$platformName-$appVersion-release-$releaseDate.apk"
     if (Test-Path -LiteralPath $releaseApk) {
         if ((Get-FileHash -LiteralPath $releaseApk).Hash.ToLowerInvariant() -ne $buildManifest.apk_sha256) { throw 'Permanent release archive already contains different bytes.' }
@@ -550,6 +589,15 @@ Write-Output "SHA256: $($buildManifest.apk_sha256)"
         [Environment]::SetEnvironmentVariable($key, $originalSigningEnvironment[$key], 'Process')
     }
     if ($null -ne $originalExportPresets) { [IO.File]::WriteAllBytes($exportPresetsPath, $originalExportPresets) }
+    # The export-only GDExtension declaration never stays in the project.
+    $layerExtensionFile = Join-Path $workspace 'app\godot\addons\quest_player\layer_extensions.gdextension'
+    # Its .uid stays (git-ignored): deleting it makes the next import warn about the cached UID.
+    if (Test-Path -LiteralPath $layerExtensionFile) { [IO.File]::Delete($layerExtensionFile) }
+    $extensionList = Join-Path $workspace 'app\godot\.godot\extension_list.cfg'
+    if (Test-Path -LiteralPath $extensionList) {
+        $remaining = @(Get-Content -LiteralPath $extensionList | Where-Object { $_ -notmatch 'layer_extensions\.gdextension' })
+        [IO.File]::WriteAllLines($extensionList, [string[]]$remaining)
+    }
     if ($buildLockHeld) { $buildMutex.ReleaseMutex() }
     $buildMutex.Dispose()
 }

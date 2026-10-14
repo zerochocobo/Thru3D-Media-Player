@@ -25,6 +25,8 @@ internal object VideoLayerNative {
     @JvmStatic external fun copyBand(texture: Int, y: Int, rows: Int): Boolean
     @JvmStatic external fun releaseImage(mipmaps: Boolean): Boolean
     @JvmStatic external fun runtimeExtensions(): String
+    /** Layers can carry a colour scale/bias (the colour grade) instead of leaving the compositor. */
+    @JvmStatic external fun colorScaleBias(): Boolean
     @JvmStatic external fun layerCount(): Int
     @JvmStatic external fun layerAddress(index: Int): Long
 }
