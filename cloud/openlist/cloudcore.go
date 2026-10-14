@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -242,7 +243,7 @@ func requestContext(ctx context.Context, method, route, body string) (string, er
 		return "", err
 	}
 	if w.Code != http.StatusOK {
-		return "", errors.New("cloud request failed")
+		return "", fmt.Errorf("cloud request: HTTP %d", w.Code)
 	}
 	return w.Body.String(), nil
 }

@@ -16,8 +16,7 @@ internal class CloudDrive(val provider: String, private val cookie: String, priv
     private fun checked(response: CloudResponse): JSONObject {
         val json = response.json
         if (json.opt("state") != true && json.opt("state")?.toString() != "1") {
-            if (json.optInt("errno") in setOf(99, 911, 990001, 40101032) || json.optInt("code") == 99) throw CloudFailure("cloud_login_required")
-            throw CloudFailure()
+            throw CloudDiagnostics.providerFailure(json)
         }
         return json
     }

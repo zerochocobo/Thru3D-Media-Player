@@ -21,7 +21,8 @@ internal object MpvSourceNative {
                                    maxWidth: Int = 0, audioFiles: Array<String> = emptyArray(),
                                    subtitleFiles: Array<String> = emptyArray(), exactStart: Boolean = true,
                                    layerSurface: android.view.Surface? = null, softwareLayer: Boolean = false,
-                                   layerWidth: Int = 4096, layerHeight: Int = 4096, isoInput: Boolean = false): Long
+                                   layerWidth: Int = 4096, layerHeight: Int = 4096, isoInput: Boolean = false,
+                                   tlsCaFile: String = MpvTlsTrust.prepare(context)): Long
     /** ISO header/title preflight on the source worker; width, height, duration-us, MVC flag. */
     @JvmStatic external fun probeIso(path: String): LongArray
     /** Empty string when no completed image is available. Never waits for the GPU. */
@@ -35,6 +36,8 @@ internal object MpvSourceNative {
     @JvmStatic external fun setAudio(handle: Long, trackId: Int, volume: Double, muted: Boolean): Boolean
     /** 0 rejected; positive coalesced command serial. -1 auto, 0 off, actual subtitle id. */
     @JvmStatic external fun setSubtitle(handle: Long, trackId: Int): Long
+    /** Positive seconds delay captions; shares the subtitle command fence. */
+    @JvmStatic external fun setSubtitleDelay(handle: Long, seconds: Double): Long
     /** Plain text in a separate UI layer; empty when no newer snapshot is available. */
     @JvmStatic external fun subtitleStatus(handle: Long, afterSequence: Long): String
     /** Cropped premultiplied RGBA for this exact bitmap version, empty if superseded. */

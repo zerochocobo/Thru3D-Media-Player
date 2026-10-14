@@ -95,12 +95,28 @@ func _run() -> void:
 			check(player._subtitle_open and not player._subtitle_appearance_open and player.choices.sliders.is_empty(), "Player appearance starts collapsed")
 			await shot(viewport, output.path_join("player_%s_%s_collapsed.png" % [language, "flat" if geometry == 0 else "immersive"]))
 			player._activate(Player.SUBTITLE_APPEARANCE)
-			check(player._subtitle_appearance_open and player.choices.sliders.size() == (2 if geometry == 0 else 3), "Player disclosure opens all appropriate controls")
+			check(player._subtitle_appearance_open and player.choices.sliders.size() == (3 if geometry == 0 else 4), "Player disclosure opens all appropriate controls")
 			var visual_styles := player.choices.targets.values().filter(func(item): return item.get("key") == "subtitle_style")
 			check(visual_styles.size() == 5, "Player appearance contains the five visual samples")
 			await shot(viewport, output.path_join("player_%s_%s_expanded.png" % [language, "flat" if geometry == 0 else "immersive"]))
 			player._activate(Player.SUBTITLE_APPEARANCE)
 			check(player._subtitle_open and player.choices.sliders.is_empty(), "Player collapse retains subtitle selection panel")
+		player_state.geometry = 0
+		player_state.subtitle_options[0].codec = "hdmv_pgs_subtitle"
+		player.dismiss(); player.toggle(); player._activate(110); player._activate(Player.SUBTITLE_APPEARANCE)
+		check(player.choices.sliders.size() == 3 and not player.choices.targets.values().any(func(item): return item.get("key") == "subtitle_style"), "PGS exposes sync/size/position in every language")
+		await shot(viewport, output.path_join("player_%s_pgs.png" % language))
+		for seconds in [-1.5, 2.0]:
+			player_state.subtitle_delay = seconds; player.refresh()
+			var sync_ids := player.choices.sliders.keys().filter(func(id): return player.choices.targets[id].key == "subtitle_delay")
+			check(sync_ids.size() == 1, "Each PGS panel has one sync slider")
+			var sync: Dictionary = player.choices.sliders[sync_ids[0]]
+			check(sync.label.text == "%+.1f s" % seconds and sync.reset.enabled and sync.reset.node.visible, "Signed time and active reset are visible")
+			await shot(viewport, output.path_join("player_%s_pgs_sync_%s.png" % [language, "early" if seconds < 0 else "late"]))
+		player_state.subtitle_delay = 0.0; player.refresh()
+		for id in player.choices.sliders:
+			if player.choices.targets[id].key == "subtitle_delay": check(not player.choices.sliders[id].reset.node.visible, "Zero sync has no visible reset")
+		player_state.subtitle_options[0].codec = "subrip"
 	viewport.queue_free()
 	await process_frame
 	FileAccess.open(output.path_join("verification.json"), FileAccess.WRITE).store_string(JSON.stringify({"checks": checks, "failures": failures}, "\t"))

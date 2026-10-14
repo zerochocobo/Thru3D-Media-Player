@@ -44,6 +44,7 @@ internal class MediaSources(
     @Synchronized fun streams(): LocalStreamServer = server ?: LocalStreamServer().also { server = it }
 
     fun releasePhotoStream(uri: String) { if (uri.isNotEmpty()) server?.revoke(uri) }
+    fun streamProgress(uri: String): TransferMeter.Snapshot? = server?.progress(uri)
 
     fun nextId(): Int = ids.incrementAndGet()
     /** Main thread: may show the media permission request. path "" lists the storage volumes. */
@@ -108,7 +109,7 @@ internal class MediaSources(
                 CloudLibrary.start(context() ?: error("Activity unavailable"))
                 CloudLibrary.browse(path, refresh, offset, cancellation, order).put("state", "ready")
             } catch (error: Exception) {
-                JSONObject().put("state", "error").put("error", error.message ?: "Cloud connection failed")
+                CloudDiagnostics.response(error, "cloud.browse")
             }
             result.put("source", "cloud").put("path", path).put("offset", offset).put("order", order).toString()
         }, emit)
@@ -212,7 +213,51 @@ internal class MediaSources(
     }
 
     /** MPV-playable location for a library URI; blocks (SMB connects). Worker threads only. */
-    fun playable(uri: String): String = when {
+    private val strm = StrmResolver(::readStrm, ::isStrm) { origin, target ->
+        if (target.startsWith("smb://")) smb.strmTarget(target, origin) else target
+    }
+
+    private fun isStrm(uri: String): Boolean {
+        if (StrmFile.location(uri)) return true
+        val source = android.net.Uri.parse(uri)
+        if (source.scheme != "content") return false
+        return context()?.contentResolver?.query(source, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use {
+            it.moveToFirst() && StrmFile.named(it.getString(0).orEmpty())
+        } == true
+    }
+
+    private fun readStrm(uri: String): StrmDocument {
+        val source = android.net.Uri.parse(uri)
+        val bytes = when (source.scheme) {
+            "file" -> java.io.File(source.path ?: throw StrmFailure("STRM_READ_FAILED")).inputStream().use(StrmFile::read)
+            "content" -> (context()?.contentResolver?.openInputStream(source) ?: throw StrmFailure("STRM_READ_FAILED")).use(StrmFile::read)
+            "smb" -> smb.readStrm(uri)
+            "cloud" -> {
+                CloudLibrary.start(context() ?: error("Activity unavailable"))
+                StrmFile.read(CloudLibrary.dav.source(CloudPaths.path(uri)))
+            }
+            "http", "https" -> return StrmHttp.read(uri)
+            else -> throw StrmFailure("STRM_UNSUPPORTED_ADDRESS")
+        }
+        return StrmDocument(bytes, if (source.scheme == "smb") smb.strmOrigin(uri) else uri)
+    }
+
+    fun playable(uri: String): String {
+        val target = strm.resolve(uri)
+        return try { directPlayable(target) }
+        catch (error: Exception) {
+            if (target != uri) throw StrmFailure("STRM_TARGET_UNAVAILABLE")
+            throw error
+        }
+    }
+
+    private fun directPlayable(uri: String): String = when {
+        (uri.startsWith("http://") || uri.startsWith("https://")) && java.net.URI(uri).path.orEmpty().endsWith(".iso", true) -> {
+            // Blu-ray preflight uses FFmpeg's independent HTTP reader; route it through Android TLS too.
+            val source = HttpRangeStreamSource.remote(java.net.URI(uri))
+            try { streams().publish(source, java.net.URI(uri).path.substringAfterLast('/')) }
+            catch (error: Exception) { source.close(); throw error }
+        }
         uri.startsWith("medialib://") -> mediaServers.playable(uri)
         uri.startsWith("smb://") -> smb.stream(uri)
         uri.startsWith("cloud://") -> {
@@ -244,6 +289,7 @@ internal class MediaSources(
 
     fun sidecarSubtitles(uri: String): List<SidecarSubtitles.Track> = try {
         when {
+            uri.startsWith("file://") -> SidecarSubtitles.forLocal(java.io.File(android.net.Uri.parse(uri).path ?: ""))
             uri.startsWith("smb://") -> smb.sidecarSubtitles(uri)
             uri.startsWith("medialib://") -> mediaServers.sidecarSubtitles(uri)
             uri.startsWith("http://") || uri.startsWith("https://") -> SidecarSubtitles.forDlna(dlna.subtitles(uri)) { source, name -> streams().publish(source, name) }

@@ -48,10 +48,26 @@ internal class PhotoBridge(
     @Volatile private var connection: HttpURLConnection? = null
     @Volatile private var closed = false
     private var cachePrepared = false // IO worker only; discard leftovers from a previous process.
+    private class Loading(val id: Int, @Volatile var remote: Boolean) {
+        val started = System.nanoTime()
+        val meter = TransferMeter()
+        @Volatile var phase = "connecting"
+    }
+    @Volatile private var loading: Loading? = null
+    fun loadingStatus(id: Int): String {
+        val state = loading?.takeIf { it.id == id && current.get() == id && !closed } ?: return ""
+        val progress = state.meter.snapshot()
+        return JSONObject().put("remote", state.remote).put("phase", state.phase)
+            .put("elapsed_ms", (System.nanoTime() - state.started) / 1_000_000).apply {
+                if (state.remote && state.phase != "connecting") put("bytes", progress.bytes).put("bytes_per_second", progress.bytesPerSecond)
+            }.toString()
+    }
 
     fun open(id: Int, uri: String): Boolean {
         if (closed) return false
         synchronized(PhotoCache.lock) { current.set(id) }
+        val state = Loading(id, Uri.parse(uri).scheme !in setOf("file", "content"))
+        loading = state
         cancelDepth(); connection?.disconnect()
         worker.execute {
             if (current.get() != id || closed) return@execute
@@ -69,6 +85,7 @@ internal class PhotoBridge(
                 resolved = resolve(uri)
                 checkCurrent(id)
                 val location = Uri.parse(resolved)
+                state.remote = state.remote || location.scheme in setOf("http", "https")
                 val stream: InputStream = when (location.scheme) {
                     "file" -> File(location.path ?: error("PHOTO_UNAVAILABLE")).inputStream()
                     "content" -> app.contentResolver.openInputStream(location) ?: error("PHOTO_UNAVAILABLE")
@@ -82,6 +99,7 @@ internal class PhotoBridge(
                     else -> error("PHOTO_UNAVAILABLE")
                 }
                 stream.use { input -> source.outputStream().use { output ->
+                    state.phase = "reading"
                     val bytes = ByteArray(65536); var total = 0L
                     val header = ByteArrayOutputStream()
                     var metadataSent = false
@@ -89,6 +107,7 @@ internal class PhotoBridge(
                         checkCurrent(id)
                         val count = input.read(bytes); if (count < 0) break
                         total += count; require(total <= MAX_BYTES) { "PHOTO_TOO_LARGE" }
+                        if (state.remote) state.meter.add(count)
                         output.write(bytes, 0, count)
                         if (!metadataSent && header.size() < PhotoHeader.MAX_BYTES) {
                             header.write(bytes, 0, minOf(count, PhotoHeader.MAX_BYTES - header.size()))
@@ -103,6 +122,7 @@ internal class PhotoBridge(
                         }
                     }
                 } }
+                state.phase = "preparing"
                 val heif = HeifPhotoInfo.read(source)
                 if (heif != null) {
                     val ready = HeifPhotoDecoder.prepare(source, directory, heif, { checkCurrent(id) },

@@ -7,10 +7,11 @@ var failures: Array[String] = []
 
 class InputMain extends "res://scripts/main.gd":
 	var pose := Transform3D(Basis.IDENTITY, Vector3(0, 1.5, -0.5))
+	var head_pose := Transform3D(Basis.IDENTITY, Vector3(0, 1.6, 0))
 	var rays := {}
 	func _move_pose(_hand: String) -> Variant: return pose
 	func _ray(hand: String) -> Variant: return rays.get(hand)
-	func _head_pose() -> Variant: return Transform3D(Basis.IDENTITY, Vector3(0, 1.6, 0))
+	func _head_pose() -> Variant: return head_pose
 
 func check(ok: bool, message: String) -> void:
 	checks += 1
@@ -42,6 +43,26 @@ func run() -> void:
 	check("photo_close" in ordinary and "photo_close" not in combinations, "The new close key appears in ordinary global controller settings")
 	check(bindings.resolve("right_hand", "stick_up", "video_flat") == "flat_volume_up", "Flat right up is volume")
 	check(bindings.resolve("right_hand", "stick_up", "video_immersive") == "zoom_in", "Immersive right up is zoom")
+	for hand in Bindings.HANDS:
+		for context in ["video_flat", "video_immersive", "photo"]:
+			check(bindings.resolve(hand, "grip_click", context) == ("move_photo" if context == "photo" else "move_video"), "Both grips default to movement in " + context)
+	var fixed_before := bindings.snapshot()
+	for item in bindings.definitions():
+		if bindings.is_fixed(item.id):
+			bindings.clear(item.id)
+			check(not bindings.assign(item.id, Bindings.bind("right_hand", "trigger_click"), false, true).ok and not bindings.swap_binding(item.id, Bindings.bind("right_hand", "trigger_click")).ok, "Fixed movement cannot be cleared, reassigned or swapped")
+		else:
+			for hand in Bindings.HANDS:
+				check(not bindings.assign(item.id, Bindings.bind(hand, "grip_click"), false, true).ok, "Reserved grip rejects " + item.id)
+	check(bindings.snapshot() == fixed_before, "Rejected assignments leave the entire map intact")
+	page_menu = Node3D.new(); page = preload("res://scripts/controls_page.gd").new(page_menu)
+	check(page.items().filter(func(item): return item.get("id", "") in Bindings.FIXED_ACTIONS).all(func(item): return item.has("fixed") and item.fixed == page.bindings.label(item.id)), "Settings display both movement bindings as fixed rows")
+	page.all_actions = true
+	for item in page.items():
+		if not item.has("id"): continue
+		var field := page.binding_field(item.id)
+		check(field.is_empty() if bindings.is_fixed(item.id) else field.choices.all(func(option): return not str(option.value).ends_with("/grip_click")), "Grip is unavailable to other action editors")
+	page_menu.free()
 	for language in ["zh", "zh_Hant", "ja"]:
 		var catalog: Dictionary = preload("res://scripts/i18n.gd").translations[language]
 		for item in bindings.definitions(): check(catalog.has(item.title), "Translated action: " + language + "/" + item.title)
@@ -67,7 +88,7 @@ func run() -> void:
 	bindings.press("right_hand", "trigger_click"); bindings.press("right_hand", "grip_click")
 	check(bindings.resolve("right_hand", "by_button", "video_flat").is_empty(), "Reverse modifier order cannot start a grip-first chord")
 	bindings.release("right_hand", "trigger_click"); bindings.release("right_hand", "grip_click")
-	check(bindings.assign("move_video", Bindings.bind("right_hand", "grip_click")).ok, "Grip movement can share a chord's starting grip")
+	check(bindings.bindings("move_video").size() == 2, "Fixed grip movement can share a chord's starting grip")
 	bindings.press("right_hand", "grip_click")
 	check(bindings.resolve("right_hand", "grip_click", "video_flat") == "move_video", "Grip can arm movement without requiring delay")
 	var data := bindings.snapshot()
@@ -77,9 +98,12 @@ func run() -> void:
 	legacy.restore({"version":1,"bindings":{"inspect":[Bindings.bind("right_hand","ax_button")]}})
 	check(legacy.resolve("right_hand","ax_button","photo") == "inspect" and legacy.bindings("photo_close").is_empty(), "An existing custom photo A mapping survives addition of the new default")
 	legacy.restore({"version":1,"bindings":{"play":[Bindings.bind("right_hand","grip_click")]}})
-	check(legacy.resolve("right_hand","ax_button","photo") == "photo_close" and legacy.resolve("right_hand","grip_click","video_flat") == "play", "Existing video mappings coexist with the new photo default")
-	legacy.restore({"version":1,"bindings":{"play":[Bindings.bind("right_hand","by_button"), Bindings.bind("right_hand","grip_click")], "mute":[Bindings.bind("left_hand","by_button")]}})
-	check(legacy.bindings("play") == [Bindings.bind("right_hand","grip_click")] and legacy.bindings("mute").is_empty() and legacy.resolve("right_hand","by_button","video_flat").is_empty(), "Saved plain B/Y is dropped without resetting other mappings")
+	check(legacy.resolve("right_hand","ax_button","photo") == "photo_close" and legacy.resolve("right_hand","grip_click","video_flat") == "move_video" and legacy.bindings("play").is_empty(), "Old grip playback yields to fixed movement")
+	legacy.restore({"version":1,"move_scope":"all","bindings":{"play":[Bindings.bind("right_hand","by_button"), Bindings.bind("right_hand","grip_click"), Bindings.bind("right_hand","ax_button")], "mute":[Bindings.bind("left_hand","by_button")], "inspect":[Bindings.bind("left_hand","grip_click"), Bindings.bind("right_hand","grip_click")], "move_video":[], "move_photo":[Bindings.bind("right_hand","trigger_click")], "subtitles":[choice]}})
+	check(legacy.bindings("play") == [Bindings.bind("right_hand","ax_button")] and legacy.bindings("mute").is_empty() and legacy.bindings("inspect").is_empty() and legacy.resolve("right_hand","by_button","video_flat").is_empty(), "Saved reserved grips/B/Y are dropped while other choices survive")
+	check(legacy.move_scope == "all" and legacy.bindings("subtitles") == [choice] and Bindings.FIXED_ACTIONS.all(func(id): return legacy.bindings(id).size() == 2 and not legacy.overrides.has(id)), "Old cleared/reassigned movement restores both grips without losing scope or chords")
+	var migrated := Bindings.new(); migrated.restore(legacy.snapshot())
+	check(migrated.snapshot() == legacy.snapshot(), "Migrated binding data remains stable after restart")
 	check(not legacy.assign("play", Bindings.bind("right_hand","by_button")).ok and legacy.assign("subtitles", Bindings.bind("left_hand","by_button",Bindings.MODIFIERS), true).ok, "Plain B/Y stays reserved for closing menus while chords may use it")
 	check(not restored.press("right_hand", "ax_button") or restored.down.right_hand.has("ax_button"), "Pressed state is bounded by input names")
 	restored.reset_inputs()
@@ -89,12 +113,11 @@ func run() -> void:
 	restored.restore({"version": 1, "bindings": {"play": [{"hand": "bad", "input": "ax_button"}]}})
 	check(restored.overrides.is_empty() and restored.resolve("right_hand", "ax_button", "video_flat") == "play", "Malformed settings restore usable defaults")
 	var exchange := Bindings.new()
-	exchange.assign("play", Bindings.bind("right_hand", "grip_click"))
 	var exchange_before := exchange.snapshot()
 	check(not exchange.assign("play", Bindings.bind("left_hand", "ax_button")).ok and exchange.snapshot() == exchange_before, "Same active video context cannot save a duplicate")
 	check(exchange.swap_binding("play", Bindings.bind("left_hand", "ax_button"), false, false).ok and exchange.snapshot() == exchange_before, "Swap preview is read-only")
 	check(exchange.swap_binding("play", Bindings.bind("left_hand", "ax_button")).ok, "Valid simple swap commits")
-	check(exchange.resolve("left_hand", "ax_button", "video_flat") == "play" and exchange.resolve("right_hand", "grip_click", "video_flat") == "library_video", "Swap updates both runtime mappings")
+	check(exchange.resolve("left_hand", "ax_button", "video_flat") == "play" and exchange.resolve("right_hand", "ax_button", "video_flat") == "library_video", "Swap updates both runtime mappings")
 	var exchanged := Bindings.new(); exchanged.restore(exchange.snapshot())
 	check(exchanged.snapshot() == exchange.snapshot(), "Swapped map survives restart")
 	exchange.restore_all()
@@ -123,6 +146,8 @@ func run() -> void:
 	check(movement.update(pose.translated(Vector3(0.15, 0.12, -0.08)), Transform3D.IDENTITY, preload("res://scripts/view_follow.gd").new()) and panel.position.is_equal_approx(Vector3(0.15, 0.12, -0.08)), "Committed grip translates interface in XYZ")
 	check(movement.placement("panel", Transform3D.IDENTITY).origin.is_equal_approx(panel.position), "Moved menu retains session placement")
 	movement.cancel(); panel.free()
+	ray_anchored_movement()
+	spherical_movement()
 	var main := Main.new()
 	main.settings_path = ProjectSettings.globalize_path("res://../../build/output/controller-controls/settings.cfg")
 	DirAccess.make_dir_recursive_absolute(main.settings_path.get_base_dir())
@@ -131,9 +156,183 @@ func run() -> void:
 	check(saved.get_value("input", "controller_bindings") == data, "Main persists actual binding data")
 	main.free()
 	runtime()
+	await tracked_grip_drag()
 	for failure in failures: push_error(failure)
 	print("Controller bindings: %d checks, %d failures" % [checks, failures.size()])
 	quit(0 if failures.is_empty() else 1)
+
+func ray_anchored_movement() -> void:
+	var movement := Move.new()
+	var panel := Node3D.new(); root.add_child(panel)
+	panel.position = Vector3(0, 1.4, -2)
+	var start := Transform3D(Basis.IDENTITY, Vector3(0, 1.4, -0.4))
+	var anchor := panel.global_position + Vector3(0.3, 0.1, 0)
+	var relative := start.affine_inverse() * anchor
+	var target := {"node": panel, "kind": "menu", "pose": panel.global_transform, "key": "panel"}
+	check(movement.begin("left_hand", "grip_click", start, [target], anchor), "Ray grab records the exact point on the panel")
+	var pose := start; pose.basis = Basis(Vector3.UP, 0.01)
+	check(not movement.update(pose, null, preload("res://scripts/view_follow.gd").new()) and movement.pending(), "Small wrist jitter leaves grip-first chords available")
+	pose.basis = Basis(Vector3.UP, 0.7) * Basis(Vector3.RIGHT, -0.2)
+	var expected: Vector3 = pose * relative - anchor
+	check(movement.update(pose, null, preload("res://scripts/view_follow.gd").new()) and panel.position.is_equal_approx(target.pose.origin + expected), "Wrist yaw/pitch moves the remote grab point without requiring hand translation")
+	check(panel.basis == target.pose.basis and movement.capture.anchor.is_equal_approx(pose * relative), "Ray dragging preserves panel orientation and moves its captured point")
+	for step in range(1, 16):
+		pose.origin = start.origin + Vector3(step * 0.1, 0, 0)
+		check(movement.update(pose, null, preload("res://scripts/view_follow.gd").new()), "Continuous grip dragging can exceed the old total 0.8 metre limit")
+	check(not movement.capture.is_empty() and panel.position.is_equal_approx(target.pose.origin + pose * relative - anchor), "Long drag remains captured at its exact final position")
+	pose.origin += Vector3(2, 0, 0)
+	check(not movement.update(pose, null, preload("res://scripts/view_follow.gd").new()) and movement.capture.is_empty(), "An actual one-frame tracking teleport still cancels safely")
+	panel.free()
+
+func spherical_movement() -> void:
+	var movement := Move.new()
+	var follow := preload("res://scripts/view_follow.gd").new(); follow.set_enabled(true)
+	var head := Transform3D(Basis.IDENTITY, Vector3(0, 1.6, 0))
+	var panel := Node3D.new(); root.add_child(panel); panel.position = Vector3(0, 1.45, -2)
+	panel.basis = Basis(Vector3.UP, 0.1).scaled(Vector3(1.1, 0.9, 1))
+	var child := Node3D.new(); panel.add_child(child); child.position = Vector3(0, 0.72, 0)
+	var child_local := child.transform
+	var other := Node3D.new(); root.add_child(other); other.position = Vector3(0.9, 1.8, -2.4)
+	var screen := preload("res://scripts/mpv_video_display.gd").new(); screen.history_enabled = false; root.add_child(screen); screen.set_process(false)
+	screen.set_flat_world_pose(Transform3D(Basis.IDENTITY, Vector3(-0.4, 1.5, -3)))
+	var gallery := preload("res://scripts/photo_gallery.gd").new(); root.add_child(gallery)
+	gallery.anchor = head
+	var card := Node3D.new(); gallery.add_child(card); card.global_position = Vector3(1, 1.6, -3)
+	gallery.cards[1] = {"node": card, "pose": card.global_transform}
+	var worlds: Array[Transform3D] = [panel.global_transform, other.global_transform, screen.global_transform * screen.flat_pose, child.global_transform, card.global_transform]
+	var targets := [{"node": panel, "kind": "menu", "pose": worlds[0], "key": "panel"},
+		{"node": other, "kind": "menu", "pose": worlds[1], "key": "other"},
+		{"node": screen, "kind": "screen", "pose": worlds[2], "key": "screen"},
+		{"node": gallery, "kind": "gallery", "pose": gallery.anchor, "key": "gallery"}]
+	var anchor := panel.to_global(Vector3(0.4, 0.1, 0))
+	var start := Transform3D(Basis.IDENTITY, anchor + Vector3(0, 0, 1))
+	check(movement.begin("left_hand", "grip_click", start, targets, anchor, head), "Spherical grip captures a linked group, a screen and a photo layout")
+	var local_grab := panel.to_local(anchor)
+	var scale_before := panel.global_basis.get_scale()
+	var head_start := head.origin
+	var pose := start
+	for step in 36:
+		pose.origin = start.origin + Vector3(0.1 * sin(step * 0.2), 0.06 * cos(step * 0.3), 0.15 * sin(step * 0.4))
+		pose.basis = Basis(Vector3.UP, -0.7 + step * 0.04) * Basis(Vector3.RIGHT, 0.2 * sin(step * 0.1))
+		head.origin = head_start + Vector3(0.05 * sin(step * 0.2), 0.03 * cos(step * 0.3), 0.02 * sin(step * 0.4))
+		check(movement.update(pose, head, follow), "Spherical grip tracks hand translation, wrist rotation and head motion")
+		var positions: Array[Vector3] = [panel.global_position, other.global_position, (screen.global_transform * screen.flat_pose).origin, child.global_position, card.global_position]
+		for index in positions.size():
+			check(absf(positions[index].distance_to(head.origin) - worlds[index].origin.distance_to(head_start)) < 0.0001, "Each panel, screen and card retains its own original viewing distance")
+		check(child.transform.is_equal_approx(child_local) and panel.global_basis.get_scale().is_equal_approx(scale_before), "Spherical dragging preserves attached layout and physical scale")
+		check(panel.to_global(local_grab).distance_to(movement.capture.anchor) < 0.0001, "Live marker remains on the original grabbed point")
+		check((movement.capture.anchor - pose.origin).normalized().dot((pose.basis * (start.affine_inverse() * anchor)).normalized()) > 0.99999, "Captured point stays collinear with the controller ray")
+		check(movement.placement("panel", head).is_equal_approx(panel.global_transform) and follow.pose("screen", head).is_equal_approx(screen.global_transform * screen.flat_pose), "Session placement and follow remember the constrained poses")
+	check(not movement.update(pose, null, follow) and movement.capture.is_empty(), "Losing the head pose cancels rather than returning to free-depth dragging")
+	panel.global_transform = Transform3D(Basis.IDENTITY, Vector3(0, 1.6, -2)); head.origin = head_start
+	pose = Transform3D(Basis.IDENTITY, Vector3(0, 1.6, -0.4))
+	var fixed := panel.global_transform
+	movement.begin("right_hand", "grip_click", pose, [{"node": panel, "kind": "menu", "pose": fixed, "key": "panel"}], panel.global_position, head)
+	for offset in [-0.2, 0.2, -0.1, 0.1]:
+		pose.origin.z = -0.4 + offset
+		check(movement.update(pose, head, follow) and panel.global_transform.is_equal_approx(fixed), "Pushing or pulling along the ray cannot change panel depth")
+	check(Move._sphere_point(Vector3(3, 0, 0), Vector3.RIGHT, Vector3.ZERO, 2, Vector3(2, 0, 0)).is_equal_approx(Vector3(2, 0, 0)), "A hand outside a missed sphere clamps without a depth jump")
+	check(Move._sphere_point(Vector3(2, 0, 3), Vector3.FORWARD, Vector3.ZERO, 2, Vector3(2, 0, 0)).is_equal_approx(Vector3(2, 0, 0)), "Tangent rays remain finite on the viewing sphere")
+	check(Move._sphere_point(Vector3(0, 0, 3), Vector3.FORWARD, Vector3.ZERO, 2, Vector3(0, 0, 2)).is_equal_approx(Vector3(0, 0, 2)), "Outside intersections retain the near surface instead of flipping across the head")
+	movement.cancel(); gallery.cards.clear(); gallery.free(); screen.free(); other.free(); panel.free()
+
+func tracked_grip_drag() -> void:
+	# Exercise the real XRController3D pose, button signals and per-frame pointer dispatch.
+	var main := Main.new()
+	main.settings_path = "user://grip-ray-regression.cfg"
+	var video := preload("res://scripts/mpv_video_display.gd").new(); root.add_child(video); video.set_process(false)
+	main.video = video
+	var photo := preload("res://scripts/photo_display.gd").new(); root.add_child(photo); photo.set_process(false); photo.auto_depth = false
+	main.photo = photo
+	var player := preload("res://scripts/player_menu.gd").new(); root.add_child(player); player.set_process(false)
+	player.state_provider = func(): return {"has_video": true, "playing": false}
+	main.video_menu = player; main.player_menu = player
+	var photo_menu := preload("res://scripts/photo_menu.gd").new(); root.add_child(photo_menu); photo_menu.set_process(false)
+	photo_menu.state_provider = photo.snapshot; main.photo_menu = photo_menu
+	var library := preload("res://scripts/library_menu.gd").new(); root.add_child(library); library.set_process(false); main.recent_menu = library
+	player.expanded_library = library
+	var origin := XROrigin3D.new(); root.add_child(origin)
+	var camera := XRCamera3D.new(); origin.add_child(camera); camera.position = Vector3(0, 1.6, 0); main.xr_camera = camera
+	for hand in Bindings.HANDS:
+		var tracker := XRControllerTracker.new(); tracker.type = XRServer.TRACKER_CONTROLLER; tracker.name = hand
+		XRServer.add_tracker(tracker)
+		var controller := XRController3D.new(); controller.tracker = hand; controller.pose = "aim"; origin.add_child(controller)
+		controller.button_pressed.connect(main._on_controller_button.bind(hand))
+		controller.button_released.connect(main._on_controller_release.bind(hand))
+		if hand == "left_hand": main.left_controller = controller
+		else: main.right_controller = controller
+		for kind in ["video", "photo", "library", "compact"]:
+			player.dismiss(); photo_menu.dismiss(); library.dismiss()
+			if library.get_parent() != root: library.reparent(root)
+			library.set_compact(kind == "compact")
+			main.photo_active = kind == "photo"; main.player_menu = photo_menu if main.photo_active else player
+			var menu: Node3D = library if kind == "library" else main.player_menu
+			menu.toggle(); menu.global_transform = Transform3D(Basis.IDENTITY, Vector3(0, 1.4, -1.8))
+			var hit_menu := menu
+			if kind == "compact":
+				library.reparent(player); library.transform = Transform3D(Basis.IDENTITY, Vector3(0, 0.72, 0)); library.visible = true; library.refresh()
+				hit_menu = library
+			var half: Vector2 = hit_menu._backdrop.mesh.size / 2
+			var anchor: Vector3 = hit_menu._backdrop.to_global(Vector3(half.x - 0.01, 0, 0))
+			var start := Transform3D(Basis.IDENTITY, anchor + Vector3(0, 0, 1.2))
+			tracker.set_pose("aim", start, Vector3.ZERO, Vector3.ZERO, XRPose.XR_TRACKING_CONFIDENCE_HIGH)
+			await process_frame
+			anchor = menu.to_global(menu.grab_hit(start.origin, -start.basis.z).point)
+			check(main._move_pose(hand) != null, "Real controller pose is tracked: " + hand + "/" + kind)
+			tracker.set_input("grip_click", true)
+			check(main.interface_move.pending() and main.interface_move.capture.targets[0].node == menu, "Real grip captures the aimed menu group: " + kind)
+			var menu_start: Transform3D = menu.global_transform
+			var head: Vector3 = main._head_pose().origin
+			var radius := menu_start.origin.distance_to(head)
+			var grab_local := menu.to_local(anchor)
+			var pose := start; pose.basis = Basis(Vector3.UP, 0.6) * Basis(Vector3.RIGHT, 0.15)
+			tracker.set_pose("aim", pose, Vector3.ZERO, Vector3.ZERO, XRPose.XR_TRACKING_CONFIDENCE_HIGH)
+			await process_frame
+			main._update_interface_move(); main._process_sticks(Vector2.ZERO, Vector2.ZERO, 0.014)
+			var expected: Vector3 = menu.to_global(grab_local)
+			check(absf(menu.global_position.distance_to(head) - radius) < 0.0001 and menu.global_position.distance_to(menu_start.origin) > 0.1, "Tracked wrist turning moves the panel on its head sphere: " + kind)
+			check((expected - pose.origin).normalized().dot(-pose.basis.z) > 0.99999, "Spherical grab stays on the real controller ray: " + kind)
+			check(menu._pointers.has(hand) and menu._pointers[hand].line.visible and menu._pointers[hand].dot.visible and menu._pointers[hand].dot.global_position.distance_to(expected) < 0.009,
+				"Moving grip ray ends on the panel instead of at a stale far point: " + kind)
+			var point_before: Vector3 = menu._pointers[hand].dot.global_position
+			pose.basis = Basis(Vector3.UP, -0.3) * Basis(Vector3.RIGHT, -0.12)
+			tracker.set_pose("aim", pose, Vector3.ZERO, Vector3.ZERO, XRPose.XR_TRACKING_CONFIDENCE_HIGH)
+			await process_frame
+			main._update_interface_move(); main._process_sticks(Vector2.ZERO, Vector2.ZERO, 0.014)
+			check(menu._pointers[hand].dot.global_position.distance_to(point_before) > 0.5 and menu._hover.get(hand) == menu.NONE, "Grip pointer refreshes each frame without hovering or selecting controls")
+			for step in 25:
+				var turn := Basis(Vector3.UP, step * TAU / 24.0)
+				pose = Transform3D(turn * start.basis, head + turn * (start.origin - head))
+				tracker.set_pose("aim", pose, Vector3.ZERO, Vector3.ZERO, XRPose.XR_TRACKING_CONFIDENCE_HIGH)
+				await process_frame
+				main._update_interface_move(); main._process_sticks(Vector2.ZERO, Vector2.ZERO, 0.014)
+				check(menu.global_basis.y.normalized().dot(menu_start.basis.y.normalized()) > 0.99999, "Tracked grip keeps the real menu upright all the way around the head: " + hand + "/" + kind)
+				check(menu.to_global(grab_local).distance_to(menu._pointers[hand].dot.global_position) < 0.009 and absf(menu.global_position.distance_to(head) - radius) < 0.0001,
+					"Tracked front/side/rear grips retain the exact point, depth and linked layout: " + kind)
+			var menu_end: Transform3D = menu.global_transform
+			tracker.set_input("grip_click", false)
+			pose.origin += Vector3(0.1, 0, 0); tracker.set_pose("aim", pose, Vector3.ZERO, Vector3.ZERO, XRPose.XR_TRACKING_CONFIDENCE_HIGH)
+			await process_frame
+			main._update_interface_move()
+			check(main.interface_move.capture.is_empty() and menu.global_transform == menu_end, "Release leaves the panel at its dragged position")
+			if kind == "compact": check(library.global_position.is_equal_approx(player.to_global(Vector3(0, 0.72, 0))), "Ray dragging preserves the attached file panel's local transform")
+			if kind == "video":
+				var aim: Vector3 = menu._backdrop.global_position
+				pose = Transform3D(Basis.IDENTITY, aim + Vector3(0, 0, 1.2))
+				tracker.set_pose("aim", pose, Vector3.ZERO, Vector3.ZERO, XRPose.XR_TRACKING_CONFIDENCE_HIGH)
+				await process_frame
+				tracker.set_input("grip_click", true)
+				pose.origin.x += 0.05; tracker.set_pose("aim", pose, Vector3.ZERO, Vector3.ZERO, XRPose.XR_TRACKING_CONFIDENCE_HIGH)
+				await process_frame
+				main._update_interface_move(); main._process_sticks(Vector2.ZERO, Vector2.ZERO, 0.014)
+				tracker.invalidate_pose("aim")
+				await process_frame
+				main._update_interface_move(); main._process_sticks(Vector2.ZERO, Vector2.ZERO, 0.014)
+				check(main.interface_move.capture.is_empty() and not menu._pointers[hand].line.visible and not menu._pointers[hand].dot.visible, "Actual tracking loss cancels the grab and removes its stale ray")
+				tracker.set_input("grip_click", false)
+		XRServer.remove_tracker(tracker); controller.free()
+	if library.get_parent() != root: library.reparent(root)
+	origin.free(); library.free(); photo_menu.free(); player.free(); photo.free(); video.free(); main.free()
 
 func tap(main: Node3D, input: String, hand: String = "right_hand") -> void:
 	main._on_controller_button(input, hand); main._on_controller_release(input, hand)
@@ -183,14 +382,23 @@ func runtime() -> void:
 	root.add_child(library); library.set_process(false); main.recent_menu = library
 	tap(main, "ax_button")
 	check(not video.requested_play and host.calls.back() == ["play", 7, false], "Production default A pauses native backend")
-	check(main.controller_bindings.assign("play", Bindings.bind("right_hand", "grip_click")).ok, "Playback can move to grip")
+	check(not main.controller_bindings.assign("play", Bindings.bind("right_hand", "grip_click")).ok, "Playback cannot take a fixed grip")
+	main.controller_bindings.clear("reset_video")
+	check(main.controller_bindings.assign("play", Bindings.bind("right_hand", "primary_click")).ok, "Playback can move to an available button")
 	var before: int = host.calls.size()
 	tap(main, "ax_button")
 	check(host.calls.size() == before, "Old A does not fire after remapping")
-	tap(main, "grip_click")
-	check(video.requested_play and host.calls.back() == ["play", 7, true], "Remapped grip resumes native backend")
+	tap(main, "primary_click")
+	check(video.requested_play and host.calls.back() == ["play", 7, true], "Remapped button resumes native backend")
 	main.controller_bindings.restore_all()
-	main.controller_bindings.assign("move_video", Bindings.bind("right_hand", "grip_click"))
+	main._on_controller_button("grip_click", "right_hand")
+	before = host.calls.size()
+	main._process_sticks(Vector2.ZERO, Vector2.ZERO, 0.1)
+	main._process_sticks(Vector2(0, 0.99), Vector2(0.99, 0), 0.1)
+	check(main.interface_move.pending() and host.calls.size() == before, "Default grip movement also blocks playback sticks before displacement")
+	main._on_controller_release("grip_click", "right_hand")
+	main._process_sticks(Vector2(0, 0.99), Vector2(0.99, 0), 0.1)
+	check(host.calls.size() == before, "Releasing default grip still requires stick recentering")
 	main.controller_bindings.assign("subtitles", Bindings.bind("right_hand", "by_button", ["grip_click", "trigger_click"]), true, true)
 	main._show_player_menu()
 	main.rays.right_hand = [menu.to_global(Vector3(0, 0, 1)), -menu.global_basis.z]
@@ -210,7 +418,7 @@ func runtime() -> void:
 	main._on_controller_button("grip_click", "right_hand")
 	main.pose.origin += Vector3(0.1, 0.06, 0)
 	main._update_interface_move()
-	check(main.interface_move.capture.moved and menu.global_position.is_equal_approx(start.origin + Vector3(0.1, 0.06, 0)), "Main moves the aimed interface in XYZ")
+	check(main.interface_move.capture.moved and menu.global_position.distance_to(start.origin) > 0.05 and absf(menu.global_position.distance_to(main.head_pose.origin) - start.origin.distance_to(main.head_pose.origin)) < 0.0001, "Main moves the aimed interface while preserving head distance")
 	before = host.calls.size(); tap(main, "ax_button")
 	check(host.calls.size() == before, "Committed movement owns A until release")
 	main._on_pointer_button("trigger_click", "left_hand")
@@ -220,7 +428,14 @@ func runtime() -> void:
 	menu.dismiss(); main._show_player_menu()
 	check(menu.global_transform.is_equal_approx(moved), "Reopening a moved menu preserves its session placement")
 	main._recenter()
-	check(not menu.global_transform.is_equal_approx(moved), "Recenter recovers a moved panel")
+	check(not menu.global_transform.is_equal_approx(moved) and not main.interface_move.placements.has(main._menu_key(menu)), "Recenter restores defaults and clears the saved menu placement")
+	start = menu.global_transform
+	main.rays.left_hand = [menu.to_global(Vector3(0, 0, 1)), -menu.global_basis.z]
+	main._on_controller_button("grip_click", "left_hand")
+	check(main.interface_move.pending() and main.interface_move.capture.hand == "left_hand", "Left grip arms the same default menu movement")
+	main.pose.origin += Vector3(-0.06, 0.02, 0.03); main._update_interface_move()
+	check(menu.global_position.distance_to(start.origin) > 0.02 and absf(menu.global_position.distance_to(main.head_pose.origin) - start.origin.distance_to(main.head_pose.origin)) < 0.0001, "Left grip moves the aimed menu on the same head sphere")
+	main._on_controller_release("grip_click", "left_hand")
 	main.controller_bindings.move_scope = "all"
 	main._on_controller_button("grip_click", "right_hand")
 	check(main.interface_move.capture.targets.any(func(target): return target.node == library) and main.interface_move.capture.targets.any(func(target): return target.node == video), "All interfaces includes hidden library placement and the media surface")
@@ -253,20 +468,22 @@ func runtime() -> void:
 	check(library.scroll == frozen_scroll and library._buttons.filter(func(button): return library._row_target(button.target)).all(func(button): return not button.enabled), "Dialog scroll cannot move or activate the underlying function list")
 	check(tap_ui(main, library, library.ControlsPage.CANCEL) and library.choices.targets.is_empty() and library.controls_page.selection.is_empty(), "Dialog close releases its option controls and data")
 	before = host.calls.size()
-	check(dropdown(main, library, "control_binding/play", "left_hand/grip_click"), "Ray dropdown selects a free physical button")
-	check(main.controller_bindings.resolve("left_hand", "grip_click", "video_flat") == "play" and host.calls.size() == before, "Dropdown saves a free binding without executing playback")
+	main.controller_bindings.clear("projection_video")
+	check(dropdown(main, library, "control_binding/play", "left_hand/primary_click"), "Ray dropdown selects a free physical button")
+	check(main.controller_bindings.resolve("left_hand", "primary_click", "video_flat") == "play" and host.calls.size() == before, "Dropdown saves a free binding without executing playback")
 	var persisted := ConfigFile.new(); persisted.load(main.settings_path)
 	check(persisted.get_value("input", "controller_bindings") == main.controller_bindings.snapshot(), "Dropdown binding is persisted")
 	check(tap_ui(main, library, choice_target(library, "control_binding/play", null, "open")), "Binding options reopen")
 	check(choice_target(library, "control_binding/play", "left_hand/ax_button") != -1 and choice_target(library, "control_binding/play", "right_hand/by_button") == -1 and choice_target(library, "control_binding/play", "left_hand/by_button") == -1, "Remappable occupied X remains selectable while fixed B/Y are absent")
-	check(main.controller_bindings.resolve("left_hand", "grip_click", "video_flat") == "play", "Filtering keeps the current mapping")
+	check(choice_target(library, "control_binding/play", "left_hand/grip_click") == -1 and choice_target(library, "control_binding/play", "right_hand/grip_click") == -1, "Both reserved grips are absent from the dropdown")
+	check(main.controller_bindings.resolve("left_hand", "primary_click", "video_flat") == "play", "Filtering keeps the current mapping")
 	check(tap_ui(main, library, library.ControlsPage.CANCEL), "Ray cancellation returns to the same list")
 	check(dropdown(main, library, "control_binding/play", "left_hand/ax_button") and not library.controls_page.pending.is_empty(), "Occupied editable binding still requires confirmation")
-	check(main.controller_bindings.resolve("left_hand", "grip_click", "video_flat") == "play", "Pending swap preserves both mappings")
+	check(main.controller_bindings.resolve("left_hand", "primary_click", "video_flat") == "play", "Pending swap preserves both mappings")
 	check(tap_ui(main, library, library.ControlsPage.CANCEL) and library.controls_page.pending.is_empty(), "Ray cancellation leaves the mappings intact")
 	check(dropdown(main, library, "control_binding/play", "left_hand/ax_button") and library.text_snapshot().contains(preload("res://scripts/i18n.gd").t("Swap these bindings?")), "Editable X opens the existing swap prompt")
 	check(tap_ui(main, library, library.ControlsPage.SWAP), "Ray confirms the exchange")
-	check(main.controller_bindings.resolve("left_hand", "ax_button", "video_flat") == "play" and main.controller_bindings.resolve("left_hand", "grip_click", "video_flat") == "library_video", "Confirmed swap gives each action the other's key")
+	check(main.controller_bindings.resolve("left_hand", "ax_button", "video_flat") == "play" and main.controller_bindings.resolve("left_hand", "primary_click", "video_flat") == "library_video", "Confirmed swap gives each action the other's key")
 	check(dropdown(main, library, "control_binding/play", "__default") and main.controller_bindings.resolve("right_hand", "ax_button", "video_flat") == "play", "Dropdown restores an individual default")
 	check(dropdown(main, library, "control_binding/play", "__clear") and main.controller_bindings.bindings("play").is_empty(), "Dropdown can clear the binding")
 	dropdown(main, library, "control_binding/play", "__default")

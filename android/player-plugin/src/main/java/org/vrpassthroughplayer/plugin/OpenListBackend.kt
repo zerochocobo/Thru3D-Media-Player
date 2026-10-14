@@ -31,14 +31,8 @@ internal object OpenListBackend {
                 } finally { cancellation.detachAction(); Cloudcore.cancelRequest(key) }
             }
         }
-        catch (_: Exception) { throw CloudFailure() }
-        if (result.optInt("code") != 200) {
-            val message = result.optString("message")
-            if (message in setOf("Search expired. Search again", "Search scope unavailable", "Search result limit reached", "Folder too large to search", "Invalid search"))
-                throw IllegalStateException(message)
-            throw CloudFailure()
-        }
-        return result
+        catch (error: Exception) { throw CloudDiagnostics.failure("OpenList $route", error) }
+        return CloudDiagnostics.checkCore(result, route)
     }
     fun create(credential: OpenListAuth.Credential) = create(credential.provider, credential.addition())
     fun createWebDav(connection: RemoteWebDav.Connection): JSONObject =
@@ -111,7 +105,7 @@ internal object OpenListBackend {
             val items = data.optJSONArray("content") ?: org.json.JSONArray()
             val total = data.getInt("total")
             if (total < 0 || items.length() > CloudDrive.PAGE_SIZE || offset > total ||
-                (items.length() == 0 && offset < total)) throw CloudFailure()
+                (items.length() == 0 && offset < total)) throw CloudFailure(detail = "directory.page: offset=$offset, total=$total, rows=${items.length()}")
             val files = (0 until items.length()).map { i ->
                 val item = items.getJSONObject(i)
                 val name = item.getString("name")
@@ -123,7 +117,7 @@ internal object OpenListBackend {
             // 115 can contain different objects at the same path. Keep their metadata visible;
             // object IDs still detect repeated provider rows, and find() rejects ambiguous paths.
             val keys = files.map { if (canDelete) it.objectId else it.name }
-            if (keys.toSet().size != files.size) throw CloudFailure()
+            if (keys.toSet().size != files.size) throw CloudFailure(detail = "directory.page: duplicate object IDs")
             return CloudPage(files, if (offset + items.length() < total) offset + items.length() else -1, total)
         }
         override fun list(path: String): List<CloudFile> {

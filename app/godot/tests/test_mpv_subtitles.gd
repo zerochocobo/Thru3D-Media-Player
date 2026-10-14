@@ -55,6 +55,19 @@ func _initialize() -> void:
 	state.select(-1)
 	state.clear(true)
 	check(state.observe(sample, 7, pair) and state.text == sample.text, "Automatic text track selection accepts actual MPV id")
+	for seconds in [-10.0, -0.1, 0.1, 10.0]:
+		state.set_delay(seconds); state.clear(true)
+		var shifted := sample.duplicate(true)
+		shifted.delay_seconds = seconds
+		shifted.start_seconds = "20.0"; shifted.end_seconds = "21.0"
+		shifted.position_seconds = str(20.5 + seconds)
+		check(state.observe(shifted, 7, pair) and state.text == sample.text, "Text timing fence uses source time after delay: %s" % seconds)
+		state.clear(true); shifted.position_seconds = str(21.0 + seconds)
+		check(state.observe(shifted, 7, pair) and state.text.is_empty(), "Shifted cue disappears at its delayed end boundary")
+		state.clear(true); shifted.position_seconds = str(20.5 + seconds); shifted.delay_seconds = 0.0
+		check(state.observe(shifted, 7, pair) and state.text.is_empty(), "Old delay snapshot cannot bring back a stale cue")
+	state.set_delay(0.0); state.clear(true)
+	state.observe(sample, 7, pair)
 	state.clear()
 	check(state.text.is_empty() and state.sequence == 1, "Seek clears text and retains same-source sequence fence")
 	state.clear(true)
@@ -75,6 +88,12 @@ func _initialize() -> void:
 	pgs.end_seconds = ""
 	pgs.bitmap = {"visible": true, "version": 2, "x": 10, "y": 80, "width": 50, "height": 10, "canvas_width": 100, "canvas_height": 100}
 	check(state.observe(pgs, 7, pair) and not state.bitmap.is_empty() and state.text.is_empty(), "PGS uses native active-cue status even without a known end time")
+	state.set_delay(2.0); state.clear(true)
+	var delayed_pgs := pgs.duplicate(true); delayed_pgs.delay_seconds = 2.0
+	check(state.observe(delayed_pgs, 7, pair) and not state.bitmap.is_empty(), "PGS accepts the native cue with its currently requested delay")
+	state.clear(true); delayed_pgs.delay_seconds = 0.0
+	check(state.observe(delayed_pgs, 7, pair) and state.bitmap.is_empty(), "Changing PGS timing cannot redisplay an old-delay bitmap")
+	state.set_delay(0.0)
 	for mutation in [{"generation": 2}, {"source_epoch": 1}, {"command_id": 3}, {"track_id": "8"}, {"age_ms": 1001}, {"timeline_valid": false}]:
 		state.clear(true)
 		var bad := pgs.duplicate(true)
@@ -130,6 +149,34 @@ func _initialize() -> void:
 		video.subtitles.select(0)
 		video.media.playback = {"details": {"subtitle_tracks": [{"id": 25, "codec": codec}]}}
 		check(video.cycle_subtitle_track() and host.calls.back() == [7, 25], "Late external track enables CC: " + codec)
+	video._layout_basename = "Movie.MKV"
+	var ass := {"id": 31, "title": "Movie.ASS", "codec": "ass", "external": true}
+	var srt := {"id": 32, "title": "movie.srt", "codec": "subrip", "external": true}
+	video.media.playback = {"details": {"subtitle_tracks": [ass, srt]}}
+	video.subtitles.select(0); video._queue_track_restore({}); video._subtitle_auto_pending = true
+	video._restore_tracks()
+	check(video.subtitles.requested_track == 32 and not video._subtitle_auto_pending and video._track_choices.is_empty(), "Automatic selection prefers exact SRT over ASS without recording a manual choice")
+	video.set_subtitle_track(31)
+	video._restore_tracks()
+	check(video.subtitles.requested_track == 31 and not video._subtitle_auto_pending, "Manual ASS selection survives future polls")
+	video.subtitles.select(0); video._queue_track_restore({}); video._subtitle_auto_pending = true
+	video.media.playback.details.subtitle_tracks = [ass]
+	video._restore_tracks()
+	check(video.subtitles.requested_track == 31, "Missing SRT falls back to exact ASS")
+	video.subtitles.select(0); video._queue_track_restore({"subtitle": {"id": 0}}); video._subtitle_auto_pending = true
+	video._restore_tracks()
+	check(video.subtitles.requested_track == 0 and not video._subtitle_auto_pending, "Remembered subtitles off takes priority over global automatic selection")
+	video.subtitles.select(0); video._queue_track_restore({}); video.set_subtitle_auto_load(false)
+	video._restore_tracks()
+	check(video.subtitles.requested_track == 0 and not video._subtitle_auto_pending, "Disabled automatic selection leaves manual tracks available")
+	video.media.playback.details.subtitle_tracks = [{"id": 33, "title": "movie.en.srt", "codec": "subrip", "external": true}, {"id": 34, "title": "movie.srt", "codec": "subrip", "external": false}]
+	video.set_subtitle_auto_load(true)
+	check(video.subtitles.requested_track == 0 and video._subtitle_auto_pending, "Automatic selection does not choose language variants or embedded filename-like titles")
+	video.media.playback.details.subtitle_tracks.append(srt)
+	host.accepted = false; video._restore_tracks()
+	check(video.subtitles.requested_track == 0 and video._subtitle_auto_pending, "Rejected native automatic choice remains pending")
+	host.accepted = true; video._restore_tracks()
+	check(video.subtitles.requested_track == 32 and not video._subtitle_auto_pending, "Late exact SRT is selected once the native bridge accepts it")
 	video.free()
 	if failures.is_empty():
 		print("MPV subtitle host checks passed: %d" % checks)

@@ -38,14 +38,14 @@ func _run() -> void:
 	check(distance_row.span == Vector3(0.1, 5, 0.1) and is_equal_approx(distance_row.value, 0.1), "Shared menu distance row allows the nearest test distance")
 	var menu := Menu.new()
 	menu.state_provider = func(): return state
-	menu.adjustment_requested.connect(func(key, value): state[key] = value)
-	menu.setting_requested.connect(func(key, value): state[key] = value; saves.append([key, value]))
+	menu.adjustment_requested.connect(func(key, value): state[key] = value.value if value is Dictionary else value)
+	menu.setting_requested.connect(func(key, value): state[key] = value.value if value is Dictionary else value; saves.append([key, value]))
 	root.add_child(menu)
 	menu.toggle()
 	menu._activate(110)
 	check(menu.choices.sliders.is_empty() and not menu._subtitle_appearance_open, "CC opens with appearance collapsed")
 	menu._activate(Menu.SUBTITLE_APPEARANCE)
-	check(menu.choices.sliders.size() == 3 and menu.choices.opened.is_empty(), "CC uses angle, distance and text-size sliders")
+	check(menu.choices.sliders.size() == 4 and menu.choices.opened.is_empty(), "CC uses sync, angle, distance and text-size sliders")
 	for target in menu.choices.sliders.keys():
 		var slider: Dictionary = menu.choices.sliders[target]
 		var key: String = menu.choices.targets[target].key
@@ -65,7 +65,7 @@ func _run() -> void:
 		menu.release_pointer("right", Vector3.ZERO, Vector3.ZERO, false)
 		check(saves.size() == before + 1 and not menu.has_pointer_capture(), "Tracking loss commits last preview once")
 	# Closing an active drag also saves once.
-	var target: int = menu.choices.sliders.keys()[0]
+	var target: int = menu.choices.sliders.keys().filter(func(id): return menu.choices.targets[id].key == "subtitle_position")[0]
 	var slider: Dictionary = menu.choices.sliders[target]
 	var centre: Vector3 = menu.to_local(slider.node.global_position)
 	var point := Vector3(centre.x + slider.left + slider.width / 2, centre.y, 1)
@@ -74,6 +74,32 @@ func _run() -> void:
 	var before := saves.size()
 	menu.dismiss()
 	check(saves.size() == before + 1 and not menu.has_pointer_capture(), "Dismiss saves and clears slider capture")
+	state.geometry = 0
+	state.source_uri = "file:///movie.mkv"
+	state.subtitle_track = 1
+	state.subtitle_options = []
+	for index in 8: state.subtitle_options.append({"id": index + 1, "title": "Track %d" % index, "codec": "hdmv_pgs_subtitle"})
+	menu.subtitle_requested.connect(func(id): state.subtitle_track = id)
+	menu.toggle(); menu._activate(110); menu._activate(Menu.SUBTITLE_APPEARANCE)
+	check(menu.choices.sliders.size() == 3 and not menu.choices.targets.values().any(func(item): return item.get("key") == "subtitle_style"), "PGS has sync, size and position with no text-only style")
+	var blocker: Dictionary = menu._ray_blockers[0]
+	var top: float = blocker.node.position.y + blocker.rect.size.y / 2.0
+	for point_local in [Vector3(-0.51, top - 0.35, 1), Vector3(0, top - 0.23, 1), Vector3(0, 0.30, 1)]:
+		var origin := menu.to_global(point_local)
+		var hit := menu.ray_hit(origin, -menu.global_basis.z)
+		check(not hit.is_empty() and not hit.enabled and hit.target == menu.NONE, "Panel margin/row gap stops the ray")
+		check(menu.press_pointer("right", origin, -menu.global_basis.z, true) and menu._subtitle_open and menu.visible, "Blank press is consumed without dismissing subtitles")
+	var row: Dictionary = menu._buttons.filter(func(button): return button.target == Menu.SUBTITLE_ROW + 2)[0]
+	var row_origin: Vector3 = row.node.to_global(Vector3(0, 0, 1))
+	check(menu.ray_hit(row_origin, -menu.global_basis.z).target == row.target, "Track in front of the surface stays selectable")
+	menu.press_pointer("right", row_origin, -menu.global_basis.z, true)
+	check(state.subtitle_track == 2 and menu._subtitle_open and menu._subtitle_appearance_open, "Selecting a track retains the adjustment panel")
+	menu.stick_scroll(-1, 0.5)
+	check(menu._subtitle_offset > 0 and not menu.allows_playback_sticks(), "Many-track list scrolls while playback shortcuts remain isolated")
+	menu._activate(Menu.SUBTITLE_AUTO)
+	check(state.subtitle_auto_load == false and menu._subtitle_open, "Automatic loading switch changes only its setting and stays open")
+	menu._activate(Menu.SUBTITLE_CLOSE)
+	check(not menu._subtitle_open and menu.visible and menu.allows_playback_sticks(), "Explicit close returns to the normal transport bar")
 	menu.free()
 	for failure in failures: push_error(failure)
 	print("Subtitle slider checks=", checks, " failures=", failures.size())

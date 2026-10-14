@@ -116,6 +116,10 @@ if ($LASTEXITCODE -ne 0) { throw 'Depth parallax render regression failed.' }
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'dlna-menu-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|ERROR:)') { throw 'DLNA menu regression failed.' }
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_library_menu.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'library-menu-host.log')
 if ($LASTEXITCODE -ne 0) { throw 'Library menu host regression failed.' }
+& $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_library_views.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'library-views-host.log')
+if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'library-views-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|ERROR:)') { throw 'Library view mode and position regression failed.' }
+& $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_compact_library.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'compact-library-host.log')
+if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'compact-library-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|ERROR:)') { throw 'Playback library expansion, input and placement regression failed.' }
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_library_file_actions.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'library-file-actions-host.log')
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'library-file-actions-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|ERROR:)') { throw 'Library editing and directory sorting regression failed.' }
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_library_sort.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'library-sort-host.log')

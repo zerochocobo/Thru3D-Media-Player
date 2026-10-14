@@ -18,6 +18,7 @@ var bookmarks := BookmarkMenu.new(self)
 const ChoiceFields := preload("res://scripts/choice_fields.gd")
 const SubtitleDepth := preload("res://scripts/subtitle_depth.gd")
 const SubtitleStyle := preload("res://scripts/subtitle_style.gd")
+const SubtitleTiming := preload("res://scripts/file_subtitle_timing.gd")
 var choices := ChoiceFields.new(self)
 signal setting_requested(key: String, value: Variant)
 const MODE := 120
@@ -44,6 +45,8 @@ const SUBTITLE_DOWN := 291
 const SUBTITLE_ROWS := 3
 const SUBTITLE_POSITION := 292
 const SUBTITLE_APPEARANCE := 293
+const SUBTITLE_CLOSE := 294
+const SUBTITLE_AUTO := 295
 const PLAYBACK_SETTINGS := 470
 const ROTATION_RESET := 471
 const SPEED_RESET := 472
@@ -128,15 +131,38 @@ var _subtitle_offset := 0
 var _subtitle_scroll := 0.0
 var _subtitle_source := ""
 var _subtitle_ids: Dictionary = {}
+var expanded_library: Node3D
 
-func has_pointer_capture() -> bool:
+func has_expanded_library() -> bool:
+	return is_instance_valid(expanded_library) and expanded_library.get_parent() == self and expanded_library.visible and visible
+
+func _controls_pointer_capture() -> bool:
 	return not choices.capture.is_empty() or not bookmarks.capture.is_empty() or not _seek_hand.is_empty() or not _volume_hand.is_empty() \
 		or not _depth_hand.is_empty() or not _adjust_hand.is_empty()
+
+func ray_hit(origin: Vector3, direction: Vector3) -> Dictionary:
+	var hit := super(origin, direction)
+	if has_expanded_library():
+		var browser_hit: Dictionary = expanded_library.ray_hit(origin, direction)
+		if not browser_hit.is_empty() and (hit.is_empty() or float(browser_hit.distance) < float(hit.distance)):
+			return {"target": NONE, "point": to_local(expanded_library.to_global(browser_hit.point)), "distance": browser_hit.distance, "enabled": false, "library": true}
+	return hit
+
+func grab_hit(origin: Vector3, direction: Vector3) -> Dictionary:
+	var hit := super(origin, direction)
+	if has_expanded_library():
+		var browser_hit: Dictionary = expanded_library.grab_hit(origin, direction)
+		if not browser_hit.is_empty() and (hit.is_empty() or float(browser_hit.distance) < float(hit.distance)):
+			return {"target": NONE, "point": to_local(expanded_library.to_global(browser_hit.point)), "distance": browser_hit.distance, "enabled": false, "library": true}
+	return hit
+
+func has_pointer_capture() -> bool:
+	return _controls_pointer_capture() or (has_expanded_library() and expanded_library.has_pointer_capture())
 
 ## The transport bar has no list navigation; popups and settings keep their own input.
 func allows_playback_sticks() -> bool:
 	return visible and section == 0 and _state.get("has_video", false) and _adjustment.is_empty() \
-		and choices.opened.is_empty() and not _mode_open and not _subtitle_open and not bookmarks.opened and not has_pointer_capture()
+		and choices.opened.is_empty() and not _mode_open and not _subtitle_open and not bookmarks.opened and not has_pointer_capture() and not has_expanded_library()
 
 func _finish_depth_drag() -> void:
 	if not _depth_hand.is_empty():
@@ -148,6 +174,7 @@ func _close_depth_slider() -> void:
 	_depth_open = false
 
 func dismiss() -> void:
+	if has_expanded_library(): expanded_library.dismiss()
 	_icon_tap.clear()
 	choices.reset()
 	bookmarks.reset()
@@ -182,6 +209,11 @@ func _reset_navigation() -> void:
 func refresh() -> void:
 	_state = state_provider.call() if state_provider.is_valid() else {}
 	_draw()
+
+func show_playback_error() -> void:
+	_reset_navigation()
+	section = 2
+	refresh()
 
 func refresh_values() -> void:
 	composition_changed.emit()
@@ -236,7 +268,8 @@ func refresh_values() -> void:
 			_tips[109] = _volume_tip()
 		if section == 0 and button.target == 112: _tips[112] = _depth_tip()
 	if is_instance_valid(_status):
-		_status.text = _status_text()
+		_status.text = str(_state.get("loading_caption", "")) if section == 0 else _status_text()
+		_status.visible = section != 0 or not _status.text.is_empty()
 	if is_instance_valid(_info):
 		_info.text = _info_text()
 	if is_instance_valid(_title):
@@ -321,6 +354,9 @@ func _draw_bar() -> void:
 	_glyph(MODE, "view_mode", Vector2(0.38 if spatial else 0.41, row), 0.075, true, I18n.t("Video mode"))
 	_glyph(11, "settings", Vector2(0.5, row), 0.075, true, I18n.t("Settings"))
 	_seek_bar(-0.08)
+	_status = _label(str(_state.get("loading_caption", "")), Vector3(0, -0.15, 0.004), 20)
+	_status.modulate = ACCENT
+	_status.visible = not _status.text.is_empty()
 	# Floating actions above the bar.
 	_round(107, "close", Vector2(-0.14, 0.215), 0.08, _enabled("stop"), false, I18n.t("Close video"))
 	_round(100, "folder", Vector2(0, 0.215), 0.08, true, false, I18n.t("Library"))
@@ -355,9 +391,9 @@ func _subtitle_label(track: Dictionary) -> String:
 
 func _subtitle_controls() -> Array:
 	var pgs := _subtitle_tracks().any(func(track): return int(track.id) == int(_state.get("subtitle_track", 0)) and str(track.get("codec", "")) == "hdmv_pgs_subtitle")
-	if pgs: return []
-	var rows: Array = [{"title": "Subtitle appearance", "disclosure": true}]
+	var rows: Array = [{"title": "Subtitle adjustments", "disclosure": true}]
 	if not _subtitle_appearance_open: return rows
+	rows.append({"title": "Subtitle sync", "field": SubtitleTiming.slider_row(float(_state.get("subtitle_delay", 0.0)), str(_state.get("source_uri", "")))})
 	if _immersive_subtitles():
 		rows.append({"title": "Subtitle direction", "field": SubtitleDepth.direction_row(int(_state.get("subtitle_direction", 0)))})
 		rows.append({"title": "Horizontal position" if int(_state.get("subtitle_direction", 0)) == 1 else "Subtitle position", "field": SubtitleDepth.slider_row("subtitle_position", float(_state.get("subtitle_position", 0.0)))})
@@ -365,7 +401,8 @@ func _subtitle_controls() -> Array:
 	else:
 		rows.append({"title": "Vertical position", "field": {"key": "subtitle_flat_position", "value": _state.get("subtitle_flat_position", 0.0), "slider": true, "span": Vector3(0, 100, 1), "unit": "%", "reset_value": 0.0}})
 	rows.append({"title": "Subtitle size", "field": SubtitleStyle.size_row(float(_state.get("subtitle_size", 100.0)))})
-	rows.append({"title": "Subtitle color style", "field": SubtitleStyle.style_row(_state.get("subtitle_style", SubtitleStyle.DEFAULT))})
+	if not pgs:
+		rows.append({"title": "Subtitle color style", "field": SubtitleStyle.style_row(_state.get("subtitle_style", SubtitleStyle.DEFAULT))})
 	return rows
 
 func _draw_subtitles() -> void:
@@ -373,14 +410,27 @@ func _draw_subtitles() -> void:
 	_subtitle_offset = clampi(_subtitle_offset, 0, maxi(0, tracks.size() - SUBTITLE_ROWS))
 	var rows := _subtitle_controls()
 	var scrolling := tracks.size() > SUBTITLE_ROWS
-	var height := 0.18 + (1 + mini(tracks.size(), SUBTITLE_ROWS)) * 0.075 + rows.size() * 0.10 + (0.06 if scrolling else 0.0)
+	var height := 0.19 + (1 + mini(tracks.size(), SUBTITLE_ROWS)) * 0.075 + rows.size() * 0.10 + (0.06 if scrolling else 0.0)
 	var top := 0.285 + height
 	var panel := _quad(Vector2(1.10, height), Vector3(0, 0.285 + height / 2, 0.001), Color(PANEL, 0.96), 10)
 	panel.material_override.set_shader_parameter("corner_radius", 0.025)
 	add_child(panel); _decorations.append(panel)
+	_block_rays(panel, Vector2(1.10, height))
 	var heading := _label(I18n.t("Subtitles"), Vector3(-0.48, top - 0.05, 0.004), 18)
 	heading.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
-	var y := top - 0.125
+	_glyph(SUBTITLE_CLOSE, "close", Vector2(0.465, top - 0.05), 0.055, true, I18n.t("Close"))
+	var auto_label := _label(I18n.t("Auto-load matching subtitles"), Vector3(-0.48, top - 0.12, 0.004), 17)
+	auto_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+	var automatic := bool(_state.get("subtitle_auto_load", true))
+	_button(SUBTITLE_AUTO, "", Vector2(0.42, top - 0.12), Vector2(0.10, 0.05))
+	var toggle: Dictionary = _buttons.back()
+	toggle.base_color = SELECTED if automatic else TILE
+	toggle.node.material_override.set_shader_parameter("corner_radius", 0.025)
+	var knob := _quad(Vector2(0.032, 0.032), Vector3(0.023 if automatic else -0.023, 0, 0.004), ACCENT if automatic else MUTED, 12)
+	knob.material_override.set_shader_parameter("corner_radius", 0.016)
+	toggle.node.add_child(knob)
+	_tips[SUBTITLE_AUTO] = I18n.t("On" if automatic else "Off")
+	var y := top - 0.195
 	_subtitle_row(SUBTITLE_ROW, 0, I18n.t("Off"), y)
 	y -= 0.075
 	for index in range(_subtitle_offset, mini(tracks.size(), _subtitle_offset + SUBTITLE_ROWS)):
@@ -394,17 +444,13 @@ func _draw_subtitles() -> void:
 	y -= 0.01
 	for row in rows:
 		if row.get("disclosure", false):
-			_button(SUBTITLE_APPEARANCE, I18n.t("Subtitle appearance") + ("  ▾" if _subtitle_appearance_open else "  ▸"), Vector2(0, y), Vector2(0.96, 0.075))
+			_button(SUBTITLE_APPEARANCE, I18n.t("Subtitle adjustments") + ("  ▾" if _subtitle_appearance_open else "  ▸"), Vector2(0, y), Vector2(0.96, 0.075))
 			y -= 0.10
 			continue
 		var title := _label(I18n.t(row.title), Vector3(-0.48, y, 0.004), 17)
 		title.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
 		choices.field(null, row.field, Vector2(0.14, y), 0.64, 0.075)
 		y -= 0.10
-	var hint := _label(I18n.t("External subtitles must match the video filename."), Vector3(0, 0.355, 0.004), 15)
-	hint.modulate = MUTED
-	var example := _label(I18n.t("movie.mp4 → movie.srt"), Vector3(0, 0.315, 0.004), 14)
-	example.modulate = MUTED
 	choices.bounds = Vector2(0.285, top - 0.08)
 	choices.finish()
 
@@ -424,6 +470,9 @@ func _subtitle_row(target: int, id: int, text: String, y: float) -> void:
 		_icon("check", Vector3(0.414, 0, 0.004), 0.029, ACCENT, button.node)
 
 func stick_scroll(y: float, delta: float) -> void:
+	if has_expanded_library():
+		if not _controls_pointer_capture(): expanded_library.stick_scroll(y, delta)
+		return
 	if choices.stick_scroll(y, delta): return
 	if visible and bookmarks.opened:
 		bookmarks.stick_scroll(y, delta)
@@ -435,6 +484,10 @@ func stick_scroll(y: float, delta: float) -> void:
 	if absf(_subtitle_scroll) >= 1.0:
 		_scroll_subtitles(int(_subtitle_scroll))
 		_subtitle_scroll -= int(_subtitle_scroll)
+
+func stick_scroll_horizontal(x: float, delta: float) -> void:
+	if has_expanded_library() and not _controls_pointer_capture():
+		expanded_library.stick_scroll_horizontal(x, delta)
 
 func _scroll_subtitles(rows: int) -> void:
 	var offset := clampi(_subtitle_offset + rows, 0, maxi(0, _subtitle_tracks().size() - SUBTITLE_ROWS))
@@ -609,6 +662,14 @@ func _plane_point(origin: Vector3, direction: Vector3) -> Variant:
 	return start + delta * (-start.z / delta.z)
 
 func press_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: bool) -> bool:
+	if has_expanded_library() and not _controls_pointer_capture():
+		if expanded_library.has_pointer_capture() or (tracked and ray_hit(origin, direction).get("library", false)):
+			super.update_pointer(hand, origin, direction, false)
+			return expanded_library.press_pointer(hand, origin, direction, tracked)
+		var controls_hit := super.ray_hit(origin, direction) if tracked else {}
+		# Keep transport and timeline available; opening another popup folds the browser away.
+		if not controls_hit.is_empty() and int(controls_hit.target) not in [NONE, 100, 101, 102, 103, 107, 108, SEEK, FOLLOW, TEMP_PASSTHROUGH, CLOSE_MENU]:
+			expanded_library.dismiss()
 	if choices.press(hand, origin, direction, tracked): return true
 	if not bookmarks.capture.is_empty(): return true
 	for owner in [_adjust_hand, _depth_hand, _volume_hand, _seek_hand]:
@@ -644,6 +705,7 @@ func press_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: b
 	return super(hand, origin, direction, tracked)
 
 func cancel_pointer(hand: String) -> void:
+	if has_expanded_library(): expanded_library.cancel_pointer(hand)
 	if _icon_tap.get("hand") == hand: _icon_tap.clear()
 	choices.cancel(hand)
 	if bookmarks.capture.get("hand", "") == hand: bookmarks.cancel()
@@ -654,7 +716,9 @@ func cancel_pointer(hand: String) -> void:
 	super(hand)
 
 func update_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: bool) -> void:
-	super(hand, origin, direction, tracked)
+	var on_library: bool = has_expanded_library() and not _controls_pointer_capture() and (expanded_library.has_pointer_capture() or (tracked and ray_hit(origin, direction).get("library", false)))
+	super(hand, origin, direction, tracked and not on_library)
+	if has_expanded_library(): expanded_library.update_pointer(hand, origin, direction, tracked and on_library)
 	choices.update(hand, origin, direction, tracked)
 	bookmarks.update(hand, origin, direction, tracked)
 	if hand == _seek_hand:
@@ -684,6 +748,9 @@ func update_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: 
 		_set_volume_at(float(point.y))
 
 func release_pointer(hand: String, _origin: Vector3, _direction: Vector3, _tracked: bool) -> void:
+	if has_expanded_library() and expanded_library.has_pointer_capture():
+		expanded_library.release_pointer(hand, _origin, _direction, _tracked)
+		return
 	if _icon_tap.get("hand") == hand:
 		if _tracked and visible: _icon_tap.released = true
 		else: _icon_tap.clear()
@@ -704,7 +771,7 @@ func _bar_key() -> String:
 	return str([_state.get("clone_voice", false), _state.get("geometry", 0), _state.get("has_video", false),
 		_state.get("spatial_video", false),
 		_state.get("source_uri", ""), _subtitle_tracks(), _state.get("subtitle_track", 0), bookmarks.key(), _state.get("audio_options", []), _state.get("audio_track_id", -1),
-		_state.get("subtitle_distance", SubtitleDepth.DEFAULT), _state.get("subtitle_position", SubtitleDepth.DEFAULT_POSITION), _state.get("subtitle_direction", 0), _state.get("subtitle_size", 100), _state.get("subtitle_style", SubtitleStyle.DEFAULT), _state.get("subtitle_flat_position", 0)])
+		_state.get("subtitle_distance", SubtitleDepth.DEFAULT), _state.get("subtitle_position", SubtitleDepth.DEFAULT_POSITION), _state.get("subtitle_direction", 0), _state.get("subtitle_size", 100), _state.get("subtitle_style", SubtitleStyle.DEFAULT), _state.get("subtitle_flat_position", 0), _state.get("subtitle_auto_load", true), _state.get("subtitle_delay", 0.0)])
 
 func _seek_at(x: float) -> int:
 	return roundi(clampf((x + BAR_SEEK / 2) / BAR_SEEK, 0.0, 1.0) * int(_state.get("duration_ms", 0)))
@@ -802,6 +869,7 @@ func _draw_panel() -> void:
 	var shown_index := 0
 	for index in operations.size():
 		var operation: String = operations[index]
+		if section == 2 and not str(_state.get("error", "")).is_empty(): continue
 		if operation == "stereo_view" and not _state.get("stereo", false): continue
 		_button(100 + index, _caption(operation), Vector2(-0.36 if shown_index % 2 == 0 else 0.36,
 			0.17 - (shown_index / 2) * 0.145), Vector2(0.67, 0.12), _enabled(operation))
@@ -843,6 +911,11 @@ func _draw_panel() -> void:
 	_status.modulate = MUTED
 	if section == 2:
 		_info = _label(_info_text(), Vector3(0, -0.08, 0.004), 20)
+		if not str(_state.get("error", "")).is_empty():
+			set_label_size(_info, 24)
+			_info.position.y = 0.02
+			_info.width = 760
+			_info.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	choices.finish()
 
 func _settings_key() -> String:
@@ -969,6 +1042,15 @@ func _activate(target: int) -> void:
 		refresh()
 		return
 	if section == 0 and _subtitle_open:
+		if target == SUBTITLE_CLOSE:
+			_subtitle_open = false
+			choices.reset()
+			refresh()
+			return
+		if target == SUBTITLE_AUTO:
+			setting_requested.emit("subtitle_auto_load", not bool(_state.get("subtitle_auto_load", true)))
+			refresh()
+			return
 		if target == SUBTITLE_APPEARANCE:
 			_subtitle_appearance_open = not _subtitle_appearance_open
 			refresh()
@@ -978,7 +1060,6 @@ func _activate(target: int) -> void:
 			return
 		if _subtitle_ids.has(target):
 			subtitle_requested.emit(int(_subtitle_ids[target]))
-			_subtitle_open = false
 			refresh()
 			return
 		_subtitle_open = false
@@ -1034,11 +1115,8 @@ func _activate(target: int) -> void:
 		if not _enabled(operation):
 			return
 		if operation == "recent":
-			dismiss()
 			recent_requested.emit()
 		else:
-			if operation == "open_file":
-				dismiss()
 			action_requested.emit(operation)
 			if section == 0 and operation == "stop":
 				refresh()
@@ -1161,7 +1239,8 @@ func _caption_text(operation: String) -> String:
 
 func _status_text() -> String:
 	if not str(_state.get("error", "")).is_empty():
-		return I18n.t("Error: open Info")
+		return I18n.t("Playback failed")
+	if not str(_state.get("loading_caption", "")).is_empty(): return str(_state.loading_caption)
 	if not _state.get("has_video", false): return I18n.t("No video selected")
 	if section == 1:
 		return "%d%% · %s · %s %s" % [int(_state.get("volume", 100)), I18n.t("Muted" if _state.get("muted", false) else "Sound on"),
@@ -1176,6 +1255,9 @@ func _subtitle_name() -> String:
 	return I18n.t("Off") if int(_state.get("subtitle_track", 0)) == 0 else I18n.t("On")
 
 func _info_text() -> String:
+	var failure := str(_state.get("error", ""))
+	if not failure.is_empty():
+		return _fit_title(str(_state.get("title", "")), "") + "\n\n" + I18n.t("Playback failed") + "\n" + failure
 	var lines := PackedStringArray()
 	lines.append(_fit_title(str(_state.get("title", I18n.t("No video selected"))), ""))
 	lines.append(I18n.t("Source: %s | %s") % [str(_state.get("source_size", I18n.t("Unknown"))), I18n.t(str(_state.get("codec", "Unknown codec")))])

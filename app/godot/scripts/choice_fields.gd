@@ -98,10 +98,13 @@ func field(parent: Node3D, row: Dictionary, centre: Vector2, width: float, heigh
 
 # A wide invisible hit target surrounds the rail; graphics follow the button's plane.
 func _slider(parent: Node3D, row: Dictionary, centre: Vector2, width: float, height: float) -> void:
-	var field_width := width - (0.08 if row.has("reset_value") else 0.0)
+	var reset_width := 0.08 if row.has("reset_value") else 0.0
+	var nudge_width := 0.12 if row.has("nudge_step") else 0.0
+	var field_width := width - reset_width - nudge_width
 	var field_centre := centre - Vector2((width - field_width) * 0.5, 0)
 	var rail_width := field_width - 0.15
 	var target := _button({"kind": "slider", "key": row.key, "span": row.span}, "", field_centre, Vector2(field_width, height), parent)
+	if row.has("source_uri"): targets[target].source_uri = row.source_uri
 	var button: Dictionary = menu._buttons.back()
 	button.base_color = Color(menu.TILE, 0)
 	button.node.material_override.set_shader_parameter("surface_color", button.base_color)
@@ -123,17 +126,28 @@ func _slider(parent: Node3D, row: Dictionary, centre: Vector2, width: float, hei
 	label.position = Vector3(field_width / 2 - 0.005, 0, 0.006)
 	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	sliders[target] = {"span": row.span, "left": left, "width": rail_width, "fill": fill, "knob": knob,
-		"label": label, "unit": row.unit, "node": node}
+		"label": label, "unit": row.unit, "node": node, "signed": row.get("signed", false)}
+	if row.has("nudge_step"):
+		for index in 2:
+			var step := float(row.nudge_step) * (-1 if index == 0 else 1)
+			var item := {"kind": "nudge", "key": row.key, "value": row.value, "step": step, "span": row.span}
+			if row.has("source_uri"): item.source_uri = row.source_uri
+			_button(item, "−" if index == 0 else "+", centre + Vector2(width / 2 - reset_width - nudge_width + 0.03 + index * 0.06, 0), Vector2(0.055, height), parent)
+			var nudge: Dictionary = menu._buttons.back()
+			nudge.enabled = not same(clampf(float(row.value) + step, row.span.x, row.span.y), row.value)
+			if not nudge.enabled: nudge.node.get_child(0).modulate = menu.MUTED
 	if row.has("reset_value"):
 		var reset_target := _button({"kind": "reset", "key": row.key, "value": row.reset_value}, "",
 			centre + Vector2(width / 2 - 0.0325, 0), Vector2(0.065, height), parent)
 		var reset: Dictionary = menu._buttons.back()
+		if row.has("source_uri"): targets[reset_target].source_uri = row.source_uri
 		reset.base_color = Color(menu.TILE, 0)
 		reset.node.material_override.set_shader_parameter("surface_color", reset.base_color)
 		menu._icon("refresh", Vector3(0, 0, 0.006), 0.032, menu.MUTED, reset.node)
 		menu._tips[reset_target] = menu.I18n.t("Reset")
 		sliders[target]["reset"] = reset
 		sliders[target]["reset_value"] = row.reset_value
+		sliders[target]["reset_when_changed"] = row.get("reset_when_changed", false)
 	# Capture retains the last preview through ordinary menu redraws.
 	var value := float(capture.value) if capture.get("item", {}).get("key", "") == row.key and capture.has("value") else float(row.value)
 	_refresh_slider(target, value)
@@ -148,8 +162,10 @@ func _refresh_slider(target: int, value: float) -> void:
 	slider.fill.material_override.set_shader_parameter("surface_size", slider.fill.mesh.size)
 	slider.knob.position.x = slider.left + fraction * slider.width
 	slider.label.text = ("%.0f" % value if slider.unit in ["%", " FPS"] else ("%+.0f" % value if slider.unit == "°" and value != 0 else ("%.0f" % value if slider.unit == "°" else "%.1f" % value))) + slider.unit
+	if slider.get("signed", false): slider.label.text = (("%+.1f" if not is_zero_approx(value) else "%.1f") % value) + slider.unit
 	if slider.has("reset"):
 		slider.reset.enabled = not same(value, slider.reset_value)
+		if slider.get("reset_when_changed", false): slider.reset.node.visible = slider.reset.enabled
 		slider.reset.node.get_child(1).material_override.albedo_color = menu.ACCENT if slider.reset.enabled else menu.MUTED
 
 func _preview_slider(point: Vector3) -> void:
@@ -159,14 +175,17 @@ func _preview_slider(point: Vector3) -> void:
 	if capture.has("value") and is_equal_approx(capture.value, value): return
 	capture.value = value
 	_refresh_slider(int(capture.target), value)
-	previewed.emit(str(capture.item.key), value)
+	previewed.emit(str(capture.item.key), _scoped_value(capture.item, value))
 
 func _finish_slider() -> bool:
 	if capture.get("item", {}).get("kind", "") != "slider": return false
 	var request := capture.duplicate(true)
 	capture.clear()
-	if request.has("value"): changed.emit(str(request.item.key), request.value)
+	if request.has("value"): changed.emit(str(request.item.key), _scoped_value(request.item, request.value))
 	return true
+
+static func _scoped_value(item: Dictionary, value: Variant) -> Variant:
+	return {"value": value, "source_uri": item.source_uri} if item.has("source_uri") else value
 
 ## Icon-triggered lists share the same ownership, scrolling and selection as settings fields.
 func present(row: Dictionary, centre: Vector2, vertical_bounds: Vector2) -> void:
@@ -229,9 +248,14 @@ func action(target: int) -> bool:
 	if not targets.has(target): return false
 	var item: Dictionary = targets[target]
 	match item.kind:
+		"nudge":
+			if not menu._buttons.any(func(button): return button.target == target and button.enabled): return true
+			var value := clampf(snappedf(float(item.value) + float(item.step), item.span.z), item.span.x, item.span.y)
+			changed.emit(str(item.key), _scoped_value(item, value))
+			menu.refresh()
 		"reset":
 			if not menu._buttons.any(func(button): return button.target == target and button.enabled): return true
-			changed.emit(str(item.key), item.value)
+			changed.emit(str(item.key), _scoped_value(item, item.value))
 			menu.refresh()
 		"open":
 			opened = "" if opened == item.key else str(item.key)

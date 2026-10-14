@@ -44,8 +44,11 @@ var _surface_flip := true
 var debug_image_layout := -2
 var _settings := false
 const NORMAL_SUPER_SAMPLING := 1
+const QUALITY_SUPER_SAMPLING := 2
 const NORMAL_SHARPENING := 4
 const QUALITY_SHARPENING := 8
+## Compositor supersampling of video and photo layers: 0 off, 1 normal, 2 quality.
+var supersampling := 1
 var _sent := PackedFloat32Array()
 var _sent_count := -1
 ## Video and photo share the one provider: whoever showed the layers last owns them, and only the
@@ -156,8 +159,8 @@ func show(surface: Node3D, origin: XROrigin3D, source: int = SURFACE, size := Ve
 	_owner = surface
 	return _apply(values.size() / STRIDE, values)
 
-## STRIDE floats per layer (one, or left and right). The video sharpness setting becomes the
-## compositor's own sharpening (no shader on this path).
+## STRIDE floats per layer (one, or left and right). The supersampling and sharpness settings become
+## the compositor's own filters (no shader on this path).
 ## inset: the fraction of a flat screen's width/height left to the eye buffers on each side (a photo's
 ## soft edge drawn there); the layer shows the inner part of the screen and of each eye's picture.
 func layer_values(surface: Node3D, origin: Node3D, source_kind: int = SURFACE, image := Vector2(SURFACE_SIZE, SURFACE_SIZE),
@@ -167,7 +170,7 @@ func layer_values(surface: Node3D, origin: Node3D, source_kind: int = SURFACE, i
 	var viewing: int = int(surface.get("viewing_eye")) if surface.get("viewing_eye") != null else 0
 	var filters := 0
 	if _settings:
-		filters = NORMAL_SUPER_SAMPLING
+		filters = [0, NORMAL_SUPER_SAMPLING, QUALITY_SUPER_SAMPLING][clampi(supersampling, 0, 2)]
 		if surface.sharpness >= 0.4: filters |= QUALITY_SHARPENING
 		elif surface.sharpness > 0.0: filters |= NORMAL_SHARPENING
 	var panel: MeshInstance3D = surface.panel

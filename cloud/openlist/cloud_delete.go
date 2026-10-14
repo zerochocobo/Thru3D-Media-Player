@@ -87,12 +87,12 @@ func list115(c *gin.Context) {
 		Refresh bool `json:"refresh"`
 	}
 	if c.ShouldBindJSON(&t) != nil || t.Offset < 0 || t.Offset%48 != 0 {
-		cloudError(c)
+		cloudListError(c, "list115.request", errors.New("invalid directory page request"))
 		return
 	}
 	s, p, err := targetStorage(t.cloudTarget, false)
 	if err != nil {
-		cloudError(c)
+		cloudListError(c, "list115.storage", err)
 		return
 	}
 	key := t.Mount + p
@@ -112,11 +112,11 @@ func list115(c *gin.Context) {
 		}
 		if err != nil {
 			delete(cloudSnapshots, key)
-			cloudError(c)
+			cloudListError(c, "list115.list", err)
 			return
 		}
 		if len(items) > 240000 {
-			cloudError(c)
+			cloudListError(c, "list115.limit", errors.New("directory exceeds 240000 entries"))
 			return
 		}
 		delete(cloudSnapshots, key)
@@ -135,7 +135,7 @@ func list115(c *gin.Context) {
 		cloudSnapshots[key] = snapshot
 	}
 	if t.Offset > len(snapshot.objects) {
-		cloudError(c)
+		cloudListError(c, "list115.page", errors.New("page offset exceeds directory entry count; refresh the folder"))
 		return
 	}
 	end := min(t.Offset+48, len(snapshot.objects))

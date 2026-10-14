@@ -2,8 +2,16 @@ extends "res://scripts/media_surface.gd"
 
 signal changed
 signal thumbnail_ready(uri: String)
+signal playback_failed
 
 const PlatformMethods := preload("res://scripts/platform_methods.gd")
+const PlaybackErrors := preload("res://scripts/playback_errors.gd")
+const Loading := preload("res://scripts/media_loading.gd")
+var _loading_status := {}
+var _loading_poll_ms := 0
+var _loading_started_ms := 0
+var _buffering_started_ms := 0
+var _loading_bytes := -1
 const State := preload("res://scripts/mpv_media_state.gd")
 const Thumbnails := preload("res://scripts/thumbnail_cache.gd")
 const Binding := preload("res://scripts/pair_texture_binding.gd")
@@ -19,6 +27,7 @@ const BitmapSubtitles := preload("res://scripts/bitmap_subtitles.gd")
 var bitmap_subtitles := BitmapSubtitles.new()
 const ModeMemory := preload("res://scripts/file_mode_memory.gd")
 const TrackMemory := preload("res://scripts/file_track_memory.gd")
+const SubtitleTiming := preload("res://scripts/file_subtitle_timing.gd")
 const StereoView := preload("res://scripts/stereo_view.gd")
 var viewing_eye := 0 # 0 binocular; 1/2 duplicate the logical left/right view after eye swap.
 var stereo_horizontal := 0.0
@@ -74,6 +83,8 @@ var audio_volume := 100.0
 signal audio_options_changed(volume: float, muted: bool)
 var audio_muted := false
 var subtitles := SubtitleState.new()
+var subtitle_auto_load := true
+var _subtitle_auto_pending := false
 ## Text subtitles: on the flat screen near its lower edge; in immersive modes floating at
 ## a video-local plane at [subtitle_distance], projected from each physical XR eye.
 var playback_speed := 1.0
@@ -85,6 +96,7 @@ var subtitle_style := SubtitleStyle.DEFAULT:
 var subtitle_flat_position := 0.0:
 	set(value): subtitle_flat_position = clampf(value, 0.0, 1.0) if is_finite(value) else 0.0
 var _subtitle_surface: MeshInstance3D
+var _subtitle_patch: QuadMesh
 var _subtitle_material: ShaderMaterial
 var caption: Label3D
 const ColorGrade := preload("res://scripts/color_grade.gd")
@@ -106,6 +118,9 @@ var _subtitle_poll_ms := 0
 var _subtitle_received_ms := 0
 var mode_memory := ModeMemory.new()
 var track_memory := TrackMemory.new()
+var subtitle_timing := SubtitleTiming.new()
+var subtitle_delay := 0.0
+var _subtitle_delay_pending := false
 var _track_restore: Dictionary = {}
 var _track_choices: Dictionary = {}
 var _remember_file := false
@@ -130,6 +145,11 @@ var _fixture := -1
 var _recover := false
 var _recover_ms := 0
 var _waiting_first := false
+var _opening_deadline_ms := 0
+var _output_deadline_ms := 0
+var _buffering_deadline_ms := 0
+const OPEN_TIMEOUT_MS := 60000
+const OUTPUT_TIMEOUT_MS := 30000
 var _thumbnail_busy := false
 var _thumbnail_sequence := 0
 var _thumbnail_result: Dictionary = {}
@@ -172,6 +192,7 @@ var _picture_refresh := 0
 func _ready() -> void:
 	mode_memory.load_saved()
 	track_memory.load_saved()
+	subtitle_timing.load_saved()
 	recent_files.load_saved()
 	initialize_surface(load("res://shaders/video_rvm_pair.gdshader"))
 	color_grade.apply(material)
@@ -342,6 +363,7 @@ func _on_selected(payload: String) -> void:
 	elif result.get("state") == "checking":
 		picker_error = "Checking file access..."
 	changed.emit()
+	if result.get("state") == "error": playback_failed.emit()
 
 func cancel_pending_open() -> void:
 	var picker := _picker_request
@@ -385,6 +407,7 @@ func open_recent(uri: String, from_start: bool = false, metadata: Dictionary = {
 		_access_pending = {}
 		picker_error = "File access check busy or unavailable"
 		changed.emit()
+		playback_failed.emit()
 		return false
 	picker_error = "Checking file access..."
 	changed.emit()
@@ -405,6 +428,7 @@ func _on_local_access(id: int, payload: String) -> void:
 	if result.get("state") != "readable" or not result.get("persisted_permission") is bool:
 		picker_error = str(result.get("error", "File unavailable; select it again"))
 		changed.emit()
+		playback_failed.emit()
 		return
 	requested_play = true
 	var metadata: Dictionary = pending.get("metadata", {}).duplicate(true)
@@ -439,6 +463,7 @@ func open_local(uri: String, title: String, start_ms: int = 0, restore_mode: boo
 	if not platform or not platform.mpv_supported():
 		picker_error = "MPV playback backend unavailable"
 		changed.emit()
+		playback_failed.emit()
 		return false
 	cancel_pending_open()
 	close_video()
@@ -538,7 +563,12 @@ func open_local(uri: String, title: String, start_ms: int = 0, restore_mode: boo
 	_clone_applied = false
 	subtitles.select(0)
 	subtitles.clear(true)
+	_subtitle_auto_pending = subtitle_auto_load
 	_queue_track_restore(track_memory.lookup(uri) if restore_mode else {})
+	subtitle_delay = float(subtitle_timing.lookup(uri).get("delay_seconds", 0.0)) if restore_mode else 0.0
+	subtitles.set_delay(subtitle_delay)
+	_subtitle_delay_pending = true
+	_apply_subtitle_delay()
 	bitmap_subtitles.clear(material)
 	if _subtitle_surface: _subtitle_surface.visible = false
 	reset_view() # every video starts straight ahead at its natural size
@@ -547,9 +577,15 @@ func open_local(uri: String, title: String, start_ms: int = 0, restore_mode: boo
 		picker_error = "Player resources are still closing"
 	else:
 		_waiting_first = true
+		_opening_deadline_ms = Time.get_ticks_msec() + OPEN_TIMEOUT_MS
+		_loading_started_ms = Time.get_ticks_msec()
+		_loading_status = {"remote": Loading.remote(uri), "phase": "connecting"}
+		_loading_poll_ms = 0
+		_loading_bytes = -1
 		platform.set_mpv_playing(id, false)
 		picker_error = ""
 	changed.emit()
+	if id <= 0: playback_failed.emit()
 	return id > 0
 
 func _unbind() -> void:
@@ -587,6 +623,8 @@ func close_video() -> void:
 		mode_memory.save()
 	if track_memory.dirty:
 		track_memory.save()
+	if subtitle_timing.dirty:
+		subtitle_timing.save()
 	if recent_files.dirty:
 		recent_files.save()
 	_unbind()
@@ -608,6 +646,9 @@ func close_video() -> void:
 	_debug_seek_delay_until_ms = 0
 	_waiting_first = false
 	_audio_pending = false
+	_opening_deadline_ms = 0
+	_output_deadline_ms = 0
+	_buffering_deadline_ms = 0
 	_track_restore.clear()
 	_track_choices.clear()
 	control.close()
@@ -658,6 +699,8 @@ func _request_revision(position_ms: int = -1, mode: String = "") -> void:
 		"seek_mode": SeekPolicy.normalize(seek_mode if mode.is_empty() else mode)}
 	platform.set_mpv_playing(media.session_id, false)
 	_waiting_first = true
+	_output_deadline_ms = Time.get_ticks_msec() + OUTPUT_TIMEOUT_MS
+	_loading_started_ms = Time.get_ticks_msec(); _loading_poll_ms = 0
 	subtitles.clear()
 	bitmap_subtitles.clear(material)
 	if _subtitle_surface: _subtitle_surface.visible = false
@@ -997,6 +1040,7 @@ func set_subtitle_track(track_id: int, remember: bool = true) -> bool:
 	if projected_subtitles:
 		projected_subtitles.clear(material)
 	if remember: _remember_track("subtitle", track_id)
+	if remember: _subtitle_auto_pending = false
 	changed.emit()
 	return true
 
@@ -1031,6 +1075,7 @@ func _queue_track_restore(choices: Dictionary) -> void:
 
 func _restore_tracks() -> void:
 	if not platform or not media.accepts(media.session_id): return
+	_apply_subtitle_delay()
 	for channel in _track_restore.keys():
 		var id := TrackMemory.resolve(_track_restore[channel], _raw_tracks(channel))
 		if id == TrackMemory.UNRESOLVED: continue # External tracks can arrive after FILE_LOADED.
@@ -1038,6 +1083,66 @@ func _restore_tracks() -> void:
 		if accepted:
 			_track_choices[channel] = TrackMemory.describe(id, _raw_tracks(channel))
 			_track_restore.erase(channel)
+			if channel == "subtitle": _subtitle_auto_pending = false
+	_auto_select_subtitle()
+
+func _apply_subtitle_delay() -> bool:
+	if not _subtitle_delay_pending: return true
+	if not platform or not media.accepts(media.session_id): return false
+	if not PlatformMethods.supports(platform, "set_mpv_subtitle_delay"):
+		_subtitle_delay_pending = not is_zero_approx(subtitle_delay)
+		return not _subtitle_delay_pending
+	if not platform.set_mpv_subtitle_delay(media.session_id, subtitle_delay): return false
+	_subtitle_delay_pending = false
+	return true
+
+func set_subtitle_delay(seconds: float) -> bool:
+	if not is_finite(seconds): return false
+	var value := SubtitleTiming.delay(seconds)
+	if is_equal_approx(value, subtitle_delay): return _apply_subtitle_delay()
+	if not platform or not media.accepts(media.session_id) or not PlatformMethods.supports(platform, "set_mpv_subtitle_delay"):
+		return false
+	if not platform.set_mpv_subtitle_delay(media.session_id, value): return false
+	subtitle_delay = value
+	_subtitle_delay_pending = false
+	subtitles.set_delay(value)
+	bitmap_subtitles.clear(material)
+	if caption: caption.visible = false
+	if projected_subtitles: projected_subtitles.clear(material)
+	if _subtitle_surface: _subtitle_surface.visible = false
+	_subtitle_poll_ms = 0
+	changed.emit()
+	return true
+
+func commit_subtitle_delay(seconds: float, uri: String) -> bool:
+	if not is_finite(seconds) or uri.is_empty(): return false
+	# A release from a previous video's captured slider may save that video,
+	# but must never shift whichever file has since opened.
+	if uri == local_uri and not set_subtitle_delay(seconds): return false
+	if not _remember_file: return true
+	if not subtitle_timing.remember(uri, {"delay_seconds": SubtitleTiming.delay(seconds)}): return false
+	if not subtitle_timing.save():
+		Log.record("file_subtitle_timing_save_failed", {"error": subtitle_timing.last_error})
+		return false
+	return true
+
+func set_subtitle_auto_load(enabled: bool) -> void:
+	subtitle_auto_load = enabled
+	_subtitle_auto_pending = enabled and subtitles.requested_track == 0 and not _track_choices.has("subtitle")
+	_auto_select_subtitle()
+	changed.emit()
+
+func _auto_select_subtitle() -> void:
+	if not subtitle_auto_load or not _subtitle_auto_pending or _track_restore.has("subtitle"): return
+	var stem := _layout_basename.get_basename().to_lower()
+	if stem.is_empty(): return
+	# Explicit defaults: exact basename SRT, then ASS. Other formats/variants
+	# remain available in the existing track list for a manual choice.
+	for extension in ["srt", "ass"]:
+		for track in subtitle_tracks():
+			if bool(track.get("external", false)) and str(track.get("title", "")).to_lower() == stem + "." + extension:
+				if set_subtitle_track(int(track.id), false): _subtitle_auto_pending = false
+				return
 
 func subtitle_tracks() -> Array[Dictionary]:
 	var tracks: Array[Dictionary] = []
@@ -1081,7 +1186,7 @@ func _poll_subtitles() -> void:
 		var pixels := PackedByteArray()
 		if bitmap_subtitles.needs_pixels(subtitles.bitmap, handle):
 			pixels = platform.get_mpv_subtitle_bitmap(media.session_id, int(subtitles.bitmap.version))
-		bitmap_subtitles.apply(material, subtitles.bitmap, handle, pixels)
+		bitmap_subtitles.apply(material, subtitles.bitmap, handle, pixels, subtitle_size, subtitle_flat_position)
 	else:
 		bitmap_subtitles.clear(material)
 		if _subtitle_surface: _subtitle_surface.visible = false
@@ -1372,7 +1477,7 @@ func _remember_mode() -> void:
 		Log.record("file_mode_save_failed", {"error": mode_memory.last_error})
 
 func _on_pair(id: int, payload: String) -> void:
-	if id != media.session_id:
+	if not media.accepts(id):
 		return
 	var pair: Variant = JSON.parse_string(payload)
 	if pair is Dictionary:
@@ -1420,6 +1525,8 @@ func _present_pending() -> void:
 	if _waiting_first:
 		if control.in_flight > 0: _seek_event("target_presented")
 		_waiting_first = false
+		_opening_deadline_ms = 0
+		_output_deadline_ms = 0
 		var actual_position_ms := int(int(claimed.pts_us) / 1000)
 		if control.in_flight > 0:
 			control.first_frame(actual_position_ms)
@@ -1440,7 +1547,7 @@ func _present_pending() -> void:
 	changed.emit()
 
 func _on_state(id: int, payload: String) -> void:
-	if id != media.session_id:
+	if id != media.session_id or not media.error.is_empty():
 		return
 	var report: Variant = JSON.parse_string(payload)
 	if not report is Dictionary:
@@ -1475,33 +1582,101 @@ func _on_state(id: int, payload: String) -> void:
 	changed.emit()
 
 func _on_error(id: int, payload: String) -> void:
-	if id != media.session_id:
+	if id != media.session_id or (media.state == "failed" and not media.error.is_empty()):
 		return
 	_thumbnail_sequence += 1
 	var report: Variant = JSON.parse_string(payload)
-	media.error = str(report.get("code", "MPV playback failed")) if report is Dictionary else "MPV playback failed"
+	var code := str(report.get("code", "")) if report is Dictionary else ""
+	media.error = PlaybackErrors.message(report if report is Dictionary else {})
 	media.state = "failed"
+	_audio_pending = false
 	_freeze_request = 0
 	_pending_revision = {}
+	_pending_pair = {}
 	_waiting_first = false
+	_opening_deadline_ms = 0
+	_output_deadline_ms = 0
+	_buffering_deadline_ms = 0
 	control.reject()
 	subtitles.clear()
-	_recover = media.error == "MPV_GL_CONTEXT_RECREATED"
+	_recover = code == "MPV_GL_CONTEXT_RECREATED"
 	_recover_ms = control.observed_position_ms
 	_unbind()
 	Log.record("mpv_error", {"session_id": id, "report": report})
 	_write_debug_report()
 	changed.emit()
+	if not _recover: playback_failed.emit()
+
+func _check_open_timeout(now_ms: int) -> void:
+	if _opening_deadline_ms <= 0: return
+	if not _waiting_first or media.state in ["closed", "failed"]:
+		_opening_deadline_ms = 0
+		return
+	if now_ms < _opening_deadline_ms: return
+	var id: int = media.session_id
+	_on_error(id, JSON.stringify({"code": "MPV_OPEN_TIMEOUT"}))
+	if platform and id > 0: platform.close_mpv_video(id)
 
 func _on_detach(id: int, _payload: String) -> void:
 	if int(_binding.ticket.get("session_id", 0)) == id and not _is_frozen():
 		_unbind()
+
+func _check_playback_timeout(now_ms: int) -> void:
+	if not media.accepts(media.session_id):
+		_output_deadline_ms = 0; _buffering_deadline_ms = 0
+		return
+	if not _waiting_first: _output_deadline_ms = 0
+	var code := ""
+	if _output_deadline_ms > 0 and now_ms >= _output_deadline_ms: code = "MPV_OUTPUT_TIMEOUT"
+	var buffering := requested_play and media.frame_counter > 0 and not _waiting_first \
+		and str(media.playback.get("details", {}).get("paused_for_cache", "no")) == "yes"
+	if not buffering: _buffering_deadline_ms = 0
+	elif _buffering_deadline_ms == 0: _buffering_deadline_ms = now_ms + OUTPUT_TIMEOUT_MS
+	elif now_ms >= _buffering_deadline_ms: code = "MPV_BUFFER_TIMEOUT"
+	if code.is_empty(): return
+	var id: int = media.session_id
+	_on_error(id, JSON.stringify({"code": code}))
+	if platform: platform.close_mpv_video(id)
 
 func _on_released(id: int, _payload: String) -> void:
 	if id == media.session_id and _recover:
 		_recover = false
 		call_deferred("_reopen_after_context_loss", local_uri, display_name, _recover_ms, _remember_file, id)
 	_write_debug_report()
+
+func loading_caption() -> String:
+	if not media.accepts(media.session_id) or not media.error.is_empty(): return ""
+	var buffering := requested_play and str(media.playback.get("details", {}).get("paused_for_cache", "no")) == "yes"
+	if not _waiting_first and not buffering: return ""
+	var status: Dictionary = _loading_status.duplicate()
+	status.elapsed_ms = Time.get_ticks_msec() - (_buffering_started_ms if buffering and not _waiting_first else _loading_started_ms)
+	if buffering and not _waiting_first: status.phase = "buffering"
+	elif _waiting_first and status.get("phase", "") == "reading" and not buffering and not str(media.playback.get("details", {}).get("codec", "")).is_empty():
+		status.phase = "preparing"
+	if not status.has("bytes_per_second"):
+		var speed := str(media.playback.get("details", {}).get("cache_speed", ""))
+		if speed.is_valid_float(): status.bytes_per_second = float(speed)
+	return Loading.caption(status)
+
+func _poll_loading(now_ms: int) -> void:
+	var buffering := requested_play and str(media.playback.get("details", {}).get("paused_for_cache", "no")) == "yes"
+	if not buffering: _buffering_started_ms = 0
+	elif _buffering_started_ms == 0: _buffering_started_ms = now_ms
+	if not media.accepts(media.session_id) or (not _waiting_first and not buffering) or now_ms < _loading_poll_ms: return
+	_loading_poll_ms = now_ms + 500
+	if PlatformMethods.supports(platform, "get_mpv_loading_status"):
+		var report: Variant = JSON.parse_string(platform.get_mpv_loading_status(media.session_id))
+		if report is Dictionary: _loading_status = report
+	var bytes := int(_loading_status.get("bytes", -1))
+	var progressing := bytes > 0 and bytes > _loading_bytes
+	if not _loading_status.has("bytes"):
+		var rate := str(media.playback.get("details", {}).get("cache_speed", ""))
+		progressing = rate.is_valid_float() and float(rate) > 0
+	_loading_bytes = bytes
+	if progressing:
+		if _opening_deadline_ms > 0: _opening_deadline_ms = now_ms + OPEN_TIMEOUT_MS
+		if _output_deadline_ms > 0: _output_deadline_ms = now_ms + OUTPUT_TIMEOUT_MS
+		if _buffering_deadline_ms > 0: _buffering_deadline_ms = now_ms + OUTPUT_TIMEOUT_MS
 
 func _reopen_after_context_loss(uri: String, title: String, position_ms: int, remember_file: bool, expected_session: int = 0) -> void:
 	if uri != local_uri or (expected_session > 0 and expected_session != media.session_id): return
@@ -1655,8 +1830,24 @@ func _sync_subtitle_surface() -> void:
 	material.set_shader_parameter("separate_subtitles", separate)
 	_subtitle_surface.visible = separate and panel.visible and (material.get_shader_parameter("subtitle_enabled") == true or material.get_shader_parameter("bitmap_subtitle_enabled") == true)
 	if not _subtitle_surface.visible: return
-	_subtitle_surface.mesh = panel.mesh
-	_subtitle_surface.global_transform = subtitle_transform()
+	if geometry == Geometry.Geometry.FLAT:
+		_subtitle_surface.mesh = panel.mesh
+		_subtitle_surface.global_transform = subtitle_transform()
+	else:
+		# Each eye's ray through the sphere meets the caption plane where it would meet the plane
+		# itself, so drawing just the plane's patch is the same image. The whole VR180/360 sphere
+		# ran this blended pass over most of each eye (a 10-20 FPS cost on XR2 Gen1 headsets).
+		var extent: Variant = material.get_shader_parameter("subtitle_patch_half_extent")
+		var half: float = extent if extent != null else 0.35
+		var to_patch: Variant = material.get_shader_parameter("subtitle_world_to_patch")
+		if not to_patch is Transform3D:
+			_subtitle_surface.visible = false
+			return
+		if not _subtitle_patch or not is_equal_approx(_subtitle_patch.size.x, half * 2.0):
+			_subtitle_patch = QuadMesh.new()
+			_subtitle_patch.size = Vector2.ONE * half * 2.0
+		_subtitle_surface.mesh = _subtitle_patch
+		_subtitle_surface.global_transform = (to_patch as Transform3D).affine_inverse()
 	for key in ["subtitle_texture", "subtitle_enabled", "subtitle_world_to_patch", "subtitle_patch_half_extent", "bitmap_subtitle_texture", "bitmap_subtitle_enabled", "bitmap_subtitle_rect", "rotation_degrees"]:
 		_subtitle_material.set_shader_parameter(key, material.get_shader_parameter(key))
 
@@ -1741,6 +1932,9 @@ func _can_loop() -> bool:
 		and (not alpha_requested or final_pair.get("inference_ran", false))
 
 func _process(_delta: float) -> void:
+	_poll_loading(Time.get_ticks_msec())
+	_check_open_timeout(Time.get_ticks_msec())
+	_check_playback_timeout(Time.get_ticks_msec())
 	_restore_tracks()
 	if _audio_pending:
 		set_audio_options(audio_track_id, audio_volume, audio_muted)

@@ -343,12 +343,12 @@ func _run() -> void:
 	check(click(menu, 10) and click(menu, 110) and menu._subtitle_open and video.subtitles.requested_track == 0, "CC opens choices without changing subtitle selection")
 	check(menu._subtitle_ids.values() == [0, 1, 3], "Picker shows Off and every supported text track, skipping bitmap subtitles")
 	check(click(menu, Menu.SUBTITLE_ROW + 2) and video.subtitles.requested_track == 3 and host.calls.back() == ["subtitle", 7, 3]
-		and not menu._subtitle_open, "Ray selects the actual nonconsecutive ASS track ID and closes picker")
+		and menu._subtitle_open, "Ray selects the actual nonconsecutive ASS track ID and retains picker")
 	menu.update_pointer("right_hand", Vector3.ZERO, Vector3.ZERO, false)
 	var cc: Dictionary = menu._buttons.filter(func(b): return b.target == 110)[0]
 	check(cc.node.material_override.get_shader_parameter("surface_color") == Menu.SELECTED
 		and cc.node.get_child(1).material_override.albedo_color == Menu.ACCENT, "Enabled CC has both selected background and accent glyph")
-	check(click(menu, 110), "CC reopens to inspect current selection")
+	check(click(menu, Menu.SUBTITLE_CLOSE) and click(menu, 110), "Explicit close and CC reopen preserve current selection")
 	check(not menu._buttons.any(func(b): return b.target == Menu.SUBTITLE_POSITION)
 		and not menu.choices.targets.values().any(func(item): return item.get("key") == "subtitle_distance"),
 		"Flat subtitle picker hides immersive distance and position controls")
@@ -358,6 +358,7 @@ func _run() -> void:
 	check(click(menu, Menu.SUBTITLE_ROW) and video.subtitles.requested_track == 0, "Off explicitly disables subtitles")
 	cc = menu._buttons.filter(func(b): return b.target == 110)[0]
 	check(cc.node.get_child(1).material_override.albedo_color != Menu.ACCENT, "Off resets CC accent")
+	check(click(menu, Menu.SUBTITLE_CLOSE) and not menu._subtitle_open, "Off selection remains inspectable until explicit close")
 	var saved_tracks: Array = video.media.playback.details.subtitle_tracks.duplicate(true)
 	video.media.playback.details.subtitle_tracks = []
 	menu.refresh_values()
@@ -413,7 +414,7 @@ func _run() -> void:
 	var layout_calls := host.calls.size()
 	check(click(menu, 110) and menu._subtitle_open and menu.choices.sliders.is_empty(),
 		"VR CC popup focuses on subtitle selection with appearance collapsed")
-	check(click(menu, Menu.SUBTITLE_APPEARANCE) and menu._subtitle_open and menu.choices.sliders.size() == 3,
+	check(click(menu, Menu.SUBTITLE_APPEARANCE) and menu._subtitle_open and menu.choices.sliders.size() == 4,
 		"Appearance disclosure opens distance, angle, size and styles")
 	check(choose_setting(menu, "subtitle_position", -60) and video.subtitle_position == -60 and main.settings.get_value("subtitles", "elevation_degrees") == -60 and menu._subtitle_open,
 		"CC angle applies and persists while keeping the popup open")
@@ -558,6 +559,7 @@ func _run() -> void:
 	video.set_projection(0)
 	main._show_player_menu()
 	check(click(menu, 107) and video.media.state == "closed" and host.calls.back() == ["close", 7], "Close video uses production close/cancel sequence")
+	check(recent.visible and not menu.visible, "Closing the media restores the full library")
 	check(not click(menu, 102), "Play disabled after close even if URI retained for recovery")
 	video.load_mode_lock({"geometry": 1, "layout": 1, "depth": false, "fisheye_fov": 180})
 	video.open_local("file:///lock/plain.mp4", "plain.mp4")
@@ -583,6 +585,7 @@ func _run() -> void:
 	main.settings.save(main.settings_path)
 	_check_device_status()
 	video.open_local("file:///menu.mp4", "测试电影 😀")
+	main._show_player_menu()
 	menu.section = 0
 	main.video_queue = [{"uri": "file:///menu.mp4", "title": "测试电影 😀"}, {"uri": "file:///next.mp4", "title": "Next"}]
 	menu.refresh()
@@ -673,6 +676,7 @@ func _check_transport_button(main: Node3D, video: Node3D, menu: Node3D, host: Re
 	main.display.preview = true
 	for hand in ["left_hand", "right_hand"]:
 		main._on_controller_button("grip_click", hand)
+		main._on_controller_release("grip_click", hand)
 	check(host.calls.size() == calls, "Neither grip button toggles video playback")
 	main.test_rays["right_hand"] = [Vector3(0, 1.6, 0), Vector3.FORWARD]
 	_tap_controller(tracker, "trigger_click")

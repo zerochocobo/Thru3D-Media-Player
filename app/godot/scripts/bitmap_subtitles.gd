@@ -14,7 +14,7 @@ func clear(material: ShaderMaterial) -> void:
 func needs_pixels(bitmap: Dictionary, source_handle: int) -> bool:
 	return not texture or version != int(bitmap.get("version", 0)) or source != source_handle
 
-func apply(material: ShaderMaterial, bitmap: Dictionary, source_handle: int, pixels: PackedByteArray) -> bool:
+func apply(material: ShaderMaterial, bitmap: Dictionary, source_handle: int, pixels: PackedByteArray, size: float = 1.0, position: float = 0.0) -> bool:
 	if not material or bitmap.is_empty():
 		clear(material)
 		return false
@@ -28,9 +28,20 @@ func apply(material: ShaderMaterial, bitmap: Dictionary, source_handle: int, pix
 		texture = ImageTexture.create_from_image(image)
 		version = int(bitmap.version)
 		source = source_handle
-	var canvas := Vector2(float(bitmap.canvas_width), float(bitmap.canvas_height))
+	var rect := adjusted_rect(bitmap, size, position)
 	material.set_shader_parameter("bitmap_subtitle_texture", texture)
-	material.set_shader_parameter("bitmap_subtitle_rect", Vector4(float(bitmap.x) / canvas.x, float(bitmap.y) / canvas.y,
-		float(bitmap.width) / canvas.x, float(bitmap.height) / canvas.y))
+	material.set_shader_parameter("bitmap_subtitle_rect", rect)
 	material.set_shader_parameter("bitmap_subtitle_enabled", true)
 	return true
+
+## Scale around the cue centre/baseline. Position 0 preserves authored placement;
+## positive values lift the baseline toward the top, matching the text slider.
+static func adjusted_rect(bitmap: Dictionary, size: float, position: float) -> Vector4:
+	var canvas := Vector2(float(bitmap.canvas_width), float(bitmap.canvas_height))
+	var scale := clampf(size, 0.5, 2.0) if is_finite(size) else 1.0
+	var lift := clampf(position, 0.0, 1.0) if is_finite(position) else 0.0
+	var extent := Vector2(float(bitmap.width), float(bitmap.height)) / canvas * scale
+	var centre := (float(bitmap.x) + float(bitmap.width) / 2.0) / canvas.x
+	var baseline := (float(bitmap.y) + float(bitmap.height)) / canvas.y
+	var top := lerpf(baseline - extent.y, 0.0, lift)
+	return Vector4(centre - extent.x / 2.0, top, extent.x, extent.y)

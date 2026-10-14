@@ -6,6 +6,27 @@ import java.net.HttpURLConnection
 import java.net.URL
 
 class SidecarSubtitlesTest {
+    @Test fun exactSrtThenAssRemainFirstEvenWithManyVariants() {
+        val names = (1..20).map { "film.$it.ass" } + listOf("film.ssa", "FILM.ASS", "film.SRT")
+        assertEquals(listOf("film.SRT", "FILM.ASS"), SidecarSubtitles.select("film.mkv", names).take(2))
+    }
+
+    @Test fun localCompanionsKeepTheirFilenameAndReadablePath() {
+        val folder = java.nio.file.Files.createTempDirectory("subtitle-sidecars").toFile()
+        try {
+            val video = java.io.File(folder, "影片 @SBS.mkv").apply { writeText("fixture") }
+            for (name in listOf("影片 @SBS.ass", "影片 @SBS.srt", "影片 @SBS.en.vtt", "other.srt", "影片 @SBS.sup"))
+                java.io.File(folder, name).writeText("fixture")
+            java.io.File(folder, "影片 @SBS.folder.sub").mkdir()
+            val tracks = SidecarSubtitles.forLocal(video)
+            assertEquals(listOf("影片 @SBS.srt", "影片 @SBS.ass", "影片 @SBS.en.vtt"), tracks.map { it.title })
+            assertTrue(tracks.all { java.io.File(it.location).readText() == "fixture" })
+        } finally {
+            check(folder.canonicalFile.parentFile == java.io.File(System.getProperty("java.io.tmpdir")).canonicalFile)
+            folder.deleteRecursively()
+        }
+    }
+
     @Test fun sitestMatchesOnlyTheSelectedPart() {
         val stem = "4k2.com@sivr00434_8k_part1"
         val names = listOf("$stem.mp4", "$stem.srt", "$stem.si.mix.m4a", "$stem.si.wav",

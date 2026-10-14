@@ -86,6 +86,8 @@ var _labels: Array[Label3D] = []
 var _hover: Dictionary = {}
 var _pointers: Dictionary = {}
 var _decorations: Array[Node3D] = []
+## Modal surfaces stop rays in the gaps between their controls.
+var _ray_blockers: Array[Dictionary] = []
 var _backdrop: MeshInstance3D
 ## Hover names of icon-only buttons (target -> text), shown over the hovered button.
 var _tips: Dictionary = {}
@@ -138,7 +140,7 @@ func ray_hit(origin: Vector3, direction: Vector3) -> Dictionary:
 		return {}
 	var ray := direction.normalized()
 	var best := {}
-	for button in _buttons:
+	for button in _buttons + _ray_blockers:
 		if (not button.enabled and not button.get("hover_disabled", false)) or not button.node.visible:
 			continue
 		var inverse: Transform3D = button.node.global_transform.affine_inverse()
@@ -149,7 +151,7 @@ func ray_hit(origin: Vector3, direction: Vector3) -> Dictionary:
 			continue
 		var local := start + delta * (-start.z / delta.z)
 		var half: Vector2 = button.rect.size * 0.5
-		var radius := minf(0.012, minf(half.x, half.y))
+		var radius := minf(float(button.get("radius", 0.012)), minf(half.x, half.y))
 		var corner := Vector2(absf(local.x), absf(local.y)) - (half - Vector2.ONE * radius)
 		if corner.x > radius or corner.y > radius or corner.max(Vector2.ZERO).length() > radius:
 			continue
@@ -160,26 +162,55 @@ func ray_hit(origin: Vector3, direction: Vector3) -> Dictionary:
 		best = {"target": button.target, "point": to_local(world), "distance": distance, "enabled": button.enabled}
 	return best
 
+func _block_rays(panel: MeshInstance3D, size: Vector2, radius: float = 0.025) -> void:
+	_ray_blockers.append({"target": NONE, "rect": Rect2(-size / 2, size), "enabled": false,
+		"hover_disabled": true, "node": panel, "radius": radius})
+
+## Grabbing includes the panel's empty background without making it a clickable control.
+func grab_hit(origin: Vector3, direction: Vector3) -> Dictionary:
+	var hit := ray_hit(origin, direction)
+	if not visible or not origin.is_finite() or not direction.is_finite() or direction.length_squared() < 0.000001: return hit
+	var inverse := _backdrop.global_transform.affine_inverse()
+	var start: Vector3 = inverse * origin
+	var delta: Vector3 = inverse.basis * direction.normalized()
+	if delta.z >= -0.00001 or start.z <= 0: return hit
+	var local: Vector3 = start + delta * (-start.z / delta.z)
+	var half: Vector2 = _backdrop.mesh.size / 2
+	if absf(local.x) > half.x or absf(local.y) > half.y: return hit
+	var world: Vector3 = _backdrop.global_transform * Vector3(local.x, local.y, 0)
+	var distance := origin.distance_to(world)
+	if distance > MAX_RAY_METRES or (not hit.is_empty() and float(hit.distance) <= distance): return hit
+	return {"target": NONE, "point": to_local(world), "distance": distance, "enabled": false}
+
 func update_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: bool) -> void:
 	if not visible:
 		return
 	var hit := ray_hit(origin, direction) if tracked else {}
 	_hover[hand] = int(hit.get("target", NONE))
-	var pointer := _pointer(hand)
 	var valid := tracked and origin.is_finite() and direction.is_finite() and direction.length_squared() > 0.000001
+	var endpoint := Vector3.ZERO
+	if valid: endpoint = to_global(hit.point) if not hit.is_empty() else origin + direction.normalized() * MAX_RAY_METRES
+	_draw_pointer(hand, origin, endpoint, valid, not hit.is_empty())
+	_update_highlights()
+
+func update_move_pointer(hand: String, origin: Vector3, point: Vector3, tracked: bool) -> void:
+	_hover[hand] = NONE
+	_draw_pointer(hand, origin, point, tracked and visible and origin.is_finite() and point.is_finite(), true)
+	_update_highlights()
+
+func _draw_pointer(hand: String, origin: Vector3, endpoint: Vector3, valid: bool, hit: bool) -> void:
+	var pointer := _pointer(hand)
 	pointer.line.visible = valid
-	pointer.dot.visible = not hit.is_empty()
+	pointer.dot.visible = valid and hit
 	if valid:
-		var endpoint: Vector3 = to_global(hit.point) if not hit.is_empty() else origin + direction.normalized() * MAX_RAY_METRES
 		var mesh: ImmediateMesh = pointer.line.mesh
 		mesh.clear_surfaces()
 		mesh.surface_begin(Mesh.PRIMITIVE_LINES)
 		mesh.surface_add_vertex(to_local(origin))
 		mesh.surface_add_vertex(to_local(endpoint) + Vector3(0, 0, 0.006))
 		mesh.surface_end()
-		if not hit.is_empty():
-			pointer.dot.position = hit.point + Vector3(0, 0, 0.008)
-	_update_highlights()
+		if hit:
+			pointer.dot.position = to_local(endpoint) + Vector3(0, 0, 0.008)
 
 func cancel_pointer(hand: String) -> void:
 	update_pointer(hand, Vector3.ZERO, Vector3.ZERO, false)
@@ -223,6 +254,7 @@ func _clear_layout() -> void:
 	for button in _buttons:
 		button.node.free()
 	_buttons.clear()
+	_ray_blockers.clear()
 	for label in _labels:
 		label.free()
 	_labels.clear()

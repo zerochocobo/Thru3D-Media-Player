@@ -50,10 +50,15 @@ func items() -> Array[Dictionary]:
 	for item in bindings.definitions():
 		if mode == 0 and not all_actions and item.defaults.is_empty() and not item.id.begins_with("move_"): continue
 		if mode == 2 and (item.hold or not item.defaults.is_empty()): continue
-		result.append(item)
+		var row: Dictionary = item.duplicate()
+		if bindings.is_fixed(item.id): row["fixed"] = bindings.label(item.id)
+		result.append(row)
 	if mode == 0:
+		result.append({"title": "Push away / pull closer", "fixed": "Grip + stick ↑ / ↓", "scope": "All media"})
+		result.append({"title": "Push away / pull closer", "fixed": "Trigger + stick ↑ / ↓", "scope": "Flat picture"})
 		var ranks := {"play": 0, "Show / hide controls": 1, "Menu selection": 2, "Close controls": 3, "back10": 4, "forward10": 5, "volume_up": 6, "volume_down": 7}
-		result.sort_custom(func(a, b): return int(ranks.get(a.get("id", a.title), 20 + bindings.definitions().find(a))) < int(ranks.get(b.get("id", b.title), 20 + bindings.definitions().find(b))))
+		var order: Array = bindings.definitions().map(func(item): return item.id)
+		result.sort_custom(func(a, b): return int(ranks.get(a.get("id", a.title), 20 + order.find(a.get("id", "")))) < int(ranks.get(b.get("id", b.title), 20 + order.find(b.get("id", "")))))
 		result.append({"title": "Movement range", "move_scope": true, "scope": "All media"})
 	return result
 
@@ -98,7 +103,7 @@ func choose(key: String, value: Variant) -> bool:
 		reset(); return true
 	if not key.begins_with(BINDING_KEY): return false
 	var id := key.trim_prefix(BINDING_KEY)
-	if bindings.definition(id).is_empty(): return true
+	if bindings.definition(id).is_empty() or bindings.is_fixed(id): return true
 	reset()
 	if not value is String: return true
 	if value == "__clear":
@@ -141,11 +146,12 @@ func scope_field() -> Dictionary:
 		{"value": "panel", "label": "This panel"}, {"value": "media", "label": "Picture + controls"}, {"value": "all", "label": "All interfaces"}], "heading": "Movement range", "all_visible": true}
 
 func binding_field(id: String) -> Dictionary:
+	if bindings.is_fixed(id): return {}
 	var item := bindings.definition(id)
 	var advanced := mode == 2
 	var options: Array = [{"value": "__clear", "label": "Unassigned"}]
 	if not advanced: options.append({"value": "__default", "label": "Restore defaults"})
-	var inputs: Array = ["grip_click", "trigger_click"] if item.hold else (Bindings.BUTTONS + Bindings.AXES)
+	var inputs: Array = ["trigger_click"] if item.hold else (Bindings.BUTTONS + Bindings.AXES)
 	if advanced: inputs = ["ax_button", "by_button", "primary_click"] + Bindings.AXES
 	for hand in ["right_hand", "left_hand"]:
 		for input in inputs:
@@ -199,7 +205,7 @@ func draw() -> void:
 			var button: Dictionary = menu._buttons.back()
 			var node: Node3D = menu._buttons.back().node
 			if row.has("scope"):
-				label(I18n.t(row.scope) if row.has("fixed") else Bindings.scope_name(row.scope), Vector2(-0.60, 0), 18, INK, node, 0.19, false)
+				label(Bindings.scope_name(row.scope) if row.has("id") else I18n.t(row.scope), Vector2(-0.60, 0), 18, INK, node, 0.19, false)
 			label(row.title, Vector2(-0.365, 0), 18, INK, node, 0.39)
 			if row.has("fixed"):
 				label(row.fixed, Vector2(0.12, 0), 18, INK, node, 0.49)
@@ -211,6 +217,8 @@ func draw() -> void:
 	if mode == 1: draw_gesture()
 	elif not notice.is_empty() and pending.is_empty():
 		label(notice, Vector2(-0.48, -0.50), 15, menu.ACCENT, menu, 0.64)
+	elif mode == 0 and pending.is_empty():
+		label("Same hand: ↑ away · ↓ closer", Vector2(-0.48, -0.50), 15, menu.MUTED, menu, 0.80)
 	if menu._max_scroll() > 0:
 		var span: Vector2 = menu._bar_span()
 		menu._button(menu.SCROLLBAR, "", Vector2(0.82, span.x - span.y / 2), Vector2(0.035, span.y), not modal())

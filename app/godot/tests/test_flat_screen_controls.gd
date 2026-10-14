@@ -66,14 +66,13 @@ func _run() -> void:
 			main._on_pointer_button("trigger_click", "right_hand")
 			check(not menu.visible and main._grab.get("hid_menu", false), "%s screen press closes controls" % mode)
 			main._update_flat_grab_stick(Vector2(0, 1), Vector2.ZERO, 0.4)
-			check(video.screen_scale == 1.0, "Other hand cannot scale held screen")
+			check(video.screen_scale == 1.0 and video.screen_distance == 2.0, "Other hand cannot push the held screen")
 			main._update_flat_grab_stick(Vector2.ZERO, Vector2(0, 1), 0.4)
-			check(video.screen_scale > 1.0 and video.screen_distance == 2.0, "%s held up grows at fixed distance" % mode)
-			var grown: float = video.screen_scale
+			check(video.screen_scale == 1.0 and is_equal_approx(video.screen_distance, 2.6), "%s trigger plus up pushes away without scaling" % mode)
 			video._apply_geometry() # Next native frame must retain the new mesh and pose.
-			check(video._flat.size.is_equal_approx(size * grown), "%s presented frame preserves size" % mode)
+			check(video._flat.size.is_equal_approx(size) and is_equal_approx(video.panel.global_position.distance_to(eye), 2.6), "%s presented frame preserves size and changed distance" % mode)
 			main._update_flat_grab_stick(Vector2.ZERO, Vector2(0, -1), 0.4)
-			check(is_equal_approx(video.screen_scale, 1), "%s down shrinks symmetrically" % mode)
+			check(is_equal_approx(video.screen_scale, 1) and is_equal_approx(video.screen_distance, 2), "%s down pulls closer symmetrically" % mode)
 			main._on_pointer_release("trigger_click", "right_hand")
 			check(main._grab.is_empty() and not menu.visible, "Release finishes without reopening controls")
 			for corner in [0, 1]:
@@ -86,7 +85,7 @@ func _run() -> void:
 				check(video._handles[corner].visible, "Active corner bracket is visible")
 				main.test_ray = [eye, (video.panel.to_global(Vector3(video.screen_corner(corner).x * 1.5, video.screen_corner(corner).y * 1.5, 0)) - eye).normalized()]
 				main._update_grab()
-				check(video.screen_scale > 1 and video.screen_distance == 2, "%s corner grows without moving distance" % mode)
+				check(video.screen_scale > 1 and is_equal_approx(video.screen_distance, 2), "%s corner grows without moving distance" % mode)
 				main._on_pointer_release("trigger_click", "right_hand")
 			video.set_screen_scale(1)
 			main._grab = {"hand": "right_hand", "moved": false}
@@ -109,9 +108,10 @@ func _run() -> void:
 			menu.dismiss()
 	main._grab = {"hand": "right_hand", "moved": false}
 	main._update_flat_grab_stick(Vector2.ZERO, Vector2(0, 1), 10)
-	check(video.screen_scale == video.SCALE_LIMITS.y, "Upper scale limit")
+	check(video.screen_distance == video.DISTANCE_LIMITS.y and video.screen_scale == 1, "Upper distance limit without scaling")
 	main._update_flat_grab_stick(Vector2.ZERO, Vector2(0, -1), 10)
-	check(video.screen_scale == video.SCALE_LIMITS.x, "Lower scale limit")
+	check(video.screen_distance == video.DISTANCE_LIMITS.x and video.screen_scale == 1, "Lower distance limit without scaling")
+	var distance_before: float = video.screen_distance
 	main._grab = {}
 	video.geometry = 1
 	menu.toggle()
@@ -120,7 +120,7 @@ func _run() -> void:
 	menu._activate(11)
 	check(menu._adjustment == "screen" and not menu._adjust_rows.values().any(func(row): return row.key == "screen_distance"), "Immersive projection disables flat distance")
 	main._on_playback_adjustment("screen_distance", 5)
-	check(is_equal_approx(video.screen_distance, 2), "Immersive adjustment cannot change flat screen")
+	check(is_equal_approx(video.screen_distance, distance_before), "Immersive adjustment cannot change flat screen")
 	menu.free()
 	main.recent_menu.free()
 	main.free()

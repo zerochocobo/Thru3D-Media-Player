@@ -44,15 +44,18 @@ func run() -> void:
 		await shot(viewport, menu, output.path_join(language + "-controllers-scrolled.png"))
 		menu.scroll = menu.rows.find(menu.rows.filter(func(row): return row.get("id") == "move_video")[0]); menu.refresh()
 		check(menu._buttons.all(func(button): return button.target != 7052), "No recording button remains")
-		open_dropdown(menu, "control_binding/move_video")
+		check(menu.rows.filter(func(row): return row.get("id", "") in Bindings.FIXED_ACTIONS).all(func(row): return row.has("fixed") and row.fixed == menu.controls_page.bindings.label(row.id)), "Both movement rows display fixed left/right grips")
+		check(not menu._buttons.any(func(button): return button.get("choice_key", "") in ["control_binding/move_video", "control_binding/move_photo"]), "Fixed movement has no reassignment dropdown")
+		check(not Array(menu.text_snapshot().split("\n")).any(func(text): return text in ["video", "photo"]), "Fixed movement context uses the translated video/photo names")
 		await shot(viewport, menu, output.path_join(language + "-move-binding.png"))
 		menu.choices.reset(); menu.controls_page.reset(); menu.scroll = menu._max_scroll(); menu.refresh()
 		open_dropdown(menu, "control_move_scope")
 		await shot(viewport, menu, output.path_join(language + "-move-scope.png"))
 		menu.choices.reset(); menu.controls_page.mode = 0; menu.scroll = 0; menu.refresh()
 		open_dropdown(menu, "control_binding/play")
+		check(menu.choices.popup.choices.all(func(option): return not str(option.value).ends_with("/grip_click")), "Other action dropdowns omit both grips")
 		await shot(viewport, menu, output.path_join(language + "-binding-dropdown.png"))
-		await pointer_shot(viewport, camera, menu, "right_hand/by_button", output.path_join(language + "-binding-pointer.png"), language == "zh")
+		await pointer_shot(viewport, camera, menu, "right_hand/ax_button", output.path_join(language + "-binding-pointer.png"), language == "zh")
 		menu.choices.reset(); menu.controls_page.choose("control_binding/play", "left_hand/ax_button"); menu.refresh()
 		check(not menu.controls_page.pending.is_empty() and menu.text_snapshot().contains(I18n.t("Swap these bindings?")), "Duplicate binding visibly requires confirmation")
 		await shot(viewport, menu, output.path_join(language + "-binding-conflict.png"))
@@ -82,11 +85,76 @@ func run() -> void:
 			for frame in 36:
 				menu.controls_page.demo.show_phase(float(frame) / 36)
 				await shot(viewport, menu, output.path_join("gesture-frames/%03d.png" % frame), false)
+	await grip_frames(viewport, camera, menu, output)
 	menu.queue_free(); viewport.queue_free(); await process_frame
 	for failure in failures: push_error(failure)
 	FileAccess.open(output.path_join("verification.json"), FileAccess.WRITE).store_string(JSON.stringify({"checks": checks, "failures": failures, "widget_counts": widget_counts}, "\t"))
 	print("Controls render: %d checks, %d failures" % [checks, failures.size()])
 	quit(0 if failures.is_empty() else 1)
+
+func grip_frames(viewport: SubViewport, camera: Camera3D, menu: Node3D, output: String) -> void:
+	I18n.use("zh")
+	menu.choices.reset(); menu.controls_page.reset(); menu.controls_page.mode = 0
+	menu.scroll = menu._max_scroll(); menu.refresh()
+	menu.reparent(viewport, true)
+	var main := preload("res://tests/test_controller_bindings.gd").InputMain.new()
+	main.recent_menu = menu
+	main.head_pose = camera.global_transform
+	var head_start := camera.global_transform
+	var up := menu.global_basis.y.normalized()
+	var radius := menu.global_position.distance_to(camera.global_position)
+	var point: Vector3 = menu._backdrop.to_global(Vector3(-menu._backdrop.mesh.size.x / 2 + 0.025, 0.1, 0))
+	var initial := Transform3D(Basis.IDENTITY, point + Vector3(0.04, -0.02, 0.9)).looking_at(point, Vector3.UP)
+	main.pose = initial; main.rays.right_hand = [initial.origin, -initial.basis.z]
+	main._process_sticks(Vector2.ZERO, Vector2.ZERO, 0.014)
+	await shot(viewport, menu, output.path_join("zh-grip-before.png"), false)
+	main._on_controller_button("grip_click", "right_hand")
+	check(main.interface_move.pending(), "Grip preview captures the empty panel background")
+	for index in 3:
+		main.pose = initial
+		if index > 0:
+			main.pose.basis = Basis(Vector3.UP, 0.18 if index == 1 else -0.2) * initial.basis
+			if index == 2: main.pose.origin += Vector3(0.12, 0.05, -0.1)
+		main.rays.right_hand = [main.pose.origin, -main.pose.basis.z]
+		main._update_interface_move(); main._process_sticks(Vector2.ZERO, Vector2.ZERO, 0.014)
+		check(absf(menu.global_position.distance_to(camera.global_position) - radius) < 0.0001, "Grip preview preserves viewing distance while translating and turning")
+		var pointer: Dictionary = menu._pointers.right_hand
+		check(pointer.line.visible and pointer.dot.visible and pointer.dot.global_position.distance_to(main.interface_move.capture.anchor) < 0.009, "Grip preview ray terminates at the live captured point")
+		var frame := await shot(viewport, menu, output.path_join("zh-grip-%d.png" % index), false)
+		check(amber_pixels(frame, camera.unproject_position(pointer.dot.global_position), 6) >= 10, "Live grip reticle pixels remain visible on the panel")
+		var line_point: Vector3 = main.pose.origin.lerp(main.interface_move.capture.anchor, 0.85)
+		check(amber_pixels(frame, camera.unproject_position(line_point), 4) > 0, "Live grip line pixels track the current hand origin")
+	for step in 8: main._process_sticks(Vector2.ZERO, Vector2(0, 1), 0.05)
+	check(menu.global_position.distance_to(camera.global_position) > radius + 0.3, "Grip plus stick up visibly pushes the menu away")
+	var depth_pointer: Dictionary = menu._pointers.right_hand
+	check(depth_pointer.dot.global_position.distance_to(main.interface_move.capture.anchor) < 0.009, "Depth movement keeps the ray endpoint on its grabbed point")
+	var pushed := await shot(viewport, menu, output.path_join("zh-grip-pushed.png"), false)
+	check(amber_pixels(pushed, camera.unproject_position(depth_pointer.dot.global_position), 6) >= 10, "Depth-adjusted menu retains visible reticle pixels")
+	for step in 8: main._process_sticks(Vector2.ZERO, Vector2(0, -1), 0.05)
+	check(absf(menu.global_position.distance_to(camera.global_position) - radius) < 0.0001, "Grip plus down visibly returns to the original distance")
+	for step in 37:
+		var turn := Basis(up, step * PI / 36.0)
+		main.pose = Transform3D(turn * initial.basis, head_start.origin + turn * (initial.origin - head_start.origin))
+		main.rays.right_hand = [main.pose.origin, -main.pose.basis.z]
+		camera.global_transform = Transform3D(turn * head_start.basis, head_start.origin)
+		main.head_pose = camera.global_transform
+		main._update_interface_move(); main._process_sticks(Vector2.ZERO, Vector2.ZERO, 0.014)
+		check(menu.global_basis.y.normalized().dot(up) > 0.99999, "Actual menu stays upright when dragged to the side and behind the head")
+		if step in [18, 36]:
+			var rear_pointer: Dictionary = menu._pointers.right_hand
+			var frame := await shot(viewport, menu, output.path_join("zh-grip-side.png" if step == 18 else "zh-grip-behind.png"), false)
+			check(amber_pixels(frame, camera.unproject_position(rear_pointer.dot.global_position), 6) >= 10, "The upright side/rear menu retains its visible grab marker")
+	main._on_controller_release("grip_click", "right_hand")
+	camera.global_transform = head_start
+	main.head_pose = Transform3D(head_start.basis * Basis.from_euler(Vector3(0.1, 0, 0.25)), head_start.origin)
+	main.interface_move.placements.erase(main._menu_key(menu))
+	main._place_menu(menu)
+	check(menu.global_basis.y.is_equal_approx(Vector3.UP), "Actual library ignores head tilt when follow is off")
+	await shot(viewport, menu, output.path_join("zh-level-head-tilted.png"), false)
+	main.view_follow.set_enabled(true); main._place_menu(menu)
+	check(menu.global_basis.is_equal_approx(main.head_pose.basis), "Actual library uses the full head tilt only in follow mode")
+	await shot(viewport, menu, output.path_join("zh-follow-head-tilted.png"), false)
+	main.free()
 
 func open_dropdown(menu: Node3D, key: String) -> void:
 	for button in menu._buttons:

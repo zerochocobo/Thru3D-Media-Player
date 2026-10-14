@@ -81,7 +81,9 @@ func _run() -> void:
 	video.material.set_shader_parameter("stereo_sbs", false)
 	var counts := {}
 	var masks := {}
-	for mode in ["normal", "unchanged", "rotation90", "rotation-90", "restored", "alpha_zero", "gap", "vr", "off"]:
+	for mode in ["normal", "unchanged", "small", "large", "lifted", "adjustment_reset", "rotation90", "rotation-90", "restored", "alpha_zero", "gap", "vr", "off"]:
+		video.subtitle_size = 0.5 if mode == "small" else (1.25 if mode == "large" else 1.0)
+		video.subtitle_flat_position = 0.5 if mode == "lifted" else 0.0
 		video.material.set_shader_parameter("alpha_enabled", mode == "alpha_zero")
 		if mode == "rotation90": video.set_screen_rotation(90)
 		if mode == "rotation-90": video.set_screen_rotation(-90)
@@ -111,19 +113,25 @@ func _run() -> void:
 				if minf(pixel.r, minf(pixel.g, pixel.b)) > 0.85: mask.append(y * image.get_width() + x)
 		masks[mode] = mask
 		image.save_png(output.path_join("pgs_" + mode + ".png"))
-		if mode in ["normal", "unchanged", "rotation90", "rotation-90", "restored", "alpha_zero"] and counts[mode] < 100:
+		if mode in ["normal", "unchanged", "small", "large", "lifted", "adjustment_reset", "rotation90", "rotation-90", "restored", "alpha_zero"] and counts[mode] < 100:
 			failures.append("PGS must render above the video including transparent Alpha: " + mode)
 		if mode in ["gap", "vr", "off"] and counts[mode] != 0:
 			failures.append("PGS must disappear immediately: " + mode)
 		if video.caption.visible:
 			failures.append("PGS must never produce a duplicate text label")
 		var state: Dictionary = video.layout_snapshot().subtitles
-		if bool(state.bitmap_ready) != (mode in ["normal", "unchanged", "rotation90", "rotation-90", "restored", "alpha_zero"]):
+		if bool(state.bitmap_ready) != (mode in ["normal", "unchanged", "small", "large", "lifted", "adjustment_reset", "rotation90", "rotation-90", "restored", "alpha_zero"]):
 			failures.append("PGS diagnostics must reflect the actual uploaded texture: " + mode)
 		if state.bitmap_ready and (state.bitmap_texture_size != [1280, 160] or state.render_layer != "flat_PGS_bitmap_overlay"):
 			failures.append("PGS texture dimensions/render layer must be reported correctly")
 		if mode == "alpha_zero" and host.reads != 1:
 			failures.append("Unchanged/paused PGS crop must upload only once")
+	if counts.small >= counts.normal * 0.4 or counts.large <= counts.normal * 1.3:
+		failures.append("PGS size slider must change the actual rendered bitmap area")
+	if masks.adjustment_reset != masks.normal:
+		failures.append("Resetting bitmap adjustments must restore its authored silhouette")
+	if masks.lifted.is_empty() or masks.normal.is_empty() or masks.lifted[0] >= masks.normal[0]:
+		failures.append("PGS position slider must lift the actual rendered crop")
 	# Transparent video gives a background-independent reference for the same PGS silhouette.
 	for mode in ["rotation90", "rotation-90"]:
 		if masks[mode] != masks.alpha_zero:

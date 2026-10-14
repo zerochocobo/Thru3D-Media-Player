@@ -138,12 +138,15 @@ func _run() -> void:
 		var zoom: float = video.view_zoom
 		video.screen_rotation = 0
 		video._apply_geometry()
-		var pose: Transform3D = video.subtitle_transform()
+		video._place_caption()
+		var plane: Transform3D = video.material.get_shader_parameter("subtitle_world_to_patch")
+		var pose := plane.affine_inverse()
 		video.set_screen_rotation(-90)
 		menu.refresh_values()
 		video._place_caption()
 		video._sync_subtitle_surface()
 		check(video._subtitle_surface.visible and video._subtitle_surface.global_transform.is_equal_approx(pose), "VR captions keep their pose while the picture rolls")
+		check(video._subtitle_surface.mesh is QuadMesh, "VR captions draw only their projection plane, not the whole sphere")
 		check(click(menu, Menu.ROTATION_RESET) and video.view_yaw == yaw and video.view_pitch == pitch and video.view_zoom == zoom, "VR straighten preserves direction and zoom")
 	video.geometry = 0
 	video._apply_geometry()
@@ -185,16 +188,22 @@ func _run() -> void:
 	click(menu, 110)
 	check(menu.choices.sliders.is_empty() and not menu.choices.targets.values().any(func(item): return item.get("key") == "subtitle_style"), "Flat CC initially hides all appearance controls")
 	check(click(menu, Menu.SUBTITLE_APPEARANCE) and menu._subtitle_open, "Ray opens appearance without closing subtitle selection")
-	check(menu.choices.sliders.size() == 2 and menu.text_snapshot().contains("External subtitles must match the video filename."), "Flat CC provides size, vertical position and naming guidance")
+	check(menu.choices.sliders.size() == 3 and menu.text_snapshot().contains("Auto-load matching subtitles"), "Flat CC provides sync, size, vertical position and automatic loading switch")
 	video.subtitles.select(2)
 	menu.refresh()
-	check(menu.choices.sliders.is_empty(), "PGS preserves source layout and hides text controls")
+	check(menu.choices.sliders.size() == 3 and not menu.choices.targets.values().any(func(item): return item.get("key") == "subtitle_style"), "PGS offers sync, size and vertical position while preserving bitmap colors")
 	video.subtitles.select(1)
 	menu.refresh()
-	check(menu.choices.sliders.size() == 2, "Text controls return despite PGS also being listed")
+	check(menu.choices.sliders.size() == 3, "Text controls return despite PGS also being listed")
 	var saved_size: float = video.subtitle_size
 	check(click(menu, Menu.SUBTITLE_APPEARANCE) and menu.choices.sliders.is_empty() and not menu.choices.targets.values().any(func(item): return item.get("key") == "subtitle_style") and video.subtitle_size == saved_size, "Collapsing hides all appearance controls without resetting settings")
 	check(click(menu, 110) and click(menu, 110) and not menu._subtitle_appearance_open and menu.choices.sliders.is_empty(), "Reopening subtitles starts with appearance collapsed")
+	check(click(menu, Menu.SUBTITLE_AUTO) and not video.subtitle_auto_load and menu._subtitle_open, "Automatic-loading switch is wired to the player")
+	stored.load(main.settings_path)
+	check(stored.get_value("subtitles", "auto_load") == false and main._menu_state().subtitle_auto_load == false, "Automatic-loading preference persists and refreshes menu state")
+	video.subtitle_auto_load = true; main._restore_subtitle_settings()
+	check(not video.subtitle_auto_load, "Automatic-loading preference survives settings reload")
+	main._on_player_setting("subtitle_auto_load", true)
 	# The global and playback panels share the same saved appearance and live renderer.
 	var library := Library.new()
 	library.settings_provider = main._library_settings

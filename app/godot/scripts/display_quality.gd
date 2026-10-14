@@ -6,14 +6,30 @@ const SCALES := [1.0, 1.1, 1.25]
 const AUTO := -1
 const DEFAULT := AUTO
 const TIER_DEFAULT := 1
-const SHARPNESS := [0.0, 0.2, 0.4, 0.6]
-const SHARPNESS_NAMES := ["Off", "Low", "Medium", "High"]
+## Matches the compositor's two sharpening filters; the value is the shader strength off the layer.
+const SHARPNESS := [0.0, 0.2, 0.6]
+const SHARPNESS_NAMES := ["Off", "Normal", "Quality"]
 const DEFAULT_SHARPNESS := 0.2
 ## Video output width: -1 follows the device tier, 0 keeps the source size.
 const AUTO_OUTPUT := -1
 ## XR2 Gen1 class GPUs (Quest 2/Pro, PICO Neo3/4) lack the bandwidth to resample 8K60
 ## RGBA per eye pixel; 4K output and no sharpening keep their frame rate.
 const LOW_END_OUTPUT_WIDTH := 4096
+## Compositor supersampling of media layers: 0 off, 1 normal (the earlier fixed filter), 2 quality.
+const SUPERSAMPLING_NAMES := ["Off", "Normal", "Quality"]
+const DEFAULT_SUPERSAMPLING := 1
+
+## Settings hover text: one sentence per setting, the numbers on each choice.
+const SCALE_INFO := "Eye-buffer resolution for the 3D scene and shader-drawn media; normal video, photos and menus are unaffected."
+const SCALE_HINTS := ["×1.0 per axis", "×1.1 per axis (1.21× pixels)", "×1.25 per axis (1.56× pixels)"]
+const SCALE_AUTO_HINT := "×1.0 on Quest 2 / PICO Neo3 class GPUs, ×1.1 otherwise"
+const SUPERSAMPLING_INFO := "Compositor filtering of video and photo layers when scaled down; reduces shimmer."
+const SUPERSAMPLING_HINTS := ["No filtering, lowest GPU cost", "System normal supersampling", "Stronger filtering, higher GPU cost"]
+const SHARPNESS_INFO := "Edge sharpening for video and photos, independent of supersampling."
+const SHARPNESS_HINTS := ["No sharpening", "System normal sharpening; shader strength 0.2", "System quality sharpening; shader strength 0.6"]
+const OUTPUT_INFO := "Maximum decoded width for shader playback; compositor-layer playback ignores it."
+const OUTPUT_HINTS := {AUTO_OUTPUT: "4096 px on Quest 2 / PICO Neo3 class GPUs, source width otherwise", 0: "Source width",
+	5760: "Max 5760 px wide", 4096: "Max 4096 px wide"}
 
 static func load_quality(settings: ConfigFile) -> int:
 	if settings.has_section_key("video", "display_quality"):
@@ -38,7 +54,12 @@ static func default_sharpness(low_end: bool) -> float:
 static func load_sharpness(settings: ConfigFile, low_end: bool = false) -> float:
 	var fallback := default_sharpness(low_end)
 	var value := float(settings.get_value("video", "sharpness", fallback))
-	return clampf(value, 0.0, 0.6) if is_finite(value) else fallback
+	if not is_finite(value): return fallback
+	# Earlier four levels fold in: Low stays Normal, Medium and High become Quality.
+	return SHARPNESS[0 if value <= 0.0 else (1 if value < 0.4 else 2)]
+
+static func load_supersampling(settings: ConfigFile) -> int:
+	return clampi(int(settings.get_value("video", "supersampling", DEFAULT_SUPERSAMPLING)), 0, SUPERSAMPLING_NAMES.size() - 1)
 
 static func load_output_choice(settings: ConfigFile) -> int:
 	var value := int(settings.get_value("video", "output_width", AUTO_OUTPUT))

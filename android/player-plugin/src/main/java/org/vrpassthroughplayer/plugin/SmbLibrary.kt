@@ -234,14 +234,28 @@ internal class SmbLibrary(private val context: Context, private val streams: () 
     }
 
     /** smb://<server id>/<share>/<path> -> loopback HTTP URL with Range support. */
-    fun stream(uri: String): String {
+    fun strmTarget(uri: String, origin: String): String = StrmFile.smbTarget(uri,
+        servers().map { it.id to it.host }, origin.removePrefix("smb://").substringBefore('/'))
+
+    fun readStrm(uri: String): ByteArray = StrmFile.read(source(uri))
+
+    fun strmOrigin(uri: String): String {
+        val rest = uri.removePrefix("smb://")
+        val host = server(rest.substringBefore('/')).host
+        val path = listOf(host.substringAfter('/', ""), rest.substringAfter('/')).filter(String::isNotEmpty).joinToString("/")
+        return java.net.URI("smb", host.substringBefore('/'), "/$path", null).toASCIIString()
+    }
+
+    fun stream(uri: String): String = streams().publish(source(uri), uri.substringAfterLast('/'))
+
+    private fun source(uri: String): StreamSource {
         val rest = uri.removePrefix("smb://")
         val server = server(rest.substringBefore('/'))
         val path = rest.substringAfter('/')
         val url = "smb://${server.host}/$path"
         val context = cifs(server)
         val size = SmbFile(url, context).use { it.length() }
-        val source = object : StreamSource {
+        return object : StreamSource {
             override val size = size
             override fun open(): StreamSource.Reader {
                 val file = SmbFile(url, context)
@@ -255,7 +269,6 @@ internal class SmbLibrary(private val context: Context, private val streams: () 
                 }
             }
         }
-        return streams().publish(source, path.substringAfterLast('/'))
     }
 
     /** SMB hosts seen within [timeoutMs]: mDNS _smb._tcp (NAS, macOS, Samba) plus WS-Discovery,

@@ -80,7 +80,7 @@ internal class EmbyClient(private val account: MediaServerAccount, private val h
             "CollectionFolder,Folder,Series,Season,Movie,Episode,Video,BoxSet,Playlist"
             else if (request.optString("mode") == "library") libraryTypes else "Movie,Episode,Video",
             "StartIndex" to (page - 1) * 48, "Limit" to 48, "EnableTotalRecordCount" to true,
-            "Fields" to "MediaSources,MediaStreams,Overview,People,Genres,Studios,Chapters,Tags,ParentId,ChildCount,PrimaryImageAspectRatio",
+            "Fields" to "MediaSources,MediaStreams,Overview,People,Genres,Studios,Chapters,Tags,Path,ParentId,ChildCount,PrimaryImageAspectRatio",
             "SortBy" to (mapOf("title" to "SortName", "date" to "PremiereDate", "duration" to "Runtime", "rating100" to "CommunityRating")[request.optString("sort")] ?: "DateCreated"),
             "SortOrder" to if (request.optString("direction") == "ASC") "Ascending" else "Descending")
         val parent = if (request.optBoolean("all_libraries")) "" else request.optString("parent_id").ifBlank { request.optString("library_id") }
@@ -189,7 +189,7 @@ internal class EmbyClient(private val account: MediaServerAccount, private val h
         val userData = data.optJSONObject("UserData") ?: JSONObject()
         val result = JSONObject().put("id", id).put("kind", if (container) "container" else "video").put("container", container)
             .put("title", data.optString("Name", "Video").take(256)).put("duration_ms", data.optLong("RunTimeTicks").coerceAtLeast(0) / 10000)
-            .put("basename", source.optString("Path").ifBlank { data.optString("Path").ifBlank { data.optString("FileName") } }.substringAfterLast('/').substringAfterLast('\\'))
+            .put("basename", basename(source.optString("Path").ifBlank { data.optString("Path").ifBlank { data.optString("FileName") } }))
             .put("width", video?.optInt("Width") ?: 0).put("height", video?.optInt("Height") ?: 0)
             .put("description", data.optString("Overview").take(2000)).put("rating", (data.optDouble("CommunityRating", 0.0) * 10).toInt())
             .put("year", data.optInt("ProductionYear")).put("type", data.optString("Type"))
@@ -201,6 +201,12 @@ internal class EmbyClient(private val account: MediaServerAccount, private val h
             .put("genres", facets(data, "GenreItems", "Genres", true)).put("tags", facets(data, "TagItems", "Tags", true))
             .put("performers", facets(data, "People", "", false)).put("studios", facets(data, "Studios", "", false))
         val tags = data.optJSONObject("ImageTags") ?: JSONObject()
+        val variants = JSONObject()
+        for (type in listOf("Primary", "Thumb", "Backdrop")) {
+            val tag = if (type == "Backdrop") data.optJSONArray("BackdropImageTags")?.optString(0).orEmpty() else tags.optString(type)
+            if (tag.isNotBlank()) variants.put(type, imageNode(id, type, 0, tag))
+        }
+        result.put("image_variants", variants)
         val coverType = listOf("Primary", "Thumb", "Backdrop").firstOrNull { tags.optString(it).isNotBlank() ||
             (it == "Backdrop" && (data.optJSONArray("BackdropImageTags")?.length() ?: 0) > 0) }
         result.put("has_cover", coverType != null)
@@ -211,7 +217,7 @@ internal class EmbyClient(private val account: MediaServerAccount, private val h
     }
     override fun detail(id: String): JSONObject {
         val data = item(id)
-        val result = summary(data).put("markers", chapterMarkers(data)).put("images", images(data))
+        val result = summary(data).put("description", data.optString("Overview")).put("markers", chapterMarkers(data)).put("images", images(data))
         if (result.optInt("part_count") > 1 || partMarker.containsMatchIn(result.optString("basename"))) {
             val additional = get("Videos/${mediaId(id)}/AdditionalParts", mapOf("UserId" to user(), "Fields" to "MediaSources,MediaStreams,Path,Chapters", "EnableImages" to true))
                 .getJSONArray("Items").objects()
@@ -271,8 +277,11 @@ internal class EmbyClient(private val account: MediaServerAccount, private val h
         if (tag.isNotBlank()) args["tag"] = tag
         return account.endpoint("Items/${mediaId(id)}/Images/$type/$index?" + mediaQuery(args))
     }
+    private fun basename(path: String): String = if (path.startsWith("http://", true) || path.startsWith("https://", true))
+        runCatching { URI(path).path.orEmpty().substringAfterLast('/') }.getOrDefault("")
+        else path.substringAfterLast('/').substringAfterLast('\\')
     private fun directSource(sources: JSONArray): JSONObject? = sources.objects().firstOrNull {
-        it.optBoolean("SupportsDirectPlay", true) && it.optString("Protocol", "File") == "File" && !it.optBoolean("IsRemote") && !it.optBoolean("RequiresOpening")
+        it.optBoolean("SupportsDirectPlay", true) && it.optString("Protocol", "File").lowercase() in setOf("file", "http", "https") && !it.optBoolean("RequiresOpening") && !it.optBoolean("IsInfiniteStream")
     }
     override fun stream(id: String): MediaStreamLink {
         val data = get("Items/${mediaId(id)}/PlaybackInfo", mapOf("UserId" to user()))
@@ -282,6 +291,16 @@ internal class EmbyClient(private val account: MediaServerAccount, private val h
             ?: throw MediaServerFailure("Original stream unavailable")
         val sourceId = source.getString("Id")
         mediaRequire(sourceId.length in 1..256)
+        val protocol = source.optString("Protocol", "File").lowercase()
+        if (protocol in setOf("http", "https") || source.optBoolean("IsRemote")) {
+            val url = try { URI(source.getString("Path")) } catch (_: Exception) { throw MediaServerFailure("Invalid remote media address") }
+            mediaRequire(url.scheme in setOf("http", "https") && !url.host.isNullOrEmpty() && url.rawUserInfo == null, "Invalid remote media address")
+            val headerData = source.optJSONObject("RequiredHttpHeaders") ?: JSONObject()
+            val headers = headerData.keys().asSequence().associateWith { headerData.getString(it) }
+            return MediaStreamLink(url, sourceId + ":" + source.optLong("Size") + ":" + source.optString("ETag"),
+                runCatching { subtitleLinks(id, source) }.getOrDefault(emptyList()), runCatching { audioLinks(source) }.getOrDefault(emptyList()),
+                url.path.substringAfterLast('/'), remote = true, headers = headers)
+        }
         val args = mapOf("Static" to true, "MediaSourceId" to sourceId,
             "PlaySessionId" to data.optString("PlaySessionId").ifBlank { UUID.randomUUID().toString().replace("-", "") })
         val basename = source.optString("Path").ifBlank { source.optString("FileName") }

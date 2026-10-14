@@ -12,5 +12,7 @@ func set_enabled(value: bool) -> void:
 func capture(key: StringName, head: Transform3D, world: Transform3D) -> void:
 	if enabled: _poses[key] = head.affine_inverse() * world
 
+func forget(key: StringName) -> void: _poses.erase(key)
+
 func pose(key: StringName, head: Transform3D) -> Variant:
 	return head * _poses[key] if enabled and _poses.has(key) else null

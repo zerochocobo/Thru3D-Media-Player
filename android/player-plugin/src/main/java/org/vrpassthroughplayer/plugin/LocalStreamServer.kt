@@ -24,6 +24,7 @@ internal interface StreamSource : Closeable {
 internal class LocalStreamServer : Closeable {
     private val socket = ServerSocket(0, 16, InetAddress.getByName("127.0.0.1"))
     private val sources = ConcurrentHashMap<String, StreamSource>()
+    private val meters = ConcurrentHashMap<String, TransferMeter>()
     private val clients = ConcurrentHashMap.newKeySet<Socket>()
     private val pool = Executors.newCachedThreadPool { Thread(it, "QuestStreamServer").apply { isDaemon = true } }
     private val random = SecureRandom()
@@ -42,11 +43,15 @@ internal class LocalStreamServer : Closeable {
     /** Returns http://127.0.0.1:port/<token>/<name> for MPV; the name only helps container probing. */
     fun publish(source: StreamSource, name: String): String {
         val token = ByteArray(16).also(random::nextBytes).joinToString("") { "%02x".format(it) }
+        meters[token] = TransferMeter()
         sources[token] = source
         return "http://127.0.0.1:${socket.localPort}/$token/${URLEncoder.encode(name, "UTF-8").replace("+", "%20")}"
     }
 
-    fun revoke(url: String) { sources.remove(url.substringAfter(":${socket.localPort}/").substringBefore('/'))?.close() }
+    private fun token(url: String) = url.takeIf { it.startsWith("http://127.0.0.1:${socket.localPort}/") }
+        ?.substringAfter(":${socket.localPort}/")?.substringBefore('/')
+    fun progress(url: String): TransferMeter.Snapshot? = token(url)?.let { meters[it]?.snapshot() }
+    fun revoke(url: String) { token(url)?.let { meters.remove(it); sources.remove(it)?.close() } }
 
     private fun serve(client: Socket) = client.use {
         try {
@@ -63,7 +68,9 @@ internal class LocalStreamServer : Closeable {
             val parts = request.split(' ')
             val output = client.getOutputStream()
             if (parts.size < 3 || parts[0] !in setOf("GET", "HEAD")) return respond(output, 405, "Method Not Allowed")
-            val source = sources[parts[1].trimStart('/').substringBefore('/')] ?: return respond(output, 404, "Not Found")
+            val token = parts[1].trimStart('/').substringBefore('/')
+            val source = sources[token] ?: return respond(output, 404, "Not Found")
+            val meter = meters[token]
             val range = parseRange(headers["range"], source.size) ?: return respond(output, 416, "Range Not Satisfiable",
                 "Content-Range: bytes */${source.size}\r\n")
             val (start, end) = range
@@ -83,11 +90,13 @@ internal class LocalStreamServer : Closeable {
                 val first = try { reader.read(offset, buffer, minOf(buffer.size.toLong(), end - offset + 1).toInt()) }
                     catch (_: Exception) { return respond(output, 502, "Bad Gateway") }
                 if (first <= 0) return respond(output, 502, "Bad Gateway")
+                meter?.add(first)
                 output.write(responseHead)
                 output.write(buffer, 0, first); offset += first
                 while (offset <= end && !closed) {
                     val count = reader.read(offset, buffer, minOf(buffer.size.toLong(), end - offset + 1).toInt())
                     if (count <= 0) break
+                    meter?.add(count)
                     output.write(buffer, 0, count)
                     offset += count
                 }
@@ -120,6 +129,7 @@ internal class LocalStreamServer : Closeable {
         clients.toList().forEach { runCatching { it.close() } }; clients.clear()
         sources.values.forEach { runCatching { it.close() } }
         sources.clear()
+        meters.clear()
     }
 
     companion object {

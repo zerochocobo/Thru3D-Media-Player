@@ -171,6 +171,9 @@ struct Source final {
     std::vector<int64_t> subtitle_track_ids; // commands_mutex
     int desired_subtitle_id = 0;
     bool subtitle_dirty = false;
+    double desired_subtitle_delay = 0.0, subtitle_delay_applied = 0.0;
+    uint64_t desired_subtitle_delay_command = 0;
+    bool subtitle_delay_dirty = false;
     std::string subtitle_snapshot; // status_mutex
     uint64_t published_subtitle_sequence = 0; // status_mutex
     int64_t published_subtitle_ns = 0; // status_mutex
@@ -205,7 +208,7 @@ struct Source final {
     std::vector<int64_t> audio_track_ids; // commands_mutex; from actual MPV track-list
     int desired_audio_id = -1; double desired_volume = 100; bool desired_mute = false, audio_dirty = false;
     uint64_t snapshot_sequence = 0; // control thread only
-    std::string state = "opening", details = "{}", error, render_error;
+    std::string state = "opening", details = "{}", error, render_error, tls_ca_file, source_failure;
     double pixel_aspect = 1.0; // status_mutex; output coordinates remain packed source pixels
     std::string stereo_mode; // status_mutex; MPV's demuxed stereo-in, never inferred from title
     std::atomic<bool> hardware_decoding{false};
@@ -229,10 +232,12 @@ struct Source final {
            std::vector<std::pair<std::string, std::string>> extra_audio = {},
            std::vector<std::pair<std::string, std::string>> extra_subtitles = {}, bool precise_start = true,
            jobject surface = nullptr, JavaVM* java = nullptr,
-           bool software = false, int surface_width = 4096, int surface_height = 4096, bool disc_input = false)
+           bool software = false, int surface_width = 4096, int surface_height = 4096, bool disc_input = false,
+           std::string ca_file = {})
         : path(std::move(file)), hardware(hw), audio(with_audio), exact_start(precise_start), start_ms(position),
           audio_files(std::move(extra_audio)), subtitle_files(std::move(extra_subtitles)), last_seek_exact(precise_start),
           layer_surface(surface), software_layer(software), iso_input(disc_input), layer_width(surface_width), layer_height(surface_height), vm(java) {
+        tls_ca_file = std::move(ca_file);
         require(display != EGL_NO_DISPLAY && owner_context != EGL_NO_CONTEXT,
                 "MPV source must start in the Godot GLES owner context");
     }
@@ -372,6 +377,7 @@ struct Source final {
         const auto eof = property(core, "eof-reached");
         const auto subtitle_json = "{\"sequence\":" + std::to_string(++subtitle_sequence) +
             ",\"command_id\":" + std::to_string(subtitle_command_applied) + ",\"track_id\":" + quote(subtitle_id) +
+            ",\"delay_seconds\":" + std::to_string(subtitle_delay_applied) +
             ",\"text\":" + quote(subtitle_text) + ",\"start_seconds\":" + quote(subtitle_start) +
             ",\"bitmap\":" + bitmap_json +
             ",\"end_seconds\":" + quote(subtitle_end) + ",\"position_seconds\":" + quote(seconds_property(core, "time-pos")) +
@@ -397,7 +403,7 @@ struct Source final {
             ",\"pgs_supported\":" + (pgs_read ? "true" : "false") +
             ",\"playback_speed\":" + quote(property(core, "speed")) + ",\"volume\":" + quote(volume) + ",\"mute\":" + quote(mute) + ",\"audio_samplerate\":" + quote(rate) +
             ",\"audio_channels\":" + quote(channels) + ",\"avsync_seconds\":" + quote(avsync) +
-            ",\"paused_for_cache\":" + quote(cache_pause) + ",\"decoder_frame_drop_count\":" + quote(decoder_drops) +
+            ",\"paused_for_cache\":" + quote(cache_pause) + ",\"cache_speed\":" + quote(property(core, "cache-speed")) + ",\"decoder_frame_drop_count\":" + quote(decoder_drops) +
             ",\"estimated_frame_number\":" + quote(frame_number) + ",\"vo_frame_drop_count\":" + quote(vo_drops) +
             ",\"snapshot_sequence\":" + std::to_string(++snapshot_sequence) +
             ",\"observed_monotonic_ns\":" + std::to_string(observed_ns) +
@@ -494,12 +500,17 @@ struct Source final {
             // Network sources: a deep read-ahead absorbs Wi-Fi jitter for 8K bitrates.
             option("cache", "auto"); option("demuxer-max-bytes", "256MiB"); option("demuxer-readahead-secs", "20");
             option("network-timeout", "30");
+            option("tls-verify", "yes");
+            if (!tls_ca_file.empty()) option("tls-ca-file", tls_ca_file.c_str());
             // stream_curl treats a 206 that ends before Content-Range's total as EOF unless it is
             // issuing bounded requests; servers that answer open ranges in spans (virtual MP4
             // passthrough) then stop playback a few seconds in. Bounded requests resume at the next byte.
             option("curl-max-request-size", "32MiB");
             option("user-agent", user_agent.c_str());
             option("osd-level", "0"); option("sub", "no"); option("sub-visibility", "no"); option("interpolation", "no"); option("dither", "no");
+            // Our source discovery lists matching companions with stable filename titles;
+            // Godot selects exact-name SRT/ASS or restores the user's saved track.
+            option("sub-auto", "no");
             option("scale", "bilinear"); option("cscale", "bilinear"); option("dscale", "bilinear");
             // Non-Profile-5 sources: one direct OES -> RGBA8 pass instead of an 8K RGBA16F intermediate plus a
             // second 8K pass: -65% video-path bandwidth on Quest 3 (ovrgpuprofiler).
@@ -561,7 +572,9 @@ struct Source final {
             while (!closing.load() && !render_failed.load()) {
                 dolby_color_mode(core);
                 bool set_play = false, play = false, set_audio = false, muted = false, set_subtitle = false, seek_exact = true, set_speed = false;
-                double speed = 1.0;
+                double speed = 1.0, subtitle_delay = 0.0;
+                bool set_subtitle_delay = false;
+                uint64_t subtitle_delay_command = 0;
 #ifndef NDEBUG
                 bool set_step = false;
 #endif
@@ -580,6 +593,8 @@ struct Source final {
                         audio_id = desired_audio_id; volume = desired_volume; muted = desired_mute;
                         set_subtitle = subtitle_dirty; subtitle_dirty = false;
                         subtitle_id = desired_subtitle_id; subtitle_command = desired_subtitle_command;
+                        set_subtitle_delay = subtitle_delay_dirty; subtitle_delay_dirty = false;
+                        subtitle_delay = desired_subtitle_delay; subtitle_delay_command = desired_subtitle_delay_command;
                     }
                 }
                 if (set_play && !play) checked(mpv_set_property_string(core, "pause", "yes"), "MPV source pause before audio");
@@ -595,7 +610,13 @@ struct Source final {
                 if (set_subtitle) {
                     const auto selected = subtitle_id < 0 ? "auto" : (subtitle_id == 0 ? "no" : std::to_string(subtitle_id));
                     checked(mpv_set_property_string(core, "sid", selected.c_str()), "MPV subtitle track");
-                    subtitle_command_applied = subtitle_command;
+                    subtitle_command_applied = std::max(subtitle_command_applied, subtitle_command);
+                    next_snapshot = std::chrono::steady_clock::now();
+                }
+                if (set_subtitle_delay) {
+                    checked(mpv_set_property(core, "sub-delay", MPV_FORMAT_DOUBLE, &subtitle_delay), "MPV subtitle delay");
+                    subtitle_delay_applied = subtitle_delay;
+                    subtitle_command_applied = std::max(subtitle_command_applied, subtitle_delay_command);
                     next_snapshot = std::chrono::steady_clock::now();
                 }
                 if (seek >= 0) {
@@ -637,9 +658,20 @@ struct Source final {
                 if (event->event_id == MPV_EVENT_LOG_MESSAGE) {
                     const auto* log = static_cast<const mpv_event_log_message*>(event->data);
                     __android_log_print(ANDROID_LOG_INFO, "QuestMpvSource", "[%s] %s", log->prefix, log->text);
+                    // Keep a fixed cause, never a log line containing a signed address.
+                    if (log->log_level <= MPV_LOG_LEVEL_WARN) {
+                        const std::string text = log->text;
+                        if (text.find("certificate verification failed") != std::string::npos || text.find("SSL peer certificate") != std::string::npos)
+                            source_failure = "TLS certificate verification failed";
+                        else if (text.find("timed out") != std::string::npos || text.find("Timeout") != std::string::npos)
+                            source_failure = "Network read timed out";
+                        else if (text.find("Error opening decoder") != std::string::npos || text.find("Failed to initialize a video decoder") != std::string::npos)
+                            source_failure = "Video decoder could not be started";
+                    }
                 } else if (event->event_id == MPV_EVENT_PROPERTY_CHANGE && event->reply_userdata == 41) {
                     next_snapshot = std::chrono::steady_clock::now();
                 } else if (event->event_id == MPV_EVENT_FILE_LOADED) {
+                    source_failure.clear();
                     if (!loaded && audio) for (const auto& [location, title] : audio_files) {
                         // "auto": listed for the user, never selected over the video's own audio.
                         const char* add[] = {"audio-add", location.c_str(), "auto", title.c_str(), nullptr};
@@ -672,7 +704,7 @@ struct Source final {
                 else if (event->event_id == MPV_EVENT_PLAYBACK_RESTART && layer() && !awaiting_seek_event) publish_layer(core, true);
                 else if (event->event_id == MPV_EVENT_END_FILE) {
                     const auto* end = static_cast<const mpv_event_end_file*>(event->data);
-                    if (end->error < 0) throw std::runtime_error(std::string("MPV playback: ") + mpv_error_string(end->error));
+                    if (end->error < 0) throw std::runtime_error(source_failure.empty() ? std::string("MPV playback: ") + mpv_error_string(end->error) : source_failure);
                     set_state(end->reason == MPV_END_FILE_REASON_EOF ? "ended" : "stopped");
                     // Preserve EOF slots and the last source frame until consumer retirement.
                 }
@@ -1199,7 +1231,8 @@ extern "C" JNIEXPORT jlong JNICALL
 Java_org_vrpassthroughplayer_plugin_MpvSourceNative_create(JNIEnv* env, jclass, jobject context, jstring path, jint start,
                                                          jboolean hardware, jboolean audio, jint max_width, jobjectArray audio_files,
                                                          jobjectArray subtitle_files, jboolean exact_start, jobject surface,
-                                                         jboolean software_layer, jint layer_width, jint layer_height, jboolean iso_input) {
+                                                         jboolean software_layer, jint layer_width, jint layer_height, jboolean iso_input,
+                                                         jstring ca_file) {
     try {
         require(extension_available(), "MPV source requires the verified private source-frame build");
         require(path && start >= 0, "Invalid MPV local source request");
@@ -1210,6 +1243,10 @@ Java_org_vrpassthroughplayer_plugin_MpvSourceNative_create(JNIEnv* env, jclass, 
         });
         const char* utf = env->GetStringUTFChars(path, nullptr); require(utf != nullptr, "MPV local path unavailable");
         std::string file = utf; env->ReleaseStringUTFChars(path, utf);
+        require(ca_file != nullptr, "System TLS certificate cache unavailable");
+        const char* ca_utf = env->GetStringUTFChars(ca_file, nullptr);
+        require(ca_utf != nullptr, "System TLS certificate cache unavailable");
+        std::string tls_ca_file = ca_utf; env->ReleaseStringUTFChars(ca_file, ca_utf);
         const bool local = !file.empty() && file.front() == '/';
         const bool descriptor = file.rfind("fd://", 0) == 0 && file.size() > 5 && file.find_first_not_of("0123456789", 5) == std::string::npos;
         // Network library sources: the loopback SMB proxy and LAN DLNA servers (plain HTTP media URLs).
@@ -1251,7 +1288,7 @@ Java_org_vrpassthroughplayer_plugin_MpvSourceNative_create(JNIEnv* env, jclass, 
         try {
             source = std::make_shared<Source>(file, hardware == JNI_TRUE, audio == JNI_TRUE, start,
                 read_tracks(audio_files), read_tracks(subtitle_files), exact_start == JNI_TRUE, layer_surface, vm,
-                software_layer == JNI_TRUE, layer_width, layer_height, iso_input == JNI_TRUE);
+                software_layer == JNI_TRUE, layer_width, layer_height, iso_input == JNI_TRUE, std::move(tls_ca_file));
         } catch (...) { if (layer_surface) env->DeleteGlobalRef(layer_surface); throw; }
         source->max_output_width.store(max_width); // before any render; fixed for this source
         std::lock_guard<std::mutex> lock(registry_mutex);
@@ -1334,6 +1371,18 @@ Java_org_vrpassthroughplayer_plugin_MpvSourceNative_subtitleStatus(JNIEnv* env, 
         json += ",\"age_ms\":" + std::to_string(std::max<int64_t>(0, (now-source->published_subtitle_ns)/1000000)) + "}";
         return env->NewStringUTF(json.c_str());
     } catch (const std::exception& failure) { error(env, failure); return nullptr; }
+}
+extern "C" JNIEXPORT jlong JNICALL
+Java_org_vrpassthroughplayer_plugin_MpvSourceNative_setSubtitleDelay(JNIEnv* env, jclass, jlong handle, jdouble seconds) {
+    try {
+        if (!std::isfinite(seconds) || std::abs(seconds) > 10.0) return 0;
+        auto source = find(handle); std::lock_guard<std::mutex> lock(source->commands_mutex);
+        if (source->closing.load() || source->subtitle_requests >= static_cast<uint64_t>(std::numeric_limits<jlong>::max())) return 0;
+        source->desired_subtitle_delay = seconds;
+        source->desired_subtitle_delay_command = ++source->subtitle_requests;
+        source->subtitle_delay_dirty = true; source->wake.notify_one();
+        return static_cast<jlong>(source->desired_subtitle_delay_command);
+    } catch (const std::exception& failure) { error(env, failure); return 0; }
 }
 extern "C" JNIEXPORT jboolean JNICALL
 Java_org_vrpassthroughplayer_plugin_MpvSourceNative_seek(JNIEnv* env, jclass, jlong handle, jlong position, jboolean exact) {

@@ -4,6 +4,33 @@
 
 Newest first, following product release milestones. Some development/source snapshots contained features before their product release. Original APK identifiers `0.2` and `0.4` are retained; `0.4` was also called `0.4.0` in release notes. Availability depends on device, server and media capabilities.
 
+## 0.9.0 — 2026-10-14
+
+This update adds STRM playback and remote loading feedback, and improves interface movement, menu placement and picture-quality controls.
+
+- Added compatible STRM link-file playback from local, SMB and cloud sources, retaining history, viewing preferences and sidecar-subtitle association with the original index file.
+- Remote videos and photos show loading stages, elapsed time and measured read speed; improved compatibility for some HTTPS, Emby remote streams and network ISO inputs.
+- Playback failures show their reasons and allow recovery to the full library. Cloud-folder failures offer sanitized underlying reasons and codes; diagnostic improvements do not establish universal account-access fixes.
+- Grip dragging retains viewing distance; grip or trigger plus the same controller's vertical thumbstick moves supported panels or flat pictures nearer/farther. Placement memory is session-only.
+- Standard menus stay upright, while head-following mode uses head tilt. Fixed unwanted roll and behind-you flips; app/system recentering restores default menu placement.
+- Single-photo and side-thumbnail layouts keep their picture position across image changes with following off; explicit recentering restores the picture to the current view.
+- The full playback library retains the control bar and moves with it. Emby/Jellyfin internal pages use consistent larger layouts, with direct source-sidebar access and clearer filter/server-option icons.
+- Supersampling and sharpness independently offer Off/Normal/Quality. Display Quality becomes Render Scale, with explanatory hints and migration of earlier sharpness levels to distinguishable effects.
+
+## 0.8.1 — 2026-10-14
+
+This update improves file browsing and media selection during playback, upgrades library details, and adds per-video subtitle synchronization.
+
+- Added list/icon browsing with remembered preferences, existing metadata and playback progress, and retained browsing positions.
+- Added a compact browser above playback controls for browsing, sorting and switching media; it can expand into the full library while retaining playback state and browsing context.
+- Added Emby/Jellyfin poster, landscape-thumbnail and small-image filename views, three item sizes and per-server display preferences.
+- Improved detail layouts with full synopses, scrollable parts/cast/artwork and content-tag queries for related titles.
+- Both grip buttons are reserved for interface/photo-magnifier movement while advanced combinations remain available. Fixed ray feedback and coplanar browser/control-bar movement.
+- Added subtitle synchronization within ±10 seconds, 0.1-second fine adjustment and reset, saved per video. Positive values delay subtitles; negative values advance them.
+- Track selection keeps the adjustment panel open and empty areas intercept clicks. Matching-filename auto-loading prioritizes SRT, then ASS; manual and saved choices take precedence.
+- Added flat-screen PGS size and vertical-position controls with individual resets and original colors retained.
+- Reduced unnecessary VR picture/subtitle rendering work and prevented brief frame-rate dips from prematurely disabling high-resolution menus.
+
 ## 0.8.0 — 2026-10-13
 
 This update adds Blu-ray ISO playback and cloud-drive search, improves media-server browsing, and refines display adjustments and file navigation.

@@ -41,7 +41,7 @@ internal class CloudCancellation : CloudTransport {
         return CloudHttp.request(url, cookie, form, this)
     }
 }
-internal class CloudFailure(val reason: String = "cloud_unavailable") : IOException(when (reason) {
+internal class CloudFailure(val reason: String = "cloud_unavailable", detail: String = "", cause: Throwable? = null) : IOException(when (reason) {
     "cloud_login_required" -> "Please sign in to your cloud account again"
     "cloud_store_unavailable" -> "Cloud account storage unavailable"
     "cloud_file_missing" -> "Cloud file or account not found"
@@ -49,7 +49,9 @@ internal class CloudFailure(val reason: String = "cloud_unavailable") : IOExcept
     "cloud_file_ambiguous" -> "Duplicate cloud names. Rename in cloud storage"
     "cloud_folder_too_large" -> "Cloud folder too large"
     else -> "Cloud connection failed"
-})
+}, cause) {
+    val detail = CloudDiagnostics.sanitize(detail)
+}
 
 internal object CloudHttp : CloudTransport {
     val apiHosts = setOf("webapi.115.com", "proapi.115.com", "pan.baidu.com")
@@ -82,8 +84,9 @@ internal object CloudHttp : CloudTransport {
                 connection.setRequestProperty("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
                 connection.outputStream.use { it.write(form(form).toByteArray(Charsets.UTF_8)) }
             }
-            if (connection.responseCode in setOf(301, 302, 401, 403)) throw CloudFailure("cloud_login_required")
-            if (connection.responseCode != 200) throw CloudFailure()
+            val status = connection.responseCode
+            if (status in setOf(301, 302, 401, 403)) throw CloudFailure("cloud_login_required", "${uri.host}${uri.path}: HTTP $status")
+            if (status != 200) throw CloudFailure(detail = "${uri.host}${uri.path}: HTTP $status")
             val bytes = connection.inputStream.use { input ->
                 val out = ByteArrayOutputStream()
                 val buffer = ByteArray(8192)
@@ -91,7 +94,7 @@ internal object CloudHttp : CloudTransport {
                     if (Thread.currentThread().isInterrupted) throw CloudFailure()
                     val count = input.read(buffer)
                     if (count < 0) break
-                    if (out.size() + count > 8 * 1024 * 1024) throw CloudFailure()
+                    if (out.size() + count > 8 * 1024 * 1024) throw CloudFailure(detail = "${uri.host}${uri.path}: response exceeds 8 MiB")
                     out.write(buffer, 0, count)
                 }
                 out.toByteArray()
@@ -99,7 +102,7 @@ internal object CloudHttp : CloudTransport {
             return CloudResponse(JSONObject(String(bytes, Charsets.UTF_8)), connection.headerFields.entries
                 .filter { it.key.equals("Set-Cookie", true) }.flatMap { it.value })
         } catch (error: CloudFailure) { throw error }
-        catch (_: Exception) { throw CloudFailure() }
+        catch (error: Exception) { throw CloudDiagnostics.failure("${uri.host}${uri.path}", error) }
         finally { cancellation?.detach(connection); connection.disconnect() }
     }
 }

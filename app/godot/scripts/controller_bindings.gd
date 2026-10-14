@@ -6,6 +6,7 @@ const AXES := ["stick_left", "stick_right", "stick_up", "stick_down"]
 const HANDS := ["left_hand", "right_hand"]
 const MODIFIERS := ["grip_click", "trigger_click"]
 const SCOPES := ["video", "video_flat", "video_immersive", "photo"]
+const FIXED_ACTIONS := ["move_video", "move_photo"]
 var overrides := {}
 var move_scope := "panel"
 var down := {"left_hand": {}, "right_hand": {}}
@@ -39,9 +40,9 @@ func _init() -> void:
 		entry("reset_photo", "Reset picture", "photo", [bind("right_hand", "primary_click")]),
 		entry("projection_video", "Cycle projection", "video", [bind("left_hand", "primary_click")]),
 		entry("projection_photo", "Cycle projection", "photo", [bind("left_hand", "primary_click")]),
-		entry("inspect", "Inspect photo", "photo", [bind("left_hand", "grip_click"), bind("right_hand", "grip_click")]),
-		entry("move_video", "Move interfaces", "video", [], false, true),
-		entry("move_photo", "Move interfaces", "photo", [], false, true),
+		entry("inspect", "Inspect photo", "photo", []),
+		entry("move_video", "Move interfaces", "video", [bind("left_hand", "grip_click"), bind("right_hand", "grip_click")], false, true),
+		entry("move_photo", "Move interfaces / magnifier", "photo", [bind("left_hand", "grip_click"), bind("right_hand", "grip_click")], false, true),
 		entry("subtitles", "Subtitle panel", "video", []),
 		entry("passthrough_video", "Temporary passthrough", "video", []),
 		entry("passthrough_photo", "Temporary passthrough", "photo", []),
@@ -71,7 +72,11 @@ func definition(id: String) -> Dictionary:
 	return {}
 
 func bindings(id: String) -> Array:
+	if is_fixed(id): return definition(id).defaults.duplicate(true)
 	return overrides.get(id, definition(id).get("defaults", [])).duplicate(true)
+
+static func is_fixed(id: String) -> bool:
+	return id in FIXED_ACTIONS
 
 static func applies(scope: String, context: String) -> bool:
 	return scope == context or (scope == "video" and context.begins_with("video"))
@@ -91,12 +96,14 @@ func clean_binding(value: Variant, id: String) -> Dictionary:
 	unique.sort()
 	if not unique.is_empty() and unique != MODIFIERS: return {}
 	if definition(id).hold and (value.input not in ["grip_click", "trigger_click"] or not unique.is_empty()): return {}
+	if is_fixed(id) and value.input != "grip_click": return {}
 	if reserved(id, value.input, unique): return {}
 	return bind(value.hand, value.input, unique)
 
+## Grip alone moves interfaces; grip + trigger chords retain their separate target input.
 ## B/Y alone always backs out of menus; only chords and the matching photo close may use them.
 static func reserved(id: String, input: String, modifiers: Array) -> bool:
-	return input == "by_button" and modifiers.is_empty() and id != "photo_close"
+	return (input == "grip_click" and not is_fixed(id)) or (input == "by_button" and modifiers.is_empty() and id != "photo_close")
 
 func conflicts(id: String, candidate: Dictionary) -> Array[String]:
 	var result: Array[String] = []
@@ -113,6 +120,7 @@ func conflicts(id: String, candidate: Dictionary) -> Array[String]:
 	return result
 
 func assign(id: String, value: Variant, advanced: bool = false, replace_conflicts: bool = false) -> Dictionary:
+	if is_fixed(id): return {"ok": false, "error": "Unsupported binding"}
 	var candidate := clean_binding(value, id)
 	if candidate.is_empty(): return {"ok": false, "error": "Unsupported binding"}
 	var collisions := conflicts(id, candidate)
@@ -130,16 +138,19 @@ func assign(id: String, value: Variant, advanced: bool = false, replace_conflict
 	return {"ok": true}
 
 func clear(id: String, advanced: bool = false) -> void:
+	if is_fixed(id): return
 	overrides[id] = bindings(id).filter(func(b): return b.modifiers.is_empty() if advanced else not b.modifiers.is_empty())
 	reset_inputs()
 
 ## Validate the complete exchange before committing either side.
 func swap_binding(id: String, value: Variant, advanced: bool = false, commit: bool = true) -> Dictionary:
+	if is_fixed(id): return {"ok": false}
 	var candidate := clean_binding(value, id)
 	if candidate.is_empty(): return {"ok": false}
 	var collisions := conflicts(id, candidate)
 	if collisions.size() != 1: return {"ok": false}
 	var other: String = collisions[0]
+	if is_fixed(other): return {"ok": false}
 	var matching: Array = bindings(other).filter(func(binding): return binding == candidate)
 	var previous: Array = bindings(id).filter(func(binding): return not binding.modifiers.is_empty() if advanced else binding.modifiers.is_empty())
 	if matching.size() != 1 or previous.size() > 1: return {"ok": false}
@@ -180,10 +191,12 @@ func restore(data: Variant) -> void:
 	if not saved is Dictionary: return
 	# Validate the whole map first; malformed/conflicting files fall back to usable defaults.
 	for id in saved:
+		# Movement is fixed even when an older file cleared or reassigned it.
+		if is_fixed(id): continue
 		if definition(id).is_empty() or not saved[id] is Array or saved[id].size() > 8: restore_all(); return
 		var values: Array = []
 		for value in saved[id]:
-			# Older builds allowed plain B/Y; drop just that choice instead of resetting every binding.
+			# Drop old reserved choices while preserving every other valid custom binding.
 			if value is Dictionary and value.get("modifiers", []) is Array and reserved(id, str(value.get("input", "")), value.get("modifiers", [])): continue
 			var cleaned := clean_binding(value, id)
 			if cleaned.is_empty(): restore_all(); return
@@ -220,7 +233,7 @@ func resolve(hand: String, input: String, context: String) -> String:
 	var longest := -1
 	for item in _definitions:
 		if not applies(item.scope, context): continue
-		for value in overrides.get(item.id, item.defaults):
+		for value in (item.defaults if is_fixed(item.id) else overrides.get(item.id, item.defaults)):
 			if value.hand != hand or value.input != input: continue
 			if not value.modifiers.all(func(mod): return down[hand].has(mod)): continue
 			if not value.modifiers.is_empty() and int(down[hand].grip_click) >= int(down[hand].trigger_click): continue
@@ -239,7 +252,7 @@ func is_modifier(hand: String, input: String, context: String) -> bool:
 	if input == "trigger_click" and not down.get(hand, {}).has("grip_click"): return false
 	for item in _definitions:
 		if applies(item.scope, context):
-			for value in overrides.get(item.id, item.defaults):
+			for value in (item.defaults if is_fixed(item.id) else overrides.get(item.id, item.defaults)):
 				if value.hand == hand and input in value.modifiers: return true
 	return false
 

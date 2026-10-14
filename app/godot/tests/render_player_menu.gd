@@ -223,7 +223,9 @@ func _run() -> void:
 	if menu._subtitle_ids.values() != [0, 1, 3, 8]: failures.append("Subtitle picker must show Off and real IDs")
 	if not menu.choices.sliders.is_empty(): failures.append("Subtitle appearance starts collapsed")
 	menu._activate(Menu.SUBTITLE_APPEARANCE)
-	if menu.choices.sliders.size() != 3:
+	# Capture the complete expanded list, including its header and close control.
+	camera.fov = 75
+	if menu.choices.sliders.size() != 4:
 		failures.append("Expanded VR subtitle appearance must show position, distance and size")
 	await RenderingServer.frame_post_draw
 	await RenderingServer.frame_post_draw
@@ -268,11 +270,18 @@ func _run() -> void:
 	viewport.get_texture().get_image().save_png(output.path_join("subtitles-flat.png"))
 	state.subtitle_options.append({"id": 14, "codec": "hdmv_pgs_subtitle", "title": "Chinese PGS"})
 	state.subtitle_track = 14
+	menu._subtitle_offset = maxi(0, state.subtitle_options.size() - Menu.SUBTITLE_ROWS)
 	menu.refresh()
 	await RenderingServer.frame_post_draw
 	await RenderingServer.frame_post_draw
 	viewport.get_texture().get_image().save_png(output.path_join("subtitles-pgs.png"))
-	if not menu.choices.sliders.is_empty(): failures.append("PGS must hide text adjustment controls")
+	menu._activate(Menu.SUBTITLE_APPEARANCE)
+	if menu.choices.sliders.size() != 3 or menu.choices.targets.values().any(func(item): return item.get("key") == "subtitle_style"):
+		failures.append("PGS must offer size and position without text color controls")
+	await RenderingServer.frame_post_draw
+	await RenderingServer.frame_post_draw
+	viewport.get_texture().get_image().save_png(output.path_join("subtitles-pgs-adjustments.png"))
+	camera.fov = 60
 	# Default and changed values must retain the row geometry while reset visibility changes.
 	for sample in [{"name": "screen-default", "geometry": 0, "scale": 100, "rotation": 0, "speed": 1, "tab": 11},
 		{"name": "screen-changed", "geometry": 0, "scale": 300, "rotation": 45, "speed": 1, "tab": 11},

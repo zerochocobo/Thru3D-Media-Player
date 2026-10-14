@@ -2,20 +2,28 @@ extends SceneTree
 const Menu := preload("res://scripts/library_menu.gd")
 const Fixture := preload("res://tests/test_media_servers.gd")
 const Test := preload("res://tests/test_media_server_browser.gd")
+const Capture := preload("res://scripts/menu_composition.gd")
+const Display := preload("res://scripts/xr_display.gd")
+var checks := 0
+var failures: Array[String] = []
+func check(ok: bool, message: String) -> void:
+	checks += 1
+	if not ok: failures.append(message)
 func _initialize() -> void: call_deferred("_run")
 func _run() -> void:
 	var output := OS.get_environment("QUEST_SERVER_PREVIEW_DIR")
 	if output.is_empty(): quit(1); return
 	DirAccess.make_dir_recursive_absolute(output)
 	var viewport := SubViewport.new(); viewport.size = Vector2i(1600, 1100); viewport.own_world_3d = true; viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS; root.add_child(viewport)
-	var camera := Camera3D.new(); camera.fov = 65; viewport.add_child(camera)
+	var camera := Camera3D.new(); camera.fov = 72; viewport.add_child(camera)
 	var menu := Menu.new(); camera.add_child(menu)
 	var platform := Fixture.Platform.new(); menu.attach_platform(platform); menu.toggle(); menu.section = Menu.Section.MEDIA_SERVER
 	var b: RefCounted = menu.server_browser; b.server = {"id": "profile", "name": "Emby · Demo Library", "provider": "emby"}; b.capabilities = Test.CAPS.merged({"home_layout": "libraries", "artwork": true}); b.library_id = "lib1"; b.total = 250; b.end_reached = false; b.loaded_page = 1
+	var capture_detail := {}
 	var movies: Array = []
 	var names := ["远山来信", "蓝色时刻", "深海回声", "月面航行", "夜行列车", "北境之光", "城市边缘", "荒野之路"]
 	for i in 8:
-		var node := {"id": str(i + 1), "title": names[i], "uri": "medialib://profile/scene/%d" % (i + 1), "duration_ms": 6540000, "position_ms": 2322000 if i == 1 else 0, "tags": [{"id": "自然", "name": "自然"}], "genres": [{"id": "纪录", "name": "纪录"}], "markers": [{"title": "起点", "position_ms": 0}, {"title": "山间", "position_ms": 180000}]}
+		var node := {"id": str(i + 1), "title": names[i], "basename": names[i] + "_完整文件名_180_SBS_2160p_2026.mp4", "uri": "medialib://profile/scene/%d" % (i + 1), "duration_ms": 6540000, "position_ms": 2322000 if i == 1 else 0, "tags": [{"id": "自然", "name": "自然"}], "genres": [{"id": "纪录", "name": "纪录"}], "markers": [{"title": "起点", "position_ms": 0}, {"title": "山间", "position_ms": 180000}]}
 		movies.append(node)
 		var image := Image.create(256, 360, false, Image.FORMAT_RGB8)
 		var hue := 0.48 + i * 0.055
@@ -48,21 +56,36 @@ func _run() -> void:
 		actors.append({"id": "actor%d" % i, "name": ["林雨", "周明", "沈青", "顾川", "陈月", "叶星"][i], "has_cover": true})
 		b.textures["profile/actor%d" % i] = b.textures["profile/%d" % (i + 1)]
 	b.home_data = {"recent": [], "resume": [], "recent_opened": movies, "libraries": libraries}
-	for language in ["zh", "en"]:
+	for i in movies.size():
+		var movie: Dictionary = movies[i]
+		var poster := {"id": str(movie.id), "image_type": "Primary", "image_tag": "poster"}
+		var thumb := {"id": str(movie.id), "image_type": "Thumb", "image_tag": "thumb"}
+		movie.cover_image = poster; movie.image_variants = {"Primary": poster, "Thumb": thumb}
+		for width in [128, 512]:
+			b.textures[b._request_image_key(b._image_request({"cover_image": poster.merged({"max_width": width})}))] = b.textures["profile/" + str(movie.id)]
+			b.textures[b._request_image_key(b._image_request({"cover_image": thumb.merged({"max_width": width})}))] = b.textures[b._request_image_key(b._image_request({"cover_image": images[i % images.size()].merged({"max_width": 256})}))]
+	for language in ["zh", "en", "ja"]:
 		preload("res://scripts/i18n.gd").use(language)
-		for page in ["home", "home_more", "home_single", "home_recent_more", "home_empty", "scenes", "facets", "folders", "detail", "detail_cd2", "detail_parts_more", "picture", "filters", "favorites"]:
+		for page in ["home", "home_more", "home_single", "home_recent_more", "home_empty", "scenes", "scenes_small", "scenes_large", "scenes_thumb", "scenes_list", "facets", "candidates", "folders", "folders_sources", "detail", "detail_cd2", "detail_parts_more", "detail_images", "detail_long", "overview", "picture", "filters", "filters_sources", "options", "saved", "search", "favorites"]:
 			b.view = page; b.query = {"page": 1, "q": "", "all_tags": true}; b.folder_path.clear(); b.entries = movies.duplicate(true); b.candidates = []; b.detail = {}
-			if page == "facets": b.kind = "genres"; b.candidate_total = 33; b.candidates = [{"id": "纪录", "name": "纪录", "count": 18}, {"id": "剧情", "name": "剧情", "count": 22}, {"id": "科幻", "name": "科幻", "count": 12}, {"id": "冒险", "name": "冒险", "count": 6}, {"id": "动画", "name": "动画", "count": 7}, {"id": "自然", "name": "自然", "count": 9}, {"id": "音乐", "name": "音乐", "count": 4}]
-			if page == "folders": b.view = "scenes"; b.query.mode = "folders"; b.entries = [{"id": "folder1", "title": "VR影像", "container": true, "has_cover": false, "child_count": 21}, {"id": "folder2", "title": "电影", "container": true, "has_cover": false, "child_count": 20}, {"id": "folder3", "title": "纪录片", "container": true, "has_cover": false, "child_count": 10}] + movies.slice(0, 1)
+			b.sources_open = page in ["folders_sources", "filters_sources"]; b.keyboard = ""
+			if page == "search": b.view = "scenes"; b.keyboard = "search"; b.text = "寻找影片 / Find a movie"
+			if page == "filters_sources": b.view = "filters"
+			b.display_preferences.profile = {"mode": "list" if page == "scenes_list" else ("thumb" if page == "scenes_thumb" else "poster"), "size": 0 if page == "scenes_small" else (2 if page == "scenes_large" else 1)}
+			if page.begins_with("scenes_"): b.view = "scenes"
+			b.gallery.detail_start = 1 if page == "detail_images" else 0; b.gallery.overview_start = 0; b.gallery.tag_start = 0
+			if page in ["facets", "candidates"]: b.kind = "genres"; b.candidate_total = 33; b.candidates = [{"id": "纪录", "name": "纪录", "count": 18}, {"id": "剧情", "name": "剧情", "count": 22}, {"id": "科幻", "name": "科幻", "count": 12}, {"id": "冒险", "name": "冒险", "count": 6}, {"id": "动画", "name": "动画", "count": 7}, {"id": "自然", "name": "自然", "count": 9}, {"id": "音乐", "name": "音乐", "count": 4}]
+			if page in ["folders", "folders_sources"]: b.view = "scenes"; b.query.mode = "folders"; b.folder_path = [{"id": "a", "title": "资料"}, {"id": "b", "title": "VR"}]; b.entries = [{"id": "folder1", "title": "VR影像", "container": true, "has_cover": false, "child_count": 21}, {"id": "folder2", "title": "电影", "container": true, "has_cover": false, "child_count": 20}, {"id": "folder3", "title": "纪录片", "container": true, "has_cover": false, "child_count": 10}] + movies.slice(0, 1)
 			b.gallery.library_start = 5 if page == "home_more" else 0
 			b.gallery.recent_start = 4 if page == "home_recent_more" else 0
 			b.home_data.libraries = [libraries[0].merged({"title": "Movie"}, true)] if page in ["home_single", "home_empty"] else libraries
 			b.home_data.recent_opened = [] if page == "home_empty" else movies
 			if page.begins_with("home_"): b.view = "home"
 			b.library_id = "" if b.view == "home" else "lib1"
-			if page in ["detail", "detail_cd2", "detail_parts_more", "picture"]:
+			if page in ["detail", "detail_cd2", "detail_parts_more", "detail_images", "detail_long", "overview", "picture"]:
 				b.detail = movies[1].duplicate(true); b.detail.description = "当暮色落在城市边缘，一场安静的旅程缓缓展开。"
 				b.detail.images = images; b.detail.actors = actors; b.detail.year = 2026
+				if page in ["detail_long", "overview"]: b.detail.description = "当暮色落在城市边缘，一场安静的旅程缓缓展开。沿着群山与海岸，寻找生活中的细微光芒。".repeat(90)
 				b.detail.parts = [movies[1].merged({"title": "蓝色时刻 · cd1", "part_label": "cd1"}, true), movies[2].merged({"title": "蓝色时刻 · cd2", "part_label": "cd2"}, true)]
 				if page == "detail_parts_more":
 					for i in range(3, 6): b.detail.parts.append(movies[i].merged({"title": "蓝色时刻 · cd%d" % i, "part_label": "cd%d" % i}, true))
@@ -71,11 +94,32 @@ func _run() -> void:
 					b.detail.parts[i].part_image = part_image
 					b.textures[b._request_image_key(b._image_request({"cover_image": part_image}))] = b.textures[b._request_image_key(b._image_request({"cover_image": images[i].merged({"max_width": 256})}))]
 				b.gallery.part_start = 0; b.gallery.selected_part = 1 if page == "detail_cd2" else 0
-				if page in ["detail_cd2", "detail_parts_more"]: b.view = "detail"
+				if page in ["detail_cd2", "detail_parts_more", "detail_images", "detail_long"]: b.view = "detail"
 				if page == "detail_parts_more": b.gallery.part_start = 2
 			if page == "favorites": b.view = "scenes"; b.query.favorites = true; b.entries = []; b.total = 0
 			else: b.total = 250
 			menu._reset_navigation(); menu.refresh()
+			if page == "detail": capture_detail = b.detail.duplicate(true)
+			check(menu._side.visible == (not b.focused() or b.sources_open), "Source navigation follows the explicit choice: " + language + "/" + page)
+			if b.media_content():
+				for item in menu._buttons:
+					if not item.node.is_visible_in_tree() or not menu._row_target(int(item.target)): continue
+					var center: Vector3 = menu.to_local(item.node.global_position)
+					check(center.y + item.rect.size.y / 2 < 0.335, "Content stays below display controls: " + language + "/" + page)
 			await process_frame; await RenderingServer.frame_post_draw; await RenderingServer.frame_post_draw
 			viewport.get_texture().get_image().save_png(output.path_join(language + "-" + page + ".png"))
-	menu.free(); platform.free(); viewport.queue_free(); await process_frame; print("common media server previews rendered"); quit()
+	var capture := Capture.new(); viewport.add_child(capture)
+	capture.configure(camera, camera, Display.new(), [menu], false, true); capture.set_process(false)
+	for page in ["scenes", "detail", "sources"]:
+		b.sources_open = page == "sources"; b.keyboard = ""; b.view = "scenes" if page == "sources" else page; b.entries = movies; b.detail = capture_detail; b.display_preferences.profile = {"mode": "poster", "size": 1}; menu.refresh()
+		capture.update(); await process_frame; await RenderingServer.frame_post_draw; capture.update()
+		check(capture.active == menu, "Compositor activates the complete media page: " + page)
+		check(capture.slots.any(func(slot): return slot.used and slot.nodes.has(menu._backdrop)), "Compositor captures the larger backdrop: " + page)
+		if page == "sources": check(capture.slots.any(func(slot): return slot.used and slot.nodes.has(menu._side.get_child(0))), "Compositor captures the visible source sidebar")
+		for slot in capture.slots:
+			if slot.used: slot.raw.get_texture().get_image().save_png(output.path_join("composition-" + page + "-%d.png" % slot.index))
+	capture.shutdown("test_complete")
+	FileAccess.open(output.path_join("verification.json"), FileAccess.WRITE).store_string(JSON.stringify({"checks": checks, "failures": failures, "scope": "Desktop media layouts and production menu capture; native XR and physical headset viewing unverified"}, "\t"))
+	for failure in failures: push_error(failure)
+	menu.free(); platform.free(); viewport.queue_free(); await process_frame
+	print("Media server layout render checks=%d failures=%d" % [checks, failures.size()]); quit(0 if failures.is_empty() else 1)

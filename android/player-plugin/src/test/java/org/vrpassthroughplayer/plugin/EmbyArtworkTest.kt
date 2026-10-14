@@ -80,7 +80,8 @@ class EmbyArtworkTest {
     }
 
     @Test fun detailKeepsCastArtworkAndFormatWithoutServerPaths() {
-        val item = """{"Id":"film1","Name":"Film","Type":"Movie","ImageTags":{"Primary":"poster-tag","Thumb":"thumb-tag"},
+        val overview = "A complete overview paragraph. ".repeat(200)
+        val item = """{"Id":"film1","Name":"Film","Type":"Movie","Overview":${JSONObject.quote(overview)},"ImageTags":{"Primary":"poster-tag","Thumb":"thumb-tag"},
             "BackdropImageTags":["backdrop0","backdrop1"],"Video3DFormat":"HalfSideBySide",
             "MediaSources":[{"Path":"/private/film.mp4","Video3DFormat":"FullTopAndBottom"}],
             "People":[{"Id":"actor1","Name":"Actor","Type":"Actor","Role":"Lead","PrimaryImageTag":"face-tag"},
@@ -96,6 +97,9 @@ class EmbyArtworkTest {
                 val client = EmbyClient(account, http); val detail = client.detail("film1")
                 assertEquals("FullTopAndBottom", detail.getString("video_3d_format"))
                 assertEquals("film.mp4", detail.getString("basename")); assertFalse(detail.toString().contains("/private"))
+                assertEquals(overview, detail.getString("description"))
+                assertEquals("thumb-tag", detail.getJSONObject("image_variants").getJSONObject("Thumb").getString("image_tag"))
+                assertEquals("poster-tag", detail.getJSONObject("image_variants").getJSONObject("Primary").getString("image_tag"))
                 val actor = detail.getJSONArray("actors").getJSONObject(0)
                 assertEquals(1, detail.getJSONArray("actors").length()); assertEquals("Lead", actor.getString("role"))
                 assertEquals("face-tag", actor.getJSONObject("cover_image").getString("image_tag"))

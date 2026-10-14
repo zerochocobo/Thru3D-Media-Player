@@ -28,6 +28,7 @@ internal class MpvVideoBridge(
     private val sidecarAudio: (String) -> List<SidecarAudio.Track> = { emptyList() },
     private val releaseNetwork: (String) -> Unit = {},
     private val sidecarSubtitles: (String) -> List<SidecarSubtitles.Track> = { emptyList() },
+    private val networkProgress: (String) -> TransferMeter.Snapshot? = { null },
 ) {
     private val worker = RvmWorkers.video
     private val gate = MediaSessionGate()
@@ -78,6 +79,9 @@ internal class MpvVideoBridge(
                 .invoke(null, "debug.vrpp.mpv.normal_direct") == "0"
         } catch (_: Throwable) { false }
         private val openNs = System.nanoTime()
+        @Volatile var loadingPhase = "connecting"
+        @Volatile var remote = Uri.parse(uri).scheme !in setOf("file", "content")
+        fun elapsedMs() = (System.nanoTime() - openNs) / 1_000_000
         val startup = ConcurrentHashMap<String, Double>()
         fun markStartup(stage: String) { startup.putIfAbsent(stage, (System.nanoTime() - openNs) / 1_000_000.0) }
         @Volatile var handle = 0L
@@ -85,6 +89,7 @@ internal class MpvVideoBridge(
         @Volatile var closing = false
         @Volatile var playing = true
         var speed = 1.0 // synchronized(host), retained across processing revisions
+        var subtitleDelay = 0.0 // synchronized(host), belongs to this video's native source
         @Volatile var audioEnabled = audio
         @Volatile var audioAvailable = audio
         @Volatile var descriptor: ParcelFileDescriptor? = null
@@ -207,11 +212,15 @@ internal class MpvVideoBridge(
                 host.markStartup("worker_started_ms")
                 if (host.closing || stopped) return@post
                 val app = context() ?: error("Activity unavailable")
-                val source = Uri.parse(uri)
+                val tlsCaFile = MpvTlsTrust.prepare(app)
+                // Keep Host.uri (history, modes and companions) on the shortcut, resolving only the input.
+                val resolved = resolveNetwork(uri)
+                val source = Uri.parse(resolved)
+                host.remote = host.remote || source.scheme in setOf("http", "https", "smb", "cloud", "medialib")
+                host.loadingPhase = "reading"
+                if (resolved != uri || source.scheme in setOf("medialib", "cloud", "smb")) host.networkLease = resolved
                 val path = if (source.scheme == "file") source.path ?: error("Local file path unavailable")
-                else if (source.scheme in setOf("smb", "cloud", "medialib", "http", "https")) resolveNetwork(uri).also {
-                    if (source.scheme in setOf("medialib", "cloud", "smb")) host.networkLease = it
-                } else {
+                else if (source.scheme in setOf("http", "https")) resolved else {
                     val fd = app.contentResolver.openFileDescriptor(source, "r") ?: error("Local document descriptor unavailable")
                     host.descriptor = fd
                     "fd://${fd.fd}"
@@ -223,7 +232,9 @@ internal class MpvVideoBridge(
                         arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use {
                             it.moveToFirst() && it.getString(0).orEmpty().lowercase().endsWith(".iso")
                         } == true)
+                if (iso) host.loadingPhase = "reading_disc"
                 val disc = if (iso) MpvSourceNative.probeIso(path) else null
+                host.loadingPhase = "preparing"
                 val nativePath = if (iso && path.startsWith("fd://")) "/proc/self/fd/${path.removePrefix("fd://")}" else path
                 val surfaceWidth = disc?.get(0)?.toInt() ?: LAYER_SURFACE_SIZE
                 val surfaceHeight = disc?.get(1)?.toInt() ?: LAYER_SURFACE_SIZE
@@ -250,10 +261,16 @@ internal class MpvVideoBridge(
                         host.handle = MpvSourceNative.create(app, nativePath, startMs, hardware, audio, host.maxWidth,
                             extra.flatMap { listOf(it.location, it.title) }.toTypedArray(),
                             captions.flatMap { listOf(it.location, it.title) }.toTypedArray(), host.exactStart,
-                            if (host.layer) host.layerSurface else null, disc?.get(3) == 1L, surfaceWidth, surfaceHeight, iso)
+                            if (host.layer) host.layerSurface else null, disc?.get(3) == 1L, surfaceWidth, surfaceHeight, iso, tlsCaFile)
                         check(host.handle > 0)
                         host.markStartup("native_created_ms")
-                        synchronized(host) { check(MpvSourceNative.setSpeed(host.handle, host.speed)) }
+                        host.loadingPhase = "reading"
+                        synchronized(host) {
+                            check(MpvSourceNative.setSpeed(host.handle, host.speed))
+                            val serial = MpvSourceNative.setSubtitleDelay(host.handle, host.subtitleDelay)
+                            check(serial > 0)
+                            host.subtitleCommand = maxOf(host.subtitleCommand, serial)
+                        }
                         MpvSourceNative.setFrameCap(host.handle, frameCap(session))
                         MpvSourceNative.setDirect(host.handle, direct(session))
                         // Native creation stays paused until focus policy has
@@ -261,9 +278,19 @@ internal class MpvVideoBridge(
                         refreshPlayback()
                     } catch (failure: Throwable) { fail(session, "MPV_SOURCE_START_FAILED", failure) }
                 })
-            } catch (failure: Throwable) { fail(session, "MPV_LOCAL_SOURCE_FAILED", failure) }
+            } catch (failure: Throwable) { fail(session, (failure as? StrmFailure)?.code ?: "MPV_LOCAL_SOURCE_FAILED", failure) }
         }
         return id
+    }
+    /** A nonblocking snapshot, also available while source resolution/ISO probing is on the worker. */
+    fun loadingStatus(id: Int): String {
+        val session = sessions[id]?.takeIf(::active) ?: return ""
+        val host = session.host
+        val progress = host.networkLease?.let(networkProgress)
+        return JSONObject().put("remote", host.remote).put("phase", host.loadingPhase)
+            .put("elapsed_ms", host.elapsedMs()).apply {
+                if (progress != null) put("bytes", progress.bytes).put("bytes_per_second", progress.bytesPerSecond)
+            }.toString()
     }
     private fun prepareModel(session: Session) {
         if (session.depth) {
@@ -379,6 +406,22 @@ internal class MpvVideoBridge(
         if (text.isEmpty() || !active(session)) return ""
         return JSONObject(text).put("session_id", session.id).put("generation", session.scope.generation)
             .put("mpv_source_handle", session.host.handle).put("required_command_id", session.host.subtitleCommand).toString()
+    }
+    fun setSubtitleDelay(id: Int, seconds: Double): Boolean {
+        val session = sessions[id] ?: return false
+        if (!seconds.isFinite() || kotlin.math.abs(seconds) > 10.0) return false
+        synchronized(session.host) {
+            if (!active(session) || session.host.closing) return false
+            if (session.host.handle > 0) {
+                val serial = MpvSourceNative.setSubtitleDelay(session.host.handle, seconds)
+                if (serial <= 0) return false
+                session.host.subtitleCommand = maxOf(session.host.subtitleCommand, serial)
+            }
+            // Opening can still be resolving the source on the worker. Apply this
+            // value when the native handle is created, before first playback.
+            session.host.subtitleDelay = seconds
+        }
+        return true
     }
     fun subtitleBitmap(id: Int, version: Long): ByteArray {
         val session = sessions[id] ?: return ByteArray(0)

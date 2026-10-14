@@ -6,6 +6,7 @@ extends "res://scripts/ray_menu.gd"
 
 signal chosen(uri: String, title: String)
 signal player_requested
+signal layout_requested
 signal recenter_requested
 signal setting_changed(key: String, value: Variant)
 signal setting_previewed(key: String, value: Variant)
@@ -30,6 +31,8 @@ const CloudAccountActions := preload("res://scripts/cloud_account_actions.gd")
 var cloud_accounts: RefCounted = CloudAccountActions.new(self)
 const CloudSearch := preload("res://scripts/cloud_search.gd")
 var cloud_search: RefCounted = CloudSearch.new(self)
+const CloudBrowseError := preload("res://scripts/cloud_browse_error.gd")
+var cloud_error := CloudBrowseError.new(self)
 const AccountPanel := preload("res://scripts/account_panel.gd")
 var account_panel: RefCounted = AccountPanel.new(self)
 const Quality := preload("res://scripts/display_quality.gd")
@@ -100,7 +103,14 @@ const CRUMB_BASE := 50
 const FILTER_BASE := 70
 const MEDIA_FILTERS := ["All", "Video", "Images"]
 const ImageInfo := preload("res://scripts/image_info.gd")
-## Browsing shows a grid like common VR players (folders and videos as tiles); settings stay a list.
+const Presentation := preload("res://scripts/library_presentation.gd")
+const VIEW_LIST := 88
+const VIEW_GRID := 89
+const EXPAND_LIBRARY := 90
+var view_mode := "grid"
+var _position_to_restore := {}
+var _cloud_requested_position := {}
+## File content shares one grid/list preference; settings and entry pages keep their own layout.
 const COLS := 4
 const GRID_LINES := 3
 const RECENT_PAGE_SIZE := COLS * GRID_LINES
@@ -173,7 +183,110 @@ var _symbols := false
 var _side: Node3D                  # navigation column, angled towards the viewer
 var _covers := {}                  # DLNA cover URL -> HTTPRequest while it downloads
 
+## The browser stays a child of the transport while expanded. Data and requests remain shared.
+var compact := false
+var playback_expanded := false
+var playback_controls_pose: Variant = null
+var _compact_server_context := {}
+var _compact_server_entries: Array = []
+var _layout_anchor := {}
+var _layout_scroll := 0.0
+var _playback_context := {}
+const COMPACT_SIZE := Vector2(1.16, 0.84)
+const CONTEXT_FIELDS := ["section", "media_filter", "_local_stack", "_local_entries", "_smb_server", "_smb_path", "_smb_entries",
+	"_dlna_server", "_dlna_stack", "_dlna_entries", "_cloud_stack", "_cloud_entries", "_cloud_page", "_cloud_offsets", "_cloud_next", "_cloud_total", "_cloud_location", "_recent_page"]
+const SEARCH_FIELDS := ["active", "editing", "query", "scope", "kind", "path", "entries", "cursors", "page", "next_cursor", "committed_request", "limited"]
+
+func remember_playback_context() -> void:
+	_playback_context = {"anchor": capture_position(), "search": {}}
+	for key in CONTEXT_FIELDS:
+		var value: Variant = get(key)
+		_playback_context[key] = value.duplicate(true) if value is Array or value is Dictionary else value
+	if cloud_search.active:
+		for key in SEARCH_FIELDS:
+			var value: Variant = cloud_search.get(key)
+			_playback_context.search[key] = value.duplicate(true) if value is Array or value is Dictionary else value
+
+func set_compact(value: bool, restore_playback: bool = false) -> void:
+	var anchor := _position_to_restore.duplicate(true) if not _position_to_restore.is_empty() else capture_position()
+	if restore_playback:
+		if _playback_context.is_empty():
+			section = Section.RECENT
+		else:
+			for key in CONTEXT_FIELDS:
+				var stored: Variant = _playback_context[key]
+				set(key, stored.duplicate(true) if stored is Array or stored is Dictionary else stored)
+			anchor = _playback_context.anchor.duplicate(true)
+			for key in _playback_context.search:
+				var stored: Variant = _playback_context.search[key]
+				cloud_search.set(key, stored.duplicate(true) if stored is Array or stored is Dictionary else stored)
+	compact = value
+	_drag = {}; _fling = 0.0; _hover.clear()
+	file_actions.reset(); choices.reset(); controls_page.reset(); account_panel.close(); _editor = {}; cloud_accounts.mode = ""
+	if compact and section == Section.MEDIA_SERVER and server_browser.view == "detail":
+		_compact_server_context = server_browser.context_state()
+		server_browser.entries = server_browser.playback_entries().duplicate(true)
+		_compact_server_entries = server_browser.entries.map(func(item): return str(item.get("id", "")))
+		server_browser.view = "scenes"; server_browser.keyboard = ""
+	elif not compact and not _compact_server_context.is_empty():
+		if section == Section.MEDIA_SERVER and server_browser.view == "scenes" and server_browser.query == _compact_server_context.query and server_browser.entries.map(func(item): return str(item.get("id", ""))) == _compact_server_entries:
+			server_browser.restore_context(_compact_server_context)
+			anchor = _compact_server_context.position
+		_compact_server_context = {}; _compact_server_entries = []
+	_position_to_restore = anchor
+	refresh()
+	_layout_anchor = anchor; _layout_scroll = scroll
+	# Search resolution can open a file before its containing folder has ever been listed.
+	if compact and platform and rows.is_empty() and section == Section.CLOUD and not cloud_search.active and not _cloud_stack.is_empty():
+		_load_cloud(false, false, _cloud_page)
+		refresh()
+
+func hide_for_layout() -> void:
+	_position_to_restore = capture_position() if browser_content() else {}
+	if browser_content() and is_equal_approx(scroll, _layout_scroll) and rows.slice(_first_line() * _cols(), (_first_line() + 1) * _cols()).any(func(row): return Presentation.key(row) == str(_layout_anchor.get("key", ""))):
+		_position_to_restore = _layout_anchor.duplicate(true)
+	_save_folder_position()
+	_drag = {}; _fling = 0.0; server_browser.gallery.capture.clear()
+	super.dismiss()
+
+func composition_root() -> Node3D:
+	return get_parent() as Node3D if compact or playback_expanded else self
+
+func _align_playback_panel() -> void:
+	if compact or not playback_expanded or not get_parent().has_method("has_expanded_library"): return
+	var controls: Node3D = get_parent()
+	var top: float = controls._backdrop.position.y + controls._backdrop.mesh.size.y * 0.5
+	for button in controls._buttons:
+		if button.node.visible:
+			top = maxf(top, controls.to_local(button.node.global_position).y + button.rect.size.y * 0.5)
+	# Keep the library's floating actions clear of the transport; its status row is shared.
+	var bottom: float = _backdrop.position.y - _backdrop.mesh.size.y * 0.5 - 0.14
+	transform = Transform3D(Basis.IDENTITY, Vector3(0, top + 0.08 - bottom, 0))
+
+func has_pointer_capture() -> bool:
+	return not _drag.is_empty() or not choices.capture.is_empty() or not account_panel.web_hand.is_empty()
+
+func _place_device_status(centre: Vector2) -> void:
+	if compact or playback_expanded:
+		if device_status: device_status.visible = false
+		return
+	super(centre)
+	device_status.visible = true
+
+func refresh_session_controls(force: bool = false) -> void:
+	if not compact and not playback_expanded: super(force)
+
+func toggle() -> void:
+	if visible:
+		dismiss()
+	else:
+		var anchor := _position_to_restore.duplicate(true) if not _position_to_restore.is_empty() else capture_position()
+		var recent_page := _recent_page
+		visible = true; _reset_navigation(); _recent_page = recent_page; _position_to_restore = anchor; refresh()
+
 func dismiss() -> void:
+	if cloud_error.opened: cloud_error.close(); _rebuild_rows()
+	var anchor := capture_position() if browser_content() else {}
 	_save_folder_position()
 	cloud_search.close()
 	controls_page.reset()
@@ -182,7 +295,9 @@ func dismiss() -> void:
 	account_panel.close()
 	server_browser.cancel()
 	_cancel_cloud()
+	_position_to_restore = anchor
 	super()
+	composition_layout_changed.emit()
 
 func _on_choice_changed(key: String, value: Variant) -> void:
 	if controls_page.choose(key, value): return
@@ -250,6 +365,9 @@ func _row_target(target: int) -> bool:
 
 ## The list area, gaps between tiles included: a press there can drag the list.
 func _in_list(point: Vector3) -> bool:
+	if compact:
+		var span := _bar_span()
+		return not rows.is_empty() and absf(point.x) < 0.56 and point.y < span.x + 0.01 and point.y > span.x - span.y - 0.02
 	if controls_page.active() and controls_page.modal(): return false
 	if controls_page.active() and controls_page.mode == 1 and point.x > -0.04: return false
 	var span := _bar_span()
@@ -265,20 +383,20 @@ func press_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: b
 		if int(web_hit.get("target", NONE)) in [AccountPanel.WEB, AccountPanel.WEB_SCROLL]:
 			account_panel.web_press(hand, web_hit.point, int(web_hit.target) == AccountPanel.WEB_SCROLL)
 			return true
-	if section == Section.MEDIA_SERVER and not account_panel.active() and server_browser.gallery.press(hand, origin, direction, tracked):
+	if not compact and section == Section.MEDIA_SERVER and not account_panel.active() and server_browser.gallery.press(hand, origin, direction, tracked):
 		_fling = 0.0; return true
 	if not _drag.is_empty() and _drag.hand != hand: return true
 	update_pointer(hand, origin, direction, tracked)
 	var hit := ray_hit(origin, direction) if tracked else {}
 	var target := int(hit.get("target", NONE))
 	var start_y := 0.0
-	if not hit.is_empty() and target != SCROLLBAR and not _row_target(target):
+	if not hit.is_empty() and target not in [SCROLLBAR, NONE] and not _row_target(target):
 		_activate_hit(hit)
 		return true
-	if hit.is_empty():
+	if hit.is_empty() or target == NONE:
 		var point: Variant = _plane_point(origin, direction) if tracked else null
 		if point == null or not _in_list(point):
-			return false
+			return not hit.is_empty()
 		start_y = float(point.y)
 	else:
 		start_y = float(hit.point.y)
@@ -357,7 +475,8 @@ func release_pointer(hand: String, origin: Vector3, direction: Vector3, tracked:
 
 ## Thumbstick y (up positive) scrolls the list; it never selects.
 func stick_scroll(y: float, delta: float) -> void:
-	if section == Section.MEDIA_SERVER and not account_panel.active() and server_browser.gallery.fixed(): return
+	if not compact and section == Section.MEDIA_SERVER and not account_panel.active() and server_browser.gallery.fixed():
+		server_browser.gallery.vertical_scroll(y, delta); return
 	if controls_page.active() and not controls_page.pending.is_empty(): return
 	if not choices.capture.is_empty(): return
 	if not file_actions.modal.is_empty(): return
@@ -374,6 +493,7 @@ func stick_scroll(y: float, delta: float) -> void:
 	_set_scroll(scroll - signf(y) * amount * _lines() * STICK_SPEED * delta)
 
 func stick_scroll_horizontal(x: float, delta: float) -> void:
+	if compact: return
 	if visible and section == Section.MEDIA_SERVER and not account_panel.active() and file_actions.modal.is_empty() and _editor.is_empty():
 		server_browser.gallery.stick_scroll(x, delta)
 
@@ -439,24 +559,75 @@ func _place_list() -> void:
 		_bar_thumb.position.y = span.x - travel - thumb * 0.5
 
 func _grid() -> bool:
-	if cloud_search.active: return false
+	if cloud_error.opened: return false
+	if compact: return view_mode == "grid"
+	if cloud_search.active: return not cloud_search.editing and view_mode == "grid"
 	if account_panel.active(): return false
 	if section == Section.CLOUD and not cloud_accounts.mode.is_empty(): return false
 	if section == Section.MEDIA_SERVER: return server_browser.grid()
+	if browser_content(true): return view_mode == "grid"
 	return section != Section.SETTINGS
 
+func browser_content(allow_modal: bool = false) -> bool:
+	if cloud_error.opened: return false
+	if account_panel.active() or not _editor.is_empty() or (not allow_modal and not file_actions.modal.is_empty()): return false
+	if cloud_search.active: return not cloud_search.editing
+	match section:
+		Section.RECENT: return true
+		Section.LOCAL: return not _local_stack.is_empty()
+		Section.SMB: return not _smb_server.is_empty()
+		Section.DLNA: return not _dlna_server.is_empty()
+		Section.CLOUD: return not _cloud_stack.is_empty() and cloud_accounts.mode.is_empty()
+		Section.MEDIA_SERVER: return server_browser.view == "scenes" and server_browser.keyboard.is_empty()
+	return false
+
+func load_view_mode(value: Variant) -> void:
+	view_mode = Presentation.mode(value)
+
+func capture_position() -> Dictionary:
+	return Presentation.anchor(rows, scroll, _cols())
+
+func set_view_mode(value: String) -> void:
+	value = Presentation.mode(value)
+	if value == view_mode or (not compact and not browser_content()): return
+	var anchor := capture_position()
+	view_mode = value
+	_drag = {}; _fling = 0.0; _hover.clear(); _hide_tooltip()
+	_cancel_covers()
+	_position_to_restore = anchor
+	setting_changed.emit("library_view_mode", view_mode)
+	refresh()
+
+func draw_view_modes(y: float = 0.445, left: float = 0.69) -> void:
+	for spec in [[VIEW_LIST, "list", "List view"], [VIEW_GRID, "grid", "Icon view"]]:
+		_button(int(spec[0]), "", Vector2(left + (0.11 if spec[1] == "grid" else 0.0), y), Vector2(0.09, 0.065), true, str(spec[1]))
+		_lit(view_mode == spec[1]); _tips[int(spec[0])] = I18n.t(str(spec[2]))
+		if view_mode == spec[1]:
+			var node: MeshInstance3D = _buttons.back().node
+			node.material_override.set_shader_parameter("surface_color", SELECTED)
+			node.add_child(_quad(Vector2(0.028, 0.003), Vector3(0, -0.025, 0.006), ACCENT, 14))
+
+func _header_y() -> float:
+	return 0.515 if browser_content() else 0.46
+
+func _action_position(x: float) -> Vector2:
+	return Vector2(x - 0.22, 0.445) if browser_content() else Vector2(x, 0.46)
+
 func _cols() -> int:
-	return COLS if _grid() else 1
+	if not compact and section == Section.MEDIA_SERVER and server_browser.media_content(): return server_browser.columns() if _grid() else 1
+	return (3 if compact else COLS) if _grid() else 1
 
 ## Visible lines (tile rows or list rows); [scroll] counts lines.
 func _lines() -> int:
-	if cloud_search.active: return 5
+	if compact: return 2 if _grid() else 5
+	if cloud_search.active: return 2 if _grid() else 5
 	if controls_page.active(): return 6
 	if account_panel.active(): return VISIBLE_ROWS
 	if section == Section.MEDIA_SERVER: return server_browser.visible_lines()
 	return GRID_LINES if _grid() else VISIBLE_ROWS
 
 func _pitch() -> float:
+	if compact: return GRID_PITCH.y if _grid() else ROW_PITCH
 	if controls_page.active(): return 0.10
 	if account_panel.active(): return ROW_PITCH
 	if section == Section.MEDIA_SERVER: return server_browser.pitch()
@@ -467,13 +638,14 @@ func _line_count() -> int:
 
 ## Scrollbar track: top and height.
 func _bar_span() -> Vector2:
-	if cloud_search.active: return Vector2(0.095, 0.54)
+	if compact: return Vector2(0.265, _lines() * _pitch() - 0.012)
+	if cloud_search.active: return Vector2(0.095, 2 * GRID_PITCH.y - 0.012 if _grid() else 0.54)
 	if controls_page.active(): return Vector2(0.20, 0.60)
 	if section == Section.MEDIA_SERVER and not account_panel.active(): return server_browser.bar_span()
 	return Vector2(GRID_TOP if _grid() else LIST_TOP + 0.05, _lines() * _pitch() - 0.012)
 
 func _max_scroll() -> float:
-	if section == Section.MEDIA_SERVER and not account_panel.active() and server_browser.gallery.fixed(): return 0.0
+	if not compact and section == Section.MEDIA_SERVER and not account_panel.active() and server_browser.gallery.fixed(): return 0.0
 	return float(maxi(0, _line_count() - _lines()))
 
 func _folder_key() -> String:
@@ -488,19 +660,21 @@ func _folder_key() -> String:
 func _save_folder_position() -> void:
 	if cloud_search.active or account_panel.active() or not _editor.is_empty(): return
 	if section == Section.CLOUD:
-		if _cloud_busy or not cloud_accounts.mode.is_empty(): return
+		if _cloud_busy or not cloud_accounts.mode.is_empty() or _cloud_location != _cloud_path(): return
 		_cloud_positions[_cloud_location] = {"page": _cloud_page, "offsets": _cloud_offsets.duplicate(),
-			"scroll": scroll, "filter": media_filter, "order": file_actions.cloud_order()}
+			"scroll": scroll, "position": capture_position(), "filter": media_filter, "order": file_actions.cloud_order()}
 		while _cloud_positions.size() > 32: _cloud_positions.erase(_cloud_positions.keys()[0])
 	else:
 		var key := _folder_key()
 		if key.is_empty(): return
-		_folder_positions[key] = scroll
+		_folder_positions[key] = capture_position()
 		while _folder_positions.size() > 64: _folder_positions.erase(_folder_positions.keys()[0])
 
 func _restore_folder_position() -> void:
 	if not _restore_folder_key.is_empty() and _restore_folder_key == _folder_key():
-		scroll = float(_folder_positions.get(_restore_folder_key, 0.0))
+		var saved: Variant = _folder_positions.get(_restore_folder_key, {})
+		if saved is Dictionary: _position_to_restore = saved.duplicate(true)
+		else: scroll = float(saved)
 		_restore_folder_key = ""
 
 func _plain_file_grid() -> bool:
@@ -528,6 +702,7 @@ func _redraw_file_rows() -> void:
 func refresh() -> void:
 	_rebuild_rows()
 	_draw()
+	_align_playback_panel()
 
 # --- requests -------------------------------------------------------------------------------
 
@@ -599,11 +774,13 @@ func _on_media_list(id: int, payload: String) -> void:
 	if kind == "cloud": _cloud_busy = false
 	if kind == "cloud" and section != Section.CLOUD:
 		return
-	var parsed: Variant = JSON.parse_string(payload)
+	var parser := JSON.new()
+	var parsed: Variant = parser.data if parser.parse(payload) == OK else null
 	if not parsed is Dictionary:
 		if kind == "cloud":
 			file_actions.cloud_failed()
 			status = "Cloud connection failed"
+			cloud_error.receive({"error": status, "error_detail": "cloud.response: invalid JSON", "offset": _cloud_offsets[_cloud_requested_page]})
 			refresh()
 		return
 	var result: Dictionary = parsed
@@ -613,6 +790,7 @@ func _on_media_list(id: int, payload: String) -> void:
 		# A matching request ID with the wrong page is a protocol failure, not pending work.
 		file_actions.cloud_failed()
 		status = "Cloud connection failed"
+		cloud_error.receive({"error": status, "error_detail": "cloud.response: path, offset or sort order did not match the requested page", "offset": _cloud_offsets[_cloud_requested_page]})
 		if visible: refresh()
 		return
 	status = ""
@@ -622,9 +800,11 @@ func _on_media_list(id: int, payload: String) -> void:
 	elif state != "ready":
 		if kind == "cloud": file_actions.cloud_failed()
 		status = str(result.get("error", "Error")).left(80)
+		if kind == "cloud": cloud_error.receive(result)
 	else:
 		match kind:
 			"cloud":
+				cloud_error.clear()
 				cloud_search.observe(result)
 				file_actions.commit_cloud(str(result.get("order", "")))
 				_cloud_entries = result.get("entries", [])
@@ -634,6 +814,7 @@ func _on_media_list(id: int, payload: String) -> void:
 				_cloud_page_size = maxi(1, int(result.get("page_size", 48)))
 				_reset_navigation()
 				scroll = _cloud_requested_scroll
+				_position_to_restore = _cloud_requested_position.duplicate(true)
 			"local":
 				if str(result.get("path", "")) == _local_path():
 					_local_entries = result.get("entries", [])
@@ -733,6 +914,8 @@ func _load_section() -> void:
 
 func _rebuild_rows() -> void:
 	rows.clear()
+	if cloud_error.opened:
+		rows.assign(cloud_error.rows()); scroll = clampf(scroll, 0.0, _max_scroll()); return
 	if account_panel.active():
 		rows.assign(account_panel.rows())
 		scroll = clampf(scroll, 0.0, _max_scroll())
@@ -744,6 +927,8 @@ func _rebuild_rows() -> void:
 				var photo: bool = entry.get("kind", "") == "image" or ImageInfo.is_image(str(entry.uri), str(entry.title))
 				rows.append({"title": str(entry.title), "detail": "%02d:%02d" % [seconds / 60, seconds % 60] if seconds > 0 else "",
 					"kind": "image" if photo else "video", "icon": "image" if photo else "video", "uri": str(entry.uri)})
+				rows.back().position_ms = int(entry.get("position_ms", 0))
+				rows.back().duration_ms = int(entry.get("duration_ms", -1))
 				if not str(entry.get("cover", "")).is_empty(): rows.back()["cover"] = entry.cover
 		Section.LOCAL:
 			for entry in _local_entries:
@@ -779,8 +964,11 @@ func _rebuild_rows() -> void:
 					[{"value": SeekPolicy.SPEED, "label": "Speed", "hint": "Faster jumps, less precise"},
 					{"value": SeekPolicy.EXACT, "label": "Precise", "hint": "Accurate jumps, may take longer"}], false,
 					"Faster jumps, less precise" if seek == SeekPolicy.SPEED else "Accurate jumps, may take longer"))
-				rows.append(_choice_row("Resolution", "output_width", int(settings.get("output_width", Quality.AUTO_OUTPUT)),
-					[{"value": Quality.AUTO_OUTPUT, "label": "Auto"}, {"value": 0, "label": "Original size"}, {"value": 5760, "label": "6K"}, {"value": 4096, "label": "4K"}], true))
+				var outputs: Array = []
+				for option in [[Quality.AUTO_OUTPUT, "Auto"], [0, "Original size"], [5760, "6K"], [4096, "4K"]]:
+					outputs.append({"value": option[0], "label": option[1], "hint": Quality.OUTPUT_HINTS[option[0]]})
+				var output_row := _choice_row("Output resolution", "output_width", int(settings.get("output_width", Quality.AUTO_OUTPUT)), outputs, true)
+				output_row.info = Quality.OUTPUT_INFO; rows.append(output_row)
 				rows.append({"title": I18n.t("Alpha passthrough FPS limit"), "key": "alpha_fps", "value": int(settings.get("alpha_fps", 20)),
 					"slider": true, "span": Vector3(10, 40, 1), "unit": " FPS", "reset_value": 20.0, "hint": "Passthrough uses lots of GPU, so FPS may be lower"})
 				rows.append_array(_subtitle_rows(settings))
@@ -800,15 +988,22 @@ func _rebuild_rows() -> void:
 				rows.append({"title": I18n.t("Clear cache"), "detail": _bytes(cache.y) if cache.x > 0 else "", "icon": "check" if armed else "trash",
 					"selected": armed, "clear_cache": true, "empty": cache.x == 0})
 			elif tab == DISPLAY_TAB:
-				var quality_choices: Array = [{"value": Quality.AUTO, "label": "Auto"}]
+				var quality_choices: Array = [{"value": Quality.AUTO, "label": "Auto", "hint": Quality.SCALE_AUTO_HINT}]
 				for i in Quality.SCALES.size():
-					quality_choices.append({"value": i, "label": Quality.NAMES[i]})
-				rows.append(_choice_row("Display quality", "display_quality", int(settings.get("display_quality", Quality.DEFAULT)),
-					quality_choices, false, "Restart to apply" if settings.get("display_quality_pending", false) else ""))
+					quality_choices.append({"value": i, "label": Quality.NAMES[i], "hint": Quality.SCALE_HINTS[i]})
+				var scale_row := _choice_row("Render scale", "display_quality", int(settings.get("display_quality", Quality.DEFAULT)),
+					quality_choices, false, "Restart to apply" if settings.get("display_quality_pending", false) else "")
+				scale_row.info = Quality.SCALE_INFO; rows.append(scale_row)
+				var supersampling_choices: Array = []
+				for i in Quality.SUPERSAMPLING_NAMES.size():
+					supersampling_choices.append({"value": i, "label": Quality.SUPERSAMPLING_NAMES[i], "hint": Quality.SUPERSAMPLING_HINTS[i]})
+				var supersampling_row := _choice_row("Supersampling", "supersampling", int(settings.get("supersampling", Quality.DEFAULT_SUPERSAMPLING)), supersampling_choices, true)
+				supersampling_row.info = Quality.SUPERSAMPLING_INFO; rows.append(supersampling_row)
 				var sharpness_choices: Array = []
 				for i in Quality.SHARPNESS.size():
-					sharpness_choices.append({"value": Quality.SHARPNESS[i], "label": Quality.SHARPNESS_NAMES[i]})
-				rows.append(_choice_row("Sharpness", "sharpness", float(settings.get("sharpness", Quality.DEFAULT_SHARPNESS)), sharpness_choices, true))
+					sharpness_choices.append({"value": Quality.SHARPNESS[i], "label": Quality.SHARPNESS_NAMES[i], "hint": Quality.SHARPNESS_HINTS[i]})
+				var sharpness_row := _choice_row("Sharpness", "sharpness", float(settings.get("sharpness", Quality.DEFAULT_SHARPNESS)), sharpness_choices, true)
+				sharpness_row.info = Quality.SHARPNESS_INFO; rows.append(sharpness_row)
 				rows.append(_choice_row("Show FPS", "show_fps", bool(settings.get("show_fps", false)),
 					[{"value": false, "label": "Off"}, {"value": true, "label": "On"}]))
 			elif tab == BACKGROUND_TAB:
@@ -856,6 +1051,11 @@ func _rebuild_rows() -> void:
 					rows.append(_entry_row(entry))
 	if section == Section.MEDIA_SERVER:
 		rows = server_browser.rows()
+	if compact:
+		if section == Section.MEDIA_SERVER:
+			rows.assign(rows.filter(func(row): return row.has("scene") or row.has("container_node") or row.has("library") or row.has("server_account") or row.has("open_libraries")))
+		else:
+			rows.assign(rows.filter(func(row): return not row.has("smb_found")))
 	if media_filter > 0 and section not in [Section.SETTINGS, Section.MEDIA_SERVER]:
 		rows.assign(rows.filter(func(row): return not row.has("uri") or row.get("kind", "video") == ("image" if media_filter == 2 else "video")))
 	file_actions.sort_rows()
@@ -865,6 +1065,9 @@ func _rebuild_rows() -> void:
 		_recent_page = clampi(_recent_page, 0, _recent_page_count() - 1)
 		rows.assign(_recent_all_rows.slice(_recent_page * RECENT_PAGE_SIZE, (_recent_page + 1) * RECENT_PAGE_SIZE))
 	focus_index = clampi(focus_index, 0, maxi(0, rows.size() - 1))
+	if not _position_to_restore.is_empty():
+		scroll = Presentation.position(rows, _position_to_restore, _cols())
+		_position_to_restore = {}
 	scroll = clampf(scroll, 0.0, _max_scroll())
 
 ## The open local folder's path ("" lists the storage volumes).
@@ -884,6 +1087,7 @@ func _cancel_cloud() -> void:
 
 func _load_cloud(reset: bool = true, force: bool = false, page: int = 0) -> void:
 	_cancel_cloud()
+	cloud_error.clear()
 	if reset:
 		cloud_search.scopes = ["current"]
 		_cloud_location = _cloud_path()
@@ -896,8 +1100,10 @@ func _load_cloud(reset: bool = true, force: bool = false, page: int = 0) -> void
 		_cloud_next = -1
 		_cloud_total = -1
 		_cloud_requested_scroll = float(saved_page.get("scroll", 0.0))
+		_cloud_requested_position = saved_page.get("position", {}).duplicate(true)
 	else:
 		_cloud_requested_scroll = scroll if page == _cloud_page else 0.0
+		_cloud_requested_position = capture_position() if page == _cloud_page else {}
 	if not platform or page < 0 or page >= _cloud_offsets.size(): return
 	_cloud_requested_page = page
 	_cloud_busy = true
@@ -925,12 +1131,12 @@ func _entry_row(entry: Dictionary) -> Dictionary:
 	if bool(entry.get("container", false)):
 		var folder_row := {"title": str(entry.title), "detail": "", "icon": "folder", "container": entry, "folder": true,
 			"delete_uri": str(entry.get("delete_uri", "")), "can_delete": bool(entry.get("can_delete", false)), "delete_reason": str(entry.get("delete_reason", "File deletion unavailable for this source"))}
-		for field in ["size", "modified", "cloud_id", "delete_effect"]:
+		for field in ["size", "modified", "cloud_id", "delete_effect", "child_count", "type"]:
 			if entry.has(field): folder_row[field] = entry[field]
 		return folder_row
 	var photo: bool = entry.get("kind", "") == "image" or ImageInfo.is_image(str(entry.get("uri", "")), str(entry.title))
 	var row := {"title": str(entry.title), "detail": _size(entry), "kind": "image" if photo else "video", "icon": "image" if photo else "video", "uri": str(entry.get("uri", ""))}
-	for field in ["size", "modified", "can_delete", "delete_reason", "id", "cloud_id", "delete_effect"]:
+	for field in ["size", "modified", "can_delete", "delete_reason", "id", "cloud_id", "delete_effect", "duration_ms", "width", "height"]:
 		if entry.has(field): row[field] = entry[field]
 	if not str(entry.get("cover", "")).is_empty():
 		row["cover"] = str(entry.cover)
@@ -997,6 +1203,11 @@ func _read_cache_usage() -> Vector2i:
 ## (current, compiling, cold) shown on the Alpha tab change.
 func _activate(target: int) -> void:
 	if _activate_footer(target): return
+	if cloud_error.action(target): return
+	if target == EXPAND_LIBRARY:
+		layout_requested.emit(); return
+	if target in [VIEW_LIST, VIEW_GRID]:
+		set_view_mode("list" if target == VIEW_LIST else "grid"); return
 	if controls_page.action(target): return
 	if file_actions.action(target): return
 	if choices.action(target): return
@@ -1030,6 +1241,7 @@ func _activate(target: int) -> void:
 		tab = GENERAL_TAB if section == Section.SETTINGS else 0
 		scroll = 0.0
 		status = ""
+		cloud_error.clear()
 		_editor = {}
 		_cache_usage = null
 		_restore_folder_key = _folder_key()
@@ -1118,9 +1330,13 @@ func _choose(row: Dictionary) -> void:
 		refresh()
 		return
 	if section == Section.MEDIA_SERVER:
+		if compact and row.has("scene"):
+			server_browser._play(row.scene, int(row.scene.get("position_ms", -1)))
+			return
 		server_browser.choose(row)
 		return
 	if row.has("uri") and not str(row.uri).is_empty():
+		remember_playback_context()
 		dismiss()
 		chosen.emit(str(row.uri), str(row.title))
 	elif row.has("smb_server"):
@@ -1392,8 +1608,89 @@ func _editor_input(target: int) -> void:
 
 # --- drawing --------------------------------------------------------------------------------
 
+func _is_current_row(row: Dictionary) -> bool:
+	var uri := str(row.get("uri", row.get("scene", {}).get("uri", "")))
+	return current_file_provider.is_valid() and not uri.is_empty() and uri == str(current_file_provider.call())
+
+func _draw_compact() -> void:
+	_set_backdrop(COMPACT_SIZE)
+	_block_rays(_backdrop, COMPACT_SIZE)
+	var crumbs := _crumbs()
+	_button(BACK, "", Vector2(-0.51, 0.36), Vector2(0.075, 0.065), not crumbs.is_empty() or section == Section.MEDIA_SERVER or cloud_search.active, "up")
+	var heading: String = cloud_search.query if cloud_search.active else (_header_title() if not _header_title().is_empty() else I18n.t(NAV[section]))
+	var title := _label(_fit_title(heading, "", 0.78, 19), Vector3(-0.45, 0.36, 0.004), 19)
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+	_button(CLOSE, "", Vector2(0.51, 0.36), Vector2(0.075, 0.065), true, "close")
+	_tips[CLOSE] = I18n.t("Close")
+	if section != Section.RECENT:
+		_button(REFRESH, "", Vector2(0.27, 0.36), Vector2(0.075, 0.065), platform != null and not _cloud_busy, "refresh")
+		_tips[REFRESH] = I18n.t("Refresh")
+	_button(EXPAND_LIBRARY, "", Vector2(0.28, -0.365), Vector2(0.09, 0.065), true, "expand")
+	_tips[EXPAND_LIBRARY] = I18n.t("Expand library")
+	_decoration(Vector2(1.04, 0.002), Vector2(0, 0.305), Color(0.17, 0.2, 0.24))
+	_draw_rows()
+	for spec in [[VIEW_LIST, "list", "List view"], [VIEW_GRID, "grid", "Icon view"]]:
+		_button(int(spec[0]), "", Vector2(0.39 + (0.11 if spec[1] == "grid" else 0), -0.365), Vector2(0.09, 0.065), true, str(spec[1]), view_mode == spec[1])
+		_tips[int(spec[0])] = I18n.t(str(spec[2]))
+	var previous := RECENT_PREVIOUS if section == Section.RECENT else CLOUD_PREVIOUS
+	var next := RECENT_NEXT if section == Section.RECENT else CLOUD_NEXT
+	var page := _recent_page if section == Section.RECENT else _cloud_page
+	var count := str(_recent_page_count()) if section == Section.RECENT else (str(maxi(1, ceili(float(_cloud_total) / _cloud_page_size))) if _cloud_total >= 0 else "…")
+	var paging := section == Section.RECENT or (section == Section.CLOUD and not _cloud_stack.is_empty())
+	var can_next := page + 1 < _recent_page_count() if section == Section.RECENT else _cloud_next >= 0
+	var busy := _cloud_busy if section == Section.CLOUD else false
+	if cloud_search.active:
+		previous = CloudSearch.PREVIOUS; next = CloudSearch.NEXT; page = cloud_search.page; count = "…"; paging = true
+		can_next = not cloud_search.next_cursor.is_empty(); busy = cloud_search.pending > 0
+	if paging:
+		_button(previous, "", Vector2(-0.49, -0.365), Vector2(0.075, 0.065), not busy and page > 0, "previous")
+		_label("%d / %s" % [page + 1, count], Vector3(-0.32, -0.365, 0.004), 16)
+		_button(next, "", Vector2(-0.15, -0.365), Vector2(0.075, 0.065), not busy and can_next, "next")
+	if not status.is_empty():
+		var message := _label(_fit_title(cloud_error.summary_text() if section == Section.CLOUD else I18n.t(status), "", 0.94, 14), Vector3(0, 0.278, 0.004), 14)
+		message.modulate = MUTED
+		if section == Section.CLOUD and not cloud_error.detail.is_empty():
+			_button(CloudBrowseError.OPEN, "", Vector2(0.39, 0.36), Vector2(0.065, 0.065), true, "info")
+			_tips[CloudBrowseError.OPEN] = I18n.t("Error details")
+
+func _draw_compact_rows() -> void:
+	_list = Node3D.new(); add_child(_list); _decorations.append(_list); _bar_thumb = null
+	var first := _first_line() * _cols()
+	for i in range(first, mini(rows.size(), first + _drawn_slots())):
+		var row: Dictionary = rows[i]
+		var k := i - first
+		if _grid():
+			_tile(ROW_BASE + k, row, Vector2(-0.34 + (k % 3) * 0.34, 0.13 - (k / 3) * _pitch()))
+		else:
+			var centre := Vector2(0, 0.215 - k * _pitch())
+			_button(ROW_BASE + k, _fit_title(str(row.title), "", 0.83, 20), centre, Vector2(1.03, 0.098), true, "", false, _list)
+			var button: Dictionary = _buttons.back()
+			var node: MeshInstance3D = button.node
+			if _is_current_row(row):
+				button.base_color = SELECTED; node.material_override.set_shader_parameter("surface_color", SELECTED)
+			var name: Label3D = node.get_child(0)
+			name.position = Vector3(-0.40, 0.021, 0.004); name.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+			set_label_size(name, 20); _tips[ROW_BASE + k] = str(row.title)
+			_icon(str(row.get("icon", "video")), Vector3(-0.46, 0, 0.005), 0.04, FOLDER if row.has("container") else MUTED, node)
+			var detail := _label(_fit_title(str(Presentation.info(row, catalog, section == Section.RECENT).subtitle), "", 0.83, 15), Vector3(-0.40, -0.025, 0.004), 15, node)
+			detail.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT; detail.modulate = MUTED
+	if _max_scroll() > 0:
+		var span := _bar_span()
+		_button(SCROLLBAR, "", Vector2(0.55, span.x - span.y * 0.5), Vector2(0.035, span.y))
+		var thumb := span.y * float(_lines()) / _line_count()
+		_bar_thumb = _decoration(Vector2(0.01, thumb), Vector2(0.55, span.x - thumb * 0.5), MUTED)
+		_bar_thumb.material_override.render_priority = 13
+	elif rows.is_empty() and status.is_empty():
+		_label("—", Vector3(0, 0, 0.004), 26).modulate = MUTED
+	_place_list()
+
 func _draw() -> void:
 	_clear_layout()
+	if cloud_error.opened: cloud_error.draw(); return
+	_side.visible = not compact
+	if compact:
+		_draw_compact()
+		return
 	if not file_actions.modal.is_empty():
 		file_actions.draw_modal()
 		return
@@ -1402,17 +1699,23 @@ func _draw() -> void:
 	# Like common VR players: a navigation column angled towards the viewer, the browser beside
 	# it, and round actions floating under the browser.
 	_set_backdrop(Vector2(1.46, 1.12), Vector2(0.13, 0))
-	var column := _quad(Vector2(0.42, 1.12), Vector3.ZERO, PANEL, 10)
-	_side.add_child(column)
-	_decorations.append(column)
-	for position in NAV_ORDER.size():
-		var i: int = NAV_ORDER[position]
-		_nav_button(NAV_BASE + i, I18n.t(NAV[i]), NAV_ICONS[i], Vector2(0, 0.39 - position * 0.13), i == section)
+	if section == Section.MEDIA_SERVER and server_browser.focused():
+		_side.visible = server_browser.sources_open
+		_set_backdrop(Vector2(1.68, 1.44), Vector2(0.13, 0.015))
+	if _side.visible:
+		var column := _quad(Vector2(0.42, 1.12), Vector3.ZERO, PANEL, 10)
+		_side.add_child(column)
+		_decorations.append(column)
+		for position in NAV_ORDER.size():
+			var i: int = NAV_ORDER[position]
+			_nav_button(NAV_BASE + i, I18n.t(NAV[i]), NAV_ICONS[i], Vector2(0, 0.39 - position * 0.13), i == section)
 	if not controls_page.active():
-		_round(RECENTER, "recenter", Vector2(0.01, -0.65), 0.08, true, false, I18n.t("Recenter"))
-		_round(PLAYER, "play", Vector2(0.13, -0.65), 0.08, true, false, I18n.t("Player"))
-		_round(CLOSE, "close", Vector2(0.25, -0.65), 0.08, true, false, I18n.t("Close"))
-		_place_device_status(Vector2(0.13, -0.735))
+		var footer_y := -0.80 if section == Section.MEDIA_SERVER and server_browser.focused() else -0.65
+		_round(RECENTER, "recenter", Vector2(0.01, footer_y), 0.08, true, false, I18n.t("Recenter"))
+		_round(PLAYER, "play", Vector2(0.13, footer_y), 0.08, true, false, I18n.t("Player"))
+		_round(CLOSE, "close", Vector2(0.25, footer_y), 0.08, true, false, I18n.t("Close"))
+		if playback_expanded: _round(EXPAND_LIBRARY, "collapse", Vector2(0.37, footer_y), 0.08, true, false, I18n.t("Collapse library"))
+		_place_device_status(Vector2(0.13, footer_y - 0.085))
 	if account_panel.active():
 		account_panel.draw()
 		return
@@ -1444,33 +1747,33 @@ func _draw() -> void:
 			controls_page.draw()
 			return
 		if section in [Section.RECENT, Section.LOCAL, Section.SMB, Section.DLNA, Section.CLOUD]:
-			var title := _label(I18n.t(NAV[section]), Vector3(-0.42, 0.46, 0.004), 24)
+			var title := _label(I18n.t(NAV[section]), Vector3(-0.42, _header_y(), 0.004), 24)
 			title.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
 	else:
-		_button(BACK, "", Vector2(-0.52, 0.46), Vector2(0.09, 0.07), true, "up")
+		_button(BACK, "", Vector2(-0.52, _header_y()), Vector2(0.09, 0.07), true, "up")
 		_draw_crumbs(crumbs)
 	if section in [Section.LOCAL, Section.SMB, Section.DLNA, Section.CLOUD] and not cloud_managing:
-		_button(REFRESH, "", Vector2(0.80, 0.46), Vector2(0.09, 0.07), platform != null, "refresh")
+		_button(REFRESH, "", _action_position(0.80), Vector2(0.09, 0.065), platform != null, "refresh")
 	if section == Section.CLOUD:
 		cloud_accounts.draw()
 		if cloud_accounts.mode.is_empty() and not _cloud_stack.is_empty() and cloud_search.supported():
-			_button(CloudSearch.OPEN, "", Vector2(0.69, 0.46), Vector2(0.09, 0.07), not _cloud_busy, "search")
+			_button(CloudSearch.OPEN, "", _action_position(0.69), Vector2(0.09, 0.065), not _cloud_busy, "search")
 			_tips[CloudSearch.OPEN] = I18n.t("Search")
 		if not cloud_managing and _cloud_stack.is_empty():
 			_button(CLOUD_ACCOUNTS, "", Vector2(0.69, 0.46), Vector2(0.09, 0.07), platform != null, "plus")
 			_tips[CLOUD_ACCOUNTS] = I18n.t("Cloud accounts")
 	if section == Section.LOCAL and not _local_all_files and platform:
-		_button(ALL_FILES, "", Vector2(0.69, 0.46), Vector2(0.09, 0.07), not _local_grant_pending, "unlock")
+		_button(ALL_FILES, "", _action_position(0.69), Vector2(0.09, 0.065), not _local_grant_pending, "unlock")
 		_tips[ALL_FILES] = I18n.t("Allow access to all files")
 	if section == Section.LOCAL and not _external_volumes().is_empty():
-		_button(USB_STORAGE,"",Vector2(0.58,0.46),Vector2(0.09,0.07),true,"usb")
+		_button(USB_STORAGE,"",_action_position(0.58),Vector2(0.09,0.065),true,"usb")
 		_tips[USB_STORAGE] = I18n.t("USB storage")
 		if not _eject_volume().is_empty():
-			_button(EJECT_STORAGE,"",Vector2(0.47,0.46),Vector2(0.09,0.07),_local_eject_pending.is_empty(),"eject")
+			_button(EJECT_STORAGE,"",_action_position(0.47),Vector2(0.09,0.065),_local_eject_pending.is_empty(),"eject")
 			_tips[EJECT_STORAGE] = I18n.t("Stop using storage")
 	if section == Section.RECENT and not rows.is_empty():
 		# Two presses: the first lights the button, the second clears.
-		_button(CLEAR_HISTORY, "", Vector2(0.80, 0.46), Vector2(0.09, 0.07), true, "check" if _confirm == "clear_history" else "trash",
+		_button(CLEAR_HISTORY, "", _action_position(0.80), Vector2(0.09, 0.065), true, "check" if _confirm == "clear_history" else "trash",
 			_confirm == "clear_history")
 		_tips[CLEAR_HISTORY] = I18n.t("Clear history")
 	if section == Section.DLNA:
@@ -1478,12 +1781,13 @@ func _draw() -> void:
 			_button(ADD, "", Vector2(0.69, 0.46), Vector2(0.09, 0.07), PlatformMethods.supports(platform, "media_dlna_save"), "plus")
 			_tips[ADD] = I18n.t("Add server")
 		elif _dlna_stack.is_empty() and _dlna_servers.any(func(server): return str(server.id) == _dlna_server and bool(server.get("manual", false))):
-			_button(EDIT, "", Vector2(0.69, 0.46), Vector2(0.09, 0.07), true, "edit")
+			_button(EDIT, "", _action_position(0.69), Vector2(0.09, 0.065), true, "edit")
 	if section == Section.SMB and _smb_server.is_empty():
 		_button(ADD, "", Vector2(0.69, 0.46), Vector2(0.09, 0.07), platform != null, "plus")
 	if section == Section.SMB and not _smb_server.is_empty() and _smb_path.is_empty():
-		_button(EDIT, "", Vector2(0.69, 0.46), Vector2(0.09, 0.07), true, "edit")
+		_button(EDIT, "", _action_position(0.69), Vector2(0.09, 0.065), true, "edit")
 	file_actions.draw_header()
+	if browser_content(): draw_view_modes()
 	_decoration(Vector2(1.28, 0.002), Vector2(0.19, 0.405), Color(0.17, 0.2, 0.24))
 	_draw_rows()
 	if section == Section.SETTINGS and tab == ABOUT_TAB:
@@ -1509,7 +1813,10 @@ func _draw() -> void:
 		var pages := str(maxi(_cloud_page + 1, maxi(1, ceili(float(_cloud_total) / _cloud_page_size)))) if _cloud_total >= 0 else ("…" if _cloud_next >= 0 else str(_cloud_page + 1))
 		_label("%d / %s" % [_cloud_page + 1, pages], Vector3(-0.27, -0.515, 0.004), 18)
 		_button(CLOUD_NEXT, "›", Vector2(-0.09, -0.515), Vector2(0.09, 0.07), not _cloud_busy and _cloud_next >= 0)
-	var line := _label(_fit_title(I18n.t(status), "", 0.67, 17), Vector3(-0.45, -0.58 if cloud_paging or file_actions.folder() else -0.52, 0.004), 17)
+	var line := _label(_fit_title(cloud_error.summary_text() if section == Section.CLOUD else I18n.t(status), "", 0.67, 17), Vector3(-0.45, -0.58 if cloud_paging or file_actions.folder() else -0.52, 0.004), 17)
+	if section == Section.CLOUD and not cloud_error.detail.is_empty():
+		_button(CloudBrowseError.OPEN, "", Vector2(0.30, line.position.y), Vector2(0.07, 0.065), true, "info")
+		_tips[CloudBrowseError.OPEN] = I18n.t("Error details")
 	line.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
 	line.modulate = MUTED
 	if file_actions.uncertain or file_actions.pending > 0:
@@ -1524,7 +1831,7 @@ func _draw_crumbs(crumbs: Array) -> void:
 		var text := _fit_title(str(crumbs[i]), "", 0.24, 19)
 		var width := text_width(text, 19) + 0.05
 		var current := i == crumbs.size() - 1
-		_button(CRUMB_BASE + i, text, Vector2(x + width * 0.5, 0.46), Vector2(width, 0.065), not current)
+		_button(CRUMB_BASE + i, text, Vector2(x + width * 0.5, _header_y()), Vector2(width, 0.065), not current)
 		var label: Label3D = _buttons.back().node.get_child(0)
 		set_label_size(label, 19)
 		label.modulate = ACCENT if current else MUTED
@@ -1532,7 +1839,7 @@ func _draw_crumbs(crumbs: Array) -> void:
 			_buttons.back().base_color = Color(TILE, 0.0)
 		x += width + 0.035
 		if not current:
-			_label("›", Vector3(x - 0.0175, 0.46, 0.004), 19).modulate = MUTED
+			_label("›", Vector3(x - 0.0175, _header_y(), 0.004), 19).modulate = MUTED
 
 func _header_title() -> String:
 	match section:
@@ -1554,6 +1861,10 @@ func _header_title() -> String:
 	return ""
 
 func _draw_rows() -> void:
+	if cloud_error.opened: cloud_error.draw_rows(); return
+	if compact:
+		_draw_compact_rows()
+		return
 	choices.begin(str([section, tab]))
 	_list = Node3D.new()
 	add_child(_list)
@@ -1566,10 +1877,19 @@ func _draw_rows() -> void:
 		var k := i - first
 		if _grid():
 			if section == Section.MEDIA_SERVER:
-				server_browser.tile(ROW_BASE + k, row, Vector2(-0.36 + (k % COLS) * GRID_PITCH.x, server_browser.list_top() - 0.13 - (k / COLS) * _pitch()))
+				var cols := _cols()
+				var size: Vector2 = server_browser.tile_size() if server_browser.media_content() else TILE_SIZE
+				var step: float = size.x + 0.025 if server_browser.media_content() else GRID_PITCH.x
+				var left: float = -0.53 + size.x / 2 if server_browser.media_content() else -0.36
+				server_browser.tile(ROW_BASE + k, row, Vector2(left + (k % cols) * step, server_browser.list_top() - size.y / 2 - (k / cols) * _pitch()))
 			else:
-				_tile(ROW_BASE + k, row, Vector2(-0.36 + (k % COLS) * GRID_PITCH.x, GRID_TOP - TILE_SIZE.y * 0.5 - (k / COLS) * GRID_PITCH.y))
+				_tile(ROW_BASE + k, row, Vector2(-0.36 + (k % COLS) * GRID_PITCH.x, (0.095 if cloud_search.active else GRID_TOP) - TILE_SIZE.y * 0.5 - (k / COLS) * GRID_PITCH.y))
 		else:
+			if section == Section.MEDIA_SERVER and server_browser.media_content():
+				server_browser.media_row(ROW_BASE + k, row, Vector2(0.17, row_top - k * _pitch())); continue
+			if browser_content():
+				_media_row_button(ROW_BASE + k, row, Vector2(0.17, row_top - k * _pitch()))
+				continue
 			if row.has("choices") or row.get("slider", false):
 				_setting_field(row, Vector2(0.17, row_top - k * _pitch()), ROW_BASE + k)
 				continue
@@ -1597,9 +1917,10 @@ func _draw_rows() -> void:
 		# Scrollbar: the thumb shows position and length; pointing at the track jumps there.
 		var top := _bar_span().x
 		var height := _bar_span().y
-		_button(SCROLLBAR, "", Vector2(0.835, top - height * 0.5), Vector2(0.04, height))
+		var bar_x := 0.925 if section == Section.MEDIA_SERVER and server_browser.media_content() else 0.835
+		_button(SCROLLBAR, "", Vector2(bar_x, top - height * 0.5), Vector2(0.04, height))
 		var thumb := height * float(_lines()) / _line_count()
-		_bar_thumb = _decoration(Vector2(0.012, thumb), Vector2(0.835, top - thumb * 0.5), MUTED)
+		_bar_thumb = _decoration(Vector2(0.012, thumb), Vector2(bar_x, top - thumb * 0.5), MUTED)
 		_bar_thumb.material_override.render_priority = 13
 	elif rows.is_empty() and status.is_empty():
 		var empty := _label("—", Vector3(0.19, 0.0, 0.004), 30)
@@ -1619,6 +1940,10 @@ func _setting_field(row: Dictionary, centre: Vector2, target: int) -> void:
 	if not str(row.get("hint", "")).is_empty():
 		var hint := _label(_fit_title(I18n.t(row.hint), "", 0.43, 13), Vector3(-0.55, -0.022, 0.004), 13, node)
 		hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT; hint.modulate = MUTED
+	if not str(row.get("info", "")).is_empty():
+		# Pointing at the title explains the setting; the row itself stays inert.
+		button.hover_disabled = true; _tips[target] = I18n.t(row.info)
+		_icon("info", Vector3(-0.55 + minf(text_width(title.text, 18), 0.43) + 0.022, title.position.y, 0.004), 0.026, MUTED, node)
 	var first_field := _buttons.size()
 	choices.field(node, row, Vector2(0.225, 0), 0.72)
 	for index in range(first_field, _buttons.size()): _buttons[index]["list_row"] = target
@@ -1649,6 +1974,7 @@ func _tile(target: int, row: Dictionary, centre: Vector2) -> void:
 	_button(target, _fit_title(str(row.title), "", 0.5, 18), centre, TILE_SIZE, true, "", false, _list)
 	var button: Dictionary = _buttons.back()
 	button.base_color = SELECTED if file_actions.editing and file_actions.row_uri(row) == file_actions.selected else Color(TILE, 0.0)
+	if compact and _is_current_row(row): button.base_color = SELECTED
 	button.enabled = not file_actions.editing or not file_actions.row_uri(row).is_empty()
 	button.node.material_override.set_shader_parameter("surface_color", button.base_color)
 	var node: MeshInstance3D = button.node
@@ -1674,6 +2000,10 @@ func _tile(target: int, row: Dictionary, centre: Vector2) -> void:
 	if file_actions.editing and not file_actions.row_uri(row).is_empty():
 		_icon("check" if file_actions.row_uri(row) == file_actions.selected else "circle", Vector3(-0.115, 0.095, 0.009), 0.035, ACCENT, node)
 	var detail := str(row.get("detail", ""))
+	if browser_content():
+		var info := Presentation.info(row, catalog, section == Section.RECENT)
+		detail = str(info.badge)
+		_progress_on(node, float(info.ratio), Vector2(0, -0.046), TILE_SIZE.x - 0.035)
 	if not detail.is_empty():
 		var badge := _label(detail, Vector3(TILE_SIZE.x * 0.5 - 0.02, -0.03, 0.006), 13, node)
 		badge.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
@@ -1749,6 +2079,36 @@ func _turn_recent_page(step: int) -> void:
 	_drag = {}
 	_fling = 0.0
 	refresh()
+
+func _progress_on(parent: Node3D, ratio: float, center: Vector2, width: float) -> void:
+	if ratio < 0.0: return
+	var track := _quad(Vector2(width, 0.003), Vector3(center.x, center.y, 0.008), Color(0.22, 0.29, 0.30), 14)
+	parent.add_child(track)
+	if ratio <= 0.0: return
+	var filled := width * ratio
+	parent.add_child(_quad(Vector2(filled, 0.003), Vector3(center.x - width * 0.5 + filled * 0.5, center.y, 0.009), ACCENT, 15))
+
+func _media_row_button(target: int, row: Dictionary, centre: Vector2) -> void:
+	var info := Presentation.info(row, catalog, section == Section.RECENT)
+	var status_text := str(info.status)
+	var title_width := 0.76 if not status_text.is_empty() else 1.0
+	_button(target, _fit_title(str(row.title), "", title_width, 22), centre, Vector2(1.24, 0.098), true, "", false, _list)
+	var selected: bool = file_actions.editing and file_actions.row_uri(row) == file_actions.selected and not file_actions.selected.is_empty()
+	_lit(selected)
+	var node: MeshInstance3D = _buttons.back().node
+	var label: Label3D = node.get_child(0)
+	label.position = Vector3(-0.48, 0.023, 0.004)
+	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+	_tips[target] = str(row.title)
+	_icon("check" if selected else str(row.get("icon", "video")), Vector3(-0.565, 0, 0.004), 0.045, ACCENT if selected else (FOLDER if info.folder else _buttons.back().foreground), node)
+	var subtitle_width := 0.76 if float(info.ratio) >= 0 else 1.02
+	var subtitle := _label(_fit_title(str(info.subtitle), "", subtitle_width, 16), Vector3(-0.48, -0.025, 0.004), 16, node)
+	subtitle.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT; subtitle.modulate = MUTED
+	if not status_text.is_empty():
+		var status_label := _label(_fit_title(status_text, "", 0.28, 14), Vector3(0.58, 0.022, 0.004), 14, node)
+		status_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT; status_label.modulate = ACCENT
+	if info.folder: _icon("next", Vector3(0.565, 0, 0.004), 0.028, MUTED, node)
+	_progress_on(node, float(info.ratio), Vector2(0.46, -0.025), 0.24)
 
 func _row_button(target: int, title: String, detail: String, icon: String, centre: Vector2, selected: bool) -> void:
 	_button(target, _fit_title(title, "", 0.9, 22), centre, Vector2(1.24, 0.098), true, "", false, _list)

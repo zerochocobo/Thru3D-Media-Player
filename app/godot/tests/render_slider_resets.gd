@@ -67,7 +67,7 @@ func run() -> void:
 		menu._adjustment = "stereo_view"; menu.refresh(); await snapshot("stereo-" + language)
 		menu._adjustment = ""; menu.section = 0; state.geometry = 1
 		menu.refresh(); menu._activate(110); menu._activate(Menu.SUBTITLE_APPEARANCE)
-		check(menu.choices.sliders.size() == 3, "Subtitle appearance actually shows all three slider fields")
+		check(menu.choices.sliders.size() == 4, "Subtitle appearance actually shows all four slider fields")
 		await snapshot("subtitles-" + language)
 		state.geometry = 0
 	I18n.use("zh"); make_menu(); menu.section = 1; menu._adjustment = "screen"

@@ -41,6 +41,7 @@ var cards := {} # queue index -> card, original pose/shape/size are never change
 var focus := -1
 var focus_pose := Transform3D.IDENTITY
 var _viewing_offsets := {} # Head-relative, per layout/session; applied only when opening a photo.
+var _layout_offsets := {} # Grip placement, relative to the head, never written to settings.
 var progress := 0.0
 var returning := false
 var capture := {}
@@ -80,6 +81,7 @@ func recenter(reset_viewing: bool = true) -> void:
 		forward = forward.normalized() if forward.length() > 0.01 else Vector3.FORWARD
 		anchor = Transform3D(Basis(Vector3.UP, atan2(-forward.x, -forward.z)), head.origin)
 	else: anchor = Transform3D(Basis.IDENTITY, Vector3(0, 1.6, 0))
+	if _layout_offsets.has(mode): anchor = _view_head() * _layout_offsets[mode]
 	_yaw = 0.0; _reflow = true
 	if focus >= 0: _place_focus()
 
@@ -96,12 +98,20 @@ func set_wall_rows(value: int) -> void:
 ## Move the complete world layout without changing its batch, scale or preview resources.
 func translate_layout(offset: Vector3) -> void:
 	if not offset.is_finite(): return
-	anchor.origin += offset
-	focus_pose.origin += offset
+	transform_layout(Transform3D(Basis.IDENTITY, offset))
+
+func transform_layout(motion: Transform3D) -> void:
+	if not motion.is_finite(): return
+	anchor = motion * anchor
+	focus_pose = motion * focus_pose
 	if focus >= 0: remember_focus_pose(focus_pose)
 	for card in cards.values():
-		card.pose.origin += offset
-		card.node.global_position += offset
+		card.pose = motion * card.pose
+		card.node.global_transform = motion * card.node.global_transform
+	remember_layout_pose()
+
+func remember_layout_pose() -> void:
+	if photo and is_instance_valid(photo.view_camera): _layout_offsets[mode] = _view_head().affine_inverse() * anchor
 
 func clear(reset_viewing: bool = true) -> void:
 	if reset_viewing: _viewing_offsets.clear()

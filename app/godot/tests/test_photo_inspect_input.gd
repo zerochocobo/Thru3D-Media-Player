@@ -5,6 +5,8 @@ var failures: Array[String] = []
 
 class InputMain extends "res://scripts/main.gd":
 	var rays := {}
+	var move_pose := Transform3D(Basis.IDENTITY, Vector3(0, 1.5, -0.5))
+	func _move_pose(_hand: String) -> Variant: return move_pose
 	func _ray(hand: String) -> Variant:
 		return rays[hand] if rays.has(hand) else super._ray(hand)
 
@@ -35,7 +37,18 @@ func _run() -> void:
 	photo._detail_material.set_shader_parameter("photo_texture",photo._texture)
 	photo.set_screen_curve(0); photo._apply_geometry(); photo.panel.visible = true
 	main._place_screen()
-	menu.toggle(); menu._activate(Menu.PHOTO_ADJUST)
+	menu.toggle()
+	for hand in ["left_hand", "right_hand"]:
+		main.rays[hand] = [menu.to_global(Vector3(0, 0, 1)), -menu.global_basis.z]
+		var menu_pose: Transform3D = menu.global_transform
+		var head: Vector3 = main._head_pose().origin
+		var picture_pose: Transform3D = photo.panel.global_transform
+		main._on_controller_button("grip_click", hand)
+		check(main.interface_move.pending() and main.interface_move.capture.targets[0].node == menu, "Default grip arms the photo control menu: " + hand)
+		main.move_pose.origin += Vector3(0.06, -0.02, 0.04); main._update_interface_move()
+		main._on_controller_release("grip_click", hand)
+		check(menu.global_position.distance_to(menu_pose.origin) > 0.02 and absf(menu.global_position.distance_to(head) - menu_pose.origin.distance_to(head)) < 0.0001 and photo.panel.global_transform == picture_pose and not photo.inspect, "Either grip moves only the aimed photo menu at its original distance")
+	menu._activate(Menu.PHOTO_ADJUST)
 	var y: float = menu._adjust_rows[452].knob.position.y
 	menu.press_pointer("right_hand", menu.to_global(Vector3(0.03,y,1)), -menu.global_basis.z,true)
 	menu.update_pointer("right_hand",menu.to_global(Vector3(0.63,y,1)),-menu.global_basis.z,true)
@@ -46,7 +59,7 @@ func _run() -> void:
 	check(stored.get_value("photo_screen","magnification") == 8, "Default persists after slider release")
 	menu._activate(Menu.PHOTO_ADJUST_BACK)
 	var icon: Dictionary = menu._buttons.filter(func(b): return b.target == Menu.PHOTO_INSPECT)[0]
-	main.rays["right_hand"] = [icon.node.global_position + Vector3(0,0,1), -menu.global_basis.z]
+	main.rays["right_hand"] = [icon.node.global_position + menu.global_basis.z, -menu.global_basis.z]
 	menu.update_pointer("right_hand",main.rays.right_hand[0],main.rays.right_hand[1],true)
 	check(menu._tooltip.visible and menu._tooltip.get_child(0).text.contains("8.0×"), "Actual hovered icon shows remembered default")
 	check(not menu._buttons.any(func(b): return b.target in [Menu.PHOTO_PLUS, Menu.PHOTO_MINUS]), "Photo bar has no live magnifier zoom controls")
@@ -56,6 +69,38 @@ func _run() -> void:
 	check(photo.inspect, "Releasing the opening trigger does not close the window")
 	var original_pose: Transform3D = photo.panel.global_transform
 	var original_size: Vector2 = photo._flat.size
+	main.controller_bindings.move_scope = "all"
+	for hand in ["left_hand", "right_hand"]:
+		var detail_pose: Transform3D = photo._detail.global_transform
+		var head: Vector3 = main._head_pose().origin
+		var centre: Vector2 = photo.crop_center
+		var settings_before := FileAccess.get_file_as_string(main.settings_path)
+		main._on_controller_button("grip_click", hand)
+		check(photo.inspect and main.interface_move.pending() and main.interface_move.capture.hand == hand and main.interface_move.capture.targets.size() == 1 and main.interface_move.capture.targets[0].node == photo._detail,
+			"Either grip arms only the magnifier window: " + hand)
+		main.move_pose.origin += Vector3(0.005, 0, 0); main._update_interface_move()
+		check(photo._detail.global_transform == detail_pose and main.interface_move.pending(), "Small grip jitter keeps the magnifier in place")
+		main.move_pose.origin += Vector3(0.065, 0.04, -0.03); main._update_interface_move()
+		main._update_photo_inspect()
+		check(main.interface_move.capture.moved and photo._detail.global_position.distance_to(detail_pose.origin) > 0.03 and absf(photo._detail.global_position.distance_to(head) - detail_pose.origin.distance_to(head)) < 0.0001, "Grip moves the magnifier at a fixed head distance")
+		check(photo.inspect and photo.panel.global_transform == original_pose and photo._flat.size == original_size and photo.magnification == 8 and photo.inspect_magnification == 8 and photo.crop_center.is_equal_approx(centre),
+			"Moving the magnifier keeps the source, sampling centre and zoom unchanged")
+		var other := "right_hand" if hand == "left_hand" else "left_hand"
+		main._on_controller_button("grip_click", other)
+		main._on_controller_release("grip_click", other)
+		check(main.interface_move.capture.hand == hand, "Other grip cannot steal the magnifier movement")
+		main._on_controller_button("trigger_click", other); main._on_controller_release("trigger_click", other)
+		check(photo.inspect, "Trigger cannot close the window during committed movement")
+		main._on_controller_release("grip_click", hand)
+		var moved: Transform3D = photo._detail.global_transform
+		main.move_pose.origin += Vector3(0.1, 0, 0); main._update_interface_move()
+		check(photo.inspect and main.interface_move.capture.is_empty() and photo._detail.global_transform == moved and FileAccess.get_file_as_string(main.settings_path) == settings_before,
+			"Grip release leaves the moved window open without changing picture settings")
+	var remembered: Transform3D = main._head_pose().affine_inverse() * photo._detail.global_transform
+	main._close_photo_inspect(false)
+	main.xr_camera.position += Vector3(0.15, 0.05, 0.1); main.xr_camera.rotate_y(0.2)
+	main._toggle_photo_inspect("right_hand")
+	check(photo._detail.global_transform.is_equal_approx(main._head_pose() * remembered), "Reopening the magnifier restores its session-only head-relative placement")
 	for u in [0.2,0.8]:
 		var target: Vector3 = photo.panel.to_global(Vector3((u-0.5)*photo._flat.size.x,0,0))
 		main.rays["right_hand"] = [main._eye()+Vector3(0.1,-0.1,0), (target-main._eye()-Vector3(0.1,-0.1,0)).normalized()]
@@ -103,6 +148,15 @@ func _run() -> void:
 	check(photo.inspect and photo.magnification == 3 and main._inspect_desktop_ray != null,
 		"Desktop wheel opens the configured default through the same inspection state")
 	main._close_photo_inspect(); menu.dismiss()
+	photo.set_projection(3); main._toggle_photo_inspect("right_hand")
+	var panorama_pose: Transform3D = photo.panel.global_transform
+	var panorama_detail: Transform3D = photo._detail.global_transform
+	var panorama_head: Vector3 = main._head_pose().origin
+	main._on_controller_button("grip_click", "right_hand")
+	main.move_pose.origin += Vector3(-0.1, 0.03, 0.04); main._update_interface_move()
+	main._on_controller_release("grip_click", "right_hand")
+	check(photo.inspect and photo._detail.global_position.distance_to(panorama_detail.origin) > 0.03 and absf(photo._detail.global_position.distance_to(panorama_head) - panorama_detail.origin.distance_to(panorama_head)) < 0.0001 and photo.panel.global_transform == panorama_pose, "Panorama grip moves only its magnifier at the original distance")
+	main._close_photo_inspect(); menu.dismiss(); photo.set_projection(0)
 	# Use the actual Meta hand aim/select pipeline without joint positions.
 	main.rays.clear()
 	main.input_visuals.free(); main.input_visuals = null # This fixture validates aim/select without a hand skeleton.

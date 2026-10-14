@@ -59,3 +59,13 @@ cloud_search.gd and CloudDirectorySearch bridge bounded search sessions into the
 media_server_gallery.gd supports Emby/Jellyfin library cards, detail artwork, actor queries and multipart selection. Part ordering uses explicit numeric markers, while each part retains its own media URI, metadata and playback preferences. ISO routing preserves source filename/container hints through local proxies. Returning to a parent restores directory pagination and scroll state.
 
 The Blu-ray adapter and its pinned decoder/filesystem dependencies are described in BLURAY.md. Debug-only text-band menu experiments do not change the Release menu policy or establish a new released bandwidth improvement.
+
+## Browser layout, placement and remote feedback
+
+library_presentation.gd normalizes available metadata and existing playback records. Grid/list preference and stable entry anchors are shared across sources; this does not introduce a persistent whole-library watched index. Emby/Jellyfin view and size preferences are server-scoped. During playback, both compact and full browser layouts remain children of the current control bar, preserving its visible controls and grouped movement.
+
+interface_move.gd uses head-centered fixed-distance dragging with explicit same-hand thumbstick depth changes. Standard menus use gravity and horizontal heading; following uses full head pose. Recenter resets menu offsets; photo reading frames retain placement across ordinary image changes.
+
+file_subtitle_timing.gd stores per-video timing separately from appearance, guarded against stale cross-source commits. The Android/native bridge applies subtitle delay before accepting updated text/bitmap snapshots. PGS display remains flat-screen only.
+
+StrmFile/StrmHttp resolve bounded single-address indexes while retaining original-file identity. RemoteMediaHttp and MpvTlsTrust preserve TLS checks and source/header boundaries. TransferMeter and media_loading.gd publish actual read progress; playback_errors.gd and cloud_browse_error.gd expose sanitized failure details and browse recovery. See STRM_SUPPORT.md and MEDIA_LOADING.md for user-facing scope.

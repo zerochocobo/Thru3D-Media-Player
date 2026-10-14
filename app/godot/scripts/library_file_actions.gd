@@ -205,10 +205,10 @@ func receive(id: int, payload: String) -> bool:
 
 func draw_header() -> void:
 	if not sortable(): return
-	menu._button(SORT, "", Vector2(0.25, 0.46), Vector2(0.09, 0.07), not editing and not menu._cloud_busy, "sort")
+	menu._button(SORT, "", menu._action_position(0.25), Vector2(0.09, 0.065), not editing and not menu._cloud_busy, "sort")
 	menu._tips[SORT] = menu.I18n.t("Sort")
 	if enabled and folder():
-		menu._button(EDIT_MODE, "", Vector2(0.36, 0.46), Vector2(0.09, 0.07), pending == 0, "check" if editing else "select", editing)
+		menu._button(EDIT_MODE, "", menu._action_position(0.36), Vector2(0.09, 0.065), pending == 0, "check" if editing else "select", editing)
 		menu._tips[EDIT_MODE] = menu.I18n.t("Done" if editing else "Edit files")
 
 func draw_footer() -> void:

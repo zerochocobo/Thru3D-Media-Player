@@ -63,7 +63,7 @@ func refresh_values() -> void:
 	if latest != _state:
 		var old_layout := _state.duplicate()
 		var new_layout := latest.duplicate()
-		for key in ["depth_strength", "depth_requested", "depth_enabled", "depth_error", "stereo_strategy", "stereo_ready", "render_strength", "portrait_enabled"]:
+		for key in ["depth_strength", "depth_requested", "depth_enabled", "depth_error", "stereo_strategy", "stereo_ready", "render_strength", "portrait_enabled", "loading_caption"]:
 			old_layout.erase(key); new_layout.erase(key)
 		_state = latest
 		if old_layout != new_layout:
@@ -240,6 +240,9 @@ func _draw_gallery() -> void:
 		caption.modulate = MUTED
 
 func stick_scroll(amount: float, delta: float) -> void:
+	if has_expanded_library():
+		if not _controls_pointer_capture(): expanded_library.stick_scroll(amount, delta)
+		return
 	if not _gallery_open or absf(amount) < 0.7: return
 	if Time.get_ticks_msec() < _scroll_after: return
 	_scroll_after = Time.get_ticks_msec() + 200
@@ -299,7 +302,7 @@ func _activate(target: int) -> void:
 	_close_depth_slider()
 	match target:
 		CLOSE: dismiss()
-		100: dismiss(); recent_requested.emit()
+		100: recent_requested.emit()
 		107: action_requested.emit("stop")
 		108: action_requested.emit("recenter")
 		10, 11: section = target - 10
@@ -331,6 +334,7 @@ func _inspect_tip() -> String:
 	return I18n.t("Inspect") + "  %.1f×" % float(_state.get("inspect_magnification", Photo.DEFAULT_MAGNIFICATION))
 
 func _photo_status() -> String:
+	if not str(_state.get("loading_caption", "")).is_empty(): return str(_state.loading_caption)
 	if not str(_state.get("portrait_error", "")).is_empty(): return I18n.t(str(_state.portrait_error))
 	if _state.get("portrait_requested",false):
 		if _state.get("portrait_enabled",false) and not is_equal_approx(float(_state.get("render_strength",-1)),float(_state.get("depth_strength",1))): return I18n.t("Preparing 3D")

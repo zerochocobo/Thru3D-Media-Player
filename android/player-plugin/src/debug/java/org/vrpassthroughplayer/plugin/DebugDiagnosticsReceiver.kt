@@ -156,7 +156,7 @@ class DebugDiagnosticsReceiver : BroadcastReceiver() {
                                 val network = intent.getStringExtra("uri")
                                 if (network != null) {
                                     // Library network sources (DLNA http, SMB) through the same open path.
-                                    require(network.startsWith("http://") || network.startsWith("https://") || network.startsWith("smb://") || network.startsWith("cloud://"))
+                                    require(android.net.Uri.parse(network).scheme in setOf("http", "https", "smb", "cloud", "file", "medialib"))
                                     if (network.startsWith("cloud://")) CloudPaths.path(network)
                                     command.put("uri", network).put("title", intent.getStringExtra("title") ?: "network")
                                 } else {

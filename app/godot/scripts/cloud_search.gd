@@ -173,7 +173,8 @@ func receive(id: int, payload: String) -> bool:
 	menu._reset_navigation(); menu.refresh(); return true
 func draw() -> void:
 	menu._button(BACK, "", Vector2(-0.52, 0.46), Vector2(0.09, 0.07), true, "up")
-	menu._button(INPUT, menu._fit_title(query if not query.is_empty() else I18n.t("Search files"), "", 1.12, 21), Vector2(0.19, 0.46), Vector2(1.20, 0.075), true, "", editing)
+	menu._button(INPUT, menu._fit_title(query if not query.is_empty() else I18n.t("Search files"), "", 1.12 if editing else 0.9, 21), Vector2(0.19 if editing else 0.065, 0.46), Vector2(1.20 if editing else 0.95, 0.075), true, "", editing)
+	if not editing: menu.draw_view_modes(0.46)
 	var available_scopes: Array = SCOPES.filter(func(value): return value in scopes)
 	for index in available_scopes.size():
 		var value: String = available_scopes[index]; var width := 1.24 / available_scopes.size()
@@ -192,14 +193,6 @@ func draw() -> void:
 		menu._button(SUBMIT, I18n.t("Search"), Vector2(0.51, -0.43), Vector2(0.48, 0.075), not query.strip_edges().is_empty(), "search", true)
 	else:
 		menu._draw_rows()
-		for button in menu._buttons:
-			if not menu._row_target(button.target): continue
-			var node: MeshInstance3D = button.node; var title: Label3D = node.get_child(0)
-			title.position.y = 0.018; menu.set_label_size(title, 19)
-			for child in node.get_children():
-				if child is Label3D and child != title:
-					child.position = Vector3(-0.48, -0.027, 0.004); child.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
-					child.text = menu._fit_title(child.text, "", 1.03, 14); menu.set_label_size(child, 14)
 		menu._button(PREVIOUS, "‹", Vector2(-0.39, -0.51), Vector2(0.10, 0.07), pending == 0 and page > 0)
 		menu._label(str(page + 1), Vector3(-0.19, -0.51, 0.004), 18)
 		menu._button(NEXT, "›", Vector2(0.01, -0.51), Vector2(0.10, 0.07), pending == 0 and not next_cursor.is_empty())

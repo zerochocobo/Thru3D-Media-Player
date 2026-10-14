@@ -2,8 +2,9 @@ package org.vrpassthroughplayer.plugin
 
 import java.net.HttpURLConnection
 import java.net.URI
+import java.io.File
 
-/** Text subtitles beside a network video. Keep discovery separate from media filtering:
+/** Text subtitles beside a video. Keep discovery separate from media filtering:
  * SRT/ASS files should become CC tracks, not playable library entries. */
 internal object SidecarSubtitles {
     data class Track(val location: String, val title: String)
@@ -17,7 +18,17 @@ internal object SidecarSubtitles {
             '/' !in it && '\\' !in it && it.startsWith("$stem.", ignoreCase = true) &&
                 it.substringAfterLast('.', "").lowercase() in extensions
         }.sortedWith(compareBy({ !it.substringBeforeLast('.').equals(stem, ignoreCase = true) },
+            { when (it.substringAfterLast('.').lowercase()) { "srt" -> 0; "ass" -> 1; else -> 2 } },
             { it.lowercase() })).take(8)
+    }
+
+    fun forLocal(video: File): List<Track> {
+        val directory = video.parentFile ?: return emptyList()
+        val names = directory.list()?.toList() ?: return emptyList()
+        return select(video.name, names).mapNotNull { name ->
+            val file = File(directory, name)
+            if (file.isFile && file.canRead() && file.length() > 0) Track(file.absolutePath, name) else null
+        }
     }
 
     fun forCloud(path: String, client: CloudClient, publish: (CloudFile) -> String): List<Track> {

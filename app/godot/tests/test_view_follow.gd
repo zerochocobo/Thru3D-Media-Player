@@ -88,6 +88,45 @@ func close_menu_check(main: Node3D, menu: Node3D, name: String) -> void:
 		name + " does not close or change media")
 	main.test_ray = null
 
+func recenter_menus(main: Node3D) -> void:
+	main.photo_active = false; main.player_menu = main.video_menu
+	main.video_menu.section = 0; main.photo_menu.section = 0
+	for following in [false, true]:
+		if main.view_follow.enabled != following: main._on_session_control("follow")
+		for system in [false, true]:
+			main.xr_camera.transform = Transform3D(Basis.from_euler(Vector3(0.25, 0.4, -0.35)), Vector3(1, 1.6, 2))
+			main._show_full_library()
+			for menu in [main.recent_menu, main.video_menu, main.photo_menu]:
+				var world: Transform3D = main._head_pose() * Transform3D(Basis(Vector3.UP, 1.2), Vector3(1.4, 0.8, -3))
+				menu.global_transform = world
+				main.interface_move.placements[main._menu_key(menu)] = main.InterfaceMove.menu_head(main._head_pose(), following).affine_inverse() * world
+				main.view_follow.capture(main._menu_key(menu), main._head_pose(), world)
+			main.recent_menu.playback_controls_pose = main.video_menu.global_transform
+			if system: main._on_system_recentered()
+			else: check(click(main.recent_menu, main.recent_menu.RECENTER), "The actual library recenter button is clickable after dragging")
+			var frame: Transform3D = main.InterfaceMove.menu_head(main._head_pose(), following)
+			check(main.recent_menu.global_transform.is_equal_approx(frame * Transform3D(Basis.IDENTITY, Vector3(0, -0.05, -1.4))), "Both recenter entry points restore default library position, distance and orientation")
+			check(main.view_follow.enabled == following and main.recent_menu.playback_controls_pose == null, "Recenter preserves the follow switch and discards the expanded-library control-bar cache")
+			for menu in [main.recent_menu, main.video_menu, main.photo_menu]:
+				check(not main.interface_move.placements.has(main._menu_key(menu)), "Recenter removes the dragged offset of visible and hidden menus")
+			main._show_player_menu()
+			check(main.video_menu.global_transform.is_equal_approx(frame * Transform3D(Basis.IDENTITY, Vector3(0, -0.45, -1.4))), "A hidden video control bar reopens at its default pose after recenter")
+			var fixed: Transform3D = main.video_menu.global_transform
+			main.xr_camera.rotate_z(0.2); main._update_view_follow()
+			check(not main.video_menu.global_transform.is_equal_approx(fixed) if following else main.video_menu.global_transform.is_equal_approx(fixed), "Only follow mode tilts the centered control bar with subsequent head roll")
+			main.photo_active = true; main.player_menu = main.photo_menu; main._show_player_menu()
+			frame = main.InterfaceMove.menu_head(main._head_pose(), following)
+			check(main.photo_menu.global_transform.is_equal_approx(frame * Transform3D(Basis.IDENTITY, Vector3(0, -0.45, -1.4))), "A hidden photo control bar also loses its previous dragged pose")
+			main.photo_menu.dismiss()
+			main.photo_active = false; main.player_menu = main.video_menu
+		main._show_player_menu(); main._show_recent_menu(); main._toggle_library_layout()
+		check(main.recent_menu.playback_expanded, "Recenter fixture opens the full library from the nested player browser")
+		main.recent_menu.playback_controls_pose = Transform3D(Basis(Vector3.FORWARD, 0.4), Vector3(4, 1, 3))
+		main._on_system_recentered(); main._toggle_library_layout()
+		var restored: Transform3D = main.InterfaceMove.menu_head(main._head_pose(), following) * Transform3D(Basis.IDENTITY, Vector3(0, -0.45, -1.4))
+		check(main._library_is_compact() and main.video_menu.global_transform.is_equal_approx(restored), "Collapsing the library after recenter cannot resurrect the old tilted control-bar cache")
+		main._show_full_library()
+
 func _run() -> void:
 	DirAccess.make_dir_recursive_absolute(directory)
 	var config := ConfigFile.new()
@@ -170,8 +209,8 @@ func _run() -> void:
 		and placement(main,main.video).is_equal_approx(captured_screen), "Timeline capture keeps strict menu/screen follow during head movement")
 	main.video_menu._seek_hand = ""
 	main._recenter()
-	check(placement(main, main.video).origin.is_equal_approx(Vector3(0,0,-main.video.screen_distance)) and main.view_follow.enabled,
-		"Follow recenter updates only screen's local placement")
+	check(placement(main, main.video).is_equal_approx(captured_screen) and main.view_follow.enabled,
+		"Follow recenter retains the screen's remembered local placement")
 	check(main.video.screen_scale == scale and main.video.screen_rotation == 25, "Recenter preserves size and content rotation")
 	screen_local = placement(main, main.video)
 	main._on_library_chosen("file:///follow/next_2D.mp4", "next_2D.mp4")
@@ -201,7 +240,7 @@ func _run() -> void:
 		main.temporary_passthrough = original
 		main.video.set_alpha(true)
 		check(main._person_passthrough() and main.display.applied_passthrough, "Person passthrough forces actual transparent state")
-		main._show_recent_menu(); main.recent_menu.refresh()
+		main._show_full_library(); main.recent_menu.refresh()
 		var item := button(main.recent_menu, Menu.TEMP_PASSTHROUGH)
 		check(not item.enabled and item.base_color == Menu.ACCENT, "Person mode shows restricted on-state")
 		var origin: Vector3 = item.node.global_position + item.node.global_basis.z * .25
@@ -235,9 +274,8 @@ func _run() -> void:
 	main.xr_camera.position += Vector3(4,0,0); main._update_view_follow()
 	check(main.recent_menu.global_transform.is_equal_approx(frozen), "Invalid head tracking does not recapture or move panels")
 	main.tracked = true
-	var recovered: Variant = main.view_follow.pose(main._menu_key(main.recent_menu), main._head_pose())
 	main._on_system_recentered()
-	check(main.recent_menu.global_transform.is_equal_approx(recovered), "System recenter/tracking recovery retains local pose")
+	check(main.recent_menu.global_transform.is_equal_approx(main._head_pose() * Transform3D(Basis.IDENTITY, Vector3(0, -0.05, -1.4))), "System recenter restores default menus even while following")
 	main.display.preview = true
 	main._on_session_control("follow")
 	var world: Transform3D = main.video.global_transform * main.video.flat_pose
@@ -245,9 +283,9 @@ func _run() -> void:
 	main._update_view_follow()
 	check((main.video.global_transform * main.video.flat_pose).is_equal_approx(world), "Disabling follow leaves media in its current world pose")
 	main._recenter()
-	check(main.video.flat_pose.basis.y.is_equal_approx(Vector3.UP), "Standard recenter returns upright theater screen")
-	main._show_recent_menu()
-	check(main.recent_menu.global_basis.is_equal_approx(main.xr_camera.global_basis), "Standard menus still summon with full head pose")
+	check(placement(main, main.video).is_equal_approx(main.interface_move.placements[main._surface_key(main.video)]), "Standard recenter restores the remembered head-relative pose without clearing it")
+	main._show_full_library()
+	check(main.recent_menu.global_basis.y.is_equal_approx(Vector3.UP), "Standard menus summon level instead of inheriting head tilt")
 	main.recent_menu.refresh()
 	var control_position: Vector3 = button(main.recent_menu, Menu.FOLLOW).node.position
 	main.recent_menu.device_status.status_provider = func(): return {"level":100,"charging":true,"clock24":false}
@@ -287,12 +325,12 @@ func _run() -> void:
 	# Exercise Main's real ray press/release and each menu's dismiss/cleanup path.
 	I18n.use("zh")
 	main._on_session_control("temporary_passthrough")
-	main._show_recent_menu()
+	main._show_full_library()
 	close_menu_check(main,main.recent_menu,"Library")
-	main._show_recent_menu()
+	main._show_full_library()
 	main.recent_menu.section = main.recent_menu.Section.SETTINGS; main.recent_menu.refresh()
 	close_menu_check(main,main.recent_menu,"Settings")
-	main._show_recent_menu()
+	main._show_full_library()
 	main.recent_menu.file_actions.modal = "delete"
 	main.recent_menu.file_actions.target = {"title":"Example.mp4", "uri":"file:///Example.mp4"}
 	main.recent_menu.refresh()
@@ -307,6 +345,7 @@ func _run() -> void:
 	main.photo_active = true; main.player_menu = main.photo_menu
 	main._show_player_menu(); main.photo_menu._adjustment = "photo_view"; main.photo_menu.refresh()
 	close_menu_check(main,main.photo_menu,"Photo adjustments")
+	recenter_menus(main)
 	main.settings.save(main.settings_path)
 	var restarted := FollowMain.new()
 	restarted.settings_path = main.settings_path; restarted.display = SupportedDisplay.new()

@@ -1,6 +1,7 @@
 extends SceneTree
 const Quality := preload("res://scripts/display_quality.gd")
 const Main := preload("res://scripts/main.gd")
+const I18n := preload("res://scripts/i18n.gd")
 class HostProbe extends RefCounted:
 	var requests: Array[bool] = []
 	func finish_app(restart: bool) -> void: requests.append(restart)
@@ -25,7 +26,9 @@ func _run() -> void:
 	var explicit := ConfigFile.new()
 	explicit.set_value("video", "output_width", 0)
 	explicit.set_value("video", "sharpness", 0.4)
-	check(Quality.load_output_choice(explicit) == 0 and Quality.load_sharpness(explicit, true) == 0.4, "Saved choices override tier defaults")
+	check(Quality.load_output_choice(explicit) == 0 and Quality.load_sharpness(explicit, true) == 0.6, "Saved choices override tier defaults")
+	explicit.set_value("video", "sharpness", 0.6)
+	check(Quality.load_sharpness(explicit) == 0.6, "The former High level stays at Quality strength")
 	explicit.set_value("video", "output_width", 1234)
 	check(Quality.load_output_choice(explicit) == Quality.AUTO_OUTPUT, "Unknown output width falls back to auto")
 	var path := "user://quality_test_%d.cfg" % Time.get_ticks_usec()
@@ -37,19 +40,36 @@ func _run() -> void:
 	main.recent_menu.section = main.recent_menu.Section.SETTINGS
 	main.recent_menu.tab = main.recent_menu.DISPLAY_TAB
 	main.recent_menu.refresh()
-	check(main.recent_menu.rows.size() == 3 and main.recent_menu.rows[0].choices.size() == 4 and main.recent_menu.rows[0].choices[0].value == Quality.AUTO and main.recent_menu.rows[1].choices.size() == 4
-		and main.recent_menu.rows[2].key == "show_fps",
-		"Quality and sharpness each occupy one field with all their choices, followed by the FPS display")
+	check(main.recent_menu.rows.size() == 4 and main.recent_menu.rows[0].choices.size() == 4 and main.recent_menu.rows[0].choices[0].value == Quality.AUTO
+		and main.recent_menu.rows[1].key == "supersampling" and main.recent_menu.rows[1].choices.size() == 3 and main.recent_menu.rows[1].value == 1
+		and main.recent_menu.rows[2].key == "sharpness" and main.recent_menu.rows[2].choices.size() == 3 and main.recent_menu.rows[3].key == "show_fps",
+		"Render scale, supersampling (off/normal/quality) and sharpness each occupy one field, followed by the FPS display")
+	var explained := 0
+	for button in main.recent_menu._buttons:
+		var tip := str(main.recent_menu._tips.get(button.target, ""))
+		if tip in [I18n.t(Quality.SCALE_INFO), I18n.t(Quality.SUPERSAMPLING_INFO), I18n.t(Quality.SHARPNESS_INFO)] and not button.enabled and button.get("hover_disabled", false): explained += 1
+	check(explained == 3, "Pointing at the render scale, supersampling and sharpness titles explains them without making the rows clickable")
+	check(main.recent_menu.rows[2].choices.all(func(option): return not str(option.get("hint", "")).is_empty())
+		and main.recent_menu._tips.values().has(I18n.t(Quality.SHARPNESS_HINTS[2])), "Each sharpness choice has a technical hint")
 	main._on_setting_changed("display_quality",2)
-	main._on_setting_changed("sharpness",0.4)
+	main._on_setting_changed("sharpness",0.6)
+	main._on_setting_changed("supersampling", 0)
+	settings.load(path)
+	check(Quality.load_supersampling(settings) == 0, "Supersampling off persists")
+	var layer := preload("res://scripts/video_layer.gd").new(null)
+	layer._settings = true
+	for mode in 3:
+		layer.supersampling = mode
+		var filters := int(layer.layer_values(main.video, main.video.view_camera.get_parent())[18])
+		check(filters & 3 == [0, 1, 2][mode] and filters & 8 != 0, "Layer supersampling %d is independent of sharpening" % mode)
 	check(not bool(ProjectSettings.get_setting("xr/openxr/extensions/meta/dynamic_resolution", true)), "Runtime cannot silently lower chosen video/menu render quality")
 	check(main.display.capabilities().meta_dynamic_resolution_enabled == false and main.display.capabilities().render_target_size_scope == "allocated_eye_buffer", "Diagnostics distinguish allocated buffers from dynamic render regions")
 	check(main.display.render_scale == 1.1, "Quality keeps current XR targets until restart")
 	check(main._library_settings().display_quality_pending, "Pending quality is visible")
-	check(main.video.sharpness == 0.4 and main.photo.sharpness == 0.4, "Sharpness applies to both media types")
-	check(main.photo._detail_material.get_shader_parameter("sharpness") == 0.4, "Photo magnifier matches")
+	check(main.video.sharpness == 0.6 and main.photo.sharpness == 0.6, "Sharpness applies to both media types")
+	check(main.photo._detail_material.get_shader_parameter("sharpness") == 0.6, "Photo magnifier matches")
 	settings.load(path)
-	check(Quality.load_quality(settings) == 2 and Quality.load_sharpness(settings) == 0.4, "Settings persist")
+	check(Quality.load_quality(settings) == 2 and Quality.load_sharpness(settings) == 0.6, "Settings persist")
 	main._on_setting_changed("sharpness",0.0)
 	check(main.video.material.get_shader_parameter("sharpness") == 0.0, "Off restores neutral shader")
 	var host := HostProbe.new()

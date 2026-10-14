@@ -13,6 +13,10 @@ func frames(count: int = 1) -> void:
 	for i in count:
 		await process_frame; await RenderingServer.frame_post_draw
 	await RenderingServer.frame_post_draw
+## Frames at a steady rate through the watchdog, as _process would deliver them.
+func _feed(capture: Node, fps: float, seconds: float) -> void:
+	for frame in roundi(fps * seconds): capture._watchdog(1.0 / fps)
+
 func slot_with(capture: Node, node: Node) -> Dictionary:
 	for slot in capture.slots:
 		if slot.used and slot.nodes.has(node): return slot
@@ -156,6 +160,18 @@ func run() -> void:
 	check(main_slot.raw.render_target_update_mode == SubViewport.UPDATE_DISABLED and main_slot.submit.render_target_update_mode == SubViewport.UPDATE_DISABLED, "Hidden capture stops rendering")
 	menu.visible = true; capture.update(); await frames()
 	check(menu._buttons[0].node.layers != 1, "Reopened menu returns to layers")
+	# Heavy playback (VR video on XR2 Gen1 at 30-50 FPS) is not a layer collapse; a lasting ~1 FPS is.
+	capture.force_capture = false; display.menu_layers = true
+	_feed(capture, 25.0, 8.0)
+	check(capture.enabled and capture.fallback_reason != "watchdog_fps", "Sustained 25 FPS playback keeps the menu layers")
+	_feed(capture, 1.0, 2.0)
+	check(capture.enabled, "One slow window (a load hitch) keeps the menu layers")
+	_feed(capture, 30.0, 2.0)
+	_feed(capture, 1.0, 2.0)
+	check(capture.enabled, "Slow windows must be consecutive")
+	_feed(capture, 1.0, 4.0)
+	check(not capture.enabled and capture.fallback_reason == "watchdog_fps", "A sustained collapse still returns to the eye-buffer menu")
+	capture.enabled = true; capture.force_capture = true; display.menu_layers = false
 	capture.shutdown("watchdog_fps")
 	check(menu._buttons[0].node.layers == 1 and camera.cull_mask == original_eye_mask and not capture.is_processing() and main_slot.layer.quad_size.x < 0.001,
 		"Watchdog shutdown restores the eye-buffer menu and parks layers")

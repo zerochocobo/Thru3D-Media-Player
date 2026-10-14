@@ -317,5 +317,5 @@ internal object CloudLibrary {
     }
     private inline fun <T> safe(block: () -> T): T = try { block() }
         catch (error: CloudFailure) { throw error }
-        catch (_: Exception) { throw CloudFailure() }
+        catch (error: Exception) { throw CloudDiagnostics.failure("cloud.library", error) }
 }

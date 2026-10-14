@@ -50,7 +50,7 @@ class CloudStreamSourceTest {
         } finally { server.stop(0) }
     }
     // Android's compile classpath omits jdk.httpserver. Keep the fixture as real sockets.
-    private class HttpServer private constructor(bind: InetSocketAddress) {
+    internal class HttpServer private constructor(bind: InetSocketAddress) {
         private val socket = ServerSocket().apply { bind(bind) }
         val address = InetSocketAddress("127.0.0.1", socket.localPort)
         private val routes = HashMap<String, (Exchange) -> Unit>()

@@ -59,7 +59,7 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     private val mpv = MpvVideoBridge({ activity?.applicationContext }, {
         check(controlledRenderTasks.offer(it)) { "Player render task capacity exhausted" }
     }, { name, id, json -> if (!closed.get()) emitSignal(name, id, json) }, sources::playable, sources::sidecarAudio,
-        sources::releaseMediaStream, sources::sidecarSubtitles)
+        sources::releaseMediaStream, sources::sidecarSubtitles, sources::streamProgress)
     private val photos = PhotoBridge({ activity?.applicationContext }, sources::playable, sources::releasePhotoStream) { name, id, json ->
         if (!closed.get()) emitSignal(name, id, json)
     }
@@ -72,6 +72,7 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
         val id = requestId.incrementAndGet()
         return if (photos.open(id, uri)) id else -1
     }
+    @UsedByGodot fun get_photo_loading_status(id: Int): String = if (closed.get()) "" else photos.loadingStatus(id)
     private val photoPreviews = PhotoPreviewBridge({ activity?.applicationContext }, sources::playable, sources::releasePhotoStream) { id, json ->
         if (!closed.get()) emitSignal("photo_preview_ready", id, json)
     }
@@ -348,7 +349,9 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
         !closed.get() && mpv.setAudio(id, trackId, volume, muted)
     @UsedByGodot fun set_mpv_speed(id: Int, speed: Double): Boolean = !closed.get() && mpv.setSpeed(id, speed)
     @UsedByGodot fun set_mpv_subtitle(id: Int, trackId: Int): Boolean = !closed.get() && mpv.setSubtitle(id, trackId)
+    @UsedByGodot fun set_mpv_subtitle_delay(id: Int, seconds: Double): Boolean = !closed.get() && mpv.setSubtitleDelay(id, seconds)
     @UsedByGodot fun get_mpv_subtitles(id: Int, afterSequence: Long): String = if (closed.get()) "" else mpv.subtitles(id, afterSequence)
+    @UsedByGodot fun get_mpv_loading_status(id: Int): String = if (closed.get()) "" else mpv.loadingStatus(id)
     @UsedByGodot fun get_mpv_subtitle_bitmap(id: Int, version: Long): ByteArray = if (closed.get()) ByteArray(0) else mpv.subtitleBitmap(id, version)
     @UsedByGodot fun set_mpv_depth_view(id: Int, shift: Double, convergence: Double): Boolean =
         !closed.get() && mpv.setDepthView(id, shift, convergence)

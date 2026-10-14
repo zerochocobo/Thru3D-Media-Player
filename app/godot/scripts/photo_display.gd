@@ -44,6 +44,10 @@ var index := -1
 var pending_index := -1
 var error := ""
 var loading := false
+const Loading := preload("res://scripts/media_loading.gd")
+var _loading_status := {}
+var _loading_started_ms := 0
+var _loading_poll_ms := 0
 var inspect := false
 var magnification := 1.0
 var crop_center := Vector2(0.5, 0.5)
@@ -84,6 +88,7 @@ var _thread: Thread
 var _next_decode := {}
 var _decoding := {}
 var _detail: MeshInstance3D
+var detail_placement: Variant
 var _detail_material: ShaderMaterial
 var _detail_zoom: Label3D
 var _detail_direction := Vector3.FORWARD
@@ -273,8 +278,9 @@ func _source_size() -> Vector2:
 	return _size
 
 func open_image(uri: String, title: String, entries: Array = []) -> bool:
+	var retain_frame := not local_uri.is_empty() and geometry == Geometry.Geometry.FLAT and gallery.mode in [Gallery.Layout.SINGLE, Gallery.Layout.SIDES] and not portrait_requested
 	close_image()
-	placement_pending = true
+	placement_pending = not retain_frame
 	queue.clear()
 	for entry in entries:
 		if entry is Dictionary and not str(entry.get("uri", "")).is_empty() and (entry.get("kind") == "image" or Info.is_image(str(entry.uri), str(entry.get("title", "")))):
@@ -372,6 +378,8 @@ func _select(target: int, direction: int = 0) -> bool:
 	loading = true
 	error = ""
 	var item := queue[target]
+	_loading_started_ms = Time.get_ticks_msec(); _loading_poll_ms = 0
+	_loading_status = {"remote": Loading.remote(str(item.uri)), "phase": "connecting"}
 	if swipe_offset != 0.0:
 		var outgoing := _placeholder if placeholder_visible() else panel
 		outgoing.position += flat_pose.basis * Vector3(swipe_offset, 0, 0)
@@ -561,6 +569,11 @@ static func _decode(job: Dictionary) -> Dictionary:
 
 var _catalog_save_ms := 0
 func _process(delta: float) -> void:
+	if loading and Time.get_ticks_msec() >= _loading_poll_ms:
+		_loading_poll_ms = Time.get_ticks_msec() + 500
+		if Methods.supports(platform, "get_photo_loading_status"):
+			var report: Variant = JSON.parse_string(platform.get_photo_loading_status(_request))
+			if report is Dictionary: _loading_status = report
 	if _catalog_save_ms > 0 and Time.get_ticks_msec() >= _catalog_save_ms and catalog:
 		_catalog_save_ms = 0
 		catalog.save()
@@ -1063,7 +1076,8 @@ func close_inspect() -> void:
 
 func _place_detail() -> void:
 	var pose := view_camera.global_transform if view_camera else Transform3D(Basis(), Vector3(0, 1.6, 0))
-	_detail.global_transform = pose * Transform3D(Basis(), Vector3(0.42, 0.22, -1.4))
+	var local: Transform3D = detail_placement if detail_placement is Transform3D else Transform3D(Basis(), Vector3(0.42, 0.22, -1.4))
+	_detail.global_transform = pose * local
 	_detail_direction = panel.global_basis.inverse() * -pose.basis.z
 
 func reset_view() -> void:
@@ -1410,7 +1424,9 @@ func set_depth_strength(value: float) -> bool:
 func snapshot() -> Dictionary:
 	var position := pending_index if pending_index >= 0 else index
 	var title := str(queue[position].get("title", "")) if position >= 0 and position < queue.size() else display_name
-	return {"has_image": _texture != null, "loading": loading, "placeholder": placeholder_visible(), "preparing_depth": not _pending_display.is_empty(), "title": title, "index": position, "count": queue.size(),
+	var progress: Dictionary = _loading_status.duplicate()
+	progress.elapsed_ms = Time.get_ticks_msec() - _loading_started_ms
+	return {"has_image": _texture != null, "loading": loading, "loading_caption": Loading.caption(progress) if loading else "", "placeholder": placeholder_visible(), "preparing_depth": not _pending_display.is_empty(), "title": title, "index": position, "count": queue.size(),
 		"source_uri": local_uri, "layout": gallery.mode, "wall_rows": gallery.wall_rows, "gallery_scale": gallery.view_scale, "gallery_distance": gallery.view_distance, "gallery_swapping": gallery._swap_phase != 0, "gallery_focus": gallery.focus, "directory_loading": directory.loading, "directory_error": directory_error, "queue_complete": queue_complete,
 		"can_background": can_background(),
 		"can_previous": not portrait_requested and queue.size() > 1 and (((geometry == Geometry.Geometry.FLAT or gallery.mode != 0) and queue_complete) or position > 0),

@@ -2,6 +2,13 @@ extends RefCounted
 
 # Original vector glyphs, generated once and shared by both ray menus.
 const PATHS := {
+	"menu": '<path d="M4 6H20M4 12H20M4 18H20"/>',
+	"filter": '<path d="M3 4H21L14 12V20L10 18V12Z"/>',
+	"scroll_up": '<path d="M6 15L12 9 18 15"/>',
+	"scroll_down": '<path d="M6 9L12 15 18 9"/>',
+	"expand": '<path d="M3 9V3H9M15 3H21V9M21 15V21H15M9 21H3V15"/>',
+	"collapse": '<path d="M3 9H9V3M15 3V9H21M21 15H15V21M9 21V15H3"/>',
+	"poster": '<rect x="6" y="2" width="12" height="20" rx="2"/><path d="M9 17H15M9 19H13M9 6L15 10 9 14Z"/>',
 	"head_follow": '<path d="M4 5H17A2 2 0 0 1 19 7V13A2 2 0 0 1 17 15H14L12 12H9L7 15H4A2 2 0 0 1 2 13V7A2 2 0 0 1 4 5Z"/><path d="M16 18H20M15 16H14A3 3 0 0 0 14 22H16M19 16H20A3 3 0 0 1 20 22H18"/>',
 	"passthrough": '<path d="M3 8V3H8M16 3H21V8M21 16V21H16M8 21H3V16M4 12Q12 3 20 12Q12 21 4 12Z"/><circle cx="12" cy="12" r="2.5"/>',
 	"dice": '<rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="7" cy="7" r="1"/><circle cx="17" cy="7" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="7" cy="17" r="1"/><circle cx="17" cy="17" r="1"/>',
@@ -23,6 +30,7 @@ const PATHS := {
 	"search": '<circle cx="10" cy="10" r="6"/><path d="M15 15L21 21"/>',
 	"time": '<circle cx="12" cy="12" r="9"/><path d="M12 6V12L16 15"/>',
 	"list": '<path d="M9 5H21M9 12H21M9 19H21M3 5H4M3 12H4M3 19H4"/>',
+	"grid": '<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>',
 	"plus": '<path d="M5 12H19M12 5V19"/>',
 	"play": '<path d="M9 5L20 12 9 19Z" fill="white" stroke="none"/>',
 	"pause": '<path d="M8 5V19M16 5V19" stroke-width="4"/>',

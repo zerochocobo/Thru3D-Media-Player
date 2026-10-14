@@ -6,6 +6,7 @@ const PHOTO := 6000
 const ACTOR := 8000
 const PART := 10000
 const RECENT := 12000
+const TAG := 14000
 var _owner: WeakRef
 var browser: RefCounted:
 	get: return _owner.get_ref()
@@ -17,19 +18,26 @@ var actor_start := 0
 var selected_image := 0
 var part_start := 0
 var selected_part := 0
+var detail_start := 0
+var tag_start := 0
+var overview_start := 0
+var detail_strip := "parts"
+var _overview_text := ""
+var _overview_lines: Array[String] = []
 var capture := {}
 var stick_at := 0
 
 func _init(owner: RefCounted) -> void: _owner = weakref(owner)
 func home() -> bool: return browser.view == "home" and browser.capabilities.get("home_layout", "") == "libraries"
 func rich_detail() -> bool: return browser.view == "detail" and browser.capabilities.get("artwork", false)
-func fixed() -> bool: return home() or rich_detail() or browser.view == "picture"
-func state() -> Dictionary: return {"library_start": library_start, "recent_start": recent_start, "home_strip": home_strip, "image_start": image_start, "actor_start": actor_start, "selected_image": selected_image, "part_start": part_start, "selected_part": selected_part}
+func fixed() -> bool: return home() or rich_detail() or browser.view in ["picture", "overview"]
+func state() -> Dictionary: return {"library_start": library_start, "recent_start": recent_start, "home_strip": home_strip, "image_start": image_start, "actor_start": actor_start, "selected_image": selected_image, "part_start": part_start, "selected_part": selected_part, "detail_start": detail_start, "tag_start": tag_start, "overview_start": overview_start}
 func restore(value: Dictionary) -> void:
 	library_start = int(value.get("library_start", 0)); image_start = int(value.get("image_start", 0))
 	recent_start = int(value.get("recent_start", 0)); home_strip = str(value.get("home_strip", "libraries"))
 	actor_start = int(value.get("actor_start", 0)); selected_image = int(value.get("selected_image", 0))
 	part_start = int(value.get("part_start", 0)); selected_part = int(value.get("selected_part", 0))
+	detail_start = int(value.get("detail_start", 0)); tag_start = int(value.get("tag_start", 0)); overview_start = int(value.get("overview_start", 0))
 func libraries() -> Array: return browser.home_data.get("libraries", [])
 func recent() -> Array: return browser.home_recent_entries()
 func images() -> Array: return browser.detail.get("images", [])
@@ -47,16 +55,37 @@ func priority_nodes() -> Array:
 		recent_start = clampi(recent_start, 0, maxi(0, recent().size() - 4))
 		return libraries().slice(library_start, library_start + 4) + recent().slice(recent_start, recent_start + 4)
 	if rich_detail():
-		nodes.append(browser.detail)
-		for part in parts().slice(part_start, part_start + 2): nodes.append(part_picture(part))
-		for image in images().slice(image_start, image_start + 3): nodes.append({"cover_image": image.merged({"max_width": 256})})
-		for actor in actors().slice(actor_start, actor_start + 4): nodes.append(actor)
+		nodes.append(browser.display_node(browser.detail, "poster"))
+		if "parts" in visible_sections():
+			for part in parts().slice(part_start, part_start + 2): nodes.append(part_picture(part))
+		if "images" in visible_sections():
+			for item in images().slice(image_start, image_start + 3): nodes.append({"cover_image": item.merged({"max_width": 256})})
+		if "actors" in visible_sections():
+			for actor in actors().slice(actor_start, actor_start + 4): nodes.append(actor)
 	elif browser.view == "picture" and not images().is_empty():
 		selected_image = clampi(selected_image, 0, images().size() - 1)
 		nodes.append({"cover_image": images()[selected_image].merged({"max_width": 1024})})
 	return nodes
 
 func action(target: int) -> bool:
+	if rich_detail() and target >= TAG and target < TAG + tags().size():
+		var value: Dictionary = tags()[target - TAG]
+		browser._remember(); browser.labels.clear(); browser.folder_path.clear()
+		browser.query = {"page": 1, "q": "", value.category: [str(value.item.id)]}
+		browser.labels[str(value.category) + "/" + str(value.item.id)] = str(value.item.name)
+		browser.browse(); return true
+	var extra: int = target - browser.ACTION
+	if rich_detail() and extra in [52, 53, 54, 55, 56]:
+		match extra:
+			52: tag_start = maxi(0, tag_start - 4)
+			53: tag_start = mini(maxi(0, tags().size() - 4), tag_start + 4)
+			54: detail_start = maxi(0, detail_start - 1)
+			55: detail_start = mini(maxi(0, sections().size() - 2), detail_start + 1)
+			56: browser._remember(); browser.cancel(); browser.view = "overview"; overview_start = 0; browser.menu._reset_navigation()
+		browser.menu.refresh(); return true
+	if browser.view == "overview" and extra in [57, 58]:
+		overview_start = clampi(overview_start + (-10 if extra == 57 else 10), 0, maxi(0, overview_lines().size() - 10))
+		browser.menu.refresh(); return true
 	if home() and target >= LIBRARY and target < LIBRARY + libraries().size():
 		browser.choose({"library": libraries()[target - LIBRARY]}); return true
 	if home() and target >= RECENT and target < RECENT + recent().size():
@@ -93,6 +122,12 @@ func action(target: int) -> bool:
 	browser.menu.refresh(); return true
 
 func stick_scroll(x: float, delta: float) -> void:
+	if rich_detail():
+		if capture.is_empty() and is_finite(x) and absf(x) >= 0.55 and Time.get_ticks_msec() >= stick_at:
+			stick_at = Time.get_ticks_msec() + 220
+			var actions: Array = {"parts": [41, 42], "actors": [34, 35], "images": [32, 33], "tags": [52, 53]}.get(detail_strip, [41, 42])
+			action(browser.ACTION + int(actions[1 if x > 0 else 0]))
+		return
 	if (not home() and not rich_detail()) or not capture.is_empty() or not is_finite(x) or absf(x) < 0.55: return
 	if Time.get_ticks_msec() < stick_at: return
 	stick_at = Time.get_ticks_msec() + 220
@@ -108,6 +143,7 @@ func _home_strip_at(point: Vector3) -> String:
 	return ""
 
 func press(hand: String, origin: Vector3, direction: Vector3, tracked: bool) -> bool:
+	if rich_detail() or browser.view == "overview": return detail_press(hand, origin, direction, tracked)
 	if not home() and not rich_detail(): return false
 	if not capture.is_empty(): return true
 	var point: Variant = browser.menu._plane_point(origin, direction) if tracked else null
@@ -125,6 +161,8 @@ func press(hand: String, origin: Vector3, direction: Vector3, tracked: bool) -> 
 	return true
 
 func move(hand: String, origin: Vector3, direction: Vector3, tracked: bool) -> void:
+	if rich_detail() or browser.view == "overview":
+		detail_move(hand, origin, direction, tracked); return
 	if home() and capture.is_empty() and tracked:
 		var hover: Variant = browser.menu._plane_point(origin, direction)
 		if hover != null:
@@ -205,54 +243,165 @@ func draw_home() -> void:
 
 func draw_detail() -> void:
 	var menu: Node = browser.menu; var detail: Dictionary = browser.detail
-	_picture(detail, Vector2(-0.335, 0.035), Vector2(0.23, 0.32))
-	var playback := playback_node()
-	var play_label := I18n.t("Continue watching" if int(playback.get("position_ms", 0)) > 0 else "Play / resume")
-	if parts().size() > 1: play_label += " · " + str(playback.get("part_label", ""))
-	menu._button(browser.ACTION + 30, play_label, Vector2(0.19, 0.14), Vector2(0.48, 0.075), not browser.busy, "play")
-	menu._button(browser.ACTION + 31, "", Vector2(0.51, 0.14), Vector2(0.09, 0.075), not browser.busy, "heart")
-	menu._lit(browser._is_favorite(detail))
-	menu._button(browser.ACTION + 38, "", Vector2(0.64, 0.14), Vector2(0.09, 0.075), true, "info")
-	var meta := []
+	if detail_strip not in visible_sections() and (detail_strip != "tags" or tags().is_empty()):
+		detail_strip = str(visible_sections()[0]) if not visible_sections().is_empty() else "tags"
+	_picture(browser.display_node(detail, "poster"), Vector2(-0.335, 0.33), Vector2(0.28, 0.41))
+	var title_lines: Array[String] = browser.wrapped_lines(str(detail.get("title", "")), 0.80, 24)
+	var title := _label("\n".join(title_lines.slice(0, 2)), Vector2(-0.015, 0.52), 24)
+	title.vertical_alignment = VERTICAL_ALIGNMENT_TOP
+	var playback := playback_node(); var meta: Array[String] = []
 	if int(detail.get("year", 0)) > 0: meta.append(str(detail.year))
 	if int(playback.get("duration_ms", 0)) > 0: meta.append(browser._time(int(playback.duration_ms)))
-	_label(" · ".join(meta), Vector2(-0.025, 0.06), 16).modulate = menu.MUTED
-	if parts().size() > 1:
-		for i in range(part_start, mini(parts().size(), part_start + 2)):
-			menu._button(PART + i, "", Vector2(0.18 + (i - part_start) * 0.36, -0.065), Vector2(0.33, 0.195))
-			menu._lit(i == selected_part)
-			var card: MeshInstance3D = menu._buttons.back().node
-			_picture(part_picture(parts()[i]), Vector2(0, 0.015), Vector2(0.31, 0.145), card)
-			var caption: Label3D = menu._label(str(parts()[i].get("part_label", "#%d" % (i + 1))), Vector3(0, -0.082, 0.009), 16, card)
-			caption.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER; caption.modulate = menu.ACCENT if i == selected_part else Color.WHITE
-			menu._tips[PART + i] = str(parts()[i].get("title", ""))
-		if parts().size() > 2:
-			menu._button(browser.ACTION + 41, "‹", Vector2(-0.027, -0.065), Vector2(0.04, 0.06), part_start > 0)
-			menu._button(browser.ACTION + 42, "›", Vector2(0.755, -0.065), Vector2(0.04, 0.06), part_start + 2 < parts().size())
-	else:
-		var overview := _label(str(detail.get("description", "")).left(110), Vector2(-0.025, -0.005), 16)
-		overview.autowrap_mode = TextServer.AUTOWRAP_ARBITRARY; overview.width = 0.77 / overview.pixel_size
-		overview.vertical_alignment = VERTICAL_ALIGNMENT_TOP
-	if not images().is_empty():
-		_label(I18n.t("Images"), Vector2(-0.46, -0.18), 18)
-		for i in range(image_start, mini(images().size(), image_start + 3)):
-			var x := -0.28 + (i - image_start) * 0.43
-			menu._button(PHOTO + i, "", Vector2(x, -0.275), Vector2(0.39, 0.14))
-			_picture({"cover_image": images()[i].merged({"max_width": 256})}, Vector2.ZERO, Vector2(0.37, 0.125), menu._buttons.back().node)
-		_arrows(32, 33, -0.275, image_start, images().size(), 3)
-	if not actors().is_empty():
-		_label(I18n.t("Performers"), Vector2(-0.46, -0.39), 18)
-		for i in range(actor_start, mini(actors().size(), actor_start + 4)):
-			var actor: Dictionary = actors()[i]; var x := -0.36 + (i - actor_start) * 0.333
-			menu._button(ACTOR + i, "", Vector2(x, -0.475), Vector2(0.30, 0.125))
-			var card: MeshInstance3D = menu._buttons.back().node
-			_picture(actor, Vector2(-0.105, 0), Vector2(0.068, 0.107), card)
-			var label: Label3D = menu._label(menu._fit_title(str(actor.name), "", 0.195, 17), Vector3(-0.055, 0, 0.008), 17, card)
-			label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT; menu._tips[ACTOR + i] = str(actor.name)
-		_arrows(34, 35, -0.475, actor_start, actors().size(), 4)
+	var width := int(playback.get("width", 0)); var height := int(playback.get("height", 0))
+	if width > 0 and height > 0:
+		var resolution := "8K" if width >= 7680 else ("6K" if width >= 6000 else ("4K" if width >= 3840 else ""))
+		meta.append((resolution + " · " if not resolution.is_empty() else "") + "%d × %d" % [width, height])
+	_label(" · ".join(meta), Vector2(-0.015, 0.405), 16).modulate = menu.MUTED
+	var lines: Array[String] = browser.wrapped_lines(str(detail.get("description", "")), 0.78, 18)
+	var overview := _label("\n".join(lines.slice(0, 3)), Vector2(-0.015, 0.36), 18)
+	overview.vertical_alignment = VERTICAL_ALIGNMENT_TOP
+	if lines.size() > 3: menu._button(browser.ACTION + 56, I18n.t("More"), Vector2(0.65, 0.235), Vector2(0.19, 0.06))
+	var play_label := I18n.t("Continue watching" if int(playback.get("position_ms", 0)) > 0 else "Play / resume")
+	if parts().size() > 1: play_label += " · " + str(playback.get("part_label", ""))
+	menu._button(browser.ACTION + 30, play_label, Vector2(0.19, 0.135), Vector2(0.48, 0.075), not browser.busy, "play")
+	menu._button(browser.ACTION + 31, "", Vector2(0.51, 0.135), Vector2(0.09, 0.075), not browser.busy, "heart")
+	menu._lit(browser._is_favorite(detail))
+	menu._button(browser.ACTION + 38, "", Vector2(0.64, 0.135), Vector2(0.09, 0.075), true, "info")
+	for strip in visible_sections():
+		var y := section_y(strip)
+		_label(I18n.t({"parts": "Parts", "actors": "Performers", "images": "Images"}[strip]), Vector2(-0.46, y + 0.125), 18)
+		match strip:
+			"parts":
+				for i in range(part_start, mini(parts().size(), part_start + 2)):
+					menu._button(PART + i, "", Vector2(0.18 + (i - part_start) * 0.36, y), Vector2(0.33, 0.195))
+					menu._lit(i == selected_part)
+					var card: MeshInstance3D = menu._buttons.back().node
+					_picture(part_picture(parts()[i]), Vector2(0, 0.015), Vector2(0.31, 0.145), card)
+					var caption: Label3D = menu._label(str(parts()[i].get("part_label", "#%d" % (i + 1))), Vector3(0, -0.082, 0.009), 16, card)
+					caption.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER; caption.modulate = menu.ACCENT if i == selected_part else Color.WHITE
+					menu._tips[PART + i] = str(parts()[i].get("title", ""))
+				if parts().size() > 2:
+					menu._button(browser.ACTION + 41, "‹", Vector2(-0.027, y), Vector2(0.04, 0.06), part_start > 0)
+					menu._button(browser.ACTION + 42, "›", Vector2(0.755, y), Vector2(0.04, 0.06), part_start + 2 < parts().size())
+			"actors":
+				for i in range(actor_start, mini(actors().size(), actor_start + 4)):
+					var actor: Dictionary = actors()[i]; var x := -0.36 + (i - actor_start) * 0.333
+					menu._button(ACTOR + i, "", Vector2(x, y), Vector2(0.30, 0.15))
+					var card: MeshInstance3D = menu._buttons.back().node
+					_picture(actor, Vector2(-0.105, 0), Vector2(0.075, 0.13), card)
+					var label: Label3D = menu._label(menu._fit_title(str(actor.name), "", 0.195, 17), Vector3(-0.055, 0, 0.008), 17, card)
+					label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT; menu._tips[ACTOR + i] = str(actor.name)
+				_arrows(34, 35, y, actor_start, actors().size(), 4)
+			"images":
+				for i in range(image_start, mini(images().size(), image_start + 3)):
+					menu._button(PHOTO + i, "", Vector2(-0.28 + (i - image_start) * 0.43, y), Vector2(0.39, 0.18))
+					_picture({"cover_image": images()[i].merged({"max_width": 256})}, Vector2.ZERO, Vector2(0.37, 0.165), menu._buttons.back().node)
+				_arrows(32, 33, y, image_start, images().size(), 3)
+	if sections().size() > 2:
+		menu._button(browser.ACTION + 54, "", Vector2(0.925, -0.055), Vector2(0.075, 0.065), detail_start > 0, "scroll_up")
+		menu._button(browser.ACTION + 55, "", Vector2(0.925, -0.405), Vector2(0.075, 0.065), detail_start + 2 < sections().size(), "scroll_down")
+	var values := tags(); tag_start = clampi(tag_start, 0, maxi(0, values.size() - 4))
+	for i in range(tag_start, mini(values.size(), tag_start + 4)):
+		var name := str(values[i].item.name)
+		menu._button(TAG + i, menu._fit_title(name, "", 0.27, 17), Vector2(-0.36 + (i - tag_start) * 0.333, -0.565), Vector2(0.30, 0.065))
+		menu._tips[TAG + i] = name
+	if values.size() > 4: _arrows(52, 53, -0.565, tag_start, values.size(), 4)
 
 func draw_picture() -> void:
 	if images().is_empty(): return
 	_picture({"cover_image": images()[selected_image].merged({"max_width": 1024})}, Vector2(0.16, -0.1), Vector2(1.24, 0.58))
 	_arrows(39, 40, -0.1, selected_image, images().size(), 1)
 	_label("%d / %d" % [selected_image + 1, images().size()], Vector2(0.08, -0.46), 17)
+
+func sections() -> Array:
+	var result: Array = []
+	if parts().size() > 1: result.append("parts")
+	if not actors().is_empty(): result.append("actors")
+	if not images().is_empty(): result.append("images")
+	return result
+
+func visible_sections() -> Array:
+	detail_start = clampi(detail_start, 0, maxi(0, sections().size() - 2))
+	return sections().slice(detail_start, detail_start + 2)
+
+func section_y(strip: String) -> float:
+	return -0.095 - visible_sections().find(strip) * 0.235
+
+func tags() -> Array:
+	var result: Array = []; var seen := {}
+	for category in ["tags", "genres"]:
+		for item in browser.detail.get(category, []):
+			var name := str(item.get("name", ""))
+			if name.is_empty() or seen.has(name): continue
+			seen[name] = true; result.append({"category": category, "item": item})
+	return result
+
+func overview_lines() -> Array[String]:
+	var text := str(browser.detail.get("description", ""))
+	if text != _overview_text:
+		_overview_text = text; _overview_lines = browser.wrapped_lines(text, 1.25, 21)
+	return _overview_lines
+
+func draw_overview() -> void:
+	_label(I18n.t("Synopsis"), Vector2(-0.46, 0.45), 24)
+	var lines := overview_lines(); overview_start = clampi(overview_start, 0, maxi(0, lines.size() - 10))
+	var text := _label("\n".join(lines.slice(overview_start, overview_start + 10)), Vector2(-0.46, 0.32), 21)
+	text.vertical_alignment = VERTICAL_ALIGNMENT_TOP
+	if lines.size() > 10:
+		browser.menu._button(browser.ACTION + 57, "", Vector2(0.925, 0.25), Vector2(0.075, 0.065), overview_start > 0, "scroll_up")
+		browser.menu._button(browser.ACTION + 58, "", Vector2(0.925, -0.45), Vector2(0.075, 0.065), overview_start + 10 < lines.size(), "scroll_down")
+
+func vertical_scroll(y: float, _delta: float) -> void:
+	if not rich_detail() and browser.view != "overview": return
+	if not capture.is_empty() or not is_finite(y) or absf(y) < 0.55 or Time.get_ticks_msec() < stick_at: return
+	stick_at = Time.get_ticks_msec() + 220
+	if rich_detail(): action(browser.ACTION + (54 if y > 0 else 55))
+	elif browser.view == "overview": action(browser.ACTION + (57 if y > 0 else 58))
+
+func detail_strip_at(point: Vector3) -> String:
+	if point.x < -0.5 or point.x > 0.81: return ""
+	if browser.view == "overview": return "overview" if point.y <= 0.32 and point.y >= -0.48 else ""
+	if not tags().is_empty() and absf(point.y + 0.565) < 0.05: return "tags"
+	for strip in visible_sections():
+		if absf(point.y - section_y(strip)) < 0.10: return strip
+	return "body" if point.y <= 0.065 and point.y >= -0.44 else ""
+
+func detail_press(hand: String, origin: Vector3, direction: Vector3, tracked: bool) -> bool:
+	if not capture.is_empty(): return true
+	var point: Variant = browser.menu._plane_point(origin, direction) if tracked else null
+	if point == null: return false
+	var strip := detail_strip_at(point)
+	if strip.is_empty(): return false
+	var hit: Dictionary = browser.menu.ray_hit(origin, direction); var target := int(hit.get("target", -1))
+	var minimum: int = {"parts": PART, "actors": ACTOR, "images": PHOTO, "tags": TAG}.get(strip, 99999)
+	if target >= 0 and target < minimum: return false
+	var start: int = {"parts": part_start, "actors": actor_start, "images": image_start, "tags": tag_start}.get(strip, 0)
+	capture = {"hand": hand, "x": float(point.x), "y": float(point.y), "start": start, "vertical_start": overview_start if browser.view == "overview" else detail_start, "target": target, "moved": false, "strip": strip, "axis": ""}
+	return true
+
+func detail_move(hand: String, origin: Vector3, direction: Vector3, tracked: bool) -> void:
+	var point: Variant = browser.menu._plane_point(origin, direction) if tracked else null
+	if capture.is_empty():
+		if point != null:
+			var strip := detail_strip_at(point)
+			if strip in ["parts", "actors", "images", "tags"]: detail_strip = strip
+		return
+	if capture.get("hand", "") != hand: return
+	if not tracked: capture.clear(); return
+	if point == null: return
+	var travel := float(capture.x) - float(point.x); var vertical := float(point.y) - float(capture.y)
+	if not capture.moved and maxf(absf(travel), absf(vertical)) > 0.015:
+		capture.moved = true; capture.axis = "vertical" if absf(vertical) > absf(travel) or capture.strip in ["body", "overview"] else "horizontal"
+	if not capture.moved: return
+	if capture.axis == "vertical":
+		if browser.view == "overview": overview_start = clampi(int(capture.vertical_start) + roundi(vertical / 0.032), 0, maxi(0, overview_lines().size() - 10))
+		else: detail_start = clampi(int(capture.vertical_start) + roundi(vertical / 0.18), 0, maxi(0, sections().size() - 2))
+	else:
+		var limits := {"parts": parts().size() - 2, "actors": actors().size() - 4, "images": images().size() - 3, "tags": tags().size() - 4}
+		var next := clampi(int(capture.start) + roundi(travel / 0.30), 0, maxi(0, int(limits.get(capture.strip, 0))))
+		match capture.strip:
+			"parts": part_start = next
+			"actors": actor_start = next
+			"images": image_start = next
+			"tags": tag_start = next
+	browser.menu.refresh()

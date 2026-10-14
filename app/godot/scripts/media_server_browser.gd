@@ -48,9 +48,13 @@ var folder_path: Array = []
 var library_id := ""
 var end_reached := false
 var candidate_end := false
+var display_preferences := {}
+var sources_open := false
+var display_preferences_path := "user://settings/server_views.cfg"
 
 func _init(owner: Node) -> void:
 	menu = owner
+	load_display_preferences()
 	var config := ConfigFile.new()
 	if config.load("user://settings/server_filters.cfg") == OK:
 		var value: Variant = config.get_value("filters", "items", [])
@@ -69,7 +73,7 @@ func cancel() -> void:
 	busy = false
 
 func load_servers() -> void:
-	cancel(); view = "servers"; server = {}; history.clear(); keyboard = ""
+	cancel(); view = "servers"; server = {}; history.clear(); keyboard = ""; sources_open = false
 	menu._reset_navigation()
 	request("servers")
 
@@ -150,7 +154,13 @@ func receive(id: int, payload: String) -> bool:
 			detail = data.get("detail", {}); view = "detail"
 			gallery.image_start = 0; gallery.actor_start = 0; gallery.selected_image = 0
 			gallery.part_start = 0; gallery.selected_part = 0
+			gallery.detail_start = 0; gallery.tag_start = 0; gallery.overview_start = 0
 			var resume_part := false
+			var local_detail: Dictionary = menu.Presentation.local_record(menu.catalog, str(detail.get("uri", "")))
+			if not local_detail.is_empty(): detail.position_ms = int(local_detail.get("position_ms", 0))
+			for part in detail.get("parts", []):
+				var local_part: Dictionary = menu.Presentation.local_record(menu.catalog, str(part.get("uri", "")))
+				if not local_part.is_empty(): part.position_ms = int(local_part.get("position_ms", 0))
 			for local in _local_resume():
 				if local.id == detail.get("id"): detail.position_ms = local.position_ms
 				for index in detail.get("parts", []).size():
@@ -174,6 +184,7 @@ func receive(id: int, payload: String) -> bool:
 			saved = saved.filter(func(item): return item is Dictionary and item.get("server_id") != removed)
 			_save_filters(); favorites.erase(removed); _save_favorites()
 			covers.clear(); textures.clear(); failed_covers.clear(); removing = {}; load_servers()
+	if expected.action == "detail" and menu.compact: menu.set_compact(true)
 	menu.refresh()
 	return true
 
@@ -209,39 +220,108 @@ func home_recent_entries() -> Array:
 	_append_unique(result, remote.filter(func(node): return node is Dictionary and str(node.get("uri", "")).begins_with(prefix) and not node.get("container", false)))
 	return result.slice(0, 32)
 
-func _remember() -> void:
-	history.append({"view": view, "query": query.duplicate(true), "entries": entries.duplicate(true), "candidates": candidates.duplicate(true), "detail": detail.duplicate(true), "kind": kind,
+func context_state() -> Dictionary:
+	return {"view": view, "query": query.duplicate(true), "entries": entries.duplicate(true), "candidates": candidates.duplicate(true), "detail": detail.duplicate(true), "kind": kind,
 		"total": total, "loaded_page": loaded_page, "candidate_page": candidate_page, "candidate_total": candidate_total, "candidate_q": candidate_q, "labels": labels.duplicate(true), "folder_path": folder_path.duplicate(true), "scroll": menu.scroll, "end": end_reached, "candidate_end": candidate_end,
-		"library_id": library_id, "actor_name": actor_name, "gallery": gallery.state()})
+		"position": menu.capture_position(), "library_id": library_id, "actor_name": actor_name, "gallery": gallery.state()}
+
+func restore_context(previous: Dictionary) -> void:
+	view = previous.view; query = previous.query; entries = previous.entries; candidates = previous.candidates; detail = previous.detail; kind = previous.kind
+	total = previous.total; loaded_page = previous.loaded_page; candidate_page = previous.candidate_page; candidate_total = previous.candidate_total; candidate_q = previous.candidate_q
+	labels = previous.labels; folder_path = previous.folder_path; end_reached = previous.end; candidate_end = previous.candidate_end
+	library_id = str(previous.get("library_id", "")); actor_name = str(previous.get("actor_name", "")); gallery.restore(previous.get("gallery", {}))
+	menu.scroll = previous.scroll; menu._position_to_restore = previous.get("position", {})
+
+func _remember() -> void:
+	history.append(context_state())
 	if history.size() > 12: history.pop_front()
 
 func back() -> void:
 	cancel(); keyboard = ""
 	if not history.is_empty():
 		var previous: Dictionary = history.pop_back()
-		view = previous.view; query = previous.query; entries = previous.entries; candidates = previous.candidates; detail = previous.detail; kind = previous.kind
-		total = previous.total; loaded_page = previous.loaded_page; candidate_page = previous.candidate_page; candidate_total = previous.candidate_total; candidate_q = previous.candidate_q
-		labels = previous.labels; folder_path = previous.folder_path; end_reached = previous.end; candidate_end = previous.candidate_end
-		library_id = str(previous.get("library_id", "")); actor_name = str(previous.get("actor_name", "")); gallery.restore(previous.get("gallery", {}))
-		menu._reset_navigation(); menu.scroll = previous.scroll; menu.status = ""; menu.refresh()
+		menu._reset_navigation(); restore_context(previous); menu.status = ""; menu.refresh()
 	elif view == "home": load_servers()
 	elif view in ["remove_servers", "confirm_remove"]: removing = {}; load_servers()
 	else: open_home()
 
 func grid() -> bool:
+	if media_content(): return scene_view() != "list"
+	if view == "scenes": return menu.view_mode == "grid" and keyboard.is_empty()
 	return view in ["servers", "home", "scenes", "facets", "libraries"] and keyboard.is_empty()
 
 func visible_lines() -> int:
+	if media_content(): return (1 if scene_view() == "poster" and scene_size() == 2 else (3 if scene_view() == "thumb" and scene_size() < 2 else 2)) if grid() else 6
 	return 2 if grid() else (4 if view == "filters" else 5)
 
 func pitch() -> float:
+	if media_content(): return tile_size().y + 0.025 if grid() else 0.12
 	return 0.29 if grid() else (0.10 if view == "filters" else 0.105)
 
 func list_top() -> float:
+	if focused(): return 0.29 if grid() else 0.25
 	return 0.18 if grid() else 0.15
 
 func bar_span() -> Vector2:
 	return Vector2(list_top() + (0.035 if not grid() else 0.0), visible_lines() * pitch() - 0.015)
+
+func media_content() -> bool:
+	return not menu.compact and view == "scenes" and keyboard.is_empty() and capabilities.get("artwork", false)
+
+func focused() -> bool:
+	return not menu.compact and not server.is_empty() and capabilities.get("artwork", false) and view not in ["servers", "remove_servers", "confirm_remove"]
+
+func scene_view() -> String:
+	var value := str(_display_settings().get("mode", "poster"))
+	return value if value in ["poster", "thumb", "list"] else "poster"
+
+func scene_size() -> int:
+	var value: Variant = _display_settings().get("size", 1)
+	return value if value is int and value >= 0 and value <= 2 else 1
+
+func _display_settings() -> Dictionary:
+	var value: Variant = display_preferences.get(str(server.get("id", "")), {})
+	return value if value is Dictionary else {}
+
+func load_display_preferences() -> void:
+	var config := ConfigFile.new()
+	display_preferences = {}
+	if config.load(display_preferences_path) == OK:
+		var value: Variant = config.get_value("views", "items", {})
+		if value is Dictionary: display_preferences = value
+
+func columns() -> int:
+	return [5, 4, 3][scene_size()] if media_content() and grid() else menu.COLS
+
+func tile_size() -> Vector2:
+	var width: float = (1.38 - (columns() - 1) * 0.025) / columns()
+	return Vector2(width, width * 1.05 + 0.055 if scene_view() == "poster" else width * 0.5625 + 0.07)
+
+func set_display(mode: String, size: int = -1) -> void:
+	if not media_content() or mode not in ["poster", "thumb", "list"]: return
+	var anchor: Dictionary = menu.capture_position()
+	display_preferences[str(server.id)] = {"mode": mode, "size": scene_size() if size < 0 else clampi(size, 0, 2)}
+	var config := ConfigFile.new(); config.set_value("views", "items", display_preferences)
+	DirAccess.make_dir_recursive_absolute(display_preferences_path.get_base_dir())
+	if config.save(display_preferences_path) != OK: menu.status = "Unable to save display preferences"
+	menu._drag = {}; menu._fling = 0.0; menu._hover.clear(); menu._hide_tooltip()
+	menu._position_to_restore = anchor; menu.refresh()
+
+func display_node(node: Dictionary, mode: String = "") -> Dictionary:
+	if mode.is_empty(): mode = scene_view()
+	var variants: Dictionary = node.get("image_variants", {})
+	var image: Dictionary = node.get("cover_image", {})
+	for type in (["Primary", "Thumb", "Backdrop"] if mode == "poster" else ["Thumb", "Backdrop", "Primary"]):
+		if not variants.has(type): continue
+		var candidate: Dictionary = variants[type].merged({"max_width": 128 if mode == "list" else 512})
+		if failed_covers.has(_request_image_key(_image_request({"cover_image": candidate}))): continue
+		image = candidate; break
+	if not image.is_empty(): image = image.merged({"max_width": 128 if mode == "list" else 512})
+	return node.merged({"cover_image": image}, true)
+
+func filename(row: Dictionary) -> String:
+	var node: Dictionary = row.get("scene", row.get("container_node", {}))
+	return str(node.get("basename", "")) if not str(node.get("basename", "")).is_empty() else str(row.title)
 
 func rows() -> Array[Dictionary]:
 	var result: Array[Dictionary] = []
@@ -370,6 +450,7 @@ func choose(row: Dictionary) -> void:
 
 func _play(node: Dictionary, position: int) -> void:
 	selection = node.duplicate(true); selection.start_ms = position
+	menu.remember_playback_context()
 	menu.dismiss(); menu.chosen.emit(str(node.uri), str(node.get("title", "Video")))
 
 func open_actor(actor: Dictionary) -> void:
@@ -380,7 +461,9 @@ func open_actor(actor: Dictionary) -> void:
 
 func playback_entries() -> Array:
 	var parts: Array = detail.get("parts", [])
-	if parts.any(func(part): return part.get("uri", "") == selection.get("uri", "")): return parts
+	var uri := str(selection.get("uri", ""))
+	if uri.is_empty() and (view == "detail" or menu.compact) and menu.current_file_provider.is_valid(): uri = str(menu.current_file_provider.call())
+	if parts.any(func(part): return part.get("uri", "") == uri): return parts
 	return entries
 
 func _is_favorite(node: Dictionary) -> bool:
@@ -489,6 +572,12 @@ func _navigate(section: String) -> void:
 
 func action(target: int) -> bool:
 	if target < ACTION: return false
+	if target == ACTION + 19 and focused():
+		sources_open = not sources_open; menu.refresh(); return true
+	if media_content() and target in [ACTION + 160, ACTION + 161, ACTION + 162, ACTION + 163]:
+		if target == ACTION + 163: set_display(scene_view(), (scene_size() + 1) % 3)
+		else: set_display(["poster", "thumb", "list"][target - ACTION - 160])
+		return true
 	if not keyboard.is_empty(): return _keyboard_action(target)
 	if gallery.action(target): return true
 	if target >= ACTION + 200 and target < ACTION + 200 + chips.size():
@@ -558,6 +647,7 @@ func _navigation() -> Array:
 
 func cover(row: Dictionary) -> Texture2D:
 	var node: Dictionary = row.get("scene", row.get("container_node", {}))
+	if media_content(): node = display_node(node)
 	return image_texture(node)
 
 func _image_request(node: Dictionary) -> Dictionary:
@@ -594,11 +684,11 @@ func image_texture(node: Dictionary) -> Texture2D:
 func prioritize_covers() -> void:
 	var nodes: Array = []
 	if gallery.fixed(): nodes = gallery.priority_nodes()
-	elif view in ["scenes", "home"]:
+	elif view == "home" or (view == "scenes" and (grid() or media_content())):
 		var first: int = menu._first_line() * menu._cols()
 		for row in menu.rows.slice(first, first + menu._drawn_slots()):
 			var node: Dictionary = row.get("scene", row.get("container_node", {}))
-			if not node.is_empty(): nodes.append(node)
+			if not node.is_empty(): nodes.append(display_node(node) if media_content() else node)
 	elif view in ["detail", "metadata"] and not detail.is_empty(): nodes.append(detail)
 	var visible_keys: Array = nodes.map(func(node): return _request_image_key(_image_request(node)))
 	for id in pending.keys():
@@ -612,6 +702,8 @@ func _fit_picture(picture: MeshInstance3D, texture: Texture2D, area: Vector2) ->
 	if size.x > 0 and size.y > 0: picture.mesh.size = size * minf(area.x / size.x, area.y / size.y)
 
 func tile(target: int, row: Dictionary, center: Vector2) -> void:
+	if media_content():
+		_media_tile(target, row, center); return
 	menu._button(target, "", center, Vector2(0.30, 0.27), true, "", false, menu._list)
 	var node: MeshInstance3D = menu._buttons.back().node
 	var picture: MeshInstance3D = menu._quad(Vector2(0.278, 0.192), Vector3(0, 0.026, 0.003), menu.TILE, 12); node.add_child(picture)
@@ -622,46 +714,106 @@ func tile(target: int, row: Dictionary, center: Vector2) -> void:
 	menu._tips[target] = str(row.title)
 	var title: Label3D = menu._label(menu._fit_title(str(row.title), "", 0.265, 22), Vector3(0, -0.087, 0.006), 22, node)
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	var meta: Label3D = menu._label(str(row.get("detail", "")), Vector3(0, -0.119, 0.006), 16, node); meta.modulate = menu.MUTED
+	var info: Dictionary = menu.Presentation.info(row, menu.catalog)
+	var metadata := str(row.get("detail", ""))
+	if view == "scenes": metadata = str(info.badge) if not str(info.status).is_empty() else str(info.subtitle)
+	var meta: Label3D = menu._label(menu._fit_title(metadata, "", 0.265, 16), Vector3(0, -0.119, 0.006), 16, node); meta.modulate = menu.MUTED
+	menu._progress_on(node, float(info.ratio), Vector2(0, -0.068), 0.265)
+
+func _media_tile(target: int, row: Dictionary, center: Vector2) -> void:
+	var size := tile_size()
+	menu._button(target, "", center, size, true, "", false, menu._list)
+	var card: MeshInstance3D = menu._buttons.back().node
+	var area := size - Vector2(0.016, 0.065)
+	var picture: MeshInstance3D = menu._quad(area, Vector3(0, 0.026, 0.004), menu.TILE, 12); card.add_child(picture)
+	var texture := cover(row)
+	if texture:
+		var material = menu._material(Color.WHITE, 12); material.albedo_texture = texture; picture.material_override = material; _fit_picture(picture, texture, area)
+	else: menu._icon(str(row.get("icon", "video")), Vector3(0, 0.026, 0.006), 0.055, menu.MUTED, card)
+	var title: Label3D = menu._label(menu._fit_title(str(row.title), "", size.x - 0.025, 20), Vector3(0, -size.y / 2 + 0.034, 0.006), 20, card)
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	var info: Dictionary = menu.Presentation.info(row, menu.catalog)
+	var meta: Label3D = menu._label(menu._fit_title(str(info.badge) if not str(info.status).is_empty() else str(info.subtitle), "", size.x - 0.025, 14), Vector3(0, -size.y / 2 + 0.012, 0.006), 14, card); meta.modulate = menu.MUTED
+	menu._progress_on(card, float(info.ratio), Vector2(0, -size.y / 2 + 0.05), size.x - 0.024)
+	menu._tips[target] = str(row.title)
+
+func wrapped_lines(value: String, width: float, size: int) -> Array[String]:
+	var result: Array[String] = []; var line := ""; var length := 0.0; var widths := {}
+	for character in value.replace("\r", ""):
+		if character == "\n": result.append(line); line = ""; length = 0; continue
+		if not widths.has(character): widths[character] = menu.text_width(character, size)
+		var advance: float = widths[character]
+		if length + advance > width and not line.is_empty(): result.append(line); line = ""; length = 0
+		line += character; length += advance
+	result.append(line)
+	return result
+
+func media_row(target: int, row: Dictionary, center: Vector2) -> void:
+	menu._button(target, "", center, Vector2(1.38, 0.112), true, "", false, menu._list)
+	var card: MeshInstance3D = menu._buttons.back().node
+	gallery._picture(display_node(row.get("scene", row.get("container_node", {})), "list"), Vector2(-0.62, 0), Vector2(0.085, 0.098), card)
+	var name := filename(row)
+	var lines := wrapped_lines(name, 1.19, 20)
+	if lines.size() > 2: lines[1] = menu._fit_title(lines[1] + "…", "", 1.19, 20)
+	var title: Label3D = menu._label("\n".join(lines.slice(0, 2)), Vector3(-0.555, 0.044, 0.007), 20, card)
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT; title.vertical_alignment = VERTICAL_ALIGNMENT_TOP
+	var info: Dictionary = menu.Presentation.info(row, menu.catalog)
+	var meta: Label3D = menu._label(menu._fit_title(str(info.subtitle), "", 1.18, 14), Vector3(-0.555, -0.039, 0.007), 14, card)
+	meta.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT; meta.modulate = menu.MUTED
+	menu._progress_on(card, float(info.ratio), Vector2(0.04, -0.052), 1.22)
+	menu._tips[target] = name
 
 func draw() -> void:
+	if focused(): _draw_sources_button()
 	if not keyboard.is_empty(): _draw_keyboard(); return
 	prioritize_covers()
-	menu._button(ACTION, "", Vector2(-0.52, 0.46), Vector2(0.09, 0.07), view != "servers", "up")
+	var top: float = 0.62 if focused() else 0.46
+	menu._button(ACTION, "", Vector2(-0.40 if focused() else -0.52, top), Vector2(0.09, 0.07), view != "servers", "up")
 	var management := view in ["servers", "remove_servers", "confirm_remove"]
 	var caption := I18n.t("Remove server") if view in ["remove_servers", "confirm_remove"] else str(server.get("name", I18n.t("Media servers")))
-	var heading: Label3D = menu._label(menu._fit_title(caption, "", 0.77, 22), Vector3(-0.43, 0.46, 0.004), 22); heading.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+	var heading: Label3D = menu._label(menu._fit_title(caption, "", 0.73 if focused() else 0.77, 22), Vector3(-0.32 if focused() else -0.43, top, 0.004), 22); heading.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
 	if view == "servers":
 		for item in [[1, "plus"], [14, "edit"], [12, "refresh"], [13, "trash"]]: menu._button(ACTION + item[0], "", Vector2(0.43 + (0.12 * ([1, 14, 12, 13].find(item[0]))), 0.46), Vector2(0.09, 0.07), not busy or int(item[0]) in [1, 14], item[1])
 	elif not management:
-		if capabilities.get("search", true) or query.get("favorites", false) or view in ["facets", "candidates"]: menu._button(ACTION + 2, "", Vector2(0.55, 0.46), Vector2(0.09, 0.07), view != "filters", "search")
-		menu._button(ACTION + 17, "", Vector2(0.67, 0.46), Vector2(0.09, 0.07), not busy and view != "filters", "heart"); menu._tips[ACTION + 17] = I18n.t("Favorites" if capabilities.get("favorite_scope", "local") == "server" else "On-device favorites")
-		menu._button(ACTION + 15, "", Vector2(0.79, 0.46), Vector2(0.09, 0.07), view != "filters", "settings")
-		var tabs := _navigation()
+		if capabilities.get("search", true) or query.get("favorites", false) or view in ["facets", "candidates"]: menu._button(ACTION + 2, "", Vector2(0.55, top), Vector2(0.09, 0.07), view != "filters", "search")
+		menu._button(ACTION + 17, "", Vector2(0.67, top), Vector2(0.09, 0.07), not busy and view != "filters", "heart"); menu._tips[ACTION + 17] = I18n.t("Favorites" if capabilities.get("favorite_scope", "local") == "server" else "On-device favorites")
+		menu._button(ACTION + 15, "", Vector2(0.79, top), Vector2(0.09, 0.07), view != "filters", "more"); menu._tips[ACTION + 15] = I18n.t("Server options")
+		var tabs: Array = [] if view in ["detail", "picture", "overview"] and capabilities.get("artwork", false) else _navigation()
 		for i in tabs.size():
 			var name: String = {"home": "Home", "all": "All", "folders": "Folders"}.get(tabs[i], FILTER_NAMES.get(tabs[i], tabs[i]))
-			menu._button(ACTION + 100 + i, I18n.t(name), Vector2(-0.37 + i * 0.263, 0.345), Vector2(0.25, 0.063), view != "filters")
+			menu._button(ACTION + 100 + i, I18n.t(name), Vector2(-0.37 + i * 0.263, 0.49 if focused() else 0.345), Vector2(0.25, 0.063), view != "filters")
 			menu._lit((view == "home" and tabs[i] == "home") or (view == "scenes" and tabs[i] == ("folders" if query.get("mode", "") == "folders" else "all")) or (view == "facets" and tabs[i] == kind))
-		_draw_context()
+		if view not in ["detail", "overview"] or not capabilities.get("artwork", false): _draw_context()
 	chips = []
 	for category in FILTER_NAMES:
 		for prefix in ["", "exclude_"]:
 			for id in query.get(prefix + category, []): chips.append({"key": prefix + category, "id": id, "label": ("− " if prefix != "" else "") + str(labels.get(category + "/" + id, id))})
 	if query.has("unclassified"): chips.append({"key": "unclassified", "id": "", "label": I18n.t("Uncategorized")})
 	if view == "scenes":
-		menu._button(ACTION + 3, "", Vector2(0.79, 0.245), Vector2(0.08, 0.06), not busy, "settings")
-		menu._button(ACTION + 4, "", Vector2(0.68, 0.245), Vector2(0.08, 0.06), not busy, "list")
+		if media_content():
+			for i in 3:
+				menu._button(ACTION + 160 + i, "", Vector2(0.30 + i * 0.1, 0.365), Vector2(0.085, 0.065), true, ["poster", "image", "list"][i]); menu._lit(scene_view() == ["poster", "thumb", "list"][i]); menu._tips[ACTION + 160 + i] = I18n.t(["Poster view", "Thumbnail view", "List view"][i])
+				if scene_view() == ["poster", "thumb", "list"][i]:
+					var node: MeshInstance3D = menu._buttons.back().node
+					node.material_override.set_shader_parameter("surface_color", menu.SELECTED)
+					node.add_child(menu._quad(Vector2(0.028, 0.003), Vector3(0, -0.025, 0.006), menu.ACCENT, 14))
+			menu._button(ACTION + 163, I18n.t(["Small", "Medium", "Large"][scene_size()]), Vector2(0.61, 0.365), Vector2(0.105, 0.065), scene_view() != "list")
+			menu._tips[ACTION + 163] = I18n.t("Poster size")
+		else: menu.draw_view_modes(0.245, 0.44)
+		menu._button(ACTION + 3, "", Vector2(0.81 if media_content() else 0.79, 0.365 if media_content() else 0.245), Vector2(0.08, 0.06), not busy, "filter"); menu._tips[ACTION + 3] = I18n.t("Filters")
+		menu._button(ACTION + 4, "", Vector2(0.72 if media_content() else 0.68, 0.365 if media_content() else 0.245), Vector2(0.08, 0.06), not busy, "sort")
 		menu._tips[ACTION + 4] = I18n.t(SORT_NAMES[maxi(0, SORTS.find(str(query.get("sort", "created_at"))))])
-		for i in mini(3, chips.size()): menu._button(ACTION + 200 + i, menu._fit_title(str(chips[i].label), "", 0.32, 14) + " ×", Vector2(-0.27 + i * 0.42, -0.435), Vector2(0.40, 0.055))
+		for i in mini(3, chips.size()): menu._button(ACTION + 200 + i, menu._fit_title(str(chips[i].label), "", 0.32, 14) + " ×", Vector2(-0.27 + i * 0.42, -0.595 if media_content() else -0.435), Vector2(0.40, 0.055))
 	if view == "candidates":
 		if kind in capabilities.get("exclude_facets", []): menu._button(ACTION + 7, I18n.t("Exclude" if exclude else "Include"), Vector2(0.1, -0.44), Vector2(0.24, 0.065))
 		if kind == "tags" and capabilities.get("tag_match_all", false): menu._button(ACTION + 8, I18n.t("Match all" if query.get("all_tags", true) else "Match any"), Vector2(0.40, -0.44), Vector2(0.30, 0.065))
 	if view in ["scenes", "facets", "candidates"]:
 		var count := candidate_total if view in ["facets", "candidates"] else total; var loaded := candidates.size() if view in ["facets", "candidates"] else entries.size()
-		menu._label("%d / %d" % [loaded, count], Vector3(-0.36, -0.515, 0.004), 15)
+		var bottom: float = -0.655 if media_content() else -0.515
+		menu._label("%d / %d" % [loaded, count], Vector3(-0.36, bottom, 0.004), 15)
 		var has_more := not candidate_end if view in ["facets", "candidates"] else not end_reached
-		if loaded < count and has_more: menu._button(ACTION + 6, I18n.t("More"), Vector2(0.73, -0.515), Vector2(0.18, 0.065), not busy)
-		if view == "scenes": menu._button(ACTION + 9, "", Vector2(0.52, -0.515), Vector2(0.08, 0.065), not busy, "bookmark_add"); menu._tips[ACTION + 9] = I18n.t("Save search")
+		if loaded < count and has_more: menu._button(ACTION + 6, I18n.t("More"), Vector2(0.73, bottom), Vector2(0.18, 0.065), not busy)
+		if view == "scenes": menu._button(ACTION + 9, "", Vector2(0.52, bottom), Vector2(0.08, 0.065), not busy, "bookmark_add"); menu._tips[ACTION + 9] = I18n.t("Save search")
 	elif view == "filters": menu._button(ACTION + 11, I18n.t("Apply"), Vector2(0.55, -0.345), Vector2(0.30, 0.065))
 	if not menu.status.is_empty() and menu.status != "Server authentication required":
 		menu._label(I18n.t(menu.status), Vector3(0.15, -0.57, 0.004), 15)
@@ -671,10 +823,16 @@ func draw() -> void:
 	elif gallery.home(): gallery.draw_home()
 	elif gallery.rich_detail() and not detail.is_empty(): gallery.draw_detail()
 	elif view == "picture": gallery.draw_picture()
+	elif view == "overview": gallery.draw_overview()
 	elif view == "home": _draw_home()
 	elif view == "filters": _draw_filters()
 	elif view in ["detail", "metadata"] and not detail.is_empty(): _draw_detail()
 	else: menu._draw_rows()
+
+func _draw_sources_button() -> void:
+	menu._button(ACTION + 19, "", Vector2(-0.59, 0.62), Vector2(0.16, 0.07), true, "menu")
+	menu._lit(sources_open); menu._tips[ACTION + 19] = I18n.t("Main menu")
+	if sources_open: menu._buttons.back().node.material_override.set_shader_parameter("surface_color", menu.SELECTED)
 
 func _draw_sign_in_required() -> void:
 	menu._label(I18n.t("Server authentication required"), Vector3(0.16, 0.045, 0.009), 26)
@@ -691,7 +849,7 @@ func _draw_context() -> void:
 	elif query.get("favorites", false): context = I18n.t("Favorites" if capabilities.get("favorite_scope", "local") == "server" else "On-device favorites")
 	elif query.get("all_libraries", false): context = actor_name
 	if not folder_path.is_empty(): context += " / " + " / ".join(folder_path.map(func(node): return str(node.title)))
-	var label: Label3D = menu._label(menu._fit_title(context, "", 1.0, 15), Vector3(-0.48, 0.245, 0.004), 15); label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT; label.modulate = menu.MUTED
+	var label: Label3D = menu._label(menu._fit_title(context, "", 0.69 if media_content() else (0.84 if view == "scenes" else 1.0), 15), Vector3(-0.48, 0.365 if media_content() else (0.395 if focused() else 0.245), 0.004), 15); label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT; label.modulate = menu.MUTED
 
 func _draw_home() -> void:
 	menu._list = Node3D.new(); menu.add_child(menu._list); menu._decorations.append(menu._list); menu._bar_thumb = null
