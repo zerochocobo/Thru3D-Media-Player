@@ -28,7 +28,7 @@ func _run() -> void:
 	var host := Host.new()
 	video.platform = host
 	var menu := Menu.new()
-	menu.state_provider = func(): return {"error": I18n.t(video.media.error), "title": "电影.SBS.strm"}
+	menu.state_provider = func(): return {"error": I18n.t(video.picker_error if not video.picker_error.is_empty() else video.media.error), "title": "电影.SBS.strm", "error_report": video.media.error_report}
 	root.add_child(menu); menu.set_process(false)
 	main.video_menu = menu; main.player_menu = menu
 	video.playback_failed.connect(main._on_video_playback_failed)
@@ -39,7 +39,8 @@ func _run() -> void:
 		video._on_error(6, JSON.stringify({"code": code}))
 		check(not menu.visible and video.media.error.is_empty(), "Stale error must not disturb the current source")
 		video._on_error(7, JSON.stringify({"code": code, "message": "https://nas/?secret=private"}))
-		check(menu.visible and menu.section == 2, "Failure opens a visible information panel: " + code)
+		check(menu.visible and menu._failure_open and menu.section == 0, "Failure automatically opens its own dialog: " + code)
+		check(not menu._buttons.any(func(button): return button.target == 12), "Failure dialog does not require an Info tab")
 		check(menu._info.text.contains(I18n.t(Errors.MESSAGES[code])), "Specific translated reason is visible: " + code)
 		check(not menu._info.text.contains("private") and not menu._info.text.contains(code), "No tokens or diagnostic codes on the panel")
 		check(not video._waiting_first and video._opening_deadline_ms == 0, "Failure ends the opening wait")
@@ -62,11 +63,59 @@ func _run() -> void:
 		for message in Errors.MESSAGES.values(): check(I18n.t(message) != message, "Localized failure: " + language)
 	for report in [{"message": "MPV playback: loading failed"}, {"message": "MPV playback: unrecognized file format"}, {"message": "timeout"}, {}]:
 		check(not Errors.message(report).is_empty(), "Unplayable media always has a useful explanation")
+	for report in [{"code": "MPV_LOCAL_SOURCE_FAILED"}, {"message": "MPV playback: loading failed", "mpv_code": -13},
+		{"message": "Failed loading https://nas/403_permission_video.mkv"}, {}]:
+		check(Errors.message(report) == "Media loading failed. No specific cause was reported.", "Unknown failures do not invent a permission problem")
+	for reason in Errors.REASONS:
+		check(Errors.message({"reason": reason}) == Errors.REASONS[reason], "Structured reason has an exact message: " + reason)
+	for mpv_code in Errors.MPV_REASONS:
+		check(Errors.message({"mpv_code": mpv_code}) == Errors.REASONS[Errors.MPV_REASONS[mpv_code]], "Numeric native errors survive without text heuristics")
+	for language in ["zh", "zh_Hant", "ja"]:
+		I18n.use(language)
+		for text in Errors.REASONS.values(): check(I18n.t(text) != text, "Localized structured error: " + language)
+	I18n.use("zh")
+	video.media.begin(20)
+	video.media.logical_session_id = 200; video.media.generation = 2
+	video._on_error(20, JSON.stringify({"session_id": 20, "logical_session_id": 200, "generation": 1, "reason": "access_denied"}))
+	check(video.media.error.is_empty() and video.media.error_report.is_empty(), "A late generation cannot fail the current video")
+	var original := {"code": "MPV_FRAME_PIPELINE_FAILED", "reason": "access_denied", "stage": "reading", "http_status": 403, "mpv_code": -13,
+		"detail": "Upstream HTTP 403", "native_detail": "MPV playback: loading failed"}
+	video._on_error(20, JSON.stringify(original))
+	check(video.media.error_report == Errors.clean(original), "Failure keeps all structured fields after native cleanup")
+	check(not menu._error_details_open, "A new failure starts with its short reason")
+	check(not menu._info.text.contains("403") and not menu._info.text.contains("MPV_"), "Technical information stays out of the short reason")
+	menu._activate(Menu.ERROR_DETAILS)
+	check(menu._error_details_open, "Ray button expands the details")
+	var expanded_detail := Errors.details(video.media.error_report)
+	check(expanded_detail.contains("HTTP 403") and expanded_detail.contains("MPV -13") and expanded_detail.contains("Upstream HTTP 403"), "Expanded details retain upstream and native evidence")
+	check(not menu.allows_playback_sticks(), "Error details do not enable playback stick shortcuts")
+	check(menu.navigate_back() and not menu._error_details_open and menu._failure_open, "Back first collapses the details")
+	menu._activate(Menu.ERROR_DETAILS); menu._activate(Menu.ERROR_DETAILS)
+	check(not menu._error_details_open, "Ray button also collapses details")
+	menu._activate(Menu.ERROR_DETAILS); menu.dismiss()
+	check(not menu._error_details_open, "Dismissing the panel collapses details")
+	menu.show_playback_error(); menu._activate(Menu.ERROR_DETAILS)
+	menu._activate(Menu.SETTINGS_CLOSE)
+	check(not menu._failure_open, "Close dismisses the independent error dialog")
+	check(menu._buttons.any(func(button): return button.target == Menu.ERROR_OPEN), "The playback bar offers a direct error entry")
+	var error_entry := menu.ray_hit(menu.to_global(Vector3(0, 0.1, 1)), -menu.global_transform.basis.z)
+	check(int(error_entry.get("target", -1)) == Menu.ERROR_OPEN, "The failure entry is reachable by the controller ray")
+	if not error_entry.is_empty(): menu._activate_hit(error_entry)
+	check(menu._failure_open and not menu._error_details_open, "The playback bar reopens the error without visiting Info")
+	video.media.begin(21)
+	menu.refresh()
+	check(video.media.error_report.is_empty(), "Opening another source clears old diagnostics")
+	check(not menu._failure_open, "Starting another source closes the previous failure dialog")
+	video._on_error(20, JSON.stringify(original))
+	check(video.media.error_report.is_empty(), "A late previous-source failure cannot replace current diagnostics")
+	for text in ["https://user:pass@nas/video?token=secret", "smb://user:pass@nas/folder/file", "Cookie: secret", "Authorization: Bearer secret", "password=secret", "{\"token\":\"secret\"}"]:
+		check(not Errors.details({"message": text}).contains("secret"), "Details redact credentials: " + text.get_slice(":", 0))
+	check(not Errors.clean({"message": "https://nas/?token=private"}).message.contains("private"), "Saved and logged reports use the same redaction boundary")
 	menu.dismiss(); video.media.begin(10); I18n.use("zh")
 	video._access_request = 42
 	video._access_pending = {"uri": "content://documents/movie.strm", "title": "movie.strm"}
 	video._on_local_access(42, JSON.stringify({"uri": "content://documents/movie.strm", "state": "error", "error": "LOCAL_DOCUMENT_MISSING"}))
-	check(menu.visible and menu.section == 2 and video.picker_error == "LOCAL_DOCUMENT_MISSING", "A missing document grant is also reported visibly")
+	check(menu.visible and menu._failure_open and video.picker_error == "LOCAL_DOCUMENT_MISSING", "A missing document grant is also reported visibly")
 	video.picker_error = ""
 	# Ordinary files share visible failures, output and rebuffer deadlines with STRM.
 	video.local_uri = "smb://saved/ordinary.mkv"

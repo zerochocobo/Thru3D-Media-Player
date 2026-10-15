@@ -10,6 +10,7 @@
 #include "decode.h"
 #include "internal.h"
 #include "edge264mvc/edge264mvc.h"
+#include "mvc_recovery.h"
 
 typedef struct MvcDecoder {
     Edge264MvcDecoder *decoder;
@@ -19,17 +20,24 @@ typedef struct MvcDecoder {
     int clip, pending_clip, boundary_draining;
     int64_t start, end, pending_start, pending_end;
     uint64_t pairs;
+    MvcRecovery recovery;
+    int base_picture_seen;
 } MvcDecoder;
 
-static av_cold int mvc_init(AVCodecContext *avctx)
+static int mvc_open_decoder(MvcDecoder *s)
 {
-    MvcDecoder *s = avctx->priv_data;
     Edge264MvcSettings settings;
     edge264mvc_default_settings(&settings);
     settings.n_threads = 4;
     settings.max_frame_pixels = 4096 * 2160;
-    if (edge264mvc_open(&s->decoder, &settings) != EDGE264MVC_OK)
-        return AVERROR(ENOMEM);
+    return edge264mvc_open(&s->decoder, &settings) == EDGE264MVC_OK ? 0 : AVERROR(ENOMEM);
+}
+
+static av_cold int mvc_init(AVCodecContext *avctx)
+{
+    MvcDecoder *s = avctx->priv_data;
+    int ret = mvc_open_decoder(s);
+    if (ret < 0) return ret;
     s->packet = av_packet_alloc();
     if (!s->packet) {
         edge264mvc_close(&s->decoder);
@@ -38,6 +46,7 @@ static av_cold int mvc_init(AVCodecContext *avctx)
     s->base_right = avctx->extradata_size == 1 && avctx->extradata[0] == 1;
     s->clip = -1;
     s->end = INT64_MAX;
+    mvc_recovery_reset(&s->recovery);
     avctx->pix_fmt = AV_PIX_FMT_YUV420P;
     avctx->color_range = AVCOL_RANGE_MPEG;
     avctx->colorspace = AVCOL_SPC_BT709;
@@ -51,13 +60,22 @@ static av_cold int mvc_init(AVCodecContext *avctx)
 static void mvc_flush(AVCodecContext *avctx)
 {
     MvcDecoder *s = avctx->priv_data;
-    edge264mvc_flush(s->decoder);
+    /* The pinned decoder's flush retains reconstruction buffers and worker
+       caches. Reusing them after a discontinuity can change the first GOP's
+       pixels compared with a warmed decode. No upstream frames escape this
+       adapter, so replace the decoder too; ordinary playback keeps four workers. */
+    edge264mvc_flush(s->decoder); /* Finish in-flight/held slices before joining workers. */
+    edge264mvc_close(&s->decoder);
+    if (mvc_open_decoder(s) < 0)
+        av_log(avctx, AV_LOG_ERROR, "MVC decoder reset allocation failed\n");
     av_packet_unref(s->packet);
     s->next = 0;
     s->draining = 0;
     s->clip = -1;
     s->boundary_draining = 0;
     s->start = INT64_MIN; s->end = INT64_MAX;
+    mvc_recovery_reset(&s->recovery);
+    s->base_picture_seen = 0;
 }
 
 static av_cold int mvc_close(AVCodecContext *avctx)
@@ -123,11 +141,13 @@ static int mvc_copy(AVCodecContext *avctx, AVFrame *frame, const Edge264MvcFrame
 static int mvc_receive(AVCodecContext *avctx, AVFrame *frame)
 {
     MvcDecoder *s = avctx->priv_data;
+    if (!s->decoder) return AVERROR(ENOMEM);
     for (;;) {
         Edge264MvcFrame pair;
         int result = edge264mvc_receive_frame(s->decoder, &pair);
         if (result == EDGE264MVC_OK) {
-            if (pair.views[0].pts < s->start || pair.views[0].pts >= s->end) {
+            if (!mvc_recovery_allows(&s->recovery, pair.views[0].pts) ||
+                pair.views[0].pts < s->start || pair.views[0].pts >= s->end) {
                 edge264mvc_release_frame(s->decoder, &pair);
                 continue;
             }
@@ -138,7 +158,9 @@ static int mvc_receive(AVCodecContext *avctx, AVFrame *frame)
         if (result == EDGE264MVC_END && s->boundary_draining) {
             /* Preserve all reordered frames at the old clip's tail before
                resetting its references. The next clip's first packet is held. */
-            edge264mvc_flush(s->decoder);
+            edge264mvc_close(&s->decoder);
+            if (mvc_open_decoder(s) < 0) return AVERROR(ENOMEM);
+            mvc_recovery_reset(&s->recovery);
             s->boundary_draining = 0;
             s->clip = s->pending_clip;
             s->start = s->pending_start; s->end = s->pending_end;
@@ -160,6 +182,7 @@ static int mvc_receive(AVCodecContext *avctx, AVFrame *frame)
             if (ret < 0)
                 return ret;
             s->next = 0;
+            s->base_picture_seen = 0;
             size_t bytes = 0;
             const uint8_t *data = av_packet_get_side_data(s->packet, AV_PKT_DATA_STRINGS_METADATA, &bytes);
             AVDictionary *tag = NULL;
@@ -229,6 +252,20 @@ static int mvc_receive(AVCodecContext *avctx, AVFrame *frame)
             return AVERROR_INVALIDDATA;
         if (result != EDGE264MVC_OK && result != EDGE264MVC_UNSUPPORTED)
             return AVERROR_EXTERNAL;
+        if (result == EDGE264MVC_OK && !s->recovery.ready) {
+            if (nal_type == 6 && !s->base_picture_seen) {
+                int count;
+                if (!mvc_recovery_sei(s->packet->data + begin + 1, end - begin - 1, &count))
+                    return AVERROR_INVALIDDATA;
+                if (count >= 0) s->recovery.pending = count;
+            } else if (nal_type == 1 || nal_type == 5) {
+                int number, mask, reference;
+                if (thru3d_mvc_base_picture(s->decoder, &number, &mask, &reference))
+                    mvc_recovery_picture(&s->recovery, number, mask, nal_type == 5,
+                                         reference, s->packet->pts);
+            }
+        }
+        if (nal_type >= 1 && nal_type <= 5) s->base_picture_seen = 1;
         s->next = begin + length;
         if (s->next >= s->packet->size)
             av_packet_unref(s->packet);

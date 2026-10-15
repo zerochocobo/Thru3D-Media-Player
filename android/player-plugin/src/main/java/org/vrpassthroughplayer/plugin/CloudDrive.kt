@@ -4,7 +4,7 @@ import org.json.JSONObject
 import java.net.HttpCookie
 import java.net.URI
 
-internal class CloudFile(val name: String, val folder: Boolean, val size: Long, val id: String, val pickCode: String = "", val modified: Long = -1, val objectId: String = id, val canDelete: Boolean = false)
+internal class CloudFile(val name: String, val folder: Boolean, val size: Long, val id: String, val pickCode: String = "", val modified: Long = -1, val objectId: String = id, val canDelete: Boolean = false, val canRename: Boolean = false)
 internal class CloudLink(val url: String, val headers: (URI) -> Map<String, String>)
 internal class CloudPage(val files: List<CloudFile>, val nextOffset: Int, val total: Int = -1)
 

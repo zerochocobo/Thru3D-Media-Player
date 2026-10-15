@@ -157,7 +157,7 @@ func _run() -> void:
 	before = video.mode_memory.sequence
 	video.set_alpha(false)
 	check(video.mode_memory.sequence == before, "Rejected source cannot overwrite its remembered settings")
-	# A file without a remembered mode: explicit markers win, ambiguous 2:1 stays flat.
+	# A file without a remembered mode: explicit markers win, exact unmarked 2:1 defaults to VR180 SBS.
 	host.next_id = 7
 	check(video.open_local("file:///v/show_RL_180.mp4", "show_RL_180.mp4") and host.calls.back()[2] == true
 		and video.geometry == 1 and video.swap_eyes and video._layout_pending == null, "Name markers reach native at open")
@@ -165,20 +165,29 @@ func _run() -> void:
 		"Unmarked name waits for the frame")
 	video.media.format = {"width": 8192, "height": 4096, "pixel_aspect": 1.0, "unapplied_rotation_degrees": 0}
 	video._complete_layout()
-	check(video.geometry == 0 and not video.stereo_sbs and video._pending_revision.is_empty() and video._layout_pending == null,
-		"Unmarked 2:1 stays flat mono without restarting processing")
+	check(video.geometry == 1 and video.stereo_sbs and not video.top_bottom and not video.stereo_half
+		and video._pending_revision.get("stereo", false) and video._layout_pending == null,
+		"Unmarked exact 2:1 requests full SBS processing in VR180")
+	video._complete_layout()
+	check(video.geometry == 1 and video.stereo_sbs, "Completed automatic layout remains VR180 SBS")
 	var converted_uri := "file:///v/clip.mp4"
+	video.set_projection(0); video.set_stereo_layout(0)
 	check(video.set_depth(true) and video.mode_memory.lookup(converted_uri).depth_requested, "Manual conversion is saved for the current file")
 	check(video.open_local("file:///other/clip.mp4", "clip.mp4") and not video.depth_requested and not video.auto_depth and not host.depths.back(),
 		"Another URI with the same filename never inherits conversion")
 	video.media.format = {"width": 8192, "height": 4096, "pixel_aspect": 1.0}
 	video._complete_layout()
-	check(not video.depth_requested and video._pending_revision.is_empty(), "Unmarked first frame does not re-enable the previous file's depth")
-	video.set_projection(1)
+	check(video.geometry == 1 and video.stereo_sbs and not video.depth_requested and not video._pending_revision.depth,
+		"Unmarked first frame defaults to VR180 SBS without inheriting the previous file's depth")
+	video.set_projection(2)
 	check(not video.depth_requested and not video._pending_revision.depth, "Manual VR selection never needs to exit unwanted depth processing")
 	video.mode_memory = Memory.new(test_path.path_join("integration")); video.mode_memory.load_saved()
 	check(video.open_local(converted_uri, "clip.mp4") and video.depth_requested and video.auto_depth and host.depths.back(),
 		"A fresh store restores this file's conversion before the native open")
+	video.media.format = {"width": 8192, "height": 4096, "pixel_aspect": 1.0}
+	video._complete_layout()
+	check(video.geometry == 0 and not video.stereo_sbs and video.depth_requested and video._layout_pending == null,
+		"Remembered flat mono conversion overrides the exact 2:1 fallback")
 	check(video.set_depth(false) and not video.mode_memory.lookup(converted_uri).depth_requested, "Manual Off updates only this file's conversion record")
 	check(video.open_local("cloud://mount/movie", "clip.mp4") and not host.depths.back(), "A new network video starts without conversion")
 	video.set_depth(true)

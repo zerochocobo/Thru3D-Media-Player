@@ -6,6 +6,9 @@ render_mode unshaded, cull_disabled, depth_draw_never, blend_mix;
 uniform sampler2D color_texture : filter_linear, repeat_disable;
 uniform sampler2D alpha_texture : filter_linear, repeat_disable;
 uniform bool alpha_enabled = true;
+// The player's edge feather/shrink: mask values remapped from [x, y] to [0, 1] ((0, 1): unchanged).
+uniform vec2 alpha_edge = vec2(0.0, 1.0);
+float edge_alpha(float m) { return clamp((m - alpha_edge.x) / max(alpha_edge.y - alpha_edge.x, 0.001), 0.0, 1.0); }
 uniform vec2 model_size = vec2(256.0, 144.0);
 uniform vec4 model_content_rect = vec4(0.0, 0.0, 1.0, 1.0);
 // 2D->3D (mono sources): alpha_texture carries a near map (1 = nearest) instead of Alpha.
@@ -132,9 +135,9 @@ void fragment() {
 	if (packed_alpha && stereo_sbs && !top_bottom) {
 		// Pixels that carry the mask had their color overwritten by the packer.
 		// (No early return: Godot writes the outputs after this function body.)
-		ALPHA = reserved_color(color_p) ? 0.0 : clamp(packed_mask(color_p, eye), 0.0, 1.0);
+		ALPHA = reserved_color(color_p) ? 0.0 : edge_alpha(packed_mask(color_p, eye));
 	} else {
-		ALPHA = alpha_enabled && !depth_enabled ? (outside ? 0.0 : clamp(texture(alpha_texture, alpha_p).r, 0.0, 1.0)) : 1.0;
+		ALPHA = alpha_enabled && !depth_enabled ? (outside ? 0.0 : edge_alpha(texture(alpha_texture, alpha_p).r)) : 1.0;
 	}
 	// Crop correction borders rather than stretching an edge or reading the other eye.
 	if (outside_alignment(shown_uv)) { ALBEDO = vec3(0.0); ALPHA = alpha_enabled || packed_alpha ? 0.0 : 1.0; }

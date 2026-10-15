@@ -147,7 +147,11 @@ func update(pose: Transform3D, head: Variant, follow: RefCounted) -> bool:
 			if capture.head is Transform3D: world = motion * world
 			else: world.origin += displacement
 			if target.kind == "screen": target.node.set_flat_world_pose(world)
-			else: target.node.global_transform = world
+			else:
+				target.node.global_transform = world
+				if target.kind == "menu" and head is Transform3D and target.node.has_method("set_layout_viewer") and target.node._layout_eye != null:
+					target.node.set_layout_viewer(head, follow.enabled)
+					world = target.node.global_transform
 			if head is Transform3D:
 				if target.kind != "detail": follow.capture(target.key, head, world)
 				if target.kind in ["menu", "screen", "detail"]:

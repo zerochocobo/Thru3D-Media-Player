@@ -289,8 +289,12 @@ func composition_root() -> Node3D:
 	return get_parent() as Node3D if compact or playback_expanded else self
 
 func _align_playback_panel() -> void:
-	if compact or not playback_expanded or not get_parent().has_method("has_expanded_library"): return
+	if not (compact or playback_expanded) or not get_parent().has_method("has_expanded_library"): return
 	var controls: Node3D = get_parent()
+	if controls._layout_eye != null and controls.arrange_library(self, panel_bounds()): return
+	if compact:
+		transform = Transform3D(Basis.IDENTITY, Vector3(0, 0.72, 0))
+		return
 	var top: float = controls._backdrop.position.y + controls._backdrop.mesh.size.y * 0.5
 	for button in controls._buttons:
 		if button.node.visible:
@@ -401,6 +405,7 @@ func _row_target(target: int) -> bool:
 
 ## The list area, gaps between tiles included: a press there can drag the list.
 func _in_list(point: Vector3) -> bool:
+	if not file_actions.modal.is_empty(): return false
 	if section == Section.MEDIA_SERVER and server_browser.sorting(): return false
 	if compact:
 		var span := _bar_span()
@@ -427,7 +432,7 @@ func press_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: b
 	var hit := ray_hit(origin, direction) if tracked else {}
 	var target := int(hit.get("target", NONE))
 	var start_y := 0.0
-	if not hit.is_empty() and target not in [SCROLLBAR, NONE] and not _row_target(target):
+	if not hit.is_empty() and target not in [SCROLLBAR, NONE] and not _row_target(target) and not file_actions.selection_target(target):
 		_activate_hit(hit)
 		return true
 	if hit.is_empty() or target == NONE:
@@ -632,6 +637,7 @@ func set_view_mode(value: String) -> void:
 	var keep_current_visible := _current_file_visible()
 	var anchor := capture_position()
 	view_mode = value
+	file_actions.editing = false; file_actions.selection.clear()
 	_drag = {}; _fling = 0.0; _hover.clear(); _hide_tooltip()
 	_cancel_covers()
 	_position_to_restore = anchor
@@ -660,7 +666,7 @@ func _cols() -> int:
 
 ## Visible lines (tile rows or list rows); [scroll] counts lines.
 func _lines() -> int:
-	if compact: return 2 if _grid() else 5
+	if compact: return 2 if _grid() else (4 if file_actions.needs_footer() else 5)
 	if cloud_search.active: return 2 if _grid() else 5
 	if controls_page.active(): return 6
 	if account_panel.active(): return VISIBLE_ROWS
@@ -728,12 +734,12 @@ func _redraw_file_rows() -> void:
 	_hide_tooltip()
 	for index in range(_buttons.size() - 1, -1, -1):
 		var button: Dictionary = _buttons[index]
-		if _row_target(button.target) or button.target == SCROLLBAR:
+		if _row_target(button.target) or file_actions.selection_target(button.target) or button.target == SCROLLBAR:
 			_tips.erase(button.target)
 			if button.target == SCROLLBAR: button.node.free()
 			_buttons.remove_at(index)
 	for hand in _hover:
-		if _row_target(_hover[hand]) or _hover[hand] == SCROLLBAR: _hover[hand] = NONE
+		if _row_target(_hover[hand]) or file_actions.selection_target(_hover[hand]) or _hover[hand] == SCROLLBAR: _hover[hand] = NONE
 	_decorations.erase(_list); _list.free()
 	if is_instance_valid(_bar_thumb):
 		_decorations.erase(_bar_thumb); _bar_thumb.free()
@@ -1010,15 +1016,22 @@ func _rebuild_rows() -> void:
 					outputs.append({"value": option[0], "label": option[1], "hint": Quality.OUTPUT_HINTS[option[0]]})
 				var output_row := _choice_row("Output resolution", "output_width", int(settings.get("output_width", Quality.AUTO_OUTPUT)), outputs, true)
 				output_row.info = Quality.OUTPUT_INFO; rows.append(output_row)
-				rows.append({"title": I18n.t("Alpha passthrough FPS limit"), "key": "alpha_fps", "value": int(settings.get("alpha_fps", 20)),
-					"slider": true, "span": Vector3(10, 40, 1), "unit": " FPS", "reset_value": 20.0, "hint": "Passthrough uses lots of GPU, so FPS may be lower"})
+				rows.append(_alpha_size_row(settings))
+				rows.append({"title": I18n.t("Alpha passthrough FPS limit"), "key": "alpha_fps", "value": int(settings.get("alpha_fps", 30)),
+					"slider": true, "span": Vector3(10, 40, 1), "unit": " FPS", "reset_value": 30.0, "hint": "Headset performance limits keep the cut-out a little behind the picture"})
+				# The same Alpha edge as the player settings (AlphaEdge defaults).
+				rows.append({"title": I18n.t("Alpha feather"), "key": "alpha_feather", "value": int(settings.get("alpha_feather", 100)),
+					"slider": true, "span": Vector3(0, 100, 1), "unit": "%", "reset_value": 100.0})
+				rows.append({"title": I18n.t("Alpha edge shrink"), "key": "alpha_shrink", "value": int(settings.get("alpha_shrink", 40)),
+					"slider": true, "span": Vector3(0, 100, 1), "unit": "%", "reset_value": 40.0})
 				rows.append_array(_subtitle_rows(settings))
 			elif tab == GENERAL_TAB:
 				var languages: Array = []
 				for value in I18n.CHOICES: languages.append({"value": value, "label": LANGUAGE_NAMES[value]})
 				rows.append(_choice_row("Language", "language", I18n.choice, languages))
+				var management_hint := "Delete or rename files in supported library sections. Available actions depend on the source and permissions."
 				rows.append(_choice_row("Allow file management", "file_editing", file_actions.enabled,
-					[{"value": false, "label": "Off"}, {"value": true, "label": "On"}]))
+					[{"value": false, "label": "Off", "hint": management_hint}, {"value": true, "label": "On", "hint": management_hint}]))
 				rows.append(_choice_row("Save play history", "history", settings.get("history", true),
 					[{"value": true, "label": "On"}, {"value": false, "label": "Off"}]))
 				# Library thumbnails plus Android photo/depth/SBS files.
@@ -1100,6 +1113,7 @@ func _rebuild_rows() -> void:
 	if media_filter > 0 and section not in [Section.SETTINGS, Section.MEDIA_SERVER]:
 		rows.assign(rows.filter(func(row): return not row.has("uri") or row.get("kind", "video") == ("image" if media_filter == 2 else "video")))
 	file_actions.sort_rows()
+	file_actions.reconcile()
 	if section == Section.RECENT:
 		_recent_all_rows.assign(rows)
 		_recent_count = rows.size()
@@ -1165,6 +1179,7 @@ func _turn_cloud_page(step: int) -> void:
 	if step > 0:
 		_cloud_offsets.resize(page + 1)
 		_cloud_offsets[page] = _cloud_next
+	file_actions.selection.clear()
 	_load_cloud(false, false, page)
 	refresh()
 
@@ -1172,12 +1187,12 @@ func _entry_row(entry: Dictionary) -> Dictionary:
 	if bool(entry.get("container", false)):
 		var folder_row := {"title": str(entry.title), "detail": "", "icon": "folder", "container": entry, "folder": true,
 			"delete_uri": str(entry.get("delete_uri", "")), "can_delete": bool(entry.get("can_delete", false)), "delete_reason": str(entry.get("delete_reason", "File deletion unavailable for this source"))}
-		for field in ["size", "modified", "cloud_id", "delete_effect", "child_count", "type"]:
+		for field in ["size", "modified", "cloud_id", "delete_effect", "child_count", "type", "can_rename"]:
 			if entry.has(field): folder_row[field] = entry[field]
 		return folder_row
 	var photo: bool = entry.get("kind", "") == "image" or ImageInfo.is_image(str(entry.get("uri", "")), str(entry.title))
 	var row := {"title": str(entry.title), "detail": _size(entry), "kind": "image" if photo else "video", "icon": "image" if photo else "video", "uri": str(entry.get("uri", ""))}
-	for field in ["size", "modified", "can_delete", "delete_reason", "id", "cloud_id", "delete_effect", "duration_ms", "width", "height"]:
+	for field in ["size", "modified", "can_delete", "can_rename", "delete_reason", "id", "cloud_id", "delete_effect", "duration_ms", "width", "height"]:
 		if entry.has(field): row[field] = entry[field]
 	if not str(entry.get("cover", "")).is_empty():
 		row["cover"] = str(entry.cover)
@@ -1245,12 +1260,12 @@ func _read_cache_usage() -> Vector2i:
 func _activate(target: int) -> void:
 	if _activate_footer(target): return
 	if cloud_error.action(target): return
+	if file_actions.action(target): return
 	if target == EXPAND_LIBRARY:
 		layout_requested.emit(); return
 	if target in [VIEW_LIST, VIEW_GRID]:
 		set_view_mode("list" if target == VIEW_LIST else "grid"); return
 	if controls_page.action(target): return
-	if file_actions.action(target): return
 	if choices.action(target): return
 	if account_panel.action(target): return
 	if section == Section.CLOUD and cloud_search.action(target): return
@@ -1457,6 +1472,8 @@ func navigate_back() -> bool:
 		else: account_panel.action(AccountPanel.BASE)
 	elif file_actions.editing:
 		file_actions.editing = false; file_actions.selected = ""; refresh()
+	elif file_actions.has_selection():
+		file_actions.selection.clear(); refresh()
 	elif cloud_search.active or not _editor.is_empty() or (section == Section.CLOUD and not cloud_accounts.mode.is_empty()):
 		_go_back()
 	elif section == Section.MEDIA_SERVER:
@@ -1711,6 +1728,7 @@ func _draw_compact() -> void:
 	_tips[EXPAND_LIBRARY] = I18n.t("Expand library")
 	_decoration(Vector2(1.04, 0.002), Vector2(0, 0.305), Color(0.17, 0.2, 0.24))
 	_draw_rows()
+	file_actions.draw_footer()
 	for spec in [[VIEW_LIST, "list", "List view"], [VIEW_GRID, "grid", "Icon view"]]:
 		_button(int(spec[0]), "", Vector2(0.39 + (0.11 if spec[1] == "grid" else 0), -0.365), Vector2(0.09, 0.065), true, str(spec[1]), view_mode == spec[1])
 		_tips[int(spec[0])] = I18n.t(str(spec[2]))
@@ -1745,17 +1763,19 @@ func _draw_compact_rows() -> void:
 			_tile(ROW_BASE + k, row, Vector2(-0.34 + (k % 3) * 0.34, 0.13 - (k / 3) * _pitch()))
 		else:
 			var centre := Vector2(0, 0.215 - k * _pitch())
-			_button(ROW_BASE + k, _fit_title(str(row.title), "", 0.83, 20), centre, Vector2(1.03, 0.098), true, "", false, _list)
+			var managing := file_actions.list_management()
+			_button(ROW_BASE + k, _fit_title(str(row.title), "", 0.72 if managing else 0.83, 20), centre + Vector2(0.055 if managing else 0.0, 0), Vector2(0.92 if managing else 1.03, 0.098), true, "", false, _list)
 			var button: Dictionary = _buttons.back()
 			var node: MeshInstance3D = button.node
 			if _is_current_row(row):
 				button.base_color = SELECTED; node.material_override.set_shader_parameter("surface_color", SELECTED)
 			var name: Label3D = node.get_child(0)
-			name.position = Vector3(-0.40, 0.021, 0.004); name.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+			name.position = Vector3(-0.345 if managing else -0.40, 0.021, 0.004); name.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
 			set_label_size(name, 20); _tips[ROW_BASE + k] = str(row.title)
-			_icon(str(row.get("icon", "video")), Vector3(-0.46, 0, 0.005), 0.04, FOLDER if row.has("container") else MUTED, node)
-			var detail := _label(_fit_title(str(Presentation.info(row, catalog, section == Section.RECENT).subtitle), "", 0.83, 15), Vector3(-0.40, -0.025, 0.004), 15, node)
+			_icon(str(row.get("icon", "video")), Vector3(-0.405 if managing else -0.46, 0, 0.005), 0.04, FOLDER if row.has("container") else MUTED, node)
+			var detail := _label(_fit_title(str(Presentation.info(row, catalog, section == Section.RECENT).subtitle), "", 0.72 if managing else 0.83, 15), Vector3(-0.345 if managing else -0.40, -0.025, 0.004), 15, node)
 			detail.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT; detail.modulate = MUTED
+			file_actions.draw_checkbox(ROW_BASE + k, row, centre + Vector2(-0.48, 0))
 	if _max_scroll() > 0:
 		var span := _bar_span()
 		_button(SCROLLBAR, "", Vector2(0.55, span.x - span.y * 0.5), Vector2(0.035, span.y))
@@ -1770,11 +1790,11 @@ func _draw() -> void:
 	_clear_layout()
 	if cloud_error.opened: cloud_error.draw(); return
 	_side.visible = not compact
-	if compact:
-		_draw_compact()
-		return
 	if not file_actions.modal.is_empty():
 		file_actions.draw_modal()
+		return
+	if compact:
+		_draw_compact()
 		return
 	if account_panel.view == "web":
 		account_panel.draw(); return
@@ -1880,23 +1900,24 @@ func _draw() -> void:
 		_button(QUIT_APP, I18n.t("Close app"), Vector2(0.59, -0.515), Vector2(0.42, 0.07), true, "close")
 	if status in ["Video access needed", "Media access needed", "All files access needed"]:
 		_button(GRANT, I18n.t("Grant"), Vector2(0.19, -0.34), Vector2(0.3, 0.07), not _local_grant_pending, "", true)
-	if file_actions.editing:
+	if file_actions.has_selection():
 		file_actions.draw_footer()
 	elif section != Section.SETTINGS and not cloud_managing:
 		for i in MEDIA_FILTERS.size():
 			_button(FILTER_BASE + i, I18n.t(MEDIA_FILTERS[i]), Vector2(0.36 + i * 0.18, -0.515), Vector2(0.17, 0.06), true, "", media_filter == i)
 			set_label_size(_buttons.back().node.get_child(0), 17)
-	var cloud_paging := section == Section.CLOUD and not _cloud_stack.is_empty() and not file_actions.editing
+	var cloud_paging := section == Section.CLOUD and not _cloud_stack.is_empty()
+	var cloud_page_y := -0.59 if file_actions.has_selection() else -0.515
 	if section == Section.RECENT:
 		_button(RECENT_PREVIOUS, "‹", Vector2(-0.45, -0.515), Vector2(0.09, 0.07), _recent_page > 0)
 		_label("%d / %d" % [_recent_page + 1, _recent_page_count()], Vector3(-0.27, -0.515, 0.004), 18)
 		_button(RECENT_NEXT, "›", Vector2(-0.09, -0.515), Vector2(0.09, 0.07), _recent_page + 1 < _recent_page_count())
 	if cloud_paging:
-		_button(CLOUD_PREVIOUS, "‹", Vector2(-0.45, -0.515), Vector2(0.09, 0.07), not _cloud_busy and _cloud_page > 0)
+		_button(CLOUD_PREVIOUS, "‹", Vector2(-0.45, cloud_page_y), Vector2(0.09, 0.07), not _cloud_busy and _cloud_page > 0)
 		var pages := str(maxi(_cloud_page + 1, maxi(1, ceili(float(_cloud_total) / _cloud_page_size)))) if _cloud_total >= 0 else ("…" if _cloud_next >= 0 else str(_cloud_page + 1))
-		_label("%d / %s" % [_cloud_page + 1, pages], Vector3(-0.27, -0.515, 0.004), 18)
-		_button(CLOUD_NEXT, "›", Vector2(-0.09, -0.515), Vector2(0.09, 0.07), not _cloud_busy and _cloud_next >= 0)
-	var line := _label(_fit_title(cloud_error.summary_text() if section == Section.CLOUD else I18n.t(status), "", 0.67, 17), Vector3(-0.45, -0.58 if cloud_paging or file_actions.folder() else -0.52, 0.004), 17)
+		_label("%d / %s" % [_cloud_page + 1, pages], Vector3(-0.27, cloud_page_y, 0.004), 18)
+		_button(CLOUD_NEXT, "›", Vector2(-0.09, cloud_page_y), Vector2(0.09, 0.07), not _cloud_busy and _cloud_next >= 0)
+	var line := _label(_fit_title(cloud_error.summary_text() if section == Section.CLOUD else I18n.t(status), "", 0.67, 17), Vector3(-0.45, -0.66 if cloud_paging and file_actions.has_selection() else -0.58 if cloud_paging or file_actions.folder() else -0.52, 0.004), 17)
 	if section == Section.CLOUD and not cloud_error.detail.is_empty():
 		_button(CloudBrowseError.OPEN, "", Vector2(0.30, line.position.y), Vector2(0.07, 0.065), true, "info")
 		_tips[CloudBrowseError.OPEN] = I18n.t("Error details")
@@ -2031,6 +2052,34 @@ func _setting_field(row: Dictionary, centre: Vector2, target: int) -> void:
 	choices.field(node, row, Vector2(0.225, 0), 0.72)
 	for index in range(first_field, _buttons.size()): _buttons[index]["list_row"] = target
 
+## Alpha model size: larger inputs cut out finer and cost RVM more time. The trade-off is a tooltip (info
+## mark and each option), no line of text; a size not compiled yet says so on its own option instead.
+const ALPHA_SIZE_HINT := "Larger sizes are slower; smaller sizes cut out less precisely"
+static func _alpha_size_row(settings: Dictionary) -> Dictionary:
+	var options: Array = []
+	for value in ["256x256", "320x320", "384x384", "512x512"]:
+		var option := {"value": value, "label": value.get_slice("x", 0), "hint": ALPHA_SIZE_HINT}
+		if value in settings.get("alpha_warming", []): option.hint = "Preparing the model"
+		elif value in settings.get("alpha_cold", []): option.hint = "First use prepares the model, about 1 minute"
+		options.append(option)
+	var row := {"title": I18n.t("Alpha model size"), "key": "alpha_profile", "value": str(settings.get("alpha_profile", "320x320")),
+		"choices": options, "compact": true}
+	row.info = ALPHA_SIZE_HINT
+	return row
+
+## Compile progress of the Alpha model sizes arrives with video state changes, several times a
+## second: redraw the video settings only when the sizes' states change.
+var _alpha_sizes_shown := ""
+func refresh_alpha_sizes() -> void:
+	if not visible or section != Section.SETTINGS or tab != VIDEO_TAB or not settings_provider.is_valid() \
+		or not choices.opened.is_empty() or not choices.capture.is_empty():
+		return
+	var settings: Dictionary = settings_provider.call()
+	var shown := str([settings.get("alpha_profile"), settings.get("alpha_warming", []), settings.get("alpha_cold", [])])
+	if shown != _alpha_sizes_shown:
+		_alpha_sizes_shown = shown
+		refresh()
+
 func _choice_row(title: String, key: String, value: Variant, options: Array, compact: bool = false, hint: String = "") -> Dictionary:
 	return {"title": I18n.t(title), "key": key, "value": value, "choices": options, "compact": compact, "hint": hint}
 
@@ -2056,7 +2105,7 @@ func _tile(target: int, row: Dictionary, centre: Vector2) -> void:
 	var icon := str(row.get("icon", "video"))
 	_button(target, _fit_title(str(row.title), "", 0.5, 18), centre, TILE_SIZE, true, "", false, _list)
 	var button: Dictionary = _buttons.back()
-	button.base_color = SELECTED if file_actions.editing and file_actions.row_uri(row) == file_actions.selected else Color(TILE, 0.0)
+	button.base_color = SELECTED if file_actions.editing and file_actions.is_selected(row) else Color(TILE, 0.0)
 	if compact and _is_current_row(row): button.base_color = SELECTED
 	button.enabled = not file_actions.editing or not file_actions.row_uri(row).is_empty()
 	button.node.material_override.set_shader_parameter("surface_color", button.base_color)
@@ -2081,7 +2130,7 @@ func _tile(target: int, row: Dictionary, centre: Vector2) -> void:
 		var glyph := _icon(icon, Vector3(0, 0.04, 0.005), 0.065 if picture else 0.1, MUTED if picture else (FOLDER if icon == "folder" else Color(0.93, 0.95, 0.98)), node)
 		glyph.material_override.render_priority = 13
 	if file_actions.editing and not file_actions.row_uri(row).is_empty():
-		_icon("check" if file_actions.row_uri(row) == file_actions.selected else "circle", Vector3(-0.115, 0.095, 0.009), 0.035, ACCENT, node)
+		_icon("check" if file_actions.is_selected(row) else "circle", Vector3(-0.115, 0.095, 0.009), 0.035, ACCENT, node)
 	var detail := str(row.get("detail", ""))
 	if browser_content():
 		var info := Presentation.info(row, catalog, section == Section.RECENT)
@@ -2173,25 +2222,29 @@ func _progress_on(parent: Node3D, ratio: float, center: Vector2, width: float) -
 
 func _media_row_button(target: int, row: Dictionary, centre: Vector2) -> void:
 	var info := Presentation.info(row, catalog, section == Section.RECENT)
+	var managing := file_actions.list_management()
 	var status_text := str(info.status)
-	var title_width := 0.76 if not status_text.is_empty() else 1.0
-	_button(target, _fit_title(str(row.title), "", title_width, 22), centre, Vector2(1.24, 0.098), true, "", false, _list)
-	var selected: bool = file_actions.editing and file_actions.row_uri(row) == file_actions.selected and not file_actions.selected.is_empty()
+	var title_width := (0.76 if not status_text.is_empty() else 1.0) - (0.11 if managing else 0.0)
+	var body := centre + Vector2(0.055 if managing else 0.0, 0)
+	_button(target, _fit_title(str(row.title), "", title_width, 22), body, Vector2(1.13 if managing else 1.24, 0.098), true, "", false, _list)
+	var selected := file_actions.is_selected(row)
 	_lit(selected)
 	var node: MeshInstance3D = _buttons.back().node
 	var label: Label3D = node.get_child(0)
-	label.position = Vector3(-0.48, 0.023, 0.004)
+	var text_x := -0.435 if managing else -0.48
+	label.position = Vector3(text_x, 0.023, 0.004)
 	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
 	_tips[target] = str(row.title)
-	_icon("check" if selected else str(row.get("icon", "video")), Vector3(-0.565, 0, 0.004), 0.045, ACCENT if selected else (FOLDER if info.folder else _buttons.back().foreground), node)
-	var subtitle_width := 0.76 if float(info.ratio) >= 0 else 1.02
-	var subtitle := _label(_fit_title(str(info.subtitle), "", subtitle_width, 16), Vector3(-0.48, -0.025, 0.004), 16, node)
+	_icon(str(row.get("icon", "video")), Vector3(-0.51 if managing else -0.565, 0, 0.004), 0.045, FOLDER if info.folder else _buttons.back().foreground, node)
+	var subtitle_width := (0.76 if float(info.ratio) >= 0 else 1.02) - (0.11 if managing else 0.0)
+	var subtitle := _label(_fit_title(str(info.subtitle), "", subtitle_width, 16), Vector3(text_x, -0.025, 0.004), 16, node)
 	subtitle.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT; subtitle.modulate = MUTED
 	if not status_text.is_empty():
-		var status_label := _label(_fit_title(status_text, "", 0.28, 14), Vector3(0.58, 0.022, 0.004), 14, node)
+		var status_label := _label(_fit_title(status_text, "", 0.28, 14), Vector3(0.525 if managing else 0.58, 0.022, 0.004), 14, node)
 		status_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT; status_label.modulate = ACCENT
-	if info.folder: _icon("next", Vector3(0.565, 0, 0.004), 0.028, MUTED, node)
-	_progress_on(node, float(info.ratio), Vector2(0.46, -0.025), 0.24)
+	if info.folder: _icon("next", Vector3(0.51 if managing else 0.565, 0, 0.004), 0.028, MUTED, node)
+	_progress_on(node, float(info.ratio), Vector2(0.405 if managing else 0.46, -0.025), 0.24)
+	file_actions.draw_checkbox(target, row, centre + Vector2(-0.575, 0))
 
 func _row_button(target: int, title: String, detail: String, icon: String, centre: Vector2, selected: bool) -> void:
 	_button(target, _fit_title(title, "", 0.9, 22), centre, Vector2(1.24, 0.098), true, "", false, _list)

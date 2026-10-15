@@ -13,6 +13,7 @@ import java.util.concurrent.atomic.AtomicInteger
  * {source, state: ready|error|denied, entries|servers, error}. */
 internal class MediaSources(
     private val host: () -> Activity?,
+    private val beforeMutation: (String) -> Unit = {},
     private val emit: (Int, String) -> Unit,
 ) {
     private val ids = AtomicInteger()
@@ -45,6 +46,7 @@ internal class MediaSources(
 
     fun releasePhotoStream(uri: String) { if (uri.isNotEmpty()) server?.revoke(uri) }
     fun streamProgress(uri: String): TransferMeter.Snapshot? = server?.progress(uri)
+    fun streamFailure(uri: String): PlaybackFailure? = server?.failure(uri)
 
     fun nextId(): Int = ids.incrementAndGet()
     /** Main thread: may show the media permission request. path "" lists the storage volumes. */
@@ -166,10 +168,23 @@ internal class MediaSources(
                 request = JSONObject(json)
                 val uri = request.getString("uri")
                 check(fileManagementEnabled) { "File management is off" }
+                if (!prepare) {
+                    val readers = linkedSetOf(uri)
+                    request.optJSONArray("related_uris")?.let { related ->
+                        require(related.length() <= 65)
+                        for (i in 0 until related.length()) readers.add(related.getString(i))
+                    }
+                    readers.forEach(beforeMutation)
+                    check(fileManagementEnabled) { "File management is off" }
+                }
                 val result = when {
                     uri.startsWith("file://") -> local.renameFile(request, prepare)
                     uri.startsWith("smb://") -> smb.renameFile(request, prepare)
-                    else -> error("File deletion unavailable for this source")
+                    uri.startsWith("cloud://") -> {
+                        CloudLibrary.start(context() ?: error("Activity unavailable"))
+                        CloudLibrary.renameFile(request, prepare) { check(fileManagementEnabled) { "File management is off" } }
+                    }
+                    else -> error("Rename unavailable for this source")
                 }
                 if (!result.has("state")) result.put("state", "ready") else result
             } catch (error: Exception) { JSONObject().put("state", "error").put("error", error.message ?: "Rename failed; check the folder") }
@@ -188,6 +203,7 @@ internal class MediaSources(
                 val uri = request.getString("uri")
                 require(uri.startsWith("file://") || uri.startsWith("smb://") || uri.startsWith("cloud://"))
                 if (!inspect) check(fileManagementEnabled) { "File management is off" }
+                if (!inspect && !prepare) { beforeMutation(uri); check(fileManagementEnabled) { "File management is off" } }
                 // CloudDeletion handles uncertainty after its single write; exceptions here precede it.
                 sent = !inspect && !prepare && !uri.startsWith("cloud://")
                 val result = when {
@@ -246,7 +262,7 @@ internal class MediaSources(
         val target = strm.resolve(uri)
         return try { directPlayable(target) }
         catch (error: Exception) {
-            if (target != uri) throw StrmFailure("STRM_TARGET_UNAVAILABLE")
+            if (target != uri) throw StrmFailure("STRM_TARGET_UNAVAILABLE", error)
             throw error
         }
     }

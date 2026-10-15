@@ -13,6 +13,14 @@ func check(value: bool, message: String) -> void:
 
 func _initialize() -> void: call_deferred("run")
 
+func facing(menu: Node3D, head: Transform3D) -> bool:
+	var centre: Vector3 = menu.to_global(menu.panel_centre())
+	return menu.global_basis.z.normalized().dot((head.origin - centre).normalized()) > 0.99999 and absf(menu.global_basis.x.y) < 0.00001
+
+func default_controls(menu: Node3D, head: Transform3D) -> bool:
+	var centre: Vector3 = Move.menu_head(head) * (Vector3(0, -0.45, -1.4) + menu.panel_centre())
+	return menu.to_global(menu.panel_centre()).is_equal_approx(centre) and facing(menu, head)
+
 func run() -> void:
 	depth_geometry()
 	menu_inputs()
@@ -69,7 +77,7 @@ func menu_inputs() -> void:
 	for hand in ["left_hand", "right_hand"]:
 		main.head_pose.basis = Basis.from_euler(Vector3(0.15, -0.3, 0.2))
 		main._show_player_menu()
-		check(menu.global_basis.y.is_equal_approx(Vector3.UP), "Standard controls open upright despite head pitch and roll")
+		check(facing(menu, main.head_pose), "Standard controls face the eye without inheriting head roll")
 		main.rays[hand] = [menu.to_global(Vector3(0, 0, 1)), -menu.global_basis.z]
 		var start := menu.global_transform
 		var radius := start.origin.distance_to(main.head_pose.origin)
@@ -94,9 +102,10 @@ func menu_inputs() -> void:
 		var fixed := menu.global_transform; main._update_view_follow()
 		check(menu.global_transform.is_equal_approx(fixed), "Follow off leaves the visible menu in place")
 		menu.dismiss(); main._show_player_menu()
-		check(menu.global_transform.is_equal_approx(Move.menu_head(main.head_pose) * offset), "Reopening restores the heading-relative pose without inheriting head tilt")
+		var restored: Transform3D = Move.menu_head(main.head_pose) * offset
+		check(menu.to_global(menu.panel_centre()).is_equal_approx(restored * menu.panel_centre()) and facing(menu, main.head_pose), "Reopening restores the remembered centre and faces the current eye")
 		main._on_system_recentered()
-		check(not main.interface_move.placements.has(main._menu_key(menu)) and menu.global_transform.is_equal_approx(Move.menu_head(main.head_pose) * Transform3D(Basis.IDENTITY, Vector3(0, -0.45, -1.4))), "System recenter clears the dragged offset and restores default controls")
+		check(not main.interface_move.placements.has(main._menu_key(menu)) and default_controls(menu, main.head_pose), "System recenter restores the default centre and viewer-facing controls")
 		main._on_session_control("follow")
 		main.rays[hand] = [menu.to_global(Vector3(0, 0, 1)), -menu.global_basis.z]
 		main._on_controller_button("grip_click", hand)
@@ -112,7 +121,7 @@ func menu_inputs() -> void:
 		main._on_session_control("follow")
 		check(absf(menu.global_basis.x.normalized().y) < 0.00001, "Disabling follow removes head roll from the menu")
 		main._recenter()
-		check(not main.interface_move.placements.has(main._menu_key(menu)) and menu.global_basis.y.is_equal_approx(Vector3.UP), "In-app recenter also clears offsets and restores upright controls")
+		check(not main.interface_move.placements.has(main._menu_key(menu)) and default_controls(menu, main.head_pose), "In-app recenter also restores viewer-facing controls without roll")
 	var rows := library.controls_page.items()
 	check(rows.any(func(row): return row.get("fixed", "") == "Grip + stick ↑ / ↓") and rows.any(func(row): return row.get("fixed", "") == "Trigger + stick ↑ / ↓"), "Button guide includes both distance combinations")
 	var saved := ConfigFile.new(); saved.load(main.settings_path)

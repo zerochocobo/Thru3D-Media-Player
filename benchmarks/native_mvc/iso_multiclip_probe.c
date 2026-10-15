@@ -15,6 +15,7 @@
 typedef struct Stats {
     double start, end, first, last, max_gap, audio_end, audio_gap;
     int frames, compared, different, done[3], count[2], base_eye;
+    int verify_preroll, preroll_compared;
     int64_t samples;
     int64_t ref_start, ref_end;
     uint64_t eyes[2], clip_mask;
@@ -47,12 +48,16 @@ static int compare(Stats *s)
                 }
             }
         }
-        for (int eye = 0; eye < 2; eye++) {
-            s->eyes[eye] ^= hashes[eye] ^ (uint64_t)stereo->pts;
-            s->eyes[eye] *= 1099511628211ULL;
+        if (stereo->pts / 90000. < s->start - 0.000001) {
+            s->preroll_compared++;
+        } else {
+            for (int eye = 0; eye < 2; eye++) {
+                s->eyes[eye] ^= hashes[eye] ^ (uint64_t)stereo->pts;
+                s->eyes[eye] *= 1099511628211ULL;
+            }
+            s->different += hashes[0] != hashes[1];
+            s->compared++;
         }
-        s->different += hashes[0] != hashes[1];
-        s->compared++;
         for (int eye = 0; eye < 2; eye++) {
             av_frame_free(&s->queued[eye][0]);
             memmove(s->queued[eye], s->queued[eye] + 1, --s->count[eye] * sizeof(AVFrame *));
@@ -71,14 +76,14 @@ static int receive(AVCodecContext *codec, AVFrame *frame, int which, Stats *s)
             av_frame_unref(frame); continue;
         }
         if (pts >= s->end - 0.000001) s->done[which] = 1;
-        if (pts >= s->start - 0.000001 && pts < s->end - 0.000001) {
+        if ((pts >= s->start - 0.000001 || (s->verify_preroll && which != 1)) && pts < s->end - 0.000001) {
             if (which == 1) {
                 if (s->audio_end > 0) s->audio_gap = fmax(s->audio_gap, fabs(pts - s->audio_end));
                 s->samples += frame->nb_samples;
                 s->audio_end = pts + (double)frame->nb_samples / frame->sample_rate;
             } else {
                 int eye = which == 0 ? 0 : 1;
-                if (which == 0) {
+                if (which == 0 && pts >= s->start - 0.000001) {
                     if (s->frames && pts <= s->last) return AVERROR_INVALIDDATA;
                     if (!s->frames) s->first = pts;
                     else s->max_gap = fmax(s->max_gap, pts - s->last);
@@ -227,6 +232,7 @@ int main(int argc, char **argv)
     for (int arg = 3; arg < argc; arg++) {
         double target = strtod(argv[arg], NULL), end = full ? duration : fmin(duration, target + seconds);
         Stats stats = {.start = target, .end = end,
+            .verify_preroll = getenv("THRU3D_MVC_VERIFY_PREROLL") != NULL,
             .ref_start = INT64_MIN, .ref_end = INT64_MAX,
             .base_eye = video->codecpar->extradata_size == 1 && video->codecpar->extradata[0] == 1};
         int eof = 0, ref_clip = -1;
@@ -274,10 +280,11 @@ int main(int argc, char **argv)
         printf("{\"target\":%.6f,\"seconds\":%.6f,\"full\":%s,\"video_pairs\":%d,\"base_frames_bitexact\":%d,"
                "\"different_eyes\":%d,\"audio_samples\":%"PRId64",\"first_pts\":%.6f,\"last_pts\":%.6f,"
                "\"max_video_gap\":%.6f,\"max_audio_gap\":%.6f,\"audio_end\":%.6f,\"clip_mask\":%"PRIu64","
-               "\"eye_hashes\":[\"%016"PRIx64"\",\"%016"PRIx64"\"],\"elapsed_seconds\":%.3f,\"error\":%d,\"passed\":%s}\n",
+               "\"eye_hashes\":[\"%016"PRIx64"\",\"%016"PRIx64"\"],\"preroll_checked\":%s,\"preroll_compared\":%d,\"elapsed_seconds\":%.3f,\"error\":%d,\"passed\":%s}\n",
                target, end-target, full ? "true" : "false", stats.frames, stats.compared, stats.different,
                stats.samples, stats.first, stats.last, stats.max_gap, stats.audio_gap, stats.audio_end, stats.clip_mask,
-               stats.eyes[0], stats.eyes[1], (av_gettime_relative()-before)/1000000., ret, passed ? "true" : "false");
+               stats.eyes[0], stats.eyes[1], stats.verify_preroll ? "true" : "false", stats.preroll_compared,
+               (av_gettime_relative()-before)/1000000., ret, passed ? "true" : "false");
         fflush(stdout); failed |= !passed;
         for (int eye = 0; eye < 2; eye++) for (int i = 0; i < stats.count[eye]; i++) av_frame_free(&stats.queued[eye][i]);
         if (!passed) break;

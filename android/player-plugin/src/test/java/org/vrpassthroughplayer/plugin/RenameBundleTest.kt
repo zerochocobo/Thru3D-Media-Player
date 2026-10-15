@@ -4,10 +4,12 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class RenameBundleTest {
-    @Test fun includesAllMatchingCompanionsAndPreservesSuffixes() {
+    @Test fun matchesExactBasenamesWithAnyExtensionAndPreservesSuffixes() {
         val bundle = RenameBundle("Episode1.mp4", "旅行", listOf("Episode1.mp4", "Episode1.zh.srt", "Episode1.si.mix.m4a", "Episode1.idx", "Episode10.srt", "Episode1.jpg"))
-        assertEquals(setOf("旅行.mp4", "旅行.zh.srt", "旅行.si.mix.m4a", "旅行.idx"), bundle.moves.map { it.to }.toSet())
-        assertFalse(bundle.moves.any { it.from == "Episode10.srt" || it.from.endsWith(".jpg") })
+        assertEquals(setOf("旅行.mp4", "旅行.idx", "旅行.jpg"), bundle.moves.map { it.to }.toSet())
+        assertFalse(bundle.moves.any { it.from == "Episode10.srt" || it.from.contains(".zh.") || it.from.contains(".si.") })
+        assertEquals(listOf("旅行.mp4"), RenameBundle("Episode1.mp4", "旅行", listOf("Episode1.mp4", "Episode1.srt"), false).moves.map { it.to })
+        assertEquals(listOf("new.folder"), RenameBundle("old.folder", "new.folder", listOf("old.folder"), true, true).moves.map { it.to })
     }
     @Test fun blocksCollisionsAndUnsafeNamesBeforeMutation() {
         assertThrows(IllegalArgumentException::class.java) { RenameBundle("old.mp4", "new", listOf("old.mp4", "NEW.mp4")) }

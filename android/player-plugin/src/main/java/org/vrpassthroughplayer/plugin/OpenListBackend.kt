@@ -77,6 +77,7 @@ internal object OpenListBackend {
     internal class Client(private val mount: String, provider: String,
         private val call: (String, String, JSONObject?) -> JSONObject = { method, route, body -> request(method, route, body) }) : CloudClient {
         override val canDelete = provider == CloudDrive.OPEN115
+        override val canRename = provider == CloudDrive.OPEN115
         private val verifiedFolders = java.util.concurrent.ConcurrentHashMap<String, Long>()
         init { require(mount.matches(Regex("/[0-9a-f-]{36}"))) }
         private fun absolutePath(remote: String): String {
@@ -112,7 +113,8 @@ internal object OpenListBackend {
                 val child = CloudPaths.child(path, name)
                 CloudFile(name, item.getBoolean("is_dir"), item.optLong("size"), child,
                     modified = if (canDelete) item.optLong("modified_ms", -1) else runCatching { java.time.OffsetDateTime.parse(item.optString("modified")).toInstant().toEpochMilli() }.getOrDefault(-1),
-                    objectId = if (canDelete) item.getString("id") else child, canDelete = canDelete && item.optBoolean("can_delete"))
+                    objectId = if (canDelete) item.getString("id") else child, canDelete = canDelete && item.optBoolean("can_delete"),
+                    canRename = canRename && item.optBoolean("can_rename"))
             }
             // 115 can contain different objects at the same path. Keep their metadata visible;
             // object IDs still detect repeated provider rows, and find() rejects ambiguous paths.
@@ -152,8 +154,14 @@ internal object OpenListBackend {
         }
         override fun remove(path: String, file: CloudFile) {
             check(canDelete && file.canDelete && path != "/" && file.id == path)
-            request("POST", "/remove115", JSONObject().put("mount", mount).put("path", path).put("id", file.objectId)
+            call("POST", "/remove115", JSONObject().put("mount", mount).put("path", path).put("id", file.objectId)
                 .put("folder", file.folder).put("size", file.size).put("modified", file.modified))
+        }
+        override fun rename(path: String, file: CloudFile, newName: String) {
+            check(canRename && file.canRename && path != "/" && file.id == path)
+            call("POST", "/rename115", JSONObject().put("mount", mount).put("path", path).put("id", file.objectId)
+                .put("folder", file.folder).put("size", file.size).put("modified", file.modified).put("new_name", newName))
+            verifiedFolders.clear()
         }
         override fun resolve(file: CloudFile): CloudLink {
             require(!file.folder && file.size > 0)

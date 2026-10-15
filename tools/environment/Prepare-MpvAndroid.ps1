@@ -8,7 +8,7 @@ if ($Candidate -eq 'SourceFrame') {
     $sourceManifest = Get-Content -LiteralPath $sourceManifestPath -Raw | ConvertFrom-Json
     $mvcNames = @('third_party/edge264-mvc/manifest.json','third_party/bluray/source-lock.json',
                   'native/mpv/mvc/ffmpeg_bd_mvc.c','native/mpv/mvc/ffmpeg_h264_mvc.c','native/mpv/mvc/edge264mvc_all.c',
-                  'native/mpv/mvc/bluray_clpi_reader.c','tools/environment/Prepare-MvcDecoder.py',
+                  'native/mpv/mvc/bluray_clpi_reader.c','native/mpv/mvc/mvc_recovery.h','tools/environment/Prepare-MvcDecoder.py',
                   'tools/environment/Prepare-BluraySources.py','tools/environment/mpv-linux/mvc_patch.py',
                   'tools/environment/mpv-linux/build_bluray.sh')
     foreach ($name in $mvcNames) {

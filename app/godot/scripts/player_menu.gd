@@ -62,6 +62,12 @@ const ALIGNMENT_VERTICAL := 486
 ## bar's controls (100+) usable while it is open.
 const SCREEN_SETTINGS := 473
 const SETTINGS_CLOSE := 474
+const ERROR_DETAILS := 496
+const ERROR_OPEN := 499
+const PlaybackErrors := preload("res://scripts/playback_errors.gd")
+var _failure_open := false
+var _error_details_open := false
+var _error_identity := ""
 const SETTINGS_TILE := 560
 const EYE_BUFFER_NOTE := 7000
 const POPUP_WIDTH := 1.10
@@ -81,6 +87,7 @@ const OPERATIONS := [
 const HEADINGS := ["Color grading", "Loop", "Video time positioning", "Stereo viewing"]
 const SETTING_ICONS := ["light", "loop", "history", "eyes"]
 const Surface := preload("res://scripts/media_surface.gd")
+const SeekFeedback := preload("res://scripts/seek_feedback.gd")
 ## Flat screen curve steps (the video's CURVES) and their names.
 const CURVE_NAMES := ["Off", "Slight", "Medium", "Full"]
 
@@ -107,6 +114,7 @@ var _elapsed: Label3D
 var _duration: Label3D
 var _progress: MeshInstance3D
 var _thumb: MeshInstance3D
+var _seek_origin: MeshInstance3D
 var _modes: Dictionary = {} # bar button target -> its mode caption
 var _mode_open := false
 var _bar_drawn := "" # what decides the bar's buttons (clone voice, projection) when it was drawn
@@ -138,6 +146,82 @@ var _subtitle_scroll := 0.0
 var _subtitle_source := ""
 var _subtitle_ids: Dictionary = {}
 var expanded_library: Node3D
+var _popup_surfaces: Array[Node3D] = []
+var _popup_layout_key := ""
+var _transport_bounds := Rect2()
+
+func panel_centre() -> Vector3:
+	return Vector3(0, -0.025, 0) if _settings_popup() else super()
+
+func _clear_layout() -> void:
+	# The tooltip outlives page geometry, even when it was attached to a popup.
+	if is_instance_valid(_tooltip) and _tooltip.get_parent() != self: _tooltip.reparent(self, false)
+	super()
+	for surface in _popup_surfaces: surface.free()
+	_popup_surfaces.clear()
+	_transport_bounds = Rect2()
+
+## Keep logical control coordinates intact inside an independently oriented surface.
+func _draw_popup(draw: Callable) -> void:
+	var before := get_children()
+	draw.call()
+	if _layout_eye == null or not _settings_popup(): return
+	var key := str([draw.get_method(), section, _adjustment])
+	var changed := key != _popup_layout_key
+	_popup_layout_key = key
+	var surface := Node3D.new()
+	add_child(surface)
+	for child in get_children():
+		if child != surface and child is Node3D and not before.has(child): child.reparent(surface, false)
+	if surface.get_child_count() == 0: surface.free(); return
+	_popup_surfaces.append(surface)
+	# Establish the new hierarchy before measuring the bar: new popup nodes are not bar controls.
+	if changed: refresh_layout_reference()
+	arrange_surfaces()
+
+func _bar_bounds() -> Rect2:
+	if _transport_bounds.has_area(): return _transport_bounds
+	var nodes: Array = [_backdrop]
+	for button in _buttons:
+		if button.node.get_parent() == self: nodes.append(button.node)
+	for node in _labels + _decorations:
+		if node.get_parent() == self: nodes.append(node)
+	_transport_bounds = SurfaceLayout.bounds(nodes, self)
+	return _transport_bounds
+
+func arrange_surfaces() -> void:
+	if _layout_eye == null: return
+	for surface in _popup_surfaces:
+		# Bounds are measured in the unchanged logical coordinate system.
+		var rect: Rect2 = surface.get_meta("menu_surface_bounds") if surface.has_meta("menu_surface_bounds") else SurfaceLayout.bounds(surface.get_children(), surface)
+		_place_upper_surface(surface, rect)
+	if is_instance_valid(expanded_library) and expanded_library.visible and expanded_library.get_parent() == self:
+		arrange_library(expanded_library)
+
+func _place_upper_surface(surface: Node3D, rect: Rect2) -> void:
+	if rect.size.y <= 0: return
+	var world := SurfaceLayout.above(global_transform, to_global(_layout_eye), panel_centre(), _bar_bounds().end.y, rect, global_basis * _layout_up)
+	surface.global_transform = world
+	surface.set_meta("menu_surface_bounds", rect)
+	composition_layout_changed.emit()
+
+func arrange_library(library: Node3D, measured: Variant = null) -> bool:
+	if _layout_eye == null: return false
+	var rect: Rect2 = measured if measured is Rect2 else (library.get_meta("menu_surface_bounds") if library.has_meta("menu_surface_bounds") else library.panel_bounds())
+	_place_upper_surface(library, rect)
+	return true
+
+func _input_surface(target: int) -> Node3D:
+	for button in _buttons:
+		if button.target != target: continue
+		var node: Node = button.node.get_parent()
+		while node != self and node is Node3D:
+			if _popup_surfaces.has(node): return node
+			node = node.get_parent()
+	return self
+
+func _input_point(hit: Dictionary) -> Vector3:
+	return _input_surface(int(hit.target)).to_local(to_global(hit.point))
 
 func has_expanded_library() -> bool:
 	return is_instance_valid(expanded_library) and expanded_library.get_parent() == self and expanded_library.visible and visible
@@ -168,7 +252,7 @@ func has_pointer_capture() -> bool:
 ## The transport bar has no list navigation; popups and settings keep their own input.
 func allows_playback_sticks() -> bool:
 	return visible and section == 0 and _state.get("has_video", false) and _adjustment.is_empty() \
-		and choices.opened.is_empty() and not _mode_open and not _subtitle_open and not bookmarks.opened and not has_pointer_capture() and not has_expanded_library()
+		and choices.opened.is_empty() and not _mode_open and not _subtitle_open and not bookmarks.opened and not _failure_open and not has_pointer_capture() and not has_expanded_library()
 
 func _finish_depth_drag() -> void:
 	if not _depth_hand.is_empty():
@@ -199,6 +283,10 @@ func navigate_back() -> bool:
 		_volume_open = false; refresh()
 	elif _depth_open:
 		_close_depth_slider(); refresh()
+	elif _error_details_open:
+		_error_details_open = false; refresh()
+	elif _failure_open:
+		_failure_open = false; refresh()
 	elif section != 0:
 		_reset_navigation(); refresh()
 	else:
@@ -206,6 +294,8 @@ func navigate_back() -> bool:
 	return true
 
 func dismiss() -> void:
+	_failure_open = false
+	_error_details_open = false
 	if has_expanded_library(): expanded_library.dismiss()
 	_icon_tap.clear()
 	choices.reset()
@@ -221,6 +311,8 @@ func dismiss() -> void:
 	super.dismiss()
 
 func _reset_navigation() -> void:
+	_failure_open = false
+	_error_details_open = false
 	_icon_tap.clear()
 	choices.reset()
 	bookmarks.reset()
@@ -243,8 +335,10 @@ func refresh() -> void:
 	_draw()
 
 func show_playback_error() -> void:
+	visible = true
 	_reset_navigation()
-	section = 2
+	if has_expanded_library(): expanded_library.dismiss()
+	_failure_open = true
 	refresh()
 
 func refresh_values() -> void:
@@ -261,7 +355,7 @@ func refresh_values() -> void:
 	if _bar_drawn != _bar_key() and _adjust_hand.is_empty():
 		refresh()
 		return
-	if section == 1 and _adjustment.is_empty() and _settings_drawn != _settings_key():
+	if (section in [1, 2] or _failure_open) and _adjustment.is_empty() and _settings_drawn != _settings_key():
 		refresh()
 		return
 	for button in _buttons:
@@ -298,8 +392,9 @@ func refresh_values() -> void:
 			_tips[109] = _volume_tip()
 		if bar and button.target == 112: _tips[112] = _depth_tip()
 	if is_instance_valid(_status):
-		_status.text = str(_state.get("loading_caption", ""))
+		_status.text = _seek_status()
 		_status.visible = not _status.text.is_empty()
+		_status.modulate.a = float(_state.get("seek_feedback", {}).get("alpha", 1.0))
 	if is_instance_valid(_panel_status):
 		_panel_status.text = _status_text()
 	if is_instance_valid(_info):
@@ -319,11 +414,14 @@ func _process(_delta: float) -> void:
 
 func _draw() -> void:
 	_clear_layout()
+	if str(_state.get("error", "")).is_empty():
+		_failure_open = false; _error_details_open = false
 	choices.begin(str([section, _state.get("source_uri", ""), _state.get("bookmark_scope", "")]), Vector2(-0.43, 0.32))
 	_info = null
 	_title = null
 	_progress = null
 	_thumb = null
+	_seek_origin = null
 	_elapsed = null
 	_duration = null
 	_status = null
@@ -346,22 +444,31 @@ func _draw() -> void:
 			_adjustment = ""
 	if not _settings_popup() and not _adjustment.is_empty():
 		_draw_adjustments()
-		_update_highlights()
+		_finish_surface_layout()
 		return
 	if not _state.get("has_video", false) or _subtitle_source != str(_state.get("source_uri", "")):
 		_subtitle_open = false
 		_subtitle_offset = 0
 	_subtitle_source = str(_state.get("source_uri", ""))
 	if not _can_depth(): _close_depth_slider()
+	if _failure_open:
+		_draw_bar()
+		_draw_popup(_draw_failure_panel)
+		_finish_surface_layout()
+		return
 	if not _settings_popup():
 		if section == 0: _draw_bar()
 		else: _draw_panel()
 	else:
 		_draw_bar()
 		if not _adjustment.is_empty():
-			_draw_adjustments()
+			_draw_popup(_draw_adjustments)
 		elif section != 0:
-			_draw_panel()
+			_draw_popup(_draw_panel)
+	_finish_surface_layout()
+
+func _finish_surface_layout() -> void:
+	if _popup_surfaces.is_empty(): _popup_layout_key = ""
 	_update_highlights()
 
 ## Video settings open as a popup above the bar; the photo menu (a subclass) still swaps its bar
@@ -379,7 +486,7 @@ func _bar_target(target: int) -> bool:
 	return target >= 100 and target < 100 + OPERATIONS[0].size()
 
 func _settings_open() -> bool:
-	return section != 0 or not _adjustment.is_empty()
+	return _failure_open or section != 0 or not _adjustment.is_empty()
 
 ## The settings popup's panel above the bar, like the subtitle and video mode popups; returns its top.
 func _settings_frame(height: float) -> float:
@@ -448,6 +555,12 @@ func _draw_bar() -> void:
 	_backdrop.material_override.set_shader_parameter("surface_color", Color(PANEL, 0.86))
 	_backdrop.material_override.set_shader_parameter("corner_radius", 0.05)
 	_title = _label(_fit_title(str(_state.get("title", "")) if _state.get("has_video", false) else "", "", 0.9, 15), Vector3(0, 0.1, 0.004), 15)
+	if not str(_state.get("error", "")).is_empty():
+		_title.visible = false
+		_button(ERROR_OPEN, I18n.t("Playback failed") + "  ›", Vector2(0, 0.1), Vector2(0.90, 0.055))
+		_buttons.back().base_color = Color(TILE, 0.0)
+		_buttons.back().foreground = WARNING
+		_buttons.back().node.get_child(0).modulate = WARNING
 	_title.modulate = MUTED
 	var row := 0.025
 	_glyph(109, _sound_icon(), Vector2(VOLUME_X, row), 0.075, _enabled("mute"), _volume_tip())
@@ -468,8 +581,9 @@ func _draw_bar() -> void:
 	_glyph(MODE, "view_mode", Vector2(0.38 if spatial else 0.41, row), 0.075, true, I18n.t("Video mode"))
 	_glyph(11, "settings", Vector2(0.5, row), 0.075, true, I18n.t("Settings"))
 	_seek_bar(-0.08)
-	_status = _label(str(_state.get("loading_caption", "")), Vector3(0, -0.15, 0.004), 20)
+	_status = _label(_seek_status(), Vector3(0, -0.15, 0.004), 20)
 	_status.modulate = ACCENT
+	_status.modulate.a = float(_state.get("seek_feedback", {}).get("alpha", 1.0))
 	_status.visible = not _status.text.is_empty()
 	# Floating actions above the bar.
 	_round(107, "close", Vector2(-0.14, 0.215), 0.08, _enabled("stop"), false, I18n.t("Close video"))
@@ -478,20 +592,23 @@ func _draw_bar() -> void:
 	_place_device_status(Vector2(0, -0.245))
 	bookmarks.draw()
 	if _mode_open:
-		_draw_modes()
+		_draw_popup(_draw_modes)
 	if _volume_open:
 		_draw_volume()
 	if _depth_open:
 		_draw_depth()
 	if _subtitle_open:
-		_draw_subtitles()
+		_draw_popup(_draw_subtitles)
 	if choices.opened == "audio_track":
-		var audio := _setting_choices("audio")
-		if not audio.is_empty():
-			audio.merge({"heading": "Audio track", "rows": 4, "width": 0.88,
-				"footer": "A matching dubbing file in the same folder can be selected as an audio track.\nmovie.mp4 → movie.si.mix.m4a"})
-			choices.present(audio, Vector2(0, 0.8), Vector2(0.285, 0.85))
-		choices.finish()
+		_draw_popup(_draw_audio)
+
+func _draw_audio() -> void:
+	var audio := _setting_choices("audio")
+	if not audio.is_empty():
+		audio.merge({"heading": "Audio track", "rows": 4, "width": 0.88,
+			"footer": "A matching dubbing file in the same folder can be selected as an audio track.\nmovie.mp4 → movie.si.mix.m4a"})
+		choices.present(audio, Vector2(0, 0.8), Vector2(0.285, 0.85))
+	choices.finish()
 
 func _subtitle_tracks() -> Array:
 	return _state.get("subtitle_options", [])
@@ -765,15 +882,10 @@ func _set_volume_at(y: float) -> void:
 	refresh_values()
 
 ## Point on the menu plane (local), even off the track, so a drag past either end clamps.
-func _plane_point(origin: Vector3, direction: Vector3) -> Variant:
-	if not origin.is_finite() or not direction.is_finite() or direction.length_squared() < 0.000001:
-		return null
-	var inverse := global_transform.affine_inverse()
-	var start := inverse * origin
-	var delta := inverse.basis * direction.normalized()
-	if delta.z >= -0.00001 or start.z <= 0.0:
-		return null
-	return start + delta * (-start.z / delta.z)
+func _plane_point(origin: Vector3, direction: Vector3, target: int = NONE) -> Variant:
+	var surface := _input_surface(target)
+	var plane := global_transform.affine_inverse() * surface.global_transform
+	return project_pointer(origin, direction, plane)
 
 func press_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: bool) -> bool:
 	if has_expanded_library() and not _controls_pointer_capture():
@@ -795,26 +907,26 @@ func press_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: b
 	if not hit.is_empty() and bookmarks.press(hand, hit): return true
 	if not hit.is_empty() and int(hit.target) == SEEK and _can_seek():
 		_seek_hand = hand
-		_seek_start = _seek_at(float(hit.point.x))
+		_seek_start = _seek_at(_input_point(hit).x)
 		_seek_preview = _seek_start
 		return true
 	if not hit.is_empty() and _adjust_rows.has(int(hit.target)):
 		if not _adjust_hand.is_empty() and _adjust_hand != hand: return false
 		_adjust_hand = hand
 		_adjust_target = int(hit.target)
-		_set_adjustment_at(float(hit.point.x))
+		_set_adjustment_at(_input_point(hit).x)
 		return true
 	if not hit.is_empty() and int(hit.target) == DEPTH:
 		if not _depth_hand.is_empty() and _depth_hand != hand: return false
 		_depth_hand = hand
 		_depth_sent = -1
-		_set_depth_at(float(hit.point.y))
+		_set_depth_at(_input_point(hit).y)
 		return true
 	if not hit.is_empty() and int(hit.target) == VOLUME:
 		# The press sets the level; holding the trigger drags it (update_pointer).
 		_volume_hand = hand
 		_volume_sent = -1
-		_set_volume_at(float(hit.point.y))
+		_set_volume_at(_input_point(hit).y)
 		return true
 	return super(hand, origin, direction, tracked)
 
@@ -840,24 +952,24 @@ func update_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: 
 			_seek_hand = ""
 			_seek_preview = -1
 		else:
-			var seek_point: Variant = _plane_point(origin, direction)
+			var seek_point: Variant = _plane_point(origin, direction, SEEK)
 			if seek_point != null: _seek_preview = _seek_at(float(seek_point.x))
 	if hand == _volume_hand and (not visible or not tracked): _volume_hand = ""
 	if hand == _adjust_hand:
 		if not visible or not tracked:
 			_finish_adjustment()
 		else:
-			var adjust_point: Variant = _plane_point(origin, direction)
+			var adjust_point: Variant = _plane_point(origin, direction, _adjust_target)
 			if adjust_point != null: _set_adjustment_at(float(adjust_point.x))
 	if hand == _depth_hand:
 		if not visible or not tracked or not _depth_open or not _can_depth():
 			_finish_depth_drag()
 		else:
-			var depth_point: Variant = _plane_point(origin, direction)
+			var depth_point: Variant = _plane_point(origin, direction, DEPTH)
 			if depth_point != null: _set_depth_at(float(depth_point.y))
 	if hand != _volume_hand or not tracked or not _volume_open:
 		return
-	var point: Variant = _plane_point(origin, direction)
+	var point: Variant = _plane_point(origin, direction, VOLUME)
 	if point != null:
 		_set_volume_at(float(point.y))
 
@@ -883,7 +995,7 @@ func release_pointer(hand: String, _origin: Vector3, _direction: Vector3, _track
 
 func _bar_key() -> String:
 	return str([_state.get("clone_voice", false), _state.get("geometry", 0), _state.get("has_video", false),
-		_state.get("spatial_video", false),
+		_state.get("spatial_video", false), _state.get("error", ""),
 		_state.get("source_uri", ""), _subtitle_tracks(), _state.get("subtitle_track", 0), bookmarks.key(), _state.get("audio_options", []), _state.get("audio_track_id", -1),
 		_state.get("subtitle_distance", SubtitleDepth.DEFAULT), _state.get("subtitle_position", SubtitleDepth.DEFAULT_POSITION), _state.get("subtitle_direction", 0), _state.get("subtitle_size", 100), _state.get("subtitle_style", SubtitleStyle.DEFAULT), _state.get("subtitle_flat_position", 0), _state.get("subtitle_auto_load", true), _state.get("subtitle_delay", 0.0)])
 
@@ -976,6 +1088,9 @@ func _mode_tile(target: int, text: String, icon: String, centre: Vector2, curren
 ## "More": picture, sound and info settings; the arrow returns to the bar.
 func _draw_panel() -> void:
 	_settings_drawn = _settings_key()
+	if section == 2 and not str(_state.get("error", "")).is_empty():
+		_draw_failure_panel()
+		return
 	var operations: Array = OPERATIONS[section]
 	var tiles: Array = []
 	for index in operations.size():
@@ -985,7 +1100,7 @@ func _draw_panel() -> void:
 		tiles.append(index)
 	var tile_rows := ceili(tiles.size() / 2.0)
 	var alpha_fps: bool = section == 1 and _enabled("alpha")
-	var height := 0.12 + tile_rows * 0.105 + (0.26 + (0.1 if alpha_fps else 0.0) if section == 1 else 0.36)
+	var height := 0.12 + tile_rows * 0.105 + (0.26 + (0.27 if alpha_fps else 0.0) if section == 1 else 0.36)
 	var top := _settings_frame(height)
 	_draw_settings_tabs(top - 0.055)
 	var y := top - 0.165
@@ -1019,11 +1134,15 @@ func _draw_panel() -> void:
 		if alpha_fps:
 			y -= 0.085
 			_adjustment_row(454, "alpha_fps", "Alpha passthrough FPS limit", Vector3(10, 40, 1), y)
-			_slider_tick(454, 20, "20", y)
-			var hint := _label(I18n.t("Passthrough uses lots of GPU, so FPS may be lower"), Vector3(-0.50, y - 0.038, 0.004), 12)
+			_slider_tick(454, 30, "30", y)
+			var hint := _label(I18n.t("Headset performance limits keep the cut-out a little behind the picture"), Vector3(-0.50, y - 0.038, 0.004), 12)
 			hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
 			hint.modulate = MUTED
 			y -= 0.015
+			y -= 0.085
+			_adjustment_row(455, "alpha_feather", "Alpha feather", Vector3(0, 100, 1), y)
+			y -= 0.085
+			_adjustment_row(456, "alpha_shrink", "Alpha edge shrink", Vector3(0, 100, 1), y)
 		y -= 0.085
 		var fps := _label(I18n.t("Show FPS"), Vector3(-0.50, y, 0.004), 17)
 		fps.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
@@ -1040,10 +1159,41 @@ func _draw_panel() -> void:
 			set_label_size(_info, 19)
 	choices.finish()
 
+func _draw_failure_panel() -> void:
+	_settings_drawn = _settings_key()
+	var identity := str([_state.get("source_uri", ""), _state.get("error", ""), _state.get("error_report", {})])
+	if identity != _error_identity: _error_details_open = false
+	_error_identity = identity
+	var summary := _info_text()
+	var detail := PlaybackErrors.details(_state.get("error_report", {}))
+	var button_offset := 0.14 + _error_text_height(summary, 19) + 0.058
+	var detail_offset := button_offset + 0.058
+	var height := detail_offset + _error_text_height(detail, 14) + 0.055 if _error_details_open else button_offset + 0.093
+	var top := _settings_frame(height)
+	_label(I18n.t("Playback failed"), Vector3(0, top - 0.055, 0.004), 19)
+	_glyph(SETTINGS_CLOSE, "close", Vector2(0.47, top - 0.055), 0.055, true, I18n.t("Close"))
+	_info = _label(summary, Vector3(-0.49, top - 0.14, 0.004), 19)
+	_info.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+	_info.vertical_alignment = VERTICAL_ALIGNMENT_TOP
+	_info.width = 0.98 / _info.pixel_size
+	_info.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_button(ERROR_DETAILS, I18n.t("Error details") + ("  ▾" if _error_details_open else "  ▸"), Vector2(0, top - button_offset), Vector2(0.98, 0.065))
+	if _error_details_open:
+		var info := _label(detail, Vector3(-0.49, top - detail_offset, 0.004), 14)
+		info.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+		info.vertical_alignment = VERTICAL_ALIGNMENT_TOP
+		info.width = 0.98 / info.pixel_size
+		info.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	choices.finish()
+
+func _error_text_height(text: String, logical_size: int) -> float:
+	return ui_font().get_multiline_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, 0.98 / TEXT_PIXEL_SIZE,
+		logical_size * TEXT_RASTER_SCALE, -1, TextServer.BREAK_MANDATORY | TextServer.BREAK_WORD_BOUND | TextServer.BREAK_ADAPTIVE).y * TEXT_PIXEL_SIZE
+
 func _settings_key() -> String:
 	return str([_state.get("source_uri", ""), _state.get("has_video", false),
 		_state.get("loop", false), _state.get("screen_curve", 0.0), _state.get("seek_mode", "speed"), _state.get("stereo", false), _state.get("geometry", 0),
-		_state.get("show_fps", false), _state.get("viewing_eye", 0), _state.get("swap_eyes", false)])
+		_state.get("show_fps", false), _state.get("viewing_eye", 0), _state.get("swap_eyes", false), _state.get("error", ""), _state.get("error_report", {})])
 
 func _setting_choices(operation: String) -> Dictionary:
 	if not _enabled(operation): return {}
@@ -1074,6 +1224,8 @@ func _seek_bar(y: float) -> void:
 	_decoration(Vector2(BAR_SEEK, 0.007), Vector2(0, y), Color(0.3, 0.35, 0.4))
 	_progress = _decoration(Vector2(BAR_SEEK, 0.007), Vector2(0, y), ACCENT)
 	_thumb = _decoration(Vector2(0.023, 0.023), Vector2(0, y), Color.WHITE)
+	_seek_origin = _decoration(Vector2(0.006, 0.021), Vector2(0, y), MUTED)
+	_seek_origin.material_override.render_priority = 14
 	_progress.material_override.render_priority = 13
 	_thumb.material_override.render_priority = 14
 	_elapsed = _label("", Vector3(-BAR_SEEK / 2 - 0.035, y, 0.004), 16)
@@ -1088,7 +1240,8 @@ func _can_seek() -> bool:
 func _refresh_progress() -> void:
 	if not is_instance_valid(_progress): return
 	var duration := maxi(0, int(_state.get("duration_ms", 0)))
-	var position := clampi(_seek_preview if _seek_preview >= 0 else int(_state.get("position_ms", 0)), 0, duration)
+	var feedback: Dictionary = _state.get("seek_feedback", {})
+	var position := clampi(_seek_preview if _seek_preview >= 0 else int(feedback.get("target_ms", _state.get("position_ms", 0))), 0, duration)
 	var fraction := float(position) / duration if duration > 0 else 0.0
 	_progress.visible = fraction > 0
 	_progress.mesh.size.x = maxf(0.001, BAR_SEEK * fraction)
@@ -1098,6 +1251,18 @@ func _refresh_progress() -> void:
 	_thumb.visible = _can_seek()
 	_elapsed.text = _time(position)
 	_duration.text = _time(duration) if duration > 0 else "--:--"
+	_seek_origin.visible = not feedback.is_empty() and _seek_preview < 0
+	if _seek_origin.visible:
+		_seek_origin.position.x = -BAR_SEEK / 2 + BAR_SEEK * clampf(float(feedback.origin_ms) / maxf(1.0, duration), 0.0, 1.0)
+		_seek_origin.material_override.set_shader_parameter("surface_color", Color(MUTED, float(feedback.alpha)))
+
+func _seek_status() -> String:
+	var feedback: Dictionary = _state.get("seek_feedback", {})
+	var caption := str(_state.get("loading_caption", ""))
+	if feedback.is_empty(): return caption
+	var text := "%s → %s   %s" % [SeekFeedback.time(feedback.origin_ms), SeekFeedback.time(feedback.target_ms), SeekFeedback.offset(feedback.delta_ms)]
+	if feedback.phase == "waiting": text += " · " + (caption if not caption.is_empty() else "…")
+	return text
 
 func _time(milliseconds: int) -> String:
 	var seconds := maxi(0, milliseconds / 1000)
@@ -1112,6 +1277,16 @@ func _activate_hit(hit: Dictionary) -> void:
 		super._activate_hit(hit)
 
 func _activate(target: int) -> void:
+	if target == ERROR_OPEN and not str(_state.get("error", "")).is_empty():
+		show_playback_error()
+		return
+	if target == SETTINGS_CLOSE and _failure_open:
+		_failure_open = false; _error_details_open = false; refresh()
+		return
+	if target == ERROR_DETAILS and (_failure_open or section == 2) and not str(_state.get("error", "")).is_empty():
+		_error_details_open = not _error_details_open
+		refresh()
+		return
 	if _activate_footer(target): return
 	if _activate_slider_reset(target): return
 	if _activate_depth_reset(target): return
@@ -1127,12 +1302,16 @@ func _activate(target: int) -> void:
 		_finish_adjustment()
 		choices.reset()
 		section = 0
+		_failure_open = false
+		_error_details_open = false
 		_adjustment = ""
 		# Redraw as the bar first: choice fields keyed by section start fresh before the action.
 		refresh()
 		if target in [11, SETTINGS_CLOSE]:
 			return
 	if target in [11, 12, PLAYBACK_SETTINGS, SCREEN_SETTINGS]:
+		_failure_open = false
+		_error_details_open = false
 		_finish_adjustment()
 		choices.reset()
 		_subtitle_open = false; _mode_open = false; _volume_open = false
@@ -1389,7 +1568,7 @@ func _subtitle_name() -> String:
 func _info_text() -> String:
 	var failure := str(_state.get("error", ""))
 	if not failure.is_empty():
-		return _fit_title(str(_state.get("title", "")), "") + "\n\n" + I18n.t("Playback failed") + "\n" + failure
+		return _fit_title(str(_state.get("title", "")), "") + "\n\n" + failure
 	var lines := PackedStringArray()
 	lines.append(_fit_title(str(_state.get("title", I18n.t("No video selected"))), ""))
 	lines.append(I18n.t("Source: %s | %s") % [str(_state.get("source_size", I18n.t("Unknown"))), I18n.t(str(_state.get("codec", "Unknown codec")))])
@@ -1546,7 +1725,7 @@ func _leaves_layer(key: String) -> bool:
 func _adjustment_default(key: String) -> Variant:
 	if Grade.DEFAULTS.has(key): return Grade.DEFAULTS[key]
 	return {"screen_distance": Surface.SCREEN_DISTANCE, "screen_scale": 100.0,
-		"screen_rotation": 0.0, "playback_speed": 1.0, "alpha_fps": 20.0,
+		"screen_rotation": 0.0, "playback_speed": 1.0, "alpha_fps": 30.0, "alpha_feather": 100.0, "alpha_shrink": 40.0,
 		"stereo_horizontal": 0.0, "stereo_vertical": 0.0}.get(key)
 
 func _activate_slider_reset(target: int) -> bool:
@@ -1593,7 +1772,7 @@ func _refresh_adjustments() -> void:
 	for row in _adjust_rows.values():
 		var distance: bool = row.key in ["subtitle_distance", "screen_distance"]
 		var position: bool = row.key == "subtitle_position"
-		var defaults := {"screen_scale": 100.0, "screen_rotation": 0.0, "playback_speed": 1.0, "alpha_fps": 20.0, "stereo_horizontal": 0.0, "stereo_vertical": 0.0}
+		var defaults := {"screen_scale": 100.0, "screen_rotation": 0.0, "playback_speed": 1.0, "alpha_fps": 30.0, "alpha_feather": 100.0, "alpha_shrink": 40.0, "stereo_horizontal": 0.0, "stereo_vertical": 0.0}
 		var value := float(_state.get(row.key, defaults[row.key])) if defaults.has(row.key) else (float(_state.get(row.key, 5.0 if row.key == "subtitle_distance" else Surface.SCREEN_DISTANCE)) if distance else (float(_state.get(row.key, SubtitleDepth.DEFAULT_POSITION)) if position else float(values.get(row.key, Grade.DEFAULTS[row.key]))))
 		row["value"] = value
 		var fraction := clampf((value - row.span.x) / (row.span.y - row.span.x), 0, 1)
@@ -1603,6 +1782,7 @@ func _refresh_adjustments() -> void:
 		elif row.key == "screen_rotation": row.label.text = "%+.0f°" % value if value != 0 else "0°"
 		elif row.key == "playback_speed": row.label.text = "%.2f×" % value
 		elif row.key == "alpha_fps": row.label.text = "%d FPS" % roundi(value)
+		elif row.key in ["alpha_feather", "alpha_shrink"]: row.label.text = "%d%%" % roundi(value)
 		elif row.key in ["stereo_horizontal", "stereo_vertical"]: row.label.text = "%+.2f%%" % value if value != 0 else "0.00%"
 		row.fill.visible = fraction > 0
 		row.fill.mesh.size.x = maxf(0.001, fraction * row.width)

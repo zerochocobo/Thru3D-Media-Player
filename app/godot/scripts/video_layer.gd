@@ -23,6 +23,11 @@ const OPAQUE := 0
 const SOURCE_ALPHA := 1
 ## Overlays (subtitles, magnifier) above the video, still beneath the menu layers and eye buffers.
 const OVERLAY_ORDER := -7
+## XR_FB_composition_layer_alpha_blend (values[27] bits 2 and 3): a mask layer beneath the video writes
+## destination colour x (1 - m) and destination alpha m; the video above adds its colour x m.
+const MASK_WRITE := 4
+const MASKED := 8
+const MASK_ORDER := -9 # beneath the video (ORDER), above whatever the mask keeps (passthrough)
 
 class Provider extends OpenXRExtensionWrapper:
 	## Read by Godot's frame end. Android runs Godot's frame and rendering on one thread.
@@ -58,6 +63,8 @@ var _settings := false
 ## XR_KHR_composition_layer_color_scale_bias, requested by the player plugin's GDExtension: the colour
 ## grade stays on the layer as a per-channel scale and bias instead of sending playback to the eye buffers.
 var color_scale_bias := false
+## The vendors plugin enabled XR_FB_composition_layer_alpha_blend (Alpha prototype, plan B).
+var alpha_blend := false
 const NORMAL_SUPER_SAMPLING := 1
 const QUALITY_SUPER_SAMPLING := 2
 const NORMAL_SHARPENING := 4
@@ -143,6 +150,7 @@ func update_session() -> void:
 	_space = space
 	_flip = _enabled("OpenXRFbCompositionLayerImageLayoutExtension")
 	_settings = _enabled("OpenXRFbCompositionLayerSettingsExtension")
+	alpha_blend = _enabled("OpenXRFbCompositionLayerAlphaBlendExtension")
 	color_scale_bias = PlatformMethods.supports(platform, "video_layer_color_scale_bias") and bool(platform.video_layer_color_scale_bias())
 	bound = platform.bind_video_layer(_api.get_instance(), session, _api.get_instance_proc_addr("xrGetInstanceProcAddr"), space)
 	var xr := XRServer.find_interface("OpenXR") as OpenXRInterface
@@ -155,7 +163,7 @@ func update_session() -> void:
 	_sent_count = -1
 	DiagnosticLog.record("video_layer_bound", {"bound": bound, "types": _types, "vertical_flip": _flip,
 		"surface_vertical_flip": _surface_flip, "runtime": runtime_name, "system": system_name,
-		"pico_build": pico_build, "driver": driver, "settings": _settings, "color_scale_bias": color_scale_bias})
+		"pico_build": pico_build, "driver": driver, "settings": _settings, "color_scale_bias": color_scale_bias, "alpha_blend": alpha_blend})
 	if PlatformMethods.supports(platform, "video_layer_runtime_extensions"):
 		# Layer features the runtime offers (colour scale, blending, swapchain state...): one short line.
 		var layer_extensions := Array(str(platform.video_layer_runtime_extensions()).split(" ", false)).filter(func(name: String):

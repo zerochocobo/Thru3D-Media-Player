@@ -29,18 +29,19 @@ func _initialize() -> void: call_deferred("_run")
 func click(menu: Node3D, target: int) -> bool:
 	for button in menu._buttons:
 		if button.target == target and button.enabled:
-			var point: Vector2 = button.rect.get_center()
-			var origin: Vector3 = menu.to_global(Vector3(point.x, point.y, 1))
-			menu.press_pointer("right", origin, -menu.global_basis.z, true)
-			menu.release_pointer("right", origin, -menu.global_basis.z, true)
+			var origin: Vector3 = button.node.to_global(Vector3(0, 0, 1))
+			var direction: Vector3 = -button.node.global_basis.z
+			menu.press_pointer("right", origin, direction, true)
+			menu.release_pointer("right", origin, direction, true)
 			return true
 	return false
 
 func drag(menu: Node3D, target: int, fraction: float) -> void:
 	var button: Dictionary = menu._buttons.filter(func(row): return row.target == target)[0]
+	var surface: Node3D = menu._input_surface(target)
 	var point := Vector3(menu.SLIDER_LEFT + menu.SLIDER_WIDTH * fraction, button.rect.get_center().y, 1)
-	menu.press_pointer("right", menu.to_global(point), -menu.global_basis.z, true)
-	menu.release_pointer("right", menu.to_global(point), -menu.global_basis.z, true)
+	menu.press_pointer("right", surface.to_global(point), -surface.global_basis.z, true)
+	menu.release_pointer("right", surface.to_global(point), -surface.global_basis.z, true)
 
 func button(menu: Node3D, target: int) -> Dictionary:
 	return menu._buttons.filter(func(row): return row.target == target)[0]
@@ -79,10 +80,9 @@ func _run() -> void:
 	root.add_child(camera)
 	video.view_camera = camera
 	main._place_menu(menu)
-	check(menu.global_basis.is_equal_approx(Basis.IDENTITY), "Below-eye menu remains upright")
-	var top_width := camera.unproject_position(menu.to_global(Vector3(0.5, 1, 0))).x - camera.unproject_position(menu.to_global(Vector3(-0.5, 1, 0))).x
-	var bottom_width := camera.unproject_position(menu.to_global(Vector3(0.5, 0, 0))).x - camera.unproject_position(menu.to_global(Vector3(-0.5, 0, 0))).x
-	check(is_equal_approx(top_width, bottom_width), "Upper popup rows are not compressed by menu tilt")
+	var centre: Vector3 = menu.to_global(menu.panel_centre())
+	check(menu.global_basis.z.normalized().dot((camera.global_position - centre).normalized()) > 0.99999, "Below-eye menu faces the eye")
+	check(centre.is_equal_approx(camera.global_position + Vector3(0, -0.475, -1.4)), "Tilting preserves the transport's default centre")
 	menu.toggle()
 	check(click(menu, 11) and menu.section == 1 and menu._adjustment.is_empty() and click(menu, Menu.SCREEN_SETTINGS) and menu._adjustment == "screen", "Settings opens Playback; Screen is the second tab")
 	check(menu._buttons.any(func(b): return b.target == 102), "The bar stays under the settings popup")
@@ -168,7 +168,7 @@ func _run() -> void:
 	video.geometry = 1
 	video._apply_geometry()
 	menu.refresh()
-	check(menu._adjust_rows.has(454) and menu._adjust_rows[454].label.text == "20 FPS", "VR180 playback settings show the Alpha frame rate at 20")
+	check(menu._adjust_rows.has(454) and menu._adjust_rows[454].label.text == "30 FPS", "VR180 playback settings show the Alpha frame rate at 30")
 	drag(menu, 454, 1.0)
 	check(host.alpha_fps.back() == 40 and main._menu_state().alpha_fps == 40 and menu._adjust_rows[454].label.text == "40 FPS", "Alpha frame rate reaches the bridge while dragging")
 	drag(menu, 454, 0.0)
@@ -211,10 +211,11 @@ func _run() -> void:
 	library.setting_previewed.connect(main._on_playback_adjustment)
 	root.add_child(library)
 	library.toggle(); library.section = Library.Section.SETTINGS; library.tab = Library.VIDEO_TAB; library.refresh()
-	check(library.rows.size() == 8 and library.rows[3].value == video.subtitle_size * 100, "Global size reflects playback's current value")
+	check(library.rows.size() == 11 and library.rows[6].value == video.subtitle_size * 100, "Global size reflects playback's current value")
 	main._on_setting_changed("subtitle_size", 125)
 	check(video.subtitle_size == 1.25 and main._menu_state().subtitle_size == 125 and main._library_settings().subtitle_size == 125, "Global and playback size agree")
 	for preset in Style.PRESETS:
+		library.scroll = library._max_scroll() # the style row lies below the first page
 		library.refresh()
 		var target := -1
 		for id in library.choices.targets:

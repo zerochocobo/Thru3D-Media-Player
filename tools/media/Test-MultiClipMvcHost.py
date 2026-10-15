@@ -20,6 +20,7 @@ def main():
     parser.add_argument('--clip-boundaries', type=float, nargs='+', required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--full', action='store_true', help='Also decode and verify the entire title')
+    parser.add_argument('--verify-preroll', action='store_true', help='Also compare frames published before each seek target')
     parser.add_argument('--full-workers', type=int, choices=(1, 2, 4), default=1,
                         help='Parallel overlapping whole-clip runs; 1 keeps one continuous title instance')
     args = parser.parse_args()
@@ -34,10 +35,13 @@ def main():
     if boundaries != sorted(set(boundaries)) or boundaries[0] < 3:
         parser.error('Clip boundaries must be unique, increasing and at least three seconds from the start')
     env = os.environ.copy()
+    if args.verify_preroll:
+        env['THRU3D_MVC_VERIFY_PREROLL'] = '1'
     env['LD_LIBRARY_PATH'] = ':'.join(str(binary / lib) for lib in (
         'libavcodec', 'libavformat', 'libavfilter', 'libavdevice', 'libavutil', 'libswscale', 'libswresample'))
     inputs = [source, Path(__file__).resolve(), root / 'native/mpv/mvc/ffmpeg_bd_mvc.c',
-              root / 'native/mpv/mvc/ffmpeg_h264_mvc.c', binary / 'ffprobe']
+              root / 'native/mpv/mvc/ffmpeg_h264_mvc.c', root / 'native/mpv/mvc/edge264mvc_all.c',
+              root / 'native/mpv/mvc/mvc_recovery.h', binary / 'ffprobe']
     inputs += [binary / lib / (lib + '.so') for lib in ('libavformat', 'libavcodec', 'libavutil')]
 
     def hashes():
@@ -110,6 +114,7 @@ def main():
     if hashes() != input_hashes or hashlib.sha256(probe.read_bytes()).hexdigest() != probe_hash:
         raise ValueError('Validation inputs changed during the run')
     result = {'passed': True, 'clip_count': count, 'duration_seconds': duration,
+              'verify_preroll': args.verify_preroll,
               'join_windows': len(boundaries), 'seek_windows': len(rows),
               'revisited_targets': len(rows) - len(previous), 'windows': rows, 'continuous': full,
               'tail': tail,

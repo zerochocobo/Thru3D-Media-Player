@@ -76,6 +76,9 @@ func draw() -> void:
 		menu._tips[target] = menu._time(int(group.markers[0].position_ms)) if group.markers.size() == 1 else menu.I18n.t("Bookmarks") + " · " + str(group.markers.size())
 		targets[target] = {"kind": "group", "ids": group.markers.map(func(item): return item.id)}
 	if not opened: return
+	menu._draw_popup(_draw_list)
+
+func _draw_list() -> void:
 	var entries := _markers()
 	offset = clampi(offset, 0, maxi(0, entries.size() - ROWS))
 	var panel = menu._quad(Vector2(0.84, 0.56), Vector3(0, 0.55, 0.001), menu.PANEL, 10)
@@ -112,14 +115,14 @@ func press(hand: String, hit: Dictionary) -> bool:
 	var target := int(hit.get("target", -1))
 	if not _belongs(target): return false
 	capture = {"hand": hand, "target": target, "scope": scope, "item": targets.get(target, {}).duplicate(true),
-		"start": hit.point, "offset": offset, "moved": false}
+		"start": menu.control_point(hit), "plane": menu.control_plane(target), "offset": offset, "moved": false}
 	return true
 
 func update(hand: String, origin: Vector3, direction: Vector3, tracked: bool) -> void:
 	if capture.is_empty() or capture.hand != hand: return
 	if not tracked or not menu.visible or capture.scope != _scope():
 		capture.clear(); return
-	var point: Variant = menu._plane_point(origin, direction)
+	var point: Variant = menu.project_pointer(origin, direction, capture.plane)
 	if point == null: capture.clear(); return
 	var delta: Vector2 = Vector2(point.x - capture.start.x, point.y - capture.start.y)
 	if delta.length() > 0.018: capture.moved = true
@@ -138,7 +141,8 @@ func release(hand: String, origin: Vector3, direction: Vector3, tracked: bool) -
 	if not tracked or not menu.visible or pressed.scope != _scope() or pressed.moved: return
 	var hit: Dictionary = menu.ray_hit(origin, direction)
 	if int(hit.get("target", -1)) != int(pressed.target) or targets.get(pressed.target, {}) != pressed.item: return
-	if Vector2(hit.point.x - pressed.start.x, hit.point.y - pressed.start.y).length() > 0.018: return
+	var point: Vector3 = menu.control_point(hit)
+	if Vector2(point.x - pressed.start.x, point.y - pressed.start.y).length() > 0.018: return
 	_activate(int(pressed.target), pressed.item, str(pressed.scope))
 
 func _activate(target: int, item: Dictionary, media_scope: String) -> void:

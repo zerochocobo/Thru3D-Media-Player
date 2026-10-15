@@ -119,6 +119,8 @@ func relocate(old_uri: String, new_uri: String, basename: String, size: int = -1
 		var record: Dictionary = records[id].duplicate(true)
 		if old_alias not in record.aliases: continue
 		var feature := fingerprint(basename, size)
+		# A parent-folder rename preserves the basename and the existing content fingerprint.
+		if feature.is_empty() and basename == old_uri.get_file().uri_decode(): feature = str(record.fingerprint)
 		if feature.is_empty(): return false
 		var copied := record.duplicate(true)
 		copied.id = JSON.stringify([new_alias, feature]).sha256_text()

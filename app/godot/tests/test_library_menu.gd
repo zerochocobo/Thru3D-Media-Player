@@ -307,14 +307,14 @@ func _run() -> void:
 	choose_setting(menu, "show_fps", true)
 	check(settings_events.back() == ["show_fps", true], "FPS display can be switched on from Display settings")
 	menu._activate(Menu.TAB_BASE + Menu.SUBTITLES_TAB)
-	check(menu.tab == Menu.VIDEO_TAB and menu.rows.size() == 8 and menu.rows[5].slider and menu.rows[5].value == 5.0,
+	check(menu.tab == Menu.VIDEO_TAB and menu.rows.size() == 11 and menu.rows[8].slider and menu.rows[8].value == 5.0,
 		"Subtitle distance is a slider, 5 m by default")
-	check(menu.rows[7].key == "subtitle_position" and menu.rows[7].slider and menu.rows[7].value == 0,
+	check(menu.rows[10].key == "subtitle_position" and menu.rows[10].slider and menu.rows[10].value == 0,
 		"Global subtitle angle defaults to the marked centre")
-	check(menu.rows[6].key == "subtitle_direction" and menu.rows[6].value == 0 and menu.rows[6].choices.size() == 2,
+	check(menu.rows[9].key == "subtitle_direction" and menu.rows[9].value == 0 and menu.rows[9].choices.size() == 2,
 		"Direction control is above position, horizontal by default")
-	check(menu.rows[3].key == "subtitle_size" and menu.rows[3].value == 100 and menu.rows[3].span == Vector3(50, 200, 5), "Global text size covers 50 to 200 percent")
-	check(menu.rows[4].key == "subtitle_style" and menu.rows[4].choices.size() == 5 and menu.rows[4].compact, "Global subtitle styles are five direct visual choices")
+	check(menu.rows[6].key == "subtitle_size" and menu.rows[6].value == 100 and menu.rows[6].span == Vector3(50, 200, 5), "Global text size covers 50 to 200 percent")
+	check(menu.rows[7].key == "subtitle_style" and menu.rows[7].choices.size() == 5 and menu.rows[7].compact, "Global subtitle styles are five direct visual choices")
 	choose_setting(menu, "subtitle_size", 150)
 	check(settings_events.back() == ["subtitle_size", 150.0], "Global size slider applies on release")
 	choose_setting(menu, "subtitle_style", "yellow_black")

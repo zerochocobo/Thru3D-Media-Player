@@ -5,6 +5,11 @@ class Reader extends Node3D:
 	var local_uri := ""
 	var queue: Array[Dictionary] = []
 	var closes := 0
+	var recent_files: RefCounted
+	var mode_memory: RefCounted
+	var track_memory: RefCounted
+	var subtitle_timing: RefCounted
+	var bookmark_store: RefCounted
 	func close_video() -> void: closes += 1; local_uri = ""
 	func close_image() -> void: closes += 1; local_uri = ""; queue.clear()
 func check(ok: bool, message: String) -> void:
@@ -53,6 +58,30 @@ func _initialize() -> void:
 	app.photo.queue.assign([{"uri":"file:///storage/test/folder/preloaded.jpg"}])
 	app._prepare_file_delete("file:///storage/test/folder")
 	check(app.photo.closes == 2, "A descendant preloaded image is released even with an unrelated current display")
+	var folder_uri := "cloud://account/old.folder"
+	var child := folder_uri + "/movie.mp4"
+	var moved_child := "cloud://account/new.folder/movie.mp4"
+	app.video.recent_files = preload("res://scripts/recent_files.gd").new(directory.path_join("folder"))
+	app.video.mode_memory = preload("res://scripts/file_mode_memory.gd").new(directory.path_join("folder"))
+	app.video.track_memory = preload("res://scripts/file_track_memory.gd").new(directory.path_join("folder"))
+	app.video.subtitle_timing = preload("res://scripts/file_subtitle_timing.gd").new(directory.path_join("folder"))
+	app.video.bookmark_store = preload("res://scripts/bookmark_store.gd").new(directory.path_join("folder/bookmarks"))
+	app.photo.mode_memory = preload("res://scripts/file_mode_memory.gd").new(directory.path_join("folder-photo"))
+	app.video.recent_files.opened(child, "movie.mp4", false); app.video.recent_files.progress(child, 6000, 100000)
+	app.video.mode_memory.remember(child, {"profile":"320x320", "geometry":1, "stereo_sbs":true, "swap_eyes":false, "alpha_requested":false})
+	app.video.bookmark_store.add(child, "movie.mp4", 5000, 10000)
+	app.video_queue.assign([{"uri":child, "title":"movie.mp4", "size":5000}])
+	app.video.local_uri = child
+	app.recent_menu = preload("res://scripts/library_menu.gd").new()
+	app.recent_menu.file_actions.modal = "rename"; app.recent_menu.file_actions.target = {"uri":folder_uri, "folder":true}
+	app._prepare_file_delete(folder_uri)
+	app._on_file_renamed(folder_uri, "cloud://account/new.folder", "new.folder")
+	check(app.video.recent_files.resume_position(moved_child) == 6000 and app.video.recent_files.lookup(child).is_empty(), "Folder rename migrates known child progress")
+	check(app.video.mode_memory.lookup(moved_child).get("stereo_sbs", false) and app.video_queue[0].uri == moved_child, "Folder rename migrates viewing mode and playback queue")
+	check(app.video.bookmark_store.list_markers(app.video.bookmark_store.resolve(moved_child)).size() == 1, "Folder rename preserves bookmarks without requiring a new basename fingerprint")
+	var restarted := preload("res://scripts/recent_files.gd").new(directory.path_join("folder")); restarted.load_saved()
+	check(restarted.resume_position(moved_child) == 6000, "Folder rename progress migration survives restart")
+	app.recent_menu.free()
 	app.video.free(); app.photo.free(); app.free()
 	print("file editing memory checks=%d failures=%d" % [checks, failures.size()])
 	for failure in failures: push_error(failure)

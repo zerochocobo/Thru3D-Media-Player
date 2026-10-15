@@ -3,6 +3,7 @@ extends "res://scripts/media_surface.gd"
 signal changed
 signal thumbnail_ready(uri: String)
 signal playback_failed
+signal seek_presented(request_id: int, position_ms: int)
 
 const PlatformMethods := preload("res://scripts/platform_methods.gd")
 const I18n := preload("res://scripts/i18n.gd")
@@ -25,6 +26,7 @@ const Log := preload("res://scripts/diagnostic_log.gd")
 const PixelProbe := preload("res://scripts/mpv_pixel_probe.gd")
 const SubtitleState := preload("res://scripts/mpv_subtitle_state.gd")
 const BitmapSubtitles := preload("res://scripts/bitmap_subtitles.gd")
+const AlphaEdge := preload("res://scripts/alpha_edge.gd")
 var bitmap_subtitles := BitmapSubtitles.new()
 const ModeMemory := preload("res://scripts/file_mode_memory.gd")
 const TrackMemory := preload("res://scripts/file_track_memory.gd")
@@ -54,6 +56,8 @@ var platform: Object
 var alpha_encoding := 1
 var alpha_enabled := false
 var alpha_requested := false
+## Alpha mask edge from the player settings (AlphaEdge.bounds): shader uniform and compositor mask alike.
+var alpha_edge := Vector2(0.0, 1.0)
 ## Realtime 2D->3D: a depth model drives per-eye parallax on mono sources (never with Alpha or SBS).
 var depth_requested := false
 var auto_depth := false # This file's conversion choice, retained while changing its projection.
@@ -139,6 +143,12 @@ var display_name := ""
 var picker_error := ""
 var _picker_request := 0
 var profile := AUTOMATIC_PROFILE # ROI default: one square input for full-eye and zoom windows
+## Alpha model sizes offered in the settings: square inputs, as the ROI windows are.
+const ALPHA_PROFILES := ["256x256", "320x320", "384x384", "512x512"]
+## The Alpha model size chosen in the settings; every file opens with it.
+var default_profile := AUTOMATIC_PROFILE
+## A newly chosen size still compiling while Alpha plays: the session switches once it is ready.
+var _profile_pending := ""
 var _binding := Binding.new()
 var _pending_pair: Dictionary = {}
 var _pending_revision: Dictionary = {}
@@ -175,6 +185,8 @@ const VideoLayer := preload("res://scripts/video_layer.gd")
 var layer_enabled := true
 var video_layer: VideoLayer
 var _layer_session := false # the native session decodes into the layer surface
+## This session was opened on the layer surface; it may report the file incompatible before any frame.
+var _layer_requested := false
 var _eye_buffer_only := false # the next open stays on the eye-buffer path (one-shot)
 ## This file left the layer for a shader effect: back on the layer once the effect is off again.
 var _layer_return_uri := ""
@@ -196,6 +208,17 @@ var _subtitle_layer_generation := -1
 var _subtitle_layer_failed := false
 var _subtitle_copy_after := -1 # frames_drawn after which a redrawn canvas has rendered
 var _subtitle_texture: ImageTexture
+## Debug prototype of Alpha plan B (compositor alpha blending): 0 off, 1 a test mask over what lies
+## beneath (passthrough), 2 the same over a test backdrop layer, so a capture shows the blend.
+var alpha_probe := 0
+## Alpha plan B prototype (debug property debug.vrpp.layer.alpha): Alpha keeps the decoder surface layer
+## and RVM's mask becomes a compositor mask layer beneath it. Read once with the platform.
+var _layer_alpha_debug := false
+## This session's decoder fans its frames out for Alpha (opened with Alpha on the layer): only such a
+## session can turn Alpha on in place. Any other layer session reopens with Alpha instead.
+var _layer_alpha_host := false
+var _revision_refused_logged := false
+var _alpha_probe_uploaded := false
 ## Flat-screen PGS cues: the bitmap in the subtitle swapchain, padded to a size bucket so a new cue
 ## rarely recreates it, shown as a quad (or a cylinder section on a curved screen) over the video.
 var _bitmap_layer_texture: ImageTexture # the cue texture last copied
@@ -203,6 +226,10 @@ var _bitmap_layer_size := Vector2i.ZERO
 var _picture_token := -1 # the 2D->3D pair last copied into the picture layer
 ## Frames to copy the held pair again: a strength change re-warps it in place, asynchronously.
 var _picture_refresh := 0
+## Profile 5 and software decode: MPV's RGBA frames shown on the picture layer this frame.
+var _frame_picture := false
+## The picture layer could not take this file's frames (swapchain size, copy): eye buffers until the next open.
+var _frame_picture_failed := false
 
 func _ready() -> void:
 	mode_memory.load_saved()
@@ -233,6 +260,8 @@ func _ready() -> void:
 	add_child(_subtitle_surface)
 	if OS.get_name() == "Android" and Engine.has_singleton("QuestPlayer"):
 		platform = Engine.get_singleton("QuestPlayer")
+		_layer_alpha_debug = PlatformMethods.supports(platform, "video_layer_alpha_debug") and bool(platform.video_layer_alpha_debug())
+		if PlatformMethods.supports(platform, "set_mpv_alpha_edge"): platform.set_mpv_alpha_edge(alpha_edge.x, alpha_edge.y)
 		platform.connect("local_video_selected", _on_selected)
 		platform.connect("local_video_access", _on_local_access)
 		platform.connect("mpv_pair_available", _on_pair)
@@ -332,6 +361,22 @@ func profile_ready(value: String) -> bool:
 		return bool(Engine.get_singleton("QuestPlayer").rvm_profile_ready(value))
 	return true
 
+## The settings chose a new Alpha model size. Its first use compiles for ~40 s: warm it now, with or
+## without a video, and keep a playing Alpha session on its current size until the new one is ready.
+func select_profile(value: String) -> void:
+	if not value in ALPHA_PROFILES: return
+	default_profile = value
+	_profile_pending = ""
+	if OS.get_name() == "Android" and Engine.has_singleton("QuestPlayer"):
+		Engine.get_singleton("QuestPlayer").warm_rvm(value)
+	if not alpha_requested or local_uri.is_empty():
+		profile = value
+	elif profile_ready(value):
+		set_profile(value)
+	else:
+		_profile_pending = value
+	changed.emit()
+
 func reload_rvm() -> void:
 	_warm_rvm()
 	if alpha_requested:
@@ -341,10 +386,15 @@ func _on_rvm_warmup(payload: String) -> void:
 	var result: Variant = JSON.parse_string(payload)
 	if result is Dictionary:
 		rvm_warmup = result
+		var key := str(result.get("profile_key", ""))
 		if str(result.get("state", "")) == "warming":
-			warming[str(result.get("profile_key", ""))] = true
+			warming[key] = true
 		else:
-			warming.erase(str(result.get("profile_key", "")))
+			warming.erase(key)
+		if key == _profile_pending and str(result.get("state", "")) in ["ready", "cached"]:
+			_profile_pending = ""
+			if alpha_requested and not local_uri.is_empty(): set_profile(key)
+			else: profile = key
 		DiagnosticLog.record("rvm_warmup", result)
 		changed.emit()
 
@@ -490,8 +540,8 @@ func open_local(uri: String, title: String, start_ms: int = 0, restore_mode: boo
 	packed_alpha = packed_file and (alpha or restore_mode)
 	_layout_pending = null
 	if restore_mode:
-		# Ignore legacy per-file model choices; everyday playback uses one tested ROI profile.
-		profile = AUTOMATIC_PROFILE
+		# Ignore legacy per-file model choices: every file uses the size chosen in the settings.
+		profile = default_profile
 		var saved := mode_memory.lookup(uri)
 		if not saved.is_empty():
 			# The user's own choice for this file wins over its name and shape.
@@ -554,6 +604,7 @@ func open_local(uri: String, title: String, start_ms: int = 0, restore_mode: boo
 	# The cover comes from a displayed frame (never a second decoder). The layer has none to read, so a
 	# layer session leaves it to the next eye-buffer session (Alpha, 3D, effects) instead of switching.
 	var layer := _layer_wanted() and not _eye_buffer_only and uri != _layer_blocked_uri
+	_layer_alpha_host = layer and alpha_requested and _layer_alpha_debug
 	# Opened in the eye buffers only for a setting of the moment (colour grade, 3D, Alpha): go to the
 	# layer once that setting is undone, as a session moved off the layer does.
 	if not layer and not _eye_buffer_only and uri != _layer_blocked_uri and layer_enabled \
@@ -561,8 +612,10 @@ func open_local(uri: String, title: String, start_ms: int = 0, restore_mode: boo
 		_layer_return_uri = uri
 	_eye_buffer_only = false
 	_layer_session = false
+	_frame_picture_failed = false
 	_layer_seek_hold = false
 	if layer: _layer_generation = video_layer.generation
+	_layer_requested = layer
 	if PlatformMethods.supports(platform, "set_mpv_video_layer"):
 		platform.set_mpv_video_layer(layer)
 	var id: int = platform.open_mpv_video(uri, maxi(start_ms, 0), stereo_sbs, profile, alpha_requested, true, depth_requested,
@@ -645,6 +698,7 @@ func close_video() -> void:
 		recent_files.save()
 	_unbind()
 	_layer_session = false
+	_layer_requested = false # this close must not reopen the file again
 	_layer_seek_hold = false
 	_update_layer()
 	_picture_token = -1
@@ -795,13 +849,21 @@ func _try_revision() -> void:
 	if int(_pending_revision.position_ms) >= 0 and Time.get_ticks_msec() < _debug_seek_delay_until_ms:
 		return
 	var request := _pending_revision
-	if _layer_session and (bool(request.alpha) or bool(request.depth)):
+	if _layer_session and ((bool(request.alpha) and not _layer_alpha_debug) or bool(request.depth)):
 		_pending_revision = {}
 		_reopen_on_eye_buffer(int(request.position_ms))
+		return
+	if _layer_session and bool(request.alpha) and not _layer_alpha_host:
+		# Alpha on a layer session opened without it: its decoder has no frame fan-out for the model.
+		_pending_revision = {}
+		_reopen_at(int(request.position_ms), true)
 		return
 	var id: int = platform.revise_mpv_video(media.session_id, request.stereo, request.alpha, request.profile, request.position_ms,
 		request.depth, request.top_bottom, request.seek_mode == SeekPolicy.EXACT)
 	if id <= 0:
+		if OS.is_debug_build() and not _revision_refused_logged:
+			_revision_refused_logged = true
+			DiagnosticLog.record("mpv_revision_refused", {"request": request, "layer_session": _layer_session})
 		return
 	_layer_seek_hold = _layer_session and int(request.position_ms) >= 0 and media.frame_counter > 0
 	if int(request.position_ms) < 0 or not (_is_frozen() or _layer_seek_hold): _unbind()
@@ -828,6 +890,11 @@ func has_active_presentation() -> bool:
 	if local_uri.is_empty() or not media.accepts(media.session_id): return false
 	return media.state != "ended" or (loop_enabled and requested_play) \
 		or _waiting_first or not _pending_revision.is_empty()
+
+func set_alpha_edge(feather: float, shrink: float) -> void:
+	alpha_edge = AlphaEdge.bounds(feather, shrink)
+	if material: material.set_shader_parameter("alpha_edge", alpha_edge)
+	if PlatformMethods.supports(platform, "set_mpv_alpha_edge"): platform.set_mpv_alpha_edge(alpha_edge.x, alpha_edge.y)
 
 func set_alpha(enabled: bool) -> bool:
 	if packed_file:
@@ -1573,6 +1640,10 @@ func _on_pair(id: int, payload: String) -> void:
 	var pair: Variant = JSON.parse_string(payload)
 	if pair is Dictionary:
 		_pending_pair = pair
+		if OS.is_debug_build() and media.frame_counter < 2:
+			DiagnosticLog.record("mpv_pair_offered", {"slot_token": pair.get("slot_token"), "frame_id": pair.get("frame_id"),
+				"layer": pair.get("color_target") == "layer", "pending_revision": not _pending_revision.is_empty(),
+				"pixel_busy": _pixel_busy, "thumbnail_busy": _thumbnail_busy})
 
 func _present_pending() -> void:
 	if _pixel_busy or _thumbnail_busy or _pending_pair.is_empty() or not _pending_revision.is_empty():
@@ -1609,6 +1680,7 @@ func _present_pending() -> void:
 	depth_enabled = bool(claimed.get("depth_requested", false)) and bool(claimed.get("depth_ran", false))
 	_apply_packed()
 	material.set_shader_parameter("alpha_enabled", _rvm_alpha)
+	material.set_shader_parameter("alpha_edge", alpha_edge) # a bind may have switched the shader
 	_send_depth_view()
 	_apply_geometry()
 	panel.visible = true
@@ -1622,7 +1694,8 @@ func _present_pending() -> void:
 		_output_deadline_ms = 0
 		var actual_position_ms := int(int(claimed.pts_us) / 1000)
 		if control.in_flight > 0:
-			control.first_frame(actual_position_ms)
+			var seek_request := control.in_flight
+			if control.first_frame(actual_position_ms): seek_presented.emit(seek_request, actual_position_ms)
 		else:
 			control.observe(actual_position_ms, control.duration_ms)
 		platform.set_mpv_playing(media.session_id, requested_play)
@@ -1677,10 +1750,15 @@ func _on_state(id: int, payload: String) -> void:
 func _on_error(id: int, payload: String) -> void:
 	if id != media.session_id or (media.state == "failed" and not media.error.is_empty()):
 		return
-	_thumbnail_sequence += 1
 	var report: Variant = JSON.parse_string(payload)
+	report = PlaybackErrors.clean(report) if report is Dictionary else {}
+	if report.has("session_id") and int(report.session_id) != id: return
+	if media.logical_session_id > 0 and (report.has("logical_session_id") or report.has("generation")):
+		if int(report.get("logical_session_id", 0)) != media.logical_session_id or int(report.get("generation", 0)) != media.generation: return
+	_thumbnail_sequence += 1
 	var code := str(report.get("code", "")) if report is Dictionary else ""
 	media.error = PlaybackErrors.message(report if report is Dictionary else {})
+	media.error_report = report.duplicate(true) if report is Dictionary else {}
 	media.state = "failed"
 	_audio_pending = false
 	_freeze_request = 0
@@ -1707,7 +1785,7 @@ func _check_open_timeout(now_ms: int) -> void:
 		return
 	if now_ms < _opening_deadline_ms: return
 	var id: int = media.session_id
-	_on_error(id, JSON.stringify({"code": "MPV_OPEN_TIMEOUT"}))
+	_on_error(id, JSON.stringify({"code": "MPV_OPEN_TIMEOUT", "stage": "opening"}))
 	if platform and id > 0: platform.close_mpv_video(id)
 
 func _on_detach(id: int, _payload: String) -> void:
@@ -1728,7 +1806,7 @@ func _check_playback_timeout(now_ms: int) -> void:
 	elif now_ms >= _buffering_deadline_ms: code = "MPV_BUFFER_TIMEOUT"
 	if code.is_empty(): return
 	var id: int = media.session_id
-	_on_error(id, JSON.stringify({"code": code}))
+	_on_error(id, JSON.stringify({"code": code, "stage": "reading" if code == "MPV_BUFFER_TIMEOUT" else "output"}))
 	if platform: platform.close_mpv_video(id)
 
 func _on_released(id: int, _payload: String) -> void:
@@ -2025,7 +2103,7 @@ func _can_loop() -> bool:
 		and int(target.source_epoch) == int(final_pair.get("source_epoch", -1)) \
 		and int(target.frame_id) == int(final_pair.get("frame_id", -1)) \
 		and int(target.pts_us) == int(final_pair.get("pts_us", -1)) \
-		and (not alpha_requested or final_pair.get("inference_ran", false))
+		and (not alpha_requested or final_pair.get("inference_ran", false) or final_pair.get("color_target") == "layer")
 
 func _process(_delta: float) -> void:
 	_poll_loading(Time.get_ticks_msec())
@@ -2061,7 +2139,7 @@ func stereo_offset_uv() -> Vector2:
 
 ## Presentation the compositor layer can show exactly: plain decoder colour on a supported shape.
 func _layer_presentation() -> bool:
-	return layer_enabled and video_layer != null and not alpha_requested and not depth_requested and not packed_file \
+	return layer_enabled and video_layer != null and (not alpha_requested or _layer_alpha_debug) and not depth_requested and not packed_file \
 		and (local_uri.is_empty() or local_uri != _layer_blocked_uri) \
 		and video_layer.grades(color_grade) and video_layer.supports(geometry, screen_curve > 0.0) \
 		and (int(media.format.get("source_rotation_degrees", 0)) == 0 or _layer_turns())
@@ -2110,7 +2188,8 @@ func _update_layer() -> void:
 		and _pending_revision.is_empty():
 		_reopen_at(-1, true) # a new XR session replaced the swapchain MPV decodes into
 		return
-	if _layer_session and media.playback.get("layer_compatible", true) == false:
+	# Profile 5 and a software decoder are known before the surface shows anything (no frame would come).
+	if (_layer_session or _layer_requested) and media.accepts(media.session_id) and media.playback.get("layer_compatible", true) == false:
 		_layer_blocked_uri = local_uri
 		_reopen_on_eye_buffer(-1) # Profile 5, software decode or rotation: MPV must normalize
 		return
@@ -2125,11 +2204,17 @@ func _update_layer() -> void:
 	if _layer_seek_hold and not _waiting_first: _layer_seek_hold = false
 	var layer_size := Vector2(float(media.playback.get("layer_surface_width", VideoLayer.SURFACE_SIZE)), \
 		float(media.playback.get("layer_surface_height", VideoLayer.SURFACE_SIZE)))
+	_frame_picture = not _layer_session and origin != null and _frame_picture_wanted()
 	var extras := _subtitle_layer_extras(origin) if origin != null else []
+	var masked := alpha_probe > 0 and origin != null and video_layer.alpha_blend and geometry == Geometry.Geometry.FLAT and _alpha_probe_layers(origin, layer_size, extras)
+	if not masked and alpha_requested and _layer_session and origin != null and video_layer.alpha_blend:
+		masked = _alpha_mask_layers(origin, layer_size, extras)
 	var shown := (_layer_session or _layer_seek_hold) and media.accepts(media.session_id) \
 		and (media.frame_counter > 0 or _layer_seek_hold) \
 		and media.state != "failed" and origin != null \
-		and video_layer.show(self, origin, VideoLayer.SURFACE, layer_size, -1, Vector2.ZERO, Vector4(0, 0, 1, 1), VideoLayer.OPAQUE, extras)
+		and video_layer.show(self, origin, VideoLayer.SURFACE, layer_size, -1, Vector2.ZERO, Vector4(0, 0, 1, 1),
+			VideoLayer.MASKED if masked else VideoLayer.OPAQUE, extras)
+	if not shown and _frame_picture: shown = _show_frame_picture(origin, extras)
 	if not shown: _subtitle_on_layer = false
 	if _subtitle_surface and _subtitle_on_layer: _subtitle_surface.visible = false
 	if not shown and not _layer_session and origin != null:
@@ -2143,13 +2228,66 @@ func _update_layer() -> void:
 	elif panel.material_override == _hole_material:
 		panel.material_override = material
 
+## Plan B: RVM's mask (drawn by the bridge over the frame layout into the mask slot) as layers of the
+## video's own shape and eyes beneath it; their rects scale from the nominal surface to the mask's size.
+func _alpha_mask_layers(origin: XROrigin3D, layer_size: Vector2, extras: Array) -> bool:
+	var state := str(platform.video_layer_mask()).split(" ")
+	if state.size() != 3 or int(state[0]) <= 0: return false
+	var scale := Vector2(float(state[1]), float(state[2])) / layer_size
+	var shape := video_layer.layer_values(self, origin, VideoLayer.SURFACE, layer_size)
+	for start in range(0, shape.size(), VideoLayer.STRIDE):
+		var values := shape.slice(start, start + VideoLayer.STRIDE)
+		values[9] *= scale.x; values[10] *= scale.y; values[11] *= scale.x; values[12] *= scale.y
+		values[17] = 1.0 # GL pictures are top-first
+		values[18] = 0 # no compositor supersampling or sharpening: either widens the mask's soft edge into a halo
+		values[19] = VideoLayer.PICTURE
+		for i in 3: values[20 + i] = 1.0; values[23 + i] = 0.0
+		values[26] = VideoLayer.MAGNIFIER_SLOT; values[27] = VideoLayer.MASK_WRITE | VideoLayer.SOURCE_ALPHA
+		extras.append({"values": values, "order": VideoLayer.MASK_ORDER})
+	return true
+
+## Plan B prototype: the test mask (and backdrop) as layers of the video's own shape beneath it.
+## Mask: the top half ramps alpha 0 -> 1 left to right, the bottom half is a solid disc.
+func _alpha_probe_layers(origin: XROrigin3D, layer_size: Vector2, extras: Array) -> bool:
+	if not _alpha_probe_uploaded:
+		var mask := Image.create_empty(512, 256, false, Image.FORMAT_RGBA8)
+		var backdrop := Image.create_empty(256, 256, false, Image.FORMAT_RGBA8)
+		for y in 256:
+			for x in 512:
+				var m := float(x) / 511.0 if y < 128 else (1.0 if Vector2(x - 256, y - 192).length() < 56.0 else 0.0)
+				mask.set_pixel(x, y, Color(m, m, m, m)) # premultiplied white
+			for x in 256:
+				backdrop.set_pixel(x, y, Color(0.9, 0.1, 0.1) if (x / 32 + y / 32) % 2 == 0 else Color(1.0, 0.85, 0.1))
+		for job in [[VideoLayer.MAGNIFIER_SLOT, mask], [VideoLayer.PICTURE_SLOT, backdrop]]:
+			var texture := ImageTexture.create_from_image(job[1])
+			if not platform.create_layer_image(job[0], job[1].get_width(), job[1].get_height(), 1, true) \
+				or platform.acquire_layer_image(job[0]) <= 0: return false
+			var copied: bool = platform.copy_layer_texture(job[0], RenderingServer.texture_get_native_handle(texture.get_rid()))
+			if not platform.release_layer_image(job[0], false) or not copied: return false
+		_alpha_probe_uploaded = true
+		video_layer.invalidate()
+		DiagnosticLog.record("alpha_probe_uploaded", {"mode": alpha_probe})
+	var shape := video_layer.layer_values(self, origin, VideoLayer.SURFACE, layer_size)
+	if shape.size() != VideoLayer.STRIDE: return false # one flat mono layer only
+	var layers := [[VideoLayer.MAGNIFIER_SLOT, Vector2(512, 256), VideoLayer.MASK_WRITE | VideoLayer.SOURCE_ALPHA, VideoLayer.MASK_ORDER]]
+	if alpha_probe == 2: layers.append([VideoLayer.PICTURE_SLOT, Vector2(256, 256), VideoLayer.OPAQUE, VideoLayer.MASK_ORDER - 1])
+	for layer in layers:
+		var values := shape.duplicate()
+		values[9] = 0; values[10] = 0; values[11] = layer[1].x; values[12] = layer[1].y
+		values[17] = 1.0 # GL pictures are top-first
+		values[19] = VideoLayer.PICTURE
+		for i in 3: values[20 + i] = 1.0; values[23 + i] = 0.0
+		values[26] = layer[0]; values[27] = layer[2]
+		extras.append({"values": values, "order": layer[3]})
+	return true
+
 ## Immersive (VR180/360) captions as their own quad layer: the projected caption plane is a quad in
 ## space, which the compositor draws from each eye exactly as the eye-buffer patch shader did. The
 ## canvas reaches the swapchain one frame after each redraw; the previous copy stays up meanwhile.
 func _subtitle_layer_extras(origin: XROrigin3D) -> Array:
 	_subtitle_on_layer = false
 	if geometry == Geometry.Geometry.FLAT: return _bitmap_layer_extras(origin)
-	if not _layer_session or _subtitle_layer_failed \
+	if not (_layer_session or _frame_picture) or _subtitle_layer_failed \
 		or material.get_shader_parameter("subtitle_enabled") != true or not projected_subtitles or not projected_subtitles.viewport \
 		or not PlatformMethods.supports(platform, "copy_layer_texture"):
 		return []
@@ -2188,7 +2326,7 @@ func _check_subtitle_generation() -> void:
 func _bitmap_layer_extras(origin: XROrigin3D) -> Array:
 	var texture: ImageTexture = bitmap_subtitles.texture
 	var rect: Variant = material.get_shader_parameter("bitmap_subtitle_rect")
-	if not _layer_session or _subtitle_layer_failed or texture == null or not rect is Vector4 \
+	if not (_layer_session or _frame_picture) or _subtitle_layer_failed or texture == null or not rect is Vector4 \
 		or material.get_shader_parameter("bitmap_subtitle_enabled") != true or material.get_shader_parameter("rotation_degrees") not in [null, 0] \
 		or not PlatformMethods.supports(platform, "copy_layer_texture"):
 		return []
@@ -2284,6 +2422,43 @@ func _show_depth_picture(origin: XROrigin3D) -> bool:
 			return false
 		_picture_token = token
 	return video_layer.show(self, origin, VideoLayer.PICTURE, Vector2(size), 1)
+
+## Profile 5 and software decode cannot use the decoder surface; MPV normalizes their colour and
+## orientation into RGBA frames. Each new frame is copied into the picture layer once, instead of the
+## frame being sampled into both eye buffers every display frame. Same presentation rules as the surface.
+func _frame_picture_wanted() -> bool:
+	var ticket := _binding.ticket
+	return not _frame_picture_failed and not ticket.is_empty() and not _binding.layer and not _binding.warped \
+		and int(ticket.get("session_id", 0)) == media.session_id and media.state != "failed" \
+		and str(ticket.get("color_target", "")) != "external" and int(ticket.get("color_texture_id", 0)) > 0 \
+		and not local_uri.is_empty() and local_uri == _layer_blocked_uri \
+		and layer_enabled and video_layer.available() and not alpha_requested and not depth_requested and not packed_file \
+		and video_layer.grades(color_grade) and video_layer.supports(geometry, screen_curve > 0.0) \
+		and PlatformMethods.supports(platform, "copy_layer_texture")
+
+func _show_frame_picture(origin: XROrigin3D, extras: Array) -> bool:
+	var ticket := _binding.ticket
+	var size := Vector2i(int(ticket.width), int(ticket.height))
+	var token := int(ticket.get("slot_token", 0))
+	if token != _picture_token:
+		# A runtime may refuse a large swapchain (XR2 Gen 1 headsets): this file stays in the eye buffers.
+		if not platform.create_layer_image(VideoLayer.PICTURE_SLOT, size.x, size.y, 1, false):
+			_frame_picture_failed = true
+			DiagnosticLog.record("frame_picture_failed", {"stage": "create", "size": [size.x, size.y]})
+			return false
+		if Vector2i(video_layer.picture_size) != size:
+			video_layer.invalidate() # a new swapchain for this size
+			video_layer.picture_size = Vector2(size)
+		if platform.acquire_layer_image(VideoLayer.PICTURE_SLOT) <= 0:
+			return false
+		var copied: bool = platform.copy_layer_texture(VideoLayer.PICTURE_SLOT, int(ticket.color_texture_id))
+		if not platform.release_layer_image(VideoLayer.PICTURE_SLOT, false) or not copied:
+			_frame_picture_failed = true
+			DiagnosticLog.record("frame_picture_failed", {"stage": "copy", "size": [size.x, size.y]})
+			return false
+		_picture_token = token
+	return video_layer.show(self, origin, VideoLayer.PICTURE, Vector2(size), -1, Vector2.ZERO, Vector4(0, 0, 1, 1),
+		VideoLayer.OPAQUE, extras)
 
 ## Same file and position, decoded for Godot's shader (Alpha, 2D->3D, fisheye, grading, Profile 5).
 func _reopen_on_eye_buffer(position_ms: int) -> void:

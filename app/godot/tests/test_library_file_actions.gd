@@ -119,7 +119,7 @@ func _run() -> void:
 	var renamed: Array = []
 	menu.file_renamed.connect(func(old, new, title): renamed.append([old,new,title]))
 	menu._activate(Actions.Rename.APPLY); menu._activate(Actions.Rename.APPLY)
-	check(platform.calls.size() == 9 and platform.calls.back().operation == "rename" and preparing.size() == 4, "Rename confirms exactly once and releases readers")
+	check(platform.calls.size() == 9 and platform.calls.back().operation == "rename" and preparing.size() == 5, "Rename confirms exactly once and releases primary and companion readers")
 	platform.respond(9,"ready",{"renamed":true,"new_uri":"file:///storage/test/new.mp4","new_title":"new.mp4"})
 	check(renamed.size() == 1 and menu.rows[0].uri.ends_with("new.mp4"), "Rename success updates browsing identity and emits migration")
 	menu.file_actions.reset(); menu.section = Menu.Section.SETTINGS; menu.tab = Menu.GENERAL_TAB; menu.refresh()

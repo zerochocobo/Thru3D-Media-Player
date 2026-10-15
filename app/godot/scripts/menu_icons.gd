@@ -69,6 +69,7 @@ const PATHS := {
 	"keyboard_hide": '<rect x="3" y="3" width="18" height="11" rx="2"/><path d="M6 7H7M11 7H12M16 7H17M7 11H17M8 18L12 22 16 18"/>',
 	"previous": '<path d="M15 6L9 12 15 18"/>',
 	"circle": '<circle cx="12" cy="12" r="7"/>',
+	"checkbox": '<rect x="4" y="4" width="16" height="16" rx="2"/>',
 	"sort": '<path d="M4 6H20M4 12H15M4 18H10"/>',
 	"select": '<rect x="4" y="4" width="16" height="16" rx="2"/><path d="M7 12L10 15 17 8"/>',
 	"edit": '<path d="M4 20H8L19 9 15 5 4 16Z"/>',

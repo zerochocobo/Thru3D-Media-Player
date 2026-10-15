@@ -4,6 +4,24 @@
 
 Newest first, following product release milestones. Some development/source snapshots contained features before their product release. Original APK identifiers `0.2` and `0.4` are retained; `0.4` was also called `0.4.0` in release notes. Availability depends on device, server and media capabilities.
 
+## 0.10.0 — 2026-10-16
+
+This update expands Alpha passthrough controls, improves thumbstick seeking, panel placement and file management, and provides clearer playback errors and better compatibility.
+
+- **Alpha edge controls**: Adjust Alpha Feather and Alpha Edge Shrink from playback or library settings to refine portrait outlines.
+- **Alpha model-size selection**: Choose 256, 320, 384 or 512 with a remembered global preference to balance cutout detail and performance. First use of a size may take about a minute to prepare; the current size stays active meanwhile.
+- **Updated Alpha frame-rate default**: New settings default to a 30 FPS limit, adjustable for your headset. Existing saved preferences are retained.
+- **Preview thumbstick seeks before committing**: Default steps are 20 seconds on the left controller and 10 seconds on the right. Hold to accumulate, then return the stick to center to seek. Target-time feedback fades after the new picture appears.
+- **Less intrusive buffering feedback**: With controls hidden, a small independent indicator shows loading stages, elapsed time and measured read speed without opening the playback bar. Visible controls use their existing status area.
+- **More natural panel placement**: Playback, settings, subtitle, bookmark and library panels face the viewing position when opened or placed, making stacked panels easier to read. Improved menu-edge rendering.
+- **Return directly to the library with B/Y**: Exit ordinary video playback and return to the library without opening the controls first. Popups, folders and active drags retain their contextual Back or cancel priority.
+- **Improved controller combinations**: Added optional 180-degree turning for 360-degree media and previous/next-video actions. Grip and trigger modifiers work in either order, with fixes for blank-space grip captures blocking combinations.
+- **Optional file-management mode**: List checkboxes support multi-select deletion, with preview and confirmation for file operations and renaming. Matching-basename companion files can be updated together; supported sources now include file/folder renaming through 115 Open.
+- **Optimized presentation for more videos**: Compatible Dolby Vision Profile 5 and software-decoded videos can use efficient layer presentation, with associated subtitle support.
+- **More stable 3D Blu-ray seeking**: Fixed picture corruption after seeking in some MVC titles and improved decoder recovery and multi-clip transitions.
+- **Restored exact 2:1 detection**: Unspecified videos with an exact 2:1 aspect ratio default to VR180 side-by-side stereo. Explicit filename tags, media metadata and saved manual settings take precedence.
+- **Clearer playback failures**: Errors automatically open a concise dialog with expandable details. Reopen it from the playback bar after dismissal, with more accurate network-source and decoder failure information.
+
 ## 0.9.2 — 2026-10-15
 
 This update improves multi-clip Blu-ray playback, subtitle and photo rendering, controller navigation, external subtitles and Emby browsing.

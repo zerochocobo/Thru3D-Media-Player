@@ -38,6 +38,8 @@ internal object MpvSourceNative {
     @JvmStatic external fun setSubtitle(handle: Long, trackId: Int): Long
     /** Positive seconds delay captions; shares the subtitle command fence. */
     @JvmStatic external fun setSubtitleDelay(handle: Long, seconds: Double): Long
+    /** Positive seconds play the audio later: Alpha plan B holds layer frames until their masks. */
+    @JvmStatic external fun setAudioDelay(handle: Long, seconds: Double): Boolean
     /** Plain text in a separate UI layer; empty when no newer snapshot is available. */
     @JvmStatic external fun subtitleStatus(handle: Long, afterSequence: Long): String
     /** Cropped premultiplied RGBA for this exact bitmap version, empty if superseded. */

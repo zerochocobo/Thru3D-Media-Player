@@ -7,7 +7,7 @@ import java.nio.ByteBuffer
 import java.nio.charset.CodingErrorAction
 
 /** A STRM is a bounded text shortcut, never a playlist or a player command. */
-internal class StrmFailure(val code: String) : IllegalArgumentException(code)
+internal class StrmFailure(val code: String, cause: Throwable? = null) : IllegalArgumentException(code, cause)
 internal data class StrmDocument(val bytes: ByteArray, val location: String)
 
 internal object StrmFile {

@@ -54,12 +54,12 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     }) { name, id, json ->
         if (!closed.get()) emitSignal(name, id, json)
     }
-    private val sources = MediaSources({ activity }) { id, json -> if (!closed.get()) emitSignal("media_list", id, json) }
+    private val sources: MediaSources = MediaSources({ activity }, beforeMutation = { uri -> mpv.awaitFileRelease(uri) }) { id, json -> if (!closed.get()) emitSignal("media_list", id, json) }
     private val accounts = AccountManager { activity }
-    private val mpv = MpvVideoBridge({ activity?.applicationContext }, {
+    private val mpv: MpvVideoBridge = MpvVideoBridge({ activity?.applicationContext }, {
         check(controlledRenderTasks.offer(it)) { "Player render task capacity exhausted" }
     }, { name, id, json -> if (!closed.get()) emitSignal(name, id, json) }, sources::playable, sources::sidecarAudio,
-        sources::releaseMediaStream, sources::sidecarSubtitles, sources::streamProgress)
+        sources::releaseMediaStream, sources::sidecarSubtitles, sources::streamProgress, sources::streamFailure)
     private val photos = PhotoBridge({ activity?.applicationContext }, sources::playable, sources::releasePhotoStream) { name, id, json ->
         if (!closed.get()) emitSignal(name, id, json)
     }
@@ -227,6 +227,8 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     @UsedByGodot fun set_mpv_output_width(width: Int) { if (width in 0..8192) mpv.outputWidthCap = width }
     /** Alpha source frame rate; applies to the running Alpha session as well. */
     @UsedByGodot fun set_mpv_alpha_fps(fps: Int): Boolean = !closed.get() && mpv.setAlphaFps(fps)
+    /** Alpha mask edge (feather/shrink) as the mask value range mapped to [0, 1]. */
+    @UsedByGodot fun set_mpv_alpha_edge(low: Double, high: Double): Boolean = !closed.get() && mpv.setAlphaEdge(low, high)
     // Library sources: each returns a request id; the result arrives as media_list(id, json).
     /** Headset storage: path "" lists the volumes, otherwise one folder's subfolders and videos. */
     @UsedByGodot fun media_local_browse(path: String): Int {
@@ -328,6 +330,11 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     @UsedByGodot fun copy_layer_texture(slot: Int, texture: Int): Boolean = runCatching { VideoLayerNative.copyTexture(slot, texture) }.getOrDefault(false)
     @UsedByGodot fun copy_layer_band(slot: Int, texture: Int, y: Int, rows: Int): Boolean =
         runCatching { VideoLayerNative.copyBand(slot, texture, y, rows) }.getOrDefault(false)
+    /** Alpha plan B prototype: whether Alpha keeps the layer (debug property), and "masks width height". */
+    @UsedByGodot fun video_layer_alpha_debug(): Boolean = BuildConfig.DEBUG && runCatching {
+        Class.forName("android.os.SystemProperties").getMethod("get", String::class.java).invoke(null, "debug.vrpp.layer.alpha") != "0"
+    }.getOrDefault(false)
+    @UsedByGodot fun video_layer_mask(): String = MpvVideoBridge.layerMask
     @UsedByGodot fun copy_layer_band_masked(slot: Int, color: Int, mask: Int, y: Int, rows: Int): Boolean =
         runCatching { VideoLayerNative.copyBandMasked(slot, color, mask, y, rows) }.getOrDefault(false)
     @UsedByGodot fun release_layer_image(slot: Int, mipmaps: Boolean): Boolean =

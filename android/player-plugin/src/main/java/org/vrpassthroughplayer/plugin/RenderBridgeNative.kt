@@ -51,6 +51,8 @@ internal object RenderBridgeNative {
     /** Each returned handle holds a reference: pass the array to [releaseBuffers] when done. */
     @JvmStatic external fun zeroCopyBuffers(handle: Long, token: Long, scout: Boolean): LongArray
     @JvmStatic external fun releaseBuffers(buffers: LongArray?)
+    /** The native AHardwareBuffer of a Java HardwareBuffer (no added reference): Alpha plan B frames. */
+    @JvmStatic external fun hardwareBufferPointer(buffer: android.hardware.HardwareBuffer): Long
     /** Pack the two Alpha buffers into the slot's R8 mask on the GPU; fenced like uploadAlpha. */
     @JvmStatic external fun commitZeroCopyAlpha(handle: Long, token: Long): Boolean
     /** Both eyes validated before upload. Never overwrite a mask still owned by this token. */

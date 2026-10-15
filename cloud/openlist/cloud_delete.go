@@ -22,6 +22,7 @@ var cloudID = regexp.MustCompile(`^[1-9][0-9]*$`)
 func deletionRoutes(router *gin.Engine) {
 	router.POST("/list115", list115)
 	router.POST("/remove115", remove115)
+	router.POST("/rename115", rename115)
 }
 
 type cloudTarget struct {
@@ -140,8 +141,14 @@ func list115(c *gin.Context) {
 	}
 	end := min(t.Offset+48, len(snapshot.objects))
 	content := make([]gin.H, 0, end-t.Offset)
+	names := make(map[string]int)
+	for _, item := range snapshot.objects {
+		names[item.GetName()]++
+	}
 	for _, item := range snapshot.objects[t.Offset:end] {
-		content = append(content, gin.H{"name": item.GetName(), "id": item.GetID(), "is_dir": item.IsDir(), "size": item.GetSize(), "modified_ms": cloudModified(item), "can_delete": cloudID.MatchString(item.GetID()) && !model.ObjHasMask(item, model.NoRemove)})
+		_, renameResult := s.(driver.RenameResult)
+		_, renameOnly := s.(driver.Rename)
+		content = append(content, gin.H{"name": item.GetName(), "id": item.GetID(), "is_dir": item.IsDir(), "size": item.GetSize(), "modified_ms": cloudModified(item), "can_delete": names[item.GetName()] == 1 && cloudID.MatchString(item.GetID()) && !model.ObjHasMask(item, model.NoRemove), "can_rename": (renameResult || renameOnly) && cloudID.MatchString(item.GetID()) && !model.ObjHasMask(item, model.NoRename)})
 	}
 	c.JSON(200, gin.H{"code": 200, "data": gin.H{"content": content, "total": len(snapshot.objects)}})
 }

@@ -4,7 +4,7 @@
 
 Standalone Android VR/MR media player for Meta Quest and PICO. Play videos and photos, explore media libraries, and combine supported content with passthrough and stereo effects directly on your headset.
 
-Current source version: **0.9.2** (Android versionCode **23**). An experimental standard OpenXR Android export is also available.
+Current source version: **0.10.0** (Android versionCode **24**). An experimental standard OpenXR Android export is also available.
 
 Minimum compatibility targets are **Quest 2** and **PICO Neo3**. Source/build compatibility does not establish hardware performance or interaction acceptance on every device.
 
@@ -43,9 +43,15 @@ Minimum compatibility targets are **Quest 2** and **PICO Neo3**. Source/build co
 - Available file size alongside playback position, and retained year/duration details on media-server cards with viewing status.
 
 - External-subtitle recovery and automatic filename/interface-language selection, with manual/saved choices taking priority.
-- Contextual B/Y Back navigation and right-controller-only library recovery; video triggers operate controls while grip moves the picture.
+- Contextual B/Y Back and right-controller library recovery; plain video playback can exit directly to the library, with triggers for controls and grip for picture movement.
 - Emby full titles, eligible single-movie-folder landscape artwork, portrait cast cards and compact server-supported sorting.
 - Efficient compositor paths for supported immersive text/flat PGS subtitles, photo magnifiers/portraits/spatial photos and flat rotated video.
+
+- Alpha feather/shrink, global model-size selection and frame-rate limits for device-dependent cutout quality and performance.
+- Thumbstick target preview with return-to-center seeking, passive seek/buffering feedback and optional 360-degree half-turn/previous/next combinations.
+- Independently oriented playback panels and grouped library placement, with explicit head following retained.
+- Source-dependent opt-in file management, multi-select deletion, rename preview/confirmation and matching-basename companion updates, including 115 Open file/folder renaming.
+- Efficient layer presentation for supported Dolby Vision Profile 5/software-decoded video, with MVC seek recovery.
 
 ## Spatial media and photo layouts
 

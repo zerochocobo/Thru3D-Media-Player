@@ -33,7 +33,7 @@ func _run() -> void:
 		state.subtitle_distance = 5.0; state.subtitle_position = 0.0; state.subtitle_direction = 0
 		state.subtitle_size = 125.0; state.subtitle_style = "yellow_black"
 		menu.scroll = 0; menu.refresh()
-		check(menu.rows.size() == 8, "All video and subtitle settings present: " + language)
+		check(menu.rows.size() == 11, "All video and subtitle settings present: " + language)
 		await shot(viewport, output.path_join("video_" + language + ".png"))
 		menu._set_scroll(menu._max_scroll())
 		await shot(viewport, output.path_join("subtitles_" + language + ".png"))

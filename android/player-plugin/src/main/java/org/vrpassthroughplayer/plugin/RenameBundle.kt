@@ -3,8 +3,8 @@ package org.vrpassthroughplayer.plugin
 import org.json.JSONArray
 import org.json.JSONObject
 
-/** Same stem plus a dot boundary includes language/clone-voice suffixes without taking episode10. */
-internal class RenameBundle(video: String, newStem: String, names: Collection<String>) {
+/** Exact basename matching; an arbitrary extension is preserved byte-for-byte. */
+internal class RenameBundle(video: String, newStem: String, names: Collection<String>, includeSameName: Boolean = true, folder: Boolean = false) {
     data class Move(val from: String, val to: String)
     val moves: List<Move>
     init {
@@ -12,10 +12,11 @@ internal class RenameBundle(video: String, newStem: String, names: Collection<St
             newStem.toByteArray().size <= 200 && !newStem.startsWith('.') && !newStem.endsWith('.') &&
             newStem.none { it < ' ' || it in "/\\:*?\"<>|#%" } && newStem !in setOf(".", "..")) { "Invalid file name" }
         require(!Regex("(?i)(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\\..*)?").matches(newStem)) { "Invalid file name" }
-        val stem = video.substringBeforeLast('.')
+        val stem = if (folder) video else video.substringBeforeLast('.')
         require(!stem.equals(newStem, true)) { "Name is unchanged" }
-        val extensions = setOf("srt", "ass", "ssa", "vtt", "smi", "sami", "sub", "idx", "m4a", "aac", "mp3", "flac", "wav", "ogg", "opus", "ac3", "eac3", "dts")
-        val companions = names.filter { it != video && it.startsWith("$stem.", true) && it.substringAfterLast('.').lowercase() in extensions }.sorted()
+        val companions = if (folder || !includeSameName) emptyList() else names.filter {
+            it != video && it.contains('.') && it.substringBeforeLast('.').equals(stem, true)
+        }.sorted()
         require(companions.size <= 64) { "Too many companion files" }
         moves = (listOf(video) + companions).map { Move(it, newStem + it.substring(stem.length)) }
         val existing = names.map { it.lowercase(java.util.Locale.ROOT) }.toSet()

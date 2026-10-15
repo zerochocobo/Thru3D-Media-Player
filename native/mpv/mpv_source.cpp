@@ -28,6 +28,7 @@
 #include "json_quote.h"
 #include "pgs_bitmap.h"
 #include "frame_geometry.h"
+#include "playback_failure.h"
 
 void quest_mpv_initialize_android(JNIEnv*, jobject);
 
@@ -163,6 +164,8 @@ struct Source final {
     // Direct mode (Alpha): publish MPV's exported MediaCodec images; no full-resolution RGBA render.
     std::atomic<bool> direct{false};
     std::atomic<bool> dolby_profile5{false};
+    // A layer session whose decoder fell back to software: mediacodec_embed cannot show its frames.
+    std::atomic<bool> software_fallback{false};
     std::atomic<bool> dolby_color_ready{false};
     std::atomic<uint64_t> dolby_frames{0};
     std::atomic<bool> cadence_target_ns{false};
@@ -174,6 +177,8 @@ struct Source final {
     double desired_subtitle_delay = 0.0, subtitle_delay_applied = 0.0;
     uint64_t desired_subtitle_delay_command = 0;
     bool subtitle_delay_dirty = false;
+    // Alpha plan B: the layer holds each frame until its mask is ready; audio waits as long. commands_mutex
+    double desired_audio_delay = 0.0; bool audio_delay_dirty = false;
     std::string subtitle_snapshot; // status_mutex
     uint64_t published_subtitle_sequence = 0; // status_mutex
     int64_t published_subtitle_ns = 0; // status_mutex
@@ -208,7 +213,9 @@ struct Source final {
     std::vector<int64_t> audio_track_ids; // commands_mutex; from actual MPV track-list
     int desired_audio_id = -1; double desired_volume = 100; bool desired_mute = false, audio_dirty = false;
     uint64_t snapshot_sequence = 0; // control thread only
-    std::string state = "opening", details = "{}", error, render_error, tls_ca_file, source_failure;
+    std::string state = "opening", details = "{}", error, render_error, tls_ca_file, failure_reason, failure_stage;
+    int mpv_failure_code = 0; // status_mutex
+    quest::PlaybackFailure source_failure; // control thread, opening hints only
     double pixel_aspect = 1.0; // status_mutex; output coordinates remain packed source pixels
     std::string stereo_mode; // status_mutex; MPV's demuxed stereo-in, never inferred from title
     std::atomic<bool> hardware_decoding{false};
@@ -290,9 +297,13 @@ struct Source final {
         void* symbol = reinterpret_cast<void*>(eglGetProcAddress(name));
         return symbol ? symbol : dlsym(library, name);
     }
-    void set_state(std::string value, std::string failure = "") {
+    void set_state(std::string value, std::string failure = "", int code = 0, std::string reason = "", std::string stage = "") {
         std::lock_guard<std::mutex> lock(status_mutex);
-        state = std::move(value); if (!failure.empty()) error = std::move(failure);
+        state = std::move(value);
+        if (!failure.empty()) {
+            error = std::move(failure); mpv_failure_code = code;
+            failure_reason = std::move(reason); failure_stage = std::move(stage);
+        }
     }
     void clear_pgs() {
         if (!pgs_image.rgba.empty()) { pgs_image = {}; ++pgs_version; }
@@ -470,9 +481,10 @@ struct Source final {
             if (iso_input) {
                 option("demuxer", "lavf"); option("demuxer-lavf-format", "bd_mvc");
                 // Blu-ray AVC access points can need recovery frames after a seek.
-                // Pre-roll ordinary titles, then let exact seeking discard frames
-                // before the requested time. Keyframe/speed seeks remain unchanged.
-                if (!software_layer) option("hr-seek-demuxer-offset", "5");
+                // Pre-roll AVC and MVC titles, then let exact seeking discard
+                // frames before the requested time. Speed seeks use the MVC
+                // decoder's recovery gate without this exact-seek pre-roll.
+                option("hr-seek-demuxer-offset", "5");
             }
             if (layer()) {
                 // The decoder renders into the compositor's surface; MPV only paces the releases.
@@ -575,7 +587,8 @@ struct Source final {
                 dolby_color_mode(core);
                 bool set_play = false, play = false, set_audio = false, muted = false, set_subtitle = false, seek_exact = true, set_speed = false;
                 double speed = 1.0, subtitle_delay = 0.0;
-                bool set_subtitle_delay = false;
+                bool set_subtitle_delay = false, set_audio_delay = false;
+                double audio_delay = 0.0;
                 uint64_t subtitle_delay_command = 0;
 #ifndef NDEBUG
                 bool set_step = false;
@@ -597,6 +610,7 @@ struct Source final {
                         subtitle_id = desired_subtitle_id; subtitle_command = desired_subtitle_command;
                         set_subtitle_delay = subtitle_delay_dirty; subtitle_delay_dirty = false;
                         subtitle_delay = desired_subtitle_delay; subtitle_delay_command = desired_subtitle_delay_command;
+                        set_audio_delay = audio_delay_dirty; audio_delay_dirty = false; audio_delay = desired_audio_delay;
                     }
                 }
                 if (set_play && !play) checked(mpv_set_property_string(core, "pause", "yes"), "MPV source pause before audio");
@@ -615,6 +629,7 @@ struct Source final {
                     subtitle_command_applied = std::max(subtitle_command_applied, subtitle_command);
                     next_snapshot = std::chrono::steady_clock::now();
                 }
+                if (set_audio_delay) checked(mpv_set_property(core, "audio-delay", MPV_FORMAT_DOUBLE, &audio_delay), "MPV audio delay");
                 if (set_subtitle_delay) {
                     checked(mpv_set_property(core, "sub-delay", MPV_FORMAT_DOUBLE, &subtitle_delay), "MPV subtitle delay");
                     subtitle_delay_applied = subtitle_delay;
@@ -661,19 +676,13 @@ struct Source final {
                     const auto* log = static_cast<const mpv_event_log_message*>(event->data);
                     __android_log_print(ANDROID_LOG_INFO, "QuestMpvSource", "[%s] %s", log->prefix, log->text);
                     // Keep a fixed cause, never a log line containing a signed address.
-                    if (log->log_level <= MPV_LOG_LEVEL_WARN) {
-                        const std::string text = log->text;
-                        if (text.find("certificate verification failed") != std::string::npos || text.find("SSL peer certificate") != std::string::npos)
-                            source_failure = "TLS certificate verification failed";
-                        else if (text.find("timed out") != std::string::npos || text.find("Timeout") != std::string::npos)
-                            source_failure = "Network read timed out";
-                        else if (text.find("Error opening decoder") != std::string::npos || text.find("Failed to initialize a video decoder") != std::string::npos)
-                            source_failure = "Video decoder could not be started";
+                    if (!loaded && log->log_level <= MPV_LOG_LEVEL_ERROR && source_failure.reason.empty()) {
+                        source_failure = quest::playback_log_failure(log->prefix, log->text);
                     }
                 } else if (event->event_id == MPV_EVENT_PROPERTY_CHANGE && event->reply_userdata == 41) {
                     next_snapshot = std::chrono::steady_clock::now();
                 } else if (event->event_id == MPV_EVENT_FILE_LOADED) {
-                    source_failure.clear();
+                    source_failure = {}; // Opening recovered; ignore later sidecar warnings.
                     if (!loaded && audio) for (const auto& [location, title] : audio_files) {
                         // "auto": listed for the user, never selected over the video's own audio.
                         const char* add[] = {"audio-add", location.c_str(), "auto", title.c_str(), nullptr};
@@ -706,7 +715,13 @@ struct Source final {
                 else if (event->event_id == MPV_EVENT_PLAYBACK_RESTART && layer() && !awaiting_seek_event) publish_layer(core, true);
                 else if (event->event_id == MPV_EVENT_END_FILE) {
                     const auto* end = static_cast<const mpv_event_end_file*>(event->data);
-                    if (end->error < 0) throw std::runtime_error(source_failure.empty() ? std::string("MPV playback: ") + mpv_error_string(end->error) : source_failure);
+                    if (end->error < 0) {
+                        const auto diagnosis = quest::playback_end_failure(end->error, source_failure);
+                        const std::string detail = std::string("MPV playback: ") + mpv_error_string(end->error) +
+                            (diagnosis.detail.empty() ? "" : "; " + diagnosis.detail);
+                        set_state("failed", detail, end->error, diagnosis.reason, diagnosis.stage);
+                        break;
+                    }
                     set_state(end->reason == MPV_END_FILE_REASON_EOF ? "ended" : "stopped");
                     // Preserve EOF slots and the last source frame until consumer retirement.
                 }
@@ -725,6 +740,8 @@ struct Source final {
                 }
                 if (std::chrono::steady_clock::now() >= next_snapshot) {
                     if (loaded && dimensions.load() == 0) {
+                        if (layer() && !software_layer && !software_fallback.load() && property(core, "hwdec-current") == "no")
+                            software_fallback.store(true);
                         format(core);
                         require(dimensions.load() != 0 || std::chrono::steady_clock::now() < format_deadline,
                                 "MPV video output format did not become ready within 15 seconds");
@@ -741,8 +758,11 @@ struct Source final {
                     }
                 }
             }
-            if (render_failed.load()) set_state("failed", "Shared renderer failed; see render_error");
-        } catch (const std::exception& failure) { set_state("failed", failure.what()); }
+            if (render_failed.load()) set_state("failed", "Shared renderer failed; see render_error", 0, "video_output_failed", "output");
+        } catch (const std::exception& failure) {
+            const auto diagnosis = quest::playback_exception_failure(failure.what());
+            set_state("failed", failure.what(), 0, diagnosis.reason, diagnosis.stage);
+        }
         closing.store(true); wake.notify_all();
         // Rendering disposes its context before this ordinary API destroys the core.
         if (render_thread.joinable()) render_thread.join();
@@ -1139,8 +1159,9 @@ struct Source final {
         require(complete && status == GL_NO_ERROR, "Shared source calibration readback failed");
     }
     std::string status() {
-        std::string snapshot, state_copy, error_copy, render_error_copy, final_copy = "null"; int held = 0, retiring = 0;
-        { std::lock_guard<std::mutex> lock(status_mutex); snapshot = details; state_copy = state; error_copy = error; }
+        std::string snapshot, state_copy, error_copy, reason_copy, stage_copy, render_error_copy, final_copy = "null"; int held = 0, retiring = 0, code_copy = 0;
+        { std::lock_guard<std::mutex> lock(status_mutex); snapshot = details; state_copy = state; error_copy = error;
+            code_copy = mpv_failure_code; reason_copy = failure_reason; stage_copy = failure_stage; }
         { std::lock_guard<std::mutex> lock(frames_mutex); render_error_copy = render_error;
             if (core_eof.load() && final_ticket.frame_id > 0 && final_ticket.source_epoch >= epoch_floor.load())
                 final_copy = "{\"source_epoch\":" + std::to_string(final_ticket.source_epoch) +
@@ -1149,6 +1170,7 @@ struct Source final {
             for (auto& slot : slots) { held += slot.phase == Phase::acquired; retiring += slot.phase == Phase::retiring; }
         }
         return "{\"backend\":\"Android_libmpv\",\"state\":" + quote(state_copy) + ",\"error\":" + quote(error_copy) +
+            ",\"mpv_code\":" + std::to_string(code_copy) + ",\"failure_reason\":" + quote(reason_copy) + ",\"failure_stage\":" + quote(stage_copy) +
             ",\"render_error\":" + quote(render_error_copy) + ",\"done\":" + (done.load() ? "true" : "false") +
             ",\"render_failed\":" + (render_failed.load() ? "true" : "false") + ",\"closing\":" + (closing.load() ? "true" : "false") +
             ",\"rendered\":" + std::to_string(rendered.load()) + ",\"published\":" + std::to_string(published.load()) +
@@ -1184,7 +1206,7 @@ struct Source final {
             ",\"software_layer\":" + (software_layer ? "true" : "false") +
             ",\"layer_surface_width\":" + std::to_string(layer_width) +
             ",\"layer_surface_height\":" + std::to_string(layer_height) +
-            ",\"layer_compatible\":" + (!layer() || ((software_layer || hardware_decoding.load() || dimensions.load() == 0) && !dolby_profile5.load()) ? "true" : "false") +
+            ",\"layer_compatible\":" + (!layer() || ((software_layer || hardware_decoding.load() || dimensions.load() == 0) && !dolby_profile5.load() && !software_fallback.load()) ? "true" : "false") +
             ",\"details\":" + snapshot + "}";
     }
 };
@@ -1376,6 +1398,17 @@ Java_org_vrpassthroughplayer_plugin_MpvSourceNative_subtitleStatus(JNIEnv* env, 
         json += ",\"age_ms\":" + std::to_string(std::max<int64_t>(0, (now-source->published_subtitle_ns)/1000000)) + "}";
         return env->NewStringUTF(json.c_str());
     } catch (const std::exception& failure) { error(env, failure); return nullptr; }
+}
+// Positive seconds play the audio later (Alpha plan B holds the layer's frames for their masks).
+extern "C" JNIEXPORT jboolean JNICALL
+Java_org_vrpassthroughplayer_plugin_MpvSourceNative_setAudioDelay(JNIEnv* env, jclass, jlong handle, jdouble seconds) {
+    try {
+        if (!std::isfinite(seconds) || std::abs(seconds) > 2.0) return JNI_FALSE;
+        auto source = find(handle); std::lock_guard<std::mutex> lock(source->commands_mutex);
+        if (source->closing.load()) return JNI_FALSE;
+        source->desired_audio_delay = seconds; source->audio_delay_dirty = true; source->wake.notify_one();
+        return JNI_TRUE;
+    } catch (const std::exception& failure) { error(env, failure); return JNI_FALSE; }
 }
 extern "C" JNIEXPORT jlong JNICALL
 Java_org_vrpassthroughplayer_plugin_MpvSourceNative_setSubtitleDelay(JNIEnv* env, jclass, jlong handle, jdouble seconds) {

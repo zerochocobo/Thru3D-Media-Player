@@ -55,3 +55,7 @@ Re-training on other media will generally produce different student weights and 
 ## Licenses
 
 The upstream RVM code is GPL-3.0; the project records its reused/sliced student weights as GPL-derived. The actual weight grant and appropriate modifiable form must be considered when distributing them. Depth Anything V2 **Small** weights are Apache-2.0; Base/Large/Giant have different terms. Excluding weights from Git does not settle obligations for APKs that embed them. See [licensing scope](LICENSING.md).
+
+## Runtime Alpha sizes
+
+The global inference-size choice is 256/320/384/512 (default 320), using the version-matched modified RVM contract above. This is not a general model-weight selector. First use of a size can prepare for about a minute while the existing size remains usable. No weights or private preparation caches are published. New Alpha processing-limit settings default to 30 FPS; saved settings take precedence, and actual throughput depends on device and media.

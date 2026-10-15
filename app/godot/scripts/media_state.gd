@@ -7,6 +7,7 @@ var format_revision := 0
 var effect_revision := 0
 var state := "closed"
 var error := ""
+var error_report: Dictionary = {}
 var frame_counter := 0
 var surface_timestamp_ns := 0
 var transform := Projection.IDENTITY
@@ -24,6 +25,7 @@ func begin(id: int) -> void:
 	effect_revision = 0
 	state = "opening" if id > 0 else "failed"
 	error = "" if id > 0 else "MEDIA_OPEN_REJECTED"
+	error_report = {}
 	frame_counter = 0
 	surface_timestamp_ns = 0
 	transform = Projection.IDENTITY

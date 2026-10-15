@@ -63,6 +63,7 @@ struct State {
     std::array<XrCompositionLayerImageLayoutFB, kMaxLayers> layouts{};
     std::array<XrCompositionLayerSettingsFB, kMaxLayers> settings{};
     std::array<XrCompositionLayerColorScaleBiasKHR, kMaxLayers> colors{};
+    std::array<XrCompositionLayerAlphaBlendFB, kMaxLayers> blends{};
     std::array<uint64_t, kMaxLayers> logged_layout{};
     int count = 0;
     // RGBA picture swapchains (2D->3D pairs, photos, subtitles).
@@ -157,6 +158,42 @@ GLuint masked_copy_program() {
     if (!ok) { log(ANDROID_LOG_WARN, "masked copy program does not link"); glDeleteProgram(masked_program); masked_program = 0; }
     return masked_program;
 }
+/** Alpha plan B: RVM's packed R8 mask (left | right model eyes) drawn over the whole frame layout into
+ * the mask swapchain as (0, 0, 0, m), sampled exactly as video_rvm_pair.gdshader: eye UV -> model UV by
+ * rect, nothing outside the model window (ROI), texel centres kept inside the content and this eye. */
+GLuint mask_program = 0;
+GLuint mask_draw_program() {
+    if (mask_program && glIsProgram(mask_program)) return mask_program;
+    static const char* vertex = "#version 300 es\n"
+        "void main() { vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2)); gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0); }\n";
+    static const char* fragment = "#version 300 es\n"
+        "precision highp float;\n"
+        "uniform sampler2D mask; uniform vec4 rect; uniform int frame_layout; uniform vec2 model_size; uniform vec2 target;\n"
+        "uniform vec2 edge; // the player's edge feather/shrink: mask values remapped from [edge.x, edge.y] to [0, 1]\n"
+        "out vec4 result;\n"
+        "void main() {\n"
+        "  vec2 uv = gl_FragCoord.xy / target; // row 0 is the picture's top, as for every GL picture here\n"
+        "  float eye = 0.0; vec2 local = uv;\n"
+        "  if (frame_layout == 1) { eye = step(0.5, uv.x); local.x = uv.x * 2.0 - eye; }\n"
+        "  else if (frame_layout == 2) { eye = step(0.5, uv.y); local.y = uv.y * 2.0 - eye; }\n"
+        "  vec2 model_p = rect.xy + local * rect.zw;\n"
+        "  if (any(lessThan(model_p, vec2(0.0))) || any(greaterThan(model_p, vec2(1.0)))) { result = vec4(0.0); return; }\n"
+        "  vec2 first_center = max((ceil(rect.xy * model_size - vec2(0.5)) + vec2(0.5)) / model_size, vec2(0.5) / model_size);\n"
+        "  vec2 last_center = min((floor((rect.xy + rect.zw) * model_size - vec2(0.5)) + vec2(0.5)) / model_size, vec2(1.0) - vec2(0.5) / model_size);\n"
+        "  vec2 p = clamp(model_p, first_center, last_center);\n"
+        "  float m = clamp((texture(mask, vec2((p.x + eye) * 0.5, p.y)).r - edge.x) / max(edge.y - edge.x, 0.001), 0.0, 1.0);\n"
+        "  result = vec4(0.0, 0.0, 0.0, m);\n"
+        "}\n";
+    const GLuint vs = compile(GL_VERTEX_SHADER, vertex), fs = compile(GL_FRAGMENT_SHADER, fragment);
+    if (!vs || !fs) { if (vs) glDeleteShader(vs); if (fs) glDeleteShader(fs); return 0; }
+    mask_program = glCreateProgram();
+    glAttachShader(mask_program, vs); glAttachShader(mask_program, fs); glLinkProgram(mask_program);
+    glDeleteShader(vs); glDeleteShader(fs);
+    GLint ok = 0; glGetProgramiv(mask_program, GL_LINK_STATUS, &ok);
+    if (!ok) { log(ANDROID_LOG_WARN, "mask program does not link"); glDeleteProgram(mask_program); mask_program = 0; }
+    return mask_program;
+}
+uint64_t mask_version = 0; // masks drawn into the mask swapchain (Godot shows the mask layer once > 0)
 /** Everything the masked draw changes, restored afterwards (Godot keeps its own GL state cache). */
 struct DrawState {
     GLint framebuffer = 0, program = 0, array = 0, active = 0, viewport[4] = {}, textures[2] = {}, samplers[2] = {};
@@ -284,7 +321,10 @@ Java_org_vrpassthroughplayer_plugin_VideoLayerNative_destroySurface(JNIEnv* env,
  * enabled. 19: source, 0 the decoder surface, 1 the RGBA picture swapchain. 20-22: colour scale RGB,
  * 23-25: colour bias RGB (XR_KHR_composition_layer_color_scale_bias, ignored unless Godot enabled it;
  * identity 1 1 1 / 0 0 0 adds nothing). 26: picture slot (0-2) of a picture source. 27: blending, bit 0 the
- * texture's alpha (premultiplied), bit 1 unpremultiplied alpha; 0 opaque. count 0 hides the layers. */
+ * texture's alpha (premultiplied), bit 1 unpremultiplied alpha; 0 opaque. Bits 2 and 3 (callers set them
+ * only with XR_FB_composition_layer_alpha_blend enabled) mask the next layer up: bit 2 writes the mask,
+ * destination colour x (1 - a) and destination alpha = a; bit 3 adds its colour x destination alpha,
+ * leaving the alpha. Together: video x m + what lay beneath x (1 - m). count 0 hides the layers. */
 extern "C" JNIEXPORT jboolean JNICALL
 Java_org_vrpassthroughplayer_plugin_VideoLayerNative_setLayers(JNIEnv* env, jclass, jint count, jfloatArray values) {
     std::lock_guard<std::mutex> lock(mutex);
@@ -349,6 +389,20 @@ Java_org_vrpassthroughplayer_plugin_VideoLayerNative_setLayers(JNIEnv* env, jcla
             state.colors[i].colorScale = {p[20], p[21], p[22], 1.0f};
             state.colors[i].colorBias = {p[23], p[24], p[25], 0.0f};
             next = &state.colors[i];
+        }
+        if (blend & 12) {
+            XrCompositionLayerAlphaBlendFB& factors = state.blends[i];
+            factors = {};
+            factors.type = XR_TYPE_COMPOSITION_LAYER_ALPHA_BLEND_FB;
+            factors.next = const_cast<void*>(next);
+            if (blend & 4) {
+                factors.srcFactorColor = XR_BLEND_FACTOR_ZERO_FB; factors.dstFactorColor = XR_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA_FB;
+                factors.srcFactorAlpha = XR_BLEND_FACTOR_ONE_FB; factors.dstFactorAlpha = XR_BLEND_FACTOR_ZERO_FB;
+            } else {
+                factors.srcFactorColor = XR_BLEND_FACTOR_DST_ALPHA_FB; factors.dstFactorColor = XR_BLEND_FACTOR_ONE_FB;
+                factors.srcFactorAlpha = XR_BLEND_FACTOR_ZERO_FB; factors.dstFactorAlpha = XR_BLEND_FACTOR_ONE_FB;
+            }
+            next = &factors;
         }
         Layer& layer = state.layers[i];
         std::memset(&layer, 0, sizeof(layer));
@@ -626,4 +680,67 @@ Java_org_vrpassthroughplayer_plugin_VideoLayerNative_copyBandMasked(JNIEnv*, jcl
     if (status != GL_FRAMEBUFFER_COMPLETE || error != GL_NO_ERROR)
         log(ANDROID_LOG_WARN, "copyBandMasked framebuffer status " + std::to_string(status) + " GL error " + std::to_string(error));
     return status == GL_FRAMEBUFFER_COMPLETE && error == GL_NO_ERROR ? JNI_TRUE : JNI_FALSE;
+}
+
+/** Alpha plan B: draws RVM's mask texture (R8, 2 x model width: left | right) into the whole acquired
+ * image of [slot] laid out as the video frame (0 mono, 1 side by side, 2 top-bottom); rect maps eye UV
+ * to model UV (the pair's model_content_rect). */
+extern "C" JNIEXPORT jboolean JNICALL
+Java_org_vrpassthroughplayer_plugin_VideoLayerNative_drawMask(JNIEnv* env, jclass, jint slot, jint mask, jfloatArray rect,
+        jint frame_layout, jint model_width, jint model_height, jfloat edge_low, jfloat edge_high) {
+    std::lock_guard<std::mutex> lock(mutex);
+    Picture* target = picture(slot);
+    if (!target || !target->acquired || mask <= 0 || !rect || env->GetArrayLength(rect) != 4 || model_width <= 0 || model_height <= 0
+        || !glIsTexture(static_cast<GLuint>(mask))) return JNI_FALSE;
+    std::array<float, 4> window{}; env->GetFloatArrayRegion(rect, 0, 4, window.data());
+    for (float value : window) if (!std::isfinite(value)) return JNI_FALSE;
+    Picture& p = *target;
+    while (glGetError() != GL_NO_ERROR) {}
+    GLenum status = GL_FRAMEBUFFER_COMPLETE;
+    {
+        DrawState saved;
+        const GLuint program = mask_draw_program();
+        if (!program) return JNI_FALSE;
+        GLuint framebuffer = 0;
+        glGenFramebuffers(1, &framebuffer);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, framebuffer);
+        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, p.acquired, 0);
+        status = glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER);
+        if (status == GL_FRAMEBUFFER_COMPLETE) {
+            glDisable(GL_BLEND); glDisable(GL_SCISSOR_TEST); glDisable(GL_DEPTH_TEST);
+            glDisable(GL_CULL_FACE); glDisable(GL_STENCIL_TEST); glDisable(GL_DITHER);
+            glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+            glViewport(0, 0, p.width, p.height);
+            glUseProgram(program);
+            glBindVertexArray(0);
+            glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, static_cast<GLuint>(mask)); glBindSampler(0, 0);
+            glUniform1i(glGetUniformLocation(program, "mask"), 0);
+            glUniform4f(glGetUniformLocation(program, "rect"), window[0], window[1], window[2], window[3]);
+            glUniform1i(glGetUniformLocation(program, "frame_layout"), frame_layout);
+            glUniform2f(glGetUniformLocation(program, "model_size"), static_cast<float>(model_width), static_cast<float>(model_height));
+            glUniform2f(glGetUniformLocation(program, "target"), static_cast<float>(p.width), static_cast<float>(p.height));
+            glUniform2f(glGetUniformLocation(program, "edge"), std::isfinite(edge_low) ? edge_low : 0.0f, std::isfinite(edge_high) ? edge_high : 1.0f);
+            glDrawArrays(GL_TRIANGLES, 0, 3);
+        }
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+        glDeleteFramebuffers(1, &framebuffer);
+    }
+    const GLenum error = glGetError();
+    if (status != GL_FRAMEBUFFER_COMPLETE || error != GL_NO_ERROR) {
+        log(ANDROID_LOG_WARN, "drawMask framebuffer status " + std::to_string(status) + " GL error " + std::to_string(error));
+        return JNI_FALSE;
+    }
+    return JNI_TRUE;
+}
+
+/** Counts a mask released into the mask swapchain; Godot reads it with maskVersion(). */
+extern "C" JNIEXPORT jlong JNICALL
+Java_org_vrpassthroughplayer_plugin_VideoLayerNative_maskDrawn(JNIEnv*, jclass) {
+    std::lock_guard<std::mutex> lock(mutex);
+    return static_cast<jlong>(++mask_version);
+}
+extern "C" JNIEXPORT jlong JNICALL
+Java_org_vrpassthroughplayer_plugin_VideoLayerNative_maskVersion(JNIEnv*, jclass) {
+    std::lock_guard<std::mutex> lock(mutex);
+    return static_cast<jlong>(mask_version);
 }

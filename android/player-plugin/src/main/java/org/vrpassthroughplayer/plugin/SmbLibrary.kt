@@ -99,12 +99,13 @@ internal class SmbLibrary(private val context: Context, private val streams: () 
                 val childPath = if (clean.isEmpty()) name else "$clean/$name"
                 if (child.isDirectory) entries.put(JSONObject().put("id", childPath).put("title", name).put("container", true)
                     .put("modified", child.lastModified().takeIf { it > 0 } ?: -1)
-                    .put("delete_uri", "smb://$id/$childPath").put("can_delete", clean.isNotEmpty() && child.attributes and 0x401 == 0)
+                    .put("delete_uri", "smb://$id/$childPath").put("can_delete", clean.isNotEmpty() && child.attributes and 0x401 == 0 && runCatching { MediaDeletePolicy.smbPath(childPath, true) }.isSuccess)
                     .put("delete_reason", "File deletion unavailable for this source"))
                 else if (MediaKinds.supported(name)) entries.put(JSONObject().put("id", childPath).put("title", name).put("kind", MediaKinds.kind(name))
                     .put("container", false).put("size", child.length()).put("uri", "smb://$id/$childPath")
                     .put("modified", child.lastModified().takeIf { it > 0 } ?: -1)
                     .put("can_delete", child.attributes and org.codelibs.jcifs.smb.SmbConstants.ATTR_READONLY == 0 && runCatching { MediaDeletePolicy.smbPath(childPath) }.isSuccess)
+                    .put("can_rename", child.attributes and 0x401 == 0 && MediaKinds.kind(name) == "video" && runCatching { MediaDeletePolicy.smbPath(childPath) }.isSuccess)
                     .put("delete_reason", "File is read-only"))
                 child.close()
             }
@@ -119,8 +120,15 @@ internal class SmbLibrary(private val context: Context, private val streams: () 
         val path = MediaDeletePolicy.smbPath(rest.substringAfter('/'))
         val parent = path.substringBeforeLast('/')
         val context = cifs(server)
-        val names = SmbFile("smb://${server.host}/$parent/", context).use { it.list().map { name -> name.trimEnd('/') } }
-        val bundle = RenameBundle(path.substringAfterLast('/'), request.getString("new_name"), names)
+        val names = SmbFile("smb://${server.host}/$parent/", context).use { directory ->
+            val children = directory.listFiles()
+            try { children.filter { it.isFile && it.attributes and 0x400 == 0 }.map { it.name.trimEnd('/') } }
+            finally { children.forEach { it.close() } }
+        }
+        val bundle = RenameBundle(path.substringAfterLast('/'), request.getString("new_name"), names, request.optBoolean("include_same_name", true))
+        for (move in bundle.moves) SmbFile("smb://${server.host}/$parent/${move.to}", context).use {
+            check(!it.exists()) { "A file with that name already exists" }
+        }
         val expected = HashMap<String, Pair<Long, Long>>()
         val fingerprint = bundle.fingerprint { name ->
             MediaDeletePolicy.smbPath("$parent/$name", true)
@@ -130,7 +138,14 @@ internal class SmbLibrary(private val context: Context, private val streams: () 
             }
         }
         SmbFile("smb://${server.host}/$path", context).use { MediaDeletePolicy.unchanged(it.length(), it.lastModified(), request.getLong("size"), request.getLong("modified")) }
-        if (prepare) return JSONObject().put("preview", true).put("plan", fingerprint).put("moves", bundle.preview())
+        val preview = bundle.preview().apply {
+            for (i in 0 until length()) getJSONObject(i).apply {
+                put("old_uri", "smb://$id/$parent/${getString("from")}")
+                put("new_uri", "smb://$id/$parent/${getString("to")}")
+                put("size", expected.getValue(getString("from")).first)
+            }
+        }
+        if (prepare) return JSONObject().put("preview", true).put("plan", fingerprint).put("moves", preview)
         check(fingerprint == request.optString("plan")) { "Folder changed; check its contents again" }
         return bundle.execute(inspect = { move ->
             fun state(name: String): Pair<Boolean, Boolean> = SmbFile("smb://${server.host}/$parent/$name", context).use { child ->
@@ -143,7 +158,7 @@ internal class SmbLibrary(private val context: Context, private val streams: () 
             SmbFile("smb://${server.host}/$parent/$from", context).use { source ->
                 SmbFile("smb://${server.host}/$parent/$to", context).use { destination -> source.renameTo(destination) }
             }
-        }.put("new_uri", "smb://$id/$parent/${bundle.moves[0].to}").put("new_title", bundle.moves[0].to)
+        }.put("moves", preview).put("new_uri", "smb://$id/$parent/${bundle.moves[0].to}").put("new_title", bundle.moves[0].to)
     }
 
     fun deleteFile(request: JSONObject, inspect: Boolean, prepare: Boolean = false): JSONObject {

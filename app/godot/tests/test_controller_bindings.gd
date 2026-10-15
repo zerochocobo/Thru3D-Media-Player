@@ -27,11 +27,13 @@ func run() -> void:
 	var ordinary := page.items().filter(func(item): return item.has("id")).map(func(item): return item.id)
 	check("drag_video" not in ordinary and "drag_photo" in ordinary, "Video trigger dragging is removed while photo dragging remains configurable")
 	check(page.items().filter(func(item): return item.get("fixed", "") == "Trigger + stick ↑ / ↓").all(func(item): return item.scope == "Flat photos"), "Trigger movement help applies only to photos")
+	check(page.items().any(func(item): return item.title == "Close video and return" and item.get("fixed", "") == "B / Y" and item.scope == "Video"), "Controls explain the fixed video Back shortcut")
 	page.mode = 2
 	var combinations := page.items().map(func(item): return item.id)
 	check(not combinations.is_empty() and combinations.all(func(id): return id not in ordinary), "Combinations omit the ordinary controller operations")
 	check(["play", "back10", "forward10", "volume_up", "zoom_in", "reset_video", "projection_video", "photo_next"].all(func(id): return id not in combinations), "Playback, navigation and other standard operations are absent from combinations")
 	check(["subtitles", "passthrough_video", "grade_next", "subtitle_next", "audio_next"].all(func(id): return id in combinations), "Combinations retain the supplementary operations")
+	check(["turn_180_video", "turn_180_photo", "previous_video", "next_video"].all(func(id): return id in combinations and bindings.bindings(id).is_empty()), "360 turns and video navigation are optional combinations without new defaults")
 	page.bindings.clear("play")
 	check(not page.items().any(func(item): return item.id == "play"), "Clearing a standard binding does not reinsert it in combinations")
 	page.bindings.restore_all()
@@ -74,7 +76,7 @@ func run() -> void:
 		for text in ["Restore defaults", "Grip + trigger", "Target button", "Stick direction", "Controllers", "Gestures", "Combinations", "Movement range", "Unassigned", "Cancel"]:
 			check(catalog.has(text), "Translated editor: " + language + "/" + text)
 	check(not bindings.assign("play", Bindings.bind("right_hand", "menu_button")).ok, "System/menu recovery key cannot be rebound")
-	check(not bindings.assign("play", Bindings.bind("right_hand", "ax_button", ["trigger_click"]), true).ok, "All chords start with grip")
+	check(not bindings.assign("play", Bindings.bind("right_hand", "ax_button", ["trigger_click"]), true).ok, "Chords require both grip and trigger")
 	var choice := Bindings.bind("right_hand", "by_button", ["grip_click", "trigger_click"])
 	var collision := bindings.assign("subtitles", choice, true)
 	check(collision.ok and bindings.resolve("right_hand", "trigger_click", "video_flat").is_empty(), "Grip-first chords leave the fixed video UI trigger independent of shortcuts")
@@ -89,7 +91,7 @@ func run() -> void:
 	bindings.release("right_hand", "grip_click")
 	check(bindings.resolve("right_hand", "ax_button", "video_flat") == "play", "Base A recovers after modifier release")
 	bindings.press("right_hand", "trigger_click"); bindings.press("right_hand", "grip_click")
-	check(bindings.resolve("right_hand", "by_button", "video_flat").is_empty(), "Reverse modifier order cannot start a grip-first chord")
+	check(bindings.resolve("right_hand", "by_button", "video_flat") == "subtitles", "Trigger then grip then B resolves the same chord")
 	bindings.release("right_hand", "trigger_click"); bindings.release("right_hand", "grip_click")
 	check(bindings.bindings("move_video").size() == 2, "Fixed grip movement can share a chord's starting grip")
 	bindings.press("right_hand", "grip_click")
@@ -171,6 +173,9 @@ func run() -> void:
 	check(saved.get_value("input", "controller_bindings") == data, "Main persists actual binding data")
 	main.free()
 	runtime()
+	combination_media_actions()
+	combination_media_actions(true)
+	grip_chord_arbitration()
 	await tracked_grip_drag()
 	await video_triggers()
 	await back_navigation()
@@ -354,6 +359,221 @@ func tracked_grip_drag() -> void:
 func tap(main: Node3D, input: String, hand: String = "right_hand") -> void:
 	main._on_controller_button(input, hand); main._on_controller_release(input, hand)
 
+func media_chord(main: Node3D, hand: String, input: String = "by_button") -> void:
+	var trigger_first: bool = main.get_meta("trigger_first", false)
+	main._on_controller_button("trigger_click" if trigger_first else "grip_click", hand)
+	# Production updates run between presses, including natural hand/head movement.
+	main.pose.origin.x += 0.04; main._update_interface_move(); main._update_grab()
+	main._on_controller_button("grip_click" if trigger_first else "trigger_click", hand)
+	main.pose.origin.y += 0.03; main._update_interface_move()
+	# Duplicate press events must not flip twice or skip two files.
+	main._on_controller_button(input, hand); main._on_controller_button(input, hand)
+	main._on_controller_release(input, hand)
+	main._on_controller_release("trigger_click", hand)
+	main._on_controller_release("grip_click", hand)
+
+func grip_chord_arbitration() -> void:
+	var directory := ProjectSettings.globalize_path("res://../../build/output/controller-controls/grip-chords")
+	DirAccess.make_dir_recursive_absolute(directory)
+	var video := preload("res://scripts/mpv_video_display.gd").new(); video.history_enabled = false
+	root.add_child(video); video.set_process(false)
+	video.platform = preload("res://tests/test_player_menu.gd").Host.new()
+	video.local_uri = "file:///grip.mp4"; video.media.begin(7); video.media.state = "playing"
+	var photo := preload("res://scripts/photo_display.gd").new(); photo.auto_depth = false
+	root.add_child(photo); photo.set_process(false); photo.local_uri = "file:///grip.jpg"
+	var main := InputMain.new(); main.video = video; main.photo = photo; main.settings_path = directory.path_join("settings.cfg")
+	var menu := preload("res://scripts/player_menu.gd").new(); menu.state_provider = main._menu_state
+	root.add_child(menu); menu.set_process(false); menu.dismiss(); main.player_menu = menu; main.video_menu = menu
+	var library := preload("res://scripts/library_menu.gd").new()
+	root.add_child(library); library.set_process(false); library.dismiss(); main.recent_menu = library
+	for hand in Bindings.HANDS:
+		for is_photo in [false, true]:
+			main.photo_active = is_photo
+			var surface: Node3D = photo if is_photo else video
+			surface.geometry = 0; surface.flat_pose = Transform3D(Basis.IDENTITY, Vector3(0, 1.6, -2))
+			surface._apply_geometry(); surface.panel.visible = true
+			var id := "follow_photo" if is_photo else "follow_video"
+			for scope in ["panel", "media", "all"]:
+				main.controller_bindings.restore_all(); main.controller_bindings.move_scope = scope
+				main.controller_bindings.assign(id, Bindings.bind(hand, "by_button", Bindings.MODIFIERS), true)
+				for ray in [null, [Vector3(0, 1.6, 0), Vector3(3, 0, -1).normalized()]]:
+					main.rays[hand] = ray
+					var before: Transform3D = surface.flat_pose
+					main._on_controller_button("grip_click", hand)
+					main.pose.origin.x += 0.05; main._update_interface_move()
+					check(main.interface_move.capture.is_empty() and surface.flat_pose == before, "Blank/untracked grip never captures flat media or hidden interfaces: %s/%s/%s" % [hand, str(is_photo), scope])
+					main._on_controller_button("trigger_click", hand)
+					var following: bool = main.view_follow.enabled
+					tap(main, "by_button", hand)
+					check(main.view_follow.enabled != following, "Blank-space grip chord survives a tracked update before trigger")
+					main._on_controller_release("trigger_click", hand); main._on_controller_release("grip_click", hand)
+			# A real picture grab may already have moved before the second modifier arrives.
+			main.controller_bindings.restore_all()
+			for input in ["by_button", "stick_right"]:
+				main.controller_bindings.assign(id, Bindings.bind(hand, input, Bindings.MODIFIERS), true)
+			main.rays[hand] = [Vector3(0, 1.6, 0), (surface.panel.global_position - Vector3(0, 1.6, 0)).normalized()]
+			for input in ["by_button", "stick_right"]:
+				main.pose = Transform3D(Basis.IDENTITY, Vector3(0, 1.5, -0.5))
+				main._on_controller_button("grip_click", hand)
+				main.pose.origin.x += 0.05; main._update_interface_move()
+				check(main.interface_move.capture.get("moved", false), "Aimed grip still moves flat video/photo before chord takeover")
+				main._on_controller_button("trigger_click", hand)
+				var frozen: Transform3D = surface.flat_pose
+				main.pose.origin.y += 0.05; main.head_pose.origin.x += 0.04; main._update_interface_move()
+				check(main.interface_move.capture.is_empty() and surface.flat_pose == frozen, "Same-hand trigger ends committed movement and freezes it throughout the chord")
+				var following: bool = main.view_follow.enabled
+				if input == "by_button": tap(main, input, hand)
+				else:
+					main._process_sticks(Vector2.ZERO, Vector2.ZERO, 0.1)
+					for repeat in 3: main._process_sticks(Vector2(1, 0) if hand == "left_hand" else Vector2.ZERO, Vector2(1, 0) if hand == "right_hand" else Vector2.ZERO, 0.1)
+				check(main.view_follow.enabled != following, "Button/stick chord executes once after committed movement: " + input)
+				main._on_controller_release("trigger_click", hand)
+				main.pose.origin.x += 0.05; main._update_interface_move()
+				check(main.interface_move.capture.is_empty(), "Releasing trigger cannot resume movement with the original grip still held")
+				main._on_controller_release("grip_click", hand)
+				main._process_sticks(Vector2.ZERO, Vector2.ZERO, 0.1)
+			# Reverse order must also take over a photo drag that already committed.
+			main.rays[hand] = [Vector3(0, 1.6, 0), Vector3.FORWARD]
+			main._on_controller_button("trigger_click", hand)
+			main.rays[hand][1] = Basis(Vector3.UP, 0.15) * Vector3.FORWARD; main._update_grab()
+			check(main._grab.get("moved", false) if is_photo else not main._video_control_tap.is_empty(), "Trigger-first begins the existing photo drag/video controls tap")
+			main._on_controller_button("grip_click", hand)
+			var frozen: Transform3D = surface.flat_pose
+			main.rays[hand][1] = Basis(Vector3.UP, 0.3) * Vector3.FORWARD; main._update_grab(); main._update_interface_move()
+			check(main._grab.is_empty() and main.interface_move.capture.is_empty() and surface.flat_pose == frozen and main._video_control_tap.is_empty(), "Grip takes over a committed trigger drag without a jump or deferred popup")
+			var following: bool = main.view_follow.enabled
+			tap(main, "by_button", hand)
+			check(main.view_follow.enabled != following, "Trigger-first chord executes after real photo drag/video tap takeover")
+			main._on_controller_release("grip_click", hand); main._on_controller_release("trigger_click", hand)
+			check(not menu.visible, "Either modifier release order avoids a late controls popup")
+			# With chords assigned, a plain blank trigger click still dismisses a library.
+			main.rays[hand] = [Vector3(0, 1.6, 0), Vector3(3, 0, -1).normalized()]
+			library.visible = true
+			main._on_controller_button("trigger_click", hand)
+			check(library.visible, "A chord-capable blank trigger waits for release")
+			main._on_controller_release("trigger_click", hand)
+			check(not library.visible, "A plain trigger release still dismisses video/photo library")
+			if is_photo:
+				photo.gallery.mode = 2; photo.gallery.visible = true
+				main._on_controller_button("grip_click", hand)
+				check(main.interface_move.capture.is_empty(), "Blank space between gallery cards cannot grab the whole layout")
+				main._on_controller_release("grip_click", hand); photo.gallery.mode = 0
+			else:
+				video.geometry = 1; video._apply_geometry(); video.panel.visible = true
+				main.rays[hand] = [video.panel.global_position, video.panel.global_basis.z]
+				main._on_controller_button("grip_click", hand)
+				check(main.interface_move.capture.is_empty(), "The empty rear of VR180 cannot capture the picture")
+				main._on_controller_release("grip_click", hand); video.geometry = 0; video._apply_geometry()
+		# A blank press over a visible transport must not fall back to the video either.
+		main.photo_active = false; main._show_player_menu()
+		main.rays[hand] = [Vector3(0, 1.6, 0), Vector3(3, 0, -1).normalized()]
+		main._on_controller_button("grip_click", hand)
+		check(main.interface_move.capture.is_empty(), "Visible controls do not turn an empty-space grip into a picture capture")
+		main._on_controller_release("grip_click", hand); menu.dismiss()
+	library.free(); menu.free(); photo.free(); video.free(); main.free()
+
+func combination_media_actions(trigger_first: bool = false) -> void:
+	var directory := ProjectSettings.globalize_path("res://../../build/output/controller-controls/media-actions")
+	DirAccess.make_dir_recursive_absolute(directory)
+	var video := preload("res://scripts/mpv_video_display.gd").new(); video.history_enabled = false
+	video.mode_memory = preload("res://scripts/file_mode_memory.gd").new(directory.path_join("video-modes"))
+	root.add_child(video); video.set_process(false)
+	var host := preload("res://tests/test_player_menu.gd").Host.new(); video.platform = host
+	var photo := preload("res://scripts/photo_display.gd").new(); photo.auto_depth = false
+	root.add_child(photo); photo.set_process(false)
+	var main := InputMain.new(); main.video = video; main.photo = photo
+	main.set_meta("trigger_first", trigger_first)
+	main.settings_path = directory.path_join("settings.cfg")
+	var menu := preload("res://scripts/player_menu.gd").new(); menu.state_provider = main._menu_state
+	root.add_child(menu); menu.set_process(false); main.player_menu = menu; main.video_menu = menu
+	var photo_menu := preload("res://scripts/photo_menu.gd").new(); photo_menu.state_provider = photo.snapshot
+	root.add_child(photo_menu); photo_menu.set_process(false); main.photo_menu = photo_menu
+	var library := preload("res://scripts/library_menu.gd").new()
+	root.add_child(library); library.set_process(false); main.recent_menu = library
+	for hand in Bindings.HANDS:
+		main.rays[hand] = [Vector3(0, 1.6, 0), Vector3(3, 0, -1).normalized()]
+		main.controller_bindings.restore_all()
+		for id in ["turn_180_video", "turn_180_photo"]:
+			check(main.controller_bindings.assign(id, Bindings.bind(hand, "by_button", Bindings.MODIFIERS), true).ok, "Video and photo turn bindings can share one chord: " + hand)
+		var restored := Bindings.new(); restored.restore(main.controller_bindings.snapshot())
+		check(restored.snapshot() == main.controller_bindings.snapshot(), "New optional actions survive saving and restoring")
+		for is_photo in [false, true]:
+			main.photo_active = is_photo; main.player_menu = photo_menu if is_photo else menu
+			var surface: Node3D = photo if is_photo else video
+			surface.local_uri = "file:///turn.jpg" if is_photo else "file:///turn.mp4"
+			video.media.begin(7); video.media.state = "playing"
+			for projection in [0, 1, 2, 3]:
+				menu.dismiss(); photo_menu.dismiss(); library.dismiss()
+				surface.geometry = projection; surface._apply_geometry()
+				surface.view_yaw = 0.3; surface.view_pitch = 0.2; surface.view_zoom = 0.1; surface._center_on_view()
+				var basis_before: Basis = surface.panel.global_basis
+				var id := "turn_180_photo" if is_photo else "turn_180_video"
+				check(main._shortcut_allowed(id, true) == (projection == 3), "Turn is enabled only in 360 media: %s/%s/%d" % [hand, str(is_photo), projection])
+				media_chord(main, hand)
+				check(is_equal_approx(surface.view_yaw, wrapf(0.3 + (PI if projection == 3 else 0.0), -PI, PI)), "Turn chord rotates once only for 360 and cannot fall through to Back")
+				check(is_equal_approx(surface.view_pitch, 0.2) and is_equal_approx(surface.view_zoom, 0.1) and not library.visible and not main.player_menu.visible, "Turning preserves pitch, zoom and hidden controls")
+				if projection == 3:
+					media_chord(main, hand)
+					check(surface.panel.global_basis.is_equal_approx(basis_before), "Two 180-degree turns restore the video/photo orientation")
+			library.toggle(); library.refresh()
+			var yaw: float = surface.view_yaw
+			media_chord(main, hand)
+			check(surface.view_yaw == yaw and library.visible, "Library blocks 360 chords without invoking ordinary Back")
+			library.dismiss()
+		main.photo_active = false; main.player_menu = menu
+		main.controller_bindings.restore_all()
+		check(main.controller_bindings.assign("next_video", Bindings.bind(hand, "ax_button", Bindings.MODIFIERS), true).ok
+			and main.controller_bindings.assign("previous_video", Bindings.bind(hand, "by_button", Bindings.MODIFIERS), true).ok, "Both video navigation chords can be assigned")
+		restored.restore(main.controller_bindings.snapshot())
+		check(restored.snapshot() == main.controller_bindings.snapshot(), "Video navigation combinations survive restart")
+		var collision := main.controller_bindings.assign("turn_180_video", Bindings.bind(hand, "by_button", Bindings.MODIFIERS), true)
+		check(not collision.ok and "previous_video" in collision.conflicts, "New combinations retain conflict detection")
+		main.video_queue = [{"uri": "file:///first.mp4", "title": "First"}, {"uri": "smb://fixture/second.mp4", "title": "Second", "metadata": {"duration_ms": 120000}}, {"uri": "https://fixture/third.mp4", "title": "Third"}]
+		video.open_library("file:///first.mp4", "First")
+		var count_before: int = host.calls.size()
+		media_chord(main, hand)
+		check(video.local_uri == "file:///first.mp4" and host.calls.size() == count_before and not library.visible, "Previous at the first video does nothing without falling through to exit")
+		media_chord(main, hand, "ax_button")
+		check(video.local_uri == "smb://fixture/second.mp4" and video.requested_play and not menu.visible, "Next chord opens exactly the next queued video and keeps controls hidden")
+		main._show_player_menu(); menu.refresh()
+		media_chord(main, hand, "ax_button")
+		check(video.local_uri == "https://fixture/third.mp4" and menu.visible and video.requested_play, "Next chord also works with ordinary video controls visible")
+		count_before = host.calls.size(); media_chord(main, hand, "ax_button")
+		check(video.local_uri == "https://fixture/third.mp4" and host.calls.size() == count_before, "Last video does not wrap or reopen")
+		menu.section = 1; menu.refresh(); media_chord(main, hand)
+		check(video.local_uri == "https://fixture/third.mp4" and menu.section == 1, "Video settings block navigation chords")
+		var capture_hand := "left_hand" if hand == "right_hand" else "right_hand"
+		menu._reset_navigation(); menu.refresh(); menu._seek_hand = capture_hand
+		media_chord(main, hand)
+		check(video.local_uri == "https://fixture/third.mp4" and menu._seek_hand == capture_hand, "Other-hand timeline capture owns input and blocks video navigation")
+		menu._seek_hand = ""; menu.dismiss()
+		media_chord(main, hand)
+		check(video.local_uri == "smb://fixture/second.mp4" and not library.visible and video.requested_play, "Previous chord opens the previous queued video without closing playback: %s/%s/%s" % [video.local_uri, str(library.visible), str(video.requested_play)])
+		main.video_queue.clear(); count_before = host.calls.size()
+		media_chord(main, hand, "ax_button"); media_chord(main, hand)
+		check(host.calls.size() == count_before, "Missing browse queue leaves both skip actions inactive")
+		main.controller_bindings.restore_all()
+		main.controller_bindings.assign("turn_180_video", Bindings.bind(hand, "stick_up", Bindings.MODIFIERS), true)
+		video.geometry = 3; video._apply_geometry(); video.view_yaw = 0.3
+		main._on_controller_button("trigger_click" if trigger_first else "grip_click", hand)
+		main.pose.origin.x += 0.04; main._update_interface_move()
+		main._on_controller_button("grip_click" if trigger_first else "trigger_click", hand)
+		main.pose.origin.y += 0.03; main._update_interface_move()
+		main._process_sticks(Vector2.ZERO, Vector2.ZERO, 0.1)
+		for repeat in 3: main._process_sticks(Vector2(0, 0.99) if hand == "left_hand" else Vector2.ZERO, Vector2(0, 0.99) if hand == "right_hand" else Vector2.ZERO, 0.1)
+		check(is_equal_approx(video.view_yaw, wrapf(0.3 + PI, -PI, PI)), "A held stick combination turns only once until recentered")
+		main._process_sticks(Vector2.ZERO, Vector2.ZERO, 0.1)
+		main._process_sticks(Vector2(0, 0.99) if hand == "left_hand" else Vector2.ZERO, Vector2(0, 0.99) if hand == "right_hand" else Vector2.ZERO, 0.1)
+		check(is_equal_approx(video.view_yaw, 0.3), "Centering the stick permits another 180-degree turn")
+		main._on_controller_release("trigger_click", hand); main._on_controller_release("grip_click", hand)
+		video.close_video()
+		check(not main._shortcut_allowed("turn_180_video", true) and not main._shortcut_allowed("next_video", true), "Retained URI after close cannot enable the new actions")
+		main.video_queue = [{"uri": video.local_uri, "title": "Closed"}, {"uri": "file:///next.mp4", "title": "Next"}]
+		count_before = host.calls.size(); var closed_yaw: float = video.view_yaw
+		main._execute_shortcut("next_video"); main._execute_shortcut("turn_180_video")
+		check(host.calls.size() == count_before and is_equal_approx(video.view_yaw, closed_yaw), "Mapped action dispatch also ignores a closed media session with a retained queue")
+	video.free(); photo.free(); menu.free(); photo_menu.free(); library.free(); main.free()
+
 ## The production physical-controller route, including legacy settings and realistic ray drift.
 func video_triggers() -> void:
 	var Video := preload("res://scripts/mpv_video_display.gd")
@@ -416,6 +636,7 @@ func video_triggers() -> void:
 			video.flat_pose = Transform3D(Basis(), Vector3(0, 1.6, -2)); video._apply_geometry()
 			var before: Transform3D = video.flat_pose
 			main.pose = Transform3D(Basis(), Vector3(0, 1.5, -0.5))
+			main.rays[hand] = [Vector3(0, 1.6, 0), Vector3.FORWARD]
 			main._on_controller_button("grip_click", hand)
 			check(main.interface_move.capture.targets[0].kind == ("screen" if projection == 0 else "immersive"), "Either grip owns the selected video projection")
 			main.pose.basis = Basis(Vector3.UP, 0.2); main.pose.origin.x += 0.2; main._update_interface_move()
@@ -581,6 +802,7 @@ func back_navigation() -> void:
 		# Attached compact/full libraries take precedence over their parent transport.
 		video.local_uri = "file:///playing.mp4"; video.media.begin(7); video.media.state = "playing"; video.requested_play = true
 		for expanded in [false, true]:
+			video.local_uri = "file:///playing.mp4"; video.media.begin(7); video.media.state = "playing"; video.requested_play = true
 			main._show_recent_menu()
 			if library.compact == expanded: main._toggle_library_layout()
 			library.section = Library.Section.LOCAL; library._local_stack = [{"id": "/disk", "title": "Disk"}]; library.refresh()
@@ -589,7 +811,26 @@ func back_navigation() -> void:
 			tap(main, "by_button", hand)
 			check(not library.visible and menu.visible and video.requested_play, "At either playback library root Back retains the transport and playback")
 			tap(main, "by_button", hand)
-			check(not menu.visible and video.requested_play, "Plain transport Back returns to uninterrupted viewing")
+			check(not menu.visible and library.visible and video.media.state == "closed" and not video.panel.visible, "Plain video transport Back closes playback and returns to the full library")
+			await process_frame
+			library.dismiss()
+		# The same shortcut works without first opening controls, in flat and immersive playback.
+		for geometry in [0, 1]:
+			for playback in ["playing", "buffering", "opening", "paused"]:
+				video.local_uri = "smb://fixture/Share/playing.mp4"; video.media.begin(7)
+				video.media.state = "opening" if playback == "opening" else "playing"
+				video.geometry = geometry; video.requested_play = playback != "paused"; video._waiting_first = playback == "opening"
+				video.media.playback = {"details": {"paused_for_cache": "yes" if playback == "buffering" else "no"}}
+				menu.dismiss(); library.dismiss()
+				var before_close := host.calls.filter(func(call): return call[0] == "close").size()
+				main._on_controller_button("by_button", hand); main._on_controller_button("by_button", hand)
+				main._on_controller_release("by_button", hand)
+				check(library.visible and not library.compact and not menu.visible and not video.panel.visible, "Hidden video Back returns directly to the full library: %s/%d/%s" % [hand, geometry, playback])
+				check(video.media.state == "closed" and video.media.session_id == 0 and video.control.in_flight == 0, "Back closes the old session and pending playback work")
+				check(host.calls.filter(func(call): return call[0] == "close").size() == before_close + 1, "Holding Back closes the native session exactly once")
+				await process_frame
+				library.dismiss()
+		video.local_uri = "file:///playing.mp4"; video.media.begin(7); video.media.state = "playing"; video.requested_play = true; video._waiting_first = false
 		main._show_player_menu(); menu.section = 1; menu._adjustment = "color_grade"; menu.refresh()
 		tap(main, "by_button", hand); check(menu.visible and menu.section == 1 and menu._adjustment.is_empty(), "Back leaves color adjustments for playback settings")
 		tap(main, "by_button", hand); check(menu.visible and menu.section == 0, "Back leaves settings for the transport")
@@ -602,7 +843,9 @@ func back_navigation() -> void:
 		main._process_sticks(Vector2.ZERO, Vector2(0.99, 0), 0.1)
 		check(host.calls.size() == before, "A stick held across Back cannot leak a playback action")
 		main._process_sticks(Vector2.ZERO, Vector2.ZERO, 0.1); main._process_sticks(Vector2.ZERO, Vector2(0.99, 0), 0.1)
-		check(host.calls.size() > before, "Ordinary playback stick seeking recovers after recentering")
+		check(host.calls.size() == before and main.seek_feedback.phase == "preview", "Ordinary playback stick seeking previews after recentering")
+		main._process_sticks(Vector2.ZERO, Vector2.ZERO, 0.1)
+		check(host.calls.size() > before, "Releasing the recentered playback stick commits its preview")
 		# Grip-first B/Y chords retain priority, including no ordinary Back fallback when blocked.
 		video.control.reject(); menu._reset_navigation(); menu.refresh(); main.controller_bindings.restore_all()
 		main.controller_bindings.assign("subtitles", Bindings.bind(hand, "by_button", Bindings.MODIFIERS), true)
@@ -663,6 +906,8 @@ func runtime() -> void:
 	tap(main, "primary_click")
 	check(video.requested_play and host.calls.back() == ["play", 7, true], "Remapped button resumes native backend")
 	main.controller_bindings.restore_all()
+	video.panel.visible = true
+	main.rays.right_hand = [Vector3(0, 1.6, 0), (video.panel.global_position - Vector3(0, 1.6, 0)).normalized()]
 	main._on_controller_button("grip_click", "right_hand")
 	before = host.calls.size()
 	main._process_sticks(Vector2.ZERO, Vector2.ZERO, 0.1)

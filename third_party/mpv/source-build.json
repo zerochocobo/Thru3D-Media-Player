@@ -75,9 +75,9 @@
     },
     {
       "name": "libavcodec.so",
-      "sha256": "5c10650dd369b9ebbc89fa533ce99a8f4f9dbc83d91db92b72a00bf39b6b81a2",
-      "bytes": 12559576,
-      "built_sha256": "5deffddeacfcd382de21adada0ae893d08aabbeef8a8403c43e61b6e3468cd4f",
+      "sha256": "18080be9edcb03ee55df5aa0d1cb8566e598f89e1ceea7e31102169241ab73fb",
+      "bytes": 12560904,
+      "built_sha256": "5e6b32f55d07819f9ad10d207bc82721d058b8e0f1e2b31528aee8edea341ceb",
       "needed": [
         "libswresample.so",
         "libavutil.so",
@@ -165,20 +165,21 @@
     }
   ],
   "host_packages_sha256": "0d42dd4ec021254111a439214a2681bf37ca44ba2af04a9d97af479f2bd1dd33",
-  "build_receipt_sha256": "b32aa0d4df7afd28971cb7be535d4caf2d2c8899814b33e7de753a19f71943e4",
+  "build_receipt_sha256": "ad1aa1964ba688fa7f87819b1764d3872608786e4bc4fbaa935617333f171a66",
   "meson": "1.11.0",
   "ninja": "1.11.1",
   "mvc_inputs_sha256": {
     "third_party/edge264-mvc/manifest.json": "59d1c887ed3d5bd1fda6902ee5de0c8343c9a4ff0e93f2941f117aa894e32ebf",
     "third_party/bluray/source-lock.json": "7eabc13232bc1587c1baf21c836869afc8948fea1dde1f04af826c34a54e84f3",
-    "tools/environment/mpv-linux/mvc_patch.py": "6fed52d4caf2b276062fd3c42a9b6f36fd825ff0f5f95a2dd28283b2233c5416",
+    "tools/environment/mpv-linux/mvc_patch.py": "2861df08d03a2a5049beca755c1ef14f0ac0b57117afe96f37d9f64c513c8f96",
     "tools/environment/Prepare-MvcDecoder.py": "ac33805b5d397d14b8b78e6b9d65abdc7609d0ee375245b160c4968097eac52c",
     "tools/environment/Prepare-BluraySources.py": "d5988db75da92f8b511a095bae6a5760faeb1618d3d320a1c4f3fab802ed6045",
     "tools/environment/mpv-linux/build_bluray.sh": "be189cd78bdbb02081ac0b65aee99fc6f16b1650fd3648ae825832c3940e4815",
     "native/mpv/mvc/bluray_clpi_reader.c": "3b177cbdaeaadfa3221039cbbc04928cddd74603d3fe99b82c5efd76cf9ebc51",
-    "native/mpv/mvc/edge264mvc_all.c": "eef0dcf8a47a264ff2fb4d1ce778da8b9dce17fb636939d50b820dbb284b5407",
+    "native/mpv/mvc/edge264mvc_all.c": "d23091d4f6559c828a5a8e70bb609487d484ea30176c6e60773f492661750382",
     "native/mpv/mvc/ffmpeg_bd_mvc.c": "28189011eabfa0bdc708b3f148224a5f351da1a01fa90dd2453b92dbccc9260b",
-    "native/mpv/mvc/ffmpeg_h264_mvc.c": "eadbdd2eb31571090d6896eccee616a2a63dbdad284b2c8c63dac59f4eb2491a"
+    "native/mpv/mvc/ffmpeg_h264_mvc.c": "cb1298e1430a6a282fd713ea338a9d7179a018340e5d3a78b4f02fbd6ae920a6",
+    "native/mpv/mvc/mvc_recovery.h": "8ee01cca57e2e807cfcaf5956652dc54b67d3ae5395993277c5ccefb45138fd5"
   },
   "cxx_runtime_policy": "Use the existing Godot/project libc++_shared; do not package a duplicate; device compatibility pending",
   "license_profile": "GPL mpv and FFmpeg with gpl/version3 enabled; used by Debug and Release.",
@@ -187,13 +188,14 @@
   "reference_mvc_inputs_sha256": {
     "third_party/edge264-mvc/manifest.json": "59d1c887ed3d5bd1fda6902ee5de0c8343c9a4ff0e93f2941f117aa894e32ebf",
     "third_party/bluray/source-lock.json": "7eabc13232bc1587c1baf21c836869afc8948fea1dde1f04af826c34a54e84f3",
-    "tools/environment/mpv-linux/mvc_patch.py": "6fed52d4caf2b276062fd3c42a9b6f36fd825ff0f5f95a2dd28283b2233c5416",
+    "tools/environment/mpv-linux/mvc_patch.py": "2861df08d03a2a5049beca755c1ef14f0ac0b57117afe96f37d9f64c513c8f96",
     "tools/environment/Prepare-MvcDecoder.py": "ac33805b5d397d14b8b78e6b9d65abdc7609d0ee375245b160c4968097eac52c",
     "tools/environment/Prepare-BluraySources.py": "d5988db75da92f8b511a095bae6a5760faeb1618d3d320a1c4f3fab802ed6045",
     "tools/environment/mpv-linux/build_bluray.sh": "276e35a7ccf1dff02cd6e317fe839e2afee9cbf7e644601bc05bf6469db3b3cd",
     "native/mpv/mvc/bluray_clpi_reader.c": "3b177cbdaeaadfa3221039cbbc04928cddd74603d3fe99b82c5efd76cf9ebc51",
-    "native/mpv/mvc/edge264mvc_all.c": "eef0dcf8a47a264ff2fb4d1ce778da8b9dce17fb636939d50b820dbb284b5407",
+    "native/mpv/mvc/edge264mvc_all.c": "d23091d4f6559c828a5a8e70bb609487d484ea30176c6e60773f492661750382",
     "native/mpv/mvc/ffmpeg_bd_mvc.c": "28189011eabfa0bdc708b3f148224a5f351da1a01fa90dd2453b92dbccc9260b",
-    "native/mpv/mvc/ffmpeg_h264_mvc.c": "eadbdd2eb31571090d6896eccee616a2a63dbdad284b2c8c63dac59f4eb2491a"
+    "native/mpv/mvc/ffmpeg_h264_mvc.c": "cb1298e1430a6a282fd713ea338a9d7179a018340e5d3a78b4f02fbd6ae920a6",
+    "native/mpv/mvc/mvc_recovery.h": "8ee01cca57e2e807cfcaf5956652dc54b67d3ae5395993277c5ccefb45138fd5"
   }
 }

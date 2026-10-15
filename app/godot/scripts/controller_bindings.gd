@@ -43,6 +43,10 @@ func _init() -> void:
 		entry("move_video", "Move picture / interfaces", "video", [bind("left_hand", "grip_click"), bind("right_hand", "grip_click")], false, true),
 		entry("move_photo", "Move interfaces / magnifier", "photo", [bind("left_hand", "grip_click"), bind("right_hand", "grip_click")], false, true),
 		entry("subtitles", "Subtitle panel", "video", []),
+		entry("turn_180_video", "Turn 180° (360°)", "video_immersive", []),
+		entry("turn_180_photo", "Turn 180° (360°)", "photo", []),
+		entry("previous_video", "Previous video", "video", []),
+		entry("next_video", "Next video", "video", []),
 		entry("passthrough_video", "Temporary passthrough", "video", []),
 		entry("passthrough_photo", "Temporary passthrough", "photo", []),
 		entry("follow_video", "Head follow", "video", []),
@@ -239,7 +243,6 @@ func resolve(hand: String, input: String, context: String) -> String:
 		for value in (item.defaults if is_fixed(item.id) else overrides.get(item.id, item.defaults)):
 			if value.hand != hand or value.input != input: continue
 			if not value.modifiers.all(func(mod): return down[hand].has(mod)): continue
-			if not value.modifiers.is_empty() and int(down[hand].grip_click) >= int(down[hand].trigger_click): continue
 			if value.modifiers.size() > longest:
 				chosen = item.id; longest = value.modifiers.size()
 	# A configured modifier owns its press and axes until all modifiers are released.
@@ -254,7 +257,8 @@ func modifier_held(hand: String, context: String) -> bool:
 func is_modifier(hand: String, input: String, context: String) -> bool:
 	if input == "trigger_click" and not down.get(hand, {}).has("grip_click"): return false
 	for item in _definitions:
-		if applies(item.scope, context):
+		# Reserve modifiers across video projections even when the action is unavailable.
+		if applies(item.scope, context) or (item.scope.begins_with("video") and context.begins_with("video")):
 			for value in (item.defaults if is_fixed(item.id) else overrides.get(item.id, item.defaults)):
 				if value.hand == hand and input in value.modifiers: return true
 	return false

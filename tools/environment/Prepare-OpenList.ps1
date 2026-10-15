@@ -18,9 +18,16 @@ $revision = '2bdf16d5967d0a403f67d809efd5a418b8f5bd30' # OpenList v4.2.6
 $mobileVersion = 'v0.0.0-20260908204917-8b95e45f8d3e'
 $source = Join-Path $cache "OpenList-$revision"
 $output = Join-Path $workspace 'app\godot\addons\quest_player\bin\cloudcore.aar'
-$adapters = @(Get-ChildItem (Join-Path $workspace 'cloud\openlist') -Filter '*.go' | Where-Object { $_.Name -notlike '*_test.go' } | Sort-Object Name)
+# Cache identities must not depend on the caller's culture or PowerShell sort rules.
+function Sort-BindingInputs([IO.FileInfo[]]$Files) {
+    $comparison = [Collections.Generic.Comparer[IO.FileInfo]]::Create(
+        [Comparison[IO.FileInfo]] { param($left, $right) [StringComparer]::Ordinal.Compare($left.FullName, $right.FullName) })
+    [Array]::Sort($Files, $comparison)
+    $Files
+}
+$adapters = @(Sort-BindingInputs @(Get-ChildItem (Join-Path $workspace 'cloud\openlist') -File -Filter '*.go' | Where-Object { $_.Name -notlike '*_test.go' }))
 $adapterHashes = ($adapters | ForEach-Object { "$($_.Name):$((Get-FileHash $_.FullName -Algorithm SHA256).Hash)" }) -join '/'
-$searchAdapters = @(Get-ChildItem (Join-Path $workspace 'cloud\openlist\search') -Filter '*.go' -Recurse | Sort-Object FullName)
+$searchAdapters = @(Sort-BindingInputs @(Get-ChildItem (Join-Path $workspace 'cloud\openlist\search') -File -Filter '*.go' -Recurse | Where-Object { $_.Name -notlike '*_test.go' }))
 $adapterHashes += '/' + (($searchAdapters | ForEach-Object { "$($_.Directory.Name)/$($_.Name):$((Get-FileHash $_.FullName -Algorithm SHA256).Hash)" }) -join '/')
 $fingerprint = "$revision/$mobileVersion/$adapterHashes/$((Get-FileHash $PSCommandPath -Algorithm SHA256).Hash)"
 $stamp = Join-Path $cache 'build.stamp'

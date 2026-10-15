@@ -14,6 +14,9 @@ class InputMain extends "res://scripts/main.gd":
 	var test_rays := {}
 	func _ray(hand: String) -> Variant: return test_rays.get(hand)
 
+class RecentStub extends "res://scripts/recent_menu.gd":
+	func refresh_alpha_sizes() -> void: pass
+
 class Host extends RefCounted:
 	var calls: Array = []
 	var revision_id := 0 # Busy by default; feedback tests also exercise accepted revisions.
@@ -195,7 +198,7 @@ func _run() -> void:
 	root.add_child(menu)
 	menu.set_process(false)
 	main.player_menu = menu
-	var recent := Recent.new()
+	var recent := RecentStub.new()
 	recent.catalog = video.recent_files
 	recent.player_requested.connect(main._show_player_menu)
 	root.add_child(recent)
@@ -498,7 +501,9 @@ func _run() -> void:
 	check(menu.visible and menu.section == 0, "B returns from information to the transport first")
 	main._on_controller_button("by_button", "right_hand")
 	main._on_controller_release("by_button", "right_hand")
-	check(not menu.visible, "B on the plain transport returns to watching")
+	check(not menu.visible and recent.visible and video.media.state == "closed", "B on the plain transport closes video and returns to the library")
+	video.open_local("file:///menu.mp4", "测试电影 😀", 0, false)
+	video._waiting_first = false; video.media.state = "playing"
 	main._on_controller_button("menu_button", "left_hand")
 	check(menu.visible and menu.section == 0, "Menu button reopens controls on Playback")
 	main._on_controller_button("menu_button", "left_hand")
@@ -631,19 +636,21 @@ func _check_seek_feedback(main: Node3D, video: Node3D, menu: Node3D, host: RefCo
 			host.revision_id = revision_id
 			for hand in ["left", "right"]:
 				for direction in [-1, 1]:
+					main.seek_feedback.clear()
 					video.media.begin(7); video.media.state = "playing"
 					video.local_uri = "smb://server/movie.mp4" if remote else "file:///movie.mp4"
 					video.geometry = 0; video.requested_play = true; video._waiting_first = false
 					video._pending_revision.clear(); video.control.close(); video.control.observe(40000, 120000)
 					video._loading_status = {"remote": remote, "phase": "reading"}
-					main._video_waiting_feedback = false
 					main._process_sticks(Vector2.ZERO, Vector2.ZERO, 0.1)
 					var axis := Vector2(0.99 * direction, 0)
 					main._process_sticks(axis if hand == "left" else Vector2.ZERO, axis if hand == "right" else Vector2.ZERO, 0.1)
 					video.changed.emit() # The next native progress report also uses this handler.
 					var expected: int = 40000 + direction * (20000 if hand == "left" else 10000)
-					check(video.control.target_ms == expected and not menu.visible,
-						"Stick seek preserves hidden controls: remote=%s revision=%d %s %d" % [remote, revision_id, hand, direction])
+					check(video.control.display_position_ms() == 40000 and main.seek_feedback.target_ms == expected and not menu.visible,
+						"Stick preview preserves hidden controls: remote=%s revision=%d %s %d" % [remote, revision_id, hand, direction])
+					main._process_sticks(Vector2.ZERO, Vector2.ZERO, 0.1)
+					check(video.control.target_ms == expected and not menu.visible, "Release seeks without opening the transport")
 					# A network cache wait can continue after the seek target is presented.
 					video.media.playback = {"details": {"paused_for_cache": "yes"}}
 					video.changed.emit()
@@ -651,12 +658,14 @@ func _check_seek_feedback(main: Node3D, video: Node3D, menu: Node3D, host: RefCo
 					video.changed.emit()
 					check(not menu.visible, "Post-seek buffering also preserves hidden controls")
 					video.media.playback = {}; video.changed.emit()
-	# Initial network loading and real playback failures still offer their normal feedback.
+	# Loading uses the passive status overlay; real failures still open error controls.
+	main.seek_feedback.clear()
 	video.control.reject(); video._pending_revision.clear(); video._waiting_first = true
-	video._loading_status = {"remote": true, "phase": "connecting"}; main._video_waiting_feedback = false
+	video._loading_status = {"remote": true, "phase": "connecting"}
 	video.changed.emit()
-	check(menu.visible and not video.loading_caption().is_empty(), "Opening a remote video still shows transfer feedback")
+	check(not menu.visible and not main._playback_status_sample().caption.is_empty(), "Remote loading keeps the transport hidden and offers passive feedback")
 	video._waiting_first = false; video.changed.emit()
+	main._show_player_menu()
 	main._process_sticks(Vector2.ZERO, Vector2.ZERO, 0.1)
 	main._process_sticks(Vector2(-0.99, 0), Vector2.ZERO, 0.1)
 	check(menu.visible, "Seeking with the transport already open keeps it visible")
@@ -764,13 +773,13 @@ func _check_control_sticks(main: Node3D, video: Node3D, menu: Node3D, host: RefC
 	main._menu_touched_ms = Time.get_ticks_msec()
 	main._process_sticks(Vector2.ZERO, Vector2.ZERO, 0.1)
 	main._process_sticks(Vector2(.99, 0), Vector2(-.99, 0), 0.1)
-	check(video.control.target_ms == 50000 and menu._elapsed.text == "00:50", "Visible transport bar dispatches left +20s and right -10s and immediately displays the target")
+	check(video.control.display_position_ms() == 40000 and main.seek_feedback.target_ms == 60000 and menu._elapsed.text == "01:00", "Visible transport previews the first hand's +20s without committing either stick")
 	var calls: int = host.calls.size()
 	main._process_sticks(Vector2(.99, 0), Vector2(-.99, 0), 0.1)
 	check(host.calls.size() == calls, "Holding visible-bar sticks does not repeat seeks")
 	main._process_sticks(Vector2.ZERO, Vector2.ZERO, 0.1)
 	main._process_sticks(Vector2(-.99, 0), Vector2(.99, 0), 0.1)
-	check(video.control.target_ms == 40000 and menu._elapsed.text == "00:40", "Recentered sticks reverse direction with their original step sizes")
+	check(video.control.target_ms == 60000 and main.seek_feedback.target_ms == 40000 and menu._elapsed.text == "00:40", "Recenter commits once, then the next gesture previews the reverse step")
 	main._process_sticks(Vector2.ZERO, Vector2.ZERO, 0.1)
 	video.audio_volume = 50.0
 	main._process_sticks(Vector2(0, .99), Vector2.ZERO, 0.1)
@@ -871,7 +880,8 @@ func _check_control_sticks(main: Node3D, video: Node3D, menu: Node3D, host: RefC
 	menu.dismiss()
 	main._process_sticks(Vector2.ZERO, Vector2.ZERO, 0.1)
 	main._process_sticks(Vector2(-.99, 0), Vector2.ZERO, 0.1)
-	check(video.control.target_ms == 50000, "Hidden transport retains the same left -20s seek")
+	check(main.seek_feedback.target_ms == 50000 and video.control.target_ms == 70000, "Hidden transport previews the same left -20s before release")
+	main._process_sticks(Vector2.ZERO, Vector2.ZERO, 0.1)
 	# Hover misses are not interaction, paused/awaiting seeks keep their controls visible.
 	menu.toggle()
 	video.control.reject()

@@ -212,9 +212,10 @@ internal object CloudLibrary {
                 val child = CloudPaths.child(path, file.name)
                 entries.put(JSONObject().put("id", child).put("title", file.name).put("container", file.folder)
                     .put("size", file.size).put("modified", file.modified).put("can_delete", client.canDelete && file.canDelete)
+                    .put("can_rename", client.canRename && file.canRename)
                     .put("cloud_id", file.objectId).put("delete_effect", if (client.canDelete) "recycle" else "")
                     .put("delete_reason", "File deletion unavailable for this source").apply {
-                        if (file.folder && client.canDelete) put("delete_uri", CloudPaths.uri(child))
+                        if (file.folder && (client.canDelete || client.canRename)) put("delete_uri", CloudPaths.uri(child))
                         if (!file.folder) put("uri", CloudPaths.uri(child)).put("kind", MediaKinds.kind(file.name))
                     })
             }
@@ -222,6 +223,30 @@ internal object CloudLibrary {
         JSONObject().put("path", path).put("offset", offset).put("order", order).put("next_offset", nextOffset)
             .put("total", total).put("page_size", CloudDrive.PAGE_SIZE).put("entries", entries)
             .apply { if (path.isNotEmpty() && path != "/") put("search_scopes", searchScopes(credentials(split(path).first).getString("provider"))) }
+    }
+    fun renameFile(request: JSONObject, prepare: Boolean, authorized: () -> Unit): JSONObject {
+        val (id, remote) = split(CloudPaths.path(request.getString("uri")))
+        val account = credentials(id)
+        val client = drive(account)
+        return try {
+            val result = CloudRename(client) {
+                authorized()
+                if (identity(credentials(id)) != identity(account)) throw CloudFailure("cloud_login_required")
+            }.run(remote, request, prepare)
+            if (result.has("new_path")) result.put("new_uri", CloudPaths.uri("/$id" + result.getString("new_path"))).remove("new_path")
+            result.optJSONArray("moves")?.let { moves ->
+                for (i in 0 until moves.length()) moves.getJSONObject(i).apply {
+                    put("old_uri", CloudPaths.uri("/$id" + getString("old_path"))); remove("old_path")
+                    put("new_uri", CloudPaths.uri("/$id" + getString("new_path"))); remove("new_path")
+                }
+            }
+            result
+        } finally {
+            if (!prepare) {
+                synchronized(sortedPages) { sortedPages.remove(id) }
+                synchronized(this) { metadata[id]?.invalidate("/") }
+            }
+        }
     }
     fun deleteFile(request: JSONObject, inspect: Boolean, prepare: Boolean, authorized: () -> Unit): JSONObject {
         val (id, remote) = split(CloudPaths.path(request.getString("uri")))

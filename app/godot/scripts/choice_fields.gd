@@ -278,12 +278,12 @@ func press(hand: String, origin: Vector3, direction: Vector3, tracked: bool) -> 
 			return target >= 100 or target < 0 # Consume outside content presses; navigation can proceed.
 		return false
 	capture = {"hand": hand, "target": target, "scope": scope, "item": targets[target].duplicate(true),
-		"point": hit.point, "offset": offset, "moved": false}
+		"point": menu.control_point(hit), "plane": menu.control_plane(target), "offset": offset, "moved": false}
 	if capture.item.kind == "slider":
 		var slider: Dictionary = sliders[target]
-		capture.left = menu.to_local(slider.node.global_position).x + slider.left
+		capture.left = slider.left
 		capture.width = slider.width
-		_preview_slider(hit.point)
+		_preview_slider(capture.point)
 	return true
 
 func update(hand: String, origin: Vector3, direction: Vector3, tracked: bool) -> void:
@@ -305,14 +305,7 @@ func update(hand: String, origin: Vector3, direction: Vector3, tracked: bool) ->
 		if next != offset: offset = next; menu.refresh()
 
 func _capture_point(origin: Vector3, direction: Vector3) -> Variant:
-	if not origin.is_finite() or not direction.is_finite() or direction.length_squared() < 0.000001: return null
-	var inverse: Transform3D = menu.global_transform.affine_inverse()
-	var start: Vector3 = inverse * origin
-	var delta: Vector3 = inverse.basis * direction.normalized()
-	var z := float(capture.point.z)
-	if delta.z >= -0.00001 or start.z <= z: return null
-	# Use the pressed button's plane. Projecting to z=0 makes a stationary angled ray drift.
-	return start + delta * ((z - start.z) / delta.z)
+	return menu.project_pointer(origin, direction, capture.plane)
 
 func release(hand: String, origin: Vector3, direction: Vector3, tracked: bool) -> void:
 	if capture.is_empty() or capture.hand != hand: return
@@ -322,7 +315,8 @@ func release(hand: String, origin: Vector3, direction: Vector3, tracked: bool) -
 	if not tracked or not menu.visible or request.scope != scope or request.moved: return
 	var hit: Dictionary = menu.ray_hit(origin, direction)
 	if int(hit.get("target", -1)) != request.target or targets.get(request.target, {}) != request.item: return
-	if Vector2(hit.point.x-request.point.x, hit.point.y-request.point.y).length() > 0.018: return
+	var point: Vector3 = menu.control_point(hit)
+	if Vector2(point.x-request.point.x, point.y-request.point.y).length() > 0.018: return
 	action(int(request.target))
 
 func cancel(hand: String) -> void:

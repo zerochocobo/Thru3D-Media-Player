@@ -42,6 +42,8 @@ if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'menu-text-sam
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'menu-tooltips.log') -Raw) -match '(?m)^(SCRIPT ERROR:|ERROR:)') { throw 'Menu tooltip regression failed.' }
 & $env:GODOT_EXE --xr-mode off --rendering-method gl_compatibility --rendering-driver opengl3 --path $projectDirectory --quit-after 1800 --script res://tests/render_menu_composition.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'menu-composition.log')
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'menu-composition.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)') { throw 'Menu compositor capture regression failed.' }
+& $env:GODOT_EXE --xr-mode off --rendering-method gl_compatibility --rendering-driver opengl3 --path $projectDirectory --quit-after 1800 --script res://tests/render_menu_edge_coverage.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'menu-edge-coverage.log')
+if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'menu-edge-coverage.log') -Raw) -notmatch 'Menu edge coverage: [0-9]+ checks, 0 failures') { throw 'Menu fractional edge coverage regression failed.' }
 & $env:GODOT_EXE --xr-mode off --rendering-method gl_compatibility --rendering-driver opengl3 --path $projectDirectory --quit-after 1800 --script res://tests/render_layer_backdrop.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'layer-backdrop.log')
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'layer-backdrop.log') -Raw) -notmatch 'Layer backdrop: [0-9]+ checks, 0 failures') { throw 'Layer backdrop sky regression failed.' }
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_i18n.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'i18n-host.log')
@@ -69,6 +71,10 @@ if ((Get-Content (Join-Path $logDirectory 'c04-host-regression.log') -Raw) -matc
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'video-layer-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)') { throw 'Compositor video layer regression failed.' }
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_mpv_rotation.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'mpv-rotation-host.log')
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'mpv-rotation-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)') { throw 'MPV source rotation regression failed.' }
+& $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_frame_picture_layer.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'frame-picture-layer-host.log')
+if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'frame-picture-layer-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)') { throw 'Frame picture layer regression failed.' }
+& $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_alpha_profile.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'alpha-profile-host.log')
+if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'alpha-profile-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)') { throw 'Alpha model size regression failed.' }
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_c05_playback.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'c05-host-regression.log')
 if ($LASTEXITCODE -ne 0) { throw 'C05 host regression failed.' }
 if ((Get-Content (Join-Path $logDirectory 'c05-host-regression.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)') { throw 'C05 host regression reported runtime errors.' }
@@ -95,6 +101,13 @@ if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'file-track-me
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_player_sticks.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'player-sticks-host.log')
 if ($LASTEXITCODE -ne 0) { throw 'Player stick host regression failed.' }
 if ((Get-Content (Join-Path $logDirectory 'player-sticks-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)') { throw 'Player stick host regression reported runtime errors.' }
+& $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_seek_feedback.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'seek-feedback-host.log')
+if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'seek-feedback-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)' -or (Get-Content (Join-Path $logDirectory 'seek-feedback-host.log') -Raw) -notmatch 'Seek feedback checks=\d+ failures=0') { throw 'Deferred stick seek feedback regression failed.' }
+if ($RenderPreview) {
+    $env:THRU3D_TEST_OUTPUT = Join-Path $logDirectory 'seek-feedback-previews'
+    & $env:GODOT_EXE --xr-mode off --rendering-method gl_compatibility --rendering-driver opengl3 --path $projectDirectory --quit-after 1800 --script res://tests/render_seek_feedback.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'seek-feedback-render.log')
+    if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'seek-feedback-render.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)' -or (Get-Content (Join-Path $logDirectory 'seek-feedback-render.log') -Raw) -notmatch 'Seek feedback previews cases=28 checks=\d+ failures=0') { throw 'Seek feedback visual regression failed.' }
+}
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_recent_files.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'recent-files-host.log')
 if ($LASTEXITCODE -ne 0) { throw 'Recent files host regression failed.' }
 if ((Get-Content (Join-Path $logDirectory 'recent-files-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)') { throw 'Recent files host regression reported runtime errors.' }
@@ -124,6 +137,8 @@ if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'library-metad
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'compact-library-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|ERROR:)') { throw 'Playback library expansion, input and placement regression failed.' }
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_library_file_actions.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'library-file-actions-host.log')
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'library-file-actions-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|ERROR:)') { throw 'Library editing and directory sorting regression failed.' }
+& $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_file_management_lists.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'file-management-lists-host.log')
+if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'file-management-lists-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|ERROR:)') { throw 'Opt-in checkboxes, batch deletion and active-file release regression failed.' }
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_library_sort.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'library-sort-host.log')
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'library-sort-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|ERROR:)') { throw 'Folder modification time and DLNA name sorting regression failed.' }
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_file_editing_memory.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'file-editing-memory-host.log')

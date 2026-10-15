@@ -33,13 +33,14 @@ func _run() -> void:
 		main.video.turn_view(0.2,-0.1); main.video.zoom_view(0.3)
 		await main._recenter()
 		check(aligned(main.video) and main.video.view_yaw == 0 and main.video.view_pitch == 0 and main.video.view_zoom == 0,"Application recenter removes old offsets "+name)
-	# An ambiguous 2:1 frame stays flat; an explicit projection change aligns the current gaze.
+	# Exact unmarked 2:1 enters VR180 SBS when the first frame supplies its dimensions.
 	main.video.open_local("file:///alignment/unnamed.mp4","unnamed.mp4")
 	main.video.media.format = {"width":8192,"height":4096,"pixel_aspect":1.0}
 	head.rotation = Vector3(-0.17,0.9,0)
 	main.video._complete_layout()
-	check(main.video.geometry == 0 and not main.video.stereo_sbs,"First 2:1 frame does not infer VR180 SBS")
-	main.video.set_projection(1)
+	check(main.video.geometry == 1 and main.video.stereo_sbs,"First exact 2:1 frame defaults to VR180 SBS")
+	check(aligned(main.video),"Automatic VR180 transition aligns current gaze")
+	main.video.set_projection(0); head.rotate_y(0.2); main.video.set_projection(1)
 	check(aligned(main.video),"Explicit VR180 transition aligns current gaze")
 	# The shared fix also applies to panorama photos and keeps their detail window coherent.
 	main.photo_active = true; main.player_menu = main.photo_menu

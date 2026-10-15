@@ -29,6 +29,7 @@ internal class MpvVideoBridge(
     private val releaseNetwork: (String) -> Unit = {},
     private val sidecarSubtitles: (String) -> List<SidecarSubtitles.Track> = { emptyList() },
     private val networkProgress: (String) -> TransferMeter.Snapshot? = { null },
+    private val networkFailure: (String) -> PlaybackFailure? = { null },
 ) {
     private val worker = RvmWorkers.video
     private val gate = MediaSessionGate()
@@ -69,10 +70,23 @@ internal class MpvVideoBridge(
     @Volatile private var audioFocusState = "none"
 
     private inner class Host(val uri: String, val startMs: Int, val hardware: Boolean, val audio: Boolean, val exactStart: Boolean,
-                             val maxWidth: Int, val layerRequested: Boolean = false) {
+                             val maxWidth: Int, val layerRequested: Boolean = false, val alphaLayer: Boolean = false) {
         /** MPV decodes into a compositor layer surface; set when that surface was created. */
         @Volatile var layer = false
         @Volatile var layerSurface: android.view.Surface? = null
+        /** Alpha plan B spike (debug: adb shell setprop debug.vrpp.layer.fanout 1): frames pass through an
+         * ImageReader on their way to the layer surface. */
+        @Volatile var fanout: LayerFanout? = null
+        /** GPU copy prototype (debug: setprop debug.vrpp.layer.copy 1): frames drawn into the layer surface. */
+        @Volatile var copy: LayerCopy? = null
+        /** Where this host's decoder writes for the layer: the GPU copy (Alpha) or the debug hand-off. */
+        val frames: LayerFrames? get() = copy ?: fanout
+        val debugCopy = BuildConfig.DEBUG && debugProperty("debug.vrpp.layer.copy") == "1"
+        val copyFlip = debugProperty("debug.vrpp.layer.copy_flip") != "0"
+        val debugFanout = BuildConfig.DEBUG && try {
+            Class.forName("android.os.SystemProperties").getMethod("get", String::class.java)
+                .invoke(null, "debug.vrpp.layer.fanout") == "1"
+        } catch (_: Throwable) { false }
         /** Debug A/B for a whole playback: adb shell setprop debug.vrpp.mpv.normal_direct 0 keeps the RGBA copy path. */
         val debugRgba = BuildConfig.DEBUG && try {
             Class.forName("android.os.SystemProperties").getMethod("get", String::class.java)
@@ -134,6 +148,19 @@ internal class MpvVideoBridge(
         val depthViewQueued = AtomicBoolean(false)
         /** Both effects run a model on every presented frame and gate pairs through it. */
         val inference get() = alpha || depth
+        /** Alpha plan B: frames fan out from the layer surface to RVM; masks go to the mask layer. */
+        val layerAlpha get() = alpha && host.layer && host.frames != null
+        var nextFanoutNs = 0L // GL thread
+        var layerMasks = 0L // GL thread
+        var debugTicks = 0L // GL thread
+        var audioDelay = 0.0 // seconds MPV delays the audio by: the layer's measured hold for masks
+        /** The fanned-out frame RVM works on (capture time, ns): one at a time, so no frame waits in a queue
+         * while the held video waits for its mask. 0 when none. */
+        var maskInFlightNs = 0L // GL thread
+        var maskLatencyMs = 0.0 // GL thread: capture -> mask on the layer, smoothed
+        val captureNs = HashMap<Long, Long>() // GL thread: capture time of each Alpha layer token
+        /** GPU copy: finished masks waiting for their frame to be drawn (token to pair), oldest first. */
+        val pendingMasks = ArrayDeque<Pair<Long, JSONObject>>() // GL thread
         fun accepts(pair: JSONObject) = if (alpha) model?.acceptsPair(pair) == true else depthModel?.acceptsPair(pair) == true
         fun presented(pair: JSONObject) = if (alpha) model?.presented(pair) == true else depthModel?.presented(pair) == true
         @Volatile var roi: RoiController? = null // Alpha only; created with the renderer on the GL thread.
@@ -175,6 +202,13 @@ internal class MpvVideoBridge(
     @Volatile var outputWidthCap = 0
     /** User setting: Alpha passthrough reads the source at this rate, one RVM pair per presented frame. */
     @Volatile private var alphaFps = RVM_VIDEO_FPS
+    /** The player's Alpha edge: mask values remapped from [low, high] to [0, 1] (0, 1: unchanged). */
+    @Volatile private var alphaEdge = floatArrayOf(0f, 1f)
+    fun setAlphaEdge(low: Double, high: Double): Boolean {
+        if (!low.isFinite() || !high.isFinite() || low < 0.0 || high > 1.0 || high - low < 0.01) return false
+        alphaEdge = floatArrayOf(low.toFloat(), high.toFloat())
+        return true
+    }
     /** MPV's cadence cap is atomic and resets its decimation on change, so a running session follows at once. */
     fun setAlphaFps(fps: Int): Boolean {
         if (fps !in ALPHA_FPS_RANGE) return false
@@ -187,7 +221,7 @@ internal class MpvVideoBridge(
     }
     private fun frameCap(session: Session) = if (BuildConfig.DEBUG && debugFrameCapOverride >= 0) debugFrameCapOverride
         // 2D->3D shows every frame with the latest depth map; only Alpha needs one result per frame.
-        else if (session.alpha) alphaFps else 0
+        else if (session.alpha && !session.layerAlpha) alphaFps else 0
     private fun active(session: Session) = !stopped && !session.disposed.get() && gate.accepts(session.id)
     private fun event(name: String, session: Session, json: JSONObject) {
         json.put("session_id", session.id).put("logical_session_id", session.scope.logicalSessionId)
@@ -200,8 +234,12 @@ internal class MpvVideoBridge(
         if (!supported() || sessions.size >= 2 || startMs < 0 || profile !in RvmProfiles.keys || (depth && (alpha || stereo)) ||
             Uri.parse(uri).scheme !in setOf("content", "file", "smb", "cloud", "medialib", "http", "https")) return -1
         val id = gate.begin(); if (id <= 0) return -1
-        // Compositor layers carry normal playback only: Alpha and 2D->3D compose in Godot's shader.
-        val host = Host(uri, startMs, hardware, audio, exactSeek, outputWidthCap, layer && hardware && !alpha && !depth)
+        // Compositor layers carry normal playback; Alpha only in the plan B prototype (its mask becomes a
+        // compositor mask layer). 2D->3D composes in Godot's shader.
+        val alphaLayer = alpha && debugLayerAlpha()
+        val host = Host(uri, startMs, hardware, audio, exactSeek, outputWidthCap, layer && hardware && !depth && (!alpha || alphaLayer),
+            alphaLayer && layer && hardware)
+        if (host.alphaLayer) layerMask = "0 0 0"
         val session = Session(gate.current(id) ?: return -1, host, stereo, profile, alpha, vulkan, debugNormalFastPath, depth,
             stereo && topBottom)
         sessions[id] = session; hosts.add(host)
@@ -257,11 +295,22 @@ internal class MpvVideoBridge(
                                 .onFailure { android.util.Log.w("QuestPlayer", "Video layer surface unavailable", it) }.getOrNull()
                             host.layer = host.layerSurface != null
                             if (host.layer) currentLayerSurface = host.layerSurface
+                            // Alpha on the layer always copies: the hand-off made the decoder allocate a buffer per frame.
+                            if (host.layer && (host.debugCopy || host.alphaLayer)) host.copy = runCatching {
+                                LayerCopy(host.layerSurface!!, surfaceWidth, surfaceHeight, host.copyFlip, holdable = host.alphaLayer,
+                                    heldLimit = debugInt("debug.vrpp.layer.held", 8).coerceIn(2, 12),
+                                    // The output resolution setting caps the compositor window as it caps the RGBA frames.
+                                    maxOutputWidth = debugInt("debug.vrpp.layer.window_max", host.maxWidth))
+                                    .also { it.keepFrames = host.alphaLayer }
+                            }.onFailure { android.util.Log.w("QuestPlayer", "Layer copy unavailable", it) }.getOrNull()
+                            if (host.layer && host.copy == null && host.debugFanout) host.fanout = runCatching {
+                                LayerFanout(host.layerSurface!!, surfaceWidth, surfaceHeight, holdable = host.alphaLayer).also { it.keepFrames = host.alphaLayer }
+                            }.onFailure { android.util.Log.w("QuestPlayer", "Layer fan-out unavailable", it) }.getOrNull()
                         }
                         host.handle = MpvSourceNative.create(app, nativePath, startMs, hardware, audio, host.maxWidth,
                             extra.flatMap { listOf(it.location, it.title) }.toTypedArray(),
                             captions.flatMap { listOf(it.location, it.title) }.toTypedArray(), host.exactStart,
-                            if (host.layer) host.layerSurface else null, disc?.get(3) == 1L, surfaceWidth, surfaceHeight, iso, tlsCaFile)
+                            if (host.layer) host.copy?.surface ?: host.fanout?.surface ?: host.layerSurface else null, disc?.get(3) == 1L, surfaceWidth, surfaceHeight, iso, tlsCaFile)
                         check(host.handle > 0)
                         host.markStartup("native_created_ms")
                         host.loadingPhase = "reading"
@@ -345,8 +394,9 @@ internal class MpvVideoBridge(
         val old = sessions[id] ?: return -1
         if (!active(old) || sessions.size >= 2 || profile !in RvmProfiles.keys || (depth && (alpha || stereo))) return -1
         val host = old.host
-        // A layer host has no frame images for the shader effects; the owner reopens it instead.
-        if (host.layer && (alpha || depth)) return -1
+        // A layer host has no frame images for the shader effects; the owner reopens it instead. The Alpha
+        // plan B prototype host fans its frames out to RVM, so it keeps the layer for Alpha.
+        if (host.layer && (depth || (alpha && !host.alphaLayer))) return -1
         if (positionMs >= 0 && (host.handle <= 0 || !MpvSourceNative.seek(host.handle, positionMs.toLong(), exactSeek))) return -1
         val next = gate.replace(id); if (next <= 0) return -1
         val session = Session(gate.current(next) ?: return -1, host, stereo, profile, alpha, old.vulkan, old.normalFastPath, depth,
@@ -476,7 +526,9 @@ internal class MpvVideoBridge(
                                 session.lastPostDrawFrame = frame
                                 session.lastPostDrawEpoch = epoch
                             }
-                            session.end.postDraw(identity(pair), pair.getLong("source_epoch"), pair.getBoolean("inference_ran"))
+                            // A layer identity's picture needs no inference of its own (Alpha plan B masks it on the layer).
+                            session.end.postDraw(identity(pair), pair.getLong("source_epoch"),
+                                pair.getBoolean("inference_ran") || pair.optString("color_target") == "layer")
                         }
                     }
                 }
@@ -496,6 +548,19 @@ internal class MpvVideoBridge(
                         session.deferredCopies++
                     }
                 }
+                if (BuildConfig.DEBUG && session.layerAlpha && session.debugTicks++ % 144 == 0L)
+                    android.util.Log.i("QuestPlayer", "layer alpha draw effectReady=$effectReady copying=${session.copying != null} " +
+                        "pending=${session.pendingSource != null} model=${session.model?.isReady()} captured=${session.captured} masks=${session.layerMasks} " +
+                        "playing=${session.host.playing} uploads=${session.alphaUploads.size}")
+                // Alpha turned off in place: frames go on unheld (and the audio delay returns to zero below).
+                session.host.frames?.hold = session.layerAlpha
+                session.host.copy?.maxFps = if (session.layerAlpha) alphaFps else 0
+                if (session.layerAlpha) session.host.frames?.releaseStale(HOLD_LIMIT_MS)
+                if (session.layerAlpha) showPresentedMasks(session)
+                if (session.layerAlpha && session.copying == null && session.maskInFlightNs == 0L && session.model?.isReady() == true)
+                    captureFanout(session)
+                // A capture whose mask never comes (dropped by the model) frees the slot after a while.
+                if (session.maskInFlightNs != 0L && System.nanoTime() - session.maskInFlightNs > 1_000_000_000L) session.maskInFlightNs = 0L
                 if (System.nanoTime() >= session.host.nextStatusNs) {
                     session.host.nextStatusNs = System.nanoTime()+250_000_000L
                     val status = JSONObject(MpvSourceNative.status(session.host.handle))
@@ -504,6 +569,15 @@ internal class MpvVideoBridge(
                     status.put("normal_fast_path", !session.inference && session.normalFastPath)
                         .put("layer_active", session.host.layer)
                         .put("rvm_video_fps_cap", frameCap(session))
+                    session.host.frames?.let { fanout ->
+                        // Audio waits as long as the frames wait for their masks (changes under 20 ms are kept).
+                        val delay = if (session.layerAlpha) Math.round(fanout.holdMs) / 1000.0 else 0.0
+                        if (Math.abs(delay - session.audioDelay) >= 0.02 && MpvSourceNative.setAudioDelay(session.host.handle, delay))
+                            session.audioDelay = delay
+                        status.put(if (fanout is LayerCopy) "layer_copy" else "layer_fanout",
+                            fanout.stats().put("masks", session.layerMasks).put("audio_delay", session.audioDelay)
+                            .put("mask_latency_ms", session.maskLatencyMs))
+                    }
                     session.roi?.status()?.forEach { (key, value) -> status.put(key, if (value is List<*>) JSONArray(value) else value) }
                     session.model?.stats()?.forEach { (key, value) -> status.put(key, value) }
                     session.depthModel?.stats()?.forEach { (key, value) -> status.put(key, value) }
@@ -526,7 +600,7 @@ internal class MpvVideoBridge(
                         .put("eof_pair_post_draw", session.end.complete()).put("eof_presented_slot", session.end.completedSlot())
                         .put("audio_focus", audioFocusState))
                     if (status.optString("state") == "failed" || status.optBoolean("render_failed"))
-                        error(status.optString("error") + " " + status.optString("render_error"))
+                        throw PlaybackFailureException(PlaybackFailure.native(status))
                 }
             } catch (failure: Throwable) { fail(session, "MPV_FRAME_PIPELINE_FAILED", failure) }
         }
@@ -535,6 +609,8 @@ internal class MpvVideoBridge(
                 if (host.handle == 0L || MpvSourceNative.close(host.handle, host.owner != EGL14.eglGetCurrentContext())) {
                     host.handle = 0; host.closeDescriptors(); hosts.remove(host)
                     // A newer playback may already own the current swapchain; only the last one destroys it.
+                    host.fanout?.close(); host.fanout = null
+                    host.copy?.close(); host.copy = null
                     if (host.layer && currentLayerSurface === host.layerSurface) {
                         VideoLayerNative.destroySurface(); currentLayerSurface = null
                     }
@@ -618,6 +694,93 @@ internal class MpvVideoBridge(
                 check(MpvSourceNative.release(session.host.handle, producer)) { "Producer lease release failed" }
         }
     }
+    /** Alpha plan B: the newest frame fanned out from the layer surface becomes the RVM input, as a decoder
+     * capture does in MPV direct mode, at the Alpha rate. Its mask goes to the mask layer (finishUploads). */
+    private fun captureFanout(session: Session) {
+        val now = System.nanoTime()
+        if (now < session.nextFanoutNs) return
+        val frame = session.host.frames?.take() ?: return
+        try {
+            session.nextFanoutNs = now + 1_000_000_000L / alphaFps.coerceAtLeast(1)
+            val width = frame.width; val height = frame.height
+            check(!session.stereo || (if (session.topBottom) height else width) % 2 == 0)
+            val eyeWidth = if (session.stereo && !session.topBottom) width / 2 else width
+            val eyeHeight = if (session.topBottom) height / 2 else height
+            if (session.renderer == 0L) {
+                session.owner = EGL14.eglGetCurrentContext()
+                session.renderer = RenderBridgeNative.create(width, height, session.dims[0], session.dims[1], session.stereo, session.topBottom)
+                if (session.vulkan && !debugZeroCopyDisabled) session.zeroCopy = RenderBridgeNative.enableZeroCopy(session.renderer)
+                if (session.roiEnabled && !debugRoiDisabled) session.roi = RoiController(RenderBridgeNative.fullInputRect(session.renderer),
+                    session.dims[0], session.dims[1], eyeWidth, eyeHeight)
+            }
+            val plan = session.roi?.plan()
+            val buffer = RenderBridgeNative.hardwareBufferPointer(frame.buffer)
+            val token = RenderBridgeNative.captureBufferRoi(session.renderer, buffer, frame.bufferWidth, frame.bufferHeight,
+                plan?.rect ?: RenderBridgeNative.fullInputRect(session.renderer), plan?.scout ?: false)
+            if (token == 0L) return
+            val ticket = DecodedFrameGate.Ticket(session.scope, frame.sequence, frame.timestampNs / 1000, 1, 1)
+            val sourceAspect = eyeWidth.toDouble()/eyeHeight
+            val inputAspect = session.dims[0].toDouble()/session.dims[1]
+            val rect = plan?.rect?.map { it.toDouble() }
+                ?: if (sourceAspect > inputAspect) { val h = inputAspect/sourceAspect; listOf(0.0, (1-h)*0.5, 1.0, h) }
+                else { val w = sourceAspect/inputAspect; listOf((1-w)*0.5, 0.0, w, 1.0) }
+            val pair = JSONObject().put("width", width).put("height", height)
+                .put("buffer_width", frame.bufferWidth).put("buffer_height", frame.bufferHeight)
+                .put("frame_id", frame.sequence).put("pts_us", frame.timestampNs / 1000).put("source_epoch", session.sourceEpoch)
+                .put("mpv_source_handle", session.host.handle).put("slot_token", token).put("format_revision", 1).put("effect_revision", 1)
+                .put("session_id", session.id).put("logical_session_id", session.scope.logicalSessionId).put("generation", session.scope.generation)
+                .put("input_width", session.dims[0]).put("input_height", session.dims[1]).put("profile_key", session.profile)
+                .put("input_layout", "float32_CHW_RGB_0_1").put("model_content_rect", JSONArray(rect))
+                .put("stereo_sbs", session.stereo).put("top_bottom", session.topBottom)
+                .put("source_pts_verified", true).put("source_ticket_origin", "layer_fanout")
+                .put("alpha_requested", true).put("depth_requested", false).put("immutable_color_frame", true).put("layer_alpha", true)
+            // Zero-copy model inputs need no CPU planes (finishCopy reads this key).
+            if (session.zeroCopy) pair.put("hardware_buffer", buffer)
+            if (plan != null) pair.put("roi_window_id", plan.windowId).put("roi_scout", plan.scout).put("roi_zoomed", plan.zoomed)
+            session.copying = ticket to token; session.copyingPair = pair
+            if (session.captureNs.size > 16) session.captureNs.clear() // tokens the model dropped
+            session.maskInFlightNs = System.nanoTime(); session.captureNs[token] = session.maskInFlightNs
+        } finally { frame.buffer.close() } // the capture's EGLImage holds the buffer now
+    }
+    /** GPU copy: a finished mask goes up once the copy thread has drawn its frame; of several, the newest
+     * shown (the others are retired). Masks never wait for long: a stalled copy lets them through. */
+    private fun showPresentedMasks(session: Session) {
+        val presented = session.host.frames?.presented ?: return
+        var latest: Pair<Long, JSONObject>? = null
+        while (session.pendingMasks.isNotEmpty() && (session.pendingMasks.first().second.getLong("frame_id") <= presented ||
+                session.pendingMasks.size > 4)) {
+            latest?.let { retire(session, it.first) }
+            latest = session.pendingMasks.removeFirst()
+        }
+        latest?.let { (token, pair) -> showLayerMask(session, token, pair); retire(session, token) }
+    }
+    /** Alpha plan B: the finished mask, drawn over the frame layout into the mask swapchain (slot 2). */
+    private fun showLayerMask(session: Session, token: Long, pair: JSONObject) {
+        val layout = if (!session.stereo) 0 else if (session.topBottom) 2 else 1
+        val width = pair.getInt("width"); val height = pair.getInt("height")
+        // An ROI window puts the model's pixels on a small part of the frame: a coarse mask swapchain blurred
+        // its edges into a halo of the video's background. 2048 per eye keeps the model's detail.
+        val scale = minOf(1.0, (if (layout == 1) 4096.0 else 2048.0) / width)
+        val maskWidth = maxOf(2, Math.round(width * scale).toInt()); val maskHeight = maxOf(2, Math.round(height * scale).toInt())
+        val values = pair.getJSONArray("model_content_rect")
+        val rect = FloatArray(4) { values.getDouble(it).toFloat() }
+        try {
+            if (!VideoLayerNative.createImage(MASK_SLOT, maskWidth, maskHeight, 1, false) || VideoLayerNative.acquireImage(MASK_SLOT) <= 0) return
+            val edge = alphaEdge
+            val drawn = VideoLayerNative.drawMask(MASK_SLOT, RenderBridgeNative.alphaTexture(session.renderer, token), rect, layout,
+                session.dims[0], session.dims[1], edge[0], edge[1])
+            if (VideoLayerNative.releaseImage(MASK_SLOT, false) && drawn) {
+                VideoLayerNative.maskDrawn()
+                session.layerMasks++
+                layerMask = "${session.layerMasks} $maskWidth $maskHeight"
+            }
+        } finally {
+            // The frames this mask belongs with (and the earlier ones) go to the compositor in the same frame.
+            // One frame newer may show with this mask too (masks come every two or three frames): no frame
+            // is then more than a frame away from its mask, and none waits for the mask after next.
+            session.host.frames?.releaseThrough(pair.getLong("frame_id") + 1)
+        }
+    }
     /** Layer frame: an identity only, the picture is already on the compositor's surface. Offered to
      * Godot like a completed pair so its claim/seek/EOF bookkeeping is unchanged. */
     private fun captureLayer(session: Session, source: JSONObject): Boolean {
@@ -643,6 +806,8 @@ internal class MpvVideoBridge(
             pair, NO_PLANES.first, NO_PLANES.second, producer)
         session.captured++
         val obsolete = session.display.offer(identity(pair))
+        if (BuildConfig.DEBUG && session.captured <= 4L) android.util.Log.i("QuestPlayer", "layer pair offer token=$token obsolete=$obsolete " +
+            "alpha=${session.alpha} frame=${pair.optLong("frame_id")} pts=${pair.optLong("pts_us")} head=${session.display.readyToken()}")
         if (obsolete == token) { retire(session, token); return true }
         obsolete?.let { retire(session, it) }
         session.pairs[token] = pair; session.latestPair = pair.toString()
@@ -698,6 +863,7 @@ internal class MpvVideoBridge(
     }
     private fun upload(session: Session, pair: JSONObject, left: ByteBuffer, right: ByteBuffer) {
         val token = pair.getLong("slot_token")
+        if (pair.optBoolean("layer_alpha")) session.maskInFlightNs = 0L // the model is free for the next frame
         check(session.leases.containsKey(token)) { "Alpha color lease unavailable" }
         if (pair.optString("alpha_transport") == "zero_copy") check(RenderBridgeNative.commitZeroCopyAlpha(session.renderer, token))
         else check(RenderBridgeNative.uploadAlpha(session.renderer, token, left, right))
@@ -716,6 +882,17 @@ internal class MpvVideoBridge(
             }
             if (!RenderBridgeNative.alphaReady(session.renderer, token)) continue
             iterator.remove()
+            if (upload.pair.optBoolean("layer_alpha")) {
+                // Capture to finished mask: delayed presentation waits as long (and the audio with it).
+                session.captureNs.remove(token)?.let { captured ->
+                    val latency = (System.nanoTime() - captured) / 1e6
+                    session.maskLatencyMs = if (session.maskLatencyMs == 0.0) latency else session.maskLatencyMs * 0.9 + latency * 0.1
+                    session.host.frames?.maskLatency(session.maskLatencyMs)
+                }
+                if (session.host.frames?.presentsLater == true) session.pendingMasks.addLast(token to upload.pair)
+                else { showLayerMask(session, token, upload.pair); retire(session, token) }
+                continue
+            }
             val pair = upload.pair.put("alpha_texture_id", RenderBridgeNative.alphaTexture(session.renderer, token))
                 .put("alpha_width", session.dims[0]*2).put("alpha_height", session.dims[1])
                 .put("alpha_texture_format", "GL_R8_numeric").put("alpha_gpu_uploaded", true).put("alpha_fence_ready", true)
@@ -825,7 +1002,10 @@ internal class MpvVideoBridge(
         val session = sessions[id] ?: return false
         synchronized(session.lock) {
             val pair = session.pairs[token] ?: return false
-            if (!active(session) || (session.inference && !session.presented(pair)) || !session.display.acknowledge(token)) return false
+            // A layer identity (the picture is on the compositor's surface) carries no effect of its own: the
+            // Alpha plan B mask goes to the mask layer, so it is presented without an inference result.
+            val identity = pair.optString("color_target") == "layer"
+            if (!active(session) || (session.inference && !identity && !session.presented(pair)) || !session.display.acknowledge(token)) return false
             session.drawnToken = token; pair.put("pair_presented", true); session.firstPair = true
             session.host.markStartup("first_pair_bound_ms")
             return true
@@ -850,7 +1030,9 @@ internal class MpvVideoBridge(
         check(!session.display.owns(token)) { "Cannot retire a Godot display claim" }
         val lease = session.leases.remove(token) ?: return
         session.pairs.remove(token)
-        if (session.renderer > 0) { RenderBridgeNative.retire(session.renderer, token); session.retiring.add(token) }
+        if (session.renderer > 0 && lease.pair.optString("color_target") != "layer") {
+            RenderBridgeNative.retire(session.renderer, token); session.retiring.add(token)
+        }
         // After the bridge fence: the MPV slot may be reused once every draw of this pair completes.
         if (lease.producer > 0) check(MpvSourceNative.release(session.host.handle, lease.producer)) { "Borrowed producer release failed" }
     }
@@ -951,10 +1133,29 @@ internal class MpvVideoBridge(
     }
     private fun fail(session: Session, code: String, failure: Throwable) {
         if (session.disposed.get()) return
-        event("mpv_error", session, JSONObject().put("code", code).put("message", failure.message))
+        val stage = when (session.host.loadingPhase) {
+            "connecting" -> "resolving"
+            "reading_disc" -> "parsing"
+            "reading" -> "reading"
+            else -> "output"
+        }
+        val upstream = session.host.networkLease?.let(networkFailure)
+        event("mpv_error", session, PlaybackFailure.report(code, failure, stage, upstream))
         gate.invalidate(session.id); dispose(session, true)
     }
     fun close(id: Int) { sessions[id]?.let { gate.invalidate(id); dispose(it, true) } }
+    /** File-management worker only. close() invalidates playback before GL retires its reader. */
+    fun awaitFileRelease(uri: String) {
+        val deadline = System.nanoTime() + 5_000_000_000L
+        val prefix = uri.trimEnd('/') + "/"
+        while (true) {
+            val readers = hosts.filter { it.uri == uri || it.uri.startsWith(prefix) }
+            if (readers.isEmpty()) return
+            check(readers.all { it.closing }) { "Stop playback before file management" }
+            check(System.nanoTime() < deadline) { "Playback is still closing. Try again" }
+            Thread.sleep(25)
+        }
+    }
     fun pause() {
         foreground = false; hosts.forEach { if (it.handle > 0) MpvSourceNative.setPlaying(it.handle, false) }
         refreshPlayback()
@@ -966,12 +1167,30 @@ internal class MpvVideoBridge(
         // creation has no sessions; UI can reopen the same authorized URI.
         sessions.values.forEach { fail(it, "MPV_GL_CONTEXT_RECREATED", IllegalStateException("Owner context recreated")) }
     }
-    private var layerTokens = 0L // GL thread: layer pair tokens (no bridge slot behind them)
+    // GL thread: layer pair tokens (no bridge slot behind them), in a range of their own: an Alpha layer
+    // session also holds render bridge tokens in the same lease map.
+    private var layerTokens = 1L shl 40
     @Volatile private var currentLayerSurface: android.view.Surface? = null
+    /** Alpha plan B, on in debug builds (adb shell setprop debug.vrpp.layer.alpha 0 compares the eye-buffer
+     * Alpha): Alpha keeps the layer through the GPU copy (LayerCopy), RVM reads its held frames and the mask
+     * becomes a compositor mask layer. Release builds keep the eye buffers until the other runtimes are verified. */
+    /** Debug builds: an integer system property, [fallback] when unset or not a number. */
+    private fun debugInt(name: String, fallback: Int): Int = if (BuildConfig.DEBUG) debugProperty(name).toIntOrNull() ?: fallback else fallback
+    private fun debugProperty(name: String): String = try {
+        Class.forName("android.os.SystemProperties").getMethod("get", String::class.java).invoke(null, name) as String
+    } catch (_: Throwable) { "" }
+    private fun debugLayerAlpha() = BuildConfig.DEBUG && try {
+        Class.forName("android.os.SystemProperties").getMethod("get", String::class.java)
+            .invoke(null, "debug.vrpp.layer.alpha") != "0"
+    } catch (_: Throwable) { false }
     companion object {
+        /** Alpha plan B: masks shown so far in this Alpha layer session and the mask swapchain size, "count w h". */
+        @Volatile var layerMask = "0 0 0"
+        const val MASK_SLOT = 2 // the picture swapchain slot Godot shows as the mask layer
+        const val HOLD_LIMIT_MS = 250L // a held layer frame goes on without its mask after this
         /** Nominal swapchain size: the decoder sets the buffer size; layer rects are in these units. */
         const val LAYER_SURFACE_SIZE = 4096
-        const val RVM_VIDEO_FPS = 20
+        const val RVM_VIDEO_FPS = 30
         val ALPHA_FPS_RANGE = 10..40
         private val NO_PLANES: Pair<ByteBuffer, ByteBuffer> = ByteBuffer.allocateDirect(0) to ByteBuffer.allocateDirect(0)
     }

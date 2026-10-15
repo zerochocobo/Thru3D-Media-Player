@@ -5,6 +5,11 @@ const Main := preload("res://scripts/main.gd")
 var failures: Array[String] = []
 var checks := 0
 
+# This suite verifies cardinal dispatch; release/decoder behavior is covered by test_seek_feedback.
+class DispatchMain extends "res://scripts/main.gd":
+	func _begin_stick_seek(_hand: String, _input: String, step: int, _id: String = "") -> void:
+		video.calls.append(["seek", step])
+
 class Trace extends Node3D:
 	var calls: Array = []
 	func seek_relative(delta: int) -> bool:
@@ -34,7 +39,7 @@ func check(value: bool, message: String) -> void:
 		failures.append(message)
 
 func _initialize() -> void:
-	var main := Main.new()
+	var main := DispatchMain.new()
 	var video := Trace.new()
 	main.video = video
 	var controls := Controls.new()

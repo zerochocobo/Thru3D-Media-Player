@@ -96,6 +96,56 @@ var device_status: Node3D
 var session_controls_provider: Callable
 var _footer_state := {}
 var _footer_centre := Vector2.ZERO
+const SurfaceLayout := preload("res://scripts/menu_surface_layout.gd")
+var _layout_eye: Variant = null
+var _layout_up := Vector3.UP
+var layout_head_provider: Callable
+var _layout_following := false
+
+func panel_centre() -> Vector3:
+	return _backdrop.position if is_instance_valid(_backdrop) else Vector3.ZERO
+
+## Store the viewer in menu space so refreshes cannot chase head motion during a click.
+func set_layout_viewer(head: Transform3D, following: bool = false, orient: bool = true) -> void:
+	if not is_inside_tree(): return
+	var up := head.basis.y.normalized() if following else Vector3.UP
+	if orient: global_transform = SurfaceLayout.facing(global_transform, head.origin, panel_centre(), up)
+	_layout_following = following
+	_layout_eye = to_local(head.origin)
+	_layout_up = global_basis.inverse() * up
+	arrange_surfaces()
+
+## Only explicit opens/layout changes refresh this reference; ordinary redraws keep it frozen.
+func refresh_layout_reference() -> void:
+	if not layout_head_provider.is_valid(): return
+	var head: Variant = layout_head_provider.call()
+	if head is Transform3D: set_layout_viewer(head, _layout_following, false)
+
+func arrange_surfaces() -> void:
+	pass
+
+func panel_bounds() -> Rect2:
+	var nodes: Array = [_backdrop]
+	nodes.append_array(_labels); nodes.append_array(_decorations)
+	for button in _buttons: nodes.append(button.node)
+	return SurfaceLayout.bounds(nodes, self)
+
+## Captures use the actual pressed plane, including angled popups and raised choice lists.
+func control_plane(target: int) -> Transform3D:
+	for button in _buttons:
+		if button.target == target: return global_transform.affine_inverse() * button.node.global_transform
+	return Transform3D.IDENTITY
+
+func control_point(hit: Dictionary) -> Vector3:
+	return control_plane(int(hit.target)).affine_inverse() * Vector3(hit.point)
+
+func project_pointer(origin: Vector3, direction: Vector3, plane: Transform3D) -> Variant:
+	if not origin.is_finite() or not direction.is_finite() or direction.length_squared() < 0.000001: return null
+	var inverse := (global_transform * plane).affine_inverse()
+	var start := inverse * origin
+	var delta := inverse.basis * direction.normalized()
+	if delta.z >= -0.00001 or start.z <= 0: return null
+	return start + delta * (-start.z / delta.z)
 
 func _ready() -> void:
 	position = Vector3(0, -0.03, -1.55)
@@ -495,9 +545,16 @@ func _update_tooltip() -> void:
 	var size: Vector2 = _tooltip.mesh.size
 	var rect: Rect2 = shown.rect
 	# List tiles move with their scrolling parent; use their actual menu-space centre.
-	var centre := to_local(shown.node.global_position)
-	var bounds: Vector2 = _backdrop.mesh.size
-	var x := clampf(centre.x, _backdrop.position.x - bounds.x * 0.5 + size.x * 0.5, _backdrop.position.x + bounds.x * 0.5 - size.x * 0.5)
+	var surface: Node3D = self
+	var parent: Node = shown.node.get_parent()
+	while parent != self and parent is Node3D:
+		if parent.has_meta("menu_surface_bounds"): surface = parent; break
+		parent = parent.get_parent()
+	if _tooltip.get_parent() != surface: _tooltip.reparent(surface, false)
+	_tooltip.basis = Basis.IDENTITY
+	var centre := surface.to_local(shown.node.global_position)
+	var bounds: Rect2 = surface.get_meta("menu_surface_bounds") if surface != self else Rect2(Vector2(_backdrop.position.x, _backdrop.position.y) - _backdrop.mesh.size / 2, _backdrop.mesh.size)
+	var x := clampf(centre.x, bounds.position.x + size.x * 0.5, bounds.end.x - size.x * 0.5) if bounds.size.x >= size.x else bounds.get_center().x
 	_tooltip.position = Vector3(x, centre.y + (-1 if shown.get("tip_below", false) else 1) * (rect.size.y * 0.5 + size.y * 0.5 + 0.017), 0.012)
 	_tooltip.visible = true
 	if changed: composition_layout_changed.emit()

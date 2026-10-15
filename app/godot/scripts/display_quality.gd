@@ -27,7 +27,7 @@ const SUPERSAMPLING_INFO := "Compositor filtering of video and photo layers when
 const SUPERSAMPLING_HINTS := ["No filtering, lowest GPU cost", "System normal supersampling", "Stronger filtering, higher GPU cost"]
 const SHARPNESS_INFO := "Edge sharpening for video and photos, independent of supersampling."
 const SHARPNESS_HINTS := ["No sharpening", "System normal sharpening; shader strength 0.2", "System quality sharpening; shader strength 0.6"]
-const OUTPUT_INFO := "Maximum decoded width for shader playback; compositor-layer playback ignores it."
+const OUTPUT_INFO := "Maximum decoded width for shader playback and Alpha on the compositor layer; plain compositor-layer playback ignores it."
 const OUTPUT_HINTS := {AUTO_OUTPUT: "4096 px on Quest 2 / PICO Neo3 class GPUs, source width otherwise", 0: "Source width",
 	5760: "Max 5760 px wide", 4096: "Max 4096 px wide"}
 

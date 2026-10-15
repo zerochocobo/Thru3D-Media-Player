@@ -46,6 +46,17 @@ func click(menu: Node3D, target: int) -> bool:
 func placement(main: Node3D, surface: Node3D) -> Transform3D:
 	return main.xr_camera.global_transform.affine_inverse() * (surface.global_transform * surface.flat_pose)
 
+func faces_viewer(main: Node3D, menu: Node3D) -> bool:
+	var eye: Transform3D = main._head_pose()
+	var direction := (eye.origin - menu.to_global(menu.panel_centre())).normalized()
+	var up: Vector3 = eye.basis.y if main.view_follow.enabled else Vector3.UP
+	return menu.global_basis.z.normalized().dot(direction) > 0.99999 and absf(menu.global_basis.x.normalized().dot(up)) < 0.00001
+
+func default_menu(main: Node3D, menu: Node3D, drop: float) -> bool:
+	var head: Transform3D = main._head_pose()
+	var centre: Vector3 = main.InterfaceMove.menu_head(head, main.view_follow.enabled) * (Vector3(0, -drop, -1.4) + menu.panel_centre())
+	return menu.to_global(menu.panel_centre()).is_equal_approx(centre) and faces_viewer(main, menu)
+
 func footer_check(menu: Node3D, name: String) -> void:
 	var follow := button(menu, Menu.FOLLOW)
 	var pass_button := button(menu, Menu.TEMP_PASSTHROUGH)
@@ -102,26 +113,25 @@ func recenter_menus(main: Node3D) -> void:
 				main.video_menu.visible = true; main.video_menu.refresh()
 				check(click(main.video_menu, 108), "The actual player recenter button is clickable after dragging")
 			var frame: Transform3D = main.InterfaceMove.menu_head(main._head_pose(), following)
-			check(main.recent_menu.global_transform.is_equal_approx(frame * Transform3D(Basis.IDENTITY, Vector3(0, -0.05, -1.4))), "Both recenter entry points restore default library position, distance and orientation")
+			check(default_menu(main, main.recent_menu, 0.05), "Both recenter entry points restore the default library centre facing the eye")
 			check(main.view_follow.enabled == following and main.recent_menu.playback_controls_pose == null, "Recenter preserves the follow switch and discards the expanded-library control-bar cache")
 			for menu in [main.recent_menu, main.video_menu, main.photo_menu]:
 				check(not main.interface_move.placements.has(main._menu_key(menu)), "Recenter removes the dragged offset of visible and hidden menus")
 			main._show_player_menu()
-			check(main.video_menu.global_transform.is_equal_approx(frame * Transform3D(Basis.IDENTITY, Vector3(0, -0.45, -1.4))), "A hidden video control bar reopens at its default pose after recenter")
+			check(default_menu(main, main.video_menu, 0.45), "A hidden video control bar reopens at its default viewer-facing pose after recenter")
 			var fixed: Transform3D = main.video_menu.global_transform
 			main.xr_camera.rotate_z(0.2); main._update_view_follow()
 			check(not main.video_menu.global_transform.is_equal_approx(fixed) if following else main.video_menu.global_transform.is_equal_approx(fixed), "Only follow mode tilts the centered control bar with subsequent head roll")
 			main.photo_active = true; main.player_menu = main.photo_menu; main._show_player_menu()
 			frame = main.InterfaceMove.menu_head(main._head_pose(), following)
-			check(main.photo_menu.global_transform.is_equal_approx(frame * Transform3D(Basis.IDENTITY, Vector3(0, -0.45, -1.4))), "A hidden photo control bar also loses its previous dragged pose")
+			check(default_menu(main, main.photo_menu, 0.45), "A hidden photo control bar also loses its previous dragged pose")
 			main.photo_menu.dismiss()
 			main.photo_active = false; main.player_menu = main.video_menu
 		main._show_player_menu(); main._show_recent_menu(); main._toggle_library_layout()
 		check(main.recent_menu.playback_expanded, "Recenter fixture opens the full library from the nested player browser")
 		main.recent_menu.playback_controls_pose = Transform3D(Basis(Vector3.FORWARD, 0.4), Vector3(4, 1, 3))
 		main._on_system_recentered(); main._toggle_library_layout()
-		var restored: Transform3D = main.InterfaceMove.menu_head(main._head_pose(), following) * Transform3D(Basis.IDENTITY, Vector3(0, -0.45, -1.4))
-		check(main._library_is_compact() and main.video_menu.global_transform.is_equal_approx(restored), "Collapsing the library after recenter cannot resurrect the old tilted control-bar cache")
+		check(main._library_is_compact() and default_menu(main, main.video_menu, 0.45), "Collapsing the library after recenter cannot resurrect the old tilted control-bar cache")
 		main._show_full_library()
 
 func _run() -> void:
@@ -184,7 +194,7 @@ func _run() -> void:
 	var before := placement(main, main.video)
 	main._show_player_menu()
 	check(placement(main, main.video).is_equal_approx(before), "Menu summons do not move screen")
-	check(main.video_menu.global_basis.is_equal_approx(main.xr_camera.global_basis), "Player summon includes head tilt and roll")
+	check(faces_viewer(main, main.video_menu), "Following player faces the eye with the head's up reference")
 	footer_check(main.video_menu, "Player bar")
 	for section in [1,2]:
 		main.video_menu.section = section; main.video_menu.refresh()
@@ -272,7 +282,7 @@ func _run() -> void:
 	check(main.recent_menu.global_transform.is_equal_approx(frozen), "Invalid head tracking does not recapture or move panels")
 	main.tracked = true
 	main._on_system_recentered()
-	check(main.recent_menu.global_transform.is_equal_approx(main._head_pose() * Transform3D(Basis.IDENTITY, Vector3(0, -0.05, -1.4))), "System recenter restores default menus even while following")
+	check(default_menu(main, main.recent_menu, 0.05), "System recenter restores default viewer-facing menus even while following")
 	main.display.preview = true
 	main._on_session_control("follow")
 	var world: Transform3D = main.video.global_transform * main.video.flat_pose
@@ -282,7 +292,7 @@ func _run() -> void:
 	main._recenter()
 	check(placement(main, main.video).is_equal_approx(main.interface_move.placements[main._surface_key(main.video)]), "Standard recenter restores the remembered head-relative pose without clearing it")
 	main._show_full_library()
-	check(main.recent_menu.global_basis.y.is_equal_approx(Vector3.UP), "Standard menus summon level instead of inheriting head tilt")
+	check(faces_viewer(main, main.recent_menu), "Standard menus face the eye without inheriting head roll")
 	main.recent_menu.refresh()
 	var control_position: Vector3 = button(main.recent_menu, Menu.FOLLOW).node.position
 	main.recent_menu.device_status.status_provider = func(): return {"level":100,"charging":true,"clock24":false}

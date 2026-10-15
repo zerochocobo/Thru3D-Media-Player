@@ -53,6 +53,7 @@ def apply_mvc_patch(ffmpeg, archive):
     edited['libavformat/Makefile'] += '\nOBJS-$(CONFIG_BD_MVC_DEMUXER) += bd_mvc.o\n'
     desired = {name: content.encode() for name, content in edited.items()}
     for local, name in [('ffmpeg_h264_mvc.c','libavcodec/h264_mvc.c'),
+                        ('mvc_recovery.h','libavcodec/mvc_recovery.h'),
                         ('ffmpeg_bd_mvc.c','libavformat/bd_mvc.c'),
                         ('edge264mvc_all.c','libavcodec/edge264mvc_all.c')]:
         desired[name] = (ROOT / 'native/mpv/mvc' / local).read_bytes()

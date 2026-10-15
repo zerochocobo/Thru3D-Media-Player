@@ -41,7 +41,7 @@ internal class CloudCancellation : CloudTransport {
         return CloudHttp.request(url, cookie, form, this)
     }
 }
-internal class CloudFailure(val reason: String = "cloud_unavailable", detail: String = "", cause: Throwable? = null) : IOException(when (reason) {
+internal class CloudFailure(val reason: String = "cloud_unavailable", detail: String = "", cause: Throwable? = null, val httpStatus: Int = 0) : IOException(when (reason) {
     "cloud_login_required" -> "Please sign in to your cloud account again"
     "cloud_store_unavailable" -> "Cloud account storage unavailable"
     "cloud_file_missing" -> "Cloud file or account not found"
@@ -85,8 +85,8 @@ internal object CloudHttp : CloudTransport {
                 connection.outputStream.use { it.write(form(form).toByteArray(Charsets.UTF_8)) }
             }
             val status = connection.responseCode
-            if (status in setOf(301, 302, 401, 403)) throw CloudFailure("cloud_login_required", "${uri.host}${uri.path}: HTTP $status")
-            if (status != 200) throw CloudFailure(detail = "${uri.host}${uri.path}: HTTP $status")
+            if (status in setOf(301, 302, 401, 403)) throw CloudFailure("cloud_login_required", "Cloud API HTTP $status", httpStatus = status)
+            if (status != 200) throw CloudFailure(detail = "Cloud API HTTP $status", httpStatus = status)
             val bytes = connection.inputStream.use { input ->
                 val out = ByteArrayOutputStream()
                 val buffer = ByteArray(8192)

@@ -3,6 +3,7 @@
 #include <GLES3/gl31.h>
 #include <GLES2/gl2ext.h>
 #include <android/hardware_buffer.h>
+#include <android/hardware_buffer_jni.h>
 #include <jni.h>
 #include <android/log.h>
 #include <sys/system_properties.h>
@@ -1285,6 +1286,13 @@ Java_org_vrpassthroughplayer_plugin_RenderBridgeNative_zeroCopyBuffers(JNIEnv* e
         if (result) env->SetLongArrayRegion(result, 0, 4, handles.data());
         return result;
     } catch (const std::exception& e) { error(env, e.what()); return nullptr; }
+}
+// A Java HardwareBuffer's native buffer (no reference added: the Java object keeps it alive until the
+// capture's EGLImage holds its own). Frames fanned out from the decoder's layer surface (Alpha plan B).
+extern "C" JNIEXPORT jlong JNICALL
+Java_org_vrpassthroughplayer_plugin_RenderBridgeNative_hardwareBufferPointer(JNIEnv* env, jclass, jobject buffer) {
+    if (!buffer) return 0;
+    return static_cast<jlong>(reinterpret_cast<uintptr_t>(AHardwareBuffer_fromHardwareBuffer(env, buffer)));
 }
 // Drops the references zeroCopyBuffers() handed out. Any thread; the bridge may be gone.
 extern "C" JNIEXPORT void JNICALL

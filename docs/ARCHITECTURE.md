@@ -36,7 +36,7 @@ These bridges still require device-specific website/input validation.
 
 Immersive text subtitles intersect each physical eye's viewing ray with a shared video-local plane, rather than using a single-eye longitude offset. The current configurable distance is 0.1–5 m; source tests do not establish near-field headset comfort.
 
-The normal matting backend uses MNN OpenCL with four recurrent states for each eye. ROI decisions are in Kotlin's `RoiController`; the default source snapshot uses the internal 320×320 fast profile. No model/resolution selector is exposed in the normal UI. ncnn/reference paths are retained for dedicated diagnostics; normal playback has no automatic CPU fallback.
+The normal matting backend uses MNN OpenCL with four recurrent states for each eye. ROI decisions are in Kotlin's `RoiController`; the default source snapshot uses the internal 320×320 fast profile. The normal UI exposes a remembered global 256/320/384/512 inference-size choice (default 320). A cold size can take about a minute to prepare while the current size stays active. This does not allow arbitrary replacement weights. ncnn/reference paths are retained for dedicated diagnostics; normal playback has no automatic CPU fallback.
 
 The independent depth backend processes flat mono videos/photos using Depth Anything V2 Small. `depth_stabilizer` limits temporal variation before Godot renders depth-based stereo. Depth updates and display frames have distinct timing; a rendered-frame rate is not an inference rate.
 
@@ -72,12 +72,18 @@ StrmFile/StrmHttp resolve bounded single-address indexes while retaining origina
 
 Video settings, grading and stereo controls use compact popups above the playback bar; photo settings retain the full panel. Menu backing surfaces intercept rays, while a trigger tap outside dismisses menus. library_presentation.gd and media_server_browser.gd preserve existing size/year/duration fields alongside viewing progress, without inventing missing metadata or expanding recent-playback storage.
 
-## 0.9.2 navigation, subtitle and compositor behavior
+## Navigation, subtitle and compositor behavior
 
-Video triggers operate controls and show/hide transport; grip moves flat pictures or turns immersive video. Contextual B/Y routing closes the innermost popup, navigates to a parent directory, then hides transport while keeping playback. Library recovery also works with the right controller. Reopening a browser locates the playing item within its available context, without a background scan. Video depth preferences are file-scoped; photo depth preferences remain separate.
+Video triggers operate controls and show/hide transport; grip moves flat pictures or turns immersive video. Contextual B/Y routing closes the innermost popup, navigates to a parent directory, then closes ordinary video playback and returns to the library; photos retain their previous Back behavior. Library recovery also works with the right controller. Reopening a browser locates the playing item within its available context, without a background scan. Video depth preferences are file-scoped; photo depth preferences remain separate.
 
 DLNA stores bounded playback references separately from its browsing cache, retaining object/server identity for recent-playback subtitle rediscovery. Subtitle snapshots preserve original external filenames; automatic selection tries a matching basename, then an interface-language external subtitle, while explicit/saved selections (including Off) take priority. Missing identity in already-evicted old history cannot be reconstructed from a media URL.
 
 Supported immersive text and flat PGS use compositor layers; flat ordinary text keeps its current path. Rotation layers are limited to compatible uncurved flat mono pictures. Photo magnifier, portrait-mask and native stereo-photo paths use layers when their mode/runtime supports them; these source changes do not prove every device's performance.
 
 Emby title presentation is distinct from filename hover hints. Eligible visible folders may borrow horizontal artwork only from a unique direct movie/video child, using bounded requests and caching. Cast/still layouts preserve aspect ratio. Sort popup editing leaves the background in place; applying a supported server sort reloads page one. Multi-clip MVC remains software decoding with compatible stream layouts as described in BLURAY.md.
+
+## Passive feedback, panel placement and file operations
+
+seek_feedback.gd owns a source/session-scoped thumbstick preview; return-to-center submits it, and only the matching presented frame completes feedback. seek_overlay.gd and playback_status_overlay.gd keep seek/buffering status independent of transport visibility. Panel layout uses captured viewer references and per-panel tangent planes rather than continuous implicit head following.
+
+Structured playback failures retain sanitized upstream/native causes in a concise dialog with expandable details. File-management selection and guarded rename/delete operations remain opt-in and source-dependent; uncertain writes are verified instead of repeated. Compatible DV Profile 5 and software-frame picture-layer presentation is distinct from Alpha's Debug-only GPU-copy experiment. No new MVC hardware decoder, universal provider-access fix, USB filesystem support or upscaler is implied by these changes.

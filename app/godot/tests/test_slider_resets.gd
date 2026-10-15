@@ -96,7 +96,7 @@ func run() -> void:
 	menu._adjustment = ""; menu.refresh()
 	click(menu, row_for(menu, "alpha_fps").reset)
 	var saved_fps := ConfigFile.new(); saved_fps.load(main.settings_path)
-	check(main._alpha_fps() == 20 and saved_fps.get_value("video", "alpha_fps") == 20, "Alpha FPS resets and persists without touching other playback settings")
+	check(main._alpha_fps() == 30 and saved_fps.get_value("video", "alpha_fps") == 30, "Alpha FPS resets and persists without touching other playback settings")
 	menu.free(); main.free(); video.free()
 	# Shared subtitle fields own reset clicks until release; no preview writes or double commits.
 	var state := {"has_video": true, "source_uri": "file:///subtitle.mp4", "geometry": 1,

@@ -1,5 +1,7 @@
 extends RefCounted
 
+signal suspended
+
 var left_latched := false
 var right_latched := false
 ## The right stick is zooming an immersive view: it stays zoom until it returns to center.
@@ -12,6 +14,7 @@ func suspend() -> void:
 	right_latched = true
 	right_zooming = false
 	mapped_continuous.clear()
+	suspended.emit()
 
 # One command per deflection; return to center before changing direction/action.
 # With [zoom] (immersive views) the right stick's up/down zooms continuously instead of volume.

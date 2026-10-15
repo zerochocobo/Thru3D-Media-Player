@@ -25,6 +25,22 @@ internal class LocalStreamServer : Closeable {
     private val socket = ServerSocket(0, 16, InetAddress.getByName("127.0.0.1"))
     private val sources = ConcurrentHashMap<String, StreamSource>()
     private val meters = ConcurrentHashMap<String, TransferMeter>()
+    private class Diagnostics {
+        private var sequence = 0L
+        private var success = 0L
+        private var failed = 0L
+        private var cause: PlaybackFailure? = null
+        @Synchronized fun begin() = ++sequence
+        @Synchronized fun success(attempt: Long) {
+            success = maxOf(success, attempt)
+            if (attempt >= failed) cause = null
+        }
+        @Synchronized fun fail(attempt: Long, value: PlaybackFailure) {
+            if (attempt > success && attempt >= failed) { failed = attempt; cause = value }
+        }
+        @Synchronized fun failure(): PlaybackFailure? = cause
+    }
+    private val diagnostics = ConcurrentHashMap<String, Diagnostics>()
     private val clients = ConcurrentHashMap.newKeySet<Socket>()
     private val pool = Executors.newCachedThreadPool { Thread(it, "QuestStreamServer").apply { isDaemon = true } }
     private val random = SecureRandom()
@@ -44,6 +60,7 @@ internal class LocalStreamServer : Closeable {
     fun publish(source: StreamSource, name: String): String {
         val token = ByteArray(16).also(random::nextBytes).joinToString("") { "%02x".format(it) }
         meters[token] = TransferMeter()
+        diagnostics[token] = Diagnostics()
         sources[token] = source
         return "http://127.0.0.1:${socket.localPort}/$token/${URLEncoder.encode(name, "UTF-8").replace("+", "%20")}"
     }
@@ -51,7 +68,25 @@ internal class LocalStreamServer : Closeable {
     private fun token(url: String) = url.takeIf { it.startsWith("http://127.0.0.1:${socket.localPort}/") }
         ?.substringAfter(":${socket.localPort}/")?.substringBefore('/')
     fun progress(url: String): TransferMeter.Snapshot? = token(url)?.let { meters[it]?.snapshot() }
-    fun revoke(url: String) { token(url)?.let { meters.remove(it); sources.remove(it)?.close() } }
+    fun failure(url: String): PlaybackFailure? = token(url)?.let { diagnostics[it]?.failure() }
+    fun revoke(url: String) { token(url)?.let { meters.remove(it); sources.remove(it)?.close(); diagnostics.remove(it) } }
+
+    private fun record(token: String, source: StreamSource, attempt: Long, error: Exception) {
+        if (!closed && sources[token] === source && !Thread.currentThread().isInterrupted && !PlaybackFailure.cancelled(error)) {
+            diagnostics[token]?.fail(attempt, PlaybackFailure.from(error, "reading"))
+        }
+    }
+
+    private fun read(token: String, source: StreamSource, reader: StreamSource.Reader, offset: Long, buffer: ByteArray, length: Int): Int {
+        val state = diagnostics[token]
+        val attempt = state?.begin() ?: 0
+        try {
+            val count = reader.read(offset, buffer, length)
+            if (count <= 0) throw PlaybackFailureException(PlaybackFailure("stream_interrupted", "reading", "Upstream stream ended before the requested range"))
+            state?.success(attempt) // A late failure from an older seek cannot undo this recovery.
+            return count
+        } catch (error: Exception) { record(token, source, attempt, error); throw error }
+    }
 
     private fun serve(client: Socket) = client.use {
         try {
@@ -82,19 +117,20 @@ internal class LocalStreamServer : Closeable {
             if (partial) head.append("Content-Range: bytes ").append(start).append('-').append(end).append('/').append(source.size).append("\r\n")
             val responseHead = head.append("Connection: close\r\n\r\n").toString().toByteArray()
             if (parts[0] == "HEAD") { output.write(responseHead); return }
-            val opened = try { source.open() } catch (_: Exception) { return respond(output, 502, "Bad Gateway") }
+            val opening = diagnostics[token]?.begin() ?: 0
+            val opened = try { source.open() } catch (error: Exception) { record(token, source, opening, error); return respond(output, 502, "Bad Gateway") }
             opened.use { reader ->
                 val buffer = ByteArray(512 * 1024)
                 var offset = start
                 // Validate the upstream status/range before committing a successful HTTP response.
-                val first = try { reader.read(offset, buffer, minOf(buffer.size.toLong(), end - offset + 1).toInt()) }
+                val first = try { read(token, source, reader, offset, buffer, minOf(buffer.size.toLong(), end - offset + 1).toInt()) }
                     catch (_: Exception) { return respond(output, 502, "Bad Gateway") }
                 if (first <= 0) return respond(output, 502, "Bad Gateway")
                 meter?.add(first)
                 output.write(responseHead)
                 output.write(buffer, 0, first); offset += first
                 while (offset <= end && !closed) {
-                    val count = reader.read(offset, buffer, minOf(buffer.size.toLong(), end - offset + 1).toInt())
+                    val count = read(token, source, reader, offset, buffer, minOf(buffer.size.toLong(), end - offset + 1).toInt())
                     if (count <= 0) break
                     meter?.add(count)
                     output.write(buffer, 0, count)
@@ -128,6 +164,7 @@ internal class LocalStreamServer : Closeable {
         pool.shutdownNow()
         clients.toList().forEach { runCatching { it.close() } }; clients.clear()
         sources.values.forEach { runCatching { it.close() } }
+        diagnostics.clear()
         sources.clear()
         meters.clear()
     }
