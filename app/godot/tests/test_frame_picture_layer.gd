@@ -104,6 +104,19 @@ func _run() -> void:
 	video._binding.ticket = _frame(10)
 	check(not video._show_frame_picture(origin, []) and video._frame_picture_failed and not video._frame_picture_wanted(),
 		"A refused swapchain falls back to the eye buffers")
+	# Alpha keeps the layer only where the runtime blends layers by the mask; elsewhere the video
+	# layer would show uncut, so Alpha goes to the eye buffers.
+	host.refuse_create = false
+	video._layer_blocked_uri = ""
+	video.alpha_requested = true
+	video._layer_alpha_allowed = true
+	video.video_layer.alpha_blend = false
+	check(not video._layer_alpha() and not video._layer_presentation(), "Without the runtime's layer blending Alpha uses the eye buffers")
+	video.video_layer.alpha_blend = true
+	check(video._layer_alpha() and video._layer_presentation(), "With it Alpha stays on the layer")
+	video._layer_alpha_allowed = false
+	check(not video._layer_presentation(), "A build that does not allow it keeps the eye buffers")
+	video.alpha_requested = false
 	video.free()
 	# A software decoder on the layer surface never produces a frame: the session reports it at once
 	# and the file reopens on MPV's RGBA frames instead of waiting for the output timeout.

@@ -92,6 +92,8 @@ Thumbstick seeking previews a target before submitting it on a deliberate return
 
 Grip and trigger modifiers may be pressed in either order on the same controller. Optional combinations provide half-turns only for 360-degree media and previous/next video navigation within the existing queue. Active UI captures and unavailable actions remain isolated; these combinations are not new default bindings.
 
-Alpha has a global 256/320/384/512 model-size choice, with cached preparation and a default 30 FPS limit for unsaved preferences. A cold size may take about a minute to prepare; during playback the existing size stays active until preparation completes. Feather/shrink controls are available in playback and library settings. The GPU-copy Alpha layer is currently a Debug-only experiment, not a default Release capability or a fixed frame-rate guarantee.
+Alpha has a global 256/320/384/512 model-size choice, with cached preparation and a default 30 FPS limit for unsaved preferences. A cold size may take about a minute to prepare; during playback the existing size stays active until preparation completes. Feather/shrink controls are available in playback and library settings. The updated Alpha presentation is included in the 0.10.0 Release scope; actual playback and inference rates depend on the headset, media and selected settings.
 
 Opt-in file management provides source-dependent list selection, confirmed deletion and rename previews. Matching companions require exactly the same basename; folder renaming is not recursive. 115 Open support does not imply the legacy cookie provider can rename. Unknown write outcomes require status verification rather than automatic repeated writes.
+
+Headsets/runtimes without support for the updated Alpha presentation automatically use eye-buffer Alpha.

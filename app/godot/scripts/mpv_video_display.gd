@@ -211,9 +211,9 @@ var _subtitle_texture: ImageTexture
 ## Debug prototype of Alpha plan B (compositor alpha blending): 0 off, 1 a test mask over what lies
 ## beneath (passthrough), 2 the same over a test backdrop layer, so a capture shows the blend.
 var alpha_probe := 0
-## Alpha plan B prototype (debug property debug.vrpp.layer.alpha): Alpha keeps the decoder surface layer
-## and RVM's mask becomes a compositor mask layer beneath it. Read once with the platform.
-var _layer_alpha_debug := false
+## Alpha on the layer: Alpha keeps the decoder surface layer and RVM's mask becomes a compositor mask
+## layer beneath it. The platform allows it (read once); see _layer_alpha() for the runtime's part.
+var _layer_alpha_allowed := false
 ## This session's decoder fans its frames out for Alpha (opened with Alpha on the layer): only such a
 ## session can turn Alpha on in place. Any other layer session reopens with Alpha instead.
 var _layer_alpha_host := false
@@ -260,7 +260,7 @@ func _ready() -> void:
 	add_child(_subtitle_surface)
 	if OS.get_name() == "Android" and Engine.has_singleton("QuestPlayer"):
 		platform = Engine.get_singleton("QuestPlayer")
-		_layer_alpha_debug = PlatformMethods.supports(platform, "video_layer_alpha_debug") and bool(platform.video_layer_alpha_debug())
+		_layer_alpha_allowed = PlatformMethods.supports(platform, "video_layer_alpha") and bool(platform.video_layer_alpha())
 		if PlatformMethods.supports(platform, "set_mpv_alpha_edge"): platform.set_mpv_alpha_edge(alpha_edge.x, alpha_edge.y)
 		platform.connect("local_video_selected", _on_selected)
 		platform.connect("local_video_access", _on_local_access)
@@ -604,7 +604,7 @@ func open_local(uri: String, title: String, start_ms: int = 0, restore_mode: boo
 	# The cover comes from a displayed frame (never a second decoder). The layer has none to read, so a
 	# layer session leaves it to the next eye-buffer session (Alpha, 3D, effects) instead of switching.
 	var layer := _layer_wanted() and not _eye_buffer_only and uri != _layer_blocked_uri
-	_layer_alpha_host = layer and alpha_requested and _layer_alpha_debug
+	_layer_alpha_host = layer and alpha_requested and _layer_alpha()
 	# Opened in the eye buffers only for a setting of the moment (colour grade, 3D, Alpha): go to the
 	# layer once that setting is undone, as a session moved off the layer does.
 	if not layer and not _eye_buffer_only and uri != _layer_blocked_uri and layer_enabled \
@@ -849,7 +849,7 @@ func _try_revision() -> void:
 	if int(_pending_revision.position_ms) >= 0 and Time.get_ticks_msec() < _debug_seek_delay_until_ms:
 		return
 	var request := _pending_revision
-	if _layer_session and ((bool(request.alpha) and not _layer_alpha_debug) or bool(request.depth)):
+	if _layer_session and ((bool(request.alpha) and not _layer_alpha()) or bool(request.depth)):
 		_pending_revision = {}
 		_reopen_on_eye_buffer(int(request.position_ms))
 		return
@@ -2139,10 +2139,16 @@ func stereo_offset_uv() -> Vector2:
 
 ## Presentation the compositor layer can show exactly: plain decoder colour on a supported shape.
 func _layer_presentation() -> bool:
-	return layer_enabled and video_layer != null and (not alpha_requested or _layer_alpha_debug) and not depth_requested and not packed_file \
+	return layer_enabled and video_layer != null and (not alpha_requested or _layer_alpha()) and not depth_requested and not packed_file \
 		and (local_uri.is_empty() or local_uri != _layer_blocked_uri) \
 		and video_layer.grades(color_grade) and video_layer.supports(geometry, screen_curve > 0.0) \
 		and (int(media.format.get("source_rotation_degrees", 0)) == 0 or _layer_turns())
+
+## Alpha may stay on the layer: allowed by the platform, and the runtime blends layers by the mask
+## (XR_FB_composition_layer_alpha_blend). Without that blend the video layer would show uncut, so
+## Alpha uses the eye buffers instead.
+func _layer_alpha() -> bool:
+	return _layer_alpha_allowed and video_layer != null and video_layer.alpha_blend
 
 ## Short code for the FPS overlay: why playback is in the eye buffers ("" when on the layer).
 func layer_block_reason() -> String:

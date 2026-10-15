@@ -47,11 +47,10 @@ Minimum compatibility targets are **Quest 2** and **PICO Neo3**. Source/build co
 - Emby full titles, eligible single-movie-folder landscape artwork, portrait cast cards and compact server-supported sorting.
 - Efficient compositor paths for supported immersive text/flat PGS subtitles, photo magnifiers/portraits/spatial photos and flat rotated video.
 
-- Alpha feather/shrink, global model-size selection and frame-rate limits for device-dependent cutout quality and performance.
+- Alpha passthrough quality/frame-rate controls, edge feather/shrink and global model-size selection, with automatic eye-buffer Alpha fallback on unsupported headsets.
 - Thumbstick target preview with return-to-center seeking, passive seek/buffering feedback and optional 360-degree half-turn/previous/next combinations.
 - Independently oriented playback panels and grouped library placement, with explicit head following retained.
 - Source-dependent opt-in file management, multi-select deletion, rename preview/confirmation and matching-basename companion updates, including 115 Open file/folder renaming.
-- Efficient layer presentation for supported Dolby Vision Profile 5/software-decoded video, with MVC seek recovery.
 
 ## Spatial media and photo layouts
 

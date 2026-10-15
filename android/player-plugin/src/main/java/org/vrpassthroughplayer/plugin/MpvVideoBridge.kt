@@ -236,7 +236,7 @@ internal class MpvVideoBridge(
         val id = gate.begin(); if (id <= 0) return -1
         // Compositor layers carry normal playback; Alpha only in the plan B prototype (its mask becomes a
         // compositor mask layer). 2D->3D composes in Godot's shader.
-        val alphaLayer = alpha && debugLayerAlpha()
+        val alphaLayer = alpha && layerAlpha()
         val host = Host(uri, startMs, hardware, audio, exactSeek, outputWidthCap, layer && hardware && !depth && (!alpha || alphaLayer),
             alphaLayer && layer && hardware)
         if (host.alphaLayer) layerMask = "0 0 0"
@@ -1171,18 +1171,16 @@ internal class MpvVideoBridge(
     // session also holds render bridge tokens in the same lease map.
     private var layerTokens = 1L shl 40
     @Volatile private var currentLayerSurface: android.view.Surface? = null
-    /** Alpha plan B, on in debug builds (adb shell setprop debug.vrpp.layer.alpha 0 compares the eye-buffer
-     * Alpha): Alpha keeps the layer through the GPU copy (LayerCopy), RVM reads its held frames and the mask
-     * becomes a compositor mask layer. Release builds keep the eye buffers until the other runtimes are verified. */
     /** Debug builds: an integer system property, [fallback] when unset or not a number. */
     private fun debugInt(name: String, fallback: Int): Int = if (BuildConfig.DEBUG) debugProperty(name).toIntOrNull() ?: fallback else fallback
     private fun debugProperty(name: String): String = try {
         Class.forName("android.os.SystemProperties").getMethod("get", String::class.java).invoke(null, name) as String
     } catch (_: Throwable) { "" }
-    private fun debugLayerAlpha() = BuildConfig.DEBUG && try {
-        Class.forName("android.os.SystemProperties").getMethod("get", String::class.java)
-            .invoke(null, "debug.vrpp.layer.alpha") != "0"
-    } catch (_: Throwable) { false }
+    /** Alpha on the layer: the GPU copy (LayerCopy) keeps the decoder surface path, RVM reads its held frames
+     * and the mask becomes a compositor mask layer. Godot asks for it only where the runtime blends layers
+     * (XR_FB_composition_layer_alpha_blend). Debug builds can compare the eye-buffer Alpha with
+     * adb shell setprop debug.vrpp.layer.alpha 0. */
+    private fun layerAlpha() = !BuildConfig.DEBUG || debugProperty("debug.vrpp.layer.alpha") != "0"
     companion object {
         /** Alpha plan B: masks shown so far in this Alpha layer session and the mask swapchain size, "count w h". */
         @Volatile var layerMask = "0 0 0"

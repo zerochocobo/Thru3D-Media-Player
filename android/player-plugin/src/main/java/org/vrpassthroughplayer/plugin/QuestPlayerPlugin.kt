@@ -330,10 +330,11 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     @UsedByGodot fun copy_layer_texture(slot: Int, texture: Int): Boolean = runCatching { VideoLayerNative.copyTexture(slot, texture) }.getOrDefault(false)
     @UsedByGodot fun copy_layer_band(slot: Int, texture: Int, y: Int, rows: Int): Boolean =
         runCatching { VideoLayerNative.copyBand(slot, texture, y, rows) }.getOrDefault(false)
-    /** Alpha plan B prototype: whether Alpha keeps the layer (debug property), and "masks width height". */
-    @UsedByGodot fun video_layer_alpha_debug(): Boolean = BuildConfig.DEBUG && runCatching {
+    /** Whether Alpha may keep the compositor layer (always in release builds; debug builds compare the
+     * eye-buffer Alpha with the debug.vrpp.layer.alpha=0 property), and the mask's "masks width height". */
+    @UsedByGodot fun video_layer_alpha(): Boolean = !BuildConfig.DEBUG || runCatching {
         Class.forName("android.os.SystemProperties").getMethod("get", String::class.java).invoke(null, "debug.vrpp.layer.alpha") != "0"
-    }.getOrDefault(false)
+    }.getOrDefault(true)
     @UsedByGodot fun video_layer_mask(): String = MpvVideoBridge.layerMask
     @UsedByGodot fun copy_layer_band_masked(slot: Int, color: Int, mask: Int, y: Int, rows: Int): Boolean =
         runCatching { VideoLayerNative.copyBandMasked(slot, color, mask, y, rows) }.getOrDefault(false)
