@@ -1,6 +1,7 @@
 extends RefCounted
 ## A changed PGS cue uploads one occupied RGBA crop; native pixels are premultiplied.
 var texture: ImageTexture
+var image: Image # the cue's pixels, kept for the compositor layer's copy
 var version := 0
 var source := 0
 
@@ -8,6 +9,7 @@ func clear(material: ShaderMaterial) -> void:
 	if material:
 		material.set_shader_parameter("bitmap_subtitle_enabled", false)
 	texture = null
+	image = null
 	version = 0
 	source = 0
 
@@ -24,8 +26,9 @@ func apply(material: ShaderMaterial, bitmap: Dictionary, source_handle: int, pix
 		if w <= 0 or h <= 0 or pixels.size() != w * h * 4:
 			clear(material)
 			return false
-		var image := Image.create_from_data(w, h, false, Image.FORMAT_RGBA8, pixels)
-		texture = ImageTexture.create_from_image(image)
+		var cue := Image.create_from_data(w, h, false, Image.FORMAT_RGBA8, pixels)
+		image = cue
+		texture = ImageTexture.create_from_image(cue)
 		version = int(bitmap.version)
 		source = source_handle
 	var rect := adjusted_rect(bitmap, size, position)

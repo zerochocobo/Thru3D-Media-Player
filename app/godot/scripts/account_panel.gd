@@ -40,11 +40,12 @@ func active() -> bool: return not view.is_empty()
 func supported() -> bool: return Methods.supports(menu.platform, "account_open")
 
 func close() -> void:
+	if active(): menu.scroll = 0.0
 	web_cancel()
 	if session > 0 and menu.platform: menu.platform.account_cancel(session)
 	session = 0; view = ""; data = {}; items = []; fields.clear(); field = ""
 	prompt = null; choices = null; web_texture = null; web_node = null; selected.clear()
-	license_lines.clear(); menu.scroll = 0.0; revision = -1; challenge_revision = -1; paused = false; _defaults = {}
+	license_lines.clear(); revision = -1; challenge_revision = -1; paused = false; _defaults = {}
 
 func open(source: String, manage: bool = false) -> void:
 	close()

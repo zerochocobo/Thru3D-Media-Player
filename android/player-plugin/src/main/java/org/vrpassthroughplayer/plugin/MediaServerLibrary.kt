@@ -81,6 +81,7 @@ internal class MediaServerLibrary(private val context: () -> Context?, private v
                             "home" -> client.home(req)
                             "favorite" -> client.favorite(req)
                             "browse" -> client.browse(req)
+                            "folder_artwork" -> client.folderArtwork(req.getString("scene_id"))
                             "candidates" -> client.candidates(req)
                             "detail" -> JSONObject().put("detail", client.detail(req.getString("scene_id")))
                             "cover" -> cover(app, account, client, http, req)

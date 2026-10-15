@@ -11,6 +11,21 @@ class SidecarSubtitlesTest {
         assertEquals(listOf("film.SRT", "FILM.ASS"), SidecarSubtitles.select("film.mkv", names).take(2))
     }
 
+    @Test fun dlnaProxyKeepsTheOriginalFilenameWhenTheDisplayTitleIsALanguageLabel() {
+        MediaServerClientTest.Fixture { _, _, _ ->
+            MediaServerClientTest.Reply(body = "1\n00:00:00,000 --> 00:00:02,000\n字幕\n".toByteArray())
+        }.use { fixture ->
+            val link = MediaSubtitleLink(java.net.URI(fixture.url + "/%E5%BD%B1%E7%89%87%20%40SBS.srt?token=fixture"), "zh · SRT")
+            val tracks = SidecarSubtitles.forDlna(listOf(link)) { source, name ->
+                source.close()
+                assertEquals("影片 @SBS.srt", name)
+                "fixture-stream/$name"
+            }
+            assertEquals("zh · SRT", tracks.single().title)
+            assertEquals("fixture-stream/影片 @SBS.srt", tracks.single().location)
+        }
+    }
+
     @Test fun localCompanionsKeepTheirFilenameAndReadablePath() {
         val folder = java.nio.file.Files.createTempDirectory("subtitle-sidecars").toFile()
         try {

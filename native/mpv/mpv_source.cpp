@@ -265,9 +265,10 @@ struct Source final {
                 position = shown;
         }
         if (!dimensions.load()) return;
-        // Profile 5 / rotated sources show wrong on the layer (green IPT-PQ, sideways): never announce
-        // them, so Godot reopens on the eye buffers before any of these frames is shown.
-        if (dolby_profile5.load() || source_rotation.load() != 0) return;
+        // Profile 5 shows wrong on the layer (green IPT-PQ): never announce it, so Godot reopens on
+        // the eye buffers before any of these frames is shown. A rotated source keeps its coded
+        // orientation on the surface; the frame names the rotation and Godot turns the layer.
+        if (dolby_profile5.load()) return;
         std::lock_guard<std::mutex> lock(frames_mutex);
         // seek() raised the floor before the command ran; the restart that follows starts it.
         if (!restart && last_epoch.load() < epoch_floor.load()) return;
@@ -357,6 +358,7 @@ struct Source final {
                 const auto* external = member(track, "external");
                 list += "{\"id\":" + std::to_string(id->u.int64) + ",\"title\":" + quote(node_text(track, "title")) +
                     ",\"language\":" + quote(node_text(track, "lang")) + ",\"codec\":" + quote(node_text(track, "codec")) +
+                    ",\"filename\":" + quote(node_text(track, "external-filename")) +
                     ",\"external\":" + (external && external->format == MPV_FORMAT_FLAG && external->u.flag ? "true" : "false") + "}";
             }
         }
@@ -1029,20 +1031,23 @@ struct Source final {
     std::string acquire_layer() {
         std::lock_guard<std::mutex> lock(frames_mutex);
         const auto packed = dimensions.load();
-        // The external MediaCodec surface does not share the RGBA rotation contract. Its owner
-        // reopens on the GPU path before displaying anything with an unhandled source rotation.
-        if (closing.load() || source_rotation.load() != 0 || layer_token <= last_acquired_token || !packed || last_epoch.load() < epoch_floor.load()) return "";
+        // The decoder surface keeps the coded orientation: the frame reports the displayed size and
+        // surface_rotation_degrees, and Godot turns the layer (flat screens) or reopens on the GPU path.
+        if (closing.load() || layer_token <= last_acquired_token || !packed || last_epoch.load() < epoch_floor.load()) return "";
         last_acquired_token = layer_token; acquired.fetch_add(1);
         double par; std::string stereo;
         { std::lock_guard<std::mutex> status_lock(status_mutex); par = pixel_aspect; stereo = stereo_mode; }
-        const int width = static_cast<int>(packed >> 32), height = static_cast<int>(packed & 0xffffffffu);
+        const int rotation = source_rotation.load();
+        int width = static_cast<int>(packed >> 32), height = static_cast<int>(packed & 0xffffffffu);
+        if (rotation == 90 || rotation == 270) { std::swap(width, height); if (par > 0) par = 1.0 / par; }
         return "{\"producer_token\":" + std::to_string(layer_token) + ",\"color_texture_id\":0" +
             ",\"frame_id\":" + std::to_string(layer_frame) + ",\"pts_us\":" + std::to_string(layer_pts_us) +
             ",\"source_epoch\":" + std::to_string(last_epoch.load()) + ",\"render_sequence\":0,\"source_flags\":0" +
             ",\"spatial_video\":false,\"width\":" + std::to_string(width) + ",\"height\":" + std::to_string(height) +
             ",\"source_width\":" + std::to_string(width) + ",\"source_height\":" + std::to_string(height) +
             ",\"pixel_aspect\":" + std::to_string(par) + ",\"stereo_mode\":" + quote(stereo) +
-            ",\"rotation_degrees\":0,\"color_target\":\"layer\",\"color_format\":\"surface\"" +
+            ",\"rotation_degrees\":0,\"surface_rotation_degrees\":" + std::to_string(rotation) +
+            ",\"color_target\":\"layer\",\"color_format\":\"surface\"" +
             ",\"owner_context_shared\":true,\"producer_fence_ready\":true,\"source_ticket_valid\":true" +
             ",\"immutable_color_frame\":false,\"coords\":\"compositor layer surface\"}";
     }
@@ -1179,7 +1184,7 @@ struct Source final {
             ",\"software_layer\":" + (software_layer ? "true" : "false") +
             ",\"layer_surface_width\":" + std::to_string(layer_width) +
             ",\"layer_surface_height\":" + std::to_string(layer_height) +
-            ",\"layer_compatible\":" + (!layer() || ((software_layer || hardware_decoding.load() || dimensions.load() == 0) && !dolby_profile5.load() && source_rotation.load() == 0) ? "true" : "false") +
+            ",\"layer_compatible\":" + (!layer() || ((software_layer || hardware_decoding.load() || dimensions.load() == 0) && !dolby_profile5.load()) ? "true" : "false") +
             ",\"details\":" + snapshot + "}";
     }
 };

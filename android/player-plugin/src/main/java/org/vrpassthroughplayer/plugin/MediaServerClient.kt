@@ -143,6 +143,7 @@ internal class MediaServerHttp(private val account: MediaServerAccount,
 }
 
 internal interface MediaLibraryClient {
+    fun folderArtwork(id: String): JSONObject = throw MediaServerFailure("Server query unsupported")
     fun capabilities(): JSONObject = MediaLibraryPresentation.capabilities()
     fun home(request: JSONObject): JSONObject = MediaLibraryPresentation.home(this, request)
     fun favorite(request: JSONObject): JSONObject = throw MediaServerFailure("Server query unsupported")

@@ -4,6 +4,8 @@ extends Node
 const PATCH_SIZE := 700
 const PROJECTION_RADIUS := 50.0
 var plane_pose := Transform3D.IDENTITY
+## Bumped on every canvas redraw: a compositor layer copy of the canvas knows when it is stale.
+var version := 0
 var anchor_basis := Basis.IDENTITY
 var viewport: SubViewport
 var label: Label
@@ -63,6 +65,7 @@ func update_patch(caption: Label3D, target: ShaderMaterial, anchor: Basis, dista
 		else:
 			label.text = _text
 		viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
+		version += 1
 	target.set_shader_parameter("subtitle_texture", viewport.get_texture())
 	target.set_shader_parameter("subtitle_enabled", true)
 	anchor_basis = anchor

@@ -17,13 +17,16 @@ internal object VideoLayerNative {
     @JvmStatic external fun setLayers(count: Int, values: FloatArray): Boolean
     /** RGBA picture swapchain (2D->3D pairs, photos) on Godot's render thread: create, acquire,
      * fill (row slices or a GPU copy), then release (optionally mipmapped) before a layer shows it. */
-    @JvmStatic external fun createImage(width: Int, height: Int, levels: Int, isStatic: Boolean): Boolean
-    @JvmStatic external fun destroyImage()
-    @JvmStatic external fun acquireImage(): Int
-    @JvmStatic external fun uploadRows(y: Int, rows: Int, pixels: ByteArray, channels: Int): Boolean
-    @JvmStatic external fun copyTexture(texture: Int): Boolean
-    @JvmStatic external fun copyBand(texture: Int, y: Int, rows: Int): Boolean
-    @JvmStatic external fun releaseImage(mipmaps: Boolean): Boolean
+    /** slot: 0 photos and 2D->3D pairs, 1 subtitles, 2 the photo magnifier. */
+    @JvmStatic external fun createImage(slot: Int, width: Int, height: Int, levels: Int, isStatic: Boolean): Boolean
+    @JvmStatic external fun destroyImage(slot: Int)
+    @JvmStatic external fun acquireImage(slot: Int): Int
+    @JvmStatic external fun uploadRows(slot: Int, y: Int, rows: Int, pixels: ByteArray, channels: Int): Boolean
+    @JvmStatic external fun copyTexture(slot: Int, texture: Int): Boolean
+    @JvmStatic external fun copyBand(slot: Int, texture: Int, y: Int, rows: Int): Boolean
+    /** A colour band times an R8 mask band of the same size, premultiplied: a photo's portrait cutout. */
+    @JvmStatic external fun copyBandMasked(slot: Int, color: Int, mask: Int, y: Int, rows: Int): Boolean
+    @JvmStatic external fun releaseImage(slot: Int, mipmaps: Boolean): Boolean
     @JvmStatic external fun runtimeExtensions(): String
     /** Layers can carry a colour scale/bias (the colour grade) instead of leaving the compositor. */
     @JvmStatic external fun colorScaleBias(): Boolean

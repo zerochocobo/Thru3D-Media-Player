@@ -158,6 +158,12 @@ func _run() -> void:
 	video.set_subtitle_track(-1); video.select_audio_track(0)
 	video.close_video(); video.open_local("smb://server/share/other.mp4", "other.mp4"); state(video)
 	check(video.audio_track_id == 0 and video.subtitles.requested_track == -1, "Disabled audio and automatic subtitles also persist")
+	video.subtitle_auto_load = true
+	video.close_video(); video.open_local("smb://server/share/fresh.mp4", "fresh.mp4")
+	video._reopen_at(500, false)
+	state(video, AUDIO, [{"id": 21, "title": "fresh.srt", "language": "", "codec": "subrip", "external": true}])
+	check(video.subtitles.requested_track == 21, "An internal reopen before tracks arrive keeps automatic subtitle selection")
+	video.subtitle_auto_load = false
 	video.close_video(); video.open_local(URI, "movie.mp4", 0, false); state(video)
 	check(video._track_restore.is_empty() and video.audio_track_id == -1 and video.subtitles.requested_track == 0,
 		"Diagnostic opens bypass user track preferences")

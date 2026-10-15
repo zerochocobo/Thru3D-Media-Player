@@ -13,6 +13,7 @@ class FakeVideo extends "res://scripts/media_surface.gd":
 	var viewing_eye := 0
 	var offset := Vector2.ZERO
 	var color_grade: RefCounted = null
+	var layer_rotation := 0
 	func stereo_offset_uv() -> Vector2:
 		return offset
 
@@ -238,6 +239,25 @@ func _run() -> void:
 	grade.select("Original")
 	layer.color_scale_bias = false
 	_check(layer.grades(grade), "An ungraded file never needs the extension")
+	# A rotated phone video on the decoder surface: the flat quad turns with its sides swapped.
+	video.set("color_grade", null)
+	video.geometry = Geometry.Geometry.FLAT
+	video.stereo_sbs = false
+	video.set_screen_curve(0.0)
+	video._apply_geometry()
+	var upright := _layer(layer.layer_values(video, origin), 0)
+	video.layer_rotation = 90
+	var quarter := _layer(layer.layer_values(video, origin), 0)
+	_check(_near(quarter[13], upright[14]) and _near(quarter[14], upright[13]), "90 degrees swap the quad's width and height")
+	var quarter_basis := Basis(Quaternion(quarter[5], quarter[6], quarter[7], quarter[8]))
+	var upright_basis := Basis(Quaternion(upright[5], upright[6], upright[7], upright[8]))
+	_check((upright_basis.inverse() * quarter_basis).is_equal_approx(Basis(Vector3.BACK, -PI / 2)), "The quad turns clockwise about its normal")
+	video.layer_rotation = 180
+	var flipped := _layer(layer.layer_values(video, origin), 0)
+	_check(_near(flipped[13], upright[13]) and _near(flipped[14], upright[14]), "180 degrees keep the quad's sides")
+	var picture_quad := _layer(layer.layer_values(video, origin, VideoLayer.PICTURE, Vector2(1000, 500)), 0)
+	_check(_near(picture_quad[13], upright[13]) and _near(picture_quad[14], upright[14]), "Pictures ignore the surface rotation")
+	video.layer_rotation = 0
 	for failure in failures:
 		push_error(failure)
 	print("video layer: %d checks, %d failures" % [checks, failures.size()])

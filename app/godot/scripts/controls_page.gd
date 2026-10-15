@@ -46,7 +46,7 @@ func items() -> Array[Dictionary]:
 	if mode == 0:
 		for fixed in [{"title": "Menu selection", "fixed": "Ray + trigger", "scope": "Menus"},
 			{"title": "Show / hide controls", "fixed": "Menu / trigger tap", "scope": "All media"},
-			{"title": "Close controls", "fixed": "B / Y", "scope": "Menus"}]: result.append(fixed)
+			{"title": "Back", "fixed": "B / Y", "scope": "Menus"}]: result.append(fixed)
 	for item in bindings.definitions():
 		if mode == 0 and not all_actions and item.defaults.is_empty() and not item.id.begins_with("move_"): continue
 		if mode == 2 and (item.hold or not item.defaults.is_empty()): continue
@@ -55,8 +55,8 @@ func items() -> Array[Dictionary]:
 		result.append(row)
 	if mode == 0:
 		result.append({"title": "Push away / pull closer", "fixed": "Grip + stick ↑ / ↓", "scope": "All media"})
-		result.append({"title": "Push away / pull closer", "fixed": "Trigger + stick ↑ / ↓", "scope": "Flat picture"})
-		var ranks := {"play": 0, "Show / hide controls": 1, "Menu selection": 2, "Close controls": 3, "back10": 4, "forward10": 5, "volume_up": 6, "volume_down": 7}
+		result.append({"title": "Push away / pull closer", "fixed": "Trigger + stick ↑ / ↓", "scope": "Flat photos"})
+		var ranks := {"play": 0, "Show / hide controls": 1, "Menu selection": 2, "Back": 3, "back10": 4, "forward10": 5, "volume_up": 6, "volume_down": 7}
 		var order: Array = bindings.definitions().map(func(item): return item.id)
 		result.sort_custom(func(a, b): return int(ranks.get(a.get("id", a.title), 20 + order.find(a.get("id", "")))) < int(ranks.get(b.get("id", b.title), 20 + order.find(b.get("id", "")))))
 		result.append({"title": "Movement range", "move_scope": true, "scope": "All media"})
@@ -155,7 +155,7 @@ func binding_field(id: String) -> Dictionary:
 	if advanced: inputs = ["ax_button", "by_button", "primary_click"] + Bindings.AXES
 	for hand in ["right_hand", "left_hand"]:
 		for input in inputs:
-			# Reserved inputs (plain B/Y closes menus) are not offered; chords stay independent of ordinary buttons.
+			# Reserved inputs (plain B/Y navigates back) are not offered; chords stay independent of ordinary buttons.
 			var candidate := Bindings.bind(hand, input, Bindings.MODIFIERS if advanced else [])
 			if bindings.clean_binding(candidate, id).is_empty(): continue
 			var caption := Bindings.input_name(input, hand)

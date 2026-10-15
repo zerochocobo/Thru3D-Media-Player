@@ -73,7 +73,7 @@ func _run() -> void:
 	b.action(Browser.ACTION + 162)
 	check(not menu._grid() and menu._cols() == 1 and b.scene_view() == "list", "Server list is independently selected")
 	check(menu.capture_position().key == first_key and menu.view_mode == original_view, "Server view conversion preserves item identity and the common folder preference")
-	check(menu._tips.get(Menu.ROW_BASE, "").begins_with("完整文件名_"), "List uses the actual filename and retains its full tooltip")
+	check(menu._tips.get(Menu.ROW_BASE, "").begins_with("Film\n完整文件名_"), "List leads with the server title and retains the complete filename in its tooltip")
 	check(b.pending.values().filter(func(req): return req.action == "cover").size() == 2 and b.pending.values().filter(func(req): return req.action == "cover").all(func(req): return req.image_type == "Thumb" and req.max_width == 128), "List fetches only small horizontal images")
 	b.action(Browser.ACTION + 161)
 	check(menu._grid() and b.scene_view() == "thumb" and b.pending.values().filter(func(req): return req.action == "cover").all(func(req): return req.image_type == "Thumb" and req.max_width == 512), "Thumbnail mode switches image variant without per-film detail queries")

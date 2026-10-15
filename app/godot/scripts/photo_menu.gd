@@ -46,6 +46,15 @@ func _reset_navigation() -> void:
 	_layout_open = false
 	_wall_rows_open = false
 
+func navigate_back() -> bool:
+	if has_pointer_capture() or not choices.opened.is_empty(): return super.navigate_back()
+	if _wall_rows_open: _wall_rows_open = false
+	elif _layout_open: _layout_open = false
+	elif _gallery_open: _gallery_open = false
+	else: return super.navigate_back()
+	refresh()
+	return true
+
 func refresh_values() -> void:
 	composition_changed.emit()
 	if not visible: return

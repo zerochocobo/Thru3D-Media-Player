@@ -75,9 +75,9 @@
     },
     {
       "name": "libavcodec.so",
-      "sha256": "ec0df1fc19afe5afc040e7a96467902191435e931e60e347a1068685098b11a2",
-      "bytes": 12558808,
-      "built_sha256": "58741ea680b66567298aa0aab943a820dc7e293c9ac029908b35d2a12d056d30",
+      "sha256": "5c10650dd369b9ebbc89fa533ce99a8f4f9dbc83d91db92b72a00bf39b6b81a2",
+      "bytes": 12559576,
+      "built_sha256": "5deffddeacfcd382de21adada0ae893d08aabbeef8a8403c43e61b6e3468cd4f",
       "needed": [
         "libswresample.so",
         "libavutil.so",
@@ -117,9 +117,9 @@
     },
     {
       "name": "libavformat.so",
-      "sha256": "fad9146f2716c3fc5661ede7f8becf535e62a63eb6667f0f4af7571680c26edd",
-      "bytes": 4315400,
-      "built_sha256": "22a8fd2ddea20d74edc8cb987d21668ea6b160c41a3d91dd382326c69cbdab53",
+      "sha256": "9c4dd405ef1fdbf39d2b67ce1c11438ad76a05fb85fcd28868c32999e646f2d7",
+      "bytes": 4319448,
+      "built_sha256": "1085ce3f7f4ffa521b51a4948153ada65f454713e5148c95af0e8cf925182267",
       "needed": [
         "libavcodec.so",
         "libavutil.so",
@@ -165,7 +165,7 @@
     }
   ],
   "host_packages_sha256": "0d42dd4ec021254111a439214a2681bf37ca44ba2af04a9d97af479f2bd1dd33",
-  "build_receipt_sha256": "1dd3abce7b962090bb3126bd939d761e8b1a8496bc15c08d73725efbd926eb26",
+  "build_receipt_sha256": "b32aa0d4df7afd28971cb7be535d4caf2d2c8899814b33e7de753a19f71943e4",
   "meson": "1.11.0",
   "ninja": "1.11.1",
   "mvc_inputs_sha256": {
@@ -177,8 +177,8 @@
     "tools/environment/mpv-linux/build_bluray.sh": "be189cd78bdbb02081ac0b65aee99fc6f16b1650fd3648ae825832c3940e4815",
     "native/mpv/mvc/bluray_clpi_reader.c": "3b177cbdaeaadfa3221039cbbc04928cddd74603d3fe99b82c5efd76cf9ebc51",
     "native/mpv/mvc/edge264mvc_all.c": "eef0dcf8a47a264ff2fb4d1ce778da8b9dce17fb636939d50b820dbb284b5407",
-    "native/mpv/mvc/ffmpeg_bd_mvc.c": "3c5525d39729dc5a8005b7bf523c88e42d0813c7f34cb98e3d6f5e20d2a95e09",
-    "native/mpv/mvc/ffmpeg_h264_mvc.c": "08117a1c0ed94f23e3f547131cf532d13a57db82d1f4f1b98a2cbea255a6bb46"
+    "native/mpv/mvc/ffmpeg_bd_mvc.c": "28189011eabfa0bdc708b3f148224a5f351da1a01fa90dd2453b92dbccc9260b",
+    "native/mpv/mvc/ffmpeg_h264_mvc.c": "eadbdd2eb31571090d6896eccee616a2a63dbdad284b2c8c63dac59f4eb2491a"
   },
   "cxx_runtime_policy": "Use the existing Godot/project libc++_shared; do not package a duplicate; device compatibility pending",
   "license_profile": "GPL mpv and FFmpeg with gpl/version3 enabled; used by Debug and Release.",
@@ -193,7 +193,7 @@
     "tools/environment/mpv-linux/build_bluray.sh": "276e35a7ccf1dff02cd6e317fe839e2afee9cbf7e644601bc05bf6469db3b3cd",
     "native/mpv/mvc/bluray_clpi_reader.c": "3b177cbdaeaadfa3221039cbbc04928cddd74603d3fe99b82c5efd76cf9ebc51",
     "native/mpv/mvc/edge264mvc_all.c": "eef0dcf8a47a264ff2fb4d1ce778da8b9dce17fb636939d50b820dbb284b5407",
-    "native/mpv/mvc/ffmpeg_bd_mvc.c": "3c5525d39729dc5a8005b7bf523c88e42d0813c7f34cb98e3d6f5e20d2a95e09",
-    "native/mpv/mvc/ffmpeg_h264_mvc.c": "08117a1c0ed94f23e3f547131cf532d13a57db82d1f4f1b98a2cbea255a6bb46"
+    "native/mpv/mvc/ffmpeg_bd_mvc.c": "28189011eabfa0bdc708b3f148224a5f351da1a01fa90dd2453b92dbccc9260b",
+    "native/mpv/mvc/ffmpeg_h264_mvc.c": "eadbdd2eb31571090d6896eccee616a2a63dbdad284b2c8c63dac59f4eb2491a"
   }
 }

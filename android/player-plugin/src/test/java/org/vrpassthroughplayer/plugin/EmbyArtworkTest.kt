@@ -11,6 +11,73 @@ class EmbyArtworkTest {
         .split('&').filter { it.contains('=') }.associate { val pair = it.split('=', limit = 2)
             URLDecoder.decode(pair[0], "UTF-8") to URLDecoder.decode(pair[1], "UTF-8") }
 
+    @Test fun singleMovieFolderLendsOnlyHorizontalArtworkWithoutChangingIdentityOrScanning() {
+        val requests = mutableListOf<String>()
+        MediaServerClientTest.Fixture { request, _, _ ->
+            requests.add(request)
+            MediaServerClientTest.Reply(body = """{"Items":[{"Id":"film","Type":"Movie","Name":"Full movie title",
+                "Path":"/private/film.mp4","ImageTags":{"Thumb":"wide","Primary":"poster"},"BackdropImageTags":["back"]}],"TotalRecordCount":1}""".toByteArray())
+        }.use { fixture ->
+            val account = MediaServerAccount("test", "Test", fixture.url, "fake", "emby", "user1")
+            MediaServerHttp(account).use { http ->
+                val data = EmbyClient(account, http).folderArtwork("folder")
+                assertEquals("folder", data.getString("scene_id")); assertFalse(data.has("uri"))
+                val variants = data.getJSONObject("image_variants")
+                assertEquals("film", variants.getJSONObject("Thumb").getString("id"))
+                assertEquals("wide", variants.getJSONObject("Thumb").getString("image_tag"))
+                assertTrue(variants.has("Backdrop")); assertFalse(variants.has("Primary")); assertFalse(data.toString().contains("/private"))
+                assertEquals(1, requests.size)
+                val args = query(requests.single())
+                assertEquals("folder", args["ParentId"]); assertEquals("false", args["Recursive"]); assertEquals("2", args["Limit"])
+                assertFalse(args.containsKey("IncludeItemTypes")); assertTrue(requests.single().contains("/Users/user1/Items"))
+            }
+        }
+    }
+
+    @Test fun ambiguousAndNonMovieFoldersNeverBorrowAnArbitraryCover() {
+        val responses = listOf(
+            """{"Items":[],"TotalRecordCount":0}""",
+            """{"Items":[{"Id":"film","Type":"Movie","ImageTags":{"Thumb":"t"}}],"TotalRecordCount":2}""",
+            """{"Items":[{"Id":"a","Type":"Movie"},{"Id":"b","Type":"Movie"}],"TotalRecordCount":2}""",
+            """{"Items":[{"Id":"sub","Type":"Folder","IsFolder":true,"ImageTags":{"Thumb":"t"}}],"TotalRecordCount":1}""",
+            """{"Items":[{"Id":"episode","Type":"Episode","ImageTags":{"Thumb":"t"}}],"TotalRecordCount":1}""",
+            """{"Items":[{"Id":"poster","Type":"Movie","ImageTags":{"Primary":"p"}}],"TotalRecordCount":1}"""
+        )
+        for (response in responses) MediaServerClientTest.Fixture { _, _, _ -> MediaServerClientTest.Reply(body = response.toByteArray()) }.use { fixture ->
+            val account = MediaServerAccount("test", "Test", fixture.url, "fake", "emby", "user1")
+            MediaServerHttp(account).use { http -> assertEquals(0, EmbyClient(account, http).folderArtwork("folder").getJSONObject("image_variants").length()) }
+        }
+    }
+
+    @Test fun folderArtworkRequiresUserAccessAndValidIdentity() {
+        MediaServerClientTest.Fixture { _, _, _ -> MediaServerClientTest.Reply(401, body = byteArrayOf()) }.use { fixture ->
+            val account = MediaServerAccount("test", "Test", fixture.url, "fake", "emby", "user1")
+            MediaServerHttp(account).use { http ->
+                val client = EmbyClient(account, http)
+                assertEquals("Server authentication required", assertThrows(MediaServerFailure::class.java) { client.folderArtwork("folder") }.code)
+                assertThrows(MediaServerFailure::class.java) { client.folderArtwork("../private") }
+            }
+        }
+    }
+
+    @Test fun allSortFieldsSupportEitherDirectionAndRetainTheFolderAndPage() {
+        var last = ""
+        MediaServerClientTest.Fixture { request, _, _ -> last = request; MediaServerClientTest.Reply(body = """{"Items":[],"TotalRecordCount":0}""".toByteArray()) }.use { fixture ->
+            val account = MediaServerAccount("test", "Test", fixture.url, "fake", "emby", "user1")
+            MediaServerHttp(account).use { http ->
+                val client = EmbyClient(account, http)
+                for ((sort, remote) in mapOf("title" to "SortName", "created_at" to "DateCreated", "date" to "PremiereDate", "duration" to "Runtime", "rating100" to "CommunityRating")) {
+                    for (direction in listOf("ASC", "DESC")) {
+                        client.browse(JSONObject().put("sort", sort).put("direction", direction).put("mode", "folders").put("parent_id", "folder").put("page", 2))
+                        val args = query(last)
+                        assertEquals(remote, args["SortBy"]); assertEquals(if (direction == "ASC") "Ascending" else "Descending", args["SortOrder"])
+                        assertEquals("folder", args["ParentId"]); assertEquals("48", args["StartIndex"]); assertEquals("false", args["Recursive"])
+                    }
+                }
+            }
+        }
+    }
+
     @Test fun libraryHomeAddsUserScopedHistoryAndActorResultsHaveNoParentRestriction() {
         val requests = java.util.concurrent.CopyOnWriteArrayList<String>()
         MediaServerClientTest.Fixture { request, _, _ ->

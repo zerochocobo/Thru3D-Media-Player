@@ -1,0 +1,49 @@
+# 源码、构建与操作指南
+
+源码发布范围、开发入口和详细操作由功能介绍页迁入此处。
+
+## 公开范围与构建条件
+
+公开仓库包含应用源码、必要资源、构建与模型修改脚本、第三方来源和测试。模型权重、编译依赖、签名密钥、个人媒体和研发记录不进入 Git。
+
+**全新克隆尚不能在缺少外部工具链和匹配模型时直接生成 APK。** 当前默认抠像模型是本项目修改并蒸馏的 RVM；本次源码发布没有托管其权重，上游 checkpoint 不能直接替代。具体文件、SHA256、导入方式和复现边界见 [模型说明](MODELS.md)。本快照不宣称已经完成现有 APK 的完整对应源码交付。
+
+不依赖模型和 Android SDK 的源码检查：
+
+```powershell
+python tools/Check-PublicSource.py
+$env:GODOT_EXE = (Get-Command godot).Source
+./tools/Test-Source.ps1
+```
+
+Android 构建需先完成 [环境准备](BUILD.md)，再导入自行取得且有权使用的版本匹配模型：
+
+```powershell
+$env:THRU3D_TOOL_ROOT = Join-Path $HOME '.cache/thru3d-toolchain'
+./tools/Import-ModelAssets.ps1 -FromDirectory ./external-model-assets
+./tools/Build-Player.ps1 -ToolRoot $env:THRU3D_TOOL_ROOT -UsePreparedModelAssets -XrVendor Quest
+./tools/Build-Player.ps1 -ToolRoot $env:THRU3D_TOOL_ROOT -UsePreparedModelAssets -XrVendor Pico
+./tools/Build-Player.ps1 -ToolRoot $env:THRU3D_TOOL_ROOT -UsePreparedModelAssets -XrVendor OpenXR
+```
+
+可重建输出放在忽略的 `build/output/`，短期数据放在 `tmp/`。正式发布归档、签名资料和个人备份使用持久目录，并始终排除于公开 Git。自行生成的签名不一定可以覆盖已有发行版。Quest/PICO 分别使用对应厂商导出预设；标准 OpenXR 目标要求设备具备兼容运行时，PICO/通用打包检查不等同于真机验证。运行所需的 MIT 手部 glTF 网格随源码保留，AI 权重不入 Git。
+
+## 目录与操作
+
+`app/godot` 包含场景、菜单、着色器和语言；`android` 包含 Kotlin 插件和 JVM 测试；`native` 包含 JNI 与推理/渲染；`tools` 包含构建和验证；`models` 只保存契约、哈希和许可；`third_party` 保存依赖来源与声明。
+
+左 Menu 打开菜单，用手柄射线指向并按对应扳机选择。媒体库、设置、列表弹层及图片菜单中，摇杆只用于滚动并隔离播放快捷动作。普通视频控制条显示时仍可用摇杆快进/快退、音量和沉浸缩放；指针捕获期间屏蔽快捷动作，退出列表或结束捕获后须回中再触发。也支持手部指向和捏合。桌面模式用于开发预览。
+
+右手 A 默认控制视频播放／暂停或收起展开照片，左手 X 打开媒体库。B/Y 逐层返回，先关闭弹层，再返回上一级文件夹；无播放时保留媒体库最外层，界面隐藏后可用右扳机或 B 重新打开。播放中的媒体库返回后保留控制栏，仅在普通控制栏按 B/Y 才隐藏控制栏，播放不中断，已配置的组合键仍优先。射线指向菜单外按扳机也可关闭。视频设置在播放条上方展开，照片设置保留整面板布局。全局“操作”页可点击绑定值选择按键、配置组合键及界面移动范围，并查看手势动画；冲突时确认互换或取消，保留返回和射线选择。3D 和音量图标单击调节、双击开关／静音。
+
+左右握持键移动视频画面、界面或照片放大镜。视频中握持键移动平面屏幕或转动沉浸画面，普通扳机只操作控件及显隐播放条。握持配合同手摇杆↑/↓推远／拉近适用目标，扳机配合摇杆推拉仅保留用于平面图片。普通菜单保持直立，跟随模式才使用头显倾斜；应用居中及系统回正恢复默认菜单摆放，位置偏移只在本次运行记忆。播放中展开完整媒体库仍可用底部控制栏。
+
+抠像质量、GPU 支持及持续性能取决于模型、设备和媒体；主机与打包测试不代表头显播放性能验收。技术细节见 [架构](ARCHITECTURE.md)、[测试](TESTING.md) 和 [贡献指南](../CONTRIBUTING.md)。
+
+项目原创源码采用 **GPL-3.0-only**，完整文本见 [LICENSE](../LICENSE)。第三方组件及资源保留原许可；适用范围和二进制发行要求见 [许可说明](LICENSING.md)。
+
+内嵌OpenList组件采用 **AGPL-3.0**；`cloud/openlist`包含Go适配源码，构建脚本和上游/依赖许可随源码保留。组合二进制发行还须履行适用的AGPL义务，详见许可说明。
+
+视频控制栏外按手柄扳机仅关闭控制栏，该次按下期间的手部偏移不会拖动画面；时间线及滑条仍可拖动。视频设置默认显示播放页，调色及立体观看以条上弹窗打开；照片设置保留原面板布局。
+
+视频 2D→3D 按文件独立记忆，新文件默认关闭；图片使用独立全局偏好。手动开启的视频人像透视不会带到下一次打开。外挂字幕优先同名，再尝试界面语言；手动／已保存选择（含关闭）优先于自动规则。

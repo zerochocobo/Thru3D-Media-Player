@@ -17,6 +17,9 @@ func _initialize() -> void: call_deferred("_run")
 
 func _run() -> void:
 	var main := InputMain.new()
+	# Direct pointer gestures below represent a hand pinch; physical video triggers are UI-only.
+	main.hand_pointers["right_hand"] = preload("res://scripts/hand_pointer.gd").new()
+	main.hand_pointers["right_hand"].source = "hand"
 	main.settings_path = "user://flat-screen-test.cfg"
 	var video := Video.new()
 	root.add_child(video)
@@ -68,7 +71,7 @@ func _run() -> void:
 			main._update_flat_grab_stick(Vector2(0, 1), Vector2.ZERO, 0.4)
 			check(video.screen_scale == 1.0 and video.screen_distance == 2.0, "Other hand cannot push the held screen")
 			main._update_flat_grab_stick(Vector2.ZERO, Vector2(0, 1), 0.4)
-			check(video.screen_scale == 1.0 and is_equal_approx(video.screen_distance, 2.6), "%s trigger plus up pushes away without scaling" % mode)
+			check(video.screen_scale == 1.0 and is_equal_approx(video.screen_distance, 2.6), "%s shared held-pointer distance helper pushes away without scaling" % mode)
 			video._apply_geometry() # Next native frame must retain the new mesh and pose.
 			check(video._flat.size.is_equal_approx(size) and is_equal_approx(video.panel.global_position.distance_to(eye), 2.6), "%s presented frame preserves size and changed distance" % mode)
 			main._update_flat_grab_stick(Vector2.ZERO, Vector2(0, -1), 0.4)

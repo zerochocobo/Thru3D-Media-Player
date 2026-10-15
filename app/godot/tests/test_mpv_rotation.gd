@@ -49,6 +49,8 @@ func _run() -> void:
 	check(video._layer_wanted(), "An ordinary unrotated file retains the decoder Surface path")
 	video.screen_rotation = 23.0
 	video.playback_speed = 1.5
+	# A curved screen cannot turn its cylinder: the rotated surface falls back to normalized RGBA.
+	video.screen_curve = 0.35
 	video._layer_return_uri = video.local_uri
 	video._on_state(1, JSON.stringify({"state": "playing", "layer_active": true,
 		"layer_compatible": false, "source_rotation_degrees": 90,
@@ -61,6 +63,14 @@ func _run() -> void:
 	check(video.opens[0].position == 1500, "Surface fallback preserves the observed position without a displayed pair")
 	check(video.screen_rotation == 23.0 and video.playback_speed == 1.5, "Reopen preserves the user's manual rotation and playback speed")
 	check(backend.speeds == [[2, 1.5]], "Reopened MPV receives the retained playback speed")
+	video.screen_curve = 0.0
+	video._layer_blocked_uri = ""
+	video.media.format = {"width": 2160, "height": 3840, "pixel_aspect": 1.0, "source_rotation_degrees": 90}
+	video._accept_source_rotation(90)
+	check(video._layer_wanted() and video._layer_blocked_uri.is_empty(), "A flat mono rotated file keeps the decoder Surface; the compositor turns its quad")
+	video.screen_curve = 0.35
+	check(not video._layer_wanted(), "Curving a rotated file's screen leaves the Surface")
+	video.screen_curve = 0.0
 	for rotation in [90, 180, 270]:
 		video.media.format = {"width": 2160 if rotation != 180 else 3840,
 			"height": 3840 if rotation != 180 else 2160, "pixel_aspect": 1.0,

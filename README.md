@@ -2,9 +2,9 @@
 
 [简体中文](README.zh-CN.md) · [Changelog](CHANGELOG.md) · [中文更新日志](CHANGELOG.zh-CN.md)
 
-Standalone Android VR/MR media player for Meta Quest and PICO. Thru3D combines a Godot OpenXR interface, Android media access, a native libmpv renderer, and MNN inference for video matting and depth-based stereo rendering.
+Standalone Android VR/MR media player for Meta Quest and PICO. Play videos and photos, explore media libraries, and combine supported content with passthrough and stereo effects directly on your headset.
 
-Current source version: **0.9.1** (Android versionCode **22**). An experimental standard OpenXR Android export is also available.
+Current source version: **0.9.2** (Android versionCode **23**). An experimental standard OpenXR Android export is also available.
 
 Minimum compatibility targets are **Quest 2** and **PICO Neo3**. Source/build compatibility does not establish hardware performance or interaction acceptance on every device.
 
@@ -29,7 +29,7 @@ Minimum compatibility targets are **Quest 2** and **PICO Neo3**. Source/build co
 - Context-specific controller bindings, combinations, confirmed conflict swaps, interface movement and animated gesture guides.
 - Remembered per-video audio/subtitle selections, five text subtitle styles and anchored immersive stereo subtitles.
 - Double-click 3D/volume shortcuts, persistent volume/mute state and full-filename hover hints.
-- Direct main-feature playback of supported unencrypted standard/MVC 3D Blu-ray ISOs, with audio tracks and seeking; see [Blu-ray scope](docs/BLURAY.md).
+- Direct main-feature playback of supported unencrypted standard/MVC 3D Blu-ray ISOs, including compatible multi-clip titles, with audio tracks and seeking; see [Blu-ray scope](docs/BLURAY.md).
 - Provider-dependent cloud keyword search, scope and media-type filters without background whole-drive scanning.
 - Emby/Jellyfin poster walls, actor-related titles, detail artwork, multipart selection and home playback history.
 - Individual slider resets, color-page reset, and Original/Warm/Cool/Custom color choices.
@@ -38,88 +38,14 @@ Minimum compatibility targets are **Quest 2** and **PICO Neo3**. Source/build co
 - Per-video subtitle synchronization (±10 s, 0.1 s steps), matching-filename auto-loading and flat-screen PGS size/position controls.
 - Supported STRM link playback, remote loading stages/measured read speed and accessible error details.
 - Independent supersampling/sharpness, fixed-distance grip dragging and same-hand thumbstick distance control.
-- Compositor-compatible color adjustments on supported devices, with shader fallback for non-default gamma/saturation.
-- Compact video settings above the playback bar and file/media cards that retain available metadata alongside playback progress.
+- Efficient color adjustments on supported devices: compatible exposure, contrast and white balance retain compositor presentation; gamma/saturation options offer performance tooltips.
+- Compact playback settings, color and stereo-view panels above the controls, with trigger-tap menu dismissal outside the panel.
+- Available file size alongside playback position, and retained year/duration details on media-server cards with viewing status.
 
-## Source release
-
-This repository contains application source, build scripts, third-party source pins/patches, and tests. Model weights, compiled dependencies, signing keys, personal media and development records are excluded.
-
-**A fresh clone does not yet build an APK without external dependencies and the exact runtime models.** The default matting model is a project-modified, distilled RVM model. Its weights are not hosted in this source release; the upstream RVM checkpoint is not a drop-in replacement. See [model requirements](docs/MODELS.md) before starting an Android build. This source snapshot is not presented as a complete corresponding-source offer for an existing APK.
-
-The desktop Godot tests and native depth-stabilizer test can run without model weights or an Android toolchain.
-
-## Architecture
-
-```text
-Godot scenes / GDScript / OpenXR
-              │
-Android Kotlin plugin: media libraries, permissions, playback sessions
-              │ JNI
-libmpv / FFmpeg → decoder Surface or shared textures → OpenXR layers / Godot
-              └ MNN OpenCL: recurrent matting and monocular depth
-```
-
-| Directory | Purpose |
-| --- | --- |
-| `app/godot` | XR scenes, menus, shaders, localization and host tests |
-| `android` | Kotlin Godot plugin, Gradle wrapper and JVM tests |
-| `native` | JNI media bridge, rendering and inference backends |
-| `cloud/openlist` | Embedded OpenList Go adapter and synthetic tests |
-| `tools` | Build, conversion and verification entry points |
-| `models` | Model contracts, checksums and licenses; no weights |
-| `third_party` | Dependency sources, patches, provenance and notices |
-| `benchmarks`, `tests` | Verification programs and synthetic fixtures |
-
-## Getting started
-
-```powershell
-git clone https://github.com/zerochocobo/Thru3D-Media-Player.git Thru3D
-cd Thru3D
-python tools/Check-PublicSource.py
-
-# Source-only tests: point this at your Godot executable.
-$env:GODOT_EXE = (Get-Command godot).Source
-./tools/Test-Source.ps1
-```
-
-For Android, prepare the pinned toolchain and externally supplied, version-matched models as described in [BUILD.md](docs/BUILD.md):
-
-```powershell
-$env:THRU3D_TOOL_ROOT = Join-Path $HOME '.cache/thru3d-toolchain'
-./tools/Import-ModelAssets.ps1 -FromDirectory ./external-model-assets
-./tools/Build-Player.ps1 -ToolRoot $env:THRU3D_TOOL_ROOT -UsePreparedModelAssets -XrVendor Quest
-# PICO uses a separate export preset and vendor loader.
-./tools/Build-Player.ps1 -ToolRoot $env:THRU3D_TOOL_ROOT -UsePreparedModelAssets -XrVendor Pico
-# Experimental: requires a compatible standard OpenXR runtime on the device.
-./tools/Build-Player.ps1 -ToolRoot $env:THRU3D_TOOL_ROOT -UsePreparedModelAssets -XrVendor OpenXR
-```
-
-Rebuildable outputs use `build/output/`; temporary data uses `tmp/`. Formal release archives and private signing material use persistent directories, all excluded from public Git. A locally built application has your own signing identity. It cannot necessarily update an installed distribution signed by another key.
-
-## Controls
-
-Open the VR menu with the left Menu button. Point a controller ray at a control and press that controller's trigger. Libraries, settings, list popups and photo menus use thumbsticks only for scrolling. The ordinary video control bar allows seek, volume and immersive zoom shortcuts; pointer capture suppresses them, with a return-to-center gate after capture or lists close. Hand pointing/pinching is also supported. Desktop input is intended for development previews.
-
-The right A button defaults to video play/pause or closing an expanded photo; left X opens the library and B/Y closes menus. Point outside a menu and press the trigger to dismiss it. Video settings open above the playback bar; photo settings retain their full-panel layout. Settings → Controls lets you select bindings, configure combinations and interface movement, and view animated gesture guides. Conflicts require a confirmed swap or cancellation; menu exit and ray selection remain available. Click the 3D/volume icons to adjust, or double-click to toggle/mute.
-
-Both grip buttons are reserved for interfaces or the photo magnifier. Grip or trigger plus the same controller's vertical thumbstick adjusts supported targets' distance. Standard menus remain upright; following mode uses head tilt. App/system recentering restores default menu placement, and placement offsets are session-only. The full playback library keeps the control bar available.
-
-## Status and limitations
-
-- Early source release; Android ARM64 builds use separate Quest, PICO and experimental standard OpenXR presets.
-- Quest 3 has been used during development. PICO packaging checks do not establish PICO hardware playback, passthrough or hand-tracking validation.
-- Matting quality, GPU support and sustained performance depend on the model, device and video. Host/packaging checks are not headset performance measurements.
-- AI depth operates on flat mono content; video matting is limited to supported sources, including the dedicated spatial-video path; photo portrait matting applies to selected ordinary flat photos.
-- Cloud/media-service adapters depend on third-party services and user authorization.
-
-Read [architecture](docs/ARCHITECTURE.md), [build](docs/BUILD.md), [models](docs/MODELS.md) and [testing](docs/TESTING.md) for implementation details. Contributions are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md).
-
-## License
-
-Project-owned source is released under **GPL-3.0-only**. See [LICENSE](LICENSE) for the complete GNU GPL v3 text and [licensing scope](docs/LICENSING.md) for third-party code, models, assets and binary distribution requirements. Third-party components keep their existing licenses; this declaration does not relicense them or grant rights to excluded assets.
-
-The embedded OpenList component is **AGPL-3.0**; its adapter, pinned build recipe and upstream/dependency notices are included. Combined binary distribution must satisfy its applicable AGPL obligations as explained in the licensing scope.
+- External-subtitle recovery and automatic filename/interface-language selection, with manual/saved choices taking priority.
+- Contextual B/Y Back navigation and right-controller-only library recovery; video triggers operate controls while grip moves the picture.
+- Emby full titles, eligible single-movie-folder landscape artwork, portrait cast cards and compact server-supported sorting.
+- Efficient compositor paths for supported immersive text/flat PGS subtitles, photo magnifiers/portraits/spatial photos and flat rotated video.
 
 ## Spatial media and photo layouts
 
@@ -128,3 +54,5 @@ The embedded OpenList component is **AGPL-3.0**; its adapter, pinned build recip
 - Portrait passthrough for selected ordinary flat photos, with 0–200% stereo strength. Native stereo/panorama photos and overview grids are outside this portrait path.
 - Session-scoped head following for flat videos, single photos/portraits and menus; an independent environment-passthrough footer control. No permanent spatial-anchor or full-wall head-lock claim.
 - Stereo/left-view/right-view video display and per-video horizontal/vertical alignment. Both eyes display the selected logical view in single-view mode; it does not disable one panel or alter headset IPD.
+
+[Source and controls guide](docs/SOURCE_GUIDE.md) · [Build](docs/BUILD.md) · [Licensing](docs/LICENSING.md)

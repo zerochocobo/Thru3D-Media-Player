@@ -2,9 +2,9 @@
 
 [English](README.md) · [更新日志](CHANGELOG.zh-CN.md) · [English changelog](CHANGELOG.md)
 
-面向 Meta Quest 和 PICO 的独立 Android VR/MR 媒体播放器。使用 Godot OpenXR 构建界面，Kotlin 管理媒体与授权，libmpv/FFmpeg 解码，MNN OpenCL 执行人物抠像与深度推理。
+面向 Meta Quest 和 PICO 的独立 VR/MR 媒体播放器，可直接在头显中观看视频和照片、浏览媒体库，并使用支持内容的透视与立体效果。
 
-当前源码版本：**0.9.1**，Android versionCode **22**；另提供实验性的标准 OpenXR Android 导出目标。
+当前源码版本：**0.9.2**，Android versionCode **23**；另提供实验性的标准 OpenXR Android 导出目标。
 
 最低兼容目标为 **Quest 2、PICO Neo3**。源码和构建兼容不等于所有机型的性能、显示及交互均已实机验收。
 
@@ -29,7 +29,7 @@
 - 场景化自定义按键、组合键、冲突互换、界面移动和手势动画说明。
 - 每个视频的字幕／音轨选择记忆、五种文字字幕配色及固定位置的沉浸立体字幕。
 - 3D／音量双击快捷开关、跨启动保留音量和静音状态、完整文件名悬浮提示。
-- 支持范围内的未加密普通蓝光／MVC 3D ISO 主影片直接播放，支持音轨与跳转，详见 [蓝光支持范围](docs/BLURAY.md)。
+- 支持范围内的未加密普通蓝光／MVC 3D ISO 主影片直接播放（含兼容的多片段标题），支持音轨与跳转，详见 [蓝光支持范围](docs/BLURAY.md)。
 - 按网盘能力提供关键词搜索、范围与媒体类型筛选，不后台扫描全盘。
 - Emby／Jellyfin 海报墙、演员关联、详情多图与多段影片选择、首页最近打开列表。
 - 滑块单项重置、调色本页重置，以及原色／暖色／冷色／自定义四种调色选择。
@@ -38,51 +38,14 @@
 - 字幕同步±10秒／0.1秒精调与逐片记忆、自动同名字幕及平面PGS大小／位置调整。
 - 支持范围内的STRM链接播放、远程加载阶段／实际读速和可查看的错误详情。
 - 独立超采样与锐度设置、固定距离握持移动及同手摇杆推拉。
+- 支持设备上的高效调色：兼容的曝光、对比度和色温调整保持合成层显示；伽马／饱和度等选项提供性能悬浮提示。
+- 控制栏上方的紧凑播放设置、调色及立体观看弹窗，调整时保留播放控制；射线在菜单外按扳机关闭菜单。
+- 文件大小与播放位置同时显示，媒体服务器卡片保留已有年份／总时长及观看状态。
 
-- 支持设备上兼容调色保持合成层路径，非默认伽马／饱和度仍可能回退到着色器。
-- 控制栏上方的紧凑视频设置弹窗；文件／媒体卡片同时保留已有元数据与播放进度。
-
-## 公开范围与构建条件
-
-公开仓库包含应用源码、必要资源、构建与模型修改脚本、第三方来源和测试。模型权重、编译依赖、签名密钥、个人媒体和研发记录不进入 Git。
-
-**全新克隆尚不能在缺少外部工具链和匹配模型时直接生成 APK。** 当前默认抠像模型是本项目修改并蒸馏的 RVM；本次源码发布没有托管其权重，上游 checkpoint 不能直接替代。具体文件、SHA256、导入方式和复现边界见 [模型说明](docs/MODELS.md)。本快照不宣称已经完成现有 APK 的完整对应源码交付。
-
-不依赖模型和 Android SDK 的源码检查：
-
-```powershell
-python tools/Check-PublicSource.py
-$env:GODOT_EXE = (Get-Command godot).Source
-./tools/Test-Source.ps1
-```
-
-Android 构建需先完成 [环境准备](docs/BUILD.md)，再导入自行取得且有权使用的版本匹配模型：
-
-```powershell
-$env:THRU3D_TOOL_ROOT = Join-Path $HOME '.cache/thru3d-toolchain'
-./tools/Import-ModelAssets.ps1 -FromDirectory ./external-model-assets
-./tools/Build-Player.ps1 -ToolRoot $env:THRU3D_TOOL_ROOT -UsePreparedModelAssets -XrVendor Quest
-./tools/Build-Player.ps1 -ToolRoot $env:THRU3D_TOOL_ROOT -UsePreparedModelAssets -XrVendor Pico
-./tools/Build-Player.ps1 -ToolRoot $env:THRU3D_TOOL_ROOT -UsePreparedModelAssets -XrVendor OpenXR
-```
-
-可重建输出放在忽略的 `build/output/`，短期数据放在 `tmp/`。正式发布归档、签名资料和个人备份使用持久目录，并始终排除于公开 Git。自行生成的签名不一定可以覆盖已有发行版。Quest/PICO 分别使用对应厂商导出预设；标准 OpenXR 目标要求设备具备兼容运行时，PICO/通用打包检查不等同于真机验证。运行所需的 MIT 手部 glTF 网格随源码保留，AI 权重不入 Git。
-
-## 目录与操作
-
-`app/godot` 包含场景、菜单、着色器和语言；`android` 包含 Kotlin 插件和 JVM 测试；`native` 包含 JNI 与推理/渲染；`tools` 包含构建和验证；`models` 只保存契约、哈希和许可；`third_party` 保存依赖来源与声明。
-
-左 Menu 打开菜单，用手柄射线指向并按对应扳机选择。媒体库、设置、列表弹层及图片菜单中，摇杆只用于滚动并隔离播放快捷动作。普通视频控制条显示时仍可用摇杆快进/快退、音量和沉浸缩放；指针捕获期间屏蔽快捷动作，退出列表或结束捕获后须回中再触发。也支持手部指向和捏合。桌面模式用于开发预览。
-
-右手 A 默认控制视频播放／暂停或收起展开照片，左手 X 打开媒体库，B/Y 关闭菜单。射线指向菜单外按扳机也可关闭。视频设置在播放条上方展开，照片设置保留整面板布局。全局“操作”页可点击绑定值选择按键、配置组合键及界面移动范围，并查看手势动画；冲突时确认互换或取消，保留菜单退出和射线选择。3D 和音量图标单击调节、双击开关／静音。
-
-左右握持键固定移动界面或照片放大镜；握持或扳机配合同手摇杆↑/↓推远／拉近适用目标。普通菜单保持直立，跟随模式才使用头显倾斜；应用居中及系统回正恢复默认菜单摆放，位置偏移只在本次运行记忆。播放中展开完整媒体库仍可用底部控制栏。
-
-抠像质量、GPU 支持及持续性能取决于模型、设备和媒体；主机与打包测试不代表头显播放性能验收。技术细节见 [架构](docs/ARCHITECTURE.md)、[测试](docs/TESTING.md) 和 [贡献指南](CONTRIBUTING.md)。
-
-项目原创源码采用 **GPL-3.0-only**，完整文本见 [LICENSE](LICENSE)。第三方组件及资源保留原许可；适用范围和二进制发行要求见 [许可说明](docs/LICENSING.md)。
-
-内嵌OpenList组件采用 **AGPL-3.0**；`cloud/openlist`包含Go适配源码，构建脚本和上游/依赖许可随源码保留。组合二进制发行还须履行适用的AGPL义务，详见许可说明。
+- 外挂字幕恢复、同名／界面语言自动匹配，手动及已保存选择优先。
+- B/Y 按层返回及单右手柄恢复媒体库；视频扳机操作控件，握持键移动画面。
+- Emby 完整标题、符合条件的单片文件夹横图、竖幅演员卡和服务器支持的紧凑排序弹窗。
+- 支持场景下沉浸文本／平面 PGS 字幕、照片放大镜／人像／空间照片及平面旋转视频的高效合成层显示。
 
 ## 空间媒体与照片布局
 
@@ -91,3 +54,5 @@ $env:THRU3D_TOOL_ROOT = Join-Path $HOME '.cache/thru3d-toolchain'
 - 普通平面照片人像透视、0～200%立体强度；原生立体/全景和多图总览不进入该人像路径。
 - 平面视频、单图/人像及菜单的会话内头显跟随，独立环境透视开关；不宣称永久空间锚点或整面照片墙随头锁定。
 - 视频双眼/左视角/右视角和逐片水平/垂直校正；单视角由双眼显示同一逻辑视角，不关闭另一块屏幕或改变头显IPD。
+
+[源码与操作指南](docs/SOURCE_GUIDE.zh-CN.md) · [构建](docs/BUILD.md) · [许可](docs/LICENSING.md)

@@ -318,17 +318,20 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     @UsedByGodot fun set_video_layers(count: Int, values: FloatArray): Boolean =
         runCatching { VideoLayerNative.setLayers(count, values) }.getOrDefault(false)
     // Picture layer: called on Godot's render thread (its GL context is current there).
-    @UsedByGodot fun create_layer_image(width: Int, height: Int, levels: Int, isStatic: Boolean): Boolean =
-        runCatching { VideoLayerNative.createImage(width, height, levels, isStatic) }.getOrDefault(false)
-    @UsedByGodot fun destroy_layer_image() { runCatching { VideoLayerNative.destroyImage() } }
-    @UsedByGodot fun acquire_layer_image(): Int = runCatching { VideoLayerNative.acquireImage() }.getOrDefault(0)
-    @UsedByGodot fun upload_layer_rows(y: Int, rows: Int, pixels: ByteArray, channels: Int): Boolean =
-        runCatching { VideoLayerNative.uploadRows(y, rows, pixels, channels) }.getOrDefault(false)
-    @UsedByGodot fun copy_layer_texture(texture: Int): Boolean = runCatching { VideoLayerNative.copyTexture(texture) }.getOrDefault(false)
-    @UsedByGodot fun copy_layer_band(texture: Int, y: Int, rows: Int): Boolean =
-        runCatching { VideoLayerNative.copyBand(texture, y, rows) }.getOrDefault(false)
-    @UsedByGodot fun release_layer_image(mipmaps: Boolean): Boolean =
-        runCatching { VideoLayerNative.releaseImage(mipmaps) }.getOrDefault(false)
+    /** Picture swapchains by slot: 0 photos and 2D->3D pairs, 1 subtitles, 2 the photo magnifier. */
+    @UsedByGodot fun create_layer_image(slot: Int, width: Int, height: Int, levels: Int, isStatic: Boolean): Boolean =
+        runCatching { VideoLayerNative.createImage(slot, width, height, levels, isStatic) }.getOrDefault(false)
+    @UsedByGodot fun destroy_layer_image(slot: Int) { runCatching { VideoLayerNative.destroyImage(slot) } }
+    @UsedByGodot fun acquire_layer_image(slot: Int): Int = runCatching { VideoLayerNative.acquireImage(slot) }.getOrDefault(0)
+    @UsedByGodot fun upload_layer_rows(slot: Int, y: Int, rows: Int, pixels: ByteArray, channels: Int): Boolean =
+        runCatching { VideoLayerNative.uploadRows(slot, y, rows, pixels, channels) }.getOrDefault(false)
+    @UsedByGodot fun copy_layer_texture(slot: Int, texture: Int): Boolean = runCatching { VideoLayerNative.copyTexture(slot, texture) }.getOrDefault(false)
+    @UsedByGodot fun copy_layer_band(slot: Int, texture: Int, y: Int, rows: Int): Boolean =
+        runCatching { VideoLayerNative.copyBand(slot, texture, y, rows) }.getOrDefault(false)
+    @UsedByGodot fun copy_layer_band_masked(slot: Int, color: Int, mask: Int, y: Int, rows: Int): Boolean =
+        runCatching { VideoLayerNative.copyBandMasked(slot, color, mask, y, rows) }.getOrDefault(false)
+    @UsedByGodot fun release_layer_image(slot: Int, mipmaps: Boolean): Boolean =
+        runCatching { VideoLayerNative.releaseImage(slot, mipmaps) }.getOrDefault(false)
     @UsedByGodot fun video_layer_color_scale_bias(): Boolean = runCatching { VideoLayerNative.colorScaleBias() }.getOrDefault(false)
     @UsedByGodot fun video_layer_runtime_extensions(): String = runCatching { VideoLayerNative.runtimeExtensions() }.getOrDefault("")
     @UsedByGodot fun video_layer_count(): Int = runCatching { VideoLayerNative.layerCount() }.getOrDefault(0)

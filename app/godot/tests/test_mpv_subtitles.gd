@@ -2,6 +2,7 @@ extends SceneTree
 
 const State := preload("res://scripts/mpv_subtitle_state.gd")
 const Video := preload("res://scripts/mpv_video_display.gd")
+const I18n := preload("res://scripts/i18n.gd")
 var failures: Array[String] = []
 var checks := 0
 
@@ -22,6 +23,7 @@ func check(value: bool, message: String) -> void:
 		failures.append(message)
 
 func _initialize() -> void:
+	I18n.use("en")
 	var state := State.new()
 	var pair := {"session_id": 7, "generation": 3, "source_epoch": 2, "mpv_source_handle": 55}
 	var sample := {"session_id": 7, "sequence": 1, "generation": 3, "source_epoch": 2,
@@ -171,12 +173,75 @@ func _initialize() -> void:
 	check(video.subtitles.requested_track == 0 and not video._subtitle_auto_pending, "Disabled automatic selection leaves manual tracks available")
 	video.media.playback.details.subtitle_tracks = [{"id": 33, "title": "movie.en.srt", "codec": "subrip", "external": true}, {"id": 34, "title": "movie.srt", "codec": "subrip", "external": false}]
 	video.set_subtitle_auto_load(true)
-	check(video.subtitles.requested_track == 0 and video._subtitle_auto_pending, "Automatic selection does not choose language variants or embedded filename-like titles")
+	check(video.subtitles.requested_track == 33 and not video._subtitle_auto_pending, "Without an exact filename, automatic selection chooses the interface-language variant")
+	video.subtitles.select(0); video._queue_track_restore({}); video._subtitle_auto_pending = true
 	video.media.playback.details.subtitle_tracks.append(srt)
 	host.accepted = false; video._restore_tracks()
 	check(video.subtitles.requested_track == 0 and video._subtitle_auto_pending, "Rejected native automatic choice remains pending")
 	host.accepted = true; video._restore_tracks()
 	check(video.subtitles.requested_track == 32 and not video._subtitle_auto_pending, "Late exact SRT is selected once the native bridge accepts it")
+	# DLNA display labels need not be filenames, and its video title may omit the extension.
+	for source in ["http://nas/media/%E5%BD%B1%E7%89%87%20%40SBS.mp4?token=fixture", "smb://saved-id/Movies/影片 @SBS.mp4"]:
+		video.local_uri = source
+		video._layout_basename = "影片 @SBS" if source.begins_with("smb:") else "Server display title"
+		var dlna_ass := {"id": 41, "title": "zh · ASS", "codec": "ass", "external": true, "filename": "http://127.0.0.1:1234/session/%E5%BD%B1%E7%89%87%20%40SBS.ass"}
+		var dlna_srt := {"id": 42, "title": "zh · SRT", "codec": "subrip", "external": true, "filename": "http://127.0.0.1:1234/session/%E5%BD%B1%E7%89%87%20%40SBS.srt"}
+		video.media.playback.details.subtitle_tracks = [dlna_ass, dlna_srt]
+		video.subtitles.select(0); video._queue_track_restore({}); video._subtitle_auto_pending = true
+		video._restore_tracks()
+		check(video.subtitles.requested_track == 42, "Original external filename auto-selects SRT despite DLNA language/display labels: " + source)
+		video.subtitles.select(0); video._queue_track_restore({"subtitle": {"id": 0}}); video._subtitle_auto_pending = true
+		video._restore_tracks()
+		check(video.subtitles.requested_track == 0 and not video._subtitle_auto_pending, "Remembered off still wins over original network filenames")
+		video.subtitles.select(0); video._queue_track_restore({}); video._subtitle_auto_pending = true
+		video.media.playback.details.subtitle_tracks = [dlna_ass]
+		video._restore_tracks()
+		check(video.subtitles.requested_track == 41, "Original filename falls back to ASS")
+		video.set_subtitle_track(41)
+		video.media.playback.details.subtitle_tracks.append(dlna_srt)
+		video._restore_tracks()
+		check(video.subtitles.requested_track == 41, "Manual selection wins when a matching network SRT arrives later")
+	video.local_uri = "http://nas/media/movie.mp4"
+	video._layout_basename = "Movie.mp4"
+	var language_tracks := [
+		{"id": 51, "title": "movie.zh-TW.srt", "codec": "subrip", "external": true},
+		{"id": 52, "title": "movie.chs.ass", "codec": "ass", "external": true},
+		{"id": 53, "title": "ja · SRT", "codec": "subrip", "external": true},
+		{"id": 54, "title": "English", "language": "eng", "codec": "subrip", "external": true},
+		{"id": 55, "title": "zh · SRT", "codec": "subrip", "external": true}]
+	for rule in [{"ui": "zh", "expected": 52}, {"ui": "zh_Hant", "expected": 51}, {"ui": "ja", "expected": 53}, {"ui": "en", "expected": 54}]:
+		I18n.use(rule.ui)
+		video.media.playback.details.subtitle_tracks = language_tracks.duplicate(true)
+		video.subtitles.select(0); video._queue_track_restore({}); video._subtitle_auto_pending = true
+		video._restore_tracks()
+		check(video.subtitles.requested_track == rule.expected and video._track_choices.is_empty(), "Interface-language fallback respects language and Chinese script: " + rule.ui)
+		video.media.playback.details.subtitle_tracks.append(srt)
+		video.subtitles.select(0); video._queue_track_restore({}); video._subtitle_auto_pending = true
+		video._restore_tracks()
+		check(video.subtitles.requested_track == 32, "Exact filename takes priority over interface language: " + rule.ui)
+	I18n.use("zh")
+	for rule in [
+		{"tracks": [language_tracks[0]], "expected": 0},
+		{"tracks": [language_tracks[4]], "expected": 55},
+		{"tracks": [{"id": 56, "title": "movie.chs.srt", "language": "eng", "codec": "subrip", "external": true}], "expected": 0},
+		{"tracks": [{"id": 57, "title": "movie.zh-Hans.srt", "codec": "subrip", "external": false}], "expected": 0},
+		{"tracks": [{"id": 58, "title": "Unknown subtitle", "codec": "subrip", "external": true}], "expected": 0},
+		{"tracks": [{"id": 59, "title": "zh · ASS", "filename": "http://127.0.0.1/session/movie.zh_Hant.ass", "codec": "ass", "external": true}], "expected": 0},
+		{"tracks": [{"id": 60, "title": "movie.zh_CN.srt", "codec": "subrip", "external": true}], "expected": 60},
+		{"tracks": [{"id": 61, "title": "movie.zh-Hans-TW.srt", "codec": "subrip", "external": true}], "expected": 61},
+		{"tracks": [{"id": 62, "title": "movie.chs.srt", "language": "fra", "codec": "subrip", "external": true}], "expected": 0}]:
+		video.media.playback.details.subtitle_tracks = rule.tracks
+		video.subtitles.select(0); video._queue_track_restore({}); video._subtitle_auto_pending = true
+		video._restore_tracks()
+		check(video.subtitles.requested_track == rule.expected, "Language fallback rejects conflicting scripts, embedded and unknown languages: " + str(rule))
+	video.media.playback.details.subtitle_tracks = [language_tracks[1]]
+	video.subtitles.select(0); video._queue_track_restore({}); video.set_subtitle_auto_load(false)
+	video._restore_tracks()
+	check(video.subtitles.requested_track == 0, "Disabled automatic loading also suppresses language fallback")
+	video.subtitles.select(0); video._queue_track_restore({"subtitle": {"id": 0}}); video.set_subtitle_auto_load(true)
+	video._restore_tracks()
+	check(video.subtitles.requested_track == 0, "Remembered off takes priority over a matching interface language")
+	I18n.use("en")
 	video.free()
 	if failures.is_empty():
 		print("MPV subtitle host checks passed: %d" % checks)

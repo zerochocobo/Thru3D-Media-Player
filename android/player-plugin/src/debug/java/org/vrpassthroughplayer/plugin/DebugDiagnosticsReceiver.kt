@@ -97,7 +97,7 @@ class DebugDiagnosticsReceiver : BroadcastReceiver() {
                         when (intent.action) {
                         "com.wapok.thru3d.DEBUG_PLAYER_MPV" -> {
                             val operation = intent.getStringExtra("operation") ?: "open"
-                            require(operation in setOf("open", "alpha", "depth", "playing", "seek", "hold_pixels", "observe", "stereo", "profile", "close", "pixels", "subtitle", "display_quality", "sharpness", "cloud_accounts", "cloud_page_probe", "display_menu", "player_menu", "restart_app", "quit_app", "seek_policy_ui", "media_library_ui", "photo_open", "photo_step", "photo_depth", "layer_flip", "layer_order", "menu_layers", "menu_layer_filter", "menu_layer_holes", "menu_nav", "menu_bench"))
+                            require(operation in setOf("open", "alpha", "depth", "playing", "seek", "hold_pixels", "observe", "stereo", "profile", "close", "pixels", "subtitle", "display_quality", "sharpness", "cloud_accounts", "cloud_page_probe", "display_menu", "player_menu", "restart_app", "quit_app", "seek_policy_ui", "media_library_ui", "photo_open", "photo_step", "photo_depth", "photo_inspect", "photo_portrait", "layer_flip", "layer_order", "hide_menus", "menu_layers", "menu_layer_filter", "menu_layer_holes", "menu_nav", "menu_bench"))
                             val command = JSONObject().put("operation", operation).put("request_key", request)
                                 .put("value", intent.getFloatExtra("value", 0f).toDouble())
                                 .put("benchmark", intent.getBooleanExtra("benchmark", false))
@@ -129,6 +129,11 @@ class DebugDiagnosticsReceiver : BroadcastReceiver() {
                                 require(folder.startsWith("/sdcard/") && !folder.contains(".."))
                                 command.put("folder", folder).put("name", intent.getStringExtra("name").orEmpty())
                                     .put("layout", intent.getIntExtra("layout", -1)) // -1 keeps the viewer's layout
+                            }
+                            if (operation == "photo_inspect" && intent.hasExtra("x")) {
+                                // Magnifier crop centre, picture UV top-first.
+                                command.put("x", intent.getFloatExtra("x", 0.5f).coerceIn(0f, 1f).toDouble())
+                                    .put("y", intent.getFloatExtra("y", 0.5f).coerceIn(0f, 1f).toDouble())
                             }
                             if (operation == "media_library_ui") {
                                 val step = intent.getStringExtra("step") ?: "snapshot"

@@ -15,11 +15,13 @@ class Interrupted extends "res://scripts/file_mode_memory.gd":
 
 class Host extends RefCounted:
 	var calls: Array = []
+	var depths: Array[bool] = []
 	var next_id := 7
 	func mpv_supported() -> bool:
 		return true
 	func open_mpv_video(uri: String, start: int, stereo: bool, profile: String, alpha: bool, vulkan: bool, _depth: bool = false, _top_bottom: bool = false, _exact: bool = false) -> int:
 		calls.append([uri, start, stereo, profile, alpha, vulkan])
+		depths.append(_depth)
 		return next_id
 	func set_mpv_playing(_id: int, _playing: bool) -> void:
 		pass
@@ -61,7 +63,7 @@ func _run() -> void:
 		"Stable SMB and DLNA library URIs keep per-file modes")
 	check(not Memory.key_for("cloud://mount-id/中文%20VR.mp4").is_empty(), "Cloud mount identity survives proxy URL changes")
 	check(not memory.remember(uri, {}) and not memory.remember("http://127.0.0.1:4242/t/v.mp4", mode), "Invalid modes/proxy source cannot enter memory")
-	for mutation in [{"geometry": 4}, {"geometry": 0.5}, {"geometry": NAN}, {"stereo_sbs": "true"}, {"profile": "wrong"}]:
+	for mutation in [{"geometry": 4}, {"geometry": 0.5}, {"geometry": NAN}, {"stereo_sbs": "true"}, {"profile": "wrong"}, {"depth_requested": "true"}]:
 		var invalid := mode.duplicate(true)
 		invalid.merge(mutation, true)
 		check(not memory.remember(uri, invalid), "Reject invalid saved mode " + str(mutation))
@@ -165,6 +167,37 @@ func _run() -> void:
 	video._complete_layout()
 	check(video.geometry == 0 and not video.stereo_sbs and video._pending_revision.is_empty() and video._layout_pending == null,
 		"Unmarked 2:1 stays flat mono without restarting processing")
+	var converted_uri := "file:///v/clip.mp4"
+	check(video.set_depth(true) and video.mode_memory.lookup(converted_uri).depth_requested, "Manual conversion is saved for the current file")
+	check(video.open_local("file:///other/clip.mp4", "clip.mp4") and not video.depth_requested and not video.auto_depth and not host.depths.back(),
+		"Another URI with the same filename never inherits conversion")
+	video.media.format = {"width": 8192, "height": 4096, "pixel_aspect": 1.0}
+	video._complete_layout()
+	check(not video.depth_requested and video._pending_revision.is_empty(), "Unmarked first frame does not re-enable the previous file's depth")
+	video.set_projection(1)
+	check(not video.depth_requested and not video._pending_revision.depth, "Manual VR selection never needs to exit unwanted depth processing")
+	video.mode_memory = Memory.new(test_path.path_join("integration")); video.mode_memory.load_saved()
+	check(video.open_local(converted_uri, "clip.mp4") and video.depth_requested and video.auto_depth and host.depths.back(),
+		"A fresh store restores this file's conversion before the native open")
+	check(video.set_depth(false) and not video.mode_memory.lookup(converted_uri).depth_requested, "Manual Off updates only this file's conversion record")
+	check(video.open_local("cloud://mount/movie", "clip.mp4") and not host.depths.back(), "A new network video starts without conversion")
+	video.set_depth(true)
+	check(video.open_local(converted_uri, "clip.mp4") and not video.depth_requested and not host.depths.back(), "An older Off file ignores another video's On choice")
+	check(video.open_local("cloud://mount/movie", "clip.mp4") and video.depth_requested and host.depths.back(), "Another video's Off choice cannot overwrite the network file's On record")
+	video._reopen_after_context_loss(video.local_uri, video.display_name, 1234, true)
+	check(video.depth_requested and host.depths.back(), "Context recovery keeps the current file's live conversion")
+	var legacy := mode.duplicate(true); legacy.geometry = 0; legacy.stereo_sbs = false
+	video.mode_memory.remember("file:///legacy.mp4", legacy)
+	check(video.open_local("file:///legacy.mp4", "legacy.mp4") and not video.auto_depth and not host.depths.back(), "A legacy mode without a depth field defaults Off")
+	video.set_alpha(true)
+	check(video.alpha_requested and not video.mode_memory.lookup("file:///legacy.mp4").alpha_requested, "Manual passthrough is live only and is never saved On")
+	video._reopen_after_context_loss(video.local_uri, video.display_name, 1234, true)
+	check(video.alpha_requested and host.calls.back()[4], "Context recovery preserves live passthrough")
+	video._reopen_at(1234, false)
+	check(video.alpha_requested and host.calls.back()[4], "Changing the render path preserves live passthrough")
+	check(video.open_local("file:///legacy.mp4", "legacy.mp4") and not video.alpha_requested and not host.calls.back()[4], "Reopening the same unmarked video always starts passthrough Off")
+	video.set_alpha(true)
+	check(video.open_local("file:///other.mp4", "other.mp4") and not video.alpha_requested and not host.calls.back()[4], "A different video never inherits manual passthrough")
 	for lock in [{"geometry": 0, "layout": 0, "depth": false, "fisheye_fov": 180},
 			{"geometry": 0, "layout": 0, "depth": true, "fisheye_fov": 180},
 			{"geometry": 1, "layout": 1, "depth": false, "fisheye_fov": 180},
@@ -172,21 +205,29 @@ func _run() -> void:
 			{"geometry": 3, "layout": 2, "depth": false, "fisheye_fov": 180}]:
 		video.load_mode_lock(lock)
 		video.auto_depth = lock.depth
+		var expected: Dictionary = lock.duplicate(); expected.depth = false
 		check(video.open_local("file:///v/locked_%d.mp4" % lock.geometry, "locked_%d.mp4" % lock.geometry)
-			and video.current_lock() == lock and video._layout_pending == null, "Unmarked source opens with locked mode %d" % lock.geometry)
+			and video.current_lock() == expected and not host.depths.back() and video._layout_pending == null, "Projection lock cannot carry depth into an unmarked source %d" % lock.geometry)
 		video.media.format = {"width": 8192, "height": 4096, "pixel_aspect": 1.0}
 		video._complete_layout()
-		check(video.current_lock() == lock and video.mode_lock == lock and video._pending_revision.is_empty(),
+		check(video.current_lock() == expected and video.mode_lock == expected and video._pending_revision.is_empty(),
 			"First 2:1 frame preserves locked mode %d" % lock.geometry)
 	video.load_mode_lock({})
 	video.auto_depth = false
 	check(video.open_local("file:///v/clip_alpha.mp4", "clip_alpha.mp4") and host.calls.back()[4] == true and not video.packed_file,
 		"Alpha in the name opens with live Alpha")
+	video.set_alpha(false)
+	check(video.open_local("file:///v/clip_alpha.mp4", "clip_alpha.mp4") and video.alpha_requested and host.calls.back()[4], "Explicit Alpha filename still opts in after manual Off")
+	check(video.open_local("file:///v/clip_passthrough.mp4", "clip_passthrough.mp4") and video.alpha_requested, "Passthrough filename marker also opts in")
 	var packed_uri := "file:///v/clip_LR_180_FISHEYE_F180_alpha.mp4"
 	check(video.open_local(packed_uri, "clip_LR_180_FISHEYE_F180_alpha.mp4") and host.calls.back()[4] == false
 		and video.packed_file and video.alpha_wanted() and video.geometry == 2 and video.stereo_sbs, "Packed output shows its own mask without RVM")
 	var opens := host.calls.size()
 	check(video.set_alpha(false) and not video.alpha_wanted() and host.calls.size() == opens, "Alpha switch toggles the packed mask in place")
+	video._reopen_after_context_loss(packed_uri, video.display_name, 1234, true)
+	check(video.packed_file and not video.alpha_wanted() and not host.calls.back()[4], "Packed-mask Off survives context recovery without live inference")
+	video.set_alpha(true); video._reopen_at(1234, false)
+	check(video.packed_file and video.alpha_wanted() and not host.calls.back()[4], "Packed-mask On survives render-path changes without live inference")
 	video.mode_memory.remember(packed_uri, {"geometry": 0, "stereo_sbs": false, "swap_eyes": false, "alpha_requested": false, "profile": "320x320"})
 	check(video.open_local(packed_uri, "clip_LR_180_FISHEYE_F180_alpha.mp4") and video.geometry == 0 and not video.stereo_sbs,
 		"The user's remembered mode wins over the name")

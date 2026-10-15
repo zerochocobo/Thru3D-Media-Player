@@ -34,14 +34,13 @@ func _init() -> void:
 		entry("photo_close", "Close expanded photo", "photo", [bind("right_hand", "ax_button")]),
 		entry("photo_zoom_in", "Zoom in", "photo", [bind("right_hand", "stick_up")], true),
 		entry("photo_zoom_out", "Zoom out", "photo", [bind("right_hand", "stick_down")], true),
-		entry("drag_video", "Drag picture", "video", [bind("left_hand", "trigger_click"), bind("right_hand", "trigger_click")], false, true),
 		entry("drag_photo", "Drag picture", "photo", [bind("left_hand", "trigger_click"), bind("right_hand", "trigger_click")], false, true),
 		entry("reset_video", "Reset picture", "video", [bind("right_hand", "primary_click")]),
 		entry("reset_photo", "Reset picture", "photo", [bind("right_hand", "primary_click")]),
 		entry("projection_video", "Cycle projection", "video", [bind("left_hand", "primary_click")]),
 		entry("projection_photo", "Cycle projection", "photo", [bind("left_hand", "primary_click")]),
 		entry("inspect", "Inspect photo", "photo", []),
-		entry("move_video", "Move interfaces", "video", [bind("left_hand", "grip_click"), bind("right_hand", "grip_click")], false, true),
+		entry("move_video", "Move picture / interfaces", "video", [bind("left_hand", "grip_click"), bind("right_hand", "grip_click")], false, true),
 		entry("move_photo", "Move interfaces / magnifier", "photo", [bind("left_hand", "grip_click"), bind("right_hand", "grip_click")], false, true),
 		entry("subtitles", "Subtitle panel", "video", []),
 		entry("passthrough_video", "Temporary passthrough", "video", []),
@@ -101,9 +100,11 @@ func clean_binding(value: Variant, id: String) -> Dictionary:
 	return bind(value.hand, value.input, unique)
 
 ## Grip alone moves interfaces; grip + trigger chords retain their separate target input.
-## B/Y alone always backs out of menus; only chords and the matching photo close may use them.
-static func reserved(id: String, input: String, modifiers: Array) -> bool:
-	return (input == "grip_click" and not is_fixed(id)) or (input == "by_button" and modifiers.is_empty() and id != "photo_close")
+## B/Y alone navigates back; only chords and the matching photo close may use them.
+## A plain video trigger is reserved for UI selection and showing/hiding controls.
+func reserved(id: String, input: String, modifiers: Array) -> bool:
+	return (input == "grip_click" and not is_fixed(id)) or (input == "by_button" and modifiers.is_empty() and id != "photo_close") \
+		or (input == "trigger_click" and modifiers.is_empty() and str(definition(id).get("scope", "")).begins_with("video"))
 
 func conflicts(id: String, candidate: Dictionary) -> Array[String]:
 	var result: Array[String] = []
@@ -191,6 +192,8 @@ func restore(data: Variant) -> void:
 	if not saved is Dictionary: return
 	# Validate the whole map first; malformed/conflicting files fall back to usable defaults.
 	for id in saved:
+		# Retire video trigger dragging without resetting unrelated custom bindings.
+		if id == "drag_video": continue
 		# Movement is fixed even when an older file cleared or reassigned it.
 		if is_fixed(id): continue
 		if definition(id).is_empty() or not saved[id] is Array or saved[id].size() > 8: restore_all(); return

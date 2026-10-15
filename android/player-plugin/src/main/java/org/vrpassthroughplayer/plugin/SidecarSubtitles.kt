@@ -61,7 +61,12 @@ internal object SidecarSubtitles {
                 val bytes = download(caption.url)
                 validate(bytes)
                 val source = Bytes(bytes)
-                try { Track(publish(source, "subtitle-$index.${caption.extension}"), caption.title) }
+                // MPV exposes this filename separately from the display title (e.g. "zh · SRT").
+                // Keep it through the proxy so automatic matching still works after history replay.
+                val filename = caption.url.path.substringAfterLast('/').takeIf {
+                    it.isNotBlank() && '/' !in it && '\\' !in it && it.substringAfterLast('.', "").lowercase() in extensions
+                } ?: "subtitle-$index.${caption.extension}"
+                try { Track(publish(source, filename), caption.title) }
                 catch (error: Exception) { source.close(); throw error }
             }.getOrNull()
         }

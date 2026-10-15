@@ -16,6 +16,7 @@ class InputMain extends "res://scripts/main.gd":
 
 class Host extends RefCounted:
 	var calls: Array = []
+	var revision_id := 0 # Busy by default; feedback tests also exercise accepted revisions.
 	func mpv_supported() -> bool: return true
 	func open_mpv_video(uri: String, start: int, stereo: bool, profile: String, alpha: bool, _vulkan: bool, _depth: bool = false, _top_bottom: bool = false, _exact: bool = false) -> int:
 		calls.append(["open", uri, start, stereo, profile, alpha])
@@ -24,7 +25,7 @@ class Host extends RefCounted:
 	func set_mpv_playing(id: int, playing: bool) -> void: calls.append(["play", id, playing])
 	func revise_mpv_video(id: int, stereo: bool, alpha: bool, profile: String, position: int, _depth: bool = false, _top_bottom: bool = false, _exact: bool = false) -> int:
 		calls.append(["revise", id, stereo, alpha, profile, position])
-		return 0 # Busy native revision stays queued, just as production.
+		return revision_id
 	func set_mpv_audio(id: int, track: int, volume: float, muted: bool) -> bool:
 		calls.append(["audio", id, track, volume, muted])
 		return true
@@ -253,7 +254,7 @@ func _run() -> void:
 	check(host.calls.size() == depth_calls, "Depth drag stops on trigger release")
 	var saved_strength := ConfigFile.new()
 	saved_strength.load(main.settings_path)
-	check(saved_strength.get_value("video", "depth_strength") == 2.0 and not saved_strength.get_value("effects", "auto_3d"), "Release persists strength and manual Off")
+	check(saved_strength.get_value("video", "depth_strength") == 2.0 and not saved_strength.has_section_key("effects", "auto_3d"), "Video slider saves strength without writing the photo conversion preference")
 	check(click(menu, 112) and not menu._depth_open, "Close disabled depth slider")
 	check(double_click(menu, 112) and video.depth_requested and video.depth_strength == 2.0, "Double click restores the previous 200% choice")
 	check(double_click(menu, 112) and not video.depth_requested and video.depth_strength == 2.0, "Double click disables conversion without erasing its strength")
@@ -493,7 +494,11 @@ func _run() -> void:
 	main._process(1.0 / 72.0)
 	check(menu.section == 2, "Menu ignores absent/zero tracking axes")
 	main._on_controller_button("by_button", "right_hand")
-	check(not menu.visible, "B dismisses controls overlay")
+	main._on_controller_release("by_button", "right_hand")
+	check(menu.visible and menu.section == 0, "B returns from information to the transport first")
+	main._on_controller_button("by_button", "right_hand")
+	main._on_controller_release("by_button", "right_hand")
+	check(not menu.visible, "B on the plain transport returns to watching")
 	main._on_controller_button("menu_button", "left_hand")
 	check(menu.visible and menu.section == 0, "Menu button reopens controls on Playback")
 	main._on_controller_button("menu_button", "left_hand")
@@ -574,14 +579,14 @@ func _run() -> void:
 	video.open_local("file:///sticky/first_2D.mp4", "first_2D.mp4")
 	main._on_depth_strength(1.65, false)
 	video.open_local("file:///sticky/next_2D.mp4", "next_2D.mp4")
-	check(video.auto_depth and video.depth_requested and is_equal_approx(video.depth_strength, 1.65), "Next 2D video retains conversion and non-preset strength")
+	check(not video.auto_depth and not video.depth_requested and is_equal_approx(video.depth_strength, 1.65), "Next 2D video starts Off while retaining the preferred strength")
 	video.open_local("file:///sticky/stereo_SBS.mp4", "stereo_SBS.mp4")
-	check(video.stereo_sbs and not video.depth_requested and video.auto_depth, "Stereo video bypasses inference without erasing choice")
+	check(video.stereo_sbs and not video.depth_requested and not video.auto_depth, "New stereo video does not inherit conversion")
 	video.open_local("file:///sticky/flat_2D.mp4", "flat_2D.mp4")
-	check(video.depth_requested and is_equal_approx(video.depth_strength, 1.65), "Following flat video restores strength")
+	check(not video.depth_requested and is_equal_approx(video.depth_strength, 1.65), "Another new flat video keeps conversion Off")
 	main._on_depth_strength(0.0, false)
 	video.open_local("file:///sticky/first_2D.mp4", "first_2D.mp4")
-	check(not video.depth_requested and not video.auto_depth, "Manual Off wins over a file's previous 3D memory")
+	check(video.depth_requested and video.auto_depth, "Off on another file cannot override this video's saved conversion")
 	main.settings.set_value("video", "mode_lock", {})
 	main.settings.save(main.settings_path)
 	_check_device_status()
@@ -603,6 +608,7 @@ func _run() -> void:
 	check(not click(menu, 101) and not click(menu, 103) and host.calls.size() == navigation_calls, "A video opened without a browse queue cannot navigate or seek via skip buttons")
 	_check_control_sticks(main, video, menu, host)
 	_check_transport_button(main, video, menu, host)
+	_check_seek_feedback(main, video, menu, host)
 	video.free()
 	menu.free()
 	recent.free()
@@ -613,6 +619,52 @@ func _run() -> void:
 	for failure in failures: push_error(failure)
 	print("Player menu host checks: %s (%d), evidence=%s" % [report.state, checks, directory])
 	quit(0 if failures.is_empty() else 1)
+
+## Native loading updates during a stick seek must not open a dismissed transport.
+func _check_seek_feedback(main: Node3D, video: Node3D, menu: Node3D, host: RefCounted) -> void:
+	main.video_menu = menu
+	main.recent_menu.dismiss()
+	menu._reset_navigation(); menu.dismiss()
+	video.changed.connect(main._on_video_changed)
+	for remote in [false, true]:
+		for revision_id in [0, 8]:
+			host.revision_id = revision_id
+			for hand in ["left", "right"]:
+				for direction in [-1, 1]:
+					video.media.begin(7); video.media.state = "playing"
+					video.local_uri = "smb://server/movie.mp4" if remote else "file:///movie.mp4"
+					video.geometry = 0; video.requested_play = true; video._waiting_first = false
+					video._pending_revision.clear(); video.control.close(); video.control.observe(40000, 120000)
+					video._loading_status = {"remote": remote, "phase": "reading"}
+					main._video_waiting_feedback = false
+					main._process_sticks(Vector2.ZERO, Vector2.ZERO, 0.1)
+					var axis := Vector2(0.99 * direction, 0)
+					main._process_sticks(axis if hand == "left" else Vector2.ZERO, axis if hand == "right" else Vector2.ZERO, 0.1)
+					video.changed.emit() # The next native progress report also uses this handler.
+					var expected: int = 40000 + direction * (20000 if hand == "left" else 10000)
+					check(video.control.target_ms == expected and not menu.visible,
+						"Stick seek preserves hidden controls: remote=%s revision=%d %s %d" % [remote, revision_id, hand, direction])
+					# A network cache wait can continue after the seek target is presented.
+					video.media.playback = {"details": {"paused_for_cache": "yes"}}
+					video.changed.emit()
+					video.control.reject(); video._waiting_first = false
+					video.changed.emit()
+					check(not menu.visible, "Post-seek buffering also preserves hidden controls")
+					video.media.playback = {}; video.changed.emit()
+	# Initial network loading and real playback failures still offer their normal feedback.
+	video.control.reject(); video._pending_revision.clear(); video._waiting_first = true
+	video._loading_status = {"remote": true, "phase": "connecting"}; main._video_waiting_feedback = false
+	video.changed.emit()
+	check(menu.visible and not video.loading_caption().is_empty(), "Opening a remote video still shows transfer feedback")
+	video._waiting_first = false; video.changed.emit()
+	main._process_sticks(Vector2.ZERO, Vector2.ZERO, 0.1)
+	main._process_sticks(Vector2(-0.99, 0), Vector2.ZERO, 0.1)
+	check(menu.visible, "Seeking with the transport already open keeps it visible")
+	menu.dismiss()
+	video.picker_error = "Playback failed"
+	main._on_video_playback_failed()
+	check(menu.visible, "Actual playback failure still opens the error controls")
+	video.changed.disconnect(main._on_video_changed)
 
 ## Exercise the real XR button signal path with production menus and mocked native playback.
 func _check_transport_button(main: Node3D, video: Node3D, menu: Node3D, host: RefCounted) -> void:

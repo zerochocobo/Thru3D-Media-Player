@@ -64,6 +64,12 @@ var portrait_requested := false
 var portrait_enabled := false
 var portrait_error := ""
 var _portrait_texture: ImageTexture
+## The mask's level 0 bytes (R8, the pair's size): the picture layer's cutout is drawn from it.
+var _portrait_mask := PackedByteArray()
+var _portrait_serial := 0
+## The scene behind the photo is passthrough (no environment in the eye buffers): only then can the
+## cutout sit on a layer beneath them, whose hole would otherwise erase the environment behind it.
+var transparent_background := false
 var _portrait_epoch := 0
 var _portrait_strength := -1.0
 var _portrait_curve := DEFAULT_CURVE
@@ -125,6 +131,7 @@ var _swipe_offset := 0.0
 ## on the render thread. Godot keeps a small proxy for transitions; the full texture is made only
 ## when the shader needs it (magnifier, depth/portrait, unsupported projections).
 const VideoLayer := preload("res://scripts/video_layer.gd")
+const MAGNIFIER_SKEW := 0.5 # largest crop shear (of its scale) the upright magnifier layer stands in for
 const PROXY_SIZE := 1024
 const UPLOAD_BYTES := 3 * 1024 * 1024 # per frame: one band texture upload plus a GPU copy
 var video_layer: VideoLayer
@@ -136,6 +143,9 @@ var _upload := {} # {"key", "image", "data", "row", "channels"} while slices rem
 var _layer_key := "" # the picture in the layer swapchain: "color:<request>" or "stereo:<request>:<strength>"
 var _depth_textures_pending := false # depth data kept for the shader, its textures made on demand
 var _hole: MeshInstance3D
+## The magnifier's own hole: its window shows quad layers over the uploaded picture's crop.
+var _detail_hole: MeshInstance3D
+var magnifier_on_layer := false
 var _hole_material: ShaderMaterial
 var _logged_key := ""
 
@@ -241,6 +251,14 @@ func _ready() -> void:
 	_detail_zoom.position = Vector3(0.35, -0.274, 0.003)
 	_detail_zoom.render_priority = 3
 	_detail.add_child(_detail_zoom)
+	_detail_hole = MeshInstance3D.new()
+	_detail_hole.mesh = quad
+	var detail_hole_material := ShaderMaterial.new()
+	detail_hole_material.shader = preload("res://shaders/video_layer_hole.gdshader")
+	detail_hole_material.render_priority = 2 # after the photo and the window's border
+	_detail_hole.material_override = detail_hole_material
+	_detail_hole.visible = false
+	_detail.add_child(_detail_hole)
 	_inspect_pointer_material = StandardMaterial3D.new()
 	_inspect_pointer_material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	_inspect_pointer_material.no_depth_test = true
@@ -348,7 +366,7 @@ func select_image(target: int, direction: int = 0) -> bool:
 func _select(target: int, direction: int = 0) -> bool:
 	if target < 0 or target >= queue.size() or (target == index and not loading): return false
 	if portrait_requested: set_portrait(false)
-	_portrait_texture = null; _portrait_strength = -1.0; portrait_error = ""
+	_portrait_texture = null; _portrait_mask = PackedByteArray(); _portrait_strength = -1.0; portrait_error = ""
 	if target < 0 or target >= queue.size(): return false
 	if target == index and not loading: return false
 	var swipe_offset := _swipe_offset
@@ -1484,7 +1502,7 @@ func close_image(notify: bool = true) -> void:
 		_catalog_save_ms = 0
 		catalog.save()
 	if portrait_requested: set_portrait(false)
-	_portrait_texture = null; _portrait_strength = -1.0; portrait_error = ""; _portrait_next = {}
+	_portrait_texture = null; _portrait_mask = PackedByteArray(); _portrait_strength = -1.0; portrait_error = ""; _portrait_next = {}
 	directory.cancel(); _directory_result = {}; queue_complete = true; directory_error = ""
 	gallery.clear()
 	_restore_display()
@@ -1505,7 +1523,7 @@ func close_image(notify: bool = true) -> void:
 		if Methods.supports(platform, "release_photo_depth_runtime"): platform.release_photo_depth_runtime()
 	_request = 0; _display_request = 0; _next_decode = {}
 	_hide_layer(); _upload = {}; _layer_key = ""; _full_image = null; _texture_full = true; _depth_textures_pending = false
-	if Methods.supports(platform, "destroy_layer_image"): platform.destroy_layer_image()
+	if Methods.supports(platform, "destroy_layer_image"): platform.destroy_layer_image(VideoLayer.PICTURE_SLOT)
 	_texture = null; _depth_texture = null; _stereo_texture = null; _depth_busy = false; depth_requested = false; depth_enabled = false
 	material.set_shader_parameter("photo_texture", null); material.set_shader_parameter("depth_texture", null)
 	_detail_material.set_shader_parameter("sharpness", sharpness)
@@ -1586,9 +1604,10 @@ static func _read_portrait(result: Dictionary) -> Dictionary:
 	if not is_finite(strength) or strength < 0 or strength > 2: return {}
 	var file := FileAccess.open(str(result.get("path","")),FileAccess.READ)
 	if not file or file.get_length() != w*h: return {}
-	var image := Image.create_from_data(w,h,false,Image.FORMAT_R8,file.get_buffer(w*h))
+	var mask := file.get_buffer(w*h)
+	var image := Image.create_from_data(w,h,false,Image.FORMAT_R8,mask)
 	image.generate_mipmaps()
-	return {"image":image,"strength":strength}
+	return {"image":image,"strength":strength,"mask":mask}
 
 func _process_portrait() -> void:
 	if _portrait_thread and not _portrait_thread.is_alive():
@@ -1601,6 +1620,7 @@ func _process_portrait() -> void:
 			else:
 				if not _portrait_pending_depth.is_empty(): _commit_depth_data(_portrait_pending_depth); _portrait_pending_depth = {}
 				_portrait_texture = ImageTexture.create_from_image(data.image); _portrait_strength = float(data.strength); portrait_enabled = true
+				_portrait_mask = data.mask; _portrait_serial += 1
 			_apply_geometry(); changed.emit()
 		_portrait_job = {}
 		if _deferred_release_ids.erase(id) and id not in [_request,_display_request]: _release_photo(id)
@@ -1616,6 +1636,14 @@ func _layer_possible(projection: int) -> bool:
 
 ## What the layer shows now: the generated stereo pair while 3D is on, else the photo itself.
 func _layer_source() -> Dictionary:
+	if portrait_requested:
+		# The cutout: the pair times its mask, premultiplied, over passthrough.
+		var pair: Image = _display_depth_data.get("stereo_image")
+		if not portrait_enabled or not transparent_background or pair == null or not Methods.supports(platform, "copy_layer_band_masked") \
+			or _portrait_mask.size() != pair.get_width() * pair.get_height():
+			return {}
+		return {"key": "portrait:%d:%d" % [_display_request, _portrait_serial], "image": pair, "mask": _portrait_mask,
+			"stereo": 1, "blend": VideoLayer.SOURCE_ALPHA}
 	if depth_enabled and _display_depth_data.has("stereo_image"):
 		return {"key": "stereo:%d:%.3f" % [_display_request, float(_display_depth_data.get("strength", 0))],
 			"image": _display_depth_data.stereo_image, "stereo": 1}
@@ -1627,8 +1655,15 @@ func _layer_source() -> Dictionary:
 func _layer_eligible() -> bool:
 	return _display_request > 0 and _texture != null and panel.visible and not loading and error.is_empty() \
 		and not gallery.overview() and not _transition_active and _reveal_seconds == 0 and not placeholder_visible() \
-		and not portrait_enabled and not portrait_requested and not bool(_metadata.get("native_stereo", false)) \
 		and _layer_possible(geometry)
+
+## A spatial photo's disparity as the layer's per-eye UV shift: the photo shader's own shift of each
+## source eye, in the video's alignment convention (the left eye moves by -offset / 2).
+func stereo_offset_uv() -> Vector2:
+	if not bool(_metadata.get("native_stereo", false)) or not stereo_sbs or top_bottom or geometry != Geometry.Geometry.FLAT:
+		return Vector2.ZERO
+	var disparity := clampf(float(_metadata.get("spatial_disparity", 0)), -1.0, 1.0)
+	return Vector2(disparity if swap_eyes else -disparity, 0)
 
 func _origin() -> XROrigin3D:
 	return view_camera.get_parent() as XROrigin3D if view_camera else null
@@ -1645,7 +1680,7 @@ func _process_layer() -> void:
 			"panel": panel.visible, "transition": _transition_active, "placeholder": placeholder_visible()})
 	var eligible: bool = _layer_eligible() and not source.is_empty() and source.image != null
 	if eligible and _layer_key != source.key and str(_upload.get("key", "")) != source.key:
-		_upload = {"key": source.key, "image": source.image, "row": 0} # replaces an unfinished other picture
+		_upload = {"key": source.key, "image": source.image, "mask": source.get("mask"), "row": 0} # replaces an unfinished other picture
 	if not _upload.is_empty():
 		_continue_upload()
 	var origin := _origin()
@@ -1661,13 +1696,20 @@ func _process_layer() -> void:
 		var cut := Vector4(keep.x, keep.y, 1.0 - 2.0 * keep.x, 1.0 - 2.0 * keep.y)
 		var pano := Info.panorama_rect(_metadata) if geometry == Geometry.Geometry.EQUIRECT_360 and not stereo_sbs else Vector4(0, 0, 1, 1)
 		var picture: Image = source.image
-		shown = video_layer.show(self, origin, VideoLayer.PICTURE, Vector2(picture.get_width(), picture.get_height()), int(source.stereo), inset, pano)
+		var image := Vector2(picture.get_width(), picture.get_height())
+		var magnifier := _magnifier_layers(origin, image, int(source.stereo))
+		shown = video_layer.show(self, origin, VideoLayer.PICTURE, image, int(source.stereo), inset, pano, int(source.get("blend", VideoLayer.OPAQUE)), magnifier.layers)
 		if shown:
 			_hole.mesh = panel.mesh
 			_hole.transform = panel.transform
 			_hole_material.set_shader_parameter("keep_rect", cut if flat else Vector4(0, 0, 1, 1))
+			# A shifted spatial pair leaves part of each eye without picture: it stays in the eye buffers.
+			var offset := stereo_offset_uv()
+			_hole_material.set_shader_parameter("stereo_sbs", offset != Vector2.ZERO)
+			_hole_material.set_shader_parameter("stereo_offset", offset)
 			_hole.visible = true
 			material.set_shader_parameter("layer_cut", cut if flat else Vector4(0, 0, 1, 1))
+		_show_magnifier_hole(magnifier.window if shown else Rect2())
 	if not shown:
 		_hide_layer()
 		# Off the layer the shader shows the photo: the full picture, once nothing transient is on.
@@ -1675,8 +1717,8 @@ func _process_layer() -> void:
 		if (not _texture_full or _depth_textures_pending) and panel.visible and not loading and not _transition_active and _reveal_seconds == 0 \
 			and _upload.is_empty():
 			_ensure_full_texture()
-	elif inspect:
-		_ensure_full_texture() # the magnifier samples the full picture
+	elif inspect and not magnifier_on_layer:
+		_ensure_full_texture() # the eye-buffer magnifier samples the full picture
 	if shown != layer_shown or (shown and str(_upload.get("key", "")) == "" and _layer_key != _logged_key):
 		_logged_key = _layer_key if shown else ""
 		DiagnosticLog.record("photo_layer", layer_snapshot().merged({"shown": shown, "eligible": eligible,
@@ -1686,9 +1728,62 @@ func _process_layer() -> void:
 
 func _hide_layer() -> void:
 	layer_shown = false
+	_show_magnifier_hole(Rect2())
 	if _hole: _hole.visible = false
 	if material: material.set_shader_parameter("layer_cut", Vector4.ZERO)
 	if video_layer: video_layer.hide(self)
+
+## Flat inspect over the picture layer: the window's crop as quad layers above it (one per eye for a
+## stereo pair), so the eye buffers neither sample nor hold the full picture while it is open.
+## window: the part of the detail window the picture covers (a small picture leaves margins).
+func _magnifier_layers(origin: XROrigin3D, image: Vector2, stereo: int) -> Dictionary:
+	var none := {"layers": [], "window": Rect2()}
+	if not inspect or not _detail.visible or geometry != Geometry.Geometry.FLAT: return none
+	var aspect: Variant = _detail_material.get_shader_parameter("crop_aspect")
+	var skew: Variant = _detail_material.get_shader_parameter("crop_skew")
+	# A quad shows an upright crop where the shader shears it to the source's projected slant (about 20%
+	# for a large photo with the window above-right of the crop): fine for a loupe; extremes stay sheared.
+	if not aspect is Vector2 or not skew is Vector2 or aspect.x <= 0 or aspect.y <= 0 \
+		or absf(skew.x) > MAGNIFIER_SKEW * aspect.x or absf(skew.y) > MAGNIFIER_SKEW * aspect.y:
+		_record_magnifier(false, {"aspect": str(aspect), "skew": str(skew)})
+		return none
+	var span: Vector2 = aspect / magnification
+	var start := crop_center - span * 0.5
+	var crop := Rect2(start, span).intersection(Rect2(0, 0, 1, 1))
+	if crop.size.x <= 0 or crop.size.y <= 0: return none
+	var window := Rect2((crop.position - start) / span, crop.size / span)
+	var mesh: Vector2 = _detail.mesh.size
+	var pose := _detail.global_transform
+	var centre := window.get_center() - Vector2(0.5, 0.5)
+	pose.origin += pose.basis * Vector3(centre.x * mesh.x, -centre.y * mesh.y, 0)
+	var size := mesh * Vector2(_detail.global_basis.x.length(), _detail.global_basis.y.length()) * window.size
+	# Each eye's crop in its own view: the generated pair side by side, or a packed stereo photo's views.
+	var packed := stereo != 1 and stereo_sbs
+	var below := packed and top_bottom
+	var eye_image: Vector2 = image * (Vector2(1.0, 0.5) if below else Vector2(0.5, 1.0)) if stereo == 1 or packed else image
+	var layers := []
+	for eye in ([0] if stereo != 1 and not packed else [1, 2]):
+		var view: int = (2 - eye if swap_eyes else eye - 1) if packed else maxi(eye - 1, 0)
+		var corner := Vector2(0.0, eye_image.y * view) if below else Vector2(eye_image.x * view, 0.0)
+		var rect := Rect2(corner + crop.position * eye_image, crop.size * eye_image)
+		layers.append({"values": video_layer.quad_values(origin, pose, size, VideoLayer.PICTURE_SLOT, image, rect, VideoLayer.OPAQUE, eye),
+			"order": VideoLayer.OVERLAY_ORDER})
+	_record_magnifier(true, {"window": str(window), "eyes": layers.size()})
+	return {"layers": layers, "window": window}
+
+var _magnifier_logged := -1
+func _record_magnifier(on_layer: bool, detail: Dictionary) -> void:
+	if int(on_layer) == _magnifier_logged: return
+	_magnifier_logged = int(on_layer)
+	DiagnosticLog.record("photo_magnifier_layer", detail.merged({"on_layer": on_layer}))
+
+func _show_magnifier_hole(window: Rect2) -> void:
+	magnifier_on_layer = window.has_area()
+	if not _detail_hole: return
+	_detail_hole.visible = magnifier_on_layer
+	var cut := Vector4(window.position.x, window.position.y, window.size.x, window.size.y) if magnifier_on_layer else Vector4.ZERO
+	_detail_hole.material_override.set_shader_parameter("keep_rect", cut)
+	_detail_material.set_shader_parameter("layer_cut", cut)
 
 func _ensure_full_texture() -> void:
 	if not _texture_full and _full_image != null:
@@ -1729,11 +1824,11 @@ func _continue_upload() -> void:
 			_upload.image = image
 		var levels := int(floor(log(maxf(width, height)) / log(2.0))) + 1
 		var started := Time.get_ticks_usec()
-		var created: bool = platform.create_layer_image(width, height, levels, true)
+		var created: bool = platform.create_layer_image(VideoLayer.PICTURE_SLOT, width, height, levels, true)
 		var created_us := Time.get_ticks_usec() - started
 		video_layer.invalidate()
 		started = Time.get_ticks_usec()
-		var acquired: int = platform.acquire_layer_image() if created else 0
+		var acquired: int = platform.acquire_layer_image(VideoLayer.PICTURE_SLOT) if created else 0
 		_upload.timing = {"create_us": created_us, "acquire_us": Time.get_ticks_usec() - started, "slices": 0,
 			"slice_max_us": 0, "slice_total_us": 0, "get_data_us": 0}
 		DiagnosticLog.record("photo_layer_upload", {"key": str(_upload.key), "size": [width, height], "levels": levels,
@@ -1746,20 +1841,28 @@ func _continue_upload() -> void:
 	var slice_started := Time.get_ticks_usec()
 	# A band of rows as a small Godot texture (the engine's own upload), then a GPU copy into place.
 	var band := ImageTexture.create_from_image(image.get_region(Rect2i(0, int(_upload.row), width, rows)))
-	var uploaded: bool = platform.copy_layer_band(RenderingServer.texture_get_native_handle(band.get_rid()), int(_upload.row), rows)
+	var uploaded := false
+	var mask: Variant = _upload.get("mask")
+	if mask is PackedByteArray:
+		var mask_band := ImageTexture.create_from_image(Image.create_from_data(width, rows, false, Image.FORMAT_R8,
+			(mask as PackedByteArray).slice(int(_upload.row) * width, (int(_upload.row) + rows) * width)))
+		uploaded = platform.copy_layer_band_masked(VideoLayer.PICTURE_SLOT, RenderingServer.texture_get_native_handle(band.get_rid()),
+			RenderingServer.texture_get_native_handle(mask_band.get_rid()), int(_upload.row), rows)
+	else:
+		uploaded = platform.copy_layer_band(VideoLayer.PICTURE_SLOT, RenderingServer.texture_get_native_handle(band.get_rid()), int(_upload.row), rows)
 	var slice_us := Time.get_ticks_usec() - slice_started
 	_upload.timing.slices = int(_upload.timing.slices) + 1
 	_upload.timing.slice_total_us = int(_upload.timing.slice_total_us) + slice_us
 	_upload.timing.slice_max_us = maxi(int(_upload.timing.slice_max_us), slice_us)
 	if not uploaded:
-		platform.destroy_layer_image()
+		platform.destroy_layer_image(VideoLayer.PICTURE_SLOT)
 		video_layer.invalidate()
 		_upload = {}
 		return
 	_upload.row = int(_upload.row) + rows
 	if int(_upload.row) >= height:
 		var release_started := Time.get_ticks_usec()
-		var released: bool = platform.release_layer_image(true)
+		var released: bool = platform.release_layer_image(VideoLayer.PICTURE_SLOT, true)
 		_upload.timing.release_us = Time.get_ticks_usec() - release_started
 		if released: _layer_key = str(_upload.key)
 		DiagnosticLog.record("photo_layer_uploaded", {"key": str(_upload.key), "released": released, "timing": _upload.timing})

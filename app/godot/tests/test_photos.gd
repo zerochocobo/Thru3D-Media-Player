@@ -251,7 +251,10 @@ func _run() -> void:
 	near.fill(Color(.8,0,0))
 	FileAccess.open(host.depth_path, FileAccess.WRITE).store_buffer(near.get_data())
 	main.photo.platform = host
-	main._remember_auto_depth(false)
+	main._remember_photo_auto_depth(false)
+	var initial_photo_off := ConfigFile.new()
+	check(initial_photo_off.load(main.settings_path) == OK and not initial_photo_off.get_value("effects", "auto_3d", true),
+		"Turning off default photo conversion persists even before any preference was saved")
 	main._on_library_chosen(entries[0].uri, entries[0].title)
 	await settle(main.photo)
 	main.photo_menu._activate(Menu.PHOTO_DEPTH)
@@ -282,15 +285,22 @@ func _run() -> void:
 	check(not main.photo.depth_enabled and main.photo.auto_depth, "Panorama temporarily bypasses 3D without clearing preference")
 	main.photo.set_projection(0)
 	check(main.photo.depth_enabled and main.photo.depth_strength == 2.0, "Returning to flat photo restores 3D")
+	main.video.auto_depth = true; main.video.depth_requested = true
 	main._on_depth_strength(0.0,true)
 	main._on_photo_action("photo_next")
 	await settle(main.photo); await process_frame
-	check(not main.photo.depth_requested and not main.photo.auto_depth and not main.video.auto_depth and host.inference == 2,
-		"Manual Off applies to both media types and stays off on the next photo")
+	check(not main.photo.depth_requested and not main.photo.auto_depth and main.video.auto_depth and main.video.depth_requested and host.inference == 2,
+		"Photo Off stays off on the next photo without disabling the video's independent conversion")
 	main._on_depth_strength(1.5,true); main._save_depth_strength()
 	var saved := ConfigFile.new(); saved.load(main.settings_path)
 	check(is_equal_approx(saved.get_value("photo","depth_strength"), 1.5) and saved.get_value("effects","auto_3d") and main.video.auto_depth,
-		"Photo preference also enables following videos and saves independent photo strength")
+		"Photo conversion and strength persist without overwriting the video's live choice")
+	main.photo_active = false
+	main._on_menu_action("depth"); main._on_menu_action("stereo_2d")
+	check(main.photo.auto_depth and main.settings.get_value("effects", "auto_3d"), "Video conversion and plain-2D menu actions leave the global photo preference On")
+	main._on_depth_strength(0.0, false)
+	check(main.photo.auto_depth and main.settings.get_value("effects", "auto_3d"), "Video slider Off also leaves new photos in global 3D mode")
+	main.photo_active = true
 	main.photo.set_projection(3)
 	main._on_photo_action("lock_mode")
 	saved.load(main.settings_path)
@@ -298,8 +308,8 @@ func _run() -> void:
 	var restored := Main.new()
 	restored.settings_path = main.settings_path
 	root.add_child(restored)
-	check(restored.video.auto_depth and restored.photo.auto_depth and is_equal_approx(restored.photo.depth_strength, 1.5) and restored.video.depth_strength == 1.0,
-		"Restart restores shared auto-3D choice and separate strengths")
+	check(not restored.video.auto_depth and restored.photo.auto_depth and is_equal_approx(restored.photo.depth_strength, 1.5) and restored.video.depth_strength == 1.0,
+		"Restart restores photo conversion and separate strengths while video awaits its own file record")
 	check(restored.photo.mode_lock.geometry == 3 and restored.video.mode_lock.is_empty(), "Restart restores panorama photo lock without locking videos")
 	main._on_photo_action("lock_mode"); saved.load(main.settings_path)
 	check(saved.get_value("photo", "mode_lock").is_empty(), "Unlock is saved across restarts")

@@ -7,24 +7,36 @@ extends RefCounted
 
 const Geometry := preload("res://scripts/video_geometry.gd")
 const PlatformMethods := preload("res://scripts/platform_methods.gd")
-const STRIDE := 26 # floats per layer, see VideoLayerNative.setLayers
+const STRIDE := 28 # floats per layer, see VideoLayerNative.setLayers
+const MAX_LAYERS := 6 # native/xr-layer kMaxLayers
 const SURFACE_SIZE := 4096.0 # nominal swapchain units (MpvVideoBridge.LAYER_SURFACE_SIZE)
 const ORDER := -8 # beneath the menu layers (-6..-3) and eye buffers; the video panel punches the hole
 ## Layer sources: the decoder's surface, or the RGBA picture swapchain (2D->3D pairs, photos).
 const SURFACE := 0
 const PICTURE := 1
+## Picture swapchain slots (native kSlots): photos and 2D->3D pairs, subtitles, the photo magnifier.
+const PICTURE_SLOT := 0
+const SUBTITLE_SLOT := 1
+const MAGNIFIER_SLOT := 2
+## Layer blending (values[27]): opaque, or the texture's premultiplied alpha.
+const OPAQUE := 0
+const SOURCE_ALPHA := 1
+## Overlays (subtitles, magnifier) above the video, still beneath the menu layers and eye buffers.
+const OVERLAY_ORDER := -7
 
 class Provider extends OpenXRExtensionWrapper:
 	## Read by Godot's frame end. Android runs Godot's frame and rendering on one thread.
 	var count := 0
-	var addresses := PackedInt64Array([0, 0])
+	var addresses := PackedInt64Array()
+	var orders := PackedInt32Array()
 	var debug_order := 0 # debug builds: a positive order draws the layers over the eye buffers
 	func _get_composition_layer_count() -> int:
 		return count
 	func _get_composition_layer(index: int) -> int:
 		return addresses[index] if index >= 0 and index < count else 0
-	func _get_composition_layer_order(_index: int) -> int:
-		return debug_order if debug_order != 0 else ORDER
+	func _get_composition_layer_order(index: int) -> int:
+		if debug_order != 0: return debug_order
+		return orders[index] if index >= 0 and index < orders.size() else ORDER
 
 var platform: Object
 var _api: OpenXRAPIExtension
@@ -162,19 +174,54 @@ func hide(owner: Object = null) -> void:
 
 ## surface: the video or photo node (media_surface); origin: the XR origin the play space belongs to.
 ## source PICTURE shows the picture swapchain of [size] pixels; stereo: 1 side by side whatever the
-## surface says (a 2D->3D pair), 0 mono, -1 as the surface.
+## surface says (a 2D->3D pair), 0 mono, -1 as the surface. blend: OPAQUE, or SOURCE_ALPHA for a
+## cut-out picture. extras: overlay layers drawn above it ({"values": STRIDE floats, "order": int}).
 func show(surface: Node3D, origin: XROrigin3D, source: int = SURFACE, size := Vector2(SURFACE_SIZE, SURFACE_SIZE), stereo: int = -1,
-		inset := Vector2.ZERO, pano := Vector4(0, 0, 1, 1)) -> bool:
-	var values := layer_values(surface, origin, source, size, stereo, inset, pano)
+		inset := Vector2.ZERO, pano := Vector4(0, 0, 1, 1), blend := OPAQUE, extras: Array = []) -> bool:
+	var values := layer_values(surface, origin, source, size, stereo, inset, pano, blend)
+	var orders := PackedInt32Array()
+	for i in values.size() / STRIDE: orders.append(ORDER)
+	for extra in extras:
+		if values.size() / STRIDE >= MAX_LAYERS: break
+		values.append_array(extra.values)
+		orders.append(int(extra.order))
 	_owner = surface
-	return _apply(values.size() / STRIDE, values)
+	return _apply(values.size() / STRIDE, values, orders)
+
+## One quad over a picture slot, posed in the origin's space ([pose] places its centre), [size] metres,
+## showing [rect] (pixels) of the slot's [image]: subtitles, the magnifier. eye 0 both, 1 left, 2 right.
+func quad_values(origin: Node3D, pose: Transform3D, size: Vector2, slot: int, image: Vector2,
+		rect := Rect2(), blend := SOURCE_ALPHA, eye := 0) -> PackedFloat32Array:
+	var local := origin.global_transform.affine_inverse() * pose
+	local.basis = local.basis.orthonormalized()
+	var quat := local.basis.get_rotation_quaternion()
+	if rect.size == Vector2.ZERO: rect = Rect2(Vector2.ZERO, image)
+	var values := PackedFloat32Array([0.0, float(eye), local.origin.x, local.origin.y, local.origin.z, quat.x, quat.y, quat.z, quat.w,
+		rect.position.x, rect.position.y, rect.size.x, rect.size.y, size.x, size.y])
+	values.resize(STRIDE)
+	values[17] = 1.0 if _flip else -1.0 # GL pictures are top-first
+	values[18] = NORMAL_SUPER_SAMPLING if _settings else 0
+	values[19] = PICTURE
+	values[20] = 1.0; values[21] = 1.0; values[22] = 1.0
+	values[26] = slot
+	values[27] = blend
+	return values
+
+## A section of a cylinder over a picture slot: [pose] is the cylinder's centre with the section's
+## middle along its -Z; [angle] radians wide, [aspect] its arc length over its height.
+func cylinder_values(origin: Node3D, pose: Transform3D, radius: float, angle: float, aspect: float, slot: int,
+		image: Vector2, rect := Rect2(), blend := SOURCE_ALPHA) -> PackedFloat32Array:
+	var values := quad_values(origin, pose, Vector2.ONE, slot, image, rect, blend)
+	values[0] = 1.0
+	values[13] = radius; values[14] = angle; values[15] = aspect
+	return values
 
 ## STRIDE floats per layer (one, or left and right). The supersampling and sharpness settings become
 ## the compositor's own filters (no shader on this path).
 ## inset: the fraction of a flat screen's width/height left to the eye buffers on each side (a photo's
 ## soft edge drawn there); the layer shows the inner part of the screen and of each eye's picture.
 func layer_values(surface: Node3D, origin: Node3D, source_kind: int = SURFACE, image := Vector2(SURFACE_SIZE, SURFACE_SIZE),
-		stereo: int = -1, inset := Vector2.ZERO, pano := Vector4(0, 0, 1, 1)) -> PackedFloat32Array:
+		stereo: int = -1, inset := Vector2.ZERO, pano := Vector4(0, 0, 1, 1), blend := OPAQUE) -> PackedFloat32Array:
 	var sbs: bool = surface.stereo_sbs if stereo < 0 else stereo == 1
 	var top_bottom: bool = surface.top_bottom and stereo < 0
 	var viewing: int = int(surface.get("viewing_eye")) if surface.get("viewing_eye") != null else 0
@@ -194,6 +241,12 @@ func layer_values(surface: Node3D, origin: Node3D, source_kind: int = SURFACE, i
 		var size: Vector2 = surface._flat.size * Vector2(scale.x, scale.y) * (Vector2.ONE - 2.0 * inset)
 		if surface.screen_curve <= 0.0:
 			shape = PackedFloat32Array([size.x, size.y])
+			# A rotated source on the decoder surface keeps its coded orientation: turn the quad about its
+			# normal (clockwise as the rotation metadata says) with its sides swapped for 90/270.
+			var turn: int = int(surface.get("layer_rotation")) if source_kind == SURFACE and surface.get("layer_rotation") != null else 0
+			if turn != 0:
+				if turn % 180 != 0: shape = PackedFloat32Array([size.y, size.x])
+				pose.basis = pose.basis * Basis(Vector3.BACK, -deg_to_rad(turn))
 		else:
 			type = 1
 			var radius: float = surface._curve_radius() * scale.x
@@ -254,6 +307,8 @@ func layer_values(surface: Node3D, origin: Node3D, source_kind: int = SURFACE, i
 		var color := _color_terms(surface)
 		values[20] = color.scale.x; values[21] = color.scale.y; values[22] = color.scale.z
 		values[23] = color.bias.x; values[24] = color.bias.y; values[25] = color.bias.z
+		values[26] = PICTURE_SLOT
+		values[27] = blend
 		layers.append(values)
 	var packed := PackedFloat32Array()
 	for values in layers:
@@ -299,7 +354,7 @@ static func _aligned_layer(eye_rect: Rect2, shift: Vector2, type: int, shape: Pa
 		mapped[3] = shape[2] - destination.end.y * (shape[2] - shape[3])
 	return {"rect": rect, "shape": mapped, "pose": pose}
 
-func _apply(count: int, values: PackedFloat32Array) -> bool:
+func _apply(count: int, values: PackedFloat32Array, orders := PackedInt32Array()) -> bool:
 	if not _provider:
 		return false
 	if count == _sent_count and values == _sent:
@@ -313,10 +368,10 @@ func _apply(count: int, values: PackedFloat32Array) -> bool:
 		platform.set_video_layers(0, values)
 	_sent_count = count
 	_sent = values
-	var addresses := PackedInt64Array([0, 0])
-	var debug_order := 0 # debug builds: a positive order draws the layers over the eye buffers
+	var addresses := PackedInt64Array()
 	for i in count:
-		addresses[i] = platform.video_layer_address(i)
+		addresses.append(platform.video_layer_address(i))
 	_provider.addresses = addresses
+	_provider.orders = orders
 	_provider.count = count
 	return count > 0

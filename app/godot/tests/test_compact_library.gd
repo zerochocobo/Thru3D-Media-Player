@@ -16,6 +16,16 @@ class Harness extends "res://scripts/main.gd":
 	func _head_pose() -> Variant: return Transform3D(Basis.IDENTITY, Vector3(0, 1.6, 0))
 	func _move_pose(_hand: String) -> Variant: return move_pose
 
+class LocationVideo extends "res://scripts/mpv_video_display.gd":
+	var opens := 0
+	func open_library(uri: String, title: String, _metadata: Dictionary = {}) -> bool:
+		opens += 1; local_uri = uri; display_name = title; media.state = "playing"
+		return true
+
+class LocationCatalog extends RefCounted:
+	var entries: Array[Dictionary] = []
+	func list_recent() -> Array[Dictionary]: return entries
+
 class Platform extends RefCounted:
 	signal media_list(id: int, payload: String)
 	var sequence := 0
@@ -42,6 +52,106 @@ func button(menu: Node3D, target: int) -> Dictionary:
 func ray(menu: Node3D, target: int) -> Array:
 	var node: Node3D = button(menu, target).node
 	return [node.global_position + node.global_basis.z * 0.3, -node.global_basis.z]
+
+func current_button_visible(library: Node3D, uri: String) -> bool:
+	for item in library._buttons:
+		if not library._row_target(item.target) or not item.node.visible: continue
+		var index: int = library._first_line() * library._cols() + item.target - Library.ROW_BASE
+		if index < library.rows.size() and Library.Presentation.key(library.rows[index]) == uri:
+			return item.base_color == Library.SELECTED
+	return false
+
+func check_playback_location() -> void:
+	var directory := ProjectSettings.globalize_path("res://../../build/output/playback-list-location/" + str(Time.get_ticks_usec()))
+	DirAccess.make_dir_recursive_absolute(directory)
+	for mode in ["grid", "list"]:
+		for placement in ["first", "last"]:
+			var label: String = mode + "/" + placement
+			var main := Harness.new(); root.add_child(main)
+			var video := LocationVideo.new()
+			video.recent_files = preload("res://scripts/recent_files.gd").new(directory.path_join(label + "/recent"))
+			video.mode_memory = preload("res://scripts/file_mode_memory.gd").new(directory.path_join(label + "/modes"))
+			video.track_memory = preload("res://scripts/file_track_memory.gd").new(directory.path_join(label + "/tracks"))
+			video.bookmark_store = preload("res://scripts/bookmark_store.gd").new(directory.path_join(label + "/bookmarks"))
+			main.add_child(video); main.video = video; video.set_process(false)
+			var photo := Photo.new(); main.add_child(photo); main.photo = photo; photo.set_process(false)
+			var player := Player.new(); player.state_provider = main._menu_state
+			main.add_child(player); main.video_menu = player; main.player_menu = player; player.set_process(false)
+			var library := Library.new(); main.add_child(library); main.recent_menu = library; library.set_process(false)
+			library.catalog = video.recent_files; library.current_file_provider = func(): return video.local_uri
+			library.chosen.connect(main._on_library_chosen); library.layout_requested.connect(main._toggle_library_layout)
+			library.section = Library.Section.LOCAL; library._local_stack = [{"id": "/disk", "title": "Disk"}]
+			for i in range(1, 101):
+				library._local_entries.append({"uri": "file:///disk/%03d.mp4" % i, "title": "%03d.mp4" % i})
+			library.view_mode = mode; library.visible = true; library.refresh()
+			var line: int = 54 / library._cols()
+			library._set_scroll(line if placement == "first" else line - library._lines() + 1)
+			library._choose(library.rows[54]); main._show_recent_menu()
+			check(current_button_visible(library, video.local_uri) and video.local_uri == "file:///disk/055.mp4", "Opening from a full library reveals 55: " + label)
+			var opens: int = video.opens
+			library._set_scroll(0); main._show_recent_menu(); main._show_recent_menu()
+			check(current_button_visible(library, video.local_uri), "Folder toggle reopens at 55 after browsing to the top: " + label)
+			library._activate(Library.CLOSE); main._show_recent_menu()
+			check(current_button_visible(library, video.local_uri) and video.opens == opens, "Close button reopens at 55 without reopening playback: " + label)
+			main._show_recent_menu()
+			for i in 6: main._navigate_video(1)
+			main._show_recent_menu()
+			check(video.local_uri == "file:///disk/061.mp4" and current_button_visible(library, video.local_uri), "Next navigation reveals 61: " + label)
+			library._choose(library.rows[54]); main._show_recent_menu()
+			check(current_button_visible(library, "file:///disk/055.mp4"), "Choosing 55 from the compact list retains its location: " + label)
+			main._toggle_library_layout(); main._toggle_library_layout()
+			check(current_button_visible(library, video.local_uri), "Expand and collapse keep the current file visible: " + label)
+			library.set_view_mode("grid"); video.local_uri = "file:///disk/057.mp4"; library.refresh(); library._set_scroll(17)
+			check(current_button_visible(library, video.local_uri), "57 starts in the sixth compact tile: " + label)
+			library.set_view_mode("list")
+			check(current_button_visible(library, video.local_uri), "Changing six tiles to five rows keeps 57 visible: " + label)
+			video.local_uri = "file:///disk/100.mp4"; main._show_recent_menu(); main._show_recent_menu()
+			check(current_button_visible(library, video.local_uri) and library.scroll == library._max_scroll(), "The final item is visible at the clamped list end: " + label)
+			video.local_uri = "file:///missing.mp4"; library._set_scroll(20)
+			main._show_recent_menu(); main._show_recent_menu()
+			check(library.scroll == 20, "A missing current URI preserves browsing position: " + label)
+			main.free()
+	# Dismissing a hidden browser must not overwrite its saved position with zero.
+	var library := Library.new(); root.add_child(library)
+	library.section = Library.Section.LOCAL; library._local_stack = [{"id": "/disk", "title": "Disk"}]
+	library._local_entries = Platform.files(); library.view_mode = "list"; library.visible = true; library.refresh(); library._set_scroll(15)
+	library.dismiss(); library.dismiss(); library.toggle()
+	check(library.scroll == 15, "Repeated dismiss preserves the standalone folder position")
+	library.free()
+	# Recent history has a separate page boundary in addition to compact scrolling.
+	library = Library.new(); root.add_child(library); library.visible = true
+	var catalog := LocationCatalog.new()
+	for i in range(1, 101): catalog.entries.append({"uri": "file:///disk/%03d.mp4" % i, "title": "%03d.mp4" % i, "position_ms": 0})
+	var current := {"uri": "file:///disk/055.mp4"}
+	library.catalog = catalog; library.current_file_provider = func(): return current.uri
+	library.refresh(); library.show_playback_files()
+	check(library._recent_page == 4 and current_button_visible(library, current.uri), "Recent playback opens the page containing 55")
+	current.uri = "file:///disk/061.mp4"; library.dismiss(); library.show_playback_files()
+	check(library._recent_page == 5 and current_button_visible(library, current.uri), "Recent playback follows 61 across a page boundary")
+	library.free()
+	# An async cloud response must apply the current URI within the selected cloud page.
+	var platform := preload("res://tests/test_cloud_pagination.gd").Platform.new()
+	library = Library.new(); root.add_child(library); library.visible = true; library.attach_platform(platform)
+	library.section = Library.Section.CLOUD; library._cloud_stack = [{"id": "/mount1", "title": "Cloud"}]
+	library._cloud_location = "/mount1"; library._cloud_page = 1; library._cloud_offsets.assign([0, 48])
+	current.uri = "cloud://mount1/070.mp4"; library.current_file_provider = func(): return current.uri
+	library.show_playback_files()
+	check(platform.requests.size() == 1 and platform.requests[0].offset == 48, "Opening an unlisted playback folder retains its cloud page")
+	var entries: Array = []
+	for i in range(49, 97): entries.append({"uri": "cloud://mount1/%03d.mp4" % i, "title": "%03d.mp4" % i})
+	library._on_media_list(1, JSON.stringify({"state": "ready", "path": "/mount1", "offset": 48, "entries": entries, "total": 100, "next_offset": 96}))
+	check(library._cloud_page == 1 and current_button_visible(library, current.uri), "Async cloud page reveals the current file instead of its first row")
+	library.remember_playback_context(); library.dismiss(); library._cloud_page = 0; library._cloud_entries = []
+	library.show_playback_files(true)
+	check(library._cloud_page == 1 and current_button_visible(library, current.uri) and platform.requests.size() == 1, "Playback context restores the cloud page and current file without another request")
+	library.free(); platform.free()
+	library = Library.new(); root.add_child(library); library.visible = true
+	library.section = Library.Section.MEDIA_SERVER; library.server_browser.view = "scenes"
+	for i in range(1, 101): library.server_browser.entries.append({"uri": "medialib://test/scene/%d" % i, "title": "%03d.mp4" % i, "id": str(i)})
+	current.uri = "medialib://test/scene/55"; library.current_file_provider = func(): return current.uri
+	library.show_playback_files()
+	check(current_button_visible(library, current.uri), "Media-server scene rows reveal and highlight the playing URI")
+	library.free()
 
 func check_group_grips(main: Node3D, controls: Node3D, library: Node3D, kind: String) -> void:
 	var initial_pose: Transform3D = controls.global_transform
@@ -92,6 +202,7 @@ func check_group_grips(main: Node3D, controls: Node3D, library: Node3D, kind: St
 func _initialize() -> void: call_deferred("run")
 
 func run() -> void:
+	check_playback_location()
 	var main := Harness.new(); root.add_child(main)
 	var video := Video.new(); main.add_child(video); video.set_process(false); main.video = video
 	video.platform = Host.new()
@@ -129,7 +240,7 @@ func run() -> void:
 	check(not library._side.visible and library._cols() == 3 and library._lines() == 2, "Compact grid has three columns, two rows and no side navigation")
 	check(library._buttons.all(func(item): return item.target < Library.NAV_BASE or item.target >= Library.NAV_BASE + Library.NAV.size()), "Hidden navigation has no ray targets")
 	check(library._buttons.all(func(item): return item.target not in [Library.FOLLOW, Library.TEMP_PASSTHROUGH]), "Compact browser does not duplicate the transport footer")
-	check(library.rows.slice(library._first_line() * library._cols(), (library._first_line() + 1) * library._cols()).any(func(row): return row.get("uri", "") == "file:///disk/15.mp4"), "Layout conversion keeps the prior first item in the first visible grid row")
+	check(current_button_visible(library, video.local_uri), "Opening playback files puts the playing item in view")
 	check(not player.allows_playback_sticks(), "Expanded files isolate playback sticks")
 	var playing_before: bool = video.requested_play
 	var calls_before: int = video.platform.calls.size()

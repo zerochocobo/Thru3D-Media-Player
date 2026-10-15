@@ -23,6 +23,7 @@ class DlnaLibraryTest {
         var header = false
         var downloadAvailable = true
         var includeOther = false
+        var unrelatedCount = 0
         val requests = mutableListOf<String>()
         val payload = "1\n00:00:00,000 --> 00:00:02,000\nFixture subtitle\n".toByteArray()
         val fixture = MediaServerClientTest.Fixture { request, _, body ->
@@ -41,7 +42,9 @@ class DlnaLibraryTest {
                     else {
                         fun video(id: String = "v_1", captions: Boolean = true, changed: Boolean = false): String =
                             """<item id="$id"${if (metadata && parentInMetadata) " parentID=\"0\"" else ""}><dc:title>Movie</dc:title><res protocolInfo="http-get:*:video/mp4:*">/movie.mp4${if (changed) "?token=new" else ""}</res>${if (captions) "<res protocolInfo=\"http-get:*:text/srt:*\">/${if (id == "v_1") "movie" else "other"}.srt</res>" else ""}</item>"""
-                        val entries = if (metadata) when (mode) {
+                        val entries = if (!metadata && id == "unrelated") (0 until unrelatedCount).joinToString("") {
+                            """<item id="unrelated-$it"><dc:title>Other $it</dc:title><res protocolInfo="http-get:*:video/mp4:*">/other-$it.mp4</res></item>"""
+                        } else if (metadata) when (mode) {
                             "empty" -> ""
                             "omits" -> video(captions = false)
                             "changed_uri" -> video(changed = true)
@@ -76,6 +79,56 @@ class DlnaLibraryTest {
             assertEquals(1, f.tracks(restored, uri).size)
             assertEquals(listOf("children:0", "metadata:v_1", "children:0"), f.requests)
             assertEquals("0", JSONObject(f.state).getJSONArray("references").getJSONObject(0).getString("parent_id"))
+        }
+    }
+
+    @Test fun playedSubtitleReferenceSurvivesBrowsingAnotherDirectoryAndRestart() {
+        CaptionFixture().use { f ->
+            val library = f.library(); val uri = f.browse(library)
+            assertEquals(1, f.tracks(library, uri).size)
+            f.unrelatedCount = 300
+            assertEquals(300, library.browse("id", "unrelated").length())
+            f.mode = "omits"
+            assertEquals(1, f.tracks(f.library(), uri).size)
+            f.parentCaptions = false
+            assertTrue(f.library().subtitles(uri).isEmpty())
+            f.parentCaptions = true
+            assertEquals(1, f.tracks(f.library(), uri).size)
+        }
+    }
+
+    @Test fun playedSubtitleReferenceSurvivesInMemoryBrowseCacheEviction() {
+        CaptionFixture().use { f ->
+            val library = f.library(); val uri = f.browse(library)
+            assertEquals(1, f.tracks(library, uri).size)
+            f.unrelatedCount = DlnaClient.MAX_BROWSE_ITEMS
+            assertEquals(DlnaClient.MAX_BROWSE_ITEMS, library.browse("id", "unrelated").length())
+            f.mode = "omits"
+            assertEquals(1, f.tracks(library, uri).size)
+        }
+    }
+
+    @Test fun playbackReferenceBankIsBoundedAndRefreshesExistingItemsBeforeEviction() {
+        MediaServerClientTest.Fixture { _, _, body ->
+            assertTrue(body.contains("BrowseMetadata"))
+            val id = Regex("<ObjectID>(.*?)</ObjectID>").find(body)!!.groupValues[1]
+            MediaServerClientTest.Reply(body = soap(xml("""<item id="$id"><res protocolInfo="http-get:*:video/mp4:*">/$id.mp4</res><res protocolInfo="http-get:*:text/srt:*">/$id.srt</res></item>""")).toByteArray())
+        }.use { fixture ->
+            val server = DlnaClient.Server("id", "Fixture", fixture.url, fixture.url).json()
+            val references = JSONArray()
+            for (id in 0..32) references.put(JSONObject().put("uri", fixture.url + "/$id.mp4")
+                .put("object_id", "$id").put("server", server))
+            var state = JSONObject().put("references", references).toString()
+            val library = DlnaLibrary({ state }, { state = it })
+            for (id in 0..31) assertEquals(1, library.subtitles(fixture.url + "/$id.mp4").size)
+            assertEquals(1, library.subtitles(fixture.url + "/0.mp4").size)
+            assertEquals(1, library.subtitles(fixture.url + "/32.mp4").size)
+            val bank = JSONObject(state).getJSONArray("playback_references")
+            assertEquals(32, bank.length())
+            val ids = (0 until bank.length()).map { bank.getJSONObject(it).getString("object_id") }
+            assertFalse(ids.contains("1"))
+            assertTrue(ids.contains("0"))
+            assertEquals("32", ids.last())
         }
     }
 
@@ -363,7 +416,7 @@ class DlnaLibraryTest {
             assertTrue(metadata)
             assertEquals(1, links.size)
             val tracks = SidecarSubtitles.forDlna(links) { source, name ->
-                assertEquals("subtitle-0.srt", name)
+                assertEquals("movie.srt", name)
                 val result = ByteArray(payload.size)
                 source.open().use { reader -> assertEquals(payload.size, reader.read(0, result, result.size)) }
                 assertArrayEquals(payload, result)

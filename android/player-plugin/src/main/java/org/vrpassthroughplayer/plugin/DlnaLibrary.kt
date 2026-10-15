@@ -12,6 +12,8 @@ internal class DlnaLibrary(
     private val saved = LinkedHashMap<String, JSONObject>()
     private val found = LinkedHashMap<String, DlnaClient.Server>()
     private val references = LinkedHashMap<String, JSONObject>()
+    // Match the player's 32-entry history. Directory browsing must not evict played items.
+    private val playbackReferences = LinkedHashMap<String, JSONObject>()
     init {
         runCatching { JSONObject(load()) }.getOrNull()?.let { data ->
             data.optJSONArray("servers")?.let { list ->
@@ -20,13 +22,16 @@ internal class DlnaLibrary(
                     if (server(row) != null) saved[row.getString("id")] = row
                 }
             }
-            data.optJSONArray("references")?.let { list ->
-                for (i in 0 until minOf(list.length(), 256)) {
+            fun restore(name: String, target: MutableMap<String, JSONObject>, limit: Int) {
+                val list = data.optJSONArray(name) ?: return
+                for (i in 0 until minOf(list.length(), limit)) {
                     val row = list.optJSONObject(i) ?: continue
                     val uri = DlnaClient.httpUri(row.optString("uri")) ?: continue
-                    if (server(row.optJSONObject("server") ?: continue) != null) references[uri.toString()] = row
+                    if (server(row.optJSONObject("server") ?: continue) != null) target[uri.toString()] = row
                 }
             }
+            restore("references", references, 256)
+            restore("playback_references", playbackReferences, 32)
         }
     }
 
@@ -79,6 +84,7 @@ internal class DlnaLibrary(
                 references[uri] = JSONObject().put("uri", uri).put("object_id", entry.getString("id"))
                     .put("server", selected.json()).put("parent_id", objectId).put("subtitle_origin", "directory")
                     .put("subtitles", entry.optJSONArray("subtitles") ?: JSONArray())
+                if (playbackReferences.containsKey(uri)) playbackReferences[uri] = references.getValue(uri)
             }
             // Keep every video in the complete displayed directory available for subtitle selection.
             while (references.size > DlnaClient.MAX_BROWSE_ITEMS) references.remove(references.keys.first())
@@ -89,7 +95,7 @@ internal class DlnaLibrary(
     }
 
     fun subtitles(uri: String): List<MediaSubtitleLink> {
-        val original = synchronized(this) { references[uri] } ?: return emptyList()
+        val original = synchronized(this) { references[uri] ?: playbackReferences[uri] } ?: return emptyList()
         val reference = JSONObject(original.toString())
         var captions = reference.optJSONArray("subtitles") ?: JSONArray()
         var origin = reference.optString("subtitle_origin", "legacy")
@@ -141,9 +147,17 @@ internal class DlnaLibrary(
                 reference.optBoolean("subtitle_directory_fallback")) refreshParent()
         }
         synchronized(this) {
-            if (references[uri] === original) {
+            val current = references[uri] ?: playbackReferences[uri]
+            // A concurrent browse may have replaced the reference; keep its newer data, but
+            // still record this playback so history replay can find the item later.
+            val played = if (current === original) {
                 references.remove(uri)
-                references[uri] = reference.put("subtitles", captions).put("subtitle_origin", origin)
+                reference.put("subtitles", captions).put("subtitle_origin", origin).also { references[uri] = it }
+            } else current
+            if (played != null) {
+                playbackReferences.remove(uri)
+                playbackReferences[uri] = played
+                while (playbackReferences.size > 32) playbackReferences.remove(playbackReferences.keys.first())
                 // The selected item must survive restart even if it was early in a large page.
                 runCatching { store() }
             }
@@ -161,7 +175,8 @@ internal class DlnaLibrary(
         .singleOrNull { it.optString("kind") == "video" && it.optString("id") == objectId }
 
     private fun store() = persist(JSONObject().put("servers", JSONArray(saved.values.toList()))
-        .put("references", JSONArray(references.values.toList().takeLast(256))).toString())
+        .put("references", JSONArray(references.values.toList().takeLast(256)))
+        .put("playback_references", JSONArray(playbackReferences.values.toList())).toString())
 
     private fun server(row: JSONObject): DlnaClient.Server? {
         val location = DlnaClient.httpUri(row.optString("location")) ?: return null

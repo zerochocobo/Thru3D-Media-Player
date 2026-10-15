@@ -115,6 +115,20 @@ internal class EmbyClient(private val account: MediaServerAccount, private val h
         return JSONObject().put("entries", JSONArray(result.getJSONArray("Items").objects().map(::summary)))
             .put("total", result.getInt("TotalRecordCount")).put("page", page)
     }
+    override fun folderArtwork(id: String): JSONObject {
+        val result = get("Users/${user()}/Items", mapOf("ParentId" to mediaId(id), "Recursive" to false,
+            "Limit" to 2, "EnableTotalRecordCount" to true, "EnableImages" to true))
+        val items = result.getJSONArray("Items").objects()
+        val images = JSONObject()
+        // Only a unique direct movie may lend its artwork; never scan descendants or pick a
+        // random member of a collection. The folder keeps its own identity and navigation.
+        if (result.optInt("TotalRecordCount", items.size) == 1 && items.size == 1 &&
+            !items[0].optBoolean("IsFolder") && items[0].optString("Type") in setOf("Movie", "Video")) {
+            val variants = summary(items[0]).getJSONObject("image_variants")
+            for (type in listOf("Thumb", "Backdrop")) variants.optJSONObject(type)?.let { images.put(type, it) }
+        }
+        return JSONObject().put("scene_id", id).put("image_variants", images)
+    }
     // No shared native 'has no genre/tag' predicate: scan bounded pages, retaining only the
     // requested result page. Closing this request's HTTP scope also cancels the scan.
     private fun unclassified(args: LinkedHashMap<String, Any>, kind: String, page: Int): JSONObject {

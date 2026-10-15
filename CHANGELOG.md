@@ -4,17 +4,35 @@
 
 Newest first, following product release milestones. Some development/source snapshots contained features before their product release. Original APK identifiers `0.2` and `0.4` are retained; `0.4` was also called `0.4.0` in release notes. Availability depends on device, server and media capabilities.
 
+## 0.9.2 — 2026-10-15
+
+This update improves multi-clip Blu-ray playback, subtitle and photo rendering, controller navigation, external subtitles and Emby browsing.
+
+- **Improved multi-clip 3D Blu-ray playback**: Added support for compatible multi-clip MVC Blu-ray ISOs, with better clip transitions, cross-clip seeking and end-of-title handling. Fixed failures when opening some titles.
+- **More efficient subtitle rendering**: Optimized immersive VR subtitles and flat-screen PGS bitmap subtitles to reduce rendering overhead, while retaining existing position and size controls.
+- **Improved photo viewing**: Sharper magnifier details and optimized portrait passthrough and native spatial-photo presentation in supported viewing modes.
+- **Better portrait-video presentation**: Optimized supported flat videos with rotation metadata, maintaining the correct orientation with less rendering overhead.
+- **Clearer trigger and grip controls**: Video triggers select controls and show/hide the playback bar, preventing accidental picture movement when dismissing it. Use grip to move the picture or reorient VR video. Photo dragging and hand interaction remain available.
+- **More natural Back navigation**: B/Y first closes the current popup or returns to the parent folder before hiding playback controls. Improved library recovery when using only the right controller.
+- **Keep the current file visible**: Reopening the playback browser locates the playing file, including after previous/next navigation, with better positioning across large lists and compact layouts.
+- **Correct per-video effect memory**: 2D-to-3D is remembered separately for each video and defaults to Off for new files; photos retain their separate global preference. Manually enabled video portrait passthrough no longer carries over to the next opening; filename-based detection remains available.
+- **Less intrusive thumbstick seeking**: Fixed the playback bar unexpectedly appearing during network-video seeking and subsequent buffering when controls were hidden.
+- **Better external-subtitle recovery and selection**: Fixed missing external subtitles for some DLNA videos opened from recent playback. Matching filenames take priority, followed by a subtitle matching the interface language. Manual choices and saved Off settings take precedence.
+- **Improved Emby browsing and details**: Lists prioritize full movie titles, with filenames in hover hints. Eligible single-movie folders can show landscape artwork; cast cards place portraits above names, with improved still-image layouts.
+- **Compact sorting popup**: Choose server-supported sorting by date added, title, release date, duration or rating, with ascending/descending order and remembered preferences. The list stays in place while editing your choice; applying a new server sort reloads from the first page.
+
+Compatibility notes: MVC retains the existing software decoder and requires compatible clip layouts; this is not hardware MVC support or a whole-disc compatibility guarantee. Rotation layers cover supported flat, uncurved mono video. Subtitle-layer improvements cover immersive text and flat PGS; ordinary flat text retains its existing path. Language fallback selects external subtitles only, after manual/saved choices; old DLNA history without server/object identity may require one opening from the original folder.
+
 ## 0.9.1 — 2026-10-14
 
 This update improves color-adjustment performance, streamlines playback settings and menus, and keeps media-card information visible alongside viewing progress.
 
-- Compatible exposure, contrast, color-temperature and RGB gain/offset adjustments can remain on the compositor-layer path on supported devices. Non-default gamma or saturation can still require the shader path; this does not establish a fixed performance gain for every headset or video.
-- Video settings, color adjustments and stereo-view controls open in compact panels above the playback bar, keeping playback controls available. Settings opens on the Playback tab; photo settings retain their full-panel layout.
-- Added hoverable performance hints for gamma, saturation and RGB gamma controls that can require additional rendering work.
-- Removed duplicate floating actions and the shared close-menu button. Point outside a menu and press the trigger to dismiss it; recenter remains on the playback bar and Close video retains its × icon.
-- File icons keep available file size alongside playback position and progress bars. Missing metadata remains unknown; this does not add file-size caching to old recent-playback records.
-- Media-server cards retain available year, total duration and other existing metadata alongside playback progress or watched status.
-- Added build support for a dedicated QUEST Store application identity, separate from the ordinary package. This is distribution support, not a new playback feature.
+- **More efficient color adjustments**: On supported devices, compatible adjustments such as exposure, contrast and color temperature reduce rendering overhead for high-resolution video playback.
+- **Compact playback settings**: Settings, color adjustments and stereo-view controls now open in small panels above the playback bar, keeping playback controls available. Settings opens on the Playback tab for easier access to color adjustments.
+- **Color-adjustment performance hints**: Indicators beside settings such as gamma and saturation explain their potential GPU cost when pointed at, helping you choose settings for your headset.
+- **Simpler menu controls**: Removed duplicate floating actions and the shared close-menu button. Point outside a menu and press the trigger to dismiss it; recenter remains on the playback bar.
+- **File size stays visible after playback**: File icons can show available file size and playback position together, while retaining progress bars for easy resuming and comparison.
+- **Richer media-server cards**: Movie cards retain available details such as year and total duration alongside playback progress or watched status.
 
 ## 0.9.0 — 2026-10-14
 

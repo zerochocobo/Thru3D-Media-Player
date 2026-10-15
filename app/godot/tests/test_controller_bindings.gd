@@ -7,9 +7,10 @@ var failures: Array[String] = []
 
 class InputMain extends "res://scripts/main.gd":
 	var pose := Transform3D(Basis.IDENTITY, Vector3(0, 1.5, -0.5))
+	var pose_available := true
 	var head_pose := Transform3D(Basis.IDENTITY, Vector3(0, 1.6, 0))
 	var rays := {}
-	func _move_pose(_hand: String) -> Variant: return pose
+	func _move_pose(_hand: String) -> Variant: return pose if pose_available else null
 	func _ray(hand: String) -> Variant: return rays.get(hand)
 	func _head_pose() -> Variant: return head_pose
 
@@ -24,6 +25,8 @@ func run() -> void:
 	var page_menu := Node3D.new()
 	var page := preload("res://scripts/controls_page.gd").new(page_menu)
 	var ordinary := page.items().filter(func(item): return item.has("id")).map(func(item): return item.id)
+	check("drag_video" not in ordinary and "drag_photo" in ordinary, "Video trigger dragging is removed while photo dragging remains configurable")
+	check(page.items().filter(func(item): return item.get("fixed", "") == "Trigger + stick ↑ / ↓").all(func(item): return item.scope == "Flat photos"), "Trigger movement help applies only to photos")
 	page.mode = 2
 	var combinations := page.items().map(func(item): return item.id)
 	check(not combinations.is_empty() and combinations.all(func(id): return id not in ordinary), "Combinations omit the ordinary controller operations")
@@ -74,7 +77,7 @@ func run() -> void:
 	check(not bindings.assign("play", Bindings.bind("right_hand", "ax_button", ["trigger_click"]), true).ok, "All chords start with grip")
 	var choice := Bindings.bind("right_hand", "by_button", ["grip_click", "trigger_click"])
 	var collision := bindings.assign("subtitles", choice, true)
-	check(collision.ok and bindings.resolve("right_hand", "trigger_click", "video_flat") == "drag_video", "Grip-first chords preserve ordinary trigger dragging")
+	check(collision.ok and bindings.resolve("right_hand", "trigger_click", "video_flat").is_empty(), "Grip-first chords leave the fixed video UI trigger independent of shortcuts")
 	var duplicate := bindings.assign("mute", choice, true)
 	check(not duplicate.ok and "subtitles" in duplicate.conflicts, "An identical chord requires explicit conflict replacement")
 	bindings.press("right_hand", "grip_click")
@@ -104,6 +107,18 @@ func run() -> void:
 	check(legacy.move_scope == "all" and legacy.bindings("subtitles") == [choice] and Bindings.FIXED_ACTIONS.all(func(id): return legacy.bindings(id).size() == 2 and not legacy.overrides.has(id)), "Old cleared/reassigned movement restores both grips without losing scope or chords")
 	var migrated := Bindings.new(); migrated.restore(legacy.snapshot())
 	check(migrated.snapshot() == legacy.snapshot(), "Migrated binding data remains stable after restart")
+	for previous_drag in [[], [Bindings.bind("left_hand", "trigger_click")], [Bindings.bind("right_hand", "trigger_click")]]:
+		legacy.restore({"version": 1, "move_scope": "all", "bindings": {"drag_video": previous_drag,
+			"play": [Bindings.bind("right_hand", "trigger_click"), Bindings.bind("right_hand", "ax_button")],
+			"drag_photo": [], "subtitles": [choice]}})
+		check(not legacy.overrides.has("drag_video") and legacy.move_scope == "all" and legacy.bindings("subtitles") == [choice]
+			and legacy.bindings("drag_photo").is_empty() and legacy.bindings("play") == [Bindings.bind("right_hand", "ax_button")],
+			"Legacy cleared/rebound video drag and trigger shortcuts retire without resetting other preferences")
+		var round_trip := Bindings.new(); round_trip.restore(legacy.snapshot())
+		check(round_trip.snapshot() == legacy.snapshot(), "Retired video drag migration survives restart")
+	check(not bindings.assign("play", Bindings.bind("right_hand", "trigger_click"), false, true).ok,
+		"Video shortcuts cannot take the plain UI trigger")
+	check(bindings.resolve("right_hand", "trigger_click", "photo") == "drag_photo", "Photo trigger dragging retains its default")
 	check(not legacy.assign("play", Bindings.bind("right_hand","by_button")).ok and legacy.assign("subtitles", Bindings.bind("left_hand","by_button",Bindings.MODIFIERS), true).ok, "Plain B/Y stays reserved for closing menus while chords may use it")
 	check(not restored.press("right_hand", "ax_button") or restored.down.right_hand.has("ax_button"), "Pressed state is bounded by input names")
 	restored.reset_inputs()
@@ -126,7 +141,7 @@ func run() -> void:
 	exchange_before = exchange.snapshot()
 	check(not exchange.assign("volume_up", Bindings.bind("right_hand", "stick_up")).ok and exchange.snapshot() == exchange_before, "Generic video rejects both flat and immersive overlaps")
 	check(not exchange.swap_binding("volume_up", Bindings.bind("right_hand", "stick_up")).ok and exchange.snapshot() == exchange_before, "Ambiguous multi-action swap changes neither side")
-	check(not exchange.swap_binding("play", Bindings.bind("right_hand", "trigger_click")).ok and exchange.snapshot() == exchange_before, "A hold action cannot receive an incompatible button in a swap")
+	check(not exchange.swap_binding("play", Bindings.bind("right_hand", "trigger_click")).ok and exchange.snapshot() == exchange_before, "The fixed video UI trigger cannot enter a shortcut swap")
 	exchange.restore_all()
 	exchange.assign("subtitles", Bindings.bind("right_hand", "by_button", Bindings.MODIFIERS), true)
 	exchange.assign("mute", Bindings.bind("right_hand", "ax_button", Bindings.MODIFIERS), true)
@@ -157,6 +172,8 @@ func run() -> void:
 	main.free()
 	runtime()
 	await tracked_grip_drag()
+	await video_triggers()
+	await back_navigation()
 	for failure in failures: push_error(failure)
 	print("Controller bindings: %d checks, %d failures" % [checks, failures.size()])
 	quit(0 if failures.is_empty() else 1)
@@ -337,6 +354,101 @@ func tracked_grip_drag() -> void:
 func tap(main: Node3D, input: String, hand: String = "right_hand") -> void:
 	main._on_controller_button(input, hand); main._on_controller_release(input, hand)
 
+## The production physical-controller route, including legacy settings and realistic ray drift.
+func video_triggers() -> void:
+	var Video := preload("res://scripts/mpv_video_display.gd")
+	var Player := preload("res://scripts/player_menu.gd")
+	var directory := ProjectSettings.globalize_path("res://../../build/output/video-trigger-host/" + str(Time.get_ticks_usec()))
+	DirAccess.make_dir_recursive_absolute(directory)
+	var video := Video.new(); video.history_enabled = false
+	video.mode_memory = preload("res://scripts/file_mode_memory.gd").new(directory.path_join("modes"))
+	root.add_child(video); video.set_process(false)
+	video.platform = preload("res://tests/test_player_menu.gd").Host.new()
+	var main := InputMain.new(); main.video = video; main.settings_path = directory.path_join("settings.cfg")
+	var menu := Player.new(); menu.state_provider = main._menu_state
+	menu.seek_requested.connect(main._on_menu_seek)
+	root.add_child(menu); menu.set_process(false); main.player_menu = menu; main.video_menu = menu
+	var library := preload("res://scripts/library_menu.gd").new()
+	root.add_child(library); library.set_process(false); main.recent_menu = library; library.dismiss()
+	for legacy in [{}, {"drag_video": []}, {"drag_video": [Bindings.bind("right_hand", "trigger_click")]}]:
+		for projection in [0, 1, 2, 3]:
+			for hand in Bindings.HANDS:
+				main.controller_bindings.restore({"version": 1, "bindings": legacy})
+				menu.dismiss(); video.media.begin(7); video.media.state = "playing"
+				video.local_uri = "file:///trigger.mp4"; video.geometry = projection
+				video.view_yaw = 0; video.view_pitch = 0; video.screen_scale = 1
+				video.flat_pose = Transform3D(Basis(), Vector3(0, 1.6, -2)); video._apply_geometry(); video.panel.visible = true
+				var before: Transform3D = video.flat_pose
+				main.rays[hand] = [Vector3(0, 1.6, 0), Vector3.FORWARD]
+				main._on_controller_button("trigger_click", hand)
+				check(main._grab.is_empty() and not menu.visible, "Trigger waits for release without arming a picture grab")
+				main.rays[hand] = [Vector3(0, 1.6, 0), Basis(Vector3.UP, 0.3) * Vector3.FORWARD]
+				main._update_grab(); main._update_corner_hover()
+				main._on_controller_release("trigger_click", hand)
+				check(menu.visible and main._grab.is_empty() and video.flat_pose == before and video.view_yaw == 0 and video.view_pitch == 0,
+					"Either trigger opens controls despite drift and old bindings: projection=%d hand=%s" % [projection, hand])
+				main.rays[hand] = [Vector3(0, 1.6, 0), Vector3(3, 0, -1).normalized()]
+				main._on_controller_button("trigger_click", hand)
+				check(not menu.visible and main._grab.is_empty(), "Blank press dismisses controls without arming movement")
+				main.rays[hand][1] = Vector3(-3, 0, -1).normalized(); main._update_grab()
+				main._on_controller_release("trigger_click", hand)
+				check(not menu.visible and video.flat_pose == before and video.screen_scale == 1 and video.view_yaw == 0 and video.view_pitch == 0,
+					"Closing controls tolerates large ray drift without moving, resizing or reopening")
+	# A real seek capture still belongs to the pressing hand and commits on release.
+	for hand in Bindings.HANDS:
+		video.control.close(); video.control.observe(40000, 120000); main._show_player_menu(); menu.refresh()
+		var origin: Vector3 = menu.to_global(Vector3(-Player.BAR_SEEK / 4, -0.08, 1))
+		main.rays[hand] = [origin, -menu.global_basis.z]
+		main._on_controller_button("trigger_click", hand)
+		check(menu._seek_hand == hand and main._grab.is_empty(), "Physical trigger captures the timeline without moving the picture")
+		var other := "left_hand" if hand == "right_hand" else "right_hand"
+		main.rays[other] = [Vector3(0, 1.6, 0), Vector3(3, 0, -1).normalized()]
+		tap(main, "trigger_click", other)
+		check(menu.visible and menu._seek_hand == hand, "Other-hand blank press cannot dismiss an owned timeline")
+		main.rays[hand][0] = menu.to_global(Vector3(Player.BAR_SEEK / 4, -0.08, 1)); main._update_menu_pointer(hand)
+		main._on_controller_release("trigger_click", hand)
+		check(menu.visible and menu._seek_hand.is_empty() and video.control.target_ms > 40000, "Timeline trigger release still seeks and leaves controls open")
+		menu.dismiss()
+	# Grip routes both kinds of video through the existing movement owner and locks its targets.
+	for projection in [0, 1, 2, 3]:
+		for hand in Bindings.HANDS:
+			video.geometry = projection; video.view_yaw = 0; video.view_pitch = 0
+			video.flat_pose = Transform3D(Basis(), Vector3(0, 1.6, -2)); video._apply_geometry()
+			var before: Transform3D = video.flat_pose
+			main.pose = Transform3D(Basis(), Vector3(0, 1.5, -0.5))
+			main._on_controller_button("grip_click", hand)
+			check(main.interface_move.capture.targets[0].kind == ("screen" if projection == 0 else "immersive"), "Either grip owns the selected video projection")
+			main.pose.basis = Basis(Vector3.UP, 0.2); main.pose.origin.x += 0.2; main._update_interface_move()
+			check(video.flat_pose != before if projection == 0 else absf(video.view_yaw) > 0.1, "Grip moves 2D screens and turns immersive video")
+			main._on_controller_release("grip_click", hand)
+			check(main.interface_move.capture.is_empty() and not menu.visible, "Releasing a grip finishes movement without opening controls")
+	main._show_player_menu(); main.rays.right_hand = [menu.to_global(Vector3(0, 0, 1)), -menu.global_basis.z]
+	main.pose = Transform3D(Basis(), Vector3(0, 1.5, -0.5)); var before_yaw: float = video.view_yaw
+	main._on_controller_button("grip_click", "right_hand")
+	main.rays.right_hand = [Vector3.ZERO, Vector3(3, 0, -1).normalized()]
+	main.pose.origin.x += 0.15; main._update_interface_move()
+	check(main.interface_move.capture.targets[0].node == menu and video.view_yaw == before_yaw, "A grip on controls keeps its original target when the ray leaves")
+	main._on_controller_release("grip_click", "right_hand"); menu.dismiss()
+	main.rays.right_hand = [Vector3(0, 1.6, 0), Vector3.FORWARD]
+	main._on_controller_button("trigger_click", "right_hand"); main._cancel_pointer("right_hand"); main._on_controller_release("trigger_click", "right_hand")
+	check(not menu.visible, "Tracking cancellation cannot complete a deferred controls tap")
+	main._on_controller_button("trigger_click", "right_hand"); video.local_uri = "file:///different.mp4"; main._on_controller_release("trigger_click", "right_hand")
+	check(not menu.visible, "A deferred trigger tap cannot open controls for another file")
+	main._on_controller_button("trigger_click", "right_hand")
+	main.display.preview = false; main.display.session_state = "session_visible"; main._on_input_session_changed()
+	main.display.preview = true; main._on_controller_release("trigger_click", "right_hand")
+	check(not menu.visible and main._video_control_tap.is_empty(), "Losing XR focus cancels the tap even when focus returns before release")
+	main._on_controller_button("trigger_click", "right_hand"); main._on_controller_button("grip_click", "right_hand")
+	main.pose.basis = Basis(Vector3.UP, 0.4); main._update_interface_move()
+	main._on_controller_release("trigger_click", "right_hand"); main._on_controller_release("grip_click", "right_hand")
+	check(not menu.visible and main._video_control_tap.is_empty(), "Starting a grip consumes any earlier trigger tap without a delayed controls popup")
+	video.geometry = 0; video._apply_geometry(); video.panel.visible = true
+	var eye := Vector3(0, 1.6, 0)
+	main.rays.right_hand = [eye, (video.panel.to_global(video.screen_corner(1)) - eye).normalized()]
+	main._update_corner_hover()
+	check(not video._handles.any(func(handle): return handle.visible), "Video controller rays no longer advertise trigger corner resizing")
+	library.free(); menu.free(); video.free(); main.free()
+
 func choice_target(menu: Node3D, key: String, value: Variant = null, kind: String = "choose") -> int:
 	if kind == "open":
 		for button in menu._buttons:
@@ -364,6 +476,166 @@ func dropdown(main: Node3D, menu: Node3D, key: String, value: String) -> bool:
 		menu._draw()
 		return tap_ui(main, menu, choice_target(menu, key, value))
 	return false
+
+## Back uses the same production dispatch on either hand; no left controller is required.
+func back_navigation() -> void:
+	var Library := preload("res://scripts/library_menu.gd")
+	var Player := preload("res://scripts/player_menu.gd")
+	var video := preload("res://scripts/mpv_video_display.gd").new()
+	video.history_enabled = false; root.add_child(video); video.set_process(false)
+	var host := preload("res://tests/test_player_menu.gd").Host.new(); video.platform = host
+	var main := InputMain.new(); main.video = video
+	main.settings_path = ProjectSettings.globalize_path("res://../../build/output/controller-controls/back-settings.cfg")
+	var library := Library.new(); root.add_child(library); library.set_process(false)
+	var platform := preload("res://tests/test_library_menu.gd").FakePlatform.new(); library.attach_platform(platform)
+	main.recent_menu = library
+	var menu := Player.new(); menu.state_provider = main._menu_state
+	menu.seek_requested.connect(main._on_menu_seek)
+	root.add_child(menu); menu.set_process(false); main.player_menu = menu; main.video_menu = menu
+	for hand in Bindings.HANDS:
+		video.close_video(); menu.dismiss(); library.dismiss(); main._show_full_library()
+		main.controller_bindings.restore({"version": 1, "bindings": {"drag_video": []}})
+		for source in [Library.Section.LOCAL, Library.Section.SMB, Library.Section.DLNA, Library.Section.CLOUD]:
+			library.section = source
+			library._local_stack = [{"id": "/disk", "title": "Disk"}, {"id": "/disk/child", "title": "Child"}]
+			library._smb_server = "srv1"; library._smb_path = "share/child"
+			library._dlna_server = "dlna1"; library._dlna_stack = [{"id": "root", "title": "Root"}, {"id": "child", "title": "Child"}]
+			library._cloud_stack = [{"id": "/mount1", "title": "Mount"}, {"id": "/mount1/child", "title": "Child"}]
+			library.refresh()
+			var depth: int = library._crumbs().size()
+			main._on_controller_button("by_button", hand)
+			main._on_controller_button("by_button", hand)
+			main._on_controller_release("by_button", hand)
+			await process_frame
+			check(library.visible and library._crumbs().size() == depth - 1, "Each B/Y press returns exactly one folder level: %s/%d" % [hand, source])
+			for step in 4: tap(main, "by_button", hand); await process_frame
+			check(library.visible and library._crumbs().is_empty(), "Repeated Back at the source root retains the last library: %s/%d" % [hand, source])
+		# A stale child error must not overwrite the newly requested parent.
+		library.section = Library.Section.SMB; library._smb_server = "srv1"; library._smb_path = "share/child"
+		library._pending[90000] = "smb_browse"; library.refresh(); tap(main, "by_button", hand); await process_frame
+		var parent_rows: Array = library.rows.duplicate(true); var parent_status: String = library.status
+		library._on_media_list(90000, JSON.stringify({"state": "error", "error": "old child failed"}))
+		check(library.rows == parent_rows and library.status == parent_status, "Late child responses cannot replace parent results or errors")
+		# Server discovery only refreshes the server list; leaving a server keeps its result.
+		library.section = Library.Section.DLNA; library._dlna_server = "dlna1"; library._dlna_stack = []; library._dlna_servers = []
+		library._pending[90001] = "dlna_discover"; library.refresh(); tap(main, "by_button", hand); await process_frame
+		check(library._dlna_server.is_empty() and library._pending.get(90001, "") == "dlna_discover", "Back keeps pending DLNA discovery")
+		library._on_media_list(90001, JSON.stringify({"state": "ready", "servers": [{"id": "found1", "name": "Found"}]}))
+		check(library._dlna_servers.any(func(server): return str(server.id) == "found1"), "Discovery finishing after Back fills the server list")
+		# Layered settings and file operations return without confirming or cancelling committed I/O.
+		library.section = Library.Section.SETTINGS; library.tab = Library.CONTROLS_TAB; library.refresh()
+		library.controls_page.selection = library.controls_page.binding_field("play")
+		library.choices.opened = "control_binding/play"; library.refresh()
+		tap(main, "by_button", hand)
+		check(library.visible and library.section == Library.Section.SETTINGS and library.choices.opened.is_empty(), "Back closes the dropdown and retains settings")
+		var bindings_before: Dictionary = library.controls_page.bindings.snapshot()
+		library.controls_page.commit("play", Bindings.bind("left_hand", "ax_button")); library.refresh()
+		check(not library.controls_page.pending.is_empty(), "A real binding conflict is available for Back cancellation")
+		tap(main, "by_button", hand)
+		check(library.controls_page.pending.is_empty() and library.controls_page.bindings.snapshot() == bindings_before
+			and library.visible and library.section == Library.Section.SETTINGS, "Back cancels a binding swap without accepting it or leaving settings")
+		tap(main, "by_button", hand)
+		check(library.visible and library.section == Library.Section.RECENT, "Back from settings retains the main library")
+		library.section = Library.Section.LOCAL; library._local_stack = [{"id": "/disk", "title": "Disk"}]
+		library.file_actions.modal = "delete"; library.file_actions.pending = 777
+		library.file_actions.target = {"title": "movie.mp4", "uri": "file:///disk/movie.mp4"}; library.refresh()
+		tap(main, "by_button", hand)
+		check(library.file_actions.modal.is_empty() and library.file_actions.pending == 777 and library._local_stack.size() == 1 and library.visible,
+			"Back hides a file-operation dialog without cancelling its committed job or navigating folders")
+		library.file_actions.pending = 0; library.file_actions.reset()
+		library.file_actions.editing = true; library.refresh(); tap(main, "by_button", hand)
+		check(not library.file_actions.editing and library._local_stack.size() == 1, "Back leaves file-selection mode before navigating a folder")
+		library.cloud_error.detail = "test"; library.cloud_error.opened = true; library.refresh(); tap(main, "by_button", hand)
+		check(not library.cloud_error.opened and library.visible and library._local_stack.size() == 1, "Error details close without leaving the folder")
+		library.account_panel.view = "choose"; library.refresh(); tap(main, "by_button", hand); await process_frame
+		check(not library.account_panel.active() and library.visible, "Account forms return to their containing browser")
+		library.section = Library.Section.CLOUD
+		library._cloud_stack = [{"id": "/mount1", "title": "Mount"}]
+		library.cloud_search.active = true; library.refresh(); tap(main, "by_button", hand); await process_frame
+		check(not library.cloud_search.active and library.visible and library._cloud_stack.size() == 1, "Back exits search before moving up the cloud directory")
+		library._cloud_stack = []; library.cloud_accounts.mode = "confirm"
+		library.cloud_accounts.removing = {"id": "mount1", "title": "Mount"}; library.refresh()
+		tap(main, "by_button", hand)
+		check(library.cloud_accounts.mode == "remove" and library.visible, "Back cancels account-removal confirmation before its account list")
+		tap(main, "by_button", hand); check(library.cloud_accounts.mode.is_empty() and library.visible, "Back then exits account removal without removing an account")
+		# Media servers have their own navigation history and source-menu overlay.
+		library.platform = null; library.section = Library.Section.MEDIA_SERVER
+		var browser: RefCounted = library.server_browser; browser.view = "home"
+		browser.history = [browser.context_state()]; browser.view = "scenes"; browser.sources_open = true; library.refresh()
+		tap(main, "by_button", hand)
+		check(not browser.sources_open and browser.view == "scenes", "Back closes the media-server source overlay before history")
+		browser._remember(); browser.keyboard = "search"; browser.sources_open = true; library.refresh()
+		tap(main, "by_button", hand)
+		check(browser.keyboard.is_empty() and browser.sources_open and browser.view == "scenes", "Server keyboard Back does not skip its containing view or a hidden overlay")
+		tap(main, "by_button", hand)
+		tap(main, "by_button", hand); check(browser.view == "home", "Media-server Back restores its previous view")
+		tap(main, "by_button", hand); check(browser.view == "servers", "Media-server home returns to the server list")
+		tap(main, "by_button", hand); check(library.visible and browser.view == "servers", "Media-server root does not disappear")
+		library.platform = platform; library.section = Library.Section.RECENT; library.refresh()
+		# Right-only recovery works with no media, and also with a retained closed-file URI.
+		for closed_uri in ["", "file:///closed.mp4"]:
+			video.local_uri = closed_uri; library.dismiss(); menu.dismiss(); tap(main, "by_button", hand)
+			check(library.visible, "B/Y alone can recover a hidden library without a video")
+			library.dismiss(); main.rays[hand] = [Vector3(0, 1.6, 0), Vector3.FORWARD]; tap(main, "trigger_click", hand)
+			check(library.visible, "Trigger alone can recover the library even with an old cancelled drag binding")
+		# Attached compact/full libraries take precedence over their parent transport.
+		video.local_uri = "file:///playing.mp4"; video.media.begin(7); video.media.state = "playing"; video.requested_play = true
+		for expanded in [false, true]:
+			main._show_recent_menu()
+			if library.compact == expanded: main._toggle_library_layout()
+			library.section = Library.Section.LOCAL; library._local_stack = [{"id": "/disk", "title": "Disk"}]; library.refresh()
+			tap(main, "by_button", hand); await process_frame
+			check(library.visible and menu.visible and library._local_stack.is_empty(), "Attached browser returns to its source list before collapsing")
+			tap(main, "by_button", hand)
+			check(not library.visible and menu.visible and video.requested_play, "At either playback library root Back retains the transport and playback")
+			tap(main, "by_button", hand)
+			check(not menu.visible and video.requested_play, "Plain transport Back returns to uninterrupted viewing")
+		main._show_player_menu(); menu.section = 1; menu._adjustment = "color_grade"; menu.refresh()
+		tap(main, "by_button", hand); check(menu.visible and menu.section == 1 and menu._adjustment.is_empty(), "Back leaves color adjustments for playback settings")
+		tap(main, "by_button", hand); check(menu.visible and menu.section == 0, "Back leaves settings for the transport")
+		# Captured timeline cancellation cannot seek, pause, or click the newly exposed UI.
+		video.control.close(); video.control.observe(40000, 120000); menu.refresh()
+		main.rays[hand] = [menu.to_global(Vector3(-Player.BAR_SEEK / 4, -0.08, 1)), -menu.global_basis.z]
+		main._on_controller_button("trigger_click", hand); var before: int = host.calls.size()
+		tap(main, "by_button", hand); main._on_controller_release("trigger_click", hand)
+		check(menu.visible and menu._seek_hand.is_empty() and host.calls.size() == before and video.requested_play, "Back cancels timeline capture without submitting playback commands")
+		main._process_sticks(Vector2.ZERO, Vector2(0.99, 0), 0.1)
+		check(host.calls.size() == before, "A stick held across Back cannot leak a playback action")
+		main._process_sticks(Vector2.ZERO, Vector2.ZERO, 0.1); main._process_sticks(Vector2.ZERO, Vector2(0.99, 0), 0.1)
+		check(host.calls.size() > before, "Ordinary playback stick seeking recovers after recentering")
+		# Grip-first B/Y chords retain priority, including no ordinary Back fallback when blocked.
+		video.control.reject(); menu._reset_navigation(); menu.refresh(); main.controller_bindings.restore_all()
+		main.controller_bindings.assign("subtitles", Bindings.bind(hand, "by_button", Bindings.MODIFIERS), true)
+		main.rays[hand] = [Vector3(0, 1.6, 0), Vector3(3, 0, -1).normalized()]
+		main._on_controller_button("grip_click", hand); main._on_controller_button("trigger_click", hand); main._on_controller_button("by_button", hand)
+		check(menu.visible and menu._subtitle_open, "Configured B/Y chord opens subtitles without ordinary Back")
+		main._on_controller_release("by_button", hand); main._on_controller_release("trigger_click", hand); main._on_controller_release("grip_click", hand)
+		main._show_recent_menu(); library.section = Library.Section.LOCAL; library._local_stack = [{"id": "/disk", "title": "Disk"}]; library.refresh()
+		main._on_controller_button("grip_click", hand); main._on_controller_button("trigger_click", hand); main._on_controller_button("by_button", hand)
+		check(library.visible and library._local_stack.size() == 1, "A chord unavailable in a browser cannot become a directory Back")
+		main._on_controller_release("by_button", hand); main._on_controller_release("trigger_click", hand); main._on_controller_release("grip_click", hand)
+		main.pose_available = false
+		main._on_controller_button("grip_click", hand); tap(main, "by_button", hand)
+		check(library.visible and library._local_stack.size() == 1, "A partial configured chord cannot become Back when no grip pose is available")
+		main._on_controller_release("grip_click", hand); main.pose_available = true
+		main.controller_bindings.restore_all()
+	# Photo child panels also return one layer, retaining their existing image interaction.
+	library.dismiss(); menu.dismiss()
+	var photo := preload("res://scripts/photo_display.gd").new(); root.add_child(photo); photo.set_process(false)
+	photo.local_uri = "file:///photo.jpg"; main.photo = photo; main.photo_active = true
+	var photo_menu := preload("res://scripts/photo_menu.gd").new(); photo_menu.state_provider = photo.snapshot
+	root.add_child(photo_menu); photo_menu.set_process(false); main.photo_menu = photo_menu; main.player_menu = photo_menu
+	photo_menu.visible = true; photo_menu._layout_open = true; photo_menu._wall_rows_open = true; photo_menu.refresh()
+	tap(main, "by_button")
+	check(photo_menu.visible and photo_menu._layout_open and not photo_menu._wall_rows_open, "Photo Back closes row selection before the layout picker")
+	tap(main, "by_button"); check(photo_menu.visible and not photo_menu._layout_open, "Photo layout Back returns to its transport")
+	photo_menu._adjustment = "photo_view"; photo_menu.refresh(); tap(main, "by_button")
+	check(photo_menu.visible and photo_menu._adjustment.is_empty(), "Photo appearance Back retains the image and transport")
+	tap(main, "by_button"); check(not photo_menu.visible and photo.local_uri == "file:///photo.jpg", "Plain photo transport Back hides controls without closing the image")
+	photo_menu.free(); photo.free(); main.player_menu = menu; main.photo_active = false
+	await process_frame # Drain fake-platform replies before releasing their signal owner.
+	if library.get_parent() != root: library.reparent(root)
+	library.free(); menu.free(); video.free(); main.free(); platform.free()
 
 func runtime() -> void:
 	var video := preload("res://scripts/mpv_video_display.gd").new()
@@ -506,7 +778,11 @@ func runtime() -> void:
 	before = host.calls.size(); tap(main, "ax_button")
 	check(host.calls.size() == before, "Settings retain playback input isolation")
 	tap(main, "by_button")
-	check(not library.visible and library.choices.opened.is_empty(), "Physical B remains available to close the settings and dropdown")
+	check(library.visible and library.choices.opened.is_empty(), "Physical B closes only the settings dropdown")
+	tap(main, "by_button")
+	check(library.visible and library.section == library.Section.RECENT, "A second B returns from settings to the library")
+	tap(main, "by_button")
+	check(not library.visible and menu.visible, "At the playback library root B returns to the transport")
 	library.dismiss(); menu.dismiss(); main.controller_bindings.restore_all()
 	main.controller_bindings.assign("volume_up", Bindings.bind("right_hand", "stick_up", ["grip_click", "trigger_click"]), true, true)
 	main._on_controller_button("grip_click", "right_hand"); main._on_controller_button("trigger_click", "right_hand")

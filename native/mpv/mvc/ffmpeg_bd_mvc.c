@@ -41,12 +41,28 @@ typedef struct IsoInput {
     BdMvc *owner;
 } IsoInput;
 
+typedef struct MvcClip {
+    char dependent_id[6];
+    int64_t size;
+} MvcClip;
+
+/* One CLIPINF listing with each clip's base stream size, read once per title. */
+typedef struct MvcCandidate {
+    char id[6];
+    int64_t size;
+} MvcCandidate;
+
 struct BdMvc {
     const AVClass *class;
     int header_only;
     int is_mvc;
     int title_stream;
     int packet_clip;
+    int clip_tag_pending;
+    MvcClip *mvc_clips;
+    MvcCandidate *candidates;
+    unsigned candidate_count;
+    int candidates_ready;
     int64_t *clip_offsets;
     SectorCache *sector_cache;
     unsigned cache_cursor;
@@ -65,10 +81,13 @@ struct BdMvc {
     unsigned mapped_streams;
     PacketNode *views[2];
     int64_t queued_bytes;
+    int64_t first_pair_dts;
     uint64_t paired;
     uint64_t packets;
     uint64_t reads;
 };
+
+static int64_t ssif_position(BdMvc *s, UDFFILE *file, int64_t position);
 
 static int64_t index_seek(BD_FILE_H *file, int64_t offset, int32_t whence)
 {
@@ -148,6 +167,7 @@ static int stream_read(void *opaque, uint8_t *buffer, int size)
 {
     BdMvc *s = opaque;
     ssize_t count = s->title_stream ? bd_read(s->disc, buffer, size) : udfread_file_read(s->ssif, buffer, size);
+    if (!count && s->is_mvc && udfread_file_tell(s->ssif) < s->size) return AVERROR(EIO);
     if (s->reads++ < 4)
         av_log(s->outer, AV_LOG_VERBOSE, "Blu-ray read %d -> %zd bytes\n", size, count);
     return count < 0 ? AVERROR(EIO) : count ? count : AVERROR_EOF;
@@ -180,22 +200,37 @@ static void clear_views(BdMvc *s)
         }
     }
     s->queued_bytes = 0;
+    s->first_pair_dts = AV_NOPTS_VALUE;
+}
+
+static void close_transport(BdMvc *s)
+{
+    avformat_close_input(&s->inner);
+    if (s->stream_io) {
+        av_freep(&s->stream_io->buffer);
+        avio_context_free(&s->stream_io);
+    }
+    av_freep(&s->stream_map);
+    s->mapped_streams = 0;
+}
+
+static void close_clip(BdMvc *s)
+{
+    if (s->base) udfread_file_close(s->base);
+    if (s->dependent) udfread_file_close(s->dependent);
+    if (s->base_index) bd_free_clpi(s->base_index);
+    if (s->dependent_index) bd_free_clpi(s->dependent_index);
+    if (s->ssif) udfread_file_close(s->ssif);
+    s->base = s->ssif = s->dependent = NULL;
+    s->base_index = s->dependent_index = NULL;
 }
 
 static int close_disc(AVFormatContext *context)
 {
     BdMvc *s = context->priv_data;
     clear_views(s);
-    avformat_close_input(&s->inner);
-    if (s->stream_io) {
-        av_freep(&s->stream_io->buffer);
-        avio_context_free(&s->stream_io);
-    }
-    if (s->base) udfread_file_close(s->base);
-    if (s->dependent) udfread_file_close(s->dependent);
-    if (s->base_index) bd_free_clpi(s->base_index);
-    if (s->dependent_index) bd_free_clpi(s->dependent_index);
-    if (s->ssif) udfread_file_close(s->ssif);
+    close_transport(s);
+    close_clip(s);
     if (s->udf) udfread_close(s->udf);
     if (s->title) bd_free_title_info(s->title);
     if (s->disc) bd_close(s->disc);
@@ -204,7 +239,201 @@ static int close_disc(AVFormatContext *context)
     s->udf = NULL; s->title = NULL; s->disc = NULL;
     av_freep(&s->stream_map);
     av_freep(&s->clip_offsets);
+    av_freep(&s->mvc_clips);
+    av_freep(&s->candidates);
     av_freep(&s->sector_cache);
+    return 0;
+}
+
+static int index_has_pid(CLPI_CL *index, int pid)
+{
+    if (!index) return 0;
+    if (!index->cpi.num_stream_pid && index->cpi_ss.num_stream_pid) {
+        index->cpi = index->cpi_ss;
+        index->cpi_ss = (CLPI_CPI){0};
+    }
+    for (unsigned i = 0; i < index->cpi.num_stream_pid; i++)
+        if (index->cpi.entry[i].pid == pid) return 1;
+    return 0;
+}
+
+/* A dependent PID alone is not an association: a disc can contain many MVC
+   clips. Match the logical streams to this SSIF's physical allocation first. */
+static int dependency_in_ssif(BdMvc *s, UDFFILE *file)
+{
+    int64_t bytes = udfread_file_size(file);
+    if (bytes <= 0 || bytes != s->size - udfread_file_size(s->base)) return 0;
+    return ssif_position(s, file, 0) >= 0 && ssif_position(s, file, bytes - 1) >= 0;
+}
+
+static int list_candidates(BdMvc *s)
+{
+    UDFDIR *directory;
+    struct udfread_dirent entry;
+    unsigned examined = 0;
+    char path[128];
+    if (s->candidates_ready) return 0;
+    directory = udfread_opendir(s->udf, "BDMV/CLIPINF");
+    if (!directory) return AVERROR_INVALIDDATA;
+    while (udfread_readdir(directory, &entry)) {
+        UDFFILE *file;
+        MvcCandidate *grown;
+        if (++examined > 8192) { udfread_closedir(directory); return AVERROR(ENOSYS); }
+        if (strlen(entry.d_name) != 10 || strcmp(entry.d_name + 5, ".clpi")) continue;
+        snprintf(path, sizeof(path), "BDMV/STREAM/%.5s.m2ts", entry.d_name);
+        file = udfread_file_open(s->udf, path);
+        if (!file) continue;
+        grown = av_realloc_array(s->candidates, s->candidate_count + 1, sizeof(*grown));
+        if (!grown) { udfread_file_close(file); udfread_closedir(directory); return AVERROR(ENOMEM); }
+        s->candidates = grown;
+        memcpy(grown[s->candidate_count].id, entry.d_name, 5);
+        grown[s->candidate_count].id[5] = 0;
+        grown[s->candidate_count++].size = udfread_file_size(file);
+        udfread_file_close(file);
+    }
+    udfread_closedir(directory);
+    s->candidates_ready = 1;
+    return 0;
+}
+
+static int select_mvc_clip(BdMvc *s, unsigned number)
+{
+    BLURAY_CLIP_INFO *clip = &s->title->clips[number];
+    MvcClip *known = &s->mvc_clips[number];
+    char path[128];
+    close_clip(s);
+    s->packet_clip = number;
+    s->origin = clip->in_time; s->end = clip->out_time;
+    snprintf(path, sizeof(path), "BDMV/STREAM/SSIF/%s.ssif", clip->clip_id);
+    s->ssif = udfread_file_open(s->udf, path);
+    snprintf(path, sizeof(path), "BDMV/STREAM/%s.m2ts", clip->clip_id);
+    s->base = udfread_file_open(s->udf, path);
+    snprintf(path, sizeof(path), "BDMV/CLIPINF/%s.clpi", clip->clip_id);
+    s->base_index = read_index(s, path);
+    if (!s->ssif || !s->base || !index_has_pid(s->base_index, s->base_pid))
+        return AVERROR_INVALIDDATA;
+    s->size = udfread_file_size(s->ssif);
+    if (s->size <= 0 || udfread_file_size(s->base) <= 0 || udfread_file_size(s->base) >= s->size ||
+        (known->size && known->size != s->size)) return AVERROR_INVALIDDATA;
+    if (ssif_position(s, s->base, 0) < 0 ||
+        ssif_position(s, s->base, udfread_file_size(s->base) - 1) < 0)
+        return AVERROR(ENOSYS);
+    if (known->dependent_id[0]) {
+        snprintf(path, sizeof(path), "BDMV/STREAM/%s.m2ts", known->dependent_id);
+        s->dependent = udfread_file_open(s->udf, path);
+        snprintf(path, sizeof(path), "BDMV/CLIPINF/%s.clpi", known->dependent_id);
+        s->dependent_index = read_index(s, path);
+        if (!s->dependent || !dependency_in_ssif(s, s->dependent) ||
+            !index_has_pid(s->dependent_index, s->dependent_pid)) return AVERROR_INVALIDDATA;
+    } else {
+        int64_t wanted = s->size - udfread_file_size(s->base);
+        int ret = list_candidates(s);
+        if (ret < 0) return ret;
+        /* Size is a cheap filter; physical allocation and PID confirm the pair. */
+        for (unsigned i = 0; i < s->candidate_count; i++) {
+            MvcCandidate *candidate = &s->candidates[i];
+            UDFFILE *file;
+            CLPI_CL *index;
+            if (candidate->size != wanted || !strncmp(candidate->id, clip->clip_id, 5)) continue;
+            snprintf(path, sizeof(path), "BDMV/STREAM/%s.m2ts", candidate->id);
+            file = udfread_file_open(s->udf, path);
+            if (!file) continue;
+            if (!dependency_in_ssif(s, file)) { udfread_file_close(file); continue; }
+            snprintf(path, sizeof(path), "BDMV/CLIPINF/%s.clpi", candidate->id);
+            index = read_index(s, path);
+            if (!index_has_pid(index, s->dependent_pid)) {
+                if (index) bd_free_clpi(index);
+                udfread_file_close(file); continue;
+            }
+            if (s->dependent) {
+                bd_free_clpi(index); udfread_file_close(file);
+                av_log(s->outer, AV_LOG_ERROR, "MVC dependency clip is ambiguous for %.5s\n", clip->clip_id);
+                return AVERROR(ENOSYS);
+            }
+            s->dependent = file; s->dependent_index = index;
+            memcpy(known->dependent_id, candidate->id, 5);
+        }
+        if (!s->dependent) {
+            av_log(s->outer, AV_LOG_ERROR, "MVC dependency index not found for %.5s\n", clip->clip_id);
+            return AVERROR_INVALIDDATA;
+        }
+        known->size = s->size;
+    }
+    s->clip_tag_pending = 1;
+    s->first_pair_dts = AV_NOPTS_VALUE;
+    av_log(s->outer, AV_LOG_VERBOSE, "MVC clip %u/%u: %.5s + %.5s, start %.6f, duration %.6f\n",
+           number + 1, s->title->clip_count, clip->clip_id, known->dependent_id,
+           clip->start_time / 90000., (clip->out_time - clip->in_time) / 90000.);
+    return 0;
+}
+
+static int open_transport(BdMvc *s)
+{
+    AVDictionary *options = NULL;
+    int ret;
+    uint8_t *buffer = av_malloc(64 * 1024);
+    if (!buffer) return AVERROR(ENOMEM);
+    s->stream_io = avio_alloc_context(buffer, 64 * 1024, 0, s, stream_read, NULL, stream_seek);
+    if (!s->stream_io) { av_free(buffer); return AVERROR(ENOMEM); }
+    s->inner = avformat_alloc_context();
+    if (!s->inner) return AVERROR(ENOMEM);
+    s->inner->pb = s->stream_io;
+    s->inner->flags |= AVFMT_FLAG_CUSTOM_IO;
+    if (s->is_mvc) s->inner->flags |= AVFMT_FLAG_NOPARSE | AVFMT_FLAG_NOFILLIN;
+    s->inner->interrupt_callback = s->outer->interrupt_callback;
+    s->inner->probesize = 32 * 1024 * 1024;
+    s->inner->max_analyze_duration = 15000000;
+    s->inner->skip_estimate_duration_from_pts = 1;
+    s->inner->codec_whitelist = av_strdup(s->is_mvc ? "dca,ac3,eac3,mlp,truehd,pcm_bluray,pgssub" : "h264,hevc,mpeg2video,vc1,dca,ac3,eac3,mlp,truehd,pcm_bluray,pgssub");
+    av_dict_set(&options, "max_packet_size", "16777216", 0);
+    ret = avformat_open_input(&s->inner, NULL, av_find_input_format("mpegts"), &options);
+    av_dict_free(&options);
+    if (ret < 0) return ret;
+    ret = avformat_find_stream_info(s->inner, NULL);
+    if (ret < 0) return ret;
+    avformat_flush(s->inner);
+    return avio_seek(s->stream_io, 0, SEEK_SET) < 0 ? AVERROR(EIO) : 0;
+}
+
+static int remap_transport(BdMvc *s)
+{
+    av_freep(&s->stream_map);
+    s->mapped_streams = s->inner->nb_streams;
+    s->stream_map = av_malloc_array(s->mapped_streams, sizeof(*s->stream_map));
+    if (!s->stream_map) return AVERROR(ENOMEM);
+    for (unsigned i = 0; i < s->mapped_streams; i++) {
+        AVStream *in = s->inner->streams[i];
+        s->stream_map[i] = -1;
+        if (in->id == s->dependent_pid) continue;
+        for (unsigned j = 0; j < s->outer->nb_streams; j++) {
+            AVStream *out = s->outer->streams[j];
+            if (out->id != in->id) continue;
+            if (out->codecpar->codec_type != in->codecpar->codec_type ||
+                (out->codecpar->codec_id != in->codecpar->codec_id && (int)j != s->video_stream))
+                return AVERROR_INVALIDDATA;
+            s->stream_map[i] = j;
+        }
+    }
+    for (unsigned j = 0; j < s->outer->nb_streams; j++) {
+        int found = 0;
+        for (unsigned i = 0; i < s->mapped_streams; i++) found |= s->stream_map[i] == (int)j;
+        if (!found) return AVERROR_INVALIDDATA;
+    }
+    return 0;
+}
+
+/* A failed switch leaves no reader: later reads fail and a seek reopens the clip,
+   instead of using a closed demuxer or a partially filled stream map. */
+static int switch_mvc_clip(BdMvc *s, unsigned number)
+{
+    int ret;
+    close_transport(s);
+    clear_views(s);
+    if ((ret = select_mvc_clip(s, number)) < 0 || (ret = open_transport(s)) < 0 ||
+        (ret = remap_transport(s)) < 0) {
+        close_transport(s);
+        return ret;
+    }
     return 0;
 }
 
@@ -217,7 +446,6 @@ static int disc_header(AVFormatContext *context)
     uint64_t longest = 0;
     int titles, ret, selected = -1;
     char path[128];
-    uint8_t *buffer;
     s->outer = context;
     av_log(context, AV_LOG_VERBOSE, "MVC ISO: opening sector reader\n");
     if (!context->pb || !(context->pb->seekable & AVIO_SEEKABLE_NORMAL))
@@ -245,7 +473,6 @@ static int disc_header(AVFormatContext *context)
         return AVERROR_INVALIDDATA;
     s->title = bd_get_title_info(s->disc, selected, 0);
     if (!s->title || !s->title->clip_count || s->title->clip_count > 4096) return AVERROR_INVALIDDATA;
-    s->title_stream = s->title->clip_count > 1;
     clip = &s->title->clips[0];
     av_log(context, AV_LOG_VERBOSE, "MVC ISO: title %u has %u video streams\n", s->title->playlist, clip->video_stream_count);
     if (!clip->video_stream_count || clip->still_mode != BLURAY_STILL_NONE)
@@ -254,127 +481,71 @@ static int disc_header(AVFormatContext *context)
     static const int widths[] = {0,720,720,720,1920,1280,1920,720,3840};
     static const int heights[] = {0,480,576,480,1080,720,1080,576,2160};
     if (video->format >= FF_ARRAY_ELEMS(widths) || !widths[video->format]) return AVERROR(ENOSYS);
-    s->width = widths[video->format];
-    s->height = heights[video->format];
-    s->base_pid = video->pid;
-    s->dependent_pid = 0x1012;
-    s->origin = clip->in_time;
-    s->end = clip->out_time;
-    s->input.input.read = udf_blocks;
-    s->input.owner = s;
+    s->width = widths[video->format]; s->height = heights[video->format];
+    s->base_pid = video->pid; s->dependent_pid = 0x1012;
+    s->origin = clip->in_time; s->end = clip->out_time;
+    s->input.input.read = udf_blocks; s->input.owner = s;
     s->udf = udfread_init();
     if (!s->udf || udfread_open_input(s->udf, &s->input.input) < 0)
         return AVERROR_INVALIDDATA;
     snprintf(path, sizeof(path), "BDMV/STREAM/SSIF/%s.ssif", clip->clip_id);
     s->ssif = udfread_file_open(s->udf, path);
     s->is_mvc = s->ssif != NULL;
-    snprintf(path, sizeof(path), "BDMV/STREAM/%s.m2ts", clip->clip_id);
-    s->base = udfread_file_open(s->udf, path);
-    if (!s->base) {
-        av_log(context, AV_LOG_ERROR, "Main playlist stream unavailable\n");
-        return AVERROR(ENOSYS);
-    }
-    if (!s->is_mvc) s->ssif = udfread_file_open(s->udf, path);
-    if (!s->ssif) return AVERROR(EIO);
-    s->base_index = bd_get_clpi(s->disc, 0);
-    if (!s->base_index) return AVERROR_INVALIDDATA;
+    s->title_stream = !s->is_mvc && s->title->clip_count > 1;
     if (s->title_stream) {
-        if (s->is_mvc) {
-            av_log(context, AV_LOG_ERROR, "Multi-clip MVC playlist is unsupported\n");
-            return AVERROR(ENOSYS);
-        }
         s->clip_offsets = av_calloc(s->title->clip_count + 1, sizeof(*s->clip_offsets));
         if (!s->clip_offsets) return AVERROR(ENOMEM);
-        for (unsigned i = 0; i < s->title->clip_count; i++) {
-            BLURAY_CLIP_INFO *part = &s->title->clips[i];
-            if (!part->video_stream_count || part->still_mode != BLURAY_STILL_NONE ||
-                part->video_streams[0].pid != video->pid ||
-                part->video_streams[0].coding_type != video->coding_type ||
-                part->video_streams[0].format != video->format ||
-                part->audio_stream_count != clip->audio_stream_count)
+    }
+    for (unsigned i = 0; i < s->title->clip_count; i++) {
+        BLURAY_CLIP_INFO *part = &s->title->clips[i];
+        if (!part->video_stream_count || part->still_mode != BLURAY_STILL_NONE ||
+            part->out_time <= part->in_time ||
+            part->video_streams[0].pid != video->pid ||
+            part->video_streams[0].coding_type != video->coding_type ||
+            part->video_streams[0].format != video->format ||
+            part->audio_stream_count != clip->audio_stream_count)
+            return AVERROR(ENOSYS);
+        for (unsigned a = 0; a < part->audio_stream_count; a++)
+            if (part->audio_streams[a].pid != clip->audio_streams[a].pid ||
+                part->audio_streams[a].coding_type != clip->audio_streams[a].coding_type)
+                return AVERROR(ENOSYS);
+        if (s->is_mvc) {
+            if (part->video_streams[0].rate != video->rate || part->pg_stream_count != clip->pg_stream_count)
                 return AVERROR(ENOSYS);
             for (unsigned a = 0; a < part->audio_stream_count; a++)
-                if (part->audio_streams[a].pid != clip->audio_streams[a].pid ||
-                    part->audio_streams[a].coding_type != clip->audio_streams[a].coding_type)
-                    return AVERROR(ENOSYS);
-            s->clip_offsets[i+1] = s->clip_offsets[i] + (int64_t)part->pkt_count * 192;
+                if (part->audio_streams[a].format != clip->audio_streams[a].format ||
+                    part->audio_streams[a].rate != clip->audio_streams[a].rate) return AVERROR(ENOSYS);
+            for (unsigned a = 0; a < part->pg_stream_count; a++)
+                if (part->pg_streams[a].pid != clip->pg_streams[a].pid ||
+                    part->pg_streams[a].coding_type != clip->pg_streams[a].coding_type) return AVERROR(ENOSYS);
         }
-        if (s->clip_offsets[s->title->clip_count] != bd_get_title_size(s->disc)) return AVERROR_INVALIDDATA;
+        if (s->title_stream) s->clip_offsets[i+1] = s->clip_offsets[i] + (int64_t)part->pkt_count * 192;
     }
     if (s->is_mvc) {
         if (video->format != BLURAY_VIDEO_FORMAT_1080P && video->format != BLURAY_VIDEO_FORMAT_720P)
             return AVERROR(ENOSYS);
-        av_log(context, AV_LOG_VERBOSE, "MVC ISO: opening dependency index\n");
-        UDFDIR *directory = udfread_opendir(s->udf, "BDMV/CLIPINF");
-        struct udfread_dirent entry;
-        unsigned examined = 0;
-        if (!directory || !s->base_index) {
-            if (directory) udfread_closedir(directory);
-            return AVERROR_INVALIDDATA;
-        }
-        while (examined++ < 256 && udfread_readdir(directory, &entry)) {
-            if (strlen(entry.d_name) != 10 || strcmp(entry.d_name + 5, ".clpi")) continue;
-            snprintf(path, sizeof(path), "BDMV/CLIPINF/%s", entry.d_name);
-            CLPI_CL *candidate = read_index(s, path);
-            int match = 0;
-            if (!candidate) continue;
-            if (!candidate->cpi.num_stream_pid && candidate->cpi_ss.num_stream_pid) {
-                candidate->cpi = candidate->cpi_ss;
-                candidate->cpi_ss = (CLPI_CPI){0};
-            }
-            for (unsigned i = 0; i < candidate->cpi.num_stream_pid; i++)
-                if (candidate->cpi.entry[i].pid == s->dependent_pid) match = 1;
-            av_log(context, AV_LOG_VERBOSE, "MVC ISO: CLPI %.5s CPI streams %u, first PID %u\n", entry.d_name,
-                   candidate->cpi.num_stream_pid, candidate->cpi.num_stream_pid ? candidate->cpi.entry[0].pid : 0);
-            if (!match) { bd_free_clpi(candidate); continue; }
-            if (s->dependent_index) {
-                bd_free_clpi(candidate); udfread_closedir(directory);
-                av_log(context, AV_LOG_ERROR, "MVC dependency clip is ambiguous\n");
-                return AVERROR(ENOSYS);
-            }
-            s->dependent_index = candidate;
-            snprintf(path, sizeof(path), "BDMV/STREAM/%.5s.m2ts", entry.d_name);
-            s->dependent = udfread_file_open(s->udf, path);
-        }
-        udfread_closedir(directory);
-        if (!s->dependent || !s->dependent_index) {
-            av_log(context, AV_LOG_ERROR, "MVC dependency index not found\n");
-            return AVERROR_INVALIDDATA;
-        }
+        s->mvc_clips = av_calloc(s->title->clip_count, sizeof(*s->mvc_clips));
+        if (!s->mvc_clips) return AVERROR(ENOMEM);
+        /* Validate each independent SSIF/index association during preflight.
+           Only the active clip's file handles and parsed indexes stay resident. */
+        for (unsigned i = 0; i < s->title->clip_count; i++)
+            if ((ret = select_mvc_clip(s, i)) < 0) return ret;
+        if (s->packet_clip && (ret = select_mvc_clip(s, 0)) < 0) return ret;
+    } else {
+        snprintf(path, sizeof(path), "BDMV/STREAM/%s.m2ts", clip->clip_id);
+        s->base = udfread_file_open(s->udf, path);
+        s->ssif = udfread_file_open(s->udf, path);
+        s->base_index = bd_get_clpi(s->disc, 0);
+        if (!s->base || !s->ssif || !s->base_index) return AVERROR_INVALIDDATA;
+        s->size = s->title_stream ? bd_get_title_size(s->disc) : udfread_file_size(s->ssif);
+        if (s->title_stream && s->clip_offsets[s->title->clip_count] != s->size) return AVERROR_INVALIDDATA;
     }
-    s->size = s->title_stream ? bd_get_title_size(s->disc) : udfread_file_size(s->ssif);
-    if (s->size <= 0)
-        return AVERROR_INVALIDDATA;
+    if (s->size <= 0) return AVERROR_INVALIDDATA;
     context->duration = av_rescale(s->title->duration, AV_TIME_BASE, 90000);
     context->start_time = 0;
+    av_dict_set_int(&context->metadata, "thru3d_clip_count", s->title->clip_count, 0);
     if (s->header_only) return 0;
-    buffer = av_malloc(64 * 1024);
-    if (!buffer) return AVERROR(ENOMEM);
-    s->stream_io = avio_alloc_context(buffer, 64 * 1024, 0, s, stream_read, NULL, stream_seek);
-    if (!s->stream_io) { av_free(buffer); return AVERROR(ENOMEM); }
-    s->inner = avformat_alloc_context();
-    if (!s->inner) return AVERROR(ENOMEM);
-    s->inner->pb = s->stream_io;
-    s->inner->flags |= AVFMT_FLAG_CUSTOM_IO;
-    if (s->is_mvc) s->inner->flags |= AVFMT_FLAG_NOPARSE | AVFMT_FLAG_NOFILLIN;
-    s->inner->interrupt_callback = context->interrupt_callback;
-    s->inner->probesize = 32 * 1024 * 1024;
-    s->inner->max_analyze_duration = 15000000;
-    s->inner->skip_estimate_duration_from_pts = 1;
-    s->inner->codec_whitelist = av_strdup(s->is_mvc ? "dca,ac3,eac3,mlp,truehd,pcm_bluray,pgssub" : "h264,hevc,mpeg2video,vc1,dca,ac3,eac3,mlp,truehd,pcm_bluray,pgssub");
-    AVDictionary *transport_options = NULL;
-    /* The default 200 KiB splits a large MVC access unit and clears the tail's
-       timestamps. Bound whole PES packets instead, before view pairing. */
-    av_dict_set(&transport_options, "max_packet_size", "16777216", 0);
-    ret = avformat_open_input(&s->inner, NULL, av_find_input_format("mpegts"), &transport_options);
-    av_dict_free(&transport_options);
-    if (ret < 0)
-        return ret;
-    /* MPEG-TS discovers streams while probing. Keep their video PES intact;
-       the outer demuxer parses audio PES into complete DTS/AC3 frames. */
-    avformat_find_stream_info(s->inner, NULL);
-    avformat_flush(s->inner);
-    if (avio_seek(s->stream_io, 0, SEEK_SET) < 0) return AVERROR(EIO);
+    if ((ret = open_transport(s)) < 0) return ret;
     s->mapped_streams = s->inner->nb_streams;
     s->stream_map = av_malloc_array(s->mapped_streams, sizeof(*s->stream_map));
     if (!s->stream_map) return AVERROR(ENOMEM);
@@ -451,14 +622,41 @@ static int disc_packet(AVFormatContext *context, AVPacket *output)
         int ret, pid, eye;
         PacketNode **other, *found;
         if (!packet) return AVERROR(ENOMEM);
+        if (!s->inner) { av_packet_free(&packet); return AVERROR(EIO); }
         ret = av_read_frame(s->inner, packet);
         if (ret < 0) {
             av_log(context, AV_LOG_VERBOSE, "MVC inner read returned %d at %"PRId64"\n", ret, avio_tell(s->stream_io));
-            av_packet_free(&packet); return ret;
+            av_packet_free(&packet);
+            if (ret == AVERROR_EOF && s->is_mvc && s->packet_clip + 1 < s->title->clip_count) {
+                /* Starting at the earlier of two CLPI points can read one
+                   view before the other's first access unit. Only these
+                   pre-roll or out-of-presentation orphans may be discarded. */
+                for (int view = 0; view < 2; view++) {
+                    PacketNode **node = &s->views[view];
+                    while (*node) {
+                        AVPacket *p = (*node)->packet;
+                        if (p->pts < s->origin || p->pts >= s->end ||
+                            (p->dts != AV_NOPTS_VALUE && s->first_pair_dts != AV_NOPTS_VALUE &&
+                             p->dts < s->first_pair_dts)) {
+                            PacketNode *old = *node;
+                            *node = old->next; s->queued_bytes -= p->size;
+                            av_packet_free(&old->packet); av_free(old);
+                        } else node = &(*node)->next;
+                    }
+                }
+                /* A one-eyed tail cannot be shown; drop it rather than ending the title. */
+                if (s->views[0] || s->views[1])
+                    av_log(context, AV_LOG_WARNING, "MVC clip %d ended with an unmatched view; dropping it\n",
+                           s->packet_clip + 1);
+                if ((ret = switch_mvc_clip(s, s->packet_clip + 1)) < 0) return ret;
+                continue;
+            }
+            return ret;
         }
         if ((unsigned)packet->stream_index >= s->mapped_streams) { av_packet_free(&packet); continue; }
         pid = s->inner->streams[packet->stream_index]->id;
-        int64_t origin = s->origin, end = s->end, title_start = 0;
+        int64_t origin = s->origin, end = s->end;
+        int64_t title_start = s->is_mvc ? s->title->clips[s->packet_clip].start_time : 0;
         if (s->title_stream) {
             if (packet->pos >= 0) {
                 unsigned low = 0, high = s->title->clip_count - 1;
@@ -475,7 +673,11 @@ static int disc_packet(AVFormatContext *context, AVPacket *output)
         if (s->packets++ < 8)
             av_log(context, AV_LOG_VERBOSE, "MVC packet pid=%x pts=%"PRId64" dts=%"PRId64" bytes=%d origin=%"PRId64" end=%"PRId64"\n",
                    pid, packet->pts, packet->dts, packet->size, s->origin, s->end);
-        if (packet->pts != AV_NOPTS_VALUE && packet->pts >= end) { av_packet_free(&packet); continue; }
+        /* MVC reference pictures can have PTS beyond the playlist out-point
+           while earlier B pictures still need them. Trim decoded frames, not
+           compressed reference pictures. Ordinary/audio trimming stays here. */
+        if ((!s->is_mvc || (pid != s->base_pid && pid != s->dependent_pid)) &&
+            packet->pts != AV_NOPTS_VALUE && packet->pts >= end) { av_packet_free(&packet); continue; }
         if (!s->is_mvc || (pid != s->base_pid && pid != s->dependent_pid)) {
             int mapped = s->stream_map[packet->stream_index];
             if (mapped < 0 || (packet->pts != AV_NOPTS_VALUE && packet->pts < origin)) {
@@ -488,12 +690,19 @@ static int disc_packet(AVFormatContext *context, AVPacket *output)
             av_packet_free(&packet);
             return 0;
         }
+        int terminator = 0, picture = 0;
+        for (int at = 0; at + 3 < packet->size; at++) {
+            if (packet->data[at] || packet->data[at+1] || packet->data[at+2] != 1) continue;
+            int type = packet->data[at+3] & 31;
+            terminator |= type == 10 || type == 11;
+            picture |= (type >= 1 && type <= 5) || type == 20;
+        }
+        if (terminator && !picture) { av_packet_free(&packet); continue; }
         if (packet->pts == AV_NOPTS_VALUE || packet->size <= 0 || packet->size > 16*1024*1024) {
             av_log(context, AV_LOG_ERROR, "MVC invalid PES pid=%x pts=%"PRId64" dts=%"PRId64" bytes=%d\n",
                    pid, packet->pts, packet->dts, packet->size);
             av_packet_free(&packet); return AVERROR_INVALIDDATA;
         }
-        if (packet->pts < s->origin) { av_packet_free(&packet); continue; }
         eye = pid == s->base_pid ? 0 : 1;
         other = &s->views[!eye];
         while (*other && (*other)->packet->pts != packet->pts) other = &(*other)->next;
@@ -506,6 +715,7 @@ static int disc_packet(AVFormatContext *context, AVPacket *output)
                 av_log(context, AV_LOG_ERROR, "MVC pair DTS mismatch: %"PRId64" / %"PRId64"\n", base->dts, dependent->dts);
                 av_packet_free(&packet); return AVERROR_INVALIDDATA;
             }
+            if (s->first_pair_dts == AV_NOPTS_VALUE) s->first_pair_dts = base->dts;
             /* CLPI random-access points may use recovery-point SEI with an
                intra picture instead of IDR. The decoder's reset gate handles
                both; discarding these here would skip seconds after a seek. */
@@ -513,12 +723,26 @@ static int disc_packet(AVFormatContext *context, AVPacket *output)
             if (ret < 0) { av_packet_free(&packet); return ret; }
             memcpy(output->data, base->data, base->size);
             memcpy(output->data + base->size, dependent->data, dependent->size);
-            output->pts = base->pts - s->origin;
-            output->dts = base->dts == AV_NOPTS_VALUE ? AV_NOPTS_VALUE : base->dts - s->origin;
+            output->pts = base->pts + title_start - origin;
+            output->dts = base->dts == AV_NOPTS_VALUE ? AV_NOPTS_VALUE : base->dts + title_start - origin;
             output->duration = base->duration;
             output->flags = base->flags;
             output->stream_index = s->video_stream;
             output->pos = base->pos;
+            if (s->clip_tag_pending) {
+                AVDictionary *tag = NULL;
+                size_t bytes;
+                uint8_t *data;
+                av_dict_set_int(&tag, "thru3d_mvc_clip", s->packet_clip, 0);
+                av_dict_set_int(&tag, "thru3d_mvc_start", title_start, 0);
+                av_dict_set_int(&tag, "thru3d_mvc_end", title_start + end - origin, 0);
+                data = av_packet_pack_dictionary(tag, &bytes);
+                av_dict_free(&tag);
+                if (!data) { av_packet_unref(output); av_packet_free(&packet); return AVERROR(ENOMEM); }
+                ret = av_packet_add_side_data(output, AV_PKT_DATA_STRINGS_METADATA, data, bytes);
+                if (ret < 0) { av_free(data); av_packet_unref(output); av_packet_free(&packet); return ret; }
+                s->clip_tag_pending = 0;
+            }
             *other = found->next;
             s->queued_bytes -= found->packet->size;
             av_packet_free(&found->packet); av_free(found);
@@ -543,6 +767,7 @@ static int disc_packet(AVFormatContext *context, AVPacket *output)
 static int64_t ssif_position(BdMvc *s, UDFFILE *file, int64_t position)
 {
     uint32_t target, low = 0, high = (s->size - 1) / 2048;
+    if (position < 0 || position >= udfread_file_size(file)) return AVERROR(EIO);
     target = udfread_file_lba(file, position / 2048);
     if (!target) return AVERROR(EIO);
     /* Locate the base IDR's physical sector in the interleaved SSIF allocation.
@@ -567,6 +792,15 @@ static int disc_seek(AVFormatContext *context, int stream, int64_t timestamp, in
     else
         timestamp = av_rescale_q(timestamp, AV_TIME_BASE_Q, (AVRational){1,90000});
     timestamp = av_clip64(timestamp, 0, s->title->duration - 1);
+    if (s->is_mvc) {
+        unsigned clip = 0;
+        int ret;
+        while (clip + 1 < s->title->clip_count && s->title->clips[clip + 1].start_time <= timestamp) clip++;
+        clear_views(s);
+        if ((clip != s->packet_clip || !s->inner) && (ret = switch_mvc_clip(s, clip)) < 0) return ret;
+        timestamp -= s->title->clips[clip].start_time;
+        s->clip_tag_pending = 1;
+    }
     if (s->title_stream) {
         position = bd_seek_time(s->disc, timestamp);
         if (position < 0) return AVERROR(EIO);

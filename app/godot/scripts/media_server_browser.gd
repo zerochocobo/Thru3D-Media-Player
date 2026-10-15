@@ -4,7 +4,7 @@ const I18n := preload("res://scripts/i18n.gd")
 const ACTION := 1000
 const KEY := 1400
 const SORTS := ["created_at", "title", "date", "duration", "rating100"]
-const SORT_NAMES := ["Recently added", "Title", "Release date", "Duration", "Rating"]
+const SORT_NAMES := ["Date added", "Title", "Release date", "Duration", "Rating"]
 const FILTER_NAMES := {"genres": "Genres", "tags": "Tags", "performers": "Performers", "studios": "Studios"}
 const Gallery := preload("res://scripts/media_server_gallery.gd")
 var gallery: RefCounted = Gallery.new(self)
@@ -49,6 +49,8 @@ var library_id := ""
 var end_reached := false
 var candidate_end := false
 var display_preferences := {}
+var folder_artwork := {}
+var sort_query := {}
 var sources_open := false
 var display_preferences_path := "user://settings/server_views.cfg"
 
@@ -65,6 +67,7 @@ func _init(owner: Node) -> void:
 			if value is Array: favorites[id] = value.filter(func(item): return item is Dictionary and str(item.get("uri", "")).begins_with("medialib://" + str(id) + "/scene/")).slice(0, 1000)
 
 func cancel() -> void:
+	sort_query.clear()
 	gallery.capture.clear()
 	generation += 1
 	if menu.platform:
@@ -85,7 +88,8 @@ func request(action_name: String, extra: Dictionary = {}) -> void:
 	var id: int = menu.platform.media_server_request(JSON.stringify(body))
 	if id > 0:
 		pending[id] = body
-		if action_name != "cover": busy = true; menu.status = "Loading…"
+		if action_name not in ["cover", "folder_artwork"]: busy = true; menu.status = "Loading…"
+	elif action_name == "folder_artwork": _cache_folder_artwork(str(extra.get("scene_id", "")), {})
 	else: menu.status = "Server unavailable"
 
 func open_home() -> void:
@@ -95,6 +99,10 @@ func open_home() -> void:
 
 func browse(reset: bool = true) -> void:
 	cancel()
+	if not query.has("sort"): query.sort = str(_display_settings().get("sort", "created_at"))
+	if str(query.sort) not in available_sorts(): query.sort = "created_at" if "created_at" in available_sorts() else available_sorts().front() if not available_sorts().is_empty() else "created_at"
+	if not query.has("direction"): query.direction = str(_display_settings().get("direction", "ASC" if query.sort == "title" else "DESC"))
+	if query.direction not in ["ASC", "DESC"]: query.direction = "DESC"
 	if reset: query.page = 1
 	query.library_id = "" if query.get("all_libraries", false) else library_id
 	if not query.has("mode") and not library_id.is_empty() and not query.get("all_libraries", false) and capabilities.get("home_layout", "") == "libraries":
@@ -122,12 +130,13 @@ func receive(id: int, payload: String) -> bool:
 	var expected: Dictionary = pending[id]; pending.erase(id)
 	var data: Variant = JSON.parse_string(payload)
 	if not data is Dictionary or int(data.get("generation", -1)) != generation or data.get("server_id", "") != expected.server_id: return true
-	if expected.action != "cover": busy = false
+	if expected.action not in ["cover", "folder_artwork"]: busy = false
 	if data.get("state") != "ready":
 		if expected.action == "cover": failed_covers[_request_image_key(expected)] = true
+		elif expected.action == "folder_artwork": _cache_folder_artwork(str(expected.scene_id), {})
 		else: menu.status = str(data.get("error", "Server unavailable"))
 		menu.refresh(); return true
-	if expected.action != "cover": menu.status = ""
+	if expected.action not in ["cover", "folder_artwork"]: menu.status = ""
 	match expected.action:
 		"servers": servers = data.get("servers", [])
 		"home":
@@ -179,6 +188,7 @@ func receive(id: int, payload: String) -> bool:
 				detail.favorite = bool(data.get("favorite", false))
 				_favorite_changed(str(detail.id), detail.favorite)
 		"cover": covers[_request_image_key(expected)] = str(data.get("path", ""))
+		"folder_artwork": _cache_folder_artwork(str(expected.scene_id), data.get("image_variants", {}))
 		"remove":
 			var removed := str(expected.server_id)
 			saved = saved.filter(func(item): return item is Dictionary and item.get("server_id") != removed)
@@ -237,6 +247,7 @@ func _remember() -> void:
 	if history.size() > 12: history.pop_front()
 
 func back() -> void:
+	if sorting(): sort_query.clear(); menu.refresh(); return
 	cancel(); keyboard = ""
 	if not history.is_empty():
 		var previous: Dictionary = history.pop_back()
@@ -251,7 +262,7 @@ func grid() -> bool:
 	return view in ["servers", "home", "scenes", "facets", "libraries"] and keyboard.is_empty()
 
 func visible_lines() -> int:
-	if media_content(): return (1 if scene_view() == "poster" and scene_size() == 2 else (3 if scene_view() == "thumb" and scene_size() < 2 else 2)) if grid() else 6
+	if media_content(): return (1 if tile_mode() == "poster" and scene_size() == 2 else (3 if tile_mode() == "thumb" and scene_size() < 2 else 2)) if grid() else 6
 	return 2 if grid() else (4 if view == "filters" else 5)
 
 func pitch() -> float:
@@ -295,21 +306,73 @@ func columns() -> int:
 
 func tile_size() -> Vector2:
 	var width: float = (1.38 - (columns() - 1) * 0.025) / columns()
-	return Vector2(width, width * 1.05 + 0.055 if scene_view() == "poster" else width * 0.5625 + 0.07)
+	return Vector2(width, width * 1.05 + 0.055 if tile_mode() == "poster" else width * 0.5625 + 0.07)
+
+func movie_folders() -> bool:
+	if not media_content() or query.get("mode", "") != "folders": return false
+	if query.get("collection_type", "") == "movies": return true
+	return home_data.get("libraries", []).any(func(item): return str(item.get("id", "")) == library_id and item.get("collection_type", "") == "movies")
+
+func tile_mode() -> String:
+	return "thumb" if movie_folders() and scene_view() != "list" else scene_view()
+
+func _folder_key(id: String) -> String: return str(server.get("id", "")) + "/" + id
+
+func _cache_folder_artwork(id: String, images: Dictionary) -> void:
+	var key := _folder_key(id)
+	folder_artwork.erase(key)
+	folder_artwork[key] = images
+	while folder_artwork.size() > 256: folder_artwork.erase(folder_artwork.keys()[0])
+
+func _folder_image_variants(node: Dictionary) -> Dictionary:
+	var variants: Dictionary = node.get("image_variants", {}).duplicate()
+	var inherited: Dictionary = folder_artwork.get(_folder_key(str(node.get("id", ""))), {})
+	for type in ["Thumb", "Backdrop"]:
+		if not variants.has(type) and inherited.has(type): variants[type] = inherited[type]
+	return variants
+
+func _request_folder_artwork(node: Dictionary) -> void:
+	if not movie_folders() or not node.get("container", false) or node.get("type", "") != "Folder": return
+	if node.get("image_variants", {}).has("Thumb") or folder_artwork.has(_folder_key(str(node.id))): return
+	if int(node.get("child_count", -1)) == 0 or int(node.get("child_count", -1)) > 1: return
+	var active: Array = pending.values().filter(func(p): return p.action == "folder_artwork")
+	if menu.visible and active.size() < 2 and not active.any(func(p): return p.scene_id == node.id): request("folder_artwork", {"scene_id": str(node.id)})
 
 func set_display(mode: String, size: int = -1) -> void:
 	if not media_content() or mode not in ["poster", "thumb", "list"]: return
 	var anchor: Dictionary = menu.capture_position()
-	display_preferences[str(server.id)] = {"mode": mode, "size": scene_size() if size < 0 else clampi(size, 0, 2)}
-	var config := ConfigFile.new(); config.set_value("views", "items", display_preferences)
-	DirAccess.make_dir_recursive_absolute(display_preferences_path.get_base_dir())
-	if config.save(display_preferences_path) != OK: menu.status = "Unable to save display preferences"
+	display_preferences[str(server.id)] = _display_settings().merged({"mode": mode, "size": scene_size() if size < 0 else clampi(size, 0, 2)}, true)
+	_save_display_preferences()
 	menu._drag = {}; menu._fling = 0.0; menu._hover.clear(); menu._hide_tooltip()
 	menu._position_to_restore = anchor; menu.refresh()
 
+func _save_display_preferences() -> void:
+	var config := ConfigFile.new(); config.set_value("views", "items", display_preferences)
+	DirAccess.make_dir_recursive_absolute(display_preferences_path.get_base_dir())
+	if config.save(display_preferences_path) != OK: menu.status = "Unable to save display preferences"
+
+func available_sorts() -> Array:
+	var result: Array = capabilities.get("sorts", SORTS).filter(func(value): return value in SORTS)
+	if query.get("favorites", false) and capabilities.get("favorite_scope", "local") != "server": result.erase("date")
+	return result
+
+func sort_caption(short: bool = false) -> String:
+	var name := I18n.t(SORT_NAMES[maxi(0, SORTS.find(str(query.get("sort", "created_at"))))])
+	return (menu._fit_title(name, "", 0.28, 17) if short else name) + (" ↑" if query.get("direction", "DESC") == "ASC" else " ↓")
+
+func sorting() -> bool:
+	return not sort_query.is_empty() and view == "scenes" and not menu.compact and keyboard.is_empty()
+
+func _apply_sort() -> void:
+	var sort := str(sort_query.get("sort", "created_at")); var direction := str(sort_query.get("direction", "DESC"))
+	sort_query.clear()
+	query.sort = sort; query.direction = direction
+	display_preferences[str(server.id)] = _display_settings().merged({"sort": sort, "direction": direction}, true)
+	_save_display_preferences(); browse()
+
 func display_node(node: Dictionary, mode: String = "") -> Dictionary:
-	if mode.is_empty(): mode = scene_view()
-	var variants: Dictionary = node.get("image_variants", {})
+	if mode.is_empty(): mode = tile_mode()
+	var variants: Dictionary = _folder_image_variants(node) if movie_folders() and node.get("container", false) else node.get("image_variants", {})
 	var image: Dictionary = node.get("cover_image", {})
 	for type in (["Primary", "Thumb", "Backdrop"] if mode == "poster" else ["Thumb", "Backdrop", "Primary"]):
 		if not variants.has(type): continue
@@ -317,7 +380,7 @@ func display_node(node: Dictionary, mode: String = "") -> Dictionary:
 		if failed_covers.has(_request_image_key(_image_request({"cover_image": candidate}))): continue
 		image = candidate; break
 	if not image.is_empty(): image = image.merged({"max_width": 128 if mode == "list" else 512})
-	return node.merged({"cover_image": image}, true)
+	return node.merged({"cover_image": image, "has_cover": not image.is_empty() or node.get("has_cover", false)}, true)
 
 func filename(row: Dictionary) -> String:
 	var node: Dictionary = row.get("scene", row.get("container_node", {}))
@@ -443,7 +506,7 @@ func choose(row: Dictionary) -> void:
 				else: query.erase(key)
 			_: cycle(key, {"min_duration": [0, 600, 1200, 1800, 3600], "min_rating": [0, 20, 40, 60, 80], "resolution": ["", "FOUR_K", "SIX_K", "EIGHT_K"]}[key])
 	elif row.has("open_libraries"): _remember(); cancel(); view = "libraries"; menu._reset_navigation()
-	elif row.has("refresh_server"): open_home()
+	elif row.has("refresh_server"): folder_artwork.clear(); open_home()
 	elif row.has("open_saved"): _remember(); cancel(); view = "saved"; menu._reset_navigation()
 	elif row.has("edit_server"): cancel(); menu.account_panel.open("server", true)
 	menu.refresh()
@@ -503,6 +566,7 @@ func _local_favorites_query() -> Array:
 	elif sort_key in ["duration", "rating100", "date"]:
 		var key: String = {"duration": "duration_ms", "rating100": "rating", "date": "year"}[sort_key]
 		result.sort_custom(func(a, b): return int(a.get(key, 0)) > int(b.get(key, 0)))
+	if (sort_key == "title" and query.get("direction", "ASC") == "DESC") or (sort_key != "title" and query.get("direction", "DESC") == "ASC"): result.reverse()
 	return result
 
 func _favorite_changed(id: String, selected: bool) -> void:
@@ -572,6 +636,14 @@ func _navigate(section: String) -> void:
 
 func action(target: int) -> bool:
 	if target < ACTION: return false
+	if sorting():
+		if target >= ACTION + 170 and target < ACTION + 170 + SORTS.size():
+			var sort: String = SORTS[target - ACTION - 170]
+			if sort in available_sorts(): sort_query.sort = sort
+		elif target in [ACTION + 175, ACTION + 176]: sort_query.direction = "ASC" if target == ACTION + 175 else "DESC"
+		elif target == ACTION + 11: _apply_sort(); return true
+		elif target in [ACTION, ACTION + 4, ACTION + 177]: sort_query.clear()
+		menu.refresh(); return true
 	if target == ACTION + 19 and focused():
 		sources_open = not sources_open; menu.refresh(); return true
 	if media_content() and target in [ACTION + 160, ACTION + 161, ACTION + 162, ACTION + 163]:
@@ -593,10 +665,9 @@ func action(target: int) -> bool:
 		2: _remember(); keyboard = "search"; text = candidate_q if view in ["candidates", "facets"] else str(query.get("q", ""))
 		3: _remember(); cancel(); view = "filters"; menu._reset_navigation()
 		4:
-			var sorts: Array = capabilities.get("sorts", SORTS).duplicate();
-			if query.get("favorites", false) and capabilities.get("favorite_scope", "local") != "server": sorts.erase("date")
-			var at: int = sorts.find(str(query.get("sort", "created_at")))
-			if not sorts.is_empty(): query.sort = sorts[(at + 1) % sorts.size()]; query.direction = "ASC" if query.sort == "title" else "DESC"; browse()
+			if view != "scenes" or busy or available_sorts().is_empty(): return true
+			sort_query = {"sort": str(query.get("sort", "created_at")), "direction": str(query.get("direction", "DESC"))}
+			menu._drag.clear(); menu._fling = 0.0
 		6: more()
 		7:
 			if kind in capabilities.get("exclude_facets", []): exclude = not exclude
@@ -688,14 +759,16 @@ func prioritize_covers() -> void:
 		var first: int = menu._first_line() * menu._cols()
 		for row in menu.rows.slice(first, first + menu._drawn_slots()):
 			var node: Dictionary = row.get("scene", row.get("container_node", {}))
-			if not node.is_empty(): nodes.append(display_node(node) if media_content() else node)
+			if not node.is_empty(): nodes.append(node)
 	elif view in ["detail", "metadata"] and not detail.is_empty(): nodes.append(detail)
-	var visible_keys: Array = nodes.map(func(node): return _request_image_key(_image_request(node)))
+	var visible_keys: Array = nodes.map(func(node): return _request_image_key(_image_request(display_node(node) if media_content() else node)))
+	var visible_folders: Array = nodes.map(func(node): return str(node.get("id", ""))) if movie_folders() else []
 	for id in pending.keys():
 		var req: Dictionary = pending[id]
-		if req.action == "cover" and _request_image_key(req) not in visible_keys:
+		if (req.action == "cover" and _request_image_key(req) not in visible_keys) or (req.action == "folder_artwork" and str(req.scene_id) not in visible_folders):
 			if menu.platform: menu.platform.media_server_cancel(int(id))
 			pending.erase(id)
+	for node in nodes: _request_folder_artwork(node)
 
 func _fit_picture(picture: MeshInstance3D, texture: Texture2D, area: Vector2) -> void:
 	var size := texture.get_size()
@@ -752,7 +825,8 @@ func media_row(target: int, row: Dictionary, center: Vector2) -> void:
 	menu._button(target, "", center, Vector2(1.38, 0.112), true, "", false, menu._list)
 	var card: MeshInstance3D = menu._buttons.back().node
 	gallery._picture(display_node(row.get("scene", row.get("container_node", {})), "list"), Vector2(-0.62, 0), Vector2(0.085, 0.098), card)
-	var name := filename(row)
+	var name := str(row.get("title", "")).strip_edges()
+	if name.is_empty(): name = filename(row)
 	var lines := wrapped_lines(name, 1.19, 20)
 	if lines.size() > 2: lines[1] = menu._fit_title(lines[1] + "…", "", 1.19, 20)
 	var title: Label3D = menu._label("\n".join(lines.slice(0, 2)), Vector3(-0.555, 0.044, 0.007), 20, card)
@@ -761,7 +835,8 @@ func media_row(target: int, row: Dictionary, center: Vector2) -> void:
 	var meta: Label3D = menu._label(menu._fit_title(str(info.subtitle), "", 1.18, 14), Vector3(-0.555, -0.039, 0.007), 14, card)
 	meta.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT; meta.modulate = menu.MUTED
 	menu._progress_on(card, float(info.ratio), Vector2(0.04, -0.052), 1.22)
-	menu._tips[target] = name
+	var original := filename(row)
+	menu._tips[target] = name + ("\n" + original if not original.is_empty() and original != name else "")
 
 func draw() -> void:
 	if focused(): _draw_sources_button()
@@ -792,17 +867,18 @@ func draw() -> void:
 	if view == "scenes":
 		if media_content():
 			for i in 3:
-				menu._button(ACTION + 160 + i, "", Vector2(0.30 + i * 0.1, 0.365), Vector2(0.085, 0.065), true, ["poster", "image", "list"][i]); menu._lit(scene_view() == ["poster", "thumb", "list"][i]); menu._tips[ACTION + 160 + i] = I18n.t(["Poster view", "Thumbnail view", "List view"][i])
+				menu._button(ACTION + 160 + i, "", Vector2(0.33 + i * 0.1, 0.365), Vector2(0.085, 0.065), true, ["poster", "image", "list"][i]); menu._lit(scene_view() == ["poster", "thumb", "list"][i]); menu._tips[ACTION + 160 + i] = I18n.t(["Poster view", "Thumbnail view", "List view"][i])
 				if scene_view() == ["poster", "thumb", "list"][i]:
 					var node: MeshInstance3D = menu._buttons.back().node
 					node.material_override.set_shader_parameter("surface_color", menu.SELECTED)
 					node.add_child(menu._quad(Vector2(0.028, 0.003), Vector3(0, -0.025, 0.006), menu.ACCENT, 14))
-			menu._button(ACTION + 163, I18n.t(["Small", "Medium", "Large"][scene_size()]), Vector2(0.61, 0.365), Vector2(0.105, 0.065), scene_view() != "list")
+			menu._button(ACTION + 163, I18n.t(["Small", "Medium", "Large"][scene_size()]), Vector2(0.655, 0.365), Vector2(0.14, 0.065), scene_view() != "list")
 			menu._tips[ACTION + 163] = I18n.t("Poster size")
 		else: menu.draw_view_modes(0.245, 0.44)
 		menu._button(ACTION + 3, "", Vector2(0.81 if media_content() else 0.79, 0.365 if media_content() else 0.245), Vector2(0.08, 0.06), not busy, "filter"); menu._tips[ACTION + 3] = I18n.t("Filters")
-		menu._button(ACTION + 4, "", Vector2(0.72 if media_content() else 0.68, 0.365 if media_content() else 0.245), Vector2(0.08, 0.06), not busy, "sort")
-		menu._tips[ACTION + 4] = I18n.t(SORT_NAMES[maxi(0, SORTS.find(str(query.get("sort", "created_at"))))])
+		menu._button(ACTION + 4, sort_caption(true) if media_content() else "", Vector2(0.045 if media_content() else 0.68, 0.365 if media_content() else 0.245), Vector2(0.37, 0.065) if media_content() else Vector2(0.08, 0.06), not busy and not available_sorts().is_empty(), "" if media_content() else "sort")
+		if media_content(): menu.set_label_size(menu._buttons.back().node.get_child(0), 17)
+		menu._tips[ACTION + 4] = I18n.t("Sort") + " · " + sort_caption()
 		for i in mini(3, chips.size()): menu._button(ACTION + 200 + i, menu._fit_title(str(chips[i].label), "", 0.32, 14) + " ×", Vector2(-0.27 + i * 0.42, -0.595 if media_content() else -0.435), Vector2(0.40, 0.055))
 	if view == "candidates":
 		if kind in capabilities.get("exclude_facets", []): menu._button(ACTION + 7, I18n.t("Exclude" if exclude else "Include"), Vector2(0.1, -0.44), Vector2(0.24, 0.065))
@@ -828,11 +904,45 @@ func draw() -> void:
 	elif view == "filters": _draw_filters()
 	elif view in ["detail", "metadata"] and not detail.is_empty(): _draw_detail()
 	else: menu._draw_rows()
+	if sorting(): _draw_sort()
 
 func _draw_sources_button() -> void:
 	menu._button(ACTION + 19, "", Vector2(-0.59, 0.62), Vector2(0.16, 0.07), true, "menu")
 	menu._lit(sources_open); menu._tips[ACTION + 19] = I18n.t("Main menu")
 	if sources_open: menu._buttons.back().node.material_override.set_shader_parameter("surface_color", menu.SELECTED)
+
+func _draw_sort() -> void:
+	for button in menu._buttons: button.enabled = false
+	var dim: MeshInstance3D = menu._quad(menu._backdrop.mesh.size, menu._backdrop.position + Vector3(0, 0, 0.02), Color(0, 0, 0, 0.15), 24)
+	# UI plates become opaque in compositor captures; the dimmer must retain its alpha.
+	dim.material_override = menu._material(Color(0, 0, 0, 0.15), 24)
+	menu.add_child(dim); menu._decorations.append(dim)
+	menu._text_button(ACTION + 177, "", Vector2(menu._backdrop.position.x, menu._backdrop.position.y), menu._backdrop.mesh.size)
+	menu._buttons.back().node.position.z = 0.026
+	var sorts := available_sorts(); var rows := ceili(sorts.size() / 2.0)
+	var direction_y := 0.16 - rows * 0.09 - 0.035; var apply_y := direction_y - 0.13
+	var size := Vector2(1.02, 0.31 - apply_y + 0.065)
+	var panel: MeshInstance3D = menu._quad(size, Vector3(0.12, 0.31 - size.y / 2, 0.032), menu.PANEL, 30)
+	menu.add_child(panel); menu._decorations.append(panel); menu._block_rays(panel, size)
+	var label: Label3D = menu._label(I18n.t("Sort"), Vector3(-0.325, 0.25, 0.043), 21); label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT; label.render_priority = 32
+	_sort_button(ACTION + 177, "", Vector2(0.56, 0.25), Vector2(0.06, 0.06), false, "close")
+	for index in sorts.size():
+		var i: int = SORTS.find(sorts[index])
+		_sort_button(ACTION + 170 + i, I18n.t(SORT_NAMES[i]), Vector2(-0.115 + (index % 2) * 0.46, 0.16 - (index / 2) * 0.09), Vector2(0.42, 0.065), sort_query.sort == SORTS[i])
+	for i in 2:
+		_sort_button(ACTION + 175 + i, I18n.t("Ascending" if i == 0 else "Descending") + (" ↑" if i == 0 else " ↓"), Vector2(-0.115 + i * 0.46, direction_y), Vector2(0.42, 0.065), sort_query.direction == ("ASC" if i == 0 else "DESC"))
+	_sort_button(ACTION + 11, I18n.t("Apply"), Vector2(0.12, apply_y), Vector2(0.30, 0.065))
+
+func _sort_button(target: int, text_value: String, center: Vector2, size: Vector2, selected: bool = false, icon: String = "") -> void:
+	menu._button(target, text_value, center, size, true, icon)
+	menu._lit(selected)
+	var node: MeshInstance3D = menu._buttons.back().node
+	node.position.z = 0.04; node.material_override.render_priority = 31
+	node.material_override.set_shader_parameter("surface_color", menu._buttons.back().base_color)
+	for child in node.get_children():
+		if child is MeshInstance3D and child.material_override: child.material_override.render_priority = 32
+	menu.set_label_size(node.get_child(0), 18)
+	(node.get_child(0) as Label3D).render_priority = 32
 
 func _draw_sign_in_required() -> void:
 	menu._label(I18n.t("Server authentication required"), Vector3(0.16, 0.045, 0.009), 26)
@@ -849,7 +959,7 @@ func _draw_context() -> void:
 	elif query.get("favorites", false): context = I18n.t("Favorites" if capabilities.get("favorite_scope", "local") == "server" else "On-device favorites")
 	elif query.get("all_libraries", false): context = actor_name
 	if not folder_path.is_empty(): context += " / " + " / ".join(folder_path.map(func(node): return str(node.title)))
-	var label: Label3D = menu._label(menu._fit_title(context, "", 0.69 if media_content() else (0.84 if view == "scenes" else 1.0), 15), Vector3(-0.48, 0.365 if media_content() else (0.395 if focused() else 0.245), 0.004), 15); label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT; label.modulate = menu.MUTED
+	var label: Label3D = menu._label(menu._fit_title(context, "", 0.30 if media_content() else (0.84 if view == "scenes" else 1.0), 15), Vector3(-0.48, 0.365 if media_content() else (0.395 if focused() else 0.245), 0.004), 15); label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT; label.modulate = menu.MUTED
 
 func _draw_home() -> void:
 	menu._list = Node3D.new(); menu.add_child(menu._list); menu._decorations.append(menu._list); menu._bar_thumb = null

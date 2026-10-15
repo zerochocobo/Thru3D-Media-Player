@@ -5,6 +5,7 @@ signal thumbnail_ready(uri: String)
 signal playback_failed
 
 const PlatformMethods := preload("res://scripts/platform_methods.gd")
+const I18n := preload("res://scripts/i18n.gd")
 const PlaybackErrors := preload("res://scripts/playback_errors.gd")
 const Loading := preload("res://scripts/media_loading.gd")
 var _loading_status := {}
@@ -55,7 +56,7 @@ var alpha_enabled := false
 var alpha_requested := false
 ## Realtime 2D->3D: a depth model drives per-eye parallax on mono sources (never with Alpha or SBS).
 var depth_requested := false
-var auto_depth := false # Global user choice, independent of remembered per-file projection.
+var auto_depth := false # This file's conversion choice, retained while changing its projection.
 var depth_enabled := false
 const DEPTH_STRENGTHS := [0.5, 1.0, 1.5, 2.0]
 const DepthStrength := preload("res://scripts/depth_strength.gd")
@@ -185,6 +186,20 @@ var _layer_seek_hold := false
 var _hole_material: ShaderMaterial
 var _alignment_border: ShaderMaterial
 var video_layer_shown := false # main renders the eye buffers transparent while true
+## Source rotation the layer quad turns (a rotated file on the decoder surface keeps its coded orientation).
+var layer_rotation := 0
+## Immersive subtitles as a quad layer over the video: the caption canvas is copied into its own
+## picture swapchain whenever it redraws, instead of a blended patch drawn into both eye buffers.
+var _subtitle_on_layer := false
+var _subtitle_layer_version := -1 # canvas version in the swapchain, -1 none
+var _subtitle_layer_generation := -1
+var _subtitle_layer_failed := false
+var _subtitle_copy_after := -1 # frames_drawn after which a redrawn canvas has rendered
+var _subtitle_texture: ImageTexture
+## Flat-screen PGS cues: the bitmap in the subtitle swapchain, padded to a size bucket so a new cue
+## rarely recreates it, shown as a quad (or a cylinder section on a curved screen) over the video.
+var _bitmap_layer_texture: ImageTexture # the cue texture last copied
+var _bitmap_layer_size := Vector2i.ZERO
 var _picture_token := -1 # the 2D->3D pair last copied into the picture layer
 ## Frames to copy the held pair again: a strength change re-warps it in place, asynchronously.
 var _picture_refresh := 0
@@ -472,7 +487,7 @@ func open_local(uri: String, title: String, start_ms: int = 0, restore_mode: boo
 	var stated := Naming.from_metadata(_layout_basename, metadata)
 	if uri.begins_with("medialib://"): stated.erase("alpha")
 	packed_file = bool(stated.get("packed", false))
-	packed_alpha = packed_file
+	packed_alpha = packed_file and (alpha or restore_mode)
 	_layout_pending = null
 	if restore_mode:
 		# Ignore legacy per-file model choices; everyday playback uses one tested ROI profile.
@@ -497,7 +512,7 @@ func open_local(uri: String, title: String, start_ms: int = 0, restore_mode: boo
 			stereo_half = int(mode_lock.layout) in [3, 4]
 			fisheye_fov = int(mode_lock.fisheye_fov)
 			swap_eyes = false
-			depth_requested = bool(mode_lock.depth) and not stereo_sbs
+			depth_requested = false # Projection/layout locks never enable conversion on other files.
 		else:
 			depth_requested = false
 			geometry = int(stated.get("geometry", Geometry.Geometry.FLAT))
@@ -508,8 +523,9 @@ func open_local(uri: String, title: String, start_ms: int = 0, restore_mode: boo
 			swap_eyes = bool(stated.get("swap", false))
 			if not stated.has("geometry") or not stated.has("stereo") or (geometry in [Geometry.Geometry.FLAT, Geometry.Geometry.FISHEYE] and not stated.has("stereo_half")):
 				_layout_pending = stated
-	# Videos start as normal playback unless the name asks for live Alpha.
-	alpha_requested = alpha or (restore_mode and bool(stated.get("alpha", false)) and not packed_file)
+		auto_depth = depth_requested
+	# Manual Alpha is never restored from memory; explicit filename markers still opt in.
+	alpha_requested = (alpha or (restore_mode and bool(stated.get("alpha", false)))) and not packed_file
 	_thumb_tries = 0
 	_thumbnail_result = {}
 	_thumb_after_ms = -1
@@ -519,8 +535,6 @@ func open_local(uri: String, title: String, start_ms: int = 0, restore_mode: boo
 		_thumb_after_ms = 0
 	local_uri = uri
 	_warm_rvm()
-	if auto_depth and OS.get_name() == "Android" and Engine.has_singleton("QuestPlayer"):
-		Engine.get_singleton("QuestPlayer").warm_depth()
 	display_name = title
 	_bookmark_metadata = metadata.duplicate(true)
 	if not basename.is_empty(): _bookmark_metadata.basename = basename
@@ -534,6 +548,8 @@ func open_local(uri: String, title: String, start_ms: int = 0, restore_mode: boo
 		if source: _bookmark_metadata.size = source.get_length()
 	_bookmark_resolve()
 	depth_requested = auto_depth and geometry == Geometry.Geometry.FLAT and not stereo_sbs and not alpha_requested
+	if depth_requested and OS.get_name() == "Android" and Engine.has_singleton("QuestPlayer"):
+		Engine.get_singleton("QuestPlayer").warm_depth()
 	_last_seek_mode = SeekPolicy.normalize(seek_mode)
 	# The cover comes from a displayed frame (never a second decoder). The layer has none to read, so a
 	# layer session leaves it to the next eye-buffer session (Alpha, 3D, effects) instead of switching.
@@ -563,7 +579,7 @@ func open_local(uri: String, title: String, start_ms: int = 0, restore_mode: boo
 	_clone_applied = false
 	subtitles.select(0)
 	subtitles.clear(true)
-	_subtitle_auto_pending = subtitle_auto_load
+	_subtitle_auto_pending = subtitle_auto_load and restore_mode
 	_queue_track_restore(track_memory.lookup(uri) if restore_mode else {})
 	subtitle_delay = float(subtitle_timing.lookup(uri).get("delay_seconds", 0.0)) if restore_mode else 0.0
 	subtitles.set_delay(subtitle_delay)
@@ -633,7 +649,10 @@ func close_video() -> void:
 	_update_layer()
 	_picture_token = -1
 	if PlatformMethods.supports(platform, "destroy_layer_image"):
-		platform.destroy_layer_image()
+		platform.destroy_layer_image(VideoLayer.PICTURE_SLOT)
+		platform.destroy_layer_image(VideoLayer.SUBTITLE_SLOT)
+		_subtitle_layer_version = -1; _bitmap_layer_texture = null; _bitmap_layer_size = Vector2i.ZERO
+		_subtitle_layer_failed = false
 		if video_layer:
 			video_layer.invalidate()
 			video_layer.picture_size = Vector2.ZERO
@@ -1063,6 +1082,8 @@ func _capture_track_choices() -> Dictionary:
 	choices.merge(_track_restore, true)
 	for channel in TrackMemory.CHANNELS:
 		if _track_restore.has(channel): continue
+		# A still-pending automatic subtitle choice is not the user's "off".
+		if channel == "subtitle" and _subtitle_auto_pending and not _track_choices.has("subtitle"): continue
 		var id := audio_track_id if channel == "audio" else subtitles.requested_track
 		var choice := TrackMemory.describe(id, _raw_tracks(channel))
 		if not choice.is_empty(): choices[channel] = choice
@@ -1134,15 +1155,85 @@ func set_subtitle_auto_load(enabled: bool) -> void:
 
 func _auto_select_subtitle() -> void:
 	if not subtitle_auto_load or not _subtitle_auto_pending or _track_restore.has("subtitle"): return
-	var stem := _layout_basename.get_basename().to_lower()
-	if stem.is_empty(): return
-	# Explicit defaults: exact basename SRT, then ASS. Other formats/variants
-	# remain available in the existing track list for a manual choice.
-	for extension in ["srt", "ass"]:
+	var stems: Array[String] = [_layout_basename.get_basename().to_lower()]
+	# DLNA display titles can differ from the media filename; history keeps the original URI.
+	if local_uri.begins_with("http://") or local_uri.begins_with("https://") or local_uri.begins_with("smb://") \
+		or local_uri.begins_with("file://") or local_uri.begins_with("cloud://"):
+		var original := _subtitle_filename(local_uri).get_basename()
+		if not original.is_empty() and not stems.has(original): stems.append(original)
+	# Exact filenames win over language preferences; SRT, then ASS remain first.
+	var extensions := ["srt", "ass", "ssa", "vtt", "smi", "sami", "sub"]
+	for extension in extensions:
 		for track in subtitle_tracks():
-			if bool(track.get("external", false)) and str(track.get("title", "")).to_lower() == stem + "." + extension:
+			# Language labels such as "zh · SRT" are for display, not filename matching.
+			var filename := _subtitle_filename(str(track.get("filename", "")))
+			if filename.is_empty(): filename = str(track.get("title", "")).to_lower()
+			if bool(track.get("external", false)) and stems.any(func(stem): return not stem.is_empty() and filename == stem + "." + extension):
 				if set_subtitle_track(int(track.id), false): _subtitle_auto_pending = false
 				return
+	# Unlabelled tracks stay available for manual selection. Prefer an explicit Chinese
+	# script over generic zh, without treating Simplified and Traditional as equivalent.
+	var target := "zh_Hans" if I18n.language == "zh" else I18n.language
+	var selected := 0
+	var best_rank := 0
+	var best_format := extensions.size()
+	for track in subtitle_tracks():
+		if not bool(track.get("external", false)): continue
+		var language := _subtitle_language(track)
+		var rank := 2 if language == target else (1 if language == "zh" and target.begins_with("zh_") else 0)
+		var filename := _subtitle_filename(str(track.get("filename", "")))
+		if filename.is_empty(): filename = str(track.get("title", "")).to_lower()
+		var format := extensions.find(filename.get_extension())
+		if format < 0:
+			format = extensions.find({"subrip": "srt", "ass": "ass", "ssa": "ssa", "webvtt": "vtt", "sami": "smi"}.get(str(track.get("codec", "")), ""))
+		if format < 0: format = extensions.size()
+		if rank > best_rank or (rank > 0 and rank == best_rank and format < best_format):
+			selected = int(track.id); best_rank = rank; best_format = format
+	if selected > 0 and set_subtitle_track(selected, false): _subtitle_auto_pending = false
+
+static func _subtitle_filename(location: String) -> String:
+	if location.contains("://"):
+		return location.get_slice("?", 0).get_slice("#", 0).get_file().uri_decode().to_lower()
+	return location.get_file().to_lower()
+
+static func _subtitle_language(track: Dictionary) -> String:
+	var declared := str(track.get("language", "")).strip_edges().to_lower()
+	var language := _subtitle_language_code(declared)
+	if language.is_empty() and declared not in ["", "und", "unknown"]: return declared
+	if not language.is_empty() and language != "zh": return language
+	# DLNA resource language is also carried by its display label (e.g. "zh · SRT").
+	var label := _subtitle_language_code(str(track.get("title", "")).get_slice("·", 0))
+	if language.is_empty(): language = label
+	if not language.is_empty() and language != "zh": return language
+	var filename := _subtitle_filename(str(track.get("filename", "")))
+	if filename.is_empty(): filename = str(track.get("title", "")).to_lower()
+	var name := filename.get_basename()
+	for suffix in ["hans", "hant", "cn", "sg", "tw", "hk", "mo"]:
+		name = name.replace("zh_" + suffix, "zh-" + suffix)
+	for separator in ["_", " ", "[", "]", "(", ")"]: name = name.replace(separator, ".")
+	var parts := name.split(".", false)
+	parts.reverse()
+	# Read suffix tags, not words elsewhere in a movie title.
+	for part in parts.slice(0, 3):
+		var hint := _subtitle_language_code(part)
+		if hint.is_empty() or (language == "zh" and not hint.begins_with("zh")): continue
+		if hint != "zh": return hint
+		language = hint
+	return language
+
+static func _subtitle_language_code(value: String) -> String:
+	var tag := value.strip_edges().to_lower().replace("_", "-")
+	if tag.begins_with("zh-"):
+		var parts := tag.split("-")
+		if "hant" in parts: return "zh_Hant"
+		if "hans" in parts: return "zh_Hans"
+		return "zh_Hant" if "tw" in parts or "hk" in parts or "mo" in parts else ("zh_Hans" if "cn" in parts or "sg" in parts else "zh")
+	if tag in ["chs", "hans", "简体", "简体中文", "簡體中文"]: return "zh_Hans"
+	if tag in ["cht", "hant", "繁体", "繁體", "繁体中文", "繁體中文"]: return "zh_Hant"
+	if tag in ["zh", "zho", "chi", "cmn", "chinese", "中文"]: return "zh"
+	if tag in ["en", "eng", "english"] or tag.begins_with("en-"): return "en"
+	if tag in ["ja", "jpn", "jp", "japanese", "日本語", "日语", "日語"] or tag.begins_with("ja-"): return "ja"
+	return ""
 
 func subtitle_tracks() -> Array[Dictionary]:
 	var tracks: Array[Dictionary] = []
@@ -1246,9 +1337,9 @@ func mode_action_allowed(operation: String) -> bool:
 		and not operation.begins_with("stereo_") and not operation.begins_with("projection_") \
 		and not operation.begins_with("fov_")
 
-## The current projection and layout as a lock.
+## Lock only projection/layout; generated 3D is remembered for the individual file.
 func current_lock() -> Dictionary:
-	return {"geometry": geometry, "layout": stereo_layout(), "depth": depth_requested and not stereo_sbs, "fisheye_fov": fisheye_fov}
+	return {"geometry": geometry, "layout": stereo_layout(), "depth": false, "fisheye_fov": fisheye_fov}
 
 ## Locks the current mode, or unlocks when it is the locked one.
 func toggle_mode_lock() -> void:
@@ -1266,7 +1357,7 @@ func load_mode_lock(value: Variant) -> void:
 	var numbers := ["geometry", "layout", "fisheye_fov"].all(func(k): return value.get(k) is int or value.get(k) is float)
 	if not numbers or not value.get("depth") is bool or int(value.geometry) not in [0, 1, 2, 3] 		or int(value.layout) not in [0, 1, 2, 3, 4] or int(value.fisheye_fov) not in FISHEYE_FOVS:
 		return
-	mode_lock = {"geometry": int(value.geometry), "layout": int(value.layout), "depth": bool(value.depth) and int(value.layout) == 0,
+	mode_lock = {"geometry": int(value.geometry), "layout": int(value.layout), "depth": false,
 		"fisheye_fov": int(value.fisheye_fov)}
 
 func toggle_loop() -> void:
@@ -1471,7 +1562,7 @@ func _remember_mode() -> void:
 		return
 	var mode := {"geometry": geometry, "stereo_sbs": stereo_sbs, "swap_eyes": swap_eyes,
 		"viewing_eye": viewing_eye, "stereo_horizontal": stereo_horizontal, "stereo_vertical": stereo_vertical,
-		"alpha_requested": alpha_requested, "profile": profile, "depth_requested": depth_requested,
+		"alpha_requested": false, "profile": profile, "depth_requested": depth_requested,
 		"top_bottom": stereo_sbs and top_bottom, "stereo_half": stereo_sbs and stereo_half, "fisheye_fov": fisheye_fov}
 	if mode_memory.remember(local_uri, mode) and not mode_memory.save():
 		Log.record("file_mode_save_failed", {"error": mode_memory.last_error})
@@ -1499,6 +1590,8 @@ func _present_pending() -> void:
 		return
 	media.last_pair = claimed
 	if _binding.layer: _layer_session = true
+	# The decoder surface keeps a rotated source's coded orientation: the layer quad is turned.
+	layer_rotation = int(claimed.get("surface_rotation_degrees", 0)) if _binding.layer else 0
 	media.logical_session_id = int(claimed.logical_session_id)
 	media.generation = int(claimed.generation)
 	media.format_revision = int(claimed.format_revision)
@@ -1510,8 +1603,8 @@ func _present_pending() -> void:
 		"spatial_video": _spatial_video,
 		"pixel_aspect": par if is_finite(par) and par > 0.0 and par <= 16.0 else 1.0,
 		"stereo_mode": str(claimed.get("stereo_mode", "")), "unapplied_rotation_degrees": 0,
-		"source_rotation_degrees": int(claimed.get("source_rotation_degrees", 0))}
-	_accept_source_rotation(int(claimed.get("source_rotation_degrees", 0)))
+		"source_rotation_degrees": int(claimed.get("source_rotation_degrees", claimed.get("surface_rotation_degrees", 0)))}
+	_accept_source_rotation(int(media.format.source_rotation_degrees))
 	_rvm_alpha = bool(claimed.alpha_requested) and bool(claimed.inference_ran)
 	depth_enabled = bool(claimed.get("depth_requested", false)) and bool(claimed.get("depth_ran", false))
 	_apply_packed()
@@ -1685,7 +1778,9 @@ func _reopen_after_context_loss(uri: String, title: String, position_ms: int, re
 	var eye := viewing_eye
 	var alignment := Vector2(stereo_horizontal, stereo_vertical)
 	var tracks := _capture_track_choices()
-	if open_local(uri, title, position_ms, false, alpha_requested):
+	var auto_subtitle := _subtitle_auto_pending # An internal reopen keeps an unfinished automatic choice.
+	if open_local(uri, title, position_ms, false, alpha_wanted()):
+		_subtitle_auto_pending = auto_subtitle
 		_queue_track_restore(tracks)
 		_remember_file = remember_file
 		_file_permission_persisted = persisted
@@ -1828,7 +1923,8 @@ func _sync_subtitle_surface() -> void:
 	# The layer shows no shader overlays: subtitles go on their own surface above the hole.
 	var separate := not is_zero_approx(screen_rotation) or _layer_session
 	material.set_shader_parameter("separate_subtitles", separate)
-	_subtitle_surface.visible = separate and panel.visible and (material.get_shader_parameter("subtitle_enabled") == true or material.get_shader_parameter("bitmap_subtitle_enabled") == true)
+	_subtitle_surface.visible = separate and panel.visible and not _subtitle_on_layer \
+		and (material.get_shader_parameter("subtitle_enabled") == true or material.get_shader_parameter("bitmap_subtitle_enabled") == true)
 	if not _subtitle_surface.visible: return
 	if geometry == Geometry.Geometry.FLAT:
 		_subtitle_surface.mesh = panel.mesh
@@ -1967,7 +2063,8 @@ func stereo_offset_uv() -> Vector2:
 func _layer_presentation() -> bool:
 	return layer_enabled and video_layer != null and not alpha_requested and not depth_requested and not packed_file \
 		and (local_uri.is_empty() or local_uri != _layer_blocked_uri) \
-		and video_layer.grades(color_grade) and video_layer.supports(geometry, screen_curve > 0.0)
+		and video_layer.grades(color_grade) and video_layer.supports(geometry, screen_curve > 0.0) \
+		and (int(media.format.get("source_rotation_degrees", 0)) == 0 or _layer_turns())
 
 ## Short code for the FPS overlay: why playback is in the eye buffers ("" when on the layer).
 func layer_block_reason() -> String:
@@ -1982,11 +2079,16 @@ func layer_block_reason() -> String:
 	return "wait"
 
 ## RGBA frames already have their file orientation baked by MPV. Keep manual rotation as an
-## extra adjustment, and never reopen this file on an unnormalized decoder Surface for its cover.
+## extra adjustment. A flat, uncurved, mono screen shows a rotated source on the decoder surface by
+## turning its quad; other shapes never reopen this file on the unnormalized surface.
 func _accept_source_rotation(rotation: int) -> void:
-	if rotation == 0: return
+	if rotation == 0 or _layer_turns(): return
 	_layer_blocked_uri = local_uri
 	_layer_return_uri = ""
+
+## The compositor can turn only a quad: a rotated source keeps the layer on flat, uncurved, mono screens.
+func _layer_turns() -> bool:
+	return geometry == Geometry.Geometry.FLAT and screen_curve <= 0.0 and not stereo_sbs
 
 func _layer_wanted() -> bool:
 	if video_layer: video_layer.update_session()
@@ -2023,9 +2125,13 @@ func _update_layer() -> void:
 	if _layer_seek_hold and not _waiting_first: _layer_seek_hold = false
 	var layer_size := Vector2(float(media.playback.get("layer_surface_width", VideoLayer.SURFACE_SIZE)), \
 		float(media.playback.get("layer_surface_height", VideoLayer.SURFACE_SIZE)))
+	var extras := _subtitle_layer_extras(origin) if origin != null else []
 	var shown := (_layer_session or _layer_seek_hold) and media.accepts(media.session_id) \
 		and (media.frame_counter > 0 or _layer_seek_hold) \
-		and media.state != "failed" and origin != null and video_layer.show(self, origin, VideoLayer.SURFACE, layer_size)
+		and media.state != "failed" and origin != null \
+		and video_layer.show(self, origin, VideoLayer.SURFACE, layer_size, -1, Vector2.ZERO, Vector4(0, 0, 1, 1), VideoLayer.OPAQUE, extras)
+	if not shown: _subtitle_on_layer = false
+	if _subtitle_surface and _subtitle_on_layer: _subtitle_surface.visible = false
 	if not shown and not _layer_session and origin != null:
 		shown = _show_depth_picture(origin)
 	video_layer_shown = shown
@@ -2036,6 +2142,123 @@ func _update_layer() -> void:
 		panel.material_override = _hole_material
 	elif panel.material_override == _hole_material:
 		panel.material_override = material
+
+## Immersive (VR180/360) captions as their own quad layer: the projected caption plane is a quad in
+## space, which the compositor draws from each eye exactly as the eye-buffer patch shader did. The
+## canvas reaches the swapchain one frame after each redraw; the previous copy stays up meanwhile.
+func _subtitle_layer_extras(origin: XROrigin3D) -> Array:
+	_subtitle_on_layer = false
+	if geometry == Geometry.Geometry.FLAT: return _bitmap_layer_extras(origin)
+	if not _layer_session or _subtitle_layer_failed \
+		or material.get_shader_parameter("subtitle_enabled") != true or not projected_subtitles or not projected_subtitles.viewport \
+		or not PlatformMethods.supports(platform, "copy_layer_texture"):
+		return []
+	var to_patch: Variant = material.get_shader_parameter("subtitle_world_to_patch")
+	if not to_patch is Transform3D: return []
+	_check_subtitle_generation()
+	var canvas: SubViewport = projected_subtitles.viewport
+	var version: int = projected_subtitles.version
+	if version != _subtitle_layer_version:
+		if _subtitle_copy_after < 0: _subtitle_copy_after = Engine.get_frames_drawn() + 1
+		if Engine.get_frames_drawn() > _subtitle_copy_after:
+			_subtitle_copy_after = -1
+			if not _copy_subtitle_canvas(canvas):
+				_subtitle_layer_failed = true
+				DiagnosticLog.record("subtitle_layer_failed", {"version": version, "size": [canvas.size.x, canvas.size.y]})
+				return []
+			_subtitle_layer_version = version
+	if _subtitle_layer_version < 0: return []
+	var pose := (to_patch as Transform3D).affine_inverse()
+	var extent: Variant = material.get_shader_parameter("subtitle_patch_half_extent")
+	var half: float = extent if extent != null else 0.35
+	var size := Vector2.ONE * half * 2.0 * pose.basis.x.length()
+	_subtitle_on_layer = true
+	return [{"values": video_layer.quad_values(origin, pose, size, VideoLayer.SUBTITLE_SLOT, Vector2(canvas.size)),
+		"order": VideoLayer.OVERLAY_ORDER}]
+
+func _check_subtitle_generation() -> void:
+	if video_layer.generation != _subtitle_layer_generation:
+		_subtitle_layer_generation = video_layer.generation # a new session dropped the swapchain
+		_subtitle_layer_version = -1
+		_bitmap_layer_texture = null
+		_bitmap_layer_size = Vector2i.ZERO
+
+## Flat-screen PGS: the cue's rectangle of the subtitle surface (the screen, kept upright when it
+## rolls) as its own layer. The eye-buffer surface covered the whole screen for a strip of text.
+func _bitmap_layer_extras(origin: XROrigin3D) -> Array:
+	var texture: ImageTexture = bitmap_subtitles.texture
+	var rect: Variant = material.get_shader_parameter("bitmap_subtitle_rect")
+	if not _layer_session or _subtitle_layer_failed or texture == null or not rect is Vector4 \
+		or material.get_shader_parameter("bitmap_subtitle_enabled") != true or material.get_shader_parameter("rotation_degrees") not in [null, 0] \
+		or not PlatformMethods.supports(platform, "copy_layer_texture"):
+		return []
+	_check_subtitle_generation()
+	var size := Vector2i(texture.get_size())
+	if texture != _bitmap_layer_texture:
+		# Buckets of 256 x 64 pixels: most cues reuse the swapchain of the one before.
+		var bucket := Vector2i(ceili(size.x / 256.0) * 256, ceili(size.y / 64.0) * 64).max(_bitmap_layer_size)
+		if not _copy_bitmap_cue(bucket):
+			_subtitle_layer_failed = true
+			DiagnosticLog.record("subtitle_layer_failed", {"bitmap": [size.x, size.y], "bucket": [bucket.x, bucket.y]})
+			return []
+		_bitmap_layer_texture = texture
+		_bitmap_layer_size = bucket
+	# The cue's part of the surface, clipped to it as the surface clipped it.
+	var cue := Rect2(rect.x, rect.y, rect.z, rect.w)
+	var shown := cue.intersection(Rect2(0, 0, 1, 1))
+	if not shown.has_area(): return []
+	var start := ((shown.position - cue.position) / cue.size * Vector2(size)).round()
+	var pixels := Rect2(start, ((shown.end - cue.position) / cue.size * Vector2(size)).round() - start)
+	var pose := subtitle_transform()
+	var scale := Vector2(pose.basis.x.length(), pose.basis.y.length())
+	pose.basis = pose.basis.orthonormalized()
+	var screen := _flat.size * scale
+	var middle := (shown.get_center() - Vector2(0.5, 0.5)) * screen
+	var extent := shown.size * screen
+	var values: PackedFloat32Array
+	var image := Vector2(_bitmap_layer_size)
+	if screen_curve > 0.0:
+		var radius := _curve_radius() * scale.x
+		# The mesh bends towards the viewer from the panel origin; the cylinder centre sits on that axis.
+		pose.origin += pose.basis * Vector3(0, -middle.y, radius)
+		pose.basis = pose.basis * Basis(Vector3.UP, -middle.x / radius)
+		values = video_layer.cylinder_values(origin, pose, radius, extent.x / radius, extent.x / extent.y,
+			VideoLayer.SUBTITLE_SLOT, image, pixels)
+	else:
+		pose.origin += pose.basis * Vector3(middle.x, -middle.y, 0)
+		values = video_layer.quad_values(origin, pose, extent, VideoLayer.SUBTITLE_SLOT, image, pixels)
+	_subtitle_on_layer = true
+	return [{"values": values, "order": VideoLayer.OVERLAY_ORDER}]
+
+## The cue's premultiplied pixels at the top left of a transparent bucket-sized image, copied once.
+func _copy_bitmap_cue(bucket: Vector2i) -> bool:
+	_subtitle_layer_version = -1 # the immersive canvas no longer is in the swapchain
+	var cue: Image = bitmap_subtitles.image
+	if cue == null or cue.is_empty(): return false
+	if cue.get_format() != Image.FORMAT_RGBA8: cue.convert(Image.FORMAT_RGBA8)
+	var padded := Image.create_empty(bucket.x, bucket.y, false, Image.FORMAT_RGBA8)
+	padded.blit_rect(cue, Rect2i(Vector2i.ZERO, cue.get_size()), Vector2i.ZERO)
+	if _subtitle_texture and Vector2i(_subtitle_texture.get_size()) == bucket: _subtitle_texture.update(padded)
+	else: _subtitle_texture = ImageTexture.create_from_image(padded)
+	if not platform.create_layer_image(VideoLayer.SUBTITLE_SLOT, bucket.x, bucket.y, 1, false): return false
+	if platform.acquire_layer_image(VideoLayer.SUBTITLE_SLOT) <= 0: return false
+	var copied: bool = platform.copy_layer_texture(VideoLayer.SUBTITLE_SLOT, RenderingServer.texture_get_native_handle(_subtitle_texture.get_rid()))
+	return platform.release_layer_image(VideoLayer.SUBTITLE_SLOT, false) and copied
+
+func _copy_subtitle_canvas(canvas: SubViewport) -> bool:
+	_bitmap_layer_texture = null; _bitmap_layer_size = Vector2i.ZERO # the PGS cue no longer is in the swapchain
+	var size := Vector2i(canvas.size)
+	if not platform.create_layer_image(VideoLayer.SUBTITLE_SLOT, size.x, size.y, 1, false): return false
+	# A viewport texture has no GL texture of its own in this renderer: read the canvas back once per
+	# cue into a plain texture (700 px square, on caption changes only) and copy that.
+	var image := canvas.get_texture().get_image()
+	if image == null or image.is_empty(): return false
+	if image.get_format() != Image.FORMAT_RGBA8: image.convert(Image.FORMAT_RGBA8)
+	if _subtitle_texture and Vector2i(_subtitle_texture.get_size()) == image.get_size(): _subtitle_texture.update(image)
+	else: _subtitle_texture = ImageTexture.create_from_image(image)
+	if platform.acquire_layer_image(VideoLayer.SUBTITLE_SLOT) <= 0: return false
+	var copied: bool = platform.copy_layer_texture(VideoLayer.SUBTITLE_SLOT, RenderingServer.texture_get_native_handle(_subtitle_texture.get_rid()))
+	return platform.release_layer_image(VideoLayer.SUBTITLE_SLOT, false) and copied
 
 ## 2D->3D: the bridge's stereo pair of each frame, copied into the picture layer once per pair.
 ## Until the model's first map (shader parallax) the frame stays in the eye buffers.
@@ -2050,14 +2273,14 @@ func _show_depth_picture(origin: XROrigin3D) -> bool:
 	if token != _picture_token or _picture_refresh > 0:
 		_picture_refresh = maxi(0, _picture_refresh - 1)
 		var warp := int(ticket.get("warp_texture_id", 0))
-		var created: bool = warp > 0 and platform.create_layer_image(size.x, size.y, 1, false)
+		var created: bool = warp > 0 and platform.create_layer_image(VideoLayer.PICTURE_SLOT, size.x, size.y, 1, false)
 		if created and Vector2i(video_layer.picture_size) != size:
 			video_layer.invalidate() # a new swapchain for this size
 			video_layer.picture_size = Vector2(size)
-		if not created or platform.acquire_layer_image() <= 0:
+		if not created or platform.acquire_layer_image(VideoLayer.PICTURE_SLOT) <= 0:
 			return false
-		var copied: bool = platform.copy_layer_texture(warp)
-		if not platform.release_layer_image(false) or not copied:
+		var copied: bool = platform.copy_layer_texture(VideoLayer.PICTURE_SLOT, warp)
+		if not platform.release_layer_image(VideoLayer.PICTURE_SLOT, false) or not copied:
 			return false
 		_picture_token = token
 	return video_layer.show(self, origin, VideoLayer.PICTURE, Vector2(size), 1)
@@ -2085,7 +2308,9 @@ func _reopen_at(position_ms: int, layer: bool) -> void:
 		"depth": depth_requested, "geometry": geometry, "compatible": media.playback.get("layer_compatible", true)})
 	_eye_buffer_only = not layer
 	var return_uri := _layer_return_uri
-	if open_local(local_uri, display_name, position, false, alpha_requested):
+	var auto_subtitle := _subtitle_auto_pending # An internal reopen keeps an unfinished automatic choice.
+	if open_local(local_uri, display_name, position, false, alpha_wanted()):
+		_subtitle_auto_pending = auto_subtitle
 		_queue_track_restore(tracks)
 		_remember_file = remember
 		_file_permission_persisted = persisted

@@ -204,6 +204,8 @@ func remember_playback_context() -> void:
 			_playback_context.search[key] = value.duplicate(true) if value is Array or value is Dictionary else value
 
 func set_compact(value: bool, restore_playback: bool = false) -> void:
+	if value: server_browser.sort_query.clear()
+	var keep_current_visible := _current_file_visible()
 	var anchor := _position_to_restore.duplicate(true) if not _position_to_restore.is_empty() else capture_position()
 	if restore_playback:
 		if _playback_context.is_empty():
@@ -231,11 +233,49 @@ func set_compact(value: bool, restore_playback: bool = false) -> void:
 		_compact_server_context = {}; _compact_server_entries = []
 	_position_to_restore = anchor
 	refresh()
+	if keep_current_visible and not _current_file_visible():
+		_reveal_current_file(false)
+		anchor = capture_position()
 	_layout_anchor = anchor; _layout_scroll = scroll
 	# Search resolution can open a file before its containing folder has ever been listed.
 	if compact and platform and rows.is_empty() and section == Section.CLOUD and not cloud_search.active and not _cloud_stack.is_empty():
 		_load_cloud(false, false, _cloud_page)
 		refresh()
+
+func show_playback_files(restore_playback: bool = false) -> void:
+	set_compact(true, restore_playback)
+	if section == Section.RECENT:
+		var index := _current_file_index(_recent_all_rows)
+		if index >= 0 and _recent_page != index / RECENT_PAGE_SIZE:
+			_recent_page = index / RECENT_PAGE_SIZE
+			_position_to_restore = {}
+			refresh()
+	_reveal_current_file()
+	# An unlisted cloud folder finishes loading after the playback list opens.
+	if section == Section.CLOUD and _cloud_busy and current_file_provider.is_valid():
+		var uri := str(current_file_provider.call())
+		if not uri.is_empty():
+			_cloud_requested_position = {"key": uri, "index": _first_line() * _cols()}
+	_layout_anchor = capture_position(); _layout_scroll = scroll
+
+func _current_file_index(entries: Array) -> int:
+	for index in entries.size():
+		if _is_current_row(entries[index]): return index
+	return -1
+
+func _current_file_visible() -> bool:
+	if not browser_content(): return false
+	var index := _current_file_index(rows)
+	return index >= _first_line() * _cols() and index < (_first_line() + _lines()) * _cols()
+
+func _reveal_current_file(at_top: bool = true) -> void:
+	if not browser_content(): return
+	var index := _current_file_index(rows)
+	if index < 0: return
+	var line := float(index / _cols())
+	_position_to_restore = {}
+	_drag = {}; _fling = 0.0
+	_set_scroll(line if at_top else clampf(scroll, line - _lines() + 1, line))
 
 func hide_for_layout() -> void:
 	_position_to_restore = capture_position() if browser_content() else {}
@@ -361,6 +401,7 @@ func _row_target(target: int) -> bool:
 
 ## The list area, gaps between tiles included: a press there can drag the list.
 func _in_list(point: Vector3) -> bool:
+	if section == Section.MEDIA_SERVER and server_browser.sorting(): return false
 	if compact:
 		var span := _bar_span()
 		return not rows.is_empty() and absf(point.x) < 0.56 and point.y < span.x + 0.01 and point.y > span.x - span.y - 0.02
@@ -471,6 +512,7 @@ func release_pointer(hand: String, origin: Vector3, direction: Vector3, tracked:
 
 ## Thumbstick y (up positive) scrolls the list; it never selects.
 func stick_scroll(y: float, delta: float) -> void:
+	if section == Section.MEDIA_SERVER and server_browser.sorting(): return
 	if not compact and section == Section.MEDIA_SERVER and not account_panel.active() and server_browser.gallery.fixed():
 		server_browser.gallery.vertical_scroll(y, delta); return
 	if controls_page.active() and not controls_page.pending.is_empty(): return
@@ -494,6 +536,7 @@ func stick_scroll_horizontal(x: float, delta: float) -> void:
 		server_browser.gallery.stick_scroll(x, delta)
 
 func _process(delta: float) -> void:
+	if section == Section.MEDIA_SERVER and server_browser.sorting(): return
 	if controls_page.active() and controls_page.modal(): return
 	if not file_actions.modal.is_empty(): return
 	if visible: account_panel.tick(delta)
@@ -586,6 +629,7 @@ func capture_position() -> Dictionary:
 func set_view_mode(value: String) -> void:
 	value = Presentation.mode(value)
 	if value == view_mode or (not compact and not browser_content()): return
+	var keep_current_visible := _current_file_visible()
 	var anchor := capture_position()
 	view_mode = value
 	_drag = {}; _fling = 0.0; _hover.clear(); _hide_tooltip()
@@ -593,6 +637,7 @@ func set_view_mode(value: String) -> void:
 	_position_to_restore = anchor
 	setting_changed.emit("library_view_mode", view_mode)
 	refresh()
+	if keep_current_visible and not _current_file_visible(): _reveal_current_file(false)
 
 func draw_view_modes(y: float = 0.445, left: float = 0.69) -> void:
 	for spec in [[VIEW_LIST, "list", "List view"], [VIEW_GRID, "grid", "Icon view"]]:
@@ -1393,6 +1438,45 @@ func _choose(row: Dictionary) -> void:
 		setting_changed.emit(str(row.setting[0]), row.setting[1])
 		refresh()
 
+## True when a child layer was consumed; false means the source's top-level list.
+func navigate_back() -> bool:
+	if has_pointer_capture() or not server_browser.gallery.capture.is_empty():
+		for hand in ["left_hand", "right_hand"]: cancel_pointer(hand)
+		return true
+	if cloud_error.opened:
+		cloud_error.action(CloudBrowseError.BACK)
+	elif not file_actions.modal.is_empty():
+		file_actions.action(FileActions.CANCEL)
+	elif not choices.opened.is_empty():
+		choices.reset(); controls_page.selection.clear(); refresh()
+	elif not controls_page.pending.is_empty() or not controls_page.notice.is_empty():
+		controls_page.action(ControlsPage.CANCEL)
+	elif account_panel.active():
+		if account_panel.view == "web" and account_panel.data.get("web", {}).get("editing", false):
+			account_panel.web_action("keyboard_close")
+		else: account_panel.action(AccountPanel.BASE)
+	elif file_actions.editing:
+		file_actions.editing = false; file_actions.selected = ""; refresh()
+	elif cloud_search.active or not _editor.is_empty() or (section == Section.CLOUD and not cloud_accounts.mode.is_empty()):
+		_go_back()
+	elif section == Section.MEDIA_SERVER:
+		if not server_browser.keyboard.is_empty():
+			server_browser.action(ServerBrowser.ACTION + 25); refresh()
+		elif server_browser.sources_open:
+			server_browser.sources_open = false; refresh()
+		elif server_browser.view != "servers" or not server_browser.history.is_empty():
+			server_browser.back()
+		else: return false
+	elif not _crumbs().is_empty():
+		_go_back()
+	elif section == Section.SETTINGS:
+		if _about_page > 0:
+			_about_page = 0; scroll = 0.0; refresh()
+		else: _activate(NAV_BASE + Section.RECENT)
+	else:
+		return false
+	return true
+
 func _go_back() -> void:
 	if cloud_search.active: cloud_search.close(true); return
 	_save_folder_position()
@@ -1400,6 +1484,13 @@ func _go_back() -> void:
 	if section == Section.CLOUD and not cloud_accounts.mode.is_empty():
 		cloud_accounts.action(CloudAccountActions.BACK)
 		return
+	# Retire old directory reads before changing the path. In particular, late errors
+	# must not replace the parent listing/status. Server lists/discovery and save/delete
+	# jobs only refresh the server list, so their responses stay wanted.
+	var reads: Array = {Section.LOCAL: ["local"], Section.SMB: ["smb_browse"],
+		Section.DLNA: ["dlna_browse"]}.get(section, [])
+	for id in _pending.keys():
+		if _pending[id] in reads: _pending.erase(id)
 	scroll = 0.0
 	status = ""
 	if not _editor.is_empty():

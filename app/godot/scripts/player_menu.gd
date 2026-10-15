@@ -179,6 +179,32 @@ func _close_depth_slider() -> void:
 	_finish_depth_drag()
 	_depth_open = false
 
+## Pop controls above the transport before the owning app hides the transport itself.
+func navigate_back() -> bool:
+	if _controls_pointer_capture():
+		for hand in ["left_hand", "right_hand"]: cancel_pointer(hand)
+	elif not choices.opened.is_empty():
+		choices.reset(); refresh()
+	elif bookmarks.opened:
+		bookmarks.reset(); refresh()
+	elif not _adjustment.is_empty():
+		_finish_adjustment(); _adjustment = ""; refresh()
+	elif _subtitle_open and _subtitle_appearance_open:
+		_subtitle_appearance_open = false; refresh()
+	elif _subtitle_open:
+		_subtitle_open = false; refresh()
+	elif _mode_open:
+		_mode_open = false; refresh()
+	elif _volume_open:
+		_volume_open = false; refresh()
+	elif _depth_open:
+		_close_depth_slider(); refresh()
+	elif section != 0:
+		_reset_navigation(); refresh()
+	else:
+		return false
+	return true
+
 func dismiss() -> void:
 	if has_expanded_library(): expanded_library.dismiss()
 	_icon_tap.clear()

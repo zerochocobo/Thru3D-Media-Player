@@ -1,6 +1,7 @@
 extends RefCounted
 ## Fixed library and detail carousels, operated by rays and scroll input.
 const I18n := preload("res://scripts/i18n.gd")
+const ACTORS_VISIBLE := 5
 const LIBRARY := 4000
 const PHOTO := 6000
 const ACTOR := 8000
@@ -59,9 +60,9 @@ func priority_nodes() -> Array:
 		if "parts" in visible_sections():
 			for part in parts().slice(part_start, part_start + 2): nodes.append(part_picture(part))
 		if "images" in visible_sections():
-			for item in images().slice(image_start, image_start + 3): nodes.append({"cover_image": item.merged({"max_width": 256})})
+			for item in images().slice(image_start, image_start + 3): nodes.append({"cover_image": item.merged({"max_width": 512})})
 		if "actors" in visible_sections():
-			for actor in actors().slice(actor_start, actor_start + 4): nodes.append(actor)
+			for actor in actors().slice(actor_start, actor_start + ACTORS_VISIBLE): nodes.append(actor)
 	elif browser.view == "picture" and not images().is_empty():
 		selected_image = clampi(selected_image, 0, images().size() - 1)
 		nodes.append({"cover_image": images()[selected_image].merged({"max_width": 1024})})
@@ -107,8 +108,8 @@ func action(target: int) -> bool:
 		31: browser._toggle_favorite()
 		32: image_start = maxi(0, image_start - 3)
 		33: image_start = mini(maxi(0, images().size() - 3), image_start + 3)
-		34: actor_start = maxi(0, actor_start - 4)
-		35: actor_start = mini(maxi(0, actors().size() - 4), actor_start + 4)
+		34: actor_start = maxi(0, actor_start - ACTORS_VISIBLE)
+		35: actor_start = mini(maxi(0, actors().size() - ACTORS_VISIBLE), actor_start + ACTORS_VISIBLE)
 		36: home_strip = "libraries"; library_start = maxi(0, library_start - 1)
 		37: home_strip = "libraries"; library_start = mini(maxi(0, libraries().size() - 4), library_start + 1)
 		38: browser._remember(); browser.cancel(); browser.view = "metadata"; browser.menu._reset_navigation()
@@ -269,33 +270,33 @@ func draw_detail() -> void:
 	menu._button(browser.ACTION + 38, "", Vector2(0.64, 0.135), Vector2(0.09, 0.075), true, "info")
 	for strip in visible_sections():
 		var y := section_y(strip)
-		_label(I18n.t({"parts": "Parts", "actors": "Performers", "images": "Images"}[strip]), Vector2(-0.46, y + 0.125), 18)
+		_label(I18n.t({"parts": "Parts", "actors": "Performers", "images": "Images"}[strip]), Vector2(-0.46, y + 0.145), 18)
 		match strip:
 			"parts":
 				for i in range(part_start, mini(parts().size(), part_start + 2)):
-					menu._button(PART + i, "", Vector2(0.18 + (i - part_start) * 0.36, y), Vector2(0.33, 0.195))
+					menu._button(PART + i, "", Vector2(0.18 + (i - part_start) * 0.36, y), Vector2(0.33, 0.255))
 					menu._lit(i == selected_part)
 					var card: MeshInstance3D = menu._buttons.back().node
-					_picture(part_picture(parts()[i]), Vector2(0, 0.015), Vector2(0.31, 0.145), card)
-					var caption: Label3D = menu._label(str(parts()[i].get("part_label", "#%d" % (i + 1))), Vector3(0, -0.082, 0.009), 16, card)
+					_picture(part_picture(parts()[i]), Vector2(0, 0.014), Vector2(0.31, 0.207), card)
+					var caption: Label3D = menu._label(str(parts()[i].get("part_label", "#%d" % (i + 1))), Vector3(0, -0.108, 0.009), 16, card)
 					caption.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER; caption.modulate = menu.ACCENT if i == selected_part else Color.WHITE
 					menu._tips[PART + i] = str(parts()[i].get("title", ""))
 				if parts().size() > 2:
 					menu._button(browser.ACTION + 41, "‹", Vector2(-0.027, y), Vector2(0.04, 0.06), part_start > 0)
 					menu._button(browser.ACTION + 42, "›", Vector2(0.755, y), Vector2(0.04, 0.06), part_start + 2 < parts().size())
 			"actors":
-				for i in range(actor_start, mini(actors().size(), actor_start + 4)):
-					var actor: Dictionary = actors()[i]; var x := -0.36 + (i - actor_start) * 0.333
-					menu._button(ACTOR + i, "", Vector2(x, y), Vector2(0.30, 0.15))
+				for i in range(actor_start, mini(actors().size(), actor_start + ACTORS_VISIBLE)):
+					var actor: Dictionary = actors()[i]; var x := -0.37 + (i - actor_start) * 0.265
+					menu._button(ACTOR + i, "", Vector2(x, y), Vector2(0.23, 0.255))
 					var card: MeshInstance3D = menu._buttons.back().node
-					_picture(actor, Vector2(-0.105, 0), Vector2(0.075, 0.13), card)
-					var label: Label3D = menu._label(menu._fit_title(str(actor.name), "", 0.195, 17), Vector3(-0.055, 0, 0.008), 17, card)
-					label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT; menu._tips[ACTOR + i] = str(actor.name)
-				_arrows(34, 35, y, actor_start, actors().size(), 4)
+					_picture(actor, Vector2(0, 0.014), Vector2(0.14, 0.21), card)
+					var label: Label3D = menu._label(menu._fit_title(str(actor.name), "", 0.22, 17), Vector3(0, -0.108, 0.008), 17, card)
+					label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER; menu._tips[ACTOR + i] = str(actor.name)
+					_arrows(34, 35, y, actor_start, actors().size(), ACTORS_VISIBLE)
 			"images":
 				for i in range(image_start, mini(images().size(), image_start + 3)):
-					menu._button(PHOTO + i, "", Vector2(-0.28 + (i - image_start) * 0.43, y), Vector2(0.39, 0.18))
-					_picture({"cover_image": images()[i].merged({"max_width": 256})}, Vector2.ZERO, Vector2(0.37, 0.165), menu._buttons.back().node)
+					menu._button(PHOTO + i, "", Vector2(-0.28 + (i - image_start) * 0.43, y), Vector2(0.39, 0.235))
+					_picture({"cover_image": images()[i].merged({"max_width": 512})}, Vector2.ZERO, Vector2(0.315, 0.21), menu._buttons.back().node)
 				_arrows(32, 33, y, image_start, images().size(), 3)
 	if sections().size() > 2:
 		menu._button(browser.ACTION + 54, "", Vector2(0.925, -0.055), Vector2(0.075, 0.065), detail_start > 0, "scroll_up")
@@ -325,7 +326,7 @@ func visible_sections() -> Array:
 	return sections().slice(detail_start, detail_start + 2)
 
 func section_y(strip: String) -> float:
-	return -0.095 - visible_sections().find(strip) * 0.235
+	return -0.10 - visible_sections().find(strip) * 0.29
 
 func tags() -> Array:
 	var result: Array = []; var seen := {}
@@ -363,8 +364,8 @@ func detail_strip_at(point: Vector3) -> String:
 	if browser.view == "overview": return "overview" if point.y <= 0.32 and point.y >= -0.48 else ""
 	if not tags().is_empty() and absf(point.y + 0.565) < 0.05: return "tags"
 	for strip in visible_sections():
-		if absf(point.y - section_y(strip)) < 0.10: return strip
-	return "body" if point.y <= 0.065 and point.y >= -0.44 else ""
+		if absf(point.y - section_y(strip)) < 0.13: return strip
+	return "body" if point.y <= 0.065 and point.y >= -0.52 else ""
 
 func detail_press(hand: String, origin: Vector3, direction: Vector3, tracked: bool) -> bool:
 	if not capture.is_empty(): return true
@@ -397,8 +398,8 @@ func detail_move(hand: String, origin: Vector3, direction: Vector3, tracked: boo
 		if browser.view == "overview": overview_start = clampi(int(capture.vertical_start) + roundi(vertical / 0.032), 0, maxi(0, overview_lines().size() - 10))
 		else: detail_start = clampi(int(capture.vertical_start) + roundi(vertical / 0.18), 0, maxi(0, sections().size() - 2))
 	else:
-		var limits := {"parts": parts().size() - 2, "actors": actors().size() - 4, "images": images().size() - 3, "tags": tags().size() - 4}
-		var next := clampi(int(capture.start) + roundi(travel / 0.30), 0, maxi(0, int(limits.get(capture.strip, 0))))
+		var limits := {"parts": parts().size() - 2, "actors": actors().size() - ACTORS_VISIBLE, "images": images().size() - 3, "tags": tags().size() - 4}
+		var next := clampi(int(capture.start) + roundi(travel / (0.265 if capture.strip == "actors" else 0.30)), 0, maxi(0, int(limits.get(capture.strip, 0))))
 		match capture.strip:
 			"parts": part_start = next
 			"actors": actor_start = next

@@ -181,7 +181,6 @@ func _ready() -> void:
 	video.history_enabled = bool(settings.get_value("library", "history", true))
 	_restore_seek_settings()
 	video.depth_strength = video.DepthStrength.remembered(float(settings.get_value("video", "depth_strength", 1.0)))
-	video.auto_depth = bool(settings.get_value("effects", "auto_3d", false))
 	video.load_mode_lock(settings.get_value("video", "mode_lock", {}))
 	_restore_subtitle_settings()
 	video.color_grade.restore(settings.get_value("video", "color_grade", {}))
@@ -422,7 +421,7 @@ func _unhandled_key_input(event: InputEvent) -> void:
 				_request_controlled_probe()
 
 # Menus are ray + trigger only. A list row clicks on release unless the ray dragged to scroll.
-# Outside the menus a trigger tap shows/hides the controls; held and moved, it drags the picture.
+# Video controller triggers operate controls; grip moves pictures. Photo/hand dragging is separate.
 func _on_controller_release(action: String, hand: String = "") -> void:
 	controller_bindings.release(hand, action)
 	var consumed_key := hand + "/" + action
@@ -459,6 +458,12 @@ func _on_pointer_release(action: String, hand: String) -> void:
 	if action == "trigger_click" and _ray(hand) == null:
 		_cancel_pointer(hand)
 		return
+	if action == "trigger_click" and not _video_control_tap.is_empty() and _video_control_tap.get("hand", "") == hand:
+		var tap := _video_control_tap
+		_video_control_tap = {}
+		if not photo_active and video and video.local_uri == tap.uri and _has_open_media() and not _active_menu():
+			_show_player_menu()
+		return
 	if action == "trigger_click" and photo_active and photo.gallery.capture.get("hand", "") == hand:
 		var ray: Variant = _ray(hand)
 		photo.gallery.release_pointer(hand, ray[0] if ray != null else Vector3.ZERO, ray[1] if ray != null else Vector3.ZERO, ray != null)
@@ -489,7 +494,8 @@ func _on_controller_button(action: String, hand: String = "") -> void:
 		if action == "menu_button": interface_move.cancel()
 		_on_pointer_button(action, hand); return
 	if controller_bindings.blocked[hand].has(action): return
-	controller_bindings.press(hand, action)
+	var first_press := controller_bindings.press(hand, action)
+	if action == "by_button" and not first_press: return
 	var consumed_key := hand + "/" + action
 	if not interface_move.capture.is_empty() and interface_move.capture.moved:
 		_controller_consumed[consumed_key] = true; return
@@ -502,13 +508,19 @@ func _on_controller_button(action: String, hand: String = "") -> void:
 		var ray: Variant = _ray(hand)
 		var chord_modifier: bool = controller_bindings.down[hand].has("grip_click") and controller_bindings.is_modifier(hand, action, _controller_context()) and _shortcut_allowed("play")
 		if _menu_captured(menu) or (not chord_modifier and ray != null and not menu.ray_hit(ray[0], ray[1]).is_empty()):
-			interface_move.cancel(); _on_pointer_button(action, hand); return
+			interface_move.cancel()
+			if photo_active: _on_pointer_button(action, hand)
+			else: _on_video_trigger(hand)
+			return
 	if interface_move.pending() and not id.begins_with("move_") and not _is_chord(id, hand, action):
 		_controller_consumed[consumed_key] = true; return
 	if id.begins_with("move_") and _shortcut_allowed(id):
 		_begin_interface_move(hand, action); _controller_consumed[consumed_key] = true; return
 	if controller_bindings.is_modifier(hand, action, _controller_context()):
 		_controller_consumed[consumed_key] = true; return
+	if not photo_active and action == "trigger_click":
+		_on_video_trigger(hand)
+		return
 	if not id.is_empty() and _shortcut_allowed(id, _is_chord(id, hand, action)):
 		if interface_move.pending(): interface_move.cancel()
 		if id.begins_with("drag_"):
@@ -518,8 +530,37 @@ func _on_controller_button(action: String, hand: String = "") -> void:
 			_controller_consumed[consumed_key] = true
 			_execute_shortcut(id, hand, 1.0, 0.18)
 		return
-	if menu and action in ["trigger_click", "by_button"]: _on_pointer_button(action, hand)
+	if action == "by_button":
+		_controller_consumed[consumed_key] = true
+		# Full or partial chords must not fall through to ordinary Back.
+		if controller_bindings.modifier_held(hand, _controller_context()): return
+		_on_pointer_button(action, hand)
+		return
+	if menu and action == "trigger_click": _on_pointer_button(action, hand)
 	else: _controller_consumed[consumed_key] = true
+
+## A fixed controller UI action, independent of saved playback bindings and picture grabs.
+var _video_control_tap := {}
+func _on_video_trigger(hand: String) -> void:
+	if not _video_control_tap.is_empty() or not _grab.is_empty():
+		_controller_consumed[hand + "/trigger_click"] = true
+		return
+	var ray: Variant = _ray(hand)
+	if ray == null: return
+	var menu := _active_menu()
+	if menu:
+		var captured := _menu_captured(menu)
+		if _update_menu_pointer(hand, true) or captured: return
+		# This press only dismisses the controls; it never becomes a picture drag.
+		if menu.ray_hit(ray[0], ray[1]).is_empty() and (menu == player_menu or menu.grab_hit(ray[0], ray[1]).is_empty()):
+			menu.dismiss()
+			_controller_consumed[hand + "/trigger_click"] = true
+		return
+	if not _has_open_media():
+		_show_recent_menu()
+		_controller_consumed[hand + "/trigger_click"] = true
+	else:
+		_video_control_tap = {"hand": hand, "uri": video.local_uri}
 
 func _binding_page() -> bool:
 	return recent_menu is LibraryMenu and recent_menu.controls_page.active()
@@ -604,6 +645,7 @@ func _begin_interface_move(hand: String, input: String) -> void:
 	var pose: Variant = _move_pose(hand)
 	var head: Variant = _head_pose()
 	if pose == null or head == null: return
+	_video_control_tap = {} # Starting a grip cannot leave a deferred trigger tap behind.
 	if photo_active and photo.inspect:
 		var detail: MeshInstance3D = photo._detail
 		if detail and detail.visible and interface_move.begin(hand, input, pose, [{"node": detail, "kind": "detail", "pose": detail.global_transform, "key": "magnifier"}], detail.global_position, head):
@@ -665,6 +707,9 @@ func _on_pointer_button(action: String, hand: String) -> void:
 	if action == "menu_button":
 		_toggle_player_menu()
 		return
+	if action == "by_button":
+		_navigate_back()
+		return
 	var menu := _active_menu()
 	# ax_button is A on the right controller and X on the left. Only A controls video transport.
 	if not photo_active and action == "ax_button" and hand == "right_hand":
@@ -678,8 +723,8 @@ func _on_pointer_button(action: String, hand: String) -> void:
 	if menu:
 		match action:
 			"trigger_click":
-				# Beside the player controls a tap hides them and a drag moves the picture;
-				# beside any other menu a tap simply closes it.
+				# Shared photo/hand pointer gestures may drag; physical video controllers
+				# use _on_video_trigger instead and never enter this picture-grab path.
 				if not _update_menu_pointer(hand, true):
 					var ray: Variant = _ray(hand)
 					# A slider owned by the other hand rejects this press; it is not a screen drag.
@@ -687,7 +732,6 @@ func _on_pointer_button(action: String, hand: String) -> void:
 						if ray != null and menu.ray_hit(ray[0], ray[1]).is_empty(): _begin_grab(hand)
 					elif ray != null and menu.grab_hit(ray[0], ray[1]).is_empty():
 						menu.dismiss()
-			"by_button": menu.dismiss()
 		return
 	if photo_active:
 		match action:
@@ -969,6 +1013,7 @@ func _dispatch_hand_input(inputs: Dictionary, _delta: float = 1.0 / 72.0) -> voi
 
 func _cancel_pointer(hand: String) -> void:
 	controller_bindings.cancel_hand(hand)
+	if _video_control_tap.get("hand", "") == hand: _video_control_tap = {}
 	if not interface_move.capture.is_empty() and interface_move.capture.hand == hand: interface_move.cancel()
 	if photo: photo.gallery.cancel_pointer(hand)
 	_inspect_blocked.erase(hand)
@@ -982,6 +1027,7 @@ func _cancel_pointer(hand: String) -> void:
 
 func _on_input_session_changed() -> void:
 	if _input_focused(): return
+	_video_control_tap = {}
 	controller_bindings.reset_inputs(); interface_move.cancel(); stick_controls.suspend()
 	photo_hands.cancel()
 	photo_swipe.cancel(); memory_swipe.cancel()
@@ -1015,7 +1061,7 @@ const MOUSE_TURN := 0.004   # radians per pixel in the desktop preview
 const ZOOM_SPEED := 0.6     # sphere radii per second at full deflection
 const PUSH_SPEED := 1.5     # metres per second the held flat screen moves at full deflection
 const STICK_DEADZONE := 0.2
-## Trigger held outside the menus: hand, start/last ray angles (yaw, pitch), moved; a press on a
+## Photo trigger / hand pinch outside menus: hand, start/last ray angles, moved; a press on a
 ## flat screen corner adds resize = {corner, start_length, start_scale}.
 var _grab := {}
 
@@ -1052,6 +1098,7 @@ func _update_corner_hover() -> void:
 	elif _grab.is_empty() and not recent_menu.visible and not _viewer().local_uri.is_empty() and not (photo_active and photo.inspect):
 		for hand in ["right_hand", "left_hand"]:
 			if _is_photo_hand(hand): continue
+			if not photo_active and not (hand_pointers.has(hand) and hand_pointers[hand].source == "hand"): continue
 			var ray: Variant = _ray(hand)
 			if ray != null and not (player_menu.visible and player_menu._hover.get(hand, -1) != -1):
 				corner = _viewer().corner_at(ray[0], ray[1])
@@ -1455,12 +1502,12 @@ func _on_photo_action(operation: String) -> void:
 		"stop": _close_current_media()
 		"recenter": _recenter()
 		"depth":
-			if photo.set_depth(not photo.depth_requested): _remember_auto_depth(photo.auto_depth)
+			if photo.set_depth(not photo.depth_requested): _remember_photo_auto_depth(photo.auto_depth)
 		"depth_strength": photo.cycle_depth_strength()
 		"projection_0", "projection_1", "projection_2", "projection_3": photo.set_projection(int(operation.right(1)))
 		"lock_mode":
 			photo.toggle_mode_lock()
-		"stereo_2d": _remember_auto_depth(false); photo.set_depth(false); photo.set_stereo_layout(0)
+		"stereo_2d": _remember_photo_auto_depth(false); photo.set_depth(false); photo.set_stereo_layout(0)
 		"stereo_sbs": photo.set_stereo_layout(1)
 		"stereo_tb": photo.set_stereo_layout(2)
 		"eyes": photo.toggle_eye_order()
@@ -1588,6 +1635,31 @@ func _has_open_media() -> bool:
 	if photo_active and photo: return not photo.local_uri.is_empty() or photo.loading or not photo.queue.is_empty()
 	return video != null and not video.local_uri.is_empty() and video.media.state not in ["closed", "failed"]
 
+## Return one visible layer at a time, even when the browser is attached to the player bar.
+func _navigate_back() -> void:
+	_video_control_tap = {}
+	stick_controls.suspend()
+	if not _grab.is_empty():
+		_cancel_pointer(str(_grab.hand))
+		return
+	var menu := _active_menu()
+	if _menu_captured(menu):
+		for hand in ControllerBindings.HANDS: menu.cancel_pointer(hand)
+		return
+	if recent_menu and recent_menu.visible:
+		if recent_menu.has_method("navigate_back") and recent_menu.navigate_back(): return
+		if _has_open_media():
+			recent_menu.dismiss()
+			_show_player_menu()
+		# Without media, retain the last visible library instead of leaving an empty scene.
+		return
+	if player_menu and player_menu.visible:
+		if player_menu.has_method("navigate_back") and player_menu.navigate_back(): return
+		if _has_open_media(): player_menu.dismiss()
+		else: _show_full_library()
+	elif not _has_open_media():
+		_show_full_library() # B alone is also a recovery entry for a right-controller-only user.
+
 func _toggle_player_menu() -> void:
 	if photo_active and photo.inspect:
 		_close_photo_inspect()
@@ -1621,7 +1693,7 @@ func _show_recent_menu() -> void:
 		if recent_menu.get_parent() != player_menu: recent_menu.reparent(player_menu, false)
 		recent_menu.transform = Transform3D(Basis.IDENTITY, Vector3(0, 0.72, 0))
 		recent_menu.playback_expanded = false
-		recent_menu.set_compact(true, not was_compact)
+		recent_menu.show_playback_files(not was_compact)
 		recent_menu.visible = true
 		recent_menu.composition_layout_changed.emit()
 		stick_controls.suspend(); _menu_touched_ms = Time.get_ticks_msec()
@@ -1819,7 +1891,7 @@ func _on_menu_action(operation: String) -> void:
 		"play": video.toggle_play()
 		"alpha": video.set_alpha(not video.alpha_wanted())
 		"depth":
-			if video.set_depth(not video.depth_requested): _remember_auto_depth(video.auto_depth)
+			video.set_depth(not video.depth_requested)
 		"depth_strength":
 			video.cycle_depth_strength()
 			settings.set_value("video", "depth_strength", video.depth_strength)
@@ -1837,7 +1909,6 @@ func _on_menu_action(operation: String) -> void:
 		"projection": video.cycle_projection()
 		"projection_0", "projection_1", "projection_2", "projection_3": video.set_projection(int(operation.right(1)))
 		"stereo_2d":
-			_remember_auto_depth(false)
 			video.set_depth(false) # plain 2D: also ends 2D -> 3D
 			video.set_stereo_layout(0)
 		"lock_mode":
@@ -1926,12 +1997,11 @@ func _on_depth_strength(strength: float, for_photo: bool) -> void:
 	var viewer: Node3D = photo if for_photo else video
 	if viewer.set_depth_strength(strength):
 		settings.set_value("photo" if for_photo else "video", "depth_strength", viewer.depth_strength)
-		_remember_auto_depth(viewer.auto_depth)
+		if for_photo: _remember_photo_auto_depth(viewer.auto_depth)
 
-func _remember_auto_depth(enabled: bool) -> void:
-	if video: video.auto_depth = enabled
+func _remember_photo_auto_depth(enabled: bool) -> void:
 	if photo: photo.auto_depth = enabled
-	if settings.get_value("effects", "auto_3d", false) != enabled:
+	if settings.get_value("effects", "auto_3d", true) != enabled:
 		settings.set_value("effects", "auto_3d", enabled)
 		settings.save(settings_path)
 
@@ -2125,7 +2195,10 @@ func _toggle_display() -> void:
 func _on_video_changed() -> void:
 	if photo_active: return
 	var waiting: bool = not video.loading_caption().is_empty()
-	if waiting and not _video_waiting_feedback and video_menu and not video_menu.visible and (not recent_menu or not recent_menu.visible):
+	# Seeking can also report network loading. Keep a dismissed transport hidden throughout
+	# that wait, including continued cache buffering after the target frame arrives.
+	var seeking: bool = video.control.pending or video.control.in_flight > 0
+	if waiting and not seeking and not _video_waiting_feedback and video_menu and not video_menu.visible and (not recent_menu or not recent_menu.visible):
 		player_menu = video_menu
 		_show_player_menu()
 	_video_waiting_feedback = waiting
@@ -2177,6 +2250,7 @@ func _update_background() -> void:
 	var passthrough: bool = wants_passthrough and display.supports_passthrough()
 	if display.applied_passthrough != passthrough or display.requested_passthrough != passthrough:
 		display.set_passthrough(passthrough)
+	if photo: photo.transparent_background = display.applied_passthrough and not display.preview
 	_refresh_session_controls()
 
 func _connect_session_controls(menu: Node3D) -> void:
@@ -2505,6 +2579,9 @@ func _on_display_debug_command(_id: int, payload: String) -> void:
 		video.video_layer.debug_image_layout = int(command.get("value", -2))
 	elif operation == "layer_order" and OS.is_debug_build() and video.video_layer and video.video_layer._provider:
 		video.video_layer._provider.debug_order = int(command.get("value", 0))
+	elif operation == "hide_menus" and OS.is_debug_build():
+		# Device captures of the scene itself (layers, subtitles) without menus in front.
+		recent_menu.dismiss(); player_menu.dismiss(); photo_menu.dismiss()
 	elif operation == "menu_layers" and OS.is_debug_build() and menu_composition:
 		menu_composition.set_active(bool(command.get("enabled", false)))
 	elif operation == "menu_layer_filter" and OS.is_debug_build() and menu_composition:
@@ -2521,6 +2598,14 @@ func _on_display_debug_command(_id: int, payload: String) -> void:
 		bench.start(self, str(command.get("profile", "run")).validate_filename())
 	elif operation == "photo_depth" and OS.is_debug_build() and photo_active:
 		photo.set_depth(bool(command.get("enabled", false)))
+	elif operation == "photo_inspect" and OS.is_debug_build() and photo_active:
+		# Magnifier probes: open/close it and place its crop (picture UV, top-first).
+		if bool(command.get("enabled", true)) != photo.inspect: photo.toggle_inspect()
+		if photo.inspect and command.has("x"):
+			photo.crop_center = Vector2(float(command.x), float(command.get("y", 0.5)))
+			photo._update_inspect()
+	elif operation == "photo_portrait" and OS.is_debug_build() and photo_active:
+		photo.set_portrait(bool(command.get("enabled", true)))
 	elif operation == "photo_step" and OS.is_debug_build() and photo_active:
 		photo.navigate(1 if float(command.get("value", 1.0)) >= 0.0 else -1)
 
