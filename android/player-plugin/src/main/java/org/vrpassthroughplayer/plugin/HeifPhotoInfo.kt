@@ -2,12 +2,15 @@ package org.vrpassthroughplayer.plugin
 
 import java.io.File
 import java.io.RandomAccessFile
+import kotlin.math.abs
+import kotlin.math.atan
 
 /** Bounded HEIF metadata only. 'ster' IDs identify eyes; primary/thumbnail/gain-map order does not. */
 internal data class HeifPhotoInfo(
     val primary: Int, val primaryOffset: Long, val idBytes: Int,
     val left: Int, val right: Int?, val width: Int, val height: Int,
     val hiddenFlagOffsets: Map<Int, Long>, val disparity: Double,
+    val horizontalFovDegrees: Double? = null,
 ) {
     val stereo get() = right != null
     val packedWidth get() = width * if (stereo) 2 else 1
@@ -61,8 +64,28 @@ internal data class HeifPhotoInfo(
         private val imageTypes = setOf("hvc1", "hev1", "grid", "jpeg")
         // Apple's spatial disparity property, signed fraction of image width x 10000.
         private val disparityUuid = "de22508536cb436587432f8705e7c78a"
+        // Apple's UUID alias of the HEIF CameraIntrinsicMatrixProperty (cmin).
+        private val intrinsicsUuid = "22cc04c7d6d94e079d904eb6ecbaf3a3"
         private data class Box(val start: Int, val body: Int, val end: Int, val type: String)
-        private data class Property(val width: Int = 0, val height: Int = 0, val rotate: Boolean = false, val disparity: Double? = null, val crop: Pair<Int,Int>? = null)
+        private data class Intrinsics(val fx: Double, val fy: Double?, val cx: Double, val cy: Double)
+        private data class Property(val width: Int = 0, val height: Int = 0, val rotate: Boolean = false, val disparity: Double? = null,
+                                    val crop: Pair<Int,Int>? = null, val centeredCrop: Boolean = true, val intrinsics: Intrinsics? = null,
+                                    val hasIntrinsics: Boolean = false)
+
+        private fun intrinsics(b: ByteArray, start: Int, end: Int): Intrinsics? {
+            if (end - start < 16 || b[start].toInt() != 0) return null
+            val flags = u32(b, start).toInt() and 0xffffff
+            val anisotropic = flags and 1 != 0
+            if (flags and 0x1f1f01.inv() != 0 || end - start != if (anisotropic) 24 else 16) return null
+            val denominator = (1L shl ((flags ushr 8) and 31)).toDouble()
+            fun number(at: Int) = u32(b, at).toInt().toDouble() / denominator
+            val fx = number(start + 4); val cx = number(start + 8); val cy = number(start + 12)
+            val fy = if (anisotropic) number(start + 16) else null
+            // This action matches a symmetric rectilinear view, not an off-axis camera.
+            if (fx <= 0 || (fy != null && fy <= 0) || abs(cx - .5) > 1e-5 || abs(cy - .5) > 1e-5 ||
+                (anisotropic && u32(b, start + 20) != 0L)) return null
+            return Intrinsics(fx, fy, cx, cy)
+        }
 
         private fun u16(b: ByteArray, at: Int): Int {
             require(at >= 0 && at.toLong() + 2 <= b.size) { "PHOTO_DECODE_FAILED" }
@@ -188,6 +211,7 @@ internal data class HeifPhotoInfo(
                         Property(w.toInt(), h.toInt())
                     }
                     "irot" -> { require(p.end - p.body == 1); Property(rotate = (b[p.body].toInt() and 1) != 0) }
+                    "cmin" -> Property(intrinsics = intrinsics(b, p.body, p.end), hasIntrinsics = true)
                     "clap" -> {
                         require(p.end - p.body == 32) { "PHOTO_DECODE_FAILED" }
                         fun dimension(at: Int): Int {
@@ -196,7 +220,9 @@ internal data class HeifPhotoInfo(
                             require(value in 1..32768) { "PHOTO_DECODE_FAILED" }
                             return value.toInt()
                         }
-                        Property(crop = dimension(p.body) to dimension(p.body + 8))
+                        Property(crop = dimension(p.body) to dimension(p.body + 8),
+                            centeredCrop = u32(b, p.body + 16) == 0L && u32(b, p.body + 20) > 0 &&
+                                u32(b, p.body + 24) == 0L && u32(b, p.body + 28) > 0)
                     }
                     "uuid" -> {
                         val uuid = if (p.end - p.body >= 16) b.copyOfRange(p.body, p.body + 16).joinToString("") { "%02x".format(it.toInt() and 255) } else ""
@@ -205,7 +231,8 @@ internal data class HeifPhotoInfo(
                             val adjustment = u32(b, p.body + 16).toInt()
                             require(adjustment in -10000..10000) { "PHOTO_DECODE_FAILED" }
                             Property(disparity = adjustment / 10000.0)
-                        } else Property()
+                        } else if (uuid == intrinsicsUuid) Property(intrinsics = intrinsics(b, p.body + 16, p.end), hasIntrinsics = true)
+                        else Property()
                     }
                     else -> Property()
                 }
@@ -243,8 +270,24 @@ internal data class HeifPhotoInfo(
             }
             require(sizes.all { it == sizes.first() }) { "PHOTO_DECODE_FAILED" }
             val disparity = (groupId?.let { selected(it) }.orEmpty() + selected(eyes[0])).mapNotNull { it.disparity }.firstOrNull() ?: 0.0
+            val groupProperties = groupId?.let { selected(it) }.orEmpty()
+            fun fov(eye: Int): Double? {
+                val props = selected(eye)
+                val cameras = (props + groupProperties).filter { it.hasIntrinsics }
+                if (cameras.any { it.intrinsics == null }) return null
+                val camera = cameras.mapNotNull { it.intrinsics }.distinct().singleOrNull() ?: return null
+                val size = props.single { it.width > 0 }
+                if (props.any { !it.centeredCrop }) return null
+                val crop = props.mapNotNull { it.crop }.singleOrNull() ?: (size.width to size.height)
+                val rotated = props.any { it.rotate }
+                val pixels = if (rotated) crop.second else crop.first
+                val focal = if (rotated) camera.fy?.times(size.height) ?: (camera.fx * size.width) else camera.fx * size.width
+                return Math.toDegrees(2 * atan(pixels / (2 * focal))).takeIf { it.isFinite() && it > 0 && it < 180 }
+            }
+            val fovs = if (eyes.size == 2) eyes.map { fov(it) } else emptyList()
+            val horizontalFov = fovs.firstOrNull()?.takeIf { first -> fovs.all { it != null && abs(it - first) < .01 } }
             return HeifPhotoInfo(primary, offset + pitm.body + 4, if (version == 0) 2 else 4,
-                eyes[0], eyes.getOrNull(1), sizes[0].first, sizes[0].second, hidden, disparity)
+                eyes[0], eyes.getOrNull(1), sizes[0].first, sizes[0].second, hidden, disparity, horizontalFov)
         }
     }
 }

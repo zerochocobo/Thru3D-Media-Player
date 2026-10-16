@@ -1,4 +1,6 @@
 extends Node3D
+
+const SpatialCapture := preload("res://scripts/spatial_video_metadata.gd")
 ## Shared spatial surface only: decoding, playback clocks and photo queues live in their owners.
 signal mode_lock_changed(lock: Dictionary)
 
@@ -214,6 +216,30 @@ func screen_point(origin: Vector3, direction: Vector3) -> Variant:
 		return null
 	return start + delta * (-start.z / delta.z)
 
+## Visible flat/curved surface hit. Unlike the drag plane, this respects the actual mesh.
+func screen_hit(origin: Vector3, direction: Vector3) -> Variant:
+	if geometry != Geometry.Geometry.FLAT or not panel.visible or not origin.is_finite() or not direction.is_finite(): return null
+	if screen_curve <= 0.0:
+		var point: Variant = screen_point(origin, direction)
+		if point == null or absf(point.x) > _flat.size.x * 0.5 or absf(point.y) > _flat.size.y * 0.5: return null
+		return panel.to_global(point)
+	var inverse := panel.global_transform.affine_inverse()
+	var start := inverse * origin
+	var ray := inverse.basis * direction
+	var radius := _curve_radius()
+	var a := ray.x * ray.x + ray.z * ray.z
+	var b := start.x * ray.x + (start.z - radius) * ray.z
+	var c := start.x * start.x + (start.z - radius) * (start.z - radius) - radius * radius
+	var discriminant := b * b - a * c
+	if a < 0.000001 or discriminant < 0.0: return null
+	for distance in [(-b - sqrt(discriminant)) / a, (-b + sqrt(discriminant)) / a]:
+		if distance <= 0.0: continue
+		var point: Vector3 = start + ray * distance
+		var angle := atan2(point.x, radius - point.z)
+		if absf(angle) <= _flat.size.x * 0.5 / radius + 0.00001 and absf(point.y) <= _flat.size.y * 0.5 + 0.00001:
+			return panel.to_global(point)
+	return null
+
 func set_screen_rotation(value: float) -> void:
 	if not is_finite(value): return
 	screen_rotation = clampf(value, -90.0, 90.0)
@@ -226,6 +252,16 @@ func set_screen_scale(value: float) -> void:
 	screen_scale = clampf(value, SCALE_LIMITS.x, SCALE_LIMITS.y)
 	_flat.size = _screen_base * screen_scale
 	_shape_screen()
+
+## Match a symmetric capture's angular width from the current centred viewpoint.
+func capture_fov_scale(fov: float, limits: Vector2) -> float:
+	var distance := screen_distance
+	if view_camera and view_camera.is_inside_tree() and panel and panel.is_inside_tree():
+		var eye := panel.to_local(view_camera.global_position)
+		if eye.z <= 0.0 or Vector2(eye.x, eye.y).length() > eye.z * 0.01: return -1.0
+		distance = eye.z
+	var scale := SpatialCapture.fov_scale(fov, distance, _screen_base.x)
+	return scale if scale >= limits.x and scale <= limits.y else -1.0
 
 func set_screen_curve(value: float) -> void:
 	screen_curve = clampf(value, 0.0, 1.0)

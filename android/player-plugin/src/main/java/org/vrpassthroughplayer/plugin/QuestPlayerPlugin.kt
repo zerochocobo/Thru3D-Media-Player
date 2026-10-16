@@ -29,6 +29,33 @@ import javax.microedition.khronos.opengles.GL10
 class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     private val closed = AtomicBoolean(false)
     @Volatile private var signalsReady = false
+    private val favoritesVault = FavoritesVault()
+    private val favoritesTasks = FavoritesVaultTasks(favoritesVault)
+    @UsedByGodot fun favorites_vault_begin(operation: String, path: String, password: String, payload: String): Int =
+        if (closed.get()) 0 else favoritesTasks.begin(operation, path, password, payload)
+    @UsedByGodot fun favorites_vault_result(id: Int): String = favoritesTasks.take(id)
+    @UsedByGodot fun set_playback_privacy(mode: String, protectedFavorites: Boolean) {
+        PlaybackPrivacy.mode = mode.takeIf { it in setOf("all", "local", "none") } ?: "none"
+        PlaybackPrivacy.protectedFavorites = protectedFavorites
+        runCatching { MpvSourceNative.setPrivacy(!PlaybackPrivacy.diagnostics) }
+    }
+    @UsedByGodot fun clear_playback_private_data() {
+        sources.clearPlaybackReferences()
+        activity?.applicationContext?.let { app ->
+            File(app.filesDir, "diagnostics").listFiles()?.filter {
+                it.name == "capabilities.json" || it.name.matches(Regex("mpv_player_[0-9]+\\.json"))
+            }?.forEach { it.delete() }
+        }
+    }
+    @UsedByGodot fun favorites_vault_open(path: String, password: String): String = try {
+        org.json.JSONObject().put("ok", true).put("data", favoritesVault.open(path, password)).toString()
+    } catch (failure: Exception) { org.json.JSONObject().put("error", if (failure.message == "Try again shortly") "Try again shortly" else "Incorrect password or damaged favorites").toString() }
+    @UsedByGodot fun favorites_vault_create(path: String, password: String, payload: String): String = try {
+        org.json.JSONObject().put("ok", true).put("data", favoritesVault.create(path, password, payload)).toString()
+    } catch (_: Exception) { org.json.JSONObject().put("error", "Favorites save failed").toString() }
+    @UsedByGodot fun favorites_vault_save(path: String, payload: String): Boolean =
+        !closed.get() && !favoritesTasks.busy() && runCatching { favoritesVault.save(path, payload) }.getOrDefault(false)
+    @UsedByGodot fun favorites_vault_lock() { favoritesVault.lock() }
     private val requestId = AtomicInteger(0)
     private val probe = ThreadPoolExecutor(1, 1, 0, TimeUnit.MILLISECONDS,
         ArrayBlockingQueue(1), { task -> Thread(task, "QuestCapabilityProbe") },
@@ -238,12 +265,15 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
         return id
     }
     @UsedByGodot fun media_list_local(): Int = media_local_browse("")
-    @UsedByGodot fun media_local_storage_settings(path: String): Int {
+    @UsedByGodot fun media_local_stop_storage(path: String): Int {
         if (closed.get()) return -1
         val id = sources.nextId()
-        runOnHostThread { if (!closed.get()) sources.openLocalEjectSettings(id,path) }
+        runOnHostThread { if (!closed.get()) sources.stopLocalStorage(id,path) }
         return id
     }
+    // Compatibility alias; never opens an external settings Activity.
+    @UsedByGodot fun media_local_storage_settings(path: String): Int = media_local_stop_storage(path)
+    @UsedByGodot fun media_local_refresh_storage() { if (!closed.get()) runOnHostThread { sources.refreshLocalStorage() } }
     @UsedByGodot fun media_cloud_browse(path: String, refresh: Boolean): Int = if (closed.get()) -1 else sources.cloudBrowse(path, refresh)
     @UsedByGodot fun media_photo_directory_page(path: String, offset: Int, order: String): Int = if (closed.get()) -1 else sources.photoDirectoryPage(path, offset, order)
     @UsedByGodot fun media_photo_directory_cancel(id: Int) = sources.photoDirectoryCancel(id)
@@ -277,6 +307,7 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     @UsedByGodot fun media_server_cancel(id: Int) { sources.serverCancel(id) }
     /** Opens the system "All files access" page (folders beyond media ones, files beside videos). */
     @UsedByGodot fun media_local_grant_all_files() { if (!closed.get()) runOnHostThread { sources.grantAllFiles() } }
+    @UsedByGodot fun media_local_grant_directory(path: String) { if (!closed.get()) runOnHostThread { sources.grantLocalDirectory(path) } }
     @UsedByGodot fun media_dlna_discover(): Int = if (closed.get()) -1 else sources.dlnaDiscover()
     @UsedByGodot fun media_dlna_servers(): Int = if (closed.get()) -1 else sources.dlnaServers()
     @UsedByGodot fun media_dlna_save(json: String): Int = if (closed.get()) -1 else sources.dlnaSave(json)
@@ -402,6 +433,7 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
         return id
     }
     @UsedByGodot fun save_mpv_player_report(id: Int, json: String): String {
+        if (!PlaybackPrivacy.diagnostics) return "PRIVACY_DISABLED"
         if (id <= 0) return "ERROR:INVALID_REQUEST"
         return try {
             JSONObject(json)
@@ -421,7 +453,7 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
             grantResults != null && grantResults.isNotEmpty() && grantResults.all { it == android.content.pm.PackageManager.PERMISSION_GRANTED })
     }
     override fun onMainActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        if (!closed.get()) picker.result(requestCode, resultCode, data)
+        if (!closed.get()) { sources.onActivityResult(requestCode, resultCode, data); picker.result(requestCode, resultCode, data) }
     }
 
     override fun onGLDrawFrame(gl: GL10?) {
@@ -454,6 +486,7 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
 
     @UsedByGodot
     fun save_capability_report(json: String): String {
+        if (!PlaybackPrivacy.diagnostics) return "PRIVACY_DISABLED"
         val host = activity ?: return "ERROR:ACTIVITY_UNAVAILABLE"
         return try {
             JSONObject(json)
@@ -491,13 +524,13 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     }
 
     // Android can resume before Godot registers the plugin's native signals.
-    override fun onGodotSetupCompleted() { signalsReady = true }
+    override fun onGodotSetupCompleted() { signalsReady = true; clear_photo_cache() }
     override fun onMainPause() { if (!closed.get()) { accounts.pause(true); media.pause(); controlled.pause(); mpv.pause(); if (signalsReady) emitSignal("android_lifecycle", "pause") } }
     override fun onMainResume() { if (!closed.get()) { accounts.pause(false); media.resume(); controlled.resume(); mpv.resume(); if (signalsReady) { sources.refreshLocalStorage(); emitSignal("android_lifecycle", "resume") } } }
     override fun onMainDestroy() { close() }
     override fun onGodotTerminating() { close() }
 
     private fun close() {
-        if (closed.compareAndSet(false, true)) { accounts.close(); photos.close(); photoPreloads.close(); photoPreviews.close(); PhotoDepthRuntime.release(); picker.close(); localAccess.close(); probe.shutdownNow(); media.shutdown(); controlled.shutdown(); mpv.shutdown(); rvm.close(); sources.close() }
+        if (closed.compareAndSet(false, true)) { favoritesTasks.close(); accounts.close(); photos.close(); photoPreloads.close(); photoPreviews.close(); PhotoDepthRuntime.release(); picker.close(); localAccess.close(); probe.shutdownNow(); media.shutdown(); controlled.shutdown(); mpv.shutdown(); rvm.close(); sources.close() }
     }
 }

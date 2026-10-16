@@ -15,7 +15,7 @@ class HeifPhotoInfoTest {
     }.toByteArray()
     private fun box(type: String, body: ByteArray) = bytes { writeInt(body.size + 8); writeBytes(type); write(body) }
     private fun full(type: String, body: ByteArray, flags: Int = 0) = box(type, bytes { writeInt(flags); write(body) })
-    private fun fixture(stereo: Boolean = true, eyes: List<Int> = listOf(20,10), wide: Boolean = false, rotate: Boolean = false, crop: Boolean = false): ByteArray {
+    private fun fixture(stereo: Boolean = true, eyes: List<Int> = listOf(20,10), wide: Boolean = false, rotate: Boolean = false, crop: Boolean = false, camera: ByteArray? = null): ByteArray {
         val ids = listOf(99,10,20,77) // primary, right, left and an auxiliary image deliberately out of eye order.
         val infos = ids.map { item -> full("infe", bytes {
             if (wide) writeInt(item) else writeShort(item)
@@ -29,8 +29,9 @@ class HeifPhotoInfoTest {
             writeInt(5)
             for (item in ids + 100) {
                 if (wide) writeInt(item) else writeShort(item)
-                writeByte(if (item == 100) 1 else if (crop) 3 else 2)
-                if (item == 100) writeByte(3) else { writeByte(0x81); writeByte(2); if (crop) writeByte(4) }
+                writeByte(if (item == 100) (if (camera != null) 2 else 1) else if (crop) 3 else 2)
+                if (item == 100) { writeByte(3); if (camera != null) writeByte(if (crop) 5 else 4) }
+                else { writeByte(0x81); writeByte(2); if (crop) writeByte(4) }
             }
         }, if (wide) 1 shl 24 else 0)
         val grpl = if (stereo) box("grpl", full("ster", bytes {
@@ -39,7 +40,16 @@ class HeifPhotoInfoTest {
         val primary = full("pitm", bytes { if (wide) writeInt(99) else writeShort(99) }, if (wide) 1 shl 24 else 0)
         return box("ftyp", "heic".toByteArray() + ByteArray(4) + "mif1heic".toByteArray()) +
             full("meta", primary + full("iinf", bytes { writeShort(ids.size); write(infos) }) +
-                box("iprp", box("ipco", size+rotation+uuid+(if (crop) aperture else byteArrayOf())) + ipma) + grpl) + box("mdat", byteArrayOf(1,2,3,4))
+                box("iprp", box("ipco", size+rotation+uuid+(if (crop) aperture else byteArrayOf())+(camera ?: byteArrayOf())) + ipma) + grpl) + box("mdat", byteArrayOf(1,2,3,4))
+    }
+    private fun camera(uuid: Boolean = true, fx: Double = .5, fy: Double? = null, cx: Double = .5, version: Int = 0, skew: Int = 0): ByteArray {
+        val payload = bytes {
+            writeInt(version shl 24 or 0x1000 or if (fy == null) 0 else 1)
+            writeInt((fx * 65536).toInt()); writeInt((cx * 65536).toInt()); writeInt(32768)
+            if (fy != null) { writeInt((fy * 65536).toInt()); writeInt(skew) }
+        }
+        return if (!uuid) box("cmin", payload) else box("uuid",
+            "22cc04c7d6d94e079d904eb6ecbaf3a3".chunked(2).map { it.toInt(16).toByte() }.toByteArray() + payload)
     }
     private fun withFile(data: ByteArray, check: (File) -> Unit) {
         val directory = Files.createTempDirectory("thru3d-heif").toFile()
@@ -92,6 +102,35 @@ class HeifPhotoInfoTest {
         assertEquals(450,info.width); assertEquals(620,info.height)
     }
 
+    @Test fun spatialFovUsesAssociatedIntrinsicsForBothUuidAndStandardProperties() {
+        for (uuid in listOf(false, true)) withFile(fixture(camera=camera(uuid))) { file ->
+            val before = file.readBytes(); val info = HeifPhotoInfo.read(file)!!
+            assertEquals(90.0,info.horizontalFovDegrees!!,1e-6)
+            assertEquals(info.horizontalFovDegrees,HeifPhotoInfo.readPrefix(before)!!.horizontalFovDegrees)
+            assertArrayEquals(before,file.readBytes())
+        }
+    }
+
+    @Test fun fovAccountsForCropRotationAndAnisotropicIntrinsics() {
+        withFile(fixture(rotate=true,crop=true,camera=camera())) { file ->
+            assertEquals(Math.toDegrees(2*kotlin.math.atan(450.0/640)),HeifPhotoInfo.read(file)!!.horizontalFovDegrees!!,1e-6)
+        }
+        withFile(fixture(rotate=true,camera=camera(fy=1.0))) { file ->
+            assertEquals(Math.toDegrees(2*kotlin.math.atan(.5)),HeifPhotoInfo.read(file)!!.horizontalFovDegrees!!,1e-6)
+        }
+    }
+
+    @Test fun ordinaryMissingUnsupportedAndOffAxisCamerasHaveNoSpatialFov() {
+        withFile(fixture(stereo=false,camera=camera())) { assertNull(HeifPhotoInfo.read(it)!!.horizontalFovDegrees) }
+        withFile(fixture()) { assertNull(HeifPhotoInfo.read(it)!!.horizontalFovDegrees) }
+        for (property in listOf(camera(fx=-.5),camera(cx=.25),camera(version=1),camera(fy=1.0,skew=1),box("cmin",byteArrayOf(0)))) {
+            withFile(fixture(camera=property)) { file ->
+                val info = HeifPhotoInfo.read(file)!!
+                assertTrue(info.stereo); assertNull(info.horizontalFovDegrees)
+            }
+        }
+    }
+
     @Test fun selectingAnEyeChangesOnlyPrivatePrimaryAndVisibilityBytes() = withFile(fixture()) { file ->
         val original=file.readBytes(); val info=HeifPhotoInfo.read(file)!!
         val copy=File(file.parentFile,"view.heic"); file.copyTo(copy)
@@ -125,6 +164,8 @@ class HeifPhotoInfoTest {
             val info=HeifPhotoInfo.read(file)!!
             assertTrue(file.name,info.stereo); assertNotEquals(info.left,info.right)
             assertTrue(info.width>0 && info.height>0)
+            assertNotNull("Spatial reference has capture intrinsics: " + file.name,info.horizontalFovDegrees)
+            println("Spatial capture FOV: ${file.name} ${info.horizontalFovDegrees}")
             val prefix=file.inputStream().use { it.readNBytes(PhotoHeader.MAX_BYTES) }
             assertEquals(PhotoHeader(info.packedWidth,info.height,1,true),PhotoHeader.read(prefix))
             System.getenv("THRU3D_HEIF_PROBE_OUTPUT")?.let { output ->
@@ -136,6 +177,7 @@ class HeifPhotoInfoTest {
                 File(root,file.nameWithoutExtension+".json").writeText(JSONObject()
                     .put("source",file.name).put("left_item",info.left).put("right_item",info.right)
                     .put("width",info.width).put("height",info.height).put("disparity",info.disparity)
+                    .put("horizontal_fov_degrees",info.horizontalFovDegrees)
                     .put("primary",info.primary).toString(2))
             }
         }

@@ -215,6 +215,12 @@ internal class EmbyClient(private val account: MediaServerAccount, private val h
             .put("genres", facets(data, "GenreItems", "Genres", true)).put("tags", facets(data, "TagItems", "Tags", true))
             .put("performers", facets(data, "People", "", false)).put("studios", facets(data, "Studios", "", false))
         val tags = data.optJSONObject("ImageTags") ?: JSONObject()
+        for ((input, output) in mapOf("ParentId" to "parent_id", "SeasonId" to "season_id", "SeriesId" to "series_id")) {
+            data.optString(input).takeIf { it.isNotBlank() }?.let { raw ->
+                runCatching { mediaId(raw) }.getOrNull()?.let { result.put(output, it) }
+            }
+        }
+        if (data.optString("SeriesName").isNotBlank()) result.put("series_title", data.optString("SeriesName").take(256))
         val variants = JSONObject()
         for (type in listOf("Primary", "Thumb", "Backdrop")) {
             val tag = if (type == "Backdrop") data.optJSONArray("BackdropImageTags")?.optString(0).orEmpty() else tags.optString(type)

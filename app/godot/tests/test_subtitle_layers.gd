@@ -9,7 +9,9 @@ var failures: Array[String] = []
 class Host extends RefCounted:
 	var created: Array = []
 	var copies := 0
+	var refuse_slot := -1
 	func create_layer_image(slot: int, w: int, h: int, _levels: int, _static: bool) -> bool:
+		if slot == refuse_slot: return false
 		if created.is_empty() or created[-1] != [slot, w, h]: created.append([slot, w, h])
 		return true
 	func acquire_layer_image(_slot: int) -> int: return 1
@@ -18,11 +20,19 @@ class Host extends RefCounted:
 		return true
 	func release_layer_image(_slot: int, _mipmaps: bool) -> bool: return true
 	func close_mpv_video(_id: int) -> void: pass
+	func detach_mpv_pair(_id: int, _token: int) -> void: pass
 
 class Layers extends "res://scripts/video_layer.gd":
+	var shown := PackedFloat32Array()
+	var orders := PackedInt32Array()
+	var refuse_show := false
 	func update_session() -> void: pass
 	func available() -> bool: return true
 	func supports(_geometry: int, _curved: bool) -> bool: return true
+	func _apply(count: int, values: PackedFloat32Array, layer_orders := PackedInt32Array()) -> bool:
+		shown = values
+		orders = layer_orders
+		return count > 0 and not refuse_show
 
 func check(ok: bool, message: String) -> void:
 	checks += 1
@@ -100,6 +110,110 @@ func _run() -> void:
 	video._layer_session = true
 	video.bitmap_subtitles.clear(video.material)
 	check(video._subtitle_layer_extras(origin).is_empty(), "No cue, no layer")
+	video.free()
+	_depth_layers(origin)
+	origin.free()
 	print("Subtitle layers: %d checks, %d failures" % [checks, failures.size()])
 	for failure in failures: print("FAIL: " + failure)
 	quit(1 if failures.size() else 0)
+
+func _depth_layers(origin: XROrigin3D) -> void:
+	var camera := XRCamera3D.new()
+	origin.add_child(camera)
+	var video := Video.new()
+	origin.add_child(video)
+	video.set_process(false)
+	video.view_camera = camera
+	var host := Host.new()
+	var layers := Layers.new(null)
+	layers._flip = true
+	video.platform = host
+	video.video_layer = layers
+	video.media.begin(7)
+	video.media.state = "playing"
+	video.media.frame_counter = 1
+	video.panel.visible = true
+	video.depth_requested = true
+	video.depth_enabled = true
+	video._binding.warped = true
+	video._binding.ticket = {"session_id": 7, "width": 1920, "height": 1080, "slot_token": 1, "warp_texture_id": 77}
+	video._apply_geometry()
+	var cue := _cue(1, 300, 50)
+	_apply(video, cue)
+	video._update_layer()
+	check(video.video_layer_shown and layers.shown.size() == VideoLayer.STRIDE * 3,
+		"2D->3D submits its stereo picture and a PGS overlay together")
+	check(video._subtitle_on_layer and not video._subtitle_surface.visible,
+		"A submitted depth PGS overlay hides the duplicate eye-buffer surface")
+	if layers.shown.size() == VideoLayer.STRIDE * 3:
+		var values := layers.shown.slice(VideoLayer.STRIDE * 2)
+		check(values[1] == 0 and values[26] == VideoLayer.SUBTITLE_SLOT and values[27] == VideoLayer.SOURCE_ALPHA
+			and layers.orders == PackedInt32Array([VideoLayer.ORDER, VideoLayer.ORDER, VideoLayer.OVERLAY_ORDER]),
+			"Depth PGS is an unwarped premultiplied overlay visible to both eyes above the stereo video")
+	var copies := host.copies
+	video._update_layer()
+	check(host.copies == copies, "Paused depth playback reuses both the picture and subtitle copies")
+	var pixels := PackedByteArray(); pixels.resize(300 * 50 * 4)
+	video.bitmap_subtitles.apply(video.material, cue, 1, pixels, 1.5, 0.5)
+	video._update_layer()
+	if layers.shown.size() == VideoLayer.STRIDE * 3:
+		var values := layers.shown.slice(VideoLayer.STRIDE * 2)
+		check(is_equal_approx(values[13], 450.0 / 1920 * video._flat.size.x)
+			and values[3] > video.subtitle_transform().origin.y - video._flat.size.y * 0.25,
+			"Depth PGS size and position adjust the submitted layer geometry")
+	check(host.copies == copies, "Depth PGS adjustments do not reupload unchanged pixels")
+	video.set_screen_curve(0.35)
+	video._update_layer()
+	check(layers.shown.size() == VideoLayer.STRIDE * 3 and layers.shown[VideoLayer.STRIDE * 2] == 1,
+		"Curved 2D->3D submits the PGS cylinder section")
+	video.set_screen_curve(0.0)
+	video.bitmap_subtitles.clear(video.material)
+	video._update_layer()
+	check(layers.shown.size() == VideoLayer.STRIDE * 2 and not video._subtitle_on_layer and not video._subtitle_surface.visible,
+		"A depth subtitle gap/off immediately removes its overlay")
+	_apply(video, _cue(2, 300, 50))
+	video._update_layer()
+	check(layers.shown.size() == VideoLayer.STRIDE * 3 and video._subtitle_on_layer,
+		"A new PGS cue returns during depth playback")
+	# If its swapchain cannot be uploaded, the subtitle must stay above the video hole.
+	video._bitmap_layer_texture = null
+	host.refuse_slot = VideoLayer.SUBTITLE_SLOT
+	video._update_layer()
+	check(video._subtitle_layer_failed and video.video_layer_shown and not video._subtitle_on_layer and video._subtitle_surface.visible
+		and video.material.get_shader_parameter("separate_subtitles") == true,
+		"A refused subtitle layer falls back to a separate visible surface over the depth picture")
+	host.refuse_slot = -1
+	video._subtitle_layer_failed = false
+	video.material.set_shader_parameter("rotation_degrees", 90)
+	video._update_layer()
+	check(video._subtitle_surface.visible and not video._subtitle_on_layer
+		and video._subtitle_material.get_shader_parameter("rotation_degrees") == 90,
+		"Rotated depth source keeps its oriented subtitle surface over the video")
+	video.material.set_shader_parameter("rotation_degrees", 0)
+	# Failure after subtitle preparation must not leave it hidden on a layer that was never shown.
+	host.refuse_slot = VideoLayer.PICTURE_SLOT
+	video._binding.ticket.slot_token = 2
+	video._update_layer()
+	check(not video.video_layer_shown and not video._subtitle_on_layer
+		and video.panel.material_override == video.material
+		and video.material.get_shader_parameter("separate_subtitles") == false,
+		"A refused depth picture restores inline PGS in the eye buffers in the same frame")
+	host.refuse_slot = -1
+	video._update_layer()
+	check(video.video_layer_shown and video._subtitle_on_layer and not video._subtitle_surface.visible,
+		"Depth picture recovery submits the cached PGS overlay")
+	layers.refuse_show = true
+	video._update_layer()
+	check(not video.video_layer_shown and not video._subtitle_on_layer,
+		"A refused layer submission also restores subtitle fallback")
+	layers.refuse_show = false
+	video._binding.warped = false
+	video.depth_enabled = false
+	video.depth_requested = false
+	video._apply_geometry()
+	video._update_layer()
+	check(not video.video_layer_shown and not video._subtitle_on_layer
+		and video.material.get_shader_parameter("bitmap_subtitle_enabled") == true,
+		"Turning conversion off retains the current PGS cue on the ordinary video shader")
+	video.free()
+	camera.free()

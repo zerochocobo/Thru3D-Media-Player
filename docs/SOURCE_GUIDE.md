@@ -105,3 +105,17 @@ The fisheye-angle row in the video mode panel offers “Use the video's own Alph
 Supported compositor-layer videos can also generate library covers after playback, retaining black-frame retries. Stereo covers use the left-eye image and account for source orientation. Capture failures do not block playback.
 
 115 Open folder deletion avoids a full subtree scan before confirmation and a repeated scan afterward. Target identity, type and permissions are still checked; uncertain outcomes require verification without automatically repeating the deletion. Local/SMB rules are unchanged, and this does not imply the same behavior for legacy cookie-based 115 or other cloud providers.
+
+## Favorites, privacy and USB playback
+
+Switch the home library between Recent and Favorites, or use the playback favorite action. Supported items can reopen their source folder. Checkboxes, batch removal and a short undo window manage records without deleting source files.
+
+History can record all media, local media only or nothing. Clearing network/all history keeps account connections and explicitly saved favorites. Favorites can be encrypted with a four-digit PIN, manually locked and automatically locked according to the selected policy. Locking hides contents and closes protected playback. These are app-level privacy controls; a short PIN is not a guarantee against offline guessing or access to the original files.
+
+Supported USB devices offer read-only FAT32, exFAT and NTFS browsing, including compatible partitions and same-directory subtitles. System-mounted volumes may require read-only folder authorization. The library toolbar's global stop action releases this app's playback/readers across USB sources; it does not promise operating-system unmounting or power removal. A previous raw-USB session's favorites are not guaranteed to resolve after unplugging/reconnecting.
+
+## Spatial metadata and controller feedback
+
+Spatial videos with valid source metadata can apply the recommended stereo offset, remembered per video. Capture-FOV matching is available for spatial videos/photos with valid capture information. This does not imply complete Apple spatial presentation or physical-scale reconstruction.
+
+Move a controller or press a button to reveal its ray and hit point outside menus; idle feedback hides with the controls. Flat-video corners support proportional trigger resizing. Default right-stick vertical movement adjusts flat-picture size or immersive zoom; saved custom mappings remain in effect. Photo 3D waits for the stereo result before switching, and flat PGS subtitles remain available during supported video 2D-to-3D conversion.

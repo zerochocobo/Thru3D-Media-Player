@@ -5,6 +5,41 @@
 #include <libavformat/avformat.h>
 #include <libavutil/opt.h>
 #include "../../native/mpv/spatial/quest_spatial_video.h"
+#include "../../native/mpv/spatial/quest_spatial_metadata.h"
+
+static void metadata_tests(void)
+{
+    _Static_assert(sizeof(quest_mpv_source_frame) == 80, "Keep API-2 ABI");
+    _Static_assert(sizeof(quest_mpv_spatial_metadata) == 32, "Spatial ABI");
+    AVStereo3D stereo = {0};
+    quest_mpv_spatial_metadata out;
+    quest_spatial_metadata_read(&out, NULL);
+    assert(out.struct_size == sizeof(out) && !out.flags);
+    stereo.baseline = 19200;
+    stereo.horizontal_field_of_view = (AVRational){63400, 1000};
+    stereo.horizontal_disparity_adjustment = (AVRational){200, 10000};
+    quest_spatial_metadata_read(&out, &stereo);
+    assert(out.flags == (QUEST_MPV_SPATIAL_BASELINE | QUEST_MPV_SPATIAL_FOV | QUEST_MPV_SPATIAL_DISPARITY));
+    assert(fabs(out.baseline_meters - .0192) < 1e-12);
+    assert(fabs(out.horizontal_fov_degrees - 63.4) < 1e-12);
+    assert(fabs(out.horizontal_disparity - .02) < 1e-12);
+    stereo.horizontal_disparity_adjustment.num = -200;
+    quest_spatial_metadata_read(&out, &stereo);
+    assert(fabs(out.horizontal_disparity + .02) < 1e-12);
+    stereo.horizontal_disparity_adjustment.num = 0;
+    quest_spatial_metadata_read(&out, &stereo);
+    assert((out.flags & QUEST_MPV_SPATIAL_DISPARITY) && out.horizontal_disparity == 0);
+    stereo.baseline = 0;
+    stereo.horizontal_field_of_view = (AVRational){180, 1};
+    stereo.horizontal_disparity_adjustment = (AVRational){10001, 10000};
+    quest_spatial_metadata_read(&out, &stereo);
+    assert(!out.flags && out.baseline_meters == 0 && out.horizontal_disparity == 0);
+    stereo.horizontal_field_of_view = (AVRational){63, 0};
+    stereo.horizontal_disparity_adjustment = (AVRational){2, -100};
+    quest_spatial_metadata_read(&out, &stereo);
+    assert(!out.flags);
+    puts("Spatial metadata units, sign, zero, missing/invalid fields and ABI: passed");
+}
 
 static AVFrame *eye(int view, int64_t pts, int value)
 {
@@ -87,7 +122,8 @@ static void unit_tests(void)
 }
 
 static int receive(AVCodecContext *codec, struct quest_spatial_pair *pair,
-                   AVFrame *frame, int64_t *last, int *different)
+                   AVFrame *frame, int64_t *last, int *different,
+                   const quest_mpv_spatial_metadata *expected)
 {
     int count = 0, ret;
     while ((ret = avcodec_receive_frame(codec, frame)) >= 0) {
@@ -99,6 +135,12 @@ static int receive(AVCodecContext *codec, struct quest_spatial_pair *pair,
             const AVStereo3D *sd = (const AVStereo3D *)av_frame_get_side_data(
                 frame, AV_FRAME_DATA_STEREO3D)->data;
             assert(sd->type == AV_STEREO3D_SIDEBYSIDE && sd->view == AV_STEREO3D_VIEW_PACKED);
+            quest_mpv_spatial_metadata actual;
+            quest_spatial_metadata_read(&actual, sd);
+            assert(actual.flags == expected->flags);
+            assert(fabs(actual.baseline_meters - expected->baseline_meters) < 1e-12);
+            assert(fabs(actual.horizontal_fov_degrees - expected->horizontal_fov_degrees) < 1e-12);
+            assert(fabs(actual.horizontal_disparity - expected->horizontal_disparity) < 1e-12);
             int width = frame->width / 2;
             for (int y = 0; y < frame->height; y++)
                 if (memcmp(frame->data[0] + y * frame->linesize[0],
@@ -161,6 +203,12 @@ static void test_file(const char *path)
     assert(stream >= 0);
     AVCodecParameters *par = format->streams[stream]->codecpar;
     assert(quest_spatial_candidate(par));
+    const AVPacketSideData *stereo = av_packet_side_data_get(par->coded_side_data, par->nb_coded_side_data, AV_PKT_DATA_STEREO3D);
+    assert(stereo && stereo->size >= sizeof(AVStereo3D));
+    quest_mpv_spatial_metadata expected_metadata;
+    quest_spatial_metadata_read(&expected_metadata, (const AVStereo3D *)stereo->data);
+    printf("Metadata flags=%u baseline=%.6fm FOV=%.3fdeg disparity=%.6f\n", expected_metadata.flags,
+           expected_metadata.baseline_meters, expected_metadata.horizontal_fov_degrees, expected_metadata.horizontal_disparity);
     const AVCodec *decoder = avcodec_find_decoder(par->codec_id);
     AVCodecContext *codec = avcodec_alloc_context3(decoder);
     assert(codec && avcodec_parameters_to_context(codec, par) == 0);
@@ -179,14 +227,14 @@ static void test_file(const char *path)
             if (packet->stream_index == stream) {
                 int ret;
                 while ((ret = avcodec_send_packet(codec, packet)) == AVERROR(EAGAIN))
-                    count += receive(codec, &pair, frame, &last, &different);
+                    count += receive(codec, &pair, frame, &last, &different, &expected_metadata);
                 assert(ret == 0);
-                count += receive(codec, &pair, frame, &last, &different);
+                count += receive(codec, &pair, frame, &last, &different, &expected_metadata);
             }
             av_packet_unref(packet);
         }
         assert(avcodec_send_packet(codec, NULL) == 0);
-        count += receive(codec, &pair, frame, &last, &different);
+        count += receive(codec, &pair, frame, &last, &different, &expected_metadata);
         assert(count > 0 && count == expected && different == count);
         assert(!pair.eye[0] && !pair.eye[1]);
         printf("%s: pass %d, %d complete stereo frames, %d different eye pairs\n",
@@ -201,6 +249,7 @@ static void test_file(const char *path)
 
 int main(int argc, char **argv)
 {
+    metadata_tests();
     unit_tests();
     for (int i = 1; i < argc; i++) test_file(argv[i]);
     return 0;

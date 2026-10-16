@@ -25,8 +25,10 @@ func _init() -> void:
 		entry("forward10", "Forward 10 seconds", "video", [bind("right_hand", "stick_right")]),
 		entry("volume_up", "Volume up", "video", [bind("left_hand", "stick_up")]),
 		entry("volume_down", "Volume down", "video", [bind("left_hand", "stick_down")]),
-		entry("flat_volume_up", "Volume up", "video_flat", [bind("right_hand", "stick_up")]),
-		entry("flat_volume_down", "Volume down", "video_flat", [bind("right_hand", "stick_down")]),
+		entry("flat_volume_up", "Volume up", "video_flat", []),
+		entry("flat_volume_down", "Volume down", "video_flat", []),
+		entry("flat_zoom_in", "Zoom in", "video_flat", [bind("right_hand", "stick_up")], true),
+		entry("flat_zoom_out", "Zoom out", "video_flat", [bind("right_hand", "stick_down")], true),
 		entry("zoom_in", "Zoom in", "video_immersive", [bind("right_hand", "stick_up")], true),
 		entry("zoom_out", "Zoom out", "video_immersive", [bind("right_hand", "stick_down")], true),
 		entry("photo_next", "Next photo", "photo", [bind("right_hand", "stick_right")]),
@@ -41,7 +43,7 @@ func _init() -> void:
 		entry("projection_photo", "Cycle projection", "photo", [bind("left_hand", "primary_click")]),
 		entry("inspect", "Inspect photo", "photo", []),
 		entry("move_video", "Move picture / interfaces", "video", [bind("left_hand", "grip_click"), bind("right_hand", "grip_click")], false, true),
-		entry("move_photo", "Move interfaces / magnifier", "photo", [bind("left_hand", "grip_click"), bind("right_hand", "grip_click")], false, true),
+		entry("move_photo", "Move picture / interfaces", "photo", [bind("left_hand", "grip_click"), bind("right_hand", "grip_click")], false, true),
 		entry("subtitles", "Subtitle panel", "video", []),
 		entry("turn_180_video", "Turn 180° (360°)", "video_immersive", []),
 		entry("turn_180_photo", "Turn 180° (360°)", "photo", []),
@@ -105,7 +107,7 @@ func clean_binding(value: Variant, id: String) -> Dictionary:
 
 ## Grip alone moves interfaces; grip + trigger chords retain their separate target input.
 ## B/Y alone navigates back; only chords and the matching photo close may use them.
-## A plain video trigger is reserved for UI selection and showing/hiding controls.
+## A plain video trigger is reserved for UI selection, corner resizing and showing/hiding controls.
 func reserved(id: String, input: String, modifiers: Array) -> bool:
 	return (input == "grip_click" and not is_fixed(id)) or (input == "by_button" and modifiers.is_empty() and id != "photo_close") \
 		or (input == "trigger_click" and modifiers.is_empty() and str(definition(id).get("scope", "")).begins_with("video"))
@@ -212,6 +214,10 @@ func restore(data: Variant) -> void:
 	# Adding a default must not invalidate a previously saved custom photo A binding.
 	if not saved.has("photo_close") and not conflicts("photo_close", bind("right_hand", "ax_button")).is_empty():
 		overrides["photo_close"] = []
+	# New flat zoom defaults yield to an explicitly saved volume or other binding.
+	for id in ["flat_zoom_in", "flat_zoom_out"]:
+		var legacy := "flat_volume_up" if id == "flat_zoom_in" else "flat_volume_down"
+		if not saved.has(id) and ((saved.has(legacy) and saved[legacy].is_empty()) or not conflicts(id, definition(id).defaults[0]).is_empty()): overrides[id] = []
 	for id in overrides:
 		for value in bindings(id):
 			if not conflicts(id, value).is_empty(): restore_all(); return

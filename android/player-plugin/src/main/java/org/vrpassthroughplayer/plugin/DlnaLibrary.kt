@@ -14,6 +14,9 @@ internal class DlnaLibrary(
     private val references = LinkedHashMap<String, JSONObject>()
     // Match the player's 32-entry history. Directory browsing must not evict played items.
     private val playbackReferences = LinkedHashMap<String, JSONObject>()
+    private var durableReferences = JSONArray()
+    private var durablePlayback = JSONArray()
+    private val transientReferences = HashSet<String>()
     init {
         runCatching { JSONObject(load()) }.getOrNull()?.let { data ->
             data.optJSONArray("servers")?.let { list ->
@@ -32,6 +35,8 @@ internal class DlnaLibrary(
             }
             restore("references", references, 256)
             restore("playback_references", playbackReferences, 32)
+            durableReferences = JSONArray(data.optJSONArray("references")?.toString() ?: "[]")
+            durablePlayback = JSONArray(data.optJSONArray("playback_references")?.toString() ?: "[]")
         }
     }
 
@@ -80,6 +85,7 @@ internal class DlnaLibrary(
                 val entry = entries.getJSONObject(i)
                 if (entry.optString("kind") != "video") continue
                 val uri = entry.getString("uri")
+                if (PlaybackPrivacy.networkHistory) transientReferences.remove(uri) else transientReferences.add(uri)
                 references.remove(uri)
                 references[uri] = JSONObject().put("uri", uri).put("object_id", entry.getString("id"))
                     .put("server", selected.json()).put("parent_id", objectId).put("subtitle_origin", "directory")
@@ -94,7 +100,27 @@ internal class DlnaLibrary(
         return entries
     }
 
+    fun playable(uri: String): String {
+        val identity = java.net.URI(uri)
+        require(identity.scheme == "dlna" && !identity.rawAuthority.isNullOrEmpty())
+        val id = java.net.URLDecoder.decode(identity.rawAuthority, "UTF-8")
+        var selected = synchronized(this) { saved[id]?.let(::server) ?: found[id] }
+        if (selected == null) { refresh(); selected = synchronized(this) { saved[id]?.let(::server) ?: found[id] } }
+        val endpoint = selected ?: error("DLNA server unavailable")
+        val objectId = java.net.URLDecoder.decode(identity.rawPath.removePrefix("/"), "UTF-8")
+        val entry = video(DlnaClient.browse(endpoint, objectId, metadata = true), objectId) ?: error("DLNA item unavailable")
+        val resolved = entry.getString("uri")
+        synchronized(this) {
+            references[resolved] = JSONObject().put("uri", resolved).put("object_id", objectId).put("server", endpoint.json())
+                .put("parent_id", entry.optString("parent_id")).put("subtitle_origin", "directory")
+                .put("subtitles", entry.optJSONArray("subtitles") ?: JSONArray())
+            if (PlaybackPrivacy.networkHistory) transientReferences.remove(resolved) else transientReferences.add(resolved)
+        }
+        return resolved
+    }
+
     fun subtitles(uri: String): List<MediaSubtitleLink> {
+        if (!PlaybackPrivacy.networkHistory) synchronized(this) { transientReferences.add(uri) }
         val original = synchronized(this) { references[uri] ?: playbackReferences[uri] } ?: return emptyList()
         val reference = JSONObject(original.toString())
         var captions = reference.optJSONArray("subtitles") ?: JSONArray()
@@ -174,9 +200,19 @@ internal class DlnaLibrary(
         .mapNotNull { entries.optJSONObject(it) }
         .singleOrNull { it.optString("kind") == "video" && it.optString("id") == objectId }
 
-    private fun store() = persist(JSONObject().put("servers", JSONArray(saved.values.toList()))
-        .put("references", JSONArray(references.values.toList().takeLast(256)))
-        .put("playback_references", JSONArray(playbackReferences.values.toList())).toString())
+    @Synchronized fun clearPlaybackReferences() {
+        references.clear(); playbackReferences.clear(); transientReferences.clear(); durableReferences = JSONArray(); durablePlayback = JSONArray()
+        store()
+    }
+
+    private fun store() {
+        val mayRecord = PlaybackPrivacy.networkHistory
+        val nextReferences = if (mayRecord) JSONArray(references.filterKeys { it !in transientReferences }.values.toList().takeLast(256)) else durableReferences
+        val nextPlayback = if (mayRecord) JSONArray(playbackReferences.filterKeys { it !in transientReferences }.values.toList()) else durablePlayback
+        persist(JSONObject().put("servers", JSONArray(saved.values.toList()))
+            .put("references", nextReferences).put("playback_references", nextPlayback).toString())
+        durableReferences = JSONArray(nextReferences.toString()); durablePlayback = JSONArray(nextPlayback.toString())
+    }
 
     private fun server(row: JSONObject): DlnaClient.Server? {
         val location = DlnaClient.httpUri(row.optString("location")) ?: return null

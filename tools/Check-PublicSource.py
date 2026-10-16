@@ -7,7 +7,7 @@ import re
 import subprocess
 
 FORBIDDEN_PARTS = {'.git', '.cache', '.venv', '.godot', '.gradle', '.cxx', '__pycache__', 'prompt', 'artifacts', 'build', 'tmp', 'backups', 'keystore', 'releases', 'credentials', 'research'}
-FORBIDDEN_SUFFIXES = {'.onnx', '.mnn', '.pt', '.pth', '.ckpt', '.safetensors', '.bin', '.param', '.apk', '.aar', '.so', '.keystore', '.jks', '.p12', '.pfx', '.hdr', '.log', '.zip', '.7z', '.rar', '.key', '.pem'}
+FORBIDDEN_SUFFIXES = {'.onnx', '.mnn', '.pt', '.pth', '.ckpt', '.safetensors', '.bin', '.param', '.apk', '.aar', '.so', '.keystore', '.jks', '.p12', '.pfx', '.hdr', '.log', '.zip', '.tgz', '.tar', '.gz', '.bz2', '.xz', '.7z', '.rar', '.key', '.pem'}
 # MIT-licensed glTF mesh buffers, not inference weights. Only these exact bytes qualify.
 HAND_BUFFER_PINS = {
     'app/godot/models/hands/LeftHandHumanoid.bin': '05f96e5aae870c8f2fde8a1fea337b060c7fde3e659b124a5ed979f0ffa1222a',
@@ -15,6 +15,11 @@ HAND_BUFFER_PINS = {
 }
 FONT_PINS = {
     'app/godot/assets/fonts/cjk-brackets.otf': 'e63dc18bc1615fcdf509de72a18799271d5f66959296cd6bf9caa20d5d6dd7fa',
+}
+# Reviewed upstream source bundles required by native/usb, never signing/data backups.
+USB_SOURCE_PINS = {
+    'third_party/usb/fatfs-r016.zip': '99f7dc1f7e095356e4a9e3dbe29959090d8b948afe2bbc5441e52fdf4b85449e',
+    'third_party/usb/ntfs-3g-2026.9.28.tgz': '350d9415c59f7c3fa74e23985ad2d56423c6a168337368f672e2e362d8f295c8',
 }
 PATTERNS = {
     'private machine path': re.compile(r'(?i)(?:[CG]:[/\\]+(?:Users[/\\]+dennis|devtools|GIT|code[/\\]+VRPassthroughPlayer)|/mnt/' + r'g/|/opt/' + r'quest-mpv)'),
@@ -34,11 +39,14 @@ def check_files(files):
             errors.append(f'{name}: unsafe path')
         approved_mesh = name in HAND_BUFFER_PINS
         approved_font = name in FONT_PINS
+        approved_source = name in USB_SOURCE_PINS
+        if approved_source and hashlib.sha256(data).hexdigest() != USB_SOURCE_PINS[name]:
+            errors.append(f'{name}: source archive differs from reviewed upstream bytes')
         if approved_font and (len(data) != 6844 or hashlib.sha256(data).hexdigest() != FONT_PINS[name]):
             errors.append(f'{name}: font differs from reviewed OFL subset')
         if approved_mesh and (len(data) != 38584 or hashlib.sha256(data).hexdigest() != HAND_BUFFER_PINS[name]):
             errors.append(f'{name}: hand mesh differs from reviewed MIT asset')
-        if FORBIDDEN_PARTS.intersection(part.lower() for part in path.parts) or (path.suffix.lower() in FORBIDDEN_SUFFIXES and not approved_mesh):
+        if FORBIDDEN_PARTS.intersection(part.lower() for part in path.parts) or (path.suffix.lower() in FORBIDDEN_SUFFIXES and not approved_mesh and not approved_source):
             errors.append(f'{name}: excluded directory or binary asset')
         if name.startswith(tuple('docs/' + item + '/' for item in ('store', 'branding', 'archive'))) or name.startswith('tools/record_'):
             errors.append(f'{name}: private development or promotion content')
@@ -53,12 +61,24 @@ def check_files(files):
         try:
             value = data.decode('utf-8')
         except UnicodeDecodeError:
-            if path.suffix.lower() not in {'.png', '.jpg', '.jpeg', '.webp', '.mp4', '.jar'} and not approved_mesh and not approved_font:
+            if path.suffix.lower() not in {'.png', '.jpg', '.jpeg', '.webp', '.mp4', '.jar'} and not approved_mesh and not approved_font and not approved_source:
                 errors.append(f'{name}: unreviewed binary type')
             continue
         for label, pattern in PATTERNS.items():
             if pattern.search(value):
                 errors.append(f'{name}: {label}')  # Never print the matched credential.
+    if USB_SOURCE_PINS.keys() & files.keys():
+        for name in ('LICENSE.fatfs', 'LICENSE.ntfs-3g', 'LICENSE.libaums', 'source-lock.json'):
+            asset = 'third_party/usb/' + name
+            if asset not in files:
+                errors.append(f'{asset}: USB source license/lock missing')
+        try:
+            lock = json.loads(files.get('third_party/usb/source-lock.json', b'{}'))
+            for name, component in [('third_party/usb/fatfs-r016.zip', 'fatfs'), ('third_party/usb/ntfs-3g-2026.9.28.tgz', 'ntfs-3g')]:
+                if name in files and lock[component]['sha256'] != USB_SOURCE_PINS[name]:
+                    errors.append(f'{name}: USB source lock differs from reviewed pin')
+        except (ValueError, KeyError, TypeError):
+            errors.append('third_party/usb/source-lock.json: invalid USB source lock')
     if FONT_PINS.keys() & files.keys():
         for name in ('LICENSE.txt', 'NOTICE.txt'):
             asset = 'app/godot/assets/fonts/' + name

@@ -3,6 +3,7 @@ extends RefCounted
 # Two checksummed generations keep the previous valid configuration available
 # while the older bank is replaced. One writer, owned by the video controller.
 const VERSION := 1
+const Privacy := preload("res://scripts/media_privacy.gd")
 const LIMIT := 128
 const MAX_BYTES := 262144
 const StereoView := preload("res://scripts/stereo_view.gd")
@@ -23,7 +24,7 @@ static func key_for(uri: String) -> String:
 		return ""
 	# Network library URIs are stable (smb://<server id>/..., DLNA http media URLs); the
 	# loopback SMB proxy URL is per run and never stored.
-	var network := uri.begins_with("smb://") or uri.begins_with("cloud://") or uri.begins_with("medialib://") or ((uri.begins_with("http://") or uri.begins_with("https://")) 		and not uri.begins_with("http://127.0.0.1"))
+	var network := uri.begins_with("dlna://") or uri.begins_with("smb://") or uri.begins_with("cloud://") or uri.begins_with("medialib://") or ((uri.begins_with("http://") or uri.begins_with("https://")) 		and not uri.begins_with("http://127.0.0.1"))
 	if not (uri.begins_with("content://") or uri.begins_with("file://") or network):
 		return ""
 	# Android document identifiers and file paths can be case-sensitive.
@@ -64,11 +65,11 @@ func _recover_saved_value(value: Variant) -> Variant:
 	# other valid per-file choices; other stores derived from this class keep strict reads.
 	if _value_field() != "mode" or not value is Dictionary: return null
 	var repaired: Dictionary = value.duplicate(true)
-	for field in ["viewing_eye", "stereo_horizontal", "stereo_vertical"]: repaired.erase(field)
+	for field in ["viewing_eye", "stereo_horizontal", "stereo_vertical", "spatial_auto_disparity"]: repaired.erase(field)
 	if not valid_mode(repaired): return null
-	for field in ["viewing_eye", "stereo_horizontal", "stereo_vertical"]:
+	for field in ["viewing_eye", "stereo_horizontal", "stereo_vertical", "spatial_auto_disparity"]:
 		if value.has(field):
-			repaired[field] = value[field] if StereoView.valid({field: value[field]}) else 0
+			repaired[field] = value[field] if StereoView.valid({field: value[field]}) else (true if field == "spatial_auto_disparity" else 0)
 	return _normalize_value(repaired)
 
 static func _decode(text: String) -> Variant:
@@ -111,6 +112,7 @@ func _read_bank(path: String) -> Dictionary:
 			or float(updated) != floorf(float(updated)) or float(updated) < 1 or float(updated) > float(serial):
 			continue
 		result[key] = {_value_field(): recovered, "updated": int(updated)}
+		if entry.get("network") is bool: result[key].network = entry.network
 	return {"sequence": int(serial), "entries": result}
 
 func load_saved() -> void:
@@ -130,16 +132,19 @@ func load_saved() -> void:
 			active_bank = bank
 
 func lookup(uri: String) -> Dictionary:
+	if Privacy.protected_uri(uri): return Privacy.private_lookup(uri, directory.get_file() + "/" + _value_field())
 	var value: Dictionary = entries.get(key_for(uri), {})
 	return value.get(_value_field(), {}).duplicate(true)
 
 func remember(uri: String, mode: Dictionary) -> bool:
+	if not Privacy.record_allowed(uri): return false
+	if Privacy.protected_uri(uri): return Privacy.private_remember(uri, directory.get_file() + "/" + _value_field(), mode) if _valid_value(mode) else false
 	var key := key_for(uri)
 	if key.is_empty() or not _valid_value(mode):
 		return false
 	if lookup(uri) == mode:
 		return true
-	entries[key] = {_value_field(): _normalize_value(mode), "updated": sequence + 1}
+	entries[key] = {_value_field(): _normalize_value(mode), "updated": sequence + 1, "network": not Privacy.is_local(uri)}
 	while entries.size() > LIMIT:
 		var oldest := str(entries.keys()[0])
 		for candidate in entries:
@@ -151,6 +156,14 @@ func remember(uri: String, mode: Dictionary) -> bool:
 
 func _commit(staged: String, target: String) -> Error:
 	return DirAccess.rename_absolute(staged, target)
+
+## Rewrite both banks so deleted private data cannot return through recovery.
+func purge_keys(keys: Array) -> bool:
+	for key in keys: entries.erase(str(key))
+	dirty = true
+	if not save(): return false
+	dirty = true
+	return save()
 
 func relocate(old_uri: String, new_uri: String, title: String = "") -> bool:
 	var old_key := key_for(old_uri)

@@ -53,6 +53,13 @@ var folder_artwork := {}
 var sort_query := {}
 var sources_open := false
 var display_preferences_path := "user://settings/server_views.cfg"
+var _location_pending := {}
+
+func open_location(location: Dictionary) -> void:
+	cancel(); server = {"id": str(location.server_id)}
+	_location_pending = location.duplicate(true)
+	view = "home"; entries.clear(); detail.clear(); home_data.clear(); folder_path.clear()
+	request("home", {"library_id": str(location.get("library_id", ""))})
 
 func _init(owner: Node) -> void:
 	menu = owner
@@ -67,6 +74,7 @@ func _init(owner: Node) -> void:
 			if value is Array: favorites[id] = value.filter(func(item): return item is Dictionary and str(item.get("uri", "")).begins_with("medialib://" + str(id) + "/scene/")).slice(0, 1000)
 
 func cancel() -> void:
+	_location_pending.clear()
 	sort_query.clear()
 	gallery.capture.clear()
 	generation += 1
@@ -141,6 +149,12 @@ func receive(id: int, payload: String) -> bool:
 		"servers": servers = data.get("servers", [])
 		"home":
 			home_data = data; capabilities = data.get("capabilities", capabilities); library_id = str(data.get("library_id", "")); total = int(data.get("total", 0))
+			if not _location_pending.is_empty():
+				var location: Dictionary = _location_pending.duplicate(true); _location_pending.clear()
+				library_id = str(location.get("library_id", "")); folder_path = location.get("folder_path", []).duplicate(true)
+				query = {"page": 1, "q": "", "mode": "library"}
+				if not folder_path.is_empty(): query.parent_id = str(folder_path.back().id); query.mode = "folders"
+				view = "scenes"; browse(); return true
 			entries = []
 			if gallery.home(): _append_unique(entries, home_recent_entries())
 			else: _append_unique(entries, _resume_entries()); _append_unique(entries, home_data.get("recent", []))
@@ -512,6 +526,8 @@ func choose(row: Dictionary) -> void:
 	menu.refresh()
 
 func _play(node: Dictionary, position: int) -> void:
+	menu.collections.selected_location = preload("res://scripts/media_location.gd").capture(menu, node)
+	menu.collections.selected_entry = node.duplicate(true)
 	selection = node.duplicate(true); selection.start_ms = position
 	menu.remember_playback_context()
 	menu.dismiss(); menu.chosen.emit(str(node.uri), str(node.get("title", "Video")))

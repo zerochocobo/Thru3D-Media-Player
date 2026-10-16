@@ -4,7 +4,7 @@ signal suspended
 
 var left_latched := false
 var right_latched := false
-## The right stick is zooming an immersive view: it stays zoom until it returns to center.
+## The right stick stays with the selected zoom action until it returns to center.
 var right_zooming := false
 var mapped_continuous := {}
 
@@ -17,7 +17,7 @@ func suspend() -> void:
 	suspended.emit()
 
 # One command per deflection; return to center before changing direction/action.
-# With [zoom] (immersive views) the right stick's up/down zooms continuously instead of volume.
+# With [zoom] the right stick's up/down zooms continuously instead of volume.
 func poll(left: Vector2, right: Vector2, zoom: bool = false) -> Array[Dictionary]:
 	var actions: Array[Dictionary] = []
 	for hand in ["left", "right"]:
@@ -64,6 +64,9 @@ func poll_mapped(left: Vector2, right: Vector2, resolver: Callable) -> Array[Dic
 		var stick: Vector2 = left if hand == "left" else right
 		if not stick.is_finite(): continue
 		if stick.length() < 0.3:
+			# A centered stick releases its continuous action as well as its latch.
+			# Otherwise the old direction blocks reverse zoom and subsequent shortcuts.
+			mapped_continuous.erase(hand)
 			if hand == "left": left_latched = false
 			else: right_latched = false; right_zooming = false
 			continue

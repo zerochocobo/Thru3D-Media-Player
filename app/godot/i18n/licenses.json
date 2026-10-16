@@ -3,7 +3,9 @@
     "id": "cjk-brackets",
     "name": "Noto Sans CJK bracket subset",
     "license": "SIL Open Font License 1.1",
-    "assets": ["player-licenses/cjk-brackets.txt"]
+    "assets": [
+      "player-licenses/cjk-brackets.txt"
+    ]
   },
   {
     "id": "godot",
@@ -274,6 +276,17 @@
       "openlist/dependencies/modernc.org_memory@v1.5.0.txt",
       "openlist/dependencies/modernc.org_sqlite@v1.23.1.txt",
       "openlist/dependencies/resty.dev_v3@v3.0.0-beta.2.txt"
+    ]
+  },
+  {
+    "id": "usb-storage",
+    "name": "USB storage: FatFs / NTFS-3G / libaums adaptation",
+    "license": "BSD-style / GPL-2.0-or-later / Apache-2.0",
+    "assets": [
+      "usb/LICENSE.fatfs",
+      "usb/LICENSE.ntfs-3g",
+      "usb/LICENSE.libaums",
+      "usb/source-lock.json"
     ]
   }
 ]

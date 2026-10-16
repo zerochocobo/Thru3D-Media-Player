@@ -121,7 +121,7 @@ internal class PhotoPreviewBridge(
                 if (!closed && current.get() == id) emit(id, "{\"state\":\"error\",\"error\":\"PHOTO_UNAVAILABLE\"}")
             } finally {
                 connection?.disconnect(); connection = null
-                if (uri.startsWith("smb://") || uri.startsWith("cloud://")) releaseStream(resolved)
+                if (uri.startsWith("smb://") || uri.startsWith("cloud://") || uri.startsWith("usb://")) releaseStream(resolved)
                 if (!published) { synchronized(lock) { directories.remove(id) }; directory?.deleteRecursively() }
             }
         }

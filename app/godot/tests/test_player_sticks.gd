@@ -12,6 +12,7 @@ class DispatchMain extends "res://scripts/main.gd":
 
 class Trace extends Node3D:
 	var calls: Array = []
+	var geometry := 1
 	func seek_relative(delta: int) -> bool:
 		calls.append(["seek", delta])
 		return true
@@ -89,6 +90,21 @@ func _initialize() -> void:
 	controls.poll(Vector2.ZERO, Vector2.ZERO, true)
 	main._apply_stick_actions(controls.poll(Vector2(-0.99, 0), Vector2(0.99, 0), true))
 	check(video.calls.slice(-2) == [["seek", -20000], ["seek", 10000]], "Immersive playback keeps independent left 20s and right 10s seeking")
+	# Mapped continuous actions must release per hand on neutral, then allow another
+	# direction or a discrete action without erasing the other hand's held action.
+	controls = Controls.new()
+	var resolver := func(hand: String, input: String) -> Dictionary:
+		return {"operation": "shortcut", "id": hand + "/" + input, "continuous": input in ["stick_up", "stick_down"]}
+	for direction in [1.0, -1.0, 1.0]:
+		controls.poll_mapped(Vector2.ZERO, Vector2.ZERO, resolver)
+		var actions := controls.poll_mapped(Vector2(0, direction), Vector2(0, direction), resolver)
+		check(actions.size() == 2 and actions.all(func(action): return signf(action.amount) == direction), "Both mapped sticks resume the new direction after recenter")
+	controls.poll_mapped(Vector2.ZERO, Vector2(0, 1), resolver)
+	check(not controls.mapped_continuous.has("left") and controls.mapped_continuous.has("right"), "Neutral releases only its own hand's continuous action")
+	var left_seek := controls.poll_mapped(Vector2(1, 0), Vector2(0, 1), resolver)
+	check(left_seek.size() == 2 and left_seek[0].id == "left_hand/stick_right" and left_seek[1].id == "right_hand/stick_up", "A centered hand can seek while the other hand keeps zooming")
+	controls.suspend()
+	check(controls.poll_mapped(Vector2(0, -1), Vector2(0, -1), resolver).is_empty(), "Pointer capture still blocks held mapped sticks until recenter")
 	main.free()
 	video.free()
 	for failure in failures:

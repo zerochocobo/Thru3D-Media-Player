@@ -2,6 +2,9 @@ extends SceneTree
 const Photo := preload("res://scripts/photo_display.gd")
 const Info := preload("res://scripts/image_info.gd")
 const Memory := preload("res://scripts/file_mode_memory.gd")
+const Menu := preload("res://scripts/photo_menu.gd")
+const Main := preload("res://scripts/main.gd")
+const I18n := preload("res://scripts/i18n.gd")
 var failures: Array[String] = []
 var checks := 0
 var folder := "user://spatial_photos_%d" % Time.get_ticks_usec()
@@ -37,7 +40,8 @@ func _run() -> void:
 	var thumb := Image.create(40,32,false,Image.FORMAT_RGB8); thumb.fill(Color.RED)
 	var thumbnail := ProjectSettings.globalize_path(folder.path_join("thumbnail.jpg")); thumb.save_jpg(thumbnail)
 	var info := {"state":"ready","path":path,"raw_rgba":true,"decoded_width":80,"decoded_height":32,
-		"width":4032,"height":1512,"orientation":1,"native_stereo":true,"spatial_disparity":.02,"thumbnail_path":thumbnail}
+		"width":4032,"height":1512,"orientation":1,"native_stereo":true,"spatial_disparity":.02,"thumbnail_path":thumbnail,
+		"spatial_metadata":{"horizontal_fov_degrees":90.0}}
 	var decoded: Dictionary = Photo._decode({"info":info})
 	check(decoded.has("image") and decoded.image.get_pixel(10,16).r > .9 and decoded.image.get_pixel(70,16).g > .9,
 		"Raw pair preserves separate left and right colours")
@@ -66,6 +70,52 @@ func _run() -> void:
 	check(photo.material.get_shader_parameter("native_stereo") and is_equal_approx(photo.material.get_shader_parameter("spatial_disparity"),.02),
 		"Native disparity reaches the photo material")
 	check(photo.toggle_eye_order() and photo.material.get_shader_parameter("swap_eyes"), "Existing eye swap works for native stereo")
+	check(photo.snapshot().spatial_fov_available and photo.match_spatial_fov(), "Spatial photo can match its actual capture FOV")
+	check(photo.screen_curve == 0 and is_equal_approx(rad_to_deg(2 * atan(photo._flat.size.x / (2 * photo.screen_distance))), 90),
+		"Photo preset sets actual angular width on a flat screen")
+	check(photo.material.get_shader_parameter("native_stereo") and photo.stereo_sbs and not photo.depth_requested,
+		"FOV matching keeps original stereo and avoids depth inference")
+	var main := Main.new(); main.photo = photo; main.photo_active = true
+	main.settings_path = folder.path_join("main.cfg")
+	var menu := Menu.new(); menu.state_provider = photo.snapshot
+	menu.action_requested.connect(main._on_photo_action)
+	root.add_child(menu); menu.toggle(); menu._activate(Menu.PHOTO_ADJUST)
+	var buttons: Array = menu._buttons.filter(func(b): return b.target == Menu.SPATIAL_FOV)
+	check(buttons.size() == 1 and buttons[0].enabled and buttons[0].node.get_child(0).text == I18n.t("Match spatial photo capture FOV"),
+		"Photo action explicitly identifies spatial photos")
+	photo.set_screen_curve(.7); photo.set_screen_scale(1.0)
+	var centre: Vector2 = buttons[0].rect.get_center()
+	check(menu.press_pointer("right_hand", menu.to_global(Vector3(centre.x,centre.y,1)), -menu.global_basis.z, true),
+		"Ray and trigger activate capture FOV matching")
+	menu.release_pointer("right_hand",Vector3.ZERO,Vector3.ZERO,false)
+	check(photo.screen_curve == 0 and is_equal_approx(float(main.settings.get_value("photo_screen","scale",0)),photo.screen_scale),
+		"Matching persists separate photo screen settings")
+	var camera := Camera3D.new(); root.add_child(camera); photo.view_camera = camera
+	camera.global_position = photo.panel.global_position + Vector3(0,0,3)
+	menu.refresh_values()
+	var knob: Object = menu._adjust_rows[450].knob
+	var y: float = knob.position.y
+	check(menu.press_pointer("right_hand",menu.to_global(Vector3(.3,y,1)),-menu.global_basis.z,true), "Capture a slider beside the spatial-only action")
+	camera.global_position.x += .2; menu.refresh_values()
+	check(menu.has_pointer_capture() and menu._adjust_rows[450].knob == knob \
+		and not menu._buttons.filter(func(b): return b.target == Menu.SPATIAL_FOV)[0].enabled, "FOV availability changes do not interrupt a photo slider drag")
+	camera.global_position.x -= .2; menu.refresh_values()
+	check(menu.has_pointer_capture() and menu._buttons.filter(func(b): return b.target == Menu.SPATIAL_FOV)[0].enabled, "Recentred viewpoint restores the button without rebuilding controls")
+	menu.release_pointer("right_hand",Vector3.ZERO,Vector3.ZERO,false)
+	photo.view_camera = null; camera.queue_free()
+	photo.set_screen_scale(.9); photo._apply_geometry()
+	check(photo.screen_scale == .9, "Later manual photo scaling remains in control")
+	photo._metadata.erase("spatial_metadata"); menu.refresh_values()
+	check(not menu._buttons.any(func(b): return b.target == Menu.SPATIAL_FOV), "Legacy spatial photo without FOV has no unsupported action")
+	photo._metadata["spatial_metadata"] = {"horizontal_fov_degrees":90.0}
+	photo._metadata.native_stereo = false; menu.refresh_values()
+	check(not photo.snapshot().spatial_fov_available and not photo.match_spatial_fov() \
+		and not menu._buttons.any(func(b): return b.target == Menu.SPATIAL_FOV), "Ordinary/converted stereo photos never expose spatial capture matching")
+	photo._metadata.native_stereo = true; photo.loading = true; menu.refresh_values()
+	check(not menu._buttons.any(func(b): return b.target == Menu.SPATIAL_FOV), "Loading another photo hides stale source actions")
+	photo.loading = false; menu.refresh_values()
+	check(menu._buttons.any(func(b): return b.target == Menu.SPATIAL_FOV), "Late spatial metadata restores its exclusive action")
+	main.photo = null; main.free(); menu.queue_free()
 	photo.close_image(); photo.queue_free(); await process_frame
 	for failure in failures: push_error(failure)
 	print("Spatial photos: %d checks, %d failures" % [checks, failures.size()])

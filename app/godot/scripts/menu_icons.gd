@@ -2,6 +2,8 @@ extends RefCounted
 
 # Original vector glyphs, generated once and shared by both ray menus.
 const PATHS := {
+	"star": '<path d="M12 2L15 8.5 22 9.5 17 14.5 18 22 12 18.5 6 22 7 14.5 2 9.5 9 8.5Z"/>',
+	"star_filled": '<path d="M12 2L15 8.5 22 9.5 17 14.5 18 22 12 18.5 6 22 7 14.5 2 9.5 9 8.5Z" fill="white"/>',
 	"menu": '<path d="M4 6H20M4 12H20M4 18H20"/>',
 	"filter": '<path d="M3 4H21L14 12V20L10 18V12Z"/>',
 	"scroll_up": '<path d="M6 15L12 9 18 15"/>',
@@ -66,6 +68,7 @@ const PATHS := {
 	"refresh": '<path d="M20 12A8 8 0 1 1 17.7 6.3M20 4V9H15"/>',
 	"up": '<path d="M15 6L9 12 15 18"/>',
 	"next": '<path d="M9 6L15 12 9 18"/>',
+	"chevron_down": '<path d="M6 9L12 15 18 9"/>',
 	"arrow_up": '<path d="M6 15L12 9 18 15"/>',
 	"arrow_down": '<path d="M6 9L12 15 18 9"/>',
 	"keyboard_hide": '<rect x="3" y="3" width="18" height="11" rx="2"/><path d="M6 7H7M11 7H12M16 7H17M7 11H17M8 18L12 22 16 18"/>',

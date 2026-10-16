@@ -33,6 +33,7 @@
 void quest_mpv_initialize_android(JNIEnv*, jobject);
 
 namespace {
+std::atomic<bool> playback_privacy{false};
 void require(bool ok, const char* action) { if (!ok) throw std::runtime_error(action); }
 void checked(int result, const char* action) {
     if (result < 0) throw std::runtime_error(std::string(action) + ": " + mpv_error_string(result));
@@ -110,6 +111,7 @@ struct Slot {
     bool allow_repeat = false;
     int out_width = 0, out_height = 0; // color size; smaller than the source when output is capped
     quest_mpv_source_frame ticket{};
+    quest_mpv_spatial_metadata spatial{};
     // Direct mode: the decoder's own image (exported by MPV, owned here) instead of an RGBA copy;
     // `color` is then only MPV's tiny render target. Deleted when the slot is dropped or retired.
     AImage* image = nullptr;
@@ -674,7 +676,7 @@ struct Source final {
                 require(event != nullptr, "MPV source event unavailable");
                 if (event->event_id == MPV_EVENT_LOG_MESSAGE) {
                     const auto* log = static_cast<const mpv_event_log_message*>(event->data);
-                    __android_log_print(ANDROID_LOG_INFO, "QuestMpvSource", "[%s] %s", log->prefix, log->text);
+                    if (!playback_privacy.load()) __android_log_print(ANDROID_LOG_INFO, "QuestMpvSource", "[%s] %s", log->prefix, log->text);
                     // Keep a fixed cause, never a log line containing a signed address.
                     if (!loaded && log->log_level <= MPV_LOG_LEVEL_ERROR && source_failure.reason.empty()) {
                         source_failure = quest::playback_log_failure(log->prefix, log->text);
@@ -941,10 +943,12 @@ struct Source final {
                 }
                 if (!target->color) { allocate(*target, out_width, out_height); target->out_width = out_width; target->out_height = out_height; }
                 quest_mpv_source_frame ticket{}; ticket.struct_size = sizeof(ticket); ticket.api_version = QUEST_MPV_SOURCE_FRAME_API_VERSION;
+                quest_mpv_spatial_metadata spatial{}; spatial.struct_size = sizeof(spatial);
                 mpv_opengl_fbo fbo{static_cast<int>(target->fbo), out_width, out_height, GL_RGBA8}; int flip = 0;
                 quest_mpv_export exported{}; exported.struct_size = sizeof(exported);
                 mpv_render_param frame[] = {{MPV_RENDER_PARAM_OPENGL_FBO, &fbo}, {MPV_RENDER_PARAM_FLIP_Y, &flip},
                     {MPV_RENDER_PARAM_QUEST_SOURCE_FRAME, &ticket},
+                    {MPV_RENDER_PARAM_QUEST_SPATIAL_METADATA, &spatial},
                     {direct_render ? MPV_RENDER_PARAM_QUEST_EXPORT : MPV_RENDER_PARAM_INVALID, &exported},
                     {MPV_RENDER_PARAM_INVALID, nullptr}};
                 const int render_result = mpv_render_context_render(renderer, frame);
@@ -1015,7 +1019,8 @@ struct Source final {
                 require(token_sequence < static_cast<uint64_t>(std::numeric_limits<int64_t>::max()), "MPV source lease counter exhausted");
                 target->fence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
                 require(target->fence != nullptr && glGetError() == GL_NO_ERROR, "MPV producer completion fence failed");
-                glFlush(); target->ticket = ticket; target->token = ++token_sequence; target->allow_repeat = forced;
+                glFlush(); target->ticket = ticket; target->spatial = spatial;
+                target->token = ++token_sequence; target->allow_repeat = forced;
                 target->phase = Phase::ready; published.fetch_add(1);
                 int64_t unset = -1; first_published_us.compare_exchange_strong(unset, startup_us());
             }
@@ -1095,6 +1100,19 @@ struct Source final {
 #endif
         last_acquired_id = newest->ticket.frame_id; last_acquired_epoch = newest->ticket.source_epoch;
         const auto& t = newest->ticket;
+        const auto& spatial = newest->spatial;
+        std::string spatial_json = "{}";
+        if (t.flags & QUEST_MPV_SPATIAL_VIDEO) {
+            spatial_json = "{";
+            const auto field = [&](const char* key, double value) {
+                if (spatial_json.size() > 1) spatial_json += ",";
+                spatial_json += quote(key) + ":" + std::to_string(value);
+            };
+            if (spatial.flags & QUEST_MPV_SPATIAL_BASELINE) field("baseline_meters", spatial.baseline_meters);
+            if (spatial.flags & QUEST_MPV_SPATIAL_FOV) field("horizontal_fov_degrees", spatial.horizontal_fov_degrees);
+            if (spatial.flags & QUEST_MPV_SPATIAL_DISPARITY) field("horizontal_disparity", spatial.horizontal_disparity);
+            spatial_json += "}";
+        }
         double par; std::string stereo;
         { std::lock_guard<std::mutex> lock(status_mutex); par = pixel_aspect; stereo = stereo_mode; }
         return "{\"producer_token\":" + std::to_string(newest->token) + ",\"color_texture_id\":" + std::to_string(newest->color) +
@@ -1102,6 +1120,7 @@ struct Source final {
             ",\"source_epoch\":" + std::to_string(t.source_epoch) + ",\"render_sequence\":" + std::to_string(t.render_sequence) +
             ",\"source_flags\":" + std::to_string(t.flags) +
             ",\"spatial_video\":" + std::string(t.flags & QUEST_MPV_SPATIAL_VIDEO ? "true" : "false") +
+            ",\"spatial_metadata\":" + spatial_json +
             ",\"width\":" + std::to_string(newest->image ? t.width : newest->out_width) +
             ",\"height\":" + std::to_string(newest->image ? t.height : newest->out_height) +
             ",\"source_width\":" + std::to_string(t.width) + ",\"source_height\":" + std::to_string(t.height) +
@@ -1496,4 +1515,9 @@ extern "C" JNIEXPORT void JNICALL
 Java_org_vrpassthroughplayer_plugin_MpvSourceNative_requestClose(JNIEnv* env, jclass, jlong handle) {
     try { auto source = find(handle); source->closing.store(true); source->wake.notify_all(); }
     catch (const std::exception& failure) { error(env, failure); }
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_org_vrpassthroughplayer_plugin_MpvSourceNative_setPrivacy(JNIEnv*, jclass, jboolean enabled) {
+    playback_privacy.store(enabled == JNI_TRUE);
 }

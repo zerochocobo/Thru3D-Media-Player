@@ -3,6 +3,8 @@ class_name DiagnosticLog extends RefCounted
 const EVENT_PATH := "user://diagnostics/events.jsonl"
 
 static func record(event: String, details: Dictionary = {}) -> void:
+	var privacy := preload("res://scripts/media_privacy.gd")
+	if privacy.mode != privacy.ALL or (privacy.vault != null and privacy.vault.protected): return
 	var entry := {
 		"schema_version": 1,
 		"event": event,

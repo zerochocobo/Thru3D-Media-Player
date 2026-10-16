@@ -31,6 +31,8 @@ internal object HeifPhotoDecoder {
             .put("orientation", 1).put("panorama", false).put("native_stereo", info.stereo)
             .put("heif", true).put("left_item", info.left).put("right_item", info.right ?: 0)
             .put("spatial_disparity", info.disparity)
+        if (info.stereo && info.horizontalFovDegrees != null)
+            metadata.put("spatial_metadata", JSONObject().put("horizontal_fov_degrees", info.horizontalFovDegrees))
         checkCurrent(); metadataReady(JSONObject(metadata.toString()))
         val working = File(directory, "decode-view.heic")
         var left: Bitmap? = null; var right: Bitmap? = null

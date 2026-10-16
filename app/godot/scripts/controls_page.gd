@@ -46,18 +46,22 @@ func items() -> Array[Dictionary]:
 	if mode == 0:
 		for fixed in [{"title": "Menu selection", "fixed": "Ray + trigger", "scope": "Menus"},
 			{"title": "Show / hide controls", "fixed": "Menu / trigger tap", "scope": "All media"},
+			{"title": "Controller / ray", "fixed": "Move to wake · idle hides", "scope": "Menus hidden"},
+			{"title": "Resize picture", "fixed": "Corner + trigger", "scope": "Flat media"},
 			{"title": "Back", "fixed": "B / Y", "scope": "Menus"},
 			{"title": "Close video and return", "fixed": "B / Y", "scope": "Video"}]: result.append(fixed)
 	for item in bindings.definitions():
 		if mode == 0 and not all_actions and item.defaults.is_empty() and not item.id.begins_with("move_"): continue
-		if mode == 2 and (item.hold or not item.defaults.is_empty()): continue
+		if mode == 2 and (item.hold or not item.defaults.is_empty() or item.id in ["flat_volume_up", "flat_volume_down"]): continue
 		var row: Dictionary = item.duplicate()
 		if bindings.is_fixed(item.id): row["fixed"] = bindings.label(item.id)
 		result.append(row)
 	if mode == 0:
-		result.append({"title": "Push away / pull closer", "fixed": "Grip + stick ↑ / ↓", "scope": "All media"})
+		result.append({"title": "Push away / pull closer", "fixed": "Grip + stick ↑ / ↓", "scope": "Interfaces / flat media"})
 		result.append({"title": "Push away / pull closer", "fixed": "Trigger + stick ↑ / ↓", "scope": "Flat photos"})
-		var ranks := {"play": 0, "Show / hide controls": 1, "Menu selection": 2, "Back": 3, "Close video and return": 4, "back10": 5, "forward10": 6, "volume_up": 7, "volume_down": 8}
+		var ranks := {"play": 0, "Show / hide controls": 1, "Menu selection": 2, "Back": 3, "Close video and return": 4,
+			"back10": 5, "forward10": 6, "flat_zoom_in": 7, "flat_zoom_out": 8, "zoom_in": 9, "zoom_out": 10,
+			"volume_up": 11, "volume_down": 12, "Controller / ray": 13, "Resize picture": 14}
 		var order: Array = bindings.definitions().map(func(item): return item.id)
 		result.sort_custom(func(a, b): return int(ranks.get(a.get("id", a.title), 20 + order.find(a.get("id", "")))) < int(ranks.get(b.get("id", b.title), 20 + order.find(b.get("id", "")))))
 		result.append({"title": "Movement range", "move_scope": true, "scope": "All media"})
@@ -219,7 +223,9 @@ func draw() -> void:
 	elif not notice.is_empty() and pending.is_empty():
 		label(notice, Vector2(-0.48, -0.50), 15, menu.ACCENT, menu, 0.64)
 	elif mode == 0 and pending.is_empty():
-		label("Same hand: ↑ away · ↓ closer", Vector2(-0.48, -0.50), 15, menu.MUTED, menu, 0.80)
+		label("While gripping: ↑ away · ↓ closer", Vector2(-0.48, -0.50), 15, menu.MUTED, menu, 0.80)
+	elif mode == 2 and pending.is_empty():
+		label("Same hand · either order", Vector2(-0.48, -0.50), 15, menu.MUTED, menu, 0.80)
 	if menu._max_scroll() > 0:
 		var span: Vector2 = menu._bar_span()
 		menu._button(menu.SCROLLBAR, "", Vector2(0.82, span.x - span.y / 2), Vector2(0.035, span.y), not modal())

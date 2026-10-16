@@ -71,6 +71,32 @@ class DlnaLibraryTest {
         override fun close() = fixture.close()
     }
 
+    @Test fun stableIdentityResolvesFreshUrlAfterHistoryEviction() {
+        CaptionFixture().use { f ->
+            val library = f.library()
+            assertEquals(f.fixture.url + "/movie.mp4", library.playable("dlna://id/v_1"))
+            f.unrelatedCount = 300; library.browse("id", "unrelated")
+            f.mode = "changed_uri"
+            assertEquals(f.fixture.url + "/movie.mp4?token=new", f.library().playable("dlna://id/v_1"))
+        }
+    }
+
+    @Test fun privateReferencesAreNotPersistedOrBackfilledLater() {
+        try {
+            PlaybackPrivacy.mode = "none"
+            CaptionFixture().use { f ->
+                val library = f.library(); val uri = f.browse(library)
+                assertEquals(1, f.tracks(library, uri).size)
+                assertEquals(0, JSONObject(f.state).getJSONArray("references").length())
+                PlaybackPrivacy.mode = "all"
+                library.browse("id", "unrelated")
+                assertEquals(0, JSONObject(f.state).getJSONArray("references").length())
+                library.clearPlaybackReferences()
+                assertEquals(1, JSONObject(f.state).getJSONArray("servers").length())
+            }
+        } finally { PlaybackPrivacy.mode = "all" }
+    }
+
     @Test fun omittedMetadataKeepsDirectorySubtitleAfterRestart() {
         CaptionFixture().use { f ->
             val uri = f.browse(f.library())

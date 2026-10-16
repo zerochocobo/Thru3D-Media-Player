@@ -3,6 +3,9 @@ extends "res://scripts/file_mode_memory.gd"
 # Private recent-file catalog. Unlike per-file mode keys, reopening requires
 # retaining the original URI. Permissions are checked again before each open.
 const RECENT_LIMIT := 32
+const Location := preload("res://scripts/media_location.gd")
+var suppressed := {}
+var undo := {}
 
 func _bank_path(bank: int) -> String:
 	return directory.path_join("recent_files_%d.json" % bank)
@@ -56,17 +59,31 @@ func _read_bank(path: String) -> Dictionary:
 	return {"sequence": int(serial), "entries": result}
 
 func lookup(uri: String) -> Dictionary:
-	return entries.get(key_for(uri), {}).duplicate(true)
+	if Privacy.protected_uri(uri): return Privacy.private_lookup(uri, "recent")
+	if entries.has(key_for(uri)): return entries[key_for(uri)].duplicate(true)
+	return Privacy.vault.private_lookup(uri, "recent") if Privacy.vault != null and not Privacy.vault.locked else {}
 
 func list_recent() -> Array[Dictionary]:
 	var result: Array[Dictionary] = []
 	for value in entries.values():
 		result.append(value.duplicate(true))
+	if Privacy.vault != null and not Privacy.vault.locked:
+		for favorite in Privacy.vault.list_records():
+			var recent: Dictionary = favorite.get("private", {}).get("recent", {})
+			if not recent.is_empty() and not entries.has(key_for(str(recent.uri))): result.append(recent.duplicate(true))
 	result.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		var left: float = float(a.get("opened_at", 0)); var right: float = float(b.get("opened_at", 0))
+		if left != right: return left > right
 		return int(a.opened) > int(b.opened) if a.opened != b.opened else str(a.uri) < str(b.uri))
 	return result
 
 func opened(uri: String, title: String, persisted: bool, kind: String = "video") -> bool:
+	suppressed.erase(key_for(uri))
+	if not Privacy.record_allowed(uri): return false
+	if Privacy.protected_uri(uri):
+		var old := lookup(uri)
+		return Privacy.private_remember(uri, "recent", {"uri": uri, "title": title.left(256), "kind": kind, "persisted": persisted,
+			"position_ms": int(old.get("position_ms", 0)), "duration_ms": int(old.get("duration_ms", -1)), "opened": sequence + 1, "opened_at": Time.get_unix_time_from_system()})
 	var key := key_for(uri)
 	if key.is_empty():
 		return false
@@ -74,11 +91,15 @@ func opened(uri: String, title: String, persisted: bool, kind: String = "video")
 	entries[key] = {"uri": uri, "title": title.replace("\n", " ").replace("\r", " ").replace("\t", " ").left(256),
 		"kind": "image" if kind == "image" else "video",
 		"persisted": persisted, "position_ms": int(old.get("position_ms", 0)),
-		"duration_ms": int(old.get("duration_ms", -1)), "opened": sequence + 1}
+		"duration_ms": int(old.get("duration_ms", -1)), "opened": sequence + 1, "opened_at": Time.get_unix_time_from_system()}
 	if valid_cover(old.get("cover", "")): entries[key]["cover"] = old.cover
+	if old.has("location"): entries[key].location = old.location.duplicate(true)
 	# Reserve room for the checksummed JSON envelope and its escaped payload.
 	while entries.size() > RECENT_LIMIT or JSON.stringify(entries).to_utf8_buffer().size() > MAX_BYTES / 3:
-		entries.erase(key_for(list_recent().back().uri))
+		var oldest: String = str(entries.keys()[0])
+		for candidate in entries:
+			if int(entries[candidate].opened) < int(entries[oldest].opened): oldest = str(candidate)
+		entries.erase(oldest)
 	dirty = true
 	return true
 
@@ -86,6 +107,7 @@ static func valid_cover(value: Variant) -> bool:
 	return value is String and value.length() <= 2048 and (value.begins_with("http://") or value.begins_with("https://"))
 
 func set_cover(uri: String, cover: String) -> bool:
+	if not Privacy.persist_allowed(uri): return false
 	var key := key_for(uri)
 	if not entries.has(key) or not valid_cover(cover) or entries[key].get("cover", "") == cover: return false
 	var old: Dictionary = entries[key]
@@ -99,6 +121,12 @@ func set_cover(uri: String, cover: String) -> bool:
 	return true
 
 func progress(uri: String, position_ms: int, duration_ms: int, ended: bool = false) -> bool:
+	if suppressed.has(key_for(uri)) or not Privacy.record_allowed(uri): return false
+	if Privacy.protected_uri(uri):
+		var value := lookup(uri)
+		if value.is_empty(): return false
+		value.position_ms = 0 if ended else position_ms; value.duration_ms = duration_ms
+		return Privacy.private_remember(uri, "recent", value)
 	var key := key_for(uri)
 	if not entries.has(key) or position_ms < 0 or duration_ms < -1:
 		return false
@@ -116,6 +144,10 @@ func progress(uri: String, position_ms: int, duration_ms: int, ended: bool = fal
 
 ## Every entry, and with them the resume positions.
 func clear_all() -> bool:
+	undo.clear()
+	for entry in list_recent(): suppressed[key_for(entry.uri)] = true
+	if Privacy.vault != null and not Privacy.vault.locked:
+		for entry in Privacy.vault.list_records(): Privacy.vault.private_remember(entry.uri, "recent", {})
 	if entries.is_empty():
 		return false
 	entries.clear()
@@ -123,6 +155,12 @@ func clear_all() -> bool:
 	return true
 
 func forget(uri: String) -> bool:
+	var entry := lookup(uri)
+	if entry.is_empty(): return false
+	undo = {"entry": entry, "until": Time.get_ticks_msec() + 8000}
+	suppressed[key_for(uri)] = true
+	if Privacy.protected_uri(uri): return Privacy.private_remember(uri, "recent", {})
+	if Privacy.vault != null and Privacy.vault.has_record(uri): Privacy.vault.private_remember(uri, "recent", {})
 	if not entries.erase(key_for(uri)):
 		return false
 	dirty = true
@@ -135,3 +173,23 @@ func resume_position(uri: String) -> int:
 	var position := int(value.position_ms)
 	var duration := int(value.duration_ms)
 	return position if duration < 0 or position < maxi(0, duration - 2000) else 0
+
+func set_location(uri: String, location: Dictionary) -> void:
+	var entry := lookup(uri)
+	if entry.is_empty() or location.is_empty() or not Privacy.record_allowed(uri): return
+	if Privacy.protected_uri(uri):
+		entry.location = Location.clean(location); Privacy.private_remember(uri, "recent", entry)
+	elif entries.has(key_for(uri)):
+		entries[key_for(uri)].location = Location.clean(location); dirty = true
+
+func restore() -> bool:
+	if undo.is_empty() or Time.get_ticks_msec() > int(undo.until): return false
+	var entry: Dictionary = undo.entry
+	if Privacy.protected_uri(entry.uri):
+		if not Privacy.private_remember(entry.uri, "recent", entry): return false
+	else:
+		entries[key_for(entry.uri)] = entry.duplicate(true); dirty = true
+		if not save(): return false
+	suppressed.erase(key_for(entry.uri)); undo.clear(); return true
+
+func can_undo() -> bool: return not undo.is_empty() and Time.get_ticks_msec() < int(undo.until)

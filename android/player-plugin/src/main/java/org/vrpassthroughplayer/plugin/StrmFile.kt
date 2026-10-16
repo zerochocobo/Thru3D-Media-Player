@@ -83,9 +83,11 @@ internal object StrmFile {
                 val path = normalized(base.path.substringBeforeLast('/'), value.replace('\\', '/'), 0)
                 URI("file", "", path, null).toASCIIString()
             }
-            "cloud", "smb" -> {
+            "content" -> if (base.authority == StorageDocumentPolicy.AUTHORITY && base.rawPath.startsWith("/tree/"))
+                StorageDocumentPolicy.relative(origin, value) else reject("STRM_RELATIVE_PATH_UNAVAILABLE")
+            "cloud", "smb", "usb" -> {
                 // A leading slash is the mount/share root. '..' cannot escape that root.
-                val minimum = if (base.scheme == "smb") 1 else 0
+                val minimum = if (base.scheme in setOf("smb", "usb")) 1 else 0
                 val root = if (minimum == 1) "/" + base.path.trimStart('/').substringBefore('/') else ""
                 val relative = value.replace('\\', '/')
                 val path = normalized(if (relative.startsWith('/')) root else base.path.substringBeforeLast('/'), relative.trimStart('/'), minimum)
@@ -117,6 +119,7 @@ internal object StrmFile {
                 if (Regex("^/[A-Za-z]:/").containsMatchIn(uri.path)) reject("STRM_WINDOWS_PATH")
             }
             "cloud" -> CloudPaths.path(value)
+            "usb" -> if (uri.host.isNullOrEmpty() || uri.rawUserInfo != null || uri.rawQuery != null || uri.rawFragment != null || uri.path.split('/').filter(String::isNotEmpty).size < 2 || uri.path.split('/').any { it == "." || it == ".." }) reject("STRM_INVALID_ADDRESS")
             "content" -> if (uri.authority.isNullOrEmpty()) reject("STRM_INVALID_ADDRESS")
             else -> reject("STRM_UNSUPPORTED_ADDRESS")
         }

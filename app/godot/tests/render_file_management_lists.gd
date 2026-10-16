@@ -46,7 +46,7 @@ func _run() -> void:
 			if view.begins_with("settings"): menu.section = Menu.Section.SETTINGS; menu.tab = Menu.GENERAL_TAB; menu.refresh()
 			menu._draw()
 			if view == "settings_hint":
-				var hint := menu.I18n.t("Delete or rename files in supported library sections. Available actions depend on the source and permissions.")
+				var hint := menu.I18n.t("Delete or rename files in supported library sections. Managing files is easier in list view. Available actions depend on the source and permissions.")
 				for id in menu._tips:
 					if menu._tips[id] == hint:
 						menu._hover["left_hand"] = id; menu._update_tooltip(); break

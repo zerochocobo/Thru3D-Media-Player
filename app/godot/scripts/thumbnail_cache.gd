@@ -3,6 +3,8 @@ extends RefCounted
 ## DLNA items prefer the cover their server offers, with the played frame as fallback. Nothing
 ## here opens or reads a video file. Settings > clear cache empties the directory.
 
+const Privacy := preload("res://scripts/media_privacy.gd")
+static var _private_images: Dictionary = {}
 const DIRECTORY := "user://thumbnails"
 const SIZE := Vector2i(320, 180)
 const SHADER_2D := preload("res://shaders/thumbnail.gdshader")
@@ -30,9 +32,11 @@ static func relocate(old_uri: String, new_uri: String) -> void:
 	if FileAccess.file_exists(old_path): DirAccess.rename_absolute(old_path, new_path)
 
 static func has(key: String) -> bool:
+	if not Privacy.cache_allowed(key): return _private_images.has(key)
 	return not key.is_empty() and FileAccess.file_exists(path_for(key))
 
 static func texture(key: String) -> Texture2D:
+	if not Privacy.cache_allowed(key): return _private_images.get(key)
 	if key.is_empty():
 		return null
 	var path := path_for(key)
@@ -57,6 +61,10 @@ static func store(key: String, image: Image) -> bool:
 	if key.is_empty() or not image or image.is_empty():
 		return false
 	var picture := fit(image)
+	if not Privacy.cache_allowed(key):
+		_private_images[key] = ImageTexture.create_from_image(picture)
+		while _private_images.size() > KEEP_TEXTURES: _private_images.erase(_private_images.keys()[0])
+		return true
 	DirAccess.make_dir_recursive_absolute(DIRECTORY)
 	var path := path_for(key)
 	_textures.erase(path)
@@ -72,6 +80,9 @@ static func encode(image: Image) -> PackedByteArray:
 static var _stores_since_prune := 0
 ## Stores a picture encode() made off the render thread; prunes the directory every few stores.
 static func store_encoded(key: String, jpg: PackedByteArray) -> bool:
+	if not Privacy.cache_allowed(key):
+		var picture := Image.new()
+		return store(key, picture) if picture.load_jpg_from_buffer(jpg) == OK else false
 	if key.is_empty() or jpg.is_empty():
 		return false
 	DirAccess.make_dir_recursive_absolute(DIRECTORY)
@@ -136,7 +147,7 @@ static func usage() -> Vector2i:
 	return Vector2i(files, bytes)
 
 static func clear() -> void:
-	_textures.clear()
+	clear_memory()
 	var dir := DirAccess.open(DIRECTORY)
 	if not dir:
 		return
@@ -186,3 +197,10 @@ static func capture(parent: Node, color: RID, decoder: bool, stereo_sbs: bool, c
 	RenderingServer.material_set_param(material.get_rid(), "color_texture", null)
 	viewport.queue_free()
 	return image
+
+static func clear_memory() -> void:
+	_textures.clear(); _private_images.clear()
+
+static func forget(uri: String) -> void:
+	_textures.erase(path_for(uri)); _private_images.erase(uri)
+	if FileAccess.file_exists(path_for(uri)): DirAccess.remove_absolute(path_for(uri))

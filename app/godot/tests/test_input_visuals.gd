@@ -50,6 +50,8 @@ func _run() -> void:
 	check(visuals.hands.left_hand.controller_gate.visible, "Other hand ownership is independent")
 	visuals.update_visibility(false)
 	check(not visuals.hands.left_hand.controller_gate.visible and not visuals.hands.right_hand.hand_gate.visible, "Lost focus hides both input sources")
+	visuals.update_visibility(true, {"left_hand": 0.0, "right_hand": 1.0})
+	check(not visuals.hands.left_hand.controller_gate.visible, "An idle controller model hides independently")
 	trackers[1].has_tracking_data = false
 	controllers[1].invalidate_pose("grip")
 	visuals.update_visibility(true)

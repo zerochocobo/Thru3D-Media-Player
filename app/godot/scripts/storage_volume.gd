@@ -1,8 +1,13 @@
 extends RefCounted
 
 static func contains_uri(volume: Dictionary, uri: String) -> bool:
+	if volume.has("volumes"):
+		return volume.volumes.any(func(item): return item is Dictionary and contains_uri(item, uri))
 	if not bool(volume.get("removable", false)): return false
 	var root := str(volume.get("id", "")).trim_suffix("/").simplify_path()
+	if bool(volume.get("managed_usb", false)):
+		var usb_root := str(volume.get("id", "")).trim_suffix("/")
+		return uri == usb_root or uri.begins_with(usb_root + "/")
 	if root.is_empty() or root == "/": return false
 	if uri.begins_with("file://"):
 		var path := uri.substr(7).uri_decode().simplify_path()

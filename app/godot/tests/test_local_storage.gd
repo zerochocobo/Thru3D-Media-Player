@@ -18,7 +18,16 @@ class Reader extends Node3D:
 		return false
 class Library extends Node3D:
 	var finished := ""
-	func finish_storage_release(path: String) -> void: finished = path
+	func stop_storage(volume: Dictionary) -> void: finished = str(volume.id)
+class ManagedPlatform extends Fixture.FakePlatform:
+	var raw_active := true
+	var stop_fails := false
+	func storage_volumes() -> Array:
+		return [{"id":"usb://session","title":"USB drive","removable":true,"managed_usb":true,"read_only":true,"volume":true,"container":true,"active":raw_active}]
+	func media_local_storage_settings(path: String) -> int:
+		storage_settings.append(path)
+		if not stop_fails: raw_active = false
+		return _reply({"source":"local_eject","state":"error" if stop_fails else "stopped","error":"USB stop failed" if stop_fails else "","volume_id":path,"unmounted":false})
 class PhotoHost extends RefCounted:
 	var cancelled: Array[int] = []
 	var released: Array[int] = []
@@ -41,6 +50,9 @@ func _run() -> void:
 	check(not Volume.contains_uri(external,"content://other.provider/document/1234-5678%3Aa.mp4"),"Other providers cannot spoof a volume")
 	check(not Volume.contains_uri(external,"content://com.android.externalstorage.documents/tree/1234-5678%3A/document/primary%3Aa.mp4"),"Document identity takes precedence over the tree")
 	check(not Volume.contains_uri({"id":"/","removable":true},"file:///storage/1234-5678/a.mp4"),"Invalid root cannot release arbitrary playback")
+	var managed := {"id":"usb://session","removable":true,"managed_usb":true}
+	check(Volume.contains_uri(managed,"usb://session/0-2048/电影.mkv"),"A managed stop owns all partitions of its device")
+	check(not Volume.contains_uri(managed,"usb://session-other/0-2048/movie.mkv"),"A managed stop cannot release another USB session")
 	var app := Main.new()
 	app.video = Reader.new(); app.photo = Reader.new(); app.recent_menu = Library.new()
 	app.video.local_uri = "file:///storage/1234-5678/movie.mp4"
@@ -55,6 +67,14 @@ func _run() -> void:
 	app.photo.queue.assign([{"uri":app.photo.local_uri},{"uri":"file:///storage/1234-5678/image.jpg"}])
 	app._on_storage_eject_requested(external)
 	check(app.video.closes == 1 and app.photo.closes == 1 and app.photo_active and app.photo.queue.size() == 1,"Unrelated current media continues while USB queue entries are removed")
+	var second := {"id":"/storage/9876-ABCD","uuid":"9876-ABCD","removable":true}
+	var all_usb := {"id":"usb-all","removable":true,"volumes":[external,second,managed]}
+	app.video.local_uri = "content://com.android.externalstorage.documents/tree/9876-ABCD%3A/document/9876-ABCD%3Afilm.mkv"
+	app.photo.local_uri = "usb://session/0-2048/image.jpg"
+	app.video_queue.assign([{"uri":app.video.local_uri},{"uri":"file:///storage/1234-5678/film.mkv"},{"uri":"file:///storage/emulated/0/internal.mkv"}])
+	app._on_storage_eject_requested(all_usb)
+	check(app.video.closes == 2 and app.photo.closes == 2 and app.recent_menu.finished == "usb-all","One global release closes readers from either partition and the app-managed device")
+	check(app.video_queue.size() == 1 and app.video_queue[0].uri.ends_with("internal.mkv"),"Whole-USB queue pruning preserves internal media")
 	app.video.free(); app.photo.free(); app.recent_menu.free(); app.free()
 	var photo := Photo.new(); root.add_child(photo); photo.set_process(false)
 	var host := PhotoHost.new(); photo.platform = host
@@ -72,18 +92,22 @@ func _run() -> void:
 	var platform := Fixture.FakePlatform.new()
 	var menu := Menu.new(); root.add_child(menu); menu.attach_platform(platform); menu.toggle()
 	var releases: Array = []; var removals: Array = []
-	menu.storage_eject_requested.connect(func(volume): releases.append(volume); menu.finish_storage_release.call_deferred(volume.id))
+	menu.storage_eject_requested.connect(func(volume): releases.append(volume); menu.stop_storage.call_deferred(volume))
 	menu.storage_removed.connect(func(volume): removals.append(volume))
 	menu._activate(Menu.NAV_BASE+Menu.Section.LOCAL); await settle()
 	check(menu._buttons.any(func(button): return button.target == Menu.USB_STORAGE),"Connected volume exposes a quick entry")
 	menu._activate(Menu.ROW_BASE); await settle()
-	check(not menu._buttons.any(func(button): return button.target == Menu.EJECT_STORAGE),"Internal storage has no release action")
+	check(menu._buttons.any(func(button): return button.target == Menu.EJECT_STORAGE),"Global USB stop stays available while viewing internal storage")
 	menu._activate(Menu.USB_STORAGE); await settle()
 	check(menu._local_path() == external.id and menu._local_stack.size() == 1,"USB quick entry opens the removable root")
-	check(menu._tips[Menu.EJECT_STORAGE] == "Stop using storage","Release tooltip describes the software action")
+	check(menu._tips[Menu.EJECT_STORAGE] == "Stop using all USB storage","Global stop describes the whole removable-storage scope")
 	menu._activate(Menu.EJECT_STORAGE); menu._activate(Menu.EJECT_STORAGE); await settle()
-	check(releases.size() == 1 and platform.storage_settings.is_empty(),"Release never opens system settings or duplicates a pending request")
-	check(menu._local_eject_pending.is_empty() and menu._local_path().is_empty() and menu.status == "Storage access stopped. You can unplug.","Completion returns to roots and shows the unplug message")
+	check(releases.size() == 1 and platform.storage_settings == [external.id] and releases[0].volumes.size() == 1,"Global stop releases the app's system-volume readers once")
+	check(menu._local_eject_pending.is_empty() and menu._local_path().is_empty() and menu.status == "Storage access stopped","App release returns to roots with the shared short completion")
+	platform.storage_settings_available = false
+	menu._activate(Menu.EJECT_STORAGE); await settle()
+	check(menu.status == "Storage stop failed" and menu._local_eject_pending.is_empty(),"Stop failure cannot claim success or open an external UI")
+	platform.storage_settings_available = true
 	check(menu._external_volumes().size() == 1,"Software release keeps the physically connected volume mounted")
 	menu._activate(Menu.USB_STORAGE); await settle()
 	platform.usb_connected = false
@@ -105,6 +129,23 @@ func _run() -> void:
 	menu._activate(Menu.ROW_BASE+2); await settle()
 	check(menu._eject_volume().get("id") == "/storage/9876-ABCD","Release follows the selected volume")
 	menu.queue_free(); await process_frame; platform.free()
+	var raw_platform := ManagedPlatform.new()
+	var raw_menu := Menu.new(); root.add_child(raw_menu); raw_menu.attach_platform(raw_platform); raw_menu.toggle()
+	raw_menu.storage_eject_requested.connect(raw_menu.stop_storage)
+	raw_menu._activate(Menu.NAV_BASE+Menu.Section.LOCAL); await settle()
+	raw_menu._activate(Menu.USB_STORAGE); await settle()
+	check(raw_menu._tips[Menu.EJECT_STORAGE] == "Stop using all USB storage","App-managed USB uses the same global in-app stop")
+	raw_platform.stop_fails = true
+	raw_menu._activate(Menu.EJECT_STORAGE); await settle()
+	check(raw_menu.status == "USB stop failed" and raw_menu._local_path() == "usb://session","Stop failure retains the selected volume and never announces success")
+	raw_platform.stop_fails = false
+	raw_menu._activate(Menu.EJECT_STORAGE); await settle()
+	check(raw_menu._local_eject_pending.is_empty() and raw_menu._local_path().is_empty() and not raw_platform.raw_active,"Managed stop completes and returns to roots")
+	check(raw_menu.status == "Storage access stopped","Managed completion reports app stop without a system-eject promise")
+	check(raw_platform.storage_settings.size() == 2,"No implicit reopen or duplicate stop after completion")
+	var readonly_row := raw_menu._entry_row({"id":"usb://session/0-2048/movie.mkv","uri":"usb://session/0-2048/movie.mkv","title":"movie.mkv","can_delete":false,"can_rename":false,"read_only":true})
+	check(not readonly_row.get("can_delete",true) and not readonly_row.get("can_rename",true),"USB read-only capability survives row conversion")
+	raw_menu.queue_free(); await process_frame; raw_platform.free()
 	for failure in failures: push_error(failure)
 	print("Local removable storage: %d checks, %d failures" % [checks,failures.size()])
 	quit(0 if failures.is_empty() else 1)

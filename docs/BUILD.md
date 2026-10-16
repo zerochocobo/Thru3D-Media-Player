@@ -107,3 +107,7 @@ The updated FFmpeg build includes the adapters in native/mpv/mvc and pinned edge
 The Windows application export now also requires Visual Studio 2022 Build Tools with the C++ toolset. Build-Player uses its vcvars64.bat and MSVC to create a disposable editor-only GDExtension stub; Android packages load the native layer library from the player AAR. The extension declaration is added only during export and removed afterward. Host source tests do not require this Android export step.
 
 -QuestStore is limited to QUEST Release and selects a separate application identity; ordinary builds keep their existing package identity. Use your own signing material for either identity. This option supplies packaging support, not a store upload or an official distribution credential.
+
+## USB filesystem sources
+
+The two checksum-pinned upstream source archives under `third_party/usb` are required by `native/usb/CMakeLists.txt`; their licenses and source lock accompany them. They contain source, not a prebuilt filesystem library. CMake verifies the exact archive hashes and configures the player adapters for read-only access. On Linux, `bash tools/Test-UsbStorageHost.sh` builds synthetic filesystem fixtures and verifies unchanged image hashes; it requires the host C/C++ toolchain, CMake and fixture utilities and does not access a physical drive.

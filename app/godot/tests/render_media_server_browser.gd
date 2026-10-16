@@ -11,6 +11,35 @@ func check(ok: bool, message: String) -> void:
 	checks += 1
 	if not ok: failures.append(message)
 func _initialize() -> void: call_deferred("_run")
+
+func _check_detail_text(menu: Node, page: String, language: String) -> void:
+	var b: RefCounted = menu.server_browser
+	if page in ["detail_long", "detail_title"]:
+		var more: Array = menu._buttons.filter(func(item): return item.target == Browser.ACTION + 56)
+		var expected: String = {"zh": "更多", "zh_Hant": "更多", "ja": "もっと見る", "en": "More"}[language]
+		check(more.size() == 1 and more[0].node.get_children().any(func(node): return node is Label3D and node.text == expected),
+			"Synopsis disclosure uses the visible localized label: " + language)
+	if page == "detail_title":
+		var titles: Array = menu._labels.filter(func(label): return label.position.is_equal_approx(Vector3(-0.015, 0.52, 0.007)))
+		var metadata: Array = menu._labels.filter(func(label): return is_equal_approx(label.position.x, -0.015) and label.font_size == 16 * menu.TEXT_RASTER_SCALE)
+		check(titles.size() == 1 and titles[0].text.contains("\n"), "Long film title wraps into two lines: " + language)
+		if titles.size() == 1 and metadata.size() == 1:
+			var title: Label3D = titles[0]; var meta: Label3D = metadata[0]
+			check(title.get_aabb().size.x <= 0.81, "Larger title stays within its column: " + language)
+			check(title.position.y + title.get_aabb().position.y > meta.position.y + meta.get_aabb().end.y + 0.005,
+				"Two-line film title clears the metadata: " + language)
+	if page in ["overview", "overview_end"]:
+		var labels: Array = menu._labels.filter(func(label): return label.position.is_equal_approx(Vector3(-0.46, 0.32, 0.007)))
+		check(labels.size() == 1, "Synopsis body is present: " + language + "/" + page)
+		if labels.size() == 1:
+			var body: Label3D = labels[0]; var box := body.get_aabb()
+			check(body.position.y + box.position.y >= -0.48 and body.position.y + box.end.y <= 0.35,
+				"Synopsis with larger type and spacing stays inside the reading area: " + language + "/" + page)
+			check(body.position.x + box.end.x <= 0.83, "Synopsis lines clear the scroll buttons: " + language)
+			if page == "overview_end":
+				check(body.text.replace("\n", "").ends_with("End of synopsis." if language == "en" else "简介结束。"),
+					"Last synopsis page reaches the final text: " + language)
+
 func _run() -> void:
 	var output := OS.get_environment("QUEST_SERVER_PREVIEW_DIR")
 	if output.is_empty(): quit(1); return
@@ -65,9 +94,9 @@ func _run() -> void:
 		for width in [128, 512]:
 			b.textures[b._request_image_key(b._image_request({"cover_image": poster.merged({"max_width": width})}))] = b.textures["profile/" + str(movie.id)]
 			b.textures[b._request_image_key(b._image_request({"cover_image": thumb.merged({"max_width": width})}))] = b.textures[b._request_image_key(b._image_request({"cover_image": images[i % images.size()].merged({"max_width": 256})}))]
-	for language in ["zh", "en", "ja"]:
+	for language in ["zh", "zh_Hant", "en", "ja"]:
 		preload("res://scripts/i18n.gd").use(language)
-		for page in ["home", "home_more", "home_single", "home_recent_more", "home_empty", "scenes", "scenes_small", "scenes_large", "scenes_thumb", "scenes_list", "sort", "facets", "candidates", "folders", "folders_sources", "detail", "detail_cd2", "detail_parts_more", "detail_images", "detail_long", "overview", "picture", "filters", "filters_sources", "options", "saved", "search", "favorites"]:
+		for page in ["home", "home_more", "home_single", "home_recent_more", "home_empty", "scenes", "scenes_small", "scenes_large", "scenes_thumb", "scenes_list", "sort", "facets", "candidates", "folders", "folders_sources", "detail", "detail_cd2", "detail_parts_more", "detail_images", "detail_long", "detail_title", "overview", "overview_end", "picture", "filters", "filters_sources", "options", "saved", "search", "favorites"]:
 			b.view = page; b.query = {"page": 1, "q": "", "all_tags": true}; b.folder_path.clear(); b.entries = movies.duplicate(true); b.candidates = []; b.detail = {}
 			b.sort_query.clear()
 			if page == "sort": b.view = "scenes"; b.sort_query = {"sort": "duration", "direction": "ASC"}
@@ -88,10 +117,12 @@ func _run() -> void:
 			b.home_data.recent_opened = [] if page == "home_empty" else movies
 			if page.begins_with("home_"): b.view = "home"
 			b.library_id = "" if b.view == "home" else "lib1"
-			if page in ["detail", "detail_cd2", "detail_parts_more", "detail_images", "detail_long", "overview", "picture"]:
+			if page in ["detail", "detail_cd2", "detail_parts_more", "detail_images", "detail_long", "detail_title", "overview", "overview_end", "picture"]:
 				b.detail = movies[1].duplicate(true); b.detail.description = "当暮色落在城市边缘，一场安静的旅程缓缓展开。"
 				b.detail.images = images; b.detail.actors = actors; b.detail.year = 2026
-				if page in ["detail_long", "overview"]: b.detail.description = "当暮色落在城市边缘，一场安静的旅程缓缓展开。沿着群山与海岸，寻找生活中的细微光芒。".repeat(90)
+				if page in ["detail_long", "detail_title", "overview", "overview_end"]:
+					b.detail.description = ("Along the mountains and coast, a quiet journey unfolds. We discover the small moments that illuminate everyday life. ".repeat(90) + "End of synopsis.") if language == "en" else ("当暮色落在城市边缘，一场安静的旅程缓缓展开。沿着群山与海岸，寻找生活中的细微光芒。".repeat(90) + "简介结束。")
+				if page == "detail_title": b.detail.title = "Letters from the Distant Mountains: A Journey Along the Coast" if language == "en" else "远山来信：沿着群山与海岸寻找生活中的细微光芒与城市记忆"
 				b.detail.parts = [movies[1].merged({"title": "蓝色时刻 · cd1", "part_label": "cd1"}, true), movies[2].merged({"title": "蓝色时刻 · cd2", "part_label": "cd2"}, true)]
 				if page == "detail_parts_more":
 					for i in range(3, 6): b.detail.parts.append(movies[i].merged({"title": "蓝色时刻 · cd%d" % i, "part_label": "cd%d" % i}, true))
@@ -100,7 +131,8 @@ func _run() -> void:
 					b.detail.parts[i].part_image = part_image
 					b.textures[b._request_image_key(b._image_request({"cover_image": part_image}))] = b.textures[b._request_image_key(b._image_request({"cover_image": images[i].merged({"max_width": 256})}))]
 				b.gallery.part_start = 0; b.gallery.selected_part = 1 if page == "detail_cd2" else 0
-				if page in ["detail_cd2", "detail_parts_more", "detail_images", "detail_long"]: b.view = "detail"
+				if page in ["detail_cd2", "detail_parts_more", "detail_images", "detail_long", "detail_title"]: b.view = "detail"
+				if page == "overview_end": b.view = "overview"; b.gallery.overview_start = b.gallery.overview_lines().size() + 10
 				if page == "detail_parts_more": b.gallery.part_start = 2
 			if page == "favorites": b.view = "scenes"; b.query.favorites = true; b.entries = []; b.total = 0
 			else: b.total = 250
@@ -113,6 +145,7 @@ func _run() -> void:
 					var center: Vector3 = menu.to_local(item.node.global_position)
 					check(center.y + item.rect.size.y / 2 < 0.335, "Content stays below display controls: " + language + "/" + page)
 			await process_frame; await RenderingServer.frame_post_draw; await RenderingServer.frame_post_draw
+			_check_detail_text(menu, page, language)
 			viewport.get_texture().get_image().save_png(output.path_join(language + "-" + page + ".png"))
 	var capture := Capture.new(); viewport.add_child(capture)
 	capture.configure(camera, camera, Display.new(), [menu], false, true); capture.set_process(false)

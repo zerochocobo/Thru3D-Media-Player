@@ -1,4 +1,5 @@
 extends "res://scripts/media_surface.gd"
+var source_location := {}
 
 signal changed
 signal thumbnail_ready(uri: String)
@@ -51,6 +52,9 @@ const PROFILES := ["320x320", "384x216", "512x288", "384x384", "512x512", "256x1
 
 var media := State.new()
 var _spatial_video := false # Source type survives seek/effect session generations.
+const SpatialMetadata := preload("res://scripts/spatial_video_metadata.gd")
+var _spatial_metadata: Dictionary = {}
+var spatial_auto_disparity := true
 var control := PlaybackControl.new()
 var platform: Object
 var alpha_encoding := 1
@@ -564,6 +568,9 @@ func play_calibration_clip() -> void:
 	open_local("file://" + ProjectSettings.globalize_path(path), filename, 0, false)
 
 func open_local(uri: String, title: String, start_ms: int = 0, restore_mode: bool = true, alpha: bool = false, basename: String = "", metadata: Dictionary = {}) -> bool:
+	source_location = preload("res://scripts/media_location.gd").clean(metadata.get("location", {}))
+	if source_location.is_empty(): source_location = preload("res://scripts/media_location.gd").infer(uri)
+	recent_files.suppressed.erase(ModeMemory.key_for(uri))
 	_open_trace = [{"stage": "requested", "time_ms": Time.get_ticks_msec(), "start_ms": start_ms}]
 	if not platform or not platform.mpv_supported():
 		picker_error = "MPV playback backend unavailable"
@@ -594,6 +601,7 @@ func open_local(uri: String, title: String, start_ms: int = 0, restore_mode: boo
 			viewing_eye = int(saved.get("viewing_eye", 0))
 			stereo_horizontal = float(saved.get("stereo_horizontal", 0.0))
 			stereo_vertical = float(saved.get("stereo_vertical", 0.0))
+			spatial_auto_disparity = bool(saved.get("spatial_auto_disparity", true))
 			depth_requested = bool(saved.get("depth_requested", false)) and not stereo_sbs
 			# The user's own word on a built-in mask wins over the name (renamed official releases).
 			if saved.has("packed_mask"):
@@ -720,8 +728,10 @@ func close_video() -> void:
 	viewing_eye = 0
 	stereo_horizontal = 0.0
 	stereo_vertical = 0.0
-	_apply_stereo_view()
 	_spatial_video = false
+	_spatial_metadata.clear()
+	spatial_auto_disparity = true
+	_apply_stereo_view()
 	media.format.erase("spatial_video")
 	_bookmark_scope_sequence += 1
 	_bookmark_media_id = ""
@@ -787,6 +797,7 @@ func _resume(uri: String) -> int:
 	return recent_files.resume_position(uri) if history_enabled else 0
 
 func _record_history(force: bool = false) -> void:
+	if recent_files.suppressed.has(ModeMemory.key_for(local_uri)): return
 	if not history_enabled or not _remember_file or not media.accepts(media.session_id) or media.last_pair.is_empty() \
 		or not media.last_pair.get("source_pts_verified", false) or not panel.visible:
 		return
@@ -796,6 +807,7 @@ func _record_history(force: bool = false) -> void:
 	if not _history_started:
 		if not recent_files.opened(local_uri, display_name, _file_permission_persisted):
 			return
+		recent_files.set_location(local_uri, source_location if not source_location.is_empty() else preload("res://scripts/media_location.gd").infer(local_uri))
 		_history_started = true
 		recent_files.set_cover(local_uri, _library_cover)
 		force = true
@@ -1464,6 +1476,34 @@ func seek_relative(delta_ms: int) -> bool:
 func is_spatial_video() -> bool:
 	return _spatial_video
 
+func spatial_metadata() -> Dictionary:
+	return _spatial_metadata.duplicate()
+
+func _accept_spatial_metadata(frame: Dictionary) -> void:
+	if not is_spatial_video() or not frame.has("spatial_metadata"): return
+	_spatial_metadata = SpatialMetadata.normalize(frame.spatial_metadata)
+
+func set_spatial_auto_disparity(enabled: bool) -> bool:
+	if not is_spatial_video(): return false
+	spatial_auto_disparity = enabled
+	_apply_stereo_view()
+	_remember_mode()
+	changed.emit()
+	return true
+
+## One-shot angular-size match at a centred viewpoint, not metric scene reconstruction.
+func spatial_fov_scale() -> float:
+	if not is_spatial_video() or not _spatial_metadata.has("horizontal_fov_degrees"): return -1.0
+	return capture_fov_scale(float(_spatial_metadata.horizontal_fov_degrees), SCALE_LIMITS)
+
+func match_spatial_fov() -> bool:
+	var scale := spatial_fov_scale()
+	if scale <= 0.0: return false
+	set_screen_curve(0.0)
+	set_screen_scale(scale)
+	changed.emit()
+	return true
+
 func mode_action_allowed(operation: String) -> bool:
 	if not is_spatial_video(): return true
 	return operation not in ["stereo", "projection", "lock_mode", "depth", "depth_strength"] \
@@ -1643,7 +1683,7 @@ func _apply_stereo_view() -> void:
 	if not material: return
 	# Native stereo only: mono and generated 2D->3D never inherit these corrections.
 	material.set_shader_parameter("viewing_eye", viewing_eye if stereo_sbs else 0)
-	material.set_shader_parameter("stereo_offset", Vector2(stereo_horizontal, stereo_vertical) * 0.01 if stereo_sbs else Vector2.ZERO)
+	material.set_shader_parameter("stereo_offset", stereo_offset_uv() if stereo_sbs else Vector2.ZERO)
 	if _hole_material:
 		# No extra full-surface pass during ordinary playback or mono viewing.
 		_hole_material.next_pass = _alignment_border if stereo_sbs and viewing_eye == 0 and stereo_offset_uv() != Vector2.ZERO else null
@@ -1657,6 +1697,7 @@ func _apply_stereo_view() -> void:
 func _complete_layout() -> void:
 	if bool(media.format.get("spatial_video", false)): _spatial_video = true
 	if is_spatial_video():
+		_accept_spatial_metadata(media.format)
 		_layout_pending = null
 		var revise := not stereo_sbs or top_bottom or depth_requested
 		geometry = Geometry.Geometry.FLAT
@@ -1700,6 +1741,7 @@ func _remember_mode() -> void:
 		return
 	var mode := {"geometry": geometry, "stereo_sbs": stereo_sbs, "swap_eyes": swap_eyes,
 		"viewing_eye": viewing_eye, "stereo_horizontal": stereo_horizontal, "stereo_vertical": stereo_vertical,
+		"spatial_auto_disparity": spatial_auto_disparity,
 		"alpha_requested": false, "profile": profile, "depth_requested": depth_requested,
 		"top_bottom": stereo_sbs and top_bottom, "stereo_half": stereo_sbs and stereo_half, "fisheye_fov": fisheye_fov,
 		"packed_mask": packed_mask_on()}
@@ -1742,8 +1784,10 @@ func _present_pending() -> void:
 	media.frame_counter += 1
 	var par := float(claimed.get("pixel_aspect", 1.0))
 	_spatial_video = _spatial_video or bool(claimed.get("spatial_video", false))
+	_accept_spatial_metadata(claimed)
 	media.format = {"width": int(claimed.width), "height": int(claimed.height),
 		"spatial_video": _spatial_video,
+		"spatial_metadata": spatial_metadata(),
 		"pixel_aspect": par if is_finite(par) and par > 0.0 and par <= 16.0 else 1.0,
 		"stereo_mode": str(claimed.get("stereo_mode", "")), "unapplied_rotation_degrees": 0,
 		"source_rotation_degrees": int(claimed.get("source_rotation_degrees", claimed.get("surface_rotation_degrees", 0)))}
@@ -1927,6 +1971,7 @@ func _reopen_after_context_loss(uri: String, title: String, position_ms: int, re
 	var persisted := _file_permission_persisted
 	var eye := viewing_eye
 	var alignment := Vector2(stereo_horizontal, stereo_vertical)
+	var spatial := [_spatial_video, spatial_metadata(), spatial_auto_disparity]
 	var tracks := _capture_track_choices()
 	var auto_subtitle := _subtitle_auto_pending # An internal reopen keeps an unfinished automatic choice.
 	if open_local(uri, title, position_ms, false, alpha_wanted()):
@@ -1937,6 +1982,10 @@ func _reopen_after_context_loss(uri: String, title: String, position_ms: int, re
 		viewing_eye = eye
 		stereo_horizontal = alignment.x
 		stereo_vertical = alignment.y
+		_spatial_video = spatial[0]
+		_spatial_metadata = spatial[1]
+		spatial_auto_disparity = spatial[2]
+		if is_spatial_video(): _complete_layout()
 		_apply_stereo_view()
 
 func _on_debug_command(id: int, payload: String) -> void:
@@ -2035,6 +2084,7 @@ func _on_pixel_mask(id: int, payload: String) -> void:
 	_write_debug_report()
 
 func _write_debug_report() -> void:
+	if ModeMemory.Privacy.mode != ModeMemory.Privacy.ALL or (ModeMemory.Privacy.vault != null and ModeMemory.Privacy.vault.protected): return
 	if _debug_request <= 0 or not platform:
 		return
 	var now := Time.get_ticks_usec()
@@ -2071,7 +2121,7 @@ func _source_size() -> Vector2:
 func _sync_subtitle_surface() -> void:
 	if not _subtitle_surface or not material: return
 	# The layer shows no shader overlays: subtitles go on their own surface above the hole.
-	var separate := not is_zero_approx(screen_rotation) or _layer_session
+	var separate := not is_zero_approx(screen_rotation) or _layer_session or video_layer_shown
 	material.set_shader_parameter("separate_subtitles", separate)
 	_subtitle_surface.visible = separate and panel.visible and not _subtitle_on_layer \
 		and (material.get_shader_parameter("subtitle_enabled") == true or material.get_shader_parameter("bitmap_subtitle_enabled") == true)
@@ -2131,6 +2181,7 @@ func layout_snapshot() -> Dictionary:
 	playback["source_frame_pts_verified"] = not media.last_pair.is_empty()
 	return {"geometry": ["flat", "half_equirect_180", "fisheye_180", "equirect_360"][geometry], "stereo_sbs": stereo_sbs,
 		"viewing_eye": viewing_eye, "stereo_horizontal": stereo_horizontal, "stereo_vertical": stereo_vertical,
+		"spatial_video": is_spatial_video(), "spatial_metadata": spatial_metadata(), "spatial_auto_disparity": spatial_auto_disparity,
 		"top_bottom": stereo_sbs and top_bottom, "stereo_half": stereo_sbs and stereo_half, "fisheye_fov": fisheye_fov,
 		"alpha_requested": alpha_requested, "alpha_enabled": alpha_enabled, "profile": profile,
 		"depth_requested": depth_requested, "depth_enabled": depth_enabled, "depth_strength": depth_strength, "auto_depth": auto_depth,
@@ -2207,7 +2258,12 @@ func presented_frames() -> int:
 
 ## The displayed per-eye UV shift of the stereo alignment (as the shader's stereo_offset).
 func stereo_offset_uv() -> Vector2:
-	return Vector2(stereo_horizontal, stereo_vertical) * 0.01
+	var offset := Vector2(stereo_horizontal, stereo_vertical) * 0.01
+	if is_spatial_video() and spatial_auto_disparity:
+		# Positive Apple disparity moves the left image left (positive sampling UV).
+		# It follows the source eyes; the user's alignment follows the display eyes.
+		offset.x -= float(_spatial_metadata.get("horizontal_disparity", 0.0)) * (-1.0 if swap_eyes else 1.0)
+	return offset
 
 ## Presentation the compositor layer can show exactly: plain decoder colour on a supported shape.
 func _layer_presentation() -> bool:
@@ -2295,10 +2351,9 @@ func _update_layer() -> void:
 		and video_layer.show(self, origin, VideoLayer.SURFACE, layer_size, -1, Vector2.ZERO, Vector4(0, 0, 1, 1),
 			VideoLayer.MASKED if masked else VideoLayer.OPAQUE, extras)
 	if not shown and _frame_picture: shown = _show_frame_picture(origin, extras)
-	if not shown: _subtitle_on_layer = false
-	if _subtitle_surface and _subtitle_on_layer: _subtitle_surface.visible = false
 	if not shown and not _layer_session and origin != null:
-		shown = _show_depth_picture(origin)
+		shown = _show_depth_picture(origin, extras)
+	if not shown: _subtitle_on_layer = false
 	video_layer_shown = shown
 	if not shown:
 		video_layer.hide(self)
@@ -2307,6 +2362,9 @@ func _update_layer() -> void:
 		panel.material_override = _hole_material
 	elif panel.material_override == _hole_material:
 		panel.material_override = material
+	# A picture layer replaces the video shader too. Keep captions above its hole when
+	# their own layer is unavailable, and restore the shader overlay on video-layer failure.
+	_sync_subtitle_surface()
 
 ## Plan B: RVM's mask (drawn by the bridge over the frame layout into the mask slot) as layers of the
 ## video's own shape and eyes beneath it; their rects scale from the nominal surface to the mask's size.
@@ -2406,7 +2464,7 @@ func _check_subtitle_generation() -> void:
 func _bitmap_layer_extras(origin: XROrigin3D) -> Array:
 	var texture: ImageTexture = bitmap_subtitles.texture
 	var rect: Variant = material.get_shader_parameter("bitmap_subtitle_rect")
-	if not (_layer_session or _frame_picture) or _subtitle_layer_failed or texture == null or not rect is Vector4 \
+	if not (_layer_session or _frame_picture or _binding.warped) or _subtitle_layer_failed or texture == null or not rect is Vector4 \
 		or material.get_shader_parameter("bitmap_subtitle_enabled") != true or material.get_shader_parameter("rotation_degrees") not in [null, 0] \
 		or not PlatformMethods.supports(platform, "copy_layer_texture"):
 		return []
@@ -2480,7 +2538,7 @@ func _copy_subtitle_canvas(canvas: SubViewport) -> bool:
 
 ## 2D->3D: the bridge's stereo pair of each frame, copied into the picture layer once per pair.
 ## Until the model's first map (shader parallax) the frame stays in the eye buffers.
-func _show_depth_picture(origin: XROrigin3D) -> bool:
+func _show_depth_picture(origin: XROrigin3D, extras: Array = []) -> bool:
 	var ticket := _binding.ticket
 	if not _binding.warped or geometry != Geometry.Geometry.FLAT or not video_layer.available() \
 		or not video_layer.supports(geometry, screen_curve > 0.0) or not video_layer.grades(color_grade) \
@@ -2501,7 +2559,8 @@ func _show_depth_picture(origin: XROrigin3D) -> bool:
 		if not platform.release_layer_image(VideoLayer.PICTURE_SLOT, false) or not copied:
 			return false
 		_picture_token = token
-	return video_layer.show(self, origin, VideoLayer.PICTURE, Vector2(size), 1)
+	return video_layer.show(self, origin, VideoLayer.PICTURE, Vector2(size), 1, Vector2.ZERO, Vector4(0, 0, 1, 1),
+		VideoLayer.OPAQUE, extras)
 
 ## Profile 5 and software decode cannot use the decoder surface; MPV normalizes their colour and
 ## orientation into RGBA frames. Each new frame is copied into the picture layer once, instead of the
@@ -2555,6 +2614,7 @@ func _reopen_at(position_ms: int, layer: bool) -> void:
 	var persisted := _file_permission_persisted
 	var eye := viewing_eye
 	var alignment := Vector2(stereo_horizontal, stereo_vertical)
+	var spatial := [_spatial_video, spatial_metadata(), spatial_auto_disparity]
 	var view := [_view_basis, view_yaw, view_pitch, view_zoom]
 	var rotation := screen_rotation
 	var speed := playback_speed
@@ -2572,6 +2632,10 @@ func _reopen_at(position_ms: int, layer: bool) -> void:
 		viewing_eye = eye
 		stereo_horizontal = alignment.x
 		stereo_vertical = alignment.y
+		_spatial_video = spatial[0]
+		_spatial_metadata = spatial[1]
+		spatial_auto_disparity = spatial[2]
+		if is_spatial_video(): _complete_layout()
 		_view_basis = view[0]
 		view_yaw = view[1]
 		view_pitch = view[2]

@@ -2,6 +2,10 @@ extends RefCounted
 ## Fixed library and detail carousels, operated by rays and scroll input.
 const I18n := preload("res://scripts/i18n.gd")
 const ACTORS_VISIBLE := 5
+const DETAIL_TITLE_SIZE := 30
+const OVERVIEW_SIZE := 28
+const OVERVIEW_LINE_SPACING := 8
+const OVERVIEW_PAGE_LINES := 10
 const LIBRARY := 4000
 const PHOTO := 6000
 const ACTOR := 8000
@@ -24,6 +28,7 @@ var tag_start := 0
 var overview_start := 0
 var detail_strip := "parts"
 var _overview_text := ""
+var _overview_language := ""
 var _overview_lines: Array[String] = []
 var capture := {}
 var stick_at := 0
@@ -85,7 +90,7 @@ func action(target: int) -> bool:
 			56: browser._remember(); browser.cancel(); browser.view = "overview"; overview_start = 0; browser.menu._reset_navigation()
 		browser.menu.refresh(); return true
 	if browser.view == "overview" and extra in [57, 58]:
-		overview_start = clampi(overview_start + (-10 if extra == 57 else 10), 0, maxi(0, overview_lines().size() - 10))
+		overview_start = clampi(overview_start + (-OVERVIEW_PAGE_LINES if extra == 57 else OVERVIEW_PAGE_LINES), 0, maxi(0, overview_lines().size() - OVERVIEW_PAGE_LINES))
 		browser.menu.refresh(); return true
 	if home() and target >= LIBRARY and target < LIBRARY + libraries().size():
 		browser.choose({"library": libraries()[target - LIBRARY]}); return true
@@ -247,8 +252,8 @@ func draw_detail() -> void:
 	if detail_strip not in visible_sections() and (detail_strip != "tags" or tags().is_empty()):
 		detail_strip = str(visible_sections()[0]) if not visible_sections().is_empty() else "tags"
 	_picture(browser.display_node(detail, "poster"), Vector2(-0.335, 0.33), Vector2(0.28, 0.41))
-	var title_lines: Array[String] = browser.wrapped_lines(str(detail.get("title", "")), 0.80, 24)
-	var title := _label("\n".join(title_lines.slice(0, 2)), Vector2(-0.015, 0.52), 24)
+	var title_lines: Array[String] = browser.wrapped_lines(str(detail.get("title", "")), 0.80, DETAIL_TITLE_SIZE)
+	var title := _label("\n".join(title_lines.slice(0, 2)), Vector2(-0.015, 0.52), DETAIL_TITLE_SIZE)
 	title.vertical_alignment = VERTICAL_ALIGNMENT_TOP
 	var playback := playback_node(); var meta: Array[String] = []
 	if int(detail.get("year", 0)) > 0: meta.append(str(detail.year))
@@ -257,11 +262,11 @@ func draw_detail() -> void:
 	if width > 0 and height > 0:
 		var resolution := "8K" if width >= 7680 else ("6K" if width >= 6000 else ("4K" if width >= 3840 else ""))
 		meta.append((resolution + " · " if not resolution.is_empty() else "") + "%d × %d" % [width, height])
-	_label(" · ".join(meta), Vector2(-0.015, 0.405), 16).modulate = menu.MUTED
+	_label(" · ".join(meta), Vector2(-0.015, 0.385), 16).modulate = menu.MUTED
 	var lines: Array[String] = browser.wrapped_lines(str(detail.get("description", "")), 0.78, 18)
-	var overview := _label("\n".join(lines.slice(0, 3)), Vector2(-0.015, 0.36), 18)
+	var overview := _label("\n".join(lines.slice(0, 3)), Vector2(-0.015, 0.34), 18)
 	overview.vertical_alignment = VERTICAL_ALIGNMENT_TOP
-	if lines.size() > 3: menu._button(browser.ACTION + 56, I18n.t("More"), Vector2(0.65, 0.235), Vector2(0.19, 0.06))
+	if lines.size() > 3: menu._button(browser.ACTION + 56, I18n.t("More"), Vector2(0.65, 0.215), Vector2(0.19, 0.06))
 	var play_label := I18n.t("Continue watching" if int(playback.get("position_ms", 0)) > 0 else "Play / resume")
 	if parts().size() > 1: play_label += " · " + str(playback.get("part_label", ""))
 	menu._button(browser.ACTION + 30, play_label, Vector2(0.19, 0.135), Vector2(0.48, 0.075), not browser.busy, "play")
@@ -339,18 +344,24 @@ func tags() -> Array:
 
 func overview_lines() -> Array[String]:
 	var text := str(browser.detail.get("description", ""))
-	if text != _overview_text:
-		_overview_text = text; _overview_lines = browser.wrapped_lines(text, 1.25, 21)
+	if text != _overview_text or _overview_language != I18n.language:
+		_overview_text = text; _overview_language = I18n.language
+		_overview_lines = browser.wrapped_lines(text, 1.25, OVERVIEW_SIZE)
 	return _overview_lines
 
+func overview_line_height() -> float:
+	var menu: Node = browser.menu
+	return (menu.ui_font().get_height(OVERVIEW_SIZE * menu.TEXT_RASTER_SCALE) + OVERVIEW_LINE_SPACING * menu.TEXT_RASTER_SCALE) * menu.TEXT_PIXEL_SIZE
+
 func draw_overview() -> void:
-	_label(I18n.t("Synopsis"), Vector2(-0.46, 0.45), 24)
-	var lines := overview_lines(); overview_start = clampi(overview_start, 0, maxi(0, lines.size() - 10))
-	var text := _label("\n".join(lines.slice(overview_start, overview_start + 10)), Vector2(-0.46, 0.32), 21)
+	_label(I18n.t("Synopsis"), Vector2(-0.46, 0.45), DETAIL_TITLE_SIZE)
+	var lines := overview_lines(); overview_start = clampi(overview_start, 0, maxi(0, lines.size() - OVERVIEW_PAGE_LINES))
+	var text := _label("\n".join(lines.slice(overview_start, overview_start + OVERVIEW_PAGE_LINES)), Vector2(-0.46, 0.32), OVERVIEW_SIZE)
 	text.vertical_alignment = VERTICAL_ALIGNMENT_TOP
-	if lines.size() > 10:
+	text.line_spacing = OVERVIEW_LINE_SPACING * browser.menu.TEXT_RASTER_SCALE
+	if lines.size() > OVERVIEW_PAGE_LINES:
 		browser.menu._button(browser.ACTION + 57, "", Vector2(0.925, 0.25), Vector2(0.075, 0.065), overview_start > 0, "scroll_up")
-		browser.menu._button(browser.ACTION + 58, "", Vector2(0.925, -0.45), Vector2(0.075, 0.065), overview_start + 10 < lines.size(), "scroll_down")
+		browser.menu._button(browser.ACTION + 58, "", Vector2(0.925, -0.45), Vector2(0.075, 0.065), overview_start + OVERVIEW_PAGE_LINES < lines.size(), "scroll_down")
 
 func vertical_scroll(y: float, _delta: float) -> void:
 	if not rich_detail() and browser.view != "overview": return
@@ -395,7 +406,7 @@ func detail_move(hand: String, origin: Vector3, direction: Vector3, tracked: boo
 		capture.moved = true; capture.axis = "vertical" if absf(vertical) > absf(travel) or capture.strip in ["body", "overview"] else "horizontal"
 	if not capture.moved: return
 	if capture.axis == "vertical":
-		if browser.view == "overview": overview_start = clampi(int(capture.vertical_start) + roundi(vertical / 0.032), 0, maxi(0, overview_lines().size() - 10))
+		if browser.view == "overview": overview_start = clampi(int(capture.vertical_start) + roundi(vertical / overview_line_height()), 0, maxi(0, overview_lines().size() - OVERVIEW_PAGE_LINES))
 		else: detail_start = clampi(int(capture.vertical_start) + roundi(vertical / 0.18), 0, maxi(0, sections().size() - 2))
 	else:
 		var limits := {"parts": parts().size() - 2, "actors": actors().size() - ACTORS_VISIBLE, "images": images().size() - 3, "tags": tags().size() - 4}

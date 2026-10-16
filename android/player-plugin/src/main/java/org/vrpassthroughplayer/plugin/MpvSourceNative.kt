@@ -8,6 +8,7 @@ import java.nio.ByteBuffer
  * methods enqueue work for a separate ordinary-client thread.
  */
 internal object MpvSourceNative {
+    @JvmStatic external fun setPrivacy(enabled: Boolean)
     private val loaded = try { System.loadLibrary("quest_mpv"); true } catch (_: UnsatisfiedLinkError) { false }
     fun supported() = loaded && available()
     @JvmStatic private external fun available(): Boolean

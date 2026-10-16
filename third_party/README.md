@@ -17,6 +17,7 @@ The CodeLibs JCIFS jar is staged by Gradle with unused HTTP/HTTPS NTLM adapters 
 
 - edge264-mvc: pinned BSD-3-Clause decoder source recipe and license under third_party/edge264-mvc; player adapters are in native/mpv/mvc.
 - libbluray and libudfread: pinned upstream source recipes and LGPL-2.1-or-later texts under third_party/bluray, linked through the FFmpeg source candidate.
+- USB storage: checksum-pinned FatFs R0.16 (BSD-style) and NTFS-3G 2026.9.28 (GPL-2.0-or-later) source archives, plus the Apache-2.0 notice for the libaums-derived BOT/SCSI adaptation, under `third_party/usb`. The read-only adapters and native build configuration are in `native/usb` and the Android plugin.
 - Thru3D CJK punctuation: renamed bracket-only subset of Noto Sans CJK SC 2.004 under SIL OFL-1.1; exact source/hash, rebuild script and notices accompany the font under app/godot/assets/fonts.
 
 - Godot GDExtension C interface: unmodified compile-time header from Godot 4.5-stable, core/extension/gdextension_interface.h. The original MIT text is retained at native/xr-layer/gdextension/LICENSE.txt; the local OpenXR registration bridge uses the forward-compatible C ABI without godot-cpp.

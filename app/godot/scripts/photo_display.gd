@@ -1,4 +1,5 @@
 extends "res://scripts/media_surface.gd"
+var source_location := {}
 signal changed
 const Info := preload("res://scripts/image_info.gd")
 const Naming := preload("res://scripts/media_naming.gd")
@@ -295,7 +296,8 @@ func _ready() -> void:
 func _source_size() -> Vector2:
 	return _size
 
-func open_image(uri: String, title: String, entries: Array = []) -> bool:
+func open_image(uri: String, title: String, entries: Array = [], location: Dictionary = {}) -> bool:
+	source_location = location.duplicate(true) if not location.is_empty() else preload("res://scripts/media_location.gd").infer(uri)
 	var retain_frame := not local_uri.is_empty() and geometry == Geometry.Geometry.FLAT and gallery.mode in [Gallery.Layout.SINGLE, Gallery.Layout.SIDES] and not portrait_requested
 	close_image()
 	placement_pending = not retain_frame
@@ -935,6 +937,7 @@ func _accept(result: Dictionary, job: Dictionary) -> void:
 	mark = _mark("thumbnail", mark)
 	if catalog and history_enabled:
 		catalog.opened(local_uri, display_name, false, "image")
+		catalog.set_location(local_uri, source_location if not source_location.is_empty() else preload("res://scripts/media_location.gd").infer(local_uri))
 		_catalog_save_ms = Time.get_ticks_msec() + 1000 # not in the frame that shows the photo
 	mark = _mark("catalog", mark)
 	changed.emit()
@@ -997,6 +1000,11 @@ func _apply_geometry() -> void:
 	if geometry != Geometry.Geometry.FLAT: finish_transition()
 	super._apply_geometry()
 	if not _detail_material: return
+	# Show 3D only in its final form: while the generated pair is on its way, the bare depth warp would
+	# open holes around the subject that the pair then fills (a visible, dizzying step). Keep the flat
+	# photo until the pair is on the layer or in the shader; the layer's pair still needs the depth map
+	# for its feathered edge, and a depth result without a pair keeps the warp.
+	var pair_pending := _display_depth_data.has("stereo_image") and _stereo_texture == null and not _layer_key.begins_with("stereo:")
 	for target in [material, _detail_material]:
 		target.set_shader_parameter("source_size", _size)
 		target.set_shader_parameter("video_geometry", geometry)
@@ -1007,7 +1015,7 @@ func _apply_geometry() -> void:
 		target.set_shader_parameter("pano_rect", Info.panorama_rect(_metadata))
 		target.set_shader_parameter("native_stereo", bool(_metadata.get("native_stereo", false)))
 		target.set_shader_parameter("spatial_disparity", clampf(float(_metadata.get("spatial_disparity", 0)), -1.0, 1.0))
-		target.set_shader_parameter("photo_depth", depth_enabled and not stereo_sbs and geometry == Geometry.Geometry.FLAT)
+		target.set_shader_parameter("photo_depth", depth_enabled and not pair_pending and not stereo_sbs and geometry == Geometry.Geometry.FLAT)
 		target.set_shader_parameter("depth_strength", depth_strength)
 		target.set_shader_parameter("depth_texture", _depth_texture)
 		target.set_shader_parameter("depth_rect", _depth_rect)
@@ -1439,6 +1447,24 @@ func set_depth_strength(value: float) -> bool:
 	changed.emit()
 	return true
 
+func spatial_metadata() -> Dictionary:
+	return SpatialCapture.normalize(_metadata.get("spatial_metadata", {})) if _metadata.get("native_stereo", false) else {}
+
+func spatial_fov_scale() -> float:
+	var capture := spatial_metadata()
+	var selected: bool = gallery.mode in [Gallery.Layout.SINGLE, Gallery.Layout.SIDES] or (gallery.focus == index and gallery.progress >= 1 and not gallery.returning)
+	if not capture.has("horizontal_fov_degrees") or _texture == null or loading or not selected \
+		or geometry != Geometry.Geometry.FLAT or not stereo_sbs or top_bottom or portrait_requested or inspect: return -1.0
+	return capture_fov_scale(float(capture.horizontal_fov_degrees), PHOTO_SCALE_LIMITS)
+
+func match_spatial_fov() -> bool:
+	var scale := spatial_fov_scale()
+	if scale <= 0.0: return false
+	set_screen_curve(0.0)
+	set_screen_scale(scale)
+	changed.emit()
+	return true
+
 func snapshot() -> Dictionary:
 	var position := pending_index if pending_index >= 0 else index
 	var title := str(queue[position].get("title", "")) if position >= 0 and position < queue.size() else display_name
@@ -1455,6 +1481,7 @@ func snapshot() -> Dictionary:
 		"portrait_requested": portrait_requested, "portrait_enabled": portrait_enabled, "portrait_available": can_portrait(), "portrait_error": portrait_error,
 		"depth_requested": depth_requested, "depth_enabled": depth_enabled,
 		"depth_available": platform != null and not _metadata.get("native_stereo", false), "native_stereo": _metadata.get("native_stereo", false), "depth_strength": depth_strength, "depth_error": depth_error,
+		"spatial_metadata": spatial_metadata(), "spatial_fov_available": spatial_fov_scale() > 0.0,
 		"stereo_strategy":_display_depth_data.get("strategy", "inverse_shader"), "stereo_ready":_stereo_texture != null,
 		"render_strength":_display_depth_data.get("strength", depth_strength),
 		"source_size": "%d × %d" % [int(_size.x), int(_size.y)], "error": error, "screen_curve": screen_curve}
@@ -1864,7 +1891,9 @@ func _continue_upload() -> void:
 		var release_started := Time.get_ticks_usec()
 		var released: bool = platform.release_layer_image(VideoLayer.PICTURE_SLOT, true)
 		_upload.timing.release_us = Time.get_ticks_usec() - release_started
-		if released: _layer_key = str(_upload.key)
+		if released:
+			_layer_key = str(_upload.key)
+			if _layer_key.begins_with("stereo:"): _apply_geometry() # the pair is up: its edge takes the depth map
 		DiagnosticLog.record("photo_layer_uploaded", {"key": str(_upload.key), "released": released, "timing": _upload.timing})
 		_upload = {}
 

@@ -81,10 +81,17 @@ func _run() -> void:
 	video.material.set_shader_parameter("stereo_sbs", false)
 	var counts := {}
 	var masks := {}
-	for mode in ["normal", "unchanged", "small", "large", "lifted", "adjustment_reset", "rotation90", "rotation-90", "restored", "alpha_zero", "gap", "vr", "off"]:
+	for mode in ["normal", "unchanged", "small", "large", "lifted", "adjustment_reset", "rotation90", "rotation-90", "restored",
+		"depth_shader", "depth_warped", "depth_layer_fallback", "depth_return", "alpha_zero", "gap", "vr", "off"]:
 		video.subtitle_size = 0.5 if mode == "small" else (1.25 if mode == "large" else 1.0)
 		video.subtitle_flat_position = 0.5 if mode == "lifted" else 0.0
 		video.material.set_shader_parameter("alpha_enabled", mode == "alpha_zero")
+		# Mock the depth outputs; the real compositor submission is checked by test_subtitle_layers.
+		video.material.set_shader_parameter("depth_enabled", mode == "depth_shader")
+		video.material.set_shader_parameter("stereo_sbs", mode == "depth_warped")
+		video.material.set_shader_parameter("source_size", Vector2(3840 if mode == "depth_warped" else 1920, 1080))
+		video.video_layer_shown = mode == "depth_layer_fallback"
+		video.panel.material_override = video._hole_material if video.video_layer_shown else video.material
 		if mode == "rotation90": video.set_screen_rotation(90)
 		if mode == "rotation-90": video.set_screen_rotation(-90)
 		if mode == "restored": video.set_screen_rotation(0)
@@ -113,14 +120,15 @@ func _run() -> void:
 				if minf(pixel.r, minf(pixel.g, pixel.b)) > 0.85: mask.append(y * image.get_width() + x)
 		masks[mode] = mask
 		image.save_png(output.path_join("pgs_" + mode + ".png"))
-		if mode in ["normal", "unchanged", "small", "large", "lifted", "adjustment_reset", "rotation90", "rotation-90", "restored", "alpha_zero"] and counts[mode] < 100:
+		var visible_cue: bool = mode not in ["gap", "vr", "off"]
+		if visible_cue and counts[mode] < 100:
 			failures.append("PGS must render above the video including transparent Alpha: " + mode)
 		if mode in ["gap", "vr", "off"] and counts[mode] != 0:
 			failures.append("PGS must disappear immediately: " + mode)
 		if video.caption.visible:
 			failures.append("PGS must never produce a duplicate text label")
 		var state: Dictionary = video.layout_snapshot().subtitles
-		if bool(state.bitmap_ready) != (mode in ["normal", "unchanged", "small", "large", "lifted", "adjustment_reset", "rotation90", "rotation-90", "restored", "alpha_zero"]):
+		if bool(state.bitmap_ready) != visible_cue:
 			failures.append("PGS diagnostics must reflect the actual uploaded texture: " + mode)
 		if state.bitmap_ready and (state.bitmap_texture_size != [1280, 160] or state.render_layer != "flat_PGS_bitmap_overlay"):
 			failures.append("PGS texture dimensions/render layer must be reported correctly")
@@ -136,6 +144,10 @@ func _run() -> void:
 	for mode in ["rotation90", "rotation-90"]:
 		if masks[mode] != masks.alpha_zero:
 			failures.append("PGS silhouette must retain its position and orientation: " + mode)
+	for mode in ["depth_shader", "depth_warped", "depth_layer_fallback", "depth_return"]:
+		var reference: PackedInt32Array = masks.alpha_zero if mode == "depth_layer_fallback" else masks.normal
+		if masks[mode] != reference:
+			failures.append("Depth conversion and layer fallback must retain the PGS silhouette: " + mode)
 	var report := {"state": "passed" if failures.is_empty() else "failed", "white_pixels": counts,
 		"pixel_fetches": host.reads, "failures": failures,
 		"scope": "Production Godot shader and PGS state/pixel bridge with mock RGBA, desktop OpenGL; native decoder tested separately"}

@@ -2,6 +2,7 @@ extends SceneTree
 
 const Menu := preload("res://scripts/player_menu.gd")
 const I18n := preload("res://scripts/i18n.gd")
+const Video := preload("res://scripts/mpv_video_display.gd")
 var failures: Array[String] = []
 var checks := 0
 var viewport: SubViewport
@@ -80,6 +81,20 @@ func _run() -> void:
 				material.set_shader_parameter("alpha_enabled", false)
 		_textures(false, 0)
 		material.set_shader_parameter("rotation_degrees", 0)
+		# Sample the actual controller's Apple-metadata uniform through both color shaders.
+		var spatial := Video.new()
+		spatial.material = material; spatial.stereo_sbs = true; spatial._spatial_video = true
+		spatial._apply_stereo_view()
+		var neutral_left := await _pixel(0); var neutral_right := await _pixel(1)
+		for disparity in [-0.04, 0.04]:
+			spatial._accept_spatial_metadata({"spatial_metadata": {"horizontal_disparity": disparity}})
+			spatial._apply_stereo_view()
+			var corrected_left := await _pixel(0); var corrected_right := await _pixel(1)
+			check((corrected_left.r - neutral_left.r) * signf(disparity) > 0.008,
+				variant + " Apple disparity shifts the left image in the authored direction")
+			check((corrected_right.r - neutral_right.r) * signf(disparity) < -0.008,
+				variant + " Apple disparity shifts the right image oppositely")
+		spatial.free()
 		material.set_shader_parameter("stereo_offset", Vector2(0.04, 0.02))
 		material.set_shader_parameter("test_uv", Vector2(0.99, 0.5))
 		var edge := await _pixel(1)
@@ -163,7 +178,7 @@ func _menus() -> void:
 	var menu := Menu.new()
 	menu.state_provider = func(): return state
 	camera.add_child(menu)
-	menu.position = Vector3(0, 0, -1.2)
+	menu.position = Vector3(0, -0.25, -1.8)
 	menu.toggle(); menu.section = 1; menu._adjustment = "stereo_view"
 	for language in ["en", "zh", "zh_Hant", "ja"]:
 		I18n.use(language)
@@ -178,5 +193,24 @@ func _menus() -> void:
 				var label: Label3D = button.node.get_child(0)
 				var width := menu.ui_font().get_string_size(label.text, HORIZONTAL_ALIGNMENT_LEFT, -1, label.font_size).x * label.pixel_size
 				check(width < button.rect.size.x - 0.025, "Translated stereo button fits " + language + ": " + label.text)
+	state.spatial_video = true
+	state.spatial_metadata = {"horizontal_disparity": 0.02, "horizontal_fov_degrees": 63.4, "baseline_meters": 0.0192}
+	state.spatial_auto_disparity = true
+	state.spatial_fov_available = true
+	state.viewing_eye = 0
+	for language in ["en", "zh", "zh_Hant", "ja"]:
+		I18n.use(language)
+		for popup in ["stereo_view", "screen"]:
+			menu._adjustment = popup; menu.refresh()
+			await RenderingServer.frame_post_draw
+			await RenderingServer.frame_post_draw
+			check(view.get_texture().get_image().save_png(output.path_join("spatial_%s_%s.png" % [language, popup])) == OK, "Save spatial metadata controls")
+			var target := Menu.SPATIAL_DISPARITY if popup == "stereo_view" else Menu.SPATIAL_FOV
+			var buttons: Array = menu._buttons.filter(func(b): return b.target == target)
+			check(buttons.size() == 1, "Metadata popup exposes one concise source control")
+			if buttons.size() == 1:
+				var label: Label3D = buttons[0].node.get_child(0)
+				var width := menu.ui_font().get_string_size(label.text, HORIZONTAL_ALIGNMENT_LEFT, -1, label.font_size).x * label.pixel_size
+				check(width < buttons[0].rect.size.x - 0.025, "Spatial source button fits " + language)
 	view.queue_free()
 	await process_frame

@@ -21,7 +21,8 @@ internal class MediaSources(
     private val cloudNetwork = Executors.newSingleThreadExecutor { Thread(it, "QuestCloudNetwork") }
     private val cloudBrowseRequests = CloudBrowseRequests()
     private val photoDirectoryRequests = CloudBrowseRequests()
-    private val local = LocalVideoLibrary(host, emit)
+    private val usb: UsbStorage = UsbStorage(host, emit) { refreshLocalStorage() }
+    private val local: LocalVideoLibrary = LocalVideoLibrary(host, emit, usb)
     @Volatile private var fileManagementEnabled = false
     fun setFileManagement(enabled: Boolean) {
         fileManagementEnabled = enabled
@@ -36,7 +37,9 @@ internal class MediaSources(
     private val mediaServers = MediaServerLibrary(::context, ::streams, ::nextId, emit = emit)
     fun serverRequest(json: String): Int = mediaServers.request(json)
     fun serverCancel(id: Int) = mediaServers.cancel(id)
+    fun clearPlaybackReferences() { network.execute { runCatching { dlna.clearPlaybackReferences() } } }
     fun releaseMediaStream(uri: String) {
+        usb.forgetStream(uri)
         mediaServers.release(uri)
         server?.revoke(uri)
     }
@@ -44,7 +47,7 @@ internal class MediaSources(
     private fun context(): Context? = host()?.applicationContext
     @Synchronized fun streams(): LocalStreamServer = server ?: LocalStreamServer().also { server = it }
 
-    fun releasePhotoStream(uri: String) { if (uri.isNotEmpty()) server?.revoke(uri) }
+    fun releasePhotoStream(uri: String) { if (uri.isNotEmpty()) { usb.forgetStream(uri); server?.revoke(uri) } }
     fun streamProgress(uri: String): TransferMeter.Snapshot? = server?.progress(uri)
     fun streamFailure(uri: String): PlaybackFailure? = server?.failure(uri)
 
@@ -53,8 +56,12 @@ internal class MediaSources(
     fun browseLocal(id: Int, path: String) = local.browse(id, path)
     /** Main thread: requests legacy read access or opens settings, emitting local_access events. */
     fun grantAllFiles() = local.grantAllFiles()
-    fun refreshLocalStorage() = local.refreshStorage()
-    fun openLocalEjectSettings(id: Int, path: String) = local.openEjectSettings(id,path)
+    fun grantLocalDirectory(path: String) = local.grantDirectory(path)
+    fun onActivityResult(requestCode: Int, resultCode: Int, data: android.content.Intent?) = local.onActivityResult(requestCode, resultCode, data)
+    fun refreshLocalStorage(): Unit = local.refreshStorage()
+    fun stopLocalStorage(id: Int, path: String) {
+        if (path.startsWith("usb://")) usb.stop(id, path) else local.stopStorage(id,path)
+    }
     fun onPermissionResult(requestCode: Int, granted: Boolean) = local.onPermissionResult(requestCode, granted)
 
     @Volatile private var stopped = false
@@ -63,7 +70,7 @@ internal class MediaSources(
     }
     init {
         CloudAccountChanges.subscribe(cloudAccountChanged)
-        DlnaClient.log = { android.util.Log.i("QuestDlna", it) }
+        DlnaClient.log = { if (PlaybackPrivacy.diagnostics) android.util.Log.i("QuestDlna", it) }
         cloudNetwork.execute {
             if (!stopped) runCatching { context()?.let { CloudWebDav.restore(it) } }
             if (stopped) CloudWebDav.stop()
@@ -248,6 +255,7 @@ internal class MediaSources(
             "file" -> java.io.File(source.path ?: throw StrmFailure("STRM_READ_FAILED")).inputStream().use(StrmFile::read)
             "content" -> (context()?.contentResolver?.openInputStream(source) ?: throw StrmFailure("STRM_READ_FAILED")).use(StrmFile::read)
             "smb" -> smb.readStrm(uri)
+            "usb" -> StrmFile.read(usb.source(uri))
             "cloud" -> {
                 CloudLibrary.start(context() ?: error("Activity unavailable"))
                 StrmFile.read(CloudLibrary.dav.source(CloudPaths.path(uri)))
@@ -268,6 +276,7 @@ internal class MediaSources(
     }
 
     private fun directPlayable(uri: String): String = when {
+        uri.startsWith("dlna://") -> dlna.playable(uri)
         (uri.startsWith("http://") || uri.startsWith("https://")) && java.net.URI(uri).path.orEmpty().endsWith(".iso", true) -> {
             // Blu-ray preflight uses FFmpeg's independent HTTP reader; route it through Android TLS too.
             val source = HttpRangeStreamSource.remote(java.net.URI(uri))
@@ -276,6 +285,7 @@ internal class MediaSources(
         }
         uri.startsWith("medialib://") -> mediaServers.playable(uri)
         uri.startsWith("smb://") -> smb.stream(uri)
+        uri.startsWith("usb://") -> usb.stream(uri, streams())
         uri.startsWith("cloud://") -> {
             CloudLibrary.start(context() ?: error("Activity unavailable"))
             CloudLibrary.playable(uri, streams())
@@ -289,8 +299,22 @@ internal class MediaSources(
         val source = android.net.Uri.parse(uri)
         when (source.scheme) {
             "file" -> source.path?.let { SidecarAudio.forFile(it) } ?: emptyList()
-            "content" -> context()?.let { SidecarAudio.forMediaStore(it, source) } ?: emptyList()
+            "content" -> if (local.documents.owns(uri)) {
+                val rows = local.documents.siblings(uri)
+                val entries = (0 until rows.length()).map(rows::getJSONObject).filter { !it.optBoolean("container") }.associateBy { it.getString("title") }
+                val video = StorageDocumentPolicy.parse(uri).document.path.substringAfterLast('/')
+                SidecarAudio.select(video, entries.keys).mapNotNull { name ->
+                    val fd = runCatching { context()?.contentResolver?.openFileDescriptor(android.net.Uri.parse(entries.getValue(name).getString("uri")), "r") }.getOrNull() ?: return@mapNotNull null
+                    SidecarAudio.Track("fd://${fd.fd}", SidecarAudio.title(video, name), fd)
+                }
+            } else context()?.let { SidecarAudio.forMediaStore(it, source) } ?: emptyList()
             "smb" -> smb.sidecarAudio(uri)
+            "usb" -> {
+                val rows = usb.siblings(uri)
+                val names = (0 until rows.length()).map(rows::getJSONObject).filter { !it.optBoolean("container") }.map { it.getString("title") }
+                val video = source.lastPathSegment.orEmpty()
+                SidecarAudio.select(video, names).map { name -> SidecarAudio.Track(usb.stream(usb.sibling(uri,name),streams()),SidecarAudio.title(video,name)) }
+            }
             "medialib" -> mediaServers.sidecarAudio(uri)
             "cloud" -> {
                 CloudLibrary.start(context() ?: error("Activity unavailable"))
@@ -306,8 +330,24 @@ internal class MediaSources(
     fun sidecarSubtitles(uri: String): List<SidecarSubtitles.Track> = try {
         when {
             uri.startsWith("file://") -> SidecarSubtitles.forLocal(java.io.File(android.net.Uri.parse(uri).path ?: ""))
+            local.documents.owns(uri) -> {
+                val rows = local.documents.siblings(uri)
+                val entries = (0 until rows.length()).map(rows::getJSONObject).filter { !it.optBoolean("container") }.associateBy { it.getString("title") }
+                val video = StorageDocumentPolicy.parse(uri).document.path.substringAfterLast('/')
+                SidecarSubtitles.select(video, entries.keys).mapNotNull { name -> runCatching {
+                    val item = entries.getValue(name)
+                    val source = DocumentStreamSource(context() ?: error("Activity unavailable"), android.net.Uri.parse(item.getString("uri")))
+                    try { SidecarSubtitles.Track(streams().publish(source, name), name) } catch (error: Exception) { source.close(); throw error }
+                }.getOrNull() }
+            }
             uri.startsWith("smb://") -> smb.sidecarSubtitles(uri)
+            uri.startsWith("usb://") -> {
+                val rows = usb.siblings(uri)
+                val names = (0 until rows.length()).map(rows::getJSONObject).filter { !it.optBoolean("container") }.map { it.getString("title") }
+                SidecarSubtitles.select(android.net.Uri.parse(uri).lastPathSegment.orEmpty(),names).map { name -> SidecarSubtitles.Track(usb.stream(usb.sibling(uri,name),streams()),name) }
+            }
             uri.startsWith("medialib://") -> mediaServers.sidecarSubtitles(uri)
+            uri.startsWith("dlna://") -> SidecarSubtitles.forDlna(dlna.subtitles(dlna.playable(uri))) { source, name -> streams().publish(source, name) }
             uri.startsWith("http://") || uri.startsWith("https://") -> SidecarSubtitles.forDlna(dlna.subtitles(uri)) { source, name -> streams().publish(source, name) }
             uri.startsWith("cloud://") -> {
                 CloudLibrary.start(context() ?: error("Activity unavailable"))
@@ -335,7 +375,7 @@ internal class MediaSources(
         CloudAccountChanges.unsubscribe(cloudAccountChanged)
         mediaServers.close()
         cloudBrowseRequests.close(); photoDirectoryRequests.close()
-        network.shutdownNow(); cloudNetwork.shutdownNow(); local.close()
+        network.shutdownNow(); cloudNetwork.shutdownNow(); local.close(); usb.close()
         CloudLibrary.stopStreams()
         CloudWebDav.stop()
         server?.close(); server = null

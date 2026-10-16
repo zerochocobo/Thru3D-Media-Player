@@ -22,14 +22,14 @@ class LocalStoragePermissionsTest {
         assertEquals(listOf(Settings.ACTION_APPLICATION_DETAILS_SETTINGS), LocalStoragePermissions.settingsActions(29))
     }
 
-    @Test fun appSpecificSettingsFallBackToGlobalThenApplicationDetails() {
+    @Test fun missingSpecialSettingsDoesNotPretendApplicationDetailsCanGrantAllFiles() {
         val attempts = mutableListOf<String>()
-        assertTrue(LocalStoragePermissions.openSettings(32) {
+        assertFalse(LocalStoragePermissions.openSettings(32) {
             attempts += it
-            if (it != Settings.ACTION_APPLICATION_DETAILS_SETTINGS) throw IllegalStateException("Unavailable activity")
+            throw IllegalStateException("Unavailable activity")
         })
         assertEquals(listOf(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
-            Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION, Settings.ACTION_APPLICATION_DETAILS_SETTINGS), attempts)
+            Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION), attempts)
     }
 
     @Test fun firstSupportedPageStopsTheFallbackAndNoPageReportsFailure() {

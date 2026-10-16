@@ -1,0 +1,23 @@
+{
+  "fatfs": {
+    "version": "R0.16",
+    "url": "https://elm-chan.org/fsw/ff/arc/ff16.zip",
+    "sha256": "99f7dc1f7e095356e4a9e3dbe29959090d8b948afe2bbc5441e52fdf4b85449e",
+    "license": "upstream BSD-style notice",
+    "configuration": "FF_FS_READONLY=1; exFAT; 64-bit LBA; UTF-8; sector sizes 512..4096"
+  },
+  "ntfs-3g": {
+    "version": "2026.9.28",
+    "revision": "7f0f841fc52cf719106c5c93bafe465004e36816",
+    "url": "https://tuxera.com/opensource/ntfs-3g_ntfsprogs-2026.9.28.tgz",
+    "sha256": "350d9415c59f7c3fa74e23985ad2d56423c6a168337368f672e2e362d8f295c8",
+    "license": "GPL-2.0-or-later",
+    "configuration": "library core only; no FUSE; custom read-only device operations"
+  },
+  "libaums": {
+    "revision": "57fa4826b792d46073a3329a303a6c9bec430fc8",
+    "url": "https://github.com/magnusja/libaums",
+    "license": "Apache-2.0",
+    "use": "UsbBulkDevice.kt is a narrow BOT/SCSI adaptation, not the unmodified core AAR; adds READ16/CAPACITY16 and read-only command whitelist"
+  }
+}

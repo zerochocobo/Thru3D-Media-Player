@@ -135,6 +135,10 @@ func cancel_pointer(hand: String) -> void:
 func has_capture() -> bool:
 	return not capture.is_empty() or not _dual.is_empty()
 
+func hide_pointer(hand: String) -> void:
+	if _pointers.has(hand):
+		_pointers[hand].line.visible = false; _pointers[hand].dot.visible = false
+
 func overview() -> bool:
 	return mode in [Layout.WALL, Layout.FRAGMENTS] and focus < 0 and not (photo and photo.portrait_requested)
 

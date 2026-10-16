@@ -1,10 +1,16 @@
 package org.vrpassthroughplayer.plugin
 
-import android.provider.Settings
 import org.junit.Assert.*
 import org.junit.Test
 
 class LocalStorageVolumesTest {
+    @Test fun removableDirectoriesRemainReadOnlyWithGlobalManagementEnabled() {
+        val roots = listOf("/storage/emulated/0" to false, "/storage/1234-5678" to true)
+        assertTrue(LocalStorageVolumePolicy.readOnlyPath("/storage/1234-5678/Movies/a.mkv", roots))
+        assertTrue(LocalStorageVolumePolicy.readOnlyPath("/storage/1234-5678", roots))
+        assertFalse(LocalStorageVolumePolicy.readOnlyPath("/storage/1234-56780/a.mkv", roots))
+        assertFalse(LocalStorageVolumePolicy.readOnlyPath("/storage/1234-5678/../emulated/0/a.mkv", roots))
+    }
     @Test fun onlyMountedAndReadOnlyMountedVolumesAreAccessible() {
         assertTrue(LocalStorageVolumePolicy.mounted("mounted"))
         assertTrue(LocalStorageVolumePolicy.mounted("mounted_ro"))
@@ -24,16 +30,5 @@ class LocalStorageVolumesTest {
                 "/mnt/external_usb/Android/data/com.wapok.thru3d/files")))
         assertTrue(LocalStorageVolumePolicy.legacyCandidates("../../emulated/0",emptyList()).isEmpty())
         assertTrue(LocalStorageVolumePolicy.legacyCandidates(null,listOf("/not/an/app/root")).isEmpty())
-    }
-    @Test fun settingsFallbackCannotPretendToUnmountWhenNoPageExists() {
-        val attempts = mutableListOf<String>()
-        assertTrue(LocalStorageVolumePolicy.openEjectSettings {
-            attempts.add(it)
-            if (it == Settings.ACTION_MEMORY_CARD_SETTINGS) throw IllegalStateException("No activity")
-        })
-        assertEquals(listOf(Settings.ACTION_MEMORY_CARD_SETTINGS,Settings.ACTION_INTERNAL_STORAGE_SETTINGS),attempts)
-        attempts.clear()
-        assertFalse(LocalStorageVolumePolicy.openEjectSettings { attempts.add(it); throw SecurityException("Not exported") })
-        assertEquals(2,attempts.size)
     }
 }

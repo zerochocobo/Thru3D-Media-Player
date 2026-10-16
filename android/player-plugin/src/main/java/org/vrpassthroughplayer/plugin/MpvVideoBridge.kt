@@ -232,7 +232,7 @@ internal class MpvVideoBridge(
                            alpha: Boolean, vulkan: Boolean, hardware: Boolean = true, audio: Boolean = true,
                            depth: Boolean = false, topBottom: Boolean = false, exactSeek: Boolean = false, layer: Boolean = false): Int {
         if (!supported() || sessions.size >= 2 || startMs < 0 || profile !in RvmProfiles.keys || (depth && (alpha || stereo)) ||
-            Uri.parse(uri).scheme !in setOf("content", "file", "smb", "cloud", "medialib", "http", "https")) return -1
+            Uri.parse(uri).scheme !in setOf("content", "file", "usb", "smb", "cloud", "medialib", "dlna", "http", "https")) return -1
         val id = gate.begin(); if (id <= 0) return -1
         // Compositor layers carry normal playback; Alpha only in the plan B prototype (its mask becomes a
         // compositor mask layer). 2D->3D composes in Godot's shader.

@@ -9,8 +9,7 @@ internal object LocalStoragePermissions {
 
     fun settingsActions(sdk: Int): List<String> = if (sdk >= 30) listOf(
         Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
-        Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION,
-        Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+        Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)
         else listOf(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
 
     fun openSettings(sdk: Int, launch: (String) -> Unit): Boolean {

@@ -47,6 +47,14 @@ backups/
 releases/
 credentials/
 *.zip
+*.tgz
+*.tar
+*.gz
+*.bz2
+*.xz
+*.rar
+!/third_party/usb/fatfs-r016.zip
+!/third_party/usb/ntfs-3g-2026.9.28.tgz
 *.7z
 *.key
 *.pem

@@ -1,6 +1,7 @@
 extends RefCounted
 ## Local presentation only: never fetch metadata or change playback/history.
 const I18n := preload("res://scripts/i18n.gd")
+const Location := preload("res://scripts/media_location.gd")
 
 static func mode(value: Variant) -> String:
 	return "list" if value == "list" else "grid"
@@ -42,6 +43,8 @@ static func date(ms: int) -> String:
 	return Time.get_datetime_string_from_unix_time(local).left(10)
 
 static func source(uri: String) -> String:
+	if uri.is_empty(): return ""
+	if uri.begins_with("dlna://"): return "DLNA"
 	if uri.begins_with("smb://"): return "SMB"
 	if uri.begins_with("cloud://"): return I18n.t("Cloud drives")
 	if uri.begins_with("medialib://"): return I18n.t("Media servers")
@@ -58,7 +61,7 @@ static func local_record(catalog: RefCounted, uri: String) -> Dictionary:
 
 static func info(row: Dictionary, catalog: RefCounted = null, recent: bool = false) -> Dictionary:
 	var node: Dictionary = row.get("scene", row.get("container_node", row.get("container", row.get("search_result", row))))
-	var folder: bool = row.has("container") or row.has("container_node") or row.get("folder", false)
+	var folder: bool = row.has("container") or row.has("container_node") or row.get("folder", false) or row.get("kind") == "folder"
 	var photo: bool = row.get("kind", node.get("kind", "video")) == "image"
 	var uri := str(node.get("uri", row.get("uri", "")))
 	var bytes := size(int(node.get("size", row.get("size", -1)))) if not folder else ""
@@ -76,11 +79,15 @@ static func info(row: Dictionary, catalog: RefCounted = null, recent: bool = fal
 		if not path.is_empty(): parts.append(path)
 		if not bytes.is_empty(): parts.append(bytes)
 	elif recent:
-		parts.append(source(uri))
-		if duration > 0 and not photo: parts.append(time(duration))
+		var origin := Location.folder_path(Location.clean(row.get("location", {}))) if folder else source(uri)
+		if not origin.is_empty(): parts.append(origin)
+		if duration > 0 and not photo and not folder: parts.append(time(duration))
 	elif folder:
 		var count := int(node.get("child_count", -1))
-		if count >= 0: parts.append(I18n.t("%d items") % count)
+		if bool(node.get("volume", false)) and bool(node.get("removable", false)):
+			parts.append(I18n.t("App managed" if bool(node.get("managed_usb", false)) else "System mounted"))
+			parts.append(I18n.t("Read-only"))
+		elif count >= 0: parts.append(I18n.t("%d items") % count)
 		elif not modified.is_empty(): parts.append(modified)
 	elif row.has("scene"):
 		var year := int(node.get("year", 0))

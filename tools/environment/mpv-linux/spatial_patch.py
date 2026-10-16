@@ -7,6 +7,8 @@ ROOT = Path(__file__).resolve().parents[3]
 def apply_mpv_spatial(edited, replace):
     edited['video/decode/quest_spatial_video.h'] = (
         ROOT / 'native/mpv/spatial/quest_spatial_video.h').read_text(encoding='utf-8')
+    edited['video/quest_spatial_metadata.h'] = (
+        ROOT / 'native/mpv/spatial/quest_spatial_metadata.h').read_text(encoding='utf-8')
     p = 'video/decode/vd_lavc.c'
     s = edited[p]
     s = replace(s, '#include "options/m_option.h"\n',
@@ -67,7 +69,23 @@ def apply_mpv_spatial(edited, replace):
     edited[p] = replace(edited[p], '    m.stereo3d = p->codec->stereo_mode;\n',
                         '    m.stereo3d = m.quest_spatial_video ? MP_STEREO3D_SBS2L : p->codec->stereo_mode;\n')
     p = 'video/out/vo_libmpv.c'
+    edited[p] = replace(edited[p], '#include "include/mpv/quest_frame.h"\n',
+                        '#include "include/mpv/quest_frame.h"\n#include "video/quest_spatial_metadata.h"\n')
+    edited[p] = replace(edited[p], '        quest->render_sequence = ++ctx->quest_render_sequence;\n',
+                        '        quest->render_sequence = ++ctx->quest_render_sequence;\n'
+                        '        quest_mpv_spatial_metadata *spatial = get_mpv_render_param(\n'
+                        '            params, MPV_RENDER_PARAM_QUEST_SPATIAL_METADATA, NULL);\n'
+                        '        if (spatial && spatial->struct_size != sizeof(*spatial)) spatial = NULL;\n'
+                        '        if (spatial) quest_spatial_metadata_read(spatial, NULL);\n')
     edited[p] = replace(edited[p], '            quest->mpv_image_format = image->imgfmt;\n',
                         '            quest->mpv_image_format = image->imgfmt;\n'
-                        '            if (image->params.quest_spatial_video)\n'
-                        '                quest->flags |= QUEST_MPV_SPATIAL_VIDEO;\n')
+                        '            if (image->params.quest_spatial_video) {\n'
+                        '                quest->flags |= QUEST_MPV_SPATIAL_VIDEO;\n'
+                        '                for (int n = 0; spatial && n < image->num_ff_side_data; n++) {\n'
+                        '                    const struct mp_ff_side_data *sd = &image->ff_side_data[n];\n'
+                        '                    if (sd->type == AV_FRAME_DATA_STEREO3D && sd->buf->size >= sizeof(AVStereo3D)) {\n'
+                        '                        quest_spatial_metadata_read(spatial, (const AVStereo3D *)sd->buf->data);\n'
+                        '                        break;\n'
+                        '                    }\n'
+                        '                }\n'
+                        '            }\n')

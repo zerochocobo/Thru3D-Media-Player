@@ -8,8 +8,15 @@ var chosen: Array = []
 var settings_events: Array = []
 
 class Catalog extends RefCounted:
+	var removed := false
+	var undo := {}
 	func list_recent() -> Array[Dictionary]:
-		return [{"uri": "smb://srv1/Video/a.mp4", "title": "最近 A", "position_ms": 61000}]
+		return [] if removed else [{"uri": "smb://srv1/Video/a.mp4", "title": "最近 A", "position_ms": 61000}]
+	func lookup(_uri: String) -> Dictionary: return {} if removed else list_recent()[0]
+	func forget(uri: String) -> bool: undo = {"entry":lookup(uri),"until":Time.get_ticks_msec()+8000}; removed = true; return true
+	func purge_keys(_keys: Array) -> bool: return true
+	func can_undo() -> bool: return not undo.is_empty()
+	func restore() -> bool: removed = false; undo.clear(); return true
 
 class PagedCatalog extends RefCounted:
 	var count := 32
@@ -67,7 +74,10 @@ class FakePlatform extends "res://tests/account_platform_fixture.gd":
 		return _reply({"call": "local", "source": "local", "state": "ready", "path": path, "all_files": all_files, "entries": entries,"volumes":storage_volumes()})
 	func media_local_storage_settings(path: String) -> int:
 		storage_settings.append(path)
-		return _reply({"call":"local_eject","source":"local_eject","state":"settings_opened" if storage_settings_available else "error","error":"" if storage_settings_available else "Storage settings unavailable","volume_id":path,"unmounted":false})
+		return _reply({"call":"local_eject","source":"local_eject","state":"released" if storage_settings_available else "error","error":"" if storage_settings_available else "Storage stop failed","volume_id":path,"unmounted":false})
+	func media_local_stop_storage(path: String) -> int: return media_local_storage_settings(path)
+	func media_local_refresh_storage() -> void:
+		(func(): media_list.emit(0,JSON.stringify({"source":"local_storage","state":"changed","volumes":storage_volumes()}))).call_deferred()
 	func media_local_grant_all_files() -> void:
 		grants += 1
 		(func(): media_list.emit(0, JSON.stringify({"source": "local_access", "state": "settings_opened"}))).call_deferred()
@@ -172,17 +182,19 @@ func _run() -> void:
 	paged.count = 0; menu.media_filter = 0; menu.refresh()
 	check(menu.rows.is_empty() and menu._recent_page_count() == 1, "Empty history is a stable single empty page")
 	menu.catalog = Catalog.new(); menu._reset_navigation(); menu.refresh()
-	# Clearing history takes a second press on the same button.
+	# Clearing the home catalog is reversible, without a confirmation screen.
 	menu._activate(Menu.CLEAR_HISTORY)
-	check(settings_events.is_empty() and menu._confirm == "clear_history", "First press only arms clearing")
-	menu._activate(Menu.CLEAR_HISTORY)
-	check(settings_events.back() == ["clear_history", true], "Second press clears the history")
+	check(settings_events.is_empty() and menu.rows.is_empty() and not menu.collections.active(), "Clear recent runs immediately without a confirmation screen")
+	menu._activate(menu.collections.UNDO)
+	check(menu.rows.size() == 1, "Clearing recent entries can be undone")
 	# Local: the disk itself, volumes then folders and videos.
 	menu._activate(Menu.NAV_BASE + Menu.Section.LOCAL)
 	await settle()
 	check(titles(menu) == ["Internal storage", "USB drive"] and menu.rows[1].icon == "usb", "Storage volumes: %s" % [titles(menu)])
-	check(menu.text_snapshot().is_empty() == false and menu._buttons.any(func(b): return b.target == Menu.ALL_FILES),
-		"Without all-files access a button offers it")
+	check(menu.text_snapshot().is_empty() == false and not menu._buttons.any(func(b): return b.target == Menu.ALL_FILES),
+		"Volume discovery does not suggest a shared-storage grant for USB devices")
+	menu._activate(Menu.ROW_BASE); await settle()
+	check(menu._buttons.any(func(b): return b.target == Menu.ALL_FILES), "Internal storage retains its all-files access action")
 	menu._activate(Menu.ALL_FILES)
 	check(platform.grants == 1, "The button opens the system access page")
 	menu._activate(Menu.ALL_FILES)
@@ -193,8 +205,6 @@ func _run() -> void:
 	platform.android_lifecycle.emit("resume")
 	await settle()
 	check(not menu._local_grant_pending and platform.calls.size() == before_resume + 1 and not menu.rows.is_empty(), "Returning from permissions refreshes the current local listing")
-	menu._activate(Menu.ROW_BASE)
-	await settle()
 	check(titles(menu) == ["Movies", "舞台.mp4"] and menu.rows[1].detail == "2.0 GB" and menu._header_title() == "Internal storage",
 		"Volume lists folders first, then videos with size")
 	menu._activate(Menu.ROW_BASE)
@@ -286,7 +296,7 @@ func _run() -> void:
 	await settle()
 	check(menu._header_title() == "媒体服务器 / VR" and titles(menu) == ["Show"], "DLNA container lists items")
 	menu._activate(Menu.ROW_BASE)
-	check(chosen.back()[0] == "http://192.168.1.5/1.mp4", "DLNA item emits its media URL")
+	check(chosen.back()[0] == "dlna://uuid%3A1/i1", "DLNA selection retains stable server/object identity")
 	menu.toggle()
 	menu._activate(Menu.BACK)
 	await settle()
@@ -299,9 +309,10 @@ func _run() -> void:
 	choose_setting(menu, "output_width", 4096)
 	check(settings_events.back() == ["output_width", 4096], "Output cap setting")
 	menu._activate(Menu.TAB_BASE + Menu.GENERAL_TAB)
-	check(menu.rows.any(func(row): return row.get("key", "") == "history" and row.value == true), "History is saved by default")
-	choose_setting(menu, "history", false)
-	check(settings_events.back() == ["history", false], "History can be switched off")
+	menu._choose(menu.rows.filter(func(row):return row.get("group_header", false))[0])
+	check(menu.rows.any(func(row): return row.get("key", "") == "privacy_mode" and row.value == "all"), "History defaults to all in General's Privacy group")
+	choose_setting(menu, "privacy_mode", "none")
+	check(settings_events.back() == ["privacy_mode", "none"], "Privacy settings can stop recording")
 	menu._activate(Menu.TAB_BASE + Menu.DISPLAY_TAB)
 	check(menu.rows.any(func(row): return row.get("key", "") == "show_fps" and row.value == false), "Display settings offer the FPS display, off by default")
 	choose_setting(menu, "show_fps", true)
@@ -449,7 +460,7 @@ func _run() -> void:
 	check(menu.text_snapshot().contains("本地文件") and menu.text_snapshot().contains("需要媒体访问权限") 		and not menu.text_snapshot().contains("Local files"), "Chinese menu and status")
 	menu._activate(Menu.NAV_BASE + Menu.Section.SETTINGS)
 	menu._activate(Menu.TAB_BASE + Menu.GENERAL_TAB)
-	check(menu.rows.size() == 4 and menu.rows[0].title == "语言" and menu.rows[0].value == "zh"
+	check(menu.rows.any(func(row):return row.get("group_header", false)) and menu.rows[0].title == "语言" and menu.rows[0].value == "zh"
 		and menu.rows[0].choices.map(func(option): return option.label) == ["System", "简体中文", "繁體中文", "日本語", "English"],
 		"General groups all languages in one dropdown, each named in itself")
 	var chosen := []

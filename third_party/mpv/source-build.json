@@ -5,8 +5,8 @@
   "source_lock_sha256": "7036a7bf793e00607d7b65f3c4c98428a3004d3584423116d91fe0b4c22273cd",
   "builder_revision": "fdf74f6830c47dbaa8a22ac79726e8303f1db5af",
   "mpv_revision": "0b7ed670f7c353dd3dd4f8ae0fc788a181a15aa6",
-  "patch_sha256": "15e449a7251b14c3e99bd1e2d5d3f49d3ee8db65fc1555dbe3fa0696c8760541",
-  "private_header_sha256": "1775dac61c07b88ec7bed1fe594889b7323582ae0a26dbcf143bb343617275a1",
+  "patch_sha256": "960b6ad8d1cc4c5d690a5143a2a20879907c02ab63b676e2f058aae2502d2f80",
+  "private_header_sha256": "3c680fed7e92a8f5f52345825de42cac2e56a155f5c4fc47756839559a4b94fa",
   "api_version": 2,
   "ndk": "30.0.16248370",
   "android_api": 23,
@@ -52,9 +52,9 @@
   "libraries": [
     {
       "name": "libmpv.so",
-      "sha256": "89ec1073ec7b48aaf1aabe6db066ed17909d9f9f2f1f42647dfd1373a4217be4",
-      "bytes": 8263528,
-      "built_sha256": "4af369ec3596a296c51d242d9d48df4a62c5b8b29e5839f3a9e35b65ce564783",
+      "sha256": "f5afabca98021b3c0218f640d43a6d5d191bf645b1d14364fe35890545ad7b76",
+      "bytes": 8264008,
+      "built_sha256": "f68e9a8882908d32c5347ee44058a8ee58533cfe25f18d9659d1107d6f60550f",
       "needed": [
         "libm.so",
         "libz.so",
@@ -165,7 +165,7 @@
     }
   ],
   "host_packages_sha256": "0d42dd4ec021254111a439214a2681bf37ca44ba2af04a9d97af479f2bd1dd33",
-  "build_receipt_sha256": "ad1aa1964ba688fa7f87819b1764d3872608786e4bc4fbaa935617333f171a66",
+  "build_receipt_sha256": "a514e5b2c65e4fa81729e679fce20a42b1ccc4cf1219ce3238ec1a24c045a1c0",
   "meson": "1.11.0",
   "ninja": "1.11.1",
   "mvc_inputs_sha256": {

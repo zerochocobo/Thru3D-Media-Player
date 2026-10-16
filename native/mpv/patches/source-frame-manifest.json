@@ -18,7 +18,7 @@
     "filters/f_decoder_wrapper.c": "9832eddc01205675ef4e346bef6e2a16902672788c0b79d7650a57aabeac9e13"
   },
   "patched_files_sha256": {
-    "video/out/vo_libmpv.c": "925a7ac7746c7f9db30c928f9812e2029c7bb0359cf5bbda6c99d83a8a576f45",
+    "video/out/vo_libmpv.c": "8f358f400d19e7181acfceae62d3255b8fc682671363232e189495c8a933aeee",
     "video/out/gpu/libmpv_gpu.c": "00b8a7d8e03faad8d565ddf618c9135cbadf7816396fe042b0ca901347d615d3",
     "video/out/gpu/video.c": "ab98d223e9d9643226761dec1363252af310fc35965600c4906117456dbc178a",
     "video/out/gpu/video.h": "dda1d2b0a982e1ea68ce06803c86f82ea70130128a856573d1faac9c5aca89f7",
@@ -36,10 +36,11 @@
     "video/out/gpu/quest_dovi_gpu.h": "2be189b99e03ae3ec77cf144d1da4eaf06fd16d125418d6e6dc5cd2aa8f2b286",
     "video/out/gpu/quest_dovi_shader_cache.h": "613f8dbcca4a6cbe51ab8e4192934079a119eb5fa575f511a3fca1e400d09adf",
     "video/decode/quest_spatial_video.h": "3049cca5282005255901eb47fba51d448d1dcccd0ed8ac37523e02c71705916d",
-    "include/mpv/quest_frame.h": "1775dac61c07b88ec7bed1fe594889b7323582ae0a26dbcf143bb343617275a1"
+    "video/quest_spatial_metadata.h": "67e9d348aa304289110af726e8249f91aa67fceebb5a70a0bcc37e1c747e56ae",
+    "include/mpv/quest_frame.h": "3c680fed7e92a8f5f52345825de42cac2e56a155f5c4fc47756839559a4b94fa"
   },
-  "patch_sha256": "15e449a7251b14c3e99bd1e2d5d3f49d3ee8db65fc1555dbe3fa0696c8760541",
-  "private_header_sha256": "1775dac61c07b88ec7bed1fe594889b7323582ae0a26dbcf143bb343617275a1",
+  "patch_sha256": "960b6ad8d1cc4c5d690a5143a2a20879907c02ab63b676e2f058aae2502d2f80",
+  "private_header_sha256": "3c680fed7e92a8f5f52345825de42cac2e56a155f5c4fc47756839559a4b94fa",
   "api_version": 2,
   "state": "source_patch_generated; build_and_device_validation_pending"
 }

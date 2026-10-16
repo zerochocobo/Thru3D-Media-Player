@@ -170,6 +170,11 @@ func _run() -> void:
 	b.gallery.action(Browser.ACTION + 56)
 	check(b.view == "overview" and b.gallery.overview_lines().size() > 10 and "".join(b.gallery.overview_lines()) == b.detail.description, "Synopsis preserves all text and wraps without truncation")
 	b.gallery.action(Browser.ACTION + 58); check(b.gallery.overview_start > 0, "Long synopsis scrolls")
+	var overview_start: int = b.gallery.overview_start
+	start = ray(menu, -0.17, -0.33); moved = ray(menu, -0.17, -0.33 + b.gallery.overview_line_height() * 2)
+	menu.press_pointer("left_hand", start[0], start[1], true); menu.update_pointer("left_hand", moved[0], moved[1], true); menu.release_pointer("left_hand", moved[0], moved[1], true)
+	check(b.view == "overview" and b.gallery.overview_start == overview_start + 2 and b.gallery.selected_part == 1,
+		"Synopsis ray dragging follows the larger line height without activating film actions")
 	b.back(); check(b.view == "detail" and b.gallery.selected_part == 1, "Synopsis back retains selected part")
 	var detail_start: int = b.gallery.detail_start
 	b.gallery.action(Gallery.TAG)

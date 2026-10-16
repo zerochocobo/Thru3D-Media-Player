@@ -41,6 +41,25 @@ typedef struct quest_mpv_source_frame {
     int32_t mpv_image_format;
 } quest_mpv_source_frame;
 
+/* Optional spatial metadata for the SAME selected image as SOURCE_FRAME.
+ * Independent of the API-2 frame ABI: older mpv ignores this render parameter,
+ * leaving the caller's zeroed flags untouched. Request with struct_size set.
+ * Fields are valid only under their flags; disparity is total eye-width shift.
+ */
+#define MPV_RENDER_PARAM_QUEST_SPATIAL_METADATA ((mpv_render_param_type)0x51530003)
+enum quest_mpv_spatial_metadata_flags {
+    QUEST_MPV_SPATIAL_BASELINE = 1u << 0,
+    QUEST_MPV_SPATIAL_FOV = 1u << 1,
+    QUEST_MPV_SPATIAL_DISPARITY = 1u << 2
+};
+typedef struct quest_mpv_spatial_metadata {
+    uint32_t struct_size;
+    uint32_t flags;
+    double baseline_meters;
+    double horizontal_fov_degrees;
+    double horizontal_disparity;
+} quest_mpv_spatial_metadata;
+
 /* Optional, with the source frame param (API 2): hand the decoded MediaCodec image of THIS
  * render to the caller instead of drawing it into an RGBA copy. On success image is an
  * AImage* and hardware_buffer its AHardwareBuffer* (valid while the AImage lives); the caller
@@ -63,6 +82,7 @@ MPV_EXPORT uint32_t mpv_quest_source_frame_api_version(void);
 #ifdef __cplusplus
 }
 static_assert(sizeof(quest_mpv_source_frame) == 80, "Quest source frame ABI");
+static_assert(sizeof(quest_mpv_spatial_metadata) == 32, "Quest spatial metadata ABI");
 static_assert(sizeof(quest_mpv_export) == 24, "Quest export ABI");
 #endif
 #endif

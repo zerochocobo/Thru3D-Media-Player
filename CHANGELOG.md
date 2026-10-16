@@ -4,6 +4,24 @@
 
 Newest first, following product release milestones. Some development/source snapshots contained features before their product release. Original APK identifiers `0.2` and `0.4` are retained; `0.4` was also called `0.4.0` in release notes. Availability depends on device, server and media capabilities.
 
+## 0.11.0 — 2026-10-16
+
+This update adds favorites, privacy controls and read-only USB playback, improves spatial media viewing, and refines controller interaction and subtitles.
+
+- **Video, photo and folder favorites**: Save favorites during playback and switch between Recent and Favorites on the home screen for quick access to frequently viewed content and folders.
+- **Return to the source folder**: Open the original location from recent items or favorites on supported sources to browse the same folder or a show's season.
+- **Easier collection management**: List checkboxes, batch removal, hover actions and a brief undo window make organizing easier. Removing records or favorites leaves original files untouched.
+- **Playback-history privacy controls**: Choose to record everything, local media only, or nothing. Separately clear existing network or all playback records while keeping account connections and explicitly saved favorites.
+- **Favorites PIN and automatic locking**: Protect favorites with a four-digit PIN, encrypted storage, manual locking and configurable automatic locking. Locked favorites hide their contents and close protected playback. Clearer two-step PIN setup.
+- **Read-only USB playback**: Browse supported FAT32, exFAT and NTFS drives, including compatible multi-partition devices, with videos, photos and same-folder subtitles. Improved read-only folder authorization for system-mounted partitions.
+- **Stop using all USB drives at once**: A global library toolbar action stops this app's playback and access across USB drives and partitions without visiting each partition or opening system settings.
+- **Better spatial media viewing**: Compatible spatial videos can use the source's recommended stereo offset, with a per-video switch. Spatial videos and photos with valid capture data offer capture-FOV matching to help set the display size.
+- **Controller rays without open menus**: Move a controller or press a button to reveal its ray and hit point. Idle feedback hides with the playback controls.
+- **Easier picture resizing**: Point at a flat video's corner and hold the trigger to resize proportionally. By default, the right stick adjusts flat-picture size or immersive zoom. Fixed reverse zoom with custom bindings while preserving saved controls.
+- **Smoother photo-to-3D transitions**: Keep the original photo visible until the stereo image is ready, reducing temporary distortion and sudden picture changes.
+- **PGS subtitles during 2D-to-3D playback**: Fixed disappearing bitmap subtitles when conversion is enabled, while retaining subtitle size and position controls.
+- **More readable Emby/Jellyfin details**: Larger detail titles and expanded synopsis text, with more spacing for easier reading.
+
 ## 0.10.2 — 2026-10-16
 
 This update adds manual use of built-in Alpha masks, restores automatic video covers and speeds up 115 folder deletion.

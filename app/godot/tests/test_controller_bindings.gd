@@ -46,7 +46,7 @@ func run() -> void:
 	check(bindings.resolve("left_hand", "ax_button", "video_flat") == "library_video", "Left X stays the library")
 	check(bindings.resolve("right_hand", "ax_button", "photo") == "photo_close" and bindings.resolve("left_hand", "ax_button", "photo") == "library_photo", "Photo A closes the expanded view and left X opens the library")
 	check("photo_close" in ordinary and "photo_close" not in combinations, "The new close key appears in ordinary global controller settings")
-	check(bindings.resolve("right_hand", "stick_up", "video_flat") == "flat_volume_up", "Flat right up is volume")
+	check(bindings.resolve("right_hand", "stick_up", "video_flat") == "flat_zoom_in", "Flat right up scales the screen")
 	check(bindings.resolve("right_hand", "stick_up", "video_immersive") == "zoom_in", "Immersive right up is zoom")
 	for hand in Bindings.HANDS:
 		for context in ["video_flat", "video_immersive", "photo"]:
@@ -667,7 +667,7 @@ func video_triggers() -> void:
 	var eye := Vector3(0, 1.6, 0)
 	main.rays.right_hand = [eye, (video.panel.to_global(video.screen_corner(1)) - eye).normalized()]
 	main._update_corner_hover()
-	check(not video._handles.any(func(handle): return handle.visible), "Video controller rays no longer advertise trigger corner resizing")
+	check(video._handles[1].visible, "Video controller rays advertise trigger corner resizing")
 	library.free(); menu.free(); video.free(); main.free()
 
 func choice_target(menu: Node3D, key: String, value: Variant = null, kind: String = "choose") -> int:
@@ -713,6 +713,8 @@ func back_navigation() -> void:
 	var menu := Player.new(); menu.state_provider = main._menu_state
 	menu.seek_requested.connect(main._on_menu_seek)
 	root.add_child(menu); menu.set_process(false); main.player_menu = menu; main.video_menu = menu
+	# Finish initial asynchronous volume discovery before arranging synthetic folder stacks.
+	await process_frame
 	for hand in Bindings.HANDS:
 		video.close_video(); menu.dismiss(); library.dismiss(); main._show_full_library()
 		main.controller_bindings.restore({"version": 1, "bindings": {"drag_video": []}})

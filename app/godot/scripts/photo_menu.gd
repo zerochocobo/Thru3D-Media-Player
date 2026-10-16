@@ -60,7 +60,9 @@ func refresh_values() -> void:
 	if not visible: return
 	var latest: Dictionary = state_provider.call() if state_provider.is_valid() else {}
 	if _adjustment == "photo_view":
-		var layout_changed: bool = latest.get("geometry", 0) != _state.get("geometry", 0) or latest.get("has_image", false) != _state.get("has_image", false) or latest.get("layout", 0) != _state.get("layout", 0) or (int(latest.get("gallery_focus", -1)) < 0) != (int(_state.get("gallery_focus", -1)) < 0)
+		var layout_changed: bool = latest.get("geometry", 0) != _state.get("geometry", 0) or latest.get("has_image", false) != _state.get("has_image", false) or latest.get("layout", 0) != _state.get("layout", 0) or (int(latest.get("gallery_focus", -1)) < 0) != (int(_state.get("gallery_focus", -1)) < 0) \
+			or latest.get("native_stereo", false) != _state.get("native_stereo", false) or latest.get("loading", false) != _state.get("loading", false) \
+			or latest.get("spatial_metadata", {}) != _state.get("spatial_metadata", {})
 		_state = latest
 		if layout_changed:
 			_finish_adjustment()
@@ -116,12 +118,13 @@ func _draw_bar() -> void:
 	_round(107, "close", Vector2(-0.14, 0.215), 0.08, has or _state.get("loading", false), false, I18n.t("Close image"))
 	_round(100, "folder", Vector2(0, 0.215), 0.08, true, false, I18n.t("Library"))
 	_round(108, "recenter", Vector2(0.14, 0.215), 0.08, true, false, I18n.t("Recenter"))
+	_draw_favorite(Vector2(0.28, 0.215))
 	var layout := clampi(int(_state.get("layout", 0)), 0, 3)
 	_round(PHOTO_LAYOUT, ["image", "photo_sides", "photo_wall", "memory"][layout], Vector2(-0.30, 0.215), 0.08, has and not portrait, false, I18n.t("Photo layout"))
 	var caption := _label(I18n.t("Portrait passthrough" if portrait else Photo.Gallery.NAMES[layout]), Vector3(-0.30, 0.15, 0.004), 12)
 	caption.modulate = MUTED
 	if layout in [2,3] and not portrait and not _depth_open and int(_state.get("gallery_focus", -1)) < 0:
-		_round(PHOTO_SHUFFLE, "photo_batch" if layout == 2 else "dice", Vector2(0.30, 0.215), 0.08, has and not swapping, false, I18n.t("Next group" if layout == 2 else "Shuffle memories"))
+		_round(PHOTO_SHUFFLE, "photo_batch" if layout == 2 else "dice", Vector2(0.44, 0.215), 0.08, has and not swapping, false, I18n.t("Next group" if layout == 2 else "Shuffle memories"))
 	if portrait or int(_state.get("gallery_focus", -1)) >= 0:
 		_round(PHOTO_RETURN, "up", Vector2(-0.44, 0.215), 0.08, true, false, I18n.t("Back"))
 	_place_device_status(Vector2(0, -0.175))
@@ -182,13 +185,17 @@ func _draw_adjustments() -> void:
 		_adjustment_row(450, "gallery_scale", "Image size", Vector3(Photo.Gallery.SCALE_LIMITS.x, Photo.Gallery.SCALE_LIMITS.y, 0.05), 0.02)
 		_adjustment_row(451, "gallery_distance", "Distance", Vector3(Photo.Gallery.DISTANCE_LIMITS.x, Photo.Gallery.DISTANCE_LIMITS.y, 0.1), -0.125)
 		_refresh_adjustments(); return
-	_set_backdrop(Vector2(1.55, 0.64))
+	var spatial: bool = _state.get("has_image", false) and not _state.get("loading", false) and _state.get("native_stereo", false) and _state.get("spatial_metadata", {}).has("horizontal_fov_degrees")
+	_set_backdrop(Vector2(1.55, 0.74 if spatial else 0.64), Vector2(0, -0.05 if spatial else 0.0))
 	_button(PHOTO_ADJUST_BACK, "", Vector2(-0.66, 0.25), Vector2(0.09, 0.065), true, "up")
 	_button(CLOSE, "", Vector2(0.66, 0.25), Vector2(0.09, 0.065), true, "close")
 	_label(I18n.t("Adjust image"), Vector3(0, 0.25, 0.004), 24)
 	_adjustment_row(450, "screen_distance", "Distance", Vector3(Photo.PHOTO_DISTANCE_LIMITS.x, Photo.PHOTO_DISTANCE_LIMITS.y, 0.1), 0.10)
 	_adjustment_row(451, "screen_scale", "Image size", Vector3(Photo.PHOTO_SCALE_LIMITS.x, Photo.PHOTO_SCALE_LIMITS.y, 0.1), -0.045)
 	_adjustment_row(452, "inspect_magnification", "Magnification", Vector3(Photo.INSPECT_LIMITS.x, Photo.INSPECT_LIMITS.y, 0.1), -0.19)
+	if spatial:
+		_button(SPATIAL_FOV, I18n.t("Match spatial photo capture FOV"), Vector2(0, -0.31), Vector2(1.12, 0.06), bool(_state.get("spatial_fov_available", false)))
+		set_label_size(_buttons.back().node.get_child(0), 18)
 	for target in _adjust_rows:
 		var enabled: bool = _state.get("has_image", false) and (target != 452 or not _state.get("portrait_requested",false)) and (target == 452 or int(_state.get("geometry", 0)) == 0)
 		for button in _buttons:
@@ -197,13 +204,14 @@ func _draw_adjustments() -> void:
 		row.label.modulate = Color.WHITE if enabled else MUTED
 		row.fill.material_override.set_shader_parameter("surface_color", ACCENT if enabled else MUTED)
 		row.knob.material_override.set_shader_parameter("surface_color", Color.WHITE if enabled else MUTED)
-	_place_device_status(Vector2(0, -0.385))
+	_place_device_status(Vector2(0, -0.485 if spatial else -0.385))
 	_refresh_adjustments()
 
 func _refresh_adjustments() -> void:
 	if _adjustment != "photo_view":
 		super._refresh_adjustments()
 		return
+	_refresh_spatial_fov()
 	for row in _adjust_rows.values():
 		var fallback := Photo.DEFAULT_DISTANCE if row.key in ["screen_distance", "gallery_distance"] else (1.0 if row.key == "screen_scale" else Photo.DEFAULT_MAGNIFICATION)
 		var value := float(_state.get(row.key, fallback))
@@ -269,6 +277,8 @@ func stick_scroll(amount: float, delta: float) -> void:
 var _scroll_after := 0
 
 func _activate(target: int) -> void:
+	if target == FAVORITE:
+		favorite_requested.emit(); refresh_values(); return
 	if _activate_footer(target): return
 	if _activate_slider_reset(target): return
 	if _activate_depth_reset(target): return
@@ -301,6 +311,7 @@ func _activate(target: int) -> void:
 			dismiss()
 			return
 		if target == PHOTO_ADJUST_BACK: _adjustment = ""
+		elif target == SPATIAL_FOV and _state.get("spatial_fov_available", false): action_requested.emit("spatial_match_fov")
 		refresh()
 		return
 	if target == PHOTO_ADJUST:
@@ -351,6 +362,7 @@ func _inspect_tip() -> String:
 	return I18n.t("Inspect") + "  %.1f×" % float(_state.get("inspect_magnification", Photo.DEFAULT_MAGNIFICATION))
 
 func _photo_status() -> String:
+	if not _favorite_notice.is_empty(): return I18n.t(_favorite_notice)
 	if not str(_state.get("loading_caption", "")).is_empty(): return str(_state.loading_caption)
 	if not str(_state.get("portrait_error", "")).is_empty(): return I18n.t(str(_state.portrait_error))
 	if _state.get("portrait_requested",false):

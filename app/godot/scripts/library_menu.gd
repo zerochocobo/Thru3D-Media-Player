@@ -14,11 +14,13 @@ signal file_delete_preparing(uri: String)
 signal file_deleted(uri: String)
 signal file_renamed(old_uri: String, new_uri: String, title: String)
 var current_file_provider: Callable
+const Collections := preload("res://scripts/collection_menu.gd")
+var collections := Collections.new(self)
 const FileActions := preload("res://scripts/library_file_actions.gd")
 var file_actions := FileActions.new(self)
 
 enum Section { RECENT, LOCAL, SMB, DLNA, CLOUD, SETTINGS, MEDIA_SERVER }
-const NAV := ["Recent", "Local files", "SMB network", "DLNA network", "Cloud drives", "Settings", "Media servers"]
+const NAV := ["Home", "Local files", "SMB network", "DLNA network", "Cloud drives", "Settings", "Media servers"]
 const NAV_ICONS := ["history", "device", "server", "cast", "cloud", "settings", "media_library"]
 const NAV_ORDER := [Section.RECENT, Section.LOCAL, Section.SMB, Section.DLNA, Section.CLOUD, Section.MEDIA_SERVER, Section.SETTINGS]
 const ServerBrowser := preload("res://scripts/media_server_browser.gd")
@@ -144,7 +146,10 @@ var _local_all_files := true       # the last listing could read the whole disk
 var _local_grant_pending := false
 var _local_volumes: Array = []
 var _local_eject_pending := ""
-var _local_release_notice := false
+var _local_release_notice := ""
+var _storage_stop_pending := {}
+var _storage_stop_targets: Array = []
+var _storage_stop_failures: Array[String] = []
 var _smb_servers: Array = []
 var _smb_found: Array = []
 var _smb_server := ""
@@ -325,6 +330,7 @@ func toggle() -> void:
 		visible = true; _reset_navigation(); _recent_page = recent_page; _position_to_restore = anchor; refresh()
 
 func dismiss() -> void:
+	collections.selection.clear()
 	if cloud_error.opened: cloud_error.close(); _rebuild_rows()
 	var anchor := capture_position() if browser_content() else {}
 	_save_folder_position()
@@ -360,6 +366,8 @@ func attach_platform(value: Object) -> void:
 		platform.connect("media_list", _on_media_list)
 	if platform and platform.has_signal("android_lifecycle") and not platform.is_connected("android_lifecycle", _on_android_lifecycle):
 		platform.connect("android_lifecycle", _on_android_lifecycle)
+	if PlatformMethods.supports(platform, "media_local_refresh_storage"):
+		platform.media_local_refresh_storage()
 
 func _on_android_lifecycle(state: String) -> void:
 	if state == "resume" and _local_grant_pending:
@@ -405,6 +413,7 @@ func _row_target(target: int) -> bool:
 
 ## The list area, gaps between tiles included: a press there can drag the list.
 func _in_list(point: Vector3) -> bool:
+	if collections.active(): return false
 	if not file_actions.modal.is_empty(): return false
 	if section == Section.MEDIA_SERVER and server_browser.sorting(): return false
 	if compact:
@@ -432,7 +441,7 @@ func press_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: b
 	var hit := ray_hit(origin, direction) if tracked else {}
 	var target := int(hit.get("target", NONE))
 	var start_y := 0.0
-	if not hit.is_empty() and target not in [SCROLLBAR, NONE] and not _row_target(target) and not file_actions.selection_target(target):
+	if not hit.is_empty() and target not in [SCROLLBAR, NONE] and not _row_target(target) and not collections.row_target(target) and not file_actions.selection_target(target):
 		_activate_hit(hit)
 		return true
 	if hit.is_empty() or target == NONE:
@@ -446,6 +455,9 @@ func press_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: b
 	_fling = 0.0
 	_drag = {"hand": hand, "target": target, "start_y": start_y, "start_scroll": scroll, "moved": false,
 		"last": scroll, "at_us": Time.get_ticks_usec(), "velocity": 0.0}
+	if collections.home():
+		var index: int = collections.row_index(target)
+		if index >= 0 and index < rows.size() and rows[index].has("uri"): _drag.collection_uri = str(rows[index].uri)
 	if target == SCROLLBAR:
 		_scroll_to_bar(start_y)
 		_drag.moved = true
@@ -462,6 +474,7 @@ func cancel_pointer(hand: String) -> void:
 
 func update_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: bool) -> void:
 	super(hand, origin, direction, tracked)
+	collections.update_hover()
 	choices.update(hand, origin, direction, tracked)
 	server_browser.gallery.move(hand, origin, direction, tracked)
 	if account_panel.web_hand == hand:
@@ -511,12 +524,16 @@ func release_pointer(hand: String, origin: Vector3, direction: Vector3, tracked:
 		return
 	if not tracked or int(drag.target) == NONE:
 		return
+	if drag.has("collection_uri"):
+		var index: int = collections.row_index(int(drag.target))
+		if index < 0 or index >= rows.size() or str(rows[index].get("uri", "")) != str(drag.collection_uri): return
 	var hit := ray_hit(origin, direction)
 	if not hit.is_empty() and int(hit.target) == int(drag.target):
 		_activate_hit(hit)
 
 ## Thumbstick y (up positive) scrolls the list; it never selects.
 func stick_scroll(y: float, delta: float) -> void:
+	if collections.active(): return
 	if section == Section.MEDIA_SERVER and server_browser.sorting(): return
 	if not compact and section == Section.MEDIA_SERVER and not account_panel.active() and server_browser.gallery.fixed():
 		server_browser.gallery.vertical_scroll(y, delta); return
@@ -541,6 +558,8 @@ func stick_scroll_horizontal(x: float, delta: float) -> void:
 		server_browser.gallery.stick_scroll(x, delta)
 
 func _process(delta: float) -> void:
+	collections.poll()
+	if collections.active(): return
 	_poll_cache_usage()
 	if section == Section.MEDIA_SERVER and server_browser.sorting(): return
 	if controls_page.active() and controls_page.modal(): return
@@ -597,6 +616,7 @@ func _place_list() -> void:
 		if _row_target(row_target):
 			var line := float((row_target - ROW_BASE) / _cols()) - fraction
 			button.node.visible = line > -0.35 and line < _lines() - 0.65
+	collections.update_hover()
 	if is_instance_valid(_bar_thumb):
 		var span := _bar_span()
 		var thumb: float = _bar_thumb.mesh.size.y
@@ -614,6 +634,7 @@ func _grid() -> bool:
 	return section != Section.SETTINGS
 
 func browser_content(allow_modal: bool = false) -> bool:
+	if collections.active(): return false
 	if cloud_error.opened: return false
 	if account_panel.active() or not _editor.is_empty() or (not allow_modal and not file_actions.modal.is_empty()): return false
 	if cloud_search.active: return not cloud_search.editing
@@ -656,10 +677,12 @@ func draw_view_modes(y: float = 0.445, left: float = 0.69) -> void:
 			node.add_child(_quad(Vector2(0.028, 0.003), Vector3(0, -0.025, 0.006), ACCENT, 14))
 
 func _header_y() -> float:
-	return 0.515 if browser_content() else 0.46
+	return 0.515 if section != Section.RECENT and browser_content() else 0.46
 
 func _action_position(x: float) -> Vector2:
-	return Vector2(x - 0.22, 0.445) if browser_content() else Vector2(x, 0.46)
+	if browser_content():
+		return Vector2(x - 0.22, _header_y() if section == Section.RECENT else 0.445)
+	return Vector2(x, 0.46)
 
 func _cols() -> int:
 	if not compact and section == Section.MEDIA_SERVER and server_browser.media_content(): return server_browser.columns() if _grid() else 1
@@ -667,7 +690,7 @@ func _cols() -> int:
 
 ## Visible lines (tile rows or list rows); [scroll] counts lines.
 func _lines() -> int:
-	if compact: return 2 if _grid() else (4 if file_actions.needs_footer() else 5)
+	if compact: return 2 if _grid() else (4 if file_actions.needs_footer() or collections.has_selection() else 5)
 	if cloud_search.active: return 2 if _grid() else 5
 	if controls_page.active(): return 6
 	if account_panel.active(): return VISIBLE_ROWS
@@ -735,12 +758,12 @@ func _redraw_file_rows() -> void:
 	_hide_tooltip()
 	for index in range(_buttons.size() - 1, -1, -1):
 		var button: Dictionary = _buttons[index]
-		if _row_target(button.target) or file_actions.selection_target(button.target) or button.target == SCROLLBAR:
+		if _row_target(button.target) or collections.row_target(button.target) or file_actions.selection_target(button.target) or button.target == SCROLLBAR:
 			_tips.erase(button.target)
 			if button.target == SCROLLBAR: button.node.free()
 			_buttons.remove_at(index)
 	for hand in _hover:
-		if _row_target(_hover[hand]) or file_actions.selection_target(_hover[hand]) or _hover[hand] == SCROLLBAR: _hover[hand] = NONE
+		if _row_target(_hover[hand]) or collections.row_target(_hover[hand]) or file_actions.selection_target(_hover[hand]) or _hover[hand] == SCROLLBAR: _hover[hand] = NONE
 	_decorations.erase(_list); _list.free()
 	if is_instance_valid(_bar_thumb):
 		_decorations.erase(_bar_thumb); _bar_thumb.free()
@@ -787,21 +810,20 @@ func _on_media_list(id: int, payload: String) -> void:
 			var removed := _external_volumes().filter(func(volume): return not volumes.any(func(current): return str(current.id) == str(volume.id)))
 			_local_volumes = volumes
 			for volume in removed: storage_removed.emit(volume.duplicate(true))
-			if not _local_eject_pending.is_empty() and not _local_volumes.any(func(volume): return str(volume.id) == _local_eject_pending):
-				_local_eject_pending = ""
 			if not _local_stack.is_empty() and not _local_volumes.any(func(volume): return str(volume.id) == str(_local_stack[0].id)):
-				_local_stack.clear(); _local_entries = []; _local_eject_pending = ""
-			if section == Section.LOCAL and not account_panel.active():
+				_local_stack.clear(); _local_entries = []
+			if section == Section.LOCAL and not account_panel.active() and _storage_stop_pending.is_empty():
 				_load_section()
-				if visible: refresh()
+			if visible: refresh()
 			return
 		if event is Dictionary and event.get("source") == "local_access":
 			var access_state := str(event.get("state", "error"))
 			_local_grant_pending = access_state in ["requested", "settings_opened"]
 			if section != Section.LOCAL or account_panel.active(): return
+			if not str(event.get("path", "")).is_empty() and str(event.path) != _local_path(): return
 			if access_state == "granted": _load_section()
 			elif access_state == "settings_opened": status = "Allow access in system settings"
-			elif access_state == "requested": status = "Media access needed"
+			elif access_state == "requested": status = "Choose a folder" if _local_access_mode() == "directory" else "Media access needed"
 			else: status = str(event.get("error", "Permission settings unavailable"))
 			if visible: refresh()
 			return
@@ -832,6 +854,20 @@ func _on_media_list(id: int, payload: String) -> void:
 			refresh()
 		return
 	var result: Dictionary = parsed
+	if kind == "local" and result.has("path") and str(result.path) != _local_path(): return
+	if kind == "local" and result.get("state") == "loading":
+		_pending[id] = kind
+		status = str(result.get("error", "Loading…"))
+		if visible: refresh()
+		return
+	if kind == "local_eject":
+		var volume_id := str(result.get("volume_id", ""))
+		if not _storage_stop_pending.has(volume_id): return
+		_storage_stop_pending.erase(volume_id)
+		if str(result.get("state", "")) not in ["stopped", "released"]:
+			_storage_stop_failures.append(str(result.get("error", "Storage stop failed")))
+		if _storage_stop_pending.is_empty(): finish_storage_release(_local_eject_pending)
+		return
 	if kind == "cloud" and (str(result.get("path", "")) != _cloud_path() or \
 		int(result.get("offset", 0)) != _cloud_offsets[_cloud_requested_page] or
 		(not _cloud_path().is_empty() and PlatformMethods.supports(platform, "media_cloud_sorted_page") and str(result.get("order", "")) != file_actions.cloud_order())):
@@ -844,7 +880,10 @@ func _on_media_list(id: int, payload: String) -> void:
 	status = ""
 	var state := str(result.get("state", "error"))
 	if state == "denied":
-		status = "All files access needed" if str(result.get("error", "")) == "ALL_FILES_ACCESS_NEEDED" else "Media access needed"
+		match str(result.get("error", "")):
+			"ALL_FILES_ACCESS_NEEDED": status = "All files access needed"
+			"STORAGE_FOLDER_ACCESS_NEEDED": status = "Folder access needed"
+			_: status = "Media access needed"
 	elif state != "ready":
 		if kind == "cloud": file_actions.cloud_failed()
 		status = str(result.get("error", "Error")).left(80)
@@ -869,9 +908,7 @@ func _on_media_list(id: int, payload: String) -> void:
 					_local_volumes = result.get("volumes", _local_entries.filter(func(entry): return entry.get("volume",false)) if _local_path().is_empty() else _local_volumes)
 					_local_all_files = bool(result.get("all_files", true))
 					_restore_folder_position()
-					if _local_release_notice:
-						_local_release_notice = false
-						if section == Section.LOCAL: status = "Storage access stopped. You can unplug."
+					if not _local_release_notice.is_empty() and section == Section.LOCAL: status = _local_release_notice
 			"smb_servers":
 				_smb_servers = result.get("servers", [])
 			"smb_found":
@@ -895,13 +932,39 @@ func _on_media_list(id: int, payload: String) -> void:
 
 func _grant_local_access() -> void:
 	if _local_grant_pending: return
-	if not PlatformMethods.supports(platform, "media_local_grant_all_files"):
+	var mode := _local_access_mode()
+	if mode == "none": return
+	if mode == "directory":
+		if PlatformMethods.supports(platform, "media_local_grant_directory"):
+			_local_grant_pending = true
+			status = "Choose a folder"
+			platform.media_local_grant_directory(_local_path())
+		else: status = "Folder picker unavailable"
+	elif not PlatformMethods.supports(platform, "media_local_grant_all_files"):
 		status = "Permission settings unavailable"
 	else:
 		_local_grant_pending = true
 		status = "Loading…"
 		platform.media_local_grant_all_files()
 	refresh()
+
+func _local_volume() -> Dictionary:
+	var path := _local_path()
+	if path.is_empty(): return {}
+	for volume in _local_volumes:
+		var root := str(volume.get("id", "")).trim_suffix("/")
+		if path == root or path.begins_with(root + "/") or StorageVolume.contains_uri(volume, path): return volume
+	return _local_stack[0] if not _local_stack.is_empty() else {}
+
+func _local_access_mode() -> String:
+	var path := _local_path()
+	if path.is_empty() or path.begins_with("usb://"): return "none"
+	var volume := _local_volume()
+	if bool(volume.get("removable", false)) or path.begins_with("content://com.android.externalstorage.documents/"): return "directory"
+	return "none" if _local_all_files else "all_files"
+
+func _local_grant_needed() -> bool:
+	return section == Section.LOCAL and status in ["Video access needed", "Media access needed", "All files access needed", "Folder access needed", "Select a folder on this storage device"] and _local_access_mode() != "none"
 
 func _external_volumes() -> Array:
 	return _local_volumes.filter(func(volume): return bool(volume.get("removable",false)))
@@ -916,25 +979,66 @@ func _quick_usb_storage() -> void:
 
 func _eject_volume() -> Dictionary:
 	if not _local_stack.is_empty():
-		return _local_stack[0] if bool(_local_stack[0].get("removable",false)) else {}
+		var volume := _local_volume()
+		return volume if bool(volume.get("removable",false)) else {}
 	var external := _external_volumes()
 	return external[0] if external.size() == 1 else {}
 
 func _request_storage_eject() -> void:
-	var volume := _eject_volume()
-	if volume.is_empty() or not _local_eject_pending.is_empty(): return
-	_local_eject_pending = str(volume.id)
-	storage_eject_requested.emit(volume.duplicate(true))
+	var volumes := _external_volumes()
+	if volumes.is_empty() or not _storage_stop_pending.is_empty(): return
+	_begin_storage_stop(volumes)
+	storage_eject_requested.emit({"id":"usb-all", "removable":true, "volumes":_storage_stop_targets.duplicate(true)})
+	refresh()
+
+func _begin_storage_stop(volumes: Array) -> void:
+	_local_eject_pending = "usb-all"
+	_local_release_notice = ""
+	_storage_stop_targets = []; _storage_stop_pending = {}; _storage_stop_failures.clear()
+	for volume in volumes:
+		var id := str(volume.get("id", ""))
+		if id.is_empty() or _storage_stop_pending.has(id): continue
+		_storage_stop_targets.append(volume.duplicate(true)); _storage_stop_pending[id] = true
+	for id in _pending.keys():
+		if _pending[id] == "local": _pending.erase(id)
+	_cancel_covers()
+	status = "Stopping storage…"
 
 func finish_storage_release(path: String) -> void:
 	if path != _local_eject_pending: return
 	_local_eject_pending = ""
-	_local_release_notice = true
-	if not _local_stack.is_empty() and str(_local_stack[0].id) == path:
+	_storage_stop_pending.clear()
+	if not _storage_stop_failures.is_empty():
+		status = _storage_stop_failures[0]; _storage_stop_targets.clear(); refresh(); return
+	var current := str(_local_volume().get("id", ""))
+	_local_release_notice = "Storage access stopped"
+	if _storage_stop_targets.any(func(volume): return str(volume.id) == current):
 		_local_stack.clear(); _local_entries = []; scroll = 0
+	_storage_stop_targets.clear()
+	status = _local_release_notice
 	if section == Section.LOCAL:
 		_load_section()
 	refresh()
+
+func stop_storage(volume: Dictionary) -> void:
+	var volumes: Array = volume.get("volumes", [volume])
+	if _storage_stop_pending.is_empty(): _begin_storage_stop(volumes)
+	if not PlatformMethods.supports(platform, "media_local_stop_storage"):
+		_storage_stop_failures.append("Storage stop unavailable")
+		finish_storage_release(_local_eject_pending); return
+	for target in volumes:
+		var id: int = platform.media_local_stop_storage(str(target.get("id", "")))
+		if id > 0: _request("local_eject", id)
+		else:
+			_storage_stop_pending.erase(str(target.get("id", "")))
+			_storage_stop_failures.append("Storage stop failed")
+	if _storage_stop_pending.is_empty(): finish_storage_release(_local_eject_pending)
+	else: status = "Stopping storage…"; refresh()
+
+func _draw_storage_stop(centre: Vector2) -> void:
+	if _external_volumes().is_empty(): return
+	_button(EJECT_STORAGE, "", centre, Vector2(0.075, 0.065), _storage_stop_pending.is_empty(), "eject")
+	_tips[EJECT_STORAGE] = I18n.t("Stop using all USB storage")
 
 func _load_section() -> void:
 	if section == Section.MEDIA_SERVER:
@@ -970,19 +1074,14 @@ func _rebuild_rows() -> void:
 		return
 	match section:
 		Section.RECENT:
-			for entry in (catalog.list_recent() if catalog else []):
-				var seconds := int(entry.position_ms) / 1000
-				var photo: bool = entry.get("kind", "") == "image" or ImageInfo.is_image(str(entry.uri), str(entry.title))
-				rows.append({"title": str(entry.title), "detail": "%02d:%02d" % [seconds / 60, seconds % 60] if seconds > 0 else "",
-					"kind": "image" if photo else "video", "icon": "image" if photo else "video", "uri": str(entry.uri)})
-				rows.back().position_ms = int(entry.get("position_ms", 0))
-				rows.back().duration_ms = int(entry.get("duration_ms", -1))
-				if not str(entry.get("cover", "")).is_empty(): rows.back()["cover"] = entry.cover
+			rows.assign(collections.home_rows())
 		Section.LOCAL:
 			for entry in _local_entries:
 				var row := _entry_row(entry)
 				if bool(entry.get("volume", false)):
 					row.icon = "usb" if bool(entry.get("removable", false)) else "device"
+					if bool(entry.get("removable", false)):
+						row.detail = str(Presentation.info(row).subtitle)
 				rows.append(row)
 		Section.SMB:
 			if _smb_server.is_empty():
@@ -1030,11 +1129,9 @@ func _rebuild_rows() -> void:
 				var languages: Array = []
 				for value in I18n.CHOICES: languages.append({"value": value, "label": LANGUAGE_NAMES[value]})
 				rows.append(_choice_row("Language", "language", I18n.choice, languages))
-				var management_hint := "Delete or rename files in supported library sections. Available actions depend on the source and permissions."
+				var management_hint := "Delete or rename files in supported library sections. Managing files is easier in list view. Available actions depend on the source and permissions."
 				rows.append(_choice_row("Allow file management", "file_editing", file_actions.enabled,
 					[{"value": false, "label": "Off", "hint": management_hint}, {"value": true, "label": "On", "hint": management_hint}]))
-				rows.append(_choice_row("Save play history", "history", settings.get("history", true),
-					[{"value": true, "label": "On"}, {"value": false, "label": "Off"}]))
 				# Library thumbnails plus Android photo/depth/SBS files.
 				# Scanned off the main thread (one file open per thumbnail); the size shows once known.
 				if _cache_usage == null: _scan_cache_usage()
@@ -1042,6 +1139,22 @@ func _rebuild_rows() -> void:
 				var armed := _confirm == "clear_cache"
 				rows.append({"title": I18n.t("Clear cache"), "detail": _bytes(cache.y) if cache.x > 0 else "", "icon": "check" if armed else "trash",
 					"selected": armed, "clear_cache": true, "empty": cache.x == 0})
+				rows.append({"title": I18n.t("Privacy"), "group_header": true, "icon": "chevron_down" if collections.privacy_expanded else "next"})
+				if collections.privacy_expanded:
+					rows.append(_choice_row("Playback history", "privacy_mode", settings.get("privacy_mode", "all"),
+						[{"value": "all", "label": "Record all"}, {"value": "local", "label": "Local only"}, {"value": "none", "label": "Do not record"}]))
+					var favorite_store: RefCounted = collections.store
+					if favorite_store:
+						rows.append({"title": I18n.t("Unlock favorites" if favorite_store.locked else ("Change favorites password" if favorite_store.protected else "Set favorites password")), "icon": "lock", "privacy_action": "unlock" if favorite_store.locked else ("change_verify" if favorite_store.protected else "enable")})
+						if favorite_store.protected:
+							if favorite_store.locked: rows.append({"title": I18n.t("Reset locked favorites"), "icon": "trash", "privacy_action": "reset"})
+							rows.append(_choice_row("Auto-lock favorites", "favorites_lock_level", settings.get("favorites_lock_level", "relaxed"),
+								[{"value": "relaxed", "label": "Relaxed · 15 min"}, {"value": "balanced", "label": "Standard · 2 min"}, {"value": "strict", "label": "Strict · immediately"}, {"value": "manual", "label": "Manual · until exit"}]))
+							if not favorite_store.locked:
+								rows.append({"title": I18n.t("Lock favorites"), "icon": "lock", "privacy_action": "lock"})
+								rows.append({"title": I18n.t("Remove favorites password"), "icon": "unlock", "privacy_action": "disable"})
+					rows.append({"title": I18n.t("Confirm clearing history" if _confirm == str(["privacy_clear", "all"]) else "Clear existing history"), "icon": "check" if _confirm == str(["privacy_clear", "all"]) else "trash", "selected": _confirm == str(["privacy_clear", "all"]), "setting": ["privacy_clear", "all"]})
+					rows.append({"title": I18n.t("Confirm clearing network history" if _confirm == str(["privacy_clear", "network"]) else "Clear network history"), "icon": "check" if _confirm == str(["privacy_clear", "network"]) else "trash", "selected": _confirm == str(["privacy_clear", "network"]), "setting": ["privacy_clear", "network"]})
 			elif tab == DISPLAY_TAB:
 				var quality_choices: Array = [{"value": Quality.AUTO, "label": "Auto", "hint": Quality.SCALE_AUTO_HINT}]
 				for i in Quality.SCALES.size():
@@ -1112,7 +1225,7 @@ func _rebuild_rows() -> void:
 		else:
 			rows.assign(rows.filter(func(row): return not row.has("smb_found")))
 	if media_filter > 0 and section not in [Section.SETTINGS, Section.MEDIA_SERVER]:
-		rows.assign(rows.filter(func(row): return not row.has("uri") or row.get("kind", "video") == ("image" if media_filter == 2 else "video")))
+		rows.assign(rows.filter(func(row): return not row.has("uri") or row.get("kind", "") == "folder" or row.get("kind", "video") == ("image" if media_filter == 2 else "video")))
 	file_actions.sort_rows()
 	file_actions.reconcile()
 	if section == Section.RECENT:
@@ -1120,7 +1233,9 @@ func _rebuild_rows() -> void:
 		_recent_count = rows.size()
 		_recent_page = clampi(_recent_page, 0, _recent_page_count() - 1)
 		rows.assign(_recent_all_rows.slice(_recent_page * RECENT_PAGE_SIZE, (_recent_page + 1) * RECENT_PAGE_SIZE))
+	collections.reconcile()
 	focus_index = clampi(focus_index, 0, maxi(0, rows.size() - 1))
+	collections.reveal(rows)
 	if not _position_to_restore.is_empty():
 		scroll = Presentation.position(rows, _position_to_restore, _cols())
 		_position_to_restore = {}
@@ -1197,6 +1312,9 @@ func _entry_row(entry: Dictionary) -> Dictionary:
 		if entry.has(field): row[field] = entry[field]
 	if not str(entry.get("cover", "")).is_empty():
 		row["cover"] = str(entry.cover)
+	if section == Section.DLNA and row.has("id") and not _dlna_server.is_empty():
+		row.uri = "dlna://" + _dlna_server.uri_encode() + "/" + str(row.id).uri_encode()
+	row.location = preload("res://scripts/media_location.gd").capture(self, row)
 	return row
 
 func photo_directory_context() -> Dictionary:
@@ -1219,9 +1337,10 @@ func video_queue() -> Array[Dictionary]:
 		var uri := str(row.get("uri", ""))
 		var title := str(row.get("title", ""))
 		if uri.is_empty() or row.get("kind", "") == "image" or ImageInfo.is_image(uri, title): continue
-		if row.get("container", false) or row.has("folder"): continue
-		result.append({"uri": uri, "title": title,
-			"metadata": row.duplicate(true)})
+		if row.get("container", false) or row.has("folder") or row.get("kind", "") == "folder": continue
+		var metadata: Dictionary = row.duplicate(true)
+		metadata.location = preload("res://scripts/media_location.gd").capture(self, row)
+		result.append({"uri": uri, "title": title, "metadata": metadata})
 	return result
 
 func is_image_uri(uri: String) -> bool:
@@ -1272,7 +1391,7 @@ func _exit_tree() -> void:
 
 func _read_cache_usage() -> Vector2i:
 	var usage := Thumbnails.usage() + preload("res://scripts/photo_preview_cache.gd").disk_usage()
-	if PlatformMethods.supports(platform, "photo_cache_usage"):
+	if is_instance_valid(platform) and PlatformMethods.supports(platform, "photo_cache_usage"):
 		var photo_usage: Variant = JSON.parse_string(str(platform.photo_cache_usage()))
 		if photo_usage is Dictionary:
 			usage += Vector2i(maxi(0, int(photo_usage.get("files", 0))), maxi(0, int(photo_usage.get("bytes", 0))))
@@ -1281,6 +1400,8 @@ func _read_cache_usage() -> Vector2i:
 ## Video state changes arrive several times a second: redraw only when the Alpha profiles
 ## (current, compiling, cold) shown on the Alpha tab change.
 func _activate(target: int) -> void:
+	_local_release_notice = ""
+	if collections.action(target): return
 	if _activate_footer(target): return
 	if cloud_error.action(target): return
 	if file_actions.action(target): return
@@ -1362,12 +1483,7 @@ func _activate(target: int) -> void:
 	elif target == EJECT_STORAGE:
 		_request_storage_eject()
 	elif target == CLEAR_HISTORY:
-		if _confirm != "clear_history":
-			_confirm = "clear_history"
-		else:
-			_confirm = ""
-			setting_changed.emit("clear_history", true)
-		refresh()
+		collections._remove_rows(catalog.list_recent())
 	elif target >= CRUMB_BASE and target < CRUMB_BASE + 10:
 		_go_to(target - CRUMB_BASE)
 	elif target >= FILTER_BASE and target < FILTER_BASE + MEDIA_FILTERS.size():
@@ -1382,6 +1498,7 @@ func _activate(target: int) -> void:
 		_editor_input(target)
 
 func _choose(row: Dictionary) -> void:
+	if collections.choose(row): return
 	if cloud_search.choose(row): return
 	if file_actions.select(row): return
 	if account_panel.choose(row): return
@@ -1409,6 +1526,8 @@ func _choose(row: Dictionary) -> void:
 		server_browser.choose(row)
 		return
 	if row.has("uri") and not str(row.uri).is_empty():
+		collections.selected_location = preload("res://scripts/media_location.gd").capture(self, row)
+		collections.selected_entry = row.duplicate(true)
 		remember_playback_context()
 		dismiss()
 		chosen.emit(str(row.uri), str(row.title))
@@ -1467,6 +1586,8 @@ func _choose(row: Dictionary) -> void:
 		_cache_usage = null
 		refresh()
 	elif row.has("setting"):
+		if row.setting[0] == "privacy_clear" and _confirm != str(row.setting):
+			_confirm = str(row.setting); refresh(); return
 		if bool(row.get("cold", false)) and _confirm != str(row.setting[1]):
 			_confirm = str(row.setting[1])
 			refresh()
@@ -1477,6 +1598,10 @@ func _choose(row: Dictionary) -> void:
 
 ## True when a child layer was consumed; false means the source's top-level list.
 func navigate_back() -> bool:
+	if collections.active(): collections.close(); return true
+	if section == Section.SETTINGS and tab == GENERAL_TAB and collections.privacy_expanded:
+		collections.privacy_expanded = false; choices.reset(); refresh(); return true
+	if collections.has_selection(): collections.selection.clear(); refresh(); return true
 	if has_pointer_capture() or not server_browser.gallery.capture.is_empty():
 		for hand in ["left_hand", "right_hand"]: cancel_pointer(hand)
 		return true
@@ -1739,18 +1864,30 @@ func _draw_compact() -> void:
 	var crumbs := _crumbs()
 	_button(BACK, "", Vector2(-0.51, 0.36), Vector2(0.075, 0.065), not crumbs.is_empty() or section == Section.MEDIA_SERVER or cloud_search.active, "up")
 	var heading: String = cloud_search.query if cloud_search.active else (_header_title() if not _header_title().is_empty() else I18n.t(NAV[section]))
-	var title := _label(_fit_title(heading, "", 0.78, 19), Vector3(-0.45, 0.36, 0.004), 19)
-	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+	if section == Section.RECENT:
+		for i in 2:
+			_button(Collections.HOME_TAB + i, I18n.t("Recent" if i == 0 else "Favorites"), Vector2(-0.20 + i * 0.30, 0.36), Vector2(0.28, 0.065))
+			_lit(collections.home_tab == i)
+	else:
+		var usb := not _external_volumes().is_empty()
+		var title := _label(_fit_title(heading, "", 0.53 if usb else 0.65, 19), Vector3(-0.32 if usb else -0.45, 0.36, 0.004), 19)
+		title.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+	_draw_storage_stop(Vector2(-0.40, 0.36))
 	_button(CLOSE, "", Vector2(0.51, 0.36), Vector2(0.075, 0.065), true, "close")
 	_tips[CLOSE] = I18n.t("Close")
 	if section != Section.RECENT:
 		_button(REFRESH, "", Vector2(0.27, 0.36), Vector2(0.075, 0.065), platform != null and not _cloud_busy, "refresh")
 		_tips[REFRESH] = I18n.t("Refresh")
+	if section == Section.LOCAL and _local_grant_needed():
+		_button(GRANT, "", Vector2(-0.49, -0.365), Vector2(0.075, 0.065), not _local_grant_pending, "unlock")
+		_tips[GRANT] = I18n.t("Choose a folder" if _local_access_mode() == "directory" else "Grant")
 	_button(EXPAND_LIBRARY, "", Vector2(0.28, -0.365), Vector2(0.09, 0.065), true, "expand")
 	_tips[EXPAND_LIBRARY] = I18n.t("Expand library")
 	_decoration(Vector2(1.04, 0.002), Vector2(0, 0.305), Color(0.17, 0.2, 0.24))
+	if section != Section.RECENT: collections.draw_folder_header(true)
 	_draw_rows()
 	file_actions.draw_footer()
+	collections.draw_footer()
 	for spec in [[VIEW_LIST, "list", "List view"], [VIEW_GRID, "grid", "Icon view"]]:
 		_button(int(spec[0]), "", Vector2(0.39 + (0.11 if spec[1] == "grid" else 0), -0.365), Vector2(0.09, 0.065), true, str(spec[1]), view_mode == spec[1])
 		_tips[int(spec[0])] = I18n.t(str(spec[2]))
@@ -1782,9 +1919,15 @@ func _draw_compact_rows() -> void:
 		var row: Dictionary = rows[i]
 		var k := i - first
 		if _grid():
-			_tile(ROW_BASE + k, row, Vector2(-0.34 + (k % 3) * 0.34, 0.13 - (k / 3) * _pitch()))
+			var center := Vector2(-0.34 + (k % 3) * 0.34, 0.13 - (k / 3) * _pitch())
+			_tile(ROW_BASE + k, row, center)
+			collections.decorate_row(k, row, center, true, _list)
 		else:
 			var centre := Vector2(0, 0.215 - k * _pitch())
+			if collections.managed(row):
+				collections.draw_list_row(k, row, centre, _list)
+				collections.decorate_row(k, row, centre, false, _list)
+				continue
 			var managing := file_actions.list_management()
 			_button(ROW_BASE + k, _fit_title(str(row.title), "", 0.72 if managing else 0.83, 20), centre + Vector2(0.055 if managing else 0.0, 0), Vector2(0.92 if managing else 1.03, 0.098), true, "", false, _list)
 			var button: Dictionary = _buttons.back()
@@ -1798,6 +1941,7 @@ func _draw_compact_rows() -> void:
 			var detail := _label(_fit_title(str(Presentation.info(row, catalog, section == Section.RECENT).subtitle), "", 0.72 if managing else 0.83, 15), Vector3(-0.345 if managing else -0.40, -0.025, 0.004), 15, node)
 			detail.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT; detail.modulate = MUTED
 			file_actions.draw_checkbox(ROW_BASE + k, row, centre + Vector2(-0.48, 0))
+			collections.decorate_row(k, row, centre + Vector2(-0.10, 0), false, _list)
 	if _max_scroll() > 0:
 		var span := _bar_span()
 		_button(SCROLLBAR, "", Vector2(0.55, span.x - span.y * 0.5), Vector2(0.035, span.y))
@@ -1810,6 +1954,8 @@ func _draw_compact_rows() -> void:
 
 func _draw() -> void:
 	_clear_layout()
+	if collections.active():
+		_side.visible = false; collections.draw(); return
 	if cloud_error.opened: cloud_error.draw(); return
 	_side.visible = not compact
 	if not file_actions.modal.is_empty():
@@ -1853,6 +1999,8 @@ func _draw() -> void:
 	if section == Section.MEDIA_SERVER:
 		server_browser.draw()
 		return
+	# Keep the global stop alongside the upper actions, clear of Home's undo and Settings tabs.
+	_draw_storage_stop(_action_position(0.36) if section == Section.RECENT else Vector2(0.80, 0.46) if section == Section.SETTINGS else _action_position(0.47))
 	# Right header: sub-tabs at the top level, otherwise a clickable path with back.
 	var crumbs := _crumbs()
 	var cloud_managing: bool = section == Section.CLOUD and not cloud_accounts.mode.is_empty()
@@ -1865,13 +2013,13 @@ func _draw() -> void:
 			_label(I18n.t("Open source licenses" if _about_page == 3 else "Credits"), Vector3(0.13, 0.46, 0.004), 24)
 		for position in (SETTING_ORDER.size() if not tabs.is_empty() else 0):
 			var i: int = SETTING_ORDER[position]
-			_button(TAB_BASE + i, I18n.t(tabs[i]), Vector2(-0.40 + position * 0.225, 0.46), Vector2(0.21, 0.07))
+			_button(TAB_BASE + i, I18n.t(tabs[i]), Vector2(-0.43 + position * 0.20, 0.46), Vector2(0.19, 0.07))
 			set_label_size(_buttons.back().node.get_child(0), 18)
 			_lit(i == tab)
 		if controls_page.active():
 			controls_page.draw()
 			return
-		if section in [Section.RECENT, Section.LOCAL, Section.SMB, Section.DLNA, Section.CLOUD]:
+		if section in [Section.LOCAL, Section.SMB, Section.DLNA, Section.CLOUD]:
 			var title := _label(I18n.t(NAV[section]), Vector3(-0.42, _header_y(), 0.004), 24)
 			title.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
 	else:
@@ -1887,19 +2035,15 @@ func _draw() -> void:
 		if not cloud_managing and _cloud_stack.is_empty():
 			_button(CLOUD_ACCOUNTS, "", Vector2(0.69, 0.46), Vector2(0.09, 0.07), platform != null, "plus")
 			_tips[CLOUD_ACCOUNTS] = I18n.t("Cloud accounts")
-	if section == Section.LOCAL and not _local_all_files and platform:
+	if section == Section.LOCAL and _local_access_mode() != "none" and platform:
 		_button(ALL_FILES, "", _action_position(0.69), Vector2(0.09, 0.065), not _local_grant_pending, "unlock")
-		_tips[ALL_FILES] = I18n.t("Allow access to all files")
+		_tips[ALL_FILES] = I18n.t("Choose a folder" if _local_access_mode() == "directory" else "Allow access to all files")
 	if section == Section.LOCAL and not _external_volumes().is_empty():
 		_button(USB_STORAGE,"",_action_position(0.58),Vector2(0.09,0.065),true,"usb")
 		_tips[USB_STORAGE] = I18n.t("USB storage")
-		if not _eject_volume().is_empty():
-			_button(EJECT_STORAGE,"",_action_position(0.47),Vector2(0.09,0.065),_local_eject_pending.is_empty(),"eject")
-			_tips[EJECT_STORAGE] = I18n.t("Stop using storage")
-	if section == Section.RECENT and not rows.is_empty():
-		# Two presses: the first lights the button, the second clears.
-		_button(CLEAR_HISTORY, "", _action_position(0.80), Vector2(0.09, 0.065), true, "check" if _confirm == "clear_history" else "trash",
-			_confirm == "clear_history")
+	if section != Section.SETTINGS: collections.draw_header()
+	if section == Section.RECENT and collections.home_tab == 0 and not rows.is_empty():
+		_button(CLEAR_HISTORY, "", _action_position(0.80), Vector2(0.09, 0.065), true, "trash")
 		_tips[CLEAR_HISTORY] = I18n.t("Clear history")
 	if section == Section.DLNA:
 		if _dlna_server.is_empty():
@@ -1912,7 +2056,7 @@ func _draw() -> void:
 	if section == Section.SMB and not _smb_server.is_empty() and _smb_path.is_empty():
 		_button(EDIT, "", _action_position(0.69), Vector2(0.09, 0.065), true, "edit")
 	file_actions.draw_header()
-	if browser_content(): draw_view_modes()
+	if browser_content(): draw_view_modes(_action_position(0.80).y)
 	_decoration(Vector2(1.28, 0.002), Vector2(0.19, 0.405), Color(0.17, 0.2, 0.24))
 	_draw_rows()
 	if section == Section.SETTINGS and tab == ABOUT_TAB:
@@ -1926,9 +2070,11 @@ func _draw() -> void:
 	if section == Section.SETTINGS:
 		_button(RESTART_APP, I18n.t("Restart app"), Vector2(0.10, -0.515), Vector2(0.42, 0.07), true, "refresh")
 		_button(QUIT_APP, I18n.t("Close app"), Vector2(0.59, -0.515), Vector2(0.42, 0.07), true, "close")
-	if status in ["Video access needed", "Media access needed", "All files access needed"]:
+	if _local_grant_needed():
 		_button(GRANT, I18n.t("Grant"), Vector2(0.19, -0.34), Vector2(0.3, 0.07), not _local_grant_pending, "", true)
-	if file_actions.has_selection():
+	if collections.has_selection():
+		collections.draw_footer()
+	elif file_actions.has_selection():
 		file_actions.draw_footer()
 	elif section != Section.SETTINGS and not cloud_managing:
 		for i in MEDIA_FILTERS.size():
@@ -2015,18 +2161,28 @@ func _draw_rows() -> void:
 				var left: float = -0.53 + size.x / 2 if server_browser.media_content() else -0.36
 				server_browser.tile(ROW_BASE + k, row, Vector2(left + (k % cols) * step, server_browser.list_top() - size.y / 2 - (k / cols) * _pitch()))
 			else:
-				_tile(ROW_BASE + k, row, Vector2(-0.36 + (k % COLS) * GRID_PITCH.x, (0.095 if cloud_search.active else GRID_TOP) - TILE_SIZE.y * 0.5 - (k / COLS) * GRID_PITCH.y))
+				var center := Vector2(-0.36 + (k % COLS) * GRID_PITCH.x, (0.095 if cloud_search.active else GRID_TOP) - TILE_SIZE.y * 0.5 - (k / COLS) * GRID_PITCH.y)
+				_tile(ROW_BASE + k, row, center)
+				collections.decorate_row(k, row, center, true, _list)
 		else:
 			if section == Section.MEDIA_SERVER and server_browser.media_content():
 				server_browser.media_row(ROW_BASE + k, row, Vector2(0.17, row_top - k * _pitch())); continue
 			if browser_content():
-				_media_row_button(ROW_BASE + k, row, Vector2(0.17, row_top - k * _pitch()))
+				var center := Vector2(0.17, row_top - k * _pitch())
+				_media_row_button(ROW_BASE + k, row, center)
+				collections.decorate_row(k, row, center, false, _list)
 				continue
 			if row.has("choices") or row.get("slider", false):
 				_setting_field(row, Vector2(0.17, row_top - k * _pitch()), ROW_BASE + k)
 				continue
 			_row_button(ROW_BASE + k, str(row.title), "" if row.get("about_info", false) else str(row.get("detail", "")), str(row.get("icon", "video")),
 				Vector2(0.17, row_top - k * _pitch()), bool(row.get("selected", false)))
+			if row.get("group_header", false):
+				var heading: Dictionary = _buttons.back()
+				heading.enabled = true; heading.base_color = Color(TILE, 0)
+				heading.node.material_override.set_shader_parameter("surface_color", Color(TILE, 0))
+				set_label_size(heading.node.get_child(0), 17)
+				heading.node.get_child(0).modulate = MUTED
 			if bool(row.get("about_info", false)):
 				_buttons.back().enabled = false
 				var node: MeshInstance3D = _buttons.back().node
@@ -2134,7 +2290,7 @@ func _tile(target: int, row: Dictionary, centre: Vector2) -> void:
 	_button(target, _fit_title(str(row.title), "", 0.5, 18), centre, TILE_SIZE, true, "", false, _list)
 	var button: Dictionary = _buttons.back()
 	button.base_color = SELECTED if file_actions.editing and file_actions.is_selected(row) else Color(TILE, 0.0)
-	if compact and _is_current_row(row): button.base_color = SELECTED
+	if (compact and _is_current_row(row)) or (str(row.get("uri", "")) == collections.reveal_uri and not collections.reveal_uri.is_empty()): button.base_color = SELECTED
 	button.enabled = not file_actions.editing or not file_actions.row_uri(row).is_empty()
 	button.node.material_override.set_shader_parameter("surface_color", button.base_color)
 	var node: MeshInstance3D = button.node
@@ -2249,13 +2405,15 @@ func _progress_on(parent: Node3D, ratio: float, center: Vector2, width: float) -
 	parent.add_child(_quad(Vector2(filled, 0.003), Vector3(center.x - width * 0.5 + filled * 0.5, center.y, 0.009), ACCENT, 15))
 
 func _media_row_button(target: int, row: Dictionary, centre: Vector2) -> void:
+	if collections.managed(row):
+		collections.draw_list_row(target - ROW_BASE, row, centre, _list); return
 	var info := Presentation.info(row, catalog, section == Section.RECENT)
 	var managing := file_actions.list_management()
 	var status_text := str(info.status)
 	var title_width := (0.76 if not status_text.is_empty() else 1.0) - (0.11 if managing else 0.0)
 	var body := centre + Vector2(0.055 if managing else 0.0, 0)
 	_button(target, _fit_title(str(row.title), "", title_width, 22), body, Vector2(1.13 if managing else 1.24, 0.098), true, "", false, _list)
-	var selected := file_actions.is_selected(row)
+	var selected := file_actions.is_selected(row) or (str(row.get("uri", "")) == collections.reveal_uri and not collections.reveal_uri.is_empty())
 	_lit(selected)
 	var node: MeshInstance3D = _buttons.back().node
 	var label: Label3D = node.get_child(0)

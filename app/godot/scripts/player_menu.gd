@@ -1,6 +1,11 @@
 extends "res://scripts/ray_menu.gd"
 
 signal action_requested(operation: String)
+signal favorite_requested
+var favorite_provider: Callable
+var _favorite_notice := ""
+var _favorite_notice_until := 0
+const FAVORITE := 980
 signal recent_requested
 signal seek_requested(position_ms: int)
 signal bookmark_requested(operation: String, marker_id: String, scope: String)
@@ -60,6 +65,8 @@ const EYE_SWAP := 483
 const ALIGNMENT_RESET := 484
 const ALIGNMENT_HORIZONTAL := 485
 const ALIGNMENT_VERTICAL := 486
+const SPATIAL_DISPARITY := 487
+const SPATIAL_FOV := 488
 ## Settings is a popup above the bar like subtitles: its own tab, tile and close targets keep the
 ## bar's controls (100+) usable while it is open.
 const SCREEN_SETTINGS := 473
@@ -410,6 +417,9 @@ func refresh_values() -> void:
 	_update_highlights()
 
 func _process(_delta: float) -> void:
+	if _favorite_notice_until > 0 and Time.get_ticks_msec() >= _favorite_notice_until and not has_pointer_capture():
+		_favorite_notice = ""; _favorite_notice_until = 0
+		if visible: refresh()
 	if visible and Time.get_ticks_msec() >= _refresh_ms:
 		_refresh_ms = Time.get_ticks_msec() + 250
 		refresh_values()
@@ -591,6 +601,7 @@ func _draw_bar() -> void:
 	_round(107, "close", Vector2(-0.14, 0.215), 0.08, _enabled("stop"), false, I18n.t("Close video"))
 	_round(100, "folder", Vector2(0, 0.215), 0.08, true, false, I18n.t("Library"))
 	_round(108, "recenter", Vector2(0.14, 0.215), 0.08, true, false, I18n.t("Recenter"))
+	_draw_favorite(Vector2(0.28, 0.215))
 	_place_device_status(Vector2(0, -0.245))
 	bookmarks.draw()
 	if _mode_open:
@@ -1202,7 +1213,9 @@ func _error_text_height(text: String, logical_size: int) -> float:
 func _settings_key() -> String:
 	return str([_state.get("source_uri", ""), _state.get("has_video", false),
 		_state.get("loop", false), _state.get("screen_curve", 0.0), _state.get("seek_mode", "speed"), _state.get("stereo", false), _state.get("geometry", 0),
-		_state.get("show_fps", false), _state.get("viewing_eye", 0), _state.get("swap_eyes", false), _state.get("error", ""), _state.get("error_report", {})])
+		_state.get("show_fps", false), _state.get("viewing_eye", 0), _state.get("swap_eyes", false),
+		_state.get("spatial_metadata", {}), _state.get("spatial_auto_disparity", true),
+		_state.get("error", ""), _state.get("error_report", {})])
 
 func _setting_choices(operation: String) -> Dictionary:
 	if not _enabled(operation): return {}
@@ -1266,6 +1279,7 @@ func _refresh_progress() -> void:
 		_seek_origin.material_override.set_shader_parameter("surface_color", Color(MUTED, float(feedback.alpha)))
 
 func _seek_status() -> String:
+	if not _favorite_notice.is_empty(): return I18n.t(_favorite_notice)
 	var feedback: Dictionary = _state.get("seek_feedback", {})
 	var caption := str(_state.get("loading_caption", ""))
 	if feedback.is_empty(): return caption
@@ -1286,6 +1300,8 @@ func _activate_hit(hit: Dictionary) -> void:
 		super._activate_hit(hit)
 
 func _activate(target: int) -> void:
+	if target == FAVORITE:
+		favorite_requested.emit(); refresh_values(); return
 	if target == ERROR_OPEN and not str(_state.get("error", "")).is_empty():
 		show_playback_error()
 		return
@@ -1445,6 +1461,16 @@ func _activate(target: int) -> void:
 				refresh()
 			else:
 				refresh_values()
+
+func _draw_favorite(position: Vector2) -> void:
+	if not favorite_provider.is_valid(): return
+	var favorite: Dictionary = favorite_provider.call()
+	_round(FAVORITE, "lock" if favorite.get("locked", false) else ("star_filled" if favorite.get("selected", false) else "star"), position, 0.08,
+		favorite.get("enabled", false), favorite.get("selected", false), I18n.t("Unlock favorites" if favorite.get("locked", false) else ("Remove favorite" if favorite.get("selected", false) else "Add favorite")))
+
+func show_favorite_feedback(message: String) -> void:
+	_favorite_notice = message; _favorite_notice_until = Time.get_ticks_msec() + 2500
+	if is_instance_valid(_status): _status.text = I18n.t(message); _status.visible = true
 
 func _update_highlights() -> void:
 	super._update_highlights()
@@ -1624,7 +1650,8 @@ func _slider_tick(target: int, value: float, label: String, y: float) -> void:
 func _draw_screen_settings() -> void:
 	_settings_drawn = _settings_key()
 	var flat: bool = _state.get("has_video", false) and int(_state.get("geometry", 0)) == 0
-	var top := _settings_frame(0.24 + (0.27 if flat else 0.0))
+	var spatial_fov: bool = flat and _state.get("spatial_video", false) and _state.get("spatial_metadata", {}).has("horizontal_fov_degrees")
+	var top := _settings_frame(0.24 + (0.27 if flat else 0.0) + (0.08 if spatial_fov else 0.0))
 	_draw_settings_tabs(top - 0.055)
 	var y := top - 0.16
 	if flat:
@@ -1639,6 +1666,9 @@ func _draw_screen_settings() -> void:
 	_adjustment_row(452, "screen_rotation", "Screen rotation", Vector3(-90, 90, 1), y)
 	_slider_tick(452, 0, "0°", y)
 	_inline_reset(ROTATION_RESET, "Straighten", "screen_rotation", 0.0, y)
+	if spatial_fov:
+		_button(SPATIAL_FOV, I18n.t("Match spatial video capture FOV"), Vector2(0, y - 0.09), Vector2(0.86, 0.055), bool(_state.get("spatial_fov_available", false)))
+		set_label_size(_buttons.back().node.get_child(0), 16)
 	_refresh_adjustments()
 	choices.finish()
 
@@ -1674,7 +1704,8 @@ func _draw_adjustments() -> void:
 func _draw_stereo_view() -> void:
 	_settings_drawn = _settings_key()
 	var mode := int(_state.get("viewing_eye", 0))
-	var top := _settings_frame(0.62 if mode == 0 else 0.40)
+	var spatial: bool = _state.get("spatial_video", false) and _state.get("spatial_metadata", {}).has("horizontal_disparity")
+	var top := _settings_frame((0.70 if spatial else 0.62) if mode == 0 else 0.40)
 	_settings_heading("Stereo viewing", top)
 	for i in StereoView.MODES.size():
 		_button(VIEWING_EYE + i, I18n.t(StereoView.MODES[i]), Vector2(-0.335 + i * 0.335, top - 0.13), Vector2(0.32, 0.065), _enabled("stereo_view"))
@@ -1691,6 +1722,11 @@ func _draw_stereo_view() -> void:
 		_slider_tick(ALIGNMENT_VERTICAL, 0.0, "0", top - 0.45)
 		_button(ALIGNMENT_RESET, I18n.t("Reset alignment"), Vector2(0, top - 0.545), Vector2(0.36, 0.055), _enabled("stereo_view"))
 		set_label_size(_buttons.back().node.get_child(0), 16)
+		if spatial:
+			var enabled: bool = _state.get("spatial_auto_disparity", true)
+			_button(SPATIAL_DISPARITY, I18n.t("Source disparity") + "  " + I18n.t("On" if enabled else "Off"), Vector2(0, top - 0.625), Vector2(0.56, 0.055))
+			set_label_size(_buttons.back().node.get_child(0), 16)
+			if enabled: _buttons.back().base_color = SELECTED
 	else:
 		var hint := _label(I18n.t("Same view in both eyes"), Vector3(0, top - 0.31, 0.004), 17)
 		hint.modulate = MUTED
@@ -1781,7 +1817,14 @@ func _inline_reset(target: int, title: String, key: String, default_value: float
 	button["reset_caption"] = _fit_title(I18n.t(title), "", 0.15, 13)
 	set_label_size(button.node.get_child(0), 13)
 
+func _refresh_spatial_fov() -> void:
+	for button in _buttons:
+		if button.target == SPATIAL_FOV:
+			button.enabled = bool(_state.get("spatial_fov_available", false))
+			button.node.get_child(0).modulate = button.foreground if button.enabled else MUTED
+
 func _refresh_adjustments() -> void:
+	_refresh_spatial_fov()
 	var values: Dictionary = _state.get("grade_values", Grade.DEFAULTS)
 	for row in _adjust_rows.values():
 		var distance: bool = row.key in ["subtitle_distance", "screen_distance"]
@@ -1841,6 +1884,10 @@ func _activate_adjustment(target: int) -> void:
 			action_requested.emit("eyes")
 		elif target == ALIGNMENT_RESET:
 			adjustment_requested.emit("stereo_reset", true)
+		elif target == SPATIAL_DISPARITY and _state.get("spatial_video", false):
+			setting_requested.emit("spatial_auto_disparity", not _state.get("spatial_auto_disparity", true))
+	elif _adjustment == "screen" and target == SPATIAL_FOV and _state.get("spatial_fov_available", false):
+		setting_requested.emit("spatial_match_fov", true)
 	elif _adjustment == "screen" and target == ROTATION_RESET:
 		adjustment_requested.emit("screen_rotation", 0.0)
 		adjustment_committed.emit()

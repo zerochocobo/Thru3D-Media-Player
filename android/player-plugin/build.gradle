@@ -32,6 +32,7 @@ android {
     sourceSets.main.assets.srcDir '../../app/godot/i18n'
     defaultConfig {
         minSdk 29
+        consumerProguardFiles 'consumer-rules.pro'
         buildConfigField 'boolean', 'INCLUDE_DIAGNOSTIC_MODELS', includeDiagnostics.toString()
         ndk { abiFilters 'arm64-v8a' }
         externalNativeBuild {

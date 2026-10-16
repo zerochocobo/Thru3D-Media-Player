@@ -70,7 +70,7 @@ func _process(_delta: float) -> void:
 			_active = entry; _serial += 1
 			var path := DIRECTORY.path_join(uri.sha256_text() + ".png")
 			var meta := path + ".json"
-			if FileAccess.file_exists(path) and FileAccess.file_exists(meta):
+			if preload("res://scripts/media_privacy.gd").cache_allowed(uri) and FileAccess.file_exists(path) and FileAccess.file_exists(meta):
 				var info: Variant = JSON.parse_string(FileAccess.get_file_as_string(meta))
 				if info is Dictionary:
 					info["path"] = ProjectSettings.globalize_path(path); info["cached"] = true
@@ -111,6 +111,8 @@ static func _decode(job: Dictionary) -> Dictionary:
 		var ratio := minf(1.0, float(PREVIEW_EDGE) / maxf(image.get_width(), image.get_height()))
 		image.resize(maxi(1, roundi(image.get_width() * ratio)), maxi(1, roundi(image.get_height() * ratio)), Image.INTERPOLATE_BILINEAR)
 		info["orientation"] = 1
+		if not preload("res://scripts/media_privacy.gd").cache_allowed(str(job.uri)):
+			image.generate_mipmaps(); return {"image": image, "info": info}
 		DirAccess.make_dir_recursive_absolute(DIRECTORY)
 		var target := DIRECTORY.path_join(str(job.uri).sha256_text() + ".png")
 		if image.save_png(target) == OK:

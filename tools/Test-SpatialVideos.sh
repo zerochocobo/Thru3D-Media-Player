@@ -27,7 +27,7 @@ if [[ ! -f config.h ]]; then
         --disable-x86asm >"$logs/spatial-ffmpeg-configure.log" 2>&1
 fi
 make -j"${QUEST_MPV_CORES:-6}" >"$logs/spatial-ffmpeg-build.log" 2>&1
-cc -std=c11 -Wall -Wextra -Werror -I. -I"$source" \
+cc -std=c11 -Wall -Wextra -Werror -I. -I"$source" -I"$repo/native/mpv" \
     "$repo/tests/native/spatial_video_test.c" \
     libavformat/libavformat.a libavcodec/libavcodec.a libavutil/libavutil.a \
     -lm -lpthread -ldl -o spatial_video_test

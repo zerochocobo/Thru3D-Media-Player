@@ -1,15 +1,16 @@
 --- a/video/out/vo_libmpv.c
 +++ b/video/out/vo_libmpv.c
-@@ -26,6 +26,8 @@
+@@ -26,6 +26,9 @@
  #include "player/client.h"
  
  #include "libmpv.h"
 +#include "include/mpv/quest_frame.h"
++#include "video/quest_spatial_metadata.h"
 +#include "video/quest_dovi_profile.h"
  
  #if HAVE_MACOS_COCOA_CB
  #include "osdep/mac/app_bridge.h"
-@@ -86,6 +88,8 @@
+@@ -86,6 +89,8 @@
  
      // --- Protected by lock
      struct vo_frame *next_frame;    // next frame to draw
@@ -18,7 +19,7 @@
      int64_t present_count;          // incremented when next frame can be shown
      int64_t expected_flip_count;    // next vsync event for next_frame
      bool redrawing;                 // next_frame was a redraw request
-@@ -335,6 +339,11 @@
+@@ -335,6 +340,11 @@
  
  int mpv_render_context_render(mpv_render_context *ctx, mpv_render_param *params)
  {
@@ -30,7 +31,7 @@
      mp_mutex_lock(&ctx->lock);
  
      int do_render =
-@@ -384,6 +393,7 @@
+@@ -384,6 +394,7 @@
      ctx->need_reset = false;
  
      struct vo_frame *frame = ctx->next_frame;
@@ -38,7 +39,7 @@
      int64_t wait_present_count = ctx->present_count;
      if (frame) {
          ctx->next_frame = NULL;
-@@ -392,6 +402,7 @@
+@@ -392,6 +403,7 @@
          mp_cond_broadcast(&ctx->video_wait);
          talloc_free(ctx->cur_frame);
          ctx->cur_frame = vo_frame_ref(frame);
@@ -46,7 +47,7 @@
      } else {
          frame = vo_frame_ref(ctx->cur_frame);
          if (frame)
-@@ -402,6 +413,40 @@
+@@ -402,6 +414,52 @@
      if (!frame)
          frame = &dummy;
  
@@ -57,6 +58,10 @@
 +        quest->struct_size = sizeof(*quest);
 +        quest->api_version = QUEST_MPV_SOURCE_FRAME_API_VERSION;
 +        quest->render_sequence = ++ctx->quest_render_sequence;
++        quest_mpv_spatial_metadata *spatial = get_mpv_render_param(
++            params, MPV_RENDER_PARAM_QUEST_SPATIAL_METADATA, NULL);
++        if (spatial && spatial->struct_size != sizeof(*spatial)) spatial = NULL;
++        if (spatial) quest_spatial_metadata_read(spatial, NULL);
 +        if (frame->current) {
 +            const struct mp_image *image = frame->current;
 +            quest->flags = QUEST_MPV_HAS_IMAGE |
@@ -74,8 +79,16 @@
 +            quest->crop_y1 = image->params.crop.y1;
 +            quest->rotation_degrees = image->params.rotate;
 +            quest->mpv_image_format = image->imgfmt;
-+            if (image->params.quest_spatial_video)
++            if (image->params.quest_spatial_video) {
 +                quest->flags |= QUEST_MPV_SPATIAL_VIDEO;
++                for (int n = 0; spatial && n < image->num_ff_side_data; n++) {
++                    const struct mp_ff_side_data *sd = &image->ff_side_data[n];
++                    if (sd->type == AV_FRAME_DATA_STEREO3D && sd->buf->size >= sizeof(AVStereo3D)) {
++                        quest_spatial_metadata_read(spatial, (const AVStereo3D *)sd->buf->data);
++                        break;
++                    }
++                }
++            }
 +            double us = image->pts * 1e6;
 +            if (image->pts != MP_NOPTS_VALUE && isfinite(us) &&
 +                us > (double)INT64_MIN && us < (double)INT64_MAX) {
@@ -87,7 +100,7 @@
      mp_mutex_unlock(&ctx->lock);
  
      MP_STATS(ctx, "glcb-render");
-@@ -493,6 +538,11 @@
+@@ -493,6 +551,11 @@
      mp_mutex_lock(&ctx->lock);
      mp_assert(!ctx->next_frame);
      ctx->next_frame = vo_frame_ref(frame);
@@ -99,7 +112,7 @@
      ctx->expected_flip_count = ctx->flip_count + 1;
      ctx->redrawing = frame->redraw || !frame->current;
      mp_mutex_unlock(&ctx->lock);
-@@ -545,6 +595,7 @@
+@@ -545,6 +608,7 @@
      if (ctx->next_frame) {
          talloc_free(ctx->cur_frame);
          ctx->cur_frame = ctx->next_frame;
@@ -107,7 +120,7 @@
          ctx->next_frame = NULL;
          ctx->present_count += 2;
          mp_cond_signal(&ctx->video_wait);
-@@ -606,6 +657,8 @@
+@@ -606,6 +670,8 @@
      case VOCTRL_RESET:
          mp_mutex_lock(&ctx->lock);
          forget_frames(ctx, false);
@@ -116,7 +129,7 @@
          ctx->need_reset = true;
          mp_mutex_unlock(&ctx->lock);
          vo->want_redraw = true;
-@@ -755,3 +808,8 @@
+@@ -755,3 +821,8 @@
      .uninit = uninit,
      .priv_size = sizeof(struct vo_priv),
  };
@@ -877,8 +890,48 @@
 +}
 +#endif
 --- /dev/null
++++ b/video/quest_spatial_metadata.h
+@@ -0,0 +1,37 @@
++/* Spatial metadata in the same render transaction as the selected stereo frame. */
++#ifndef QUEST_SPATIAL_METADATA_H
++#define QUEST_SPATIAL_METADATA_H
++#include <math.h>
++#include <string.h>
++#include <libavutil/stereo3d.h>
++#include "include/mpv/quest_frame.h"
++
++static inline void quest_spatial_metadata_read(quest_mpv_spatial_metadata *out,
++                                               const AVStereo3D *stereo)
++{
++    memset(out, 0, sizeof(*out));
++    out->struct_size = sizeof(*out);
++    if (!stereo)
++        return;
++    if (stereo->baseline) {
++        out->baseline_meters = stereo->baseline * 1e-6;
++        out->flags |= QUEST_MPV_SPATIAL_BASELINE;
++    }
++    AVRational fov = stereo->horizontal_field_of_view;
++    if (fov.den > 0) {
++        double value = (double)fov.num / fov.den;
++        if (isfinite(value) && value > 0 && value < 180) {
++            out->horizontal_fov_degrees = value;
++            out->flags |= QUEST_MPV_SPATIAL_FOV;
++        }
++    }
++    AVRational disparity = stereo->horizontal_disparity_adjustment;
++    if (disparity.den > 0) {
++        double value = (double)disparity.num / disparity.den;
++        if (isfinite(value) && fabs(value) <= 1) {
++            out->horizontal_disparity = value;
++            out->flags |= QUEST_MPV_SPATIAL_DISPARITY;
++        }
++    }
++}
++#endif
+--- /dev/null
 +++ b/include/mpv/quest_frame.h
-@@ -0,0 +1,68 @@
+@@ -0,0 +1,88 @@
 +/* Project-specific extension for the pinned mpv source build. */
 +#ifndef QUEST_MPV_SOURCE_FRAME_H
 +#define QUEST_MPV_SOURCE_FRAME_H
@@ -922,6 +975,25 @@
 +    int32_t mpv_image_format;
 +} quest_mpv_source_frame;
 +
++/* Optional spatial metadata for the SAME selected image as SOURCE_FRAME.
++ * Independent of the API-2 frame ABI: older mpv ignores this render parameter,
++ * leaving the caller's zeroed flags untouched. Request with struct_size set.
++ * Fields are valid only under their flags; disparity is total eye-width shift.
++ */
++#define MPV_RENDER_PARAM_QUEST_SPATIAL_METADATA ((mpv_render_param_type)0x51530003)
++enum quest_mpv_spatial_metadata_flags {
++    QUEST_MPV_SPATIAL_BASELINE = 1u << 0,
++    QUEST_MPV_SPATIAL_FOV = 1u << 1,
++    QUEST_MPV_SPATIAL_DISPARITY = 1u << 2
++};
++typedef struct quest_mpv_spatial_metadata {
++    uint32_t struct_size;
++    uint32_t flags;
++    double baseline_meters;
++    double horizontal_fov_degrees;
++    double horizontal_disparity;
++} quest_mpv_spatial_metadata;
++
 +/* Optional, with the source frame param (API 2): hand the decoded MediaCodec image of THIS
 + * render to the caller instead of drawing it into an RGBA copy. On success image is an
 + * AImage* and hardware_buffer its AHardwareBuffer* (valid while the AImage lives); the caller
@@ -944,6 +1016,7 @@
 +#ifdef __cplusplus
 +}
 +static_assert(sizeof(quest_mpv_source_frame) == 80, "Quest source frame ABI");
++static_assert(sizeof(quest_mpv_spatial_metadata) == 32, "Quest spatial metadata ABI");
 +static_assert(sizeof(quest_mpv_export) == 24, "Quest export ABI");
 +#endif
 +#endif

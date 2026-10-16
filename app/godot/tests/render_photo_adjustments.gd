@@ -67,6 +67,15 @@ func _run() -> void:
 	for language in ["zh", "zh_Hant", "en", "ja"]:
 		I18n.use(language); menu.refresh()
 		await snapshot("adjustments-" + language)
+	state.native_stereo = true; state.spatial_metadata = {"horizontal_fov_degrees":90.0}; state.spatial_fov_available = true
+	for language in ["zh", "zh_Hant", "en", "ja"]:
+		I18n.use(language); menu.refresh()
+		await snapshot("spatial-photo-" + language)
+		var button: Dictionary = menu._buttons.filter(func(b): return b.target == Menu.SPATIAL_FOV)[0]
+		var label: Label3D = button.node.get_child(0)
+		var width: float = menu.ui_font().get_string_size(label.text,HORIZONTAL_ALIGNMENT_LEFT,-1,label.font_size).x * label.pixel_size
+		if width >= button.rect.size.x - .025: failures.append("Spatial-photo label overflows " + language)
+	state.erase("native_stereo"); state.erase("spatial_metadata"); state.erase("spatial_fov_available")
 	state.screen_distance = 10.0; state.screen_scale = 6.0; state.inspect_magnification = 8.0
 	I18n.use("zh"); menu.refresh()
 	await snapshot("adjustments-maximum-zh")

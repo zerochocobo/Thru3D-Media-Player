@@ -200,7 +200,7 @@ internal class PhotoBridge(
                     .put("error", if (error.message == "PHOTO_TOO_LARGE") "PHOTO_TOO_LARGE" else "PHOTO_DECODE_FAILED").toString())
             } finally {
                 connection?.disconnect(); connection = null
-                if (uri.startsWith("smb://") || uri.startsWith("cloud://")) releaseStream(resolved)
+                if (uri.startsWith("smb://") || uri.startsWith("cloud://") || uri.startsWith("usb://")) releaseStream(resolved)
                 // A published preload may already have been adopted by the foreground bridge.
                 if (!published) directory?.deleteRecursively()
             }
