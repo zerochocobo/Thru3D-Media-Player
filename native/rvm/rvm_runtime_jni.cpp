@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <cstring>
 #include <limits>
+#include <map>
 #include <mutex>
 #include <sstream>
 #include <stdexcept>
@@ -65,10 +66,23 @@ AssetPtr open_mnn_model(AAssetManager* assets, const std::string& model) {
 }
 
 // Compiled programs and tuned work sizes belong to one graph: name the cache after the model
-// bytes, so an updated model never loads another graph's tuning.
-std::string mnn_cache_path(AAsset* model, const quest::RvmProfile& profile, bool fp16) {
-    const auto* data = static_cast<const unsigned char*>(AAsset_getBuffer(model));
-    const auto bytes = static_cast<size_t>(AAsset_getLength64(model));
+// bytes, so an updated model never loads another graph's tuning. APK assets cannot change while
+// the process runs, so each model is hashed once: settings redraws ask readiness of every size,
+// and reading and hashing the model each time stalled the menu for ~100 ms per call.
+std::mutex model_tag_mutex;
+std::map<std::string, std::string> model_tags; // model_tag_mutex: asset name -> FNV-1a tag
+
+std::string cached_model_tag(const std::string& model) {
+    std::lock_guard<std::mutex> guard(model_tag_mutex);
+    const auto found = model_tags.find(model_asset(model));
+    return found == model_tags.end() ? std::string() : found->second;
+}
+
+std::string model_tag(AAsset* asset, const std::string& model) {
+    auto tag = cached_model_tag(model);
+    if (!tag.empty()) return tag;
+    const auto* data = static_cast<const unsigned char*>(AAsset_getBuffer(asset));
+    const auto bytes = static_cast<size_t>(AAsset_getLength64(asset));
     uint64_t hash = 1469598103934665603ull; // FNV-1a over 8-byte words, then the tail
     size_t i = 0;
     for (; i + 8 <= bytes; i += 8) {
@@ -77,8 +91,14 @@ std::string mnn_cache_path(AAsset* model, const quest::RvmProfile& profile, bool
         hash = (hash ^ word) * 1099511628211ull;
     }
     for (; i < bytes; ++i) hash = (hash ^ data[i]) * 1099511628211ull;
-    char tag[17];
-    snprintf(tag, sizeof(tag), "%016llx", static_cast<unsigned long long>(hash));
+    char text[17];
+    snprintf(text, sizeof(text), "%016llx", static_cast<unsigned long long>(hash));
+    std::lock_guard<std::mutex> guard(model_tag_mutex);
+    model_tags[model_asset(model)] = text;
+    return text;
+}
+
+std::string mnn_cache_path(const std::string& tag, const quest::RvmProfile& profile, bool fp16) {
     std::lock_guard<std::mutex> guard(config_mutex);
     if (cache_directory.empty()) return {};
     return cache_directory + "/mnn_rvm_" + profile.key + (fp16 ? "_fp16_" : "_fp32_") + tag + ".cache";
@@ -93,7 +113,7 @@ std::unique_ptr<quest::MnnRvmBackend> make_mnn(AAssetManager* assets, const ques
         std::lock_guard<std::mutex> guard(config_mutex);
         fp16 = gpu_fp16;
     }
-    const auto cache = mnn_cache_path(asset.get(), profile, fp16);
+    const auto cache = mnn_cache_path(model_tag(asset.get(), model), profile, fp16);
     return std::make_unique<quest::MnnRvmBackend>(AAsset_getBuffer(asset.get()), static_cast<size_t>(AAsset_getLength64(asset.get())),
                                                   profile.rgb.width, profile.rgb.height, fp16, cache);
 }
@@ -363,13 +383,16 @@ Java_org_vrpassthroughplayer_plugin_RvmNative_gpuCachePath(JNIEnv* env, jclass, 
     try {
         if (!assets) throw std::runtime_error("RVM cache path requires assets");
         const auto& profile = quest::find_profile(key_from_java(env, key));
-        const auto asset = open_mnn_model(AAssetManager_fromJava(env, assets), key_from_java(env, model));
+        const auto name = key_from_java(env, model);
+        // Only the first query of a model opens it.
+        auto tag = cached_model_tag(name);
+        if (tag.empty()) tag = model_tag(open_mnn_model(AAssetManager_fromJava(env, assets), name).get(), name);
         bool fp16;
         {
             std::lock_guard<std::mutex> guard(config_mutex);
             fp16 = gpu_fp16;
         }
-        return env->NewStringUTF(mnn_cache_path(asset.get(), profile, fp16).c_str());
+        return env->NewStringUTF(mnn_cache_path(tag, profile, fp16).c_str());
     } catch (const std::exception& error) { fail(env, error.what()); return nullptr; }
 }
 

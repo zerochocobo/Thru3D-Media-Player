@@ -55,6 +55,8 @@ func faces_viewer(main: Node3D, menu: Node3D) -> bool:
 func default_menu(main: Node3D, menu: Node3D, drop: float) -> bool:
 	var head: Transform3D = main._head_pose()
 	var centre: Vector3 = main.InterfaceMove.menu_head(head, main.view_follow.enabled) * (Vector3(0, -drop, -1.4) + menu.panel_centre())
+	if menu == main.recent_menu:
+		centre = head.origin - head.basis.z * main._library_distance()
 	return menu.to_global(menu.panel_centre()).is_equal_approx(centre) and faces_viewer(main, menu)
 
 func footer_check(menu: Node3D, name: String) -> void:
@@ -216,8 +218,9 @@ func _run() -> void:
 		and placement(main,main.video).is_equal_approx(captured_screen), "Timeline capture keeps strict menu/screen follow during head movement")
 	main.video_menu._seek_hand = ""
 	main._recenter()
-	check(placement(main, main.video).is_equal_approx(captured_screen) and main.view_follow.enabled,
-		"Follow recenter retains the screen's remembered local placement")
+	check(placement(main, main.video).is_equal_approx(Transform3D(Basis.IDENTITY, Vector3(0, 0, -main.video.SCREEN_DISTANCE))) and main.view_follow.enabled,
+		"Follow recenter restores the video to the current gaze at its default distance")
+	check(not main.interface_move.placements.has(&"video") and is_equal_approx(main.video.screen_distance, main.video.SCREEN_DISTANCE), "Recenter clears video grip placement and restores distance")
 	check(main.video.screen_scale == scale and main.video.screen_rotation == 25, "Recenter preserves size and content rotation")
 	screen_local = placement(main, main.video)
 	main._on_library_chosen("file:///follow/next_2D.mp4", "next_2D.mp4")
@@ -290,7 +293,8 @@ func _run() -> void:
 	main._update_view_follow()
 	check((main.video.global_transform * main.video.flat_pose).is_equal_approx(world), "Disabling follow leaves media in its current world pose")
 	main._recenter()
-	check(placement(main, main.video).is_equal_approx(main.interface_move.placements[main._surface_key(main.video)]), "Standard recenter restores the remembered head-relative pose without clearing it")
+	check(not main.interface_move.placements.has(&"video") and main.view_follow.pose(&"video", main._head_pose()) == null, "Standard recenter discards old video offsets")
+	check((main.video.global_transform * main.video.flat_pose).is_equal_approx(main._view_pose(main.video.SCREEN_DISTANCE, 0)), "Standard recenter places the video ahead at eye height and default distance")
 	main._show_full_library()
 	check(faces_viewer(main, main.recent_menu), "Standard menus face the eye without inheriting head roll")
 	main.recent_menu.refresh()

@@ -10,6 +10,8 @@ const PATHS := {
 	"collapse": '<path d="M3 9H9V3M15 3V9H21M21 15H15V21M9 21V15H3"/>',
 	"poster": '<rect x="6" y="2" width="12" height="20" rx="2"/><path d="M9 17H15M9 19H13M9 6L15 10 9 14Z"/>',
 	"head_follow": '<path d="M4 5H17A2 2 0 0 1 19 7V13A2 2 0 0 1 17 15H14L12 12H9L7 15H4A2 2 0 0 1 2 13V7A2 2 0 0 1 4 5Z"/><path d="M16 18H20M15 16H14A3 3 0 0 0 14 22H16M19 16H20A3 3 0 0 1 20 22H18"/>',
+	# A frame whose corners carry the mask (official packed Alpha), unlike the live-matting person.
+	"packed_mask": '<rect x="2" y="4" width="20" height="16" rx="1.5"/><path d="M2 8H6V4M18 4V8H22M2 16H6V20M18 20V16H22"/><circle cx="12" cy="10" r="2.2"/><path d="M8 17Q12 12.5 16 17"/>',
 	"passthrough": '<path d="M3 8V3H8M16 3H21V8M21 16V21H16M8 21H3V16M4 12Q12 3 20 12Q12 21 4 12Z"/><circle cx="12" cy="12" r="2.5"/>',
 	"dice": '<rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="7" cy="7" r="1"/><circle cx="17" cy="7" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="7" cy="17" r="1"/><circle cx="17" cy="17" r="1"/>',
 	"photo_batch": '<path d="M3 9V21H15M7 4H17A2 2 0 0 1 19 6V11M7 4V17H11M9 11L12 8 15 11M22 17A5 5 0 1 1 20.5 13.5M22 12V16H18"/>',

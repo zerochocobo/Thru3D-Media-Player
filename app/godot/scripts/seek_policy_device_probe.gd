@@ -11,6 +11,8 @@ static func tap(menu: Node3D, target: int) -> bool:
 	return false
 
 func run(host: Node, step: String, marker_id: String) -> Dictionary:
+	if step.begins_with("recovery_"):
+		return preload("res://scripts/playback_recovery_probe.gd").new().run(host, step)
 	var result := {"step": step, "accepted": false, "scope": "Actual production ray-menu software route on Quest; no physical controller injection"}
 	if step == "timeline_drag":
 		host._show_player_menu()

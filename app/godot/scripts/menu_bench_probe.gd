@@ -13,6 +13,8 @@ var _step := 0.0
 var _deltas := PackedFloat32Array()
 var _results: Array[Dictionary] = []
 var _repaints := 0
+## Main-thread time of the scripted menu actions (page rebuilds), per action.
+var _actions := PackedFloat32Array()
 
 func start(target_main: Node, run_label: String) -> void:
 	main = target_main; label = run_label
@@ -25,12 +27,14 @@ func start(target_main: Node, run_label: String) -> void:
 		{"name": "switch_settings_tabs", "setup": "settings"},
 		{"name": "open_close_menu", "setup": "recent"},
 		{"name": "player_menu", "setup": "player"},
+		{"name": "player_state", "setup": "player"},
+		{"name": "player_refresh", "setup": "player"},
 	]
 	_next()
 
 func _next() -> void:
 	if _phase >= 0: _finish_phase()
-	_phase += 1; _elapsed = 0.0; _step = 0.0; _deltas.clear()
+	_phase += 1; _elapsed = 0.0; _step = 0.0; _deltas.clear(); _actions.clear()
 	if _phase >= phases.size():
 		_write(); queue_free(); return
 	var menu: Node = main.recent_menu
@@ -63,18 +67,29 @@ func _process(delta: float) -> void:
 			if _step >= 0.35:
 				_step = 0.0
 				var order: Array = Menu.NAV_ORDER
-				menu._activate(Menu.NAV_BASE + order[int(t / 0.35) % order.size()])
+				_timed(func(): menu._activate(Menu.NAV_BASE + order[int(t / 0.35) % order.size()]))
 		"switch_settings_tabs":
 			if _step >= 0.35:
 				_step = 0.0
 				var tabs := [Menu.VIDEO_TAB, Menu.SUBTITLES_TAB, Menu.DISPLAY_TAB, Menu.CONTROLS_TAB, Menu.GENERAL_TAB, Menu.BACKGROUND_TAB, Menu.ABOUT_TAB]
-				menu._activate(Menu.TAB_BASE + tabs[int(t / 0.35) % tabs.size()])
+				_timed(func(): menu._activate(Menu.TAB_BASE + tabs[int(t / 0.35) % tabs.size()]))
+		"player_state":
+			if _step >= 0.25:
+				_step = 0.0; _timed(func(): main.player_menu.state_provider.call())
+		"player_refresh":
+			if _step >= 0.25:
+				_step = 0.0; _timed(func(): main.player_menu.refresh_values())
 		"open_close_menu":
 			if _step >= 0.4:
 				_step = 0.0
 				if menu.visible: menu.dismiss()
-				else: main._show_recent_menu()
+				else: _timed(func(): main._show_recent_menu())
 	if _elapsed >= PHASE_SECONDS: _next()
+
+func _timed(action: Callable) -> void:
+	var start := Time.get_ticks_usec()
+	action.call()
+	if _elapsed > 0.5: _actions.append((Time.get_ticks_usec() - start) / 1000.0)
 
 func _finish_phase() -> void:
 	main.xr_origin.position.x = 0.0
@@ -95,6 +110,7 @@ func _finish_phase() -> void:
 		"p95_ms": snappedf(sorted[mini(count - 1, int(count * 0.95))] * 1000.0, 0.01) if count else 0.0,
 		"max_ms": snappedf(sorted[count - 1] * 1000.0, 0.01) if count else 0.0,
 		"late_frames": late, "refresh": refresh,
+		"action_ms": Array(_actions).map(func(ms): return snappedf(ms, 0.1)),
 		"repaints": (main.menu_composition.repaints - _repaints) if main.menu_composition else 0})
 
 func _write() -> void:

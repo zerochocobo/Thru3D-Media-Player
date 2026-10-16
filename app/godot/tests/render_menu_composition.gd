@@ -86,7 +86,7 @@ func run() -> void:
 		check(image.get_data() == submitted.get_data(), "Swapchain copy preserves the capture: " + str(slot.index))
 		var pixels: Vector2 = Vector2(slot.raw.size)
 		check(absf(pixels.x / pixels.y - slot.layer.quad_size.x / slot.layer.quad_size.y) < 0.001, "Layer aspect equals pixel aspect")
-		check(pixels.x / slot.layer.quad_size.x >= 1400.0, "Dense capture: " + str(pixels.x / slot.layer.quad_size.x) + " px/m")
+		check(pixels.x / slot.layer.quad_size.x >= Capture.DENSITY * 0.9, "Dense capture: " + str(pixels.x / slot.layer.quad_size.x) + " px/m, slot " + str(slot.index) + " rect " + str(slot.rect.size))
 	var main_image: Image = main_slot.raw.get_texture().get_image()
 	var white := 0
 	for y in range(0, main_image.get_height(), 3):

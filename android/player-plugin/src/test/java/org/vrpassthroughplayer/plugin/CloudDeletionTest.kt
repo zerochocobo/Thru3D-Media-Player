@@ -17,6 +17,7 @@ class CloudDeletionTest {
         var mutate = true
         var loseResponse = false
         var failReadBack = false
+        var rejectBeforeWrite = false
         override fun page(path: String, offset: Int, refresh: Boolean): CloudPage {
             reads.add(Triple(path, offset, refresh))
             if (writes > 0 && failReadBack) throw CloudFailure()
@@ -25,6 +26,13 @@ class CloudDeletionTest {
             return CloudPage(all.subList(offset, end), if (end < all.size) end else -1, all.size)
         }
         override fun remove(path: String, file: CloudFile) {
+            // Model the core's checked-remove contract; its actual checks have Go tests.
+            val matches = folders[path.substringBeforeLast('/').ifEmpty { "/" }].orEmpty().filter { it.name == file.name }
+            if (matches.size > 1) throw CloudDeleteRejected("Cloud file changed. Refresh the folder")
+            val current = matches.singleOrNull()
+            if (rejectBeforeWrite || current == null || current.objectId != file.objectId || current.folder != file.folder || !current.canDelete ||
+                (!file.folder && (current.size != file.size || current.modified != file.modified)))
+                throw CloudDeleteRejected("Cloud file changed. Refresh the folder")
             writes++
             if (mutate) folders[path.substringBeforeLast('/').ifEmpty { "/" }]!!.removeAll { it.objectId == file.objectId }
             if (loseResponse) throw CloudFailure()
@@ -36,11 +44,11 @@ class CloudDeletionTest {
     private fun rejected(block: () -> Unit) {
         try { block(); fail("Expected guarded refusal") } catch (_: IllegalArgumentException) {} catch (_: IllegalStateException) {}
     }
-    @Test fun stableIdAndFreshReadRequiredBeforeSingleFileWrite() {
+    @Test fun checkedSingleWriteNeedsNoDuplicateReadOnConfirmedSuccess() {
         val f = item("中文 #%.mp4", "9007199254740993")
         val client = Fake().apply { folders["/"]!!.add(f) }
         assertTrue(CloudDeletion(client).run("/"+f.name, request(f), false, false).getBoolean("deleted"))
-        assertEquals(1, client.writes); assertTrue(client.reads.all { it.third })
+        assertEquals(1, client.writes); assertTrue(client.reads.isEmpty())
     }
     @Test fun duplicateNamesAcrossPagesCannotPrepareOrDeleteEitherObject() {
         val first = item("test.mp4", "1")
@@ -49,11 +57,11 @@ class CloudDeletionTest {
             for (i in 2..49) folders["/"]!!.add(item("test($i).mp4", "$i"))
             folders["/"]!!.add(item("test.mp4", "50"))
         }
-        for (inspect in listOf(false, true))
-            assertEquals("cloud_file_ambiguous", assertThrows(CloudFailure::class.java) {
-                CloudDeletion(client).run("/test.mp4", request(first), inspect, false)
-            }.reason)
-        assertThrows(CloudFailure::class.java) { CloudDeletion(client).run("/test.mp4", request(first), false, true) }
+        assertThrows(CloudDeleteRejected::class.java) { CloudDeletion(client).run("/test.mp4", request(first), false, false) }
+        assertEquals("cloud_file_ambiguous", assertThrows(CloudFailure::class.java) {
+            CloudDeletion(client).run("/test.mp4", request(first), true, false)
+        }.reason)
+        rejected { CloudDeletion(client).run("/test.mp4", request(first), false, true) }
         assertEquals(0, client.writes)
         val unique = client.folders["/"]!![1]
         assertTrue(CloudDeletion(client).run("/" + unique.name, request(unique), false, false).getBoolean("deleted"))
@@ -70,7 +78,7 @@ class CloudDeletionTest {
         val checked = CloudDeletion(client).run("/a.mp4", request(displayed), true, false)
         assertTrue(checked.getBoolean("exists")); assertTrue(checked.getBoolean("changed"))
     }
-    @Test fun folderPreviewIncludesHiddenAndUnsupportedFilesAcrossPages() {
+    @Test fun folderPreviewAndConfirmationNeverEnumerateChildrenOrInventCounts() {
         val folder = item("旅行", "1", true)
         val client = Fake().apply {
             folders["/"]!!.add(folder)
@@ -81,17 +89,22 @@ class CloudDeletionTest {
         }
         val action = CloudDeletion(client); val req = request(folder)
         val preview = action.run("/旅行", req, false, true)
-        assertEquals(57, preview.getInt("files")); assertEquals(1, preview.getInt("folders")); assertEquals(0, client.writes)
-        assertTrue(client.reads.any { it.first == "/旅行" && it.second == 48 && !it.third })
+        assertFalse(preview.getBoolean("counts_known")); assertFalse(preview.has("files")); assertFalse(preview.has("folders"))
+        assertEquals(0, client.writes); assertTrue(client.reads.isEmpty())
         req.put("plan", preview.getString("plan"))
         assertTrue(action.run("/旅行", req, false, false).getBoolean("deleted")); assertEquals(1, client.writes)
+        assertTrue(client.reads.isEmpty())
     }
-    @Test fun replacingAnInvisibleChildInvalidatesFolderConfirmation() {
+    @Test fun childChangesDoNotRequireRescanningButConfirmationCannotSelectAnotherDirectory() {
         val folder = item("folder", "1", true)
         val client = Fake().apply { folders["/"]!!.add(folder); folders["/folder"] = mutableListOf(item(".hidden", "2")) }
         val req = request(folder).put("plan", CloudDeletion(client).run("/folder", request(folder), false, true).getString("plan"))
         client.folders["/folder"]!![0] = item(".hidden", "3")
-        rejected { CloudDeletion(client).run("/folder", req, false, false) }; assertEquals(0, client.writes)
+        rejected { CloudDeletion(client).run("/folder", JSONObject(req.toString()).put("cloud_id", "9"), false, false) }
+        rejected { CloudDeletion(client).run("/other", req, false, false) }
+        assertEquals(0, client.writes); assertTrue(client.reads.isEmpty())
+        assertTrue(CloudDeletion(client).run("/folder", req, false, false).getBoolean("deleted"))
+        assertEquals(1, client.writes); assertTrue(client.reads.isEmpty())
     }
     @Test fun lostSuccessResponseIsResolvedByReadBackWithoutRetry() {
         val file = item("a.mp4", "1")
@@ -105,9 +118,15 @@ class CloudDeletionTest {
         val action = CloudDeletion(client)
         assertEquals("uncertain", action.run("/a.mp4", request(file), false, false).getString("state"))
         assertTrue(action.run("/a.mp4", request(file), true, false).getBoolean("exists")); assertEquals(1, client.writes)
-        val offline = Fake().apply { folders["/"]!!.add(file); failReadBack = true }
+        val offline = Fake().apply { folders["/"]!!.add(file); failReadBack = true; loseResponse = true }
         assertEquals("uncertain", CloudDeletion(offline).run("/a.mp4", request(file), false, false).getString("state"))
         assertEquals(1, offline.writes)
+    }
+    @Test fun definiteCoreRejectionIsAnErrorAndDoesNotPerformReadBack() {
+        val file = item("a.mp4", "1")
+        val client = Fake().apply { folders["/"]!!.add(file); rejectBeforeWrite = true }
+        assertThrows(CloudDeleteRejected::class.java) { CloudDeletion(client).run("/a.mp4", request(file), false, false) }
+        assertEquals(0, client.writes); assertTrue(client.reads.isEmpty())
     }
     @Test fun rootForgedIdPermissionAndDisabledGateAreRefused() {
         val file = item("a.mp4", "1", writable = false)

@@ -12,12 +12,24 @@ extends Node
 ##   the layer, detaching or resizing its viewport) corrupts the render target and crashed the
 ##   Quest GL thread. Each slot therefore has a fixed pixel size, is never hidden or detached, and
 ##   keeps its swapchain for the session; an idle slot shrinks to a sub-pixel quad instead.
+## Render bits 16-19 tag the captured planes; a plane's bit follows its slot for the current page.
 const GROUP_BIT := 16
 const MAX_GROUPS := 4
 const GROUP_MASK := ((1 << MAX_GROUPS) - 1) << GROUP_BIT
-## Fixed per-slot capture sizes: main panel, tall side column, two popups. Low-end GPUs use 2/3.
-const SLOT_PIXELS := [Vector2i(2560, 2560), Vector2i(1024, 2304), Vector2i(1536, 1536), Vector2i(1536, 1536)]
-const SLOT_PREFERENCE := {"panel": [0, 2, 3, 1], "tall": [1, 0, 2, 3], "popup": [2, 3, 0, 1]}
+## The compositor reads every pixel of a slot each frame, for each eye, whatever it shows, so the
+## swapchains match the planes the menus actually have: main panel, tall side column, two popups,
+## and the short playback/photo control bar (a square slot read 2.4x its area for it).
+## Sizes in metres at the capture density below; a larger plane is captured less densely.
+const SLOT_METRES := [Vector2(1.56, 1.36), Vector2(0.5, 1.2), Vector2(0.93, 0.93), Vector2(0.93, 0.93), Vector2(1.2, 0.66)]
+const SLOT_PREFERENCE := {"panel": [0, 2, 3, 4, 1], "tall": [1, 0, 2, 3, 4], "popup": [2, 3, 0, 4, 1], "bar": [4, 0, 2, 3, 1]}
+## Capture pixels per metre: about 1.4x the display density of Quest 3 at the menu's distance,
+## confirmed legible on the headset (2026-10-16). 1.7x (1650 px/m) cost the compositor 50% more
+## reads for text the panel barely resolves.
+const DENSITY := 1320.0
+## XR2 Gen1 class headsets (Quest 2, PICO 4, PICO Neo3, ~20 PPD) capture at about 1.1x their own
+## display density (~908 px/m). Above ~1.4x the compositor's reads multiply for text the panel
+## cannot resolve.
+const LOW_END_SCALE := 0.6875
 const HIDDEN_SIZE := Vector2(0.0005, 0.0005)
 ## Layer orders: video/pictures at -8, menu surfaces back-to-front from here, eye buffer at 0.
 const ORDER_BASE := -6
@@ -109,7 +121,7 @@ func configure(target_origin: Node3D, target_camera: Camera3D, target_display: R
 	process_priority = 100 # after scrolling, hover, controller moves and gesture animation
 	eye_mask = eye_camera.cull_mask
 	eye_camera.cull_mask &= ~GROUP_MASK
-	for index in MAX_GROUPS:
+	for index in SLOT_METRES.size():
 		slots.append(_make_slot(index))
 	if debug_bands:
 		for kind in BAND_POOLS:
@@ -129,16 +141,22 @@ func configure(target_origin: Node3D, target_camera: Camera3D, target_display: R
 	fallback_reason = ""
 
 func _scaled(pixels: Vector2i) -> Vector2i:
-	var scale := debug_pixel_scale if debug_pixel_scale > 0.0 else (2.0 / 3.0 if low_end else 1.0)
+	var scale := _scale()
 	if scale == 1.0: return pixels
 	return Vector2i(ceili(pixels.x * scale / 16) * 16, ceili(pixels.y * scale / 16) * 16)
+
+func _scale() -> float:
+	return debug_pixel_scale if debug_pixel_scale > 0.0 else (LOW_END_SCALE if low_end else 1.0)
+
+static func slot_pixels(metres: Vector2, scale: float) -> Vector2i:
+	return Vector2i(ceili(metres.x * DENSITY * scale / 16) * 16, ceili(metres.y * DENSITY * scale / 16) * 16)
 
 func _make_slot(index: int) -> Dictionary:
 	# The band prototype replaces the panel and tall slots: tiny, and never submitted.
 	var replaced := debug_bands and BAND_POOLS.values().any(func(pool): return pool.slot == index)
-	var pixels := Vector2i(16, 16) if replaced else _scaled(SLOT_PIXELS[index])
-	# With bands, popup slots join the layer list only once a popup first uses them.
-	var slot := _make_capture(pixels, 1 << (GROUP_BIT + index), "Menu%d" % index, HOLE_PRIORITY, not debug_bands)
+	var pixels := Vector2i(16, 16) if replaced else slot_pixels(SLOT_METRES[index], _scale())
+	# A layer joins the layer list (and allocates its swapchain) only once a plane first uses it.
+	var slot := _make_capture(pixels, 0, "Menu%d" % index, HOLE_PRIORITY, false)
 	slot.index = index
 	return slot
 
@@ -184,7 +202,7 @@ func _make_capture(pixels: Vector2i, cull: int, layer_name: String, hole_priorit
 	origin.add_child(hole)
 	return {"index": -1, "raw": raw, "camera": camera, "submit": submit, "copy": copy, "layer": layer,
 		"hole": hole, "key": "", "used": false, "relative": Transform3D.IDENTITY, "rect": Rect2(),
-		"nodes": [], "rank": Vector2.ZERO, "tail": 0}
+		"nodes": [], "rank": Vector2.ZERO, "tail": 0, "empty": false}
 
 ## Compositor filtering of the menu layers (0 off, 1 normal, 2 quality). Normal supersampling:
 ## the capture is denser than the display.
@@ -209,7 +227,7 @@ func set_filter(supersampling_mode: int, sharpening_mode: int) -> void:
 
 func set_debug_holes(visible: bool) -> void:
 	debug_hide_holes = not visible
-	for slot in slots + bands: slot.hole.visible = visible and slot.used and slot.rect.has_area()
+	for slot in slots + bands: slot.hole.visible = visible and slot.used and not slot.empty and slot.rect.has_area()
 
 static func clear_environment() -> Environment:
 	var environment := Environment.new()
@@ -308,7 +326,7 @@ func update() -> void:
 	var any := false
 	for slot in slots + bands:
 		_place(slot, root)
-		any = any or slot.used
+		any = any or (slot.used and not slot.empty)
 	if display: display.set_menu_layers(any and not force_capture)
 	fallback_reason = "" if any else "no_planar_surfaces"
 
@@ -345,7 +363,9 @@ func _collect() -> void:
 	for slot in slots: slot.used = false; slot.nodes = []
 	banded = {}
 	# Slot pixel sizes are fixed, so each surface takes the free slot whose shape fits it best.
-	for group in groups.slice(0, MAX_GROUPS):
+	# Each plane on the page has its own render bit, whichever slot captures it.
+	for position in mini(groups.size(), MAX_GROUPS):
+		var group: Dictionary = groups[position]
 		var kind := _kind(group, inverse)
 		if debug_bands and BAND_POOLS.has(kind) and not banded.has(kind):
 			_assign_bands(kind, group); continue
@@ -354,7 +374,7 @@ func _collect() -> void:
 			var slot: Dictionary = slots[index]
 			if slot.used: continue
 			if slot.key != group.key: slot.key = group.key; slot.rect = Rect2()
-			_assign(slot, group, root); break
+			_assign(slot, group, root, 1 << (GROUP_BIT + position)); break
 	# Back to front: popups over panels, then nearer planes.
 	var ordered := slots.filter(func(s): return s.used)
 	for band in bands: band.used = false
@@ -384,11 +404,13 @@ static func _kind(group: Dictionary, root_inverse: Transform3D) -> String:
 			lo = lo.min(Vector2(point.x, point.y)); hi = hi.max(Vector2(point.x, point.y))
 	if not lo.is_finite(): return "panel"
 	var size := hi - lo
-	return "tall" if size.y > size.x * 1.6 else "panel"
+	if size.y > size.x * 1.6: return "tall"
+	return "bar" if size.x > size.y * 1.6 else "panel"
 
-func _assign(slot: Dictionary, group: Dictionary, root: Transform3D) -> void:
+func _assign(slot: Dictionary, group: Dictionary, root: Transform3D, bit: int) -> void:
 	slot.used = true
-	if slot.layer.layer_viewport == null and not force_capture: slot.layer.layer_viewport = slot.submit
+	slot.camera.cull_mask = bit
+	if slot.layer.layer_viewport == null: slot.layer.layer_viewport = slot.submit
 	var plane := (float(group.first) + float(group.last)) * 0.5
 	var basis: Basis = group.basis
 	var local_normal: Vector3 = basis.z
@@ -398,7 +420,6 @@ func _assign(slot: Dictionary, group: Dictionary, root: Transform3D) -> void:
 		slot.rect = Rect2()
 	slot.relative = relative
 	slot.rank = Vector2(int(group.popup), relative.origin.z)
-	var bit := 1 << (GROUP_BIT + int(slot.index))
 	for item in group.nodes:
 		var node: VisualInstance3D = item.node
 		originals.append({"node": node, "layers": node.layers})
@@ -513,6 +534,9 @@ func _capture_band(band: Dictionary, rect: Rect2) -> void:
 func _gather(node: Node, items: Array[Dictionary], inverse: Transform3D, popup: bool) -> void:
 	if node.has_meta("menu_pointer") or node.has_meta("menu_eye_buffer"): return
 	if node is CanvasItem or node is Viewport: return
+	# A folded attached browser is a separate menu, not a hidden row of the transport.
+	# Drop its whole subtree so its old plane and capture cannot outlive selection/dismissal.
+	if node != active and menus.has(node) and not node.is_visible_in_tree(): return
 	# Hidden rows, tips and popups join their plane now; they may appear without a rebuild.
 	if node is VisualInstance3D:
 		var local: Transform3D = inverse * node.global_transform
@@ -541,7 +565,10 @@ func _measure(slot: Dictionary) -> void:
 		for corner in 8:
 			var point: Vector3 = to_frame * box.get_endpoint(corner)
 			lo = lo.min(Vector2(point.x, point.y)); hi = hi.max(Vector2(point.x, point.y))
-	if not lo.is_finite(): return
+	# A plane with nothing showing (a closed popup surface) parks its slot: the compositor would
+	# still read every pixel of it, and its last capture would linger.
+	slot.empty = not lo.is_finite()
+	if slot.empty: return
 	lo = ((lo - Vector2.ONE * MARGIN) / GRID).floor() * GRID
 	hi = ((hi + Vector2.ONE * MARGIN) / GRID).ceil() * GRID
 	var rect := Rect2(lo, hi - lo)
@@ -552,7 +579,7 @@ func _measure(slot: Dictionary) -> void:
 	slot.tail = 2
 
 func _place(slot: Dictionary, root: Transform3D) -> void:
-	if not slot.used or not slot.rect.has_area():
+	if not slot.used or slot.empty or not slot.rect.has_area():
 		_hide_slot(slot); return
 	var rect: Rect2 = slot.rect
 	# The pixel grid is rounded up; widen the captured rectangle to the exact pixel aspect.
@@ -566,7 +593,8 @@ func _place(slot: Dictionary, root: Transform3D) -> void:
 	camera.global_transform = pose * Transform3D(Basis.IDENTITY, Vector3(0, 0, 0.25))
 	slot.layer.quad_size = size
 	slot.layer.global_transform = pose
-	slot.hole.mesh.size = size
+	# A primitive mesh rebuilds its arrays on every size assignment.
+	if slot.hole.mesh.size != size: slot.hole.mesh.size = size
 	slot.hole.global_transform = pose
 	slot.hole.visible = not debug_hide_holes
 	if slot.tail > 0:
@@ -597,10 +625,13 @@ func _hide() -> void:
 
 func snapshot() -> Dictionary:
 	var sizes := []
+	var rects := []
 	for slot in slots:
-		if slot.used: sizes.append([slot.raw.size.x, slot.raw.size.y])
+		if slot.used and not slot.empty:
+			sizes.append([slot.raw.size.x, slot.raw.size.y])
+			rects.append([slot.index, snappedf(slot.layer.quad_size.x, 0.01), snappedf(slot.layer.quad_size.y, 0.01)])
 	return {"enabled": enabled, "active": not sizes.is_empty(), "native": enabled and not force_capture,
-		"fallback": fallback_reason, "layers": sizes.size(), "pixels": sizes,
+		"fallback": fallback_reason, "layers": sizes.size(), "pixels": sizes, "quads": rects,
 		"repaints": repaints, "filter": [supersampling, sharpening],
 		"bands": bands.filter(func(b): return b.used).size() if debug_bands else -1,
 		"band_use": BAND_POOLS.keys().map(func(kind): return bands.filter(func(b): return b.kind == kind and b.used and not b.block).size()) if debug_bands else [],

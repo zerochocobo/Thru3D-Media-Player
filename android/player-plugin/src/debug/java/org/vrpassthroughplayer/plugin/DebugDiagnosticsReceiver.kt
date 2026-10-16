@@ -97,7 +97,7 @@ class DebugDiagnosticsReceiver : BroadcastReceiver() {
                         when (intent.action) {
                         "com.wapok.thru3d.DEBUG_PLAYER_MPV" -> {
                             val operation = intent.getStringExtra("operation") ?: "open"
-                            require(operation in setOf("open", "alpha", "depth", "playing", "seek", "hold_pixels", "observe", "stereo", "profile", "close", "pixels", "subtitle", "display_quality", "sharpness", "cloud_accounts", "cloud_page_probe", "display_menu", "player_menu", "restart_app", "quit_app", "seek_policy_ui", "media_library_ui", "photo_open", "photo_step", "photo_depth", "photo_inspect", "photo_portrait", "alpha_blend_probe", "layer_flip", "layer_order", "hide_menus", "menu_layers", "menu_layer_filter", "menu_layer_holes", "menu_nav", "menu_bench"))
+                            require(operation in setOf("open", "alpha", "depth", "playing", "seek", "hold_pixels", "observe", "stereo", "profile", "close", "pixels", "subtitle", "display_quality", "sharpness", "cloud_accounts", "cloud_page_probe", "display_menu", "player_menu", "restart_app", "quit_app", "seek_policy_ui", "media_library_ui", "photo_open", "photo_step", "photo_depth", "photo_inspect", "photo_portrait", "alpha_blend_probe", "layer_flip", "layer_order", "hide_menus", "menu_layers", "menu_layer_filter", "menu_layer_holes", "menu_action", "menu_nav", "menu_bench"))
                             val command = JSONObject().put("operation", operation).put("request_key", request)
                                 .put("value", intent.getFloatExtra("value", 0f).toDouble())
                                 .put("benchmark", intent.getBooleanExtra("benchmark", false))
@@ -144,7 +144,9 @@ class DebugDiagnosticsReceiver : BroadcastReceiver() {
                             }
                             if (operation == "seek_policy_ui") {
                                 val step = intent.getStringExtra("step")
-                                require(step in setOf("global_speed", "global_exact", "bookmark_global", "bookmark_speed", "bookmark_exact", "bookmark_add", "bookmark_seek", "bookmark_delete", "timeline_drag"))
+                                require(step in setOf("global_speed", "global_exact", "bookmark_global", "bookmark_speed", "bookmark_exact", "bookmark_add", "bookmark_seek", "bookmark_delete", "timeline_drag",
+                                    "recovery_setup", "recovery_open", "recovery_expand", "recovery_choose", "recovery_close", "recovery_hide", "recovery_reopen",
+                                    "recovery_drag", "recovery_pull", "recovery_follow_pull", "recovery_recenter", "recovery_system_recenter", "recovery_snapshot", "recovery_finish"))
                                 val marker = intent.getStringExtra("marker_id").orEmpty()
                                 require(marker.isEmpty() || marker.matches(Regex("[a-f0-9]{32}")))
                                 command.put("step", step).put("marker_id", marker)

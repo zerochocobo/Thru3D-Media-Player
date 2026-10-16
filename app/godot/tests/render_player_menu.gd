@@ -154,7 +154,7 @@ func _run() -> void:
 	await RenderingServer.frame_post_draw
 	await RenderingServer.frame_post_draw
 	viewport.get_texture().get_image().save_png(output.path_join("playback_modes.png"))
-	if not menu._tooltip or not menu._tooltip.visible or menu._tooltip.get_child(0).text != preload("res://scripts/i18n.gd").t("Passthrough"):
+	if not menu._tooltip or not menu._tooltip.visible or menu._tooltip.get_child(0).text != preload("res://scripts/i18n.gd").t("AI portrait passthrough"):
 		failures.append("Hovered bar icon shows its name")
 	# Fisheye: lens angles under the layouts; a top-bottom source lit.
 	state["geometry"] = 2
@@ -168,6 +168,15 @@ func _run() -> void:
 	viewport.get_texture().get_image().save_png(output.path_join("playback_modes_fisheye.png"))
 	if menu._buttons.filter(func(b): return b.target >= menu.MODE_LENS and b.target < menu.MODE_LENS + 4).size() != 4:
 		failures.append("Fisheye shows four lens angles")
+	# The video's own Alpha mask beside the lens angles (full side-by-side fisheye); the bar's passthrough greys out.
+	state["top_bottom"] = false; state["mode_lock"] = {}; state["packed_mask_available"] = true; state["packed_mask"] = true
+	menu.refresh()
+	await RenderingServer.frame_post_draw
+	await RenderingServer.frame_post_draw
+	viewport.get_texture().get_image().save_png(output.path_join("playback_modes_fisheye_mask.png"))
+	if not menu._buttons.any(func(b): return b.target == Menu.MODE_PACKED and b.base_color == Menu.SELECTED): failures.append("The built-in mask button is shown on")
+	if menu._buttons.any(func(b): return b.target == 104 and b.enabled): failures.append("The bar passthrough is greyed out with the built-in mask")
+	state["packed_mask"] = false; state["packed_mask_available"] = false; state["top_bottom"] = true
 	state["stereo_half"] = true
 	state["mode_lock"] = {"geometry": 2, "layout": 4, "depth": false, "fisheye_fov": 200}
 	menu.refresh()

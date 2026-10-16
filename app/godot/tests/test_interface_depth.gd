@@ -26,9 +26,50 @@ func run() -> void:
 	menu_inputs()
 	gallery_memory()
 	media_depth_limits()
+	video_recenter()
 	for failure in failures: push_error(failure)
 	print("Interface depth: %d checks, %d failures" % [checks, failures.size()])
 	quit(0 if failures.is_empty() else 1)
+
+func video_recenter() -> void:
+	var main := InputMain.new(); main.settings_path = "user://video-grip-recenter.cfg"
+	var video := preload("res://scripts/mpv_video_display.gd").new(); video.history_enabled = false
+	root.add_child(video); video.set_process(false); main.video = video
+	video.platform = preload("res://tests/test_player_menu.gd").Host.new()
+	var camera := Camera3D.new(); root.add_child(camera); video.view_camera = camera
+	for following in [false, true]:
+		main.view_follow.set_enabled(following)
+		for hand in ["left_hand", "right_hand"]:
+			for depth in [false, true]:
+				camera.transform = main.head_pose
+				video.open_local("file:///grip/first_2D.mp4", "First 2D.mp4"); video.media.state = "playing"
+				main._recenter(); video.panel.visible = true
+				main.pose = Transform3D(Basis.IDENTITY, main.head_pose.origin + Vector3(0, 0, -0.3))
+				main.rays[hand] = [main.pose.origin, Vector3.FORWARD]
+				main._begin_interface_move(hand, "grip_click")
+				check(not main.interface_move.capture.is_empty(), "Either hand can grip the flat video")
+				if depth:
+					main._process_sticks(Vector2.ZERO, Vector2.ZERO, 0.1)
+					for step in 14:
+						main._process_sticks(Vector2(0, -1) if hand == "left_hand" else Vector2.ZERO, Vector2(0, -1) if hand == "right_hand" else Vector2.ZERO, 0.1)
+				else:
+					main.pose.origin += Vector3(0.15, 0.18, 0)
+					main._update_interface_move()
+				main._on_controller_release("grip_click", hand)
+				check(main.interface_move.placements.has(&"video"), "Completed grip remembers the changed screen pose")
+				var changed: Transform3D = video.global_transform * video.flat_pose
+				check(not changed.origin.is_equal_approx(main.head_pose.origin + Vector3(0, 0, -video.SCREEN_DISTANCE)), "Test moved or pulled the video away from its default")
+				main._on_system_recentered() if depth else main._recenter()
+				var expected: Transform3D = main.head_pose * Transform3D(Basis.IDENTITY, Vector3(0, 0, -video.SCREEN_DISTANCE))
+				check((video.global_transform * video.flat_pose).is_equal_approx(expected), "App/system recenter restores the flat video centre and distance after either grip gesture")
+				check(not main.interface_move.placements.has(&"video") and is_equal_approx(video.screen_distance, video.SCREEN_DISTANCE), "Recenter clears grip memory and resets distance")
+				var saved := ConfigFile.new(); saved.load(main.settings_path)
+				check(is_equal_approx(float(saved.get_value("screen", "distance", video.SCREEN_DISTANCE)), video.SCREEN_DISTANCE), "Saved distance cannot restore the pulled-in screen")
+				main._update_view_follow()
+				check((video.global_transform * video.flat_pose).is_equal_approx(expected), "The next follow update cannot resurrect the dragged pose")
+				video.close_video(); video.open_local("file:///grip/next_2D.mp4", "Next 2D.mp4"); main._place_screen()
+				check((video.global_transform * video.flat_pose).is_equal_approx(expected), "Reopening another 2D video after recenter keeps the recovered placement")
+	video.free(); camera.free(); main.free()
 
 func depth_geometry() -> void:
 	var move := Move.new()

@@ -162,6 +162,8 @@ var _buffering_deadline_ms := 0
 const OPEN_TIMEOUT_MS := 60000
 const OUTPUT_TIMEOUT_MS := 30000
 var _thumbnail_busy := false
+## A layer copy pins nothing, so pairs keep presenting while it runs.
+var _layer_thumbnail_busy := false
 var _thumbnail_sequence := 0
 var _thumbnail_result: Dictionary = {}
 var _library_cover := ""
@@ -302,38 +304,50 @@ static func _thumbnail_source(uri: String) -> bool:
 	return not ModeMemory.key_for(uri).is_empty()
 
 func _maybe_capture_thumbnail() -> void:
-	if _binding.layer: return # the picture is only on the compositor layer
-	if _thumb_after_ms < 0 or _thumbnail_busy or _pixel_busy or _waiting_first or not _pending_revision.is_empty() \
-		or media.state not in ["playing", "paused", "ended"] or not _binding.material or media.last_pair.is_empty():
+	if _thumb_after_ms < 0 or _thumbnail_busy or _layer_thumbnail_busy or _pixel_busy or _waiting_first or not _pending_revision.is_empty() \
+		or media.state not in ["playing", "paused", "ended"] or media.last_pair.is_empty() \
+		or not (video_layer_shown if _binding.layer else _binding.material != null):
 		return
 	if int(media.last_pair.get("pts_us", 0)) / 1000 < _thumb_after_ms:
 		return
 	var uri := local_uri
 	var sequence := _thumbnail_sequence
 	var pair := media.last_pair.duplicate(true)
-	if not platform.pin_mpv_pair(int(pair.session_id), int(pair.slot_token)): return
-	_thumbnail_busy = true
-	_thumb_after_ms = -1
-	# Own wrappers/ExternalTexture, so a close cannot detach/rebind our readback source.
-	var binding := Binding.new()
-	var target := ShaderMaterial.new()
-	if not binding.bind(target, pair):
+	var layer := _binding.layer
+	var image: Image
+	var failure := ""
+	if layer:
+		_layer_thumbnail_busy = true
+		_thumb_after_ms = -1
+		var copied: Array = await _layer_thumbnail(pair)
+		_layer_thumbnail_busy = false
+		image = copied[0]; failure = copied[1]
+	else:
+		if not platform.pin_mpv_pair(int(pair.session_id), int(pair.slot_token)): return
+		_thumbnail_busy = true
+		_thumb_after_ms = -1
+		# Own wrappers/ExternalTexture, so a close cannot detach/rebind our readback source.
+		var binding := Binding.new()
+		var target := ShaderMaterial.new()
+		if not binding.bind(target, pair):
+			platform.release_mpv_pair_pin(int(pair.session_id), int(pair.slot_token))
+			_thumbnail_busy = false
+			return
+		var stereo := bool(pair.get("stereo_sbs", false)) or binding.warped
+		var tb := stereo and bool(pair.get("top_bottom", false))
+		var eye := Vector2(float(pair.width) * (2.0 if binding.warped else 1.0) * (0.5 if stereo and not tb else 1.0), float(pair.height) * (0.5 if tb else 1.0))
+		var scale: Array = pair.get("color_uv_scale", [1.0, 1.0])
+		image = await Thumbnails.capture(self, binding.color_texture(), str(binding.ticket.get("color_target", "")) == "external",
+			stereo, Thumbnails.crop_for(geometry, eye), Vector2(float(scale[0]), float(scale[1])), tb)
+		binding.unbind()
 		platform.release_mpv_pair_pin(int(pair.session_id), int(pair.slot_token))
-		_thumbnail_busy = false
-		return
-	var stereo := bool(pair.get("stereo_sbs", false)) or binding.warped
-	var tb := stereo and bool(pair.get("top_bottom", false))
-	var eye := Vector2(float(pair.width) * (2.0 if binding.warped else 1.0) * (0.5 if stereo and not tb else 1.0), float(pair.height) * (0.5 if tb else 1.0))
-	var scale: Array = pair.get("color_uv_scale", [1.0, 1.0])
-	var image: Image = await Thumbnails.capture(self, binding.color_texture(), str(binding.ticket.get("color_target", "")) == "external",
-		stereo, Thumbnails.crop_for(geometry, eye), Vector2(float(scale[0]), float(scale[1])), tb)
-	binding.unbind()
-	platform.release_mpv_pair_pin(int(pair.session_id), int(pair.slot_token))
 	_thumbnail_busy = false
 	if sequence != _thumbnail_sequence or uri != local_uri: return
 	if not image or image.is_empty():
-		_thumbnail_result = {"state": "capture_failed"}
-		_thumb_after_ms = int(pair.pts_us) / 1000 + 2000
+		_thumbnail_result = {"state": "capture_failed", "layer": layer, "reason": failure}
+		# A runtime whose layer surface cannot be copied fails every time: stop after a few tries.
+		_thumb_tries += int(layer)
+		_thumb_after_ms = int(pair.pts_us) / 1000 + 2000 if _thumb_tries < 3 else -1
 		return
 	# A fade or a black opening says nothing about the video: try again a little later.
 	var small := image.duplicate() as Image
@@ -351,6 +365,32 @@ func _maybe_capture_thumbnail() -> void:
 		"width": image.get_width(), "height": image.get_height(), "source_epoch": int(pair.source_epoch)}
 	if stored: thumbnail_ready.emit(uri)
 	_write_debug_report()
+
+## A layer session's picture is only on the decoder surface: the platform copies its last buffer
+## once, cropped like Thumbnails.capture (left eye, crop_for). Returns [Image or null, failure].
+func _layer_thumbnail(pair: Dictionary) -> Array:
+	var stereo := bool(pair.get("stereo_sbs", false))
+	var tb := stereo and bool(pair.get("top_bottom", false))
+	var crop := Thumbnails.crop_for(geometry, Vector2(float(pair.width) * (0.5 if stereo and not tb else 1.0), float(pair.height) * (0.5 if tb else 1.0)))
+	# Eye UV to frame UV: the left eye is the left half, or the top one.
+	if tb:
+		crop.y *= 0.5; crop.w *= 0.5
+	elif stereo:
+		crop.x *= 0.5; crop.z *= 0.5
+	var size := Thumbnails.SIZE
+	var request: int = platform.request_mpv_layer_thumbnail(int(pair.session_id), int(pair.width), int(pair.height),
+		int(pair.get("surface_rotation_degrees", 0)), PackedFloat32Array([crop.x, crop.y, crop.z, crop.w]), size.x, size.y)
+	if request <= 0: return [null, "not_requested"]
+	var deadline := Time.get_ticks_msec() + 1500
+	while Time.get_ticks_msec() < deadline:
+		await get_tree().process_frame
+		var state: String = platform.get_mpv_layer_thumbnail_state(request)
+		if state == "pending": continue
+		if state != "ready": return [null, state]
+		var pixels: PackedByteArray = platform.take_mpv_layer_thumbnail(request)
+		if pixels.size() != size.x * size.y * 4: return [null, "size"]
+		return [Image.create_from_data(size.x, size.y, false, Image.FORMAT_RGBA8, pixels), ""]
+	return [null, "timeout"]
 
 ## Profiles compiling right now (any model), from the warmup reports.
 var warming := {}
@@ -555,6 +595,10 @@ func open_local(uri: String, title: String, start_ms: int = 0, restore_mode: boo
 			stereo_horizontal = float(saved.get("stereo_horizontal", 0.0))
 			stereo_vertical = float(saved.get("stereo_vertical", 0.0))
 			depth_requested = bool(saved.get("depth_requested", false)) and not stereo_sbs
+			# The user's own word on a built-in mask wins over the name (renamed official releases).
+			if saved.has("packed_mask"):
+				packed_file = bool(saved.packed_mask) and geometry == Geometry.Geometry.FISHEYE
+				packed_alpha = packed_file
 		elif not mode_lock.is_empty() and not stated.has("geometry") and not stated.has("stereo"):
 			geometry = int(mode_lock.geometry)
 			stereo_sbs = int(mode_lock.layout) != 0
@@ -895,6 +939,28 @@ func set_alpha_edge(feather: float, shrink: float) -> void:
 	alpha_edge = AlphaEdge.bounds(feather, shrink)
 	if material: material.set_shader_parameter("alpha_edge", alpha_edge)
 	if PlatformMethods.supports(platform, "set_mpv_alpha_edge"): platform.set_mpv_alpha_edge(alpha_edge.x, alpha_edge.y)
+
+## The video's own Alpha mask (official packed releases: the mask in the frame corners) is in use.
+func packed_mask_on() -> bool:
+	return packed_file and packed_alpha
+
+## Only a full side-by-side fisheye frame carries the packed mask layout.
+func packed_mask_available() -> bool:
+	return not is_spatial_video() and geometry == Geometry.Geometry.FISHEYE and stereo_sbs and not top_bottom and not stereo_half
+
+## The user says this fisheye file carries its own mask (official releases renamed without the
+## marker): passthrough then uses that mask, and live matting stops. Off returns to a plain fisheye.
+func set_packed_mask(enabled: bool) -> void:
+	if enabled and not packed_mask_available(): return
+	if enabled == packed_mask_on(): return
+	packed_file = enabled
+	packed_alpha = enabled
+	if enabled and alpha_requested:
+		alpha_requested = false
+		_request_revision()
+	_apply_packed()
+	_remember_mode()
+	changed.emit()
 
 func set_alpha(enabled: bool) -> bool:
 	if packed_file:
@@ -1494,6 +1560,11 @@ func set_projection(value: int) -> void:
 	if not stereo and alpha_requested:
 		alpha_requested = false
 		revise = true
+	# The built-in mask belongs to the fisheye layout: other projections leave it.
+	if geometry != Geometry.Geometry.FISHEYE and packed_file:
+		packed_file = false
+		packed_alpha = false
+		_apply_packed()
 	if geometry == Geometry.Geometry.FLAT and not stereo_sbs and auto_depth and not depth_requested:
 		depth_requested = true
 		revise = true
@@ -1630,7 +1701,8 @@ func _remember_mode() -> void:
 	var mode := {"geometry": geometry, "stereo_sbs": stereo_sbs, "swap_eyes": swap_eyes,
 		"viewing_eye": viewing_eye, "stereo_horizontal": stereo_horizontal, "stereo_vertical": stereo_vertical,
 		"alpha_requested": false, "profile": profile, "depth_requested": depth_requested,
-		"top_bottom": stereo_sbs and top_bottom, "stereo_half": stereo_sbs and stereo_half, "fisheye_fov": fisheye_fov}
+		"top_bottom": stereo_sbs and top_bottom, "stereo_half": stereo_sbs and stereo_half, "fisheye_fov": fisheye_fov,
+		"packed_mask": packed_mask_on()}
 	if mode_memory.remember(local_uri, mode) and not mode_memory.save():
 		Log.record("file_mode_save_failed", {"error": mode_memory.last_error})
 
@@ -1988,7 +2060,7 @@ func _write_debug_report() -> void:
 		"pixel_probe": _debug_pixels,
 		"seek_trace": _seek_trace,
 		"player_menu_progress": progress,
-		"thumbnail": {"available": Thumbnails.has(local_uri), "capture": _thumbnail_result, "busy": _thumbnail_busy},
+		"thumbnail": {"available": Thumbnails.has(local_uri), "capture": _thumbnail_result, "busy": _thumbnail_busy or _layer_thumbnail_busy},
 		"diagnostic_2d": OS.get_cmdline_user_args().has("--mpv-diagnostic-2d"),
 		"scope": "Production MPV/RVM/Godot ownership trace; independent pixel, audio and performance validation pending"}
 	platform.save_mpv_player_report(_debug_request, JSON.stringify(report))
@@ -2154,7 +2226,9 @@ func _layer_alpha() -> bool:
 func layer_block_reason() -> String:
 	if video_layer_shown: return ""
 	if video_layer == null or not video_layer.available(): return "xr"
-	if alpha_requested: return "alpha"
+	# Alpha itself blocks the layer only where it may not use it; otherwise name the real blocker.
+	if alpha_requested and not _layer_alpha_allowed: return "alpha"
+	if alpha_requested and not video_layer.alpha_blend: return "blend" # runtime without XR_FB_composition_layer_alpha_blend
 	if depth_requested: return "3d"
 	if packed_file: return "packed"
 	if not local_uri.is_empty() and local_uri == _layer_blocked_uri: return "decoder"

@@ -59,14 +59,14 @@ func freshCloudList(ctx context.Context, s driver.Driver, p string) ([]model.Obj
 			}
 			current = nil
 			for _, item := range items {
-				if item.IsDir() && item.GetName() == name {
+				if item.GetName() == name {
 					if current != nil {
 						return nil, errors.New("ambiguous cloud folder")
 					}
 					current = item
 				}
 			}
-			if current == nil {
+			if current == nil || !current.IsDir() {
 				return nil, missingCloudFolder
 			}
 		}
@@ -186,29 +186,54 @@ func checkedCloudRemove(ctx context.Context, s driver.Driver, p string, t cloudT
 	}
 	// One ordinary deletion of the verified object. No child-by-child removal,
 	// recycle-bin purge, or replay after an ambiguous transport error.
-	return remover.Remove(ctx, target)
+	if err := remover.Remove(ctx, target); err != nil {
+		return &cloudRemoveAttempt{err}
+	}
+	return nil
+}
+
+type cloudRemoveAttempt struct{ error }
+
+func cloudRemoveError(c *gin.Context, err error, started bool) {
+	reason := "failed"
+	if errors.Is(err, missingCloudFolder) || err.Error() == "cloud file changed" || err.Error() == "ambiguous cloud file" || err.Error() == "ambiguous cloud folder" {
+		reason = "changed"
+	}
+	c.JSON(200, gin.H{"code": 500, "message": "Cloud request failed", "delete_started": started, "delete_reason": reason})
+}
+
+func invalidateCloudRemoval(s driver.Driver, mount, p string) {
+	parent := mount + path.Dir(p)
+	target := mount + p
+	for key := range cloudSnapshots {
+		if key == parent || key == target || strings.HasPrefix(key, target+"/") || (path.Dir(p) == "/" && strings.HasPrefix(key, mount+"/")) {
+			delete(cloudSnapshots, key)
+		}
+	}
+	// A child removal does not replace its ancestors. Keep unrelated/root snapshots
+	// rather than force the next parent refresh to query the root twice.
+	op.Cache.DeleteDirectoryTree(s, path.Dir(p))
 }
 
 func remove115(c *gin.Context) {
 	var t cloudTarget
 	if c.ShouldBindJSON(&t) != nil {
-		cloudError(c)
+		cloudRemoveError(c, errors.New("invalid cloud target"), false)
 		return
 	}
 	s, p, err := targetStorage(t, true)
 	if err != nil {
-		cloudError(c)
+		cloudRemoveError(c, err, false)
 		return
 	}
 	err = checkedCloudRemove(c.Request.Context(), s, p, t)
-	for key := range cloudSnapshots {
-		if strings.HasPrefix(key, t.Mount+"/") {
-			delete(cloudSnapshots, key)
-		}
+	var attempted *cloudRemoveAttempt
+	started := errors.As(err, &attempted)
+	if err == nil || started {
+		invalidateCloudRemoval(s, t.Mount, p)
 	}
-	op.Cache.DeleteDirectoryTree(s, "/")
 	if err != nil {
-		cloudError(c)
+		cloudRemoveError(c, err, started)
 		return
 	}
 	c.JSON(200, gin.H{"code": 200, "data": nil})

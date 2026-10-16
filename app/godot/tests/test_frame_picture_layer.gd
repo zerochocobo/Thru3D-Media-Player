@@ -116,6 +116,15 @@ func _run() -> void:
 	check(video._layer_alpha() and video._layer_presentation(), "With it Alpha stays on the layer")
 	video._layer_alpha_allowed = false
 	check(not video._layer_presentation(), "A build that does not allow it keeps the eye buffers")
+	# The FPS overlay names why Alpha is in the eye buffers instead of always saying "alpha".
+	check(video.layer_block_reason() == "alpha", "A build without layer Alpha says alpha")
+	video._layer_alpha_allowed = true
+	video.video_layer.alpha_blend = false
+	check(video.layer_block_reason() == "blend", "A runtime without layer blending says blend")
+	video.video_layer.alpha_blend = true
+	video._layer_blocked_uri = video.local_uri
+	check(video.layer_block_reason() == "decoder", "Otherwise the real blocker is named: %s" % video.layer_block_reason())
+	video._layer_blocked_uri = ""
 	video.alpha_requested = false
 	video.free()
 	# A software decoder on the layer surface never produces a frame: the session reports it at once

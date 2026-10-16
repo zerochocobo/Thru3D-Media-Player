@@ -1076,6 +1076,12 @@ internal class MpvVideoBridge(
         if (!BuildConfig.DEBUG) return false
         return unpinPair(id, token)
     }
+    /** Library picture of a layer session (see LayerThumbnail); 0 when the session shows no layer. */
+    fun requestLayerThumbnail(id: Int, width: Int, height: Int, rotation: Int, crop: FloatArray, outWidth: Int, outHeight: Int): Int {
+        val session = sessions[id] ?: return 0
+        if (!active(session) || !session.host.layer) return 0
+        return LayerThumbnail.request(session.host.layerSurface, width, height, rotation, crop, outWidth, outHeight)
+    }
     fun pinPair(id: Int, token: Long): Boolean {
         val session = sessions[id] ?: return false
         synchronized(session.lock) { return active(session) && session.display.pin(token) }

@@ -14,6 +14,7 @@ const StorageVolume := preload("res://scripts/storage_volume.gd")
 const Quality := preload("res://scripts/display_quality.gd")
 const ThumbnailCache := preload("res://scripts/thumbnail_cache.gd")
 const SETTINGS_PATH := "user://player_settings.cfg"
+const LIBRARY_DISTANCE_DEFAULT := 1.4
 const PhotoDisplay := preload("res://scripts/photo_display.gd")
 const PhotoMenu := preload("res://scripts/photo_menu.gd")
 const PhotoHandGestures := preload("res://scripts/photo_hand_gestures.gd")
@@ -469,6 +470,8 @@ func _finish_interface_move() -> void:
 				if target.kind != "detail": view_follow.capture(target.key, head, world)
 				elif photo: photo.detail_placement = interface_move.placements[target.key]
 			if target.kind == "gallery": target.node.remember_layout_pose()
+			if target.kind == "menu" and target.node == recent_menu and not is_zero_approx(float(interface_move.capture.get("depth", 0.0))):
+				_remember_library_distance(head)
 			if target.kind == "screen":
 				target.node.set_screen_distance((target.node.global_transform * target.node.flat_pose).origin.distance_to(_eye()))
 				if photo_active and photo.gallery.focus >= 0: photo.gallery.remember_focus_pose(photo.global_transform * photo.flat_pose)
@@ -1729,22 +1732,38 @@ func _update_view_follow() -> void:
 	if surface and _flat_followable(surface) and (not surface.local_uri.is_empty() or (surface == photo and photo.loading)):
 		surface.set_flat_world_pose(_follow_screen_pose(surface, head))
 
-func _place_menu(menu: Node3D) -> void:
+func _library_distance() -> float:
+	var value: Variant = settings.get_value("ui", "library_distance", LIBRARY_DISTANCE_DEFAULT)
+	if not (value is float or value is int) or not is_finite(float(value)) or float(value) <= 0.0:
+		return LIBRARY_DISTANCE_DEFAULT
+	return clampf(float(value), InterfaceMove.DEPTH_LIMITS.x, InterfaceMove.DEPTH_LIMITS.y)
+
+func _remember_library_distance(head: Variant) -> void:
+	if not head is Transform3D or not recent_menu is LibraryMenu or _library_is_attached() or not recent_menu.is_visible_in_tree(): return
+	var distance: float = recent_menu.to_global(recent_menu.panel_centre()).distance_to(head.origin)
+	if not is_finite(distance): return
+	distance = clampf(distance, InterfaceMove.DEPTH_LIMITS.x, InterfaceMove.DEPTH_LIMITS.y)
+	if settings.has_section_key("ui", "library_distance") and is_equal_approx(_library_distance(), distance): return
+	settings.set_value("ui", "library_distance", distance)
+	settings.save(settings_path)
+
+func _place_menu(menu: Node3D, recenter: bool = false) -> void:
 	if menu == recent_menu and _library_is_attached(): return
 	# The player bar sits low; its popups (settings too) open above it.
 	var drop := 0.45 if menu == player_menu else 0.05
 	var head: Variant = _head_pose()
 	var frame: Variant = InterfaceMove.menu_head(head, view_follow.enabled) if head != null else null
 	var moved: Variant = interface_move.placement(_menu_key(menu), frame)
-	if moved != null:
-		menu.global_transform = moved
-		menu.set_layout_viewer(head, view_follow.enabled)
-		view_follow.capture(_menu_key(menu), head, menu.global_transform if menu.is_inside_tree() else moved)
-		return
-	var pose: Variant = frame * Transform3D(Basis.IDENTITY, Vector3(0, -drop, -1.4)) if frame != null else null
+	var pose: Variant = moved if moved != null else (frame * Transform3D(Basis.IDENTITY, Vector3(0, -drop, -1.4)) if frame != null else null)
 	if pose == null:
 		menu.transform = Transform3D(Basis.IDENTITY, Vector3(0, 1.6 - drop, -1.55))
 	else:
+		if menu == recent_menu and menu is LibraryMenu:
+			# Persist only the comfort distance. Recenter returns the panel centre to the
+			# current gaze on that sphere; facing() below keeps standard menus upright.
+			var offset: Vector3 = -head.basis.z if recenter else pose * menu.panel_centre() - head.origin
+			if offset.length_squared() < 0.0001: offset = -head.basis.z
+			pose.origin = head.origin + offset.normalized() * _library_distance() - pose.basis * menu.panel_centre()
 		menu.global_transform = pose
 		menu.set_layout_viewer(head, view_follow.enabled)
 		view_follow.capture(_menu_key(menu), head, menu.global_transform if menu.is_inside_tree() else pose)
@@ -2063,6 +2082,7 @@ func _on_menu_action(operation: String) -> void:
 		"stereo_half_sbs": video.set_stereo_layout(3)
 		"stereo_half_tb": video.set_stereo_layout(4)
 		"fov_180", "fov_190", "fov_200", "fov_220": video.set_fisheye_fov(int(operation.right(3)))
+		"packed_mask": video.set_packed_mask(not video.packed_mask_on())
 		"recenter": _recenter()
 		"screen_curve":
 			video.cycle_screen_curve()
@@ -2178,6 +2198,7 @@ func _menu_state() -> Dictionary:
 		"loop": video.loop_enabled, "stereo": video.stereo_sbs, "swap_eyes": video.swap_eyes,
 		"viewing_eye": video.viewing_eye, "stereo_horizontal": video.stereo_horizontal, "stereo_vertical": video.stereo_vertical,
 		"top_bottom": video.stereo_sbs and video.top_bottom, "stereo_half": video.stereo_sbs and video.stereo_half, "fisheye_fov": video.fisheye_fov,
+		"packed_mask": video.packed_mask_on(), "packed_mask_available": video.packed_mask_available(),
 		"projection": ["Flat", "VR180", "Fisheye", "360"][video.geometry], "geometry": video.geometry, "profile": video.profile,
 		"mode_lock": video.mode_lock,
 		"spatial_video": video.is_spatial_video(),
@@ -2484,6 +2505,12 @@ func _recenter(restore_defaults: bool = true) -> void:
 	interface_move.cancel()
 	stick_controls.suspend()
 	if restore_defaults:
+		interface_move.placements.erase(&"video")
+		view_follow.forget(&"video")
+		if video and not is_equal_approx(video.screen_distance, video.SCREEN_DISTANCE):
+			video.set_screen_distance(video.SCREEN_DISTANCE)
+			settings.set_value("screen", "distance", video.screen_distance)
+			settings.save(settings_path)
 		for menu in [recent_menu, video_menu, photo_menu]:
 			if menu:
 				interface_move.placements.erase(_menu_key(menu))
@@ -2494,7 +2521,8 @@ func _recenter(restore_defaults: bool = true) -> void:
 	photo_swipe.cancel(); memory_swipe.cancel()
 	if not _viewer().local_uri.is_empty():
 		var reset_photo: bool = restore_defaults and photo_active and photo.geometry == Geometry.Geometry.FLAT and photo.gallery.mode in [0, 1] and not photo.portrait_requested
-		_place_screen(reset_photo)
+		var reset_video: bool = restore_defaults and not photo_active and video.geometry == Geometry.Geometry.FLAT
+		_place_screen(reset_photo or reset_video)
 		if reset_photo:
 			var head: Variant = _head_pose()
 			if head != null:
@@ -2508,7 +2536,7 @@ func _recenter(restore_defaults: bool = true) -> void:
 		if photo.inspect: photo._place_detail()
 	for menu in [recent_menu, player_menu]:
 		if menu and menu.visible:
-			_place_menu(menu)
+			_place_menu(menu, restore_defaults)
 	Log.record("recenter_requested")
 
 func request_capabilities() -> void:
@@ -2797,6 +2825,9 @@ func _on_display_debug_command(_id: int, payload: String) -> void:
 		menu_composition.set_filter(code % 10, code / 10 % 10)
 	elif operation == "menu_layer_holes" and OS.is_debug_build() and menu_composition:
 		menu_composition.set_debug_holes(bool(command.get("enabled", true)))
+	elif operation == "menu_action" and OS.is_debug_build():
+		# Device probes: a player-menu action by name, as its button would send it.
+		_on_menu_action(str(command.get("target", "")))
 	elif operation == "menu_nav" and OS.is_debug_build():
 		_debug_menu_nav(str(command.get("target", "")))
 	elif operation == "menu_bench" and OS.is_debug_build():

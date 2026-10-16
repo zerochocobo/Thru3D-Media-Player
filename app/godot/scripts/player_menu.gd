@@ -26,6 +26,8 @@ const SELECTED := Color(0.16, 0.31, 0.27)
 const MODE_PROJECTION := 130
 const MODE_STEREO := 140
 const MODE_LENS := 150
+## Fisheye: the video's own Alpha mask, after the lens angles.
+const MODE_PACKED := 158
 const VOLUME := 160
 ## Volume slider over the sound icon: track span (bottom, top) and its x; the lowest steps mute.
 const VOLUME_X := -0.5
@@ -574,7 +576,7 @@ func _draw_bar() -> void:
 	_glyph(103, "next_video", Vector2(0.13, row), 0.08, _enabled("next_video"), I18n.t("Next video"))
 	var spatial := bool(_state.get("spatial_video", false))
 	if spatial: _close_depth_slider()
-	_glyph(104, "alpha", Vector2(0.26 if spatial else 0.23, row), 0.075, _enabled("alpha"), I18n.t("Passthrough"))
+	_glyph(104, "alpha", Vector2(0.26 if spatial else 0.23, row), 0.075, _enabled("alpha"), I18n.t("AI portrait passthrough"))
 	if not spatial:
 		_glyph(112, "depth", Vector2(0.32, row), 0.075, _enabled("depth"), _depth_tip())
 		_depth_busy = _busy_ring(_buttons.back().node, 0.075)
@@ -1064,10 +1066,17 @@ func _draw_modes() -> void:
 		_mode_tile(MODE_STEREO + 3, I18n.t("Auto 3D"), "depth", Vector2(0.2, controls_y), depth, not stereo and projection == 0)
 		_mode_tile(MODE_STEREO + 2, _caption("eyes"), "eyes", Vector2(0.4, controls_y), false, stereo)
 	if fisheye:
+		var lens_y := layouts_y - 0.11 if half_choices else controls_y - 0.145
+		var lens_height := 0.06 if half_choices else 0.08
 		for i in LENS_FOVS.size():
-			_button(MODE_LENS + i, "%d°" % LENS_FOVS[i], Vector2(-0.3 + i * 0.2, layouts_y - 0.11 if half_choices else controls_y - 0.145), Vector2(0.18, 0.06 if half_choices else 0.08))
+			_button(MODE_LENS + i, "%d°" % LENS_FOVS[i], Vector2(-0.4 + i * 0.2, lens_y), Vector2(0.18, lens_height))
 			if int(_state.get("fisheye_fov", 180)) == LENS_FOVS[i]:
 				_buttons.back().base_color = SELECTED
+		# The video's own mask (official packed Alpha): independent of the lens angle.
+		_button(MODE_PACKED, "", Vector2(0.4, lens_y), Vector2(0.18, lens_height), bool(_state.get("packed_mask_available", false)), "packed_mask")
+		_tips[MODE_PACKED] = I18n.t("Use the video's own Alpha mask")
+		if _state.get("packed_mask", false):
+			_buttons.back().base_color = SELECTED
 	for button in _buttons:
 		if locked.has(button.target):
 			var half: Vector2 = button.rect.size / 2
@@ -1292,7 +1301,7 @@ func _activate(target: int) -> void:
 	if _activate_depth_reset(target): return
 	if _state.get("spatial_video", false) and (target in range(MODE_PROJECTION, MODE_PROJECTION + 4) \
 		or target in [MODE_STEREO, MODE_STEREO + 1, MODE_STEREO + 3, MODE_STEREO + 4, MODE_STEREO + 5, MODE_STEREO + 6] \
-		or target in range(MODE_LENS, MODE_LENS + LENS_FOVS.size())): return
+		or target in range(MODE_LENS, MODE_LENS + LENS_FOVS.size()) or target == MODE_PACKED): return
 	if choices.action(target): return
 	if target >= EYE_BUFFER_NOTE and target < EYE_BUFFER_NOTE + 1000: return
 	bookmarks.opened = false
@@ -1384,7 +1393,7 @@ func _activate(target: int) -> void:
 		_toggle_depth_slider()
 		return
 	_close_depth_slider()
-	if target != MODE and (target < MODE_PROJECTION or target >= MODE_LENS + LENS_FOVS.size()):
+	if target != MODE and target != MODE_PACKED and (target < MODE_PROJECTION or target >= MODE_LENS + LENS_FOVS.size()):
 		_mode_open = false
 	if target != 109:
 		_volume_open = false
@@ -1416,6 +1425,9 @@ func _activate(target: int) -> void:
 		refresh()
 	elif target >= MODE_LENS and target < MODE_LENS + LENS_FOVS.size():
 		action_requested.emit("fov_%d" % LENS_FOVS[target - MODE_LENS])
+		refresh()
+	elif target == MODE_PACKED:
+		action_requested.emit("packed_mask")
 		refresh()
 	elif target == MODE_STEREO + 3:
 		if not _state.get("stereo", false):
@@ -1495,7 +1507,8 @@ func _enabled(operation: String) -> bool:
 	match operation:
 		"play", "loop", "stop": return has_video
 		"previous_video", "next_video": return has_video and _state.get("has_" + operation, false)
-		"alpha": return has_video and (_state.get("spatial_video", false) or int(_state.get("geometry", 0)) in [1, 2])
+		# The video's own mask replaces live passthrough matting: one passthrough control at a time.
+		"alpha": return has_video and not _state.get("packed_mask", false) and (_state.get("spatial_video", false) or int(_state.get("geometry", 0)) in [1, 2])
 		"eyes", "stereo_view": return has_video and _state.get("stereo", false)
 		"volume_down", "volume_up", "mute": return has_video and _state.get("audio_available", false)
 		"audio": return has_video
@@ -1520,7 +1533,8 @@ func _caption_text(operation: String) -> String:
 		"open_file": return "Open"
 		"recent": return "Library"
 		"play": return "Pause" if _pausable() else "Play"
-		"alpha": return "Passthrough"
+		# Live AI matting, unlike the video's own mask in the fisheye panel.
+		"alpha": return "AI portrait passthrough"
 		"previous_video": return "Previous video"
 		"next_video": return "Next video"
 		"loop": return "On" if _state.get("loop", false) else "Off"

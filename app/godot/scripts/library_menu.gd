@@ -541,6 +541,7 @@ func stick_scroll_horizontal(x: float, delta: float) -> void:
 		server_browser.gallery.stick_scroll(x, delta)
 
 func _process(delta: float) -> void:
+	_poll_cache_usage()
 	if section == Section.MEDIA_SERVER and server_browser.sorting(): return
 	if controls_page.active() and controls_page.modal(): return
 	if not file_actions.modal.is_empty(): return
@@ -1035,9 +1036,9 @@ func _rebuild_rows() -> void:
 				rows.append(_choice_row("Save play history", "history", settings.get("history", true),
 					[{"value": true, "label": "On"}, {"value": false, "label": "Off"}]))
 				# Library thumbnails plus Android photo/depth/SBS files.
-				if _cache_usage == null:
-					_cache_usage = _read_cache_usage() # scan once, not on each redraw
-				var cache: Vector2i = _cache_usage
+				# Scanned off the main thread (one file open per thumbnail); the size shows once known.
+				if _cache_usage == null: _scan_cache_usage()
+				var cache: Vector2i = _cache_usage if _cache_usage is Vector2i else Vector2i(-1, 0)
 				var armed := _confirm == "clear_cache"
 				rows.append({"title": I18n.t("Clear cache"), "detail": _bytes(cache.y) if cache.x > 0 else "", "icon": "check" if armed else "trash",
 					"selected": armed, "clear_cache": true, "empty": cache.x == 0})
@@ -1246,6 +1247,28 @@ static func _size(entry: Dictionary) -> String:
 ## Cold Alpha profile awaiting its confirming second press.
 var _confirm := ""
 var _cache_usage: Variant = null   # thumbnail and photo files/bytes, read on opening settings
+var _cache_task := -1
+var _cache_result := Vector2i.ZERO
+var _cache_rescan := false
+
+func _scan_cache_usage() -> void:
+	_cache_usage = false # scanning
+	if _cache_task >= 0: _cache_rescan = true; return
+	_cache_task = WorkerThreadPool.add_task(func(): _cache_result = _read_cache_usage())
+
+## Applies a finished scan; a scan requested meanwhile (the cache was cleared) runs again first.
+func _poll_cache_usage() -> void:
+	if _cache_task < 0 or not WorkerThreadPool.is_task_completed(_cache_task): return
+	WorkerThreadPool.wait_for_task_completion(_cache_task)
+	_cache_task = -1
+	if _cache_rescan:
+		_cache_rescan = false; _scan_cache_usage(); return
+	if not _cache_usage is bool: return # reset, or applied
+	_cache_usage = _cache_result
+	if visible and section == Section.SETTINGS and tab == GENERAL_TAB: refresh()
+
+func _exit_tree() -> void:
+	if _cache_task >= 0: WorkerThreadPool.wait_for_task_completion(_cache_task); _cache_task = -1
 
 func _read_cache_usage() -> Vector2i:
 	var usage := Thumbnails.usage() + preload("res://scripts/photo_preview_cache.gd").disk_usage()
@@ -1303,7 +1326,6 @@ func _activate(target: int) -> void:
 		controls_page.reset()
 		tab = VIDEO_TAB if target == TAB_BASE + SUBTITLES_TAB else target - TAB_BASE
 		scroll = 0.0
-		_cache_usage = null
 		_load_section()
 		refresh()
 	elif target == BACK:
@@ -1895,6 +1917,12 @@ func _draw() -> void:
 	_draw_rows()
 	if section == Section.SETTINGS and tab == ABOUT_TAB:
 		_draw_about()
+	if section == Section.SETTINGS and tab == BACKGROUND_TAB:
+		var hint := _label(I18n.t("When viewing a 360° panorama, use image settings to set it as this player's background."), Vector3(-0.38, -0.10, 0.004), 16)
+		hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+		hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		hint.width = 1.16 / hint.pixel_size
+		hint.modulate = MUTED
 	if section == Section.SETTINGS:
 		_button(RESTART_APP, I18n.t("Restart app"), Vector2(0.10, -0.515), Vector2(0.42, 0.07), true, "refresh")
 		_button(QUIT_APP, I18n.t("Close app"), Vector2(0.59, -0.515), Vector2(0.42, 0.07), true, "close")

@@ -4,6 +4,27 @@
 
 Newest first, following product release milestones. Some development/source snapshots contained features before their product release. Original APK identifiers `0.2` and `0.4` are retained; `0.4` was also called `0.4.0` in release notes. Availability depends on device, server and media capabilities.
 
+## 0.10.2 — 2026-10-16
+
+This update adds manual use of built-in Alpha masks, restores automatic video covers and speeds up 115 folder deletion.
+
+- **Built-in Alpha mask toggle**: For compatible full side-by-side fisheye videos, enable “Use the video's own Alpha mask” in the video mode panel to use the embedded mask without live AI matting. Your choice is saved per video and takes priority over filename detection.
+- **Automatic video covers restored**: Fixed missing library covers after playing some videos, with improved stereo-video framing and orientation.
+- **Faster 115 deletion**: Reduced waiting before deletion and processing time after confirmation for files and folders through 115 Open, while retaining confirmation and failure safeguards.
+- **Clearer passthrough naming**: The playback bar's live matting control is now called “AI portrait passthrough” to distinguish it from a video's built-in Alpha mask.
+
+- **Custom panorama guidance**: Global background settings now explain how to set a viewed 360° panorama as the player's background.
+
+## 0.10.1 — 2026-10-16
+
+This update improves menu responsiveness during playback, fixes playback-browser and flat-video recentering issues, and remembers your preferred library viewing distance.
+
+- **Smoother menus during playback**: Reduced the extra load from playback controls and the media library to reduce stuttering when opening menus.
+- **Faster settings navigation**: Reduced pauses when opening settings and switching tabs for more responsive interaction.
+- **Playback-browser fixes**: Fixed cases where the browser became unclickable after changing videos or reappeared with the controls after being closed, covering compact and full library layouts.
+- **Reliable flat-video recentering**: App and system recentering restore the default picture position and distance after grip movement or distance adjustments, preventing old offsets from returning after a video change. Picture size, curvature and content rotation are preserved.
+- **Remembered library viewing distance**: Adjust the main library's distance with grip and thumbstick, and keep it when returning from playback, reopening the library or restarting the app. Recentering brings it to the center of your current gaze while retaining the saved distance.
+
 ## 0.10.0 — 2026-10-16
 
 This update focuses on better Alpha passthrough quality and smoothness, alongside improved thumbstick seeking, panel placement, file management and playback error messages.

@@ -7,6 +7,15 @@ import org.junit.Test
 import java.net.SocketTimeoutException
 
 class CloudDiagnosticsTest {
+    @Test fun deletionDistinguishesDefinitePreWriteRejectionFromUncertainDriverFailure() {
+        val rejection = JSONObject().put("code", 500).put("delete_started", false).put("delete_reason", "changed")
+        assertEquals("Cloud file changed. Refresh the folder", assertThrows(CloudDeleteRejected::class.java) {
+            CloudDiagnostics.checkCore(rejection, "/remove115")
+        }.message)
+        for (reply in listOf(JSONObject().put("code", 500), JSONObject().put("code", 500).put("delete_started", true))) {
+            assertThrows(CloudFailure::class.java) { CloudDiagnostics.checkCore(reply, "/remove115") }
+        }
+    }
     @Test fun list115FailureSurvivesCoreAndMediaDto() {
         val response = JSONObject().put("code", 500).put("message", "Cloud request failed")
             .put("error_detail", "list115.list\n115 code: 430004, message: 文件夹不存在或无权限")

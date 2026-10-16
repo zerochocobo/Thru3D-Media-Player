@@ -268,6 +268,7 @@ func receive(id: int, payload: String) -> bool:
 		preparing = false
 		if result.get("state") == "ready" and result.get("preview", false):
 			for key in ["plan", "files", "folders"]: target[key] = result.get(key, 0)
+			target["counts_known"] = result.get("counts_known", true)
 			prepare_index += 1; prepare_folder()
 		else:
 			failed = true; menu.status = str(result.get("error", "File deletion failed"))
@@ -371,7 +372,7 @@ func draw_modal() -> void:
 	menu._label(menu.I18n.t(effect), Vector3(0.13, -0.01, 0.004), 18)
 	if current_affected:
 		menu._label(menu.I18n.t("Playback will stop before deletion"), Vector3(0.13, -0.075, 0.004), 17).modulate = menu.ACCENT
-	if has_folders and plan_ready:
+	if has_folders and plan_ready and items.all(func(item): return not item.get("folder", false) or item.get("counts_known", true)):
 		menu._label(menu.I18n.t("%d files · %d folders") % [files, folders], Vector3(0.13, -0.13 if current_affected else -0.10, 0.004), 17)
 	menu._label(menu.I18n.t(pending_text()) if pending > 0 else menu.I18n.t(menu.status) if failed or uncertain else "", Vector3(0.13, -0.21, 0.004), 16)
 	menu._button(CANCEL, menu.I18n.t("Hide" if pending > 0 else "Cancel"), Vector2(-0.12, -0.38), Vector2(0.40, 0.08))

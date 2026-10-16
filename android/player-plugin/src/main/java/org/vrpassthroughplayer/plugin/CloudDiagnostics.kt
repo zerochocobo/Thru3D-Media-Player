@@ -26,6 +26,9 @@ internal object CloudDiagnostics {
     }
     fun checkCore(result: JSONObject, route: String): JSONObject {
         if (result.optInt("code") == 200) return result
+        if (route == "/remove115" && result.opt("delete_started") == false)
+            throw CloudDeleteRejected(if (result.optString("delete_reason") == "changed")
+                "Cloud file changed. Refresh the folder" else "File deletion failed")
         val message = result.optString("message")
         if (message in setOf("Search expired. Search again", "Search scope unavailable", "Search result limit reached", "Folder too large to search", "Invalid search"))
             throw IllegalStateException(message)

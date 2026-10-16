@@ -375,6 +375,10 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     @UsedByGodot fun retain_mpv_frozen_frame(id: Long): Boolean = !closed.get() && mpv.retainFrozen(id)
     @UsedByGodot fun pin_mpv_pair(id: Int, token: Long): Boolean = !closed.get() && mpv.pinPair(id, token)
     @UsedByGodot fun release_mpv_pair_pin(id: Int, token: Long): Boolean = mpv.unpinPair(id, token)
+    @UsedByGodot fun request_mpv_layer_thumbnail(id: Int, width: Int, height: Int, rotation: Int, crop: FloatArray, outWidth: Int, outHeight: Int): Int =
+        if (closed.get()) 0 else mpv.requestLayerThumbnail(id, width, height, rotation, crop, outWidth, outHeight)
+    @UsedByGodot fun get_mpv_layer_thumbnail_state(request: Int): String = LayerThumbnail.state(request)
+    @UsedByGodot fun take_mpv_layer_thumbnail(request: Int): ByteArray = LayerThumbnail.pixels(request)
     @UsedByGodot fun close_mpv_video(id: Int) { mpv.close(id) }
     @UsedByGodot fun request_mpv_pixel_mask(request: Int, id: Int, token: Long): Boolean =
         !closed.get() && mpv.requestPixelMask(request, id, token)

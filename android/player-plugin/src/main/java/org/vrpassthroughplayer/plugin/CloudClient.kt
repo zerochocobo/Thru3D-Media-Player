@@ -7,6 +7,8 @@ internal interface CloudClient {
     fun resolve(file: CloudFile): CloudLink
     val canDelete: Boolean get() = false
     val canRename: Boolean get() = false
+    // A writable implementation must resolve the path fresh and verify this expected
+    // identity/metadata before its one provider write. Success means provider-confirmed.
     fun remove(path: String, file: CloudFile) { throw IllegalStateException("File deletion unavailable for this source") }
     fun rename(path: String, file: CloudFile, newName: String) { throw IllegalStateException("Rename unavailable for this source") }
 }

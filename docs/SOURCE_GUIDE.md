@@ -97,3 +97,11 @@ Alpha has a global 256/320/384/512 model-size choice, with cached preparation an
 Opt-in file management provides source-dependent list selection, confirmed deletion and rename previews. Matching companions require exactly the same basename; folder renaming is not recursive. 115 Open support does not imply the legacy cookie provider can rename. Unknown write outcomes require status verification rather than automatic repeated writes.
 
 Headsets/runtimes without support for the updated Alpha presentation automatically use eye-buffer Alpha.
+
+## Built-in masks and library covers
+
+The fisheye-angle row in the video mode panel offers “Use the video's own Alpha mask.” It is available for compatible full side-by-side fisheye videos, excluding top-bottom, half-width side-by-side and spatial video. Enabling it uses the packed source mask and stops live AI matting; the playback bar's “AI portrait passthrough” control becomes unavailable. The choice is saved per video, including a manual Off overriding an `_alpha` filename tag. Switching to another projection turns the active source mask off.
+
+Supported compositor-layer videos can also generate library covers after playback, retaining black-frame retries. Stereo covers use the left-eye image and account for source orientation. Capture failures do not block playback.
+
+115 Open folder deletion avoids a full subtree scan before confirmation and a repeated scan afterward. Target identity, type and permissions are still checked; uncertain outcomes require verification without automatically repeating the deletion. Local/SMB rules are unchanged, and this does not imply the same behavior for legacy cookie-based 115 or other cloud providers.
