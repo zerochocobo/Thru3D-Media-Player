@@ -11,6 +11,29 @@ class CloudDriveTest {
     private fun query(url: String) = URI(url).rawQuery.split('&').associate {
         URLDecoder.decode(it.substringBefore('='), "UTF-8") to URLDecoder.decode(it.substringAfter('='), "UTF-8")
     }
+    @Test fun cookieAccountSortsAtProviderAndCachesPagesByOrderWithoutReadingAllFiles() {
+        val queries = ArrayList<Map<String, String>>()
+        val drive = CloudDrive(CloudDrive.P115, "UID=x", CloudTransport { url, _, _ ->
+            val args = query(url); queries.add(args)
+            val offset = args.getValue("offset").toInt()
+            val items = org.json.JSONArray()
+            repeat(48) { items.put(JSONObject().put("fid", "${offset+it+1}").put("n", "3D$it.mp4").put("s", 90000000000L)) }
+            CloudResponse(JSONObject().put("state", true).put("offset", offset).put("count", 50000).put("data", items))
+        })
+        val pages = CloudSortedPages()
+        for (order in CloudSortedPages.ORDERS + "source") {
+            assertEquals(50000, pages.page(drive, "/", 0, false, order).total)
+            val args = queries.last()
+            assertEquals(when (order.substringBefore('_')) { "size" -> "file_size"; "modified" -> "user_utime"; else -> "file_name" }, args["o"])
+            assertEquals(if (order.endsWith("desc")) "0" else "1", args["asc"])
+        }
+        assertEquals(7, queries.size)
+        pages.page(drive, "/", 0, false, "size_desc")
+        assertEquals(7, queries.size)
+        pages.page(drive, "/", 48, false, "size_desc")
+        assertEquals(8, queries.size)
+        assertEquals("48", queries.last()["offset"])
+    }
     @Test fun paginated115ListingUsesOnlyMetadataAndPreservesLargeIds() {
         var requests = 0
         val drive = CloudDrive(CloudDrive.P115, "UID=test; CID=test; SEID=test", CloudTransport { url, _, form ->

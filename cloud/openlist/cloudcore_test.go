@@ -125,7 +125,7 @@ func TestBrowseAndRangeStream(t *testing.T) {
 
 	// File management is not reachable through the loopback media listener.
 	base := streamBase[:strings.LastIndex(streamBase, "/")]
-	for _, route := range []string{"/remove115", "/list115"} {
+	for _, route := range []string{"/remove115", "/list115", "/stat115", "/directory"} {
 		response, err := http.Post(base+route, "application/json", strings.NewReader("{}"))
 		if err != nil { t.Fatal(err) }; response.Body.Close()
 		if response.StatusCode != 404 { t.Fatal("management route exposed", route) }

@@ -13,6 +13,23 @@ import (
 type playerSearchTransport func(*http.Request) (*http.Response, error)
 
 func (f playerSearchTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+func TestPlayerSearchCompanionsPreservesSubtitleAndAudioKindsAndParentIdentity(t *testing.T) {
+	transport := playerSearchTransport(func(r *http.Request) (*http.Response, error) {
+		q := r.URL.Query()
+		if r.URL.Path != "/open/ufile/search" || q.Get("cid") != "42" || q.Get("search_value") != "film" ||
+			q.Get("type") != "" || q.Get("fc") != "" || q.Get("offset") != "48" {
+			t.Fatal("companion search must not exclude text/audio files", r.URL, q)
+		}
+		body := `{"state":true,"count":50,"offset":48,"data":[{"file_id":"1","file_name":"film.srt","file_size":"128","file_category":"1","parent_id":"42"},{"file_id":"2","file_name":"film.si.mix.m4a","file_size":"256","file_category":"1","parent_id":"99"}]}`
+		return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
+	})
+	d := &Open115{}
+	d.client = sdk.New(sdk.WithAccessToken("fixture")).SetHttpClient(&http.Client{Transport: transport})
+	files, next, _, capped, err := d.PlayerSearch(context.Background(), &model.Object{ID: "42", IsFolder: true}, "film", "all", "48")
+	if err != nil || next != "" || capped || len(files) != 2 || files[0].(interface{ PlayerParentID() string }).PlayerParentID() != "42" {
+		t.Fatal(files, next, capped, err)
+	}
+}
 func TestPlayerSearch115UsesNativePageAndLazyParent(t *testing.T) {
 	requests := 0
 	transport := playerSearchTransport(func(r *http.Request) (*http.Response, error) {

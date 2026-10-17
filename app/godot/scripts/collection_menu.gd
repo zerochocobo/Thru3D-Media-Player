@@ -68,7 +68,8 @@ func reveal(rows: Array) -> void:
 func _init(owner: Node) -> void: menu = owner
 func _store_lock_changed() -> void:
 	if not store or not store.locked: return
-	selection.clear(); batch.clear(); history_undo.clear(); pending_favorites.clear(); target.clear()
+	if home_tab == 1: selection.clear(); batch.clear()
+	pending_favorites.clear(); target.clear()
 	selected_entry.clear(); selected_location.clear()
 	if modal in ["item", "batch_remove"]: modal = ""; menu.refresh()
 func active() -> bool: return not modal.is_empty()
@@ -97,7 +98,7 @@ func reconcile() -> void:
 	var present := {}
 	for row in menu.rows: present[str(row.get("uri", ""))] = true
 	for uri in selection.keys():
-		if not present.has(uri) or (store and store.locked): selection.erase(uri)
+		if not present.has(uri) or (home_tab == 1 and store and store.locked): selection.erase(uri)
 
 func draw_list_row(slot: int, row: Dictionary, centre: Vector2, parent: Node3D) -> void:
 	var compact: bool = menu.compact
@@ -222,13 +223,15 @@ func draw_header() -> void:
 
 func draw_folder_header(compact: bool) -> void:
 	var location := Location.capture(menu, {})
+	var toolbar_left := Vector2(-0.40, 0.445)
 	if not location.is_empty() and not menu._crumbs().is_empty():
 		var selected: bool = store != null and store.contains(Location.folder_uri(location))
 		var locked: bool = store != null and store.locked
-		menu._button(FAVORITE_FOLDER, "", Vector2(0.39, 0.36) if compact else Vector2(0.80, menu._header_y()), Vector2(0.075, 0.065), store != null and not store.busy, "lock" if locked else "star_filled" if selected else "star")
+		var favorite_position := toolbar_left + Vector2(0.11 if not home_return.is_empty() else 0.0, 0)
+		menu._button(FAVORITE_FOLDER, "", Vector2(0.39, 0.36) if compact else favorite_position, Vector2(0.075, 0.065), store != null and not store.busy, "lock" if locked else "star_filled" if selected else "star")
 		menu._tips[FAVORITE_FOLDER] = menu.I18n.t("Unlock favorites" if locked else "Remove favorite" if selected else "Favorite this location")
 	if not home_return.is_empty():
-		menu._button(RETURN_HOME, "", Vector2(0.12, -0.365) if compact else Vector2(0.69, menu._header_y()), Vector2(0.075, 0.065), true, "history")
+		menu._button(RETURN_HOME, "", Vector2(0.12, -0.365) if compact else toolbar_left, Vector2(0.075, 0.065), true, "history")
 		menu._tips[RETURN_HOME] = menu.I18n.t("Back to recent and favorites")
 
 func decorate_row(slot: int, row: Dictionary, centre: Vector2, grid: bool, parent: Node3D) -> void:
@@ -410,7 +413,7 @@ func _toggle_card_favorite(row: Dictionary) -> void:
 	if not success: menu.status = "Favorites save failed"
 	menu.refresh()
 
-func _remove_rows(items: Array) -> void:
+func _remove_rows(items: Array, clear_all: bool = false) -> void:
 	var success := false
 	if home_tab == 1:
 		success = store.remove_many(items.map(func(row):return str(row.uri)))
@@ -419,6 +422,9 @@ func _remove_rows(items: Array) -> void:
 		for row in items:
 			var entry: Dictionary = menu.catalog.lookup(str(row.uri))
 			if menu.catalog.forget(str(row.uri)): removed.append(entry)
+		if clear_all:
+			var undo: Dictionary = menu.catalog.undo.duplicate(true)
+			menu.catalog.clear_all(); menu.catalog.undo = undo
 		var persisted: bool = menu.catalog.purge_keys([]) if not removed.is_empty() else false
 		success = removed.size() == items.size() and persisted
 		if not removed.is_empty(): history_undo = {"entries":removed, "until":Time.get_ticks_msec() + 8000, "marker":menu.catalog.undo.duplicate(true)}

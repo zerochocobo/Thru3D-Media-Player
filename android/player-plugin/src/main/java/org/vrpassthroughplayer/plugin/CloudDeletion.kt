@@ -10,6 +10,11 @@ internal class CloudDeletion(private val client: CloudClient, private val author
     private fun fresh(path: String): CloudFile? {
         val parent = path.substringBeforeLast('/').ifEmpty { "/" }
         val name = path.substringAfterLast('/')
+        client.freshMatches(parent, listOf(name))?.let { files ->
+            val matches = files.filter { it.name == name }
+            if (matches.size > 1) throw CloudFailure("cloud_file_ambiguous")
+            return matches.singleOrNull()
+        }
         var offset = 0
         val seen = HashSet<String>()
         var count = 0
@@ -59,6 +64,10 @@ internal class CloudDeletion(private val client: CloudClient, private val author
         catch (error: CloudDeleteRejected) { throw error }
         catch (_: Exception) { /* An error can follow a successful delete. Read back, never replay. */ }
         return try {
+            client.containsObject(file)?.let { present ->
+                return if (!present) JSONObject().put("deleted", true)
+                else JSONObject().put("state", "uncertain").put("error", "Delete result needs checking")
+            }
             val remaining = fresh(path)
             if (remaining == null) JSONObject().put("deleted", true)
             else JSONObject().put("state", "uncertain").put("error", "Delete result needs checking")

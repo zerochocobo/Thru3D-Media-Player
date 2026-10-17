@@ -33,12 +33,13 @@ func run() -> void:
 	player.state_provider = func():return {"has_video":true,"geometry":0,"playing":true,"title":"山海之旅 · 第一集","position_ms":123456,"duration_ms":2400000}
 	player.favorite_provider = func():return {"enabled":true,"selected":true,"locked":false}
 	var photo := Photo.new(); camera.add_child(photo); photo.position = player.position
-	photo.state_provider = func():return {"has_image":true,"layout":0,"count":8,"index":1,"gallery_focus":-1,"title":"京都 · 秋日散步.jpg"}
+	photo.state_provider = func():return {"has_image":true,"depth_available":true,"layout":0,"count":8,"index":1,"gallery_focus":-1,"title":"京都 · 秋日散步.jpg"}
 	photo.favorite_provider = func():return {"enabled":true,"selected":false,"locked":false}
 	for language in ["zh","zh_Hant","ja","en"]:
 		preload("res://scripts/i18n.gd").use(language)
-		for scene in ["recent-grid","recent-hover","favorites-list","favorites-hover","favorites-recover","favorites-selection","favorites-folder-list","favorites-folder-hover","favorites-locked-list","favorites-locked-grid","folder-toolbar","privacy-collapsed","privacy-open","privacy","pin","pin-confirm","pin-busy","video","photo"]:
+		for scene in ["recent-grid","recent-hover","favorites-list","favorites-hover","favorites-recover","favorites-selection","favorites-folder-list","favorites-folder-hover","favorites-locked-list","favorites-locked-grid","folder-toolbar","privacy-collapsed","privacy-open","privacy","pin","pin-confirm","pin-busy","video","video-depth","photo","photo-depth"]:
 			menu.collections.modal = ""; menu.visible = true; player.visible = false; photo.visible = false
+			player._depth_open = false; photo._depth_open = false
 			store.busy = false
 			menu.section = Library.Section.RECENT; store.protected = false; store.locked = false; menu.collections.home_tab = 0
 			if scene == "recent-grid": menu.load_view_mode("grid")
@@ -66,8 +67,8 @@ func run() -> void:
 			elif scene == "pin-busy":
 				menu.collections.open_password("enable"); menu.collections.stage = "confirm"; store.busy = true
 				menu.collections.message = "Still processing. You can return."
-			elif scene == "video": menu.visible = false; player.visible = true; player.refresh()
-			elif scene == "photo": menu.visible = false; photo.visible = true; photo.refresh()
+			elif scene in ["video", "video-depth"]: menu.visible = false; player.visible = true; player._depth_open = scene.ends_with("depth"); player.refresh()
+			elif scene in ["photo", "photo-depth"]: menu.visible = false; photo.visible = true; photo._depth_open = scene.ends_with("depth"); photo.refresh()
 			if menu.visible: menu.refresh()
 			if scene == "privacy-open": menu._choose(menu.rows.filter(func(row):return row.get("group_header", false))[0])
 			if scene == "favorites-recover": menu.collections._toggle_card_favorite(menu.rows[0])
@@ -88,6 +89,21 @@ func run() -> void:
 			for frame in 20: await process_frame
 			await RenderingServer.frame_post_draw; await RenderingServer.frame_post_draw
 			var image := viewport.get_texture().get_image()
+			if scene in ["video-depth", "photo-depth"]:
+				var provider: Callable = active.favorite_provider
+				active.favorite_provider = Callable(); active.refresh()
+				for frame in 20: await process_frame
+				await RenderingServer.frame_post_draw
+				var reference := viewport.get_texture().get_image()
+				var start: Vector2i = Vector2i(camera.unproject_position(active.to_global(Vector3(0.275, 0.23, 0.022))))
+				var end: Vector2i = Vector2i(camera.unproject_position(active.to_global(Vector3(0.31, 0.20, 0.022))))
+				var difference := 0.0
+				for y in range(start.y, end.y):
+					for x in range(start.x, end.x):
+						var a := image.get_pixel(x, y); var b := reference.get_pixel(x, y)
+						difference = maxf(difference, maxf(absf(a.r-b.r), maxf(absf(a.g-b.g), absf(a.b-b.b))))
+				check(difference < 0.04, "Favorite pixels cannot cover the depth popup: " + language + "/" + scene)
+				active.favorite_provider = provider
 			if scene in ["photo", "video"]:
 				for button in active._buttons:
 					if button.target not in [100, 107, 108, active.FAVORITE]: continue

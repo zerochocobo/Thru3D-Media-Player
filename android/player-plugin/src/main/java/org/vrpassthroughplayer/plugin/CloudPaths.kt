@@ -21,7 +21,9 @@ internal object CloudPaths {
     }
 
     fun child(parent: String, name: String): String {
-        require(name.isNotEmpty() && name != "." && name != ".." && !name.contains('/') && !name.contains('\u0000'))
+        require(validName(name)) { "cloud.path: invalid child name" }
         return parent.trimEnd('/') + "/" + name
     }
+    fun validName(name: String): Boolean = name.isNotEmpty() && name != "." && name != ".." &&
+        name.none { it == '/' || it == '\\' || it == '\u0000' }
 }

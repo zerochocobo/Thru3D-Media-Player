@@ -10,7 +10,11 @@ static func clean(value: Variant) -> Dictionary:
 		var stack: Array = []
 		for item in value[key].slice(0, 64):
 			if item is Dictionary and item.get("id") is String and item.get("title", "") is String:
-				stack.append({"id": str(item.id).left(8192), "title": str(item.get("title", "")).left(256)})
+				var folder := {"id": str(item.id).left(8192), "title": str(item.get("title", "")).left(256)}
+				var cloud_id: Variant = item.get("cloud_id")
+				if result.get("type") == "cloud" and cloud_id is String and not cloud_id.is_empty() and cloud_id.length() <= 2048 and not cloud_id.contains("\n") and not cloud_id.contains("\r") and not cloud_id.contains("://"):
+					folder["cloud_id"] = cloud_id
+				stack.append(folder)
 		result[key] = stack
 	var kind := str(result.get("type", ""))
 	if kind not in ["local", "smb", "cloud", "dlna", "server"]: return {}

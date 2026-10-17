@@ -33,17 +33,11 @@ class SidecarAudioTest {
             CloudFile("part1.srt", false, 10, "/movie/subtitle-id"),
             CloudFile("part1.si.wav", false, 10, "/movie/wav-id"),
             CloudFile("part1.folder.m4a", true, 20, "/movie/folder-id"))
-        val client = object : CloudClient {
-            override fun list(path: String): List<CloudFile> { assertEquals("/movie", path); return files }
-            override fun page(path: String, offset: Int, refresh: Boolean): CloudPage = error("Use all pages")
-            override fun find(path: String): CloudFile = error("Use listed identity")
-            override fun resolve(file: CloudFile): CloudLink = error("Do not resolve unrelated files")
-        }
         val ids = ArrayList<String>()
-        val tracks = SidecarAudio.forCloud("/movie/part1.mp4", client) { file -> ids.add(file.id); "fixture-stream" }
+        val tracks = SidecarAudio.forCloud("/movie/part1.mp4", files) { file -> ids.add(file.id); "fixture-stream" }
         assertEquals(listOf("/movie/clone-id", "/movie/commentary-id"), ids)
         assertEquals(listOf(SidecarAudio.CLONE_TITLE, "commentary"), tracks.map { it.title })
-        val available = SidecarAudio.forCloud("/movie/part1.mp4", client) { file ->
+        val available = SidecarAudio.forCloud("/movie/part1.mp4", files) { file ->
             if (file.id == "/movie/clone-id") throw CloudFailure()
             "fixture-stream"
         }

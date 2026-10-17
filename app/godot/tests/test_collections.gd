@@ -13,7 +13,10 @@ var failures: Array[String] = []
 class Vault extends RefCounted:
 	var data := ""
 	var is_locked := false
-	func favorites_vault_save(_path: String, text: String) -> bool: data = text; return true
+	var can_save := true
+	func favorites_vault_save(_path: String, text: String) -> bool:
+		if not can_save: return false
+		data = text; return true
 	func favorites_vault_lock() -> void: is_locked = true
 
 class Platform extends RefCounted:
@@ -23,9 +26,96 @@ class Platform extends RefCounted:
 	func media_smb_browse(id: String, path: String) -> int: calls.append(["smb", id, path]); return 2
 	func media_dlna_browse(id: String, path: String) -> int: calls.append(["dlna", id, path]); return 3
 
+class MigrationViewer extends Node3D:
+	var recent_files: RefCounted
+	var mode_memory := Memory.new()
+	var track_memory := Memory.new()
+	var subtitle_timing := Memory.new()
+
+func _legacy_recent(uri: String) -> Dictionary:
+	return {"uri":uri,"title":"Older playback","kind":"video","persisted":false,"opened":1,"opened_at":100.0,"position_ms":1234,"duration_ms":60000}
+
+func _check_history_independence(directory: String) -> void:
+	var store := Favorites.new(directory.path_join("separate-favorites")); store.platform = Vault.new(); store.protected = true
+	var recent := Recent.new(directory.path_join("separate-recent"))
+	var a := "file:///Series/favorite.mp4"; var b := "smb://nas/Series/ordinary.mp4"
+	store.toggle(a, "Favorite", "video"); Privacy.vault = store; Privacy.configure("all")
+	var saved := store.entries.duplicate(true); store.lock()
+	check(recent.opened(a, "Favorite", false) and recent.progress(a, 2222, 60000) and recent.opened(b, "Ordinary", false) and recent.save(), "A locked favorite list cannot block favorite or ordinary playback history")
+	var reloaded := Recent.new(recent.directory); reloaded.load_saved()
+	check(reloaded.resume_position(a) == 2222 and reloaded.list_recent().size() == 2, "Recent names and resume positions survive restart while favorites remain locked")
+	reloaded.set_location(a, Location.infer(a)); check(reloaded.set_cover(a, "https://example.invalid/cover.jpg") and reloaded.save(), "A locked favorite list cannot block recent directory and cover metadata")
+	Privacy.configure("local")
+	check(not reloaded.opened("https://example.invalid/network.mp4", "Network", false) and reloaded.opened("file:///ordinary.jpg", "Image", false, "image"), "Independent recent recording still honors local-only privacy")
+	Privacy.configure("none")
+	check(not reloaded.opened("file:///blocked.mp4", "Blocked", false) and not reloaded.progress(a, 9999, 60000) and reloaded.resume_position(a) == 2222, "Do-not-record blocks new opens and progress independently of the favorite lock")
+	Privacy.configure("all"); store.entries = saved; store.locked = false
+	store.private_remember(a, "recent", _legacy_recent(a))
+	var legacy_uri := "file:///Series/legacy.mp4"; store.toggle(legacy_uri, "Legacy", "video"); store.private_remember(legacy_uri, "recent", _legacy_recent(legacy_uri))
+	var unwritable := Recent.new(directory.path_join("cannot-migrate")); unwritable.read_only = true
+	check(not unwritable.import_legacy(store) and not store.private_lookup(legacy_uri, "recent").is_empty(), "A failed recent-bank write preserves encrypted legacy history for retry")
+	store.platform.can_save = false
+	check(not reloaded.import_legacy(store) and not store.private_lookup(a, "recent").is_empty() and not store.private_lookup(legacy_uri, "recent").is_empty(), "A failed vault cleanup retains all legacy records without a partial batch")
+	store.platform.can_save = true
+	check(reloaded.import_legacy(store) and reloaded.resume_position(a) == 2222 and reloaded.resume_position(legacy_uri) == 1234, "Unlock imports old encrypted history without replacing newer independent progress")
+	check(store.private_lookup(a, "recent").is_empty() and store.private_lookup(legacy_uri, "recent").is_empty() and store.contains(a), "Successful import removes legacy copies without removing favorites")
+	var main := preload("res://scripts/main.gd").new(); var viewer := MigrationViewer.new(); var photo := MigrationViewer.new()
+	viewer.recent_files = reloaded
+	for memory in [viewer.mode_memory, viewer.track_memory, viewer.subtitle_timing, photo.mode_memory]: memory.directory = directory.path_join(str(memory.get_instance_id()))
+	viewer.mode_memory.entries[Memory.key_for(a)] = {"mode":{"geometry":0},"updated":1}
+	main.video = viewer; main.photo = photo; main.favorites = store
+	main._migrate_protected_favorites()
+	check(reloaded.resume_position(a) == 2222 and not reloaded.entries.is_empty() and store.private_lookup(a, "recent").is_empty(), "Main's favorite migration never drains independent recent banks")
+	main.free(); viewer.free(); photo.free()
+	store.private_remember(a, "recent", _legacy_recent(a)); store.private_remember(legacy_uri, "recent", _legacy_recent(legacy_uri))
+	var deletions := Recent.new(directory.path_join("deleted-before-unlock")); deletions.opened(a, "Favorite", false); deletions.save()
+	saved = store.entries.duplicate(true); store.lock()
+	check(deletions.forget(a) and deletions.purge_keys([]), "Recent deletion remains available while favorites are locked")
+	var after_delete := Recent.new(deletions.directory); after_delete.load_saved(); store.entries = saved; store.locked = false
+	check(after_delete.import_legacy(store) and after_delete.lookup(a).is_empty() and not after_delete.lookup(legacy_uri).is_empty(), "Restart and unlock cannot resurrect an individually deleted recent item during legacy import")
+	store.private_remember(a, "recent", _legacy_recent(a)); saved = store.entries.duplicate(true); store.lock()
+	check(after_delete.clear_all() and after_delete.purge_keys([]), "Recent clear-all needs no favorite password")
+	var after_clear := Recent.new(after_delete.directory); after_clear.load_saved(); store.entries = saved; store.locked = false
+	check(after_clear.import_legacy(store) and after_clear.list_recent().is_empty() and store.contains(a), "Unlock after clear-all cannot restore old history or erase favorites")
+	Privacy.vault = null; Privacy.configure("all")
+
 func check(value: bool, message: String) -> void:
 	checks += 1
 	if not value: failures.append(message)
+
+func _check_popup_layers() -> void:
+	for script in [Player, PhotoMenu]:
+		var control: Node3D = script.new(); root.add_child(control); control.set_process(false); control.visible = true
+		control.state_provider = func():return {"has_video":true,"has_image":true,"geometry":0,"depth_available":true,"depth_requested":true,"depth_enabled":true,"depth_strength":1.0,"layout":0}
+		var favorite := {"enabled":true,"selected":false,"locked":false}
+		control.favorite_provider = func():return favorite
+		var stars := []; var strengths := []
+		control.favorite_requested.connect(func():stars.append(true))
+		control.depth_strength_requested.connect(func(value):strengths.append(value))
+		for selected in [false, true]:
+			favorite.selected = selected
+			for angled in [false, true]:
+				control.rotation = Vector3(-0.15, 0.2, 0.03) if angled else Vector3.ZERO
+				control.scale = Vector3.ONE * (1.15 if angled else 1.0)
+				control._depth_open = true; control.refresh()
+				var origin: Vector3 = control.to_global(Vector3(0.29, 0.215, 0.7))
+				var direction: Vector3 = -control.global_basis.z
+				check(control.ray_hit(origin, direction).get("target") == control.DEPTH, "Depth popup wins over the overlapping favorite in either player and transformed menu")
+				var slider: Dictionary = control._buttons.filter(func(button):return button.target == control.DEPTH)[0]
+				var star: Dictionary = control._buttons.filter(func(button):return button.target == control.FAVORITE)[0]
+				check(slider.node.position.z > star.node.position.z and slider.node.material_override.render_priority > star.node.material_override.render_priority, "Depth popup is in front for both pixels and ray hits")
+				control.press_pointer("right_hand", origin, direction, true)
+				check(stars.is_empty() and not strengths.is_empty(), "Pressing the overlap adjusts depth without changing favorite state")
+				var target: Vector3 = control.to_global(Vector3(control.DEPTH_X, 0.35, slider.node.position.z))
+				var drag_origin: Vector3 = target + control.global_basis * Vector3(0.16, 0.12, 0.7)
+				control.update_pointer("right_hand", drag_origin, target - drag_origin, true)
+				check(is_equal_approx(float(strengths.back()), control.DepthStrength.from_fraction((0.35 - control.DEPTH_SPAN.x) / (control.DEPTH_SPAN.y - control.DEPTH_SPAN.x), control._depth_maximum())), "An oblique drag projects onto the raised slider plane without a strength offset")
+				control.release_pointer("right_hand", drag_origin, target - drag_origin, true)
+				var blank: Vector3 = control.to_global(Vector3(0.26, 0.215, 0.7))
+				check(control.ray_hit(blank, direction).get("target") == control.NONE, "Popup background blocks click-through to the favorite")
+				control._depth_open = false; control.refresh()
+				check(control.ray_hit(control.to_global(Vector3(0.28, 0.215, 0.7)), direction).get("target") == control.FAVORITE, "Closing the depth popup makes the favorite reachable again")
+		control.free()
 
 func _initialize() -> void: call_deferred("_run")
 func _run() -> void:
@@ -46,6 +136,11 @@ func _run() -> void:
 	check(Location.infer("cloud://account/Series/01.mp4").path == "/account/Series", "Cloud parent uses the native browser's mount path")
 	check(Location.infer("cloud://account/%E5%89%A7%E9%9B%86/01.mp4").path == "/account/剧集", "Cloud parent decodes path components once")
 	check(Location.clean({"type":"smb","server_id":"a","path":"p","password":"secret","token":"private"}) == {"type":"smb","server_id":"a","path":"p"}, "Source location excludes credentials")
+	var cloud_location := Location.clean({"type":"cloud", "path":"/account/Movies", "stack":[{"id":"/account/Movies", "title":"Movies", "cloud_id":"9007199254740993", "token":"private"}]})
+	var cloud_restored := Location.clean(JSON.parse_string(JSON.stringify(cloud_location)))
+	check(cloud_restored.stack.back().get("cloud_id") == "9007199254740993" and not cloud_restored.stack.back().has("token"), "Cloud folder IDs survive persisted location cleaning without credentials")
+	for bad_id in ["", "x".repeat(2049), "bad\nid", "https://example.invalid/?token=private", 123]:
+		check(not Location.clean({"type":"cloud", "path":"/account/Movies", "stack":[{"id":"/account/Movies", "title":"Movies", "cloud_id":bad_id}]}).stack.back().has("cloud_id"), "Malformed cloud identity stays out of saved locations")
 	check(Location.folder_uri({"type":"local","path":"/Series","stack":[{"id":"/Series","title":"Old name"}]}) == Location.folder_uri({"type":"local","path":"/Series","stack":[{"id":"/Series","title":"New display name"}]}), "Directory favorite identity ignores display labels")
 	check(Location.folder_title({"type":"local","path":"/Movies/Series","stack":[{"id":"/Movies","title":"Movies"},{"id":"/Movies/Series","title":"Series"}]}, "Local files") == "Series", "Directory names use the current folder rather than a source label or full breadcrumb")
 	check(Location.folder_title({"type":"smb","server_id":"nas","path":"Movies/Series"}, "SMB") == "Series", "A directory without a saved breadcrumb derives its real name from the path")
@@ -88,10 +183,11 @@ func _run() -> void:
 	var private_uri := "file:///private/secret.mp4"
 	check(store.toggle(private_uri, "Private", "video"), "Unlocked protected favorite uses encrypted backend")
 	check(not Privacy.persist_allowed(private_uri), "Protected file cannot enter plaintext storage")
-	check(recent.opened(private_uri, "Private", false) and recent.progress(private_uri, 1234, 60000), "Protected playback progress is kept inside the vault")
-	check(not recent.entries.has(Memory.key_for(private_uri)) and store.private_lookup(private_uri, "recent").position_ms == 1234, "Protected resume never enters public history banks")
-	check(store.remove(private_uri) and not store.contains(private_uri) and recent.lookup(private_uri).position_ms == 1234, "Removing a favorite preserves independent encrypted playback history")
-	check(Privacy.protected_uri(private_uri), "Unfavorited private history remains protected")
+	check(recent.opened(private_uri, "Private", false) and recent.progress(private_uri, 1234, 60000), "Recent playback records favorite media independently")
+	check(recent.entries.has(Memory.key_for(private_uri)) and store.private_lookup(private_uri, "recent").is_empty(), "Recent progress lives in its own banks instead of the favorites vault")
+	store.private_remember(private_uri, "view", {"geometry":0})
+	check(store.remove(private_uri) and not store.contains(private_uri) and recent.lookup(private_uri).position_ms == 1234, "Removing a favorite preserves independent playback history")
+	check(Privacy.protected_uri(private_uri), "Unfavorited encrypted per-file preferences remain protected")
 	store.restore()
 	check(store.remove(private_uri) and store.clear_private_records(false) and not store.restore(), "Privacy clear invalidates undo that could resurrect private history")
 	check(store.restore_favorite({"uri":private_uri,"title":"Private","kind":"video","added":1,"location":{},"private":{"recent":{"uri":private_uri}}}) and store.private_lookup(private_uri, "recent").is_empty(), "Restoring a toggled favorite cannot revive cleared private history")
@@ -100,7 +196,7 @@ func _run() -> void:
 	check(not store.locked, "Default relaxed lock tolerates briefly removing the headset")
 	store.focus_changed(false, 10000); store.tick(10000 + 15 * 60000)
 	check(store.locked and store.entries.is_empty() and vault.is_locked, "Relaxed timeout clears decrypted collection and native key")
-	check(not store.contains(private_uri) and not Privacy.persist_allowed(first), "Locked collection leaks neither membership nor new records")
+	check(not store.contains(private_uri) and not Privacy.persist_allowed(first), "Locking clears favorite membership and keeps per-file preferences protected")
 	store.locked = false; store.lock_level = "manual"; store.focus_changed(false, 0); store.tick(9999999)
 	check(not store.locked, "Manual lock level keeps one unlocked process session")
 	store.away_since = -1; store.lock_level = "balanced"; store.focus_changed(false, 0); store.tick(119999)
@@ -110,6 +206,7 @@ func _run() -> void:
 	check(store.locked, "Strict lock remains available as an explicit choice")
 	Privacy.vault = null; Privacy.configure("all")
 	var menu := Library.new(); root.add_child(menu)
+	_check_history_independence(directory)
 	menu.catalog = recent; menu.collections.store = restored
 	menu.refresh()
 	check(menu._buttons.any(func(b):return b.target == menu.collections.HOME_TAB), "Home renders recent and favorite tabs")
@@ -153,6 +250,7 @@ func _run() -> void:
 	photo._activate(photo.FAVORITE)
 	check(photo_actions.size() == 1, "Photo favorite action reaches its own handler")
 	menu.free(); player.free(); photo.free()
+	_check_popup_layers()
 	Privacy.vault = null; Privacy.configure("all")
 	print("Collections: %d checks, %d failures" % [checks, failures.size()])
 	for failure in failures: push_error(failure)

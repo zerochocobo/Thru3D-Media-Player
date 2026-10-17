@@ -868,9 +868,11 @@ func _on_media_list(id: int, payload: String) -> void:
 			_storage_stop_failures.append(str(result.get("error", "Storage stop failed")))
 		if _storage_stop_pending.is_empty(): finish_storage_release(_local_eject_pending)
 		return
+	var accepted_order_fallback: bool = kind == "cloud" and bool(result.get("order_fallback", false)) and \
+		result.get("sort_orders", []) is Array and str(result.get("order", "")) in result.get("sort_orders", [])
 	if kind == "cloud" and (str(result.get("path", "")) != _cloud_path() or \
 		int(result.get("offset", 0)) != _cloud_offsets[_cloud_requested_page] or
-		(not _cloud_path().is_empty() and PlatformMethods.supports(platform, "media_cloud_sorted_page") and str(result.get("order", "")) != file_actions.cloud_order())):
+		(not _cloud_path().is_empty() and (PlatformMethods.supports(platform, "media_cloud_sorted_page") or PlatformMethods.supports(platform, "media_cloud_directory_page")) and str(result.get("order", "")) != file_actions.cloud_order() and not accepted_order_fallback)):
 		# A matching request ID with the wrong page is a protocol failure, not pending work.
 		file_actions.cloud_failed()
 		status = "Cloud connection failed"
@@ -892,6 +894,8 @@ func _on_media_list(id: int, payload: String) -> void:
 		match kind:
 			"cloud":
 				cloud_error.clear()
+				if not _cloud_stack.is_empty() and result.get("sort_orders") is Array:
+					_cloud_stack[0]["sort_orders"] = result.sort_orders.duplicate()
 				cloud_search.observe(result)
 				file_actions.commit_cloud(str(result.get("order", "")))
 				_cloud_entries = result.get("entries", [])
@@ -1139,7 +1143,7 @@ func _rebuild_rows() -> void:
 				var armed := _confirm == "clear_cache"
 				rows.append({"title": I18n.t("Clear cache"), "detail": _bytes(cache.y) if cache.x > 0 else "", "icon": "check" if armed else "trash",
 					"selected": armed, "clear_cache": true, "empty": cache.x == 0})
-				rows.append({"title": I18n.t("Privacy"), "group_header": true, "icon": "chevron_down" if collections.privacy_expanded else "next"})
+				rows.append({"title": I18n.t("Privacy settings"), "group_header": true, "icon": "chevron_down" if collections.privacy_expanded else "next"})
 				if collections.privacy_expanded:
 					rows.append(_choice_row("Playback history", "privacy_mode", settings.get("privacy_mode", "all"),
 						[{"value": "all", "label": "Record all"}, {"value": "local", "label": "Local only"}, {"value": "none", "label": "Do not record"}]))
@@ -1258,6 +1262,10 @@ func _cancel_cloud() -> void:
 
 func _load_cloud(reset: bool = true, force: bool = false, page: int = 0) -> void:
 	_cancel_cloud()
+	if force and cloud_error.reason in ["cloud_page_expired", "cloud_location_expired"]:
+		if cloud_error.reason == "cloud_location_expired" and _cloud_stack.size() > 1:
+			_cloud_stack.resize(1); _cloud_location = _cloud_path()
+		_cloud_offsets.assign([0]); page = 0
 	cloud_error.clear()
 	if reset:
 		cloud_search.scopes = ["current"]
@@ -1278,7 +1286,9 @@ func _load_cloud(reset: bool = true, force: bool = false, page: int = 0) -> void
 	if not platform or page < 0 or page >= _cloud_offsets.size(): return
 	_cloud_requested_page = page
 	_cloud_busy = true
-	if PlatformMethods.supports(platform, "media_cloud_sorted_page") and not _cloud_path().is_empty():
+	if PlatformMethods.supports(platform, "media_cloud_directory_page") and not _cloud_path().is_empty():
+		_request("cloud", platform.media_cloud_directory_page(_cloud_path(), _cloud_offsets[page], force, file_actions.cloud_order(), str(_cloud_stack.back().get("cloud_id", ""))))
+	elif PlatformMethods.supports(platform, "media_cloud_sorted_page") and not _cloud_path().is_empty():
 		_request("cloud", platform.media_cloud_sorted_page(_cloud_path(), _cloud_offsets[page], force, file_actions.cloud_order()))
 	elif PlatformMethods.supports(platform, "media_cloud_page"):
 		_request("cloud", platform.media_cloud_page(_cloud_path(), _cloud_offsets[page], force))
@@ -1483,7 +1493,7 @@ func _activate(target: int) -> void:
 	elif target == EJECT_STORAGE:
 		_request_storage_eject()
 	elif target == CLEAR_HISTORY:
-		collections._remove_rows(catalog.list_recent())
+		collections._remove_rows(catalog.list_recent(), true)
 	elif target >= CRUMB_BASE and target < CRUMB_BASE + 10:
 		_go_to(target - CRUMB_BASE)
 	elif target >= FILTER_BASE and target < FILTER_BASE + MEDIA_FILTERS.size():
@@ -1562,7 +1572,7 @@ func _choose(row: Dictionary) -> void:
 			_smb_entries = []
 			_request("smb_browse", platform.media_smb_browse(_smb_server, _smb_path))
 		elif section == Section.CLOUD:
-			_cloud_stack.append({"id": str(container.id), "title": str(container.title)})
+			_cloud_stack.append(container.duplicate(true))
 			_cloud_entries = []
 			_load_section()
 		else:
@@ -2057,6 +2067,7 @@ func _draw() -> void:
 		_button(EDIT, "", _action_position(0.69), Vector2(0.09, 0.065), true, "edit")
 	file_actions.draw_header()
 	if browser_content(): draw_view_modes(_action_position(0.80).y)
+	_align_folder_tools()
 	_decoration(Vector2(1.28, 0.002), Vector2(0.19, 0.405), Color(0.17, 0.2, 0.24))
 	_draw_rows()
 	if section == Section.SETTINGS and tab == ABOUT_TAB:
@@ -2099,6 +2110,18 @@ func _draw() -> void:
 	line.modulate = MUTED
 	if file_actions.uncertain or file_actions.pending > 0:
 		_button(FileActions.CHECK_STATUS, I18n.t(file_actions.pending_text()), Vector2(0.66, -0.59), Vector2(0.30, 0.06), file_actions.pending == 0, "refresh")
+
+## Pack the visible folder actions against the view buttons, without gaps for absent actions.
+func _align_folder_tools() -> void:
+	if not browser_content() or section == Section.RECENT: return
+	var tools: Array[Dictionary] = []
+	for target in [FileActions.SORT, FileActions.EDIT_MODE, EJECT_STORAGE, USB_STORAGE, ALL_FILES, CloudSearch.OPEN, EDIT, REFRESH, VIEW_LIST, VIEW_GRID]:
+		for button in _buttons:
+			if button.target == target and is_equal_approx(button.rect.get_center().y, 0.445): tools.append(button)
+	for i in tools.size():
+		var x := 0.80 - (tools.size() - 1 - i) * 0.11
+		tools[i].node.position.x = x
+		tools[i].rect.position.x = x - tools[i].rect.size.x * 0.5
 
 ## Path pills (last four segments); every segment but the current one jumps there.
 func _draw_crumbs(crumbs: Array) -> void:
@@ -2181,8 +2204,6 @@ func _draw_rows() -> void:
 				var heading: Dictionary = _buttons.back()
 				heading.enabled = true; heading.base_color = Color(TILE, 0)
 				heading.node.material_override.set_shader_parameter("surface_color", Color(TILE, 0))
-				set_label_size(heading.node.get_child(0), 17)
-				heading.node.get_child(0).modulate = MUTED
 			if bool(row.get("about_info", false)):
 				_buttons.back().enabled = false
 				var node: MeshInstance3D = _buttons.back().node

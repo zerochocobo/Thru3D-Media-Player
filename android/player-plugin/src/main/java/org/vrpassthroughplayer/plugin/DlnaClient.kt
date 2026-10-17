@@ -233,7 +233,7 @@ internal object DlnaClient {
                 }
             }
             val res = chosen ?: continue
-            val entry = JSONObject().put("id", item.getAttribute("id")).put("title", title(item)).put("container", false)
+            val entry = JSONObject().put("id", item.getAttribute("id")).put("title", mediaTitle(title(item), res, imageItem)).put("container", false)
                 .put("uri", httpUri(res.textContent.trim(), base)?.toString() ?: res.textContent.trim()).put("kind", if (imageItem) "image" else "video")
             if (!imageItem) entry.put("subtitles", subtitles(item, base))
             item.getAttribute("parentID").takeIf { it.isNotBlank() && it != "-1" }?.let { entry.put("parent_id", it) }
@@ -246,6 +246,18 @@ internal object DlnaClient {
             out.put(entry)
         }
         return out
+    }
+
+    /** Keep the server's title, including an original suffix when it offers a transcoded stream. */
+    private fun mediaTitle(title: String, resource: Element, image: Boolean): String {
+        val extensions = if (image) MediaKinds.images else VIDEO_EXTENSIONS
+        if (title.substringAfterLast('.', "").lowercase() in extensions) return title
+        // URI.path decodes escaped filenames and excludes query parameters. MIME alone does not
+        // identify the original container (e.g. video/mpeg may mean mpg, ts or m2ts).
+        val name = runCatching { URI(resource.textContent.trim()).path?.substringAfterLast('/') }.getOrNull().orEmpty()
+        val extension = name.substringAfterLast('.', "")
+        if (extension.lowercase() !in extensions) return title
+        return if (title.isEmpty()) name else "$title.$extension"
     }
 
     fun parseDuration(value: String?): Long? {

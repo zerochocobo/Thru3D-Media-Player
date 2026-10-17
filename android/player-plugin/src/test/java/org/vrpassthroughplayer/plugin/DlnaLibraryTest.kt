@@ -15,6 +15,28 @@ class DlnaLibraryTest {
         """<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body><u:BrowseResponse xmlns:u="urn:schemas-upnp-org:service:ContentDirectory:1"><u:Result>${escape(didl)}</u:Result><NumberReturned>$returned</NumberReturned><TotalMatches>$total</TotalMatches><UpdateID>$update</UpdateID></u:BrowseResponse></s:Body></s:Envelope>"""
     private val description = """<root><device><friendlyName>PT server</friendlyName><UDN>uuid:pt</UDN><serviceList><service><serviceType>urn:schemas-upnp-org:service:ContentDirectory:1</serviceType><controlURL>/control/cds</controlURL></service></serviceList></device></root>"""
 
+    @Test fun displayTitlesUseSelectedResourceSuffixWithoutGuessingOrReplacingOriginalNames() {
+        fun video(title: String, url: String, mime: String = "video/mp4") =
+            DlnaClient.didl(xml("""<item id="v"><dc:title>${escape(title)}</dc:title><res protocolInfo="http-get:*:image/jpeg:*">/cover.jpg</res><res protocolInfo="http-get:*:$mime:*">${escape(url)}</res></item>"""))
+                .getJSONObject(0).getString("title")
+        assertEquals("电影.MKV", video("电影", "http://nas/media/%E7%94%B5%E5%BD%B1%2EMKV?token=x.mp4", "video/x-matroska"))
+        assertEquals("Episode.01.mp4", video("Episode.01", "/media/42.mp4?filename=wrong.mkv#ignored.avi"))
+        assertEquals("Original.mkv", video("Original.mkv", "/transcode/42.mp4"))
+        assertEquals("Original.MP4", video("Original.MP4", "/media/42.mp4"))
+        assertEquals("Movie", video("Movie", "/stream/42?filename=movie.mkv"))
+        assertEquals("Movie", video("Movie", "/media/42.bin", "video/mpeg"))
+        assertEquals("Movie", video("Movie", "/stream/42.jpg"))
+        assertEquals("Movie", video("Movie", "http://[invalid"))
+        assertEquals("movie.mp4", video("", "/media/movie.mp4"))
+
+        val entries = DlnaClient.didl(xml("""<container id="c"><dc:title>Photos</dc:title></container>
+            <item id="p"><dc:title>旅行</dc:title><class>object.item.imageItem.photo</class>
+            <res protocolInfo="http-get:*:image/jpeg:*" resolution="100x100">/thumb.jpg</res>
+            <res protocolInfo="http-get:*:image/png:*" resolution="2000x1000">/photo.PNG?token=1</res></item>"""))
+        assertEquals("Photos", entries.getJSONObject(0).getString("title"))
+        assertEquals("旅行.PNG", entries.getJSONObject(1).getString("title"))
+    }
+
     private inner class CaptionFixture : java.io.Closeable {
         var mode = "full"
         var parentCaptions = true

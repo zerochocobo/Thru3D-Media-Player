@@ -37,7 +37,7 @@ foreach ($symbol in @('Java_org_vrpassthroughplayer_plugin_MpvNative_probe',
     'Java_org_vrpassthroughplayer_plugin_MpvNative_probeGpu')) {
     if ($symbols -notmatch ('(?m)\bT\s+' + [regex]::Escape($symbol) + '\s*$')) { throw "MPV JNI export missing: $symbol" }
 }
-foreach ($method in @('available','create','acquire','release','setPlaying','setAudio','setSubtitle','subtitleStatus','seek','status','requestFrame','readFrameCode','close','requestClose')) {
+foreach ($method in @('available','create','acquire','release','setPlaying','setAudio','setNarrationGain','setSubtitle','subtitleStatus','seek','status','requestFrame','readFrameCode','close','requestClose')) {
     $symbol = 'Java_org_vrpassthroughplayer_plugin_MpvSourceNative_' + $method
     if ($symbols -notmatch ('(?m)\bT\s+' + [regex]::Escape($symbol) + '\s*$')) { throw "MPV source JNI export missing: $symbol" }
 }

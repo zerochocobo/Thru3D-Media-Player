@@ -21,6 +21,10 @@ var cloudID = regexp.MustCompile(`^[1-9][0-9]*$`)
 // These routes are JNI-only. Never register them on the HTTP stream router.
 func deletionRoutes(router *gin.Engine) {
 	router.POST("/list115", list115)
+	router.POST("/stat115", stat115)
+	router.POST("/companions115", companions115)
+	router.POST("/matches115", matches115)
+	router.POST("/exists115", exists115)
 	router.POST("/remove115", remove115)
 	router.POST("/rename115", rename115)
 }
@@ -32,10 +36,11 @@ type cloudTarget struct {
 	Folder   bool   `json:"folder"`
 	Size     int64  `json:"size"`
 	Modified int64  `json:"modified"`
+	FolderID string `json:"folder_id"`
 }
 
 func targetStorage(t cloudTarget, deleting bool) (driver.Driver, string, error) {
-	if !cloudMount.MatchString(t.Mount) || !strings.HasPrefix(t.Path, "/") || path.Clean(t.Path) != t.Path || strings.ContainsAny(t.Path, "\x00\\") || (deleting && (t.Path == "/" || !cloudID.MatchString(t.ID))) {
+	if !cloudMount.MatchString(t.Mount) || !strings.HasPrefix(t.Path, "/") || path.Clean(t.Path) != t.Path || strings.ContainsAny(t.Path, "\x00\\") || len(t.FolderID) > 128 || t.FolderID != "" && !cloudID.MatchString(t.FolderID) || (deleting && (t.Path == "/" || !cloudID.MatchString(t.ID))) {
 		return nil, "", errors.New("invalid cloud target")
 	}
 	s, actual, err := op.GetStorageAndActualPath(t.Mount + t.Path)
@@ -74,85 +79,6 @@ func freshCloudList(ctx context.Context, s driver.Driver, p string) ([]model.Obj
 	return s.List(ctx, current, model.ListArgs{Refresh: true})
 }
 
-type cloudSnapshot struct {
-	objects []model.Obj
-	expires time.Time
-}
-
-var cloudSnapshots = map[string]cloudSnapshot{} // Request serializes all JNI requests.
-
-func list115(c *gin.Context) {
-	var t struct {
-		cloudTarget
-		Offset  int  `json:"offset"`
-		Refresh bool `json:"refresh"`
-	}
-	if c.ShouldBindJSON(&t) != nil || t.Offset < 0 || t.Offset%48 != 0 {
-		cloudListError(c, "list115.request", errors.New("invalid directory page request"))
-		return
-	}
-	s, p, err := targetStorage(t.cloudTarget, false)
-	if err != nil {
-		cloudListError(c, "list115.storage", err)
-		return
-	}
-	key := t.Mount + p
-	snapshot, ok := cloudSnapshots[key]
-	if t.Refresh || !ok || time.Now().After(snapshot.expires) {
-		var items []model.Obj
-		if t.Refresh {
-			items, err = freshCloudList(c.Request.Context(), s, p)
-		} else {
-			// Ordinary browsing retains OpenList's parent cache. Only mutation
-			// checks and explicit refresh walk every ancestor from the root.
-			items, err = op.List(c.Request.Context(), s, p, model.ListArgs{})
-		}
-		if errors.Is(err, missingCloudFolder) {
-			items = nil
-			err = nil
-		}
-		if err != nil {
-			delete(cloudSnapshots, key)
-			cloudListError(c, "list115.list", err)
-			return
-		}
-		if len(items) > 240000 {
-			cloudListError(c, "list115.limit", errors.New("directory exceeds 240000 entries"))
-			return
-		}
-		delete(cloudSnapshots, key)
-		total := len(items)
-		for _, cached := range cloudSnapshots {
-			total += len(cached.objects)
-		}
-		for total > 240000 || len(cloudSnapshots) >= 64 {
-			for cachedKey, cached := range cloudSnapshots {
-				delete(cloudSnapshots, cachedKey)
-				total -= len(cached.objects)
-				break
-			}
-		}
-		snapshot = cloudSnapshot{items, time.Now().Add(2 * time.Minute)}
-		cloudSnapshots[key] = snapshot
-	}
-	if t.Offset > len(snapshot.objects) {
-		cloudListError(c, "list115.page", errors.New("page offset exceeds directory entry count; refresh the folder"))
-		return
-	}
-	end := min(t.Offset+48, len(snapshot.objects))
-	content := make([]gin.H, 0, end-t.Offset)
-	names := make(map[string]int)
-	for _, item := range snapshot.objects {
-		names[item.GetName()]++
-	}
-	for _, item := range snapshot.objects[t.Offset:end] {
-		_, renameResult := s.(driver.RenameResult)
-		_, renameOnly := s.(driver.Rename)
-		content = append(content, gin.H{"name": item.GetName(), "id": item.GetID(), "is_dir": item.IsDir(), "size": item.GetSize(), "modified_ms": cloudModified(item), "can_delete": names[item.GetName()] == 1 && cloudID.MatchString(item.GetID()) && !model.ObjHasMask(item, model.NoRemove), "can_rename": (renameResult || renameOnly) && cloudID.MatchString(item.GetID()) && !model.ObjHasMask(item, model.NoRename)})
-	}
-	c.JSON(200, gin.H{"code": 200, "data": gin.H{"content": content, "total": len(snapshot.objects)}})
-}
-
 func cloudModified(obj model.Obj) int64 {
 	if obj.ModTime().IsZero() {
 		return -1
@@ -164,7 +90,7 @@ func checkedCloudRemove(ctx context.Context, s driver.Driver, p string, t cloudT
 	if p == "/" || path.Clean(p) != p || !cloudID.MatchString(t.ID) {
 		return errors.New("invalid cloud target")
 	}
-	items, err := freshCloudList(ctx, s, path.Dir(p))
+	items, err := freshCloudCandidates(ctx, s, path.Dir(p), []string{path.Base(p)}, t.FolderID)
 	if err != nil {
 		return err
 	}
@@ -177,7 +103,11 @@ func checkedCloudRemove(ctx context.Context, s driver.Driver, p string, t cloudT
 			target = item
 		}
 	}
-	if target == nil || target.GetID() != t.ID || target.IsDir() != t.Folder || model.ObjHasMask(target, model.NoRemove) || (!t.Folder && (target.GetSize() != t.Size || (t.Modified >= 0 && cloudModified(target) != t.Modified))) {
+	target, err = freshWriteObject(ctx, s, p, target)
+	if err != nil {
+		return err
+	}
+	if target == nil || target.GetID() != t.ID || target.GetName() != path.Base(p) || target.IsDir() != t.Folder || model.ObjHasMask(target, model.NoRemove) || (!t.Folder && (target.GetSize() != t.Size || (t.Modified >= 0 && cloudModified(target) != t.Modified))) {
 		return errors.New("cloud file changed")
 	}
 	remover, ok := s.(driver.Remove)
@@ -186,6 +116,9 @@ func checkedCloudRemove(ctx context.Context, s driver.Driver, p string, t cloudT
 	}
 	// One ordinary deletion of the verified object. No child-by-child removal,
 	// recycle-bin purge, or replay after an ambiguous transport error.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := remover.Remove(ctx, target); err != nil {
 		return &cloudRemoveAttempt{err}
 	}
@@ -206,8 +139,14 @@ func invalidateCloudRemoval(s driver.Driver, mount, p string) {
 	parent := mount + path.Dir(p)
 	target := mount + p
 	for key := range cloudSnapshots {
-		if key == parent || key == target || strings.HasPrefix(key, target+"/") || (path.Dir(p) == "/" && strings.HasPrefix(key, mount+"/")) {
+		base, _, _ := strings.Cut(key, "\x00")
+		if base == parent || base == target || strings.HasPrefix(base, target+"/") || (path.Dir(p) == "/" && strings.HasPrefix(base, mount+"/")) {
 			delete(cloudSnapshots, key)
+		}
+	}
+	for key := range cloudFolders {
+		if key == target || strings.HasPrefix(key, target+"/") || (path.Dir(p) == "/" && strings.HasPrefix(key, mount+"/")) {
+			delete(cloudFolders, key)
 		}
 	}
 	// A child removal does not replace its ancestors. Keep unrelated/root snapshots
@@ -226,7 +165,9 @@ func remove115(c *gin.Context) {
 		cloudRemoveError(c, err, false)
 		return
 	}
-	err = checkedCloudRemove(c.Request.Context(), s, p, t)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 20*time.Second)
+	defer cancel()
+	err = checkedCloudRemove(ctx, s, p, t)
 	var attempted *cloudRemoveAttempt
 	started := errors.As(err, &attempted)
 	if err == nil || started {

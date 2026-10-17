@@ -147,6 +147,7 @@ func _ready() -> void:
 		else:
 			left_controller = controller
 	controller_feedback = ControllerFeedback.new()
+	controller_feedback.woken.connect(func(hand, reason): Log.record("controller_wake", {"hand": hand, "reason": reason}))
 	origin.add_child(controller_feedback)
 	var board := Board.new()
 	calibration_board = board
@@ -216,6 +217,7 @@ func _ready() -> void:
 	video.mode_lock_changed.connect(_on_mode_lock_changed.bind("video"))
 	video.thumbnail_ready.connect(_on_video_thumbnail_ready)
 	video.prefer_clone_voice = bool(settings.get_value("audio", "prefer_clone_voice", false))
+	video.narration.load_settings(settings)
 	video.history_enabled = Privacy.mode != Privacy.NONE
 	_restore_seek_settings()
 	# The chosen Alpha model size, warmed now so Alpha starts without the first-use compile.
@@ -291,6 +293,8 @@ func _ready() -> void:
 	player_menu.adjustment_requested.connect(_on_playback_adjustment)
 	player_menu.adjustment_committed.connect(_save_playback_adjustments)
 	player_menu.subtitle_requested.connect(video.set_subtitle_track)
+	player_menu.subtitle_files_requested.connect(video.request_subtitle_files)
+	player_menu.subtitle_file_requested.connect(video.select_subtitle_file)
 	player_menu.depth_strength_requested.connect(_on_depth_strength.bind(false))
 	player_menu.depth_strength_committed.connect(_save_depth_strength)
 	_connect_session_controls(player_menu)
@@ -546,13 +550,16 @@ func _on_pointer_release(action: String, hand: String) -> void:
 		ray[1] if ray != null else Vector3.ZERO, ray != null)
 
 func _on_controller_button(action: String, hand: String = "") -> void:
-	if not _controller_allowed(hand): return
-	if controller_feedback: controller_feedback.wake(hand)
-	if action not in ControllerBindings.BUTTONS or hand not in ControllerBindings.HANDS:
-		if action == "menu_button": interface_move.cancel()
+	if hand not in ControllerBindings.HANDS or not _controller_allowed(hand): return
+	if action == "menu_button":
+		if controller_feedback: controller_feedback.wake(hand)
+		interface_move.cancel()
 		_on_pointer_button(action, hand); return
+	# Capacitive touches are boolean OpenXR events too; only actual clicks wake.
+	if action not in ControllerBindings.BUTTONS: return
 	if controller_bindings.blocked[hand].has(action): return
 	var first_press := controller_bindings.press(hand, action)
+	if first_press and controller_feedback: controller_feedback.wake(hand)
 	if action in ControllerBindings.MODIFIERS and not first_press: return
 	if action == "by_button" and not first_press: return
 	var consumed_key := hand + "/" + action
@@ -890,6 +897,7 @@ func _head_tracked() -> bool:
 
 func _on_system_recentered() -> void:
 	Log.record("system_recentered")
+	if controller_feedback: controller_feedback.rebase()
 	_recenter()
 
 func _process(delta: float) -> void:
@@ -1004,7 +1012,7 @@ func _update_controls_visibility(menu: Node3D) -> void:
 	if photo_active:
 		if photo_menu._gallery_open or photo.loading: return
 	else:
-		if not menu.choices.opened.is_empty() or menu._subtitle_open or menu.bookmarks.opened or not video.requested_play or video.media.state != "playing" \
+		if not menu.choices.opened.is_empty() or menu._audio_open or menu._subtitle_open or menu.bookmarks.opened or not video.requested_play or video.media.state != "playing" \
 			or video.control.pending or video.control.in_flight > 0 or not seek_feedback.phase.is_empty() or not video.loading_caption().is_empty(): return
 	if now - _menu_touched_ms > CONTROLS_HIDE_MS: menu.dismiss()
 
@@ -1162,6 +1170,7 @@ func _cancel_pointer(hand: String) -> void:
 func _on_input_session_changed() -> void:
 	if favorites: favorites.focus_changed(_input_focused(), Time.get_ticks_msec())
 	if _input_focused(): return
+	if controller_feedback: controller_feedback.rebase()
 	_finish_flat_zoom()
 	_video_control_tap = {}
 	controller_bindings.reset_inputs(); interface_move.cancel(); stick_controls.suspend()
@@ -1222,6 +1231,20 @@ func _ray(hand: String) -> Variant:
 	if HandPointer.is_optical(_hand_tracker(hand)): return null
 	return _controller_ray(hand)
 
+## Activity uses raw tracking-space metres, independently of the head, XR origin,
+## reference-frame adjustment and the world-space ray used to draw/hit media.
+func _controller_activity(hand: String) -> Dictionary:
+	if not _controller_allowed(hand): return {}
+	var tracker := XRServer.get_tracker(hand) as XRPositionalTracker
+	if not tracker or not tracker.has_pose("grip") or not tracker.has_pose("aim"): return {}
+	var grip := tracker.get_pose("grip")
+	var aim := tracker.get_pose("aim")
+	if not grip.has_tracking_data or not aim.has_tracking_data \
+		or grip.tracking_confidence != XRPose.XR_TRACKING_CONFIDENCE_HIGH \
+		or aim.tracking_confidence != XRPose.XR_TRACKING_CONFIDENCE_HIGH: return {}
+	if not grip.transform.is_finite() or not aim.transform.is_finite(): return {}
+	return {"position": grip.transform.origin, "direction": -aim.transform.basis.z}
+
 func _update_controller_feedback(delta: float) -> void:
 	if not controller_feedback: return
 	var focused := _input_focused() and (_head_tracked() or display.preview)
@@ -1233,8 +1256,8 @@ func _update_controller_feedback(delta: float) -> void:
 		var engaged: bool = not controller_bindings.down[hand].is_empty() \
 			or interface_move.capture.get("hand", "") == hand or _grab.get("hand", "") == hand \
 			or (photo_active and photo.gallery.capture.get("hand", "") == hand)
-		var controller: XRController3D = left_controller if hand == "left_hand" else right_controller
-		engaged = engaged or _stick(controller).length() >= 0.3
+		# A suspended latch or an unassigned/diagonal axis is not an accepted action.
+		engaged = engaged or stick_controls.active_hands.has(hand.trim_suffix("_hand"))
 		var point: Variant = _media_move_anchor(_viewer(), ray) if ray != null else null
 		if interface_move.capture.get("hand", "") == hand: point = interface_move.capture.anchor
 		elif _grab.get("hand", "") == hand and _grab.has("resize"):
@@ -1242,7 +1265,8 @@ func _update_controller_feedback(delta: float) -> void:
 		elif ray != null and _viewer() and not (photo_active and (photo.inspect or photo.gallery.overview())):
 			var corner: int = _viewer().corner_at(ray[0], ray[1])
 			if corner >= 0: point = _viewer().panel.to_global(_viewer().screen_corner(corner))
-		alphas[hand] = controller_feedback.update_hand(hand, pose, ray, point, engaged, menu != null, delta, not (photo_active and photo.inspect))
+		alphas[hand] = controller_feedback.update_hand(hand, pose, ray, point, engaged, menu != null, delta,
+			not (photo_active and photo.inspect), _controller_activity(hand) if pose != null else {})
 		if photo and _controller_allowed(hand): photo.gallery.hide_pointer(hand)
 	if input_visuals: input_visuals.update_visibility(focused, alphas)
 
@@ -2216,13 +2240,17 @@ func _on_menu_seek(position_ms: int) -> void:
 
 func _on_player_setting(key: String, value: Variant) -> void:
 	if photo_active: return
+	if key.begins_with("narration_"):
+		if video.narration.set_option(key, value):
+			video.narration.save(settings); settings.save(settings_path)
+		return
 	match key:
 		"subtitle_auto_load":
 			video.set_subtitle_auto_load(bool(value))
 			settings.set_value("subtitles", "auto_load", video.subtitle_auto_load)
 			settings.save(settings_path)
 		"subtitle_delay":
-			if value is Dictionary and not video.commit_subtitle_delay(float(value.value), str(value.source_uri)):
+			if value is Dictionary and not video.commit_subtitle_delay(float(value.value), str(value.source_uri), str(value.get("subtitle_key", "__current__"))):
 				if is_instance_valid(player_menu): player_menu.refresh()
 		"seek_mode", "subtitle_distance", "subtitle_position", "subtitle_direction", "subtitle_style": _on_setting_changed(key, value)
 		"viewing_eye": video.set_viewing_eye(int(value))
@@ -2347,6 +2375,10 @@ func _menu_state() -> Dictionary:
 		"subtitle_track": video.subtitles.requested_track, "source_uri": video.local_uri,
 		"subtitle_auto_load": video.subtitle_auto_load,
 		"subtitle_delay": video.subtitle_delay,
+		"subtitle_timing_key": video.subtitle_timing_key(),
+		"subtitle_files_available": video.subtitle_files_available(), "subtitle_files": video.subtitle_files,
+		"subtitle_files_revision": video.subtitle_files_revision,
+		"subtitle_files_state": video.subtitle_files_state, "subtitle_file_loading": video.subtitle_file_loading, "subtitle_file_error": video.subtitle_file_error,
 		"title": video.display_name, "source_size": "%s x %s" % [video.media.format.get("width", "?"), video.media.format.get("height", "?")],
 		"codec": details.get("codec", "Unknown codec"),
 		"position_ms": video.control.display_position_ms(), "duration_ms": video.control.duration_ms,
@@ -2355,6 +2387,7 @@ func _menu_state() -> Dictionary:
 		"capabilities_available": platform_plugin != null,
 		"error": _menu_error(), "error_report": video.media.error_report if video.picker_error.is_empty() else {}}
 	result.merge(video.bookmarks_snapshot())
+	result.merge(video.narration.snapshot())
 	return result
 
 ## Preserve native titles/IDs for sidecar recognition; localize their presentation only.
@@ -2751,6 +2784,9 @@ func _update_status() -> void:
 
 
 func _on_playback_adjustment(key: String, value: Variant) -> void:
+	if key.begins_with("narration_"):
+		video.narration.set_option(key, value)
+		return
 	if key in ["stereo_horizontal", "stereo_vertical"]:
 		if not photo_active: video.set_stereo_alignment(key, float(value))
 		return
@@ -2783,7 +2819,7 @@ func _on_playback_adjustment(key: String, value: Variant) -> void:
 		if not is_finite(float(value)): return
 		video.subtitle_size = clampf(float(value) / 100.0, 0.5, 2.0)
 	elif key == "subtitle_delay":
-		if value is Dictionary and str(value.source_uri) == video.local_uri:
+		if value is Dictionary and str(value.source_uri) == video.local_uri and str(value.get("subtitle_key", video.subtitle_timing_key())) == video.subtitle_timing_key():
 			video.set_subtitle_delay(float(value.value))
 		return
 	elif key == "subtitle_flat_position":
@@ -3065,19 +3101,27 @@ func _on_favorites_lock_changed() -> void:
 func _migrate_protected_favorites() -> void:
 	if _migrating_favorites or not favorites.protected or favorites.locked or not video or not photo: return
 	_migrating_favorites = true
+	if not video.recent_files.import_legacy(favorites):
+		favorites.last_error = "Privacy cleanup failed"
+		if recent_menu: recent_menu.status = favorites.last_error
 	var keys := []
 	for favorite in favorites.list_favorites():
 		var uri: String = favorite.uri
 		var key := Video.ModeMemory.key_for(uri)
 		var success := true
-		var has_public_data: bool = video.recent_files.entries.has(key) or video.mode_memory.entries.has(key) or video.track_memory.entries.has(key) or photo.mode_memory.entries.has(key)
-		if video.recent_files.entries.has(key): success = favorites.private_remember(uri, "recent", video.recent_files.entries[key])
-		for memory in [video.mode_memory, video.track_memory, photo.mode_memory]:
-			if memory.entries.has(key):
-				success = favorites.private_remember(uri, memory.directory.get_file() + "/" + memory._value_field(), memory.entries[key].get(memory._value_field(), {})) and success
+		var has_public_data := false
+		for memory in [video.mode_memory, video.track_memory, video.subtitle_timing, photo.mode_memory]:
+			var memory_key: String = memory.entry_key(uri)
+			if memory.entries.has(memory_key):
+				has_public_data = true
+				success = favorites.private_remember(uri, memory.directory.get_file() + "/" + memory._value_field(), memory.entries[memory_key].get(memory._value_field(), {})) and success
 		if success and has_public_data: keys.append(key); ThumbnailCache.forget(uri)
+		if success and has_public_data:
+			for memory in [video.track_memory, video.subtitle_timing]:
+				var memory_key: String = memory.entry_key(uri)
+				if not keys.has(memory_key): keys.append(memory_key)
 	if not keys.is_empty():
-		for memory in [video.recent_files, video.mode_memory, video.track_memory, photo.mode_memory]:
+		for memory in [video.mode_memory, video.track_memory, video.subtitle_timing, photo.mode_memory]:
 			if not memory.purge_keys(keys):
 				favorites.last_error = "Privacy cleanup failed"
 				if recent_menu: recent_menu.status = favorites.last_error
@@ -3091,7 +3135,7 @@ func _clear_private_history(network_only: bool) -> void:
 		if network_only and Privacy.is_local(str(entry.uri)): continue
 		keys.append(Video.ModeMemory.key_for(entry.uri)); video.recent_files.forget(entry.uri)
 		if favorites.protected and favorites.contains(entry.uri): favorites.private_remember(entry.uri, "recent", {})
-	for memory in [video.recent_files, video.mode_memory, video.track_memory, photo.mode_memory]:
+	for memory in [video.recent_files, video.mode_memory, video.track_memory, video.subtitle_timing, photo.mode_memory]:
 		var erase_keys: Array = keys.duplicate() if network_only else memory.entries.keys()
 		if network_only:
 			for key in memory.entries:

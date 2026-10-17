@@ -105,6 +105,7 @@ func _slider(parent: Node3D, row: Dictionary, centre: Vector2, width: float, hei
 	var rail_width := field_width - 0.15
 	var target := _button({"kind": "slider", "key": row.key, "span": row.span}, "", field_centre, Vector2(field_width, height), parent)
 	if row.has("source_uri"): targets[target].source_uri = row.source_uri
+	if row.has("subtitle_key"): targets[target].subtitle_key = row.subtitle_key
 	var button: Dictionary = menu._buttons.back()
 	button.base_color = Color(menu.TILE, 0)
 	button.node.material_override.set_shader_parameter("surface_color", button.base_color)
@@ -132,6 +133,7 @@ func _slider(parent: Node3D, row: Dictionary, centre: Vector2, width: float, hei
 			var step := float(row.nudge_step) * (-1 if index == 0 else 1)
 			var item := {"kind": "nudge", "key": row.key, "value": row.value, "step": step, "span": row.span}
 			if row.has("source_uri"): item.source_uri = row.source_uri
+			if row.has("subtitle_key"): item.subtitle_key = row.subtitle_key
 			_button(item, "−" if index == 0 else "+", centre + Vector2(width / 2 - reset_width - nudge_width + 0.03 + index * 0.06, 0), Vector2(0.055, height), parent)
 			var nudge: Dictionary = menu._buttons.back()
 			nudge.enabled = not same(clampf(float(row.value) + step, row.span.x, row.span.y), row.value)
@@ -141,6 +143,7 @@ func _slider(parent: Node3D, row: Dictionary, centre: Vector2, width: float, hei
 			centre + Vector2(width / 2 - 0.0325, 0), Vector2(0.065, height), parent)
 		var reset: Dictionary = menu._buttons.back()
 		if row.has("source_uri"): targets[reset_target].source_uri = row.source_uri
+		if row.has("subtitle_key"): targets[reset_target].subtitle_key = row.subtitle_key
 		reset.base_color = Color(menu.TILE, 0)
 		reset.node.material_override.set_shader_parameter("surface_color", reset.base_color)
 		menu._icon("refresh", Vector3(0, 0, 0.006), 0.032, menu.MUTED, reset.node)
@@ -185,7 +188,10 @@ func _finish_slider() -> bool:
 	return true
 
 static func _scoped_value(item: Dictionary, value: Variant) -> Variant:
-	return {"value": value, "source_uri": item.source_uri} if item.has("source_uri") else value
+	if not item.has("source_uri"): return value
+	var result := {"value": value, "source_uri": item.source_uri}
+	if item.has("subtitle_key"): result.subtitle_key = item.subtitle_key
+	return result
 
 ## Icon-triggered lists share the same ownership, scrolling and selection as settings fields.
 func present(row: Dictionary, centre: Vector2, vertical_bounds: Vector2) -> void:

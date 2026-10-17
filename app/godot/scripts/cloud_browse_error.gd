@@ -6,6 +6,7 @@ const Log := preload("res://scripts/diagnostic_log.gd")
 var menu: Node
 var detail := ""
 var code := ""
+var reason := ""
 var opened := false
 var saved_scroll := 0.0
 
@@ -13,12 +14,12 @@ func _init(owner: Node) -> void: menu = owner
 
 func clear() -> void:
 	if opened: close()
-	detail = ""; code = ""
+	detail = ""; code = ""; reason = ""
 
 func receive(result: Dictionary) -> void:
 	clear()
 	var summary := str(result.get("error", "Cloud connection failed"))
-	var reason := str(result.get("error_reason", "cloud_unavailable"))
+	reason = str(result.get("error_reason", "cloud_unavailable"))
 	var original := str(result.get("error_detail", "")).left(4097)
 	var names: Array[String] = []
 	for entry in menu._cloud_stack: names.append(str(entry.title))

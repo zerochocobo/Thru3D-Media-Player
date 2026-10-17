@@ -22,7 +22,12 @@ internal object CloudDiagnostics {
         if (error is CloudFailure) return error
         // JSON exceptions may quote the entire payload. Only their type is diagnostic.
         val message = if (error is org.json.JSONException) "Invalid cloud response" else error.message.orEmpty()
-        return CloudFailure(detail = "$stage: ${error.javaClass.simpleName}: $message", cause = error)
+        // A bare Kotlin require failure is otherwise indistinguishable from a transport error.
+        // Retain one application source location, never a full stack or filesystem path.
+        val location = if (error is IllegalArgumentException) error.stackTrace.firstOrNull {
+            it.className.startsWith("org.vrpassthroughplayer.plugin.")
+        }?.let { " @ ${it.className.substringAfterLast('.')}.${it.methodName}:${it.lineNumber}" }.orEmpty() else ""
+        return CloudFailure(detail = "$stage: ${error.javaClass.simpleName}: $message$location", cause = error)
     }
     fun checkCore(result: JSONObject, route: String): JSONObject {
         if (result.optInt("code") == 200) return result
@@ -33,6 +38,8 @@ internal object CloudDiagnostics {
         if (message in setOf("Search expired. Search again", "Search scope unavailable", "Search result limit reached", "Folder too large to search", "Invalid search"))
             throw IllegalStateException(message)
         val detail = result.optString("error_detail").ifBlank { message }
+        if (result.optString("error_reason") in setOf("cloud_page_expired", "cloud_location_expired"))
+            throw CloudFailure(result.getString("error_reason"), detail)
         throw CloudFailure(detail = "OpenList $route · code ${result.optInt("code")}\n$detail")
     }
     fun providerFailure(json: JSONObject): CloudFailure {

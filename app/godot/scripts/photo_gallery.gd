@@ -210,6 +210,11 @@ func change_batch(direction: int = 1) -> bool:
 	_swap_phase = 1; _swap_alpha = 1.0; hover.clear()
 	return true
 
+func navigate_wall(direction: int) -> bool:
+	if not overview() or mode != Layout.WALL or _swap_phase != 0 or has_capture(): return false
+	var current: int = _wall_start if _wall_start >= 0 else (photo.pending_index if photo.pending_index >= 0 else photo.index)
+	return photo.select_image(_wall_neighbor(current, direction), 1 if direction > 0 else -1)
+
 func _advance_wall() -> void:
 	var current: int = _wall_start if _wall_start >= 0 else (photo.pending_index if photo.pending_index >= 0 else photo.index)
 	var uri := str(photo.queue[current].uri)
@@ -223,9 +228,9 @@ func _advance_wall() -> void:
 			if str(photo.queue[index].uri) == wanted: next = index; break
 		_wall_group = target
 	if next < 0:
-		var step := 1 if cards.size() >= photo.queue.size() else maxi(1, cards.size())
-		next = _neighbor(current, step * _batch_direction)
-		if next < 0: next = clampi(current + step * _batch_direction, 0, photo.queue.size() - 1)
+		var step := 1 if cards.size() >= photo.queue.size() else maxi(1, ceili(cards.size() / float(wall_rows)))
+		next = _wall_neighbor(current, step * _batch_direction)
+		if next < 0: next = 0 if _batch_direction < 0 else _wall_neighbor(photo.queue.size() - 1, 0)
 		if _batch_direction > 0:
 			_wall_groups.append(str(photo.queue[next].uri)); _wall_group = _wall_groups.size() - 1
 		else:
@@ -318,6 +323,7 @@ func synchronize() -> void:
 	current = clampi(current, 0, photo.queue.size() - 1)
 	if mode == Layout.WALL:
 		if _wall_start < 0: _wall_start = current
+		_wall_start = _wall_neighbor(_wall_start, 0)
 		current = _wall_start
 	var signature := "%d/%d/%d/%s" % [mode, _fragment_start if mode == Layout.FRAGMENTS else current, photo.queue.size(), str(photo.queue[0].uri)]
 	if mode == Layout.SIDES:
@@ -341,6 +347,16 @@ func _neighbor(current: int, offset: int) -> int:
 	var target := current + offset
 	if photo.queue_complete: return posmod(target, photo.queue.size())
 	return target if target >= 0 and target < photo.queue.size() else -1
+
+## Wrap whole columns, leaving absent cells in the final column empty. Wrapping individual
+## indices would move photos between rows whenever the album size is not a row multiple.
+func _wall_neighbor(current: int, columns: int, row: int = 0) -> int:
+	var count := ceili(photo.queue.size() / float(wall_rows))
+	var column := floori(current / float(wall_rows)) + columns
+	if photo.queue_complete: column = posmod(column, count)
+	elif column < 0 or column >= count: return -1
+	var target := column * wall_rows + row
+	return target if target < photo.queue.size() else -1
 
 func _aspect(index: int) -> float:
 	var uri := str(photo.queue[index].uri)
@@ -386,7 +402,8 @@ func _build(current: int) -> void:
 		# Columns run top to bottom and are placed whole, so a group never skips a picture.
 		var row_edges := {}
 		for row in wall_rows:
-			var seed := _neighbor(current, row)
+			row_edges[row] = {-1: 0.0, 1: 0.0}
+			var seed := _wall_neighbor(current, 0, row)
 			if seed < 0 or used.has(seed) or cards.size() >= MAX_CARDS: continue
 			var centre_width := height * _aspect(seed)
 			_add(seed, anchor * _ring_pose(0.0, radius, _wall_row_y(row, height)), Vector2(centre_width, height), RECT)
@@ -398,8 +415,8 @@ func _build(current: int) -> void:
 				if not open[side]: continue
 				var column := {}
 				for row in row_edges:
-					var index := _neighbor(current, int(row) + rank * side * wall_rows)
-					if index < 0: open[side] = false; continue
+					var index := _wall_neighbor(current, rank * side, int(row))
+					if index < 0: continue
 					var half := atan(height * _aspect(index) * 0.5 / radius)
 					var centre: float = row_edges[row][side] + 0.035 + half
 					if used.has(index) or centre + half >= PI - 0.08: column.clear(); open[side] = false; break
@@ -771,7 +788,7 @@ func release_pointer(hand: String, origin: Vector3, direction: Vector3, tracked:
 			var offset: Vector3 = cards[index].node.global_position - anchor.origin
 			var value := forward.angle_to(offset)
 			if value < angle: closest = index; angle = value
-		if closest >= 0: _wall_start = closest; photo._select(closest)
+		if closest >= 0: _wall_start = _wall_neighbor(closest, 0); photo._select(closest)
 		_yaw = 0; _reflow = true
 	return true
 

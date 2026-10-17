@@ -82,6 +82,13 @@ func (d *Open115) PlayerSearchParent(ctx context.Context, parentID string) (stri
 	if err != nil {
 		return "", err
 	}
+	if info.FileID != parentID {
+		return "", errors.New("search result outside mount")
+	}
+	return d.playerInfoPath(info)
+}
+
+func (d *Open115) playerInfoPath(info *sdk.GetFolderInfoResp) (string, error) {
 	rootID := d.GetRootId()
 	found := rootID == "0"
 	result := "/"
@@ -102,17 +109,69 @@ func (d *Open115) PlayerSearchParent(ctx context.Context, parentID string) (stri
 		}
 		result = path.Join(result, ancestor.FileName)
 	}
-	if !found || info.FileID != parentID {
+	if !found || info.FileID == "" {
 		return "", errors.New("search result outside mount")
 	}
 	// Folder-info paths may include the folder itself or only its ancestors.
-	if len(info.Paths) == 0 || info.Paths[len(info.Paths)-1].FileID != parentID {
+	if len(info.Paths) == 0 || info.Paths[len(info.Paths)-1].FileID != info.FileID {
 		if !playerSafeName(info.FileName) {
 			return "", errors.New("invalid parent name")
 		}
 		result = path.Join(result, info.FileName)
 	}
 	return result, nil
+}
+
+// Validate the selected object against the authoritative ID endpoint immediately
+// before writing; search results alone are not proof that metadata is unchanged.
+func (d *Open115) PlayerVerifyTarget(ctx context.Context, remote, id string) (model.Obj, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := d.WaitLimit(ctx); err != nil {
+		return nil, err
+	}
+	info, err := d.client.GetFolderInfo(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	actual, err := d.playerInfoPath(info)
+	if err != nil || actual != remote || info.FileID != id || info.FileName != path.Base(remote) {
+		return nil, errors.New("cloud file changed")
+	}
+	parent := len(info.Paths) - 1
+	if parent >= 0 && info.Paths[parent].FileID == info.FileID {
+		parent--
+	}
+	if parent < 0 {
+		return nil, errors.New("missing authoritative parent identity")
+	}
+	obj, err := playerLookupObjects(info.FileID, info.FileName, strconv.FormatInt(info.SizeByte, 10), info.FileCategory, info.PickCode, info.UTime)
+	if err != nil {
+		return nil, err
+	}
+	obj.(*Obj).Pid = info.Paths[parent].FileID
+	return obj, nil
+}
+
+func (d *Open115) PlayerObjectExists(ctx context.Context, id string) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if err := d.WaitLimit(ctx); err != nil {
+		return false, err
+	}
+	info, err := d.client.GetFolderInfo(ctx, id)
+	if errors.Is(err, sdk.ErrObjectNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if info.FileID != id {
+		return false, errors.New("invalid cloud identity response")
+	}
+	return true, nil
 }
 func playerSafeName(name string) bool {
 	return name != "" && name != "." && name != ".." && path.Base(name) == name && !stringsContainsUnsafe(name)

@@ -8,13 +8,13 @@
     },
     {
       "path": "depth-mnn/depth.mnn",
-      "bytes": 48809068,
-      "sha256": "85b8f12d6b7e7fac252336847563e5adc2c96a9627c5f6b420b4d398c978b898"
+      "bytes": 48971944,
+      "sha256": "a2688f9c9070ecd7cedb3b335d95bc820e12ac4df0a630c6d7b9dc11e9c76ac0"
     },
     {
       "path": "depth-mnn/photo_depth.mnn",
-      "bytes": 49722220,
-      "sha256": "93bbaad8c7c7681043ef7ff71ab35d6d2ba0f23a02efdf7b851ceb3c3caaf3a8"
+      "bytes": 49723816,
+      "sha256": "17924969505831d83497f75f12e15b8649f1300ff35e8dfe17bb647f8d2ca0bd"
     }
   ],
   "manifests": {
@@ -138,30 +138,33 @@
       "branch": "ratio=1 upstream (refiner skipped), fgr pruned, u8 io for AHardwareBuffer zero-copy, bandwidth-fused graph with NC4HW4 inputs and HardSwish in the convolutions"
     },
     "depth-mnn": {
-      "schema_version": 1,
+      "schema_version": 2,
       "backend": "MNN 3.6.1 OpenCL",
       "model": "Depth Anything V2 Small",
+      "head": "late-upsample",
       "license": "Apache-2.0",
       "source_onnx": "models\\source\\depth\\depth_anything_v2_small.onnx",
       "source_sha256": "afb6a5c28f3b6bf1618c6e43f02073ef9dfdc70e937502d51603e57b0a1df10c",
       "input": "src float32 1x3xHxW RGB 0..1 (ImageNet normalization folded)",
       "output": "depth float32 1x1xHxW relative inverse depth (larger = nearer)",
-      "width": 252,
-      "height": 140,
-      "frozen_onnx_sha256": "1c273ad875040582d8b507d05cd85ce3317d9c962c18563b0117917f7ba84119",
-      "mnn_sha256": "85b8f12d6b7e7fac252336847563e5adc2c96a9627c5f6b420b4d398c978b898",
+      "width": 364,
+      "height": 210,
+      "frozen_onnx_sha256": "f6e7ae4841ece9b33f6783ccaa64d2d218d81826b9d971edbb6635c07fccf3b1",
+      "mnn_sha256": "a2688f9c9070ecd7cedb3b335d95bc820e12ac4df0a630c6d7b9dc11e9c76ac0",
       "mnn_file": "depth.mnn",
+      "usage": "video",
       "dynamic_ops_left": [
         "Gather",
         "Resize"
       ],
-      "frozen_vs_source_rel_max": 5.237012373981997e-06,
-      "mnn_fp16_weights_vs_frozen_rel_max": 0.017661921679973602
+      "frozen_vs_source_rel_max": 6.50156516712741e-06,
+      "mnn_fp16_weights_vs_frozen_rel_max": 0.006531872320920229
     },
     "photo-depth-mnn": {
-      "schema_version": 1,
+      "schema_version": 2,
       "backend": "MNN 3.6.1 OpenCL",
       "model": "Depth Anything V2 Small",
+      "head": "late-upsample",
       "license": "Apache-2.0",
       "source_onnx": "models\\source\\depth\\depth_anything_v2_small.onnx",
       "source_sha256": "afb6a5c28f3b6bf1618c6e43f02073ef9dfdc70e937502d51603e57b0a1df10c",
@@ -169,16 +172,16 @@
       "output": "depth float32 1x1xHxW relative inverse depth (larger = nearer)",
       "width": 518,
       "height": 518,
-      "frozen_onnx_sha256": "90547d87b5af8fac7c1411edb3f39731b6775ced61ae1afef7abc47a5b3cf73e",
-      "mnn_sha256": "93bbaad8c7c7681043ef7ff71ab35d6d2ba0f23a02efdf7b851ceb3c3caaf3a8",
+      "frozen_onnx_sha256": "a422549b57675e0b5f433c7210d6548fd2117e090f5180eda6d27a3a9fd4b6c7",
+      "mnn_sha256": "17924969505831d83497f75f12e15b8649f1300ff35e8dfe17bb647f8d2ca0bd",
       "mnn_file": "photo_depth.mnn",
       "usage": "photo",
       "dynamic_ops_left": [
         "Gather",
         "Resize"
       ],
-      "frozen_vs_source_rel_max": 4.614237241185037e-06,
-      "mnn_fp16_weights_vs_frozen_rel_max": 0.006559561938047409
+      "frozen_vs_source_rel_max": 3.5669847875396954e-06,
+      "mnn_fp16_weights_vs_frozen_rel_max": 0.004773904103785753
     }
   }
 }

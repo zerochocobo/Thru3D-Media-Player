@@ -1,0 +1,82 @@
+{
+  "onnxruntime_version": "1.28.0",
+  "json_version": "3.12.0",
+  "dependencies": [
+    {
+      "file": "json.hpp",
+      "url": "https://raw.githubusercontent.com/nlohmann/json/v3.12.0/single_include/nlohmann/json.hpp",
+      "bytes": 953436,
+      "sha256": "aaf127c04cb31c406e5b04a63f1ae89369fccde6d8fa7cdda1ed4f32dfc5de63"
+    },
+    {
+      "file": "onnxruntime_c_api.h",
+      "url": "https://raw.githubusercontent.com/microsoft/onnxruntime/v1.28.0/include/onnxruntime/core/session/onnxruntime_c_api.h",
+      "bytes": 394991,
+      "sha256": "b69a133143c0da61782b2b02cc8a620d21ac139231fd211719776d10385135c1"
+    },
+    {
+      "file": "onnxruntime_cxx_api.h",
+      "url": "https://raw.githubusercontent.com/microsoft/onnxruntime/v1.28.0/include/onnxruntime/core/session/onnxruntime_cxx_api.h",
+      "bytes": 168928,
+      "sha256": "c6bf005e4063b7db911d0a6b030452bcb9d4fc5e87530a39d94c4a5fcd311b61"
+    },
+    {
+      "file": "onnxruntime_cxx_inline.h",
+      "url": "https://raw.githubusercontent.com/microsoft/onnxruntime/v1.28.0/include/onnxruntime/core/session/onnxruntime_cxx_inline.h",
+      "bytes": 157610,
+      "sha256": "97f960b1bc4a372918893ef4c77102dee725ccfce0d76607f4570b03e7e28325"
+    },
+    {
+      "file": "onnxruntime_float16.h",
+      "url": "https://raw.githubusercontent.com/microsoft/onnxruntime/v1.28.0/include/onnxruntime/core/session/onnxruntime_float16.h",
+      "bytes": 17991,
+      "sha256": "88b242845d25981633a0bbd1c148e273cf8bfb016ea3f57c4af41a06530f72b0"
+    },
+    {
+      "file": "onnxruntime-android-1.28.0.aar",
+      "url": "https://repo.maven.apache.org/maven2/com/microsoft/onnxruntime/onnxruntime-android/1.28.0/onnxruntime-android-1.28.0.aar",
+      "bytes": 45634470,
+      "sha256": "f351a0638696f54b35184290dbc001d66daae17281ad0b548d2c70347d53b8a9"
+    },
+    {
+      "file": "onnxruntime_error_code.h",
+      "url": "https://raw.githubusercontent.com/microsoft/onnxruntime/v1.28.0/include/onnxruntime/core/session/onnxruntime_error_code.h",
+      "sha256": "5ce3b054e798eced8d14f5b86e98692fd33470463f96194ce0700a2d53dd8721"
+    },
+    {
+      "file": "onnxruntime_ep_c_api.h",
+      "url": "https://raw.githubusercontent.com/microsoft/onnxruntime/v1.28.0/include/onnxruntime/core/session/onnxruntime_ep_c_api.h",
+      "sha256": "db86df0f846b8d3bdbf429a5c76c5805293196575ca3c475878612591cd18e51"
+    }
+  ],
+  "licenses": {
+    "onnxruntime": "https://github.com/microsoft/onnxruntime/blob/v1.28.0/LICENSE",
+    "json": "https://github.com/nlohmann/json/blob/v3.12.0/LICENSE.MIT",
+    "MOSS": "https://github.com/OpenMOSS/MOSS-TTS-Nano/blob/8b7bcc9341b3b4ef3a3a58ba1338a7d85ff133eb/LICENSE"
+  },
+  "archives": [
+    {
+      "name": "sentencepiece",
+      "file": "sentencepiece.tar.gz",
+      "folder": "sentencepiece-0.2.1",
+      "url": "https://codeload.github.com/google/sentencepiece/tar.gz/refs/tags/v0.2.1",
+      "sha256": "c1a59e9259c9653ad0ade653dadff074cd31f0a6ff2a11316f67bee4189a8f1b",
+      "license": "Apache-2.0"
+    },
+    {
+      "name": "ffmpeg",
+      "file": "ffmpeg.tar.gz",
+      "folder": "FFmpeg-094a2f8a2a5e7fa64736e067de224ce28fdf5979",
+      "url": "https://codeload.github.com/FFmpeg/FFmpeg/tar.gz/094a2f8a2a5e7fa64736e067de224ce28fdf5979",
+      "sha256": "3633c09eb65cba9864fe4ca1eff75ca1423174869e423e5fe9d8fce028fcf66a",
+      "license": "GPL-2.0-or-later; same FFmpeg revision as bundled MPV"
+    }
+  ],
+  "runtime_library": {
+    "file": "libonnxruntime.so",
+    "bytes": 28637280,
+    "sha256": "f826d8efb03adf0a84f10e7ba408f9d4cd11b0a2ccd8d08aeb0f7451fb50cacc",
+    "packaged_sha256": "324679b9a86f3160e36be940e794b507a627c0d34331585df62c7f6be75e8c0f",
+    "packaging_transform": "NDK 29.0.14206865 llvm-strip --strip-unneeded; reproduced and idempotent"
+  }
+}

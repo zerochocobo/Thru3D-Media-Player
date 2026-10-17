@@ -24,7 +24,7 @@ internal object PhotoPortrait {
     fun prepare(context: Context, source: File, strength: Float, token: Int, check: () -> Unit): JSONObject {
         val nearFile = File(source.parentFile,"depth.bin")
         val depth = JSONObject(File(source.parentFile,"depth.json").readText())
-        require(depth.optString("photo_cache") == "da2-518-stretch-v1" && nearFile.length() == 518L*518*4)
+        require(depth.optString("photo_cache") == "da2-518-stretch-v2" && nearFile.length() == 518L*518*4)
         val directory = File(source.parentFile,"portrait").apply { mkdirs() }
         val sourceMask = File(directory,"mask.png")
         if (!sourceMask.isFile) {

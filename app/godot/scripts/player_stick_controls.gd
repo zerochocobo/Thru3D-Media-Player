@@ -7,6 +7,8 @@ var right_latched := false
 ## The right stick stays with the selected zoom action until it returns to center.
 var right_zooming := false
 var mapped_continuous := {}
+## Only accepted actions keep feedback awake; suspend's blocked latches do not.
+var active_hands := {}
 
 ## UI captures own the input until each stick returns to center.
 func suspend() -> void:
@@ -14,6 +16,7 @@ func suspend() -> void:
 	right_latched = true
 	right_zooming = false
 	mapped_continuous.clear()
+	active_hands.clear()
 	suspended.emit()
 
 # One command per deflection; return to center before changing direction/action.
@@ -23,9 +26,11 @@ func poll(left: Vector2, right: Vector2, zoom: bool = false) -> Array[Dictionary
 	for hand in ["left", "right"]:
 		var stick: Vector2 = left if hand == "left" else right
 		if not is_finite(stick.x) or not is_finite(stick.y):
+			active_hands.erase(hand)
 			continue
 		if stick.length() < 0.3:
 			mapped_continuous.erase(hand)
+			active_hands.erase(hand)
 			if hand == "left":
 				left_latched = false
 			else:
@@ -36,6 +41,7 @@ func poll(left: Vector2, right: Vector2, zoom: bool = false) -> Array[Dictionary
 			right_zooming = true
 			right_latched = true
 			actions.append({"operation": "zoom", "amount": stick.y})
+			active_hands[hand] = true
 			continue
 		var latched := left_latched if hand == "left" else right_latched
 		if latched:
@@ -51,6 +57,7 @@ func poll(left: Vector2, right: Vector2, zoom: bool = false) -> Array[Dictionary
 			action = {"operation": "volume", "direction": 1 if stick.y > 0 else -1}
 		if not action.is_empty():
 			actions.append(action)
+			active_hands[hand] = true
 			if hand == "left":
 				left_latched = true
 			else:
@@ -62,11 +69,12 @@ func poll_mapped(left: Vector2, right: Vector2, resolver: Callable) -> Array[Dic
 	var actions: Array[Dictionary] = []
 	for hand in ["left", "right"]:
 		var stick: Vector2 = left if hand == "left" else right
-		if not stick.is_finite(): continue
+		if not stick.is_finite(): active_hands.erase(hand); continue
 		if stick.length() < 0.3:
 			# A centered stick releases its continuous action as well as its latch.
 			# Otherwise the old direction blocks reverse zoom and subsequent shortcuts.
 			mapped_continuous.erase(hand)
+			active_hands.erase(hand)
 			if hand == "left": left_latched = false
 			else: right_latched = false; right_zooming = false
 			continue
@@ -90,8 +98,10 @@ func poll_mapped(left: Vector2, right: Vector2, resolver: Callable) -> Array[Dic
 				if hand == "left": left_latched = true
 				else: right_latched = true
 				actions.append(resolved)
+				active_hands[hand] = true
 		elif not latched and (absf(stick.x) > 0.75 and absf(stick.y) < 0.3 or absf(stick.y) > 0.75 and absf(stick.x) < 0.3):
 			if hand == "left": left_latched = true
 			else: right_latched = true
 			actions.append(resolved)
+			active_hands[hand] = true
 	return actions

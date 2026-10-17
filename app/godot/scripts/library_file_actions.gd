@@ -62,6 +62,9 @@ func sortable() -> bool:
 
 func supports_order(value: String) -> bool:
 	if menu.section == menu.Section.DLNA: return value in ["name_asc", "name_desc"]
+	if menu.section == menu.Section.CLOUD and not menu._cloud_stack.is_empty():
+		var supported: Variant = menu._cloud_stack[0].get("sort_orders", Order.ORDERS)
+		if supported is Array and value not in supported: return false
 	return value in Order.ORDERS and (value != "source" or menu.section == menu.Section.CLOUD)
 
 func load(value: Dictionary) -> void:
@@ -169,7 +172,7 @@ func sort_rows() -> void:
 func choose_order(value: String) -> void:
 	if not sortable() or not supports_order(value): return
 	if menu.section == menu.Section.CLOUD:
-		if not menu.PlatformMethods.supports(menu.platform, "media_cloud_sorted_page"): return
+		if not menu.PlatformMethods.supports(menu.platform, "media_cloud_sorted_page") and not menu.PlatformMethods.supports(menu.platform, "media_cloud_directory_page"): return
 		cloud_requested_order = value
 		cloud_rollback = {"offsets": menu._cloud_offsets.duplicate(), "page": menu._cloud_page}
 		menu._cloud_positions.clear()
@@ -190,7 +193,8 @@ func commit_cloud(value: String) -> void:
 		menu.setting_changed.emit("library_orders", orders.duplicate(true))
 
 func cloud_order() -> String:
-	return cloud_requested_order if not cloud_requested_order.is_empty() else Order.normalize(orders.get(str(menu.Section.CLOUD), "name_asc"))
+	var value := cloud_requested_order if not cloud_requested_order.is_empty() else Order.normalize(orders.get(str(menu.Section.CLOUD), "name_asc"))
+	return value if supports_order(value) else "name_asc"
 
 func cloud_failed() -> void:
 	if not cloud_rollback.is_empty():
@@ -347,7 +351,7 @@ func draw_modal() -> void:
 			if not supports_order(Order.ORDERS[i]): continue
 			var field: String = Order.ORDERS[i].get_slice("_", 0)
 			var available: bool = field in ["name", "source"] or menu.rows.any(func(row): return (field == "modified" or row.has("uri")) and int(row.get(field, -1)) >= 0)
-			if menu.section == menu.Section.CLOUD: available = available and menu.PlatformMethods.supports(menu.platform, "media_cloud_sorted_page")
+			if menu.section == menu.Section.CLOUD: available = available and (menu.PlatformMethods.supports(menu.platform, "media_cloud_sorted_page") or menu.PlatformMethods.supports(menu.platform, "media_cloud_directory_page"))
 			menu._button(ORDER_BASE + i, menu.I18n.t(Order.LABELS[i]), Vector2(-0.12 + (i % 2) * 0.50, 0.01 if names_only else 0.19 - (i / 2) * 0.135), Vector2(0.46, 0.095), available, "", order() == Order.ORDERS[i])
 		menu._button(CANCEL, menu.I18n.t("Close"), Vector2(0.13, -0.13 if names_only else -0.32), Vector2(0.38, 0.08))
 		return

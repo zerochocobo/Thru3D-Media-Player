@@ -18,6 +18,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <memory>
 #include <mutex>
 #include <sstream>
@@ -89,10 +90,9 @@ int depth_priority(bool photo = false) {
     return 0;
 }
 
-std::string cache_path(AAsset* model, const std::string& directory, bool photo = false) {
+std::string cache_path(const void* model, size_t bytes, const std::string& directory, bool photo = false) {
     if (directory.empty()) return {};
-    const auto* data = static_cast<const unsigned char*>(AAsset_getBuffer(model));
-    const auto bytes = static_cast<size_t>(AAsset_getLength64(model));
+    const auto* data = static_cast<const unsigned char*>(model);
     uint64_t hash = 1469598103934665603ull; // FNV-1a over 8-byte words, then the tail (as RVM's cache name)
     size_t i = 0;
     for (; i + 8 <= bytes; i += 8) {
@@ -192,7 +192,16 @@ struct Depth final {
         require(!photo, "Video processing needs the video depth model");
         const auto started = std::chrono::steady_clock::now();
         infer(rgb);
-        if (!stabilizer) stabilizer = std::make_unique<quest::DepthStabilizer>(width, height);
+        if (!stabilizer) {
+            stabilizer = std::make_unique<quest::DepthStabilizer>(width, height);
+            // 1.5x the PTMediaServer smoothing rates: at 364x210 a map arrives only ~5 times a second and
+            // the default smoothing doubled the visible lag; 2x let edges shimmer (Quest 3 playback A/B).
+            // Debug A/B: adb shell setprop debug.vrpp.depth.stab_speed <speed>.
+            float speed = 1.5f;
+            char value[PROP_VALUE_MAX] = {};
+            if (__system_property_get("debug.vrpp.depth.stab_speed", value) > 0 && std::strtof(value, nullptr) > 0) speed = std::strtof(value, nullptr);
+            stabilizer->set_speed(speed);
+        }
         if (reset) stabilizer->reset();
         const auto inferred = std::chrono::steady_clock::now();
         stabilizer->process(out_host->host<float>(), rgb, frame_step, near);
@@ -238,7 +247,8 @@ extern "C" JNIEXPORT jstring JNICALL
 Java_org_vrpassthroughplayer_plugin_DepthNative_cachePath(JNIEnv* env, jclass, jobject assets, jstring directory) {
     try {
         const auto model = open_model(env, assets);
-        return env->NewStringUTF(cache_path(model.get(), text(env, directory)).c_str());
+        return env->NewStringUTF(cache_path(AAsset_getBuffer(model.get()), static_cast<size_t>(AAsset_getLength64(model.get())),
+                                            text(env, directory)).c_str());
     } catch (const std::exception& error) { fail(env, error.what()); return nullptr; }
 }
 
@@ -246,8 +256,26 @@ extern "C" JNIEXPORT jlong JNICALL
 Java_org_vrpassthroughplayer_plugin_DepthNative_create(JNIEnv* env, jclass, jobject assets, jstring directory) {
     try {
         const auto model = open_model(env, assets);
-        auto depth = std::make_shared<Depth>(AAsset_getBuffer(model.get()), static_cast<size_t>(AAsset_getLength64(model.get())),
-                                             cache_path(model.get(), text(env, directory)));
+        const void* data = AAsset_getBuffer(model.get());
+        const auto bytes = static_cast<size_t>(AAsset_getLength64(model.get()));
+        auto depth = std::make_shared<Depth>(data, bytes, cache_path(data, bytes, text(env, directory)));
+        std::lock_guard<std::mutex> guard(registry_mutex);
+        const jlong handle = next_handle++;
+        registry.emplace_back(handle, std::move(depth));
+        return handle;
+    } catch (const std::exception& error) { fail(env, error.what()); return 0; }
+}
+
+/** Debug A/B of the video input size: a converted video model file instead of the packaged asset. */
+extern "C" JNIEXPORT jlong JNICALL
+Java_org_vrpassthroughplayer_plugin_DepthNative_createFromFile(JNIEnv* env, jclass, jstring modelPath, jstring directory) {
+    try {
+        std::ifstream file(text(env, modelPath), std::ios::binary | std::ios::ate);
+        require(file.good(), "Depth model file unreadable");
+        std::vector<char> model(static_cast<size_t>(file.tellg()));
+        file.seekg(0);
+        require(file.read(model.data(), static_cast<std::streamsize>(model.size())).good(), "Depth model file short read");
+        auto depth = std::make_shared<Depth>(model.data(), model.size(), cache_path(model.data(), model.size(), text(env, directory)));
         std::lock_guard<std::mutex> guard(registry_mutex);
         const jlong handle = next_handle++;
         registry.emplace_back(handle, std::move(depth));
@@ -270,8 +298,9 @@ extern "C" JNIEXPORT jlong JNICALL
 Java_org_vrpassthroughplayer_plugin_DepthNative_createPhoto(JNIEnv* env, jclass, jobject assets, jstring directory) {
     try {
         const auto model = open_model(env, assets, kPhotoModelAsset);
-        auto depth = std::make_shared<Depth>(AAsset_getBuffer(model.get()), static_cast<size_t>(AAsset_getLength64(model.get())),
-                                             cache_path(model.get(), text(env, directory), true), true);
+        const void* data = AAsset_getBuffer(model.get());
+        const auto bytes = static_cast<size_t>(AAsset_getLength64(model.get()));
+        auto depth = std::make_shared<Depth>(data, bytes, cache_path(data, bytes, text(env, directory), true), true);
         require(depth->width == 518 && depth->height == 518, "Photo depth model shape differs");
         std::lock_guard<std::mutex> guard(registry_mutex);
         const jlong handle = next_handle++;

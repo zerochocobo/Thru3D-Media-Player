@@ -19,6 +19,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -132,13 +133,20 @@ func start(dataDir, keyHex string) (err error) {
 	api.Use(gin.Recovery(), middlewares.StoragesLoaded, middlewares.Auth(false), middlewares.AuthAdmin)
 	api.POST("/list", handles.FsListSplit)
 	deletionRoutes(api)
+	cursorListingRoutes(api)
 	searchRoutes(api)
 	api.GET("/drivers", handles.ListDriverInfo)
 	api.GET("/accounts", handles.ListStorages)
 	api.GET("/account", handles.GetStorage)
 	api.POST("/create", handles.CreateStorage)
 	api.POST("/update", handles.UpdateStorage)
-	api.POST("/delete", handles.DeleteStorage)
+	api.POST("/delete", func(c *gin.Context) {
+		id, _ := strconv.Atoi(c.Query("id"))
+		handles.DeleteStorage(c)
+		if id > 0 {
+			dropCursorStorage(id)
+		}
+	})
 	listener, err := net.Listen("tcp4", "127.0.0.1:0")
 	if err != nil {
 		return errors.New("cloud stream unavailable")

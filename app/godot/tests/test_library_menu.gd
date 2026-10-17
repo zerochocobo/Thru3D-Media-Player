@@ -14,6 +14,7 @@ class Catalog extends RefCounted:
 		return [] if removed else [{"uri": "smb://srv1/Video/a.mp4", "title": "最近 A", "position_ms": 61000}]
 	func lookup(_uri: String) -> Dictionary: return {} if removed else list_recent()[0]
 	func forget(uri: String) -> bool: undo = {"entry":lookup(uri),"until":Time.get_ticks_msec()+8000}; removed = true; return true
+	func clear_all() -> bool: removed = true; undo.clear(); return true
 	func purge_keys(_keys: Array) -> bool: return true
 	func can_undo() -> bool: return not undo.is_empty()
 	func restore() -> bool: removed = false; undo.clear(); return true

@@ -31,7 +31,8 @@ func _run() -> void:
 			if view == "long-titles":
 				for index in range(3, 12): state.audio_options.insert(3, {"value": index, "label": "Director commentary / " + "長い音声タイトル".repeat(12)})
 			if view == "silent": state.audio_options = [{"value": -1, "label": "Auto"}, {"value": 0, "label": "Off"}]
-			if view not in ["empty-bar", "bookmarked-bar"]: menu.choices.opened = "audio_track"
+			if view not in ["empty-bar", "bookmarked-bar"]:
+				menu._audio_open = true; menu._audio_source = str(state.source_uri); menu.choices.opened = "audio_track"
 			menu.refresh()
 			await process_frame
 			await RenderingServer.frame_post_draw

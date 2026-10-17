@@ -29,7 +29,7 @@ func _initialize() -> void: call_deferred("_run")
 
 func _run() -> void:
 	I18n.use("en")
-	var state := {"seek_mode": "speed", "background": "belfast", "background_yaw": 0, "background_brightness": 1.0, "history": true}
+	var state := {"seek_mode": "speed", "background": "belfast", "background_yaw": 0, "background_brightness": 1.0, "privacy_mode": "all"}
 	var menu := Library.new()
 	menu.section = Library.Section.SETTINGS; menu.tab = Library.GENERAL_TAB
 	menu.settings_provider = func(): return state
@@ -37,7 +37,7 @@ func _run() -> void:
 		events.append([key, value]); state[key] = value
 		if key == "language": I18n.use(str(value)))
 	root.add_child(menu); menu.toggle(); menu.set_process(false)
-	check(menu.rows.filter(func(row): return row.get("key", "") == "language").size() == 1 and menu.rows.any(func(row): return row.get("key", "") == "history"), "One row per setting; language is not five separate rows")
+	check(menu.rows.filter(func(row): return row.get("key", "") == "language").size() == 1 and menu.rows.any(func(row): return row.get("group_header", false) and row.get("title", "") == I18n.t("Privacy settings")), "One language row and the current collapsible privacy group")
 	var open_id := target(menu, "language", null, "open")
 	var value_button: Dictionary = menu._buttons.filter(func(button): return button.target == open_id)[0]
 	check(not value_button.node is MeshInstance3D and value_button.node.get_child_count() == 1, "Resting choice value uses one label and no dropdown surface")

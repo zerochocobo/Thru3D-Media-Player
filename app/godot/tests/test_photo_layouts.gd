@@ -365,6 +365,7 @@ func _input_checks() -> void:
 	check(app.photo_menu._wall_rows_open and app.photo.gallery.mode == 0 and app.photo_menu._buttons.any(func(button): return button.target == app.photo_menu.PHOTO_WALL_ROWS + 3), "Choosing the wall opens its row sub-menu before changing layout")
 	app.photo_menu._activate(app.photo_menu.PHOTO_WALL_ROWS + 3)
 	check(app.photo.gallery.mode == 2 and app.photo.gallery.wall_rows == 3 and not app.photo_menu._layout_open, "Three-row choice applies and dismisses the selector")
+	await _wall_navigation_checks(app)
 	app._on_photo_action("photo_layout_1"); app.photo_menu.dismiss(); await load_previews(app.photo)
 	var side_pose: Transform3D = app.photo.flat_pose
 	var side_anchor: Transform3D = app.photo.gallery.anchor
@@ -406,6 +407,66 @@ func _input_checks() -> void:
 	app.photo.gallery._process(.5); app.photo.gallery._process(.5)
 	await _close_shortcut_checks(app)
 	app.queue_free(); await process_frame
+
+func _wall_heights(photo: Node3D) -> Dictionary:
+	var heights := {}
+	for index in photo.gallery.cards:
+		heights[str(photo.queue[index].uri)] = (photo.gallery.anchor.affine_inverse() * photo.gallery.cards[index].pose.origin).y
+	return heights
+
+func _check_wall_heights(photo: Node3D, original: Dictionary, message: String) -> void:
+	var current := _wall_heights(photo)
+	check(current.keys().all(func(uri): return not original.has(uri) or is_equal_approx(current[uri], original[uri])), message)
+	check(photo.gallery.cards.size() <= photo.gallery.MAX_CARDS, "Wall navigation stays within the preview budget")
+
+func _wall_navigation_checks(app: Node3D) -> void:
+	app.photo_menu.dismiss()
+	for rows in [1, 2, 3]:
+		for count in ([7] if rows == 1 else [7, 8, 95]):
+			app.photo.close_image()
+			app.photo.open_image(str(entries[0].uri), "00.png", entries.slice(0, count)); await settle(app.photo)
+			app.photo.set_layout_mode(2); app.photo.gallery.set_wall_rows(rows); await load_previews(app.photo)
+			var original := _wall_heights(app.photo)
+			var last_column: int = floori((count - 1) / float(rows)) * rows
+			for move in [[1, rows], [-1, 0], [-1, last_column], [1, 0]]:
+				app._process_sticks(Vector2.ZERO, Vector2.ZERO, 0.016)
+				app._process_sticks(Vector2.ZERO, Vector2(move[0], 0), 0.016)
+				await settle(app.photo); await load_previews(app.photo)
+				check(app.photo.index == move[1], "Right stick moves one whole wall column, including a partial final column: rows=%d count=%d" % [rows, count])
+				_check_wall_heights(app.photo, original, "Horizontal wall navigation never moves a photo to another row")
+				if count < 10: check(app.photo.gallery.cards.size() == count, "A partial centre column never removes photos from other rows")
+				app._process_sticks(Vector2.ZERO, Vector2(move[0], 0), 0.016)
+				check(app.photo.index == move[1], "Holding the right stick cannot advance another column before recentering")
+			check(app.photo.gallery.change_batch(1), "Multi-row wall accepts next group")
+			app.photo.gallery._process(0.23); await settle(app.photo); await load_previews(app.photo); app.photo.gallery._process(1)
+			_check_wall_heights(app.photo, original, "Group paging preserves each photo's row")
+			check(app.photo.gallery.change_batch(-1), "Multi-row wall accepts previous group")
+			app.photo.gallery._process(0.23); await settle(app.photo); await load_previews(app.photo); app.photo.gallery._process(1)
+			check(app.photo.gallery._wall_start == 0, "Previous group restores the original column")
+			if rows > 1:
+				var bottom: int = rows - 1
+				app.photo.gallery.activate(bottom); await settle(app.photo); app.photo.gallery._process(1)
+				check(app.photo.navigate(1), "An expanded wall photo still advances by one image")
+				await settle(app.photo); app.photo.gallery._process(1)
+				check(app.photo.gallery.focus == bottom + 1, "Column navigation does not skip photos while expanded")
+				app.photo.gallery.return_focus(); app.photo.gallery._process(1); await load_previews(app.photo)
+				_check_wall_heights(app.photo, original, "Returning from an expanded photo preserves its wall row")
+				var origin: Vector3 = app.xr_camera.global_position
+				var direction: Vector3 = (app.photo.gallery.cards[bottom].pose.origin - origin).normalized()
+				check(app.photo.gallery.press_pointer("wall_drag", origin, direction), "A lower wall row accepts dragging")
+				direction = Basis(Vector3.UP, -0.45) * direction
+				app.photo.gallery.update_pointer("wall_drag", origin, direction)
+				app.photo.gallery.release_pointer("wall_drag", origin, direction)
+				await settle(app.photo); await load_previews(app.photo)
+				_check_wall_heights(app.photo, original, "Recentring after a wall drag cannot promote a lower-row photo to the top")
+			app.photo.queue_complete = false
+			app.photo.select_image(count - 1); await settle(app.photo); await load_previews(app.photo)
+			check(not app.photo.navigate(1), "Incomplete albums stop at the final wall column")
+			app.photo.select_image(0); await settle(app.photo); await load_previews(app.photo)
+			check(not app.photo.navigate(-1), "Incomplete albums cannot wrap to the last wall column")
+	app.photo.close_image()
+	app.photo.open_image(str(entries[0].uri), "00.png", entries); await settle(app.photo)
+	app.photo.set_layout_mode(2); app.photo.gallery.set_wall_rows(3); await load_previews(app.photo)
 
 func _close_shortcut_checks(app: Node3D) -> void:
 	const Bindings := preload("res://scripts/controller_bindings.gd")

@@ -87,7 +87,7 @@ class CloudSearchTest {
             var request = JSONObject()
             val client = OpenListBackend.Client("/11111111-1111-4111-8111-111111111111", provider) { _, _, body ->
                 request = body!!
-                JSONObject().put("data", JSONObject().put("content", JSONArray().put(JSONObject().put("name", "movie.mp4").put("id", "49").put("is_dir", false))).put("total", 49))
+                JSONObject().put("data", JSONObject().put("content", JSONArray().put(JSONObject().put("name", "movie.mp4").put("id", "49").put("is_dir", false))).put("total", 49).put("next_offset", -1))
             }
             client.page("/", 48, true)
             assertTrue(request.getBoolean("refresh"))

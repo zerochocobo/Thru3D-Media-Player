@@ -46,7 +46,7 @@ func items() -> Array[Dictionary]:
 	if mode == 0:
 		for fixed in [{"title": "Menu selection", "fixed": "Ray + trigger", "scope": "Menus"},
 			{"title": "Show / hide controls", "fixed": "Menu / trigger tap", "scope": "All media"},
-			{"title": "Controller / ray", "fixed": "Move to wake · idle hides", "scope": "Menus hidden"},
+			{"title": "Controller / ray", "fixed": "Move clearly to wake · idle hides", "scope": "Menus hidden"},
 			{"title": "Resize picture", "fixed": "Corner + trigger", "scope": "Flat media"},
 			{"title": "Back", "fixed": "B / Y", "scope": "Menus"},
 			{"title": "Close video and return", "fixed": "B / Y", "scope": "Video"}]: result.append(fixed)

@@ -102,6 +102,7 @@ if ($UsePreparedModelAssets) {
     & "$workspace\tools\models\Prepare-RvmCandidate.ps1" -ToolRoot $ToolRoot
 }
 & "$workspace\tools\environment\Prepare-MpvAndroid.ps1" -ToolRoot $ToolRoot -Candidate $MpvCandidate
+& "$workspace\tools\environment\Prepare-Narration.ps1"
 
 # Extract the Java API from the matching official template, not a second engine dependency.
 Add-Type -AssemblyName System.IO.Compression.FileSystem
@@ -394,9 +395,28 @@ try {
     if (-not $nativeEntry) { throw 'APK is missing the RVM JNI library.' }
     $nativeEvidenceDirectory = Join-Path $artifactDirectory 'native'
     New-Item -ItemType Directory -Path $nativeEvidenceDirectory -Force | Out-Null
+    $narrationEntry = $apkArchive.GetEntry('lib/arm64-v8a/libquest_narration.so')
+    $ortEntry = $apkArchive.GetEntry('lib/arm64-v8a/libonnxruntime.so')
+    if (-not $narrationEntry -or -not $ortEntry -or -not $apkArchive.GetEntry('assets/narration/model.json')) { throw 'APK is missing narration runtime or its model manifest.' }
+    $narrationLibrary = Join-Path $nativeEvidenceDirectory 'libquest_narration.so'
+    [IO.Compression.ZipFileExtensions]::ExtractToFile($narrationEntry, $narrationLibrary, $true)
+    $runtimeManifest = Get-Content (Join-Path $workspace 'third_party/narration/dependencies.json') -Raw | ConvertFrom-Json
+    $runtimeStream = $ortEntry.Open(); $runtimeSha = [Security.Cryptography.SHA256]::Create()
+    try { $runtimeHash = (Convert-HexString ($runtimeSha.ComputeHash($runtimeStream))).ToLowerInvariant() }
+    finally { $runtimeStream.Dispose(); $runtimeSha.Dispose() }
+    if ($runtimeHash -ne $runtimeManifest.runtime_library.packaged_sha256) { throw 'APK ORT runtime differs from the pinned library.' }
+    if ($apkArchive.Entries | Where-Object { $_.FullName -match '^assets/.*(moss_tts_|moss_audio_tokenizer_|MOSS-TTS-Nano-100M|MOSS-Audio-Tokenizer-Nano|tokenizer\.model|shared_weights\.data)' }) {
+        throw 'Narration model weights/presets must be provisioned separately, never bundled in this APK.'
+    }
     $rvmLibrary = Join-Path $nativeEvidenceDirectory 'libquest_rvm.so'
     [IO.Compression.ZipFileExtensions]::ExtractToFile($nativeEntry, $rvmLibrary, $true)
 } finally { $apkArchive.Dispose() }
+& "$env:ANDROID_NDK_HOME\toolchains\llvm\prebuilt\windows-x86_64\bin\llvm-nm.exe" -D --defined-only $narrationLibrary 2>&1 | Out-File (Join-Path $logDirectory 'narration-jni.log') -Encoding utf8
+if ($LASTEXITCODE -ne 0) { throw 'Narration JNI inspection failed.' }
+$narrationSymbols = Get-Content (Join-Path $logDirectory 'narration-jni.log') -Raw
+foreach ($method in @('create','cancel','destroy','synthesize','openReader','readWindow','closeReader')) {
+    if (-not $narrationSymbols.Contains('Java_org_vrpassthroughplayer_plugin_NarrationNative_' + $method)) { throw "Narration JNI method missing: $method" }
+}
 & "$env:ANDROID_NDK_HOME\toolchains\llvm\prebuilt\windows-x86_64\bin\llvm-readelf.exe" -h -d -l $rvmLibrary 2>&1 | Out-File (Join-Path $logDirectory 'rvm-elf.log') -Encoding utf8
 if ($LASTEXITCODE -ne 0) { throw 'RVM ELF inspection failed.' }
 $elfText = Get-Content (Join-Path $logDirectory 'rvm-elf.log') -Raw
@@ -439,7 +459,7 @@ if ($LASTEXITCODE -ne 0) { throw 'APK MPV audio method inspection failed.' }
 $audioMethod = Get-Content (Join-Path $logDirectory 'mpv-audio-plugin-method.log') -Raw
 if (-not $audioMethod.Contains('.method public final set_mpv_audio(IIDZ)Z') -or -not $audioMethod.Contains('.annotation runtime Lorg/godotengine/godot/plugin/UsedByGodot;') -or -not $audioMethod.Contains('MpvVideoBridge;->setAudio(IIDZ)Z')) { throw 'APK MPV audio method/Godot annotation differs.' }
 & "$workspace\tools\Verify-MpvCandidate.ps1" -ToolRoot $ToolRoot -Candidate $MpvCandidate -ApkPath $apkPath
-foreach ($binding in @(@('set_mpv_subtitle(II)Z', 'setSubtitle(II)Z'), @('get_mpv_subtitles(IJ)Ljava/lang/String;', 'subtitles(IJ)Ljava/lang/String;'), @('get_mpv_subtitle_bitmap(IJ)[B', 'subtitleBitmap(IJ)[B'))) {
+foreach ($binding in @(@('set_mpv_subtitle(II)Z', 'setSubtitle(II)Z'), @('get_mpv_subtitles(IJ)Ljava/lang/String;', 'subtitles(IJ)Ljava/lang/String;'), @('get_mpv_subtitle_bitmap(IJ)[B', 'subtitleBitmap(IJ)[B'), @('set_mpv_narration(ILjava/lang/String;)Z', 'setNarration(ILjava/lang/String;)Z'))) {
     $methodName = $binding[0].Split('(')[0]
     $methodLog = Join-Path $logDirectory ($methodName + '-dex.log')
     & "$env:ANDROID_HOME\cmdline-tools\latest\bin\apkanalyzer.bat" dex code --class org.vrpassthroughplayer.plugin.QuestPlayerPlugin --method $binding[0] $apkPath 2>&1 | Out-File $methodLog -Encoding utf8

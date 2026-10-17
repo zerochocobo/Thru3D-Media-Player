@@ -169,6 +169,17 @@ func clear_private_records(network_only: bool) -> bool:
 	if not _save(proposed): return false
 	undo.clear(); return true
 
+func clear_recent_records(uris: Array) -> bool:
+	if locked: return false
+	var proposed := entries.duplicate(true)
+	var changed := false
+	for uri in uris:
+		var key := key_for(str(uri))
+		if not proposed.has(key) or not proposed[key].get("private", {}).has("recent"): continue
+		proposed[key].private.erase("recent"); changed = true
+		if not proposed[key].get("favorite", true) and proposed[key].private.values().all(func(value):return value is Dictionary and value.is_empty()): proposed.erase(key)
+	return _save(proposed) if changed else true
+
 func lock() -> void:
 	if not protected or locked or busy: return
 	locking.emit()

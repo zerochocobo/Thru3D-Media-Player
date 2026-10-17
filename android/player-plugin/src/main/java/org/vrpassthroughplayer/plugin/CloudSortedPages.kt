@@ -1,14 +1,16 @@
 package org.vrpassthroughplayer.plugin
 
-/** Sort the entire directory metadata before slicing. Never label a sorted single page a directory sort.
- * Bounded snapshots contain no stream URLs or credentials, expire after two minutes, and are account-local. */
+/** Prefer provider-wide sorting and paging. Other providers retain a bounded full-directory fallback;
+ * a locally sorted single page must never be presented as a directory-wide sort.
+ * Fallback snapshots contain metadata only, expire after two minutes, and are account-local. */
 internal class CloudSortedPages(private val now: () -> Long = { System.nanoTime() / 1_000_000 }) {
     private data class Snapshot(val files: List<CloudFile>, val expires: Long,
         var order: String = "", var ordered: List<CloudFile> = emptyList())
     private val snapshots = LinkedHashMap<String, Snapshot>(4, .75f, true)
 
     @Synchronized fun page(client: CloudClient, path: String, offset: Int, refresh: Boolean, order: String): CloudPage {
-        require((order in ORDERS || order == "source") && offset >= 0)
+        require((order in ORDERS || order == "source") && offset >= 0) { "directory.sort: invalid order or offset" }
+        client.orderedPage(path, offset, refresh, order)?.let { return it }
         if (order == "source") return client.page(path, offset, refresh)
         require(offset % CloudDrive.PAGE_SIZE == 0)
         if (refresh) snapshots.remove(path)

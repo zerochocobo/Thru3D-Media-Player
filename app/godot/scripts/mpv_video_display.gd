@@ -92,6 +92,8 @@ var audio_volume := 100.0
 signal audio_options_changed(volume: float, muted: bool)
 var audio_muted := false
 var subtitles := SubtitleState.new()
+const NarrationSettings := preload("res://scripts/narration_settings.gd")
+var narration := NarrationSettings.new(self)
 var subtitle_auto_load := true
 var _subtitle_auto_pending := false
 ## Text subtitles: on the flat screen near its lower edge; in immersive modes floating at
@@ -130,6 +132,19 @@ var track_memory := TrackMemory.new()
 var subtitle_timing := SubtitleTiming.new()
 var subtitle_delay := 0.0
 var _subtitle_delay_pending := false
+var _subtitle_timing_key := ""
+var subtitle_files: Array[String] = []
+var subtitle_files_revision := 0
+var subtitle_files_state := "idle"
+var subtitle_file_error := ""
+var subtitle_file_loading := ""
+var _subtitle_file_sequence := 0
+var _subtitle_list_request := 0
+var _subtitle_load_request := 0
+var _subtitle_loaded_track := 0
+var _subtitle_load_restore := false
+var _subtitle_restore_attempted := false
+var _subtitle_files_session := 0
 var _track_restore: Dictionary = {}
 var _track_choices: Dictionary = {}
 var _remember_file := false
@@ -193,6 +208,8 @@ var video_layer: VideoLayer
 var _layer_session := false # the native session decodes into the layer surface
 ## This session was opened on the layer surface; it may report the file incompatible before any frame.
 var _layer_requested := false
+var _network_interleave_compat := false
+var _network_interleave_next := false
 var _eye_buffer_only := false # the next open stays on the eye-buffer path (one-shot)
 ## This file left the layer for a shader effect: back on the layer once the effect is off again.
 var _layer_return_uri := ""
@@ -272,6 +289,8 @@ func _ready() -> void:
 		platform.connect("local_video_access", _on_local_access)
 		platform.connect("mpv_pair_available", _on_pair)
 		platform.connect("mpv_state", _on_state)
+		if platform.has_signal("mpv_subtitle_files"):
+			platform.connect("mpv_subtitle_files", _on_subtitle_files)
 		platform.connect("mpv_error", _on_error)
 		platform.connect("mpv_detach", _on_detach)
 		platform.connect("mpv_released", _on_released)
@@ -568,6 +587,8 @@ func play_calibration_clip() -> void:
 	open_local("file://" + ProjectSettings.globalize_path(path), filename, 0, false)
 
 func open_local(uri: String, title: String, start_ms: int = 0, restore_mode: bool = true, alpha: bool = false, basename: String = "", metadata: Dictionary = {}) -> bool:
+	var network_interleave := _network_interleave_next
+	_network_interleave_next = false
 	source_location = preload("res://scripts/media_location.gd").clean(metadata.get("location", {}))
 	if source_location.is_empty(): source_location = preload("res://scripts/media_location.gd").infer(uri)
 	recent_files.suppressed.erase(ModeMemory.key_for(uri))
@@ -636,6 +657,7 @@ func open_local(uri: String, title: String, start_ms: int = 0, restore_mode: boo
 	if _thumbnail_source(uri) and Thumbnails.texture(uri) == null and not RecentFiles.valid_cover(server_cover):
 		_thumb_after_ms = 0
 	local_uri = uri
+	_network_interleave_compat = network_interleave
 	_warm_rvm()
 	display_name = title
 	_bookmark_metadata = metadata.duplicate(true)
@@ -670,9 +692,12 @@ func open_local(uri: String, title: String, start_ms: int = 0, restore_mode: boo
 	_layer_requested = layer
 	if PlatformMethods.supports(platform, "set_mpv_video_layer"):
 		platform.set_mpv_video_layer(layer)
+	if PlatformMethods.supports(platform, "set_mpv_interleave_compat"):
+		platform.set_mpv_interleave_compat(network_interleave)
 	var id: int = platform.open_mpv_video(uri, maxi(start_ms, 0), stereo_sbs, profile, alpha_requested, true, depth_requested,
 		stereo_sbs and top_bottom, SeekPolicy.normalize(seek_mode) == SeekPolicy.EXACT)
 	media.begin(id)
+	narration.reset_source()
 	playback_speed = 1.0
 	screen_rotation = 0.0
 	if PlatformMethods.supports(platform, "set_mpv_speed"): platform.set_mpv_speed(id, playback_speed)
@@ -685,6 +710,8 @@ func open_local(uri: String, title: String, start_ms: int = 0, restore_mode: boo
 	subtitles.select(0)
 	subtitles.clear(true)
 	_subtitle_auto_pending = subtitle_auto_load and restore_mode
+	_reset_subtitle_files()
+	_subtitle_timing_key = ""
 	_queue_track_restore(track_memory.lookup(uri) if restore_mode else {})
 	subtitle_delay = float(subtitle_timing.lookup(uri).get("delay_seconds", 0.0)) if restore_mode else 0.0
 	subtitles.set_delay(subtitle_delay)
@@ -724,6 +751,8 @@ func _unbind() -> void:
 		caption.visible = false
 
 func close_video() -> void:
+	_network_interleave_compat = false
+	_network_interleave_next = false
 	commit_stereo_view()
 	viewing_eye = 0
 	stereo_horizontal = 0.0
@@ -778,6 +807,7 @@ func close_video() -> void:
 	_buffering_deadline_ms = 0
 	_track_restore.clear()
 	_track_choices.clear()
+	_reset_subtitle_files()
 	control.close()
 	_remember_file = false
 	subtitles.clear(true)
@@ -1196,6 +1226,21 @@ func set_subtitle_track(track_id: int, remember: bool = true) -> bool:
 		return false
 	if not platform.set_mpv_subtitle(media.session_id, track_id):
 		return false
+	var track: Dictionary = {}
+	for item in _raw_tracks("subtitle"):
+		if int(item.get("id", 0)) == track_id: track = item; break
+	var timing_key := SubtitleTiming.track_key(track)
+	if not timing_key.is_empty() and timing_key != _subtitle_timing_key:
+		var legacy := not remember and _subtitle_timing_key.is_empty() and _remember_file
+		var seconds := subtitle_timing.for_track(local_uri, timing_key, legacy)
+		_subtitle_timing_key = timing_key
+		if not set_subtitle_delay(seconds):
+			subtitle_delay = seconds; subtitles.set_delay(seconds); _subtitle_delay_pending = true
+		if legacy and not subtitle_timing.lookup(local_uri).is_empty() and not subtitle_timing.lookup(local_uri).has("tracks"):
+			if subtitle_timing.remember_track(local_uri, timing_key, seconds): subtitle_timing.save()
+		elif remember and _remember_file:
+			if subtitle_timing.remember_track(local_uri, timing_key, seconds): subtitle_timing.save()
+	elif timing_key.is_empty(): _subtitle_timing_key = ""
 	subtitles.select(track_id)
 	bitmap_subtitles.clear(material)
 	if _subtitle_surface: _subtitle_surface.visible = false
@@ -1203,10 +1248,83 @@ func set_subtitle_track(track_id: int, remember: bool = true) -> bool:
 		caption.visible = false
 	if projected_subtitles:
 		projected_subtitles.clear(material)
-	if remember: _remember_track("subtitle", track_id)
+	if remember:
+		_subtitle_load_request = 0; _subtitle_loaded_track = 0; subtitle_file_loading = ""
+		_remember_track("subtitle", track_id)
 	if remember: _subtitle_auto_pending = false
 	changed.emit()
 	return true
+
+func _reset_subtitle_files() -> void:
+	subtitle_files_revision += 1
+	subtitle_files.clear(); subtitle_files_state = "idle"; subtitle_file_error = ""; subtitle_file_loading = ""
+	_subtitle_list_request = 0; _subtitle_load_request = 0; _subtitle_loaded_track = 0
+	_subtitle_restore_attempted = false; _subtitle_files_session = media.session_id
+
+func subtitle_files_available() -> bool:
+	if not PlatformMethods.supports(platform, "list_mpv_subtitle_files") or not PlatformMethods.supports(platform, "load_mpv_subtitle_file"): return false
+	return local_uri.begins_with("file://") or local_uri.begins_with("usb://") or local_uri.begins_with("smb://") or local_uri.begins_with("cloud://") \
+		or (local_uri.begins_with("content://com.android.externalstorage.documents/tree/"))
+
+func request_subtitle_files() -> void:
+	if not subtitle_files_available() or not media.accepts(media.session_id) or _subtitle_list_request > 0: return
+	_subtitle_file_sequence += 1; _subtitle_list_request = _subtitle_file_sequence
+	_subtitle_files_session = media.session_id
+	subtitle_files_state = "loading"; subtitle_file_error = ""
+	if not platform.list_mpv_subtitle_files(media.session_id, _subtitle_list_request):
+		_subtitle_list_request = 0; subtitle_files_state = "error"; subtitle_file_error = "Unable to list subtitle files"
+	changed.emit()
+
+func select_subtitle_file(filename: String, restoring: bool = false) -> bool:
+	if not subtitle_files_available() or not TrackMemory.valid_file(filename) or not media.accepts(media.session_id) or _subtitle_load_request > 0: return false
+	_subtitle_file_sequence += 1; _subtitle_load_request = _subtitle_file_sequence
+	_subtitle_files_session = media.session_id
+	_subtitle_loaded_track = 0; _subtitle_load_restore = restoring
+	subtitle_file_loading = filename; subtitle_file_error = ""
+	if not restoring:
+		_track_restore.erase("subtitle"); _subtitle_auto_pending = false
+	if not platform.load_mpv_subtitle_file(media.session_id, _subtitle_load_request, filename):
+		_subtitle_load_request = 0; subtitle_file_loading = ""; subtitle_file_error = "Unable to load subtitle"
+		changed.emit(); return false
+	changed.emit(); return true
+
+func _on_subtitle_files(id: int, payload: String) -> void:
+	if id != media.session_id or not media.accepts(id): return
+	var result: Variant = JSON.parse_string(payload)
+	if not result is Dictionary: return
+	var request := int(result.get("request", 0))
+	if result.get("operation") == "list" and request > 0 and request == _subtitle_list_request:
+		_subtitle_list_request = 0
+		subtitle_files_state = str(result.get("state", "error"))
+		subtitle_file_error = str(result.get("error", ""))
+		if subtitle_files_state == "ready":
+			subtitle_files_revision += 1
+			subtitle_files.clear()
+			for filename in result.get("files", []):
+				if TrackMemory.valid_file(filename) and not subtitle_files.has(filename): subtitle_files.append(filename)
+	elif result.get("operation") == "load" and request > 0 and request == _subtitle_load_request:
+		if result.get("state") == "ready":
+			_subtitle_loaded_track = int(result.get("track_id", 0))
+			_finish_subtitle_file()
+		else:
+			_subtitle_load_request = 0; subtitle_file_loading = ""; subtitle_file_error = "Unable to load subtitle"
+			if _subtitle_load_restore:
+				_track_restore.erase("subtitle"); _track_choices.erase("subtitle"); _auto_select_subtitle()
+	changed.emit()
+
+func _finish_subtitle_file() -> void:
+	if _subtitle_load_request <= 0 or _subtitle_loaded_track <= 0: return
+	if not subtitle_tracks().any(func(track): return int(track.id) == _subtitle_loaded_track): return
+	var selected := _subtitle_loaded_track
+	var restore := _subtitle_load_restore
+	_subtitle_load_request = 0; _subtitle_loaded_track = 0; subtitle_file_loading = ""
+	if set_subtitle_track(selected, not restore):
+		if restore:
+			_track_choices.subtitle = TrackMemory.describe(selected, _raw_tracks("subtitle"))
+			_track_restore.erase("subtitle"); _subtitle_auto_pending = false
+	else: subtitle_file_error = "Unable to load subtitle"
+
+func subtitle_timing_key() -> String: return _subtitle_timing_key
 
 func _raw_tracks(channel: String) -> Array:
 	return media.playback.get("details", {}).get(channel + "_tracks", [])
@@ -1236,15 +1354,29 @@ func _capture_track_choices() -> Dictionary:
 
 func _queue_track_restore(choices: Dictionary) -> void:
 	_track_restore = choices.duplicate(true)
+	_subtitle_restore_attempted = false
 	_track_choices = choices.duplicate(true)
 	if choices.has("audio"): _clone_applied = true # Per-file choice takes priority over global dubbing.
 
 func _restore_tracks() -> void:
 	if not platform or not media.accepts(media.session_id): return
+	if _subtitle_files_session != media.session_id:
+		_subtitle_files_session = media.session_id
+		_subtitle_list_request = 0; _subtitle_load_request = 0; _subtitle_loaded_track = 0; subtitle_file_loading = ""
+		_subtitle_restore_attempted = false
+		if subtitle_files_state == "loading": subtitle_files_state = "idle"
+	_finish_subtitle_file()
 	_apply_subtitle_delay()
 	for channel in _track_restore.keys():
 		var id := TrackMemory.resolve(_track_restore[channel], _raw_tracks(channel))
-		if id == TrackMemory.UNRESOLVED: continue # External tracks can arrive after FILE_LOADED.
+		if id == TrackMemory.UNRESOLVED:
+			# A remembered arbitrary sibling must be loaded again before its MPV id can resolve.
+			var filename := str(_track_restore[channel].get("file", ""))
+			if channel == "subtitle" and not filename.is_empty() and not _subtitle_restore_attempted and media.playback.get("details", {}).has("subtitle_tracks"):
+				_subtitle_restore_attempted = true
+				if not select_subtitle_file(filename, true):
+					_track_restore.erase(channel); _track_choices.erase(channel)
+			continue # External tracks can arrive after FILE_LOADED.
 		var accepted := set_audio_options(id, audio_volume, audio_muted) if channel == "audio" else set_subtitle_track(id, false)
 		if accepted:
 			_track_choices[channel] = TrackMemory.describe(id, _raw_tracks(channel))
@@ -1280,13 +1412,14 @@ func set_subtitle_delay(seconds: float) -> bool:
 	changed.emit()
 	return true
 
-func commit_subtitle_delay(seconds: float, uri: String) -> bool:
+func commit_subtitle_delay(seconds: float, uri: String, key: String = "__current__") -> bool:
 	if not is_finite(seconds) or uri.is_empty(): return false
+	if key == "__current__": key = _subtitle_timing_key if uri == local_uri else ""
 	# A release from a previous video's captured slider may save that video,
 	# but must never shift whichever file has since opened.
-	if uri == local_uri and not set_subtitle_delay(seconds): return false
+	if uri == local_uri and key == _subtitle_timing_key and not set_subtitle_delay(seconds): return false
 	if not _remember_file: return true
-	if not subtitle_timing.remember(uri, {"delay_seconds": SubtitleTiming.delay(seconds)}): return false
+	if not subtitle_timing.remember_track(uri, key, seconds): return false
 	if not subtitle_timing.save():
 		Log.record("file_subtitle_timing_save_failed", {"error": subtitle_timing.last_error})
 		return false
@@ -1837,6 +1970,13 @@ func _on_state(id: int, payload: String) -> void:
 	if report.get("audio_focus_change", "") == "loss":
 		requested_play = false
 	media.playback = report
+	var subtitle_identity := str(report.get("subtitle_memory_id", ""))
+	if track_memory.register_usb_identity(local_uri, subtitle_identity):
+		subtitle_timing.register_usb_identity(local_uri, subtitle_identity)
+		if _remember_file:
+			_queue_track_restore(track_memory.lookup(local_uri))
+			if _subtitle_timing_key.is_empty():
+				subtitle_delay = float(subtitle_timing.lookup(local_uri).get("delay_seconds", 0.0)); subtitles.set_delay(subtitle_delay); _subtitle_delay_pending = true
 	_layer_session = bool(report.get("layer_active", false))
 	_accept_source_rotation(int(report.get("source_rotation_degrees", 0)))
 	var details: Dictionary = report.get("details", {})
@@ -1973,10 +2113,12 @@ func _reopen_after_context_loss(uri: String, title: String, position_ms: int, re
 	var alignment := Vector2(stereo_horizontal, stereo_vertical)
 	var spatial := [_spatial_video, spatial_metadata(), spatial_auto_disparity]
 	var tracks := _capture_track_choices()
+	var timing := [_subtitle_timing_key, subtitle_delay]
 	var auto_subtitle := _subtitle_auto_pending # An internal reopen keeps an unfinished automatic choice.
 	if open_local(uri, title, position_ms, false, alpha_wanted()):
 		_subtitle_auto_pending = auto_subtitle
 		_queue_track_restore(tracks)
+		_subtitle_timing_key = timing[0]; subtitle_delay = timing[1]; subtitles.set_delay(subtitle_delay); _subtitle_delay_pending = true
 		_remember_file = remember_file
 		_file_permission_persisted = persisted
 		viewing_eye = eye
@@ -2017,6 +2159,12 @@ func _on_debug_command(id: int, payload: String) -> void:
 		command["accepted"] = set_depth_strength(float(command.strength)) if command.has("strength") else set_depth(bool(command.enabled))
 	elif command.operation == "audio":
 		command["accepted"] = set_audio_options(int(command.track_id), audio_volume, audio_muted)
+	elif command.operation == "narration":
+		command["accepted"] = true
+		for key in command.get("options", {}):
+			if not narration.set_option("narration_" + str(key), command.options[key]): command.accepted = false
+	elif command.operation == "narration_status":
+		command["health"] = platform.save_narration_test_status(media.session_id, str(command.request_key))
 	elif command.operation == "subtitle":
 		command["accepted"] = set_subtitle_track(int(command.track_id))
 	elif command.operation == "playing":
@@ -2229,6 +2377,7 @@ func _can_loop() -> bool:
 		and (not alpha_requested or final_pair.get("inference_ran", false) or final_pair.get("color_target") == "layer")
 
 func _process(_delta: float) -> void:
+	narration.apply()
 	_poll_loading(Time.get_ticks_msec())
 	_check_open_timeout(Time.get_ticks_msec())
 	_check_playback_timeout(Time.get_ticks_msec())
@@ -2249,10 +2398,14 @@ func _process(_delta: float) -> void:
 		seek_absolute(0)
 
 ## Video frames shown so far: presented pairs, or on the video layer (whose pairs only mark
-## restarts and positions) the frames MPV released to the layer surface minus its drops.
+## restarts and positions) the frames MPV released to the layer surface minus its drops. The layer
+## copy (Alpha) counts what it drew itself: it drops frames above the Alpha rate and without masks.
 func presented_frames() -> int:
 	if not _binding.layer:
 		return media.frame_counter
+	var copy: Variant = media.playback.get("layer_copy")
+	if copy is Dictionary and copy.has("drawn"):
+		return int(copy.drawn)
 	var details: Dictionary = media.playback.get("details", {})
 	return maxi(0, str(details.get("estimated_frame_number", "0")).to_int() - str(details.get("vo_frame_drop_count", "0")).to_int())
 
@@ -2323,6 +2476,11 @@ func _update_layer() -> void:
 	if _layer_session and video_layer.generation != _layer_generation and media.accepts(media.session_id) \
 		and _pending_revision.is_empty():
 		_reopen_at(-1, true) # a new XR session replaced the swapchain MPV decodes into
+		return
+	if media.accepts(media.session_id) and media.playback.get("network_interleave_retry", false):
+		media.playback["network_interleave_retry"] = false # close_video updates the layer before retiring this session.
+		_network_interleave_compat = true
+		_reopen_at(int(media.playback.get("network_interleave_restart_ms", 0)), _layer_session or _layer_requested)
 		return
 	# Profile 5 and a software decoder are known before the surface shows anything (no frame would come).
 	if (_layer_session or _layer_requested) and media.accepts(media.session_id) and media.playback.get("layer_compatible", true) == false:
@@ -2610,6 +2768,7 @@ func _reopen_at(position_ms: int, layer: bool) -> void:
 	if local_uri.is_empty():
 		return
 	var position := position_ms if position_ms >= 0 else maxi(0, int(int(media.last_pair.get("pts_us", control.observed_position_ms * 1000)) / 1000))
+	if position_ms < 0 and media.last_pair.is_empty(): position = maxi(position, int(media.playback.get("source_start_ms", 0)))
 	var remember := _remember_file
 	var persisted := _file_permission_persisted
 	var eye := viewing_eye
@@ -2619,14 +2778,17 @@ func _reopen_at(position_ms: int, layer: bool) -> void:
 	var rotation := screen_rotation
 	var speed := playback_speed
 	var tracks := _capture_track_choices()
+	var timing := [_subtitle_timing_key, subtitle_delay]
 	Log.record("video_layer_reopen", {"layer": layer, "position_ms": position, "alpha": alpha_requested,
 		"depth": depth_requested, "geometry": geometry, "compatible": media.playback.get("layer_compatible", true)})
 	_eye_buffer_only = not layer
 	var return_uri := _layer_return_uri
 	var auto_subtitle := _subtitle_auto_pending # An internal reopen keeps an unfinished automatic choice.
+	_network_interleave_next = _network_interleave_compat
 	if open_local(local_uri, display_name, position, false, alpha_wanted()):
 		_subtitle_auto_pending = auto_subtitle
 		_queue_track_restore(tracks)
+		_subtitle_timing_key = timing[0]; subtitle_delay = timing[1]; subtitles.set_delay(subtitle_delay); _subtitle_delay_pending = true
 		_remember_file = remember
 		_file_permission_persisted = persisted
 		viewing_eye = eye

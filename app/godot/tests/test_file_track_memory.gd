@@ -18,6 +18,8 @@ class Host extends RefCounted:
 	var calls: Array = []
 	var serial := 10
 	var audio_ok := true
+	var read_policies: Array = []
+	func set_mpv_interleave_compat(enabled: bool) -> void: read_policies.append(enabled)
 	var subtitle_ok := true
 	func mpv_supported() -> bool: return true
 	func open_mpv_video(uri: String, start: int, stereo: bool, profile: String, alpha: bool, _vulkan: bool,
@@ -120,7 +122,9 @@ func _run() -> void:
 	video.set_depth(true); video._try_revision()
 	state(video, AUDIO, SUBS)
 	check(video.depth_requested and video.audio_track_id == 4 and video.subtitles.requested_track == 12, "Layer-to-2D/3D retains both choices")
+	video._network_interleave_compat = true
 	video._reopen_at(1200, true); state(video)
+	check(host.read_policies.back() == true and video._network_interleave_compat, "Confirmed read policy crosses close/open and stays with this source")
 	check(video.audio_track_id == 4 and video.subtitles.requested_track == 12, "Returning to the compositor layer retains choices")
 	video.subtitles.sequence = 42
 	video._layer_session = false
@@ -129,6 +133,7 @@ func _run() -> void:
 	check(video.subtitles.requested_track == 12 and video.audio_track_id == 4 and video.subtitles.sequence == 42
 		and not host.calls.slice(count).any(func(c): return c[0] == "subtitle"), "Same-core revision keeps choices and cue fencing without redundant commands")
 	video._reopen_at(3100, false); state(video)
+	check(host.read_policies.back() == true, "A display-path reopen retains confirmed network compatibility")
 	check(video.subtitles.requested_track == 12 and video.audio_track_id == 4, "Immediate reopen after revision retains identities before new metadata arrives")
 	video._reopen_after_context_loss(URI, "movie.mp4", 3200, true); state(video)
 	check(video.subtitles.requested_track == 12 and video.audio_track_id == 4, "Graphics context recovery restores both tracks")
@@ -136,6 +141,7 @@ func _run() -> void:
 	video = player(directory.path_join("player")); host = video.platform
 	video.prefer_clone_voice = true
 	check(video.open_local(URI, "movie.mp4"), "Fresh controller reopens the same file")
+	check(host.read_policies.back() == false, "A fresh file open cannot inherit a previous source's compatibility override")
 	state(video)
 	check(video.audio_track_id == 4 and video.subtitles.requested_track == 12, "App restart restores both file choices")
 	check(video.set_subtitle_track(0) and video.select_audio_track(-1), "Explicit disabled subtitle and automatic audio accepted")

@@ -4,7 +4,8 @@ import org.json.JSONObject
 
 /** Rebuild the confirmed plan from fresh metadata; mutate only verified object IDs. */
 internal class CloudRename(private val client: CloudClient, private val authorized: () -> Unit = {}) {
-    private fun fresh(parent: String): List<CloudFile> {
+    private fun fresh(parent: String, queries: List<String>): List<CloudFile> {
+        client.freshMatches(parent, queries)?.let { return it }
         val result = ArrayList<CloudFile>()
         val seen = HashSet<String>()
         var offset = 0
@@ -25,7 +26,9 @@ internal class CloudRename(private val client: CloudClient, private val authoriz
         val expectedID = request.getString("cloud_id")
         require(expectedID.matches(Regex("[1-9][0-9]*")))
         val parent = path.substringBeforeLast('/').ifEmpty { "/" }
-        val files = fresh(parent)
+        val old = path.substringAfterLast('/')
+        val queries = listOf(if (request.optBoolean("folder")) old else old.substringBeforeLast('.'), request.getString("new_name"))
+        val files = fresh(parent, queries)
         val file = files.singleOrNull { it.objectId == expectedID && it.name == path.substringAfterLast('/') }
         check(file != null && file.canRename && file.folder == request.optBoolean("folder")) { "Cloud file changed. Refresh the folder" }
         if (!file.folder) MediaDeletePolicy.unchanged(file.size, file.modified, request.getLong("size"), request.optLong("modified", -1))
@@ -55,7 +58,7 @@ internal class CloudRename(private val client: CloudClient, private val authoriz
         check(request.optString("plan") == fingerprint) { "Folder changed; check its contents again" }
         fun inspect(move: RenameBundle.Move): Int {
             val original = originals.getValue(move.from)
-            val current = fresh(parent)
+            val current = fresh(parent, queries)
             val item = current.singleOrNull { it.objectId == original.objectId } ?: return -1
             if (item.folder != original.folder || (!item.folder && (item.size != original.size || item.modified != original.modified))) return -1
             return when {
@@ -68,7 +71,7 @@ internal class CloudRename(private val client: CloudClient, private val authoriz
             authorized()
             val originalMove = bundle.moves.single { it.from == from || it.to == from }
             val original = originals.getValue(originalMove.from)
-            val current = fresh(parent).singleOrNull { it.objectId == original.objectId && it.name == from }
+            val current = fresh(parent, queries).singleOrNull { it.objectId == original.objectId && it.name == from }
             check(current != null && current.canRename) { "Cloud file changed. Refresh the folder" }
             try { client.rename(CloudPaths.child(parent, from), current, to) } catch (_: Exception) { /* Inspect; never replay the same write. */ }
             val expected = if (from == originalMove.from) 1 else 0

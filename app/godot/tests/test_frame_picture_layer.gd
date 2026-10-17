@@ -36,7 +36,7 @@ class Reopen extends "res://scripts/mpv_video_display.gd":
 	var opens: Array = []
 	func open_local(uri: String, _title: String, start_ms: int = 0, _restore_mode: bool = true,
 			_alpha: bool = false, _basename: String = "", _metadata: Dictionary = {}) -> bool:
-		opens.append({"uri": uri, "position": start_ms, "eye_buffer": _eye_buffer_only})
+		opens.append({"uri": uri, "position": start_ms, "eye_buffer": _eye_buffer_only, "read_compat": _network_interleave_next})
 		if opens.size() > 3: return false # the device recursed through close_video
 		close_video()
 		media.begin(media.session_id + 1)
@@ -138,13 +138,29 @@ func _run() -> void:
 	reopen.media.begin(3)
 	reopen._layer_requested = true
 	reopen._on_state(3, JSON.stringify({"state": "playing", "layer_compatible": false,
+		"source_start_ms": 60000,
 		"details": {"position_seconds": "2.0", "duration_seconds": "20"}}))
 	reopen._update_layer()
 	check(reopen.opens.size() == 1 and reopen.opens[0].eye_buffer and reopen._layer_blocked_uri == reopen.local_uri,
 		"A layer session incompatible before its first frame reopens on the RGBA frames: %s" % [reopen.opens])
 	reopen._update_layer()
 	check(reopen.opens.size() == 1, "The reopened session is not reopened again")
+	check(reopen.opens[0].position == 60000, "Fallback before the first frame retains the requested resume position")
 	reopen.free()
+	var network := Reopen.new()
+	origin.add_child(network); network.set_process(false)
+	network.platform = Host.new(); network.video_layer = Layers.new(null)
+	network.local_uri = "https://media.example.test/movie.mp4"; network.media.begin(5); network._layer_requested = true
+	network._on_state(5, JSON.stringify({"state": "opening", "network_interleave_suspect": true}))
+	network._update_layer()
+	check(network.opens.is_empty(), "Suspicious seeks alone cannot reopen a normal source")
+	network._on_state(5, JSON.stringify({"state": "opening", "network_interleave_retry": true, "network_interleave_restart_ms": 125000}))
+	network._update_layer()
+	check(network.opens.size() == 1 and network.opens[0].position == 125000 and not network.opens[0].eye_buffer and network.opens[0].read_compat,
+		"Confirmed network compatibility reopens at the actual position while keeping the hardware layer")
+	network._update_layer()
+	check(network.opens.size() == 1, "Consumed compatibility retry cannot reopen the replacement again")
+	network.free()
 	origin.free()
 	print("Frame picture layer checks=%d failures=%d" % [checks, failures.size()])
 	for failure in failures: push_error(failure)

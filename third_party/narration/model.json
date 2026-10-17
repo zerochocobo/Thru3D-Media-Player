@@ -1,0 +1,57 @@
+{
+  "id": "moss-nano-int8-20261017",
+  "directory": "narration/moss-nano-int8-20261017",
+  "files": {
+    "MOSS-Audio-Tokenizer-Nano-ONNX/codec_browser_onnx_meta.json": {
+      "bytes": 17036,
+      "sha256": "3e291c883bb7d11ff2fe8e964e3e495519760358859f35c951254c7741592731"
+    },
+    "MOSS-Audio-Tokenizer-Nano-ONNX/moss_audio_tokenizer_decode_step.onnx": {
+      "bytes": 727295,
+      "sha256": "1bf4a5c25ba50eb2ebeb4b40a31e83fefbfdbcae47502de7887993071f8a0018"
+    },
+    "MOSS-Audio-Tokenizer-Nano-ONNX/shared_weights.data": {
+      "bytes": 12508160,
+      "sha256": "08bcba5da4efbbf9b9dd0392a25f3f5191f3eb0a0e0b509ec61665932ca9f447"
+    },
+    "MOSS-TTS-Nano-100M-ONNX/browser_poc_manifest.json": {
+      "bytes": 503354,
+      "sha256": "097d80e993dc29f0bae427590b4f77084a161cb578b50d82c29f455d5faa9eee"
+    },
+    "MOSS-TTS-Nano-100M-ONNX/moss_tts_decode_step.onnx": {
+      "bytes": 902517,
+      "sha256": "b0fb8d53f25376b5be97f2719991f66fa6a1cbd22f9c77f01950b0b4141a7dc3"
+    },
+    "MOSS-TTS-Nano-100M-ONNX/moss_tts_local_fixed_sampled_frame.onnx": {
+      "bytes": 988366,
+      "sha256": "fc488aa78cff55672a137f858a6059a61bb22d0ef0694d558ae00c9c977b8ab5"
+    },
+    "MOSS-TTS-Nano-100M-ONNX/moss_tts_prefill.onnx": {
+      "bytes": 890846,
+      "sha256": "cb709ff4ef417924e02689b977c24e5ebecd15dac1f0f635e02c9afe0d9a8d07"
+    },
+    "MOSS-TTS-Nano-100M-ONNX/shared_weights.data": {
+      "bytes": 142792704,
+      "sha256": "4784943f4b212cb1e22de754f79a5213d4dec22fc0ef13b48c9b1db6c50748b0"
+    },
+    "MOSS-TTS-Nano-100M-ONNX/tokenizer.model": {
+      "bytes": 470897,
+      "sha256": "c353ee1479b536bf414c1b247f5542b6607fb8ae91320e5af1781fee200fddff"
+    },
+    "MOSS-TTS-Nano-100M-ONNX/tts_browser_onnx_meta.json": {
+      "bytes": 4487,
+      "sha256": "3edf25232dcd0af3d061c837e9a968a39e2f8592e06777d740503c4f2244f95c"
+    }
+  },
+  "voices": {
+    "zh": [
+      "Yuewen",
+      "Junhao"
+    ],
+    "en": [
+      "Ava",
+      "Adam"
+    ]
+  },
+  "preset_distribution": "Reference recording provenance unverified. Provision for local testing; do not bundle these model/preset assets in commercial releases."
+}

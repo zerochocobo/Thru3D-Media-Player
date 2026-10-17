@@ -299,7 +299,7 @@ internal class PhotoBridge(
                 val target = File(source.parentFile, "depth.bin")
                 val metadata = File(source.parentFile, "depth.json")
                 val cached = if (target.length() == w.toLong()*h*4 && metadata.isFile)
-                    runCatching { JSONObject(metadata.readText()).takeIf { it.optString("photo_cache") == "da2-518-stretch-v1" } }.getOrNull() else null
+                    runCatching { JSONObject(metadata.readText()).takeIf { it.optString("photo_cache") == "da2-518-stretch-v2" } }.getOrNull() else null
                 val result: JSONObject
                 if (cached != null) {
                     near.put(target.readBytes()); near.rewind()
@@ -325,7 +325,7 @@ internal class PhotoBridge(
                     checkDepth()
                     near.rewind(); val bytes = ByteArray(near.remaining()); near.get(bytes); near.rewind()
                     target.writeBytes(bytes)
-                    result.put("path",target.path).put("width",w).put("height",h).put("photo_cache","da2-518-stretch-v1")
+                    result.put("path",target.path).put("width",w).put("height",h).put("photo_cache","da2-518-stretch-v2")
                         .put("rect",org.json.JSONArray(listOf(content.x.toDouble()/w,content.y.toDouble()/h,content.width.toDouble()/w,content.height.toDouble()/h)))
                     metadata.writeText(result.toString())
                 }

@@ -86,7 +86,8 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     private val mpv: MpvVideoBridge = MpvVideoBridge({ activity?.applicationContext }, {
         check(controlledRenderTasks.offer(it)) { "Player render task capacity exhausted" }
     }, { name, id, json -> if (!closed.get()) emitSignal(name, id, json) }, sources::playable, sources::sidecarAudio,
-        sources::releaseMediaStream, sources::sidecarSubtitles, sources::streamProgress, sources::streamFailure)
+        sources::releaseMediaStream, sources::sidecarSubtitles, sources::streamProgress, sources::streamFailure,
+        sources::subtitleFiles, sources::openSubtitleFile, sources::subtitleIdentity)
     private val photos = PhotoBridge({ activity?.applicationContext }, sources::playable, sources::releasePhotoStream) { name, id, json ->
         if (!closed.get()) emitSignal(name, id, json)
     }
@@ -189,6 +190,7 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
         SignalInfo("controlled_error", Int::class.javaObjectType, String::class.java),
         SignalInfo("controlled_released", Int::class.javaObjectType, String::class.java),
         SignalInfo("mpv_state", Int::class.javaObjectType, String::class.java),
+        SignalInfo("mpv_subtitle_files", Int::class.javaObjectType, String::class.java),
         SignalInfo("mpv_pair_available", Int::class.javaObjectType, String::class.java),
         SignalInfo("mpv_error", Int::class.javaObjectType, String::class.java),
         SignalInfo("mpv_detach", Int::class.javaObjectType, String::class.java),
@@ -279,6 +281,7 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     @UsedByGodot fun media_photo_directory_cancel(id: Int) = sources.photoDirectoryCancel(id)
     @UsedByGodot fun media_cloud_page(path: String, offset: Int, refresh: Boolean): Int = if (closed.get()) -1 else sources.cloudBrowse(path, refresh, offset)
     @UsedByGodot fun media_cloud_sorted_page(path: String, offset: Int, refresh: Boolean, order: String): Int = if (closed.get()) -1 else sources.cloudBrowse(path, refresh, offset, order)
+    @UsedByGodot fun media_cloud_directory_page(path: String, offset: Int, refresh: Boolean, order: String, folderId: String): Int = if (closed.get()) -1 else sources.cloudBrowse(path, refresh, offset, order, folderId)
     @UsedByGodot fun media_cloud_search(path: String, query: String, scope: String, kind: String, cursor: String, refresh: Boolean): Int = if (closed.get()) -1 else sources.cloudSearch(path, query, scope, kind, cursor, refresh)
     @UsedByGodot fun media_cloud_search_resolve(path: String, token: String): Int = if (closed.get()) -1 else sources.cloudSearchResolve(path, token)
     @UsedByGodot fun media_clipboard_text(): String = runCatching {
@@ -339,9 +342,15 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     /** depth: realtime 2D->3D (mono sources only, never with alpha). */
     /** topBottom: a stereo source with the views above each other (top = left eye) instead of side by side. */
     @UsedByGodot fun open_mpv_video(uri: String, startMs: Int, stereo: Boolean, profile: String, alpha: Boolean, vulkan: Boolean,
-                                    depth: Boolean, topBottom: Boolean, exactSeek: Boolean): Int =
-        if (closed.get()) -1 else mpv.open(uri, startMs, stereo, profile, alpha, vulkan, depth = depth, topBottom = topBottom,
-            exactSeek = exactSeek, layer = videoLayer)
+                                    depth: Boolean, topBottom: Boolean, exactSeek: Boolean): Int {
+        val interleave = videoInterleaveCompat
+        videoInterleaveCompat = false
+        return if (closed.get()) -1 else mpv.open(uri, startMs, stereo, profile, alpha, vulkan, depth = depth, topBottom = topBottom,
+            exactSeek = exactSeek, layer = videoLayer, networkInterleaveCompat = interleave)
+    }
+    @Volatile private var videoInterleaveCompat = false
+    /** One next open only; Godot sends this after structural confirmation for the current source. */
+    @UsedByGodot fun set_mpv_interleave_compat(enabled: Boolean) { videoInterleaveCompat = enabled }
     /** The next open decodes into the compositor video layer (normal playback only). */
     @Volatile private var videoLayer = false
     @UsedByGodot fun set_mpv_video_layer(enabled: Boolean) { videoLayer = enabled }
@@ -390,8 +399,12 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     @UsedByGodot fun set_mpv_playing(id: Int, playing: Boolean) { if (!closed.get()) mpv.setPlaying(id, playing) }
     @UsedByGodot fun set_mpv_audio(id: Int, trackId: Int, volume: Double, muted: Boolean): Boolean =
         !closed.get() && mpv.setAudio(id, trackId, volume, muted)
+    @UsedByGodot fun set_mpv_narration(id: Int, options: String): Boolean = !closed.get() && mpv.setNarration(id, options)
+    @UsedByGodot fun narration_supported(): Boolean = !closed.get() && NarrationPolicy.FEATURE_ENABLED && NarrationNative.supported()
     @UsedByGodot fun set_mpv_speed(id: Int, speed: Double): Boolean = !closed.get() && mpv.setSpeed(id, speed)
     @UsedByGodot fun set_mpv_subtitle(id: Int, trackId: Int): Boolean = !closed.get() && mpv.setSubtitle(id, trackId)
+    @UsedByGodot fun list_mpv_subtitle_files(id: Int, request: Int): Boolean = !closed.get() && mpv.listSubtitleFiles(id, request)
+    @UsedByGodot fun load_mpv_subtitle_file(id: Int, request: Int, name: String): Boolean = !closed.get() && mpv.loadSubtitleFile(id, request, name)
     @UsedByGodot fun set_mpv_subtitle_delay(id: Int, seconds: Double): Boolean = !closed.get() && mpv.setSubtitleDelay(id, seconds)
     @UsedByGodot fun get_mpv_subtitles(id: Int, afterSequence: Long): String = if (closed.get()) "" else mpv.subtitles(id, afterSequence)
     @UsedByGodot fun get_mpv_loading_status(id: Int): String = if (closed.get()) "" else mpv.loadingStatus(id)
@@ -446,6 +459,17 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
             } finally { temporary.delete() }
             "mpv_player_$id.json"
         } catch (failure: Exception) { "ERROR:" + failure.javaClass.simpleName }
+    }
+    /** Bounded, text-free health for an explicitly opened Debug fixture. Full privacy gates remain unchanged. */
+    @UsedByGodot fun save_narration_test_status(id: Int, request: String): String {
+        if (!BuildConfig.DEBUG || !request.matches(Regex("[A-Za-z0-9_-]{1,80}"))) return "UNAVAILABLE"
+        return try {
+            val app=activity?.applicationContext ?: return "UNAVAILABLE"
+            val value=mpv.narrationTestStatus(id).put("request",request)
+            val file=File(app.cacheDir,"narration-test-health.json")
+            val temporary=File(app.cacheDir,"narration-test-health.tmp")
+            temporary.writeText(value.toString());check(temporary.renameTo(file));file.name
+        } catch (_: Exception) { "UNAVAILABLE" }
     }
 
     override fun onMainRequestPermissionsResult(requestCode: Int, permissions: Array<String?>?, grantResults: IntArray?) {

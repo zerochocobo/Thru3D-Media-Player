@@ -52,7 +52,10 @@ func run() -> void:
 			check(menu.to_global(menu.panel_centre()).is_equal_approx(centre) and faces(menu, menu.panel_centre(), head.origin), "Default transport keeps its centre and faces the viewer")
 			check(absf(menu.global_basis.x.dot(head.basis.y if following else Vector3.UP)) < 0.00001, "Roll follows the selected reference frame")
 			var bar := menu.global_transform
-			for mode in ["settings", "settings-alpha", "screen", "color_grade", "stereo_view", "modes", "subtitles", "audio", "bookmarks", "error"]:
+			for mode in ["settings", "settings-alpha", "screen", "color_grade", "stereo_view", "modes", "subtitles", "audio", "narration", "bookmarks", "error"]:
+				state.narration_available = mode == "narration"
+				state.narration_enabled = true; state.narration_resolved_language = "zh"; state.narration_voice = "Yuewen"
+				state.narration_sources = [{"value": -1, "label": "Follow current subtitles"}, {"value": 1, "label": "Chinese"}, {"value": 2, "label": "English"}]
 				menu._reset_navigation(); state.erase("error")
 				state.stereo = mode == "stereo_view"
 				state.geometry = 1 if mode == "settings-alpha" else 0
@@ -61,7 +64,8 @@ func run() -> void:
 					"screen", "color_grade", "stereo_view": menu._adjustment = mode
 					"modes": menu._mode_open = true
 					"subtitles": menu._subtitle_open = true
-					"audio": menu.choices.opened = "audio_track"
+					"audio": menu._audio_open = true; menu._audio_source = str(state.source_uri); menu.choices.opened = "audio_track"
+					"narration": menu._audio_open = true; menu._audio_source = str(state.source_uri)
 					"bookmarks": menu.bookmarks.opened = true
 					"error": state.error = "Network unavailable"; menu._failure_open = true
 				menu.refresh()

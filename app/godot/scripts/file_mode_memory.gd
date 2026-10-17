@@ -15,6 +15,7 @@ var active_bank := -1
 var dirty := false
 var read_only := false
 var last_error := OK
+var identity_aliases: Dictionary = {}
 
 func _init(path: String = "user://settings") -> void:
 	directory = path
@@ -25,7 +26,7 @@ static func key_for(uri: String) -> String:
 	# Network library URIs are stable (smb://<server id>/..., DLNA http media URLs); the
 	# loopback SMB proxy URL is per run and never stored.
 	var network := uri.begins_with("dlna://") or uri.begins_with("smb://") or uri.begins_with("cloud://") or uri.begins_with("medialib://") or ((uri.begins_with("http://") or uri.begins_with("https://")) 		and not uri.begins_with("http://127.0.0.1"))
-	if not (uri.begins_with("content://") or uri.begins_with("file://") or network):
+	if not (uri.begins_with("content://") or uri.begins_with("file://") or uri.begins_with("usb://") or network):
 		return ""
 	# Android document identifiers and file paths can be case-sensitive.
 	return uri.sha256_text()
@@ -78,7 +79,7 @@ static func _decode(text: String) -> Variant:
 
 func _read_bank(path: String) -> Dictionary:
 	var file := FileAccess.open(path, FileAccess.READ)
-	if not file or file.get_length() > MAX_BYTES:
+	if not file or file.get_length() > _max_bytes():
 		return {}
 	var envelope: Variant = _decode(file.get_as_text())
 	if not envelope is Dictionary:
@@ -133,13 +134,13 @@ func load_saved() -> void:
 
 func lookup(uri: String) -> Dictionary:
 	if Privacy.protected_uri(uri): return Privacy.private_lookup(uri, directory.get_file() + "/" + _value_field())
-	var value: Dictionary = entries.get(key_for(uri), {})
+	var value: Dictionary = entries.get(entry_key(uri), {})
 	return value.get(_value_field(), {}).duplicate(true)
 
 func remember(uri: String, mode: Dictionary) -> bool:
 	if not Privacy.record_allowed(uri): return false
 	if Privacy.protected_uri(uri): return Privacy.private_remember(uri, directory.get_file() + "/" + _value_field(), mode) if _valid_value(mode) else false
-	var key := key_for(uri)
+	var key := entry_key(uri)
 	if key.is_empty() or not _valid_value(mode):
 		return false
 	if lookup(uri) == mode:
@@ -154,6 +155,19 @@ func remember(uri: String, mode: Dictionary) -> bool:
 	dirty = true
 	return true
 
+func entry_key(uri: String) -> String:
+	return key_for(str(identity_aliases.get(uri, uri)))
+
+func _max_bytes() -> int: return MAX_BYTES
+
+func register_usb_identity(uri: String, identity: String) -> bool:
+	if not uri.begins_with("usb://") or not identity.begins_with("usb://stable/") or identity.length() > 8192: return false
+	var volume := identity.trim_prefix("usb://stable/").get_slice("/", 0)
+	if volume.length() != 64 or not volume.is_valid_hex_number(false): return false
+	if identity_aliases.get(uri, "") == identity: return false
+	identity_aliases[uri] = identity
+	return true
+
 func _commit(staged: String, target: String) -> Error:
 	return DirAccess.rename_absolute(staged, target)
 
@@ -166,14 +180,17 @@ func purge_keys(keys: Array) -> bool:
 	return save()
 
 func relocate(old_uri: String, new_uri: String, title: String = "") -> bool:
-	var old_key := key_for(old_uri)
-	var new_key := key_for(new_uri)
+	var old_key := entry_key(old_uri)
+	var new_key := entry_key(new_uri)
 	if old_key.is_empty() or new_key.is_empty() or not entries.has(old_key): return false
 	var value: Dictionary = entries[old_key].duplicate(true)
 	if value.has("uri"): value.uri = new_uri
 	if value.has("title") and not title.is_empty(): value.title = title.left(256)
 	entries[new_key] = value; entries.erase(old_key); dirty = true
 	return true
+
+func _payload(serial: int) -> Dictionary:
+	return {"sequence": serial, "entries": entries}
 
 func save() -> bool:
 	if not dirty:
@@ -190,10 +207,10 @@ func save() -> bool:
 	var next_bank := 0 if active_bank != 0 else 1
 	var target := _bank_path(next_bank)
 	var staged := target + ".tmp"
-	var encoded := JSON.stringify({"sequence": sequence + 1, "entries": entries})
+	var encoded := JSON.stringify(_payload(sequence + 1))
 	var serialized := JSON.stringify({"schema_version": VERSION, "sequence": sequence + 1,
 		"payload_json": encoded, "payload_sha256": encoded.sha256_text()})
-	if serialized.to_utf8_buffer().size() > MAX_BYTES:
+	if serialized.to_utf8_buffer().size() > _max_bytes():
 		last_error = ERR_OUT_OF_MEMORY
 		return false
 	var file := FileAccess.open(staged, FileAccess.WRITE)

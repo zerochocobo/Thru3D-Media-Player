@@ -528,10 +528,10 @@ func _update_tooltip() -> void:
 		_hide_tooltip()
 		return
 	if not _tooltip:
-		_tooltip = _quad(Vector2(0.2, 0.05), Vector3.ZERO, Color(0.02, 0.025, 0.03, 0.92), 16)
+		_tooltip = _quad(Vector2(0.2, 0.05), Vector3.ZERO, Color(0.02, 0.025, 0.03, 0.92), 40)
 		add_child(_tooltip)
 		var text := _label("", Vector3(0, 0, 0.002), 17, _tooltip)
-		text.render_priority = 17
+		text.render_priority = 41
 	var label: Label3D = _tooltip.get_child(0)
 	var changed := not _tooltip.visible or label.text != tip
 	if changed:

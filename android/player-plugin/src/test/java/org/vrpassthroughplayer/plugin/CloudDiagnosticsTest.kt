@@ -7,6 +7,26 @@ import org.junit.Test
 import java.net.SocketTimeoutException
 
 class CloudDiagnosticsTest {
+    @Test fun expiredDirectoryCursorsRemainActionableInTheBrowseDto() {
+        for (reason in listOf("cloud_page_expired", "cloud_location_expired")) {
+            val failure = assertThrows(CloudFailure::class.java) {
+                CloudDiagnostics.checkCore(JSONObject().put("code", 500).put("error_reason", reason)
+                    .put("error_detail", "directory.page: refresh to restart paging"), "/directory")
+            }
+            assertEquals(reason, CloudDiagnostics.response(failure, "cloud.browse").getString("error_reason"))
+        }
+    }
+    @Test fun requirementFailureIncludesOneApplicationLocationWithoutAFullStack() {
+        val error = IllegalArgumentException("Failed requirement.")
+        error.stackTrace = arrayOf(
+            StackTraceElement("java.lang.Thread", "run", "private-path", 1),
+            StackTraceElement("org.vrpassthroughplayer.plugin.CloudPaths", "child", "CloudPaths.kt", 31),
+            StackTraceElement("org.vrpassthroughplayer.plugin.CloudLibrary", "browse", "CloudLibrary.kt", 200))
+        val detail = CloudDiagnostics.response(error, "cloud.library").getString("error_detail")
+        assertTrue(detail.contains("CloudPaths.child:31"))
+        assertFalse(detail.contains("private-path"))
+        assertFalse(detail.contains("CloudLibrary.browse"))
+    }
     @Test fun deletionDistinguishesDefinitePreWriteRejectionFromUncertainDriverFailure() {
         val rejection = JSONObject().put("code", 500).put("delete_started", false).put("delete_reason", "changed")
         assertEquals("Cloud file changed. Refresh the folder", assertThrows(CloudDeleteRejected::class.java) {

@@ -169,7 +169,7 @@ void DepthStabilizer::band(const float* inv, int frame_step) {
         lo_ = plo; hi_ = phi; ++cuts_;
         return;
     }
-    const float a = rate(kNormAlpha, frame_step);
+    const float a = rate(std::min(1.f, kNormAlpha * speed_), frame_step);
     lo_ = (1 - a) * lo_ + a * plo;
     hi_ = (1 - a) * hi_ + a * phi;
 }
@@ -257,7 +257,7 @@ void DepthStabilizer::stabilize(const float* rgb, int frame_step) {
                 back[y * sw_ + x] = (coarse[y0 * tw + x0] * (1 - ax) + coarse[y0 * tw + x1] * ax) * (1 - ay)
                                   + (coarse[y1 * tw + x0] * (1 - ax) + coarse[y1 * tw + x1] * ax) * ay;
             }
-            const float lock = kDepthAlpha * kEvidenceLock;
+            const float lock = std::min(1.f, kDepthAlpha * speed_) * kEvidenceLock;
             std::vector<float> alpha_small(small.size());
             for (size_t i = 0; i < small.size(); ++i) {
                 const float t = std::clamp((back[i] - kEvidLo) / std::max(1e-3f, kEvidHi - kEvidLo), 0.f, 1.f);
@@ -289,7 +289,7 @@ void DepthStabilizer::stabilize(const float* rgb, int frame_step) {
             bias = std::clamp(static_cast<float>(mp - scale * mc), -kAffineMaxBias, kAffineMaxBias);
         }
     }
-    const float fixed = rate(kDepthAlpha, frame_step);
+    const float fixed = rate(std::min(1.f, kDepthAlpha * speed_), frame_step);
     std::vector<float> next(n);
     for (size_t p = 0; p < n; ++p) {
         const float a = alpha_map ? rate(alpha_[p], frame_step) : fixed;

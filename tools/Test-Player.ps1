@@ -115,6 +115,8 @@ if ((Get-Content (Join-Path $logDirectory 'mpv-audio-host.log') -Raw) -match '(?
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_mpv_subtitles.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'mpv-subtitles-host.log')
 if ($LASTEXITCODE -ne 0) { throw 'MPV subtitle host regression failed.' }
 if ((Get-Content (Join-Path $logDirectory 'mpv-subtitles-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)') { throw 'MPV subtitle host regression reported runtime errors.' }
+& $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_subtitle_files.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'subtitle-files-host.log')
+if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'subtitle-files-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)') { throw 'Sibling subtitle selection, restoration and pair timing regression failed.' }
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_file_mode_memory.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'file-mode-memory-host.log')
 if ($LASTEXITCODE -ne 0) { throw 'File mode memory host regression failed.' }
 if ((Get-Content (Join-Path $logDirectory 'file-mode-memory-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)') { throw 'File mode memory host regression reported runtime errors.' }

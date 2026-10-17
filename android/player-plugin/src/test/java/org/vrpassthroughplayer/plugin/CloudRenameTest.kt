@@ -34,6 +34,14 @@ class CloudRenameTest {
         var writes = 0
         var loseResponse = false
         var failReadBack = false
+        var targeted = false
+        val queries = ArrayList<List<String>>()
+        override fun freshMatches(parent: String, queries: List<String>): List<CloudFile>? {
+            if (!targeted) return null
+            this.queries.add(queries)
+            if (writes > 0 && failReadBack) throw CloudFailure()
+            return files.filter { file -> queries.any { file.name.contains(it,true) } }.toList()
+        }
         override fun page(path: String, offset: Int, refresh: Boolean): CloudPage {
             reads.add(path)
             if (writes > 0 && failReadBack) throw CloudFailure()
@@ -58,6 +66,19 @@ class CloudRenameTest {
         request.put("plan", CloudRename(client).run(item.id, request, true).getString("plan"))
         assertEquals(0, client.writes)
         return request
+    }
+    @Test fun targetedPreviewWriteAndReadbackNeverRequestUnrelatedDirectoryPages() {
+        val item=file("old.mp4","1")
+        val client=Fake().apply {
+            targeted=true
+            files.addAll(listOf(item,file("old.nfo","2")))
+            repeat(8000) { files.add(file("unrelated$it.mp4","${100+it}")) }
+        }
+        val req=prepare(client,item)
+        assertTrue(CloudRename(client).run(item.id,req,false).getBoolean("renamed"))
+        assertEquals(2,client.writes);assertTrue(client.reads.isEmpty())
+        assertTrue(client.queries.all { it==listOf("old","new") })
+        assertEquals(setOf("new.mp4","new.nfo"),client.files.filter { it.objectId in setOf("1","2") }.map { it.name }.toSet())
     }
     @Test fun anyExtensionCompanionsAreOptionalAndNoPrefixOrFolderIsIncluded() {
         val item = file("old.mp4", "1")

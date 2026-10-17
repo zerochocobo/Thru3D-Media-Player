@@ -26,26 +26,29 @@ internal class CloudDrive(val provider: String, private val cookie: String, priv
         visit(path) { result.addAll(it); false }
         return result
     }
-    override fun page(path: String, offset: Int, refresh: Boolean): CloudPage {
-        require(path.startsWith('/') && path.split('/').none { it == "." || it == ".." || '\u0000' in it })
-        require(offset >= 0 && offset <= Int.MAX_VALUE - PAGE_SIZE)
+    override fun page(path: String, offset: Int, refresh: Boolean): CloudPage = readPage(path, offset, refresh, "source")
+    override fun orderedPage(path: String, offset: Int, refresh: Boolean, order: String): CloudPage = readPage(path, offset, refresh, order)
+    private fun readPage(path: String, offset: Int, refresh: Boolean, order: String): CloudPage {
+        require(path.startsWith('/') && path.split('/').none { it == "." || it == ".." || '\u0000' in it || '\\' in it }) { "directory.request: invalid remote path" }
+        require(offset >= 0 && offset <= Int.MAX_VALUE - PAGE_SIZE) { "directory.request: invalid page offset" }
+        require(order == "source" || order in CloudSortedPages.ORDERS) { "directory.request: invalid sort order" }
         if (Thread.currentThread().isInterrupted) throw CloudFailure()
         if (refresh) metadata.invalidate(path)
-        metadata.page(path, offset)?.let { return it }
-        val page = page115(path, offset)
+        metadata.page(path, offset, order)?.let { return it }
+        val page = page115(path, offset, order)
         val keys = page.files.map { (if (it.folder) "d" else "f") + it.id }
         if (keys.toSet().size != keys.size) throw CloudFailure()
         // An endpoint ignoring offset must not create an endless series of identical pages.
         if (offset > 0 && page.files.isNotEmpty()) {
-            val previous = metadata.previous(path, offset)
+            val previous = metadata.previous(path, offset, order)
             if (previous != null && previous.files.map { (if (it.folder) "d" else "f") + it.id } == keys) throw CloudFailure()
         }
         if (Thread.currentThread().isInterrupted) throw CloudFailure()
         page.files.forEach { metadata.put(CloudPaths.child(path, it.name), it) }
-        metadata.put(path, offset, page)
+        metadata.put(path, offset, page, order)
         return page
     }
-    private fun page115(path: String, offset: Int): CloudPage {
+    private fun page115(path: String, offset: Int, order: String): CloudPage {
         val folder = if (path == "/") "0" else metadata.file(path)?.takeIf { it.folder }?.id
             ?: checked(get("https://webapi.115.com/files/getid", mapOf("path" to path))).get("id").toString()
         if (folder == "0" && path != "/") throw CloudFailure("cloud_file_missing")
@@ -53,12 +56,14 @@ internal class CloudDrive(val provider: String, private val cookie: String, priv
         val result = ArrayList<CloudFile>()
         val json = checked(get("https://webapi.115.com/files", mapOf("cid" to folder, "offset" to "$offset",
             "limit" to "$PAGE_SIZE", "show_dir" to "1", "count_folders" to "1", "cur" to "1", "fc_mix" to "0",
-            "o" to "file_name", "asc" to "1", "format" to "json")))
+            "o" to when (order.substringBefore('_')) { "size" -> "file_size"; "modified" -> "user_utime"; else -> "file_name" },
+            "asc" to if (order.endsWith("desc")) "0" else "1", "format" to "json")))
         val items = json.getJSONArray("data")
         if (json.has("offset") && json.getInt("offset") != offset) throw CloudFailure()
         if (items.length() > PAGE_SIZE) throw CloudFailure()
         for (i in 0 until items.length()) {
             val item = items.getJSONObject(i)
+            if (!CloudPaths.validName(item.getString("n"))) continue
             val directory = !item.has("fid") || item.optString("fid").isEmpty()
             val id = item.get(if (directory) "cid" else "fid").toString()
             result.add(CloudFile(item.getString("n"), directory, item.optLong("s"), id, item.optString("pc"), item.optLong("te", -1).takeIf { it > 0 }?.times(1000) ?: -1))
@@ -66,7 +71,7 @@ internal class CloudDrive(val provider: String, private val cookie: String, priv
         val next = offset + items.length()
         val count = json.getInt("count")
         if (items.length() == 0 && offset < count) throw CloudFailure()
-        if (count < 0) throw CloudFailure()
+        if (count < 0 || offset > count || next > count) throw CloudFailure(detail = "directory.page: inconsistent total or offset")
         return CloudPage(result, if (next < count) next else -1, count)
     }
     private fun visit(path: String, accept: (List<CloudFile>) -> Boolean) {

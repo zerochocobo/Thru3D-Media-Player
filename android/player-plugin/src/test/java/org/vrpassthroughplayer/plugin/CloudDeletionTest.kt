@@ -18,6 +18,17 @@ class CloudDeletionTest {
         var loseResponse = false
         var failReadBack = false
         var rejectBeforeWrite = false
+        var targeted = false
+        var identityReadback: Boolean? = null
+        var identityThrows = false
+        var identityReads = 0
+        override fun freshMatches(parent: String, queries: List<String>): List<CloudFile>? =
+            if (targeted) folders[parent].orEmpty().filter { file -> queries.any { file.name.contains(it,true) } } else null
+        override fun containsObject(file: CloudFile): Boolean? {
+            identityReads++
+            if (identityThrows) throw CloudFailure()
+            return identityReadback
+        }
         override fun page(path: String, offset: Int, refresh: Boolean): CloudPage {
             reads.add(Triple(path, offset, refresh))
             if (writes > 0 && failReadBack) throw CloudFailure()
@@ -49,6 +60,25 @@ class CloudDeletionTest {
         val client = Fake().apply { folders["/"]!!.add(f) }
         assertTrue(CloudDeletion(client).run("/"+f.name, request(f), false, false).getBoolean("deleted"))
         assertEquals(1, client.writes); assertTrue(client.reads.isEmpty())
+    }
+    @Test fun targetedInspectionNeverReadsUnrelatedPages() {
+        val file=item("a.mp4","9")
+        val client=Fake().apply { targeted=true; folders["/"]!!.add(file) }
+        assertTrue(CloudDeletion(client).run(file.id,request(file),true,false).getBoolean("exists"))
+        assertTrue(client.reads.isEmpty());assertEquals(0,client.writes)
+    }
+    @Test fun uncertainDeleteUsesObjectIdentityAndNeverClaimsSuccessFromAnEmptySearch() {
+        for (present in listOf(true,false)) {
+            val file=item("a.mp4","9")
+            val client=Fake().apply { targeted=true;loseResponse=true;identityReadback=present;folders["/"]!!.add(file) }
+            val result=CloudDeletion(client).run(file.id,request(file),false,false)
+            if(present) assertEquals("uncertain",result.getString("state")) else assertTrue(result.getBoolean("deleted"))
+            assertEquals(1,client.writes);assertEquals(1,client.identityReads);assertTrue(client.reads.isEmpty())
+        }
+        val file=item("a.mp4","9")
+        val client=Fake().apply { targeted=true;loseResponse=true;identityThrows=true;folders["/"]!!.add(file) }
+        assertEquals("uncertain",CloudDeletion(client).run(file.id,request(file),false,false).getString("state"))
+        assertEquals(1,client.writes);assertTrue(client.reads.isEmpty())
     }
     @Test fun duplicateNamesAcrossPagesCannotPrepareOrDeleteEitherObject() {
         val first = item("test.mp4", "1")

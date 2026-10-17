@@ -152,6 +152,7 @@ func receive(id: int, payload: String) -> bool:
 		if not data.get("entry") is Dictionary: menu.status = "Cloud search failed"; resolving = false; menu.refresh(); return true
 		var entry: Dictionary = data.entry
 		var account_name := str(menu._cloud_stack[0].title)
+		var account_entry: Dictionary = menu._cloud_stack[0].duplicate(true)
 		close()
 		var destination := str(entry.id) if entry.get("container", false) else str(entry.id).get_base_dir()
 		if destination != menu._cloud_path():
@@ -160,9 +161,12 @@ func receive(id: int, payload: String) -> bool:
 			var current := ""
 			for index in parts.size():
 				current += "/" + parts[index]
-				menu._cloud_stack.append({"id": current, "title": account_name if index == 0 else parts[index]})
+				var location: Dictionary = account_entry.duplicate(true) if index == 0 else {}
+				location.merge({"id": current, "title": account_name if index == 0 else parts[index]}, true)
+				menu._cloud_stack.append(location)
 			menu._cloud_entries = []
 		if entry.get("container", false):
+			if entry.has("cloud_id"): menu._cloud_stack.back()["cloud_id"] = entry.cloud_id
 			menu._load_cloud(); menu.refresh()
 		else: menu._choose(menu._entry_row(entry))
 		return true

@@ -48,6 +48,7 @@ internal class UsbStorage(private val host: () -> Activity?, private val emit: (
         val partitions=linkedMapOf<String,Pair<Int,UsbPartitions.Partition>>()
         val volumes=mutableSetOf<Long>()
         val mounted=mutableMapOf<String,Pair<Long,Int>>()
+        val subtitleIdentities=mutableMapOf<String,String>()
         val streams=linkedMapOf<String,LocalStreamServer>()
         var stage="discovery"
         var scan=JSONObject()
@@ -276,6 +277,20 @@ internal class UsbStorage(private val host: () -> Activity?, private val emit: (
         override fun close() { if(sourceClosed.compareAndSet(false,true)) release(opened) }
     }
     fun siblings(uri:String):JSONArray = directory(uri.substringBeforeLast('/'),false)
+    fun subtitleIdentity(uri:String):String {
+        val s=session(uri)
+        return synchronized(s) {
+            check(s.active && !s.stopping && !closed) { "USB access stopped" }
+            val parts=Uri.parse(uri).pathSegments
+            val (lun,part)=s.partitions[parts.first()] ?: throw IOException("USB partition unavailable")
+            val key=s.subtitleIdentities.getOrPut(parts.first()) {
+                val disk=s.blocks[lun] ?: throw IOException("USB storage unavailable")
+                val boot=ByteArray(disk.sectorSize).also { disk.readBlocks(part.first,it) }
+                UsbSubtitleIdentity.partition(part,disk.sectorSize,boot)
+            }
+            "usb://stable/$key/"+parts.drop(1).joinToString("/") { Uri.encode(it) }
+        }
+    }
     fun sibling(uri:String,name:String)=child(uri.substringBeforeLast('/'),name)
     fun forgetStream(uri:String) {
         val values=synchronized(this) { sessions.values.toList() }

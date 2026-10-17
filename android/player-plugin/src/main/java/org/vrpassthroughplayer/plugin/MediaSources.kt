@@ -111,16 +111,17 @@ internal class MediaSources(
         JSONObject().put("server_id", serverId).put("path", path).put("entries", smb.browse(serverId, path))
     }
 
-    fun cloudBrowse(path: String, refresh: Boolean, offset: Int = 0, order: String = ""): Int {
+    fun cloudBrowse(path: String, refresh: Boolean, offset: Int = 0, order: String = "", folderId: String = ""): Int {
         val id = nextId()
         cloudBrowseRequests.submit(id, { cancellation ->
             val result = try {
                 CloudLibrary.start(context() ?: error("Activity unavailable"))
-                CloudLibrary.browse(path, refresh, offset, cancellation, order).put("state", "ready")
+                CloudLibrary.browse(path, refresh, offset, cancellation, order, folderId).put("state", "ready")
             } catch (error: Exception) {
                 CloudDiagnostics.response(error, "cloud.browse")
             }
-            result.put("source", "cloud").put("path", path).put("offset", offset).put("order", order).toString()
+            if (!result.has("order")) result.put("order", order)
+            result.put("source", "cloud").put("path", path).put("offset", offset).toString()
         }, emit)
         return id
     }
@@ -358,6 +359,62 @@ internal class MediaSources(
     } catch (error: Exception) {
         android.util.Log.w("QuestSubtitles", "Network subtitle lookup failed: ${error.javaClass.simpleName}")
         emptyList()
+    }
+
+    /** Raw sibling names only; no media-library filter, network resolution or stream publication. */
+    fun subtitleFiles(uri: String): List<String> {
+        require(SidecarSubtitles.supportsDirectory(uri))
+        val names = when {
+            uri.startsWith("file://") -> {
+                val folder = java.io.File(android.net.Uri.parse(uri).path ?: "").parentFile ?: error("No parent folder")
+                val children = folder.listFiles() ?: throw java.nio.file.AccessDeniedException("subtitle folder")
+                children.filter { it.isFile && it.canRead() && it.length() > 0 && it.canonicalFile.parentFile == folder.canonicalFile }.map { it.name }
+            }
+            local.documents.owns(uri) -> {
+                val rows = local.documents.siblings(uri)
+                (0 until rows.length()).map(rows::getJSONObject).filter { !it.optBoolean("container") && it.optLong("size", -1) != 0L }.map { it.getString("title") }
+            }
+            uri.startsWith("usb://") -> {
+                val rows = usb.siblings(uri)
+                (0 until rows.length()).map(rows::getJSONObject).filter { !it.optBoolean("container") && it.optLong("size", -1) != 0L }.map { it.getString("title") }
+            }
+            uri.startsWith("smb://") -> return smb.subtitleFiles(uri)
+            else -> {
+                CloudLibrary.start(context() ?: error("Activity unavailable"))
+                return CloudLibrary.subtitleFiles(uri)
+            }
+        }
+        return SidecarSubtitles.files(names)
+    }
+
+    fun subtitleIdentity(uri: String): String = if (uri.startsWith("usb://")) usb.subtitleIdentity(uri) else ""
+
+    /** Revalidate against the original video's parent, never a caller-supplied path or proxy URL. */
+    fun openSubtitleFile(uri: String, name: String): SidecarSubtitles.Track {
+        require(SidecarSubtitles.supportsDirectory(uri) && SidecarSubtitles.supportedFile(name))
+        return when {
+            uri.startsWith("file://") -> {
+                val folder = java.io.File(android.net.Uri.parse(uri).path ?: "").parentFile ?: error("No parent folder")
+                val file = java.io.File(folder, name)
+                require(file.isFile && file.canRead() && file.length() > 0 && file.canonicalFile.parentFile == folder.canonicalFile)
+                SidecarSubtitles.Track(file.absolutePath, name)
+            }
+            local.documents.owns(uri) -> {
+                val rows = local.documents.siblings(uri)
+                val item = (0 until rows.length()).map(rows::getJSONObject).single { !it.optBoolean("container") && it.getString("title") == name }
+                val source = DocumentStreamSource(context() ?: error("Activity unavailable"), android.net.Uri.parse(item.getString("uri")))
+                try { SidecarSubtitles.Track(streams().publish(source, name), name) } catch (error: Exception) { source.close(); throw error }
+            }
+            uri.startsWith("usb://") -> {
+                require(name in subtitleFiles(uri))
+                SidecarSubtitles.Track(usb.stream(usb.sibling(uri, name), streams()), name)
+            }
+            uri.startsWith("smb://") -> smb.openSubtitleFile(uri, name)
+            else -> {
+                CloudLibrary.start(context() ?: error("Activity unavailable"))
+                CloudLibrary.openSubtitleFile(uri, name, streams())
+            }
+        }
     }
 
     private fun run(source: String, block: () -> JSONObject): Int {

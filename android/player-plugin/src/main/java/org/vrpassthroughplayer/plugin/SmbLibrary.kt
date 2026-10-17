@@ -248,6 +248,21 @@ internal class SmbLibrary(private val context: Context, private val streams: () 
         }
     }
 
+    fun subtitleFiles(uri: String): List<String> {
+        val rest = uri.removePrefix("smb://")
+        val selected = server(rest.substringBefore('/'))
+        val folder = rest.substringAfter('/').substringBeforeLast('/', "")
+        require(folder.isNotEmpty() || selected.host.contains('/'))
+        return SmbFile("smb://${selected.host}/" + if (folder.isEmpty()) "" else "$folder/", cifs(selected)).use {
+            SidecarSubtitles.files(it.list().toList())
+        }
+    }
+
+    fun openSubtitleFile(uri: String, name: String): SidecarSubtitles.Track {
+        require(name in subtitleFiles(uri))
+        return SidecarSubtitles.Track(stream(uri.substringBeforeLast('/') + "/" + name), name)
+    }
+
     /** smb://<server id>/<share>/<path> -> loopback HTTP URL with Range support. */
     fun strmTarget(uri: String, origin: String): String = StrmFile.smbTarget(uri,
         servers().map { it.id to it.host }, origin.removePrefix("smb://").substringBefore('/'))

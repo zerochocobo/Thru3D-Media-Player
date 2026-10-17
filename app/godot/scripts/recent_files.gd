@@ -6,6 +6,19 @@ const RECENT_LIMIT := 32
 const Location := preload("res://scripts/media_location.gd")
 var suppressed := {}
 var undo := {}
+var legacy_pending := true
+var legacy_ignored := {}
+
+func load_saved() -> void:
+	super()
+	var bank := _read_bank(_bank_path(active_bank)) if active_bank >= 0 else {}
+	legacy_pending = bool(bank.get("legacy_pending", true))
+	legacy_ignored = bank.get("legacy_ignored", {}).duplicate()
+
+func _payload(serial: int) -> Dictionary:
+	var value := super(serial)
+	value.legacy_pending = legacy_pending; value.legacy_ignored = legacy_ignored.keys()
+	return value
 
 func _bank_path(bank: int) -> String:
 	return directory.path_join("recent_files_%d.json" % bank)
@@ -56,21 +69,21 @@ func _read_bank(path: String) -> Dictionary:
 		for name in ["position_ms", "duration_ms", "opened"]:
 			value[name] = int(value[name])
 		result[key] = value
-	return {"sequence": int(serial), "entries": result}
+	var ignored := {}
+	var ignored_keys: Variant = payload.get("legacy_ignored", [])
+	if not ignored_keys is Array or ignored_keys.size() > 2048 or not payload.get("legacy_pending", true) is bool: return {}
+	for key in ignored_keys:
+		if not key is String or key.length() != 64 or not key.is_valid_hex_number(false): return {}
+		ignored[key] = true
+	return {"sequence": int(serial), "entries": result, "legacy_pending": payload.get("legacy_pending", true), "legacy_ignored": ignored}
 
 func lookup(uri: String) -> Dictionary:
-	if Privacy.protected_uri(uri): return Privacy.private_lookup(uri, "recent")
-	if entries.has(key_for(uri)): return entries[key_for(uri)].duplicate(true)
-	return Privacy.vault.private_lookup(uri, "recent") if Privacy.vault != null and not Privacy.vault.locked else {}
+	return entries.get(key_for(uri), {}).duplicate(true)
 
 func list_recent() -> Array[Dictionary]:
 	var result: Array[Dictionary] = []
 	for value in entries.values():
 		result.append(value.duplicate(true))
-	if Privacy.vault != null and not Privacy.vault.locked:
-		for favorite in Privacy.vault.list_records():
-			var recent: Dictionary = favorite.get("private", {}).get("recent", {})
-			if not recent.is_empty() and not entries.has(key_for(str(recent.uri))): result.append(recent.duplicate(true))
 	result.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
 		var left: float = float(a.get("opened_at", 0)); var right: float = float(b.get("opened_at", 0))
 		if left != right: return left > right
@@ -80,10 +93,6 @@ func list_recent() -> Array[Dictionary]:
 func opened(uri: String, title: String, persisted: bool, kind: String = "video") -> bool:
 	suppressed.erase(key_for(uri))
 	if not Privacy.record_allowed(uri): return false
-	if Privacy.protected_uri(uri):
-		var old := lookup(uri)
-		return Privacy.private_remember(uri, "recent", {"uri": uri, "title": title.left(256), "kind": kind, "persisted": persisted,
-			"position_ms": int(old.get("position_ms", 0)), "duration_ms": int(old.get("duration_ms", -1)), "opened": sequence + 1, "opened_at": Time.get_unix_time_from_system()})
 	var key := key_for(uri)
 	if key.is_empty():
 		return false
@@ -107,7 +116,7 @@ static func valid_cover(value: Variant) -> bool:
 	return value is String and value.length() <= 2048 and (value.begins_with("http://") or value.begins_with("https://"))
 
 func set_cover(uri: String, cover: String) -> bool:
-	if not Privacy.persist_allowed(uri): return false
+	if not Privacy.record_allowed(uri): return false
 	var key := key_for(uri)
 	if not entries.has(key) or not valid_cover(cover) or entries[key].get("cover", "") == cover: return false
 	var old: Dictionary = entries[key]
@@ -122,11 +131,6 @@ func set_cover(uri: String, cover: String) -> bool:
 
 func progress(uri: String, position_ms: int, duration_ms: int, ended: bool = false) -> bool:
 	if suppressed.has(key_for(uri)) or not Privacy.record_allowed(uri): return false
-	if Privacy.protected_uri(uri):
-		var value := lookup(uri)
-		if value.is_empty(): return false
-		value.position_ms = 0 if ended else position_ms; value.duration_ms = duration_ms
-		return Privacy.private_remember(uri, "recent", value)
 	var key := key_for(uri)
 	if not entries.has(key) or position_ms < 0 or duration_ms < -1:
 		return false
@@ -146,10 +150,7 @@ func progress(uri: String, position_ms: int, duration_ms: int, ended: bool = fal
 func clear_all() -> bool:
 	undo.clear()
 	for entry in list_recent(): suppressed[key_for(entry.uri)] = true
-	if Privacy.vault != null and not Privacy.vault.locked:
-		for entry in Privacy.vault.list_records(): Privacy.vault.private_remember(entry.uri, "recent", {})
-	if entries.is_empty():
-		return false
+	legacy_pending = false; legacy_ignored.clear()
 	entries.clear()
 	dirty = true
 	return true
@@ -159,7 +160,9 @@ func forget(uri: String) -> bool:
 	if entry.is_empty(): return false
 	undo = {"entry": entry, "until": Time.get_ticks_msec() + 8000}
 	suppressed[key_for(uri)] = true
-	if Privacy.protected_uri(uri): return Privacy.private_remember(uri, "recent", {})
+	if legacy_pending and Privacy.vault != null and Privacy.vault.protected:
+		legacy_ignored[key_for(uri)] = true
+		if legacy_ignored.size() > 2048: legacy_pending = false; legacy_ignored.clear()
 	if Privacy.vault != null and Privacy.vault.has_record(uri): Privacy.vault.private_remember(uri, "recent", {})
 	if not entries.erase(key_for(uri)):
 		return false
@@ -177,19 +180,50 @@ func resume_position(uri: String) -> int:
 func set_location(uri: String, location: Dictionary) -> void:
 	var entry := lookup(uri)
 	if entry.is_empty() or location.is_empty() or not Privacy.record_allowed(uri): return
-	if Privacy.protected_uri(uri):
-		entry.location = Location.clean(location); Privacy.private_remember(uri, "recent", entry)
-	elif entries.has(key_for(uri)):
+	if entries.has(key_for(uri)):
 		entries[key_for(uri)].location = Location.clean(location); dirty = true
 
 func restore() -> bool:
 	if undo.is_empty() or Time.get_ticks_msec() > int(undo.until): return false
 	var entry: Dictionary = undo.entry
-	if Privacy.protected_uri(entry.uri):
-		if not Privacy.private_remember(entry.uri, "recent", entry): return false
-	else:
-		entries[key_for(entry.uri)] = entry.duplicate(true); dirty = true
-		if not save(): return false
+	legacy_ignored.erase(key_for(entry.uri))
+	entries[key_for(entry.uri)] = entry.duplicate(true); dirty = true
+	if not save(): return false
 	suppressed.erase(key_for(entry.uri)); undo.clear(); return true
 
 func can_undo() -> bool: return not undo.is_empty() and Time.get_ticks_msec() < int(undo.until)
+
+## Older versions put recent entries inside the PIN vault. Move them once it is unlocked;
+## save the independent banks first, and retain deletion markers across interrupted upgrades.
+func import_legacy(vault: RefCounted) -> bool:
+	if not vault or vault.locked: return true
+	var cleanup: Array[String] = []
+	var proposed := entries.duplicate(true)
+	var remaining := false
+	for favorite in vault.list_records():
+		var old: Variant = favorite.get("private", {}).get("recent", {})
+		if not old is Dictionary: remaining = true; continue
+		if old.is_empty(): continue
+		var uri := str(favorite.uri)
+		var key := key_for(uri)
+		if not legacy_pending or legacy_ignored.has(key): cleanup.append(uri); continue
+		if not Privacy.record_allowed(uri): remaining = true; continue
+		var value: Dictionary = old.duplicate(true); value.opened = sequence + 1
+		if old.get("uri") != uri or not valid_entry(value, sequence + 1): remaining = true; continue
+		value.opened_at = float(value.get("opened_at", 0))
+		if not is_finite(value.opened_at): value.opened_at = 0.0
+		if not proposed.has(key): proposed[key] = value
+		cleanup.append(uri)
+	if cleanup.is_empty() and (remaining or not legacy_pending): return true
+	var ordered: Array = proposed.values()
+	ordered.sort_custom(func(a, b):return float(a.get("opened_at", 0)) > float(b.get("opened_at", 0)) if a.get("opened_at", 0) != b.get("opened_at", 0) else int(a.opened) > int(b.opened))
+	entries.clear()
+	for value in ordered:
+		if entries.size() >= RECENT_LIMIT: break
+		entries[key_for(value.uri)] = value
+	while JSON.stringify(entries).to_utf8_buffer().size() > MAX_BYTES / 3 and not entries.is_empty(): entries.erase(entries.keys().back())
+	legacy_pending = remaining
+	if not remaining: legacy_ignored.clear()
+	dirty = true
+	if not save(): return false
+	return vault.clear_recent_records(cleanup)

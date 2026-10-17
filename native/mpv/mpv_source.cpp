@@ -1,4 +1,7 @@
 #include <jni.h>
+#include "video_output_policy.h"
+#include "network_read_policy.h"
+#include <cstdio>
 #include <mpv/client.h>
 #include <mpv/render_gl.h>
 #include <mpv/quest_frame.h>
@@ -133,6 +136,7 @@ struct Source final {
     const std::string path;
     const bool hardware, audio, exact_start;
     const int start_ms;
+    const bool network_interleave_compat;
     const std::chrono::steady_clock::time_point created_at = std::chrono::steady_clock::now();
     std::atomic<int64_t> initialized_us{-1}, renderer_ready_us{-1}, load_submitted_us{-1}, file_loaded_us{-1}, first_published_us{-1};
     int64_t startup_us() const {
@@ -168,6 +172,7 @@ struct Source final {
     std::atomic<bool> dolby_profile5{false};
     // A layer session whose decoder fell back to software: mediacodec_embed cannot show its frames.
     std::atomic<bool> software_fallback{false};
+    std::atomic<bool> interleave_suspect{false};
     std::atomic<bool> dolby_color_ready{false};
     std::atomic<uint64_t> dolby_frames{0};
     std::atomic<bool> cadence_target_ns{false};
@@ -179,6 +184,12 @@ struct Source final {
     double desired_subtitle_delay = 0.0, subtitle_delay_applied = 0.0;
     uint64_t desired_subtitle_delay_command = 0;
     bool subtitle_delay_dirty = false;
+    struct SubtitleFile { uint64_t request = 0; std::string location, title; };
+    SubtitleFile pending_subtitle_file; // commands_mutex; one optional file at a time
+    uint64_t subtitle_file_requests = 0;
+    bool subtitle_file_busy = false;
+    uint64_t subtitle_file_completed = 0; // status_mutex
+    int64_t subtitle_file_track = 0; // 0 means the optional load failed
     // Alpha plan B: the layer holds each frame until its mask is ready; audio waits as long. commands_mutex
     double desired_audio_delay = 0.0; bool audio_delay_dirty = false;
     std::string subtitle_snapshot; // status_mutex
@@ -214,6 +225,7 @@ struct Source final {
     std::atomic<bool> last_seek_exact{true};
     std::vector<int64_t> audio_track_ids; // commands_mutex; from actual MPV track-list
     int desired_audio_id = -1; double desired_volume = 100; bool desired_mute = false, audio_dirty = false;
+    double narration_gain = 1.0; bool narration_gain_dirty = false; // temporary; never changes aid/base volume
     uint64_t snapshot_sequence = 0; // control thread only
     std::string state = "opening", details = "{}", error, render_error, tls_ca_file, failure_reason, failure_stage;
     int mpv_failure_code = 0; // status_mutex
@@ -242,8 +254,8 @@ struct Source final {
            std::vector<std::pair<std::string, std::string>> extra_subtitles = {}, bool precise_start = true,
            jobject surface = nullptr, JavaVM* java = nullptr,
            bool software = false, int surface_width = 4096, int surface_height = 4096, bool disc_input = false,
-           std::string ca_file = {})
-        : path(std::move(file)), hardware(hw), audio(with_audio), exact_start(precise_start), start_ms(position),
+           std::string ca_file = {}, bool interleave_compat = false)
+        : path(std::move(file)), hardware(hw), audio(with_audio), exact_start(precise_start), start_ms(position), network_interleave_compat(interleave_compat),
           audio_files(std::move(extra_audio)), subtitle_files(std::move(extra_subtitles)), last_seek_exact(precise_start),
           layer_surface(surface), software_layer(software), iso_input(disc_input), layer_width(surface_width), layer_height(surface_height), vm(java) {
         tls_ca_file = std::move(ca_file);
@@ -340,6 +352,31 @@ struct Source final {
         pgs_copy_failed = false;
         if (pgs_read(core, cw, ch, pts, pgs_callback, this) < 0 || pgs_copy_failed) clear_pgs();
     }
+    void add_subtitle_file(mpv_handle* core, const SubtitleFile& file) {
+        const char* add[] = {"sub-add", file.location.c_str(), "auto", file.title.c_str(), nullptr};
+        const int result = mpv_command(core, add);
+        int64_t id = 0;
+        OwnedNode tracks;
+        if (result >= 0 && mpv_get_property(core, "track-list", MPV_FORMAT_NODE, &tracks.value) >= 0 && tracks.value.format == MPV_FORMAT_NODE_ARRAY) {
+            for (int i = 0; i < tracks.value.u.list->num; ++i) {
+                const auto& track = tracks.value.u.list->values[i];
+                const auto* value = member(track, "id");
+                if (node_text(track, "type") != "sub" || node_text(track, "external-filename") != file.location ||
+                    !value || value->format != MPV_FORMAT_INT64 || value->u.int64 <= 0) continue;
+                const auto codec = node_text(track, "codec");
+                const bool supported = codec == "subrip" || codec == "ass" || codec == "ssa" || codec == "webvtt" ||
+                    codec == "sami" || codec == "microdvd" || codec == "subviewer" || codec == "text" || codec == "ttml";
+                if (supported) id = value->u.int64;
+                else {
+                    const auto unwanted = std::to_string(value->u.int64);
+                    const char* remove[] = {"sub-remove", unwanted.c_str(), nullptr};
+                    mpv_command(core, remove);
+                }
+            }
+        }
+        { std::lock_guard<std::mutex> lock(status_mutex); subtitle_file_completed = file.request; subtitle_file_track = id; }
+        { std::lock_guard<std::mutex> lock(commands_mutex); subtitle_file_busy = false; }
+    }
     void snapshot(mpv_handle* core) {
         // All property reads happen before taking the status lock.
         const auto codec = property(core, "video-codec"), hwdec = property(core, "hwdec-current");
@@ -369,7 +406,9 @@ struct Source final {
                 if (!ids.empty()) list += ',';
                 ids.push_back(id->u.int64);
                 const auto* external = member(track, "external");
+                const auto* stream_index = member(track, "ff-index");
                 list += "{\"id\":" + std::to_string(id->u.int64) + ",\"title\":" + quote(node_text(track, "title")) +
+                    ",\"stream_index\":" + std::to_string(stream_index && stream_index->format == MPV_FORMAT_INT64 ? stream_index->u.int64 : -1) +
                     ",\"language\":" + quote(node_text(track, "lang")) + ",\"codec\":" + quote(node_text(track, "codec")) +
                     ",\"filename\":" + quote(node_text(track, "external-filename")) +
                     ",\"external\":" + (external && external->format == MPV_FORMAT_FLAG && external->u.flag ? "true" : "false") + "}";
@@ -515,6 +554,9 @@ struct Source final {
             if (audio) { option("ao", "aaudio"); option("aaudio-performance-mode", "low-latency"); }
             // Network sources: a deep read-ahead absorbs Wi-Fi jitter for 8K bitrates.
             option("cache", "auto"); option("demuxer-max-bytes", "256MiB"); option("demuxer-readahead-secs", "20");
+            // Enabled only after the bounded MP4 index probe identified <=128 MiB
+            // of almost the entire audio track before video, never for ordinary interleaving.
+            if (network_interleave_compat) option("demuxer-lavf-o", "interleaved_read=no");
             option("network-timeout", "30");
             option("tls-verify", "yes");
             if (!tls_ca_file.empty()) option("tls-ca-file", tls_ca_file.c_str());
@@ -584,6 +626,7 @@ struct Source final {
             }
             bool loaded = false;
             auto format_deadline = std::chrono::steady_clock::time_point::max();
+            quest::NetworkSeekPattern network_seeks;
             auto next_snapshot = std::chrono::steady_clock::now();
             while (!closing.load() && !render_failed.load()) {
                 dolby_color_mode(core);
@@ -597,6 +640,8 @@ struct Source final {
 #endif
                 int subtitle_id = 0; uint64_t subtitle_command = 0;
                 int audio_id = -1; double volume = 100; int64_t seek = -1;
+                bool set_narration_gain = false;
+                SubtitleFile subtitle_file;
                 {
                     std::lock_guard<std::mutex> lock(commands_mutex);
                     if (loaded) {
@@ -607,15 +652,21 @@ struct Source final {
 #endif
                         seek = pending_seek_ms; seek_exact = pending_seek_exact; pending_seek_ms = -1;
                         set_audio = audio_dirty; audio_dirty = false;
-                        audio_id = desired_audio_id; volume = desired_volume; muted = desired_mute;
+                        audio_id = desired_audio_id; volume = desired_volume * narration_gain; muted = desired_mute;
+                        set_narration_gain = narration_gain_dirty; narration_gain_dirty = false;
                         set_subtitle = subtitle_dirty; subtitle_dirty = false;
                         subtitle_id = desired_subtitle_id; subtitle_command = desired_subtitle_command;
                         set_subtitle_delay = subtitle_delay_dirty; subtitle_delay_dirty = false;
                         subtitle_delay = desired_subtitle_delay; subtitle_delay_command = desired_subtitle_delay_command;
                         set_audio_delay = audio_delay_dirty; audio_delay_dirty = false; audio_delay = desired_audio_delay;
+                        subtitle_file = std::move(pending_subtitle_file); pending_subtitle_file = {};
                     }
                 }
                 if (set_play && !play) checked(mpv_set_property_string(core, "pause", "yes"), "MPV source pause before audio");
+                if (subtitle_file.request) {
+                    add_subtitle_file(core, subtitle_file);
+                    next_snapshot = std::chrono::steady_clock::now();
+                }
                 if (set_speed) checked(mpv_set_property(core, "speed", MPV_FORMAT_DOUBLE, &speed), "MPV playback speed");
                 if (set_audio) {
                     const auto selected = audio_id < 0 ? "auto" : (audio_id == 0 ? "no" : std::to_string(audio_id));
@@ -625,6 +676,8 @@ struct Source final {
                     checked(mpv_set_property(core, "mute", MPV_FORMAT_FLAG, &mute), "MPV mute");
                     audio_commands_applied.fetch_add(1);
                 }
+                if (set_narration_gain && !set_audio)
+                    checked(mpv_set_property(core, "volume", MPV_FORMAT_DOUBLE, &volume), "MPV temporary narration gain");
                 if (set_subtitle) {
                     const auto selected = subtitle_id < 0 ? "auto" : (subtitle_id == 0 ? "no" : std::to_string(subtitle_id));
                     checked(mpv_set_property_string(core, "sid", selected.c_str()), "MPV subtitle track");
@@ -677,6 +730,26 @@ struct Source final {
                 if (event->event_id == MPV_EVENT_LOG_MESSAGE) {
                     const auto* log = static_cast<const mpv_event_log_message*>(event->data);
                     if (!playback_privacy.load()) __android_log_print(ANDROID_LOG_INFO, "QuestMpvSource", "[%s] %s", log->prefix, log->text);
+                    if (loaded && audio && !network_interleave_compat && !interleave_suspect.load() &&
+                        seeks_started.load() == 0 && (path.rfind("http://", 0) == 0 || path.rfind("https://", 0) == 0) &&
+                        std::string(log->prefix) == "curl") {
+                        unsigned long long from = 0, to = 0;
+                        if (std::sscanf(log->text, "stream level seek from %llu to %llu", &from, &to) == 2 &&
+                            property(core, "file-format").rfind("mov", 0) == 0 && network_seeks.observe(from, to)) {
+                            interleave_suspect.store(true);
+                            mpv_set_property_string(core, "pause", "yes");
+                            next_snapshot = std::chrono::steady_clock::now();
+                        }
+                    }
+                    // A software decoder can lose its properties entirely when mediacodec_embed
+                    // rejects its frames. An empty hwdec-current during initialization is not
+                    // enough evidence; the terminal video-chain error is.
+                    if (quest::layer_video_chain_failed(layer(), software_layer, log->log_level <= MPV_LOG_LEVEL_ERROR,
+                                                       log->prefix, log->text)) {
+                        software_fallback.store(true);
+                        mpv_set_property_string(core, "pause", "yes");
+                        next_snapshot = std::chrono::steady_clock::now();
+                    }
                     // Keep a fixed cause, never a log line containing a signed address.
                     if (!loaded && log->log_level <= MPV_LOG_LEVEL_ERROR && source_failure.reason.empty()) {
                         source_failure = quest::playback_log_failure(log->prefix, log->text);
@@ -1223,6 +1296,9 @@ struct Source final {
             // shared by the displayed color, Alpha and depth, so the owner reopens those there.
             ",\"layer\":" + (layer() ? "true" : "false") +
             ",\"software_layer\":" + (software_layer ? "true" : "false") +
+            ",\"network_interleave_compat\":" + (network_interleave_compat ? "true" : "false") +
+            ",\"network_interleave_suspect\":" + (interleave_suspect.load() ? "true" : "false") +
+            ",\"layer_software_fallback\":" + (software_fallback.load() ? "true" : "false") +
             ",\"layer_surface_width\":" + std::to_string(layer_width) +
             ",\"layer_surface_height\":" + std::to_string(layer_height) +
             ",\"layer_compatible\":" + (!layer() || ((software_layer || hardware_decoding.load() || dimensions.load() == 0) && !dolby_profile5.load() && !software_fallback.load()) ? "true" : "false") +
@@ -1278,7 +1354,7 @@ Java_org_vrpassthroughplayer_plugin_MpvSourceNative_create(JNIEnv* env, jclass, 
                                                          jboolean hardware, jboolean audio, jint max_width, jobjectArray audio_files,
                                                          jobjectArray subtitle_files, jboolean exact_start, jobject surface,
                                                          jboolean software_layer, jint layer_width, jint layer_height, jboolean iso_input,
-                                                         jstring ca_file) {
+                                                         jstring ca_file, jboolean interleave_compat) {
     try {
         require(extension_available(), "MPV source requires the verified private source-frame build");
         require(path && start >= 0, "Invalid MPV local source request");
@@ -1299,6 +1375,7 @@ Java_org_vrpassthroughplayer_plugin_MpvSourceNative_create(JNIEnv* env, jclass, 
         const bool network = (file.rfind("http://", 0) == 0 || file.rfind("https://", 0) == 0) &&
             file.find_first_of(" \r\n") == std::string::npos;
         require(local || descriptor || network, "MPV source requires a local path, owned descriptor or HTTP media URL");
+        require(interleave_compat != JNI_TRUE || (network && audio == JNI_TRUE), "MPV interleave compatibility requires network audio/video");
         require(max_width >= 0 && max_width <= 8192, "MPV output width cap out of range");
         require(layer_width > 0 && layer_width <= 8192 && layer_height > 0 && layer_height <= 8192,
                 "Compositor surface dimensions out of range");
@@ -1334,7 +1411,7 @@ Java_org_vrpassthroughplayer_plugin_MpvSourceNative_create(JNIEnv* env, jclass, 
         try {
             source = std::make_shared<Source>(file, hardware == JNI_TRUE, audio == JNI_TRUE, start,
                 read_tracks(audio_files), read_tracks(subtitle_files), exact_start == JNI_TRUE, layer_surface, vm,
-                software_layer == JNI_TRUE, layer_width, layer_height, iso_input == JNI_TRUE, std::move(tls_ca_file));
+                software_layer == JNI_TRUE, layer_width, layer_height, iso_input == JNI_TRUE, std::move(tls_ca_file), interleave_compat == JNI_TRUE);
         } catch (...) { if (layer_surface) env->DeleteGlobalRef(layer_surface); throw; }
         source->max_output_width.store(max_width); // before any render; fixed for this source
         std::lock_guard<std::mutex> lock(registry_mutex);
@@ -1391,6 +1468,42 @@ Java_org_vrpassthroughplayer_plugin_MpvSourceNative_setAudio(JNIEnv* env, jclass
         source->desired_audio_id = track; source->desired_volume = volume; source->desired_mute = muted == JNI_TRUE;
         source->audio_dirty = true; source->wake.notify_one(); return JNI_TRUE;
     } catch (const std::exception& failure) { error(env, failure); return JNI_FALSE; }
+}
+extern "C" JNIEXPORT jboolean JNICALL
+Java_org_vrpassthroughplayer_plugin_MpvSourceNative_setNarrationGain(JNIEnv* env, jclass, jlong handle, jdouble gain) {
+    try {
+        if (!std::isfinite(gain) || gain < 0 || gain > 1) return JNI_FALSE;
+        auto source = find(handle); std::lock_guard<std::mutex> lock(source->commands_mutex);
+        if (source->closing.load()) return JNI_FALSE;
+        source->narration_gain = gain; source->narration_gain_dirty = true;
+        source->wake.notify_one(); return JNI_TRUE;
+    } catch (const std::exception& failure) { error(env, failure); return JNI_FALSE; }
+}
+extern "C" JNIEXPORT jlong JNICALL
+Java_org_vrpassthroughplayer_plugin_MpvSourceNative_addSubtitleFile(JNIEnv* env, jclass, jlong handle, jstring location, jstring title) {
+    try {
+        const char* path_chars = env->GetStringUTFChars(location, nullptr);
+        if (!path_chars) return 0;
+        std::string path(path_chars); env->ReleaseStringUTFChars(location, path_chars);
+        const char* title_chars = env->GetStringUTFChars(title, nullptr);
+        if (!title_chars) return 0;
+        std::string label(title_chars); env->ReleaseStringUTFChars(title, title_chars);
+        if (path.empty() || path.size() > 32768 || label.empty() || label.size() > 4096) return 0;
+        auto source = find(handle); std::lock_guard<std::mutex> lock(source->commands_mutex);
+        if (source->closing.load() || source->subtitle_file_busy || source->subtitle_file_requests >= static_cast<uint64_t>(std::numeric_limits<jlong>::max())) return 0;
+        source->pending_subtitle_file = {++source->subtitle_file_requests, std::move(path), std::move(label)};
+        source->subtitle_file_busy = true; source->wake.notify_one();
+        return static_cast<jlong>(source->subtitle_file_requests);
+    } catch (const std::exception& failure) { error(env, failure); return 0; }
+}
+extern "C" JNIEXPORT jstring JNICALL
+Java_org_vrpassthroughplayer_plugin_MpvSourceNative_subtitleFileStatus(JNIEnv* env, jclass, jlong handle, jlong request) {
+    try {
+        auto source = find(handle); std::lock_guard<std::mutex> lock(source->status_mutex);
+        if (request <= 0 || source->subtitle_file_completed != static_cast<uint64_t>(request)) return env->NewStringUTF("");
+        const auto result = "{\"track_id\":" + std::to_string(source->subtitle_file_track) + "}";
+        return env->NewStringUTF(result.c_str());
+    } catch (const std::exception& failure) { error(env, failure); return nullptr; }
 }
 extern "C" JNIEXPORT jlong JNICALL
 Java_org_vrpassthroughplayer_plugin_MpvSourceNative_setSubtitle(JNIEnv* env, jclass, jlong handle, jint track) {

@@ -15,7 +15,7 @@ CPU. Inputs are the render bridge's float32 CHW RGB in [0, 1]; ImageNet
 normalization is folded into the first ops. The output is DAv2's relative
 inverse depth (larger = nearer); the runtime maps it to a 0..1 near map.
 
-Checks: the frozen graph against the original ORT graph on real frames, and
+Checks: the frozen graph against the ORT graph of the converted network (late-upsample head) on real frames, and
 the converted MNN model (CPU, FP32) against the frozen graph.
 """
 import os
@@ -37,10 +37,8 @@ OUT = ROOT / 'build/depth'
 ASSETS = ROOT / 'android/player-plugin/src/main/assets/depth-mnn'
 MNNCONVERT = Path(os.environ.get('MNNCONVERT', 'mnnconvert'))
 SAMPLES = [OUT / 'sample_a.png', OUT / 'sample_b.png']
-# 18 x 10 patches (16:9 within one patch). Quest 3 MNN OpenCL FP16 per frame: 364x210 ~117 ms,
-# 308x168 ~77, 252x140 ~52, 196x112 ~32 (but 14 x 8 patches lose the scene). 252x140 keeps the
-# person and background apart at ~19 depth updates/s; the display does not wait for them.
-WIDTH, HEIGHT = 252, 140
+# Fixed 364x210 video input; runtime performance depends on source and headset.
+WIDTH, HEIGHT = 364, 210
 MEAN = np.array([0.485, 0.456, 0.406], np.float32)
 STD = np.array([0.229, 0.224, 0.225], np.float32)
 
@@ -61,9 +59,43 @@ def frames(width, height):
     return out
 
 
+def late_upsample(model):
+    """DPT head: run the last 3x3 (32->32) and 1x1 (32->1) convolutions at the 2x feature size and
+    upsample the 1-channel result (same bilinear align_corners Resize) instead of upsampling the
+    32-channel map first. DIODE accuracy is unchanged at 252..518 px; Quest 3 time -2..3%."""
+    g = model.graph
+    by_name = {n.name: n for n in g.node}
+    resize = by_name['/depth_head/Resize']
+    by_name['/depth_head/output_conv2/output_conv2.0/Conv'].input[0] = resize.input[0]
+    small = by_name['/depth_head/output_conv2/output_conv2.3/Relu'].output[0]
+    target_hw = by_name['/depth_head/Concat_5'].input[1]
+    g.initializer.extend([numpy_helper.from_array(np.array([0], np.int64), 'late_s0'),
+                          numpy_helper.from_array(np.array([2], np.int64), 'late_s2')])
+    added = [
+        helper.make_node('Shape', [small], ['late_shape'], name='late_shape'),
+        helper.make_node('Slice', ['late_shape', 'late_s0', 'late_s2'], ['late_nc'], name='late_slice'),
+        helper.make_node('Concat', ['late_nc', target_hw], ['late_sizes'], axis=0, name='late_concat'),
+        helper.make_node('Resize', [small, '', '', 'late_sizes'], ['late_up'], name='late_resize',
+                         **{a.name: helper.get_attribute_value(a) for a in resize.attribute}),
+    ]
+    final = by_name['/Relu']
+    final.input[0] = 'late_up'
+    position = list(g.node).index(final)
+    for offset, node in enumerate(added):
+        g.node.insert(position + offset, node)
+    g.node.remove(resize)
+    del g.value_info[:]  # shapes recorded for the full-size head
+    return model
+
+
+def source_model():
+    """The converted network: the published ONNX with the late-upsample head."""
+    return late_upsample(onnx.load(str(SOURCE)))
+
+
 def freeze(width, height):
     from onnxsim import simplify
-    model = onnx.load(str(SOURCE))
+    model = source_model()
     graph = model.graph
     original = graph.input[0].name
     # src (0..1) -> (src - mean) / std == src * (1/std) + (-mean/std): one Mul + Add.
@@ -183,7 +215,7 @@ def split_attention_heads(model):
 
 
 def check_frozen(frozen_path, width, height):
-    reference = ort.InferenceSession(str(SOURCE), providers=['CPUExecutionProvider'])
+    reference = ort.InferenceSession(source_model().SerializeToString(), providers=['CPUExecutionProvider'])
     frozen = ort.InferenceSession(str(frozen_path), providers=['CPUExecutionProvider'])
     worst = 0.0
     for src in frames(width, height):
@@ -248,7 +280,7 @@ def main():
     mnn_error = check_mnn(mnn_path, frozen_path, width, height)
     if mnn_error > 0.02:  # FP16 weights; relative to the largest output value
         raise SystemExit(f'MNN depth model differs from the frozen graph: {mnn_error}')
-    manifest = dict(schema_version=1, backend='MNN 3.6.1 OpenCL', model='Depth Anything V2 Small',
+    manifest = dict(schema_version=2, backend='MNN 3.6.1 OpenCL', model='Depth Anything V2 Small', head='late-upsample',
                     license='Apache-2.0', source_onnx=str(SOURCE.relative_to(ROOT)), source_sha256=sha(SOURCE),
                     input='src float32 1x3xHxW RGB 0..1 (ImageNet normalization folded)',
                     output='depth float32 1x1xHxW relative inverse depth (larger = nearer)',

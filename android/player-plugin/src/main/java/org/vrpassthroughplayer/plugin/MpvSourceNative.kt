@@ -23,7 +23,8 @@ internal object MpvSourceNative {
                                    subtitleFiles: Array<String> = emptyArray(), exactStart: Boolean = true,
                                    layerSurface: android.view.Surface? = null, softwareLayer: Boolean = false,
                                    layerWidth: Int = 4096, layerHeight: Int = 4096, isoInput: Boolean = false,
-                                   tlsCaFile: String = MpvTlsTrust.prepare(context)): Long
+                                   tlsCaFile: String = MpvTlsTrust.prepare(context),
+                                   networkInterleaveCompat: Boolean = false): Long
     /** ISO header/title preflight on the source worker; width, height, duration-us, MVC flag. */
     @JvmStatic external fun probeIso(path: String): LongArray
     /** Empty string when no completed image is available. Never waits for the GPU. */
@@ -35,8 +36,13 @@ internal object MpvSourceNative {
     @JvmStatic external fun setSpeed(handle: Long, speed: Double): Boolean
     /** Coalesced control request. -1 auto, 0 disabled, or an actual track-list id; volume 0..100. */
     @JvmStatic external fun setAudio(handle: Long, trackId: Int, volume: Double, muted: Boolean): Boolean
+    /** Independent temporary multiplier; never changes the selected track or saved volume. */
+    @JvmStatic external fun setNarrationGain(handle: Long, gain: Double): Boolean
     /** 0 rejected; positive coalesced command serial. -1 auto, 0 off, actual subtitle id. */
     @JvmStatic external fun setSubtitle(handle: Long, trackId: Int): Long
+    /** Optional unselected subtitle, queued on MPV's control thread. Failure never stops video. */
+    @JvmStatic external fun addSubtitleFile(handle: Long, location: String, title: String): Long
+    @JvmStatic external fun subtitleFileStatus(handle: Long, request: Long): String
     /** Positive seconds delay captions; shares the subtitle command fence. */
     @JvmStatic external fun setSubtitleDelay(handle: Long, seconds: Double): Long
     /** Positive seconds play the audio later: Alpha plan B holds layer frames until their masks. */

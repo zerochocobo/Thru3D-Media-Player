@@ -119,6 +119,12 @@ func searchCloud(c *gin.Context) {
 		searchError(c, "Cloud account unavailable")
 		return
 	}
+	ctx := c.Request.Context()
+	if _, native := storage.(cloudNativeMatches); native && req.Scope == "current" {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, 20*time.Second)
+		defer cancel()
+	}
 	key := ""
 	page := 0
 	var session *searchSession
@@ -160,7 +166,13 @@ func searchCloud(c *gin.Context) {
 		if req.Scope == "all" {
 			rootPath = "/"
 		}
-		root, e := op.Get(c.Request.Context(), storage, rootPath)
+		var root model.Obj
+		var e error
+		if native, ok := storage.(cloudNativeMatches); ok && req.Scope == "current" {
+			root, e = freshMatchParent(ctx, native, req.Mount, rootPath, "")
+		} else {
+			root, e = op.Get(ctx, storage, rootPath)
+		}
 		if e != nil || !root.IsDir() {
 			searchError(c, "Cloud folder unavailable")
 			return
@@ -168,7 +180,9 @@ func searchCloud(c *gin.Context) {
 		session = &searchSession{Request: req, Storage: storage, Root: root, Expires: time.Now().Add(5 * time.Minute), Pages: map[int]searchPage{}, Objects: map[string]model.Obj{}, Paths: map[string]string{}, Seen: map[string]bool{}}
 		if req.Scope == "current" {
 			var objects []model.Obj
-			if req.Refresh && storage.Config().Name == "115 Open" {
+			if native, ok := storage.(cloudNativeMatches); ok {
+				objects, err = native.PlayerMatches(ctx, root, req.Query)
+			} else if req.Refresh && storage.Config().Name == "115 Open" {
 				objects, err = freshCloudList(c.Request.Context(), storage, req.Path)
 			} else {
 				objects, err = op.List(c.Request.Context(), storage, req.Path, model.ListArgs{Refresh: req.Refresh})

@@ -349,6 +349,7 @@ func _replace_directory() -> void:
 
 func navigate(direction: int) -> bool:
 	if portrait_requested or queue.size() <= 1 or direction == 0: return false
+	if gallery.mode == Gallery.Layout.WALL and gallery.overview(): return gallery.navigate_wall(direction)
 	var target := (pending_index if pending_index >= 0 else index) + direction
 	if (geometry == Geometry.Geometry.FLAT or gallery.mode != 0) and queue_complete: target = posmod(target, queue.size())
 	return select_image(target, 1 if direction > 0 else -1)

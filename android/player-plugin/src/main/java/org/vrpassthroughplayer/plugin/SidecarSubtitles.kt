@@ -11,6 +11,20 @@ internal object SidecarSubtitles {
     // .sub is ambiguous: MPV's detected codec decides whether it is text or bitmap.
     private val extensions = setOf("srt", "ass", "ssa", "vtt", "smi", "sami", "sub")
 
+    fun supportedFile(name: String): Boolean = name.length in 1..1024 && !name.startsWith('.') &&
+        name.none { it == '/' || it == '\\' || it.code < 32 } &&
+        name.substringAfterLast('.', "").lowercase() in extensions
+
+    /** Manual discovery has no basename restriction or automatic-track limit. */
+    fun files(names: Collection<String>): List<String> = names.filter(::supportedFile).distinct()
+        .sortedWith(compareBy<String> { it.lowercase() }.thenBy { it })
+
+    fun supportsDirectory(uri: String): Boolean = when (uri.substringBefore("://", "")) {
+        "file", "usb", "smb", "cloud" -> true
+        "content" -> runCatching { StorageDocumentPolicy.parse(uri); true }.getOrDefault(false)
+        else -> false
+    }
+
     fun select(video: String, names: Collection<String>): List<String> {
         val stem = video.substringBeforeLast('.')
         if (stem.isEmpty()) return emptyList()
@@ -31,10 +45,10 @@ internal object SidecarSubtitles {
         }
     }
 
-    fun forCloud(path: String, client: CloudClient, publish: (CloudFile) -> String): List<Track> {
-        // Library pages hide subtitle files. Read the unfiltered directory, including later pages.
-        val files = client.list(path.substringBeforeLast('/').ifEmpty { "/" })
-            .filter { !it.folder && it.size > 0 }.associateBy { it.name }
+    fun forCloud(path: String, pageFiles: List<CloudFile>, publish: (CloudFile) -> String): List<Track> {
+        // Filter provided candidates only; the playback snapshot owns the discovery policy.
+        val files = pageFiles.groupBy { it.name }.filterValues { it.size == 1 }
+            .mapValues { it.value.single() }.filterValues { !it.folder && it.size > 0 }
         return select(path.substringAfterLast('/'), files.keys).mapNotNull { name ->
             // One inaccessible subtitle must not hide other tracks or fail video playback.
             runCatching { Track(publish(files.getValue(name)), name) }.getOrNull()

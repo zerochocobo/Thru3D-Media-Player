@@ -119,3 +119,11 @@ Supported USB devices offer read-only FAT32, exFAT and NTFS browsing, including 
 Spatial videos with valid source metadata can apply the recommended stereo offset, remembered per video. Capture-FOV matching is available for spatial videos/photos with valid capture information. This does not imply complete Apple spatial presentation or physical-scale reconstruction.
 
 Move a controller or press a button to reveal its ray and hit point outside menus; idle feedback hides with the controls. Flat-video corners support proportional trigger resizing. Default right-stick vertical movement adjusts flat-picture size or immersive zoom; saved custom mappings remain in effect. Photo 3D waits for the stereo result before switching, and flat PGS subtitles remain available during supported video 2D-to-3D conversion.
+
+## Subtitle files and paged cloud browsing
+
+The subtitle picker can choose other text-subtitle filenames from the current folder on sources with directory access (including supported local, USB, SMB, cloud and WebDAV sources). Manual cloud choices use the cached page captured when the video opened; this is separate from supported automatic basename discovery across that directory. Subtitle timing is remembered separately for each track/file within the video, with explicit selections taking priority.
+
+Native cloud providers load bounded directory pages with source-supported sorting. WebDAV reuses its complete fetched directory snapshot; this is not server-side WebDAV pagination. 115 retains account-scoped parent identities for playback preparation and verifies parent/target identities freshly before managed writes. This reduces redundant lookup work without promising fixed network latency or bypassing permissions.
+
+Video depth uses the version-matched 364×210 late-upsample model and adjusted temporal smoothing; the independent photo model remains 518×518. Alpha FPS counts drawn frames. The masked-only Alpha experiment is reverted. Subtitle narration remains disabled in both UI and Android runtime gates; supporting build source is included because the current player links it, with no narration weights, reference audio or release-feature claim.

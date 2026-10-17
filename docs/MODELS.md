@@ -9,7 +9,7 @@ Normal playback expects:
 ```text
 external-model-assets/
   rvm-mnn/rvm.mnn       modified/distilled RVM, RGBA uint8-range input
-  depth-mnn/depth.mnn   Depth Anything V2 Small, 252×140 input
+  depth-mnn/depth.mnn   Depth Anything V2 Small, 364×210 input
   depth-mnn/photo_depth.mnn   Independent still-photo Depth Anything V2 Small, 518×518 input
 ```
 
@@ -29,7 +29,7 @@ The importer checks every model against the committed catalog before copying, re
 | Model | Source | Project transformations |
 | --- | --- | --- |
 | RVM MobileNetV3 | [RVM v1.0.0](https://github.com/PeterL1n/RobustVideoMatting/releases/tag/v1.0.0); pinned ONNX in `rvm_mobilenetv3.json` | Ratio=1 specialization, unused output pruning, 0..255/RGBA input handling, operator fusion, sliced decoder and recurrent student distillation, MNN conversion. |
-| Depth Anything V2 Small | [ONNX model](https://huggingface.co/onnx-community/depth-anything-v2-small); source SHA256 in the runtime conversion manifest | Video: 252×140. Photos: independent 518×518 model, aspect-preserving letterbox, content-only normalization. Both fold input normalization, rewrite patch embedding/attention, and use MNN FP16 weights. |
+| Depth Anything V2 Small | [ONNX model](https://huggingface.co/onnx-community/depth-anything-v2-small); source SHA256 in the runtime conversion manifest | Video: 364×210 with a late-upsample head. Photos: independent 518×518 model, aspect-preserving letterbox, content-only normalization. Both fold input normalization, rewrite patch embedding/attention, and use MNN FP16 weights. |
 
 RVM uses four recurrent states independently for each eye. Runtime models are not generic arbitrary ONNX/MNN files; tensor names, dimensions, conventions and the patched MNN kernels are part of the interface contract.
 

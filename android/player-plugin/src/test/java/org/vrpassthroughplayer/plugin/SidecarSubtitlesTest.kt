@@ -6,6 +6,24 @@ import java.net.HttpURLConnection
 import java.net.URL
 
 class SidecarSubtitlesTest {
+    @Test fun manualCandidatesIncludeUnrelatedNamesAndAllMatchingVersionsWithoutOpeningFiles() {
+        val variants = (1..30).map { "film.$it.srt" }
+        val names = variants + listOf("different release.ass", "字幕.SRT", "film.srt/", "../escape.srt", "folder\\escape.srt", ".hidden.srt", "film.zip", "film.idx", "film.sup", "bad\n.srt")
+        val selected = SidecarSubtitles.files(names + names)
+        assertEquals(32, selected.size)
+        assertTrue(selected.containsAll(variants))
+        assertTrue(selected.containsAll(listOf("different release.ass", "字幕.SRT")))
+        assertEquals(8, SidecarSubtitles.select("film.mp4", names).size)
+    }
+
+    @Test fun directoryCapabilitiesKeepTheOriginalSourceIncludingUnescapedSpaces() {
+        for (uri in listOf("file:///storage/Film name.mp4", "usb://disk/Film%20name.mp4", "smb://saved/share/Film name.mp4", "cloud://saved/Film%20name.mp4",
+            "content://com.android.externalstorage.documents/tree/ABCD%3AFilms/document/ABCD%3AFilms%2Ffilm.mp4"))
+            assertTrue(uri, SidecarSubtitles.supportsDirectory(uri))
+        for (uri in listOf("http://example.test/film.mp4", "https://example.test/film.mp4", "dlna://saved/123", "medialib://saved/123", "content://media/external/video/42"))
+            assertFalse(uri, SidecarSubtitles.supportsDirectory(uri))
+    }
+
     @Test fun exactSrtThenAssRemainFirstEvenWithManyVariants() {
         val names = (1..20).map { "film.$it.ass" } + listOf("film.ssa", "FILM.ASS", "film.SRT")
         assertEquals(listOf("film.SRT", "FILM.ASS"), SidecarSubtitles.select("film.mkv", names).take(2))
@@ -84,7 +102,7 @@ class SidecarSubtitlesTest {
         }
         assertTrue(SidecarSubtitles.select("film.mp4", listOf("film.idx", "film.sup", "film.txt", "film.srt/child")).isEmpty())
     }
-    @Test fun cloudDiscoveryIncludesSubtitlesBeyondTheFirstLibraryPage() {
+    @Test fun cachedPageDiscoveryDoesNotReadLaterPagesToFindSubtitles() {
         val offsets = ArrayList<Int>()
         val stem = "片名 @SBS"
         val client = CloudDrive(CloudDrive.P115, "UID=fixture", CloudTransport { url, _, _ ->
@@ -98,10 +116,11 @@ class SidecarSubtitlesTest {
             CloudResponse(org.json.JSONObject().put("state", true).put("offset", offset).put("count", 60).put("data", data))
         })
         val selected = ArrayList<CloudFile>()
-        val tracks = SidecarSubtitles.forCloud("/$stem.mp4", client) { file -> selected.add(file); "fixture-stream" }
-        assertEquals(listOf(0, 48), offsets)
-        assertEquals(listOf("$stem.zh-CN.srt"), tracks.map { it.title })
-        assertEquals("pick-55", selected.single().pickCode)
+        val currentPage = client.page("/")
+        val tracks = SidecarSubtitles.forCloud("/$stem.mp4", currentPage.files) { file -> selected.add(file); "fixture-stream" }
+        assertEquals(listOf(0), offsets)
+        assertTrue(tracks.isEmpty())
+        assertTrue(selected.isEmpty())
     }
 
     @Test fun cloudFoldersEmptyFilesAndOneUnavailableSubtitleDoNotHideAnotherTrack() {
@@ -110,13 +129,7 @@ class SidecarSubtitlesTest {
             CloudFile("film.zh.srt", true, 10, "/folder/film.zh.srt"),
             CloudFile("film.ja.srt", false, 0, "/folder/film.ja.srt"),
             CloudFile("other.srt", false, 10, "/folder/other.srt"))
-        val client = object : CloudClient {
-            override fun list(path: String): List<CloudFile> { assertEquals("/folder", path); return files }
-            override fun page(path: String, offset: Int, refresh: Boolean): CloudPage = error("Must read all sibling pages")
-            override fun find(path: String): CloudFile = error("Preserve listed file metadata")
-            override fun resolve(file: CloudFile): CloudLink = error("Do not resolve unrelated files")
-        }
-        val tracks = SidecarSubtitles.forCloud("/folder/film.mp4", client) { file ->
+        val tracks = SidecarSubtitles.forCloud("/folder/film.mp4", files) { file ->
             if (file.name == "film.srt") throw CloudFailure()
             assertEquals("/folder/film.en.srt", file.id)
             "fixture-stream"
@@ -148,7 +161,7 @@ class SidecarSubtitlesTest {
                 override fun find(path: String): CloudFile = error("Unexpected call")
                 override fun resolve(file: CloudFile) = CloudLink(origin) { emptyMap() }
             }
-            val track = SidecarSubtitles.forCloud("/film.mp4", client) { file ->
+            val track = SidecarSubtitles.forCloud("/film.mp4", client.list("/")) { file ->
                 val source = CloudStreamSource(file.size, { client.resolve(file) }) {
                     it.toURL().openConnection() as HttpURLConnection
                 }

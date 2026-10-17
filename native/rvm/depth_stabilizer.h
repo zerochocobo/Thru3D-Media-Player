@@ -33,6 +33,9 @@ public:
     uint64_t cuts() const { return cuts_; }
     /** Foreground dilation radius in model pixels; negative restores the default round(w/512), >= 1. */
     void set_dilation(int radius) { dilation_ = radius; }
+    /** Temporal smoothing speed: per-frame rates of the depth base and of the near band are multiplied
+     * by speed (1 = PTMediaServer defaults, 2 = settles twice as fast, at most rate 1). */
+    void set_speed(float speed) { speed_ = speed > 0 ? speed : 1.f; }
 
     // Parameters (PTMediaServer defaults).
     static constexpr float kNormAlpha = 0.10f, kNormReset = 1.0f;
@@ -51,6 +54,7 @@ public:
 private:
     int w_, h_, sw_, sh_;
     bool have_band_ = false, initialized_ = false, have_small_ = false;
+    float speed_ = 1.f;
     float lo_ = 0, hi_ = 1;
     std::vector<float> near_, base_cur_, base_prev_, base_warp_, tmp_, alpha_;
     std::vector<uint8_t> gray_;

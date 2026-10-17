@@ -52,7 +52,7 @@ func run() -> void:
 		await shot(viewport, menu, output.path_join(language + "-move-binding.png"))
 		menu.scroll = menu.rows.find(menu.rows.filter(func(row): return row.title == "Controller / ray")[0]); menu.refresh()
 		visible_text = "\n".join(menu.find_children("*", "Label3D", true, false).filter(func(label): return label.is_visible_in_tree()).map(func(label): return label.text))
-		check(visible_text.contains(I18n.t("Move to wake · idle hides")) and visible_text.contains(I18n.t("Corner + trigger")), "Wake/idle and corner resize guides are visible: " + language)
+		check(visible_text.contains(I18n.t("Move clearly to wake · idle hides")) and visible_text.contains(I18n.t("Corner + trigger")), "Wake/idle and corner resize guides are visible: " + language)
 		await shot(viewport, menu, output.path_join(language + "-ray-resize.png"))
 		menu.scroll = menu.rows.find(menu.rows.filter(func(row): return row.get("id", "") == "flat_zoom_in")[0]); menu.refresh()
 		visible_text = "\n".join(menu.find_children("*", "Label3D", true, false).filter(func(label): return label.is_visible_in_tree()).map(func(label): return label.text))

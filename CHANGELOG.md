@@ -4,6 +4,23 @@
 
 Newest first, following product release milestones. Some development/source snapshots contained features before their product release. Original APK identifiers `0.2` and `0.4` are retained; `0.4` was also called `0.4.0` in release notes. Availability depends on device, server and media capabilities.
 
+## 0.11.1 — 2026-10-17
+
+This update adds same-folder subtitle selection, per-subtitle sync memory and on-demand cloud browsing, with improvements to 115 startup, 2D-to-3D conversion and network playback.
+
+- **Choose other subtitles from the same folder**: Select differently named files or alternate subtitle versions on supported local, USB, SMB, cloud and WebDAV sources. Manual cloud choices use the directory page from which the video was opened.
+- **Per-subtitle sync memory**: Different subtitles for the same video keep separate timing offsets. Your selected subtitle and its settings can be restored on the next opening.
+- **On-demand cloud pages and sorting**: Browse 115, Baidu, Aliyun Drive, Quark and OneDrive page by page, with provider-supported sorting, without first loading the entire directory.
+- **Improved 2D-to-3D conversion**: More detailed video depth and adjusted temporal smoothing balance responsiveness and stability, with processing optimizations for videos and photos.
+- **Less waiting in 115**: Reduced redundant folder lookups and subtitle/audio preparation, with improved subfolder navigation and target verification for deletion and renaming.
+- **Smoother WebDAV browsing**: Reuse directory results to reduce repeated requests when paging or changing sort order.
+- **Network playback fixes**: Improved playback of some MP4 files with prolonged buffering and WMV files that failed to display video, with automatic fallback for incompatible video output.
+- **Fewer accidental controller wakeups**: Head movement, light touches and tracking jitter are less likely to reveal hidden pointers. Deliberate controller movement or a button press wakes them, with the first press taking effect.
+- **Favorites and recent-history fixes**: Recent playback follows global privacy settings independently of the favorites lock. Fixed favorite icons obstructing 2D-to-3D and volume popups, and clarified the privacy-settings entry.
+- **Stable photo-wall rows**: Browse multi-row photo walls by column while keeping photos in their original rows, including wraparound and incomplete final columns. Expanded photos retain individual navigation.
+- **Clearer file browsing**: DLNA entries show file extensions when reliably available, with more compact folder-toolbar grouping.
+- **Accurate Alpha FPS display**: The readout now reflects frames actually drawn, making frame-rate limits easier to assess.
+
 ## 0.11.0 — 2026-10-16
 
 This update adds favorites, privacy controls and read-only USB playback, improves spatial media viewing, and refines controller interaction and subtitles.

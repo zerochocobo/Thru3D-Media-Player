@@ -53,7 +53,10 @@ $env:GOTOOLCHAIN = 'local'
 $env:GOFLAGS = '-mod=mod'
 New-Item -ItemType Directory -Force "$source\cloudcore", "$source\public\dist" | Out-Null
 foreach ($adapter in $adapters) { Copy-Item -LiteralPath $adapter.FullName -Destination "$source\cloudcore\$($adapter.Name)" -Force }
-foreach ($adapter in $searchAdapters) { Copy-Item -LiteralPath $adapter.FullName -Destination (Join-Path $source "drivers\$($adapter.Directory.Name)\$($adapter.Name)") -Force }
+foreach ($adapter in $searchAdapters) {
+    $packageRoot = if ($adapter.Directory.Name -eq 'gowebdav') { 'pkg' } else { 'drivers' }
+    Copy-Item -LiteralPath $adapter.FullName -Destination (Join-Path $source "$packageRoot\$($adapter.Directory.Name)\$($adapter.Name)") -Force
+}
 $storageModel = Join-Path $source 'internal\model\storage.go'
 $modelText = Get-Content $storageModel -Raw
 $originalTag = 'json:"addition" gorm:"type:text"'

@@ -21,3 +21,5 @@ The CodeLibs JCIFS jar is staged by Gradle with unused HTTP/HTTPS NTLM adapters 
 - Thru3D CJK punctuation: renamed bracket-only subset of Noto Sans CJK SC 2.004 under SIL OFL-1.1; exact source/hash, rebuild script and notices accompany the font under app/godot/assets/fonts.
 
 - Godot GDExtension C interface: unmodified compile-time header from Godot 4.5-stable, core/extension/gdextension_interface.h. The original MIT text is retained at native/xr-layer/gdextension/LICENSE.txt; the local OpenXR registration bridge uses the forward-compatible C ABI without godot-cpp.
+
+- Linked but feature-disabled narration support: ONNX Runtime and nlohmann/json (MIT), SentencePiece and MOSS runtime semantics (Apache-2.0), with bundled subcomponent notices in `third_party/narration`. Only source recipes, notices and metadata are included; no narration weights, preset codes or reference recordings.

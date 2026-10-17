@@ -14,7 +14,7 @@ import java.nio.ByteOrder
  *
  * The video never waits for depth. Each frame is published at once with the latest near map;
  * whenever the model is idle, a copy of that frame's model input is sent to [DepthWorker], and its
- * result becomes the latest map (Quest 3, 252x140: ~52 ms, ~19 updates/s). Depth changes slowly
+ * result becomes the latest map (Quest 3, 364x210: ~165 ms in 1080p playback, ~5 updates/s). Depth changes slowly
  * against the frame rate, so a map one or two frames old reads as the same scene.
  * Before the first result (cold compile) and for good if the model cannot run, frames show in 2D
  * (depth_ran=false) and the reason is reported in stats. */
@@ -57,7 +57,8 @@ internal class DepthVideoProbe(
             try {
                 if (synchronized(lock) { closed }) return@post
                 val host = context() ?: error("Depth activity unavailable")
-                val created = DepthNative.create(host.assets, DepthWarmup.cacheDirectory(host).absolutePath)
+                val created = DepthNative.videoModelFile(host)?.let { DepthNative.createFromFile(it.path, DepthWarmup.cacheDirectory(host).absolutePath) }
+                    ?: DepthNative.create(host.assets, DepthWarmup.cacheDirectory(host).absolutePath)
                 check(created > 0) { "Depth prepare failed" }
                 val kept = synchronized(lock) { if (closed) false else { handle = created; true } }
                 if (!kept) DepthNative.close(created) else { info = DepthNative.describe(created); ready() }
@@ -155,6 +156,9 @@ internal class DepthVideoProbe(
                 } else false
             }
             if (updated) mapReady()
+            // Debug A/B of the depth input size: one line per 50 maps.
+            if (updated && BuildConfig.DEBUG && inferred % 50 == 0L) android.util.Log.i("QuestDepth",
+                "video depth profile=${DepthNative.PROFILE} process_ms_avg=${"%.1f".format(processMs)} updates=$inferred")
         } finally {
             synchronized(lock) { busy = false }
         }
@@ -203,13 +207,13 @@ internal object DepthWorker {
 internal object DepthWarmup {
     fun cacheDirectory(context: Context) = File(context.cacheDir, "depth-mnn").apply { mkdirs() }
 
-    fun ready(context: Context): Boolean = DepthNative.unavailable == null &&
-        File(DepthNative.cachePath(context.assets, cacheDirectory(context).absolutePath)).length() > 4096
+    fun ready(context: Context): Boolean = DepthNative.unavailable == null && (DepthNative.videoModelFile(context)?.isFile
+        ?: (File(DepthNative.cachePath(context.assets, cacheDirectory(context).absolutePath)).length() > 4096))
 
     /** Runs on [DepthWorker], so a session that starts meanwhile waits for this compile and then
      * opens from the cache instead of compiling a second time. */
     fun schedule(context: Context, report: (JSONObject) -> Unit) {
-        if (DepthNative.unavailable != null) return
+        if (DepthNative.unavailable != null || DepthNative.videoModelOverride != null) return // debug A/B compiles at session start
         val app = context.applicationContext
         DepthWorker.handler.post {
             val base = JSONObject().put("profile_key", "depth").put("model", "depth")

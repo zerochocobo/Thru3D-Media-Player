@@ -35,8 +35,14 @@ static func valid_choice(value: Variant) -> bool:
 	var matches: Variant = value.get("matches")
 	if not (matches is int or matches is float) or not is_finite(float(matches)) \
 		or float(matches) != floorf(float(matches)) or float(matches) < 1 or float(matches) > 4096: return false
-	return value.size() == 7 and value.get("external") is bool and value.get("layout") is String \
+	return (value.size() == 7 or (value.size() == 8 and value.get("external", false) and valid_file(value.get("file")))) and value.get("external") is bool and value.get("layout") is String \
 		and value.layout.length() == 64 and value.layout.is_valid_hex_number(false)
+
+static func valid_file(value: Variant) -> bool:
+	if not value is String or value.length() < 1 or value.length() > 1024 or value.begins_with(".") or value.contains("/") or value.contains("\\"): return false
+	for index in value.length():
+		if value.unicode_at(index) < 32: return false
+	return true
 
 static func identity(track: Dictionary) -> Dictionary:
 	return {"title": str(track.get("title", "")).left(1024),
@@ -61,12 +67,17 @@ static func describe(id: int, tracks: Array) -> Dictionary:
 			result.id = id
 			result.layout = layout(tracks)
 			result.matches = tracks.filter(func(t): return t is Dictionary and int(t.get("id", 0)) > 0 and identity(t) == identity(track)).size()
+			if bool(track.get("external", false)) and valid_file(track.get("source_file")): result.file = track.source_file
 			return result
 	return {}
 
 static func resolve(choice: Dictionary, tracks: Array) -> int:
 	if not valid_choice(choice): return UNRESOLVED
 	if int(choice.id) <= 0: return int(choice.id)
+	if choice.has("file"):
+		for track in tracks:
+			if track is Dictionary and track.get("external", false) and track.get("source_file", "") == choice.file: return int(track.id)
+		return UNRESOLVED
 	var matches: Array[int] = []
 	for track in tracks:
 		if track is Dictionary and int(track.get("id", 0)) > 0 and identity(track) == identity(choice):
