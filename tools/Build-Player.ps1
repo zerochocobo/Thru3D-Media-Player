@@ -49,6 +49,7 @@ if ($DebugApplicationId) {
 }
 function Convert-HexString([byte[]]$Bytes) { -join ($Bytes | ForEach-Object { $_.ToString('X2') }) }
 $workspace = Split-Path -Parent $PSScriptRoot
+& "$PSScriptRoot\Assert-NarrationExcluded.ps1"
 # Gradle outputs, Godot's import cache and evidence paths belong to one checkout.
 # Concurrent builds can otherwise package another run's plugin or overwrite its tests.
 $buildMutex = [Threading.Mutex]::new($false, 'Local\VRPassthroughPlayer-Build')
@@ -102,7 +103,6 @@ if ($UsePreparedModelAssets) {
     & "$workspace\tools\models\Prepare-RvmCandidate.ps1" -ToolRoot $ToolRoot
 }
 & "$workspace\tools\environment\Prepare-MpvAndroid.ps1" -ToolRoot $ToolRoot -Candidate $MpvCandidate
-& "$workspace\tools\environment\Prepare-Narration.ps1"
 
 # Extract the Java API from the matching official template, not a second engine dependency.
 Add-Type -AssemblyName System.IO.Compression.FileSystem
@@ -126,6 +126,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Android plugin build failed; inspect build/out
 $pluginDirectory = Join-Path $projectDirectory 'addons\quest_player\bin'
 New-Item -ItemType Directory -Path $pluginDirectory -Force | Out-Null
 foreach ($variant in @('debug','release')) {
+    & "$PSScriptRoot\Assert-NarrationExcluded.ps1" -ArchivePath "$workspace\android\player-plugin\build\outputs\aar\player-plugin-$variant.aar"
     Copy-Item -LiteralPath "$workspace\android\player-plugin\build\outputs\aar\player-plugin-$variant.aar" -Destination $pluginDirectory -Force
 }
 # OpenXR layer extensions Godot does not request (native/xr-layer/layer_extensions.cpp): a GDExtension
@@ -395,28 +396,10 @@ try {
     if (-not $nativeEntry) { throw 'APK is missing the RVM JNI library.' }
     $nativeEvidenceDirectory = Join-Path $artifactDirectory 'native'
     New-Item -ItemType Directory -Path $nativeEvidenceDirectory -Force | Out-Null
-    $narrationEntry = $apkArchive.GetEntry('lib/arm64-v8a/libquest_narration.so')
-    $ortEntry = $apkArchive.GetEntry('lib/arm64-v8a/libonnxruntime.so')
-    if (-not $narrationEntry -or -not $ortEntry -or -not $apkArchive.GetEntry('assets/narration/model.json')) { throw 'APK is missing narration runtime or its model manifest.' }
-    $narrationLibrary = Join-Path $nativeEvidenceDirectory 'libquest_narration.so'
-    [IO.Compression.ZipFileExtensions]::ExtractToFile($narrationEntry, $narrationLibrary, $true)
-    $runtimeManifest = Get-Content (Join-Path $workspace 'third_party/narration/dependencies.json') -Raw | ConvertFrom-Json
-    $runtimeStream = $ortEntry.Open(); $runtimeSha = [Security.Cryptography.SHA256]::Create()
-    try { $runtimeHash = (Convert-HexString ($runtimeSha.ComputeHash($runtimeStream))).ToLowerInvariant() }
-    finally { $runtimeStream.Dispose(); $runtimeSha.Dispose() }
-    if ($runtimeHash -ne $runtimeManifest.runtime_library.packaged_sha256) { throw 'APK ORT runtime differs from the pinned library.' }
-    if ($apkArchive.Entries | Where-Object { $_.FullName -match '^assets/.*(moss_tts_|moss_audio_tokenizer_|MOSS-TTS-Nano-100M|MOSS-Audio-Tokenizer-Nano|tokenizer\.model|shared_weights\.data)' }) {
-        throw 'Narration model weights/presets must be provisioned separately, never bundled in this APK.'
-    }
+    & "$PSScriptRoot\Assert-NarrationExcluded.ps1" -ArchivePath $apkPath
     $rvmLibrary = Join-Path $nativeEvidenceDirectory 'libquest_rvm.so'
     [IO.Compression.ZipFileExtensions]::ExtractToFile($nativeEntry, $rvmLibrary, $true)
 } finally { $apkArchive.Dispose() }
-& "$env:ANDROID_NDK_HOME\toolchains\llvm\prebuilt\windows-x86_64\bin\llvm-nm.exe" -D --defined-only $narrationLibrary 2>&1 | Out-File (Join-Path $logDirectory 'narration-jni.log') -Encoding utf8
-if ($LASTEXITCODE -ne 0) { throw 'Narration JNI inspection failed.' }
-$narrationSymbols = Get-Content (Join-Path $logDirectory 'narration-jni.log') -Raw
-foreach ($method in @('create','cancel','destroy','synthesize','openReader','readWindow','closeReader')) {
-    if (-not $narrationSymbols.Contains('Java_org_vrpassthroughplayer_plugin_NarrationNative_' + $method)) { throw "Narration JNI method missing: $method" }
-}
 & "$env:ANDROID_NDK_HOME\toolchains\llvm\prebuilt\windows-x86_64\bin\llvm-readelf.exe" -h -d -l $rvmLibrary 2>&1 | Out-File (Join-Path $logDirectory 'rvm-elf.log') -Encoding utf8
 if ($LASTEXITCODE -ne 0) { throw 'RVM ELF inspection failed.' }
 $elfText = Get-Content (Join-Path $logDirectory 'rvm-elf.log') -Raw

@@ -27,6 +27,7 @@ func option(menu: Node3D, key: String, value: Variant) -> int:
 	return -1
 func _initialize() -> void: call_deferred("_run")
 func _run() -> void:
+	if "--narration-hidden" in OS.get_cmdline_user_args(): Menu.NarrationSettings.FEATURE_ENABLED = false
 	I18n.use("en")
 	var host := Host.new(); var video := Video.new(); root.add_child(video);video.set_process(false);video.platform=host
 	video.local_uri="file:///narration.mp4";video.media.begin(8);video.media.state="playing"
@@ -70,6 +71,22 @@ func _run() -> void:
 	check(not video.narration.enabled and not host.calls.back()[1].enabled,"Subtitle and audio panel share one narration state")
 	menu.navigate_back();tap(menu,111)
 	video.narration.reset_source();check(video.narration.source==-1 and video.narration.language=="auto" and video.narration.zh_voice=="Junhao","New video resets source/language while preserving per-language voice")
+	video.narration.reset_source(video.local_uri)
+	video.narration.set_option("narration_enabled", true)
+	video.narration.set_option("narration_source", 2); video.narration.set_option("narration_language", "en")
+	video.narration.reset_source(video.local_uri)
+	check(video.narration.source == 2 and video.narration.language == "en", "Internal reopen keeps the same video's fixed source and manual language")
+	var sent := host.calls.size(); video.narration.apply()
+	check(host.calls.size() == sent + 1 and host.calls.back()[1].language == "en", "Internal reopen resends configuration after track metadata is restored")
+	var tracks: Array = JSON.parse_string(JSON.stringify(video.media.playback.details.subtitle_tracks))
+	video.media.playback.details.subtitle_tracks = tracks; video.narration.apply()
+	check(video.narration.language == "en", "Real JSON float track IDs preserve manual language")
+	video.media.playback.details.subtitle_tracks = []; video.narration.apply()
+	check(video.narration.language == "en", "Transient seek metadata preserves fixed-source language")
+	video.media.playback.details.subtitle_tracks = tracks; video.narration.apply()
+	check(video.narration.language == "en", "Seek metadata restoration does not clear manual language")
+	video.narration.reset_source("file:///another.mp4")
+	check(video.narration.source == -1 and video.narration.language == "auto", "Changing actual video resets the temporary narration selection")
 	for lang in ["zh","zh_Hant","ja","en"]:
 		I18n.use(lang);menu.refresh();check(not button(menu,menu.AUDIO_CLOSE).is_empty(),"Audio panel draws in "+lang)
 	_finish(menu, video, main)

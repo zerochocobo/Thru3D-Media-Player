@@ -78,9 +78,8 @@ class CloudPlaybackPagesTest {
         assertEquals(second, cache.forVideo("account", "mount", "/movies/next.mp4").files)
     }
 
-    @Test fun refreshSortDirectoryAccountAndExpiryDoNotLeakOldPages() {
-        var time = 0L
-        val cache = CloudPlaybackPages { time }
+    @Test fun refreshSortDirectoryAndAccountDoNotLeakOldPages() {
+        val cache = CloudPlaybackPages()
         cache.replace("account", "mount", "/movies", first)
         assertTrue(cache.forVideo("different", "mount", "/movies/film.mp4").files.isEmpty())
         assertTrue(cache.forVideo("account", "mount", "/other/film.mp4").files.isEmpty())
@@ -90,8 +89,7 @@ class CloudPlaybackPagesTest {
         assertTrue(cache.forVideo("account", "new-mount", "/movies/film.mp4").files.isEmpty())
         assertTrue(cache.forVideo("account", "mount", "/movies/film.mp4").files.isEmpty())
         cache.replace("account", "mount", "/movies", first)
-        time = 120_000
-        assertTrue(cache.forVideo("account", "mount", "/movies/film.mp4").files.isEmpty())
+        assertEquals(first, cache.forVideo("account", "mount", "/movies/film.mp4").files)
         cache.replace("account", "mount", "/movies", first)
         cache.remove("account")
         assertTrue(cache.forVideo("account", "mount", "/movies/film.mp4").files.isEmpty())
@@ -106,14 +104,12 @@ class CloudPlaybackPagesTest {
         assertTrue(cache.forVideo("0", "mount", "/movies/film.mp4").files.isEmpty())
     }
 
-    @Test fun parentIdentitySurvivesMetadataExpiryWithoutLeakingAcrossLocationsOrAccounts() {
-        var time=0L
-        val cache=CloudPlaybackPages { time }
+    @Test fun visibleSinglePageKeepsIdentityAndNoSearchPolicyUntilNavigationOrAccountChange() {
+        val cache=CloudPlaybackPages()
         cache.replace("account","mount","/movies",first,true,"42")
         assertEquals("42",cache.forVideo("account","mount","/movies/film.mp4").folderId)
-        time=120_000
         val expired=cache.forVideo("account","mount","/movies/film.mp4")
-        assertTrue(expired.files.isEmpty()); assertFalse(expired.complete); assertEquals("42",expired.folderId)
+        assertEquals(first, expired.files); assertTrue(expired.complete); assertEquals("42",expired.folderId)
         assertEquals("42",cache.folderId("account","mount","/movies"))
         assertEquals("",cache.folderId("account","new-mount","/movies"))
         assertEquals("",cache.folderId("account","mount","/other"))

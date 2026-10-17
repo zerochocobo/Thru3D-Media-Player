@@ -288,40 +288,5 @@
       "usb/LICENSE.libaums",
       "usb/source-lock.json"
     ]
-  },
-  {
-    "id": "onnxruntime",
-    "name": "ONNX Runtime 1.28.0",
-    "license": "MIT",
-    "assets": [
-      "narration/LICENSE.onnxruntime"
-    ]
-  },
-  {
-    "id": "sentencepiece",
-    "name": "SentencePiece 0.2.1",
-    "license": "Apache-2.0 and dependency notices",
-    "assets": [
-      "narration/LICENSE.sentencepiece",
-      "narration/LICENSE.sentencepiece-protobuf-lite",
-      "narration/LICENSE.sentencepiece-absl",
-      "narration/LICENSE.sentencepiece-darts_clone"
-    ]
-  },
-  {
-    "id": "narration-json",
-    "name": "nlohmann/json 3.12.0",
-    "license": "MIT",
-    "assets": [
-      "narration/LICENSE.nlohmann-json"
-    ]
-  },
-  {
-    "id": "moss-nano",
-    "name": "MOSS-TTS-Nano runtime adaptation",
-    "license": "Apache-2.0",
-    "assets": [
-      "narration/LICENSE.MOSS"
-    ]
   }
 ]

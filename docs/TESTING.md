@@ -33,3 +33,7 @@ Only project-generated synthetic media are distributed. Moving-person tests and 
 Record the APK hash, device/vendor, model hash, input media contract and test scope. Distinguish decoding, inference, presented unique video frames, engine ticks and final XR display. Test seeking, pause/resume, menu interactions, permission revocation, background/foreground transitions, stereo alignment and sustained operation separately.
 
 Host tests and ELF/APK inspection do not prove passthrough visuals, audio synchronization, physical hand/controller interaction or sustained frame rate. PICO export success is not PICO hardware validation.
+
+## Optional audio fixtures
+
+The built-in recordings are excluded from public source. `test_background_audio.gd` and `test_audio_native_transport.gd` include built-in decoding paths and require the twelve caller-supplied assets described in [AUDIO.md](AUDIO.md). Without them, do not report the complete source suite as passed. Music UI rendering can use generated fixtures. The narration exclusion regression uses synthetic ZIP entries and never enables narration or loads its runtime/models.

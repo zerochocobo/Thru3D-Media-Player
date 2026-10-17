@@ -8,6 +8,7 @@ var failures: Array[String] = []
 class PlaybackMain extends "res://scripts/main.gd":
 	func _show_player_menu() -> void: pass
 class Viewer extends Node3D:
+	var platform: Object
 	var source_location := {}
 	var calls := []
 	func dismiss() -> void: pass

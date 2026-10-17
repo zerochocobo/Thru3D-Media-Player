@@ -49,6 +49,20 @@ func run() -> void:
 			check(overlay.text.contains("2.3 MB/s") and not fps.visible, "Real transfer rate remains visible with FPS disabled")
 			video.media.playback = {}; video.changed.emit()
 			check(not overlay.visible and overlay.text.is_empty() and not menu.visible, "Recovery clears feedback and preserves hidden controls")
+	for language in ["en", "zh", "zh_Hant", "ja"]:
+		I18n.use(language)
+		video.media.playback = {"narration": {"startup_hold": true}}
+		video.changed.emit()
+		if Menu.NarrationSettings.FEATURE_ENABLED:
+			check(overlay.visible and overlay.text == I18n.t("Preparing narration…") and not menu.visible, "Opening narration preparation has localized passive feedback: " + language)
+		else:
+			check(not overlay.visible and overlay.text.is_empty(), "Withheld narration never shows a stale preparation status: " + language)
+		video.requested_play = false; video.changed.emit()
+		check(not overlay.visible, "A user pause hides automatic narration preparation feedback")
+		video.requested_play = true
+		video.media.playback = {"narration": {"startup_hold": false}}
+		video.changed.emit()
+		check(not overlay.visible and overlay.text.is_empty(), "Narration readiness or cancellation clears feedback")
 	I18n.use("en")
 	video.media.playback = {"details": {"paused_for_cache": "yes"}}
 	main._show_player_menu(); video.changed.emit()

@@ -18,7 +18,7 @@ class Harness extends "res://scripts/main.gd":
 
 class LocationVideo extends "res://scripts/mpv_video_display.gd":
 	var opens := 0
-	func open_library(uri: String, title: String, _metadata: Dictionary = {}) -> bool:
+	func open_library(uri: String, title: String, _metadata: Dictionary = {}, _from_start: bool = false) -> bool:
 		opens += 1; local_uri = uri; display_name = title; media.state = "playing"
 		return true
 

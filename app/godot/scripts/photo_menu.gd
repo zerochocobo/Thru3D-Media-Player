@@ -1,6 +1,6 @@
 extends "res://scripts/player_menu.gd"
 ## Photo controls share the existing ray-menu surface, glyphs and projection picker, with no
-## video timeline or audio commands. The image queue is supplied by the browsing context.
+## video timeline. Background audio belongs to the application, independent of the image queue.
 const PHOTO_PREVIOUS := 400
 
 func _supports_half_layouts() -> bool:
@@ -24,6 +24,7 @@ const PHOTO_LAYOUT := 415
 const PHOTO_RETURN := 416
 const PHOTO_SHUFFLE := 417
 const PHOTO_PORTRAIT := 418
+const PHOTO_AUDIO := 430
 const PHOTO_LAYOUT_BASE := 470
 const PHOTO_WALL_ROWS := 490
 var _layout_open := false
@@ -119,6 +120,8 @@ func _draw_bar() -> void:
 	_round(100, "folder", Vector2(0, 0.215), 0.08, true, false, I18n.t("Library"))
 	_round(108, "recenter", Vector2(0.14, 0.215), 0.08, true, false, I18n.t("Recenter"))
 	_draw_favorite(Vector2(0.28, 0.215))
+	_round(PHOTO_AUDIO, "music", Vector2(-0.58, 0.215), 0.08, true, false, I18n.t("Music"))
+	if _state.get("audio_active", false): _buttons.back().base_color = SELECTED
 	var layout := clampi(int(_state.get("layout", 0)), 0, 3)
 	_round(PHOTO_LAYOUT, ["image", "photo_sides", "photo_wall", "memory"][layout], Vector2(-0.30, 0.215), 0.08, has and not portrait, false, I18n.t("Photo layout"))
 	var caption := _label(I18n.t("Portrait passthrough" if portrait else Photo.Gallery.NAMES[layout]), Vector3(-0.30, 0.15, 0.004), 12)
@@ -242,6 +245,7 @@ func _draw_gallery() -> void:
 	var entries: Array = queue_provider.call() if queue_provider.is_valid() else []
 	_gallery_start = clampi(_gallery_start, 0, maxi(0, entries.size() - 5))
 	var background := _quad(Vector2(1.16, 0.23), Vector3(0, 0.465, 0.001), PANEL, 10)
+	_pointer_panels.append(background)
 	add_child(background); _decorations.append(background)
 	_round(PHOTO_PAGE_BACK, "previous", Vector2(-0.64, 0.465), 0.075, _gallery_start > 0, false, I18n.t("Previous"))
 	_round(PHOTO_PAGE_NEXT, "next", Vector2(0.64, 0.465), 0.075, _gallery_start + 5 < entries.size(), false, I18n.t("Next"))
@@ -268,6 +272,7 @@ func stick_scroll(amount: float, delta: float) -> void:
 	if has_expanded_library():
 		if not _controls_pointer_capture(): expanded_library.stick_scroll(amount, delta)
 		return
+	if choices.stick_scroll(amount, delta): return
 	if not _gallery_open or absf(amount) < 0.7: return
 	if Time.get_ticks_msec() < _scroll_after: return
 	_scroll_after = Time.get_ticks_msec() + 200
@@ -282,6 +287,8 @@ func _activate(target: int) -> void:
 	if _activate_footer(target): return
 	if _activate_slider_reset(target): return
 	if _activate_depth_reset(target): return
+	if target == PHOTO_AUDIO:
+		action_requested.emit("music_open"); return
 	if target > PHOTO_WALL_ROWS and target <= PHOTO_WALL_ROWS + 3:
 		_layout_open = false; _wall_rows_open = false
 		action_requested.emit("photo_wall_rows_%d" % (target - PHOTO_WALL_ROWS))

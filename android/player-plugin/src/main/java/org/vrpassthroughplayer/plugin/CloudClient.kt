@@ -6,6 +6,8 @@ internal interface CloudClient {
     fun orderedPage(path: String, offset: Int, refresh: Boolean, order: String): CloudPage? = null
     fun list(path: String): List<CloudFile>
     fun find(path: String): CloudFile
+    /** Browsed identities are read-only hints, verified by the playback endpoint. */
+    fun findForPlayback(path: String, selected: CloudFile?): CloudFile = find(path)
     /** Native same-directory companion search; providers without it use only the captured page. */
     fun companions(path: String, pageFiles: List<CloudFile>): List<CloudFile> = pageFiles
     /** Fresh direct-sibling search for management checks; null keeps legacy adapters compatible. */

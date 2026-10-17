@@ -82,7 +82,7 @@ internal object OpenListBackend {
         private val call: (String, String, JSONObject?) -> JSONObject = { method, route, body -> request(method, route, body) }) : CloudClient {
         override val canDelete = provider == CloudDrive.OPEN115
         override val canRename = provider == CloudDrive.OPEN115
-        private data class Found(val file: CloudFile, val expires: Long)
+        private data class Found(val file: CloudFile, val expires: Long, val stream: String)
         private var freshlyFound: Found? = null
         init { require(mount.matches(Regex("/[0-9a-f-]{36}"))) }
         private fun absolutePath(remote: String): String {
@@ -163,12 +163,17 @@ internal object OpenListBackend {
         override fun find(path: String): CloudFile {
             if (canDelete) {
                 synchronized(this) { freshlyFound = null }
-                return find115(path).also { synchronized(this) { freshlyFound = Found(it, now() + 10_000) } }
+                return find115(path)
             }
             val matches = list(path.substringBeforeLast('/').ifEmpty { "/" })
                 .filter { it.name == path.substringAfterLast('/') }
             if (matches.size > 1) throw CloudFailure("cloud_file_ambiguous")
             return matches.singleOrNull()?.takeIf { !it.folder } ?: throw CloudFailure("cloud_file_missing")
+        }
+        override fun findForPlayback(path: String, selected: CloudFile?): CloudFile {
+            if (!canDelete) return find(path)
+            val id = selected?.takeIf { it.id == path && !it.folder && it.objectId.matches(Regex("[1-9][0-9]{0,127}")) }?.objectId.orEmpty()
+            return find115(path, id)
         }
         override fun companions(path: String, pageFiles: List<CloudFile>): List<CloudFile> {
             if (!canDelete) return pageFiles
@@ -186,18 +191,21 @@ internal object OpenListBackend {
                     modified = item.optLong("modified_ms", -1), objectId = item.getString("id"))
             }
         }
-        private fun find115(path: String): CloudFile {
+        private fun find115(path: String, id: String = ""): CloudFile {
             absolutePath(path)
             val started = System.nanoTime()
             playbackTiming("locate_start parent_hint=${folderId.isNotEmpty()}")
-            val response = call("POST", "/stat115", JSONObject().put("mount", mount).put("path", path).put("folder_id", folderId))
-            val mode = response.optJSONObject("lookup")?.optString("folder")?.takeIf { it in setOf("provided_id", "memory", "root", "path_lookup") } ?: "unknown"
+            val response = call("POST", "/stat115", JSONObject().put("mount", mount).put("path", path).put("id", id).put("folder_id", folderId))
+            val mode = response.optJSONObject("lookup")?.optString("folder")?.takeIf { it in setOf("object_id", "exact_path") } ?: "unknown"
             playbackTiming("locate folder=$mode elapsed_ms=${(System.nanoTime() - started) / 1_000_000}")
             val item = response.getJSONObject("data")
             if (item.getBoolean("is_dir")) throw CloudFailure("cloud_file_missing")
-            return CloudFile(item.getString("name"), false, item.optLong("size"), path,
+            val file = CloudFile(item.getString("name"), false, item.optLong("size"), path,
                 modified = item.optLong("modified_ms", -1), objectId = item.getString("id"),
                 canDelete = item.optBoolean("can_delete"), canRename = item.optBoolean("can_rename"))
+            if (file.name != path.substringAfterLast('/') || id.isNotEmpty() && file.objectId != id) throw CloudFailure("cloud_file_changed")
+            synchronized(this) { freshlyFound = Found(file, now() + 10_000, response.getString("stream")) }
+            return file
         }
         override fun remove(path: String, file: CloudFile) {
             check(canDelete && file.canDelete && path != "/" && file.id == path)
@@ -233,14 +241,19 @@ internal object OpenListBackend {
             require(!file.folder && file.size > 0)
             // Consume a single recent find() result instead of searching the same path twice.
             // Listed companions and subsequent link refreshes still verify identity afresh.
-            val verified = synchronized(this) {
+            var receipt = synchronized(this) {
                 val found = freshlyFound
                 freshlyFound = null
-                found != null && found.file === file && found.expires > now()
+                found?.takeIf { it.file === file && it.expires > now() }
             }
-            if (canDelete && !verified && find115(file.id).objectId != file.objectId) throw CloudFailure("cloud_file_missing")
-            if (canDelete) playbackTiming("prepare reused_lookup=$verified")
-            val location = stream(absolutePath(file.id))
+            val reused = receipt != null
+            if (canDelete && receipt == null) {
+                val fresh = find115(file.id, file.objectId)
+                if (fresh.objectId != file.objectId || fresh.size != file.size) throw CloudFailure("cloud_file_changed")
+                receipt = synchronized(this) { freshlyFound.also { freshlyFound = null } }
+            }
+            if (canDelete) playbackTiming("prepare reused_lookup=$reused")
+            val location = if (canDelete) receipt?.stream ?: throw CloudFailure() else stream(absolutePath(file.id))
             val origin = URI(location)
             return CloudLink(location) { emptyMap() }.also { require(origin.host == "127.0.0.1" && origin.scheme == "http") }
         }

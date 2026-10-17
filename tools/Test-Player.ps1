@@ -3,6 +3,22 @@ $ErrorActionPreference = 'Stop'
 $workspace = Split-Path -Parent $PSScriptRoot
 . "$PSScriptRoot\environment\Activate-QuestEnvironment.ps1" -ToolRoot $ToolRoot
 $projectDirectory = Join-Path $workspace 'app\godot'
+$videoUxOutput = Join-Path $workspace 'build/output/video-modes-ray'
+New-Item -ItemType Directory -Path $videoUxOutput -Force | Out-Null
+foreach ($videoUxTest in @('test_video_playback_modes', 'test_video_idle_rays')) {
+    $videoUxLog = Join-Path $videoUxOutput ($videoUxTest + '.log')
+    & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script ('res://tests/' + $videoUxTest + '.gd') 2>&1 | Tee-Object -FilePath $videoUxLog
+    if ($LASTEXITCODE -ne 0 -or (Get-Content $videoUxLog -Raw) -match '(?m)^(SCRIPT ERROR:|ERROR:)' -or (Get-Content $videoUxLog -Raw) -notmatch 'Video (playback modes|idle rays): [0-9]+ checks, 0 failures') { throw ('Video playback mode / idle pointer regression failed: ' + $videoUxTest) }
+}
+& $env:GODOT_EXE --xr-mode off --rendering-method gl_compatibility --rendering-driver opengl3 --path $projectDirectory --quit-after 1800 --script res://tests/render_video_playback_modes.gd 2>&1 | Tee-Object -FilePath (Join-Path $videoUxOutput 'visuals.log')
+if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $videoUxOutput 'visuals.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:)' -or (Get-Content (Join-Path $videoUxOutput 'visuals.log') -Raw) -notmatch 'Video playback modes render: [0-9]+ checks, 0 failures') { throw 'Video playback mode visual and ray regression failed.' }
+New-Item -ItemType Directory -Path (Join-Path $workspace 'build/output/background-audio') -Force | Out-Null
+& $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_audio_native_transport.gd 2>&1 | Tee-Object -FilePath (Join-Path $workspace 'build/output/background-audio/native-transport.log')
+if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $workspace 'build/output/background-audio/native-transport.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)') { throw 'Native music transport regression failed.' }
+& $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_background_audio.gd 2>&1 | Tee-Object -FilePath (Join-Path $workspace 'build/output/background-audio/test.log')
+if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $workspace 'build/output/background-audio/test.log') -Raw) -match '(?m)^(SCRIPT ERROR:|ERROR:)' -or (Get-Content (Join-Path $workspace 'build/output/background-audio/test.log') -Raw) -notmatch 'Background audio: [0-9]+ checks, 0 failures') { throw 'Background audio and offline import regression failed.' }
+& $env:GODOT_EXE --xr-mode off --rendering-method gl_compatibility --rendering-driver opengl3 --path $projectDirectory --quit-after 1800 --script res://tests/render_background_audio.gd 2>&1 | Tee-Object -FilePath (Join-Path $workspace 'build/output/background-audio/render.log')
+if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $workspace 'build/output/background-audio/render.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)' -or (Get-Content (Join-Path $workspace 'build/output/background-audio/render.log') -Raw) -notmatch 'Background audio render: [0-9]+ checks, 0 failures') { throw 'Background audio visual and ray regression failed.' }
 New-Item -ItemType Directory -Path (Join-Path $workspace 'build/output') -Force | Out-Null
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_controller_bindings.gd 2>&1 | Tee-Object -FilePath (Join-Path $workspace 'build/output/controller-bindings-host.log')
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $workspace 'build/output/controller-bindings-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|ERROR:)') { throw 'Controller bindings regression failed.' }
@@ -159,6 +175,10 @@ if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'library-views
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'library-metadata-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|ERROR:)') { throw 'Played video capacity and metadata regression failed.' }
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_compact_library.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'compact-library-host.log')
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'compact-library-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|ERROR:)') { throw 'Playback library expansion, input and placement regression failed.' }
+& $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_large_playback_list.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'large-playback-list-host.log')
+if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'large-playback-list-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|ERROR:)' -or (Get-Content (Join-Path $logDirectory 'large-playback-list-host.log') -Raw) -notmatch 'Large playback list checks=\d+ failures=0') { throw 'Large playback list scrolling and selection regression failed.' }
+& $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_file_mutation_position.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'file-mutation-position-host.log')
+if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'file-mutation-position-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|ERROR:)' -or (Get-Content (Join-Path $logDirectory 'file-mutation-position-host.log') -Raw) -notmatch 'File mutation position checks=\d+ failures=0') { throw 'File mutation position and incremental directory update regression failed.' }
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_library_file_actions.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'library-file-actions-host.log')
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'library-file-actions-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|ERROR:)') { throw 'Library editing and directory sorting regression failed.' }
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_file_management_lists.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'file-management-lists-host.log')

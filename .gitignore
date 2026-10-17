@@ -60,3 +60,8 @@ credentials/
 *.pem
 signing-identities.json
 thru3d-signing.json
+
+/app/godot/assets/audio/*.ogg
+/app/godot/assets/audio/*.ogg.import
+/app/godot/assets/audio/provenance.json
+/app/godot/assets/audio/CREDITS.txt

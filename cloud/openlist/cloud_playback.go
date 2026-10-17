@@ -1,0 +1,143 @@
+package cloudcore
+
+import (
+	"context"
+	"errors"
+	"net/http"
+	"net/url"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/OpenListTeam/OpenList/v4/internal/driver"
+	"github.com/OpenListTeam/OpenList/v4/internal/model"
+	"github.com/OpenListTeam/OpenList/v4/internal/op"
+	"github.com/OpenListTeam/OpenList/v4/server/common"
+	"github.com/gin-gonic/gin"
+)
+
+type cloudPlaybackReader interface {
+	PlayerPlaybackTarget(context.Context, string, string) (model.Obj, error)
+}
+
+// A process-local capability binds the verified object, not a reusable path.
+// Neither proxy requests nor Range seeks call op.Get or enumerate directories.
+type cloudPlaybackLease struct {
+	storage       driver.Driver
+	mount, remote string
+	file          model.Obj
+	created       time.Time
+	mu            sync.Mutex
+	links         map[string]cloudPlaybackLink
+}
+type cloudPlaybackLink struct {
+	url     string
+	header  http.Header
+	expires time.Time
+}
+
+var cloudPlaybackLeases = struct {
+	sync.Mutex
+	items map[string]*cloudPlaybackLease
+}{items: map[string]*cloudPlaybackLease{}}
+
+func playbackLeaseURL(storage driver.Driver, mount, remote string, file model.Obj) (string, error) {
+	if streamBase == "" || file == nil || file.IsDir() || !cloudID.MatchString(file.GetID()) || file.GetSize() <= 0 {
+		return "", errors.New("playback stream unavailable")
+	}
+	key := searchKey()
+	if key == "" {
+		return "", errors.New("playback stream unavailable")
+	}
+	now := time.Now()
+	cloudPlaybackLeases.Lock()
+	defer cloudPlaybackLeases.Unlock()
+	for id, lease := range cloudPlaybackLeases.items {
+		if now.Sub(lease.created) >= 24*time.Hour {
+			delete(cloudPlaybackLeases.items, id)
+		}
+	}
+	if len(cloudPlaybackLeases.items) >= 256 {
+		var oldest string
+		for id, lease := range cloudPlaybackLeases.items {
+			if oldest == "" || lease.created.Before(cloudPlaybackLeases.items[oldest].created) {
+				oldest = id
+			}
+		}
+		delete(cloudPlaybackLeases.items, oldest)
+	}
+	cloudPlaybackLeases.items[key] = &cloudPlaybackLease{storage: storage, mount: mount, remote: remote, file: file, created: now, links: map[string]cloudPlaybackLink{}}
+	u := url.URL{Path: "/" + file.GetName()}
+	return streamBase + "-115/" + key + u.EscapedPath(), nil
+}
+
+func (lease *cloudPlaybackLease) link(ctx context.Context, header http.Header) (*model.Link, error) {
+	lease.mu.Lock()
+	defer lease.mu.Unlock()
+	ua := header.Get("User-Agent")
+	if cached, ok := lease.links[ua]; ok && time.Now().Before(cached.expires) {
+		return &model.Link{URL: cached.url, Header: cached.header.Clone()}, nil
+	}
+	link, err := lease.storage.Link(ctx, lease.file, model.LinkArgs{Header: header})
+	if err != nil {
+		return nil, err
+	}
+	defer link.Close()
+	if link.URL == "" || link.RangeReader != nil {
+		return nil, errors.New("invalid native playback link")
+	}
+	upstream, err := url.Parse(link.URL)
+	if err != nil || upstream.Scheme != "http" && upstream.Scheme != "https" || upstream.Host == "" {
+		return nil, errors.New("invalid native playback origin")
+	}
+	expires := time.Now().Add(2 * time.Minute)
+	if link.Expiration != nil && *link.Expiration < 2*time.Minute {
+		expires = time.Now().Add(*link.Expiration)
+	}
+	if len(lease.links) >= 4 {
+		clear(lease.links)
+	}
+	lease.links[ua] = cloudPlaybackLink{url: link.URL, header: link.Header.Clone(), expires: expires}
+	return &model.Link{URL: link.URL, Header: link.Header.Clone()}, nil
+}
+
+func playback115Proxy(c *gin.Context) {
+	servePlayback115(c, op.GetStorageAndActualPath)
+}
+
+func servePlayback115(c *gin.Context, resolve func(string) (driver.Driver, string, error)) {
+	cloudPlaybackLeases.Lock()
+	lease := cloudPlaybackLeases.items[c.Param("lease")]
+	cloudPlaybackLeases.Unlock()
+	if lease == nil || time.Since(lease.created) >= 24*time.Hour || c.Param("name") != "/"+lease.file.GetName() {
+		c.Status(http.StatusNotFound)
+		return
+	}
+	storage, actual, err := resolve(lease.mount + lease.remote)
+	if err != nil || storage != lease.storage || actual != lease.remote || storage.GetStorage().Disabled {
+		c.Status(http.StatusGone)
+		return
+	}
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 15*time.Second)
+	link, err := lease.link(ctx, c.Request.Header)
+	cancel() // Only link lookup is bounded here; media may stream for hours.
+	if err != nil {
+		c.Status(http.StatusBadGateway)
+		return
+	}
+	defer link.Close()
+	if storage.GetStorage().ProxyRange {
+		link = common.ProxyRange(c, link, lease.file.GetSize())
+	}
+	writer := &common.WrittenResponseWriter{ResponseWriter: c.Writer}
+	if err := common.Proxy(writer, c.Request, link, lease.file); err != nil && !writer.IsWritten() {
+		c.Status(http.StatusBadGateway)
+	}
+}
+
+func playback115Routes(streams *gin.Engine, capability string) {
+	// A separate prefix avoids Gin wildcard conflicts with legacy /cap/*path.
+	base := "/" + strings.TrimPrefix(capability, "/") + "-115/:lease/*name"
+	streams.GET(base, playback115Proxy)
+	streams.HEAD(base, playback115Proxy)
+}

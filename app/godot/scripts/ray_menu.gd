@@ -87,6 +87,8 @@ var _pointers: Dictionary = {}
 var _decorations: Array[Node3D] = []
 ## Modal surfaces stop rays in the gaps between their controls.
 var _ray_blockers: Array[Dictionary] = []
+## Passive surfaces stop the visual pointer without becoming clickable controls.
+var _pointer_panels: Array[MeshInstance3D] = []
 var _backdrop: MeshInstance3D
 ## Hover names of icon-only buttons (target -> text), shown over the hovered button.
 var _tips: Dictionary = {}
@@ -185,12 +187,14 @@ func _draw() -> void:
 # tested on its own plane, so panels may be angled (the library's side column); the nearest wins.
 # "point" is in this menu's space.
 func ray_hit(origin: Vector3, direction: Vector3) -> Dictionary:
+	return _nearest_hit(origin, direction, _buttons + _ray_blockers)
+
+func _nearest_hit(origin: Vector3, direction: Vector3, surfaces: Array, best: Dictionary = {}) -> Dictionary:
 	if not visible or not origin.is_finite() or not direction.is_finite() or direction.length_squared() < 0.000001:
 		return {}
 	var ray := direction.normalized()
-	var best := {}
-	for button in _buttons + _ray_blockers:
-		if (not button.enabled and not button.get("hover_disabled", false)) or not button.node.visible:
+	for button in surfaces:
+		if (not button.enabled and not button.get("hover_disabled", false)) or not button.node.is_visible_in_tree():
 			continue
 		var inverse: Transform3D = button.node.global_transform.affine_inverse()
 		var start: Vector3 = inverse * origin
@@ -210,6 +214,20 @@ func ray_hit(origin: Vector3, direction: Vector3) -> Dictionary:
 			continue
 		best = {"target": button.target, "point": to_local(world), "distance": distance, "enabled": button.enabled}
 	return best
+
+## Use the current mesh size/radius: backgrounds can resize or move on every refresh.
+func pointer_hit(origin: Vector3, direction: Vector3) -> Dictionary:
+	var surfaces: Array = []
+	var panels: Array = [_backdrop]
+	panels.append_array(_pointer_panels)
+	if is_instance_valid(device_status): panels.append(device_status._pill)
+	for panel in panels:
+		if not is_instance_valid(panel): continue
+		var size: Vector2 = panel.mesh.size
+		surfaces.append({"target": NONE, "rect": Rect2(-size / 2, size), "enabled": false,
+			"hover_disabled": true, "node": panel,
+			"radius": panel.material_override.get_shader_parameter("corner_radius")})
+	return _nearest_hit(origin, direction, surfaces, ray_hit(origin, direction))
 
 func _block_rays(panel: MeshInstance3D, size: Vector2, radius: float = 0.025) -> void:
 	_ray_blockers.append({"target": NONE, "rect": Rect2(-size / 2, size), "enabled": false,
@@ -234,7 +252,7 @@ func grab_hit(origin: Vector3, direction: Vector3) -> Dictionary:
 func update_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: bool) -> void:
 	if not visible:
 		return
-	var hit := ray_hit(origin, direction) if tracked else {}
+	var hit := pointer_hit(origin, direction) if tracked else {}
 	_hover[hand] = int(hit.get("target", NONE))
 	var valid := tracked and origin.is_finite() and direction.is_finite() and direction.length_squared() > 0.000001
 	var endpoint := Vector3.ZERO
@@ -302,6 +320,7 @@ func _clear_layout() -> void:
 		if is_instance_valid(button.node): button.node.free()
 	_buttons.clear()
 	_ray_blockers.clear()
+	_pointer_panels.clear()
 	for label in _labels:
 		label.free()
 	_labels.clear()

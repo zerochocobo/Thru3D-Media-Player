@@ -82,6 +82,7 @@ func _draw_list() -> void:
 	var entries := _markers()
 	offset = clampi(offset, 0, maxi(0, entries.size() - ROWS))
 	var panel = menu._quad(Vector2(0.84, 0.56), Vector3(0, 0.55, 0.001), menu.PANEL, 10)
+	menu._pointer_panels.append(panel)
 	menu.add_child(panel); menu._decorations.append(panel)
 	menu._label(menu.I18n.t("Bookmarks") + " · " + str(entries.size()), Vector3(-0.05, 0.778, 0.01), 21)
 	menu._glyph(CLOSE, "close", Vector2(0.355, 0.778), 0.065, true, menu.I18n.t("Close"))

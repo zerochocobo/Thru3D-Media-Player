@@ -188,20 +188,38 @@ func stat115(c *gin.Context) {
 		cloudListError(c, "stat115.storage", err)
 		return
 	}
-	native, ok := s.(cloudPageDriver)
-	if !ok {
-		cloudListError(c, "stat115.driver", errors.New("native path lookup unavailable"))
-		return
-	}
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 15*time.Second)
 	defer cancel()
 	started := time.Now()
-	obj, mode, err := lookupCloudFile(ctx, native, t.Mount, p, t.FolderID)
+	reader, readable := s.(cloudPlaybackReader)
+	if !readable || t.ID != "" && !cloudID.MatchString(t.ID) {
+		cloudListError(c, "stat115.driver", errors.New("native playback lookup unavailable"))
+		return
+	}
+	obj, err := reader.PlayerPlaybackTarget(ctx, p, t.ID)
 	if err != nil {
 		cloudListError(c, "stat115.lookup", err)
 		return
 	}
-	c.JSON(200, gin.H{"code": 200, "data": cloudListingObject(s, obj), "lookup": gin.H{"folder": mode, "elapsed_ms": time.Since(started).Milliseconds()}})
+	if parent, ok := obj.(interface{ PlayerParentID() string }); ok && (parent.PlayerParentID() == "0" || cloudID.MatchString(parent.PlayerParentID())) {
+		if len(cloudFolders) >= 64 {
+			for key := range cloudFolders {
+				delete(cloudFolders, key)
+				break
+			}
+		}
+		cloudFolders[t.Mount+path.Dir(p)] = cloudFolder{object: &model.Object{ID: parent.PlayerParentID(), Name: path.Base(path.Dir(p)), IsFolder: true}, expires: time.Now().Add(2 * time.Minute)}
+	}
+	location, err := playbackLeaseURL(s, t.Mount, p, obj)
+	if err != nil {
+		cloudListError(c, "stat115.stream", err)
+		return
+	}
+	mode := "exact_path"
+	if t.ID != "" {
+		mode = "object_id"
+	}
+	c.JSON(200, gin.H{"code": 200, "data": cloudListingObject(s, obj), "stream": location, "lookup": gin.H{"folder": mode, "elapsed_ms": time.Since(started).Milliseconds()}})
 }
 
 type cloudChildLookup interface {

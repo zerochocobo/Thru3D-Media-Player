@@ -18,7 +18,7 @@ var hands := {}
 
 func _state(hand: String) -> Dictionary:
 	if not hands.has(hand):
-		hands[hand] = {"age": IDLE_SECONDS, "opacity": 0.0, "nodes": {}, "clock": 0.0,
+		hands[hand] = {"age": IDLE_SECONDS, "pointer_age": IDLE_SECONDS, "opacity": 0.0, "nodes": {}, "clock": 0.0,
 			"reference": {}, "samples": [], "candidate": {}, "settled": 0.0, "settle_frames": 0, "reason": ""}
 	return hands[hand]
 
@@ -26,6 +26,7 @@ func wake(hand: String, reason: String = "button") -> void:
 	var state := _state(hand)
 	var was_idle: bool = state.age >= IDLE_SECONDS and state.opacity <= 0.0
 	state.age = 0.0; state.candidate.clear(); state.reason = reason
+	if reason != "shortcut": state.pointer_age = 0.0
 	if was_idle: woken.emit(hand, reason)
 
 ## Tracking/focus/reference changes establish a new baseline, never an activity event.
@@ -81,19 +82,19 @@ func _motion(hand: String, state: Dictionary, sample: Dictionary, menu_open: boo
 		state.candidate = {"reference": reference, "time": state.clock, "frames": 1,
 			"reason": "translation" if distance >= WAKE_METRES else "aim_turn"}
 
-func update_hand(hand: String, pose: Variant, ray: Variant, point: Variant, engaged: bool, menu_open: bool, delta: float, world_enabled: bool = true, activity: Dictionary = {}) -> float:
+func update_hand(hand: String, pose: Variant, ray: Variant, point: Variant, engaged: bool, menu_open: bool, delta: float, world_enabled: bool = true, activity: Dictionary = {}, idle_menu: bool = false, pointer_engaged: bool = true) -> float:
 	var state := _state(hand)
 	var step := maxf(0.0, delta) if is_finite(delta) else 0.0
-	state.age += step; state.clock += step
+	state.age += step; state.pointer_age += step; state.clock += step
 	if not pose is Transform3D or not pose.is_finite():
 		_clear_motion(state); state.opacity = 0.0
 		_hide(state); return 0.0
 	_motion(hand, state, activity, menu_open, step)
-	if engaged: wake(hand, "input_held")
-	# Menus keep models visible, but do not restart the physical activity clock.
-	# When an idle transport closes, its stationary controllers hide with it.
-	state.opacity = 1.0 if menu_open else clampf((IDLE_SECONDS - state.age) / FADE_SECONDS, 0.0, 1.0)
-	var valid: bool = world_enabled and not menu_open and state.opacity > 0.0 and ray != null \
+	if engaged: wake(hand, "input_held" if pointer_engaged else "shortcut")
+	# Video menus share the activity deadline; stationary hover is not activity.
+	state.opacity = 1.0 if menu_open and not idle_menu else clampf((IDLE_SECONDS - state.age) / FADE_SECONDS, 0.0, 1.0)
+	var pointer_opacity := minf(state.opacity, clampf((IDLE_SECONDS - state.pointer_age) / FADE_SECONDS, 0.0, 1.0))
+	var valid: bool = world_enabled and not menu_open and pointer_opacity > 0.0 and ray != null \
 		and ray[0].is_finite() and ray[1].is_finite() and ray[1].length_squared() > 0.00001
 	if not valid: _hide(state); return state.opacity
 	if state.nodes.is_empty(): state.nodes = _make_pointer()
@@ -108,17 +109,23 @@ func update_hand(hand: String, pose: Variant, ray: Variant, point: Variant, enga
 	nodes.line.global_transform = Transform3D(Basis(Quaternion(Vector3.UP, offset / length)), (origin + endpoint) * 0.5)
 	nodes.line.scale = Vector3(1, length, 1)
 	var color := Color(1.0, 0.73, 0.24) if engaged else Color(0.85, 0.94, 1.0)
-	nodes.line.material_override.albedo_color = Color(color, state.opacity * 0.65)
+	nodes.line.material_override.albedo_color = Color(color, pointer_opacity * 0.65)
 	for key in ["rim", "dot"]:
 		nodes[key].visible = hit
 		if hit:
 			nodes[key].global_position = endpoint - offset / length * 0.008
 			nodes[key].scale = Vector3.ONE * clampf(length * 0.0055, 0.006, 0.4) * (1.65 if key == "rim" else 1.0)
-			nodes[key].material_override.albedo_color = Color(Color(0.025, 0.035, 0.045) if key == "rim" else color, state.opacity)
+			nodes[key].material_override.albedo_color = Color(Color(0.025, 0.035, 0.045) if key == "rim" else color, pointer_opacity)
 	return state.opacity
 
 func opacity(hand: String) -> float:
 	return float(hands.get(hand, {}).get("opacity", 0.0))
+
+func awake(hand: String) -> bool:
+	return float(hands.get(hand, {}).get("pointer_age", IDLE_SECONDS)) < IDLE_SECONDS
+
+func activity_age(hand: String) -> float:
+	return float(hands.get(hand, {}).get("age", IDLE_SECONDS))
 
 func _hide(state: Dictionary) -> void:
 	for node in state.nodes.values(): node.visible = false

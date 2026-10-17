@@ -26,6 +26,20 @@ func ray(node: Node3D, point: Vector3 = Vector3.ZERO) -> Array:
 func faces(node: Node3D, point: Vector3, eye: Vector3) -> bool:
 	return node.global_basis.z.normalized().dot((eye - node.to_global(point)).normalized()) > 0.99999
 
+func pointer_surfaces(menu: Node3D, name: String) -> void:
+	var panels: Array = [menu._backdrop]
+	for node in menu._decorations:
+		if node is MeshInstance3D and node.material_override is ShaderMaterial and node.material_override.render_priority in [10, 30]: panels.append(node)
+	for panel in panels:
+		if not panel.is_visible_in_tree(): continue
+		# A point just inside the middle of the side edge avoids rounded corners.
+		var point := Vector3(panel.mesh.size.x / 2 - 0.004, 0, 0)
+		var pointer := ray(panel, point)
+		var hit: Dictionary = menu.pointer_hit(pointer[0], pointer[1])
+		check(not hit.is_empty() and float(hit.distance) <= 0.4001, name + " stops at visible panel or nearer control")
+		menu.update_pointer("right_hand", pointer[0], pointer[1], true)
+		check(menu._pointers.right_hand.dot.visible, name + " keeps the dot at panel edge")
+
 func upper_check(menu: Node3D, surface: Node3D, eye: Vector3, name: String) -> void:
 	var rect: Rect2 = surface.get_meta("menu_surface_bounds")
 	var centre := Vector3(rect.get_center().x, rect.get_center().y, 0)
@@ -69,6 +83,7 @@ func run() -> void:
 					"bookmarks": menu.bookmarks.opened = true
 					"error": state.error = "Network unavailable"; menu._failure_open = true
 				menu.refresh()
+				pointer_surfaces(menu, mode)
 				check(menu._popup_surfaces.size() == 1, mode + " has one complete surface")
 				if menu._popup_surfaces.is_empty(): continue
 				var surface: Node3D = menu._popup_surfaces[0]
@@ -127,6 +142,11 @@ func run() -> void:
 			menu._reset_navigation(); menu.refresh(); menu.expanded_library = library; library.reparent(menu, false)
 			for compact in [true, false, true]:
 				library.playback_expanded = not compact; library.set_compact(compact); library.visible = true; library.refresh()
+				pointer_surfaces(library, "library compact=" + str(compact))
+				var edge := ray(library._backdrop, Vector3(library._backdrop.mesh.size.x / 2 - 0.004, 0, 0))
+				check(menu.pointer_hit(edge[0], edge[1]).get("library", false), "Expanded library background owns pointer routing")
+				menu.update_pointer("left_hand", edge[0], edge[1], true)
+				check(library._pointers.left_hand.dot.visible and not menu._pointers.left_hand.line.visible, "Only expanded library draws the background pointer")
 				upper_check(menu, library, head.origin, "library compact=" + str(compact))
 				check(menu.global_transform.is_equal_approx(bar), "Expanding/collapsing the library keeps the transport still")
 			# Drag and depth changes update both surfaces around the current head, without scaling.

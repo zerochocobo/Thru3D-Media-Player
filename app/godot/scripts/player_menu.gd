@@ -108,7 +108,7 @@ const OPERATIONS := [
 		"audio", "depth"],
 	["color_grade", "loop", "seek_mode", "stereo_view"],
 	["capabilities"]]
-const HEADINGS := ["Color grading", "Loop", "Video time positioning", "Stereo viewing"]
+const HEADINGS := ["Color grading", "Playback mode", "Video time positioning", "Stereo viewing"]
 const SETTING_ICONS := ["light", "loop", "history", "eyes"]
 const Surface := preload("res://scripts/media_surface.gd")
 const SeekFeedback := preload("res://scripts/seek_feedback.gd")
@@ -269,6 +269,14 @@ func grab_hit(origin: Vector3, direction: Vector3) -> Dictionary:
 	var hit := super(origin, direction)
 	if has_expanded_library():
 		var browser_hit: Dictionary = expanded_library.grab_hit(origin, direction)
+		if not browser_hit.is_empty() and (hit.is_empty() or float(browser_hit.distance) < float(hit.distance)):
+			return {"target": NONE, "point": to_local(expanded_library.to_global(browser_hit.point)), "distance": browser_hit.distance, "enabled": false, "library": true}
+	return hit
+
+func pointer_hit(origin: Vector3, direction: Vector3) -> Dictionary:
+	var hit := super(origin, direction)
+	if has_expanded_library():
+		var browser_hit: Dictionary = expanded_library.pointer_hit(origin, direction)
 		if not browser_hit.is_empty() and (hit.is_empty() or float(browser_hit.distance) < float(hit.distance)):
 			return {"target": NONE, "point": to_local(expanded_library.to_global(browser_hit.point)), "distance": browser_hit.distance, "enabled": false, "library": true}
 	return hit
@@ -1098,7 +1106,7 @@ func cancel_pointer(hand: String) -> void:
 	super(hand)
 
 func update_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: bool) -> void:
-	var on_library: bool = has_expanded_library() and not _controls_pointer_capture() and (expanded_library.has_pointer_capture() or (tracked and ray_hit(origin, direction).get("library", false)))
+	var on_library: bool = has_expanded_library() and not _controls_pointer_capture() and (expanded_library.has_pointer_capture() or (tracked and pointer_hit(origin, direction).get("library", false)))
 	super(hand, origin, direction, tracked and not on_library)
 	if has_expanded_library(): expanded_library.update_pointer(hand, origin, direction, tracked and on_library)
 	choices.update(hand, origin, direction, tracked)
@@ -1186,6 +1194,7 @@ func _draw_modes() -> void:
 		height += 0.08
 		centre_y += 0.04
 	var panel := _quad(Vector2(1.06, height), Vector3(0, centre_y, 0.001), Color(PANEL, 0.94), 10)
+	_pointer_panels.append(panel)
 	panel.material_override.set_shader_parameter("corner_radius", 0.04)
 	add_child(panel)
 	_decorations.append(panel)
@@ -1357,7 +1366,7 @@ func _error_text_height(text: String, logical_size: int) -> float:
 
 func _settings_key() -> String:
 	return str([_state.get("source_uri", ""), _state.get("has_video", false),
-		_state.get("loop", false), _state.get("screen_curve", 0.0), _state.get("seek_mode", "speed"), _state.get("stereo", false), _state.get("geometry", 0),
+		_state.get("playback_mode", "single"), _state.get("screen_curve", 0.0), _state.get("seek_mode", "speed"), _state.get("stereo", false), _state.get("geometry", 0),
 		_state.get("show_fps", false), _state.get("viewing_eye", 0), _state.get("swap_eyes", false),
 		_state.get("spatial_metadata", {}), _state.get("spatial_auto_disparity", true),
 		_state.get("error", ""), _state.get("error_report", {})])
@@ -1370,7 +1379,9 @@ func _setting_choices(operation: String) -> Dictionary:
 				{"value": "speed", "label": "Speed", "hint": "Faster jumps, less precise"},
 				{"value": "exact", "label": "Precise", "hint": "Accurate jumps, may take longer"}]}
 		"loop":
-			return {"key": "loop", "value": _state.get("loop", false), "choices": [{"value": false, "label": "Off"}, {"value": true, "label": "On"}]}
+			return {"key": "playback_mode", "value": _state.get("playback_mode", "single"), "choices": [
+				{"value": "single", "label": "Single video"}, {"value": "repeat_one", "label": "Repeat video"},
+				{"value": "sequence", "label": "Play in order"}, {"value": "repeat_all", "label": "Repeat playlist"}]}
 		"screen_curve":
 			var values: Array = []
 			for i in Surface.CURVES.size(): values.append({"value": Surface.CURVES[i], "label": CURVE_NAMES[i]})
@@ -1728,7 +1739,7 @@ func _caption_text(operation: String) -> String:
 		"alpha": return "AI portrait passthrough"
 		"previous_video": return "Previous video"
 		"next_video": return "Next video"
-		"loop": return "On" if _state.get("loop", false) else "Off"
+		"loop": return {"single": "Single video", "repeat_one": "Repeat video", "sequence": "Play in order", "repeat_all": "Repeat playlist"}.get(_state.get("playback_mode", "single"), "Single video")
 		"seek_mode": return "Precise" if _state.get("seek_mode", "speed") == "exact" else "Speed"
 		"stop": return "Close video"
 		"stereo": return ("TB" if _state.get("top_bottom", false) else "SBS") if _state.get("stereo", false) else "2D"

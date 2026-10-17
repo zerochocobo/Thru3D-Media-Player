@@ -44,6 +44,27 @@ void checked(int result, const char* action) {
 std::string quote(const std::string& value) {
     return quest::json_quote(value);
 }
+std::vector<std::pair<std::string, std::string>> read_extra_tracks(JNIEnv* env, jobjectArray files) {
+    std::vector<std::pair<std::string, std::string>> extra;
+    const jsize items = files ? env->GetArrayLength(files) : 0;
+    require(items % 2 == 0 && items <= 16, "MPV extra track list must be location/title pairs");
+    for (jsize i = 0; i < items; i += 2) {
+        std::array<std::string, 2> pair;
+        for (int k = 0; k < 2; ++k) {
+            auto* item = static_cast<jstring>(env->GetObjectArrayElement(files, i + k));
+            require(item != nullptr, "MPV extra track entry missing");
+            const char* chars = env->GetStringUTFChars(item, nullptr); require(chars != nullptr, "MPV extra track text unavailable");
+            pair[k] = chars; env->ReleaseStringUTFChars(item, chars); env->DeleteLocalRef(item);
+        }
+        const auto& where = pair[0];
+        const bool ok = (!where.empty() && where.front() == '/') ||
+            (where.rfind("fd://", 0) == 0 && where.size() > 5 && where.find_first_not_of("0123456789", 5) == std::string::npos) ||
+            ((where.rfind("http://", 0) == 0 || where.rfind("https://", 0) == 0) && where.find_first_of(" \r\n") == std::string::npos);
+        require(ok && where.size() <= 32768 && pair[1].size() <= 4096, "MPV extra track location/title invalid");
+        extra.emplace_back(std::move(pair[0]), std::move(pair[1]));
+    }
+    return extra;
+}
 // libmpv's default User-Agent is a bare "libmpv", which media servers also see from other
 // players' thumbnail probes. Identify the player itself; "libmpv" stays for HTTP-stack matching.
 std::once_flag user_agent_once;
@@ -188,6 +209,8 @@ struct Source final {
     SubtitleFile pending_subtitle_file; // commands_mutex; one optional file at a time
     uint64_t subtitle_file_requests = 0;
     bool subtitle_file_busy = false;
+    bool companions_queued = false; // commands_mutex; once per playback
+    std::vector<std::pair<std::string, std::string>> pending_audio_files, pending_caption_files;
     uint64_t subtitle_file_completed = 0; // status_mutex
     int64_t subtitle_file_track = 0; // 0 means the optional load failed
     // Alpha plan B: the layer holds each frame until its mask is ready; audio waits as long. commands_mutex
@@ -380,13 +403,13 @@ struct Source final {
     void snapshot(mpv_handle* core) {
         // All property reads happen before taking the status lock.
         const auto codec = property(core, "video-codec"), hwdec = property(core, "hwdec-current");
-        const auto position = property(core, "time-pos"), duration = property(core, "duration");
+        const auto duration = property(core, "duration");
         const auto seekable = property(core, "seekable"), partial = property(core, "partially-seekable");
         const auto file_size = property(core, "file-size");
         const auto matrix = property(core, "video-params/colormatrix"), range = property(core, "video-params/colorlevels");
         const auto transfer = property(core, "video-params/gamma"), paused = property(core, "pause");
         const auto audio_codec = property(core, "audio-codec"), ao = property(core, "current-ao");
-        const auto audio_pts = media_position(core, "audio-pts"), aid = property(core, "current-tracks/audio/id");
+        const auto aid = property(core, "current-tracks/audio/id");
         const auto volume = property(core, "volume"), mute = property(core, "mute");
         const auto rate = property(core, "audio-params/samplerate"), channels = property(core, "audio-params/channel-count");
         const auto avsync = property(core, "avsync"), cache_pause = property(core, "paused-for-cache");
@@ -427,6 +450,14 @@ struct Source final {
             ",\"x\":" + std::to_string(pgs_image.x) + ",\"y\":" + std::to_string(pgs_image.y) +
             ",\"width\":" + std::to_string(pgs_image.width) + ",\"height\":" + std::to_string(pgs_image.height) +
             ",\"canvas_width\":" + std::to_string(pgs_image.canvas_width) + ",\"canvas_height\":" + std::to_string(pgs_image.canvas_height) + "}";
+        // Pair the position and its monotonic anchor after the potentially slow
+        // metadata/bitmap reads. Both consumers must extrapolate the same clock.
+        const auto audio_delay = property(core, "audio-delay");
+        const auto audio_before = std::chrono::steady_clock::now();
+        const auto audio_pts = media_position(core, "audio-pts");
+        const auto audio_after = std::chrono::steady_clock::now();
+        const auto audio_observed_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(audio_before.time_since_epoch() + (audio_after - audio_before) / 2).count();
+        const auto position = property(core, "time-pos");
         const auto observed_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
         const auto eof = property(core, "eof-reached");
         const auto subtitle_json = "{\"sequence\":" + std::to_string(++subtitle_sequence) +
@@ -434,7 +465,7 @@ struct Source final {
             ",\"delay_seconds\":" + std::to_string(subtitle_delay_applied) +
             ",\"text\":" + quote(subtitle_text) + ",\"start_seconds\":" + quote(subtitle_start) +
             ",\"bitmap\":" + bitmap_json +
-            ",\"end_seconds\":" + quote(subtitle_end) + ",\"position_seconds\":" + quote(seconds_property(core, "time-pos")) +
+            ",\"end_seconds\":" + quote(subtitle_end) + ",\"position_seconds\":" + quote(position) +
             ",\"source_epoch\":" + std::to_string(last_epoch.load()) +
             ",\"timeline_valid\":" + (subtitle_timeline_valid ? "true" : "false") +
             ",\"observed_monotonic_ns\":" + std::to_string(observed_ns) +
@@ -451,6 +482,7 @@ struct Source final {
             ",\"color_range\":" + quote(range) + ",\"color_transfer\":" + quote(transfer) +
             ",\"audio_codec\":" + quote(audio_codec) + ",\"audio_output\":" + quote(ao) +
             ",\"audio_pts_us\":" + audio_pts + ",\"video_pts_us\":" + media_position(core, "video-pts") +
+            ",\"audio_observed_monotonic_ns\":" + std::to_string(audio_observed_ns) + ",\"audio_delay_seconds\":" + quote(audio_delay) +
             ",\"audio_clock_available\":" + (audio_pts == "null" ? "false" : "true") +
             ",\"audio_track_id\":" + quote(aid) + ",\"audio_tracks\":" + tracks_json +
             ",\"subtitle_tracks\":" + subtitles_json + ",\"subtitle\":" + subtitle_json +
@@ -605,6 +637,9 @@ struct Source final {
                 pgs_read = reinterpret_cast<PgsRead>(dlsym(RTLD_DEFAULT, "mpv_quest_get_pgs"));
             initialized_us.store(startup_us());
             checked(mpv_observe_property(core, 41, "sub-text", MPV_FORMAT_STRING), "MPV subtitle text observation");
+            checked(mpv_observe_property(core, 42, "pause", MPV_FORMAT_FLAG), "MPV pause observation");
+            checked(mpv_observe_property(core, 43, "paused-for-cache", MPV_FORMAT_FLAG), "MPV buffering observation");
+            checked(mpv_observe_property(core, 44, "eof-reached", MPV_FORMAT_FLAG), "MPV EOF observation");
             if (layer()) render_ready.store(true);
             else {
                 render_thread = std::thread([this, core] { render(core); });
@@ -642,6 +677,7 @@ struct Source final {
                 int audio_id = -1; double volume = 100; int64_t seek = -1;
                 bool set_narration_gain = false;
                 SubtitleFile subtitle_file;
+                std::vector<std::pair<std::string, std::string>> extra_audio, extra_captions;
                 {
                     std::lock_guard<std::mutex> lock(commands_mutex);
                     if (loaded) {
@@ -660,9 +696,20 @@ struct Source final {
                         subtitle_delay = desired_subtitle_delay; subtitle_delay_command = desired_subtitle_delay_command;
                         set_audio_delay = audio_delay_dirty; audio_delay_dirty = false; audio_delay = desired_audio_delay;
                         subtitle_file = std::move(pending_subtitle_file); pending_subtitle_file = {};
+                        extra_audio.swap(pending_audio_files); extra_captions.swap(pending_caption_files);
                     }
                 }
                 if (set_play && !play) checked(mpv_set_property_string(core, "pause", "yes"), "MPV source pause before audio");
+                for (const auto& [location, title] : extra_audio) {
+                    const char* add[] = {"audio-add", location.c_str(), "auto", title.c_str(), nullptr};
+                    mpv_command(core, add); // Optional: failure must not fail the video.
+                    next_snapshot = std::chrono::steady_clock::now();
+                }
+                for (const auto& [location, title] : extra_captions) {
+                    const char* add[] = {"sub-add", location.c_str(), "auto", title.c_str(), nullptr};
+                    mpv_command(core, add);
+                    next_snapshot = std::chrono::steady_clock::now();
+                }
                 if (subtitle_file.request) {
                     add_subtitle_file(core, subtitle_file);
                     next_snapshot = std::chrono::steady_clock::now();
@@ -714,6 +761,7 @@ struct Source final {
                     seeks_completed.fetch_add(1);
                 }
                 if (set_play && play) checked(mpv_set_property_string(core, "pause", "no"), "MPV source play");
+                if (set_play) next_snapshot = std::chrono::steady_clock::now();
 #ifndef NDEBUG
                 if (set_step) {
                     int paused = 0;
@@ -754,7 +802,7 @@ struct Source final {
                     if (!loaded && log->log_level <= MPV_LOG_LEVEL_ERROR && source_failure.reason.empty()) {
                         source_failure = quest::playback_log_failure(log->prefix, log->text);
                     }
-                } else if (event->event_id == MPV_EVENT_PROPERTY_CHANGE && event->reply_userdata == 41) {
+                } else if (event->event_id == MPV_EVENT_PROPERTY_CHANGE && event->reply_userdata >= 41 && event->reply_userdata <= 44) {
                     next_snapshot = std::chrono::steady_clock::now();
                 } else if (event->event_id == MPV_EVENT_FILE_LOADED) {
                     source_failure = {}; // Opening recovered; ignore later sidecar warnings.
@@ -787,7 +835,10 @@ struct Source final {
                 }
                 else if (event->event_id == MPV_EVENT_VIDEO_RECONFIG) format(core);
                 else if (event->event_id == MPV_EVENT_SEEK) { awaiting_seek_event = false; core_eof.store(false); }
-                else if (event->event_id == MPV_EVENT_PLAYBACK_RESTART && layer() && !awaiting_seek_event) publish_layer(core, true);
+                else if (event->event_id == MPV_EVENT_PLAYBACK_RESTART) {
+                    if (layer() && !awaiting_seek_event) publish_layer(core, true);
+                    next_snapshot = std::chrono::steady_clock::now();
+                }
                 else if (event->event_id == MPV_EVENT_END_FILE) {
                     const auto* end = static_cast<const mpv_event_end_file*>(event->data);
                     if (end->error < 0) {
@@ -1250,6 +1301,15 @@ struct Source final {
         glPixelStorei(GL_PACK_ROW_LENGTH, row_length); glPixelStorei(GL_PACK_SKIP_ROWS, skip_rows); glPixelStorei(GL_PACK_SKIP_PIXELS, skip_pixels);
         require(complete && status == GL_NO_ERROR, "Shared source calibration readback failed");
     }
+    std::string narration_status() {
+        // The audio producer must not wait for renderer/GPU slot retirement.
+        // Only the cached playback snapshot and atomic transport fences matter.
+        std::string snapshot;
+        { std::lock_guard<std::mutex> lock(status_mutex); snapshot = details; }
+        return "{\"details\":" + snapshot + ",\"last_source_epoch\":" + std::to_string(last_epoch.load()) +
+            ",\"epoch_floor\":" + std::to_string(epoch_floor.load()) + ",\"seeks_started\":" + std::to_string(seeks_started.load()) +
+            ",\"seeks_completed\":" + std::to_string(seeks_completed.load()) + "}";
+    }
     std::string status() {
         std::string snapshot, state_copy, error_copy, reason_copy, stage_copy, render_error_copy, final_copy = "null"; int held = 0, retiring = 0, code_copy = 0;
         { std::lock_guard<std::mutex> lock(status_mutex); snapshot = details; state_copy = state; error_copy = error;
@@ -1380,27 +1440,6 @@ Java_org_vrpassthroughplayer_plugin_MpvSourceNative_create(JNIEnv* env, jclass, 
         require(layer_width > 0 && layer_width <= 8192 && layer_height > 0 && layer_height <= 8192,
                 "Compositor surface dimensions out of range");
         // Alternating location/title; locations follow the same rules as the video itself.
-        auto read_tracks = [env](jobjectArray files) {
-            std::vector<std::pair<std::string, std::string>> extra;
-            const jsize items = files ? env->GetArrayLength(files) : 0;
-            require(items % 2 == 0 && items <= 16, "MPV extra track list must be location/title pairs");
-            for (jsize i = 0; i < items; i += 2) {
-                std::array<std::string, 2> pair;
-                for (int k = 0; k < 2; ++k) {
-                    auto* item = static_cast<jstring>(env->GetObjectArrayElement(files, i + k));
-                    require(item != nullptr, "MPV extra track entry missing");
-                    const char* chars = env->GetStringUTFChars(item, nullptr); require(chars != nullptr, "MPV extra track text unavailable");
-                    pair[k] = chars; env->ReleaseStringUTFChars(item, chars); env->DeleteLocalRef(item);
-                }
-                const auto& where = pair[0];
-                const bool ok = (!where.empty() && where.front() == '/') ||
-                    (where.rfind("fd://", 0) == 0 && where.size() > 5 && where.find_first_not_of("0123456789", 5) == std::string::npos) ||
-                    ((where.rfind("http://", 0) == 0 || where.rfind("https://", 0) == 0) && where.find_first_of(" \r\n") == std::string::npos);
-                require(ok, "MPV extra track requires a local path, owned descriptor or HTTP URL");
-                extra.emplace_back(pair[0], pair[1]);
-            }
-            return extra;
-        };
         JavaVM* vm = nullptr;
         jobject layer_surface = nullptr;
         if (surface) {
@@ -1410,7 +1449,7 @@ Java_org_vrpassthroughplayer_plugin_MpvSourceNative_create(JNIEnv* env, jclass, 
         std::shared_ptr<Source> source;
         try {
             source = std::make_shared<Source>(file, hardware == JNI_TRUE, audio == JNI_TRUE, start,
-                read_tracks(audio_files), read_tracks(subtitle_files), exact_start == JNI_TRUE, layer_surface, vm,
+                read_extra_tracks(env, audio_files), read_extra_tracks(env, subtitle_files), exact_start == JNI_TRUE, layer_surface, vm,
                 software_layer == JNI_TRUE, layer_width, layer_height, iso_input == JNI_TRUE, std::move(tls_ca_file), interleave_compat == JNI_TRUE);
         } catch (...) { if (layer_surface) env->DeleteGlobalRef(layer_surface); throw; }
         source->max_output_width.store(max_width); // before any render; fixed for this source
@@ -1495,6 +1534,19 @@ Java_org_vrpassthroughplayer_plugin_MpvSourceNative_addSubtitleFile(JNIEnv* env,
         source->subtitle_file_busy = true; source->wake.notify_one();
         return static_cast<jlong>(source->subtitle_file_requests);
     } catch (const std::exception& failure) { error(env, failure); return 0; }
+}
+extern "C" JNIEXPORT jboolean JNICALL
+Java_org_vrpassthroughplayer_plugin_MpvSourceNative_addCompanions(JNIEnv* env, jclass, jlong handle, jobjectArray audio, jobjectArray captions) {
+    try {
+        auto extra_audio = read_extra_tracks(env, audio);
+        auto extra_captions = read_extra_tracks(env, captions);
+        auto source = find(handle); std::lock_guard<std::mutex> lock(source->commands_mutex);
+        if (source->closing.load() || source->companions_queued) return JNI_FALSE;
+        source->companions_queued = true;
+        source->pending_audio_files = std::move(extra_audio);
+        source->pending_caption_files = std::move(extra_captions);
+        source->wake.notify_one(); return JNI_TRUE;
+    } catch (const std::exception& failure) { error(env, failure); return JNI_FALSE; }
 }
 extern "C" JNIEXPORT jstring JNICALL
 Java_org_vrpassthroughplayer_plugin_MpvSourceNative_subtitleFileStatus(JNIEnv* env, jclass, jlong handle, jlong request) {
@@ -1583,6 +1635,11 @@ Java_org_vrpassthroughplayer_plugin_MpvSourceNative_subtitleBitmap(JNIEnv* env, 
 extern "C" JNIEXPORT jstring JNICALL
 Java_org_vrpassthroughplayer_plugin_MpvSourceNative_status(JNIEnv* env, jclass, jlong handle) {
     try { return env->NewStringUTF(find(handle)->status().c_str()); }
+    catch (const std::exception& failure) { error(env, failure); return nullptr; }
+}
+extern "C" JNIEXPORT jstring JNICALL
+Java_org_vrpassthroughplayer_plugin_MpvSourceNative_narrationStatus(JNIEnv* env, jclass, jlong handle) {
+    try { return env->NewStringUTF(find(handle)->narration_status().c_str()); }
     catch (const std::exception& failure) { error(env, failure); return nullptr; }
 }
 // Direct mode: publish the decoder's exported images (Alpha). Takes effect on the next render.

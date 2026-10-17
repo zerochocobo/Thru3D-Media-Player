@@ -5,6 +5,17 @@ extends "res://scripts/ray_menu.gd"
 ## asynchronously through the platform's media_list(id, json) signal. Selection is controller ray + trigger only.
 
 signal chosen(uri: String, title: String)
+signal audio_import_cancelled
+signal music_requested
+signal audio_import_selected(files: Array)
+var background_audio_provider: Callable
+const MUSIC_OPEN := 5300
+const AUDIO_IMPORT_DONE := 5301
+const AUDIO_IMPORT_CANCEL := 5302
+var audio_selection := {}
+var audio_import_mode := false
+var _audio_import_context := {}
+const AudioCatalog := preload("res://scripts/background_audio_catalog.gd")
 signal layout_requested
 signal setting_changed(key: String, value: Variant)
 signal setting_previewed(key: String, value: Variant)
@@ -264,8 +275,11 @@ func show_playback_files(restore_playback: bool = false) -> void:
 	_layout_anchor = capture_position(); _layout_scroll = scroll
 
 func _current_file_index(entries: Array) -> int:
+	var uri := str(current_file_provider.call()) if current_file_provider.is_valid() else ""
+	if uri.is_empty(): return -1
 	for index in entries.size():
-		if _is_current_row(entries[index]): return index
+		var row: Dictionary = entries[index]
+		if str(row.get("uri", row.get("scene", {}).get("uri", ""))) == uri: return index
 	return -1
 
 func _current_file_visible() -> bool:
@@ -321,6 +335,14 @@ func _place_device_status(centre: Vector2) -> void:
 func refresh_session_controls(force: bool = false) -> void:
 	if not compact and not playback_expanded: super(force)
 
+func refresh_background_audio() -> void:
+	var state: Dictionary = background_audio_provider.call() if background_audio_provider.is_valid() else {}
+	for button in _buttons:
+		if button.target == MUSIC_OPEN:
+			button.base_color = SELECTED if state.get("audio_active", false) else TILE
+			button.node.material_override.set_shader_parameter("surface_color", button.base_color)
+			_tips[MUSIC_OPEN] = I18n.t("Music")
+
 func toggle() -> void:
 	if visible:
 		dismiss()
@@ -330,6 +352,7 @@ func toggle() -> void:
 		visible = true; _reset_navigation(); _recent_page = recent_page; _position_to_restore = anchor; refresh()
 
 func dismiss() -> void:
+	var cancel_audio := audio_import_mode
 	collections.selection.clear()
 	if cloud_error.opened: cloud_error.close(); _rebuild_rows()
 	var anchor := capture_position() if browser_content() else {}
@@ -343,7 +366,38 @@ func dismiss() -> void:
 	_cancel_cloud()
 	_position_to_restore = anchor
 	super()
+	if cancel_audio:
+		_restore_audio_import_context()
+		audio_import_cancelled.emit()
 	composition_layout_changed.emit()
+
+func begin_audio_import() -> void:
+	if audio_import_mode: return
+	_audio_import_context = {"anchor": capture_position(), "editing": file_actions.enabled, "view_mode": view_mode}
+	for key in CONTEXT_FIELDS:
+		var value: Variant = get(key)
+		_audio_import_context[key] = value.duplicate(true) if value is Array or value is Dictionary else value
+	audio_import_mode = true
+	audio_selection.clear()
+	collections.selection.clear(); file_actions.reset(); file_actions.enabled = false
+	cloud_search.close(); choices.reset(); account_panel.close()
+	if section not in [Section.LOCAL, Section.SMB, Section.CLOUD]: section = Section.LOCAL
+	media_filter = 0; view_mode = "list"; scroll = 0
+	_load_section(); refresh()
+
+func _restore_audio_import_context() -> void:
+	audio_import_mode = false
+	audio_selection.clear()
+	_cancel_cloud()
+	for id in _pending.keys():
+		if str(_pending[id]) in ["local", "smb_browse", "smb_servers"]: _pending.erase(id)
+	for key in CONTEXT_FIELDS:
+		if _audio_import_context.has(key): set(key, _audio_import_context[key])
+	file_actions.enabled = bool(_audio_import_context.get("editing", false))
+	view_mode = str(_audio_import_context.get("view_mode", "grid"))
+	_position_to_restore = _audio_import_context.get("anchor", {}).duplicate(true)
+	_audio_import_context.clear()
+	_rebuild_rows()
 
 func _on_choice_changed(key: String, value: Variant) -> void:
 	if controls_page.choose(key, value): return
@@ -624,6 +678,7 @@ func _place_list() -> void:
 		_bar_thumb.position.y = span.x - travel - thumb * 0.5
 
 func _grid() -> bool:
+	if audio_import_mode: return false
 	if cloud_error.opened: return false
 	if compact: return view_mode == "grid"
 	if cloud_search.active: return not cloud_search.editing and view_mode == "grid"
@@ -726,7 +781,7 @@ func _folder_key() -> String:
 		Section.SMB: location = str([_smb_server, _smb_path])
 		Section.DLNA: location = str([_dlna_server, _dlna_stack])
 		_: return ""
-	return str([section, location, media_filter, file_actions.order()])
+	return ("audio:" if audio_import_mode else "") + str([section, location, media_filter, file_actions.order()])
 
 func _save_folder_position() -> void:
 	if cloud_search.active or account_panel.active() or not _editor.is_empty(): return
@@ -774,6 +829,82 @@ func refresh() -> void:
 	_rebuild_rows()
 	_draw()
 	_align_playback_panel()
+
+## Editing and checkmarks change visible controls only; directory rows/order stay intact.
+func refresh_file_selection() -> void:
+	scroll = clampf(scroll, 0.0, _max_scroll())
+	_draw()
+	_align_playback_panel()
+
+func file_entry_snapshots() -> Array:
+	var snapshots: Array = [_local_entries, _smb_entries, _cloud_entries]
+	for field in ["_local_entries", "_smb_entries", "_cloud_entries"]:
+		if _playback_context.get(field) is Array: snapshots.append(_playback_context[field])
+	return snapshots
+
+## Confirmed mutations patch existing data. Preserve the surrounding files even if a renamed
+## item sorts elsewhere; a removed top item falls back to the neighboring index.
+func remove_file_rows(target: Dictionary) -> void:
+	var anchor := capture_position()
+	var uri := str(target.uri); var cloud_id := str(target.get("cloud_id", ""))
+	var cloud_count := 0
+	for entry in _cloud_entries:
+		if str(entry.get("uri", entry.get("delete_uri", ""))) == uri and str(entry.get("cloud_id", "")) == cloud_id: cloud_count += 1
+	var playback_cloud_count := 0
+	for entry in _playback_context.get("_cloud_entries", []):
+		if str(entry.get("uri", entry.get("delete_uri", ""))) == uri and str(entry.get("cloud_id", "")) == cloud_id: playback_cloud_count += 1
+	for entries in file_entry_snapshots():
+		for index in range(entries.size() - 1, -1, -1):
+			var entry: Dictionary = entries[index]
+			if str(entry.get("uri", entry.get("delete_uri", ""))) == uri and str(entry.get("cloud_id", "")) == cloud_id: entries.remove_at(index)
+	for index in range(rows.size() - 1, -1, -1):
+		if file_actions.row_uri(rows[index]) == uri and str(rows[index].get("cloud_id", "")) == cloud_id: rows.remove_at(index)
+	if cloud_count > 0:
+		if _cloud_total >= 0: _cloud_total = maxi(0, _cloud_total - cloud_count)
+		if _cloud_next >= 0: _cloud_next = maxi(0, _cloud_next - cloud_count)
+	if playback_cloud_count > 0:
+		for field in ["_cloud_total", "_cloud_next"]:
+			if int(_playback_context.get(field, -1)) >= 0: _playback_context[field] = maxi(0, int(_playback_context[field]) - playback_cloud_count)
+	_finish_file_rows_change(anchor)
+
+func rename_file_rows(updates: Dictionary, anchor: Dictionary) -> void:
+	var sorted := file_actions.sortable() and section != Section.CLOUD
+	var changed: Array[Dictionary] = []
+	for index in range(rows.size() - 1, -1, -1):
+		var key := file_actions.row_key(rows[index])
+		if not updates.has(key): continue
+		var row := _entry_row(updates[key])
+		if sorted:
+			rows.remove_at(index); changed.append(row)
+		else: rows[index] = row
+	if not changed.is_empty():
+		var order := file_actions.order()
+		for row in changed:
+			var left := 0; var right := rows.size()
+			while left < right:
+				var middle := (left + right) / 2
+				if FileActions.Order.before(rows[middle], row, order): left = middle + 1
+				else: right = middle
+			rows.insert(left, row)
+	_finish_file_rows_change(anchor)
+
+func _finish_file_rows_change(anchor: Dictionary) -> void:
+	file_actions.reconcile()
+	_position_to_restore = {}
+	scroll = clampf(Presentation.position(rows, anchor, _cols()), 0.0, _max_scroll())
+	focus_index = clampi(focus_index, 0, maxi(0, rows.size() - 1))
+	_drag = {}; _fling = 0.0
+
+## Pagination is invalidated after a mutation, but the current offset remains usable.
+func refresh_cloud_mutation() -> void:
+	if section != Section.CLOUD or _cloud_stack.is_empty(): return
+	_cloud_positions.erase(_cloud_path())
+	var page := _cloud_page
+	if _cloud_entries.is_empty() and page > 0: page -= 1
+	_cloud_offsets.resize(page + 1)
+	_load_cloud(false, true, page)
+	if page < _cloud_page:
+		_cloud_requested_position = {"index": maxi(0, _cloud_page_size - 1)}
 
 # --- requests -------------------------------------------------------------------------------
 
@@ -1228,7 +1359,11 @@ func _rebuild_rows() -> void:
 			rows.assign(rows.filter(func(row): return row.has("scene") or row.has("container_node") or row.has("library") or row.has("server_account") or row.has("open_libraries")))
 		else:
 			rows.assign(rows.filter(func(row): return not row.has("smb_found")))
-	if media_filter > 0 and section not in [Section.SETTINGS, Section.MEDIA_SERVER]:
+	if audio_import_mode:
+		rows.assign(rows.filter(func(row): return not row.has("uri") or str(row.get("uri", "")).is_empty() or row.get("kind", "") == "folder" or AudioCatalog.supported(str(row.get("title", "")))))
+	else:
+		rows.assign(rows.filter(func(row): return row.get("kind", "") != "audio"))
+	if not audio_import_mode and media_filter > 0 and section not in [Section.SETTINGS, Section.MEDIA_SERVER]:
 		rows.assign(rows.filter(func(row): return not row.has("uri") or row.get("kind", "") == "folder" or row.get("kind", "video") == ("image" if media_filter == 2 else "video")))
 	file_actions.sort_rows()
 	file_actions.reconcile()
@@ -1318,6 +1453,8 @@ func _entry_row(entry: Dictionary) -> Dictionary:
 		return folder_row
 	var photo: bool = entry.get("kind", "") == "image" or ImageInfo.is_image(str(entry.get("uri", "")), str(entry.title))
 	var row := {"title": str(entry.title), "detail": _size(entry), "kind": "image" if photo else "video", "icon": "image" if photo else "video", "uri": str(entry.get("uri", ""))}
+	if entry.get("kind", "") == "audio" or AudioCatalog.supported(str(entry.title)):
+		row.kind = "audio"; row.icon = "music"
 	for field in ["size", "modified", "can_delete", "can_rename", "delete_reason", "id", "cloud_id", "delete_effect", "duration_ms", "width", "height"]:
 		if entry.has(field): row[field] = entry[field]
 	if not str(entry.get("cover", "")).is_empty():
@@ -1346,7 +1483,7 @@ func video_queue() -> Array[Dictionary]:
 	for row in source:
 		var uri := str(row.get("uri", ""))
 		var title := str(row.get("title", ""))
-		if uri.is_empty() or row.get("kind", "") == "image" or ImageInfo.is_image(uri, title): continue
+		if uri.is_empty() or row.get("kind", "") in ["image", "audio"] or ImageInfo.is_image(uri, title): continue
 		if row.get("container", false) or row.has("folder") or row.get("kind", "") == "folder": continue
 		var metadata: Dictionary = row.duplicate(true)
 		metadata.location = preload("res://scripts/media_location.gd").capture(self, row)
@@ -1410,6 +1547,12 @@ func _read_cache_usage() -> Vector2i:
 ## Video state changes arrive several times a second: redraw only when the Alpha profiles
 ## (current, compiling, cold) shown on the Alpha tab change.
 func _activate(target: int) -> void:
+	if target == MUSIC_OPEN: music_requested.emit(); return
+	if target == AUDIO_IMPORT_CANCEL: dismiss(); return
+	if target == AUDIO_IMPORT_DONE:
+		var files: Array = audio_selection.values().duplicate(true)
+		if files.is_empty(): return
+		_restore_audio_import_context(); dismiss(); audio_import_selected.emit(files); return
 	_local_release_notice = ""
 	if collections.action(target): return
 	if _activate_footer(target): return
@@ -1508,6 +1651,13 @@ func _activate(target: int) -> void:
 		_editor_input(target)
 
 func _choose(row: Dictionary) -> void:
+	if audio_import_mode and row.has("uri") and not str(row.uri).is_empty():
+		if not AudioCatalog.supported(str(row.get("title", ""))): return
+		var uri := str(row.uri)
+		if audio_selection.has(uri): audio_selection.erase(uri)
+		else: audio_selection[uri] = {"uri": uri, "title": str(row.title)}
+		refresh()
+		return
 	if collections.choose(row): return
 	if cloud_search.choose(row): return
 	if file_actions.select(row): return
@@ -1988,11 +2138,15 @@ func _draw() -> void:
 		_decorations.append(column)
 		# A tap on the column between its buttons is inside the menu, not a tap away.
 		_block_rays(column, Vector2(0.42, 1.12))
-		for position in NAV_ORDER.size():
-			var i: int = NAV_ORDER[position]
+		var navigation: Array = [Section.LOCAL, Section.SMB, Section.CLOUD] if audio_import_mode else NAV_ORDER
+		for position in navigation.size():
+			var i: int = navigation[position]
 			_nav_button(NAV_BASE + i, I18n.t(NAV[i]), NAV_ICONS[i], Vector2(0, 0.39 - position * 0.13), i == section)
 	if not controls_page.active():
 		var footer_y := -0.80 if section == Section.MEDIA_SERVER and server_browser.focused() else -0.65
+		if not audio_import_mode:
+			_round(MUSIC_OPEN, "music", Vector2(-0.48, footer_y), 0.08, true, false, I18n.t("Music"))
+			refresh_background_audio()
 		# Closing the menu is the shared footer's job and recentering the player's; only collapse floats here.
 		if playback_expanded: _round(EXPAND_LIBRARY, "collapse", Vector2(0.13, footer_y), 0.08, true, false, I18n.t("Collapse library"))
 		# With no floating row left, the footer takes its place right under the browser.
@@ -2039,7 +2193,7 @@ func _draw() -> void:
 		_button(REFRESH, "", _action_position(0.80), Vector2(0.09, 0.065), platform != null, "refresh")
 	if section == Section.CLOUD:
 		cloud_accounts.draw()
-		if cloud_accounts.mode.is_empty() and not _cloud_stack.is_empty() and cloud_search.supported():
+		if not audio_import_mode and cloud_accounts.mode.is_empty() and not _cloud_stack.is_empty() and cloud_search.supported():
 			_button(CloudSearch.OPEN, "", _action_position(0.69), Vector2(0.09, 0.065), not _cloud_busy, "search")
 			_tips[CloudSearch.OPEN] = I18n.t("Search")
 		if not cloud_managing and _cloud_stack.is_empty():
@@ -2087,6 +2241,10 @@ func _draw() -> void:
 		collections.draw_footer()
 	elif file_actions.has_selection():
 		file_actions.draw_footer()
+	elif audio_import_mode:
+		_button(AUDIO_IMPORT_CANCEL, I18n.t("Cancel"), Vector2(0.18, -0.515), Vector2(0.26, 0.065))
+		_button(AUDIO_IMPORT_DONE, I18n.t("Add audio") + " (%d)" % audio_selection.size(), Vector2(0.61, -0.515), Vector2(0.50, 0.065), not audio_selection.is_empty(), "plus")
+		set_label_size(_buttons.back().node.get_child(0), 18)
 	elif section != Section.SETTINGS and not cloud_managing:
 		for i in MEDIA_FILTERS.size():
 			_button(FILTER_BASE + i, I18n.t(MEDIA_FILTERS[i]), Vector2(0.36 + i * 0.18, -0.515), Vector2(0.17, 0.06), true, "", media_filter == i)
@@ -2143,6 +2301,7 @@ func _draw_crumbs(crumbs: Array) -> void:
 			_label("›", Vector3(x - 0.0175, _header_y(), 0.004), 19).modulate = MUTED
 
 func _header_title() -> String:
+	if audio_import_mode: return I18n.t("Import audio")
 	match section:
 		Section.CLOUD:
 			return " / ".join(_cloud_stack.map(func(c): return str(c.title)))
@@ -2193,6 +2352,7 @@ func _draw_rows() -> void:
 			if browser_content():
 				var center := Vector2(0.17, row_top - k * _pitch())
 				_media_row_button(ROW_BASE + k, row, center)
+				_decorate_audio_selection(row)
 				collections.decorate_row(k, row, center, false, _list)
 				continue
 			if row.has("choices") or row.get("slider", false):
@@ -2200,6 +2360,7 @@ func _draw_rows() -> void:
 				continue
 			_row_button(ROW_BASE + k, str(row.title), "" if row.get("about_info", false) else str(row.get("detail", "")), str(row.get("icon", "video")),
 				Vector2(0.17, row_top - k * _pitch()), bool(row.get("selected", false)))
+			_decorate_audio_selection(row)
 			if row.get("group_header", false):
 				var heading: Dictionary = _buttons.back()
 				heading.enabled = true; heading.base_color = Color(TILE, 0)
@@ -2236,6 +2397,15 @@ func _draw_rows() -> void:
 		empty.modulate = MUTED
 	_place_list()
 	choices.finish()
+
+func _decorate_audio_selection(row: Dictionary) -> void:
+	if not audio_import_mode or not row.has("uri") or not AudioCatalog.supported(str(row.get("title", ""))): return
+	var selected := audio_selection.has(str(row.uri))
+	var button: Dictionary = _buttons.back()
+	if selected:
+		button.base_color = SELECTED
+		button.node.material_override.set_shader_parameter("surface_color", SELECTED)
+	_icon("check" if selected else "circle", Vector3(0.53, 0, 0.006), 0.035, ACCENT if selected else MUTED, button.node)
 
 func _setting_field(row: Dictionary, centre: Vector2, target: int) -> void:
 	_row_button(target, str(row.title), "", "", centre, false)
@@ -2335,7 +2505,8 @@ func _tile(target: int, row: Dictionary, centre: Vector2) -> void:
 		var glyph := _icon(icon, Vector3(0, 0.04, 0.005), 0.065 if picture else 0.1, MUTED if picture else (FOLDER if icon == "folder" else Color(0.93, 0.95, 0.98)), node)
 		glyph.material_override.render_priority = 13
 	if file_actions.editing and not file_actions.row_uri(row).is_empty():
-		_icon("check" if file_actions.is_selected(row) else "circle", Vector3(-0.115, 0.095, 0.009), 0.035, ACCENT, node)
+		var marker := _icon("check" if file_actions.is_selected(row) else "circle", Vector3(-0.115, 0.095, 0.009), 0.035, ACCENT, node)
+		marker.material_override.render_priority = 14
 	var detail := str(row.get("detail", ""))
 	if browser_content():
 		var info := Presentation.info(row, catalog, section == Section.RECENT)
@@ -2432,6 +2603,7 @@ func _media_row_button(target: int, row: Dictionary, centre: Vector2) -> void:
 	var managing := file_actions.list_management()
 	var status_text := str(info.status)
 	var title_width := (0.76 if not status_text.is_empty() else 1.0) - (0.11 if managing else 0.0)
+	if audio_import_mode: title_width = minf(title_width, 0.90)
 	var body := centre + Vector2(0.055 if managing else 0.0, 0)
 	_button(target, _fit_title(str(row.title), "", title_width, 22), body, Vector2(1.13 if managing else 1.24, 0.098), true, "", false, _list)
 	var selected := file_actions.is_selected(row) or (str(row.get("uri", "")) == collections.reveal_uri and not collections.reveal_uri.is_empty())

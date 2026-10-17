@@ -73,7 +73,7 @@ class OpenListListingTest {
             val matches = names.indices.filter { names[it] == body.getString("path").substringAfterLast('/') }
             if (matches.size > 1) throw CloudFailure("cloud_file_ambiguous")
             if (matches.isEmpty()) throw CloudFailure("cloud_file_missing")
-            JSONObject().put("code", 200).put("data", item(matches.single()))
+            JSONObject().put("code", 200).put("stream", "http://127.0.0.1:1234/capability-115/lease/file").put("data", item(matches.single()))
         } else {
             assertEquals("/list115", route)
             val offset = body.getInt("offset")

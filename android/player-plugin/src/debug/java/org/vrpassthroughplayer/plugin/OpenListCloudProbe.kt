@@ -8,7 +8,7 @@ import java.io.File
  * credentials, signed URLs, response bodies or screenshots of a logged-in account. */
 internal object OpenListCloudProbe {
     fun request(context: Context, request: String, provider: String, play: Boolean): Int {
-        require(provider in setOf(CloudDrive.ALIYUN, CloudDrive.QUARK))
+        require(provider in setOf(CloudDrive.ALIYUN, CloudDrive.QUARK, CloudDrive.OPEN115))
         Thread {
             val report = JSONObject().put("provider", provider).put("state", "running").put("stage", "account")
             try {
@@ -22,6 +22,22 @@ internal object OpenListCloudProbe {
                 val pending = ArrayDeque<String>().apply { add("/") }
                 var selected: CloudFile? = null
                 var selectedPath = ""
+                if (provider == CloudDrive.OPEN115) {
+                    // Existing recent video only: no exploratory cloud crawl or filename reporting.
+                    val recent = (0..1).mapNotNull { bank -> runCatching {
+                        val envelope = JSONObject(File(context.filesDir, "settings/recent_files_$bank.json").readText())
+                        envelope.optLong("sequence") to JSONObject(envelope.getString("payload_json")).getJSONObject("entries")
+                    }.getOrNull() }.maxByOrNull { it.first }?.second ?: error("No recent video")
+                    val prefix = "cloud://${account.getString("id")}/"
+                    val item = recent.keys().asSequence().map { recent.getJSONObject(it) }
+                        .filter { it.optString("uri").startsWith(prefix) && it.optString("kind") != "image" }
+                        .maxByOrNull { it.optLong("opened") } ?: error("No recent 115 video")
+                    val full = CloudPaths.path(item.getString("uri"))
+                    selectedPath = full.removePrefix("/${account.getString("id")}")
+                    val started = System.nanoTime()
+                    selected = client.find(selectedPath)
+                    report.put("selection", "recent").put("locate_ms", (System.nanoTime()-started)/1_000_000)
+                }
                 while (pending.isNotEmpty() && pages < 64 && selected == null) {
                     val path = pending.removeFirst()
                     var offset = 0
@@ -43,12 +59,14 @@ internal object OpenListCloudProbe {
                 val resolve = { client.resolve(file) }
                 CloudStreamSource(file.size, resolve, linkConnection = OpenListBackend::connection).use { source ->
                     source.prepare()
+                    val readStarted = System.nanoTime()
                     source.open().use { reader ->
                         val buffer = ByteArray(65536)
                         val head = reader.read(0, buffer, buffer.size)
                         val seek = reader.read(file.size / 2, buffer, buffer.size)
                         require(head > 0 && seek > 0)
                         report.put("head_bytes", head).put("seek_bytes", seek)
+                        report.put("head_and_seek_ms", (System.nanoTime()-readStarted)/1_000_000)
                         buffer.fill(0)
                     }
                 }
@@ -57,6 +75,7 @@ internal object OpenListCloudProbe {
                     val plugin = DiagnosticRequests.current() ?: error("Player unavailable")
                     val id = plugin.requestMpvPlayerCommand(JSONObject().put("operation", "open").put("request_key", request)
                         .put("uri", CloudPaths.uri("/" + account.getString("id") + selectedPath)).put("title", "Cloud playback check")
+                        .put("position_ms", 0)
                         .put("stereo", false).put("profile", "384x216").put("enabled", false)
                         .put("benchmark", true).put("normal_fast", true).toString())
                     require(id > 0); report.put("player_request", id)

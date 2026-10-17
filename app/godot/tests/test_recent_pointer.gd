@@ -25,6 +25,44 @@ func target_origin(menu: Node3D, x: float, y: float, z: float = 1.0) -> Vector3:
 func _initialize() -> void:
 	call_deferred("_run")
 
+func check_passive_pointer(menu: Node3D, panel: MeshInstance3D, point: Vector3, message: String) -> void:
+	var world := panel.to_global(point)
+	var origin := world + panel.global_basis.z.normalized() * 0.4
+	var direction := -panel.global_basis.z.normalized()
+	var hit: Dictionary = menu.pointer_hit(origin, direction)
+	check(not hit.is_empty() and not hit.enabled and menu.to_global(hit.point).distance_to(world) < 0.0001, message + ": passive surface intersection")
+	for hand in ["left_hand", "right_hand"]:
+		menu.update_pointer(hand, origin, direction, true)
+		check(menu._pointers[hand].line.visible and menu._pointers[hand].dot.visible and menu._hover[hand] == Menu.NONE, message + ": line and dot without highlight (" + hand + ")")
+		check(menu._pointers[hand].dot.position.distance_to(menu.to_local(world) + Vector3(0, 0, 0.008)) < 0.0001, message + ": dot ends at the panel")
+
+func check_panel_surfaces(menu: Node3D) -> void:
+	check_passive_pointer(menu, menu._backdrop, Vector3(0, 0.206, 0), "Row gap")
+	check_passive_pointer(menu, menu._backdrop, Vector3(-0.5, -0.415, 0), "Disabled previous button")
+	check_passive_pointer(menu, menu._backdrop, Vector3(0.73, 0, 0), "Panel margin")
+	check_passive_pointer(menu, menu.device_status._pill, Vector3.ZERO, "Battery and clock surface")
+	var direction := -menu.global_basis.z
+	for point in [Vector3(0.774, 0.539, 1), Vector3(0.8, 0, 1)]:
+		var origin: Vector3 = menu.to_global(point)
+		check(menu.pointer_hit(origin, direction).is_empty(), "Outside or transparent rounded corner has no surface")
+		menu.update_pointer("right_hand", origin, direction, true)
+		check(menu._pointers.right_hand.line.visible and not menu._pointers.right_hand.dot.visible, "Outside panel draws only extended line")
+	# Angled popup on top of a clickable row must own the visual hit; its hidden parent must not.
+	var parent := Node3D.new(); menu.add_child(parent)
+	parent.position = Vector3(0, 0.163, 0.08); parent.rotation.y = 0.35
+	var panel: MeshInstance3D = menu._quad(Vector2(0.3, 0.16), Vector3.ZERO, menu.PANEL, 10)
+	parent.add_child(panel); menu._pointer_panels.append(panel)
+	check_passive_pointer(menu, panel, Vector3.ZERO, "Angled foreground popup occludes the row")
+	parent.visible = false
+	var origin: Vector3 = menu.to_global(Vector3(0, 0.163, 1))
+	check(menu.pointer_hit(origin, direction).get("target") == 1, "Hidden popup parent cannot block visible row")
+	menu._pointer_panels.erase(panel); parent.free()
+	menu._set_backdrop(Vector2(1.1, 0.8), Vector2(0.1, 0.05))
+	check_passive_pointer(menu, menu._backdrop, Vector3(0.52, 0.156, 0), "Resized and shifted panel uses current mesh")
+	menu._set_backdrop(Vector2(1.55, 1.08))
+	menu.refresh()
+	check_passive_pointer(menu, menu._backdrop, Vector3(0, 0.206, 0), "Refresh preserves backdrop hit")
+
 func _run() -> void:
 	preload("res://scripts/i18n.gd").use("en") # text checks are written in English
 	var menu := Menu.new()
@@ -33,6 +71,7 @@ func _run() -> void:
 	menu.choose_file.connect(func(): opened += 1)
 	root.add_child(menu)
 	menu.toggle()
+	check_panel_surfaces(menu)
 	var direction := -menu.global_basis.z
 	var row := target_origin(menu, 0, 0.163)
 	check(menu.ray_hit(row, direction).target == 1, "Ray selects actual row geometry")
@@ -53,6 +92,7 @@ func _run() -> void:
 	menu.position = Vector3(2, 3, -4)
 	direction = -menu.global_basis.z
 	row = target_origin(menu, 0, 0.163)
+	check_passive_pointer(menu, menu._backdrop, Vector3(0, 0.206, 0), "Rotated and translated panel")
 	check(menu.ray_hit(row, direction).target == 1, "World transformed menu keeps correct hit")
 	check(menu.press_pointer("left_hand", row, direction, true) and selected == ["content://pointer/0"] and not menu.visible, "Correct hand emits exact URI and closes once")
 	check(not menu.press_pointer("left_hand", row, direction, true) and selected.size() == 1, "Closed menu rejects repeated activation")

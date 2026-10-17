@@ -4,7 +4,7 @@
 
 Standalone Android VR/MR media player for Meta Quest and PICO. Play videos and photos, explore media libraries, and combine supported content with passthrough and stereo effects directly on your headset.
 
-Current source version: **0.11.1** (Android versionCode **28**). An experimental standard OpenXR Android export is also available.
+Current source version: **0.11.2** (Android versionCode **29**). An experimental standard OpenXR Android export is also available.
 
 Minimum compatibility targets are **Quest 2** and **PICO Neo3**. Source/build compatibility does not establish hardware performance or interaction acceptance on every device.
 
@@ -63,6 +63,9 @@ Minimum compatibility targets are **Quest 2** and **PICO Neo3**. Source/build co
 
 - Same-folder external-subtitle selection with per-subtitle timing memory; manual cloud choices retain the opened page, while supported automatic discovery can search matching companions in that directory.
 - On-demand cloud directory pages and provider-supported sorting, with reused WebDAV directory snapshots.
+
+- Global music playback, custom playlists, offline imports and MP3/OGG/WAV/FLAC/DTS support; music pauses for video playback. Built-in recordings are separate assets: see [audio resources](docs/AUDIO.md).
+- Remembered single-video, repeat-one, sequential and repeat-all playback, with bounded cross-page continuation on supported sources.
 
 ## Spatial media and photo layouts
 

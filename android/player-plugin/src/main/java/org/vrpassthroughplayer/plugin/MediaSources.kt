@@ -267,6 +267,11 @@ internal class MediaSources(
         return StrmDocument(bytes, if (source.scheme == "smb") smb.strmOrigin(uri) else uri)
     }
 
+    fun audioDownload(uri: String): String = if (uri.startsWith("cloud://")) {
+        CloudLibrary.start(context() ?: error("Activity unavailable"))
+        CloudLibrary.audioDownload(uri, streams())
+    } else playable(uri)
+
     fun playable(uri: String): String {
         val target = strm.resolve(uri)
         return try { directPlayable(target) }

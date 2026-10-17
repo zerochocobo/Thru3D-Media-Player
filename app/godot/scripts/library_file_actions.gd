@@ -13,10 +13,13 @@ var menu: Node3D
 var editing := false
 var enabled := false
 var selection := {}
+var _row_indices := {} # Identity -> row indices, rebuilt with directory data, not on each tick/click.
 var selected: String:
 	get: return str(selection.values()[0].get("uri", "")) if selection.size() == 1 else ""
 	set(value):
 		selection.clear()
+		if value.is_empty(): return
+		_index_rows()
 		for row in menu.rows:
 			if not value.is_empty() and row_uri(row) == value:
 				var copy: Dictionary = row.duplicate(true); copy.uri = value
@@ -72,6 +75,7 @@ func load(value: Dictionary) -> void:
 
 func reset() -> void:
 	editing = false; selection.clear(); modal = ""
+	_row_indices.clear()
 	cloud_requested_order = ""; cloud_rollback = {}
 	if pending == 0 and not uncertain:
 		target = {}; deletions.clear(); batch_running = false
@@ -85,8 +89,14 @@ func row_key(row: Dictionary) -> String:
 
 func selected_rows() -> Array[Dictionary]:
 	var result: Array[Dictionary] = []
-	for row in menu.rows:
-		if not selection.has(row_key(row)): continue
+	if selection.is_empty(): return result
+	var indices: Array[int] = []
+	for key in selection:
+		for index: int in _row_indices.get(key, []):
+			if index < menu.rows.size() and row_key(menu.rows[index]) == key: indices.append(index)
+	indices.sort()
+	for index in indices:
+		var row: Dictionary = menu.rows[index]
 		var copy: Dictionary = row.duplicate(true); copy.uri = row_uri(row)
 		result.append(copy)
 	return result
@@ -95,7 +105,22 @@ func list_management() -> bool:
 	return enabled and menu.view_mode == "list" and folder() and not menu.cloud_search.active
 
 func has_selection() -> bool:
-	return not selected_rows().is_empty()
+	# Compact row sizing must inspect selected identities, never scan the whole directory.
+	for key in selection:
+		if _current_index(key) >= 0: return true
+	return false
+
+func _current_index(key: String) -> int:
+	for index: int in _row_indices.get(key, []):
+		if index < menu.rows.size() and row_key(menu.rows[index]) == key: return index
+	return -1
+
+func _index_rows() -> void:
+	_row_indices.clear()
+	for index in menu.rows.size():
+		var key := row_key(menu.rows[index])
+		if not _row_indices.has(key): _row_indices[key] = []
+		_row_indices[key].append(index)
 
 func needs_footer() -> bool:
 	return has_selection() or pending > 0 or uncertain
@@ -107,10 +132,10 @@ func reconcile() -> void:
 	var context := str([menu.section, menu._local_path(), menu._smb_server, menu._smb_path, menu._cloud_path(), menu._cloud_page, menu.media_filter, menu.cloud_search.active])
 	if selection_scope != context:
 		selection.clear(); selection_scope = context
-	var present := {}
-	for row in menu.rows: present[row_key(row)] = true
+	if enabled or not selection.is_empty(): _index_rows()
+	else: _row_indices.clear()
 	for key in selection.keys():
-		if not present.has(key): selection.erase(key)
+		if not _row_indices.has(key): selection.erase(key)
 
 func selection_target(id: int) -> bool:
 	return id >= SELECT_BASE and id < SELECT_BASE + menu._drawn_slots()
@@ -157,17 +182,21 @@ func select(row: Dictionary) -> bool:
 	return true
 
 func toggle(row: Dictionary) -> void:
-	if not idle() or not selectable(row): return
+	if not idle(): return
+	if _row_indices.is_empty(): _index_rows()
 	var key := row_key(row)
+	var index := _current_index(key)
+	if index < 0 or not selectable(menu.rows[index]): return
 	if selection.has(key): selection.erase(key)
 	else:
-		var copy: Dictionary = row.duplicate(true); copy.uri = row_uri(row)
+		var copy: Dictionary = menu.rows[index].duplicate(true); copy.uri = row_uri(copy)
 		selection[key] = copy
-	menu.status = ""; menu.refresh()
+	menu.status = ""; menu.refresh_file_selection()
 
 func sort_rows() -> void:
 	if not sortable() or menu.section == menu.Section.CLOUD: return
-	menu.rows.sort_custom(func(a, b): return Order.before(a, b, order()))
+	var selected_order := order()
+	menu.rows.sort_custom(func(a, b): return Order.before(a, b, selected_order))
 
 func choose_order(value: String) -> void:
 	if not sortable() or not supports_order(value): return
@@ -205,7 +234,7 @@ func cloud_failed() -> void:
 func action(id: int) -> bool:
 	if not modal.is_empty():
 		if modal == "rename": rename.action(id); return true
-		if id == CANCEL: modal = ""; menu.refresh()
+		if id == CANCEL: modal = ""; menu.refresh_file_selection()
 		elif modal == "sort" and id >= ORDER_BASE and id < ORDER_BASE + Order.ORDERS.size(): choose_order(Order.ORDERS[id - ORDER_BASE])
 		elif modal == "delete" and id == CONFIRM and idle() and plan_ready:
 			batch_running = true; dispatch(false)
@@ -216,22 +245,22 @@ func action(id: int) -> bool:
 		if list_management() and index < menu.rows.size(): toggle(menu.rows[index])
 		return true
 	if id == SORT and sortable() and not editing and pending == 0:
-		modal = "sort"; menu.refresh(); return true
+		modal = "sort"; menu.refresh_file_selection(); return true
 	if id == EDIT_MODE and enabled and folder() and not list_management() and pending == 0:
-		editing = not editing; selection.clear(); menu.refresh(); return true
+		editing = not editing; selection.clear(); menu.refresh_file_selection(); return true
 	if id == DELETE_FILE:
 		if can_delete_selection():
 			deletions = selected_rows().duplicate(true); delete_index = 0; prepare_index = 0
 			deleted_count = 0; batch_running = false; failed = false; plan_ready = false; modal = "delete"
 			prepare_folder()
-			menu.refresh()
+			menu.refresh_file_selection()
 		return true
 	if id == Rename.OPEN:
 		var row := selected_row()
 		if rename.can_rename(row): rename.open(row)
 		return true
 	if id == CHECK_STATUS and uncertain:
-		modal = "delete"; menu.refresh(); return true
+		modal = "delete"; menu.refresh_file_selection(); return true
 	return false
 
 func prepare_folder() -> void:
@@ -258,7 +287,7 @@ func dispatch(inspect: bool) -> void:
 	pending = int(menu.platform.call(method, JSON.stringify(target)))
 	if pending <= 0:
 		pending = 0; failed = true; batch_running = false; menu.status = "File deletion failed"
-	menu.refresh()
+	menu.refresh_file_selection()
 
 func receive(id: int, payload: String) -> bool:
 	if rename.receive(id, payload): return true
@@ -279,10 +308,7 @@ func receive(id: int, payload: String) -> bool:
 	elif result.get("state") == "ready" and (result.get("deleted", false) or (checking and not result.get("exists", true))):
 		var uri := str(target.uri)
 		uncertain = false; failed = false; selection.erase(row_key(target))
-		for entries in [menu._local_entries, menu._smb_entries, menu._cloud_entries]:
-			for i in range(entries.size() - 1, -1, -1):
-				var entry: Dictionary = entries[i]
-				if str(entry.get("uri", entry.get("delete_uri", ""))) == uri and str(entry.get("cloud_id", "")) == str(target.get("cloud_id", "")): entries.remove_at(i)
+		menu.remove_file_rows(target)
 		menu.file_deleted.emit(uri)
 		deleted_count += 1; delete_index += 1; checking = false
 		if batch_running and enabled and delete_index < deletions.size():
@@ -291,7 +317,7 @@ func receive(id: int, payload: String) -> bool:
 		menu.status = "File deleted" if deleted_count == 1 else menu.I18n.t("%d items deleted") % deleted_count
 		# Refresh cloud pages after the entire batch; do not disturb snapshots mid-batch.
 		if menu.section == menu.Section.CLOUD and enabled:
-			menu._cloud_positions.clear(); menu._cloud_offsets.assign([0]); menu._load_cloud(false, true, 0)
+			menu.refresh_cloud_mutation()
 	elif checking and result.get("state") == "ready" and result.get("changed", false):
 		uncertain = false; failed = true; batch_running = false; modal = ""; selection.clear(); target = {}; deletions.clear()
 		menu.status = "Cloud file changed. Refresh the folder"
@@ -304,7 +330,7 @@ func receive(id: int, payload: String) -> bool:
 		failed = true; batch_running = false
 		menu.status = str(result.get("error", "Delete result needs checking" if uncertain else "File deletion failed"))
 	checking = false
-	if menu.visible: menu.refresh()
+	if menu.visible: menu.refresh_file_selection()
 	return true
 
 func draw_header() -> void:
@@ -328,11 +354,11 @@ func draw_footer() -> void:
 	var left := -0.49 if compact else -0.43
 	var label: Label3D = menu._label(menu.I18n.t("%d selected") % rows.size(), Vector3(left, y, 0.004), 16 if compact else 18)
 	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
-	var row := selected_row()
+	var row: Dictionary = rows[0] if rows.size() == 1 else {}
 	if rename.supported(row) and rows.size() == 1:
 		menu._button(Rename.OPEN, menu.I18n.t("Rename"), Vector2(0.09 if compact else 0.38, y), Vector2(0.23, 0.065), rename.can_rename(row), "edit")
 	if rows.all(func(item): return delete_supported(item)):
-		menu._button(DELETE_FILE, menu.I18n.t("Delete"), Vector2(0.37 if compact else 0.68, y), Vector2(0.24 if compact else 0.28, 0.065), can_delete_selection(), "trash")
+		menu._button(DELETE_FILE, menu.I18n.t("Delete"), Vector2(0.37 if compact else 0.68, y), Vector2(0.24 if compact else 0.28, 0.065), idle(), "trash")
 
 func pending_text() -> String:
 	if uncertain: return "Check status"

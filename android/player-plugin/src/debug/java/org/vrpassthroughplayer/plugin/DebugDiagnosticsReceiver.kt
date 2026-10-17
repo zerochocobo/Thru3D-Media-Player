@@ -39,6 +39,8 @@ class DebugDiagnosticsReceiver : BroadcastReceiver() {
                     } else if (intent.action == "com.wapok.thru3d.DEBUG_RVM_STANDALONE") {
                         RvmStandaloneProbe.request(context.applicationContext, intent.getStringExtra("mode") ?: "resident",
                             intent.getStringExtra("profile") ?: "256x144")
+                    } else if (intent.action == "com.wapok.thru3d.DEBUG_MUSIC_FORMATS") {
+                        BackgroundAudioProbe.request(context.applicationContext)
                     } else if (intent.action == "com.wapok.thru3d.DEBUG_SMB_CRYPTO") {
                         report.put("smb", SmbCryptoProbe.run())
                         1

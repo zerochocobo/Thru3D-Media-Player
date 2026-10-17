@@ -102,7 +102,7 @@ func _slider(parent: Node3D, row: Dictionary, centre: Vector2, width: float, hei
 	var nudge_width := 0.12 if row.has("nudge_step") else 0.0
 	var field_width := width - reset_width - nudge_width
 	var field_centre := centre - Vector2((width - field_width) * 0.5, 0)
-	var rail_width := field_width - 0.15
+	var rail_width := field_width - (0.03 if row.get("hide_value", false) else 0.15)
 	var target := _button({"kind": "slider", "key": row.key, "span": row.span}, "", field_centre, Vector2(field_width, height), parent)
 	if row.has("source_uri"): targets[target].source_uri = row.source_uri
 	if row.has("subtitle_key"): targets[target].subtitle_key = row.subtitle_key
@@ -124,6 +124,7 @@ func _slider(parent: Node3D, row: Dictionary, centre: Vector2, width: float, hei
 	var knob: MeshInstance3D = menu._quad(Vector2(0.022, 0.022), Vector3(left, y, 0.006), Color.WHITE, 17)
 	node.add_child(knob)
 	var label: Label3D = node.get_child(0)
+	label.visible = not row.get("hide_value", false)
 	label.position = Vector3(field_width / 2 - 0.005, 0, 0.006)
 	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	sliders[target] = {"span": row.span, "left": left, "width": rail_width, "fill": fill, "knob": knob,
@@ -231,6 +232,7 @@ func finish() -> void:
 	top = clampf(top, bounds.x + height, bounds.y)
 	var x := clampf(anchor.x, -0.39, 0.46)
 	var panel: MeshInstance3D = menu._quad(Vector2(width, height), Vector3(x, top-height/2, 0.028), menu.PANEL, 30)
+	menu._pointer_panels.append(panel)
 	menu.add_child(panel); menu._decorations.append(panel)
 	if not header.is_empty():
 		var heading: Label3D = menu._label(menu.I18n.t(header), Vector3(x, top - 0.032, 0.039), 20)

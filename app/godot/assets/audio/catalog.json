@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "scope": "Metadata only; built-in sound recordings are not distributed in this public source repository. Supply licensed version-matched files separately, or use offline audio imports.",
+  "assets": [
+    {
+      "path": "yunhai.ogg",
+      "bytes": 2063491,
+      "sha256": "fae262a96e6b5a9c35db1bc24aff338299fd03b3362f7c3381c3ba125e598287"
+    },
+    {
+      "path": "xingmian.ogg",
+      "bytes": 3073999,
+      "sha256": "c534194db7324996ea9576a3bebe099d2ca5e604634296d8e4b35e1e855f889f"
+    },
+    {
+      "path": "chenguang.ogg",
+      "bytes": 2285854,
+      "sha256": "64496cc94d913bf04947316e1a6d1b1086879c2e4ec39acd8d57923eb64738d8"
+    },
+    {
+      "path": "weifeng.ogg",
+      "bytes": 3557281,
+      "sha256": "b60e20417e5a88003be8e164e0e3465fc9d9febcc8ad0c0f6eb03f6c29cf3f28"
+    },
+    {
+      "path": "shiguang.ogg",
+      "bytes": 2135963,
+      "sha256": "142c24ba3cdd448bae19d4eed044bf72891a5e7a9edb004dbc13918cdfd9ff59"
+    },
+    {
+      "path": "manyou.ogg",
+      "bytes": 3468281,
+      "sha256": "b1d74e9e3ded55a6c099cd1c1b532907412223d24fc3b16a83c4019a313ef8a4"
+    },
+    {
+      "path": "mountain_stream.ogg",
+      "bytes": 4229406,
+      "sha256": "2fa2ed952399b0c4753b6eb29b2b36f3c3c30a95507f9771d780d38231db2fe4"
+    },
+    {
+      "path": "ocean_waves.ogg",
+      "bytes": 15682535,
+      "sha256": "1adc7042bba18c32d280815b55ca701f3eff83263827c407d998beefc92b0171"
+    },
+    {
+      "path": "forest_wind.ogg",
+      "bytes": 6688421,
+      "sha256": "dd60b4180de4892caa51ed8289dad2723cd387265f274422244e84ae77fbfce8"
+    },
+    {
+      "path": "gentle_rain.ogg",
+      "bytes": 7646985,
+      "sha256": "566b9a40b980ae620dad75d3e2982f5a23b73f716e72c0cc65cf944537fc3e81"
+    },
+    {
+      "path": "summer_night.ogg",
+      "bytes": 4695892,
+      "sha256": "8a335d071155ec9711068e8cbf17782761b3b1c59673a1fd462196f932673833"
+    },
+    {
+      "path": "distant_city.ogg",
+      "bytes": 8244320,
+      "sha256": "bcba320f3a1549a4a5ba10db463479c7866a38177cd8afb4553efed159c40f15"
+    }
+  ]
+}

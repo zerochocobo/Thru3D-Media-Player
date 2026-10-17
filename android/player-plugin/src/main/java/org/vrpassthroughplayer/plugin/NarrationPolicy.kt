@@ -7,7 +7,7 @@ import java.util.Locale
 
 /** Pure subtitle/selection rules. Text and cue identities stay in memory. */
 internal object NarrationPolicy {
-    // Emergency patch: keep runtime entry points disabled as well as the player UI.
+    // Withheld in Debug and Release; resuming requires explicit user authorization.
     const val FEATURE_ENABLED = false
     val voices = mapOf("zh" to listOf("Yuewen", "Junhao"), "en" to listOf("Ava", "Adam"))
     data class Config(val enabled: Boolean = false, val source: Int = -1, val language: String = "auto",
@@ -32,6 +32,22 @@ internal object NarrationPolicy {
     }
     data class Cue(val start: Double, val end: Double, val text: String, val windowStart: Double = start, val windowEnd: Double = end) {
         val key get() = "$start:$end:$text"
+    }
+    data class PlaybackClock(val position: Double,val observedNs: Long,val kind: String)
+    fun playbackClock(observation: JSONObject): PlaybackClock {
+        val video=observation.optString("position_seconds").toDoubleOrNull()?.takeIf {it.isFinite()&&it>=0} ?: 0.0
+        val videoClock=PlaybackClock(video,observation.optLong("observed_monotonic_ns"),"video")
+        // time-pos changes once per video frame. Audio PTS includes driver delay
+        // and gives the presentation clock between frames. The player's audio
+        // delay follows frames held for masks: keep that delay in presentation,
+        // using it only to reject an old audio timestamp after a seek.
+        val audio=observation.optDouble("audio_pts_us",Double.NaN)/1e6
+        val pipelineDelay=observation.optDouble("audio_delay_seconds",0.0)
+        val audioNs=observation.optLong("audio_observed_monotonic_ns")
+        val stopped=observation.optString("paused")=="yes"||observation.optString("paused_for_cache")=="yes"
+        val noTrack=observation.optString("audio_track_id") in setOf("","no","0")
+        return if(!stopped&&!noTrack&&observation.optBoolean("audio_clock_available")&&audioNs>0&&audio.isFinite()&&pipelineDelay.isFinite()&&kotlin.math.abs(audio+pipelineDelay-video)<=.5)
+            PlaybackClock(audio,audioNs,"audio") else videoClock
     }
     fun language(tag: String): String = when (tag.replace('_', '-').lowercase(Locale.ROOT).substringBefore('-')) {
         "zh", "zho", "chi", "cmn", "chs", "cht" -> "zh"
@@ -114,6 +130,17 @@ internal object NarrationPolicy {
                 (if(raw.endsWith('%')&&lang=="zh")"百分之" else "") + integer + decimal + if(raw.endsWith('%')&&lang!="zh")" percent" else ""
         }
     }
+    // The user preference remains .8..1.3. A long sentence may need a little
+    // more acceleration to finish before the next subtitle, with pitch intact.
+    const val MAX_ADAPTIVE_RATE = 1.4
+    private fun availableSpeechTime(windowSeconds: Double, latenessSeconds: Double) =
+        (windowSeconds-latenessSeconds.coerceAtLeast(0.0)-.25).coerceAtLeast(.1)
+    fun playbackRate(audioSeconds: Double, windowSeconds: Double, latenessSeconds: Double, preferredRate: Double): Double =
+        maxOf(preferredRate,audioSeconds/availableSpeechTime(windowSeconds,latenessSeconds)).coerceAtMost(MAX_ADAPTIVE_RATE)
+    fun frameBudget(windowSeconds: Double): Int =
+        (availableSpeechTime(windowSeconds,0.0)*MAX_ADAPTIVE_RATE/.08).toInt().coerceIn(8,250)
+    fun hasPreparationLead(start: Double,end: Double,position: Double,advancing: Boolean=true): Boolean =
+        !advancing || start-position>=minOf(5.0,(end-start)*.75)
     fun duck(position: Double, windows: List<Cue>, amount: Double, ready: Boolean): Double {
         if (!ready) return 1.0
         var start = -1.0; var end = -1.0

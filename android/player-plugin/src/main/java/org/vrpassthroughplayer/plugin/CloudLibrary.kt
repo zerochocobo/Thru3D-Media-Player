@@ -140,7 +140,7 @@ internal object CloudLibrary {
     }
     private fun revoke(id: String, disconnectDav: Boolean = true) {
         synchronized(sortedPages) { sortedPages.remove(id) }
-        playbackCompanions.remove(id)
+        playbackCompanions.remove(id)?.cancellation?.cancel()
         if (disconnectDav) playbackPages.remove(id)
         if (disconnectDav) metadata.remove(id)
         activeStreams.remove(id)?.forEach { (server, url) -> server.revoke(url) }
@@ -286,12 +286,29 @@ internal object CloudLibrary {
             }
         }
     }
+    /** Independent download lease: browsing photos or starting another video must not revoke it. */
+    fun audioDownload(uri: String, server: LocalStreamServer): String = safe {
+        val (id, remote) = split(CloudPaths.path(uri))
+        val account = credentials(id)
+        val companions = playbackPages.forVideo(id, identity(account), remote)
+        val client = drive(account, folderId = companions.folderId)
+        val file = client.findForPlayback(remote, companions.files.singleOrNull { it.id == remote && !it.folder })
+        val source = source(account, client, file)
+        try {
+            source.prepare()
+            synchronized(this) {
+                if (identity(credentials(id)) != identity(account)) throw CloudFailure("cloud_login_required")
+                server.publish(source, file.name)
+            }
+        } catch (error: Exception) { source.close(); throw error }
+    }
+
     fun playable(uri: String, server: LocalStreamServer): String = safe {
         val (id, remote) = split(CloudPaths.path(uri))
         val account = credentials(id)
         val companions = playbackPages.forVideo(id, identity(account), remote)
         val client = drive(account, folderId = companions.folderId)
-        val file = client.find(remote)
+        val file = client.findForPlayback(remote, companions.files.singleOrNull { it.id == remote && !it.folder })
         val source = source(account, client, file)
         source.prepare()
         synchronized(this) {
@@ -307,15 +324,15 @@ internal object CloudLibrary {
         val (id, remote) = split(CloudPaths.path(uri))
         val account = credentials(id)
         val selected = companionSelection(id, account, remote) ?: return@safe emptyList()
-        val client = drive(account, folderId = selected.page.folderId)
-        SidecarSubtitles.forCloud(remote, selected.automatic(client)) { publishCompanion(account, client, it, server) }
+        val client = drive(account, selected.cancellation, selected.page.folderId)
+        SidecarSubtitles.forCloud(remote, selected.automatic(client)) { publishCompanion(account, client, it, server, selected) }
     }
     fun sidecarAudio(uri: String, server: LocalStreamServer): List<SidecarAudio.Track> = safe {
         val (id, remote) = split(CloudPaths.path(uri))
         val account = credentials(id)
         val selected = companionSelection(id, account, remote) ?: return@safe emptyList()
-        val client = drive(account, folderId = selected.page.folderId)
-        SidecarAudio.forCloud(remote, selected.automatic(client)) { publishCompanion(account, client, it, server) }
+        val client = drive(account, selected.cancellation, selected.page.folderId)
+        SidecarAudio.forCloud(remote, selected.automatic(client)) { publishCompanion(account, client, it, server, selected) }
     }
     fun subtitleFiles(uri: String): List<String> = safe {
         val (id, remote) = split(CloudPaths.path(uri))
@@ -328,11 +345,11 @@ internal object CloudLibrary {
         val selected = companionSelection(id, account, remote) ?: throw CloudFailure("cloud_file_missing")
         val client = drive(account, folderId = selected.page.folderId)
         val file = selected.subtitle(name)
-        SidecarSubtitles.Track(publishCompanion(account, client, file, server), name)
+        SidecarSubtitles.Track(publishCompanion(account, client, file, server, selected), name)
     }
     @Synchronized private fun companionSelection(id: String, account: JSONObject, remote: String): CloudPlaybackPages.Playback? =
         playbackCompanions[id]?.takeIf { it.path == remote && it.identity == identity(account) }
-    private fun publishCompanion(account: JSONObject, client: CloudClient, file: CloudFile, server: LocalStreamServer): String {
+    private fun publishCompanion(account: JSONObject, client: CloudClient, file: CloudFile, server: LocalStreamServer, selected: CloudPlaybackPages.Playback): String {
         val id = account.getString("id")
         val source = source(account, client, file)
         return try {
@@ -340,6 +357,7 @@ internal object CloudLibrary {
             synchronized(this) {
                 if (identity(credentials(id)) != identity(account)) throw CloudFailure("cloud_login_required")
                 // Add to the current video's leases; playable() would revoke the video stream.
+                if (playbackCompanions[id] !== selected || selected.cancellation.cancelled) throw CloudFailure()
                 val url = server.publish(source, file.name)
                 activeStreams.getOrPut(id) { ArrayList() }.add(server to url)
                 url

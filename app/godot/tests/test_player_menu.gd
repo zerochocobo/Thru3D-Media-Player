@@ -334,7 +334,7 @@ func _run() -> void:
 	video.control.duration_ms = 60000
 	menu.refresh_values()
 	check(not menu.text_snapshot().contains("Press trigger") and not menu.text_snapshot().contains("controller"), "Product controls omit implementation and interaction instruction text")
-	check(click(menu, 11) and menu.section == 1 and menu._adjustment.is_empty() and click(menu, Menu.PLAYBACK_SETTINGS) and choose_setting(menu, "loop", true) and video.loop_enabled and menu.visible and menu.text_snapshot().contains("On"), "Loop radio selection applies without closing menu")
+	check(click(menu, 11) and menu.section == 1 and menu._adjustment.is_empty() and click(menu, Menu.PLAYBACK_SETTINGS) and choose_setting(menu, "playback_mode", "repeat_one") and video.loop_enabled and menu.visible and menu.text_snapshot().contains("Repeat video"), "Playback mode selection applies without closing menu")
 	check(click(menu, Menu.SETTINGS_CLOSE) and menu.section == 0 and menu.visible, "Close folds the settings popup back to the bar")
 	check(click(menu, 11) and menu.section == 1 and menu.visible and click(menu, Menu.PLAYBACK_SETTINGS), "Settings tab selected by ray")
 	check(not menu.text_snapshot().contains("Test video") and not Menu.OPERATIONS[1].has("calibration"), "Settings no longer offers test videos")

@@ -163,6 +163,7 @@ func start(dataDir, keyHex string) (err error) {
 	chain := []gin.HandlerFunc{middlewares.PathParse, middlewares.Down(func(string, string) error { return nil }), handles.Proxy}
 	streams.GET("/"+capability+"/*path", chain...)
 	streams.HEAD("/"+capability+"/*path", chain...)
+	playback115Routes(streams, capability)
 	server := &http.Server{Handler: streams, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 30 * time.Second}
 	streamBase = "http://" + listener.Addr().String() + "/" + capability
 	go server.Serve(listener)

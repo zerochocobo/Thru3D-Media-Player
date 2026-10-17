@@ -112,6 +112,10 @@ The Windows application export now also requires Visual Studio 2022 Build Tools 
 
 The two checksum-pinned upstream source archives under `third_party/usb` are required by `native/usb/CMakeLists.txt`; their licenses and source lock accompany them. They contain source, not a prebuilt filesystem library. CMake verifies the exact archive hashes and configures the player adapters for read-only access. On Linux, `bash tools/Test-UsbStorageHost.sh` builds synthetic filesystem fixtures and verifies unchanged image hashes; it requires the host C/C++ toolchain, CMake and fixture utilities and does not access a physical drive.
 
-## Linked narration runtime (feature disabled)
+## Narration exclusion
 
-The current plugin/native build also compiles the narration support library, while the UI and Android feature gates remain off. `Build-Player.ps1` invokes `tools/environment/Prepare-Narration.ps1` to download checksum-pinned ONNX Runtime, SentencePiece and matching FFmpeg headers into disposable `tmp/narration-deps`. Recipes and notices are in `third_party/narration`; no compiled library, model weight, preset code or reference recording is bundled. These dependencies are required to build this snapshot and do not make narration an enabled 0.11.1 feature.
+Subtitle narration is withheld in every platform, build type and diagnostic variant. The build no longer prepares or links narration/ONNX Runtime dependencies; Android asset staging excludes narration resources and JNI packaging rejects stale narration libraries. `tools/Assert-NarrationExcluded.ps1` checks the disabled UI/Android gates before building and rejects forbidden runtime/model/preset entries in the AAR and APK. Do not bypass it or restore narration without explicit project authorization. Retained development source is not an enabled build target.
+
+## Built-in audio assets
+
+This source snapshot keeps the music player and offline import implementation, but excludes the twelve built-in recordings, original downloads and private provenance records. [Audio resource instructions](AUDIO.md) describe the metadata-only catalog and optional version-matched import. These recordings are separate from the project's source license. Source verification that exercises packaged-track decoding needs caller-supplied audio assets.

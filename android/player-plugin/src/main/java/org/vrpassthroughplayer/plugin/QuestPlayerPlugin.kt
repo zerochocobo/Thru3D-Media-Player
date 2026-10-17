@@ -88,6 +88,19 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     }, { name, id, json -> if (!closed.get()) emitSignal(name, id, json) }, sources::playable, sources::sidecarAudio,
         sources::releaseMediaStream, sources::sidecarSubtitles, sources::streamProgress, sources::streamFailure,
         sources::subtitleFiles, sources::openSubtitleFile, sources::subtitleIdentity)
+    private val backgroundAudio = BackgroundAudioImport({ activity?.applicationContext }, sources::audioDownload, sources::releasePhotoStream) { id, json ->
+        if (!closed.get()) emitSignal("background_audio_imported", id, json)
+    }
+    @UsedByGodot fun import_background_audio(uri: String, title: String): Int = if (closed.get()) -1 else backgroundAudio.start(uri, title)
+    @UsedByGodot fun cancel_background_audio_import(id: Int) = backgroundAudio.cancel(id)
+    @UsedByGodot fun background_audio_import_progress(id: Int): Double = backgroundAudio.progress(id)
+    @UsedByGodot fun remove_background_audio(path: String): Boolean = backgroundAudio.remove(path)
+    private val musicPlayback = BackgroundAudioPlayback { activity?.applicationContext }
+    @UsedByGodot fun load_background_audio(path: String, position: Double): Int = if (closed.get()) 0 else musicPlayback.load(path, position)
+    @UsedByGodot fun control_background_audio(id: Int, playing: Boolean, volume: Double, position: Double): Boolean = musicPlayback.control(id, playing, volume, position)
+    @UsedByGodot fun background_audio_status(): String = musicPlayback.status()
+    @UsedByGodot fun stop_background_audio() = musicPlayback.stop()
+
     private val photos = PhotoBridge({ activity?.applicationContext }, sources::playable, sources::releasePhotoStream) { name, id, json ->
         if (!closed.get()) emitSignal(name, id, json)
     }
@@ -170,6 +183,7 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
         SignalInfo("android_lifecycle", String::class.java),
         SignalInfo("rvm_warmup", String::class.java),
         SignalInfo("photo_ready", Int::class.javaObjectType, String::class.java),
+        SignalInfo("background_audio_imported", Int::class.javaObjectType, String::class.java),
         SignalInfo("photo_portrait", Int::class.javaObjectType, String::class.java),
         SignalInfo("photo_preview_ready", Int::class.javaObjectType, String::class.java),
         SignalInfo("photo_depth", Int::class.javaObjectType, String::class.java),
@@ -400,7 +414,7 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     @UsedByGodot fun set_mpv_audio(id: Int, trackId: Int, volume: Double, muted: Boolean): Boolean =
         !closed.get() && mpv.setAudio(id, trackId, volume, muted)
     @UsedByGodot fun set_mpv_narration(id: Int, options: String): Boolean = !closed.get() && mpv.setNarration(id, options)
-    @UsedByGodot fun narration_supported(): Boolean = !closed.get() && NarrationPolicy.FEATURE_ENABLED && NarrationNative.supported()
+    @UsedByGodot fun narration_supported(): Boolean = !closed.get() && BuildConfig.DEBUG && NarrationPolicy.FEATURE_ENABLED && NarrationNative.supported()
     @UsedByGodot fun set_mpv_speed(id: Int, speed: Double): Boolean = !closed.get() && mpv.setSpeed(id, speed)
     @UsedByGodot fun set_mpv_subtitle(id: Int, trackId: Int): Boolean = !closed.get() && mpv.setSubtitle(id, trackId)
     @UsedByGodot fun list_mpv_subtitle_files(id: Int, request: Int): Boolean = !closed.get() && mpv.listSubtitleFiles(id, request)
@@ -549,12 +563,12 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
 
     // Android can resume before Godot registers the plugin's native signals.
     override fun onGodotSetupCompleted() { signalsReady = true; clear_photo_cache() }
-    override fun onMainPause() { if (!closed.get()) { accounts.pause(true); media.pause(); controlled.pause(); mpv.pause(); if (signalsReady) emitSignal("android_lifecycle", "pause") } }
-    override fun onMainResume() { if (!closed.get()) { accounts.pause(false); media.resume(); controlled.resume(); mpv.resume(); if (signalsReady) { sources.refreshLocalStorage(); emitSignal("android_lifecycle", "resume") } } }
+    override fun onMainPause() { if (!closed.get()) { musicPlayback.foreground(false); accounts.pause(true); media.pause(); controlled.pause(); mpv.pause(); if (signalsReady) emitSignal("android_lifecycle", "pause") } }
+    override fun onMainResume() { if (!closed.get()) { musicPlayback.foreground(true); accounts.pause(false); media.resume(); controlled.resume(); mpv.resume(); if (signalsReady) { sources.refreshLocalStorage(); emitSignal("android_lifecycle", "resume") } } }
     override fun onMainDestroy() { close() }
     override fun onGodotTerminating() { close() }
 
     private fun close() {
-        if (closed.compareAndSet(false, true)) { favoritesTasks.close(); accounts.close(); photos.close(); photoPreloads.close(); photoPreviews.close(); PhotoDepthRuntime.release(); picker.close(); localAccess.close(); probe.shutdownNow(); media.shutdown(); controlled.shutdown(); mpv.shutdown(); rvm.close(); sources.close() }
+        if (closed.compareAndSet(false, true)) { favoritesTasks.close(); accounts.close(); musicPlayback.close(); backgroundAudio.close(); photos.close(); photoPreloads.close(); photoPreviews.close(); PhotoDepthRuntime.release(); picker.close(); localAccess.close(); probe.shutdownNow(); media.shutdown(); controlled.shutdown(); mpv.shutdown(); rvm.close(); sources.close() }
     }
 }

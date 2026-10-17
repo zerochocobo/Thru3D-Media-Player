@@ -2,6 +2,16 @@ extends RefCounted
 
 # Original vector glyphs, generated once and shared by both ray menus.
 const PATHS := {
+	"ambience": '<path d="M10 16C8 9 14 4 21 3C21 10 19 17 12 17M9 21L17 9M2 6H6M1 10H5M2 14H5"/>',
+	"water": '<path d="M2 6Q5 2 8 6T14 6T20 6M2 12Q5 8 8 12T14 12T20 12M2 18Q5 14 8 18T14 18T20 18"/>',
+	"rain": '<path d="M5 13A4 4 0 0 1 5 5A6 6 0 0 1 17 5A4 4 0 0 1 19 13H5M7 16L5 20M13 16L11 20M19 16L17 20"/>',
+	"night": '<path d="M14 3A9 9 0 1 0 21 16A9 9 0 0 1 14 3ZM19 3V7M17 5H21"/>',
+	"city": '<path d="M2 21H22M4 21V9H10V21M10 21V3H19V21M6 12H7M6 16H7M13 7H15M13 11H15M13 15H15"/>',
+	"sequence": '<path d="M4 5H19M4 11H19M4 17H12M16 14L21 18 16 22M13 18H21"/>',
+	"repeat_all": '<path d="M3 10V6H21M17 2L21 6 17 10M21 14V18H3M7 14L3 18 7 22"/>',
+	"repeat_one": '<path d="M3 10V6H21M17 2L21 6 17 10M21 14V18H3M7 14L3 18 7 22M10 10L12 8V15M10 15H14"/>',
+	"shuffle": '<path d="M3 6H6C11 6 13 18 18 18H21M18 15L21 18 18 21M3 18H6C8 18 9 16 10 14M14 10C15 7 16 6 18 6H21M18 3L21 6 18 9"/>',
+	"music": '<path d="M9 17V5L20 3V15M9 8L20 6"/><ellipse cx="6" cy="17" rx="3" ry="2.5"/><ellipse cx="17" cy="15" rx="3" ry="2.5"/>',
 	"star": '<path d="M12 2L15 8.5 22 9.5 17 14.5 18 22 12 18.5 6 22 7 14.5 2 9.5 9 8.5Z"/>',
 	"star_filled": '<path d="M12 2L15 8.5 22 9.5 17 14.5 18 22 12 18.5 6 22 7 14.5 2 9.5 9 8.5Z" fill="white"/>',
 	"menu": '<path d="M4 6H20M4 12H20M4 18H20"/>',

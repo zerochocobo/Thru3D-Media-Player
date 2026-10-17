@@ -42,6 +42,8 @@ internal object MpvSourceNative {
     @JvmStatic external fun setSubtitle(handle: Long, trackId: Int): Long
     /** Optional unselected subtitle, queued on MPV's control thread. Failure never stops video. */
     @JvmStatic external fun addSubtitleFile(handle: Long, location: String, title: String): Long
+    /** Deferred unselected cloud companions; queued once after the first video frame. */
+    @JvmStatic external fun addCompanions(handle: Long, audioFiles: Array<String>, subtitleFiles: Array<String>): Boolean
     @JvmStatic external fun subtitleFileStatus(handle: Long, request: Long): String
     /** Positive seconds delay captions; shares the subtitle command fence. */
     @JvmStatic external fun setSubtitleDelay(handle: Long, seconds: Double): Long
@@ -62,6 +64,8 @@ internal object MpvSourceNative {
     @JvmStatic external fun readFrameCode(handle: Long, producerToken: Long, output: ByteBuffer)
     /** position_seconds is a playback clock observation, never a source-frame PTS. */
     @JvmStatic external fun status(handle: Long): String
+    /** Cached playback metadata and transport fences; never locks renderer slots. */
+    @JvmStatic external fun narrationStatus(handle: Long): String
     /** Begin teardown but retain status/handle until close, so cleanup can be checked. */
     @JvmStatic external fun requestClose(handle: Long)
     /** Asynchronous. Repeat until true. abandon is only for a dead owner context. */

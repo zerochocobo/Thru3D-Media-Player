@@ -15,22 +15,25 @@ func _run() -> void:
 	viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS; root.add_child(viewport)
 	var camera := Camera3D.new(); camera.fov = 70; viewport.add_child(camera)
 	var platform := preload("res://tests/test_library_file_actions.gd").Platform.new()
-	var menu := Menu.new(); camera.add_child(menu); menu.attach_platform(platform)
+	var menu := Menu.new(); camera.add_child(menu); menu.attach_platform(platform); menu.set_process(false)
 	var normal_only := OS.get_environment("FILE_MANAGEMENT_NORMAL_ONLY") == "1"
 	for language in ["en", "zh", "zh_Hant", "ja"]:
 		menu.I18n.use(language)
-		for view in ["off", "list", "single", "multi", "compact_off", "compact", "compact_selected", "compact_confirm", "rename", "rename_preview", "folder_rename", "settings", "settings_hint"]:
+		for view in ["off", "list", "single", "multi", "grid_edit", "grid_multi", "compact_off", "compact", "compact_selected", "compact_confirm", "rename", "rename_preview", "folder_rename", "settings", "settings_hint"]:
 			if normal_only and view not in ["off", "compact_off"]: continue
 			menu.file_actions.reset(); menu.file_actions.set_enabled(view not in ["off", "compact_off"])
-			menu.compact = view.begins_with("compact"); menu.section = Menu.Section.LOCAL; menu.view_mode = "list"
+			menu.compact = view.begins_with("compact"); menu.section = Menu.Section.LOCAL; menu.view_mode = "grid" if view.begins_with("grid_") else "list"
 			menu._local_all_files = true; menu._cloud_stack.clear(); menu._cloud_busy = false
 			menu._local_stack = [{"id":"/disk", "title":"Movies"}]
 			menu._local_entries = []
-			for i in 8:
+			for i in (1500 if view.begins_with("grid_") else 8):
 				menu._local_entries.append({"title":"旅行 %02d - A long video title.mp4" % i, "uri":"file:///disk/%02d.mp4" % i,
 					"size":104857600, "modified":100, "kind":"video", "can_delete":i != 7, "can_rename":i != 7})
 			menu.current_file_provider = func(): return "file:///disk/00.mp4"
 			menu.visible = true; menu.scroll = 0; menu.refresh()
+			if view.begins_with("grid_"):
+				menu._activate(Actions.EDIT_MODE); menu._set_scroll(250)
+				if view == "grid_multi": menu.file_actions.toggle(menu.rows[1000]); menu.file_actions.toggle(menu.rows[1001])
 			if view in ["single", "multi", "compact_selected", "compact_confirm"]:
 				menu.file_actions.toggle(menu.rows[0])
 				if view == "multi": menu.file_actions.toggle(menu.rows[1])
@@ -61,6 +64,9 @@ func _run() -> void:
 					if body.node.visible and menu._row_target(body.target): check(not item.rect.intersects(body.rect), label + " checkbox does not overlap a row")
 			if view in ["off", "compact_off"]: check(boxes == 0, label + " normal view has no management controls")
 			if view in ["list", "compact"]: check(boxes > 0, label + " opt-in has visible checkboxes")
+			if view.begins_with("grid_"):
+				check(menu.file_actions.editing and menu.scroll == 250, label + " large grid stays at its editing position")
+				check(menu.file_actions.selected_rows().size() == (2 if view == "grid_multi" else 0), label + " grid selection matches checkmarks")
 			if view == "compact_selected": check(menu._lines() == 4, label + " footer reserves its own space")
 			if view == "compact_confirm": check(menu.text_snapshot().contains(menu.I18n.t("Playback will stop before deletion")), label + " current playback deletion is explicit")
 			if view == "settings_hint":

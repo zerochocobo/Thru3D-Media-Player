@@ -56,4 +56,63 @@ class NarrationPolicyTest {
         assertEquals(1.0,NarrationPolicy.duck(5.0,cues,.75,true),0.0)
         assertEquals(1.0,NarrationPolicy.duck(2.0,cues,.75,false),0.0)
     }
+    @Test fun adjacentSubtitleSpeechReservesPresentationTimeAndNeverExceedsSpeedLimit() {
+        // The actual 8K failure: 6.72 seconds of PCM in a six-second cue.
+        val fit=NarrationPolicy.playbackRate(6.72,6.0,.02,1.0)
+        assertTrue(.02+6.72/fit+.20<6.0)
+        assertEquals(1.0,NarrationPolicy.playbackRate(4.0,6.0,0.0,1.0),0.0)
+        assertTrue(NarrationPolicy.playbackRate(6.72,6.0,.20,1.0)>fit)
+        assertEquals(1.4,NarrationPolicy.playbackRate(20.0,.1,.4,1.0),0.0)
+    }
+    @Test fun generationCannotSpendTwentySecondsOfPcmOnASixSecondSubtitle() {
+        assertEquals(100,NarrationPolicy.frameBudget(6.0))
+        assertEquals(250,NarrationPolicy.frameBudget(60.0))
+        // Every admitted complete generation must fit, including the observed
+        // 98-frame long sentence that overran a six-second window at 1.3x.
+        for(frames in 8..NarrationPolicy.frameBudget(6.0))for(preference in listOf(.8,1.0,1.3)) {
+            val seconds=frames*.08
+            val tempo=NarrationPolicy.playbackRate(seconds,6.0,0.0,preference)
+            assertTrue(seconds/tempo<=5.75+.000001)
+        }
+    }
+    @Test fun slowerPreferenceDoesNotPushSpeechPastTheSubtitleDeadline() {
+        assertEquals(.8,NarrationPolicy.playbackRate(3.0,6.0,0.0,.8),0.0)
+        val tempo=NarrationPolicy.playbackRate(5.0,6.0,0.0,.8)
+        assertTrue(tempo>.8)
+        assertEquals(5.75,5.0/tempo,.000001)
+    }
+    @Test fun coldSeekSkipsAnImminentCueAndBootstrapsFromTheNextOne() {
+        assertFalse(NarrationPolicy.hasPreparationLead(102.0,108.0,100.0))
+        assertTrue(NarrationPolicy.hasPreparationLead(108.0,114.0,100.0))
+        assertTrue(NarrationPolicy.hasPreparationLead(12.0,18.0,4.0))
+        assertTrue(NarrationPolicy.hasPreparationLead(12.0,13.0,10.0))
+    }
+    @Test fun pausedVideoCanPrepareAnImminentCueBeforeResuming() {
+        assertFalse(NarrationPolicy.hasPreparationLead(12.0,20.0,11.9,true))
+        assertTrue(NarrationPolicy.hasPreparationLead(12.0,20.0,11.9,false))
+        assertTrue(NarrationPolicy.hasPreparationLead(12.0,20.0,12.0,false))
+    }
+    @Test fun audioPresentationClockKeepsTheMaskPipelineDelayAndItsOwnAnchor() {
+        val observation=org.json.JSONObject("{\"position_seconds\":\"12.000\",\"observed_monotonic_ns\":1000,\"audio_pts_us\":11780000,\"audio_delay_seconds\":\"0.2\",\"audio_clock_available\":true,\"audio_observed_monotonic_ns\":900,\"audio_track_id\":\"1\",\"paused\":\"no\"}")
+        val clock=NarrationPolicy.playbackClock(observation)
+        assertEquals("audio",clock.kind);assertEquals(11.78,clock.position,.000001);assertEquals(900L,clock.observedNs)
+        observation.put("paused","yes")
+        assertEquals("video",NarrationPolicy.playbackClock(observation).kind)
+    }
+    @Test fun negativeAudioPrerollDoesNotBecomePositivePlaybackTime() {
+        val observation=org.json.JSONObject("{\"position_seconds\":\"0.1\",\"observed_monotonic_ns\":1000,\"audio_pts_us\":-100000,\"audio_delay_seconds\":\"0.2\",\"audio_clock_available\":true,\"audio_observed_monotonic_ns\":900,\"audio_track_id\":\"1\"}")
+        val clock=NarrationPolicy.playbackClock(observation)
+        assertEquals("audio",clock.kind);assertEquals(-.1,clock.position,.000001)
+        assertTrue(NarrationPolicy.hasPreparationLead(0.0,5.0,clock.position,clock.position>=0))
+    }
+    @Test fun disabledOrStaleAudioCannotReplaceTheVideoClock() {
+        val observation=org.json.JSONObject("{\"position_seconds\":\"12.000\",\"observed_monotonic_ns\":1000,\"audio_pts_us\":1000000,\"audio_clock_available\":true,\"audio_observed_monotonic_ns\":900,\"audio_track_id\":\"1\"}")
+        assertEquals("video",NarrationPolicy.playbackClock(observation).kind) // Old audio after a seek.
+        observation.put("audio_pts_us",11980000).put("audio_track_id","")
+        assertEquals("video",NarrationPolicy.playbackClock(observation).kind)
+        observation.put("audio_track_id","1").put("audio_pts_us",-100000)
+        assertEquals("video",NarrationPolicy.playbackClock(observation).kind)
+        observation.put("audio_pts_us",11980000).put("paused_for_cache","yes")
+        assertEquals("video",NarrationPolicy.playbackClock(observation).kind)
+    }
 }

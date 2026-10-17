@@ -147,6 +147,34 @@ func _run() -> void:
 	check(reopen.opens.size() == 1, "The reopened session is not reopened again")
 	check(reopen.opens[0].position == 60000, "Fallback before the first frame retains the requested resume position")
 	reopen.free()
+	# MPV can reject a decoded MV-HEVC pair and report failed between two Godot frames.
+	# The bridge queues state + error together; waiting for _update_layer loses the retry.
+	for native_state in ["failed", "ready"]:
+		var spatial := Reopen.new()
+		origin.add_child(spatial); spatial.set_process(false)
+		spatial.platform = Host.new(); spatial.video_layer = Layers.new(null)
+		spatial.local_uri = "file:///iPhone16Pro_SVD_0041.mov"
+		spatial.media.begin(11); spatial._layer_requested = true
+		spatial.requested_play = false
+		var errors: Array = []
+		spatial.playback_failed.connect(func(): errors.append(true))
+		spatial._on_state(11, JSON.stringify({"state": native_state, "layer_active": true,
+			"layer_compatible": false, "layer_software_fallback": true, "source_start_ms": 4200,
+			"details": {"position_seconds": "0", "duration_seconds": "5"}}))
+		spatial._on_error(11, JSON.stringify({"session_id": 11, "code": "MPV_FRAME_PIPELINE_FAILED", "mpv_code": -16}))
+		check(spatial.opens.size() == 1 and spatial.opens[0].eye_buffer and spatial.opens[0].position == 4200,
+			"Same-tick %s/error retries decoded spatial frames on RGBA at the requested position" % native_state)
+		check(spatial.media.error.is_empty() and errors.is_empty() and not spatial.requested_play,
+			"The retired Surface error cannot fail the replacement or change pause intent")
+		spatial._update_layer()
+		spatial._on_state(11, JSON.stringify({"state": "failed", "layer_active": true, "layer_compatible": false}))
+		check(spatial.opens.size() == 1, "A late old-session report cannot retry the replacement")
+		var replacement := spatial.media.session_id
+		spatial._on_state(replacement, JSON.stringify({"state": "failed", "layer_active": false, "layer_compatible": true}))
+		spatial._on_error(replacement, JSON.stringify({"session_id": replacement, "code": "MPV_FRAME_PIPELINE_FAILED", "mpv_code": -16}))
+		check(spatial.opens.size() == 1 and not spatial.media.error.is_empty() and errors.size() == 1,
+			"An actual RGBA playback failure is surfaced without an unbounded retry")
+		spatial.free()
 	var network := Reopen.new()
 	origin.add_child(network); network.set_process(false)
 	network.platform = Host.new(); network.video_layer = Layers.new(null)

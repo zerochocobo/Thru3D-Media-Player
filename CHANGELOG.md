@@ -4,6 +4,23 @@
 
 Newest first, following product release milestones. Some development/source snapshots contained features before their product release. Original APK identifiers `0.2` and `0.4` are retained; `0.4` was also called `0.4.0` in release notes. Availability depends on device, server and media capabilities.
 
+## 0.11.2 — 2026-10-18
+
+This update adds a global music player, offline audio imports and video playback modes, alongside improvements to 115 startup, large libraries and controller pointers.
+
+- **Global music player**: Use the same player from the home screen and photo viewer, with playback, track, seek and volume controls. Audio continues while changing photos or returning home and pauses when video playback begins.
+- **Built-in music and ambience**: Choose from six calm, joyful and focus music tracks, plus six ambient recordings: stream, ocean, forest breeze, rain, summer night and distant city.
+- **Custom playlists and playback queues**: Create, rename and organize playlists, with sequential, repeat-all, repeat-one and shuffle modes. The compact player shows the current track and its playlist source.
+- **Offline audio imports**: Batch-import from supported local, USB, SMB, cloud and WebDAV sources. Completed imports play from a local copy without keeping the original source online. Removing an app copy leaves the original file untouched.
+- **More audio formats**: Play MP3, OGG, WAV, FLAC and DTS audio, with multichannel tracks downmixed to stereo on the headset.
+- **Four video playback modes**: Choose single-video playback, repeat-one, sequential playback or repeat-all, with a remembered preference. Supported cloud and media-server sources can continue across pages.
+- **Less waiting when opening 115 videos**: Fixed redundant full-directory reads during playback preparation. The main video starts before external subtitles and audio tracks are prepared.
+- **Smoother large libraries**: Improved scrolling, selection, sorting and editing in folders containing hundreds or thousands of files.
+- **Keep your browsing position after file changes**: Deleting or renaming items better preserves the current page and nearby position, reducing jumps to the start and repeated reloads.
+- **Less intrusive controller feedback**: Stationary hovering no longer keeps ordinary playback controls visible indefinitely. Fewer unnecessary rays during VR180/360 viewing, with feedback retained for active adjustments.
+- **Correct pointer hits on menu backgrounds**: Rays retain a visible hit point over blank areas inside panels, with improved feedback on bookmarks, dropdowns and playback-mode popups.
+- **Spatial-video playback fix**: Fixed some spatial videos incorrectly reporting no playable audio/video tracks, with automatic fallback when the initial video output is incompatible.
+
 ## 0.11.1 — 2026-10-17
 
 This update adds same-folder subtitle selection, per-subtitle sync memory and on-demand cloud browsing, with improvements to 115 startup, 2D-to-3D conversion and network playback.

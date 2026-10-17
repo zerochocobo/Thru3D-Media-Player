@@ -25,12 +25,13 @@ func context() -> String:
 
 func refresh_source() -> void:
 	if context() != location: return
+	menu._position_to_restore = menu.capture_position()
 	if menu.section == menu.Section.LOCAL and menu.PlatformMethods.supports(menu.platform, "media_local_browse"):
 		menu._request("local", menu.platform.media_local_browse(menu._local_path()))
 	elif menu.section == menu.Section.SMB and menu.PlatformMethods.supports(menu.platform, "media_smb_browse"):
 		menu._request("smb_browse", menu.platform.media_smb_browse(menu._smb_server, menu._smb_path))
 	elif menu.section == menu.Section.CLOUD:
-		menu._cloud_positions.clear(); menu._cloud_offsets.assign([0]); menu._load_cloud(false, true, 0)
+		menu.refresh_cloud_mutation()
 func supported(row: Dictionary) -> bool:
 	var uri: String = menu.file_actions.row_uri(row)
 	var local_video: bool = (uri.begins_with("file://") or uri.begins_with("smb://")) and row.get("kind", "") == "video" and not row.get("folder", false)
@@ -57,13 +58,13 @@ func open(row: Dictionary) -> void:
 	menu.file_actions.target.uri = menu.file_actions.row_uri(row)
 	location = context(); result_error = ""
 	phase = "input"; moves = []; page = 0; name = original_name(); shifted = false; symbols = false; selected_all = false; include_same_name = true
-	menu.file_actions.modal = "rename"; menu.refresh()
+	menu.file_actions.modal = "rename"; menu.refresh_file_selection()
 func action(id: int) -> void:
 	var actions: RefCounted = menu.file_actions
 	if id == actions.CANCEL:
 		if phase == "result" and actions.pending == 0: refresh_source()
 		if actions.pending == 0: phase = ""
-		actions.modal = ""; menu.refresh(); return
+		actions.modal = ""; menu.refresh_file_selection(); return
 	if actions.pending > 0: return
 	if id == PREVIOUS: page = maxi(0, page - 1)
 	if id == NEXT: page = mini(maxi(0, ceili(moves.size() / 5.0) - 1), page + 1)
@@ -85,7 +86,7 @@ func action(id: int) -> void:
 		elif id == SAME_NAME and companions_allowed(): include_same_name = not include_same_name
 		elif id == PREVIEW and not name.is_empty() and name != original_name(): dispatch(true)
 	elif phase == "preview" and id == APPLY and actions.enabled: dispatch(false)
-	menu.refresh()
+	menu.refresh_file_selection()
 func dispatch(prepare: bool) -> void:
 	var actions: RefCounted = menu.file_actions
 	actions.target["new_name"] = name
@@ -117,9 +118,11 @@ func receive(id: int, payload: String) -> bool:
 		var old_uri := str(actions.target.uri)
 		var new_uri := str(result.get("new_uri", ""))
 		var title := str(result.get("new_title", ""))
+		var anchor: Dictionary = menu.capture_position()
+		var updates := {}
 		migration_failed = false
 		menu.file_renamed.emit(old_uri, new_uri, title)
-		for entries in [menu._local_entries, menu._smb_entries, menu._cloud_entries]:
+		for entries in menu.file_entry_snapshots():
 			for entry in entries:
 				var uri := str(entry.get("uri", entry.get("delete_uri", "")))
 				var destination := ""; var renamed_title := ""
@@ -130,18 +133,21 @@ func receive(id: int, payload: String) -> bool:
 						if str(entry.get("title", "")) == str(move.from):
 							destination = str(move.get("new_uri", new_uri.get_base_dir() + "/" + str(move.to).uri_encode())); renamed_title = str(move.to)
 				if destination.is_empty(): continue
+				var key := JSON.stringify([uri, str(entry.get("cloud_id", ""))])
 				if entry.get("container", false): entry.delete_uri = destination
 				else: entry.uri = destination
 				entry.title = renamed_title
 				entry.id = str(entry.get("id", "")).get_base_dir().path_join(renamed_title)
+				if not updates.has(key): updates[key] = entry
 		actions.selection.clear(); actions.target = {}; actions.modal = ""; phase = ""
+		menu.rename_file_rows(updates, anchor)
 		menu.status = "Files renamed; playback records could not be saved" if migration_failed else "Files renamed"
 	else:
 		moves = result.get("remaining", [])
 		moves.append_array(result.get("unknown_moves", [])); page = 0; phase = "result"
 		result_error = str(result.get("error", "Rename failed; check the folder")); menu.status = result_error
 	if not (result is Dictionary and result.get("preview", false)) and menu.section == menu.Section.CLOUD and not menu._cloud_stack.is_empty(): refresh_source()
-	if menu.visible: menu.refresh()
+	if menu.visible: menu.refresh_file_selection()
 	return true
 func draw() -> void:
 	var actions: RefCounted = menu.file_actions

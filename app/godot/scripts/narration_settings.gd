@@ -2,8 +2,8 @@ extends RefCounted
 const Methods := preload("res://scripts/platform_methods.gd")
 const Timing := preload("res://scripts/file_subtitle_timing.gd")
 const I18n := preload("res://scripts/i18n.gd")
-# Temporarily withheld from the emergency patch until player integration is validated.
-const FEATURE_ENABLED := false
+# Withheld in every build until the user explicitly resumes narration development.
+static var FEATURE_ENABLED := false
 const VOICES := {"zh": ["Yuewen", "Junhao"], "en": ["Ava", "Adam"]}
 var video: Node
 var enabled := false
@@ -19,6 +19,8 @@ var retry := 0
 var preview := 0
 var _last_payload := ""
 var _language_source := ""
+var _video_source := ""
+var _restoring_source := false
 
 func _init(owner: Node) -> void: video = owner
 
@@ -34,14 +36,18 @@ func save(settings: ConfigFile) -> void:
 	for key in ["enabled", "zh_voice", "en_voice", "duck", "volume", "rate", "offset"]:
 		settings.set_value("narration", key, get(key))
 
-func reset_source() -> void:
-	source = -1; language = "auto"; _last_payload = ""; _language_source = ""
+func reset_source(uri: String = "") -> void:
+	_restoring_source = not uri.is_empty() and uri == _video_source
+	_video_source = uri
+	_last_payload = ""; _language_source = ""
+	if not _restoring_source: source = -1; language = "auto"
 
 func available() -> bool:
 	return FEATURE_ENABLED and Methods.supports(video.platform, "set_mpv_narration")
 
 func set_option(key: String, value: Variant) -> bool:
 	if not FEATURE_ENABLED: return false
+	if key in ["narration_source", "narration_current", "narration_language"]: _restoring_source = false
 	match key:
 		"narration_enabled": enabled = bool(value)
 		"narration_current": enabled = bool(value); source = -1; language = "auto"
@@ -82,7 +88,11 @@ func apply() -> void:
 	if not FEATURE_ENABLED: return
 	if video.media.session_id <= 0 or (not enabled and _last_payload.is_empty()): return
 	var track := selected_track()
-	var identity := str(source) + ":" + str(track.get("id", source if source >= 0 else video.subtitles.requested_track))
+	if _restoring_source and track.is_empty(): return
+	# JSON track IDs are floats; a transient empty track during seek falls back to
+	# an int. Normalize before comparing, or "2:2.0" becomes "2:2" and loses language.
+	var identity := str(source) + ":" + str(int(track.get("id", source if source >= 0 else video.subtitles.requested_track)))
+	if _restoring_source: _language_source = identity; _restoring_source = false
 	if not _language_source.is_empty() and identity != _language_source: language = "auto"
 	_language_source = identity
 	if not available() or video.media.session_id <= 0 or (not enabled and _last_payload.is_empty()): return

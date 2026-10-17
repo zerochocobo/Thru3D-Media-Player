@@ -33,12 +33,13 @@ struct Engine {
                           {"local",t+"moss_tts_local_fixed_sampled_frame.onnx"}, {"codec",c+"moss_audio_tokenizer_decode_step.onnx"}})
             sessions[item.first]=std::make_unique<Session>(*env,options,item.second,static_cast<OrtPrepackedWeightsContainer*>(prepacked));
     }
-    J generate(const std::string& text,const std::string& voice,int64_t token, const std::function<bool(const std::vector<float>&)>& output) {
+    J generate(const std::string& text,const std::string& voice,int64_t token, const std::function<bool(const std::vector<float>&)>& output, int max_frames=250, int random_skip=0) {
         std::lock_guard<std::mutex> lock(running);
         auto cancelled=[&]{return epoch.load()!=token;};
         if(cancelled()) return {{"cancelled",true}};
         const std::set<std::string> allowed{"Yuewen","Ava","Junhao","Adam"};
         if(text.empty()||text.size()>4096||!allowed.count(voice)) throw std::runtime_error("Invalid narration input");
+        if(max_frames<1||max_frames>250||random_skip<0||random_skip>1024)throw std::runtime_error("Invalid synthesis limits");
         std::vector<int> tokens;
         if(!tokenizer.Encode(text,&tokens).ok()||tokens.empty()||tokens.size()>384) throw std::runtime_error("Narration text too long");
         const auto& cfg=manifest["tts_config"]; const auto& tpl=manifest["prompt_templates"];
@@ -66,13 +67,14 @@ struct Engine {
         std::vector<int32_t> seen(n*book,0),pending;
         Codec codec(*sessions.at("codec"),codec_meta["streaming_decode"]);
         Pcg64 random;
+        for(int i=0;i<random_skip;++i)random.next();
         auto emit=[&] {
             if(pending.empty()||cancelled()) return;
             auto block=codec.decode(pending,n,2);pending.clear();
             if(first<0)first=elapsed(started);
             if(!output(block)) {int64_t expected=token;epoch.compare_exchange_strong(expected,token+1);}
         };
-        for(int step=0;step<250&&!cancelled();++step) {
+        for(int step=0;step<max_frames&&!cancelled();++step) {
             float assistant_random=random.next();std::vector<float> draws(n);for(auto& x:draws)x=random.next();
             auto seen_tensor=tensor<int32_t>({1,n,book},seen),ar=tensor<float>({1},assistant_random),au=tensor<float>({1,n},draws);
             auto local=sessions.at("local")->run({{"global_hidden",&hidden},{"repetition_seen_mask",&seen_tensor},{"assistant_random_u",&ar},{"audio_random_u",&au}});
@@ -110,7 +112,7 @@ extern "C" JNIEXPORT void JNICALL Java_org_vrpassthroughplayer_plugin_NarrationN
 extern "C" JNIEXPORT void JNICALL Java_org_vrpassthroughplayer_plugin_NarrationNative_destroy(JNIEnv*,jclass,jlong id) {
     std::lock_guard<std::mutex> lock(moss::engines_mutex);moss::engines.erase(id);
 }
-extern "C" JNIEXPORT jstring JNICALL Java_org_vrpassthroughplayer_plugin_NarrationNative_synthesize(JNIEnv* e,jclass,jlong id,jstring text,jstring voice,jlong epoch,jobject sink) {
+static jstring narration_synthesize(JNIEnv* e,jlong id,jstring text,jstring voice,jlong epoch,jobject sink,int max_frames,int random_skip) {
     try {
         auto type=e->GetObjectClass(sink);auto method=e->GetMethodID(type,"onChunk","(J[F)Z");e->DeleteLocalRef(type);
         if(!method||e->ExceptionCheck())return nullptr;
@@ -118,8 +120,14 @@ extern "C" JNIEXPORT jstring JNICALL Java_org_vrpassthroughplayer_plugin_Narrati
             auto array=e->NewFloatArray(block.size());if(!array)return false;
             e->SetFloatArrayRegion(array,0,block.size(),block.data());bool accepted=e->CallBooleanMethod(sink,method,epoch,array);e->DeleteLocalRef(array);
             return !e->ExceptionCheck()&&accepted;
-        });
+        },max_frames,random_skip);
         if(e->ExceptionCheck())return nullptr;
         return e->NewStringUTF(result.dump(-1,' ',true).c_str());
     } catch(const std::exception&) {narration_error(e,"Narration synthesis failed");return nullptr;}
+}
+extern "C" JNIEXPORT jstring JNICALL Java_org_vrpassthroughplayer_plugin_NarrationNative_synthesize(JNIEnv* e,jclass,jlong id,jstring text,jstring voice,jlong epoch,jobject sink) {
+    return narration_synthesize(e,id,text,voice,epoch,sink,250,0);
+}
+extern "C" JNIEXPORT jstring JNICALL Java_org_vrpassthroughplayer_plugin_NarrationNative_synthesizeConfigured(JNIEnv* e,jclass,jlong id,jstring text,jstring voice,jlong epoch,jint max_frames,jint random_skip,jobject sink) {
+    return narration_synthesize(e,id,text,voice,epoch,sink,max_frames,random_skip);
 }

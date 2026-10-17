@@ -160,6 +160,24 @@ func _run() -> void:
 	var pointer := await capture(viewport, "pointer")
 	var dot: Vector2i = camera.unproject_position(menu.to_global(menu._pointers.right_hand.dot.position))
 	check(pointer.get_pixelv(dot).r > 0.8 and pointer.get_pixelv(dot).g > 0.4, "Pointer remains visible over menu")
+	for sample in [{"name": "panel-blank", "point": Vector3(0.3, -0.18, 0), "hit": true},
+		{"name": "panel-outside", "point": Vector3(0.47, -0.18, 0), "hit": false}]:
+		var origin := Vector3(-0.25, -0.4, 0.6)
+		var direction: Vector3 = (sample.point - origin).normalized()
+		menu.update_pointer("right_hand", origin, direction, true)
+		var rendered := await capture(viewport, sample.name)
+		check(menu._pointers.right_hand.line.visible and menu._pointers.right_hand.dot.visible == sample.hit, sample.name + " line/dot state")
+		var vertices: PackedVector3Array = menu._pointers.right_hand.line.mesh.surface_get_arrays(0)[Mesh.ARRAY_VERTEX]
+		var expected: Vector3 = sample.point if sample.hit else origin + direction * Menu.MAX_RAY_METRES
+		check(vertices[1].distance_to(expected + Vector3(0, 0, 0.006)) < 0.0001, sample.name + " line ends at surface or full range")
+		if sample.hit:
+			var centre: Vector2i = camera.unproject_position(menu._pointers.right_hand.dot.global_position)
+			var colored := 0
+			for y in range(centre.y - 4, centre.y + 5):
+				for x in range(centre.x - 4, centre.x + 5):
+					var pixel := rendered.get_pixel(x, y)
+					if pixel.r > 0.8 and pixel.g > 0.4 and pixel.b < 0.4: colored += 1
+			check(colored > 30, "Blank panel renders a round amber dot, not only the thin line")
 	viewport.free()
 	for failure in failures: push_error(failure)
 	print("Menu depth pixels: %d checks, %d failures" % [checks, failures.size()])

@@ -4,6 +4,8 @@ var source_location := {}
 signal changed
 signal thumbnail_ready(uri: String)
 signal playback_failed
+signal playback_completed
+var _completed_end := ""
 signal seek_presented(request_id: int, position_ms: int)
 
 const PlatformMethods := preload("res://scripts/platform_methods.gd")
@@ -506,15 +508,15 @@ func cancel_pending_open() -> void:
 
 # Library selection: MediaStore content URIs are readable through the media permission;
 # network URIs (smb://, DLNA http) have no document grant to check.
-func open_library(uri: String, title: String, metadata: Dictionary = {}) -> bool:
+func open_library(uri: String, title: String, metadata: Dictionary = {}, from_start: bool = false) -> bool:
 	var cover := str(metadata.get("cover", recent_files.lookup(uri).get("cover", "")))
 	var opened := false
 	if uri.begins_with("medialib://") and not metadata.is_empty():
 		requested_play = true
 		var start: int = int(metadata.get("start_ms", -1))
-		opened = open_local(uri, title, _resume(uri) if start < 0 else start, true, false, str(metadata.get("basename", "")), metadata)
+		opened = open_local(uri, title, 0 if from_start else (_resume(uri) if start < 0 else start), true, false, str(metadata.get("basename", "")), metadata)
 	elif not recent_files.lookup(uri).is_empty():
-		opened = open_recent(uri, false, metadata)
+		opened = open_recent(uri, from_start, metadata)
 	else:
 		requested_play = true
 		opened = open_local(uri, title, 0, true, false, "", metadata)
@@ -587,6 +589,7 @@ func play_calibration_clip() -> void:
 	open_local("file://" + ProjectSettings.globalize_path(path), filename, 0, false)
 
 func open_local(uri: String, title: String, start_ms: int = 0, restore_mode: bool = true, alpha: bool = false, basename: String = "", metadata: Dictionary = {}) -> bool:
+	_completed_end = ""
 	var network_interleave := _network_interleave_next
 	_network_interleave_next = false
 	source_location = preload("res://scripts/media_location.gd").clean(metadata.get("location", {}))
@@ -697,7 +700,7 @@ func open_local(uri: String, title: String, start_ms: int = 0, restore_mode: boo
 	var id: int = platform.open_mpv_video(uri, maxi(start_ms, 0), stereo_sbs, profile, alpha_requested, true, depth_requested,
 		stereo_sbs and top_bottom, SeekPolicy.normalize(seek_mode) == SeekPolicy.EXACT)
 	media.begin(id)
-	narration.reset_source()
+	narration.reset_source(uri)
 	playback_speed = 1.0
 	screen_rotation = 0.0
 	if PlatformMethods.supports(platform, "set_mpv_speed"): platform.set_mpv_speed(id, playback_speed)
@@ -1994,6 +1997,10 @@ func _on_state(id: int, payload: String) -> void:
 			position_ms = int(int(pair.pts_us) / 1000)
 		control.observe(position_ms, int(float(details.get("duration_seconds", "-1")) * 1000))
 		media.decoder = str(details.get("codec", "")) + " / " + str(details.get("hwdec_current", ""))
+	# A rejected software frame can reach END_FILE before the next display frame.
+	# Consume its Surface incompatibility before marking this session failed; the
+	# bridge may already have queued mpv_error, which must belong to the retired id.
+	if _recover_layer_output(): return
 	media.state = str(report.get("state", "opening"))
 	_restore_tracks()
 	if media.state == "ended":
@@ -2073,6 +2080,8 @@ func _on_released(id: int, _payload: String) -> void:
 
 func loading_caption() -> String:
 	if not media.accepts(media.session_id) or not media.error.is_empty(): return ""
+	if NarrationSettings.FEATURE_ENABLED and requested_play and bool(media.playback.get("narration", {}).get("startup_hold", false)):
+		return I18n.t("Preparing narration…")
 	var buffering := requested_play and str(media.playback.get("details", {}).get("paused_for_cache", "no")) == "yes"
 	if not _waiting_first and not buffering: return ""
 	var status: Dictionary = _loading_status.duplicate()
@@ -2363,7 +2372,11 @@ func _subtitle_anchor_direction() -> Array:
 	return [anchor.x, anchor.y, anchor.z]
 
 func _can_loop() -> bool:
-	if not loop_enabled or not requested_play or media.state != "ended" or _waiting_first or not _pending_revision.is_empty():
+	return loop_enabled and playback_end_ready()
+
+## A natural EOF is actionable only after its final source frame was presented.
+func playback_end_ready() -> bool:
+	if not requested_play or media.state != "ended" or _waiting_first or not _pending_revision.is_empty() or control.pending or control.in_flight > 0 or not media.error.is_empty():
 		return false
 	var end: Dictionary = media.playback
 	var final_pair: Dictionary = media.last_pair
@@ -2394,8 +2407,17 @@ func _process(_delta: float) -> void:
 	_update_layer()
 	_maybe_capture_thumbnail()
 	_poll_subtitles()
-	if _can_loop():
+	_process_playback_end()
+
+func _process_playback_end() -> void:
+	if not playback_end_ready(): return
+	if loop_enabled:
 		seek_absolute(0)
+	else:
+		var identity := str([media.session_id, control.sequence, media.last_pair.get("slot_token", 0)])
+		if identity != _completed_end:
+			_completed_end = identity
+			playback_completed.emit()
 
 ## Video frames shown so far: presented pairs, or on the video layer (whose pairs only mark
 ## restarts and positions) the frames MPV released to the layer surface minus its drops. The layer
@@ -2464,6 +2486,14 @@ func _layer_wanted() -> bool:
 func _origin() -> XROrigin3D:
 	return view_camera.get_parent() as XROrigin3D if view_camera else null
 
+func _recover_layer_output() -> bool:
+	if not (_layer_session or _layer_requested) or not media.accepts(media.session_id) \
+		or media.playback.get("layer_compatible", true) != false or local_uri.is_empty():
+		return false
+	_layer_blocked_uri = local_uri
+	_reopen_on_eye_buffer(-1) # Profile 5, software decode or rotation: MPV must normalize.
+	return true
+
 ## Keep the layer, the hole and the subtitles in step with the video surface every frame.
 func _update_layer() -> void:
 	if not video_layer:
@@ -2483,10 +2513,7 @@ func _update_layer() -> void:
 		_reopen_at(int(media.playback.get("network_interleave_restart_ms", 0)), _layer_session or _layer_requested)
 		return
 	# Profile 5 and a software decoder are known before the surface shows anything (no frame would come).
-	if (_layer_session or _layer_requested) and media.accepts(media.session_id) and media.playback.get("layer_compatible", true) == false:
-		_layer_blocked_uri = local_uri
-		_reopen_on_eye_buffer(-1) # Profile 5, software decode or rotation: MPV must normalize
-		return
+	if _recover_layer_output(): return
 	# Back from a temporary shader effect: the layer again, at the shown position.
 	if not _layer_session and not _layer_return_uri.is_empty() and _layer_return_uri == local_uri \
 		and media.accepts(media.session_id) and media.frame_counter > 0 and _pending_revision.is_empty() \
