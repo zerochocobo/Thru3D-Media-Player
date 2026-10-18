@@ -106,6 +106,7 @@ func _slider(parent: Node3D, row: Dictionary, centre: Vector2, width: float, hei
 	var target := _button({"kind": "slider", "key": row.key, "span": row.span}, "", field_centre, Vector2(field_width, height), parent)
 	if row.has("source_uri"): targets[target].source_uri = row.source_uri
 	if row.has("subtitle_key"): targets[target].subtitle_key = row.subtitle_key
+	if row.has("audio_key"): targets[target].audio_key = row.audio_key
 	var button: Dictionary = menu._buttons.back()
 	button.base_color = Color(menu.TILE, 0)
 	button.node.material_override.set_shader_parameter("surface_color", button.base_color)
@@ -128,13 +129,14 @@ func _slider(parent: Node3D, row: Dictionary, centre: Vector2, width: float, hei
 	label.position = Vector3(field_width / 2 - 0.005, 0, 0.006)
 	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	sliders[target] = {"span": row.span, "left": left, "width": rail_width, "fill": fill, "knob": knob,
-		"label": label, "unit": row.unit, "node": node, "signed": row.get("signed", false)}
+		"label": label, "unit": row.unit, "node": node, "signed": row.get("signed", false), "decimals": row.get("decimals", 1)}
 	if row.has("nudge_step"):
 		for index in 2:
 			var step := float(row.nudge_step) * (-1 if index == 0 else 1)
 			var item := {"kind": "nudge", "key": row.key, "value": row.value, "step": step, "span": row.span}
 			if row.has("source_uri"): item.source_uri = row.source_uri
 			if row.has("subtitle_key"): item.subtitle_key = row.subtitle_key
+			if row.has("audio_key"): item.audio_key = row.audio_key
 			_button(item, "−" if index == 0 else "+", centre + Vector2(width / 2 - reset_width - nudge_width + 0.03 + index * 0.06, 0), Vector2(0.055, height), parent)
 			var nudge: Dictionary = menu._buttons.back()
 			nudge.enabled = not same(clampf(float(row.value) + step, row.span.x, row.span.y), row.value)
@@ -145,6 +147,7 @@ func _slider(parent: Node3D, row: Dictionary, centre: Vector2, width: float, hei
 		var reset: Dictionary = menu._buttons.back()
 		if row.has("source_uri"): targets[reset_target].source_uri = row.source_uri
 		if row.has("subtitle_key"): targets[reset_target].subtitle_key = row.subtitle_key
+		if row.has("audio_key"): targets[reset_target].audio_key = row.audio_key
 		reset.base_color = Color(menu.TILE, 0)
 		reset.node.material_override.set_shader_parameter("surface_color", reset.base_color)
 		menu._icon("refresh", Vector3(0, 0, 0.006), 0.032, menu.MUTED, reset.node)
@@ -166,7 +169,7 @@ func _refresh_slider(target: int, value: float) -> void:
 	slider.fill.material_override.set_shader_parameter("surface_size", slider.fill.mesh.size)
 	slider.knob.position.x = slider.left + fraction * slider.width
 	slider.label.text = ("%.0f" % value if slider.unit in ["%", " FPS"] else ("%+.0f" % value if slider.unit == "°" and value != 0 else ("%.0f" % value if slider.unit == "°" else "%.1f" % value))) + slider.unit
-	if slider.get("signed", false): slider.label.text = (("%+.1f" if not is_zero_approx(value) else "%.1f") % value) + slider.unit
+	if slider.get("signed", false): slider.label.text = ((("%+.2f" if not is_zero_approx(value) else "%.2f") if slider.get("decimals", 1) == 2 else ("%+.1f" if not is_zero_approx(value) else "%.1f")) % value) + slider.unit
 	if slider.has("reset"):
 		slider.reset.enabled = not same(value, slider.reset_value)
 		if slider.get("reset_when_changed", false): slider.reset.node.visible = slider.reset.enabled
@@ -192,6 +195,7 @@ static func _scoped_value(item: Dictionary, value: Variant) -> Variant:
 	if not item.has("source_uri"): return value
 	var result := {"value": value, "source_uri": item.source_uri}
 	if item.has("subtitle_key"): result.subtitle_key = item.subtitle_key
+	if item.has("audio_key"): result.audio_key = item.audio_key
 	return result
 
 ## Icon-triggered lists share the same ownership, scrolling and selection as settings fields.

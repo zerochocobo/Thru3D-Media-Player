@@ -31,7 +31,7 @@ std::string quoted_property(mpv_handle* core, const char* key) {
 }
 }
 extern "C" JNIEXPORT jlong JNICALL
-Java_org_vrpassthroughplayer_plugin_BackgroundAudioNative_open(JNIEnv* env, jclass, jobject context, jstring path, jboolean probe) {
+Java_org_vrpassthroughplayer_plugin_BackgroundAudioNative_open(JNIEnv* env, jclass, jobject context, jstring path, jboolean probe, jstring tls_ca_file) {
     try {
         quest_mpv_initialize_android(env, context);
         auto audio = std::make_unique<Audio>(); audio->core = mpv_create();
@@ -44,6 +44,13 @@ Java_org_vrpassthroughplayer_plugin_BackgroundAudioNative_open(JNIEnv* env, jcla
         option("pause", "yes"); option("idle", "yes"); option("keep-open", "no");
         option("cache", "no"); option("demuxer-max-bytes", "4MiB");
         option("demuxer-readahead-secs", "1"); option("ytdl", "no");
+        option("network-timeout", "10"); option("tls-verify", "yes");
+        if (tls_ca_file) {
+            const char* ca = env->GetStringUTFChars(tls_ca_file, nullptr);
+            if (!ca) return 0;
+            const std::string ca_path(ca); env->ReleaseStringUTFChars(tls_ca_file, ca);
+            if (!ca_path.empty()) option("tls-ca-file", ca_path.c_str());
+        }
         check(mpv_initialize(audio->core));
         const char* raw = env->GetStringUTFChars(path, nullptr);
         if (!raw) return 0;
@@ -70,9 +77,11 @@ Java_org_vrpassthroughplayer_plugin_BackgroundAudioNative_status(JNIEnv* env, jc
     }
     audio->duration = number(audio->core, "duration", audio->duration);
     audio->position = number(audio->core, "time-pos", audio->position);
+    int seekable = 0;
+    mpv_get_property(audio->core, "seekable", MPV_FORMAT_FLAG, &seekable);
     const auto state = audio->failed ? "failed" : audio->ended ? "ended" : audio->loaded ? "ready" : "loading";
     std::string json = "{\"state\":\"" + std::string(state) + "\",\"position\":" + std::to_string(audio->position) +
-        ",\"duration\":" + std::to_string(audio->duration) + ",\"codec\":" + quoted_property(audio->core, "audio-codec-name") +
+        ",\"duration\":" + std::to_string(audio->duration) + ",\"seekable\":" + (seekable ? "true" : "false") + ",\"codec\":" + quoted_property(audio->core, "audio-codec-name") +
         ",\"channels\":" + quoted_property(audio->core, "audio-out-params/channels") +
         ",\"sample_rate\":" + std::to_string(number(audio->core, "audio-params/samplerate")) + "}";
     return env->NewStringUTF(json.c_str());

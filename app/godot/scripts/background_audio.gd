@@ -43,6 +43,19 @@ var _native_token := 0
 var _native_loading := false
 var _native_ended := false
 var _native_poll := 0.0
+var _storage_revision := -1
+var _storage_used := 0
+var _preview_token := 0
+var _preview_uri := ""
+var _preview_title := ""
+var _preview_loading := false
+var _preview_error := ""
+var _preview_poll := 0.0
+var _preview_position := 0.0
+var _preview_duration := 0.0
+var _preview_seekable := false
+var _preview_scrubbing := false
+var _preview_elapsed := 0.0
 
 func _ready() -> void:
 	if AudioServer.get_bus_index(_bus) < 0:
@@ -104,12 +117,66 @@ func save_settings(settings: ConfigFile) -> void:
 	for pair in [["current", current], ["queue", queue], ["source", queue_source], ["name", queue_name], ["mode", mode], ["volume", volume], ["position", position()], ["duration", duration()]]:
 		settings.set_value("audio_player", pair[0], pair[1])
 
-func blocked() -> bool: return paused or video_active or not focused
+func blocked() -> bool: return paused or video_active or not focused or _preview_token > 0
+
+func preview_audio(uri: String, title: String) -> bool:
+	if _preview_token > 0 and uri == _preview_uri: stop_preview(); return true
+	stop_preview(false); _preview_error = ""
+	if video_active or not focused:
+		_preview_error = "Audio suspended"; _apply_context(); changed.emit(); return false
+	if not Importer.Methods.supports(importer.platform, "preview_background_audio"):
+		_preview_error = "Audio preview unavailable"; _apply_context(); changed.emit(); return false
+	_preview_token = int(importer.platform.preview_background_audio(uri))
+	if _preview_token > 0:
+		_preview_uri = uri; _preview_title = title; _preview_loading = true
+	else: _preview_error = "Audio preview unavailable"
+	_apply_context(); changed.emit(); return _preview_token > 0
+
+func stop_preview(restore: bool = true) -> void:
+	var had_preview := _preview_token > 0
+	if had_preview and is_instance_valid(importer.platform): importer.platform.stop_audio_preview()
+	_preview_token = 0; _preview_uri = ""; _preview_title = ""; _preview_loading = false; _preview_error = ""
+	_preview_position = 0; _preview_duration = 0; _preview_seekable = false; _preview_scrubbing = false; _preview_elapsed = 0
+	if restore: _apply_context()
+	if had_preview and restore: changed.emit()
+
+func _poll_preview(delta: float) -> void:
+	if _preview_token <= 0: return
+	if not _preview_loading and not _preview_scrubbing: _preview_elapsed += delta
+	if _preview_elapsed >= 30: stop_preview(); return
+	_preview_poll += delta
+	if _preview_poll < 0.1: return
+	_preview_poll = 0.0
+	var state: Variant = JSON.parse_string(str(importer.platform.audio_preview_status()))
+	if not state is Dictionary or int(state.get("generation", 0)) != _preview_token: return
+	var status := str(state.get("state", ""))
+	if status == "failed":
+		stop_preview(); _preview_error = "Audio preview unavailable"; changed.emit()
+	elif status == "ended": stop_preview()
+	elif status == "ready":
+		var was_loading := _preview_loading
+		_preview_loading = false
+		_preview_position = maxf(0, float(state.get("position", 0)))
+		_preview_duration = maxf(0, float(state.get("duration", 0)))
+		_preview_seekable = bool(state.get("seekable", false)) and _preview_duration > 0 and Importer.Methods.supports(importer.platform, "seek_audio_preview")
+		if was_loading: changed.emit()
+
+## A capture owns a generation, so a late release cannot seek another preview.
+func scrub_preview(token: int, position_seconds: float, active: bool) -> void:
+	if token <= 0 or token != _preview_token: return
+	if active and (_preview_loading or not _preview_seekable): return
+	_preview_scrubbing = active
+	if not active and _preview_seekable and is_finite(position_seconds) and position_seconds >= 0:
+		var target := clampf(position_seconds, 0, maxf(0, _preview_duration - 0.05))
+		if importer.platform.seek_audio_preview(token, target):
+			_preview_position = target; _preview_elapsed = 0
+	_apply_context()
 
 func _apply_context() -> void:
 	if not is_instance_valid(player): return
 	player.stream_paused = blocked()
 	_apply_gain()
+	if _preview_token > 0: importer.platform.control_audio_preview(_preview_token, focused and not video_active and not _preview_scrubbing, volume)
 	if _end_pending and not blocked(): _end_pending = false; adjacent(1, true)
 
 func _apply_gain() -> void:
@@ -125,6 +192,7 @@ func _stop_native() -> void:
 func set_context(video: bool, has_focus: bool) -> void:
 	if video_active == video and focused == has_focus: return
 	video_active = video; focused = has_focus
+	if video_active or not focused: stop_preview(false)
 	_apply_context(); changed.emit()
 
 func set_volume(value: Variant) -> bool:
@@ -156,6 +224,7 @@ func play_tracks(ids: Array, track: String, label: String = "", source: String =
 
 func select_track(id: String) -> bool:
 	if library.resolve(id).is_empty(): return false
+	stop_preview(false)
 	_stop_native()
 	if not queue.has(id): queue.append(id)
 	current = id; paused = false; error = ""; _resume_position = 0.0; _remembered_duration = 0.0; _entry_gain = 0.0; _end_pending = false
@@ -231,6 +300,7 @@ func _request() -> void:
 		_thread = null; error = "Audio file unavailable"; paused = true; _notify()
 
 func _process(delta: float) -> void:
+	_poll_preview(delta)
 	if _native_token > 0:
 		_native_poll += delta
 		if _native_poll >= 0.08:
@@ -313,7 +383,17 @@ func remove_import(id: String) -> bool:
 
 func snapshot() -> Dictionary:
 	var row := library.resolve(current)
+	var storage: Dictionary = importer.storage_info()
+	if not storage.has("used_bytes"):
+		if _storage_revision != library.revision:
+			_storage_revision = library.revision; _storage_used = 0
+			for entry in library.imports: _storage_used += maxi(0, int(entry.get("bytes", 0)))
+		storage.used_bytes = _storage_used
 	return {"audio_current": current, "audio_title": str(row.get("label", "Choose audio")), "audio_volume": volume,
+		"audio_storage": storage,
+		"audio_preview_available": Importer.Methods.supports(importer.platform, "preview_background_audio"),
+		"audio_preview_uri": _preview_uri, "audio_preview_title": _preview_title, "audio_preview_loading": _preview_loading, "audio_preview_error": _preview_error,
+		"audio_preview_token": _preview_token, "audio_preview_position": _preview_position, "audio_preview_duration": _preview_duration, "audio_preview_seekable": _preview_seekable,
 		"audio_mode": mode, "audio_paused": paused, "audio_active": not blocked() and not current.is_empty() and _loaded == current,
 		"audio_blocked": video_active or not focused, "audio_loading": _thread != null or _native_loading, "audio_position": position(), "audio_duration": duration(),
 		"audio_queue": queue.duplicate(), "audio_queue_name": queue_name, "audio_queue_source": queue_source,
@@ -323,6 +403,7 @@ func snapshot() -> Dictionary:
 
 func _exit_tree() -> void:
 	_resume_position = position(); _remembered_duration = duration()
+	stop_preview(false)
 	_stop_native()
 	if _thread: _thread.wait_to_finish(); _thread = null
 	if is_instance_valid(player): player.stop(); player.stream = null

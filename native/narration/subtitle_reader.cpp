@@ -18,9 +18,14 @@ extern "C" {
 namespace {
 using J=nlohmann::json;
 using Clock=std::chrono::steady_clock;
+// Only fixed stages and numeric FFmpeg codes cross JNI; never source URLs/text.
+struct SubtitleError : std::runtime_error {
+    SubtitleError(const char* stage,int code=0):std::runtime_error(std::string("subtitle_")+stage+":"+std::to_string(code)) {}
+};
 struct Reader {
     std::string path, ca;
     int stream;
+    int progress_stream=-1;
     AVFormatContext* format=nullptr;
     AVCodecContext* codec=nullptr;
     std::atomic<bool> cancelled{false};
@@ -42,22 +47,35 @@ struct Reader {
         if(!ca.empty())av_dict_set(&options,"ca_file",ca.c_str(),0);
         std::string location=path.rfind("fd://",0)==0?"/proc/self/fd/"+path.substr(5):path;
         int result=avformat_open_input(&format,location.c_str(),nullptr,&options);av_dict_free(&options);
-        if(result<0)throw std::runtime_error("Unable to open subtitle source");
+        if(result<0)throw SubtitleError(interrupt(this)?"open_timeout":"open",result);
         // Header metadata is sufficient for the selected text stream. Do not call
         // find_stream_info(): probing can decode video/audio behind our back.
-        if(stream<0||unsigned(stream)>=format->nb_streams)throw std::runtime_error("Subtitle stream unavailable");
+        if(stream<0||unsigned(stream)>=format->nb_streams)throw SubtitleError("stream");
         auto* parameters=format->streams[stream]->codecpar;
         auto* description=avcodec_descriptor_get(parameters->codec_id);
         if(parameters->codec_type!=AVMEDIA_TYPE_SUBTITLE||!description||!(description->props&AV_CODEC_PROP_TEXT_SUB))
-            throw std::runtime_error("Text subtitles required");
+            throw SubtitleError("text_required");
         auto* decoder=avcodec_find_decoder(parameters->codec_id);
-        if(!decoder)throw std::runtime_error("Subtitle decoder unavailable");
+        if(!decoder)throw SubtitleError("decoder");
         codec=avcodec_alloc_context3(decoder);
-        if(!codec||avcodec_parameters_to_context(codec,parameters)<0||avcodec_open2(codec,decoder,nullptr)<0)throw std::runtime_error("Subtitle decoder unavailable");
-        for(unsigned i=0;i<format->nb_streams;++i)if(i!=unsigned(stream))format->streams[i]->discard=AVDISCARD_ALL;
+        if(!codec||avcodec_parameters_to_context(codec,parameters)<0||avcodec_open2(codec,decoder,nullptr)<0)throw SubtitleError("decoder");
+        for(unsigned i=0;i<format->nb_streams;++i) {
+            auto* candidate=format->streams[i];
+            if(candidate->codecpar->codec_type==AVMEDIA_TYPE_VIDEO&&!(candidate->disposition&AV_DISPOSITION_ATTACHED_PIC)) {progress_stream=int(i);break;}
+            if(progress_stream<0&&candidate->codecpar->codec_type==AVMEDIA_TYPE_AUDIO)progress_stream=int(i);
+        }
+        for(unsigned i=0;i<format->nb_streams;++i)if(i!=unsigned(stream))
+            format->streams[i]->discard=int(i)==progress_stream?AVDISCARD_NONKEY:AVDISCARD_ALL;
         if(position>5) {
-            auto timestamp=int64_t((position-5)/av_q2d(format->streams[stream]->time_base));
-            if(av_seek_frame(format,stream,timestamp,AVSEEK_FLAG_BACKWARD)>=0)avcodec_flush_buffers(codec);
+            // MKV commonly indexes only video. Seeking its subtitle stream asks
+            // FFmpeg's generic fallback to scan from the beginning of the film.
+            // Use the media index. Media packets provide timestamps only;
+            // no video/audio decoder is opened by this reader.
+            int anchor=progress_stream<0?stream:progress_stream;
+            auto timestamp=int64_t((position-5)/av_q2d(format->streams[anchor]->time_base));
+            int status=av_seek_frame(format,anchor,timestamp,AVSEEK_FLAG_BACKWARD);
+            if(status<0)throw SubtitleError(interrupt(this)?"seek_timeout":"seek",status);
+            avcodec_flush_buffers(codec);
         }
         initialized=true;
     }
@@ -69,10 +87,11 @@ struct Reader {
         const double base=av_q2d(format->streams[stream]->time_base);
         std::unique_ptr<AVPacket,void(*)(AVPacket*)> packet(av_packet_alloc(),[](AVPacket* p){av_packet_free(&p);});
         if(!packet)throw std::runtime_error("Allocation failed");
-        for(int count=0;!eof&&read_until<end&&count<150000&&!interrupt(this);++count) {
+        int count=0;
+        for(;!eof&&read_until<end&&count<150000&&!interrupt(this);++count) {
             int status=av_read_frame(format,packet.get());
             if(status==AVERROR_EOF) {eof=true;break;}
-            if(status<0)throw std::runtime_error("Unable to read subtitles");
+            if(status<0)throw SubtitleError(interrupt(this)?"read_timeout":"read",status);
             if(packet->stream_index==stream) {
                 AVSubtitle subtitle{};int got=0;
                 int decoded=avcodec_decode_subtitle2(codec,&subtitle,&got,packet.get());
@@ -99,10 +118,17 @@ struct Reader {
                 avsubtitle_free(&subtitle);
                 if(pts>=0)read_until=std::max(read_until,pts);
             }
+            // A long silence must end at the requested window, rather than scan
+            // the rest of a multi-GB movie looking for the next subtitle packet.
+            if(packet->stream_index==progress_stream) {
+                auto timestamp=packet->dts==AV_NOPTS_VALUE?packet->pts:packet->dts;
+                if(timestamp!=AV_NOPTS_VALUE)read_until=std::max(read_until,timestamp*av_q2d(format->streams[progress_stream]->time_base));
+            }
             av_packet_unref(packet.get());
-            if(cues.size()>4096)throw std::runtime_error("Subtitle window too large");
+            if(cues.size()>4096)throw SubtitleError("window_limit");
         }
-        if(interrupt(this)&&!cancelled.load())throw std::runtime_error("Subtitle read timed out");
+        if(interrupt(this)&&!cancelled.load())throw SubtitleError("read_timeout");
+        if(count==150000&&!eof&&read_until<end)throw SubtitleError("packet_limit");
         J kept=J::array(),result=J::array();
         for(auto& cue:cues) if(cue["end"].get<double>()>=start-1) {
             if(cue["start"].get<double>()<end)result.push_back(cue);
@@ -124,11 +150,23 @@ extern "C" JNIEXPORT jlong JNICALL Java_org_vrpassthroughplayer_plugin_Narration
 extern "C" JNIEXPORT void JNICALL Java_org_vrpassthroughplayer_plugin_NarrationNative_closeReader(JNIEnv*,jclass,jlong id) {
     std::lock_guard<std::mutex> lock(readers_mutex);auto it=readers.find(id);if(it!=readers.end()) {it->second->cancelled.store(true);readers.erase(it);}
 }
-extern "C" JNIEXPORT jstring JNICALL Java_org_vrpassthroughplayer_plugin_NarrationNative_readWindow(JNIEnv* e,jclass,jlong id,jdouble start,jdouble end) {
+namespace {
+jstring read_window(JNIEnv* e,jlong id,jdouble start,jdouble end,bool metadata) {
     try {
         std::shared_ptr<Reader> reader;
         {std::lock_guard<std::mutex> lock(readers_mutex);auto it=readers.find(id);if(it==readers.end())return e->NewStringUTF("[]");reader=it->second;}
         if(!std::isfinite(start)||!std::isfinite(end)||start<0||end<=start||end-start>60)throw std::runtime_error("Invalid subtitle window");
-        return e->NewStringUTF(reader->window(start,end).dump(-1,' ',true).c_str());
-    } catch(const std::exception&) {narration_error(e,"Unable to prepare subtitle timeline");return nullptr;}
+        auto result=reader->window(start,end);
+        if(metadata)result=J{{"cues",std::move(result)},{"eof",reader->eof},
+            {"duration",reader->format&&reader->format->duration>0?reader->format->duration/double(AV_TIME_BASE):0.0}};
+        return e->NewStringUTF(result.dump(-1,' ',true).c_str());
+    } catch(const SubtitleError& error) {narration_error(e,error.what());return nullptr;}
+      catch(const std::exception&) {narration_error(e,"subtitle_internal:0");return nullptr;}
+}
+}
+extern "C" JNIEXPORT jstring JNICALL Java_org_vrpassthroughplayer_plugin_NarrationNative_readWindow(JNIEnv* e,jclass,jlong id,jdouble start,jdouble end) {
+    return read_window(e,id,start,end,false);
+}
+extern "C" JNIEXPORT jstring JNICALL Java_org_vrpassthroughplayer_plugin_NarrationNative_readBatch(JNIEnv* e,jclass,jlong id,jdouble start,jdouble end) {
+    return read_window(e,id,start,end,true);
 }

@@ -18,6 +18,36 @@ class BackgroundAudioFilesTest {
         }
         assertEquals(512L * 1024 * 1024, BackgroundAudioFiles.MAX_BYTES)
     }
+    @Test fun sizeLimitUsesLongAndDoesNotLimitTheWholeLibrary() {
+        val directory = folder()
+        assertThrows(IllegalArgumentException::class.java) { BackgroundAudioFiles.copy(ByteArrayInputStream(byteArrayOf(1)), directory, "flac", BackgroundAudioFiles.MAX_BYTES + 1) }
+        // The exact per-file boundary is accepted, then completeness is checked.
+        assertThrows(IllegalStateException::class.java) { BackgroundAudioFiles.copy(ByteArrayInputStream(byteArrayOf(1)), directory, "flac", BackgroundAudioFiles.MAX_BYTES) }
+        // Virtual metadata exercises >4 GiB totals without allocating a giant test file.
+        val large = object : java.io.File(directory, "import_existing.flac") {
+            override fun isFile() = true
+            override fun length() = 4L * 1024 * 1024 * 1024 + 1
+        }
+        val largeLibrary = object : java.io.File(directory.path) {
+            override fun listFiles() = directory.listFiles()!!.plus(large)
+        }
+        val saved = BackgroundAudioFiles.copy(ByteArrayInputStream(byteArrayOf(1, 2, 3)), largeLibrary, "wav")
+        assertTrue(saved.created)
+        val storage = BackgroundAudioFiles.storage(largeLibrary)
+        assertEquals(4L * 1024 * 1024 * 1024 + 4, storage.used)
+        assertTrue(storage.total > 0 && storage.free in 0..storage.total)
+        assertTrue(BackgroundAudioFiles.remove(directory, saved.file.path)); directory.delete()
+    }
+    @Test fun storageCountsFilesOnceIncludingAnInFlightCopy() {
+        val directory = folder()
+        directory.resolve("a.flac").writeBytes(ByteArray(7))
+        directory.resolve("pending.part").writeBytes(ByteArray(3))
+        directory.resolve("nested").mkdir()
+        assertEquals(10L, BackgroundAudioFiles.storage(directory).used)
+        directory.resolve("a.flac").delete()
+        assertEquals(3L, BackgroundAudioFiles.storage(directory).used)
+        directory.resolve("pending.part").delete(); directory.resolve("nested").delete(); directory.delete()
+    }
     private fun folder() = Files.createTempDirectory("thru3d-audio-test").toFile().also { it.deleteOnExit() }
     @Test fun completeCopyIsIndependentAndDeduplicated() {
         val directory = folder(); val bytes = ByteArray(1024) { it.toByte() }

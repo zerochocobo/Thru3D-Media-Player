@@ -9,6 +9,8 @@ param([string]$ToolRoot = $(if ($env:THRU3D_TOOL_ROOT) { $env:THRU3D_TOOL_ROOT }
     [switch]$IncludeDiagnostics,
     # Version-matched assets imported with tools/Import-ModelAssets.ps1.
     [switch]$UsePreparedModelAssets,
+    # Legacy argument accepted for existing callers; narration is included by default.
+    [switch]$EnableNarrationDevelopment,
     # A worktree has no keystore of its own: point at the main checkout's keystore/signing.
     [string]$SigningDirectory = '',
     # A separate package keeps emulator Debug diagnostics apart from an installed Release.
@@ -28,9 +30,9 @@ if (-not $ApkName) {
         }
     } else {
         switch ($XrVendor) {
-            'Pico' { 'pico4-player-debug.apk' }
-            'OpenXR' { 'openxr-player-debug.apk' }
-            default { 'quest3-player-debug.apk' }
+            'Pico' { 'Thru3D-PICO-debug.apk' }
+            'OpenXR' { 'Thru3D-OpenXR-debug.apk' }
+            default { 'Thru3D-QUEST-debug.apk' }
         }
     }
 }
@@ -49,7 +51,7 @@ if ($DebugApplicationId) {
 }
 function Convert-HexString([byte[]]$Bytes) { -join ($Bytes | ForEach-Object { $_.ToString('X2') }) }
 $workspace = Split-Path -Parent $PSScriptRoot
-& "$PSScriptRoot\Assert-NarrationExcluded.ps1"
+& "$PSScriptRoot\Assert-NarrationPackaged.ps1"
 # Gradle outputs, Godot's import cache and evidence paths belong to one checkout.
 # Concurrent builds can otherwise package another run's plugin or overwrite its tests.
 $buildMutex = [Threading.Mutex]::new($false, 'Local\VRPassthroughPlayer-Build')
@@ -103,6 +105,8 @@ if ($UsePreparedModelAssets) {
     & "$workspace\tools\models\Prepare-RvmCandidate.ps1" -ToolRoot $ToolRoot
 }
 & "$workspace\tools\environment\Prepare-MpvAndroid.ps1" -ToolRoot $ToolRoot -Candidate $MpvCandidate
+& "$workspace\tools\environment\Prepare-Narration.ps1"
+& "$workspace\tools\environment\Prepare-NarrationModels.ps1"
 
 # Extract the Java API from the matching official template, not a second engine dependency.
 Add-Type -AssemblyName System.IO.Compression.FileSystem
@@ -120,13 +124,14 @@ if (-not (Test-Path -LiteralPath $godotApi)) {
 & "$PSScriptRoot\environment\Prepare-OpenList.ps1" -ToolRoot $ToolRoot
 # A cold Gradle daemon prints an SDK XML warning on stderr; only the exit code decides.
 $ErrorActionPreference = 'Continue'
-& "$workspace\android\gradlew.bat" -p "$workspace\android" "-PgodotAarPath=$godotApi" "-PincludeDiagnostics=$($IncludeDiagnostics.IsPresent.ToString().ToLowerInvariant())" :player-plugin:assembleDebug :player-plugin:assembleRelease $(if ($SkipUnitTests) { @() } else { @(':player-plugin:testDebugUnitTest') }) --console=plain 2>&1 | Out-File (Join-Path $logDirectory 'plugin-build.log') -Encoding utf8
+[string[]]$pluginTasks = @(':player-plugin:assembleDebug', ':player-plugin:assembleRelease')
+& "$workspace\android\gradlew.bat" -p "$workspace\android" "-PgodotAarPath=$godotApi" "-PincludeDiagnostics=$($IncludeDiagnostics.IsPresent.ToString().ToLowerInvariant())" @pluginTasks $(if ($SkipUnitTests) { @() } else { @(':player-plugin:testDebugUnitTest') }) --console=plain 2>&1 | Out-File (Join-Path $logDirectory 'plugin-build.log') -Encoding utf8
 $ErrorActionPreference = 'Stop'
 if ($LASTEXITCODE -ne 0) { throw 'Android plugin build failed; inspect build/output/logs/plugin-build.log.' }
 $pluginDirectory = Join-Path $projectDirectory 'addons\quest_player\bin'
 New-Item -ItemType Directory -Path $pluginDirectory -Force | Out-Null
 foreach ($variant in @('debug','release')) {
-    & "$PSScriptRoot\Assert-NarrationExcluded.ps1" -ArchivePath "$workspace\android\player-plugin\build\outputs\aar\player-plugin-$variant.aar"
+    & "$PSScriptRoot\Assert-NarrationPackaged.ps1" -ArchivePath "$workspace\android\player-plugin\build\outputs\aar\player-plugin-$variant.aar"
     Copy-Item -LiteralPath "$workspace\android\player-plugin\build\outputs\aar\player-plugin-$variant.aar" -Destination $pluginDirectory -Force
 }
 # OpenXR layer extensions Godot does not request (native/xr-layer/layer_extensions.cpp): a GDExtension
@@ -145,7 +150,8 @@ if ($LASTEXITCODE -ne 0) { throw 'Layer extension editor stub failed; inspect bu
 Copy-Item -LiteralPath (Join-Path $stubBuild 'layer_extensions_stub.dll') -Destination $stubDirectory -Force
 # The declaration names the Android library at a project path, as the vendors addon does.
 Add-Type -AssemblyName System.IO.Compression.FileSystem
-$pluginArchive = [IO.Compression.ZipFile]::OpenRead((Join-Path $pluginDirectory 'player-plugin-release.aar'))
+$layerVariant = $BuildType.ToLowerInvariant()
+$pluginArchive = [IO.Compression.ZipFile]::OpenRead((Join-Path $pluginDirectory "player-plugin-$layerVariant.aar"))
 try {
     $entry = $pluginArchive.GetEntry('jni/arm64-v8a/libquest_video_layer.so')
     if (-not $entry) { throw 'The player plugin AAR lacks libquest_video_layer.so.' }
@@ -396,7 +402,7 @@ try {
     if (-not $nativeEntry) { throw 'APK is missing the RVM JNI library.' }
     $nativeEvidenceDirectory = Join-Path $artifactDirectory 'native'
     New-Item -ItemType Directory -Path $nativeEvidenceDirectory -Force | Out-Null
-    & "$PSScriptRoot\Assert-NarrationExcluded.ps1" -ArchivePath $apkPath
+    & "$PSScriptRoot\Assert-NarrationPackaged.ps1" -ArchivePath $apkPath
     $rvmLibrary = Join-Path $nativeEvidenceDirectory 'libquest_rvm.so'
     [IO.Compression.ZipFileExtensions]::ExtractToFile($nativeEntry, $rvmLibrary, $true)
 } finally { $apkArchive.Dispose() }
@@ -463,7 +469,9 @@ $pickerCancelPath = Join-Path $logDirectory 'cancel_local_video_pick-dex.log'
 if ($LASTEXITCODE -ne 0) { throw 'APK picker cancellation method missing.' }
 $pickerCancelMethod = Get-Content $pickerCancelPath -Raw
 if (-not $pickerCancelMethod.Contains('.method public final cancel_local_video_pick(I)V') -or -not $pickerCancelMethod.Contains('.annotation runtime Lorg/godotengine/godot/plugin/UsedByGodot;') -or -not $pickerCancelMethod.Contains('runOnHostThread')) { throw 'APK picker cancellation Godot/UI binding differs.' }
+$narrationBundle = Get-Content (Join-Path $workspace 'third_party/narration/model.json') -Raw | ConvertFrom-Json
 $buildManifest = [ordered]@{
+    subtitle_narration = @{ enabled = $true; model_id = $narrationBundle.id; model_files = @($narrationBundle.files.PSObject.Properties).Count; model_bytes = ($narrationBundle.files.PSObject.Properties.Value.bytes | Measure-Object -Sum).Sum; bundled = $true }
     schema_version = 1
     built_utc = [DateTime]::UtcNow.ToString('o')
     application_id = $applicationId

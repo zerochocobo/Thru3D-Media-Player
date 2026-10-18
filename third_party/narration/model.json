@@ -1,6 +1,6 @@
 {
-  "id": "moss-nano-int8-20261017",
-  "directory": "narration/moss-nano-int8-20261017",
+  "id": "moss-nano-int8-recovery-20261018",
+  "directory": "narration/moss-nano-int8-recovery-20261018",
   "files": {
     "MOSS-Audio-Tokenizer-Nano-ONNX/codec_browser_onnx_meta.json": {
       "bytes": 17036,
@@ -31,8 +31,8 @@
       "sha256": "cb709ff4ef417924e02689b977c24e5ebecd15dac1f0f635e02c9afe0d9a8d07"
     },
     "MOSS-TTS-Nano-100M-ONNX/shared_weights.data": {
-      "bytes": 142792704,
-      "sha256": "4784943f4b212cb1e22de754f79a5213d4dec22fc0ef13b48c9b1db6c50748b0"
+      "bytes": 171104256,
+      "sha256": "0a9f2924ee3d43ffea5876642312be7f5d66b0afcc4c4e2e04d2018163860394"
     },
     "MOSS-TTS-Nano-100M-ONNX/tokenizer.model": {
       "bytes": 470897,
@@ -41,17 +41,32 @@
     "MOSS-TTS-Nano-100M-ONNX/tts_browser_onnx_meta.json": {
       "bytes": 4487,
       "sha256": "3edf25232dcd0af3d061c837e9a968a39e2f8592e06777d740503c4f2244f95c"
+    },
+    "MOSS-TTS-Nano-100M-ONNX/moss_tts_local_fallback.onnx": {
+      "bytes": 941477,
+      "sha256": "71ba74cedffd580425483ee3bac6bc3f858b820f959f323fdd8ed92d43706b16"
     }
   },
   "voices": {
     "zh": [
+      "Xiaoyu",
       "Yuewen",
+      "Lingyu",
+      "Zhiming",
       "Junhao"
     ],
     "en": [
       "Ava",
+      "Bella",
       "Adam"
+    ],
+    "ja": [
+      "Mei",
+      "Saki",
+      "Mortis",
+      "Umiri"
     ]
   },
-  "preset_distribution": "Reference recording provenance unverified. Provision for local testing; do not bundle these model/preset assets in commercial releases."
+  "preset_distribution": "Normal Debug and Release bundle the pinned model and built-in prompt codes. Individual reference-recording provenance audit remains unresolved; see NOTICE.md.",
+  "variant": "Fast local INT8 by default; lazily loaded original-local float projections for one bounded per-cue precision recovery. Prefill, decode, codec and tensor payloads are shared."
 }

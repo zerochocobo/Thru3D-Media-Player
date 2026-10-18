@@ -74,6 +74,11 @@ static func describe(id: int, tracks: Array) -> Dictionary:
 static func resolve(choice: Dictionary, tracks: Array) -> int:
 	if not valid_choice(choice): return UNRESOLVED
 	if int(choice.id) <= 0: return int(choice.id)
+	# Older versions hid the mix filename behind this fixed title. Migrate only
+	# an unambiguous prepared mix; never bind that preference to another M4A.
+	if choice.get("external", false) and choice.get("title", "") == "Clone voice":
+		var mixes := tracks.filter(func(track): return track is Dictionary and track.get("external", false) and str(track.get("title", "")).to_lower().ends_with(".si.mix.m4a"))
+		if mixes.size() == 1: return int(mixes[0].id)
 	if choice.has("file"):
 		for track in tracks:
 			if track is Dictionary and track.get("external", false) and track.get("source_file", "") == choice.file: return int(track.id)

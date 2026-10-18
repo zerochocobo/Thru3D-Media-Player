@@ -75,6 +75,67 @@ class Mp4InterleavePolicyTest {
     @Test fun smallerAudioPrefixesKeepTheNormalLowLatencyPolicy() {
         assertFalse(Mp4InterleavePolicy.inspect(fixture(audioSize = 4 * mib)).sequential)
     }
+    private fun timedFixture(skewed: Boolean, corrupt: Boolean = false, chunks: Int = 32,
+                             spacing: Long = 64 * mib, audioLength: Long = 1000, ticks: Long = 1000,
+                             videoLeads: Boolean = false, variableAudio: Boolean = false): SparseReader {
+        fun timed(kind: String, positions: LongArray, length: Long) = box("trak", box("mdia",
+            box("hdlr", numbers(0, 0), kind.toByteArray()),
+            box("mdhd", numbers(0, 0, 0, 1000, chunks * ticks, 0)),
+            box("minf", box("stbl", offsets(positions, true),
+                box("stsz", if (variableAudio && kind == "soun") numbers(0, 0, positions.size.toLong(),
+                    *LongArray(positions.size) { length - it % 3 }) else numbers(0, length, positions.size.toLong())),
+                box("stsc", numbers(0, 1, 1, 1, 1)),
+                box("stts", numbers(0, 1, if (corrupt) 999 else positions.size.toLong(), ticks))))))
+        val video = LongArray(chunks) { if (skewed && videoLeads) 44 + it * 64L else 44 + it * spacing }
+        val audio = LongArray(chunks) { if (!skewed) video[it] + 64
+            else if (videoLeads) 1000L + it * spacing else 1000L + it * audioLength }
+        val moovAt = (chunks + 1) * spacing + chunks * audioLength + 4096
+        val ftyp = box("ftyp", "isom".toByteArray(), numbers(0), "isommp41".toByteArray())
+        val mdat = ByteArrayOutputStream().also { out -> DataOutputStream(out).use {
+            it.writeInt(1); it.writeBytes("mdat"); it.writeLong(moovAt - ftyp.size)
+        } }.toByteArray()
+        return SparseReader(ftyp + mdat, box("moov", timed("vide", video, 64), timed("soun", audio, audioLength)), moovAt)
+    }
+    @Test fun distributedFutureAudioIncludesExactPayloadRangesWithoutChangingDemuxOrder() {
+        val decision = Mp4InterleavePolicy.inspect(timedFixture(true))
+        assertTrue(decision.regionCache); assertFalse(decision.sequential)
+        assertEquals("noninterleaved_tracks", decision.diagnostic)
+        assertEquals(32, decision.audioChunks.size)
+        assertEquals(AudioReadSpan(1000, 2000), decision.audioChunks.first())
+        assertEquals(32000L, decision.audioChunks.sumOf { it.end - it.start })
+    }
+    @Test fun tinyShortFilesFewChunksSingleChunksAndLargerAudioDoNotNeedSizeExemptions() {
+        val short = timedFixture(true, chunks = 4, spacing = 65536, audioLength = 128)
+        assertTrue(short.size < mib)
+        assertTrue(Mp4InterleavePolicy.inspect(short).regionCache)
+        assertTrue(Mp4InterleavePolicy.inspect(timedFixture(true, chunks = 1, spacing = 65536, ticks = 4000)).regionCache)
+        assertTrue(Mp4InterleavePolicy.inspect(timedFixture(true, chunks = 4, audioLength = 4 * mib)).regionCache)
+        assertFalse(Mp4InterleavePolicy.inspect(timedFixture(false, chunks = 4, spacing = 65536, audioLength = 128)).regionCache)
+    }
+    @Test fun futureVideoOrAudioExceedingTheDemuxBudgetCannotEnablePhysicalOrder() {
+        assertTrue(Mp4InterleavePolicy.inspect(timedFixture(true, videoLeads = true)).audioChunks.isEmpty())
+        for (reader in listOf(timedFixture(true, videoLeads = true),
+            timedFixture(true, chunks = 4, spacing = 512 * mib, audioLength = 64 * mib))) {
+            val decision = Mp4InterleavePolicy.inspect(reader)
+            assertFalse(decision.sequential)
+            assertTrue(decision.regionCache)
+        }
+    }
+    @Test fun variableAudioSampleSizesExcludeInterveningVideoBytesFromCachedSpans() {
+        val decision = Mp4InterleavePolicy.inspect(timedFixture(true, chunks = 4, spacing = 65536,
+            audioLength = 128, variableAudio = true))
+        assertTrue(decision.regionCache); assertFalse(decision.sequential)
+        assertEquals(listOf(128L, 127L, 126L, 128L), decision.audioChunks.map { it.end - it.start })
+        assertEquals(listOf(1000L, 1128L, 1256L, 1384L), decision.audioChunks.map { it.start })
+    }
+    @Test fun ordinarySmallAudioAndInvalidTimelinesNeverEnableReadCache() {
+        assertFalse(Mp4InterleavePolicy.inspect(timedFixture(false)).regionCache)
+        assertFalse(Mp4InterleavePolicy.inspect(timedFixture(true, corrupt = true)).regionCache)
+        assertFalse(Mp4InterleavePolicy.inspect(fixture()).regionCache)
+        assertFalse(Mp4InterleavePolicy.inspect(fixture(multipleAudio = true)).regionCache)
+        assertFalse(Mp4InterleavePolicy.inspect(fixture(withAudio = false)).regionCache)
+        assertFalse(Mp4InterleavePolicy.inspect(fixture(fragmented = true)).regionCache)
+    }
     @Test fun missingMetadataInvalidLengthsAndUnsupportedContainersFailOpen() {
         val f = fixture()
         assertFalse(Mp4InterleavePolicy.inspect(SparseReader(f.head, ByteArray(8), f.moovAt)).sequential)

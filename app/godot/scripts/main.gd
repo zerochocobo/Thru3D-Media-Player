@@ -1,5 +1,7 @@
 extends Node3D
 
+const ScreenPresets := preload("res://scripts/screen_presets.gd")
+
 const DisplayController := preload("res://scripts/xr_display.gd")
 const Board := preload("res://scripts/calibration_board.gd")
 const Favorites := preload("res://scripts/favorite_store.gd")
@@ -17,13 +19,16 @@ const InputVisuals := preload("res://scripts/input_visuals.gd")
 const ControllerFeedback := preload("res://scripts/controller_feedback.gd")
 const Geometry := preload("res://scripts/video_geometry.gd")
 const LibraryMenu := preload("res://scripts/library_menu.gd")
+const PuzzleLibraryMenu := preload("res://scripts/puzzle/puzzle_library_menu.gd")
 const StorageVolume := preload("res://scripts/storage_volume.gd")
 const Quality := preload("res://scripts/display_quality.gd")
 const ThumbnailCache := preload("res://scripts/thumbnail_cache.gd")
 const SETTINGS_PATH := "user://player_settings.cfg"
 const LIBRARY_DISTANCE_DEFAULT := 1.4
 const PhotoDisplay := preload("res://scripts/photo_display.gd")
-const PhotoMenu := preload("res://scripts/photo_menu.gd")
+const PhotoMenu := preload("res://scripts/puzzle/puzzle_photo_menu.gd")
+const PuzzleHost := preload("res://scripts/puzzle/puzzle_host.gd")
+var puzzle_game: Node3D
 const PhotoHandGestures := preload("res://scripts/photo_hand_gestures.gd")
 const PhotoPalmSwipe := preload("res://scripts/photo_palm_swipe.gd")
 const ImageInfo := preload("res://scripts/image_info.gd")
@@ -257,10 +262,7 @@ func _ready() -> void:
 	video.load_mode_lock(settings.get_value("video", "mode_lock", {}))
 	_restore_subtitle_settings()
 	video.color_grade.restore(settings.get_value("video", "color_grade", {}))
-	# The flat screen keeps the distance, size and curve the viewer last chose.
-	video.screen_distance = clampf(float(settings.get_value("screen", "distance", video.SCREEN_DISTANCE)),
-		video.DISTANCE_LIMITS.x, video.DISTANCE_LIMITS.y)
-	video.screen_scale = clampf(float(settings.get_value("screen", "scale", 1.0)), video.SCALE_LIMITS.x, video.SCALE_LIMITS.y)
+	_restore_flat_video_settings()
 	video.screen_curve = clampf(float(settings.get_value("screen", "curve", 0.0)), 0.0, 1.0)
 	add_child(video)
 	_update_thumbnail_protection()
@@ -282,7 +284,7 @@ func _ready() -> void:
 	photo.video_layer = video.video_layer # one compositor layer provider for both players
 	if video.video_layer: video.video_layer.supersampling = Quality.load_supersampling(settings)
 	display.set_foveation(int(settings.get_value("video", "foveation", 0)))
-	recent_menu = LibraryMenu.new()
+	recent_menu = PuzzleLibraryMenu.new()
 	recent_menu.controls_page.bindings = controller_bindings
 	recent_menu.catalog = video.recent_files
 	recent_menu.collections.store = favorites
@@ -298,7 +300,14 @@ func _ready() -> void:
 	recent_menu.audio_import_selected.connect(_on_audio_import_selected)
 	recent_menu.audio_import_cancelled.connect(_on_audio_import_cancelled)
 	recent_menu.background_audio_provider = background_audio.snapshot
-	recent_menu.music_requested.connect(func(): _show_music_menu(false))
+	recent_menu.music_requested.connect(func(): _show_music_management(false))
+	recent_menu.puzzle_requested.connect(func(): if puzzle_game: puzzle_game.open_hub())
+	recent_menu.puzzle_progress_provider=func(): return puzzle_game!=null and puzzle_game.has_progress()
+	recent_menu.puzzle_mode_provider=func(): return puzzle_game!=null and puzzle_game.is_mode_enabled()
+	recent_menu.music_toggle_requested.connect(background_audio.toggle_pause)
+	recent_menu.audio_preview_requested.connect(background_audio.preview_audio)
+	recent_menu.audio_preview_stopped.connect(background_audio.stop_preview)
+	recent_menu.audio_preview_scrubbed.connect(background_audio.scrub_preview)
 	recent_menu.storage_eject_requested.connect(_on_storage_eject_requested)
 	recent_menu.storage_removed.connect(_release_storage_readers)
 	recent_menu.layout_requested.connect(_toggle_library_layout)
@@ -325,6 +334,8 @@ func _ready() -> void:
 	player_menu.bookmark_mode_requested.connect(_on_bookmark_mode_requested)
 	player_menu.setting_requested.connect(_on_player_setting)
 	player_menu.volume_requested.connect(_on_menu_volume)
+	player_menu.whisper_requested.connect(_on_menu_whisper)
+	player_menu.whisper_haptic.connect(_on_whisper_haptic)
 	player_menu.adjustment_requested.connect(_on_playback_adjustment)
 	player_menu.adjustment_committed.connect(_save_playback_adjustments)
 	player_menu.subtitle_requested.connect(video.set_subtitle_track)
@@ -390,6 +401,7 @@ func _ready() -> void:
 	report_timer.start()
 	_update_status()
 	if not OS.get_cmdline_user_args().has("--mpv-diagnostic-2d"):
+		puzzle_game = PuzzleHost.new(); puzzle_game.app = self; add_child(puzzle_game)
 		_show_recent_menu()
 	Log.record("ui_ready", {"library_visible": recent_menu.visible, "player_visible": player_menu.visible,
 		"diagnostics_visible": status_label.visible, "calibration_visible": calibration_board.visible,
@@ -399,6 +411,8 @@ func _ready() -> void:
 
 ## Desktop preview: dragging with the mouse moves the picture, the wheel zooms immersive views.
 func _unhandled_input(event: InputEvent) -> void:
+	if puzzle_game and puzzle_game.active:
+		puzzle_game.desktop(event); get_viewport().set_input_as_handled(); return
 	if photo_active and photo.inspect:
 		if event is InputEventMouseMotion:
 			_inspect_desktop_ray = [photo.view_camera.project_ray_origin(event.position), photo.view_camera.project_ray_normal(event.position)]
@@ -436,6 +450,8 @@ func _unhandled_input(event: InputEvent) -> void:
 			_save_screen()
 
 func _unhandled_key_input(event: InputEvent) -> void:
+	if puzzle_game and puzzle_game.active:
+		puzzle_game.desktop(event); get_viewport().set_input_as_handled(); return
 	if event is InputEventKey and event.pressed and not event.echo:
 		if photo_active and photo.inspect and event.keycode in [KEY_ESCAPE, KEY_SPACE]:
 			_close_photo_inspect()
@@ -514,6 +530,8 @@ func _unhandled_key_input(event: InputEvent) -> void:
 # Menus are ray + trigger only. A list row clicks on release unless the ray dragged to scroll.
 # Video triggers select controls or resize flat corners; grips move pictures. Photo/hand dragging is separate.
 func _on_controller_release(action: String, hand: String = "") -> void:
+	if puzzle_game and puzzle_game.active:
+		puzzle_game.button(action, hand, true); return
 	controller_bindings.release(hand, action)
 	var consumed_key := hand + "/" + action
 	var consumed: bool = _controller_consumed.has(consumed_key)
@@ -543,7 +561,7 @@ func _finish_interface_move() -> void:
 			if target.kind == "menu" and target.node == recent_menu and not is_zero_approx(float(interface_move.capture.get("depth", 0.0))):
 				_remember_library_distance(head)
 			if target.kind == "screen":
-				target.node.set_screen_distance((target.node.global_transform * target.node.flat_pose).origin.distance_to(_eye()))
+				target.node.set_screen_distance(_surface_distance(target.node))
 				if photo_active and photo.gallery.focus >= 0: photo.gallery.remember_focus_pose(photo.global_transform * photo.flat_pose)
 		if video and not _viewer().local_uri.is_empty() and interface_move.capture.targets.any(func(target): return target.kind in ["screen", "immersive", "gallery"]): _save_screen()
 	interface_move.cancel(); stick_controls.suspend()
@@ -593,6 +611,8 @@ func _on_pointer_release(action: String, hand: String) -> void:
 
 func _on_controller_button(action: String, hand: String = "") -> void:
 	if hand not in ControllerBindings.HANDS or not _controller_allowed(hand): return
+	if puzzle_game and puzzle_game.active:
+		puzzle_game.button(action, hand); return
 	if action == "menu_button":
 		if controller_feedback: controller_feedback.wake(hand)
 		interface_move.cancel()
@@ -824,7 +844,9 @@ func _begin_interface_move(hand: String, input: String) -> void:
 			targets.append({"node": surface, "kind": "screen" if surface.geometry == Geometry.Geometry.FLAT else "immersive", "pose": surface.global_transform * surface.flat_pose, "key": _surface_key(surface)})
 	if targets.is_empty(): return
 	for target in targets:
-		if target.kind == "screen": target["distance_limits"] = photo.PHOTO_DISTANCE_LIMITS if photo_active else video.DISTANCE_LIMITS
+		if target.kind == "screen":
+			target["distance_limits"] = photo.PHOTO_DISTANCE_LIMITS if photo_active else video.DISTANCE_LIMITS
+			target["cinema"] = target.node == video and video.cinema.active(video)
 		elif target.kind == "gallery": target["distance_limits"] = photo.gallery.DISTANCE_LIMITS
 	var anchor: Vector3 = menu.to_global(hit.point) if not hit.is_empty() else media_anchor
 	if interface_move.begin(hand, input, pose, targets, anchor, head, view_follow.enabled): stick_controls.suspend()
@@ -863,6 +885,8 @@ func _update_interface_move() -> void:
 			photo._update_inspect()
 
 func _on_pointer_button(action: String, hand: String) -> void:
+	if puzzle_game and puzzle_game.active:
+		puzzle_game.button(action, hand); return
 	if not interface_move.capture.is_empty():
 		if action == "menu_button": interface_move.cancel()
 		elif interface_move.capture.moved: return
@@ -965,6 +989,9 @@ func _process(delta: float) -> void:
 	if _gallery_save_after > 0 and Time.get_ticks_msec() >= _gallery_save_after:
 		_gallery_save_after = 0; _save_photo_adjustments()
 	_update_hand_input(delta)
+	if puzzle_game and puzzle_game.active:
+		if video: video.cinema.hide_guide()
+		puzzle_game.tick(delta); stick_controls.suspend(); display.set_video_layer(false); return
 	if not _head_placed and _head_tracked():
 		_head_placed = true
 		if not view_follow.enabled: _recenter(false)
@@ -991,7 +1018,28 @@ func _process(delta: float) -> void:
 	_process_sticks(left, right, delta)
 	_update_controller_feedback(delta)
 
+var _cinema_adjusting := false
+
 func _process_sticks(left: Vector2, right: Vector2, delta: float) -> void:
+	_cinema_adjusting = false
+	_process_stick_input(left, right, delta)
+	_update_cinema_guide()
+
+func _update_cinema_guide() -> void:
+	if not video: return
+	var adjusting := false
+	if not photo_active and _input_focused() and video.cinema.active(video) and not (puzzle_game and puzzle_game.active):
+		var menu := _active_menu()
+		if menu == player_menu and is_instance_valid(player_menu) and player_menu.visible:
+			adjusting = player_menu._adjust_target in [450, 451] and not player_menu._adjust_hand.is_empty() and _ray(player_menu._adjust_hand) != null
+		if not menu or (menu == player_menu and player_menu.allows_playback_sticks()):
+			adjusting = adjusting or (_cinema_adjusting and not _flat_zoom_hand.is_empty() and _ray(_flat_zoom_hand) != null)
+			if _grab.has("resize") and _ray(_grab.hand) != null: adjusting = true
+		# Grip depth is permitted even while the playback controls are open.
+		if _cinema_adjusting and not interface_move.capture.is_empty(): adjusting = true
+	video.cinema.show_guide(video, _head_pose(), adjusting)
+
+func _process_stick_input(left: Vector2, right: Vector2, delta: float) -> void:
 	if not _flat_zoom_hand.is_empty() and (photo_active or video.geometry != Geometry.Geometry.FLAT \
 		or (left if _flat_zoom_hand == "left_hand" else right).length() < 0.3): _finish_flat_zoom()
 	_update_seek_feedback(0.0)
@@ -1002,10 +1050,13 @@ func _process_sticks(left: Vector2, right: Vector2, delta: float) -> void:
 	if not interface_move.capture.is_empty() and _input_focused():
 		var held := left if interface_move.capture.hand == "left_hand" else right
 		var chord_pending: bool = interface_move.pending() and controller_bindings.down[interface_move.capture.hand].has("trigger_click")
+		_cinema_adjusting = not chord_pending and interface_move.capture.get("depth_ready", false) and held.is_finite() and absf(held.y) > 0.2 and absf(held.y) > absf(held.x) \
+			and interface_move.capture.get("targets", []).any(func(target): return target.node == video and target.kind == "screen")
 		if not chord_pending and interface_move.adjust_distance(held, delta):
 			_update_interface_move()
+			if interface_move.capture.is_empty(): _cinema_adjusting = false
 			for target in interface_move.capture.get("targets", []):
-				if target.kind == "screen" and is_instance_valid(target.node): target.node.set_screen_distance((target.node.global_transform * target.node.flat_pose).origin.distance_to(_eye()))
+				if target.kind == "screen" and is_instance_valid(target.node): target.node.set_screen_distance(_surface_distance(target.node))
 			if menu and not interface_move.capture.is_empty(): _update_menu_pointer(interface_move.capture.hand)
 		if not chord_pending: stick_controls.suspend(); return
 	if not interface_move.capture.is_empty() and interface_move.capture.moved:
@@ -1105,6 +1156,8 @@ func _update_hand_input(delta: float) -> void:
 	for hand in hand_pointers:
 		var sample := {}
 		var point: Variant = null
+		var hand_pose: Variant = null
+		var reference_position: Variant = null
 		var palm := {}
 		if _input_focused():
 			var tracker := _hand_tracker(hand)
@@ -1126,12 +1179,16 @@ func _update_hand_input(delta: float) -> void:
 			elif not HandPointer.is_optical(tracker):
 				var ray: Variant = _controller_ray(hand)
 				if ray != null: sample = {"source": "controller", "ray": ray}
+			if puzzle_game and puzzle_game.active and xr_origin:
+				reference_position=HandPointer.palm_position(tracker,xr_origin.global_transform*XRServer.get_reference_frame(),XRServer.world_scale)
+				hand_pose=HandPointer.grip_pose(tracker,xr_origin.global_transform*XRServer.get_reference_frame(),XRServer.world_scale)
+				if hand_pose==null and sample.get("source")=="hand": hand_pose=sample.get("pose")
 		var event: Dictionary = hand_pointers[hand].update(sample, delta)
 		if event.cancelled: _cancel_pointer(hand)
 		if event.menu and hand == "left_hand": _on_pointer_button("menu_button", hand)
 		var pointer: RefCounted = hand_pointers[hand]
 		inputs[hand] = event.merged({"source": pointer.source, "tracked": pointer.ray != null,
-			"down": pointer.down, "position": point, "palm": palm})
+			"down": pointer.down, "position": point, "palm": palm, "pose": hand_pose,"reference_position":reference_position})
 		if hand_marks.has(hand):
 			var mark: MeshInstance3D = hand_marks[hand]
 			mark.visible = pointer.source == "hand" and pointer.ray != null and not _active_menu() and not photo_active
@@ -1145,6 +1202,8 @@ func _is_photo_hand(hand: String) -> bool:
 		and hand_pointers.has(hand) and hand_pointers[hand].source == "hand"
 
 func _dispatch_hand_input(inputs: Dictionary, _delta: float = 1.0 / 72.0) -> void:
+	if puzzle_game and puzzle_game.active:
+		puzzle_game.hand_inputs(inputs); return
 	if not interface_move.capture.is_empty(): return
 	if photo_active:
 		inputs = inputs.duplicate(true)
@@ -1223,8 +1282,11 @@ func _cancel_pointer(hand: String) -> void:
 		if is_instance_valid(menu) and menu.has_method("cancel_pointer"): menu.cancel_pointer(hand)
 
 func _on_input_session_changed() -> void:
+	if puzzle_game and puzzle_game.active and not _input_focused():
+		puzzle_game.show_panel(true)
 	if favorites: favorites.focus_changed(_input_focused(), Time.get_ticks_msec())
 	if _input_focused(): return
+	if video: video.cinema.hide_guide()
 	if controller_feedback: controller_feedback.rebase()
 	_finish_flat_zoom()
 	_video_control_tap = {}
@@ -1393,6 +1455,13 @@ func _begin_grab(hand: String) -> void:
 	var point: Variant = _viewer().screen_point(ray[0], ray[1]) if corner >= 0 else null
 	if point != null and Vector2(point.x, point.y).length() > 0.05:
 		_grab["resize"] = {"corner": corner, "start_length": Vector2(point.x, point.y).length(), "start_scale": _viewer().screen_scale}
+		if not photo_active and video.cinema.active(video):
+			_grab.resize["cinema_anchor"] = video.cinema.content_bottom(video)
+			var anchor: Transform3D = _grab.resize.cinema_anchor
+			var denominator: float = ray[1].dot(anchor.basis.z)
+			if absf(denominator) > 0.00001:
+				_grab.resize["cinema_vector"] = ray[0] + ray[1] * ((anchor.origin - ray[0]).dot(anchor.basis.z) / denominator) - anchor.origin
+			else: _grab.erase("resize")
 	# A deliberate screen press leaves the controls before sticks may affect playback.
 	# Remember this on release so a tap does not immediately reopen the controls.
 	if not photo_active and _viewer().geometry == Geometry.Geometry.FLAT and _viewer().panel.visible and player_menu.visible:
@@ -1429,6 +1498,16 @@ func _update_grab() -> void:
 			return
 		_grab.moved = true
 	if _grab.has("resize"):
+		if _grab.resize.has("cinema_anchor"):
+			var anchor: Transform3D = _grab.resize.cinema_anchor
+			var normal := anchor.basis.z
+			var denominator: float = ray[1].dot(normal)
+			if absf(denominator) > 0.00001:
+				var t: float = (anchor.origin - ray[0]).dot(normal) / denominator
+				if t > 0:
+					var vector: Vector3 = _grab.resize.cinema_vector
+					video.set_screen_scale(float(_grab.resize.start_scale) * maxf(0.0, (ray[0] + ray[1] * t - anchor.origin).dot(vector) / vector.length_squared()))
+			return
 		# The corner follows the ray: the screen grows or shrinks about its centre.
 		var point: Variant = _viewer().screen_point(ray[0], ray[1])
 		if point != null:
@@ -1449,6 +1528,11 @@ static func _ray_angles(direction: Vector3) -> Vector2:
 ## at its distance and keeps facing the eyes.
 func _turn_picture(yaw: float, pitch: float) -> void:
 	if photo_active and photo.inspect: return
+	if not photo_active and video.cinema.active(video):
+		var pose: Transform3D = video.global_transform * video.flat_pose
+		pose.origin += pose.basis.x * (-yaw * video.screen_distance) + Vector3.UP * pitch * video.screen_distance
+		video.set_flat_world_pose(pose)
+		return
 	if view_follow.enabled and _head_pose() == null: return
 	if is_zero_approx(yaw) and is_zero_approx(pitch): return
 	if _viewer().geometry != Geometry.Geometry.FLAT:
@@ -1483,6 +1567,9 @@ func _turn_picture(yaw: float, pitch: float) -> void:
 
 ## The flat screen nearer (negative) or farther along the line from the eyes, still facing them.
 func _push_screen(amount: float) -> void:
+	if not photo_active and video.cinema.active(video):
+		video.cinema.push(video, _eye(), amount)
+		return
 	if view_follow.enabled and _head_pose() == null: return
 	var eye := _eye()
 	var world: Transform3D = _viewer().global_transform * _viewer().flat_pose
@@ -1496,16 +1583,133 @@ func _push_screen(amount: float) -> void:
 	if photo_active and photo.gallery.focus >= 0:
 		photo.gallery.remember_focus_pose(photo.global_transform * photo.flat_pose)
 
+## Explicit defaults are separate from the last viewing state written by gestures and sliders.
+func _surface_distance(surface: Node3D) -> float:
+	if surface == video and video.cinema.active(video): return video.cinema.distance(video, _eye())
+	return (surface.global_transform * surface.flat_pose).origin.distance_to(_eye())
+
+func _cinema_default(key: String = "default_cinema") -> Dictionary:
+	var value: Variant = settings.get_value("screen", key, {})
+	if not value is Dictionary: return {"enabled": false, "height": -0.5, "preset": ""}
+	var height_value: Variant = value.get("height", -0.5)
+	var height := float(height_value) if (height_value is float or height_value is int) and is_finite(float(height_value)) else -0.5
+	var preset := str(value.get("preset", ""))
+	if ScreenPresets.find(preset).is_empty(): preset = ""
+	return {"enabled": value.get("enabled", false) == true, "height": clampf(height, -30, 30), "preset": preset}
+
+func _apply_screen_preset(id: String) -> void:
+	if photo_active or not video or video.local_uri.is_empty() or video.geometry != Geometry.Geometry.FLAT: return
+	var preset: Dictionary = ScreenPresets.find(id)
+	var head: Variant = _head_pose()
+	if preset.is_empty() or not head is Transform3D: return
+	_finish_flat_zoom()
+	_set_cinema_mode(true)
+	video.screen_preset = id
+	video.set_screen_curve(0.0)
+	video._apply_geometry()
+	video.set_screen_distance(preset.distance)
+	# A preset establishes a new seat; manual resizing afterwards retains the bottom anchor.
+	video.cinema.height = -preset.size.y * preset.eye_level
+	video.cinema.recenter(video, head)
+	_cinema_adjusting = false
+	_save_screen()
+
+func _active_screen_preset() -> String:
+	var preset: Dictionary = ScreenPresets.find(video.screen_preset)
+	if preset.is_empty() or not video.cinema.active(video) or video.screen_curve != 0: return ""
+	if not is_equal_approx(_surface_distance(video), float(preset.distance)): return ""
+	if not is_equal_approx(video.cinema.eye_level(video, _eye()), float(preset.eye_level)): return ""
+	return video.screen_preset
+
+func _set_cinema_mode(enabled: bool) -> void:
+	if photo_active or not video or video.geometry != Geometry.Geometry.FLAT: return
+	interface_move.cancel(); _grab.clear(); stick_controls.suspend()
+	if enabled and view_follow.enabled: _on_session_control("follow")
+	interface_move.placements.erase(&"video"); view_follow.forget(&"video")
+	video.cinema.configure(video, enabled, _head_pose())
+	video.set_screen_distance(clampf(_surface_distance(video), video.DISTANCE_LIMITS.x, video.DISTANCE_LIMITS.y))
+
+func _flat_video_is_default() -> bool:
+	if not settings.has_section_key("screen", "default_view"): return false
+	var distance: float = _surface_distance(video) if video.cinema.active(video) else video.screen_distance
+	if not Vector2(distance, video.screen_scale).is_equal_approx(_flat_video_defaults()): return false
+	var saved := _cinema_default()
+	if video.cinema.enabled != saved.enabled: return false
+	if video.screen_preset != saved.preset: return false
+	return not saved.enabled or (video.cinema.bottom is Transform3D and is_equal_approx(video.cinema.bottom.origin.y - _eye().y, saved.height))
+
+func _flat_video_defaults() -> Vector2:
+	var value: Variant = settings.get_value("screen", "default_view", Vector2(video.SCREEN_DISTANCE, 1.0))
+	if not value is Vector2 or not value.is_finite(): return Vector2(video.SCREEN_DISTANCE, 1.0)
+	var preset := str(_cinema_default().preset)
+	if not preset.is_empty(): value.y = ScreenPresets.scale_for(preset, video._screen_base)
+	return Vector2(clampf(value.x, video.DISTANCE_LIMITS.x, video.DISTANCE_LIMITS.y),
+		clampf(value.y, video.SCALE_LIMITS.x, video.SCALE_LIMITS.y))
+
+func _restore_flat_video_settings() -> void:
+	# Keep legacy viewing state until the user explicitly saves a default; never infer intent from it.
+	var value := _flat_video_defaults()
+	if not settings.has_section_key("screen", "default_view"):
+		value = Vector2(float(settings.get_value("screen", "distance", video.SCREEN_DISTANCE)),
+			float(settings.get_value("screen", "scale", 1.0)))
+		if not value.is_finite(): value = Vector2(video.SCREEN_DISTANCE, 1.0)
+	video.screen_distance = clampf(value.x, video.DISTANCE_LIMITS.x, video.DISTANCE_LIMITS.y)
+	video.screen_scale = clampf(value.y, video.SCALE_LIMITS.x, video.SCALE_LIMITS.y)
+	var saved := _cinema_default("default_cinema" if settings.has_section_key("screen", "default_view") else "cinema")
+	video.cinema.enabled = saved.enabled
+	video.cinema.height = saved.height
+	video.cinema.placed = false
+	video.screen_preset = saved.preset
+
+func _current_cinema_state() -> Dictionary:
+	var height: float = video.cinema.bottom.origin.y - _eye().y if video.cinema.active(video) and video.cinema.bottom is Transform3D else video.cinema.height
+	return {"enabled": video.cinema.enabled, "height": height, "preset": video.screen_preset}
+
+func _remember_current_screen() -> void:
+	settings.set_value("screen", "distance", video.screen_distance)
+	settings.set_value("screen", "scale", video.screen_scale)
+	if video.geometry == Geometry.Geometry.FLAT:
+		var cinema := _current_cinema_state()
+		video.cinema.height = cinema.height
+		settings.set_value("screen", "cinema", cinema)
+
+func _save_flat_video_defaults(locked: bool = true) -> void:
+	if photo_active or not video or video.local_uri.is_empty() or video.geometry != Geometry.Geometry.FLAT: return
+	var value := Vector2(_surface_distance(video) if video.cinema.active(video) else video.screen_distance, video.screen_scale)
+	if not value.is_finite() or value.x < video.DISTANCE_LIMITS.x - 0.0001 or value.x > video.DISTANCE_LIMITS.y + 0.0001: return
+	value.x = clampf(value.x, video.DISTANCE_LIMITS.x, video.DISTANCE_LIMITS.y)
+	var previous := {}
+	for key in ["default_view", "default_cinema", "distance", "scale", "cinema"]:
+		if settings.has_section_key("screen", key): previous[key] = settings.get_value("screen", key)
+	var cinema := _current_cinema_state()
+	if locked:
+		settings.set_value("screen", "default_view", value)
+		settings.set_value("screen", "default_cinema", cinema)
+	else:
+		for key in ["default_view", "default_cinema"]:
+			if settings.has_section_key("screen", key): settings.erase_section_key("screen", key)
+	# Switching back to automatic must survive restart without resurrecting the old lock.
+	settings.set_value("screen", "distance", value.x)
+	settings.set_value("screen", "scale", value.y)
+	settings.set_value("screen", "cinema", cinema)
+	var error := settings.save(settings_path)
+	if error != OK:
+		for key in ["default_view", "default_cinema", "distance", "scale", "cinema"]:
+			if previous.has(key): settings.set_value("screen", key, previous[key])
+			elif settings.has_section_key("screen", key): settings.erase_section_key("screen", key)
+		Log.record("screen_default_save_failed", {"error": error})
+	else: video.cinema.height = cinema.height
+
 func _save_screen() -> void:
 	if photo_active:
 		_save_photo_adjustments()
 		return
-	settings.set_value("screen", "distance", video.screen_distance)
-	settings.set_value("screen", "scale", video.screen_scale)
+	_remember_current_screen()
 	settings.set_value("screen", "curve", video.screen_curve)
 	settings.save(settings_path)
 
 func _zoom_video(amount: float, hand: String = "right_hand") -> void:
+	_cinema_adjusting = true
 	if video.geometry == Geometry.Geometry.FLAT:
 		video.set_screen_scale(video.screen_scale * exp(amount))
 		settings.set_value("screen", "scale", video.screen_scale)
@@ -1515,6 +1719,7 @@ func _zoom_video(amount: float, hand: String = "right_hand") -> void:
 func _finish_flat_zoom() -> void:
 	if _flat_zoom_hand.is_empty(): return
 	# Commit the last scaled video's value, even if another media is now displayed.
+	_remember_current_screen()
 	settings.save(settings_path); _flat_zoom_hand = ""
 
 ## Right stick press: the picture back at its natural size and distance (the curve stays). It stays
@@ -1525,7 +1730,7 @@ func _reset_picture() -> void:
 	var offset: Vector3 = (_viewer().global_transform * _viewer().flat_pose).origin - _eye()
 	var distance: float = photo.DEFAULT_DISTANCE if photo_active else video.SCREEN_DISTANCE
 	if _viewer().geometry == Geometry.Geometry.FLAT and offset.length() >= 0.1:
-		_push_screen(distance - offset.length())
+		_push_screen(distance - _surface_distance(_viewer()))
 	_viewer().set_screen_distance(distance)
 	_save_screen()
 
@@ -1559,16 +1764,19 @@ var _menu_touched_ms := 0
 func _viewer() -> Node3D:
 	return photo if photo_active and photo else video
 
-func _on_library_chosen(uri: String, title: String) -> void:
+func _on_library_chosen(uri: String, title: String, retained_photo: Dictionary = {}) -> void:
+	if puzzle_game and puzzle_game.active:
+		puzzle_game.finish()
+		if puzzle_game.active: return
 	_cancel_video_queue_wait()
 	var controls_pose: Variant = recent_menu.get_parent().global_transform if _library_is_attached() else null
 	if recent_menu is LibraryMenu: recent_menu.playback_expanded = false
 	var location: Dictionary = recent_menu.collections.selected_location.duplicate(true)
-	if location.is_empty(): location = MediaLocation.infer(uri)
+	if location.is_empty() or not retained_photo.is_empty(): location = MediaLocation.infer(uri)
 	if title.get_extension().to_lower() == "strm": Privacy.sources[uri] = false
 	video.source_location = location; photo.source_location = location
 	var is_photo: bool = ImageInfo.is_image(uri, title) or recent_menu.is_image_uri(uri)
-	var directory_context: Dictionary = recent_menu.photo_directory_context() if is_photo else {}
+	var directory_context: Dictionary = recent_menu.photo_directory_context() if is_photo and retained_photo.is_empty() else {}
 	video_queue_pages.platform = video.platform
 	video_queue_pages.capture(recent_menu, uri)
 	recent_menu.dismiss()
@@ -1581,9 +1789,10 @@ func _on_library_chosen(uri: String, title: String) -> void:
 		player_menu = photo_menu
 		_photo_open_hide_controls = not (controls_pose is Transform3D) and hand_pointers.values().any(func(pointer): return pointer.source == "hand")
 		var image_queue: Array[Dictionary] = []
-		if recent_menu.section == recent_menu.Section.RECENT: image_queue.append({"uri": uri, "title": title, "kind": "image"})
+		if recent_menu.section == recent_menu.Section.RECENT or not retained_photo.is_empty(): image_queue.append({"uri": uri, "title": title, "kind": "image"})
 		else: image_queue.assign(recent_menu.image_queue())
-		photo.open_image(uri, title, image_queue, location)
+		if not retained_photo.is_empty(): photo.set_layout_mode(0)
+		photo.open_image(uri, title, image_queue, location, retained_photo)
 		photo.start_directory(directory_context)
 		_show_player_menu()
 	else:
@@ -1642,8 +1851,12 @@ func _relocate_file_records(old_uri: String, new_uri: String, title: String, siz
 	if not video.mode_memory.save(): recent_menu.file_actions.rename.migration_failed = true
 	video.track_memory.relocate(old_uri, new_uri)
 	if not video.track_memory.save(): recent_menu.file_actions.rename.migration_failed = true
+	video.whisper_memory.relocate(old_uri, new_uri)
+	if not video.whisper_memory.save(): recent_menu.file_actions.rename.migration_failed = true
 	video.subtitle_timing.relocate(old_uri, new_uri)
 	if not video.subtitle_timing.save(): recent_menu.file_actions.rename.migration_failed = true
+	video.narration.memory.relocate(old_uri, new_uri)
+	if not video.narration.memory.save(): recent_menu.file_actions.rename.migration_failed = true
 	photo.mode_memory.relocate(old_uri, new_uri)
 	if not photo.mode_memory.save(): recent_menu.file_actions.rename.migration_failed = true
 	if not video.bookmark_store.relocate(old_uri, new_uri, title, size): recent_menu.file_actions.rename.migration_failed = true
@@ -1872,7 +2085,11 @@ func _update_photo_inspect() -> void:
 		photo.update_inspect_pointer(ray[0], ray[1], _inspect_hand)
 
 func _on_photo_action(operation: String) -> void:
-	if operation == "music_open": _show_music_menu(true); return
+	if operation == "photo_puzzle":
+		if puzzle_game: puzzle_game.open_hub()
+		return
+	if operation == "music_open": _show_music_management(true); return
+	if operation == "music_toggle": background_audio.toggle_pause(); return
 	if operation.begins_with("photo_wall_rows_"):
 		_grab = {}; photo_hands.cancel(); photo_swipe.cancel(); memory_swipe.cancel(); stick_controls.suspend()
 		photo.gallery.set_wall_rows(int(operation.trim_prefix("photo_wall_rows_")))
@@ -1954,6 +2171,11 @@ func _view_pose(distance: float, drop: float) -> Variant:
 
 func _place_screen(recenter: bool = false) -> void:
 	var head: Variant = _head_pose()
+	if not photo_active and video.cinema.active(video):
+		if view_follow.enabled: _on_session_control("follow")
+		if head != null and (recenter or not video.cinema.placed): video.cinema.recenter(video, head)
+		else: video._apply_geometry()
+		return
 	var pose: Variant = _view_pose(_viewer().screen_distance, 0.0)
 	if recenter and photo_active and photo.gallery.mode in [0, 1] and head != null:
 		pose = head * Transform3D(Basis.IDENTITY, Vector3(0, 0, -photo.screen_distance))
@@ -1969,6 +2191,7 @@ func _place_screen(recenter: bool = false) -> void:
 			_viewer()._apply_geometry()
 
 func _flat_followable(surface: Node3D) -> bool:
+	if surface == video and video and video.cinema.active(video): return false
 	return surface != null and surface.geometry == Geometry.Geometry.FLAT and (surface != photo or photo.gallery.mode == 0 or photo.portrait_requested)
 
 func _surface_key(surface: Node3D) -> StringName:
@@ -2044,10 +2267,14 @@ func _place_menu(menu: Node3D, recenter: bool = false) -> void:
 		view_follow.capture(_menu_key(menu), head, menu.global_transform if menu.is_inside_tree() else pose)
 
 func _active_menu() -> Node3D:
+	if puzzle_game and puzzle_game.active: return puzzle_game.input_menu()
 	if music_menu and music_menu.visible: return music_menu
 	if recent_menu and recent_menu.visible:
 		if _library_is_attached(): return recent_menu.get_parent() as Node3D
 		return recent_menu
+	if puzzle_game:
+		var entry: Node3D=puzzle_game.photo_entry_menu()
+		if entry: return entry
 	if player_menu and player_menu.visible:
 		return player_menu
 	return null
@@ -2172,6 +2399,9 @@ func _toggle_library_layout() -> void:
 	_menu_touched_ms = Time.get_ticks_msec()
 
 func _close_current_media() -> void:
+	if puzzle_game and puzzle_game.active:
+		puzzle_game.finish()
+		if puzzle_game.active: return
 	_grab = {}; interface_move.cancel(); stick_controls.suspend()
 	if player_menu: player_menu.dismiss()
 	if photo_active:
@@ -2409,6 +2639,9 @@ func _on_player_setting(key: String, value: Variant) -> void:
 			video.set_subtitle_auto_load(bool(value))
 			settings.set_value("subtitles", "auto_load", video.subtitle_auto_load)
 			settings.save(settings_path)
+		"audio_delay":
+			if value is Dictionary and not video.commit_audio_delay(float(value.value), str(value.source_uri), str(value.audio_key)):
+				if is_instance_valid(player_menu): player_menu.refresh()
 		"subtitle_delay":
 			if value is Dictionary and not video.commit_subtitle_delay(float(value.value), str(value.source_uri), str(value.get("subtitle_key", "__current__"))):
 				if is_instance_valid(player_menu): player_menu.refresh()
@@ -2447,14 +2680,25 @@ func _on_bookmark_request(operation: String, marker_id: String, scope: String) -
 ## Muting keeps the level, so unmuting (left stick) brings the sound back where it was.
 func _on_menu_volume(volume: float, muted: bool) -> void:
 	if photo_active: return
-	video.set_audio_options(video.audio_track_id, video.audio_volume if muted else volume, muted)
+	if video.system_volume.supported(): video.set_volume_level(0 if muted else volume)
+	else: video.set_audio_options(video.audio_track_id, video.audio_volume if muted else volume, muted)
+
+func _on_menu_whisper(level: int, source_uri: String) -> void:
+	if not photo_active and source_uri == video.local_uri: video.set_audio_whisper(level)
+
+func _on_whisper_haptic(hand: String) -> void:
+	var controller := left_controller if hand == "left_hand" else right_controller
+	if controller is XRController3D: controller.trigger_haptic_pulse("haptic", 0.0, 0.25, 0.04, 0.0)
 
 func _restore_audio_preferences() -> void:
+	if video.system_volume.supported():
+		video.system_volume.poll(true); return
 	var level := float(settings.get_value("audio", "volume", 100.0))
 	video.audio_volume = clampf(level, 1.0, 100.0) if is_finite(level) and level > 0.0 else 100.0
 	video.audio_muted = bool(settings.get_value("audio", "muted", false))
 
 func _on_audio_options_changed(volume: float, muted: bool) -> void:
+	if video.system_volume.supported(): return
 	if settings.get_value("audio", "volume", 100.0) == volume and settings.get_value("audio", "muted", false) == muted: return
 	settings.set_value("audio", "volume", volume); settings.set_value("audio", "muted", muted)
 	_audio_save_after = Time.get_ticks_msec() + 350
@@ -2499,7 +2743,7 @@ func _menu_state() -> Dictionary:
 		if track is Dictionary and int(track.get("id", 0)) > 0:
 			var label := _audio_option_label(track)
 			var option := {"value": int(track.id), "label": label, "hint": label}
-			if track.get("external", false) and str(track.get("title", "")) == "Clone voice": audio_options.insert(1, option)
+			if track.get("external", false) and (str(track.get("title", "")) == "Clone voice" or str(track.get("title", "")).to_lower().ends_with(".si.mix.m4a")): audio_options.insert(1, option)
 			else: audio_options.append(option)
 	audio_options.append({"value": 0, "label": "Off"})
 	var text_tracks: Array = video.subtitle_tracks()
@@ -2516,13 +2760,21 @@ func _menu_state() -> Dictionary:
 		"spatial_video": video.is_spatial_video(),
 		"spatial_metadata": video.spatial_metadata(), "spatial_auto_disparity": video.spatial_auto_disparity,
 		"spatial_fov_available": video.spatial_fov_scale() > 0.0,
-		"volume": video.audio_volume, "muted": video.audio_muted,
+		"volume": video.system_volume.level() if video.system_volume.supported() else video.audio_volume, "muted": video.audio_muted,
+		"volume_writable": video.system_volume.writable if video.system_volume.supported() else true,
+		"boost_saved": video.audio_boost_saved,
+		"audio_whisper": video.audio_whisper, "whisper_available": PlatformMethods.supports(video.platform, "set_mpv_whisper"),
+		"whisper_error": video.whisper_error,
 		"audio_available": details.get("audio_tracks", []).size() > 0,
 		"audio_options": audio_options, "audio_track_id": video.audio_track_id,
+		"audio_delay": video.audio_delay, "audio_timing_key": video.audio_timing_key(),
 		"audio_tracks": details.get("audio_tracks", []).size(), "audio_track": _audio_track_name(details),
 		"clone_voice": video.clone_voice_track() > 0, "clone_voice_active": video.clone_voice_active(),
 		"depth_requested": video.depth_requested, "depth_enabled": video.depth_enabled, "depth_strength": video.depth_strength,
-		"screen_curve": video.screen_curve, "screen_distance": video.screen_distance,
+		"screen_curve": video.screen_curve, "screen_distance": _surface_distance(video) if video.cinema.active(video) else video.screen_distance,
+		"screen_is_default": _flat_video_is_default(), "screen_default_locked": settings.has_section_key("screen", "default_view"), "screen_cinema": video.cinema.enabled,
+		"screen_preset": _active_screen_preset(), "screen_dimensions": video._flat.size,
+		"screen_eye_level": video.cinema.eye_level(video, _eye()),
 		"screen_scale": video.screen_scale * 100.0, "screen_rotation": video.screen_rotation, "playback_speed": video.playback_speed,
 		"alpha_fps": _alpha_fps(), "alpha_feather": _alpha_edge_value("alpha_feather"), "alpha_shrink": _alpha_edge_value("alpha_shrink"),
 		"show_fps": fps_overlay != null and fps_overlay.visible,
@@ -2557,7 +2809,10 @@ func _menu_state() -> Dictionary:
 
 ## Preserve native titles/IDs for sidecar recognition; localize their presentation only.
 func _audio_option_label(track: Dictionary) -> String:
-	if track.get("external", false) and str(track.get("title", "")) == "Clone voice": return I18n.t("Dubbing")
+	if track.get("external", false):
+		var filename := str(track.get("title", "")).replace("\n", " ").replace("\r", " ").strip_edges()
+		if filename == "Clone voice": return I18n.t("Dubbing")
+		return I18n.t("Dubbing") + ": " + filename
 	var title := str(track.get("title", "")).replace("\n", " ").replace("\r", " ").strip_edges()
 	var language := str(track.get("language", "")).replace("_", "-").to_lower().split("-")[0]
 	var names := {"en": "English", "eng": "English", "zh": "Chinese", "zho": "Chinese", "chi": "Chinese",
@@ -2724,7 +2979,9 @@ func _update_background() -> void:
 	if not background or not display.environment: return
 	var immersive := false
 	var alpha := false
-	if photo_active and photo:
+	if puzzle_game and puzzle_game.active and puzzle_game.session!=null:
+		immersive=puzzle_game.session.spherical
+	elif photo_active and photo:
 		immersive = not photo.local_uri.is_empty() and photo.geometry != Geometry.Geometry.FLAT
 		alpha = photo.portrait_requested or photo.portrait_enabled
 	elif video:
@@ -2755,6 +3012,7 @@ func _on_menu_placement_changed(menu: Node3D) -> void:
 	if head != null: view_follow.capture(_menu_key(menu), head, menu.global_transform)
 
 func _person_passthrough() -> bool:
+	if puzzle_game and puzzle_game.active and puzzle_game.session!=null: return false
 	if photo_active and photo: return photo.portrait_requested or photo.portrait_enabled
 	return not photo_active and video != null and video.has_active_presentation() and (video.alpha_wanted() or video.alpha_enabled)
 
@@ -2781,6 +3039,7 @@ func _on_session_control(operation: String) -> void:
 		_update_view_follow()
 		var was_following: bool = view_follow.enabled
 		view_follow.set_enabled(not view_follow.enabled)
+		if view_follow.enabled and not photo_active and video and video.cinema.active(video): _set_cinema_mode(false)
 		interface_move.cancel()
 		_grab.clear()
 		photo_hands.cancel(); photo_swipe.cancel(); memory_swipe.cancel(); stick_controls.suspend()
@@ -2830,10 +3089,17 @@ func _recenter(restore_defaults: bool = true) -> void:
 	if restore_defaults:
 		interface_move.placements.erase(&"video")
 		view_follow.forget(&"video")
-		if video and not is_equal_approx(video.screen_distance, video.SCREEN_DISTANCE):
-			video.set_screen_distance(video.SCREEN_DISTANCE)
-			settings.set_value("screen", "distance", video.screen_distance)
-			settings.save(settings_path)
+		# Only an explicit save locks a baseline. Otherwise recenter uses the latest
+		# live dimensions and mode, including legacy settings restored on startup.
+		if video and not photo_active and video.geometry == Geometry.Geometry.FLAT and settings.has_section_key("screen", "default_view"):
+			var defaults := _flat_video_defaults()
+			var cinema_saved := _cinema_default()
+			_set_cinema_mode(cinema_saved.enabled)
+			video.set_screen_distance(defaults.x)
+			video.set_screen_scale(defaults.y)
+			video.screen_preset = cinema_saved.preset
+			video.cinema.height = cinema_saved.height
+			video._apply_geometry()
 		for menu in [recent_menu, video_menu, photo_menu, music_menu]:
 			if menu:
 				interface_move.placements.erase(_menu_key(menu))
@@ -2846,6 +3112,7 @@ func _recenter(restore_defaults: bool = true) -> void:
 		var reset_photo: bool = restore_defaults and photo_active and photo.geometry == Geometry.Geometry.FLAT and photo.gallery.mode in [0, 1] and not photo.portrait_requested
 		var reset_video: bool = restore_defaults and not photo_active and video.geometry == Geometry.Geometry.FLAT
 		_place_screen(reset_photo or reset_video)
+		if reset_video: _save_screen()
 		if reset_photo:
 			var head: Variant = _head_pose()
 			if head != null:
@@ -2961,16 +3228,34 @@ func _on_playback_adjustment(key: String, value: Variant) -> void:
 	elif key == "stereo_reset":
 		if not photo_active: video.reset_stereo_alignment()
 		return
+	elif key == "screen_cinema":
+		if photo_active or video.geometry != Geometry.Geometry.FLAT: return
+		_set_cinema_mode(bool(value))
+		_save_screen()
+		return
+	elif key == "screen_preset":
+		_apply_screen_preset(str(value))
+		return
+	elif key == "screen_eye_level":
+		if photo_active or not video.cinema.active(video) or not is_finite(float(value)): return
+		var head: Variant = _head_pose()
+		if head is Transform3D:
+			video.cinema.set_eye_level(video, head, float(value))
+			_save_screen()
+		return
+	elif key == "screen_set_default":
+		_save_flat_video_defaults(bool(value))
+		return
 	elif key == "screen_distance":
 		if photo_active or video.geometry != Geometry.Geometry.FLAT or not is_finite(float(value)): return
-		_push_screen(clampf(float(value), video.DISTANCE_LIMITS.x, video.DISTANCE_LIMITS.y) - video.panel.global_position.distance_to(_eye()))
+		_push_screen(clampf(float(value), video.DISTANCE_LIMITS.x, video.DISTANCE_LIMITS.y) - _surface_distance(video))
 		return
 	elif key == "screen_scale":
 		if photo_active or video.geometry != Geometry.Geometry.FLAT or not is_finite(float(value)): return
 		video.set_screen_scale(float(value) / 100.0)
 		return
 	elif key == "screen_rotation":
-		if photo_active: return
+		if photo_active or video.cinema.active(video): return
 		video.set_screen_rotation(float(value))
 		return
 	elif key == "playback_speed":
@@ -2986,6 +3271,9 @@ func _on_playback_adjustment(key: String, value: Variant) -> void:
 	elif key == "subtitle_size":
 		if not is_finite(float(value)): return
 		video.subtitle_size = clampf(float(value) / 100.0, 0.5, 2.0)
+	elif key == "audio_delay":
+		if value is Dictionary and str(value.source_uri) == video.local_uri and str(value.get("audio_key", "")) == video.audio_timing_key(): video.set_audio_delay(float(value.value))
+		return
 	elif key == "subtitle_delay":
 		if value is Dictionary and str(value.source_uri) == video.local_uri and str(value.get("subtitle_key", video.subtitle_timing_key())) == video.subtitle_timing_key():
 			video.set_subtitle_delay(float(value.value))
@@ -3009,8 +3297,7 @@ func _on_playback_adjustment(key: String, value: Variant) -> void:
 
 func _save_playback_adjustments() -> void:
 	video.commit_stereo_view()
-	settings.set_value("screen", "distance", video.screen_distance)
-	settings.set_value("screen", "scale", video.screen_scale)
+	_remember_current_screen()
 	settings.set_value("subtitles", "size", video.subtitle_size)
 	settings.set_value("subtitles", "style", video.subtitle_style)
 	settings.set_value("subtitles", "flat_position", video.subtitle_flat_position)
@@ -3204,6 +3491,9 @@ func _debug_menu_nav(target: String) -> void:
 
 var _finishing_app := false
 func _finish_app(restart: bool) -> void:
+	if puzzle_game and puzzle_game.active:
+		puzzle_game.show_panel(true)
+		if not puzzle_game.save_now(): return
 	if photo and _gallery_save_after > 0: _save_photo_adjustments()
 	if _finishing_app: return
 	_finishing_app = true
@@ -3219,6 +3509,8 @@ func _finish_app(restart: bool) -> void:
 		get_tree().quit()
 
 func _notification(what: int) -> void:
+	if puzzle_game and puzzle_game.active and what in [NOTIFICATION_APPLICATION_PAUSED, NOTIFICATION_APPLICATION_FOCUS_OUT]:
+		puzzle_game.show_panel(true)
 	if what in [NOTIFICATION_APPLICATION_PAUSED, NOTIFICATION_APPLICATION_FOCUS_OUT]:
 		_background_app_paused = true
 		if background_audio: _sync_background_audio()
@@ -3241,6 +3533,7 @@ func _photo_menu_state() -> Dictionary:
 func _sync_background_audio() -> void:
 	if background_audio:
 		var has_video: bool = video != null and not video.local_uri.is_empty() and video.media.state not in ["closed", "failed"]
+		if puzzle_game and puzzle_game.active and puzzle_game.session!=null: has_video=false
 		background_audio.set_context(has_video, _input_focused() and not _background_app_paused)
 
 func _on_background_audio_changed() -> void:
@@ -3287,6 +3580,11 @@ func _on_audio_import_cancelled() -> void:
 	_audio_import_pending = false; _audio_import_playlist = ""
 	_show_music_menu(false, true)
 
+func _show_music_management(from_photo: bool) -> void:
+	_show_music_menu(from_photo)
+	if music_menu:
+		music_menu.compact = false; music_menu.refresh(); _place_menu(music_menu)
+
 func _show_music_menu(mini: bool = false, restore: bool = false) -> void:
 	if not music_menu: return
 	if not restore: _music_return_photo = mini and photo_active
@@ -3301,6 +3599,8 @@ func _show_music_menu(mini: bool = false, restore: bool = false) -> void:
 func _close_music_menu() -> void:
 	if music_menu: music_menu.dismiss()
 	stick_controls.suspend()
+	if puzzle_game and puzzle_game.active and puzzle_game.music_open:
+		puzzle_game.return_from_music(); return
 	if _music_return_photo and photo_active: _show_player_menu()
 	else: _show_full_library()
 
@@ -3360,18 +3660,18 @@ func _migrate_protected_favorites() -> void:
 		var key := Video.ModeMemory.key_for(uri)
 		var success := true
 		var has_public_data := false
-		for memory in [video.mode_memory, video.track_memory, video.subtitle_timing, photo.mode_memory]:
+		for memory in [video.mode_memory, video.track_memory, video.subtitle_timing, video.whisper_memory, video.narration.memory, photo.mode_memory]:
 			var memory_key: String = memory.entry_key(uri)
 			if memory.entries.has(memory_key):
 				has_public_data = true
 				success = favorites.private_remember(uri, memory.directory.get_file() + "/" + memory._value_field(), memory.entries[memory_key].get(memory._value_field(), {})) and success
 		if success and has_public_data: keys.append(key); ThumbnailCache.forget(uri)
 		if success and has_public_data:
-			for memory in [video.track_memory, video.subtitle_timing]:
+			for memory in [video.track_memory, video.subtitle_timing, video.whisper_memory, video.narration.memory]:
 				var memory_key: String = memory.entry_key(uri)
 				if not keys.has(memory_key): keys.append(memory_key)
 	if not keys.is_empty():
-		for memory in [video.mode_memory, video.track_memory, video.subtitle_timing, photo.mode_memory]:
+		for memory in [video.mode_memory, video.track_memory, video.subtitle_timing, video.whisper_memory, video.narration.memory, photo.mode_memory]:
 			if not memory.purge_keys(keys):
 				favorites.last_error = "Privacy cleanup failed"
 				if recent_menu: recent_menu.status = favorites.last_error
@@ -3385,7 +3685,7 @@ func _clear_private_history(network_only: bool) -> void:
 		if network_only and Privacy.is_local(str(entry.uri)): continue
 		keys.append(Video.ModeMemory.key_for(entry.uri)); video.recent_files.forget(entry.uri)
 		if favorites.protected and favorites.contains(entry.uri): favorites.private_remember(entry.uri, "recent", {})
-	for memory in [video.recent_files, video.mode_memory, video.track_memory, video.subtitle_timing, photo.mode_memory]:
+	for memory in [video.recent_files, video.mode_memory, video.track_memory, video.subtitle_timing, video.whisper_memory, video.narration.memory, photo.mode_memory]:
 		var erase_keys: Array = keys.duplicate() if network_only else memory.entries.keys()
 		if network_only:
 			for key in memory.entries:

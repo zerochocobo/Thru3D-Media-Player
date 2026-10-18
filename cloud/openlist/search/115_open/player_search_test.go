@@ -2,10 +2,13 @@ package _115_open
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	sdk "github.com/OpenListTeam/115-sdk-go"
 	"github.com/OpenListTeam/OpenList/v4/internal/model"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -28,6 +31,100 @@ func TestPlayerSearchCompanionsPreservesSubtitleAndAudioKindsAndParentIdentity(t
 	files, next, _, capped, err := d.PlayerSearch(context.Background(), &model.Object{ID: "42", IsFolder: true}, "film", "all", "48")
 	if err != nil || next != "" || capped || len(files) != 2 || files[0].(interface{ PlayerParentID() string }).PlayerParentID() != "42" {
 		t.Fatal(files, next, capped, err)
+	}
+}
+
+func TestPlayerCurrentSearchCapsCandidatesAndKeepsResultsForEveryReportedKeyword(t *testing.T) {
+	for _, query := range []string{"2D", "4", "DIY", "2011"} {
+		for _, total := range []int{0, 1, 199, 200, 201, 10001} {
+			t.Run(fmt.Sprintf("%s/%d", query, total), func(t *testing.T) {
+				calls := 0
+				d := listingDriver(func(r *http.Request) (*http.Response, error) {
+					calls++
+					q := r.URL.Query()
+					offset, _ := strconv.Atoi(q.Get("offset"))
+					limit, _ := strconv.Atoi(q.Get("limit"))
+					if r.URL.Path != "/open/ufile/search" || q.Get("search_value") != query || q.Get("cid") != "42" || limit != min(48, 200-offset) {
+						t.Fatal("unexpected bounded search parameters", q)
+					}
+					rows := make([]map[string]string, 0)
+					for i := offset; i < min(offset+limit, total); i++ {
+						rows = append(rows, map[string]string{"file_id": fmt.Sprint(i + 1), "file_name": query + " film.mp4", "file_size": "128", "file_category": "1", "parent_id": "42"})
+					}
+					body, _ := json.Marshal(map[string]any{"state": true, "count": total, "offset": offset, "data": rows})
+					return listingResponse(r, string(body)), nil
+				})
+				files, capped, err := d.PlayerSearchCurrent(context.Background(), &model.Object{ID: "42", IsFolder: true}, query)
+				if err != nil || len(files) != min(total, 200) || capped != (total > 200) || calls != max(1, (min(total, 200)+47)/48) {
+					t.Fatal("wrong bounded current results", len(files), capped, calls, err)
+				}
+			})
+		}
+	}
+}
+
+func TestPlayerCurrentSearchCapsShortPagesAndDescendantsWithoutClaimingCompletion(t *testing.T) {
+	for _, short := range []bool{false, true} {
+		calls := 0
+		d := listingDriver(func(r *http.Request) (*http.Response, error) {
+			calls++
+			offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+			limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+			if short {
+				limit = 1
+			}
+			rows := make([]map[string]string, limit)
+			for i := range rows {
+				parent := "99"
+				if offset+i == 0 {
+					parent = "42"
+				}
+				rows[i] = map[string]string{"file_id": fmt.Sprint(offset + i + 1), "file_name": "DIY.mp4", "file_size": "128", "file_category": "1", "parent_id": parent}
+			}
+			body, _ := json.Marshal(map[string]any{"state": true, "count": 10001, "offset": offset, "data": rows})
+			return listingResponse(r, string(body)), nil
+		})
+		files, capped, err := d.PlayerSearchCurrent(context.Background(), &model.Object{ID: "42", IsFolder: true}, "DIY")
+		if err != nil || !capped || calls != 5 || len(files) != 1 || files[0].GetID() != "1" {
+			t.Fatal("search lost current result or kept paging descendants", short, calls, capped, files, err)
+		}
+	}
+}
+
+func TestPlayerEntireDriveSearchStopsAtTwoHundredAndRejectsFurtherCursor(t *testing.T) {
+	calls := 0
+	d := listingDriver(func(r *http.Request) (*http.Response, error) {
+		calls++
+		q := r.URL.Query()
+		offset, _ := strconv.Atoi(q.Get("offset"))
+		limit, _ := strconv.Atoi(q.Get("limit"))
+		if limit != min(48, 200-offset) {
+			t.Fatal("search exceeded candidate budget", q)
+		}
+		rows := make([]map[string]string, limit)
+		for i := range rows {
+			rows[i] = map[string]string{"file_id": fmt.Sprint(offset + i + 1), "file_name": "4K.mp4", "file_size": "128", "file_category": "1", "parent_id": "42"}
+		}
+		body, _ := json.Marshal(map[string]any{"state": true, "count": 10001, "offset": offset, "data": rows})
+		return listingResponse(r, string(body)), nil
+	})
+	cursor, total := "", 0
+	for {
+		files, next, _, capped, err := d.PlayerSearch(context.Background(), &model.Object{ID: "0", IsFolder: true}, "4", "video", cursor)
+		if err != nil {
+			t.Fatal(err)
+		}
+		total += len(files)
+		if next == "" {
+			if !capped || len(files) != 8 || total != 200 || calls != 5 {
+				t.Fatal("wrong final search page", len(files), total, calls, capped)
+			}
+			break
+		}
+		cursor = next
+	}
+	if _, _, _, _, err := d.PlayerSearch(context.Background(), &model.Object{ID: "0", IsFolder: true}, "4", "video", "200"); err == nil || calls != 5 {
+		t.Fatal("accepted an over-budget cursor", calls, err)
 	}
 }
 func TestPlayerSearch115UsesNativePageAndLazyParent(t *testing.T) {

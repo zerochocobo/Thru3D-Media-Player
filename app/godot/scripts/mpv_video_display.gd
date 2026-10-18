@@ -52,6 +52,9 @@ const Naming := preload("res://scripts/media_naming.gd")
 const AUTOMATIC_PROFILE := "320x320"
 const PROFILES := ["320x320", "384x216", "512x288", "384x384", "512x512", "256x144", "256x256"]
 
+var cinema := preload("res://scripts/cinema_placement.gd").new()
+const ScreenPresets := preload("res://scripts/screen_presets.gd")
+var screen_preset := ""
 var media := State.new()
 var _spatial_video := false # Source type survives seek/effect session generations.
 const SpatialMetadata := preload("res://scripts/spatial_video_metadata.gd")
@@ -93,6 +96,17 @@ var audio_track_id := -1
 var audio_volume := 100.0
 signal audio_options_changed(volume: float, muted: bool)
 var audio_muted := false
+const WhisperMemory := preload("res://scripts/file_whisper_memory.gd")
+var whisper_memory := WhisperMemory.new()
+var audio_whisper := 0 # 0 off; 1 compression only; 2..51 continuous boost.
+var audio_boost_saved := 0 # Passive recall mark; never restores system volume.
+const SystemVolume := preload("res://scripts/system_video_volume.gd")
+var system_volume := SystemVolume.new(self)
+var _whisper_command := 0
+var _whisper_remember := false
+var _whisper_restore_pending := false
+var _whisper_restore_remember := false
+var whisper_error := ""
 var subtitles := SubtitleState.new()
 const NarrationSettings := preload("res://scripts/narration_settings.gd")
 var narration := NarrationSettings.new(self)
@@ -131,6 +145,11 @@ var _subtitle_poll_ms := 0
 var _subtitle_received_ms := 0
 var mode_memory := ModeMemory.new()
 var track_memory := TrackMemory.new()
+const AudioTiming := preload("res://scripts/file_audio_timing.gd")
+var audio_timing := AudioTiming.new()
+var audio_delay := 0.0
+var _audio_delay_pending := false
+var _audio_timing_key := ""
 var subtitle_timing := SubtitleTiming.new()
 var subtitle_delay := 0.0
 var _subtitle_delay_pending := false
@@ -260,6 +279,9 @@ func _ready() -> void:
 	mode_memory.load_saved()
 	track_memory.load_saved()
 	subtitle_timing.load_saved()
+	audio_timing.load_saved()
+	whisper_memory.load_saved()
+	narration.memory.load_saved()
 	recent_files.load_saved()
 	initialize_surface(load("res://shaders/video_rvm_pair.gdshader"))
 	color_grade.apply(material)
@@ -660,6 +682,14 @@ func open_local(uri: String, title: String, start_ms: int = 0, restore_mode: boo
 	if _thumbnail_source(uri) and Thumbnails.texture(uri) == null and not RecentFiles.valid_cover(server_cover):
 		_thumb_after_ms = 0
 	local_uri = uri
+	var saved_whisper := whisper_memory.lookup(uri) if restore_mode else {}
+	audio_whisper = 1 if saved_whisper.get("enabled", false) else 0
+	audio_boost_saved = int(saved_whisper.get("boost", 0))
+	_whisper_command = 0
+	_whisper_remember = false
+	_whisper_restore_pending = audio_whisper > 0
+	_whisper_restore_remember = false
+	whisper_error = ""
 	_network_interleave_compat = network_interleave
 	_warm_rvm()
 	display_name = title
@@ -709,6 +739,9 @@ func open_local(uri: String, title: String, start_ms: int = 0, restore_mode: boo
 	_history_started = false
 	_file_permission_persisted = false
 	audio_track_id = -1
+	_audio_timing_key = ""
+	audio_delay = 0.0
+	_audio_delay_pending = true
 	_clone_applied = false
 	subtitles.select(0)
 	subtitles.clear(true)
@@ -780,6 +813,9 @@ func close_video() -> void:
 		track_memory.save()
 	if subtitle_timing.dirty:
 		subtitle_timing.save()
+	if audio_timing.dirty: audio_timing.save()
+	if whisper_memory.dirty: whisper_memory.save()
+	if narration.memory.dirty: narration.memory.save()
 	if recent_files.dirty:
 		recent_files.save()
 	_unbind()
@@ -799,6 +835,7 @@ func close_video() -> void:
 	if platform and media.session_id > 0:
 		platform.close_mpv_video(media.session_id)
 	media.close()
+	narration.reset_source()
 	_pending_pair = {}
 	_pending_revision = {}
 	_freeze_request = 0
@@ -806,6 +843,10 @@ func close_video() -> void:
 	_waiting_first = false
 	_audio_pending = false
 	_opening_deadline_ms = 0
+	_whisper_command = 0; _whisper_remember = false; _whisper_restore_pending = false
+	_whisper_restore_remember = false
+	audio_whisper = 0; audio_boost_saved = 0; whisper_error = ""
+	system_volume.cancel_source()
 	_output_deadline_ms = 0
 	_buffering_deadline_ms = 0
 	_track_restore.clear()
@@ -1077,7 +1118,7 @@ func set_depth_strength(value: float) -> bool:
 ## The extra track titled "Clone voice" (see SidecarAudio.kt); 0 when this video has none.
 func clone_voice_track() -> int:
 	for track in media.playback.get("details", {}).get("audio_tracks", []):
-		if track is Dictionary and bool(track.get("external", false)) and str(track.get("title", "")) == "Clone voice":
+		if track is Dictionary and bool(track.get("external", false)) and (str(track.get("title", "")) == "Clone voice" or str(track.get("title", "")).to_lower().ends_with(".si.mix.m4a")):
 			return int(track.get("id", 0))
 	return 0
 
@@ -1118,9 +1159,44 @@ func toggle_play() -> void:
 		platform.set_mpv_playing(media.session_id, requested_play and not _waiting_first)
 	changed.emit()
 
+func set_audio_whisper(level: int, remember: bool = true) -> bool:
+	if level < 0 or level > 51 or not media.accepts(media.session_id) or not PlatformMethods.supports(platform, "set_mpv_whisper"): return false
+	var command: int = platform.set_mpv_whisper(media.session_id, level)
+	if command <= 0: return false
+	audio_whisper = level
+	_whisper_command = command
+	_whisper_remember = remember
+	_whisper_restore_pending = false
+	_whisper_restore_remember = false
+	whisper_error = ""
+	changed.emit()
+	return true
+
+func _confirm_audio_whisper(details: Dictionary) -> void:
+	if _whisper_command == 0 and audio_whisper > 0 and not str(details.get("whisper_error", "")).is_empty():
+		audio_whisper = 0; whisper_error = str(details.whisper_error); changed.emit()
+		return
+	if _whisper_command <= 0 or int(details.get("whisper_serial", 0)) < _whisper_command: return
+	_whisper_command = 0
+	whisper_error = str(details.get("whisper_error", ""))
+	audio_whisper = int(details.get("whisper_level", 0))
+	if _whisper_remember and whisper_error.is_empty() and _remember_file:
+		if audio_whisper > 1: audio_boost_saved = audio_whisper - 1
+		if whisper_memory.remember(local_uri, {"enabled": audio_whisper > 0, "boost": audio_boost_saved}) and not whisper_memory.save():
+			Log.record("file_whisper_save_failed", {"error": whisper_memory.last_error})
+	_whisper_remember = false
+	changed.emit()
+
 func set_audio_options(track_id: int, volume: float, muted: bool) -> bool:
 	if track_id < -1 or not is_finite(volume) or volume < 0.0 or volume > 100.0 or not platform or not media.accepts(media.session_id):
 		return false
+	if system_volume.supported():
+		if not platform.set_mpv_audio(media.session_id, track_id, 100.0, false): return false
+		audio_track_id = track_id
+		_audio_pending = false
+		_sync_audio_timing()
+		changed.emit()
+		return true
 	if volume == 0.0:
 		volume = audio_volume if audio_volume > 0.0 else 100.0
 		muted = true
@@ -1131,6 +1207,7 @@ func set_audio_options(track_id: int, volume: float, muted: bool) -> bool:
 	audio_muted = muted
 	audio_options_changed.emit(audio_volume, audio_muted)
 	_audio_pending = false
+	_sync_audio_timing()
 	changed.emit()
 	return true
 
@@ -1144,10 +1221,16 @@ func select_audio_track(track_id: int) -> bool:
 
 ## Raising the volume unmutes (a muted slider shows 0, so a silent step up would look ignored);
 ## lowering keeps mute.
+func set_volume_level(value: float) -> bool:
+	if system_volume.supported(): return system_volume.request(value)
+	return set_audio_options(audio_track_id, clampf(value, 0, 100), value <= 0)
+
 func change_volume(delta: float) -> bool:
+	if system_volume.supported(): return system_volume.request(clampf(system_volume.level() + delta, 0.0, 150.0 if audio_whisper > 0 else 100.0))
 	return set_audio_options(audio_track_id, clampf(audio_volume + delta, 0.0, 100.0), audio_muted and delta <= 0.0)
 
 func toggle_mute() -> bool:
+	if system_volume.supported(): return system_volume.toggle_mute()
 	return set_audio_options(audio_track_id, audio_volume, not audio_muted)
 
 func cycle_audio_track(direction: int = 1) -> bool:
@@ -1387,6 +1470,35 @@ func _restore_tracks() -> void:
 			if channel == "subtitle": _subtitle_auto_pending = false
 	_auto_select_subtitle()
 
+func audio_timing_key() -> String: return _audio_timing_key
+
+func _sync_audio_timing() -> void:
+	if not media.accepts(media.session_id): return
+	var key := str(audio_track_id).sha256_text()
+	if audio_track_id > 0:
+		var tracks := _raw_tracks("audio").filter(func(track): return int(track.get("id", 0)) == audio_track_id)
+		if tracks.is_empty(): return
+		key = AudioTiming.track_key(tracks[0])
+	if key != _audio_timing_key:
+		_audio_timing_key = key
+		audio_delay = audio_timing.for_track(local_uri, key) if _remember_file else 0.0
+		_audio_delay_pending = true
+	if _audio_delay_pending: set_audio_delay(audio_delay)
+
+func set_audio_delay(seconds: float) -> bool:
+	if not is_finite(seconds) or not media.accepts(media.session_id) or not PlatformMethods.supports(platform, "set_mpv_audio_delay"): return false
+	var value := AudioTiming.delay(seconds)
+	if not platform.set_mpv_audio_delay(media.session_id, value): return false
+	audio_delay = value; _audio_delay_pending = false
+	changed.emit()
+	return true
+
+func commit_audio_delay(seconds: float, uri: String, key: String) -> bool:
+	if not is_finite(seconds) or uri.is_empty() or key.is_empty(): return false
+	if uri == local_uri and key == _audio_timing_key and not set_audio_delay(seconds): return false
+	if not _remember_file: return true
+	return audio_timing.remember_track(uri, key, seconds) and audio_timing.save()
+
 func _apply_subtitle_delay() -> bool:
 	if not _subtitle_delay_pending: return true
 	if not platform or not media.accepts(media.session_id): return false
@@ -1553,6 +1665,13 @@ func _poll_subtitles() -> void:
 			_subtitle_received_ms = now
 	if now - _subtitle_received_ms > 1000:
 		subtitles.clear()
+	# Keep the selected track and MPV text queue alive for narration.
+	if narration.hides_display():
+		caption.visible = false
+		projected_subtitles.clear(material)
+		bitmap_subtitles.clear(material)
+		if _subtitle_surface: _subtitle_surface.visible = false
+		return
 	if geometry == Geometry.Geometry.FLAT and not subtitles.bitmap.is_empty():
 		var handle := int(subtitles.cue.get("mpv_source_handle", 0))
 		var pixels := PackedByteArray()
@@ -1976,13 +2095,26 @@ func _on_state(id: int, payload: String) -> void:
 	var subtitle_identity := str(report.get("subtitle_memory_id", ""))
 	if track_memory.register_usb_identity(local_uri, subtitle_identity):
 		subtitle_timing.register_usb_identity(local_uri, subtitle_identity)
+		audio_timing.register_usb_identity(local_uri, subtitle_identity)
+		var early_narration := narration.memory.lookup(local_uri)
+		narration.memory.register_usb_identity(local_uri, subtitle_identity)
+		if not early_narration.is_empty() and narration.memory.remember(local_uri, early_narration): narration.memory.save()
+		if _remember_file: narration.reset_source(); narration.reset_source(local_uri)
+		# A user may confirm a choice before Android resolves the stable USB id.
+		var early_whisper := whisper_memory.lookup(local_uri)
+		whisper_memory.register_usb_identity(local_uri, subtitle_identity)
+		if not early_whisper.is_empty() and whisper_memory.remember(local_uri, early_whisper): whisper_memory.save()
 		if _remember_file:
+			if _whisper_command == 0:
+				var saved_whisper := whisper_memory.lookup(local_uri)
+				audio_whisper = 1 if saved_whisper.get("enabled", false) else 0; audio_boost_saved = int(saved_whisper.get("boost", 0)); _whisper_restore_pending = audio_whisper > 0
 			_queue_track_restore(track_memory.lookup(local_uri))
 			if _subtitle_timing_key.is_empty():
 				subtitle_delay = float(subtitle_timing.lookup(local_uri).get("delay_seconds", 0.0)); subtitles.set_delay(subtitle_delay); _subtitle_delay_pending = true
 	_layer_session = bool(report.get("layer_active", false))
 	_accept_source_rotation(int(report.get("source_rotation_degrees", 0)))
 	var details: Dictionary = report.get("details", {})
+	_confirm_audio_whisper(details)
 	var size := str(details.get("file_size", ""))
 	if not BookmarkStore.integer(_bookmark_metadata.get("size", -1), 1, 9007199254740991) and size.is_valid_int() and BookmarkStore.integer(int(size), 1, 9007199254740991):
 		# Native metadata fills gaps for recent/SAF opens, without hashing or reading the video.
@@ -2080,6 +2212,13 @@ func _on_released(id: int, _payload: String) -> void:
 
 func loading_caption() -> String:
 	if not media.accepts(media.session_id) or not media.error.is_empty(): return ""
+	if NarrationSettings.FEATURE_ENABLED and narration.enabled:
+		var report: Dictionary = media.playback.get("narration", {})
+		var stage := NarrationSettings.display_status(report)
+		if (requested_play or bool(report.get("preview", false))) and stage in ["verifying", "model_loading", "preparing", "preview_buffering", "subtitle_loading"]:
+			var text := I18n.t(NarrationSettings.status_label(stage))
+			var progress := NarrationSettings.progress_percent(report)
+			return text + (" · %d%%" % progress if progress >= 0 else "")
 	if NarrationSettings.FEATURE_ENABLED and requested_play and bool(media.playback.get("narration", {}).get("startup_hold", false)):
 		return I18n.t("Preparing narration…")
 	var buffering := requested_play and str(media.playback.get("details", {}).get("paused_for_cache", "no")) == "yes"
@@ -2123,12 +2262,16 @@ func _reopen_after_context_loss(uri: String, title: String, position_ms: int, re
 	var spatial := [_spatial_video, spatial_metadata(), spatial_auto_disparity]
 	var tracks := _capture_track_choices()
 	var timing := [_subtitle_timing_key, subtitle_delay]
+	var whisper := audio_whisper
+	var boost_mark := audio_boost_saved
+	var whisper_save := _whisper_remember or _whisper_restore_remember
 	var auto_subtitle := _subtitle_auto_pending # An internal reopen keeps an unfinished automatic choice.
 	if open_local(uri, title, position_ms, false, alpha_wanted()):
 		_subtitle_auto_pending = auto_subtitle
 		_queue_track_restore(tracks)
 		_subtitle_timing_key = timing[0]; subtitle_delay = timing[1]; subtitles.set_delay(subtitle_delay); _subtitle_delay_pending = true
 		_remember_file = remember_file
+		audio_whisper = whisper; audio_boost_saved = boost_mark; _whisper_restore_pending = whisper > 0 or whisper_save; _whisper_restore_remember = whisper_save
 		_file_permission_persisted = persisted
 		viewing_eye = eye
 		stereo_horizontal = alignment.x
@@ -2168,6 +2311,8 @@ func _on_debug_command(id: int, payload: String) -> void:
 		command["accepted"] = set_depth_strength(float(command.strength)) if command.has("strength") else set_depth(bool(command.enabled))
 	elif command.operation == "audio":
 		command["accepted"] = set_audio_options(int(command.track_id), audio_volume, audio_muted)
+	elif command.operation == "audio_delay":
+		command["accepted"] = local_uri.get_base_dir().ends_with("/files/fixtures") and set_audio_delay(float(command.get("seconds", NAN)))
 	elif command.operation == "narration":
 		command["accepted"] = true
 		for key in command.get("options", {}):
@@ -2308,12 +2453,39 @@ func _pixel_aspect() -> float:
 	return float(media.format.get("pixel_aspect", 1.0))
 
 func _apply_flat_pose() -> void:
+	if cinema.active(self): screen_rotation = 0.0
+	cinema.constrain(self)
 	super._apply_flat_pose()
 	if caption and caption.visible: _place_caption()
 	_sync_subtitle_surface()
 
+func set_flat_world_pose(pose: Transform3D) -> void:
+	if cinema.active(self): cinema.capture(self, pose)
+	super.set_flat_world_pose(pose)
+
+func set_screen_scale(value: float) -> void:
+	# Leaving a preset must not move the visible bottom edge before manual resizing.
+	if not screen_preset.is_empty() and cinema.active(self) and cinema.bottom is Transform3D:
+		cinema.height += (screen_frame_height() - _flat.size.y) * 0.5
+		cinema.bottom = cinema.content_bottom(self)
+	screen_preset = ""
+	super.set_screen_scale(value)
+	if cinema.active(self): _apply_flat_pose()
+
+func screen_frame_height() -> float:
+	var preset: Dictionary = ScreenPresets.find(screen_preset)
+	return float(preset.size.y) if not preset.is_empty() else _flat.size.y
+
+func corner_at(origin: Vector3, direction: Vector3) -> int:
+	var corner := super.corner_at(origin, direction)
+	return -1 if cinema.active(self) and corner >= 2 else corner
+
 func _apply_geometry() -> void:
 	super._apply_geometry()
+	if geometry == Geometry.Geometry.FLAT and not ScreenPresets.find(screen_preset).is_empty():
+		super.set_screen_scale(ScreenPresets.scale_for(screen_preset, _screen_base))
+	# Metadata/aspect changes can alter height after the initial pose was applied.
+	if cinema.active(self): _apply_flat_pose()
 	_apply_stereo_view()
 	if geometry != Geometry.Geometry.FLAT:
 		bitmap_subtitles.clear(material)
@@ -2390,11 +2562,15 @@ func playback_end_ready() -> bool:
 		and (not alpha_requested or final_pair.get("inference_ran", false) or final_pair.get("color_target") == "layer")
 
 func _process(_delta: float) -> void:
+	system_volume.poll()
 	narration.apply()
 	_poll_loading(Time.get_ticks_msec())
 	_check_open_timeout(Time.get_ticks_msec())
 	_check_playback_timeout(Time.get_ticks_msec())
 	_restore_tracks()
+	_sync_audio_timing()
+	if _whisper_restore_pending and PlatformMethods.supports(platform, "set_mpv_whisper"):
+		set_audio_whisper(audio_whisper, _whisper_restore_remember)
 	if _audio_pending:
 		set_audio_options(audio_track_id, audio_volume, audio_muted)
 	elif prefer_clone_voice and not _clone_applied and clone_voice_track() > 0:
@@ -2806,6 +2982,9 @@ func _reopen_at(position_ms: int, layer: bool) -> void:
 	var speed := playback_speed
 	var tracks := _capture_track_choices()
 	var timing := [_subtitle_timing_key, subtitle_delay]
+	var whisper := audio_whisper
+	var boost_mark := audio_boost_saved
+	var whisper_save := _whisper_remember or _whisper_restore_remember
 	Log.record("video_layer_reopen", {"layer": layer, "position_ms": position, "alpha": alpha_requested,
 		"depth": depth_requested, "geometry": geometry, "compatible": media.playback.get("layer_compatible", true)})
 	_eye_buffer_only = not layer
@@ -2813,6 +2992,7 @@ func _reopen_at(position_ms: int, layer: bool) -> void:
 	var auto_subtitle := _subtitle_auto_pending # An internal reopen keeps an unfinished automatic choice.
 	_network_interleave_next = _network_interleave_compat
 	if open_local(local_uri, display_name, position, false, alpha_wanted()):
+		audio_whisper = whisper; audio_boost_saved = boost_mark; _whisper_restore_pending = whisper > 0 or whisper_save; _whisper_restore_remember = whisper_save
 		_subtitle_auto_pending = auto_subtitle
 		_queue_track_restore(tracks)
 		_subtitle_timing_key = timing[0]; subtitle_delay = timing[1]; subtitles.set_delay(subtitle_delay); _subtitle_delay_pending = true

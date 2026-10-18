@@ -2,6 +2,11 @@ extends RefCounted
 
 # Original vector glyphs, generated once and shared by both ray menus.
 const PATHS := {
+	"globe": '<circle cx="12" cy="12" r="10"/><ellipse cx="12" cy="12" rx="4" ry="10"/><path d="M2 12H22M4 6H20M4 18H20"/>',
+	"seated": '<circle cx="10" cy="4" r="2"/><path d="M10 7V13H17V21M5 8V16H13M5 16V22M13 16V22"/>',
+	"standing": '<circle cx="12" cy="4" r="2"/><path d="M12 7V14M6 10L12 8 18 10M12 14L8 22M12 14L16 22"/>',
+	"help": '<circle cx="12" cy="12" r="10"/><path d="M9 8A3 3 0 0 1 15 8C15 11 12 10 12 14M12 17V18"/>',
+	"puzzle": '<path d="M3 3H9V6A3 3 0 1 0 15 6V3H21V9H18A3 3 0 1 0 18 15H21V21H15V18A3 3 0 1 0 9 18V21H3V15H6A3 3 0 1 0 6 9H3Z"/>',
 	"ambience": '<path d="M10 16C8 9 14 4 21 3C21 10 19 17 12 17M9 21L17 9M2 6H6M1 10H5M2 14H5"/>',
 	"water": '<path d="M2 6Q5 2 8 6T14 6T20 6M2 12Q5 8 8 12T14 12T20 12M2 18Q5 14 8 18T14 18T20 18"/>',
 	"rain": '<path d="M5 13A4 4 0 0 1 5 5A6 6 0 0 1 17 5A4 4 0 0 1 19 13H5M7 16L5 20M13 16L11 20M19 16L17 20"/>',
@@ -68,6 +73,7 @@ const PATHS := {
 	"volume_low": '<path d="M3 9H7L12 5V19L7 15H3ZM15.5 9A4.5 4.5 0 0 1 15.5 15"/>',
 	"mute": '<path d="M3 9H7L12 5V19L7 15H3ZM16 9L22 15M22 9L16 15"/>',
 	"audio": '<path d="M6 16V4H19V16M6 7H19"/><circle cx="3.5" cy="17" r="3"/><circle cx="16.5" cy="17" r="3"/>',
+	"subtitle_voice": '<rect x="2" y="5" width="13" height="14" rx="2"/><path d="M10 9C5 7 5 17 10 15M17 9A4 4 0 0 1 17 15M20 6A8 8 0 0 1 20 18"/>',
 	"subtitle": '<rect x="2" y="5" width="20" height="14" rx="3"/><path d="M10 9C5 7 5 17 10 15M18 9C13 7 13 17 18 15"/>',
 	"info": '<circle cx="12" cy="12" r="9"/><path d="M12 11V17M12 7V7.1"/>',
 	"device": '<rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20H16M12 16V20"/>',

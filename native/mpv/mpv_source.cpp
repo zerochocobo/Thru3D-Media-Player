@@ -32,6 +32,7 @@
 #include "pgs_bitmap.h"
 #include "frame_geometry.h"
 #include "playback_failure.h"
+#include "whisper_audio.h"
 
 void quest_mpv_initialize_android(JNIEnv*, jobject);
 
@@ -218,6 +219,11 @@ struct Source final {
     std::string subtitle_snapshot; // status_mutex
     uint64_t published_subtitle_sequence = 0; // status_mutex
     int64_t published_subtitle_ns = 0; // status_mutex
+    std::atomic<int64_t> narration_poll_ns{0};
+    std::string narration_queue = "{}"; // status_mutex; never in ordinary player diagnostics
+    int64_t queue_poll_ns = 0;
+    uint64_t queue_sequence = 0, queue_epoch = 0, queue_command = 0;
+    std::string queue_track;
     using PgsRead = int (*)(mpv_handle*, int, int, double, quest_mpv_pgs_callback, void*);
     PgsRead pgs_read = nullptr; // control thread; optional independently versioned API
     quest::PgsImage pgs_image; // control thread only
@@ -248,6 +254,8 @@ struct Source final {
     std::atomic<bool> last_seek_exact{true};
     std::vector<int64_t> audio_track_ids; // commands_mutex; from actual MPV track-list
     int desired_audio_id = -1; double desired_volume = 100; bool desired_mute = false, audio_dirty = false;
+    int desired_whisper = 0; uint64_t whisper_request = 0; bool whisper_dirty = false; // commands_mutex
+    int whisper_level = 0; uint64_t whisper_serial = 0; std::string whisper_error; // control thread
     double narration_gain = 1.0; bool narration_gain_dirty = false; // temporary; never changes aid/base volume
     uint64_t snapshot_sequence = 0; // control thread only
     std::string state = "opening", details = "{}", error, render_error, tls_ca_file, failure_reason, failure_stage;
@@ -444,6 +452,7 @@ struct Source final {
         const bool subtitle_timeline_valid = !awaiting_seek_event && !seek_in_progress.load() && last_epoch.load() >= epoch_floor.load();
         const auto subtitle_text = subtitle_timeline_valid ? property(core, "sub-text") : "";
         const auto subtitle_start = seconds_property(core, "sub-start"), subtitle_end = seconds_property(core, "sub-end");
+        update_narration_queue(core, subtitle_id, subtitle_timeline_valid);
         update_pgs(core, subtitle_timeline_valid);
         const auto bitmap_json = "{\"version\":" + std::to_string(pgs_version) +
             ",\"visible\":" + (!pgs_image.rgba.empty() ? "true" : "false") +
@@ -489,6 +498,8 @@ struct Source final {
             ",\"pgs_supported\":" + (pgs_read ? "true" : "false") +
             ",\"playback_speed\":" + quote(property(core, "speed")) + ",\"volume\":" + quote(volume) + ",\"mute\":" + quote(mute) + ",\"audio_samplerate\":" + quote(rate) +
             ",\"audio_channels\":" + quote(channels) + ",\"avsync_seconds\":" + quote(avsync) +
+            ",\"whisper_level\":" + std::to_string(whisper_level) + ",\"whisper_serial\":" + std::to_string(whisper_serial) +
+            ",\"whisper_error\":" + quote(whisper_error) +
             ",\"paused_for_cache\":" + quote(cache_pause) + ",\"cache_speed\":" + quote(property(core, "cache-speed")) + ",\"decoder_frame_drop_count\":" + quote(decoder_drops) +
             ",\"estimated_frame_number\":" + quote(frame_number) + ",\"vo_frame_drop_count\":" + quote(vo_drops) +
             ",\"snapshot_sequence\":" + std::to_string(++snapshot_sequence) +
@@ -501,6 +512,53 @@ struct Source final {
         published_subtitle_sequence = subtitle_sequence;
         published_subtitle_ns = observed_ns;
         if (!codec.empty() && state != "failed") state = eof == "yes" ? "ended" : (paused == "yes" ? "paused" : "playing");
+    }
+    void update_narration_queue(mpv_handle* core, const std::string& track, bool valid) {
+        const auto started = std::chrono::steady_clock::now();
+        const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(started.time_since_epoch()).count();
+        if (ns - narration_poll_ns.load() > 2000000000LL) return;
+        const auto epoch = last_epoch.load();
+        if (!valid || track.empty() || track == "no") {
+            std::lock_guard<std::mutex> lock(status_mutex); narration_queue = "{}";
+            queue_poll_ns = 0; return;
+        }
+        if (ns - queue_poll_ns < 250000000 && queue_epoch == epoch &&
+            queue_command == subtitle_command_applied && queue_track == track) return;
+        queue_poll_ns = ns; queue_epoch = epoch; queue_command = subtitle_command_applied; queue_track = track;
+        // Public API of the pinned MPV revision: already decoded text, including
+        // future events from the SAME demuxer. No file open, read, seek or decoder.
+        using QueuePump = int (*)(mpv_handle*);
+        static const auto pump = reinterpret_cast<QueuePump>(dlsym(RTLD_DEFAULT, "mpv_quest_pump_text_queue"));
+        static const auto queue_api = reinterpret_cast<uint32_t (*)()>(dlsym(RTLD_DEFAULT, "mpv_quest_text_queue_api_version"));
+        const bool queue_supported = pump && queue_api && queue_api() == QUEST_MPV_TEXT_QUEUE_API_VERSION;
+        if (queue_supported) pump(core);
+        OwnedNode lines;
+        const bool supported = queue_supported && mpv_get_property(core, "sub-lines", MPV_FORMAT_NODE, &lines.value) >= 0 &&
+            lines.value.format == MPV_FORMAT_NODE_ARRAY;
+        double position = 0;
+        const bool positioned = mpv_get_property(core, "time-pos", MPV_FORMAT_DOUBLE, &position) >= 0 && std::isfinite(position);
+        std::string cues = "["; int count = 0; bool limited = false; double ahead = 0;
+        if (supported && positioned) for (int i = 0; i < lines.value.u.list->num; ++i) {
+            const auto& line = lines.value.u.list->values[i];
+            const auto* start = member(line, "start"); const auto* end = member(line, "end");
+            const auto text = node_text(line, "text");
+            if (!start || !end || start->format != MPV_FORMAT_DOUBLE || end->format != MPV_FORMAT_DOUBLE ||
+                !std::isfinite(start->u.double_) || !std::isfinite(end->u.double_) ||
+                start->u.double_ < 0 || end->u.double_ <= start->u.double_ || text.empty()) continue;
+            if (end->u.double_ < position - subtitle_delay_applied - 8 || start->u.double_ > position - subtitle_delay_applied + 45) continue;
+            if (count >= 256 || text.size() > 8192 || cues.size() + text.size()*6 > 262144) { limited = true; continue; }
+            if (count++) cues += ',';
+            cues += "{\"start\":" + std::to_string(start->u.double_) + ",\"end\":" + std::to_string(end->u.double_) + ",\"text\":" + quote(text) + "}";
+            ahead = std::max(ahead, start->u.double_ + subtitle_delay_applied - position);
+        }
+        cues += ']';
+        const auto us = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-started).count();
+        const auto json = "{\"sequence\":" + std::to_string(++queue_sequence) + ",\"track_id\":" + quote(track) +
+            ",\"source_epoch\":" + std::to_string(epoch) + ",\"command_id\":" + std::to_string(subtitle_command_applied) +
+            ",\"observed_monotonic_ns\":" + std::to_string(ns) + ",\"supported\":" + (supported ? "true" : "false") +
+            ",\"limited\":" + (limited ? "true" : "false") + ",\"ahead_seconds\":" + std::to_string(ahead) +
+            ",\"read_us\":" + std::to_string(us) + ",\"cues\":" + cues + "}";
+        std::lock_guard<std::mutex> lock(status_mutex); narration_queue = json;
     }
     void dolby_color_mode(mpv_handle* core) {
         if (!dolby_profile5.load() || dolby_color_ready.load()) return;
@@ -663,6 +721,12 @@ struct Source final {
             auto format_deadline = std::chrono::steady_clock::time_point::max();
             quest::NetworkSeekPattern network_seeks;
             auto next_snapshot = std::chrono::steady_clock::now();
+            quest::WhisperAudio whisper([&](const std::vector<std::string>& args) {
+                std::vector<const char*> command;
+                for (const auto& arg : args) command.push_back(arg.c_str());
+                command.push_back(nullptr);
+                return mpv_command(core, command.data());
+            });
             while (!closing.load() && !render_failed.load()) {
                 dolby_color_mode(core);
                 bool set_play = false, play = false, set_audio = false, muted = false, set_subtitle = false, seek_exact = true, set_speed = false;
@@ -675,6 +739,7 @@ struct Source final {
 #endif
                 int subtitle_id = 0; uint64_t subtitle_command = 0;
                 int audio_id = -1; double volume = 100; int64_t seek = -1;
+                bool set_whisper = false; int requested_whisper = 0; uint64_t requested_whisper_serial = 0;
                 bool set_narration_gain = false;
                 SubtitleFile subtitle_file;
                 std::vector<std::pair<std::string, std::string>> extra_audio, extra_captions;
@@ -688,6 +753,8 @@ struct Source final {
 #endif
                         seek = pending_seek_ms; seek_exact = pending_seek_exact; pending_seek_ms = -1;
                         set_audio = audio_dirty; audio_dirty = false;
+                        set_whisper = whisper_dirty; whisper_dirty = false;
+                        requested_whisper = desired_whisper; requested_whisper_serial = whisper_request;
                         audio_id = desired_audio_id; volume = desired_volume * narration_gain; muted = desired_mute;
                         set_narration_gain = narration_gain_dirty; narration_gain_dirty = false;
                         set_subtitle = subtitle_dirty; subtitle_dirty = false;
@@ -700,6 +767,12 @@ struct Source final {
                     }
                 }
                 if (set_play && !play) checked(mpv_set_property_string(core, "pause", "yes"), "MPV source pause before audio");
+                const auto whisper_now = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+                if (set_whisper) whisper.request(requested_whisper, requested_whisper_serial, whisper_now);
+                if (whisper.pending()) whisper.tick(whisper_now, property(core, "pause") != "yes" &&
+                    property(core, "paused-for-cache") != "yes" && !property(core, "current-ao").empty());
+                if (whisper_serial != whisper.serial) next_snapshot = std::chrono::steady_clock::now();
+                whisper_level = whisper.level; whisper_serial = whisper.serial; whisper_error = whisper.error;
                 for (const auto& [location, title] : extra_audio) {
                     const char* add[] = {"audio-add", location.c_str(), "auto", title.c_str(), nullptr};
                     mpv_command(core, add); // Optional: failure must not fail the video.
@@ -739,6 +812,10 @@ struct Source final {
                     next_snapshot = std::chrono::steady_clock::now();
                 }
                 if (seek >= 0) {
+                    // A user jump is not evidence of alternating audio/video
+                    // reads. Start a fresh observation window after each jump,
+                    // while still detecting a real storm that begins afterwards.
+                    network_seeks = quest::NetworkSeekPattern{};
                     // Flush cannot invalidate a MediaCodec surface while the
                     // worker is mapping that surface. The worker still serves
                     // advanced-control update tasks while new renders wait.
@@ -779,7 +856,7 @@ struct Source final {
                     const auto* log = static_cast<const mpv_event_log_message*>(event->data);
                     if (!playback_privacy.load()) __android_log_print(ANDROID_LOG_INFO, "QuestMpvSource", "[%s] %s", log->prefix, log->text);
                     if (loaded && audio && !network_interleave_compat && !interleave_suspect.load() &&
-                        seeks_started.load() == 0 && (path.rfind("http://", 0) == 0 || path.rfind("https://", 0) == 0) &&
+                        (path.rfind("http://", 0) == 0 || path.rfind("https://", 0) == 0) &&
                         std::string(log->prefix) == "curl") {
                         unsigned long long from = 0, to = 0;
                         if (std::sscanf(log->text, "stream level seek from %llu to %llu", &from, &to) == 2 &&
@@ -834,7 +911,10 @@ struct Source final {
                     format_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(15);
                 }
                 else if (event->event_id == MPV_EVENT_VIDEO_RECONFIG) format(core);
-                else if (event->event_id == MPV_EVENT_SEEK) { awaiting_seek_event = false; core_eof.store(false); }
+                else if (event->event_id == MPV_EVENT_SEEK) {
+                    awaiting_seek_event = false; core_eof.store(false); whisper.invalidate(whisper_now);
+                }
+                else if (event->event_id == MPV_EVENT_AUDIO_RECONFIG) whisper.invalidate(whisper_now);
                 else if (event->event_id == MPV_EVENT_PLAYBACK_RESTART) {
                     if (layer() && !awaiting_seek_event) publish_layer(core, true);
                     next_snapshot = std::chrono::steady_clock::now();
@@ -1304,9 +1384,10 @@ struct Source final {
     std::string narration_status() {
         // The audio producer must not wait for renderer/GPU slot retirement.
         // Only the cached playback snapshot and atomic transport fences matter.
-        std::string snapshot;
-        { std::lock_guard<std::mutex> lock(status_mutex); snapshot = details; }
-        return "{\"details\":" + snapshot + ",\"last_source_epoch\":" + std::to_string(last_epoch.load()) +
+        narration_poll_ns.store(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
+        std::string snapshot, queue;
+        { std::lock_guard<std::mutex> lock(status_mutex); snapshot = details; queue = narration_queue; }
+        return "{\"details\":" + snapshot + ",\"subtitle_queue\":" + queue + ",\"last_source_epoch\":" + std::to_string(last_epoch.load()) +
             ",\"epoch_floor\":" + std::to_string(epoch_floor.load()) + ",\"seeks_started\":" + std::to_string(seeks_started.load()) +
             ",\"seeks_completed\":" + std::to_string(seeks_completed.load()) + "}";
     }
@@ -1508,6 +1589,16 @@ Java_org_vrpassthroughplayer_plugin_MpvSourceNative_setAudio(JNIEnv* env, jclass
         source->audio_dirty = true; source->wake.notify_one(); return JNI_TRUE;
     } catch (const std::exception& failure) { error(env, failure); return JNI_FALSE; }
 }
+extern "C" JNIEXPORT jlong JNICALL
+Java_org_vrpassthroughplayer_plugin_MpvSourceNative_setWhisper(JNIEnv* env, jclass, jlong handle, jint level) {
+    try {
+        if (!quest::WhisperAudio::valid(level)) return 0;
+        auto source = find(handle); std::lock_guard<std::mutex> lock(source->commands_mutex);
+        if (source->closing.load() || !source->audio) return 0;
+        source->desired_whisper = level; source->whisper_dirty = true;
+        source->wake.notify_one(); return static_cast<jlong>(++source->whisper_request);
+    } catch (const std::exception& failure) { error(env, failure); return 0; }
+}
 extern "C" JNIEXPORT jboolean JNICALL
 Java_org_vrpassthroughplayer_plugin_MpvSourceNative_setNarrationGain(JNIEnv* env, jclass, jlong handle, jdouble gain) {
     try {
@@ -1587,7 +1678,8 @@ Java_org_vrpassthroughplayer_plugin_MpvSourceNative_subtitleStatus(JNIEnv* env, 
 extern "C" JNIEXPORT jboolean JNICALL
 Java_org_vrpassthroughplayer_plugin_MpvSourceNative_setAudioDelay(JNIEnv* env, jclass, jlong handle, jdouble seconds) {
     try {
-        if (!std::isfinite(seconds) || std::abs(seconds) > 2.0) return JNI_FALSE;
+        // User correction (+/-10s) plus the bounded video processing hold.
+        if (!std::isfinite(seconds) || std::abs(seconds) > 12.0) return JNI_FALSE;
         auto source = find(handle); std::lock_guard<std::mutex> lock(source->commands_mutex);
         if (source->closing.load()) return JNI_FALSE;
         source->desired_audio_delay = seconds; source->audio_delay_dirty = true; source->wake.notify_one();

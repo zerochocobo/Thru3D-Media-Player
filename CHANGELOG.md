@@ -4,6 +4,24 @@
 
 Newest first, following product release milestones. Some development/source snapshots contained features before their product release. Original APK identifiers `0.2` and `0.4` are retained; `0.4` was also called `0.4.0` in release notes. Availability depends on device, server and media capabilities.
 
+## 0.12.1 — 2026-10-18
+
+- **Narration remembered per video**: New videos start with narration off. Reopening a video restores its saved on/off state, language, voice and other narration preferences; controls released after switching videos no longer change the new video's settings.
+- **Visible subtitles by default**: Narration leaves subtitles visible unless you explicitly hide them. The language selector remains available while narration is off; Chinese, English or Japanese defaults follow the interface language, with an explicit follow-subtitles option retained.
+- **More reliable narration language selection**: Your selected language takes priority over subtitle metadata, including untagged external subtitles. Older automatic defaults migrate without overriding an explicit automatic-language choice.
+- **Flat-screen defaults follow your adjustments**: Distance, size and placement become the next viewing defaults unless explicitly fixed. Fixed defaults survive temporary changes; releasing the lock saves the current layout. App and system recentering use the same defaults, with an initial 2 m / 100% layout.
+
+## 0.12.0 — 2026-10-18
+
+- **Offline subtitle narration**: Normal Debug and Release builds enable Chinese, English and Japanese text-subtitle narration with 12 preset voices, previews, line selection, volume, original-audio ducking and optional subtitle hiding. Timing adapts automatically up to 1.8×, with pause/resume and seek handling. Public source includes runtime recipes and metadata, while weights, preset payloads and reference recordings remain excluded; the independent commercial-source audit of reference recordings remains unresolved.
+- **Photo puzzles**: Production Release entry points support ordinary, depth-converted and spatial photos, plus mono 360° panoramas, with seated/standing placement, piece-count choices, wrist rotation, a movable frame and off-hand reference. Save/resume separate sessions, browse unfinished/completed history and remove records without deleting originals. Procedurally generated cues and completion fireworks accompany play.
+- **Cinema screen placement**: Added 100-inch, 150-inch and two giant-screen presets, eye-level placement, a temporary alignment grid and saved flat-view defaults. Flat screens support 1–50 m distance, 100%–3000% size and direct Off/Light/Medium/Wrap curvature selection.
+- **Audio timing and dialogue controls**: Remember sync offsets per video and audio track, show full external-track names, follow headset media volume and save continuous quiet-dialogue enhancement per video.
+- **Music previews and quick controls**: Preview supported local, USB and network audio before importing, including seeking. Hover controls show the current track and play/pause; storage details show audio usage/free space. No fixed library-wide quota; Android retains a 512 MB per-file limit.
+- **System keyboard search**: Use available multilingual system input methods with paste, clear and retained search drafts. Broad 115 folder searches preserve found results and suggest narrowing the query.
+- **Network playback**: Reuse nearby MP4 upstream reads and Blu-ray ISO preparation/playback data to reduce redundant loading on supported sources.
+- **Panorama background**: Fixed bright seams and pole artifacts in affected display paths while retaining the source detail and orientation.
+
 ## 0.11.2 — 2026-10-18
 
 This update adds a global music player, offline audio imports and video playback modes, alongside improvements to 115 startup, large libraries and controller pointers.

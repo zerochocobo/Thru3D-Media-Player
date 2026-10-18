@@ -99,7 +99,7 @@ class DebugDiagnosticsReceiver : BroadcastReceiver() {
                         when (intent.action) {
                         "com.wapok.thru3d.DEBUG_PLAYER_MPV" -> {
                             val operation = intent.getStringExtra("operation") ?: "open"
-                            require(operation in setOf("open", "alpha", "depth", "playing", "seek", "hold_pixels", "observe", "stereo", "profile", "close", "pixels", "subtitle", "audio", "narration", "narration_status", "display_quality", "sharpness", "cloud_accounts", "cloud_page_probe", "display_menu", "player_menu", "restart_app", "quit_app", "seek_policy_ui", "media_library_ui", "photo_open", "photo_step", "photo_depth", "photo_inspect", "photo_portrait", "alpha_blend_probe", "layer_flip", "layer_order", "hide_menus", "menu_layers", "menu_layer_filter", "menu_layer_holes", "menu_action", "menu_nav", "menu_bench"))
+                            require(operation in setOf("open", "alpha", "depth", "playing", "seek", "hold_pixels", "observe", "stereo", "profile", "close", "pixels", "subtitle", "audio", "audio_delay", "narration", "narration_status", "display_quality", "sharpness", "cloud_accounts", "cloud_page_probe", "display_menu", "player_menu", "restart_app", "quit_app", "seek_policy_ui", "media_library_ui", "photo_open", "photo_step", "photo_depth", "photo_inspect", "photo_portrait", "alpha_blend_probe", "layer_flip", "layer_order", "hide_menus", "menu_layers", "menu_layer_filter", "menu_layer_holes", "menu_action", "menu_nav", "menu_bench"))
                             val command = JSONObject().put("operation", operation).put("request_key", request)
                                 .put("value", intent.getFloatExtra("value", 0f).toDouble())
                                 .put("benchmark", intent.getBooleanExtra("benchmark", false))
@@ -193,6 +193,7 @@ class DebugDiagnosticsReceiver : BroadcastReceiver() {
                                 require(track >= -1)
                                 command.put("track_id", track)
                             }
+                            if (operation == "audio_delay") command.put("seconds", intent.getFloatExtra("seconds", Float.NaN).toDouble())
                             if (operation == "narration") command.put("options", JSONObject(intent.getStringExtra("options") ?: "{}"))
                             plugin.requestMpvPlayerCommand(command.toString())
                         }

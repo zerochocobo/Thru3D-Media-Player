@@ -7,6 +7,7 @@ import android.media.ImageReader;
 import android.opengl.*;
 import android.os.*;
 import android.view.Surface;
+import dalvik.system.PathClassLoader;
 import org.json.*;
 import java.io.*;
 import java.lang.reflect.*;
@@ -16,6 +17,32 @@ import java.util.concurrent.atomic.AtomicInteger;
  * The controller must close the normal app before the optional cloud test to avoid a second DB owner. */
 public class MediaPlaybackCompatibility {
     private static ClassLoader appLoader;
+    private static final JSONArray upstreamRanges = new JSONArray();
+    private static class ObservedConnection extends java.net.HttpURLConnection {
+        private final java.net.HttpURLConnection original;
+        ObservedConnection(java.net.HttpURLConnection original) { super(original.getURL()); this.original = original; }
+        public void connect() throws IOException { original.connect(); }
+        public void disconnect() { original.disconnect(); }
+        public boolean usingProxy() { return original.usingProxy(); }
+        public void setConnectTimeout(int value) { original.setConnectTimeout(value); }
+        public void setReadTimeout(int value) { original.setReadTimeout(value); }
+        public void setInstanceFollowRedirects(boolean value) { original.setInstanceFollowRedirects(value); }
+        public void setUseCaches(boolean value) { original.setUseCaches(value); }
+        public void setRequestProperty(String key, String value) { original.setRequestProperty(key, value); }
+        public String getHeaderField(String key) { return original.getHeaderField(key); }
+        public InputStream getInputStream() throws IOException { return original.getInputStream(); }
+        public int getResponseCode() throws IOException {
+            long start = System.nanoTime();
+            JSONObject row = new JSONObject();
+            try {
+                row.put("range", original.getRequestProperty("Range"));
+                synchronized (upstreamRanges) { if (upstreamRanges.length() < 4096) upstreamRanges.put(row); }
+                int status = original.getResponseCode();
+                synchronized (upstreamRanges) { row.put("status", status).put("headers_ms", (System.nanoTime() - start) / 1e6); }
+                return status;
+            } catch (org.json.JSONException error) { throw new IOException(error); }
+        }
+    }
     private static Class<?> type(String name) throws Exception { return appLoader.loadClass("org.vrpassthroughplayer.plugin." + name); }
     private static Object singleton(String name) throws Exception { return type(name).getField("INSTANCE").get(null); }
     private static Object call(Object object, String name, Object... args) throws Exception {
@@ -23,6 +50,34 @@ public class MediaPlaybackCompatibility {
             try { return method.invoke(object, args); } catch (IllegalArgumentException ignored) { }
         }
         throw new NoSuchMethodException(name);
+    }
+    /** Instrument only this probe's newly owned lease. Never print endpoint,
+     * credentials or tokens; delegate connection properties and IO unchanged. */
+    private static AtomicInteger countUpstreamConnections(Object server, String url) throws Exception {
+        Field sources = server.getClass().getDeclaredField("sources"); sources.setAccessible(true);
+        String token = java.net.URI.create(url).getPath().split("/")[1];
+        Object source = ((java.util.Map<?, ?>) sources.get(server)).get(token);
+        if (source.getClass().getSimpleName().equals("AdaptiveInterleaveSource")) {
+            Field inner = source.getClass().getDeclaredField("source"); inner.setAccessible(true); source = inner.get(source);
+        }
+        AtomicInteger attempts = new AtomicInteger();
+        for (String name : new String[]{"linkConnection", "connect"}) {
+            Field field = source.getClass().getDeclaredField(name); field.setAccessible(true);
+            final Object original = field.get(source);
+            if (original == null) continue;
+            Object observed = Proxy.newProxyInstance(field.getType().getClassLoader(), new Class<?>[]{field.getType()}, (proxy, method, args) -> {
+                if (method.getName().equals("invoke")) attempts.incrementAndGet();
+                try {
+                    Object result = method.invoke(original, args);
+                    return method.getName().equals("invoke") && result instanceof java.net.HttpURLConnection
+                        ? new ObservedConnection((java.net.HttpURLConnection) result) : result;
+                }
+                catch (InvocationTargetException error) { throw error.getCause(); }
+            });
+            field.set(source, observed);
+            return attempts;
+        }
+        throw new IllegalStateException("Upstream connection hook unavailable");
     }
     private static void close(long handle) throws Exception {
         MpvSourceNative.requestClose(handle);
@@ -50,11 +105,19 @@ public class MediaPlaybackCompatibility {
         Context system = (Context) at.getMethod("getSystemContext").invoke(thread);
         Context raw = system.createPackageContext("com.wapok.thru3d", Context.CONTEXT_INCLUDE_CODE | Context.CONTEXT_IGNORE_SECURITY);
         Context context = new ContextWrapper(raw) { public Context getApplicationContext() { return this; } };
-        appLoader = context.getClassLoader();
+        // Probe production classes and their APK dependencies must share one
+        // loader. Mixing the APK's old StreamSource with a new AudioReadSpan
+        // makes a cache test fail before any media has been read.
+        String productionDex = System.getProperty("media.compat.production.dex");
+        appLoader = productionDex == null ? context.getClassLoader() : new PathClassLoader(
+            productionDex + File.pathSeparator + raw.getApplicationInfo().sourceDir,
+            raw.getApplicationInfo().nativeLibraryDir + File.pathSeparator +
+                raw.getApplicationInfo().sourceDir + "!/lib/arm64-v8a",
+            ClassLoader.getSystemClassLoader().getParent());
         Class.forName("android.security.keystore2.AndroidKeyStoreProvider").getMethod("install").invoke(null);
         JSONObject report = new JSONObject().put("label", args[2]).put("stage", "starting");
         File output = new File(context.getCacheDir(), "media-compat-" + args[2] + ".json");
-        Object server = null; long handle = 0; ImageReader images = null; HandlerThread drain = null;
+        Object server = null; AtomicInteger upstreamConnections = null; long handle = 0; ImageReader images = null; HandlerThread drain = null;
         EGLDisplay display = null; EGLContext gl = null; EGLSurface surface = null;
         try {
             String url = args[1];
@@ -63,9 +126,13 @@ public class MediaPlaybackCompatibility {
                 Object cloud = singleton("CloudLibrary"); call(cloud, "start", context);
                 server = type("LocalStreamServer").getConstructor().newInstance();
                 url = (String) call(cloud, "playable", url, server);
+                upstreamConnections = countUpstreamConnections(server, url);
             }
-            boolean sequential = false, policyChecked = false;
-            report.put("sequential", false).put("leading_audio_bytes", 0).put("metadata_probe_ms", 0).put("policy_diagnostic", "not_requested");
+            boolean sequential = Boolean.getBoolean("media.compat.force.sequential"), policyChecked = sequential;
+            if (sequential && server != null && Boolean.getBoolean("media.compat.sequential.reuse"))
+                report.put("sequential_transport_reuse", call(server, "enableInterleaveCache", url));
+            report.put("sequential", sequential).put("diagnostic_force_sequential", sequential)
+                .put("leading_audio_bytes", 0).put("metadata_probe_ms", 0).put("policy_diagnostic", "not_requested");
             display = EGL14.eglGetDisplay(EGL14.EGL_DEFAULT_DISPLAY); int[] versions = new int[2];
             if (!EGL14.eglInitialize(display, versions, 0, versions, 1)) throw new Exception("EGL initialize");
             EGLConfig[] configs = new EGLConfig[1]; int[] count = new int[1];
@@ -85,6 +152,7 @@ public class MediaPlaybackCompatibility {
             int fallbackCount = 0, readPolicyRestarts = 0; long tickets = 0; long start = System.nanoTime(); double firstFrame = -1;
             double lastSnapshot = -1; boolean seekForward = false, seekBack = false, audioOff = false, audioOn = false;
             boolean far = args[2].endsWith("-far"); double forwardReady = -1, backReady = -1; long forwardFrames = 0, backFrames = 0;
+            int forwardTarget = 1200000;
             JSONArray snapshots = new JSONArray(); report.put("snapshots", snapshots);
             while ((System.nanoTime() - start) / 1e9 < Integer.parseInt(args[3])) {
                 String acquired = MpvSourceNative.acquire(handle);
@@ -97,13 +165,19 @@ public class MediaPlaybackCompatibility {
                     JSONObject status = new JSONObject(MpvSourceNative.status(handle));
                     JSONObject details = status.optJSONObject("details");
                     JSONObject snapshot = new JSONObject().put("seconds", elapsed).put("tickets", tickets).put("images", drained.get()).put("source", status);
+                    if (upstreamConnections != null) snapshot.put("upstream_connection_attempts", upstreamConnections.get());
+                    if (server != null) {
+                        Object readCache = call(server, "interleaveCacheStats", url);
+                        if (readCache instanceof java.util.Map) snapshot.put("read_cache", new JSONObject((java.util.Map) readCache));
+                    }
                     snapshots.put(snapshot); lastSnapshot = elapsed;
+                    synchronized (upstreamRanges) { report.put("upstream_ranges", new JSONArray(upstreamRanges.toString())); }
                     if (firstFrame < 0 && (drained.get() > 0 || tickets > 0)) firstFrame = elapsed;
                     if (status.optBoolean("network_interleave_suspect") && !policyChecked && !sequential) {
                         policyChecked = true;
-                        Class<?> function = Class.forName("kotlin.jvm.functions.Function0");
+                        Class<?> function = appLoader.loadClass("kotlin.jvm.functions.Function0");
                         Object cancelled = Proxy.newProxyInstance(function.getClassLoader(), new Class<?>[]{function}, (proxy, method, values) -> false);
-                        Object policy = Class.forName("org.vrpassthroughplayer.plugin.Mp4InterleavePolicy").getField("INSTANCE").get(null);
+                        Object policy = singleton("Mp4InterleavePolicy");
                         long probeStart = System.nanoTime();
                         Object decision = call(policy, "inspectHttp", url, cancelled);
                         sequential = (Boolean) call(decision, "getSequential");
@@ -115,7 +189,11 @@ public class MediaPlaybackCompatibility {
                             int position = details == null ? initialPosition : (int) Math.max(initialPosition, details.optDouble("position_seconds", 0) * 1000);
                             handle = create(context, url, ca, layer ? images.getSurface() : null, true, position);
                             firstFrame = -1; tickets = 0; drained.set(0);
-                        } else MpvSourceNative.setPlaying(handle, true);
+                        } else {
+                            if ((Boolean) call(decision, "getRegionCache") && server != null)
+                                report.put("region_cache_enabled", call(server, "enableInterleaveCache", url, call(decision, "getAudioChunks")));
+                            MpvSourceNative.setPlaying(handle, true);
+                        }
                     }
                     if (layer && !status.optBoolean("layer_compatible", true)) {
                         if (fallbackCount++ != 0) throw new Exception("Repeated layer fallback");
@@ -128,10 +206,13 @@ public class MediaPlaybackCompatibility {
                     if (controls && firstFrame >= 0 && (!args[2].startsWith("mp4-") || sequential)) {
                         double played = elapsed - firstFrame;
                         if (!seekForward && played >= 2) {
+                            if (far && details != null)
+                                forwardTarget = (int) Math.max(10000, Math.min(1200000,
+                                    details.optDouble("duration_seconds", 1220) * 1000 - 20000));
                             forwardFrames = drained.get() + tickets;
-                            seekForward = MpvSourceNative.seek(handle, far ? 1200000 : 8000, true);
+                            seekForward = MpvSourceNative.seek(handle, far ? forwardTarget : 8000, true);
                         }
-                        if (far && details != null && seekForward && forwardReady < 0 && details.optDouble("position_seconds") >= 1199 &&
+                        if (far && details != null && seekForward && forwardReady < 0 && details.optDouble("position_seconds") >= forwardTarget / 1000.0 - 1 &&
                             status.optLong("last_source_epoch") >= status.optLong("epoch_floor") &&
                             !details.optString("paused_for_cache").equals("yes") && drained.get() + tickets > forwardFrames) forwardReady = elapsed;
                         if (!seekBack && (far ? forwardReady >= 0 && elapsed - forwardReady >= 2 : played >= 4)) {
@@ -149,10 +230,15 @@ public class MediaPlaybackCompatibility {
                 }
                 Thread.sleep(10);
             }
+            if (firstFrame < 0 || drained.get() + tickets == 0)
+                throw new IllegalStateException("No decoded output before probe deadline");
+            if (controls && !(seekForward && seekBack && audioOff && audioOn && (!far || forwardReady >= 0 && backReady >= 0)))
+                throw new IllegalStateException("Playback controls did not recover decoded output");
             report.put("stage", "complete").put("fallback_count", fallbackCount).put("first_frame_seconds", firstFrame)
                 .put("read_policy_restarts", readPolicyRestarts)
                 .put("initial_position_ms", initialPosition).put("far_forward_verified", forwardReady >= 0).put("far_back_verified", backReady >= 0)
                 .put("tickets", tickets).put("images_drained", drained.get()).put("controls_exercised", seekForward && seekBack && audioOff && audioOn);
+            if (upstreamConnections != null) report.put("upstream_connection_attempts", upstreamConnections.get());
         } catch (Throwable error) {
             Throwable cause = error instanceof InvocationTargetException ? ((InvocationTargetException) error).getCause() : error;
             report.put("stage", "failed").put("error_type", cause.getClass().getName())

@@ -14,8 +14,12 @@ class Catalog extends RefCounted:
 		for i in 40: entries.append({"uri": "content://hand/%d" % i, "title": "Video %d" % i, "position_ms": 0})
 		return entries
 
+class Cinema extends RefCounted:
+	func active(_viewer: Node) -> bool: return false
+
 class Viewer extends Node3D:
 	var local_uri := "content://hand/video"
+	var cinema := Cinema.new()
 	var geometry := 1
 	var view_camera: XRCamera3D
 	var turned := Vector2.ZERO
@@ -89,6 +93,26 @@ func _run() -> void:
 	pointer.update(sample(0.8), 0.014)
 	check(pointer.update(sample(NAN), 0.014).cancelled and pointer.ray == null, "NaN data cannot click")
 	var tracker := make_tracker()
+	check(Hand.grip_pose(tracker,Transform3D.IDENTITY,1)==null,"Missing wrist orientation never invents piece rotation")
+	var wrist := XRHandTracker.HAND_JOINT_WRIST
+	var wrist_flags := Hand.POSITION_FLAGS | XRHandTracker.HAND_JOINT_FLAG_ORIENTATION_VALID | XRHandTracker.HAND_JOINT_FLAG_ORIENTATION_TRACKED
+	tracker.set_hand_joint_flags(wrist,wrist_flags)
+	var wrist_pose := Transform3D(Basis(Vector3.BACK,PI*0.5),Vector3(0.2,1.2,-0.4))
+	tracker.set_hand_joint_transform(wrist,wrist_pose)
+	check((Hand.grip_pose(tracker,Transform3D.IDENTITY,1) as Transform3D).is_equal_approx(wrist_pose),"Optical wrist roll is retained independently of the aim ray")
+	var wrist_space := Transform3D(Basis(Vector3.UP,0.4),Vector3(2,0,-1))
+	var grip: Transform3D=Hand.grip_pose(tracker,wrist_space,2)
+	check(grip.origin.is_equal_approx(wrist_space*(wrist_pose.origin*2)) and grip.basis.is_equal_approx(wrist_space.basis*wrist_pose.basis),"Wrist pose applies recenter and world scale once")
+	tracker.set_hand_joint_flags(wrist,wrist_flags & ~XRHandTracker.HAND_JOINT_FLAG_ORIENTATION_TRACKED)
+	check(Hand.grip_pose(tracker,Transform3D.IDENTITY,1)==null,"Stale wrist orientation is rejected even while position stays tracked")
+	var palm_joint := XRHandTracker.HAND_JOINT_PALM
+	var palm_flags := tracker.get_hand_joint_flags(palm_joint); var palm_pose := tracker.get_hand_joint_transform(palm_joint)
+	tracker.set_hand_joint_flags(palm_joint,Hand.POSITION_FLAGS)
+	tracker.set_hand_joint_transform(palm_joint,Transform3D(Basis.IDENTITY,Vector3(-0.2,1.2,-0.4)))
+	check((Hand.palm_position(tracker,wrist_space,2) as Vector3).is_equal_approx(wrist_space*Vector3(-0.4,2.4,-0.8)),"Reference palm position applies space and scale once without requiring wrist orientation")
+	tracker.set_hand_joint_flags(palm_joint,XRHandTracker.HAND_JOINT_FLAG_POSITION_VALID)
+	check(Hand.palm_position(tracker,Transform3D.IDENTITY,1)==null,"A stale palm position cannot move the reference")
+	tracker.set_hand_joint_flags(palm_joint,palm_flags); tracker.set_hand_joint_transform(palm_joint,palm_pose)
 	var head := Transform3D(Basis.IDENTITY, Vector3(0, 1.6, 0))
 	var data := Hand.sample(tracker, "right_hand", head, Transform3D.IDENTITY, 1)
 	check(data.has("ray") and is_equal_approx(data.ratio, 2.0 / 7), "Real XRHandTracker supplies scale-normalized pinch")
@@ -312,7 +336,7 @@ func _run() -> void:
 	for failure in failures: push_error(failure)
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path("res://../../build/output/hand-input"))
 	FileAccess.open("res://../../build/output/hand-input/verification.json", FileAccess.WRITE).store_string(JSON.stringify({"checks": checks, "failures": failures, "physical_tracking": "not_verified"}, "\t"))
-	print("Hand pointer checks: %s (%d)" % ["passed" if failures.is_empty() else "FAILED", checks])
+	print("Hand pointer: %d checks, %d failures" % [checks,failures.size()])
 	quit(0 if failures.is_empty() else 1)
 
 func make_aim() -> XRControllerTracker:

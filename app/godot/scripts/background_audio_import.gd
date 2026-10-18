@@ -16,6 +16,18 @@ var _cancel := false
 var _title := ""
 var _connected: Object
 var _poll := 0.0
+var _storage_payload := ""
+var _storage := {}
+
+func storage_info() -> Dictionary:
+	if Methods.supports(platform, "background_audio_storage"):
+		var payload := str(platform.background_audio_storage())
+		if payload != _storage_payload:
+			_storage_payload = payload
+			var value: Variant = JSON.parse_string(payload)
+			if value is Dictionary: _storage = value
+		return _storage.duplicate()
+	return {"max_file_bytes": Catalog.MAX_BYTES}
 
 func start(uri: String, title: String, playlist: String = "") -> bool:
 	if busy: return false

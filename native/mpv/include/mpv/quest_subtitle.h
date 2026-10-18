@@ -25,6 +25,12 @@ MPV_EXPORT uint32_t mpv_quest_pgs_api_version(void);
  * clean video used for Alpha/depth inference. Empty cues also invoke callback. */
 MPV_EXPORT int mpv_quest_get_pgs(mpv_handle *, int, int, double,
                                quest_mpv_pgs_callback, void *);
+/* Feed only already-buffered packets to the selected text decoder, even while
+ * paused. No media read/seek, no second demuxer, no synthetic playback clock.
+ * Call on the control thread before querying the public sub-lines property. */
+#define QUEST_MPV_TEXT_QUEUE_API_VERSION 1u
+MPV_EXPORT uint32_t mpv_quest_text_queue_api_version(void);
+MPV_EXPORT int mpv_quest_pump_text_queue(mpv_handle *);
 #ifdef __cplusplus
 }
 #endif

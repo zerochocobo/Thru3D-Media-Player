@@ -4,6 +4,10 @@ const Audio := preload("res://scripts/background_audio.gd")
 const Home := preload("res://scripts/library_menu.gd")
 const Photo := preload("res://scripts/photo_menu.gd")
 const I18n := preload("res://scripts/i18n.gd")
+class RenderPlatform extends RefCounted:
+	func background_audio_storage() -> String: return JSON.stringify({"used_bytes": 256 * 1024 * 1024, "free_bytes": 78 * 1024 * 1024 * 1024, "total_bytes": 128 * 1024 * 1024 * 1024, "max_file_bytes": 512 * 1024 * 1024})
+	func preview_background_audio(_uri: String) -> int: return 1
+	func seek_audio_preview(_id: int, _position: float) -> bool: return true
 var failures: Array[String] = []
 var checks := 0
 func _initialize() -> void: call_deferred("_run")
@@ -15,7 +19,7 @@ func _run() -> void:
 	DirAccess.make_dir_recursive_absolute(output)
 	var viewport := SubViewport.new(); viewport.size = Vector2i(1440, 1300); viewport.own_world_3d = true; viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS; root.add_child(viewport)
 	var camera := Camera3D.new(); camera.fov = 45; viewport.add_child(camera)
-	var audio := Audio.new()
+	var audio := Audio.new(); audio.importer.platform = RenderPlatform.new()
 	audio.current = "yunhai"; audio.queue.assign(["yunhai", "xingmian"]); audio.queue_name = "Calm"; audio.queue_source = "calm"; audio._loaded = "yunhai"; audio.paused = false; audio._resume_position = 47.5
 	var wav := AudioStreamWAV.new(); wav.mix_rate = 8000; wav.format = AudioStreamWAV.FORMAT_8_BITS; var data := PackedByteArray(); data.resize(240 * 8000); wav.data = data
 	audio.player = AudioStreamPlayer.new(); audio.player.stream = wav
@@ -25,19 +29,36 @@ func _run() -> void:
 	var base_playlists: Array = audio.library.playlists.duplicate(true)
 	var menu := Menu.new(); menu.audio = audio; camera.add_child(menu); menu.position = Vector3(0, 0, -2.4)
 	var home := Home.new(); camera.add_child(home); home.position = Vector3(0, 0, -2.4); home.background_audio_provider = audio.snapshot
-	var photo := Photo.new(); camera.add_child(photo); photo.position = Vector3(0, 0, -2.4); photo.state_provider = func(): return {"has_image": true, "count": 12, "index": 0, "title": "Mountain panorama.jpg", "audio_active": true}
+	var photo := Photo.new(); camera.add_child(photo); photo.position = Vector3(0, 0, -2.4); photo.state_provider = func():
+		var state: Dictionary = audio.snapshot(); state.merge({"has_image": true, "count": 12, "index": 0, "title": "Mountain panorama.jpg"}); return state
 	for language in ["zh", "zh_Hant", "ja", "en"]:
 		I18n.use(language)
-		for view in ["mini", "volume", "sequence", "single", "shuffle", "empty", "long-title", "lists", "tracks", "environment", "all", "queue", "custom", "add", "track-actions", "delete", "name", "importing", "home", "photo", "import-browser", "organize", "add-source", "playlist-actions", "delete-playlist", "choose-list", "empty-playlist", "custom-source", "deleted-source", "library-source", "paged-playlists", "long-source", "environment-end", "ambience-source"]:
+		for view in ["mini", "volume", "sequence", "single", "shuffle", "empty", "long-title", "lists", "tracks", "environment", "all", "queue", "custom", "add", "track-actions", "delete", "name", "importing", "home", "photo", "import-browser", "organize", "add-source", "playlist-actions", "delete-playlist", "choose-list", "empty-playlist", "custom-source", "deleted-source", "library-source", "paged-playlists", "long-source", "environment-end", "ambience-source", "home-hover", "home-hover-empty", "photo-hover", "photo-hover-paused", "import-preview", "import-preview-loading", "import-preview-stream", "import-preview-drag"]:
 			menu.dismiss(); home.dismiss(); photo.dismiss(); audio.importer.busy = false
+			audio._preview_uri = ""; audio._preview_token = 0; audio._preview_loading = false; audio._preview_seekable = false
+			audio.paused = view == "photo-hover-paused"; audio.current = "" if view == "home-hover-empty" else "yunhai"
+			camera.fov = 50 if "hover" in view else 45
 			audio.library.playlists.assign(base_playlists.duplicate(true))
 			var shown: Node3D = menu
-			if view in ["home", "import-browser"]:
+			if view in ["home", "import-browser", "home-hover", "home-hover-empty"] or view.begins_with("import-preview"):
 				shown = home; home.visible = true
-				if view == "import-browser":
+				if view == "import-browser" or view.begins_with("import-preview"):
 					home.section = Home.Section.LOCAL; home._local_entries = [{"title": "Sea and wind.wav", "uri": "file:///sea.wav", "kind": "audio"}, {"title": "My ambient music.mp3", "uri": "file:///song.mp3", "kind": "audio"}]; home.begin_audio_import(); home._choose(home.rows[0])
+				if view.begins_with("import-preview"):
+					audio._preview_uri = "file:///sea.wav"; audio._preview_token = 1
+					audio._preview_loading = view == "import-preview-loading"
+					audio._preview_seekable = view in ["import-preview", "import-preview-drag"]
+					audio._preview_position = 72 if audio._preview_seekable else 0
+					audio._preview_duration = 300 if audio._preview_seekable else 0
 				home.refresh()
-			elif view == "photo": shown = photo; photo.visible = true; photo.refresh()
+				if view == "import-preview-drag":
+					var rail: Node3D = home.audio_preview_seek.view.node
+					home.press_pointer("left_hand", Vector3.ZERO, rail.global_position.normalized(), true)
+					home.update_pointer("left_hand", Vector3.ZERO, (rail.global_transform * Vector3(0.1425, 0, 0)).normalized(), true)
+				if view in ["home-hover", "home-hover-empty"]: home.music_quick.expanded = true; home.refresh_music_quick_controls()
+			elif view in ["photo", "photo-hover", "photo-hover-paused"]:
+				shown = photo; photo.visible = true; photo.refresh_values()
+				if "hover" in view: photo.music_quick.expanded = true; photo.refresh_music_quick_controls()
 			else:
 				menu.open(true); menu.compact = view in ["mini", "volume", "sequence", "single", "shuffle", "empty", "long-title", "custom-source", "deleted-source", "library-source", "long-source", "ambience-source"]
 				audio.queue_source = "calm"; audio.queue_name = "Calm"
@@ -71,10 +92,32 @@ func _run() -> void:
 				menu.refresh()
 			await process_frame; await RenderingServer.frame_post_draw; await RenderingServer.frame_post_draw
 			check(viewport.get_texture().get_image().save_png(output.path_join(language + "-" + view + ".png")) == OK, "Save " + language + view)
-			if shown == menu:
-				for label in menu.find_children("*", "Label3D", true, false):
-					if label.has_meta("music_text_width"):
-						check(label.get_aabb().size.x <= float(label.get_meta("music_text_width")) + 0.006, "Rendered text width: " + language + " " + view + " " + label.text + " actual=" + str(label.get_aabb().size.x))
+			if view in ["import-preview", "import-preview-drag"]:
+				var seek: RefCounted = home.audio_preview_seek
+				check(seek.view.elapsed.text in (["3:44", "3:45"] if view == "import-preview-drag" else ["1:12"]) and seek.view.total.text == "5:00", "Preview time labels: " + language + view)
+				var rail: Node3D = seek.view.node
+				var frame := viewport.get_texture().get_image(); var mint := 0
+				var a := camera.unproject_position(rail.global_transform * Vector3(-0.27, 0, 0))
+				var b := camera.unproject_position(rail.global_position)
+				for x in range(int(a.x), int(b.x)):
+					for y in range(int(a.y) - 3, int(a.y) + 4):
+						var color := frame.get_pixel(x, y)
+						if color.g > color.r + 0.10 and color.g > 0.60: mint += 1
+				check(mint > 35, "Audition progress renders above the row: " + language + view)
+			if "hover" in view or view.begins_with("import-preview"):
+				var target := Home.AUDIO_PREVIEW_BASE if view.begins_with("import-preview") else -5401
+				for control in shown._buttons:
+					if int(control.target) != target: continue
+					var centre: Vector2 = camera.unproject_position(control.node.global_position)
+					var frame := viewport.get_texture().get_image(); var mint := 0
+					for x in range(int(centre.x) - 14, int(centre.x) + 15):
+						for y in range(int(centre.y) - 14, int(centre.y) + 15):
+							var color := frame.get_pixel(x, y)
+							if color.g > 0.60 and color.r > 0.35 and color.b > 0.45 and color.g > color.r + 0.10: mint += 1
+					check(mint > 100, "Transport remains visible above its plate: " + language + view)
+			for label in shown.find_children("*", "Label3D", true, false):
+				if label.has_meta("music_text_width"):
+					check(label.get_aabb().size.x <= float(label.get_meta("music_text_width")) + 0.006, "Rendered text width: " + language + " " + view + " " + label.text + " actual=" + str(label.get_aabb().size.x))
 			for control in shown._buttons:
 				if not control.enabled: continue
 				var direction: Vector3 = control.node.global_position.normalized()

@@ -16,9 +16,9 @@ func run() -> void:
 	platform.browse_reply(1); menu._choose(menu.rows[0]); platform.browse_reply(2)
 	for language in ["zh", "en", "zh_Hant", "ja"]:
 		I18n.use(language); menu.cloud_search.scopes = ["current", "tree", "all"]; menu.cloud_search.open()
-		menu.cloud_search.query = "旅行"; menu.refresh()
+		menu.cloud_search._set_draft("旅行"); menu.refresh()
 		await shot(viewport, menu, output.path_join(language + "-input.png"))
-		menu.cloud_search.editing = false
+		menu.system_text_input.cancel(); menu.cloud_search.editing = false
 		menu.cloud_search.entries = []
 		for index in 20: menu.cloud_search.entries.append(platform.result("fixture:%d" % index, "旅行 %02d _ 中文 long_filename_4K_SBS.mp4" % index))
 		menu.cloud_search.page = 1; menu.cloud_search.next_cursor = "fixture:2"; menu.refresh()
@@ -28,7 +28,15 @@ func run() -> void:
 		menu.cloud_search.scopes = ["current"]; menu.cloud_search.scope = "current"; menu.cloud_search.editing = true; menu.refresh()
 		await shot(viewport, menu, output.path_join(language + "-current-only.png"))
 		menu.cloud_search.close()
-	var report := {"checks": checks, "failures": failures, "state": "passed" if failures.is_empty() else "failed", "previews": 16}
+	menu.section = Menu.Section.MEDIA_SERVER
+	for language in ["zh", "en", "zh_Hant", "ja"]:
+		I18n.use(language)
+		for purpose in ["search", "save"]:
+			menu.server_browser.keyboard = purpose; menu.server_browser.text = "旅行电影 / 日本語"
+			menu.refresh()
+			await shot(viewport, menu, output.path_join(language + "-server-" + purpose + ".png"))
+	menu.server_browser.keyboard = ""
+	var report := {"checks": checks, "failures": failures, "state": "passed" if failures.is_empty() else "failed", "previews": 24}
 	var file := FileAccess.open(output.path_join("verification.json"), FileAccess.WRITE); file.store_string(JSON.stringify(report, "  ")); file.close()
 	print("Cloud search render: %d checks, %d failures" % [checks, failures.size()])
 	for failure in failures: push_error(failure)
@@ -41,7 +49,9 @@ func shot(viewport: SubViewport, menu: Node3D, output: String) -> void:
 		if not button.node.visible: continue
 		for child in button.node.get_children():
 			if child is Label3D:
-				var width: float = child.font.get_string_size(child.text, HORIZONTAL_ALIGNMENT_LEFT, -1, child.font_size).x * child.pixel_size
+				# Tile captions wrap; measure their rendered bounds instead of the
+				# unwrapped source string, which falsely flags valid two-line titles.
+				var width: float = child.get_aabb().size.x
 				checks += 1
 				if width > button.rect.size.x + 0.004: failures.append("Text exceeds target: " + child.text + " / " + output.get_file())
 	viewport.get_texture().get_image().save_png(output)

@@ -20,6 +20,13 @@ import (
 type nativeCloudSearcher interface {
 	PlayerSearch(context.Context, model.Obj, string, string, string) ([]model.Obj, string, int64, bool, error)
 }
+type boundedCurrentCloudSearcher interface {
+	PlayerSearchCurrent(context.Context, model.Obj, string) ([]model.Obj, bool, error)
+}
+
+const cloudSearchResultLimit = 200
+const cloudSearchPageLimit = 5
+
 type cloudParentResolver interface {
 	PlayerSearchParent(context.Context, string) (string, error)
 }
@@ -50,6 +57,8 @@ type searchSession struct {
 	Local        []model.Obj
 	NativeCursor string
 	Loaded       int
+	Scanned      int
+	Capped       bool
 }
 
 var cloudSearchSessions = map[string]*searchSession{} // Serialized JNI management requests.
@@ -180,7 +189,9 @@ func searchCloud(c *gin.Context) {
 		session = &searchSession{Request: req, Storage: storage, Root: root, Expires: time.Now().Add(5 * time.Minute), Pages: map[int]searchPage{}, Objects: map[string]model.Obj{}, Paths: map[string]string{}, Seen: map[string]bool{}}
 		if req.Scope == "current" {
 			var objects []model.Obj
-			if native, ok := storage.(cloudNativeMatches); ok {
+			if bounded, ok := storage.(boundedCurrentCloudSearcher); ok {
+				objects, session.Capped, err = bounded.PlayerSearchCurrent(ctx, root, req.Query)
+			} else if native, ok := storage.(cloudNativeMatches); ok {
 				objects, err = native.PlayerMatches(ctx, root, req.Query)
 			} else if req.Refresh && storage.Config().Name == "115 Open" {
 				objects, err = freshCloudList(c.Request.Context(), storage, req.Path)
@@ -188,7 +199,7 @@ func searchCloud(c *gin.Context) {
 				objects, err = op.List(c.Request.Context(), storage, req.Path, model.ListArgs{Refresh: req.Refresh})
 			}
 			if err != nil {
-				searchError(c, "Cloud search failed")
+				cloudListError(c, "search.current", err)
 				return
 			}
 			if len(objects) > 20000 {
@@ -208,6 +219,10 @@ func searchCloud(c *gin.Context) {
 				}
 				return strings.ToLower(a.GetName()) < strings.ToLower(b.GetName())
 			})
+			if len(session.Local) > cloudSearchResultLimit {
+				session.Local = session.Local[:cloudSearchResultLimit]
+				session.Capped = true
+			}
 		} else if _, ok := storage.(nativeCloudSearcher); !ok || (req.Scope == "tree" && storage.Config().Name == "115 Open") {
 			searchError(c, "Search scope unavailable")
 			return
@@ -216,7 +231,7 @@ func searchCloud(c *gin.Context) {
 	}
 	cached, ok := session.Pages[page]
 	if !ok {
-		if page != session.Loaded || page >= 209 {
+		if page != session.Loaded || page >= cloudSearchPageLimit {
 			searchError(c, "Search result limit reached")
 			return
 		}
@@ -227,7 +242,7 @@ func searchCloud(c *gin.Context) {
 				return
 			}
 			end := min(start+48, len(session.Local))
-			cached = searchPage{Objects: session.Local[start:end], Total: int64(len(session.Local))}
+			cached = searchPage{Objects: session.Local[start:end], Total: int64(len(session.Local)), Capped: session.Capped}
 			if end < len(session.Local) {
 				cached.Next = key + ":" + strconv.Itoa(page+1)
 			}
@@ -238,12 +253,24 @@ func searchCloud(c *gin.Context) {
 			}
 			raw, next, total, capped, e := storage.(nativeCloudSearcher).PlayerSearch(c.Request.Context(), session.Root, req.Query, req.Kind, session.NativeCursor)
 			if e != nil {
-				searchError(c, "Cloud search failed")
+				cloudListError(c, "search.native", e)
 				return
 			}
 			if next != "" && next == session.NativeCursor {
 				searchError(c, "Repeated search page")
 				return
+			}
+			remaining := cloudSearchResultLimit - session.Scanned
+			if len(raw) > remaining {
+				raw = raw[:remaining]
+				capped = true
+			}
+			session.Scanned += len(raw)
+			if next != "" && (session.Scanned >= cloudSearchResultLimit || page >= cloudSearchPageLimit-1) {
+				capped = true
+			}
+			if capped {
+				next = ""
 			}
 			cached = searchPage{Objects: make([]model.Obj, 0), Total: total, Capped: capped}
 			pendingIDs := map[string]bool{}
@@ -285,7 +312,7 @@ func searchCloud(c *gin.Context) {
 			}
 			session.NativeCursor = next
 			if next != "" {
-				if page == 208 {
+				if page == cloudSearchPageLimit-1 {
 					cached.Capped = true
 				} else {
 					cached.Next = key + ":" + strconv.Itoa(page+1)

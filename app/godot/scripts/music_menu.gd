@@ -3,6 +3,7 @@ extends "res://scripts/ray_menu.gd"
 signal close_requested
 signal import_requested(destination: String)
 const ChoiceFields := preload("res://scripts/choice_fields.gd")
+const StorageView := preload("res://scripts/audio_storage_view.gd")
 const SELECTED := Color(0.16, 0.31, 0.27)
 const ROW := 100
 const MORE := 200
@@ -73,6 +74,7 @@ var _shown := ""
 var _time: Label3D
 var _duration: Label3D
 var _notice: Label3D
+var _storage_labels: Array[Label3D] = []
 
 func _ready() -> void:
 	super()
@@ -133,7 +135,7 @@ func _source_caption() -> String:
 
 func _key() -> String:
 	var value := _state.duplicate()
-	for field in ["audio_position", "audio_progress"]: value.erase(field)
+	for field in ["audio_position", "audio_progress", "audio_storage"]: value.erase(field)
 	return str(value)
 
 func refresh() -> void:
@@ -154,6 +156,7 @@ func refresh_values() -> void:
 		_time.text = _clock(value)
 	if is_instance_valid(_duration): _duration.text = _clock(float(_state.audio_duration))
 	if is_instance_valid(_notice): _notice.text = _fit_title(_status(), "", 0.90 if compact else 1.05, 14)
+	StorageView.update(self, _storage_labels, _state)
 	composition_changed.emit()
 
 func _process(_delta: float) -> void:
@@ -188,11 +191,11 @@ func _pill(id: int, text: String, point: Vector2, width: float, enabled: bool = 
 	set_label_size(_buttons.back().node.get_child(0), 18)
 
 func _draw() -> void:
-	_clear_layout(); _time = null; _duration = null; _notice = null
+	_clear_layout(); _time = null; _duration = null; _notice = null; _storage_labels.clear()
 	choices.begin(str([compact, view, playlist_id, modal, filter]), Vector2(-0.39, 0.31))
-	var panel_size := Vector2(1.14, 0.54) if compact else Vector2(1.42, 1.22)
+	var panel_size := Vector2(1.14, 0.54) if compact else Vector2(1.42, 1.28)
 	if not modal.is_empty(): panel_size = Vector2(1.42, 1.12) if modal == "name" else Vector2(1.20, 1.0 if modal == "choose_list" else 0.90)
-	_set_backdrop(panel_size, Vector2.ZERO)
+	_set_backdrop(panel_size, Vector2(0, -0.03) if not compact and modal.is_empty() else Vector2.ZERO)
 	_block_rays(_backdrop, _backdrop.mesh.size)
 	if not modal.is_empty():
 		_glyph(BACK, "up", Vector2(-panel_size.x / 2 + 0.09, panel_size.y / 2 - 0.075), 0.075, true, I18n.t("Back"))
@@ -232,7 +235,8 @@ func _draw() -> void:
 		if view == "tracks" and not audio.library.playlist(playlist_id).get("builtin", true): _pill(ADD_TRACKS, "Add tracks", Vector2(0, -0.18), 0.40, true, true)
 		elif view == "queue": _pill(TAB, "Playlists", Vector2(0, -0.18), 0.40, true, true)
 	_draw_paging(-0.35)
-	_draw_dock(); _draw_status(-0.575); choices.finish()
+	_draw_dock(); _storage_labels = StorageView.draw(self, _state, Vector2(0, -0.575), 1.20)
+	_draw_status(-0.635); choices.finish()
 
 func _collect_rows() -> void:
 	_rows.clear()
@@ -430,7 +434,8 @@ func _draw_modal() -> void:
 	if modal == "add_source":
 		_text_action(FROM_LIBRARY, "From audio library", 0.12)
 		_text_action(ADD_FILES, "Import audio", -0.01)
-		_pill(CANCEL, "Cancel", Vector2(0, -0.25), 0.40); return
+		_pill(CANCEL, "Cancel", Vector2(0, -0.25), 0.40)
+		_storage_labels = StorageView.draw(self, _state, Vector2(0, -0.325), 1.04, true); return
 	if modal == "playlist":
 		_text_action(RENAME, "Rename", 0.12)
 		_text_action(DELETE_LIST, "Delete playlist", -0.01)

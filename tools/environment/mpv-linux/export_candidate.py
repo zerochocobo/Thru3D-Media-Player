@@ -47,7 +47,7 @@ def main():
     if not re.search(r'\bT\s+mpv_quest_source_frame_api_version(?:@@?[^\s]+)?\s*$', exports, re.M):
         raise ValueError('Source-frame extension handshake is absent from libmpv')
     destination_base = DEST.parent
-    for symbol in ['mpv_quest_pgs_api_version', 'mpv_quest_get_pgs']:
+    for symbol in ['mpv_quest_pgs_api_version', 'mpv_quest_get_pgs', 'mpv_quest_text_queue_api_version', 'mpv_quest_pump_text_queue']:
         if not re.search(r'\bT\s+' + symbol + r'(?:@@?[^\s]+)?\s*$', exports, re.M):
             raise ValueError('PGS extension export missing: ' + symbol)
     destination_base.mkdir(parents=True, exist_ok=True)

@@ -36,6 +36,8 @@ internal object MpvSourceNative {
     @JvmStatic external fun setSpeed(handle: Long, speed: Double): Boolean
     /** Coalesced control request. -1 auto, 0 disabled, or an actual track-list id; volume 0..100. */
     @JvmStatic external fun setAudio(handle: Long, trackId: Int, volume: Double, muted: Boolean): Boolean
+    /** Per-video whisper enhancement: 0 off; 1..51 enable compression with continuous 0..50 boost; serial 0 rejects. */
+    @JvmStatic external fun setWhisper(handle: Long, level: Int): Long
     /** Independent temporary multiplier; never changes the selected track or saved volume. */
     @JvmStatic external fun setNarrationGain(handle: Long, gain: Double): Boolean
     /** 0 rejected; positive coalesced command serial. -1 auto, 0 off, actual subtitle id. */

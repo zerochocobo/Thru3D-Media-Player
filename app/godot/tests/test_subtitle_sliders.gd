@@ -93,6 +93,7 @@ func _run() -> void:
 	var row_origin: Vector3 = row.node.to_global(Vector3(0, 0, 1))
 	check(menu.ray_hit(row_origin, -menu.global_basis.z).target == row.target, "Track in front of the surface stays selectable")
 	menu.press_pointer("right", row_origin, -menu.global_basis.z, true)
+	menu.release_pointer("right", row_origin, -menu.global_basis.z, true)
 	check(state.subtitle_track == 2 and menu._subtitle_open and menu._subtitle_appearance_open, "Selecting a track retains the adjustment panel")
 	menu.stick_scroll(-1, 0.5)
 	check(menu._subtitle_offset > 0 and not menu.allows_playback_sticks(), "Many-track list scrolls while playback shortcuts remain isolated")

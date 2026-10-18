@@ -44,4 +44,43 @@ internal class NarrationPcm(speed: Double) {
         }
     }
     fun close() {processor?.reset();chunks.clear()}
+    /** Samples already submitted to AudioTrack must never be replayed when an
+     * utterance finishes generating and its unheard tail needs a faster tempo. */
+    fun remaining(): List<FloatArray> {
+        var skip=cursor
+        return chunks.mapNotNull { chunk ->
+            if(skip>=chunk.size) {skip-=chunk.size;null}
+            else chunk.let {val begin=skip;skip=0;if(begin==0)it else it.copyOfRange(begin,it.size)}
+        }
+    }
+    companion object {
+        /** Outer padding only, preserving 80 ms around soft consonants. */
+        fun trimOuterSilence(source: List<FloatArray>): List<FloatArray> {
+            val count=source.sumOf {it.size}
+            if(count==0)return source
+            var energy=0.0
+            for(chunk in source)for(value in chunk) {require(value.isFinite());energy+=value*value}
+            val threshold=maxOf(.00025,kotlin.math.sqrt(energy/count)*.01)
+            val block=960 // 10 ms stereo at 48 kHz.
+            var offset=0;var used=0;var sum=0.0;var first=-1;var last=0
+            for(chunk in source)for(value in chunk) {
+                sum+=value*value;used++;offset++
+                if(used==block||offset==count) {
+                    if(kotlin.math.sqrt(sum/used)>threshold) {if(first<0)first=offset-used;last=offset}
+                    used=0;sum=0.0
+                }
+            }
+            if(first<0)return source
+            val begin=(first-7680).coerceAtLeast(0)/2*2
+            val end=(last+7680).coerceAtMost(count)/2*2
+            if(begin==0&&end==count)return source
+            var at=0;val result=mutableListOf<FloatArray>()
+            for(chunk in source) {
+                val start=(begin-at).coerceAtLeast(0);val limit=(end-at).coerceAtMost(chunk.size)
+                if(start<limit)result+=if(start==0&&limit==chunk.size)chunk else chunk.copyOfRange(start,limit)
+                at+=chunk.size
+            }
+            return result
+        }
+    }
 }

@@ -1,6 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-feature android:name="android.hardware.usb.host" android:required="false" />
+    <!-- Android IME overlay on Quest; optional so PICO and other Android runtimes
+         continue to use their own system keyboard without a Meta dependency. -->
+    <uses-feature android:name="oculus.software.overlay_keyboard" android:required="false" />
     <!-- Quest immersive playback requires 6DoF hardware (Meta manifest contract). -->
     <uses-feature android:name="android.hardware.vr.headtracking"
         android:required="true" android:version="1" />
@@ -16,6 +19,7 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
     <!-- DLNA media servers describe themselves and answer Browse over plain LAN HTTP; Android
          blocks cleartext HttpURLConnection traffic unless the app allows it. -->

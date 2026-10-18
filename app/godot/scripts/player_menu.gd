@@ -11,6 +11,8 @@ signal seek_requested(position_ms: int)
 signal bookmark_requested(operation: String, marker_id: String, scope: String)
 signal bookmark_mode_requested(mode: String, scope: String)
 signal volume_requested(volume: float, muted: bool)
+signal whisper_requested(level: int, source_uri: String)
+signal whisper_haptic(hand: String)
 signal subtitle_requested(track_id: int)
 signal subtitle_files_requested
 signal subtitle_file_requested(filename: String)
@@ -28,11 +30,19 @@ const SubtitleStyle := preload("res://scripts/subtitle_style.gd")
 const SubtitleTiming := preload("res://scripts/file_subtitle_timing.gd")
 const NarrationSettings := preload("res://scripts/narration_settings.gd")
 const AUDIO_CLOSE := 520
-const AUDIO_MORE := 521
-const AUDIO_RETRY := 522
-const AUDIO_PREVIEW := 523
+const AUDIO_UP := 521
+const AUDIO_DOWN := 522
+const AUDIO_ROW := 23000
+const NARRATION_MORE := 524
+const NARRATION_RETRY := 525
+const NARRATION_PREVIEW := 526
+const AudioTiming := preload("res://scripts/file_audio_timing.gd")
 var _audio_open := false
-var _audio_more := false
+var _narration_more := false
+var _audio_offset := 0
+var _audio_ids := {}
+var _track_drag := {}
+var _narration_busy: MeshInstance3D
 var _audio_source := ""
 var choices := ChoiceFields.new(self)
 signal setting_requested(key: String, value: Variant)
@@ -46,8 +56,10 @@ const MODE_PACKED := 158
 const VOLUME := 160
 ## Volume slider over the sound icon: track span (bottom, top) and its x; the lowest steps mute.
 const VOLUME_X := -0.5
-const VOLUME_SPAN := Vector2(0.2, 0.44)
+const VOLUME_SPAN := Vector2(0.1, 0.34)
 const VOLUME_MUTE := 3
+const WHISPER := 163
+const BOOST_HEIGHT := 0.14
 const DepthStrength := preload("res://scripts/depth_strength.gd")
 const DEPTH := 161
 const DEPTH_RESET := 162
@@ -86,6 +98,16 @@ const SPATIAL_FOV := 488
 ## bar's controls (100+) usable while it is open.
 const SCREEN_SETTINGS := 473
 const SETTINGS_CLOSE := 474
+const SCREEN_SET_DEFAULT := 475
+const SCREEN_AUTO_DEFAULT := 478
+const SCREEN_CINEMA := 476
+const SCREEN_CINEMA_OFF := 477
+const SCREEN_PRESET := 490
+const SCREEN_EYE_LEVEL := 530
+const SCREEN_CURVE := 540
+const EYE_LEVELS := [1.0 / 3.0, 0.5]
+const ScreenPresets := preload("res://scripts/screen_presets.gd")
+var _screen_measurement: Label3D
 const ERROR_DETAILS := 496
 const ERROR_OPEN := 499
 const PlaybackErrors := preload("res://scripts/playback_errors.gd")
@@ -147,9 +169,13 @@ var _lit_modes: Dictionary = {} # video mode tiles lit as current; pressing one 
 var _volume_open := false
 var _volume_hand := "" # the hand dragging the volume slider
 var _volume_sent := -1 # last level sent during this press (0 = muted)
+var _volume_source := ""
+var _volume_breakthrough := false
 var _volume_fill: MeshInstance3D
 var _volume_knob: MeshInstance3D
 var _volume_label: Label3D
+var _boost_fill: MeshInstance3D
+var _boost_mark: MeshInstance3D
 var _depth_open := false
 var _depth_hand := ""
 var _depth_sent := -1
@@ -255,7 +281,7 @@ func has_expanded_library() -> bool:
 
 func _controls_pointer_capture() -> bool:
 	return not choices.capture.is_empty() or not bookmarks.capture.is_empty() or not _seek_hand.is_empty() or not _volume_hand.is_empty() \
-		or not _depth_hand.is_empty() or not _adjust_hand.is_empty()
+		or not _depth_hand.is_empty() or not _adjust_hand.is_empty() or not _track_drag.is_empty()
 
 func ray_hit(origin: Vector3, direction: Vector3) -> Dictionary:
 	var hit := super(origin, direction)
@@ -337,6 +363,7 @@ func dismiss() -> void:
 	_error_details_open = false
 	if has_expanded_library(): expanded_library.dismiss()
 	_icon_tap.clear()
+	_track_drag.clear()
 	choices.reset()
 	bookmarks.reset()
 	_seek_hand = ""
@@ -351,7 +378,7 @@ func dismiss() -> void:
 	super.dismiss()
 
 func _reset_navigation() -> void:
-	_audio_open = false; _audio_more = false
+	_audio_open = false; _narration_more = false; _audio_offset = 0
 	_failure_open = false
 	_error_details_open = false
 	_icon_tap.clear()
@@ -401,6 +428,8 @@ func refresh_values() -> void:
 		refresh()
 		return
 	for button in _buttons:
+		if button.target in [SCREEN_SET_DEFAULT, SCREEN_AUTO_DEFAULT]:
+			button.base_color = SELECTED if (button.target == SCREEN_SET_DEFAULT) == bool(_state.get("screen_default_locked", false)) else TILE
 		if section == 1 and button.target in [SETTINGS_TILE + OPERATIONS[1].find("seek_mode"), SETTINGS_TILE + OPERATIONS[1].find("loop")]: continue
 		if button.target == BookmarkMenu.ADD:
 			button.enabled = _state.get("bookmark_ready", false) and _seek_hand.is_empty()
@@ -458,6 +487,10 @@ func _process(_delta: float) -> void:
 		refresh_values()
 
 func _draw() -> void:
+	if _volume_source != str(_state.get("source_uri", "")):
+		_volume_hand = ""; _volume_breakthrough = false
+	_volume_source = str(_state.get("source_uri", ""))
+	if not _track_drag.is_empty() and _track_drag.source != str(_state.get("source_uri", "")): _track_drag.clear()
 	if _audio_open and (_audio_source != str(_state.get("source_uri", "")) or section != 0 or _subtitle_open or _mode_open or _volume_open):
 		_audio_open = false; choices.reset()
 	_clear_layout()
@@ -481,6 +514,8 @@ func _draw() -> void:
 	_depth_knob = null
 	_depth_label = null
 	_depth_busy = null
+	_narration_busy = null
+	_audio_ids = {}
 	_subtitle_ids = {}
 	_subtitle_file_ids = {}
 	_adjust_rows = {}
@@ -614,7 +649,8 @@ func _draw_bar() -> void:
 	var row := 0.025
 	_glyph(109, _sound_icon(), Vector2(VOLUME_X, row), 0.075, _enabled("mute"), _volume_tip())
 	_style_sound(_buttons.back())
-	_glyph(110, "subtitle", Vector2(-0.4, row), 0.075, _enabled("subtitles"), I18n.t("Subtitles") + ": " + _subtitle_name())
+	_glyph(110, "subtitle_voice" if _narration_on() else "subtitle", Vector2(-0.4, row), 0.075, _enabled("subtitles"), I18n.t("Subtitles") + ": " + _subtitle_name() + ("\n" + _narration_status() if _narration_on() else ""))
+	_narration_busy = _busy_ring(_buttons.back().node, 0.075)
 	_bar_drawn = _bar_key()
 	_glyph(111, "voice", Vector2(-0.3, row), 0.075, _enabled("audio"), I18n.t("Audio"))
 	_glyph(101, "previous_video", Vector2(-0.13, row), 0.08, _enabled("previous_video"), I18n.t("Previous video"))
@@ -653,16 +689,10 @@ func _draw_bar() -> void:
 		_draw_popup(_draw_audio)
 
 func _draw_audio() -> void:
-	var audio := _setting_choices("audio")
-	var rows: Array = []
-	if not audio.is_empty():
-		audio.merge({"heading": "Original audio track", "rows": 4, "width": 0.88, "footer": "movie.mp4 → movie.si.mix.m4a"})
-		rows.append({"title": "Original audio track", "field": audio})
-	var narration_available: bool = NarrationSettings.FEATURE_ENABLED and _state.get("narration_available", false)
-	if narration_available: rows.append_array(NarrationSettings.rows(_state, _audio_more))
-	var status := NarrationSettings.status_label(str(_state.get("narration_status", "off"))) if _state.get("narration_enabled", false) else ""
-	var extra: bool = narration_available and _state.get("narration_enabled", false)
-	var height := 0.13 + rows.size() * 0.09 + (0.075 if extra else 0.0) + (0.055 if not status.is_empty() else 0.0)
+	var tracks: Array = _state.get("audio_options", [])
+	_audio_offset = clampi(_audio_offset, 0, maxi(0, tracks.size() - 4))
+	var scrolling := tracks.size() > 4
+	var height := 0.23 + mini(4, tracks.size()) * 0.075 + (0.06 if scrolling else 0.0)
 	var top := POPUP_BOTTOM + height
 	var panel := _quad(Vector2(POPUP_WIDTH, height), Vector3(0, POPUP_BOTTOM + height / 2, 0.001), Color(PANEL, 0.96), 10)
 	panel.material_override.set_shader_parameter("corner_radius", 0.025)
@@ -670,23 +700,45 @@ func _draw_audio() -> void:
 	var heading := _label(I18n.t("Audio"), Vector3(-0.48, top - 0.05, 0.004), 18)
 	heading.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
 	_glyph(AUDIO_CLOSE, "close", Vector2(0.465, top - 0.05), 0.055, true, I18n.t("Close"))
-	var y := top - 0.135
-	for row in rows:
-		var label := _label(I18n.t(row.title), Vector3(-0.48, y, 0.004), 17)
-		label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
-		choices.field(null, row.field, Vector2(0.17, y), 0.59, 0.065)
-		if row.field.key == "narration_voice": _glyph(AUDIO_PREVIEW, "play", Vector2(-0.22, y), 0.05, true, I18n.t("Preview voice"))
-		y -= 0.09
-	if extra:
-		_button(AUDIO_MORE, I18n.t("More") + ("  ▾" if _audio_more else "  ▸"), Vector2(0, y), Vector2(0.96, 0.06))
+	var y := top - 0.13
+	for index in range(_audio_offset, mini(tracks.size(), _audio_offset + 4)):
+		var track: Dictionary = tracks[index]
+		var target := AUDIO_ROW + index
+		_audio_ids[target] = int(track.value)
+		var title := I18n.t(str(track.label))
+		_button(target, _fit_title(title, "", 0.78, 19), Vector2(0, y), Vector2(0.92, 0.065))
+		var button: Dictionary = _buttons.back()
+		var label: Label3D = button.node.get_child(0)
+		set_label_size(label, 19); label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT; label.position.x = -0.42
+		_tips[target] = title
+		if int(track.value) == int(_state.get("audio_track_id", -1)):
+			button.base_color = SELECTED
+			_icon("check", Vector3(0.414, 0, 0.004), 0.029, ACCENT, button.node)
 		y -= 0.075
-	if not status.is_empty():
-		var label := _label(I18n.t(status), Vector3(-0.48, y + 0.015, 0.004), 14)
-		label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT; label.modulate = MUTED
-		if str(_state.get("narration_status", "")) in ["model_missing", "model_error", "timeline_error", "speech_error"]:
-			_glyph(AUDIO_RETRY, "refresh", Vector2(0.46, y + 0.015), 0.05, true, I18n.t("Retry"))
-	choices.bounds = Vector2(POPUP_BOTTOM, maxf(top, 1.2))
+	if scrolling:
+		_button(AUDIO_UP, "↑", Vector2(-0.07, y + 0.015), Vector2(0.10, 0.05), _audio_offset > 0)
+		_button(AUDIO_DOWN, "↓", Vector2(0.07, y + 0.015), Vector2(0.10, 0.05), _audio_offset + 4 < tracks.size())
+		y -= 0.06
+	var label := _label(I18n.t("Audio sync"), Vector3(-0.48, y - 0.01, 0.004), 17)
+	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+	choices.field(null, AudioTiming.slider_row(float(_state.get("audio_delay", 0.0)), str(_state.get("source_uri", "")), str(_state.get("audio_timing_key", ""))), Vector2(0.14, y - 0.01), 0.64, 0.065)
+	choices.bounds = Vector2(POPUP_BOTTOM, top - 0.08)
 	choices.finish()
+
+func _scroll_audio(rows: int) -> void:
+	var offset := clampi(_audio_offset + rows, 0, maxi(0, _state.get("audio_options", []).size() - 4))
+	if offset != _audio_offset: _audio_offset = offset; refresh()
+
+func _narration_status() -> String:
+	if not _narration_on(): return ""
+	var status := I18n.t(NarrationSettings.status_label(str(_state.get("narration_status", "off"))))
+	if status.is_empty(): return ""
+	if int(_state.get("narration_progress", -1)) >= 0: status += " · %d%%" % int(_state.narration_progress)
+	if int(_state.get("narration_missing", 0)) > 0:
+		var failed := str(_state.get("narration_miss_reason", "")) in ["generation_limit", "generation_error"]
+		status += " · " + I18n.t("Speech generation failed" if failed else "Speech not ready before next subtitle")
+	if int(_state.get("narration_delay", 0)) > 0: status += " · " + I18n.t("Delay %d s") % int(_state.narration_delay)
+	return status
 
 func _subtitle_tracks() -> Array:
 	return _state.get("subtitle_options", [])
@@ -701,8 +753,10 @@ func _subtitle_label(track: Dictionary) -> String:
 func _subtitle_controls() -> Array:
 	var pgs := _subtitle_tracks().any(func(track): return int(track.id) == int(_state.get("subtitle_track", 0)) and str(track.get("codec", "")) == "hdmv_pgs_subtitle")
 	var rows: Array = [{"title": "Subtitle adjustments", "disclosure": true}]
-	if NarrationSettings.FEATURE_ENABLED and _state.get("narration_available", false) and _subtitle_tracks().any(func(track): return int(track.id) == int(_state.get("subtitle_track", 0)) and video_text_subtitle(track)):
-		rows.push_front({"title": "Read these subtitles", "field": NarrationSettings.toggle("narration_current", bool(_state.get("narration_current", false)))})
+	if NarrationSettings.FEATURE_ENABLED and _state.get("narration_available", false):
+		for row in NarrationSettings.rows(_state, _narration_more):
+			rows.append(row)
+			if row.field.key == "narration_voice": rows.append({"narration_player": true})
 	if not _subtitle_appearance_open: return rows
 	rows.append({"title": "Subtitle sync", "field": SubtitleTiming.slider_row(float(_state.get("subtitle_delay", 0.0)), str(_state.get("source_uri", "")), str(_state.get("subtitle_timing_key", "")))})
 	if _immersive_subtitles():
@@ -720,6 +774,9 @@ func video_text_subtitle(track: Dictionary) -> bool:
 	return str(track.get("codec", "")) in ["subrip", "ass", "ssa", "webvtt", "mov_text", "text", "sami", "microdvd", "subviewer", "ttml"]
 
 func _draw_subtitles() -> void:
+	if _narration_more and _narration_on():
+		_draw_narration_advanced()
+		return
 	var tracks := _subtitle_tracks()
 	_subtitle_offset = clampi(_subtitle_offset, 0, maxi(0, tracks.size() - SUBTITLE_ROWS))
 	var rows := _subtitle_controls()
@@ -730,6 +787,8 @@ func _draw_subtitles() -> void:
 	var height := 0.19 + (1 + mini(tracks.size(), SUBTITLE_ROWS)) * 0.075 + rows.size() * 0.10 + (0.06 if scrolling else 0.0)
 	if other_subtitles: height += _subtitle_files_height()
 	elif files_error: height += 0.075
+	var status := _narration_status()
+	if not status.is_empty(): height += 0.065
 	var top := 0.285 + height
 	var panel := _quad(Vector2(1.10, height), Vector3(0, 0.285 + height / 2, 0.001), Color(PANEL, 0.96), 10)
 	panel.material_override.set_shader_parameter("corner_radius", 0.025)
@@ -774,11 +833,64 @@ func _draw_subtitles() -> void:
 			_button(SUBTITLE_APPEARANCE, I18n.t("Subtitle adjustments") + ("  ▾" if _subtitle_appearance_open else "  ▸"), Vector2(0, y), Vector2(0.96, 0.075))
 			y -= 0.10
 			continue
+		if row.get("narration_player", false):
+			_draw_narration_sample(y)
+			y -= 0.10
+			continue
 		var title := _label(I18n.t(row.title), Vector3(-0.48, y, 0.004), 17)
 		title.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
 		choices.field(null, row.field, Vector2(0.14, y), 0.64, 0.075)
 		y -= 0.10
+	if not status.is_empty():
+		var label := _label(_fit_title(status, "", 0.86, 15), Vector3(-0.48, y + 0.005, 0.004), 15)
+		label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+		label.modulate = ACCENT if _narration_preparing() else MUTED
+		if str(_state.get("narration_status", "")) in ["model_missing", "model_error", "timeline_error", "speech_error"]:
+			_glyph(NARRATION_RETRY, "refresh", Vector2(0.46, y + 0.005), 0.05, true, I18n.t("Retry"))
 	choices.bounds = Vector2(0.285, top - 0.08)
+	choices.finish()
+
+func _draw_narration_sample(y: float) -> void:
+	var busy := bool(_state.get("narration_preview_busy", false))
+	var preparing := busy and str(_state.get("narration_status", "")) in ["loading", "verifying", "model_loading", "preparing", "preview_buffering"]
+	var background := _decoration(Vector2(0.70, 0.075), Vector2(-0.13, y), TILE)
+	background.material_override.render_priority = 11
+	background.position.z = 0.0015
+	_glyph(NARRATION_PREVIEW, "stop" if busy else "play", Vector2(-0.43, y), 0.065, busy or not str(_state.get("narration_resolved_language", "")).is_empty(), I18n.t("Stop preview" if busy else "Preview voice"))
+	var label := _label(I18n.t("Preparing voice preview…" if preparing else "Voice sample"), Vector3(-0.36, y + 0.014, 0.005), 15)
+	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+	_decoration(Vector2(0.51, 0.005), Vector2(-0.105, y - 0.020), MUTED)
+	var fraction := clampf(float(_state.get("narration_preview_progress", -1)) / 100.0, 0.0, 1.0)
+	if fraction > 0.0: _decoration(Vector2(0.51 * fraction, 0.005), Vector2(-0.36 + 0.255 * fraction, y - 0.020), ACCENT).position.z = 0.004
+	_button(NARRATION_MORE, I18n.t("More") + "  ▸", Vector2(0.36, y), Vector2(0.24, 0.075))
+
+func _draw_narration_advanced() -> void:
+	var rows := NarrationSettings.rows(_state, true).filter(func(row): return row.field.key in ["narration_duck", "narration_volume", "narration_offset"])
+	var status := _narration_status()
+	var height := 0.25 + rows.size() * 0.10 + (0.055 if not status.is_empty() else 0.0)
+	var top := POPUP_BOTTOM + height
+	var panel := _quad(Vector2(POPUP_WIDTH, height), Vector3(0, POPUP_BOTTOM + height / 2, 0.001), Color(PANEL, 0.96), 10)
+	panel.material_override.set_shader_parameter("corner_radius", 0.025)
+	add_child(panel); _decorations.append(panel); _block_rays(panel, Vector2(POPUP_WIDTH, height))
+	_button(NARRATION_MORE, "‹", Vector2(-0.45, top - 0.05), Vector2(0.06, 0.06))
+	_tips[NARRATION_MORE] = I18n.t("Back")
+	var heading := _label(I18n.t("Subtitle narration"), Vector3(-0.38, top - 0.05, 0.004), 18)
+	heading.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+	_glyph(SUBTITLE_CLOSE, "close", Vector2(0.465, top - 0.05), 0.055, true, I18n.t("Close"))
+	var y := top - 0.145
+	for row in rows:
+		var title := _label(I18n.t(row.title), Vector3(-0.48, y, 0.004), 17)
+		title.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+		choices.field(null, row.field, Vector2(0.14, y), 0.64, 0.075)
+		y -= 0.10
+	var timing_note := _label(I18n.t("Finish sentences; auto speed up to 1.8x and use gaps to catch up."), Vector3(-0.48, y, 0.004), 14)
+	timing_note.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+	timing_note.width = 1800; timing_note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	y -= 0.09
+	if not status.is_empty():
+		var label := _label(_fit_title(status, "", 0.86, 15), Vector3(-0.48, y, 0.004), 15)
+		label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT; label.modulate = MUTED
+	choices.bounds = Vector2(POPUP_BOTTOM, top - 0.08)
 	choices.finish()
 
 func _other_subtitle_files() -> Array:
@@ -844,12 +956,13 @@ func stick_scroll(y: float, delta: float) -> void:
 	if visible and bookmarks.opened:
 		bookmarks.stick_scroll(y, delta)
 		return
-	if not visible or not _subtitle_open or not is_finite(y) or absf(y) < 0.4:
+	if not visible or not (_subtitle_open or _audio_open) or not is_finite(y) or absf(y) < 0.4:
 		_subtitle_scroll = 0.0
 		return
 	_subtitle_scroll -= y * delta * 7.0
 	if absf(_subtitle_scroll) >= 1.0:
-		if _subtitle_files_open: _scroll_subtitle_files(int(_subtitle_scroll))
+		if _audio_open: _scroll_audio(int(_subtitle_scroll))
+		elif _subtitle_files_open: _scroll_subtitle_files(int(_subtitle_scroll))
 		else: _scroll_subtitles(int(_subtitle_scroll))
 		_subtitle_scroll -= int(_subtitle_scroll)
 
@@ -987,22 +1100,40 @@ func _set_depth_at(y: float) -> void:
 ## Volume: a slider rising from the sound icon; the bottom of the track is mute.
 func _draw_volume() -> void:
 	var before := get_children()
-	var height := VOLUME_SPAN.y - VOLUME_SPAN.x
-	var middle := (VOLUME_SPAN.x + VOLUME_SPAN.y) / 2
-	var panel := _quad(Vector2(0.1, height + 0.13), Vector3(VOLUME_X, middle + 0.025, 0.001), Color(PANEL, 0.94), 10)
+	var available: bool = _state.get("whisper_available", false)
+	var enhanced := int(_state.get("audio_whisper", 0)) > 0 and available
+	var top := VOLUME_SPAN.y + (BOOST_HEIGHT if enhanced else 0.0)
+	var height := top - VOLUME_SPAN.x
+	var middle := (VOLUME_SPAN.x + top) / 2
+	var cap_y := top + 0.105
+	# Leave a small gap above the sound button (row 0.025, diameter 0.075).
+	var bottom := VOLUME_SPAN.x - 0.025
+	var panel_top := cap_y + 0.055 if available else top + 0.09
+	var panel := _quad(Vector2(0.1, panel_top - bottom), Vector3(VOLUME_X, (panel_top + bottom) / 2, 0.001), Color(PANEL, 0.94), 10)
 	panel.material_override.set_shader_parameter("corner_radius", 0.05)
-	add_child(panel)
-	_decorations.append(panel)
+	add_child(panel); _decorations.append(panel)
 	_block_rays(panel, panel.mesh.size, 0.05)
-	_button(VOLUME, "", Vector2(VOLUME_X, middle), Vector2(0.09, height + 0.04), _enabled("mute"))
-	_buttons.back().base_color = Color(TILE, 0.0) # the track itself is the visible part
-	_decoration(Vector2(0.012, height), Vector2(VOLUME_X, middle), Color(0.3, 0.35, 0.4))
-	_volume_fill = _decoration(Vector2(0.012, height), Vector2(VOLUME_X, middle), ACCENT)
+	_button(VOLUME, "", Vector2(VOLUME_X, middle), Vector2(0.10, height + 0.04), _enabled("mute") and _state.get("volume_writable", true))
+	_buttons.back().base_color = Color(TILE, 0.0)
+	var normal_height := VOLUME_SPAN.y - VOLUME_SPAN.x
+	var normal_mid := (VOLUME_SPAN.y + VOLUME_SPAN.x) / 2
+	_decoration(Vector2(0.012, normal_height), Vector2(VOLUME_X, normal_mid), Color(0.3, 0.35, 0.4))
+	_volume_fill = _decoration(Vector2(0.012, normal_height), Vector2(VOLUME_X, normal_mid), ACCENT)
 	_volume_fill.material_override.render_priority = 13
+	_boost_fill = null; _boost_mark = null
+	if enhanced:
+		_decoration(Vector2(0.012, BOOST_HEIGHT), Vector2(VOLUME_X, VOLUME_SPAN.y + BOOST_HEIGHT / 2), Color(WARNING, 0.35))
+		_boost_fill = _decoration(Vector2(0.012, BOOST_HEIGHT), Vector2(VOLUME_X, VOLUME_SPAN.y + BOOST_HEIGHT / 2), WARNING)
+		_boost_fill.material_override.render_priority = 13
+		_decoration(Vector2(0.08, 0.004), Vector2(VOLUME_X, VOLUME_SPAN.y), Color(0.7, 0.74, 0.78))
+		_boost_mark = _decoration(Vector2(0.035, 0.004), Vector2(VOLUME_X, top), Color(WARNING, 0.55))
 	_volume_knob = _decoration(Vector2(0.03, 0.03), Vector2(VOLUME_X, VOLUME_SPAN.x), Color.WHITE)
 	_volume_knob.material_override.set_shader_parameter("corner_radius", 0.015)
 	_volume_knob.material_override.render_priority = 14
-	_volume_label = _label("", Vector3(VOLUME_X, VOLUME_SPAN.y + 0.045, 0.004), 16)
+	_volume_label = _label("", Vector3(VOLUME_X, top + 0.038, 0.004), 16)
+	if available:
+		_button(WHISPER, I18n.t("Boost"), Vector2(VOLUME_X, cap_y), Vector2(0.09, 0.085), _state.get("has_video", false) and _state.get("audio_available", false))
+		_tips[WHISPER] = I18n.t("Dialogue enhancement")
 	_refresh_volume()
 	_raise_quick_popup(before)
 
@@ -1014,7 +1145,7 @@ func _volume_level() -> int:
 func _style_sound(button: Dictionary) -> void:
 	var silent: bool = _volume_level() == 0 and button.enabled
 	button.base_color = MUTE_TINT if silent else Color(TILE, 0.0)
-	button.node.get_child(1).material_override.albedo_color = MUTE_INK if silent else (button.foreground if button.enabled else MUTED)
+	button.node.get_child(1).material_override.albedo_color = MUTE_INK if silent else ((WARNING if int(_state.get("audio_whisper", 0)) > 0 else button.foreground) if button.enabled else MUTED)
 	_update_highlights()
 
 func _sound_icon() -> String:
@@ -1023,24 +1154,45 @@ func _sound_icon() -> String:
 
 func _refresh_volume() -> void:
 	if not is_instance_valid(_volume_fill): return
+	var level := _volume_level()
+	var fraction := minf(level / 100.0, 1.0)
 	var height := VOLUME_SPAN.y - VOLUME_SPAN.x
-	var fraction := _volume_level() / 100.0
 	_volume_fill.visible = fraction > 0
 	_volume_fill.mesh.size.y = maxf(0.001, height * fraction)
 	_volume_fill.position.y = VOLUME_SPAN.x + height * fraction / 2
 	_volume_fill.material_override.set_shader_parameter("surface_size", _volume_fill.mesh.size)
-	_volume_knob.position.y = VOLUME_SPAN.x + height * fraction
-	_volume_label.text = str(_volume_level()) if fraction > 0 else ""
+	var enhanced := int(_state.get("audio_whisper", 0)) > 0
+	var boost := clampf((level - 100.0) / 50.0, 0.0, 1.0) if enhanced else 0.0
+	_volume_knob.position.y = VOLUME_SPAN.y + BOOST_HEIGHT * boost if boost > 0 else VOLUME_SPAN.x + height * fraction
+	_volume_knob.material_override.set_shader_parameter("surface_color", WARNING if boost > 0 else Color.WHITE)
+	_volume_label.text = "%d%%" % level
+	_volume_label.modulate = WARNING if boost > 0 else Color.WHITE
+	if is_instance_valid(_boost_fill):
+		_boost_fill.visible = boost > 0
+		_boost_fill.mesh.size.y = maxf(0.001, BOOST_HEIGHT * boost)
+		_boost_fill.position.y = VOLUME_SPAN.y + BOOST_HEIGHT * boost / 2
+		_boost_fill.material_override.set_shader_parameter("surface_size", _boost_fill.mesh.size)
+	if is_instance_valid(_boost_mark):
+		var saved := int(_state.get("boost_saved", 0))
+		_boost_mark.visible = saved > 0 and boost == 0
+		_boost_mark.position.y = VOLUME_SPAN.y + BOOST_HEIGHT * clampf(saved / 50.0, 0.0, 1.0)
+	for button in _buttons:
+		if button.target != WHISPER: continue
+		button.base_color = SELECTED if enhanced else TILE
+		button.node.get_child(0).modulate = (WARNING if enhanced else Color.WHITE) if button.enabled else MUTED
+		_tips[WHISPER] = I18n.t("Whisper enhancement unavailable" if not str(_state.get("whisper_error", "")).is_empty() else "Dialogue enhancement")
+	_update_highlights()
 
-## Pointer height on the track -> 0..100; the lowest steps snap to mute.
 func _set_volume_at(y: float) -> void:
+	var enhanced := int(_state.get("audio_whisper", 0)) > 0 and bool(_state.get("whisper_available", false))
 	var level := roundi(clampf((y - VOLUME_SPAN.x) / (VOLUME_SPAN.y - VOLUME_SPAN.x), 0.0, 1.0) * 100)
-	if level < VOLUME_MUTE:
-		level = 0
-	if level == _volume_sent:
-		return
+	if enhanced and y > VOLUME_SPAN.y: level = 100 + roundi(clampf((y - VOLUME_SPAN.y) / BOOST_HEIGHT, 0.0, 1.0) * 50)
+	if level < VOLUME_MUTE: level = 0
+	if level == _volume_sent: return
 	_volume_sent = level
 	volume_requested.emit(float(level), level == 0)
+	if level > 100 and not _volume_breakthrough:
+		_volume_breakthrough = true; whisper_haptic.emit(_volume_hand)
 	refresh_values()
 
 ## Point on the menu plane (local), even off the track, so a drag past either end clamps.
@@ -1060,12 +1212,18 @@ func press_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: b
 		# Keep transport and timeline available; opening another popup folds the browser away.
 		if not controls_hit.is_empty() and int(controls_hit.target) not in [NONE, 100, 101, 102, 103, 107, 108, SEEK, FOLLOW, TEMP_PASSTHROUGH]:
 			expanded_library.dismiss()
+	if not _track_drag.is_empty(): return true
 	if choices.press(hand, origin, direction, tracked): return true
 	if not bookmarks.capture.is_empty(): return true
 	for owner in [_adjust_hand, _depth_hand, _volume_hand, _seek_hand]:
 		if not owner.is_empty() and owner != hand: return false
 	update_pointer(hand, origin, direction, tracked)
 	var hit := ray_hit(origin, direction) if tracked else {}
+	if not hit.is_empty() and hit.get("enabled", false) and (_audio_ids.has(int(hit.target)) or _subtitle_ids.has(int(hit.target)) or _subtitle_file_ids.has(int(hit.target))):
+		var kind := "audio" if _audio_ids.has(int(hit.target)) else ("files" if _subtitle_file_ids.has(int(hit.target)) else "subtitle")
+		_track_drag = {"hand": hand, "target": int(hit.target), "plane": control_plane(int(hit.target)), "point": control_point(hit), "kind": kind,
+			"offset": _audio_offset if kind == "audio" else (_subtitle_files_offset if kind == "files" else _subtitle_offset), "moved": false, "source": str(_state.get("source_uri", ""))}
+		return true
 	if not hit.is_empty() and hit.get("enabled", false) and _press_quick_icon(hand, int(hit.target)): return true
 	if hit.is_empty(): _icon_tap.clear()
 	if not hit.is_empty() and bookmarks.press(hand, hit): return true
@@ -1088,7 +1246,9 @@ func press_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: b
 		return true
 	if not hit.is_empty() and int(hit.target) == VOLUME:
 		# The press sets the level; holding the trigger drags it (update_pointer).
+		if not _volume_hand.is_empty() and _volume_hand != hand: return false
 		_volume_hand = hand
+		_volume_breakthrough = false
 		_volume_sent = -1
 		_set_volume_at(_input_point(hit).y)
 		return true
@@ -1096,6 +1256,7 @@ func press_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: b
 
 func cancel_pointer(hand: String) -> void:
 	if has_expanded_library(): expanded_library.cancel_pointer(hand)
+	if _track_drag.get("hand") == hand: _track_drag.clear()
 	if _icon_tap.get("hand") == hand: _icon_tap.clear()
 	choices.cancel(hand)
 	if bookmarks.capture.get("hand", "") == hand: bookmarks.cancel()
@@ -1109,6 +1270,18 @@ func update_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: 
 	var on_library: bool = has_expanded_library() and not _controls_pointer_capture() and (expanded_library.has_pointer_capture() or (tracked and pointer_hit(origin, direction).get("library", false)))
 	super(hand, origin, direction, tracked and not on_library)
 	if has_expanded_library(): expanded_library.update_pointer(hand, origin, direction, tracked and on_library)
+	if _track_drag.get("hand") == hand:
+		if not tracked or not visible or _track_drag.source != str(_state.get("source_uri", "")): _track_drag.clear()
+		else:
+			var drag_point: Variant = project_pointer(origin, direction, _track_drag.plane)
+			if drag_point != null:
+				var shift := float(drag_point.y) - float(_track_drag.point.y)
+				if absf(shift) > 0.018: _track_drag.moved = true
+				if _track_drag.moved:
+					var next := int(_track_drag.offset) + roundi(shift / 0.075)
+					if _track_drag.kind == "audio": _scroll_audio(next - _audio_offset)
+					elif _track_drag.kind == "files": _scroll_subtitle_files(next - _subtitle_files_offset)
+					else: _scroll_subtitles(next - _subtitle_offset)
 	choices.update(hand, origin, direction, tracked)
 	bookmarks.update(hand, origin, direction, tracked)
 	if hand == _seek_hand:
@@ -1138,6 +1311,11 @@ func update_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: 
 		_set_volume_at(float(point.y))
 
 func release_pointer(hand: String, _origin: Vector3, _direction: Vector3, _tracked: bool) -> void:
+	if _track_drag.get("hand") == hand:
+		var request := _track_drag.duplicate()
+		_track_drag.clear()
+		if _tracked and visible and not request.moved and request.source == str(_state.get("source_uri", "")) and int(ray_hit(_origin, _direction).get("target", NONE)) == request.target: _activate(int(request.target))
+		return
 	if has_expanded_library() and expanded_library.has_pointer_capture():
 		expanded_library.release_pointer(hand, _origin, _direction, _tracked)
 		return
@@ -1158,12 +1336,12 @@ func release_pointer(hand: String, _origin: Vector3, _direction: Vector3, _track
 		_volume_hand = ""
 
 func _bar_key() -> String:
-	return str([_state.get("clone_voice", false), _state.get("geometry", 0), _state.get("has_video", false),
+	return str([int(_state.get("audio_whisper", 0)) > 0, _state.get("volume_writable", true), _state.get("whisper_available", false), _state.get("clone_voice", false), _state.get("geometry", 0), _state.get("has_video", false),
 		_state.get("spatial_video", false), _state.get("error", ""),
-		_state.get("source_uri", ""), _subtitle_tracks(), _state.get("subtitle_track", 0), bookmarks.key(), _state.get("audio_options", []), _state.get("audio_track_id", -1),
+		_state.get("source_uri", ""), _subtitle_tracks(), _state.get("subtitle_track", 0), bookmarks.key(), _state.get("audio_options", []), _state.get("audio_track_id", -1), _state.get("audio_delay", 0.0), _state.get("audio_timing_key", ""),
 		_state.get("subtitle_files_available", false), _state.get("subtitle_files_revision", 0), _state.get("subtitle_files_state", "idle"), _state.get("subtitle_file_loading", ""), _state.get("subtitle_file_error", ""), _state.get("subtitle_timing_key", ""),
 		_state.get("subtitle_distance", SubtitleDepth.DEFAULT), _state.get("subtitle_position", SubtitleDepth.DEFAULT_POSITION), _state.get("subtitle_direction", 0), _state.get("subtitle_size", 100), _state.get("subtitle_style", SubtitleStyle.DEFAULT), _state.get("subtitle_flat_position", 0), _state.get("subtitle_auto_load", true), _state.get("subtitle_delay", 0.0),
-		_state.get("narration_enabled", false), _state.get("narration_source", -1), _state.get("narration_sources", []), _state.get("narration_language", "auto"), _state.get("narration_resolved_language", ""), _state.get("narration_voice", ""), _state.get("narration_status", "off")])
+		_state.get("narration_enabled", false), _state.get("narration_source", -1), _state.get("narration_sources", []), _state.get("narration_language", "auto"), _state.get("narration_resolved_language", ""), _state.get("narration_voice", ""), _state.get("narration_status", "off"), _state.get("narration_preview_busy", false), _state.get("narration_missing", 0), _state.get("narration_timing", "continuous"), _state.get("narration_delay", 0), _state.get("narration_progress", -1), _state.get("narration_profile", ""), _state.get("narration_voice_origin", "default"), _state.get("narration_line", 0), _state.get("narration_hide_subtitles", true), _state.get("narration_miss_reason", ""), _state.get("narration_language_required", false), _state.get("narration_preview_progress", -1)])
 
 func _seek_at(x: float) -> int:
 	return roundi(clampf((x + BAR_SEEK / 2) / BAR_SEEK, 0.0, 1.0) * int(_state.get("duration_ms", 0)))
@@ -1369,6 +1547,7 @@ func _settings_key() -> String:
 		_state.get("playback_mode", "single"), _state.get("screen_curve", 0.0), _state.get("seek_mode", "speed"), _state.get("stereo", false), _state.get("geometry", 0),
 		_state.get("show_fps", false), _state.get("viewing_eye", 0), _state.get("swap_eyes", false),
 		_state.get("spatial_metadata", {}), _state.get("spatial_auto_disparity", true),
+		_state.get("screen_cinema", false),
 		_state.get("error", ""), _state.get("error_report", {})])
 
 func _setting_choices(operation: String) -> Dictionary:
@@ -1456,6 +1635,11 @@ func _activate_hit(hit: Dictionary) -> void:
 		super._activate_hit(hit)
 
 func _activate(target: int) -> void:
+	if target == WHISPER:
+		if not _volume_hand.is_empty() or not _volume_open or not _state.get("has_video", false) or not _state.get("audio_available", false) or not _state.get("whisper_available", false): return
+		whisper_requested.emit(0 if int(_state.get("audio_whisper", 0)) > 0 else 1, str(_state.get("source_uri", "")))
+		refresh_values()
+		return
 	if target == FAVORITE:
 		favorite_requested.emit(); refresh_values(); return
 	if target == ERROR_OPEN and not str(_state.get("error", "")).is_empty():
@@ -1510,10 +1694,13 @@ func _activate(target: int) -> void:
 		_close_depth_slider()
 		refresh()
 		return
-	if section == 0 and target in [AUDIO_CLOSE, AUDIO_MORE, AUDIO_RETRY, AUDIO_PREVIEW]:
-		if target == AUDIO_CLOSE: _audio_open = false; choices.reset()
-		elif target == AUDIO_MORE: _audio_more = not _audio_more; choices.reset()
-		elif target == AUDIO_PREVIEW: setting_requested.emit("narration_preview", true)
+	if section == 0 and _audio_open:
+		if target == AUDIO_CLOSE: _audio_open = false; choices.reset(); refresh(); return
+		if target in [AUDIO_UP, AUDIO_DOWN]: _scroll_audio(-4 if target == AUDIO_UP else 4); return
+		if _audio_ids.has(target): setting_requested.emit("audio_track", _audio_ids[target]); refresh(); return
+	if section == 0 and _subtitle_open and target in [NARRATION_MORE, NARRATION_RETRY, NARRATION_PREVIEW]:
+		if target == NARRATION_MORE: _narration_more = not _narration_more; _subtitle_appearance_open = false; choices.reset()
+		elif target == NARRATION_PREVIEW: setting_requested.emit("narration_preview", true)
 		else: setting_requested.emit("narration_retry", true)
 		refresh(); return
 	if target == SPEED_RESET and section == 1 and _adjustment.is_empty():
@@ -1534,6 +1721,7 @@ func _activate(target: int) -> void:
 		if not _enabled("subtitles"): return
 		_subtitle_open = not _subtitle_open
 		_subtitle_appearance_open = false
+		_narration_more = false
 		_subtitle_offset = 0
 		_subtitle_files_open = false; _subtitle_files_offset = 0
 		_subtitle_scroll = 0.0
@@ -1556,6 +1744,7 @@ func _activate(target: int) -> void:
 			return
 		if target == SUBTITLE_APPEARANCE:
 			_subtitle_appearance_open = not _subtitle_appearance_open
+			_narration_more = false
 			_subtitle_files_open = false
 			refresh()
 			return
@@ -1655,10 +1844,11 @@ func _update_highlights() -> void:
 			button.node.material_override.set_shader_parameter("surface_color", SELECTED)
 	if _depth_busy:
 		_depth_busy.visible = _depth_preparing()
+	if _narration_busy: _narration_busy.visible = _narration_preparing()
 	for button in _buttons:
 		if button.target == 110:
 			var active: bool = button.enabled and int(_state.get("subtitle_track", 0)) != 0
-			button.node.get_child(1).material_override.albedo_color = ACCENT if active else (button.foreground if button.enabled else MUTED)
+			button.node.get_child(1).material_override.albedo_color = (WARNING if str(_state.get("narration_status", "")) in ["model_missing", "model_error", "timeline_error", "speech_error", "line_missing"] else ACCENT) if _narration_on() or active else (button.foreground if button.enabled else MUTED)
 			if active and not _hover.values().has(button.target):
 				button.node.material_override.set_shader_parameter("surface_color", SELECTED)
 		if button.target == 10 + section and not _hover.values().has(button.target):
@@ -1671,6 +1861,12 @@ func _update_highlights() -> void:
 			button.node.get_child(1).material_override.albedo_color = ACCENT if _audio_open else (button.foreground if button.enabled else MUTED)
 			if button.enabled and not _hover.values().has(button.target) and _audio_open:
 				button.node.material_override.set_shader_parameter("surface_color", SELECTED)
+
+func _narration_on() -> bool:
+	return NarrationSettings.FEATURE_ENABLED and _state.get("narration_enabled", false)
+
+func _narration_preparing() -> bool:
+	return _narration_on() and str(_state.get("narration_status", "off")) in ["loading", "verifying", "model_loading", "preparing", "preview_buffering", "subtitle_loading"]
 
 func _depth_preparing() -> bool:
 	return _enabled("depth") and _state.get("depth_requested", false) 		and not _state.get("depth_enabled", false) and str(_state.get("depth_error", "")).is_empty()
@@ -1712,7 +1908,8 @@ func _enabled(operation: String) -> bool:
 		# The video's own mask replaces live passthrough matting: one passthrough control at a time.
 		"alpha": return has_video and not _state.get("packed_mask", false) and (_state.get("spatial_video", false) or int(_state.get("geometry", 0)) in [1, 2])
 		"eyes", "stereo_view": return has_video and _state.get("stereo", false)
-		"volume_down", "volume_up", "mute": return has_video and _state.get("audio_available", false)
+		"volume_down", "volume_up": return has_video and _state.get("audio_available", false) and _state.get("volume_writable", true)
+		"mute": return has_video and _state.get("audio_available", false)
 		"audio": return has_video
 		"clone_voice": return has_video and _state.get("clone_voice", false)
 		"depth": return has_video and not _state.get("spatial_video", false) and int(_state.get("geometry", 0)) == 0 and not _state.get("stereo", false)
@@ -1827,21 +2024,60 @@ func _draw_screen_settings() -> void:
 	_settings_drawn = _settings_key()
 	var flat: bool = _state.get("has_video", false) and int(_state.get("geometry", 0)) == 0
 	var spatial_fov: bool = flat and _state.get("spatial_video", false) and _state.get("spatial_metadata", {}).has("horizontal_fov_degrees")
-	var top := _settings_frame(0.24 + (0.27 if flat else 0.0) + (0.08 if spatial_fov else 0.0))
+	var cinema: bool = flat and _state.get("screen_cinema", false)
+	var top := _settings_frame(0.24 + (0.465 if flat else 0.0) + (0.10 if cinema else 0.0) + (0.08 if spatial_fov else 0.0))
 	_draw_settings_tabs(top - 0.055)
 	var y := top - 0.16
 	if flat:
+		var cinema_title := _label(I18n.t("Cinema screen"), Vector3(-0.50, y, 0.004), 17)
+		cinema_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+		for option in [{"target": SCREEN_CINEMA_OFF, "label": "Off", "value": false}, {"target": SCREEN_CINEMA, "label": "On", "value": true}]:
+			_button(option.target, I18n.t(option.label), Vector2(0.16 + (0.1685 if option.value else -0.1685), y), Vector2(0.323, 0.055))
+			set_label_size(_buttons.back().node.get_child(0), 16)
+			_buttons.back().base_color = SELECTED if cinema == option.value else TILE
+			_tips[option.target] = I18n.t("Keeps the screen upright, like in a cinema. Resizing keeps its bottom edge in place; pushing or pulling changes only its distance. A ground grid appears only while resizing or moving it nearer or farther. Turn off to position the screen freely.")
+		y -= 0.08
+		if cinema:
+			for index in ScreenPresets.ITEMS.size():
+				var preset: Dictionary = ScreenPresets.ITEMS[index]
+				_button(SCREEN_PRESET + index, I18n.t(preset.title) + "\n" + preset.detail, Vector2(-0.375 + index * 0.25, y), Vector2(0.235, 0.085))
+				set_label_size(_buttons.back().node.get_child(0), 14)
+				_tips[SCREEN_PRESET + index] = I18n.t("Apply size, distance and upright placement while preserving video proportions. Choose Lock current settings to make recenter restore this setup.")
+			y -= 0.11
+			var height_title := _label(I18n.t("Eye level"), Vector3(-0.50, y, 0.004), 17)
+			height_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+			for index in EYE_LEVELS.size():
+				_button(SCREEN_EYE_LEVEL + index, I18n.t(["Cinema view", "Centered"][index]), Vector2(0.16 + (-0.1685 if index == 0 else 0.1685), y), Vector2(0.323, 0.05))
+				set_label_size(_buttons.back().node.get_child(0), 15)
+				_tips[SCREEN_EYE_LEVEL + index] = I18n.t("Cinema view places your eyes about one-third up the screen; Centered aligns them with its center. You can also hold Grip and drag to adjust the height.")
+			y -= 0.08
 		_adjustment_row(450, "screen_distance", "Screen distance", Vector3(Surface.DISTANCE_LIMITS.x, Surface.DISTANCE_LIMITS.y, 0.1), y)
 		y -= 0.09
-		_adjustment_row(451, "screen_scale", "Screen size", Vector3(40, 300, 5), y)
+		_adjustment_row(451, "screen_scale", "Screen size", Vector3(Surface.SCALE_LIMITS.x * 100, Surface.SCALE_LIMITS.y * 100, 5), y)
+		_screen_measurement = _label("", Vector3(0.16, y - 0.038, 0.004), 13)
+		_screen_measurement.modulate = MUTED
+		y -= 0.035
+		y -= 0.075
+		for option in [{"target": SCREEN_AUTO_DEFAULT, "label": "Use latest adjustments", "locked": false}, {"target": SCREEN_SET_DEFAULT, "label": "Lock current settings", "locked": true}]:
+			_button(option.target, I18n.t(option.label), Vector2(0.16 + (0.1685 if option.locked else -0.1685), y), Vector2(0.323, 0.055))
+			set_label_size(_buttons.back().node.get_child(0), 15)
+			_buttons.back().base_color = SELECTED if bool(_state.get("screen_default_locked", false)) == option.locked else TILE
+		_tips[SCREEN_AUTO_DEFAULT] = I18n.t("Do not lock a default. Each adjustment becomes the latest setting. Controller recenter and player Center keep that size, distance and viewing height. This also removes any previously locked settings.")
+		_tips[SCREEN_SET_DEFAULT] = I18n.t("Lock the current size, distance, cinema mode and viewing height. Controller recenter and player Center restore them after temporary adjustments. Click again to replace the locked settings with the current ones.")
+		y -= 0.005
 		y -= 0.09
 		var title := _label(I18n.t("Screen curve"), Vector3(-0.50, y, 0.004), 17)
 		title.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
-		choices.field(null, _setting_choices("screen_curve"), Vector2(0.16, y), 0.66, 0.05)
+		for index in Surface.CURVES.size():
+			_button(SCREEN_CURVE + index, I18n.t(CURVE_NAMES[index]), Vector2(-0.092 + index * 0.168, y), Vector2(0.156, 0.05))
+			set_label_size(_buttons.back().node.get_child(0), 15)
+			_buttons.back().base_color = SELECTED if is_equal_approx(float(_state.get("screen_curve", 0.0)), Surface.CURVES[index]) else TILE
 		y -= 0.09
-	_adjustment_row(452, "screen_rotation", "Screen rotation", Vector3(-90, 90, 1), y)
-	_slider_tick(452, 0, "0°", y)
-	_inline_reset(ROTATION_RESET, "Straighten", "screen_rotation", 0.0, y)
+	if not cinema:
+		_adjustment_row(452, "screen_rotation", "Screen rotation", Vector3(-90, 90, 1), y)
+		_slider_tick(452, 0, "0°", y)
+		_inline_reset(ROTATION_RESET, "Straighten", "screen_rotation", 0.0, y)
+	else: y += 0.09
 	if spatial_fov:
 		_button(SPATIAL_FOV, I18n.t("Match spatial video capture FOV"), Vector2(0, y - 0.09), Vector2(0.86, 0.055), bool(_state.get("spatial_fov_available", false)))
 		set_label_size(_buttons.back().node.get_child(0), 16)
@@ -2001,6 +2237,14 @@ func _refresh_spatial_fov() -> void:
 
 func _refresh_adjustments() -> void:
 	_refresh_spatial_fov()
+	if is_instance_valid(_screen_measurement):
+		var size: Vector2 = _state.get("screen_dimensions", Vector2.ZERO)
+		_screen_measurement.text = "%.2f × %.2f m" % [size.x, size.y] if size.x > 0 and size.y > 0 else ""
+	for button in _buttons:
+		if button.target >= SCREEN_PRESET and button.target < SCREEN_PRESET + ScreenPresets.ITEMS.size():
+			button.base_color = SELECTED if _state.get("screen_preset", "") == ScreenPresets.ITEMS[button.target - SCREEN_PRESET].id else TILE
+		if button.target >= SCREEN_EYE_LEVEL and button.target < SCREEN_EYE_LEVEL + EYE_LEVELS.size():
+			button.base_color = SELECTED if is_equal_approx(float(_state.get("screen_eye_level", 0.5)), EYE_LEVELS[button.target - SCREEN_EYE_LEVEL]) else TILE
 	var values: Dictionary = _state.get("grade_values", Grade.DEFAULTS)
 	for row in _adjust_rows.values():
 		var distance: bool = row.key in ["subtitle_distance", "screen_distance"]
@@ -2010,7 +2254,9 @@ func _refresh_adjustments() -> void:
 		row["value"] = value
 		var fraction := clampf((value - row.span.x) / (row.span.y - row.span.x), 0, 1)
 		if row.key == "subtitle_distance": fraction = SubtitleDepth.slider_fraction(value)
+		if _adjustment == "screen" and row.key in ["screen_distance", "screen_scale"]: fraction = ScreenPresets.slider_fraction(value, row.span)
 		row.label.text = "%.1f m" % value if distance else ("%+.0f°" % value if position else ("%d K" % value if row.key == "temperature" else ("%+.2f EV" % value if row.key == "exposure" else "%.3f" % value)))
+		if row.key == "screen_distance" and value < 10: row.label.text = "%.2f m" % value
 		if row.key == "screen_scale": row.label.text = "%d%%" % roundi(value)
 		elif row.key == "screen_rotation": row.label.text = "%+.0f°" % value if value != 0 else "0°"
 		elif row.key == "playback_speed": row.label.text = "%.2f×" % value
@@ -2041,6 +2287,7 @@ func _set_adjustment_at(x: float) -> void:
 	var row: Dictionary = _adjust_rows[_adjust_target]
 	var value := clampf(snappedf(lerpf(row.span.x, row.span.y, clampf((x - row.left) / row.width, 0, 1)), row.span.z), row.span.x, row.span.y)
 	if row.key == "subtitle_distance": value = SubtitleDepth.slider_distance((x - row.left) / row.width)
+	if _adjustment == "screen" and row.key in ["screen_distance", "screen_scale"]: value = ScreenPresets.slider_value((x - row.left) / row.width, row.span)
 	if row.key == "screen_rotation" and absf(value) <= 1: value = 0.0
 	if row.key == "playback_speed" and absf(value - 1.0) < 0.03: value = 1.0
 	adjustment_requested.emit(row.key, value)
@@ -2062,6 +2309,17 @@ func _activate_adjustment(target: int) -> void:
 			adjustment_requested.emit("stereo_reset", true)
 		elif target == SPATIAL_DISPARITY and _state.get("spatial_video", false):
 			setting_requested.emit("spatial_auto_disparity", not _state.get("spatial_auto_disparity", true))
+	elif _adjustment == "screen" and target >= SCREEN_CURVE and target < SCREEN_CURVE + Surface.CURVES.size() and _enabled("screen_curve"):
+		setting_requested.emit("screen_curve", Surface.CURVES[target - SCREEN_CURVE])
+	elif _adjustment == "screen" and target >= SCREEN_PRESET and target < SCREEN_PRESET + ScreenPresets.ITEMS.size() and _state.get("screen_cinema", false) and _state.get("has_video", false) and int(_state.get("geometry", 0)) == 0:
+		adjustment_requested.emit("screen_preset", ScreenPresets.ITEMS[target - SCREEN_PRESET].id)
+	elif _adjustment == "screen" and target >= SCREEN_EYE_LEVEL and target < SCREEN_EYE_LEVEL + EYE_LEVELS.size() and _state.get("screen_cinema", false):
+		adjustment_requested.emit("screen_eye_level", EYE_LEVELS[target - SCREEN_EYE_LEVEL])
+	elif _adjustment == "screen" and target in [SCREEN_CINEMA, SCREEN_CINEMA_OFF] and _state.get("has_video", false) and int(_state.get("geometry", 0)) == 0:
+		if (target == SCREEN_CINEMA) != bool(_state.get("screen_cinema", false)):
+			adjustment_requested.emit("screen_cinema", target == SCREEN_CINEMA)
+	elif _adjustment == "screen" and target in [SCREEN_SET_DEFAULT, SCREEN_AUTO_DEFAULT] and _state.get("has_video", false) and int(_state.get("geometry", 0)) == 0:
+		adjustment_requested.emit("screen_set_default", target == SCREEN_SET_DEFAULT)
 	elif _adjustment == "screen" and target == SPATIAL_FOV and _state.get("spatial_fov_available", false):
 		setting_requested.emit("spatial_match_fov", true)
 	elif _adjustment == "screen" and target == ROTATION_RESET:

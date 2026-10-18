@@ -66,6 +66,8 @@ func player(path: String) -> Node:
 func _initialize() -> void: call_deferred("_run")
 
 func _run() -> void:
+	var legacy_mix := Memory.describe(4, [{"id":4,"external":true,"title":"Clone voice"}])
+	check(Memory.resolve(legacy_mix,[{"id":6,"external":true,"title":"movie.si.mix.m4a"},{"id":7,"external":true,"title":"movie.chs.m4a"}])==6,"Legacy dubbing preference migrates to the named prepared mix")
 	directory = ProjectSettings.globalize_path("res://../../build/output/file-track-preferences-20261012/" + str(Time.get_ticks_usec()))
 	DirAccess.make_dir_recursive_absolute(directory)
 	var path := directory.path_join("storage")

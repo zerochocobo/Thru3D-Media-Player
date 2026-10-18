@@ -34,6 +34,8 @@ internal class MpvVideoBridge(
     private val subtitleFiles: (String) -> List<String> = { emptyList() },
     private val openSubtitleFile: (String, String) -> SidecarSubtitles.Track = { _, _ -> error("Subtitle unavailable") },
     private val subtitleIdentity: (String) -> String = { "" },
+    private val enableNetworkReadCache: (String, List<AudioReadSpan>) -> Boolean = { _, _ -> false },
+    private val finishIsoPreflight: (String) -> Unit = {},
 ) {
     private val worker = RvmWorkers.video
     private val subtitleWorker = Executors.newSingleThreadExecutor { Thread(it, "QuestSubtitleFiles") }
@@ -112,6 +114,8 @@ internal class MpvVideoBridge(
         @Volatile var subtitleDelay = 0.0 // also read by the narration clock
         @Volatile var audioEnabled = audio
         @Volatile var audioVolume = 100.0
+        @Volatile var userAudioDelay = 0.0
+        @Volatile var pipelineAudioDelay = 0.0
         @Volatile var audioMuted = false
         @Volatile var narrationPath = ""
         @Volatile var narrationCa = ""
@@ -162,7 +166,11 @@ internal class MpvVideoBridge(
                     (observed * 1000).coerceIn(0.0, Int.MAX_VALUE.toDouble()).toInt() else host.startMs)
                 host.interleavePolicy = decision
                 host.interleaveRetry = true
-            } else refreshPlayback() // A negative/failed check resumes the unchanged policy.
+            } else {
+                host.interleavePolicy = if (!decision.regionCache || enableNetworkReadCache(host.narrationPath, decision.audioChunks)) decision
+                    else decision.copy(regionCache = false, diagnostic = "cache_unavailable")
+                refreshPlayback() // Resume without reopening the decoder or changing demux order.
+            }
         }
     }
 
@@ -319,7 +327,7 @@ internal class MpvVideoBridge(
                             it.moveToFirst() && it.getString(0).orEmpty().lowercase().endsWith(".iso")
                         } == true)
                 if (iso) host.loadingPhase = "reading_disc"
-                val disc = if (iso) MpvSourceNative.probeIso(path) else null
+                val disc = if (iso) try { MpvSourceNative.probeIso(path) } finally { finishIsoPreflight(path) } else null
                 host.loadingPhase = "preparing"
                 val nativePath = if (iso && path.startsWith("fd://")) "/proc/self/fd/${path.removePrefix("fd://")}" else path
                 host.narrationPath = nativePath; host.narrationCa = tlsCaFile
@@ -524,15 +532,32 @@ internal class MpvVideoBridge(
         refreshPlayback(explicit = accepted && trackId != 0)
         return accepted
     }
+    fun setWhisper(id: Int, level: Int): Long {
+        if (level !in 0..51) return 0
+        val session = sessions[id] ?: return 0
+        if (!active(session) || session.host.handle <= 0) return 0
+        return MpvSourceNative.setWhisper(session.host.handle, level)
+    }
+    fun setAudioDelay(id: Int, seconds: Double): Boolean {
+        if (!seconds.isFinite() || seconds !in -10.0..10.0) return false
+        val session = sessions[id] ?: return false
+        val host = session.host
+        synchronized(host) {
+            if (!active(session) || host.closing || host.handle <= 0) return false
+            if (!MpvSourceNative.setAudioDelay(host.handle, seconds + host.pipelineAudioDelay)) return false
+            host.userAudioDelay = seconds
+        }
+        return true
+    }
     fun setNarration(id: Int, json: String): Boolean {
-        if (!BuildConfig.DEBUG || !NarrationPolicy.FEATURE_ENABLED) return false
+        if (!NarrationPolicy.FEATURE_ENABLED) return false
         val session = sessions[id] ?: return false
         if (!active(session) || session.host.closing) return false
         val host = session.host
         val controller = synchronized(host) {
             host.narration ?: NarrationController(context, {
                 if (host.closing || stopped || host.handle <= 0) null else NarrationController.Source(host.handle,
-                    host.narrationPath, host.narrationCa, foreground, host.audioVolume, host.audioMuted, host.subtitleDelay, host.subtitleCommand,host.playing)
+                    host.narrationPath, host.narrationCa, foreground, host.audioVolume, host.audioMuted, host.subtitleDelay, host.subtitleCommand,host.playing,host.userAudioDelay)
             }, { value -> if (host.handle > 0 && !host.closing) MpvSourceNative.setNarrationGain(host.handle, value) },
                 { refreshPlayback() }).also { host.narration=it }
         }
@@ -555,8 +580,10 @@ internal class MpvVideoBridge(
                 .put("language",item.optString("language")).put("stream_index",item.optInt("stream_index",-1))
                 .put("fixture_language",if(title.endsWith(".narration-zh.srt"))"zh" else if(title.endsWith(".narration-en.srt"))"en" else ""))
         } }
-        return (session.host.narration?.status() ?: JSONObject().put("state","off"))
+        return (session.host.narration?.diagnosticStatus() ?: JSONObject().put("state","off"))
             .put("session_id",id).put("focus",audioFocusState).put("base_volume",session.host.audioVolume)
+            .put("user_audio_delay_seconds",session.host.userAudioDelay).put("pipeline_audio_delay_seconds",session.host.pipelineAudioDelay)
+            .put("audio_tracks",details.optJSONArray("audio_tracks") ?: JSONArray())
             .put("effective_volume",details.optString("volume")).put("muted",session.host.audioMuted)
             .put("position",details.optString("position_seconds")).put("paused",details.optString("paused"))
             .put("decoder_drops",details.optString("decoder_frame_drop_count")).put("vo_drops",details.optString("vo_frame_drop_count"))
@@ -791,11 +818,16 @@ internal class MpvVideoBridge(
                     status.put("normal_fast_path", !session.inference && session.normalFastPath)
                         .put("layer_active", session.host.layer)
                         .put("rvm_video_fps_cap", frameCap(session))
+                    // Compose the user's track correction with automatic video hold, including
+                    // revisions that no longer have a fanout. Both writers share the host lock.
+                    synchronized(session.host) {
+                        val delay = if (session.layerAlpha) Math.round(session.host.frames?.holdMs ?: 0.0) / 1000.0 else 0.0
+                        if (Math.abs(delay - session.host.pipelineAudioDelay) >= 0.02 && MpvSourceNative.setAudioDelay(session.host.handle, delay + session.host.userAudioDelay))
+                            session.host.pipelineAudioDelay = delay
+                        session.audioDelay = session.host.pipelineAudioDelay
+                    }
+                    status.put("user_audio_delay_seconds", session.host.userAudioDelay)
                     session.host.frames?.let { fanout ->
-                        // Audio waits as long as the frames wait for their masks (changes under 20 ms are kept).
-                        val delay = if (session.layerAlpha) Math.round(fanout.holdMs) / 1000.0 else 0.0
-                        if (Math.abs(delay - session.audioDelay) >= 0.02 && MpvSourceNative.setAudioDelay(session.host.handle, delay))
-                            session.audioDelay = delay
                         status.put(if (fanout is LayerCopy) "layer_copy" else "layer_fanout",
                             fanout.stats().put("masks", session.layerMasks).put("audio_delay", session.audioDelay)
                             .put("mask_latency_ms", session.maskLatencyMs))
@@ -819,6 +851,8 @@ internal class MpvVideoBridge(
                     event("mpv_state", session, status.put("alpha_requested", session.alpha).put("depth_requested", session.depth)
                         .put("startup_bridge", JSONObject(session.host.startup as Map<*, *>))
                         .put("interleave_leading_audio_bytes", session.host.interleavePolicy.leadingAudioBytes)
+                        .put("network_interleave_diagnostic", session.host.interleavePolicy.diagnostic)
+                        .put("network_interleave_region_cache", session.host.interleavePolicy.regionCache)
                         .put("network_interleave_retry", session.host.interleaveRetry)
                         .put("network_interleave_restart_ms", session.host.interleaveRestartMs)
                         .put("source_start_ms", session.host.startMs)

@@ -15,6 +15,8 @@ type playerSearchObject struct {
 	parentID string
 }
 
+const playerSearchLimit = 200
+
 func (o *playerSearchObject) PlayerParentID() string { return o.parentID }
 
 // The adapter uses the driver's existing client, refresh callback and rate limiter.
@@ -23,11 +25,11 @@ func (d *Open115) PlayerSearch(ctx context.Context, dir model.Obj, query, kind, 
 	if cursor != "" {
 		var err error
 		offset, err = strconv.ParseInt(cursor, 10, 64)
-		if err != nil || offset < 0 || offset >= 10000 {
+		if err != nil || offset < 0 || offset >= playerSearchLimit {
 			return nil, "", 0, false, errors.New("invalid search cursor")
 		}
 	}
-	req := &sdk.SearchFilesReq{SearchValue: query, CID: dir.GetID(), Limit: min(48, 10000-offset), Offset: offset}
+	req := &sdk.SearchFilesReq{SearchValue: query, CID: dir.GetID(), Limit: min(48, playerSearchLimit-offset), Offset: offset}
 	switch kind {
 	case "video":
 		req.Type, req.FC = "4", "2"
@@ -43,7 +45,7 @@ func (d *Open115) PlayerSearch(ctx context.Context, dir model.Obj, query, kind, 
 	if err != nil {
 		return nil, "", 0, false, err
 	}
-	if resp.Offset != offset || len(resp.Data) > 48 || resp.Count < 0 {
+	if resp.Offset != offset || int64(len(resp.Data)) > req.Limit || resp.Count < 0 {
 		return nil, "", 0, false, errors.New("invalid search response")
 	}
 	objects := make([]model.Obj, 0, len(resp.Data))
@@ -60,7 +62,7 @@ func (d *Open115) PlayerSearch(ctx context.Context, dir model.Obj, query, kind, 
 		objects = append(objects, &playerSearchObject{Object: model.Object{ID: item.FileID, Name: item.FileName, Size: size, IsFolder: item.FileCategory == "0", Modified: time.Unix(modified, 0)}, parentID: item.ParentID})
 	}
 	next := offset + int64(len(resp.Data))
-	capped := next >= 10000 && next < resp.Count
+	capped := next >= playerSearchLimit && next < resp.Count
 	if next < resp.Count && !capped {
 		if len(objects) == 0 {
 			return nil, "", 0, false, errors.New("empty intermediate search page")

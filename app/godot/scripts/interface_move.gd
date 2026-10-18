@@ -26,6 +26,10 @@ func begin(hand: String, input: String, pose: Transform3D, targets: Array, ancho
 		"last_angles": Vector2.ZERO, "last_displacement": Vector3.ZERO}
 	if head is Transform3D: capture["depth_limits"] = _depth_bounds(targets, point, head.origin)
 	for target in targets:
+		if target.get("cinema", false) and head is Transform3D:
+			var distance: float = (head.origin - target.pose.origin).dot(target.pose.basis.z)
+			capture.depth_limits = target.distance_limits - Vector2.ONE * distance
+	for target in targets:
 		if target.kind == "menu":
 			var up: Vector3 = head.basis.y if following and head is Transform3D else Vector3.UP
 			capture["upright_basis"] = _horizontal_basis(target.pose.basis, up)
@@ -144,7 +148,13 @@ func update(pose: Transform3D, head: Variant, follow: RefCounted) -> bool:
 			else: target.node.translate_layout(displacement - capture.last_displacement)
 		else:
 			var world: Transform3D = target.pose
-			if capture.head is Transform3D: world = motion * world
+			if target.get("cinema", false) and head is Transform3D:
+				# Grip translates the upright screen in its plane. Stick depth never changes height.
+				var normal: Vector3 = world.basis.z
+				world.origin += world.basis.x * displacement.dot(world.basis.x) + Vector3.UP * displacement.y - normal * capture.depth
+				var distance: float = (head.origin - world.origin).dot(normal)
+				world.origin -= normal * (clampf(distance, target.distance_limits.x, target.distance_limits.y) - distance)
+			elif capture.head is Transform3D: world = motion * world
 			else: world.origin += displacement
 			if target.kind == "screen": target.node.set_flat_world_pose(world)
 			else:
@@ -152,7 +162,7 @@ func update(pose: Transform3D, head: Variant, follow: RefCounted) -> bool:
 				if target.kind == "menu" and head is Transform3D and target.node.has_method("set_layout_viewer") and target.node._layout_eye != null:
 					target.node.set_layout_viewer(head, follow.enabled)
 					world = target.node.global_transform
-			if head is Transform3D:
+			if head is Transform3D and not target.get("cinema", false):
 				if target.kind != "detail": follow.capture(target.key, head, world)
 				if target.kind in ["menu", "screen", "detail"]:
 					var frame: Transform3D = menu_head(head, follow.enabled) if target.kind == "menu" else head

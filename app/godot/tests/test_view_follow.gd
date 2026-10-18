@@ -221,7 +221,7 @@ func _run() -> void:
 	check(placement(main, main.video).is_equal_approx(Transform3D(Basis.IDENTITY, Vector3(0, 0, -main.video.SCREEN_DISTANCE))) and main.view_follow.enabled,
 		"Follow recenter restores the video to the current gaze at its default distance")
 	check(not main.interface_move.placements.has(&"video") and is_equal_approx(main.video.screen_distance, main.video.SCREEN_DISTANCE), "Recenter clears video grip placement and restores distance")
-	check(main.video.screen_scale == scale and main.video.screen_rotation == 25, "Recenter preserves size and content rotation")
+	check(main.video.screen_scale == 1.0 and main.video.screen_rotation == 25, "Recenter restores default size and preserves content rotation")
 	screen_local = placement(main, main.video)
 	main._on_library_chosen("file:///follow/next_2D.mp4", "next_2D.mp4")
 	main._place_screen()

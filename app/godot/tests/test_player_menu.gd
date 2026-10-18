@@ -72,7 +72,10 @@ func click(menu: Node3D, target: int, hand: String = "right_hand") -> bool:
 	for button in menu._buttons:
 		if button.target == target:
 			var centre: Vector2 = button.rect.get_center()
-			return menu.press_pointer(hand, menu.to_global(Vector3(centre.x, centre.y, 1)), -menu.global_basis.z, true)
+			var ray := menu.to_global(Vector3(centre.x, centre.y, 1))
+			var result: bool = menu.press_pointer(hand, ray, -menu.global_basis.z, true)
+			if menu is Menu and (menu._subtitle_ids.has(target) or menu._audio_ids.has(target)): menu.release_pointer(hand, ray, -menu.global_basis.z, true)
+			return result
 	return false
 
 func double_click(menu: Node3D, target: int, hand: String = "right_hand") -> bool:
@@ -142,6 +145,10 @@ func setting_click(menu: Node3D, target: int) -> bool:
 	return false
 
 func choose_setting(menu: Node3D, key: String, value: Variant) -> bool:
+	if key == "audio_track":
+		for target in menu._audio_ids:
+			if menu._audio_ids[target] == value: return click(menu, target)
+		return false
 
 	for target in menu.choices.sliders:
 		if menu.choices.targets[target].key != key: continue
@@ -539,7 +546,7 @@ func _run() -> void:
 	check(video._handles[1].visible and not video._handles[0].visible, "Only the pointed corner shows its bracket")
 	video.set_screen_scale(1.5)
 	check(video._flat.size.is_equal_approx(size * 1.5), "Corner drag scales the screen")
-	video.set_screen_scale(10.0)
+	video.set_screen_scale(video.SCALE_LIMITS.y + 1.0)
 	check(is_equal_approx(video.screen_scale, video.SCALE_LIMITS.y), "Size is limited")
 	video.set_screen_scale(1.0)
 	video.set_corner_hover(-1)

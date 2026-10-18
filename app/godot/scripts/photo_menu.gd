@@ -75,7 +75,7 @@ func refresh_values() -> void:
 	if latest != _state:
 		var old_layout := _state.duplicate()
 		var new_layout := latest.duplicate()
-		for key in ["depth_strength", "depth_requested", "depth_enabled", "depth_error", "stereo_strategy", "stereo_ready", "render_strength", "portrait_enabled", "loading_caption"]:
+		for key in ["depth_strength", "depth_requested", "depth_enabled", "depth_error", "stereo_strategy", "stereo_ready", "render_strength", "portrait_enabled", "loading_caption", "audio_storage"]:
 			old_layout.erase(key); new_layout.erase(key)
 		_state = latest
 		if old_layout != new_layout:
@@ -92,6 +92,10 @@ func refresh_values() -> void:
 func _can_depth() -> bool:
 	return _state.get("has_image", false) and not _state.get("loading", false) and int(_state.get("geometry", 0)) == 0 \
 		and not _state.get("stereo", false) and _state.get("depth_available", false)
+
+func _bar_action_x(target: int) -> float:
+	return {PHOTO_AUDIO:-0.58,PHOTO_LAYOUT:-0.30,PHOTO_RETURN:-0.44,
+		107:-0.14,100:0.0,108:0.14,FAVORITE:0.28,PHOTO_SHUFFLE:0.44}.get(target,0.0)
 
 func _draw_bar() -> void:
 	_set_backdrop(Vector2(1.16, 0.27), Vector2.ZERO)
@@ -116,20 +120,20 @@ func _draw_bar() -> void:
 	_glyph(11, "settings", Vector2(0.5, 0.025), 0.075, has, I18n.t("Settings"))
 	_status = _label(_photo_status(), Vector3(0, -0.075, 0.004), 15)
 	_status.modulate = MUTED
-	_round(107, "close", Vector2(-0.14, 0.215), 0.08, has or _state.get("loading", false), false, I18n.t("Close image"))
-	_round(100, "folder", Vector2(0, 0.215), 0.08, true, false, I18n.t("Library"))
-	_round(108, "recenter", Vector2(0.14, 0.215), 0.08, true, false, I18n.t("Recenter"))
-	_draw_favorite(Vector2(0.28, 0.215))
-	_round(PHOTO_AUDIO, "music", Vector2(-0.58, 0.215), 0.08, true, false, I18n.t("Music"))
-	if _state.get("audio_active", false): _buttons.back().base_color = SELECTED
+	_round(107, "close", Vector2(_bar_action_x(107), 0.215), 0.08, has or _state.get("loading", false), false, I18n.t("Close image"))
+	_round(100, "folder", Vector2(_bar_action_x(100), 0.215), 0.08, true, false, I18n.t("Library"))
+	_round(108, "recenter", Vector2(_bar_action_x(108), 0.215), 0.08, true, false, I18n.t("Recenter"))
+	_draw_favorite(Vector2(_bar_action_x(FAVORITE), 0.215))
+	if not music_quick: music_quick = preload("res://scripts/music_quick_controls.gd").new(self, func(): action_requested.emit("music_toggle"))
+	music_quick.draw(PHOTO_AUDIO, Vector2(_bar_action_x(PHOTO_AUDIO), 0.215), _state)
 	var layout := clampi(int(_state.get("layout", 0)), 0, 3)
-	_round(PHOTO_LAYOUT, ["image", "photo_sides", "photo_wall", "memory"][layout], Vector2(-0.30, 0.215), 0.08, has and not portrait, false, I18n.t("Photo layout"))
-	var caption := _label(I18n.t("Portrait passthrough" if portrait else Photo.Gallery.NAMES[layout]), Vector3(-0.30, 0.15, 0.004), 12)
+	_round(PHOTO_LAYOUT, ["image", "photo_sides", "photo_wall", "memory"][layout], Vector2(_bar_action_x(PHOTO_LAYOUT), 0.215), 0.08, has and not portrait, false, I18n.t("Photo layout"))
+	var caption := _label(I18n.t("Portrait passthrough" if portrait else Photo.Gallery.NAMES[layout]), Vector3(_bar_action_x(PHOTO_LAYOUT), 0.15, 0.004), 12)
 	caption.modulate = MUTED
 	if layout in [2,3] and not portrait and not _depth_open and int(_state.get("gallery_focus", -1)) < 0:
-		_round(PHOTO_SHUFFLE, "photo_batch" if layout == 2 else "dice", Vector2(0.44, 0.215), 0.08, has and not swapping, false, I18n.t("Next group" if layout == 2 else "Shuffle memories"))
+		_round(PHOTO_SHUFFLE, "photo_batch" if layout == 2 else "dice", Vector2(_bar_action_x(PHOTO_SHUFFLE), 0.215), 0.08, has and not swapping, false, I18n.t("Next group" if layout == 2 else "Shuffle memories"))
 	if portrait or int(_state.get("gallery_focus", -1)) >= 0:
-		_round(PHOTO_RETURN, "up", Vector2(-0.44, 0.215), 0.08, true, false, I18n.t("Back"))
+		_round(PHOTO_RETURN, "up", Vector2(_bar_action_x(PHOTO_RETURN), 0.215), 0.08, true, false, I18n.t("Back"))
 	_place_device_status(Vector2(0, -0.175))
 	if _layout_open:
 		_draw_layouts()

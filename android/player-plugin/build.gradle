@@ -12,14 +12,36 @@ if (!mnnSource.isPresent() || !mnnLib.isPresent()) { throw new GradleException('
 // Keep the full numerical oracles on disk for device diagnostics, but never
 // include them in a normal player APK (including ordinary Debug builds).
 def includeDiagnostics = providers.gradleProperty('includeDiagnostics').map { it.toBoolean() }.getOrElse(false)
+// Subtitle narration is included in both normal Debug and Release builds.
+def narrationManifest = new groovy.json.JsonSlurper().parse(file('../../third_party/narration/model.json'))
+def narrationModels = file("../../models/narration/${narrationManifest.id}")
 def playerAssets = layout.buildDirectory.dir('playerAssets')
 def stagePlayerAssets = tasks.register('stagePlayerAssets', Sync) {
     from('src/main/assets')
     from('../../third_party')
     from('../../app/godot/i18n')
     into(playerAssets)
-    // Narration is withheld in all variants, including diagnostic Debug builds.
-    exclude 'narration/**'
+    from(narrationModels) {
+        into(narrationManifest.directory)
+        include(narrationManifest.files.keySet() as String[])
+    }
+    doFirst {
+        narrationManifest.files.each { name, expected ->
+            def model = new File(narrationModels, name)
+            if (!model.isFile() || model.length() != expected.bytes) {
+                throw new GradleException("Missing narration model: ${name}. Run tools/environment/Prepare-NarrationModels.ps1.")
+            }
+            def digest = java.security.MessageDigest.getInstance('SHA-256')
+            model.withInputStream { input ->
+                byte[] buffer = new byte[131072]
+                int count
+                while ((count = input.read(buffer)) > 0) { digest.update(buffer, 0, count) }
+            }
+            if (digest.digest().encodeHex().toString() != expected.sha256) {
+                throw new GradleException("Narration model digest differs: ${name}")
+            }
+        }
+    }
     if (!includeDiagnostics) {
         exclude 'rvm/reference/**', 'rvm/**/*.bin', 'rvm/**/*.param', 'rvm-mnn/rvm_quality.mnn'
     }
@@ -36,20 +58,23 @@ android {
         minSdk 29
         consumerProguardFiles 'consumer-rules.pro'
         buildConfigField 'boolean', 'INCLUDE_DIAGNOSTIC_MODELS', includeDiagnostics.toString()
+        buildConfigField 'boolean', 'NARRATION_ENABLED', 'true'
         ndk { abiFilters 'arm64-v8a' }
         externalNativeBuild {
             cmake {
-                // Explicit playback targets; withheld narration is never built.
-                targets 'quest_rvm', 'quest_render_bridge', 'quest_mpv', 'quest_video_layer', 'quest_usb'
+                // Normal playback includes offline subtitle narration.
+                targets 'quest_rvm', 'quest_render_bridge', 'quest_mpv', 'quest_video_layer', 'quest_usb', 'quest_narration'
                 arguments "-Dncnn_DIR=${ncnnRoot.get().replace('\\', '/')}/lib/cmake/ncnn", '-DANDROID_STL=c++_shared',
+                '-DQUEST_NARRATION_ENABLED=ON',
                 "-DQUEST_DIAGNOSTIC_MODELS=${includeDiagnostics ? 'ON' : 'OFF'}",
                 "-DMNN_SOURCE=${mnnSource.get().replace('\\', '/')}", "-DMNN_LIB=${mnnLib.get().replace('\\', '/')}" }
         }
     }
     externalNativeBuild { cmake { path '../../native/rvm/CMakeLists.txt'; version '3.31.6' } }
     // The Godot APK provides the matching NDK C++ shared runtime.
-    // Also reject stale narration binaries from an earlier development build.
-    packagingOptions { jniLibs { excludes += ['**/libc++_shared.so', '**/libquest_narration.so', '**/libonnxruntime*.so'] } }
+    packagingOptions { jniLibs {
+        excludes += ['**/libc++_shared.so']
+    } }
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17

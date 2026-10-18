@@ -23,5 +23,17 @@ int main() {
     assert(broken.observe(116000000, 48000));
     quest::NetworkSeekPattern forward;
     for (uint64_t i = 0; i < 20; ++i) assert(!forward.observe(i * 100000000, (i + 1) * 100000000));
-    std::cout << "Video output/network seek policy: 138 checks passed\n";
+    for (uint64_t span : {512ULL, 8192ULL, 4ULL * 1024 * 1024}) {
+        quest::NetworkSeekPattern small;
+        for (int i = 0; i < 7; ++i) assert(!small.observe(i % 2 ? span : 0, i % 2 ? 0 : span));
+        assert(small.observe(span, 0));
+    }
+    quest::NetworkSeekPattern stationary;
+    for (int i = 0; i < 20; ++i) assert(!stationary.observe(100, 100));
+    quest::NetworkSeekPattern after_jump;
+    for (int i = 0; i < 7; ++i) assert(!after_jump.observe(i % 2 ? 4096 : 0, i % 2 ? 0 : 4096));
+    after_jump = quest::NetworkSeekPattern{};
+    for (int i = 0; i < 7; ++i) assert(!after_jump.observe(i % 2 ? 4096 : 0, i % 2 ? 0 : 4096));
+    assert(after_jump.observe(4096, 0));
+    std::cout << "Video output/network seek policy checks passed\n";
 }

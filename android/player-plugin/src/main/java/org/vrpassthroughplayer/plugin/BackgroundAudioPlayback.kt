@@ -8,7 +8,9 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
 /** Independent audio-only MPV, bounded decoder buffers; Godot never waits on decoding. */
-internal class BackgroundAudioPlayback(private val context: () -> Context?) : Closeable {
+internal class BackgroundAudioPlayback(private val context: () -> Context?,
+    private val sourceResolver: ((String) -> String)? = null,
+    private val releaseSource: (String) -> Unit = {}) : Closeable {
     private val worker = Executors.newSingleThreadScheduledExecutor { Thread(it, "Thru3DMusic") }
     private var generation = 0
     private var path = ""
@@ -18,6 +20,7 @@ internal class BackgroundAudioPlayback(private val context: () -> Context?) : Cl
     private var seek = -1.0
     private var closed = false
     private var handle = 0L // worker only
+    private var resolved = "" // worker only; preview owns a separate remote lease
     private var loadedGeneration = -1
     private var loadDeadline = 0L
     @Volatile private var snapshot = "{}"
@@ -25,9 +28,13 @@ internal class BackgroundAudioPlayback(private val context: () -> Context?) : Cl
 
     @Synchronized fun load(value: String, position: Double): Int {
         val app = context() ?: return 0
-        val file = runCatching { File(value).canonicalFile }.getOrNull() ?: return 0
-        if (closed || file.parentFile != File(app.filesDir, "background-audio").canonicalFile || !file.isFile || !position.isFinite()) return 0
-        generation++; path = file.path; playing = false; volume = 0.0; seek = position.coerceAtLeast(0.0)
+        if (closed || !position.isFinite() || value.isEmpty()) return 0
+        val source = if (sourceResolver == null) {
+            val file = runCatching { File(value).canonicalFile }.getOrNull() ?: return 0
+            if (file.parentFile != File(app.filesDir, "background-audio").canonicalFile || !file.isFile) return 0
+            file.path
+        } else value
+        generation++; path = source; playing = false; volume = 0.0; seek = if (position > 0) position else -1.0
         snapshot = JSONObject().put("generation", generation).put("state", "loading").toString()
         return generation
     }
@@ -37,19 +44,38 @@ internal class BackgroundAudioPlayback(private val context: () -> Context?) : Cl
         if (position >= 0) seek = position
         return true
     }
+    @Synchronized fun seekTo(id: Int, position: Double): Boolean {
+        if (closed || path.isEmpty() || id != generation || !position.isFinite() || position < 0) return false
+        seek = position
+        return true
+    }
     @Synchronized fun stop() { generation++; path = ""; playing = false; snapshot = "{}" }
     @Synchronized fun foreground(value: Boolean) { foreground = value }
     fun status() = snapshot
     private data class Desired(val id: Int, val path: String, val play: Boolean, val volume: Double)
+    private fun releaseResolved() {
+        val old = resolved; resolved = ""
+        if (sourceResolver != null && old.isNotEmpty()) runCatching { releaseSource(old) }
+    }
+    private fun closeHandle() {
+        val old = handle; handle = 0
+        if (old == 0L) return
+        // Silence output before potentially waiting for a remote reader to terminate.
+        BackgroundAudioNative.control(old, false, 0.0, -1.0)
+        BackgroundAudioNative.close(old)
+    }
     private fun tick() {
         val desired = synchronized(this) { if (closed) return; Desired(generation, path, playing && foreground, volume) }
         try {
             if (loadedGeneration != desired.id) {
-                if (handle != 0L) BackgroundAudioNative.close(handle)
-                handle = 0; loadedGeneration = desired.id
+                closeHandle(); releaseResolved(); loadedGeneration = desired.id
                 if (desired.path.isEmpty()) return
                 check(BackgroundAudioNative.supported())
-                handle = BackgroundAudioNative.open(context() ?: error("No context"), desired.path, false)
+                val app = context() ?: error("No context")
+                resolved = sourceResolver?.invoke(desired.path) ?: desired.path
+                if (synchronized(this) { closed || generation != desired.id }) { releaseResolved(); return }
+                val ca = if (sourceResolver != null) MpvTlsTrust.prepare(app) else ""
+                handle = BackgroundAudioNative.open(app, resolved, false, ca)
                 check(handle != 0L); loadDeadline = System.nanoTime() + 15_000_000_000L
             }
             if (handle == 0L) return
@@ -66,14 +92,14 @@ internal class BackgroundAudioPlayback(private val context: () -> Context?) : Cl
             }
             synchronized(this) { if (!closed && generation == desired.id) snapshot = state.put("generation", desired.id).toString() }
         } catch (_: Exception) {
-            if (handle != 0L) BackgroundAudioNative.close(handle)
-            handle = 0
+            closeHandle()
+            releaseResolved()
             synchronized(this) { if (generation == desired.id) snapshot = JSONObject().put("generation", desired.id).put("state", "failed").toString() }
         }
     }
     override fun close() {
         synchronized(this) { if (closed) return; closed = true; playing = false }
-        worker.execute { if (handle != 0L) BackgroundAudioNative.close(handle); handle = 0 }
+        worker.execute { closeHandle(); releaseResolved() }
         worker.shutdown()
     }
 }

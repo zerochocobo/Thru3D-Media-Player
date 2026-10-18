@@ -7,31 +7,43 @@ import java.util.Locale
 
 /** Pure subtitle/selection rules. Text and cue identities stay in memory. */
 internal object NarrationPolicy {
-    // Withheld in Debug and Release; resuming requires explicit user authorization.
-    const val FEATURE_ENABLED = false
-    val voices = mapOf("zh" to listOf("Yuewen", "Junhao"), "en" to listOf("Ava", "Adam"))
+    // Normal playback feature in both Debug and Release.
+    const val FEATURE_ENABLED = BuildConfig.NARRATION_ENABLED
+    val voices = mapOf("zh" to listOf("Xiaoyu", "Yuewen", "Lingyu", "Zhiming", "Junhao"), "en" to listOf("Ava", "Bella", "Adam"), "ja" to listOf("Mei", "Saki", "Mortis", "Umiri"))
     data class Config(val enabled: Boolean = false, val source: Int = -1, val language: String = "auto",
-                      val zhVoice: String = "Yuewen", val enVoice: String = "Ava", val duck: Double = .75,
-                      val volume: Double = 1.0, val rate: Double = 1.0, val offset: Double = 0.0, val retry: Int = 0,
-                      val sourceDelay: Double? = null, val preview: Int = 0) {
-        fun voice(lang: String) = if (lang == "zh") zhVoice else enVoice
+                      val zhVoice: String = "Xiaoyu", val enVoice: String = "Ava", val duck: Double = .75,
+                      val volume: Double = 1.0, val offset: Double = 0.0, val retry: Int = 0,
+                      val sourceDelay: Double? = null, val preview: Int = 0, val timing: String = "interrupt",
+                      val jaVoice: String = "Mei", val line: Int = 0, val voiceOverride: String = "") {
+        fun voice(lang: String) = if(voiceOverride.isNotEmpty())voiceOverride else when(lang) { "zh" -> zhVoice; "ja" -> jaVoice; else -> enVoice }
+        val deadlineSlack get() = when(timing) {"interrupt"->0.0;"continuous"->3.0;else->.4}
         companion object {
             fun parse(json: String): Config {
                 val j = JSONObject(json)
                 val c = Config(j.optBoolean("enabled"), j.optInt("source", -1), j.optString("language", "auto"),
-                    j.optString("zh_voice", "Yuewen"), j.optString("en_voice", "Ava"), j.optDouble("duck", .75),
-                    j.optDouble("volume", 1.0), j.optDouble("rate", 1.0), j.optDouble("offset", 0.0), j.optInt("retry"),
-                    if(j.isNull("source_delay"))null else j.getDouble("source_delay"),j.optInt("preview"))
-                require(c.source >= -1 && c.language in setOf("auto", "zh", "en") && c.zhVoice in voices.getValue("zh") && c.enVoice in voices.getValue("en"))
+                    j.optString("zh_voice", "Xiaoyu"), j.optString("en_voice", "Ava"), j.optDouble("duck", .75),
+                    j.optDouble("volume", 1.0), j.optDouble("offset", 0.0), j.optInt("retry"),
+                    if(j.isNull("source_delay"))null else j.getDouble("source_delay"),j.optInt("preview"),j.optString("timing","interrupt"),j.optString("ja_voice","Mei"),j.optInt("line",0),j.optString("voice_override",""))
+                require(c.voiceOverride.isEmpty() || c.voiceOverride in voices.values.flatten())
+                require(c.source >= -1 && c.language in setOf("auto", "zh", "en", "ja") && c.zhVoice in voices.getValue("zh") && c.enVoice in voices.getValue("en") && c.jaVoice in voices.getValue("ja") && c.line in 0..2)
                 require(c.duck.isFinite() && c.duck in 0.0..1.0 && c.volume.isFinite() && c.volume in 0.0..1.0 &&
-                    c.rate.isFinite() && c.rate in .8..1.3 && c.offset.isFinite() && c.offset in -2.0..2.0)
+                    c.offset.isFinite() && c.offset in -2.0..2.0)
                 require(c.sourceDelay == null || c.sourceDelay.isFinite() && c.sourceDelay in -10.0..10.0)
+                require(c.timing in setOf("interrupt","continuous","strict"))
                 return c
             }
         }
     }
     data class Cue(val start: Double, val end: Double, val text: String, val windowStart: Double = start, val windowEnd: Double = end) {
         val key get() = "$start:$end:$text"
+    }
+    /** Playback text is authoritative for a cue already being prepared. A later
+     * prefetch result must not make a second utterance for that displayed window. */
+    fun mergeDisplayed(prefetched: List<Cue>, displayed: List<Cue>): Pair<List<Cue>,List<String>> {
+        val replaced=prefetched.filter {cue -> displayed.none {it.key==cue.key} && displayed.any {
+            cue.windowStart<it.windowEnd && cue.windowEnd>it.windowStart
+        }}
+        return (prefetched-replaced.toSet()+displayed).distinctBy {it.key}.sortedBy {it.start} to replaced.map {it.key}
     }
     data class PlaybackClock(val position: Double,val observedNs: Long,val kind: String)
     fun playbackClock(observation: JSONObject): PlaybackClock {
@@ -41,8 +53,10 @@ internal object NarrationPolicy {
         // and gives the presentation clock between frames. The player's audio
         // delay follows frames held for masks: keep that delay in presentation,
         // using it only to reject an old audio timestamp after a seek.
-        val audio=observation.optDouble("audio_pts_us",Double.NaN)/1e6
-        val pipelineDelay=observation.optDouble("audio_delay_seconds",0.0)
+        // Audio-track sync must not shift subtitle narration away from the picture.
+        val userDelay=observation.optDouble("user_audio_delay_seconds",0.0)
+        val audio=observation.optDouble("audio_pts_us",Double.NaN)/1e6+userDelay
+        val pipelineDelay=observation.optDouble("audio_delay_seconds",0.0)-userDelay
         val audioNs=observation.optLong("audio_observed_monotonic_ns")
         val stopped=observation.optString("paused")=="yes"||observation.optString("paused_for_cache")=="yes"
         val noTrack=observation.optString("audio_track_id") in setOf("","no","0")
@@ -52,15 +66,18 @@ internal object NarrationPolicy {
     fun language(tag: String): String = when (tag.replace('_', '-').lowercase(Locale.ROOT).substringBefore('-')) {
         "zh", "zho", "chi", "cmn", "chs", "cht" -> "zh"
         "en", "eng" -> "en"
+        "ja", "jpn" -> "ja"
         else -> ""
     }
     fun clean(value: String): String = Normalizer.normalize(value, Normalizer.Form.NFKC)
         .replace(Regex("\\{[^}]*\\}"), "").replace("\\N", "\n").replace("\\n", "\n").replace("\\h", " ")
+        .replace(Regex("<br\\s*/?>", RegexOption.IGNORE_CASE), "\n")
         .replace(Regex("<[^>]*>"), "").replace("&nbsp;", " ").replace("&amp;", "&")
         .replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&#39;", "'")
         .replace(Regex("[\\p{Cc}&&[^\\n\\t]]"), "").trim().take(2048)
 
-    fun cues(array: JSONArray, lang: String): List<Cue> {
+    fun cues(array: JSONArray, lang: String, line: Int = 0): List<Cue> {
+        require(line in 0..8)
         val original = (0 until array.length()).mapNotNull { i ->
             val j = array.getJSONObject(i); val start = j.optDouble("start"); val end = j.optDouble("end"); val text = clean(j.optString("text"))
             if (start.isFinite() && end.isFinite() && start >= 0 && end > start && text.isNotBlank()) Cue(start, end, text) else null
@@ -74,8 +91,11 @@ internal object NarrationPolicy {
             } else merged += cue
         }
         return merged.flatMap { cue ->
-            val limit = if (lang == "zh") 65 else 180
-            val parts = mutableListOf<String>(); var rest = cue.text
+            // Select authored lines after merging simultaneous bilingual events, before
+            // speech chunking. Layout wrapping is deliberately not a subtitle line.
+            val selected = if(line == 0) cue.text else cue.text.lines().filter {it.isNotBlank()}.getOrNull(line-1).orEmpty()
+            val limit = if (lang in setOf("zh", "ja")) 65 else 180
+            val parts = mutableListOf<String>(); var rest = selected
             while (rest.length > limit) {
                 val cut = (rest.take(limit).indexOfLast { it in "。！？.!?;；，, " } + 1).takeIf { it >= limit / 3 } ?: limit
                 parts += rest.take(cut).trim(); rest = rest.drop(cut).trim()
@@ -115,6 +135,7 @@ internal object NarrationPolicy {
         return out.toString()
     }
     fun normalize(text: String, lang: String): String {
+        if(lang == "ja") return text // Preserve Japanese numerals for the model's own frontend.
         val digits="零一二三四五六七八九"
         var value=text
         // Android ICU's \d includes non-ASCII digits, which cannot index this ASCII digit table.
@@ -130,17 +151,62 @@ internal object NarrationPolicy {
                 (if(raw.endsWith('%')&&lang=="zh")"百分之" else "") + integer + decimal + if(raw.endsWith('%')&&lang!="zh")" percent" else ""
         }
     }
-    // The user preference remains .8..1.3. A long sentence may need a little
-    // more acceleration to finish before the next subtitle, with pitch intact.
-    const val MAX_ADAPTIVE_RATE = 1.4
+    // A single automatic speed rule; obsolete saved manual rates are ignored.
+    // The final output tempo (including video speed) shares the same cap.
+    const val MAX_ADAPTIVE_RATE = 1.8
+    const val MAX_BORROW_SECONDS = 2.0
+    const val TARGET_BORROW_SECONDS = .5
+    fun interruptBoundary(cue: Cue, cues: List<Cue>): Double =
+        cues.filter {it.windowStart>cue.windowStart+.001}.minOfOrNull {it.windowStart} ?: Double.POSITIVE_INFINITY
+    fun speechDeadline(cue: Cue, cues: List<Cue>) = interruptBoundary(cue,cues)+MAX_BORROW_SECONDS
+    fun afterSeek(cue: Cue, floor: Double, offset: Double) = !floor.isFinite() || cue.end+offset>floor
+    data class SpeechBudget(val seconds: Double,val deadline: Double)
+    /** Earliest-deadline demand over the current and following sentences. Silence
+     * is usable time; aim to recover within .5s, with a separate 2s hard limit. */
+    fun plannedTempo(budgets: List<SpeechBudget>, position: Double, speed: Double, queuedSeconds: Double, preferredTempo: Double): Double {
+        var cumulative=0.0;var tempo=preferredTempo
+        for(budget in budgets) {
+            cumulative+=budget.seconds.coerceAtLeast(0.0)
+            tempo=maxOf(tempo,fittedTempo(cumulative,(budget.deadline-position)/speed-queuedSeconds-.04,preferredTempo))
+        }
+        return tempo.coerceIn(.25,MAX_ADAPTIVE_RATE)
+    }
+    fun streamingReady(samples: Int, rate: Double, remaining: Double, interrupting: Boolean): Boolean =
+        samples>=38400 || interrupting && remaining.isFinite() && remaining>0 && samples>=15360 && samples/96000.0/rate>=remaining+.04
+    // Native generation is bounded at 250 * 80ms = 20s. A preview at the
+    // slowest selectable rate (.8) needs 25s plus presentation margin.
+    const val PREVIEW_WINDOW_SECONDS = 30.0
     private fun availableSpeechTime(windowSeconds: Double, latenessSeconds: Double) =
         (windowSeconds-latenessSeconds.coerceAtLeast(0.0)-.25).coerceAtLeast(.1)
     fun playbackRate(audioSeconds: Double, windowSeconds: Double, latenessSeconds: Double, preferredRate: Double): Double =
         maxOf(preferredRate,audioSeconds/availableSpeechTime(windowSeconds,latenessSeconds)).coerceAtMost(MAX_ADAPTIVE_RATE)
+    /** Actual output tempo, including video speed, never exceeds the approved 1.8x cap.
+     * Infinite available time means there is no known following subtitle. */
+    fun fittedTempo(audioSeconds: Double, availableWallSeconds: Double, preferredTempo: Double): Double =
+        maxOf(preferredTempo,if(availableWallSeconds.isFinite()&&audioSeconds>0)
+            audioSeconds/availableWallSeconds.coerceAtLeast(.05) else preferredTempo).coerceIn(.25,MAX_ADAPTIVE_RATE)
+    fun canFinish(audioSeconds: Double, windowSeconds: Double, latenessSeconds: Double, preferredRate: Double, slack: Double): Boolean =
+        audioSeconds>0&&audioSeconds/playbackRate(audioSeconds,windowSeconds,latenessSeconds,preferredRate)+.02<=windowSeconds+slack-latenessSeconds.coerceAtLeast(0.0)
     fun frameBudget(windowSeconds: Double): Int =
         (availableSpeechTime(windowSeconds,0.0)*MAX_ADAPTIVE_RATE/.08).toInt().coerceIn(8,250)
-    fun hasPreparationLead(start: Double,end: Double,position: Double,advancing: Boolean=true): Boolean =
-        !advancing || start-position>=minOf(5.0,(end-start)*.75)
+    // EOS is a property of the utterance, not of how long a subtitle is visible.
+    // A two-second subtitle may need three seconds of natural speech. Generate
+    // the full sentence first; the output tempo owns its presentation budget.
+    fun generationFrameBudget(text: String, language: String, windowSeconds: Double, minimumFrames: Int = 64): Int {
+        val units=if(language in setOf("zh","ja"))text.count {it.isLetterOrDigit()} else Regex("[\\p{L}\\p{N}]+").findAll(text).count()
+        val naturalSeconds=.8+units*(if(language in setOf("zh","ja")).45 else .7)
+        // The original INT8 Junhao preset needs 52 frames for a valid short
+        // caption in the ARM regression. Leave EOS room beyond that boundary.
+        return maxOf(frameBudget(windowSeconds),kotlin.math.ceil(naturalSeconds/.08).toInt()).coerceIn(minimumFrames.coerceIn(48,64),250)
+    }
+    fun speechText(text: String, language: String): String {
+        val value=Normalizer.normalize(text,Normalizer.Form.NFKC)
+            .replace(Regex("[()\\[\\]{}\"“”„«»「」『』《》〈〉【】]"),"")
+            .replace('’','\'').replace('‘','\'').replace(Regex("\\s+")," ").trim().trim('\'')
+        if(value.isEmpty()||value.last() in "。！？!?….")return value
+        val phrase=value.trimEnd(',','，',';', '；', ':', '：').trimEnd()
+        return if(phrase.isEmpty())"" else phrase+if(language in setOf("zh","ja"))"。" else "."
+    }
     fun duck(position: Double, windows: List<Cue>, amount: Double, ready: Boolean): Double {
         if (!ready) return 1.0
         var start = -1.0; var end = -1.0

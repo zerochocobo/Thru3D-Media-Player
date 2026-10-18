@@ -16,9 +16,9 @@ class SidecarAudioTest {
             "4k2.com@sivr00434_8k_part1.m4a"), SidecarAudio.select(video, names))
     }
     @Test fun titlesNameTheTrack() {
-        assertEquals(SidecarAudio.CLONE_TITLE, SidecarAudio.title(video, "4k2.com@sivr00434_8k_part1.si.mix.m4a"))
-        assertEquals("commentary", SidecarAudio.title(video, "4k2.com@sivr00434_8k_part1.commentary.M4A"))
-        assertEquals("M4A", SidecarAudio.title("a.mkv", "a.m4a"))
+        assertEquals("4k2.com@sivr00434_8k_part1.si.mix.m4a", SidecarAudio.title(video, "4k2.com@sivr00434_8k_part1.si.mix.m4a"))
+        assertEquals("4k2.com@sivr00434_8k_part1.commentary.M4A", SidecarAudio.title(video, "4k2.com@sivr00434_8k_part1.commentary.M4A"))
+        assertEquals("a.m4a", SidecarAudio.title("a.mkv", "a.m4a"))
     }
     @Test fun otherFormatsAndNamelessVideosAddNothing() {
         assertTrue(SidecarAudio.select(video, folder.filter { !it.endsWith(".m4a") }).isEmpty())
@@ -36,12 +36,12 @@ class SidecarAudioTest {
         val ids = ArrayList<String>()
         val tracks = SidecarAudio.forCloud("/movie/part1.mp4", files) { file -> ids.add(file.id); "fixture-stream" }
         assertEquals(listOf("/movie/clone-id", "/movie/commentary-id"), ids)
-        assertEquals(listOf(SidecarAudio.CLONE_TITLE, "commentary"), tracks.map { it.title })
+        assertEquals(listOf("part1.si.mix.m4a", "part1.commentary.m4a"), tracks.map { it.title })
         val available = SidecarAudio.forCloud("/movie/part1.mp4", files) { file ->
             if (file.id == "/movie/clone-id") throw CloudFailure()
             "fixture-stream"
         }
-        assertEquals(listOf("commentary"), available.map { it.title })
+        assertEquals(listOf("part1.commentary.m4a"), available.map { it.title })
         assertTrue(SidecarAudio.select("part1.mp4", listOf("part1.dir/bad.m4a", "part1.dir\\bad.m4a")).isEmpty())
     }
 }

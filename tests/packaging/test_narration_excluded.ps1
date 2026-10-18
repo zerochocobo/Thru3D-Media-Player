@@ -38,3 +38,24 @@ foreach ($forbidden in @('') + $cases) {
     $checks++
 }
 Write-Output "Narration package exclusion checks=$checks failures=0"
+
+# Development may contain the runtime and clear-text model manifest only.
+$development = Join-Path $output 'development.apk'
+$zip = [IO.Compression.ZipFile]::Open($development, [IO.Compression.ZipArchiveMode]::Create)
+try {
+    foreach ($name in @('AndroidManifest.xml', 'lib/arm64-v8a/libquest_narration.so', 'lib/arm64-v8a/libonnxruntime.so', 'assets/narration/model.json')) {
+        $zip.CreateEntry($name) | Out-Null
+    }
+    $entry = $zip.CreateEntry('assets/project.binary'); $writer = [IO.StreamWriter]::new($entry.Open())
+    try { $writer.Write('narration_development') } finally { $writer.Dispose() }
+} finally { $zip.Dispose() }
+& $guard -ArchivePath $development -AllowDevelopment
+$rejected = $false
+try { & $guard -ArchivePath $development } catch { $rejected = $true }
+if (!$rejected) { throw 'Normal packaging accepted a development archive.' }
+$zip = [IO.Compression.ZipFile]::Open($development, [IO.Compression.ZipArchiveMode]::Update)
+try { $zip.CreateEntry('assets/MOSS-TTS-Nano-100M-ONNX/shared_weights.data') | Out-Null } finally { $zip.Dispose() }
+$rejected = $false
+try { & $guard -ArchivePath $development -AllowDevelopment } catch { $rejected = $true }
+if (!$rejected) { throw 'Development packaging accepted narration weights.' }
+Write-Output 'Narration development package checks=3 failures=0'

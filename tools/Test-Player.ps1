@@ -13,6 +13,8 @@ foreach ($videoUxTest in @('test_video_playback_modes', 'test_video_idle_rays'))
 & $env:GODOT_EXE --xr-mode off --rendering-method gl_compatibility --rendering-driver opengl3 --path $projectDirectory --quit-after 1800 --script res://tests/render_video_playback_modes.gd 2>&1 | Tee-Object -FilePath (Join-Path $videoUxOutput 'visuals.log')
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $videoUxOutput 'visuals.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:)' -or (Get-Content (Join-Path $videoUxOutput 'visuals.log') -Raw) -notmatch 'Video playback modes render: [0-9]+ checks, 0 failures') { throw 'Video playback mode visual and ray regression failed.' }
 New-Item -ItemType Directory -Path (Join-Path $workspace 'build/output/background-audio') -Force | Out-Null
+& $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_music_quick_controls.gd 2>&1 | Tee-Object -FilePath (Join-Path $workspace 'build/output/background-audio/quick-controls.log')
+if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $workspace 'build/output/background-audio/quick-controls.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)') { throw 'Music quick controls and preview regression failed.' }
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_audio_native_transport.gd 2>&1 | Tee-Object -FilePath (Join-Path $workspace 'build/output/background-audio/native-transport.log')
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $workspace 'build/output/background-audio/native-transport.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)') { throw 'Native music transport regression failed.' }
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_background_audio.gd 2>&1 | Tee-Object -FilePath (Join-Path $workspace 'build/output/background-audio/test.log')
@@ -128,6 +130,8 @@ if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'choice-fields
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_mpv_audio.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'mpv-audio-host.log')
 if ($LASTEXITCODE -ne 0) { throw 'MPV audio host regression failed.' }
 if ((Get-Content (Join-Path $logDirectory 'mpv-audio-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)') { throw 'MPV audio host regression reported runtime errors.' }
+& $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_whisper_audio.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'whisper-audio-host.log')
+if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'whisper-audio-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)') { throw 'Per-video whisper enhancement regression failed.' }
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_mpv_subtitles.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'mpv-subtitles-host.log')
 if ($LASTEXITCODE -ne 0) { throw 'MPV subtitle host regression failed.' }
 if ((Get-Content (Join-Path $logDirectory 'mpv-subtitles-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)') { throw 'MPV subtitle host regression reported runtime errors.' }

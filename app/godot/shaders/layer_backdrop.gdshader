@@ -4,7 +4,9 @@ shader_type spatial;
 // this camera-centred sphere draws the same panorama, or the plain background colour.
 render_mode unshaded, cull_front, shadows_disabled, fog_disabled;
 
-uniform sampler2D panorama : source_color, filter_linear_mipmap, repeat_enable;
+// Match PanoramaSkyMaterial's base-level bilinear sampling. Mipmap selection
+// across wrapped longitude pulls distant bright sky into the seam and poles.
+uniform sampler2D panorama : source_color, filter_linear, repeat_enable;
 uniform bool has_panorama = false;
 uniform vec3 background : source_color = vec3(0.035, 0.045, 0.06);
 uniform mat3 orientation = mat3(1.0); // inverse of Environment.sky_rotation: world to sky space
@@ -24,6 +26,6 @@ void fragment() {
 		float u = atan(d.x, -d.z);
 		if (u < 0.0) { u += 2.0 * PI; }
 		vec2 uv = vec2(u, acos(clamp(d.y, -1.0, 1.0))) / vec2(2.0 * PI, PI);
-		ALBEDO = texture(panorama, uv).rgb;
+		ALBEDO = textureLod(panorama, uv, 0.0).rgb;
 	}
 }

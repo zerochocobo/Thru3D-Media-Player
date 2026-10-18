@@ -4,6 +4,24 @@ MPV_EXPORT uint32_t mpv_quest_pgs_api_version(void)
     return QUEST_MPV_PGS_API_VERSION;
 }
 
+MPV_EXPORT uint32_t mpv_quest_text_queue_api_version(void)
+{
+    return QUEST_MPV_TEXT_QUEUE_API_VERSION;
+}
+
+MPV_EXPORT int mpv_quest_pump_text_queue(mpv_handle *ctx)
+{
+    if (!ctx)
+        return MPV_ERROR_INVALID_PARAMETER;
+    lock_core(ctx);
+    struct track *track = ctx->mpctx->current_track[0][STREAM_SUB];
+    double pts = ctx->mpctx->playback_pts;
+    if (track && track->d_sub && pts != MP_NOPTS_VALUE)
+        sub_read_cached_text(track->d_sub, pts);
+    unlock_core(ctx);
+    return 0;
+}
+
 MPV_EXPORT int mpv_quest_get_pgs(mpv_handle *ctx, int width, int height,
                                double pts, quest_mpv_pgs_callback callback,
                                void *opaque)

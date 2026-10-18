@@ -7,7 +7,7 @@ import java.io.File
 internal object BackgroundAudioNative {
     private val available = try { System.loadLibrary("quest_mpv"); true } catch (_: UnsatisfiedLinkError) { false }
     fun supported() = available
-    @JvmStatic external fun open(context: Context, path: String, probe: Boolean): Long
+    @JvmStatic external fun open(context: Context, path: String, probe: Boolean, tlsCaFile: String = ""): Long
     @JvmStatic external fun status(handle: Long): String
     @JvmStatic external fun control(handle: Long, playing: Boolean, volume: Double, seek: Double): Boolean
     @JvmStatic external fun close(handle: Long)

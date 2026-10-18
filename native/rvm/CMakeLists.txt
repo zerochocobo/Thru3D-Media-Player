@@ -27,7 +27,10 @@ target_link_libraries(quest_rvm PRIVATE ncnn -Wl,--whole-archive "${MNN_LIB}" -W
 target_link_options(quest_rvm PRIVATE "-Wl,-z,max-page-size=16384")
 add_subdirectory("${CMAKE_CURRENT_LIST_DIR}/../render-bridge" "render-bridge")
 add_subdirectory("${CMAKE_CURRENT_LIST_DIR}/../mpv" "mpv")
-# Narration is withheld: do not configure its runtime or tokenizer dependencies.
+# Offline narration is a normal Debug and Release playback feature.
+if(QUEST_NARRATION_ENABLED)
+    add_subdirectory("${CMAKE_CURRENT_LIST_DIR}/../narration" "narration")
+endif()
 add_subdirectory("${CMAKE_CURRENT_LIST_DIR}/../xr-layer" "xr-layer")
 add_subdirectory("${CMAKE_CURRENT_LIST_DIR}/../usb" "usb")
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")

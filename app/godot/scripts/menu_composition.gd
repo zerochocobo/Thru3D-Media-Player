@@ -102,11 +102,12 @@ var _watch_strikes := 0
 var bands: Array[Dictionary] = []
 ## Planes captured as bands, by kind: {"relative", "rank", "nodes", "width", "overflow"}.
 var banded: Dictionary = {}
+var _peer_poses := []
 
 func configure(target_origin: Node3D, target_camera: Camera3D, target_display: RefCounted,
 		target_menus: Array, is_low_end: bool, host_capture: bool = false) -> void:
 	origin = target_origin; eye_camera = target_camera; display = target_display
-	menus = target_menus; low_end = is_low_end; force_capture = host_capture
+	menus = target_menus.duplicate(); low_end = is_low_end; force_capture = host_capture
 	xr = XRServer.find_interface("OpenXR")
 	var probe := OpenXRCompositionLayerQuad.new()
 	enabled = host_capture or (xr != null and xr.is_initialized() and xr.get_view_count() == 2 and probe.is_natively_supported())
@@ -241,6 +242,32 @@ func invalidate() -> void:
 func repaint() -> void:
 	dirty = true
 
+## Short-lived game panels share the existing fixed swapchains and capture policy.
+func register_menu(menu: Node3D) -> void:
+	if not is_instance_valid(menu) or menus.has(menu): return
+	menus.append(menu)
+	menu.composition_changed.connect(repaint)
+	menu.composition_layout_changed.connect(invalidate)
+	menu.tree_exiting.connect(unregister_menu.bind(menu))
+	_watch_children(menu); invalidate()
+
+func unregister_menu(menu: Node3D) -> void:
+	if not menus.has(menu): return
+	if active==menu or (is_instance_valid(active) and menu.is_ancestor_of(active)):
+		# Restore render masks before a captured panel is detached or freed.
+		_restore(); _hide(); active=null
+	if _last_menu==menu: _last_menu=null
+	menus.erase(menu)
+	if menu.composition_changed.is_connected(repaint): menu.composition_changed.disconnect(repaint)
+	if menu.composition_layout_changed.is_connected(invalidate): menu.composition_layout_changed.disconnect(invalidate)
+	var exiting := unregister_menu.bind(menu)
+	if menu.tree_exiting.is_connected(exiting): menu.tree_exiting.disconnect(exiting)
+	_unwatch_children(menu); invalidate()
+
+func _unwatch_children(node: Node) -> void:
+	if node.has_signal("visual_changed") and node.is_connected("visual_changed",repaint): node.disconnect("visual_changed",repaint)
+	for child in node.get_children(): _unwatch_children(child)
+
 func _watch_children(node: Node) -> void:
 	if node.has_meta("menu_eye_buffer"): return
 	if node.has_signal("visual_changed") and not node.is_connected("visual_changed", repaint):
@@ -313,6 +340,9 @@ func update() -> void:
 		invalidate()
 	if not active:
 		return
+	var peer_poses := []
+	for peer in _visible_peers(): peer_poses.append([peer.get_instance_id(),active.global_transform.affine_inverse()*peer.global_transform])
+	if peer_poses!=_peer_poses: _peer_poses=peer_poses; geometry_dirty=true
 	if geometry_dirty:
 		_collect(); geometry_dirty = false; dirty = true
 	var now := Time.get_ticks_msec()
@@ -343,6 +373,11 @@ func _collect() -> void:
 	var inverse := root.affine_inverse()
 	var items: Array[Dictionary] = []
 	_gather(active, items, inverse, false)
+	for item in items: item["owner"]=active.get_instance_id()
+	var owners := [active.get_instance_id()]
+	for peer in _visible_peers():
+		var start := items.size(); _gather(peer,items,inverse,false); owners.append(peer.get_instance_id())
+		for i in range(start,items.size()): items[i]["owner"]=peer.get_instance_id()
 	var groups: Array[Dictionary] = []
 	items.sort_custom(func(a, b): return a.offset < b.offset)
 	for item in items:
@@ -351,12 +386,25 @@ func _collect() -> void:
 			if group.popup == item.popup and group.normal.dot(item.normal) > NORMAL_DOT and item.offset - group.last <= PLANE_GAP:
 				group.nodes.append(item); group.last = item.offset
 				group.shown += int(item.shown)
+				group.owners[item.owner]=true
 				joined = true; break
 		if not joined:
 			groups.append({"normal": item.normal, "basis": item.basis, "first": item.offset, "last": item.offset,
-				"nodes": [item], "popup": item.popup, "shown": int(item.shown)})
+				"nodes": [item], "popup": item.popup, "shown": int(item.shown),"owners":{item.owner:true}})
 	# Visible, larger groups claim slots first; any surplus geometry stays in the eye buffer.
 	groups.sort_custom(func(a, b): return a.shown > b.shown or (a.shown == b.shown and a.nodes.size() > b.nodes.size()))
+	# A small companion caption must not lose all HD slots to a large menu's
+	# extra planes. Reserve its main visible plane, then fill remaining slots.
+	var selected: Array[Dictionary]=[]
+	for owner in owners:
+		for group in groups:
+			if group.shown>0 and group.owners.has(owner):
+				if not selected.has(group) and selected.size()<MAX_GROUPS: selected.append(group)
+				break
+	for group in groups:
+		if selected.size()==MAX_GROUPS: break
+		if not selected.has(group): selected.append(group)
+	groups=selected
 	for group in groups.slice(0, MAX_GROUPS):
 		var key := "%d:%d:%d:%d:%d" % [int(group.popup), roundi(group.normal.x * 50), roundi(group.normal.y * 50), roundi(group.normal.z * 50), roundi(group.first / PLANE_GAP)]
 		group["key"] = key
@@ -389,6 +437,12 @@ func _collect() -> void:
 		else: ordered[index].layer.sort_order = ORDER_BASE + index
 	for slot in slots + bands:
 		if not slot.used: _hide_slot(slot)
+
+func _visible_peers() -> Array:
+	var peers := []
+	for menu in menus:
+		if menu!=active and not active.is_ancestor_of(menu) and menu.is_visible_in_tree() and menu.has_method("composition_root") and menu.composition_root()==active: peers.append(menu)
+	return peers
 
 static func _kind(group: Dictionary, root_inverse: Transform3D) -> String:
 	if group.popup: return "popup"

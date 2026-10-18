@@ -11,6 +11,13 @@ internal object BackgroundAudioFiles {
     const val MAX_BYTES = 512L * 1024 * 1024
     val extensions = setOf("mp3", "ogg", "wav", "flac", "dts", "dtshd")
     data class Saved(val id: String, val file: File, val bytes: Long, val created: Boolean)
+    data class Storage(val used: Long, val free: Long, val total: Long)
+
+    fun storage(directory: File): Storage {
+        val partition = if (directory.exists()) directory else directory.parentFile
+        return Storage(directory.listFiles()?.filter { it.isFile }?.sumOf { it.length() } ?: 0L,
+            partition?.usableSpace ?: 0L, partition?.totalSpace ?: 0L)
+    }
 
     fun copy(input: InputStream, directory: File, extension: String, expected: Long = -1,
              cancelled: () -> Boolean = { false }, progress: (Long, Long) -> Unit = { _, _ -> },

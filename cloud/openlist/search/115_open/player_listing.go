@@ -120,8 +120,22 @@ func (d *Open115) PlayerLookupChild(ctx context.Context, dir model.Obj, name str
 // Native candidate search retains complete direct-child results, including folders
 // and sidecar formats. It never enumerates unrelated directory pages.
 func (d *Open115) PlayerMatches(ctx context.Context, dir model.Obj, query string) ([]model.Obj, error) {
+	objects, limited, err := d.playerMatches(ctx, dir, query, 10000)
+	if err == nil && limited {
+		return nil, errors.New("cloud path lookup exceeds search limit")
+	}
+	return objects, err
+}
+
+// User search is deliberately bounded. Exact path and management lookups keep
+// using PlayerMatches so truncation cannot hide ambiguous names or companions.
+func (d *Open115) PlayerSearchCurrent(ctx context.Context, dir model.Obj, query string) ([]model.Obj, bool, error) {
+	return d.playerMatches(ctx, dir, query, playerSearchLimit)
+}
+
+func (d *Open115) playerMatches(ctx context.Context, dir model.Obj, query string, limit int64) ([]model.Obj, bool, error) {
 	if dir == nil || !dir.IsDir() || !playerSafeName(query) {
-		return nil, errors.New("invalid cloud match request")
+		return nil, false, errors.New("invalid cloud match request")
 	}
 	search := []rune(query)
 	if len(search) > 128 {
@@ -130,19 +144,21 @@ func (d *Open115) PlayerMatches(ctx context.Context, dir model.Obj, query string
 	objects := make([]model.Obj, 0)
 	seen := map[string]bool{}
 	offset := int64(0)
+	pages := 0
 	for {
 		if err := ctx.Err(); err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		if err := d.WaitLimit(ctx); err != nil {
-			return nil, err
+			return nil, false, err
 		}
-		resp, err := d.client.SearchFiles(ctx, &sdk.SearchFilesReq{CID: dir.GetID(), SearchValue: string(search), Offset: offset, Limit: min(48, 10000-offset)})
+		pageLimit := min(48, limit-offset)
+		resp, err := d.client.SearchFiles(ctx, &sdk.SearchFilesReq{CID: dir.GetID(), SearchValue: string(search), Offset: offset, Limit: pageLimit})
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
-		if resp.Offset != offset || resp.Count < 0 || len(resp.Data) > 48 || offset+int64(len(resp.Data)) > resp.Count || (len(resp.Data) == 0 && offset < resp.Count) {
-			return nil, errors.New("invalid cloud path lookup response")
+		if resp.Offset != offset || resp.Count < 0 || int64(len(resp.Data)) > pageLimit || offset+int64(len(resp.Data)) > resp.Count || (len(resp.Data) == 0 && offset < resp.Count) {
+			return nil, false, errors.New("invalid cloud path lookup response")
 		}
 		for _, item := range resp.Data {
 			if item.AreaID != "" && item.AreaID != "1" {
@@ -152,22 +168,23 @@ func (d *Open115) PlayerMatches(ctx context.Context, dir model.Obj, query string
 				continue
 			}
 			if !playerSafeName(item.FileName) || item.FileID == "" || seen[item.FileID] {
-				return nil, errors.New("invalid repeated cloud match")
+				return nil, false, errors.New("invalid repeated cloud match")
 			}
 			obj, err := playerLookupObjects(item.FileID, item.FileName, item.FileSize, item.FileCategory, item.PickCode, item.UserUtime)
 			if err != nil {
-				return nil, err
+				return nil, false, err
 			}
 			obj.(*Obj).Pid = item.ParentID
 			seen[item.FileID] = true
 			objects = append(objects, obj)
 		}
 		offset += int64(len(resp.Data))
+		pages++
 		if offset >= resp.Count {
-			return objects, ctx.Err()
+			return objects, false, ctx.Err()
 		}
-		if offset >= 10000 {
-			return nil, errors.New("cloud path lookup exceeds search limit")
+		if offset >= limit || limit == playerSearchLimit && pages >= 5 {
+			return objects, true, ctx.Err()
 		}
 	}
 }

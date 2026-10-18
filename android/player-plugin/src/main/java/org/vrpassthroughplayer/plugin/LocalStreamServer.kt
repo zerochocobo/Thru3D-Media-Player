@@ -61,7 +61,10 @@ internal class LocalStreamServer : Closeable {
         val token = ByteArray(16).also(random::nextBytes).joinToString("") { "%02x".format(it) }
         meters[token] = TransferMeter()
         diagnostics[token] = Diagnostics()
-        sources[token] = source
+        sources[token] = if (source is CloudStreamSource || source is HttpRangeStreamSource) {
+            if (name.endsWith(".iso", true)) IsoReadCache(source) { meters[token]?.add(it) }
+            else AdaptiveInterleaveSource(source, meters[token])
+        } else source
         return "http://127.0.0.1:${socket.localPort}/$token/${URLEncoder.encode(name, "UTF-8").replace("+", "%20")}"
     }
 
@@ -69,6 +72,15 @@ internal class LocalStreamServer : Closeable {
         ?.substringAfter(":${socket.localPort}/")?.substringBefore('/')
     fun progress(url: String): TransferMeter.Snapshot? = token(url)?.let { meters[it]?.snapshot() }
     fun failure(url: String): PlaybackFailure? = token(url)?.let { diagnostics[it]?.failure() }
+    fun enableInterleaveCache(url: String): Boolean = enableInterleaveCache(url, emptyList())
+    fun enableInterleaveCache(url: String, audioChunks: List<AudioReadSpan>): Boolean = token(url)?.let {
+        (sources[it] as? AdaptiveInterleaveSource)?.enable(audioChunks)
+    } ?: false
+    fun interleaveCacheStats(url: String): Map<String, Long>? = token(url)?.let {
+        (sources[it] as? AdaptiveInterleaveSource)?.stats()
+    }
+    fun finishIsoPreflight(url: String) { token(url)?.let { (sources[it] as? IsoReadCache)?.finishPreflight() } }
+    fun isoCacheStats(url: String): Map<String, Long>? = token(url)?.let { (sources[it] as? IsoReadCache)?.stats() }
     fun revoke(url: String) { token(url)?.let { meters.remove(it); sources.remove(it)?.close(); diagnostics.remove(it) } }
 
     private fun record(token: String, source: StreamSource, attempt: Long, error: Exception) {
@@ -108,8 +120,15 @@ internal class LocalStreamServer : Closeable {
             val meter = meters[token]
             val range = parseRange(headers["range"], source.size) ?: return respond(output, 416, "Range Not Satisfiable",
                 "Content-Range: bytes */${source.size}\r\n")
-            val (start, end) = range
+            val start = range.first
             val partial = headers.containsKey("range")
+            val bounded = headers["range"]?.substringAfter('=')?.trim()?.let { !it.startsWith('-') && !it.endsWith('-') } == true
+            // A cached audio packet must not start another CDN read merely
+            // because the transient curl client requested 32 MiB after it.
+            // MPV's bounded curl requests resume at the advertised Range end.
+            // Unbounded FFmpeg HTTP reads can interpret an early response end
+            // as EOF. Only bounded clients (MPV curl) can resume this segment.
+            val end = if (bounded) (source as? AdaptiveInterleaveSource)?.responseEnd(start, range.second) ?: range.second else range.second
             val head = StringBuilder()
                 .append("HTTP/1.1 ").append(if (partial) "206 Partial Content" else "200 OK").append("\r\n")
                 .append("Content-Type: application/octet-stream\r\nAccept-Ranges: bytes\r\n")
@@ -120,19 +139,19 @@ internal class LocalStreamServer : Closeable {
             val opening = diagnostics[token]?.begin() ?: 0
             val opened = try { source.open() } catch (error: Exception) { record(token, source, opening, error); return respond(output, 502, "Bad Gateway") }
             opened.use { reader ->
-                val buffer = ByteArray(512 * 1024)
+                val buffer = ByteArray(if (reader is UpstreamMeteredReader) 64 * 1024 else 512 * 1024)
                 var offset = start
                 // Validate the upstream status/range before committing a successful HTTP response.
                 val first = try { read(token, source, reader, offset, buffer, minOf(buffer.size.toLong(), end - offset + 1).toInt()) }
                     catch (_: Exception) { return respond(output, 502, "Bad Gateway") }
                 if (first <= 0) return respond(output, 502, "Bad Gateway")
-                meter?.add(first)
+                if (reader !is UpstreamMeteredReader) meter?.add(first)
                 output.write(responseHead)
                 output.write(buffer, 0, first); offset += first
                 while (offset <= end && !closed) {
                     val count = read(token, source, reader, offset, buffer, minOf(buffer.size.toLong(), end - offset + 1).toInt())
                     if (count <= 0) break
-                    meter?.add(count)
+                    if (reader !is UpstreamMeteredReader) meter?.add(count)
                     output.write(buffer, 0, count)
                     offset += count
                 }

@@ -1,6 +1,7 @@
 extends RefCounted
 ## One ray-driven browser; native clients supply capabilities and normalized nodes.
 const I18n := preload("res://scripts/i18n.gd")
+const Methods := preload("res://scripts/platform_methods.gd")
 const ACTION := 1000
 const KEY := 1400
 const SORTS := ["created_at", "title", "date", "duration", "rating100"]
@@ -35,8 +36,6 @@ var failed_covers := {}
 var selection := {}
 var keyboard := ""
 var text := ""
-var shift := false
-var symbols := false
 var saved: Array = []
 var favorites := {}
 var setup := false
@@ -74,6 +73,7 @@ func _init(owner: Node) -> void:
 			if value is Array: favorites[id] = value.filter(func(item): return item is Dictionary and str(item.get("uri", "")).begins_with("medialib://" + str(id) + "/scene/")).slice(0, 1000)
 
 func cancel() -> void:
+	menu.system_text_input.cancel("media_server_search")
 	_location_pending.clear()
 	sort_query.clear()
 	gallery.capture.clear()
@@ -704,29 +704,46 @@ func action(target: int) -> bool:
 		17: _navigate("favorites")
 		18:
 			cancel(); menu.account_panel.close(); menu.account_panel.kind = "server"; menu.account_panel.start("server", str(server.get("provider", "")), str(server.get("id", "")))
+	if target in [ACTION + 2, ACTION + 9]: _begin_text_input()
 	menu.refresh(); return true
 
+func _begin_text_input() -> void:
+	menu.system_text_input.begin("media_server_search", text, 200, _draft_changed, _input_submitted, _input_cancelled)
+
+func _draft_changed(value: String) -> void:
+	if keyboard.is_empty(): return
+	text = value; menu.refresh()
+
+func _input_submitted(value: String) -> void:
+	if keyboard.is_empty(): return
+	text = value; _keyboard_action(ACTION + 26)
+
+func _input_cancelled(value: String) -> void:
+	if not keyboard.is_empty(): text = value; menu.refresh()
+
 func _keyboard_action(target: int) -> bool:
-	if target >= KEY and target < KEY + 40:
-		var layer: Array = menu.SYMBOLS if symbols else menu.KEYS; var character: String = layer[(target - KEY) / 10][(target - KEY) % 10]
-		text = (text + (character.to_upper() if shift else character)).left(200); shift = false
-	else:
-		match target - ACTION:
-			21: text = text.left(-1)
-			22: text = (text + " ").left(200)
-			23: shift = not shift
-			24: symbols = not symbols
-			25: keyboard = ""; if not history.is_empty(): history.pop_back()
-			26:
-				var purpose := keyboard; keyboard = ""
-				if purpose == "save":
-					if not text.strip_edges().is_empty():
-						saved = saved.filter(func(item): return not (item is Dictionary and item.get("server_id") == server.get("id") and item.get("name") == text.strip_edges()))
-						saved.append({"server_id": server.id, "name": text.strip_edges(), "query": query.duplicate(true), "labels": labels.duplicate(true)})
-						if saved.size() > 100: saved.pop_front()
-						_save_filters()
-				elif view in ["candidates", "facets"]: candidate_q = text; get_candidates()
-				else: query.q = text; query.erase("mode"); query.erase("parent_id"); folder_path.clear(); browse()
+	match target - ACTION:
+		27: _begin_text_input()
+		28, 29:
+			var value := ""
+			if target == ACTION + 28:
+				value = text + (menu.platform.media_clipboard_text() if Methods.supports(menu.platform, "media_clipboard_text") else DisplayServer.clipboard_get())
+			text = menu.SystemTextInput.clean(value, 200)
+			if menu.system_text_input.active("media_server_search"): menu.system_text_input.set_text("media_server_search", text)
+			else: _begin_text_input()
+		25: keyboard = ""; if not history.is_empty(): history.pop_back()
+		26:
+			text = menu.system_text_input.finish("media_server_search", text)
+			var purpose := keyboard; keyboard = ""
+			if purpose == "save":
+				if not text.strip_edges().is_empty():
+					saved = saved.filter(func(item): return not (item is Dictionary and item.get("server_id") == server.get("id") and item.get("name") == text.strip_edges()))
+					saved.append({"server_id": server.id, "name": text.strip_edges(), "query": query.duplicate(true), "labels": labels.duplicate(true)})
+					if saved.size() > 100: saved.pop_front()
+					_save_filters()
+			elif view in ["candidates", "facets"]: candidate_q = text; get_candidates()
+			else: query.q = text; query.erase("mode"); query.erase("parent_id"); folder_path.clear(); browse()
+	if target == ACTION + 25: menu.system_text_input.cancel("media_server_search")
 	menu.refresh(); return true
 
 func _navigation() -> Array:
@@ -1038,8 +1055,5 @@ func _draw_bar() -> void:
 func _draw_keyboard() -> void:
 	menu._label(I18n.t("Save search" if keyboard == "save" else "Search"), Vector3(0.15, 0.46, 0.004), 23)
 	menu._button(ACTION + 27, text.right(60) + "│", Vector2(0.15, 0.33), Vector2(1.24, 0.09))
-	var layer: Array = menu.SYMBOLS if symbols else menu.KEYS
-	for r in 4:
-		for c in 10:
-			var character: String = layer[r][c]; menu._button(KEY + r * 10 + c, character.to_upper() if shift else character, Vector2(-0.415 + c * 0.125, 0.16 - r * 0.12), Vector2(0.112, 0.1))
-	for item in [[21, "⌫"], [22, "Space"], [23, "Shift"], [24, "#+="], [25, "Cancel"], [26, "Apply"]]: menu._button(ACTION + item[0], I18n.t(item[1]), Vector2(-0.4 + (item[0] - 21) * 0.22, -0.4), Vector2(0.21, 0.08))
+	for item in [[25, "Cancel"], [28, "Paste"], [29, "Clear"], [26, "Save" if keyboard == "save" else "Search"]]:
+		menu._button(ACTION + item[0], I18n.t(item[1]), Vector2(-0.36 + [25,28,29,26].find(item[0]) * 0.33, 0.12), Vector2(0.30, 0.08))

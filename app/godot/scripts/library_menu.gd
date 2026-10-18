@@ -7,6 +7,16 @@ extends "res://scripts/ray_menu.gd"
 signal chosen(uri: String, title: String)
 signal audio_import_cancelled
 signal music_requested
+signal music_toggle_requested
+signal audio_preview_requested(uri: String, title: String)
+signal audio_preview_stopped
+signal audio_preview_scrubbed(token: int, position_seconds: float, active: bool)
+var audio_preview_seek := preload("res://scripts/audio_preview_seek.gd").new(self)
+const AUDIO_PREVIEW_BASE := 5400
+var _audio_preview_rows := {}
+var _audio_preview_scope := ""
+var _audio_preview_state := {}
+var _audio_preview_dirty := false
 signal audio_import_selected(files: Array)
 var background_audio_provider: Callable
 const MUSIC_OPEN := 5300
@@ -16,6 +26,9 @@ var audio_selection := {}
 var audio_import_mode := false
 var _audio_import_context := {}
 const AudioCatalog := preload("res://scripts/background_audio_catalog.gd")
+const AudioStorageView := preload("res://scripts/audio_storage_view.gd")
+var _audio_storage_labels: Array[Label3D] = []
+var _audio_storage_refresh := 0
 signal layout_requested
 signal setting_changed(key: String, value: Variant)
 signal setting_previewed(key: String, value: Variant)
@@ -36,6 +49,8 @@ const NAV_ICONS := ["history", "device", "server", "cast", "cloud", "settings", 
 const NAV_ORDER := [Section.RECENT, Section.LOCAL, Section.SMB, Section.DLNA, Section.CLOUD, Section.MEDIA_SERVER, Section.SETTINGS]
 const ServerBrowser := preload("res://scripts/media_server_browser.gd")
 const PlatformMethods := preload("res://scripts/platform_methods.gd")
+const SystemTextInput := preload("res://scripts/system_text_input.gd")
+var system_text_input := SystemTextInput.new(self)
 const StorageVolume := preload("res://scripts/storage_volume.gd")
 var server_browser: RefCounted = ServerBrowser.new(self)
 const CloudAccountActions := preload("res://scripts/cloud_account_actions.gd")
@@ -148,7 +163,12 @@ var _list: Node3D                  # drawn rows; moved for fractional scrolling
 var _bar_thumb: MeshInstance3D
 var focus_index := 0 # Desktop keyboard preview only.
 var rows: Array[Dictionary] = []
-var media_filter := 0
+var _media_filter_location := ""
+var media_browse_intent := 0
+var media_filter := 0:
+	set(value):
+		media_filter=clampi(value,0,2)
+		_media_filter_location=_filter_location()
 var status := ""                   # English; shown through I18n
 var _pending := {}                 # request id -> kind
 var _local_entries: Array = []
@@ -205,7 +225,7 @@ var _layout_anchor := {}
 var _layout_scroll := 0.0
 var _playback_context := {}
 const COMPACT_SIZE := Vector2(1.16, 0.84)
-const CONTEXT_FIELDS := ["section", "media_filter", "_local_stack", "_local_entries", "_smb_server", "_smb_path", "_smb_entries",
+const CONTEXT_FIELDS := ["section", "media_filter", "media_browse_intent", "_local_stack", "_local_entries", "_smb_server", "_smb_path", "_smb_entries",
 	"_dlna_server", "_dlna_stack", "_dlna_entries", "_cloud_stack", "_cloud_entries", "_cloud_page", "_cloud_offsets", "_cloud_next", "_cloud_total", "_cloud_location", "_recent_page"]
 const SEARCH_FIELDS := ["active", "editing", "query", "scope", "kind", "path", "entries", "cursors", "page", "next_cursor", "committed_request", "limited"]
 
@@ -213,6 +233,7 @@ func remember_playback_context() -> void:
 	_playback_context = {"anchor": capture_position(), "search": {}}
 	for key in CONTEXT_FIELDS:
 		var value: Variant = get(key)
+		if key=="media_filter": value=media_browse_intent
 		_playback_context[key] = value.duplicate(true) if value is Array or value is Dictionary else value
 	if cloud_search.active:
 		for key in SEARCH_FIELDS:
@@ -323,7 +344,7 @@ func _align_playback_panel() -> void:
 	transform = Transform3D(Basis.IDENTITY, Vector3(0, top + 0.08 - bottom, 0))
 
 func has_pointer_capture() -> bool:
-	return not _drag.is_empty() or not choices.capture.is_empty() or not account_panel.web_hand.is_empty()
+	return not audio_preview_seek.capture.is_empty() or not _drag.is_empty() or not choices.capture.is_empty() or not account_panel.web_hand.is_empty()
 
 func _place_device_status(centre: Vector2) -> void:
 	if compact or playback_expanded:
@@ -336,6 +357,12 @@ func refresh_session_controls(force: bool = false) -> void:
 	if not compact and not playback_expanded: super(force)
 
 func refresh_background_audio() -> void:
+	if audio_import_mode:
+		if has_pointer_capture(): _audio_preview_dirty = true
+		else: refresh_music_quick_controls()
+		return
+	if music_quick and music_quick.expanded:
+		refresh_music_quick_controls(); return
 	var state: Dictionary = background_audio_provider.call() if background_audio_provider.is_valid() else {}
 	for button in _buttons:
 		if button.target == MUSIC_OPEN:
@@ -352,11 +379,15 @@ func toggle() -> void:
 		visible = true; _reset_navigation(); _recent_page = recent_page; _position_to_restore = anchor; refresh()
 
 func dismiss() -> void:
+	system_text_input.cancel()
+	_stop_audio_preview()
 	var cancel_audio := audio_import_mode
 	collections.selection.clear()
 	if cloud_error.opened: cloud_error.close(); _rebuild_rows()
 	var anchor := capture_position() if browser_content() else {}
 	_save_folder_position()
+	# Manual filters belong to this visit, not the next browser session.
+	media_browse_intent=0; media_filter=0
 	cloud_search.close()
 	controls_page.reset()
 	file_actions.reset()
@@ -378,6 +409,7 @@ func begin_audio_import() -> void:
 		var value: Variant = get(key)
 		_audio_import_context[key] = value.duplicate(true) if value is Array or value is Dictionary else value
 	audio_import_mode = true
+	media_browse_intent=0
 	audio_selection.clear()
 	collections.selection.clear(); file_actions.reset(); file_actions.enabled = false
 	cloud_search.close(); choices.reset(); account_panel.close()
@@ -386,6 +418,7 @@ func begin_audio_import() -> void:
 	_load_section(); refresh()
 
 func _restore_audio_import_context() -> void:
+	_stop_audio_preview()
 	audio_import_mode = false
 	audio_selection.clear()
 	_cancel_cloud()
@@ -480,6 +513,7 @@ func _in_list(point: Vector3) -> bool:
 		and point.y < span.x + 0.01 and point.y > span.x - span.y - 0.02
 
 func press_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: bool) -> bool:
+	if audio_preview_seek.press(hand, origin, direction, tracked): return true
 	if section == Section.SETTINGS and choices.press(hand, origin, direction, tracked):
 		_fling = 0.0; return true
 	if account_panel.view == "web":
@@ -518,6 +552,7 @@ func press_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: b
 	return true
 
 func cancel_pointer(hand: String) -> void:
+	audio_preview_seek.cancel(hand)
 	choices.cancel(hand)
 	if server_browser.gallery.capture.get("hand", "") == hand: server_browser.gallery.capture.clear()
 	if account_panel.web_hand == hand: account_panel.web_cancel()
@@ -528,6 +563,7 @@ func cancel_pointer(hand: String) -> void:
 
 func update_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: bool) -> void:
 	super(hand, origin, direction, tracked)
+	audio_preview_seek.move(hand, origin, direction, tracked)
 	collections.update_hover()
 	choices.update(hand, origin, direction, tracked)
 	server_browser.gallery.move(hand, origin, direction, tracked)
@@ -561,6 +597,7 @@ func update_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: 
 		_drag.at_us = now
 
 func release_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: bool) -> void:
+	if audio_preview_seek.release(hand, origin, direction, tracked): return
 	if server_browser.gallery.release(hand, origin, direction, tracked): return
 	if choices.capture.get("hand", "") == hand:
 		choices.release(hand, origin, direction, tracked); return
@@ -587,6 +624,7 @@ func release_pointer(hand: String, origin: Vector3, direction: Vector3, tracked:
 
 ## Thumbstick y (up positive) scrolls the list; it never selects.
 func stick_scroll(y: float, delta: float) -> void:
+	if not audio_preview_seek.capture.is_empty(): return
 	if collections.active(): return
 	if section == Section.MEDIA_SERVER and server_browser.sorting(): return
 	if not compact and section == Section.MEDIA_SERVER and not account_panel.active() and server_browser.gallery.fixed():
@@ -612,6 +650,13 @@ func stick_scroll_horizontal(x: float, delta: float) -> void:
 		server_browser.gallery.stick_scroll(x, delta)
 
 func _process(delta: float) -> void:
+	if not _audio_preview_scope.is_empty() and (not visible or not audio_import_mode or _audio_preview_scope != _audio_preview_scope_key()): _stop_audio_preview()
+	audio_preview_seek.poll(delta)
+	if visible and audio_import_mode and _audio_preview_dirty and not has_pointer_capture():
+		_audio_preview_dirty = false; refresh_music_quick_controls()
+	if visible and audio_import_mode and Time.get_ticks_msec() >= _audio_storage_refresh:
+		_audio_storage_refresh = Time.get_ticks_msec() + 1000
+		AudioStorageView.update(self, _audio_storage_labels, background_audio_provider.call() if background_audio_provider.is_valid() else {})
 	collections.poll()
 	if collections.active(): return
 	_poll_cache_usage()
@@ -619,7 +664,7 @@ func _process(delta: float) -> void:
 	if controls_page.active() and controls_page.modal(): return
 	if not file_actions.modal.is_empty(): return
 	if visible: account_panel.tick(delta)
-	if not visible or not _drag.is_empty() or not choices.capture.is_empty() or Time.get_ticks_msec() - _stick_ms < 120:
+	if not visible or has_pointer_capture() or Time.get_ticks_msec() - _stick_ms < 120:
 		return
 	if absf(_fling) > 0.4:
 		var before := scroll
@@ -774,7 +819,27 @@ func _max_scroll() -> float:
 	if not compact and section == Section.MEDIA_SERVER and not account_panel.active() and server_browser.gallery.fixed(): return 0.0
 	return float(maxi(0, _line_count() - _lines()))
 
+## External photo/video pickers can explicitly keep their purpose across folders.
+func begin_media_browse(kind: int) -> void:
+	media_browse_intent=clampi(kind,0,2); media_filter=media_browse_intent
+	refresh()
+
+func _filter_location() -> String:
+	match section:
+		Section.LOCAL: return str([section,_local_stack.map(func(item):return item.get("id",""))])
+		Section.SMB: return str([section,_smb_server,_smb_path])
+		Section.DLNA: return str([section,_dlna_server,_dlna_stack.map(func(item):return item.get("id",""))])
+		Section.CLOUD: return str([section,_cloud_stack.map(func(item):return item.get("id",""))])
+		Section.RECENT: return str([section,collections.home_tab if collections else 0])
+	return str(section)
+
+func _sync_media_filter() -> void:
+	if media_browse_intent>0:
+		if media_filter!=media_browse_intent: media_filter=media_browse_intent
+	elif not _media_filter_location.is_empty() and _media_filter_location!=_filter_location(): media_filter=0
+
 func _folder_key() -> String:
+	_sync_media_filter()
 	var location := ""
 	match section:
 		Section.LOCAL: location = _local_path()
@@ -829,6 +894,9 @@ func refresh() -> void:
 	_rebuild_rows()
 	_draw()
 	_align_playback_panel()
+
+func refresh_music_quick_controls() -> void:
+	_draw(); _align_playback_panel()
 
 ## Editing and checkmarks change visible controls only; directory rows/order stay intact.
 func refresh_file_selection() -> void:
@@ -1200,6 +1268,7 @@ func _load_section() -> void:
 # --- rows -----------------------------------------------------------------------------------
 
 func _rebuild_rows() -> void:
+	_sync_media_filter()
 	rows.clear()
 	if cloud_error.opened:
 		rows.assign(cloud_error.rows()); scroll = clampf(scroll, 0.0, _max_scroll()); return
@@ -1534,6 +1603,7 @@ func _poll_cache_usage() -> void:
 	if visible and section == Section.SETTINGS and tab == GENERAL_TAB: refresh()
 
 func _exit_tree() -> void:
+	system_text_input.cancel()
 	if _cache_task >= 0: WorkerThreadPool.wait_for_task_completion(_cache_task); _cache_task = -1
 
 func _read_cache_usage() -> Vector2i:
@@ -1547,6 +1617,10 @@ func _read_cache_usage() -> Vector2i:
 ## Video state changes arrive several times a second: redraw only when the Alpha profiles
 ## (current, compiling, cold) shown on the Alpha tab change.
 func _activate(target: int) -> void:
+	if _audio_preview_rows.has(target):
+		var row: Dictionary = _audio_preview_rows[target]
+		_audio_preview_scope = _audio_preview_scope_key()
+		audio_preview_requested.emit(str(row.uri), str(row.title)); return
 	if target == MUSIC_OPEN: music_requested.emit(); return
 	if target == AUDIO_IMPORT_CANCEL: dismiss(); return
 	if target == AUDIO_IMPORT_DONE:
@@ -1640,6 +1714,7 @@ func _activate(target: int) -> void:
 	elif target >= CRUMB_BASE and target < CRUMB_BASE + 10:
 		_go_to(target - CRUMB_BASE)
 	elif target >= FILTER_BASE and target < FILTER_BASE + MEDIA_FILTERS.size():
+		media_browse_intent=0
 		media_filter = target - FILTER_BASE
 		_reset_navigation()
 		refresh()
@@ -1758,6 +1833,7 @@ func _choose(row: Dictionary) -> void:
 
 ## True when a child layer was consumed; false means the source's top-level list.
 func navigate_back() -> bool:
+	if system_text_input.active(): system_text_input.cancel("", true); return true
 	if collections.active(): collections.close(); return true
 	if section == Section.SETTINGS and tab == GENERAL_TAB and collections.privacy_expanded:
 		collections.privacy_expanded = false; choices.reset(); refresh(); return true
@@ -2113,6 +2189,10 @@ func _draw_compact_rows() -> void:
 	_place_list()
 
 func _draw() -> void:
+	_audio_storage_labels.clear()
+	_audio_preview_rows.clear()
+	audio_preview_seek.clear_layout()
+	_audio_preview_state = background_audio_provider.call() if audio_import_mode and background_audio_provider.is_valid() else {}
 	_clear_layout()
 	if collections.active():
 		_side.visible = false; collections.draw(); return
@@ -2145,8 +2225,8 @@ func _draw() -> void:
 	if not controls_page.active():
 		var footer_y := -0.80 if section == Section.MEDIA_SERVER and server_browser.focused() else -0.65
 		if not audio_import_mode:
-			_round(MUSIC_OPEN, "music", Vector2(-0.48, footer_y), 0.08, true, false, I18n.t("Music"))
-			refresh_background_audio()
+			if not music_quick: music_quick = preload("res://scripts/music_quick_controls.gd").new(self, func(): music_toggle_requested.emit())
+			music_quick.draw(MUSIC_OPEN, Vector2(-0.48, footer_y), background_audio_provider.call() if background_audio_provider.is_valid() else {})
 		# Closing the menu is the shared footer's job and recentering the player's; only collapse floats here.
 		if playback_expanded: _round(EXPAND_LIBRARY, "collapse", Vector2(0.13, footer_y), 0.08, true, false, I18n.t("Collapse library"))
 		# With no floating row left, the footer takes its place right under the browser.
@@ -2245,6 +2325,10 @@ func _draw() -> void:
 		_button(AUDIO_IMPORT_CANCEL, I18n.t("Cancel"), Vector2(0.18, -0.515), Vector2(0.26, 0.065))
 		_button(AUDIO_IMPORT_DONE, I18n.t("Add audio") + " (%d)" % audio_selection.size(), Vector2(0.61, -0.515), Vector2(0.50, 0.065), not audio_selection.is_empty(), "plus")
 		set_label_size(_buttons.back().node.get_child(0), 18)
+		var storage_panel := _quad(Vector2(1.46, 0.14), Vector3(0.13, -0.635, 0), PANEL, 10)
+		add_child(storage_panel); _decorations.append(storage_panel); _block_rays(storage_panel, Vector2(1.46, 0.14))
+		_audio_storage_labels = AudioStorageView.draw(self, background_audio_provider.call() if background_audio_provider.is_valid() else {}, Vector2(0.13, -0.61), 1.26, true)
+		_place_device_status(Vector2(0.13, -0.79))
 	elif section != Section.SETTINGS and not cloud_managing:
 		for i in MEDIA_FILTERS.size():
 			_button(FILTER_BASE + i, I18n.t(MEDIA_FILTERS[i]), Vector2(0.36 + i * 0.18, -0.515), Vector2(0.17, 0.06), true, "", media_filter == i)
@@ -2260,7 +2344,10 @@ func _draw() -> void:
 		var pages := str(maxi(_cloud_page + 1, maxi(1, ceili(float(_cloud_total) / _cloud_page_size)))) if _cloud_total >= 0 else ("…" if _cloud_next >= 0 else str(_cloud_page + 1))
 		_label("%d / %s" % [_cloud_page + 1, pages], Vector3(-0.27, cloud_page_y, 0.004), 18)
 		_button(CLOUD_NEXT, "›", Vector2(-0.09, cloud_page_y), Vector2(0.09, 0.07), not _cloud_busy and _cloud_next >= 0)
-	var line := _label(_fit_title(cloud_error.summary_text() if section == Section.CLOUD else I18n.t(status), "", 0.67, 17), Vector3(-0.45, -0.66 if cloud_paging and file_actions.has_selection() else -0.58 if cloud_paging or file_actions.folder() else -0.52, 0.004), 17)
+	var footer_status := cloud_error.summary_text() if section == Section.CLOUD else I18n.t(status)
+	if audio_import_mode and not str(_audio_preview_state.get("audio_preview_error", "")).is_empty(): footer_status = I18n.t(str(_audio_preview_state.audio_preview_error))
+	elif audio_import_mode and _audio_preview_state.get("audio_preview_loading", false): footer_status = I18n.t("Loading preview")
+	var line := _label(_fit_title(footer_status, "", 0.46 if audio_import_mode else 0.67, 17), Vector3(-0.45, -0.66 if cloud_paging and file_actions.has_selection() else -0.58 if cloud_paging or file_actions.folder() else -0.52, 0.004), 17)
 	if section == Section.CLOUD and not cloud_error.detail.is_empty():
 		_button(CloudBrowseError.OPEN, "", Vector2(0.30, line.position.y), Vector2(0.07, 0.065), true, "info")
 		_tips[CloudBrowseError.OPEN] = I18n.t("Error details")
@@ -2406,6 +2493,27 @@ func _decorate_audio_selection(row: Dictionary) -> void:
 		button.base_color = SELECTED
 		button.node.material_override.set_shader_parameter("surface_color", SELECTED)
 	_icon("check" if selected else "circle", Vector3(0.53, 0, 0.006), 0.035, ACCENT if selected else MUTED, button.node)
+	var target := AUDIO_PREVIEW_BASE + int(button.target) - ROW_BASE
+	_audio_preview_rows[target] = row
+	var playing := str(_audio_preview_state.get("audio_preview_uri", "")) == str(row.uri)
+	_round(target, "stop" if playing else "play", Vector2.ZERO, 0.073, bool(_audio_preview_state.get("audio_preview_available", false)), playing, I18n.t("Stop audio preview" if playing else "Preview audio (30 s)"))
+	var preview: MeshInstance3D = _buttons.back().node
+	preview.reparent(button.node, false); preview.position = Vector3(0.405, 0, 0.012)
+	preview.material_override.render_priority = 13
+	for child in preview.get_children():
+		if child is MeshInstance3D: child.material_override.render_priority = 14
+		elif child is Label3D: child.render_priority = 14
+	var title: Label3D = button.node.get_child(0)
+	title.text = _fit_title(title.text, "", 0.76, title.font_size / TEXT_RASTER_SCALE)
+	if playing: audio_preview_seek.draw(button.node, _audio_preview_state)
+
+func _audio_preview_scope_key() -> String:
+	return str([section, _folder_key(), _cloud_location, _cloud_path(), _cloud_page, cloud_accounts.mode, account_panel.view])
+
+func _stop_audio_preview() -> void:
+	if _audio_preview_scope.is_empty(): return
+	_audio_preview_scope = ""; audio_preview_stopped.emit()
+	audio_preview_seek.cancel(str(audio_preview_seek.capture.get("hand", "")))
 
 func _setting_field(row: Dictionary, centre: Vector2, target: int) -> void:
 	_row_button(target, str(row.title), "", "", centre, false)

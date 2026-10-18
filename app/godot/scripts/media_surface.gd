@@ -26,8 +26,8 @@ var flat_pose := Transform3D(Basis(), Vector3(0, 1.5, -2))
 ## Flat screen set by the viewer: distance from the eyes, size (corner drag) and curvature.
 ## A curve of 1 bends the screen round the eyes; smaller values bend it less.
 const SCREEN_DISTANCE := 2.0
-const DISTANCE_LIMITS := Vector2(0.8, 8.0)
-const SCALE_LIMITS := Vector2(0.4, 3.0)
+const DISTANCE_LIMITS := Vector2(1.0, 50.0)
+const SCALE_LIMITS := Vector2(1.0, 30.0)
 const CURVES := [0.0, 0.35, 0.7, 1.0]
 var screen_distance := SCREEN_DISTANCE
 var screen_scale := 1.0

@@ -11,12 +11,12 @@ import java.io.File
 
 /** Extra audio tracks stored next to a video: "<video stem>.*m4a". The prepared clone-voice mix
  * of PTMediaServer / VR Video Toolbox ("<stem>.si.mix.m4a": dubbed voice over the ducked original)
- * comes first and is titled [CLONE_TITLE]; MPV adds each as a selectable, unselected track.
+ * comes first. Titles retain the filename; MPV adds each as a selectable, unselected track.
  * Only M4A is looked for. Calls block (MediaStore query, SMB listing): worker threads only. */
 internal object SidecarAudio {
     const val CLONE_TITLE = "Clone voice"
     private const val CLONE_SUFFIX = ".si.mix.m4a"
-    private const val LIMIT = 4
+    private const val LIMIT = 32
 
     /** An MPV location for one track; [descriptor] stays open until the source closes. */
     data class Track(val location: String, val title: String, val descriptor: ParcelFileDescriptor? = null)
@@ -31,12 +31,9 @@ internal object SidecarAudio {
             .take(LIMIT)
     }
 
-    /** "Clone voice" for the prepared mix; otherwise what the name adds to the video stem. */
+    /** Stable filename identity for direct track lists and per-file selection memory. */
     fun title(video: String, name: String): String {
-        if (name.endsWith(CLONE_SUFFIX, ignoreCase = true)) return CLONE_TITLE
-        val extra = name.substring(video.substringBeforeLast('.').length).removeSuffix(".m4a").removeSuffix(".M4A")
-            .trim('.', ' ', '_', '-')
-        return extra.ifEmpty { "M4A" }
+        return name
     }
 
     fun forCloud(path: String, pageFiles: List<CloudFile>, publish: (CloudFile) -> String): List<Track> {

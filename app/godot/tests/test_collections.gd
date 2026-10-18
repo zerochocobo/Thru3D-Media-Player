@@ -31,6 +31,7 @@ class MigrationViewer extends Node3D:
 	var mode_memory := Memory.new()
 	var track_memory := Memory.new()
 	var subtitle_timing := Memory.new()
+	var whisper_memory := preload("res://scripts/file_whisper_memory.gd").new()
 
 func _legacy_recent(uri: String) -> Dictionary:
 	return {"uri":uri,"title":"Older playback","kind":"video","persisted":false,"opened":1,"opened_at":100.0,"position_ms":1234,"duration_ms":60000}
@@ -61,11 +62,13 @@ func _check_history_independence(directory: String) -> void:
 	check(store.private_lookup(a, "recent").is_empty() and store.private_lookup(legacy_uri, "recent").is_empty() and store.contains(a), "Successful import removes legacy copies without removing favorites")
 	var main := preload("res://scripts/main.gd").new(); var viewer := MigrationViewer.new(); var photo := MigrationViewer.new()
 	viewer.recent_files = reloaded
-	for memory in [viewer.mode_memory, viewer.track_memory, viewer.subtitle_timing, photo.mode_memory]: memory.directory = directory.path_join(str(memory.get_instance_id()))
+	for memory in [viewer.mode_memory, viewer.track_memory, viewer.subtitle_timing, viewer.whisper_memory, photo.mode_memory]: memory.directory = directory.path_join(str(memory.get_instance_id()))
 	viewer.mode_memory.entries[Memory.key_for(a)] = {"mode":{"geometry":0},"updated":1}
+	viewer.whisper_memory.entries[Memory.key_for(a)] = {"whisper":{"level":2},"updated":1}
 	main.video = viewer; main.photo = photo; main.favorites = store
 	main._migrate_protected_favorites()
 	check(reloaded.resume_position(a) == 2222 and not reloaded.entries.is_empty() and store.private_lookup(a, "recent").is_empty(), "Main's favorite migration never drains independent recent banks")
+	check(viewer.whisper_memory.entries.is_empty() and store.private_lookup(a, viewer.whisper_memory.directory.get_file() + "/whisper") == {"level":2}, "Whisper preference migrates into the protected favorite vault")
 	main.free(); viewer.free(); photo.free()
 	store.private_remember(a, "recent", _legacy_recent(a)); store.private_remember(legacy_uri, "recent", _legacy_recent(legacy_uri))
 	var deletions := Recent.new(directory.path_join("deleted-before-unlock")); deletions.opened(a, "Favorite", false); deletions.save()

@@ -112,9 +112,13 @@ The Windows application export now also requires Visual Studio 2022 Build Tools 
 
 The two checksum-pinned upstream source archives under `third_party/usb` are required by `native/usb/CMakeLists.txt`; their licenses and source lock accompany them. They contain source, not a prebuilt filesystem library. CMake verifies the exact archive hashes and configures the player adapters for read-only access. On Linux, `bash tools/Test-UsbStorageHost.sh` builds synthetic filesystem fixtures and verifies unchanged image hashes; it requires the host C/C++ toolchain, CMake and fixture utilities and does not access a physical drive.
 
-## Narration exclusion
+## Default subtitle narration
 
-Subtitle narration is withheld in every platform, build type and diagnostic variant. The build no longer prepares or links narration/ONNX Runtime dependencies; Android asset staging excludes narration resources and JNI packaging rejects stale narration libraries. `tools/Assert-NarrationExcluded.ps1` checks the disabled UI/Android gates before building and rejects forbidden runtime/model/preset entries in the AAR and APK. Do not bypass it or restore narration without explicit project authorization. Retained development source is not an enabled build target.
+Normal Debug, diagnostic Debug and Release builds enable the narration runtime and ONNX Runtime. Supply the version-matched 11-file INT8 model/preset bundle described by `third_party/narration/model.json`, either already under ignored `models/narration/<manifest-id>/` or through `THRU3D_NARRATION_MODEL_SOURCE` / `tools/environment/Prepare-NarrationModels.ps1 -SourceDirectory <bundle>`.
+
+The public repository contains source, recipes, notices and manifests, with 12 voice choices in the UI; it contains no weights, voice-code payloads or reference recordings and does not host their download. Obtain and license your own matching inputs. The independent commercial-source audit of the reference recordings remains unresolved; build enablement is not a copyright clearance.
+
+`Build-Player.ps1` validates file sizes and SHA-256 before building and uses `Assert-NarrationPackaged.ps1` to check the runtime, exact manifest and payload in AAR/APK output. Missing or damaged inputs stop the build. The older exclusion guard is historical and is not the normal build path. Prepared matting/depth assets do not replace the required narration bundle.
 
 ## Built-in audio assets
 

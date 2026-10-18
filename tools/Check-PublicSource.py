@@ -7,7 +7,7 @@ import re
 import subprocess
 
 FORBIDDEN_PARTS = {'.git', '.cache', '.venv', '.godot', '.gradle', '.cxx', '__pycache__', 'prompt', 'artifacts', 'build', 'tmp', 'backups', 'keystore', 'releases', 'credentials', 'research'}
-FORBIDDEN_SUFFIXES = {'.onnx', '.mnn', '.pt', '.pth', '.ckpt', '.safetensors', '.bin', '.param', '.apk', '.aar', '.so', '.keystore', '.jks', '.p12', '.pfx', '.hdr', '.log', '.zip', '.tgz', '.tar', '.gz', '.bz2', '.xz', '.7z', '.rar', '.key', '.pem'}
+FORBIDDEN_SUFFIXES = {'.data', '.model', '.npz', '.npy', '.gguf', '.tflite', '.ort', '.onnx', '.mnn', '.pt', '.pth', '.ckpt', '.safetensors', '.bin', '.param', '.apk', '.aar', '.so', '.keystore', '.jks', '.p12', '.pfx', '.hdr', '.log', '.zip', '.tgz', '.tar', '.gz', '.bz2', '.xz', '.7z', '.rar', '.key', '.pem'}
 # MIT-licensed glTF mesh buffers, not inference weights. Only these exact bytes qualify.
 HAND_BUFFER_PINS = {
     'app/godot/models/hands/LeftHandHumanoid.bin': '05f96e5aae870c8f2fde8a1fea337b060c7fde3e659b124a5ed979f0ffa1222a',
@@ -21,6 +21,8 @@ USB_SOURCE_PINS = {
     'third_party/usb/fatfs-r016.zip': '99f7dc1f7e095356e4a9e3dbe29959090d8b948afe2bbc5441e52fdf4b85449e',
     'third_party/usb/ntfs-3g-2026.9.28.tgz': '350d9415c59f7c3fa74e23985ad2d56423c6a168337368f672e2e362d8f295c8',
 }
+# Exact project-generated effects; arbitrary audio and recordings remain excluded.
+PUZZLE_AUDIO_PINS = {'app/godot/audio/puzzle/rotate.wav': '2dab090f79861e99cae55434cda831922a7d0c0ac5cf94de8fc9c2c0249b5f06', 'app/godot/audio/puzzle/snap.wav': 'afe5db969224020aba863a236c86de92ecbfa0e1ec5a16d70a3caf0925191ed4', 'app/godot/audio/puzzle/success.wav': '65d1e4934a74344671febe19660979092eae2824ecda672eccf6711628d57b49', 'app/godot/audio/puzzle/launch.wav': '9672c6b35d2222fa66fcbea5598d4e68661488e63503d348a18c42ff2df530e9', 'app/godot/audio/puzzle/burst.wav': '0c1517ce01ebbca7b3ec5db7e4deaf408169bf61ee9ee79b7a698cfa3010fab4'}
 PATTERNS = {
     'private machine path': re.compile(r'(?i)(?:[CG]:[/\\]+(?:Users[/\\]+dennis|devtools|GIT|code[/\\]+VRPassthroughPlayer)|/mnt/' + r'g/|/opt/' + r'quest-mpv)'),
     'GitHub credential': re.compile(r'\b(?:gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{50,})\b'),
@@ -39,6 +41,11 @@ def check_files(files):
             errors.append(f'{name}: unsafe path')
         approved_mesh = name in HAND_BUFFER_PINS
         approved_font = name in FONT_PINS
+        approved_audio = name in PUZZLE_AUDIO_PINS
+        if approved_audio and hashlib.sha256(data).hexdigest() != PUZZLE_AUDIO_PINS[name]:
+            errors.append(f'{name}: puzzle sound differs from reviewed procedural bytes')
+        if path.suffix.lower() in {'.wav', '.ogg', '.mp3', '.flac', '.dts'} and not approved_audio:
+            errors.append(f'{name}: unreviewed sound recording')
         approved_source = name in USB_SOURCE_PINS
         if approved_source and hashlib.sha256(data).hexdigest() != USB_SOURCE_PINS[name]:
             errors.append(f'{name}: source archive differs from reviewed upstream bytes')
@@ -48,6 +55,8 @@ def check_files(files):
             errors.append(f'{name}: hand mesh differs from reviewed MIT asset')
         if FORBIDDEN_PARTS.intersection(part.lower() for part in path.parts) or (path.suffix.lower() in FORBIDDEN_SUFFIXES and not approved_mesh and not approved_source):
             errors.append(f'{name}: excluded directory or binary asset')
+        if name.startswith(('models/narration/', 'android/player-plugin/src/main/assets/narration/')):
+            errors.append(f'{name}: excluded narration payload cache')
         if name.startswith(tuple('docs/' + item + '/' for item in ('store', 'branding', 'archive'))) or name.startswith('tools/record_'):
             errors.append(f'{name}: private development or promotion content')
         if name.endswith('store_capture_debug.gd') or 'local.properties' == path.name:
@@ -61,12 +70,14 @@ def check_files(files):
         try:
             value = data.decode('utf-8')
         except UnicodeDecodeError:
-            if path.suffix.lower() not in {'.png', '.jpg', '.jpeg', '.webp', '.mp4', '.jar'} and not approved_mesh and not approved_font and not approved_source:
+            if path.suffix.lower() not in {'.png', '.jpg', '.jpeg', '.webp', '.mp4', '.jar'} and not approved_mesh and not approved_font and not approved_source and not approved_audio:
                 errors.append(f'{name}: unreviewed binary type')
             continue
         for label, pattern in PATTERNS.items():
             if pattern.search(value):
                 errors.append(f'{name}: {label}')  # Never print the matched credential.
+    if PUZZLE_AUDIO_PINS.keys() & files.keys() and 'tools/Generate-PuzzleSounds.py' not in files:
+        errors.append('tools/Generate-PuzzleSounds.py: puzzle sound generator missing')
     if USB_SOURCE_PINS.keys() & files.keys():
         for name in ('LICENSE.fatfs', 'LICENSE.ntfs-3g', 'LICENSE.libaums', 'source-lock.json'):
             asset = 'third_party/usb/' + name

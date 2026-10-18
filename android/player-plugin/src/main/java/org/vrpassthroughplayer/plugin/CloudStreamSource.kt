@@ -35,7 +35,9 @@ internal class CloudStreamSource(
     }
     override fun close() {
         closed = true
-        readers.toList().forEach { it.close() }
+        // KeySetView.forEach tolerates concurrent removals. Kotlin toList's
+        // size==1 shortcut can call next() after the last reader disappears.
+        readers.forEach { it.close() }
         link = null
     }
 

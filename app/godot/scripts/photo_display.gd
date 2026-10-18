@@ -296,7 +296,7 @@ func _ready() -> void:
 func _source_size() -> Vector2:
 	return _size
 
-func open_image(uri: String, title: String, entries: Array = [], location: Dictionary = {}) -> bool:
+func open_image(uri: String, title: String, entries: Array = [], location: Dictionary = {}, retained: Dictionary = {}) -> bool:
 	source_location = location.duplicate(true) if not location.is_empty() else preload("res://scripts/media_location.gd").infer(uri)
 	var retain_frame := not local_uri.is_empty() and geometry == Geometry.Geometry.FLAT and gallery.mode in [Gallery.Layout.SINGLE, Gallery.Layout.SIDES] and not portrait_requested
 	close_image()
@@ -311,6 +311,7 @@ func open_image(uri: String, title: String, entries: Array = [], location: Dicti
 	if target < 0:
 		queue = [{"uri": uri, "title": title, "kind": "image"}]
 		target = 0
+	if not retained.is_empty(): queue[target]["retained_source"] = retained.duplicate()
 	index = -1
 	gallery.recenter()
 	return _select(target)
@@ -772,6 +773,10 @@ func _pump_prefetch() -> void:
 			_on_ready(id, JSON.stringify({"state": "ready", "path": path}) if path.is_absolute_path() else '{"state":"error"}')
 
 func _resolved_mode(target: int, info: Dictionary) -> Dictionary:
+	var retained: Dictionary = queue[target].get("retained_source", {})
+	if not retained.is_empty():
+		return {"geometry":3 if retained.get("projection")=="sphere" else 0,"stereo_sbs":int(retained.get("layout",0))!=0,
+			"top_bottom":int(retained.get("layout",0))==2,"swap_eyes":bool(retained.get("swap_eyes",false)),"fisheye_fov":180}
 	var native_stereo := bool(info.get("native_stereo", false))
 	var stated := {} if native_stereo else Naming.from_name(str(queue[target].get("title", "")))
 	var saved := mode_memory.lookup(str(queue[target].uri))
@@ -788,6 +793,7 @@ func _resolved_mode(target: int, info: Dictionary) -> Dictionary:
 	return mode
 
 func _requires_depth(target: int, info: Dictionary) -> bool:
+	if queue[target].has("retained_source"): return false
 	var mode := _resolved_mode(target, info)
 	return auto_depth and not info.get("native_stereo", false) and platform != null and int(mode.geometry) == Geometry.Geometry.FLAT and not mode.stereo_sbs
 
@@ -856,6 +862,12 @@ func _accept(result: Dictionary, job: Dictionary) -> void:
 	local_uri = str(queue[index].uri)
 	display_name = str(queue[index].get("title", local_uri.get_file()))
 	_metadata = result.info
+	var retained: Dictionary = queue[index].get("retained_source", {})
+	if not retained.is_empty():
+		_metadata["native_stereo"] = int(retained.get("layout",0))!=0
+		_metadata["spatial_disparity"] = float(retained.get("spatial_disparity",0))
+		if retained.get("depth") is Image:
+			result["depth_data"] = {"image":retained.depth,"rect":retained.depth_rect,"strength":depth_strength}
 	queue[index]["photo_info"] = result.info
 	var mode := _resolved_mode(index, _metadata)
 	_hide_layer()
@@ -881,7 +893,7 @@ func _accept(result: Dictionary, job: Dictionary) -> void:
 	if not _display_depth_data.is_empty():
 		_depth_rect = _display_depth_data.rect
 		_use_depth_textures()
-		depth_requested = auto_depth; depth_enabled = auto_depth
+		depth_requested = auto_depth or retained.get("kind")=="relief"; depth_enabled = depth_requested
 	_display_info = result.info
 	_display_result = result if geometry == Geometry.Geometry.FLAT and result.image.get_data_size() <= CACHE_IMAGE_BYTES else {}
 	_prefetch_failed.erase(index)
@@ -929,7 +941,7 @@ func _accept(result: Dictionary, job: Dictionary) -> void:
 	elif old_surface != null:
 		old_surface.free()
 	mark = _mark("display", mark)
-	if auto_depth and geometry == 0 and not stereo_sbs: set_depth(true)
+	if auto_depth and geometry == 0 and not stereo_sbs and retained.is_empty(): set_depth(true)
 	mark = _mark("depth", mark)
 	if not result.get("thumbnail_cached", false) or not Thumbnails.has(local_uri):
 		var stored := Thumbnails.store_encoded(local_uri, result.thumbnail_jpg) if result.has("thumbnail_jpg") \

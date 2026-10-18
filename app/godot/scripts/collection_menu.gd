@@ -33,7 +33,7 @@ var store: RefCounted:
 		store = value
 		if store: store.lock_changed.connect(_store_lock_changed)
 var home_tab := 0
-var home_positions := [{"page": 0, "scroll": 0.0, "filter": 0}, {"page": 0, "scroll": 0.0, "filter": 0}]
+var home_positions := [{"page": 0, "scroll": 0.0}, {"page": 0, "scroll": 0.0}]
 var home_return := {}
 var selected_location := {}
 var selected_entry := {}
@@ -200,9 +200,9 @@ func home_rows() -> Array[Dictionary]:
 
 func switch_tab(value: int) -> void:
 	selection.clear(); history_undo.clear(); pending_favorites.clear()
-	home_positions[home_tab] = {"page": menu._recent_page, "scroll": menu.scroll, "filter": menu.media_filter}
+	home_positions[home_tab] = {"page": menu._recent_page, "scroll": menu.scroll}
 	home_tab = clampi(value, 0, 1)
-	menu._recent_page = int(home_positions[home_tab].page); menu.scroll = float(home_positions[home_tab].scroll); menu.media_filter = int(home_positions[home_tab].filter)
+	menu._recent_page = int(home_positions[home_tab].page); menu.scroll = float(home_positions[home_tab].scroll); menu.media_filter = menu.media_browse_intent
 	menu._confirm = ""; menu.refresh()
 
 func draw_header() -> void:

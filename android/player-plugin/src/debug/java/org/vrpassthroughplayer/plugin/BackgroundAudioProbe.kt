@@ -16,7 +16,7 @@ internal object BackgroundAudioProbe {
                     val source = File(context.filesDir, "fixtures/music-formats/$name")
                     val saved = source.inputStream().use { BackgroundAudioFiles.copy(it, File(context.filesDir, "background-audio"), source.extension,
                         source.length(), validate = { BackgroundAudioNative.validate(context, it) { false } }) }
-                    val player = BackgroundAudioPlayback { context }
+                    val player = BackgroundAudioPlayback({ context })
                     try {
                         val id = player.load(saved.file.path, 0.0); check(id > 0)
                         fun waitFor(predicate: (JSONObject) -> Boolean): JSONObject {

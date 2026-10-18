@@ -44,6 +44,7 @@ static func runtime_sample(tracker: XRPositionalTracker, space: Transform3D, sca
 	var direction := space.basis * -transform.basis.z
 	if direction.length_squared() < 0.001: return result
 	result["ray"] = [space * (transform.origin * scale), direction.normalized()]
+	result["pose"] = Transform3D((space.basis*transform.basis).orthonormalized(),result.ray[0])
 	return result
 
 static func is_optical(tracker: XRHandTracker) -> bool:
@@ -61,6 +62,24 @@ static func pinch_position(tracker: XRHandTracker, space: Transform3D, scale: fl
 		if not tip.is_finite(): return null
 		point += tip * 0.5
 	return space * (point * scale)
+
+## Reference placement needs a tracked palm position, independently of wrist/aim orientation.
+static func palm_position(tracker: XRHandTracker, space: Transform3D, scale: float) -> Variant:
+	if not is_optical(tracker) or not space.is_finite() or not is_finite(scale) or scale<=0: return null
+	var joint := XRHandTracker.HAND_JOINT_PALM
+	if tracker.get_hand_joint_flags(joint)&POSITION_FLAGS!=POSITION_FLAGS: return null
+	var point := tracker.get_hand_joint_transform(joint).origin
+	return space*(point*scale) if point.is_finite() else null
+
+## The physical wrist carries roll even when the runtime stabilizes its aim ray.
+static func grip_pose(tracker: XRHandTracker, space: Transform3D, scale: float) -> Variant:
+	if not is_optical(tracker) or not space.is_finite() or not is_finite(scale) or scale<=0: return null
+	var joint := XRHandTracker.HAND_JOINT_WRIST
+	var flags := POSITION_FLAGS | XRHandTracker.HAND_JOINT_FLAG_ORIENTATION_VALID | XRHandTracker.HAND_JOINT_FLAG_ORIENTATION_TRACKED
+	if tracker.get_hand_joint_flags(joint)&flags!=flags: return null
+	var pose := tracker.get_hand_joint_transform(joint)
+	if not pose.is_finite() or absf(pose.basis.determinant())<0.001: return null
+	return Transform3D((space.basis*pose.basis).orthonormalized(),space*(pose.origin*scale))
 
 const OPEN_FINGERS := [
 	[XRHandTracker.HAND_JOINT_INDEX_FINGER_PHALANX_PROXIMAL, XRHandTracker.HAND_JOINT_INDEX_FINGER_PHALANX_INTERMEDIATE, XRHandTracker.HAND_JOINT_INDEX_FINGER_TIP],

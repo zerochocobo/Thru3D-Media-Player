@@ -103,6 +103,7 @@ var _layout_eye: Variant = null
 var _layout_up := Vector3.UP
 var layout_head_provider: Callable
 var _layout_following := false
+var music_quick: RefCounted
 
 func panel_centre() -> Vector3:
 	return _backdrop.position if is_instance_valid(_backdrop) else Vector3.ZERO
@@ -164,6 +165,7 @@ func toggle() -> void:
 		refresh()
 
 func dismiss() -> void:
+	if music_quick: music_quick.reset()
 	visible = false
 	_hover.clear()
 	_hide_tooltip()
@@ -176,6 +178,9 @@ func _reset_navigation() -> void:
 
 func refresh() -> void:
 	_draw()
+
+func refresh_music_quick_controls() -> void:
+	refresh()
 
 func _activate(_target: int) -> void:
 	pass
@@ -252,6 +257,7 @@ func grab_hit(origin: Vector3, direction: Vector3) -> Dictionary:
 func update_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: bool) -> void:
 	if not visible:
 		return
+	if music_quick: music_quick.update(hand, origin, direction, tracked)
 	var hit := pointer_hit(origin, direction) if tracked else {}
 	_hover[hand] = int(hit.get("target", NONE))
 	var valid := tracked and origin.is_finite() and direction.is_finite() and direction.length_squared() > 0.000001
@@ -293,6 +299,7 @@ func press_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: b
 
 func _activate_hit(hit: Dictionary) -> void:
 	if not hit.get("enabled", true): return
+	if music_quick and music_quick.activate(int(hit.target)): return
 	if _activate_footer(int(hit.target)): return
 	_activate(int(hit.target))
 
@@ -314,6 +321,7 @@ func _set_backdrop(size: Vector2, centre: Vector2 = Vector2.ZERO) -> void:
 	_place_device_status(Vector2(centre.x, centre.y - size.y * 0.5 - 0.085))
 
 func _clear_layout() -> void:
+	if music_quick: music_quick.begin_layout()
 	composition_layout_changed.emit()
 	for button in _buttons:
 		# A badge nested in another button's tile is freed with it.

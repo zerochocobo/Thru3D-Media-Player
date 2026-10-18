@@ -59,3 +59,9 @@ The upstream RVM code is GPL-3.0; the project records its reused/sliced student 
 ## Runtime Alpha sizes
 
 The global inference-size choice is 256/320/384/512 (default 320), using the version-matched modified RVM contract above. This is not a general model-weight selector. First use of a size can prepare for about a minute while the existing size remains usable. No weights or private preparation caches are published. New Alpha processing-limit settings default to 30 FPS; saved settings take precedence, and actual throughput depends on device and media.
+
+## Subtitle narration
+
+Normal Debug and Release builds require the separate, version-matched INT8 bundle in `third_party/narration/model.json`: 11 size/SHA-256-pinned files, including data for 12 Chinese/English/Japanese voice presets. Supply it with `tools/environment/Prepare-NarrationModels.ps1 -SourceDirectory <bundle>` or `THRU3D_NARRATION_MODEL_SOURCE`; verified files persist under ignored `models/narration/<manifest-id>/`. Missing/corrupt files stop the build; no weights, preset codes or reference recordings are distributed in this Git source.
+
+Runtime notices and model metadata do not grant rights to excluded voice inputs. The independent commercial-source audit of reference recordings remains unresolved. Build enablement and this source release are not copyright clearance for those recordings. Narration supports text subtitles; it does not imply bitmap-subtitle OCR or translation.

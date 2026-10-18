@@ -102,18 +102,18 @@ func _run() -> void:
 			check(menu._adjustment == "screen", "%s opens distance editor" % mode)
 			var distance_y: float = menu._adjust_rows[450].button.node.position.y
 			menu.press_pointer("right_hand", menu.to_global(Vector3(Menu.SLIDER_LEFT + Menu.SLIDER_WIDTH, distance_y, 1)), -menu.global_basis.z, true)
-			check(video.screen_distance == 8 and is_equal_approx(video.panel.global_position.distance_to(eye), 8) and video.screen_scale == 1, "Distance slider moves screen without scaling")
+			check(video.screen_distance == 50 and is_equal_approx(video.panel.global_position.distance_to(eye), 50) and video.screen_scale == 1, "Distance slider moves screen without scaling")
 			menu.release_pointer("right_hand", Vector3.ZERO, Vector3.ZERO, true)
 			var saved := ConfigFile.new()
-			check(saved.load(main.settings_path) == OK and saved.get_value("screen", "distance") == 8, "Distance saves on release")
-			menu.press_pointer("right_hand", menu.to_global(Vector3(Menu.SLIDER_LEFT + Menu.SLIDER_WIDTH / 6.0, distance_y, 1)), -menu.global_basis.z, true)
+			check(saved.load(main.settings_path) == OK and saved.get_value("screen", "distance") == 50, "Distance saves on release")
+			menu.press_pointer("right_hand", menu.to_global(Vector3(Menu.SLIDER_LEFT + Menu.SLIDER_WIDTH * Menu.ScreenPresets.slider_fraction(2.0, menu._adjust_rows[450].span), distance_y, 1)), -menu.global_basis.z, true)
 			menu.release_pointer("right_hand", Vector3.ZERO, Vector3.ZERO, true)
 			check(is_equal_approx(video.screen_distance, 2), "2m slider restores default distance")
 			menu.dismiss()
 	main._grab = {"hand": "right_hand", "moved": false}
-	main._update_flat_grab_stick(Vector2.ZERO, Vector2(0, 1), 10)
+	main._update_flat_grab_stick(Vector2.ZERO, Vector2(0, 1), 100)
 	check(video.screen_distance == video.DISTANCE_LIMITS.y and video.screen_scale == 1, "Upper distance limit without scaling")
-	main._update_flat_grab_stick(Vector2.ZERO, Vector2(0, -1), 10)
+	main._update_flat_grab_stick(Vector2.ZERO, Vector2(0, -1), 100)
 	check(video.screen_distance == video.DISTANCE_LIMITS.x and video.screen_scale == 1, "Lower distance limit without scaling")
 	var distance_before: float = video.screen_distance
 	main._grab = {}

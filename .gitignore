@@ -65,3 +65,5 @@ thru3d-signing.json
 /app/godot/assets/audio/*.ogg.import
 /app/godot/assets/audio/provenance.json
 /app/godot/assets/audio/CREDITS.txt
+
+/models/narration/

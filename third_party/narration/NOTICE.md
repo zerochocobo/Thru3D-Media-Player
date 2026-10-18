@@ -7,4 +7,4 @@
 - Subtitle extraction uses the existing pinned MPV/FFmpeg binaries and license/source records under third_party/mpv.
 
 The copied notices retain their copyright statements and conditions; trailing whitespace and extra blank lines at EOF are normalized.
-No model weights, preset codes or reference recordings are bundled here. The individual reference-recording provenance for the four preset IDs remains unverified for commercial distribution. The separate pinned model provisioner is for local testing.
+Normal Debug and Release packages include the verified INT8 model payload and built-in prompt codes from the Git-ignored models/narration cache. Raw reference audio is not included. The model/repository declare Apache-2.0; recording-by-recording provenance for the 12 selected presets remains unverified in the separate licensing review. Project authorization to bundle them does not itself establish third-party recording rights.

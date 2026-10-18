@@ -50,6 +50,8 @@ internal class MediaSources(
     fun releasePhotoStream(uri: String) { if (uri.isNotEmpty()) { usb.forgetStream(uri); server?.revoke(uri) } }
     fun streamProgress(uri: String): TransferMeter.Snapshot? = server?.progress(uri)
     fun streamFailure(uri: String): PlaybackFailure? = server?.failure(uri)
+    fun enableInterleaveCache(uri: String, audioChunks: List<AudioReadSpan>): Boolean = server?.enableInterleaveCache(uri, audioChunks) ?: false
+    fun finishIsoPreflight(uri: String) { server?.finishIsoPreflight(uri) }
 
     fun nextId(): Int = ids.incrementAndGet()
     /** Main thread: may show the media permission request. path "" lists the storage volumes. */

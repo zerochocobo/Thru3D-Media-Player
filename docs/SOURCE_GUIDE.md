@@ -126,7 +126,7 @@ The subtitle picker can choose other text-subtitle filenames from the current fo
 
 Native cloud providers load bounded directory pages with source-supported sorting. WebDAV reuses its complete fetched directory snapshot; this is not server-side WebDAV pagination. 115 retains account-scoped parent identities for playback preparation and verifies parent/target identities freshly before managed writes. This reduces redundant lookup work without promising fixed network latency or bypassing permissions.
 
-Video depth uses the version-matched 364×210 late-upsample model and adjusted temporal smoothing; the independent photo model remains 518×518. Alpha FPS counts drawn frames. The masked-only Alpha experiment is reverted. Subtitle narration remains disabled in both UI and Android runtime gates; the build also excludes its JNI, ONNX Runtime and resources. Retained development source is not linked.
+Video depth uses the version-matched 364×210 late-upsample model and adjusted temporal smoothing; the independent photo model remains 518×518. Alpha FPS counts drawn frames. The masked-only Alpha experiment is reverted. From 0.12.0, normal builds enable subtitle narration and require separately supplied model/preset assets; see [model requirements](MODELS.md). In 0.12.1, new videos start with narration off and preserve visible subtitles by default, with language, voice and other preferences remembered per video. Flat-screen defaults follow adjustments unless explicitly fixed. Photo/mono-360° puzzles include saved sessions, reference views and completion effects in production Release builds.
 
 ## Music and video playback modes
 

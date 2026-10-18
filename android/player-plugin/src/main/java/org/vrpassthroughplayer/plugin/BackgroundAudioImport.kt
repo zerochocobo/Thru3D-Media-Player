@@ -10,6 +10,7 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicBoolean
 
 /** Downloading never shares the video's exclusive cloud stream or the disposable photo cache. */
 internal class BackgroundAudioImport(
@@ -18,6 +19,10 @@ internal class BackgroundAudioImport(
 ) : Closeable {
     private val ids = AtomicInteger()
     private val worker = Executors.newSingleThreadExecutor { Thread(it, "Thru3DAudioImport") }
+    private val storageWorker = Executors.newSingleThreadExecutor { Thread(it, "Thru3DMusicStorage") }
+    private val storagePending = AtomicBoolean()
+    @Volatile private var storageSnapshot = "{}"
+    @Volatile private var storageAt = 0L
     @Volatile private var active = 0
     @Volatile private var closed = false
     @Volatile private var connection: HttpURLConnection? = null
@@ -80,5 +85,20 @@ internal class BackgroundAudioImport(
     @Synchronized fun cancel(id: Int) { if (active == id) { active = 0; connection?.disconnect() } }
     fun progress(id: Int): Double = if (active == id && length > 0) (bytes.toDouble() / length).coerceIn(0.0, 1.0) else if (active == id) -1.0 else 0.0
     fun remove(path: String): Boolean = runCatching { context()?.let { BackgroundAudioFiles.remove(File(it.filesDir, "background-audio"), path) } ?: false }.getOrDefault(false)
-    override fun close() { closed = true; active = 0; connection?.disconnect(); worker.shutdownNow() }
+    fun storage(): String {
+        if (!closed && (storageAt == 0L || System.nanoTime() - storageAt >= 1_000_000_000L) && storagePending.compareAndSet(false, true)) {
+            try { storageWorker.execute {
+                try {
+                    context()?.let { app ->
+                        val value = BackgroundAudioFiles.storage(File(app.filesDir, "background-audio"))
+                        storageSnapshot = JSONObject().put("used_bytes", value.used).put("free_bytes", value.free)
+                            .put("total_bytes", value.total).put("max_file_bytes", BackgroundAudioFiles.MAX_BYTES).toString()
+                    }
+                } catch (_: Exception) { /* Retain the last known storage snapshot. */ }
+                finally { storageAt = System.nanoTime(); storagePending.set(false) }
+            } } catch (_: java.util.concurrent.RejectedExecutionException) { storagePending.set(false) }
+        }
+        return storageSnapshot
+    }
+    override fun close() { closed = true; active = 0; connection?.disconnect(); worker.shutdownNow(); storageWorker.shutdownNow() }
 }

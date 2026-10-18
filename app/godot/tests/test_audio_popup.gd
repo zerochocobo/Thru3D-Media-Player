@@ -34,14 +34,10 @@ func tap(menu: Node3D, target: int) -> void:
 
 func audio_tracks(menu: Node3D) -> void:
 	if not menu._audio_open: tap(menu, 111)
-	for target in menu.choices.targets:
-		var item: Dictionary = menu.choices.targets[target]
-		if item.kind == "open" and item.key == "audio_track": tap(menu, target); return
 
 func choice(menu: Node3D, value: int) -> int:
-	for target in menu.choices.targets:
-		var item: Dictionary = menu.choices.targets[target]
-		if item.kind == "choose" and int(item.value) == value: return target
+	for target in menu._audio_ids:
+		if menu._audio_ids[target] == value: return target
 	return -1
 
 func _initialize() -> void: call_deferred("_run")
@@ -78,14 +74,14 @@ func _run() -> void:
 	tap(menu, menu.BookmarkMenu.UNDO)
 	check(not button(menu, menu.BookmarkMenu.LIST).is_empty() and video.bookmark_store.list_markers(video._bookmark_media_id)[0].id == marker.id, "Undo automatically restores list entry")
 	audio_tracks(menu)
-	check(menu.choices.opened == "audio_track" and not menu.allows_playback_sticks(), "Audio popup blocks playback stick shortcuts")
-	check(menu.text_snapshot().contains("movie.si.mix.m4a") and menu.choices.popup.choices.size() == 4, "No-sidecar popup explains sibling naming and keeps all audio choices")
-	check(menu.choices.popup.choices.any(func(item): return str(item.label).contains("English")) and menu.choices.popup.choices.any(func(item): return str(item.label).contains("Japanese")), "Foreign audio tracks show language labels")
+	check(menu._audio_open and menu.choices.opened.is_empty() and not menu.allows_playback_sticks(), "Audio popup blocks playback stick shortcuts")
+	check(not menu.text_snapshot().contains("movie.si.mix.m4a") and menu._audio_ids.size() == 4, "No-sidecar direct list has all choices and no filename instruction")
+	check(menu.text_snapshot().contains("English") and menu.text_snapshot().contains("Japanese"), "Foreign audio tracks show language labels")
 	var angled_origin := menu.to_global(Vector3(0, 0, 0.5))
 	var angled_direction: Vector3 = (button(menu, choice(menu, 2)).node.global_position - angled_origin).normalized()
 	menu.press_pointer("left_hand", angled_origin, angled_direction, true)
 	menu.update_pointer("left_hand", angled_origin, angled_direction, true)
-	check(not menu.choices.capture.get("moved", false), "Stationary angled ray does not falsely become a drag on raised popup plane")
+	check(not menu._track_drag.get("moved", false), "Stationary angled ray does not falsely become a drag on raised popup plane")
 	menu.cancel_pointer("left_hand")
 	main._menu_touched_ms = Time.get_ticks_msec() - main.CONTROLS_HIDE_MS - 1
 	menu._hover.clear(); main._update_controls_visibility(menu)
@@ -98,9 +94,9 @@ func _run() -> void:
 	menu.release_pointer("left_hand", origin, -menu.global_basis.z, true)
 	check(host.calls.back() == [7, 2, video.audio_volume, video.audio_muted] and menu.choices.opened.is_empty(), "Owning release selects exact native track ID and closes popup")
 	check(video.media.session_id == 7 and video.control.snapshot().state == "idle", "Track switching does not restart the video or seek")
-	video.media.playback.details.audio_tracks.append({"id": 4, "external": true, "title": "Clone voice"})
+	video.media.playback.details.audio_tracks.append({"id": 4, "external": true, "title": "movie.si.mix.m4a"})
 	menu.refresh_values(); audio_tracks(menu)
-	check(menu.choices.popup.choices[1].label == "Dubbing" and choice(menu, 4) >= 0, "Dubbed sidecar appears on initial popup page with native ID")
+	check(menu.text_snapshot().contains("Dubbing: movie.si.mix.m4a") and choice(menu, 4) >= 0, "Dubbed sidecar appears on initial popup page with native ID")
 	video._clone_applied = false; video.prefer_clone_voice = true
 	tap(menu, choice(menu, 1))
 	check(not video.prefer_clone_voice and video._clone_applied and video.audio_track_id == 1, "Explicit original track cannot be overridden by pending auto dubbing")
@@ -108,14 +104,14 @@ func _run() -> void:
 	check(video.prefer_clone_voice and video.audio_track_id == 4 and main.settings.get_value("audio", "prefer_clone_voice", false), "Selecting Dubbing uses same audio path and preserves the preference")
 	audio_tracks(menu); before = host.calls.size()
 	menu.stick_scroll(-1.0, 0.5)
-	check(menu.choices.offset > 0 and host.calls.size() == before, "Audio popup stick only scrolls, never switches tracks")
-	menu.choices.offset = 0; menu.refresh()
+	check(menu._audio_offset > 0 and host.calls.size() == before, "Audio popup stick only scrolls, never switches tracks")
+	menu._audio_offset = 0; menu.refresh()
 	origin = point(menu, choice(menu, 2))
 	menu.press_pointer("left_hand", origin, -menu.global_basis.z, true)
 	menu.update_pointer("left_hand", origin + Vector3(0, 0.04, 0), -menu.global_basis.z, true)
 	menu.release_pointer("left_hand", origin, -menu.global_basis.z, true)
 	check(host.calls.size() == before and video.audio_track_id == 4, "Dragging audio rows cannot choose a track")
-	menu.choices.offset = 0; menu.refresh(); host.accepted = false
+	menu._audio_offset = 0; menu.refresh(); host.accepted = false
 	tap(menu, choice(menu, 1))
 	check(video.audio_track_id == 4 and video.prefer_clone_voice, "Rejected native change preserves current track and dubbing preference")
 	host.accepted = true; audio_tracks(menu)
@@ -123,11 +119,11 @@ func _run() -> void:
 	menu.press_pointer("left_hand", origin, -menu.global_basis.z, true)
 	video.local_uri = "file:///next.mp4"; menu.refresh()
 	before = host.calls.size(); menu.release_pointer("left_hand", origin, -menu.global_basis.z, true)
-	check(host.calls.size() == before and menu.choices.capture.is_empty() and menu.choices.opened.is_empty(), "Changing movie cancels held audio choice")
+	check(host.calls.size() == before and menu._track_drag.is_empty() and menu.choices.opened.is_empty(), "Changing movie cancels held audio choice")
 	video.media.playback.details.audio_tracks = []; menu.refresh(); audio_tracks(menu)
-	check(menu._audio_open and menu.choices.targets.values().any(func(item): return item.kind == "choose" and item.key == "audio_track" and item.value == 0), "Silent video still offers original-audio Auto/Off in the audio panel")
+	check(menu._audio_open and menu._audio_ids.values().has(0), "Silent video still offers original-audio Auto/Off in the audio panel")
 	I18n.use("zh")
-	check(main._audio_option_label({"id": 4, "external": true, "title": "Clone voice"}) == "配音", "Clone voice title is localized without changing native identity")
+	check(main._audio_option_label({"id": 4, "external": true, "title": "movie.si.mix.m4a"}) == "配音: movie.si.mix.m4a", "Clone voice title is localized without changing native identity")
 	check(main._audio_option_label({"id": 1, "language": "eng"}) == "音轨 1 · 英语", "Audio labels localize language and track number")
 	I18n.use("en"); menu.free(); video.free(); main.free()
 	print("Audio popup checks=%d failures=%d" % [checks, failures.size()])

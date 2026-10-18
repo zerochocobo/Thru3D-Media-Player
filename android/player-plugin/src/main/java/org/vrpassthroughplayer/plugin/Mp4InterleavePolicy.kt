@@ -5,14 +5,15 @@ import java.net.HttpURLConnection
 import java.net.URI
 
 /** A bounded metadata check; never scans mdat, changes the file, or probes a decoder.
- * Only a small, almost complete audio track preceding one video track is eligible.
- * 128 MiB leaves at least half of the existing 256 MiB demux cache for video. */
+ * Existing leading-audio compatibility keeps its 128-MiB cap. Other time/physical
+ * ordering mismatches instead retain bounded upstream windows and audio payload. */
 internal object Mp4InterleavePolicy {
     const val MAX_AUDIO_BYTES = 128L * 1024 * 1024
     const val MAX_METADATA_BYTES = 8 * 1024 * 1024
     private const val HEAD_BYTES = 32 * 1024
     private const val MIN_AUDIO_BYTES = 32L * 1024 * 1024
-    data class Decision(val sequential: Boolean = false, val leadingAudioBytes: Long = 0, val diagnostic: String = "default")
+    data class Decision(val sequential: Boolean = false, val leadingAudioBytes: Long = 0, val diagnostic: String = "default",
+                        val regionCache: Boolean = false, val audioChunks: List<AudioReadSpan> = emptyList())
     private fun fallback(error: Exception) = Decision(diagnostic = error.javaClass.simpleName + ":" +
         (error.stackTrace.firstOrNull { it.className.startsWith(Mp4InterleavePolicy::class.java.name) }?.lineNumber ?: 0))
     interface Reader {
@@ -88,7 +89,8 @@ internal object Mp4InterleavePolicy {
     }
     private fun child(bytes: ByteArray, parent: Box, name: String): Box =
         children(bytes, parent).single { it.type == name }
-    private data class Track(val kind: String, val offsets: LongArray, val sampleBytes: Long)
+    private data class Track(val kind: String, val offsets: LongArray, val sampleBytes: Long,
+                             val samples: Long, val mdia: Box, val stbl: Box)
     private fun track(bytes: ByteArray, trak: Box): Track? {
         val mdia = child(bytes, trak, "mdia")
         val hdlr = child(bytes, mdia, "hdlr"); require(hdlr.size >= hdlr.header + 12)
@@ -114,7 +116,56 @@ internal object Mp4InterleavePolicy {
             for (i in 0 until samples.toInt()) sum = Math.addExact(sum, u32(bytes, sz.data + 12 + i * 4))
             sum
         }
-        return Track(kind, offsets, sampleBytes)
+        return Track(kind, offsets, sampleBytes, samples, mdia, stbl)
+    }
+    /** Chunk decode boundaries, built from runs without expanding every sample.
+     * This is only reached after the native seek-storm signal. */
+    private fun chunkTimes(bytes: ByteArray, track: Track): DoubleArray {
+        val mdhd = child(bytes, track.mdia, "mdhd")
+        require(mdhd.size >= mdhd.header + 4)
+        val version = bytes[mdhd.data].toInt(); require(version in 0..1)
+        val scaleAt = mdhd.data + if (version == 1) 20 else 12
+        require(scaleAt <= mdhd.end - 4)
+        val scale = u32(bytes, scaleAt); require(scale > 0)
+        val sc = child(bytes, track.stbl, "stsc")
+        val ts = child(bytes, track.stbl, "stts")
+        require(sc.size >= sc.header + 8 && ts.size >= ts.header + 8)
+        val runs = u32(bytes, sc.data + 4).toInt()
+        val times = u32(bytes, ts.data + 4).toInt()
+        require(runs in 1..track.offsets.size && runs.toLong() * 12 == (sc.end - sc.data - 8).toLong())
+        require(times in 1..1000000 && times.toLong() * 8 == (ts.end - ts.data - 8).toLong())
+        require(u32(bytes, sc.data + 8) == 1L)
+        for (i in 0 until runs) {
+            val at = sc.data + 8 + i * 12
+            require(u32(bytes, at) in 1..track.offsets.size.toLong() && u32(bytes, at + 4) > 0 && u32(bytes, at + 8) > 0)
+            if (i > 0) require(u32(bytes, at) > u32(bytes, at - 12))
+        }
+        var sum = 0L
+        for (i in 0 until times) {
+            val at = ts.data + 8 + i * 8
+            require(u32(bytes, at) > 0 && u32(bytes, at + 4) > 0)
+            sum = Math.addExact(sum, u32(bytes, at))
+        }
+        require(sum == track.samples)
+        var run = 0; var timeRun = 0; var used = 0L; var sample = 0L; var ticks = 0L
+        val result = DoubleArray(track.offsets.size + 1)
+        for (i in track.offsets.indices) {
+            while (run + 1 < runs && u32(bytes, sc.data + 8 + (run + 1) * 12) <= i + 1L) run++
+            result[i] = ticks.toDouble() / scale
+            var remaining = u32(bytes, sc.data + 12 + run * 12)
+            sample = Math.addExact(sample, remaining); require(sample <= track.samples)
+            while (remaining > 0) {
+                require(timeRun < times)
+                val at = ts.data + 8 + timeRun * 8
+                val take = minOf(remaining, u32(bytes, at) - used)
+                ticks = Math.addExact(ticks, Math.multiplyExact(take, u32(bytes, at + 4)))
+                used += take; remaining -= take
+                if (used == u32(bytes, at)) { timeRun++; used = 0 }
+            }
+        }
+        require(sample == track.samples)
+        result[result.lastIndex] = ticks.toDouble() / scale
+        return result
     }
     private fun classify(bytes: ByteArray, fileSize: Long): Decision {
         val moov = box(bytes, 0, bytes.size); require(moov.type == "moov" && moov.end == bytes.size)
@@ -125,14 +176,51 @@ internal object Mp4InterleavePolicy {
         // Different audio/video selections must not inherit a guess about the first track.
         val audio = tracks.filter { it.kind == "soun" }.single()
         val video = tracks.filter { it.kind == "vide" }.single()
-        require(audio.sampleBytes in MIN_AUDIO_BYTES..MAX_AUDIO_BYTES && audio.offsets.size >= 2)
         val videoStart = video.offsets.first()
         val prefixBytes = videoStart - audio.offsets.first()
-        require(prefixBytes in MIN_AUDIO_BYTES..MAX_AUDIO_BYTES)
-        require(prefixBytes <= audio.sampleBytes && prefixBytes >= audio.sampleBytes - 1024 * 1024)
-        // Allow the final short audio chunk after video, as in the reported Resolve export.
-        require(audio.offsets.count { it < videoStart } >= audio.offsets.size - 1)
-        return Decision(true, prefixBytes, "leading_audio")
+        // Preserve the previously validated leading-audio compatibility path.
+        if (audio.sampleBytes in MIN_AUDIO_BYTES..MAX_AUDIO_BYTES && audio.offsets.size >= 2 &&
+            prefixBytes in MIN_AUDIO_BYTES..MAX_AUDIO_BYTES && prefixBytes <= audio.sampleBytes &&
+            prefixBytes >= audio.sampleBytes - 1024 * 1024 &&
+            audio.offsets.count { it < videoStart } >= audio.offsets.size - 1)
+            return Decision(true, prefixBytes, "leading_audio")
+        val audioTimes = chunkTimes(bytes, audio); val videoTimes = chunkTimes(bytes, video)
+        // Follow physical chunk order. A chunk ending >1 second ahead of the
+        // other track forces lavf away from its physical-order preference.
+        // No file/audio size, duration or minimum chunk-count eligibility gate.
+        var a = 0; var v = 0; var audioEnd = 0.0; var videoEnd = 0.0
+        while (a < audio.offsets.size && v < video.offsets.size) {
+            if (audio.offsets[a] < video.offsets[v]) audioEnd = audioTimes[++a]
+            else videoEnd = videoTimes[++v]
+            if (kotlin.math.abs(audioEnd - videoEnd) > 1.0)
+                return Decision(diagnostic = "noninterleaved_tracks", regionCache = true,
+                    audioChunks = if (audioEnd - videoEnd > 1.0) chunkSpans(bytes, audio, fileSize) else emptyList())
+        }
+        return Decision()
+    }
+
+    /** Locate compressed payload, excluding the potentially huge video gaps
+     * between audio chunks. The byte budget belongs to the cache, not eligibility. */
+    private fun chunkSpans(bytes: ByteArray, track: Track, fileSize: Long): List<AudioReadSpan> {
+        val sc = child(bytes, track.stbl, "stsc")
+        val sz = child(bytes, track.stbl, "stsz")
+        val runs = u32(bytes, sc.data + 4).toInt()
+        val fixed = u32(bytes, sz.data + 4)
+        var run = 0; var sample = 0L
+        return track.offsets.mapIndexed { index, start ->
+            while (run + 1 < runs && u32(bytes, sc.data + 8 + (run + 1) * 12) <= index + 1L) run++
+            val count = u32(bytes, sc.data + 12 + run * 12)
+            require(count <= track.samples - sample)
+            val length = if (fixed > 0) Math.multiplyExact(fixed, count) else {
+                var sum = 0L
+                repeat(count.toInt()) { i -> sum = Math.addExact(sum, u32(bytes, sz.data + 12 + (sample.toInt() + i) * 4)) }
+                sum
+            }
+            sample += count
+            val end = Math.addExact(start, length)
+            require(length > 0 && end <= fileSize && (index == track.offsets.lastIndex || end <= track.offsets[index + 1]))
+            AudioReadSpan(start, end)
+        }.also { require(sample == track.samples) }
     }
 
     /** Optional compatibility probe. Unsupported Range, malformed metadata, cancellation or

@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -54,8 +55,9 @@ func TestCloudRequestCancellationWhileWaitingForOtherOperation(t *testing.T) {
 
 type searchFixture struct {
 	model.Storage
-	addition struct{}
-	calls    int
+	addition     struct{}
+	calls        int
+	currentCalls int
 }
 
 func (d *searchFixture) Config() driver.Config          { return driver.Config{Name: "Player search fixture"} }
@@ -73,6 +75,15 @@ func (d *searchFixture) Link(context.Context, model.Obj, model.LinkArgs) (*model
 }
 func (d *searchFixture) PlayerSearch(ctx context.Context, dir model.Obj, query, kind, cursor string) ([]model.Obj, string, int64, bool, error) {
 	d.calls++
+	if query == "paged" {
+		offset, _ := strconv.Atoi(cursor)
+		items := make([]model.Obj, 48)
+		for i := range items {
+			name := fmt.Sprintf("paged %03d.mp4", offset+i)
+			items[i] = &model.Object{ID: fmt.Sprint(offset + i + 1), Path: "/folder/" + name, Name: name, Size: 128}
+		}
+		return items, strconv.Itoa(offset + 48), 1000, false, nil
+	}
 	if query == "miss" && cursor == "" {
 		return []model.Obj{&model.Object{ID: "unsupported", Path: "/paper.txt", Name: "paper.txt"}}, "next", -1, false, nil
 	}
@@ -85,6 +96,15 @@ func (d *searchFixture) PlayerSearch(ctx context.Context, dir model.Obj, query, 
 		items = append(items, &model.Object{ID: fmt.Sprint(i + 1), Path: "/folder/" + name, Name: name, Size: 128})
 	}
 	return items, "", 500, true, nil
+}
+
+func (d *searchFixture) PlayerSearchCurrent(ctx context.Context, dir model.Obj, query string) ([]model.Obj, bool, error) {
+	d.currentCalls++
+	items := make([]model.Obj, 200)
+	for i := range items {
+		items[i] = &model.Object{ID: fmt.Sprint(i + 1), Name: fmt.Sprintf("%s %03d.mp4", query, i), Size: 128}
+	}
+	return items, true, nil
 }
 
 // Runs while the parent integration test owns the core database and routes.
@@ -176,9 +196,30 @@ func assertCloudSearchCore(t *testing.T, call func(string, string, any) map[stri
 		req["cursor"] = page["next_cursor"]
 		page = call("POST", "/search", req)["data"].(map[string]any)
 	}
-	if total != 500 || native.calls != 1 || page["limited"] != true {
+	if total != 200 || native.calls != 1 || page["limited"] != true {
 		t.Fatal("bounded native response pagination failed", total, native.calls)
 	}
+	for _, scope := range []string{"current", "all"} {
+		native.calls, native.currentCalls = 0, 0
+		req["query"], req["scope"], req["cursor"] = "paged", scope, ""
+		page = call("POST", "/search", req)["data"].(map[string]any)
+		total, pages := 0, 0
+		for {
+			total += len(page["content"].([]any))
+			pages++
+			if page["next_cursor"] == "" {
+				break
+			}
+			req["cursor"] = page["next_cursor"]
+			page = call("POST", "/search", req)["data"].(map[string]any)
+		}
+		if total != 200 || pages != 5 || len(page["content"].([]any)) != 8 || page["limited"] != true ||
+			scope == "all" && (native.calls != 5 || native.currentCalls != 0) ||
+			scope == "current" && (native.calls != 0 || native.currentCalls != 1) {
+			t.Fatal("user search did not stop at 200 with a final 8-row page", scope, total, pages, native.calls, native.currentCalls)
+		}
+	}
+	req["scope"] = "all"
 	req["query"] = "miss"
 	req["cursor"] = ""
 	page = call("POST", "/search", req)["data"].(map[string]any)

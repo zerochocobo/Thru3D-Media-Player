@@ -141,7 +141,9 @@ func run() -> void:
 	var tip_ray: Vector3 = menu._buttons[1].node.to_global(Vector3(0, 0, 1))
 	menu.update_pointer("right_hand", tip_ray, -menu._buttons[1].node.global_basis.z, true)
 	capture.update(); await frames()
-	check(menu._tooltip and menu._tooltip.visible and slot_with(capture, menu._tooltip) == main_slot, "Tooltip joins the main layer")
+	var tip_slot := slot_with(capture, menu._tooltip)
+	check(menu._tooltip and menu._tooltip.visible and not tip_slot.is_empty() and tip_slot.nodes.has(menu._tooltip.get_child(0)) \
+		and tip_slot.layer.sort_order>main_slot.layer.sort_order, "Tooltip and its text are captured above the main layer")
 	check(capture.repaints == repaints + 1, "Hover repaints once")
 	capture.update(); capture.update(); await frames()
 	check(capture.repaints == repaints + 1, "Steady hover does not keep repainting")

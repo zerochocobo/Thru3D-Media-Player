@@ -446,7 +446,7 @@ class MediaServerClientTest {
                     val audio = library.sidecarAudio(uri)
                     assertEquals(provider, 1, audio.size)
                     if (audio.isNotEmpty()) {
-                        assertEquals(SidecarAudio.CLONE_TITLE, audio.single().title)
+                        assertEquals("film.si.mix.m4a", audio.single().title)
                         assertArrayEquals(mix, URI(audio.single().location).toURL().readBytes())
                     }
                     val tracks = library.sidecarSubtitles(uri)

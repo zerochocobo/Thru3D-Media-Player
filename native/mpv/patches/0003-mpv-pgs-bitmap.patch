@@ -9,7 +9,7 @@
  
  /*
   * Locking hierarchy:
-@@ -2247,3 +2249,57 @@
+@@ -2247,3 +2249,75 @@
      mp_mutex_unlock(&clients->lock);
      return found;
  }
@@ -18,6 +18,24 @@
 +MPV_EXPORT uint32_t mpv_quest_pgs_api_version(void)
 +{
 +    return QUEST_MPV_PGS_API_VERSION;
++}
++
++MPV_EXPORT uint32_t mpv_quest_text_queue_api_version(void)
++{
++    return QUEST_MPV_TEXT_QUEUE_API_VERSION;
++}
++
++MPV_EXPORT int mpv_quest_pump_text_queue(mpv_handle *ctx)
++{
++    if (!ctx)
++        return MPV_ERROR_INVALID_PARAMETER;
++    lock_core(ctx);
++    struct track *track = ctx->mpctx->current_track[0][STREAM_SUB];
++    double pts = ctx->mpctx->playback_pts;
++    if (track && track->d_sub && pts != MP_NOPTS_VALUE)
++        sub_read_cached_text(track->d_sub, pts);
++    unlock_core(ctx);
++    return 0;
 +}
 +
 +MPV_EXPORT int mpv_quest_get_pgs(mpv_handle *ctx, int width, int height,
@@ -67,9 +85,107 @@
 +    unlock_core(ctx);
 +    return 0;
 +}
+--- a/sub/dec_sub.c
++++ b/sub/dec_sub.c
+@@ -342,13 +342,18 @@
+ // enough packets were read and if the subtitle state updated in anyway. If
+ // packets_read is false, the player should wait until the demuxer signals new
+ // packets and retry.
+-void sub_read_packets(struct dec_sub *sub, double video_pts, bool force,
+-                      bool *packets_read, bool *sub_updated)
++static void read_packets(struct dec_sub *sub, double video_pts, bool force,
++                         bool *packets_read, bool *sub_updated, bool cached_only)
+ {
+     *packets_read = true;
+     mp_mutex_lock(&sub->lock);
++    if (cached_only && !sub->sd->driver->get_lines) {
++        mp_mutex_unlock(&sub->lock);
++        return;
++    }
+     video_pts = pts_to_subtitle(sub, video_pts);
+-    while (1) {
++    int queued_budget = 256;
++    while (!cached_only || queued_budget-- > 0) {
+         bool read_more = true;
+         if (sub->sd->driver->accepts_packet)
+             read_more = sub->sd->driver->accepts_packet(sub->sd, video_pts);
+@@ -369,7 +374,8 @@
+         double min_pts = delay < 0 || force ? video_pts : MP_NOPTS_VALUE;
+ 
+         struct demux_packet *pkt;
+-        int st = demux_read_packet_async_until(sub->sh, min_pts, &pkt);
++        int st = cached_only ? demux_read_packet_cached(sub->sh, &pkt)
++                             : demux_read_packet_async_until(sub->sh, min_pts, &pkt);
+         // Note: "wait" (st==0) happens with non-interleaved streams only, and
+         // then we should stop the playloop until a new enough packet has been
+         // seen (or the subtitle decoder's queue is full). This usually does not
+@@ -403,6 +409,18 @@
+         sub->sub_visible = visible;
+     }
+     mp_mutex_unlock(&sub->lock);
++}
++
++void sub_read_packets(struct dec_sub *sub, double video_pts, bool force,
++                      bool *packets_read, bool *sub_updated)
++{
++    read_packets(sub, video_pts, force, packets_read, sub_updated, false);
++}
++
++void sub_read_cached_text(struct dec_sub *sub, double video_pts)
++{
++    bool read = false, updated = false;
++    read_packets(sub, video_pts, true, &read, &updated, true);
+ }
+ 
+ // Redecode all cached packets if needed.
+--- a/sub/dec_sub.h
++++ b/sub/dec_sub.h
+@@ -59,6 +59,7 @@
+ bool sub_can_preload(struct dec_sub *sub);
+ void sub_preload(struct dec_sub *sub);
+ void sub_redecode_cached_packets(struct dec_sub *sub);
++void sub_read_cached_text(struct dec_sub *sub, double video_pts);
+ void sub_read_packets(struct dec_sub *sub, double video_pts, bool force,
+                       bool *packets_read, bool *sub_updated);
+ struct sub_bitmaps *sub_get_bitmaps(struct dec_sub *sub, struct mp_osd_res dim,
+--- a/demux/demux.c
++++ b/demux/demux.c
+@@ -2973,6 +2973,22 @@
+ // Note: when reading interleaved subtitles, the demuxer won't try to forcibly
+ // read ahead to get the next subtitle packet (as the next packet could be
+ // minutes away). In this situation, this function will just return -1.
++// Consumer-side nonblocking drain of packets already queued by this demuxer.
++// Unlike the async reader's unthreaded path this must never call thread_work.
++int demux_read_packet_cached(struct sh_stream *sh, struct demux_packet **out_pkt)
++{
++    *out_pkt = NULL;
++    struct demux_stream *ds = sh ? sh->ds : NULL;
++    if (!ds)
++        return 0;
++    struct demux_internal *in = ds->in;
++    mp_mutex_lock(&in->lock);
++    int r = ds->reader_head && !ds->reader_head->is_cached
++        ? dequeue_packet(ds, MP_NOPTS_VALUE, out_pkt) : 0;
++    mp_mutex_unlock(&in->lock);
++    return r;
++}
++
+ int demux_read_packet_async(struct sh_stream *sh, struct demux_packet **out_pkt)
+ {
+     return demux_read_packet_async_until(sh, MP_NOPTS_VALUE, out_pkt);
+--- a/demux/demux.h
++++ b/demux/demux.h
+@@ -304,6 +304,7 @@
+ 
+ void demuxer_feed_caption(struct sh_stream *stream, demux_packet_t *dp);
+ 
++int demux_read_packet_cached(struct sh_stream *sh, struct demux_packet **out_pkt);
+ int demux_read_packet_async(struct sh_stream *sh, struct demux_packet **out_pkt);
+ int demux_read_packet_async_until(struct sh_stream *sh, double min_pts,
+                                   struct demux_packet **out_pkt);
 --- /dev/null
 +++ b/include/mpv/quest_subtitle.h
-@@ -0,0 +1,31 @@
+@@ -0,0 +1,37 @@
 +/* Independent PGS bitmap extension for the pinned mpv client. */
 +#ifndef QUEST_MPV_SUBTITLE_H
 +#define QUEST_MPV_SUBTITLE_H
@@ -97,6 +213,12 @@
 + * clean video used for Alpha/depth inference. Empty cues also invoke callback. */
 +MPV_EXPORT int mpv_quest_get_pgs(mpv_handle *, int, int, double,
 +                               quest_mpv_pgs_callback, void *);
++/* Feed only already-buffered packets to the selected text decoder, even while
++ * paused. No media read/seek, no second demuxer, no synthetic playback clock.
++ * Call on the control thread before querying the public sub-lines property. */
++#define QUEST_MPV_TEXT_QUEUE_API_VERSION 1u
++MPV_EXPORT uint32_t mpv_quest_text_queue_api_version(void);
++MPV_EXPORT int mpv_quest_pump_text_queue(mpv_handle *);
 +#ifdef __cplusplus
 +}
 +#endif
