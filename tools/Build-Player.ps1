@@ -448,7 +448,9 @@ if ($LASTEXITCODE -ne 0) { throw 'APK MPV audio method inspection failed.' }
 $audioMethod = Get-Content (Join-Path $logDirectory 'mpv-audio-plugin-method.log') -Raw
 if (-not $audioMethod.Contains('.method public final set_mpv_audio(IIDZ)Z') -or -not $audioMethod.Contains('.annotation runtime Lorg/godotengine/godot/plugin/UsedByGodot;') -or -not $audioMethod.Contains('MpvVideoBridge;->setAudio(IIDZ)Z')) { throw 'APK MPV audio method/Godot annotation differs.' }
 & "$workspace\tools\Verify-MpvCandidate.ps1" -ToolRoot $ToolRoot -Candidate $MpvCandidate -ApkPath $apkPath
-foreach ($binding in @(@('set_mpv_subtitle(II)Z', 'setSubtitle(II)Z'), @('get_mpv_subtitles(IJ)Ljava/lang/String;', 'subtitles(IJ)Ljava/lang/String;'), @('get_mpv_subtitle_bitmap(IJ)[B', 'subtitleBitmap(IJ)[B'), @('set_mpv_narration(ILjava/lang/String;)Z', 'setNarration(ILjava/lang/String;)Z'))) {
+foreach ($binding in @(@('set_mpv_subtitle(II)Z', 'setSubtitle(II)Z'), @('get_mpv_subtitles(IJ)Ljava/lang/String;', 'subtitles(IJ)Ljava/lang/String;'), @('get_mpv_subtitle_bitmap(IJ)[B', 'subtitleBitmap(IJ)[B'), @('set_mpv_narration(ILjava/lang/String;)Z', 'setNarration(ILjava/lang/String;)Z'),
+    @('mpv_voice_clone_request(ILjava/lang/String;)Z', 'voiceCloneRequest(ILjava/lang/String;)Z'), @('mpv_voice_clone_status(I)Ljava/lang/String;', 'voiceCloneStatus(I)Ljava/lang/String;'),
+    @('narration_voice_manager_request(Ljava/lang/String;)Z', 'voiceManagerRequest(Ljava/lang/String;)Z'), @('narration_voice_manager_status()Ljava/lang/String;', 'voiceManagerStatus()Ljava/lang/String;'))) {
     $methodName = $binding[0].Split('(')[0]
     $methodLog = Join-Path $logDirectory ($methodName + '-dex.log')
     & "$env:ANDROID_HOME\cmdline-tools\latest\bin\apkanalyzer.bat" dex code --class org.vrpassthroughplayer.plugin.QuestPlayerPlugin --method $binding[0] $apkPath 2>&1 | Out-File $methodLog -Encoding utf8
@@ -470,8 +472,10 @@ if ($LASTEXITCODE -ne 0) { throw 'APK picker cancellation method missing.' }
 $pickerCancelMethod = Get-Content $pickerCancelPath -Raw
 if (-not $pickerCancelMethod.Contains('.method public final cancel_local_video_pick(I)V') -or -not $pickerCancelMethod.Contains('.annotation runtime Lorg/godotengine/godot/plugin/UsedByGodot;') -or -not $pickerCancelMethod.Contains('runOnHostThread')) { throw 'APK picker cancellation Godot/UI binding differs.' }
 $narrationBundle = Get-Content (Join-Path $workspace 'third_party/narration/model.json') -Raw | ConvertFrom-Json
+$voiceEncoderBundle = Get-Content (Join-Path $workspace 'third_party/narration/clone_model.json') -Raw | ConvertFrom-Json
 $buildManifest = [ordered]@{
     subtitle_narration = @{ enabled = $true; model_id = $narrationBundle.id; model_files = @($narrationBundle.files.PSObject.Properties).Count; model_bytes = ($narrationBundle.files.PSObject.Properties.Value.bytes | Measure-Object -Sum).Sum; bundled = $true }
+    voice_reference_encoder = @{ enabled = $true; model_id = $voiceEncoderBundle.id; model_files = @($voiceEncoderBundle.files.PSObject.Properties).Count; model_bytes = ($voiceEncoderBundle.files.PSObject.Properties.Value.bytes | Measure-Object -Sum).Sum; process = ':voice_clone'; bundled = $true }
     schema_version = 1
     built_utc = [DateTime]::UtcNow.ToString('o')
     application_id = $applicationId

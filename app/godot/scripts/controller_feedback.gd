@@ -82,10 +82,15 @@ func _motion(hand: String, state: Dictionary, sample: Dictionary, menu_open: boo
 		state.candidate = {"reference": reference, "time": state.clock, "frames": 1,
 			"reason": "translation" if distance >= WAKE_METRES else "aim_turn"}
 
-func update_hand(hand: String, pose: Variant, ray: Variant, point: Variant, engaged: bool, menu_open: bool, delta: float, world_enabled: bool = true, activity: Dictionary = {}, idle_menu: bool = false, pointer_engaged: bool = true) -> float:
+func update_hand(hand: String, pose: Variant, ray: Variant, point: Variant, engaged: bool, menu_open: bool, delta: float, world_enabled: bool = true, activity: Dictionary = {}, idle_menu: bool = false, pointer_engaged: bool = true, presentation_allowed: bool = true) -> float:
 	var state := _state(hand)
 	var step := maxf(0.0, delta) if is_finite(delta) else 0.0
 	state.age += step; state.pointer_age += step; state.clock += step
+	# Watching media has no input visuals until an interaction panel is opened.
+	# Clicks, shortcuts, motion and tracking recovery cannot bypass this gate.
+	if not presentation_allowed:
+		_clear_motion(state); state.opacity = 0.0
+		_hide(state); return 0.0
 	if not pose is Transform3D or not pose.is_finite():
 		_clear_motion(state); state.opacity = 0.0
 		_hide(state); return 0.0

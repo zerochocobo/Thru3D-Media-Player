@@ -1,0 +1,8 @@
+{
+  "id": "moss-nano-reference-ceff0d0749bf",
+  "directory": "narration/moss-nano-reference-ceff0d0749bf",
+  "files": {
+    "moss_audio_tokenizer_encode.onnx": { "bytes": 815775, "sha256": "eadea4a645abdcf98714c7aead122ee2ce7da6e080f9f80b977cd1ca8e19473a" },
+    "moss_audio_tokenizer_encode.data": { "bytes": 44507136, "sha256": "aa751265b2bab2887eac224484546b194875aa7494b607115439b3dc6b228a2c" }
+  }
+}

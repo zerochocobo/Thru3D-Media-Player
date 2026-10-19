@@ -879,7 +879,7 @@ struct Bridge final {
             std::fclose(file);
         }
     }
-    GLuint render_warp(Slot& slot, float shift, float convergence) {
+    GLuint render_warp(Slot& slot, float shift, float convergence, float photo_half = -1.f) {
         GLint major = 0, minor = 0; glGetIntegerv(GL_MAJOR_VERSION, &major); glGetIntegerv(GL_MINOR_VERSION, &minor);
         if (major * 10 + minor < 31) throw std::runtime_error("OpenGL ES 3.1 compute unavailable");
         const int W2 = width * 2;
@@ -894,7 +894,7 @@ struct Bridge final {
             if (glGetError() != GL_NO_ERROR) throw std::runtime_error("2D->3D warp allocation GL error");
         }
         // PTMediaServer _max_disparity_pixels: max(2, min(96, W * 0.035 * strength)); each eye moves half.
-        const float half = shift > 0.f ? std::max(2.f, std::min(96.f, width * shift)) * 0.5f : 0.f;
+        const float half = photo_half >= 0.f ? photo_half : (shift > 0.f ? std::max(2.f, std::min(96.f, width * shift)) * 0.5f : 0.f);
         if (slot.near != map_near || half != map_half || convergence != map_convergence) {
             map_timer.start();
             const auto uniforms = [&](GLuint prog) {
@@ -1064,8 +1064,7 @@ void photo_stereo(const unsigned char* rgba, int w, int h, const float* near, in
     // Limit the near map's falls for this strength (render_warp's own half shift, in model columns),
     // so the unchanged hole fill cannot repeat the subject's contour outside it.
     std::vector<float> limited(near, near + static_cast<size_t>(mw) * mh);
-    const float shift = 0.035f * strength;
-    const float half = shift > 0.f ? std::max(2.f, std::min(96.f, w * shift)) * 0.5f : 0.f;
+    const float half = quest::photo_half_shift(w,strength);
     const int cx = std::clamp(static_cast<int>(std::lround(rect[0] * mw)), 0, mw - 1);
     const int cy = std::clamp(static_cast<int>(std::lround(rect[1] * mh)), 0, mh - 1);
     const int cw = std::clamp(static_cast<int>(std::lround(rect[2] * mw)), 1, mw - cx);
@@ -1074,7 +1073,7 @@ void photo_stereo(const unsigned char* rgba, int w, int h, const float* near, in
     std::vector<float> right(limited);
     bridge.upload_alpha(1, limited.data(), right.data());
     // Use render_warp directly: the video width cap is a realtime budget, not a still-photo cap.
-    bridge.render_warp(slot, 0.035f * strength, 0.35f);
+    bridge.render_warp(slot, 0.035f * strength, 0.35f, half);
     glBindBuffer(GL_PIXEL_PACK_BUFFER, 0); glPixelStorei(GL_PACK_ALIGNMENT, 1);
     glReadPixels(0, 0, w * 2, h, GL_RGBA, GL_UNSIGNED_BYTE, output);
     check_gl("Photo stereo readback");

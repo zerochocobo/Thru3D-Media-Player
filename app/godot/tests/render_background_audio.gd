@@ -3,6 +3,7 @@ const Menu := preload("res://scripts/music_menu.gd")
 const Audio := preload("res://scripts/background_audio.gd")
 const Home := preload("res://scripts/library_menu.gd")
 const Photo := preload("res://scripts/photo_menu.gd")
+const Video := preload("res://scripts/player_menu.gd")
 const I18n := preload("res://scripts/i18n.gd")
 class RenderPlatform extends RefCounted:
 	func background_audio_storage() -> String: return JSON.stringify({"used_bytes": 256 * 1024 * 1024, "free_bytes": 78 * 1024 * 1024 * 1024, "total_bytes": 128 * 1024 * 1024 * 1024, "max_file_bytes": 512 * 1024 * 1024})
@@ -31,12 +32,15 @@ func _run() -> void:
 	var home := Home.new(); camera.add_child(home); home.position = Vector3(0, 0, -2.4); home.background_audio_provider = audio.snapshot
 	var photo := Photo.new(); camera.add_child(photo); photo.position = Vector3(0, 0, -2.4); photo.state_provider = func():
 		var state: Dictionary = audio.snapshot(); state.merge({"has_image": true, "count": 12, "index": 0, "title": "Mountain panorama.jpg"}); return state
+	var video := Video.new(); camera.add_child(video); video.position = Vector3(0, 0, -2.4); video.state_provider = func():
+		var state: Dictionary = audio.snapshot(); state.merge({"has_video": true, "playing": true, "playback_state": "playing", "source_uri": "tutorial.mp4", "title": "Tutorial.mp4", "audio_available": true, "volume": 67, "duration_ms": 600000, "position_ms": 123456}); return state
 	for language in ["zh", "zh_Hant", "ja", "en"]:
 		I18n.use(language)
-		for view in ["mini", "volume", "sequence", "single", "shuffle", "empty", "long-title", "lists", "tracks", "environment", "all", "queue", "custom", "add", "track-actions", "delete", "name", "importing", "home", "photo", "import-browser", "organize", "add-source", "playlist-actions", "delete-playlist", "choose-list", "empty-playlist", "custom-source", "deleted-source", "library-source", "paged-playlists", "long-source", "environment-end", "ambience-source", "home-hover", "home-hover-empty", "photo-hover", "photo-hover-paused", "import-preview", "import-preview-loading", "import-preview-stream", "import-preview-drag"]:
-			menu.dismiss(); home.dismiss(); photo.dismiss(); audio.importer.busy = false
+		for view in ["mini", "volume", "sequence", "single", "shuffle", "empty", "long-title", "lists", "tracks", "environment", "all", "queue", "custom", "add", "track-actions", "delete", "name", "importing", "home", "photo", "import-browser", "organize", "add-source", "playlist-actions", "delete-playlist", "choose-list", "empty-playlist", "custom-source", "deleted-source", "library-source", "paged-playlists", "long-source", "environment-end", "ambience-source", "home-hover", "home-hover-empty", "photo-hover", "photo-hover-paused", "import-preview", "import-preview-loading", "import-preview-stream", "import-preview-drag", "mini-video-on", "lists-video-on", "video-off", "video-on", "video-hover", "video-hover-paused", "settings-mini-off", "settings-mini-on", "settings-full-off", "settings-full-on"]:
+			menu.dismiss(); home.dismiss(); photo.dismiss(); video.dismiss(); audio.importer.busy = false
+			audio.play_during_video = ("video" in view and view != "video-off") or view in ["settings-mini-on", "settings-full-on"]
 			audio._preview_uri = ""; audio._preview_token = 0; audio._preview_loading = false; audio._preview_seekable = false
-			audio.paused = view == "photo-hover-paused"; audio.current = "" if view == "home-hover-empty" else "yunhai"
+			audio.paused = view in ["photo-hover-paused", "video-hover-paused"]; audio.current = "" if view == "home-hover-empty" else "yunhai"
 			camera.fov = 50 if "hover" in view else 45
 			audio.library.playlists.assign(base_playlists.duplicate(true))
 			var shown: Node3D = menu
@@ -59,8 +63,12 @@ func _run() -> void:
 			elif view in ["photo", "photo-hover", "photo-hover-paused"]:
 				shown = photo; photo.visible = true; photo.refresh_values()
 				if "hover" in view: photo.music_quick.expanded = true; photo.refresh_music_quick_controls()
+			elif view.begins_with("video-"):
+				shown = video; video.visible = true; video.refresh()
+				if "hover" in view: video.music_quick.expanded = true; video.refresh_music_quick_controls()
 			else:
 				menu.open(true); menu.compact = view in ["mini", "volume", "sequence", "single", "shuffle", "empty", "long-title", "custom-source", "deleted-source", "library-source", "long-source", "ambience-source"]
+				if view == "mini-video-on": menu.compact = true
 				audio.queue_source = "calm"; audio.queue_name = "Calm"
 				if view == "custom-source": audio.queue_source = "list_fixture"; audio.queue_name = "My panorama"
 				if view == "deleted-source": audio.queue_source = "list_deleted"; audio.queue_name = "Previous playlist"
@@ -89,8 +97,14 @@ func _run() -> void:
 				if view in ["track-actions", "delete"]: menu.target_track = "import_fixture"; menu.target_playlist = "list_fixture"; menu.modal = "confirm_file" if view == "delete" else "track"
 				if view == "name": menu.modal = "name"; menu.name_text = I18n.t("Playlist") + " 2"
 				if view == "importing": audio.importer.busy = true; audio.importer.progress = 0.67
+				if view.begins_with("settings-"):
+					menu.compact = "mini" in view; menu._open_modal("settings")
 				menu.refresh()
 			await process_frame; await RenderingServer.frame_post_draw; await RenderingServer.frame_post_draw
+			if shown == menu and menu.modal.is_empty():
+				check(menu._storage_labels.is_empty() and not menu.choices.targets.values().any(func(item): return item.get("key", "") == "audio_play_during_video"), "Clean playback footer: " + language + view)
+			if view.begins_with("settings-"):
+				check(menu._storage_labels.size() == 3 and menu.choices.targets.values().any(func(item): return item.get("key", "") == "audio_play_during_video"), "Settings contains music option and capacity: " + language + view)
 			check(viewport.get_texture().get_image().save_png(output.path_join(language + "-" + view + ".png")) == OK, "Save " + language + view)
 			if view in ["import-preview", "import-preview-drag"]:
 				var seek: RefCounted = home.audio_preview_seek
@@ -127,7 +141,7 @@ func _run() -> void:
 					var label: Label3D = control.node.get_child(0)
 					var width: float = shown.text_width(label.text, int(label.font_size / shown.TEXT_RASTER_SCALE))
 					check(width < control.rect.size.x + 0.005, "Button text fits " + language + view + " " + label.text)
-	menu.free(); home.free(); photo.free(); audio.player.free(); audio.player = null; audio.importer.free(); audio.free(); viewport.free(); wav = null
+	menu.free(); home.free(); photo.free(); video.free(); audio.player.free(); audio.player = null; audio.importer.free(); audio.free(); viewport.free(); wav = null
 	await process_frame
 	for failure in failures: push_error(failure)
 	print("Background audio render: %d checks, %d failures" % [checks, failures.size()]); quit(0 if failures.is_empty() else 1)

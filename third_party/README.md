@@ -25,3 +25,5 @@ The CodeLibs JCIFS jar is staged by Gradle with unused HTTP/HTTPS NTLM adapters 
 - Default narration runtime source: ONNX Runtime and nlohmann/json (MIT), SentencePiece and MOSS runtime semantics (Apache-2.0), with bundled subcomponent notices in `third_party/narration`. Only source recipes, notices and metadata are included; no narration weights, preset codes or reference recordings.
 
 - Built-in music and ambient recordings are excluded. Only their version-matched file metadata accompanies the player source; the project GPL license does not grant rights to excluded sound recordings. See `docs/AUDIO.md`.
+
+- Optional experimental Windows desktop video: checksum-pinned FFmpegPlayer source/dependency recipes, local native patch and MIT/LGPL notices in `third_party/desktop-video`. No DLLs or archives are included; see `docs/EXPERIMENTAL_CINEMA.md` for build scope.

@@ -23,7 +23,11 @@
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
     <!-- DLNA media servers describe themselves and answer Browse over plain LAN HTTP; Android
          blocks cleartext HttpURLConnection traffic unless the app allows it. -->
-    <application android:usesCleartextTraffic="true">
+    <!-- Horizontal Quest/Android launchers read the application banner before the square icon. -->
+    <application android:usesCleartextTraffic="true"
+        android:banner="@drawable/thru3d_launcher_banner">
+        <service android:name="org.vrpassthroughplayer.plugin.VoiceCloneService"
+            android:exported="false" android:process=":voice_clone" android:stopWithTask="true" />
         <meta-data android:name="org.godotengine.plugin.v2.QuestPlayer"
             android:value="org.vrpassthroughplayer.plugin.QuestPlayerPlugin" />
         <!-- MNN dlopens the vendor OpenCL driver for RVM; the app linker namespace

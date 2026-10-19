@@ -26,7 +26,7 @@ func run() -> void:
 		var uri := "file:///Series/Episode%02d.mp4" % i
 		store.toggle(uri, "山海之旅 · 第 %02d 集" % i, "video", {"type":"local","path":"/Series","stack":[{"id":"/Series","title":"Series"}]})
 		recent.opened(uri, "山海之旅 · 第 %02d 集" % i, false); recent.progress(uri, i * 300000, 2400000); recent.save()
-	menu.settings_provider = func():return {"privacy_mode":"local","favorites_lock_level":"relaxed"}
+	menu.settings_provider = func():return {"privacy_mode":"none","file_settings_memory":"all","favorites_lock_level":"relaxed"}
 	var folder_location := {"type":"local","path":"/Movies/连续剧","stack":[{"id":"/Movies","title":"Movies"},{"id":"/Movies/连续剧","title":"连续剧"}]}
 	var folder_uri: String = menu.collections.Location.folder_uri(folder_location)
 	var player := Player.new(); camera.add_child(player); player.position = Vector3(0, -0.12, -1.25)
@@ -37,7 +37,7 @@ func run() -> void:
 	photo.favorite_provider = func():return {"enabled":true,"selected":false,"locked":false}
 	for language in ["zh","zh_Hant","ja","en"]:
 		preload("res://scripts/i18n.gd").use(language)
-		for scene in ["recent-grid","recent-hover","favorites-list","favorites-hover","favorites-recover","favorites-selection","favorites-folder-list","favorites-folder-hover","favorites-locked-list","favorites-locked-grid","folder-toolbar","privacy-collapsed","privacy-open","privacy","pin","pin-confirm","pin-busy","video","video-depth","photo","photo-depth"]:
+		for scene in ["recent-grid","recent-hover","favorites-list","favorites-hover","favorites-recover","favorites-selection","favorites-folder-list","favorites-folder-hover","favorites-locked-list","favorites-locked-grid","folder-toolbar","privacy-collapsed","privacy-open","privacy","privacy-memory","privacy-clear","pin","pin-confirm","pin-busy","video","video-depth","photo","photo-depth"]:
 			menu.collections.modal = ""; menu.visible = true; player.visible = false; photo.visible = false
 			player._depth_open = false; photo._depth_open = false
 			store.busy = false
@@ -61,6 +61,8 @@ func run() -> void:
 				menu._local_entries = recent.list_recent()
 			elif scene in ["privacy-collapsed", "privacy-open"]: menu.section = Library.Section.SETTINGS; menu.tab = Library.GENERAL_TAB; menu.collections.privacy_expanded = false; menu.scroll = 0
 			elif scene == "privacy": store.protected = true; menu.section = Library.Section.SETTINGS; menu.tab = Library.GENERAL_TAB; menu.collections.privacy_expanded = true; menu.scroll = 3
+			elif scene in ["privacy-memory", "privacy-clear"]:
+				menu.section = Library.Section.SETTINGS; menu.tab = Library.GENERAL_TAB; menu.collections.privacy_expanded = true; menu.scroll = 3 if scene == "privacy-memory" else 999
 			elif scene == "pin": menu.collections.open_password("enable"); menu.collections.text = "12"
 			elif scene == "pin-confirm":
 				menu.collections.open_password("enable"); menu.collections.text = "0123"; menu.collections._submit()

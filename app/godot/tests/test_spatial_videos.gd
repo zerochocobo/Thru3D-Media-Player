@@ -17,7 +17,7 @@ class Probe extends "res://scripts/mpv_video_display.gd":
 		if advance_session: media.begin(media.session_id + 1)
 	func _apply_geometry() -> void:
 		pass
-	func _remember_mode() -> void:
+	func _remember_mode(_user_change: bool = true) -> void:
 		pass
 	func _unbind() -> void:
 		pass

@@ -79,10 +79,11 @@ func _run() -> void:
 			main._on_pointer_release("trigger_click", "right_hand")
 			check(main._grab.is_empty() and not menu.visible, "Release finishes without reopening controls")
 			for corner in [0, 1]:
+				menu.visible = true; menu.refresh()
 				video.set_screen_scale(1)
 				var hit: Vector3 = video.panel.to_global(video.screen_corner(corner))
 				main.test_ray = [eye, (hit - eye).normalized()]
-				main._begin_grab("right_hand")
+				main._begin_grab("right_hand", true)
 				check(main._grab.has("resize"), "%s curve %s corner %s begins resize" % [mode, curve, corner])
 				main._update_corner_hover()
 				check(video._handles[corner].visible, "Active corner bracket is visible")
@@ -90,6 +91,7 @@ func _run() -> void:
 				main._update_grab()
 				check(video.screen_scale > 1 and is_equal_approx(video.screen_distance, 2), "%s corner grows without moving distance" % mode)
 				main._on_pointer_release("trigger_click", "right_hand")
+			menu.dismiss()
 			video.set_screen_scale(1)
 			main._grab = {"hand": "right_hand", "moved": false}
 			menu.toggle()

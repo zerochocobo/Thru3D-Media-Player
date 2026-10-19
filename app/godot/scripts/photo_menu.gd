@@ -2,6 +2,46 @@ extends "res://scripts/player_menu.gd"
 ## Photo controls share the existing ray-menu surface, glyphs and projection picker, with no
 ## video timeline. Background audio belongs to the application, independent of the image queue.
 const PHOTO_PREVIOUS := 400
+signal online_image_requested(item: Dictionary, spherical: bool)
+const PHOTO_ONLINE := 985002
+const PHOTO_SAVE := 985003
+const OnlinePanorama := preload("res://scripts/online_panorama_panel.gd")
+var online := OnlinePanorama.new(self)
+
+func _process(delta: float) -> void:
+	super._process(delta)
+	online.tick(delta)
+
+func _draw() -> void:
+	if online.opened:
+		_clear_layout(); online.draw(); _finish_surface_layout(); return
+	super._draw()
+
+func dismiss() -> void:
+	online.hide()
+	super.dismiss()
+
+func _exit_tree() -> void:
+	online.shutdown()
+
+func has_pointer_capture() -> bool:
+	return not online.hand.is_empty() or super.has_pointer_capture()
+
+func press_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: bool) -> bool:
+	if online.press(hand,origin,direction,tracked): return true
+	return super.press_pointer(hand,origin,direction,tracked)
+
+func update_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: bool) -> void:
+	super.update_pointer(hand,origin,direction,tracked)
+	online.move(hand,origin,direction,tracked)
+
+func release_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: bool) -> void:
+	if online.release(hand,origin,direction,tracked): return
+	super.release_pointer(hand,origin,direction,tracked)
+
+func cancel_pointer(hand: String) -> void:
+	if online.hand==hand: online.cancel()
+	super.cancel_pointer(hand)
 
 func _supports_half_layouts() -> bool:
 	return false
@@ -24,7 +64,9 @@ const PHOTO_LAYOUT := 415
 const PHOTO_RETURN := 416
 const PHOTO_SHUFFLE := 417
 const PHOTO_PORTRAIT := 418
+const PHOTO_SPATIAL := 419
 const PHOTO_AUDIO := 430
+const PHOTO_STATIC := 432
 const PHOTO_LAYOUT_BASE := 470
 const PHOTO_WALL_ROWS := 490
 var _layout_open := false
@@ -38,8 +80,72 @@ var _gallery_start := 0
 func _depth_maximum() -> float:
 	return DepthStrength.PHOTO_MAX
 
+func _depth_span() -> Vector2:
+	return DEPTH_SPAN if _state.get("portrait_requested",false) else DEPTH_SPAN-Vector2(.03,.03)
+
 func _depth_icon_target() -> int:
 	return PHOTO_DEPTH
+
+func _spatial_mode() -> bool:
+	return bool(_state.get("spatial_preferred",true)) and not _state.get("portrait_requested",false)
+
+func _depth_tip() -> String:
+	return I18n.t("Spatial stereo" if _spatial_mode() else "Static 3D") if _state.get("native_stereo",false) else super._depth_tip()
+
+func _depth_caption() -> String:
+	if _state.get("native_stereo",false): return _depth_tip()
+	if _spatial_mode() and _state.get("depth_requested",false): return I18n.t("Spatial view")
+	return super._depth_caption()
+
+func _set_depth_at(y: float) -> void:
+	if _spatial_mode() or _state.get("native_stereo",false): return
+	var span:=_depth_span()
+	var fraction:=clampf((y-span.x)/(span.y-span.x),0,1)
+	var strength:=DepthStrength.from_fraction(fraction,_depth_maximum())
+	var level:=roundi(strength*100)
+	if level==_depth_sent: return
+	_depth_sent=level; depth_strength_requested.emit(strength); refresh_values()
+
+func _press_quick_icon(hand: String, target: int) -> bool:
+	if target==PHOTO_DEPTH and _state.get("native_stereo",false):
+		# This entry selects native viewing modes; double-click never converts or disables the pair.
+		_icon_tap.clear(); return false
+	return super._press_quick_icon(hand,target)
+
+func _photo_mode_option(target: int, title: String, y: float, selected: bool) -> void:
+	_button(target,title,Vector2(DEPTH_X,y),Vector2(.29,.065))
+	var button: Dictionary=_buttons.back()
+	button.base_color=SELECTED if selected else TILE
+	button["photo_mode_selected"]=selected
+	var caption: Label3D=button.node.get_child(0)
+	caption.horizontal_alignment=HORIZONTAL_ALIGNMENT_LEFT; caption.position.x=-.127
+	var ring:=_quad(Vector2(.030,.030),Vector3(.105,0,.004),ACCENT if selected else MUTED,13)
+	ring.material_override.set_shader_parameter("corner_radius",.015); button.node.add_child(ring)
+	var inside:=_quad(Vector2(.022,.022),Vector3(0,0,.002),button.base_color,14)
+	inside.material_override.set_shader_parameter("corner_radius",.011); ring.add_child(inside)
+	if selected:
+		var dot:=_quad(Vector2(.012,.012),Vector3(0,0,.002),ACCENT,15)
+		dot.material_override.set_shader_parameter("corner_radius",.006); inside.add_child(dot)
+
+func _draw_photo_modes(centre: float) -> void:
+	var panel:=_quad(Vector2(.32,.21),Vector3(DEPTH_X,centre,.001),Color(PANEL,1),10)
+	add_child(panel); _decorations.append(panel); _block_rays(panel,panel.mesh.size)
+	_photo_mode_option(PHOTO_SPATIAL,I18n.t("Spatial stereo"),centre+.045,_spatial_mode())
+	_photo_mode_option(PHOTO_STATIC,I18n.t("Static 3D"),centre-.045,not _spatial_mode())
+
+func _draw_depth() -> void:
+	var native: bool=_state.get("native_stereo",false)
+	if not native and _state.get("portrait_requested",false): super._draw_depth(); return
+	if not native and not _spatial_mode():
+		super._draw_depth()
+		var before:=get_children()
+		_draw_photo_modes(_depth_span().y+.21)
+		_raise_quick_popup(before)
+		return
+	# Native stereo always keeps its captured depth; spatial relief also has no adjustable rail.
+	var before:=get_children()
+	_draw_photo_modes(.18)
+	_raise_quick_popup(before)
 
 func _reset_navigation() -> void:
 	super._reset_navigation()
@@ -48,6 +154,7 @@ func _reset_navigation() -> void:
 	_wall_rows_open = false
 
 func navigate_back() -> bool:
+	if online.back(): return true
 	if has_pointer_capture() or not choices.opened.is_empty(): return super.navigate_back()
 	if _wall_rows_open: _wall_rows_open = false
 	elif _layout_open: _layout_open = false
@@ -59,6 +166,7 @@ func navigate_back() -> bool:
 func refresh_values() -> void:
 	composition_changed.emit()
 	if not visible: return
+	if online.opened: return
 	var latest: Dictionary = state_provider.call() if state_provider.is_valid() else {}
 	if _adjustment == "photo_view":
 		var layout_changed: bool = latest.get("geometry", 0) != _state.get("geometry", 0) or latest.get("has_image", false) != _state.get("has_image", false) or latest.get("layout", 0) != _state.get("layout", 0) or (int(latest.get("gallery_focus", -1)) < 0) != (int(_state.get("gallery_focus", -1)) < 0) \
@@ -91,7 +199,7 @@ func refresh_values() -> void:
 
 func _can_depth() -> bool:
 	return _state.get("has_image", false) and not _state.get("loading", false) and int(_state.get("geometry", 0)) == 0 \
-		and not _state.get("stereo", false) and _state.get("depth_available", false)
+		and (_state.get("native_stereo",false) or (not _state.get("stereo", false) and _state.get("depth_available", false)))
 
 func _bar_action_x(target: int) -> float:
 	return {PHOTO_AUDIO:-0.58,PHOTO_LAYOUT:-0.30,PHOTO_RETURN:-0.44,
@@ -123,6 +231,11 @@ func _draw_bar() -> void:
 	_round(107, "close", Vector2(_bar_action_x(107), 0.215), 0.08, has or _state.get("loading", false), false, I18n.t("Close image"))
 	_round(100, "folder", Vector2(_bar_action_x(100), 0.215), 0.08, true, false, I18n.t("Library"))
 	_round(108, "recenter", Vector2(_bar_action_x(108), 0.215), 0.08, true, false, I18n.t("Recenter"))
+	if OnlinePanorama.AVAILABLE:
+		_round(PHOTO_ONLINE, "globe", Vector2(0.56, 0.215), 0.08, true, online.opened, I18n.t("Online panoramas"))
+	if _state.get("can_save_pictures",false):
+		var saving: String=_state.get("pictures_save",{}).get("state","")
+		_round(PHOTO_SAVE,"check" if saving=="saved" else "download",Vector2(0.68,0.215),0.08,saving not in ["saving","saved"],saving=="saved",I18n.t("Saved to Pictures" if saving=="saved" else "Save to Pictures"))
 	_draw_favorite(Vector2(_bar_action_x(FAVORITE), 0.215))
 	if not music_quick: music_quick = preload("res://scripts/music_quick_controls.gd").new(self, func(): action_requested.emit("music_toggle"))
 	music_quick.draw(PHOTO_AUDIO, Vector2(_bar_action_x(PHOTO_AUDIO), 0.215), _state)
@@ -139,6 +252,12 @@ func _draw_bar() -> void:
 		_draw_layouts()
 	elif _mode_open:
 		_draw_modes()
+		if int(_state.get("geometry",0))==0 and not _state.get("native_stereo",false) and (_state.get("depth_requested",false) \
+			or _state.get("spatial_available",false) or _state.get("spatial_requested",false)):
+			var spatial_panel:=_quad(Vector2(1.06,0.105),Vector3(0,0.705,0.001),Color(PANEL,0.94),10)
+			_pointer_panels.append(spatial_panel); add_child(spatial_panel); _decorations.append(spatial_panel)
+			_button(PHOTO_SPATIAL,I18n.t("Spatial view"),Vector2(0,0.705),Vector2(0.35,0.065),_state.get("spatial_available",false) or _state.get("spatial_requested",false))
+			if _spatial_mode(): _buttons.back().base_color=SELECTED
 		for button in _buttons:
 			if button.target == MODE_STEREO + 3: button.enabled = bool(button.enabled) and _state.get("depth_available", false)
 	elif _gallery_open:
@@ -166,7 +285,7 @@ func _settings_popup() -> bool:
 	return false
 
 func _slider_geometry() -> Dictionary:
-	return {"title_x": -0.66, "title_size": 20, "value_x": -0.06, "value_size": 18, "left": 0.03, "width": 0.6, "hit": 0.1,
+	return {"title_x": -0.66, "title_size": TEXT_BODY, "value_x": -0.06, "value_size": TEXT_BODY, "left": 0.03, "width": 0.6, "hit": 0.1,
 		"height": 0.08, "thickness": 0.009, "knob": 0.025, "reset_x": 0.715, "reset_size": 0.065}
 
 func _adjustment_row(target: int, key: String, title: String, span: Vector3, y: float) -> void:
@@ -188,7 +307,7 @@ func _draw_adjustments() -> void:
 		_set_backdrop(Vector2(1.55, 0.50))
 		_button(PHOTO_ADJUST_BACK, "", Vector2(-0.66, 0.19), Vector2(0.09, 0.065), true, "up")
 		_button(CLOSE, "", Vector2(0.66, 0.19), Vector2(0.09, 0.065), true, "close")
-		_label(I18n.t(Photo.Gallery.NAMES[int(_state.layout)]), Vector3(0, 0.19, 0.004), 24)
+		_label(I18n.t(Photo.Gallery.NAMES[int(_state.layout)]), Vector3(0, 0.19, 0.004), TEXT_PAGE_TITLE).font = ui_bold_font()
 		_adjustment_row(450, "gallery_scale", "Image size", Vector3(Photo.Gallery.SCALE_LIMITS.x, Photo.Gallery.SCALE_LIMITS.y, 0.05), 0.02)
 		_adjustment_row(451, "gallery_distance", "Distance", Vector3(Photo.Gallery.DISTANCE_LIMITS.x, Photo.Gallery.DISTANCE_LIMITS.y, 0.1), -0.125)
 		_refresh_adjustments(); return
@@ -196,7 +315,7 @@ func _draw_adjustments() -> void:
 	_set_backdrop(Vector2(1.55, 0.74 if spatial else 0.64), Vector2(0, -0.05 if spatial else 0.0))
 	_button(PHOTO_ADJUST_BACK, "", Vector2(-0.66, 0.25), Vector2(0.09, 0.065), true, "up")
 	_button(CLOSE, "", Vector2(0.66, 0.25), Vector2(0.09, 0.065), true, "close")
-	_label(I18n.t("Adjust image"), Vector3(0, 0.25, 0.004), 24)
+	_label(I18n.t("Adjust image"), Vector3(0, 0.25, 0.004), TEXT_PAGE_TITLE).font = ui_bold_font()
 	_adjustment_row(450, "screen_distance", "Distance", Vector3(Photo.PHOTO_DISTANCE_LIMITS.x, Photo.PHOTO_DISTANCE_LIMITS.y, 0.1), 0.10)
 	_adjustment_row(451, "screen_scale", "Image size", Vector3(Photo.PHOTO_SCALE_LIMITS.x, Photo.PHOTO_SCALE_LIMITS.y, 0.1), -0.045)
 	_adjustment_row(452, "inspect_magnification", "Magnification", Vector3(Photo.INSPECT_LIMITS.x, Photo.INSPECT_LIMITS.y, 0.1), -0.19)
@@ -273,6 +392,8 @@ func _draw_gallery() -> void:
 		caption.modulate = MUTED
 
 func stick_scroll(amount: float, delta: float) -> void:
+	if online.opened:
+		online.scroll(amount,delta); return
 	if has_expanded_library():
 		if not _controls_pointer_capture(): expanded_library.stick_scroll(amount, delta)
 		return
@@ -286,6 +407,15 @@ func stick_scroll(amount: float, delta: float) -> void:
 var _scroll_after := 0
 
 func _activate(target: int) -> void:
+	if target==PHOTO_STATIC:
+		action_requested.emit("photo_static"); refresh()
+		return
+	if target==PHOTO_SPATIAL:
+		var operation:="photo_spatial_on" if _depth_open else "photo_spatial"
+		_mode_open=false; action_requested.emit(operation); refresh(); return
+	if target==PHOTO_ONLINE: action_requested.emit("online_panoramas"); return
+	if online.activate(target): return
+	if target==PHOTO_SAVE: action_requested.emit("save_pictures"); refresh_values(); return
 	if target == FAVORITE:
 		favorite_requested.emit(); refresh_values(); return
 	if _activate_footer(target): return
@@ -373,7 +503,12 @@ func _inspect_tip() -> String:
 	return I18n.t("Inspect") + "  %.1f×" % float(_state.get("inspect_magnification", Photo.DEFAULT_MAGNIFICATION))
 
 func _photo_status() -> String:
+	if not str(_state.get("spatial_error","")).is_empty(): return I18n.t(str(_state.spatial_error))
+	if _state.get("spatial_requested",false): return I18n.t("Spatial view" if _state.get("spatial_ready",false) else "Preparing spatial view")
 	if not _favorite_notice.is_empty(): return I18n.t(_favorite_notice)
+	var saved: Dictionary=_state.get("pictures_save",{})
+	if saved.get("state")=="saving": return I18n.t("Saving original image")
+	if saved.get("state")=="error": return I18n.t("Could not save image")
 	if not str(_state.get("loading_caption", "")).is_empty(): return str(_state.loading_caption)
 	if not str(_state.get("portrait_error", "")).is_empty(): return I18n.t(str(_state.portrait_error))
 	if _state.get("portrait_requested",false):
@@ -384,6 +519,8 @@ func _photo_status() -> String:
 	if _state.get("loading", false): return I18n.t("Preparing 3D" if _state.get("preparing_depth", false) else "Loading image")
 	if not str(_state.get("error", "")).is_empty(): return I18n.t(str(_state.error))
 	if not str(_state.get("depth_error", "")).is_empty(): return I18n.t(str(_state.depth_error))
+	if not str(_state.get("panorama_detail_error", "")).is_empty(): return I18n.t(str(_state.panorama_detail_error))
+	if _state.get("native_stereo",false): return I18n.t("Static 3D")
 	if _state.get("depth_requested", false): return I18n.t("3D on" if _state.get("depth_enabled", false) else "Preparing 3D")
 	return str(_state.get("source_size", ""))
 
@@ -391,7 +528,7 @@ func _update_highlights() -> void:
 	if _tips.has(PHOTO_INSPECT): _tips[PHOTO_INSPECT] = _inspect_tip()
 	super._update_highlights()
 	for button in _buttons:
-		if (button.target == PHOTO_INSPECT and _state.get("inspect", false)) or (button.target == PHOTO_DEPTH and _state.get("depth_requested", false)):
+		if (button.target == PHOTO_INSPECT and _state.get("inspect", false)) or (button.target == PHOTO_DEPTH and (_state.get("depth_requested", false) or _state.get("native_stereo",false))):
 			button.node.material_override.set_shader_parameter("surface_color", SELECTED)
 		if button.target == PHOTO_PORTRAIT and button.enabled and _state.get("portrait_requested",false) and not _hover.values().has(button.target):
 			button.node.material_override.set_shader_parameter("surface_color", Color(0.16, 0.31, 0.27))

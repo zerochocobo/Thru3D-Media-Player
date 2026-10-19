@@ -46,7 +46,7 @@ func items() -> Array[Dictionary]:
 	if mode == 0:
 		for fixed in [{"title": "Menu selection", "fixed": "Ray + trigger", "scope": "Menus"},
 			{"title": "Show / hide controls", "fixed": "Menu / trigger tap", "scope": "All media"},
-			{"title": "Controller / ray", "fixed": "Move clearly to wake · idle hides", "scope": "Menus hidden"},
+			{"title": "Hands / controllers", "fixed": "Shown with controls", "scope": "All media"},
 			{"title": "Resize picture", "fixed": "Corner + trigger", "scope": "Flat media"},
 			{"title": "Back", "fixed": "B / Y", "scope": "Menus"},
 			{"title": "Close video and return", "fixed": "B / Y", "scope": "Video"}]: result.append(fixed)
@@ -61,7 +61,7 @@ func items() -> Array[Dictionary]:
 		result.append({"title": "Push away / pull closer", "fixed": "Trigger + stick ↑ / ↓", "scope": "Flat photos"})
 		var ranks := {"play": 0, "Show / hide controls": 1, "Menu selection": 2, "Back": 3, "Close video and return": 4,
 			"back10": 5, "forward10": 6, "flat_zoom_in": 7, "flat_zoom_out": 8, "zoom_in": 9, "zoom_out": 10,
-			"volume_up": 11, "volume_down": 12, "Controller / ray": 13, "Resize picture": 14}
+			"volume_up": 11, "volume_down": 12, "Hands / controllers": 13, "Resize picture": 14}
 		var order: Array = bindings.definitions().map(func(item): return item.id)
 		result.sort_custom(func(a, b): return int(ranks.get(a.get("id", a.title), 20 + order.find(a.get("id", "")))) < int(ranks.get(b.get("id", b.title), 20 + order.find(b.get("id", "")))))
 		result.append({"title": "Movement range", "move_scope": true, "scope": "All media"})
@@ -188,7 +188,7 @@ func draw() -> void:
 		menu._glyph(RESET_ALL, "refresh", Vector2(0.77, 0.35), 0.065, true, I18n.t("Restore defaults"))
 		if mode == 0 and pending.is_empty():
 			menu._button(FILTER, I18n.t("All actions" if not all_actions else "Common actions"), Vector2(0.59, -0.50), Vector2(0.36, 0.06))
-			menu.set_label_size(menu._buttons.back().node.get_child(0), 16)
+			menu.set_label_size(menu._buttons.back().node.get_child(0), menu.TEXT_BODY)
 		header("Context", Vector2(-0.48, 0.235))
 		header("Action", Vector2(-0.245, 0.235))
 		var binding_title := I18n.t("Binding") + (" · " + combination_hint() if mode == 2 else "")
@@ -216,16 +216,18 @@ func draw() -> void:
 				label(row.fixed, Vector2(0.12, 0), 18, INK, node, 0.49)
 			else:
 				var text: String = I18n.t({"panel": "This panel", "media": "Picture + controls", "all": "All interfaces"}.get(bindings.move_scope, "This panel")) if row.has("move_scope") else binding_summary(row.id)
-				# The chevron shares the value label; no separate icon/control is allocated.
-				button.hover_labels.append(label(menu._fit_title(text, "  " + menu.CHOICE_MARK, 0.49, 18), Vector2(0.12, 0), 18, INK, node, 0.49, false))
+				var value := label(text, Vector2(0.12, 0), menu.TEXT_BODY, INK, node, 0.49, false)
+				button.hover_labels.append(value)
+				menu._select_face(button, value, Vector2(0.347, 0), Vector2(0.49, 0.059))
+				if value.text != text: menu._tips[target] = text
 				button["choice_key"] = SCOPE_KEY if row.has("move_scope") else BINDING_KEY + row.id
 	if mode == 1: draw_gesture()
 	elif not notice.is_empty() and pending.is_empty():
-		label(notice, Vector2(-0.48, -0.50), 15, menu.ACCENT, menu, 0.64)
+		label(notice, Vector2(-0.48, -0.50), menu.TEXT_AUX, menu.ACCENT, menu, 0.64)
 	elif mode == 0 and pending.is_empty():
-		label("While gripping: ↑ away · ↓ closer", Vector2(-0.48, -0.50), 15, menu.MUTED, menu, 0.80)
+		label("While gripping: ↑ away · ↓ closer", Vector2(-0.48, -0.50), menu.TEXT_AUX, menu.MUTED, menu, 0.80)
 	elif mode == 2 and pending.is_empty():
-		label("Same hand · either order", Vector2(-0.48, -0.50), 15, menu.MUTED, menu, 0.80)
+		label("Same hand · either order", Vector2(-0.48, -0.50), menu.TEXT_AUX, menu.MUTED, menu, 0.80)
 	if menu._max_scroll() > 0:
 		var span: Vector2 = menu._bar_span()
 		menu._button(menu.SCROLLBAR, "", Vector2(0.82, span.x - span.y / 2), Vector2(0.035, span.y), not modal())
@@ -248,7 +250,7 @@ func draw_selection() -> void:
 	panel.position.z = 0.028; panel.material_override.render_priority = 30
 	var title := I18n.t(selection.heading)
 	if not scope: title = str(selection.context) + " · " + title
-	selection_label(title, Vector2(0.12, 0.323), width - 0.15, 30, true)
+	selection_label(title, Vector2(0.12, 0.323), width - 0.15, menu.TEXT_TITLE, true)
 	if scope:
 		for index in selection.choices.size():
 			menu.choices.option(selection.choices[index], Vector2(0.12, 0.235 - index * 0.075), Vector2(0.56, 0.06))
@@ -288,7 +290,7 @@ func fit_bold(text: String, width: float, size: int) -> String:
 
 func header(text: String, point: Vector2, width: float = 0.6, translate: bool = true) -> void:
 	var value := I18n.t(text) if translate else text
-	var caption := label(fit_bold(value, width, 22), point, 22, INK, menu, width, false)
+	var caption := label(fit_bold(value, width, menu.TEXT_TITLE), point, menu.TEXT_TITLE, INK, menu, width, false)
 	caption.font = menu.ui_bold_font()
 
 func draw_conflict() -> void:
@@ -296,7 +298,7 @@ func draw_conflict() -> void:
 		if menu.choices.targets.has(button.target) or menu._row_target(button.target): button.enabled = false
 	var panel: MeshInstance3D = menu._decoration(Vector2(1.12, 0.54), Vector2(0.12, -0.04), menu.PANEL)
 	panel.position.z = 0.034; panel.material_override.render_priority = 30
-	conflict_label(I18n.t("Binding conflict"), 0.16, 22)
+	conflict_label(I18n.t("Binding conflict"), 0.16, menu.TEXT_TITLE)
 	conflict_label(I18n.t(bindings.definition(pending.id).title) + " · " + bindings.label(pending.id, mode == 2), 0.09, 18)
 	var occupied: String = " / ".join(pending.conflicts.map(func(id): return I18n.t(bindings.definition(id).title)))
 	conflict_label(occupied + " · " + Bindings.describe(pending.binding), 0.025, 18)

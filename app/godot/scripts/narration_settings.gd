@@ -1,8 +1,11 @@
 extends RefCounted
+signal voice_choice_changed
 const Methods := preload("res://scripts/platform_methods.gd")
 const Timing := preload("res://scripts/file_subtitle_timing.gd")
 const I18n := preload("res://scripts/i18n.gd")
 const Memory := preload("res://scripts/file_narration_memory.gd")
+const Languages := preload("res://scripts/narration_languages.gd")
+const VoiceStatus := preload("res://scripts/narration_voice_status.gd")
 var memory := Memory.new()
 var _defaults := {}
 # Available in normal Debug and Release; text subtitle selection controls visibility.
@@ -15,6 +18,21 @@ const PROFILES := ["zh_female", "zh_male", "en_female", "en_male", "ja_female", 
 var profile := ""
 var voice_origin := ""
 var voice_id := ""
+var voice_kind := "preset"
+var custom_voice := ""
+var clone_state: Dictionary = {}
+var _clone_poll_at := 0
+var _clone_session := 0
+var _clone_identity_session := 0
+var _clone_saved := ""
+var _clone_save_request := -1
+var _personal_voices: Array = []
+var _voice_catalog_revision := -1
+var _clone_request := 0
+var _voice_warning := ""
+var _global_voice_state := {}
+var _global_voice_poll_at := 0
+var _global_voice_started := false
 var line := 0
 var hide_subtitles := false
 var video: Node
@@ -30,6 +48,10 @@ var timing := "interrupt"
 var offset := 0.0
 var retry := 0
 var preview := 0
+var _preview_ui_request := -1
+var _preview_ui_busy := false
+var _preview_ui_until := 0
+var _preview_feedback := ""
 var _last_payload := ""
 var _language_source := ""
 var _video_source := ""
@@ -59,11 +81,15 @@ func _load_values(settings: ConfigFile, restore_enabled: bool = true) -> void:
 	voice_origin = str(settings.get_value("narration", "voice_origin", profile.get_slice("_", 0)))
 	if voice_origin not in VOICES: voice_origin = ""
 	voice_id = str(settings.get_value("narration", "voice_id", LEGACY_VOICES.get(profile, "")))
+	voice_kind = str(settings.get_value("narration", "voice_kind", "preset"))
+	if voice_kind not in ["preset", "custom"]: voice_kind = "preset"
+	custom_voice = str(settings.get_value("narration", "custom_voice", ""))
+	if not custom_voice.is_empty() and not Memory.valid_custom_voice(custom_voice): custom_voice = ""
 	var default_language := default_profile(I18n.language).get_slice("_", 0)
 	language = str(settings.get_value("narration", "language", default_language))
 	# Earlier builds saved auto as the implicit default, which blocked untagged
 	# sidecars. Preserve auto only when selected in the new explicit chooser.
-	if language not in ["auto", "zh", "en", "ja"] or (language == "auto" and int(settings.get_value("narration", "language_choice_version", 0)) < 1):
+	if (language != "auto" and language not in Languages.NAMES) or (language == "auto" and int(settings.get_value("narration", "language_choice_version", 0)) < 1):
 		language = default_language
 	for key in ["zh_voice", "en_voice", "ja_voice"]:
 		var saved_voice := str(settings.get_value("narration", key, get(key)))
@@ -79,7 +105,7 @@ func save(settings: ConfigFile) -> void:
 	settings.set_value("narration", "language_choice_version", 1)
 	for key in Memory.FIELDS:
 		if key != "enabled": settings.set_value("narration", key, _defaults[key])
-	var uri := _video_source if not _video_source.is_empty() else str(video.local_uri)
+	var uri := _video_source if not _video_source.is_empty() else (str(video.local_uri) if video.media.session_id > 0 else "")
 	if memory.remember(uri, _values()): memory.save()
 
 	for key in ["enabled", "rate", "voice_rates"]:
@@ -101,8 +127,11 @@ func reset_source(uri: String = "") -> void:
 	_video_source = uri
 	_last_payload = ""; _language_source = ""
 	if not _restoring_source:
+		_voice_warning = ""
 		source = -1
 		preview = 0; retry = 0
+		_preview_ui_request = -1; _preview_ui_busy = false; _preview_ui_until = 0
+		_preview_feedback = ""
 		var values := _defaults.duplicate(true)
 		values.merge(memory.lookup(uri), true)
 		_restore_values(values)
@@ -125,19 +154,31 @@ func current_text_subtitles() -> bool:
 
 func set_option(key: String, value: Variant) -> bool:
 	if not FEATURE_ENABLED: return false
+	if key == "narration_clone": return clone_command(value) if value is Dictionary else false
 	# A slider can release while auto-next is already opening another movie.
 	# Its final value belongs to the captured source and must never modify that movie.
 	if value is Dictionary:
 		if key not in ["narration_duck", "narration_volume", "narration_offset"] or str(value.get("source_uri", "")) != str(video.local_uri): return false
 		value = value.get("value")
-	if (key in ["narration_enabled", "narration_current"] and bool(value) or key == "narration_preview") and not current_text_subtitles(): return false
+	if key in ["narration_enabled", "narration_current"] and bool(value) and not current_text_subtitles(): return false
+	if key == "narration_preview" and not current_text_subtitles() and not (_clone_preview_busy() or _normal_preview_busy()): return false
 	if key in ["narration_source", "narration_current", "narration_language"]: _restoring_source = false
 	match key:
-		"narration_enabled": enabled = bool(value); source = -1; _sync_profile()
+		"narration_clone_audio": return clone_command({"operation": "candidates", "audio_id": int(value), "start": maxf(0, video.control.display_position_ms() / 1000.0 - 20)})
+		"narration_voice_kind":
+			if str(value) not in ["preset", "custom"]: return false
+			voice_kind = str(value)
+			if voice_kind == "custom" and not _personal_voices.is_empty() and not _has_voice(custom_voice): custom_voice = _fallback_voice()
+		"narration_custom_voice":
+			if not Memory.valid_custom_voice(str(value)): return false
+			custom_voice = str(value); voice_kind = "custom"
+		"narration_enabled":
+			enabled = bool(value); source = -1; _sync_profile()
+			if not enabled and _clone_preview_busy(): clone_command({"operation": "stop"})
 		"narration_current": enabled = bool(value); source = -1; _sync_profile()
 		"narration_source": source = maxi(-1, int(value))
 		"narration_language":
-			if str(value) not in ["auto", "zh", "en", "ja"]: return false
+			if str(value) != "auto" and str(value) not in Languages.NAMES: return false
 			language = str(value); _language_source = ""
 		"narration_profile":
 			if str(value) not in PROFILES and str(value) != "default": return false
@@ -153,19 +194,31 @@ func set_option(key: String, value: Variant) -> bool:
 			line = int(value)
 		"narration_hide_subtitles": hide_subtitles = bool(value)
 		"narration_voice":
-			if str(value) not in VOICES[selected_origin()]: return false
-			profile = ""; voice_id = str(value); _sync_profile()
+			var origin := ""
+			for lang in VOICES:
+				if str(value) in VOICES[lang]: origin = lang; break
+			if origin.is_empty(): return false
+			profile = ""; voice_origin = origin; voice_id = str(value); voice_kind = "preset"; _sync_profile()
 		"narration_duck", "narration_volume", "narration_offset":
 			if not (value is float or value is int) or not is_finite(float(value)): return false
 			var field := key.trim_prefix("narration_")
 			var limits := Vector2(0, 100) if field in ["duck", "volume"] else Vector2(-2, 2)
 			set(field, clampf(float(value), limits.x, limits.y))
 		"narration_retry": retry += 1
-		"narration_preview": preview += 1
+		"narration_preview":
+			if _clone_preview_busy():
+				_preview_feedback = "stopped"
+				return clone_command({"operation": "stop"})
+			if voice_kind == "custom" and not Memory.valid_custom_voice(custom_voice): return false
+			# All UI auditions use the same streaming/cache path, including presets.
+			return clone_command({"operation": "preview", "id": selected_voice(), "language": resolved_language()})
 		"narration_timing":
 			if str(value) != "interrupt": return false
 			timing = str(value)
 		_: return false
+	if key in ["narration_voice_kind", "narration_custom_voice", "narration_voice", "narration_voice_origin", "narration_profile"]:
+		_voice_warning = ""
+		for field in ["profile", "voice_origin", "voice_id", "zh_voice", "en_voice", "ja_voice", "voice_kind", "custom_voice"]: _defaults[field] = get(field)
 	apply(); video.changed.emit(); return true
 
 func selected_track() -> Dictionary:
@@ -186,26 +239,24 @@ func selected_origin() -> String:
 	return voice_origin if voice_origin in VOICES else default_profile(I18n.language).get_slice("_", 0)
 
 func selected_voice() -> String:
+	if voice_kind == "custom" and Memory.valid_custom_voice(custom_voice): return custom_voice
 	var origin := selected_origin()
 	if voice_id in VOICES[origin]: return voice_id
 	return str(get(origin + "_voice")) if str(get(origin + "_voice")) in VOICES[origin] else str(VOICES[origin][0])
 
 func _sync_profile() -> void:
 	_ui_locale = I18n.language
-	set(selected_origin() + "_voice", selected_voice())
+	if voice_kind != "custom": set(selected_origin() + "_voice", selected_voice())
 
 func resolved_language() -> String:
 	return declared_language() if language == "auto" else language
 
 func declared_language() -> String:
-	var tag := str(selected_track().get("language", "")).replace("_", "-").to_lower().split("-")[0]
-	if tag in ["zh", "zho", "chi", "cmn", "chs", "cht"]: return "zh"
-	if tag in ["en", "eng"]: return "en"
-	if tag in ["ja", "jpn"]: return "ja"
-	return ""
+	return Languages.canonical(str(selected_track().get("language", "")))
 
 func apply() -> void:
 	if not FEATURE_ENABLED: return
+	_poll_clone()
 	if profile.is_empty() and _ui_locale != I18n.language: _sync_profile()
 	if video.media.session_id <= 0 or (not enabled and _last_payload.is_empty()): return
 	var track := selected_track()
@@ -227,6 +278,7 @@ func apply() -> void:
 
 func snapshot() -> Dictionary:
 	if not FEATURE_ENABLED: return {"narration_available": false, "narration_enabled": false, "narration_current": false}
+	_poll_clone()
 	var lang := resolved_language()
 	var report: Dictionary = video.media.playback.get("narration", {})
 	var options: Array = [{"value": -1, "label": "Follow current subtitles"}]
@@ -238,10 +290,14 @@ func snapshot() -> Dictionary:
 	return {"narration_available": available(), "narration_enabled": enabled and available(), "narration_current": enabled and available() and source == -1,
 		"narration_source": source, "narration_sources": options, "narration_language": language,
 		"narration_source_uri": str(video.local_uri),
+		"narration_voice_kind": voice_kind, "narration_custom_voice": custom_voice, "narration_personal_voices": _personal_voices.duplicate(true),
+		"narration_clone_state": clone_state, "narration_clone_supported": Methods.supports(video.platform, "mpv_voice_clone_request"),
+		"narration_voice_warning": _voice_warning,
 		"narration_resolved_language": lang, "narration_language_required": lang.is_empty(), "narration_voice": selected_voice(), "narration_voice_origin": selected_origin(), "narration_resolved_origin": selected_origin(),
 		"narration_profile": profile if not profile.is_empty() else "default", "narration_line": line, "narration_hide_subtitles": hide_subtitles,
 		"narration_duck": duck, "narration_volume": volume, "narration_offset": offset,
-		"narration_preview_busy": bool(video.media.playback.get("narration", {}).get("preview", false)),
+		"narration_preview_busy": _clone_preview_busy() or _normal_preview_busy(),
+		"narration_preview_status": _preview_status(report),
 		"narration_preview_progress": int(report.get("preview_progress", -1)),
 		"narration_missing": int(video.media.playback.get("narration", {}).get("missing_cues", 0)),
 		"narration_miss_reason": str(report.get("last_miss_reason", "")),
@@ -280,26 +336,30 @@ static func rows(state: Dictionary, more: bool = false) -> Array:
 	var result: Array = [{"title": "Subtitle narration", "field": toggle("narration_enabled", bool(state.get("narration_enabled", false)))}]
 	if not state.get("narration_enabled", false): return result
 	var default_lang := default_profile(I18n.language).get_slice("_", 0)
-	result.append({"title": "Reading language", "field": {"key": "narration_language", "value": state.get("narration_language", default_lang), "choices": [{"value": "zh", "label": "Chinese"}, {"value": "en", "label": "English"}, {"value": "ja", "label": "Japanese"}, {"value": "auto", "label": "From subtitles"}], "rows": 4}})
-	var origins: Array = []
-	for lang in ["zh", "en", "ja"]:
-		origins.append({"value": lang, "label": I18n.t({"zh": "Chinese", "en": "English", "ja": "Japanese"}[lang])})
-	result.append({"title": "Voice native language", "field": {"key": "narration_voice_origin", "value": state.get("narration_voice_origin", default_lang), "choices": origins, "rows": 3}})
+	result.append({"title": "Reading language", "field": {"key": "narration_language", "value": state.get("narration_language", default_lang), "choices": Languages.choices(), "rows": 6, "heading": "Reading language"}})
+	var custom: bool = state.get("narration_voice_kind", "preset") == "custom"
+	result.append({"title": "Voice type", "field": {"key": "narration_voice_kind", "value": "custom" if custom else "preset", "choices": [{"value": "preset", "label": "Preset voices"}, {"value": "custom", "label": "Cloned voices"}]}})
 	var origin := str(state.get("narration_resolved_origin", default_lang))
 	var voices: Array = []
-	for voice in VOICES.get(origin, VOICES.en):
-		var info: Array = VOICE_INFO[voice]
-		voices.append({"value": voice, "label": I18n.t(str(info[0])) + " %d" % int(info[1])})
-	result.append({"title": "Voice", "field": {"key": "narration_voice", "value": state.get("narration_voice", VOICES[origin][0]), "choices": voices, "rows": 4}})
-	result.append({"title": "Hide subtitle display", "field": toggle("narration_hide_subtitles", bool(state.get("narration_hide_subtitles", false)))})
+	if custom:
+		for voice in state.get("narration_personal_voices", []): voices.append({"value": voice.id, "label": voice.name, "literal": true})
+		if not voices.is_empty(): result.append({"title": "My voices", "field": {"key": "narration_custom_voice", "value": state.get("narration_custom_voice", ""), "choices": voices, "rows": 4, "dropdown": true}})
+	else:
+		for lang in ["zh", "en", "ja"]:
+			var native_label := I18n.t({"zh": "Native Chinese", "en": "Native English", "ja": "Native Japanese"}[lang])
+			for voice in VOICES[lang]:
+				var info: Array = VOICE_INFO[voice]
+				voices.append({"value": voice, "label": native_label + " · " + I18n.t(str(info[0])) + " %d" % int(info[1]), "literal": true})
+		result.append({"title": "Voice", "field": {"key": "narration_voice", "value": state.get("narration_voice", VOICES.get(origin, VOICES[default_lang])[0]), "choices": voices, "rows": 6, "dropdown": true}})
+	var uri := str(state.get("narration_source_uri", state.get("source_uri", "")))
+	result.append({"title": "Narration volume", "field": {"key": "narration_volume", "value": state.get("narration_volume", 100.0), "slider": true, "span": Vector3(0, 100, 5), "unit": "%", "source_uri": uri}})
+	result.append({"title": "Lower original audio", "field": {"key": "narration_duck", "value": state.get("narration_duck", 75.0), "slider": true, "span": Vector3(0, 100, 5), "unit": "%", "source_uri": uri}})
 	var lines: Array = [{"value": 0, "label": "All lines"}]
 	for index in range(1, 3): lines.append({"value": index, "label": I18n.t("Line %d") % index})
-	result.append({"title": "Read line", "field": {"key": "narration_line", "value": state.get("narration_line", 0), "choices": lines, "rows": 3}})
+	result.append({"title": "Read line", "field": {"key": "narration_line", "value": state.get("narration_line", 0), "choices": lines, "compact": true}})
 	if more:
-		var uri := str(state.get("narration_source_uri", state.get("source_uri", "")))
-		result.append({"title": "Lower original audio", "field": {"key": "narration_duck", "value": state.get("narration_duck", 75.0), "slider": true, "span": Vector3(0, 100, 5), "unit": "%", "source_uri": uri}})
-		for field in [{"key": "volume", "title": "Narration volume", "span": Vector3(0, 100, 5), "unit": "%"},
-			{"key": "offset", "title": "Narration sync", "span": Vector3(-2, 2, 0.1), "unit": " s"}]:
+		result.append({"title": "Hide subtitle display", "field": toggle("narration_hide_subtitles", bool(state.get("narration_hide_subtitles", false)))})
+		for field in [{"key": "offset", "title": "Narration sync", "span": Vector3(-2, 2, 0.1), "unit": " s"}]:
 			result.append({"title": field.title, "field": {"key": "narration_" + field.key, "value": state.get("narration_" + field.key, 1.0 if field.key == "rate" else (100.0 if field.key == "volume" else 0.0)), "slider": true, "span": field.span, "unit": field.unit, "source_uri": uri}})
 	return result
 
@@ -309,3 +369,132 @@ func hides_display() -> bool:
 static func status_label(code: String) -> String:
 	if not FEATURE_ENABLED: return ""
 	return {"loading": "Preparing narration…", "verifying": "Checking narration model…", "model_loading": "Loading narration model…", "preparing": "Preparing speech…", "preview_buffering": "Preparing voice preview…", "subtitle_loading": "Reading subtitle timeline…", "ready": "Narration ready", "speaking": "Reading subtitles…", "model_missing": "Narration model not installed", "model_error": "Unable to load narration model", "subtitle_required": "Choose subtitles", "language_required": "Choose language", "unsupported_subtitle": "Text subtitles required", "timeline_error": "Unable to prepare subtitles", "speech_error": "Unable to read subtitle", "line_missing": "Selected line has no text"}.get(code, "")
+
+func clone_command(value: Dictionary) -> bool:
+	if not Methods.supports(video.platform, "mpv_voice_clone_request") or video.media.session_id <= 0: return false
+	var command := value.duplicate(true)
+	var operation := str(command.get("operation", ""))
+	if operation == "use": return set_option("narration_custom_voice", str(command.get("id", "")))
+	if operation in ["open", "preview", "original", "clone", "save", "rename", "delete"] or (operation == "list" and command.get("pause", false)):
+		video.pause_for_voice_clone()
+	if operation == "preview": _preview_feedback = "clone"
+	if operation == "open":
+		clone_state.opened = true
+		var track := selected_track()
+		if track.is_empty() or resolved_language().is_empty(): return false
+		command.merge({"subtitle_id": int(track.id), "line": line, "language": resolved_language(), "audio_id": video.audio_track_id, "position": video.control.display_position_ms() / 1000.0}, true)
+		command.subtitle_delay = video.subtitle_delay if source < 0 else video.subtitle_timing.for_track(video.local_uri, Timing.track_key(track))
+		command.audio_delays = {}
+		for audio_track in video._raw_tracks("audio"):
+			var track_id := int(audio_track.get("id", 0))
+			command.audio_delays[str(track_id)] = video.audio_delay if track_id == video.audio_track_id else video.audio_timing.for_track(video.local_uri, video.AudioTiming.track_key(audio_track))
+	_clone_request += 1; command.request = _clone_request
+	var accepted := bool(video.platform.mpv_voice_clone_request(video.media.session_id, JSON.stringify(command)))
+	if accepted and operation == "save": _clone_save_request = _clone_request
+	if accepted and Methods.supports(video.platform, "mpv_voice_clone_status"):
+		var immediate: Variant = JSON.parse_string(video.platform.mpv_voice_clone_status(video.media.session_id))
+		if immediate is Dictionary: clone_state = immediate
+		_clone_poll_at = 0
+		video.changed.emit()
+	return accepted
+
+func _poll_clone() -> void:
+	if not Methods.supports(video.platform, "mpv_voice_clone_status") or video.media.session_id <= 0: return
+	var now := Time.get_ticks_msec()
+	if now < _clone_poll_at: return
+	_clone_poll_at = now + 150
+	if _clone_session != video.media.session_id:
+		_clone_session = video.media.session_id; clone_state = {}
+		if _clone_identity_session != video.media.session_id:
+			_clone_identity_session = video.media.session_id; _clone_saved = ""; _clone_save_request = -1; _preview_feedback = ""
+		clone_command({"operation": "list"})
+	var parsed: Variant = JSON.parse_string(video.platform.mpv_voice_clone_status(video.media.session_id))
+	if not parsed is Dictionary: return
+	clone_state = parsed
+	var catalog_ready := _accept_voice_catalog(clone_state)
+	var saved: Dictionary = clone_state.get("saved", {})
+	if _clone_save_request >= 0 and int(clone_state.get("save_request", -2)) == _clone_save_request and not saved.is_empty() and str(saved.get("id", "")) != _clone_saved:
+		_clone_saved = str(saved.id)
+		_clone_save_request = -1
+		if set_option("narration_custom_voice", _clone_saved): voice_choice_changed.emit()
+	if catalog_ready and voice_kind == "custom" and not _has_voice(custom_voice):
+		var missing := not custom_voice.is_empty()
+		custom_voice = _fallback_voice()
+		if custom_voice.is_empty() and missing: voice_kind = "preset"
+		if missing: _voice_warning = "Saved voice unavailable; using another voice"
+		if missing or not custom_voice.is_empty():
+			_last_payload = ""; voice_choice_changed.emit()
+
+func _clone_preview_busy() -> bool:
+	return VoiceStatus.preview_busy(clone_state)
+
+func _preview_status(report: Dictionary) -> String:
+	if _preview_feedback.is_empty(): return ""
+	if not (_clone_preview_busy() or _normal_preview_busy()) and video.requested_play:
+		_preview_feedback = ""; return ""
+	if _preview_feedback == "stopped": return "Voice preview stopped"
+	if _preview_feedback == "clone": return VoiceStatus.label(clone_state)
+	if str(report.get("state", "")) in ["model_missing", "model_error", "speech_error"]: return status_label(str(report.state))
+	if not _normal_preview_busy(): return "Voice preview finished"
+	if int(report.get("preview_request", -1)) < _preview_ui_request: return "Preparing voice preview…"
+	var code := display_status(report)
+	if code in ["ready", "speaking"]: return "Playing voice preview…" if not report.get("synthesizing", false) else "Preparing voice preview…"
+	return status_label(code)
+
+func _has_voice(id: String) -> bool:
+	return _personal_voices.any(func(voice): return str(voice.get("id", "")) == id)
+
+func _fallback_voice() -> String:
+	var id := str(_defaults.get("custom_voice", ""))
+	return id if _has_voice(id) else (str(_personal_voices[0].id) if not _personal_voices.is_empty() else "")
+
+func _accept_voice_catalog(state: Dictionary) -> bool:
+	# A newly requested list can still contain an old empty catalog. Only a
+	# completed disk read is authoritative for deletion/default repair.
+	if not state.has("voices") or not state.get("voices_ready", state.get("state", "") not in ["preparing", "idle"]): return false
+	var revision := int(state.get("voices_revision", -1))
+	if revision >= 0 and revision < _voice_catalog_revision: return false
+	_voice_catalog_revision = maxi(_voice_catalog_revision, revision)
+	_personal_voices = state.voices.duplicate(true)
+	_repair_voice_defaults(_personal_voices)
+	return true
+
+func _normal_preview_busy() -> bool:
+	var report: Dictionary = video.media.playback.get("narration", {})
+	if _preview_ui_request >= 0 and int(report.get("preview_request", -1)) < _preview_ui_request and Time.get_ticks_msec() < _preview_ui_until:
+		return _preview_ui_busy
+	return bool(report.get("preview", false))
+
+func _repair_voice_defaults(voices: Array) -> void:
+	var id := str(_defaults.get("custom_voice", ""))
+	if _defaults.get("voice_kind", "preset") == "custom" and not id.is_empty() and not voices.any(func(voice): return str(voice.get("id", "")) == id):
+		_defaults.voice_kind = "preset"; _defaults.custom_voice = ""; voice_choice_changed.emit()
+
+func global_voice_command(value: Dictionary) -> bool:
+	if not Methods.supports(video.platform, "narration_voice_manager_request"): return false
+	var command := value.duplicate(true)
+	if (command.get("operation", "") in ["preview", "rename", "delete", "use"] or command.get("pause", false)) and video.media.session_id > 0: video.pause_for_voice_clone()
+	if command.get("operation", "") == "use":
+		var id := str(command.get("id", ""))
+		if not Memory.valid_custom_voice(id) or not _global_voice_state.get("voices", []).any(func(voice): return str(voice.get("id", "")) == id): return false
+		_defaults.voice_kind = "custom"; _defaults.custom_voice = id; voice_choice_changed.emit(); return true
+	if command.get("operation", "") == "preview": command.language = resolved_language() if not resolved_language().is_empty() else default_profile(I18n.language).get_slice("_", 0)
+	var accepted := bool(video.platform.narration_voice_manager_request(JSON.stringify(command)))
+	if accepted: _global_voice_poll_at = 0
+	return accepted
+
+func voice_manager_snapshot() -> Dictionary:
+	var supported := Methods.supports(video.platform, "narration_voice_manager_status")
+	var now := Time.get_ticks_msec()
+	if supported and now >= _global_voice_poll_at:
+		_global_voice_poll_at = now + 150
+		if not _global_voice_started:
+			_global_voice_started = true; global_voice_command({"operation": "list"})
+		var parsed: Variant = JSON.parse_string(video.platform.narration_voice_manager_status())
+		if parsed is Dictionary and not parsed.is_empty():
+			var previous_voices: Array = _personal_voices.duplicate(true)
+			_global_voice_state = parsed
+			if _accept_voice_catalog(parsed) and _personal_voices != previous_voices and not clone_state.get("opened", false) and not _clone_preview_busy(): _clone_session = 0
+	return {"source_uri": "global-voice-manager", "global_voice_manager": true, "narration_clone_supported": supported,
+		"narration_clone_state": _global_voice_state, "narration_personal_voices": _personal_voices.duplicate(true),
+		"narration_voice_kind": _defaults.get("voice_kind", "preset"), "narration_custom_voice": _defaults.get("custom_voice", ""), "narration_available": false}

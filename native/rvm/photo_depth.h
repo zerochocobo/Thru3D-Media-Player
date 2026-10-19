@@ -5,6 +5,15 @@
 #include <vector>
 
 namespace quest {
+// Still-photo range: cap the 100% base first, then apply strength. Capping after strength
+// made large photographs hit 96px before 100%, leaving the 100..200% rail ineffective.
+// Video retains its own realtime cap. Fractional strengths must not snap to a 2px minimum.
+inline float photo_half_shift(int width, float strength) {
+    if (width < 1 || !std::isfinite(strength) || strength < 0.f || strength > 2.f)
+        throw std::invalid_argument("Invalid photo disparity strength");
+    return std::max(2.f, std::min(96.f, width * 0.035f)) * strength * 0.5f;
+}
+
 // Still-image normalization. Only the content rectangle contributes to the band or
 // foreground dilation; the surrounding padding is extended from its nearest content
 // pixel so linear sampling cannot pull artificial depth into the picture's edges.

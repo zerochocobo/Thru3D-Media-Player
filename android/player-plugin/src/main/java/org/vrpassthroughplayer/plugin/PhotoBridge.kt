@@ -34,7 +34,7 @@ internal class PhotoBridge(
 ) : Closeable {
     private val current = AtomicInteger(0)
     private val files = ConcurrentHashMap<Int, PhotoSource>()
-    private class DepthJob(val id: Int, val source: PhotoSource, @Volatile var strength: Float, val stereo: Boolean,
+    private class DepthJob(val id: Int, val source: PhotoSource, @Volatile var strength: Float, val stereo: Boolean, val sceneToken: Int,
                            @Volatile var owner: PhotoBridge, @Volatile var background: Boolean) {
         @Volatile var cancelled = false
     }
@@ -136,10 +136,12 @@ internal class PhotoBridge(
                 }
                 val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
                 BitmapFactory.decodeFile(source.path, bounds)
-                require(bounds.outWidth in 1..32768 && bounds.outHeight in 1..32768) { "PHOTO_DECODE_FAILED" }
+                require(bounds.outWidth in 1..65535 && bounds.outHeight in 1..65535) { "PHOTO_DECODE_FAILED" }
                 require(bounds.outMimeType in setOf("image/jpeg", "image/png", "image/webp")) { "PHOTO_FORMAT_UNSUPPORTED" }
                 val metadata = JSONObject().put("state", "ready").put("width", bounds.outWidth).put("height", bounds.outHeight)
-                val orientation = runCatching { ExifInterface(source.path).getAttributeInt(ExifInterface.TAG_ORIENTATION, 1) }.getOrDefault(1)
+                val orientation = runCatching {
+                    PhotoHeader.normalizedOrientation(ExifInterface(source.path).getAttributeInt(ExifInterface.TAG_ORIENTATION, 1))
+                }.getOrDefault(1)
                 metadata.put("orientation", orientation)
                 // GPano is a positive hint only; ordinary 2:1 photos stay flat.
                 val header = source.inputStream().use { input ->
@@ -159,8 +161,13 @@ internal class PhotoBridge(
                 // Correct late EXIF/GPano hints before a large preview is decoded and encoded.
                 checkCurrent(id)
                 emit("photo_ready", id, JSONObject(metadata.toString()).put("state", "metadata").toString())
+                val regionSource = orientation == 1 && bounds.outWidth > 8192 && bounds.outWidth == 2 * bounds.outHeight
+                // An inexpensive full-sphere fallback remains visible during original-pixel region loading.
+                // Regions are activated only by an explicit full-sphere mode, never by aspect ratio alone.
+                val previewEdge = 8192
+                if (regionSource) metadata.put("region_source", source.path)
                 var sample = 1
-                while (bounds.outWidth / sample > 8192 || bounds.outHeight / sample > 8192 ||
+                while (bounds.outWidth / sample > previewEdge || bounds.outHeight / sample > previewEdge ||
                     bounds.outWidth.toLong() / sample * (bounds.outHeight / sample) > MAX_PIXELS) sample *= 2
                 var output = source
                 if (sample > 1) {
@@ -266,22 +273,26 @@ internal class PhotoBridge(
     }
     private fun checkCurrent(id: Int) { if (closed || current.get() != id) throw InterruptedException() }
 
+    fun cancelSceneDepth(id: Int, token: Int) = synchronized(PhotoCache.lock) {
+        depthJobs[id]?.takeIf { it.sceneToken == token && token > 0 }?.cancelled = true
+    }
+
     /** One inference per photo on the shared model thread, using the independent photo model.
      * Color stays at source display resolution; only content contributes to depth normalization. */
-    fun depth(id: Int, strength: Float = 1f, stereo: Boolean = false, background: Boolean = preload): Boolean {
+    fun depth(id: Int, strength: Float = 1f, stereo: Boolean = false, background: Boolean = preload, sceneToken: Int = 0): Boolean {
         if (!strength.isFinite() || strength !in 0f..2f) return false
         val job = synchronized(PhotoCache.lock) {
             if (closed) return false
             val source = files[id] ?: return false
-            if (source.nativeStereo) return false
+            if (source.nativeStereo && sceneToken == 0) return false
             val existing = depthJobs[id]
-            if (existing != null && !existing.cancelled && existing.stereo == stereo) {
+            if (existing != null && !existing.cancelled && existing.stereo == stereo && existing.sceneToken == sceneToken) {
                 existing.strength = strength
                 existing.background = background
                 return true
             }
             depthJobs.remove(id)?.cancelled = true
-            DepthJob(id, source.retain(), strength, stereo, this, background).also {
+            DepthJob(id, source.retain(), strength, stereo, sceneToken, this, background).also {
                 depthJobs[id] = it
                 inFlightSources[it] = source
             }
@@ -307,7 +318,7 @@ internal class PhotoBridge(
                 } else {
                     stage(id,"input")
                     val inputStarted = System.nanoTime()
-                    val input = PhotoDepthInput.prepare(source)
+                    val input = PhotoDepthInput.prepare(source, selectLeftEye = job.source.nativeStereo && job.sceneToken > 0)
                     val inputMs = (System.nanoTime() - inputStarted) / 1_000_000.0
                     val content = input.content
                     checkDepth()
@@ -348,7 +359,8 @@ internal class PhotoBridge(
                     android.util.Log.i("QuestPhotoDepth", "request=$id cached=${cached != null} reused=${result.optBoolean("model_reused")} total_ms=${result.optDouble("total_ms")} " +
                         "input_ms=${result.optDouble("input_ms")} depth_ms=${result.optDouble("depth_ms")} priority=${result.optJSONObject("runtime")?.optInt("priority",-1)} " +
                         "stereo_ms=${result.optDouble("stereo_total_ms")} stereo_gpu_us=${result.optLong("stereo_render_us")}")
-                    job.owner.emit(if (job.background) "photo_preload_depth" else "photo_depth",id,result.toString())
+                    if (job.sceneToken > 0) result.put("scene_token",job.sceneToken)
+                    job.owner.emit(if (job.sceneToken > 0) "photo_scene_depth" else if (job.background) "photo_preload_depth" else "photo_depth",id,result.toString())
                 }
             } catch (_: InterruptedException) { }
             catch (error: Throwable) {
@@ -356,7 +368,8 @@ internal class PhotoBridge(
                     job.owner.depthJobs.remove(id,job)
                     job.owner.stage(id,"failed")
                     android.util.Log.w("QuestPhotoDepth", "Photo depth failed", error)
-                    job.owner.emit(if (job.background) "photo_preload_depth" else "photo_depth", id, "{\"state\":\"error\",\"error\":\"PHOTO_DEPTH_FAILED\"}")
+                    val failure = JSONObject().put("state","error").put("error","PHOTO_DEPTH_FAILED").put("scene_token",job.sceneToken)
+                    job.owner.emit(if (job.sceneToken > 0) "photo_scene_depth" else if (job.background) "photo_preload_depth" else "photo_depth", id, failure.toString())
                 } }
             }
             finally { synchronized(PhotoCache.lock) {

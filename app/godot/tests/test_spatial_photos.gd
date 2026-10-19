@@ -67,6 +67,12 @@ func _run() -> void:
 	check(photo.snapshot().native_stereo and not photo.snapshot().depth_available and not photo.set_depth(true),
 		"Native photo cannot accidentally be sent through 2D-to-3D again")
 	check(is_equal_approx(photo._flat.size.x / photo._flat.size.y, 1.25), "Display size uses one eye's aspect ratio")
+	check(photo.set_spatial_mode(false,true),"Native viewing mode accepts the global static choice")
+	photo.open_image("file://second.HEIC","second.HEIC"); await settle(photo)
+	check(not photo.spatial_preferred and photo.snapshot().native_stereo,"Another Apple photo keeps the global static choice")
+	photo.spatial_preferred=true
+	photo.open_image("file://camera.HEIC","camera.HEIC"); await settle(photo)
+	check(photo.spatial_preferred,"Reopening an Apple photo keeps the global spatial choice")
 	check(photo.material.get_shader_parameter("native_stereo") and is_equal_approx(photo.material.get_shader_parameter("spatial_disparity"),.02),
 		"Native disparity reaches the photo material")
 	check(photo.toggle_eye_order() and photo.material.get_shader_parameter("swap_eyes"), "Existing eye swap works for native stereo")

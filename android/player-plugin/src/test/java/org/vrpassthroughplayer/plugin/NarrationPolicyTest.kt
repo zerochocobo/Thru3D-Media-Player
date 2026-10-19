@@ -5,6 +5,33 @@ import org.junit.Test
 import org.json.JSONArray
 
 class NarrationPolicyTest {
+    @Test fun pinnedLanguagesAcceptAliasesAndUseTheirOwnPreviewText() {
+        val expected=setOf("zh","en","ja","de","es","fr","it","hu","ko","ru","fa","ar","pl","pt","cs","da","sv","el","tr")
+        assertEquals(expected,NarrationPolicy.languages)
+        for(code in expected) {
+            assertEquals(code,NarrationPolicy.Config.parse("""{"language":"$code"}""").language)
+            assertEquals(code,NarrationPolicy.language(code.uppercase(java.util.Locale.ROOT)+"_REGION"))
+            assertTrue(NarrationPolicy.previewText(code).isNotBlank())
+            if(code!="en")assertNotEquals(NarrationPolicy.previewText("en"),NarrationPolicy.previewText(code))
+        }
+        mapOf("deu" to "de","ger" to "de","fra" to "fr","fre" to "fr","spa" to "es","ita" to "it","hun" to "hu",
+            "kor" to "ko","rus" to "ru","fas" to "fa","per" to "fa","ara" to "ar","pol" to "pl","por" to "pt",
+            "ces" to "cs","cze" to "cs","dan" to "da","swe" to "sv","ell" to "el","gre" to "el","tur" to "tr")
+            .forEach {(tag,code)->assertEquals(code,NarrationPolicy.language(tag))}
+        assertEquals("",NarrationPolicy.language("vi"))
+        assertThrows(IllegalArgumentException::class.java){NarrationPolicy.Config.parse("""{"language":"vi"}""")}
+        assertThrows(IllegalArgumentException::class.java){NarrationPolicy.previewText("und")}
+    }
+    @Test fun additionalLanguagesNeverReceiveEnglishNumberExpansion() {
+        val text="2026 / 12,5% / 007 / ١٢٣"
+        for(code in NarrationPolicy.languages-setOf("zh","en")) {
+            assertEquals(text,NarrationPolicy.normalize(text,code))
+            val cues=NarrationPolicy.cues(JSONArray("""[{"start":1,"end":4,"text":"$text"}]"""),code)
+            assertEquals(text,cues.single().text)
+        }
+        assertEquals("كيف حالك؟",NarrationPolicy.speechText("كيف حالك؟","ar"))
+        assertEquals("Πώς είσαι;",NarrationPolicy.speechText("Πώς είσαι;","el"))
+    }
     @Test fun onlyExplicitLanguageMetadataSelectsLanguage() {
         listOf("zh", "chi", "cmn", "zho", "zh-Hant", "zh_Hans_CN").forEach { assertEquals("zh", NarrationPolicy.language(it)) }
         listOf("en", "eng", "en-US").forEach { assertEquals("en", NarrationPolicy.language(it)) }
@@ -149,7 +176,7 @@ class NarrationPolicyTest {
         val groups=mapOf("zh" to listOf("Xiaoyu","Yuewen","Lingyu","Zhiming","Junhao"),
             "en" to listOf("Ava","Bella","Adam"),"ja" to listOf("Mei","Saki","Mortis","Umiri"))
         assertEquals(12,groups.values.flatten().distinct().size)
-        for(voice in groups.values.flatten()) for(language in listOf("zh","en","ja")) {
+        for(voice in groups.values.flatten()) for(language in NarrationPolicy.languages) {
             val config=NarrationPolicy.Config.parse("{\"language\":\"$language\",\"voice_override\":\"$voice\"}")
             assertEquals(voice,config.voice(language));assertEquals(language,config.language)
         }

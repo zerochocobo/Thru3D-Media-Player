@@ -45,13 +45,6 @@ const MARGIN := 0.012
 const GRID := 0.05
 ## A low-rate refresh catches visuals changed without a signal (late thumbnails, text).
 const KEEPALIVE_MS := 250
-## Session kill switch: a sustained frame-rate collapse while menu layers show returns to the
-## eye-buffer menu until restart. Catastrophic cases only (the swapchain churn this guards against
-## ran at ~1 FPS); not a tuning loop. Heavy playback alone runs at 30-50 FPS on XR2 Gen1 headsets
-## (PICO 4 at 90 Hz), so a half-rate threshold blamed the video on the menu and left it blurred.
-const WATCHDOG_SECONDS := 2.0
-const WATCHDOG_FPS_RATIO := 0.15
-const WATCHDOG_STRIKES := 2
 const HOLE_SHADER := preload("res://shaders/menu_layer_hole.gdshader")
 const COPY_SHADER := preload("res://shaders/menu_layer_copy.gdshader")
 const SURFACE_SHADER := preload("res://shaders/menu_surface.gdshader")
@@ -96,9 +89,6 @@ var fallback_reason := "not_configured"
 var repaints := 0
 var _painted_ms := 0
 var _last_menu: Node3D
-var _watch_time := 0.0
-var _watch_frames := 0
-var _watch_strikes := 0
 var bands: Array[Dictionary] = []
 ## Planes captured as bands, by kind: {"relative", "rank", "nodes", "width", "overflow"}.
 var banded: Dictionary = {}
@@ -281,27 +271,10 @@ func _node_added(node: Node) -> void:
 			if menu == active: invalidate()
 			return
 
-func _process(delta: float) -> void:
+func _process(_delta: float) -> void:
+	# Frame rate cannot identify menu-layer faults; playback and style edits can also stall.
+	# Keep the fixed swapchains and capture density through slow frames.
 	update()
-	_watchdog(delta)
-
-func _watchdog(delta: float) -> void:
-	if not enabled or force_capture or not display or not display.menu_layers:
-		_watch_time = 0.0; _watch_frames = 0; _watch_strikes = 0; return
-	_watch_time += delta; _watch_frames += 1
-	if _watch_time < WATCHDOG_SECONDS: return
-	var refresh := 72.0
-	if xr is OpenXRInterface and xr.display_refresh_rate > 0.0: refresh = xr.display_refresh_rate
-	var fps := _watch_frames / _watch_time
-	_watch_time = 0.0; _watch_frames = 0
-	# One slow window is a load hitch (menu opening, a video starting); a collapse persists.
-	_watch_strikes = _watch_strikes + 1 if collapsed(fps, refresh) else 0
-	if _watch_strikes >= WATCHDOG_STRIKES:
-		DiagnosticLog.record("menu_composition_disabled", {"fps": snappedf(fps, 0.1), "refresh": refresh})
-		shutdown("watchdog_fps")
-
-static func collapsed(fps: float, refresh: float) -> bool:
-	return fps < refresh * WATCHDOG_FPS_RATIO
 
 ## Debug comparison: pauses the layers and restores the eye-buffer menu without freeing them.
 func set_active(on: bool) -> void:
@@ -314,7 +287,7 @@ func set_active(on: bool) -> void:
 		set_process(false); eye_camera.cull_mask = eye_mask
 		fallback_reason = "debug_paused"
 
-## Returns to the original eye-buffer menu for the rest of the session.
+## Explicit lifecycle cleanup; frame timing never invokes this.
 func shutdown(reason: String) -> void:
 	# Layers stay allocated (sub-pixel, not rendering): freeing them is the unsafe path above.
 	_restore(); _hide()

@@ -15,13 +15,15 @@ import kotlin.math.abs
 
 /** One media source, one clock, bounded in-memory PCM. Neither subtitles nor PCM are logged/saved. */
 internal class NarrationController(private val context: () -> Context?, private val source: () -> Source?,
-                                   private val gain: (Double) -> Unit, private val audioChanged: () -> Unit = {}) : AutoCloseable {
+                                   private val gain: (Double) -> Unit, private val audioChanged: () -> Unit = {},
+                                   private val runtime: SharedNarrationEngine) : AutoCloseable {
     data class Source(val handle: Long, val path: String, val caFile: String, val allowed: Boolean,
                       val volume: Double, val muted: Boolean, val delay: Double, val subtitleCommand: Long,
                       val playRequested: Boolean, val audioDelay: Double = 0.0)
     private class Speech(val cue: NarrationPolicy.Cue, val epoch: Long, val preview: Boolean = false) {
         val chunks = mutableListOf<FloatArray>()
         var samples = 0; var cursor = 0; var done = false; var failed = false; var rtf = 0.0
+        var rawSamples=0;var localTempo=1.0
     }
     private val lock = Any()
     private val clock = Executors.newSingleThreadScheduledExecutor { Thread(it, "SubtitleNarrationClock") }
@@ -36,7 +38,9 @@ internal class NarrationController(private val context: () -> Context?, private 
     private var startupDeadlineNs = 0L
     private var pauseDeadlineNs = 0L
     private var epoch = 1L
-    private var engine = 0L
+    @Volatile private var engineLease: SharedNarrationEngine.Lease?=null
+    private val engine get()=engineLease?.handle ?: 0L
+    @Volatile private var cloneSuspended=false
     private var loading = false
     private var modelRequest = 0L
     private val previewCache = linkedMapOf<String, List<FloatArray>>()
@@ -143,7 +147,13 @@ internal class NarrationController(private val context: () -> Context?, private 
     private var renderedFinalized = false
     private var outputRawSeconds = 0.0
     private var outputPcmSeconds = 0.0
+    private var rhythmPauseRemovedMs=0.0
+    private var rhythmDragRemovedMs=0.0
+    private var rhythmBufferSamples=0
+    private var levelGainDb=0.0
+    private var levelLimitedFrames=0
     val enabled get() = config.enabled && !closed
+    val previewVolume get() = config.volume
     val wantsAudio get() = enabled && soundEligible
     val wantsPreview get() = wantsAudio && previewRequested
     val wantsPauseDrain get() = enabled && pausingWithVideo
@@ -178,6 +188,11 @@ internal class NarrationController(private val context: () -> Context?, private 
         return true
     }
     fun status() = JSONObject(report)
+    fun suspendForClone(value: Boolean)=synchronized(lock) {
+        if(cloneSuspended==value)return@synchronized
+        cloneSuspended=value;invalidate(false)
+    }
+    fun awaitCloneDrain(){synthesis.submit {}.get(30,TimeUnit.SECONDS)}
     fun diagnosticStatus() = synchronized(lock) {JSONObject(report).put("outcomes",org.json.JSONArray(outcomes.toList()))}
     private fun outcome(speech: Speech, kind: String) = outcome(speech.cue,kind,speech.preview)
     private fun outcome(cue: NarrationPolicy.Cue, kind: String, preview: Boolean=false) {
@@ -236,7 +251,7 @@ internal class NarrationController(private val context: () -> Context?, private 
         ++epoch
         generationFloor=Double.NaN
         ++synthesisToken
-        if (engine > 0) runCatching { NarrationNative.cancel(engine, synthesisToken) }
+        engineLease?.cancel()
         reading=true;readThrough=-1.0;sharedSequence=-1;sharedAhead=0.0
         windows=emptyList();displayedCues.clear();selectedLineEmpty=false;cache.clear();spoken.clear();prepared.clear();runtimeFailed=false;missingCues=0;lastMissReason=""
         previewPending=false;previewActive=false;previewPosition=0.0
@@ -248,44 +263,38 @@ internal class NarrationController(private val context: () -> Context?, private 
         if(startupHold) {startupHold=false;audioChanged()}
     }
     private fun unload() {
-        val old=engine;engine=0
+        val old=engineLease;engineLease=null
         ++modelRequest;loading=false;modelPhase="off";previewCache.clear();precisionModelLoaded=false;lastPrecisionRecovery=false;lastPrecisionLoadMs=0.0
-        if (old > 0) synthesis.execute { NarrationNative.destroy(old) }
+        if (old != null) synthesis.execute {old.close()}
     }
     private fun prepareModel() {
         if (loading || engine > 0 || modelFailure.isNotEmpty()) return
         loading=true;modelPhase="verifying";verifiedBytes=0;val token=modelRequest
         synthesis.execute {
             Process.setThreadPriority(5)
-            var loaded=0L;var failure="model_error"
+            var loaded: SharedNarrationEngine.Lease?=null;var failure="model_error"
             try {
-                val app=context() ?: error("Unavailable")
-                val manifest=app.assets.open("narration/model.json").bufferedReader().use { JSONObject(it.readText()) }
-                val directory=File(app.filesDir,manifest.getString("directory")).canonicalFile
-                val files=manifest.getJSONObject("files")
-                modelBytes=files.keys().asSequence().sumOf {files.getJSONObject(it).getLong("bytes")}
                 val verifyingStarted=System.nanoTime()
-                require(directory.path.startsWith(app.filesDir.canonicalFile.path+File.separator))
-                NarrationModels.ensure(directory,files,
-                    { name -> app.assets.open(manifest.getString("directory")+"/"+name) },
-                    { synchronized(lock) { !closed && token==modelRequest && config.enabled } },
-                    { bytes -> verifiedBytes+=bytes })
-                verificationMs=(System.nanoTime()-verifyingStarted)/1e6
-                modelPhase="loading";val loadingStarted=System.nanoTime()
-                loaded=NarrationNative.create(directory.path)
+                var loadingStarted=verifyingStarted
+                val active={ synchronized(lock){!closed && token==modelRequest && config.enabled && !cloneSuspended} }
+                val progress: (String,Long,Long)->Unit={phase,bytes,total->
+                    modelPhase=phase;verifiedBytes=bytes;modelBytes=total
+                    if(phase=="loading"){verificationMs=(System.nanoTime()-verifyingStarted)/1e6;loadingStarted=System.nanoTime()}
+                }
+                loaded=engineLease?.also {it.ensure(active,progress)} ?: runtime.acquire(active,progress)
                 modelLoadMs=(System.nanoTime()-loadingStarted)/1e6
             } catch (_: LinkageError) { /* Missing/incompatible runtime is a recoverable model error. */
             } catch (_: Exception) { /* Deliberately no URI, subtitle text or model exception in logs. */ }
             synchronized(lock) {
-                if (closed || token!=modelRequest || !config.enabled) {
-                    if(loaded>0)synthesis.execute {NarrationNative.destroy(loaded)}
+                if (closed || token!=modelRequest || !config.enabled || cloneSuspended) {
+                    if(loaded!=null&&loaded!==engineLease){val unused=loaded;synthesis.execute {unused?.close()}}
+                    if(token==modelRequest)loading=false
                     return@synchronized
                 }
                 loading=false
-                engine=loaded;modelFailure=if(loaded==0L)failure else ""
-                if(loaded>0)modelLoadCount++
-                modelPhase=if(loaded>0)"ready" else "error"
-                if(engine>0)NarrationNative.cancel(engine,epoch)
+                engineLease=loaded;modelFailure=if(loaded==null)failure else ""
+                if(loaded!=null)modelLoadCount++
+                modelPhase=if(loaded!=null)"ready" else "error"
             }
         }
     }
@@ -340,34 +349,54 @@ internal class NarrationController(private val context: () -> Context?, private 
             rejectedLate++
             spoken+=cue.key;lateSkipped++;missingCues++;outcome(cue,"late_before_generation");return
         }
-        val speech=Speech(cue,epoch,previewActive);cache[cue.key]=speech;val model=engine;val token=epoch;val voice=config.voice(language)
+        val speech=Speech(cue,epoch,previewActive);cache[cue.key]=speech;val model=engineLease ?: return;val token=epoch;val voice=config.voice(language)
         val text=NarrationPolicy.speechText(cue.text,language)
         synthesizing=true;generating=speech
         val nativeToken=++synthesisToken
-        NarrationNative.cancel(model,nativeToken)
+        model.cancel()
         synthesisStartedNs=System.nanoTime();firstChunkMs=0.0
         synthesis.execute {
             var result: JSONObject?=null
             for(attempt in 0..1) {
+              lateinit var rhythm: NarrationRhythm
+              val level=NarrationLevel {chunk->synchronized(lock){
+                  check(!closed&&token==epoch&&cache[cue.key]===speech){"voice_cancelled"}
+                  check(cache.values.sumOf {it.samples}+chunk.size<=48000*2*56)
+                  speech.localTempo=rhythm.tempoCeiling
+                  speech.chunks+=chunk;speech.samples+=chunk.size
+                  if(speech.preview||config.timing=="interrupt")prepared+=cue.key
+              }}
+              rhythm=NarrationRhythm(text,language){level.append(it)}
+              synchronized(lock){speech.localTempo=rhythm.tempoCeiling}
               try {
                 val frames=NarrationPolicy.generationFrameBudget(text,language,cue.end-cue.start,if(attempt==0)48 else 64)
-                result=JSONObject(NarrationNative.synthesizePrecisionConfigured(model,text,voice,nativeToken,frames,0,attempt>0,object: NarrationNative.Sink {
-                    override fun onChunk(epoch: Long, pcm: FloatArray): Boolean = synchronized(lock) {
-                        if(closed||this@NarrationController.epoch!=token||synthesisToken!=epoch||cache[cue.key]!==speech||
-                            cache.values.sumOf { it.samples }+pcm.size>48000*2*56)return@synchronized false
-                        if(speech.samples==0)firstChunkMs=(System.nanoTime()-synthesisStartedNs)/1e6
-                        speech.chunks+=pcm;speech.samples+=pcm.size;if(speech.preview||config.timing=="interrupt")prepared+=cue.key;true
+                result=JSONObject(runtime.synthesize(model,text,voice,nativeToken,frames,attempt>0,
+                    active={ synchronized(lock){!closed && token==epoch && synthesisToken==nativeToken && !cloneSuspended} },
+                    codes={NarrationAssets.voices(context() ?: error("Unavailable")).load(voice)},sink=object: NarrationNative.Sink {
+                    override fun onChunk(epoch: Long, pcm: FloatArray): Boolean {
+                        val active=synchronized(lock){
+                            if(closed||this@NarrationController.epoch!=token||synthesisToken!=epoch||cache[cue.key]!==speech)false
+                            else {if(speech.rawSamples==0)firstChunkMs=(System.nanoTime()-synthesisStartedNs)/1e6;speech.rawSamples+=pcm.size;true}}
+                        if(!active)return false
+                        rhythm.append(pcm)
+                        return synchronized(lock){!closed&&this@NarrationController.epoch==token&&synthesisToken==epoch}
                     }
                 }))
+                if(result?.optBoolean("eos")==true&&!result!!.optBoolean("cancelled")){rhythm.finish();level.finish()}
+                synchronized(lock){if(token==epoch&&cache[cue.key]===speech){
+                    speech.localTempo=rhythm.tempoCeiling;rhythmPauseRemovedMs=rhythm.stats.removedPauseSamples/96.0
+                    rhythmDragRemovedMs=rhythm.stats.removedDragSamples/96.0;rhythmBufferSamples=rhythm.stats.maxBufferedSamples
+                    levelGainDb=level.stats.gainDb;levelLimitedFrames=level.stats.limitedFrames}}
               } catch (_: LinkageError) { result=null
               } catch (_: Exception) { result=null }
+              finally {rhythm.close();level.close()}
               val success=result?.let {it.optBoolean("eos")&&!it.optBoolean("cancelled")&&it.optDouble("audio_seconds",0.0)>0} ?: false
-              val fits=speech.preview||config.timing!="continuous"||(result?.let {NarrationPolicy.canFinish(it.optDouble("audio_seconds",0.0),cue.end-cue.start,0.0,1.0,config.deadlineSlack)} ?: false)
+              val fits=speech.preview||config.timing!="continuous"||NarrationPolicy.canFinish(speech.samples/96000.0,cue.end-cue.start,0.0,1.0,config.deadlineSlack)
               if((success&&fits)||attempt==1||synchronized(lock){output===speech&&outputStarted&&!speech.preview})break
               synchronized(lock) {
                   if(closed||token!=epoch||cache[cue.key]!==speech){synthesizing=false;if(generating===speech)generating=null;return@execute}
                   if(output===speech) {stopOutput();if(previewActive)previewPosition=0.0}
-                  speech.chunks.clear();speech.samples=0;speech.cursor=0;prepared.remove(cue.key);synthesisRetries++;precisionRecoveries++;if(success&&!fits)precisionDurationRetries++
+                  speech.chunks.clear();speech.samples=0;speech.rawSamples=0;speech.localTempo=1.0;speech.cursor=0;prepared.remove(cue.key);synthesisRetries++;precisionRecoveries++;if(success&&!fits)precisionDurationRetries++
               }
             }
             val complete=result?.let {it.optBoolean("eos")&&!it.optBoolean("cancelled")} ?: false
@@ -396,7 +425,10 @@ internal class NarrationController(private val context: () -> Context?, private 
                     outcome(speech,if(result?.optBoolean("eos")==false)"generation_limit" else "generation_error")
                 } else {
                     prepared+=cue.key
-                    if(speech.preview&&speech.samples<=96000*8)previewCache["$language:$voice"]=speech.chunks.toList()
+                    if(speech.preview&&speech.samples<=96000*8) {
+                        previewCache["$language:$voice"]=speech.chunks.toList()
+                        while(previewCache.values.sumOf {chunks->chunks.sumOf {it.size}}>2_097_152)previewCache.remove(previewCache.keys.first())
+                    }
                 }
             }
         }
@@ -413,13 +445,14 @@ internal class NarrationController(private val context: () -> Context?, private 
         check(audio.state==AudioTrack.STATE_INITIALIZED);track=audio
         val created=System.nanoTime();outputCreateMs=(created-setupStarted)/1e6
         val duration=if(speech.done||speech.preview)speech.samples/96000.0 else speech.cue.end-speech.cue.start
-        val tempo=if(speech.preview)1.0 else if(config.timing=="interrupt")
+        val planned=if(speech.preview)1.0 else if(config.timing=="interrupt")
             if(speech.done)NarrationPolicy.plannedTempo(speechBudgets(speech,duration,config.offset),maxOf(reportPosition,speech.cue.start+config.offset),speed,0.0,speed)
             else NarrationPolicy.fittedTempo(0.0,Double.POSITIVE_INFINITY,speed)
             else (speed*NarrationPolicy.playbackRate(duration,speech.cue.end-speech.cue.start,lastLatenessMs/1000,1.0)).coerceAtMost(NarrationPolicy.MAX_ADAPTIVE_RATE)
+        val tempo=NarrationRhythm.presentationTempo(planned,speech.localTempo)
         rendered=NarrationPcm(tempo).also {it.update(speech.chunks,speech.done);speech.cursor=speech.samples}
         outputAdapted=speech.done||speech.preview;renderedFinalized=false
-        outputTempo=tempo;outputRawSeconds=duration;outputPcmSeconds=rendered!!.samples/96000.0
+        outputTempo=tempo;outputRawSeconds=if(speech.rawSamples>0)speech.rawSamples/96000.0 else duration;outputPcmSeconds=rendered!!.samples/96000.0
         outputRenderMs=(System.nanoTime()-created)/1e6
         audio.setVolume(if(current.muted)0f else (current.volume/100*config.volume).toFloat())
         // Prepare before the cue boundary; only play() belongs on the deadline.
@@ -483,11 +516,11 @@ internal class NarrationController(private val context: () -> Context?, private 
         outputAdapted=true
         val pcm=rendered ?: return
         pcm.update(speech.chunks,true)
-        outputRawSeconds=speech.samples/96000.0
+        outputRawSeconds=if(speech.rawSamples>0)speech.rawSamples/96000.0 else speech.samples/96000.0
         val played=audio.playbackHeadPosition.toLong() and 0xffffffffL
         val queued=(written-played).coerceAtLeast(0)/48000.0
-        val tempo=minOf(NarrationPolicy.plannedTempo(speechBudgets(speech,(pcm.samples-pcm.cursor)/96000.0*outputTempo,offset),
-            maxOf(position,speech.cue.start+offset),speed,queued+outputLatencySeconds,outputTempo),outputTempo*3.9)
+        val tempo=NarrationRhythm.presentationTempo(minOf(NarrationPolicy.plannedTempo(speechBudgets(speech,(pcm.samples-pcm.cursor)/96000.0*outputTempo,offset),
+            maxOf(position,speech.cue.start+offset),speed,queued+outputLatencySeconds,outputTempo),outputTempo*3.9),speech.localTempo)
         if(tempo<=outputTempo+.01)return
         val faster=NarrationPcm(tempo/outputTempo)
         faster.update(pcm.remaining(),true)
@@ -511,7 +544,7 @@ internal class NarrationController(private val context: () -> Context?, private 
         phaseValid=false
         val now=System.nanoTime();val delta=((now-lastTick)/1e9).coerceIn(0.0,.1);lastTick=now
         val current=source()
-        if(!config.enabled||current==null||current.handle<=0) {state="off";restoreGain();releaseStartupHold();publish();return@synchronized}
+        if(!config.enabled||cloneSuspended||current==null||current.handle<=0) {state="off";restoreGain();releaseStartupHold();publish();return@synchronized}
         if(now>=nextPoll) {
             outer=JSONObject(MpvSourceNative.narrationStatus(current.handle));observation=outer.optJSONObject("details") ?: JSONObject()
             val transition=pausingWithVideo || outputStarted&&!outputPaused&&!previewActive || current.playRequested&&current.allowed&&!suspended&&
@@ -580,7 +613,7 @@ internal class NarrationController(private val context: () -> Context?, private 
         }
         if(state=="ready") {
             if(previewPending) {
-                val text=when(lang) {"zh" -> "你好，这是我的朗读声音。"; "ja" -> "こんにちは。これが私の声です。"; else -> "Hello, this is my reading voice."}
+                val text=NarrationPolicy.previewText(lang)
                 // Audition the voice on its own clock, including when the video is paused.
                 // The clock starts with output, so model preparation cannot expire the sample.
                 windows=listOf(NarrationPolicy.Cue(0.0,NarrationPolicy.PREVIEW_WINDOW_SECONDS,text));previewPending=false;previewActive=true
@@ -704,6 +737,7 @@ internal class NarrationController(private val context: () -> Context?, private 
             .put("model_phase",modelPhase).put("model_verified_bytes",verifiedBytes).put("model_bytes",modelBytes)
             .put("model_verification_ms",verificationMs).put("model_load_ms",modelLoadMs)
             .put("model_load_count",modelLoadCount)
+            .put("shared_model",runtime.stats())
             .put("timeline_reading",reading).put("timeline_cues",windows.size).put("timeline_read_through",readThrough)
             .put("timeline_cached_cues",timelineText.size).put("timeline_cache_hits",timelineCacheHits)
             .put("timeline_index_mode","mpv_shared_queue").put("timeline_shared_reads",sharedReads).put("timeline_shared_ahead",sharedAhead).put("timeline_shared_read_ms",sharedReadMs).put("timeline_shared_max_read_ms",sharedMaxReadMs)
@@ -717,7 +751,7 @@ internal class NarrationController(private val context: () -> Context?, private 
             .put("timing",config.timing).put("output_delay_seconds",if(outputStarted&&!previewActive)lastLatenessMs/1000 else 0.0)
             .put("buffered_seconds",cache.values.filter {it.done&&!it.failed}.sumOf {it.samples}/96000.0).put("buffer_goal_seconds",16.0)
             .put("precision_recoveries",precisionRecoveries).put("precision_duration_retries",precisionDurationRetries).put("last_precision_recovery",lastPrecisionRecovery).put("precision_model_loaded",precisionModelLoaded).put("last_precision_load_ms",lastPrecisionLoadMs)
-            .put("preview",previewRequested)
+            .put("preview",previewRequested).put("preview_request",config.preview)
             .put("preview_progress",if(previewRequested&&output?.preview==true&&rendered?.done==true&&rendered!!.samples>0)
                 ((track?.playbackHeadPosition?.toLong()?.and(0xffffffffL) ?: 0L)*200/rendered!!.samples).coerceIn(0,99) else -1)
             .put("pause_pending",pausingWithVideo)
@@ -735,6 +769,9 @@ internal class NarrationController(private val context: () -> Context?, private 
             .put("output_create_ms",outputCreateMs).put("output_render_ms",outputRenderMs)
             .put("output_start_ms",outputStartMs).put("output_setup_ms",outputSetupMs).put("output_resume_ms",outputResumeMs)
             .put("output_tempo",outputTempo).put("output_raw_seconds",outputRawSeconds).put("output_pcm_seconds",outputPcmSeconds)
+            .put("rhythm_pause_removed_ms",rhythmPauseRemovedMs).put("rhythm_drag_removed_ms",rhythmDragRemovedMs)
+            .put("rhythm_buffer_samples",rhythmBufferSamples).put("rhythm_local_tempo",output?.localTempo ?: 1.0)
+            .put("level_gain_db",levelGainDb).put("level_limited_frames",levelLimitedFrames)
             .put("output_cue_start",output?.cue?.start ?: -1.0)
             .put("audio_performance_mode",track?.performanceMode ?: -1)
             .put("output_started",outputStarted).put("output_latency_estimate_ms",outputLatencySeconds*1000)

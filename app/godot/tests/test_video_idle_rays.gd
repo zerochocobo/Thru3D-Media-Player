@@ -35,7 +35,7 @@ func run() -> void:
 	main.rays = {"left_hand": [origin, -timeline.node.global_basis.z], "right_hand": [origin, -timeline.node.global_basis.z]}
 	main.controller_feedback.wake("right_hand"); main._update_controller_feedback(0.01)
 	for hand in main.ControllerBindings.HANDS: main._update_menu_pointer(hand)
-	check(menu._pointers.right_hand.line.visible and not menu._pointers.left_hand.line.visible, "Opening interactions shows only the active controller's menu ray")
+	check(menu._pointers.right_hand.line.visible and menu._pointers.left_hand.line.visible, "A visible panel shows both tracked controller rays")
 	check(menu._hover.right_hand == Menu.SEEK, "Active ray still precisely targets the timeline")
 	main._menu_touched_ms = Time.get_ticks_msec() - main.CONTROLS_HIDE_MS - 1
 	main._update_controls_visibility(menu)
@@ -44,18 +44,13 @@ func run() -> void:
 	for frame in 510:
 		main._update_controller_feedback(0.01)
 		for hand in main.ControllerBindings.HANDS: main._update_menu_pointer(hand)
-	check(not menu._pointers.right_hand.line.visible and menu.visible, "An idle menu ray can hide while a menu remains available")
+	check(menu._pointers.right_hand.line.visible and menu._pointers.left_hand.line.visible and menu.visible, "Pointers stay visible for as long as the panel is visible")
 	main._on_controller_button("trigger_click", "right_hand")
-	check(menu._seek_hand.is_empty(), "First trigger on an invisible pointer reveals aim without a blind seek")
-	main._on_controller_release("trigger_click", "right_hand")
-	main._update_controller_feedback(0.01); main._update_menu_pointer("right_hand")
-	check(menu._pointers.right_hand.line.visible and menu._pointers.right_hand.dot.visible, "Wake press immediately restores a visible aim and endpoint")
-	main._on_controller_button("trigger_click", "right_hand")
-	check(menu._seek_hand == "right_hand", "The next trigger can acquire the exact timeline target")
+	check(menu._seek_hand == "right_hand", "First click on a visible timeline acquires it without a wake-only click")
 	for frame in 700:
 		main._update_controller_feedback(0.01)
 		main._update_menu_pointer("right_hand")
-	check(menu._seek_hand == "right_hand" and menu._pointers.right_hand.line.visible and not main.controller_feedback.awake("left_hand"), "A long timeline drag never hides or wakes the other hand")
+	check(menu._seek_hand == "right_hand" and menu._pointers.right_hand.line.visible and main.controller_feedback.opacity("left_hand") == 1.0, "A long timeline drag retains both tracked inputs while the panel is visible")
 	var before: int = video.control.sequence
 	main._process_sticks(Vector2(1, 0), Vector2(0, 1), 0.1)
 	check(video.control.sequence == before and main.stick_controls.active_hands.is_empty(), "Timeline capture preserves shortcut isolation")
@@ -73,34 +68,62 @@ func run() -> void:
 	check(main._pending_video_end.is_empty() and video.local_uri == "file:///ray-test.mp4" and video.control.sequence > before, "Releasing the timeline submits its seek and cancels the old EOF transition")
 	main.playback_mode = "single"; video.control.reject(); video._pending_revision.clear(); video.media.state = "playing"
 	menu.dismiss(); main.controller_bindings.reset_inputs(); main.stick_controls.suspend()
-	video.geometry = 1
-	main.controller_feedback.wake("right_hand"); main._update_controller_feedback(0.01)
-	var nodes: Dictionary = main.controller_feedback.hands.right_hand.nodes
-	# A menu-owned pointer may not have created world nodes yet.
-	video.geometry = 0; main._update_controller_feedback(0.01); nodes = main.controller_feedback.hands.right_hand.nodes
-	check(nodes.line.visible, "Flat media restores its pointer for a real pointing operation")
-	video.geometry = 1; main._update_controller_feedback(0.01)
-	check(not nodes.line.visible and not nodes.dot.visible, "Immersive viewing keeps rays hidden after controller movement or button feedback")
-	main._grab = {"hand": "right_hand"}; main._update_controller_feedback(0.01)
-	check(nodes.line.visible, "An immersive picture adjustment retains its capture feedback")
-	main._grab.clear(); main._update_controller_feedback(0.01)
-	check(not nodes.line.visible, "Finishing an immersive adjustment immediately removes its world ray")
-	video.geometry = 0
-	for frame in 510: main._update_controller_feedback(0.01)
-	main.stick_controls.active_hands = {"right": true}
-	main._update_controller_feedback(0.01)
-	check(not nodes.line.visible and main.controller_feedback.opacity("right_hand") == 1.0, "A playback stick shortcut can show controller feedback without a ray")
-	main.stick_controls.active_hands.clear(); main._update_controller_feedback(0.01)
-	check(not nodes.line.visible and not main.controller_feedback.awake("right_hand"), "Releasing a stick shortcut cannot flash a previously hidden ray")
+	for projection in [0, 1, 2, 3]:
+		video.geometry = projection; video._apply_geometry()
+		main.controller_feedback.wake("right_hand")
+		for frame in 50:
+			main.pose.origin.x += 0.04; main.pose.basis = Basis(Vector3.UP, frame * 0.1)
+			main._update_controller_feedback(0.01)
+		check(main.controller_feedback.opacity("right_hand") == 0.0, "Movement and explicit wake cannot show models with no panel: %d" % projection)
+		check(main.controller_feedback.hands.right_hand.nodes.values().all(func(node): return not node.visible), "No-panel rays and dots stay hidden: %d" % projection)
+		main._grab = {"hand": "right_hand"}; main._update_controller_feedback(0.01)
+		check(main.controller_feedback.opacity("right_hand") == 0.0, "A hidden-panel grip capture cannot show an input model")
+		main._grab.clear()
+		main.stick_controls.active_hands = {"right": true}; main._update_controller_feedback(0.01)
+		check(main.controller_feedback.opacity("right_hand") == 0.0, "Playback shortcuts keep both model and ray hidden")
+		main.stick_controls.active_hands.clear()
 	menu.visible = true; menu.section = 1; menu.refresh()
 	main.controller_feedback.wake("right_hand"); main._update_controller_feedback(0.01)
 	for frame in 510: main._update_controller_feedback(0.01)
 	main._update_menu_pointer("right_hand"); main._menu_touched_ms = 0; main._update_controls_visibility(menu)
-	check(menu.visible and not menu._pointers.right_hand.line.visible, "Idle settings remain open with hidden rays")
+	check(menu.visible and menu._pointers.right_hand.line.visible, "Settings keep their pointer visible without an idle deadline")
 	main.pose.basis = Basis(Vector3.UP, deg_to_rad(8)); main._update_controller_feedback(0.01); main._update_menu_pointer("right_hand")
-	check(menu._pointers.right_hand.line.visible, "A deliberate aim adjustment wakes an idle settings pointer without a click")
+	check(menu._pointers.right_hand.line.visible, "Aim adjustments keep an already visible settings pointer usable")
 	main._cancel_pointer("right_hand"); main.rays.erase("right_hand"); main._update_menu_pointer("right_hand")
 	check(not menu._pointers.right_hand.line.visible and menu._seek_hand.is_empty(), "Tracking loss clears both pointer visuals and capture")
+	for projection in [0, 1, 2, 3]:
+		menu.dismiss(); video.geometry = projection; video._apply_geometry(); video.panel.visible = true
+		main.controller_bindings.restore_all()
+		var direction: Vector3 = (video.panel.to_global(video.screen_corner(1)) - Vector3(0, 1.6, 0)).normalized() if projection == 0 else Vector3.FORWARD
+		main.rays.right_hand = [Vector3(0, 1.6, 0), direction]
+		main._on_controller_button("trigger_click", "right_hand"); main._update_controller_feedback(0.01)
+		check(not menu.visible and main._grab.is_empty() and main.controller_feedback.opacity("right_hand") == 0.0, "Trigger down does not flash feedback before a complete single click")
+		main._on_controller_release("trigger_click", "right_hand"); main._update_controller_feedback(0.01)
+		check(menu.visible and main.controller_feedback.opacity("right_hand") == 1.0, "Trigger release opens panel and feedback together")
+		main.rays.right_hand = [Vector3(0, 1.6, 0), Vector3.UP]
+		main._on_controller_button("trigger_click", "right_hand"); main._on_controller_release("trigger_click", "right_hand")
+		main._update_controller_feedback(0.0)
+		check(not menu.visible and main.controller_feedback.opacity("right_hand") == 0.0, "Outside click hides panel and feedback without a residual five seconds")
+	for hand in main.ControllerBindings.HANDS:
+		main.controller_bindings.assign("follow_video", main.ControllerBindings.bind(hand, "by_button", main.ControllerBindings.MODIFIERS), true)
+		main.rays[hand] = [Vector3(0, 1.6, 0), Vector3.FORWARD]
+		for trigger_first in [false, true]:
+			var before_follow: bool = main.view_follow.enabled
+			for input in ["trigger_click" if trigger_first else "grip_click", "grip_click" if trigger_first else "trigger_click", "by_button"]:
+				main._on_controller_button(input, hand); main._update_controller_feedback(0.01)
+				check(not menu.visible and main.controller_feedback.opacity(hand) == 0.0, "Every chord key stays invisible in either modifier order")
+			check(main.view_follow.enabled != before_follow, "Hidden chord still executes normally")
+			for input in ["by_button", "trigger_click", "grip_click"]: main._on_controller_release(input, hand)
+			check(not menu.visible, "Releasing a hidden chord cannot open the controls")
+	main.controller_bindings.restore_all()
+	# Gesture recognition uses its existing input route while presentation is hidden.
+	var pointer := main.HandPointer.new(); pointer.source = "hand"; pointer.ray = main.rays.right_hand
+	main.hand_pointers.right_hand = pointer
+	main._dispatch_hand_input({"right_hand": {"source": "hand", "pressed": true, "down": true, "tracked": true}}, 0.01)
+	main._update_controller_feedback(0.01)
+	check(not menu.visible and main.controller_feedback.opacity("right_hand") == 0.0, "Pinch down is recognized without showing the hand before its panel")
+	main._dispatch_hand_input({"right_hand": {"source": "hand", "released": true, "down": false, "tracked": true}}, 0.01)
+	check(menu.visible and main._input_feedback_visible(), "A completed pinch still opens controls while models were hidden")
 	main.controller_feedback.free(); library.free(); menu.free(); main.free(); video.free()
 	for failure in failures: push_error(failure)
 	print("Video idle rays: %d checks, %d failures" % [checks, failures.size()])

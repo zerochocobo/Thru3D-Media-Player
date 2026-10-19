@@ -3,6 +3,8 @@ extends SceneTree
 const Video := preload("res://scripts/mpv_video_display.gd")
 const Memory := preload("res://scripts/file_mode_memory.gd")
 const ExistingTests := preload("res://tests/test_file_mode_memory.gd")
+const Main := preload("res://scripts/main.gd")
+const Menu := preload("res://scripts/player_menu.gd")
 var failures: Array[String] = []
 var checks := 0
 
@@ -12,6 +14,142 @@ func check(ok: bool, message: String) -> void:
 
 func _initialize() -> void:
 	call_deferred("_run")
+
+func usb_state(video: Node, identity: String) -> void:
+	video._on_state(video.media.session_id, JSON.stringify({"state": "ready", "subtitle_memory_id": identity}))
+
+func drag_alignment(menu: Node, key: String, fraction: float) -> void:
+	var row: Dictionary = menu._adjust_rows[Menu.ALIGNMENT_HORIZONTAL if key == "stereo_horizontal" else Menu.ALIGNMENT_VERTICAL]
+	var point: Vector3 = row.knob.position
+	point.x = row.left + fraction * row.width; point.z += 1
+	var origin: Vector3 = row.knob.get_parent().to_global(point)
+	var direction: Vector3 = -row.knob.global_basis.z
+	check(menu.press_pointer("right", origin, direction, true), "Production menu captures the alignment slider")
+	menu.release_pointer("right", origin, direction, true)
+
+func check_persistence(video: Node, path: String) -> void:
+	video.mode_memory = Memory.new(path)
+	var main := Main.new(); main.video = video; main.settings_path = path.path_join("settings.cfg")
+	var menu := Menu.new(); root.add_child(menu); menu.set_process(false)
+	menu.state_provider = main._menu_state
+	menu.adjustment_requested.connect(main._on_playback_adjustment)
+	menu.adjustment_committed.connect(main._save_playback_adjustments)
+	menu.visible = true; menu.section = 1; menu._adjustment = "stereo_view"
+	for prefix in ["file:///", "cloud://account/", "smb://server/share/", "medialib://server/"]:
+		var uri: String = prefix + "saved_LR.mp4"
+		video.open_library(uri, "saved_LR.mp4"); menu.refresh()
+		drag_alignment(menu, "stereo_horizontal", 0.7)
+		drag_alignment(menu, "stereo_vertical", 0.4)
+		var reloaded := Memory.new(path); reloaded.load_saved()
+		check(is_equal_approx(float(reloaded.lookup(uri).get("stereo_horizontal", 0)), 2.0)
+			and is_equal_approx(float(reloaded.lookup(uri).get("stereo_vertical", 0)), -1.0), "Real slider release saves both axes: " + prefix)
+		video.close_video(); video.mode_memory = reloaded
+		video.open_library(prefix + "other_TB.mp4", "other_TB.mp4")
+		check(video.stereo_horizontal == 0 and video.stereo_vertical == 0, "Different movie starts neutral: " + prefix)
+		video.open_library(uri, "saved_LR.mp4")
+		check(is_equal_approx(video.stereo_horizontal, 2.0) and is_equal_approx(video.stereo_vertical, -1.0), "Fresh memory reader restores the movie's own adjustments: " + prefix)
+		video.close_video()
+	menu.free()
+	# Backgrounding can happen while the trigger is held, before a release event.
+	video.open_local("file:///background_LR.mp4", "background_LR.mp4")
+	video.set_stereo_alignment("stereo_horizontal", 1.25)
+	video.set_stereo_alignment("stereo_vertical", -0.75)
+	main._notification(NOTIFICATION_APPLICATION_PAUSED)
+	var fresh := Memory.new(path); fresh.load_saved()
+	check(fresh.lookup(video.local_uri).get("stereo_horizontal") == 1.25 and fresh.lookup(video.local_uri).get("stereo_vertical") == -0.75,
+		"Background checkpoint commits a held alignment slider before process loss")
+	video.close_video()
+	var identity := "usb://stable/" + "b".repeat(64) + "/movie.mp4"
+	video.open_local("usb://connection-a/partition/movie.mp4", "movie_LR.mp4")
+	usb_state(video, identity)
+	video.set_stereo_alignment("stereo_horizontal", 2.5)
+	video.set_stereo_alignment("stereo_vertical", -1.5)
+	video.commit_stereo_view()
+	video.close_video()
+	fresh = Memory.new(path); fresh.load_saved(); video.mode_memory = fresh
+	video.open_local("usb://connection-b/partition/movie.mp4", "movie_LR.mp4")
+	usb_state(video, identity)
+	check(video.stereo_horizontal == 2.5 and video.stereo_vertical == -1.5,
+		"Fresh reader restores USB alignment after its connection URI changes")
+	check(video.material.get_shader_parameter("stereo_offset").is_equal_approx(Vector2(0.025, -0.015)),
+		"Restored USB alignment reaches the rendering material")
+	check(fresh.lookup(identity).get("stereo_horizontal") == 2.5,
+		"USB corrections are persisted against the stable partition and file identity")
+	var sequence: int = fresh.sequence
+	usb_state(video, identity)
+	check(fresh.sequence == sequence, "Repeated USB status does not rewrite the mode store")
+	video.close_video()
+	# A different movie on that disk starts neutral and has independent corrections.
+	video.open_local("usb://connection-b/partition/other.mp4", "other_LR.mp4")
+	usb_state(video, identity.replace("movie.mp4", "other.mp4"))
+	check(video.stereo_horizontal == 0 and video.stereo_vertical == 0, "Another USB movie does not inherit alignment")
+	video.set_stereo_alignment("stereo_horizontal", -0.5); video.commit_stereo_view(); video.close_video()
+	video.open_local("usb://connection-c/partition/movie.mp4", "movie_LR.mp4")
+	# The first frame can be displayed before Android reports the stable identity.
+	video._remember_mode(false)
+	usb_state(video, identity)
+	check(video.stereo_horizontal == 2.5 and video.stereo_vertical == -1.5,
+		"A first-frame default cannot replace saved USB corrections before identity arrives")
+	video.close_video()
+	# A user's newer preview takes precedence over a late identity report.
+	video.open_local("usb://connection-d/partition/movie.mp4", "movie_LR.mp4")
+	video.set_stereo_alignment("stereo_horizontal", 0.75)
+	video.set_stereo_alignment("stereo_vertical", 0.25)
+	usb_state(video, identity)
+	video.commit_stereo_view(); video.close_video()
+	fresh = Memory.new(path); fresh.load_saved(); video.mode_memory = fresh
+	video.open_local("usb://connection-e/partition/movie.mp4", "movie_LR.mp4")
+	usb_state(video, identity)
+	check(video.stereo_horizontal == 0.75 and video.stereo_vertical == 0.25,
+		"Early user adjustment survives a late USB identity and the next restart")
+	video.reset_stereo_alignment(); video.close_video()
+	fresh = Memory.new(path); fresh.load_saved(); video.mode_memory = fresh
+	video.open_local("usb://connection-f/partition/movie.mp4", "movie_LR.mp4"); usb_state(video, identity)
+	check(video.stereo_horizontal == 0 and video.stereo_vertical == 0, "Explicit alignment reset survives USB reconnect")
+	video.close_video()
+	var tb_identity := identity.replace("movie.mp4", "top-bottom.mp4")
+	var tb := {"geometry": 1, "stereo_sbs": true, "top_bottom": true, "stereo_half": true,
+		"swap_eyes": false, "alpha_requested": false, "profile": "320x320", "stereo_vertical": 1.25}
+	check(fresh.remember(tb_identity, tb) and fresh.save(), "Save a USB top-bottom mode")
+	video.open_local("usb://connection-f/partition/top-bottom.mp4", "unmarked.mp4"); usb_state(video, tb_identity)
+	check(video.geometry == 1 and video.stereo_sbs and video.top_bottom and video.stereo_half and video.stereo_vertical == 1.25
+		and video._pending_revision.get("stereo", false) and video._pending_revision.get("top_bottom", false),
+		"Late restoration revises the decoder when the saved stereo packing differs")
+	video.close_video()
+	# Recover an old record if the current connection URI is still available.
+	var legacy := {"geometry": 1, "stereo_sbs": true, "swap_eyes": true, "alpha_requested": false, "profile": "320x320",
+		"stereo_horizontal": -2.0, "stereo_vertical": 1.0, "viewing_eye": 2}
+	var legacy_uri := "usb://legacy-connection/partition/legacy.mp4"
+	check(fresh.remember(legacy_uri, legacy) and fresh.save(), "Write legacy USB record under its old connection URI")
+	video.open_local(legacy_uri, "legacy_LR.mp4")
+	usb_state(video, identity.replace("movie.mp4", "legacy.mp4")); video.close_video()
+	fresh = Memory.new(path); fresh.load_saved(); video.mode_memory = fresh
+	video.open_local("usb://new-connection/partition/legacy.mp4", "legacy_LR.mp4")
+	usb_state(video, identity.replace("movie.mp4", "legacy.mp4"))
+	check(video.stereo_horizontal == -2.0 and video.stereo_vertical == 1.0 and video.viewing_eye == 2 and video.swap_eyes and video.geometry == 1,
+		"A reachable legacy USB record migrates with its projection, eye choice and alignment")
+	video.close_video()
+	# Diagnostics never load or overwrite user modes, even after identity is resolved.
+	video.open_local("usb://diagnostic/partition/movie.mp4", "movie_LR.mp4", 0, false)
+	sequence = fresh.sequence; usb_state(video, identity)
+	check(video.stereo_horizontal == 0 and video.stereo_vertical == 0 and fresh.sequence == sequence,
+		"Diagnostic USB open bypasses stored corrections and preserves user records")
+	video.close_video()
+	# A late callback from a retired session must not bind the new movie to that disk.
+	video.open_local("usb://current/partition/movie.mp4", "movie_LR.mp4")
+	video._on_state(video.media.session_id + 1, JSON.stringify({"state": "ready", "subtitle_memory_id": identity}))
+	check(not fresh.identity_aliases.has(video.local_uri), "Stale session cannot register a USB file identity")
+	usb_state(video, "usb://stable/" + "c".repeat(64) + "/movie.mp4")
+	check(video.stereo_horizontal == 0 and video.stereo_vertical == 0, "Same file path on a different USB disk stays independent")
+	video.close_video()
+	var privacy_mode: String = Memory.Privacy.file_settings; Memory.Privacy.configure_file_settings(Memory.Privacy.NONE)
+	sequence = fresh.sequence
+	video.open_local("usb://private/partition/private.mp4", "private_LR.mp4")
+	usb_state(video, identity.replace("movie.mp4", "private.mp4"))
+	video.set_stereo_alignment("stereo_horizontal", 1.0); video.commit_stereo_view(); video.close_video()
+	check(fresh.sequence == sequence, "Disabled settings memory prevents USB alignment persistence")
+	Memory.Privacy.configure_file_settings(privacy_mode)
+	main.free()
 
 func _run() -> void:
 	var path := ProjectSettings.globalize_path("res://../../build/output/stereo-view/memory-" + str(Time.get_ticks_usec()))
@@ -94,6 +232,7 @@ func _run() -> void:
 	check(video.open_local(legacy_uri, "previously-unopenable_LR_180.mp4") and video.geometry == 1 and video.swap_eyes
 		and video.stereo_horizontal == 0 and video.stereo_vertical == 0 and video.viewing_eye == 0, "Malformed alignment recovers with VR layout and eye order intact")
 	video.close_video(); origin.queue_free()
+	check_persistence(video, path.path_join("persistence"))
 	video.queue_free()
 	await process_frame
 	print("Stereo viewing lifecycle checks=%d failures=%d" % [checks, failures.size()])

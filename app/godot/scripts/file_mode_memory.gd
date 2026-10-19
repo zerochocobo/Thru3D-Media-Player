@@ -133,12 +133,13 @@ func load_saved() -> void:
 			active_bank = bank
 
 func lookup(uri: String) -> Dictionary:
+	if not Privacy.settings_allowed(uri): return {}
 	if Privacy.protected_uri(uri): return Privacy.private_lookup(uri, directory.get_file() + "/" + _value_field())
 	var value: Dictionary = entries.get(entry_key(uri), {})
 	return value.get(_value_field(), {}).duplicate(true)
 
 func remember(uri: String, mode: Dictionary) -> bool:
-	if not Privacy.record_allowed(uri): return false
+	if not Privacy.settings_allowed(uri): return false
 	if Privacy.protected_uri(uri): return Privacy.private_remember(uri, directory.get_file() + "/" + _value_field(), mode) if _valid_value(mode) else false
 	var key := entry_key(uri)
 	if key.is_empty() or not _valid_value(mode):

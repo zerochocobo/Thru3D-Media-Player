@@ -39,6 +39,8 @@ var viewing_eye := 0 # 0 binocular; 1/2 duplicate the logical left/right view af
 var stereo_horizontal := 0.0
 var stereo_vertical := 0.0
 var _stereo_view_dirty := false
+var _mode_user_changed := false # Late USB identity must not replace this open's manual choices.
+var _mode_memory_cleared := false # Automatic frames must not resurrect explicitly cleared settings.
 const RecentFiles := preload("res://scripts/recent_files.gd")
 const BookmarkStore := preload("res://scripts/bookmark_store.gd")
 var bookmark_store := BookmarkStore.new()
@@ -635,24 +637,11 @@ func open_local(uri: String, title: String, start_ms: int = 0, restore_mode: boo
 	if restore_mode:
 		# Ignore legacy per-file model choices: every file uses the size chosen in the settings.
 		profile = default_profile
+		depth_strength = DepthStrength.DEFAULT
 		var saved := mode_memory.lookup(uri)
 		if not saved.is_empty():
 			# The user's own choice for this file wins over its name and shape.
-			geometry = int(saved.geometry)
-			stereo_sbs = bool(saved.stereo_sbs)
-			top_bottom = stereo_sbs and bool(saved.get("top_bottom", false))
-			stereo_half = stereo_sbs and bool(saved.get("stereo_half", false))
-			fisheye_fov = int(saved.get("fisheye_fov", 180)) if int(saved.get("fisheye_fov", 180)) in FISHEYE_FOVS else 180
-			swap_eyes = bool(saved.swap_eyes)
-			viewing_eye = int(saved.get("viewing_eye", 0))
-			stereo_horizontal = float(saved.get("stereo_horizontal", 0.0))
-			stereo_vertical = float(saved.get("stereo_vertical", 0.0))
-			spatial_auto_disparity = bool(saved.get("spatial_auto_disparity", true))
-			depth_requested = bool(saved.get("depth_requested", false)) and not stereo_sbs
-			# The user's own word on a built-in mask wins over the name (renamed official releases).
-			if saved.has("packed_mask"):
-				packed_file = bool(saved.packed_mask) and geometry == Geometry.Geometry.FISHEYE
-				packed_alpha = packed_file
+			_restore_saved_mode(saved)
 		elif not mode_lock.is_empty() and not stated.has("geometry") and not stated.has("stereo"):
 			geometry = int(mode_lock.geometry)
 			stereo_sbs = int(mode_lock.layout) != 0
@@ -854,12 +843,15 @@ func close_video() -> void:
 	_reset_subtitle_files()
 	control.close()
 	_remember_file = false
+	_mode_user_changed = false
+	_mode_memory_cleared = false
 	subtitles.clear(true)
 	bitmap_subtitles.clear(material)
 	if _subtitle_surface: _subtitle_surface.visible = false
 	changed.emit()
 
 func checkpoint_playback() -> void:
+	commit_stereo_view()
 	_record_history(true)
 
 func clear_history() -> void:
@@ -869,6 +861,16 @@ func clear_history() -> void:
 
 func _resume(uri: String) -> int:
 	return recent_files.resume_position(uri) if history_enabled else 0
+
+func discard_history_thumbnail() -> void:
+	_thumbnail_sequence += 1
+	_thumb_after_ms = -1
+
+func discard_file_settings() -> void:
+	commit_stereo_view()
+	_mode_memory_cleared = true
+	_whisper_remember = false
+	_whisper_restore_remember = false
 
 func _record_history(force: bool = false) -> void:
 	if recent_files.suppressed.has(ModeMemory.key_for(local_uri)): return
@@ -1099,12 +1101,14 @@ func depth_model_ready() -> bool:
 	return true
 
 func cycle_depth_strength() -> void:
-	set_depth_strength(DEPTH_STRENGTHS[(DEPTH_STRENGTHS.find(depth_strength) + 1) % DEPTH_STRENGTHS.size()])
+	if set_depth_strength(DEPTH_STRENGTHS[(DEPTH_STRENGTHS.find(depth_strength) + 1) % DEPTH_STRENGTHS.size()]):
+		_remember_mode()
 
 func set_depth_strength(value: float) -> bool:
 	if is_spatial_video(): return false
 	var strength := DepthStrength.clamp_value(value)
 	if strength > 0.0 and (stereo_sbs or geometry != 0 or local_uri.is_empty() or media.state == "closed"): return false
+	if strength>0.0 and not is_equal_approx(strength,depth_strength): _mode_user_changed=true
 	if strength > 0.0: depth_strength = strength
 	auto_depth = strength > 0.0
 	material.set_shader_parameter("depth_shift", DEPTH_SHIFT * strength)
@@ -1148,6 +1152,7 @@ func set_playback_speed(value: float) -> bool:
 	return true
 
 func toggle_play() -> void:
+	if bool(narration.clone_state.get("opened", false)): return
 	if media.state == "ended":
 		requested_play = true
 		seek_absolute(0)
@@ -1157,6 +1162,11 @@ func toggle_play() -> void:
 		_record_history(true)
 	if platform and media.accepts(media.session_id):
 		platform.set_mpv_playing(media.session_id, requested_play and not _waiting_first)
+	changed.emit()
+
+func pause_for_voice_clone() -> void:
+	requested_play = false
+	if platform and media.accepts(media.session_id): platform.set_mpv_playing(media.session_id, false)
 	changed.emit()
 
 func set_audio_whisper(level: int, remember: bool = true) -> bool:
@@ -1918,6 +1928,7 @@ func set_stereo_alignment(key: String, value: float) -> bool:
 	if key not in ["stereo_horizontal", "stereo_vertical"]: return false
 	set(key, clampf(snappedf(value, StereoView.STEP), -StereoView.LIMIT, StereoView.LIMIT))
 	_stereo_view_dirty = true
+	_mode_user_changed = true
 	_apply_stereo_view()
 	return true
 
@@ -1991,13 +2002,58 @@ func _apply_packed() -> void:
 		material.set_shader_parameter("packed_size", Vector2(Geometry.packed_dimensions(int(media.format.width), int(media.format.height))))
 	alpha_enabled = _rvm_alpha or shown
 
-func _remember_mode() -> void:
+func _restore_saved_mode(saved: Dictionary) -> void:
+	geometry = int(saved.geometry)
+	stereo_sbs = bool(saved.stereo_sbs)
+	top_bottom = stereo_sbs and bool(saved.get("top_bottom", false))
+	stereo_half = stereo_sbs and bool(saved.get("stereo_half", false))
+	fisheye_fov = int(saved.get("fisheye_fov", 180)) if int(saved.get("fisheye_fov", 180)) in FISHEYE_FOVS else 180
+	swap_eyes = bool(saved.swap_eyes)
+	viewing_eye = int(saved.get("viewing_eye", 0))
+	stereo_horizontal = float(saved.get("stereo_horizontal", 0.0))
+	stereo_vertical = float(saved.get("stereo_vertical", 0.0))
+	spatial_auto_disparity = bool(saved.get("spatial_auto_disparity", true))
+	depth_requested = bool(saved.get("depth_requested", false)) and not stereo_sbs
+	var saved_strength: Variant = saved.get("depth_strength", DepthStrength.DEFAULT)
+	depth_strength = DepthStrength.remembered(float(saved_strength)) if saved_strength is float or saved_strength is int else DepthStrength.DEFAULT
+	auto_depth = depth_requested
+	# The user's own word on a built-in mask wins over the name (renamed official releases).
+	if saved.has("packed_mask"):
+		packed_file = bool(saved.packed_mask) and geometry == Geometry.Geometry.FISHEYE
+		packed_alpha = packed_file
+
+func _restore_usb_mode(identity: String) -> void:
+	# USB connection URIs contain a random token. Android reports the stable
+	# partition + path identity asynchronously, possibly after the first frame.
+	if not local_uri.begins_with("usb://") or mode_memory.identity_aliases.get(local_uri, "") == identity: return
+	var early := mode_memory.lookup(local_uri)
+	if not mode_memory.register_usb_identity(local_uri, identity) or not _remember_file: return
+	var saved := mode_memory.lookup(local_uri)
+	if saved.is_empty(): saved = early # Migrate a reachable pre-fix record.
+	if not saved.is_empty() and not _mode_user_changed and not _stereo_view_dirty:
+		var backend := [stereo_sbs, top_bottom, depth_requested]
+		_restore_saved_mode(saved)
+		alpha_requested = alpha_requested and not packed_file
+		depth_requested = auto_depth and geometry == Geometry.Geometry.FLAT and not stereo_sbs and not alpha_requested
+		_layout_pending = null
+		if is_spatial_video(): _complete_layout()
+		if backend != [stereo_sbs, top_bottom, depth_requested]: _request_revision()
+		_apply_geometry()
+		_send_depth_view()
+		_picture_refresh = 6
+	if not saved.is_empty() or _mode_user_changed or _stereo_view_dirty or media.frame_counter > 0:
+		_remember_mode(false)
+
+func _remember_mode(user_change: bool = true) -> void:
 	if not _remember_file or not media.accepts(media.session_id):
 		return
+	if not user_change and _mode_memory_cleared: return
+	if user_change: _mode_memory_cleared = false
+	_mode_user_changed = _mode_user_changed or user_change
 	var mode := {"geometry": geometry, "stereo_sbs": stereo_sbs, "swap_eyes": swap_eyes,
 		"viewing_eye": viewing_eye, "stereo_horizontal": stereo_horizontal, "stereo_vertical": stereo_vertical,
 		"spatial_auto_disparity": spatial_auto_disparity,
-		"alpha_requested": false, "profile": profile, "depth_requested": depth_requested,
+		"alpha_requested": false, "profile": profile, "depth_requested": depth_requested, "depth_strength": depth_strength,
 		"top_bottom": stereo_sbs and top_bottom, "stereo_half": stereo_sbs and stereo_half, "fisheye_fov": fisheye_fov,
 		"packed_mask": packed_mask_on()}
 	if mode_memory.remember(local_uri, mode) and not mode_memory.save():
@@ -2075,7 +2131,7 @@ func _present_pending() -> void:
 	if media.frame_counter == 1:
 		_open_trace.append({"stage": "first_pair_bound", "time_ms": Time.get_ticks_msec(), "pts_us": int(claimed.pts_us)})
 		_complete_layout()
-		_remember_mode()
+		_remember_mode(false)
 		Log.record("mpv_pair_bound", media.frame_identity())
 	_record_history()
 	if _debug_request > 0 and not _debug_benchmark and _debug_pairs.size() < 128:
@@ -2093,6 +2149,7 @@ func _on_state(id: int, payload: String) -> void:
 		requested_play = false
 	media.playback = report
 	var subtitle_identity := str(report.get("subtitle_memory_id", ""))
+	if not subtitle_identity.is_empty(): _restore_usb_mode(subtitle_identity)
 	if track_memory.register_usb_identity(local_uri, subtitle_identity):
 		subtitle_timing.register_usb_identity(local_uri, subtitle_identity)
 		audio_timing.register_usb_identity(local_uri, subtitle_identity)
@@ -2257,6 +2314,8 @@ func _reopen_after_context_loss(uri: String, title: String, position_ms: int, re
 	if uri != local_uri or (expected_session > 0 and expected_session != media.session_id): return
 	# Retain live user choices even if the last disk save failed.
 	var persisted := _file_permission_persisted
+	var mode_user_changed := _mode_user_changed
+	var mode_memory_cleared := _mode_memory_cleared
 	var eye := viewing_eye
 	var alignment := Vector2(stereo_horizontal, stereo_vertical)
 	var spatial := [_spatial_video, spatial_metadata(), spatial_auto_disparity]
@@ -2271,6 +2330,8 @@ func _reopen_after_context_loss(uri: String, title: String, position_ms: int, re
 		_queue_track_restore(tracks)
 		_subtitle_timing_key = timing[0]; subtitle_delay = timing[1]; subtitles.set_delay(subtitle_delay); _subtitle_delay_pending = true
 		_remember_file = remember_file
+		_mode_user_changed = mode_user_changed
+		_mode_memory_cleared = mode_memory_cleared
 		audio_whisper = whisper; audio_boost_saved = boost_mark; _whisper_restore_pending = whisper > 0 or whisper_save; _whisper_restore_remember = whisper_save
 		_file_permission_persisted = persisted
 		viewing_eye = eye
@@ -2973,6 +3034,8 @@ func _reopen_at(position_ms: int, layer: bool) -> void:
 	var position := position_ms if position_ms >= 0 else maxi(0, int(int(media.last_pair.get("pts_us", control.observed_position_ms * 1000)) / 1000))
 	if position_ms < 0 and media.last_pair.is_empty(): position = maxi(position, int(media.playback.get("source_start_ms", 0)))
 	var remember := _remember_file
+	var mode_user_changed := _mode_user_changed
+	var mode_memory_cleared := _mode_memory_cleared
 	var persisted := _file_permission_persisted
 	var eye := viewing_eye
 	var alignment := Vector2(stereo_horizontal, stereo_vertical)
@@ -2997,6 +3060,8 @@ func _reopen_at(position_ms: int, layer: bool) -> void:
 		_queue_track_restore(tracks)
 		_subtitle_timing_key = timing[0]; subtitle_delay = timing[1]; subtitles.set_delay(subtitle_delay); _subtitle_delay_pending = true
 		_remember_file = remember
+		_mode_user_changed = mode_user_changed
+		_mode_memory_cleared = mode_memory_cleared
 		_file_permission_persisted = persisted
 		viewing_eye = eye
 		stereo_horizontal = alignment.x

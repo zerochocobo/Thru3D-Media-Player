@@ -6,7 +6,7 @@ $outputDirectory = Join-Path $workspace 'build/output/stereo-view'
 New-Item -ItemType Directory -Force $outputDirectory | Out-Null
 # Avoid probing unrelated desktop USB controllers during offscreen visual checks.
 $env:SDL_JOYSTICK_HIDAPI = '0'
-$cases = @('test_stereo_view', 'test_player_menu', 'test_file_mode_memory', 'test_spatial_videos', 'test_spatial_video_metadata', 'test_player_sticks', 'test_i18n', 'test_photos', 'test_photo_adjustments', 'render_stereo_view', 'render_spatial_video_modes')
+$cases = @('test_stereo_view', 'test_smb_stereo_memory', 'test_privacy_memory', 'test_player_menu', 'test_file_mode_memory', 'test_spatial_videos', 'test_spatial_video_metadata', 'test_player_sticks', 'test_i18n', 'test_photos', 'test_photo_adjustments', 'render_stereo_view', 'render_spatial_video_modes')
 foreach ($case in $cases) {
     if ($RenderOnly -and -not $case.StartsWith('render_')) { continue }
     $stdout = Join-Path $outputDirectory ($case + '.log')

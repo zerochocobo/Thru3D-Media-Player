@@ -175,6 +175,11 @@ func _run() -> void:
 		main._update_photo_inspect()
 		check(photo.inspect and main.hand_pointers.right_hand.provider == "meta_aim" and photo._inspect_line.visible and photo._inspect_dot.visible,
 			"Native hand aim visibly targets the magnifier in projection %d" % geometry)
+		var crop: Vector2 = photo.crop_center
+		main._update_controller_feedback(0.014)
+		check(photo.crop_center == crop and not photo._inspect_line.visible and not photo._inspect_dot.visible \
+			and not main._input_feedback_visible() and main.hand_pointers.right_hand.source == "hand",
+			"No-panel presentation hides the magnifier ray while preserving gesture input and its sample")
 		var before: Transform3D = photo.panel.global_transform
 		if geometry == 0:
 			aim.set_pose("default",Transform3D(Basis.IDENTITY,Vector3(0.1,1.4,-0.4)),Vector3.ZERO,Vector3.ZERO,XRPose.XR_TRACKING_CONFIDENCE_NONE)

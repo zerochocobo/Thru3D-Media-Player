@@ -193,7 +193,7 @@ func tracked_input(video: Node3D, menu: Node3D, library: Node3D) -> void:
 	main.controller_feedback.rebase()
 	var playing: bool = video.requested_play
 	main._on_controller_button("ax_button", "right_hand"); main._update_controller_feedback(0.0)
-	check(main.controller_feedback.opacity("right_hand") == 1.0 and video.requested_play != playing, "First A press during tracking settling wakes and toggles playback in that same event")
+	check(main.controller_feedback.opacity("right_hand") == 0.0 and video.requested_play != playing, "First A press toggles playback in the same event without showing a model")
 	main._on_controller_release("ax_button", "right_hand")
 	for frame in 510: main._update_controller_feedback(0.01)
 	main._process_sticks(Vector2.ZERO, Vector2.ZERO, 0.01)
@@ -201,7 +201,7 @@ func tracked_input(video: Node3D, menu: Node3D, library: Node3D) -> void:
 	check(main.controller_feedback.opacity("left_hand") == 0.0 and main.stick_controls.active_hands.is_empty(), "A diagonal with no dispatched action cannot wake feedback")
 	var before: float = video.screen_scale
 	main._process_sticks(Vector2.ZERO, Vector2(0, 0.8), 0.1); main._update_controller_feedback(0.0)
-	check(main.controller_feedback.opacity("right_hand") == 1.0 and video.screen_scale > before, "Accepted right-stick input wakes and scales without an extra threshold")
+	check(main.controller_feedback.opacity("right_hand") == 0.0 and video.screen_scale > before, "Accepted right-stick input scales without showing a model")
 	main.stick_controls.suspend()
 	check(main.stick_controls.active_hands.is_empty(), "Suspended input cannot hold feedback awake")
 	XRServer.remove_tracker(tracker); XRServer.remove_tracker(head)
@@ -227,11 +227,13 @@ func run() -> void:
 		video.screen_curve = curve; video.screen_scale = 1.0; video.screen_distance = 2.0
 		video._apply_geometry(); video.panel.visible = true
 		for hand in Bindings.HANDS:
+			menu.dismiss()
 			main.rays[hand] = [eye, Vector3.FORWARD]
 			main.controller_feedback.wake(hand)
 			main._update_controller_feedback(0.01)
-			check(main.controller_feedback.hands[hand].nodes.dot.visible, "Production route shows a hit without a panel")
+			check(main.controller_feedback.opacity(hand) == 0.0 and main.controller_feedback.hands[hand].nodes.is_empty(), "Production route keeps input visuals hidden without a panel")
 			for corner in 4:
+				menu.visible = true; menu.refresh()
 				video.set_screen_scale(1.0)
 				var target: Vector3 = video.panel.to_global(video.screen_corner(corner))
 				check(video.screen_hit(eye, target - eye) != null, "Actual flat/curved corner intersects: %s/%d" % [str(curve), corner])
@@ -246,7 +248,7 @@ func run() -> void:
 				main._update_grab()
 				check(video.screen_scale > 1.0 and video.panel.global_position == centre and video.screen_distance == 2.0, "All four corners scale without moving centre or depth")
 				main._on_controller_release("trigger_click", hand)
-				check(main._grab.is_empty() and not menu.visible, "Resize release never opens controls")
+				check(main._grab.is_empty() and menu.visible, "Corner resizing keeps its existing controls and pointing feedback")
 			# A same-hand chord takes over either a grip move or an already changing corner.
 			main.controller_bindings.assign("follow_video", Bindings.bind(hand, "by_button", Bindings.MODIFIERS), true)
 			for trigger_first in [false, true]:
@@ -269,8 +271,9 @@ func run() -> void:
 				main._on_controller_button("by_button", hand)
 				check(main.view_follow.enabled != following, "Chord executes after takeover in either order")
 				for input in ["by_button", "trigger_click", "grip_click"]: main._on_controller_release(input, hand)
-				check(not menu.visible, "Chord releases do not resurrect deferred controls")
+				check(menu.visible, "Chord releases preserve the already visible controls")
 			main.controller_bindings.restore_all()
+		menu.dismiss()
 		# Test actual curved hit points inside the panel and clear misses outside it.
 		var x: float = video._flat.size.x * 0.25
 		var local := Vector3(x, 0, 0)
@@ -333,6 +336,7 @@ func run() -> void:
 				check((layer.layer_values(video, origin)[13] - width) * direction > 0.0 and video.panel.mesh.size == video._flat.size, "Flat zoom updates both rendered mesh and compositor width")
 	video.geometry = 0; video._apply_geometry(); origin.free()
 	main.controller_bindings.restore_all()
+	menu.visible = true; menu.refresh()
 	main.rays.right_hand = [eye, (video.panel.to_global(video.screen_corner(1)) - eye).normalized()]
 	main.rays.left_hand = [eye, (video.panel.to_global(video.screen_corner(0)) - eye).normalized()]
 	main._on_controller_button("trigger_click", "right_hand")
@@ -344,9 +348,9 @@ func run() -> void:
 	main._on_controller_button("grip_click", "left_hand")
 	check(main._grab.get("hand", "") == "right_hand" and main.interface_move.capture.is_empty(), "Another hand cannot steal a corner resize")
 	main._on_controller_release("trigger_click", "left_hand"); main._on_controller_release("grip_click", "left_hand")
-	check(main._grab.get("hand", "") == "right_hand" and not menu.visible, "Other-hand release cannot finish resizing or show controls")
+	check(main._grab.get("hand", "") == "right_hand" and menu.visible, "Other-hand release cannot finish resizing or hide controls")
 	main._cancel_pointer("right_hand"); main._on_controller_release("trigger_click", "right_hand")
-	check(main._grab.is_empty() and not menu.visible, "Tracking cancellation of a resize cannot become a controls tap")
+	check(main._grab.is_empty() and menu.visible, "Tracking cancellation of a resize cannot toggle the existing controls")
 	# A normal video transport shares the zoom mapping and the controller idle deadline.
 	menu.visible = true; video.requested_play = true
 	menu.refresh()
@@ -371,7 +375,7 @@ func run() -> void:
 	for frame in 40: main._update_controller_feedback(0.01)
 	main.activity_pose.origin.x += 0.1
 	for frame in 14: main._update_controller_feedback(0.01)
-	check(Bindings.HANDS.all(func(hand): return main.controller_feedback.opacity(hand) == 1.0), "Obvious movement wakes controllers after confirmation following the shared hide deadline")
+	check(Bindings.HANDS.all(func(hand): return main.controller_feedback.opacity(hand) == 0.0), "Obvious movement after the panel hides cannot reveal controllers")
 	var bindings := Bindings.new()
 	bindings.restore({"version":1,"bindings":{"flat_volume_up":[Bindings.bind("right_hand","stick_up")]}})
 	check(bindings.resolve("right_hand", "stick_up", "video_flat") == "flat_volume_up" and bindings.bindings("flat_zoom_in").is_empty(), "Explicit saved volume wins over the new default")
@@ -379,7 +383,7 @@ func run() -> void:
 	check(bindings.resolve("right_hand", "stick_up", "video_flat").is_empty(), "An explicitly disabled old right-up binding stays disabled")
 	var page := preload("res://scripts/controls_page.gd").new(library)
 	check(page.items().any(func(row): return row.title == "Resize picture" and row.fixed == "Corner + trigger"), "Controls include fixed corner resizing")
-	check(page.items().any(func(row): return row.title == "Controller / ray"), "Controls include wake and idle visibility")
+	check(page.items().any(func(row): return row.title == "Hands / controllers"), "Controls describe panel-driven hand and controller visibility")
 	var action_ids := page.items().map(func(row): return row.get("id", ""))
 	check(action_ids.find("flat_zoom_in") + 1 == action_ids.find("flat_zoom_out") and action_ids.find("flat_zoom_out") < action_ids.find("volume_up"), "Controls place both flat zoom directions together near playback shortcuts")
 	main.controller_feedback.free(); library.free(); menu.free(); main.free(); video.free()

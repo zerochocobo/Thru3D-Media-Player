@@ -71,6 +71,17 @@ func run() -> void:
 	await settle(capture)
 	check(used(capture).map(func(slot): return slot.index) == [4] and used(capture)[0].rect.size.y < 0.7,
 		"Closing settings returns to the bar slot without its grown rectangle")
+	# Subtitle appearance edits rebuild the popup while video playback remains active.
+	var fixed_sizes: Array = capture.slots.map(func(slot): return slot.raw.size)
+	player._activate(110); player._activate(Player.SUBTITLE_APPEARANCE)
+	for style in player.SubtitleStyle.PRESETS:
+		state.subtitle_style = style.value; state.subtitle_size = 150.0
+		player.refresh(); await settle(capture)
+		check(capture.enabled and capture.snapshot().active and player._subtitle_appearance_open,
+			"Subtitle appearance stays on menu layers: " + str(style.value))
+		check(capture.slots.map(func(slot): return slot.raw.size) == fixed_sizes,
+			"Subtitle edits preserve fixed capture density: " + str(style.value))
+	player._activate(110); await settle(capture)
 
 	# On a headset the player's popups sit on their own tilted plane. Closed, that plane must not
 	# keep a (transparent) layer the compositor reads every frame.

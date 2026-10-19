@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "abi": "windows.x86_64",
+  "godot_extension_minimum": "4.1",
+  "ffmpeg_abi": [60, 60, 58, 4, 7],
+  "archives": [
+    {
+      "name": "extension-987b764.zip",
+      "url": "https://codeload.github.com/KirbyKid256/FFmpegPlayer/zip/987b76428774d21cf6542d5cda7d1cd09ebf2730",
+      "bytes": 140601242,
+      "sha256": "bf5bf1ca0bcd34509d99defb4ebee38aa0894e8c5ea5ec78f61dc763debca0ec",
+      "prefix": "FFmpegPlayer-987b76428774d21cf6542d5cda7d1cd09ebf2730/src/"
+    },
+    {
+      "name": "godot-cpp-4d5d707.zip",
+      "url": "https://codeload.github.com/godotengine/godot-cpp/zip/4d5d707d60aac3ecb4d3e413c840448fb1356264",
+      "bytes": 718885,
+      "sha256": "945d7d5c27f36990015acb3bf55ba843965d6baedf9fe4a4e50d70dd1a9accb7",
+      "prefix": "godot-cpp-4d5d707d60aac3ecb4d3e413c840448fb1356264/"
+    },
+    {
+      "name": "ffmpeg-b1a45341.zip",
+      "url": "https://codeload.github.com/FFmpeg/FFmpeg/zip/b1a4534186ca51b0457579fc05a5739eb2cc45cd",
+      "bytes": 20401249,
+      "sha256": "fec7a1035d6934e824eb0a46f272f42c3977c0f80c9a061aa53ead2453f7c83c",
+      "prefix": "FFmpeg-b1a4534186ca51b0457579fc05a5739eb2cc45cd/"
+    }
+  ]
+}

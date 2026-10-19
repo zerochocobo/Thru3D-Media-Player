@@ -21,6 +21,7 @@ uniform vec3 detail_forward = vec3(0.0, 0.0, -1.0);
 uniform vec3 detail_right = vec3(1.0, 0.0, 0.0);
 uniform vec3 detail_up = vec3(0.0, 1.0, 0.0);
 uniform bool photo_depth = false;
+uniform bool spatial_hidden = false;
 uniform float depth_strength = 1.0;
 uniform vec4 depth_rect = vec4(0.0, 0.0, 1.0, 1.0);
 uniform int test_eye = -1;
@@ -46,6 +47,7 @@ vec4 photo_color(vec2 p) {
 
 void vertex() { eye_index = test_eye >= 0 ? test_eye : int(VIEW_INDEX); media_direction = VERTEX; }
 void fragment() {
+	if (spatial_hidden) { discard; }
 	if (layer_cut.z > 0.0 && all(greaterThanEqual(UV, layer_cut.xy)) && all(lessThanEqual(UV, layer_cut.xy + layer_cut.zw))) { discard; }
 	vec3 direction = media_direction;
 	if (detail_projection) {

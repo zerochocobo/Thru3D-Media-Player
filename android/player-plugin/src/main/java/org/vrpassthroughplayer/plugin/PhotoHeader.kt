@@ -4,6 +4,8 @@ package org.vrpassthroughplayer.plugin
 internal data class PhotoHeader(val width: Int, val height: Int, val orientation: Int = 1, val nativeStereo: Boolean = false) {
     companion object {
         const val MAX_BYTES = 1024 * 1024
+        // EXIF 0 means undefined: the pixel order is unchanged, just as when the tag is absent.
+        fun normalizedOrientation(value: Int): Int = value.takeIf { it in 1..8 } ?: 1
         fun read(b: ByteArray): PhotoHeader? {
             if (b.size < 30) return null
             if (String(b, 4, 4, Charsets.ISO_8859_1) == "ftyp")
@@ -55,7 +57,7 @@ internal data class PhotoHeader(val width: Int, val height: Int, val orientation
                         repeat(minOf(u16(table.toInt(), little), 256)) { index ->
                             val entry = table.toInt() + 2 + index * 12
                             if (entry + 12 <= end && u16(entry, little) == 0x112 && u16(entry + 2, little) == 3 && u32(entry + 4, little) == 1L)
-                                orientation = u16(entry + 8, little).takeIf { it in 1..8 } ?: 1
+                                orientation = normalizedOrientation(u16(entry + 8, little))
                         }
                     }
                 }

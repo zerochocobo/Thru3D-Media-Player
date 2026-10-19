@@ -9,6 +9,29 @@ import java.util.Locale
 internal object NarrationPolicy {
     // Normal playback feature in both Debug and Release.
     const val FEATURE_ENABLED = BuildConfig.NARRATION_ENABLED
+    // Fixed upstream README lists 19 languages. These do not add voice-origin presets.
+    private val previews = linkedMapOf(
+        "zh" to "你好，很高兴为您提供字幕朗读服务。",
+        "en" to "Hello, I'm happy to read subtitles for you.",
+        "ja" to "こんにちは。喜んで字幕を読み上げます。",
+        "de" to "Hallo, ich lese Ihnen gerne die Untertitel vor.",
+        "es" to "Hola, será un placer leer los subtítulos para usted.",
+        "fr" to "Bonjour, je vous lirai les sous-titres avec plaisir.",
+        "it" to "Salve, sarà un piacere leggere i sottotitoli per lei.",
+        "hu" to "Üdvözlöm, örömmel olvasom fel Önnek a feliratokat.",
+        "ko" to "안녕하세요. 기쁜 마음으로 자막을 읽어 드리겠습니다.",
+        "ru" to "Здравствуйте! С удовольствием прочитаю для вас субтитры.",
+        "fa" to "سلام، با کمال میل زیرنویس‌ها را برای شما می‌خوانم.",
+        "ar" to "مرحبًا، يسعدني أن أقرأ لك نصوص الترجمة.",
+        "pl" to "Dzień dobry, z przyjemnością przeczytam dla Państwa napisy.",
+        "pt" to "Olá, será um prazer ler as legendas para você.",
+        "cs" to "Dobrý den, s potěšením vám přečtu titulky.",
+        "da" to "Hej, jeg vil med glæde læse underteksterne op for dig.",
+        "sv" to "Hej, jag läser gärna upp undertexterna för dig.",
+        "el" to "Γεια σας, με χαρά θα σας διαβάσω τους υπότιτλους.",
+        "tr" to "Merhaba, altyazıları sizin için memnuniyetle seslendireceğim.")
+    val languages: Set<String> = previews.keys
+    fun previewText(language: String): String = requireNotNull(previews[language]) { "unsupported_language" }
     val voices = mapOf("zh" to listOf("Xiaoyu", "Yuewen", "Lingyu", "Zhiming", "Junhao"), "en" to listOf("Ava", "Bella", "Adam"), "ja" to listOf("Mei", "Saki", "Mortis", "Umiri"))
     data class Config(val enabled: Boolean = false, val source: Int = -1, val language: String = "auto",
                       val zhVoice: String = "Xiaoyu", val enVoice: String = "Ava", val duck: Double = .75,
@@ -24,8 +47,8 @@ internal object NarrationPolicy {
                     j.optString("zh_voice", "Xiaoyu"), j.optString("en_voice", "Ava"), j.optDouble("duck", .75),
                     j.optDouble("volume", 1.0), j.optDouble("offset", 0.0), j.optInt("retry"),
                     if(j.isNull("source_delay"))null else j.getDouble("source_delay"),j.optInt("preview"),j.optString("timing","interrupt"),j.optString("ja_voice","Mei"),j.optInt("line",0),j.optString("voice_override",""))
-                require(c.voiceOverride.isEmpty() || c.voiceOverride in voices.values.flatten())
-                require(c.source >= -1 && c.language in setOf("auto", "zh", "en", "ja") && c.zhVoice in voices.getValue("zh") && c.enVoice in voices.getValue("en") && c.jaVoice in voices.getValue("ja") && c.line in 0..2)
+                require(c.voiceOverride.isEmpty() || c.voiceOverride in voices.values.flatten() || PersonalVoiceStore.isVoice(c.voiceOverride))
+                require(c.source >= -1 && (c.language == "auto" || c.language in languages) && c.zhVoice in voices.getValue("zh") && c.enVoice in voices.getValue("en") && c.jaVoice in voices.getValue("ja") && c.line in 0..2)
                 require(c.duck.isFinite() && c.duck in 0.0..1.0 && c.volume.isFinite() && c.volume in 0.0..1.0 &&
                     c.offset.isFinite() && c.offset in -2.0..2.0)
                 require(c.sourceDelay == null || c.sourceDelay.isFinite() && c.sourceDelay in -10.0..10.0)
@@ -63,11 +86,16 @@ internal object NarrationPolicy {
         return if(!stopped&&!noTrack&&observation.optBoolean("audio_clock_available")&&audioNs>0&&audio.isFinite()&&pipelineDelay.isFinite()&&kotlin.math.abs(audio+pipelineDelay-video)<=.5)
             PlaybackClock(audio,audioNs,"audio") else videoClock
     }
-    fun language(tag: String): String = when (tag.replace('_', '-').lowercase(Locale.ROOT).substringBefore('-')) {
-        "zh", "zho", "chi", "cmn", "chs", "cht" -> "zh"
-        "en", "eng" -> "en"
-        "ja", "jpn" -> "ja"
-        else -> ""
+    fun language(tag: String): String {
+        val code=tag.trim().replace('_', '-').lowercase(Locale.ROOT).substringBefore('-')
+        if(code in languages)return code
+        return when(code) {
+            "zho", "chi", "cmn", "chs", "cht" -> "zh"; "eng" -> "en"; "jpn" -> "ja"
+            "deu", "ger" -> "de"; "spa" -> "es"; "fra", "fre" -> "fr"; "ita" -> "it"; "hun" -> "hu"; "kor" -> "ko"
+            "rus" -> "ru"; "fas", "per" -> "fa"; "ara" -> "ar"; "pol" -> "pl"; "por" -> "pt"; "ces", "cze" -> "cs"
+            "dan" -> "da"; "swe" -> "sv"; "ell", "gre" -> "el"; "tur" -> "tr"
+            else -> ""
+        }
     }
     fun clean(value: String): String = Normalizer.normalize(value, Normalizer.Form.NFKC)
         .replace(Regex("\\{[^}]*\\}"), "").replace("\\N", "\n").replace("\\n", "\n").replace("\\h", " ")
@@ -135,7 +163,9 @@ internal object NarrationPolicy {
         return out.toString()
     }
     fun normalize(text: String, lang: String): String {
-        if(lang == "ja") return text // Preserve Japanese numerals for the model's own frontend.
+        // Only these two frontends expand numbers. Preserve every other language
+        // for the multilingual model rather than injecting English number words.
+        if(lang !in setOf("zh","en")) return text
         val digits="零一二三四五六七八九"
         var value=text
         // Android ICU's \d includes non-ASCII digits, which cannot index this ASCII digit table.
@@ -203,7 +233,7 @@ internal object NarrationPolicy {
         val value=Normalizer.normalize(text,Normalizer.Form.NFKC)
             .replace(Regex("[()\\[\\]{}\"“”„«»「」『』《》〈〉【】]"),"")
             .replace('’','\'').replace('‘','\'').replace(Regex("\\s+")," ").trim().trim('\'')
-        if(value.isEmpty()||value.last() in "。！？!?….")return value
+        if(value.isEmpty()||value.last() in "。！？!?….؟"||(language=="el"&&value.last()==';'))return value
         val phrase=value.trimEnd(',','，',';', '；', ':', '：').trimEnd()
         return if(phrase.isEmpty())"" else phrase+if(language in setOf("zh","ja"))"。" else "."
     }

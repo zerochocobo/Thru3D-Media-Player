@@ -43,8 +43,16 @@ internal class MpvVideoBridge(
     private val gate = MediaSessionGate()
     private val sessions = ConcurrentHashMap<Int, Session>()
     private val hosts = ConcurrentHashMap.newKeySet<Host>()
+    private val narrationRuntime=SharedNarrationEngine.native(context)
+    private val narrationPreviewCache by lazy {
+        val app=context() ?: error("voice_unavailable")
+        NarrationPreviewCache(java.io.File(app.filesDir,"narration/previews-v2"),java.io.File(app.cacheDir,"narration/previews-v2"))
+    }
     @Volatile private var foreground = true
     @Volatile private var stopped = false
+    @Volatile private var globalVoiceManager: VoiceCloneController? = null
+    private val globalVoiceHolds=java.util.concurrent.atomic.AtomicInteger()
+    private val globalVoiceHolding get()=globalVoiceHolds.get()>0
     private val freezePending = AtomicBoolean(false)
     private val frozenFrames = ConcurrentHashMap<Long, AtomicInteger>()
     @Volatile private var debugNormalFastPath = true
@@ -118,13 +126,18 @@ internal class MpvVideoBridge(
         @Volatile var pipelineAudioDelay = 0.0
         @Volatile var audioMuted = false
         @Volatile var narrationPath = ""
+        @Volatile var discInput = false
         @Volatile var narrationCa = ""
         @Volatile var interleavePolicy = Mp4InterleavePolicy.Decision()
         var interleaveCheckStarted = false // GL thread only
         @Volatile var interleaveRetry = false
         @Volatile var interleaveRestartMs = startMs
         @Volatile var narration: NarrationController? = null
-        fun needsAudio() = (audioEnabled && audioAvailable) || narration?.wantsAudio == true || narration?.wantsPreview == true || narration?.wantsPauseDrain == true
+        @Volatile var voiceClone: VoiceCloneController? = null
+        val cloneHolds=java.util.concurrent.atomic.AtomicInteger()
+        val cloneHolding get()=cloneHolds.get()>0
+        var cloneGainApplied=false // playback worker only
+        fun needsAudio() = (audioEnabled && audioAvailable) || narration?.wantsAudio == true || narration?.wantsPreview == true || narration?.wantsPauseDrain == true || voiceClone?.wantsAudio == true
         @Volatile var audioAvailable = audio
         @Volatile var descriptor: ParcelFileDescriptor? = null
         @Volatile var sidecars: List<ParcelFileDescriptor> = emptyList()
@@ -138,6 +151,7 @@ internal class MpvVideoBridge(
         var cloudCompanionsStarted = false // GL thread; discovery starts after first published frame
         /** Only once MPV no longer reads them. */
         fun closeDescriptors() = synchronized(this) {
+            voiceClone?.close(); voiceClone=null
             narration?.close(); narration = null
             networkLease?.let(releaseNetwork); networkLease = null
             subtitleLeases.forEach(releaseNetwork); subtitleLeases = emptyList()
@@ -328,6 +342,7 @@ internal class MpvVideoBridge(
                         } == true)
                 if (iso) host.loadingPhase = "reading_disc"
                 val disc = if (iso) try { MpvSourceNative.probeIso(path) } finally { finishIsoPreflight(path) } else null
+                host.discInput=iso
                 host.loadingPhase = "preparing"
                 val nativePath = if (iso && path.startsWith("fd://")) "/proc/self/fd/${path.removePrefix("fd://")}" else path
                 host.narrationPath = nativePath; host.narrationCa = tlsCaFile
@@ -507,6 +522,7 @@ internal class MpvVideoBridge(
     fun setPlaying(id: Int, playing: Boolean) {
         val session = sessions[id] ?: return
         if (!active(session)) return
+        if(playing&&(session.host.voiceClone?.holdsPlayback==true||globalVoiceManager?.holdsPlayback==true))return
         session.host.playing = playing
         if (!playing) session.host.narration?.pauseWithVideo()
         if (!playing && session.host.handle > 0) MpvSourceNative.setPlaying(session.host.handle, false)
@@ -559,12 +575,42 @@ internal class MpvVideoBridge(
                 if (host.closing || stopped || host.handle <= 0) null else NarrationController.Source(host.handle,
                     host.narrationPath, host.narrationCa, foreground, host.audioVolume, host.audioMuted, host.subtitleDelay, host.subtitleCommand,host.playing,host.userAudioDelay)
             }, { value -> if (host.handle > 0 && !host.closing) MpvSourceNative.setNarrationGain(host.handle, value) },
-                { refreshPlayback() }).also { host.narration=it }
+                { refreshPlayback() },narrationRuntime).also { host.narration=it;it.suspendForClone(host.cloneHolding||globalVoiceHolding) }
         }
         val accepted = controller.configure(json)
         if (accepted) refreshPlayback(explicit = controller.enabled)
         return accepted
     }
+    fun voiceCloneRequest(id: Int,json: String): Boolean {
+        val session=sessions[id] ?: return false
+        if(!active(session)||session.host.closing||!foreground)return false
+        val host=session.host
+        val operation=runCatching {JSONObject(json).optString("operation")}.getOrDefault("")
+        if(operation in setOf("open","preview","original","clone")){globalVoiceManager?.close();globalVoiceManager=null}
+        if(operation in setOf("open","preview","original","clone")||runCatching {JSONObject(json).optBoolean("pause")}.getOrDefault(false))setPlaying(id,false)
+        val controller=synchronized(host) {
+            host.voiceClone ?: VoiceCloneController(context,{
+                if(host.closing||stopped||host.handle<=0)null else VoiceCloneController.Source(host.handle,host.narrationPath,host.narrationCa,
+                    host.subtitleDelay,host.userAudioDelay,foreground,host.audioVolume,host.audioMuted,host.discInput,host.narration?.previewVolume ?: 1.0)
+            },{value->host.cloneHolds.addAndGet(if(value)1 else -1);host.narration?.suspendForClone(host.cloneHolding||globalVoiceHolding)}, {refreshPlayback(explicit=true)}, {host.narration?.awaitCloneDrain()},narrationRuntime,{narrationPreviewCache}).also {host.voiceClone=it}
+        }
+        return controller.request(json)
+    }
+    fun voiceCloneStatus(id: Int): String=sessions[id]?.takeIf {active(it)}?.host?.voiceClone?.status()?.toString() ?: "{\"opened\":false,\"revision\":0}"
+    @Synchronized fun voiceManagerRequest(json: String): Boolean {
+        if(stopped||!foreground||json.length>8192)return false
+        val operation=runCatching {JSONObject(json).optString("operation")}.getOrNull()
+        if(operation !in setOf("list","preview","rename","delete","stop","close"))return false
+        if(operation in setOf("preview","rename","delete")||JSONObject(json).optBoolean("pause"))sessions.values.filter {active(it)}.forEach {setPlaying(it.id,false)}
+        if(operation!="list")hosts.forEach {it.voiceClone?.close();it.voiceClone=null}
+        val controller=globalVoiceManager ?: VoiceCloneController(context,{
+            val host=hosts.firstOrNull {!it.closing&&it.handle>0}
+            VoiceCloneController.Source(0,"","",0.0,0.0,foreground&&!stopped,host?.audioVolume ?: 100.0,host?.audioMuted ?: false,narrationVolume=host?.narration?.previewVolume ?: 1.0)
+        },{value->globalVoiceHolds.addAndGet(if(value)1 else -1);hosts.forEach {it.narration?.suspendForClone(globalVoiceHolding||it.cloneHolding)}},
+            {refreshPlayback(explicit=true)},{hosts.forEach {it.narration?.awaitCloneDrain()}},narrationRuntime,{narrationPreviewCache}).also {globalVoiceManager=it}
+        return controller.request(json)
+    }
+    fun voiceManagerStatus(): String=globalVoiceManager?.status()?.toString() ?: "{}"
     /** Explicit Debug fixture tests only; no user-media details or subtitle text. */
     fun narrationTestStatus(id: Int): JSONObject {
         check(BuildConfig.DEBUG)
@@ -581,6 +627,7 @@ internal class MpvVideoBridge(
                 .put("fixture_language",if(title.endsWith(".narration-zh.srt"))"zh" else if(title.endsWith(".narration-en.srt"))"en" else ""))
         } }
         return (session.host.narration?.diagnosticStatus() ?: JSONObject().put("state","off"))
+            .put("voice_clone",session.host.voiceClone?.status() ?: JSONObject())
             .put("session_id",id).put("focus",audioFocusState).put("base_volume",session.host.audioVolume)
             .put("user_audio_delay_seconds",session.host.userAudioDelay).put("pipeline_audio_delay_seconds",session.host.pipelineAudioDelay)
             .put("audio_tracks",details.optJSONArray("audio_tracks") ?: JSONArray())
@@ -727,9 +774,9 @@ internal class MpvVideoBridge(
     }
     private fun refreshPlayback(explicit: Boolean = false) {
         worker.post {
-            val needsAudio = !stopped && foreground && hosts.any {
-                !it.closing && it.handle > 0 && (it.playing || it.narration?.wantsPreview == true || it.narration?.wantsPauseDrain == true) && it.needsAudio()
-            }
+            val needsAudio = !stopped && foreground && (globalVoiceManager?.wantsAudio==true || hosts.any {
+                !it.closing && it.handle > 0 && (it.playing || it.narration?.wantsPreview == true || it.narration?.wantsPauseDrain == true || it.voiceClone?.wantsAudio==true) && it.needsAudio()
+            })
             if (needsAudio && audioFocus == null) context()?.let { app ->
                 audioFocus = MpvAudioFocus(app) { change ->
                     // Stop as soon as loss arrives; waiting for RVM work to
@@ -737,8 +784,10 @@ internal class MpvVideoBridge(
                     if (change != MpvAudioFocusGate.Change.GAIN) hosts.filter { !stopped && !it.closing && it.needsAudio() }.forEach {
                         if (change == MpvAudioFocusGate.Change.LOSS) it.playing = false
                         it.narration?.allow(false)
+                        it.voiceClone?.allow(false)
                         if (it.handle > 0) MpvSourceNative.setPlaying(it.handle, false)
                     }
+                    if(change != MpvAudioFocusGate.Change.GAIN)globalVoiceManager?.allow(false)
                     if (change == MpvAudioFocusGate.Change.LOSS) sessions.values.filter { active(it) && it.host.needsAudio() }.forEach {
                         event("mpv_state", it, JSONObject().put("state", "paused").put("audio_focus_change", "loss"))
                     }
@@ -749,9 +798,16 @@ internal class MpvVideoBridge(
                 audioFocus?.release(); true
             }
             audioFocusState = if (needsAudio) audioFocus?.state() ?: "unavailable" else "none"
+            if(!foreground||!granted)globalVoiceManager?.allow(false)
             hosts.forEach { host -> if (!stopped && !host.closing && host.handle > 0) {
                 val allowed = foreground && host.playing && host.narration?.holdsPlayback != true && (!host.needsAudio() || granted)
                 host.narration?.allow(foreground && (host.playing || host.narration?.wantsPreview == true || host.narration?.wantsPauseDrain == true) && (!host.needsAudio() || granted))
+                if(!foreground||!granted)host.voiceClone?.allow(false)
+                if(host.voiceClone?.wantsAudio==true||globalVoiceManager?.wantsAudio==true){
+                    MpvSourceNative.setNarrationGain(host.handle,0.0);host.cloneGainApplied=true
+                }else if(host.cloneGainApplied){
+                    MpvSourceNative.setNarrationGain(host.handle,1.0);host.cloneGainApplied=false
+                }
                 MpvSourceNative.setPlaying(host.handle, allowed)
             } }
         }
@@ -1429,7 +1485,8 @@ internal class MpvVideoBridge(
         }
     }
     fun pause() {
-        foreground = false; hosts.forEach { it.narration?.allow(false); if (it.handle > 0) MpvSourceNative.setPlaying(it.handle, false) }
+        globalVoiceManager?.allow(false)
+        foreground = false; hosts.forEach { it.narration?.allow(false); it.voiceClone?.allow(false); if (it.handle > 0) MpvSourceNative.setPlaying(it.handle, false) }
         refreshPlayback()
     }
     fun resume() { foreground = true; refreshPlayback() }
@@ -1465,7 +1522,9 @@ internal class MpvVideoBridge(
         private val NO_PLANES: Pair<ByteBuffer, ByteBuffer> = ByteBuffer.allocateDirect(0) to ByteBuffer.allocateDirect(0)
     }
     fun shutdown() {
+        globalVoiceManager?.close();globalVoiceManager=null
         stopped = true; gate.shutdown(); sessions.values.forEach { dispose(it, true) }
+        Thread({narrationRuntime.close()},"NarrationRuntimeDispose").start()
         subtitleWorker.shutdownNow()
         companionWorker.shutdownNow()
         // Android may never deliver another draw during termination. Forget old

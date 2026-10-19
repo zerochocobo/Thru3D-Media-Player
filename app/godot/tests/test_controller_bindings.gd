@@ -667,6 +667,8 @@ func video_triggers() -> void:
 	var eye := Vector3(0, 1.6, 0)
 	main.rays.right_hand = [eye, (video.panel.to_global(video.screen_corner(1)) - eye).normalized()]
 	main._update_corner_hover()
+	check(video.hovered_corner == -1, "Hidden controls have no invisible corner affordance")
+	menu.visible = true; menu.refresh(); main._update_corner_hover()
 	check(video._handles[1].visible, "Video controller rays advertise trigger corner resizing")
 	library.free(); menu.free(); video.free(); main.free()
 
@@ -967,13 +969,13 @@ func runtime() -> void:
 	library.controls_page.mode = 0; library.refresh()
 	check(not library.text_snapshot().contains("Press to record") and not library.controls_page.action(7052), "Removed recording entry cannot arm input interception")
 	check(library.choices.targets.is_empty() and library.choices.popup.is_empty() and library.controls_page.selection.is_empty(), "Resting controller list allocates no choice controls or option data")
-	check(library._buttons.filter(func(button): return library._row_target(button.target)).all(func(button): return not button.node is MeshInstance3D and button.node.get_children().all(func(child): return child is Label3D and not child.text.is_empty())), "Controller rows contain only the three text columns without meshes or blank labels")
-	check(library._buttons.filter(func(button): return button.has("choice_key")).all(func(button): return button.hover_labels.size() == 1 and button.hover_labels[0].text.ends_with(library.CHOICE_MARK)), "Every editable value includes a chevron in its existing label")
-	check(library._buttons.filter(func(button): return library._row_target(button.target) and not button.has("choice_key")).all(func(button): return button.node.get_children().all(func(child): return not child.text.contains(library.CHOICE_MARK))), "Fixed menu bindings have no choice chevron")
+	check(library._buttons.filter(func(button): return library._row_target(button.target)).all(func(button): return not button.node is MeshInstance3D and button.node.get_children().filter(func(child): return child is Label3D).all(func(child): return not child.text.is_empty())), "Controller table preserves text columns and one row input target")
+	check(library._buttons.filter(func(button): return button.has("choice_key")).all(func(button): return button.hover_labels.size() == 1 and button.has("select_surface") and button.has("select_arrow")), "Editable bindings use the shared filled select and vector arrow")
+	check(library._buttons.filter(func(button): return library._row_target(button.target) and not button.has("choice_key")).all(func(button): return not button.has("select_surface") and not button.has("select_arrow")), "Fixed bindings remain plain text")
 	var play_row := choice_target(library, "control_binding/play", null, "open")
 	main.rays.right_hand = [library._buttons.filter(func(button): return button.target == play_row)[0].node.to_global(Vector3(0, 0, 1)), -library.global_basis.z]
 	library.update_pointer("right_hand", main.rays.right_hand[0], main.rays.right_hand[1], true)
-	check(library._buttons.filter(func(button): return button.target == play_row)[0].hover_labels[0].modulate == library.ACCENT and library.choices.targets.is_empty(), "Hover highlights the editable value without creating a popup or background")
+	check(library._buttons.filter(func(button): return button.target == play_row)[0].hover_labels[0].modulate == library.ACCENT and library.choices.targets.is_empty(), "Hover highlights the editable value without opening options")
 	main._on_controller_button("trigger_click", "right_hand")
 	check(library.choices.opened.is_empty() and not library._drag.is_empty(), "Text row waits for trigger release so a drag can scroll")
 	main._on_controller_release("trigger_click", "left_hand")

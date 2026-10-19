@@ -11,6 +11,9 @@ const PREVIOUS := -2
 const NEXT := -3
 const CLOSE := -4
 const MAX_RAY_METRES := 5.0
+var ray_max_distance := MAX_RAY_METRES
+var scene_overlay := false
+static var _overlay_shaders: Dictionary = {}
 const FOLLOW := -1001
 const TEMP_PASSTHROUGH := -1002
 const FOOTER_DIAMETER := 0.09
@@ -29,7 +32,10 @@ const MUTED := Color(0.56, 0.62, 0.69)
 ## typography and physical dimensions stay the same, including labels resized after creation.
 const TEXT_RASTER_SCALE := 2
 const TEXT_PIXEL_SIZE := 0.0012 / TEXT_RASTER_SCALE
-const CHOICE_MARK := "›"
+const TEXT_BODY := 18
+const TEXT_AUX := 16
+const TEXT_TITLE := 20
+const TEXT_PAGE_TITLE := 24
 const BRACKET_FONT := preload("res://assets/fonts/cjk-brackets.otf")
 const POINTER_LINE_PRIORITY := 126
 const POINTER_DOT_PRIORITY := 127
@@ -215,7 +221,7 @@ func _nearest_hit(origin: Vector3, direction: Vector3, surfaces: Array, best: Di
 			continue
 		var world: Vector3 = button.node.global_transform * Vector3(local.x, local.y, 0)
 		var distance := origin.distance_to(world)
-		if distance > MAX_RAY_METRES or (not best.is_empty() and distance >= float(best.distance)):
+		if distance > ray_max_distance or (not best.is_empty() and distance >= float(best.distance)):
 			continue
 		best = {"target": button.target, "point": to_local(world), "distance": distance, "enabled": button.enabled}
 	return best
@@ -251,7 +257,7 @@ func grab_hit(origin: Vector3, direction: Vector3) -> Dictionary:
 	if absf(local.x) > half.x or absf(local.y) > half.y: return hit
 	var world: Vector3 = _backdrop.global_transform * Vector3(local.x, local.y, 0)
 	var distance := origin.distance_to(world)
-	if distance > MAX_RAY_METRES or (not hit.is_empty() and float(hit.distance) <= distance): return hit
+	if distance > ray_max_distance or (not hit.is_empty() and float(hit.distance) <= distance): return hit
 	return {"target": NONE, "point": to_local(world), "distance": distance, "enabled": false}
 
 func update_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: bool) -> void:
@@ -262,7 +268,7 @@ func update_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: 
 	_hover[hand] = int(hit.get("target", NONE))
 	var valid := tracked and origin.is_finite() and direction.is_finite() and direction.length_squared() > 0.000001
 	var endpoint := Vector3.ZERO
-	if valid: endpoint = to_global(hit.point) if not hit.is_empty() else origin + direction.normalized() * MAX_RAY_METRES
+	if valid: endpoint = to_global(hit.point) if not hit.is_empty() else origin + direction.normalized() * ray_max_distance
 	_draw_pointer(hand, origin, endpoint, valid, not hit.is_empty())
 	_update_highlights()
 
@@ -349,7 +355,7 @@ func _button(target: int, text: String, centre: Vector2, size: Vector2, enabled:
 	var foreground := Color(0.045, 0.1, 0.085) if primary else Color(0.93, 0.95, 0.98)
 	var node := _quad(size, Vector3(centre.x, centre.y, 0.002), base, 11)
 	(parent if parent else self).add_child(node)
-	var label := _label(text, Vector3(0, -size.y * 0.26 if not icon.is_empty() else 0, 0.004), 19 if not icon.is_empty() else 23, node)
+	var label := _label(text, Vector3(0, -size.y * 0.26 if not icon.is_empty() else 0, 0.004), TEXT_BODY, node)
 	label.modulate = foreground if enabled else MUTED * Color(0.7, 0.7, 0.7)
 	if not icon.is_empty():
 		# Icon-only buttons centre a larger glyph; captioned buttons stack icon over text.
@@ -368,10 +374,27 @@ func _text_button(target: int, text: String, centre: Vector2, size: Vector2, ena
 	var foreground := Color(0.93, 0.95, 0.98)
 	var hover_labels: Array[Label3D] = []
 	if not text.is_empty():
-		var caption := _label(text, Vector3.ZERO, 18, node)
+		var caption := _label(text, Vector3.ZERO, TEXT_BODY, node)
 		caption.modulate = foreground; hover_labels.append(caption)
 	_buttons.append({"target": target, "rect": Rect2(centre - size / 2, size), "enabled": enabled,
 		"node": node, "base_color": Color(TILE, 0), "foreground": foreground, "hover_labels": hover_labels})
+
+## A select keeps one input target; its value and vector arrow share that target.
+## Text-only table rows get a surface just behind the editable value column.
+func _select_face(button: Dictionary, caption: Label3D, centre: Vector2, size: Vector2) -> void:
+	set_label_size(caption, TEXT_BODY)
+	caption.text = _fit_title(caption.text, "", maxf(0.01, size.x - 0.09), TEXT_BODY)
+	caption.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+	caption.position.x = centre.x - size.x / 2 + 0.018
+	caption.position.y = centre.y
+	if not button.node is MeshInstance3D:
+		var surface := _quad(size, Vector3(centre.x, centre.y, caption.position.z - 0.003), TILE, caption.render_priority - 1)
+		button.node.add_child(surface)
+		button["select_surface"] = surface
+	var arrow := _icon("chevron_down", Vector3(centre.x + size.x / 2 - 0.032, centre.y, caption.position.z), minf(0.040, size.y * 0.65), button.foreground, button.node)
+	arrow.material_override.render_priority = caption.render_priority
+	button["select_arrow"] = arrow
+	button["select_caption"] = caption
 
 ## Icon-only round button (play, floating actions); [tip] names it while a ray hovers it.
 func _round(target: int, icon: String, centre: Vector2, diameter: float, enabled: bool = true,
@@ -399,6 +422,7 @@ func _place_device_status(centre: Vector2) -> void:
 	var bottom: float = _backdrop.position.y - _backdrop.mesh.size.y * 0.5
 	_footer_centre = Vector2(centre.x, minf(centre.y - 0.025, bottom - 0.085))
 	refresh_session_controls(true)
+	if scene_overlay: _apply_overlay_node(device_status)
 
 func _session_controls() -> Dictionary:
 	return session_controls_provider.call() if session_controls_provider.is_valid() else {}
@@ -470,6 +494,7 @@ func _quad(size: Vector2, location: Vector3, color: Color, priority: int) -> Mes
 	surface.set_shader_parameter("surface_size", size)
 	surface.set_shader_parameter("corner_radius", 0.028 if priority == 10 else 0.012)
 	node.material_override = surface
+	_apply_overlay_node(node)
 	return node
 
 func _material(color: Color, priority: int, overlay: bool = false) -> StandardMaterial3D:
@@ -483,6 +508,9 @@ func _material(color: Color, priority: int, overlay: bool = false) -> StandardMa
 	material.no_depth_test = overlay
 	material.render_priority = priority
 	material.texture_filter = BaseMaterial3D.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
+	if scene_overlay:
+		material.set_meta("menu_creation_depth", overlay)
+		material.no_depth_test = true
 	return material
 
 func _label(text: String, location: Vector3, size: int, parent: Node = self) -> Label3D:
@@ -499,7 +527,57 @@ func _label(text: String, location: Vector3, size: int, parent: Node = self) -> 
 	parent.add_child(label)
 	if parent == self:
 		_labels.append(label)
+	_apply_overlay_node(label)
 	return label
+
+## This opt-in policy belongs to one menu. Preserve each node's original depth
+## setting and shader so leaving the cinema restores normal scene occlusion.
+func set_scene_overlay(enabled: bool) -> void:
+	scene_overlay = enabled
+	apply_scene_overlay()
+
+func apply_scene_overlay() -> void:
+	_apply_overlay_node(self)
+
+func _apply_overlay_node(node: Node) -> void:
+	if node is Label3D:
+		if scene_overlay:
+			if not node.has_meta("menu_original_label_depth"): node.set_meta("menu_original_label_depth", node.no_depth_test)
+			node.no_depth_test = true
+		elif node.has_meta("menu_original_label_depth"):
+			node.no_depth_test = node.get_meta("menu_original_label_depth")
+			node.remove_meta("menu_original_label_depth")
+	elif node is GeometryInstance3D and node.material_override:
+		var material: Material = node.material_override
+		if material is ShaderMaterial:
+			if scene_overlay and material.shader and not node.has_meta("menu_original_shader"):
+				var original: Shader = material.shader
+				var key := original.get_instance_id()
+				if not _overlay_shaders.has(key):
+					var shader := Shader.new()
+					shader.code = original.code if "depth_test_disabled" in original.code else original.code.replace("render_mode ", "render_mode depth_test_disabled, ")
+					_overlay_shaders[key] = shader
+				node.set_meta("menu_original_shader", original)
+				var copy := material.duplicate() as ShaderMaterial
+				copy.shader = _overlay_shaders[key]
+				node.material_override = copy
+			elif not scene_overlay and node.has_meta("menu_original_shader"):
+				material.shader = node.get_meta("menu_original_shader")
+				node.remove_meta("menu_original_shader")
+		elif material is BaseMaterial3D:
+			if scene_overlay:
+				if not node.has_meta("menu_original_material_depth"):
+					node.set_meta("menu_original_material_depth", material.get_meta("menu_creation_depth", material.no_depth_test))
+					node.material_override = material.duplicate()
+				node.material_override.no_depth_test = true
+			elif node.has_meta("menu_original_material_depth"):
+				material.no_depth_test = node.get_meta("menu_original_material_depth")
+				node.remove_meta("menu_original_material_depth")
+			elif material.has_meta("menu_creation_depth"):
+				material.no_depth_test = material.get_meta("menu_creation_depth")
+			if not scene_overlay and material.has_meta("menu_creation_depth"): material.remove_meta("menu_creation_depth")
+	for child in node.get_children():
+		_apply_overlay_node(child)
 
 func _pointer(hand: String) -> Dictionary:
 	if _pointers.has(hand):
@@ -526,6 +604,15 @@ func _update_highlights() -> void:
 	var changed := false
 	for button in _buttons:
 		var hovered: bool = button.enabled and _hover.values().has(button.target)
+		if button.has("select_arrow"):
+			var ink: Color = (ACCENT if hovered and button.has("hover_labels") else button.foreground) if button.enabled else MUTED
+			if button.select_arrow.material_override.albedo_color != ink:
+				button.select_arrow.material_override.albedo_color = ink; changed = true
+		if button.has("select_surface"):
+			var fill := Color(0.23, 0.43, 0.38) if hovered else TILE
+			if not button.enabled: fill = Color(0.085, 0.095, 0.115)
+			if button.select_surface.material_override.get_shader_parameter("surface_color") != fill:
+				button.select_surface.material_override.set_shader_parameter("surface_color", fill); changed = true
 		if button.has("hover_labels"):
 			var ink: Color = ACCENT if hovered else button.foreground
 			if not button.enabled: ink = button.get("disabled_ink", MUTED)
@@ -557,13 +644,13 @@ func _update_tooltip() -> void:
 	if not _tooltip:
 		_tooltip = _quad(Vector2(0.2, 0.05), Vector3.ZERO, Color(0.02, 0.025, 0.03, 0.92), 40)
 		add_child(_tooltip)
-		var text := _label("", Vector3(0, 0, 0.002), 17, _tooltip)
+		var text := _label("", Vector3(0, 0, 0.002), TEXT_AUX, _tooltip)
 		text.render_priority = 41
 	var label: Label3D = _tooltip.get_child(0)
 	var changed := not _tooltip.visible or label.text != tip
 	if changed:
 		label.text = tip; label.font = ui_font()
-		var width := minf(text_width(tip, 17) + 0.006, 0.86)
+		var width := minf(text_width(tip, TEXT_AUX) + 0.006, 0.86)
 		label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		label.width = width / label.pixel_size
 		var measured := ui_font().get_multiline_string_size(tip, HORIZONTAL_ALIGNMENT_CENTER, label.width, label.font_size, -1, TextServer.BREAK_MANDATORY | TextServer.BREAK_WORD_BOUND | TextServer.BREAK_ADAPTIVE)

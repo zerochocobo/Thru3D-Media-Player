@@ -23,3 +23,4 @@ foreach ($entry in $manifest.files.PSObject.Properties) {
     if ((Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash.ToLowerInvariant() -ne $entry.Value.sha256) { throw 'Narration model copy differs.' }
 }
 Write-Output "Verified bundled narration models: $(@($manifest.files.PSObject.Properties).Count) files in models/narration/$($manifest.id)."
+& (Join-Path $PSScriptRoot 'Prepare-VoiceCloneModels.ps1')

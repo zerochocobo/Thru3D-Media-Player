@@ -24,7 +24,8 @@ internal object PhotoStereo {
 
     fun prepare(source: File, near: ByteBuffer, rect: FloatArray, strength: Float, generation: Int): JSONObject {
         require(strength.isFinite() && strength in 0f..2f)
-        val prefix = "stereo-${(strength*100).roundToInt()}-"
+        // v2 applies strength after the base disparity cap; old pairs above 100% are stale.
+        val prefix = "stereo-v2-${(strength*100).roundToInt()}-"
         // Raw RGBA pair named with its size: a hit is checked by length, with nothing to decode.
         source.parentFile?.listFiles()?.firstOrNull { it.name.startsWith(prefix) && it.extension == "rgba" }?.let { cached ->
             val size = Regex("""-(\d+)x(\d+)$""").find(cached.nameWithoutExtension)?.groupValues

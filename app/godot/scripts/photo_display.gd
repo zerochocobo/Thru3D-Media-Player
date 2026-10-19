@@ -58,6 +58,14 @@ var depth_enabled := false
 var depth_strength := 1.0
 const DepthStrength := preload("res://scripts/depth_strength.gd")
 var depth_error := ""
+var spatial_requested := false
+var spatial_preferred := true # Global photo preference; navigation and automatic cleanup never change it.
+var _spatial_auto_due := false
+var spatial_error := ""
+var _spatial_token := 0
+var _spatial_curve := 0.0
+var _spatial_waiting := false
+var _spatial: Node3D
 var _depth_busy := false
 var _depth_texture: ImageTexture
 var placement_pending := true
@@ -103,6 +111,7 @@ var _inspect_line: MeshInstance3D
 var _inspect_dot: MeshInstance3D
 var _inspect_pointer_material: StandardMaterial3D
 var mode_memory := ModeMemory.new("user://photo_settings")
+var panorama_tiles := preload("res://scripts/panorama_tiles.gd").new()
 
 const DEFAULT_CURVE := 0.35
 const DEFAULT_DISTANCE := 3.0
@@ -158,6 +167,7 @@ func _init() -> void:
 	flat_pose.origin.z = -DEFAULT_DISTANCE
 
 func restore_view_settings(settings: ConfigFile) -> void:
+	spatial_preferred = bool(settings.get_value("photo", "spatial_preferred", true))
 	var distance := float(settings.get_value("photo_screen", "distance", DEFAULT_DISTANCE))
 	var scale := float(settings.get_value("photo_screen", "scale", 1.0))
 	var curve := float(settings.get_value("photo_screen", "curve", DEFAULT_CURVE))
@@ -215,6 +225,8 @@ func pan_hand(step: Vector2) -> void:
 
 func _ready() -> void:
 	initialize_surface(SHADER)
+	panorama_tiles.photo = self
+	panel.add_child(panorama_tiles)
 	changed.connect(gallery._refresh_textures)
 	directory.completed.connect(func(entries, complete, failure): _directory_result = {"entries": entries, "complete": complete, "error": failure})
 	_placeholder = MeshInstance3D.new()
@@ -289,8 +301,12 @@ func _ready() -> void:
 		platform = Engine.get_singleton("QuestPlayer")
 		platform.connect("photo_ready", _on_ready)
 		platform.connect("photo_depth", _on_depth)
+		if platform.has_signal("photo_scene_depth"): platform.connect("photo_scene_depth", _on_spatial_depth)
 		if platform.has_signal("photo_portrait"): platform.connect("photo_portrait", _on_portrait)
 		if platform.has_signal("photo_preload_depth"): platform.connect("photo_preload_depth", _on_prefetch_depth)
+	_spatial=preload("res://scripts/photo_spatial_scene.gd").new()
+	add_child(_spatial)
+	_spatial.completed.connect(_spatial_completed)
 	_apply_geometry()
 
 func _source_size() -> Vector2:
@@ -299,7 +315,7 @@ func _source_size() -> Vector2:
 func open_image(uri: String, title: String, entries: Array = [], location: Dictionary = {}, retained: Dictionary = {}) -> bool:
 	source_location = location.duplicate(true) if not location.is_empty() else preload("res://scripts/media_location.gd").infer(uri)
 	var retain_frame := not local_uri.is_empty() and geometry == Geometry.Geometry.FLAT and gallery.mode in [Gallery.Layout.SINGLE, Gallery.Layout.SIDES] and not portrait_requested
-	close_image()
+	close_image(true, uri if source_location.has("online_source") else "")
 	placement_pending = not retain_frame
 	queue.clear()
 	for entry in entries:
@@ -322,6 +338,7 @@ func start_directory(context: Dictionary) -> void:
 	changed.emit()
 
 func set_layout_mode(value: int) -> void:
+	if spatial_requested: set_spatial(false, true)
 	if portrait_requested: set_portrait(false)
 	gallery.set_mode(value)
 	if gallery.overview():
@@ -356,6 +373,7 @@ func navigate(direction: int) -> bool:
 	return select_image(target, 1 if direction > 0 else -1)
 
 func select_image(target: int, direction: int = 0) -> bool:
+	if spatial_requested: set_spatial(false, true)
 	if portrait_requested and target == index: return false
 	if portrait_requested and target != index and target >= 0 and target < queue.size(): set_portrait(false)
 	var was_focused: bool = gallery.focus >= 0
@@ -599,6 +617,7 @@ func _process(delta: float) -> void:
 	if _catalog_save_ms > 0 and Time.get_ticks_msec() >= _catalog_save_ms and catalog:
 		_catalog_save_ms = 0
 		catalog.save()
+	_process_spatial()
 	_process_portrait()
 	_process_layer()
 	if not _directory_result.is_empty() and not loading and not _thread: _replace_directory()
@@ -665,7 +684,8 @@ func _process(delta: float) -> void:
 		material.set_shader_parameter("reveal_progress", progress)
 		_placeholder_material.set_shader_parameter("reveal_progress", progress)
 		if _reveal_seconds == 0: _placeholder.visible = false
-	if not portrait_requested and not loading and not _transition_active and _reveal_seconds == 0 and not gallery.overview(): _pump_prefetch()
+	_maybe_start_spatial()
+	if not spatial_requested and not portrait_requested and not loading and not _transition_active and _reveal_seconds == 0 and not gallery.overview(): _pump_prefetch()
 
 func _cache_supported() -> bool:
 	return not platform or (Methods.supports(platform, "preload_photo") and Methods.supports(platform, "activate_photo"))
@@ -833,6 +853,8 @@ func _mark(stage: String, since: int) -> int:
 	return now
 
 func _accept(result: Dictionary, job: Dictionary) -> void:
+	if spatial_requested: set_spatial(false, true)
+	spatial_error=""
 	_accept_timing = {}
 	var accept_started := Time.get_ticks_usec()
 	var mark := accept_started
@@ -862,6 +884,7 @@ func _accept(result: Dictionary, job: Dictionary) -> void:
 	local_uri = str(queue[index].uri)
 	display_name = str(queue[index].get("title", local_uri.get_file()))
 	_metadata = result.info
+	panorama_tiles.configure(_metadata,platform)
 	var retained: Dictionary = queue[index].get("retained_source", {})
 	if not retained.is_empty():
 		_metadata["native_stereo"] = int(retained.get("layout",0))!=0
@@ -948,13 +971,14 @@ func _accept(result: Dictionary, job: Dictionary) -> void:
 			else Thumbnails.store(local_uri, result.thumbnail)
 		if stored: result["thumbnail_cached"] = true
 	mark = _mark("thumbnail", mark)
-	if catalog and history_enabled:
+	if catalog and history_enabled and not source_location.has("online_source"):
 		catalog.opened(local_uri, display_name, false, "image")
 		catalog.set_location(local_uri, source_location if not source_location.is_empty() else preload("res://scripts/media_location.gd").infer(local_uri))
 		_catalog_save_ms = Time.get_ticks_msec() + 1000 # not in the frame that shows the photo
 	mark = _mark("catalog", mark)
 	changed.emit()
 	mark = _mark("changed", mark)
+	_spatial_auto_due=true
 	_accept_timing["total"] = Time.get_ticks_usec() - accept_started
 	DiagnosticLog.record("photo_accept_timing", _accept_timing)
 
@@ -1040,6 +1064,7 @@ func _apply_geometry() -> void:
 	_update_inspect()
 
 func set_projection(value: int) -> void:
+	if spatial_requested: set_spatial(false, true)
 	if portrait_requested: set_portrait(false)
 	if value not in [0, 1, 2, 3]: return
 	if value != geometry: _unlock_mode()
@@ -1052,6 +1077,7 @@ func cycle_projection() -> void:
 	set_projection((geometry + 1) % 4)
 
 func set_stereo_layout(layout: int) -> void:
+	if spatial_requested: set_spatial(false, true)
 	if portrait_requested: set_portrait(false)
 	if layout not in [0, 1, 2]: return
 	if layout != current_lock().layout: _unlock_mode()
@@ -1064,6 +1090,7 @@ func toggle_stereo() -> void:
 	set_stereo_layout(0 if stereo_sbs else 1)
 
 func toggle_eye_order() -> bool:
+	if spatial_requested: set_spatial(false, true)
 	if not stereo_sbs: return false
 	swap_eyes = not swap_eyes; _apply_geometry(); _remember_mode(); changed.emit(); return true
 
@@ -1099,6 +1126,7 @@ func load_mode_lock(value: Variant) -> void:
 		"depth": bool(value.depth) and int(value.layout) == 0 and int(value.geometry) == 0, "fisheye_fov": int(value.fisheye_fov)}
 
 func toggle_inspect() -> void:
+	if spatial_requested: set_spatial(false, true)
 	if portrait_requested: return
 	if inspect:
 		close_inspect()
@@ -1291,8 +1319,11 @@ func _update_inspect() -> void:
 	_detail_material.set_shader_parameter("detail_up", right.cross(forward).normalized())
 
 func set_depth(enabled: bool) -> bool:
+	if spatial_requested: set_spatial(false, true)
 	if not enabled and portrait_requested: set_portrait(false)
 	if enabled and (_metadata.get("native_stereo", false) or stereo_sbs or geometry != 0 or not platform or _display_request <= 0): return false
+	# An explicit spatial-mode choice lasts for this photo, including conversion Off/On.
+	# A newly accepted photo restores the default spatial preference.
 	if enabled != depth_requested: _unlock_mode()
 	auto_depth = enabled
 	depth_requested = enabled
@@ -1300,6 +1331,7 @@ func set_depth(enabled: bool) -> bool:
 	depth_enabled = enabled and (_depth_texture != null or _display_depth_data.has("image")) \
 		and (not Methods.supports(platform, "prepare_photo_3d") or _stereo_texture != null or _display_depth_data.has("stereo_image"))
 	depth_error = ""
+	_spatial_auto_due=enabled
 	if enabled and (not depth_enabled or (Methods.supports(platform, "prepare_photo_3d") and
 		 not is_equal_approx(float(_display_depth_data.get("strength", -1)), depth_strength))) and not _depth_busy:
 		_depth_busy = _prepare_depth(_display_request)
@@ -1398,6 +1430,7 @@ func _commit_depth_data(data: Dictionary) -> void:
 	_depth_rect = data.rect
 	_use_depth_textures()
 	depth_enabled = depth_requested and geometry == 0 and not stereo_sbs
+	_spatial_auto_due=depth_enabled
 
 func _on_depth(id: int, payload: String) -> void:
 	if _queue_depth_payload(id, payload, false): return
@@ -1442,11 +1475,13 @@ func cycle_depth_strength() -> void:
 	set_depth_strength(0.5 if depth_strength >= DepthStrength.PHOTO_MAX else depth_strength + 0.5)
 
 func set_depth_strength(value: float) -> bool:
+	if _metadata.get("native_stereo", false): return false
 	var strength := DepthStrength.clamp_value(value, DepthStrength.PHOTO_MAX)
 	# Zero disparity keeps the cutout active; the portrait button remains the explicit exit.
 	if strength <= 0.0 and not portrait_requested: return set_depth(false)
-	if _metadata.get("native_stereo", false) or stereo_sbs or geometry != 0 or not platform or _display_request <= 0: return false
+	if stereo_sbs or geometry != 0 or not platform or _display_request <= 0: return false
 	if is_equal_approx(strength,depth_strength) and depth_requested: return true
+	if spatial_requested: set_spatial(false, true)
 	if portrait_requested: _invalidate_portrait_mask()
 	depth_strength = strength
 	if Methods.supports(platform, "update_photo_3d_strength"):
@@ -1457,6 +1492,7 @@ func set_depth_strength(value: float) -> bool:
 		material.set_shader_parameter("depth_strength", depth_strength)
 		_detail_material.set_shader_parameter("depth_strength", depth_strength)
 	if Methods.supports(platform, "prepare_photo_3d"): _depth_rebuild_seconds = 0.15
+	_spatial_auto_due=not portrait_requested
 	changed.emit()
 	return true
 
@@ -1478,14 +1514,26 @@ func match_spatial_fov() -> bool:
 	changed.emit()
 	return true
 
+func can_save_pictures() -> bool:
+	return _texture != null and not loading and local_uri.begins_with("file://") and source_location.has("online_source") and Methods.supports(platform,"panorama_save_pictures")
+func pictures_status() -> Dictionary:
+	if not can_save_pictures(): return {}
+	var report: Variant=JSON.parse_string(platform.panorama_save_status())
+	return report if report is Dictionary and report.get("source","")==local_uri else {}
+func save_to_pictures() -> bool:
+	if not can_save_pictures() or pictures_status().get("state","") in ["saving","saved"]: return false
+	return bool(platform.panorama_save_pictures(local_uri,display_name,geometry==Geometry.Geometry.EQUIRECT_360 and not stereo_sbs))
 func snapshot() -> Dictionary:
 	var position := pending_index if pending_index >= 0 else index
 	var title := str(queue[position].get("title", "")) if position >= 0 and position < queue.size() else display_name
+	var shown_size: Vector2=Vector2(panorama_tiles.dimensions) if panorama_tiles.active() else _size
 	var progress: Dictionary = _loading_status.duplicate()
 	progress.elapsed_ms = Time.get_ticks_msec() - _loading_started_ms
-	return {"has_image": _texture != null, "loading": loading, "loading_caption": Loading.caption(progress) if loading else "", "placeholder": placeholder_visible(), "preparing_depth": not _pending_display.is_empty(), "title": title, "index": position, "count": queue.size(),
+	return {"spatial_preferred":spatial_preferred,"spatial_requested":spatial_requested,"spatial_ready":_spatial.prepared if is_instance_valid(_spatial) else false,"spatial_available":can_spatial(),"spatial_error":spatial_error,
+		"spatial_report":_spatial.report if is_instance_valid(_spatial) else {},"has_image": _texture != null, "loading": loading, "loading_caption": Loading.caption(progress) if loading else "", "placeholder": placeholder_visible(), "preparing_depth": not _pending_display.is_empty(), "title": title, "index": position, "count": queue.size(),
 		"source_uri": local_uri, "layout": gallery.mode, "wall_rows": gallery.wall_rows, "gallery_scale": gallery.view_scale, "gallery_distance": gallery.view_distance, "gallery_swapping": gallery._swap_phase != 0, "gallery_focus": gallery.focus, "directory_loading": directory.loading, "directory_error": directory_error, "queue_complete": queue_complete,
-		"can_background": can_background(),
+		"can_save_pictures":can_save_pictures(), "pictures_save":pictures_status(),
+		"can_background": can_background(), "panorama_detail_error": panorama_tiles.error,
 		"can_previous": not portrait_requested and queue.size() > 1 and (((geometry == Geometry.Geometry.FLAT or gallery.mode != 0) and queue_complete) or position > 0),
 		"can_next": not portrait_requested and queue.size() > 1 and (((geometry == Geometry.Geometry.FLAT or gallery.mode != 0) and queue_complete) or (position >= 0 and position < queue.size() - 1)),
 		"geometry": geometry, "stereo": stereo_sbs, "top_bottom": top_bottom, "swap_eyes": swap_eyes, "fisheye_fov": fisheye_fov, "mode_lock": mode_lock.duplicate(),
@@ -1497,11 +1545,106 @@ func snapshot() -> Dictionary:
 		"spatial_metadata": spatial_metadata(), "spatial_fov_available": spatial_fov_scale() > 0.0,
 		"stereo_strategy":_display_depth_data.get("strategy", "inverse_shader"), "stereo_ready":_stereo_texture != null,
 		"render_strength":_display_depth_data.get("strength", depth_strength),
-		"source_size": "%d × %d" % [int(_size.x), int(_size.y)], "error": error, "screen_curve": screen_curve}
+		"source_size": "%d × %d" % [int(shown_size.x), int(shown_size.y)], "error": error, "screen_curve": screen_curve}
 
 func can_background() -> bool:
 	return _texture != null and not _metadata.get("raw_rgba", false) and not loading and error.is_empty() and geometry == Geometry.Geometry.EQUIRECT_360 and not stereo_sbs \
 		and absf(_size.x / _size.y - 2.0) < 0.02 and Info.panorama_rect(_metadata).is_equal_approx(Vector4(0,0,1,1))
+
+func can_spatial() -> bool:
+	if not is_instance_valid(_spatial) or _texture==null or loading or not error.is_empty() or geometry!=0 or portrait_requested or inspect \
+		or _depth_busy or _depth_rebuild_seconds>0 or gallery.overview(): return false
+	if bool(_metadata.get("native_stereo",false)):
+		return Methods.supports(platform,"prepare_photo_scene_depth")
+	# Plain 2D never starts a second conversion. Reuse the completed conversion at this strength.
+	return not stereo_sbs and depth_requested and depth_enabled and _display_depth_data.has("image") \
+		and (not Methods.supports(platform,"prepare_photo_3d") or (_display_depth_data.has("stereo_image") \
+		and is_equal_approx(float(_display_depth_data.get("strength",-1)),depth_strength)))
+
+func _maybe_start_spatial() -> void:
+	if not _spatial_auto_due or not spatial_preferred or spatial_requested or not spatial_error.is_empty(): return
+	if loading or _transition_active or _reveal_seconds>0 or _depth_busy or _depth_rebuild_seconds>0: return
+	if not bool(_metadata.get("native_stereo",false)) and not depth_requested:
+		_spatial_auto_due=false; return
+	if can_spatial(): set_spatial(true, true)
+
+func set_spatial_mode(enabled: bool, enable_conversion: bool = false) -> bool:
+	if geometry!=0 or loading or _texture==null or portrait_requested or gallery.overview(): return false
+	if not enabled:
+		set_spatial(false)
+		spatial_error=""
+		# Native static mode uses the captured SBS pair, with no mono conversion or strength change.
+		if enable_conversion and not bool(_metadata.get("native_stereo",false)) and not depth_requested and not set_depth(true): return false
+		changed.emit(); return true
+	spatial_preferred=true; spatial_error=""; _spatial_auto_due=true
+	if not bool(_metadata.get("native_stereo",false)) and not depth_requested:
+		if not set_depth(true): changed.emit(); return false
+	_maybe_start_spatial()
+	changed.emit(); return true
+
+func set_spatial(enabled: bool, automatic: bool = false) -> bool:
+	if enabled and not spatial_requested and not can_spatial(): return false
+	if not automatic: spatial_preferred=enabled
+	_spatial_auto_due=false
+	if enabled == spatial_requested: return true
+	_spatial_token+=1; _spatial_waiting=false; spatial_error=""
+	if not enabled:
+		if Methods.supports(platform,"cancel_photo_scene_depth"): platform.cancel_photo_scene_depth(_display_request,_spatial_token-1)
+		spatial_requested=false; _spatial.clear()
+		material.set_shader_parameter("spatial_hidden",false)
+		set_screen_curve(_spatial_curve); _apply_geometry(); changed.emit(); return true
+	finish_transition(); close_inspect(); _pause_prefetch()
+	_spatial_curve=screen_curve; set_screen_curve(0)
+	spatial_requested=true; _hide_layer(); _upload={}; _apply_geometry()
+	if _display_depth_data.has("image") and not bool(_metadata.get("native_stereo",false)):
+		_start_spatial(_display_depth_data)
+	else:
+		_spatial_waiting=bool(platform.prepare_photo_scene_depth(_display_request,_spatial_token))
+		if not _spatial_waiting: set_spatial(false, true); spatial_error="Spatial view unavailable"
+	changed.emit(); return spatial_requested
+
+func _on_spatial_depth(id: int, payload: String) -> void:
+	var result: Variant=JSON.parse_string(payload)
+	if not result is Dictionary or not spatial_requested or not _spatial_waiting or int(result.get("scene_token",0))!=_spatial_token or id!=_display_request: return
+	_spatial_waiting=false
+	var data:=_read_depth(payload)
+	if data.is_empty():
+		set_spatial(false, true); spatial_error="Spatial view unavailable"; changed.emit(); return
+	_start_spatial(data)
+
+func _start_spatial(data: Dictionary) -> void:
+	var source: Image=_full_image if _full_image!=null else _texture.get_image()
+	if _display_result.has("image"): source=_display_result.image
+	var eye:=panel.global_transform.affine_inverse()*view_camera.global_position if view_camera else Vector3(0,0,screen_distance)
+	var separation:=0.064
+	var xr:=XRServer.primary_interface
+	if xr and xr.is_initialized() and xr.get_view_count()>=2:
+		var measured: float=xr.get_transform_for_view(0,Transform3D.IDENTITY).origin.distance_to(xr.get_transform_for_view(1,Transform3D.IDENTITY).origin)
+		if measured>=0.045 and measured<=0.085: separation=measured
+	if bool(_metadata.get("native_stereo",false)):
+		var right:=panel.global_basis.inverse()*(view_camera.global_basis.x if view_camera else Vector3.RIGHT)
+		eye-=right*separation*0.5
+	_spatial.begin(source,data.image,data.rect,eye,_flat.size,bool(_metadata.get("native_stereo",false)),
+		1.0, # Fixed spatial relief for both inputs, independent of the original SBS slider.
+		true,separation)
+
+func _spatial_completed() -> void:
+	if not spatial_requested: return
+	if not _spatial.error.is_empty():
+		var failure: String=_spatial.error
+		set_spatial(false, true); spatial_error=failure
+	changed.emit()
+
+func _process_spatial() -> void:
+	if not spatial_requested: return
+	if loading or geometry!=0 or portrait_requested or inspect or gallery.overview() \
+		or (not bool(_metadata.get("native_stereo",false)) and (not depth_requested or not depth_enabled)):
+		set_spatial(false, true); return
+	if not _spatial.prepared: return
+	var eye:=panel.global_transform.affine_inverse()*view_camera.global_position if view_camera else Vector3(0,0,screen_distance)
+	_spatial.sync(panel.transform,_flat.size,eye,material.render_priority)
+	_spatial.visible=_spatial.visible and panel.visible
+	material.set_shader_parameter("spatial_hidden",_spatial.visible and _spatial.coverage>0.999)
 
 func background_source() -> Dictionary:
 	return {"path": _metadata.get("path", ""), "orientation": _metadata.get("orientation", 1)} if can_background() else {}
@@ -1537,7 +1680,10 @@ func release_storage(volume: Dictionary) -> bool:
 	changed.emit()
 	return false
 
-func close_image(notify: bool = true) -> void:
+func close_image(notify: bool = true, next_online_uri: String = "") -> void:
+	if spatial_requested: set_spatial(false, true)
+	spatial_error=""
+	panorama_tiles.clear()
 	if _catalog_save_ms > 0 and catalog:
 		_catalog_save_ms = 0
 		catalog.save()
@@ -1572,6 +1718,7 @@ func close_image(notify: bool = true) -> void:
 		target.set_shader_parameter("stereo_texture", null); target.set_shader_parameter("photo_stereo", false)
 	panel.visible = false; _detail.visible = false; loading = false; inspect = false
 	hide_inspect_pointer()
+	if Methods.supports(platform, "panorama_original_view"): platform.panorama_original_view(next_online_uri)
 	local_uri = ""; display_name = ""; error = ""; index = -1; pending_index = -1
 	if notify: changed.emit()
 
@@ -1586,7 +1733,7 @@ func _exit_tree() -> void:
 
 func can_portrait() -> bool:
 	var selected: bool = gallery.mode in [Gallery.Layout.SINGLE, Gallery.Layout.SIDES] or (gallery.focus == index and gallery.progress >= 1 and not gallery.returning)
-	return selected and not loading and _texture != null and geometry == 0 and not stereo_sbs \
+	return selected and not spatial_requested and not loading and _texture != null and geometry == 0 and not stereo_sbs \
 		and not _metadata.get("native_stereo",false) and _display_request > 0 \
 		and Methods.supports(platform,"prepare_photo_3d") and Methods.supports(platform,"prepare_photo_portrait")
 
@@ -1693,7 +1840,7 @@ func _layer_source() -> Dictionary:
 
 ## The layer can show the photo as the shader would now: no shader-only effects or transitions.
 func _layer_eligible() -> bool:
-	return _display_request > 0 and _texture != null and panel.visible and not loading and error.is_empty() \
+	return not spatial_requested and _display_request > 0 and _texture != null and panel.visible and not loading and error.is_empty() \
 		and not gallery.overview() and not _transition_active and _reveal_seconds == 0 and not placeholder_visible() \
 		and _layer_possible(geometry)
 
@@ -1754,7 +1901,7 @@ func _process_layer() -> void:
 		_hide_layer()
 		# Off the layer the shader shows the photo: the full picture, once nothing transient is on.
 		# Only for a picture on show: the wall overview keeps its previews and the proxy.
-		if (not _texture_full or _depth_textures_pending) and panel.visible and not loading and not _transition_active and _reveal_seconds == 0 \
+		if not spatial_requested and (not _texture_full or _depth_textures_pending) and panel.visible and not loading and not _transition_active and _reveal_seconds == 0 \
 			and _upload.is_empty():
 			_ensure_full_texture()
 	elif inspect and not magnifier_on_layer:

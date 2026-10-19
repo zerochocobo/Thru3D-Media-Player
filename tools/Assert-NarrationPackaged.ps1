@@ -1,7 +1,8 @@
-param([string]$ArchivePath = '', [string]$ManifestPath = '')
+param([string]$ArchivePath = '', [string]$ManifestPath = '', [string]$CloneManifestPath = '')
 $ErrorActionPreference = 'Stop'
 $workspace = Split-Path -Parent $PSScriptRoot
 if (-not $ManifestPath) { $ManifestPath = Join-Path $workspace 'third_party/narration/model.json' }
+if (-not $CloneManifestPath) { $CloneManifestPath = Join-Path $workspace 'third_party/narration/clone_model.json' }
 $sourceChecks = @(
     @('app/godot/scripts/narration_settings.gd', '(?m)^static var FEATURE_ENABLED := true\s*$'),
     @('android/player-plugin/src/main/java/org/vrpassthroughplayer/plugin/NarrationPolicy.kt', '(?m)^\s*const val FEATURE_ENABLED = BuildConfig\.NARRATION_ENABLED\s*$')
@@ -11,9 +12,6 @@ foreach ($check in $sourceChecks) {
 }
 if (-not $ArchivePath) { return }
 Add-Type -AssemblyName System.IO.Compression.FileSystem
-$manifestBytes = [IO.File]::ReadAllBytes($ManifestPath)
-$manifest = [Text.Encoding]::UTF8.GetString($manifestBytes) | ConvertFrom-Json
-if ($manifest.directory -match '(^/|\\|(^|/)\.\.(/|$)|:)') { throw 'Unsafe model directory.' }
 $zip = [IO.Compression.ZipFile]::OpenRead($ArchivePath)
 try {
     $prefix = if ($ArchivePath.EndsWith('.apk')) { 'lib' } else { 'jni' }
@@ -21,7 +19,11 @@ try {
         $entry = $zip.GetEntry($name)
         if (-not $entry -or $entry.Length -le 0) { throw "Narration package is missing: $name" }
     }
-    $entry = $zip.GetEntry('assets/narration/model.json')
+    foreach ($bundle in @(@{ path=$ManifestPath; asset='model.json' }, @{ path=$CloneManifestPath; asset='clone_model.json' })) {
+    $manifestBytes = [IO.File]::ReadAllBytes($bundle.path)
+    $manifest = [Text.Encoding]::UTF8.GetString($manifestBytes) | ConvertFrom-Json
+    if ($manifest.directory -match '(^/|\\|(^|/)\.\.(/|$)|:)') { throw 'Unsafe model directory.' }
+    $entry = $zip.GetEntry('assets/narration/' + $bundle.asset)
     if (-not $entry) { throw 'Narration package is missing its manifest.' }
     $stream = $entry.Open(); $copy = [IO.MemoryStream]::new()
     try { $stream.CopyTo($copy); $actualManifest = $copy.ToArray() } finally { $stream.Dispose(); $copy.Dispose() }
@@ -35,5 +37,6 @@ try {
         try { $actual = -join ($digest.ComputeHash($stream) | ForEach-Object { $_.ToString('x2') }) }
         finally { $stream.Dispose(); $digest.Dispose() }
         if ($actual -ne $file.Value.sha256) { throw "Packaged narration model digest differs: $name" }
+    }
     }
 } finally { $zip.Dispose() }

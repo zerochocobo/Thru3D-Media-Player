@@ -159,12 +159,14 @@ func private_remember(uri: String, field: String, value: Dictionary) -> bool:
 		proposed.erase(key_for(uri))
 	return _save(proposed)
 
-func clear_private_records(network_only: bool) -> bool:
+func clear_private_records(network_only: bool, preserve_history: bool = false) -> bool:
 	if locked: return false
 	var proposed := entries.duplicate(true)
 	for key in proposed.keys():
 		if network_only and Memory.Privacy.is_local(str(proposed[key].uri)): continue
-		if proposed[key].get("favorite", true): proposed[key].private = {}
+		var recent: Dictionary = proposed[key].get("private", {}).get("recent", {}).duplicate(true) if preserve_history else {}
+		if proposed[key].get("favorite", true) or not recent.is_empty():
+			proposed[key].private = {"recent": recent} if not recent.is_empty() else {}
 		else: proposed.erase(key)
 	if not _save(proposed): return false
 	undo.clear(); return true

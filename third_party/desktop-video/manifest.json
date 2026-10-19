@@ -1,0 +1,70 @@
+{
+  "schema_version": 1,
+  "publisher": "KirbyKid256",
+  "project": "FFmpegPlayer",
+  "version": "v1.0.1",
+  "source_commit": "987b76428774d21cf6542d5cda7d1cd09ebf2730",
+  "repository": "https://github.com/KirbyKid256/FFmpegPlayer",
+  "release_url": "https://github.com/KirbyKid256/FFmpegPlayer/releases/tag/v1.0.1",
+  "asset_url": "https://github.com/KirbyKid256/FFmpegPlayer/releases/download/v1.0.1/FFmpegPlayer.v1.0.1.zip",
+  "asset_name": "FFmpegPlayer.v1.0.1.zip",
+  "asset_bytes": 73864915,
+  "asset_sha256": "c3a615e94996c647931f063eca0d58971aec85348e48459d21a5811ff33fc4a4",
+  "publisher_digest": null,
+  "checksum_note": "Publisher GitHub asset metadata exposes no digest. SHA-256 values were computed locally from the fixed publisher asset fetched over normally verified HTTPS; they are not a publisher signature or published checksum.",
+  "platform": "windows.x86_64",
+  "class_name": "VideoStreamFFmpeg",
+  "minimum_godot": "4.1",
+  "project_license": "MIT",
+  "bundled_ffmpeg_license": "LGPL version 3 text is shipped in the publisher archive; exact FFmpeg configuration and redistribution obligations remain to be audited",
+  "files": [
+    {
+      "name": "FFmpegPlayer.dll",
+      "archive_entry": "ffmpegplayer/win64/FFmpegPlayer.dll",
+      "bytes": 1040896,
+      "sha256": "eea7b3245f5be2cf562e300cf562dad7067c578867524128fe2afe4430c74917"
+    },
+    {
+      "name": "avcodec-60.dll",
+      "archive_entry": "ffmpegplayer/win64/avcodec-60.dll",
+      "bytes": 41397760,
+      "sha256": "440cde64d247e761f210408ca8af83b489c44d055efa2bf296cf828a22ed1e7b"
+    },
+    {
+      "name": "avformat-60.dll",
+      "archive_entry": "ffmpegplayer/win64/avformat-60.dll",
+      "bytes": 12055552,
+      "sha256": "9c02ed93b67f54d04cb54e2b52df39c3f3664ea0e4593502d47f8e545f8faf30"
+    },
+    {
+      "name": "avutil-58.dll",
+      "archive_entry": "ffmpegplayer/win64/avutil-58.dll",
+      "bytes": 1169920,
+      "sha256": "7088e51007d9d1e5c45756a97f0f48d48865a6a098ec10b268b71407edabea23"
+    },
+    {
+      "name": "swresample-4.dll",
+      "archive_entry": "ffmpegplayer/win64/swresample-4.dll",
+      "bytes": 434688,
+      "sha256": "bf7fbcfffc8369b1a2b7b30d77eb73b3053d46e836d7c86e464ad732eb6c102e"
+    },
+    {
+      "name": "swscale-7.dll",
+      "archive_entry": "ffmpegplayer/win64/swscale-7.dll",
+      "bytes": 637440,
+      "sha256": "c4adec7c9097d3ab6c2cb5531f13607a8f97578605e3ce458327a313c6e87d02"
+    }
+  ],
+  "licenses": [
+    {
+      "name": "LICENSE-EIRTeam-gdextension.txt",
+      "archive_entry": "ffmpegplayer/LICENSE-EIRTeam-gdextension.txt",
+      "sha256": "fd83fb44ccb5adc338902a8b197741be4ee459eabd73e3e11e207f8e1a3bf4d3"
+    },
+    {
+      "name": "LICENSE-ffmpeg.txt",
+      "archive_entry": "ffmpegplayer/LICENSE-ffmpeg.txt",
+      "sha256": "ea7d049c7705dc13afc202dd18e1827f3484f8212fd3fa7b82fc4a0c363432c9"
+    }
+  ]
+}

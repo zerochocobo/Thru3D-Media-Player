@@ -67,13 +67,13 @@ func _ready() -> void:
 				tracked_hand.add_child(mesh)
 				entry.hand_mesh = mesh
 
-func update_visibility(focused: bool, controller_opacity: Dictionary = {}) -> void:
+func update_visibility(focused: bool, controller_opacity: Dictionary = {}, interaction_visible: bool = true) -> void:
 	for hand in hands:
 		var entry: Dictionary = hands[hand]
 		var tracker := XRServer.get_tracker("/user/hand_tracker/" + hand.trim_suffix("_hand")) as XRHandTracker
 		var optical := HandInput.is_optical(tracker)
-		entry.hand_gate.visible = focused and optical
-		entry.controller_gate.visible = focused and not optical and _pose_tracked(entry.grip) and float(controller_opacity.get(hand, 1.0)) > 0.0
+		entry.hand_gate.visible = focused and interaction_visible and optical
+		entry.controller_gate.visible = focused and interaction_visible and not optical and _pose_tracked(entry.grip) and float(controller_opacity.get(hand, 1.0)) > 0.0
 		var ext_ready := entry.ext != null and _has_mesh(entry.ext)
 		var fb_ready: bool = entry.fb != null and entry.fb.has_render_model_node()
 		if entry.ext: entry.ext.visible = ext_ready

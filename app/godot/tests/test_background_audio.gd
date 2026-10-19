@@ -55,6 +55,12 @@ func _run() -> void:
 	check(audio.current == "forest_wind", "Environment does not jump to a different scene")
 	audio.adjacent(1); await settled(audio); check(audio.current == "gentle_rain", "Manual next works in repeat-one mode")
 	audio.set_context(true, true); check(audio.player.stream_paused and audio.blocked(), "Video suspends audio")
+	audio.set_play_during_video(true)
+	check(not audio.blocked() and not audio.player.stream_paused and audio.player.playing, "Opt-in keeps the actual built-in audio stream playing with video")
+	var music_volume: float = audio.volume
+	audio.set_volume(0); check(audio.player.volume_linear == 0 and audio.player.playing, "Music-only mute silences its stream without stopping playback")
+	audio.set_volume(music_volume); audio.set_play_during_video(false)
+	check(audio.player.stream_paused and audio.blocked() and not audio.paused, "Opt-out pauses the same stream without losing its play intent")
 	audio.set_context(false, false); check(audio.blocked(), "Focus loss remains silent")
 	audio.set_context(false, true); check(not audio.blocked(), "System suspension resumes previous intent")
 	audio.toggle_pause(); audio.set_context(true, true); audio.set_context(false, true)

@@ -19,6 +19,7 @@ var _mode_selected := false
 var _queue_finished := false
 var paused := true
 var video_active := false
+var play_during_video := false
 var focused := true
 var error := ""
 var player: AudioStreamPlayer
@@ -76,6 +77,7 @@ func _ready() -> void:
 
 func load_settings(settings: ConfigFile) -> void:
 	var section := "audio_player"
+	play_during_video = settings.get_value(section, "play_during_video", false) == true
 	if settings.has_section(section):
 		current = str(settings.get_value(section, "current", ""))
 		var ids: Variant = settings.get_value(section, "queue", [])
@@ -112,17 +114,20 @@ func duration() -> float:
 
 func save_settings(settings: ConfigFile) -> void:
 	settings.set_value("audio_player", "mode_selected", _mode_selected)
+	settings.set_value("audio_player", "play_during_video", play_during_video)
 	for key in ["music", "ambience", "music_volume", "ambience_volume", "paused"]:
 		if settings.has_section_key("background_audio", key): settings.erase_section_key("background_audio", key)
 	for pair in [["current", current], ["queue", queue], ["source", queue_source], ["name", queue_name], ["mode", mode], ["volume", volume], ["position", position()], ["duration", duration()]]:
 		settings.set_value("audio_player", pair[0], pair[1])
 
-func blocked() -> bool: return paused or video_active or not focused or _preview_token > 0
+func video_blocks_audio() -> bool: return video_active and not play_during_video
+
+func blocked() -> bool: return paused or video_blocks_audio() or not focused or _preview_token > 0
 
 func preview_audio(uri: String, title: String) -> bool:
 	if _preview_token > 0 and uri == _preview_uri: stop_preview(); return true
 	stop_preview(false); _preview_error = ""
-	if video_active or not focused:
+	if video_blocks_audio() or not focused:
 		_preview_error = "Audio suspended"; _apply_context(); changed.emit(); return false
 	if not Importer.Methods.supports(importer.platform, "preview_background_audio"):
 		_preview_error = "Audio preview unavailable"; _apply_context(); changed.emit(); return false
@@ -176,7 +181,7 @@ func _apply_context() -> void:
 	if not is_instance_valid(player): return
 	player.stream_paused = blocked()
 	_apply_gain()
-	if _preview_token > 0: importer.platform.control_audio_preview(_preview_token, focused and not video_active and not _preview_scrubbing, volume)
+	if _preview_token > 0: importer.platform.control_audio_preview(_preview_token, focused and not video_blocks_audio() and not _preview_scrubbing, volume)
 	if _end_pending and not blocked(): _end_pending = false; adjacent(1, true)
 
 func _apply_gain() -> void:
@@ -192,8 +197,14 @@ func _stop_native() -> void:
 func set_context(video: bool, has_focus: bool) -> void:
 	if video_active == video and focused == has_focus: return
 	video_active = video; focused = has_focus
-	if video_active or not focused: stop_preview(false)
+	if video_blocks_audio() or not focused: stop_preview(false)
 	_apply_context(); changed.emit()
+
+func set_play_during_video(enabled: bool) -> void:
+	if play_during_video == enabled: return
+	play_during_video = enabled
+	if video_blocks_audio(): stop_preview(false)
+	_apply_context(); _notify()
 
 func set_volume(value: Variant) -> bool:
 	if not (value is int or value is float) or not is_finite(float(value)): return false
@@ -390,12 +401,13 @@ func snapshot() -> Dictionary:
 			for entry in library.imports: _storage_used += maxi(0, int(entry.get("bytes", 0)))
 		storage.used_bytes = _storage_used
 	return {"audio_current": current, "audio_title": str(row.get("label", "Choose audio")), "audio_volume": volume,
+		"audio_play_during_video": play_during_video,
 		"audio_storage": storage,
 		"audio_preview_available": Importer.Methods.supports(importer.platform, "preview_background_audio"),
 		"audio_preview_uri": _preview_uri, "audio_preview_title": _preview_title, "audio_preview_loading": _preview_loading, "audio_preview_error": _preview_error,
 		"audio_preview_token": _preview_token, "audio_preview_position": _preview_position, "audio_preview_duration": _preview_duration, "audio_preview_seekable": _preview_seekable,
 		"audio_mode": mode, "audio_paused": paused, "audio_active": not blocked() and not current.is_empty() and _loaded == current,
-		"audio_blocked": video_active or not focused, "audio_loading": _thread != null or _native_loading, "audio_position": position(), "audio_duration": duration(),
+		"audio_blocked": video_blocks_audio() or not focused, "audio_loading": _thread != null or _native_loading, "audio_position": position(), "audio_duration": duration(),
 		"audio_queue": queue.duplicate(), "audio_queue_name": queue_name, "audio_queue_source": queue_source,
 		"audio_importing": importer.busy or not pending_imports.is_empty(), "audio_progress": importer.progress,
 		"audio_pending": pending_imports.size(), "audio_failed": failed_imports.size(), "audio_revision": library.revision,

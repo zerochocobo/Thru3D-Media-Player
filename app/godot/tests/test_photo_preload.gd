@@ -160,14 +160,18 @@ func _run() -> void:
 	DirAccess.remove_absolute(Thumbnails.path_for(entries[3].uri))
 	var first_request: int = photo._display_request
 	var count: int = host.opens
+	photo.spatial_preferred = false
 	photo.navigate(-1)
 	check(not photo.loading and photo.index == 3 and host.opens == count, "First-to-last uses decoded cache without foreground transfer")
+	check(not photo.spatial_preferred,"Decoded-cache navigation preserves the global static-photo preference")
 	check(photo._transition_direction == -1, "Wrapping previous still enters from left")
 	check(Thumbnails.has(entries[3].uri), "Cache hit restores a thumbnail removed by cache cleanup")
 	await warm(photo,host)
 	check(photo._prefetched.has(0) and int(photo._prefetched[0].id) == first_request, "Departing photo keeps its source and decoded data for return")
+	photo.spatial_preferred = true
 	photo.navigate(1)
 	check(photo.index == 0 and not photo.loading and host.opens == count and photo._transition_direction == 1, "Last-to-first returns from cache with right entry")
+	check(photo.spatial_preferred,"Returning from the decoded cache preserves the global spatial-photo preference")
 	await warm(photo,host)
 	photo.navigate(-1); photo.navigate(-1); photo.navigate(1)
 	await settle(photo)

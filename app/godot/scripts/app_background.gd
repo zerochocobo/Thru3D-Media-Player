@@ -3,8 +3,9 @@ extends Node
 signal changed
 signal custom_saved(path: String, title: String, orientation: int)
 const Info := preload("res://scripts/image_info.gd")
+const CinemaFeature := preload("res://scripts/environments/cinema_feature.gd")
 const BELFAST := "res://backgrounds/belfast_sunset_puresky.jpg"
-const CHOICES := ["belfast", "dark", "passthrough", "custom"]
+const CHOICES := ["belfast", "dark", "passthrough", "custom", "cinema"]
 var directory := "user://backgrounds"
 var choice := "belfast"
 var custom_path := ""
@@ -32,6 +33,7 @@ func _ready() -> void:
 
 func select(value: String) -> bool:
 	if value not in CHOICES: return false
+	if value == "cinema" and not CinemaFeature.enabled(): return false
 	if value == "custom" and not has_custom(): return false
 	_generation += 1
 	choice = value

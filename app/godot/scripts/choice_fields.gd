@@ -31,7 +31,7 @@ static func same(a: Variant, b: Variant) -> bool:
 	if (a is int or a is float) and (b is int or b is float): return is_equal_approx(float(a), float(b))
 	return a == b
 
-func _button(item: Dictionary, label: String, centre: Vector2, size: Vector2, parent: Node3D = null, selected: bool = false, text_only: bool = false) -> int:
+func _button(item: Dictionary, label: String, centre: Vector2, size: Vector2, parent: Node3D = null, selected: bool = false) -> int:
 	var target := BASE + targets.size()
 	targets[target] = item
 	var field_z := 0.0
@@ -41,19 +41,18 @@ func _button(item: Dictionary, label: String, centre: Vector2, size: Vector2, pa
 		var container: Node3D = parent.get_parent()
 		var local: Vector3 = container.to_local(parent.to_global(Vector3(centre.x, centre.y, 0)))
 		centre = Vector2(local.x, local.y); field_z = local.z + 0.004; parent = container
-	if text_only: menu._text_button(target, menu._fit_title(label, "", size.x - 0.025, 18), centre, size, true, parent)
-	else: menu._button(target, menu._fit_title(label, "", size.x - 0.025, 18), centre, size, true, "", false, parent)
+	menu._button(target, menu._fit_title(label, "", size.x - 0.025, menu.TEXT_BODY), centre, size, true, "", false, parent)
 	var button: Dictionary = menu._buttons.back()
 	if field_z > 0: button.node.position.z = field_z
 	button.base_color = menu.SELECTED if selected else menu.TILE
-	if not text_only:
-		button.node.material_override.set_shader_parameter("surface_color", button.base_color)
-		button.node.material_override.render_priority = 13
-	menu.set_label_size(button.node.get_child(0), 18)
+	button.node.material_override.set_shader_parameter("surface_color", button.base_color)
+	button.node.material_override.render_priority = 13
+	menu.set_label_size(button.node.get_child(0), menu.TEXT_BODY)
 	(button.node.get_child(0) as Label3D).render_priority = 14
 	return target
 
 func _option_label(option: Dictionary) -> String:
+	if option.get("literal", false): return str(option.label)
 	if option.has("text_color") and menu.I18n.language == "en": return "Aa"
 	return menu.I18n.t(option.label)
 
@@ -72,7 +71,19 @@ func field(parent: Node3D, row: Dictionary, centre: Vector2, width: float, heigh
 		return
 	var options: Array = row.choices
 	var key: String = row.key
-	if options.size() <= 2 or row.get("compact", false):
+	if row.get("switch", false):
+		var on := bool(row.value)
+		var target := _button({"kind": "choose", "key": key, "value": not on}, "", centre, Vector2(width, height), parent)
+		var button: Dictionary = menu._buttons.back()
+		button.base_color = menu.SELECTED if on else menu.TILE
+		button.node.material_override.set_shader_parameter("surface_color", button.base_color)
+		button.node.material_override.set_shader_parameter("corner_radius", 0.025)
+		var knob: MeshInstance3D = menu._quad(Vector2(0.032, 0.032), Vector3(0.023 if on else -0.023, 0, 0.004), menu.ACCENT if on else menu.MUTED, 14)
+		knob.material_override.set_shader_parameter("corner_radius", 0.016)
+		button.node.add_child(knob)
+		menu._tips[target] = menu.I18n.t(str(row.get("hint", ""))) + " · " + menu.I18n.t("On" if on else "Off")
+		return
+	if (options.size() <= 2 and not row.get("dropdown", false)) or row.get("compact", false):
 		var cell := (width - 0.014 * (options.size() - 1)) / options.size()
 		for index in options.size():
 			var option: Dictionary = options[index]
@@ -87,10 +98,14 @@ func field(parent: Node3D, row: Dictionary, centre: Vector2, width: float, heigh
 			if same(row.value, option.value):
 				label = _option_label(option); selected = option; break
 		if label.is_empty(): label = str(row.get("display_value", row.value))
-		var target := _button({"kind": "open", "key": key}, menu._fit_title(label, "  " + menu.CHOICE_MARK, width - 0.025, 18), centre, Vector2(width, height), parent, false, true)
+		if row.has("display_format"): label = menu.I18n.t(str(row.display_format)) % label
+		var target := _button({"kind": "open", "key": key}, label if not label.is_empty() else " ", centre, Vector2(width, height), parent)
+		var button: Dictionary = menu._buttons.back()
+		menu._select_face(button, button.node.get_child(0), Vector2.ZERO, Vector2(width, height))
 		_appearance(selected)
 		menu._buttons.back().foreground = (menu._buttons.back().node.get_child(0) as Label3D).modulate
-		menu._tips[target] = menu.I18n.t(str(row.get("hint", "")))
+		var hint: String = menu.I18n.t(str(row.get("hint", "")))
+		menu._tips[target] = label if hint.is_empty() and button.select_caption.text != label else hint
 		if opened == key:
 			popup = row.duplicate(true)
 			var point: Vector3 = menu.to_local(menu._buttons.back().node.global_position)

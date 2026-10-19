@@ -7,6 +7,8 @@ extends "res://scripts/ray_menu.gd"
 signal chosen(uri: String, title: String)
 signal audio_import_cancelled
 signal music_requested
+signal online_panoramas_requested
+const ONLINE_PANORAMAS := 985002
 signal music_toggle_requested
 signal audio_preview_requested(uri: String, title: String)
 signal audio_preview_stopped
@@ -26,6 +28,7 @@ var audio_selection := {}
 var audio_import_mode := false
 var _audio_import_context := {}
 const AudioCatalog := preload("res://scripts/background_audio_catalog.gd")
+const CinemaFeature := preload("res://scripts/environments/cinema_feature.gd")
 const AudioStorageView := preload("res://scripts/audio_storage_view.gd")
 var _audio_storage_labels: Array[Label3D] = []
 var _audio_storage_refresh := 0
@@ -65,6 +68,11 @@ const Quality := preload("res://scripts/display_quality.gd")
 const SeekPolicy := preload("res://scripts/seek_policy.gd")
 const ChoiceFields := preload("res://scripts/choice_fields.gd")
 var choices := ChoiceFields.new(self)
+const VoiceManagerPanel := preload("res://scripts/narration_clone_panel.gd")
+var voice_manager := VoiceManagerPanel.new(self)
+var _state := {}
+var _voice_revision := -1
+var _voice_drag := {}
 const ControlsPage := preload("res://scripts/controls_page.gd")
 var controls_page := ControlsPage.new(self)
 const SETTING_TABS := ["Video", "VR subtitles", "Background", "About", "Display", "General", "Controls"]
@@ -344,7 +352,7 @@ func _align_playback_panel() -> void:
 	transform = Transform3D(Basis.IDENTITY, Vector3(0, top + 0.08 - bottom, 0))
 
 func has_pointer_capture() -> bool:
-	return not audio_preview_seek.capture.is_empty() or not _drag.is_empty() or not choices.capture.is_empty() or not account_panel.web_hand.is_empty()
+	return not _voice_drag.is_empty() or not audio_preview_seek.capture.is_empty() or not _drag.is_empty() or not choices.capture.is_empty() or not account_panel.web_hand.is_empty()
 
 func _place_device_status(centre: Vector2) -> void:
 	if compact or playback_expanded:
@@ -379,6 +387,8 @@ func toggle() -> void:
 		visible = true; _reset_navigation(); _recent_page = recent_page; _position_to_restore = anchor; refresh()
 
 func dismiss() -> void:
+	if voice_manager.opened: voice_manager.close()
+	_voice_drag.clear()
 	system_text_input.cancel()
 	_stop_audio_preview()
 	var cancel_audio := audio_import_mode
@@ -513,6 +523,16 @@ func _in_list(point: Vector3) -> bool:
 		and point.y < span.x + 0.01 and point.y > span.x - span.y - 0.02
 
 func press_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: bool) -> bool:
+	if voice_manager.opened:
+		if not _voice_drag.is_empty(): return true
+		update_pointer(hand, origin, direction, tracked)
+		var voice_hit := ray_hit(origin, direction) if tracked else {}
+		if voice_hit.is_empty() or not voice_hit.get("enabled", false): return not voice_hit.is_empty()
+		var voice_target := int(voice_hit.target)
+		if voice_manager.actions.get(voice_target, {}).get("operation", "") in ["use", "preview", "rename_name"]:
+			_voice_drag = {"hand": hand, "target": voice_target, "plane": control_plane(voice_target), "start_y": float(control_point(voice_hit).y), "offset": voice_manager.offset, "moved": false}
+		else: _activate_hit(voice_hit)
+		return true
 	if audio_preview_seek.press(hand, origin, direction, tracked): return true
 	if section == Section.SETTINGS and choices.press(hand, origin, direction, tracked):
 		_fling = 0.0; return true
@@ -552,6 +572,7 @@ func press_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: b
 	return true
 
 func cancel_pointer(hand: String) -> void:
+	if _voice_drag.get("hand", "") == hand: _voice_drag.clear()
 	audio_preview_seek.cancel(hand)
 	choices.cancel(hand)
 	if server_browser.gallery.capture.get("hand", "") == hand: server_browser.gallery.capture.clear()
@@ -563,6 +584,14 @@ func cancel_pointer(hand: String) -> void:
 
 func update_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: bool) -> void:
 	super(hand, origin, direction, tracked)
+	if voice_manager.opened:
+		if _voice_drag.get("hand", "") == hand:
+			var projected: Variant = project_pointer(origin, direction, _voice_drag.plane) if tracked else null
+			if projected == null: _voice_drag.clear(); return
+			var distance := float(projected.y) - float(_voice_drag.start_y)
+			if absf(distance) > DRAG_START: _voice_drag.moved = true
+			if _voice_drag.moved: voice_manager.move(int(_voice_drag.offset) + roundi(distance / VoiceManagerPanel.ROW_PITCH) - voice_manager.offset)
+		return
 	audio_preview_seek.move(hand, origin, direction, tracked)
 	collections.update_hover()
 	choices.update(hand, origin, direction, tracked)
@@ -597,6 +626,11 @@ func update_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: 
 		_drag.at_us = now
 
 func release_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: bool) -> void:
+	if voice_manager.opened:
+		if _voice_drag.get("hand", "") == hand:
+			var captured := _voice_drag.duplicate(); _voice_drag.clear()
+			if tracked and not captured.moved and int(ray_hit(origin, direction).get("target", NONE)) == int(captured.target): voice_manager.activate(int(captured.target))
+		return
 	if audio_preview_seek.release(hand, origin, direction, tracked): return
 	if server_browser.gallery.release(hand, origin, direction, tracked): return
 	if choices.capture.get("hand", "") == hand:
@@ -624,6 +658,7 @@ func release_pointer(hand: String, origin: Vector3, direction: Vector3, tracked:
 
 ## Thumbstick y (up positive) scrolls the list; it never selects.
 func stick_scroll(y: float, delta: float) -> void:
+	if voice_manager.opened: voice_manager.stick(y, delta); return
 	if not audio_preview_seek.capture.is_empty(): return
 	if collections.active(): return
 	if section == Section.MEDIA_SERVER and server_browser.sorting(): return
@@ -650,6 +685,10 @@ func stick_scroll_horizontal(x: float, delta: float) -> void:
 		server_browser.gallery.stick_scroll(x, delta)
 
 func _process(delta: float) -> void:
+	if voice_manager.opened and visible:
+		var current: Dictionary = settings_provider.call().get("voice_manager", {}) if settings_provider.is_valid() else {}
+		if int(current.get("narration_clone_state", {}).get("revision", 0)) != _voice_revision: refresh()
+		return
 	if not _audio_preview_scope.is_empty() and (not visible or not audio_import_mode or _audio_preview_scope != _audio_preview_scope_key()): _stop_audio_preview()
 	audio_preview_seek.poll(delta)
 	if visible and audio_import_mode and _audio_preview_dirty and not has_pointer_capture():
@@ -891,7 +930,7 @@ func _redraw_file_rows() -> void:
 	composition_layout_changed.emit()
 
 func refresh() -> void:
-	_rebuild_rows()
+	if not voice_manager.opened: _rebuild_rows()
 	_draw()
 	_align_playback_panel()
 
@@ -1310,6 +1349,7 @@ func _rebuild_rows() -> void:
 			if tab == CONTROLS_TAB:
 				rows.assign(controls_page.items())
 			elif tab == VIDEO_TAB or tab == SUBTITLES_TAB:
+				if settings.get("voice_manager", {}).get("narration_clone_supported", false): rows.append({"title": I18n.t("Subtitle narration"), "voice_manager": true})
 				var seek: String = SeekPolicy.normalize(settings.get("seek_mode", SeekPolicy.SPEED))
 				rows.append(_choice_row("Video time positioning", "seek_mode", seek,
 					[{"value": SeekPolicy.SPEED, "label": "Speed", "hint": "Faster jumps, less precise"},
@@ -1347,6 +1387,8 @@ func _rebuild_rows() -> void:
 				if collections.privacy_expanded:
 					rows.append(_choice_row("Playback history", "privacy_mode", settings.get("privacy_mode", "all"),
 						[{"value": "all", "label": "Record all"}, {"value": "local", "label": "Local only"}, {"value": "none", "label": "Do not record"}]))
+					rows.append(_choice_row("Per-file settings", "file_settings_memory", settings.get("file_settings_memory", "all"),
+						[{"value": "all", "label": "Remember all"}, {"value": "local", "label": "Local only"}, {"value": "none", "label": "Do not remember"}]))
 					var favorite_store: RefCounted = collections.store
 					if favorite_store:
 						rows.append({"title": I18n.t("Unlock favorites" if favorite_store.locked else ("Change favorites password" if favorite_store.protected else "Set favorites password")), "icon": "lock", "privacy_action": "unlock" if favorite_store.locked else ("change_verify" if favorite_store.protected else "enable")})
@@ -1359,6 +1401,8 @@ func _rebuild_rows() -> void:
 								rows.append({"title": I18n.t("Remove favorites password"), "icon": "unlock", "privacy_action": "disable"})
 					rows.append({"title": I18n.t("Confirm clearing history" if _confirm == str(["privacy_clear", "all"]) else "Clear existing history"), "icon": "check" if _confirm == str(["privacy_clear", "all"]) else "trash", "selected": _confirm == str(["privacy_clear", "all"]), "setting": ["privacy_clear", "all"]})
 					rows.append({"title": I18n.t("Confirm clearing network history" if _confirm == str(["privacy_clear", "network"]) else "Clear network history"), "icon": "check" if _confirm == str(["privacy_clear", "network"]) else "trash", "selected": _confirm == str(["privacy_clear", "network"]), "setting": ["privacy_clear", "network"]})
+					rows.append({"title": I18n.t("Confirm clearing file settings" if _confirm == str(["file_settings_clear", "all"]) else "Clear file settings"), "icon": "check" if _confirm == str(["file_settings_clear", "all"]) else "trash", "selected": _confirm == str(["file_settings_clear", "all"]), "setting": ["file_settings_clear", "all"]})
+					rows.append({"title": I18n.t("Confirm clearing network file settings" if _confirm == str(["file_settings_clear", "network"]) else "Clear network file settings"), "icon": "check" if _confirm == str(["file_settings_clear", "network"]) else "trash", "selected": _confirm == str(["file_settings_clear", "network"]), "setting": ["file_settings_clear", "network"]})
 			elif tab == DISPLAY_TAB:
 				var quality_choices: Array = [{"value": Quality.AUTO, "label": "Auto", "hint": Quality.SCALE_AUTO_HINT}]
 				for i in Quality.SCALES.size():
@@ -1379,9 +1423,10 @@ func _rebuild_rows() -> void:
 				rows.append(_choice_row("Show FPS", "show_fps", bool(settings.get("show_fps", false)),
 					[{"value": false, "label": "Off"}, {"value": true, "label": "On"}]))
 			elif tab == BACKGROUND_TAB:
-				var selected := str(settings.get("background", "belfast"))
+				var selected := CinemaFeature.normalize_background(str(settings.get("background", "belfast")))
 				var backgrounds: Array = []
-				for option in [["belfast", "Belfast sunset", "image"], ["dark", "Dark background", "circle"], ["passthrough", "Passthrough", "eyes"]]:
+				for option in [["belfast", "Belfast sunset", "image"], ["cinema", "Grand cinema", "video"], ["dark", "Dark background", "circle"], ["passthrough", "Passthrough", "eyes"]]:
+					if option[0] == "cinema" and not CinemaFeature.enabled(): continue
 					backgrounds.append({"value": option[0], "label": option[1]})
 				if settings.get("background_custom", false):
 					backgrounds.append({"value": "custom", "label": "Custom panorama"})
@@ -1392,7 +1437,21 @@ func _rebuild_rows() -> void:
 					rows.append(_choice_row("Direction", "background_yaw", int(settings.get("background_yaw", 0)), directions))
 					rows.append(_choice_row("Brightness", "background_brightness", float(settings.get("background_brightness", 1.0)),
 						[{"value": 0.5, "label": "50%"}, {"value": 0.75, "label": "75%"}, {"value": 1.0, "label": "100%"}, {"value": 1.25, "label": "125%"}], true))
-				status = "Loading…" if settings.get("background_loading", false) else str(settings.get("background_error", ""))
+				if selected == "cinema":
+					var ready := bool(settings.get("cinema_ready", false))
+					var interaction := str(settings.get("cinema_interaction", "watch"))
+					if interaction not in ["watch", "seat", "move"]: interaction = "watch"
+					var interaction_row := _choice_row("Cinema interaction", "cinema_interaction", interaction,
+						[{"value": "watch", "label": "Watch"}, {"value": "seat", "label": "Choose seat"}, {"value": "move", "label": "Move"}], true)
+					interaction_row.enabled = ready
+					rows.append(interaction_row)
+					var seat := str(settings.get("cinema_seat", ""))
+					rows.append({"title": I18n.t("Reset seat"), "detail": I18n.t("Seat %s") % seat if not seat.is_empty() else "",
+						"icon": "refresh", "setting": ["cinema_home", true], "enabled": ready})
+					status = "Loading cinema…" if settings.get("cinema_loading", false) else str(settings.get("cinema_error", ""))
+					if not ready and status.is_empty(): status = "Cinema unavailable"
+				else:
+					status = "Loading…" if settings.get("background_loading", false) else str(settings.get("background_error", ""))
 			elif tab == ABOUT_TAB:
 				if _about_page == 3:
 					var licenses: Variant = JSON.parse_string(FileAccess.get_file_as_string("res://i18n/licenses.json"))
@@ -1617,6 +1676,8 @@ func _read_cache_usage() -> Vector2i:
 ## Video state changes arrive several times a second: redraw only when the Alpha profiles
 ## (current, compiling, cold) shown on the Alpha tab change.
 func _activate(target: int) -> void:
+	if voice_manager.opened: voice_manager.activate(target); return
+	if target==ONLINE_PANORAMAS: online_panoramas_requested.emit(); return
 	if _audio_preview_rows.has(target):
 		var row: Dictionary = _audio_preview_rows[target]
 		_audio_preview_scope = _audio_preview_scope_key()
@@ -1726,6 +1787,7 @@ func _activate(target: int) -> void:
 		_editor_input(target)
 
 func _choose(row: Dictionary) -> void:
+	if not bool(row.get("enabled", true)): return
 	if audio_import_mode and row.has("uri") and not str(row.uri).is_empty():
 		if not AudioCatalog.supported(str(row.get("title", ""))): return
 		var uri := str(row.uri)
@@ -1820,8 +1882,11 @@ func _choose(row: Dictionary) -> void:
 		if PlatformMethods.supports(platform, "clear_photo_cache"): platform.clear_photo_cache()
 		_cache_usage = null
 		refresh()
+	elif row.get("voice_manager", false):
+		_state = settings_provider.call().get("voice_manager", {})
+		voice_manager.open(true)
 	elif row.has("setting"):
-		if row.setting[0] == "privacy_clear" and _confirm != str(row.setting):
+		if row.setting[0] in ["privacy_clear", "file_settings_clear"] and _confirm != str(row.setting):
 			_confirm = str(row.setting); refresh(); return
 		if bool(row.get("cold", false)) and _confirm != str(row.setting[1]):
 			_confirm = str(row.setting[1])
@@ -1833,6 +1898,7 @@ func _choose(row: Dictionary) -> void:
 
 ## True when a child layer was consumed; false means the source's top-level list.
 func navigate_back() -> bool:
+	if voice_manager.opened: voice_manager.back(); return true
 	if system_text_input.active(): system_text_input.cancel("", true); return true
 	if collections.active(): collections.close(); return true
 	if section == Section.SETTINGS and tab == GENERAL_TAB and collections.privacy_expanded:
@@ -2194,6 +2260,11 @@ func _draw() -> void:
 	audio_preview_seek.clear_layout()
 	_audio_preview_state = background_audio_provider.call() if audio_import_mode and background_audio_provider.is_valid() else {}
 	_clear_layout()
+	if voice_manager.opened:
+		_state = settings_provider.call().get("voice_manager", {}) if settings_provider.is_valid() else {}
+		_voice_revision = int(_state.get("narration_clone_state", {}).get("revision", 0))
+		_side.visible = false; _backdrop.visible = false; voice_manager.draw(); return
+	_backdrop.visible = true
 	if collections.active():
 		_side.visible = false; collections.draw(); return
 	if cloud_error.opened: cloud_error.draw(); return
@@ -2302,11 +2373,14 @@ func _draw() -> void:
 	file_actions.draw_header()
 	if browser_content(): draw_view_modes(_action_position(0.80).y)
 	_align_folder_tools()
+	if preload("res://scripts/online_panorama_panel.gd").AVAILABLE and media_filter==2 and section!=Section.SETTINGS and not audio_import_mode:
+		_round(ONLINE_PANORAMAS,"globe",Vector2(0.80,0.58),0.08,true,false,I18n.t("Online panoramas"))
 	_decoration(Vector2(1.28, 0.002), Vector2(0.19, 0.405), Color(0.17, 0.2, 0.24))
 	_draw_rows()
 	if section == Section.SETTINGS and tab == ABOUT_TAB:
 		_draw_about()
-	if section == Section.SETTINGS and tab == BACKGROUND_TAB:
+	var background_settings: Dictionary = settings_provider.call() if settings_provider.is_valid() else {}
+	if section == Section.SETTINGS and tab == BACKGROUND_TAB and CinemaFeature.normalize_background(str(background_settings.get("background", "belfast"))) != "cinema":
 		var hint := _label(I18n.t("When viewing a 360° panorama, use image settings to set it as this player's background."), Vector3(-0.38, -0.10, 0.004), 16)
 		hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
 		hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -2442,16 +2516,25 @@ func _draw_rows() -> void:
 				_decorate_audio_selection(row)
 				collections.decorate_row(k, row, center, false, _list)
 				continue
+			if row.get("voice_manager", false):
+				_voice_manager_entry(row, Vector2(0.17, row_top - k * _pitch()), ROW_BASE + k)
+				continue
 			if row.has("choices") or row.get("slider", false):
 				_setting_field(row, Vector2(0.17, row_top - k * _pitch()), ROW_BASE + k)
 				continue
 			_row_button(ROW_BASE + k, str(row.title), "" if row.get("about_info", false) else str(row.get("detail", "")), str(row.get("icon", "video")),
 				Vector2(0.17, row_top - k * _pitch()), bool(row.get("selected", false)))
+			if not bool(row.get("enabled", true)):
+				_buttons.back().enabled = false
+				_buttons.back().foreground = MUTED
+				_buttons.back().node.get_child(0).modulate = MUTED
 			_decorate_audio_selection(row)
 			if row.get("group_header", false):
 				var heading: Dictionary = _buttons.back()
 				heading.enabled = true; heading.base_color = Color(TILE, 0)
 				heading.node.material_override.set_shader_parameter("surface_color", Color(TILE, 0))
+				set_label_size(heading.node.get_child(0), TEXT_TITLE)
+				heading.node.get_child(0).font = ui_bold_font()
 			if bool(row.get("about_info", false)):
 				_buttons.back().enabled = false
 				var node: MeshInstance3D = _buttons.back().node
@@ -2515,6 +2598,12 @@ func _stop_audio_preview() -> void:
 	_audio_preview_scope = ""; audio_preview_stopped.emit()
 	audio_preview_seek.cancel(str(audio_preview_seek.capture.get("hand", "")))
 
+func _voice_manager_entry(row: Dictionary, centre: Vector2, target: int) -> void:
+	var title := _label(_fit_title(str(row.title), "", 0.43, TEXT_BODY), Vector3(centre.x - 0.55, centre.y, 0.004), TEXT_BODY, _list)
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+	_button(target, _fit_title(I18n.t("Manage my voices"), "", 0.68, TEXT_BODY), centre + Vector2(0.225, 0), Vector2(0.72, 0.065), true, "", false, _list)
+	set_label_size(_buttons.back().node.get_child(0), TEXT_BODY)
+
 func _setting_field(row: Dictionary, centre: Vector2, target: int) -> void:
 	_row_button(target, str(row.title), "", "", centre, false)
 	var button: Dictionary = _buttons.back()
@@ -2525,7 +2614,7 @@ func _setting_field(row: Dictionary, centre: Vector2, target: int) -> void:
 	title.position = Vector3(-0.55, 0.014 if not str(row.get("hint", "")).is_empty() else 0, 0.004)
 	set_label_size(title, 18); title.text = _fit_title(str(row.title), "", 0.43, 18)
 	if not str(row.get("hint", "")).is_empty():
-		var hint := _label(_fit_title(I18n.t(row.hint), "", 0.43, 13), Vector3(-0.55, -0.022, 0.004), 13, node)
+		var hint := _label(_fit_title(I18n.t(row.hint), "", 0.43, TEXT_AUX), Vector3(-0.55, -0.022, 0.004), TEXT_AUX, node)
 		hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT; hint.modulate = MUTED
 	if not str(row.get("info", "")).is_empty():
 		# Pointing at the title explains the setting; the row itself stays inert.
@@ -2533,7 +2622,12 @@ func _setting_field(row: Dictionary, centre: Vector2, target: int) -> void:
 		_icon("info", Vector3(-0.55 + minf(text_width(title.text, 18), 0.43) + 0.022, title.position.y, 0.004), 0.026, MUTED, node)
 	var first_field := _buttons.size()
 	choices.field(node, row, Vector2(0.225, 0), 0.72)
-	for index in range(first_field, _buttons.size()): _buttons[index]["list_row"] = target
+	for index in range(first_field, _buttons.size()):
+		_buttons[index]["list_row"] = target
+		if not bool(row.get("enabled", true)):
+			_buttons[index].enabled = false
+			_buttons[index].foreground = MUTED
+			_buttons[index].node.get_child(0).modulate = MUTED
 
 ## Alpha model size: larger inputs cut out finer and cost RVM more time. The trade-off is a tooltip (info
 ## mark and each option), no line of text; a size not compiled yet says so on its own option instead.
@@ -2734,16 +2828,16 @@ func _media_row_button(target: int, row: Dictionary, centre: Vector2) -> void:
 	file_actions.draw_checkbox(target, row, centre + Vector2(-0.575, 0))
 
 func _row_button(target: int, title: String, detail: String, icon: String, centre: Vector2, selected: bool) -> void:
-	_button(target, _fit_title(title, "", 0.9, 22), centre, Vector2(1.24, 0.098), true, "", false, _list)
+	_button(target, _fit_title(title, "", 0.9, TEXT_BODY), centre, Vector2(1.24, 0.098), true, "", false, _list)
 	_lit(selected)
 	var node: MeshInstance3D = _buttons.back().node
 	var label: Label3D = node.get_child(0)
 	label.position.x = -0.48
 	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
-	set_label_size(label, 22)
+	set_label_size(label, TEXT_BODY)
 	_icon(icon, Vector3(-0.565, 0, 0.004), 0.045, _buttons.back().foreground, node)
 	if not detail.is_empty():
-		var info := _label(detail, Vector3(0.58, 0, 0.004), 17, node)
+		var info := _label(detail, Vector3(0.58, 0, 0.004), TEXT_AUX, node)
 		info.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 		info.modulate = MUTED
 

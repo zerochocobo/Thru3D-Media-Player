@@ -19,6 +19,7 @@ struct Engine {
     bool fallback_available=false;
     sentencepiece::SentencePieceProcessor tokenizer;
     J manifest, codec_meta;
+    std::map<std::string,std::vector<int32_t>> personal_voices;
     std::atomic<int64_t> epoch{0};
     std::mutex running;
     explicit Engine(const std::string& root) {
@@ -44,7 +45,7 @@ struct Engine {
         auto cancelled=[&]{return epoch.load()!=token;};
         if(cancelled()) return {{"cancelled",true}};
         const std::set<std::string> allowed{"Xiaoyu","Zhiming","Ava","Adam","Mei","Umiri","Yuewen","Junhao","Lingyu","Bella","Saki","Mortis"};
-        if(text.empty()||text.size()>4096||!allowed.count(voice)) throw std::runtime_error("Invalid narration input");
+        if(text.empty()||text.size()>4096||(!allowed.count(voice)&&!personal_voices.count(voice))) throw std::runtime_error("Invalid narration input");
         if(max_frames<1||max_frames>250||random_skip<0||random_skip>1024)throw std::runtime_error("Invalid synthesis limits");
         std::vector<int> tokens;
         if(!tokenizer.Encode(text,&tokens).ok()||tokens.empty()||tokens.size()>384) throw std::runtime_error("Narration text too long");
@@ -55,6 +56,15 @@ struct Engine {
         for(int32_t id:tpl["user_prompt_prefix_token_ids"]) text_row(id);
         text_row(cfg["audio_start_token_id"]);
         bool found=false;
+        auto personal=personal_voices.find(voice);
+        if(personal!=personal_voices.end()) {
+            const auto& codes=personal->second;
+            for(size_t frame=0;frame<codes.size();frame+=n) {
+                flat.push_back(cfg["audio_user_slot_token_id"]);
+                flat.insert(flat.end(),codes.begin()+frame,codes.begin()+frame+n);
+            }
+            found=true;
+        }
         for(const auto& v:manifest["builtin_voices"]) if(v["voice"]==voice) {
             for(const auto& row:v["prompt_audio_codes"]) { flat.push_back(cfg["audio_user_slot_token_id"]); for(int i=0;i<n;++i) flat.push_back(row[i]); }
             found=true;break;
@@ -127,6 +137,16 @@ extern "C" JNIEXPORT void JNICALL Java_org_vrpassthroughplayer_plugin_NarrationN
 }
 extern "C" JNIEXPORT void JNICALL Java_org_vrpassthroughplayer_plugin_NarrationNative_destroy(JNIEnv*,jclass,jlong id) {
     std::lock_guard<std::mutex> lock(moss::engines_mutex);moss::engines.erase(id);
+}
+extern "C" JNIEXPORT void JNICALL Java_org_vrpassthroughplayer_plugin_NarrationNative_registerVoice(JNIEnv* e,jclass,jlong id,jstring name,jintArray codes) {
+    try {
+        auto key=narration_utf8(e,name);auto size=e->GetArrayLength(codes);
+        if(key.rfind("custom:",0)!=0||key.size()>64||size<37*16||size>125*16||size%16)throw std::runtime_error("Invalid voice");
+        std::vector<int32_t> values(size);e->GetIntArrayRegion(codes,0,size,values.data());if(e->ExceptionCheck())return;
+        if(!std::all_of(values.begin(),values.end(),[](int32_t x){return x>=0&&x<1024;}))throw std::runtime_error("Invalid codes");
+        auto engine=moss::engine(id);std::lock_guard<std::mutex> lock(engine->running);
+        engine->personal_voices.clear();engine->personal_voices.emplace(key,std::move(values));
+    } catch(const std::exception&) {narration_error(e,"Unable to load personal voice");}
 }
 static jstring narration_synthesize(JNIEnv* e,jlong id,jstring text,jstring voice,jlong epoch,jobject sink,int max_frames,int random_skip,bool precision_recovery=false) {
     try {

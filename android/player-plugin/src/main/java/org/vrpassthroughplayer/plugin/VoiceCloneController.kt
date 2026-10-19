@@ -1,0 +1,282 @@
+package org.vrpassthroughplayer.plugin
+
+import android.content.Context
+import android.media.AudioAttributes
+import android.media.AudioFormat
+import android.media.AudioTrack
+import android.util.Log
+import org.json.JSONArray
+import org.json.JSONObject
+import java.io.File
+import java.util.UUID
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
+import kotlin.math.max
+
+/** All file/model work is serial and off the VR thread. Every result belongs to one source and request generation. */
+internal class VoiceCloneController(private val context: ()->Context?,private val source: ()->Source?,
+    private val onHold: (Boolean)->Unit,private val audioChanged: ()->Unit,private val drain: ()->Unit={},
+    private val runtime: SharedNarrationEngine,private val previewCache: ()->NarrationPreviewCache) : AutoCloseable {
+    data class Source(val handle: Long,val path: String,val ca: String,val subtitleDelay: Double,val audioDelay: Double,val allowed: Boolean,val volume: Double,val muted: Boolean,val disc: Boolean=false,val narrationVolume: Double=1.0)
+    // All sessions and the global manager share a queue, including engine teardown.
+    // A new source must not load TTS while the previous source is still closing it.
+    companion object {
+        private val worker=Executors.newSingleThreadExecutor {Thread(it,"VoiceCloneTasks")}
+        private data class Catalog(val json: String,val revision: Long)
+        @Volatile private var catalog: Catalog?=null
+    }
+    private val generation=AtomicLong()
+    private val stateLock=Any()
+    private val holdLock=Any()
+    private val holding=AtomicBoolean()
+    private fun hold(value: Boolean)=synchronized(holdLock){if(holding.getAndSet(value)!=value)onHold(value)}
+    @Volatile private var closed=false
+    @Volatile private var opened=false
+    @Volatile private var managing=false
+    @Volatile private var interrupted=false
+    @Volatile private var audio: AudioTrack?=null
+    @Volatile private var nativeJob=0L
+    @Volatile private var reader=0L
+    @Volatile private var encoder: VoiceEncoderClient?=null
+    @Volatile private var report="{}"
+    @Volatile var wantsAudio=false;private set
+    val holdsPlayback get()=opened||managing
+    private var state=JSONObject().put("state","idle").put("revision",0)
+    private var params=JSONObject()
+    private var rows=JSONArray()
+    private var next=0.0
+    private var taskDir: File?=null
+    private var referenceKey=""
+    private var candidateId=""
+    private val previewSession=NarrationPreviewSession(runtime,previewCache,drain)
+    private var modelRevision=""
+    private var requestStarted=0L
+    private var previewReady=false
+    private fun app()=context() ?: error("voice_unavailable")
+    private fun active(token: Long)=!closed&&generation.get()==token&&source()?.allowed==true
+    private fun checkActive(token: Long){check(active(token)){"voice_cancelled"}}
+    private fun publish(block: (JSONObject)->Unit={})=synchronized(stateLock){
+        block(state);state.put("revision",state.optLong("revision")+1).put("opened",opened);report=state.toString()
+    }
+    private fun phase(value: String){publish {it.put("state",value).put("error","").put("error_code","").put("error_detail","")}}
+    private fun publishCurrent(token: Long,block: (JSONObject)->Unit)=synchronized(stateLock){if(!closed&&generation.get()==token)publish(block)}
+    fun status(): JSONObject {
+        val result=JSONObject(report);val current=catalog ?: return result
+        // Session and global controllers must never return contradictory copies
+        // after saving/deleting a voice. The immutable catalog is updated on the
+        // shared worker; status reads do no disk work.
+        return result.put("shared_model",runtime.stats()).put("voices",JSONArray(current.json)).put("voices_revision",current.revision)
+            .put("voices_ready",result.optBoolean("voices_ready",true))
+    }
+    private fun cancel() {
+        generation.incrementAndGet();encoder?.close();encoder=null
+        val job=nativeJob;if(job>0)runCatching {VoiceCloneNative.cancelJob(job)}
+        val reading=reader;if(reading>0)runCatching {NarrationNative.closeReader(reading)}
+        previewSession.cancel()
+        wantsAudio=false;audio?.let {runCatching {it.pause();it.flush()}};audioChanged()
+    }
+    private fun clearEngine(){previewSession.close()}
+    private fun clearCandidate(){taskDir?.let {if(it.isDirectory)it.deleteRecursively()};taskDir=null;referenceKey="";candidateId="";previewReady=false;publish {
+        it.put("ready_key","");for(key in listOf("reference_input_db","reference_output_db","reference_gain_db","reference_center","reference_crest_db","reference_target_db"))it.remove(key)
+    }}
+    fun request(raw: String): Boolean {
+        if(closed||raw.length>8192)return false
+        val j=runCatching {JSONObject(raw)}.getOrNull() ?: return false
+        val op=synchronized(stateLock){VoiceClonePolicy.operation(j,state)}
+        if(op !in setOf("list","open","candidates","original","clone","save","rename","delete","preview","stop","close"))return false
+        interrupted=false;requestStarted=System.nanoTime()
+        cancel();val token=generation.get()
+        if(op=="open")opened=true
+        if(op=="list"&&j.optBoolean("pause"))managing=true
+        if(op=="close"){opened=false;managing=false}
+        publish {it.put("operation",op).put("active_key",j.optString("key")).put("preview_id",j.optString("id")).put("state",if(op=="open")"pausing" else if(op in setOf("save","rename","delete"))"saving" else "preparing").put("error","").put("error_code","").put("error_detail","").put("played_frames",0)}
+        if(op=="list")publish {it.put("voices_ready",false)}
+        publish {it.put("cache_hit",false).put("first_audio_ms",-1).put("cache_write_failed",false).put("preview_underruns",0)
+            .put("rhythm_pause_removed_ms",0).put("rhythm_drag_removed_ms",0).put("rhythm_local_tempo",1.0).put("rhythm_buffer_samples",0)
+            .put("level_initial_gain_db",0).put("level_gain_db",0).put("level_limited_frames",0).put("level_buffer_samples",0)}
+        if(opened||managing||op=="preview")hold(true)
+        worker.execute {
+            try {
+                checkActive(token)
+                when(op) {
+                    "list"->{refreshVoices();phase("ready")}
+                    "open"->{clearCandidate();params=j;awaitPause(token);readCandidates(token,j.optDouble("position",0.0).minus(20).coerceAtLeast(0.0),true)}
+                    "candidates"->{awaitPause(token);clearCandidate();params.put("audio_id",j.optInt("audio_id",params.optInt("audio_id",0)));readCandidates(token,if(j.optBoolean("all"))0.0 else if(j.has("start"))j.getDouble("start") else next,j.optBoolean("all")||j.has("start"))}
+                    "original","clone"->{awaitPause(token);renderCandidate(token,j.getString("key"),op=="clone")}
+                    "save"->{require(previewReady&&candidateId.isNotEmpty()&&j.getString("key")==referenceKey);checkActive(token)
+                        val dir=taskDir ?: error("voice_unavailable");val saved=NarrationAssets.voices(app()).save(j.getString("name"),File(dir,"prepared.wav"),File(dir,"codes.bin"))
+                        checkActive(token);refreshVoices();publish {it.put("saved",saved).put("save_request",j.optInt("request")).put("state","saved")}}
+                    "rename"->{NarrationAssets.voices(app()).rename(j.getString("id"),j.getString("name"));refreshVoices();phase("ready")}
+                    "delete"->{previewCache().deleteVoice(j.getString("id"));NarrationAssets.voices(app()).delete(j.getString("id"));refreshVoices();publish {it.put("deleted",j.getString("id")).put("state","ready")}}
+                    "preview"->{val id=j.getString("id");require(PersonalVoiceStore.isVoice(id)||id in NarrationPolicy.voices.values.flatten());val lang=j.optString("language","zh");
+                        if((source()?.handle ?: 0)>0)awaitPause(token,false)
+                        val text=NarrationPolicy.previewText(lang)
+                        streamPreview(token,id,lang,text,if(PersonalVoiceStore.isVoice(id))NarrationAssets.voices(app()).load(id) else IntArray(0),true)}
+                    "stop"->phase("ready")
+                    "close"->{clearEngine();clearCandidate();phase("idle")}
+                }
+            } catch(error: Throwable) {
+                if(active(token)){
+                    val stage=synchronized(stateLock){state.optString("state")}
+                    val code=VoiceClonePolicy.failureCode(op,stage,error)
+                    val reason=error.message.orEmpty().takeIf {it.matches(Regex("(voice_[a-z_]+|No value for [a-z_]+|voice_extract:[A-Za-z -]+)"))} ?: "internal"
+                    // Fixed operation/stage/code only: no URLs, subtitle text or file paths.
+                    Log.w("Thru3DVoiceClone","operation=$op stage=$stage code=$code detail=$reason exception=${error.javaClass.simpleName}")
+                    publish {it.put("state","error").put("error_code",code).put("error_detail",reason).put("error",VoiceClonePolicy.failureMessage(code))}
+                }
+            } finally {
+                audio?.let {runCatching {it.release()}};audio=null;wantsAudio=false
+                if(generation.get()==token){audioChanged();if(!opened&&!managing)hold(false)}
+            }
+        }
+        return true
+    }
+    private fun refreshVoices(){
+        val voices=NarrationAssets.voices(app()).list();val json=voices.toString();val previous=catalog
+        if(previous?.json!=json)catalog=Catalog(json,(previous?.revision ?: 0)+1)
+        publish {it.put("voices_ready",true)}
+    }
+    private fun observation()=JSONObject(MpvSourceNative.narrationStatus(source()?.handle ?: error("voice_unavailable"))).getJSONObject("details")
+    private fun awaitPause(token: Long,requireOpened: Boolean=true) {
+        check(!requireOpened||opened);val deadline=System.nanoTime()+3_000_000_000L
+        while(true){checkActive(token);if(observation().optString("paused")=="yes")return;check(System.nanoTime()<deadline){"voice_pause_timeout"};Thread.sleep(25)}
+    }
+    private fun selectedTrack(type: String,id: Int,details: JSONObject): JSONObject {
+        val missing=if(type=="audio")"voice_audio_required" else "voice_subtitles_required"
+        val tracks=details.optJSONArray(type+"_tracks") ?: error(missing)
+        return (0 until tracks.length()).map {tracks.getJSONObject(it)}.firstOrNull {it.optInt("id")==id} ?: error(missing)
+    }
+    private fun readCandidates(token: Long,start: Double,replace: Boolean) {
+        check(start.isFinite()&&start>=0);phase("reading")
+        val s=source() ?: error("voice_unavailable");val details=observation();val sub=selectedTrack("subtitle",params.getInt("subtitle_id"),details)
+        require(sub.optString("codec") in setOf("subrip","ass","ssa","webvtt","mov_text","text","sami","microdvd","subviewer","ttml"))
+        val path=if(sub.optBoolean("external"))sub.getString("filename") else s.path
+        val audioOptions=details.optJSONArray("audio_tracks") ?: JSONArray()
+        val selectedAudio=VoiceClonePolicy.audioTrack(params.optInt("audio_id",0),details)
+        params.put("audio_id",selectedAudio.getInt("id"))
+        rows=if(replace)JSONArray() else rows
+        publish {it.put("candidates",rows).put("audio_options",audioOptions).put("audio_id",params.getInt("audio_id")).put("eof",false)}
+        val handle=NarrationNative.openReaderConfigured(path,sub.getInt("stream_index"),s.ca,s.disc&&!sub.optBoolean("external"));reader=handle
+        val result: VoiceCloneScan.Result
+        try {result=VoiceCloneScan.read(start,params.optInt("line",0),rows,
+            active={checkActive(token)},progress={found,cursor->
+                checkActive(token);rows=found;next=cursor
+                publish {it.put("candidates",rows).put("next",next)}
+            },read={from,to->JSONObject(NarrationNative.readBatch(handle,from,to))})}
+        finally {NarrationNative.closeReader(handle);if(reader==handle)reader=0}
+        checkActive(token);rows=result.rows;next=result.next
+        refreshVoices();publish {it.put("candidates",rows).put("next",next).put("eof",result.eof).put("ready_key","").put("state","ready")}
+        if(rows.length()==0){val code=if(result.eof)"no_candidates" else "no_candidates_in_range"
+            publish {it.put("state","error").put("error_code",code).put("error",VoiceClonePolicy.failureMessage(code))}}
+    }
+    private fun renderCandidate(token: Long,key: String,clone: Boolean) {
+        val cue=(0 until rows.length()).map {rows.getJSONObject(it)}.firstOrNull {it.getString("key")==key} ?: error("voice_candidate_missing")
+        publish {it.put("active_key",key).put("ready_key",if(referenceKey==key&&previewReady)key else "")}
+        if(referenceKey!=key){clearCandidate();val s=source() ?: error("voice_unavailable");val details=observation();val track=selectedTrack("audio",params.getInt("audio_id"),details)
+            val subtitleDelay=params.optDouble("subtitle_delay",s.subtitleDelay)
+            val audioDelay=params.optJSONObject("audio_delays")?.optDouble(track.getInt("id").toString(),s.audioDelay) ?: s.audioDelay
+            val start=cue.getDouble("start")+subtitleDelay-audioDelay;val end=cue.getDouble("end")+subtitleDelay-audioDelay;require(start>=0)
+            val dir=File(app().cacheDir,"voice-clone/"+UUID.randomUUID());check(dir.mkdirs());taskDir=dir
+            val handle=VoiceCloneNative.createJob();nativeJob=handle;phase("extracting")
+            try {VoiceCloneNative.extract(handle,if(track.optBoolean("external"))track.getString("filename") else s.path,track.getInt("stream_index"),s.ca,start,end,File(dir,"reference.wav").path,s.disc&&!track.optBoolean("external"))}
+            finally {VoiceCloneNative.cancelJob(handle);if(nativeJob==handle)nativeJob=0}
+            checkActive(token);referenceKey=key
+        }
+        val dir=taskDir ?: error("voice_unavailable")
+        // Audition, encoding and saved references use exactly the same prepared WAV.
+        // Preparing it is independent of the model, so listening never loads TTS.
+        val reference=File(dir,"prepared.wav")
+        if(!reference.isFile){
+            phase("preparing")
+            val dialogue=File(dir,"reference.wav.dialogue.wav")
+            val prepared=VoiceReferencePcm.prepare(VoiceClonePolicy.readWav(if(dialogue.isFile)dialogue else File(dir,"reference.wav")))
+            checkActive(token);VoiceReferencePcm.write(reference,prepared.pcm)
+            publishCurrent(token){it.put("reference_input_db",prepared.inputDb).put("reference_output_db",prepared.outputDb)
+                .put("reference_gain_db",prepared.gainDb).put("reference_center",dialogue.isFile)
+                .put("reference_crest_db",prepared.crestDb).put("reference_target_db",prepared.targetDb)}
+        }
+        if(!clone){phase("playing_original");play(token,VoiceClonePolicy.readWav(reference),true);return}
+        if(candidateId.isEmpty()){
+            phase("encoding");drain()
+            runtime.encoding({active(token)}) {
+                val model=NarrationAssets.prepare(app(),true){active(token)};checkActive(token)
+                VoiceEncoderClient(app()).use {client->encoder=client;client.encode(File(model,"moss_audio_tokenizer_encode.onnx"),File(dir,"prepared.wav"),File(dir,"codes.bin")){active(token)}};encoder=null
+            }
+            checkActive(token);candidateId="custom:"+UUID.randomUUID()
+        }
+        val language=params.optString("language","zh");val text=NarrationPolicy.speechText(cue.getString("text"),language)
+        streamPreview(token,candidateId,language,text,PersonalVoiceStore.codes(File(dir,"codes.bin")),false)
+        checkActive(token);previewReady=true;publish {it.put("ready_key",key)}
+    }
+    private fun streamPreview(token: Long,id: String,language: String,text: String,codes: IntArray,saved: Boolean) {
+        checkActive(token)
+        if(modelRevision.isEmpty())modelRevision=app().assets.open("narration/model.json").use {input->
+            java.security.MessageDigest.getInstance("SHA-256").digest(input.readBytes()).joinToString(""){"%02x".format(it)}}
+        previewSession.play(id,language,text,codes,saved,modelRevision,{active(token)},{streamOutput(token)},
+            phase={value->checkActive(token);publishCurrent(token){it.put("state",value).put("error","").put("error_code","").put("error_detail","")}},
+            cacheInfo={hit,samples->publishCurrent(token){it.put("cache_hit",hit).put("preview_frames",samples/2)}},
+            cacheFailure={publishCurrent(token){it.put("cache_write_failed",true)}},
+            rhythmInfo={stats->publishCurrent(token){it.put("preview_raw_frames",stats.inputSamples/2).put("preview_frames",stats.outputSamples/2)
+                .put("rhythm_pause_removed_ms",stats.removedPauseSamples/96.0).put("rhythm_drag_removed_ms",stats.removedDragSamples/96.0)
+                .put("rhythm_local_tempo",stats.localTempo).put("rhythm_buffer_samples",stats.maxBufferedSamples)}},
+            levelInfo={stats->publishCurrent(token){it.put("level_initial_gain_db",stats.initialGainDb).put("level_gain_db",stats.gainDb)
+                .put("level_limited_frames",stats.limitedFrames).put("level_buffer_samples",stats.maxBufferedSamples)}})
+    }
+    private fun streamOutput(token: Long)=object:VoicePreviewStream.Output {
+        private var track: AudioTrack?=null
+        private val released=AtomicBoolean()
+        private val outputLock=Any()
+        private var firstWrite=true
+        private val startedAt=requestStarted
+        override fun start() {
+            checkActive(token);val s=source() ?: error("voice_unavailable")
+            val gain=VoiceClonePolicy.playbackGain(s.volume,s.narrationVolume,false);check(!s.muted&&gain>0){"voice_preview_muted"}
+            wantsAudio=true;audioChanged();Thread.sleep(80);checkActive(token)
+            val value=AudioTrack.Builder().setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
+                .setAudioFormat(AudioFormat.Builder().setEncoding(AudioFormat.ENCODING_PCM_FLOAT).setSampleRate(48000).setChannelMask(AudioFormat.CHANNEL_OUT_STEREO).build())
+                .setBufferSizeInBytes(max(76800,AudioTrack.getMinBufferSize(48000,AudioFormat.CHANNEL_OUT_STEREO,AudioFormat.ENCODING_PCM_FLOAT))).setTransferMode(AudioTrack.MODE_STREAM).build()
+            synchronized(outputLock){
+                if(released.get()){value.release();error("voice_cancelled")}
+                track=value;audio=value;value.setVolume(gain)
+            }
+            checkActive(token);publishCurrent(token){it.put("output_gain",gain)}
+        }
+        override fun write(pcm: FloatArray) {
+            val value=track ?: error("voice_playback_failed");var at=0
+            while(at<pcm.size){checkActive(token);val n=value.write(pcm,at,minOf(4096,pcm.size-at),AudioTrack.WRITE_BLOCKING);check(n>0);at+=n
+                if(firstWrite){checkActive(token);firstWrite=false;value.play();publishCurrent(token){it.put("state","playing_clone").put("first_audio_ms",(System.nanoTime()-startedAt)/1e6)}}}
+        }
+        override fun finish(samples: Int) {
+            val value=track ?: error("voice_playback_failed");val deadline=System.nanoTime()+30_000_000_000L
+            while((value.playbackHeadPosition.toLong() and 0xffffffffL)<samples/2){checkActive(token);check(System.nanoTime()<deadline){"voice_playback_timeout"};Thread.sleep(20)}
+            publishCurrent(token){it.put("played_frames",samples/2).put("preview_underruns",value.underrunCount)}
+        }
+        override fun close() {
+            synchronized(outputLock){
+                if(released.getAndSet(true))return
+                track?.let {value->runCatching {value.pause();value.flush();value.release()};if(audio===value)audio=null}
+            }
+            if(generation.get()==token){wantsAudio=false;audioChanged()}
+        }
+    }
+    private fun play(token: Long,data: FloatArray,original: Boolean=false) {
+        checkActive(token);val s=source() ?: error("voice_unavailable");val outputGain=VoiceClonePolicy.playbackGain(s.volume,s.narrationVolume,original)
+        check(!s.muted&&outputGain>0){"voice_preview_muted"}
+        publish {it.put("preview_frames",data.size/2).put("played_frames",0).put("output_gain",outputGain)}
+        wantsAudio=true;audioChanged();Thread.sleep(80);checkActive(token)
+        val track=AudioTrack.Builder().setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
+            .setAudioFormat(AudioFormat.Builder().setEncoding(AudioFormat.ENCODING_PCM_FLOAT).setSampleRate(48000).setChannelMask(AudioFormat.CHANNEL_OUT_STEREO).build())
+            .setBufferSizeInBytes(max(48000*2*4/5,AudioTrack.getMinBufferSize(48000,AudioFormat.CHANNEL_OUT_STEREO,AudioFormat.ENCODING_PCM_FLOAT))).setTransferMode(AudioTrack.MODE_STREAM).build()
+        audio=track;track.setVolume(outputGain);track.play();var offset=0
+        while(offset<data.size){checkActive(token);val count=track.write(data,offset,minOf(4096,data.size-offset),AudioTrack.WRITE_BLOCKING);check(count>0);offset+=count}
+        val deadline=System.nanoTime()+30_000_000_000L;while((track.playbackHeadPosition.toLong() and 0xffffffffL) < (data.size/2).toLong()){checkActive(token);check(System.nanoTime()<deadline);Thread.sleep(20)}
+        checkActive(token);publish {it.put("state","ready").put("played_frames",data.size/2)}
+    }
+    @Synchronized fun allow(value: Boolean){
+        if(value||closed||interrupted)return
+        interrupted=true;cancel();val token=generation.get()
+        worker.execute {clearEngine();if(!closed&&generation.get()==token){phase("ready");if(!opened&&!managing)hold(false)}}
+    }
+    override fun close(){if(closed)return;closed=true;opened=false;managing=false;cancel();publish {it.put("state","idle").put("ready_key","")};worker.execute {clearEngine();clearCandidate();hold(false)}}
+}

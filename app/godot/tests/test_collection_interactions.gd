@@ -16,7 +16,7 @@ class Viewer extends Node3D:
 	func close_video() -> void: pass
 	func open_library(uri: String, title: String, metadata: Dictionary) -> bool:
 		calls.append([uri, title, metadata]); return true
-	func open_image(uri: String, title: String, queue: Array[Dictionary], location: Dictionary) -> void:
+	func open_image(uri: String, title: String, queue: Array[Dictionary], location: Dictionary, _retained: Dictionary = {}) -> void:
 		calls.append([uri, title, queue, location])
 	func start_directory(_value: Dictionary) -> void: pass
 class NativeVault extends RefCounted:
@@ -148,9 +148,11 @@ func layout_checks(menu: Node3D, store: RefCounted, recent: RefCounted) -> void:
 		menu.set_compact(compact); menu.collections.privacy_expanded = false; menu.scroll = 0; menu.refresh()
 		var privacy_index: int = menu.rows.find(menu.rows.filter(func(row):return row.get("group_header", false))[0])
 		tap(menu, menu.ROW_BASE + privacy_index)
-		check(menu.rows[privacy_index + 1].get("key") == "privacy_mode" and menu.rows[privacy_index + 2].get("privacy_action") == "enable", "Password is the second function in the expanded Privacy group")
-		var password_slot: int = privacy_index + 2 - menu._first_line()
-		check(password_slot >= 0 and password_slot < menu._lines(), "Expanding Privacy reveals the password action without extra scrolling")
+		check(menu.rows[privacy_index + 1].get("key") == "privacy_mode" and menu.rows[privacy_index + 2].get("key") == "file_settings_memory", "Privacy offers independent history and per-file memory controls")
+		var password_index: int = menu.rows.find(menu.rows.filter(func(row): return row.get("privacy_action") == "enable")[0])
+		if password_index - menu._first_line() >= menu._lines(): menu._set_scroll(float(password_index - menu._lines() + 1))
+		var password_slot: int = password_index - menu._first_line()
+		check(password_slot >= 0 and password_slot < menu._lines(), "Password action remains reachable after the independent memory control")
 		tap(menu, menu.ROW_BASE + password_slot)
 		check(menu.collections.stage == "new" and menu.collections.active(), "The visible password action opens PIN setup")
 		tap(menu, menu.collections.CANCEL)

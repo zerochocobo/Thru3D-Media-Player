@@ -4,6 +4,27 @@
 
 Newest first, following product release milestones. Some development/source snapshots contained features before their product release. Original APK identifiers `0.2` and `0.4` are retained; `0.4` was also called `0.4.0` in release notes. Availability depends on device, server and media capabilities.
 
+## 0.12.2 — 2026-10-19
+
+This update adds custom cloned voices, 19 narration languages and head-tracked spatial photo viewing, alongside optional music during videos and separate controls for history and per-file settings.
+
+- **Custom cloned voices**: Pause a video, create a voice from a suitable original-audio segment, audition it and save it for subtitle narration in other videos.
+- **My Voices manager**: Audition, select, rename and delete personal voices from subtitle controls or global settings, and choose a default voice for new videos. Narration remains manually enabled for each new video.
+- **19 narration languages**: Read existing subtitle text in languages including Chinese, English, Japanese, Korean, French, German and Spanish. Select a language or follow subtitle metadata, with matching audition samples.
+- **Head-tracked spatial photo viewing**: Apple spatial photos and completed 2D-to-3D photos offer depth changes with small head movements. Switch between Spatial Stereo and Static 3D; Apple's static mode retains the native stereo image.
+- **Music alongside video**: An optional setting allows music during video playback, with music controls on the video bar and separate music volume. Video retains priority by default.
+- **Separate history and per-file settings controls**: Keep subtitle, audio, stereo-alignment and narration preferences without recording playback history. Disable or clear each category independently.
+- **More stable spatial photos**: Fixed frame deformation, sudden snap-back during head movement and small mesh gaps in affected photos, with clearer viewing-mode selection.
+- **Voice audition and narration refinements**: Unified play/stop controls, clearer preparation feedback and reused audition caches. Local timing adjustments reduce some drawn-out openings and long pauses while retaining saved voices and original caches. Fixed voice restoration after reopening a video.
+- **Unobstructed viewing**: Hands, controller models and rays hide when no control panel is open and return with the controls. Gesture recognition and playback shortcuts remain available.
+- **More reliable stereo-alignment memory**: Fixed lost settings after USB reconnection and when entering the background before an adjustment was finished.
+- **Cleaner music pages**: Music options and storage details move into settings, while quick playback controls remain available. Returning restores the playlist and browsing position.
+- **More consistent interface**: Unified selection controls, typography and dropdown arrows, plus a landscape launcher card to improve readability and reduce icon cropping in affected launchers.
+- **Current source refinements**: Remember photo viewing mode/strength globally and video depth strength per file. Scale spatial-photo relief with its actual display size, and condition cloned references with shared narration playback-level handling and independent narration volume. These changes do not establish a universal listening-quality or headset-performance guarantee.
+- **Source/build scope**: The experimental auditorium, seating, movement and desktop prototype are Debug-only; Release rejects stale cinema settings while retaining cinema-style screen placement. Online panorama entries remain hidden. Voice models, preset payloads, reference recordings and personal voices are excluded from Git; see [models](docs/MODELS.md).
+
+- **Latest screen/menu fixes**: Leaving cinema placement restores the ordinary screen toward the current view without overwriting fixed defaults. Slow frames no longer disable menu composition layers or reduce capture density; native capability fallback remains.
+
 ## 0.12.1 — 2026-10-18
 
 - **Narration remembered per video**: New videos start with narration off. Reopening a video restores its saved on/off state, language, voice and other narration preferences; controls released after switching videos no longer change the new video's settings.

@@ -5,6 +5,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.ImageDecoder
 import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.Rect
@@ -31,8 +32,21 @@ internal object PhotoDepthInput {
         return Content(0, 0, WIDTH, HEIGHT)
     }
 
-    fun prepare(source: File, width: Int = WIDTH, height: Int = HEIGHT): Input {
+    fun prepare(source: File, width: Int = WIDTH, height: Int = HEIGHT, selectLeftEye: Boolean = false): Input {
         require(width in 1..WIDTH && height in 1..HEIGHT)
+        if (selectLeftEye) {
+            val info = HeifPhotoInfo.read(source) ?: error("PHOTO_DECODE_FAILED")
+            val copy = File(source.parentFile,"scene-depth-left.heic")
+            try {
+                source.copyTo(copy,overwrite=true)
+                info.selectPrimary(copy,info.left)
+                val bitmap = ImageDecoder.decodeBitmap(ImageDecoder.createSource(copy)) { decoder, _, _ ->
+                    HeifPhotoDecoder.configure8Bit(decoder)
+                    decoder.setTargetSize(width,height)
+                }
+                try { return encodeInput(bitmap,width,height) } finally { bitmap.recycle() }
+            } finally { copy.delete() }
+        }
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeFile(source.path, bounds)
         require(bounds.outWidth > 0 && bounds.outHeight > 0) { "PHOTO_DECODE_FAILED" }
@@ -56,13 +70,17 @@ internal object PhotoDepthInput {
                     drawColor(Color.BLACK)
                     drawBitmap(upright, null, Rect(content.x, content.y, content.x + content.width, content.y + content.height), Paint(Paint.FILTER_BITMAP_FLAG))
                 }
-                val pixels = IntArray(width * height)
-                input.getPixels(pixels, 0, width, 0, 0, width, height)
-                val rgb = ByteBuffer.allocateDirect(width * height * 12).order(ByteOrder.LITTLE_ENDIAN)
-                for (shift in listOf(16, 8, 0)) for (pixel in pixels) rgb.putFloat(((pixel shr shift) and 255) / 255f)
-                rgb.rewind()
-                return Input(rgb, content)
+                return encodeInput(input,width,height)
             } finally { input.recycle() }
         } finally { if (upright !== original) upright.recycle(); original.recycle() }
+    }
+
+    private fun encodeInput(bitmap: Bitmap, width: Int, height: Int): Input {
+        val pixels = IntArray(width * height)
+        bitmap.getPixels(pixels,0,width,0,0,width,height)
+        val rgb = ByteBuffer.allocateDirect(width * height * 12).order(ByteOrder.LITTLE_ENDIAN)
+        for (shift in listOf(16,8,0)) for (pixel in pixels) rgb.putFloat(((pixel shr shift) and 255)/255f)
+        rgb.rewind()
+        return Input(rgb,Content(0,0,width,height))
     }
 }

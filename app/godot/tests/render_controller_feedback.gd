@@ -48,6 +48,12 @@ func run() -> void:
 	await process_frame; await RenderingServer.frame_post_draw; await RenderingServer.frame_post_draw
 	image = viewport.get_texture().get_image()
 	check(image.save_png(output.path_join("idle.png")) == OK and image.get_pixel(480, 320).a < 0.01, "Idle feedback leaves no stale cursor")
+	feedback.wake("right_hand")
+	feedback.update_hand("right_hand", pose, ray, point, true, false, 0.01, true, {}, false, true, false)
+	await process_frame; await RenderingServer.frame_post_draw; await RenderingServer.frame_post_draw
+	image = viewport.get_texture().get_image()
+	check(image.save_png(output.path_join("panel-hidden.png")) == OK and image.get_pixel(480, 320).a < 0.01 \
+		and feedback.opacity("right_hand") == 0.0, "A hidden panel suppresses the pointer even during explicit input")
 	for failure in failures: push_error(failure)
 	print("Controller feedback render: %d checks, %d failures" % [checks, failures.size()])
 	quit(0 if failures.is_empty() else 1)

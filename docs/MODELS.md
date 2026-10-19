@@ -65,3 +65,9 @@ The global inference-size choice is 256/320/384/512 (default 320), using the ver
 Normal Debug and Release builds require the separate, version-matched INT8 bundle in `third_party/narration/model.json`: 11 size/SHA-256-pinned files, including data for 12 Chinese/English/Japanese voice presets. Supply it with `tools/environment/Prepare-NarrationModels.ps1 -SourceDirectory <bundle>` or `THRU3D_NARRATION_MODEL_SOURCE`; verified files persist under ignored `models/narration/<manifest-id>/`. Missing/corrupt files stop the build; no weights, preset codes or reference recordings are distributed in this Git source.
 
 Runtime notices and model metadata do not grant rights to excluded voice inputs. The independent commercial-source audit of reference recordings remains unresolved. Build enablement and this source release are not copyright clearance for those recordings. Narration supports text subtitles; it does not imply bitmap-subtitle OCR or translation.
+
+### Custom voices in 0.12.2
+
+The separate `third_party/narration/clone_model.json` pins two reference-encoder files. Prepare them with `tools/environment/Prepare-VoiceCloneModels.ps1 -SourceDirectory <bundle>` or `THRU3D_NARRATION_CLONE_SOURCE`; storage is the ignored `models/narration/<clone-id>/`. Normal builds require both the existing 11-file narration bundle and this two-file encoder bundle. No missing-input fallback disables the feature silently.
+
+The UI supports 19 text languages; the 12 preset voice origins are unchanged. Custom voice creation requires a suitable caller-provided audio reference and saves reference audio, codes and metadata in persistent app-private storage. None of these personal inputs/voices are published here, and runtime source/metadata do not confer rights to a person's voice or reference recording.

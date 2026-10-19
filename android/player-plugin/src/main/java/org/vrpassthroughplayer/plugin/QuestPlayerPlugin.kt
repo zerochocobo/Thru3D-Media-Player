@@ -87,6 +87,25 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     }
     private val sources: MediaSources = MediaSources({ activity }, beforeMutation = { uri -> mpv.awaitFileRelease(uri) }) { id, json -> if (!closed.get()) emitSignal("media_list", id, json) }
     private val accounts = AccountManager { activity }
+    private val panoramaOriginals = PanoramaOriginals { activity?.applicationContext?.filesDir?.let { java.io.File(it, "online-panoramas") } }
+    private val panoramaBrowser = PanoramaBrowser({ activity }, panoramaOriginals)
+    private val panoramaRegions = PanoramaRegions { activity?.applicationContext }
+    private val panoramaPictures = PanoramaPictures({ activity?.applicationContext }, panoramaOriginals)
+    @UsedByGodot fun panorama_original_view(uri: String) { if (!closed.get()) panoramaBrowser.view(uri) }
+    @UsedByGodot fun panorama_save_pictures(uri: String, title: String, spherical: Boolean): Boolean =
+        !closed.get() && panoramaPictures.save(uri, title, spherical)
+    @UsedByGodot fun panorama_save_status(): String = if (closed.get()) "{}" else panoramaPictures.snapshot()
+    @UsedByGodot fun panorama_browse(url: String) { if (!closed.get()) panoramaBrowser.navigate(url) }
+    @UsedByGodot fun panorama_browser_status(): String = if (closed.get()) "{}" else panoramaBrowser.snapshot()
+    @UsedByGodot fun panorama_browser_frame(): ByteArray = if (closed.get()) ByteArray(0) else panoramaBrowser.frame()
+    @UsedByGodot fun panorama_browser_action(action: String, x: Float, y: Float, text: String) {
+        if (!closed.get()) panoramaBrowser.action(action, x, y, text)
+    }
+    @UsedByGodot fun panorama_browser_pause(paused: Boolean) { if (!closed.get()) panoramaBrowser.pause(paused) }
+    @UsedByGodot fun panorama_regions_open(path: String): Int = if (closed.get()) 0 else panoramaRegions.open(path)
+    @UsedByGodot fun panorama_regions_status(id: Int): String = if (closed.get()) "{}" else panoramaRegions.snapshot(id)
+    @UsedByGodot fun panorama_regions_request(id: Int, column: Int, row: Int): Boolean = !closed.get() && panoramaRegions.request(id, column, row)
+    @UsedByGodot fun panorama_regions_close(id: Int) { if (!closed.get()) panoramaRegions.release(id) }
     private val mpv: MpvVideoBridge = MpvVideoBridge({ activity?.applicationContext }, {
         check(controlledRenderTasks.offer(it)) { "Player render task capacity exhausted" }
     }, { name, id, json -> if (!closed.get()) emitSignal(name, id, json) }, sources::playable, sources::sidecarAudio,
@@ -151,6 +170,8 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     @UsedByGodot fun prepare_photo_portrait(id: Int, token: Int, strength: Double): Boolean = !closed.get() && photos.portrait(id,token,strength.toFloat())
     @UsedByGodot fun cancel_photo_portrait(token: Int) = photos.cancelPortrait(token)
     @UsedByGodot fun prepare_photo_depth(id: Int): Boolean = !closed.get() && photos.depth(id)
+    @UsedByGodot fun prepare_photo_scene_depth(id: Int, token: Int): Boolean = !closed.get() && token > 0 && photos.depth(id,sceneToken=token)
+    @UsedByGodot fun cancel_photo_scene_depth(id: Int, token: Int) { photos.cancelSceneDepth(id,token) }
     @UsedByGodot fun prepare_preloaded_photo_depth(id: Int): Boolean = !closed.get() && (photoPreloads.depth(id) || photos.depth(id,background=true))
     @UsedByGodot fun prepare_photo_3d(id: Int, strength: Double): Boolean = !closed.get() && photos.depth(id,strength.toFloat(),true)
     @UsedByGodot fun prepare_preloaded_photo_3d(id: Int, strength: Double): Boolean = !closed.get() && (photoPreloads.depth(id,strength.toFloat(),true) || photos.depth(id,strength.toFloat(),true,true))
@@ -199,6 +220,7 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
         SignalInfo("photo_portrait", Int::class.javaObjectType, String::class.java),
         SignalInfo("photo_preview_ready", Int::class.javaObjectType, String::class.java),
         SignalInfo("photo_depth", Int::class.javaObjectType, String::class.java),
+        SignalInfo("photo_scene_depth", Int::class.javaObjectType, String::class.java),
         SignalInfo("photo_preload_depth", Int::class.javaObjectType, String::class.java),
         SignalInfo("media_list", Int::class.javaObjectType, String::class.java),
         SignalInfo("local_video_selected", String::class.java),
@@ -427,6 +449,10 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
         !closed.get() && mpv.setAudio(id, trackId, volume, muted)
     @UsedByGodot fun set_mpv_whisper(id: Int, level: Int): Long = if (closed.get()) 0 else mpv.setWhisper(id, level)
     @UsedByGodot fun set_mpv_narration(id: Int, options: String): Boolean = !closed.get() && mpv.setNarration(id, options)
+    @UsedByGodot fun mpv_voice_clone_request(id: Int, options: String): Boolean = !closed.get() && mpv.voiceCloneRequest(id, options)
+    @UsedByGodot fun mpv_voice_clone_status(id: Int): String = if(closed.get()) "{}" else mpv.voiceCloneStatus(id)
+    @UsedByGodot fun narration_voice_manager_request(options: String): Boolean = !closed.get() && mpv.voiceManagerRequest(options)
+    @UsedByGodot fun narration_voice_manager_status(): String = if(closed.get()) "{}" else mpv.voiceManagerStatus()
     @UsedByGodot fun narration_supported(): Boolean = !closed.get() && NarrationPolicy.FEATURE_ENABLED && NarrationNative.supported()
     @UsedByGodot fun set_mpv_speed(id: Int, speed: Double): Boolean = !closed.get() && mpv.setSpeed(id, speed)
     @UsedByGodot fun set_mpv_subtitle(id: Int, trackId: Int): Boolean = !closed.get() && mpv.setSubtitle(id, trackId)
@@ -576,13 +602,13 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     }
 
     // Android can resume before Godot registers the plugin's native signals.
-    override fun onGodotSetupCompleted() { signalsReady = true; clear_photo_cache() }
-    override fun onMainPause() { if (!closed.get()) { systemVolume.foreground(false); musicPlayback.foreground(false); musicPreview.foreground(false); accounts.pause(true); media.pause(); controlled.pause(); mpv.pause(); if (signalsReady) emitSignal("android_lifecycle", "pause") } }
-    override fun onMainResume() { if (!closed.get()) { activity?.volumeControlStream = AudioManager.STREAM_MUSIC; systemVolume.foreground(true); musicPlayback.foreground(true); musicPreview.foreground(true); accounts.pause(false); media.resume(); controlled.resume(); mpv.resume(); if (signalsReady) { sources.refreshLocalStorage(); emitSignal("android_lifecycle", "resume") } } }
+    override fun onGodotSetupCompleted() { signalsReady = true; clear_photo_cache(); runCatching { panoramaOriginals.prepare() } }
+    override fun onMainPause() { if (!closed.get()) { systemVolume.foreground(false); musicPlayback.foreground(false); musicPreview.foreground(false); accounts.pause(true); panoramaBrowser.foreground(false); media.pause(); controlled.pause(); mpv.pause(); if (signalsReady) emitSignal("android_lifecycle", "pause") } }
+    override fun onMainResume() { if (!closed.get()) { activity?.volumeControlStream = AudioManager.STREAM_MUSIC; systemVolume.foreground(true); musicPlayback.foreground(true); musicPreview.foreground(true); accounts.pause(false); panoramaBrowser.foreground(true); media.resume(); controlled.resume(); mpv.resume(); if (signalsReady) { sources.refreshLocalStorage(); emitSignal("android_lifecycle", "resume") } } }
     override fun onMainDestroy() { close() }
     override fun onGodotTerminating() { close() }
 
     private fun close() {
-        if (closed.compareAndSet(false, true)) { systemVolume.close(); favoritesTasks.close(); accounts.close(); musicPlayback.close(); musicPreview.close(); backgroundAudio.close(); photos.close(); photoPreloads.close(); photoPreviews.close(); PhotoDepthRuntime.release(); picker.close(); localAccess.close(); probe.shutdownNow(); media.shutdown(); controlled.shutdown(); mpv.shutdown(); rvm.close(); sources.close() }
+        if (closed.compareAndSet(false, true)) { systemVolume.close(); favoritesTasks.close(); accounts.close(); panoramaBrowser.close(); panoramaRegions.close(); panoramaPictures.close(); panoramaOriginals.close(); musicPlayback.close(); musicPreview.close(); backgroundAudio.close(); photos.close(); photoPreloads.close(); photoPreviews.close(); PhotoDepthRuntime.release(); picker.close(); localAccess.close(); probe.shutdownNow(); media.shutdown(); controlled.shutdown(); mpv.shutdown(); rvm.close(); sources.close() }
     }
 }

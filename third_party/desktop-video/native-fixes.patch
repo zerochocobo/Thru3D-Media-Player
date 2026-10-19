@@ -1,0 +1,218 @@
+--- a/src/command_queue_mt.cpp
++++ b/src/command_queue_mt.cpp
+@@ -38,11 +38,11 @@
+ #include <godot_cpp/classes/os.hpp>
+ 
+ void CommandQueueMT::lock() {
+-    mutex.lock();
++    mutex->lock();
+ }
+ 
+ void CommandQueueMT::unlock() {
+-    mutex.unlock();
++    mutex->unlock();
+ }
+ 
+ void CommandQueueMT::wait_for_flush() {
+--- a/src/command_queue_mt.h
++++ b/src/command_queue_mt.h
+@@ -281,7 +281,7 @@
+         unlock();                                                                              \
+         if (sync)                                                                              \
+             sync->post();                                                                      \
+-        ss->sem.wait();                                                                        \
++        ss->sem->wait();                                                                        \
+         ss->in_use = false;                                                                    \
+     }
+ 
+@@ -299,7 +299,7 @@
+         unlock();                                                                     \
+         if (sync)                                                                     \
+             sync->post();                                                             \
+-        ss->sem.wait();                                                               \
++        ss->sem->wait();                                                               \
+         ss->in_use = false;                                                           \
+     }
+ 
+@@ -307,7 +307,7 @@
+ 
+ class CommandQueueMT {
+     struct SyncSemaphore {
+-        Semaphore sem;
++        Ref<Semaphore> sem = Ref<Semaphore>(memnew(Semaphore));
+         bool in_use = false;
+     };
+ 
+@@ -321,7 +321,7 @@
+         SyncSemaphore *sync_sem = nullptr;
+ 
+         virtual void post() override {
+-            sync_sem->sem.post();
++            sync_sem->sem->post();
+         }
+     };
+ 
+@@ -345,7 +345,7 @@
+ 
+     LocalVector<uint8_t> command_mem;
+     SyncSemaphore sync_sems[SYNC_SEMAPHORES];
+-    Mutex mutex;
++    Ref<Mutex> mutex = Ref<Mutex>(memnew(Mutex));
+     Semaphore *sync = nullptr;
+ 
+     template <class T>
+--- a/src/video_decoder.cpp
++++ b/src/video_decoder.cpp
+@@ -264,9 +264,9 @@
+         switch (decoder->decoder_state) {
+             case READY:
+             case RUNNING: {
+-                decoder->decoded_frames_mutex.lock();
++                decoder->decoded_frames_mutex->lock();
+                 bool needs_frame = decoder->decoded_frames.size() < MAX_PENDING_FRAMES;
+-                decoder->decoded_frames_mutex.unlock();
++                decoder->decoded_frames_mutex->unlock();
+                 if (needs_frame) {
+                     decoder->_decode_next_frame(packet, receive_frame);
+                 } else {
+@@ -306,7 +306,7 @@
+ 
+         bool unref_packet = true;
+ 
+-        if (p_packet->stream_index == video_stream->index || p_packet->stream_index == audio_stream->index) {
++        if (p_packet->stream_index == video_stream->index || (audio_stream && p_packet->stream_index == audio_stream->index)) {
+             AVCodecContext *codec_ctx = video_codec_context;
+             if (has_audio && p_packet->stream_index == audio_stream->index) {
+                 codec_ctx = audio_codec_context;
+@@ -353,7 +353,7 @@
+         } else {
+             _read_decoded_audio_frames(p_receive_frame);
+         }
+-    } else if (format_context->streams[p_packet->stream_index]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
++    } else if (p_packet && format_context->streams[p_packet->stream_index]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
+         UtilityFunctions::print(vformat("Failed to send avcodec packet: %s", ffmpeg_get_error_message(send_packet_result)));
+         _try_disable_hw_decoding(send_packet_result);
+     }
+@@ -456,12 +456,12 @@
+         }
+ #ifdef FFMPEG_MT_GPU_UPLOAD
+         Ref<ImageTexture> tex;
+-        available_textures_mutex.lock();
++        available_textures_mutex->lock();
+         if (available_textures.size() > 0) {
+             tex = available_textures[0];
+             available_textures.pop_front();
+         }
+-        available_textures_mutex.unlock();
++        available_textures_mutex->unlock();
+         {
+             ZoneNamedN(image_unwrap_gpu, "Image unwrap GPU upload", true);
+             if (!tex.is_valid() || tex->get_size() != image->get_size() || tex->get_format() != image->get_format()) {
+@@ -472,15 +472,15 @@
+                 tex->update(image);
+             }
+         }
+-        decoded_frames_mutex.lock();
++        decoded_frames_mutex->lock();
+         decoded_frames.push_back(memnew(DecodedFrame(frame_time, tex)));
+-        decoded_frames_mutex.unlock();
++        decoded_frames_mutex->unlock();
+ #else
+-        decoded_frames_mutex.lock();
++        decoded_frames_mutex->lock();
+         if (!skip_current_outputs.is_set()) {
+             decoded_frames.push_back(memnew(DecodedFrame(frame_time, image)));
+         }
+-        decoded_frames_mutex.unlock();
++        decoded_frames_mutex->unlock();
+ #endif
+     }
+ }
+@@ -521,11 +521,11 @@
+         Ref<DecodedAudioFrame> audio_frame = memnew(DecodedAudioFrame(frame_time));
+         audio_frame->sample_data.resize(data_size / sizeof(float));
+         memcpy(audio_frame->sample_data.ptrw(), frame->data[0], data_size);
+-        audio_buffer_mutex.lock();
++        audio_buffer_mutex->lock();
+         if (!skip_current_outputs.is_set()) {
+             decoded_audio_frames.push_back(audio_frame);
+         }
+-        audio_buffer_mutex.unlock();
++        audio_buffer_mutex->unlock();
+ 
+         av_frame_unref(p_received_frame);
+         if (frame != p_received_frame) {
+@@ -645,16 +645,16 @@
+ }
+ 
+ void VideoDecoder::seek(double p_time, bool p_wait) {
+-    decoded_frames_mutex.lock();
+-    audio_buffer_mutex.lock();
++    decoded_frames_mutex->lock();
++    audio_buffer_mutex->lock();
+ 
+     decoded_frames.clear();
+     decoded_audio_frames.clear();
+ 
+     last_decoded_frame_time.set(p_time);
+     skip_current_outputs.set();
+-    decoded_frames_mutex.unlock();
+-    audio_buffer_mutex.unlock();
++    decoded_frames_mutex->unlock();
++    audio_buffer_mutex->unlock();
+ 
+     if (p_wait) {
+         decoder_commands.push_and_sync(this, &VideoDecoder::_seek_command, p_time);
+@@ -766,20 +766,20 @@
+ }
+ 
+ void VideoDecoder::return_frame(Ref<DecodedFrame> p_frame) {
+-    MutexLock lock(available_textures_mutex);
++    MutexLock lock(*available_textures_mutex.ptr());
+     available_textures.push_back(p_frame->get_texture());
+ }
+ 
+ Vector<Ref<DecodedFrame>> VideoDecoder::get_decoded_frames(bool p_clear) {
+     Vector<Ref<DecodedFrame>> frames;
+-    MutexLock lock(decoded_frames_mutex);
++    MutexLock lock(*decoded_frames_mutex.ptr());
+     frames = decoded_frames.duplicate();
+     if (p_clear) decoded_frames.clear();
+     return frames;
+ }
+ 
+ Vector<Ref<DecodedAudioFrame>> VideoDecoder::get_decoded_audio_frames(bool p_clear) {
+-    MutexLock lock(audio_buffer_mutex);
++    MutexLock lock(*audio_buffer_mutex.ptr());
+     Vector<Ref<DecodedAudioFrame>> frames = decoded_audio_frames.duplicate();
+     if (p_clear) decoded_audio_frames.clear();
+     return frames;
+--- a/src/video_decoder.h
++++ b/src/video_decoder.h
+@@ -109,7 +109,7 @@
+ private:
+     Vector<Ref<DecodedAudioFrame>> decoded_audio_frames;
+ 
+-    Mutex audio_buffer_mutex;
++    Ref<Mutex> audio_buffer_mutex = Ref<Mutex>(memnew(Mutex));
+ 
+     SwsContext *sws_context = nullptr;
+     SwrContext *swr_context = nullptr;
+@@ -132,13 +132,13 @@
+     SafeNumeric<float> last_decoded_frame_time;
+     Ref<FileAccess> video_file;
+     BitField<HardwareVideoDecoder> target_hw_video_decoders = HardwareVideoDecoder::ANY;
+-    Mutex available_textures_mutex;
++    Ref<Mutex> available_textures_mutex = Ref<Mutex>(memnew(Mutex));
+     List<Ref<ImageTexture>> available_textures;
+-    Mutex hw_transfer_frames_mutex;
++    Ref<Mutex> hw_transfer_frames_mutex = Ref<Mutex>(memnew(Mutex));
+     List<Ref<FFmpegFrame>> hw_transfer_frames;
+-    Mutex scaler_frames_mutex;
++    Ref<Mutex> scaler_frames_mutex = Ref<Mutex>(memnew(Mutex));
+     List<Ref<FFmpegFrame>> scaler_frames;
+-    Mutex decoded_frames_mutex;
++    Ref<Mutex> decoded_frames_mutex = Ref<Mutex>(memnew(Mutex));
+     Vector<Ref<DecodedFrame>> decoded_frames;
+     std::thread *thread = nullptr;
+     SafeFlag thread_abort;

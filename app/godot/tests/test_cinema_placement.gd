@@ -105,11 +105,13 @@ func run() -> void:
 		check(is_equal_approx(main._surface_distance(video), 2.5), "Distance slider uses the plane distance despite elevated centre")
 		for hand in ["left_hand", "right_hand"]:
 			for corner in [0, 1]:
+				menu.dismiss(); menu.section = 0; menu._adjustment = ""; menu.toggle()
 				video.set_screen_scale(1.0); video.panel.visible = true
 				anchor = bottom(video)
 				var target: Vector3 = video.panel.to_global(video.screen_corner(corner))
 				main.rays[hand] = [camera.global_position, (target - camera.global_position).normalized()]
 				check(main._try_corner_resize(hand), "Either upper corner can start a resize with either hand")
+				if not main._grab.has("resize"): continue
 				main._process_sticks(Vector2.ZERO, Vector2.ZERO, 0.1)
 				check(video.cinema.guide.visible, "Either corner shows the temporary grid")
 				var vector: Vector3 = main._grab.resize.cinema_vector
@@ -146,7 +148,7 @@ func run() -> void:
 	check(video.screen_scale == 30.0, "Stick zoom stops at 3000 percent")
 	video.set_screen_scale(5.0)
 	main._on_playback_adjustment("screen_distance", 3.0)
-	menu.toggle(); menu._activate(Menu.SCREEN_SETTINGS)
+	menu.dismiss(); menu.toggle(); menu._activate(Menu.SCREEN_SETTINGS)
 	check(click(menu, Menu.SCREEN_SET_DEFAULT) and main._flat_video_is_default(), "Set as default saves cinema placement and selected feedback")
 	menu.dismiss()
 	var saved := main._cinema_default(); var saved_size := main._flat_video_defaults()
@@ -264,7 +266,38 @@ func run() -> void:
 		for fraction in [0.0, 0.25, 0.5, 0.75, 1.0]:
 			var value := Video.ScreenPresets.slider_value(fraction, span)
 			check(value >= span.x and value <= span.y and absf(Video.ScreenPresets.slider_fraction(value, span) - fraction) < 0.02, "Wide-range slider mapping stays bounded and reversible")
+	check_free_exit(main, video, camera, menu)
 	menu.free(); main.recent_menu.free(); video.free(); camera.free(); main.free()
 	for failure in failures: push_error(failure)
 	print("Cinema placement: %d checks, %d failures" % [checks, failures.size()])
 	quit(0 if failures.is_empty() else 1)
+
+func check_free_exit(main: Node3D, video: Node3D, camera: Camera3D, menu: Node3D) -> void:
+	var locked: Vector2 = main._flat_video_defaults()
+	var locked_cinema: Dictionary = main._cinema_default()
+	for id in ["tv100", "home150", "giant22", "giant32"]:
+		main.head_pose = Transform3D(Basis.from_euler(Vector3(0.22, 0.6, 0.1)), Vector3(0.3, 1.7, -0.2))
+		camera.transform = main.head_pose
+		main._apply_screen_preset(id)
+		main._turn_picture(0.15, 0.12)
+		var size: Vector2 = video._flat.size
+		var distance: float = main._surface_distance(video)
+		main.interface_move.placements[&"video"] = Transform3D(Basis.IDENTITY, Vector3(8, 4, -2))
+		menu.dismiss(); menu.toggle(); menu._activate(Menu.SCREEN_SETTINGS)
+		check(click(menu, Menu.SCREEN_CINEMA_OFF), "Exit cinema through the actual Off button: " + id)
+		var pose := world(video)
+		check(pose.is_equal_approx(main._view_pose(distance, 0)), "Cinema Off automatically uses ordinary placement at the current heading: " + id)
+		check(is_equal_approx(video.screen_distance, distance) and video._flat.size.is_equal_approx(size), "Cinema Off retains plane distance and size: " + id)
+		check(pose.basis.z.normalized().is_equal_approx((camera.global_position - pose.origin).normalized()), "Free screen faces the eyes without a recenter press: " + id)
+		check(not main.interface_move.placements.has(&"video") and main._grab.is_empty(), "Exit discards stale drag placement: " + id)
+		main._place_screen(); main._update_view_follow()
+		check(world(video).is_equal_approx(pose), "Later placement cannot resurrect the cinema pose: " + id)
+		menu.dismiss()
+		var direction := (pose.origin - camera.global_position).normalized()
+		main.rays.right_hand = [camera.global_position, direction]
+		main._begin_grab("right_hand")
+		main.rays.right_hand = [camera.global_position, Basis(Vector3.UP, 0.15) * direction]
+		main._update_grab()
+		check(not world(video).is_equal_approx(pose), "The first free-mode pointer drag works immediately: " + id)
+		main._grab.clear()
+		check(main._flat_video_defaults() == locked and main._cinema_default() == locked_cinema, "Automatic free placement never overwrites locked defaults: " + id)

@@ -40,8 +40,9 @@ func _run() -> void:
 	check(menu.rows.filter(func(row): return row.get("key", "") == "language").size() == 1 and menu.rows.any(func(row): return row.get("group_header", false) and row.get("title", "") == I18n.t("Privacy settings")), "One language row and the current collapsible privacy group")
 	var open_id := target(menu, "language", null, "open")
 	var value_button: Dictionary = menu._buttons.filter(func(button): return button.target == open_id)[0]
-	check(not value_button.node is MeshInstance3D and value_button.node.get_child_count() == 1, "Resting choice value uses one label and no dropdown surface")
-	var point := origin(menu, open_id)
+	check(value_button.node is MeshInstance3D and value_button.has("select_arrow"), "Resting choice has a filled surface and a vector dropdown arrow")
+	var point: Vector3 = value_button.node.to_global(Vector3(value_button.rect.size.x / 2 - 0.032, 0, 1))
+	check(menu.ray_hit(point, -menu.global_basis.z).get("target", -1) == open_id, "Arrow and value use the same dropdown ray target")
 	menu.press_pointer("left_hand", point, -menu.global_basis.z, true)
 	check(menu.choices.opened.is_empty() and not menu.choices.capture.is_empty(), "Dropdown opens only on owning release")
 	menu.release_pointer("right_hand", point, -menu.global_basis.z, true)

@@ -1,0 +1,47 @@
+{
+  "source_commit": "987b76428774d21cf6542d5cda7d1cd09ebf2730",
+  "godot_cpp_commit": "4d5d707d60aac3ecb4d3e413c840448fb1356264",
+  "ffmpeg_headers_commit": "b1a4534186ca51b0457579fc05a5739eb2cc45cd",
+  "source_sha256": {
+    "command_queue_mt.cpp": "4c2e702e2f95accd4ea5323cd59df7ff0a2a8191aa6acf530c0f4bef0772ae6b",
+    "command_queue_mt.h": "94876f7b2cdd230a95df5f30317123744a9033f7d2a6ce38e801d3ca7cabddde",
+    "ffmpeg_codec.cpp": "098c3bebf572dd089e1ee50d574a812e023a7bbb793ec7bf7e4074286e343ee1",
+    "ffmpeg_codec.h": "5f1405351f2826ff06533bce28baecfc4406a039c82e1790580570fddabc5bdc",
+    "ffmpeg_frame.cpp": "4a622a4f135c441af3262f966161ef8d123368739b2e93eb3a76fd30538e117f",
+    "ffmpeg_frame.h": "d703f132c7ad5bc81adbd8d9219fb858854fae9a4aec291eac901a5154b80018",
+    "register_types.cpp": "57768a775f537adb85fd1ed9a1fc7cb76ab322d51ab89dde0a5bdb77def7b337",
+    "register_types.h": "fa3a89da06e8b43d23a184221507353c77a7258dc072a0f943fe5bc69d4cf4e5",
+    "simple_type.h": "b52de278a7a89dc38b55d18d47a5c88ee0dbccf5795de94bc6107f97b4accdd6",
+    "video_decoder.cpp": "9ef24daa957672436dc02929f5455cf9adc9c3a389f8abaf40837c359bbbf510",
+    "video_decoder.h": "a09166e03114719ef2e4d3bdc0813268e7d4b6aee89e80a1643d4d9507eb3126",
+    "video_stream_ffmpeg.cpp": "e706b869f920e3a4cde78cc482cb16d1980967304f42b750bd6af5c93089af67",
+    "video_stream_ffmpeg.h": "c80262548bdc742db61c405ad78774d7a1696bf5c80dcc0257e1db3597808550",
+    "video_stream_ffmpeg_loader.cpp": "efd6252cd6318f9ed0e7c2e6bf4b879cf1920e2710e75f757bae85156c2f4929",
+    "video_stream_ffmpeg_loader.h": "fc260df2da5a23d00967278281276c25e45c49a169df0c6bfc56fa21a6797341"
+  },
+  "patch_sha256": "2baf7095b43d813a27b2ad8fc6c2f4ac5a1311c8ffba3f9d2b88ae1f8da2ae60",
+  "binding_classes": [
+    "object",
+    "ref_counted",
+    "resource",
+    "file_access",
+    "image",
+    "texture",
+    "texture2d",
+    "image_texture",
+    "video_stream",
+    "video_stream_playback",
+    "weak_ref",
+    "mutex",
+    "semaphore",
+    "os",
+    "resource_format_loader",
+    "resource_loader",
+    "class_db_singleton"
+  ],
+  "generated_avconfig": {
+    "AV_HAVE_BIGENDIAN": 0,
+    "AV_HAVE_FAST_UNALIGNED": 1
+  },
+  "godot_cpp_license_sha256": "26a5b210d90760156ce886267ce9df235787dcc6cebfd7ecd95ef5b6fdcc95bf"
+}

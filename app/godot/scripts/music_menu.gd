@@ -35,6 +35,7 @@ const VOLUME := 424
 const MUTE := 425
 const MINIMIZE := 426
 const DOCK := 433
+const SETTINGS := 434
 const SOURCE := 427
 const EDIT_LIST := 428
 const LIST_OPTIONS := 429
@@ -155,7 +156,7 @@ func refresh_values() -> void:
 		var value := float(choices.capture.get("value", _state.audio_position)) if choices.capture.get("item", {}).get("key", "") == "audio_seek" else float(_state.audio_position)
 		_time.text = _clock(value)
 	if is_instance_valid(_duration): _duration.text = _clock(float(_state.audio_duration))
-	if is_instance_valid(_notice): _notice.text = _fit_title(_status(), "", 0.90 if compact else 1.05, 14)
+	if is_instance_valid(_notice): _notice.text = _fit_title(_status(), "", 0.90 if compact else 1.05, TEXT_AUX)
 	StorageView.update(self, _storage_labels, _state)
 	composition_changed.emit()
 
@@ -177,8 +178,8 @@ func _status() -> String:
 	return ""
 
 func _text_action(id: int, title: String, y: float, enabled: bool = true) -> void:
-	_button(id, _fit_title(I18n.t(title), "", 1.02, 19), Vector2(0, y), Vector2(1.10, 0.085), enabled)
-	set_label_size(_buttons.back().node.get_child(0), 19)
+	_button(id, _fit_title(I18n.t(title), "", 1.02, TEXT_BODY), Vector2(0, y), Vector2(1.10, 0.085), enabled)
+	set_label_size(_buttons.back().node.get_child(0), TEXT_BODY)
 
 func _caption(text: String, point: Vector2, width: float, font_size: int = 18, ink: Color = MUTED) -> Label3D:
 	var label := _label(_fit_title(text, "", width, font_size), Vector3(point.x, point.y, 0.004), font_size)
@@ -193,24 +194,26 @@ func _pill(id: int, text: String, point: Vector2, width: float, enabled: bool = 
 func _draw() -> void:
 	_clear_layout(); _time = null; _duration = null; _notice = null; _storage_labels.clear()
 	choices.begin(str([compact, view, playlist_id, modal, filter]), Vector2(-0.39, 0.31))
-	var panel_size := Vector2(1.14, 0.54) if compact else Vector2(1.42, 1.28)
+	var panel_size := Vector2(1.14, 0.54) if compact else Vector2(1.42, 1.22)
 	if not modal.is_empty(): panel_size = Vector2(1.42, 1.12) if modal == "name" else Vector2(1.20, 1.0 if modal == "choose_list" else 0.90)
-	_set_backdrop(panel_size, Vector2(0, -0.03) if not compact and modal.is_empty() else Vector2.ZERO)
+	if modal == "settings": panel_size = Vector2(1.14, 0.60)
+	_set_backdrop(panel_size, Vector2.ZERO)
 	_block_rays(_backdrop, _backdrop.mesh.size)
 	if not modal.is_empty():
 		_glyph(BACK, "up", Vector2(-panel_size.x / 2 + 0.09, panel_size.y / 2 - 0.075), 0.075, true, I18n.t("Back"))
 		_glyph(CLOSE, "close", Vector2(panel_size.x / 2 - 0.09, panel_size.y / 2 - 0.075), 0.075, true, I18n.t("Close"))
 		_draw_modal(); _draw_status(-panel_size.y / 2 + 0.035); choices.finish(); return
 	if compact:
-		_text_button(SOURCE, "", Vector2(-0.13, 0.205), Vector2(0.72, 0.075))
-		_icon("ambience" if audio.queue_source == "ambience" else "list", Vector3(-0.46, 0.205, 0.006), 0.032, ACCENT)
-		_caption(_source_caption(), Vector2(-0.41, 0.205), 0.60, 16)
+		_glyph(SETTINGS, "settings", Vector2(-0.48, 0.205), 0.075, true, I18n.t("Settings"))
+		_text_button(SOURCE, "", Vector2(-0.08, 0.205), Vector2(0.64, 0.075))
+		_caption(_source_caption(), Vector2(-0.39, 0.205), 0.58, 16)
 		_tips[SOURCE] = _source_caption()
 		_glyph(QUEUE, "list", Vector2(0.35, 0.205), 0.075, true, I18n.t("Queue"))
 		_glyph(CLOSE, "close", Vector2(0.48, 0.205), 0.075, true, I18n.t("Close"))
 		_draw_transport(); _draw_status(-0.23); choices.finish(); return
-	_glyph(BACK, "up", Vector2(-0.60, 0.52), 0.075, true, I18n.t("Back"))
-	_label(I18n.t("Music"), Vector3(0, 0.52, 0.004), 23)
+	_glyph(SETTINGS, "settings", Vector2(-0.60, 0.52), 0.075, true, I18n.t("Settings"))
+	_glyph(BACK, "up", Vector2(-0.47, 0.52), 0.075, true, I18n.t("Back"))
+	_label(I18n.t("Music"), Vector3(0, 0.52, 0.004), TEXT_PAGE_TITLE).font = ui_bold_font()
 	if view != "add": _glyph(MINIMIZE, "collapse", Vector2(0.47, 0.52), 0.075, true, I18n.t("Now playing"))
 	_glyph(CLOSE, "close", Vector2(0.60, 0.52), 0.075, true, I18n.t("Close"))
 	if view == "add":
@@ -235,8 +238,13 @@ func _draw() -> void:
 		if view == "tracks" and not audio.library.playlist(playlist_id).get("builtin", true): _pill(ADD_TRACKS, "Add tracks", Vector2(0, -0.18), 0.40, true, true)
 		elif view == "queue": _pill(TAB, "Playlists", Vector2(0, -0.18), 0.40, true, true)
 	_draw_paging(-0.35)
-	_draw_dock(); _storage_labels = StorageView.draw(self, _state, Vector2(0, -0.575), 1.20)
-	_draw_status(-0.635); choices.finish()
+	_draw_dock(); _draw_status(-0.575); choices.finish()
+
+func _draw_video_switch(y: float) -> void:
+	var width := 0.96
+	var title := _caption(I18n.t("Play music during video"), Vector2(-width / 2, y), width - 0.15, TEXT_BODY)
+	var switch_x := title.position.x + text_width(title.text, TEXT_BODY) + 0.03 + 0.045
+	choices.field(null, {"key": "audio_play_during_video", "value": _state.audio_play_during_video, "switch": true, "choices": [], "hint": "Play music during video"}, Vector2(switch_x, y), 0.09, 0.05)
 
 func _collect_rows() -> void:
 	_rows.clear()
@@ -292,7 +300,7 @@ func _draw_playlist_cards() -> void:
 		name_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
 		var detail := I18n.t("%d sounds" if row.id == "ambience" else "%d tracks") % row.tracks.size()
 		if row.builtin: detail += " · " + I18n.t("Built-in")
-		var subtitle := _label(_fit_title(detail, "", 0.42, 14), Vector3(-0.25, -0.035, 0.004), 14, node)
+		var subtitle := _label(_fit_title(detail, "", 0.42, TEXT_AUX), Vector3(-0.25, -0.035, 0.004), TEXT_AUX, node)
 		subtitle.set_meta("music_text_width", 0.42)
 		subtitle.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT; subtitle.modulate = MUTED
 		_tips[ROW + i] = _playlist_label(row)
@@ -311,7 +319,7 @@ func _draw_track_rows() -> void:
 			_buttons.back().base_color = SELECTED; node.material_override.set_shader_parameter("surface_color", SELECTED)
 		var leading := "check" if view == "add" and marked else ("checkbox" if view == "add" else ("pause" if marked and not audio.paused else _track_icon(row)))
 		if view == "queue" and not marked:
-			_label(str(offset + i + 1), Vector3(-width / 2 + 0.045, 0, 0.004), 14, node).modulate = MUTED
+			_label(str(offset + i + 1), Vector3(-width / 2 + 0.045, 0, 0.004), TEXT_AUX, node).modulate = MUTED
 		else: _icon(leading, Vector3(-width / 2 + 0.045, 0, 0.004), 0.030, ink if marked else MUTED, node)
 		var title_width := width - (0.36 if view == "all" else 0.16)
 		var label := _label(_fit_title(I18n.t(str(row.label)), "", title_width, 20), Vector3(-width / 2 + 0.09, 0, 0.004), 20, node)
@@ -320,7 +328,7 @@ func _draw_track_rows() -> void:
 		_tips[ROW + i] = I18n.t(str(row.label))
 		if view == "all":
 			var kind := "Imported audio" if str(row.id).begins_with("import_") else ("Ambience" if row.get("kind", "") == "ambience" else "Music")
-			var category := _label(_fit_title(I18n.t(kind), "", 0.20, 14), Vector3(width / 2 - 0.025, 0, 0.004), 14, node)
+			var category := _label(_fit_title(I18n.t(kind), "", 0.20, TEXT_AUX), Vector3(width / 2 - 0.025, 0, 0.004), TEXT_AUX, node)
 			category.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT; category.modulate = MUTED; category.set_meta("music_text_width", 0.20)
 		if editing:
 			_glyph(INLINE_UP + i, "arrow_up", Vector2(0.38, y), 0.070, offset + i > 0, I18n.t("Move up"))
@@ -331,7 +339,7 @@ func _draw_track_rows() -> void:
 func _draw_paging(y: float) -> void:
 	if _rows.size() <= _capacity(): return
 	_glyph(PREVIOUS, "scroll_up", Vector2(-0.54, y), 0.065, offset > 0, I18n.t("Previous"))
-	_label("%d–%d / %d" % [offset + 1, mini(offset + _capacity(), _rows.size()), _rows.size()], Vector3(0, y, 0.004), 14).modulate = MUTED
+	_label("%d–%d / %d" % [offset + 1, mini(offset + _capacity(), _rows.size()), _rows.size()], Vector3(0, y, 0.004), TEXT_AUX).modulate = MUTED
 	_glyph(NEXT, "scroll_down", Vector2(0.54, y), 0.065, offset + _capacity() < _rows.size(), I18n.t("Next"))
 
 func _draw_dock() -> void:
@@ -346,7 +354,7 @@ func _draw_dock() -> void:
 	_glyph(NEXT_TRACK, "next_video", Vector2(0.54, -0.48), 0.080, audio.can_advance(1), I18n.t("Next"))
 
 func _draw_status(y: float) -> void:
-	_notice = _label(_fit_title(_status(), "", 0.90 if compact else 1.05, 14), Vector3(-0.035, y, 0.004), 14); _notice.modulate = MUTED
+	_notice = _label(_fit_title(_status(), "", 0.90 if compact else 1.05, TEXT_AUX), Vector3(-0.035, y, 0.004), TEXT_AUX); _notice.modulate = MUTED
 	var action_x: float = _backdrop.mesh.size.x / 2 - 0.065
 	if _state.audio_importing: _glyph(CANCEL_IMPORT, "close", Vector2(action_x, y), 0.05, true, I18n.t("Cancel import"))
 	elif int(_state.audio_failed) > 0: _glyph(RETRY_IMPORT, "refresh", Vector2(action_x, y), 0.05, true, I18n.t("Retry"))
@@ -375,7 +383,7 @@ func _draw_transport() -> void:
 	_glyph(MODE, mode_icon, Vector2(-0.43, y), 0.085, true, I18n.t(caption))
 	# A short, persistent label makes the current repeat state unambiguous in VR.
 	_label(I18n.t(caption), Vector3(-0.43, y - 0.055, 0.004), 12).modulate = MUTED
-	_glyph(VOLUME, "mute" if float(_state.audio_volume) == 0 else "sound", Vector2(0.43, y), 0.085, true, I18n.t("Volume"))
+	_glyph(VOLUME, "mute" if float(_state.audio_volume) == 0 else "sound", Vector2(0.43, y), 0.085, true, I18n.t("Music volume"))
 	if _volume_open: _draw_volume(y)
 
 func _draw_volume(y: float) -> void:
@@ -393,13 +401,18 @@ func _draw_volume(y: float) -> void:
 			elif child is MeshInstance3D: child.material_override.render_priority = 33 + mini(child.get_index(), 3)
 
 func _draw_modal() -> void:
-	var heading: String = {"name": "New playlist" if target_playlist.is_empty() else "Rename", "choose_list": "Add to playlist", "confirm_file": "Delete local audio?", "confirm_list": "Delete playlist?", "playlist": "Playlist options", "track": "Track options", "add_source": "Add tracks"}.get(modal, "Music")
+	var heading: String = {"settings": "Settings", "name": "New playlist" if target_playlist.is_empty() else "Rename", "choose_list": "Add to playlist", "confirm_file": "Delete local audio?", "confirm_list": "Delete playlist?", "playlist": "Playlist options", "track": "Track options", "add_source": "Add tracks"}.get(modal, "Music")
 	var top := 0.485 if modal == "name" else (0.425 if modal == "choose_list" else 0.375)
-	_label(I18n.t(heading), Vector3(0, top, 0.004), 22)
+	if modal == "settings": top = 0.225
+	_label(I18n.t(heading), Vector3(0, top, 0.004), TEXT_TITLE).font = ui_bold_font()
+	if modal == "settings":
+		_draw_video_switch(0.075)
+		_storage_labels = StorageView.draw(self, _state, Vector2(0, -0.09), 0.96, true, true)
+		return
 	if modal == "name":
 		var input := _quad(Vector2(1.16, 0.085), Vector3(0, 0.36, 0.002), TILE, 11)
 		add_child(input); _decorations.append(input)
-		_label(_fit_title(name_text + "│", "", 1.08, 23), Vector3(0, 0.36, 0.004), 23)
+		_label(_fit_title(name_text + "│", "", 1.08, TEXT_BODY), Vector3(0, 0.36, 0.004), TEXT_BODY)
 		for r in KEYS.size():
 			for c in 10:
 				var ch: String = KEYS[r][c]
@@ -454,6 +467,8 @@ func _activate(id: int) -> void:
 	if id in [CLOSE, BACK, CANCEL]:
 		if id == CLOSE or not navigate_back(): close_requested.emit()
 		return
+	if id == SETTINGS and modal.is_empty():
+		_volume_open = false; _open_modal("settings"); refresh(); return
 	if id in [PREVIOUS, NEXT]:
 		offset = clampi(offset + (-_capacity() if id == PREVIOUS else _capacity()), 0, maxi(0, _rows.size() - _capacity())); refresh(); return
 	if modal == "name":
@@ -560,6 +575,7 @@ func _activate(id: int) -> void:
 
 func _choice_changed(key: String, value: Variant) -> void:
 	if key == "audio_volume": audio.set_volume(value)
+	elif key == "audio_play_during_video": audio.set_play_during_video(bool(value))
 	elif key == "audio_seek" and value is Dictionary and value.source_uri == audio.current: audio.seek(value.value)
 	elif key == "audio_filter": filter = str(value); offset = 0
 	refresh()
@@ -572,7 +588,7 @@ func press_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: b
 	if has_pointer_capture(): return true
 	var hit := ray_hit(origin, direction) if tracked else {}
 	var id := int(hit.get("target", NONE))
-	if _volume_open and tracked and id not in [VOLUME, MUTE] and choices.targets.get(id, {}).get("key", "") != "audio_volume":
+	if _volume_open and tracked and id not in [VOLUME, MUTE, SETTINGS] and choices.targets.get(id, {}).get("key", "") != "audio_volume":
 		_volume_open = false; refresh(); return true
 	if choices.press(hand, origin, direction, tracked): return true
 	if not compact and modal in ["", "choose_list"] and not hit.is_empty() and (id in range(ROW, ROW + _capacity()) or (id == NONE and hit.point.y < 0.20 and hit.point.y > -0.30)):

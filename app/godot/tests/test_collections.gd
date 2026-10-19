@@ -26,12 +26,16 @@ class Platform extends RefCounted:
 	func media_smb_browse(id: String, path: String) -> int: calls.append(["smb", id, path]); return 2
 	func media_dlna_browse(id: String, path: String) -> int: calls.append(["dlna", id, path]); return 3
 
+class NarrationMemory extends RefCounted:
+	var memory := preload("res://scripts/file_narration_memory.gd").new()
+
 class MigrationViewer extends Node3D:
 	var recent_files: RefCounted
 	var mode_memory := Memory.new()
 	var track_memory := Memory.new()
 	var subtitle_timing := Memory.new()
 	var whisper_memory := preload("res://scripts/file_whisper_memory.gd").new()
+	var narration := NarrationMemory.new()
 
 func _legacy_recent(uri: String) -> Dictionary:
 	return {"uri":uri,"title":"Older playback","kind":"video","persisted":false,"opened":1,"opened_at":100.0,"position_ms":1234,"duration_ms":60000}
@@ -172,7 +176,11 @@ func _run() -> void:
 	check(not Privacy.record_allowed("file:///storage/movie.strm") and not Privacy.record_allowed("content://remote.provider/1"), "Shortcuts and unknown content providers cannot bypass local-only policy")
 	Privacy.configure("none")
 	var memory := Memory.new(directory.path_join("settings"))
-	check(not memory.remember(first, {"geometry":0,"stereo_sbs":false,"swap_eyes":false,"alpha_requested":false,"profile":"320x320"}), "No-record policy covers per-file preferences")
+	var file_mode := {"geometry":0,"stereo_sbs":false,"swap_eyes":false,"alpha_requested":false,"profile":"320x320"}
+	check(memory.remember(first, file_mode) and memory.save(), "Disabled history still permits independent per-file preferences")
+	Privacy.configure_file_settings("none")
+	check(not memory.remember(first, file_mode) and memory.lookup(first).is_empty(), "Independent memory switch disables settings reads and writes")
+	Privacy.configure_file_settings("all")
 	var recent := Recent.new(directory.path_join("recent"))
 	check(not recent.opened(first, "Episode", false), "No-record policy covers recent catalog")
 	Privacy.configure("all")

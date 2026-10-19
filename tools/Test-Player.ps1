@@ -13,6 +13,8 @@ foreach ($videoUxTest in @('test_video_playback_modes', 'test_video_idle_rays'))
 & $env:GODOT_EXE --xr-mode off --rendering-method gl_compatibility --rendering-driver opengl3 --path $projectDirectory --quit-after 1800 --script res://tests/render_video_playback_modes.gd 2>&1 | Tee-Object -FilePath (Join-Path $videoUxOutput 'visuals.log')
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $videoUxOutput 'visuals.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:)' -or (Get-Content (Join-Path $videoUxOutput 'visuals.log') -Raw) -notmatch 'Video playback modes render: [0-9]+ checks, 0 failures') { throw 'Video playback mode visual and ray regression failed.' }
 New-Item -ItemType Directory -Path (Join-Path $workspace 'build/output/background-audio') -Force | Out-Null
+& $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_music_video.gd 2>&1 | Tee-Object -FilePath (Join-Path $workspace 'build/output/background-audio/music-video.log')
+if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $workspace 'build/output/background-audio/music-video.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)' -or (Get-Content (Join-Path $workspace 'build/output/background-audio/music-video.log') -Raw) -notmatch 'Music with video: [0-9]+ checks, 0 failures') { throw 'Simultaneous music/video regression failed.' }
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_music_quick_controls.gd 2>&1 | Tee-Object -FilePath (Join-Path $workspace 'build/output/background-audio/quick-controls.log')
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $workspace 'build/output/background-audio/quick-controls.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)') { throw 'Music quick controls and preview regression failed.' }
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_audio_native_transport.gd 2>&1 | Tee-Object -FilePath (Join-Path $workspace 'build/output/background-audio/native-transport.log')
@@ -34,6 +36,12 @@ if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $workspace 'build/output/pho
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $workspace 'build/output/photo-portrait-render.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)') { throw 'Photo portrait pixels failed.' }
 $logDirectory = Join-Path $workspace 'build\output\logs'
 New-Item -ItemType Directory -Path $logDirectory -Force | Out-Null
+foreach ($privacyMemoryTest in @('test_smb_stereo_memory', 'test_privacy_memory')) {
+    $privacyMemoryLog = Join-Path $logDirectory ($privacyMemoryTest + '.log')
+    & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script ('res://tests/' + $privacyMemoryTest + '.gd') 2>&1 | Tee-Object -FilePath $privacyMemoryLog
+    $privacyMemoryResult = Get-Content -LiteralPath $privacyMemoryLog -Raw
+    if ($LASTEXITCODE -ne 0 -or $privacyMemoryResult -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)' -or $privacyMemoryResult -notmatch '(SMB stereo memory|Independent privacy memory) checks=[0-9]+ failures=0') { throw ('Independent history and per-file memory regression failed: ' + $privacyMemoryTest) }
+}
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_collections.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'collections-host.log')
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'collections-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|ERROR:)' -or (Get-Content (Join-Path $logDirectory 'collections-host.log') -Raw) -notmatch 'Collections: [0-9]+ checks, 0 failures') { throw 'Favorites, source navigation and privacy regression failed.' }
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_collection_interactions.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'collection-interactions-host.log')

@@ -7,10 +7,12 @@ internal object NarrationNative {
     @JvmStatic external fun create(directory: String): Long
     @JvmStatic external fun cancel(engine: Long, epoch: Long)
     @JvmStatic external fun destroy(engine: Long)
+    @JvmStatic external fun registerVoice(engine: Long, voice: String, codes: IntArray)
     @JvmStatic external fun synthesize(engine: Long, text: String, voice: String, epoch: Long, sink: Sink): String
     @JvmStatic external fun synthesizeConfigured(engine: Long, text: String, voice: String, epoch: Long, frames: Int, randomSkip: Int, sink: Sink): String
     @JvmStatic external fun synthesizePrecisionConfigured(engine: Long, text: String, voice: String, epoch: Long, frames: Int, randomSkip: Int, precisionRecovery: Boolean, sink: Sink): String
     @JvmStatic external fun openReader(path: String, stream: Int, caFile: String): Long
+    @JvmStatic external fun openReaderConfigured(path: String, stream: Int, caFile: String, disc: Boolean): Long
     @JvmStatic external fun readWindow(reader: Long, start: Double, end: Double): String
     @JvmStatic external fun readBatch(reader: Long, start: Double, end: Double): String
     @JvmStatic external fun closeReader(reader: Long)

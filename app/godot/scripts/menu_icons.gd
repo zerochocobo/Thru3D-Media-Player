@@ -2,6 +2,7 @@ extends RefCounted
 
 # Original vector glyphs, generated once and shared by both ray menus.
 const PATHS := {
+	"download": '<path d="M12 3V15M7 10L12 15 17 10M4 16V21H20V16"/>',
 	"globe": '<circle cx="12" cy="12" r="10"/><ellipse cx="12" cy="12" rx="4" ry="10"/><path d="M2 12H22M4 6H20M4 18H20"/>',
 	"seated": '<circle cx="10" cy="4" r="2"/><path d="M10 7V13H17V21M5 8V16H13M5 16V22M13 16V22"/>',
 	"standing": '<circle cx="12" cy="4" r="2"/><path d="M12 7V14M6 10L12 8 18 10M12 14L8 22M12 14L16 22"/>',
@@ -94,6 +95,7 @@ const PATHS := {
 	"sort": '<path d="M4 6H20M4 12H15M4 18H10"/>',
 	"select": '<rect x="4" y="4" width="16" height="16" rx="2"/><path d="M7 12L10 15 17 8"/>',
 	"edit": '<path d="M4 20H8L19 9 15 5 4 16Z"/>',
+	"save": '<path d="M4 3H17L21 7V21H3V3Z"/><path d="M7 3V9H16V3M7 21V13H17V21"/>',
 	"backspace": '<path d="M8 5H21V19H8L2 12Z"/><path d="M11 9L17 15M17 9L11 15"/>',
 	"check": '<path d="M4 12L10 18 20 6"/>',
 	"trash": '<path d="M4 7H20M9 7V4H15V7M6 7L7 21H17L18 7M10 11V17M14 11V17"/>',

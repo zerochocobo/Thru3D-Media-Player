@@ -7,7 +7,7 @@ import re
 import subprocess
 
 FORBIDDEN_PARTS = {'.git', '.cache', '.venv', '.godot', '.gradle', '.cxx', '__pycache__', 'prompt', 'artifacts', 'build', 'tmp', 'backups', 'keystore', 'releases', 'credentials', 'research'}
-FORBIDDEN_SUFFIXES = {'.data', '.model', '.npz', '.npy', '.gguf', '.tflite', '.ort', '.onnx', '.mnn', '.pt', '.pth', '.ckpt', '.safetensors', '.bin', '.param', '.apk', '.aar', '.so', '.keystore', '.jks', '.p12', '.pfx', '.hdr', '.log', '.zip', '.tgz', '.tar', '.gz', '.bz2', '.xz', '.7z', '.rar', '.key', '.pem'}
+FORBIDDEN_SUFFIXES = {'.glb', '.data', '.model', '.npz', '.npy', '.gguf', '.tflite', '.ort', '.onnx', '.mnn', '.pt', '.pth', '.ckpt', '.safetensors', '.bin', '.param', '.apk', '.aar', '.so', '.keystore', '.jks', '.p12', '.pfx', '.hdr', '.log', '.zip', '.tgz', '.tar', '.gz', '.bz2', '.xz', '.7z', '.rar', '.key', '.pem'}
 # MIT-licensed glTF mesh buffers, not inference weights. Only these exact bytes qualify.
 HAND_BUFFER_PINS = {
     'app/godot/models/hands/LeftHandHumanoid.bin': '05f96e5aae870c8f2fde8a1fea337b060c7fde3e659b124a5ed979f0ffa1222a',
@@ -39,6 +39,10 @@ def check_files(files):
         path = PurePosixPath(name)
         if path.is_absolute() or '..' in path.parts or '\\' in name or ':' in name:
             errors.append(f'{name}: unsafe path')
+        if path.name.lower() in {'voice.json', 'voice.new', 'reference.wav'} or ('narration' in path.parts and 'voices' in path.parts) or data.startswith(b'T3VOICE1'):
+            errors.append(f'{name}: excluded personal voice data')
+        if name.startswith('app/godot/environments/grand_cinema/'):
+            errors.append(f'{name}: excluded generated scene model')
         approved_mesh = name in HAND_BUFFER_PINS
         approved_font = name in FONT_PINS
         approved_audio = name in PUZZLE_AUDIO_PINS

@@ -38,6 +38,12 @@ func choose(menu: Node3D, key: String, value: Variant) -> bool:
 	if opener < 0: return false
 	tap(menu, opener)
 	var target := option(menu, key, value)
+	for index in menu.choices.popup.get("choices", []).size():
+		if target >= 0: break
+		var previous: int = menu.choices.offset
+		menu.choices.offset += 1; menu.refresh()
+		if menu.choices.offset == previous: break
+		target = option(menu, key, value)
 	if target < 0: return false
 	tap(menu, target)
 	return true
@@ -82,23 +88,50 @@ func _run() -> void:
 	menu.navigate_back();tap(menu,110)
 	check(option(menu,"narration_enabled",true)>=0,"Only subtitle panel offers narration")
 	tap(menu,option(menu,"narration_enabled",true))
-	check(menu.text_snapshot().contains("Voice sample") and button(menu,menu.NARRATION_PREVIEW).rect.size.x>0.06,"Voice sample has a dedicated playback control")
+	check(not menu.text_snapshot().contains("Voice sample") and button(menu,menu.NARRATION_PREVIEW).rect.size.x>0.06 and menu._tips[menu.NARRATION_PREVIEW]=="Preview voice","Voice audition is an icon with a hover hint, without a separate sample row")
 	check(host.calls.back()[1].enabled and host.calls.back()[1].source == -1 and host.calls.back()[1].line == 0,"Narration follows displayed subtitles, default all lines")
 	check(host.calls.back()[1].language=="en" and not video.narration.snapshot().narration_language_required and button(menu,menu.NARRATION_PREVIEW).enabled,"Untagged external subtitle starts with a usable default and voice preview")
 	check(not video.narration.hide_subtitles and not video.narration.hides_display(),"Narration keeps visual subtitles visible by default")
 	var line_row: Dictionary = video.NarrationSettings.rows(video.narration.snapshot()).filter(func(row): return row.field.key=="narration_line")[0]
 	check(line_row.field.choices.map(func(choice):return choice.value)==[0,1,2],"Only All / First / Second authored line")
 	check(video.narration.timing=="interrupt","Next subtitle interrupts unfinished speech")
-	var origin_row: Dictionary = video.NarrationSettings.rows(video.narration.snapshot()).filter(func(row):return row.field.key=="narration_voice_origin")[0]
-	check(origin_row.field.choices.map(func(choice):return choice.value)==["zh","en","ja"] and origin_row.field.value=="en","UI locale selects an actual origin without a separate Default option")
+	check(not video.NarrationSettings.rows(video.narration.snapshot()).any(func(row):return row.field.key=="narration_voice_origin"),"Voice native language is combined into the preset chooser")
 	var voice_row: Dictionary = video.NarrationSettings.rows(video.narration.snapshot()).filter(func(row):return row.field.key=="narration_voice")[0]
-	check(voice_row.field.choices.map(func(choice):return choice.label)==["Female 1","Female 2","Male 1"],"Voice names stay internal; only gender and number are displayed")
+	check(voice_row.field.choices.size()==12 and voice_row.field.value=="Ava" and voice_row.field.choices[0].label=="Native Chinese · Female 1" and voice_row.field.choices[5].label=="Native English · Female 1" and voice_row.field.choices[11].label=="Native Japanese · Neutral 1","One preset list shows native language, gender and number for all twelve voices")
+	check(choose(menu,"narration_voice","Umiri") and video.narration.selected_origin()=="ja" and video.narration.selected_voice()=="Umiri" and video.narration.language=="en","Ray selects a different native language from the scrolled list without changing reading language")
+	var preset_values: Dictionary = video.narration._values()
+	check(not video.narration.set_option("narration_voice","invalid") and video.narration._values()==preset_values,"Invalid combined preset choice preserves the current voice and origin")
+	var enable_targets: Array = menu.choices.targets.keys().filter(func(target):return menu.choices.targets[target].get("key","")=="narration_enabled")
+	var enable_target: int = enable_targets[0]
+	check(enable_targets.size()==1 and menu.choices.targets[enable_target].value==false and button(menu,enable_target).node.get_child_count()==2 and button(menu,enable_target).node.get_child(0).text.is_empty(),"Narration uses one slider-style toggle that offers the opposite state on release")
+	var language_target: int = menu.choices.targets.keys().filter(func(target):return menu.choices.targets[target].get("key","")=="narration_language")[0]
+	check(is_equal_approx(button(menu,enable_target).node.position.y,button(menu,language_target).node.position.y),"Narration toggle and target language share one row")
+	check(button(menu,language_target).node is MeshInstance3D and button(menu,language_target).node.get_child(0).text.begins_with("Read: English"),"Target language is a visible button with an explicit reading label")
+	check(["narration_duck","narration_volume"].all(func(key):return menu.choices.targets.values().any(func(item):return item.get("key","")==key)) and not menu.choices.targets.values().any(func(item):return item.get("key","") in ["narration_offset","narration_hide_subtitles"]),"Narration and original audio levels are directly visible; secondary controls stay hidden")
 	check(video.narration.set_option("narration_hide_subtitles",true) and video.narration.hides_display(),"Optional hiding retains narration and selected track")
 	video.narration.set_option("narration_hide_subtitles",false)
 	video.subtitles.select(1);video.narration.apply();menu.refresh()
 	check(video.narration.resolved_language()=="en" and host.calls.back()[1].language=="en","Concrete default starts narration without a language prompt or metadata override")
 	var language_rows := video.NarrationSettings.rows(video.narration.snapshot())
-	check(language_rows[1].field.key=="narration_language" and language_rows[1].field.choices.map(func(choice):return choice.value)==["zh","en","ja","auto"],"Language is visible directly below enable; Follow subtitles is last")
+	check(language_rows[1].field.key=="narration_language" and language_rows[1].field.choices.size()==20 and language_rows[1].field.choices.back().value=="auto","All nineteen pinned languages are offered with Follow subtitles last")
+	var language_book := video.NarrationSettings.Memory.new(narration_path + "-languages")
+	for code in video.NarrationSettings.Languages.NAMES:
+		check(choose(menu,"narration_language",code) and video.narration.resolved_language()==code and host.calls.back()[1].language==code and video.narration.selected_voice()=="Umiri","Ray selects reading language independently of voice: " + code)
+		check(language_book.remember("file:///languages/"+code+".mp4",video.narration._values()),"Per-video memory accepts language: " + code)
+	check(language_book.save(),"Expanded language records save successfully")
+	var language_reload := video.NarrationSettings.Memory.new(narration_path + "-languages"); language_reload.load_saved()
+	for code in video.NarrationSettings.Languages.NAMES:
+		check(language_reload.lookup("file:///languages/"+code+".mp4").get("language","")==code,"Per-video language survives reload: " + code)
+	var current_values: Dictionary = video.narration._values()
+	check(not video.narration.set_option("narration_language","vi") and video.narration._values()==current_values,"Unsupported language does not alter the current selection")
+	for alias in video.NarrationSettings.Languages.ALIASES:
+		check(video.NarrationSettings.Languages.canonical(alias)==video.NarrationSettings.Languages.ALIASES[alias],"Subtitle language alias: " + alias)
+	video.media.playback.details.subtitle_tracks[0].language="fre-FR"
+	check(choose(menu,"narration_language","auto") and video.narration.resolved_language()=="fr","Follow subtitles recognizes a regional ISO-639-2 language tag")
+	video.media.playback.details.subtitle_tracks[0].language="und"
+	check(video.narration.resolved_language().is_empty(),"Unknown subtitle language still requires an explicit selection")
+	video.media.playback.details.subtitle_tracks[0].language="zh-Hans"
+	menu.refresh()
 	check(choose(menu,"narration_language","zh") and video.narration.resolved_language()=="zh" and host.calls.back()[1].language=="zh","Controller ray can open language chooser and select Chinese")
 	for profile in video.NarrationSettings.PROFILES:
 		check(video.narration.set_option("narration_profile",profile),"Accept profile " + profile)
@@ -142,7 +175,7 @@ func _run() -> void:
 	check(not video.narration.set_option("narration_line",3) and not video.narration.set_option("narration_line",-1) and not video.narration.set_option("narration_line",1.5),"Invalid line selections rejected")
 	menu.refresh();tap(menu,menu.NARRATION_MORE)
 	check(not menu.text_snapshot().contains("Base reading speed") and not menu.text_snapshot().contains("Reading speed") and menu.text_snapshot().contains("Narration sync"),"Advanced narration controls stay in subtitles")
-	check(not menu.text_snapshot().contains("Sentence timing") and menu.text_snapshot().contains("1.8x") and menu.text_snapshot().contains("Finish sentences"),"One clear timing behavior and the acceleration cap replace ambiguous modes")
+	check(not menu.text_snapshot().contains("Sentence timing") and not menu.text_snapshot().contains("Finish sentences") and menu.choices.targets.values().any(func(item):return item.get("key","")=="narration_hide_subtitles") and not menu.choices.targets.values().any(func(item):return item.get("key","")=="narration_duck"),"Advanced panel keeps secondary controls and omits the main ducking control and long timing note")
 	tap(menu,menu.NARRATION_MORE)
 	check(not button(menu,menu.NARRATION_PREVIEW).is_empty(),"Subtitle voice has preview")
 	var before := host.calls.size();video.narration.apply();check(host.calls.size()==before,"Unchanged configuration is not resent each frame")
@@ -170,7 +203,10 @@ func _run() -> void:
 		check(menu._narration_on(),"Narration glyph active " + stage)
 		check(menu._narration_preparing()==(stage in ["verifying","model_loading","preparing"]),"Loading ring distinguishes working/error " + stage)
 	tap(menu,option(menu,"narration_enabled",false))
-	check(button(menu,menu.NARRATION_PREVIEW).is_empty() and not menu._narration_on(),"Off collapses narration fields and restores icon")
+	check(button(menu,menu.NARRATION_PREVIEW).is_empty() and not menu._narration_on(),"Off removes voice audition and restores the narration icon")
+	check(menu.choices.targets.values().all(func(item): return not str(item.get("key", "")).begins_with("narration_") or item.key == "narration_enabled"),"Off leaves only the narration switch, including no reading language")
+	var off_target: int = menu.choices.targets.keys().filter(func(target): return menu.choices.targets[target].get("key", "") == "narration_enabled")[0]
+	check(is_equal_approx(button(menu,off_target).rect.size.x,0.09),"Off keeps the compact switch size after hiding language")
 	for locale in ["zh","zh_Hant","ja","en"]:
 		I18n.use(locale);menu.refresh();check(not button(menu,menu.SUBTITLE_CLOSE).is_empty(),"Subtitle panel draws " + locale)
 	_test_per_video(main, video, host, narration_path + "-scope")

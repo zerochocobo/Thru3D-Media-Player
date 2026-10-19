@@ -268,19 +268,26 @@ func _run() -> void:
 	main.photo_menu._activate(Menu.PHOTO_DEPTH)
 	await process_frame
 	check(main.photo.depth_requested and main.photo.depth_enabled and main.photo.depth_strength == 1.0 and main.photo_menu._depth_open, "Photo double click prepares one depth map at 100%")
+	check(not is_instance_valid(main.photo_menu._depth_knob), "Default photo spatial mode hides the strength rail")
+	main.photo_menu._activate(Menu.PHOTO_STATIC)
+	check(not main.photo.spatial_preferred and is_instance_valid(main.photo_menu._depth_knob), "Explicit Spatial Off exposes the original stereo depth rail")
 	var original_knob: Object = main.photo_menu._depth_knob
 	var original_texture: Object = main.photo._depth_texture
-	var y := Menu.DEPTH_SPAN.y
+	var y: float=main.photo_menu._depth_span().y
 	var controls: Node3D = main.photo_menu
 	controls.press_pointer("left_hand", controls.to_global(Vector3(Menu.DEPTH_X,y,1)), -controls.global_basis.z, true)
 	check(is_equal_approx(main.photo.depth_strength, 2.0) and is_equal_approx(main.photo.material.get_shader_parameter("depth_strength"),2.0)
 		and is_equal_approx(main.photo._detail_material.get_shader_parameter("depth_strength"),2.0), "Slider top gives photo and detail shaders live 200% strength")
 	check(host.inference == 1 and main.photo._depth_texture == original_texture and controls._depth_knob == original_knob, "Dragging reuses depth map and UI meshes")
 	controls.release_pointer("left_hand",Vector3.ZERO,Vector3.ZERO,false)
+	controls._activate(Menu.PHOTO_SPATIAL)
+	check(main.photo.spatial_preferred and not is_instance_valid(controls._depth_knob), "Main routes the spatial radio to fixed-depth viewing")
+	controls._activate(Menu.PHOTO_STATIC)
+	check(not main.photo.spatial_preferred and main.photo.depth_strength==2.0, "Main routes the static radio without erasing the 200% preference")
 	main._on_photo_action("photo_next")
 	await settle(main.photo); await process_frame
-	check(main.photo.index == 1 and main.photo.depth_requested and main.photo.depth_enabled and main.photo.depth_strength == 2.0 and host.inference == 2,
-		"Next photo retains 3D choice and strength, estimates the new image once")
+	check(main.photo.index == 1 and main.photo.depth_requested and main.photo.depth_enabled and main.photo.depth_strength == 2.0 and host.inference == 2 and not main.photo.spatial_preferred,
+		"Next photo retains the global static mode and strength, estimates the new image once")
 	main.photo.set_projection(3)
 	check(not main.photo.depth_enabled and main.photo.auto_depth, "Panorama temporarily bypasses 3D without clearing preference")
 	main.photo.set_projection(0)
@@ -291,7 +298,7 @@ func _run() -> void:
 	await settle(main.photo); await process_frame
 	check(not main.photo.depth_requested and not main.photo.auto_depth and main.video.auto_depth and main.video.depth_requested and host.inference == 2,
 		"Photo Off stays off on the next photo without disabling the video's independent conversion")
-	main._on_depth_strength(1.5,true); main._save_depth_strength()
+	main._on_depth_strength(1.5,true); main._save_depth_strength(true)
 	var saved := ConfigFile.new(); saved.load(main.settings_path)
 	check(is_equal_approx(saved.get_value("photo","depth_strength"), 1.5) and saved.get_value("effects","auto_3d") and main.video.auto_depth,
 		"Photo conversion and strength persist without overwriting the video's live choice")
@@ -301,6 +308,13 @@ func _run() -> void:
 	main._on_depth_strength(0.0, false)
 	check(main.photo.auto_depth and main.settings.get_value("effects", "auto_3d"), "Video slider Off also leaves new photos in global 3D mode")
 	main.photo_active = true
+	saved.set_value("video","depth_strength",1.9); saved.save(main.settings_path)
+	var static_restart := Main.new(); static_restart.settings_path = main.settings_path; root.add_child(static_restart)
+	check(not static_restart.photo.spatial_preferred and is_equal_approx(static_restart.photo.depth_strength,1.5) and static_restart.video.depth_strength==1.0,
+		"Restart restores global static-photo settings while ignoring the obsolete global video strength")
+	static_restart.queue_free(); await process_frame
+	main._on_photo_action("photo_spatial_on")
+	check(main.photo.spatial_preferred and main.settings.get_value("photo","spatial_preferred"),"Selecting spatial mode also persists globally")
 	main.photo.set_projection(3)
 	main._on_photo_action("lock_mode")
 	saved.load(main.settings_path)
@@ -308,8 +322,8 @@ func _run() -> void:
 	var restored := Main.new()
 	restored.settings_path = main.settings_path
 	root.add_child(restored)
-	check(not restored.video.auto_depth and restored.photo.auto_depth and is_equal_approx(restored.photo.depth_strength, 1.5) and restored.video.depth_strength == 1.0,
-		"Restart restores photo conversion and separate strengths while video awaits its own file record")
+	check(not restored.video.auto_depth and restored.photo.auto_depth and restored.photo.spatial_preferred and is_equal_approx(restored.photo.depth_strength, 1.5) and restored.video.depth_strength == 1.0,
+		"Restart restores global spatial-photo mode and strength while video awaits its own file record")
 	check(restored.photo.mode_lock.geometry == 3 and restored.video.mode_lock.is_empty(), "Restart restores panorama photo lock without locking videos")
 	main._on_photo_action("lock_mode"); saved.load(main.settings_path)
 	check(saved.get_value("photo", "mode_lock").is_empty(), "Unlock is saved across restarts")

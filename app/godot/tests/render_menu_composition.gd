@@ -2,6 +2,12 @@ extends SceneTree
 const Menu := preload("res://scripts/ray_menu.gd")
 const Capture := preload("res://scripts/menu_composition.gd")
 const Display := preload("res://scripts/xr_display.gd")
+## Host rendering has no running native XR session. Stub only that update boundary so the
+## actual _process path sees active native menu layers, including any frame-rate policy.
+class NativeFrameProbe extends Capture:
+	func update() -> void:
+		display.set_menu_layers(true)
+
 var failures: Array[String] = []
 var checks := 0
 var output := ProjectSettings.globalize_path("res://../../build/output/menu-hd/composition")
@@ -13,9 +19,9 @@ func frames(count: int = 1) -> void:
 	for i in count:
 		await process_frame; await RenderingServer.frame_post_draw
 	await RenderingServer.frame_post_draw
-## Frames at a steady rate through the watchdog, as _process would deliver them.
+## Feed elapsed frame times without waiting for real-time stalls on the desktop.
 func _feed(capture: Node, fps: float, seconds: float) -> void:
-	for frame in roundi(fps * seconds): capture._watchdog(1.0 / fps)
+	for frame in roundi(fps * seconds): capture._process(1.0 / fps)
 
 func slot_with(capture: Node, node: Node) -> Dictionary:
 	for slot in capture.slots:
@@ -162,23 +168,22 @@ func run() -> void:
 	check(main_slot.raw.render_target_update_mode == SubViewport.UPDATE_DISABLED and main_slot.submit.render_target_update_mode == SubViewport.UPDATE_DISABLED, "Hidden capture stops rendering")
 	menu.visible = true; capture.update(); await frames()
 	check(menu._buttons[0].node.layers != 1, "Reopened menu returns to layers")
-	# Heavy playback (VR video on XR2 Gen1 at 30-50 FPS) is not a layer collapse; a lasting ~1 FPS is.
-	capture.force_capture = false; display.menu_layers = true
-	_feed(capture, 25.0, 8.0)
-	check(capture.enabled and capture.fallback_reason != "watchdog_fps", "Sustained 25 FPS playback keeps the menu layers")
-	_feed(capture, 1.0, 2.0)
-	check(capture.enabled, "One slow window (a load hitch) keeps the menu layers")
-	_feed(capture, 30.0, 2.0)
-	_feed(capture, 1.0, 2.0)
-	check(capture.enabled, "Slow windows must be consecutive")
-	_feed(capture, 1.0, 4.0)
-	check(not capture.enabled and capture.fallback_reason == "watchdog_fps", "A sustained collapse still returns to the eye-buffer menu")
-	capture.enabled = true; capture.force_capture = true; display.menu_layers = false
-	capture.shutdown("watchdog_fps")
-	check(menu._buttons[0].node.layers == 1 and camera.cull_mask == original_eye_mask and not capture.is_processing() and main_slot.layer.quad_size.x < 0.001,
-		"Watchdog shutdown restores the eye-buffer menu and parks layers")
+	var slow_frame_pixels: Array = capture.snapshot().pixels
+	var probe := NativeFrameProbe.new(); viewport.add_child(probe); probe.set_process(false)
+	probe.enabled = true; probe.display = display; probe.fallback_reason = ""
+	for fps in [25.0, 10.0, 1.0, 0.25]:
+		_feed(probe, fps, 12.0)
+		check(probe.enabled and display.menu_layers and probe.fallback_reason.is_empty(),
+			"Slow frames never disable native menu layers: %.2f FPS" % fps)
+	probe.queue_free(); await process_frame
 	capture.update()
-	check(capture.snapshot().fallback == "watchdog_fps" and menu._buttons[0].node.layers == 1, "Shutdown stays off for the session")
+	check(capture.enabled and menu._buttons[0].node.layers != 1 and capture.snapshot().pixels == slow_frame_pixels,
+		"The rendered menu retains its layer masks and fixed capture density")
+	capture.shutdown("test_complete")
+	check(menu._buttons[0].node.layers == 1 and camera.cull_mask == original_eye_mask and not capture.is_processing() and main_slot.layer.quad_size.x < 0.001,
+		"Explicit cleanup restores the eye-buffer menu and parks layers")
+	capture.update()
+	check(capture.snapshot().fallback == "test_complete" and menu._buttons[0].node.layers == 1, "Explicit cleanup stays off for the session")
 	var report := {"scope": "Planar menu capture, grouping, masks and update policy on desktop OpenGL; native XR submission pending", "checks": checks, "failures": failures, "capture": initial}
 	FileAccess.open(output.path_join("verification.json"), FileAccess.WRITE).store_string(JSON.stringify(report, "\t"))
 	for failure in failures: push_error(failure)

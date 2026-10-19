@@ -37,3 +37,9 @@ Host tests and ELF/APK inspection do not prove passthrough visuals, audio synchr
 ## Optional audio fixtures
 
 The built-in recordings are excluded from public source. `test_background_audio.gd` and `test_audio_native_transport.gd` include built-in decoding paths and require the twelve caller-supplied assets described in [AUDIO.md](AUDIO.md). Without them, do not report the complete source suite as passed. Music UI rendering can use generated fixtures. `tests/packaging/test_narration_packaged.ps1` uses synthetic AAR/APK ZIP entries to verify required libraries, manifest, payload size and digest, including corrupt/missing cases. It does not run inference. The older exclusion regression describes a historical disabled configuration. The five small puzzle WAV effects are independently reproducible with `tools/Generate-PuzzleSounds.py` and are included, unlike the twelve excluded music/ambient recordings.
+
+## 0.12.2 focused checks
+
+Privacy/history and per-file settings have independent tests (`test_privacy_memory`, `test_smb_stereo_memory`). Narration/clone UI tests use fake backends; JVM policy, preview-session, voice-store, level and rhythm tests can run with synthetic audio. Real reference/model inference requires separately supplied assets. File-probe tests that require explicit fixture environment variables must remain skipped without caller-owned inputs.
+
+Generate the optional auditorium geometry before its source/gate tests; see [experimental cinema](EXPERIMENTAL_CINEMA.md). Photo gradient parity requires compiling `tests/native/photo_gradient_probe.cpp` and setting `THRU3D_PHOTO_GRADIENT_PROBE`. Other photo suites use synthetic image/depth fixtures. Excluded built-in recordings remain required for complete music decoding tests; do not claim the entire suite passed without them.

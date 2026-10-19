@@ -173,8 +173,11 @@ func _run() -> void:
 	var converted_uri := "file:///v/clip.mp4"
 	video.set_projection(0); video.set_stereo_layout(0)
 	check(video.set_depth(true) and video.mode_memory.lookup(converted_uri).depth_requested, "Manual conversion is saved for the current file")
+	video.set_depth_strength(1.65); video._remember_mode()
+	check(is_equal_approx(video.mode_memory.lookup(converted_uri).depth_strength,1.65),"Strength is committed with this video's conversion record")
 	check(video.open_local("file:///other/clip.mp4", "clip.mp4") and not video.depth_requested and not video.auto_depth and not host.depths.back(),
 		"Another URI with the same filename never inherits conversion")
+	check(video.depth_strength==1.0,"Another URI never inherits the previous video's strength")
 	video.media.format = {"width": 8192, "height": 4096, "pixel_aspect": 1.0}
 	video._complete_layout()
 	check(video.geometry == 1 and video.stereo_sbs and not video.depth_requested and not video._pending_revision.depth,
@@ -184,6 +187,7 @@ func _run() -> void:
 	video.mode_memory = Memory.new(test_path.path_join("integration")); video.mode_memory.load_saved()
 	check(video.open_local(converted_uri, "clip.mp4") and video.depth_requested and video.auto_depth and host.depths.back(),
 		"A fresh store restores this file's conversion before the native open")
+	check(is_equal_approx(video.depth_strength,1.65),"A fresh file-settings store restores this video's individual strength")
 	video.media.format = {"width": 8192, "height": 4096, "pixel_aspect": 1.0}
 	video._complete_layout()
 	check(video.geometry == 0 and not video.stereo_sbs and video.depth_requested and video._layout_pending == null,
@@ -191,13 +195,18 @@ func _run() -> void:
 	check(video.set_depth(false) and not video.mode_memory.lookup(converted_uri).depth_requested, "Manual Off updates only this file's conversion record")
 	check(video.open_local("cloud://mount/movie", "clip.mp4") and not host.depths.back(), "A new network video starts without conversion")
 	video.set_depth(true)
+	video.set_depth_strength(.75); video._remember_mode()
 	check(video.open_local(converted_uri, "clip.mp4") and not video.depth_requested and not host.depths.back(), "An older Off file ignores another video's On choice")
+	check(is_equal_approx(video.depth_strength,1.65),"Turning this video off retains only its own last nonzero strength")
 	check(video.open_local("cloud://mount/movie", "clip.mp4") and video.depth_requested and host.depths.back(), "Another video's Off choice cannot overwrite the network file's On record")
+	check(is_equal_approx(video.depth_strength,.75),"The network video restores its own independent strength")
 	video._reopen_after_context_loss(video.local_uri, video.display_name, 1234, true)
 	check(video.depth_requested and host.depths.back(), "Context recovery keeps the current file's live conversion")
+	check(is_equal_approx(video.depth_strength,.75),"Context recovery keeps live strength instead of resetting it")
 	var legacy := mode.duplicate(true); legacy.geometry = 0; legacy.stereo_sbs = false
 	video.mode_memory.remember("file:///legacy.mp4", legacy)
 	check(video.open_local("file:///legacy.mp4", "legacy.mp4") and not video.auto_depth and not host.depths.back(), "A legacy mode without a depth field defaults Off")
+	check(video.depth_strength==1.0,"Legacy per-file settings without strength use 100%, not another file's choice")
 	video.set_alpha(true)
 	check(video.alpha_requested and not video.mode_memory.lookup("file:///legacy.mp4").alpha_requested, "Manual passthrough is live only and is never saved On")
 	video._reopen_after_context_loss(video.local_uri, video.display_name, 1234, true)

@@ -130,4 +130,12 @@ Video depth uses the version-matched 364×210 late-upsample model and adjusted t
 
 ## Music and video playback modes
 
-Home and photo viewing share one music transport. Completed offline imports no longer require the source connection; deleting an app copy leaves the original file intact. Custom playlists support ordering and sequential/repeat-all/repeat-one/shuffle playback; video playback pauses music. Built-in recordings are excluded from public source; see [audio assets](AUDIO.md). Video has separate single/repeat-one/sequential/repeat-all modes, with source-supported bounded cross-page continuation rather than a whole-directory scan or unlimited failure retries. 115 main-video preparation is separated from deferred subtitle/audio companions.
+Home and photo viewing share one music transport. Completed offline imports no longer require the source connection; deleting an app copy leaves the original file intact. Custom playlists support ordering and sequential/repeat-all/repeat-one/shuffle playback; video playback pauses music by default; the optional simultaneous-playback setting retains a separate music volume. Built-in recordings are excluded from public source; see [audio assets](AUDIO.md). Video has separate single/repeat-one/sequential/repeat-all modes, with source-supported bounded cross-page continuation rather than a whole-directory scan or unlimited failure retries. 115 main-video preparation is separated from deferred subtitle/audio companions.
+
+## 0.12.2 source scope
+
+History (`privacy/history`) controls recent items, resume progress and thumbnail persistence. Per-file settings (`privacy/file_settings`) independently control viewing, audio/subtitle selection/timing, narration and quiet-dialogue preferences; its default remains All when upgrading from disabled history. Each category can be disabled or cleared without clearing the other; disabling does not erase existing data. Protected favorites retain their encryption/locking boundary.
+
+Narration exposes 19 text languages, 12 preset voice origins and locally created custom voices. The voice manager auditions, renames/deletes and chooses defaults; new videos still start with narration off. Audition streaming/cache, rhythm and level processing share production paths; matching voice-encoder assets are separately required. Photos use global viewing preferences while videos retain independent depth strength. Spatial relief follows physical display size.
+
+The auditorium experiment is [Debug-only](EXPERIMENTAL_CINEMA.md), distinct from released cinema screen placement. Online panorama entry points remain hidden. No personal voices or model payloads accompany this source.

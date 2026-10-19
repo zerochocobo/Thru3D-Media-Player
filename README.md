@@ -4,7 +4,7 @@
 
 Standalone Android VR/MR media player for Meta Quest and PICO. Play videos and photos, explore media libraries, and combine supported content with passthrough and stereo effects directly on your headset.
 
-Current source version: **0.12.1** (Android versionCode **31**). An experimental standard OpenXR Android export is also available.
+Current source version: **0.12.2** (Android versionCode **32**). An experimental standard OpenXR Android export is also available.
 
 Minimum compatibility targets are **Quest 2** and **PICO Neo3**. Source/build compatibility does not establish hardware performance or interaction acceptance on every device.
 
@@ -25,7 +25,7 @@ Minimum compatibility targets are **Quest 2** and **PICO Neo3**. Source/build co
 - Immersive photo presentation, pinch-drag navigation, adjacent-photo preload and cached 3D conversion; photo stereo strength is adjustable up to 200%.
 - Media-server sections, filters, details, continuation pages and capability-dependent favorites; manual DLNA endpoints and exposed external subtitles.
 - Photo distance/size controls and a separate 2–8× magnifier referenced to the displayed image; source-dependent file management.
-- Efficient compositor-layer video/photo presentation and high-resolution menus on supported devices, with fallback for unsupported effects or low menu frame rates.
+- Efficient compositor-layer video/photo presentation and high-resolution menus on supported devices, with capability-dependent fallback. Slow frames retain menu layer resolution.
 - Context-specific controller bindings, combinations, confirmed conflict swaps, interface movement and animated gesture guides.
 - Remembered per-video audio/subtitle selections, five text subtitle styles and anchored immersive stereo subtitles.
 - Double-click 3D/volume shortcuts, persistent volume/mute state and full-filename hover hints.
@@ -64,14 +64,18 @@ Minimum compatibility targets are **Quest 2** and **PICO Neo3**. Source/build co
 - Same-folder external-subtitle selection with per-subtitle timing memory; manual cloud choices retain the opened page, while supported automatic discovery can search matching companions in that directory.
 - On-demand cloud directory pages and provider-supported sorting, with reused WebDAV directory snapshots.
 
-- Global music playback, custom playlists, offline imports and MP3/OGG/WAV/FLAC/DTS support; music pauses for video playback. Built-in recordings are separate assets: see [audio resources](docs/AUDIO.md).
+- Global music playback, custom playlists, offline imports and MP3/OGG/WAV/FLAC/DTS support; music pauses for video by default, with an opt-in setting for simultaneous playback and separate music volume. Built-in recordings are separate assets: see [audio resources](docs/AUDIO.md).
 - Remembered single-video, repeat-one, sequential and repeat-all playback, with bounded cross-page continuation on supported sources.
 
-- Offline Chinese/English/Japanese subtitle narration with 12 voice presets, automatic timing up to 1.8× and per-video preferences. Models/preset payloads are supplied separately; see [model scope](docs/MODELS.md).
+- Offline text-subtitle narration in 19 languages, 12 preset voices and reusable custom voices, with automatic timing up to 1.8× and per-video preferences. Models/preset payloads are supplied separately; see [model scope](docs/MODELS.md).
 - Photo and mono-360° puzzles with saved sessions, reference images, piece rotation and completion effects.
 - Cinema screen presets, 1–50 m distance and 100%–3000% size, with automatic or explicitly fixed flat-view defaults.
 - Per-track audio synchronization, headset media-volume integration and remembered quiet-dialogue enhancement.
 - Seekable audio previews before import, hover music controls and multilingual system-keyboard search.
+
+- Independent all/local/none policies and clearing for playback history and per-file settings; disabling history preserves settings memory by default.
+- Head-tracked Spatial Stereo / Static 3D photo modes, global photo viewing preferences and independent per-video depth strength. Native Apple static viewing retains the original stereo pair.
+- Custom voice creation from a suitable paused-video audio reference, with audition, rename/delete and default-voice management. Personal voice data stays local and outside this source release.
 
 ## Spatial media and photo layouts
 

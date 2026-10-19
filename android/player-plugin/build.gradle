@@ -14,6 +14,8 @@ if (!mnnSource.isPresent() || !mnnLib.isPresent()) { throw new GradleException('
 def includeDiagnostics = providers.gradleProperty('includeDiagnostics').map { it.toBoolean() }.getOrElse(false)
 // Subtitle narration is included in both normal Debug and Release builds.
 def narrationManifest = new groovy.json.JsonSlurper().parse(file('../../third_party/narration/model.json'))
+def cloneManifest = new groovy.json.JsonSlurper().parse(file('../../third_party/narration/clone_model.json'))
+def narrationBundles = [narrationManifest, cloneManifest]
 def narrationModels = file("../../models/narration/${narrationManifest.id}")
 def playerAssets = layout.buildDirectory.dir('playerAssets')
 def stagePlayerAssets = tasks.register('stagePlayerAssets', Sync) {
@@ -21,13 +23,15 @@ def stagePlayerAssets = tasks.register('stagePlayerAssets', Sync) {
     from('../../third_party')
     from('../../app/godot/i18n')
     into(playerAssets)
-    from(narrationModels) {
-        into(narrationManifest.directory)
-        include(narrationManifest.files.keySet() as String[])
+    narrationBundles.each { bundle ->
+        from(file("../../models/narration/${bundle.id}")) {
+            into(bundle.directory)
+            include(bundle.files.keySet() as String[])
+        }
     }
     doFirst {
-        narrationManifest.files.each { name, expected ->
-            def model = new File(narrationModels, name)
+        narrationBundles.each { bundle -> bundle.files.each { name, expected ->
+            def model = new File(file("../../models/narration/${bundle.id}"), name)
             if (!model.isFile() || model.length() != expected.bytes) {
                 throw new GradleException("Missing narration model: ${name}. Run tools/environment/Prepare-NarrationModels.ps1.")
             }
@@ -40,7 +44,7 @@ def stagePlayerAssets = tasks.register('stagePlayerAssets', Sync) {
             if (digest.digest().encodeHex().toString() != expected.sha256) {
                 throw new GradleException("Narration model digest differs: ${name}")
             }
-        }
+        } }
     }
     if (!includeDiagnostics) {
         exclude 'rvm/reference/**', 'rvm/**/*.bin', 'rvm/**/*.param', 'rvm-mnn/rvm_quality.mnn'

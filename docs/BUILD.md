@@ -118,7 +118,7 @@ Normal Debug, diagnostic Debug and Release builds enable the narration runtime a
 
 The public repository contains source, recipes, notices and manifests, with 12 voice choices in the UI; it contains no weights, voice-code payloads or reference recordings and does not host their download. Obtain and license your own matching inputs. The independent commercial-source audit of the reference recordings remains unresolved; build enablement is not a copyright clearance.
 
-`Build-Player.ps1` validates file sizes and SHA-256 before building and uses `Assert-NarrationPackaged.ps1` to check the runtime, exact manifest and payload in AAR/APK output. Missing or damaged inputs stop the build. The older exclusion guard is historical and is not the normal build path. Prepared matting/depth assets do not replace the required narration bundle.
+`Build-Player.ps1` validates file sizes and SHA-256 before building and uses `Assert-NarrationPackaged.ps1` to check the runtime, exact manifest and payload in AAR/APK output. Missing or damaged inputs stop the build. The older exclusion guard is historical and is not the normal build path. Prepared matting/depth assets do not replace the required narration bundle. From 0.12.2, `third_party/narration/clone_model.json` also requires two pinned reference-encoder files; supply them under ignored `models/narration/<clone-id>/` or set `THRU3D_NARRATION_CLONE_SOURCE` / run `tools/environment/Prepare-VoiceCloneModels.ps1 -SourceDirectory <bundle>`. Both manifests and payload sets are verified in normal builds. The UI offers 19 text languages; these do not create additional preset voice-origin recordings.
 
 ## Built-in audio assets
 

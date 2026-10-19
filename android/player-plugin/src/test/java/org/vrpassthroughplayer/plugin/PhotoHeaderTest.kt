@@ -4,6 +4,12 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class PhotoHeaderTest {
+    @Test fun undefinedExifOrientationPreservesPixelOrderAndAllowsUhdRegions() {
+        assertEquals(1, PhotoHeader.normalizedOrientation(0))
+        assertEquals(1, PhotoHeader.normalizedOrientation(-1))
+        assertEquals(1, PhotoHeader.normalizedOrientation(255))
+        for (orientation in 1..8) assertEquals(orientation, PhotoHeader.normalizedOrientation(orientation))
+    }
     @Test fun pngDimensionsArriveWithoutPixelData() {
         val b = ByteArray(32)
         byteArrayOf(0x89.toByte(), 80, 78, 71).copyInto(b)

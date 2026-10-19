@@ -13,7 +13,8 @@ func check(ok: bool, message: String) -> void:
 	if not ok: failures.append(message)
 
 func run() -> void:
-	var output := ProjectSettings.globalize_path("res://../../build/output/controller-controls/previews")
+	var output := OS.get_environment("CONTROLS_UI_OUTPUT")
+	if output.is_empty(): output = ProjectSettings.globalize_path("res://../../build/output/controller-controls/previews")
 	DirAccess.make_dir_recursive_absolute(output)
 	var viewport := SubViewport.new()
 	viewport.size = Vector2i(1600, 1050); viewport.own_world_3d = true
@@ -50,9 +51,9 @@ func run() -> void:
 		check(not menu._buttons.any(func(button): return button.get("choice_key", "") in ["control_binding/move_video", "control_binding/move_photo"]), "Fixed movement has no reassignment dropdown")
 		check(not Array(menu.text_snapshot().split("\n")).any(func(text): return text in ["video", "photo"]), "Fixed movement context uses the translated video/photo names")
 		await shot(viewport, menu, output.path_join(language + "-move-binding.png"))
-		menu.scroll = menu.rows.find(menu.rows.filter(func(row): return row.title == "Controller / ray")[0]); menu.refresh()
+		menu.scroll = menu.rows.find(menu.rows.filter(func(row): return row.title == "Hands / controllers")[0]); menu.refresh()
 		visible_text = "\n".join(menu.find_children("*", "Label3D", true, false).filter(func(label): return label.is_visible_in_tree()).map(func(label): return label.text))
-		check(visible_text.contains(I18n.t("Move clearly to wake · idle hides")) and visible_text.contains(I18n.t("Corner + trigger")), "Wake/idle and corner resize guides are visible: " + language)
+		check(visible_text.contains(I18n.t("Shown with controls")) and visible_text.contains(I18n.t("Corner + trigger")), "Panel visibility and corner resize guides are visible: " + language)
 		await shot(viewport, menu, output.path_join(language + "-ray-resize.png"))
 		menu.scroll = menu.rows.find(menu.rows.filter(func(row): return row.get("id", "") == "flat_zoom_in")[0]); menu.refresh()
 		visible_text = "\n".join(menu.find_children("*", "Label3D", true, false).filter(func(label): return label.is_visible_in_tree()).map(func(label): return label.text))
@@ -199,7 +200,7 @@ func count_node(node: Node, counts: Dictionary) -> void:
 func check_headers(menu: Node3D) -> void:
 	var expected: Array[String] = [I18n.t("Context"), I18n.t("Action"), I18n.t("Binding") + (" · " + menu.controls_page.combination_hint() if menu.controls_page.mode == 2 else "")]
 	var headers: Array = menu._labels.filter(func(caption): return caption.text in expected)
-	check(headers.size() == 3 and headers.all(func(caption): return caption.font_size == 22 * menu.TEXT_RASTER_SCALE and caption.modulate == menu.ControlsPage.INK and caption.font == menu.ui_bold_font()), "Both tables use white bold headers distinct from body text")
+	check(headers.size() == 3 and headers.all(func(caption): return caption.font_size == menu.TEXT_TITLE * menu.TEXT_RASTER_SCALE and caption.modulate == menu.ControlsPage.INK and caption.font == menu.ui_bold_font()), "Both tables use white bold headers distinct from body text")
 	if menu.controls_page.mode == 2: check(expected[2].ends_with("?"), "Combination table includes the missing third input")
 
 func amber_pixels(image: Image, point: Vector2, radius: int) -> int:

@@ -4,6 +4,7 @@
 }
 -keep class org.vrpassthroughplayer.plugin.UsbFsNative { *; }
 -keep class org.vrpassthroughplayer.plugin.NarrationNative { *; }
+-keep class org.vrpassthroughplayer.plugin.VoiceCloneNative { *; }
 -keepclassmembers class * implements org.vrpassthroughplayer.plugin.NarrationNative$Sink {
     public boolean onChunk(long, float[]);
 }

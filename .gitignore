@@ -67,3 +67,9 @@ thru3d-signing.json
 /app/godot/assets/audio/CREDITS.txt
 
 /models/narration/
+
+/app/godot/environments/grand_cinema/
+/narration/voices/
+**/voice.json
+**/voice.new
+**/reference.wav

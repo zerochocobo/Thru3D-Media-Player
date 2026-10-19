@@ -34,7 +34,8 @@ struct Reader {
     J cues=J::array();
     double read_until=-1;
     bool eof=false, initialized=false;
-    Reader(std::string p,int s,std::string c):path(std::move(p)),ca(std::move(c)),stream(s) {}
+    bool disc=false;
+    Reader(std::string p,int s,std::string c,bool d=false):path(std::move(p)),ca(std::move(c)),stream(s),disc(d) {}
     ~Reader() {avcodec_free_context(&codec);avformat_close_input(&format);}
     static int interrupt(void* p) {auto* r=static_cast<Reader*>(p);return r->cancelled.load()||Clock::now()>r->deadline;}
     void open(double position) {
@@ -46,7 +47,9 @@ struct Reader {
         av_dict_set(&options,"user_agent","Thru3D subtitle reader",0);
         if(!ca.empty())av_dict_set(&options,"ca_file",ca.c_str(),0);
         std::string location=path.rfind("fd://",0)==0?"/proc/self/fd/"+path.substr(5):path;
-        int result=avformat_open_input(&format,location.c_str(),nullptr,&options);av_dict_free(&options);
+        const AVInputFormat* demuxer=disc?av_find_input_format("bd_mvc"):nullptr;
+        if(disc&&!demuxer){av_dict_free(&options);throw SubtitleError("open");}
+        int result=avformat_open_input(&format,location.c_str(),demuxer,&options);av_dict_free(&options);
         if(result<0)throw SubtitleError(interrupt(this)?"open_timeout":"open",result);
         // Header metadata is sufficient for the selected text stream. Do not call
         // find_stream_info(): probing can decode video/audio behind our back.
@@ -149,6 +152,12 @@ extern "C" JNIEXPORT jlong JNICALL Java_org_vrpassthroughplayer_plugin_Narration
 }
 extern "C" JNIEXPORT void JNICALL Java_org_vrpassthroughplayer_plugin_NarrationNative_closeReader(JNIEnv*,jclass,jlong id) {
     std::lock_guard<std::mutex> lock(readers_mutex);auto it=readers.find(id);if(it!=readers.end()) {it->second->cancelled.store(true);readers.erase(it);}
+}
+extern "C" JNIEXPORT jlong JNICALL Java_org_vrpassthroughplayer_plugin_NarrationNative_openReaderConfigured(JNIEnv* e,jclass,jstring path,jint stream,jstring ca,jboolean disc) {
+    try {
+        auto reader=std::make_shared<Reader>(narration_utf8(e,path),stream,narration_utf8(e,ca),disc==JNI_TRUE);
+        std::lock_guard<std::mutex> lock(readers_mutex);auto id=++next_reader;readers[id]=reader;return id;
+    } catch(const std::exception&) {narration_error(e,"Unable to prepare subtitle reader");return 0;}
 }
 namespace {
 jstring read_window(JNIEnv* e,jlong id,jdouble start,jdouble end,bool metadata) {
