@@ -14,9 +14,10 @@ internal object OpenListBackend {
     fun supported(provider: String) = provider in drivers
     private var initialized = false
     @Synchronized fun start(context: Context) {
-        if (initialized) return
+        if (initialized) { Cloudcore.configureReadDiagnostics(BuildConfig.DEBUG && PlaybackPrivacy.diagnostics);return }
         try {
             Cloudcore.start(File(context.noBackupFilesDir, "openlist-vr-v1").absolutePath, CloudSecret.key(context))
+            Cloudcore.configureReadDiagnostics(BuildConfig.DEBUG && PlaybackPrivacy.diagnostics)
             initialized = true
         } catch (_: Exception) { throw CloudFailure("cloud_store_unavailable") }
     }

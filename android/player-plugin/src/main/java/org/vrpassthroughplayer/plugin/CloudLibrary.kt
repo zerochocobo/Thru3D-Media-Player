@@ -287,13 +287,14 @@ internal object CloudLibrary {
         }
     }
     /** Independent download lease: browsing photos or starting another video must not revoke it. */
-    fun audioDownload(uri: String, server: LocalStreamServer): String = safe {
+    fun audioDownload(uri: String, server: LocalStreamServer, rangeWindow: Long = Long.MAX_VALUE): String = safe {
         val (id, remote) = split(CloudPaths.path(uri))
         val account = credentials(id)
         val companions = playbackPages.forVideo(id, identity(account), remote)
         val client = drive(account, folderId = companions.folderId)
         val file = client.findForPlayback(remote, companions.files.singleOrNull { it.id == remote && !it.folder })
         val source = source(account, client, file)
+        if(rangeWindow<Long.MAX_VALUE)source.boundedRanges(rangeWindow)
         try {
             source.prepare()
             synchronized(this) {

@@ -15,6 +15,21 @@ class DlnaLibraryTest {
         """<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body><u:BrowseResponse xmlns:u="urn:schemas-upnp-org:service:ContentDirectory:1"><u:Result>${escape(didl)}</u:Result><NumberReturned>$returned</NumberReturned><TotalMatches>$total</TotalMatches><UpdateID>$update</UpdateID></u:BrowseResponse></s:Body></s:Envelope>"""
     private val description = """<root><device><friendlyName>PT server</friendlyName><UDN>uuid:pt</UDN><serviceList><service><serviceType>urn:schemas-upnp-org:service:ContentDirectory:1</serviceType><controlURL>/control/cds</controlURL></service></serviceList></device></root>"""
 
+    @Test fun advertisedDlnaSubtitleLeaseIsUsableForCloneSamplingWithoutFfmpegIndex() {
+        CaptionFixture().use { fixture ->
+            val library=fixture.library()
+            val movie=fixture.browse(library)
+            LocalStreamServer().use { local ->
+                val subtitle=SidecarSubtitles.forDlna(library.subtitles(movie),local::publish).single()
+                val input=VoiceClonePolicy.input(movie,JSONObject().put("external",true)
+                    .put("filename",subtitle.location).put("stream_index",-1))
+                assertEquals(0,input.stream);assertNotEquals(movie,input.path)
+                assertArrayEquals(fixture.payload,URI(input.path).toURL().readBytes())
+                assertTrue(input.path.contains("127.0.0.1"))
+            }
+        }
+    }
+
     @Test fun displayTitlesUseSelectedResourceSuffixWithoutGuessingOrReplacingOriginalNames() {
         fun video(title: String, url: String, mime: String = "video/mp4") =
             DlnaClient.didl(xml("""<item id="v"><dc:title>${escape(title)}</dc:title><res protocolInfo="http-get:*:image/jpeg:*">/cover.jpg</res><res protocolInfo="http-get:*:$mime:*">${escape(url)}</res></item>"""))

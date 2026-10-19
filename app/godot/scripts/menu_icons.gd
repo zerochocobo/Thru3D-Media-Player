@@ -2,6 +2,9 @@ extends RefCounted
 
 # Original vector glyphs, generated once and shared by both ray menus.
 const PATHS := {
+	"camera": '<path d="M3 7H7L9 4H15L17 7H21V20H3Z"/><circle cx="12" cy="13" r="4"/>',
+	"camera_recording": '<path d="M3 7H7L9 4H15L17 7H21V20H3Z"/><circle cx="12" cy="13" r="4"/><circle cx="20" cy="4" r="2.5" fill="white"/>',
+	"record": '<circle cx="12" cy="12" r="7" fill="white" stroke="none"/>',
 	"download": '<path d="M12 3V15M7 10L12 15 17 10M4 16V21H20V16"/>',
 	"globe": '<circle cx="12" cy="12" r="10"/><ellipse cx="12" cy="12" rx="4" ry="10"/><path d="M2 12H22M4 6H20M4 18H20"/>',
 	"seated": '<circle cx="10" cy="4" r="2"/><path d="M10 7V13H17V21M5 8V16H13M5 16V22M13 16V22"/>',

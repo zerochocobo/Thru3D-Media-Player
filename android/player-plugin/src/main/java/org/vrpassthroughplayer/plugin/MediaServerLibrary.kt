@@ -54,6 +54,7 @@ internal class MediaServerLibrary(private val context: () -> Context?, private v
     private data class Playback(val account: MediaServerAccount, val scene: String,
         val stream: MediaStreamLink, val videoUrl: String)
     private val playback = ConcurrentHashMap<String, Playback>()
+    private val captureReaders = ConcurrentHashMap<String, Playback>()
     @Volatile private var closed = false
     init { instances.add(this) }
     fun request(raw: String): Int {
@@ -148,7 +149,7 @@ internal class MediaServerLibrary(private val context: () -> Context?, private v
         try { return decoder.decodeRegion(android.graphics.Rect(region.x, region.y, region.x + width, region.y + height), options)
             ?: throw MediaServerFailure("Cover unavailable") } finally { decoder.recycle() }
     }
-    fun playable(uri: String): String {
+    fun playable(uri: String, captureReader: Boolean = false): String {
         val (server, scene) = MediaLibraryUri.parse(uri)
         val account = getAccount(server)
         val source = HttpRangeStreamSource(account) { http ->
@@ -162,14 +163,22 @@ internal class MediaServerLibrary(private val context: () -> Context?, private v
                 // Preserve the disc type through opaque server and capability URLs.
                 val url = local.publish(source, if (original.basename.endsWith(".iso", true)) "video.iso" else "video")
                 leases[url] = server to local
-                playback[uri] = Playback(account, scene, original, url)
+                val reader = Playback(account, scene, original, url)
+                if (captureReader) captureReaders[url] = reader else playback[uri] = reader
                 return url
             }
         } catch (e: Exception) { source.close(); throw e }
     }
     fun sidecarAudio(uri: String): List<SidecarAudio.Track> {
         val selected = playback[uri] ?: return emptyList()
-        fun current() = mediaRequire(!closed && playback[uri] === selected &&
+        return readerAudio(selected) { playback[uri] === selected }
+    }
+    fun captureAudio(url: String): List<SidecarAudio.Track>? {
+        val selected = captureReaders[url] ?: return null
+        return readerAudio(selected) { captureReaders[url] === selected }
+    }
+    private fun readerAudio(selected: Playback, retained: () -> Boolean): List<SidecarAudio.Track> {
+        fun current() = mediaRequire(!closed && retained() &&
             getAccount(selected.account.id) == selected.account, "Server changed")
         synchronized(MediaServerStore) { current() }
         return MediaServerHttp(selected.account).use { http ->
@@ -214,6 +223,7 @@ internal class MediaServerLibrary(private val context: () -> Context?, private v
         }
     }
     fun release(uri: String) {
+        captureReaders.remove(uri)
         leases.remove(uri)?.second?.revoke(uri)
         playback.entries.filter { it.value.videoUrl == uri }.forEach { playback.remove(it.key, it.value) }
     }

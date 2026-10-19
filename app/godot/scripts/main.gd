@@ -123,6 +123,7 @@ var xr_origin: XROrigin3D
 var xr_camera: XRCamera3D
 var fps_overlay: Label3D
 var playback_status_overlay: Label3D
+var capture_overlay: Node3D
 var seek_overlay: Node3D
 var seek_feedback := SeekFeedback.new()
 var stick_controls := StickControls.new()
@@ -224,6 +225,9 @@ func _ready() -> void:
 	playback_status_overlay = PlaybackStatusOverlay.new()
 	playback_status_overlay.source = _playback_status_sample
 	camera.add_child(playback_status_overlay)
+	capture_overlay = preload("res://scripts/capture_overlay.gd").new()
+	capture_overlay.stop_requested.connect(func(): if video: video.captures.stop())
+	camera.add_child(capture_overlay)
 	seek_overlay = SeekOverlay.new()
 	seek_overlay.source = _seek_overlay_sample
 	camera.add_child(seek_overlay)
@@ -361,6 +365,7 @@ func _ready() -> void:
 	player_menu.depth_strength_committed.connect(_save_depth_strength.bind(false))
 	_connect_session_controls(player_menu)
 	add_child(player_menu)
+	video.captures.saved.connect(_on_capture_saved)
 	video_menu = player_menu
 	photo_menu = PhotoMenu.new()
 	photo_menu.state_provider = _photo_menu_state
@@ -651,6 +656,10 @@ func _on_controller_button(action: String, hand: String = "") -> void:
 	if action not in ControllerBindings.BUTTONS: return
 	if controller_bindings.blocked[hand].has(action): return
 	var first_press := controller_bindings.press(hand, action)
+	if first_press and action == "by_button" and hand == "right_hand" and video and not video.captures.recording.is_empty():
+		video.captures.stop()
+		_controller_consumed[hand + "/" + action] = true
+		return
 	if action == "by_button" and first_press and _cinema_interaction_owns() and not _active_menu():
 		_cinema_request_interaction("watch")
 		_controller_consumed[hand + "/" + action] = true
@@ -724,6 +733,7 @@ func _on_controller_button(action: String, hand: String = "") -> void:
 ## A fixed controller UI action, independent of saved playback bindings and picture grabs.
 var _video_control_tap := {}
 func _on_video_trigger(hand: String) -> void:
+	if _capture_pointer_press(hand): return
 	if not _video_control_tap.is_empty() or not _grab.is_empty():
 		_controller_consumed[hand + "/trigger_click"] = true
 		return
@@ -919,6 +929,8 @@ func _update_interface_move() -> void:
 			photo._update_inspect()
 
 func _on_pointer_button(action: String, hand: String) -> void:
+	if action == "trigger_click" and _capture_pointer_press(hand): return
+	if action == "by_button" and hand == "right_hand" and video and video.captures.stop(): return
 	if action == "trigger_click" and _cinema_pointer_press(hand): return
 	if action == "by_button" and _cinema_interaction_owns() and not _active_menu():
 		_cinema_request_interaction("watch"); return
@@ -1012,6 +1024,13 @@ func _on_system_recentered() -> void:
 	_recenter()
 
 func _process(delta: float) -> void:
+	if video:
+		video.captures.tick()
+		if capture_overlay:
+			capture_overlay.sync(video.captures.snapshot())
+			for hand in ["left_hand", "right_hand"]:
+				var capture_ray: Variant = _ray(hand) if _input_focused() else null
+				capture_overlay.update_pointer(hand, capture_ray[0] if capture_ray != null else Vector3.ZERO, capture_ray[1] if capture_ray != null else Vector3.ZERO, capture_ray != null)
 	video_queue_pages.poll()
 	if not _pending_video_end.is_empty():
 		_advance_completed_video(_pending_video_end.uri, _pending_video_end.session, _pending_video_end.sequence)
@@ -1823,6 +1842,10 @@ func _update_menu_pointer(hand: String, pressed: bool = false) -> bool:
 	var tracked := ray != null
 	var origin: Vector3 = ray[0] if tracked else Vector3.ZERO
 	var direction: Vector3 = ray[1] if tracked else Vector3.ZERO
+	if not pressed and capture_overlay and capture_overlay.visible and not menu.has_pointer_capture() and tracked \
+		and not capture_overlay.pointer_hit(origin, direction).is_empty():
+		menu.update_pointer(hand, Vector3.ZERO, Vector3.ZERO, false)
+		return true
 	if pressed:
 		_menu_touched_ms = Time.get_ticks_msec()
 		var handled: bool = menu.press_pointer(hand, origin, direction, tracked)
@@ -1837,6 +1860,25 @@ func _update_menu_pointer(hand: String, pressed: bool = false) -> bool:
 		return true
 	menu.update_pointer(hand, origin, direction, tracked)
 	return true
+
+func _capture_pointer_press(hand: String) -> bool:
+	if not capture_overlay or not capture_overlay.visible or not _input_focused(): return false
+	var menu := _active_menu()
+	if menu and menu.has_pointer_capture(): return false
+	if not interface_move.capture.is_empty(): return false
+	var ray: Variant = _ray(hand)
+	if ray == null: return false
+	if capture_overlay.pointer_hit(ray[0], ray[1]).is_empty(): return false
+	capture_overlay.press_pointer(hand, ray[0], ray[1], true)
+	return true
+
+func _on_capture_saved(result: Dictionary) -> void:
+	if not recent_menu or recent_menu.section != recent_menu.Section.LOCAL: return
+	var directory := str(result.get("directory", ""))
+	var path: String = recent_menu._local_path().trim_suffix("/")
+	if directory.is_empty() or not (path.ends_with("/" + directory) or path.ends_with("/" + directory.get_base_dir())): return
+	# File lists are snapshots. Refresh an already open destination after atomic publication.
+	recent_menu._load_section()
 
 const CONTROLS_HIDE_MS := int(ControllerFeedback.IDLE_SECONDS * 1000.0)
 var _menu_touched_ms := 0
@@ -2690,6 +2732,10 @@ func _on_setting_changed(key: String, value: Variant) -> void:
 	Log.record("setting_changed", {"key": key, "value": value})
 
 func _on_menu_action(operation: String) -> void:
+	if not photo_active and video and operation in ["capture_screenshot", "capture_record"]:
+		if operation == "capture_screenshot": video.captures.screenshot()
+		else: video.captures.toggle()
+		return
 	if operation == "screen_curve" and _cinema_scene_active(): return
 	if operation == "cinema_seat": _cinema_request_interaction("seat"); return
 	if operation == "cinema_move": _cinema_request_interaction("move"); return
@@ -2933,6 +2979,7 @@ func _menu_state() -> Dictionary:
 		"capabilities_available": platform_plugin != null,
 		"error": _menu_error(), "error_report": video.media.error_report if video.picker_error.is_empty() else {}}
 	result.merge(video.bookmarks_snapshot())
+	result["capture"] = video.captures.snapshot()
 	result.merge(video.narration.snapshot())
 	if background_audio: result.merge(background_audio.snapshot())
 	return result

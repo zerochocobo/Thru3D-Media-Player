@@ -43,3 +43,7 @@ The built-in recordings are excluded from public source. `test_background_audio.
 Privacy/history and per-file settings have independent tests (`test_privacy_memory`, `test_smb_stereo_memory`). Narration/clone UI tests use fake backends; JVM policy, preview-session, voice-store, level and rhythm tests can run with synthetic audio. Real reference/model inference requires separately supplied assets. File-probe tests that require explicit fixture environment variables must remain skipped without caller-owned inputs.
 
 Generate the optional auditorium geometry before its source/gate tests; see [experimental cinema](EXPERIMENTAL_CINEMA.md). Photo gradient parity requires compiling `tests/native/photo_gradient_probe.cpp` and setting `THRU3D_PHOTO_GRADIENT_PROBE`. Other photo suites use synthetic image/depth fixtures. Excluded built-in recordings remain required for complete music decoding tests; do not claim the entire suite passed without them.
+
+## 0.12.3 capture and remote-reader checks
+
+Capture state/format and UI tests use synthetic/fake inputs; the Linux/WSL packet-copy integration compares source/output compressed packets and supports file-descriptor output. Voice reference/subtitle host tests generate indexed MP4/MKV plus delayed-caption fixtures and loopback HTTP ranges. `tools/Test-VoiceCloneHost.sh` prepares its host libraries; `tools/media/test_voice_clone_sources.py` uses the companion MP4 inspector. None needs credentials or a headset. Debug cloud denial diagnostics must retain only bounded/redacted reasons, never full URLs or tickets.

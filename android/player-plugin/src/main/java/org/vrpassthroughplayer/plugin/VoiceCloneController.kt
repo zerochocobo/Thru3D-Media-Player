@@ -18,7 +18,8 @@ import kotlin.math.max
 internal class VoiceCloneController(private val context: ()->Context?,private val source: ()->Source?,
     private val onHold: (Boolean)->Unit,private val audioChanged: ()->Unit,private val drain: ()->Unit={},
     private val runtime: SharedNarrationEngine,private val previewCache: ()->NarrationPreviewCache) : AutoCloseable {
-    data class Source(val handle: Long,val path: String,val ca: String,val subtitleDelay: Double,val audioDelay: Double,val allowed: Boolean,val volume: Double,val muted: Boolean,val disc: Boolean=false,val narrationVolume: Double=1.0)
+    data class Source(val handle: Long,val path: String,val ca: String,val subtitleDelay: Double,val audioDelay: Double,val allowed: Boolean,val volume: Double,val muted: Boolean,val disc: Boolean=false,val narrationVolume: Double=1.0,
+                      val reference: (() -> VoiceClonePolicy.Reference)?=null)
     // All sessions and the global manager share a queue, including engine teardown.
     // A new source must not load TTS while the previous source is still closing it.
     companion object {
@@ -120,7 +121,7 @@ internal class VoiceCloneController(private val context: ()->Context?,private va
                 if(active(token)){
                     val stage=synchronized(stateLock){state.optString("state")}
                     val code=VoiceClonePolicy.failureCode(op,stage,error)
-                    val reason=error.message.orEmpty().takeIf {it.matches(Regex("(voice_[a-z_]+|No value for [a-z_]+|voice_extract:[A-Za-z -]+)"))} ?: "internal"
+                    val reason=VoiceClonePolicy.diagnostic(error)
                     // Fixed operation/stage/code only: no URLs, subtitle text or file paths.
                     Log.w("Thru3DVoiceClone","operation=$op stage=$stage code=$code detail=$reason exception=${error.javaClass.simpleName}")
                     publish {it.put("state","error").put("error_code",code).put("error_detail",reason).put("error",VoiceClonePolicy.failureMessage(code))}
@@ -151,13 +152,13 @@ internal class VoiceCloneController(private val context: ()->Context?,private va
         check(start.isFinite()&&start>=0);phase("reading")
         val s=source() ?: error("voice_unavailable");val details=observation();val sub=selectedTrack("subtitle",params.getInt("subtitle_id"),details)
         require(sub.optString("codec") in setOf("subrip","ass","ssa","webvtt","mov_text","text","sami","microdvd","subviewer","ttml"))
-        val path=if(sub.optBoolean("external"))sub.getString("filename") else s.path
+        val input=VoiceClonePolicy.input(s.path,sub,s.disc)
         val audioOptions=details.optJSONArray("audio_tracks") ?: JSONArray()
         val selectedAudio=VoiceClonePolicy.audioTrack(params.optInt("audio_id",0),details)
         params.put("audio_id",selectedAudio.getInt("id"))
         rows=if(replace)JSONArray() else rows
         publish {it.put("candidates",rows).put("audio_options",audioOptions).put("audio_id",params.getInt("audio_id")).put("eof",false)}
-        val handle=NarrationNative.openReaderConfigured(path,sub.getInt("stream_index"),s.ca,s.disc&&!sub.optBoolean("external"));reader=handle
+        val handle=NarrationNative.openReaderConfigured(input.path,input.stream,s.ca,input.disc);reader=handle
         val result: VoiceCloneScan.Result
         try {result=VoiceCloneScan.read(start,params.optInt("line",0),rows,
             active={checkActive(token)},progress={found,cursor->
@@ -178,9 +179,16 @@ internal class VoiceCloneController(private val context: ()->Context?,private va
             val audioDelay=params.optJSONObject("audio_delays")?.optDouble(track.getInt("id").toString(),s.audioDelay) ?: s.audioDelay
             val start=cue.getDouble("start")+subtitleDelay-audioDelay;val end=cue.getDouble("end")+subtitleDelay-audioDelay;require(start>=0)
             val dir=File(app().cacheDir,"voice-clone/"+UUID.randomUUID());check(dir.mkdirs());taskDir=dir
-            val handle=VoiceCloneNative.createJob();nativeJob=handle;phase("extracting")
-            try {VoiceCloneNative.extract(handle,if(track.optBoolean("external"))track.getString("filename") else s.path,track.getInt("stream_index"),s.ca,start,end,File(dir,"reference.wav").path,s.disc&&!track.optBoolean("external"))}
-            finally {VoiceCloneNative.cancelJob(handle);if(nativeJob==handle)nativeJob=0}
+            val input=VoiceClonePolicy.input(s.path,track,s.disc)
+            phase("extracting")
+            // A cloud playback lease owns its transport/cache lifecycle. Use the
+            // existing independent download lease for a new reference sample.
+            (if(!track.optBoolean("external"))s.reference?.invoke() else null).use {reference->
+                checkActive(token)
+                val handle=VoiceCloneNative.createJob();nativeJob=handle
+                try {VoiceCloneNative.extract(handle,reference?.path ?: input.path,input.stream,s.ca,start,end,File(dir,"reference.wav").path,input.disc)}
+                finally {VoiceCloneNative.cancelJob(handle);if(nativeJob==handle)nativeJob=0}
+            }
             checkActive(token);referenceKey=key
         }
         val dir=taskDir ?: error("voice_unavailable")

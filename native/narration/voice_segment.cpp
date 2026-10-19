@@ -12,6 +12,9 @@ extern "C" {
 #include <memory>
 #include <mutex>
 namespace {
+struct AudioError : std::runtime_error {
+    AudioError(const char* stage,int code):std::runtime_error(std::string(stage)+":"+std::to_string(code)) {}
+};
 struct Job {
     std::atomic<bool> cancelled{false};
     std::chrono::steady_clock::time_point deadline=std::chrono::steady_clock::now()+std::chrono::seconds(30);
@@ -44,7 +47,8 @@ extern "C" JNIEXPORT void JNICALL Java_org_vrpassthroughplayer_plugin_VoiceClone
         const AVInputFormat* demuxer=disc==JNI_TRUE?av_find_input_format("bd_mvc"):nullptr;
         if(disc==JNI_TRUE&&!demuxer){av_dict_free(&options);throw std::runtime_error("Disc demuxer unavailable");}
         int status=avformat_open_input(&a.format,path.c_str(),demuxer,&options);av_dict_free(&options);
-        if(status<0||unsigned(index)>=a.format->nb_streams)throw std::runtime_error("Audio source unavailable");
+        if(status<0)throw AudioError("Audio source unavailable",status);
+        if(unsigned(index)>=a.format->nb_streams)throw std::runtime_error("Audio track unavailable");
         auto* stream=a.format->streams[index];auto* parameters=stream->codecpar;
         if(parameters->codec_type!=AVMEDIA_TYPE_AUDIO)throw std::runtime_error("Audio track unavailable");
         for(unsigned i=0;i<a.format->nb_streams;++i)if(int(i)!=index)a.format->streams[i]->discard=AVDISCARD_ALL;
@@ -55,15 +59,20 @@ extern "C" JNIEXPORT void JNICALL Java_org_vrpassthroughplayer_plugin_VoiceClone
         // discarded above, so FFmpeg's default stream now becomes the audio
         // stream and may fall back to scanning a remote movie from its start.
         // Seek the indexed video explicitly; still never open a video decoder.
+        // MOV/MP4 indexes audio independently. Seeking/retaining video there can
+        // alternate distant video/audio ranges in cloud MP4s even though this
+        // task only needs a few seconds of audio. Keep the video anchor for MKV.
+        const bool indexed_audio=a.format->iformat&&std::string(a.format->iformat->name).find("mov")!=std::string::npos;
         int anchor=index;
-        for(unsigned i=0;i<a.format->nb_streams;++i)if(a.format->streams[i]->codecpar->codec_type==AVMEDIA_TYPE_VIDEO&&
+        for(unsigned i=0;!indexed_audio&&i<a.format->nb_streams;++i)if(a.format->streams[i]->codecpar->codec_type==AVMEDIA_TYPE_VIDEO&&
             !(a.format->streams[i]->disposition&AV_DISPOSITION_ATTACHED_PIC)){anchor=int(i);break;}
         // The demuxer must see the anchor keyframe to finish seeking. Discarding
         // it entirely can leave Matroska skipping every subsequent audio packet.
         if(anchor!=index)a.format->streams[anchor]->discard=AVDISCARD_NONKEY;
         const auto time_base=av_q2d(a.format->streams[anchor]->time_base);
         if(!std::isfinite(time_base)||time_base<=0)throw std::runtime_error("Audio timestamp unavailable");
-        if(start>0&&av_seek_frame(a.format,anchor,int64_t((origin+std::max(0.,start-1))/time_base),AVSEEK_FLAG_BACKWARD)<0)throw std::runtime_error("Audio seek failed");
+        if(start>0){const int seek=av_seek_frame(a.format,anchor,int64_t((origin+std::max(0.,start-1))/time_base),AVSEEK_FLAG_BACKWARD);
+            if(seek<0)throw AudioError("Audio seek failed",seek);}
         avcodec_flush_buffers(a.codec);
         const int wanted=int(std::llround((end-start)*48000));std::vector<float> pcm(wanted*2,0),center;int first=wanted,last=0;double next_time=std::numeric_limits<double>::quiet_NaN();
         auto receive=[&](){
@@ -99,7 +108,9 @@ extern "C" JNIEXPORT void JNICALL Java_org_vrpassthroughplayer_plugin_VoiceClone
             }
         };
         int packets=0;for(;last<wanted&&packets<150000&&!Job::interrupt(job.get());++packets){
-            status=av_read_frame(a.format,a.packet);if(status==AVERROR_EOF){avcodec_send_packet(a.codec,nullptr);receive();break;}if(status<0)throw std::runtime_error("Audio read failed");
+            status=av_read_frame(a.format,a.packet);if(status==AVERROR_EOF){avcodec_send_packet(a.codec,nullptr);receive();break;}if(status<0)throw AudioError("Audio read failed",status);
+            // Once the MKV keyframe has completed the seek, stop retaining video.
+            if(anchor!=index&&a.packet->stream_index==anchor)a.format->streams[anchor]->discard=AVDISCARD_ALL;
             if(a.packet->stream_index==index){int r=avcodec_send_packet(a.codec,a.packet);if(r==AVERROR(EAGAIN)){receive();r=avcodec_send_packet(a.codec,a.packet);}if(r<0)throw std::runtime_error("Audio decode failed");receive();}
             av_packet_unref(a.packet);
         }

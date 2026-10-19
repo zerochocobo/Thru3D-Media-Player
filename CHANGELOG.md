@@ -4,6 +4,21 @@
 
 Newest first, following product release milestones. Some development/source snapshots contained features before their product release. Original APK identifiers `0.2` and `0.4` are retained; `0.4` was also called `0.4.0` in release notes. Availability depends on device, server and media capabilities.
 
+## 0.12.3 — 2026-10-20
+
+This update adds original VR screenshots and lossless clip exports, fixes voice cloning from 115 and DLNA sources, and improves network recovery and menu presentation.
+
+- **Original VR screenshots**: Capture compatible VR180, fisheye and 360° videos during playback or while paused. Save full-resolution source images as PNG files with stereo-layout information retained.
+- **Lossless clip exports**: Save a selected video segment as MKV, preserving the original video quality and selected audio track. Clip boundaries may vary slightly with keyframe placement.
+- **Persistent recording indicators**: Recording status, elapsed time and a stop control remain visible when playback controls are hidden. Press right-controller B to stop, then find saved images and clips in the local library.
+- **115 voice-cloning fixes**: Improved original-audio sampling and cloned-voice auditions for affected MP4 files, reducing failures and unnecessary waiting across different segments.
+- **DLNA candidate-search fixes**: Fixed positioning failures before the first cue in some external subtitles, improving candidate discovery and original/cloned voice auditions.
+- **Better cloud-read recovery**: Improved recovery from temporary read errors, expired links and interrupted connections when resuming playback or sampling audio.
+- **More consistent menu clarity**: Lower playback frame rates alone no longer trigger a reduction in menu display quality.
+- **Smoother return from cinema-style placement**: Restore the ordinary screen toward your current gaze while retaining fixed viewing preferences, reducing unexpected position or distance changes.
+
+Source scope: screenshots use decoded source images rather than the headset view; clips copy compressed video and the selected source audio, without compositing menus, effects, background music or narration. Current locked Android builds use MKV; keyframe-aligned boundaries and unsupported-source limits apply. See [capture scope](docs/CAPTURE.md).
+
 ## 0.12.2 — 2026-10-19
 
 This update adds custom cloned voices, 19 narration languages and head-tracked spatial photo viewing, alongside optional music during videos and separate controls for history and per-file settings.

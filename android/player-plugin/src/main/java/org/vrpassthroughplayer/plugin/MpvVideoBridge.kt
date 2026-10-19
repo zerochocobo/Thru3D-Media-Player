@@ -36,6 +36,7 @@ internal class MpvVideoBridge(
     private val subtitleIdentity: (String) -> String = { "" },
     private val enableNetworkReadCache: (String, List<AudioReadSpan>) -> Boolean = { _, _ -> false },
     private val finishIsoPreflight: (String) -> Unit = {},
+    private val referenceSource: (String) -> String = { it },
 ) {
     private val worker = RvmWorkers.video
     private val subtitleWorker = Executors.newSingleThreadExecutor { Thread(it, "QuestSubtitleFiles") }
@@ -591,12 +592,27 @@ internal class MpvVideoBridge(
         val controller=synchronized(host) {
             host.voiceClone ?: VoiceCloneController(context,{
                 if(host.closing||stopped||host.handle<=0)null else VoiceCloneController.Source(host.handle,host.narrationPath,host.narrationCa,
-                    host.subtitleDelay,host.userAudioDelay,foreground,host.audioVolume,host.audioMuted,host.discInput,host.narration?.previewVolume ?: 1.0)
+                    host.subtitleDelay,host.userAudioDelay,foreground,host.audioVolume,host.audioMuted,host.discInput,host.narration?.previewVolume ?: 1.0,
+                    reference=if(host.uri.startsWith("cloud://"))({
+                        val location=referenceSource(host.uri)
+                        VoiceClonePolicy.Reference(location) {
+                            try {
+                                networkFailure(location)?.let {failure->
+                                    android.util.Log.w("Thru3DVoiceClone","reference_source_reason=${failure.reason} http_status=${failure.httpStatus}")
+                                }
+                            } finally {releaseNetwork(location)}
+                        }
+                    }) else null)
             },{value->host.cloneHolds.addAndGet(if(value)1 else -1);host.narration?.suspendForClone(host.cloneHolding||globalVoiceHolding)}, {refreshPlayback(explicit=true)}, {host.narration?.awaitCloneDrain()},narrationRuntime,{narrationPreviewCache}).also {host.voiceClone=it}
         }
         return controller.request(json)
     }
     fun voiceCloneStatus(id: Int): String=sessions[id]?.takeIf {active(it)}?.host?.voiceClone?.status()?.toString() ?: "{\"opened\":false,\"revision\":0}"
+    fun voiceReferenceTestStatus(id: Int): JSONObject {
+        check(BuildConfig.DEBUG)
+        val host=sessions[id]?.takeIf {active(it)}?.host ?: error("No active source")
+        return JSONObject().put("reference_only",true).put("voice_clone",VoiceClonePolicy.referenceHealth(host.voiceClone?.status() ?: JSONObject()))
+    }
     @Synchronized fun voiceManagerRequest(json: String): Boolean {
         if(stopped||!foreground||json.length>8192)return false
         val operation=runCatching {JSONObject(json).optString("operation")}.getOrNull()

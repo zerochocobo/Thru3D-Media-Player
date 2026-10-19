@@ -135,6 +135,7 @@ func start(dataDir, keyHex string) (err error) {
 	deletionRoutes(api)
 	cursorListingRoutes(api)
 	searchRoutes(api)
+	readDiagnosticRoutes(api)
 	api.GET("/drivers", handles.ListDriverInfo)
 	api.GET("/accounts", handles.ListStorages)
 	api.GET("/account", handles.GetStorage)

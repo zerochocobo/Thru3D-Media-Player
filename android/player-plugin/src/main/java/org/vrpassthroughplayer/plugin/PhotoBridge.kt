@@ -143,6 +143,7 @@ internal class PhotoBridge(
                     PhotoHeader.normalizedOrientation(ExifInterface(source.path).getAttributeInt(ExifInterface.TAG_ORIENTATION, 1))
                 }.getOrDefault(1)
                 metadata.put("orientation", orientation)
+                source.inputStream().use { CaptureFormat.readPng(it) }?.let { metadata.put("capture_mode", it) }
                 // GPano is a positive hint only; ordinary 2:1 photos stay flat.
                 val header = source.inputStream().use { input ->
                     val bytes = ByteArray(minOf(source.length(), 1024L * 1024).toInt())

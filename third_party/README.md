@@ -27,3 +27,5 @@ The CodeLibs JCIFS jar is staged by Gradle with unused HTTP/HTTPS NTLM adapters 
 - Built-in music and ambient recordings are excluded. Only their version-matched file metadata accompanies the player source; the project GPL license does not grant rights to excluded sound recordings. See `docs/AUDIO.md`.
 
 - Optional experimental Windows desktop video: checksum-pinned FFmpegPlayer source/dependency recipes, local native patch and MIT/LGPL notices in `third_party/desktop-video`. No DLLs or archives are included; see `docs/EXPERIMENTAL_CINEMA.md` for build scope.
+
+- Capture bridge compile-time FFmpeg headers: copied from the already pinned FFmpeg source, with local Android ARM64 public-header configuration, an adjacent per-header catalog and LGPL v2.1 text under `native/mpv/include/ffmpeg`. The runtime dependency and its separate license/source records are unchanged.

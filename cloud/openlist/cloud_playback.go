@@ -11,6 +11,7 @@ import (
 
 	"github.com/OpenListTeam/OpenList/v4/internal/driver"
 	"github.com/OpenListTeam/OpenList/v4/internal/model"
+	cloudnet "github.com/OpenListTeam/OpenList/v4/internal/net"
 	"github.com/OpenListTeam/OpenList/v4/internal/op"
 	"github.com/OpenListTeam/OpenList/v4/server/common"
 	"github.com/gin-gonic/gin"
@@ -27,8 +28,14 @@ type cloudPlaybackLease struct {
 	mount, remote string
 	file          model.Obj
 	created       time.Time
-	mu            sync.Mutex
-	links         map[string]cloudPlaybackLink
+	*cloudPlaybackLinks
+}
+
+// Separate byte readers for one verified file must share its UA-bound download
+// ticket. Reissuing tickets per reader can invalidate an active reader's URL.
+type cloudPlaybackLinks struct {
+	mu    sync.Mutex
+	links map[string]cloudPlaybackLink
 }
 type cloudPlaybackLink struct {
 	url     string
@@ -52,9 +59,13 @@ func playbackLeaseURL(storage driver.Driver, mount, remote string, file model.Ob
 	now := time.Now()
 	cloudPlaybackLeases.Lock()
 	defer cloudPlaybackLeases.Unlock()
+	var shared *cloudPlaybackLinks
 	for id, lease := range cloudPlaybackLeases.items {
 		if now.Sub(lease.created) >= 24*time.Hour {
 			delete(cloudPlaybackLeases.items, id)
+		} else if lease.storage == storage && lease.mount == mount && lease.remote == remote &&
+			lease.file.GetID() == file.GetID() && lease.file.GetSize() == file.GetSize() && lease.file.GetName() == file.GetName() {
+			shared = lease.cloudPlaybackLinks
 		}
 	}
 	if len(cloudPlaybackLeases.items) >= 256 {
@@ -66,7 +77,10 @@ func playbackLeaseURL(storage driver.Driver, mount, remote string, file model.Ob
 		}
 		delete(cloudPlaybackLeases.items, oldest)
 	}
-	cloudPlaybackLeases.items[key] = &cloudPlaybackLease{storage: storage, mount: mount, remote: remote, file: file, created: now, links: map[string]cloudPlaybackLink{}}
+	if shared == nil {
+		shared = &cloudPlaybackLinks{links: map[string]cloudPlaybackLink{}}
+	}
+	cloudPlaybackLeases.items[key] = &cloudPlaybackLease{storage: storage, mount: mount, remote: remote, file: file, created: now, cloudPlaybackLinks: shared}
 	u := url.URL{Path: "/" + file.GetName()}
 	return streamBase + "-115/" + key + u.EscapedPath(), nil
 }
@@ -105,6 +119,15 @@ func playback115Proxy(c *gin.Context) {
 	servePlayback115(c, op.GetStorageAndActualPath)
 }
 
+func (lease *cloudPlaybackLease) invalidate(header http.Header, failedURL string) {
+	lease.mu.Lock()
+	defer lease.mu.Unlock()
+	ua := header.Get("User-Agent")
+	if current, ok := lease.links[ua]; ok && current.url == failedURL {
+		delete(lease.links, ua)
+	}
+}
+
 func servePlayback115(c *gin.Context, resolve func(string) (driver.Driver, string, error)) {
 	cloudPlaybackLeases.Lock()
 	lease := cloudPlaybackLeases.items[c.Param("lease")]
@@ -126,12 +149,27 @@ func servePlayback115(c *gin.Context, resolve func(string) (driver.Driver, strin
 		return
 	}
 	defer link.Close()
+	selectedURL := link.URL
 	if storage.GetStorage().ProxyRange {
 		link = common.ProxyRange(c, link, lease.file.GetSize())
 	}
 	writer := &common.WrittenResponseWriter{ResponseWriter: c.Writer}
 	if err := common.Proxy(writer, c.Request, link, lease.file); err != nil && !writer.IsWritten() {
-		c.Status(http.StatusBadGateway)
+		// RequestHttp wraps every upstream HTTP error. Preserve its status so
+		// the existing client can distinguish an expired link from a temporary
+		// gateway failure; never expose the wrapped URL or response body.
+		status := http.StatusBadGateway
+		var upstream cloudnet.HttpStatusCodeError
+		if errors.As(err, &upstream) && int(upstream) >= 400 && int(upstream) <= 599 {
+			status = int(upstream)
+		}
+		reason, message := readDenial(err)
+		if (status == http.StatusUnauthorized || status == http.StatusForbidden || status == http.StatusGone) && reason != "cdn_connections_limited" {
+			lease.invalidate(c.Request.Header, selectedURL)
+		}
+		recordReadDiagnostic(status, reason, message, link.Header.Get("User-Agent") == c.Request.Header.Get("User-Agent"))
+		c.Header("X-Thru3D-Upstream-Reason", reason)
+		c.Status(status)
 	}
 }
 

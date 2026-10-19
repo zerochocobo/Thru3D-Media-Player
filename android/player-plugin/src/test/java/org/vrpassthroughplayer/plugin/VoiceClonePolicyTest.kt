@@ -6,6 +6,44 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class VoiceClonePolicyTest {
+    @Test fun independentReferenceLeaseReleasesExactlyOnceOnSuccessFailureAndCancellation() {
+        for(fail in listOf(false,true)) {
+            var releases=0
+            val reference=VoiceClonePolicy.Reference("independent") {releases++}
+            runCatching {reference.use {assertEquals("independent",it.path);if(fail)error("cancelled")}}
+            reference.close()
+            assertEquals(1,releases)
+        }
+    }
+    @Test fun sourceReferenceHealthContainsNoSubtitleNamesOrSourceAddresses() {
+        val state=JSONObject().put("state","ready").put("played_frames",144000).put("voices",JSONArray().put("private-name"))
+            .put("candidates",JSONArray().put(JSONObject().put("key","sample-hash").put("text","private-subtitle")))
+            .put("path","http://private/source").put("preview_id","private-voice")
+        val health=VoiceClonePolicy.referenceHealth(state)
+        assertEquals(1,health.getInt("candidate_count"));assertEquals("sample-hash",health.getString("probe_candidate_key"))
+        assertFalse(health.toString().contains("private"));assertEquals(144000,health.getInt("played_frames"))
+    }
+    @Test fun independentDlnaCaptionWithMissingIndexUsesItsOwnStreamAndLease() {
+        val movie="http://127.0.0.1:32100/movie.mp4"
+        val subtitle="http://127.0.0.1:32101/caption/subtitle.srt"
+        val track=JSONObject().put("external",true).put("filename",subtitle).put("stream_index",-1)
+        assertEquals(VoiceClonePolicy.Input(subtitle,0,false),VoiceClonePolicy.input(movie,track,true))
+        track.remove("stream_index")
+        assertEquals(0,VoiceClonePolicy.input(movie,track).stream)
+        track.put("stream_index",2)
+        assertEquals(2,VoiceClonePolicy.input(movie,track).stream)
+    }
+    @Test fun internalIndexesAndDiscModeStayBoundToTheirOriginalSource() {
+        assertEquals(VoiceClonePolicy.Input("disc",4,true),VoiceClonePolicy.input("disc",JSONObject().put("stream_index",4),true))
+        assertThrows(IllegalStateException::class.java){VoiceClonePolicy.input("movie",JSONObject().put("stream_index",-1))}
+        assertThrows(IllegalStateException::class.java){VoiceClonePolicy.input("movie",JSONObject().put("external",true).put("filename",""))}
+    }
+    @Test fun diagnosticRetainsNativeStagesAndCodesWithoutPathsOrCredentials() {
+        for(detail in listOf("subtitle_open:-5","subtitle_seek_timeout:-110","voice_extract:Audio source unavailable:-5"))
+            assertEquals(detail,VoiceClonePolicy.diagnostic(IllegalStateException(detail)))
+        for(detail in listOf("http://private/video?token=secret","voice_extract:Audio read failed /private/path","subtitle_open:-5 token=secret"))
+            assertEquals("internal",VoiceClonePolicy.diagnostic(IllegalStateException(detail)))
+    }
     @Test fun previewsUseTheSameVolumeAsNarrationButOriginalRetainsVideoLevel() {
         assertEquals(.3f,VoiceClonePolicy.playbackGain(60.0,.5,false),.000001f)
         assertEquals(.6f,VoiceClonePolicy.playbackGain(60.0,.5,true),.000001f)

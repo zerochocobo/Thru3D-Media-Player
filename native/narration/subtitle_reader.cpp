@@ -76,7 +76,13 @@ struct Reader {
             // no video/audio decoder is opened by this reader.
             int anchor=progress_stream<0?stream:progress_stream;
             auto timestamp=int64_t((position-5)/av_q2d(format->streams[anchor]->time_base));
-            int status=av_seek_frame(format,anchor,timestamp,AVSEEK_FLAG_BACKWARD);
+            // Standalone text demuxers already own an indexed subtitle queue.
+            // BACKWARD rejects a target before its first cue (ERANGE), although
+            // the requested window may contain that cue. An unrestricted queue
+            // seek also lets a position beyond the last cue reach normal EOF.
+            int status=progress_stream<0
+                ? avformat_seek_file(format,anchor,INT64_MIN,timestamp,INT64_MAX,0)
+                : av_seek_frame(format,anchor,timestamp,AVSEEK_FLAG_BACKWARD);
             if(status<0)throw SubtitleError(interrupt(this)?"seek_timeout":"seek",status);
             avcodec_flush_buffers(codec);
         }

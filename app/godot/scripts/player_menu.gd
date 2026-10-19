@@ -7,6 +7,13 @@ var _favorite_notice := ""
 var _favorite_notice_until := 0
 const FAVORITE := 980
 const MUSIC_OPEN := 981
+const CAPTURE := 982
+const CAPTURE_PICTURE := 983
+const CAPTURE_RECORD := 984
+var _capture_open := false
+var _capture_hover_ms := 0
+var _capture_leave_ms := 0
+var _capture_time: Label3D
 signal recent_requested
 signal seek_requested(position_ms: int)
 signal bookmark_requested(operation: String, marker_id: String, scope: String)
@@ -516,6 +523,7 @@ func refresh_values() -> void:
 	_update_highlights()
 
 func _process(_delta: float) -> void:
+	_process_capture_hover()
 	if _favorite_notice_until > 0 and Time.get_ticks_msec() >= _favorite_notice_until and not has_pointer_capture():
 		_favorite_notice = ""; _favorite_notice_until = 0
 		if visible: refresh()
@@ -718,6 +726,7 @@ func _draw_bar() -> void:
 	_round(100, "folder", Vector2(0, 0.215), 0.08, true, false, I18n.t("Library"))
 	_round(108, "recenter", Vector2(0.14, 0.215), 0.08, true, false, I18n.t("Recenter"))
 	_draw_favorite(Vector2(0.28, 0.215))
+	_draw_capture_action()
 	if _state.get("audio_play_during_video", false):
 		if not music_quick: music_quick = preload("res://scripts/music_quick_controls.gd").new(self, func(): action_requested.emit("music_toggle"))
 		music_quick.draw(MUSIC_OPEN, Vector2(-0.58, 0.215), _state)
@@ -1427,7 +1436,7 @@ func _bar_key() -> String:
 		_state.get("narration_voice_kind", "preset"), _state.get("narration_custom_voice", ""), _state.get("narration_personal_voices", []), _state.get("narration_voice_warning", ""), _state.get("narration_preview_status", ""), _state.get("narration_clone_state", {}).get("revision", 0)]) + _base_bar_key()
 
 func _base_bar_key() -> String:
-	return str([int(_state.get("audio_whisper", 0)) > 0, _state.get("volume_writable", true), _state.get("whisper_available", false), _state.get("clone_voice", false), _state.get("geometry", 0), _state.get("has_video", false),
+	return _capture_key() + str([int(_state.get("audio_whisper", 0)) > 0, _state.get("volume_writable", true), _state.get("whisper_available", false), _state.get("clone_voice", false), _state.get("geometry", 0), _state.get("has_video", false),
 		_state.get("spatial_video", false), _state.get("error", ""),
 		_state.get("source_uri", ""), _subtitle_tracks(), _state.get("subtitle_track", 0), bookmarks.key(), _state.get("audio_options", []), _state.get("audio_track_id", -1), _state.get("audio_delay", 0.0), _state.get("audio_timing_key", ""),
 		_state.get("subtitle_files_available", false), _state.get("subtitle_files_revision", 0), _state.get("subtitle_files_state", "idle"), _state.get("subtitle_file_loading", ""), _state.get("subtitle_file_error", ""), _state.get("subtitle_timing_key", ""),
@@ -1726,6 +1735,12 @@ func _activate_hit(hit: Dictionary) -> void:
 		super._activate_hit(hit)
 
 func _activate(target: int) -> void:
+	if target == CAPTURE:
+		if not _state.get("capture", {}).get("available", false): return
+		_reset_navigation(); _capture_open = true; _capture_leave_ms = Time.get_ticks_msec(); refresh(); return
+	if target in [CAPTURE_PICTURE, CAPTURE_RECORD]:
+		action_requested.emit("capture_screenshot" if target == CAPTURE_PICTURE else "capture_record")
+		refresh(); return
 	if target == MUSIC_OPEN and _state.get("audio_play_during_video", false):
 		action_requested.emit("music_open"); return
 	if clone_panel.opened:
@@ -1935,6 +1950,44 @@ func _draw_favorite(position: Vector2) -> void:
 	var favorite: Dictionary = favorite_provider.call()
 	_round(FAVORITE, "lock" if favorite.get("locked", false) else ("star_filled" if favorite.get("selected", false) else "star"), position, 0.08,
 		favorite.get("enabled", false), favorite.get("selected", false), I18n.t("Unlock favorites" if favorite.get("locked", false) else ("Remove favorite" if favorite.get("selected", false) else "Add favorite")))
+
+func _capture_key() -> String:
+	var value: Dictionary = _state.get("capture", {})
+	return str([value.get("available", false), value.get("ready", false), value.get("recording", false), value.get("paused", false), value.get("picture_busy", false), value.get("clip_busy", false), _capture_open])
+
+func _capture_popup_allowed() -> bool:
+	return section == 0 and _adjustment.is_empty() and not _mode_open and not _subtitle_open and not _audio_open and not _volume_open and not _depth_open and not bookmarks.opened and not _failure_open
+
+func _process_capture_hover() -> void:
+	if not visible: return
+	var value: Dictionary = _state.get("capture", {})
+	if not value.get("available", false): _capture_open = false; return
+	var now := Time.get_ticks_msec()
+	var hovered := _hover.values().any(func(target): return target in [CAPTURE, CAPTURE_PICTURE, CAPTURE_RECORD])
+	if hovered:
+		_capture_leave_ms = now
+		if _capture_hover_ms == 0: _capture_hover_ms = now
+	else: _capture_hover_ms = 0
+	var opened: bool = _capture_popup_allowed() and (value.get("recording", false) or (hovered and now - _capture_hover_ms >= 150) or (_capture_open and now - _capture_leave_ms < 500))
+	if opened != _capture_open:
+		_capture_open = opened; refresh()
+	if is_instance_valid(_capture_time):
+		_capture_time.text = preload("res://scripts/capture_overlay.gd").clock_text(int(value.get("duration_ms", 0))) if value.get("recording", false) else (I18n.t("Saving…") if value.get("clip_busy", false) else "")
+
+func _draw_capture_action() -> void:
+	_capture_time = null
+	var value: Dictionary = _state.get("capture", {})
+	if not value.get("available", false): return
+	var recording := bool(value.get("recording", false))
+	_round(CAPTURE, "camera_recording" if recording else "camera", Vector2(0.42, 0.215), 0.08, true, recording, I18n.t("Capture"))
+	if recording: _buttons.back().node.get_child(1).material_override.albedo_color = Color(1.0, 0.30, 0.28)
+	if not _capture_popup_allowed() or not (_capture_open or recording): return
+	var panel := _quad(Vector2(0.25, 0.17), Vector3(0.42, 0.36, 0.001), Color(PANEL, 0.98), 10)
+	add_child(panel); _decorations.append(panel); _block_rays(panel, Vector2(0.25, 0.17))
+	_glyph(CAPTURE_PICTURE, "camera", Vector2(0.36, 0.33), 0.075, value.get("ready", false) and not value.get("picture_busy", false), I18n.t("Take screenshot"))
+	_glyph(CAPTURE_RECORD, "stop" if recording else "record", Vector2(0.48, 0.33), 0.075, recording or (value.get("ready", false) and not value.get("clip_busy", false)), I18n.t("Stop recording · B" if recording else "Record source clip · B to stop"))
+	_buttons.back().node.get_child(1).material_override.albedo_color = Color(1.0, 0.30, 0.28)
+	_capture_time = _label(preload("res://scripts/capture_overlay.gd").clock_text(int(value.get("duration_ms", 0))) if recording else "", Vector3(0.42, 0.41, 0.008), 16)
 
 func show_favorite_feedback(message: String) -> void:
 	_favorite_notice = message; _favorite_notice_until = Time.get_ticks_msec() + 2500

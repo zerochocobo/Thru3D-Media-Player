@@ -1,6 +1,7 @@
 package org.vrpassthroughplayer.plugin
 
 import java.io.InputStream
+import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URI
 import java.util.concurrent.ConcurrentHashMap
@@ -16,10 +17,16 @@ internal class CloudStreamSource(
         this(size, resolve) { this.linkConnection = linkConnection }
     @Volatile private var link: CloudLink? = null
     private var resolvedAt = 0L
+    @Volatile private var rangeWindow=Long.MAX_VALUE
     @Volatile private var closed = false
     private val readers = ConcurrentHashMap.newKeySet<RemoteReader>()
 
     fun prepare() { currentLink() }
+    /** Configure before publication. Short reference reads must release CDN slots promptly. */
+    @Synchronized fun boundedRanges(bytes: Long): CloudStreamSource {
+        require(bytes>0);check(!closed&&link==null&&readers.isEmpty())
+        rangeWindow=bytes;return this
+    }
     @Synchronized private fun currentLink(failed: CloudLink? = null): CloudLink {
         if (closed) throw CloudFailure()
         if (link == null || failed === link || System.nanoTime() - resolvedAt > 300_000_000_000L) {
@@ -53,8 +60,21 @@ internal class CloudStreamSource(
                 if (closed || done || Thread.currentThread().isInterrupted) throw cancelled()
                 require(offset in 0 until size && length in 1..buffer.size)
                 if (offset != next || offset > end || input == null) openRange(offset)
-                val count = input!!.read(buffer, 0, minOf(length.toLong(), end - offset + 1).toInt())
-                if (count <= 0) throw PlaybackFailureException(PlaybackFailure("stream_interrupted", "reading", "Upstream stream ended before the requested range"))
+                var count = 0
+                for (attempt in 0..1) {
+                    try {
+                        count = input!!.read(buffer, 0, minOf(length.toLong(), end - offset + 1).toInt())
+                        if (count <= 0) throw PlaybackFailureException(PlaybackFailure("stream_interrupted", "reading", "Upstream stream ended before the requested range"))
+                        break
+                    } catch (error: IOException) {
+                        if (attempt != 0 || closed || done || Thread.currentThread().isInterrupted) throw error
+                        // A server may close an idle body while playback is
+                        // paused. Resume at the first byte not returned to the
+                        // caller; never restart or duplicate already read audio.
+                        disconnect()
+                        openRange(offset)
+                    }
+                }
                 next = offset + count
                 return count
             } catch (error: Exception) {
@@ -68,7 +88,10 @@ internal class CloudStreamSource(
         private fun openRange(offset: Long) {
             disconnect()
             var selected = currentLink()
-            for (attempt in 0..1) {
+            var refreshed=false;var gatewayRetried=false;var busyRetries=0
+            val requestedEnd=offset+minOf(rangeWindow,size-offset)-1
+            while(true) {
+                var retry=false
                 var target = URI(selected.url)
                 for (redirect in 0..5) {
                     if (closed || done || Thread.currentThread().isInterrupted) throw cancelled()
@@ -81,7 +104,7 @@ internal class CloudStreamSource(
                     request.instanceFollowRedirects = false; request.useCaches = false
                     request.setRequestProperty("Accept-Encoding", "identity")
                     selected.headers(target).forEach { (name, value) -> request.setRequestProperty(name, value) }
-                    request.setRequestProperty("Range", "bytes=$offset-")
+                    request.setRequestProperty("Range", if(rangeWindow==Long.MAX_VALUE)"bytes=$offset-" else "bytes=$offset-$requestedEnd")
                     val status = request.responseCode
                     if (status in setOf(301, 302, 303, 307, 308)) {
                         val location = request.getHeaderField("Location") ?: throw PlaybackFailureException(PlaybackFailure("invalid_response", "reading", "Redirect has no Location header", httpStatus = status))
@@ -89,29 +112,44 @@ internal class CloudStreamSource(
                         disconnect()
                         continue
                     }
-                    if (status in setOf(401, 403, 410) && attempt == 0) {
-                        disconnect(); selected = currentLink(selected)
+                    val reason=request.getHeaderField("X-Thru3D-Upstream-Reason").orEmpty().takeIf { it in upstreamReasons }.orEmpty()
+                    if(status in setOf(403,429,503)&&reason=="cdn_connections_limited"&&busyRetries<6) {
+                        disconnect();Thread.sleep(250L*++busyRetries);retry=true
                         break
                     }
-                    if (status !in setOf(200, 206)) throw PlaybackFailureException(PlaybackFailure.http(status))
+                    if (status in setOf(401, 403, 410) && reason!="cdn_connections_limited" && !refreshed) {
+                        disconnect(); selected = currentLink(selected);refreshed=true;retry=true
+                        break
+                    }
+                    if (status in setOf(502, 503, 504) && reason!="cdn_connections_limited" && !gatewayRetried) {
+                        // A transient proxy failure must not become a corrupt MP4
+                        // packet in FFmpeg. Retry this exact range once; keep the
+                        // verified link instead of repeating provider metadata work.
+                        disconnect()
+                        Thread.sleep(200);gatewayRetried=true;retry=true
+                        break
+                    }
+                    if (status !in setOf(200, 206)) {
+                        throw PlaybackFailureException(PlaybackFailure.http(status).copy(sourceCode=reason))
+                    }
                     val type = request.contentType.orEmpty().lowercase()
                     if (type.contains("text/html") || type.contains("application/json")) throw PlaybackFailureException(PlaybackFailure("not_media", "reading", "Upstream returned HTML or JSON instead of media", httpStatus = status))
                     if (status == 206) {
                         val match = Regex("bytes (\\d+)-(\\d+)/(\\d+)").matchEntire(request.getHeaderField("Content-Range") ?: "") ?: throw invalidRange(status)
                         val start = match.groupValues[1].toLongOrNull() ?: throw invalidRange(status)
                         end = match.groupValues[2].toLongOrNull() ?: throw invalidRange(status)
-                        if (start != offset || end < offset || end >= size || match.groupValues[3].toLongOrNull() != size) throw invalidRange(status)
+                        if (start != offset || end < offset || end > requestedEnd || match.groupValues[3].toLongOrNull() != size) throw invalidRange(status)
                         val length = request.getHeaderField("Content-Length")?.toLongOrNull()
                         if (length != null && length != end - offset + 1) throw invalidRange(status)
-                    } else if (status == 200 && offset == 0L && request.getHeaderField("Content-Length")?.toLongOrNull() == size) {
+                    } else if (status == 200 && offset == 0L && requestedEnd==size-1 && request.getHeaderField("Content-Length")?.toLongOrNull() == size) {
                         end = size - 1
                     } else throw PlaybackFailureException(PlaybackFailure("range_unsupported", "reading", "Upstream ignored the requested byte range", httpStatus = status))
                     input = request.inputStream
                     next = offset
                     return
                 }
+                if(!retry)throw PlaybackFailureException(PlaybackFailure("redirect_failed", "reading", "Upstream redirect limit exceeded"))
             }
-            throw PlaybackFailureException(PlaybackFailure("redirect_failed", "reading", "Upstream redirect limit exceeded"))
         }
         private fun disconnect() {
             // Disconnect first to unblock a pending read during logout or player shutdown.
@@ -124,6 +162,7 @@ internal class CloudStreamSource(
         }
     }
     companion object {
+        val upstreamReasons=setOf("upstream_error","cdn_cookie_missing","cdn_cookie_invalid","cdn_ua_missing","cdn_expired","cdn_signature_invalid","cdn_signature_missing","cdn_ip_mismatch","cdn_rate_limited","cdn_connections_limited")
         private fun cancelled() = PlaybackFailureException(PlaybackFailure("cancelled", "reading", "Request cancelled"))
         private fun invalidRange(status: Int) = PlaybackFailureException(PlaybackFailure("invalid_range", "reading", "Upstream returned an invalid byte range", httpStatus = status))
         private fun openMediaConnection(uri: URI): HttpURLConnection {

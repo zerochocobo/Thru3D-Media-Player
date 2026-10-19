@@ -123,3 +123,7 @@ The public repository contains source, recipes, notices and manifests, with 12 v
 ## Built-in audio assets
 
 This source snapshot keeps the music player and offline import implementation, but excludes the twelve built-in recordings, original downloads and private provenance records. [Audio resource instructions](AUDIO.md) describe the metadata-only catalog and optional version-matched import. These recordings are separate from the project's source license. Source verification that exercises packaged-track decoding needs caller-supplied audio assets.
+
+## Source-capture headers
+
+The clip bridge links the existing pinned libavformat/libavcodec/libavutil dependencies; no runtime version is replaced. Public compile-time headers, their LGPL text and SHA-256 catalog are retained at `native/mpv/include/ffmpeg`; the catalog must match the existing FFmpeg archive pin. See [capture build/test scope](CAPTURE.md).

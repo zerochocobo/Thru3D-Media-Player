@@ -85,7 +85,14 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     }) { name, id, json ->
         if (!closed.get()) emitSignal(name, id, json)
     }
-    private val sources: MediaSources = MediaSources({ activity }, beforeMutation = { uri -> mpv.awaitFileRelease(uri) }) { id, json -> if (!closed.get()) emitSignal("media_list", id, json) }
+    private val sources: MediaSources = MediaSources({ activity }, beforeMutation = { uri ->
+        check(!originalCapture.uses(uri)) { "Capture is still saving" }
+        mpv.awaitFileRelease(uri)
+    }) { id, json -> if (!closed.get()) emitSignal("media_list", id, json) }
+    private val originalCapture = OriginalCapture({ activity?.applicationContext }, sources::capturePlayable, sources::releaseMediaStream, sources::captureAudio)
+    @UsedByGodot fun original_capture_supported(): Boolean = !closed.get() && originalCapture.supported()
+    @UsedByGodot fun original_capture_request(json: String): Int = if (closed.get()) 0 else originalCapture.request(json)
+    @UsedByGodot fun original_capture_status(id: Int): String = if (closed.get()) "{}" else originalCapture.status(id)
     private val accounts = AccountManager { activity }
     private val panoramaOriginals = PanoramaOriginals { activity?.applicationContext?.filesDir?.let { java.io.File(it, "online-panoramas") } }
     private val panoramaBrowser = PanoramaBrowser({ activity }, panoramaOriginals)
@@ -111,7 +118,7 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     }, { name, id, json -> if (!closed.get()) emitSignal(name, id, json) }, sources::playable, sources::sidecarAudio,
         sources::releaseMediaStream, sources::sidecarSubtitles, sources::streamProgress, sources::streamFailure,
         sources::subtitleFiles, sources::openSubtitleFile, sources::subtitleIdentity, sources::enableInterleaveCache,
-        sources::finishIsoPreflight)
+        sources::finishIsoPreflight, sources::voiceReference)
     private val backgroundAudio = BackgroundAudioImport({ activity?.applicationContext }, sources::audioDownload, sources::releasePhotoStream) { id, json ->
         if (!closed.get()) emitSignal("background_audio_imported", id, json)
     }
@@ -514,12 +521,12 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
             "mpv_player_$id.json"
         } catch (failure: Exception) { "ERROR:" + failure.javaClass.simpleName }
     }
-    /** Bounded, text-free health for an explicitly opened Debug fixture. Full privacy gates remain unchanged. */
+    /** Full fixture health, or a strictly redacted reference-only snapshot for Debug source diagnostics. */
     @UsedByGodot fun save_narration_test_status(id: Int, request: String): String {
         if (!BuildConfig.DEBUG || !request.matches(Regex("[A-Za-z0-9_-]{1,80}"))) return "UNAVAILABLE"
         return try {
             val app=activity?.applicationContext ?: return "UNAVAILABLE"
-            val value=mpv.narrationTestStatus(id).put("request",request)
+            val value=runCatching {mpv.narrationTestStatus(id)}.getOrElse {mpv.voiceReferenceTestStatus(id)}.put("request",request)
             val file=File(app.cacheDir,"narration-test-health.json")
             val temporary=File(app.cacheDir,"narration-test-health.tmp")
             temporary.writeText(value.toString());check(temporary.renameTo(file));file.name
@@ -609,6 +616,6 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     override fun onGodotTerminating() { close() }
 
     private fun close() {
-        if (closed.compareAndSet(false, true)) { systemVolume.close(); favoritesTasks.close(); accounts.close(); panoramaBrowser.close(); panoramaRegions.close(); panoramaPictures.close(); panoramaOriginals.close(); musicPlayback.close(); musicPreview.close(); backgroundAudio.close(); photos.close(); photoPreloads.close(); photoPreviews.close(); PhotoDepthRuntime.release(); picker.close(); localAccess.close(); probe.shutdownNow(); media.shutdown(); controlled.shutdown(); mpv.shutdown(); rvm.close(); sources.close() }
+        if (closed.compareAndSet(false, true)) { originalCapture.close(); systemVolume.close(); favoritesTasks.close(); accounts.close(); panoramaBrowser.close(); panoramaRegions.close(); panoramaPictures.close(); panoramaOriginals.close(); musicPlayback.close(); musicPreview.close(); backgroundAudio.close(); photos.close(); photoPreloads.close(); photoPreviews.close(); PhotoDepthRuntime.release(); picker.close(); localAccess.close(); probe.shutdownNow(); media.shutdown(); controlled.shutdown(); mpv.shutdown(); rvm.close(); sources.close() }
     }
 }

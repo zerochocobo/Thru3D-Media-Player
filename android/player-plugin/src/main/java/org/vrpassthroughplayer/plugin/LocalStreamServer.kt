@@ -85,7 +85,15 @@ internal class LocalStreamServer : Closeable {
 
     private fun record(token: String, source: StreamSource, attempt: Long, error: Exception) {
         if (!closed && sources[token] === source && !Thread.currentThread().isInterrupted && !PlaybackFailure.cancelled(error)) {
-            diagnostics[token]?.fail(attempt, PlaybackFailure.from(error, "reading"))
+            val failure=PlaybackFailure.from(error, "reading")
+            diagnostics[token]?.fail(attempt, failure)
+            // Another range can recover before the caller samples failure().
+            // Keep fixed error fields for diagnosing concurrent readers, with
+            // no capability, URL, headers, filename or upstream response body.
+            if(BuildConfig.DEBUG && PlaybackPrivacy.diagnostics) runCatching {
+                val code=failure.sourceCode.takeIf {it in CloudStreamSource.upstreamReasons}.orEmpty()
+                android.util.Log.w("Thru3DNetworkRead","reason=${failure.reason} http_status=${failure.httpStatus} source_code=$code exception=${failure.exceptionType}")
+            }
         }
     }
 

@@ -800,6 +800,9 @@ func _resolved_mode(target: int, info: Dictionary) -> Dictionary:
 	var native_stereo := bool(info.get("native_stereo", false))
 	var stated := {} if native_stereo else Naming.from_name(str(queue[target].get("title", "")))
 	var saved := mode_memory.lookup(str(queue[target].uri))
+	if saved.is_empty():
+		var captured: Dictionary = preload("res://scripts/capture_mode.gd").clean(info.get("capture_mode"))
+		if not captured.is_empty(): saved = captured
 	var mode := {"geometry": int(saved.get("geometry", stated.get("geometry", Geometry.Geometry.EQUIRECT_360 if info.get("panorama", false) else Geometry.Geometry.FLAT))),
 		"stereo_sbs": bool(saved.get("stereo_sbs", stated.get("stereo", native_stereo))),
 		"top_bottom": bool(saved.get("top_bottom", stated.get("top_bottom", false))),

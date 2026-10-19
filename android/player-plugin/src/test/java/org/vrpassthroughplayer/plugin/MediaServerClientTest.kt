@@ -449,6 +449,18 @@ class MediaServerClientTest {
                         assertEquals("film.si.mix.m4a", audio.single().title)
                         assertArrayEquals(mix, URI(audio.single().location).toURL().readBytes())
                     }
+                    // Screenshot/export readers must not replace playback's subtitle/audio context.
+                    val captureA = library.playable(uri, true)
+                    val captureB = library.playable(uri, true)
+                    assertNotEquals(movie, captureA); assertNotEquals(captureA, captureB)
+                    val captureAudio = library.captureAudio(captureB)!!
+                    assertEquals(1, captureAudio.size)
+                    assertArrayEquals(mix, URI(captureAudio.single().location).toURL().readBytes())
+                    library.release(captureA)
+                    assertNull(library.captureAudio(captureA))
+                    assertArrayEquals(video, URI(captureB).toURL().readBytes())
+                    library.release(captureB)
+                    assertArrayEquals(video, URI(movie).toURL().readBytes())
                     val tracks = library.sidecarSubtitles(uri)
                     assertEquals(provider, 1, tracks.size)
                     assertEquals(1, subtitleRequests.get())

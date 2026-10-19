@@ -8,6 +8,30 @@ import java.nio.ByteOrder
 import java.security.MessageDigest
 
 internal object VoiceClonePolicy {
+    class Reference(val path: String, private val release: () -> Unit) : AutoCloseable {
+        private val released = java.util.concurrent.atomic.AtomicBoolean()
+        override fun close() { if (released.compareAndSet(false,true)) release() }
+    }
+    /** Debug health only: never export subtitle text, names, voice IDs or paths. */
+    fun referenceHealth(state: JSONObject): JSONObject = JSONObject().also { result ->
+        for(key in listOf("opened","state","error_code","error_detail","played_frames","preview_frames","reference_input_db","reference_output_db","reference_gain_db","reference_center"))
+            if(state.has(key))result.put(key,state.get(key))
+        val candidates=state.optJSONArray("candidates") ?: JSONArray()
+        result.put("candidate_count",candidates.length()).put("probe_candidate_key",candidates.optJSONObject(0)?.optString("key").orEmpty())
+    }
+    data class Input(val path: String, val stream: Int, val disc: Boolean)
+    /** Independent DLNA caption files may have no MPV FFmpeg stream index. */
+    fun input(movie: String, track: JSONObject, disc: Boolean = false): Input {
+        val external = track.optBoolean("external")
+        val path = if (external) track.optString("filename") else movie
+        check(path.isNotBlank()) { "voice_input_unavailable" }
+        val index = track.optInt("stream_index", -1)
+        check(external || index >= 0) { "voice_input_unavailable" }
+        return Input(path, if (external && index < 0) 0 else index, disc && !external)
+    }
+    fun diagnostic(error: Throwable): String = error.message.orEmpty().takeIf {
+        it.matches(Regex("(voice_[a-z_]+|No value for [a-z_]+|voice_extract:[A-Za-z -]+(?::-?[0-9]+)?|subtitle_[a-z_]+:-?[0-9]+)"))
+    } ?: "internal"
     fun playbackGain(videoVolume: Double,narrationVolume: Double,original: Boolean): Float {
         require(videoVolume.isFinite()&&videoVolume in 0.0..100.0&&narrationVolume.isFinite()&&narrationVolume in 0.0..1.0)
         return (videoVolume/100*(if(original)1.0 else narrationVolume)).toFloat()

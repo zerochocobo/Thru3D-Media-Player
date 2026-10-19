@@ -95,6 +95,11 @@ std::string property(mpv_handle* core, const char* key) {
     char* text = mpv_get_property_string(core, key);
     std::string value = text ? text : ""; mpv_free(text); return value;
 }
+std::string capture_metadata(mpv_handle* core) {
+    auto value = property(core, "metadata/by-key/thru3d_mode");
+    if (value.empty()) value = property(core, "metadata/by-key/THRU3D_MODE");
+    return value.size() <= 4096 ? value : "";
+}
 std::string seconds_property(mpv_handle* core, const char* key) {
     double value = 0;
     if (mpv_get_property(core, key, MPV_FORMAT_DOUBLE, &value) < 0 || !std::isfinite(value)) return "";
@@ -485,6 +490,7 @@ struct Source final {
             ",\"dolby_profile5\":" + (dolby_profile5.load() ? "true" : "false") +
             ",\"dolby_color_path\":" + quote(dolby_profile5.load() ? "GPU_RPU_RGBA16F_PQ_to_SDR" : "existing") +
             ",\"dolby_rendered_frames\":" + std::to_string(dolby_frames.load()) +
+            ",\"capture_mode\":" + quote(capture_metadata(core)) +
             ",\"position_seconds\":" + quote(position) + ",\"duration_seconds\":" + quote(duration) +
             ",\"seekable\":" + quote(seekable) + ",\"partially_seekable\":" + quote(partial) + ",\"file_size\":" + quote(file_size) +
             ",\"paused\":" + quote(paused) + ",\"color_matrix\":" + quote(matrix) +

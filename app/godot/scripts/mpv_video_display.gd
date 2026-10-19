@@ -146,6 +146,10 @@ const CAPTION_DROP := 0.244 # radians below the line of sight (14 degrees)
 var _subtitle_poll_ms := 0
 var _subtitle_received_ms := 0
 var mode_memory := ModeMemory.new()
+var captures := preload("res://scripts/video_capture.gd").new(self)
+var _capture_layout_pending := false
+var _capture_preference_exists := false
+var _capture_internal_reopen := false
 var track_memory := TrackMemory.new()
 const AudioTiming := preload("res://scripts/file_audio_timing.gd")
 var audio_timing := AudioTiming.new()
@@ -627,6 +631,8 @@ func open_local(uri: String, title: String, start_ms: int = 0, restore_mode: boo
 		return false
 	cancel_pending_open()
 	close_video()
+	_capture_layout_pending = restore_mode
+	_capture_preference_exists = not mode_memory.lookup(uri).is_empty()
 	# Alpha-packed and Alpha-wanted files say so in their names (PTMediaServer / DeoVR markers).
 	_layout_basename = basename if not basename.is_empty() else (title if not title.is_empty() else uri.uri_decode().get_file())
 	var stated := Naming.from_metadata(_layout_basename, metadata)
@@ -776,6 +782,7 @@ func _unbind() -> void:
 		caption.visible = false
 
 func close_video() -> void:
+	if not _capture_internal_reopen: captures.stop()
 	_network_interleave_compat = false
 	_network_interleave_next = false
 	commit_stereo_view()
@@ -897,6 +904,7 @@ func _record_history(force: bool = false) -> void:
 		Log.record("recent_file_save_failed", {"error": recent_files.last_error})
 
 func _request_revision(position_ms: int = -1, mode: String = "") -> void:
+	if position_ms >= 0: captures.stop()
 	if not platform or not media.accepts(media.session_id):
 		return
 	_pending_revision = {"stereo": stereo_sbs, "alpha": alpha_requested, "profile": profile, "position_ms": position_ms,
@@ -1223,6 +1231,7 @@ func set_audio_options(track_id: int, volume: float, muted: bool) -> bool:
 
 ## An explicit menu choice wins over automatic dubbing, including before the first frame.
 func select_audio_track(track_id: int) -> bool:
+	if not captures.recording.is_empty(): captures.stop()
 	if not set_audio_options(track_id, audio_volume, audio_muted): return false
 	_clone_applied = true
 	prefer_clone_voice = clone_voice_track() > 0 and track_id == clone_voice_track()
@@ -1259,6 +1268,7 @@ func cycle_audio_track(direction: int = 1) -> bool:
 func seek_absolute(position_ms: int, mode: String = "") -> bool:
 	if not platform or not media.accepts(media.session_id):
 		return false
+	captures.stop()
 	control.seek_absolute(position_ms)
 	_request_revision(control.target_ms, mode)
 	return true
@@ -1733,6 +1743,7 @@ func _place_caption() -> void:
 func seek_relative(delta_ms: int) -> bool:
 	if not platform or not media.accepts(media.session_id):
 		return false
+	captures.stop()
 	control.seek_relative(delta_ms)
 	_request_revision(control.target_ms)
 	return true
@@ -1961,6 +1972,31 @@ func _apply_stereo_view() -> void:
 
 ## The file name left the projection or the layout open: the frame's shape decides (once).
 func _complete_layout() -> void:
+	if _restore_capture_layout(): return
+	_complete_source_layout()
+
+func _restore_capture_layout() -> bool:
+	if not _capture_layout_pending: return false
+	var details: Dictionary = media.playback.get("details", {})
+	if not details.has("capture_mode"): return false
+	_capture_layout_pending = false
+	var exported: Variant = JSON.parse_string(str(media.playback.get("details", {}).get("capture_mode", "")))
+	var capture_mode: Dictionary = preload("res://scripts/capture_mode.gd").clean(exported)
+	if not capture_mode.is_empty() and not _capture_preference_exists and not _mode_user_changed:
+		geometry = int(capture_mode.geometry)
+		stereo_sbs = bool(capture_mode.stereo_sbs)
+		top_bottom = bool(capture_mode.top_bottom)
+		stereo_half = bool(capture_mode.stereo_half)
+		swap_eyes = bool(capture_mode.swap_eyes)
+		fisheye_fov = int(capture_mode.fisheye_fov)
+		_layout_pending = null
+		depth_requested = false
+		_request_revision()
+		_apply_geometry()
+		return true
+	return false
+
+func _complete_source_layout() -> void:
 	if bool(media.format.get("spatial_video", false)): _spatial_video = true
 	if is_spatial_video():
 		_accept_spatial_metadata(media.format)
@@ -2148,6 +2184,7 @@ func _on_state(id: int, payload: String) -> void:
 	if report.get("audio_focus_change", "") == "loss":
 		requested_play = false
 	media.playback = report
+	if media.frame_counter > 0: _restore_capture_layout()
 	var subtitle_identity := str(report.get("subtitle_memory_id", ""))
 	if not subtitle_identity.is_empty(): _restore_usb_mode(subtitle_identity)
 	if track_memory.register_usb_identity(local_uri, subtitle_identity):
@@ -3054,7 +3091,11 @@ func _reopen_at(position_ms: int, layer: bool) -> void:
 	var return_uri := _layer_return_uri
 	var auto_subtitle := _subtitle_auto_pending # An internal reopen keeps an unfinished automatic choice.
 	_network_interleave_next = _network_interleave_compat
-	if open_local(local_uri, display_name, position, false, alpha_wanted()):
+	_capture_internal_reopen = true
+	var capture_reopened := open_local(local_uri, display_name, position, false, alpha_wanted())
+	_capture_internal_reopen = false
+	if not capture_reopened: captures.stop()
+	if capture_reopened:
 		audio_whisper = whisper; audio_boost_saved = boost_mark; _whisper_restore_pending = whisper > 0 or whisper_save; _whisper_restore_remember = whisper_save
 		_subtitle_auto_pending = auto_subtitle
 		_queue_track_restore(tracks)

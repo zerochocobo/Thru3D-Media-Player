@@ -178,6 +178,238 @@ class CloudStreamSourceTest {
         } finally { upstream.stop(0) }
     }
 
+    @Test fun transientGatewayRetriesTheExactRangeWithoutResolvingMetadataAgain() {
+        for (status in listOf(502, 503, 504)) {
+            val requests = AtomicInteger()
+            val resolutions = AtomicInteger()
+            val upstream = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+            val offset = 32768
+            upstream.createContext("/file") { exchange ->
+                assertEquals("bytes=$offset-", exchange.requestHeaders.getFirst("Range"))
+                assertEquals("reference-agent", exchange.requestHeaders.getFirst("User-Agent"))
+                if (requests.incrementAndGet() == 1) exchange.sendResponseHeaders(status, 0)
+                else {
+                    exchange.responseHeaders.add("Content-Range", "bytes $offset-${bytes.lastIndex}/${bytes.size}")
+                    exchange.sendResponseHeaders(206, (bytes.size-offset).toLong())
+                    runCatching { exchange.responseBody.write(bytes, offset, bytes.size-offset) }
+                }
+                exchange.close()
+            }
+            upstream.start()
+            try {
+                CloudStreamSource(bytes.size.toLong(), {
+                    resolutions.incrementAndGet()
+                    CloudLink("http://127.0.0.1:${upstream.address.port}/file") { mapOf("User-Agent" to "reference-agent") }
+                }, ::localConnection).use { source ->
+                    source.open().use { reader ->
+                        val data=ByteArray(4096)
+                        val count=reader.read(offset.toLong(),data,data.size)
+                        assertTrue(count>0)
+                        assertArrayEquals(bytes.copyOfRange(offset,offset+count),data.copyOf(count))
+                    }
+                }
+                assertEquals(2,requests.get());assertEquals(1,resolutions.get())
+            } finally { upstream.stop(0) }
+        }
+    }
+
+    @Test fun persistentGatewayFailureStopsAfterOneRetryAndKeepsItsStatus() {
+        val requests=AtomicInteger()
+        val upstream=HttpServer.create(InetSocketAddress("127.0.0.1",0),0)
+        upstream.createContext("/file") { exchange ->
+            requests.incrementAndGet();exchange.sendResponseHeaders(502,0);exchange.close()
+        }
+        upstream.start()
+        try {
+            CloudStreamSource(10,{CloudLink("http://127.0.0.1:${upstream.address.port}/file") {emptyMap()}},::localConnection).use { source ->
+                source.open().use { reader ->
+                    try {reader.read(0,ByteArray(10),10);fail("Persistent gateway failure accepted")}
+                    catch(error: PlaybackFailureException){assertEquals(502,error.failure.httpStatus)}
+                }
+            }
+            assertEquals(2,requests.get())
+        } finally {upstream.stop(0)}
+    }
+
+    @Test fun revokedSourceDoesNotSendTheGatewayRetry() {
+        val requests=AtomicInteger()
+        val upstream=HttpServer.create(InetSocketAddress("127.0.0.1",0),0)
+        lateinit var source: CloudStreamSource
+        upstream.createContext("/file") { exchange ->
+            requests.incrementAndGet();source.close();exchange.sendResponseHeaders(502,0);exchange.close()
+        }
+        upstream.start()
+        try {
+            source=CloudStreamSource(10,{CloudLink("http://127.0.0.1:${upstream.address.port}/file") {emptyMap()}},::localConnection)
+            source.open().use { reader ->
+                try {reader.read(0,ByteArray(10),10);fail("Revoked source accepted")}
+                catch(error: PlaybackFailureException){assertEquals("cancelled",error.failure.reason)}
+            }
+            assertEquals(1,requests.get())
+        } finally {source.close();upstream.stop(0)}
+    }
+
+    @Test fun interruptedBodyResumesAtFirstUnreadByteWithoutRepeatingMetadata() {
+        val requests=AtomicInteger();val resolutions=AtomicInteger()
+        val upstream=HttpServer.create(InetSocketAddress("127.0.0.1",0),0)
+        val payload=ByteArray(10) {it.toByte()}
+        upstream.createContext("/file") { exchange ->
+            val first=requests.incrementAndGet()==1
+            val offset=if(first)0 else 3
+            assertEquals("bytes=$offset-",exchange.requestHeaders.getFirst("Range"))
+            exchange.responseHeaders.add("Content-Range","bytes $offset-9/10")
+            exchange.sendResponseHeaders(206,(10-offset).toLong())
+            exchange.responseBody.write(payload,offset,if(first)3 else 7)
+            exchange.close()
+        }
+        upstream.start()
+        try {
+            CloudStreamSource(10,{
+                resolutions.incrementAndGet();CloudLink("http://127.0.0.1:${upstream.address.port}/file") {emptyMap()}
+            },::localConnection).use { source ->
+                source.open().use { reader ->
+                    val result=java.io.ByteArrayOutputStream();val buffer=ByteArray(10)
+                    while(result.size()<10) {
+                        val count=reader.read(result.size().toLong(),buffer,buffer.size)
+                        result.write(buffer,0,count)
+                    }
+                    assertArrayEquals(payload,result.toByteArray())
+                }
+            }
+            assertEquals(2,requests.get());assertEquals(1,resolutions.get())
+        } finally {upstream.stop(0)}
+    }
+
+    @Test fun permanentlyInterruptedBodyStopsAfterOneResume() {
+        val requests=AtomicInteger()
+        val upstream=HttpServer.create(InetSocketAddress("127.0.0.1",0),0)
+        upstream.createContext("/file") { exchange ->
+            requests.incrementAndGet();exchange.responseHeaders.add("Content-Range","bytes 0-9/10")
+            exchange.sendResponseHeaders(206,10);exchange.close()
+        }
+        upstream.start()
+        try {
+            CloudStreamSource(10,{CloudLink("http://127.0.0.1:${upstream.address.port}/file") {emptyMap()}},::localConnection).use { source ->
+                source.open().use { reader ->
+                    try {reader.read(0,ByteArray(10),10);fail("Truncated body accepted")}
+                    catch(error: PlaybackFailureException){assertEquals("stream_interrupted",error.failure.reason)}
+                }
+            }
+            assertEquals(2,requests.get())
+        } finally {upstream.stop(0)}
+    }
+
+    @Test fun onlyKnownUpstreamDenialCodesReachStreamDiagnostics() {
+        for (code in listOf("cdn_cookie_missing","https://private.invalid/token","arbitrary_message")) {
+            val upstream=HttpServer.create(InetSocketAddress("127.0.0.1",0),0)
+            upstream.createContext("/file") { exchange ->
+                exchange.responseHeaders.add("X-Thru3D-Upstream-Reason",code)
+                exchange.sendResponseHeaders(403,0);exchange.close()
+            }
+            upstream.start()
+            try {
+                LocalStreamServer().use { local ->
+                    val url=local.publish(CloudStreamSource(10,{CloudLink("http://127.0.0.1:${upstream.address.port}/file") {emptyMap()}},::localConnection),"video.mp4")
+                    val connection=URL(url).openConnection() as HttpURLConnection
+                    assertEquals(502,connection.responseCode);connection.disconnect()
+                    assertEquals(if(code=="cdn_cookie_missing")code else "",local.failure(url)?.sourceCode)
+                }
+            } finally {upstream.stop(0)}
+        }
+    }
+
+    @Test fun boundedReferenceRangesKeepSequentialBytesWithoutHoldingAFullFileBody() {
+        val requests=AtomicInteger();val resolutions=AtomicInteger()
+        val upstream=HttpServer.create(InetSocketAddress("127.0.0.1",0),0)
+        upstream.createContext("/file") { exchange ->
+            requests.incrementAndGet()
+            val range=exchange.requestHeaders.getFirst("Range")!!.removePrefix("bytes=").split('-')
+            val start=range[0].toInt();val end=range[1].toInt()
+            assertEquals(minOf(bytes.lastIndex,start+65535),end)
+            exchange.responseHeaders.add("Content-Range","bytes $start-$end/${bytes.size}")
+            exchange.sendResponseHeaders(206,(end-start+1).toLong())
+            runCatching {exchange.responseBody.write(bytes,start,end-start+1)};exchange.close()
+        }
+        upstream.start()
+        try {
+            CloudStreamSource(bytes.size.toLong(),{
+                resolutions.incrementAndGet();CloudLink("http://127.0.0.1:${upstream.address.port}/file") {emptyMap()}
+            },::localConnection).boundedRanges(65536).use { source ->
+                source.open().use { reader ->
+                    val output=java.io.ByteArrayOutputStream();val buffer=ByteArray(10000)
+                    while(output.size()<bytes.size) {
+                        val count=reader.read(output.size().toLong(),buffer,buffer.size);output.write(buffer,0,count)
+                    }
+                    assertArrayEquals(bytes,output.toByteArray())
+                }
+            }
+            assertEquals((bytes.size+65535)/65536,requests.get());assertEquals(1,resolutions.get())
+        } finally {upstream.stop(0)}
+    }
+
+    @Test fun aServerIgnoringTheBoundedEndCannotHoldAWholeReferenceFile() {
+        val upstream=HttpServer.create(InetSocketAddress("127.0.0.1",0),0)
+        upstream.createContext("/file") { exchange ->
+            exchange.responseHeaders.add("Content-Range","bytes 0-999/1000");exchange.sendResponseHeaders(206,1000)
+            runCatching {exchange.responseBody.write(ByteArray(1000))};exchange.close()
+        }
+        upstream.start()
+        try {
+            CloudStreamSource(1000,{CloudLink("http://127.0.0.1:${upstream.address.port}/file") {emptyMap()}},::localConnection).boundedRanges(64).use { source ->
+                source.open().use { reader ->
+                    try {reader.read(0,ByteArray(10),10);fail("Ignored range end accepted")}
+                    catch(error: PlaybackFailureException){assertEquals("invalid_range",error.failure.reason)}
+                }
+            }
+        } finally {upstream.stop(0)}
+    }
+
+    @Test fun aBusyCdnWaitsAndRetriesWithoutRefreshingTheAccountOrTicket() {
+        val requests=AtomicInteger();val resolutions=AtomicInteger()
+        val upstream=HttpServer.create(InetSocketAddress("127.0.0.1",0),0)
+        upstream.createContext("/file") { exchange ->
+            if(requests.incrementAndGet()<=2) {
+                exchange.responseHeaders.add("X-Thru3D-Upstream-Reason","cdn_connections_limited");exchange.sendResponseHeaders(403,0)
+            } else {
+                exchange.responseHeaders.add("Content-Range","bytes 0-9/10");exchange.sendResponseHeaders(206,10)
+                exchange.responseBody.write(ByteArray(10){42})
+            }
+            exchange.close()
+        }
+        upstream.start()
+        try {
+            CloudStreamSource(10,{
+                resolutions.incrementAndGet();CloudLink("http://127.0.0.1:${upstream.address.port}/file") {emptyMap()}
+            },::localConnection).boundedRanges(65536).use { source ->
+                source.open().use { reader ->
+                    val data=ByteArray(10);assertEquals(10,reader.read(0,data,10));assertArrayEquals(ByteArray(10){42},data)
+                }
+            }
+            assertEquals(3,requests.get());assertEquals(1,resolutions.get())
+        } finally {upstream.stop(0)}
+    }
+
+    @Test fun aPersistentlyBusyCdnStopsAfterSixWaitsWithoutAnAuthenticationRefresh() {
+        val requests=AtomicInteger();val resolutions=AtomicInteger()
+        val upstream=HttpServer.create(InetSocketAddress("127.0.0.1",0),0)
+        upstream.createContext("/file") { exchange ->
+            requests.incrementAndGet();exchange.responseHeaders.add("X-Thru3D-Upstream-Reason","cdn_connections_limited")
+            exchange.sendResponseHeaders(403,0);exchange.close()
+        }
+        upstream.start()
+        try {
+            CloudStreamSource(10,{
+                resolutions.incrementAndGet();CloudLink("http://127.0.0.1:${upstream.address.port}/file") {emptyMap()}
+            },::localConnection).use { source ->
+                source.open().use { reader ->
+                    try {reader.read(0,ByteArray(10),10);fail("Persistent busy response accepted")}
+                    catch(error: PlaybackFailureException){assertEquals("cdn_connections_limited",error.failure.sourceCode)}
+                }
+            }
+            assertEquals(7,requests.get());assertEquals(1,resolutions.get())
+        } finally {upstream.stop(0)}
+    }
+
     @Test fun upstreamHttpStatusSurvivesTheLocal502AndIsScopedToItsStream() {
         for (status in listOf(401, 403, 404, 410, 500)) {
             val upstream = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)

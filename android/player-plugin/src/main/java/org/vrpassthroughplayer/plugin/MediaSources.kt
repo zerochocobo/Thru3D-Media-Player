@@ -274,6 +274,16 @@ internal class MediaSources(
         CloudLibrary.audioDownload(uri, streams())
     } else playable(uri)
 
+    fun voiceReference(uri: String): String {
+        require(uri.startsWith("cloud://"))
+        CloudLibrary.start(context() ?: error("Activity unavailable"))
+        // A few seconds of reference audio must not hold full-file CDN bodies
+        // alongside playback and FFmpeg's next seek connection. Keep each range
+        // large enough for MP4's indexed read-ahead: 64 KiB caused hundreds of
+        // round trips and hit the reference reader's 30-second deadline.
+        return CloudLibrary.audioDownload(uri,streams(),1024*1024L)
+    }
+
     fun playable(uri: String): String {
         val target = strm.resolve(uri)
         return try { directPlayable(target) }
@@ -282,6 +292,14 @@ internal class MediaSources(
             throw error
         }
     }
+
+    /** Background capture gets a reader without replacing a media server's active companion context. */
+    fun capturePlayable(uri: String): String {
+        val target = strm.resolve(uri)
+        return if (target.startsWith("medialib://")) mediaServers.playable(target, true) else directPlayable(target)
+    }
+    fun captureAudio(uri: String, reader: String): List<SidecarAudio.Track> =
+        mediaServers.captureAudio(reader) ?: sidecarAudio(uri)
 
     private fun directPlayable(uri: String): String = when {
         uri.startsWith("dlna://") -> dlna.playable(uri)

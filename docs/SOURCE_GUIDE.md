@@ -139,3 +139,9 @@ History (`privacy/history`) controls recent items, resume progress and thumbnail
 Narration exposes 19 text languages, 12 preset voice origins and locally created custom voices. The voice manager auditions, renames/deletes and chooses defaults; new videos still start with narration off. Audition streaming/cache, rhythm and level processing share production paths; matching voice-encoder assets are separately required. Photos use global viewing preferences while videos retain independent depth strength. Spatial relief follows physical display size.
 
 The auditorium experiment is [Debug-only](EXPERIMENTAL_CINEMA.md), distinct from released cinema screen placement. Online panorama entry points remain hidden. No personal voices or model payloads accompany this source.
+
+## 0.12.3 source capture and remote reads
+
+Compatible immersive videos support [original screenshots and lossless source clips](CAPTURE.md), with independent status/stop controls and layout metadata. Current Android output is MKV with keyframe boundary constraints; generated media and personal fixtures remain excluded from Git.
+
+Cloud reference sampling now uses independent bounded readers, shared verified 115 download tickets, transient/expired-link recovery and prompt connection release. DLNA external-subtitle positioning handles requests before the first cue. These scoped fixes do not guarantee all providers/media or repair arbitrary old playback records.
