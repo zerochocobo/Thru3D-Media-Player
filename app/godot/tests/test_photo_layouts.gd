@@ -93,6 +93,17 @@ func _run() -> void:
 		check(photo.gallery.cards.values().all(func(card): return is_equal_approx(card.size.y, photo.gallery.cards.values()[0].size.y)), "Every wall row shares one photo height")
 		var shown: Array = photo.gallery.cards.keys()
 		check(shown.filter(func(index): return not shown.has(posmod(index + 1, photo.queue.size()))).size() == 1, "A multi-row wall shows one unbroken run of photos")
+		var first_slot: Vector3 = photo.gallery.anchor.affine_inverse() * photo.gallery.cards[shown.min()].pose.origin
+		var seam := atan2(first_slot.x, -first_slot.z)
+		var reading_order := shown.duplicate()
+		reading_order.sort_custom(func(a,b):
+			var left: Vector3 = photo.gallery.anchor.affine_inverse() * photo.gallery.cards[a].pose.origin
+			var right: Vector3 = photo.gallery.anchor.affine_inverse() * photo.gallery.cards[b].pose.origin
+			return left.y > right.y if not is_equal_approx(left.y,right.y) else fposmod(atan2(left.x,-left.z)-seam+0.000001,TAU) < fposmod(atan2(right.x,-right.z)-seam+0.000001,TAU))
+		var expected := shown.duplicate(); expected.sort()
+		check(reading_order == expected, "Wall reads in the album order from left to right, then top to bottom")
+		var selected_slot: Vector3 = photo.gallery.anchor.affine_inverse() * photo.gallery.cards[photo.index].pose.origin
+		check(absf(selected_slot.x) < 0.001 and selected_slot.z < 0, "The selected photo's column faces the viewer when changing wall rows")
 		check(photo.gallery.cards.values().all(func(card): return photo.gallery.cards.values().all(func(other): return absf(card.pose.origin.y - other.pose.origin.y) < 0.01 or absf(card.pose.origin.y - other.pose.origin.y) > (card.size.y + other.size.y) * 0.5)), "Different wall rows never overlap vertically")
 		var row_settings := ConfigFile.new(); photo.gallery.save_settings(row_settings)
 		var restored_gallery := Photo.Gallery.new(); restored_gallery.restore_settings(row_settings)
@@ -175,9 +186,9 @@ func _run() -> void:
 	check(photo.gallery.cards.values().map(func(card): return card.pose) != old_shapes, "New batch randomizes its arrangement and shape")
 	check(photo.gallery._swap_phase == 0 and photo.gallery._swap_alpha == 1, "New memories finish appearing")
 	await _focus_drag_checks(photo, camera)
-	photo.set_layout_mode(0)
+	photo.set_layout_mode(0); await settle(photo)
 	check(photo.panel.visible and photo.gallery.cards.is_empty(), "Switching back preserves the current photo in single mode")
-	photo.set_layout_mode(2); photo.gallery._process(0.01); photo.set_layout_mode(1)
+	photo.set_layout_mode(2); photo.gallery._process(0.01); photo.set_layout_mode(1); await settle(photo)
 	check(photo.panel.visible, "Switching from wall overview to side previews restores the central image")
 	photo.set_layout_mode(0)
 	photo.close_image()
@@ -312,7 +323,7 @@ func _input_checks() -> void:
 	check(app.photo.gallery.has_capture() and app._grab.is_empty(), "Main routes a fragment trigger to the gallery before screen dragging")
 	app._process_sticks(Vector2.ZERO, Vector2(0, 1), 0.1)
 	check(app.photo.gallery.view_scale == 1, "Pointer capture suppresses stick shortcuts")
-	app._on_pointer_release("trigger_click", "left_hand"); app.photo.gallery._process(1.0)
+	app._on_pointer_release("trigger_click", "left_hand"); await settle(app.photo); app.photo.gallery._process(1.0)
 	check(app.photo.gallery.focus == index, "Main release expands the selected fragment")
 	app.photo_menu.toggle(); app.photo_menu._activate(app.photo_menu.PHOTO_ADJUST)
 	check(app.photo_menu._adjust_rows[450].key == "screen_distance" and app.photo_menu._adjust_rows[451].key == "screen_scale", "Expanded memory exposes full-photo distance and scale controls")
@@ -359,6 +370,7 @@ func _input_checks() -> void:
 	var layout_button: Dictionary = app.photo_menu._buttons.filter(func(button): return button.target == app.photo_menu.PHOTO_LAYOUT)[0]
 	check(layout_button.base_color.a == 1.0, "Layout action uses the same solid round tile as adjacent actions")
 	app.photo_menu._activate(app.photo_menu.PHOTO_LAYOUT_BASE)
+	await settle(app.photo)
 	check(app.photo.gallery.mode == 0 and app.photo.panel.visible, "Ray menu can return to existing single mode")
 	app.photo_menu._activate(app.photo_menu.PHOTO_LAYOUT)
 	app.photo_menu._activate(app.photo_menu.PHOTO_LAYOUT_BASE + 2)
@@ -397,13 +409,17 @@ func _input_checks() -> void:
 	check(restored.gallery.mode == 2 and is_equal_approx(restored.gallery.view_scale, 1.96) and is_equal_approx(restored.gallery.view_distance, 6.2), "A fresh photo viewer restores last mode, size and distance")
 	restored.gallery.set_mode(3)
 	check(restored.gallery.view_scale == 1 and restored.gallery.view_distance == 5.0, "Each layout restores its own transform when switching modes")
-	restored.free()
+	# This settings-only fixture never runs _ready(), which normally parents the tile helper.
+	restored.panorama_tiles.free(); restored.free()
 	app.photo.gallery._process(0.01)
 	app.photo_menu.toggle()
 	check(app.photo_menu._buttons.any(func(button):return button.target==app.photo_menu.PHOTO_SHUFFLE and button.enabled), "Wall has an explicit next-group toolbar action")
-	check(app.photo_menu._tips[app.photo_menu.PHOTO_NEXT] == app.photo_menu.I18n.t("Next group"), "Wall arrows clearly identify group navigation")
+	check(app.photo_menu._tips[app.photo_menu.PHOTO_NEXT] == app.photo_menu.I18n.t("Next image"), "Wall arrows identify the same item navigation as single-image mode")
+	var previous_index: int = app.photo.index
 	app.photo_menu._activate(app.photo_menu.PHOTO_NEXT)
-	check(app.photo.gallery._swap_phase == 1, "Production menu arrows page the wall instead of advancing one image")
+	check(app.photo.index == posmod(previous_index + 1, app.photo.queue.size()) and app.photo.gallery._swap_phase == 0, "Production menu arrow advances exactly one image in the wall")
+	app.photo_menu._activate(app.photo_menu.PHOTO_SHUFFLE)
+	check(app.photo.gallery._swap_phase == 1, "The separate next-group toolbar action still pages the wall")
 	app.photo.gallery._process(.5); app.photo.gallery._process(.5)
 	await _close_shortcut_checks(app)
 	app.queue_free(); await process_frame
@@ -427,12 +443,11 @@ func _wall_navigation_checks(app: Node3D) -> void:
 			app.photo.open_image(str(entries[0].uri), "00.png", entries.slice(0, count)); await settle(app.photo)
 			app.photo.set_layout_mode(2); app.photo.gallery.set_wall_rows(rows); await load_previews(app.photo)
 			var original := _wall_heights(app.photo)
-			var last_column: int = floori((count - 1) / float(rows)) * rows
-			for move in [[1, rows], [-1, 0], [-1, last_column], [1, 0]]:
+			for move in [[1, 1], [-1, 0], [-1, count - 1], [1, 0]]:
 				app._process_sticks(Vector2.ZERO, Vector2.ZERO, 0.016)
 				app._process_sticks(Vector2.ZERO, Vector2(move[0], 0), 0.016)
 				await settle(app.photo); await load_previews(app.photo)
-				check(app.photo.index == move[1], "Right stick moves one whole wall column, including a partial final column: rows=%d count=%d" % [rows, count])
+				check(app.photo.index == move[1], "Right stick moves one image in album order, including an incomplete last row: rows=%d count=%d" % [rows, count])
 				_check_wall_heights(app.photo, original, "Horizontal wall navigation never moves a photo to another row")
 				if count < 10: check(app.photo.gallery.cards.size() == count, "A partial centre column never removes photos from other rows")
 				app._process_sticks(Vector2.ZERO, Vector2(move[0], 0), 0.016)
@@ -444,7 +459,7 @@ func _wall_navigation_checks(app: Node3D) -> void:
 			app.photo.gallery._process(0.23); await settle(app.photo); await load_previews(app.photo); app.photo.gallery._process(1)
 			check(app.photo.gallery._wall_start == 0, "Previous group restores the original column")
 			if rows > 1:
-				var bottom: int = rows - 1
+				var bottom: int = app.photo.gallery._wall_columns()
 				app.photo.gallery.activate(bottom); await settle(app.photo); app.photo.gallery._process(1)
 				check(app.photo.navigate(1), "An expanded wall photo still advances by one image")
 				await settle(app.photo); app.photo.gallery._process(1)

@@ -10,6 +10,8 @@ var jobs: Dictionary = {}
 var notice := ""
 var notice_until := 0
 var _poll_after := 0
+var _clock_after := 0
+var _clock_playing := false
 
 func _init(owner_video: Node3D) -> void: video = owner_video
 
@@ -22,6 +24,12 @@ func ready() -> bool:
 func frame() -> Dictionary:
 	var value: Dictionary = video.bookmark_snapshot()
 	return value if not value.is_empty() and video.media.state not in ["failed", "closed"] else {}
+
+func _playing() -> bool:
+	var details: Dictionary = video.media.playback.get("details", {})
+	if details.has("paused"):
+		return details.get("paused", "yes") == "no" and details.get("paused_for_cache", "no") != "yes" and details.get("eof_reached", "no") != "yes"
+	return video.requested_play and video.media.state == "playing"
 
 func mode() -> Dictionary:
 	return Mode.clean({"version": 1, "geometry": video.geometry, "stereo_sbs": video.stereo_sbs,
@@ -45,34 +53,25 @@ func screenshot() -> bool:
 
 func start() -> bool:
 	if not recording.is_empty() or busy("clip") or not ready(): return false
-	var details: Dictionary = video.media.playback.get("details", {})
-	var selected: int = video.audio_track_id if video.audio_track_id >= 0 else int(details.get("audio_track_id", 0))
-	var audio_index := -1
-	var audio_title := ""
-	var found_audio: bool = selected == 0 and (video.audio_track_id == 0 or details.get("audio_tracks", []).is_empty())
-	for track in details.get("audio_tracks", []):
-		if int(track.get("id", 0)) != selected: continue
-		found_audio = true
-		if track.get("external", false):
-			audio_title = str(track.get("title", ""))
-			if audio_title.is_empty(): tell(I18n.t("Audio track unavailable for export")); return false
-			break
-		audio_index = int(track.get("stream_index", -1))
-		if audio_index < 0: tell(I18n.t("Audio track unavailable for export")); return false
-	if not found_audio:
-		tell(I18n.t("Audio track unavailable for export")); return false
+	if not is_equal_approx(video.playback_speed, 1.0):
+		tell(I18n.t("Recording requires 1× playback")); return false
+	if not Methods.supports(video.platform, "original_capture_stop") or not Methods.supports(video.platform, "original_capture_clock"): return false
 	var position := int(frame().position_ms) * 1000
-	recording = {"kind": "clip", "uri": video.local_uri, "mode": mode(), "audio_index": audio_index, "audio_title": audio_title,
-		"start_us": position, "end_us": position}
+	var request := {"kind": "live_clip", "uri": video.local_uri, "mode": mode(), "session_id": video.media.session_id,
+		"start_us": position, "playing": _playing()}
+	var id: int = video.platform.original_capture_request(JSON.stringify(request))
+	if id <= 0: tell(I18n.t("Capture is busy")); return false
+	jobs[id] = {"kind": "clip", "uri": video.local_uri}
+	recording = {"id": id, "uri": video.local_uri, "start_us": position, "end_us": position}
+	_clock_after = 0
 	return true
 
 func stop() -> bool:
 	if recording.is_empty(): return false
 	_update_end()
-	var request := recording.duplicate(true)
+	var request := recording.duplicate()
 	recording.clear()
-	if int(request.end_us) <= int(request.start_us): tell(I18n.t("Recording is empty")); return true
-	_request(request)
+	video.platform.original_capture_stop(int(request.id), int(request.end_us))
 	return true
 
 func toggle() -> bool:
@@ -84,25 +83,43 @@ func _update_end() -> void:
 	if not current.is_empty(): recording.end_us = maxi(int(recording.end_us), int(current.position_ms) * 1000)
 
 func tick() -> void:
+	var now := Time.get_ticks_msec()
+	var advancing := _playing()
 	if not recording.is_empty():
 		_update_end()
+		if now >= _clock_after or advancing != _clock_playing:
+			_clock_after = now + 100
+			_clock_playing = advancing
+			video.platform.original_capture_clock(int(recording.id), int(recording.end_us), advancing)
 		if recording.uri != video.local_uri or video.media.state in ["closed", "failed", "ended"]: stop()
-	var now := Time.get_ticks_msec()
+	elif not jobs.is_empty() and now >= _clock_after:
+		_clock_after = now + 100
+		for id in jobs:
+			if jobs[id].kind == "clip": video.platform.original_capture_clock(int(id), 0, advancing)
 	if notice_until > 0 and now >= notice_until: notice = ""; notice_until = 0
 	if jobs.is_empty() or now < _poll_after: return
 	_poll_after = now + 150
 	for id in jobs.keys():
 		var result: Variant = JSON.parse_string(video.platform.original_capture_status(int(id)))
+		if result is Dictionary and result.get("state", "") == "recording" and int(recording.get("id", 0)) == int(id):
+			if result.has("start_us"): recording.start_us = int(result.start_us)
 		if not result is Dictionary or result.get("state", "saving") not in ["saved", "error"]: continue
+		if int(recording.get("id", 0)) == int(id): recording.clear()
 		jobs.erase(id)
 		if result.state == "saved":
 			tell(I18n.t("Saved to %s") % str(result.get("directory", "")) + "\n" + I18n.t("Find it in Library → Local") + " · " + I18n.t("Images" if result.get("kind", "screenshot") == "screenshot" else "Video"))
 			saved.emit(result)
 		else: tell(I18n.t(str(result.get("error", "Capture save failed"))))
 
-func snapshot() -> Dictionary:
+## The persistent HUD needs only local state, never native capability or frame-readiness queries.
+func status() -> Dictionary:
 	var active := not recording.is_empty()
-	return {"available": supported() and video.geometry in [1, 2, 3] and not video.local_uri.is_empty() and not video.packed_file, "ready": ready(),
-		"recording": active, "paused": active and (not video.requested_play or video.media.state != "playing"),
+	return {"recording": active, "paused": active and not _playing(),
 		"duration_ms": maxi(0, (int(recording.get("end_us", 0)) - int(recording.get("start_us", 0))) / 1000),
 		"picture_busy": busy("screenshot"), "clip_busy": busy("clip"), "notice": notice}
+
+func snapshot() -> Dictionary:
+	var value := status()
+	value["available"] = supported() and video.geometry in [1, 2, 3] and not video.local_uri.is_empty() and not video.packed_file
+	value["ready"] = ready()
+	return value

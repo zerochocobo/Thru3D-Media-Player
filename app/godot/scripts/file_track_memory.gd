@@ -4,12 +4,15 @@ extends "res://scripts/file_mode_memory.gd"
 # Only hashed original file identities and track metadata are persisted, never proxy URLs.
 const UNRESOLVED := -2
 const CHANNELS := ["audio", "subtitle"]
+const SubtitleSources := preload("res://scripts/subtitle_sources.gd")
 
 func _bank_path(bank: int) -> String:
 	return directory.path_join("file_tracks_%d.json" % bank)
 
 func _value_field() -> String:
 	return "tracks"
+
+func _max_bytes() -> int: return 2097152 # 128 videos, including explicit subtitle source URIs.
 
 func _valid_value(value: Variant) -> bool:
 	if not value is Dictionary or value.is_empty() or value.size() > 2: return false
@@ -35,7 +38,7 @@ static func valid_choice(value: Variant) -> bool:
 	var matches: Variant = value.get("matches")
 	if not (matches is int or matches is float) or not is_finite(float(matches)) \
 		or float(matches) != floorf(float(matches)) or float(matches) < 1 or float(matches) > 4096: return false
-	return (value.size() == 7 or (value.size() == 8 and value.get("external", false) and valid_file(value.get("file")))) and value.get("external") is bool and value.get("layout") is String \
+	return (value.size() == 7 or (value.size() == 8 and value.get("external", false) and (valid_file(value.get("file")) or SubtitleSources.valid_uri(value.get("uri"))))) and value.get("external") is bool and value.get("layout") is String \
 		and value.layout.length() == 64 and value.layout.is_valid_hex_number(false)
 
 static func valid_file(value: Variant) -> bool:
@@ -67,7 +70,9 @@ static func describe(id: int, tracks: Array) -> Dictionary:
 			result.id = id
 			result.layout = layout(tracks)
 			result.matches = tracks.filter(func(t): return t is Dictionary and int(t.get("id", 0)) > 0 and identity(t) == identity(track)).size()
-			if bool(track.get("external", false)) and valid_file(track.get("source_file")): result.file = track.source_file
+			if bool(track.get("external", false)):
+				if SubtitleSources.valid_uri(track.get("source_uri")): result.uri = track.source_uri
+				elif valid_file(track.get("source_file")): result.file = track.source_file
 			return result
 	return {}
 
@@ -79,6 +84,10 @@ static func resolve(choice: Dictionary, tracks: Array) -> int:
 	if choice.get("external", false) and choice.get("title", "") == "Clone voice":
 		var mixes := tracks.filter(func(track): return track is Dictionary and track.get("external", false) and str(track.get("title", "")).to_lower().ends_with(".si.mix.m4a"))
 		if mixes.size() == 1: return int(mixes[0].id)
+	if choice.has("uri"):
+		for track in tracks:
+			if track is Dictionary and track.get("external", false) and track.get("source_uri", "") == choice.uri: return int(track.id)
+		return UNRESOLVED
 	if choice.has("file"):
 		for track in tracks:
 			if track is Dictionary and track.get("external", false) and track.get("source_file", "") == choice.file: return int(track.id)

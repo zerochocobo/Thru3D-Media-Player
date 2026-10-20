@@ -23,6 +23,7 @@ func capture(menu: Node, uri: String) -> void:
 		if not menu._cloud_entries.any(func(item): return item.get("uri", "") == uri): return
 		context = {"type": "cloud", "path": menu._cloud_path(), "order": menu.file_actions.cloud_order(),
 			"cloud_id": str(menu._cloud_stack.back().get("cloud_id", "")), "next": menu._cloud_next,
+			"offsets":menu._cloud_offsets.duplicate(), "offset":menu._cloud_offsets[menu._cloud_page],
 			"from_first": menu._cloud_page == 0, "location": Location.capture(menu, {})}
 	elif menu.section == menu.Section.MEDIA_SERVER:
 		var browser: RefCounted = menu.server_browser
@@ -60,6 +61,8 @@ func _page(cursor: int) -> void:
 	_visited[cursor] = true
 	if context.type == "cloud":
 		_expected = {"path": context.path, "order": context.order, "offset": cursor}
+		if not context.has("offsets"): context.offsets = []
+		if not context.offsets.has(cursor): context.offsets.append(cursor)
 		if Methods.supports(platform, "media_cloud_directory_page"):
 			pending = int(platform.media_cloud_directory_page(context.path, cursor, false, context.order, context.cloud_id))
 		elif Methods.supports(platform, "media_cloud_sorted_page"):
@@ -99,6 +102,7 @@ func receive(id: int, payload: String) -> void:
 		if seen.has(uri): continue
 		seen[uri] = true
 		var metadata: Dictionary = raw.duplicate(true)
+		if context.type == "cloud": metadata["browse_offset"] = int(_expected.offset)
 		metadata.location = context.location.duplicate(true)
 		if context.type == "server": metadata.location.item_id = str(raw.get("id", ""))
 		items.append({"uri": uri, "title": title, "metadata": metadata})

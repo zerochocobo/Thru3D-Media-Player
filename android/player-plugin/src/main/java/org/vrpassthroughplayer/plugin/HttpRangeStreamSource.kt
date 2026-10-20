@@ -5,7 +5,7 @@ import java.net.HttpURLConnection
 import java.net.URI
 import java.util.concurrent.ConcurrentHashMap
 
-internal data class MediaSubtitleLink(val url: URI, val title: String, val extension: String = "srt")
+internal data class MediaSubtitleLink(val url: URI, val title: String, val extension: String = "srt", val language: String = "")
 internal data class MediaAudioLink(val url: URI, val identity: String, val title: String)
 internal data class MediaStreamLink(val url: URI, val identity: String,
     val subtitles: List<MediaSubtitleLink> = emptyList(), val audio: List<MediaAudioLink> = emptyList(), val basename: String = "",

@@ -4,6 +4,7 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include "live/live_capture.h"
 
 void quest_mpv_initialize_android(JNIEnv*, jobject);
 namespace {
@@ -11,8 +12,9 @@ namespace {
 struct Audio {
     mpv_handle* core = nullptr;
     bool loaded = false, ended = false, failed = false;
+    uint64_t capture_owner = 0;
     double duration = 0, position = 0;
-    ~Audio() { if (core) mpv_terminate_destroy(core); }
+    ~Audio() { if (core) mpv_terminate_destroy(core); quest::live::source_close(capture_owner); }
 };
 void check(int value) { if (value < 0) throw std::runtime_error("Audio decoder unavailable"); }
 double number(mpv_handle* core, const char* key, double fallback = 0) {
@@ -52,6 +54,7 @@ Java_org_vrpassthroughplayer_plugin_BackgroundAudioNative_open(JNIEnv* env, jcla
             if (!ca_path.empty()) option("tls-ca-file", ca_path.c_str());
         }
         check(mpv_initialize(audio->core));
+        audio->capture_owner = quest::live::source_open(audio->core);
         const char* raw = env->GetStringUTFChars(path, nullptr);
         if (!raw) return 0;
         std::string source(raw); env->ReleaseStringUTFChars(path, raw);

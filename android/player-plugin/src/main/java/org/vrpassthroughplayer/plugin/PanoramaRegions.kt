@@ -17,6 +17,9 @@ internal class PanoramaRegions(private val context: () -> Context?) {
     private val pending = AtomicInteger()
     @Volatile private var state = "{}"
     private var decoder: BitmapRegionDecoder? = null
+    private var tiff: File? = null
+    private var width = 0
+    private var height = 0
     private var directory: File? = null
     @Volatile private var closed = false
 
@@ -31,14 +34,20 @@ internal class PanoramaRegions(private val context: () -> Context?) {
                 val app = context() ?: error("No context")
                 val file = File(path).canonicalFile
                 require(file.path.startsWith(app.cacheDir.canonicalPath + File.separator))
-                require(file.isFile && file.length() <= PhotoBridge.MAX_BYTES)
+                val raw = PhotoBitmap.rawBounds(file)
+                require(file.isFile && (raw!=null || file.length() <= PhotoBridge.MAX_BYTES))
                 @Suppress("DEPRECATION")
-                val region = BitmapRegionDecoder.newInstance(file.path, false) ?: error("Unsupported image")
-                if (region.width !in 8192..65535 || region.height !in 1..65535) { region.recycle(); error("Unsupported dimensions") }
-                if (closed || token != epoch.get()) { region.recycle(); return@execute }
+                val region = if (PhotoBitmap.isTiff(file) || raw!=null) null else (BitmapRegionDecoder.newInstance(file.path, false) ?: error("Unsupported image"))
+                val info = if (region == null) PhotoBitmap.bounds(file) else null
+                val w = region?.width ?: info!!.outWidth
+                val h = region?.height ?: info!!.outHeight
+                if (w !in 8192..65535 || h !in 1..65535) { region?.recycle(); error("Unsupported dimensions") }
+                if (closed || token != epoch.get()) { region?.recycle(); return@execute }
                 decoder = region
+                tiff = if (region == null) file else null
+                width = w; height = h
                 directory = File(app.cacheDir, "panorama-regions/$token").apply { check(mkdirs() || isDirectory) }
-                state = JSONObject().put("state", "ready").put("width", region.width).put("height", region.height).toString()
+                state = JSONObject().put("state", "ready").put("width", width).put("height", height).toString()
             } catch (_: Throwable) {
                 detach()
                 if (token == epoch.get()) state = JSONObject().put("state", "error").toString()
@@ -52,13 +61,18 @@ internal class PanoramaRegions(private val context: () -> Context?) {
         worker.execute {
             try {
                 if (closed || session != epoch.get()) return@execute
-                val region = decoder ?: return@execute
+                val region = decoder
+                val original = tiff
+                if (region == null && original == null) return@execute
                 val left = column.toLong() * TILE; val top = row.toLong() * TILE
-                require(left in 0 until region.width.toLong() && top in 0 until region.height.toLong())
-                val core = Rect(left.toInt(), top.toInt(), minOf(region.width, left.toInt() + TILE), minOf(region.height, top.toInt() + TILE))
+                require(left in 0 until width.toLong() && top in 0 until height.toLong())
+                val core = Rect(left.toInt(), top.toInt(), minOf(width, left.toInt() + TILE), minOf(height, top.toInt() + TILE))
                 val rectangle = Rect(maxOf(0, core.left - 2), maxOf(0, core.top - 2),
-                    minOf(region.width, core.right + 2), minOf(region.height, core.bottom + 2))
-                val image = region.decodeRegion(rectangle, BitmapFactory.Options().apply {
+                    minOf(width, core.right + 2), minOf(height, core.bottom + 2))
+                val image = if (original != null) PhotoBitmap.region(original, rectangle.left, rectangle.top,
+                    rectangle.width(), rectangle.height(), 1, {
+                        if (closed || session != epoch.get()) throw InterruptedException()
+                    }) else region!!.decodeRegion(rectangle, BitmapFactory.Options().apply {
                     inSampleSize = 1; inPreferredConfig = Bitmap.Config.ARGB_8888; inScaled = false
                 }) ?: error("Tile unavailable")
                 val file = File(directory ?: error("Closed"), "tile.png")
@@ -81,6 +95,7 @@ internal class PanoramaRegions(private val context: () -> Context?) {
     }
     private fun detach() {
         decoder?.recycle(); decoder = null
+        tiff = null; width = 0; height = 0
         // Only this component's generated tile directory; never traverses source/media storage.
         directory?.let { File(it, "tile.png").delete(); it.delete() }; directory = null
     }

@@ -199,7 +199,7 @@ internal object CloudLibrary {
     fun effectiveOrder(provider: String, order: String): String =
         if (provider == CloudDrive.QUARK && order.startsWith("size_")) "name_asc" else order
 
-    fun browse(path: String, refresh: Boolean, offset: Int = 0, http: CloudTransport = CloudHttp, order: String = "", folderId: String = ""): JSONObject = safe {
+    fun browse(path: String, refresh: Boolean, offset: Int = 0, http: CloudTransport = CloudHttp, order: String = "", folderId: String = "", subtitlesOnly: Boolean = false): JSONObject = safe {
         val entries = JSONArray()
         var nextOffset = -1
         var total = -1
@@ -226,10 +226,11 @@ internal object CloudLibrary {
             synchronized(this) {
                 if (identity(credentials(id)) != identity(account)) throw CloudFailure("cloud_login_required")
                 if (Thread.currentThread().isInterrupted || (http as? CloudCancellation)?.cancelled == true) throw CloudFailure()
-                playbackPages.replace(id, identity(account), remote, page.files, offset == 0 && page.nextOffset < 0, folderId)
+                if (!subtitlesOnly) playbackPages.replace(id, identity(account), remote, page.files,
+                    offset == 0 && page.nextOffset < 0, folderId)
             }
             for (file in page.files) {
-                if (!file.folder && !MediaKinds.supported(file.name)) continue
+                if (!file.folder && !(if (subtitlesOnly) SidecarSubtitles.supportedFile(file.name) else MediaKinds.supported(file.name))) continue
                 val child = CloudPaths.child(path, file.name)
                 entries.put(JSONObject().put("id", child).put("title", file.name).put("container", file.folder)
                     .put("size", file.size).put("modified", file.modified).put("can_delete", client.canDelete && file.canDelete)
@@ -321,6 +322,15 @@ internal object CloudLibrary {
             url
         }
     }
+
+    /** Derived input retains the same object-bound resolver and logout boundary. */
+    @Synchronized fun playbackView(parent: String, layout: Mp4PlaybackLayout, server: LocalStreamServer): String? {
+        val owner = activeStreams.entries.firstOrNull { (_, streams) -> streams.any { it.first === server && it.second == parent } } ?: return null
+        val url = server.playbackView(parent, layout) ?: return null
+        owner.value.removeAll { it.first === server && !server.hasSource(it.second) }
+        owner.value.add(server to url)
+        return url
+    }
     fun sidecarSubtitles(uri: String, server: LocalStreamServer): List<SidecarSubtitles.Track> = safe {
         val (id, remote) = split(CloudPaths.path(uri))
         val account = credentials(id)
@@ -344,8 +354,8 @@ internal object CloudLibrary {
         val (id, remote) = split(CloudPaths.path(uri))
         val account = credentials(id)
         val selected = companionSelection(id, account, remote) ?: throw CloudFailure("cloud_file_missing")
-        val client = drive(account, folderId = selected.page.folderId)
-        val file = selected.subtitle(name)
+        val client = drive(account, selected.cancellation, selected.page.folderId)
+        val file = selected.subtitle(name, client)
         SidecarSubtitles.Track(publishCompanion(account, client, file, server, selected), name)
     }
     @Synchronized private fun companionSelection(id: String, account: JSONObject, remote: String): CloudPlaybackPages.Playback? =

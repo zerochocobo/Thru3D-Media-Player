@@ -401,7 +401,7 @@ class MediaServerClientTest {
                     path.endsWith("/PlaybackInfo") -> Reply(body = """{"MediaSources":[
                         {"Id":"wrong-source","SupportsDirectPlay":false,"MediaStreams":[{"Type":"Subtitle","Index":8,"IsExternal":true,"IsTextSubtitleStream":true}]},
                         {"Id":"selected-source","Protocol":"File","Size":64,"Path":"/private/film.mp4","MediaStreams":[
-                            {"Type":"Subtitle","Index":2,"IsExternal":true,"Codec":"subrip","DisplayTitle":"中文"},
+                            {"Type":"Subtitle","Index":2,"IsExternal":true,"Codec":"subrip","DisplayTitle":"字幕播放（SRT).srt","Language":"chi"},
                             {"Type":"Subtitle","Index":2,"IsExternal":true,"Codec":"subrip"},
                             {"Type":"Subtitle","Index":3,"IsExternal":false,"Codec":"subrip"},
                             {"Type":"Subtitle","Index":4,"IsExternal":true,"Codec":"pgs"},
@@ -463,6 +463,10 @@ class MediaServerClientTest {
                     assertArrayEquals(video, URI(movie).toURL().readBytes())
                     val tracks = library.sidecarSubtitles(uri)
                     assertEquals(provider, 1, tracks.size)
+                    if (provider in listOf("emby", "jellyfin")) {
+                        assertEquals("字幕播放（SRT).srt", tracks.single().title)
+                        assertEquals("chi", tracks.single().language)
+                    }
                     assertEquals(1, subtitleRequests.get())
                     assertArrayEquals(if (provider == "stash") vtt else srt, URI(tracks.single().location).toURL().readBytes())
                     assertTrue(tracks.single().location.startsWith("http://127.0.0.1:"))

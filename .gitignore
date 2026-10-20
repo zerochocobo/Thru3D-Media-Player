@@ -73,3 +73,10 @@ thru3d-signing.json
 **/voice.json
 **/voice.new
 **/reference.wav
+
+# Exact, reviewed image-decoder source dependencies (hash-checked by CMake).
+!third_party/openexr/imath-3.1.12.tar.gz
+!third_party/openexr/libdeflate-1.24.tar.gz
+!third_party/openexr/openexr-3.3.14.tar.gz
+!third_party/tiff/libjpeg-turbo-3.1.2.tar.gz
+!third_party/tiff/tiff-4.7.2.tar.xz

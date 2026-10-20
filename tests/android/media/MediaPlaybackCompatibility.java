@@ -17,6 +17,26 @@ import java.util.concurrent.atomic.AtomicInteger;
  * The controller must close the normal app before the optional cloud test to avoid a second DB owner. */
 public class MediaPlaybackCompatibility {
     private static ClassLoader appLoader;
+    private static final long throttleRate = Long.getLong("media.compat.throttle.bytes_per_sec", 0L);
+    private static long throttleNextNs;
+    private static void throttle(int count) throws IOException {
+        if (count <= 0 || throttleRate <= 0) return;
+        long due;
+        synchronized (MediaPlaybackCompatibility.class) {
+            throttleNextNs = Math.max(throttleNextNs, System.nanoTime()) + count * 1000000000L / throttleRate;
+            due = throttleNextNs;
+        }
+        long wait = due - System.nanoTime();
+        if (wait > 0) try { Thread.sleep(wait / 1000000, (int) (wait % 1000000)); }
+        catch (InterruptedException error) { Thread.currentThread().interrupt(); throw new IOException("Cancelled", error); }
+    }
+    private static class LimitedInput extends FilterInputStream {
+        LimitedInput(InputStream input) { super(input); }
+        public int read(byte[] data, int offset, int count) throws IOException {
+            int n = in.read(data, offset, Math.min(count, 65536)); throttle(n); return n;
+        }
+        public int read() throws IOException { int b = in.read(); if (b >= 0) throttle(1); return b; }
+    }
     private static final JSONArray upstreamRanges = new JSONArray();
     private static class ObservedConnection extends java.net.HttpURLConnection {
         private final java.net.HttpURLConnection original;
@@ -30,7 +50,7 @@ public class MediaPlaybackCompatibility {
         public void setUseCaches(boolean value) { original.setUseCaches(value); }
         public void setRequestProperty(String key, String value) { original.setRequestProperty(key, value); }
         public String getHeaderField(String key) { return original.getHeaderField(key); }
-        public InputStream getInputStream() throws IOException { return original.getInputStream(); }
+        public InputStream getInputStream() throws IOException { return throttleRate > 0 ? new LimitedInput(original.getInputStream()) : original.getInputStream(); }
         public int getResponseCode() throws IOException {
             long start = System.nanoTime();
             JSONObject row = new JSONObject();
@@ -131,8 +151,24 @@ public class MediaPlaybackCompatibility {
             boolean sequential = Boolean.getBoolean("media.compat.force.sequential"), policyChecked = sequential;
             if (sequential && server != null && Boolean.getBoolean("media.compat.sequential.reuse"))
                 report.put("sequential_transport_reuse", call(server, "enableInterleaveCache", url));
+            report.put("throttle_bytes_per_second", throttleRate);
             report.put("sequential", sequential).put("diagnostic_force_sequential", sequential)
                 .put("leading_audio_bytes", 0).put("metadata_probe_ms", 0).put("policy_diagnostic", "not_requested");
+            if (Boolean.getBoolean("media.compat.preflight.view") && server != null) {
+                Class<?> function = appLoader.loadClass("kotlin.jvm.functions.Function0");
+                Object cancelled = Proxy.newProxyInstance(function.getClassLoader(), new Class<?>[]{function}, (proxy, method, values) -> false);
+                long probeStart = System.nanoTime();
+                Object decision = call(singleton("Mp4InterleavePolicy"), "inspectHttp", url, cancelled);
+                report.put("policy_diagnostic", call(decision, "getDiagnostic"))
+                    .put("metadata_probe_ms", (System.nanoTime() - probeStart) / 1e6);
+                Object layout = call(decision, "getPlaybackLayout");
+                if (layout == null) throw new Exception("Safe playback view unavailable");
+                url = (String) call(server, "playbackView", url, layout);
+                if (url == null) throw new Exception("Playback view unavailable");
+                policyChecked = true;
+                report.put("reinterleaved_view", true).put("preflight_view", true)
+                    .put("policy_diagnostic", call(decision, "getDiagnostic")).put("metadata_probe_ms", (System.nanoTime() - probeStart) / 1e6);
+            }
             display = EGL14.eglGetDisplay(EGL14.EGL_DEFAULT_DISPLAY); int[] versions = new int[2];
             if (!EGL14.eglInitialize(display, versions, 0, versions, 1)) throw new Exception("EGL initialize");
             EGLConfig[] configs = new EGLConfig[1]; int[] count = new int[1];
@@ -183,7 +219,18 @@ public class MediaPlaybackCompatibility {
                         sequential = (Boolean) call(decision, "getSequential");
                         report.put("sequential", sequential).put("leading_audio_bytes", call(decision, "getLeadingAudioBytes"))
                             .put("policy_diagnostic", call(decision, "getDiagnostic")).put("metadata_probe_ms", (System.nanoTime() - probeStart) / 1e6);
-                        if (sequential) {
+                        Object layout = call(decision, "getPlaybackLayout");
+                        if (Boolean.getBoolean("media.compat.playback.view") && (Boolean) call(decision, "getPreferPlaybackView") && layout != null && server != null) {
+                            String view = (String) call(server, "playbackView", url, layout);
+                            if (view == null) throw new Exception("Playback view unavailable");
+                            url = view;
+                            report.put("reinterleaved_view", true).put("view_started_seconds", (System.nanoTime() - start) / 1e9);
+                            readPolicyRestarts++;
+                            close(handle); handle = 0;
+                            int position = details == null ? initialPosition : (int) Math.max(initialPosition, details.optDouble("position_seconds", 0) * 1000);
+                            handle = create(context, url, ca, layer ? images.getSurface() : null, false, position);
+                            firstFrame = -1; tickets = 0; drained.set(0);
+                        } else if (sequential) {
                             report.put("interleave_failure_observed", status); readPolicyRestarts++;
                             close(handle); handle = 0;
                             int position = details == null ? initialPosition : (int) Math.max(initialPosition, details.optDouble("position_seconds", 0) * 1000);

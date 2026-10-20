@@ -96,7 +96,15 @@ internal data class PlaybackFailure(
 
         /** Consult only the current video's stream, and keep native errors even when upstream is clearer. */
         fun report(code: String, error: Throwable, stage: String, upstream: PlaybackFailure? = null): JSONObject {
-            val original = from(error, stage)
+            val failure = from(error, stage)
+            // RVM errors belong to the effect, even while the media reader is starting.
+            // A stale proxy failure must not replace a GPU initialization failure.
+            val original = if (code == "MPV_RVM_FAILED") {
+                val gpu = failure.detail.contains("MNN OpenCL backend unavailable") ||
+                    failure.detail.contains("MNN OpenCL session creation failed")
+                failure.copy(reason = if (gpu) "ai_gpu_unavailable" else "ai_processing_failed",
+                    stage = if (gpu) "ai_initialization" else "ai_processing")
+            } else failure
             val selected = if (upstream != null && (original.reason == "unknown" ||
                     original.reason == "unknown_format" && upstream.reason != "unknown")) upstream else original
             return selected.copy(mpvCode = original.mpvCode).json().put("code", code)

@@ -27,6 +27,89 @@ class Host extends RefCounted:
 func check(value: bool, message: String) -> void:
 	checks += 1
 	if not value: failures.append(message)
+
+func click_choice(menu: Node3D, target: int, hand: String) -> void:
+	var button: Dictionary = menu._buttons.filter(func(item): return item.target == target)[0]
+	var origin: Vector3 = button.node.to_global(Vector3(0, 0, 1))
+	var direction: Vector3 = -menu.global_basis.z
+	check(menu.press_pointer(hand, origin, direction, true), "Controller ray presses the sample track control")
+	menu.release_pointer(hand, origin, direction, true)
+
+func check_sample_track(menu: Node3D, ui: Dictionary) -> void:
+	var saved_state: Dictionary = ui.narration_clone_state.duplicate(true)
+	var saved_audio: Array = ui.get("audio_options", [])
+	var saved_language: String = menu.I18n.choice
+	var events: Array = []; var actions: Array = []
+	var listener := func(key: String, value: Variant): events.append([key, value])
+	var action_listener := func(action: String): actions.append(action)
+	menu.setting_requested.connect(listener); menu.action_requested.connect(action_listener)
+	var headings := {"zh": "取样音轨", "zh_Hant": "取樣音軌", "ja": "サンプル音声トラック", "en": "Sample track"}
+	for language in headings:
+		menu.I18n.use(language); ui.audio_options = []
+		ui.narration_clone_state.audio_options = [{"id": 1}]; ui.narration_clone_state.audio_id = 1; menu.refresh()
+		check(menu.text_snapshot().contains(headings[language]), "Sample track has its own unambiguous heading: " + language)
+		check(menu._labels.any(func(node): return node.text == menu.I18n.t("Track %d") % 1), "Unnamed single audio track displays its localized name")
+		check(not menu.choices.targets.values().any(func(item): return item.key == "narration_clone_audio"), "Single audio track has no redundant selection button")
+		ui.narration_clone_state.audio_options = [{"id": 7, "language": "jpn"}, {"id": 19, "title": "Close"}]
+		ui.narration_clone_state.audio_id = 7; menu.refresh()
+		var expected: String = menu.I18n.t("Track %d") % 7 + " · " + menu.I18n.t("Japanese")
+		check(menu.clone_panel._audio_label({"id": 7, "language": "jpn"}) == expected, "Unnamed multilingual audio retains its track number and language")
+		ui.audio_options = [{"value": 7, "label": expected}, {"value": 19, "label": "Close"}]
+		ui.narration_clone_state.audio_id = -1; menu.refresh()
+		var target: int = menu.choices.targets.keys().filter(func(id): return menu.choices.targets[id].key == "narration_clone_audio")[0]
+		var selector: Dictionary = menu._buttons.filter(func(item): return item.target == target)[0]
+		check(selector.select_caption.text == menu.I18n.t("Auto"), "Automatic selection never exposes the internal -1 value")
+		ui.narration_clone_state.audio_id = 7; menu.refresh()
+		target = menu.choices.targets.keys().filter(func(id): return menu.choices.targets[id].key == "narration_clone_audio")[0]
+		check(menu.choices.targets[target].kind == "open", "Multiple audio tracks use the existing dropdown selector")
+		click_choice(menu, target, "right_hand")
+		check(menu.choices.opened == "narration_clone_audio" and menu.choices.popup.choices[1].label == "Close", "Sample dropdown preserves literal track titles")
+		var chosen: Array = menu.choices.targets.keys().filter(func(id): return menu.choices.targets[id].get("key", "") == "narration_clone_audio" and menu.choices.targets[id].kind == "choose" and menu.choices.targets[id].value == 19)
+		check(chosen.size() == 1, "Sample dropdown retains the backend track ID")
+		if not chosen.is_empty(): click_choice(menu, chosen[0], "left_hand")
+		check(events.size() == 1 and events[0] == ["narration_clone_audio", 19] and actions.is_empty(), "Changing sample audio sends only the existing clone setting")
+		events.clear()
+	menu.setting_requested.disconnect(listener); menu.action_requested.disconnect(action_listener)
+	ui.narration_clone_state = saved_state; ui.audio_options = saved_audio; menu.I18n.use(saved_language); menu.refresh()
+
+func check_clone_close(menu: Node3D, ui: Dictionary, commands: Array) -> void:
+	var video_actions: Array = []
+	var listener := func(action: String): video_actions.append(action)
+	menu.action_requested.connect(listener)
+	for item in [{"state": "ready"}, {"state": "encoding"}, {"state": "playing_original"},
+			{"state": "playing_clone", "library": true}, {"state": "ready", "naming": true},
+			{"state": "ready", "library": true, "delete": true}]:
+		ui.narration_clone_state.state = item.state
+		menu._subtitle_open = true
+		menu.clone_panel.open(item.get("library", false))
+		if item.get("naming", false):
+			menu.clone_panel.naming = {"operation": "save", "key": "b"}
+			menu.clone_panel.edit()
+		if item.get("delete", false): menu.clone_panel.confirm_delete = ID
+		menu.refresh()
+		var hand := "left_hand" if item.get("library", false) else "right_hand"
+		var button: Dictionary = menu._buttons.filter(func(value): return value.target == 107)[0]
+		var origin: Vector3 = button.node.to_global(Vector3(0, 0, 1))
+		var direction: Vector3 = -menu.global_basis.z
+		check(menu.ray_hit(origin, direction).get("target", -1) == 107, "Transport X remains reachable below the clone panel: " + str(item))
+		check(menu._tips[107] == menu.I18n.t("Close"), "Transport X describes closing the open panel")
+		var before := commands.size()
+		check(menu.press_pointer(hand, origin, direction, true), "Controller ray presses the transport X")
+		menu.release_pointer(hand, origin, direction, true)
+		check(not menu.clone_panel.opened and menu._subtitle_open and menu.visible, "Transport X closes only the clone panel: " + str(item))
+		check(commands.size() == before + 1 and commands.back().operation == "close", "Transport X sends exactly one existing clone close command")
+		check(not menu.clone_panel.editor.active() and menu.clone_panel.naming.is_empty() and menu.clone_panel.confirm_delete.is_empty(), "Transport X clears the clone editor and confirmation")
+		check(video_actions.is_empty(), "Closing a clone panel never dispatches a video action")
+		if menu.clone_panel.opened: menu.clone_panel.close()
+	ui.narration_clone_state.state = "ready"
+	check(menu._tips[107] == menu.I18n.t("Close video"), "Transport X restores its video tooltip after the panel closes")
+	menu._activate(107)
+	check(video_actions == ["stop"] and not menu._subtitle_open, "Without a clone panel, X retains the original close-video action")
+	menu._activate(107)
+	check(video_actions == ["stop", "stop"], "Plain transport X still dispatches the original close-video action")
+	menu.action_requested.disconnect(listener)
+	menu._subtitle_open = true
+
 func _initialize() -> void: call_deferred("_run")
 func _run() -> void:
 	var host := Host.new(); var video := Video.new(); root.add_child(video); video.set_process(false); video.platform = host
@@ -135,6 +218,7 @@ func _run() -> void:
 	var clone_commands: Array = []
 	menu.setting_requested.connect(func(key: String, value: Variant):
 		if key == "narration_clone": clone_commands.append(value))
+	check_sample_track(menu, ui)
 	var operations: Array = []; var save_buttons: Array = []
 	for target in menu.clone_panel.actions:
 		var action: Dictionary = menu.clone_panel.actions[target]; operations.append(action.operation)
@@ -171,6 +255,7 @@ func _run() -> void:
 	stop_targets = menu.clone_panel.actions.keys().filter(func(target): return menu.clone_panel.actions[target].operation == "stop")
 	menu.clone_panel.activate(stop_targets[0]); check(stop_targets.size() == 1 and clone_commands.back().operation == "stop", "Saved voice uses its own preview button to stop")
 	ui.narration_clone_state.merge({"operation": "", "state": "ready"}, true)
+	check_clone_close(menu, ui, clone_commands)
 	menu.clone_panel.opened = false; ui.narration_enabled = true; ui.narration_preview_busy = true; menu.refresh()
 	var sample: Dictionary = menu._buttons.filter(func(item): return item.target == menu.NARRATION_PREVIEW)[0]
 	check(sample.node.get_child(1).material_override.albedo_texture == menu.Icons.texture("stop"), "Subtitle voice audition shows a stop icon while active")

@@ -8,6 +8,8 @@
 #include <cstring>
 #include <stdexcept>
 
+extern "C" const char* vrpp_cl_initialization_error();
+
 namespace quest {
 namespace {
 constexpr std::array<int, 4> kStateChannels{16, 20, 40, 64}; // upstream RVM MobileNetV3; a model may declare others
@@ -55,7 +57,11 @@ MnnRvmBackend::MnnRvmBackend(const void* model, size_t bytes, int width, int hei
         require(eye.session != nullptr, "MNN OpenCL session creation failed");
         MNNForwardType main = MNN_FORWARD_CPU;
         net_->getSessionInfo(eye.session, MNN::Interpreter::BACKENDS, &main);
-        require(main == MNN_FORWARD_OPENCL, "MNN OpenCL backend unavailable; refusing CPU execution");
+        if (main != MNN_FORWARD_OPENCL) {
+            const std::string detail = vrpp_cl_initialization_error();
+            throw std::runtime_error("MNN OpenCL backend unavailable; refusing CPU execution" +
+                                     (detail.empty() ? std::string() : "; " + detail));
+        }
         eye.src = net_->getSessionInput(eye.session, "src");
         require(eye.src != nullptr, "MNN RVM src input missing");
         // RGB, or RGBA (4th channel ignored; keeps MNN's 4-channel blocks aligned) when the model declares it.

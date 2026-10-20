@@ -92,10 +92,10 @@ internal class StorageDocumentTree(private val provider: Provider) {
         return JSONArray().apply { entries.forEach { put(row(at.tree, it)) } }
     }
     /** A selected subfolder stays explicit: it is never silently presented as the disk root. */
-    fun root(volume: String): JSONArray {
+    fun root(volume: String, mediaOnly: Boolean = true): JSONArray {
         val roots = grants(volume)
         if (roots.isEmpty()) throw AccessDeniedException("document")
-        roots.firstOrNull { it.path.isEmpty() }?.let { return directory(StorageDocumentPolicy.document(it, it)) }
+        roots.firstOrNull { it.path.isEmpty() }?.let { return directory(StorageDocumentPolicy.document(it, it), mediaOnly) }
         return JSONArray().apply { roots.forEach { tree ->
             val uri = StorageDocumentPolicy.document(tree, tree)
             val entry = provider.query(uri, false).firstOrNull { it.id == tree.text && it.directory }
@@ -103,12 +103,12 @@ internal class StorageDocumentTree(private val provider: Provider) {
             put(row(tree, entry))
         } }
     }
-    fun filePath(path: String, root: String, volume: String): JSONArray {
+    fun filePath(path: String, root: String, volume: String, mediaOnly: Boolean = true): JSONArray {
         val relative = path.removePrefix(root.trimEnd('/')).trimStart('/')
-        if (relative.isEmpty()) return root(volume)
+        if (relative.isEmpty()) return root(volume, mediaOnly)
         val doc = StorageDocumentPolicy.id("$volume:$relative")
         val tree = grants(volume).firstOrNull { it.contains(doc) } ?: throw AccessDeniedException("document")
-        return directory(StorageDocumentPolicy.document(tree, doc))
+        return directory(StorageDocumentPolicy.document(tree, doc), mediaOnly)
     }
     private fun validName(name: String) = name.isNotEmpty() && name !in listOf(".", "..") && name.none { it == '/' || it == '\\' || it.code < 32 }
     private fun row(tree: StorageDocumentPolicy.Id, entry: Entry): JSONObject {

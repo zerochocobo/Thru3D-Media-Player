@@ -7,8 +7,9 @@ internal data class AudioReadSpan(val start: Long, val end: Long)
 /** Retain compressed audio bytes, not the video a socket speculatively emits
  * after them. Called under the owning transport lock. Valid intervals prevent
  * a partial response from publishing unfilled bytes as cached audio. */
-internal class Mp4AudioPacketCache(private val spans: List<AudioReadSpan>, private val budget: Int = 8 * 1024 * 1024,
+internal class Mp4AudioPacketCache(private val spans: List<AudioReadSpan>, private val budget: Int = DEFAULT_BUDGET_BYTES,
                                  private val maxEntries: Int = 4096) {
+    companion object { const val DEFAULT_BUDGET_BYTES = 8 * 1024 * 1024 }
     private class Packet(val bytes: ByteArray, var from: Int, var to: Int)
     private val packets = LinkedHashMap<Long, Packet>(32, .75f, true)
     private var bytes = 0L

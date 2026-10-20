@@ -43,7 +43,8 @@ internal class PanoramaDownload(private val context: () -> Context?, private val
                 current()
                 context() ?: error("Image download failed")
                 val directory = originals.prepare()
-                val remaining = 2L * 1024 * 1024 * 1024 - (directory.listFiles()?.sumOf { it.length() } ?: 0) - 64 * 1024
+                val remaining = minOf(12L * 1024 * 1024 * 1024 - (directory.listFiles()?.sumOf { it.length() } ?: 0),
+                    directory.usableSpace) - 64L * 1024 * 1024
                 require(remaining > 0) { "Panorama storage is full" }
                 var next = url
                 var http: HttpURLConnection? = null
@@ -69,7 +70,7 @@ internal class PanoramaDownload(private val context: () -> Context?, private val
                     if (token == epoch.get()) state = JSONObject().put("state", "page").put("url", next)
                     return@execute
                 }
-                require(type in PanoramaWebPolicy.imageTypes || type == "application/octet-stream") { "Choose a JPG, PNG or WebP original" }
+                require(type in PanoramaWebPolicy.imageTypes || type == "application/octet-stream") { "Choose a supported image original" }
                 val length = response.contentLengthLong
                 require(length <= PhotoBridge.MAX_BYTES) { "Image too large" }
                 require(length <= remaining) { "Panorama storage is full" }
@@ -78,7 +79,7 @@ internal class PanoramaDownload(private val context: () -> Context?, private val
                 partial = File.createTempFile("download-", ".part", directory)
                 var count = 0L; var reported = 0L
                 response.inputStream.use { input -> partial!!.outputStream().use { output ->
-                    // Reject HDR/EXR/HTML/archive responses before saving a potentially huge body.
+                    // Check the actual format before saving a potentially huge body.
                     val prefix = ByteArray(12)
                     var offset = 0
                     while (offset < prefix.size) {
@@ -87,7 +88,7 @@ internal class PanoramaDownload(private val context: () -> Context?, private val
                         if (read < 0) break
                         offset += read
                     }
-                    require(offset == prefix.size && PanoramaWebPolicy.imageHeader(prefix)) { "Choose a JPG, PNG or WebP original" }
+                    require(offset == prefix.size && PanoramaWebPolicy.imageHeader(prefix)) { "Choose a supported image original" }
                     output.write(prefix); count = prefix.size.toLong()
                     val buffer = ByteArray(64 * 1024)
                     while (true) {
@@ -104,11 +105,10 @@ internal class PanoramaDownload(private val context: () -> Context?, private val
                 } }
                 current()
                 require(length < 0 || count == length) { "Image download failed" }
-                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                BitmapFactory.decodeFile(partial!!.path, bounds)
-                require(bounds.outMimeType in PanoramaWebPolicy.imageTypes) { "Choose a JPG, PNG or WebP original" }
+                val bounds = PhotoBitmap.bounds(partial!!)
+                require(bounds.outMimeType in PanoramaWebPolicy.imageTypes) { "Choose a supported image original" }
                 require(PanoramaWebPolicy.highResolution(bounds.outWidth, bounds.outHeight)) { "Choose an 8K or larger original" }
-                val actualExtension = when (bounds.outMimeType) { "image/png" -> "png"; "image/webp" -> "webp"; else -> "jpg" }
+                val actualExtension = when (bounds.outMimeType) { "image/png" -> "png"; "image/webp" -> "webp"; "image/tiff" -> "tif"; "image/vnd.radiance" -> "hdr"; "image/x-exr" -> "exr"; else -> "jpg" }
                 val target = File(directory, "${name}_${System.nanoTime()}.$actualExtension")
                 require(partial!!.renameTo(target)) { "Image download failed" }
                 partial = null
@@ -131,7 +131,7 @@ internal class PanoramaDownload(private val context: () -> Context?, private val
             catch (error: Throwable) {
                 if (!closed && token == epoch.get()) state = JSONObject().put("state", "error")
                     .put("error", error.message?.takeIf { it in setOf("Image too large", "Panorama storage is full",
-                        "Choose an 8K or larger original", "Choose a JPG, PNG or WebP original") } ?: "Image download failed")
+                        "Choose an 8K or larger original", "Choose a supported image original") } ?: "Image download failed")
             } finally { partial?.delete(); active?.disconnect(); if (token == epoch.get()) connection = null }
         }
     }

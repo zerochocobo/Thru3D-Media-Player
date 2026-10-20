@@ -30,6 +30,8 @@ The project license does not replace third-party notices or claim ownership of u
 | p115rsacipher adaptation | MIT; source and attribution in `third_party/p115rsacipher`. |
 | Gradle wrapper | Apache-2.0; license and notice in `third_party/gradle`. |
 | Belfast Sunset (Pure Sky) | Unmodified Poly Haven background, CC0-1.0; source and attribution are kept with the image. |
+| Morning Sky / Kloppenheim 06 Pure Sky | Derived Poly Haven CC0 background; conversion recipe, attribution and derived-file hash accompany the image. |
+| TIFF / HDR / OpenEXR decoders | Original libtiff, libjpeg-turbo (including IJG notices), OpenEXR, Imath and libdeflate terms retained with five pinned source archives in `third_party/tiff` and `third_party/openexr`. |
 | edge264-mvc | BSD-3-Clause; pinned source and original notice in `third_party/edge264-mvc`. |
 | libbluray / libudfread | LGPL-2.1-or-later; pinned sources, adapter/build modifications and original license texts are retained. |
 | USB filesystem backend | FatFs BSD-style notice, NTFS-3G GPL-2.0-or-later, and Apache-2.0 libaums BOT/SCSI adaptation notice; pinned archives and source lock in `third_party/usb`, native configuration and read-only adapters in `native/usb`. |

@@ -55,6 +55,25 @@ class OpenListPlaybackTest {
         assertEquals("/Movies/movie.zh.srt", file.id)
         assertEquals("99", file.objectId)
     }
+    @Test fun otherProvidersRecoverCaptionsBeyondTheFirstPageOnAHistoryOpen() {
+        for (provider in listOf(CloudDrive.BAIDU, CloudDrive.ALIYUN, CloudDrive.QUARK, CloudDrive.ONEDRIVE, CloudDrive.WEBDAV)) {
+            val offsets = ArrayList<Int>()
+            val client = OpenListBackend.Client(mount, provider) { _, route, body ->
+                assertEquals("/directory", route)
+                assertEquals("/Movies", body!!.getString("path"))
+                val offset = body.getInt("offset"); offsets.add(offset)
+                val rows = JSONArray()
+                if (offset == 0) repeat(48) { rows.put(JSONObject().put("name", if (it == 0) "movie.mp4" else "other-$it.bin").put("is_dir", false).put("size", 100)) }
+                else rows.put(JSONObject().put("name", "movie.zh.srt").put("is_dir", false).put("size", 100))
+                JSONObject().put("data", JSONObject().put("content", rows).put("total", 49).put("next_offset", if (offset == 0) 48 else -1))
+            }
+            val selected = CloudPlaybackPages.Playback("/Movies/movie.mp4", "mount", CloudPlaybackPages.Selection())
+            val captions = SidecarSubtitles.forCloud(selected.path, selected.automatic(client)) { it.id }
+            assertEquals(listOf("movie.zh.srt"), captions.map { it.title })
+            selected.automatic(client)
+            assertEquals(listOf(0, 48), offsets)
+        }
+    }
     @Test fun knownParentReachesPlaybackCompanionsAndManagementRequests() {
         val routes=ArrayList<String>()
         val client=OpenListBackend.Client(mount,CloudDrive.OPEN115,"42") { _,route,body ->

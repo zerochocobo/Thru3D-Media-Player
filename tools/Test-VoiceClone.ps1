@@ -24,6 +24,6 @@ if ($Render) {
     if ($env:OS -eq 'Windows_NT') { $start.WindowStyle='Hidden' }
     $process = Start-Process @start
     $result = (Get-Content -LiteralPath $log -Raw) + (Get-Content -LiteralPath $errorLog -Raw)
-    if ($process.ExitCode -ne 0 -or $result -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:)' -or $result -notmatch 'Clone voice render layouts=116 failures=0') { throw "Voice clone render regression failed. See $log" }
+    if ($process.ExitCode -ne 0 -or $result -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:)' -or $result -notmatch 'Clone voice render layouts=128 failures=0') { throw "Voice clone render regression failed. See $log" }
 }
 # Local checks only. This script never connects to, installs on, or starts a headset.

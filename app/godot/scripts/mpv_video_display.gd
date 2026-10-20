@@ -149,7 +149,6 @@ var mode_memory := ModeMemory.new()
 var captures := preload("res://scripts/video_capture.gd").new(self)
 var _capture_layout_pending := false
 var _capture_preference_exists := false
-var _capture_internal_reopen := false
 var track_memory := TrackMemory.new()
 const AudioTiming := preload("res://scripts/file_audio_timing.gd")
 var audio_timing := AudioTiming.new()
@@ -237,6 +236,7 @@ var _layer_session := false # the native session decodes into the layer surface
 var _layer_requested := false
 var _network_interleave_compat := false
 var _network_interleave_next := false
+var _keep_interleave_during_close := false
 var _eye_buffer_only := false # the next open stays on the eye-buffer path (one-shot)
 ## This file left the layer for a shader effect: back on the layer once the effect is off again.
 var _layer_return_uri := ""
@@ -630,7 +630,9 @@ func open_local(uri: String, title: String, start_ms: int = 0, restore_mode: boo
 		playback_failed.emit()
 		return false
 	cancel_pending_open()
+	_keep_interleave_during_close = network_interleave
 	close_video()
+	_keep_interleave_during_close = false
 	_capture_layout_pending = restore_mode
 	_capture_preference_exists = not mode_memory.lookup(uri).is_empty()
 	# Alpha-packed and Alpha-wanted files say so in their names (PTMediaServer / DeoVR markers).
@@ -782,7 +784,9 @@ func _unbind() -> void:
 		caption.visible = false
 
 func close_video() -> void:
-	if not _capture_internal_reopen: captures.stop()
+	captures.stop()
+	if not _keep_interleave_during_close and PlatformMethods.supports(platform, "set_mpv_interleave_compat"):
+		platform.set_mpv_interleave_compat(false)
 	_network_interleave_compat = false
 	_network_interleave_next = false
 	commit_stereo_view()
@@ -1154,6 +1158,7 @@ func alpha_ready() -> bool:
 
 func set_playback_speed(value: float) -> bool:
 	if not is_finite(value) or value < 0.25 or value > 3.0 or not media.accepts(media.session_id): return false
+	if not is_equal_approx(playback_speed, value): captures.stop()
 	if not PlatformMethods.supports(platform, "set_mpv_speed") or not platform.set_mpv_speed(media.session_id, value): return false
 	playback_speed = value
 	changed.emit()
@@ -1394,6 +1399,19 @@ func select_subtitle_file(filename: String, restoring: bool = false) -> bool:
 		changed.emit(); return false
 	changed.emit(); return true
 
+func select_subtitle_uri(uri: String, restoring: bool = false) -> bool:
+	if not TrackMemory.SubtitleSources.valid_uri(uri) or not media.accepts(media.session_id) or _subtitle_load_request > 0 \
+		or not PlatformMethods.supports(platform, "load_mpv_subtitle_uri"): return false
+	_subtitle_file_sequence += 1; _subtitle_load_request = _subtitle_file_sequence
+	_subtitle_files_session = media.session_id; _subtitle_loaded_track = 0; _subtitle_load_restore = restoring
+	subtitle_file_loading = TrackMemory.SubtitleSources.filename(uri); subtitle_file_error = ""
+	if not restoring:
+		_track_restore.erase("subtitle"); _subtitle_auto_pending = false
+	if not platform.load_mpv_subtitle_uri(media.session_id, _subtitle_load_request, uri):
+		_subtitle_load_request = 0; subtitle_file_loading = ""; subtitle_file_error = "Unable to load subtitle"
+		changed.emit(); return false
+	changed.emit(); return true
+
 func _on_subtitle_files(id: int, payload: String) -> void:
 	if id != media.session_id or not media.accepts(id): return
 	var result: Variant = JSON.parse_string(payload)
@@ -1414,8 +1432,8 @@ func _on_subtitle_files(id: int, payload: String) -> void:
 			_finish_subtitle_file()
 		else:
 			_subtitle_load_request = 0; subtitle_file_loading = ""; subtitle_file_error = "Unable to load subtitle"
-			if _subtitle_load_restore:
-				_track_restore.erase("subtitle"); _track_choices.erase("subtitle"); _auto_select_subtitle()
+			# Cloud discovery may still add this file after the optional reload failed.
+			# Retain its identity; the attempted flag prevents repeated downloads.
 	changed.emit()
 
 func _finish_subtitle_file() -> void:
@@ -1478,16 +1496,19 @@ func _restore_tracks() -> void:
 		if id == TrackMemory.UNRESOLVED:
 			# A remembered arbitrary sibling must be loaded again before its MPV id can resolve.
 			var filename := str(_track_restore[channel].get("file", ""))
-			if channel == "subtitle" and not filename.is_empty() and not _subtitle_restore_attempted and media.playback.get("details", {}).has("subtitle_tracks"):
+			var uri := str(_track_restore[channel].get("uri", ""))
+			if channel == "subtitle" and (not filename.is_empty() or not uri.is_empty()) and not _subtitle_restore_attempted and media.playback.get("details", {}).has("subtitle_tracks"):
 				_subtitle_restore_attempted = true
-				if not select_subtitle_file(filename, true):
-					_track_restore.erase(channel); _track_choices.erase(channel)
+				if not uri.is_empty(): select_subtitle_uri(uri, true)
+				else: select_subtitle_file(filename, true)
 			continue # External tracks can arrive after FILE_LOADED.
 		var accepted := set_audio_options(id, audio_volume, audio_muted) if channel == "audio" else set_subtitle_track(id, false)
 		if accepted:
 			_track_choices[channel] = TrackMemory.describe(id, _raw_tracks(channel))
 			_track_restore.erase(channel)
-			if channel == "subtitle": _subtitle_auto_pending = false
+			if channel == "subtitle":
+				_subtitle_auto_pending = false
+				subtitle_file_error = ""
 	_auto_select_subtitle()
 
 func audio_timing_key() -> String: return _audio_timing_key
@@ -1584,6 +1605,12 @@ func _auto_select_subtitle() -> void:
 			if bool(track.get("external", false)) and stems.any(func(stem): return not stem.is_empty() and filename == stem + "." + extension):
 				if set_subtitle_track(int(track.id), false): _subtitle_auto_pending = false
 				return
+	# Server captions often have a generic display name instead of the video basename.
+	# A sole supported external caption needs no filename or language guess.
+	var external := subtitle_tracks().filter(func(track): return bool(track.get("external", false)))
+	if external.size() == 1:
+		if set_subtitle_track(int(external[0].id), false): _subtitle_auto_pending = false
+		return
 	# Unlabelled tracks stay available for manual selection. Prefer an explicit Chinese
 	# script over generic zh, without treating Simplified and Traditional as equivalent.
 	var target := "zh_Hans" if I18n.language == "zh" else I18n.language
@@ -1610,7 +1637,7 @@ static func _subtitle_filename(location: String) -> String:
 	return location.get_file().to_lower()
 
 static func _subtitle_language(track: Dictionary) -> String:
-	var declared := str(track.get("language", "")).strip_edges().to_lower()
+	var declared := str(track.get("server_language", track.get("language", ""))).strip_edges().to_lower()
 	var language := _subtitle_language_code(declared)
 	if language.is_empty() and declared not in ["", "und", "unknown"]: return declared
 	if not language.is_empty() and language != "zh": return language
@@ -2357,12 +2384,14 @@ func _reopen_after_context_loss(uri: String, title: String, position_ms: int, re
 	var alignment := Vector2(stereo_horizontal, stereo_vertical)
 	var spatial := [_spatial_video, spatial_metadata(), spatial_auto_disparity]
 	var tracks := _capture_track_choices()
+	var narration_state := narration.capture_reopen()
 	var timing := [_subtitle_timing_key, subtitle_delay]
 	var whisper := audio_whisper
 	var boost_mark := audio_boost_saved
 	var whisper_save := _whisper_remember or _whisper_restore_remember
 	var auto_subtitle := _subtitle_auto_pending # An internal reopen keeps an unfinished automatic choice.
 	if open_local(uri, title, position_ms, false, alpha_wanted()):
+		narration.restore_reopen(narration_state)
 		_subtitle_auto_pending = auto_subtitle
 		_queue_track_restore(tracks)
 		_subtitle_timing_key = timing[0]; subtitle_delay = timing[1]; subtitles.set_delay(subtitle_delay); _subtitle_delay_pending = true
@@ -3081,6 +3110,7 @@ func _reopen_at(position_ms: int, layer: bool) -> void:
 	var rotation := screen_rotation
 	var speed := playback_speed
 	var tracks := _capture_track_choices()
+	var narration_state := narration.capture_reopen()
 	var timing := [_subtitle_timing_key, subtitle_delay]
 	var whisper := audio_whisper
 	var boost_mark := audio_boost_saved
@@ -3091,11 +3121,12 @@ func _reopen_at(position_ms: int, layer: bool) -> void:
 	var return_uri := _layer_return_uri
 	var auto_subtitle := _subtitle_auto_pending # An internal reopen keeps an unfinished automatic choice.
 	_network_interleave_next = _network_interleave_compat
-	_capture_internal_reopen = true
+	if _network_interleave_compat and PlatformMethods.supports(platform, "set_mpv_interleave_compat"):
+		platform.set_mpv_interleave_compat(true)
 	var capture_reopened := open_local(local_uri, display_name, position, false, alpha_wanted())
-	_capture_internal_reopen = false
 	if not capture_reopened: captures.stop()
 	if capture_reopened:
+		narration.restore_reopen(narration_state)
 		audio_whisper = whisper; audio_boost_saved = boost_mark; _whisper_restore_pending = whisper > 0 or whisper_save; _whisper_restore_remember = whisper_save
 		_subtitle_auto_pending = auto_subtitle
 		_queue_track_restore(tracks)

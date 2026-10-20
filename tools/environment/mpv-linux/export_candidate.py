@@ -47,7 +47,8 @@ def main():
     if not re.search(r'\bT\s+mpv_quest_source_frame_api_version(?:@@?[^\s]+)?\s*$', exports, re.M):
         raise ValueError('Source-frame extension handshake is absent from libmpv')
     destination_base = DEST.parent
-    for symbol in ['mpv_quest_pgs_api_version', 'mpv_quest_get_pgs', 'mpv_quest_text_queue_api_version', 'mpv_quest_pump_text_queue']:
+    for symbol in ['mpv_quest_pgs_api_version', 'mpv_quest_get_pgs', 'mpv_quest_text_queue_api_version', 'mpv_quest_pump_text_queue',
+                   'mpv_quest_capture_api_version', 'mpv_quest_capture_owner', 'mpv_quest_capture_observe']:
         if not re.search(r'\bT\s+' + symbol + r'(?:@@?[^\s]+)?\s*$', exports, re.M):
             raise ValueError('PGS extension export missing: ' + symbol)
     destination_base.mkdir(parents=True, exist_ok=True)
@@ -88,6 +89,8 @@ def main():
         'api_version': patch_manifest['api_version'], 'ndk': '30.0.16248370', 'android_api': 23,
         'pgs_bitmap_patch_sha256': sha(ROOT/'native/mpv/patches/0003-mpv-pgs-bitmap.patch'),
         'pgs_bitmap_header_sha256': sha(ROOT/'native/mpv/include/mpv/quest_subtitle.h'),
+        'live_capture_patch_sha256': sha(ROOT/'native/mpv/patches/0004-mpv-live-capture.patch'),
+        'live_capture_header_sha256': sha(ROOT/'native/mpv/include/mpv/quest_capture.h'),
         'dovi_rpu_patch_sha256': sha(ROOT/'native/mpv/patches/0002-ffmpeg-profile5-rpu.patch'),
         'architecture': 'arm64-v8a', 'elf_page_alignment': 16384,
         'build_command': 'buildall.sh --arch arm64 mpv',

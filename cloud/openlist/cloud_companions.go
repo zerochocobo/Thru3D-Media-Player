@@ -87,11 +87,8 @@ func readCloudCompanions(ctx context.Context, searcher nativeCloudSearcher, fold
 				!safeSearchName(obj.GetName()) || !strings.HasPrefix(strings.ToLower(obj.GetName()), strings.ToLower(stem)+".") {
 				continue
 			}
-			switch strings.ToLower(path.Ext(obj.GetName())) {
-			case ".srt", ".ass", ".ssa", ".vtt", ".smi", ".sami", ".sub", ".m4a":
-			default:
-				continue
-			}
+			// Discovery preserves all matching sibling types. The audio/subtitle
+			// consumer owns format support; future formats need no search-layer edit.
 			if obj.GetID() == "" || seenObjects[obj.GetID()] {
 				return nil, errors.New("invalid repeated companion object")
 			}

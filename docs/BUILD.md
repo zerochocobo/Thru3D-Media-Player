@@ -126,4 +126,8 @@ This source snapshot keeps the music player and offline import implementation, b
 
 ## Source-capture headers
 
-The clip bridge links the existing pinned libavformat/libavcodec/libavutil dependencies; no runtime version is replaced. Public compile-time headers, their LGPL text and SHA-256 catalog are retained at `native/mpv/include/ffmpeg`; the catalog must match the existing FFmpeg archive pin. See [capture build/test scope](CAPTURE.md).
+The clip bridge links the pinned libavformat/libavcodec/libavutil dependencies. Upstream version pins remain fixed, but live recording requires rebuilding mpv with `0004-mpv-live-capture.patch` and exporting a matching source receipt; older runtime libraries lack the observer API. Public compile-time headers, their LGPL text and SHA-256 catalog are retained at `native/mpv/include/ffmpeg`; the catalog must match the existing FFmpeg archive pin. See [capture build/test scope](CAPTURE.md).
+
+## Photo decoder sources
+
+The native TIFF and HDR/OpenEXR targets use five exact-hash upstream source archives under `third_party/tiff` and `third_party/openexr`. Their original licenses accompany them, and CMake checks hashes before extraction. No binary decoder is shipped in Git. See [image formats and limitations](IMAGE_FORMATS.md).

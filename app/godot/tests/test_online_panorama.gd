@@ -65,6 +65,9 @@ func _run() -> void:
 	menu.online.activate(Online.BASE+12)
 	check(host.urls.size()==1 and host.urls[0].contains("uselang=zh"),"Chinese Commons uses localized URL")
 	check(menu.online.browsing and not host.paused,"Browser visible and resumed")
+	menu.online.activate(Online.BASE+9)
+	check(host.actions.back()=="open_image","Visible webpage image can be explicitly handed to the downloader")
+	check(preload("res://scripts/image_info.gd").is_image("cloud://provider/sky.TIFF?token=1"),"TIFF photos route to image mode across remote sources")
 	var origin:=menu.to_global(Vector3(0,0,1)); var direction:=-menu.global_basis.z
 	check(menu.press_pointer("right_hand",origin,direction,true),"Web pointer press captured")
 	check(menu.has_pointer_capture() and menu.online.hand=="right_hand","Web drag owns pointer")

@@ -103,6 +103,31 @@ internal class NarrationController(private val context: () -> Context?, private 
     private var outputLatencySeconds = 0.0
     private var rendered: NarrationPcm? = null
     private var track: AudioTrack? = null
+    private val heardPcm=HeardPcm {pcm,count,ns,gain->LiveCaptureNative.narration(pcm,count,ns,gain)}
+    private var captureGain=1f
+    private var captureUnderruns=-1
+    fun captureFlush()=synchronized(lock){captureHeard()}
+    private fun captureSubmitted(pcm: FloatArray,offset: Int,count: Int) {
+        if(count<=0)return
+        runCatching{heardPcm.write(pcm,offset,count)}.onFailure {
+            heardPcm.reset();LiveCaptureNative.audioFailed=true;LiveCaptureNative.recording=false
+        }
+    }
+    private fun captureHeard() {
+        // A recorder failure must never become a speech_error or stop playback.
+        runCatching { captureHeardOutput() }.onFailure {LiveCaptureNative.audioFailed=true;LiveCaptureNative.recording=false}
+    }
+    private fun captureHeardOutput() {
+        val audio=track ?: return
+        if(!outputStarted||outputPaused||audio.playState!=AudioTrack.PLAYSTATE_PLAYING)return
+        val count=audio.underrunCount
+        if(captureUnderruns>=0&&count!=captureUnderruns)heardPcm.discontinuity()
+        captureUnderruns=count
+        val now=System.nanoTime();val timestamp=AudioTimestamp()
+        if(audio.getTimestamp(timestamp)&&timestamp.nanoTime>=playStartedNs&&kotlin.math.abs(now-timestamp.nanoTime)<250_000_000)
+            heardPcm.present(timestamp.framePosition,timestamp.nanoTime,now,captureGain,LiveCaptureNative.recording)
+        else heardPcm.present(audio.playbackHeadPosition.toLong() and 0xffffffffL,now,now,captureGain,LiveCaptureNative.recording)
+    }
     private var writeOrigin = 0
     private var written = 0L
     private var speechEndFrame = -1L
@@ -225,6 +250,7 @@ internal class NarrationController(private val context: () -> Context?, private 
         gainTarget=1.0;gainStart=1.0;gainElapsed=0.0
     }
     private fun pauseOutput() {
+        captureHeard()
         phaseValid=false
         if(outputPaused)return
         track?.let { audio ->
@@ -232,12 +258,15 @@ internal class NarrationController(private val context: () -> Context?, private 
             // here loses the presentation pipeline and requires guessing a rewind.
             runCatching { audio.pause() }
         }
+        heardPcm.discontinuity()
         timestampFrames=0;timestampNs=0;lastFeedNs=0
         outputPaused=true
     }
     private fun stopOutput() {
         pauseOutput(); track?.let { audio -> underruns += runCatching { audio.underrunCount }.getOrDefault(0); runCatching { audio.release() } }
         rendered?.close();rendered=null
+        heardPcm.reset()
+        captureUnderruns=-1
         track=null; output=null;written=0;speechEndFrame=-1;writeOrigin=0;outputPaused=false;outputStarted=false;playStartedNs=0;playOriginFrames=0;lastFeedNs=0
     }
     private fun invalidate(allowHold: Boolean = true) {
@@ -454,7 +483,8 @@ internal class NarrationController(private val context: () -> Context?, private 
         outputAdapted=speech.done||speech.preview;renderedFinalized=false
         outputTempo=tempo;outputRawSeconds=if(speech.rawSamples>0)speech.rawSamples/96000.0 else duration;outputPcmSeconds=rendered!!.samples/96000.0
         outputRenderMs=(System.nanoTime()-created)/1e6
-        audio.setVolume(if(current.muted)0f else (current.volume/100*config.volume).toFloat())
+        captureGain=if(current.muted)0f else (current.volume/100*config.volume).toFloat()
+        audio.setVolume(captureGain)
         // Prepare before the cue boundary; only play() belongs on the deadline.
         prime(speech,audio)
         outputStartMs=0.0;outputSetupMs=(System.nanoTime()-setupStarted)/1e6
@@ -475,6 +505,7 @@ internal class NarrationController(private val context: () -> Context?, private 
         if(pcm.done && written<startupFrames) {
             val silence=FloatArray((startupFrames-written).toInt()*2)
             val count=audio.write(silence,0,silence.size,AudioTrack.WRITE_NON_BLOCKING)
+            captureSubmitted(silence,0,count)
             check(count>=0);written+=count/2;writtenTotal+=count/2
         }
     }
@@ -495,6 +526,7 @@ internal class NarrationController(private val context: () -> Context?, private 
             if(budget<=0)break
             val count=minOf(chunk.size-skip,budget)
             val result=audio.write(chunk,skip,count,AudioTrack.WRITE_NON_BLOCKING)
+            captureSubmitted(chunk,skip,result)
             check(result>=0);pcm.cursor+=result;written+=result/2;writtenTotal+=result/2;budget-=result
             if(result<count)break
             skip=0
@@ -505,6 +537,7 @@ internal class NarrationController(private val context: () -> Context?, private 
             // buffer starvation at EOS is otherwise reported as an underrun.
             if(budget>0) {
                 val count=audio.write(tailSilence,0,minOf(budget,tailSilence.size),AudioTrack.WRITE_NON_BLOCKING)
+                captureSubmitted(tailSilence,0,count)
                 check(count>=0);written+=count/2;writtenTotal+=count/2
             }
         }
@@ -693,7 +726,9 @@ internal class NarrationController(private val context: () -> Context?, private 
                     outputResumeMs=(System.nanoTime()-resuming)/1e6
                 }
                 val fade=if(config.timing=="interrupt"&&!active.preview)((NarrationPolicy.speechDeadline(active.cue,windows)+offset-position)/.05).coerceIn(0.0,1.0) else 1.0
-                audio.setVolume(if(current.muted)0f else (current.volume/100*config.volume*fade).toFloat())
+                captureHeard()
+                captureGain=if(current.muted)0f else (current.volume/100*config.volume*fade).toFloat()
+                audio.setVolume(captureGain)
                 if(outputStarted)write(active,audio)
                 val phaseNow=System.nanoTime()
                 val timestampAge=(phaseNow-timestampNs)/1e9

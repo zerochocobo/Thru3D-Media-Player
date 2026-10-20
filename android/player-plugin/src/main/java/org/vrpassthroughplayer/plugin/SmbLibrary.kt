@@ -15,6 +15,7 @@ import org.codelibs.jcifs.smb.impl.SmbRandomAccessFile
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.net.URI
 import java.security.KeyStore
 import java.util.UUID
 import java.util.concurrent.CountDownLatch
@@ -86,7 +87,7 @@ internal class SmbLibrary(private val context: Context, private val streams: () 
     }
 
     /** path "" lists shares; otherwise "share/dir/...". Folders first, then video files. */
-    fun browse(id: String, path: String): JSONArray {
+    fun browse(id: String, path: String, subtitlesOnly: Boolean = false): JSONArray {
         val server = server(id)
         val clean = path.trim('/')
         val url = "smb://${server.host}/" + if (clean.isEmpty()) "" else "$clean/"
@@ -101,8 +102,8 @@ internal class SmbLibrary(private val context: Context, private val streams: () 
                     .put("modified", child.lastModified().takeIf { it > 0 } ?: -1)
                     .put("delete_uri", "smb://$id/$childPath").put("can_delete", clean.isNotEmpty() && child.attributes and 0x401 == 0 && runCatching { MediaDeletePolicy.smbPath(childPath, true) }.isSuccess)
                     .put("delete_reason", "File deletion unavailable for this source"))
-                else if (MediaKinds.supported(name)) entries.put(JSONObject().put("id", childPath).put("title", name).put("kind", MediaKinds.kind(name))
-                    .put("container", false).put("size", child.length()).put("uri", "smb://$id/$childPath")
+                else if (if (subtitlesOnly) SidecarSubtitles.supportedFile(name) else MediaKinds.supported(name)) entries.put(JSONObject().put("id", childPath).put("title", name).put("kind", MediaKinds.kind(name))
+                    .put("container", false).put("size", child.length()).put("uri", if (subtitlesOnly) URI("smb", id, "/$childPath", null).toASCIIString() else "smb://$id/$childPath")
                     .put("modified", child.lastModified().takeIf { it > 0 } ?: -1)
                     .put("can_delete", child.attributes and org.codelibs.jcifs.smb.SmbConstants.ATTR_READONLY == 0 && runCatching { MediaDeletePolicy.smbPath(childPath) }.isSuccess)
                     .put("can_rename", child.attributes and 0x401 == 0 && MediaKinds.kind(name) == "video" && runCatching { MediaDeletePolicy.smbPath(childPath) }.isSuccess)

@@ -52,6 +52,7 @@ var _fragment_seed := 0
 var _yaw := 0.0
 var _fragment_start := -1
 var _wall_start := -1
+var _wall_column := -1
 
 func _init() -> void:
 	add_child(previews)
@@ -65,6 +66,7 @@ func set_mode(value: int) -> void:
 	_scales[mode] = view_scale
 	_distances[mode] = view_distance
 	mode = value; view_scale = float(_scales[value]); view_distance = float(_distances[value]); _signature = ""; _reflow = true; _yaw = 0.0; _fragment_start = -1; _wall_start = -1
+	_wall_column = -1
 	if photo and photo.material:
 		photo.finish_transition(); photo.close_inspect()
 		photo.material.render_priority = 0; photo.set_target_feedback(0)
@@ -90,10 +92,12 @@ func set_wall_rows(value: int) -> void:
 	if next == wall_rows: return
 	cancel_all(); focus = -1; progress = 0; returning = false
 	wall_rows = next; _signature = ""; _reflow = true
+	_wall_column = -1
 	_wall_groups.clear(); _wall_group = 0; _swap_phase = 0; _swap_alpha = 1.0
 	if photo:
 		photo.finish_transition(); photo.close_inspect()
 		synchronize()
+		photo.suspend_gallery_photo()
 
 ## Move the complete world layout without changing its batch, scale or preview resources.
 func translate_layout(offset: Vector3) -> void:
@@ -116,6 +120,7 @@ func remember_layout_pose() -> void:
 func clear(reset_viewing: bool = true) -> void:
 	if reset_viewing: _viewing_offsets.clear()
 	cancel_all(); focus = -1; progress = 0; returning = false; _signature = ""; _fragment_start = -1; _wall_start = -1; _fragment_seed = 0
+	_wall_column = -1
 	for card in cards.values(): _free_card(card)
 	cards.clear(); previews.clear(); visible = false; _fragment_indices.clear(); _wall_groups.clear(); _wall_group = 0; _swap_phase = 0; _swap_alpha = 1.0
 	if photo and photo.material: photo.material.render_priority = 0
@@ -146,13 +151,13 @@ func set_view_scale(value: float) -> void:
 	if not is_finite(value): return
 	var next := clampf(value, SCALE_LIMITS.x, SCALE_LIMITS.y)
 	if is_equal_approx(next, view_scale): return
-	view_scale = next; _scales[mode] = view_scale; _reflow = true
+	view_scale = next; _scales[mode] = view_scale; _reflow = true; _wall_column = -1
 
 func set_view_distance(value: float) -> void:
 	if not is_finite(value): return
 	var next := clampf(value, DISTANCE_LIMITS.x, DISTANCE_LIMITS.y)
 	if is_equal_approx(next, view_distance): return
-	view_distance = next; _distances[mode] = next; _reflow = true
+	view_distance = next; _distances[mode] = next; _reflow = true; _wall_column = -1
 
 func restore_settings(settings: ConfigFile) -> void:
 	mode = clampi(int(settings.get_value("photo_screen", "layout", 0)), 0, 3)
@@ -210,11 +215,6 @@ func change_batch(direction: int = 1) -> bool:
 	_swap_phase = 1; _swap_alpha = 1.0; hover.clear()
 	return true
 
-func navigate_wall(direction: int) -> bool:
-	if not overview() or mode != Layout.WALL or _swap_phase != 0 or has_capture(): return false
-	var current: int = _wall_start if _wall_start >= 0 else (photo.pending_index if photo.pending_index >= 0 else photo.index)
-	return photo.select_image(_wall_neighbor(current, direction), 1 if direction > 0 else -1)
-
 func _advance_wall() -> void:
 	var current: int = _wall_start if _wall_start >= 0 else (photo.pending_index if photo.pending_index >= 0 else photo.index)
 	var uri := str(photo.queue[current].uri)
@@ -228,9 +228,15 @@ func _advance_wall() -> void:
 			if str(photo.queue[index].uri) == wanted: next = index; break
 		_wall_group = target
 	if next < 0:
-		var step := 1 if cards.size() >= photo.queue.size() else maxi(1, ceili(cards.size() / float(wall_rows)))
-		next = _wall_neighbor(current, step * _batch_direction)
-		if next < 0: next = 0 if _batch_direction < 0 else _wall_neighbor(photo.queue.size() - 1, 0)
+		if wall_rows > 1:
+			var capacity := _wall_columns() * wall_rows
+			var page := current / capacity + _batch_direction
+			var count := ceili(photo.queue.size() / float(capacity))
+			next = posmod(page, count) * capacity if photo.queue_complete else clampi(page, 0, count - 1) * capacity
+		else:
+			var step := 1 if cards.size() >= photo.queue.size() else maxi(1, cards.size())
+			next = _neighbor(current, step * _batch_direction)
+			if next < 0: next = 0 if _batch_direction < 0 else photo.queue.size() - 1
 		if _batch_direction > 0:
 			_wall_groups.append(str(photo.queue[next].uri)); _wall_group = _wall_groups.size() - 1
 		else:
@@ -239,6 +245,7 @@ func _advance_wall() -> void:
 			_wall_groups.pop_front() if _wall_group > 0 else _wall_groups.pop_back()
 			_wall_group = mini(_wall_group, _wall_groups.size() - 1)
 	_wall_start = next
+	_wall_column = -1
 	photo.finish_transition(); photo._select(next)
 
 
@@ -258,9 +265,11 @@ func _choose_memories(count: int, fresh: bool) -> void:
 
 func clear_focus() -> void:
 	_restore_focus_card(); focus = -1; progress = 0; returning = false; cancel_all(); _reflow = true
+	if photo: photo.suspend_gallery_photo()
 
 func new_window(index: int) -> void:
 	_fragment_start = index; _wall_start = index; _fragment_indices.clear(); _signature = ""; _reflow = true
+	_wall_column = -1
 
 func replace_indices(old: Array[Dictionary], entries: Array[Dictionary]) -> void:
 	var positions := {}
@@ -322,8 +331,8 @@ func synchronize() -> void:
 	var current: int = photo.pending_index if photo.pending_index >= 0 else photo.index
 	current = clampi(current, 0, photo.queue.size() - 1)
 	if mode == Layout.WALL:
-		if _wall_start < 0: _wall_start = current
-		_wall_start = _wall_neighbor(_wall_start, 0)
+		if _wall_start < 0 or (wall_rows > 1 and _wall_column < 0): _wall_start = current
+		_wall_start = _wall_page_start(_wall_start)
 		current = _wall_start
 	var signature := "%d/%d/%d/%s" % [mode, _fragment_start if mode == Layout.FRAGMENTS else current, photo.queue.size(), str(photo.queue[0].uri)]
 	if mode == Layout.SIDES:
@@ -348,15 +357,35 @@ func _neighbor(current: int, offset: int) -> int:
 	if photo.queue_complete: return posmod(target, photo.queue.size())
 	return target if target >= 0 and target < photo.queue.size() else -1
 
-## Wrap whole columns, leaving absent cells in the final column empty. Wrapping individual
-## indices would move photos between rows whenever the album size is not a row multiple.
-func _wall_neighbor(current: int, columns: int, row: int = 0) -> int:
-	var count := ceili(photo.queue.size() / float(wall_rows))
-	var column := floori(current / float(wall_rows)) + columns
-	if photo.queue_complete: column = posmod(column, count)
-	elif column < 0 or column >= count: return -1
-	var target := column * wall_rows + row
-	return target if target < photo.queue.size() else -1
+## Multi-row pages read left to right, then top to bottom. Capacity depends on the
+## layout controls, never on late thumbnail metadata, so files keep their slots.
+func _wall_columns() -> int:
+	var pitch := 2.0 * atan(1.05 * view_scale * (4.0 / 3.0) * 0.5 / view_distance) + 0.07
+	return maxi(1, mini(mini(MAX_CARDS / wall_rows, ceili(photo.queue.size() / float(wall_rows))), floori((TAU - 0.16) / pitch)))
+
+func _wall_page_start(current: int) -> int:
+	if wall_rows == 1: return current
+	var capacity := _wall_columns() * wall_rows
+	return current / capacity * capacity
+
+func _build_wall_rows(current: int) -> void:
+	var columns := _wall_columns()
+	if _wall_column < 0:
+		var selected: int = photo.pending_index if photo.pending_index >= 0 else photo.index
+		_wall_column = maxi(0, selected - current) % columns
+	var count := mini(columns * wall_rows, photo.queue.size() - current)
+	var height := 1.05 * view_scale
+	var aspect := 0.01
+	for slot in count: aspect = maxf(aspect, _aspect(current + slot))
+	var pitch := minf((TAU - 0.16) / columns, 2.0 * atan(height * aspect * 0.5 / view_distance) + 0.07)
+	var width := 2.0 * view_distance * tan(minf(pitch * 0.5 - 0.035, 1.4))
+	height = minf(height, width / aspect)
+	for slot in count:
+		var row := slot / columns
+		var column := slot % columns
+		var angle := (column - _wall_column) * pitch
+		var index := current + slot
+		_add(index, anchor * _ring_pose(angle, view_distance, _wall_row_y(row, height)), Vector2(height * _aspect(index), height), RECT)
 
 func _aspect(index: int) -> float:
 	var uri := str(photo.queue[index].uri)
@@ -395,15 +424,16 @@ func _build(current: int) -> void:
 				if size.x > viewing_distance * 0.25: size *= viewing_distance * 0.25 / size.x
 				var angle := edge_angle + atan(size.x * 0.5 / viewing_distance) + 0.045
 				_add(index, eye_frame * _ring_pose(angle * side, viewing_distance, (2 - rank) * viewing_distance * 0.22), size, RECT)
+	elif mode == Layout.WALL and wall_rows > 1:
+		_build_wall_rows(current)
 	elif mode == Layout.WALL:
 		var radius := view_distance
 		var height := 1.05 * view_scale
-		# Rows share one card height; see _wall_row_y for their vertical placement.
-		# Columns run top to bottom and are placed whole, so a group never skips a picture.
+		# The single-row ring keeps its continuous previous/next neighbours.
 		var row_edges := {}
 		for row in wall_rows:
 			row_edges[row] = {-1: 0.0, 1: 0.0}
-			var seed := _wall_neighbor(current, 0, row)
+			var seed := current
 			if seed < 0 or used.has(seed) or cards.size() >= MAX_CARDS: continue
 			var centre_width := height * _aspect(seed)
 			_add(seed, anchor * _ring_pose(0.0, radius, _wall_row_y(row, height)), Vector2(centre_width, height), RECT)
@@ -415,7 +445,7 @@ func _build(current: int) -> void:
 				if not open[side]: continue
 				var column := {}
 				for row in row_edges:
-					var index := _wall_neighbor(current, rank * side, int(row))
+					var index := _neighbor(current, rank * side)
 					if index < 0: continue
 					var half := atan(height * _aspect(index) * 0.5 / radius)
 					var centre: float = row_edges[row][side] + 0.035 + half
@@ -570,6 +600,7 @@ func _crop(index: int, size: Vector2) -> Vector4:
 
 func activate(index: int) -> void:
 	if (photo and photo.portrait_requested) or not cards.has(index): return
+	previews.retry(str(photo.queue[index].uri))
 	if focus == index:
 		return_focus(); return
 	if focus >= 0:
@@ -581,7 +612,7 @@ func activate(index: int) -> void:
 		photo._select(index); _reflow = true
 	else:
 		photo.finish_transition()
-		if photo.pending_index != index and (photo.index != index or photo.loading): photo._select(index)
+		if photo.pending_index != index and (photo.index != index or photo.loading or photo._texture == null): photo._select(index)
 		photo.changed.emit()
 
 func _place_focus() -> void:
@@ -608,6 +639,7 @@ func return_focus() -> void:
 	if photo and photo.portrait_requested: return
 	if focus < 0: return
 	returning = true; cancel_all(); photo.close_inspect(); photo.changed.emit()
+	photo.suspend_gallery_photo()
 
 func _restore_focus_card() -> void:
 	if not cards.has(focus): return
@@ -788,7 +820,8 @@ func release_pointer(hand: String, origin: Vector3, direction: Vector3, tracked:
 			var offset: Vector3 = cards[index].node.global_position - anchor.origin
 			var value := forward.angle_to(offset)
 			if value < angle: closest = index; angle = value
-		if closest >= 0: _wall_start = _wall_neighbor(closest, 0); photo._select(closest)
+		if closest >= 0:
+			_wall_start = _wall_page_start(closest); _wall_column = -1; photo._select(closest)
 		_yaw = 0; _reflow = true
 	return true
 

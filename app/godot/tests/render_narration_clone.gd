@@ -27,7 +27,7 @@ func _run() -> void:
 	camera.add_child(menu); menu.position.y = -0.35; menu.toggle(); menu.set_process(false); menu._subtitle_open = true
 	for language in ["zh", "zh_Hant", "ja", "en"]:
 		I18n.use(language)
-		for view in ["settings", "preset", "custom-on", "preset-choices", "preset-choices-last", "preset-playing", "custom-playing", "custom-loading", "custom-finished", "language-choices", "language-choices-last", "language-long", "empty-custom", "advanced", "appearance", "many-tracks", "subtitle-loading", "external-files", "candidates", "library", "library-loading", "naming", "saving", "encoding", "model-loading", "error", "hover"]:
+		for view in ["settings", "preset", "custom-on", "preset-choices", "preset-choices-last", "preset-playing", "custom-playing", "custom-loading", "custom-finished", "language-choices", "language-choices-last", "language-long", "empty-custom", "advanced", "appearance", "many-tracks", "subtitle-loading", "external-files", "candidates", "single-unnamed-audio", "audio-tracks", "audio-tracks-open", "library", "library-loading", "naming", "saving", "encoding", "model-loading", "error", "hover"]:
 			var settings_view: bool = view in ["settings", "preset", "custom-on", "preset-choices", "preset-choices-last", "preset-playing", "custom-playing", "custom-loading", "custom-finished", "language-choices", "language-choices-last", "language-long", "empty-custom", "advanced", "appearance", "many-tracks", "subtitle-loading", "external-files"]
 			menu.clone_panel.opened = not settings_view; menu.clone_panel.library = view.begins_with("library"); menu.clone_panel.source = state.source_uri; menu.clone_panel.naming = {}; menu.clone_panel.saving = false
 			state.narration_voice_kind = "preset" if view.begins_with("preset") else "custom"; state.narration_enabled = settings_view and view != "settings"
@@ -48,9 +48,15 @@ func _run() -> void:
 			if view in ["model-loading", "library-loading"]:
 				state.narration_clone_state.merge({"state": "model_loading", "operation": "preview" if view == "library-loading" else "clone", "active_key": "b", "preview_id": ID}, true)
 			state.narration_clone_state.error = "Unable to prepare voice. Try another sample." if view == "error" else ""
+			state.narration_clone_state.audio_options = [{"id": 2, "language": "ja", "title": "日本語 · 原声"}]; state.narration_clone_state.audio_id = 2
+			if view == "single-unnamed-audio":
+				state.narration_clone_state.audio_options = [{"id": 1}]; state.narration_clone_state.audio_id = 1
+			elif view.begins_with("audio-tracks"):
+				state.narration_clone_state.audio_options = [{"id": 1, "language": "zho"}, {"id": 7, "language": "jpn"}]; state.narration_clone_state.audio_id = 7
 			if view in ["naming", "saving"]: menu.clone_panel.naming = {"operation": "save", "key": "b"}; menu.clone_panel.draft = "电影女主角"
 			if view == "saving": state.narration_clone_state.state = "saving"; menu.clone_panel.saving = true
 			menu.refresh()
+			if view == "audio-tracks-open": menu.choices.opened = "narration_clone_audio"; menu.refresh()
 			if view in ["preset-choices", "preset-choices-last"]:
 				menu.choices.opened = "narration_voice"; menu.choices.offset = 6 if view.ends_with("last") else 0; menu.refresh()
 			if view in ["language-choices", "language-choices-last"]:

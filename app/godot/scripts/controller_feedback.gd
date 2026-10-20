@@ -82,11 +82,11 @@ func _motion(hand: String, state: Dictionary, sample: Dictionary, menu_open: boo
 		state.candidate = {"reference": reference, "time": state.clock, "frames": 1,
 			"reason": "translation" if distance >= WAKE_METRES else "aim_turn"}
 
-func update_hand(hand: String, pose: Variant, ray: Variant, point: Variant, engaged: bool, menu_open: bool, delta: float, world_enabled: bool = true, activity: Dictionary = {}, idle_menu: bool = false, pointer_engaged: bool = true, presentation_allowed: bool = true) -> float:
+func update_hand(hand: String, pose: Variant, ray: Variant, point: Variant, engaged: bool, menu_open: bool, delta: float, world_enabled: bool = true, activity: Dictionary = {}, idle_menu: bool = false, pointer_engaged: bool = true, presentation_allowed: bool = true, always_visible: bool = false) -> float:
 	var state := _state(hand)
 	var step := maxf(0.0, delta) if is_finite(delta) else 0.0
 	state.age += step; state.pointer_age += step; state.clock += step
-	# Watching media has no input visuals until an interaction panel is opened.
+	# Watching video has no input visuals until an interaction panel is opened.
 	# Clicks, shortcuts, motion and tracking recovery cannot bypass this gate.
 	if not presentation_allowed:
 		_clear_motion(state); state.opacity = 0.0
@@ -97,8 +97,9 @@ func update_hand(hand: String, pose: Variant, ray: Variant, point: Variant, enga
 	_motion(hand, state, activity, menu_open, step)
 	if engaged: wake(hand, "input_held" if pointer_engaged else "shortcut")
 	# Video menus share the activity deadline; stationary hover is not activity.
-	state.opacity = 1.0 if menu_open and not idle_menu else clampf((IDLE_SECONDS - state.age) / FADE_SECONDS, 0.0, 1.0)
-	var pointer_opacity := minf(state.opacity, clampf((IDLE_SECONDS - state.pointer_age) / FADE_SECONDS, 0.0, 1.0))
+	# Photo visibility bypasses idle fading without resetting video's activity clocks.
+	state.opacity = 1.0 if always_visible or (menu_open and not idle_menu) else clampf((IDLE_SECONDS - state.age) / FADE_SECONDS, 0.0, 1.0)
+	var pointer_opacity: float = state.opacity if always_visible else minf(state.opacity, clampf((IDLE_SECONDS - state.pointer_age) / FADE_SECONDS, 0.0, 1.0))
 	var valid: bool = world_enabled and not menu_open and pointer_opacity > 0.0 and ray != null \
 		and ray[0].is_finite() and ray[1].is_finite() and ray[1].length_squared() > 0.00001
 	if not valid: _hide(state); return state.opacity

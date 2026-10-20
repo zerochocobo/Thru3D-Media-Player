@@ -4,110 +4,166 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class CloudSortedPagesTest {
-    private class Client(var files: List<CloudFile>) : CloudClient {
-        var calls = 0
-        var failOffset = -1
-        override fun page(path: String, offset: Int, refresh: Boolean): CloudPage {
-            calls++
-            if (offset == failOffset) throw CloudFailure()
-            val end = minOf(files.size, offset + 48)
-            return CloudPage(files.subList(offset, end), if (end < files.size) end else -1, files.size)
+    private fun file(name: String) = CloudFile(name, false, 100, "/movies/$name")
+    private data class Call(val path: String, val offset: Int, val refresh: Boolean, val order: String)
+    private class Client(var files: List<CloudFile>, val total: Int = files.size, val native: Boolean = true) : CloudClient {
+        val calls = ArrayList<Call>()
+        var rawCalls = 0
+        var lastPage: CloudPage? = null
+        private fun read(offset: Int): CloudPage {
+            val end = minOf(files.size, offset + CloudDrive.PAGE_SIZE)
+            return CloudPage(files.subList(offset, end), if (end < total) end else -1, total).also { lastPage = it }
         }
-        override fun list(path: String) = files
-        override fun find(path: String) = files.first { it.id == path }
-        override fun resolve(file: CloudFile): CloudLink = error("Sort must never resolve media")
+        override fun orderedPage(path: String, offset: Int, refresh: Boolean, order: String): CloudPage? {
+            calls.add(Call(path, offset, refresh, order))
+            return if (native) read(offset) else null
+        }
+        override fun page(path: String, offset: Int, refresh: Boolean): CloudPage { rawCalls++; return read(offset) }
+        override fun list(path: String): List<CloudFile> = throw AssertionError("Browsing must not enumerate the directory")
+        override fun find(path: String): CloudFile = throw AssertionError("Browsing must not locate media")
+        override fun resolve(file: CloudFile): CloudLink = throw AssertionError("Browsing must not resolve streams")
     }
-    @Test fun sortsWholeDirectoryBeforePagingAndReusesSnapshotAcrossOrders() {
-        val files = (1..100).reversed().map { CloudFile("video$it.mp4", false, it.toLong(), "$it", modified = it * 100L) }
-        val client = Client(files + CloudFile("Folder", true, 0, "dir"))
-        val cache = CloudSortedPages()
-        val first = cache.page(client, "/", 0, false, "name_asc")
-        assertTrue(first.files.first().folder)
-        assertEquals("video1.mp4", first.files[1].name)
-        assertEquals("video47.mp4", first.files.last().name)
-        assertEquals("video48.mp4", cache.page(client, "/", 48, false, "name_asc").files.first().name)
-        assertEquals("video100.mp4", cache.page(client, "/", 0, false, "size_desc").files[1].name)
-        assertEquals(3, client.calls)
-        cache.page(client, "/", 0, true, "modified_desc")
-        assertEquals(6, client.calls)
-    }
-    @Test fun failedOrOversizedListingNeverCommitsPartialOrder() {
-        val client = Client((1..60).map { CloudFile("$it.mp4", false, 1, "$it") })
-        val cache = CloudSortedPages()
-        client.failOffset = 48
-        assertThrows(CloudFailure::class.java) { cache.page(client, "/", 0, false, "name_asc") }
-        client.failOffset = -1
-        assertEquals(60, cache.page(client, "/", 0, false, "name_asc").total)
-        client.files = (1..20_001).map { CloudFile("$it.mp4", false, 1, "$it") }
-        assertThrows(CloudFailure::class.java) { cache.page(client, "/", 0, true, "name_asc") }
-    }
-    @Test fun unknownTimesStayLastBothWaysAndNamesHandleHugeNumbers() {
-        val files = listOf(CloudFile("Unknown.mp4", false, 1, "a"), CloudFile("Known.mp4", false, 1, "b", modified = 5))
-        for (order in listOf("modified_asc", "modified_desc")) assertEquals("b", files.sortedWith(CloudSortedPages.comparator(order))[0].id)
-        assertTrue(CloudSortedPages.natural("2.mp4", "10.mp4") < 0)
-        assertTrue(CloudSortedPages.natural("100000000000000000000.mp4", "99999999999999999999.mp4") > 0)
-        assertEquals(0, CloudSortedPages.natural("VIDEO02.mp4", "video2.mp4"))
-    }
-    @Test fun expirationRefreshesMetadata() {
-        var now = 0L
-        val cache = CloudSortedPages { now }
-        val client = Client(listOf(CloudFile("1.mp4", false, 1, "1")))
-        cache.page(client, "/", 0, false, "name_asc")
-        now = 120_001
-        client.files = listOf(CloudFile("2.mp4", false, 1, "2"))
-        assertEquals("2", cache.page(client, "/", 0, false, "name_asc").files.single().id)
-        assertEquals(2, client.calls)
-    }
-    @Test fun orderedViewIsRebuiltAfterOrderChangesOrRefresh() {
-        val client = Client((1..100).reversed().map { CloudFile("Video$it.mp4", false, it.toLong(), "$it") })
-        val cache = CloudSortedPages()
-        assertEquals("49", cache.page(client, "/", 48, false, "name_asc").files.first().id)
-        assertEquals("52", cache.page(client, "/", 48, false, "name_desc").files.first().id)
-        assertEquals("49", cache.page(client, "/", 48, false, "name_asc").files.first().id)
-        assertEquals(3, client.calls)
-        client.files = listOf(CloudFile("Replacement.mp4", false, 1, "new"))
-        assertEquals("new", cache.page(client, "/", 0, true, "name_asc").files.single().id)
-        assertEquals(4, client.calls)
-    }
-    @Test fun folderTimesSortBothWaysWithUnknownsLastAndNaturalNameTies() {
-        val files = listOf(
-            CloudFile("A10", true, 900, "10", modified = 100),
-            CloudFile("Unknown", true, 800, "unknown"),
-            CloudFile("B", true, 100, "b", modified = 300),
-            CloudFile("A2", true, 700, "2", modified = 100),
-            CloudFile("New.mp4", false, 1, "new", modified = 999),
-            CloudFile("Old.mp4", false, 1, "old", modified = 1),
-            CloudFile("Unknown.mp4", false, 1, "file-unknown"))
-        fun ids(order: String) = files.sortedWith(CloudSortedPages.comparator(order)).map { it.id }
-        assertEquals(listOf("2", "10", "b", "unknown", "old", "new", "file-unknown"), ids("modified_asc"))
-        assertEquals(listOf("b", "2", "10", "unknown", "new", "old", "file-unknown"), ids("modified_desc"))
-        for (order in listOf("size_asc", "size_desc"))
-            assertEquals(listOf("2", "10", "b", "unknown"), ids(order).take(4))
-        assertEquals(listOf("unknown", "b", "10", "2"), ids("name_desc").take(4))
-    }
-    @Test fun folderTimeOrderIsGlobalAcrossPageBoundaries() {
-        val client = Client((1..100).map { CloudFile("Folder$it", true, 0, "$it", modified = it.toLong()) }
-            + CloudFile("Newest.mp4", false, 1, "file", modified = 9999))
+
+    @Test fun nameSortingRequestsOnlyTheRequestedApiPageInVeryLargeDirectories() {
+        val client = Client((1..96).map { file("film$it.mp4") }, total = 50_000)
         val pages = CloudSortedPages()
-        assertEquals("100", pages.page(client, "/", 0, false, "modified_desc").files.first().id)
-        assertEquals("52", pages.page(client, "/", 48, false, "modified_desc").files.first().id)
-        assertEquals(listOf("4", "3", "2", "1", "file"), pages.page(client, "/", 96, false, "modified_desc").files.map { it.id })
-        assertEquals("1", pages.page(client, "/", 0, false, "modified_asc").files.first().id)
-        assertEquals(3, client.calls)
+        val first = pages.page(client, "/movies", 0, false, "name_asc")
+        assertEquals(listOf(Call("/movies", 0, false, "name_asc")), client.calls)
+        assertEquals(48, first.files.size)
+        assertEquals(50_000, first.total)
+        assertEquals(48, first.nextOffset)
+        val next = pages.page(client, "/movies", 48, false, "name_asc")
+        assertEquals(listOf(0, 48), client.calls.map { it.offset })
+        assertEquals("film49.mp4", next.files.first().name)
+        assertEquals(96, next.nextOffset)
+        assertEquals(0, client.rawCalls)
     }
-    @Test fun sourceOrderReadsOnlyOnePageEvenInVeryLargeDirectories() {
-        val client = Client((1..20_001).reversed().map { CloudFile("$it.mp4", false, 1, "$it") })
-        val page = CloudSortedPages().page(client, "/", 0, false, "source")
-        assertEquals("20001.mp4", page.files.first().name)
-        assertEquals(48, page.files.size)
-        assertEquals(20_001, page.total)
-        assertEquals(1, client.calls)
+
+    @Test fun providerNameOrderIsPreservedIncludingLexicalNumbers() {
+        val names = listOf("film1.mp4", "film10.mp4", "film2.mp4")
+        val client = Client(names.map(::file))
+        val page = CloudSortedPages().page(client, "/movies", 0, false, "name_asc")
+        assertEquals(names, page.files.map { it.name })
+        assertSame(client.lastPage, page)
     }
-    @Test fun nonMediaChildrenDoNotCreateEmptySortedPages() {
-        val client = Client((1..80).map { CloudFile("$it.pdf", false, 1000, "$it") } + CloudFile("movie.mp4", false, 1, "video"))
-        val page = CloudSortedPages().page(client, "/", 0, false, "size_desc")
-        assertEquals(1, page.total)
-        assertEquals("movie.mp4", page.files.single().name)
-        assertEquals(-1, page.nextOffset)
+
+    @Test fun everySupportedOrderAndRefreshIsForwardedToTheProvider() {
+        val client = Client(listOf(file("film.mp4")))
+        val pages = CloudSortedPages()
+        for (order in CloudSortedPages.ORDERS + "source") {
+            pages.page(client, "/movies", 0, false, order)
+            pages.page(client, "/movies", 0, true, order)
+        }
+        assertEquals(14, client.calls.size)
+        assertEquals(7, client.calls.count { it.refresh })
+        assertEquals(0, client.rawCalls)
+    }
+
+    @Test fun unsupportedNativeSortNeverFallsBackToAFullDirectoryRead() {
+        val client = Client(listOf(file("film.mp4")), native = false)
+        for (order in CloudSortedPages.ORDERS)
+            assertThrows(CloudFailure::class.java) { CloudSortedPages().page(client, "/movies", 0, false, order) }
+        assertEquals(0, client.rawCalls)
+    }
+
+    @Test fun sourceOrderWithoutNativeSortingStillReadsOnlyOneRawPage() {
+        val client = Client((1..96).map { file("film$it.mp4") }, total = 50_000, native = false)
+        val page = CloudSortedPages().page(client, "/movies", 48, false, "source")
+        assertEquals("film49.mp4", page.files.first().name)
+        assertEquals(50_000, page.total)
+        assertEquals(1, client.rawCalls)
+    }
+
+    @Test fun rawApiPageRetainsM4aSubtitlesDocumentsAndUnknownFutureTypes() {
+        val names = listOf("film.mp4", "film.srt", "film.si.mix.m4a", "notes.pdf", "future.sidecar_new")
+        val client = Client(names.map(::file))
+        val page = CloudSortedPages().page(client, "/movies", 0, false, "name_asc")
+        assertEquals(names, page.files.map { it.name })
+        assertEquals(5, page.total)
+        val media = page.files.filter { MediaKinds.supported(it.name) }
+        assertEquals(listOf("film.mp4"), media.map { it.name })
+        assertEquals(listOf("film.srt"), SidecarSubtitles.files(page.files.map { it.name }))
+    }
+
+    @Test fun sortedSingleApiPageFindsM4aWithoutAnySubtitleFile() {
+        val client = Client(listOf(file("film.mp4"), file("film.si.mix.m4a")))
+        val page = CloudSortedPages().page(client, "/movies", 0, false, "name_asc")
+        val playback = CloudPlaybackPages.Playback("/movies/film.mp4", "account",
+            CloudPlaybackPages.Selection(page.files, page.nextOffset < 0))
+        assertEquals(listOf("film.si.mix.m4a"), SidecarAudio.forCloud(playback.path, playback.automatic(client)) { it.id }.map { it.title })
+    }
+
+    @Test fun completeApiPageReusesAudioAndSubtitlesWithoutAnotherLookup() {
+        val client = Client(listOf("film.mp4", "film.srt", "film.si.mix.m4a", "film.commentary.M4A", "film10.si.mix.m4a", "future.sidecar_new").map(::file))
+        val page = CloudSortedPages().page(client, "/movies", 0, false, "name_desc")
+        val cache = CloudPlaybackPages()
+        cache.replace("account", "identity", "/movies", page.files, true, "42")
+        val selection = cache.forVideo("account", "identity", "/movies/film.mp4")
+        assertEquals("42", selection.folderId)
+        val playback = CloudPlaybackPages.Playback("/movies/film.mp4", "identity", selection)
+        val raw = playback.automatic(client)
+        assertEquals(listOf("film.si.mix.m4a", "film.commentary.M4A"), SidecarAudio.forCloud(playback.path, raw) { it.id }.map { it.title })
+        assertEquals(listOf("film.srt"), SidecarSubtitles.forCloud(playback.path, raw) { it.id }.map { it.title })
+        assertTrue(raw.any { it.name == "future.sidecar_new" })
+        assertEquals(1, client.calls.size)
+        assertEquals(0, client.rawCalls)
+    }
+
+    @Test fun partialPageKeepsExistingCompanionLookupPolicyAndOriginalMetadata() {
+        val base = Client(listOf(file("film.mp4"), file("future.sidecar_new")), total = 100)
+        var searches = 0
+        val client = object : CloudClient by base {
+            override fun companions(path: String, pageFiles: List<CloudFile>): List<CloudFile> {
+                searches++
+                assertEquals(base.files, pageFiles)
+                return listOf(file("film.srt"), file("film.si.mix.m4a"))
+            }
+        }
+        val page = CloudSortedPages().page(client, "/movies", 0, false, "name_asc")
+        val playback = CloudPlaybackPages.Playback("/movies/film.mp4", "identity", CloudPlaybackPages.Selection(page.files, false))
+        assertEquals(1, SidecarAudio.forCloud(playback.path, playback.automatic(client)) { it.id }.size)
+        assertEquals(1, SidecarSubtitles.forCloud(playback.path, playback.automatic(client)) { it.id }.size)
+        assertEquals(1, searches)
+        assertEquals(1, base.calls.size)
+    }
+
+    @Test fun invalidOrderOrOffsetFailsBeforeAnyProviderRequest() {
+        val client = Client(listOf(file("film.mp4")))
+        val pages = CloudSortedPages()
+        assertThrows(IllegalArgumentException::class.java) { pages.page(client, "/movies", -1, false, "name_asc") }
+        assertThrows(IllegalArgumentException::class.java) { pages.page(client, "/movies", 0, false, "invalid") }
+        assertTrue(client.calls.isEmpty())
+        assertEquals(0, client.rawCalls)
+    }
+
+    @Test fun nonAlignedRawOffsetIsPassedThroughFor115FilteredRows() {
+        val client = Client((1..5).map { file("film$it.mp4") })
+        val page = CloudSortedPages().page(client, "/movies", 2, false, "name_asc")
+        assertEquals("film3.mp4", page.files.first().name)
+        assertEquals(2, client.calls.single().offset)
+    }
+
+    @Test fun providerFailuresAreNotRetriedThroughDirectoryEnumeration() {
+        var requests = 0
+        val base = Client(listOf(file("film.mp4")))
+        val client = object : CloudClient by base {
+            override fun orderedPage(path: String, offset: Int, refresh: Boolean, order: String): CloudPage {
+                requests++
+                throw CloudFailure()
+            }
+        }
+        assertThrows(CloudFailure::class.java) { CloudSortedPages().page(client, "/movies", 0, false, "name_asc") }
+        assertEquals(1, requests)
+        assertEquals(0, base.rawCalls)
+    }
+
+    @Test fun naturalComparatorRemainsAvailableForExplicitLegacySearchResults() {
+        assertTrue(CloudSortedPages.natural("2.mp4", "10.mp4") < 0)
+        assertTrue(CloudSortedPages.natural("_a.png", "a.png") > 0)
+        assertTrue(CloudSortedPages.natural(".cover.png", "!cover.png") < 0)
+        val names = listOf("a2.png", "A02.png", "a02.png", "a10.png", "中2.png", "中10.png")
+        val files = names.reversed().map(::file)
+        assertEquals(listOf("A02.png", "a02.png", "a2.png", "a10.png", "中2.png", "中10.png"),
+            files.sortedWith(CloudSortedPages.comparator("name_asc")).map { it.name })
     }
 }

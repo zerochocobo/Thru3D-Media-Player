@@ -1,7 +1,9 @@
 shader_type spatial;
 // Clears the eye buffer only where the menu layer beneath it has coverage. The quad lies on the
 // captured plane, so input models in front win the depth test and later blends draw over it.
-render_mode unshaded, blend_mul, cull_disabled, depth_draw_always, fog_disabled, shadows_disabled;
+// Do not write depth: a tooltip's fractional edge must not block the panel hole behind it.
+// Both masks must attenuate the eye buffer, regardless of their transparent draw order.
+render_mode unshaded, blend_mul, cull_disabled, depth_draw_never, fog_disabled, shadows_disabled;
 uniform sampler2D menu_texture : filter_linear, repeat_disable;
 // Text bands: keep the eye-buffer panel over semi-transparent edges and the band's top and bottom
 // strips, so the compositor's antialiased quad borders stay hidden under matching content.

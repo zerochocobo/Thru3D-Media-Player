@@ -230,10 +230,40 @@ func _initialize() -> void:
 		{"tracks": [{"id": 60, "title": "movie.zh_CN.srt", "codec": "subrip", "external": true}], "expected": 60},
 		{"tracks": [{"id": 61, "title": "movie.zh-Hans-TW.srt", "codec": "subrip", "external": true}], "expected": 61},
 		{"tracks": [{"id": 62, "title": "movie.chs.srt", "language": "fra", "codec": "subrip", "external": true}], "expected": 0}]:
-		video.media.playback.details.subtitle_tracks = rule.tracks
+		video.media.playback.details.subtitle_tracks = rule.tracks + [
+			{"id": 98, "title": "Unlabelled second caption", "codec": "subrip", "external": true},
+			{"id": 99, "title": "Unlabelled third caption", "codec": "subrip", "external": true}]
 		video.subtitles.select(0); video._queue_track_restore({}); video._subtitle_auto_pending = true
 		video._restore_tracks()
 		check(video.subtitles.requested_track == rule.expected, "Language fallback rejects conflicting scripts, embedded and unknown languages: " + str(rule))
+	for sole in [
+		{"id": 70, "title": "字幕播放（SRT).srt", "filename": "http://127.0.0.1/session/subtitle-0.srt", "codec": "subrip", "external": true},
+		{"id": 71, "title": "Unrelated.ass", "language": "eng", "codec": "ass", "external": true}]:
+		video.media.playback.details.subtitle_tracks = [sole]
+		video.subtitles.select(0); video._queue_track_restore({}); video._subtitle_auto_pending = true
+		video._restore_tracks()
+		check(video.subtitles.requested_track == sole.id and video._track_choices.is_empty(), "A sole external caption plays even with a generic name or different language")
+	# Exercise the actual Android state-receipt path, including cold history opens.
+	video.local_uri = "cloud://saved/Movies/movie.mp4"
+	video.subtitles.select(0); video._queue_track_restore({}); video._subtitle_auto_pending = true
+	video._on_state(7, JSON.stringify({"state": "ready", "details": {"subtitle_tracks": []}}))
+	check(video.subtitles.requested_track == 0 and video._subtitle_auto_pending and not video._capture_track_choices().has("subtitle"), "An empty first snapshot keeps automatic selection pending without remembering Off")
+	var generic_tracks := [
+		{"id": 72, "title": "字幕播放（SRT).srt", "server_language": "eng", "codec": "subrip", "external": true},
+		{"id": 73, "title": "字幕播放（SRT).srt", "server_language": "chi", "codec": "subrip", "external": true}]
+	var old_caption: Dictionary = generic_tracks[1].duplicate(true); old_caption.erase("server_language")
+	var old_choice: Dictionary = video.TrackMemory.describe(73, [old_caption])
+	check(video.TrackMemory.resolve(old_choice, [generic_tracks[1]]) == 73 and video.SubtitleTiming.track_key(old_caption) == video.SubtitleTiming.track_key(generic_tracks[1]), "Server language enrichment preserves remembered track and timing identities")
+	video._on_state(6, JSON.stringify({"state": "ready", "details": {"subtitle_tracks": generic_tracks}}))
+	check(video.subtitles.requested_track == 0 and video._subtitle_auto_pending, "Late tracks from the previous session cannot select current subtitles")
+	video._on_state(7, JSON.stringify({"state": "ready", "details": {"subtitle_tracks": generic_tracks}}))
+	check(video.subtitles.requested_track == 73 and not video._subtitle_auto_pending, "Late generic server captions select the interface language on the next receipt")
+	var selected_calls := host.calls.size()
+	video._on_state(7, JSON.stringify({"state": "ready", "details": {"subtitle_tracks": generic_tracks}}))
+	check(host.calls.size() == selected_calls, "Repeated asynchronous snapshots do not reapply a settled automatic selection")
+	video.set_subtitle_track(0)
+	video._on_state(7, JSON.stringify({"state": "ready", "details": {"subtitle_tracks": [srt]}}))
+	check(video.subtitles.requested_track == 0, "Manual Off survives a later matching asynchronous subtitle")
 	video.media.playback.details.subtitle_tracks = [language_tracks[1]]
 	video.subtitles.select(0); video._queue_track_restore({}); video.set_subtitle_auto_load(false)
 	video._restore_tracks()

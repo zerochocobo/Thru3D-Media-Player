@@ -34,7 +34,8 @@ internal object OriginalClipNative {
 /** One independent source lease per request; no access to the decoder or headset eye buffers. */
 internal class OriginalCapture(private val context: () -> Context?, private val resolve: (String) -> String,
                                private val release: (String) -> Unit,
-                               private val sidecars: (String, String) -> List<SidecarAudio.Track>) {
+                               private val sidecars: (String, String) -> List<SidecarAudio.Track>,
+                               owner: (Int)->Long,flushAudio: (Int)->Unit) {
     private val screenshots = Executors.newSingleThreadExecutor { Thread(it, "OriginalScreenshot") }
     private val clips = Executors.newSingleThreadExecutor { Thread(it, "OriginalClip") }
     private val pictureBusy = AtomicBoolean()
@@ -43,16 +44,27 @@ internal class OriginalCapture(private val context: () -> Context?, private val 
     private val results = ConcurrentHashMap<Int, String>()
     private val active = ConcurrentHashMap<Int, String>()
     @Volatile private var closed = false
-    fun supported() = !closed && OriginalClipNative.supported()
+    private val live=LiveClipCapture(context,owner,flushAudio){id,json->results[id]=json}
+    fun supported() = !closed && OriginalClipNative.supported() && LiveCaptureNative.available()
+    fun clock(id: Int,position: Long,playing: Boolean)=live.clock(id,position,playing)
+    fun stop(id: Int,end: Long)=live.stop(id,end)
     fun status(id: Int) = results[id] ?: "{}"
     fun uses(uri: String) = active.values.any { it == uri || it.startsWith(uri.trimEnd('/') + "/") }
     fun request(json: String): Int {
         val request = runCatching { JSONObject(json) }.getOrNull() ?: return 0
-        val movie = request.optString("kind") == "clip"
+        val liveMovie=request.optString("kind")=="live_clip"
+        val movie = liveMovie || request.optString("kind") == "clip"
         val busy = if (movie) clipBusy else pictureBusy
         val source = request.optString("uri")
         if (!supported() || source.isEmpty() || !busy.compareAndSet(false, true)) return 0
         val id = next.incrementAndGet()
+        if(liveMovie) {
+            active[id]=source;results[id]="{\"state\":\"preparing\",\"kind\":\"clip\"}"
+            live.prepare(id,request)
+            clips.execute {try{live.run(id)}finally{active.remove(id);clipBusy.set(false)
+                results.keys.sorted().dropLast(8).forEach{if(!active.containsKey(it))results.remove(it)}}}
+            return id
+        }
         if (movie) OriginalClipNative.prepare(id)
         active[id] = source
         results[id] = JSONObject().put("state", "saving").put("kind", if (movie) "clip" else "screenshot").toString()
@@ -167,6 +179,7 @@ internal class OriginalCapture(private val context: () -> Context?, private val 
     }
     fun close() {
         closed = true
+        live.close()
         active.keys.forEach { OriginalClipNative.cancel(it) }
         screenshots.shutdown(); clips.shutdown()
     }

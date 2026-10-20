@@ -33,8 +33,7 @@ internal class PanoramaPictures(private val context: () -> Context?, private val
                 val file = File(uri.path ?: error("No file")).canonicalFile
                 val root = File(app.filesDir, "online-panoramas").canonicalFile
                 require(file.parentFile == root && file.isFile && file.length() in 1..PhotoBridge.MAX_BYTES)
-                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                BitmapFactory.decodeFile(file.path, bounds)
+                val bounds = PhotoBitmap.bounds(file)
                 val mime = bounds.outMimeType
                 require(mime in PanoramaWebPolicy.imageTypes && PanoramaWebPolicy.highResolution(bounds.outWidth, bounds.outHeight))
                 val name = PanoramaPictureName.make(title, mime, spherical && bounds.outWidth == 2 * bounds.outHeight)
@@ -42,6 +41,8 @@ internal class PanoramaPictures(private val context: () -> Context?, private val
                 val values = ContentValues().apply {
                     put(MediaStore.Images.Media.DISPLAY_NAME, name)
                     put(MediaStore.Images.Media.MIME_TYPE, mime)
+                    put(MediaStore.Images.Media.WIDTH, bounds.outWidth)
+                    put(MediaStore.Images.Media.HEIGHT, bounds.outHeight)
                     put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/Thru3D")
                     put(MediaStore.Images.Media.IS_PENDING, 1)
                 }

@@ -19,10 +19,11 @@ func _run() -> void:
 	var normal_only := OS.get_environment("FILE_MANAGEMENT_NORMAL_ONLY") == "1"
 	for language in ["en", "zh", "zh_Hant", "ja"]:
 		menu.I18n.use(language)
-		for view in ["off", "list", "single", "multi", "grid_edit", "grid_multi", "compact_off", "compact", "compact_selected", "compact_confirm", "rename", "rename_preview", "folder_rename", "settings", "settings_hint"]:
+		for view in ["off", "grid_off", "off_hint", "grid_off_hint", "list", "single", "multi", "grid_edit", "grid_multi", "compact_off", "compact_grid_off", "compact_off_hint", "compact_grid_off_hint", "compact", "compact_selected", "compact_confirm", "rename", "rename_preview", "folder_rename", "settings", "settings_hint", "settings_entry"]:
 			if normal_only and view not in ["off", "compact_off"]: continue
-			menu.file_actions.reset(); menu.file_actions.set_enabled(view not in ["off", "compact_off"])
-			menu.compact = view.begins_with("compact"); menu.section = Menu.Section.LOCAL; menu.view_mode = "grid" if view.begins_with("grid_") else "list"
+			var locked: bool = view.contains("off") or view == "settings_entry"
+			menu.file_actions.settings_return.clear(); menu.file_actions.reset(); menu.file_actions.set_enabled(not locked)
+			menu.compact = view.begins_with("compact"); menu.section = Menu.Section.LOCAL; menu.view_mode = "grid" if view.contains("grid") else "list"
 			menu._local_all_files = true; menu._cloud_stack.clear(); menu._cloud_busy = false
 			menu._local_stack = [{"id":"/disk", "title":"Movies"}]
 			menu._local_entries = []
@@ -31,7 +32,7 @@ func _run() -> void:
 					"size":104857600, "modified":100, "kind":"video", "can_delete":i != 7, "can_rename":i != 7})
 			menu.current_file_provider = func(): return "file:///disk/00.mp4"
 			menu.visible = true; menu.scroll = 0; menu.refresh()
-			if view.begins_with("grid_"):
+			if view in ["grid_edit", "grid_multi"]:
 				menu._activate(Actions.EDIT_MODE); menu._set_scroll(250)
 				if view == "grid_multi": menu.file_actions.toggle(menu.rows[1000]); menu.file_actions.toggle(menu.rows[1001])
 			if view in ["single", "multi", "compact_selected", "compact_confirm"]:
@@ -47,7 +48,13 @@ func _run() -> void:
 				menu.section = Menu.Section.CLOUD; menu._cloud_stack = [{"id":"/account", "title":"115"}]
 				menu.file_actions.rename.open({"title":"旅行.2026", "uri":"cloud://account/folder", "folder":true, "can_rename":true})
 			if view.begins_with("settings"): menu.section = Menu.Section.SETTINGS; menu.tab = Menu.GENERAL_TAB; menu.refresh()
+			if view == "settings_entry":
+				menu.section = Menu.Section.LOCAL; menu.refresh(); menu._activate(Actions.EDIT_MODE)
 			menu._draw()
+			if view.ends_with("off_hint"):
+				for item in menu._buttons:
+					if item.target == Actions.EDIT_MODE:
+						menu.update_pointer("right_hand", item.node.to_global(Vector3(0, 0, 0.3)), -item.node.global_basis.z, true); break
 			if view == "settings_hint":
 				var hint := menu.I18n.t("Delete or rename files in supported library sections. Managing files is easier in list view. Available actions depend on the source and permissions.")
 				for id in menu._tips:
@@ -62,9 +69,15 @@ func _run() -> void:
 				boxes += 1
 				for body in menu._buttons:
 					if body.node.visible and menu._row_target(body.target): check(not item.rect.intersects(body.rect), label + " checkbox does not overlap a row")
-			if view in ["off", "compact_off"]: check(boxes == 0, label + " normal view has no management controls")
+			if view.contains("off"):
+				check(boxes == 0, label + " locked view has no selection checkboxes")
+				check(menu._buttons.any(func(item): return item.target == Actions.EDIT_MODE), label + " locked entry is visible")
+			if view.ends_with("off_hint"):
+				check(menu._tooltip != null and menu._tooltip.visible and menu._tooltip.get_child(0).text.contains(menu.I18n.t("Allow file management")), label + " ray shows enabling path")
+				check(menu._tooltip.mesh.size.x <= 0.91, label + " entry tooltip wraps within the panel")
+			if view == "settings_entry": check(menu._buttons.any(func(item): return item.target == Menu.BACK), label + " shortcut includes a return button")
 			if view in ["list", "compact"]: check(boxes > 0, label + " opt-in has visible checkboxes")
-			if view.begins_with("grid_"):
+			if view in ["grid_edit", "grid_multi"]:
 				check(menu.file_actions.editing and menu.scroll == 250, label + " large grid stays at its editing position")
 				check(menu.file_actions.selected_rows().size() == (2 if view == "grid_multi" else 0), label + " grid selection matches checkmarks")
 			if view == "compact_selected": check(menu._lines() == 4, label + " footer reserves its own space")

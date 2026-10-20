@@ -32,17 +32,16 @@ internal object PhotoStereo {
             val w = size?.get(1)?.toIntOrNull() ?: 0; val h = size?.get(2)?.toIntOrNull() ?: 0
             if (w > 0 && h > 0 && cached.length() == w.toLong()*h*4) return metadata(cached, w, h, strength, 0)
         }
-        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        BitmapFactory.decodeFile(source.path, bounds)
+        val bounds = PhotoBitmap.bounds(source)
         val targetSize = size(bounds.outWidth, bounds.outHeight)
         var sample = 1
         while (bounds.outWidth / (sample*2) >= targetSize.first && bounds.outHeight / (sample*2) >= targetSize.second) sample *= 2
-        val original = BitmapFactory.decodeFile(source.path, BitmapFactory.Options().apply { inSampleSize=sample; inPreferredConfig=Bitmap.Config.ARGB_8888 })
+        val original = PhotoBitmap.decode(source, BitmapFactory.Options().apply { inSampleSize=sample; inPreferredConfig=Bitmap.Config.ARGB_8888 })
             ?: error("PHOTO_DECODE_FAILED")
         var upright = original
         var color = original
         try {
-            val orientation = runCatching { ExifInterface(source.path).getAttributeInt(ExifInterface.TAG_ORIENTATION, 1) }.getOrDefault(1)
+            val orientation = PhotoBitmap.orientation(source)
             val matrix = Matrix().apply { when (orientation) {
                 2 -> setScale(-1f,1f); 3 -> setRotate(180f); 4 -> setScale(1f,-1f)
                 5 -> { setRotate(90f); postScale(-1f,1f) }; 6 -> setRotate(90f)

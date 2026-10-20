@@ -15,3 +15,26 @@ The 24K HDR original is a development source archive, not packaged in the app.
 
 CC0 permits commercial use, modification and redistribution without attribution.
 This voluntary credit does not imply endorsement by the authors or Poly Haven.
+
+Kloppenheim 06 (Pure Sky) / Morning sky
+Source: https://polyhaven.com/a/kloppenheim_06_puresky
+License: CC0 1.0 Universal (see CC0-1.0.txt).
+License verified: 2026-10-20, https://polyhaven.com/license
+
+Photography: Greg Zaal
+Sky edits: Jarod Guest
+
+The included kloppenheim_06_puresky.jpg is a processed 8192 x 4096
+equirectangular JPEG (1,042,903 bytes), derived from the official 16K EXR.
+Source: https://dl.polyhaven.org/file/ph-assets/HDRIs/exr/16k%2B/kloppenheim_06_puresky_16k.exr
+Source EXR MD5: df39600195a70a7d6464b109222a111b
+Included JPEG SHA256: 32e6268535524206c0054f4958f43c8aec64f26b3b0608b7b49bda904c573acb
+
+Processing: global-logmean-aces-srgb-v1 display conversion, Lanczos reduction
+from 16384 x 8192 to 8192 x 4096, high-quality 4:4:4 JPEG.
+Recipe: tools/media/prepare_sky_background.py in the project source.
+Godot uses mipmaps and GPU compression without further size reduction.
+The original EXR is not packaged. This is an SDR background texture.
+
+CC0 permits commercial use, modification and redistribution without attribution.
+This voluntary credit does not imply endorsement by the authors or Poly Haven.

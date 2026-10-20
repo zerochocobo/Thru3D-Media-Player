@@ -355,7 +355,8 @@ internal class EmbyClient(private val account: MediaServerAccount, private val h
             val index = caption.getInt("Index")
             val title = caption.optString("DisplayTitle").ifBlank { caption.optString("Title") }
                 .ifBlank { caption.optString("Language").ifBlank { "SRT ${index + 1}" } }.take(150)
-            MediaSubtitleLink(account.endpoint("Videos/${mediaId(id)}/$segment/Subtitles/$index/Stream.srt"), title)
+            MediaSubtitleLink(account.endpoint("Videos/${mediaId(id)}/$segment/Subtitles/$index/Stream.srt"), title,
+                language = caption.optString("Language").take(80))
         }
     }
 }

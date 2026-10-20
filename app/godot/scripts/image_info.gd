@@ -1,6 +1,6 @@
 extends RefCounted
 ## Read bounded headers before decoding. Dimensions never imply stereo or spherical projection.
-const EXTENSIONS := ["jpg", "jpeg", "png", "webp", "heic", "heif"]
+const EXTENSIONS := ["jpg", "jpeg", "png", "webp", "heic", "heif", "tif", "tiff", "hdr", "rgbe", "exr"]
 static func is_image(uri: String, title: String = "") -> bool:
 	return title.get_extension().to_lower() in EXTENSIONS or uri.get_slice("?", 0).get_slice("#", 0).uri_decode().get_extension().to_lower() in EXTENSIONS
 

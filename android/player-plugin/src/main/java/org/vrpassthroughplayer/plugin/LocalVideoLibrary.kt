@@ -34,7 +34,7 @@ internal class LocalVideoLibrary(
     private var directoryRequest = 0x5400
     private var directoryWaiting: Pair<String, String>? = null // requested path, expected volume UUID
     @Volatile private var directoryValidating = false
-    private val waiting = mutableListOf<Pair<Int, String>>() // main thread only
+    private val waiting = mutableListOf<Triple<Int, String, Boolean>>() // main thread only
     private val permission = if (Build.VERSION.SDK_INT >= 33) Manifest.permission.READ_MEDIA_VIDEO
         else Manifest.permission.READ_EXTERNAL_STORAGE
     // Asked together with video: clone-voice M4A tracks beside the videos are MediaStore audio.
@@ -110,20 +110,20 @@ internal class LocalVideoLibrary(
         .put("state",state).put("volume_id",path).put("error",error).put("unmounted",false).toString()
 
     /** Main thread. path "" lists the storage volumes. Asks for the media permission once if needed. */
-    fun browse(id: Int, path: String) {
-        if (path.startsWith("usb://") && usb != null) { usb.browse(id,path); return }
+    fun browse(id: Int, path: String, subtitlesOnly: Boolean = false) {
+        if (path.startsWith("usb://") && usb != null) { usb.browse(id,path,subtitlesOnly); return }
         val activity = host() ?: return emit(id, state("error", "ACTIVITY_UNAVAILABLE"))
         watchStorage(activity.applicationContext)
         // Volume discovery needs no media grant; a user may open USB without shared-storage access.
         if (path.isEmpty() || path.startsWith("content://") || systemVolume(path, LocalStorageVolumes.roots(activity))?.optBoolean("removable") == true) {
-            list(id,path); return
+            list(id,path,subtitlesOnly); return
         }
-        if (grantWaiting || waiting.isNotEmpty()) { waiting.add(id to path); return }
+        if (grantWaiting || waiting.isNotEmpty()) { waiting.add(Triple(id,path,subtitlesOnly)); return }
         val readable = activity.checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED ||
             (Build.VERSION.SDK_INT >= 33 && activity.checkSelfPermission(Manifest.permission.READ_MEDIA_IMAGES) == PackageManager.PERMISSION_GRANTED)
         if ((allFiles() && (Build.VERSION.SDK_INT >= 30 || !fileManagementEnabled || writable())) || permissions.all { activity.checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED } ||
-            (mediaAsked && readable)) return list(id, path)
-        waiting.add(id to path)
+            (mediaAsked && readable)) return list(id, path, subtitlesOnly)
+        waiting.add(Triple(id, path, subtitlesOnly))
         mediaAsked = true
         if (waiting.size == 1) {
             try { activity.requestPermissions(permissions, REQUEST) }
@@ -148,7 +148,7 @@ internal class LocalVideoLibrary(
         val requests = waiting.toList(); waiting.clear()
         val readable = permissions.filter { it != Manifest.permission.READ_MEDIA_AUDIO && it != Manifest.permission.WRITE_EXTERNAL_STORAGE }
             .any { host()?.checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED } || granted
-        for ((id, path) in requests) if (readable) list(id, path) else emit(id, state("denied", "MEDIA_PERMISSION_DENIED"))
+        for ((id, path, subtitlesOnly) in requests) if (readable) list(id, path, subtitlesOnly) else emit(id, state("denied", "MEDIA_PERMISSION_DENIED"))
     }
 
     private fun allFiles(): Boolean = LocalStoragePermissions.allFiles(Build.VERSION.SDK_INT,
@@ -237,7 +237,7 @@ internal class LocalVideoLibrary(
         }
     }
 
-    private fun list(id: Int, path: String) {
+    private fun list(id: Int, path: String, subtitlesOnly: Boolean = false) {
         val context = host()?.applicationContext ?: return emit(id, state("error", "ACTIVITY_UNAVAILABLE"))
         val epoch = browseEpoch.get()
         worker.execute {
@@ -251,17 +251,17 @@ internal class LocalVideoLibrary(
                     path.isEmpty() -> volumes
                     path.startsWith("content://") -> {
                         check(mounted) { "Storage device unavailable" }
-                        documents.tree.directory(path)
+                        documents.tree.directory(path, !subtitlesOnly)
                     }
                     mounted && documents.tree.grants(volume!!.getString("uuid")).isNotEmpty() ->
-                        documents.tree.filePath(path, volume.getString("id"), volume.getString("uuid"))
+                        documents.tree.filePath(path, volume.getString("id"), volume.getString("uuid"), !subtitlesOnly)
                     mounted && !allFiles() -> throw AccessDeniedException("storage")
-                    else -> folder(path) { !closed && epoch == browseEpoch.get() }
+                    else -> folder(path, subtitlesOnly) { !closed && epoch == browseEpoch.get() }
                 }
                 if (closed || epoch != browseEpoch.get()) return@execute
                 emit(id, JSONObject().put("source", "local").put("state", "ready").put("path", path)
                     .put("all_files", allFiles()).put("access_kind", if (mounted) "directory" else "all_files")
-                    .put("entries", entries).put("volumes",volumes).toString())
+                    .put("entries", if (subtitlesOnly) SidecarSubtitles.directoryEntries(entries) else entries).put("volumes",volumes).toString())
             } catch (error: Exception) {
                 val failure = LocalStorageReadPolicy.failure(error, mounted, allFiles())
                 if (!closed && epoch == browseEpoch.get()) emit(id, JSONObject(state(failure.state, failure.message)).put("path", path)
@@ -368,7 +368,7 @@ internal class LocalVideoLibrary(
         return JSONObject().put("deleted", true)
     }
 
-    private fun folder(path: String, alive: () -> Boolean): JSONArray {
+    private fun folder(path: String, subtitlesOnly: Boolean = false, alive: () -> Boolean): JSONArray {
         val directory = File(path)
         // Keep the real I/O failure: File.listFiles() collapses missing, denied and broken mounts to null.
         val children = Files.newDirectoryStream(directory.toPath()).use { entries -> entries.map {
@@ -376,11 +376,15 @@ internal class LocalVideoLibrary(
         } }
         val editableVolume = !removable(directory)
         val result = JSONArray()
-        children.filter { !it.name.startsWith(".") && (it.isDirectory || MediaKinds.supported(it.name)) }
+        children.filter { !it.name.startsWith(".") && (it.isDirectory || if (subtitlesOnly) SidecarSubtitles.supportedFile(it.name) else MediaKinds.supported(it.name)) }
             .sortedWith(compareBy({ !it.isDirectory }, { it.name.lowercase() }))
             .forEach {
                 val editablePath = editableVolume && !(it.absolutePath.replace('\\', '/') + "/").contains("/Android/")
+                // Discovery is independent of the opt-in write gate; never request a grant here.
+                val managementAvailable = editablePath && directory.canWrite() && it.canonicalPath == it.absolutePath &&
+                    (it.isDirectory || MediaDeletePolicy.regular(it))
                 val entry = JSONObject().put("id", it.absolutePath).put("title", it.name).put("container", it.isDirectory)
+                    .put("management_available", managementAvailable)
                     .put("modified", it.lastModified().takeIf { time -> time > 0 } ?: -1)
                     .put("delete_uri", Uri.fromFile(it).toString()).put("can_delete", writable() && editablePath && directory.canWrite() && it.canonicalPath == it.absolutePath)
                     .put("delete_reason", "File deletion permission denied")

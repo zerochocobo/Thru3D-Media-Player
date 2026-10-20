@@ -33,15 +33,17 @@ func TestCompanionsSearchOnlyRequestedFolderAndMatchingNamesAcrossSearchPages(t 
 		}
 		if cursor == "" {
 			return []model.Obj{obj("1", "电影.part1.srt", "42"), obj("2", "电影.part1.en.srt", "child"),
-				obj("3", "电影.part10.srt", "42"), obj("4", "电影.part1.txt", "42")}, "4", 5, false, nil
+				obj("3", "电影.part10.srt", "42"), obj("4", "电影.part1.txt", "42"),
+				obj("6", "电影.part1.future_sidecar", "42")}, "4", 6, false, nil
 		}
 		if cursor != "4" {
 			t.Fatal("wrong search continuation", cursor)
 		}
-		return []model.Obj{obj("5", "电影.part1.si.mix.m4a", "42")}, "", 5, false, nil
+		return []model.Obj{obj("5", "电影.part1.si.mix.m4a", "42")}, "", 6, false, nil
 	})
 	files, err := readCloudCompanions(context.Background(), search, &model.Object{ID: "42", IsFolder: true}, "电影.part1.mp4")
-	if err != nil || len(files) != 2 || files[0].GetID() != "1" || files[1].GetID() != "5" || count != 2 {
+	if err != nil || len(files) != 4 || files[0].GetID() != "1" || files[1].GetID() != "4" ||
+		files[2].GetID() != "6" || files[3].GetID() != "5" || count != 2 {
 		t.Fatal("companion filter or pagination failed", files, err, count)
 	}
 }

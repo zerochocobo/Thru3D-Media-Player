@@ -38,6 +38,7 @@ internal class PhotoPreviewBridge(
             var resolved = ""
             var directory: File? = null
             var published = false
+            var phase = "source"
             fun checkCurrent() { if (closed || current.get() != id) throw InterruptedException() }
             try {
                 checkCurrent()
@@ -73,10 +74,17 @@ internal class PhotoPreviewBridge(
                     }
                 } }
                 checkCurrent()
+                phase = "decode"
                 val heif = HeifPhotoInfo.read(source)
                 val metadata = JSONObject().put("state", "ready").put("orientation", 1)
                 val bitmap: Bitmap
-                if (heif != null) {
+                if (PhotoBitmap.isNative(source)) {
+                    val bounds = PhotoBitmap.bounds(source)
+                    var sample = 1
+                    while (maxOf(bounds.outWidth, bounds.outHeight) / sample > EDGE * 2) sample *= 2
+                    bitmap = PhotoBitmap.region(source, 0, 0, bounds.outWidth, bounds.outHeight, sample, ::checkCurrent)
+                    metadata.put("orientation", PhotoBitmap.orientation(source))
+                } else if (heif != null) {
                     // Select one eye before Android decodes; no packed stereo or full-size raw allocation.
                     heif.selectPrimary(source, heif.left)
                     bitmap = ImageDecoder.decodeBitmap(ImageDecoder.createSource(source)) { decoder, info, _ ->
@@ -110,6 +118,7 @@ internal class PhotoPreviewBridge(
                 }
                 try {
                     checkCurrent()
+                    phase = "encode"
                     val preview = File(directory, "preview.png")
                     preview.outputStream().use { require(bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)) }
                     metadata.put("path", preview.path).put("width", bitmap.width).put("height", bitmap.height)
@@ -117,8 +126,12 @@ internal class PhotoPreviewBridge(
                     checkCurrent(); published = true; emit(id, metadata.toString())
                 } finally { bitmap.recycle() }
             } catch (_: InterruptedException) { }
-            catch (_: Throwable) {
-                if (!closed && current.get() == id) emit(id, "{\"state\":\"error\",\"error\":\"PHOTO_UNAVAILABLE\"}")
+            catch (error: Throwable) {
+                if (!closed && current.get() == id) {
+                    // No media URI, resolved credentials, file path or provider exception message.
+                    android.util.Log.w("QuestPhotoPreview", "request=$id phase=$phase failure=${error.javaClass.simpleName}")
+                    emit(id, "{\"state\":\"error\",\"error\":\"PHOTO_UNAVAILABLE\"}")
+                }
             } finally {
                 connection?.disconnect(); connection = null
                 if (uri.startsWith("smb://") || uri.startsWith("cloud://") || uri.startsWith("usb://")) releaseStream(resolved)
@@ -134,7 +147,8 @@ internal class PhotoPreviewBridge(
     companion object {
         const val EDGE = 512
         fun dimensions(width: Int, height: Int): Pair<Int, Int> {
-            require(width in 1..32768 && height in 1..32768)
+            // Match the full-photo reader. Tall comic pages are sampled before allocating pixels.
+            require(width in 1..65535 && height in 1..65535)
             val scale = minOf(1.0, EDGE.toDouble() / maxOf(width, height))
             return maxOf(1, (width * scale).roundToInt()) to maxOf(1, (height * scale).roundToInt())
         }

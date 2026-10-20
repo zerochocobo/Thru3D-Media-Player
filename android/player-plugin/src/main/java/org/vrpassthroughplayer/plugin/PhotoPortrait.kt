@@ -53,9 +53,8 @@ internal object PhotoPortrait {
             }
             require(foreground >= 26) { "PHOTO_NO_PERSON" }
             val small = Bitmap.createBitmap(pixels,EDGE,EDGE,Bitmap.Config.ARGB_8888)
-            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-            BitmapFactory.decodeFile(source.path,bounds)
-            val orientation = runCatching { ExifInterface(source.path).getAttributeInt(ExifInterface.TAG_ORIENTATION,1) }.getOrDefault(1)
+            val bounds = PhotoBitmap.bounds(source)
+            val orientation = PhotoBitmap.orientation(source)
             val (w,h) = if (orientation in 5..8) PhotoStereo.size(bounds.outHeight,bounds.outWidth) else PhotoStereo.size(bounds.outWidth,bounds.outHeight)
             val full = Bitmap.createBitmap(w,h,Bitmap.Config.ARGB_8888)
             try {

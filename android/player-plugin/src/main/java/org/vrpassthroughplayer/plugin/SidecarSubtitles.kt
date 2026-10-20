@@ -7,7 +7,7 @@ import java.io.File
 /** Text subtitles beside a video. Keep discovery separate from media filtering:
  * SRT/ASS files should become CC tracks, not playable library entries. */
 internal object SidecarSubtitles {
-    data class Track(val location: String, val title: String)
+    data class Track(val location: String, val title: String, val language: String = "")
     // .sub is ambiguous: MPV's detected codec decides whether it is text or bitmap.
     private val extensions = setOf("srt", "ass", "ssa", "vtt", "smi", "sami", "sub")
 
@@ -18,6 +18,25 @@ internal object SidecarSubtitles {
     /** Manual discovery has no basename restriction or automatic-track limit. */
     fun files(names: Collection<String>): List<String> = names.filter(::supportedFile).distinct()
         .sortedWith(compareBy<String> { it.lowercase() }.thenBy { it })
+
+    fun directoryEntries(entries: org.json.JSONArray): org.json.JSONArray = org.json.JSONArray().apply {
+        for (index in 0 until entries.length()) {
+            val row = entries.getJSONObject(index)
+            if (row.optBoolean("container") || supportedFile(row.optString("title"))) put(row)
+        }
+    }
+
+    fun sourceName(uri: String): String {
+        val at = URI(uri)
+        require(uri.length <= 4096 && at.rawQuery == null && at.rawFragment == null && at.rawUserInfo == null)
+        require(at.scheme in setOf("file", "smb", "cloud", "usb", "content"))
+        if (at.scheme == "file") require(at.rawAuthority.isNullOrEmpty())
+        val path = if (at.scheme == "content") StorageDocumentPolicy.parse(uri).document.path else at.path.orEmpty()
+        require(path.split('/').none { it == "." || it == ".." || '\\' in it || it.any { c -> c.code < 32 } })
+        val name = path.substringAfterLast('/')
+        require(supportedFile(name))
+        return name
+    }
 
     fun supportsDirectory(uri: String): Boolean = when (uri.substringBefore("://", "")) {
         "file", "usb", "smb", "cloud" -> true
@@ -63,7 +82,7 @@ internal object SidecarSubtitles {
             require(bytes.isNotEmpty())
             validate(bytes)
             val source = Bytes(bytes)
-            try { Track(publish(source, "subtitle-$index.${caption.extension}"), caption.title) }
+            try { Track(publish(source, "subtitle-$index.${caption.extension}"), caption.title, caption.language) }
             catch (error: Exception) { source.close(); throw error }
         }.getOrNull()
     }
@@ -80,7 +99,7 @@ internal object SidecarSubtitles {
                 val filename = caption.url.path.substringAfterLast('/').takeIf {
                     it.isNotBlank() && '/' !in it && '\\' !in it && it.substringAfterLast('.', "").lowercase() in extensions
                 } ?: "subtitle-$index.${caption.extension}"
-                try { Track(publish(source, filename), caption.title) }
+                try { Track(publish(source, filename), caption.title, caption.language) }
                 catch (error: Exception) { source.close(); throw error }
             }.getOrNull()
         }

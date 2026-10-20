@@ -37,6 +37,8 @@ internal class MpvVideoBridge(
     private val enableNetworkReadCache: (String, List<AudioReadSpan>) -> Boolean = { _, _ -> false },
     private val finishIsoPreflight: (String) -> Unit = {},
     private val referenceSource: (String) -> String = { it },
+    private val openSubtitleUri: (String) -> SidecarSubtitles.Track = { error("Subtitle unavailable") },
+    private val createNetworkPlaybackView: (String, Mp4PlaybackLayout) -> String? = { _, _ -> null },
 ) {
     private val worker = RvmWorkers.video
     private val subtitleWorker = Executors.newSingleThreadExecutor { Thread(it, "QuestSubtitleFiles") }
@@ -51,6 +53,47 @@ internal class MpvVideoBridge(
     }
     @Volatile private var foreground = true
     @Volatile private var stopped = false
+    private data class PlaybackView(val uri: String, val url: String, val layout: Mp4PlaybackLayout)
+    private val playbackViewLock = Any()
+    private var pendingPlaybackView: PlaybackView? = null
+    private var playbackViewGeneration = 0L
+    @Volatile private var playbackViewUri = ""
+    /** Called before an internal close/open so the next decoder gets an independently
+     * owned input. User close clears the reservation immediately. */
+    fun setInterleaveReopen(enabled: Boolean) {
+        if (!enabled) {
+            val old = synchronized(playbackViewLock) {
+                playbackViewGeneration++; playbackViewUri = ""
+                pendingPlaybackView.also { pendingPlaybackView = null }
+            }
+            old?.let { releaseNetwork(it.url) }
+            return
+        }
+        if (synchronized(playbackViewLock) { pendingPlaybackView != null }) return
+        val host = hosts.firstOrNull { !it.closing && it.playbackLayout != null } ?: return
+        reservePlaybackView(host, host.playbackLayout!!)
+    }
+    private fun reservePlaybackView(host: Host, layout: Mp4PlaybackLayout): Boolean {
+        val generation = synchronized(playbackViewLock) { playbackViewGeneration }
+        val url = runCatching { createNetworkPlaybackView(host.narrationPath, layout) }.getOrNull() ?: return false
+        val pending = PlaybackView(host.uri, url, layout)
+        var accepted = false
+        val old = synchronized(playbackViewLock) {
+            if (generation == playbackViewGeneration && !host.closing && !stopped) {
+                accepted = true; playbackViewUri = host.uri
+                pendingPlaybackView.also { pendingPlaybackView = pending }
+            } else null
+        }
+        if (!accepted) { releaseNetwork(url); return false }
+        old?.let { releaseNetwork(it.url) }
+        worker.postDelayed({
+            val expired = synchronized(playbackViewLock) {
+                if (pendingPlaybackView === pending) pendingPlaybackView.also { pendingPlaybackView = null } else null
+            }
+            expired?.let { releaseNetwork(it.url) }
+        }, 15_000)
+        return true
+    }
     @Volatile private var globalVoiceManager: VoiceCloneController? = null
     private val globalVoiceHolds=java.util.concurrent.atomic.AtomicInteger()
     private val globalVoiceHolding get()=globalVoiceHolds.get()>0
@@ -130,6 +173,7 @@ internal class MpvVideoBridge(
         @Volatile var discInput = false
         @Volatile var narrationCa = ""
         @Volatile var interleavePolicy = Mp4InterleavePolicy.Decision()
+        @Volatile var playbackLayout: Mp4PlaybackLayout? = null
         var interleaveCheckStarted = false // GL thread only
         @Volatile var interleaveRetry = false
         @Volatile var interleaveRestartMs = startMs
@@ -145,6 +189,7 @@ internal class MpvVideoBridge(
         @Volatile var networkLease: String? = null
         @Volatile var subtitleLeases: List<String> = emptyList()
         val subtitleLocations = ConcurrentHashMap<String, String>() // original filename -> current lease
+        val subtitleLanguages = ConcurrentHashMap<String, String>() // lease -> server language metadata
         val subtitleTrackIds = ConcurrentHashMap<String, Int>()
         @Volatile var subtitleFileLoad: SubtitleFileLoad? = null
         @Volatile var subtitleMemoryId = ""
@@ -155,6 +200,7 @@ internal class MpvVideoBridge(
             voiceClone?.close(); voiceClone=null
             narration?.close(); narration = null
             networkLease?.let(releaseNetwork); networkLease = null
+            playbackLayout = null
             subtitleLeases.forEach(releaseNetwork); subtitleLeases = emptyList()
             audioLeases.forEach(releaseNetwork); audioLeases = emptyList()
             descriptor?.close(); descriptor = null
@@ -174,12 +220,13 @@ internal class MpvVideoBridge(
             val decision = Mp4InterleavePolicy.inspectHttp(host.narrationPath) { host.closing || stopped }
             host.markStartup("interleave_checked_ms")
             if (host.closing || stopped) return@post
-            if (decision.sequential) {
+            val viewReady = decision.preferPlaybackView && decision.playbackLayout?.let { reservePlaybackView(host, it) } == true
+            if (decision.sequential || viewReady) {
                 val observed = runCatching { JSONObject(MpvSourceNative.status(host.handle)).optJSONObject("details")
                     ?.optDouble("position_seconds", 0.0) ?: 0.0 }.getOrDefault(0.0)
                 host.interleaveRestartMs = maxOf(host.startMs, if (observed.isFinite())
                     (observed * 1000).coerceIn(0.0, Int.MAX_VALUE.toDouble()).toInt() else host.startMs)
-                host.interleavePolicy = decision
+                host.interleavePolicy = if (viewReady) decision.copy(regionCache = false, playbackLayout = null, diagnostic = "reinterleave_ready") else decision
                 host.interleaveRetry = true
             } else {
                 host.interleavePolicy = if (!decision.regionCache || enableNetworkReadCache(host.narrationPath, decision.audioChunks)) decision
@@ -267,6 +314,9 @@ internal class MpvVideoBridge(
         }
     }
     fun supported() = !stopped && MpvSourceNative.supported()
+    fun captureOwner(id: Int): Long = sessions[id]?.takeIf { active(it) && !it.host.closing }
+        ?.host?.handle?.takeIf { it>0 }?.let { MpvSourceNative.captureOwner(it) } ?: 0L
+    fun captureAudioFlush(id: Int){sessions[id]?.host?.narration?.captureFlush()}
     /** User setting: decoded color width cap for sources opened from now on (0 = source size). */
     @Volatile var outputWidthCap = 0
     /** User setting: Alpha passthrough reads the source at this rate, one RVM pair per presented frame. */
@@ -304,14 +354,25 @@ internal class MpvVideoBridge(
         if (!supported() || sessions.size >= 2 || startMs < 0 || profile !in RvmProfiles.keys || (depth && (alpha || stereo)) ||
             Uri.parse(uri).scheme !in setOf("content", "file", "usb", "smb", "cloud", "medialib", "dlna", "http", "https")) return -1
         val id = gate.begin(); if (id <= 0) return -1
+        val pendingView = synchronized(playbackViewLock) { pendingPlaybackView.also { pendingPlaybackView = null } }
+        val preparedView = pendingView?.takeIf { networkInterleaveCompat && it.uri == uri }
+        if (pendingView != null && preparedView == null) releaseNetwork(pendingView.url)
+        if (!networkInterleaveCompat) playbackViewUri = ""
         // Compositor layers carry normal playback; Alpha only in the plan B prototype (its mask becomes a
         // compositor mask layer). 2D->3D composes in Godot's shader.
         val alphaLayer = alpha && layerAlpha()
-        val host = Host(uri, startMs, hardware, audio, exactSeek, outputWidthCap, layer && hardware && !depth && (!alpha || alphaLayer),
-            alphaLayer && layer && hardware)
-        host.interleavePolicy = Mp4InterleavePolicy.Decision(networkInterleaveCompat)
+        // Only a verified view must resume exactly. Preserve the user's seek
+        // policy for ordinary files and the older leading-audio compatibility.
+        val host = Host(uri, startMs, hardware, audio, exactSeek || preparedView != null, outputWidthCap,
+            layer && hardware && !depth && (!alpha || alphaLayer), alphaLayer && layer && hardware)
+        host.playbackLayout = preparedView?.layout
+        host.networkLease = preparedView?.url
+        host.interleaveCheckStarted = preparedView != null
+        host.interleavePolicy = if (preparedView != null) Mp4InterleavePolicy.Decision(diagnostic = "reinterleaved_view")
+            else Mp4InterleavePolicy.Decision(networkInterleaveCompat && playbackViewUri != uri)
         if (host.alphaLayer) layerMask = "0 0 0"
-        val session = Session(gate.current(id) ?: return -1, host, stereo, profile, alpha, vulkan, debugNormalFastPath, depth,
+        val scope = gate.current(id) ?: run { host.closeDescriptors(); return -1 }
+        val session = Session(scope, host, stereo, profile, alpha, vulkan, debugNormalFastPath, depth,
             stereo && topBottom)
         sessions[id] = session; hosts.add(host)
         sessions.values.filter { it.id != id }.forEach { dispose(it, true) }
@@ -323,7 +384,7 @@ internal class MpvVideoBridge(
                 val app = context() ?: error("Activity unavailable")
                 val tlsCaFile = MpvTlsTrust.prepare(app)
                 // Keep Host.uri (history, modes and companions) on the shortcut, resolving only the input.
-                val resolved = resolveNetwork(uri)
+                val resolved = preparedView?.url ?: resolveNetwork(uri)
                 val source = Uri.parse(resolved)
                 host.remote = host.remote || source.scheme in setOf("http", "https", "smb", "cloud", "medialib")
                 host.loadingPhase = "reading"
@@ -359,6 +420,7 @@ internal class MpvVideoBridge(
                 host.subtitleMemoryId = runCatching { subtitleIdentity(uri) }.getOrDefault("")
                 host.markStartup("subtitle_sidecars_resolved_ms")
                 host.subtitleLeases = captions.map { it.location }
+                captions.filter { it.language.isNotBlank() }.forEach { host.subtitleLanguages[it.location] = it.language }
                 if (SidecarSubtitles.supportsDirectory(uri)) captions.forEach { host.subtitleLocations[it.title] = it.location }
                 if (host.closing || stopped) { host.closeDescriptors(); return@post }
                 render(Runnable {
@@ -426,6 +488,7 @@ internal class MpvVideoBridge(
                     host.sidecars = host.sidecars + audio.mapNotNull { it.descriptor }
                     host.audioLeases = host.audioLeases + audio.filter { it.location.startsWith("http://127.0.0.1:") }.map { it.location }
                     host.subtitleLeases = host.subtitleLeases + freshCaptions.map { it.location }
+                    freshCaptions.filter { it.language.isNotBlank() }.forEach { host.subtitleLanguages[it.location] = it.language }
                     freshCaptions.forEach { host.subtitleLocations[it.title] = it.location }
                     host.markStartup("cloud_companions_queued_ms")
                 } else {
@@ -683,13 +746,18 @@ internal class MpvVideoBridge(
         }
         return true
     }
-    fun loadSubtitleFile(id: Int, request: Int, name: String): Boolean {
+    fun loadSubtitleUri(id: Int, request: Int, uri: String): Boolean {
+        val name = runCatching { SidecarSubtitles.sourceName(uri) }.getOrNull() ?: return false
+        return loadSubtitleFile(id, request, name, uri)
+    }
+    fun loadSubtitleFile(id: Int, request: Int, name: String, uri: String = ""): Boolean {
         val session = sessions[id] ?: return false
         val host = session.host
+        val key = uri.ifEmpty { name }
         synchronized(host) {
             if (!active(session) || host.handle <= 0 || request <= 0 || host.subtitleFileLoad != null ||
-                !SidecarSubtitles.supportsDirectory(host.uri) || !SidecarSubtitles.supportedFile(name)) return false
-            host.subtitleFileLoad = SubtitleFileLoad(id, request, name)
+                (uri.isEmpty() && !SidecarSubtitles.supportsDirectory(host.uri)) || !SidecarSubtitles.supportedFile(name)) return false
+            host.subtitleFileLoad = SubtitleFileLoad(id, request, key)
         }
         subtitleWorker.execute {
             var location = ""
@@ -699,23 +767,23 @@ internal class MpvVideoBridge(
                     return@execute
                 }
                 // A previously loaded file can be selected without another download or sub-add.
-                val existing = host.subtitleTrackIds[name]
+                val existing = host.subtitleTrackIds[key]
                 if (existing != null) {
                     synchronized(host) { host.subtitleFileLoad = null }
                     if (active(session)) event("mpv_subtitle_files", session, JSONObject().put("operation", "load")
                         .put("request", request).put("file", name).put("state", "ready").put("track_id", existing))
                     return@execute
                 }
-                location = openSubtitleFile(host.uri, name).location
+                location = (if (uri.isEmpty()) openSubtitleFile(host.uri, name) else openSubtitleUri(uri)).location
                 synchronized(host) {
                     if (!active(session) || host.closing || host.handle <= 0) {
                         releaseNetwork(location); host.subtitleFileLoad = null; return@execute
                     }
                     val serial = MpvSourceNative.addSubtitleFile(host.handle, location, name)
                     check(serial > 0)
-                    host.subtitleLocations[name] = location
+                    host.subtitleLocations[key] = location
                     host.subtitleLeases = host.subtitleLeases + location
-                    host.subtitleFileLoad = SubtitleFileLoad(id, request, name, serial, location)
+                    host.subtitleFileLoad = SubtitleFileLoad(id, request, key, serial, location)
                 }
             } catch (_: Exception) {
                 if (location.isNotEmpty()) releaseNetwork(location)
@@ -732,8 +800,10 @@ internal class MpvVideoBridge(
         val tracks = details?.optJSONArray("subtitle_tracks") ?: JSONArray()
         for (i in 0 until tracks.length()) {
             val track = tracks.getJSONObject(i)
+            // Retain MPV's raw identity fields for saved choices and per-track timing.
+            host.subtitleLanguages[track.optString("filename")]?.let { track.put("server_language", it) }
             val name = host.subtitleLocations.entries.firstOrNull { it.value == track.optString("filename") }?.key ?: continue
-            track.put("source_file", name)
+            track.put(if (name.contains("://")) "source_uri" else "source_file", name)
             if (track.optString("codec") in setOf("subrip", "ass", "ssa", "webvtt", "sami", "microdvd", "subviewer", "text", "ttml"))
                 host.subtitleTrackIds[name] = track.getInt("id")
         }
@@ -925,6 +995,7 @@ internal class MpvVideoBridge(
                         .put("interleave_leading_audio_bytes", session.host.interleavePolicy.leadingAudioBytes)
                         .put("network_interleave_diagnostic", session.host.interleavePolicy.diagnostic)
                         .put("network_interleave_region_cache", session.host.interleavePolicy.regionCache)
+                        .put("network_reinterleaved_view", session.host.playbackLayout != null)
                         .put("network_interleave_retry", session.host.interleaveRetry)
                         .put("network_interleave_restart_ms", session.host.interleaveRestartMs)
                         .put("source_start_ms", session.host.startMs)
@@ -1538,8 +1609,10 @@ internal class MpvVideoBridge(
         private val NO_PLANES: Pair<ByteBuffer, ByteBuffer> = ByteBuffer.allocateDirect(0) to ByteBuffer.allocateDirect(0)
     }
     fun shutdown() {
+        stopped = true
+        setInterleaveReopen(false)
         globalVoiceManager?.close();globalVoiceManager=null
-        stopped = true; gate.shutdown(); sessions.values.forEach { dispose(it, true) }
+        gate.shutdown(); sessions.values.forEach { dispose(it, true) }
         Thread({narrationRuntime.close()},"NarrationRuntimeDispose").start()
         subtitleWorker.shutdownNow()
         companionWorker.shutdownNow()

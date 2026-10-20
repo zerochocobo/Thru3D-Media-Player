@@ -99,6 +99,16 @@ class InterleaveReadCacheTest {
             assertEquals(1024L, source.stats()!!.getValue("cached_bytes"))
         }
     }
+    @Test fun playbackViewGapLimitAvoidsDownloadingLargeSkippedRegions() {
+        for (limit in listOf(1024, 65536)) {
+            val origin = Origin()
+            InterleaveReadCache(origin, 65536, audioChunks = listOf(AudioReadSpan(0, 100)), maxForwardGapBytes = limit).use { source ->
+                source.open().use { verify(it, 1_000_000, 100) }
+                source.open().use { verify(it, 1_030_000, 100) }
+                assertEquals(if (limit == 1024) 200L else 30100L, source.stats().getValue("upstream_bytes"))
+            }
+        }
+    }
     @Test fun sourceCloseUnblocksPendingReadBeforeAcquiringCacheLock() {
         val entered = CountDownLatch(1); val cancelled = CountDownLatch(1); val finished = CountDownLatch(1)
         val source = InterleaveReadCache(object : StreamSource {

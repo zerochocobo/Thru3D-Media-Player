@@ -177,7 +177,7 @@ internal object OpenListBackend {
             return find115(path, id)
         }
         override fun companions(path: String, pageFiles: List<CloudFile>): List<CloudFile> {
-            if (!canDelete) return pageFiles
+            if (!canDelete) return super.companions(path, pageFiles)
             absolutePath(path)
             val started = System.nanoTime()
             val data = call("POST", "/companions115", JSONObject().put("mount", mount).put("path", path).put("folder_id", folderId)).getJSONObject("data")

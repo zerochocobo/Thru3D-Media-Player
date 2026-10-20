@@ -8,6 +8,18 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class SmbPackagingTest {
+    @Test fun subtitleNamesKeepUnicodeSpacesAndHashesThroughTheActualSmbHandler() {
+        val base = BaseContext(PropertyConfiguration(SmbClientPolicy.properties(false)))
+        try {
+            val selected = java.net.URI("smb", "saved", "/fixture/字幕 #1.srt", null)
+            assertEquals("字幕 #1.srt", SidecarSubtitles.sourceName(selected.toASCIIString()))
+            // MediaSources resolves the saved account first, then hands its decoded path to JCIFS.
+            SmbFile("smb://127.0.0.1${selected.path}", base).use { file ->
+                assertEquals("字幕 #1.srt", file.name)
+            }
+        } finally { base.close() }
+    }
+
     @Test fun deprecatedHttpTlsAdaptersAreUnavailable() {
         for (prefix in listOf("org.codelibs.jcifs.smb", "org.codelibs.jcifs.smb1")) {
             for (adapter in listOf("http.NtlmHttpURLConnection", "http.Handler", "https.Handler")) {

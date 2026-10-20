@@ -51,11 +51,12 @@ internal class MediaSources(
     fun streamProgress(uri: String): TransferMeter.Snapshot? = server?.progress(uri)
     fun streamFailure(uri: String): PlaybackFailure? = server?.failure(uri)
     fun enableInterleaveCache(uri: String, audioChunks: List<AudioReadSpan>): Boolean = server?.enableInterleaveCache(uri, audioChunks) ?: false
+    fun playbackView(uri: String, layout: Mp4PlaybackLayout): String? = server?.let { CloudLibrary.playbackView(uri, layout, it) }
     fun finishIsoPreflight(uri: String) { server?.finishIsoPreflight(uri) }
 
     fun nextId(): Int = ids.incrementAndGet()
     /** Main thread: may show the media permission request. path "" lists the storage volumes. */
-    fun browseLocal(id: Int, path: String) = local.browse(id, path)
+    fun browseLocal(id: Int, path: String, subtitlesOnly: Boolean = false) = local.browse(id, path, subtitlesOnly)
     /** Main thread: requests legacy read access or opens settings, emitting local_access events. */
     fun grantAllFiles() = local.grantAllFiles()
     fun grantLocalDirectory(path: String) = local.grantDirectory(path)
@@ -109,16 +110,16 @@ internal class MediaSources(
         JSONObject().put("saved_id", smb.save(JSONObject(request))).put("servers", smb.serversJson())
     }
     fun smbRemove(id: String): Int = run("smb") { smb.remove(id); JSONObject().put("servers", smb.serversJson()) }
-    fun smbBrowse(serverId: String, path: String): Int = run("smb") {
-        JSONObject().put("server_id", serverId).put("path", path).put("entries", smb.browse(serverId, path))
+    fun smbBrowse(serverId: String, path: String, subtitlesOnly: Boolean = false): Int = run("smb") {
+        JSONObject().put("server_id", serverId).put("path", path).put("entries", smb.browse(serverId, path, subtitlesOnly))
     }
 
-    fun cloudBrowse(path: String, refresh: Boolean, offset: Int = 0, order: String = "", folderId: String = ""): Int {
+    fun cloudBrowse(path: String, refresh: Boolean, offset: Int = 0, order: String = "", folderId: String = "", subtitlesOnly: Boolean = false): Int {
         val id = nextId()
         cloudBrowseRequests.submit(id, { cancellation ->
             val result = try {
                 CloudLibrary.start(context() ?: error("Activity unavailable"))
-                CloudLibrary.browse(path, refresh, offset, cancellation, order, folderId).put("state", "ready")
+                CloudLibrary.browse(path, refresh, offset, cancellation, order, folderId, subtitlesOnly).put("state", "ready")
             } catch (error: Exception) {
                 CloudDiagnostics.response(error, "cloud.browse")
             }
@@ -293,10 +294,16 @@ internal class MediaSources(
         }
     }
 
-    /** Background capture gets a reader without replacing a media server's active companion context. */
+    /** Capture owns its reader; opening it must not revoke playback or its subtitle/audio leases. */
     fun capturePlayable(uri: String): String {
         val target = strm.resolve(uri)
-        return if (target.startsWith("medialib://")) mediaServers.playable(target, true) else directPlayable(target)
+        return when {
+            target.startsWith("medialib://") -> mediaServers.playable(target, true)
+            // CloudLibrary.playable() switches the active video and calls stopStreams().
+            // Use the existing independent download lease, including cloud targets in STRM.
+            target.startsWith("cloud://") -> audioDownload(target)
+            else -> directPlayable(target)
+        }
     }
     fun captureAudio(uri: String, reader: String): List<SidecarAudio.Track> =
         mediaServers.captureAudio(reader) ?: sidecarAudio(uri)
@@ -413,6 +420,20 @@ internal class MediaSources(
     }
 
     fun subtitleIdentity(uri: String): String = if (uri.startsWith("usb://")) usb.subtitleIdentity(uri) else ""
+
+    /** A picker-selected subtitle owns an independent lease, never playable()'s video lease. */
+    fun openSubtitleUri(uri: String): SidecarSubtitles.Track {
+        val name = SidecarSubtitles.sourceName(uri)
+        if (uri.startsWith("cloud://")) {
+            CloudLibrary.start(context() ?: error("Activity unavailable"))
+            return SidecarSubtitles.Track(CloudLibrary.audioDownload(uri, streams()), name)
+        }
+        if (uri.startsWith("smb://")) {
+            val at = java.net.URI(uri)
+            return openSubtitleFile("smb://${at.rawAuthority}${at.path}", name)
+        }
+        return openSubtitleFile(uri, name)
+    }
 
     /** Revalidate against the original video's parent, never a caller-supplied path or proxy URL. */
     fun openSubtitleFile(uri: String, name: String): SidecarSubtitles.Track {

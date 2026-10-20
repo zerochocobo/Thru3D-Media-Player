@@ -1,5 +1,8 @@
 cmake_minimum_required(VERSION 3.22)
 project(QuestRvm LANGUAGES CXX)
+# Shared JNI names are loaded explicitly from Kotlin/Godot. Dependencies must
+# not add a Debug suffix, including when reconfiguring an existing build cache.
+set(CMAKE_DEBUG_POSTFIX "" CACHE STRING "Keep Android JNI library names constant" FORCE)
 find_package(ncnn CONFIG REQUIRED)
 set(RVM_PROFILE_INCLUDE "${CMAKE_CURRENT_LIST_DIR}/../../build/rvm/include")
 if(NOT EXISTS "${RVM_PROFILE_INCLUDE}/rvm_profiles.generated.h")
@@ -27,6 +30,8 @@ target_link_libraries(quest_rvm PRIVATE ncnn -Wl,--whole-archive "${MNN_LIB}" -W
 target_link_options(quest_rvm PRIVATE "-Wl,-z,max-page-size=16384")
 add_subdirectory("${CMAKE_CURRENT_LIST_DIR}/../render-bridge" "render-bridge")
 add_subdirectory("${CMAKE_CURRENT_LIST_DIR}/../mpv" "mpv")
+add_subdirectory("${CMAKE_CURRENT_LIST_DIR}/../tiff" "tiff")
+add_subdirectory("${CMAKE_CURRENT_LIST_DIR}/../hdr" "hdr")
 # Offline narration is a normal Debug and Release playback feature.
 if(QUEST_NARRATION_ENABLED)
     add_subdirectory("${CMAKE_CURRENT_LIST_DIR}/../narration" "narration")

@@ -19,6 +19,7 @@ class Host extends RefCounted:
 	var serial := 10
 	var audio_ok := true
 	var read_policies: Array = []
+	var close_policies: Array = []
 	func set_mpv_interleave_compat(enabled: bool) -> void: read_policies.append(enabled)
 	var subtitle_ok := true
 	func mpv_supported() -> bool: return true
@@ -27,7 +28,9 @@ class Host extends RefCounted:
 		serial += 1
 		calls.append(["open", serial, uri, start, stereo, profile, alpha, depth])
 		return serial
-	func close_mpv_video(id: int) -> void: calls.append(["close", id])
+	func close_mpv_video(id: int) -> void:
+		close_policies.append(read_policies.back() if not read_policies.is_empty() else false)
+		calls.append(["close", id])
 	func set_mpv_playing(_id: int, _playing: bool) -> void: pass
 	func set_mpv_audio(id: int, track: int, volume: float, muted: bool) -> bool:
 		calls.append(["audio", id, track, volume, muted]); return audio_ok
@@ -127,6 +130,7 @@ func _run() -> void:
 	video._network_interleave_compat = true
 	video._reopen_at(1200, true); state(video)
 	check(host.read_policies.back() == true and video._network_interleave_compat, "Confirmed read policy crosses close/open and stays with this source")
+	check(host.close_policies.back() == true, "Internal compatibility reopen reserves its lease before close")
 	check(video.audio_track_id == 4 and video.subtitles.requested_track == 12, "Returning to the compositor layer retains choices")
 	video.subtitles.sequence = 42
 	video._layer_session = false
@@ -148,6 +152,7 @@ func _run() -> void:
 	check(video.audio_track_id == 4 and video.subtitles.requested_track == 12, "App restart restores both file choices")
 	check(video.set_subtitle_track(0) and video.select_audio_track(-1), "Explicit disabled subtitle and automatic audio accepted")
 	video.close_video(); video.open_local(URI, "movie.mp4"); state(video); video._process(0.0)
+	check(host.close_policies.back() == false, "A user close cancels pending compatibility input ownership")
 	check(video.audio_track_id == -1 and video.subtitles.requested_track == 0 and video._clone_applied, "Explicit auto audio overrides global dubbing and disabled subtitle stays disabled")
 	video.set_subtitle_track(12); video.select_audio_track(4)
 	var old_id: int = video.media.session_id

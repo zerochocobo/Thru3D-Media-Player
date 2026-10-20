@@ -12,8 +12,8 @@ if [[ ! -f config.h || ! -f capture-config.sha256 || $(cat capture-config.sha256
     "$source/configure" --disable-everything --disable-autodetect --disable-doc --disable-programs \
         --disable-debug --disable-x86asm --enable-shared --disable-static \
         --disable-avdevice --disable-avfilter --disable-swscale --disable-swresample \
-        --enable-demuxer=mov,matroska,mpegts --enable-muxer="$muxers" \
-        --enable-decoder=h264,hevc,aac,pcm_s16le,vp8 \
+        --enable-demuxer=mov,matroska,mpegts,wav --enable-muxer="$muxers" \
+        --enable-decoder=h264,hevc,aac,pcm_s16le,pcm_f32le,vp8 \
         --enable-parser=h264,hevc,aac,ac3 --enable-protocol=file,http,tcp
     printf '%s' "$fingerprint" >capture-config.sha256
 fi

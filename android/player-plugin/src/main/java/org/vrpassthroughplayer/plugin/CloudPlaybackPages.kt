@@ -1,17 +1,26 @@
 package org.vrpassthroughplayer.plugin
 
-/** Raw rows of the currently displayed page, before the media-only UI filter.
- * Cache pages stay separate; automatic discovery can search an incomplete directory.
+/** All raw rows of the displayed API page, without an extension whitelist.
+ * UI filters never define companion availability; partial pages use existing discovery.
  * Only process-local metadata is retained. */
 internal class CloudPlaybackPages {
     data class Selection(val files: List<CloudFile> = emptyList(), val complete: Boolean = false, val folderId: String = "")
     class Playback(val path: String, val identity: String, val page: Selection) {
         val cancellation = CloudCancellation()
         private var found: List<CloudFile>? = null
+        private var searchAttempts = 0
         /** A complete one-page listing needs no search. Both track types share one result. */
-        @Synchronized fun automatic(client: CloudClient): List<CloudFile> = found ?: (
-            if (page.complete) page.files else runCatching { client.companions(path, page.files) }.getOrDefault(page.files)
-        ).also { found = it }
+        @Synchronized fun automatic(client: CloudClient): List<CloudFile> {
+            found?.let { return it }
+            if (page.complete) return page.files.also { found = it }
+            // A failed audio lookup must not cache an empty result for the later subtitle lookup.
+            while (searchAttempts < 3 && !cancellation.cancelled) {
+                searchAttempts++
+                try { return client.companions(path, page.files).also { found = it } }
+                catch (_: Exception) { /* Optional discovery: bounded retry, then retain visible candidates. */ }
+            }
+            return page.files
+        }
 
         fun subtitleNames(): List<String> = SidecarSubtitles.files(page.files.groupBy { it.name }.values
             .filter { it.size == 1 }.map { it.single() }.filter { !it.folder && it.size > 0 }.map { it.name })
@@ -19,6 +28,15 @@ internal class CloudPlaybackPages {
         fun subtitle(name: String): CloudFile = page.files.filter { it.name == name }.singleOrNull()
             ?.takeIf { SidecarSubtitles.supportedFile(it.name) && !it.folder && it.size > 0 }
             ?: throw CloudFailure("cloud_file_missing")
+
+        fun subtitle(name: String, client: CloudClient): CloudFile {
+            require(SidecarSubtitles.supportedFile(name))
+            // A history open has no visible directory page. Resolve only this saved sibling;
+            // never accept a proxy URL or search another directory for a similar filename.
+            val file = client.find(CloudPaths.child(path.substringBeforeLast('/').ifEmpty { "/" }, name))
+            return file.takeIf { it.name == name && !it.folder && it.size > 0 }
+                ?: throw CloudFailure("cloud_file_missing")
+        }
     }
     private data class Page(val identity: String, val directory: String, val selection: Selection)
     private val pages = LinkedHashMap<String, Page>(8, .75f, true)

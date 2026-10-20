@@ -70,6 +70,7 @@ internal class LocalStreamServer : Closeable {
 
     private fun token(url: String) = url.takeIf { it.startsWith("http://127.0.0.1:${socket.localPort}/") }
         ?.substringAfter(":${socket.localPort}/")?.substringBefore('/')
+    fun hasSource(url: String): Boolean = token(url)?.let { sources.containsKey(it) } == true
     fun progress(url: String): TransferMeter.Snapshot? = token(url)?.let { meters[it]?.snapshot() }
     fun failure(url: String): PlaybackFailure? = token(url)?.let { diagnostics[it]?.failure() }
     fun enableInterleaveCache(url: String): Boolean = enableInterleaveCache(url, emptyList())
@@ -77,7 +78,27 @@ internal class LocalStreamServer : Closeable {
         (sources[it] as? AdaptiveInterleaveSource)?.enable(audioChunks)
     } ?: false
     fun interleaveCacheStats(url: String): Map<String, Long>? = token(url)?.let {
-        (sources[it] as? AdaptiveInterleaveSource)?.stats()
+        when (val source = sources[it]) {
+            is AdaptiveInterleaveSource -> source.stats()
+            is Mp4PlaybackSource -> source.stats()
+            else -> null
+        }
+    }
+    /** Independent ownership: releasing the old decoder cannot close this input. */
+    fun playbackView(url: String, layout: Mp4PlaybackLayout): String? {
+        if (closed) return null
+        val parent = token(url)?.let { sources[it] } ?: return null
+        val fork = when (parent) {
+            is AdaptiveInterleaveSource -> parent.forkCloud()
+            is Mp4PlaybackSource -> parent.forkOrigin()
+            else -> null
+        } ?: return null
+        return try {
+            require(fork.size == layout.originalSize)
+            val meter = TransferMeter()
+            val source = Mp4PlaybackSource(fork, layout) { meter.add(it) }
+            (publish(source, "playback.mp4") + "?thru3d_interleaved=1").also { meters[token(it)!!] = meter }
+        } catch (error: Exception) { fork.close(); throw error }
     }
     fun finishIsoPreflight(url: String) { token(url)?.let { (sources[it] as? IsoReadCache)?.finishPreflight() } }
     fun isoCacheStats(url: String): Map<String, Long>? = token(url)?.let { (sources[it] as? IsoReadCache)?.stats() }

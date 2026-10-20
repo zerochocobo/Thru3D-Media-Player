@@ -89,10 +89,13 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
         check(!originalCapture.uses(uri)) { "Capture is still saving" }
         mpv.awaitFileRelease(uri)
     }) { id, json -> if (!closed.get()) emitSignal("media_list", id, json) }
-    private val originalCapture = OriginalCapture({ activity?.applicationContext }, sources::capturePlayable, sources::releaseMediaStream, sources::captureAudio)
+    private val originalCapture = OriginalCapture({ activity?.applicationContext }, sources::capturePlayable, sources::releaseMediaStream, sources::captureAudio,
+        { id->mpv.captureOwner(id) },{id->mpv.captureAudioFlush(id)})
     @UsedByGodot fun original_capture_supported(): Boolean = !closed.get() && originalCapture.supported()
     @UsedByGodot fun original_capture_request(json: String): Int = if (closed.get()) 0 else originalCapture.request(json)
     @UsedByGodot fun original_capture_status(id: Int): String = if (closed.get()) "{}" else originalCapture.status(id)
+    @UsedByGodot fun original_capture_clock(id: Int,positionUs: Long,playing: Boolean) {if(!closed.get())originalCapture.clock(id,positionUs,playing)}
+    @UsedByGodot fun original_capture_stop(id: Int,endUs: Long): Boolean = !closed.get() && originalCapture.stop(id,endUs)
     private val accounts = AccountManager { activity }
     private val panoramaOriginals = PanoramaOriginals { activity?.applicationContext?.filesDir?.let { java.io.File(it, "online-panoramas") } }
     private val panoramaBrowser = PanoramaBrowser({ activity }, panoramaOriginals)
@@ -118,7 +121,7 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     }, { name, id, json -> if (!closed.get()) emitSignal(name, id, json) }, sources::playable, sources::sidecarAudio,
         sources::releaseMediaStream, sources::sidecarSubtitles, sources::streamProgress, sources::streamFailure,
         sources::subtitleFiles, sources::openSubtitleFile, sources::subtitleIdentity, sources::enableInterleaveCache,
-        sources::finishIsoPreflight, sources::voiceReference)
+        sources::finishIsoPreflight, sources::voiceReference, sources::openSubtitleUri, sources::playbackView)
     private val backgroundAudio = BackgroundAudioImport({ activity?.applicationContext }, sources::audioDownload, sources::releasePhotoStream) { id, json ->
         if (!closed.get()) emitSignal("background_audio_imported", id, json)
     }
@@ -322,6 +325,15 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
         return id
     }
     @UsedByGodot fun media_list_local(): Int = media_local_browse("")
+    @UsedByGodot fun media_subtitle_local_browse(path: String): Int {
+        if (closed.get()) return -1
+        val id = sources.nextId()
+        runOnHostThread { if (!closed.get()) sources.browseLocal(id, path, true) }
+        return id
+    }
+    @UsedByGodot fun media_subtitle_smb_browse(server: String, path: String): Int = if (closed.get()) -1 else sources.smbBrowse(server, path, true)
+    @UsedByGodot fun media_subtitle_cloud_page(path: String, offset: Int, refresh: Boolean, order: String, folderId: String): Int =
+        if (closed.get()) -1 else sources.cloudBrowse(path, refresh, offset, order, folderId, true)
     @UsedByGodot fun media_local_stop_storage(path: String): Int {
         if (closed.get()) return -1
         val id = sources.nextId()
@@ -405,7 +417,7 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     }
     @Volatile private var videoInterleaveCompat = false
     /** One next open only; Godot sends this after structural confirmation for the current source. */
-    @UsedByGodot fun set_mpv_interleave_compat(enabled: Boolean) { videoInterleaveCompat = enabled }
+    @UsedByGodot fun set_mpv_interleave_compat(enabled: Boolean) { videoInterleaveCompat = enabled; mpv.setInterleaveReopen(enabled) }
     /** The next open decodes into the compositor video layer (normal playback only). */
     @Volatile private var videoLayer = false
     @UsedByGodot fun set_mpv_video_layer(enabled: Boolean) { videoLayer = enabled }
@@ -465,6 +477,7 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     @UsedByGodot fun set_mpv_subtitle(id: Int, trackId: Int): Boolean = !closed.get() && mpv.setSubtitle(id, trackId)
     @UsedByGodot fun list_mpv_subtitle_files(id: Int, request: Int): Boolean = !closed.get() && mpv.listSubtitleFiles(id, request)
     @UsedByGodot fun load_mpv_subtitle_file(id: Int, request: Int, name: String): Boolean = !closed.get() && mpv.loadSubtitleFile(id, request, name)
+    @UsedByGodot fun load_mpv_subtitle_uri(id: Int, request: Int, uri: String): Boolean = !closed.get() && mpv.loadSubtitleUri(id, request, uri)
     @UsedByGodot fun set_mpv_subtitle_delay(id: Int, seconds: Double): Boolean = !closed.get() && mpv.setSubtitleDelay(id, seconds)
     @UsedByGodot fun set_mpv_audio_delay(id: Int, seconds: Double): Boolean = !closed.get() && mpv.setAudioDelay(id, seconds)
     @UsedByGodot fun get_mpv_subtitles(id: Int, afterSequence: Long): String = if (closed.get()) "" else mpv.subtitles(id, afterSequence)

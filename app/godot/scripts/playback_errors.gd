@@ -21,7 +21,8 @@ const MESSAGES := {
 	"STRM_TARGET_UNAVAILABLE": "Cannot access the STRM target. Check the path and account.",
 	"MPV_OPEN_TIMEOUT": "Opening media timed out. Check the link and connection.",
 	"MPV_OUTPUT_TIMEOUT": "Video output timed out. Try opening the video again.",
-	"MPV_BUFFER_TIMEOUT": "Media buffering timed out. Check the connection."
+	"MPV_BUFFER_TIMEOUT": "Media buffering timed out. Check the connection.",
+	"MPV_RVM_FAILED": "AI passthrough failed. Turn it off to play the video."
 }
 
 const REASONS := {
@@ -47,10 +48,13 @@ const REASONS := {
 	"decoder_failed": "The video decoder could not be started.",
 	"audio_output_failed": "Audio output could not be initialized.",
 	"video_output_failed": "Video output could not be initialized.",
-	"output_timeout": "Video output timed out. Try opening the video again."
+	"output_timeout": "Video output timed out. Try opening the video again.",
+	"ai_gpu_unavailable": "AI passthrough GPU initialization failed. Turn it off to play the video.",
+	"ai_processing_failed": "AI passthrough failed. Turn it off to play the video."
 }
 const STAGES := {"resolving": "Resolving media", "reading": "Reading media", "parsing": "Parsing media",
-	"decoding": "Decoding video", "output": "Initializing output", "opening": "Opening media"}
+	"decoding": "Decoding video", "output": "Initializing output", "opening": "Opening media",
+	"ai_initialization": "Initializing AI passthrough", "ai_processing": "Processing AI passthrough"}
 const MPV_REASONS := {-14: "audio_output_failed", -15: "video_output_failed", -16: "nothing_to_play", -17: "unknown_format"}
 
 static func message(report: Dictionary) -> String:

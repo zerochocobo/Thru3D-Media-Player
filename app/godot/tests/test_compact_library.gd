@@ -53,6 +53,23 @@ func ray(menu: Node3D, target: int) -> Array:
 	var node: Node3D = button(menu, target).node
 	return [node.global_position + node.global_basis.z * 0.3, -node.global_basis.z]
 
+func library_centre(library: Node3D) -> Vector3:
+	var rect: Rect2 = library.get_meta("menu_surface_bounds", library.panel_bounds())
+	return library.to_global(Vector3(rect.get_center().x, rect.get_center().y, 0))
+
+func spherical_library(main: Node3D, controls: Node3D, library: Node3D) -> bool:
+	if library.get_parent() != controls or not library.has_meta("menu_surface_bounds"): return false
+	var eye: Vector3 = main._head_pose().origin
+	var centre := library_centre(library)
+	var base: Vector3 = controls.to_global(controls.panel_centre())
+	var top: Vector3 = controls.to_global(Vector3(0, controls._bar_bounds().end.y, 0)) - eye
+	var rect: Rect2 = library.get_meta("menu_surface_bounds")
+	var bottom: Vector3 = library.to_global(Vector3(rect.get_center().x, rect.position.y, 0)) - eye
+	return library.global_basis.z.normalized().dot((eye - centre).normalized()) > 0.99999 \
+		and absf(base.distance_to(eye) - centre.distance_to(eye)) < 0.0001 \
+		and top.normalized().cross(bottom.normalized()).dot(controls.global_basis.x) > 0.01 \
+		and library.scale.is_equal_approx(Vector3.ONE)
+
 func current_button_visible(library: Node3D, uri: String) -> bool:
 	for item in library._buttons:
 		if not library._row_target(item.target) or not item.node.visible: continue
@@ -77,6 +94,7 @@ func check_playback_location() -> void:
 			var photo := Photo.new(); main.add_child(photo); main.photo = photo; photo.set_process(false)
 			var player := Player.new(); player.state_provider = main._menu_state
 			main.add_child(player); main.video_menu = player; main.player_menu = player; player.set_process(false)
+			player.layout_head_provider = main._head_pose
 			var library := Library.new(); main.add_child(library); main.recent_menu = library; library.set_process(false)
 			library.catalog = video.recent_files; library.current_file_provider = func(): return video.local_uri
 			library.chosen.connect(main._on_library_chosen); library.layout_requested.connect(main._toggle_library_layout)
@@ -155,7 +173,6 @@ func check_playback_location() -> void:
 
 func check_group_grips(main: Node3D, controls: Node3D, library: Node3D, kind: String) -> void:
 	var initial_pose: Transform3D = controls.global_transform
-	var relative_pose: Transform3D = library.transform
 	var previous_view: String = library.view_mode
 	var previous_scope: String = main.controller_bindings.move_scope
 	var surface_pose: Transform3D = main._viewer().flat_pose
@@ -165,6 +182,7 @@ func check_group_grips(main: Node3D, controls: Node3D, library: Node3D, kind: St
 		for hand in ["left_hand", "right_hand"]:
 			for region in ["file title", "file gap", "file row", "file edge", "controls gap", "controls button"]:
 				controls.global_transform = initial_pose
+				controls.set_layout_viewer(main._head_pose(), main.view_follow.enabled, false)
 				var aim: Array
 				match region:
 					"file title": aim = [library.to_global(Vector3(-0.15, 0.36, 0.3)), -library.global_basis.z]
@@ -186,12 +204,12 @@ func check_group_grips(main: Node3D, controls: Node3D, library: Node3D, kind: St
 				if not grouped:
 					main.interface_move.cancel(); continue
 				var anchor: Vector3 = main.interface_move.capture.anchor
-				var files_before: Vector3 = library.global_position
+				var files_before := library_centre(library)
 				var head: Vector3 = main._head_pose().origin
 				main.move_pose = start * Transform3D(Basis.from_euler(Vector3(0.07, -0.11, 0)), Vector3(0.1, 0.05, -0.025))
 				main._update_interface_move()
-				check(controls.global_position.distance_to(initial_pose.origin) > 0.01 and absf(controls.global_position.distance_to(head) - initial_pose.origin.distance_to(head)) < 0.0001 and absf(library.global_position.distance_to(head) - files_before.distance_to(head)) < 0.0001 and main._viewer().flat_pose.is_equal_approx(surface_pose), "Both panels move together at their original head distances: " + label)
-				check(library.transform.is_equal_approx(relative_pose) and library.global_basis.is_equal_approx(controls.global_basis), "Dragging either panel preserves their relative pose and shared plane: " + label)
+				check(controls.global_position.distance_to(initial_pose.origin) > 0.01 and absf(controls.global_position.distance_to(head) - initial_pose.origin.distance_to(head)) < 0.0001 and absf(library_centre(library).distance_to(head) - files_before.distance_to(head)) < 0.0001 and main._viewer().flat_pose.is_equal_approx(surface_pose), "Both panels move together at their original head distances: " + label)
+				check(spherical_library(main, controls, library), "Dragging either panel retains viewer-facing surfaces at one radius with an angular gap: " + label)
 				var stopped_pose: Transform3D = controls.global_transform
 				main._on_controller_release("grip_click", hand)
 				main.move_pose.origin += Vector3(0.1, 0, 0); main._update_interface_move()
@@ -212,6 +230,7 @@ func run() -> void:
 	var photo_menu := PhotoMenu.new(); main.add_child(photo_menu); photo_menu.set_process(false); main.photo_menu = photo_menu
 	photo_menu.state_provider = photo.snapshot; photo_menu.queue_provider = func(): return photo.queue
 	var library := Library.new(); main.add_child(library); main.recent_menu = library
+	for control in [player, photo_menu, library]: control.layout_head_provider = main._head_pose
 	library.catalog = video.recent_files; library.current_file_provider = func(): return main._viewer().local_uri
 	library.attach_platform(Platform.new()); library.chosen.connect(main._on_library_chosen)
 	library.layout_requested.connect(main._toggle_library_layout)
@@ -232,11 +251,11 @@ func run() -> void:
 	# A full library was placed in the headset's previous orientation, not identity.
 	library.transform = Transform3D(Basis.from_euler(Vector3(-0.35, 0.28, 0.1)).scaled(Vector3(1.2, 0.9, 1.1)), Vector3(-0.4, 1.4, -1.55))
 	main._show_recent_menu()
-	check(library.transform.basis.is_equal_approx(Basis.IDENTITY) and library.global_basis.is_equal_approx(player.global_basis), "Expansion discards the old full-menu rotation and scale and inherits the current transport basis")
-	check(library.global_basis.z.normalized().dot(player.global_basis.z.normalized()) > 0.999999 and absf((library._backdrop.global_position - player._backdrop.global_position).dot(player.global_basis.z.normalized())) < 0.00001, "Expanded file and transport backdrops are coplanar at a tilted headset pose")
+	check(library.scale.is_equal_approx(Vector3.ONE) and spherical_library(main, player, library), "Expansion discards the stale full-menu pose and faces the viewer at the transport radius")
+	check(library.global_basis.z.angle_to(player.global_basis.z) > 0.1, "Expanded files use their own inclination above a tilted transport")
 	check(player.visible and library.visible and library.compact and library.get_parent() == player, "Folder expands the shared library under the transport")
 	check(main._active_menu() == player and library.composition_root() == player, "Input and compositor use the whole transport group")
-	check(player.global_transform.is_equal_approx(pose) and library.position.is_equal_approx(Vector3(0, 0.72, 0)), "Expansion preserves the moved transport pose")
+	check(player.global_transform.is_equal_approx(pose) and spherical_library(main, player, library), "Expansion preserves the moved transport pose and places files on its viewing sphere")
 	check(not library._side.visible and library._cols() == 3 and library._lines() == 2, "Compact grid has three columns, two rows and no side navigation")
 	check(library._buttons.all(func(item): return item.target < Library.NAV_BASE or item.target >= Library.NAV_BASE + Library.NAV.size()), "Hidden navigation has no ray targets")
 	check(library._buttons.all(func(item): return item.target not in [Library.FOLLOW, Library.TEMP_PASSTHROUGH]), "Compact browser does not duplicate the transport footer")
@@ -265,7 +284,6 @@ func run() -> void:
 	video.requested_play = playing_before
 	main._toggle_library_layout()
 	var expanded_pose := player.global_transform
-	var expanded_relative := library.transform
 	var full_scroll: float = library.scroll
 	var full_calls: int = video.platform.calls.size()
 	main._process_sticks(Vector2(0, -0.99), Vector2(0.99, 0), 0.3)
@@ -279,10 +297,10 @@ func run() -> void:
 	main.move_pose = Transform3D(Basis.IDENTITY, Vector3.ZERO); main._begin_interface_move("left_hand", "grip_click")
 	check(main.interface_move.capture.targets.size() == 1 and main.interface_move.capture.targets[0].node == player, "Grip from the full browser captures the shared video transport root")
 	main.move_pose.origin += Vector3(0.08, 0.05, 0); main._update_interface_move(); main.interface_move.cancel()
-	check(not player.global_transform.is_equal_approx(expanded_pose) and library.transform.is_equal_approx(expanded_relative), "The full browser moves with video controls and preserves its local pose")
+	check(not player.global_transform.is_equal_approx(expanded_pose) and spherical_library(main, player, library), "The full browser moves with video controls and retains its viewer-facing spherical placement")
 	var moved_expanded_pose := player.global_transform
 	main._toggle_library_layout()
-	check(player.global_transform.is_equal_approx(moved_expanded_pose) and library.global_basis.is_equal_approx(player.global_basis), "Collapse retains the visible, dragged transport pose and shared plane")
+	check(player.global_transform.is_equal_approx(moved_expanded_pose) and spherical_library(main, player, library), "Collapse retains the dragged transport pose and independently inclined file panel")
 	main._menu_touched_ms = -10000; main._update_controls_visibility(player)
 	check(player.visible and library.visible, "Expanded files defeat the idle hide timer")
 	var calls: int = video.platform.calls.size()
@@ -341,7 +359,7 @@ func run() -> void:
 	main._process_sticks(Vector2.ZERO, Vector2.ZERO, 0.1)
 	main._show_recent_menu()
 	var chosen_pose := player.global_transform
-	check(library.global_basis.is_equal_approx(player.global_basis), "Reopening after moving and head follow keeps the current transport orientation")
+	check(spherical_library(main, player, library), "Reopening after moving and head follow restores viewer-facing files at the current transport radius")
 	library._choose(library.rows[2])
 	check(video.local_uri == "file:///disk/1.mp4" and player.visible and not library.visible and player.global_transform.is_equal_approx(chosen_pose), "Selecting another video folds files and preserves transport placement")
 	main._show_recent_menu()
@@ -374,7 +392,7 @@ func run() -> void:
 	photo_menu.global_transform = Transform3D(Basis.from_euler(Vector3(0.22, -0.3, -0.15)), Vector3(-0.2, 1.2, -1.4))
 	library.transform = Transform3D(Basis.from_euler(Vector3(0.4, 0.25, 0.2)), Vector3(0, 1.4, -1.55))
 	main._show_recent_menu()
-	check(library.global_basis.is_equal_approx(photo_menu.global_basis), "Opening under photo controls resets the former full-menu orientation")
+	check(spherical_library(main, photo_menu, library), "Opening under photo controls replaces the stale full-menu pose with viewer-facing spherical placement")
 	check(library.get_parent() == photo_menu and photo_menu.has_expanded_library() and not photo_menu._gallery_open, "Image files expand under photo controls without the old thumbnail strip: uri=%s parent=%s visible=%s compact=%s gallery=%s" % [photo.local_uri, library.get_parent(), str(library.visible), str(library.compact), str(photo_menu._gallery_open)])
 	main._toggle_library_layout()
 	check(not library.compact and library.playback_expanded and library.get_parent() == photo_menu and library.visible and photo_menu.visible and main._active_menu() == photo_menu and library.composition_root() == photo_menu, "Full browsing keeps photo controls visible with shared input and composition")
@@ -382,12 +400,11 @@ func run() -> void:
 	var photo_reset_ray := ray(photo_menu, 108)
 	photo_menu.update_pointer("right_hand", photo_reset_ray[0], photo_reset_ray[1], true)
 	check(photo_menu.visible and library.visible and photo_menu._hover.right_hand == 108, "Photo controls remain visible and receive rays below the full browser")
-	var full_photo_relative := library.transform
 	main.rays.right_hand = ray(photo_menu, PhotoMenu.PHOTO_PREVIOUS)
 	main.move_pose = Transform3D.IDENTITY; main._begin_interface_move("right_hand", "grip_click")
 	check(main.interface_move.capture.targets.size() == 1 and main.interface_move.capture.targets[0].node == photo_menu, "Grip from photo controls captures the full browser too")
 	main.move_pose.origin += Vector3(-0.09, 0.04, 0); main._update_interface_move(); main.interface_move.cancel()
-	check(library.transform.is_equal_approx(full_photo_relative) and library.global_basis.is_equal_approx(photo_menu.global_basis), "Dragging expanded photo controls preserves the attached full browser plane")
+	check(spherical_library(main, photo_menu, library), "Dragging expanded photo controls retains the file panel's radius, orientation and angular gap")
 	main._toggle_library_layout()
 	check_group_grips(main, photo_menu, library, "photo")
 	var photo_uri_before: String = photo.local_uri

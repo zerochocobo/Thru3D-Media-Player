@@ -55,7 +55,8 @@ func run() -> void:
 	native_photo._size=Vector2(640,240); native_photo._display_request=1; native_photo.history_enabled=false; native_photo.auto_depth=true
 	native_photo.platform=Fixture.Host.new(); native_photo._apply_geometry(); native_photo.panel.visible=true
 	native_photo._spatial_auto_due=true; native_photo._maybe_start_spatial()
-	check(native_photo.spatial_requested,"Apple still enters the default spatial mode automatically")
+	check(not native_photo.spatial_preferred and not native_photo.spatial_requested and native_photo.platform.calls==0 and native_photo.stereo_sbs and not native_photo.depth_requested,"Apple defaults to its static captured stereo pair without scene inference")
+	check(native_photo.set_spatial_mode(true) and native_photo.spatial_requested,"Apple can explicitly enter spatial mode")
 	var native_host: RefCounted=native_photo.platform
 	var native_strength: float=native_photo.depth_strength
 	check(not native_photo.set_depth_strength(0) and not native_photo.set_depth_strength(2) and native_photo.spatial_requested and native_photo.depth_strength==native_strength,"Native strength changes, including zero, cannot alter its mode or captured depth")

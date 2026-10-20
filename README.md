@@ -4,7 +4,7 @@
 
 Standalone Android VR/MR media player for Meta Quest and PICO. Play videos and photos, explore media libraries, and combine supported content with passthrough and stereo effects directly on your headset.
 
-Current source version: **0.12.3** (Android versionCode **33**). An experimental standard OpenXR Android export is also available.
+Current source version: **0.12.5** (Android versionCode **35**). An experimental standard OpenXR Android export is also available.
 
 Minimum compatibility targets are **Quest 2** and **PICO Neo3**. Source/build compatibility does not establish hardware performance or interaction acceptance on every device.
 
@@ -61,7 +61,9 @@ Minimum compatibility targets are **Quest 2** and **PICO Neo3**. Source/build co
 - Source-recommended stereo offsets and capture-FOV matching for spatial media with valid metadata.
 - Controller rays outside menus, idle hiding and trigger corner-resizing for flat videos; adjustable thumbstick picture-size/immersive-zoom controls.
 
-- Same-folder external-subtitle selection with per-subtitle timing memory; manual cloud choices retain the opened page, while supported automatic discovery can search matching companions in that directory.
+- Cross-folder subtitle selection from local, SMB and cloud sources, with remembered picker location, independent paging and per-subtitle timing memory.
+- TIFF, Radiance HDR and OpenEXR photos/panoramas, with bounded decoding and display tone mapping; see [image formats](docs/IMAGE_FORMATS.md).
+- 8K Morning Sky background, orientation/brightness controls and custom-background removal without deleting the source image.
 - On-demand cloud directory pages and provider-supported sorting, with reused WebDAV directory snapshots.
 
 - Global music playback, custom playlists, offline imports and MP3/OGG/WAV/FLAC/DTS support; music pauses for video by default, with an opt-in setting for simultaneous playback and separate music volume. Built-in recordings are separate assets: see [audio resources](docs/AUDIO.md).
@@ -77,7 +79,7 @@ Minimum compatibility targets are **Quest 2** and **PICO Neo3**. Source/build co
 - Head-tracked Spatial Stereo / Static 3D photo modes, global photo viewing preferences and independent per-video depth strength. Native Apple static viewing retains the original stereo pair.
 - Custom voice creation from a suitable paused-video audio reference, with audition, rename/delete and default-voice management. Personal voice data stays local and outside this source release.
 
-- Source-resolution PNG screenshots and lossless MKV clip exports for compatible VR180/fisheye/360 videos, with retained layout metadata and an independent recording-status/stop control. Keyframe boundaries and source restrictions apply; see [capture](docs/CAPTURE.md).
+- Compatible immersive-video capture: full-resolution source PNG screenshots and original-video MKV clips with live app audio (including narration/music) at 1× speed. Keyframe/source limits apply; see [capture](docs/CAPTURE.md).
 
 ## Spatial media and photo layouts
 

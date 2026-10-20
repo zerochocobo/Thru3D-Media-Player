@@ -115,8 +115,11 @@ def main():
     (mpv/".quest-frame-applied.patch").write_bytes(patch.read_bytes())
     (mpv/".quest-frame-manifest.json").write_text(json.dumps(record, indent=2)+"\n")
     apply_dovi_patch(base/'ffmpeg')
+    from capture_patch import prepare_base, apply_capture_patch
     from pgs_patch import apply_pgs_patch
-    apply_pgs_patch(mpv)
+    if not prepare_base(mpv):
+        apply_pgs_patch(mpv)
+    apply_capture_patch(mpv)
     from mvc_patch import apply_mvc_patch
     ffmpeg_record = next(s for s in lock['sources'] if s['name'] == 'ffmpeg')
     apply_mvc_patch(base/'ffmpeg', args.cache/ffmpeg_record['archive'])

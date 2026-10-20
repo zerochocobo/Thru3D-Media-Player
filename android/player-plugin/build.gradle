@@ -21,6 +21,8 @@ def playerAssets = layout.buildDirectory.dir('playerAssets')
 def stagePlayerAssets = tasks.register('stagePlayerAssets', Sync) {
     from('src/main/assets')
     from('../../third_party')
+    exclude 'tiff/*.tar.xz', 'tiff/*.tar.gz'
+    exclude 'openexr/*.tar.gz'
     from('../../app/godot/i18n')
     into(playerAssets)
     narrationBundles.each { bundle ->
@@ -67,7 +69,7 @@ android {
         externalNativeBuild {
             cmake {
                 // Normal playback includes offline subtitle narration.
-                targets 'quest_rvm', 'quest_render_bridge', 'quest_mpv', 'quest_video_layer', 'quest_usb', 'quest_narration'
+                targets 'quest_rvm', 'quest_render_bridge', 'quest_mpv', 'quest_video_layer', 'quest_usb', 'quest_narration', 'quest_tiff', 'quest_hdr'
                 arguments "-Dncnn_DIR=${ncnnRoot.get().replace('\\', '/')}/lib/cmake/ncnn", '-DANDROID_STL=c++_shared',
                 '-DQUEST_NARRATION_ENABLED=ON',
                 "-DQUEST_DIAGNOSTIC_MODELS=${includeDiagnostics ? 'ON' : 'OFF'}",

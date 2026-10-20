@@ -26,6 +26,7 @@ internal class PanoramaBrowser(private val host: () -> Activity?, originals: Pan
     private val handler = Handler(Looper.getMainLooper())
     private val capturing = AtomicBoolean()
     private val download = PanoramaDownload({ host()?.applicationContext }, originals)
+    private val commons = CommonsOriginal()
     fun view(source: String) = download.view(source)
     @Volatile private var closed = false
     @Volatile private var paused = true
@@ -42,6 +43,8 @@ internal class PanoramaBrowser(private val host: () -> Activity?, originals: Pan
     @Volatile private var scrollRange = WebLoginViewport.HEIGHT
     @Volatile private var debugDocument = "{}"
     private var web: BrowserView? = null
+    private var capturedImagePage = ""
+    @Volatile private var imageLookupPage = ""
     private var viewport: FrameLayout? = null
     private var geometry: WebLoginViewport.Geometry? = null
     private var bitmap: Bitmap? = null
@@ -78,6 +81,7 @@ internal class PanoramaBrowser(private val host: () -> Activity?, originals: Pan
     fun navigate(url: String) {
         if (closed || !PanoramaWebPolicy.allowed(url)) return
         download.cancel()
+        commons.cancel(); imageLookupPage=""
         uiPaused = false; paused = !inForeground
         handler.post {
             if (closed) return@post
@@ -125,6 +129,7 @@ internal class PanoramaBrowser(private val host: () -> Activity?, originals: Pan
                 override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) {
                     if (!PanoramaWebPolicy.allowed(url)) { view.stopLoading(); return }
                     navigation++; navigationFailed = false; page = url; status = "Loading…"; editor = null; editing = false
+                    commons.cancel(); imageLookupPage=""
                 }
                 override fun onPageFinished(view: WebView, url: String) {
                     if (closed || web !== view) return
@@ -154,7 +159,7 @@ internal class PanoramaBrowser(private val host: () -> Activity?, originals: Pan
                 if (closed || paused) return@setDownloadListener
                 if ((PanoramaWebPolicy.mime(mime) in PanoramaWebPolicy.imageTypes || PanoramaWebPolicy.mime(mime) == "application/octet-stream") || PanoramaWebPolicy.imageNavigation(url, true, "GET")) {
                     download.start(url, sourcePage(view, url), disposition)
-                } else status = "Choose a JPG, PNG or WebP original"
+                } else status = "Choose a supported image original"
             }
         } catch (_: Exception) { detach(); status = "Web browsing is unavailable on this device" }
     }
@@ -175,6 +180,10 @@ internal class PanoramaBrowser(private val host: () -> Activity?, originals: Pan
                     if (current != page && PanoramaWebPolicy.allowed(current)) {
                         if (document == page) document = current
                         page = current
+                        capturedImagePage = ""
+                        commons.cancel(); imageLookupPage=""
+                        // Commons' Media Viewer is a same-document overlay, not an image navigation.
+                        if (PanoramaWebPolicy.mediaOverlay(current)) openVisibleImage(view, true)
                     }
                     canBack = view.canGoBack()
                 }
@@ -191,11 +200,12 @@ internal class PanoramaBrowser(private val host: () -> Activity?, originals: Pan
     }
     fun action(action: String, x: Float, y: Float, text: String) {
         if (closed || !x.isFinite() || !y.isFinite() || text.length > 4096) return
-        if (action == "download_cancel") { download.cancel(); return }
+        if (action == "download_cancel") { download.cancel(); commons.cancel(); imageLookupPage=""; return }
         handler.post {
             val view = web ?: return@post
             if (closed || paused) return@post
             when (action) {
+                "open_image" -> openVisibleImage(view)
                 "debug_inspect" -> if (BuildConfig.DEBUG) {
                     val script = """JSON.stringify({url:location.href,title:document.title,width:innerWidth,height:innerHeight,
                         scroll_y:scrollY,scroll_height:document.documentElement.scrollHeight,text:document.body.innerText.slice(0,16000),
@@ -234,6 +244,7 @@ internal class PanoramaBrowser(private val host: () -> Activity?, originals: Pan
         paused = uiPaused || !inForeground
         handler.post { web?.let { view ->
             if (paused) {
+                commons.cancel(); imageLookupPage=""
                 val event = MotionEvent.obtain(downAt, SystemClock.uptimeMillis(), MotionEvent.ACTION_CANCEL, 0f, 0f, 0)
                 try { view.dispatchTouchEvent(event) } finally { event.recycle() }
                 touchActive = false; view.onPause()
@@ -246,10 +257,50 @@ internal class PanoramaBrowser(private val host: () -> Activity?, originals: Pan
     private fun sourcePage(view: WebView, target: String): String = view.url.orEmpty().takeIf {
         it != target && PanoramaWebPolicy.allowed(it) && !PanoramaWebPolicy.imageNavigation(it, true, "GET")
     } ?: document
+    private fun openVisibleImage(view: WebView, automatic: Boolean = false, expected: String = view.url.orEmpty(), attempt: Int = 0) {
+        if (closed || paused || web !== view || view.url.orEmpty()!=expected || (automatic && capturedImagePage==expected)) return
+        val token = navigation
+        if (CommonsOriginal.title(expected)!=null) {
+            if(imageLookupPage==expected) return
+            imageLookupPage=expected; status="Loading…"
+            commons.resolve(expected) { image,error -> handler.post {
+                if(closed || paused || web!==view || token!=navigation || view.url.orEmpty()!=expected || imageLookupPage!=expected) return@post
+                imageLookupPage=""
+                if(image!=null) {
+                    capturedImagePage=expected; status=""; download.start(image.url,expected)
+                } else status=error ?: "Image download failed"
+            } }
+            return
+        }
+        val script = """JSON.stringify((()=>{
+            const visible=e=>{const r=e.getBoundingClientRect();return r.width>0&&r.height>0&&r.top<innerHeight&&r.bottom>0&&r.left<innerWidth&&r.right>0&&getComputedStyle(e).visibility!=='hidden';};
+            const key=u=>{try{return decodeURIComponent(new URL(u,location.href).pathname.split('/').pop()).replace(/^\d+px-/,'');}catch(_){return '';}};
+            const images=Array.from(document.images).filter(i=>visible(i)&&i.getBoundingClientRect().width>200&&i.getBoundingClientRect().height>100)
+                .sort((a,b)=>b.getBoundingClientRect().width*b.getBoundingClientRect().height-a.getBoundingClientRect().width*a.getBoundingClientRect().height);
+            const image=images[0];if(!image)return '';
+            const direct=u=>{try{const p=new URL(u,location.href).pathname;return !p.startsWith('/wiki/')&&/\.(jpg|jpeg|png|webp|tif|tiff)$/i.test(p);}catch(_){return false;}};
+            const anchor=image.closest('a[href]');if(anchor&&direct(anchor.href))return anchor.href;
+            const original=Array.from(document.querySelectorAll('a[href]')).find(a=>visible(a)&&direct(a.href)&&key(a.href)===key(image.currentSrc));
+            return original?original.href:image.currentSrc;
+        })())""".trimIndent()
+        view.evaluateJavascript(script) { raw ->
+            if (closed || paused || web !== view || token != navigation || view.url.orEmpty()!=expected || (automatic && capturedImagePage==expected)) return@evaluateJavascript
+            val url = runCatching { org.json.JSONArray("[$raw]").getString(0).let { org.json.JSONArray("[$it]").getString(0) } }.getOrDefault("")
+            if (PanoramaWebPolicy.allowed(url)) {
+                capturedImagePage=expected; status=""
+                download.start(url, sourcePage(view, url))
+            } else if (automatic && attempt<40 && PanoramaWebPolicy.mediaOverlay(expected)) {
+                // The hash changes before Media Viewer has inserted its image/original link.
+                // Wait briefly for that asynchronous UI, cancelling on navigation or pause.
+                status="Loading…"
+                handler.postDelayed({ openVisibleImage(view,true,expected,attempt+1) },250)
+            } else status = "Choose a supported image original"
+        }
+    }
     private fun detach() {
         viewport?.let { (it.parent as? ViewGroup)?.removeView(it) }
         web?.let { it.stopLoading(); it.destroy() }
         web = null; viewport = null; bitmap?.recycle(); bitmap = null; bytes = ByteArray(0); editor = null
     }
-    fun close() { closed = true; download.close(); handler.post { detach() } }
+    fun close() { closed = true; commons.close(); download.close(); handler.post { detach() } }
 }

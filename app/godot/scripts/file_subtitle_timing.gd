@@ -13,6 +13,8 @@ static func slider_row(value: float, source_uri: String, subtitle_key: String = 
 
 static func track_key(track: Dictionary) -> String:
 	if track.is_empty(): return ""
+	if bool(track.get("external", false)) and preload("res://scripts/subtitle_sources.gd").valid_uri(track.get("source_uri")):
+		return ("source:" + str(track.source_uri)).sha256_text()
 	var filename := str(track.get("source_file", ""))
 	if bool(track.get("external", false)) and not filename.is_empty(): return ("file:" + filename).sha256_text()
 	# Embedded tracks have no sibling file; retain their identity within this video.

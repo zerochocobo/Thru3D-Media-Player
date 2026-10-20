@@ -42,10 +42,11 @@ func _run() -> void:
 		{"title": "Folder", "id": "/storage/test/folder", "container": true},
 		{"title": "ReadOnly.mp4", "uri": "file:///storage/test/ReadOnly.mp4", "size": 1, "modified": -1, "can_delete": false}]
 	menu.visible = true; menu.refresh()
-	check(not menu.file_actions.enabled and not menu._buttons.any(func(button): return button.target == Actions.EDIT_MODE), "Editing defaults off and entry is absent")
+	check(not menu.file_actions.enabled and menu._buttons.any(func(button): return button.target == Actions.EDIT_MODE), "Editing defaults off and its locked discovery entry remains visible")
 	check(platform.management == [false], "Plugin mutation gate starts disabled when attached")
 	menu._activate(Actions.EDIT_MODE)
-	check(not menu.file_actions.editing, "Disabled setting rejects edit action")
+	check(not menu.file_actions.editing and not menu.file_actions.enabled and menu.section == Menu.Section.SETTINGS, "Locked entry opens settings without enabling editing")
+	menu._activate(Menu.BACK)
 	menu.file_actions.set_enabled(true); menu.refresh()
 	check(platform.management.back(), "Explicit opt-in enables the platform mutation gate")
 	check(menu.rows[0].title == "Folder" and menu.rows[1].title == "2.mp4", "Folders first; numeric names natural")
@@ -107,7 +108,7 @@ func _run() -> void:
 	platform.respond(7, "uncertain", {"partial": true, "error": "Some contents were deleted; check the folder"})
 	check(menu._local_entries.size() == 1 and menu.status.contains("Some contents"), "Partial folder deletion retains folder and precise result")
 	menu.file_actions.set_enabled(false); menu.refresh()
-	check(not menu.file_actions.editing and menu.file_actions.modal.is_empty() and not menu._buttons.any(func(button): return button.target == Actions.EDIT_MODE), "Turning off editing removes entry and exits mode")
+	check(not menu.file_actions.editing and menu.file_actions.modal.is_empty() and menu._buttons.any(func(button): return button.target == Actions.EDIT_MODE), "Turning off editing restores the locked entry and exits mode")
 	check(not platform.management.back(), "Turning off management also closes the platform mutation gate")
 	menu.file_actions.uncertain = false; menu.file_actions.set_enabled(true)
 	menu._local_entries = [{"title":"old.mp4","uri":"file:///storage/test/old.mp4","size":10,"modified":1,"can_delete":true}]
@@ -134,7 +135,8 @@ func _run() -> void:
 	menu._cloud_entries = [{"id":"/account/folder","title":"旅行","container":true,"delete_uri":"cloud://account/folder","cloud_id":"9007199254740993","delete_effect":"recycle","can_delete":true},
 		{"title":"Cloud.mp4","uri":"cloud://account/Cloud.mp4","kind":"video","size":12,"modified":10,"cloud_id":"2","delete_effect":"recycle","can_delete":true}]
 	menu.file_actions.set_enabled(false); menu.refresh(); menu._activate(Actions.EDIT_MODE)
-	check(not menu.file_actions.editing and not menu._buttons.any(func(button): return button.target == Actions.EDIT_MODE), "Cloud edit entry also stays hidden with file management off")
+	check(not menu.file_actions.editing and not menu.file_actions.enabled and menu.section == Menu.Section.SETTINGS, "Cloud locked entry also opens settings without enabling management")
+	menu._activate(Menu.BACK)
 	menu.file_actions.set_enabled(true); menu.refresh(); menu._activate(Actions.EDIT_MODE)
 	menu._choose(menu.rows[1])
 	check(not menu.file_actions.rename.can_rename(menu.file_actions.selected_row()), "Cloud deletion capability cannot accidentally enable cloud rename")

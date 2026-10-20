@@ -57,6 +57,85 @@ def replace_once(path, old, new):
     path.write_text(text.replace(old, new), encoding='utf-8', newline='\n')
 
 
+def patch_opencl_initialization(runtime):
+    """Priority/recording are optional GPU optimizations, never CPU fallback gates."""
+    replace_once(runtime, 'static std::mutex gCLMutex;', '''static std::mutex gCLMutex;
+static thread_local std::string vrppClInitializationError;
+extern "C" const char* vrpp_cl_initialization_error() {
+    return vrppClInitializationError.c_str();
+}
+static void vrppClInitFailure(const char* stage, cl_int error) {
+    vrppClInitializationError = std::string(stage) + " (" + std::to_string(error) + ")";
+    MNN_ERROR("VRPP OpenCL initialization failed: %s\\n", vrppClInitializationError.c_str());
+}''')
+    replace_once(runtime, '    mDefaultBuildParams = " -cl-mad-enable -w";', '''    vrppClInitializationError.clear();
+    mDefaultBuildParams = " -cl-mad-enable -w";''')
+    replace_once(runtime, 'const std::string extensions = platforms[0].getInfo<CL_PLATFORM_EXTENSIONS>();',
+        'const std::string extensions = platforms[platformId].getInfo<CL_PLATFORM_EXTENSIONS>();')
+    replace_once(runtime, '''                    setGlobalContext(mContext);''', '''                    // Older Adreno drivers can reject optional QCOM context hints.
+                    // Retry the same GPU with default properties before rejecting OpenCL.
+                    if (res != CL_SUCCESS && !context_properties.empty()) {
+                        MNN_ERROR("VRPP OpenCL context hints rejected (%d); retrying default GPU context\\n", res);
+                        mContext = std::make_shared<cl::Context>(std::vector<cl::Device>({*mFirstGPUDevicePtr}), nullptr, nullptr, nullptr, &res);
+                        mIsDeviceSupportedLowPower = false;
+                    }
+                    if (res == CL_SUCCESS) setGlobalContext(mContext);''')
+    replace_once(runtime, '''            MNN_CHECK_CL_SUCCESS(res, "context");
+            if (res != CL_SUCCESS) {
+                mIsCreateError = true;''', '''            MNN_CHECK_CL_SUCCESS(res, "context");
+            if (res != CL_SUCCESS) {
+                vrppClInitFailure("context", res);
+                mIsCreateError = true;''')
+    replace_once(runtime, '''            if(isPriorityHint)
+            {
+                if(true == OpenCLSymbolsOperator::getOpenclSymbolsPtr()->isPropError())
+                {
+                    mIsCreateError = true;
+                    return;
+                }
+''', '''            if(isPriorityHint && !OpenCLSymbolsOperator::getOpenclSymbolsPtr()->isPropError())
+            {
+                priorityQueueAttempted = true;
+''')
+    replace_once(runtime, '            mIsDeviceSupportedLowPower = (mIsDeviceSupportedLowPower || isPriorityHint);',
+        '''            mIsDeviceSupportedLowPower = (mIsDeviceSupportedLowPower || isPriorityHint);
+            bool priorityQueueAttempted = false;''')
+    replace_once(runtime, '''            MNN_CHECK_CL_SUCCESS(res, "commandQueue");''', '''            // Priority hints and the OpenCL 2.x queue entry point are optional.
+            // A normal in-order GPU queue preserves inference/GL-CL synchronization.
+            if (res != CL_SUCCESS && priorityQueueAttempted) {
+                MNN_ERROR("VRPP OpenCL priority queue rejected (%d); retrying default GPU queue\\n", res);
+                mCommandQueuePtr = std::make_shared<cl::CommandQueue>(*mContext, *mFirstGPUDevicePtr, properties, &res);
+                mIsDeviceSupportedLowPower = false;
+            }
+            if (isPriorityHint && !priorityQueueAttempted) mIsDeviceSupportedLowPower = false;
+            MNN_CHECK_CL_SUCCESS(res, "commandQueue");''')
+    replace_once(runtime, '''            MNN_CHECK_CL_SUCCESS(res, "commandQueue");
+            if (res != CL_SUCCESS) {
+                mIsCreateError = true;''', '''            MNN_CHECK_CL_SUCCESS(res, "commandQueue");
+            if (res != CL_SUCCESS) {
+                vrppClInitFailure("command_queue", res);
+                mIsCreateError = true;''')
+    replace_once(runtime, '''                        if(err != CL_SUCCESS){
+                            mIsCreateError = true;
+                            return;
+                        }''', '''                        if(err != CL_SUCCESS){
+                            MNN_ERROR("VRPP OpenCL recordable queue rejected (%d); using normal GPU queue\\n", err);
+                            mRecordableQueuePtr.reset();
+                            mSupportRecordQueue = false;
+                            mUseRecordableQueueSize = 0;
+                        }''')
+    replace_once(runtime, '''                    mSupportRecordQueue = true;
+                    uint32_t MaxRecordableQueueSize''', '''                    uint32_t MaxRecordableQueueSize''')
+    replace_once(runtime, '''                        if(err != CL_SUCCESS){
+                            MNN_ERROR("VRPP OpenCL recordable queue rejected''', '''                        mSupportRecordQueue = err == CL_SUCCESS;
+                        if(err != CL_SUCCESS){
+                            MNN_ERROR("VRPP OpenCL recordable queue rejected''')
+    replace_once(runtime, '''            MNN_ASSERT(1 <= gpuDevices.size());''', '''            vrppClInitFailure("gpu_device", res == CL_SUCCESS ? CL_DEVICE_NOT_FOUND : res);
+            MNN_ASSERT(1 <= gpuDevices.size());''')
+    replace_once(runtime, '''        MNN_ASSERT(platforms.size() > 0);''', '''        vrppClInitFailure("platform_or_driver", res == CL_SUCCESS ? CL_DEVICE_NOT_FOUND : res);
+        MNN_ASSERT(platforms.size() > 0);''')
+
+
 def main():
     pristine, fork = Path(sys.argv[1]), Path(sys.argv[2])
     if fork.exists():
@@ -137,6 +216,7 @@ static int vrppPriority() {
     replace_once(runtime, '''                cl_queue_properties prop[] = {CL_QUEUE_PRIORITY_KHR, CL_QUEUE_PRIORITY_LOW_KHR,''',
         '''                cl_queue_properties prop[] = {CL_QUEUE_PRIORITY_KHR, (cl_queue_properties)(vrppPriority() == 2 ? CL_QUEUE_PRIORITY_HIGH_KHR
                     : vrppPriority() == 1 ? CL_QUEUE_PRIORITY_MED_KHR : CL_QUEUE_PRIORITY_LOW_KHR),''')
+    patch_opencl_initialization(runtime)
     for name in ('ConvExecution.cpp', 'ConvWinograd.cpp', 'DepthwiseConvExecution.cpp'):
         path = image / name
         text = path.read_text(encoding='utf-8')

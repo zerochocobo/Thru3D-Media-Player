@@ -4,6 +4,17 @@ const Main := preload("res://scripts/main.gd")
 const I18n := preload("res://scripts/i18n.gd")
 class SupportedDisplay extends XrDisplay:
 	func supports_passthrough() -> bool: return true
+class CapturedPhotoHost extends RefCounted:
+	# Same ready payload as PhotoBridge after CaptureFormat reads a screenshot's PNG metadata.
+	var ready: Callable
+	var mode := {}
+	var sequence := 100
+	func open_photo(uri: String) -> int:
+		sequence += 1
+		ready.call_deferred(sequence, JSON.stringify({"state":"ready", "path":uri.trim_prefix("file://"), "capture_mode":mode}))
+		return sequence
+	func cancel_photo(_id: int) -> void: pass
+	func release_photo(_id: int) -> void: pass
 var checks := 0
 var failures: Array[String] = []
 var folder := "user://background_test_%d" % Time.get_ticks_usec()
@@ -26,6 +37,101 @@ func settle(background: Node) -> void:
 	var deadline := Time.get_ticks_msec()+15000
 	while background.loading and Time.get_ticks_msec() < deadline: await create_timer(.01).timeout
 	check(not background.loading, "Background loading completes")
+func photo_ready(main: Node) -> void:
+	var deadline := Time.get_ticks_msec()+5000
+	while main.photo.loading and Time.get_ticks_msec() < deadline: await create_timer(.01).timeout
+	check(not main.photo.loading and main.photo.error.is_empty(), "PNG async decode completes")
+func delete_target(main: Node) -> int:
+	for index in main.recent_menu.rows.size():
+		if main.recent_menu.rows[index].get("setting", []) == ["background_remove", true]: return main.recent_menu.ROW_BASE + index
+	return -1
+
+func check_png_backgrounds(main: Node, viewport: SubViewport) -> void:
+	var host := CapturedPhotoHost.new()
+	host.ready = main.photo._on_ready
+	main.photo.platform = host
+	main.photo.auto_depth = false
+	main.photo.mode_lock = {"geometry":0,"layout":0,"fisheye_fov":180}
+	var source := ProjectSettings.globalize_path(folder.path_join("screenshot_20261020_001200_000.png"))
+	var config := ConfigFile.new()
+	var cases := [
+		[Vector2i(512,256), false, false, false],
+		[Vector2i(1024,256), true, false, false], [Vector2i(1024,256), true, false, true],
+		[Vector2i(512,512), true, true, false], [Vector2i(512,512), true, true, true],
+		[Vector2i(512,256), true, false, false], [Vector2i(512,256), true, true, true]]
+	for index in cases.size():
+		var item: Array = cases[index]
+		var image := Image.create(item[0].x,item[0].y,false,Image.FORMAT_RGB8)
+		image.fill(Color.RED)
+		if item[1]:
+			image.fill_rect(Rect2i(0,item[0].y/2,item[0].x,item[0].y/2) if item[2] else Rect2i(item[0].x/2,0,item[0].x/2,item[0].y),Color.BLUE)
+		image.save_png(source)
+		host.mode = {"version":1,"geometry":3,"stereo_sbs":item[1],"top_bottom":item[2],"swap_eyes":item[3]}
+		main._on_library_chosen("file://"+source,source.get_file())
+		await photo_ready(main)
+		check(main.photo.geometry == 3 and main.photo.stereo_sbs == item[1] and main.photo.can_background(), "Captured mono/full/half stereo PNG enables background %d" % index)
+		main.photo_menu._activate(11)
+		var buttons: Array = main.photo_menu._buttons.filter(func(button): return button.target == main.photo_menu.PHOTO_BACKGROUND)
+		check(buttons.size()==1 and buttons[0].enabled, "Screenshot settings expose an enabled background action %d" % index)
+		field_tap(main.photo_menu, main.photo_menu.PHOTO_BACKGROUND)
+		await settle(main.background)
+		check(main.background.error.is_empty() and main.background.choice == "custom", "PNG import succeeds %d" % index)
+		check(not main.photo_active and main.player_menu == main.video_menu and not main.photo_menu.visible and not main._has_open_media(), "Background import leaves no empty photo bar or disabled X %d" % index)
+		check(main.recent_menu.visible and main.recent_menu.get_parent() == main and main.recent_menu.tab == main.recent_menu.BACKGROUND_TAB, "Import returns to standalone background settings %d" % index)
+		var saved := str(main.background.custom_path)
+		var header := preload("res://scripts/image_info.gd").read_header(saved)
+		check(header.width == header.height * 2, "Stored sky is one complete 2:1 eye %d" % index)
+		var sky_image: Image = main.background._custom.get_image()
+		var color := sky_image.get_pixel(sky_image.get_width()/2,sky_image.get_height()/2)
+		check(color.is_equal_approx(Color.BLUE if item[3] else Color.RED), "Sky respects selected left eye and swap %d" % index)
+		var restored := Background.new()
+		restored.directory = main.background.directory; restored.choice = "custom"; restored.custom_path = saved; restored.custom_orientation = main.background.custom_orientation
+		root.add_child(restored); await settle(restored)
+		check(restored.error.is_empty() and restored.ready_sky()!=null and restored._custom.get_size() == main.background._custom.get_size(), "Normalized PNG sky reloads without cropping twice %d" % index)
+		restored.free()
+		check(FileAccess.file_exists(source), "PNG source survives import %d" % index)
+	# Deleting an active custom sky requires its own two trigger releases.
+	if DisplayServer.get_name() != "headless": await frame(viewport,"custom-delete")
+	var saved := str(main.background.custom_path)
+	check(delete_target(main)>=0, "Custom background has a delete row")
+	field_tap(main.recent_menu,delete_target(main))
+	check(main.background.has_custom() and FileAccess.file_exists(saved), "First delete tap only confirms")
+	if DisplayServer.get_name() != "headless": await frame(viewport,"custom-delete-confirm")
+	field_tap(main.recent_menu,delete_target(main)); await settle(main.background)
+	check(not main.background.has_custom() and not FileAccess.file_exists(saved) and FileAccess.file_exists(source), "Confirmed deletion removes only the private sky copy")
+	check(main.background.choice=="belfast" and main.display.environment.background_mode==Environment.BG_SKY, "Deleting active sky restores built-in scenery")
+	config.load(main.settings_path)
+	check(config.get_value("appearance","custom_path")=="" and config.get_value("appearance","custom_title")=="" and config.get_value("appearance","background")=="belfast", "Deletion clears persisted reference and selection")
+	check(delete_target(main)<0 and not main.recent_menu.rows[0].choices.any(func(option):return option.value=="custom"), "Deleted background disappears from menu choices")
+	# A completed worker must not close another photo or override a later background choice.
+	host.mode = {"version":1,"geometry":3}
+	main._on_library_chosen("file://"+source,source.get_file()); await photo_ready(main)
+	var source_bytes := FileAccess.get_file_as_bytes(source)
+	FileAccess.open(source,FileAccess.WRITE).store_string("broken")
+	main._on_photo_action("photo_background"); await settle(main.background)
+	check(not main.background.error.is_empty() and main.photo_active and main.photo.panel.visible and main.background.choice=="belfast", "Failed background decode preserves the photo and previous sky")
+	FileAccess.open(source,FileAccess.WRITE).store_buffer(source_bytes)
+	main.background.set_process(false)
+	main._on_photo_action("photo_background")
+	check(not main.background.remove_custom(), "Deletion cannot race a pending background import")
+	main._on_setting_changed("background","dark")
+	main._on_library_chosen("file://"+source,source.get_file()); await photo_ready(main)
+	main.background.set_process(true); await settle(main.background)
+	check(main.photo_active and main.photo.panel.visible and main.background.choice=="dark" and main.background.error.is_empty(), "Retry clears failure and late import preserves reopened photo and newer preset")
+	saved = main.background.custom_path
+	main._show_full_library(); main.recent_menu.section=main.recent_menu.Section.SETTINGS; main.recent_menu.tab=main.recent_menu.BACKGROUND_TAB; main.recent_menu.refresh()
+	field_tap(main.recent_menu,delete_target(main)); field_tap(main.recent_menu,delete_target(main))
+	check(main.background.choice=="dark" and not FileAccess.file_exists(saved) and main.photo.panel.visible, "Deleting inactive custom sky preserves selected preset and open photo")
+	# Unsupported projections and cropped panoramas still do not offer a sky.
+	main.photo.set_projection(1); check(not main.photo.can_background(), "VR180 PNG cannot supply a complete background")
+	main.photo.set_projection(3)
+	main.photo._metadata.merge({"FullPanoWidthPixels":1024,"FullPanoHeightPixels":512,"CroppedAreaImageWidthPixels":512,"CroppedAreaImageHeightPixels":256,"CroppedAreaLeftPixels":0,"CroppedAreaTopPixels":0},true)
+	check(not main.photo.can_background(), "Partial GPano cannot supply a complete background")
+	main._close_current_media(); main.photo.platform = null
+	# A tampered saved path must never turn background deletion into source deletion.
+	main.background.custom_path = source
+	main._on_setting_changed("background_remove",true)
+	check(FileAccess.file_exists(source) and main.background.custom_path.is_empty(), "Deletion never removes an external original path")
 func frame(viewport: SubViewport, name: String) -> Image:
 	await process_frame
 	await RenderingServer.frame_post_draw
@@ -107,6 +213,38 @@ func _run() -> void:
 		var item: Dictionary = main.recent_menu.choices.targets[target]
 		if item.kind == "choose" and item.key == "background" and item.value == "dark": field_tap(main.recent_menu, target); break
 	check(main.background.choice == "dark", "Same-hand ray/trigger switches background")
+	for target in main.recent_menu.choices.targets:
+		var item: Dictionary = main.recent_menu.choices.targets[target]
+		if item.kind == "open" and item.key == "background": field_tap(main.recent_menu, target); break
+	for target in main.recent_menu.choices.targets:
+		var item: Dictionary = main.recent_menu.choices.targets[target]
+		if item.kind == "choose" and item.key == "background" and item.value == "morning": field_tap(main.recent_menu, target); break
+	await settle(main.background)
+	check(main.background.choice == "morning" and main.background._builtin.resource_path == Background.MORNING,
+		"Same-hand ray/trigger selects the morning sky texture")
+	check(main.background._builtin.get_size() == Vector2(8192,4096) and main.display.environment.background_mode == Environment.BG_SKY,
+		"Morning sky renders at its full 8K dimensions")
+	check(main.recent_menu.rows.any(func(row): return row.get("key") == "background_yaw") and
+		main.recent_menu.rows.any(func(row): return row.get("key") == "background_brightness"), "Morning sky retains direction and brightness controls")
+	config.load(main.settings_path)
+	check(config.get_value("appearance","background") == "morning", "Morning sky selection persists")
+	if DisplayServer.get_name() != "headless":
+		await frame(viewport,"morning-settings")
+		main.recent_menu.dismiss()
+		await frame(viewport,"morning")
+	# Switch while the next built-in request may still be pending; only the last choice wins.
+	main._on_setting_changed("background", "belfast")
+	main._on_setting_changed("background", "dark")
+	main._on_setting_changed("background", "morning")
+	await settle(main.background)
+	check(main.background.choice == "morning" and main.background._builtin.resource_path == Background.MORNING and
+		main.background.error.is_empty(), "Rapid preset switches never apply a stale sky")
+	var preset := Background.new()
+	preset.choice = str(config.get_value("appearance", "background"))
+	viewport.add_child(preset)
+	await settle(preset)
+	check(preset.ready_sky() != null and preset._builtin.resource_path == Background.MORNING, "Saved morning choice loads at startup")
+	preset.free()
 	main._on_setting_changed("background", "belfast")
 	await settle(main.background)
 	config.load(main.settings_path)
@@ -134,6 +272,7 @@ func _run() -> void:
 	main._on_photo_action("photo_background")
 	await settle(main.background)
 	check(main.background.choice == "custom" and not main.photo.panel.visible and main.display.environment.background_mode == Environment.BG_SKY, "Using panorama as background closes viewer and restores app sky")
+	check(not main.photo_active and not main.photo_menu.visible and not main._has_open_media(), "JPG import fully exits photo playback")
 	var saved := str(main.background.custom_path)
 	check(FileAccess.file_exists(saved) and saved != source, "Background has independent private copy")
 	DirAccess.remove_absolute(source)
@@ -154,7 +293,7 @@ func _run() -> void:
 	while main.photo.loading and Time.get_ticks_msec() < deadline: await create_timer(.01).timeout
 	check(main.photo.geometry == 0 and main.display.environment.background_mode == Environment.BG_SKY, "Flat photo preserves the application backdrop")
 	main.photo.set_stereo_layout(1)
-	check(not main.photo.can_background(), "Packed stereo cannot be used as a monoscopic sky")
+	check(not main.photo.can_background(), "Flat stereo cannot supply a complete sky")
 	main.photo.close_image()
 	main._on_setting_changed("background","passthrough")
 	check(main.background.choice == "passthrough" and main.display.environment.background_mode == Environment.BG_COLOR and not viewport.transparent_bg, "Unavailable desktop passthrough falls back to opaque dark")
@@ -239,6 +378,8 @@ func _run() -> void:
 	check(viewport.transparent_bg and supported.environment.background_color.a == 0.0, "Session resume preserves transparent background")
 	main.background.select("dark")
 	check(not supported.applied_passthrough and not viewport.transparent_bg and supported.environment.background_color.a == 1.0, "Dark is opaque and distinct from passthrough")
+	main.visible = true
+	await check_png_backgrounds(main,viewport)
 	restored.queue_free(); viewport.queue_free(); await process_frame
 	for failure in failures: push_error(failure)
 	print("Application background: %d checks, %d failures; previews %s" % [checks,failures.size(),output])

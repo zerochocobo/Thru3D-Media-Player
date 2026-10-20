@@ -85,10 +85,18 @@ func run() -> void:
 	scene.clear(); check(not scene.prepared and scene.report.is_empty(),"Scene resources clear on exit")
 	scene.queue_free(); await process_frame
 	var photo:=Photo.new(); photo.history_enabled=false; root.add_child(photo)
+	check(not photo.spatial_preferred,"New photo viewers default to static 3D")
+	var settings:=ConfigFile.new()
+	settings.set_value("photo","spatial_preferred",true); photo.restore_view_settings(settings)
+	check(photo.spatial_preferred,"An explicitly saved global spatial choice still restores")
+	settings.set_value("photo","spatial_preferred",false); photo.restore_view_settings(settings)
+	check(not photo.spatial_preferred,"An explicitly saved global static choice still restores")
+	photo.spatial_preferred=true; photo.restore_view_settings(ConfigFile.new())
+	check(not photo.spatial_preferred,"Settings without a viewing-mode choice restore static 3D")
 	photo._texture=ImageTexture.create_from_image(f.image); photo._size=Vector2(320,240); photo._display_request=1
 	photo._display_result={"image":f.image}; photo._display_depth_data={"image":f.depth,"rect":f.rect}
 	photo._apply_geometry(); photo.panel.visible=true
-	check(photo.spatial_preferred and not photo.can_spatial() and not photo.set_spatial(true),"Default spatial preference never converts an ordinary 2D photo directly")
+	check(not photo.spatial_preferred and not photo.can_spatial() and not photo.set_spatial(true),"The default viewing mode never converts an ordinary 2D photo directly")
 	photo.depth_requested=true; photo.depth_enabled=true; photo.auto_depth=true
 	photo.platform=StereoHost.new()
 	check(not photo.can_spatial(),"The current plugin must finish its generated stereo pair before spatial view is eligible")
@@ -101,12 +109,13 @@ func run() -> void:
 	photo._depth_busy=false; photo.platform=null
 	var curve: float=photo.screen_curve
 	photo._spatial_auto_due=true; photo._maybe_start_spatial()
-	check(photo.spatial_requested,"A completed 2D-to-3D photo automatically enters spatial view")
+	check(not photo.spatial_requested and photo.depth_enabled and not photo._spatial.prepared,"A completed 2D-to-3D photo stays in static 3D by default")
+	check(photo.set_spatial_mode(true) and photo.spatial_requested,"A completed 2D-to-3D photo can explicitly enter spatial view")
 	await settle(photo._spatial)
 	photo._process_spatial()
 	check(photo._spatial.visible and photo.material.get_shader_parameter("spatial_hidden"),"New geometry replaces the fixed stereo image")
 	photo.platform=StereoHost.new()
-	check(photo.set_depth_strength(1.0) and photo.spatial_requested,"A no-op strength refresh keeps the default spatial view active")
+	check(photo.set_depth_strength(1.0) and photo.spatial_requested,"A no-op strength refresh keeps the selected spatial view active")
 	photo.platform=null
 	check(photo.set_spatial(false) and is_equal_approx(photo.screen_curve,curve) and not photo.material.get_shader_parameter("spatial_hidden"),"Exit restores the original viewing surface and curve")
 	check(photo.depth_requested and photo.depth_enabled and photo.auto_depth,"Existing 2D-to-3D viewing choice survives spatial mode")
@@ -139,6 +148,7 @@ func run() -> void:
 		var menu:=Menu.new(); root.add_child(menu)
 		menu.state_provider=func(): return {"has_image":true,"geometry":0,"spatial_available":true,"count":1}
 		menu._mode_open=true; menu.refresh()
+		check(not menu._spatial_mode(),"A snapshot without a viewing-mode choice defaults to static 3D in "+lang)
 		check(menu._buttons.any(func(b):return b.target==Menu.PHOTO_SPATIAL and b.enabled),"Mode picker exposes spatial view in "+lang)
 		var actions: Array=[]
 		menu.action_requested.connect(func(action):actions.append(action))

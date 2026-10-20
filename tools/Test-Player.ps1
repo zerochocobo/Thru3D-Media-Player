@@ -3,6 +3,11 @@ $ErrorActionPreference = 'Stop'
 $workspace = Split-Path -Parent $PSScriptRoot
 . "$PSScriptRoot\environment\Activate-QuestEnvironment.ps1" -ToolRoot $ToolRoot
 $projectDirectory = Join-Path $workspace 'app\godot'
+$orderOutput = Join-Path $workspace 'build/output/media-browse-order'
+New-Item -ItemType Directory -Path $orderOutput -Force | Out-Null
+$orderLog = Join-Path $orderOutput 'test_media_browse_order.log'
+& $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_media_browse_order.gd 2>&1 | Tee-Object -FilePath $orderLog
+if ($LASTEXITCODE -ne 0 -or (Get-Content $orderLog -Raw) -match '(?m)^(SCRIPT ERROR:|ERROR:)' -or (Get-Content $orderLog -Raw) -notmatch 'Media browse order: [0-9]+ checks, 0 failures') { throw 'Media browse order / return position regression failed.' }
 $videoUxOutput = Join-Path $workspace 'build/output/video-modes-ray'
 New-Item -ItemType Directory -Path $videoUxOutput -Force | Out-Null
 foreach ($videoUxTest in @('test_video_playback_modes', 'test_video_idle_rays')) {
@@ -94,6 +99,8 @@ if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'i18n-host.log
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'hand-pointer-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)') { throw 'Hand pointer regression failed.' }
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_photo_hand_gestures.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'photo-hands-host.log')
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'photo-hands-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)') { throw 'Photo hand gesture regression failed.' }
+& $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_photo_input_visibility.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'photo-input-visibility-host.log')
+if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'photo-input-visibility-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)' -or (Get-Content (Join-Path $logDirectory 'photo-input-visibility-host.log') -Raw) -notmatch 'Photo input visibility: [0-9]+ checks, 0 failures') { throw 'Photo input visibility regression failed.' }
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_photo_palm_swipe.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'photo-palm-host.log')
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'photo-palm-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)') { throw 'Photo palm swipe regression failed.' }
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_photo_preload.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'photo-preload-host.log')
@@ -145,6 +152,8 @@ if ($LASTEXITCODE -ne 0) { throw 'MPV subtitle host regression failed.' }
 if ((Get-Content (Join-Path $logDirectory 'mpv-subtitles-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)') { throw 'MPV subtitle host regression reported runtime errors.' }
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_subtitle_files.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'subtitle-files-host.log')
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'subtitle-files-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)') { throw 'Sibling subtitle selection, restoration and pair timing regression failed.' }
+& $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_subtitle_effect_recovery.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'subtitle-effect-recovery-host.log')
+if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'subtitle-effect-recovery-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)' -or (Get-Content (Join-Path $logDirectory 'subtitle-effect-recovery-host.log') -Raw) -notmatch 'Subtitle effect recovery checks=\d+ failures=0') { throw 'Subtitle and narration recovery across output changes failed.' }
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_file_mode_memory.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'file-mode-memory-host.log')
 if ($LASTEXITCODE -ne 0) { throw 'File mode memory host regression failed.' }
 if ((Get-Content (Join-Path $logDirectory 'file-mode-memory-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)') { throw 'File mode memory host regression reported runtime errors.' }
@@ -195,6 +204,8 @@ if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'file-mutation
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'library-file-actions-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|ERROR:)') { throw 'Library editing and directory sorting regression failed.' }
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_file_management_lists.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'file-management-lists-host.log')
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'file-management-lists-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|ERROR:)') { throw 'Opt-in checkboxes, batch deletion and active-file release regression failed.' }
+& $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_file_management_entry.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'file-management-entry-host.log')
+if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'file-management-entry-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|ERROR:)' -or (Get-Content (Join-Path $logDirectory 'file-management-entry-host.log') -Raw) -notmatch 'File management entry: [0-9]+ checks, 0 failures') { throw 'File management discovery and settings return regression failed.' }
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_library_sort.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'library-sort-host.log')
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'library-sort-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|ERROR:)') { throw 'Folder modification time and DLNA name sorting regression failed.' }
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_file_editing_memory.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'file-editing-memory-host.log')

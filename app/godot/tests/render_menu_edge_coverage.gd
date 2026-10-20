@@ -62,6 +62,25 @@ func _run() -> void:
 			for channel in 3:
 				check(absf(after[channel] - before[channel] * keep) < 0.02,
 					"Premultiplied channel %d follows coverage %d, background %s" % [channel, x, alpha])
+	# A tooltip's fractional hole must not prevent the opaque menu hole behind it
+	# from clearing the same pixels. Their transparent draw order changes with view angle.
+	var panel := MeshInstance3D.new()
+	panel.mesh = hole.mesh
+	panel.position.z = 0.005
+	var panel_material := ShaderMaterial.new(); panel_material.shader = HOLE
+	var opaque := Image.create(1, 1, false, Image.FORMAT_RGBA8); opaque.fill(Color.WHITE)
+	panel_material.set_shader_parameter("menu_texture", ImageTexture.create_from_image(opaque))
+	panel.material_override = panel_material; viewport.add_child(panel)
+	plate.albedo_color.a = 1.0
+	for priority in [4, 6]:
+		panel_material.render_priority = priority
+		await process_frame; await RenderingServer.frame_post_draw
+		var result := viewport.get_texture().get_image()
+		var worst := 0.0
+		for x in 5:
+			var color := result.get_pixel(32 + 64 * x, 40)
+			worst = maxf(worst, maxf(color.a, maxf(color.r, maxf(color.g, color.b))))
+		check(worst < 0.015, "Overlapping menu/tooltip holes clear scenery in either draw order: priority %d, residual %.3f" % [priority, worst])
 	viewport.queue_free()
 	for failure in failures: push_error(failure)
 	print("Menu edge coverage: %d checks, %d failures" % [checks, failures.size()])

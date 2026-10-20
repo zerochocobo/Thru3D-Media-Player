@@ -137,7 +137,7 @@ func run() -> void:
 	video.track_memory.remember(URI, {"subtitle": choice}); video.track_memory.save()
 	video.open_local(URI, "Film", 0, true, false, "film.mp4"); video.media.playback = {"details": {"subtitle_tracks": []}}; video._restore_tracks()
 	reply(video, "load", host.loads.back()[1], {"state": "error"})
-	check(video._track_restore.is_empty() and video.subtitles.requested_track == 0 and not video.subtitle_file_error.is_empty(), "An unavailable remembered file exits restoration without stopping playback")
+	check(video._track_restore.has("subtitle") and video.subtitles.requested_track == 0 and not video.subtitle_file_error.is_empty(), "An unavailable remembered file retains its identity for late discovery without stopping playback")
 	video.subtitle_files = ["different.ass"]; video.subtitle_files_state = "ready"
 	video.media.playback = {"details": {"subtitle_tracks": [track(9, "different.ass")]}}
 	menu.refresh()
@@ -172,7 +172,10 @@ func run() -> void:
 	var capacity_reload := Timing.new(directory + "/capacity"); capacity_reload.load_saved()
 	check(capacity_reload.entries.size() == Modes.LIMIT and capacity_reload.lookup("file:///capacity/127.mp4").tracks.size() == 32, "A full bank restores every supported pair slot")
 	Privacy.configure(Privacy.NONE)
-	check(not video.subtitle_timing.remember_track(URI, first_key, 4.0), "Pair corrections follow the existing recording privacy policy")
+	check(video.subtitle_timing.remember_track(URI, first_key, 4.0), "Disabling history leaves per-file subtitle corrections independent")
+	Privacy.configure_file_settings(Privacy.NONE)
+	check(not video.subtitle_timing.remember_track(URI, first_key, 5.0), "Disabling per-file memory blocks subtitle correction writes")
+	Privacy.configure_file_settings(Privacy.ALL)
 	Privacy.configure(Privacy.ALL)
 	video.close_video(); menu.free(); video.free(); main.free()
 	for failure in failures: push_error(failure)

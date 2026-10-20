@@ -129,7 +129,8 @@ internal class PlexClient(private val account: MediaServerAccount, private val h
         val subtitles = (part.optJSONArray("Stream") ?: JSONArray()).objects().filter {
             it.optInt("streamType") == 3 && it.optString("key").isNotBlank() && it.optString("codec") in setOf("srt", "ass", "ssa", "vtt")
         }.take(8).map { caption -> MediaSubtitleLink(endpoint(caption.getString("key"), "/library/streams/"),
-            caption.optString("displayTitle").ifBlank { caption.optString("language", "Subtitles") }.take(150), caption.optString("codec")) }
+            caption.optString("displayTitle").ifBlank { caption.optString("language", "Subtitles") }.take(150), caption.optString("codec"),
+            caption.optString("languageCode").ifBlank { caption.optString("language") }.take(80)) }
         return MediaStreamLink(url, "${numeric(part.optString("id"))}:${part.optLong("size")}:${data.optLong("updatedAt")}", subtitles,
             basename = part.optString("file").substringAfterLast('/').substringAfterLast('\\'))
     }

@@ -28,7 +28,7 @@ import java.util.concurrent.atomic.AtomicInteger
 internal class UsbStorage(private val host: () -> Activity?, private val emit: (Int,String)->Unit, private val changed: ()->Unit) : Closeable {
     private val worker=Executors.newSingleThreadExecutor { Thread(it,"ThruUsbStorage") }
     private val sessions=linkedMapOf<String,Session>()
-    private val waiting=mutableMapOf<String,MutableList<Pair<Int,String>>>()
+    private val waiting=mutableMapOf<String,MutableList<Triple<Int,String,Boolean>>>()
     private var watched: Context?=null
     @Volatile private var closed=false
     private fun enqueue(task:()->Unit):Boolean {
@@ -62,9 +62,9 @@ internal class UsbStorage(private val host: () -> Activity?, private val emit: (
             val device=intent.getParcelableExtra<UsbDevice>(UsbManager.EXTRA_DEVICE) ?: return
             if(intent.action==action) {
                 val requests=synchronized(this@UsbStorage) { waiting.remove(device.deviceName).orEmpty().toList() }
-                for((id,path) in requests) {
+                for((id,path,subtitlesOnly) in requests) {
                     // Query the authoritative grant; immutable PendingIntents need no fill-in extras.
-                    if(runCatching { manager().hasPermission(device) }.getOrDefault(false)) browse(id,path)
+                    if(runCatching { manager().hasPermission(device) }.getOrDefault(false)) browse(id,path,subtitlesOnly)
                     else emit(id,JSONObject().put("source","local").put("state","error").put("path",path).put("error","USB access denied").toString())
                 }
             } else {
@@ -90,7 +90,7 @@ internal class UsbStorage(private val host: () -> Activity?, private val emit: (
         if(runCatching { watch() }.isFailure) return result
         val devices=runCatching { manager().deviceList.values.filter { face(it)!=null }.associateBy { it.deviceName } }.getOrElse { return result }
         val removed=mutableListOf<Session>()
-        val cancelled=mutableListOf<Pair<Int,String>>()
+        val cancelled=mutableListOf<Triple<Int,String,Boolean>>()
         val present=synchronized(this) {
             if(closed) return result
             for(key in sessions.keys.toList()) if(key !in devices) {
@@ -161,10 +161,10 @@ internal class UsbStorage(private val host: () -> Activity?, private val emit: (
             if(claimed) c.releaseInterface(f); c.close(); throw e
         }
     }
-    private fun request(id: Int,path: String,s: Session,generation:Int?) {
+    private fun request(id: Int,path: String,s: Session,generation:Int?,subtitlesOnly:Boolean) {
         val first=synchronized(this) {
             check(!s.stopping && s.generation.get()==generation) { "USB access stopped" }
-            val queue=waiting.getOrPut(s.device.deviceName){mutableListOf()}; queue.add(id to path); queue.size==1
+            val queue=waiting.getOrPut(s.device.deviceName){mutableListOf()}; queue.add(Triple(id,path,subtitlesOnly)); queue.size==1
         }
         if(first) host()?.runOnUiThread {
             if(!closed && s.generation.get()==generation && synchronized(this) { waiting[s.device.deviceName]?.isNotEmpty()==true }) try {
@@ -177,7 +177,7 @@ internal class UsbStorage(private val host: () -> Activity?, private val emit: (
             }
         }
     }
-    fun browse(id: Int,path: String) {
+    fun browse(id: Int,path: String,subtitlesOnly:Boolean=false) {
         if(closed) return
         val requested=runCatching { session(path) }.getOrNull()
         val generation=requested?.generation?.get()
@@ -185,12 +185,12 @@ internal class UsbStorage(private val host: () -> Activity?, private val emit: (
             try {
                 roots(); val s=session(path)
                 check(s===requested && s.generation.get()==generation && !s.stopping) { "USB access stopped" }
-                if(!manager().hasPermission(s.device)) { request(id,path,s,generation); return@enqueue }
+                if(!manager().hasPermission(s.device)) { request(id,path,s,generation,subtitlesOnly); return@enqueue }
                 emit(id,JSONObject().put("source","local").put("state","loading").put("path",path).put("error","Reading USB storage…").toString())
                 connect(s)
                 val entries=if(path.trimEnd('/')==s.root) synchronized(s) {
                     JSONArray().apply { s.partitions.forEach { (key,value)-> put(JSONObject().put("id",s.root+"/"+key).put("title",value.second.filesystem+" · "+(s.partitions.keys.indexOf(key)+1)).put("container",true).put("read_only",true).put("can_delete",false).put("can_rename",false)) } }
-                } else { s.stage="filesystem"; directory(path,true).also { s.stage="ready" } }
+                } else { s.stage="filesystem"; directory(path,!subtitlesOnly).let { if(subtitlesOnly) SidecarSubtitles.directoryEntries(it) else it }.also { s.stage="ready" } }
                 emit(id,JSONObject().put("source","local").put("state","ready").put("path",path).put("all_files",true).put("entries",entries).put("volumes",allRoots()).toString())
             } catch(e:Exception) {
                 val s=runCatching { session(path) }.getOrNull()

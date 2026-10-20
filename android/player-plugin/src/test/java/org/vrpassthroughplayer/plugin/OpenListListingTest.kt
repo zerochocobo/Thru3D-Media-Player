@@ -17,16 +17,15 @@ class OpenListListingTest {
             JSONObject().put("data", JSONObject().put("total", 8000).put("content", JSONArray().put(JSONObject()
                 .put("id", "1").put("name", "movie.mp4").put("is_dir", false).put("size", 12))))
         }
-        val pages = CloudSortedPages()
         for (order in CloudSortedPages.ORDERS + "source") {
-            pages.page(client, "/电影/3D/合集", 0, false, order)
-            pages.page(client, "/电影/3D/合集", 48, false, order)
-            pages.page(client, "/电影/3D/合集", 0, true, order)
+            client.orderedPage("/电影/3D/合集", 0, false, order)
+            client.orderedPage("/电影/3D/合集", 48, false, order)
+            client.orderedPage("/电影/3D/合集", 0, true, order)
         }
         assertEquals(21, calls.size)
         assertEquals(listOf(0 to false, 48 to false, 0 to true), calls.take(3))
     }
-    @Test fun everyOtherProviderUsesNativePagesWithoutGatheringTheDirectoryForSort() {
+    @Test fun everyOtherProviderAdapterSupportsNativeOrderAndCursors() {
         for (provider in listOf(CloudDrive.BAIDU, CloudDrive.ALIYUN, CloudDrive.QUARK, CloudDrive.ONEDRIVE, CloudDrive.WEBDAV)) {
             for (order in CloudSortedPages.ORDERS + "source") {
                 if (provider == CloudDrive.QUARK && order.startsWith("size_")) continue
@@ -43,14 +42,13 @@ class OpenListListingTest {
                         .put("is_dir", false).put("size", 90000000000L).put("modified_ms", 42))
                     JSONObject().put("data", JSONObject().put("content", rows).put("total", -1).put("next_offset", if (offset < 96) offset + 48 else -1))
                 }
-                val pages = CloudSortedPages()
-                val first = pages.page(client, "/Movies", 0, false, order)
+                val first = client.orderedPage("/Movies", 0, false, order)
                 assertEquals(listOf(0), calls)
                 assertEquals(-1, first.total)
                 assertEquals("0", first.files.single().objectId)
                 assertEquals(48, first.nextOffset)
-                assertEquals(96, pages.page(client, "/Movies", 48, false, order).nextOffset)
-                assertEquals(-1, pages.page(client, "/Movies", 96, false, order).nextOffset)
+                assertEquals(96, client.orderedPage("/Movies", 48, false, order).nextOffset)
+                assertEquals(-1, client.orderedPage("/Movies", 96, false, order).nextOffset)
                 assertEquals(listOf(0, 48, 96), calls)
             }
         }
@@ -127,7 +125,8 @@ class OpenListListingTest {
         val names = (0 until 55).map { "test($it).mp4" }
         val ids = names.indices.map { if (it == 54) "1" else "${it + 1}" }
         assertThrows(CloudFailure::class.java) { client(names, ids).list("/") }
-        assertEquals(48, CloudSortedPages().page(client(names, ids), "/", 0, false, "name_asc").files.size) // Later pages are not fetched eagerly.
+        assertEquals(48, client(names, ids).page("/").files.size) // The raw adapter remains lazy.
+        assertEquals(48, CloudSortedPages().page(client(names, ids), "/", 0, false, "name_asc").files.size) // API paging does not fetch an unseen page to validate the whole directory.
     }
 
     @Test fun ambiguousSidecarPathsAreRejectedBeforePublishingAnyStream() {
@@ -139,7 +138,7 @@ class OpenListListingTest {
         assertEquals("movie.mp4", client.find("/movie.mp4").name)
     }
 
-    @Test fun largeFolderAndEverySortRequestOnlyTheRequestedProviderPage() {
+    @Test fun largeFolderAdapterRequestsOnlyTheRequestedProviderPage() {
         for (total in listOf(8000, 50000)) for (order in CloudSortedPages.ORDERS + "source") {
             val offsets = ArrayList<Int>()
             val client = OpenListBackend.Client(mount, CloudDrive.OPEN115) { _, route, body ->
@@ -152,10 +151,9 @@ class OpenListListingTest {
                     .put("name", "3D${offsets.last() + it}.mp4").put("is_dir", false).put("size", 90000000000L)) }
                 JSONObject().put("data", JSONObject().put("content", rows).put("total", total))
             }
-            val pages = CloudSortedPages()
-            assertEquals(total, pages.page(client, "/3D大片合集原盘", 0, false, order).total)
+            assertEquals(total, client.orderedPage("/3D大片合集原盘", 0, false, order).total)
             assertEquals(listOf(0), offsets)
-            assertEquals(48, pages.page(client, "/3D大片合集原盘", 48, false, order).files.size)
+            assertEquals(48, client.orderedPage("/3D大片合集原盘", 48, false, order).files.size)
             assertEquals(listOf(0, 48), offsets)
         }
     }
@@ -170,11 +168,10 @@ class OpenListListingTest {
                 .put("name", name).put("is_dir", false).put("size", 12)) }
             JSONObject().put("data", JSONObject().put("content", rows).put("total", 3))
         }
-        val pages = CloudSortedPages()
-        val first = pages.page(client, "/", 0, false, "name_asc")
+        val first = client.orderedPage("/", 0, false, "name_asc")
         assertEquals(listOf("good.mp4"), first.files.map { it.name })
         assertEquals(2, first.nextOffset)
-        assertEquals(-1, pages.page(client, "/", 2, false, "name_asc").nextOffset)
+        assertEquals(-1, client.orderedPage("/", 2, false, "name_asc").nextOffset)
         assertEquals(listOf(0, 2), offsets)
         for (name in listOf("", ".", "..", "bad/name.mp4", "bad\\name.mp4", "bad\u0000name.mp4"))
             assertFalse(CloudPaths.validName(name))

@@ -1,6 +1,7 @@
 extends RefCounted
 const TextInput := preload("res://scripts/system_text_input.gd")
 const VoiceStatus := preload("res://scripts/narration_voice_status.gd")
+const Languages := preload("res://scripts/narration_languages.gd")
 const BASE := 62000
 const COUNT := 8
 const ROW_PITCH := 0.078
@@ -90,6 +91,16 @@ func label(text: String, point: Vector2, size: int = 18) -> Label3D:
 	node.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
 	return node
 
+func _audio_label(track: Dictionary) -> String:
+	var id := int(track.get("id", 0))
+	# Reuse the playback menu's localized labels without changing native track IDs.
+	for option in menu._state.get("audio_options", []):
+		if int(option.get("value", -1)) == id: return str(option.label)
+	var title := str(track.get("title", "")).replace("\n", " ").replace("\r", " ").strip_edges()
+	if title.is_empty(): title = menu.I18n.t("Track %d") % id
+	var language := Languages.canonical(str(track.get("language", "")))
+	return title + (" · " + menu.I18n.t(Languages.NAMES[language]) if not language.is_empty() else "")
+
 func draw() -> void:
 	if source != str(menu._state.get("source_uri", "")):
 		opened = false; editor.cancel(); return
@@ -124,9 +135,14 @@ func draw() -> void:
 	if not library:
 		var choices: Array = []
 		for track in state.get("audio_options", []):
-			choices.append({"value": int(track.get("id", 0)), "label": str(track.get("title", "")) if not str(track.get("title", "")).is_empty() else str(track.get("language", "")) + " · %d" % int(track.get("id", 0)), "literal": true})
-		label(menu.I18n.t("Reference audio"), Vector2(-0.65, 1.235), menu.TEXT_BODY)
-		if not choices.is_empty(): menu.choices.field(null, {"key": "narration_clone_audio", "value": state.get("audio_id", 0), "choices": choices}, Vector2(0.12, 1.235), 1.08, 0.065)
+			choices.append({"value": int(track.get("id", 0)), "label": _audio_label(track), "literal": true})
+		label(menu.I18n.t("Sample track"), Vector2(-0.65, 1.235), menu.TEXT_BODY)
+		if choices.size() == 1:
+			label(menu._fit_title(str(choices[0].label), "", 1.08, menu.TEXT_BODY), Vector2(-0.42, 1.235), menu.TEXT_BODY)
+		elif choices.size() > 1:
+			var audio_id := int(state.get("audio_id", 0))
+			menu.choices.field(null, {"key": "narration_clone_audio", "value": audio_id, "choices": choices, "dropdown": true,
+				"display_value": menu.I18n.t("Auto") if audio_id <= 0 else menu.I18n.t("Track %d") % audio_id}, Vector2(0.12, 1.235), 1.08, 0.065)
 		button("Video position", Vector2(-0.34, 1.125), 0.60, {"operation": "nearby"})
 		menu._tips[BASE + actions.size() - 1] = menu.I18n.t("Find 3–10 second subtitles, starting about 20 seconds before the current video position.")
 		button("All subtitles", Vector2(0.34, 1.125), 0.60, {"operation": "candidates", "all": true})

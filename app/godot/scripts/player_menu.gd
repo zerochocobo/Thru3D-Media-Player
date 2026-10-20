@@ -24,6 +24,7 @@ signal whisper_haptic(hand: String)
 signal subtitle_requested(track_id: int)
 signal subtitle_files_requested
 signal subtitle_file_requested(filename: String)
+signal subtitle_browse_requested
 signal depth_strength_requested(strength: float)
 signal adjustment_requested(key: String, value: Variant)
 signal adjustment_committed
@@ -94,6 +95,7 @@ const SUBTITLE_FILES := 296
 const SUBTITLE_FILES_UP := 297
 const SUBTITLE_FILES_DOWN := 298
 const SUBTITLE_FILES_RETRY := 299
+const SUBTITLE_BROWSE := 289
 const SUBTITLE_FILE_ROW := 22000
 const PLAYBACK_SETTINGS := 470
 const ROTATION_RESET := 471
@@ -722,7 +724,7 @@ func _draw_bar() -> void:
 	_status.modulate.a = float(_state.get("seek_feedback", {}).get("alpha", 1.0))
 	_status.visible = not _status.text.is_empty()
 	# Floating actions above the bar.
-	_round(107, "close", Vector2(-0.14, 0.215), 0.08, _enabled("stop"), false, I18n.t("Close video"))
+	_round(107, "close", Vector2(-0.14, 0.215), 0.08, _enabled("stop"), false, I18n.t("Close" if clone_panel.opened else "Close video"))
 	_round(100, "folder", Vector2(0, 0.215), 0.08, true, false, I18n.t("Library"))
 	_round(108, "recenter", Vector2(0.14, 0.215), 0.08, true, false, I18n.t("Recenter"))
 	_draw_favorite(Vector2(0.28, 0.215))
@@ -858,7 +860,7 @@ func _draw_subtitles() -> void:
 	var rows := _subtitle_controls()
 	var scrolling := tracks.size() > SUBTITLE_ROWS
 	var other_subtitles := _has_other_subtitles()
-	var files_error: bool = _state.get("subtitle_files_available", false) and _state.get("subtitle_files_state", "idle") == "error"
+	var files_error: bool = not str(_state.get("subtitle_file_error", "")).is_empty()
 	if not other_subtitles and _state.get("subtitle_files_state", "idle") == "ready": _subtitle_files_open = false
 	var height := 0.13 + (1 + mini(tracks.size(), SUBTITLE_ROWS)) * 0.075 + rows.size() * SUBTITLE_SETTING_PITCH + (0.06 if scrolling else 0.0)
 	if other_subtitles: height += _subtitle_files_height()
@@ -874,18 +876,20 @@ func _draw_subtitles() -> void:
 	heading.font = ui_bold_font()
 	heading.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
 	_glyph(SUBTITLE_CLOSE, "close", Vector2(0.465, top - 0.05), 0.055, true, I18n.t("Close"))
-	var auto_caption := "Loading subtitles…" if _state.get("subtitle_files_state", "idle") == "loading" else "Auto-load matching subtitles"
-	var auto_label := _label(_fit_title(I18n.t(auto_caption), "", 0.48, TEXT_AUX), Vector3(0.245, top - 0.05, 0.004), TEXT_AUX)
+	var browsing: bool = _state.get("subtitle_browse_available", false)
+	if browsing: _glyph(SUBTITLE_BROWSE, "folder", Vector2(0.385, top - 0.05), 0.055, str(_state.get("subtitle_file_loading", "")).is_empty(), I18n.t("Browse subtitles"))
+	var auto_caption := "Loading subtitle…" if not str(_state.get("subtitle_file_loading", "")).is_empty() else "Loading subtitles…" if _state.get("subtitle_files_state", "idle") == "loading" else "Auto-load subtitles"
+	var auto_label := _label(_fit_title(I18n.t(auto_caption), "", 0.42 if browsing else 0.48, TEXT_AUX), Vector3(0.185 if browsing else 0.245, top - 0.05, 0.004), TEXT_AUX)
 	auto_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	var automatic := bool(_state.get("subtitle_auto_load", true))
-	_button(SUBTITLE_AUTO, "", Vector2(0.34, top - 0.05), Vector2(0.09, SUBTITLE_SETTING_HEIGHT))
+	_button(SUBTITLE_AUTO, "", Vector2(0.28 if browsing else 0.34, top - 0.05), Vector2(0.09, SUBTITLE_SETTING_HEIGHT))
 	var toggle: Dictionary = _buttons.back()
 	toggle.base_color = SELECTED if automatic else TILE
 	toggle.node.material_override.set_shader_parameter("corner_radius", 0.025)
 	var knob := _quad(Vector2(0.032, 0.032), Vector3(0.023 if automatic else -0.023, 0, 0.004), ACCENT if automatic else MUTED, 12)
 	knob.material_override.set_shader_parameter("corner_radius", 0.016)
 	toggle.node.add_child(knob)
-	_tips[SUBTITLE_AUTO] = I18n.t("Auto-load matching subtitles") + " · " + I18n.t("On" if automatic else "Off")
+	_tips[SUBTITLE_AUTO] = I18n.t("Auto-load subtitles") + " · " + I18n.t("On" if automatic else "Off")
 	var y := top - 0.12
 	_subtitle_row(SUBTITLE_ROW, 0, I18n.t("Off"), y)
 	y -= 0.075
@@ -902,7 +906,7 @@ func _draw_subtitles() -> void:
 	elif files_error:
 		var error := _label(I18n.t(str(_state.get("subtitle_file_error", "Unable to list subtitle files"))), Vector3(-0.43, y, 0.004), 16)
 		error.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
-		_glyph(SUBTITLE_FILES_RETRY, "refresh", Vector2(0.43, y), 0.05, true, I18n.t("Retry"))
+		if _state.get("subtitle_files_available", false): _glyph(SUBTITLE_FILES_RETRY, "refresh", Vector2(0.43, y), 0.05, true, I18n.t("Retry"))
 		y -= 0.075
 	y -= 0.01
 	for row in rows:
@@ -1439,7 +1443,7 @@ func _base_bar_key() -> String:
 	return _capture_key() + str([int(_state.get("audio_whisper", 0)) > 0, _state.get("volume_writable", true), _state.get("whisper_available", false), _state.get("clone_voice", false), _state.get("geometry", 0), _state.get("has_video", false),
 		_state.get("spatial_video", false), _state.get("error", ""),
 		_state.get("source_uri", ""), _subtitle_tracks(), _state.get("subtitle_track", 0), bookmarks.key(), _state.get("audio_options", []), _state.get("audio_track_id", -1), _state.get("audio_delay", 0.0), _state.get("audio_timing_key", ""),
-		_state.get("subtitle_files_available", false), _state.get("subtitle_files_revision", 0), _state.get("subtitle_files_state", "idle"), _state.get("subtitle_file_loading", ""), _state.get("subtitle_file_error", ""), _state.get("subtitle_timing_key", ""),
+		_state.get("subtitle_browse_available", false), _state.get("subtitle_files_available", false), _state.get("subtitle_files_revision", 0), _state.get("subtitle_files_state", "idle"), _state.get("subtitle_file_loading", ""), _state.get("subtitle_file_error", ""), _state.get("subtitle_timing_key", ""),
 		_state.get("subtitle_distance", SubtitleDepth.DEFAULT), _state.get("subtitle_position", SubtitleDepth.DEFAULT_POSITION), _state.get("subtitle_direction", 0), _state.get("subtitle_size", 100), _state.get("subtitle_style", SubtitleStyle.DEFAULT), _state.get("subtitle_flat_position", 0), _state.get("subtitle_auto_load", true), _state.get("subtitle_delay", 0.0),
 		_state.get("narration_enabled", false), _state.get("narration_source", -1), _state.get("narration_sources", []), _state.get("narration_language", "auto"), _state.get("narration_resolved_language", ""), _state.get("narration_voice", ""), _state.get("narration_status", "off"), _state.get("narration_preview_busy", false), _state.get("narration_missing", 0), _state.get("narration_timing", "continuous"), _state.get("narration_delay", 0), _state.get("narration_progress", -1), _state.get("narration_profile", ""), _state.get("narration_voice_origin", "default"), _state.get("narration_line", 0), _state.get("narration_hide_subtitles", true), _state.get("narration_miss_reason", ""), _state.get("narration_language_required", false), _state.get("narration_preview_progress", -1)])
 
@@ -1744,6 +1748,7 @@ func _activate(target: int) -> void:
 	if target == MUSIC_OPEN and _state.get("audio_play_during_video", false):
 		action_requested.emit("music_open"); return
 	if clone_panel.opened:
+		if target == 107: clone_panel.close(); return
 		if clone_panel.activate(target): return
 		if choices.action(target): return
 		return
@@ -1851,6 +1856,8 @@ func _activate(target: int) -> void:
 		refresh()
 		return
 	if section == 0 and _subtitle_open:
+		if target == SUBTITLE_BROWSE and _state.get("subtitle_browse_available", false):
+			subtitle_browse_requested.emit(); return
 		if target == SUBTITLE_CLOSE:
 			_subtitle_open = false
 			choices.reset()

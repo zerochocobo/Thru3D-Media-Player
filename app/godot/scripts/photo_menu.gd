@@ -87,7 +87,7 @@ func _depth_icon_target() -> int:
 	return PHOTO_DEPTH
 
 func _spatial_mode() -> bool:
-	return bool(_state.get("spatial_preferred",true)) and not _state.get("portrait_requested",false)
+	return bool(_state.get("spatial_preferred",false)) and not _state.get("portrait_requested",false)
 
 func _depth_tip() -> String:
 	return I18n.t("Spatial stereo" if _spatial_mode() else "Static 3D") if _state.get("native_stereo",false) else super._depth_tip()
@@ -211,16 +211,15 @@ func _draw_bar() -> void:
 	_backdrop.material_override.set_shader_parameter("corner_radius", 0.05)
 	_title = _label(_fit_title(str(_state.get("title", "")), "", 0.9, 15), Vector3(0, 0.1, 0.004), 15)
 	_title.modulate = MUTED
-	var has: bool = _state.get("has_image", false)
+	var has: bool = _state.get("has_image", false) or _state.get("gallery_overview", false)
 	var portrait: bool = _state.get("portrait_requested",false)
-	var groups: bool = int(_state.get("layout", 0)) == 2 and int(_state.get("gallery_focus", -1)) < 0
 	var swapping: bool = _state.get("gallery_swapping", false)
 	_glyph(PHOTO_GALLERY, "images", Vector2(-0.5, 0.025), 0.075, _state.get("count", 0) > 0, I18n.t("Images"))
 	_glyph(PHOTO_INSPECT, "zoom", Vector2(-0.39, 0.025), 0.075, has and not portrait, _inspect_tip())
 	_glyph(PHOTO_ADJUST, "adjust", Vector2(-0.28, 0.025), 0.075, has, I18n.t("Adjust image"))
-	_glyph(PHOTO_PREVIOUS, "previous", Vector2(-0.14, 0.025), 0.085, _state.get("can_previous", false) and not swapping, I18n.t("Previous group" if groups else "Previous image"))
+	_glyph(PHOTO_PREVIOUS, "previous", Vector2(-0.14, 0.025), 0.085, _state.get("can_previous", false) and not swapping, I18n.t("Previous image"))
 	_label("%d / %d" % [maxi(0, int(_state.get("index", -1)) + 1), int(_state.get("count", 0))], Vector3(0, 0.025, 0.004), 18)
-	_glyph(PHOTO_NEXT, "next", Vector2(0.14, 0.025), 0.085, _state.get("can_next", false) and not swapping, I18n.t("Next group" if groups else "Next image"))
+	_glyph(PHOTO_NEXT, "next", Vector2(0.14, 0.025), 0.085, _state.get("can_next", false) and not swapping, I18n.t("Next image"))
 	_glyph(PHOTO_PORTRAIT, "alpha", Vector2(0.23, 0.025), 0.075, portrait or _state.get("portrait_available",false), I18n.t("Exit portrait" if portrait else "Portrait passthrough"))
 	if int(_state.get("geometry", 0)) == 0:
 		_glyph(PHOTO_DEPTH, "depth", Vector2(DEPTH_X, 0.025), 0.075, _can_depth(), _depth_tip())

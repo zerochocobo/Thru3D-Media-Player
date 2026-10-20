@@ -6,6 +6,27 @@ import java.net.HttpURLConnection
 import java.net.URL
 
 class SidecarSubtitlesTest {
+    @Test fun pickerFiltersFilesAndKeepsDirectoriesWithoutExposingUnsupportedFormats() {
+        val rows = org.json.JSONArray().put(org.json.JSONObject().put("title", "Subtitles").put("container", true))
+        for (name in listOf("字幕.SRT", "film.ass", "film.ssa", "film.vtt", "film.smi", "film.sami", "film.sub", "film.mp4", "film.sup", "film.idx", ".hidden.srt", "../bad.srt"))
+            rows.put(org.json.JSONObject().put("title", name).put("container", false))
+        val filtered = SidecarSubtitles.directoryEntries(rows)
+        assertEquals(8, filtered.length())
+        assertTrue(filtered.getJSONObject(0).getBoolean("container"))
+    }
+
+    @Test fun externalSourcesAcceptOnlySubtitleFilesFromSupportedLibraryLocations() {
+        for (uri in listOf("file:///storage/emulated/0/Subtitles/film.srt", "smb://saved/share/Subtitles/film.ass", "cloud://saved/Subtitles/film.srt", "usb://session/disk/film.srt",
+            "content://com.android.externalstorage.documents/tree/ABCD%3A/document/ABCD%3Afilm.srt"))
+            assertEquals(if (uri.endsWith(".ass")) "film.ass" else "film.srt", SidecarSubtitles.sourceName(uri))
+        assertEquals("notes:film.srt", SidecarSubtitles.sourceName("file:///storage/notes:film.srt"))
+        val smb = java.net.URI("smb", "saved", "/share/字幕 #1.srt", null).toASCIIString()
+        assertEquals("字幕 #1.srt", SidecarSubtitles.sourceName(smb))
+        assertEquals("/share/字幕 #1.srt", java.net.URI(smb).path)
+        for (uri in listOf("https://server/film.srt", "smb://user:password@server/share/film.srt", "file://server/film.srt", "cloud://saved/../film.srt", "cloud://saved/%2e%2e/film.srt", "cloud://saved/film.mp4", "cloud://saved/film.sup", "cloud://saved/film.srt?token=x", "content://other/document/film.srt"))
+            assertThrows(uri, Exception::class.java) { SidecarSubtitles.sourceName(uri) }
+    }
+
     @Test fun manualCandidatesIncludeUnrelatedNamesAndAllMatchingVersionsWithoutOpeningFiles() {
         val variants = (1..30).map { "film.$it.srt" }
         val names = variants + listOf("different release.ass", "字幕.SRT", "film.srt/", "../escape.srt", "folder\\escape.srt", ".hidden.srt", "film.zip", "film.idx", "film.sup", "bad\n.srt")

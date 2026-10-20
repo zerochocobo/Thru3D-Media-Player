@@ -199,6 +199,7 @@ func _run() -> void:
 	var main := Main.new()
 	main.settings_path = folder.path_join("settings.cfg")
 	root.add_child(main)
+	check(not main.photo.spatial_preferred, "Fresh settings default to static 3D for photos")
 	main.photo.history_enabled = false
 	main.photo.mode_memory = Memory.new(folder.path_join("main_modes"))
 	main.recent_menu._local_entries = entries
@@ -268,7 +269,7 @@ func _run() -> void:
 	main.photo_menu._activate(Menu.PHOTO_DEPTH)
 	await process_frame
 	check(main.photo.depth_requested and main.photo.depth_enabled and main.photo.depth_strength == 1.0 and main.photo_menu._depth_open, "Photo double click prepares one depth map at 100%")
-	check(not is_instance_valid(main.photo_menu._depth_knob), "Default photo spatial mode hides the strength rail")
+	check(not main.photo.spatial_preferred and not main.photo.spatial_requested and is_instance_valid(main.photo_menu._depth_knob), "Default static 3D keeps the converted photo and exposes its strength rail")
 	main.photo_menu._activate(Menu.PHOTO_STATIC)
 	check(not main.photo.spatial_preferred and is_instance_valid(main.photo_menu._depth_knob), "Explicit Spatial Off exposes the original stereo depth rail")
 	var original_knob: Object = main.photo_menu._depth_knob

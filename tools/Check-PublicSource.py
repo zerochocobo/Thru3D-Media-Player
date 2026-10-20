@@ -21,6 +21,9 @@ USB_SOURCE_PINS = {
     'third_party/usb/fatfs-r016.zip': '99f7dc1f7e095356e4a9e3dbe29959090d8b948afe2bbc5441e52fdf4b85449e',
     'third_party/usb/ntfs-3g-2026.9.28.tgz': '350d9415c59f7c3fa74e23985ad2d56423c6a168337368f672e2e362d8f295c8',
 }
+# Reviewed image-decoder source archives, bounded to these exact paths and bytes.
+IMAGE_SOURCE_PINS = {'third_party/tiff/libjpeg-turbo-3.1.2.tar.gz': '560f6338b547544c4f9721b18d8b87685d433ec78b3c644c70d77adad22c55e6', 'third_party/tiff/tiff-4.7.2.tar.xz': '4996f0c4f93094719b1ca5c6279b20e588773ba8a247533e486416fb662ddb88', 'third_party/openexr/imath-3.1.12.tar.gz': '8a1bc258f3149b5729c2f4f8ffd337c0e57f09096e4ba9784329f40c4a9035da', 'third_party/openexr/libdeflate-1.24.tar.gz': 'ad8d3723d0065c4723ab738be9723f2ff1cb0f1571e8bfcf0301ff9661f475e8', 'third_party/openexr/openexr-3.3.14.tar.gz': '54d931aaf50402c21ab7a0de9b390f91586d729a603455e1fe402dd3783426e0'}
+IMAGE_SOURCE_NOTICES = ['third_party/tiff/LIBJPEG-TURBO-IJG.txt', 'third_party/tiff/LICENSE.md', 'third_party/tiff/LIBJPEG-TURBO-LICENSE.md', 'third_party/openexr/LICENSE.md', 'third_party/openexr/IMATH-LICENSE.md', 'third_party/openexr/LIBDEFLATE-LICENSE.txt']
 # Exact project-generated effects; arbitrary audio and recordings remain excluded.
 PUZZLE_AUDIO_PINS = {'app/godot/audio/puzzle/rotate.wav': '2dab090f79861e99cae55434cda831922a7d0c0ac5cf94de8fc9c2c0249b5f06', 'app/godot/audio/puzzle/snap.wav': 'afe5db969224020aba863a236c86de92ecbfa0e1ec5a16d70a3caf0925191ed4', 'app/godot/audio/puzzle/success.wav': '65d1e4934a74344671febe19660979092eae2824ecda672eccf6711628d57b49', 'app/godot/audio/puzzle/launch.wav': '9672c6b35d2222fa66fcbea5598d4e68661488e63503d348a18c42ff2df530e9', 'app/godot/audio/puzzle/burst.wav': '0c1517ce01ebbca7b3ec5db7e4deaf408169bf61ee9ee79b7a698cfa3010fab4'}
 PATTERNS = {
@@ -50,8 +53,9 @@ def check_files(files):
             errors.append(f'{name}: puzzle sound differs from reviewed procedural bytes')
         if path.suffix.lower() in {'.wav', '.ogg', '.mp3', '.flac', '.dts'} and not approved_audio:
             errors.append(f'{name}: unreviewed sound recording')
-        approved_source = name in USB_SOURCE_PINS
-        if approved_source and hashlib.sha256(data).hexdigest() != USB_SOURCE_PINS[name]:
+        source_pins = {**USB_SOURCE_PINS, **IMAGE_SOURCE_PINS}
+        approved_source = name in source_pins
+        if approved_source and hashlib.sha256(data).hexdigest() != source_pins[name]:
             errors.append(f'{name}: source archive differs from reviewed upstream bytes')
         if approved_font and (len(data) != 6844 or hashlib.sha256(data).hexdigest() != FONT_PINS[name]):
             errors.append(f'{name}: font differs from reviewed OFL subset')
@@ -94,6 +98,17 @@ def check_files(files):
                     errors.append(f'{name}: USB source lock differs from reviewed pin')
         except (ValueError, KeyError, TypeError):
             errors.append('third_party/usb/source-lock.json: invalid USB source lock')
+    if IMAGE_SOURCE_PINS.keys() & files.keys():
+        for name in IMAGE_SOURCE_NOTICES:
+            if name not in files:
+                errors.append(f'{name}: image source license missing')
+        for name, pin in IMAGE_SOURCE_PINS.items():
+            if name not in files:
+                continue
+            cmake = 'native/tiff/CMakeLists.txt' if '/tiff/' in name else 'native/hdr/CMakeLists.txt'
+            source = files.get(cmake, b'').decode('utf-8', errors='replace')
+            if pin not in source or PurePosixPath(name).name not in source:
+                errors.append(f'{name}: image source CMake pin missing or mismatched')
     if FONT_PINS.keys() & files.keys():
         for name in ('LICENSE.txt', 'NOTICE.txt'):
             asset = 'app/godot/assets/fonts/' + name

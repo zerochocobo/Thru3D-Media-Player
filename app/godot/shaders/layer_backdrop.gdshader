@@ -8,6 +8,7 @@ render_mode unshaded, cull_front, shadows_disabled, fog_disabled;
 // across wrapped longitude pulls distant bright sky into the seam and poles.
 uniform sampler2D panorama : source_color, filter_linear, repeat_enable;
 uniform bool has_panorama = false;
+uniform float energy_multiplier = 1.0;
 uniform vec3 background : source_color = vec3(0.035, 0.045, 0.06);
 uniform mat3 orientation = mat3(1.0); // inverse of Environment.sky_rotation: world to sky space
 varying vec3 world_direction;
@@ -26,6 +27,6 @@ void fragment() {
 		float u = atan(d.x, -d.z);
 		if (u < 0.0) { u += 2.0 * PI; }
 		vec2 uv = vec2(u, acos(clamp(d.y, -1.0, 1.0))) / vec2(2.0 * PI, PI);
-		ALBEDO = textureLod(panorama, uv, 0.0).rgb;
+		ALBEDO = textureLod(panorama, uv, 0.0).rgb * energy_multiplier;
 	}
 }

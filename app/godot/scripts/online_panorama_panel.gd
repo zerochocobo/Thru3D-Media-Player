@@ -117,7 +117,7 @@ func web_rect() -> Rect2: return Rect2(-0.86,-0.38,1.72,1.032)
 func _web() -> void:
 	var editing: bool=data.get("editing",false)
 	menu._set_backdrop(Vector2(1.94,1.95 if editing else 1.42),Vector2(0,-0.12 if editing else 0.13))
-	for spec in [[1,-0.85,"up"],[4,-0.71,"back"],[5,-0.57,"refresh"],[6,0.55,"minus"],[7,0.69,"plus"]]:
+	for spec in [[1,-0.85,"up"],[4,-0.71,"back"],[5,-0.57,"refresh"],[9,0.41,"image"],[6,0.55,"minus"],[7,0.69,"plus"]]:
 		menu._button(BASE+int(spec[0]),"",Vector2(float(spec[1]),0.75),Vector2(0.10,0.08),true,str(spec[2]))
 	menu._button(menu.CLOSE,"",Vector2(0.85,0.75),Vector2(0.10,0.08),true,"close")
 	menu._label(menu._fit_title(I18n.t(SOURCES[source].name),"",0.88,22),Vector3(0,0.75,0.009),22)
@@ -165,6 +165,7 @@ func activate(target: int) -> bool:
 		6: action("zoom_out")
 		7: action("zoom_in")
 		8: action("download_cancel")
+		9: action("open_image")
 		10,11,12,13:
 			if not supported(): return true
 			source=target-BASE-10; browsing=true; data={}; texture=null

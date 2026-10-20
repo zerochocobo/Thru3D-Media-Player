@@ -204,17 +204,17 @@ func _draw() -> void:
 		_glyph(CLOSE, "close", Vector2(panel_size.x / 2 - 0.09, panel_size.y / 2 - 0.075), 0.075, true, I18n.t("Close"))
 		_draw_modal(); _draw_status(-panel_size.y / 2 + 0.035); choices.finish(); return
 	if compact:
-		_glyph(SETTINGS, "settings", Vector2(-0.48, 0.205), 0.075, true, I18n.t("Settings"))
-		_text_button(SOURCE, "", Vector2(-0.08, 0.205), Vector2(0.64, 0.075))
-		_caption(_source_caption(), Vector2(-0.39, 0.205), 0.58, 16)
+		_text_button(SOURCE, "", Vector2(-0.18, 0.205), Vector2(0.68, 0.075))
+		_caption(_source_caption(), Vector2(-0.49, 0.205), 0.62, 16)
 		_tips[SOURCE] = _source_caption()
-		_glyph(QUEUE, "list", Vector2(0.35, 0.205), 0.075, true, I18n.t("Queue"))
+		_glyph(QUEUE, "list", Vector2(0.22, 0.205), 0.075, true, I18n.t("Queue"))
+		_glyph(SETTINGS, "settings", Vector2(0.35, 0.205), 0.075, true, I18n.t("Settings"))
 		_glyph(CLOSE, "close", Vector2(0.48, 0.205), 0.075, true, I18n.t("Close"))
 		_draw_transport(); _draw_status(-0.23); choices.finish(); return
-	_glyph(SETTINGS, "settings", Vector2(-0.60, 0.52), 0.075, true, I18n.t("Settings"))
-	_glyph(BACK, "up", Vector2(-0.47, 0.52), 0.075, true, I18n.t("Back"))
+	_glyph(BACK, "up", Vector2(-0.60, 0.52), 0.075, true, I18n.t("Back"))
 	_label(I18n.t("Music"), Vector3(0, 0.52, 0.004), TEXT_PAGE_TITLE).font = ui_bold_font()
-	if view != "add": _glyph(MINIMIZE, "collapse", Vector2(0.47, 0.52), 0.075, true, I18n.t("Now playing"))
+	if view != "add": _glyph(MINIMIZE, "collapse", Vector2(0.34, 0.52), 0.075, true, I18n.t("Now playing"))
+	_glyph(SETTINGS, "settings", Vector2(0.47, 0.52), 0.075, true, I18n.t("Settings"))
 	_glyph(CLOSE, "close", Vector2(0.60, 0.52), 0.075, true, I18n.t("Close"))
 	if view == "add":
 		_caption(I18n.t("Add tracks") + " · " + _playlist_label(audio.library.playlist(playlist_id)), Vector2(-0.60, 0.40), 0.91, 21, Color.WHITE)

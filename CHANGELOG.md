@@ -4,6 +4,36 @@
 
 Newest first, following product release milestones. Some development/source snapshots contained features before their product release. Original APK identifiers `0.2` and `0.4` are retained; `0.4` was also called `0.4.0` in release notes. Availability depends on device, server and media capabilities.
 
+## 0.12.5 — 2026-10-21
+
+This update fixes missing cloud subtitles and external audio, restores bounded provider paging, and improves AI passthrough initialization.
+
+- Restore same-folder SRT discovery and manual selection on affected 115, Quark and other cloud directories when sorting by name.
+- Preserve raw provider metadata so M4A external audio tracks are recognized and loaded.
+- Restore provider-supported sorting and paging instead of scanning an entire directory just to sort it. Name order follows each provider's returned results.
+- Give the subtitle picker its own page offset and restore the media browsing position when returning.
+- Keep unsupported optional GPU optimizations from failing the entire AI passthrough initialization.
+- Classify AI failures separately from network/media reading failures and provide clearer recovery guidance.
+
+## 0.12.4 — 2026-10-20
+
+This update adds more image formats, subtitle browsing across folders, and live audio for VR recordings, while improving photo browsing, subtitle recovery, and playback of affected videos on 115.
+
+- **TIFF, HDR and EXR image support**: Open images and large panoramas in these formats from local storage, SMB shares and cloud drives.
+- **Browse for subtitles across folders**: Use the folder icon in the subtitle panel to choose subtitles from other local, SMB or cloud folders. The picker remembers your last location.
+- **Live audio for VR recordings**: Record compatible VR videos at 1× speed while preserving the original video quality and capturing the audio actually played by the app, including original audio, subtitle narration and background music. Also fixed cases of popping and gaps in recorded audio.
+- **New Morning Sky background and custom-background deletion**: Enjoy an 8K sky with adjustable orientation and brightness. Remove a custom background without deleting the original image.
+- **Easier access to file management**: A locked entry now leads directly to the relevant setting when file management is disabled. Returning restores your browsing position.
+- **More consistent browsing order**: File lists, photo walls and previous/next navigation follow a consistent order. Improved cloud-folder paging and returning to the file you were viewing.
+- **More stable photo galleries**: Reduced resource usage in photo walls, memory fragments and large-image switching, improving reliability when browsing comics and photo collections.
+- **Static stereo by default for photo 2D-to-3D**: First-time use now starts with static 3D. Spatial mode remains available, and saved preferences are retained.
+- **Smoother custom panorama backgrounds**: Compatible 360° PNG screenshots can now be used as backgrounds. Fixed an unavailable close button after setting a background and delayed brightness updates while menus were open.
+- **More reliable subtitle loading and recovery**: Improved automatic subtitle selection on media servers and subtitle recovery from cloud playback history. Fixed subtitles and narration turning off unexpectedly after switching to person passthrough.
+- **Less repeated buffering with affected 115 videos**: Improved reading of certain MP4 files that repeatedly buffered after playback began, helping continuous playback and recovery after seeking.
+- **Clearer voice-cloning controls**: Sample tracks have clearer labels, with selection available for multiple tracks. The lower close button now closes the cloning panel first while it is open.
+- **Fixed controllers, hands and pointing rays disappearing during photo viewing**: Restored their visibility while viewing photos, making navigation, zooming and pointing easier.
+- **Interface refinements**: Fixed background leakage and flickering around tooltips. Full filenames appear on hover only when truncated, and music settings have moved to the upper-right corner.
+
 ## 0.12.3 — 2026-10-20
 
 This update adds original VR screenshots and lossless clip exports, fixes voice cloning from 115 and DLNA sources, and improves network recovery and menu presentation.

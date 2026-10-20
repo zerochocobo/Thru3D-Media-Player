@@ -6,7 +6,7 @@ This directory retains upstream license texts, source locks, checksums and prove
 - `mpv`: headers/provenance, exact source archives, library reference receipt and GPL/LGPL texts. The project's source-frame modification is in `native/mpv/patches`.
 - `p115rsacipher`: original MIT notice and provenance for the Kotlin 115 RSA adaptation.
 - `gradle`: wrapper Apache-2.0 license and notice.
-- `polyhaven`: CC0 source and attribution for the unmodified built-in background.
+- `polyhaven`: CC0 source and attribution for Belfast Sunset and the derived Morning Sky background; image notices and the conversion recipe accompany the source.
 - `openlist`: AGPL-3.0 upstream license, Go/gomobile and dependency notices; the local Go adapter is in `cloud/openlist`, with the checksum-pinned build and source modification in `tools/environment/Prepare-OpenList.ps1`.
 
 Godot, Godot OpenXR Vendors, MNN, ncnn and Maven dependencies are prepared externally. Keep their exact-version notices with redistributed outputs. The MNN fork is built from upstream 3.6.1 plus `tools/mnn/patch_mnn_vrpp.py`; models use their separately recorded licenses.
@@ -29,3 +29,5 @@ The CodeLibs JCIFS jar is staged by Gradle with unused HTTP/HTTPS NTLM adapters 
 - Optional experimental Windows desktop video: checksum-pinned FFmpegPlayer source/dependency recipes, local native patch and MIT/LGPL notices in `third_party/desktop-video`. No DLLs or archives are included; see `docs/EXPERIMENTAL_CINEMA.md` for build scope.
 
 - Capture bridge compile-time FFmpeg headers: copied from the already pinned FFmpeg source, with local Android ARM64 public-header configuration, an adjacent per-header catalog and LGPL v2.1 text under `native/mpv/include/ffmpeg`. The runtime dependency and its separate license/source records are unchanged.
+
+- Image decoders: checksum-pinned libtiff 4.7.2, libjpeg-turbo 3.1.2, OpenEXR 3.3.14, Imath 3.1.12 and libdeflate 1.24 source archives with their original notices under `tiff` and `openexr`. BSD-style, IJG and other included component terms remain applicable; see [image formats](../docs/IMAGE_FORMATS.md). No prebuilt image libraries are included.

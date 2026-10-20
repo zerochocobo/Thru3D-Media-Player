@@ -22,6 +22,15 @@ internal class CloudStreamSource(
     private val readers = ConcurrentHashMap.newKeySet<RemoteReader>()
 
     fun prepare() { currentLink() }
+    /** Independent reader ownership, retaining this immutable object's resolver and
+     * identity-bound connection factory. The caller registers the new media lease. */
+    @Synchronized fun fork(): CloudStreamSource {
+        check(!closed)
+        return CloudStreamSource(size, resolve, connect).also {
+            it.linkConnection = linkConnection; it.rangeWindow = rangeWindow
+            it.link = link; it.resolvedAt = resolvedAt
+        }
+    }
     /** Configure before publication. Short reference reads must release CDN slots promptly. */
     @Synchronized fun boundedRanges(bytes: Long): CloudStreamSource {
         require(bytes>0);check(!closed&&link==null&&readers.isEmpty())

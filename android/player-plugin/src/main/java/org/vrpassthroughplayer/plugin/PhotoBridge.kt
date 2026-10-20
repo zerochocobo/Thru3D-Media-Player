@@ -86,6 +86,16 @@ internal class PhotoBridge(
                 checkCurrent(id)
                 val location = Uri.parse(resolved)
                 state.remote = state.remote || location.scheme in setOf("http", "https")
+                // The online original already lives in our private files directory. A hard link
+                // gives the photo cache its own lifetime without copying another GB of pixels.
+                val linked = if (location.scheme == "file") runCatching {
+                    val original = File(location.path ?: "").canonicalFile
+                    val online = File(app.filesDir, "online-panoramas").canonicalFile
+                    if (original.parentFile == online && original.isFile && original.length() <= MAX_BYTES) {
+                        android.system.Os.link(original.path, source.path); true
+                    } else false
+                }.getOrDefault(false) else false
+                if (!linked) {
                 val stream: InputStream = when (location.scheme) {
                     "file" -> File(location.path ?: error("PHOTO_UNAVAILABLE")).inputStream()
                     "content" -> app.contentResolver.openInputStream(location) ?: error("PHOTO_UNAVAILABLE")
@@ -94,6 +104,7 @@ internal class PhotoBridge(
                         connection = http; http.connectTimeout = 15000; http.readTimeout = 20000
                         require(http.responseCode in 200..299) { "PHOTO_UNAVAILABLE" }
                         require(http.contentLengthLong <= MAX_BYTES) { "PHOTO_TOO_LARGE" }
+                        require(http.contentLengthLong <= directory.usableSpace-64L*1024*1024) { "PHOTO_TOO_LARGE" }
                         http.inputStream
                     }
                     else -> error("PHOTO_UNAVAILABLE")
@@ -107,6 +118,7 @@ internal class PhotoBridge(
                         checkCurrent(id)
                         val count = input.read(bytes); if (count < 0) break
                         total += count; require(total <= MAX_BYTES) { "PHOTO_TOO_LARGE" }
+                        if(total/(1024*1024) != (total-count)/(1024*1024)) require(directory.usableSpace>64L*1024*1024) { "PHOTO_TOO_LARGE" }
                         if (state.remote) state.meter.add(count)
                         output.write(bytes, 0, count)
                         if (!metadataSent && header.size() < PhotoHeader.MAX_BYTES) {
@@ -122,7 +134,15 @@ internal class PhotoBridge(
                         }
                     }
                 } }
+                }
                 state.phase = "preparing"
+                if (PhotoBitmap.isNative(source)) {
+                    val ready = NativePhoto.prepare(source, directory, { checkCurrent(id) },
+                        { metadata -> emit("photo_ready", id, metadata.toString()) })
+                    checkCurrent(id); files[id] = PhotoSource(source); published = true
+                    ready.put("cache_bytes", directory.listFiles()?.sumOf { it.length() } ?: source.length())
+                    emit("photo_ready", id, ready.toString()); return@execute
+                }
                 val heif = HeifPhotoInfo.read(source)
                 if (heif != null) {
                     val ready = HeifPhotoDecoder.prepare(source, directory, heif, { checkCurrent(id) },
@@ -447,7 +467,7 @@ internal class PhotoBridge(
         files.keys.toList().forEach(::release)
     }
     companion object {
-        const val MAX_BYTES = 256L * 1024 * 1024; const val MAX_PIXELS = 32L * 1024 * 1024
+        const val MAX_BYTES = 8L * 1024 * 1024 * 1024; const val MAX_PIXELS = 32L * 1024 * 1024
         private val inFlightSources = ConcurrentHashMap<DepthJob, PhotoSource>()
         private val portraitSources = ConcurrentHashMap<PortraitJob, PhotoSource>()
     }

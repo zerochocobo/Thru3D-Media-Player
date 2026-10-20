@@ -43,7 +43,7 @@ func _run() -> void:
 		menu._activate(Menu.FILTER_BASE+2); menu.dismiss(); menu.toggle()
 		check(menu.media_filter==0 and has_video(menu),"Reopening the browser shows all files again")
 		menu._activate(Menu.FILTER_BASE+2); menu.remember_playback_context(); menu.dismiss(); menu.show_playback_files(true)
-		check(menu.media_filter==0 and has_video(menu),"Playback context does not resurrect the previous manual filter")
+		check(menu.media_filter==2 and not has_video(menu),"Returning to playback retains the filter of the opened album")
 		menu.set_compact(false); menu.visible=true
 	menu.section=Menu.Section.CLOUD; menu._cloud_stack=[{"id":"drive","title":"Drive"}]; menu.media_filter=2; menu.refresh()
 	menu._cloud_stack.append({"id":"child","title":"Child"}); menu.refresh()

@@ -30,6 +30,12 @@ func previews() -> void:
 		await create_timer(0.01).timeout
 	check(photo.gallery.cards.keys().all(func(index): return photo.gallery.previews.texture(str(entries[index].uri)) != null), "Rendered layouts have actual preview content")
 
+func expanded() -> void:
+	var deadline := Time.get_ticks_msec()+5000
+	while photo.loading and Time.get_ticks_msec()<deadline: await create_timer(.01).timeout
+	check(not photo.loading and photo.error.is_empty(), "Expanded render source reloads after overview resource release")
+	photo.finish_transition(); photo.gallery._process(1)
+
 func _run() -> void:
 	DirAccess.make_dir_recursive_absolute(output)
 	for i in 64:
@@ -77,7 +83,7 @@ func _run() -> void:
 		var multi: Image = await frame("03-wall-%d-rows" % row_count)
 		check(multi.get_data() != wall.get_data(), "Selected wall rows change the rendered arrangement")
 	photo.gallery.set_wall_rows(1); await previews()
-	photo.gallery.activate(0); photo.gallery._process(1)
+	photo.gallery.activate(0); await expanded()
 	var wall_opened: Image = await frame("03b-wall-focused")
 	await foreground_overlap(wall_opened,"03-wall")
 	photo.gallery.return_focus(); photo.gallery._process(1)
@@ -110,7 +116,7 @@ func _run() -> void:
 		check(maxf(color.r, maxf(color.g, color.b)) < 0.25, "Fragment mesh leaves its clipped corner as background")
 	photo.gallery._refresh_visibility()
 	photo.gallery.activate(0); photo.gallery._process(0.17); await frame("06-fragment-opening")
-	photo.gallery._process(1.0)
+	await expanded()
 	var opened: Image = await frame("07-fragment-complete")
 	check(photo.panel.visible and opened.get_pixel(640, 360).r > 0.5, "Open fragment exposes the full photo at eye height")
 	await foreground_overlap(opened,"07-fragments")

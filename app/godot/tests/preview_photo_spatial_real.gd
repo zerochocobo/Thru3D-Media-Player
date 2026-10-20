@@ -92,7 +92,7 @@ func load_case(entry: Dictionary) -> void:
 	source_view=make_view(size); spatial_view=make_view(size)
 	var source_camera:=make_camera(source_view); source_camera.position.x=-0.032
 	camera=make_camera(spatial_view)
-	photo=Photo.new(); photo.history_enabled=false; spatial_view.add_child(photo); photo.set_process(false)
+	photo=Photo.new(); photo.history_enabled=false; photo.spatial_preferred=true; spatial_view.add_child(photo); photo.set_process(false)
 	photo.view_camera=camera; photo.flat_pose=Transform3D(Basis(),Vector3(0,0,-3)); photo.screen_curve=0
 	photo.screen_scale=2.0/photo._screen_dimensions(aspect).y
 	photo.queue.assign([{"uri":"file://"+entry.source,"title":"Apple 空间照片" if entry.native_stereo else "普通照片"}])

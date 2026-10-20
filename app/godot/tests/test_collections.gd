@@ -91,37 +91,78 @@ func check(value: bool, message: String) -> void:
 	if not value: failures.append(message)
 
 func _check_popup_layers() -> void:
-	for script in [Player, PhotoMenu]:
+	for mode in ["video", "photo-static", "photo-spatial", "native-static", "native-spatial", "photo-portrait"]:
+		var script: GDScript = Player if mode == "video" else PhotoMenu
 		var control: Node3D = script.new(); root.add_child(control); control.set_process(false); control.visible = true
-		control.state_provider = func():return {"has_video":true,"has_image":true,"geometry":0,"depth_available":true,"depth_requested":true,"depth_enabled":true,"depth_strength":1.0,"layout":0}
+		var native: bool = mode.begins_with("native-")
+		var spatial: bool = mode.ends_with("spatial")
+		var rail: bool = not native and not spatial
+		control.state_provider = func():return {"has_video":mode == "video","has_image":mode != "video","geometry":0,"depth_available":not native,
+			"depth_requested":not native,"depth_enabled":not native,"depth_strength":1.0,"layout":0,
+			"native_stereo":native,"spatial_preferred":spatial,"portrait_requested":mode == "photo-portrait"}
 		var favorite := {"enabled":true,"selected":false,"locked":false}
 		control.favorite_provider = func():return favorite
-		var stars := []; var strengths := []
+		var stars := []; var strengths := []; var actions := []
 		control.favorite_requested.connect(func():stars.append(true))
 		control.depth_strength_requested.connect(func(value):strengths.append(value))
+		control.action_requested.connect(func(value):actions.append(value))
 		for selected in [false, true]:
 			favorite.selected = selected
 			for angled in [false, true]:
+				var context := "%s/selected=%s/angled=%s" % [mode, selected, angled]
 				control.rotation = Vector3(-0.15, 0.2, 0.03) if angled else Vector3.ZERO
 				control.scale = Vector3.ONE * (1.15 if angled else 1.0)
-				control._depth_open = true; control.refresh()
-				var origin: Vector3 = control.to_global(Vector3(0.29, 0.215, 0.7))
+				control._depth_open = false; control._icon_tap.clear(); control.refresh()
+				var icons: Array = control._buttons.filter(func(button):return button.target == control._depth_icon_target())
+				check(icons.size() == 1 and icons[0].enabled, "Depth/viewing entry is available for the current mode: " + context)
+				if icons.size() != 1: continue
+				var icon: Dictionary = icons[0]
+				var icon_ray: Vector3 = icon.node.to_global(Vector3(0, 0, 0.7))
+				control.press_pointer("right_hand", icon_ray, -icon.node.global_basis.z, true)
+				control.release_pointer("right_hand", icon_ray, -control.global_basis.z, true)
+				check(control._depth_open, "Production ray opens the current depth/viewing popup: " + context)
+				var target: int = control.DEPTH if rail else PhotoMenu.PHOTO_SPATIAL
+				var sliders: Array = control._buttons.filter(func(button):return button.target == target)
+				check(sliders.size() == 1 and sliders[0].enabled, "Current mode provides its enabled popup control: " + context)
+				if sliders.size() != 1: continue
+				check(control._buttons.any(func(button):return button.target == control.DEPTH) == rail, "Only adjustable modes expose a depth rail: " + context)
+				var slider: Dictionary = sliders[0]
+				var favorites: Array = control._buttons.filter(func(button):return button.target == control.FAVORITE)
+				check(favorites.size() == 1 and favorites[0].enabled, "Favorite remains present beneath the popup: " + context)
+				if favorites.size() != 1: continue
+				var star: Dictionary = favorites[0]
+				var overlap: Rect2 = slider.rect.intersection(star.rect)
+				check(overlap.has_area(), "Fixture exercises real popup/favorite overlap: " + context)
+				var origin: Vector3 = control.to_global(Vector3(overlap.get_center().x, overlap.get_center().y, 0.7))
 				var direction: Vector3 = -control.global_basis.z
-				check(control.ray_hit(origin, direction).get("target") == control.DEPTH, "Depth popup wins over the overlapping favorite in either player and transformed menu")
-				var slider: Dictionary = control._buttons.filter(func(button):return button.target == control.DEPTH)[0]
-				var star: Dictionary = control._buttons.filter(func(button):return button.target == control.FAVORITE)[0]
-				check(slider.node.position.z > star.node.position.z and slider.node.material_override.render_priority > star.node.material_override.render_priority, "Depth popup is in front for both pixels and ray hits")
+				check(control.ray_hit(origin, direction).get("target") == target, "Popup control wins over the overlapping favorite: " + context)
+				check(slider.node.position.z > star.node.position.z and slider.node.material_override.render_priority > star.node.material_override.render_priority, "Popup is in front for both pixels and ray hits: " + context)
+				var blank: Variant = null
+				for y in range(1, 10):
+					for x in range(1, 10):
+						var point: Vector2 = star.rect.position + star.rect.size * Vector2(x, y) / 10
+						var candidate: Vector3 = control.to_global(Vector3(point.x, point.y, 0.7))
+						if control.ray_hit(candidate, direction).get("target", -999) == control.NONE: blank = candidate; break
+					if blank != null: break
+				check(blank != null, "Popup background blocks the favorite outside its controls: " + context)
+				var popup_z: float = slider.node.position.z
+				strengths.clear(); actions.clear()
 				control.press_pointer("right_hand", origin, direction, true)
-				check(stars.is_empty() and not strengths.is_empty(), "Pressing the overlap adjusts depth without changing favorite state")
-				var target: Vector3 = control.to_global(Vector3(control.DEPTH_X, 0.35, slider.node.position.z))
-				var drag_origin: Vector3 = target + control.global_basis * Vector3(0.16, 0.12, 0.7)
-				control.update_pointer("right_hand", drag_origin, target - drag_origin, true)
-				check(is_equal_approx(float(strengths.back()), control.DepthStrength.from_fraction((0.35 - control.DEPTH_SPAN.x) / (control.DEPTH_SPAN.y - control.DEPTH_SPAN.x), control._depth_maximum())), "An oblique drag projects onto the raised slider plane without a strength offset")
-				control.release_pointer("right_hand", drag_origin, target - drag_origin, true)
-				var blank: Vector3 = control.to_global(Vector3(0.26, 0.215, 0.7))
-				check(control.ray_hit(blank, direction).get("target") == control.NONE, "Popup background blocks click-through to the favorite")
+				if rail:
+					check(stars.is_empty() and not strengths.is_empty(), "Pressing the overlap adjusts depth without changing favorite state: " + context)
+					var span: Vector2 = control._depth_span()
+					var drag_y := lerpf(span.x, span.y, 0.625)
+					var endpoint: Vector3 = control.to_global(Vector3(control.DEPTH_X, drag_y, popup_z))
+					var drag_origin: Vector3 = endpoint + control.global_basis * Vector3(0.16, 0.12, 0.7)
+					control.update_pointer("right_hand", drag_origin, endpoint - drag_origin, true)
+					check(not strengths.is_empty() and is_equal_approx(float(strengths.back()), control.DepthStrength.from_fraction(0.625, control._depth_maximum())), "Oblique dragging uses the current mode's raised slider and actual range: " + context)
+					control.release_pointer("right_hand", drag_origin, endpoint - drag_origin, true)
+				else:
+					control.release_pointer("right_hand", origin, direction, true)
+					check(stars.is_empty() and strengths.is_empty() and actions == ["photo_spatial_on"], "Viewing option consumes overlap without changing favorites or depth: " + context)
 				control._depth_open = false; control.refresh()
-				check(control.ray_hit(control.to_global(Vector3(0.28, 0.215, 0.7)), direction).get("target") == control.FAVORITE, "Closing the depth popup makes the favorite reachable again")
+				check(control.ray_hit(origin, direction).get("target") == control.FAVORITE, "Closing the popup makes the previously covered favorite reachable: " + context)
+				if blank != null: check(control.ray_hit(blank, direction).get("target") == control.FAVORITE, "Closing the popup removes its background blocker over the favorite: " + context)
 		control.free()
 
 func _initialize() -> void: call_deferred("_run")

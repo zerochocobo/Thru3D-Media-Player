@@ -26,6 +26,10 @@ func texture(uri: String) -> Texture2D:
 func metadata(uri: String) -> Dictionary:
 	return _metadata.get(uri, _textures.get(uri, {}).get("info", {}))
 
+func retry(uri: String) -> void:
+	# A transient transfer/decode failure is retried only on explicit selection, never each frame.
+	_failed.erase(uri)
+
 func request(entries: Array[Dictionary]) -> void:
 	_wanted = entries.duplicate(true)
 	var keys := entries.map(func(entry): return str(entry.uri))

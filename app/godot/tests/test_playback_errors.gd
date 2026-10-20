@@ -68,6 +68,14 @@ func _run() -> void:
 		check(Errors.message(report) == "Media loading failed. No specific cause was reported.", "Unknown failures do not invent a permission problem")
 	for reason in Errors.REASONS:
 		check(Errors.message({"reason": reason}) == Errors.REASONS[reason], "Structured reason has an exact message: " + reason)
+	check(Errors.message({"code": "MPV_RVM_FAILED", "reason": "unknown"}) == Errors.REASONS.ai_processing_failed,
+		"Older RVM reports name AI passthrough instead of blaming the media")
+	I18n.use("zh")
+	var ai_report := {"code": "MPV_RVM_FAILED", "reason": "ai_gpu_unavailable", "stage": "ai_initialization",
+		"detail": "MNN OpenCL backend unavailable; refusing CPU execution; platform_or_driver (-1001)"}
+	check(Errors.message(ai_report) == Errors.REASONS.ai_gpu_unavailable, "GPU startup failure gives an actionable effect message")
+	check(Errors.details(ai_report).contains("初始化 AI 透视") and Errors.details(ai_report).contains("platform_or_driver (-1001)"),
+		"AI details localize the actual stage and preserve the driver status")
 	for mpv_code in Errors.MPV_REASONS:
 		check(Errors.message({"mpv_code": mpv_code}) == Errors.REASONS[Errors.MPV_REASONS[mpv_code]], "Numeric native errors survive without text heuristics")
 	for language in ["zh", "zh_Hant", "ja"]:

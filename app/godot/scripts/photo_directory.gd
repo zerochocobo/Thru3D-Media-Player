@@ -1,8 +1,10 @@
 extends Node
-## A captured cloud folder/order, independent of the library's visible page and request IDs.
+## A captured cloud folder/order, independent of the visible library page. Metadata only;
+## photos and videos share this directory scan without resolving or downloading media.
 signal completed(entries: Array[Dictionary], complete: bool, error: String)
 const Methods := preload("res://scripts/platform_methods.gd")
 const Info := preload("res://scripts/image_info.gd")
+const Audio := preload("res://scripts/background_audio_catalog.gd")
 const MAX_ENTRIES := 20000
 var platform: Object
 var _context := {}
@@ -52,8 +54,12 @@ func receive(id: int, payload: String) -> void:
 	for item in result.get("entries", []):
 		if not item is Dictionary or item.get("container", false) or str(item.get("uri", "")).is_empty(): continue
 		var uri := str(item.uri)
-		if not _uris.has(uri) and (item.get("kind", "") == "image" or Info.is_image(uri, str(item.get("title", "")))):
-			_uris[uri] = true; _entries.append(item.duplicate(true))
+		var image: bool = item.get("kind", "") == "image" or Info.is_image(uri, str(item.get("title", "")))
+		var supported: bool = image if _context.get("kind", "image") == "image" else not image and item.get("kind", "") not in ["audio", "subtitle"] and not Audio.supported(str(item.get("title", "")))
+		if not _uris.has(uri) and supported:
+			var entry: Dictionary = item.duplicate(true)
+			entry["browse_offset"] = _offset
+			_uris[uri] = true; _entries.append(entry)
 	var next := int(result.get("next_offset", -1))
 	if next < 0: _finish(true, "")
 	elif _entries.size() >= MAX_ENTRIES or _offsets.size() >= 512: _finish(false, "Images unavailable")
@@ -62,5 +68,11 @@ func receive(id: int, payload: String) -> void:
 func _finish(complete: bool, error: String) -> void:
 	loading = false; _request = 0
 	completed.emit(_entries.duplicate(true), complete, error)
+
+func cursor(uri: String) -> Dictionary:
+	for entry in _entries:
+		if str(entry.uri) == uri:
+			return {"path":_context.path,"order":_context.order,"offset":entry.browse_offset,"offsets":_offsets.keys()}
+	return {}
 
 func _exit_tree() -> void: cancel()

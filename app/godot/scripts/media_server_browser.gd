@@ -817,8 +817,8 @@ func tile(target: int, row: Dictionary, center: Vector2) -> void:
 	if texture:
 		var material = menu._material(Color.WHITE, 12); material.albedo_texture = texture; picture.material_override = material; _fit_picture(picture, texture, Vector2(0.278, 0.192))
 	else: menu._icon(str(row.get("icon", "video")), Vector3(0, 0.026, 0.006), 0.064, menu.MUTED, node)
-	menu._tips[target] = str(row.title)
 	var title: Label3D = menu._label(menu._fit_title(str(row.title), "", 0.265, 22), Vector3(0, -0.087, 0.006), 22, node)
+	if title.text != str(row.title): menu._tips[target] = str(row.title)
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	var info: Dictionary = menu.Presentation.info(row, menu.catalog)
 	var metadata := str(row.get("detail", ""))
@@ -841,7 +841,7 @@ func _media_tile(target: int, row: Dictionary, center: Vector2) -> void:
 	var info: Dictionary = menu.Presentation.info(row, menu.catalog)
 	var meta: Label3D = menu._label(menu._fit_title(str(info.card_detail), "", size.x - 0.025, 14), Vector3(0, -size.y / 2 + 0.012, 0.006), 14, card); meta.modulate = menu.MUTED
 	menu._progress_on(card, float(info.ratio), Vector2(0, -size.y / 2 + 0.05), size.x - 0.024)
-	menu._tips[target] = str(row.title)
+	if title.text != str(row.title): menu._tips[target] = str(row.title)
 
 func wrapped_lines(value: String, width: float, size: int) -> Array[String]:
 	var result: Array[String] = []; var line := ""; var length := 0.0; var widths := {}
@@ -868,8 +868,9 @@ func media_row(target: int, row: Dictionary, center: Vector2) -> void:
 	var meta: Label3D = menu._label(menu._fit_title(str(info.subtitle), "", 1.18, 14), Vector3(-0.555, -0.039, 0.007), 14, card)
 	meta.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT; meta.modulate = menu.MUTED
 	menu._progress_on(card, float(info.ratio), Vector2(0.04, -0.052), 1.22)
-	var original := filename(row)
-	menu._tips[target] = name + ("\n" + original if not original.is_empty() and original != name else "")
+	if lines.size() > 2:
+		var original := filename(row)
+		menu._tips[target] = name + ("\n" + original if not original.is_empty() and original != name else "")
 
 func draw() -> void:
 	if focused(): _draw_sources_button()

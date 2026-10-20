@@ -130,6 +130,9 @@ func _run() -> void:
 	check(choose(menu,"narration_language","auto") and video.narration.resolved_language()=="fr","Follow subtitles recognizes a regional ISO-639-2 language tag")
 	video.media.playback.details.subtitle_tracks[0].language="und"
 	check(video.narration.resolved_language().is_empty(),"Unknown subtitle language still requires an explicit selection")
+	video.media.playback.details.subtitle_tracks[0].server_language="chi"
+	check(video.narration.resolved_language()=="zh","Follow subtitles also uses server metadata retained through the subtitle proxy")
+	video.media.playback.details.subtitle_tracks[0].erase("server_language")
 	video.media.playback.details.subtitle_tracks[0].language="zh-Hans"
 	menu.refresh()
 	check(choose(menu,"narration_language","zh") and video.narration.resolved_language()=="zh" and host.calls.back()[1].language=="zh","Controller ray can open language chooser and select Chinese")

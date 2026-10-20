@@ -12,6 +12,8 @@
   "android_api": 23,
   "pgs_bitmap_patch_sha256": "33cd8a5ff7078b86366db820a9c5a2d88308f8bb24326fba9c4d1af1f911dd77",
   "pgs_bitmap_header_sha256": "d5f16d18dbef6042570adad52c42cee9df6cd35a27ddf067611ff4c0addb7261",
+  "live_capture_patch_sha256": "9a15a88c8dd53be2b19717c3e73e78a4c95ae0450586de2ab7af6f4a8b676937",
+  "live_capture_header_sha256": "7cb1040bb604f0e7c2a2ce47b7b3d869da1f81c3cd0d32eded9e5e9b388c648f",
   "dovi_rpu_patch_sha256": "ac25f48b5dce159a0cdf5880500dbe13055b8b72bf03fd8763971ddd0367ad3a",
   "architecture": "arm64-v8a",
   "elf_page_alignment": 16384,
@@ -52,9 +54,9 @@
   "libraries": [
     {
       "name": "libmpv.so",
-      "sha256": "04a7b96321a6642bdc623fc442ee14a4225002b1dfeb792613757f04a02ebbaf",
-      "bytes": 8264808,
-      "built_sha256": "4c7a0d4dd8661e6694ebe5afca8646c5a569ff912c77972f727c4aae849001b8",
+      "sha256": "a99a58302527ef09c3827d03ebc53f36f0a8e0f16820f10f5686677133bd6816",
+      "bytes": 8266824,
+      "built_sha256": "c94fe9c2068ee617653972d206b6865c94c49698c31f34e3fdbe7cfc43e26d99",
       "needed": [
         "libm.so",
         "libz.so",
@@ -165,7 +167,7 @@
     }
   ],
   "host_packages_sha256": "0d42dd4ec021254111a439214a2681bf37ca44ba2af04a9d97af479f2bd1dd33",
-  "build_receipt_sha256": "0988591d99aca05140ffe08a38503ee1ef8863985a3c44404d81e7406fc7d892",
+  "build_receipt_sha256": "9a4058078111e2233ad837024b824f6abf140062e907cdf4514c9f42d7e48758",
   "meson": "1.11.0",
   "ninja": "1.11.1",
   "mvc_inputs_sha256": {

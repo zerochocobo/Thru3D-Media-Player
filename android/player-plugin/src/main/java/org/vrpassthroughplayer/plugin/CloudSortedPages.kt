@@ -1,56 +1,19 @@
 package org.vrpassthroughplayer.plugin
 
-/** Prefer provider-wide sorting and paging. Other providers retain a bounded full-directory fallback;
- * a locally sorted single page must never be presented as a directory-wide sort.
- * Fallback snapshots contain metadata only, expire after two minutes, and are account-local. */
-internal class CloudSortedPages(private val now: () -> Long = { System.nanoTime() / 1_000_000 }) {
-    private data class Snapshot(val files: List<CloudFile>, val expires: Long,
-        var order: String = "", var ordered: List<CloudFile> = emptyList())
-    private val snapshots = LinkedHashMap<String, Snapshot>(4, .75f, true)
-
-    @Synchronized fun page(client: CloudClient, path: String, offset: Int, refresh: Boolean, order: String): CloudPage {
+/** Browse in the provider's directory-wide order, one requested API page at a time.
+ * Preserve every returned file type; UI and companion consumers apply their own filters.
+ * A missing native order must not silently trigger a full-directory metadata crawl. */
+internal class CloudSortedPages {
+    fun page(client: CloudClient, path: String, offset: Int, refresh: Boolean, order: String): CloudPage {
         require((order in ORDERS || order == "source") && offset >= 0) { "directory.sort: invalid order or offset" }
         client.orderedPage(path, offset, refresh, order)?.let { return it }
         if (order == "source") return client.page(path, offset, refresh)
-        require(offset % CloudDrive.PAGE_SIZE == 0)
-        if (refresh) snapshots.remove(path)
-        var snapshot = snapshots[path]?.takeIf { it.expires > now() }
-        if (snapshot == null) {
-            val files = ArrayList<CloudFile>()
-            val seen = HashSet<String>()
-            var cursor = 0
-            while (true) {
-                if (Thread.currentThread().isInterrupted) throw CloudFailure()
-                val page = client.page(path, cursor, refresh && cursor == 0)
-                if (page.total > MAX_FILES || files.size + page.files.size > MAX_FILES) throw CloudFailure("Folder too large to sort; use source order")
-                page.files.forEach {
-                    val identity = if (client.canDelete) it.objectId else it.id
-                    if (!seen.add((if (it.folder) "d" else "f") + identity)) throw CloudFailure()
-                }
-                files.addAll(page.files)
-                if (page.nextOffset < 0) break
-                if (page.nextOffset <= cursor) throw CloudFailure()
-                cursor = page.nextOffset
-            }
-            snapshot = Snapshot(files.filter { it.folder || MediaKinds.supported(it.name) }, now() + 120_000)
-            snapshots[path] = snapshot
-            while (snapshots.size > 4 || snapshots.values.sumOf { it.files.size } > MAX_FILES * 2) snapshots.remove(snapshots.keys.first())
-        }
-        // Paging the same directory/order must not sort thousands of names again.
-        // Keep one ordered view per bounded snapshot; a new order/refresh recomputes it.
-        if (snapshot.order != order) {
-            snapshot.ordered = snapshot.files.sortedWith(comparator(order))
-            snapshot.order = order
-        }
-        val sorted = snapshot.ordered
-        if (offset > sorted.size) throw CloudFailure()
-        val end = minOf(offset + CloudDrive.PAGE_SIZE, sorted.size)
-        return CloudPage(sorted.subList(offset, end), if (end < sorted.size) end else -1, sorted.size)
+        throw CloudFailure(detail = "directory.sort: native provider sorting unavailable")
     }
 
     companion object {
-        const val MAX_FILES = 20_000
         val ORDERS = setOf("name_asc", "name_desc", "modified_desc", "modified_asc", "size_desc", "size_asc")
+        // Used only for bounded legacy search results, never for directory browsing.
         fun comparator(order: String): Comparator<CloudFile> = Comparator { a, b ->
             if (a.folder != b.folder) return@Comparator if (a.folder) -1 else 1
             val field = order.substringBefore('_')
@@ -60,28 +23,35 @@ internal class CloudSortedPages(private val now: () -> Long = { System.nanoTime(
                 if ((av < 0) != (bv < 0)) return@Comparator if (av < 0) 1 else -1
                 if (av != bv) return@Comparator av.compareTo(bv) * if (order.endsWith("desc")) -1 else 1
             }
-            val name = natural(a.name, b.name)
+            val name = natural(a.name, b.name).takeIf { it != 0 } ?: a.name.compareTo(b.name)
             if (name != 0) name * if (field == "name" && order.endsWith("desc")) -1 else 1 else a.id.compareTo(b.id)
         }
         internal fun natural(a: String, b: String): Int {
-            val left = a.lowercase(java.util.Locale.ROOT)
-            val right = b.lowercase(java.util.Locale.ROOT)
+            // Godot naturalnocasecmp compares uppercase code points and puts a leading
+            // dot before other prefixes. Do not fold punctuation or expand characters.
+            val left = a.codePoints().map { Character.toUpperCase(it) }.toArray()
+            val right = b.codePoints().map { Character.toUpperCase(it) }.toArray()
+            if (left.isNotEmpty() && right.isNotEmpty() && (left[0] == 46) != (right[0] == 46))
+                return if (left[0] == 46) -1 else 1
             var i = 0; var j = 0
-            while (i < left.length && j < right.length) {
-                if (left[i] in '0'..'9' && right[j] in '0'..'9') {
-                    val si = i; val sj = j
-                    while (i < left.length && left[i] in '0'..'9') i++
-                    while (j < right.length && right[j] in '0'..'9') j++
-                    val ln = left.substring(si, i).trimStart('0').ifEmpty { "0" }
-                    val rn = right.substring(sj, j).trimStart('0').ifEmpty { "0" }
-                    val cmp = if (ln.length != rn.length) ln.length.compareTo(rn.length) else ln.compareTo(rn)
-                    if (cmp != 0) return cmp
+            while (i < left.size && j < right.size) {
+                if (left[i] in 48..57 && right[j] in 48..57) {
+                    var si = i; var sj = j
+                    while (i < left.size && left[i] in 48..57) i++
+                    while (j < right.size && right[j] in 48..57) j++
+                    while (si < i && left[si] == 48) si++
+                    while (sj < j && right[sj] == 48) sj++
+                    if (i - si != j - sj) return (i - si).compareTo(j - sj)
+                    while (si < i) {
+                        if (left[si] != right[sj]) return left[si].compareTo(right[sj])
+                        si++; sj++
+                    }
                 } else {
                     if (left[i] != right[j]) return left[i].compareTo(right[j])
                     i++; j++
                 }
             }
-            return (left.length - i).compareTo(right.length - j)
+            return (left.size - i).compareTo(right.size - j)
         }
     }
 }

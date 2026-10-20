@@ -61,6 +61,26 @@ class StorageDocumentTreeTest {
         provider.allowed.removeAt(1)
         try { tree.root("9876-DCBA"); fail("Other partition grant reused") } catch (_: AccessDeniedException) { }
     }
+    @Test fun subtitlePickerReadsRawGrantedFoldersWithoutChangingNormalMediaFiltering() {
+        val provider = Provider(); val root = "1234-ABCD:"
+        provider.allowed.add(uri(root))
+        provider.rows[uri(root) to true] = listOf(
+            StorageDocumentTree.Entry(root + "Subtitles", "Subtitles", true),
+            StorageDocumentTree.Entry(root + "film.mp4", "film.mp4", false, 100),
+            StorageDocumentTree.Entry(root + "film.srt", "film.srt", false, 100))
+        provider.rows[uri(root, root + "Subtitles") to true] = listOf(
+            StorageDocumentTree.Entry(root + "Subtitles/字幕.ass", "字幕.ass", false, 100),
+            StorageDocumentTree.Entry(root + "Subtitles/notes.txt", "notes.txt", false, 100))
+        val tree = StorageDocumentTree(provider)
+        assertEquals(2, tree.root("1234-ABCD").length())
+        val captions = SidecarSubtitles.directoryEntries(tree.filePath("/storage/1234-ABCD", "/storage/1234-ABCD", "1234-ABCD", false))
+        assertEquals(2, captions.length())
+        assertTrue(captions.getJSONObject(0).getBoolean("container"))
+        assertEquals("film.srt", captions.getJSONObject(1).getString("title"))
+        val nested = SidecarSubtitles.directoryEntries(tree.filePath("/storage/1234-ABCD/Subtitles", "/storage/1234-ABCD", "1234-ABCD", false))
+        assertEquals(1, nested.length())
+        assertEquals("字幕.ass", SidecarSubtitles.sourceName(nested.getJSONObject(0).getString("uri")))
+    }
     @Test fun selectedSubfolderIsShownExplicitlyAndNestedGrantsStillWork() {
         val provider = Provider(); provider.allowed.add(uri("1234-ABCD:Movies/中文"))
         provider.rows[uri("1234-ABCD:Movies/中文") to false] = listOf(StorageDocumentTree.Entry("1234-ABCD:Movies/中文", "中文", true))

@@ -21,6 +21,7 @@
 #include <cstdlib>
 #include <condition_variable>
 #include <limits>
+#include "live/live_capture.h"
 #include <memory>
 #include <mutex>
 #include <stdexcept>
@@ -157,6 +158,7 @@ void drop_image(Slot& slot) {
 // producer GL operations belong exclusively to render_thread. Neither a callback
 // nor the render thread waits for a control-thread operation to return.
 struct Source final {
+    std::atomic<uint64_t> capture_owner{0};
     const EGLDisplay display = eglGetCurrentDisplay();
     const EGLContext owner_context = eglGetCurrentContext();
     const std::thread::id owner_thread = std::this_thread::get_id();
@@ -650,6 +652,11 @@ struct Source final {
             if (audio) { option("ao", "aaudio"); option("aaudio-performance-mode", "low-latency"); }
             // Network sources: a deep read-ahead absorbs Wi-Fi jitter for 8K bitrates.
             option("cache", "auto"); option("demuxer-max-bytes", "256MiB"); option("demuxer-readahead-secs", "20");
+            if (path.rfind("http://127.0.0.1:", 0) == 0 && path.find("?thru3d_interleaved=1") != std::string::npos) {
+                // Only our verified playback view: build a small time reserve
+                // before output so a bitrate peak does not immediately underrun.
+                option("cache-pause-initial", "yes"); option("cache-pause-wait", "5");
+            }
             // Enabled only after the bounded MP4 index probe identified <=128 MiB
             // of almost the entire audio track before video, never for ordinary interleaving.
             if (network_interleave_compat) option("demuxer-lavf-o", "interleaved_read=no");
@@ -696,6 +703,7 @@ struct Source final {
 #endif
             checked(mpv_request_log_messages(core, "debug"), "MPV source log subscription");
             checked(mpv_initialize(core), "MPV source initialize");
+            capture_owner.store(quest::live::source_open(core));
             auto pgs_api = reinterpret_cast<uint32_t (*)()>(dlsym(RTLD_DEFAULT, "mpv_quest_pgs_api_version"));
             if (pgs_api && pgs_api() == QUEST_MPV_PGS_API_VERSION)
                 pgs_read = reinterpret_cast<PgsRead>(dlsym(RTLD_DEFAULT, "mpv_quest_get_pgs"));
@@ -979,6 +987,7 @@ struct Source final {
         // Rendering disposes its context before this ordinary API destroys the core.
         if (render_thread.joinable()) render_thread.join();
         if (core) mpv_terminate_destroy(core);
+        quest::live::source_close(capture_owner.exchange(0));
         done.store(true);
     }
     void allocate(Slot& slot, int width, int height) {
@@ -1466,6 +1475,10 @@ void error(JNIEnv* env, const std::exception& failure) {
 
 extern "C" JNIEXPORT jboolean JNICALL
 Java_org_vrpassthroughplayer_plugin_MpvSourceNative_available(JNIEnv*, jclass) { return extension_available() ? JNI_TRUE : JNI_FALSE; }
+extern "C" JNIEXPORT jlong JNICALL
+Java_org_vrpassthroughplayer_plugin_MpvSourceNative_captureOwner(JNIEnv*, jclass, jlong handle) {
+    try { return find(handle)->capture_owner.load(); } catch (...) { return 0; }
+}
 extern "C" JNIEXPORT jlongArray JNICALL
 Java_org_vrpassthroughplayer_plugin_MpvSourceNative_probeIso(JNIEnv* env, jclass, jstring path) {
     try {

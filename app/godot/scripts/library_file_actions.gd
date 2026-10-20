@@ -12,6 +12,7 @@ const ORDER_BASE := 9120
 var menu: Node3D
 var editing := false
 var enabled := false
+var settings_return := {}
 var selection := {}
 var _row_indices := {} # Identity -> row indices, rebuilt with directory data, not on each tick/click.
 var selected: String:
@@ -55,6 +56,40 @@ func folder() -> bool:
 	return (menu.section == menu.Section.LOCAL and not menu._local_stack.is_empty()) or \
 		(menu.section == menu.Section.SMB and not menu._smb_server.is_empty() and not menu._smb_path.is_empty()) or \
 		(menu.section == menu.Section.CLOUD and not menu._cloud_stack.is_empty() and menu.cloud_accounts.mode.is_empty())
+
+## Read existing listing metadata only. Local write flags also depend on the opt-in setting.
+func entry_state() -> String:
+	if not folder() or menu.audio_import_mode or menu.subtitle_picker_mode or menu.cloud_search.active: return ""
+	if menu.section == menu.Section.LOCAL:
+		var volume: Dictionary = menu._local_volume()
+		if menu._local_path().begins_with("usb://") or menu._local_path().begins_with("content://") or volume.get("removable", false) or volume.get("read_only", false): return "read_only"
+	var entries: Array = {menu.Section.LOCAL: menu._local_entries, menu.Section.SMB: menu._smb_entries, menu.Section.CLOUD: menu._cloud_entries}.get(menu.section, [])
+	var supported: bool = menu.PlatformMethods.supports(menu.platform, "media_file_delete") or \
+		(menu.PlatformMethods.supports(menu.platform, "media_file_rename_prepare") and menu.PlatformMethods.supports(menu.platform, "media_file_rename"))
+	if not supported: return ""
+	if entries.any(func(row): return row.get("management_available", false) or row.get("can_delete", false) or row.get("can_rename", false)): return "available"
+	return "unavailable" if menu.section == menu.Section.LOCAL and not entries.is_empty() else ""
+
+func open_settings() -> void:
+	var context := {"section": menu.section, "tab": menu.tab, "compact": menu.compact,
+		"view_mode": menu.view_mode, "anchor": menu.capture_position(), "status": menu.status}
+	menu.compact = false
+	menu._activate(menu.NAV_BASE + menu.Section.SETTINGS)
+	settings_return = context
+	menu.refresh()
+
+func return_from_settings(redraw: bool = true) -> bool:
+	if settings_return.is_empty() or menu.section != menu.Section.SETTINGS: return false
+	var context := settings_return.duplicate(true)
+	settings_return.clear(); menu.choices.reset()
+	menu.section = context.section; menu.tab = context.tab; menu.compact = context.compact
+	menu.view_mode = context.view_mode; menu.status = context.status
+	menu._position_to_restore = context.anchor
+	if redraw: menu.refresh()
+	else: menu._rebuild_rows() # Dismissal must capture the restored files, not the Settings rows.
+	# Local capability flags must be read again after changing the global write gate.
+	if menu.section == menu.Section.LOCAL and menu.PlatformMethods.supports(menu.platform, "media_local_browse"): menu._load_section()
+	return true
 
 func order() -> String:
 	var value := Order.normalize(orders.get(scope(), "name_asc"))
@@ -213,6 +248,7 @@ func choose_order(value: String) -> void:
 		menu.scroll = 0.0
 	modal = ""; selected = ""
 	menu.refresh()
+	if menu.section != menu.Section.CLOUD: menu.directory_order_changed.emit()
 
 func commit_cloud(value: String) -> void:
 	cloud_committed_order = value; cloud_requested_order = ""
@@ -246,8 +282,11 @@ func action(id: int) -> bool:
 		return true
 	if id == SORT and sortable() and not editing and pending == 0:
 		modal = "sort"; menu.refresh_file_selection(); return true
-	if id == EDIT_MODE and enabled and folder() and not list_management() and pending == 0:
-		editing = not editing; selection.clear(); menu.refresh_file_selection(); return true
+	if id == EDIT_MODE:
+		if (entry_state() == "available" or (enabled and editing and folder())) and pending == 0 and not uncertain and not (menu.section == menu.Section.CLOUD and menu._cloud_busy):
+			if not enabled: open_settings()
+			elif not list_management(): editing = not editing; selection.clear(); menu.refresh_file_selection()
+		return true
 	if id == DELETE_FILE:
 		if can_delete_selection():
 			deletions = selected_rows().duplicate(true); delete_index = 0; prepare_index = 0
@@ -337,8 +376,29 @@ func draw_header() -> void:
 	if not sortable(): return
 	menu._button(SORT, "", menu._action_position(0.25), Vector2(0.09, 0.065), not editing and pending == 0 and not menu._cloud_busy, "sort")
 	menu._tips[SORT] = menu.I18n.t("Sort")
-	if enabled and folder() and not list_management():
-		menu._button(EDIT_MODE, "", menu._action_position(0.36), Vector2(0.09, 0.065), pending == 0, "check" if editing else "select", editing)
+	draw_entry(menu._action_position(0.36))
+
+func draw_entry(position: Vector2) -> void:
+	var state := entry_state()
+	if enabled and editing and folder(): state = "available"
+	if state.is_empty() or list_management(): return
+	var available := state == "available"
+	menu._button(EDIT_MODE, "", position, Vector2(0.09, 0.065), available and pending == 0 and not uncertain and not (menu.section == menu.Section.CLOUD and menu._cloud_busy), "check" if editing else "select", editing)
+	var button: Dictionary = menu._buttons.back()
+	button.hover_disabled = true
+	if not enabled or not available:
+		# This button opens Settings; the badge describes locked editing, not a dead hit target.
+		for child in button.node.get_children():
+			if child is MeshInstance3D and child.material_override is BaseMaterial3D: child.material_override.albedo_color = menu.MUTED
+		var badge: MeshInstance3D = menu._quad(Vector2(0.027, 0.027), Vector3(0.027, -0.018, 0.007), menu.TILE, 15)
+		button.node.add_child(badge)
+		var lock: MeshInstance3D = menu._icon("lock", Vector3(0, 0, 0.002), 0.023, menu.MUTED, badge)
+		lock.material_override.render_priority = 16
+		if available:
+			menu._tips[EDIT_MODE] = menu.I18n.t("File management is off") + "\n" + menu.I18n.t("Settings") + " → " + menu.I18n.t("General") + " → " + menu.I18n.t("Allow file management")
+		else:
+			menu._tips[EDIT_MODE] = menu.I18n.t("Read-only" if state == "read_only" else "File management unavailable for this folder")
+	else:
 		menu._tips[EDIT_MODE] = menu.I18n.t("Done" if editing else "Edit files")
 
 func draw_footer() -> void:

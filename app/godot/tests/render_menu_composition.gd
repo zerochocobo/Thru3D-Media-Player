@@ -27,6 +27,39 @@ func slot_with(capture: Node, node: Node) -> Dictionary:
 	for slot in capture.slots:
 		if slot.used and slot.nodes.has(node): return slot
 	return {}
+
+func check_tooltip_overlap(viewport: SubViewport, camera: Camera3D, menu: Node3D, tip_slot: Dictionary) -> void:
+	var pose := camera.transform
+	var material: ShaderMaterial = tip_slot.hole.material_override
+	var priority := material.render_priority
+	var half: Vector2 = menu._tooltip.mesh.size * 0.5
+	for rotation in [Vector3.ZERO, Vector3(0.35, 0.2, 0), Vector3(-0.35, -0.2, 0)]:
+		camera.position = Vector3.ZERO; camera.rotation = rotation
+		var lo := Vector2(INF, INF); var hi := Vector2(-INF, -INF)
+		for corner in [Vector3(-half.x, -half.y, 0), Vector3(half.x, -half.y, 0), Vector3(-half.x, half.y, 0), Vector3(half.x, half.y, 0)]:
+			var pixel := camera.unproject_position(menu._tooltip.to_global(corner))
+			lo = lo.min(pixel); hi = hi.max(pixel)
+		var area := Rect2i(Vector2i(lo.floor()) - Vector2i(3, 3), Vector2i((hi - lo).ceil()) + Vector2i(7, 7))
+		area = area.intersection(Rect2i(Vector2i.ZERO, viewport.size))
+		tip_slot.hole.visible = false; await frames()
+		var reference := viewport.get_texture().get_image()
+		tip_slot.hole.visible = true
+		for order in [Capture.HOLE_PRIORITY - 1, Capture.HOLE_PRIORITY, Capture.HOLE_PRIORITY + 1]:
+			material.render_priority = order; await frames()
+			var actual := viewport.get_texture().get_image()
+			var samples := 0; var leaked := 0; var worst := 0.0
+			for y in range(area.position.y, area.end.y):
+				for x in range(area.position.x, area.end.x):
+					if reference.get_pixel(x, y).a > 0.01: continue
+					samples += 1
+					var residual := actual.get_pixel(x, y).a
+					worst = maxf(worst, residual)
+					if residual > 0.02: leaked += 1
+			check(samples > 100 and leaked == 0, "Production tooltip retains the cleared panel at view %s, draw order %d: %d/%d leaked, residual %.3f" % [rotation, order, leaked, samples, worst])
+			actual.save_png(output.path_join("tooltip-mask-%s-%d.png" % [str(rotation), order]))
+	material.render_priority = priority; camera.transform = pose
+	await frames()
+
 func run() -> void:
 	DirAccess.make_dir_recursive_absolute(output)
 	var viewport := SubViewport.new(); viewport.size = Vector2i(1400, 1000)
@@ -155,6 +188,7 @@ func run() -> void:
 	check(capture.repaints == repaints + 1, "Steady hover does not keep repainting")
 	check(capture.snapshot().pixels == sizes, "Hover keeps slot sizes")
 	check(menu._pointers.right_hand.dot.layers == 1 and menu._pointers.right_hand.line.layers == 1, "Pointer stays in the eye buffer")
+	await check_tooltip_overlap(viewport, camera, menu, tip_slot)
 	var ray: Vector3 = menu._buttons[2].node.to_global(Vector3(0, 0, 1))
 	check(menu.ray_hit(ray, -menu._buttons[2].node.global_basis.z).get("target") == 43, "Angled side ray geometry remains live")
 	# Rebuild: new nodes join, old references drop.

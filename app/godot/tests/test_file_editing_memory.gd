@@ -10,6 +10,7 @@ class Reader extends Node3D:
 	var track_memory: RefCounted
 	var subtitle_timing: RefCounted
 	var whisper_memory: RefCounted
+	var narration := {"memory": null}
 	var bookmark_store: RefCounted
 	func close_video() -> void: closes += 1; local_uri = ""
 	func close_image() -> void: closes += 1; local_uri = ""; queue.clear()
@@ -67,6 +68,7 @@ func _initialize() -> void:
 	app.video.track_memory = preload("res://scripts/file_track_memory.gd").new(directory.path_join("folder"))
 	app.video.subtitle_timing = preload("res://scripts/file_subtitle_timing.gd").new(directory.path_join("folder"))
 	app.video.whisper_memory = preload("res://scripts/file_whisper_memory.gd").new(directory.path_join("folder"))
+	app.video.narration.memory = preload("res://scripts/file_narration_memory.gd").new(directory.path_join("folder"))
 	app.video.bookmark_store = preload("res://scripts/bookmark_store.gd").new(directory.path_join("folder/bookmarks"))
 	app.photo.mode_memory = preload("res://scripts/file_mode_memory.gd").new(directory.path_join("folder-photo"))
 	app.video.recent_files.opened(child, "movie.mp4", false); app.video.recent_files.progress(child, 6000, 100000)

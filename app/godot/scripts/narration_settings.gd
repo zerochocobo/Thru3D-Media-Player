@@ -137,6 +137,17 @@ func reset_source(uri: String = "") -> void:
 		_restore_values(values)
 	_sync_profile()
 
+func capture_reopen() -> Dictionary:
+	return {"uri": video.local_uri, "values": _values()}
+
+func restore_reopen(saved: Dictionary) -> void:
+	if str(saved.get("uri", "")).is_empty() or saved.get("uri") != video.local_uri: return
+	# Output changes are still the same viewing session, even with file memory off.
+	# Wait for its selected text track before sending the restored configuration.
+	_restoring_source = true
+	_last_payload = ""; _language_source = ""
+	_restore_values(saved.values)
+
 func available() -> bool:
 	return FEATURE_ENABLED and Methods.supports(video.platform, "set_mpv_narration") and current_text_subtitles()
 
@@ -252,7 +263,8 @@ func resolved_language() -> String:
 	return declared_language() if language == "auto" else language
 
 func declared_language() -> String:
-	return Languages.canonical(str(selected_track().get("language", "")))
+	var track := selected_track()
+	return Languages.canonical(str(track.get("server_language", track.get("language", ""))))
 
 func apply() -> void:
 	if not FEATURE_ENABLED: return

@@ -7,6 +7,22 @@ import java.io.IOException
 import java.net.SocketTimeoutException
 
 class PlaybackFailureTest {
+    @Test fun rvmGpuFailureNamesTheEffectAndKeepsItsNativeCause() {
+        val detail = "MNN OpenCL backend unavailable; refusing CPU execution; command_queue (-35)"
+        val report = PlaybackFailure.report("MPV_RVM_FAILED", IllegalStateException(detail), "reading", PlaybackFailure.http(403))
+        assertEquals("ai_gpu_unavailable", report.getString("reason"))
+        assertEquals("ai_initialization", report.getString("stage"))
+        assertEquals("IllegalStateException", report.getString("exception_type"))
+        assertEquals(0, report.getInt("http_status"))
+        assertEquals(detail, report.getString("detail"))
+        val session = PlaybackFailure.report("MPV_RVM_FAILED", IllegalStateException("MNN OpenCL session creation failed"), "reading")
+        assertEquals("ai_gpu_unavailable", session.getString("reason"))
+        val inference = PlaybackFailure.report("MPV_RVM_FAILED", IllegalStateException("MNN RVM inference failed"), "reading")
+        assertEquals("ai_processing_failed", inference.getString("reason"))
+        assertEquals("ai_processing", inference.getString("stage"))
+        assertEquals("unknown", PlaybackFailure.report("MPV_LOCAL_SOURCE_FAILED", IllegalStateException(detail), "reading").getString("reason"))
+    }
+
     @Test fun genericLoadFailureKeepsNativeCodeWithoutInventingPermissions() {
         val native = PlaybackFailure.native(JSONObject().put("mpv_code", -13).put("error", "MPV playback: loading failed"))
         val report = PlaybackFailure.report("MPV_FRAME_PIPELINE_FAILED", PlaybackFailureException(native), "output")

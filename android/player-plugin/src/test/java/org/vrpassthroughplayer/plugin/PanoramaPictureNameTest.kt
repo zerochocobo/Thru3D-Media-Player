@@ -4,6 +4,9 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class PanoramaPictureNameTest {
+    @Test fun savingTiffOriginalKeepsItsFormatAndProjectionSuffix() {
+        assertEquals("sky_360_2D.tif", PanoramaPictureName.make("sky.tiff", "image/tiff", true))
+    }
     @Test fun savesCorrectFileTypeAndPanoramaHintWithoutChangingBytes() {
         assertEquals("Night sky_360_2D.jpg", PanoramaPictureName.make("Night sky.jpg", "image/jpeg", true))
         assertEquals("Night sky_360_2D.jpg", PanoramaPictureName.make("Night sky_360_2D.jpg", "image/jpeg", true))

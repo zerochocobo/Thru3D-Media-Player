@@ -4,6 +4,18 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class PanoramaWebPolicyTest {
+    @Test fun tiffOriginalsAndCommonsImageOverlaysAreRecognizedWithoutTreatingDescriptionPagesAsImages() {
+        assertTrue(PanoramaWebPolicy.imageNavigation("https://storage.noirlab.edu/media/archives/images/original/sky.tif", true, "GET"))
+        assertTrue(PanoramaWebPolicy.imageNavigation("https://cdn.example.org/sky.TIFF?download=1", true, "GET"))
+        assertFalse(PanoramaWebPolicy.imageNavigation("https://commons.wikimedia.org/wiki/File:sky.tiff", true, "GET"))
+        assertTrue(PanoramaWebPolicy.mediaOverlay("https://commons.wikimedia.org/wiki/File:sky.jpg#/media/File:sky.jpg"))
+        assertFalse(PanoramaWebPolicy.mediaOverlay("https://example.org/#/media/File:sky.jpg"))
+        assertFalse(PanoramaWebPolicy.mediaOverlay("https://commons.wikimedia.org/wiki/File:sky.jpg"))
+        assertEquals("image/tiff", PanoramaWebPolicy.mime("image/x-tiff; charset=binary"))
+        for (header in listOf(byteArrayOf(73,73,42,0),byteArrayOf(77,77,0,42),byteArrayOf(73,73,43,0),byteArrayOf(77,77,0,43)))
+            assertTrue(PanoramaWebPolicy.imageHeader(header.copyOf(12)))
+        assertFalse(PanoramaWebPolicy.imageHeader("<html>error</html>".toByteArray()))
+    }
     @Test fun wikiImageDescriptionStaysInBrowserWhileCdnOriginalIsIntercepted() {
         assertFalse(PanoramaWebPolicy.imageNavigation("https://commons.wikimedia.org/wiki/File:Laon_Cathedral.jpg", true, "GET"))
         assertTrue(PanoramaWebPolicy.imageNavigation("https://upload.wikimedia.org/wikipedia/commons/8/82/Laon_Cathedral.jpg", true, "GET"))
@@ -35,11 +47,20 @@ class PanoramaWebPolicyTest {
             assertTrue("$size", PanoramaWebPolicy.highResolution(size.first, size.second))
         assertEquals("image/jpeg", PanoramaWebPolicy.mime(" Image/JPEG ; charset=binary"))
     }
-    @Test fun disguisedDocumentsAndHdrCannotConsumeAnEntireDownload() {
+    @Test fun hdrAndExrOriginalsAreRecognizedButDocumentsAndArchivesAreRejected() {
         assertTrue(PanoramaWebPolicy.imageHeader(byteArrayOf(255.toByte(), 216.toByte(), 255.toByte()) + ByteArray(9)))
         assertTrue(PanoramaWebPolicy.imageHeader(byteArrayOf(137.toByte(), 80, 78, 71, 13, 10, 26, 10) + ByteArray(4)))
         assertTrue(PanoramaWebPolicy.imageHeader("RIFF0000WEBP".toByteArray()))
-        for (header in listOf("<!DOCTYPE html>", "#?RADIANCE\nFORMAT=32-bit_rle_rgbe", "PK\u0003\u0004archive", "", "RIFF0000WAVE"))
+        assertTrue(PanoramaWebPolicy.imageHeader("#?RADIANCE\nFORMAT=32-bit_rle_rgbe".toByteArray()))
+        assertTrue(PanoramaWebPolicy.imageHeader("#?RGBE\nFORMAT=32-bit_rle_rgbe".toByteArray()))
+        assertTrue(PanoramaWebPolicy.imageHeader(byteArrayOf(0x76,0x2f,0x31,1)+ByteArray(8)))
+        for(extension in listOf("HDR","rgbe","exr")) {
+            assertTrue(PanoramaWebPolicy.imageNavigation("https://dl.polyhaven.org/file/sky.$extension?download=1",true,"GET"))
+            assertFalse(PanoramaWebPolicy.imageNavigation("https://dl.polyhaven.org/file/sky.$extension",false,"GET"))
+        }
+        assertEquals("image/x-exr",PanoramaWebPolicy.mime("image/exr"))
+        assertEquals("image/vnd.radiance",PanoramaWebPolicy.mime("image/x-hdr"))
+        for (header in listOf("<!DOCTYPE html>", "PK\u0003\u0004archive", "", "RIFF0000WAVE"))
             assertFalse(header, PanoramaWebPolicy.imageHeader(header.toByteArray()))
     }
 }

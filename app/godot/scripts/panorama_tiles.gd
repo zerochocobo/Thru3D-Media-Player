@@ -24,7 +24,7 @@ func configure(info: Dictionary, host: Object) -> void:
 	clear()
 	platform=host; source=str(info.get("region_source",""))
 	dimensions=Vector2i(int(info.get("width",0)),int(info.get("height",0)))
-	if dimensions.x!=dimensions.y*2 or dimensions.x<=8192 or int(info.get("orientation",1))!=1: source=""
+	if dimensions.x!=dimensions.y*2 or dimensions.x<8192 or int(info.get("orientation",1))!=1: source=""
 	if Info.panorama_rect(info)!=Vector4(0,0,1,1): source=""
 func clear() -> void:
 	if _thread: _thread.wait_to_finish(); _thread=null

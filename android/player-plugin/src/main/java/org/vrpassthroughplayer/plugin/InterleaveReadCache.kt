@@ -11,7 +11,8 @@ internal interface UpstreamMeteredReader : StreamSource.Reader
  * No disk cache, full-file download, background reader or decoder-policy change. */
 internal class InterleaveReadCache(private val source: StreamSource,
     private val windowBytes: Int = 8 * 1024 * 1024,
-    private val onRead: (Int) -> Unit = {}, audioChunks: List<AudioReadSpan> = emptyList()) : StreamSource {
+    private val onRead: (Int) -> Unit = {}, audioChunks: List<AudioReadSpan> = emptyList(),
+    private val maxForwardGapBytes: Int = windowBytes) : StreamSource {
     override val size get() = source.size
     @Volatile private var closed = false
     private val lock = Any()
@@ -27,7 +28,7 @@ internal class InterleaveReadCache(private val source: StreamSource,
         var end = start
         var used = 0L
     }
-    init { require(windowBytes >= scratch.size) }
+    init { require(windowBytes >= scratch.size && maxForwardGapBytes in 0..windowBytes) }
 
     fun stats(): Map<String, Long> = synchronized(lock) {
         mapOf("upstream_bytes" to upstreamBytes, "cached_bytes" to cachedBytes,
@@ -72,7 +73,7 @@ internal class InterleaveReadCache(private val source: StreamSource,
                     // connections by consuming a bounded forward gap. Every
                     // byte remains real and is metered/cached as usual. ISO
                     // and sources without an audio index keep their old path.
-                    window = windows.filter { it.end < offset && offset - it.end <= windowBytes }
+                    window = windows.filter { it.end < offset && offset - it.end <= maxForwardGapBytes }
                         .maxByOrNull { it.end }
                 }
                 if (window == null) {
@@ -148,6 +149,7 @@ internal class AdaptiveInterleaveSource(private val source: StreamSource,
         return true
     }
     fun stats(): Map<String, Long>? = cache?.stats()
+    @Synchronized fun forkCloud(): CloudStreamSource? = if (closed) null else (source as? CloudStreamSource)?.fork()
     fun responseEnd(offset: Long, requestedEnd: Long): Long =
         cache?.cachedAudioEnd(offset)?.let { minOf(requestedEnd, it - 1) } ?: requestedEnd
     override fun open(): StreamSource.Reader {

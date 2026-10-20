@@ -121,9 +121,11 @@ func _set_background(transparent: bool) -> void:
 	if backdrop:
 		backdrop.visible = layer and not transparent
 		var material := backdrop.material_override as ShaderMaterial
-		var panorama: Texture2D = scenery.sky_material.panorama if scenery and scenery.sky_material is PanoramaSkyMaterial else null
+		var sky_material := scenery.sky_material as PanoramaSkyMaterial if scenery else null
+		var panorama: Texture2D = sky_material.panorama if sky_material else null
 		material.set_shader_parameter("has_panorama", panorama != null)
 		material.set_shader_parameter("panorama", panorama)
+		material.set_shader_parameter("energy_multiplier", sky_material.energy_multiplier if sky_material else 1.0)
 		# Godot samples the sky with the inverse sky rotation applied to the world direction.
 		material.set_shader_parameter("orientation", Basis.from_euler(scenery_rotation).inverse())
 

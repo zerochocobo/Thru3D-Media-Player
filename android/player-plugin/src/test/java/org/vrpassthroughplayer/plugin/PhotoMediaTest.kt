@@ -5,13 +5,23 @@ import org.junit.Test
 
 class PhotoMediaTest {
     @Test fun mixedSourcesKeepPhotoKinds() {
-        for (name in listOf("photo.JPG", "portrait.jpeg", "alpha.png", "photo.webp?token=1#view", "spatial.HEIC", "camera.heif?token=1")) {
+        for (name in listOf("photo.JPG", "portrait.jpeg", "alpha.png", "photo.webp?token=1#view", "spatial.HEIC", "camera.heif?token=1", "sky.TIF", "sky.tiff?token=1")) {
             assertTrue(name, MediaKinds.supported(name))
             assertEquals("image", MediaKinds.kind(name))
         }
         assertEquals("video", MediaKinds.kind("movie.mp4?cover=a.jpg"))
         assertFalse(MediaKinds.supported("image.jpg.exe"))
         assertFalse(MediaKinds.supported("document.svg"))
+    }
+    @Test fun tiffFileNamesSurviveLocalSmbAndCloudClassification() {
+        for (name in listOf("/Pictures/星空.tif", "smb://host/share/sky.TIFF", "cloud://provider/sky.tif", "https://cdn.example.org/sky.tiff?download=1",
+            "file:///Pictures/天空.HDR", "smb://saved/share/sky.exr", "cloud://provider/sky.rgbe", "cloud://provider/sky.EXR")) {
+            assertTrue(name, MediaKinds.image(name))
+            assertEquals("image", MediaKinds.kind(name))
+        }
+        assertEquals("image", MediaKinds.fileNameKind("星空 #1?.TIFF"))
+        assertTrue(MediaKinds.supportedFileName("星空 #1?.TIFF"))
+        assertFalse(MediaKinds.image("sky.tif.exe"))
     }
     @Test fun dlnaPhotosUseFullImageAndDoNotStealVideoCovers() {
         val entries = DlnaClient.didl("""<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/">

@@ -20,6 +20,11 @@ func sorted_titles(rows: Array, order: String) -> Array:
 func _initialize() -> void: call_deferred("_run")
 func _run() -> void:
 	preload("res://scripts/i18n.gd").use("en")
+	var names := ["a2.png", "A02.png", "a02.png", "a10.png", "中2.png", "中10.png"]
+	var name_rows: Array = []
+	for i in names.size(): name_rows.append({"title":names[i],"uri":str(names.size()-i)})
+	check(sorted_titles(name_rows, "name_asc") == ["A02.png","a02.png","a2.png","a10.png","中2.png","中10.png"], "Equivalent natural filenames use original names before opaque IDs, matching cloud sorting")
+	check(Order.compare_names("_a.png","a.png") > 0 and Order.compare_names(".cover.png","!cover.png") < 0, "Filename punctuation uses the same natural order across sources")
 	var rows := [{"title":"A10","container":{"id":"10"},"modified":100,"size":900},
 		{"title":"Unknown","container":{"id":"unknown"}},
 		{"title":"B","container":{"id":"b"},"modified":300,"size":100},

@@ -119,7 +119,7 @@ func draw_list_row(slot: int, row: Dictionary, centre: Vector2, parent: Node3D) 
 	menu._icon(str(row.get("icon", "video")), Vector3(-width * 0.5 + 0.038, 0, 0.005), 0.038, menu.MUTED, node)
 	var detail: Label3D = menu._label(menu._fit_title(str(info.subtitle), "", width - 0.10, 15), Vector3(left, -0.025, 0.004), 15, node)
 	detail.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT; detail.modulate = menu.MUTED
-	menu._tips[menu.ROW_BASE + slot] = str(row.title)
+	if title.text != str(row.title): menu._tips[menu.ROW_BASE + slot] = str(row.title)
 	menu._progress_on(node, float(info.ratio), Vector2(0, -0.043), width - 0.03)
 
 func update_hover() -> void:

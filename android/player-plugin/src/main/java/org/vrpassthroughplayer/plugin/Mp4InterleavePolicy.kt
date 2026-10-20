@@ -13,7 +13,13 @@ internal object Mp4InterleavePolicy {
     private const val HEAD_BYTES = 32 * 1024
     private const val MIN_AUDIO_BYTES = 32L * 1024 * 1024
     data class Decision(val sequential: Boolean = false, val leadingAudioBytes: Long = 0, val diagnostic: String = "default",
-                        val regionCache: Boolean = false, val audioChunks: List<AudioReadSpan> = emptyList())
+                        val regionCache: Boolean = false, val audioChunks: List<AudioReadSpan> = emptyList(),
+                        val playbackLayout: Mp4PlaybackLayout? = null) {
+        // Keep the previously validated small-audio cache path. Escalate only
+        // when even the whole compressed track cannot fit its existing budget.
+        val preferPlaybackView: Boolean get() = playbackLayout != null &&
+            audioChunks.sumOf { it.end - it.start } > Mp4AudioPacketCache.DEFAULT_BUDGET_BYTES
+    }
     private fun fallback(error: Exception) = Decision(diagnostic = error.javaClass.simpleName + ":" +
         (error.stackTrace.firstOrNull { it.className.startsWith(Mp4InterleavePolicy::class.java.name) }?.lineNumber ?: 0))
     interface Reader {
@@ -28,6 +34,9 @@ internal object Mp4InterleavePolicy {
         var window = head
         var windowOffset = 0L
         var result = Decision()
+        var mediaStart = -1L; var mediaEnd = -1L; var mediaBoxes = 0
+        var simpleTopLevel = true
+        val ftyp = box(head, 0, head.size).let { head.copyOfRange(0, it.end) }
         for (i in 0 until 32) {
             if (offset >= reader.size) break
             var relative = offset - windowOffset
@@ -42,8 +51,14 @@ internal object Mp4InterleavePolicy {
                 val bytes = if (relative + box.size <= window.size) window.copyOfRange(relative.toInt(), (relative + box.size).toInt())
                     else reader.read(offset, box.size.toInt())
                 result = classify(bytes, reader.size)
+                if (result.regionCache && simpleTopLevel && mediaBoxes == 1 && offset + box.size == reader.size) {
+                    val layout = runCatching { playbackLayout(bytes, ftyp, mediaStart, mediaEnd, reader.size) }.getOrNull()
+                    result = result.copy(playbackLayout = layout)
+                }
                 break
             }
+            if (box.type == "mdat") { mediaBoxes++; mediaStart = offset + box.header; mediaEnd = offset + box.size }
+            if (box.type !in setOf("ftyp", "free", "wide", "mdat")) simpleTopLevel = false
             require(box.type != "moof") // Fragmented files keep the normal streaming policy.
             require(box.size <= reader.size - offset)
             offset += box.size
@@ -54,6 +69,116 @@ internal object Mp4InterleavePolicy {
     private data class Box(val type: String, val start: Int, val header: Int, val size: Long) {
         val data: Int get() = start + header
         val end: Int get() { require(size <= Int.MAX_VALUE - start); return start + size.toInt() }
+    }
+
+    /** Tail-moov, self-contained single AV pair only. Every mdat byte must be
+     * accounted for; unsupported tables/tracks keep the established cache path. */
+    private fun playbackLayout(bytes: ByteArray, ftyp: ByteArray, mediaStart: Long, mediaEnd: Long, fileSize: Long): Mp4PlaybackLayout {
+        val moov = box(bytes, 0, bytes.size)
+        val traks = children(bytes, moov).filter { it.type == "trak" }; require(traks.size == 2)
+        val tracks = traks.map { track(bytes, it) ?: error("Unsupported track") }
+        require(tracks.count { it.kind == "vide" } == 1 && tracks.count { it.kind == "soun" } == 1)
+        data class Part(val track: Int, val index: Int, val span: AudioReadSpan, val time: Double, val samples: Int)
+        val parts = ArrayList<Part>()
+        val replacements = HashMap<Int, ByteArray>()
+        fun atom(type: String, payload: ByteArray): ByteArray = java.nio.ByteBuffer.allocate(payload.size + 8)
+            .putInt(payload.size + 8).put(type.toByteArray(Charsets.US_ASCII)).put(payload).array()
+        tracks.forEachIndexed { index, track ->
+            val tables = children(bytes, track.stbl)
+            // Unknown/auxiliary tables may contain absolute offsets. Keep their
+            // original source rather than copying an address we cannot remap.
+            require(tables.all { it.type in setOf("stsd", "stsc", "stsz", "stts", "ctts", "stss", "stco", "co64", "sdtp", "sgpd", "sbgp") })
+            // AAC roll recovery describes sample counts, never file addresses.
+            tables.filter { it.type == "sgpd" || it.type == "sbgp" }.forEach {
+                require(type(bytes, it.data + 4) in setOf("roll", "prol"))
+            }
+            val sd = tables.single { it.type == "stsd" }
+            require(u32(bytes, sd.data + 4) == 1L)
+            val entry = box(bytes, sd.data + 8, sd.end)
+            require(entry.end == sd.end && entry.type in if (track.kind == "vide") setOf("avc1", "avc3", "hvc1", "hev1") else setOf("mp4a"))
+            require(entry.size >= entry.header + 8 && bytes[entry.data + 6] == 0.toByte() && bytes[entry.data + 7] == 1.toByte())
+            val minf = child(bytes, track.mdia, "minf")
+            val dref = child(bytes, child(bytes, minf, "dinf"), "dref")
+            require(u32(bytes, dref.data + 4) == 1L)
+            val reference = box(bytes, dref.data + 8, dref.end)
+            require(reference.type == "url " && reference.end == dref.end && u32(bytes, reference.data) == 1L)
+            val mdhd = child(bytes, track.mdia, "mdhd")
+            val scale = u32(bytes, mdhd.data + if (bytes[mdhd.data].toInt() == 1) 20 else 12)
+            children(bytes, traks[index]).singleOrNull { it.type == "edts" }?.let { edts ->
+                val edit = child(bytes, edts, "elst"); val version = bytes[edit.data].toInt()
+                require(version in 0..1 && u32(bytes, edit.data + 4) == 1L)
+                val mediaTime = if (version == 0) u32(bytes, edit.data + 12) else u64(bytes, edit.data + 16)
+                require(mediaTime <= scale / 2 && u32(bytes, edit.data + if (version == 0) 16 else 24) == 0x10000L)
+            }
+            val sc = tables.single { it.type == "stsc" }; val sz = tables.single { it.type == "stsz" }
+            val ts = tables.single { it.type == "stts" }; val co = tables.single { it.type == "stco" || it.type == "co64" }
+            val fixed = u32(bytes, sz.data + 4); val scRuns = u32(bytes, sc.data + 4).toInt()
+            var run = 0; var timeRun = 0; var timeUsed = 0L; var sample = 0; var ticks = 0L; var groupIndex = 0
+            val groups = ArrayList<Part>()
+            for (chunk in track.offsets.indices) {
+                while (run + 1 < scRuns && u32(bytes, sc.data + 8 + (run + 1) * 12) <= chunk + 1L) run++
+                val count = u32(bytes, sc.data + 12 + run * 12).toInt()
+                require(u32(bytes, sc.data + 16 + run * 12) == 1L)
+                var source = track.offsets[chunk]; var groupStart = source; var groupTicks = ticks; var groupSamples = 0
+                fun flush() {
+                    if (groupSamples > 0) {
+                        require(groups.size < 262144)
+                        groups.add(Part(index, groupIndex++, AudioReadSpan(groupStart, source), groupTicks.toDouble() / scale, groupSamples))
+                        groupStart = source; groupTicks = ticks; groupSamples = 0
+                    }
+                }
+                repeat(count) {
+                    val timing = ts.data + 8 + timeRun * 8
+                    val duration = u32(bytes, timing + 4)
+                    require(duration * 2 <= scale) // A single long sample cannot be subdivided losslessly.
+                    if (groupSamples > 0 && (ticks - groupTicks + duration) * 2 > scale) flush()
+                    val length = if (fixed > 0) fixed else u32(bytes, sz.data + 12 + sample * 4)
+                    require(length > 0 && sample.toLong() < track.samples)
+                    source = Math.addExact(source, length); ticks = Math.addExact(ticks, duration)
+                    sample++; groupSamples++; timeUsed++
+                    if (timeUsed == u32(bytes, timing)) { timeRun++; timeUsed = 0 }
+                }
+                flush()
+                require(groups.size <= 262144)
+            }
+            require(sample.toLong() == track.samples)
+            parts.addAll(groups)
+            val runs = groups.indices.filter { it == 0 || groups[it].samples != groups[it - 1].samples }
+            val newSc = java.nio.ByteBuffer.allocate(8 + runs.size * 12).putInt(0).putInt(runs.size)
+            runs.forEach { newSc.putInt(it + 1).putInt(groups[it].samples).putInt(1) }
+            replacements[sc.start] = atom("stsc", newSc.array())
+            replacements[co.start] = atom("co64", java.nio.ByteBuffer.allocate(8 + groups.size * 8).putInt(0).putInt(groups.size).array())
+        }
+        val physical = parts.sortedBy { it.span.start }
+        require(physical.first().span.start == mediaStart && physical.last().span.end == mediaEnd)
+        for (i in 1 until physical.size) require(physical[i - 1].span.end == physical[i].span.start)
+        fun rewrite(parent: Box): ByteArray {
+            replacements[parent.start]?.let { return it }
+            if (parent.type !in setOf("moov", "trak", "mdia", "minf", "stbl")) return bytes.copyOfRange(parent.start, parent.end)
+            val payload = java.io.ByteArrayOutputStream()
+            children(bytes, parent).forEach { payload.write(rewrite(it)) }
+            return atom(parent.type, payload.toByteArray())
+        }
+        val patched = rewrite(moov)
+        require(patched.size <= MAX_METADATA_BYTES)
+        fun put(at: Int, value: Long, width: Int) {
+            require(value >= 0 && (width == 8 || value <= 0xffffffffL))
+            for (i in 0 until width) patched[at + i] = (value ushr ((width - 1 - i) * 8)).toByte()
+        }
+        val tables = children(patched, box(patched, 0, patched.size)).filter { it.type == "trak" }.map {
+            child(patched, child(patched, child(patched, it, "mdia"), "minf"), "stbl")
+        }.map { child(patched, it, "co64") }
+        val ordered = parts.sortedWith(compareBy<Part> { it.time }.thenBy { it.track }.thenBy { it.index })
+        var at = ftyp.size.toLong() + patched.size + 16
+        val chunks = ordered.map { part ->
+            val table = tables[part.track]; val width = if (table.type == "co64") 8 else 4
+            put(table.data + 8 + part.index * width, at, width)
+            Mp4PlaybackLayout.Chunk(at, part.span.start, part.span.end - part.span.start).also { at = Math.addExact(at, it.length) }
+        }
+        val mdat = java.nio.ByteBuffer.allocate(16).putInt(1).put("mdat".toByteArray(Charsets.US_ASCII))
+            .putLong(mediaEnd - mediaStart + 16).array()
+        return Mp4PlaybackLayout(fileSize, ftyp + patched + mdat, chunks,
+            parts.filter { tracks[it.track].kind == "soun" }.map { it.span }.sortedBy { it.start })
     }
     private fun type(bytes: ByteArray, at: Int): String {
         require(at >= 0 && at <= bytes.size - 4)
@@ -223,12 +348,13 @@ internal object Mp4InterleavePolicy {
         }.also { require(sample == track.samples) }
     }
 
-    /** Optional compatibility probe. Unsupported Range, malformed metadata, cancellation or
-     * its five-second/8-MiB budget simply leave MPV's existing policy in place. */
+    /** Optional compatibility probe. The 5-second base adds time for a large index
+     * (at 512 KiB/s), capped at 20 seconds and 8 MiB. Unsupported input falls back. */
     fun inspectHttp(location: String, cancelled: () -> Boolean = { false }): Decision = try {
         val uri = URI(location)
         require(uri.scheme in setOf("http", "https") && uri.rawUserInfo == null)
-        val deadline = System.nanoTime() + 5_000_000_000L
+        val started = System.nanoTime()
+        var deadline = started + 5_000_000_000L
         val reader = object : Reader {
             override var size = Long.MAX_VALUE
             var readBytes = 0; var requests = 0
@@ -240,6 +366,9 @@ internal object Mp4InterleavePolicy {
                 require(offset >= 0 && offset < size && length > 0 && ++requests <= 8)
                 val count = minOf(length.toLong(), size - offset).toInt()
                 require(count <= MAX_METADATA_BYTES && readBytes + count <= MAX_METADATA_BYTES + HEAD_BYTES)
+                val metadataBytes = (readBytes.toLong() + count - HEAD_BYTES).coerceAtLeast(0)
+                val budgetMs = minOf(20_000L, 5000L + (metadataBytes * 1000 + 524287) / 524288)
+                deadline = started + budgetMs * 1_000_000L
                 val connection = uri.toURL().openConnection() as HttpURLConnection
                 try {
                     connection.connectTimeout = minOf(1500, remainingMs()); connection.readTimeout = remainingMs()

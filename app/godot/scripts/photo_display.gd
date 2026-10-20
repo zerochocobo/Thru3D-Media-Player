@@ -15,6 +15,7 @@ var directory := Directory.new()
 var queue_complete := true
 var directory_error := ""
 var _directory_result := {}
+var _directory_reorder := false
 const CACHE_IMAGE_BYTES := 32 * 1024 * 1024
 const RECENT_FILE_BYTES := 128 * 1024 * 1024
 const RECENT_FILE_COUNT := 4
@@ -59,7 +60,7 @@ var depth_strength := 1.0
 const DepthStrength := preload("res://scripts/depth_strength.gd")
 var depth_error := ""
 var spatial_requested := false
-var spatial_preferred := true # Global photo preference; navigation and automatic cleanup never change it.
+var spatial_preferred := false # Global photo preference; navigation and automatic cleanup never change it.
 var _spatial_auto_due := false
 var spatial_error := ""
 var _spatial_token := 0
@@ -167,7 +168,7 @@ func _init() -> void:
 	flat_pose.origin.z = -DEFAULT_DISTANCE
 
 func restore_view_settings(settings: ConfigFile) -> void:
-	spatial_preferred = bool(settings.get_value("photo", "spatial_preferred", true))
+	spatial_preferred = bool(settings.get_value("photo", "spatial_preferred", false))
 	var distance := float(settings.get_value("photo_screen", "distance", DEFAULT_DISTANCE))
 	var scale := float(settings.get_value("photo_screen", "scale", 1.0))
 	var curve := float(settings.get_value("photo_screen", "curve", DEFAULT_CURVE))
@@ -228,7 +229,7 @@ func _ready() -> void:
 	panorama_tiles.photo = self
 	panel.add_child(panorama_tiles)
 	changed.connect(gallery._refresh_textures)
-	directory.completed.connect(func(entries, complete, failure): _directory_result = {"entries": entries, "complete": complete, "error": failure})
+	directory.completed.connect(func(entries, complete, failure): _directory_result = {"entries": entries, "complete": complete, "error": failure, "reorder":_directory_reorder})
 	_placeholder = MeshInstance3D.new()
 	_placeholder_material = ShaderMaterial.new()
 	_placeholder_material.shader = PLACEHOLDER_SHADER
@@ -332,18 +333,27 @@ func open_image(uri: String, title: String, entries: Array = [], location: Dicti
 	gallery.recenter()
 	return _select(target)
 
-func start_directory(context: Dictionary) -> void:
+func start_directory(context: Dictionary, reorder: bool = false) -> void:
+	_directory_result = {}
+	_directory_reorder = reorder
 	queue_complete = context.is_empty(); directory_error = ""
 	directory.platform = platform; directory.start(context)
 	changed.emit()
+
+func reorder(entries: Array[Dictionary], context: Dictionary) -> void:
+	if not context.is_empty(): start_directory(context, true); return
+	directory.cancel()
+	_directory_result = {"entries":entries,"complete":true,"error":"","reorder":true}
+	if not loading and not _thread: _replace_directory()
 
 func set_layout_mode(value: int) -> void:
 	if spatial_requested: set_spatial(false, true)
 	if portrait_requested: set_portrait(false)
 	gallery.set_mode(value)
 	if gallery.overview():
-		_pause_prefetch()
-		for target in _prefetched.keys(): _drop_prefetch(target)
+		suspend_gallery_photo()
+	elif _texture == null and not loading and index >= 0:
+		_select(index)
 	if value == Gallery.Layout.SINGLE and _texture != null: panel.visible = true
 	changed.emit()
 
@@ -351,6 +361,10 @@ func _replace_directory() -> void:
 	var result := _directory_result; _directory_result = {}
 	queue_complete = bool(result.complete); directory_error = str(result.error)
 	var entries: Array[Dictionary] = result.entries
+	# A refreshed provider snapshot must not silently reshuffle the album already on show.
+	_directory_reorder = false
+	if not result.get("reorder", false) and not preload("res://scripts/library_order.gd").preserves_order(queue, entries):
+		queue_complete = false; directory_error = "Images unavailable"; changed.emit(); return
 	if not entries.is_empty() and entries.any(func(item): return str(item.uri) == local_uri):
 		_cache_epoch += 1; _pause_prefetch()
 		for target in _prefetched.keys(): _drop_prefetch(target)
@@ -366,8 +380,7 @@ func _replace_directory() -> void:
 	changed.emit()
 
 func navigate(direction: int) -> bool:
-	if portrait_requested or queue.size() <= 1 or direction == 0: return false
-	if gallery.mode == Gallery.Layout.WALL and gallery.overview(): return gallery.navigate_wall(direction)
+	if portrait_requested or queue.size() <= 1 or direction == 0 or gallery._swap_phase != 0 or (_directory_reorder and directory.loading): return false
 	var target := (pending_index if pending_index >= 0 else index) + direction
 	if (geometry == Geometry.Geometry.FLAT or gallery.mode != 0) and queue_complete: target = posmod(target, queue.size())
 	return select_image(target, 1 if direction > 0 else -1)
@@ -380,17 +393,26 @@ func select_image(target: int, direction: int = 0) -> bool:
 	if target < 0 or target >= queue.size(): return false
 	if was_focused: gallery.clear_focus()
 	var accepted := _select(target, direction)
-	if gallery.mode in [Gallery.Layout.WALL, Gallery.Layout.FRAGMENTS] and (not was_focused or not gallery.cards.has(target)): gallery.new_window(target)
+	if gallery.mode in [Gallery.Layout.WALL, Gallery.Layout.FRAGMENTS] and ((gallery.mode == Gallery.Layout.FRAGMENTS and not was_focused) or not gallery.cards.has(target)): gallery.new_window(target)
 	if was_focused:
 		gallery.synchronize(); gallery.activate(target)
 	return accepted
 
 func _select(target: int, direction: int = 0) -> bool:
-	if target < 0 or target >= queue.size() or (target == index and not loading): return false
+	if target < 0 or target >= queue.size(): return false
+	if gallery.overview():
+		_release_full_photo(false)
+		_select_gallery_item(target)
+		changed.emit()
+		return true
+	if target == index and not loading and _texture != null: return false
+	# Gallery cards already supply the outgoing preview. Do not hold an old full-size
+	# colour/pair/scene while another large comic is decoded and converted.
+	if gallery.mode in [Gallery.Layout.WALL, Gallery.Layout.FRAGMENTS]: _release_full_photo(false)
 	if portrait_requested: set_portrait(false)
 	_portrait_texture = null; _portrait_mask = PackedByteArray(); _portrait_strength = -1.0; portrait_error = ""
 	if target < 0 or target >= queue.size(): return false
-	if target == index and not loading: return false
+	if target == index and not loading and _texture != null: return false
 	var swipe_offset := _swipe_offset
 	finish_transition()
 	if _reveal_seconds > 0:
@@ -406,7 +428,7 @@ func _select(target: int, direction: int = 0) -> bool:
 	if not depth_enabled: depth_requested = false
 	_next_decode = {}
 	if platform and _request > 0 and _request != _display_request: _release_photo(_request, true)
-	if target == index and _cache_supported():
+	if target == index and _texture != null and _cache_supported():
 		if platform: platform.activate_photo(_display_request)
 		_request = _display_request; pending_index = -1; loading = false; error = ""
 		_restore_display()
@@ -688,6 +710,7 @@ func _process(delta: float) -> void:
 	if not spatial_requested and not portrait_requested and not loading and not _transition_active and _reveal_seconds == 0 and not gallery.overview(): _pump_prefetch()
 
 func _cache_supported() -> bool:
+	if gallery.mode in [Gallery.Layout.WALL, Gallery.Layout.FRAGMENTS]: return false
 	return not platform or (Methods.supports(platform, "preload_photo") and Methods.supports(platform, "activate_photo"))
 
 func _release_photo(id: int, cancel: bool = false) -> void:
@@ -816,6 +839,7 @@ func _resolved_mode(target: int, info: Dictionary) -> Dictionary:
 	return mode
 
 func _requires_depth(target: int, info: Dictionary) -> bool:
+	if gallery.mode in [Gallery.Layout.WALL, Gallery.Layout.FRAGMENTS] and (gallery.focus != target or gallery.returning): return false
 	if queue[target].has("retained_source"): return false
 	var mode := _resolved_mode(target, info)
 	return auto_depth and not info.get("native_stereo", false) and platform != null and int(mode.geometry) == Geometry.Geometry.FLAT and not mode.stereo_sbs
@@ -1325,8 +1349,7 @@ func set_depth(enabled: bool) -> bool:
 	if spatial_requested: set_spatial(false, true)
 	if not enabled and portrait_requested: set_portrait(false)
 	if enabled and (_metadata.get("native_stereo", false) or stereo_sbs or geometry != 0 or not platform or _display_request <= 0): return false
-	# An explicit spatial-mode choice lasts for this photo, including conversion Off/On.
-	# A newly accepted photo restores the default spatial preference.
+	# The global viewing-mode choice survives conversion Off/On and photo navigation.
 	if enabled != depth_requested: _unlock_mode()
 	auto_depth = enabled
 	depth_requested = enabled
@@ -1534,7 +1557,7 @@ func snapshot() -> Dictionary:
 	progress.elapsed_ms = Time.get_ticks_msec() - _loading_started_ms
 	return {"spatial_preferred":spatial_preferred,"spatial_requested":spatial_requested,"spatial_ready":_spatial.prepared if is_instance_valid(_spatial) else false,"spatial_available":can_spatial(),"spatial_error":spatial_error,
 		"spatial_report":_spatial.report if is_instance_valid(_spatial) else {},"has_image": _texture != null, "loading": loading, "loading_caption": Loading.caption(progress) if loading else "", "placeholder": placeholder_visible(), "preparing_depth": not _pending_display.is_empty(), "title": title, "index": position, "count": queue.size(),
-		"source_uri": local_uri, "layout": gallery.mode, "wall_rows": gallery.wall_rows, "gallery_scale": gallery.view_scale, "gallery_distance": gallery.view_distance, "gallery_swapping": gallery._swap_phase != 0, "gallery_focus": gallery.focus, "directory_loading": directory.loading, "directory_error": directory_error, "queue_complete": queue_complete,
+		"source_uri": local_uri, "layout": gallery.mode, "gallery_overview": gallery.overview(), "wall_rows": gallery.wall_rows, "gallery_scale": gallery.view_scale, "gallery_distance": gallery.view_distance, "gallery_swapping": gallery._swap_phase != 0, "gallery_focus": gallery.focus, "directory_loading": directory.loading, "directory_error": directory_error, "queue_complete": queue_complete,
 		"can_save_pictures":can_save_pictures(), "pictures_save":pictures_status(),
 		"can_background": can_background(), "panorama_detail_error": panorama_tiles.error,
 		"can_previous": not portrait_requested and queue.size() > 1 and (((geometry == Geometry.Geometry.FLAT or gallery.mode != 0) and queue_complete) or position > 0),
@@ -1551,8 +1574,12 @@ func snapshot() -> Dictionary:
 		"source_size": "%d × %d" % [int(shown_size.x), int(shown_size.y)], "error": error, "screen_curve": screen_curve}
 
 func can_background() -> bool:
-	return _texture != null and not _metadata.get("raw_rgba", false) and not loading and error.is_empty() and geometry == Geometry.Geometry.EQUIRECT_360 and not stereo_sbs \
-		and absf(_size.x / _size.y - 2.0) < 0.02 and Info.panorama_rect(_metadata).is_equal_approx(Vector4(0,0,1,1))
+	if _texture == null or _metadata.get("raw_rgba", false) or loading or not error.is_empty() or geometry != Geometry.Geometry.EQUIRECT_360 \
+		or _size.x <= 0 or _size.y <= 0 or not Info.panorama_rect(_metadata).is_equal_approx(Vector4(0,0,1,1)): return false
+	var aspect := _size.x / _size.y
+	# Full or half-resolution stereo panoramas can provide a single complete eye for the sky.
+	var eye_aspect := aspect * (2.0 if top_bottom else 0.5) if stereo_sbs else aspect
+	return absf(eye_aspect - 2.0) < 0.02 or (stereo_sbs and absf(aspect - 2.0) < 0.02)
 
 func can_spatial() -> bool:
 	if not is_instance_valid(_spatial) or _texture==null or loading or not error.is_empty() or geometry!=0 or portrait_requested or inspect \
@@ -1650,7 +1677,8 @@ func _process_spatial() -> void:
 	material.set_shader_parameter("spatial_hidden",_spatial.visible and _spatial.coverage>0.999)
 
 func background_source() -> Dictionary:
-	return {"path": _metadata.get("path", ""), "orientation": _metadata.get("orientation", 1)} if can_background() else {}
+	return {"path": _metadata.get("path", ""), "orientation": _metadata.get("orientation", 1),
+		"stereo": stereo_sbs, "top_bottom": top_bottom, "swap_eyes": swap_eyes} if can_background() else {}
 
 ## Cancel queued/preloaded files from a removed volume while keeping an unrelated displayed photo.
 func release_storage(volume: Dictionary) -> bool:
@@ -1683,17 +1711,30 @@ func release_storage(volume: Dictionary) -> bool:
 	changed.emit()
 	return false
 
-func close_image(notify: bool = true, next_online_uri: String = "") -> void:
+func _select_gallery_item(target: int) -> void:
+	index = target; pending_index = -1; error = ""
+	local_uri = str(queue[target].uri); display_name = str(queue[target].get("title", local_uri.get_file()))
+	_metadata = queue[target].get("photo_info", gallery.previews.metadata(local_uri)).duplicate()
+	var mode := _resolved_mode(target, _metadata)
+	geometry = int(mode.geometry); stereo_sbs = bool(mode.stereo_sbs)
+	top_bottom = stereo_sbs and bool(mode.top_bottom); swap_eyes = bool(mode.swap_eyes); fisheye_fov = int(mode.fisheye_fov)
+	_apply_geometry()
+
+func suspend_gallery_photo() -> void:
+	if gallery.mode not in [Gallery.Layout.WALL, Gallery.Layout.FRAGMENTS]: return
+	var target := pending_index if pending_index >= 0 else index
+	_release_full_photo(false)
+	if target >= 0 and target < queue.size(): _select_gallery_item(target)
+	changed.emit()
+
+## Full-size colour, generated eyes and native leases belong only to the expanded photo.
+## Album identity, the directory scan and bounded preview cards have independent lifetimes.
+func _release_full_photo(release_runtime: bool = true) -> void:
 	if spatial_requested: set_spatial(false, true)
-	spatial_error=""
+	_spatial_auto_due = false; spatial_error=""
 	panorama_tiles.clear()
-	if _catalog_save_ms > 0 and catalog:
-		_catalog_save_ms = 0
-		catalog.save()
 	if portrait_requested: set_portrait(false)
 	_portrait_texture = null; _portrait_mask = PackedByteArray(); _portrait_strength = -1.0; portrait_error = ""; _portrait_next = {}
-	directory.cancel(); _directory_result = {}; queue_complete = true; directory_error = ""
-	gallery.clear()
 	_restore_display()
 	_cache_epoch += 1
 	_pause_prefetch()
@@ -1709,7 +1750,9 @@ func close_image(notify: bool = true, next_online_uri: String = "") -> void:
 	if platform:
 		if _request > 0: _release_photo(_request, true)
 		if _display_request > 0: _release_photo(_display_request)
-		if Methods.supports(platform, "release_photo_depth_runtime"): platform.release_photo_depth_runtime()
+		# Keep the one shared model session warm between gallery selections. Native jobs
+		# above are cancelled; the existing idle timeout and closing the album release the model.
+		if release_runtime and Methods.supports(platform, "release_photo_depth_runtime"): platform.release_photo_depth_runtime()
 	_request = 0; _display_request = 0; _next_decode = {}
 	_hide_layer(); _upload = {}; _layer_key = ""; _full_image = null; _texture_full = true; _depth_textures_pending = false
 	if Methods.supports(platform, "destroy_layer_image"): platform.destroy_layer_image(VideoLayer.PICTURE_SLOT)
@@ -1721,6 +1764,14 @@ func close_image(notify: bool = true, next_online_uri: String = "") -> void:
 		target.set_shader_parameter("stereo_texture", null); target.set_shader_parameter("photo_stereo", false)
 	panel.visible = false; _detail.visible = false; loading = false; inspect = false
 	hide_inspect_pointer()
+
+func close_image(notify: bool = true, next_online_uri: String = "") -> void:
+	_release_full_photo()
+	if _catalog_save_ms > 0 and catalog:
+		_catalog_save_ms = 0
+		catalog.save()
+	directory.cancel(); _directory_result = {}; queue_complete = true; directory_error = ""
+	gallery.clear()
 	if Methods.supports(platform, "panorama_original_view"): platform.panorama_original_view(next_online_uri)
 	local_uri = ""; display_name = ""; error = ""; index = -1; pending_index = -1
 	if notify: changed.emit()
