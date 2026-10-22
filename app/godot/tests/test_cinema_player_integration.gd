@@ -79,7 +79,7 @@ func _run() -> void:
 	if not main._cinema_scene_active():
 		await _finish(); return
 	check(main.xr_camera.transform.is_equal_approx(original_camera_local), "Entering cinema changes rig without overwriting tracked camera local pose")
-	check(main.cinema_environment.snapshot().seat == "J15", "Production cinema starts at default seat J15")
+	check(main.cinema_environment.snapshot().seat == "I15", "Production cinema starts at default seat I15")
 	var world_screen: Transform3D = main.video.global_transform * main.video.flat_pose
 	check(is_equal_approx(main.video._flat.size.x, 32.0), "Cinema video uses the 32 metre physical screen envelope",
 		{"mesh": main.video._flat.size, "scale": main.video.screen_scale, "base": main.video._screen_base, "saved": main._cinema_screen_saved})
@@ -96,7 +96,7 @@ func _run() -> void:
 	_close_menus(); main._cinema_request_interaction("watch")
 	main._recenter()
 	check((main.video.global_transform * main.video.flat_pose).is_equal_approx(world_screen), "Explicit recenter preserves world cinema screen")
-	check(main.cinema_environment.snapshot().seat == "J15", "Explicit recenter returns to default cinema seat")
+	check(main.cinema_environment.snapshot().seat == "I15", "Explicit recenter returns to default cinema seat")
 	main._on_system_recentered()
 	check((main.video.global_transform * main.video.flat_pose).is_equal_approx(world_screen), "System recenter preserves world cinema screen")
 	check(_screen_preferences() == preferences, "Seat changes, walking and recenter never overwrite ordinary screen preferences")
@@ -164,7 +164,8 @@ func _seat_ray(id: String) -> Array:
 	for seat in main.cinema_environment._manifest.seats:
 		if str(seat.id) == id:
 			var position := Vector3(seat.eye_position[0], seat.eye_position[1], seat.eye_position[2])
-			return [position + Vector3(0, -0.1, 0.9), Vector3.FORWARD]
+			# Behind the target backrest, still in front of the next row's chair volume.
+			return [position + Vector3(0, -0.1, 0.6), Vector3.FORWARD]
 	return []
 
 func _press(hand: String, optical: bool = false) -> void:

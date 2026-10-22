@@ -5,6 +5,11 @@ internal interface CloudClient {
     /** A provider-wide order applied before paging. Null means that order is unavailable;
      * directory browsing must never enumerate the folder to manufacture a sorted page. */
     fun orderedPage(path: String, offset: Int, refresh: Boolean, order: String): CloudPage? = null
+    fun sizedPage(path: String, offset: Int, refresh: Boolean, order: String, size: Int): CloudPage {
+        require(size == CloudDrive.PAGE_SIZE) { "directory page size unavailable" }
+        return orderedPage(path, offset, refresh, order)
+            ?: if (order == "source") page(path, offset, refresh) else throw CloudFailure()
+    }
     fun list(path: String): List<CloudFile>
     fun find(path: String): CloudFile
     /** Browsed identities are read-only hints, verified by the playback endpoint. */

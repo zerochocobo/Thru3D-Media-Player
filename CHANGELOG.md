@@ -4,6 +4,37 @@
 
 Newest first, following product release milestones. Some development/source snapshots contained features before their product release. Original APK identifiers `0.2` and `0.4` are retained; `0.4` was also called `0.4.0` in release notes. Availability depends on device, server and media capabilities.
 
+## 0.13.0 — 2026-10-22
+
+- Add up to three picture-in-picture windows sharing the current video frame, with region selection, 1–8× zoom, movement/distance, window shapes and individual closing. Zoom is remembered per numbered window.
+- Allow a window to show a static image through the existing source picker, with image scaling and return to video mode. A bounded asynchronous loader releases resources on close/replacement.
+- Improve supported compositor layers, the shared atlas and transparent/fisheye projection caches. Refine stereo zoom disparity, upright placement and main-video-first quality budgeting; performance remains device/content dependent.
+- Resume directory browsing per source/account, directory and All/Video/Photo filter. The setting is enabled by default; disabling it starts ordinary re-entry at the top while explicit parent navigation retains its context.
+- Directory positions follow playback-history privacy: All can survive restart, Local Only keeps network positions in memory, and None keeps all positions only for the current run. Clearing history clears positions; private-session positions are never backfilled after recording is enabled.
+- Remember directory sorting, fix 115 folder-first ordering and improve bounded cloud paging/parent return. Restoring a position does not trigger an automatic full-directory crawl.
+- Improve library ray feedback, Emby favorites/artwork and crisp filenames on translucent controls. Still-image navigation yields to playback shortcuts while a video session exists.
+- Fix routing of the control-bar watch toggle and refine image-window controls, corner scaling, source-change cleanup and closing behavior.
+- Rebuild the experimental auditorium as a locally generated baked hall. Entry, loading and actions remain Debug-only; generated scene models and textures are excluded from this source release.
+
+## 0.12.7 — 2026-10-21
+
+- Add a hand-tracked wrist watch with time, battery and playback progress. Touch the face for projected playback/timeline/subtitle controls; toggle it from the video control bar.
+- Add provider-aware cloud page sizes and an explicit load-all option, remembered per account. Loading remains bounded by provider capabilities and cancellation; it is not a background scan.
+- Remember video and photo 2D-to-3D strengths separately across files while retaining per-file mode enablement and native-stereo source settings.
+- Add one controlled recovery attempt when playback stops advancing unexpectedly, without repeated player restart loops.
+- Remove the redundant capture-entry tooltip and refine stick recenter submission and menu input isolation.
+
+## 0.12.6 — 2026-10-21
+
+Playback controls can now be locked in space and use adjustable panel transparency. Compatible 180° photos/screenshots can be used as front-hemisphere backgrounds, and Emby details can show server-provided artwork with optional rotation.
+
+- Add playback refresh choices: up to 120 Hz, up to 90 Hz (default) and 72 Hz power saving, subject to runtime support and playback mode.
+- Fix repeated seeks leaving video frozen while audio continues, including multiple paused timeline drags; add the pinned AAudio clock recovery patch.
+- Reduce repeated buffering for affected poorly interleaved MP4 files on SMB using the bounded playback view.
+- Fix stale preview buttons/sliders while scrolling cloud audio import folders.
+- Improve long-title tooltips, stationary menu stability and idle rendering overhead.
+- Improve compatible fisheye compositor presentation and refresh switching. AI passthrough and depth conversion retain the 72 Hz policy to limit additional load; this is not a universal performance claim.
+
 ## 0.12.5 — 2026-10-21
 
 This update fixes missing cloud subtitles and external audio, restores bounded provider paging, and improves AI passthrough initialization.

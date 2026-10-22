@@ -104,7 +104,7 @@ func _run() -> void:
 	check(state.background == "belfast", "Tracking loss cancels a pending background choice")
 	menu.dismiss()
 	check(menu.choices.opened.is_empty() and menu.choices.capture.is_empty(), "Closing settings clears popup and capture")
-	menu.free()
+	menu.queue_free()
 	print("Choice field checks=%d failures=%d" % [checks, failures.size()])
 	for failure in failures: push_error(failure)
 	quit(0 if failures.is_empty() else 1)

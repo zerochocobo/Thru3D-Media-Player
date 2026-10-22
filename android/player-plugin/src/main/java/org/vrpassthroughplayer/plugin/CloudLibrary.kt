@@ -193,16 +193,20 @@ internal object CloudLibrary {
             .put("cloud_id", data.optString("id")).put("sort_orders", sortOrders(account.getString("provider")))
             .put("kind", MediaKinds.fileNameKind(name)).put("uri", if (data.getBoolean("is_dir")) "" else CloudPaths.uri(full))
     }
-    fun sortOrders(provider: String): JSONArray = JSONArray((CloudSortedPages.ORDERS + "source").filter {
-        provider != CloudDrive.QUARK || !it.startsWith("size_")
-    })
+    fun sortOrders(provider: String): JSONArray {
+        val orders = (CloudSortedPages.ORDERS + "source").filter { provider != CloudDrive.QUARK || !it.startsWith("size_") }
+        return JSONArray(if (provider in setOf(CloudDrive.OPEN115, CloudDrive.WEBDAV)) orders + orders.map { "mixed_$it" } else orders)
+    }
     fun effectiveOrder(provider: String, order: String): String =
         if (provider == CloudDrive.QUARK && order.startsWith("size_")) "name_asc" else order
 
-    fun browse(path: String, refresh: Boolean, offset: Int = 0, http: CloudTransport = CloudHttp, order: String = "", folderId: String = "", subtitlesOnly: Boolean = false): JSONObject = safe {
+    fun browse(path: String, refresh: Boolean, offset: Int = 0, http: CloudTransport = CloudHttp, order: String = "", folderId: String = "", subtitlesOnly: Boolean = false, requestedSize: Int = CloudDrive.PAGE_SIZE): JSONObject = safe {
         val entries = JSONArray()
         var nextOffset = -1
         var total = -1
+        var pageSize = CloudDrive.PAGE_SIZE
+        var rawCount = 0
+        var rawIds = emptyList<String>()
         var actualOrder = order
         var provider = ""
         if (path.isEmpty() || path == "/") {
@@ -218,11 +222,14 @@ internal object CloudLibrary {
             provider = account.getString("provider")
             actualOrder = effectiveOrder(provider, order)
             val client = drive(account, http, folderId)
-            val page = if (actualOrder.isEmpty()) client.page(remote, offset, refresh) else
+            val page = if (requestedSize != CloudDrive.PAGE_SIZE) client.sizedPage(remote, offset, refresh, actualOrder.ifEmpty { "source" }, requestedSize) else if (actualOrder.isEmpty()) client.page(remote, offset, refresh) else
                 synchronized(sortedPages) { sortedPages.getOrPut(id) { CloudSortedPages() } }.page(client, remote, offset, refresh, actualOrder)
             if (identity(credentials(id)) != identity(account)) throw CloudFailure("cloud_login_required")
             nextOffset = page.nextOffset
             total = page.total
+            pageSize = page.pageSize
+            rawCount = page.rawCount
+            rawIds = page.rawIds
             synchronized(this) {
                 if (identity(credentials(id)) != identity(account)) throw CloudFailure("cloud_login_required")
                 if (Thread.currentThread().isInterrupted || (http as? CloudCancellation)?.cancelled == true) throw CloudFailure()
@@ -243,7 +250,8 @@ internal object CloudLibrary {
             }
         }
         JSONObject().put("path", path).put("offset", offset).put("order", actualOrder).put("order_fallback", actualOrder != order).put("next_offset", nextOffset)
-            .put("total", total).put("page_size", CloudDrive.PAGE_SIZE).put("entries", entries)
+            .put("total", total).put("page_size", pageSize).put("raw_count", rawCount).put("raw_ids", JSONArray(rawIds))
+            .put("direct_jump", CloudPaging.direct(provider)).put("entries", entries)
             .apply { if (provider.isNotEmpty()) put("search_scopes", searchScopes(provider)).put("sort_orders", sortOrders(provider)) }
     }
     fun renameFile(request: JSONObject, prepare: Boolean, authorized: () -> Unit): JSONObject {

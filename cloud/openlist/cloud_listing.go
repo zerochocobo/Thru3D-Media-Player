@@ -66,11 +66,12 @@ func cloudListingObject(s driver.Driver, item model.Obj) gin.H {
 func list115(c *gin.Context) {
 	var t struct {
 		cloudTarget
-		Offset  int    `json:"offset"`
-		Refresh bool   `json:"refresh"`
-		Order   string `json:"order"`
+		Offset   int    `json:"offset"`
+		PageSize int    `json:"page_size"`
+		Refresh  bool   `json:"refresh"`
+		Order    string `json:"order"`
 	}
-	if c.ShouldBindJSON(&t) != nil || t.Offset < 0 || t.Offset > 2147483647-48 || len(t.FolderID) > 128 || t.FolderID != "" && !cloudID.MatchString(t.FolderID) {
+	if c.ShouldBindJSON(&t) != nil || t.Offset < 0 || t.Offset > 2147483647-1000 || t.PageSize < 0 || t.PageSize > 200 || len(t.FolderID) > 128 || t.FolderID != "" && !cloudID.MatchString(t.FolderID) {
 		cloudListError(c, "list115.request", errors.New("invalid directory page request"))
 		return
 	}
@@ -84,13 +85,13 @@ func list115(c *gin.Context) {
 		cloudListError(c, "list115.driver", errors.New("native directory paging unavailable"))
 		return
 	}
-	switch t.Order {
+	switch strings.TrimPrefix(t.Order, "mixed_") {
 	case "", "source", "name_asc", "name_desc", "size_asc", "size_desc", "modified_asc", "modified_desc":
 	default:
 		cloudListError(c, "list115.order", errors.New("invalid directory sort order"))
 		return
 	}
-	snapshot, err := readCloudListing(c.Request.Context(), native, t.Mount, p, t.Offset, t.Order, t.Refresh, t.FolderID)
+	snapshot, err := readCloudListing(c.Request.Context(), native, t.Mount, p, t.Offset, t.Order, t.Refresh, t.FolderID, t.PageSize)
 	if err != nil {
 		cloudListError(c, "list115.list", err)
 		return
@@ -103,7 +104,11 @@ func list115(c *gin.Context) {
 		"paging": gin.H{"folder": snapshot.resolution, "resolve_ms": snapshot.resolveMs, "list_ms": snapshot.listMs, "cache_hit": snapshot.cacheHit}}})
 }
 
-func readCloudListing(ctx context.Context, native cloudPageDriver, mount, p string, offset int, order string, refresh bool, folderID string) (cloudSnapshot, error) {
+func readCloudListing(ctx context.Context, native cloudPageDriver, mount, p string, offset int, order string, refresh bool, folderID string, requestedSize ...int) (cloudSnapshot, error) {
+	pageSize := listingPageSize(requestedSize)
+	if pageSize < 1 || pageSize > 200 {
+		return cloudSnapshot{}, errors.New("invalid directory page size")
+	}
 	if err := ctx.Err(); err != nil {
 		return cloudSnapshot{}, err
 	}
@@ -114,6 +119,9 @@ func readCloudListing(ctx context.Context, native cloudPageDriver, mount, p stri
 		invalidateCloudPages(mount, p)
 	}
 	key := mount + p + "\x00" + order + "\x00" + strconv.Itoa(offset)
+	if pageSize != 48 {
+		key += "\x00" + strconv.Itoa(pageSize)
+	}
 	snapshot, ok := cloudSnapshots[key]
 	if ok && folderID != "" && snapshot.folderID != folderID {
 		invalidateCloudPages(mount, p)
@@ -149,18 +157,30 @@ func readCloudListing(ctx context.Context, native cloudPageDriver, mount, p stri
 		}
 		resolveMs := time.Since(started).Milliseconds()
 		started = time.Now()
-		items, total, e := native.PlayerListPage(ctx, folder.object, int64(offset), order)
+		var items []model.Obj
+		var total int64
+		var e error
+		if sized, ok := native.(sizedCloudDriver); ok {
+			items, total, e = sized.PlayerListPageSized(ctx, folder.object, int64(offset), order, pageSize)
+		} else if pageSize == 48 {
+			items, total, e = native.PlayerListPage(ctx, folder.object, int64(offset), order)
+		} else {
+			return cloudSnapshot{}, errors.New("directory page size unavailable")
+		}
 		if e != nil {
 			return cloudSnapshot{}, e
 		}
-		if total < 0 || total > 2147483647 || int64(offset) > total || len(items) > 48 ||
+		if total < 0 || total > 2147483647 || int64(offset) > total || len(items) > pageSize ||
 			int64(offset+len(items)) > total || (len(items) == 0 && int64(offset) < total) {
 			return cloudSnapshot{}, errors.New("invalid directory page response; refresh the folder")
 		}
 		if err := ctx.Err(); err != nil {
 			return cloudSnapshot{}, err
 		}
-		if len(cloudSnapshots) >= 64 {
+		if err := checkListingMetadata(items); err != nil {
+			return cloudSnapshot{}, err
+		}
+		for len(cloudSnapshots) >= 64 || snapshotRows()+len(items) > 4096 {
 			for k := range cloudSnapshots {
 				delete(cloudSnapshots, k)
 				break

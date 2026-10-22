@@ -149,7 +149,8 @@ internal class AdaptiveInterleaveSource(private val source: StreamSource,
         return true
     }
     fun stats(): Map<String, Long>? = cache?.stats()
-    @Synchronized fun forkCloud(): CloudStreamSource? = if (closed) null else (source as? CloudStreamSource)?.fork()
+    val cloud get() = source is CloudStreamSource
+    @Synchronized fun forkOrigin(): StreamSource? = if (closed) null else source.fork()
     fun responseEnd(offset: Long, requestedEnd: Long): Long =
         cache?.cachedAudioEnd(offset)?.let { minOf(requestedEnd, it - 1) } ?: requestedEnd
     override fun open(): StreamSource.Reader {

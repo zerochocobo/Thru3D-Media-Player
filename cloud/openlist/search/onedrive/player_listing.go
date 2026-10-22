@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"strconv"
 	"strings"
 	"time"
 
@@ -36,6 +37,13 @@ func (d *Onedrive) PlayerFolder(ctx context.Context, remote, id string) (model.O
 }
 
 func (d *Onedrive) PlayerPage(ctx context.Context, dir model.Obj, cursor, order string) ([]model.Obj, string, int64, error) {
+	return d.PlayerPageSized(ctx, dir, cursor, order, 48)
+}
+
+func (d *Onedrive) PlayerPageSized(ctx context.Context, dir model.Obj, cursor, order string, pageSize int) ([]model.Obj, string, int64, error) {
+	if pageSize < 1 || pageSize > 200 {
+		return nil, "", 0, errors.New("invalid directory page size")
+	}
 	field, direction := "", "asc"
 	switch order {
 	case "source":
@@ -52,7 +60,7 @@ func (d *Onedrive) PlayerPage(ctx context.Context, dir model.Obj, cursor, order 
 		direction = "desc"
 	}
 	baseURL := strings.TrimSuffix(d.GetMetaUrl(false, "/"), "/root") + "/items/" + url.PathEscape(dir.GetID()) + "/children"
-	query := url.Values{"$top": {"48"}, "$select": {"id,name,size,folder,file,lastModifiedDateTime,fileSystemInfo"}}
+	query := url.Values{"$top": {strconv.Itoa(pageSize)}, "$select": {"id,name,size,folder,file,lastModifiedDateTime,fileSystemInfo"}}
 	if field != "" {
 		query.Set("$orderby", field+" "+direction)
 	}
@@ -81,7 +89,7 @@ func (d *Onedrive) PlayerPage(ctx context.Context, dir model.Obj, cursor, order 
 	if err != nil {
 		return nil, "", 0, err
 	}
-	if len(resp.Value) > 48 {
+	if len(resp.Value) > pageSize {
 		return nil, "", 0, errors.New("invalid directory page")
 	}
 	objects := make([]model.Obj, 0, len(resp.Value))

@@ -4,11 +4,17 @@
 
 Standalone Android VR/MR media player for Meta Quest and PICO. Play videos and photos, explore media libraries, and combine supported content with passthrough and stereo effects directly on your headset.
 
-Current source version: **0.12.5** (Android versionCode **35**). An experimental standard OpenXR Android export is also available.
+Current source version: **0.13.0** (Android versionCode **38**). An experimental standard OpenXR Android export is also available.
 
 Minimum compatibility targets are **Quest 2** and **PICO Neo3**. Source/build compatibility does not establish hardware performance or interaction acceptance on every device.
 
 ## Features
+
+- Up to three shared-frame video PiP windows, region zoom, independent placement and optional static image windows; see [PiP scope](docs/PICTURE_IN_PICTURE.md).
+- Hand-tracked wrist watch with time/battery/progress and projected playback controls.
+- Remembered directory sorting and filter-specific browse positions, following playback-history privacy; provider-aware cloud page sizes and explicit load-all.
+- Playback-control spatial locking/transparency, compatible 180° image backgrounds and Emby detail artwork.
+- Runtime-dependent playback refresh choices up to 120 Hz, up to 90 Hz (default), or 72 Hz; AI/depth modes retain their bounded policy.
 
 - Video and photo viewing: flat, 180° and 360° projections; mono and side-by-side stereo.
 - Person matting and passthrough composition for supported 180° video projections.
@@ -76,7 +82,7 @@ Minimum compatibility targets are **Quest 2** and **PICO Neo3**. Source/build co
 - Seekable audio previews before import, hover music controls and multilingual system-keyboard search.
 
 - Independent all/local/none policies and clearing for playback history and per-file settings; disabling history preserves settings memory by default.
-- Head-tracked Spatial Stereo / Static 3D photo modes, global photo viewing preferences and independent per-video depth strength. Native Apple static viewing retains the original stereo pair.
+- Head-tracked Spatial Stereo / Static 3D photo modes, global photo preferences and separately remembered global video/photo depth strengths. Native Apple static viewing retains the original stereo pair.
 - Custom voice creation from a suitable paused-video audio reference, with audition, rename/delete and default-voice management. Personal voice data stays local and outside this source release.
 
 - Compatible immersive-video capture: full-resolution source PNG screenshots and original-video MKV clips with live app audio (including narration/music) at 1× speed. Keyframe/source limits apply; see [capture](docs/CAPTURE.md).

@@ -206,6 +206,37 @@ func run() -> void:
 		var placed := Overlay.placement({"flat_anchor": anchor})
 		check(placed.is_finite() and placed.y >= -0.40001 and placed.y <= -0.19999 and absf(placed.x) <= 0.22001, "Flat/oversized/off-view screen feedback stays visible")
 	check(Feedback.time(3723000) == "1:02:03" and Feedback.offset(-70000) == "−01:10", "Hour counters and signed minute-second offsets are concise")
+	var library := preload("res://scripts/library_menu.gd").new(); root.add_child(library); library.set_process(false)
+	main.recent_menu = library; library.section = library.Section.MEDIA_SERVER
+	var browser: RefCounted = library.server_browser
+	browser.server = {"id": "stills", "provider": "emby"}; browser.view = "picture"
+	browser.detail = {"id": "film", "title": "Stills", "images": [{"id": "film", "image_type": "Backdrop", "image_index": 0}, {"id": "film", "image_type": "Backdrop", "image_index": 1}]}
+	library.visible = true; library.refresh(); reset(main, host)
+	tick(main, Vector2.ZERO, Vector2.RIGHT)
+	check(main.seek_feedback.phase == "preview" and browser.gallery.selected_image == 0, "Active video seek takes priority over still navigation")
+	tick(main, Vector2.ZERO, Vector2.ZERO)
+	check(host.revisions.size() == 1 and host.revisions[0][1] == 40000, "Still viewer submits the original playback seek on release")
+	reset(main, host); video.media.state = "paused"; video.requested_play = false
+	tick(main, Vector2.ZERO, Vector2.RIGHT)
+	check(main.seek_feedback.phase == "preview" and browser.gallery.selected_image == 0, "Pausing a video does not change the stick's owner")
+	reset(main, host)
+	main.controller_bindings.assign("forward10", Bindings.bind("left_hand", "stick_right"), false, true)
+	tick(main, Vector2.RIGHT, Vector2.ZERO)
+	check(main.seek_feedback.phase == "preview" and browser.gallery.selected_image == 0, "Custom playback seek also wins over still navigation")
+	main.seek_feedback.clear(); main.controller_bindings.restore_all(); main.stick_controls.suspend()
+	video.media.state = "closed"; video.local_uri = ""
+	tick(main, Vector2.ZERO, Vector2.ZERO); browser.gallery.stick_at = 0
+	tick(main, Vector2.ZERO, Vector2.RIGHT)
+	check(browser.gallery.selected_image == 1 and main.seek_feedback.phase.is_empty(), "Without a video session the right stick switches stills")
+	browser.gallery.stick_at = 0; tick(main, Vector2.LEFT, Vector2.ZERO)
+	check(browser.gallery.selected_image == 0, "Without a video session the left stick also switches stills")
+	reset(main, host); library._drag = {"hand": "right_hand"}
+	tick(main, Vector2.ZERO, Vector2.RIGHT)
+	check(main.seek_feedback.phase.is_empty() and browser.gallery.selected_image == 0, "Pointer capture blocks both competing actions")
+	library._drag.clear(); browser.view = "detail"; browser.capabilities = {"artwork": true}; library.refresh()
+	tick(main, Vector2.ZERO, Vector2.ZERO); tick(main, Vector2.ZERO, Vector2.RIGHT)
+	check(main.seek_feedback.phase.is_empty(), "Ordinary media-library pages retain playback shortcut isolation")
+	main.recent_menu = null; library.free()
 	video.changed.disconnect(main._on_video_changed); video.seek_presented.disconnect(main._on_stick_seek_presented)
 	video._binding.ticket.clear(); video.platform = null
 	camera.free(); menu.free(); main.free(); video.free()

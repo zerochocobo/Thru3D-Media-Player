@@ -61,6 +61,29 @@ static func load_sharpness(settings: ConfigFile, low_end: bool = false) -> float
 static func load_supersampling(settings: ConfigFile) -> int:
 	return clampi(int(settings.get_value("video", "supersampling", DEFAULT_SUPERSAMPLING)), 0, SUPERSAMPLING_NAMES.size() - 1)
 
+## Playback refresh rate: the highest rate a video may raise the display to. Matching the video's
+## frame rate shows every frame for the same number of refreshes; higher rates cost GPU time and heat.
+const REFRESH_CAPS := [120, 90, 72]
+const DEFAULT_REFRESH_CAP := 90
+const REFRESH_NAMES := {120: "Up to 120 Hz", 90: "Up to 90 Hz", 72: "72 Hz · Power saving"}
+const REFRESH_INFO := "Steadier motion at higher refresh rates, with a higher GPU load."
+const REFRESH_HINTS := {120: "60 fps → 120 Hz, 30 fps → 90 Hz · steadiest picture, highest GPU load",
+	90: "30 fps → 90 Hz, others 72 Hz · steadier picture, moderate GPU load",
+	72: "Every video at 72 Hz · lowest GPU load, power and heat"}
+
+## Power saving also keeps plain playback at sustained-low CPU/GPU levels (Alpha and 2D->3D still
+## request sustained-high for their inference).
+const POWER_SAVING_CAP := 72
+
+## The saved cap; XR2 Gen1 class GPUs (Quest 2, PICO Neo3) stop at 90 Hz.
+static func load_refresh_cap(settings: ConfigFile, low_end: bool) -> int:
+	var value := int(settings.get_value("video", "refresh_cap", DEFAULT_REFRESH_CAP))
+	if not REFRESH_CAPS.has(value): value = DEFAULT_REFRESH_CAP
+	return mini(value, 90) if low_end else value
+
+static func refresh_choices(low_end: bool) -> Array:
+	return REFRESH_CAPS.filter(func(cap): return not (low_end and cap > 90))
+
 static func load_output_choice(settings: ConfigFile) -> int:
 	var value := int(settings.get_value("video", "output_width", AUTO_OUTPUT))
 	return value if value == AUTO_OUTPUT or value in [0, 5760, 4096] else AUTO_OUTPUT

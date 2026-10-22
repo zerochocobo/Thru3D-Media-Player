@@ -28,6 +28,7 @@ func _run() -> void:
 	DirAccess.make_dir_recursive_absolute(folder)
 	var app := Main.new(); app.settings_path = folder.path_join("app.cfg"); root.add_child(app); app.set_process(false)
 	app.recent_menu.dismiss(); app.photo_active = true; app.player_menu = app.photo_menu
+	app._update_background() # as opening a photo does: ends the flat-screen cinema presentation
 	app.photo.history_enabled = false; app.photo.mode_memory = Memory.new(folder.path_join("modes"))
 	var photo: Node3D = app.photo; var host := Host.new(); photo.platform = host
 	var image := Image.create(160,100,false,Image.FORMAT_RGBA8); image.fill(Color.WHITE)
@@ -40,7 +41,10 @@ func _run() -> void:
 	photo._accept({"image":image,"thumbnail":image,"info":{}}, {"id":1,"index":0})
 	photo.finish_transition(); photo.set_layout_mode(2); photo.gallery._process(0.01)
 	check(not photo.can_portrait(), "Unselected wall overview cannot start a multi-photo portrait effect")
-	photo.gallery.activate(0); photo.gallery._process(1)
+	photo.gallery.activate(0)
+	# Wall layouts keep only previews (6f1b985b): selecting reloads the full photo; deliver it.
+	photo._accept({"image":image,"thumbnail":image,"info":{}}, {"id":1,"index":0}); photo.finish_transition()
+	photo.gallery._process(1)
 	check(photo.can_portrait() and not photo.depth_requested, "A selected ordinary photo can enter portrait without manually enabling 3D")
 	app.photo_menu.toggle()
 	var button: Dictionary = app.photo_menu._buttons.filter(func(b):return b.target == app.photo_menu.PHOTO_PORTRAIT)[0]

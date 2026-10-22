@@ -1,6 +1,9 @@
 extends RefCounted
 ## Fixed library and detail carousels, operated by rays and scroll input.
 const I18n := preload("res://scripts/i18n.gd")
+const BUTTON_OUTLINE := preload("res://shaders/menu_outline.gdshader")
+const HOVER_PICTURE := preload("res://shaders/media_picture.gdshader")
+const FAVORITE_COLOR := Color(1.0, 0.23, 0.30)
 const ACTORS_VISIBLE := 5
 const DETAIL_TITLE_SIZE := 30
 const OVERVIEW_SIZE := 28
@@ -62,6 +65,7 @@ func priority_nodes() -> Array:
 		return libraries().slice(library_start, library_start + 4) + recent().slice(recent_start, recent_start + 4)
 	if rich_detail():
 		nodes.append(browser.display_node(browser.detail, "poster"))
+		nodes.append_array(browser.backdrop.nodes())
 		if "parts" in visible_sections():
 			for part in parts().slice(part_start, part_start + 2): nodes.append(part_picture(part))
 		if "images" in visible_sections():
@@ -128,6 +132,13 @@ func action(target: int) -> bool:
 	browser.menu.refresh(); return true
 
 func stick_scroll(x: float, delta: float) -> void:
+	if browser.view == "picture":
+		if not capture.is_empty() or browser.menu.has_pointer_capture() or not browser.keyboard.is_empty() or browser.sorting(): return
+		if images().size() < 2 or not is_finite(x) or absf(x) < 0.55 or Time.get_ticks_msec() < stick_at: return
+		stick_at = Time.get_ticks_msec() + 300
+		var next_image := clampi(selected_image + (1 if x > 0 else -1), 0, images().size() - 1)
+		if next_image != selected_image: action(browser.ACTION + (40 if x > 0 else 39))
+		return
 	if rich_detail():
 		if capture.is_empty() and is_finite(x) and absf(x) >= 0.55 and Time.get_ticks_msec() >= stick_at:
 			stick_at = Time.get_ticks_msec() + 220
@@ -210,8 +221,27 @@ func _picture(node: Dictionary, center: Vector2, area: Vector2, parent: Node3D =
 	if texture:
 		var material = menu._material(Color.WHITE, 12); material.albedo_texture = texture
 		picture.material_override = material; browser._fit_picture(picture, texture, area)
+		if parent: style_hover_picture(picture)
 	else:
 		menu._icon("image", Vector3(center.x, center.y, 0.008), minf(area.x, area.y) * 0.4, menu.MUTED, parent if parent else menu)
+
+func style_hover_picture(picture: MeshInstance3D) -> void:
+	var menu: Node = browser.menu
+	if menu._buttons.is_empty(): return
+	var button: Dictionary = menu._buttons.back()
+	# Compact list thumbnails keep row feedback; image-led cards lift only the picture.
+	if picture.get_parent() != button.node or button.rect.size.y < 0.20: return
+	var image_size: Vector2 = picture.mesh.size
+	var material := ShaderMaterial.new(); material.shader = HOVER_PICTURE; material.render_priority = 12
+	material.set_shader_parameter("picture", picture.material_override.albedo_texture)
+	material.set_shader_parameter("image_size", image_size)
+	# Fixed bounds contain the enlarged image/shadow; hovering never resizes capture textures.
+	picture.mesh.size = image_size * 1.025 + Vector2(0.02, 0.02)
+	material.set_shader_parameter("surface_size", picture.mesh.size)
+	picture.material_override = material
+	if picture.has_meta("menu_original_shader"): picture.remove_meta("menu_original_shader")
+	menu._apply_overlay_node(picture)
+	button["hover_picture"] = picture
 
 func _arrows(previous: int, next: int, y: float, start: int, total: int, count: int) -> void:
 	browser.menu._button(browser.ACTION + previous, "‹", Vector2(-0.525, y), Vector2(0.06, 0.065), start > 0)
@@ -249,6 +279,7 @@ func draw_home() -> void:
 
 func draw_detail() -> void:
 	var menu: Node = browser.menu; var detail: Dictionary = browser.detail
+	browser.backdrop.draw()
 	if detail_strip not in visible_sections() and (detail_strip != "tags" or tags().is_empty()):
 		detail_strip = str(visible_sections()[0]) if not visible_sections().is_empty() else "tags"
 	_picture(browser.display_node(detail, "poster"), Vector2(-0.335, 0.33), Vector2(0.28, 0.41))
@@ -270,8 +301,22 @@ func draw_detail() -> void:
 	var play_label := I18n.t("Continue watching" if int(playback.get("position_ms", 0)) > 0 else "Play / resume")
 	if parts().size() > 1: play_label += " · " + str(playback.get("part_label", ""))
 	menu._button(browser.ACTION + 30, play_label, Vector2(0.19, 0.135), Vector2(0.48, 0.075), not browser.busy, "play")
-	menu._button(browser.ACTION + 31, "", Vector2(0.51, 0.135), Vector2(0.09, 0.075), not browser.busy, "heart")
-	menu._lit(browser._is_favorite(detail))
+	# Replace the existing plate with one hollow outline; no extra surface or capture.
+	var play_button: Dictionary = menu._buttons.back()
+	play_button.node.material_override.shader = BUTTON_OUTLINE
+	play_button.node.material_override.render_priority = 12
+	play_button.base_color = Color(0.72, 0.79, 0.82, 0.85)
+	play_button.node.material_override.set_shader_parameter("surface_color", play_button.base_color)
+	if play_button.node.has_meta("menu_original_shader"): play_button.node.remove_meta("menu_original_shader")
+	menu._apply_overlay_node(play_button.node)
+	var favorite: bool = browser._is_favorite(detail)
+	menu._button(browser.ACTION + 31, "", Vector2(0.51, 0.135), Vector2(0.09, 0.075), not browser.busy, "heart_filled" if favorite else "heart")
+	menu._tips[browser.ACTION + 31] = I18n.t("Favorited" if favorite else "Favorite")
+	if favorite:
+		var favorite_button: Dictionary = menu._buttons.back()
+		favorite_button.node.get_child(1).material_override.albedo_color = FAVORITE_COLOR
+		var caption: Label3D = menu._label(I18n.t("Favorited"), Vector3(0, -0.05, 0.004), 16, favorite_button.node)
+		caption.modulate = Color(0.93, 0.95, 0.98)
 	menu._button(browser.ACTION + 38, "", Vector2(0.64, 0.135), Vector2(0.09, 0.075), true, "info")
 	for strip in visible_sections():
 		var y := section_y(strip)

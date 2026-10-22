@@ -10,6 +10,13 @@ const MUSIC_OPEN := 981
 const CAPTURE := 982
 const CAPTURE_PICTURE := 983
 const CAPTURE_RECORD := 984
+const PIP := 998000
+const PIP_COUNT := 998010
+const PipControls := preload("res://scripts/video_pip_controls.gd")
+const PIP_ADD := PipControls.ADD
+const PIP_CLOSE := PipControls.CLOSE
+var _pip_open := false
+var pip_controls := PipControls.new(self)
 var _capture_open := false
 var _capture_hover_ms := 0
 var _capture_leave_ms := 0
@@ -158,6 +165,47 @@ const CURVE_NAMES := ["Off", "Slight", "Medium", "Full"]
 
 const Grade := preload("res://scripts/color_grade.gd")
 var _adjustment := ""
+const SPACE_LOCK := 987101
+const BAR_TRANSPARENCY := 987102
+const BAR_DONE := 987103
+## Wrist watch on/off, beside the lock. Always shown: following the hand-tracking state made it
+## flicker and swallowed taps when the bar redrew under the finger.
+const WATCH := 987104
+var bar_transparency := 14.0
+
+func set_bar_transparency(value: float) -> void:
+	bar_transparency = clampf(value, 0, 80) if is_finite(value) else 14.0
+	_state["bar_transparency"] = bar_transparency
+	if is_instance_valid(_backdrop) and _backdrop.get_meta("control_bar", false):
+		_backdrop.material_override.set_shader_parameter("surface_color", Color(PANEL, 1.0 - bar_transparency / 100.0))
+	if _adjustment == "bar_transparency": _refresh_adjustments()
+	composition_changed.emit()
+
+func _style_control_bar() -> void:
+	# A translucent plate belongs in the eye buffer. Capturing it in an underlay
+	# and using its alpha again for the projection hole would attenuate it twice.
+	# Buttons, labels and popups retain their independent high-resolution captures.
+	_backdrop.set_meta("control_bar", true)
+	_backdrop.set_meta("menu_eye_buffer", true)
+	# Before the compositor coverage pass, so the plate cannot refill
+	# glyph holes and dim the high-resolution labels beneath the projection layer.
+	_backdrop.material_override.render_priority = 4
+	_backdrop.material_override.set_shader_parameter("keep_opacity", true)
+	_backdrop.material_override.set_shader_parameter("surface_color", Color(PANEL, 1.0 - bar_transparency / 100.0))
+	_glyph(SPACE_LOCK, "lock" if space_locked() else "unlock", Vector2(0.535, 0.10), 0.065, true,
+		I18n.t("Unlock spatial position" if space_locked() else "Lock spatial position"))
+	_buttons.back().foreground = Color(0.75, 0.78, 0.80) if space_locked() else MUTED
+	if _state.get("watch_available", false):
+		var watch_on: bool = _state.get("watch_enabled", true)
+		_glyph(WATCH, "watch" if watch_on else "watch_off", Vector2(0.465, 0.10), 0.06, true,
+			I18n.t("Show a watch on the left wrist in hand tracking") + ": " + I18n.t("On" if watch_on else "Off"))
+		_buttons.back().foreground = Color(0.75, 0.78, 0.80) if watch_on else MUTED
+
+func show_bar_appearance() -> void:
+	_reset_navigation()
+	_adjustment = "bar_transparency"
+	visible = true
+	refresh()
 var _seek_hand := ""
 var _seek_start := -1
 var _seek_preview := -1
@@ -289,6 +337,7 @@ func _place_upper_surface(surface: Node3D, rect: Rect2) -> void:
 		var key := str(surface.get_meta("cinema_popup_key", "library"))
 		if not _cinema_popup_centres.has(key):
 			var head: Variant = layout_head_provider.call() if layout_head_provider.is_valid() else null
+			if space_locked(): head = get_meta("space_head", head)
 			if not head is Transform3D: return
 			_cinema_popup_centres[key] = CinemaMenuLayout.popup_centre(head)
 		surface.global_transform = CinemaMenuLayout.place_popup(_cinema_popup_centres[key], rect)
@@ -354,6 +403,10 @@ func has_pointer_capture() -> bool:
 
 ## The transport bar has no list navigation; popups and settings keep their own input.
 func allows_playback_sticks() -> bool:
+	return not _pip_open and allows_pip_input()
+
+## The small PiP picker blocks playback shortcuts, but not rays outside its buttons.
+func allows_pip_input() -> bool:
 	return visible and section == 0 and _state.get("has_video", false) and _adjustment.is_empty() \
 		and choices.opened.is_empty() and not _audio_open and not _mode_open and not _subtitle_open and not bookmarks.opened and not _failure_open and not has_pointer_capture() and not has_expanded_library()
 
@@ -424,6 +477,7 @@ func dismiss() -> void:
 	super.dismiss()
 
 func _reset_navigation() -> void:
+	_pip_open = false
 	_audio_open = false; _narration_more = false; _audio_offset = 0
 	_failure_open = false
 	_error_details_open = false
@@ -447,6 +501,7 @@ func _reset_navigation() -> void:
 
 func refresh() -> void:
 	_state = state_provider.call() if state_provider.is_valid() else {}
+	_state["bar_transparency"] = bar_transparency
 	_draw()
 
 func show_playback_error() -> void:
@@ -461,6 +516,7 @@ func refresh_values() -> void:
 	if not visible:
 		return
 	_state = state_provider.call() if state_provider.is_valid() else {}
+	_state["bar_transparency"] = bar_transparency
 	if _adjustment in ["screen", "stereo_view"] and _settings_drawn != _settings_key():
 		_finish_adjustment()
 		if _adjustment == "stereo_view" and not _enabled("stereo_view"): _adjustment = ""
@@ -517,7 +573,14 @@ func refresh_values() -> void:
 	if is_instance_valid(_info):
 		_info.text = _info_text()
 	if is_instance_valid(_title):
-		_title.text = _fit_title(str(_state.get("title", "")) if _state.get("has_video", false) else I18n.t("Your player"), "", 1.14, 23)
+		if _title.has_meta("filename_width"):
+			var caption := _fit_title(str(_state.get("title", "")), "", float(_title.get_meta("filename_width")), 15)
+			if caption != _title.text:
+				_title.text = caption
+				_back_filename(_title, float(_title.get_meta("filename_width")))
+				composition_layout_changed.emit()
+		else:
+			_title.text = _fit_title(str(_state.get("title", "")) if _state.get("has_video", false) else I18n.t("Your player"), "", 1.14, 23)
 	_refresh_progress()
 	_refresh_volume()
 	_refresh_depth()
@@ -684,14 +747,33 @@ void fragment() {
 	node.material_override = material
 	return node
 
+func _back_filename(label: Label3D, width: float) -> void:
+	label.set_meta("filename_width", width)
+	# An opaque, close-fitting caption plate keeps fractional glyph coverage inside
+	# one HD capture. It avoids both eye-buffer blur and double-alpha glyph holes.
+	# Label3D's mesh/AABB is deferred; measure the font now, before the first capture.
+	var text_size := label.font.get_string_size(label.text, HORIZONTAL_ALIGNMENT_LEFT, -1, label.font_size) * label.pixel_size
+	var size := Vector2(text_size.x + 0.024, maxf(text_size.y + 0.014, 0.036))
+	var plate: MeshInstance3D = label.get_meta("filename_plate") if label.has_meta("filename_plate") else null
+	if not is_instance_valid(plate):
+		plate = _quad(size, Vector3.ZERO, Color(PANEL, 1.0), 11)
+		label.add_child(plate); label.set_meta("filename_plate", plate)
+	plate.position = Vector3(0, 0, -0.002)
+	plate.mesh.size = size
+	plate.material_override.set_shader_parameter("surface_size", size)
+	plate.material_override.set_shader_parameter("corner_radius", 0.008)
+	plate.visible = not label.text.is_empty()
+
 ## While watching, laid out like common VR players: a small translucent bar (title, then
 ## sound and subtitles | previous, play, next | Alpha, 2D -> 3D, video mode, settings, then the timeline),
 ## round actions floating above it, icons only with their names on hover.
 func _draw_bar() -> void:
 	_set_backdrop(Vector2(1.16, 0.34), Vector2(0, -0.025))
-	_backdrop.material_override.set_shader_parameter("surface_color", Color(PANEL, 0.86))
+	_style_control_bar()
 	_backdrop.material_override.set_shader_parameter("corner_radius", 0.05)
-	_title = _label(_fit_title(str(_state.get("title", "")) if _state.get("has_video", false) else "", "", 0.9, 15), Vector3(0, 0.1, 0.004), 15)
+	var title_width := 0.84 if _state.get("watch_available", false) else 0.9
+	_title = _label(_fit_title(str(_state.get("title", "")) if _state.get("has_video", false) else "", "", title_width, 15), Vector3(0, 0.1, 0.004), 15)
+	_back_filename(_title, title_width)
 	if not str(_state.get("error", "")).is_empty():
 		_title.visible = false
 		_button(ERROR_OPEN, I18n.t("Playback failed") + "  ›", Vector2(0, 0.1), Vector2(0.90, 0.055))
@@ -724,6 +806,10 @@ func _draw_bar() -> void:
 	_status.modulate.a = float(_state.get("seek_feedback", {}).get("alpha", 1.0))
 	_status.visible = not _status.text.is_empty()
 	# Floating actions above the bar.
+	_round(PIP, "pip", Vector2(-0.28, 0.215), 0.08, bool(_state.get("has_video", false)) and bool(_state.get("pip_available", true)), int(_state.get("pip_count", 0)) > 0,
+		I18n.t("Finish recording to open picture in picture" if not _state.get("pip_available", true) and _state.get("capture", {}).get("recording", false) else "Picture in picture"))
+	if _pip_open:
+		pip_controls.draw()
 	_round(107, "close", Vector2(-0.14, 0.215), 0.08, _enabled("stop"), false, I18n.t("Close" if clone_panel.opened else "Close video"))
 	_round(100, "folder", Vector2(0, 0.215), 0.08, true, false, I18n.t("Library"))
 	_round(108, "recenter", Vector2(0.14, 0.215), 0.08, true, false, I18n.t("Recenter"))
@@ -731,7 +817,7 @@ func _draw_bar() -> void:
 	_draw_capture_action()
 	if _state.get("audio_play_during_video", false):
 		if not music_quick: music_quick = preload("res://scripts/music_quick_controls.gd").new(self, func(): action_requested.emit("music_toggle"))
-		music_quick.draw(MUSIC_OPEN, Vector2(-0.58, 0.215), _state)
+		music_quick.draw(MUSIC_OPEN, Vector2(-0.56 if not _state.get("bookmarks", []).is_empty() else -0.42, 0.215), _state)
 	elif music_quick: music_quick.reset()
 	_place_device_status(Vector2(0, -0.245))
 	bookmarks.draw()
@@ -1105,7 +1191,7 @@ func _press_quick_icon(hand: String, target: int) -> bool:
 	_close_depth_slider(); _volume_open = false
 	if target == _depth_icon_target():
 		if _state.get("depth_requested", false): action_requested.emit("depth")
-		else: depth_strength_requested.emit(DepthStrength.remembered(float(_state.get("depth_strength", DepthStrength.DEFAULT)), _depth_maximum()))
+		else: depth_strength_requested.emit(DepthStrength.remembered(float(_state.get("depth_strength", _depth_default())), _depth_maximum(), _depth_default()))
 		depth_strength_committed.emit()
 	else:
 		volume_requested.emit(float(_state.get("volume", 100.0)), not _state.get("muted", false))
@@ -1156,16 +1242,19 @@ func _raise_quick_popup_materials(node: Node) -> void:
 func _depth_maximum() -> float:
 	return DepthStrength.MAX
 
+func _depth_default() -> float:
+	return DepthStrength.VIDEO_DEFAULT
+
 func _depth_span() -> Vector2:
 	return DEPTH_SPAN
 
 func _depth_caption() -> String:
-	return "%d%%" % roundi(DepthStrength.clamp_value(float(_state.get("depth_strength", 1.0)), _depth_maximum()) * 100) if _state.get("depth_requested", false) else I18n.t("Off")
+	return "%d%%" % roundi(DepthStrength.clamp_value(float(_state.get("depth_strength", _depth_default())), _depth_maximum()) * 100) if _state.get("depth_requested", false) else I18n.t("Off")
 
 func _refresh_depth() -> void:
 	if not is_instance_valid(_depth_fill): return
 	var span := _depth_span()
-	var fraction := DepthStrength.to_fraction(float(_state.get("depth_strength", 1.0)), _depth_maximum()) if _state.get("depth_requested", false) else 0.0
+	var fraction := DepthStrength.to_fraction(float(_state.get("depth_strength", _depth_default())), _depth_maximum()) if _state.get("depth_requested", false) else 0.0
 	var height := span.y - span.x
 	_depth_fill.visible = fraction > 0
 	_depth_fill.mesh.size.y = maxf(0.001, height * fraction)
@@ -1175,7 +1264,7 @@ func _refresh_depth() -> void:
 	_depth_label.text = _depth_caption()
 	for button in _buttons:
 		if button.target != DEPTH_RESET: continue
-		button.enabled = _can_depth() and _state.get("depth_requested", false) and not is_equal_approx(float(_state.get("depth_strength", DepthStrength.DEFAULT)), DepthStrength.DEFAULT)
+		button.enabled = _can_depth() and _state.get("depth_requested", false) and not is_equal_approx(float(_state.get("depth_strength", _depth_default())), _depth_default())
 		button.node.get_child(1).material_override.albedo_color = ACCENT if button.enabled else MUTED
 
 func _set_depth_at(y: float) -> void:
@@ -1308,7 +1397,7 @@ func press_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: b
 			return expanded_library.press_pointer(hand, origin, direction, tracked)
 		var controls_hit := super.ray_hit(origin, direction) if tracked else {}
 		# Keep transport and timeline available; opening another popup folds the browser away.
-		if not controls_hit.is_empty() and int(controls_hit.target) not in [NONE, 100, 101, 102, 103, 107, 108, SEEK, FOLLOW, TEMP_PASSTHROUGH]:
+		if not controls_hit.is_empty() and int(controls_hit.target) not in [NONE, 100, 101, 102, 103, 107, 108, SEEK, FOLLOW, TEMP_PASSTHROUGH, SPACE_LOCK, WATCH]:
 			expanded_library.dismiss()
 	if not _track_drag.is_empty(): return true
 	if choices.press(hand, origin, direction, tracked): return true
@@ -1368,6 +1457,7 @@ func cancel_pointer(hand: String) -> void:
 func update_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: bool) -> void:
 	var on_library: bool = has_expanded_library() and not _controls_pointer_capture() and (expanded_library.has_pointer_capture() or (tracked and pointer_hit(origin, direction).get("library", false)))
 	super(hand, origin, direction, tracked and not on_library)
+	pip_controls.update()
 	if has_expanded_library(): expanded_library.update_pointer(hand, origin, direction, tracked and on_library)
 	if _track_drag.get("hand") == hand:
 		if not tracked or not visible or _track_drag.source != str(_state.get("source_uri", "")): _track_drag.clear()
@@ -1440,7 +1530,7 @@ func _bar_key() -> String:
 		_state.get("narration_voice_kind", "preset"), _state.get("narration_custom_voice", ""), _state.get("narration_personal_voices", []), _state.get("narration_voice_warning", ""), _state.get("narration_preview_status", ""), _state.get("narration_clone_state", {}).get("revision", 0)]) + _base_bar_key()
 
 func _base_bar_key() -> String:
-	return _capture_key() + str([int(_state.get("audio_whisper", 0)) > 0, _state.get("volume_writable", true), _state.get("whisper_available", false), _state.get("clone_voice", false), _state.get("geometry", 0), _state.get("has_video", false),
+	return _capture_key() + str([_state.get("pip_slots", []), _state.get("pip_count", 0), _state.get("pip_available", true), int(_state.get("audio_whisper", 0)) > 0, _state.get("volume_writable", true), _state.get("whisper_available", false), _state.get("clone_voice", false), _state.get("geometry", 0), _state.get("has_video", false),
 		_state.get("spatial_video", false), _state.get("error", ""),
 		_state.get("source_uri", ""), _subtitle_tracks(), _state.get("subtitle_track", 0), bookmarks.key(), _state.get("audio_options", []), _state.get("audio_track_id", -1), _state.get("audio_delay", 0.0), _state.get("audio_timing_key", ""),
 		_state.get("subtitle_browse_available", false), _state.get("subtitle_files_available", false), _state.get("subtitle_files_revision", 0), _state.get("subtitle_files_state", "idle"), _state.get("subtitle_file_loading", ""), _state.get("subtitle_file_error", ""), _state.get("subtitle_timing_key", ""),
@@ -1739,6 +1829,31 @@ func _activate_hit(hit: Dictionary) -> void:
 		super._activate_hit(hit)
 
 func _activate(target: int) -> void:
+	if target == PIP:
+		if not _state.get("has_video", false) or not _state.get("pip_available", true): return
+		var opened := _pip_open
+		_reset_navigation(); _pip_open = not opened; refresh(); return
+	if target == PIP_ADD:
+		var slot := PipControls.next_slot(_state)
+		if slot > 0: action_requested.emit("pip_slot_%d" % slot)
+		refresh(); return
+	if target > PIP_CLOSE and target <= PIP_CLOSE + 3:
+		var slot := target - PIP_CLOSE
+		if PipControls.active_slots(_state).has(slot): action_requested.emit("pip_slot_%d" % slot)
+		refresh(); return
+	if target >= PIP_COUNT and target <= PIP_COUNT + 3:
+		if target == PIP_COUNT:
+			_pip_open = false; action_requested.emit("pip_count_0")
+		elif PipControls.active_slots(_state).has(target - PIP_COUNT): action_requested.emit("pip_slot_%d" % (target - PIP_COUNT))
+		refresh(); return
+	_pip_open = false
+	if target == SPACE_LOCK:
+		action_requested.emit("space_lock"); return
+	if target == WATCH:
+		action_requested.emit("wrist_watch_toggle"); return
+	if _adjustment == "bar_transparency" and target in [BAR_DONE, SETTINGS_CLOSE, 400]:
+		_finish_adjustment(); _adjustment = ""; adjustment_committed.emit()
+		action_requested.emit("bar_appearance_done"); refresh(); return
 	if target == CAPTURE:
 		if not _state.get("capture", {}).get("available", false): return
 		_reset_navigation(); _capture_open = true; _capture_leave_ms = Time.get_ticks_msec(); refresh(); return
@@ -1963,7 +2078,7 @@ func _capture_key() -> String:
 	return str([value.get("available", false), value.get("ready", false), value.get("recording", false), value.get("paused", false), value.get("picture_busy", false), value.get("clip_busy", false), _capture_open])
 
 func _capture_popup_allowed() -> bool:
-	return section == 0 and _adjustment.is_empty() and not _mode_open and not _subtitle_open and not _audio_open and not _volume_open and not _depth_open and not bookmarks.opened and not _failure_open
+	return not _pip_open and section == 0 and _adjustment.is_empty() and not _mode_open and not _subtitle_open and not _audio_open and not _volume_open and not _depth_open and not bookmarks.opened and not _failure_open
 
 func _process_capture_hover() -> void:
 	if not visible: return
@@ -1986,7 +2101,7 @@ func _draw_capture_action() -> void:
 	var value: Dictionary = _state.get("capture", {})
 	if not value.get("available", false): return
 	var recording := bool(value.get("recording", false))
-	_round(CAPTURE, "camera_recording" if recording else "camera", Vector2(0.42, 0.215), 0.08, true, recording, I18n.t("Capture"))
+	_round(CAPTURE, "camera_recording" if recording else "camera", Vector2(0.42, 0.215), 0.08, true, recording)
 	if recording: _buttons.back().node.get_child(1).material_override.albedo_color = Color(1.0, 0.30, 0.28)
 	if not _capture_popup_allowed() or not (_capture_open or recording): return
 	var panel := _quad(Vector2(0.25, 0.17), Vector3(0.42, 0.36, 0.001), Color(PANEL, 0.98), 10)
@@ -2258,6 +2373,13 @@ func _draw_screen_settings() -> void:
 	choices.finish()
 
 func _draw_adjustments() -> void:
+	if _adjustment == "bar_transparency":
+		var top := _settings_frame(0.27)
+		_label(I18n.t("Control bar transparency"), Vector3(0, top - 0.05, 0.004), TEXT_TITLE)
+		_adjustment_row(BAR_TRANSPARENCY, "bar_transparency", "Transparency", Vector3(0, 80, 1), top - 0.125)
+		_button(BAR_DONE, I18n.t("Done"), Vector2(0, top - 0.215), Vector2(0.24, 0.055))
+		_refresh_adjustments()
+		return
 	if _adjustment == "screen":
 		_draw_screen_settings()
 		return
@@ -2333,7 +2455,7 @@ func _adjustment_row(target: int, key: String, title: String, span: Vector3, y: 
 	var width: float = g.width
 	var centre := left + width / 2
 	_button(target, "", Vector2(centre, y), Vector2(width + g.hit, g.height))
-	_buttons.back().enabled = _state.get("has_video", false)
+	_buttons.back().enabled = key == "bar_transparency" or _state.get("has_video", false)
 	_buttons.back().base_color = Color(TILE, 0)
 	_decoration(Vector2(width, g.thickness), Vector2(centre, y), MUTED)
 	var fill := _decoration(Vector2(width, g.thickness), Vector2(centre, y), ACCENT)
@@ -2358,6 +2480,7 @@ func _leaves_layer(key: String) -> bool:
 	return key in EYE_BUFFER_GRADES or not _state.get("grade_on_layer", true)
 
 func _adjustment_default(key: String) -> Variant:
+	if key == "bar_transparency": return 14.0
 	if Grade.DEFAULTS.has(key): return Grade.DEFAULTS[key]
 	return {"screen_distance": Surface.SCREEN_DISTANCE, "screen_scale": 100.0,
 		"screen_rotation": 0.0, "playback_speed": 1.0, "alpha_fps": 30.0, "alpha_feather": 100.0, "alpha_shrink": 40.0,
@@ -2378,7 +2501,7 @@ func _activate_depth_reset(target: int) -> bool:
 	if target != DEPTH_RESET: return false
 	refresh_values()
 	if _can_depth() and _state.get("depth_requested", false) and _buttons.any(func(button): return button.target == target and button.enabled):
-		depth_strength_requested.emit(DepthStrength.DEFAULT)
+		depth_strength_requested.emit(_depth_default())
 		depth_strength_committed.emit()
 		refresh_values()
 	return true
@@ -2424,6 +2547,7 @@ func _refresh_adjustments() -> void:
 		var distance: bool = row.key in ["subtitle_distance", "screen_distance"]
 		var position: bool = row.key == "subtitle_position"
 		var defaults := {"screen_scale": 100.0, "screen_rotation": 0.0, "playback_speed": 1.0, "alpha_fps": 30.0, "alpha_feather": 100.0, "alpha_shrink": 40.0, "stereo_horizontal": 0.0, "stereo_vertical": 0.0}
+		defaults["bar_transparency"] = 14.0
 		var value := float(_state.get(row.key, defaults[row.key])) if defaults.has(row.key) else (float(_state.get(row.key, 5.0 if row.key == "subtitle_distance" else Surface.SCREEN_DISTANCE)) if distance else (float(_state.get(row.key, SubtitleDepth.DEFAULT_POSITION)) if position else float(values.get(row.key, Grade.DEFAULTS[row.key]))))
 		row["value"] = value
 		var fraction := clampf((value - row.span.x) / (row.span.y - row.span.x), 0, 1)
@@ -2435,7 +2559,7 @@ func _refresh_adjustments() -> void:
 		elif row.key == "screen_rotation": row.label.text = "%+.0f°" % value if value != 0 else "0°"
 		elif row.key == "playback_speed": row.label.text = "%.2f×" % value
 		elif row.key == "alpha_fps": row.label.text = "%d FPS" % roundi(value)
-		elif row.key in ["alpha_feather", "alpha_shrink"]: row.label.text = "%d%%" % roundi(value)
+		elif row.key in ["alpha_feather", "alpha_shrink", "bar_transparency"]: row.label.text = "%d%%" % roundi(value)
 		elif row.key in ["stereo_horizontal", "stereo_vertical"]: row.label.text = "%+.2f%%" % value if value != 0 else "0.00%"
 		row.fill.visible = fraction > 0
 		row.fill.mesh.size.x = maxf(0.001, fraction * row.width)
@@ -2451,7 +2575,7 @@ func _refresh_adjustments() -> void:
 			button.enabled = _grade_page_needs_reset()
 			button.node.get_child(0).modulate = button.foreground if button.enabled else MUTED
 		if not button.has("reset_key"): continue
-		var shown: bool = _state.get("has_video", false) and not is_equal_approx(float(_state.get(button.reset_key, button.reset_value)), button.reset_value)
+		var shown: bool = (button.reset_key == "bar_transparency" or _state.get("has_video", false)) and not is_equal_approx(float(_state.get(button.reset_key, button.reset_value)), button.reset_value)
 		button.enabled = shown
 		button.node.visible = shown
 		button.node.get_child(0).text = button.reset_caption if shown else ""

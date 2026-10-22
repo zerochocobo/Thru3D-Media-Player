@@ -46,6 +46,9 @@ func seed_settings(main: Node) -> void:
 			check(memories[index].remember(uri, data[index]) and memories[index].save(), "Save independent setting store %d" % index)
 
 func seed_history(main: Node) -> void:
+	for network in [false, true]:
+		main.recent_menu.browse_memory.remember("browse-network" if network else "browse-local", network, {"index": 8}, main.recent_menu.browse_memory.revision)
+	check(main.recent_menu.browse_memory.flush(), "Browser positions use history storage")
 	for uri in [LOCAL, NETWORK]:
 		check(main.video.recent_files.opened(uri, "Movie", false) and main.video.recent_files.progress(uri, 12345, 60000)
 			and main.video.recent_files.save(), "Save recent playback and resume")
@@ -85,6 +88,7 @@ func run() -> void:
 	root.add_child(video); video.set_process(false)
 	main.favorites = Favorites.new(directory.path_join("favorites"))
 	var menu := Library.new(); main.recent_menu = menu; root.add_child(menu); menu.set_process(false)
+	menu.browse_memory.load_file(directory.path_join("browse.cfg"))
 	menu.settings_provider = main._library_settings; menu.setting_changed.connect(main._on_setting_changed)
 	menu.section = Library.Section.SETTINGS; menu.tab = Library.GENERAL_TAB; menu.collections.privacy_expanded = true
 	menu.collections.store = main.favorites; menu.catalog = video.recent_files; menu.refresh()
@@ -112,11 +116,13 @@ func run() -> void:
 	main.settings.set_value("ui", "language", "ja")
 	seed_history(main)
 	clear_with_menu(menu, "privacy_clear", "network")
+	check(menu.browse_memory.lookup("browse-network", true).is_empty() and menu.browse_memory.lookup("browse-local", false).get("index") == 8, "Existing network-history control also clears only network browser positions")
 	check(fresh(video.recent_files).resume_position(LOCAL) == 12345 and fresh(video.recent_files).lookup(NETWORK).is_empty(),
 		"Network history clear preserves local history")
 	check_settings(main)
 	seed_history(main)
 	clear_with_menu(menu, "privacy_clear", "all")
+	check(menu.browse_memory.session.is_empty() and menu.browse_memory.persisted.is_empty(), "Existing all-history control also clears browser positions")
 	check(fresh(video.recent_files).entries.is_empty() and not video.recent_files.can_undo(), "History clear removes recent/resume records from both banks and undo")
 	check(not FileAccess.file_exists(Thumbnails.path_for(LOCAL)) and not FileAccess.file_exists(Thumbnails.path_for(NETWORK)), "History clear removes thumbnails")
 	check_settings(main)
@@ -125,6 +131,7 @@ func run() -> void:
 	check(fresh(video.recent_files).resume_position(LOCAL) == 12345 and fresh(video.recent_files).resume_position(NETWORK) == 12345,
 		"Network settings clear preserves local and network history")
 	clear_with_menu(menu, "file_settings_clear", "all"); check_settings(main, true, true)
+	check(menu.browse_memory.lookup("browse-network", true).get("index") == 8, "Clearing per-file settings leaves browser history intact")
 	check(fresh(video.recent_files).entries.size() == 2 and FileAccess.file_exists(Thumbnails.path_for(NETWORK))
 		and main.settings.get_value("ui", "language") == "ja", "Clearing all settings preserves history, thumbnails and global preferences")
 	video.local_uri = NETWORK; video.media.begin(77); video._remember_file = true; video.stereo_sbs = true

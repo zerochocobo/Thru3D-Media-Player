@@ -41,7 +41,8 @@ func _run() -> void:
 			.replace("varying flat int eye_index;", "uniform int test_eye = 0;\nuniform vec2 test_uv = vec2(0.5);\nuniform vec3 test_direction = vec3(0.0, 0.0, -1.0);\nvarying flat int eye_index;") \
 			.replace("eye_index = int(VIEW_INDEX);", "eye_index = test_eye;") \
 			.replace("media_direction = VERTEX;", "media_direction = test_direction;") \
-			.replace("eye_uv(UV, media_direction)", "eye_uv(test_uv, media_direction)")
+			.replace("eye_uv(UV, media_direction)", "eye_uv(test_uv, media_direction)") \
+			.replace("eye_uv(pip_uv(UV), sample_direction)", "eye_uv(test_uv, sample_direction)")
 		# Desktop has no Android decoder EGLImage. Exercise the exact OES sampling math
 		# with an ordinary texture; actual external binding remains a device check.
 		code = code.replace("uniform samplerExternalOES color_texture;", "uniform sampler2D color_texture : filter_linear, repeat_disable;")
@@ -119,7 +120,8 @@ func _run() -> void:
 			.replace("varying flat int eye_index;", "uniform int test_eye = 0;\nuniform vec2 test_uv = vec2(0.5);\nuniform vec3 test_direction = vec3(0.0, 0.0, -1.0);\nvarying flat int eye_index;") \
 			.replace("eye_index = int(VIEW_INDEX);", "eye_index = test_eye;") \
 			.replace("media_direction = VERTEX;", "media_direction = test_direction;") \
-			.replace("eye_uv(UV, media_direction)", "eye_uv(test_uv, media_direction)")
+			.replace("eye_uv(UV, media_direction)", "eye_uv(test_uv, media_direction)") \
+			.replace("eye_uv(pip_uv(UV), sample_direction)", "eye_uv(test_uv, sample_direction)")
 		var shader := Shader.new(); shader.code = code
 		material = ShaderMaterial.new(); material.shader = shader; quad.material_override = material
 		material.set_shader_parameter("stereo_sbs", true)

@@ -41,6 +41,10 @@ func cloudDiagnosticText(value string) string {
 
 func cloudListError(c *gin.Context, stage string, err error) {
 	detail := err.Error()
+	if strings.Contains(detail, "metadata limit") || strings.Contains(detail, "metadata cache limit") {
+		c.JSON(200, gin.H{"code": 500, "message": "Directory metadata limit reached", "error_reason": "cloud_metadata_limit", "error_detail": stage + "\n" + cloudDiagnosticText(detail)})
+		return
+	}
 	var provider *sdk.Error
 	if errors.As(err, &provider) {
 		// OpenList wraps the error with directory paths. The typed SDK error

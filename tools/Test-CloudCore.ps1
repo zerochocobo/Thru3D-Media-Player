@@ -17,5 +17,5 @@ $env:GOMODCACHE = "$cache\modules"
 $env:GOCACHE = "$cache\go-build"
 $env:GOTOOLCHAIN = 'local'
 $env:CGO_ENABLED = '0'
-& "$cache\go\bin\go.exe" -C $source test -mod=mod -timeout 180s ./cloudcore ./drivers/115_open ./drivers/baidu_netdisk ./drivers/aliyundrive_open ./drivers/quark_open ./drivers/onedrive ./drivers/webdav -v
+& "$cache\go\bin\go.exe" -C $source test -mod=mod -timeout 180s ./cloudcore ./drivers/115_open ./drivers/baidu_netdisk ./drivers/aliyundrive_open ./drivers/quark_open ./drivers/onedrive ./drivers/webdav ./pkg/gowebdav -v
 if ($LASTEXITCODE) { throw 'Cloud core integration test failed.' }

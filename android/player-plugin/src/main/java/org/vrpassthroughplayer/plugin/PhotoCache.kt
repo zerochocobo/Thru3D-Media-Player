@@ -7,7 +7,7 @@ import java.nio.file.LinkOption.NOFOLLOW_LINKS
 /** Only photo transfer caches; never model programs, media originals or credentials. */
 internal object PhotoCache {
     val lock = Any()
-    private val names = listOf("photos", "photo-preloads", "photo-gallery")
+    private val names = listOf("photos", "photo-preloads", "photo-gallery", "pip-images")
 
     fun usage(cache: File): Pair<Long, Long> = synchronized(lock) {
         var count = 0L

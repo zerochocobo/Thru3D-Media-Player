@@ -9,6 +9,7 @@ const SORT_NAMES := ["Date added", "Title", "Release date", "Duration", "Rating"
 const FILTER_NAMES := {"genres": "Genres", "tags": "Tags", "performers": "Performers", "studios": "Studios"}
 const Gallery := preload("res://scripts/media_server_gallery.gd")
 var gallery: RefCounted = Gallery.new(self)
+var backdrop := preload("res://scripts/media_server_backdrop.gd").new(self)
 var actor_name := ""
 var menu: Node
 var view := "servers"
@@ -816,6 +817,7 @@ func tile(target: int, row: Dictionary, center: Vector2) -> void:
 	var texture := cover(row)
 	if texture:
 		var material = menu._material(Color.WHITE, 12); material.albedo_texture = texture; picture.material_override = material; _fit_picture(picture, texture, Vector2(0.278, 0.192))
+		gallery.style_hover_picture(picture)
 	else: menu._icon(str(row.get("icon", "video")), Vector3(0, 0.026, 0.006), 0.064, menu.MUTED, node)
 	var title: Label3D = menu._label(menu._fit_title(str(row.title), "", 0.265, 22), Vector3(0, -0.087, 0.006), 22, node)
 	if title.text != str(row.title): menu._tips[target] = str(row.title)
@@ -835,6 +837,7 @@ func _media_tile(target: int, row: Dictionary, center: Vector2) -> void:
 	var texture := cover(row)
 	if texture:
 		var material = menu._material(Color.WHITE, 12); material.albedo_texture = texture; picture.material_override = material; _fit_picture(picture, texture, area)
+		gallery.style_hover_picture(picture)
 	else: menu._icon(str(row.get("icon", "video")), Vector3(0, 0.026, 0.006), 0.055, menu.MUTED, card)
 	var title: Label3D = menu._label(menu._fit_title(str(row.title), "", size.x - 0.025, 20), Vector3(0, -size.y / 2 + 0.034, 0.006), 20, card)
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER

@@ -146,17 +146,18 @@ func cloud_cases() -> void:
 
 func incremental_sort_cases() -> void:
 	for order in ["name_asc", "name_desc", "modified_asc", "modified_desc", "size_asc", "size_desc"]:
-		var menu := fixture(Library.Section.LOCAL, 60, "grid-full")
-		for index in menu._local_entries.size():
-			menu._local_entries[index].modified = (index % 3) * 10
-			menu._local_entries[index].size = (index % 5) * 100
-		menu._local_entries.append({"id": "/disk/folder", "title": "folder", "container": true})
-		menu.file_actions.orders[str(Library.Section.LOCAL)] = order; menu.refresh()
-		menu.file_actions.toggle(menu.rows[menu.rows.size() / 2]); rename_selected(menu, "00000-renamed.mp4")
-		var expected: Array = menu.rows.duplicate(true)
-		expected.sort_custom(func(a, b): return Actions.Order.before(a, b, order))
-		check(menu.rows.map(func(row): return Library.Presentation.key(row)) == expected.map(func(row): return Library.Presentation.key(row)), "Incremental rename matches complete sort including folders: " + order)
-		dispose(menu)
+		for grouped in [false, true]:
+			var menu := fixture(Library.Section.LOCAL, 60, "grid-full")
+			for index in menu._local_entries.size():
+				menu._local_entries[index].modified = (index % 3) * 10
+				menu._local_entries[index].size = (index % 5) * 100
+			menu._local_entries.append({"id": "/disk/folder", "title": "folder", "container": true})
+			menu.file_actions.choose_order(order, grouped)
+			menu.file_actions.toggle(menu.rows[menu.rows.size() / 2]); rename_selected(menu, "00000-renamed.mp4")
+			var expected: Array = menu.rows.duplicate(true)
+			expected.sort_custom(func(a, b): return Actions.Order.before(a, b, order, grouped))
+			check(menu.rows.map(func(row): return Library.Presentation.key(row)) == expected.map(func(row): return Library.Presentation.key(row)), "Incremental rename matches complete sort including folders: " + order + " / " + str(grouped))
+			dispose(menu)
 
 func run() -> void:
 	preload("res://scripts/i18n.gd").use("en")

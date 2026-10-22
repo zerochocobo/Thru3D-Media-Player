@@ -89,19 +89,23 @@ func _run() -> void:
 	check(menu._adjust_rows.size() == 3 and menu.text_snapshot().contains("Screen size"), "Flat panel includes distance, size and rotation")
 	check(not menu.text_snapshot().contains("Audio track") and not menu.text_snapshot().contains("Subtitles") and not menu.text_snapshot().contains("3D depth"), "Screen panel contains no duplicate controls")
 	check(not reset_shown(menu, Menu.ROTATION_RESET) and not click(menu, Menu.ROTATION_RESET), "Zero rotation hides and disables reset")
-	for scale in [0.4, 1.0, 1.5, 3.0]:
+	# Screen size spans the flat limits (100-3000% since f8bed45c) on the presets' slider scale.
+	var lowest: float = Video.SCALE_LIMITS.x * 100
+	var highest: float = Video.SCALE_LIMITS.y * 100
+	for scale in [Video.SCALE_LIMITS.x, 1.5, 3.0, Video.SCALE_LIMITS.y]:
 		video.set_screen_scale(scale)
 		menu.refresh_values()
 		var row: Dictionary = menu._adjust_rows[451]
 		var percent: float = scale * 100
 		check(is_equal_approx(main._menu_state().screen_scale, percent) and row.label.text == "%d%%" % roundi(percent), "Physical scale, menu state and percentage agree")
-		check(is_equal_approx(row.knob.position.x, Menu.SLIDER_LEFT + (percent - 40) / 260 * Menu.SLIDER_WIDTH), "Screen size thumb matches displayed percentage")
+		var fraction: float = preload("res://scripts/screen_presets.gd").slider_fraction(percent, Vector3(lowest, highest, 5))
+		check(is_equal_approx(row.knob.position.x, Menu.SLIDER_LEFT + fraction * Menu.SLIDER_WIDTH), "Screen size thumb matches displayed percentage")
 	drag(menu, 451, 0)
-	check(is_equal_approx(video.screen_scale, 0.4) and video.screen_distance == 2, "Minimum screen size changes no distance")
-	check(menu._adjust_rows[451].label.text == "40%" and is_equal_approx(menu._adjust_rows[451].knob.position.x, Menu.SLIDER_LEFT), "Minimum drag displays 40% at the start")
+	check(is_equal_approx(video.screen_scale, Video.SCALE_LIMITS.x) and video.screen_distance == 2, "Minimum screen size changes no distance")
+	check(menu._adjust_rows[451].label.text == "%d%%" % roundi(lowest) and is_equal_approx(menu._adjust_rows[451].knob.position.x, Menu.SLIDER_LEFT), "Minimum drag displays the lowest size at the start")
 	drag(menu, 451, 1)
-	check(video.screen_scale == 3 and is_equal_approx(video._flat.size.x / video._flat.size.y, 16.0 / 9), "Maximum screen size preserves aspect")
-	check(menu._adjust_rows[451].label.text == "300%" and is_equal_approx(menu._adjust_rows[451].knob.position.x, Menu.SLIDER_LEFT + Menu.SLIDER_WIDTH), "Maximum drag displays 300% at the end")
+	check(is_equal_approx(video.screen_scale, Video.SCALE_LIMITS.y) and is_equal_approx(video._flat.size.x / video._flat.size.y, 16.0 / 9), "Maximum screen size preserves aspect")
+	check(menu._adjust_rows[451].label.text == "%d%%" % roundi(highest) and is_equal_approx(menu._adjust_rows[451].knob.position.x, Menu.SLIDER_LEFT + Menu.SLIDER_WIDTH), "Maximum drag displays the highest size at the end")
 	drag(menu, 452, 1)
 	check(video.screen_rotation == 90 and absf(video.panel.global_basis.x.y) > 0.99, "Rotation slider reaches clockwise 90 degrees")
 	check(reset_shown(menu, Menu.ROTATION_RESET) and is_equal_approx(button(menu, Menu.ROTATION_RESET).rect.get_center().y, button(menu, 452).rect.get_center().y), "Rotation reset appears on its slider row")
@@ -124,7 +128,7 @@ func _run() -> void:
 	main._save_playback_adjustments()
 	var saved := ConfigFile.new()
 	check(saved.load(main.settings_path) == OK and saved.get_value("subtitles", "size") == 2 and saved.get_value("subtitles", "flat_position") == 1, "Text size and flat position persist")
-	check(click(menu, Menu.ROTATION_RESET) and video.screen_rotation == 0 and video.screen_scale == 3 and video.screen_distance == 2, "Straighten changes only rotation")
+	check(click(menu, Menu.ROTATION_RESET) and video.screen_rotation == 0 and is_equal_approx(video.screen_scale, Video.SCALE_LIMITS.y) and video.screen_distance == 2, "Straighten changes only rotation")
 	check(not reset_shown(menu, Menu.ROTATION_RESET) and not menu.text_snapshot().contains("Straighten"), "Rotation reset disappears immediately after restoration")
 	for geometry in [1, 2, 3]:
 		video.geometry = geometry
@@ -188,7 +192,7 @@ func _run() -> void:
 	click(menu, 110)
 	check(menu.choices.sliders.is_empty() and not menu.choices.targets.values().any(func(item): return item.get("key") == "subtitle_style"), "Flat CC initially hides all appearance controls")
 	check(click(menu, Menu.SUBTITLE_APPEARANCE) and menu._subtitle_open, "Ray opens appearance without closing subtitle selection")
-	check(menu.choices.sliders.size() == 3 and menu.text_snapshot().contains("Auto-load matching subtitles"), "Flat CC provides sync, size, vertical position and automatic loading switch")
+	check(menu.choices.sliders.size() == 3 and menu.text_snapshot().contains("Auto-load subtitles"), "Flat CC provides sync, size, vertical position and automatic loading switch")
 	video.subtitles.select(2)
 	menu.refresh()
 	check(menu.choices.sliders.size() == 3 and not menu.choices.targets.values().any(func(item): return item.get("key") == "subtitle_style"), "PGS offers sync, size and vertical position while preserving bitmap colors")

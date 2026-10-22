@@ -24,13 +24,20 @@ func (d *BaiduNetdisk) PlayerFolder(_ context.Context, remote, id string) (model
 }
 
 func (d *BaiduNetdisk) PlayerPage(ctx context.Context, dir model.Obj, cursor, order string) ([]model.Obj, string, int64, error) {
+	return d.PlayerPageSized(ctx, dir, cursor, order, 48)
+}
+
+func (d *BaiduNetdisk) PlayerPageSized(ctx context.Context, dir model.Obj, cursor, order string, pageSize int) ([]model.Obj, string, int64, error) {
+	if pageSize < 1 || pageSize > 1000 {
+		return nil, "", 0, errors.New("invalid directory page size")
+	}
 	if err := ctx.Err(); err != nil {
 		return nil, "", 0, err
 	}
 	start := int64(0)
 	if cursor != "" {
 		n, err := strconv.ParseInt(cursor, 10, 64)
-		if err != nil || n < 0 || n > 2147483647-48 {
+		if err != nil || n < 0 || n > 2147483647-int64(pageSize) {
 			return nil, "", 0, errors.New("invalid directory cursor")
 		}
 		start = n
@@ -47,7 +54,7 @@ func (d *BaiduNetdisk) PlayerPage(ctx context.Context, dir model.Obj, cursor, or
 	default:
 		return nil, "", 0, errors.New("invalid directory sort order")
 	}
-	params := map[string]string{"method": "list", "dir": dir.GetPath(), "start": strconv.FormatInt(start, 10), "limit": "48", "order": field, "desc": "0", "web": "web"}
+	params := map[string]string{"method": "list", "dir": dir.GetPath(), "start": strconv.FormatInt(start, 10), "limit": strconv.Itoa(pageSize), "order": field, "desc": "0", "web": "web"}
 	if desc {
 		params["desc"] = "1"
 	}
@@ -56,7 +63,7 @@ func (d *BaiduNetdisk) PlayerPage(ctx context.Context, dir model.Obj, cursor, or
 	if err != nil {
 		return nil, "", 0, err
 	}
-	if resp.Errno != 0 || len(resp.List) > 48 {
+	if resp.Errno != 0 || len(resp.List) > pageSize {
 		return nil, "", 0, errors.New("invalid Baidu directory response")
 	}
 	objects := make([]model.Obj, 0, len(resp.List))
@@ -64,8 +71,14 @@ func (d *BaiduNetdisk) PlayerPage(ctx context.Context, dir model.Obj, cursor, or
 		objects = append(objects, fileToObj(file))
 	}
 	next := start + int64(len(resp.List))
-	if len(resp.List) == 48 {
+	if len(resp.List) == pageSize {
 		return objects, strconv.FormatInt(next, 10), -1, nil
+	}
+	if len(objects) == 0 && start > 0 {
+		return objects, "", -1, nil
 	}
 	return objects, "", next, nil
 }
+
+// Numeric offsets are issued by this provider; no opaque cursor replay is needed.
+func (d *BaiduNetdisk) PlayerOffsetCursor(offset int) string { return strconv.Itoa(offset) }

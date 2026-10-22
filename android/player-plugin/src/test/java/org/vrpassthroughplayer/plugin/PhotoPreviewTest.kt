@@ -21,6 +21,12 @@ class PhotoPreviewTest {
             }
         }
     }
+    @Test fun pipImagesUseAnIndependentBoundedDetailResolution() {
+        assertEquals(2048 to 1024, PhotoPreviewBridge.dimensions(8192, 4096, 2048))
+        assertEquals(1024 to 2048, PhotoPreviewBridge.dimensions(4096, 8192, 2048))
+        assertEquals(512 to 256, PhotoPreviewBridge.dimensions(8192, 4096))
+        assertEquals(2048 to 2048, PhotoPreviewBridge.dimensions(65535, 65535, 2048))
+    }
     @Test fun invalidDimensionsAreRejectedBeforeBitmapAllocation() {
         for ((width, height) in listOf(0 to 100, -1 to 100, 100 to 65536)) {
             assertThrows(IllegalArgumentException::class.java) { PhotoPreviewBridge.dimensions(width, height) }

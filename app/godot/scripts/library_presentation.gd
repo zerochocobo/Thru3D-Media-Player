@@ -19,13 +19,41 @@ static func anchor(rows: Array, scroll: float, columns: int) -> Dictionary:
 
 static func position(rows: Array, saved: Dictionary, columns: int) -> float:
 	var index := int(saved.get("index", 0))
+	var found := anchor_index(rows, saved)
+	if found >= 0: index = found
+	var offset := float(saved.get("line_offset", 0.0))
+	if int(saved.get("columns", columns)) != columns:
+		offset = float(int(saved.get("item_offset", 0)) / columns)
+	return float(maxi(0, index) / columns) - offset + clampf(float(saved.get("fraction", 0.0)), 0.0, 0.99)
+
+static func anchor_index(rows: Array, saved: Dictionary) -> int:
 	var identity := str(saved.get("key", ""))
 	if not identity.is_empty():
 		for i in rows.size():
-			if key(rows[i]) == identity:
-				index = i
-				break
-	return float(maxi(0, index) / columns) + clampf(float(saved.get("fraction", 0.0)), 0.0, 0.99)
+			var candidate := browse_key(rows[i]) if saved.get("browse", false) else key(rows[i])
+			if (candidate.sha256_text() if saved.get("hashed", false) else candidate) == identity:
+				return i
+	return -1
+
+static func browse_key(row: Dictionary) -> String:
+	var node: Dictionary = row.get("container", row)
+	var native_id := str(node.get("cloud_id", row.get("cloud_id", "")))
+	if not native_id.is_empty(): return "cloud-id:" + native_id
+	# DLNA object IDs survive changes to temporary HTTP resource URLs.
+	if not str(node.get("id", "")).is_empty(): return "id:" + str(node.id)
+	return key(row)
+
+## Keep the opened folder at its previous screen row even if siblings were inserted.
+static func folder_anchor(rows: Array, scroll: float, columns: int, row: Dictionary) -> Dictionary:
+	var saved := anchor(rows, scroll, columns)
+	var identity := key(row)
+	for i in rows.size():
+		if key(rows[i]) == identity:
+			saved.item_offset = i - int(saved.index); saved.columns = columns
+			saved.key = identity; saved.index = i
+			saved.line_offset = float(i / columns) - floorf(scroll + 0.001)
+			break
+	return saved
 
 static func time(ms: int) -> String:
 	var seconds := maxi(0, ms / 1000)

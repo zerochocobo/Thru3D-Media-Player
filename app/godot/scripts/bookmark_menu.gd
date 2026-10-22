@@ -56,8 +56,8 @@ func draw() -> void:
 		menu._state.get("bookmark_ready", false) and menu._seek_hand.is_empty(), menu.I18n.t("Add bookmark"))
 	var all: Array = menu._state.get("bookmarks", [])
 	if not all.is_empty():
-		menu._round(LIST, "bookmark", Vector2(-0.28, 0.215), 0.08, has_video, false, menu.I18n.t("Bookmarks"))
-		menu._label(str(all.size()), Vector3(-0.235, 0.245, 0.004), 13)
+		menu._round(LIST, "bookmark", Vector2(-0.42, 0.215), 0.08, has_video, false, menu.I18n.t("Bookmarks"))
+		menu._label(str(all.size()), Vector3(-0.375, 0.245, 0.004), 13)
 	elif opened:
 		# The final delete closes the now-empty list. Undo remains available separately.
 		opened = false; subset.clear(); capture.clear()

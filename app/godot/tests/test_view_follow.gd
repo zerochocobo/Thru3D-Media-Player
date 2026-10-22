@@ -142,6 +142,8 @@ func _run() -> void:
 	config.set_value("appearance", "background", "dark")
 	config.set_value("ui", "language", "en")
 	config.set_value("ui", "follow", true) # Legacy/foreign state must never enable it at startup.
+	# Recenter restores distance and size only for an explicitly saved default view (93f77659).
+	config.set_value("screen", "default_view", Vector2(preload("res://scripts/mpv_video_display.gd").SCREEN_DISTANCE, 1.0))
 	config.save(directory.path_join("settings.cfg"))
 	var main := FollowMain.new()
 	main.settings_path = directory.path_join("settings.cfg")

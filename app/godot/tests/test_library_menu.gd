@@ -310,7 +310,7 @@ func _run() -> void:
 	choose_setting(menu, "output_width", 4096)
 	check(settings_events.back() == ["output_width", 4096], "Output cap setting")
 	menu._activate(Menu.TAB_BASE + Menu.GENERAL_TAB)
-	menu._choose(menu.rows.filter(func(row):return row.get("group_header", false))[0])
+	menu._choose(menu.rows.filter(func(row):return row.get("group_header", false) and not row.get("cloud_paging_group", false))[0])
 	check(menu.rows.any(func(row): return row.get("key", "") == "privacy_mode" and row.value == "all"), "History defaults to all in General's Privacy group")
 	choose_setting(menu, "privacy_mode", "none")
 	check(settings_events.back() == ["privacy_mode", "none"], "Privacy settings can stop recording")

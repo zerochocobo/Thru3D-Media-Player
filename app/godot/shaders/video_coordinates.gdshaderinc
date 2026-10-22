@@ -6,6 +6,7 @@ uniform bool stereo_half = false;
 uniform float fisheye_fov = 180.0;
 uniform bool swap_eyes = false;
 uniform int viewing_eye = 0; // 0 stereo, 1 logical left, 2 logical right (after swap)
+uniform int pip_viewing_eye = 0; // private window override; 0 follows the main stereo view
 uniform vec2 stereo_offset = vec2(0.0); // total displacement in displayed per-eye UV
 uniform int rotation_degrees = 0;
 // 0 flat, 1 half-equirect 180, 2 equidistant fisheye 180.
@@ -18,12 +19,13 @@ varying vec3 media_direction;
 
 int source_eye() {
 	if (!stereo_sbs) { return 0; }
-	int view = viewing_eye == 0 ? eye_index : viewing_eye - 1;
+	int selected = pip_viewing_eye > 0 ? pip_viewing_eye : viewing_eye;
+	int view = selected == 0 ? eye_index : selected - 1;
 	return swap_eyes ? 1 - view : view;
 }
 
 vec2 aligned_eye_uv(vec2 uv) {
-	if (!stereo_sbs || viewing_eye != 0) { return uv; }
+	if (!stereo_sbs || viewing_eye != 0 || pip_viewing_eye != 0) { return uv; }
 	vec2 p = uv + (eye_index == 0 ? -0.5 : 0.5) * stereo_offset;
 	// Longitude wraps within this eye, never into the other half of a packed frame.
 	if (video_geometry == 3 && stereo_offset.x != 0.0) { p.x = fract(p.x); }
@@ -31,7 +33,7 @@ vec2 aligned_eye_uv(vec2 uv) {
 }
 
 bool outside_alignment(vec2 p) {
-	return stereo_sbs && viewing_eye == 0 && any(notEqual(stereo_offset, vec2(0.0)))
+	return stereo_sbs && viewing_eye == 0 && pip_viewing_eye == 0 && any(notEqual(stereo_offset, vec2(0.0)))
 		&& (any(lessThan(p, vec2(0.0))) || any(greaterThan(p, vec2(1.0))));
 }
 

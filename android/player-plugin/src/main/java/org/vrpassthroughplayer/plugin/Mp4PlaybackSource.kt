@@ -34,7 +34,8 @@ internal class Mp4PlaybackSource(private val origin: StreamSource, val layout: M
         maxForwardGapBytes = 1024 * 1024)
     @Volatile private var closed = false
     init { require(origin.size == layout.originalSize) }
-    fun forkOrigin(): CloudStreamSource? = (origin as? CloudStreamSource)?.fork()
+    val cloud get() = origin is CloudStreamSource
+    fun forkOrigin(): StreamSource? = origin.fork()
     fun stats() = transport.stats()
     override fun open(): StreamSource.Reader {
         check(!closed)

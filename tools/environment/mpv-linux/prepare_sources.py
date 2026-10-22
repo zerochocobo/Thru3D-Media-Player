@@ -117,9 +117,13 @@ def main():
     apply_dovi_patch(base/'ffmpeg')
     from capture_patch import prepare_base, apply_capture_patch
     from pgs_patch import apply_pgs_patch
+    from aaudio_patch import unapply_aaudio_patch, apply_aaudio_patch
+    # The AAudio clock fix edits the live-capture ao_aaudio.c: lift it before verifying that layer.
+    unapply_aaudio_patch(mpv)
     if not prepare_base(mpv):
         apply_pgs_patch(mpv)
     apply_capture_patch(mpv)
+    apply_aaudio_patch(mpv)
     from mvc_patch import apply_mvc_patch
     ffmpeg_record = next(s for s in lock['sources'] if s['name'] == 'ffmpeg')
     apply_mvc_patch(base/'ffmpeg', args.cache/ffmpeg_record['archive'])

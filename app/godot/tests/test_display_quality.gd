@@ -40,22 +40,31 @@ func _run() -> void:
 	main.recent_menu.section = main.recent_menu.Section.SETTINGS
 	main.recent_menu.tab = main.recent_menu.DISPLAY_TAB
 	main.recent_menu.refresh()
-	check(main.recent_menu.rows.size() == 4 and main.recent_menu.rows[0].choices.size() == 4 and main.recent_menu.rows[0].choices[0].value == Quality.AUTO
-		and main.recent_menu.rows[1].key == "supersampling" and main.recent_menu.rows[1].choices.size() == 3 and main.recent_menu.rows[1].value == 1
-		and main.recent_menu.rows[2].key == "sharpness" and main.recent_menu.rows[2].choices.size() == 3 and main.recent_menu.rows[3].key == "show_fps",
-		"Render scale, supersampling (off/normal/quality) and sharpness each occupy one field, followed by the FPS display")
+	var rows: Array = main.recent_menu.rows
+	check(rows.size() == 5 and rows[0].choices.size() == 4 and rows[0].choices[0].value == Quality.AUTO
+		and rows[1].key == "refresh_cap" and rows[1].value == Quality.DEFAULT_REFRESH_CAP
+		and rows[2].key == "supersampling" and rows[2].choices.size() == 3 and rows[2].value == 1
+		and rows[3].key == "sharpness" and rows[3].choices.size() == 3 and rows[4].key == "show_fps",
+		"Render scale, playback refresh rate, supersampling (off/normal/quality) and sharpness each occupy one field, followed by the FPS display")
+	var refresh_values: Array = rows[1].choices.map(func(option): return option.value)
+	var expected_caps: Array = Quality.refresh_choices(main.low_end_gpu)
+	check(refresh_values == expected_caps and rows[1].choices.all(func(option): return str(option.label).contains("Hz") and not str(option.get("hint", "")).is_empty()),
+		"Refresh choices name their rate in Hz and explain the trade-off")
 	var explained := 0
 	for button in main.recent_menu._buttons:
 		var tip := str(main.recent_menu._tips.get(button.target, ""))
-		if tip in [I18n.t(Quality.SCALE_INFO), I18n.t(Quality.SUPERSAMPLING_INFO), I18n.t(Quality.SHARPNESS_INFO)] and not button.enabled and button.get("hover_disabled", false): explained += 1
-	check(explained == 3, "Pointing at the render scale, supersampling and sharpness titles explains them without making the rows clickable")
-	check(main.recent_menu.rows[2].choices.all(func(option): return not str(option.get("hint", "")).is_empty())
+		if tip in [I18n.t(Quality.SCALE_INFO), I18n.t(Quality.REFRESH_INFO), I18n.t(Quality.SUPERSAMPLING_INFO), I18n.t(Quality.SHARPNESS_INFO)] and not button.enabled and button.get("hover_disabled", false): explained += 1
+	check(explained == 4, "Pointing at the render scale, refresh rate, supersampling and sharpness titles explains them without making the rows clickable")
+	check(main.recent_menu.rows[3].choices.all(func(option): return not str(option.get("hint", "")).is_empty())
 		and main.recent_menu._tips.values().has(I18n.t(Quality.SHARPNESS_HINTS[2])), "Each sharpness choice has a technical hint")
 	main._on_setting_changed("display_quality",2)
 	main._on_setting_changed("sharpness",0.6)
 	main._on_setting_changed("supersampling", 0)
+	main._on_setting_changed("refresh_cap", 72)
+	main._on_setting_changed("refresh_cap", 75)
 	settings.load(path)
 	check(Quality.load_supersampling(settings) == 0, "Supersampling off persists")
+	check(Quality.load_refresh_cap(settings, false) == 72, "Power-saving refresh persists and unknown rates are ignored")
 	var layer := preload("res://scripts/video_layer.gd").new(null)
 	layer._settings = true
 	for mode in 3:

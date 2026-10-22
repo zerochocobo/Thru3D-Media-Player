@@ -30,6 +30,9 @@ func _run() -> void:
 	main.photo_menu.set_process(false)
 	main.photo_active = true
 	main.player_menu = main.photo_menu
+	# Opening a photo refreshes the background while it loads (photo.changed), which ends the
+	# flat-screen cinema presentation; do the same here, or the first slider drag would.
+	main._update_background()
 	main.recent_menu.dismiss()
 	var photo: Node3D = main.photo
 	var menu: Node3D = main.photo_menu
@@ -187,7 +190,11 @@ func gallery_sliders(main: Node3D, image: Image) -> void:
 		photo.set_layout_mode(layout); photo.gallery._process(.02)
 		for expanded in [false,true]:
 			if expanded:
-				photo.gallery.activate(photo.index); photo.gallery._process(1)
+				photo.gallery.activate(photo.index)
+				# Wall layouts keep only previews (6f1b985b): expanding reloads the full photo first.
+				photo.set_process(true); deadline = Time.get_ticks_msec() + 5000
+				while photo.loading and Time.get_ticks_msec() < deadline: await create_timer(.01).timeout
+				photo.set_process(false); photo.finish_transition(); photo.gallery._process(1)
 				check(photo.gallery.focus >= 0 and photo.panel.visible, "Expanded fixture exposes the focused photo controls: layout=%d" % layout)
 			menu.toggle(); menu._activate(Menu.PHOTO_ADJUST)
 			for hand in ["right_hand","left_hand"]:

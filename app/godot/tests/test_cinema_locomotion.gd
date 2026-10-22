@@ -150,7 +150,7 @@ func run() -> void:
 		var manifest: Dictionary = JSON.parse_string(FileAccess.get_file_as_string(manifest_path))
 		movement = Locomotion.new()
 		movement.configure(manifest)
-		check(movement.selected_seat == "J15", "The full cinema starts in its authored central tenth-row seat")
+		check(movement.selected_seat == "I15", "The full cinema starts in its authored central ninth-row seat")
 		var valid_seats := 0
 		var valid_exits := 0
 		for seat in manifest.seats:
@@ -158,9 +158,9 @@ func run() -> void:
 				valid_seats += 1
 				if movement.set_moving(true):
 					valid_exits += 1
-		check(valid_seats == 540, "All 540 cinema seat eye volumes are clear")
-		check(valid_exits == 540, "All 540 cinema seats have safe standing aisle exits")
-		movement.select_seat("J15")
+		check(valid_seats == 420, "All 420 cinema seat eye volumes are clear")
+		check(valid_exits == 420, "All 420 cinema seats have safe standing aisle exits")
+		movement.select_seat("I15")
 		movement.set_moving(true)
 		var front_exit := Vector3.ZERO
 		for seat in manifest.seats:

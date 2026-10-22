@@ -126,7 +126,7 @@ This source snapshot keeps the music player and offline import implementation, b
 
 ## Source-capture headers
 
-The clip bridge links the pinned libavformat/libavcodec/libavutil dependencies. Upstream version pins remain fixed, but live recording requires rebuilding mpv with `0004-mpv-live-capture.patch` and exporting a matching source receipt; older runtime libraries lack the observer API. Public compile-time headers, their LGPL text and SHA-256 catalog are retained at `native/mpv/include/ffmpeg`; the catalog must match the existing FFmpeg archive pin. See [capture build/test scope](CAPTURE.md).
+The clip bridge links the pinned libavformat/libavcodec/libavutil dependencies. Upstream version pins remain fixed, but live recording requires rebuilding mpv with `0004-mpv-live-capture.patch` and exporting a matching source receipt; seek recovery additionally requires `0005-mpv-aaudio-clock.patch` on that base. Older runtime libraries are insufficient. Public compile-time headers, their LGPL text and SHA-256 catalog are retained at `native/mpv/include/ffmpeg`; the catalog must match the existing FFmpeg archive pin. See [capture build/test scope](CAPTURE.md).
 
 ## Photo decoder sources
 

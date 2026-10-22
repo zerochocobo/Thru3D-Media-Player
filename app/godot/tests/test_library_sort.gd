@@ -77,11 +77,11 @@ func _run() -> void:
 	check(options.size() == 2 and options.all(func(button): return button.enabled), "DLNA shows only two supported name options")
 	menu._activate(Actions.ORDER_BASE + 1)
 	check(titles(menu.rows) == ["Folder10","Folder2","Movie10","Movie2"], "DLNA descending names sort both groups")
-	check(saved_orders.get(str(Menu.Section.DLNA)) == "name_desc" and saved_orders.get(str(Menu.Section.LOCAL)) == "modified_asc", "DLNA preference is saved independently from local sorting")
+	check(saved_orders.directories[menu.file_actions.scope()].order == "name_desc" and saved_orders.directories.size() == 4, "Preferences are saved independently for each source directory")
 	menu.file_actions.choose_order("modified_desc")
 	check(menu.file_actions.order() == "name_desc" and titles(menu.rows)[0] == "Folder10", "Unsupported DLNA order cannot change saved selection")
 	menu._dlna_stack = [{"id":"nested","title":"Nested"}]; menu.refresh()
-	check(titles(menu.rows)[0] == "Folder10", "DLNA nested containers inherit the saved name direction")
+	check(titles(menu.rows)[0] == "Folder2", "DLNA nested containers start with the global default instead of their parent's choice")
 	var filename_cases := ["test.mp4", "test(2).mp4", "test（2）.mp4", "test (2).mp4", "test[2].mp4", "q.mp4"]
 	var filename_entries: Array = []
 	for i in filename_cases.size():
@@ -95,6 +95,7 @@ func _run() -> void:
 			for name in filename_cases:
 				check(titles(menu.rows).has(name), "Half-width/full-width parentheses and original filename survive UI sorting")
 	menu.section = Menu.Section.DLNA
+	menu._dlna_stack = []
 	menu._dlna_entries = [{"title":"Movie10","uri":"http://nas/10.mp4"},{"id":"10","title":"Folder10","container":true}]
 	menu.file_actions.load(saved_orders); menu.refresh()
 	check(menu.file_actions.order() == "name_desc", "Reloaded settings restore the DLNA choice")

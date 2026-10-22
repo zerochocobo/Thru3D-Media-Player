@@ -41,6 +41,13 @@ func (d *AliyundriveOpen) PlayerFolder(ctx context.Context, remote, id string) (
 }
 
 func (d *AliyundriveOpen) PlayerPage(ctx context.Context, dir model.Obj, cursor, order string) ([]model.Obj, string, int64, error) {
+	return d.PlayerPageSized(ctx, dir, cursor, order, 48)
+}
+
+func (d *AliyundriveOpen) PlayerPageSized(ctx context.Context, dir model.Obj, cursor, order string, pageSize int) ([]model.Obj, string, int64, error) {
+	if pageSize < 1 || pageSize > 200 {
+		return nil, "", 0, errors.New("invalid directory page size")
+	}
 	field, direction := d.OrderBy, d.OrderDirection
 	switch order {
 	case "source":
@@ -61,12 +68,12 @@ func (d *AliyundriveOpen) PlayerPage(ctx context.Context, dir model.Obj, cursor,
 	}
 	var resp Files
 	_, err := d.request(ctx, limiterList, "/adrive/v1.0/openFile/list", http.MethodPost, func(r *resty.Request) {
-		r.SetContext(ctx).SetBody(base.Json{"drive_id": d.DriveId, "parent_file_id": dir.GetID(), "limit": 48, "marker": cursor, "order_by": field, "order_direction": direction}).SetResult(&resp)
+		r.SetContext(ctx).SetBody(base.Json{"drive_id": d.DriveId, "parent_file_id": dir.GetID(), "limit": pageSize, "marker": cursor, "order_by": field, "order_direction": direction}).SetResult(&resp)
 	})
 	if err != nil {
 		return nil, "", 0, err
 	}
-	if len(resp.Items) > 48 || resp.NextMarker != "" && resp.NextMarker == cursor {
+	if len(resp.Items) > pageSize || resp.NextMarker != "" && resp.NextMarker == cursor {
 		return nil, "", 0, errors.New("invalid directory page")
 	}
 	objects := make([]model.Obj, 0, len(resp.Items))

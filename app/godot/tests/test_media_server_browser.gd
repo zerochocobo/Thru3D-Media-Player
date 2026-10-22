@@ -17,6 +17,13 @@ func request_id(browser: RefCounted, action_name: String) -> int:
 	for id in browser.pending:
 		if browser.pending[id].action == action_name: return int(id)
 	return -1
+func check_favorite_face(menu: Node, selected: bool, enabled: bool = true) -> void:
+	var button: Dictionary = menu._buttons.filter(func(item): return item.target == Browser.ACTION + 31)[0]
+	var icon: MeshInstance3D = button.node.get_child(1)
+	check(button.enabled == enabled, "favorite input follows pending request")
+	check(icon.material_override.albedo_texture == menu.Icons.texture("heart_filled" if selected else "heart"), "confirmed favorite selects filled or outline heart")
+	check((icon.material_override.albedo_color == menu.server_browser.gallery.FAVORITE_COLOR) == selected, "favorite heart visibly changes color")
+	check(button.node.get_children().any(func(node): return node is Label3D and node.text == "Favorited") == selected, "favorite caption follows confirmed state")
 func _run() -> void:
 	preload("res://scripts/i18n.gd").use("en")
 	var platform := Fixture.Platform.new()
@@ -84,6 +91,25 @@ func _run() -> void:
 	b.choose({"favorite": true}); var favorite := request_id(b, "favorite")
 	check(platform.requests[favorite].favorite, "server favorite mutation is explicit")
 	platform.answer(favorite, {"scene_id": "1", "favorite": true}); check(b.detail.favorite, "favorite reflects confirmed response")
+	b.capabilities = CAPS.merged({"artwork": true}); menu.refresh()
+	check_favorite_face(menu, true)
+	menu._activate(Browser.ACTION + 31)
+	check_favorite_face(menu, true, false)
+	platform.answer(request_id(b, "favorite"), {"state": "error", "error": "Server unavailable"})
+	check_favorite_face(menu, true)
+	menu._activate(Browser.ACTION + 31)
+	platform.answer(request_id(b, "favorite"), {"scene_id": "1", "favorite": false})
+	check_favorite_face(menu, false)
+	menu._activate(Browser.ACTION + 31)
+	platform.answer(request_id(b, "favorite"), {"scene_id": "1", "favorite": true})
+	menu._hover["test"] = Browser.ACTION + 31; menu._update_highlights()
+	check_favorite_face(menu, true)
+	menu.set_scene_overlay(true); menu.refresh()
+	var play_button: Dictionary = menu._buttons.filter(func(item): return item.target == Browser.ACTION + 30)[0]
+	check("depth_test_disabled" in play_button.node.material_override.shader.code, "play outline follows cinema overlay depth policy")
+	menu.set_scene_overlay(false)
+	check(play_button.node.material_override.shader == b.gallery.BUTTON_OUTLINE, "leaving cinema preserves hollow play outline")
+	menu._hover.clear(); b.capabilities = CAPS
 	b._navigate("favorites"); check(platform.requests[request_id(b, "browse")].favorites, "server favorite navigation")
 	platform.answer(request_id(b, "browse"), {"entries": [], "total": 0})
 	check(b.entries.is_empty() and b.end_reached, "empty favorites do not keep loading")
@@ -101,6 +127,39 @@ func _run() -> void:
 	platform.answer(request_id(b, "detail"), {"detail": page(1, 1)[0]})
 	b.choose({"favorite": true}); b.back(); check(b.entries.is_empty(), "removing local favorite updates restored list")
 
+	b.capabilities = CAPS.merged({"artwork": true}); b.view = "detail"
+	b.detail = {"id": "stills", "title": "Film stills", "images": [
+		{"id": "stills", "image_type": "Backdrop", "image_index": 0},
+		{"id": "stills", "image_type": "Backdrop", "image_index": 1},
+		{"id": "stills", "image_type": "Backdrop", "image_index": 2}]}
+	menu.refresh(); b.gallery.action(b.gallery.PHOTO)
+	check(b.view == "picture" and b.gallery.selected_image == 0, "Opening a still enters the full picture viewer")
+	b.gallery.stick_at = 0; menu.stick_scroll_horizontal(0.99, 0.016)
+	check(b.gallery.selected_image == 1, "Picture viewer right stick direction selects next still")
+	menu.stick_scroll_horizontal(0.99, 0.016)
+	check(b.gallery.selected_image == 1, "Held picture navigation is rate limited")
+	b.gallery.stick_at = 0; menu.stick_scroll_horizontal(0.99, 0.016)
+	check(b.gallery.selected_image == 2, "Holding past repeat interval selects another still")
+	var last_node: Node = menu._buttons.back().node
+	b.gallery.stick_at = 0; menu.stick_scroll_horizontal(0.99, 0.016)
+	check(b.gallery.selected_image == 2 and is_instance_valid(last_node), "Last still does not wrap or repeatedly rebuild the page")
+	b.gallery.stick_at = 0; menu.stick_scroll_horizontal(-0.99, 0.016)
+	check(b.gallery.selected_image == 1, "Picture viewer left direction selects previous still")
+	for axis in [0.0, 0.3, NAN, INF]:
+		b.gallery.stick_at = 0; menu.stick_scroll_horizontal(axis, 0.016)
+	check(b.gallery.selected_image == 1, "Deadzone and invalid axes cannot change stills")
+	menu._drag = {"hand": "right_hand"}; menu.stick_scroll_horizontal(0.99, 0.016); menu._drag.clear()
+	check(b.gallery.selected_image == 1, "Pointer capture blocks picture switching")
+	menu._activate(Browser.ACTION + 39)
+	check(b.gallery.selected_image == 0, "Previous on-screen button remains available")
+	b.gallery.stick_at = 0; menu.stick_scroll_horizontal(-0.99, 0.016)
+	check(b.gallery.selected_image == 0, "First still clamps backward navigation")
+	b.detail.images = b.detail.images.slice(0, 1); menu.refresh()
+	b.gallery.stick_at = 0; menu.stick_scroll_horizontal(0.99, 0.016)
+	check(b.gallery.selected_image == 0, "Single-still viewer safely ignores navigation")
+	b.detail.images = []; menu.refresh(); menu.stick_scroll_horizontal(0.99, 0.016)
+	check(b.gallery.selected_image == 0, "Empty still list safely ignores navigation")
+	b.back(); check(b.view == "detail", "Back from still viewer restores film detail")
 	menu.free(); platform.free()
 	for failure in failures: push_error(failure)
 	print("common server browser checks=%d failures=%d" % [checks, failures.size()])

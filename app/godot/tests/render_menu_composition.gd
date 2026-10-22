@@ -176,7 +176,7 @@ func run() -> void:
 	check(capture.repaints == repaints, "Head motion causes no repaint")
 	check(main_slot.raw.render_target_update_mode == SubViewport.UPDATE_DISABLED, "Idle capture does not render")
 	# Hover tip: layout signal regroups but keeps slots and swapchain sizes.
-	var sizes: Array = capture.snapshot().pixels
+	var sizes: Array = capture.slots.map(func(slot): return slot.raw.size)
 	var tip_ray: Vector3 = menu._buttons[1].node.to_global(Vector3(0, 0, 1))
 	menu.update_pointer("right_hand", tip_ray, -menu._buttons[1].node.global_basis.z, true)
 	capture.update(); await frames()
@@ -186,7 +186,20 @@ func run() -> void:
 	check(capture.repaints == repaints + 1, "Hover repaints once")
 	capture.update(); capture.update(); await frames()
 	check(capture.repaints == repaints + 1, "Steady hover does not keep repainting")
-	check(capture.snapshot().pixels == sizes, "Hover keeps slot sizes")
+	# The low-rate check repaints only when something it captures changed.
+	capture._painted_ms = 0
+	capture.update(); await frames()
+	check(capture.repaints == repaints + 1, "Keepalive skips an unchanged menu")
+	var quiet_label := menu._tooltip.get_child(0) as Label3D
+	quiet_label.text += " "
+	capture._painted_ms = 0
+	capture.update(); await frames()
+	check(capture.repaints == repaints + 2, "Keepalive repaints text changed without a signal")
+	capture.update(); await frames()
+	check(capture.repaints == repaints + 2, "Keepalive settles after the repaint")
+	repaints = capture.repaints - 1
+	capture._painted_ms = Time.get_ticks_msec() + 100000
+	check(capture.slots.map(func(slot): return slot.raw.size) == sizes, "Hover keeps allocated slot sizes even when its dedicated layer activates")
 	check(menu._pointers.right_hand.dot.layers == 1 and menu._pointers.right_hand.line.layers == 1, "Pointer stays in the eye buffer")
 	await check_tooltip_overlap(viewport, camera, menu, tip_slot)
 	var ray: Vector3 = menu._buttons[2].node.to_global(Vector3(0, 0, 1))

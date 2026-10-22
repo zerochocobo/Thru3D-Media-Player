@@ -3,6 +3,7 @@ package webdav
 import (
 	"context"
 	"fmt"
+	"github.com/OpenListTeam/OpenList/v4/internal/model"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,28 @@ import (
 	"testing"
 	"time"
 )
+
+func TestPlayerWebDAVGroupingUsesWholeSnapshotBeforePaging(t *testing.T) {
+	playerDAVCache = map[playerDAVKey]*playerDAVSnapshot{}
+	defer func() { playerDAVCache = map[playerDAVKey]*playerDAVSnapshot{} }()
+	d := &WebDav{}
+	dir := &model.Object{ID: "/", Path: "/", IsFolder: true}
+	playerDAVCache[playerDAVKey{d, "/"}] = &playerDAVSnapshot{expires: time.Now().Add(time.Minute), objects: []model.Obj{
+		&model.Object{ID: "b", Name: "B folder", IsFolder: true, Modified: time.Unix(20, 0), Size: 999},
+		&model.Object{ID: "a", Name: "A.mp4", Modified: time.Unix(30, 0), Size: 10},
+		&model.Object{ID: "c", Name: "C.mp4", Modified: time.Unix(10, 0), Size: 20},
+	}}
+	for order, want := range map[string]string{"name_asc": "B folder", "mixed_name_asc": "A.mp4", "modified_desc": "B folder", "mixed_modified_desc": "A.mp4", "mixed_size_desc": "C.mp4"} {
+		items, next, total, err := d.PlayerPageSized(context.Background(), dir, "", order, 1)
+		if err != nil || len(items) != 1 || items[0].GetName() != want || next != "1" || total != 3 {
+			t.Fatal(order, items, next, total, err)
+		}
+	}
+	items, _, _, err := d.PlayerPageSized(context.Background(), dir, "2", "mixed_size_desc", 1)
+	if err != nil || len(items) != 1 || !items[0].IsDir() {
+		t.Fatal("folder size must stay unknown", items, err)
+	}
+}
 
 func TestPlayerWebDAVReusesSingleDirectoryResponseAcrossPagesAndSorts(t *testing.T) {
 	playerDAVCache = map[playerDAVKey]*playerDAVSnapshot{}

@@ -48,7 +48,8 @@ class DebugDiagnosticsReceiver : BroadcastReceiver() {
                         CloudIsoProbe.request(context.applicationContext, request)
                     } else if (intent.action == "com.wapok.thru3d.DEBUG_CLOUD") {
                         val provider = intent.getStringExtra("provider") ?: CloudDrive.P115
-                        if (provider == CloudDrive.P115) CloudPlaybackProbe.request(context.applicationContext, request, intent.getBooleanExtra("play", false))
+                        if (provider == "webdav_test") webDavTest(context.applicationContext, intent, report)
+                        else if (provider == CloudDrive.P115) CloudPlaybackProbe.request(context.applicationContext, request, intent.getBooleanExtra("play", false))
                         else OpenListCloudProbe.request(context.applicationContext, request, provider, intent.getBooleanExtra("play", false))
                     } else if (intent.action == "com.wapok.thru3d.DEBUG_PLEX_NETWORK") {
                         val raw = intent.getStringExtra("connections") ?: error("Missing connections")
@@ -99,7 +100,7 @@ class DebugDiagnosticsReceiver : BroadcastReceiver() {
                         when (intent.action) {
                         "com.wapok.thru3d.DEBUG_PLAYER_MPV" -> {
                             val operation = intent.getStringExtra("operation") ?: "open"
-                            require(operation in setOf("open", "alpha", "depth", "playing", "seek", "hold_pixels", "observe", "stereo", "profile", "close", "pixels", "subtitle", "audio", "audio_delay", "narration", "narration_status", "display_quality", "sharpness", "cloud_accounts", "cloud_page_probe", "display_menu", "player_menu", "restart_app", "quit_app", "seek_policy_ui", "media_library_ui", "photo_open", "photo_step", "photo_depth", "photo_inspect", "photo_portrait", "alpha_blend_probe", "layer_flip", "layer_order", "hide_menus", "menu_layers", "menu_layer_filter", "menu_layer_holes", "menu_action", "menu_nav", "menu_bench"))
+                            require(operation in setOf("open", "alpha", "depth", "playing", "seek", "hold_pixels", "observe", "stereo", "profile", "close", "pixels", "subtitle", "audio", "audio_delay", "narration", "narration_status", "display_quality", "sharpness", "cloud_accounts", "cloud_page_probe", "display_menu", "player_menu", "restart_app", "quit_app", "seek_policy_ui", "media_library_ui", "photo_open", "photo_step", "photo_depth", "photo_inspect", "photo_portrait", "alpha_blend_probe", "layer_flip", "layer_order", "hide_menus", "menu_layers", "menu_layer_filter", "menu_layer_holes", "menu_action", "menu_nav", "menu_bench", "perf_tune", "perf_sample", "stick", "pip_probe"))
                             val command = JSONObject().put("operation", operation).put("request_key", request)
                                 .put("value", intent.getFloatExtra("value", 0f).toDouble())
                                 .put("benchmark", intent.getBooleanExtra("benchmark", false))
@@ -120,6 +121,8 @@ class DebugDiagnosticsReceiver : BroadcastReceiver() {
                                 // 2D->3D: a mono open with depth (stereo=false) or the "depth" operation.
                                 .put("stereo", intent.getBooleanExtra("stereo", true))
                                 .put("depth", intent.getBooleanExtra("depth", false))
+                            // perf_tune / perf_sample: free-form JSON parameters (Debug only).
+                            intent.getStringExtra("params")?.let { text -> JSONObject(text).let { extra -> extra.keys().forEach { key -> command.put(key, extra.get(key)) } } }
                             if (intent.hasExtra("seek_mode")) {
                                 val mode = intent.getStringExtra("seek_mode")
                                 require(mode in setOf("speed", "exact"))
@@ -231,7 +234,27 @@ class DebugDiagnosticsReceiver : BroadcastReceiver() {
             }
         } catch (_: RejectedExecutionException) { pending.finish() }
     }
+    /** A WebDAV test account through the same save path as the account panel, so a file can be
+     * played via the production cloud route; "remove" deletes only an account this probe named. */
+    private fun webDavTest(context: Context, intent: Intent, report: JSONObject): Int {
+        CloudLibrary.start(context)
+        val accounts = { (0 until CloudLibrary.accounts().length()).map { CloudLibrary.accounts().getJSONObject(it) } }
+        val ours = { accounts().filter { it.getString("name") == WEBDAV_TEST_NAME && it.getString("provider") == CloudDrive.WEBDAV } }
+        if (intent.getStringExtra("op") == "remove") {
+            ours().forEach { CloudLibrary.remove(it.getString("id")) }
+            report.put("removed", true)
+            return 1
+        }
+        if (ours().isEmpty()) CloudLibrary.connectWebDav(WEBDAV_TEST_NAME, intent.getStringExtra("base") ?: error("Missing base"),
+            intent.getStringExtra("username").orEmpty(), intent.getStringExtra("password").orEmpty())
+        val account = ours().single()
+        val file = intent.getStringExtra("file") ?: error("Missing file")
+        // Cloud URIs name the account, then the path inside its mount.
+        report.put("account_id", account.getString("id")).put("uri", CloudPaths.uri("/" + account.getString("id") + "/" + file))
+        return 1
+    }
     companion object {
+        private const val WEBDAV_TEST_NAME = "Thru3D WebDAV test"
         private val worker = ThreadPoolExecutor(1, 1, 0, TimeUnit.MILLISECONDS, ArrayBlockingQueue(1),
             { task -> Thread(task, "QuestDebugRequest") }, ThreadPoolExecutor.AbortPolicy())
     }

@@ -1,5 +1,5 @@
 extends RefCounted
-## Folder priority never reverses. Missing metadata stays last in either direction.
+## Optional folder priority never reverses. Missing metadata stays last in either direction.
 const ORDERS := ["name_asc", "name_desc", "modified_desc", "modified_asc", "size_desc", "size_asc", "source"]
 const LABELS := ["Name · A–Z", "Name · Z–A", "Modified · newest", "Modified · oldest", "Size · largest", "Size · smallest", "Source order"]
 
@@ -22,14 +22,14 @@ static func preserves_order(previous: Array, incoming: Array) -> bool:
 		last = index
 	return true
 
-static func before(a: Dictionary, b: Dictionary, order: String) -> bool:
+static func before(a: Dictionary, b: Dictionary, order: String, folders_first: bool = true) -> bool:
 	var folder_a := a.has("container")
 	var folder_b := b.has("container")
-	if folder_a != folder_b: return folder_a
+	if folders_first and folder_a != folder_b: return folder_a
 	var field := order.get_slice("_", 0)
-	if field == "modified" or (field == "size" and not folder_a):
-		var av := int(a.get(field, -1))
-		var bv := int(b.get(field, -1))
+	if field == "modified" or (field == "size" and not (folders_first and folder_a)):
+		var av := -1 if field == "size" and folder_a else int(a.get(field, -1))
+		var bv := -1 if field == "size" and folder_b else int(b.get(field, -1))
 		if (av < 0) != (bv < 0): return bv < 0
 		if av != bv: return av > bv if order.ends_with("desc") else av < bv
 	var comparison := compare_names(str(a.title), str(b.title))

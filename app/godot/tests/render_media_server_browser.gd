@@ -12,6 +12,135 @@ func check(ok: bool, message: String) -> void:
 	if not ok: failures.append(message)
 func _initialize() -> void: call_deferred("_run")
 
+func _hover_material(button: Dictionary) -> ShaderMaterial:
+	return button.hover_picture.material_override if button.has("hover_picture") else button.node.material_override
+
+func _hover_pixel(button: Dictionary, camera: Camera3D) -> Vector2i:
+	if button.has("hover_picture"):
+		var picture: MeshInstance3D = button.hover_picture
+		var size: Vector2 = picture.material_override.get_shader_parameter("image_size")
+		return Vector2i(camera.unproject_position(picture.to_global(Vector3(0, size.y * 0.5 + 0.0015, 0))))
+	return Vector2i(camera.unproject_position(button.node.to_global(Vector3(-button.rect.size.x / 2 + 0.0015, 0, 0))))
+
+func _check_hover_sweep(menu: Node, page: String, viewport: SubViewport, camera: Camera3D, output: String) -> void:
+	var sample := {}; var visited := 0
+	for button in menu._buttons:
+		if not button.node is MeshInstance3D or not button.node.is_visible_in_tree(): continue
+		var material = button.node.material_override
+		if not material is ShaderMaterial or material.shader not in [menu.SURFACE, menu.server_browser.gallery.BUTTON_OUTLINE]: continue
+		if not button.enabled:
+			menu._hover["right_hand"] = button.target; menu._update_highlights()
+			check(not _hover_material(button).get_shader_parameter("hovered"), "Disabled controls cannot light up: " + page)
+			continue
+		var pose: Transform3D = button.node.global_transform
+		var colors := {}
+		for child in button.node.get_children():
+			if child is Label3D: colors[child] = child.modulate
+			elif child is MeshInstance3D and child.material_override is StandardMaterial3D: colors[child] = child.material_override.albedo_color
+		menu.update_pointer("right_hand", pose.origin + pose.basis.z * 0.3, -pose.basis.z, true)
+		check(menu._hover.get("right_hand") == button.target, "Ray reaches media control: %s/%d" % [page, button.target])
+		check(_hover_material(button).get_shader_parameter("hovered"), "Ray gives visible feedback: %s/%d" % [page, button.target])
+		if button.has("hover_picture"):
+			check(not material.get_shader_parameter("hovered"), "Image feedback leaves the card frame quiet: " + page)
+		check(button.node.global_transform == pose, "Hover keeps hit geometry stable: " + page)
+		for child in colors:
+			var color: Color = child.modulate if child is Label3D else child.material_override.albedo_color
+			check(color == colors[child], "Hover preserves caption/icon ink: %s/%d" % [page, button.target])
+		visited += 1
+		# Prefer a picture card so the GPU check covers images obscuring the plate.
+		if sample.is_empty() or (button.rect.size.y > 0.15 and button.rect.size.x > 0.20): sample = button
+	menu.update_pointer("right_hand", Vector3.ZERO, Vector3.FORWARD, false)
+	check(visited > 0, "Media page has inspected interactions: " + page)
+	for button in menu._buttons:
+		if button.node is MeshInstance3D and button.node.material_override is ShaderMaterial:
+			if button.node.material_override.shader in [menu.SURFACE, menu.server_browser.gallery.BUTTON_OUTLINE]:
+				check(not _hover_material(button).get_shader_parameter("hovered"), "Tracking loss clears feedback: " + page)
+	await process_frame; await RenderingServer.frame_post_draw
+	var before := viewport.get_texture().get_image()
+	var pose: Transform3D = sample.node.global_transform
+	menu.update_pointer("right_hand", pose.origin + pose.basis.z * 0.3, -pose.basis.z, true)
+	var signals := [0]; var on_change := func(): signals[0] += 1
+	menu.composition_changed.connect(on_change)
+	for i in 10: menu.update_pointer("right_hand", pose.origin + pose.basis.z * 0.3, -pose.basis.z, true)
+	check(signals[0] == 0, "Steady hover does not request continuous repaint: " + page)
+	menu.composition_changed.disconnect(on_change)
+	await process_frame; await RenderingServer.frame_post_draw
+	var after := viewport.get_texture().get_image()
+	var edge := _hover_pixel(sample, camera)
+	var delta := 0.0
+	for x in range(-2, 3):
+		for y in range(-2, 3):
+			var a := after.get_pixelv(edge + Vector2i(x, y)); var b := before.get_pixelv(edge + Vector2i(x, y))
+			delta = maxf(delta, maxf(absf(a.r-b.r), maxf(absf(a.g-b.g), absf(a.b-b.b))))
+	check(delta > 0.12, "Hover feedback is visible in rendered pixels: " + page)
+	after.save_png(output.path_join("hover-" + page + ".png"))
+	menu.update_pointer("right_hand", Vector3.ZERO, Vector3.FORWARD, false)
+
+func _check_play_outline(image: Image, camera: Camera3D, menu: Node) -> void:
+	var border := Vector2i(camera.unproject_position(menu.to_global(Vector3(0.19, 0.1715, 0.002))))
+	var brightness := 0.0
+	for x in range(-1, 2):
+		for y in range(-1, 2):
+			var color := image.get_pixelv(border + Vector2i(x, y))
+			brightness = maxf(brightness, maxf(color.r, maxf(color.g, color.b)))
+	check(brightness > 0.35, "Play outline remains visible over detail artwork")
+	var centre := Vector2i(camera.unproject_position(menu.to_global(Vector3(0.40, 0.135, 0.002))))
+	var inside := image.get_pixelv(centre)
+	check(maxf(inside.r, maxf(inside.g, inside.b)) < 0.20, "Play outline keeps its centre transparent over dark artwork")
+
+func _check_native_hover(capture: Node, menu: Node, page: String, output: String) -> void:
+	var target: int = Menu.ROW_BASE if page == "scenes" else (menu.server_browser.gallery.PART + 1 if page == "detail_favorite" else Browser.ACTION + 170)
+	var button: Dictionary = menu._buttons.filter(func(item): return item.target == target)[0]
+	var slot: Dictionary = capture.slots.filter(func(item): return item.used and item.nodes.has(button.node))[0]
+	var pixel := _hover_pixel(button, slot.camera)
+	var before: Image = slot.raw.get_texture().get_image()
+	var pixels: Array = capture.slots.map(func(item): return item.raw.size)
+	var tip = menu._tips.get(target); menu._tips.erase(target) # Test feedback independently of the existing tooltip layer.
+	var pose: Transform3D = button.node.global_transform
+	menu.update_pointer("right_hand", pose.origin + pose.basis.z*0.3, -pose.basis.z, true)
+	capture.update(); await process_frame; await RenderingServer.frame_post_draw
+	capture.update(); await process_frame; await RenderingServer.frame_post_draw
+	var after: Image = slot.raw.get_texture().get_image(); var delta := 0.0
+	for x in range(-2, 3):
+		for y in range(-2, 3):
+			var a := after.get_pixelv(pixel+Vector2i(x, y)); var b := before.get_pixelv(pixel+Vector2i(x, y))
+			delta = maxf(delta, maxf(absf(a.r-b.r), maxf(absf(a.g-b.g), absf(a.b-b.b))))
+	check(delta > 0.12, "Native capture visibly highlights the ray target: " + page)
+	var repaints: int = capture.repaints
+	for i in 8:
+		menu.update_pointer("right_hand", pose.origin + pose.basis.z*0.3, -pose.basis.z, true)
+		capture._painted_ms = 0; capture.update()
+		await process_frame; await RenderingServer.frame_post_draw
+	check(capture.repaints == repaints, "Native stationary hover remains cached: " + page)
+	check(capture.slots.map(func(item): return item.raw.size) == pixels, "Hover does not allocate larger capture textures: " + page)
+	after.save_png(output.path_join("native-hover-" + page + ".png"))
+	menu.update_pointer("right_hand", Vector3.ZERO, Vector3.FORWARD, false)
+	if tip != null: menu._tips[target] = tip
+
+func _check_artwork_capture(capture: Node, menu: Node) -> void:
+	var art = menu.server_browser.backdrop
+	check(art.surface == menu._backdrop, "Detail artwork owns the panel fill; no competing panel quad")
+	var original: Texture2D = art.current
+	for overlay in [false, true]:
+		menu.set_scene_overlay(overlay)
+		for tint in [Color.RED, Color.BLUE]:
+			var image := Image.create(2, 2, false, Image.FORMAT_RGB8); image.fill(tint)
+			var material: ShaderMaterial = menu._backdrop.material_override
+			material.set_shader_parameter("picture", ImageTexture.create_from_image(image))
+			material.set_shader_parameter("transition", 0.0)
+			menu.composition_changed.emit(); capture.update()
+			await process_frame; await RenderingServer.frame_post_draw
+			capture.update(); await process_frame; await RenderingServer.frame_post_draw
+			var slot: Dictionary = capture.slots.filter(func(item): return item.used and item.nodes.has(menu._backdrop))[0]
+			var pixel := Vector2i(slot.camera.unproject_position(menu.to_global(Vector3(0.75, 0.54, 0))))
+			var color: Color = slot.raw.get_texture().get_image().get_pixelv(pixel)
+			check(color.r > color.b + 0.15 if tint == Color.RED else color.b > color.r + 0.15,
+				"Artwork remains visible in actual capture, overlay=%s tint=%s" % [overlay, tint])
+		menu._backdrop.material_override.set_shader_parameter("picture", original)
+	menu.set_scene_overlay(false)
+	menu.composition_changed.emit(); capture.update()
+	await process_frame; await RenderingServer.frame_post_draw
+
 func _check_detail_text(menu: Node, page: String, language: String) -> void:
 	var b: RefCounted = menu.server_browser
 	if page in ["detail_long", "detail_title"]:
@@ -96,7 +225,7 @@ func _run() -> void:
 			b.textures[b._request_image_key(b._image_request({"cover_image": thumb.merged({"max_width": width})}))] = b.textures[b._request_image_key(b._image_request({"cover_image": images[i % images.size()].merged({"max_width": 256})}))]
 	for language in ["zh", "zh_Hant", "en", "ja"]:
 		preload("res://scripts/i18n.gd").use(language)
-		for page in ["home", "home_more", "home_single", "home_recent_more", "home_empty", "scenes", "scenes_small", "scenes_large", "scenes_thumb", "scenes_list", "sort", "facets", "candidates", "folders", "folders_sources", "detail", "detail_cd2", "detail_parts_more", "detail_images", "detail_long", "detail_title", "overview", "overview_end", "picture", "filters", "filters_sources", "options", "saved", "search", "favorites"]:
+		for page in ["home", "home_more", "home_single", "home_recent_more", "home_empty", "scenes", "scenes_small", "scenes_large", "scenes_thumb", "scenes_list", "sort", "facets", "candidates", "folders", "folders_sources", "detail", "detail_favorite", "detail_cd2", "detail_parts_more", "detail_images", "detail_long", "detail_title", "overview", "overview_end", "picture", "filters", "filters_sources", "options", "saved", "search", "favorites"]:
 			b.view = page; b.query = {"page": 1, "q": "", "all_tags": true}; b.folder_path.clear(); b.entries = movies.duplicate(true); b.candidates = []; b.detail = {}
 			b.sort_query.clear()
 			if page == "sort": b.view = "scenes"; b.sort_query = {"sort": "duration", "direction": "ASC"}
@@ -117,9 +246,9 @@ func _run() -> void:
 			b.home_data.recent_opened = [] if page == "home_empty" else movies
 			if page.begins_with("home_"): b.view = "home"
 			b.library_id = "" if b.view == "home" else "lib1"
-			if page in ["detail", "detail_cd2", "detail_parts_more", "detail_images", "detail_long", "detail_title", "overview", "overview_end", "picture"]:
+			if page in ["detail", "detail_favorite", "detail_cd2", "detail_parts_more", "detail_images", "detail_long", "detail_title", "overview", "overview_end", "picture"]:
 				b.detail = movies[1].duplicate(true); b.detail.description = "当暮色落在城市边缘，一场安静的旅程缓缓展开。"
-				b.detail.images = images; b.detail.actors = actors; b.detail.year = 2026
+				b.detail.images = images; b.detail.backdrops = images; b.detail.actors = actors; b.detail.year = 2026; b.detail.favorite = page == "detail_favorite"
 				if page in ["detail_long", "detail_title", "overview", "overview_end"]:
 					b.detail.description = ("Along the mountains and coast, a quiet journey unfolds. We discover the small moments that illuminate everyday life. ".repeat(90) + "End of synopsis.") if language == "en" else ("当暮色落在城市边缘，一场安静的旅程缓缓展开。沿着群山与海岸，寻找生活中的细微光芒。".repeat(90) + "简介结束。")
 				if page == "detail_title": b.detail.title = "Letters from the Distant Mountains: A Journey Along the Coast" if language == "en" else "远山来信：沿着群山与海岸寻找生活中的细微光芒与城市记忆"
@@ -131,7 +260,7 @@ func _run() -> void:
 					b.detail.parts[i].part_image = part_image
 					b.textures[b._request_image_key(b._image_request({"cover_image": part_image}))] = b.textures[b._request_image_key(b._image_request({"cover_image": images[i].merged({"max_width": 256})}))]
 				b.gallery.part_start = 0; b.gallery.selected_part = 1 if page == "detail_cd2" else 0
-				if page in ["detail_cd2", "detail_parts_more", "detail_images", "detail_long", "detail_title"]: b.view = "detail"
+				if page in ["detail_favorite", "detail_cd2", "detail_parts_more", "detail_images", "detail_long", "detail_title"]: b.view = "detail"
 				if page == "overview_end": b.view = "overview"; b.gallery.overview_start = b.gallery.overview_lines().size() + 10
 				if page == "detail_parts_more": b.gallery.part_start = 2
 			if page == "favorites": b.view = "scenes"; b.query.favorites = true; b.entries = []; b.total = 0
@@ -146,11 +275,15 @@ func _run() -> void:
 					check(center.y + item.rect.size.y / 2 < 0.335, "Content stays below display controls: " + language + "/" + page)
 			await process_frame; await RenderingServer.frame_post_draw; await RenderingServer.frame_post_draw
 			_check_detail_text(menu, page, language)
+			if page == "detail_favorite": _check_play_outline(viewport.get_texture().get_image(), camera, menu)
 			viewport.get_texture().get_image().save_png(output.path_join(language + "-" + page + ".png"))
+			if language == "zh" and page in ["home", "scenes", "scenes_thumb", "scenes_list", "detail_favorite", "detail_images", "sort", "folders_sources", "filters", "options", "search"]:
+				await _check_hover_sweep(menu, page, viewport, camera, output)
 	var capture := Capture.new(); viewport.add_child(capture)
 	capture.configure(camera, camera, Display.new(), [menu], false, true); capture.set_process(false)
-	for page in ["scenes", "detail", "sources", "sort"]:
+	for page in ["scenes", "detail", "detail_favorite", "sources", "sort"]:
 		b.sources_open = page == "sources"; b.keyboard = ""; b.view = "scenes" if page in ["sources", "sort"] else page; b.entries = movies; b.detail = capture_detail; b.display_preferences.profile = {"mode": "poster", "size": 1}; b.sort_query = {"sort": "title", "direction": "DESC"} if page == "sort" else {}; menu.refresh()
+		if page == "detail_favorite": b.view = "detail"; b.detail = capture_detail.merged({"favorite": true}, true); menu.refresh()
 		capture.update(); await process_frame; await RenderingServer.frame_post_draw; capture.update()
 		check(capture.active == menu, "Compositor activates the complete media page: " + page)
 		check(capture.slots.any(func(slot): return slot.used and slot.nodes.has(menu._backdrop)), "Compositor captures the larger backdrop: " + page)
@@ -163,7 +296,12 @@ func _run() -> void:
 				var color := image.get_pixelv(pixel)
 				check(maxf(color.r, maxf(color.g, color.b)) > 0.05, "Sort popup keeps the background artwork visible in the actual compositor capture")
 		for slot in capture.slots:
+			if page == "detail_favorite" and slot.used and slot.nodes.has(menu._backdrop):
+				_check_play_outline(slot.raw.get_texture().get_image(), slot.camera, menu)
 			if slot.used: slot.raw.get_texture().get_image().save_png(output.path_join("composition-" + page + "-%d.png" % slot.index))
+		if page in ["scenes", "detail_favorite", "sort"]: await _check_native_hover(capture, menu, page, output)
+		if page == "detail_favorite": await _check_artwork_capture(capture, menu)
+		if page == "sources": check(menu._backdrop.material_override.shader == menu.SURFACE, "Leaving details restores the ordinary library panel")
 	capture.shutdown("test_complete")
 	FileAccess.open(output.path_join("verification.json"), FileAccess.WRITE).store_string(JSON.stringify({"checks": checks, "failures": failures, "scope": "Desktop media layouts and production menu capture; native XR and physical headset viewing unverified"}, "\t"))
 	for failure in failures: push_error(failure)

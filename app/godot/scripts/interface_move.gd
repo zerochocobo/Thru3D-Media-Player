@@ -30,13 +30,23 @@ func begin(hand: String, input: String, pose: Transform3D, targets: Array, ancho
 			var distance: float = (head.origin - target.pose.origin).dot(target.pose.basis.z)
 			capture.depth_limits = target.distance_limits - Vector2.ONE * distance
 	for target in targets:
-		if target.kind == "menu":
+		if target.kind == "menu" or target.get("upright_facing", false):
 			var up: Vector3 = head.basis.y if following and head is Transform3D else Vector3.UP
 			capture["upright_basis"] = _horizontal_basis(target.pose.basis, up)
 			capture["upright_pitch"] = asin(clampf(-target.pose.basis.z.normalized().dot(up), -1, 1))
 			capture["upright_yaw"] = 0.0
 			break
 	return true
+
+## Floating video/detail windows face the viewer using gravity as their up axis.
+## Use the same upright swing as menus instead of transporting roll along a sphere.
+static func face_viewer(position: Vector3, head: Transform3D) -> Basis:
+	var direction := position - head.origin
+	if direction.length_squared() < 0.0001: return head.basis.orthonormalized()
+	if Vector2(direction.x, direction.z).length_squared() < 0.0001:
+		var heading := -menu_head(head).basis.z
+		direction += heading * direction.length() * 0.01
+	return Basis.looking_at(direction.normalized(), Vector3.UP)
 
 func cancel() -> void: capture.clear()
 

@@ -8,7 +8,7 @@ extends RefCounted
 const Geometry := preload("res://scripts/video_geometry.gd")
 const PlatformMethods := preload("res://scripts/platform_methods.gd")
 const STRIDE := 28 # floats per layer, see VideoLayerNative.setLayers
-const MAX_LAYERS := 6 # native/xr-layer kMaxLayers
+const MAX_LAYERS := 16 # native storage bound; capacity() additionally budgets all providers
 const SURFACE_SIZE := 4096.0 # nominal swapchain units (MpvVideoBridge.LAYER_SURFACE_SIZE)
 const ORDER := -8 # beneath the menu layers (-6..-3) and eye buffers; the video panel punches the hole
 ## Layer sources: the decoder's surface, or the RGBA picture swapchain (2D->3D pairs, photos).
@@ -18,6 +18,11 @@ const PICTURE := 1
 const PICTURE_SLOT := 0
 const SUBTITLE_SLOT := 1
 const MAGNIFIER_SLOT := 2
+const PIP_SLOT := 3
+## Five persistent menu slots, passthrough and projection. Never let content consume their budget.
+var reserved_layers := 7
+var runtime_layers := 0
+var runtime_image_size := Vector2i.ZERO
 ## Layer blending (values[27]): opaque, or the texture's premultiplied alpha.
 const OPAQUE := 0
 const SOURCE_ALPHA := 1
@@ -102,6 +107,20 @@ func _init(target_platform: Object) -> void:
 func available() -> bool:
 	return bound and _flip
 
+func capacity() -> int:
+	return mini(MAX_LAYERS, maxi(0, runtime_layers - reserved_layers)) if runtime_layers > 0 else 6
+
+func debug_layers() -> Array:
+	var result: Array = []
+	if not OS.is_debug_build(): return result
+	for offset in range(0, _sent.size(), STRIDE):
+		result.append({"type": int(_sent[offset]), "eye": int(_sent[offset + 1]), "source": int(_sent[offset + 19]),
+			"slot": int(_sent[offset + 26]), "rect": [_sent[offset + 9], _sent[offset + 10], _sent[offset + 11], _sent[offset + 12]]})
+	return result
+
+func pip_supported() -> bool:
+	return available() and runtime_layers > 0 and PlatformMethods.supports(platform, "render_pip_atlas")
+
 static func _enabled(singleton: String) -> bool:
 	if not Engine.has_singleton(singleton):
 		return false
@@ -153,6 +172,10 @@ func update_session() -> void:
 	alpha_blend = _enabled("OpenXRFbCompositionLayerAlphaBlendExtension")
 	color_scale_bias = PlatformMethods.supports(platform, "video_layer_color_scale_bias") and bool(platform.video_layer_color_scale_bias())
 	bound = platform.bind_video_layer(_api.get_instance(), session, _api.get_instance_proc_addr("xrGetInstanceProcAddr"), space)
+	if bound and PlatformMethods.supports(platform, "video_layer_limits"):
+		var limits := str(platform.video_layer_limits()).split(" ", false)
+		if limits.size() == 3:
+			runtime_layers = int(limits[0]); runtime_image_size = Vector2i(int(limits[1]), int(limits[2]))
 	var xr := XRServer.find_interface("OpenXR") as OpenXRInterface
 	var info := xr.get_system_info() if xr else {}
 	var runtime_name := str(info.get("XRRuntimeName", ""))
@@ -184,17 +207,29 @@ func hide(owner: Object = null) -> void:
 ## source PICTURE shows the picture swapchain of [size] pixels; stereo: 1 side by side whatever the
 ## surface says (a 2D->3D pair), 0 mono, -1 as the surface. blend: OPAQUE, or SOURCE_ALPHA for a
 ## cut-out picture. extras: overlay layers drawn above it ({"values": STRIDE floats, "order": int}).
+## processed: colour, sharpening, logical eyes and alignment are already baked into the picture.
 func show(surface: Node3D, origin: XROrigin3D, source: int = SURFACE, size := Vector2(SURFACE_SIZE, SURFACE_SIZE), stereo: int = -1,
-		inset := Vector2.ZERO, pano := Vector4(0, 0, 1, 1), blend := OPAQUE, extras: Array = []) -> bool:
-	var values := layer_values(surface, origin, source, size, stereo, inset, pano, blend)
+		inset := Vector2.ZERO, pano := Vector4(0, 0, 1, 1), blend := OPAQUE, extras: Array = [], processed := false) -> bool:
+	var values := layer_values(surface, origin, source, size, stereo, inset, pano, blend, processed)
+	if values.size() / STRIDE > capacity(): return false
 	var orders := PackedInt32Array()
 	for i in values.size() / STRIDE: orders.append(ORDER)
+	# Callers reserve complete eye pairs before preparing them. Reject an overfull
+	# transaction rather than silently submitting one eye or dropping a subtitle.
+	if values.size() / STRIDE + extras.size() > capacity(): return false
 	for extra in extras:
-		if values.size() / STRIDE >= MAX_LAYERS: break
 		values.append_array(extra.values)
 		orders.append(int(extra.order))
 	_owner = surface
 	return _apply(values.size() / STRIDE, values, orders)
+
+func show_overlays(owner: Object, extras: Array) -> bool:
+	if extras.is_empty() or extras.size() > capacity(): return false
+	var values := PackedFloat32Array(); var orders := PackedInt32Array()
+	for extra in extras:
+		values.append_array(extra.values); orders.append(int(extra.order))
+	_owner = owner
+	return _apply(extras.size(), values, orders)
 
 ## One quad over a picture slot, posed in the origin's space ([pose] places its centre), [size] metres,
 ## showing [rect] (pixels) of the slot's [image]: subtitles, the magnifier. eye 0 both, 1 left, 2 right.
@@ -224,20 +259,37 @@ func cylinder_values(origin: Node3D, pose: Transform3D, radius: float, angle: fl
 	values[13] = radius; values[14] = angle; values[15] = aspect
 	return values
 
+const FISHEYE_PIXELS_PER_DEGREE := 16.0
+
+## Shared angular-density policy for ordinary and transparent main-view caches.
+static func fisheye_picture_size(source: Vector2i, span: Vector2, sbs: bool, top_bottom: bool, density: float) -> Vector2i:
+	var view_source := Vector2(source.x * (0.5 if sbs and not top_bottom else 1.0), source.y * (0.5 if sbs and top_bottom else 1.0))
+	# Snap first so 180 degrees x 16 does not round up an entire allocation step.
+	var across := snappedf(minf(rad_to_deg(span.x) * density, maxf(view_source.x, view_source.y)), 0.01)
+	var view := Vector2i(ceili(across / 16.0) * 16, ceili(snappedf(across * span.y / span.x, 0.01) / 16.0) * 16)
+	if not sbs: return view
+	return Vector2i(view.x, view.y * 2) if top_bottom else Vector2i(view.x * 2, view.y)
+
+## Equirect angles (radians): lens width across, at most 180 degrees high.
+static func fisheye_span(fov_degrees: float) -> Vector2:
+	var across := deg_to_rad(clampf(fov_degrees, 90.0, 360.0))
+	return Vector2(across, minf(across, PI))
+
 ## STRIDE floats per layer (one, or left and right). The supersampling and sharpness settings become
 ## the compositor's own filters (no shader on this path).
 ## inset: the fraction of a flat screen's width/height left to the eye buffers on each side (a photo's
 ## soft edge drawn there); the layer shows the inner part of the screen and of each eye's picture.
 func layer_values(surface: Node3D, origin: Node3D, source_kind: int = SURFACE, image := Vector2(SURFACE_SIZE, SURFACE_SIZE),
-		stereo: int = -1, inset := Vector2.ZERO, pano := Vector4(0, 0, 1, 1), blend := OPAQUE) -> PackedFloat32Array:
+		stereo: int = -1, inset := Vector2.ZERO, pano := Vector4(0, 0, 1, 1), blend := OPAQUE, processed := false) -> PackedFloat32Array:
 	var sbs: bool = surface.stereo_sbs if stereo < 0 else stereo == 1
 	var top_bottom: bool = surface.top_bottom and stereo < 0
-	var viewing: int = int(surface.get("viewing_eye")) if surface.get("viewing_eye") != null else 0
+	var viewing: int = int(surface.get("viewing_eye")) if not processed and surface.stereo_sbs and surface.get("viewing_eye") != null else 0
 	var filters := 0
 	if _settings:
 		filters = [0, NORMAL_SUPER_SAMPLING, QUALITY_SUPER_SAMPLING][clampi(supersampling, 0, 2)]
-		if surface.sharpness >= 0.4: filters |= QUALITY_SHARPENING
-		elif surface.sharpness > 0.0: filters |= NORMAL_SHARPENING
+		if not processed:
+			if surface.sharpness >= 0.4: filters |= QUALITY_SHARPENING
+			elif surface.sharpness > 0.0: filters |= NORMAL_SHARPENING
 	var panel: MeshInstance3D = surface.panel
 	var layers: Array = []
 	var pose := origin.global_transform.affine_inverse() * panel.global_transform
@@ -266,6 +318,10 @@ func layer_values(surface: Node3D, origin: Node3D, source_kind: int = SURFACE, i
 		var span := TAU if surface.geometry == Geometry.Geometry.EQUIRECT_360 else PI
 		var upper := PI * 0.5
 		var lower := -PI * 0.5
+		if surface.geometry == Geometry.Geometry.FISHEYE:
+			# A fisheye picture is remapped to equirect over the lens (equirect layers stop at +-90 degrees).
+			var fisheye := fisheye_span(float(surface.fisheye_fov))
+			span = fisheye.x; upper = fisheye.y * 0.5; lower = -upper
 		if surface.geometry == Geometry.Geometry.EQUIRECT_360 and pano != Vector4(0, 0, 1, 1):
 			# A partial panorama (photo sphere crop): the image spans only its window of the sphere,
 			# centred where its middle column lies (u 0.5 looks along -Z; larger u turns right).
@@ -278,11 +334,11 @@ func layer_values(surface: Node3D, origin: Node3D, source_kind: int = SURFACE, i
 		var source := 0
 		if sbs:
 			var view: int = eye - 1 if viewing == 0 else viewing - 1
-			source = 1 - view if surface.swap_eyes else view
+			source = 1 - view if surface.swap_eyes and surface.stereo_sbs and not processed else view
 		var rect := Rect2(Vector2.ZERO, image)
 		var shift := Vector2.ZERO
 		if sbs:
-			var offset: Vector2 = surface.stereo_offset_uv() if viewing == 0 and surface.has_method("stereo_offset_uv") else Vector2.ZERO
+			var offset: Vector2 = surface.stereo_offset_uv() if not processed and surface.stereo_sbs and viewing == 0 and surface.has_method("stereo_offset_uv") else Vector2.ZERO
 			var sign := -0.5 if eye == 1 else 0.5
 			shift = sign * offset
 			if top_bottom:
@@ -312,7 +368,7 @@ func layer_values(surface: Node3D, origin: Node3D, source_kind: int = SURFACE, i
 		if debug_image_layout != -2: values[17] = debug_image_layout
 		values[18] = filters
 		values[19] = source_kind
-		var color := _color_terms(surface)
+		var color: Dictionary = {"scale": Vector3.ONE, "bias": Vector3.ZERO} if processed else _color_terms(surface)
 		values[20] = color.scale.x; values[21] = color.scale.y; values[22] = color.scale.z
 		values[23] = color.bias.x; values[24] = color.bias.y; values[25] = color.bias.z
 		values[26] = PICTURE_SLOT

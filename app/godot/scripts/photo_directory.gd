@@ -72,7 +72,7 @@ func _finish(complete: bool, error: String) -> void:
 func cursor(uri: String) -> Dictionary:
 	for entry in _entries:
 		if str(entry.uri) == uri:
-			return {"path":_context.path,"order":_context.order,"offset":entry.browse_offset,"offsets":_offsets.keys()}
+			return {"path":_context.path,"order":_context.order,"offset":entry.browse_offset,"offsets":_offsets.keys(),"page_size":48}
 	return {}
 
 func _exit_tree() -> void: cancel()

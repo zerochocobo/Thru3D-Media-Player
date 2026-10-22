@@ -29,11 +29,11 @@ func run() -> void:
 	cinema.camera.fov = 75.0
 	check(not cinema.manifest.is_empty(), "Runtime GLB loads from file")
 	if cinema.manifest.is_empty(): quit(1); return
-	check(cinema.stats.runtime_glb and cinema.stats.seats == 540, "All 540 GT seats and runtime asset identity")
-	check(cinema.stats.triangles == 86784, "Committed GT asset triangle count")
-	var shell: MeshInstance3D = cinema.environment_root.get_child(0)
-	check(shell.get_active_material(0).vertex_color_use_as_albedo, "Runtime first primitive retains baked vertex color")
-	check(cinema.motion.selected_seat == "J15", "Default central GT seat from manifest")
+	check(cinema.stats.runtime_glb and cinema.stats.seats == 420, "All 420 GT seats and runtime asset identity")
+	check(cinema.stats.triangles == 628118, "Committed baked GT asset triangle count")
+	var seats: MeshInstance3D = cinema.environment_root.find_child("Seats_01A_near", true, false)
+	check(seats != null and seats.get_active_material(0).vertex_color_use_as_albedo, "Runtime seat chunks retain baked vertex lighting")
+	check(cinema.motion.selected_seat == "I15", "Default central GT seat from manifest")
 	check(cinema.movie != null, "Real Theora motion clip is attached")
 	await create_timer(0.6).timeout
 	check(cinema._video_size.x > 0, "Video decoder supplies texture dimensions")
@@ -44,7 +44,7 @@ func run() -> void:
 	check(is_equal_approx(cinema.video_surface.panel.mesh.size.x / cinema.video_surface.panel.mesh.size.y, 16.0 / 9.0), "Film aspect fits tall screen")
 	check(cinema.video_surface.panel.mesh.size.is_equal_approx(Vector2(32, 18)), "Real decoded 16:9 video spans 32 by 18 metres")
 	var pose: Transform3D = cinema.video_surface.panel.global_transform
-	_record_view(cinema, "J15-16x9")
+	_record_view(cinema, "I15-16x9")
 	var first := await shot(viewport, "01-center-view")
 	await create_timer(0.7).timeout
 	var second := await shot(viewport, "02-video-motion")
@@ -57,7 +57,7 @@ func run() -> void:
 	check(difference > 1.0, "Rendered screen changes while the actual video plays")
 	cinema._toggle_seats()
 	await shot(viewport, "03-seat-map")
-	check(cinema.seat_buttons.size() == 540 and cinema.seat_picker.visible, "Seat picker exposes all 540 seats")
+	check(cinema.seat_buttons.size() == 420 and cinema.seat_picker.visible, "Seat picker exposes all 420 seats")
 	_check_seat_map_bounds(cinema, viewport, "1440x960")
 	viewport.size = Vector2i(1280, 720)
 	await shot(viewport, "03-seat-map-1280x720")
@@ -70,16 +70,16 @@ func run() -> void:
 	await shot(viewport, "04-front-side-seat")
 	check(cinema.video_surface.panel.global_transform.is_equal_approx(pose), "Seat switch keeps world screen fixed")
 	# The click carries its own coordinates; a stale hover must not select an old target.
-	cinema.choose_seat("J15")
-	var target: Dictionary = cinema.manifest.seats.filter(func(seat): return seat.id == "I15")[0]
+	cinema.choose_seat("I15")
+	var target: Dictionary = cinema.manifest.seats.filter(func(seat): return seat.id == "H15")[0]
 	var target_eye: Vector3 = Prototype._vector(target.eye_position)
 	var target_pixel := cinema.camera.unproject_position(target_eye + Vector3(0, -0.45, 0.1))
-	cinema._hover_seat = "R30"
+	cinema._hover_seat = "N30"
 	var click := InputEventMouseButton.new(); click.button_index = MOUSE_BUTTON_LEFT; click.pressed = true; click.position = target_pixel
 	cinema._unhandled_input(click)
-	check(cinema.motion.selected_seat == "I15", "Mouse click recomputes visible seat ray instead of stale hover")
-	check(cinema.choose_seat("R15"), "Last row seat R15 is selectable")
-	_record_view(cinema, "R15-16x9")
+	check(cinema.motion.selected_seat == "H15", "Mouse click recomputes visible seat ray instead of stale hover")
+	check(cinema.choose_seat("N15"), "Last row seat N15 is selectable")
+	_record_view(cinema, "N15-16x9")
 	await shot(viewport, "05-rear-side-seat")
 	check(cinema.set_moving(true), "Leave seat into collision-safe aisle")
 	check(cinema.motion.selected_seat.is_empty(), "Free movement leaves seated state")
@@ -99,8 +99,8 @@ func run() -> void:
 	check(cinema.motion.eye_position == safe_eye, "Capture neutral gate stops movement")
 	check(not cinema.load_cinema("res://missing.glb", Prototype.DESCRIPTION), "Missing import fails explicitly")
 	check(is_instance_valid(cinema.environment_root), "Failed replacement retains old environment")
-	check(cinema.choose_seat("J15"), "Return to GT centre seat")
-	cinema.motion.eye_position = Vector3(14, 23.5, 35.5)
+	check(cinema.choose_seat("I15"), "Return to GT centre seat")
+	cinema.motion.eye_position = Vector3(13, 14.0, 25.5)
 	cinema._aim_screen()
 	cinema._sync_camera()
 	await shot(viewport, "07-auditorium-overview")
@@ -142,8 +142,8 @@ func _record_view(cinema: Node3D, label: String) -> void:
 
 func _check_seat_map_bounds(cinema: Node3D, viewport: SubViewport, label: String) -> void:
 	var bounds := Rect2(Vector2.ZERO, Vector2(viewport.size)).grow(0.5)
-	check(bounds.encloses(cinema.seat_picker.get_global_rect()), "Whole 540-seat picker fits " + label + ": " + str(cinema.seat_picker.get_global_rect()))
+	check(bounds.encloses(cinema.seat_picker.get_global_rect()), "Whole 420-seat picker fits " + label + ": " + str(cinema.seat_picker.get_global_rect()))
 	var all_inside := true
 	for button: Button in cinema.seat_buttons.values():
 		if not bounds.encloses(button.get_global_rect()): all_inside = false; break
-	check(all_inside, "All 540 clickable seats fit " + label)
+	check(all_inside, "All 420 clickable seats fit " + label)

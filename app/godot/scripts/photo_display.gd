@@ -56,8 +56,8 @@ var crop_center := Vector2(0.5, 0.5)
 var depth_requested := false
 var auto_depth := false # User choice survives image navigation and incompatible source modes.
 var depth_enabled := false
-var depth_strength := 1.0
 const DepthStrength := preload("res://scripts/depth_strength.gd")
+var depth_strength := DepthStrength.PHOTO_DEFAULT
 var depth_error := ""
 var spatial_requested := false
 var spatial_preferred := false # Global photo preference; navigation and automatic cleanup never change it.
@@ -1574,12 +1574,9 @@ func snapshot() -> Dictionary:
 		"source_size": "%d × %d" % [int(shown_size.x), int(shown_size.y)], "error": error, "screen_curve": screen_curve}
 
 func can_background() -> bool:
-	if _texture == null or _metadata.get("raw_rgba", false) or loading or not error.is_empty() or geometry != Geometry.Geometry.EQUIRECT_360 \
+	if _texture == null or _metadata.get("raw_rgba", false) or loading or not error.is_empty() \
 		or _size.x <= 0 or _size.y <= 0 or not Info.panorama_rect(_metadata).is_equal_approx(Vector4(0,0,1,1)): return false
-	var aspect := _size.x / _size.y
-	# Full or half-resolution stereo panoramas can provide a single complete eye for the sky.
-	var eye_aspect := aspect * (2.0 if top_bottom else 0.5) if stereo_sbs else aspect
-	return absf(eye_aspect - 2.0) < 0.02 or (stereo_sbs and absf(aspect - 2.0) < 0.02)
+	return preload("res://scripts/app_background.gd").source_supported(_size, geometry, stereo_sbs, top_bottom)
 
 func can_spatial() -> bool:
 	if not is_instance_valid(_spatial) or _texture==null or loading or not error.is_empty() or geometry!=0 or portrait_requested or inspect \
@@ -1678,7 +1675,7 @@ func _process_spatial() -> void:
 
 func background_source() -> Dictionary:
 	return {"path": _metadata.get("path", ""), "orientation": _metadata.get("orientation", 1),
-		"stereo": stereo_sbs, "top_bottom": top_bottom, "swap_eyes": swap_eyes} if can_background() else {}
+		"geometry": geometry, "stereo": stereo_sbs, "top_bottom": top_bottom, "swap_eyes": swap_eyes} if can_background() else {}
 
 ## Cancel queued/preloaded files from a removed volume while keeping an unrelated displayed photo.
 func release_storage(volume: Dictionary) -> bool:

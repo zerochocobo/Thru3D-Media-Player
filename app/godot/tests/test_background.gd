@@ -58,6 +58,8 @@ func check_png_backgrounds(main: Node, viewport: SubViewport) -> void:
 		[Vector2i(512,256), false, false, false],
 		[Vector2i(1024,256), true, false, false], [Vector2i(1024,256), true, false, true],
 		[Vector2i(512,512), true, true, false], [Vector2i(512,512), true, true, true],
+		[Vector2i(512,256), true, false, false, 1], [Vector2i(512,256), true, false, true, 1],
+		[Vector2i(256,512), true, true, false, 1], [Vector2i(256,256), true, false, false, 1],
 		[Vector2i(512,256), true, false, false], [Vector2i(512,256), true, true, true]]
 	for index in cases.size():
 		var item: Array = cases[index]
@@ -66,10 +68,11 @@ func check_png_backgrounds(main: Node, viewport: SubViewport) -> void:
 		if item[1]:
 			image.fill_rect(Rect2i(0,item[0].y/2,item[0].x,item[0].y/2) if item[2] else Rect2i(item[0].x/2,0,item[0].x/2,item[0].y),Color.BLUE)
 		image.save_png(source)
-		host.mode = {"version":1,"geometry":3,"stereo_sbs":item[1],"top_bottom":item[2],"swap_eyes":item[3]}
+		var geometry: int = item[4] if item.size()>4 else 3
+		host.mode = {"version":1,"geometry":geometry,"stereo_sbs":item[1],"top_bottom":item[2],"swap_eyes":item[3]}
 		main._on_library_chosen("file://"+source,source.get_file())
 		await photo_ready(main)
-		check(main.photo.geometry == 3 and main.photo.stereo_sbs == item[1] and main.photo.can_background(), "Captured mono/full/half stereo PNG enables background %d" % index)
+		check(main.photo.geometry == geometry and main.photo.stereo_sbs == item[1] and main.photo.can_background(), "Captured 180/360 mono/full/half stereo PNG enables background %d" % index)
 		main.photo_menu._activate(11)
 		var buttons: Array = main.photo_menu._buttons.filter(func(button): return button.target == main.photo_menu.PHOTO_BACKGROUND)
 		check(buttons.size()==1 and buttons[0].enabled, "Screenshot settings expose an enabled background action %d" % index)

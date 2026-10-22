@@ -92,6 +92,7 @@ func _start_custom(path: String, orientation: int, copy: bool, title: String, so
 	_job["stereo"] = bool(source.get("stereo", false))
 	_job["top_bottom"] = bool(source.get("top_bottom", false))
 	_job["swap_eyes"] = bool(source.get("swap_eyes", false))
+	_job["geometry"] = int(source.get("geometry", 3))
 	_thread = Thread.new()
 	if _thread.start(_read_custom.bind(input, _job.duplicate(true))) != OK:
 		_thread = null; error = "Background unavailable"; changed.emit(); return false
@@ -118,6 +119,8 @@ static func _read_custom(input: FileAccess, job: Dictionary) -> Dictionary:
 	var result := image.load_jpg_from_buffer(data) if header.codec == "jpg" else (image.load_png_from_buffer(data) if header.codec == "png" else image.load_webp_from_buffer(data))
 	if result != OK: return {}
 	Info.orient(image, int(job.orientation))
+	var half_sky: bool = job.copy and int(job.get("geometry", 3)) == 1
+	if job.copy and not source_supported(image.get_size(), int(job.get("geometry", 3)), job.stereo, job.top_bottom): return {}
 	if job.copy and job.stereo:
 		# Application skies are mono. Match the viewer's left eye, including swapped pairs.
 		var size := image.get_size()
@@ -126,15 +129,41 @@ static func _read_custom(input: FileAccess, job: Dictionary) -> Dictionary:
 		var offset := (Vector2i(0, eye.y) if job.top_bottom else Vector2i(eye.x, 0)) if job.swap_eyes else Vector2i.ZERO
 		image = image.get_region(Rect2i(offset, eye))
 		var aspect := float(eye.x) / eye.y
-		if absf(aspect - 2.0) > 0.02:
+		if not half_sky and absf(aspect - 2.0) > 0.02:
 			# Half-resolution stereo packs both views into a 2:1 frame. Restore its eye aspect.
 			if absf(float(size.x) / size.y - 2.0) > 0.02: return {}
 			var width := mini(8192, maxi(eye.x, eye.y * 2))
 			image.resize(width, width / 2, Image.INTERPOLATE_CUBIC)
+	if half_sky:
+		# A VR180 eye covers the front hemisphere, not the entire sphere. Bound the
+		# generated sky to 4096x2048 for the minimum supported headsets.
+		var edge := mini(2048, maxi(image.get_width(), image.get_height()))
+		image.resize(edge, edge, Image.INTERPOLATE_CUBIC)
+		var dark := Color(0.025, 0.03, 0.04)
+		var fade := maxi(1, edge / 30)
+		for x in fade:
+			var weight := smoothstep(0.0, float(fade), float(x))
+			for y in edge:
+				image.set_pixel(x, y, dark.lerp(image.get_pixel(x, y), weight))
+				image.set_pixel(edge - 1 - x, y, dark.lerp(image.get_pixel(edge - 1 - x, y), weight))
+		var panorama := Image.create(edge * 2, edge, false, Image.FORMAT_RGB8)
+		panorama.fill(dark)
+		image.convert(Image.FORMAT_RGB8)
+		panorama.blit_rect(image, Rect2i(0, 0, edge, edge), Vector2i(edge / 2, 0))
+		image = panorama
+	if job.copy and (job.stereo or half_sky):
 		if image.save_png(path) != OK: return {}
 	if absf(float(image.get_width()) / image.get_height() - 2.0) > 0.02: return {}
 	image.generate_mipmaps()
-	return {"image": image, "orientation": 1 if job.copy and job.stereo else int(job.orientation)}
+	return {"image": image, "orientation": 1 if job.copy and (job.stereo or half_sky) else int(job.orientation)}
+
+static func source_supported(size: Vector2, geometry: int, stereo: bool, top_bottom: bool) -> bool:
+	if geometry not in [1, 3] or size.x <= 0 or size.y <= 0: return false
+	var aspect := size.x / size.y
+	var eye_aspect := aspect * (2.0 if top_bottom else 0.5) if stereo else aspect
+	var wanted := 1.0 if geometry == 1 else 2.0
+	# Full eyes, or a half-resolution pair whose packed aspect matches one eye.
+	return absf(eye_aspect - wanted) < 0.02 or (stereo and absf(aspect - wanted) < 0.02)
 
 func _process(_delta: float) -> void:
 	if not _builtin_requested.is_empty():

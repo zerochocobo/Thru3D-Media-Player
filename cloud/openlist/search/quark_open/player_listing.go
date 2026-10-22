@@ -26,6 +26,13 @@ func (d *QuarkOpen) PlayerFolder(_ context.Context, remote, id string) (model.Ob
 }
 
 func (d *QuarkOpen) PlayerPage(ctx context.Context, dir model.Obj, cursor, order string) ([]model.Obj, string, int64, error) {
+	return d.PlayerPageSized(ctx, dir, cursor, order, 48)
+}
+
+func (d *QuarkOpen) PlayerPageSized(ctx context.Context, dir model.Obj, cursor, order string, pageSize int) ([]model.Obj, string, int64, error) {
+	if pageSize < 1 || pageSize > 100 {
+		return nil, "", 0, errors.New("invalid directory page size")
+	}
 	field, direction := d.OrderBy, d.OrderDirection
 	if field == "" || field == "none" {
 		field = "file_name"
@@ -45,7 +52,7 @@ func (d *QuarkOpen) PlayerPage(ctx context.Context, dir model.Obj, cursor, order
 			direction = "desc"
 		}
 	}
-	body := map[string]any{"parent_fid": dir.GetID(), "size": 48, "sort": field + ":" + direction}
+	body := map[string]any{"parent_fid": dir.GetID(), "size": pageSize, "sort": field + ":" + direction}
 	if cursor != "" {
 		var query QueryCursor
 		if json.Unmarshal([]byte(cursor), &query) != nil || query.Token == "" {
@@ -58,7 +65,7 @@ func (d *QuarkOpen) PlayerPage(ctx context.Context, dir model.Obj, cursor, order
 	if err != nil {
 		return nil, "", 0, err
 	}
-	if len(resp.Data.FileList) > 48 {
+	if len(resp.Data.FileList) > pageSize {
 		return nil, "", 0, errors.New("invalid directory page")
 	}
 	objects := make([]model.Obj, 0, len(resp.Data.FileList))

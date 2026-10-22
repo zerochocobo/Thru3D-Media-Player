@@ -91,7 +91,7 @@ func _run() -> void:
 	check(transport.global_transform.is_equal_approx(bar_pose), "Playback operations preserve the fixed transport world pose")
 	main.xr_camera.look_at(transport.global_position, Vector3.UP)
 	await shot("02-production-controls-below-screen")
-	for id in ["A15", "R15", "J15"]:
+	for id in ["A15", "N15", "I15"]:
 		main._cinema_request_interaction("seat")
 		for seat in main.cinema_environment._manifest.seats:
 			if str(seat.id) != id: continue

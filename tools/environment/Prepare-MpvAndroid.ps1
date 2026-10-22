@@ -30,6 +30,7 @@ if ($Candidate -eq 'SourceFrame') {
         $sourceManifest.pgs_bitmap_header_sha256 -ne (Get-FileHash (Join-Path $workspace 'native\mpv\include\mpv\quest_subtitle.h')).Hash.ToLowerInvariant() -or
         $sourceManifest.live_capture_patch_sha256 -ne (Get-FileHash (Join-Path $workspace 'native\mpv\patches\0004-mpv-live-capture.patch')).Hash.ToLowerInvariant() -or
         $sourceManifest.live_capture_header_sha256 -ne (Get-FileHash (Join-Path $workspace 'native\mpv\include\mpv\quest_capture.h')).Hash.ToLowerInvariant() -or
+        $sourceManifest.aaudio_clock_patch_sha256 -ne (Get-FileHash (Join-Path $workspace 'native\mpv\patches\0005-mpv-aaudio-clock.patch')).Hash.ToLowerInvariant() -or
         $sourceManifest.dovi_rpu_patch_sha256 -ne (Get-FileHash (Join-Path $workspace 'native\mpv\patches\0002-ffmpeg-profile5-rpu.patch')).Hash.ToLowerInvariant() -or
         $sourceManifest.source_lock_sha256 -ne (Get-FileHash (Join-Path $workspace 'third_party\mpv\source-lock.json')).Hash.ToLowerInvariant() -or
         $sourceManifest.private_header_sha256 -ne (Get-FileHash (Join-Path $workspace 'native\mpv\include\mpv\quest_frame.h')).Hash.ToLowerInvariant()) {

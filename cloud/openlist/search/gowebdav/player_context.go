@@ -17,7 +17,9 @@ func (c *Client) PlayerReadDir(ctx context.Context, path string) ([]os.FileInfo,
 	}
 	c.authMutex.Unlock()
 	view.headers = c.headers.Clone()
-	view.c = c.c
+	client := *c.c
+	client.Transport = playerBoundedTransport{c.c.Transport}
+	view.c = &client
 	interceptor := c.interceptor
 	view.interceptor = func(method string, r *http.Request) {
 		*r = *r.WithContext(ctx)
@@ -25,7 +27,7 @@ func (c *Client) PlayerReadDir(ctx context.Context, path string) ([]os.FileInfo,
 			interceptor(method, r)
 		}
 	}
-	files, err := view.ReadDir(path)
+	files, err := view.playerBoundedReadDir(path)
 	if err == nil {
 		view.authMutex.Lock()
 		accepted := view.auth

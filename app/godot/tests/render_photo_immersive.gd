@@ -147,7 +147,8 @@ func _run() -> void:
 	photo.finish_transition()
 	pending = await frame(); pending.save_png(output.path_join("loading-portrait.png"))
 	var frost := pending.get_pixel(480,300)
-	check(frost.r > .02 and frost.r < .5 and frost.b > .2, "Frosted placeholder is visible and translucent over the environment")
+	# White loading glass (1fd16aec) over the blue test environment: lighter than it, still tinted by it.
+	check(frost.r > .02 and frost.b > frost.r + .2, "Frosted placeholder is visible and translucent over the environment")
 	check(is_equal_approx(photo._placeholder_size.x / photo._placeholder_size.y, 2.0 / 3.0), "Rendered placeholder has the EXIF-correct portrait aspect")
 	photo.loading = false; photo._restore_display()
 	photo.free(); viewport.free()

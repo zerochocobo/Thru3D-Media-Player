@@ -14,6 +14,7 @@
 #include <jni.h>
 #include <android/log.h>
 #include <array>
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstring>
@@ -23,18 +24,20 @@
 #define XR_USE_PLATFORM_ANDROID
 #include <EGL/egl.h>
 #include <GLES3/gl32.h>
+#include <GLES2/gl2ext.h>
 #include <vector>
 #define XR_USE_GRAPHICS_API_OPENGL_ES
 #include <openxr/openxr.h>
 #include <openxr/openxr_platform.h>
 #include "layer_layout.h"
 #include "layer_extensions.h"
+#include "pip_shader_sources.h"
 
 namespace {
-constexpr int kMaxLayers = 6; // video or picture (one per eye), subtitles, magnifier
+constexpr int kMaxLayers = 16; // hard storage bound; the caller also budgets every runtime/provider layer
 constexpr int kStride = 28; // floats per layer in setLayers()
 /** Picture swapchain slots: 0 photos and 2D->3D pairs, 1 subtitles, 2 the photo magnifier. */
-constexpr int kSlots = 3;
+constexpr int kSlots = 4; // slot 3 is the shared three-window, two-eye PiP atlas
 struct Picture {
     XrSwapchain image = XR_NULL_HANDLE;
     std::vector<GLuint> textures;
@@ -58,6 +61,7 @@ struct State {
     XrSwapchain swapchain = XR_NULL_HANDLE;
     jobject surface = nullptr; // global reference, valid while the swapchain lives
     int width = 0, height = 0;
+    XrSystemGraphicsProperties limits{};
     std::array<Layer, kMaxLayers> layers{};
     // Next-chain structs of each layer (XR_FB extensions Godot's vendors plugin enables on Meta runtimes).
     std::array<XrCompositionLayerImageLayoutFB, kMaxLayers> layouts{};
@@ -88,7 +92,9 @@ template <typename T> T proc(const char* name) {
     return reinterpret_cast<T>(function);
 }
 Picture* picture(int slot) { return slot >= 0 && slot < kSlots ? &state.pictures[slot] : nullptr; }
+void release_pip_projection();
 void destroy_image(Picture& p) {
+    if (&p == &state.pictures[0]) release_pip_projection();
     if (p.image != XR_NULL_HANDLE) {
         if (p.acquired && state.release_image) {
             XrSwapchainImageReleaseInfo info{}; info.type = XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO;
@@ -196,7 +202,7 @@ GLuint mask_draw_program() {
 uint64_t mask_version = 0; // masks drawn into the mask swapchain (Godot shows the mask layer once > 0)
 /** Everything the masked draw changes, restored afterwards (Godot keeps its own GL state cache). */
 struct DrawState {
-    GLint framebuffer = 0, program = 0, array = 0, active = 0, viewport[4] = {}, textures[2] = {}, samplers[2] = {};
+    GLint framebuffer = 0, program = 0, array = 0, active = 0, viewport[4] = {}, textures[3] = {}, samplers[3] = {};
     GLboolean blend, scissor, depth, cull, stencil, dither, mask[4] = {}, srgb = GL_TRUE;
     // GLES encodes writes to sRGB images unless EXT_sRGB_write_control turned that off.
     static bool srgb_control() {
@@ -215,7 +221,7 @@ struct DrawState {
         if (srgb_control()) { srgb = glIsEnabled(kFramebufferSrgb); glEnable(kFramebufferSrgb); }
         glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &framebuffer); glGetIntegerv(GL_CURRENT_PROGRAM, &program);
         glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &array); glGetIntegerv(GL_ACTIVE_TEXTURE, &active); glGetIntegerv(GL_VIEWPORT, viewport);
-        for (int i = 0; i < 2; ++i) {
+        for (int i = 0; i < 3; ++i) {
             glActiveTexture(GL_TEXTURE0 + i);
             glGetIntegerv(GL_TEXTURE_BINDING_2D, &textures[i]); glGetIntegerv(GL_SAMPLER_BINDING, &samplers[i]);
         }
@@ -225,7 +231,7 @@ struct DrawState {
     }
     static void set(GLenum cap, GLboolean on) { if (on) glEnable(cap); else glDisable(cap); }
     ~DrawState() {
-        for (int i = 0; i < 2; ++i) {
+        for (int i = 0; i < 3; ++i) {
             glActiveTexture(GL_TEXTURE0 + i);
             glBindTexture(GL_TEXTURE_2D, static_cast<GLuint>(textures[i])); glBindSampler(i, static_cast<GLuint>(samplers[i]));
         }
@@ -273,6 +279,14 @@ Java_org_vrpassthroughplayer_plugin_VideoLayerNative_bind(JNIEnv* env, jclass, j
         state.acquire_image = proc<PFN_xrAcquireSwapchainImage>("xrAcquireSwapchainImage");
         state.wait_image = proc<PFN_xrWaitSwapchainImage>("xrWaitSwapchainImage");
         state.release_image = proc<PFN_xrReleaseSwapchainImage>("xrReleaseSwapchainImage");
+        XrSystemGetInfo system_info{}; system_info.type = XR_TYPE_SYSTEM_GET_INFO;
+        system_info.formFactor = XR_FORM_FACTOR_HEAD_MOUNTED_DISPLAY;
+        XrSystemId system_id = XR_NULL_SYSTEM_ID;
+        XrSystemProperties properties{}; properties.type = XR_TYPE_SYSTEM_PROPERTIES;
+        if (XR_FAILED(proc<PFN_xrGetSystem>("xrGetSystem")(state.instance, &system_info, &system_id)) ||
+            XR_FAILED(proc<PFN_xrGetSystemProperties>("xrGetSystemProperties")(state.instance, system_id, &properties)))
+            throw std::runtime_error("Cannot query compositor layer/atlas limits");
+        state.limits = properties.graphicsProperties;
         return JNI_TRUE;
     } catch (const std::exception& failure) {
         log(ANDROID_LOG_WARN, failure.what());
@@ -328,7 +342,7 @@ Java_org_vrpassthroughplayer_plugin_VideoLayerNative_destroySurface(JNIEnv* env,
 extern "C" JNIEXPORT jboolean JNICALL
 Java_org_vrpassthroughplayer_plugin_VideoLayerNative_setLayers(JNIEnv* env, jclass, jint count, jfloatArray values) {
     std::lock_guard<std::mutex> lock(mutex);
-    if (count < 0 || count > kMaxLayers || !values || env->GetArrayLength(values) < count * kStride) {
+    if (count < 0 || count > kMaxLayers || (state.limits.maxLayerCount && static_cast<uint32_t>(count) > state.limits.maxLayerCount) || !values || env->GetArrayLength(values) < count * kStride) {
         log(ANDROID_LOG_WARN, "setLayers: bad count " + std::to_string(count)); return JNI_FALSE;
     }
     std::array<float, kMaxLayers * kStride> v{};
@@ -636,6 +650,499 @@ Java_org_vrpassthroughplayer_plugin_VideoLayerNative_copyTexture(JNIEnv*, jclass
         log(ANDROID_LOG_WARN, "copyTexture GL error " + std::to_string(error) + " source format 0x" + std::to_string(format) + " " + std::to_string(width) + "x" + std::to_string(height) + " into " + std::to_string(p.width) + "x" + std::to_string(p.height));
     }
     return error == GL_NO_ERROR ? JNI_TRUE : JNI_FALSE;
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_org_vrpassthroughplayer_plugin_VideoLayerNative_compositorLimits(JNIEnv* env, jclass) {
+    std::lock_guard<std::mutex> lock(mutex);
+    const auto& p = state.limits;
+    return env->NewStringUTF((std::to_string(p.maxLayerCount) + " " + std::to_string(p.maxSwapchainImageWidth) + " " + std::to_string(p.maxSwapchainImageHeight)).c_str());
+}
+
+namespace {
+struct PipUniform { const char* name; int components; bool integer; };
+// Packed request ABI: 43 common floats followed by three windows of 16 floats.
+constexpr PipUniform pip_common[] = {
+    {"video_geometry",1,true}, {"stereo_sbs",1,true}, {"top_bottom",1,true}, {"stereo_half",1,true},
+    {"swap_eyes",1,true}, {"viewing_eye",1,true}, {"rotation_degrees",1,true}, {"fisheye_fov",1,false},
+    {"source_size",2,false}, {"color_uv_scale",2,false}, {"stereo_offset",2,false},
+    {"alpha_enabled",1,true}, {"depth_enabled",1,true}, {"depth_shift",1,false}, {"depth_convergence",1,false},
+    {"alpha_edge",2,false}, {"model_size",2,false}, {"model_content_rect",4,false},
+    {"packed_alpha",1,true}, {"packed_size",2,false}, {"packed_color",1,true}, {"grade_enabled",1,true},
+    {"grade_gain",3,false}, {"grade_gamma",3,false}, {"grade_offset",3,false},
+    {"grade_contrast",1,false}, {"grade_saturation",1,false}, {"sharpness",1,false}
+};
+constexpr PipUniform pip_window[] = {
+    {"pip_center",2,false}, {"pip_span",2,false}, {"pip_forward",3,false},
+    {"pip_right",3,false}, {"pip_up",3,false}, {"pip_tangent",2,false}, {"pip_viewing_eye",1,true}
+};
+struct PipProgram {
+    GLuint program = 0;
+    std::array<GLint, 28> common{};
+    std::array<GLint, 7> window{};
+    GLint origin = -1, size = -1, eye = -1, raw = -1, whole = -1, span = -1, pip = -1;
+    GLint make_map = -1, cached = -1;
+};
+PipProgram pip_programs[2];
+GLuint pip_sampler = 0, pip_framebuffer = 0;
+struct PipProjection {
+    GLuint texture = 0;
+    EGLContext context = EGL_NO_CONTEXT;
+    std::array<float,6> key{};
+    bool valid = false;
+    bool failed = false;
+} pip_projection;
+void release_pip_projection() {
+    pip_projection.valid=false; pip_projection.failed=false;
+    if (pip_projection.context==eglGetCurrentContext() && pip_projection.texture) {
+        glDeleteTextures(1,&pip_projection.texture); pip_projection.texture=0;
+    }
+}
+uint64_t pip_renders = 0, pip_cpu_us = 0;
+uint64_t main_cpu_us = 0;
+int pip_draws = 0;
+bool pip_sample_requested = false;
+std::vector<int> pip_sample_pixels;
+bool main_sample_requested = false;
+std::vector<int> main_sample_pixels;
+struct PipTimer {
+    struct Query { GLuint id=0; bool pending=false, valid=true; };
+    std::array<Query,8> queries{};
+    std::array<uint64_t,120> samples{};
+    size_t sample_count=0, cursor=0;
+    EGLContext context=EGL_NO_CONTEXT;
+    PFNGLGETQUERYOBJECTUI64VEXTPROC result=nullptr;
+    PFNGLGENQUERIESEXTPROC gen=nullptr;
+    PFNGLBEGINQUERYEXTPROC begin_query=nullptr;
+    PFNGLENDQUERYEXTPROC end_query=nullptr;
+    PFNGLGETQUERYIVEXTPROC query_info=nullptr;
+    PFNGLGETQUERYOBJECTUIVEXTPROC query_value=nullptr;
+    bool running=false;
+    void collect() {
+        if (context!=eglGetCurrentContext()) {
+            queries={}; samples={}; sample_count=cursor=0; running=false; context=eglGetCurrentContext(); result=nullptr;
+            GLint count=0; glGetIntegerv(GL_NUM_EXTENSIONS,&count);
+            for(GLint i=0;i<count;++i) {
+                const char* name=reinterpret_cast<const char*>(glGetStringi(GL_EXTENSIONS,static_cast<GLuint>(i)));
+                if (name && std::strcmp(name,"GL_EXT_disjoint_timer_query")==0)
+                    result=reinterpret_cast<PFNGLGETQUERYOBJECTUI64VEXTPROC>(eglGetProcAddress("glGetQueryObjectui64vEXT"));
+            }
+            gen=reinterpret_cast<PFNGLGENQUERIESEXTPROC>(eglGetProcAddress("glGenQueriesEXT"));
+            begin_query=reinterpret_cast<PFNGLBEGINQUERYEXTPROC>(eglGetProcAddress("glBeginQueryEXT"));
+            end_query=reinterpret_cast<PFNGLENDQUERYEXTPROC>(eglGetProcAddress("glEndQueryEXT"));
+            query_info=reinterpret_cast<PFNGLGETQUERYIVEXTPROC>(eglGetProcAddress("glGetQueryivEXT"));
+            query_value=reinterpret_cast<PFNGLGETQUERYOBJECTUIVEXTPROC>(eglGetProcAddress("glGetQueryObjectuivEXT"));
+            if (!gen || !begin_query || !end_query || !query_info || !query_value) result=nullptr;
+        }
+        if (!result) return;
+        GLint disjoint=0; glGetIntegerv(GL_GPU_DISJOINT_EXT,&disjoint);
+        if (disjoint) { sample_count=0; for(auto& q:queries) if (q.pending) q.valid=false; }
+        for(auto& q:queries) if (q.pending) {
+            GLuint ready=0; query_value(q.id,GL_QUERY_RESULT_AVAILABLE_EXT,&ready);
+            if (!ready) continue;
+            GLuint64 elapsed=0; result(q.id,GL_QUERY_RESULT,&elapsed); q.pending=false;
+            if (!disjoint && q.valid) { samples[sample_count%samples.size()]=elapsed/1000; ++sample_count; }
+        }
+    }
+    void begin() {
+        collect(); if (!result) return;
+        GLint current=0; query_info(GL_TIME_ELAPSED_EXT,GL_CURRENT_QUERY_EXT,&current);
+        if (current) return; // never nest in a profiler's timer
+        for(size_t i=0;i<queries.size();++i) {
+            cursor=(cursor+1)%queries.size(); auto& q=queries[cursor];
+            if (q.pending) continue;
+            if (!q.id) gen(1,&q.id);
+            begin_query(GL_TIME_ELAPSED_EXT,q.id); q.valid=true; running=true; return;
+        }
+    }
+    void restart_samples() {
+        collect(); samples={}; sample_count=0;
+        for(auto& q:queries) if(q.pending) q.valid=false;
+    }
+    void end() {
+        if (!running) return;
+        end_query(GL_TIME_ELAPSED_EXT); queries[cursor].pending=true; running=false;
+    }
+    uint64_t p95() const {
+        const size_t count=std::min(sample_count,samples.size());
+        if (!count) return 0;
+        auto sorted=samples; std::sort(sorted.begin(),sorted.begin()+count);
+        return sorted[std::min(count-1,(count*95)/100)];
+    }
+} pip_timer, main_timer;
+std::array<float,47> main_timing_key{};
+EGLContext main_timing_context=EGL_NO_CONTEXT;
+
+PipProgram* pip_program(bool external) {
+    auto& p = pip_programs[external ? 1 : 0];
+    if (p.program && glIsProgram(p.program)) return &p;
+    p = PipProgram{};
+    constexpr const char* vertex = "#version 300 es\nvoid main() { vec2 p=vec2(float((gl_VertexID<<1)&2),float(gl_VertexID&2)); gl_Position=vec4(p*2.0-1.0,0.0,1.0); }\n";
+    const GLuint vs = compile(GL_VERTEX_SHADER, vertex);
+    const GLuint fs = compile(GL_FRAGMENT_SHADER, external ? video_rvm_pair_oes_atlas : video_rvm_pair_atlas);
+    if (!vs || !fs) { if (vs) glDeleteShader(vs); if (fs) glDeleteShader(fs); return nullptr; }
+    p.program = glCreateProgram(); glAttachShader(p.program, vs); glAttachShader(p.program, fs); glLinkProgram(p.program);
+    glDeleteShader(vs); glDeleteShader(fs);
+    GLint ok = 0; glGetProgramiv(p.program, GL_LINK_STATUS, &ok);
+    if (!ok) { log(ANDROID_LOG_WARN, "PiP atlas shader does not link"); glDeleteProgram(p.program); p.program = 0; return nullptr; }
+    for (size_t i=0; i<p.common.size(); ++i) p.common[i] = glGetUniformLocation(p.program, pip_common[i].name);
+    for (size_t i=0; i<p.window.size(); ++i) p.window[i] = glGetUniformLocation(p.program, pip_window[i].name);
+    p.origin=glGetUniformLocation(p.program,"atlas_origin"); p.size=glGetUniformLocation(p.program,"atlas_size");
+    p.eye=glGetUniformLocation(p.program,"atlas_eye"); p.raw=glGetUniformLocation(p.program,"atlas_raw");
+    p.whole=glGetUniformLocation(p.program,"atlas_main"); p.span=glGetUniformLocation(p.program,"atlas_span");
+    p.pip=glGetUniformLocation(p.program,"pip_enabled");
+    p.make_map=glGetUniformLocation(p.program,"atlas_make_map"); p.cached=glGetUniformLocation(p.program,"atlas_cached");
+    glUseProgram(p.program);
+    glUniform1i(glGetUniformLocation(p.program,"color_texture"),0);
+    glUniform1i(glGetUniformLocation(p.program,"alpha_texture"),1);
+    glUniform1i(glGetUniformLocation(p.program,"atlas_projection"),2);
+    glUniform1i(glGetUniformLocation(p.program,"pip_enabled"),1);
+    return &p;
+}
+void pip_uniform(GLint location, const PipUniform& descriptor, const float* v) {
+    if (location < 0) return;
+    if (descriptor.integer) glUniform1i(location, static_cast<GLint>(v[0]));
+    else if (descriptor.components == 1) glUniform1f(location,v[0]);
+    else if (descriptor.components == 2) glUniform2fv(location,1,v);
+    else if (descriptor.components == 3) glUniform3fv(location,1,v);
+    else glUniform4fv(location,1,v);
+}
+// A small float UV map is generated once with the production projection itself.
+// Cache only the smooth 180..240-degree domain; other lenses use the analytic path.
+bool prepare_pip_projection(PipProgram& program, const std::array<float,43>& v, GLuint destination) {
+    if (v[0]!=2 || v[7]<180 || v[7]>240) return false;
+    const EGLContext current=eglGetCurrentContext();
+    if (pip_projection.context!=current) { pip_projection=PipProjection{}; pip_projection.context=current; }
+    static const bool filterable=[] {
+        GLint count=0; glGetIntegerv(GL_NUM_EXTENSIONS,&count);
+        for (GLint i=0;i<count;++i) if (std::strcmp(reinterpret_cast<const char*>(glGetStringi(GL_EXTENSIONS,i)),"GL_OES_texture_float_linear")==0) return true;
+        return false;
+    }();
+    if (!filterable) return false;
+    const std::array<float,6> key{v[1],v[2],v[3],v[7],v[8],v[9]};
+    if (pip_projection.failed && pip_projection.key==key) return false;
+    glActiveTexture(GL_TEXTURE2); glBindSampler(2,pip_sampler);
+    if (!pip_projection.valid || pip_projection.key!=key) {
+        if (!pip_projection.texture) {
+            glGenTextures(1,&pip_projection.texture); glBindTexture(GL_TEXTURE_2D,pip_projection.texture);
+            glTexStorage2D(GL_TEXTURE_2D,1,GL_RG32F,1025,1025);
+        }
+        // Do not sample the texture while drawing into it.
+        glBindTexture(GL_TEXTURE_2D,0);
+        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_2D,pip_projection.texture,0);
+        const bool complete=glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER)==GL_FRAMEBUFFER_COMPLETE;
+        if (complete) {
+            glUniform1i(program.make_map,1); glUniform1i(program.cached,0);
+            glViewport(0,0,1025,1025); glDrawArrays(GL_TRIANGLES,0,3);
+        }
+        const bool okay=complete && glGetError()==GL_NO_ERROR;
+        while (glGetError()!=GL_NO_ERROR) {}
+        glUniform1i(program.make_map,0);
+        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_2D,destination,0);
+        pip_projection.valid=okay; pip_projection.key=key; pip_projection.failed=false;
+        if (!okay) { release_pip_projection(); pip_projection.failed=true; return false; }
+    }
+    glBindTexture(GL_TEXTURE_2D,pip_projection.texture);
+    return true;
+}
+} // namespace
+
+/** One source lease, one swapchain, up to six small draws. Rows are fixed slot IDs;
+ * each eye has a duplicated two-pixel gutter. No readback, frame delay or new decoder. */
+extern "C" JNIEXPORT jboolean JNICALL
+Java_org_vrpassthroughplayer_plugin_VideoLayerNative_renderPip(JNIEnv* env, jclass, jint slot, jint color, jboolean external,
+        jint mask, jint active, jint eyes, jfloatArray common, jfloatArray windows) {
+    std::lock_guard<std::mutex> lock(mutex);
+    Picture* target = picture(slot);
+    if (!target || !target->acquired || color <= 0 || !glIsTexture(static_cast<GLuint>(color)) ||
+        active <= 0 || active > 8 || (eyes != 1 && eyes != 2) || !common || !windows ||
+        env->GetArrayLength(common) != 43 || env->GetArrayLength(windows) != 48) return JNI_FALSE;
+    std::array<float,43> v{}; std::array<float,48> w{};
+    env->GetFloatArrayRegion(common,0,43,v.data()); env->GetFloatArrayRegion(windows,0,48,w.data());
+    for (float f:v) if (!std::isfinite(f)) return JNI_FALSE;
+    for (float f:w) if (!std::isfinite(f)) return JNI_FALSE;
+    if ((v[14] != 0 || v[15] != 0) && (mask <= 0 || !glIsTexture(static_cast<GLuint>(mask)))) return JNI_FALSE;
+    auto& image = *target;
+    const bool whole=active==8; // whole processed main frame, side-by-side output, no tile gutters
+    if ((!whole && (eyes != 1 || image.height % 3)) || image.width % eyes || image.width < 40 || image.height < 60) return JNI_FALSE;
+    const int width=whole ? image.width/eyes : image.width-4, height=whole ? image.height : image.height/3-4;
+    const auto started=std::chrono::steady_clock::now();
+    while (glGetError()!=GL_NO_ERROR) {}
+    GLenum status=GL_FRAMEBUFFER_COMPLETE;
+    {
+        DrawState saved;
+        GLint previous_external=0; glActiveTexture(GL_TEXTURE0);
+        const GLenum kind=external==JNI_TRUE ? GL_TEXTURE_EXTERNAL_OES : GL_TEXTURE_2D;
+        if (external==JNI_TRUE) glGetIntegerv(GL_TEXTURE_BINDING_EXTERNAL_OES,&previous_external);
+        PipProgram* program=pip_program(external==JNI_TRUE);
+        if (!program) return JNI_FALSE;
+        if (!pip_sampler || !glIsSampler(pip_sampler)) {
+            glGenSamplers(1,&pip_sampler); glSamplerParameteri(pip_sampler,GL_TEXTURE_MIN_FILTER,GL_LINEAR);
+            glSamplerParameteri(pip_sampler,GL_TEXTURE_MAG_FILTER,GL_LINEAR);
+            glSamplerParameteri(pip_sampler,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);
+            glSamplerParameteri(pip_sampler,GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);
+        }
+        if (!pip_framebuffer || !glIsFramebuffer(pip_framebuffer)) glGenFramebuffers(1,&pip_framebuffer);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER,pip_framebuffer);
+        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_2D,image.acquired,0);
+        status=glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER);
+        if (status==GL_FRAMEBUFFER_COMPLETE) {
+            glDisable(GL_BLEND); glDisable(GL_SCISSOR_TEST); glDisable(GL_DEPTH_TEST); glDisable(GL_CULL_FACE);
+            glDisable(GL_STENCIL_TEST); glDisable(GL_DITHER); glColorMask(GL_TRUE,GL_TRUE,GL_TRUE,GL_TRUE);
+            glBindVertexArray(0); glUseProgram(program->program);
+            glActiveTexture(GL_TEXTURE0); glBindTexture(kind,static_cast<GLuint>(color)); glBindSampler(0,pip_sampler);
+            glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_2D,static_cast<GLuint>(mask)); glBindSampler(1,pip_sampler);
+            // Transparent output needs linear premultiplication; let the sRGB
+            // attachment encode it in hardware instead of three shader pow()s.
+            // Opaque output keeps the direct encoded-byte fast path.
+            const bool raw=DrawState::srgb_control() && v[14]==0 && v[26]==0;
+            if (raw) glDisable(DrawState::kFramebufferSrgb);
+            glUniform1i(program->raw,raw ? 1 : 0); glUniform2f(program->size,static_cast<float>(width),static_cast<float>(height));
+            glUniform1i(program->whole,whole ? 1 : 0); glUniform1i(program->pip,whole ? 0 : 1);
+            glUniform1i(program->make_map,0); glUniform1i(program->cached,0);
+            constexpr float pi=3.14159265358979323846f;
+            const float span=v[0]==3 ? 2*pi : v[0]==1 ? pi : v[7]*pi/180.0f;
+            glUniform2f(program->span,span,v[0]==2 ? std::min(span,pi) : pi);
+            size_t offset=0;
+            for(size_t i=0;i<program->common.size();++i) { pip_uniform(program->common[i],pip_common[i],v.data()+offset); offset+=pip_common[i].components; }
+            if (whole) glUniform1i(program->cached,prepare_pip_projection(*program,v,image.acquired) ? 1 : 0);
+            int draws=0;
+            auto& timer=whole ? main_timer : pip_timer;
+            if (whole) {
+                std::array<float,47> key{};
+                std::copy(v.begin(),v.end(),key.begin());
+                key[43]=image.width; key[44]=image.height; key[45]=eyes; key[46]=external==JNI_TRUE ? 1.0f : 0.0f;
+                if (key!=main_timing_key || main_timing_context!=eglGetCurrentContext()) {
+                    main_timer.restart_samples(); main_timing_key=key; main_timing_context=eglGetCurrentContext();
+                }
+            }
+            timer.begin();
+            for(int index=0;index<(whole ? 1 : 3);++index) if (whole || (active & (1<<index))) {
+                offset=static_cast<size_t>(index)*16;
+                for(size_t i=0;i<program->window.size();++i) { pip_uniform(program->window[i],pip_window[i],w.data()+offset); offset+=pip_window[i].components; }
+                for(int eye=0;eye<eyes;++eye) {
+                    const int gutter=whole ? 0 : 4;
+                    const int x=eye*(width+gutter),y=index*(height+gutter);
+                    glViewport(x,y,width+gutter,height+gutter); glUniform2f(program->origin,static_cast<float>(x),static_cast<float>(y));
+                    glUniform1i(program->eye,eye); glDrawArrays(GL_TRIANGLES,0,3); ++draws;
+                }
+            }
+            timer.end();
+            if (!whole) pip_draws=draws;
+            if ((pip_sample_requested && !whole) || (main_sample_requested && whole)) {
+                auto& pixels=whole ? main_sample_pixels : pip_sample_pixels;
+                if (whole) main_sample_requested=false; else pip_sample_requested=false;
+                pixels.clear();
+                GLint read=0, pack=0, row=0, skip_rows=0, skip_pixels=0;
+                glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING,&read); glGetIntegerv(GL_PIXEL_PACK_BUFFER_BINDING,&pack);
+                glGetIntegerv(GL_PACK_ROW_LENGTH,&row); glGetIntegerv(GL_PACK_SKIP_ROWS,&skip_rows); glGetIntegerv(GL_PACK_SKIP_PIXELS,&skip_pixels);
+                glBindFramebuffer(GL_READ_FRAMEBUFFER,pip_framebuffer); glBindBuffer(GL_PIXEL_PACK_BUFFER,0);
+                glPixelStorei(GL_PACK_ROW_LENGTH,0); glPixelStorei(GL_PACK_SKIP_ROWS,0); glPixelStorei(GL_PACK_SKIP_PIXELS,0);
+                for(int index=0;index<(whole ? 1 : 3);++index) if (whole || (active & (1<<index))) for(int eye=0;eye<eyes;++eye) {
+                    std::array<uint8_t,4> rgba{};
+                    const int gutter=whole ? 0 : 4, inset=whole ? 0 : 2;
+                    glReadPixels(eye*(width+gutter)+inset+width/2,index*(height+gutter)+inset+height/2,1,1,GL_RGBA,GL_UNSIGNED_BYTE,rgba.data());
+                    pixels.push_back(whole ? 0 : index+1); pixels.push_back(eye);
+                    for(uint8_t channel:rgba) pixels.push_back(channel);
+                }
+                glPixelStorei(GL_PACK_ROW_LENGTH,row); glPixelStorei(GL_PACK_SKIP_ROWS,skip_rows); glPixelStorei(GL_PACK_SKIP_PIXELS,skip_pixels);
+                glBindBuffer(GL_PIXEL_PACK_BUFFER,static_cast<GLuint>(pack)); glBindFramebuffer(GL_READ_FRAMEBUFFER,static_cast<GLuint>(read));
+            }
+        }
+        if (external==JNI_TRUE) { glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_EXTERNAL_OES,static_cast<GLuint>(previous_external)); }
+    }
+    const GLenum error=glGetError();
+    const auto cpu=static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-started).count());
+    if (whole) main_cpu_us=cpu; else pip_cpu_us=cpu;
+    if (status!=GL_FRAMEBUFFER_COMPLETE || error!=GL_NO_ERROR) {
+        log(ANDROID_LOG_WARN,"PiP atlas draw failed: framebuffer "+std::to_string(status)+" GL "+std::to_string(error)); return JNI_FALSE;
+    }
+    if (!whole) ++pip_renders;
+    return JNI_TRUE;
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_org_vrpassthroughplayer_plugin_VideoLayerNative_pipMetrics(JNIEnv* env, jclass) {
+    std::lock_guard<std::mutex> lock(mutex);
+    // Only read query results that are already ready; never wait for the GPU.
+    pip_timer.collect(); main_timer.collect();
+    return env->NewStringUTF((std::to_string(pip_cpu_us)+" "+std::to_string(pip_timer.p95())+" "+
+        std::to_string(pip_timer.sample_count)+" "+std::to_string(pip_renders)+" "+std::to_string(pip_draws)+" "+
+        std::to_string(main_timer.p95())+" "+std::to_string(main_timer.sample_count)+" "+std::to_string(main_cpu_us)+" "+
+        std::to_string(pip_projection.valid ? 1 : 0)).c_str());
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_org_vrpassthroughplayer_plugin_VideoLayerNative_pipSamples(JNIEnv* env, jclass, jboolean request) {
+    std::lock_guard<std::mutex> lock(mutex);
+    if (request==JNI_TRUE) { pip_sample_requested=true; pip_sample_pixels.clear(); }
+    std::string pixels;
+    for(int value:pip_sample_pixels) { if (!pixels.empty()) pixels+=' '; pixels+=std::to_string(value); }
+    return env->NewStringUTF(pixels.c_str());
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_org_vrpassthroughplayer_plugin_VideoLayerNative_pipMainSamples(JNIEnv* env, jclass, jboolean request) {
+    std::lock_guard<std::mutex> lock(mutex);
+    if (request==JNI_TRUE) { main_sample_requested=true; main_sample_pixels.clear(); }
+    std::string pixels;
+    for(int value:main_sample_pixels) { if (!pixels.empty()) pixels+=' '; pixels+=std::to_string(value); }
+    return env->NewStringUTF(pixels.c_str());
+}
+
+/** Fisheye -> equirect for the equirect picture layer (no layer shape exists for a lens). Each view keeps
+ * its place in the frame (layout 0 mono, 1 side by side, 2 top-bottom); one view spans span.x radians
+ * across and span.y high. Same lens mapping as video_coordinates.gdshaderinc (equidistant, padded
+ * circle, or the whole eye rectangle for half-width stereo); outside the lens is black. */
+GLuint fisheye_programs[2] = {0, 0};
+GLuint fisheye_sampler = 0;
+/** Debug only: the next remap reads its picture back, every [step]th pixel, as RGBA8 rows top-first. */
+int fisheye_readback_step = 0;
+std::vector<uint8_t> fisheye_readback;
+int fisheye_readback_size[2] = {0, 0};
+GLuint fisheye_program(bool external) {
+    GLuint& program = fisheye_programs[external ? 1 : 0];
+    if (program && glIsProgram(program)) return program;
+    static const char* vertex = "#version 300 es\n"
+        "void main() { vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2)); gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0); }\n";
+    const std::string fragment = std::string("#version 300 es\n") +
+        (external ? "#extension GL_OES_EGL_image_external_essl3 : require\n" : "") +
+        "precision highp float;\n" +
+        (external ? "uniform samplerExternalOES source;\n" : "uniform sampler2D source;\n") +
+        "uniform vec2 target; uniform vec2 source_size; uniform vec2 span; uniform vec2 uv_scale;\n"
+        "uniform float fov; uniform int frame_layout; uniform int half_eyes; uniform int raw_output;\n"
+        "out vec4 result;\n"
+        "vec3 to_linear(vec3 c) { return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(vec3(0.04045), c)); }\n"
+        "void main() {\n"
+        "  vec2 uv = gl_FragCoord.xy / target; // row 0 is the picture's top, as for every GL picture here\n"
+        "  float eye = 0.0; vec2 local = uv;\n"
+        "  if (frame_layout == 1) { eye = step(0.5, uv.x); local.x = uv.x * 2.0 - eye; }\n"
+        "  else if (frame_layout == 2) { eye = step(0.5, uv.y); local.y = uv.y * 2.0 - eye; }\n"
+        "  float longitude = (local.x - 0.5) * span.x; float latitude = (0.5 - local.y) * span.y;\n"
+        "  vec3 d = vec3(cos(latitude) * sin(longitude), sin(latitude), -cos(latitude) * cos(longitude));\n"
+        "  float radial = acos(clamp(-d.z, -1.0, 1.0)) / radians(fov * 0.5);\n"
+        "  if (radial > 1.0) { result = vec4(0.0, 0.0, 0.0, 1.0); return; }\n"
+        "  float transverse = length(d.xy);\n"
+        "  vec2 axis = transverse > 0.000001 ? vec2(d.x, -d.y) / transverse : vec2(0.0);\n"
+        "  vec2 eye_size = vec2(source_size.x * (frame_layout == 1 ? 0.5 : 1.0), source_size.y * (frame_layout == 2 ? 0.5 : 1.0));\n"
+        "  vec2 p = half_eyes == 1 ? vec2(0.5) + 0.5 * radial * axis : vec2(0.5) + 0.5 * radial * axis * min(eye_size.x, eye_size.y) / eye_size;\n"
+        "  p = clamp(p, vec2(0.5) / eye_size, vec2(1.0) - vec2(0.5) / eye_size);\n"
+        "  if (frame_layout == 1) { p.x = (p.x + eye) * 0.5; } else if (frame_layout == 2) { p.y = (p.y + eye) * 0.5; }\n"
+        "  vec3 c = texture(source, p * uv_scale).rgb;\n"
+        "  result = vec4(raw_output == 1 ? c : to_linear(c), 1.0);\n"
+        "}\n";
+    const GLuint vs = compile(GL_VERTEX_SHADER, vertex), fs = compile(GL_FRAGMENT_SHADER, fragment.c_str());
+    if (!vs || !fs) { if (vs) glDeleteShader(vs); if (fs) glDeleteShader(fs); return 0; }
+    program = glCreateProgram();
+    glAttachShader(program, vs); glAttachShader(program, fs); glLinkProgram(program);
+    glDeleteShader(vs); glDeleteShader(fs);
+    GLint ok = 0; glGetProgramiv(program, GL_LINK_STATUS, &ok);
+    if (!ok) { log(ANDROID_LOG_WARN, "fisheye program does not link"); glDeleteProgram(program); program = 0; }
+    return program;
+}
+
+/** Draws the fisheye frame [texture] (GL_TEXTURE_2D, or the decoder's external image) remapped into the
+ * whole acquired image of [slot]. params: layout, half_eyes, fov degrees, span x, span y (radians),
+ * source width, source height, UV scale x, UV scale y. */
+extern "C" JNIEXPORT jboolean JNICALL
+Java_org_vrpassthroughplayer_plugin_VideoLayerNative_remapFisheye(JNIEnv* env, jclass, jint slot, jint texture, jboolean external, jfloatArray params) {
+    std::lock_guard<std::mutex> lock(mutex);
+    Picture* target = picture(slot);
+    if (!target || !params || env->GetArrayLength(params) < 9) return JNI_FALSE;
+    Picture& p = *target;
+    if (!p.acquired || texture <= 0 || !glIsTexture(static_cast<GLuint>(texture))) {
+        log(ANDROID_LOG_WARN, "remapFisheye: texture " + std::to_string(texture) + " not usable (acquired " + std::to_string(p.acquired) + ")");
+        return JNI_FALSE;
+    }
+    float v[9] = {};
+    env->GetFloatArrayRegion(params, 0, 9, v);
+    const GLenum kind = external == JNI_TRUE ? GL_TEXTURE_EXTERNAL_OES : GL_TEXTURE_2D;
+    while (glGetError() != GL_NO_ERROR) {}
+    GLenum status = GL_FRAMEBUFFER_COMPLETE;
+    {
+        DrawState saved;
+        GLint previous_external = 0;
+        glActiveTexture(GL_TEXTURE0);
+        if (kind == GL_TEXTURE_EXTERNAL_OES) glGetIntegerv(GL_TEXTURE_BINDING_EXTERNAL_OES, &previous_external);
+        const GLuint program = fisheye_program(kind == GL_TEXTURE_EXTERNAL_OES);
+        if (!program) return JNI_FALSE;
+        if (!fisheye_sampler || !glIsSampler(fisheye_sampler)) {
+            glGenSamplers(1, &fisheye_sampler);
+            glSamplerParameteri(fisheye_sampler, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glSamplerParameteri(fisheye_sampler, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glSamplerParameteri(fisheye_sampler, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glSamplerParameteri(fisheye_sampler, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        }
+        GLuint framebuffer = 0;
+        glGenFramebuffers(1, &framebuffer);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, framebuffer);
+        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, p.acquired, 0);
+        status = glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER);
+        if (status == GL_FRAMEBUFFER_COMPLETE) {
+            glDisable(GL_BLEND); glDisable(GL_SCISSOR_TEST); glDisable(GL_DEPTH_TEST);
+            glDisable(GL_CULL_FACE); glDisable(GL_STENCIL_TEST); glDisable(GL_DITHER);
+            glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+            glViewport(0, 0, p.width, p.height);
+            glUseProgram(program);
+            glBindVertexArray(0);
+            glBindTexture(kind, static_cast<GLuint>(texture)); glBindSampler(0, fisheye_sampler);
+            glUniform1i(glGetUniformLocation(program, "source"), 0);
+            glUniform2f(glGetUniformLocation(program, "target"), static_cast<float>(p.width), static_cast<float>(p.height));
+            glUniform1i(glGetUniformLocation(program, "frame_layout"), static_cast<int>(v[0]));
+            glUniform1i(glGetUniformLocation(program, "half_eyes"), static_cast<int>(v[1]));
+            glUniform1f(glGetUniformLocation(program, "fov"), v[2]);
+            glUniform2f(glGetUniformLocation(program, "span"), v[3], v[4]);
+            glUniform2f(glGetUniformLocation(program, "source_size"), v[5], v[6]);
+            glUniform2f(glGetUniformLocation(program, "uv_scale"), v[7], v[8]);
+            // Without sRGB write encoding the frame's encoded values go in as they are (as copyTexture
+            // copies them), saving a per-pixel decode and the hardware re-encode.
+            const bool raw = DrawState::srgb_control();
+            if (raw) glDisable(DrawState::kFramebufferSrgb);
+            glUniform1i(glGetUniformLocation(program, "raw_output"), raw ? 1 : 0);
+            glDrawArrays(GL_TRIANGLES, 0, 3);
+            if (fisheye_readback_step > 0) {
+                const int step = fisheye_readback_step; fisheye_readback_step = 0;
+                std::vector<uint8_t> full(static_cast<size_t>(p.width) * p.height * 4);
+                GLint read_framebuffer = 0; glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &read_framebuffer);
+                glBindFramebuffer(GL_READ_FRAMEBUFFER, framebuffer);
+                glPixelStorei(GL_PACK_ALIGNMENT, 1);
+                glReadPixels(0, 0, p.width, p.height, GL_RGBA, GL_UNSIGNED_BYTE, full.data());
+                glBindFramebuffer(GL_READ_FRAMEBUFFER, static_cast<GLuint>(read_framebuffer));
+                const int w = p.width / step, h = p.height / step;
+                fisheye_readback.assign(static_cast<size_t>(w) * h * 4, 0);
+                for (int y = 0; y < h; ++y) for (int x = 0; x < w; ++x)
+                    std::memcpy(&fisheye_readback[(static_cast<size_t>(y) * w + x) * 4], &full[(static_cast<size_t>(y * step) * p.width + x * step) * 4], 4);
+                fisheye_readback_size[0] = w; fisheye_readback_size[1] = h;
+            }
+        }
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+        glDeleteFramebuffers(1, &framebuffer);
+        if (kind == GL_TEXTURE_EXTERNAL_OES) glBindTexture(GL_TEXTURE_EXTERNAL_OES, static_cast<GLuint>(previous_external));
+    }
+    const GLenum error = glGetError();
+    if (status != GL_FRAMEBUFFER_COMPLETE || error != GL_NO_ERROR)
+        log(ANDROID_LOG_WARN, "remapFisheye framebuffer status " + std::to_string(status) + " GL error " + std::to_string(error));
+    return status == GL_FRAMEBUFFER_COMPLETE && error == GL_NO_ERROR ? JNI_TRUE : JNI_FALSE;
+}
+
+/** Debug only: arms a readback of the next fisheye remap (every [step]th pixel). */
+extern "C" JNIEXPORT void JNICALL
+Java_org_vrpassthroughplayer_plugin_VideoLayerNative_requestFisheyeReadback(JNIEnv*, jclass, jint step) {
+    std::lock_guard<std::mutex> lock(mutex);
+    fisheye_readback_step = step > 0 ? step : 0; fisheye_readback.clear();
+}
+/** Debug only: width, height, then RGBA8 rows top-first; empty until a remap read back. */
+extern "C" JNIEXPORT jbyteArray JNICALL
+Java_org_vrpassthroughplayer_plugin_VideoLayerNative_takeFisheyeReadback(JNIEnv* env, jclass) {
+    std::lock_guard<std::mutex> lock(mutex);
+    if (fisheye_readback.empty()) return env->NewByteArray(0);
+    std::vector<uint8_t> out(8 + fisheye_readback.size());
+    for (int i = 0; i < 2; ++i) { const uint32_t v = static_cast<uint32_t>(fisheye_readback_size[i]); std::memcpy(&out[i * 4], &v, 4); }
+    std::memcpy(&out[8], fisheye_readback.data(), fisheye_readback.size());
+    fisheye_readback.clear();
+    jbyteArray result = env->NewByteArray(static_cast<jsize>(out.size()));
+    env->SetByteArrayRegion(result, 0, static_cast<jsize>(out.size()), reinterpret_cast<const jbyte*>(out.data()));
+    return result;
 }
 
 /** Rows [y, y + rows) of the acquired image from an RGBA8 colour band and an R8 mask band of the same

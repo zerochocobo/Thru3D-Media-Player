@@ -2,6 +2,7 @@ extends RefCounted
 
 # Original vector glyphs, generated once and shared by both ray menus.
 const PATHS := {
+	"pip": '<rect x="2" y="4" width="20" height="16" rx="2"/><rect x="12" y="11" width="8" height="6" rx="1"/><path d="M5 7H9M5 7V11M5 7L10 12"/>',
 	"camera": '<path d="M3 7H7L9 4H15L17 7H21V20H3Z"/><circle cx="12" cy="13" r="4"/>',
 	"camera_recording": '<path d="M3 7H7L9 4H15L17 7H21V20H3Z"/><circle cx="12" cy="13" r="4"/><circle cx="20" cy="4" r="2.5" fill="white"/>',
 	"record": '<circle cx="12" cy="12" r="7" fill="white" stroke="none"/>',
@@ -41,6 +42,7 @@ const PATHS := {
 	"photo_wall": '<path d="M2 7L7 5V19L2 17ZM9 4H15V20H9ZM17 5L22 7V17L17 19Z"/>',
 	"memory": '<path d="M3 3L11 5 8 12 2 10ZM15 2L22 5 20 12 13 9ZM9 14L20 15 16 22 6 20Z"/>',
 	"heart": '<path d="M12 21L3.5 12.5C-2 6.5 5 0 12 6C19 0 26 6.5 20.5 12.5Z"/>',
+	"heart_filled": '<path d="M12 21L3.5 12.5C-2 6.5 5 0 12 6C19 0 26 6.5 20.5 12.5Z" fill="white"/>',
 	"bookmark": '<path d="M6 3H18V21L12 17 6 21Z"/>',
 	"bookmark_add": '<path d="M5 3H14M5 3V21L11 17 17 21V13M17 3V11M13 7H21"/>',
 	"undo": '<path d="M8 5L3 10 8 15M3 10H14A6 6 0 0 1 14 22"/>',
@@ -73,6 +75,8 @@ const PATHS := {
 	"panorama": '<path d="M3 5Q12 1 21 5V15Q12 11 3 15ZM3 18C3 22 21 22 21 18M18 19L21 17 22 20"/>',
 	"quality": '<path d="M12 2L21 7V17L12 22 3 17V7Z"/><path d="M8 12L11 15 16 9"/>',
 	"recenter": '<path d="M3 9V3H9M15 3H21V9M21 15V21H15M9 21H3V15"/><circle cx="12" cy="12" r="3"/>',
+	"pick_region": '<path d="M3 9V3H9M15 3H21V9M9 21H3V15"/><path d="M10 10L20 14 16 16 14 20Z" fill="white"/>',
+	"aspect": '<rect x="3" y="5" width="18" height="14" rx="1.5"/><path d="M6 10V8H10M14 16H18V14"/>',
 	"sound": '<path d="M3 9H7L12 5V19L7 15H3ZM15.5 9A4.5 4.5 0 0 1 15.5 15M18.5 5.5A9 9 0 0 1 18.5 18.5"/>',
 	"volume_low": '<path d="M3 9H7L12 5V19L7 15H3ZM15.5 9A4.5 4.5 0 0 1 15.5 15"/>',
 	"mute": '<path d="M3 9H7L12 5V19L7 15H3ZM16 9L22 15M22 9L16 15"/>',
@@ -116,6 +120,8 @@ const PATHS := {
 	"eject": '<path d="M4 14L12 4 20 14Z"/><path d="M4 20H20"/>',
 	"battery": '<rect x="7" y="4" width="10" height="18" rx="2"/><path d="M10 2H14"/>',
 	"bolt": '<path d="M14 2L7 13H11L10 22 17 10H13Z" fill="white" stroke="none"/>',
+	"watch": '<path d="M9 2H15L16 6M8 6L9 2M9 22H15L16 18M8 18L9 22"/><circle cx="12" cy="12" r="6"/><path d="M12 9V12L14 13"/>',
+	"watch_off": '<path d="M6 2H11L12 6M5 6L6 2M6 22H11L12 18M5 18L6 22"/><circle cx="8.5" cy="12" r="6"/><path d="M8.5 9V12L10.5 13M17 9L23 15M23 9L17 15"/>',
 	"lock": '<rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7A4 4 0 0 1 16 7V11"/>',
 	"unlock": '<rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7A4 4 0 0 1 15.5 5"/>',
 	"voice": '<circle cx="8" cy="8" r="3.5"/><path d="M2 21C2 15.5 14 15.5 14 21M17 6.5A4 4 0 0 1 17 12.5M20 4A8 8 0 0 1 20 15"/>'}

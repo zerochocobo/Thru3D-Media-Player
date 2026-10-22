@@ -3,6 +3,7 @@ $ErrorActionPreference = 'Stop'
 $workspace = Split-Path -Parent $PSScriptRoot
 . "$PSScriptRoot\environment\Activate-QuestEnvironment.ps1" -ToolRoot $ToolRoot
 $projectDirectory = Join-Path $workspace 'app\godot'
+& "$PSScriptRoot\Test-VideoPip.ps1" -Godot $env:GODOT_EXE
 $orderOutput = Join-Path $workspace 'build/output/media-browse-order'
 New-Item -ItemType Directory -Path $orderOutput -Force | Out-Null
 $orderLog = Join-Path $orderOutput 'test_media_browse_order.log'
@@ -35,6 +36,19 @@ if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $workspace 'build/output/con
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $workspace 'build/output/controller-feedback-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|ERROR:)' -or (Get-Content (Join-Path $workspace 'build/output/controller-feedback-host.log') -Raw) -notmatch 'Controller feedback: [0-9]+ checks, 0 failures') { throw 'World controller feedback and picture manipulation regression failed.' }
 & $env:GODOT_EXE --xr-mode off --rendering-method gl_compatibility --rendering-driver opengl3 --path $projectDirectory --quit-after 1800 --script res://tests/render_controller_feedback.gd 2>&1 | Tee-Object -FilePath (Join-Path $workspace 'build/output/controller-feedback-render.log')
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $workspace 'build/output/controller-feedback-render.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:)' -or (Get-Content (Join-Path $workspace 'build/output/controller-feedback-render.log') -Raw) -notmatch 'Controller feedback render: [0-9]+ checks, 0 failures') { throw 'World controller pointer pixels regression failed.' }
+$watchOutput = Join-Path $workspace 'build/output/wrist-watch'
+New-Item -ItemType Directory -Path $watchOutput -Force | Out-Null
+& $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_wrist_watch.gd 2>&1 | Tee-Object -FilePath (Join-Path $watchOutput 'host.log')
+if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $watchOutput 'host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|ERROR:)' -or (Get-Content (Join-Path $watchOutput 'host.log') -Raw) -notmatch 'Wrist watch: [0-9]+ checks, 0 failures') { throw 'Wrist watch interaction regression failed.' }
+& $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_watch_toggle.gd 2>&1 | Tee-Object -FilePath (Join-Path $watchOutput 'toggle-host.log')
+if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $watchOutput 'toggle-host.log') -Raw) -notmatch 'Watch toggle: [0-9]+ checks, 0 failures') { throw 'Wrist watch toggle wiring failed.' }
+$env:THRU3D_TEST_OUTPUT = $watchOutput
+& $env:GODOT_EXE --xr-mode off --rendering-method gl_compatibility --rendering-driver opengl3 --path $projectDirectory --quit-after 3000 --script res://tests/render_wrist_watch.gd 2>&1 | Tee-Object -FilePath (Join-Path $watchOutput 'render.log')
+$env:THRU3D_TEST_OUTPUT = $watchOutput
+& $env:GODOT_EXE --xr-mode off --rendering-method gl_compatibility --rendering-driver opengl3 --path $projectDirectory --quit-after 1800 --script res://tests/render_watch_toggle.gd 2>&1 | Tee-Object -FilePath (Join-Path $watchOutput 'toggle.log')
+if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $watchOutput 'toggle.log') -Raw) -notmatch 'Watch toggle render: [0-9]+ checks, 0 failures') { throw 'Wrist watch toggle failed.' }
+Remove-Item Env:THRU3D_TEST_OUTPUT
+if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $watchOutput 'render.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:)' -or (Get-Content (Join-Path $watchOutput 'render.log') -Raw) -notmatch 'Wrist watch render: [0-9]+ checks, 0 failures') { throw 'Wrist watch rendering failed.' }
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_photo_portrait.gd 2>&1 | Tee-Object -FilePath (Join-Path $workspace 'build/output/photo-portrait-host.log')
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $workspace 'build/output/photo-portrait-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|ERROR:)') { throw 'Photo portrait regression failed.' }
 & $env:GODOT_EXE --xr-mode off --rendering-method gl_compatibility --rendering-driver opengl3 --path $projectDirectory --quit-after 1800 --script res://tests/render_photo_portrait.gd 2>&1 | Tee-Object -FilePath (Join-Path $workspace 'build/output/photo-portrait-render.log')
@@ -83,6 +97,12 @@ if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'menu-depth-re
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'menu-text-sampling.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)') { throw 'Menu text sampling regression failed.' }
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_menu_tooltips.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'menu-tooltips.log')
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'menu-tooltips.log') -Raw) -match '(?m)^(SCRIPT ERROR:|ERROR:)') { throw 'Menu tooltip regression failed.' }
+& $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_fisheye_layer.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'fisheye-layer.log')
+if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'fisheye-layer.log') -Raw) -notmatch 'Fisheye layer: [0-9]+ checks, 0 failures') { throw 'Fisheye picture layer regression failed.' }
+& $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_playback_stall_watch.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'playback-stall-watch.log')
+if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'playback-stall-watch.log') -Raw) -notmatch 'Playback stall watch: [0-9]+ checks, 0 failures') { throw 'Playback stall watch regression failed.' }
+& $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_refresh_policy.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'refresh-policy.log')
+if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'refresh-policy.log') -Raw) -notmatch 'Refresh policy: [0-9]+ checks, 0 failures') { throw 'Video refresh-rate policy regression failed.' }
 & $env:GODOT_EXE --xr-mode off --rendering-method gl_compatibility --rendering-driver opengl3 --path $projectDirectory --quit-after 1800 --script res://tests/render_menu_composition.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'menu-composition.log')
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'menu-composition.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)') { throw 'Menu compositor capture regression failed.' }
 & $env:GODOT_EXE --xr-mode off --rendering-method gl_compatibility --rendering-driver opengl3 --path $projectDirectory --quit-after 1800 --script res://tests/render_menu_slots.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'menu-slots.log')
@@ -208,12 +228,29 @@ if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'file-manageme
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'file-management-entry-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|ERROR:)' -or (Get-Content (Join-Path $logDirectory 'file-management-entry-host.log') -Raw) -notmatch 'File management entry: [0-9]+ checks, 0 failures') { throw 'File management discovery and settings return regression failed.' }
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_library_sort.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'library-sort-host.log')
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'library-sort-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|ERROR:)') { throw 'Folder modification time and DLNA name sorting regression failed.' }
+foreach ($directorySortTest in @('test_directory_preferences', 'test_library_navigation_memory', 'test_directory_cloud_navigation')) {
+    $directorySortLog = Join-Path $logDirectory ($directorySortTest + '.log')
+    & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script ('res://tests/' + $directorySortTest + '.gd') 2>&1 | Tee-Object -FilePath $directorySortLog
+    $directorySortResult = Get-Content -LiteralPath $directorySortLog -Raw
+    if ($LASTEXITCODE -ne 0 -or $directorySortResult -match '(?m)^(SCRIPT ERROR:|ERROR:)' -or $directorySortResult -notmatch '(Directory preferences: [0-9]+ checks, 0 failures|Library navigation memory checks=[0-9]+ failures=0|Cloud directory navigation: [0-9]+ checks, 0 failures)') { throw ('Per-directory sorting and parent navigation regression failed: ' + $directorySortTest) }
+}
+foreach ($browseTest in @('test_directory_browse_memory', 'test_directory_browse_cloud')) {
+    $browseLog = Join-Path $logDirectory ($browseTest + '.log')
+    & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 2400 --script ('res://tests/' + $browseTest + '.gd') 2>&1 | Tee-Object -FilePath $browseLog
+    $browseResult = Get-Content -LiteralPath $browseLog -Raw
+    if ($LASTEXITCODE -ne 0 -or $browseResult -match '(?m)^(SCRIPT ERROR:|ERROR:)' -or $browseResult -notmatch 'Directory browse (memory|cloud): [0-9]+ checks, 0 failures') { throw ('Directory resume/privacy regression failed: ' + $browseTest) }
+}
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_file_editing_memory.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'file-editing-memory-host.log')
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'file-editing-memory-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|ERROR:)') { throw 'Renamed history and bookmarks regression failed.' }
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_local_storage.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'local-storage-host.log')
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'local-storage-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|ERROR:)') { throw 'Removable storage host regression failed.' }
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_cloud_pagination.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'cloud-pagination-host.log')
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'cloud-pagination-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|ERROR:)') { throw 'Cloud pagination regression failed.' }
+foreach ($pagingTest in @('test_cloud_native_paging', 'test_cloud_paging_options')) {
+    $pagingLog = Join-Path $logDirectory ($pagingTest + '.log')
+    & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script ('res://tests/' + $pagingTest + '.gd') 2>&1 | Tee-Object -FilePath $pagingLog
+    if ($LASTEXITCODE -ne 0 -or (Get-Content $pagingLog -Raw) -match '(?m)^(SCRIPT ERROR:|ERROR:)') { throw "Cloud paging regression failed: $pagingTest" }
+}
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_media_servers.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'media-servers-host.log')
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'media-servers-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|ERROR:)') { throw 'Media server host regression failed.' }
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_media_server_browser.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'media-server-browser-host.log')

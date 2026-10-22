@@ -21,6 +21,7 @@ uniform float depth_convergence = 0.35;
 // mask is part of the color image itself; no model runs. packed_size is in the include.
 uniform bool packed_alpha = false;
 #include "res://shaders/video_coordinates.gdshaderinc"
+#include "res://shaders/video_pip_coordinates.gdshaderinc"
 #include "res://shaders/sharpness.gdshaderinc"
 #include "res://shaders/projected_subtitles.gdshaderinc"
 #include "res://shaders/bitmap_subtitles.gdshaderinc"
@@ -98,9 +99,10 @@ void vertex() {
 }
 
 void fragment() {
-	vec2 shown_uv = eye_uv(UV, media_direction);
+	vec3 sample_direction = pip_direction(UV, media_direction);
+	vec2 shown_uv = eye_uv(pip_uv(UV), sample_direction);
 	shown_uv = aligned_eye_uv(shown_uv);
-	if (depth_enabled && !stereo_sbs) { shown_uv = depth_parallax(shown_uv, eye_index); }
+	if (depth_enabled && !stereo_sbs && !pip_enabled) { shown_uv = depth_parallax(shown_uv, pip_viewing_eye > 0 ? pip_viewing_eye - 1 : eye_index); }
 	vec2 local_uv = raw_eye_uv(shown_uv);
 	int eye = source_eye();
 	vec2 eye_size = view_size();
@@ -131,7 +133,7 @@ void fragment() {
 	bool outside = any(lessThan(model_p, vec2(0.0))) || any(greaterThan(model_p, vec2(1.0)));
 	vec2 alpha_p = clamp(model_p, first_center, last_center);
 	alpha_p.x = (alpha_p.x + float(eye)) * 0.5;
-	ALBEDO = outside_lens(media_direction) ? vec3(0.0) : color_grade(rgb);
+	ALBEDO = outside_lens(sample_direction) ? vec3(0.0) : color_grade(rgb);
 	if (packed_alpha && stereo_sbs && !top_bottom) {
 		// Pixels that carry the mask had their color overwritten by the packer.
 		// (No early return: Godot writes the outputs after this function body.)
@@ -141,6 +143,7 @@ void fragment() {
 	}
 	// Crop correction borders rather than stretching an edge or reading the other eye.
 	if (outside_alignment(shown_uv)) { ALBEDO = vec3(0.0); ALPHA = alpha_enabled || packed_alpha ? 0.0 : 1.0; }
+	if (pip_outside(sample_direction)) { ALBEDO = vec3(0.0); ALPHA = alpha_enabled || packed_alpha ? 0.0 : 1.0; }
 	if (!separate_subtitles) {
 	vec4 composed = caption_composite(ALBEDO, ALPHA, projected_caption());
 	composed = caption_composite(composed.rgb, composed.a, bitmap_caption(raw_eye_uv(eye_uv(UV, media_direction))));

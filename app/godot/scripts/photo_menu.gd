@@ -13,6 +13,7 @@ func _process(delta: float) -> void:
 	online.tick(delta)
 
 func _draw() -> void:
+	if _adjustment == "bar_transparency": super._draw(); return
 	if online.opened:
 		_clear_layout(); online.draw(); _finish_surface_layout(); return
 	super._draw()
@@ -79,6 +80,9 @@ var _gallery_start := 0
 
 func _depth_maximum() -> float:
 	return DepthStrength.PHOTO_MAX
+
+func _depth_default() -> float:
+	return DepthStrength.PHOTO_DEFAULT
 
 func _depth_span() -> Vector2:
 	return DEPTH_SPAN if _state.get("portrait_requested",false) else DEPTH_SPAN-Vector2(.03,.03)
@@ -164,6 +168,7 @@ func navigate_back() -> bool:
 	return true
 
 func refresh_values() -> void:
+	if _adjustment == "bar_transparency": super.refresh_values(); return
 	composition_changed.emit()
 	if not visible: return
 	if online.opened: return
@@ -207,9 +212,10 @@ func _bar_action_x(target: int) -> float:
 
 func _draw_bar() -> void:
 	_set_backdrop(Vector2(1.16, 0.27), Vector2.ZERO)
-	_backdrop.material_override.set_shader_parameter("surface_color", Color(PANEL, 0.86))
+	_style_control_bar()
 	_backdrop.material_override.set_shader_parameter("corner_radius", 0.05)
 	_title = _label(_fit_title(str(_state.get("title", "")), "", 0.9, 15), Vector3(0, 0.1, 0.004), 15)
+	_back_filename(_title, 0.9)
 	_title.modulate = MUTED
 	var has: bool = _state.get("has_image", false) or _state.get("gallery_overview", false)
 	var portrait: bool = _state.get("portrait_requested",false)
@@ -281,6 +287,7 @@ func _draw_layouts() -> void:
 
 ## Photo controls keep their full panels in place of the bar.
 func _settings_popup() -> bool:
+	if _adjustment == "bar_transparency": return true
 	return false
 
 func _slider_geometry() -> Dictionary:
@@ -406,6 +413,7 @@ func stick_scroll(amount: float, delta: float) -> void:
 var _scroll_after := 0
 
 func _activate(target: int) -> void:
+	if target == SPACE_LOCK or _adjustment == "bar_transparency": super._activate(target); return
 	if target==PHOTO_STATIC:
 		action_requested.emit("photo_static"); refresh()
 		return

@@ -38,7 +38,7 @@ internal object CloudDiagnostics {
         if (message in setOf("Search expired. Search again", "Search scope unavailable", "Search result limit reached", "Folder too large to search", "Invalid search"))
             throw IllegalStateException(message)
         val detail = result.optString("error_detail").ifBlank { message }
-        if (result.optString("error_reason") in setOf("cloud_page_expired", "cloud_location_expired"))
+        if (result.optString("error_reason") in setOf("cloud_page_expired", "cloud_location_expired", "cloud_metadata_limit"))
             throw CloudFailure(result.getString("error_reason"), detail)
         throw CloudFailure(detail = "OpenList $route · code ${result.optInt("code")}\n$detail")
     }

@@ -7,6 +7,26 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class EmbyArtworkTest {
+    @Test fun detailBackgroundsPreferOwnThenInheritedThenLandscapeFallbacks() {
+        val cases = listOf(
+            Triple(""""BackdropImageTags":["a","b"],"ParentBackdropItemId":"series","ParentBackdropImageTags":["parent"]""", "[]", listOf("film/Backdrop/0", "film/Backdrop/1")),
+            Triple(""""ParentBackdropItemId":"series","ParentBackdropImageTags":["","parent"]""", "[]", listOf("series/Backdrop/1")),
+            Triple(""""ParentBackdropItemId":"series","ParentBackdropImageTags":[""],"ImageTags":{"Thumb":"t"}""", "[]", listOf("film/Thumb/0")),
+            Triple(""""ImageTags":{"Primary":"poster"}""", """[{"ImageType":"Screenshot","ImageIndex":0,"Width":1280,"Height":720},{"ImageType":"Screenshot","ImageIndex":1,"Width":600,"Height":900}]""", listOf("film/Screenshot/0")),
+            Triple(""""ImageTags":{"Primary":"poster"}""", "[]", emptyList())
+        )
+        for ((fields, images, expected) in cases) MediaServerClientTest.Fixture { request, _, _ ->
+            MediaServerClientTest.Reply(body = (if (request.contains("/Images")) images else """{"Id":"film","Name":"Film","Type":"Movie",$fields}""").toByteArray())
+        }.use { fixture ->
+            val account = MediaServerAccount("test", "Test", fixture.url, "fake", "emby", "user1")
+            MediaServerHttp(account).use { http ->
+                val result = EmbyClient(account, http).detail("film").getJSONArray("backdrops").objects()
+                assertEquals(expected, result.map { "${it.getString("id")}/${it.getString("image_type")}/${it.getInt("image_index")}" })
+                if (expected == listOf("series/Backdrop/1")) assertEquals("parent", result.single().getString("image_tag"))
+            }
+        }
+    }
+
     private fun query(request: String): Map<String, String> = URI("http://test" + request.split(' ')[1]).rawQuery.orEmpty()
         .split('&').filter { it.contains('=') }.associate { val pair = it.split('=', limit = 2)
             URLDecoder.decode(pair[0], "UTF-8") to URLDecoder.decode(pair[1], "UTF-8") }

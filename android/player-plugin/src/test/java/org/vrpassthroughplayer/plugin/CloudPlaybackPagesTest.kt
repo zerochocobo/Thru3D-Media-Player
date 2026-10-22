@@ -13,7 +13,10 @@ class CloudPlaybackPagesTest {
         val files = listOf(file("film.mp4"), file("film.si.mix.m4a"), file("film.srt"), file("future.sidecar_new"))
         cache.replace("account", "identity", "/movies", files, true)
         assertEquals(files, cache.forVideo("account", "identity", "/movies/film.mp4").files)
-        val tooMany = (1..49).map { file("film$it.mp4") }
+        val largePage = (1..1000).map { file("film$it.mp4") }
+        cache.replace("large", "identity", "/movies", largePage)
+        assertEquals(1000, cache.forVideo("large", "identity", "/movies/film1.mp4").files.size)
+        val tooMany = largePage + file("film1001.mp4")
         for (complete in listOf(false, true))
             assertThrows(IllegalArgumentException::class.java) { cache.replace("other", "identity", "/movies", tooMany, complete) }
     }

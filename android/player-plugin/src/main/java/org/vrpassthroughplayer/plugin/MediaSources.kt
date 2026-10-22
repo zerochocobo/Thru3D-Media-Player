@@ -51,7 +51,10 @@ internal class MediaSources(
     fun streamProgress(uri: String): TransferMeter.Snapshot? = server?.progress(uri)
     fun streamFailure(uri: String): PlaybackFailure? = server?.failure(uri)
     fun enableInterleaveCache(uri: String, audioChunks: List<AudioReadSpan>): Boolean = server?.enableInterleaveCache(uri, audioChunks) ?: false
-    fun playbackView(uri: String, layout: Mp4PlaybackLayout): String? = server?.let { CloudLibrary.playbackView(uri, layout, it) }
+    // Non-cloud views (SMB) are owned by the player's network lease, released like the parent.
+    fun playbackView(uri: String, layout: Mp4PlaybackLayout): String? = server?.let {
+        if (it.cloudBacked(uri)) CloudLibrary.playbackView(uri, layout, it) else it.playbackView(uri, layout)
+    }
     fun finishIsoPreflight(uri: String) { server?.finishIsoPreflight(uri) }
 
     fun nextId(): Int = ids.incrementAndGet()
@@ -114,12 +117,12 @@ internal class MediaSources(
         JSONObject().put("server_id", serverId).put("path", path).put("entries", smb.browse(serverId, path, subtitlesOnly))
     }
 
-    fun cloudBrowse(path: String, refresh: Boolean, offset: Int = 0, order: String = "", folderId: String = "", subtitlesOnly: Boolean = false): Int {
+    fun cloudBrowse(path: String, refresh: Boolean, offset: Int = 0, order: String = "", folderId: String = "", subtitlesOnly: Boolean = false, pageSize: Int = CloudDrive.PAGE_SIZE): Int {
         val id = nextId()
         cloudBrowseRequests.submit(id, { cancellation ->
             val result = try {
                 CloudLibrary.start(context() ?: error("Activity unavailable"))
-                CloudLibrary.browse(path, refresh, offset, cancellation, order, folderId, subtitlesOnly).put("state", "ready")
+                CloudLibrary.browse(path, refresh, offset, cancellation, order, folderId, subtitlesOnly, pageSize).put("state", "ready")
             } catch (error: Exception) {
                 CloudDiagnostics.response(error, "cloud.browse")
             }

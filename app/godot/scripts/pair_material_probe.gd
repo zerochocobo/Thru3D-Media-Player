@@ -44,7 +44,7 @@ func run(parent: Node) -> Dictionary:
 	var code := FileAccess.get_file_as_string("res://shaders/video_rvm_pair.gdshader").replace(
 		'#include "res://shaders/video_coordinates.gdshaderinc"', FileAccess.get_file_as_string("res://shaders/video_coordinates.gdshaderinc"))
 	code = code.replace("varying flat int eye_index;", "uniform int test_eye = 0;\nuniform vec2 test_uv = vec2(0.5);\nvarying flat int eye_index;")
-	code = code.replace("eye_index = int(VIEW_INDEX);", "eye_index = test_eye;").replace("eye_uv(UV, media_direction)", "test_uv")
+	code = code.replace("eye_index = int(VIEW_INDEX);", "eye_index = test_eye;").replace("eye_uv(pip_uv(UV), sample_direction)", "test_uv").replace("eye_uv(UV, media_direction)", "test_uv")
 	var material := ShaderMaterial.new()
 	var shader := Shader.new()
 	shader.code = code

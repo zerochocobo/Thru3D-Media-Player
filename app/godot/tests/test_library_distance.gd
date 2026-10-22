@@ -23,6 +23,8 @@ func make_main(path: String) -> DistanceMain:
 	main.video.set_process(false); main.photo.set_process(false)
 	main.recent_menu.set_process(false); main.video_menu.set_process(false); main.photo_menu.set_process(false)
 	main.video.platform = Host.new()
+	# Recenter restores distance and size only for an explicitly saved default view (93f77659).
+	main.settings.set_value("screen", "default_view", Vector2(main.video.SCREEN_DISTANCE, 1.0))
 	return main
 
 func distance(main: Node3D) -> float:

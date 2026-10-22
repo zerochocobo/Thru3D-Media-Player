@@ -42,7 +42,7 @@ internal class CloudPlaybackPages {
     private val pages = LinkedHashMap<String, Page>(8, .75f, true)
 
     @Synchronized fun replace(account: String, identity: String, directory: String, files: List<CloudFile>, complete: Boolean = false, folderId: String = "") {
-        require(files.size <= CloudDrive.PAGE_SIZE)
+        require(files.size <= CloudPaging.MAX_PAGE_SIZE)
         pages[account] = Page(identity, directory, Selection(files.toList(), complete, folderId))
         while (pages.size > 8) pages.remove(pages.keys.first())
     }

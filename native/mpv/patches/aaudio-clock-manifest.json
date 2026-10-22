@@ -1,0 +1,17 @@
+{
+  "purpose": "AAudio clock without timestamps after a flush (seek freeze: audio plays, video frozen)",
+  "capture_patch_sha256": "9a15a88c8dd53be2b19717c3e73e78a4c95ae0450586de2ab7af6f4a8b676937",
+  "base_files_sha256": {
+    "audio/out/ao_aaudio.c": "835a416f398d2fc37d9ad51b23bbad959dae25a92a5c4c47d94001b16777f445"
+  },
+  "patched_files_sha256": {
+    "audio/out/ao_aaudio.c": "830c24344076ca852069e99315c705aeb33c241beb55616ce8c31f6a6e2d29d9"
+  },
+  "patch_sha256": "394eda7da3d4d81196c1708a458cf78b677163cf7007ceed89696f659ea55451",
+  "inputs_sha256": {
+    "tools/environment/mpv-linux/create_aaudio_patch.py": "dd8998b336ed0ce73a1465e305644a38385cbd3d5a2f0ea2c67414e6832fa6f7"
+  },
+  "reference_inputs_sha256": {
+    "tools/environment/mpv-linux/create_aaudio_patch.py": "59824eb9b186f1aa7374debf838a1e9e3888c145734e50b0cb9e9d709248e565"
+  }
+}

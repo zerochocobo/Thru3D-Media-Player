@@ -54,8 +54,30 @@ func load_environment(model_path: String, manifest_path: String) -> Dictionary:
 					node.set_surface_override_material(surface, normalized)
 				triangle_count += (arrays[Mesh.ARRAY_INDEX].size() if arrays[Mesh.ARRAY_INDEX] != null and not arrays[Mesh.ARRAY_INDEX].is_empty() else arrays[Mesh.ARRAY_VERTEX].size()) / 3
 		for child in node.get_children(): nodes.append(child)
+	apply_seat_detail(scene)
 	return {"root": scene, "manifest": manifest, "stats": {"bytes": bytes.size(), "meshes": mesh_count,
 		"triangles": triangle_count, "seats": manifest.seats.size(), "runtime_glb": true}}
+
+## Chairs ship as coincident near/far meshes per ten-seat run, each centred on
+## its run. Only runs around the viewer draw the detailed chair.
+const SEAT_DETAIL_RANGE := 7.0
+const SEAT_DETAIL_MARGIN := 0.5
+
+static func apply_seat_detail(root: Node) -> int:
+	var count := 0
+	for node in root.find_children("Seats_*", "GeometryInstance3D", true, false):
+		var instance := node as GeometryInstance3D
+		if str(instance.name).ends_with("_near"):
+			instance.visibility_range_end = SEAT_DETAIL_RANGE
+			instance.visibility_range_end_margin = SEAT_DETAIL_MARGIN
+		elif str(instance.name).ends_with("_far"):
+			instance.visibility_range_begin = SEAT_DETAIL_RANGE
+			instance.visibility_range_begin_margin = SEAT_DETAIL_MARGIN
+		else:
+			continue
+		instance.visibility_range_fade_mode = GeometryInstance3D.VISIBILITY_RANGE_FADE_DISABLED
+		count += 1
+	return count
 
 func _validate_manifest(data: Variant) -> String:
 	# This is the desktop prototype's authoring contract, before GLTF scene

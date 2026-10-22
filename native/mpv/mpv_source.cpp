@@ -494,6 +494,7 @@ struct Source final {
             ",\"dolby_rendered_frames\":" + std::to_string(dolby_frames.load()) +
             ",\"capture_mode\":" + quote(capture_metadata(core)) +
             ",\"position_seconds\":" + quote(position) + ",\"duration_seconds\":" + quote(duration) +
+            ",\"container_fps\":" + quote(property(core, "container-fps")) +
             ",\"seekable\":" + quote(seekable) + ",\"partially_seekable\":" + quote(partial) + ",\"file_size\":" + quote(file_size) +
             ",\"paused\":" + quote(paused) + ",\"color_matrix\":" + quote(matrix) +
             ",\"color_range\":" + quote(range) + ",\"color_transfer\":" + quote(transfer) +

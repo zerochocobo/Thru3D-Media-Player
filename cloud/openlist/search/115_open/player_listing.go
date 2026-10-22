@@ -35,7 +35,16 @@ func (d *Open115) PlayerFolder(ctx context.Context, remote, id string) (model.Ob
 // This path deliberately bypasses List: List collects the whole directory.
 // Ordering belongs to 115, before the page is selected, including filename collation.
 func (d *Open115) PlayerListPage(ctx context.Context, dir model.Obj, offset int64, order string) ([]model.Obj, int64, error) {
+	return d.PlayerListPageSized(ctx, dir, offset, order, 48)
+}
+
+func (d *Open115) PlayerListPageSized(ctx context.Context, dir model.Obj, offset int64, order string, pageSize int) ([]model.Obj, int64, error) {
+	if pageSize < 1 || pageSize > 200 {
+		return nil, 0, errors.New("invalid directory page size")
+	}
 	field, asc := d.OrderBy, d.OrderDirection == "asc"
+	mixed := strings.HasPrefix(order, "mixed_")
+	order = strings.TrimPrefix(order, "mixed_")
 	switch order {
 	case "", "source":
 	case "name_asc", "name_desc":
@@ -53,13 +62,17 @@ func (d *Open115) PlayerListPage(ctx context.Context, dir model.Obj, offset int6
 	if err := d.WaitLimit(ctx); err != nil {
 		return nil, 0, err
 	}
+	// 115 selects folder priority through custom_order: 1 groups folders first,
+	// 2 mixes folders and files. Sending fc_mix with a fixed mode 2 does not
+	// restore folder priority. Both modes must be applied before selecting a page.
 	resp, err := d.client.GetFiles(ctx, &sdk.GetFilesReq{
-		CID: dir.GetID(), Offset: offset, Limit: 48, O: field, ASC: asc, Cur: 1, ShowDir: true,
+		CID: dir.GetID(), Offset: offset, Limit: int64(pageSize), O: field, ASC: asc,
+		Cur: 1, ShowDir: true, CustomOrder: sdk.Ternary(mixed, 2, 1),
 	})
 	if err != nil {
 		return nil, 0, err
 	}
-	if resp.Count < 0 || resp.Offset != offset || len(resp.Data) > 48 || offset > resp.Count ||
+	if resp.Count < 0 || resp.Offset != offset || len(resp.Data) > pageSize || offset > resp.Count ||
 		offset+int64(len(resp.Data)) > resp.Count || (len(resp.Data) == 0 && offset < resp.Count) {
 		return nil, 0, errors.New("invalid directory page response; refresh the folder")
 	}

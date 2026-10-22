@@ -80,7 +80,8 @@ const DepthStrength := preload("res://scripts/depth_strength.gd")
 const DEPTH_SHIFT := 0.035
 const DEPTH_CONVERGENCE := 0.35
 var _depth_view_sent := ""
-var depth_strength := 1.0
+var depth_strength := DepthStrength.VIDEO_DEFAULT
+var preferred_depth_strength := DepthStrength.VIDEO_DEFAULT # Global choice; diagnostic opens cannot replace it.
 ## Pick the clone-voice track (an extra M4A beside the video) whenever a video has one.
 var prefer_clone_voice := false
 ## The file is an alpha-packed fisheye output (its name says so): the mask is in the frame and
@@ -195,12 +196,15 @@ var default_profile := AUTOMATIC_PROFILE
 ## A newly chosen size still compiling while Alpha plays: the session switches once it is ready.
 var _profile_pending := ""
 var _binding := Binding.new()
+var pip := preload("res://scripts/video_pip.gd").new(self)
 var _pending_pair: Dictionary = {}
 var _pending_revision: Dictionary = {}
 var _fixture := -1
 var _recover := false
 var _recover_ms := 0
 var _waiting_first := false
+const StallWatch := preload("res://scripts/playback_stall_watch.gd")
+var _stall_watch := StallWatch.new()
 var _opening_deadline_ms := 0
 var _output_deadline_ms := 0
 var _buffering_deadline_ms := 0
@@ -280,6 +284,30 @@ var _picture_refresh := 0
 var _frame_picture := false
 ## The picture layer could not take this file's frames (swapchain size, copy): eye buffers until the next open.
 var _frame_picture_failed := false
+## Fisheye has no compositor layer shape. The plugin remaps each new frame to equirect once (at the
+## video rate) straight into the equirect picture layer, instead of the lens being sampled into both
+## eye buffers at every display refresh: the compositor then holds 120 Hz and an even cadence.
+var _fisheye_picture := false
+var _processed_picture := false
+var _fisheye_failed := false
+## Session whose remapped picture is on the layer (0: none yet, the eye buffers show the frame).
+var _fisheye_session := 0
+var _fisheye_parameters := PackedFloat32Array()
+var _fisheye_generation := -1
+## Picture density of the remapped views. The eye buffers resolved about 16 pixels per degree on
+## Quest 3 (1680 px over ~100 degrees); sampling the 8K lens at full size cost twice the pixels for
+## detail the eye-buffer path never showed, and made the remap the frame's bottleneck.
+const FISHEYE_PIXELS_PER_DEGREE := VideoLayer.FISHEYE_PIXELS_PER_DEGREE
+## Debug A/B only (0 = FISHEYE_PIXELS_PER_DEGREE).
+var debug_fisheye_density := 0.0
+## The remap rides on the app's frames. A source too heavy for the fast panel (8K60 AV1 at 115 Mbit/s
+## kept Quest 3 near 80 of 120 frames) moves this session to the slower rates: once, never back.
+const FISHEYE_SLOW_RATIO := 0.9
+const FISHEYE_SLOW_SECONDS := 5
+var fisheye_overloaded := false
+var _fisheye_overloaded_uri := ""
+var _fisheye_slow_seconds := 0
+var _fisheye_checked_ms := 0
 
 func _ready() -> void:
 	mode_memory.load_saved()
@@ -645,7 +673,7 @@ func open_local(uri: String, title: String, start_ms: int = 0, restore_mode: boo
 	if restore_mode:
 		# Ignore legacy per-file model choices: every file uses the size chosen in the settings.
 		profile = default_profile
-		depth_strength = DepthStrength.DEFAULT
+		depth_strength = preferred_depth_strength
 		var saved := mode_memory.lookup(uri)
 		if not saved.is_empty():
 			# The user's own choice for this file wins over its name and shape.
@@ -717,6 +745,11 @@ func open_local(uri: String, title: String, start_ms: int = 0, restore_mode: boo
 	_eye_buffer_only = false
 	_layer_session = false
 	_frame_picture_failed = false
+	_fisheye_failed = false
+	_fisheye_session = 0
+	# Reopens of the same file (loop, seeks, mode changes) keep the decision: no retry, no switches.
+	if uri != _fisheye_overloaded_uri: fisheye_overloaded = false
+	_fisheye_slow_seconds = 0
 	_layer_seek_hold = false
 	if layer: _layer_generation = video_layer.generation
 	_layer_requested = layer
@@ -784,6 +817,8 @@ func _unbind() -> void:
 		caption.visible = false
 
 func close_video() -> void:
+	if not pip.reopening: pip.clear()
+	else: pip.cancel_interaction()
 	captures.stop()
 	if not _keep_interleave_during_close and PlatformMethods.supports(platform, "set_mpv_interleave_compat"):
 		platform.set_mpv_interleave_compat(false)
@@ -1121,7 +1156,9 @@ func set_depth_strength(value: float) -> bool:
 	var strength := DepthStrength.clamp_value(value)
 	if strength > 0.0 and (stereo_sbs or geometry != 0 or local_uri.is_empty() or media.state == "closed"): return false
 	if strength>0.0 and not is_equal_approx(strength,depth_strength): _mode_user_changed=true
-	if strength > 0.0: depth_strength = strength
+	if strength > 0.0:
+		depth_strength = strength
+		if _remember_file and media.accepts(media.session_id): preferred_depth_strength = strength
 	auto_depth = strength > 0.0
 	material.set_shader_parameter("depth_shift", DEPTH_SHIFT * strength)
 	if depth_requested != (strength > 0.0): set_depth(strength > 0.0)
@@ -1986,6 +2023,7 @@ func commit_stereo_view() -> void:
 func _apply_stereo_view() -> void:
 	if not material: return
 	# Native stereo only: mono and generated 2D->3D never inherit these corrections.
+	material.set_shader_parameter("swap_eyes", swap_eyes if stereo_sbs else false)
 	material.set_shader_parameter("viewing_eye", viewing_eye if stereo_sbs else 0)
 	material.set_shader_parameter("stereo_offset", stereo_offset_uv() if stereo_sbs else Vector2.ZERO)
 	if _hole_material:
@@ -2077,8 +2115,7 @@ func _restore_saved_mode(saved: Dictionary) -> void:
 	stereo_vertical = float(saved.get("stereo_vertical", 0.0))
 	spatial_auto_disparity = bool(saved.get("spatial_auto_disparity", true))
 	depth_requested = bool(saved.get("depth_requested", false)) and not stereo_sbs
-	var saved_strength: Variant = saved.get("depth_strength", DepthStrength.DEFAULT)
-	depth_strength = DepthStrength.remembered(float(saved_strength)) if saved_strength is float or saved_strength is int else DepthStrength.DEFAULT
+	# Conversion On/Off is per file; legacy per-file strengths must not override the global choice.
 	auto_depth = depth_requested
 	# The user's own word on a built-in mask wins over the name (renamed official releases).
 	if saved.has("packed_mask"):
@@ -2116,7 +2153,7 @@ func _remember_mode(user_change: bool = true) -> void:
 	var mode := {"geometry": geometry, "stereo_sbs": stereo_sbs, "swap_eyes": swap_eyes,
 		"viewing_eye": viewing_eye, "stereo_horizontal": stereo_horizontal, "stereo_vertical": stereo_vertical,
 		"spatial_auto_disparity": spatial_auto_disparity,
-		"alpha_requested": false, "profile": profile, "depth_requested": depth_requested, "depth_strength": depth_strength,
+		"alpha_requested": false, "profile": profile, "depth_requested": depth_requested,
 		"top_bottom": stereo_sbs and top_bottom, "stereo_half": stereo_sbs and stereo_half, "fisheye_fov": fisheye_fov,
 		"packed_mask": packed_mask_on()}
 	if mode_memory.remember(local_uri, mode) and not mode_memory.save():
@@ -2320,10 +2357,27 @@ func _check_playback_timeout(now_ms: int) -> void:
 	if not buffering: _buffering_deadline_ms = 0
 	elif _buffering_deadline_ms == 0: _buffering_deadline_ms = now_ms + OUTPUT_TIMEOUT_MS
 	elif now_ms >= _buffering_deadline_ms: code = "MPV_BUFFER_TIMEOUT"
-	if code.is_empty(): return
+	if code.is_empty():
+		_check_playback_stall(now_ms)
+		return
 	var id: int = media.session_id
 	_on_error(id, JSON.stringify({"code": code, "stage": "reading" if code == "MPV_BUFFER_TIMEOUT" else "output"}))
 	if platform: platform.close_mpv_video(id)
+
+## Sound can keep playing while the picture and MPV's clock stand still (decoder or audio-clock
+## stall). Reopen once at the shown position, keeping every choice, instead of freezing for good.
+func _check_playback_stall(now_ms: int) -> void:
+	var details: Dictionary = media.playback.get("details", {})
+	var active := requested_play and media.state == "playing" and media.frame_counter > 0 and not _waiting_first \
+		and _pending_revision.is_empty() and control.in_flight == 0 and not control.pending \
+		and str(details.get("paused", "yes")) == "no" and str(details.get("paused_for_cache", "no")) != "yes" \
+		and str(details.get("eof_reached", "no")) != "yes"
+	var position := str(details.get("position_seconds", ""))
+	if not _stall_watch.observe(active, float(position) if position.is_valid_float() else NAN, now_ms): return
+	var at := int(float(position) * 1000.0)
+	Log.record("mpv_playback_stall", {"session_id": media.session_id, "position_ms": at, "layer": _layer_session,
+		"decoder": media.decoder, "audio_pts_us": details.get("audio_pts_us", null)})
+	call_deferred("_reopen_at", at, _layer_session)
 
 func _on_released(id: int, _payload: String) -> void:
 	if id == media.session_id and _recover:
@@ -2390,7 +2444,11 @@ func _reopen_after_context_loss(uri: String, title: String, position_ms: int, re
 	var boost_mark := audio_boost_saved
 	var whisper_save := _whisper_remember or _whisper_restore_remember
 	var auto_subtitle := _subtitle_auto_pending # An internal reopen keeps an unfinished automatic choice.
-	if open_local(uri, title, position_ms, false, alpha_wanted()):
+	pip.reopening = true
+	var reopened := open_local(uri, title, position_ms, false, alpha_wanted())
+	pip.reopening = false
+	if not reopened: pip.clear()
+	if reopened:
 		narration.restore_reopen(narration_state)
 		_subtitle_auto_pending = auto_subtitle
 		_queue_track_restore(tracks)
@@ -2531,6 +2589,7 @@ func _write_debug_report() -> void:
 				"duration_ms": int(menu._state.get("duration_ms", -1))}
 	var report := {"schema_version": 1, "request_id": _debug_request, "commands": _debug_commands,
 		"seek_policy_ui": host.seek_policy_probe_result if host and host.get("seek_policy_probe_result") is Dictionary else {},
+		"pip_probe": host.pip_probe_result if host and host.get("pip_probe_result") is Dictionary else {},
 		"open_trace": _open_trace.duplicate(true),
 		"media": media.snapshot(), "layout": layout_snapshot(), "pairs": _debug_pairs,
 		"native_status": _debug_status, "engine_fps": Engine.get_frames_per_second(),
@@ -2643,7 +2702,8 @@ func layout_snapshot() -> Dictionary:
 		"depth_requested": depth_requested, "depth_enabled": depth_enabled, "depth_strength": depth_strength, "auto_depth": auto_depth,
 		"screen_rotation": screen_rotation, "playback_speed": playback_speed,
 		"video_layer": {"shown": video_layer_shown, "surface": _layer_session, "picture_token": _picture_token,
-			"warped": _binding.warped},
+			"warped": _binding.warped, "layers": video_layer.debug_layers() if video_layer else []},
+		"pip": pip.compositor.snapshot(),
 		"alpha_ready": alpha_ready(), "backend": "Android_libmpv", "loop_enabled": loop_enabled,
 		"playback_control": playback, "subtitles": {"requested_track": subtitles.requested_track,
 			"cue": subtitles.cue, "text": subtitles.text,
@@ -2707,6 +2767,7 @@ func _process(_delta: float) -> void:
 	if not _pending_revision.is_empty():
 		_try_revision()
 	_present_pending()
+	pip.sync()
 	_update_layer()
 	_maybe_capture_thumbnail()
 	_poll_subtitles()
@@ -2744,8 +2805,93 @@ func stereo_offset_uv() -> Vector2:
 	return offset
 
 ## Presentation the compositor layer can show exactly: plain decoder colour on a supported shape.
+## The configuration shows on the compositor layer (independent of a reopen in progress).
+func layer_capable() -> bool:
+	return _layer_presentation() or (pip.video_windows().is_empty() and _fisheye_layer_config())
+
+## A native recording owns its decoder session. Do not silently end it to change outputs.
+func pip_available(count: int = 1) -> bool:
+	return media.frame_counter > 0 and (pip.compositor.direct_compatible(count) or not ((_layer_session or _layer_requested) and not captures.recording.is_empty()))
+
+func set_pip_count(count: int, head: Transform3D) -> void:
+	if local_uri.is_empty() or not media.accepts(media.session_id) or media.state == "failed": return
+	if count > pip.windows.size() and not pip_available(count): return
+	pip.set_count(count, head)
+
+func toggle_pip_slot(slot: int, head: Transform3D) -> void:
+	if slot < 1 or slot > 3 or local_uri.is_empty() or not media.accepts(media.session_id) or media.state == "failed": return
+	if not pip.windows.has(slot) and not pip_available(pip.windows.size() + 1): return
+	pip.toggle_slot(slot, head)
+
+## Fisheye settings the remapped picture layer can show exactly (the layer applies eyes, alignment,
+## grading and filters); anything else stays in the eye buffers.
+func _fisheye_layer_config() -> bool:
+	return geometry == Geometry.Geometry.FISHEYE and not _fisheye_failed and layer_enabled and video_layer != null 		and video_layer.available() and video_layer.supports(Geometry.Geometry.HALF_EQUIRECT, false) 		and not alpha_requested and not depth_requested and not packed_file and video_layer.grades(color_grade) 		and int(media.format.get("source_rotation_degrees", 0)) == 0 and PlatformMethods.supports(platform, "remap_layer_fisheye")
+
+func _fisheye_picture_wanted() -> bool:
+	var ticket := _binding.ticket
+	if not _fisheye_layer_config() or ticket.is_empty() or _binding.layer or _binding.warped: return false
+	if int(ticket.get("session_id", 0)) != media.session_id or media.state == "failed" or int(ticket.get("rotation_degrees", 0)) != 0: return false
+	return _binding.color_texture().is_valid()
+
+func _show_fisheye_picture(origin: XROrigin3D, extras: Array) -> bool:
+	var ticket := _binding.ticket
+	var size := Vector2i(int(ticket.width), int(ticket.height))
+	var span := VideoLayer.fisheye_span(float(fisheye_fov))
+	var picture := fisheye_picture_size(size, span, stereo_sbs, top_bottom, debug_fisheye_density if debug_fisheye_density > 0.0 else FISHEYE_PIXELS_PER_DEGREE)
+	var token := int(ticket.get("slot_token", 0))
+	var scale: Array = ticket.get("color_uv_scale", [1.0, 1.0])
+	var layout := 0 if not stereo_sbs else (2 if top_bottom else 1)
+	var params := PackedFloat32Array([layout, 1.0 if stereo_sbs and stereo_half else 0.0, float(fisheye_fov),
+		span.x, span.y, size.x, size.y, float(scale[0]), float(scale[1])])
+	if token != _picture_token or params != _fisheye_parameters or _fisheye_generation != video_layer.generation \
+		or Vector2i(video_layer.picture_size) != picture:
+		if not platform.create_layer_image(VideoLayer.PICTURE_SLOT, picture.x, picture.y, 1, false):
+			return _fisheye_fail("create", picture)
+		if Vector2i(video_layer.picture_size) != picture:
+			video_layer.invalidate() # a new swapchain for this size
+			video_layer.picture_size = Vector2(picture)
+		if platform.acquire_layer_image(VideoLayer.PICTURE_SLOT) <= 0: return false
+		var external := str(ticket.get("color_target", "")) == "external"
+		var source := RenderingServer.texture_get_native_handle(_binding.color_texture())
+		var drawn: bool = platform.remap_layer_fisheye(VideoLayer.PICTURE_SLOT, source, external, params)
+		if not platform.release_layer_image(VideoLayer.PICTURE_SLOT, false) or not drawn: return _fisheye_fail("remap", picture)
+		_picture_token = token
+		_fisheye_parameters = params; _fisheye_generation = video_layer.generation
+		if _fisheye_session != media.session_id:
+			_fisheye_session = media.session_id
+			DiagnosticLog.record("fisheye_picture", {"source": [size.x, size.y], "picture": [picture.x, picture.y], "fov": fisheye_fov, "external": external})
+	# Until this session's first remap is on the layer, the eye buffers show the lens.
+	if _fisheye_session != media.session_id: return false
+	_check_fisheye_load()
+	return video_layer.show(self, origin, VideoLayer.PICTURE, Vector2(picture), -1, Vector2.ZERO, Vector4(0, 0, 1, 1),
+		VideoLayer.OPAQUE, extras)
+
+## Remapped picture size: each view [span] radians at [density] pixels per degree, never denser than
+## the source's own view, laid out as the source (side by side, above each other, or mono).
+static func fisheye_picture_size(source: Vector2i, span: Vector2, sbs: bool, top_bottom: bool, density: float) -> Vector2i:
+	return VideoLayer.fisheye_picture_size(source, span, sbs, top_bottom, density)
+
+func _check_fisheye_load() -> void:
+	var now := Time.get_ticks_msec()
+	if fisheye_overloaded or now - _fisheye_checked_ms < 1000: return
+	_fisheye_checked_ms = now
+	var xr := XRServer.find_interface("OpenXR") as OpenXRInterface
+	var rate := xr.display_refresh_rate if xr and xr.is_initialized() else 0.0
+	if rate <= 90.5 or not requested_play: _fisheye_slow_seconds = 0; return
+	_fisheye_slow_seconds = _fisheye_slow_seconds + 1 if Engine.get_frames_per_second() < rate * FISHEYE_SLOW_RATIO else 0
+	if _fisheye_slow_seconds >= FISHEYE_SLOW_SECONDS:
+		fisheye_overloaded = true; _fisheye_overloaded_uri = local_uri
+		DiagnosticLog.record("fisheye_overloaded", {"refresh": rate, "fps": Engine.get_frames_per_second()})
+
+func _fisheye_fail(stage: String, size: Vector2i) -> bool:
+	_fisheye_failed = true
+	DiagnosticLog.record("fisheye_picture_failed", {"stage": stage, "size": [size.x, size.y]})
+	return false
+
 func _layer_presentation() -> bool:
-	return layer_enabled and video_layer != null and (not alpha_requested or _layer_alpha()) and not depth_requested and not packed_file \
+	return (pip.video_windows().is_empty() or pip.compositor.direct_compatible()) and layer_enabled and video_layer != null and (not alpha_requested or _layer_alpha()) and not depth_requested and not packed_file \
+		and video_layer.capacity() >= (2 if stereo_sbs else 1) + 1 \
 		and (local_uri.is_empty() or local_uri != _layer_blocked_uri) \
 		and video_layer.grades(color_grade) and video_layer.supports(geometry, screen_curve > 0.0) \
 		and (int(media.format.get("source_rotation_degrees", 0)) == 0 or _layer_turns())
@@ -2759,6 +2905,7 @@ func _layer_alpha() -> bool:
 ## Short code for the FPS overlay: why playback is in the eye buffers ("" when on the layer).
 func layer_block_reason() -> String:
 	if video_layer_shown: return ""
+	if not pip.video_windows().is_empty(): return "pip"
 	if video_layer == null or not video_layer.available(): return "xr"
 	# Alpha itself blocks the layer only where it may not use it; otherwise name the real blocker.
 	if alpha_requested and not _layer_alpha_allowed: return "alpha"
@@ -2820,6 +2967,7 @@ func _update_layer() -> void:
 	# Back from a temporary shader effect: the layer again, at the shown position.
 	if not _layer_session and not _layer_return_uri.is_empty() and _layer_return_uri == local_uri \
 		and media.accepts(media.session_id) and media.frame_counter > 0 and _pending_revision.is_empty() \
+		and captures.recording.is_empty() \
 		and _freeze_request == 0 and not _waiting_first and _thumb_after_ms < 0 and not _thumbnail_busy and _layer_wanted():
 		_layer_return_uri = ""
 		_reopen_at(-1, true)
@@ -2828,25 +2976,48 @@ func _update_layer() -> void:
 	if _layer_seek_hold and not _waiting_first: _layer_seek_hold = false
 	var layer_size := Vector2(float(media.playback.get("layer_surface_width", VideoLayer.SURFACE_SIZE)), \
 		float(media.playback.get("layer_surface_height", VideoLayer.SURFACE_SIZE)))
-	_frame_picture = not _layer_session and origin != null and _frame_picture_wanted()
+	var previous_processed := _processed_picture
+	_processed_picture = pip.compositor.prepare_main() if origin != null else false
+	if previous_processed and not _processed_picture:
+		_picture_token = -1 # processed main owned slot 0; an older copy there no longer exists
+		_fisheye_session = 0
+		_apply_stereo_view()
+	_frame_picture = not _processed_picture and not _layer_session and origin != null and _frame_picture_wanted()
+	_fisheye_picture = not _processed_picture and not _layer_session and origin != null and not _frame_picture and _fisheye_picture_wanted()
 	var extras := _subtitle_layer_extras(origin) if origin != null else []
 	var masked := alpha_probe > 0 and origin != null and video_layer.alpha_blend and geometry == Geometry.Geometry.FLAT and _alpha_probe_layers(origin, layer_size, extras)
 	if not masked and alpha_requested and _layer_session and origin != null and video_layer.alpha_blend:
 		masked = _alpha_mask_layers(origin, layer_size, extras)
+	# Reserve main eyes and subtitles/masks before allocating complete PiP eye pairs.
+	var main_layers := 0
+	if _layer_session or _layer_seek_hold or _frame_picture or _fisheye_picture or _binding.warped:
+		main_layers = 2 if stereo_sbs or _binding.warped else 1
+	if _processed_picture: main_layers = pip.compositor.main_eyes
+	var pip_layers: Array = pip.compositor.prepare(origin, main_layers + extras.size()) if pip.active() else []
+	extras.append_array(pip_layers)
 	var shown := (_layer_session or _layer_seek_hold) and media.accepts(media.session_id) \
 		and (media.frame_counter > 0 or _layer_seek_hold) \
 		and media.state != "failed" and origin != null \
 		and video_layer.show(self, origin, VideoLayer.SURFACE, layer_size, -1, Vector2.ZERO, Vector4(0, 0, 1, 1),
 			VideoLayer.MASKED if masked else VideoLayer.OPAQUE, extras)
+	if not shown and _processed_picture:
+		shown = video_layer.show(self, origin, VideoLayer.PICTURE, Vector2(pip.compositor.main_size),
+			1 if pip.compositor.main_eyes == 2 else 0, Vector2.ZERO, Vector4(0, 0, 1, 1), VideoLayer.SOURCE_ALPHA, extras, true)
 	if not shown and _frame_picture: shown = _show_frame_picture(origin, extras)
+	if not shown and _fisheye_picture: shown = _show_fisheye_picture(origin, extras)
 	if not shown and not _layer_session and origin != null:
 		shown = _show_depth_picture(origin, extras)
+	var overlays_shown := false
+	if not shown and not pip_layers.is_empty() and not pip.compositor.needs_main():
+		overlays_shown = video_layer.show_overlays(self, pip_layers)
+	pip.compositor.commit((shown or overlays_shown) and not pip_layers.is_empty())
 	if not shown: _subtitle_on_layer = false
 	video_layer_shown = shown
-	if not shown:
+	if not shown and not overlays_shown:
 		video_layer.hide(self)
 	if shown:
 		panel.visible = true
+		if _processed_picture: _hole_material.next_pass = null # processed alpha borders already have the correct transparency
 		panel.material_override = _hole_material
 	elif panel.material_override == _hole_material:
 		panel.material_override = material
@@ -2913,7 +3084,7 @@ func _alpha_probe_layers(origin: XROrigin3D, layer_size: Vector2, extras: Array)
 func _subtitle_layer_extras(origin: XROrigin3D) -> Array:
 	_subtitle_on_layer = false
 	if geometry == Geometry.Geometry.FLAT: return _bitmap_layer_extras(origin)
-	if not (_layer_session or _frame_picture) or _subtitle_layer_failed \
+	if not (_layer_session or _frame_picture or _fisheye_picture or _processed_picture) or _subtitle_layer_failed \
 		or material.get_shader_parameter("subtitle_enabled") != true or not projected_subtitles or not projected_subtitles.viewport \
 		or not PlatformMethods.supports(platform, "copy_layer_texture"):
 		return []
@@ -2952,7 +3123,7 @@ func _check_subtitle_generation() -> void:
 func _bitmap_layer_extras(origin: XROrigin3D) -> Array:
 	var texture: ImageTexture = bitmap_subtitles.texture
 	var rect: Variant = material.get_shader_parameter("bitmap_subtitle_rect")
-	if not (_layer_session or _frame_picture or _binding.warped) or _subtitle_layer_failed or texture == null or not rect is Vector4 \
+	if not (_layer_session or _frame_picture or _processed_picture or _binding.warped) or _subtitle_layer_failed or texture == null or not rect is Vector4 \
 		or material.get_shader_parameter("bitmap_subtitle_enabled") != true or material.get_shader_parameter("rotation_degrees") not in [null, 0] \
 		or not PlatformMethods.supports(platform, "copy_layer_texture"):
 		return []
@@ -3123,7 +3294,10 @@ func _reopen_at(position_ms: int, layer: bool) -> void:
 	_network_interleave_next = _network_interleave_compat
 	if _network_interleave_compat and PlatformMethods.supports(platform, "set_mpv_interleave_compat"):
 		platform.set_mpv_interleave_compat(true)
+	pip.reopening = true
 	var capture_reopened := open_local(local_uri, display_name, position, false, alpha_wanted())
+	pip.reopening = false
+	if not capture_reopened: pip.clear()
 	if not capture_reopened: captures.stop()
 	if capture_reopened:
 		narration.restore_reopen(narration_state)

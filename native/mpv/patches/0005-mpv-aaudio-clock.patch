@@ -1,0 +1,54 @@
+--- a/audio/out/ao_aaudio.c
++++ b/audio/out/ao_aaudio.c
+@@ -47,6 +47,8 @@
+ 
+     int64_t presented;
+     int64_t discarded;
++    // Frames read by the stream but not yet presented, from the last valid timestamp.
++    int64_t read_gap;
+ 
+     int device_api;
+     void *lib_handle;
+@@ -240,14 +242,23 @@
+     aaudio_result_t result;
+     int64_t presented, present_time;
+     int64_t written = p->AAudioStream_getFramesWritten(stream);
++    // AAudio counts flushed frames as read; the timestamp position excludes them.
++    int64_t read = p->AAudioStream_getFramesRead(stream);
+ 
+     if ((result = p->AAudioStream_getTimestamp(stream, CLOCK_MONOTONIC, &presented, &present_time)) < 0) {
+         MP_TRACE(ao, "AAudioStream_getTimestamp() returned %s\n",
+                  p->AAudio_convertResultToText(result));
+-        presented = p->presented;
++        // Some devices never report a timestamp again after a flush while the stream keeps
++        // playing. A stale position would grow the delay with every write and stop the audio
++        // clock (video then freezes on it). Follow the frames the stream consumed instead.
++        presented = MPMAX(p->presented, read - p->discarded - p->read_gap);
++        struct timespec now;
++        clock_gettime(CLOCK_MONOTONIC, &now);
++        present_time = now.tv_sec * INT64_C(1000000000) + now.tv_nsec;
+     } else {
+-        p->presented = presented;
+-    }
++        p->read_gap = MPCLAMP(read - (presented + p->discarded), 0, ao->samplerate);
++    }
++    p->presented = presented;
+ 
+     int64_t end_time = mp_time_ns();
+     end_time += MP_TIME_S_TO_NS(nframes) / ao->samplerate;
+@@ -264,11 +275,10 @@
+                 ao->samplerate, ao->channels.num, capture_format, 0, 0);
+         }
+     }
+-    // Only the hardware presentation watermark releases submitted samples to a recording.
+-    if (result >= 0)
+-        mpv_quest_capture_audio_feed(atomic_load(&ao->global->quest_capture_id), NULL, 0,
+-            ao->samplerate, ao->channels.num, capture_format,
+-            presented + p->discarded, present_time);
++    // Only the presentation watermark releases submitted samples to a recording.
++    mpv_quest_capture_audio_feed(atomic_load(&ao->global->quest_capture_id), NULL, 0,
++        ao->samplerate, ao->channels.num, capture_format,
++        presented + p->discarded, present_time);
+     ao_read_data(ao, &data, nframes, end_time, NULL, true, true);
+     mpv_quest_capture_audio_feed(atomic_load(&ao->global->quest_capture_id), data, nframes,
+         ao->samplerate, ao->channels.num, capture_format, written, 0);

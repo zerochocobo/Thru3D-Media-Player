@@ -4,14 +4,14 @@ The auditorium scene, seat selection, movement and desktop prototype are experim
 
 ## Generate local geometry
 
-Generated scene models are excluded from Git. The project-owned procedural blueprint contains the geometry and seat layout; no external scene asset or personal media is needed. With the matching Godot console executable:
+Generated scene models and baked textures are excluded from public Git. The project-owned blueprint defines navigation geometry and seats; Blender builds and bakes the visible hall from its manifest, without external scene assets or personal media. Use the matching Godot executable and Blender 5.2:
 
 ```powershell
-godot --headless --xr-mode off --path app/godot --script ../../tools/Generate-CinemaModel.gd
+./tools/Build-CinemaModel.ps1 -Godot godot -Blender blender
 godot --headless --editor --import --xr-mode off --path app/godot
 ```
 
-This writes `app/godot/environments/grand_cinema/cinema.glb` and `manifest.json`, both ignored. Generate them before enabling the Debug scene or running its geometry/loading/gate tests. Regeneration is optional for normal Release source builds. It does not enable the scene in Release.
+This writes the ignored manifest, GLB and baked images under `app/godot/environments/grand_cinema/`. The Blender scripts are in `tools/cinema`; Generate-CinemaModel alone produces only the manifest. Generate them before enabling the Debug scene or running its geometry/loading/gate tests. Regeneration is optional for normal Release source builds. It does not enable the scene in Release.
 
 ## Optional Windows desktop video
 

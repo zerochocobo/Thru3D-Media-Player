@@ -116,13 +116,20 @@ func panel_centre() -> Vector3:
 
 ## Store the viewer in menu space so refreshes cannot chase head motion during a click.
 func set_layout_viewer(head: Transform3D, following: bool = false, orient: bool = true) -> void:
-	if not is_inside_tree(): return
+	if not is_inside_tree() or space_locked(): return
 	var up := head.basis.y.normalized() if following else Vector3.UP
 	if orient: global_transform = SurfaceLayout.facing(global_transform, head.origin, panel_centre(), up)
 	_layout_following = following
 	_layout_eye = to_local(head.origin)
 	_layout_up = global_basis.inverse() * up
 	arrange_surfaces()
+
+func space_locked() -> bool:
+	var node: Node = self
+	while node is Node3D:
+		if node.get_meta("space_locked", false): return true
+		node = node.get_parent()
+	return false
 
 ## Only explicit opens/layout changes refresh this reference; ordinary redraws keep it frozen.
 func refresh_layout_reference() -> void:
@@ -320,6 +327,11 @@ func _activate_footer(target: int) -> bool:
 	return true
 
 func _set_backdrop(size: Vector2, centre: Vector2 = Vector2.ZERO) -> void:
+	if _backdrop.get_meta("control_bar", false):
+		_backdrop.remove_meta("control_bar"); _backdrop.remove_meta("menu_eye_buffer")
+		_backdrop.material_override.render_priority = 10
+		_backdrop.material_override.set_shader_parameter("keep_opacity", false)
+		_backdrop.material_override.set_shader_parameter("surface_color", PANEL)
 	_backdrop.mesh.size = size
 	_backdrop.position = Vector3(centre.x, centre.y, 0)
 	_backdrop.material_override.set_shader_parameter("surface_size", size)
@@ -621,7 +633,7 @@ func _update_highlights() -> void:
 			continue
 		var color: Color = button.base_color
 		if not button.enabled: color = Color(0.26, 0.44, 0.38) if button.get("hover_disabled", false) and button.base_color == ACCENT else Color(0.085, 0.095, 0.115, button.base_color.a)
-		elif hovered: color = Color(0.67, 1.0, 0.86) if button.base_color == ACCENT else Color(0.23, 0.43, 0.38)
+		elif hovered: color = button.get("hover_color", Color(0.67, 1.0, 0.86) if button.base_color == ACCENT else Color(0.23, 0.43, 0.38))
 		if button.node.material_override.get_shader_parameter("surface_color") != color:
 			button.node.material_override.set_shader_parameter("surface_color", color)
 			changed = true
@@ -643,14 +655,15 @@ func _update_tooltip() -> void:
 		return
 	if not _tooltip:
 		_tooltip = _quad(Vector2(0.2, 0.05), Vector3.ZERO, Color(0.02, 0.025, 0.03, 0.92), 40)
+		_tooltip.set_meta("menu_tooltip", true)
 		add_child(_tooltip)
-		var text := _label("", Vector3(0, 0, 0.002), TEXT_AUX, _tooltip)
+		var text := _label("", Vector3(0, 0, 0.002), TEXT_BODY, _tooltip)
 		text.render_priority = 41
 	var label: Label3D = _tooltip.get_child(0)
 	var changed := not _tooltip.visible or label.text != tip
 	if changed:
 		label.text = tip; label.font = ui_font()
-		var width := minf(text_width(tip, TEXT_AUX) + 0.006, 0.86)
+		var width := minf(text_width(tip, TEXT_BODY) + 0.006, 0.86)
 		label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		label.width = width / label.pixel_size
 		var measured := ui_font().get_multiline_string_size(tip, HORIZONTAL_ALIGNMENT_CENTER, label.width, label.font_size, -1, TextServer.BREAK_MANDATORY | TextServer.BREAK_WORD_BOUND | TextServer.BREAK_ADAPTIVE)

@@ -285,21 +285,7 @@ internal class SmbLibrary(private val context: Context, private val streams: () 
         val path = rest.substringAfter('/')
         val url = "smb://${server.host}/$path"
         val context = cifs(server)
-        val size = SmbFile(url, context).use { it.length() }
-        return object : StreamSource {
-            override val size = size
-            override fun open(): StreamSource.Reader {
-                val file = SmbFile(url, context)
-                val reader = SmbRandomAccessFile(file, "r")
-                return object : StreamSource.Reader {
-                    override fun read(offset: Long, buffer: ByteArray, length: Int): Int {
-                        reader.seek(offset)
-                        return reader.read(buffer, 0, length)
-                    }
-                    override fun close() { reader.close(); file.close() }
-                }
-            }
-        }
+        return SmbStreamSource(url, context, SmbFile(url, context).use { it.length() })
     }
 
     /** SMB hosts seen within [timeoutMs]: mDNS _smb._tcp (NAS, macOS, Samba) plus WS-Discovery,
@@ -404,4 +390,22 @@ internal class SmbLibrary(private val context: Context, private val streams: () 
     } catch (_: Throwable) { "" } // Key lost (e.g. backup restore): the user re-enters the password.
 
     companion object { private const val KEY = "quest_player_smb" }
+}
+
+/** Each reader opens its own SMB handle, so a fork reads the same file independently. */
+internal class SmbStreamSource(private val url: String, private val context: CIFSContext,
+                               override val size: Long) : StreamSource {
+    override fun open(): StreamSource.Reader {
+        val file = SmbFile(url, context)
+        val reader = SmbRandomAccessFile(file, "r")
+        return object : StreamSource.Reader {
+            override fun read(offset: Long, buffer: ByteArray, length: Int): Int {
+                reader.seek(offset)
+                return reader.read(buffer, 0, length)
+            }
+            override fun close() { reader.close(); file.close() }
+        }
+    }
+    override val forkable get() = true
+    override fun fork(): StreamSource = SmbStreamSource(url, context, size)
 }

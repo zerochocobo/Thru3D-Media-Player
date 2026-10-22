@@ -387,6 +387,7 @@ func _process(_delta: float) -> void:
 				return
 			_model.name = "GrandCinema"
 			_normalize_vertex_materials(_model)
+			Description.apply_seat_detail(_model)
 			_model.visible = false
 			add_child(_model)
 		elif status in [ResourceLoader.THREAD_LOAD_FAILED, ResourceLoader.THREAD_LOAD_INVALID_RESOURCE]:

@@ -21,6 +21,8 @@ internal class PhotoPreviewBridge(
     private val context: () -> Context?,
     private val resolve: (String) -> String,
     private val releaseStream: (String) -> Unit,
+    private val cacheName: String = "photo-gallery",
+    private val edge: Int = EDGE,
     private val emit: (Int, String) -> Unit,
 ) : Closeable {
     private val worker = Executors.newSingleThreadExecutor { Thread(it, "PhotoGalleryPreview") }
@@ -45,10 +47,10 @@ internal class PhotoPreviewBridge(
                 val app = context() ?: error("PHOTO_UNAVAILABLE")
                 synchronized(lock) {
                     if (!prepared) {
-                        File(app.cacheDir, "photo-gallery").listFiles()?.forEach { it.deleteRecursively() }
+                        File(app.cacheDir, cacheName).listFiles()?.forEach { it.deleteRecursively() }
                         prepared = true
                     }
-                    directory = File(app.cacheDir, "photo-gallery/$id").apply { mkdirs() }
+                    directory = File(app.cacheDir, "$cacheName/$id").apply { mkdirs() }
                     directories[id] = directory!!
                 }
                 val source = File(directory, "source")
@@ -77,18 +79,18 @@ internal class PhotoPreviewBridge(
                 phase = "decode"
                 val heif = HeifPhotoInfo.read(source)
                 val metadata = JSONObject().put("state", "ready").put("orientation", 1)
-                val bitmap: Bitmap
+                var bitmap: Bitmap
                 if (PhotoBitmap.isNative(source)) {
                     val bounds = PhotoBitmap.bounds(source)
                     var sample = 1
-                    while (maxOf(bounds.outWidth, bounds.outHeight) / sample > EDGE * 2) sample *= 2
+                    while (maxOf(bounds.outWidth, bounds.outHeight) / sample > edge * 2) sample *= 2
                     bitmap = PhotoBitmap.region(source, 0, 0, bounds.outWidth, bounds.outHeight, sample, ::checkCurrent)
                     metadata.put("orientation", PhotoBitmap.orientation(source))
                 } else if (heif != null) {
                     // Select one eye before Android decodes; no packed stereo or full-size raw allocation.
                     heif.selectPrimary(source, heif.left)
                     bitmap = ImageDecoder.decodeBitmap(ImageDecoder.createSource(source)) { decoder, info, _ ->
-                        val size = dimensions(info.size.width, info.size.height)
+                        val size = dimensions(info.size.width, info.size.height, edge)
                         HeifPhotoDecoder.configure8Bit(decoder)
                         decoder.setTargetSize(size.first, size.second)
                     }
@@ -97,9 +99,9 @@ internal class PhotoPreviewBridge(
                     val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
                     BitmapFactory.decodeFile(source.path, bounds)
                     require(bounds.outMimeType in setOf("image/jpeg", "image/png", "image/webp"))
-                    val size = dimensions(bounds.outWidth, bounds.outHeight)
+                    val size = dimensions(bounds.outWidth, bounds.outHeight, edge)
                     var sample = 1
-                    while (maxOf(bounds.outWidth, bounds.outHeight) / sample > EDGE * 2) sample *= 2
+                    while (maxOf(bounds.outWidth, bounds.outHeight) / sample > edge * 2) sample *= 2
                     val decoded = BitmapFactory.decodeFile(source.path, BitmapFactory.Options().apply { inSampleSize = sample })
                         ?: error("PHOTO_DECODE_FAILED")
                     try { bitmap = Bitmap.createScaledBitmap(decoded, size.first, size.second, true) }
@@ -118,6 +120,12 @@ internal class PhotoPreviewBridge(
                 }
                 try {
                     checkCurrent()
+                    val fitted = dimensions(bitmap.width, bitmap.height, edge)
+                    if (bitmap.width != fitted.first || bitmap.height != fitted.second) {
+                        val scaled = Bitmap.createScaledBitmap(bitmap, fitted.first, fitted.second, true)
+                        if (scaled !== bitmap) bitmap.recycle()
+                        bitmap = scaled
+                    }
                     phase = "encode"
                     val preview = File(directory, "preview.png")
                     preview.outputStream().use { require(bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)) }
@@ -146,10 +154,10 @@ internal class PhotoPreviewBridge(
     override fun close() { closed = true; current.set(0); connection?.disconnect(); worker.shutdownNow() }
     companion object {
         const val EDGE = 512
-        fun dimensions(width: Int, height: Int): Pair<Int, Int> {
+        fun dimensions(width: Int, height: Int, edge: Int = EDGE): Pair<Int, Int> {
             // Match the full-photo reader. Tall comic pages are sampled before allocating pixels.
             require(width in 1..65535 && height in 1..65535)
-            val scale = minOf(1.0, EDGE.toDouble() / maxOf(width, height))
+            val scale = minOf(1.0, edge.toDouble() / maxOf(width, height))
             return maxOf(1, (width * scale).roundToInt()) to maxOf(1, (height * scale).roundToInt())
         }
     }

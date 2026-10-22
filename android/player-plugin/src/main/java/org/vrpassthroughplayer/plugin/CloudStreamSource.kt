@@ -24,7 +24,7 @@ internal class CloudStreamSource(
     fun prepare() { currentLink() }
     /** Independent reader ownership, retaining this immutable object's resolver and
      * identity-bound connection factory. The caller registers the new media lease. */
-    @Synchronized fun fork(): CloudStreamSource {
+    @Synchronized override fun fork(): CloudStreamSource {
         check(!closed)
         return CloudStreamSource(size, resolve, connect).also {
             it.linkConnection = linkConnection; it.rangeWindow = rangeWindow

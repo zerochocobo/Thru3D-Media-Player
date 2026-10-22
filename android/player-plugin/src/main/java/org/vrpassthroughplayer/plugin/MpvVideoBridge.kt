@@ -5,6 +5,7 @@ import android.net.Uri
 import android.opengl.EGL14
 import android.opengl.EGLContext
 import android.os.Handler
+import android.os.Trace
 import android.os.ParcelFileDescriptor
 import org.json.JSONArray
 import org.json.JSONObject
@@ -953,7 +954,11 @@ internal class MpvVideoBridge(
                 if (session.maskInFlightNs != 0L && System.nanoTime() - session.maskInFlightNs > 1_000_000_000L) session.maskInFlightNs = 0L
                 if (System.nanoTime() >= session.host.nextStatusNs) {
                     session.host.nextStatusNs = System.nanoTime()+250_000_000L
+                    Trace.beginSection("T3D.mpvStatus")
+                    try {
+                    Trace.beginSection("T3D.mpvStatus.native")
                     val status = JSONObject(MpvSourceNative.status(session.host.handle))
+                    Trace.endSection()
                     inspectInterleave(session.host, status)
                     if (BuildConfig.DEBUG && session.renderer > 0)
                         status.put("bridge", JSONObject(RenderBridgeNative.stats(session.renderer)))
@@ -990,6 +995,10 @@ internal class MpvVideoBridge(
                     }
                     val terminal = if (status.optBoolean("eof_source_resolved")) status.optJSONObject("eof_source_ticket") else null
                     session.end.observe(terminal?.let { MpvEndGate.Source(it.getLong("source_epoch"), it.getLong("frame_id"), it.getLong("pts_us")) })
+                    Trace.beginSection("T3D.mpvStatus.narration")
+                    val narrationStatus = session.host.narration?.status() ?: JSONObject().put("state", "off")
+                    Trace.endSection()
+                    Trace.beginSection("T3D.mpvStatus.emit")
                     event("mpv_state", session, status.put("alpha_requested", session.alpha).put("depth_requested", session.depth)
                         .put("startup_bridge", JSONObject(session.host.startup as Map<*, *>))
                         .put("interleave_leading_audio_bytes", session.host.interleavePolicy.leadingAudioBytes)
@@ -1005,9 +1014,11 @@ internal class MpvVideoBridge(
                         .put("rvm_model_ready", session.model?.isReady() == true)
                         .put("producer_copy_deferred", session.deferredCopies).put("producer_copy_pending", session.pendingSource != null)
                         .put("eof_pair_post_draw", session.end.complete()).put("eof_presented_slot", session.end.completedSlot())
-                        .put("audio_focus", audioFocusState).put("narration", session.host.narration?.status() ?: JSONObject().put("state", "off")))
+                        .put("audio_focus", audioFocusState).put("narration", narrationStatus))
+                    Trace.endSection()
                     if (status.optString("state") == "failed" || status.optBoolean("render_failed"))
                         throw PlaybackFailureException(PlaybackFailure.native(status))
+                    } finally { Trace.endSection() }
                 }
             } catch (failure: Throwable) { fail(session, "MPV_FRAME_PIPELINE_FAILED", failure) }
         }

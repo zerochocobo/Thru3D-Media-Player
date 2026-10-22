@@ -84,7 +84,7 @@ The embedded OpenList component is **AGPL-3.0**; its adapter, pinned build recip
 
 Pressing a controller trigger outside the video controls only dismisses them, so hand movement during that press cannot drag the picture. Timeline and slider dragging remain available. Video settings open on Playback, with color and stereo-view popup panels; photo settings retain their panel layout.
 
-Video 2D-to-3D strength is remembered per file and defaults to Off for a new video; photos use an independent global preference. Manually enabled video portrait passthrough is not carried into the next opening. Matching external-subtitle filenames take priority, followed by the interface language; explicit/saved selections, including Off, override automatic choices.
+Video and photo 2D-to-3D strengths use separate global preferences; enabling the video mode remains file-scoped and defaults to Off for a new video. Manually enabled video portrait passthrough is not carried into the next opening. Matching external-subtitle filenames take priority, followed by the interface language; explicit/saved selections, including Off, override automatic choices.
 
 ## Seeking, combinations and Alpha settings
 
@@ -122,7 +122,7 @@ Move a controller or press a button to reveal its ray and hit point outside menu
 
 ## Subtitle files and paged cloud browsing
 
-The subtitle picker can choose other text-subtitle filenames from the current folder on sources with directory access (including supported local, USB, SMB, cloud and WebDAV sources). Manual cloud choices use the cached page captured when the video opened; this is separate from supported automatic basename discovery across that directory. Subtitle timing is remembered separately for each track/file within the video, with explicit selections taking priority.
+The subtitle picker can browse local, SMB and supported cloud directories, remembers its location and has an independent page offset. Choosing a subtitle restores the media browser context; automatic basename discovery remains a separate bounded operation. Subtitle timing is remembered separately for each track/file within the video, with explicit selections taking priority.
 
 Native cloud providers load bounded directory pages with source-supported sorting. WebDAV reuses its complete fetched directory snapshot; this is not server-side WebDAV pagination. 115 retains account-scoped parent identities for playback preparation and verifies parent/target identities freshly before managed writes. This reduces redundant lookup work without promising fixed network latency or bypassing permissions.
 
@@ -136,7 +136,7 @@ Home and photo viewing share one music transport. Completed offline imports no l
 
 History (`privacy/history`) controls recent items, resume progress and thumbnail persistence. Per-file settings (`privacy/file_settings`) independently control viewing, audio/subtitle selection/timing, narration and quiet-dialogue preferences; its default remains All when upgrading from disabled history. Each category can be disabled or cleared without clearing the other; disabling does not erase existing data. Protected favorites retain their encryption/locking boundary.
 
-Narration exposes 19 text languages, 12 preset voice origins and locally created custom voices. The voice manager auditions, renames/deletes and chooses defaults; new videos still start with narration off. Audition streaming/cache, rhythm and level processing share production paths; matching voice-encoder assets are separately required. Photos use global viewing preferences while videos retain independent depth strength. Spatial relief follows physical display size.
+Narration exposes 19 text languages, 12 preset voice origins and locally created custom voices. The voice manager auditions, renames/deletes and chooses defaults; new videos still start with narration off. Audition streaming/cache, rhythm and level processing share production paths; matching voice-encoder assets are separately required. Photos use global viewing preferences; video/photo depth strengths use separate global preferences. Spatial relief follows physical display size.
 
 The auditorium experiment is [Debug-only](EXPERIMENTAL_CINEMA.md), distinct from released cinema screen placement. Online panorama entry points remain hidden. No personal voices or model payloads accompany this source.
 
@@ -145,3 +145,7 @@ The auditorium experiment is [Debug-only](EXPERIMENTAL_CINEMA.md), distinct from
 Compatible immersive videos support [original screenshots and lossless source clips](CAPTURE.md), with independent status/stop controls and layout metadata. Current Android output is MKV with keyframe boundary constraints; generated media and personal fixtures remain excluded from Git.
 
 Cloud reference sampling now uses independent bounded readers, shared verified 115 download tickets, transient/expired-link recovery and prompt connection release. DLNA external-subtitle positioning handles requests before the first cue. These scoped fixes do not guarantee all providers/media or repair arbitrary old playback records.
+
+## PiP, watch and browse continuity
+
+The video bar provides [PiP and static image windows](PICTURE_IN_PICTURE.md) and a hand-tracked watch toggle. Directory positions are remembered separately per account/source, directory and All/Video/Photo filter. The default-on resume setting follows history privacy: All may persist, Local Only keeps network positions in memory, None keeps all positions within the current run. Clearing history clears positions; enabling history later never backfills private-session positions. Disabling resume starts ordinary re-entry at the top while explicit parent navigation retains context. Per-directory sorting and provider-supported page sizes are separate preferences; load-all requires explicit selection.

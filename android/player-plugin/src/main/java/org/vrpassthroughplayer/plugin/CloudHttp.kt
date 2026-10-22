@@ -48,6 +48,7 @@ internal class CloudFailure(val reason: String = "cloud_unavailable", detail: St
     "cloud_file_changed" -> "Cloud file changed. Refresh the folder"
     "cloud_file_ambiguous" -> "Duplicate cloud names. Rename in cloud storage"
     "cloud_folder_too_large" -> "Cloud folder too large"
+    "cloud_metadata_limit" -> "Directory metadata limit reached"
     else -> "Cloud connection failed"
 }, cause) {
     val detail = CloudDiagnostics.sanitize(detail)

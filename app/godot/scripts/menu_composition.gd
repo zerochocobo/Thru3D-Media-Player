@@ -35,7 +35,7 @@ const HIDDEN_SIZE := Vector2(0.0005, 0.0005)
 const ORDER_BASE := -6
 ## Clear after shader video (-10) and subtitles (1), before the menu's eye-buffer UI (10+).
 ## Otherwise a nearby 2D->3D screen paints back into the hole over the compositor menu.
-const HOLE_PRIORITY := 5
+const HOLE_PRIORITY := 9 # after PiP pictures/frames (0..8), before ordinary menus (10+)
 ## Surfaces whose offsets along a shared normal differ less than this share one layer plane.
 const PLANE_GAP := 0.015
 ## Popups draw with render priority 30+; they and their children never share a panel's layer.
@@ -43,8 +43,16 @@ const POPUP_PRIORITY := 30
 const NORMAL_DOT := 0.9995
 const MARGIN := 0.012
 const GRID := 0.05
-## A low-rate refresh catches visuals changed without a signal (late thumbnails, text).
+## A low-rate check catches visuals changed without a signal (late thumbnails, text). It compares
+## a signature of the captured nodes and repaints only on a change: every repaint acquires the
+## layer swapchains, and a blind 4 Hz repaint cost Quest 3 about two late frames a second, seen as
+## a constant fine judder of the idle menu (2026-10-21).
 const KEEPALIVE_MS := 250
+## Debug A/B only (0 disables the keepalive); read every frame.
+var keepalive_ms := KEEPALIVE_MS
+var _signature := 0
+## Shader uniform names, by shader instance id.
+var _uniforms := {}
 const HOLE_SHADER := preload("res://shaders/menu_layer_hole.gdshader")
 const COPY_SHADER := preload("res://shaders/menu_layer_copy.gdshader")
 const SURFACE_SHADER := preload("res://shaders/menu_surface.gdshader")
@@ -93,6 +101,12 @@ var bands: Array[Dictionary] = []
 ## Planes captured as bands, by kind: {"relative", "rank", "nodes", "width", "overflow"}.
 var banded: Dictionary = {}
 var _peer_poses := []
+
+func layer_reservation() -> int:
+	if not enabled: return 0
+	# Normal slots may be attached later in the same frame. Extra diagnostic bands
+	# already own viewports, so include those providers even while their quad is tiny.
+	return SLOT_METRES.size() + bands.size()
 
 func configure(target_origin: Node3D, target_camera: Camera3D, target_display: RefCounted,
 		target_menus: Array, is_low_end: bool, host_capture: bool = false) -> void:
@@ -241,6 +255,15 @@ func register_menu(menu: Node3D) -> void:
 	menu.tree_exiting.connect(unregister_menu.bind(menu))
 	_watch_children(menu); invalidate()
 
+## Floating video controls share the existing five providers, never extra XR layers.
+func register_companion(menu: Node3D) -> void:
+	menu.set_meta("menu_companion", true)
+	menu.composition_root().set_meta("menu_companion", true)
+	register_menu(menu)
+
+func _menu_visible(menu: Node3D) -> bool:
+	return menu.is_visible_in_tree() and (not menu.has_method("composition_visible") or menu.composition_visible())
+
 func unregister_menu(menu: Node3D) -> void:
 	if not menus.has(menu): return
 	if active==menu or (is_instance_valid(active) and menu.is_ancestor_of(active)):
@@ -301,7 +324,7 @@ func update() -> void:
 		_restore(); _hide(); fallback_reason = "session_not_running"; return
 	var wanted: Node3D
 	for menu in menus:
-		if menu.is_visible_in_tree():
+		if _menu_visible(menu):
 			wanted = menu.composition_root() if menu.has_method("composition_root") else menu
 			break
 	if wanted != active:
@@ -319,12 +342,15 @@ func update() -> void:
 	if geometry_dirty:
 		_collect(); geometry_dirty = false; dirty = true
 	var now := Time.get_ticks_msec()
-	if now - _painted_ms >= KEEPALIVE_MS: dirty = true
+	if not dirty and keepalive_ms > 0 and now - _painted_ms >= keepalive_ms:
+		_painted_ms = now
+		dirty = _visual_signature() != _signature
 	if dirty:
 		for slot in slots:
 			if slot.used: _measure(slot)
 		for kind in banded: _measure_bands(kind)
 		dirty = false; _painted_ms = now; repaints += 1
+		_signature = _visual_signature()
 	var root := _root_pose()
 	var any := false
 	for slot in slots + bands:
@@ -332,6 +358,44 @@ func update() -> void:
 		any = any or (slot.used and not slot.empty)
 	if display: display.set_menu_layers(any and not force_capture)
 	fallback_reason = "" if any else "no_planar_surfaces"
+
+## Everything a capture shows of its nodes: visibility, pose in the menu, text, colours, textures
+## and shader parameters. Equal signatures mean an identical repaint.
+func _visual_signature() -> int:
+	var inverse := _root_pose().affine_inverse()
+	var values := []
+	for slot in slots:
+		if slot.used: _sign_nodes(slot.nodes, inverse, values)
+	for kind in banded: _sign_nodes(banded[kind].nodes, inverse, values)
+	return hash(values)
+
+func _sign_nodes(nodes: Array, inverse: Transform3D, values: Array) -> void:
+	for node in nodes:
+		if not is_instance_valid(node): values.append(0); continue
+		var visual := node as VisualInstance3D
+		var shown := visual.is_visible_in_tree()
+		values.append(shown)
+		if not shown: continue
+		values.append(inverse * visual.global_transform)
+		if visual is Label3D:
+			var label := visual as Label3D
+			values.append_array([label.text, label.modulate, label.outline_modulate, label.font_size, label.width])
+		elif visual is SpriteBase3D:
+			values.append_array([visual.get("texture"), (visual as SpriteBase3D).modulate])
+		if visual is MeshInstance3D:
+			var mesh := (visual as MeshInstance3D).mesh
+			values.append(mesh)
+			if mesh is PrimitiveMesh: values.append(mesh.get("size"))
+		if visual is GeometryInstance3D:
+			var material := (visual as GeometryInstance3D).material_override
+			values.append(material)
+			if material is StandardMaterial3D:
+				values.append_array([material.albedo_color, material.albedo_texture])
+			elif material is ShaderMaterial and material.shader:
+				var key: int = material.shader.get_instance_id()
+				if not _uniforms.has(key):
+					_uniforms[key] = material.shader.get_shader_uniform_list().map(func(uniform): return uniform.name)
+				for uniform in _uniforms[key]: values.append(material.get_shader_parameter(uniform))
 
 func _root_pose() -> Transform3D:
 	var pose := active.global_transform
@@ -356,19 +420,23 @@ func _collect() -> void:
 	for item in items:
 		var joined := false
 		for group in groups:
-			if group.popup == item.popup and group.normal.dot(item.normal) > NORMAL_DOT and item.offset - group.last <= PLANE_GAP:
+			if group.tooltip == item.tooltip and group.popup == item.popup and group.normal.dot(item.normal) > NORMAL_DOT and item.offset - group.last <= PLANE_GAP:
 				group.nodes.append(item); group.last = item.offset
 				group.shown += int(item.shown)
 				group.owners[item.owner]=true
 				joined = true; break
 		if not joined:
 			groups.append({"normal": item.normal, "basis": item.basis, "first": item.offset, "last": item.offset,
-				"nodes": [item], "popup": item.popup, "shown": int(item.shown),"owners":{item.owner:true}})
+				"nodes": [item], "popup": item.popup, "tooltip": item.tooltip, "shown": int(item.shown),"owners":{item.owner:true}})
 	# Visible, larger groups claim slots first; any surplus geometry stays in the eye buffer.
 	groups.sort_custom(func(a, b): return a.shown > b.shown or (a.shown == b.shown and a.nodes.size() > b.nodes.size()))
 	# A small companion caption must not lose all HD slots to a large menu's
 	# extra planes. Reserve its main visible plane, then fill remaining slots.
 	var selected: Array[Dictionary]=[]
+	# Hover text must not drop to the lower-density eye buffer when a page uses
+	# several angled planes. Reserve one existing slot; never add XR layers.
+	for group in groups:
+		if group.tooltip and group.shown > 0: selected.append(group); break
 	for owner in owners:
 		for group in groups:
 			if group.shown>0 and group.owners.has(owner):
@@ -379,7 +447,7 @@ func _collect() -> void:
 		if not selected.has(group): selected.append(group)
 	groups=selected
 	for group in groups.slice(0, MAX_GROUPS):
-		var key := "%d:%d:%d:%d:%d" % [int(group.popup), roundi(group.normal.x * 50), roundi(group.normal.y * 50), roundi(group.normal.z * 50), roundi(group.first / PLANE_GAP)]
+		var key := "%d:%d:%d:%d:%d:%d" % [int(group.popup), int(group.tooltip), roundi(group.normal.x * 50), roundi(group.normal.y * 50), roundi(group.normal.z * 50), roundi(group.first / PLANE_GAP)]
 		group["key"] = key
 	for slot in slots: slot.used = false; slot.nodes = []
 	banded = {}
@@ -414,6 +482,11 @@ func _collect() -> void:
 func _visible_peers() -> Array:
 	var peers := []
 	for menu in menus:
+		if menu.get_meta("menu_companion", false):
+			if _menu_visible(menu):
+				var root: Node3D = menu.composition_root()
+				if root != active and not active.is_ancestor_of(root): peers.append(root)
+			continue
 		if menu!=active and not active.is_ancestor_of(menu) and menu.is_visible_in_tree() and menu.has_method("composition_root") and menu.composition_root()==active: peers.append(menu)
 	return peers
 
@@ -436,6 +509,10 @@ static func _kind(group: Dictionary, root_inverse: Transform3D) -> String:
 
 func _assign(slot: Dictionary, group: Dictionary, root: Transform3D, bit: int) -> void:
 	slot.used = true
+	slot["companion"] = group.owners.keys().any(func(id):
+		var node: Object = instance_from_id(id)
+		return is_instance_valid(node) and node.get_meta("menu_companion", false))
+	slot["tooltip"] = group.tooltip
 	slot.camera.cull_mask = bit
 	if slot.layer.layer_viewport == null: slot.layer.layer_viewport = slot.submit
 	var plane := (float(group.first) + float(group.last)) * 0.5
@@ -446,7 +523,7 @@ func _assign(slot: Dictionary, group: Dictionary, root: Transform3D, bit: int) -
 	if slot.rect.has_area() and not slot.relative.basis.is_equal_approx(basis):
 		slot.rect = Rect2()
 	slot.relative = relative
-	slot.rank = Vector2(int(group.popup), relative.origin.z)
+	slot.rank = Vector2(2 if group.tooltip else int(group.popup), relative.origin.z)
 	for item in group.nodes:
 		var node: VisualInstance3D = item.node
 		originals.append({"node": node, "layers": node.layers})
@@ -558,7 +635,8 @@ func _capture_band(band: Dictionary, rect: Rect2) -> void:
 	band.submit.render_target_update_mode = SubViewport.UPDATE_ALWAYS
 	band.tail = 2
 
-func _gather(node: Node, items: Array[Dictionary], inverse: Transform3D, popup: bool) -> void:
+func _gather(node: Node, items: Array[Dictionary], inverse: Transform3D, popup: bool, tooltip: bool = false) -> void:
+	tooltip = tooltip or node.get_meta("menu_tooltip", false)
 	if node.has_meta("menu_pointer") or node.has_meta("menu_eye_buffer"): return
 	if node is CanvasItem or node is Viewport: return
 	# A folded attached browser is a separate menu, not a hidden row of the transport.
@@ -571,8 +649,8 @@ func _gather(node: Node, items: Array[Dictionary], inverse: Transform3D, popup: 
 		var normal := basis.z
 		popup = popup or _priority(node) >= POPUP_PRIORITY
 		items.append({"node": node, "normal": normal, "basis": basis, "offset": normal.dot(local.origin), "popup": popup,
-			"shown": node.is_visible_in_tree()})
-	for child in node.get_children(): _gather(child, items, inverse, popup)
+			"tooltip": tooltip, "shown": node.is_visible_in_tree()})
+	for child in node.get_children(): _gather(child, items, inverse, popup, tooltip)
 
 static func _priority(node: VisualInstance3D) -> int:
 	if node is Label3D: return node.render_priority
@@ -586,7 +664,7 @@ func _measure(slot: Dictionary) -> void:
 	var lo := Vector2(INF, INF); var hi := Vector2(-INF, -INF)
 	for node: VisualInstance3D in slot.nodes:
 		if not is_instance_valid(node) or not node.is_visible_in_tree(): continue
-		var box := node.get_aabb()
+		var box: AABB = node.get_meta("menu_capture_bounds", node.get_aabb())
 		if box.size.x <= 0 and box.size.y <= 0: continue
 		var to_frame: Transform3D = frame_inverse * root_inverse * node.global_transform
 		for corner in 8:
@@ -600,10 +678,14 @@ func _measure(slot: Dictionary) -> void:
 	hi = ((hi + Vector2.ONE * MARGIN) / GRID).ceil() * GRID
 	var rect := Rect2(lo, hi - lo)
 	var previous: Rect2 = slot.rect
-	slot.rect = rect if not previous.has_area() else previous.merge(rect)
+	# A moving tooltip replaces its bounds. Unioning every hovered card position
+	# spreads fixed capture pixels across an ever larger, mostly empty rectangle.
+	slot.rect = rect if slot.get("tooltip", false) or not previous.has_area() else previous.merge(rect)
 	slot.raw.render_target_update_mode = SubViewport.UPDATE_ONCE
 	slot.submit.render_target_update_mode = SubViewport.UPDATE_ALWAYS
-	slot.tail = 2
+	# New floating controls change render masks immediately after creating glyphs.
+	# One follow-up capture lets those render resources settle before parking it.
+	slot.tail = 3 if slot.get("companion", false) else 2
 
 func _place(slot: Dictionary, root: Transform3D) -> void:
 	if not slot.used or slot.empty or not slot.rect.has_area():
@@ -625,6 +707,8 @@ func _place(slot: Dictionary, root: Transform3D) -> void:
 	slot.hole.global_transform = pose
 	slot.hole.visible = not debug_hide_holes
 	if slot.tail > 0:
+		if slot.get("companion", false) and slot.tail > 1:
+			slot.raw.render_target_update_mode = SubViewport.UPDATE_ONCE
 		slot.tail -= 1
 		if slot.tail == 0:
 			slot.raw.render_target_update_mode = SubViewport.UPDATE_DISABLED

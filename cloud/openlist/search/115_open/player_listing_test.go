@@ -88,6 +88,91 @@ func TestPlayerDirectoryPagesNeverEnumerateTheRestForAnyOrder(t *testing.T) {
 	}
 }
 
+func TestPlayerGroupingIsExplicitBeforeSelectingEachPage(t *testing.T) {
+	for _, mixed := range []bool{false, true} {
+		calls := 0
+		d := listingDriver(func(r *http.Request) (*http.Response, error) {
+			calls++
+			q := r.URL.Query()
+			mode := "1"
+			if mixed {
+				mode = "2"
+			}
+			if q.Get("custom_order") != mode || q.Get("offset") != "200" || q.Get("o") != "user_utime" {
+				t.Fatal("grouping was omitted or applied after paging", q)
+			}
+			return listingResponse(r, `{"state":true,"count":201,"offset":200,"data":[{"fid":"201","fn":"latest.mp4","fc":"1","fs":12}]}`), nil
+		})
+		order := "modified_desc"
+		if mixed {
+			order = "mixed_" + order
+		}
+		items, total, err := d.PlayerListPageSized(context.Background(), &model.Object{ID: "42", IsFolder: true}, 200, order, 200)
+		if err != nil || calls != 1 || len(items) != 1 || total != 201 {
+			t.Fatal(err, calls, total)
+		}
+	}
+}
+
+func TestPlayerGroupingFollows115CustomOrderAcrossPageBoundary(t *testing.T) {
+	// Protocol fixture: custom_order=2 disables folder priority even if fc_mix=0.
+	// Deliberately ignore fc_mix, so the previous fixed-mode request fails here.
+	grouped := []sdk.GetFilesResp_File{
+		{Fid: "2", Fn: "B folder", Fc: "0", Upt: 20},
+		{Fid: "4", Fn: "D folder", Fc: "0", Upt: 5},
+		{Fid: "1", Fn: "A.mp4", Fc: "1", Upt: 30},
+		{Fid: "3", Fn: "C.mp4", Fc: "1", Upt: 10},
+	}
+	mixed := []sdk.GetFilesResp_File{grouped[2], grouped[0], grouped[3], grouped[1]}
+	calls := 0
+	d := listingDriver(func(r *http.Request) (*http.Response, error) {
+		calls++
+		q := r.URL.Query()
+		if q.Get("o") != "user_utime" || q.Get("asc") != "0" || q.Get("limit") != "2" || q.Get("show_dir") != "1" || q.Get("cur") != "1" {
+			t.Fatal("sorting, page size or folder visibility changed", q)
+		}
+		rows := grouped
+		switch q.Get("custom_order") {
+		case "1":
+		case "2":
+			rows = mixed
+		default:
+			t.Fatal("request used account memory instead of the directory preference", q)
+		}
+		offset, err := strconv.Atoi(q.Get("offset"))
+		if err != nil || (offset != 0 && offset != 2) {
+			t.Fatal("unexpected page offset", q)
+		}
+		body, _ := json.Marshal(map[string]any{"state": true, "count": 4, "offset": offset, "data": rows[offset : offset+2]})
+		return listingResponse(r, string(body)), nil
+	})
+	dir := &model.Object{ID: "42", IsFolder: true}
+	for _, test := range []struct {
+		order string
+		want  []string
+	}{
+		{"modified_desc", []string{"B folder", "D folder", "A.mp4", "C.mp4"}},
+		{"mixed_modified_desc", []string{"A.mp4", "B folder", "C.mp4", "D folder"}},
+	} {
+		var names []string
+		for _, offset := range []int64{0, 2} {
+			items, total, err := d.PlayerListPageSized(context.Background(), dir, offset, test.order, 2)
+			if err != nil || total != 4 || len(items) != 2 {
+				t.Fatal(test.order, total, err)
+			}
+			for _, item := range items {
+				names = append(names, item.GetName())
+			}
+		}
+		if strings.Join(names, "|") != strings.Join(test.want, "|") {
+			t.Fatalf("%s returned %v; want %v", test.order, names, test.want)
+		}
+	}
+	if calls != 4 {
+		t.Fatal("grouping caused a directory crawl", calls)
+	}
+}
+
 func TestPlayerDirectoryRejectsBrokenPagesAndHonorsCancellation(t *testing.T) {
 	for _, body := range []string{
 		`{"state":true,"count":8000,"offset":0,"data":[]}`,

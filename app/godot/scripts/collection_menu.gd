@@ -414,6 +414,8 @@ func _toggle_card_favorite(row: Dictionary) -> void:
 	menu.refresh()
 
 func _remove_rows(items: Array, clear_all: bool = false) -> void:
+	if clear_all and home_tab == 0 and not menu.clear_browse_history(false):
+		menu.status = "Privacy cleanup failed"; menu.refresh(); return
 	var success := false
 	if home_tab == 1:
 		success = store.remove_many(items.map(func(row):return str(row.uri)))
@@ -469,6 +471,7 @@ func draw() -> void:
 	if not message.is_empty(): menu._label(menu.I18n.t(message), Vector3(0, -0.49, 0.004), 16)
 
 func open_location(row: Dictionary) -> void:
+	menu._save_folder_position(); menu._browse_activity(); menu._browse_return_restore = false
 	var location: Dictionary = location_for(row)
 	if location.is_empty(): menu.status = "Location unavailable"; menu.refresh(); return
 	reveal_uri = str(row.get("uri", "")); reveal_pending = true

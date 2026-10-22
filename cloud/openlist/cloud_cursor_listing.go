@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -44,11 +45,17 @@ func cursorDirectory(c *gin.Context) {
 		Path     string `json:"path"`
 		FolderID string `json:"folder_id"`
 		Offset   int    `json:"offset"`
+		PageSize int    `json:"page_size"`
 		Order    string `json:"order"`
 		Refresh  bool   `json:"refresh"`
 	}
-	if c.ShouldBindJSON(&req) != nil || req.Offset < 0 || req.Offset > 2147483647-48 || req.Offset%48 != 0 || len(req.FolderID) > 2048 {
+	if c.ShouldBindJSON(&req) != nil || req.Offset < 0 || req.Offset > 2147483647-1000 || req.PageSize < 0 || req.PageSize > 1000 || len(req.FolderID) > 2048 {
 		cloudListError(c, "directory.request", errors.New("invalid directory page request"))
+		return
+	}
+	pageSize := listingPageSize([]int{req.PageSize})
+	if req.Offset%pageSize != 0 {
+		cloudListError(c, "directory.request", errors.New("invalid directory offset"))
 		return
 	}
 	storage, err := searchStorage(req.Mount, req.Path)
@@ -67,13 +74,17 @@ func cursorDirectory(c *gin.Context) {
 		cloudListError(c, "directory.driver", errors.New("native directory paging unavailable"))
 		return
 	}
-	switch req.Order {
+	if strings.HasPrefix(req.Order, "mixed_") && storage.Config().Name != "WebDav" {
+		cloudListError(c, "directory.order", errors.New("directory grouping unavailable"))
+		return
+	}
+	switch strings.TrimPrefix(req.Order, "mixed_") {
 	case "source", "name_asc", "name_desc", "size_asc", "size_desc", "modified_asc", "modified_desc":
 	default:
 		cloudListError(c, "directory.order", errors.New("invalid directory sort order"))
 		return
 	}
-	page, err := readCursorDirectory(c.Request.Context(), storage, native, req.Mount, req.Path, req.FolderID, req.Offset, req.Order, req.Refresh)
+	page, err := readCursorDirectory(c.Request.Context(), storage, native, req.Mount, req.Path, req.FolderID, req.Offset, req.Order, req.Refresh, pageSize)
 	if err != nil {
 		if errors.Is(err, errDirectoryPageExpired) || strings.HasPrefix(err.Error(), "directory page expired") {
 			c.JSON(200, gin.H{"code": 500, "message": "Cloud request failed", "error_reason": "cloud_page_expired", "error_detail": "directory.page: refresh to restart paging"})
@@ -93,11 +104,19 @@ func cursorDirectory(c *gin.Context) {
 	c.JSON(200, gin.H{"code": 200, "data": gin.H{"content": items, "total": page.total, "next_offset": page.next, "folder_id": req.FolderID}})
 }
 
-func readCursorDirectory(ctx context.Context, storage driver.Driver, native cursorCloudDriver, mount, remote, folderID string, offset int, order string, refresh bool) (cursorCloudPage, error) {
+func readCursorDirectory(ctx context.Context, storage driver.Driver, native cursorCloudDriver, mount, remote, folderID string, offset int, order string, refresh bool, requestedSize ...int) (cursorCloudPage, error) {
+	pageSize := listingPageSize(requestedSize)
+	if pageSize < 1 || pageSize > 1000 {
+		return cursorCloudPage{}, errors.New("invalid directory page size")
+	}
+	direct, isDirect := native.(offsetCloudDriver)
 	if err := ctx.Err(); err != nil {
 		return cursorCloudPage{}, err
 	}
 	key := mount + remote + "\x00" + order
+	if pageSize != 48 {
+		key += "\x00" + strconv.Itoa(pageSize)
+	}
 	if folderID == "" {
 		for k, s := range cursorCloudSessions {
 			if strings.HasPrefix(k, mount+remote+"\x00") && s.storage == storage && time.Now().Before(s.expires) {
@@ -112,7 +131,7 @@ func readCursorDirectory(ctx context.Context, storage driver.Driver, native curs
 		session = nil
 	}
 	if session == nil {
-		if offset != 0 {
+		if offset != 0 && !isDirect {
 			return cursorCloudPage{}, errDirectoryPageExpired
 		}
 		folder, err := native.PlayerFolder(ctx, remote, folderID)
@@ -157,15 +176,36 @@ func readCursorDirectory(ctx context.Context, storage driver.Driver, native curs
 		return cached, nil
 	}
 	cursor, ok := session.cursors[offset]
+	if !ok && isDirect {
+		cursor, ok = direct.PlayerOffsetCursor(offset), true
+	}
 	if !ok {
 		return cursorCloudPage{}, errDirectoryPageExpired
 	}
-	objects, next, total, err := native.PlayerPage(ctx, session.folder, cursor, order)
+	var objects []model.Obj
+	var next string
+	var total int64
+	var err error
+	if sized, ok := native.(sizedCursorCloudDriver); ok {
+		objects, next, total, err = sized.PlayerPageSized(ctx, session.folder, cursor, order, pageSize)
+	} else if pageSize == 48 {
+		objects, next, total, err = native.PlayerPage(ctx, session.folder, cursor, order)
+	} else {
+		return cursorCloudPage{}, errors.New("directory page size unavailable")
+	}
 	if err != nil {
 		return cursorCloudPage{}, err
 	}
-	if len(objects) > 48 || total < -1 || total > 2147483647 || len(next) > 16384 || next != "" && next == cursor {
+	if len(objects) > pageSize || total < -1 || total > 2147483647 || len(next) > 16384 || next != "" && next == cursor {
 		return cursorCloudPage{}, errors.New("invalid directory page or repeated cursor")
+	}
+	for previous, token := range session.cursors {
+		if next != "" && previous <= offset && next == token {
+			return cursorCloudPage{}, errors.New("directory cursor cycle")
+		}
+	}
+	if err := checkListingMetadata(objects); err != nil {
+		return cursorCloudPage{}, err
 	}
 	seen := map[string]bool{}
 	for _, obj := range objects {
@@ -180,7 +220,7 @@ func readCursorDirectory(ctx context.Context, storage driver.Driver, native curs
 	}
 	result := cursorCloudPage{objects: objects, total: total, next: -1, expires: time.Now().Add(2 * time.Minute)}
 	if next != "" {
-		result.next = offset + 48
+		result.next = offset + pageSize
 	}
 	if err := ctx.Err(); err != nil {
 		return cursorCloudPage{}, err
@@ -204,6 +244,7 @@ func readCursorDirectory(ctx context.Context, storage driver.Driver, native curs
 	// Keep cursor 0 and a bounded window around the requested page. Never replay
 	// all preceding network pages to reconstruct an evicted or expired cursor.
 	trimCursorPages(session, offset)
+	trimDirectoryRows()
 	return result, nil
 }
 

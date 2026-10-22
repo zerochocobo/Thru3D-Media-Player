@@ -165,6 +165,16 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     }
     @UsedByGodot fun cancel_photo_preview(id: Int) = photoPreviews.cancel(id)
     @UsedByGodot fun release_photo_preview(id: Int) = photoPreviews.release(id)
+    // Independent channel: gallery thumbnails must not cancel or release a PiP image request.
+    private val pipImages = PhotoPreviewBridge({ activity?.applicationContext }, sources::playable, sources::releasePhotoStream,
+        "pip-images", 2048) { id, json -> if (!closed.get()) emitSignal("pip_image_ready", id, json) }
+    @UsedByGodot fun open_pip_image(uri: String): Int {
+        if (closed.get()) return -1
+        val id = requestId.incrementAndGet()
+        return if (pipImages.open(id, uri)) id else -1
+    }
+    @UsedByGodot fun cancel_pip_image(id: Int) = pipImages.cancel(id)
+    @UsedByGodot fun release_pip_image(id: Int) = pipImages.release(id)
     @UsedByGodot fun preload_photo(uri: String): Int {
         if (closed.get()) return -1
         val id = requestId.incrementAndGet()
@@ -200,7 +210,7 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
         val app = activity?.applicationContext ?: return false
         return runCatching {
             synchronized(PhotoCache.lock) {
-                PhotoCache.clear(app.cacheDir, photos.cacheDirectories() + photoPreloads.cacheDirectories() + photoPreviews.cacheDirectories())
+                PhotoCache.clear(app.cacheDir, photos.cacheDirectories() + photoPreloads.cacheDirectories() + photoPreviews.cacheDirectories() + pipImages.cacheDirectories())
             }
             true
         }.getOrElse { Log.w("QuestPhotoCache", "Photo cache cleanup failed", it); false }
@@ -225,6 +235,7 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
         SignalInfo("capabilities_ready", Int::class.javaObjectType, String::class.java),
         SignalInfo("android_lifecycle", String::class.java),
         SignalInfo("rvm_warmup", String::class.java),
+        SignalInfo("pip_image_ready", Int::class.javaObjectType, String::class.java),
         SignalInfo("photo_ready", Int::class.javaObjectType, String::class.java),
         SignalInfo("background_audio_imported", Int::class.javaObjectType, String::class.java),
         SignalInfo("photo_portrait", Int::class.javaObjectType, String::class.java),
@@ -348,6 +359,8 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     @UsedByGodot fun media_photo_directory_cancel(id: Int) = sources.photoDirectoryCancel(id)
     @UsedByGodot fun media_cloud_page(path: String, offset: Int, refresh: Boolean): Int = if (closed.get()) -1 else sources.cloudBrowse(path, refresh, offset)
     @UsedByGodot fun media_cloud_sorted_page(path: String, offset: Int, refresh: Boolean, order: String): Int = if (closed.get()) -1 else sources.cloudBrowse(path, refresh, offset, order)
+    @UsedByGodot fun media_cloud_page_options(path: String, offset: Int, refresh: Boolean, order: String, folderId: String, pageSize: Int, subtitlesOnly: Boolean): Int =
+        if (closed.get()) -1 else sources.cloudBrowse(path, refresh, offset, order, folderId, subtitlesOnly, pageSize)
     @UsedByGodot fun media_cloud_directory_page(path: String, offset: Int, refresh: Boolean, order: String, folderId: String): Int = if (closed.get()) -1 else sources.cloudBrowse(path, refresh, offset, order, folderId)
     @UsedByGodot fun media_cloud_search(path: String, query: String, scope: String, kind: String, cursor: String, refresh: Boolean): Int = if (closed.get()) -1 else sources.cloudSearch(path, query, scope, kind, cursor, refresh)
     @UsedByGodot fun media_cloud_search_resolve(path: String, token: String): Int = if (closed.get()) -1 else sources.cloudSearchResolve(path, token)
@@ -435,6 +448,21 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     @UsedByGodot fun upload_layer_rows(slot: Int, y: Int, rows: Int, pixels: ByteArray, channels: Int): Boolean =
         runCatching { VideoLayerNative.uploadRows(slot, y, rows, pixels, channels) }.getOrDefault(false)
     @UsedByGodot fun copy_layer_texture(slot: Int, texture: Int): Boolean = runCatching { VideoLayerNative.copyTexture(slot, texture) }.getOrDefault(false)
+    @UsedByGodot fun video_layer_limits(): String = runCatching { VideoLayerNative.compositorLimits() }.getOrDefault("0 0 0")
+    @UsedByGodot fun pip_compositor_metrics(): String = runCatching { VideoLayerNative.pipMetrics() }.getOrDefault("0 0 0 0 0")
+    @UsedByGodot fun pip_compositor_samples(request: Boolean): String =
+        if (BuildConfig.DEBUG) runCatching { VideoLayerNative.pipSamples(request) }.getOrDefault("") else ""
+    @UsedByGodot fun pip_main_samples(request: Boolean): String =
+        if (BuildConfig.DEBUG) runCatching { VideoLayerNative.pipMainSamples(request) }.getOrDefault("") else ""
+    @UsedByGodot fun render_pip_atlas(slot: Int, color: Int, external: Boolean, mask: Int, active: Int, eyes: Int,
+                                      common: FloatArray, windows: FloatArray): Boolean =
+        runCatching { VideoLayerNative.renderPip(slot, color, external, mask, active, eyes, common, windows) }.getOrDefault(false)
+    @UsedByGodot fun remap_layer_fisheye(slot: Int, texture: Int, external: Boolean, params: FloatArray): Boolean =
+        runCatching { VideoLayerNative.remapFisheye(slot, texture, external, params) }.getOrDefault(false)
+    /** Debug builds only: reads back the next remapped fisheye picture (every [step]th pixel). */
+    @UsedByGodot fun request_fisheye_readback(step: Int) { if (BuildConfig.DEBUG) runCatching { VideoLayerNative.requestFisheyeReadback(step) } }
+    @UsedByGodot fun take_fisheye_readback(): ByteArray =
+        if (BuildConfig.DEBUG) runCatching { VideoLayerNative.takeFisheyeReadback() }.getOrDefault(ByteArray(0)) else ByteArray(0)
     @UsedByGodot fun copy_layer_band(slot: Int, texture: Int, y: Int, rows: Int): Boolean =
         runCatching { VideoLayerNative.copyBand(slot, texture, y, rows) }.getOrDefault(false)
     /** Whether Alpha may keep the compositor layer (always in release builds; debug builds compare the
@@ -629,6 +657,6 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     override fun onGodotTerminating() { close() }
 
     private fun close() {
-        if (closed.compareAndSet(false, true)) { originalCapture.close(); systemVolume.close(); favoritesTasks.close(); accounts.close(); panoramaBrowser.close(); panoramaRegions.close(); panoramaPictures.close(); panoramaOriginals.close(); musicPlayback.close(); musicPreview.close(); backgroundAudio.close(); photos.close(); photoPreloads.close(); photoPreviews.close(); PhotoDepthRuntime.release(); picker.close(); localAccess.close(); probe.shutdownNow(); media.shutdown(); controlled.shutdown(); mpv.shutdown(); rvm.close(); sources.close() }
+        if (closed.compareAndSet(false, true)) { originalCapture.close(); systemVolume.close(); favoritesTasks.close(); accounts.close(); panoramaBrowser.close(); panoramaRegions.close(); panoramaPictures.close(); panoramaOriginals.close(); musicPlayback.close(); musicPreview.close(); backgroundAudio.close(); photos.close(); photoPreloads.close(); photoPreviews.close(); pipImages.close(); PhotoDepthRuntime.release(); picker.close(); localAccess.close(); probe.shutdownNow(); media.shutdown(); controlled.shutdown(); mpv.shutdown(); rvm.close(); sources.close() }
     }
 }

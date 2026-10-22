@@ -49,8 +49,10 @@ func run() -> void:
 		menu.section = section
 		var file: Dictionary = raw.duplicate(true)
 		file.uri = {Menu.Section.LOCAL: "file:///Movies/Film.mkv", Menu.Section.SMB: raw.uri, Menu.Section.DLNA: "http://example.invalid/Film.mkv", Menu.Section.CLOUD: "cloud://mount1/Film.mkv"}[section]
-		catalog.entries[file.uri] = {"uri": file.uri, "title": file.title, "position_ms": 90000, "duration_ms": 180000}
 		menu._local_entries = [file]; menu._smb_entries = [file]; menu._dlna_entries = [file]; menu._cloud_entries = [file]
+		# History follows the row's own key: DLNA rows use the stable dlna://server/id (8b761680).
+		var history_uri := str(menu._entry_row(file).get("uri", file.uri))
+		catalog.entries[history_uri] = {"uri": history_uri, "title": file.title, "position_ms": 90000, "duration_ms": 180000}
 		for compact in [false, true]:
 			menu.set_compact(compact); menu.refresh()
 			check(texts(menu).any(func(value): return value.contains("12.0 GB") and value.contains("1:30")), "Actual grid label has size and position: %s/%s" % [section, compact])

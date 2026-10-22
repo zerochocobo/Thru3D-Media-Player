@@ -237,7 +237,9 @@ internal class EmbyClient(private val account: MediaServerAccount, private val h
     }
     override fun detail(id: String): JSONObject {
         val data = item(id)
-        val result = summary(data).put("description", data.optString("Overview")).put("markers", chapterMarkers(data)).put("images", images(data))
+        val artwork = images(data)
+        val result = summary(data).put("description", data.optString("Overview")).put("markers", chapterMarkers(data))
+            .put("images", artwork).put("backdrops", backdrops(data, artwork))
         if (result.optInt("part_count") > 1 || partMarker.containsMatchIn(result.optString("basename"))) {
             val additional = get("Videos/${mediaId(id)}/AdditionalParts", mapOf("UserId" to user(), "Fields" to "MediaSources,MediaStreams,Path,Chapters", "EnableImages" to true))
                 .getJSONArray("Items").objects()
@@ -270,6 +272,24 @@ internal class EmbyClient(private val account: MediaServerAccount, private val h
     private val partMarker = Regex("(?:^|[ ._-])((?:cd|part|pt|disc|disk)[ ._-]?([0-9]{1,9}))(?=[ ._-]|$)", RegexOption.IGNORE_CASE)
     private fun imageNode(id: String, type: String, index: Int, tag: String = "") = JSONObject()
         .put("id", id).put("image_type", type).put("image_index", index).put("image_tag", tag.take(256))
+    private fun backdrops(data: JSONObject, artwork: JSONArray): JSONArray {
+        val own = artwork.objects().filter { it.optString("image_type") == "Backdrop" }
+        if (own.isNotEmpty()) return JSONArray(own.take(12))
+        val parent = data.optString("ParentBackdropItemId")
+        val tags = data.optJSONArray("ParentBackdropImageTags") ?: JSONArray()
+        if (parent.isNotBlank() && tags.length() > 0) {
+            val id = runCatching { mediaId(parent) }.getOrNull()
+            val inherited = if (id != null) (0 until minOf(12, tags.length())).mapNotNull { index ->
+                tags.optString(index).takeIf { it.isNotBlank() }?.let { imageNode(id, "Backdrop", index, it) }
+            } else emptyList()
+            if (inherited.isNotEmpty()) return JSONArray(inherited)
+        }
+        // Keep portrait posters and chapter thumbnails out of a page-wide background.
+        val thumbs = artwork.objects().filter { it.optString("image_type") == "Thumb" }.take(1)
+        if (thumbs.isNotEmpty()) return JSONArray(thumbs)
+        return JSONArray(artwork.objects().filter { it.optString("image_type") == "Screenshot" &&
+            it.optInt("width") > it.optInt("height") && it.optInt("height") > 0 }.take(12))
+    }
     private fun images(data: JSONObject): JSONArray {
         val id = mediaId(data.getString("Id")); val tags = data.optJSONObject("ImageTags") ?: JSONObject()
         val images = linkedMapOf<String, JSONObject>()
@@ -282,7 +302,11 @@ internal class EmbyClient(private val account: MediaServerAccount, private val h
         for (index in 0 until minOf(128, data.optJSONArray("BackdropImageTags")?.length() ?: 0)) add("Backdrop", index)
         try {
             val raw = http.bytes(account.endpoint("Items/$id/Images"), 1024 * 1024)
-            JSONArray(String(raw, Charsets.UTF_8)).objects().take(128).forEach { add(it.optString("ImageType"), it.optInt("ImageIndex", 0)) }
+            JSONArray(String(raw, Charsets.UTF_8)).objects().take(128).forEach {
+                val type = it.optString("ImageType"); val index = it.optInt("ImageIndex", 0)
+                add(type, index)
+                images["$type/$index"]?.put("width", it.optInt("Width"))?.put("height", it.optInt("Height"))
+            }
         } catch (error: Exception) {
             if (error is MediaServerFailure && error.code in setOf("Request cancelled", "Server authentication required")) throw error
             // A server without image enumeration still supplies its tagged images.

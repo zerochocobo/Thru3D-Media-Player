@@ -12,7 +12,7 @@ var seeks: Array = []
 var depths: Array = []
 
 class MainHarness extends "res://scripts/main.gd":
-	var head := Transform3D(Basis.IDENTITY, Vector3(-0.4, 10.2, 20.0))
+	var head := Transform3D(Basis.IDENTITY, Vector3(-0.4, 7.05, 17.65))
 	func _ready() -> void: pass
 	func _head_pose() -> Variant: return head
 	func _move_pose(_hand: String) -> Variant: return head
@@ -98,7 +98,7 @@ func _run() -> void:
 	check(menu.to_global(Vector3(0, bounds.end.y, 0)).y <= 1.052, "All ordinary transport visuals stay 15cm below the physical screen")
 	check("depth_test_disabled" in menu._backdrop.material_override.shader.code and menu._title.no_depth_test,
 		"Panel and text use the cinema overlay policy")
-	for seat_id in ["A15", "J15", "R15"]:
+	for seat_id in ["A15", "I15", "N15"]:
 		var eye := Vector3.ZERO
 		for seat: Dictionary in Blueprint.manifest().seats:
 			if seat.id == seat_id: eye = Vector3(seat.eye_position[0], seat.eye_position[1], seat.eye_position[2])
@@ -109,7 +109,7 @@ func _run() -> void:
 			var hit: Dictionary = menu.ray_hit(eye, aim(menu, target, eye))
 			check(hit.get("target", -1) == target and float(hit.get("distance", 0)) > 5.0,
 				"A real distant ray reaches %s control %d" % [seat_id, target])
-	main.head = Transform3D(Basis.IDENTITY, Vector3(-0.4, 10.2, 20.0))
+	main.head = Transform3D(Basis.IDENTITY, Vector3(-0.4, 7.05, 17.65))
 	main._begin_interface_move("right_hand", "grip_click")
 	check(main.interface_move.capture.is_empty(), "Grip cannot drag the fixed transport")
 	tap(menu, 102, main.head.origin)

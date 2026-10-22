@@ -199,6 +199,7 @@ func _run() -> void:
 	var main := Main.new()
 	main.settings_path = folder.path_join("settings.cfg")
 	root.add_child(main)
+	check(main.video.depth_strength == .5 and main.photo.depth_strength == 1.0, "Fresh settings use independent video 50% and photo 100% defaults")
 	check(not main.photo.spatial_preferred, "Fresh settings default to static 3D for photos")
 	main.photo.history_enabled = false
 	main.photo.mode_memory = Memory.new(folder.path_join("main_modes"))
@@ -309,10 +310,12 @@ func _run() -> void:
 	main._on_depth_strength(0.0, false)
 	check(main.photo.auto_depth and main.settings.get_value("effects", "auto_3d"), "Video slider Off also leaves new photos in global 3D mode")
 	main.photo_active = true
-	saved.set_value("video","depth_strength",1.9); saved.save(main.settings_path)
+	main.video.local_uri = "file:///global-strength_2D.mp4"; main.video.media.begin(901)
+	main.video._remember_file = true; main.video.stereo_sbs = false; main.video.geometry = 0
+	main._on_depth_strength(1.9, false); main._save_depth_strength(false)
 	var static_restart := Main.new(); static_restart.settings_path = main.settings_path; root.add_child(static_restart)
-	check(not static_restart.photo.spatial_preferred and is_equal_approx(static_restart.photo.depth_strength,1.5) and static_restart.video.depth_strength==1.0,
-		"Restart restores global static-photo settings while ignoring the obsolete global video strength")
+	check(not static_restart.photo.spatial_preferred and is_equal_approx(static_restart.photo.depth_strength,1.5) and is_equal_approx(static_restart.video.depth_strength,1.9),
+		"Restart independently restores the video and static-photo strengths committed by their controls")
 	static_restart.queue_free(); await process_frame
 	main._on_photo_action("photo_spatial_on")
 	check(main.photo.spatial_preferred and main.settings.get_value("photo","spatial_preferred"),"Selecting spatial mode also persists globally")
@@ -323,8 +326,8 @@ func _run() -> void:
 	var restored := Main.new()
 	restored.settings_path = main.settings_path
 	root.add_child(restored)
-	check(not restored.video.auto_depth and restored.photo.auto_depth and restored.photo.spatial_preferred and is_equal_approx(restored.photo.depth_strength, 1.5) and restored.video.depth_strength == 1.0,
-		"Restart restores global spatial-photo mode and strength while video awaits its own file record")
+	check(not restored.video.auto_depth and restored.photo.auto_depth and restored.photo.spatial_preferred and is_equal_approx(restored.photo.depth_strength, 1.5) and is_equal_approx(restored.video.depth_strength,1.9),
+		"Restart restores both global strengths while video conversion still awaits its own file record")
 	check(restored.photo.mode_lock.geometry == 3 and restored.video.mode_lock.is_empty(), "Restart restores panorama photo lock without locking videos")
 	main._on_photo_action("lock_mode"); saved.load(main.settings_path)
 	check(saved.get_value("photo", "mode_lock").is_empty(), "Unlock is saved across restarts")

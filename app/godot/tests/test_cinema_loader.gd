@@ -29,11 +29,11 @@ func _run() -> void:
 	var retained := valid.root as Node3D
 	retained.name = "RetainedEnvironment"
 	root.add_child(retained)
-	_check(valid.stats.seats == 540 and valid.stats.runtime_glb, "Real model preserves 540 seats and runtime-load identity")
-	_check(valid.stats.bytes < 16 * 1024 * 1024 and valid.stats.triangles < 100000,
-		"GT geometry stays below 16 MiB and 100k triangles without raising model resource limits")
+	_check(valid.stats.seats == 420 and valid.stats.runtime_glb, "Real model preserves 420 seats and runtime-load identity")
+	_check(valid.stats.bytes < 24 * 1024 * 1024 and valid.stats.triangles < 800000,
+		"Detailed GT hall with both chair detail levels stays below 24 MiB and 800k stored triangles without raising model resource limits")
 	_check(Loader.MAX_SEATS == 1024 and Loader.MAX_BYTES == 32 * 1024 * 1024 and Loader.MAX_VERTICES == 1000000 and Loader.MAX_AREAS == 4096,
-		"540-seat support retains bounded seats, bytes, vertices and navigation areas")
+		"420-seat support retains bounded seats, bytes, vertices and navigation areas")
 	_check(_colored_surfaces_normalized(retained), "Imported COLOR_0 surfaces use vertex albedo including first primitive")
 	var cases := [
 		["wrong_schema", ["schema_version"], 2],

@@ -151,6 +151,36 @@ class Mp4PlaybackSourceTest {
             try { assertEquals(404,revoked.responseCode) } finally { revoked.disconnect() }
         } } finally { CloudLibrary.stopStreams();upstream.stop(0) }
     }
+    /** SMB-like inputs: every reader reopens the file, so a view forks without an account boundary. */
+    private class Forkable(val bytes:ByteArray, val forks:AtomicInteger):StreamSource {
+        override val size=bytes.size.toLong()
+        override val forkable get()=true
+        override fun fork():StreamSource { forks.incrementAndGet(); return Forkable(bytes,forks) }
+        override fun open()=Origin(bytes).open()
+    }
+    @Test fun forkableNonCloudSourceGetsPlaybackViewOwnedByItsLease() {
+        val bytes=fixture();val layout=inspect(bytes).playbackLayout!!
+        val forks=AtomicInteger()
+        LocalStreamServer().use { local ->
+            val parent=local.publish(Forkable(bytes,forks),"fixture.mp4")
+            assertFalse(local.cloudBacked(parent))
+            assertTrue("The read cache wraps forkable sources",local.enableInterleaveCache(parent))
+            val view=local.playbackView(parent,layout)!!
+            assertEquals(1,forks.get())
+            local.revoke(parent)
+            val connection=URI(view).toURL().openConnection() as HttpURLConnection
+            try {
+                connection.setRequestProperty("Range","bytes=${layout.header.size}-${layout.header.size+31}")
+                assertEquals(206,connection.responseCode)
+                val expected=bytes.copyOfRange(layout.chunks.first().origin.toInt(),layout.chunks.first().origin.toInt()+32)
+                assertArrayEquals(expected,connection.inputStream.readBytes())
+            } finally { connection.disconnect() }
+            local.revoke(view); assertFalse(local.hasSource(view))
+            val plain=local.publish(Origin(bytes),"plain.mp4")
+            assertFalse("Plain sources keep the direct path",local.enableInterleaveCache(plain))
+            assertNull(local.playbackView(plain,layout))
+        }
+    }
     @Test fun largeIndexCanFinishBeyondFiveSecondsWithoutExpandingTheByteBudget() {
         val small=fixture();val moovAt=java.nio.ByteBuffer.wrap(small,0,4).int+16+1440
         val bytes=small.copyOfRange(0,moovAt)+box("moov",small.copyOfRange(moovAt+8,small.size),box("free",ByteArray(4*1024*1024)))

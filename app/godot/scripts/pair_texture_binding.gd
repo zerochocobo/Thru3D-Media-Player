@@ -18,6 +18,44 @@ var warped := false
 
 ## The picture of a layer pair is on the compositor's video layer: nothing to bind here.
 var layer := false
+## Secondary pictures borrow this exact display lease; detach all RIDs before retiring it.
+var _consumers: Array[ShaderMaterial] = []
+var _shared_shader: Shader
+var _shared_uniforms: Array[String] = []
+var _shared_values := {}
+
+func shared_parameters() -> Dictionary:
+	if not material or layer: return {}
+	if _shared_shader != material.shader:
+		_shared_shader = material.shader; _shared_uniforms.clear(); _shared_values.clear()
+		for uniform in material.shader.get_shader_uniform_list():
+			var name := str(uniform.name)
+			if not name.begins_with("pip_") and not name.begins_with("subtitle_") and not name.begins_with("bitmap_subtitle_") and not name in ["color_texture", "alpha_texture", "separate_subtitles"]:
+				_shared_uniforms.append(name)
+	var values := {}
+	for name in _shared_uniforms: values[name] = material.get_shader_parameter(name)
+	return values
+
+func share_with(target: ShaderMaterial, parameters: Dictionary = {}) -> void:
+	if not material or layer: return
+	if not _consumers.has(target): _consumers.append(target)
+	if parameters.is_empty(): parameters = shared_parameters()
+	if target.shader != material.shader:
+		target.shader = material.shader; _shared_values.erase(target.get_instance_id())
+	var values: Dictionary = _shared_values.get_or_add(target.get_instance_id(), {})
+	for name in parameters:
+		var value: Variant = parameters[name]
+		if not values.has(name) or values[name] != value:
+			target.set_shader_parameter(name, value); values[name] = value
+	for name in ["color_texture", "alpha_texture"]:
+		var texture := color_texture() if name == "color_texture" else alpha_rid
+		if values.get(name) != texture:
+			RenderingServer.material_set_param(target.get_rid(), name, texture); values[name] = texture
+
+func unshare(target: ShaderMaterial) -> void:
+	RenderingServer.material_set_param(target.get_rid(), "color_texture", null)
+	RenderingServer.material_set_param(target.get_rid(), "alpha_texture", null)
+	_consumers.erase(target); _shared_values.erase(target.get_instance_id())
 
 func bind(target: ShaderMaterial, pair: Dictionary) -> bool:
 	if material or not target:
@@ -79,6 +117,11 @@ func color_texture() -> RID:
 	return _decoder_color.get_rid() if str(ticket.get("color_target", "")) == "external" and _decoder_color else color_rid
 
 func unbind() -> Dictionary:
+	for target in _consumers:
+		RenderingServer.material_set_param(target.get_rid(), "color_texture", null)
+		RenderingServer.material_set_param(target.get_rid(), "alpha_texture", null)
+		var values: Dictionary = _shared_values.get(target.get_instance_id(), {})
+		values.erase("color_texture"); values.erase("alpha_texture")
 	if material:
 		RenderingServer.material_set_param(material.get_rid(), "color_texture", null)
 		RenderingServer.material_set_param(material.get_rid(), "alpha_texture", null)

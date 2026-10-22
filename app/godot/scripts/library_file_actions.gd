@@ -7,6 +7,7 @@ const DELETE_FILE := 9102
 const CANCEL := 9103
 const CONFIRM := 9104
 const CHECK_STATUS := 9105
+const FOLDERS_FIRST := 9106
 const SELECT_BASE := 9200
 const ORDER_BASE := 9120
 var menu: Node3D
@@ -50,7 +51,56 @@ func _init(owner: Node3D) -> void:
 	menu = owner; rename = Rename.new(owner)
 
 func scope() -> String:
-	return str(menu.section)
+	var location: Array = [menu.section]
+	match menu.section:
+		menu.Section.LOCAL: location.append(menu._local_path())
+		menu.Section.SMB: location.append_array([menu._smb_server, menu._smb_path])
+		menu.Section.DLNA: location.append_array([menu._dlna_server, str(menu._dlna_stack.back().id) if not menu._dlna_stack.is_empty() else "0"])
+		menu.Section.CLOUD: location.append(menu._cloud_path())
+	return JSON.stringify(location).sha256_text()
+
+func defaults() -> Dictionary:
+	var saved: Variant = orders.get("default", {})
+	return {"order": Order.normalize(saved.get("order", "name_asc")), "folders_first": bool(saved.get("folders_first", true))} if saved is Dictionary else {"order": "name_asc", "folders_first": true}
+
+func preferences() -> Dictionary:
+	var directories: Dictionary = orders.get("directories", {})
+	var saved: Variant = directories.get(scope(), {})
+	if saved is Dictionary and not saved.is_empty(): return saved
+	var fallback := defaults()
+	# Preserve old source preferences on migration, until a global default is chosen.
+	if not orders.has("default"): fallback.order = Order.normalize(orders.get(str(menu.section), fallback.order))
+	return fallback
+
+func folders_first() -> bool:
+	return bool(preferences().get("folders_first", true))
+
+func grouping_supported() -> bool:
+	# Other cloud APIs do not expose a verified directory-wide grouping switch.
+	# Do not manufacture it by reordering just one API page or crawling all pages.
+	return menu.section != menu.Section.CLOUD or menu.cloud_pagination.provider() in ["", "115_open", "webdav"]
+
+func save_preferences(value: Dictionary) -> void:
+	if not orders.get("directories") is Dictionary: orders["directories"] = {}
+	if orders.directories.get(scope(), {}) == value: return
+	orders.directories[scope()] = value.duplicate(true)
+	menu.setting_changed.emit("library_orders", orders.duplicate(true))
+
+func set_default(key: String, value: Variant) -> void:
+	var saved := defaults()
+	if key == "library_default_order": saved.order = Order.normalize(value)
+	else: saved.folders_first = bool(value)
+	orders["default"] = saved
+	menu.setting_changed.emit("library_orders", orders.duplicate(true))
+
+func settings_rows() -> Array:
+	var options: Array = []
+	for i in Order.ORDERS.size(): options.append({"value": Order.ORDERS[i], "label": Order.LABELS[i]})
+	var sort_row: Dictionary = menu._choice_row("Default sort order", "library_default_order", defaults().order, options)
+	sort_row.dropdown = true
+	return [sort_row,
+		menu._choice_row("Folders first by default", "library_default_folders_first", defaults().folders_first,
+		[{"value": false, "label": "Off"}, {"value": true, "label": "On"}])]
 
 func folder() -> bool:
 	return (menu.section == menu.Section.LOCAL and not menu._local_stack.is_empty()) or \
@@ -59,7 +109,7 @@ func folder() -> bool:
 
 ## Read existing listing metadata only. Local write flags also depend on the opt-in setting.
 func entry_state() -> String:
-	if not folder() or menu.audio_import_mode or menu.subtitle_picker_mode or menu.cloud_search.active: return ""
+	if not folder() or menu.audio_import_mode or menu.subtitle_picker_mode or menu.image_picker_mode or menu.cloud_search.active: return ""
 	if menu.section == menu.Section.LOCAL:
 		var volume: Dictionary = menu._local_volume()
 		if menu._local_path().begins_with("usb://") or menu._local_path().begins_with("content://") or volume.get("removable", false) or volume.get("read_only", false): return "read_only"
@@ -92,7 +142,7 @@ func return_from_settings(redraw: bool = true) -> bool:
 	return true
 
 func order() -> String:
-	var value := Order.normalize(orders.get(scope(), "name_asc"))
+	var value := Order.normalize(preferences().get("order", "name_asc"))
 	return value if supports_order(value) else "name_asc"
 
 func sortable() -> bool:
@@ -229,22 +279,26 @@ func toggle(row: Dictionary) -> void:
 	menu.status = ""; menu.refresh_file_selection()
 
 func sort_rows() -> void:
-	if not sortable() or menu.section == menu.Section.CLOUD: return
+	if not sortable(): return
+	if menu.section == menu.Section.CLOUD: return
 	var selected_order := order()
-	menu.rows.sort_custom(func(a, b): return Order.before(a, b, selected_order))
+	var grouped := folders_first()
+	save_preferences({"order": selected_order, "folders_first": grouped})
+	menu.rows.sort_custom(func(a, b): return Order.before(a, b, selected_order, grouped))
 
-func choose_order(value: String) -> void:
+func choose_order(value: String, grouped: Variant = null) -> void:
 	if not sortable() or not supports_order(value): return
+	if grouped != null and not grouping_supported(): return
+	var priority := folders_first() if grouped == null else bool(grouped)
 	if menu.section == menu.Section.CLOUD:
-		if not menu.PlatformMethods.supports(menu.platform, "media_cloud_sorted_page") and not menu.PlatformMethods.supports(menu.platform, "media_cloud_directory_page"): return
-		cloud_requested_order = value
+		if not menu.PlatformMethods.supports(menu.platform, "media_cloud_sorted_page") and not menu.PlatformMethods.supports(menu.platform, "media_cloud_directory_page") and not menu.cloud_pagination.supported(): return
+		cloud_requested_order = value if priority or not grouping_supported() else "mixed_" + value
 		cloud_rollback = {"offsets": menu._cloud_offsets.duplicate(), "page": menu._cloud_page}
-		menu._cloud_positions.clear()
+		menu._cloud_positions.erase(menu._cloud_position_key())
 		menu._cloud_offsets.assign([0])
 		menu._load_cloud(false, false, 0)
 	else:
-		orders[scope()] = value
-		menu.setting_changed.emit("library_orders", orders.duplicate(true))
+		save_preferences({"order": value, "folders_first": priority})
 		menu.scroll = 0.0
 	modal = ""; selected = ""
 	menu.refresh()
@@ -254,12 +308,11 @@ func commit_cloud(value: String) -> void:
 	cloud_committed_order = value; cloud_requested_order = ""
 	cloud_rollback = {}
 	if not value.is_empty():
-		orders[scope()] = value
-		menu.setting_changed.emit("library_orders", orders.duplicate(true))
+		save_preferences({"order": Order.normalize(value.trim_prefix("mixed_")), "folders_first": not value.begins_with("mixed_") if grouping_supported() else folders_first()})
 
 func cloud_order() -> String:
-	var value := cloud_requested_order if not cloud_requested_order.is_empty() else Order.normalize(orders.get(str(menu.Section.CLOUD), "name_asc"))
-	return value if supports_order(value) else "name_asc"
+	if not cloud_requested_order.is_empty(): return cloud_requested_order
+	return order() if folders_first() or not grouping_supported() else "mixed_" + order()
 
 func cloud_failed() -> void:
 	if not cloud_rollback.is_empty():
@@ -271,6 +324,7 @@ func action(id: int) -> bool:
 	if not modal.is_empty():
 		if modal == "rename": rename.action(id); return true
 		if id == CANCEL: modal = ""; menu.refresh_file_selection()
+		elif modal == "sort" and id == FOLDERS_FIRST: choose_order(order(), not folders_first())
 		elif modal == "sort" and id >= ORDER_BASE and id < ORDER_BASE + Order.ORDERS.size(): choose_order(Order.ORDERS[id - ORDER_BASE])
 		elif modal == "delete" and id == CONFIRM and idle() and plan_ready:
 			batch_running = true; dispatch(false)
@@ -428,7 +482,8 @@ func pending_text() -> String:
 func draw_modal() -> void:
 	if modal == "rename": rename.draw(); return
 	var names_only: bool = modal == "sort" and menu.section == menu.Section.DLNA
-	menu._set_backdrop(Vector2(1.12, 0.46 if names_only else 0.94 if modal == "delete" else 0.86), Vector2(0.13, 0))
+	var source_order: bool = menu.section == menu.Section.CLOUD and supports_order("source")
+	menu._set_backdrop(Vector2(1.12, 0.60 if names_only else 0.94 if modal == "delete" else 1.02 if source_order else 0.86), Vector2(0.13, 0))
 	var remaining := maxi(1, deletions.size() - delete_index)
 	var heading := "Sort" if modal == "sort" else "Delete folder" if target.get("folder", false) else "Delete file"
 	menu._label(menu.I18n.t("Delete %d items?") % remaining if modal == "delete" and remaining > 1 else menu.I18n.t(heading), Vector3(0.13, 0.14 if names_only else 0.34, 0.004), 25)
@@ -439,7 +494,11 @@ func draw_modal() -> void:
 			var available: bool = field in ["name", "source"] or menu.rows.any(func(row): return (field == "modified" or row.has("uri")) and int(row.get(field, -1)) >= 0)
 			if menu.section == menu.Section.CLOUD: available = available and (menu.PlatformMethods.supports(menu.platform, "media_cloud_sorted_page") or menu.PlatformMethods.supports(menu.platform, "media_cloud_directory_page"))
 			menu._button(ORDER_BASE + i, menu.I18n.t(Order.LABELS[i]), Vector2(-0.12 + (i % 2) * 0.50, 0.01 if names_only else 0.19 - (i / 2) * 0.135), Vector2(0.46, 0.095), available, "", order() == Order.ORDERS[i])
-		menu._button(CANCEL, menu.I18n.t("Close"), Vector2(0.13, -0.13 if names_only else -0.32), Vector2(0.38, 0.08))
+		menu._button(FOLDERS_FIRST, menu.I18n.t("Folders first"), Vector2(0.13, -0.12 if names_only else -0.34 if source_order else -0.215), Vector2(0.80, 0.09), grouping_supported() and not menu._cloud_busy, "check" if folders_first() else "checkbox", folders_first())
+		if not grouping_supported():
+			menu._buttons.back()["hover_disabled"] = true
+			menu._tips[FOLDERS_FIRST] = menu.I18n.t("Folder grouping is controlled by this source")
+		menu._button(CANCEL, menu.I18n.t("Close"), Vector2(0.13, -0.23 if names_only else -0.45 if source_order else -0.335), Vector2(0.38, 0.08))
 		return
 	var title: Label3D = menu._label(menu._fit_title(str(target.get("title", "")), "", 0.96, 22), Vector3(0.13, 0.21, 0.004), 22)
 	title.modulate = menu.ACCENT

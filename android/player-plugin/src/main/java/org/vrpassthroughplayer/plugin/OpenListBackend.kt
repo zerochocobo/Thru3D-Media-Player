@@ -77,7 +77,7 @@ internal object OpenListBackend {
         }
     }
 
-    internal class Client(private val mount: String, provider: String, private val folderId: String = "",
+    internal class Client(private val mount: String, private val provider: String, private val folderId: String = "",
         private val stream: (String) -> String = { Cloudcore.stream(it) },
         private val now: () -> Long = { System.nanoTime() / 1_000_000 },
         private val call: (String, String, JSONObject?) -> JSONObject = { method, route, body -> request(method, route, body) }) : CloudClient {
@@ -95,26 +95,29 @@ internal object OpenListBackend {
         override fun page(path: String, offset: Int, refresh: Boolean): CloudPage = readPage(path, offset, refresh, "source")
         override fun orderedPage(path: String, offset: Int, refresh: Boolean, order: String): CloudPage = readPage(path, offset, refresh, order)
 
-        private fun readPage(path: String, offset: Int, refresh: Boolean, order: String): CloudPage {
-            require(offset >= 0 && offset <= Int.MAX_VALUE - CloudDrive.PAGE_SIZE &&
-                (canDelete || offset % CloudDrive.PAGE_SIZE == 0)) { "directory.request: invalid page offset" }
-            require(order == "source" || order in CloudSortedPages.ORDERS) { "directory.request: invalid sort order" }
+        override fun sizedPage(path: String, offset: Int, refresh: Boolean, order: String, size: Int): CloudPage =
+            readPage(path, offset, refresh, order, CloudPaging.size(provider, size))
+
+        private fun readPage(path: String, offset: Int, refresh: Boolean, order: String, pageSize: Int = CloudDrive.PAGE_SIZE): CloudPage {
+            require(offset >= 0 && offset <= Int.MAX_VALUE - pageSize &&
+                (canDelete || offset % pageSize == 0)) { "directory.request: invalid page offset" }
+            require(CloudSortedPages.validOrder(order) && (!order.startsWith("mixed_") || provider in setOf(CloudDrive.OPEN115, CloudDrive.WEBDAV))) { "directory.request: invalid sort order" }
             absolutePath(path)
             val started = System.nanoTime()
             val data = if (canDelete) call("POST", "/list115", JSONObject().put("mount", mount).put("path", path)
-                .put("offset", offset).put("refresh", refresh).put("order", order).put("folder_id", folderId)).getJSONObject("data")
+                .put("page_size", pageSize).put("offset", offset).put("refresh", refresh).put("order", order).put("folder_id", folderId)).getJSONObject("data")
             else call("POST", "/directory", JSONObject().put("mount", mount).put("path", path).put("folder_id", folderId)
-                .put("offset", offset).put("order", order).put("refresh", refresh)).getJSONObject("data")
+                .put("page_size", pageSize).put("offset", offset).put("order", order).put("refresh", refresh)).getJSONObject("data")
             val items = data.optJSONArray("content") ?: org.json.JSONArray()
             val total = data.getInt("total")
             if (canDelete && BuildConfig.DEBUG && PlaybackPrivacy.diagnostics) runCatching {
                 val timing = data.optJSONObject("paging")
                 val folder = timing?.optString("folder")?.takeIf { it in setOf("provided_id", "path_lookup", "memory", "root") } ?: "unknown"
-                android.util.Log.i("QuestCloudPaging", "provider=115 mode=native limit=48 offset=$offset rows=${items.length()} total=$total " +
+                android.util.Log.i("QuestCloudPaging", "provider=115 mode=native limit=$pageSize offset=$offset rows=${items.length()} total=$total " +
                     "folder=$folder cache_hit=${timing?.optBoolean("cache_hit") ?: false} resolve_ms=${timing?.optLong("resolve_ms", -1) ?: -1} " +
                     "list_ms=${timing?.optLong("list_ms", -1) ?: -1} elapsed_ms=${(System.nanoTime() - started) / 1_000_000}")
             }
-            if (total < -1 || items.length() > CloudDrive.PAGE_SIZE || canDelete && (total < 0 || offset > total ||
+            if (total < -1 || items.length() > pageSize || canDelete && (total < 0 || offset > total ||
                 offset.toLong() + items.length() > total || items.length() == 0 && offset < total))
                 throw CloudFailure(detail = "directory.page: offset=$offset, total=$total, rows=${items.length()}")
             val files = (0 until items.length()).mapNotNull { i ->
@@ -134,8 +137,9 @@ internal object OpenListBackend {
             val keys = files.map { if (canDelete) it.objectId else it.name }
             if (keys.toSet().size != files.size) throw CloudFailure(detail = "directory.page: duplicate object IDs")
             val next = if (canDelete) { if (offset + items.length() < total) offset + items.length() else -1 } else data.getInt("next_offset")
-            if (!canDelete && next != -1 && next != offset + CloudDrive.PAGE_SIZE) throw CloudFailure(detail = "directory.page: invalid continuation")
-            return CloudPage(files, next, total)
+            if (!canDelete && next != -1 && next != offset + pageSize) throw CloudFailure(detail = "directory.page: invalid continuation")
+            return CloudPage(files, next, total, pageSize, items.length(),
+                (0 until items.length()).map { items.getJSONObject(it).optString("id", items.getJSONObject(it).optString("name")) })
         }
         override fun list(path: String): List<CloudFile> {
             val files = ArrayList<CloudFile>()

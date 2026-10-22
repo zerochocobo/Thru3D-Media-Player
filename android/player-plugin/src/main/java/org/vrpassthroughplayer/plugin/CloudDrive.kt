@@ -6,7 +6,9 @@ import java.net.URI
 
 internal class CloudFile(val name: String, val folder: Boolean, val size: Long, val id: String, val pickCode: String = "", val modified: Long = -1, val objectId: String = id, val canDelete: Boolean = false, val canRename: Boolean = false)
 internal class CloudLink(val url: String, val headers: (URI) -> Map<String, String>)
-internal class CloudPage(val files: List<CloudFile>, val nextOffset: Int, val total: Int = -1)
+internal class CloudPage(val files: List<CloudFile>, val nextOffset: Int, val total: Int = -1,
+    val pageSize: Int = CloudDrive.PAGE_SIZE, val rawCount: Int = files.size,
+    val rawIds: List<String> = files.map { it.objectId.ifEmpty { it.id } })
 
 /** Read-only legacy 115 adapter. Baidu accounts use OpenList OAuth exclusively. */
 internal class CloudDrive(val provider: String, private val cookie: String, private val http: CloudTransport = CloudHttp,

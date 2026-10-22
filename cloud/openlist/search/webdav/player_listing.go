@@ -57,6 +57,13 @@ func (d *WebDav) PlayerForget(remote string) {
 }
 
 func (d *WebDav) PlayerPage(ctx context.Context, dir model.Obj, cursor, order string) ([]model.Obj, string, int64, error) {
+	return d.PlayerPageSized(ctx, dir, cursor, order, 48)
+}
+
+func (d *WebDav) PlayerPageSized(ctx context.Context, dir model.Obj, cursor, order string, pageSize int) ([]model.Obj, string, int64, error) {
+	if pageSize < 1 || pageSize > 1000 {
+		return nil, "", 0, errors.New("invalid directory page size")
+	}
 	offset := 0
 	if cursor != "" {
 		n, err := strconv.Atoi(cursor)
@@ -65,7 +72,8 @@ func (d *WebDav) PlayerPage(ctx context.Context, dir model.Obj, cursor, order st
 		}
 		offset = n
 	}
-	switch order {
+	baseOrder := strings.TrimPrefix(order, "mixed_")
+	switch baseOrder {
 	case "source", "name_asc", "name_desc", "size_asc", "size_desc", "modified_asc", "modified_desc":
 	default:
 		return nil, "", 0, errors.New("invalid directory sort order")
@@ -77,7 +85,7 @@ func (d *WebDav) PlayerPage(ctx context.Context, dir model.Obj, cursor, order st
 		if err != nil {
 			return nil, "", 0, err
 		}
-		if len(files) > 100000 {
+		if len(files) > 20000 {
 			return nil, "", 0, errors.New("WebDAV directory exceeds metadata cache limit")
 		}
 		objects := make([]model.Obj, 0, len(files))
@@ -93,7 +101,7 @@ func (d *WebDav) PlayerPage(ctx context.Context, dir model.Obj, cursor, order st
 		for _, s := range playerDAVCache {
 			total += len(s.objects)
 		}
-		for len(playerDAVCache) >= 4 || total > 100000 {
+		for len(playerDAVCache) >= 4 || total > 20000 {
 			for k, s := range playerDAVCache {
 				delete(playerDAVCache, k)
 				total -= len(s.objects)
@@ -105,15 +113,17 @@ func (d *WebDav) PlayerPage(ctx context.Context, dir model.Obj, cursor, order st
 	}
 	if snapshot.order != order {
 		snapshot.ordered = append([]model.Obj(nil), snapshot.objects...)
-		if order != "source" {
+		if baseOrder != "source" {
 			sort.SliceStable(snapshot.ordered, func(i, j int) bool { return playerDAVBefore(snapshot.ordered[i], snapshot.ordered[j], order) })
+		} else if !strings.HasPrefix(order, "mixed_") {
+			sort.SliceStable(snapshot.ordered, func(i, j int) bool { return snapshot.ordered[i].IsDir() && !snapshot.ordered[j].IsDir() })
 		}
 		snapshot.order = order
 	}
 	if offset > len(snapshot.ordered) {
 		return nil, "", 0, errors.New("directory page expired; refresh the folder")
 	}
-	end := min(offset+48, len(snapshot.ordered))
+	end := min(offset+pageSize, len(snapshot.ordered))
 	next := ""
 	if end < len(snapshot.ordered) {
 		next = strconv.Itoa(end)
@@ -122,13 +132,21 @@ func (d *WebDav) PlayerPage(ctx context.Context, dir model.Obj, cursor, order st
 }
 
 func playerDAVBefore(a, b model.Obj, order string) bool {
-	if a.IsDir() != b.IsDir() {
+	grouped := !strings.HasPrefix(order, "mixed_")
+	order = strings.TrimPrefix(order, "mixed_")
+	if grouped && a.IsDir() != b.IsDir() {
 		return a.IsDir()
 	}
 	field := strings.Split(order, "_")[0]
 	desc := strings.HasSuffix(order, "desc")
-	if field == "modified" || field == "size" && !a.IsDir() {
+	if field == "modified" || field == "size" && !(grouped && a.IsDir()) {
 		av, bv := a.GetSize(), b.GetSize()
+		if field == "size" && a.IsDir() {
+			av = -1
+		}
+		if field == "size" && b.IsDir() {
+			bv = -1
+		}
 		if field == "modified" {
 			av, bv = a.ModTime().UnixMilli(), b.ModTime().UnixMilli()
 			if a.ModTime().IsZero() {
@@ -157,3 +175,6 @@ func playerDAVBefore(a, b model.Obj, order string) bool {
 	}
 	return natural.Less(left, right)
 }
+
+// Numeric offsets are issued by this provider; no opaque cursor replay is needed.
+func (d *WebDav) PlayerOffsetCursor(offset int) string { return strconv.Itoa(offset) }

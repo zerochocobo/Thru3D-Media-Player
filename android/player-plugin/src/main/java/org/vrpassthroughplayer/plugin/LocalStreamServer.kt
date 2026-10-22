@@ -15,6 +15,10 @@ import java.util.concurrent.Executors
 internal interface StreamSource : Closeable {
     val size: Long
     fun open(): Reader
+    /** An independent source for the same bytes (a playback view outlives its parent), or null. */
+    fun fork(): StreamSource? = null
+    /** Reopenable byte sources that can carry the read cache and a playback view. */
+    val forkable: Boolean get() = false
     override fun close() {}
     interface Reader : Closeable { fun read(offset: Long, buffer: ByteArray, length: Int): Int }
 }
@@ -61,7 +65,7 @@ internal class LocalStreamServer : Closeable {
         val token = ByteArray(16).also(random::nextBytes).joinToString("") { "%02x".format(it) }
         meters[token] = TransferMeter()
         diagnostics[token] = Diagnostics()
-        sources[token] = if (source is CloudStreamSource || source is HttpRangeStreamSource) {
+        sources[token] = if (source is CloudStreamSource || source is HttpRangeStreamSource || source.forkable) {
             if (name.endsWith(".iso", true)) IsoReadCache(source) { meters[token]?.add(it) }
             else AdaptiveInterleaveSource(source, meters[token])
         } else source
@@ -89,7 +93,7 @@ internal class LocalStreamServer : Closeable {
         if (closed) return null
         val parent = token(url)?.let { sources[it] } ?: return null
         val fork = when (parent) {
-            is AdaptiveInterleaveSource -> parent.forkCloud()
+            is AdaptiveInterleaveSource -> parent.forkOrigin()
             is Mp4PlaybackSource -> parent.forkOrigin()
             else -> null
         } ?: return null
@@ -99,6 +103,12 @@ internal class LocalStreamServer : Closeable {
             val source = Mp4PlaybackSource(fork, layout) { meter.add(it) }
             (publish(source, "playback.mp4") + "?thru3d_interleaved=1").also { meters[token(it)!!] = meter }
         } catch (error: Exception) { fork.close(); throw error }
+    }
+    /** Cloud inputs keep their account/logout boundary (CloudLibrary.playbackView). */
+    fun cloudBacked(url: String): Boolean = when (val source = token(url)?.let { sources[it] }) {
+        is AdaptiveInterleaveSource -> source.cloud
+        is Mp4PlaybackSource -> source.cloud
+        else -> false
     }
     fun finishIsoPreflight(url: String) { token(url)?.let { (sources[it] as? IsoReadCache)?.finishPreflight() } }
     fun isoCacheStats(url: String): Map<String, Long>? = token(url)?.let { (sources[it] as? IsoReadCache)?.stats() }

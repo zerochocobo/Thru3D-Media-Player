@@ -135,11 +135,14 @@ func _on_session_event(event: String) -> void:
 	if event in ["session_begun", "session_focussed"]:
 		# Reapply the user's mode after session resume; do not destroy the runtime.
 		_apply_requested_mode()
-		_apply_performance_levels()
+		apply_performance_levels()
+		_requested_refresh = 0.0
+		_apply_refresh()
 	status_changed.emit()
 
-# Alpha passthrough keeps RVM inference on the GPU continuously. Without a request
-# the Quest runtime chooses lower CPU/GPU/memory levels for this app.
+# Playback and photo depth request sustained-high CPU/GPU levels (GPU inference and network demux
+# are invisible to the runtime's frame timing). Menus and idle request sustained-low: the Quest 3
+# idle menu then runs at levels 2/1 instead of 4/4.
 var performance_levels := "default"
 # Fixed foveated rendering for the eye buffers (0 off .. 3 high); the 8K video is sampled
 # for every eye pixel at the display rate, so the periphery is a large bandwidth cost.
@@ -153,15 +156,94 @@ func _apply_foveation() -> void:
 		xr.foveation_dynamic = false
 		xr.foveation_level = foveation_level
 		DiagnosticLog.record("xr_foveation", {"level": foveation_level, "applied": xr.foveation_level})
-func _apply_performance_levels() -> void:
+## Debug A/B only: one of PERFORMANCE_LEVELS' keys.
+var debug_performance_level := ""
+var performance_demand := false
+func set_performance_demand(high: bool) -> void:
+	if high == performance_demand: return
+	performance_demand = high
+	if xr != null and xr.is_initialized(): apply_performance_levels()
+const PERFORMANCE_LEVELS := {"power_savings": OpenXRInterface.PERF_SETTINGS_LEVEL_POWER_SAVINGS,
+	"sustained_low": OpenXRInterface.PERF_SETTINGS_LEVEL_SUSTAINED_LOW,
+	"sustained_high": OpenXRInterface.PERF_SETTINGS_LEVEL_SUSTAINED_HIGH,
+	"boost": OpenXRInterface.PERF_SETTINGS_LEVEL_BOOST}
+func apply_performance_levels() -> void:
 	if not (xr is OpenXRInterface) or not xr.has_method("set_gpu_level"):
 		performance_levels = "unsupported"
 		return
-	xr.set_cpu_level(OpenXRInterface.PERF_SETTINGS_LEVEL_SUSTAINED_HIGH)
-	xr.set_gpu_level(OpenXRInterface.PERF_SETTINGS_LEVEL_SUSTAINED_HIGH)
-	performance_levels = "sustained_high"
+	var fallback := "sustained_high" if performance_demand else "sustained_low"
+	var level := debug_performance_level if PERFORMANCE_LEVELS.has(debug_performance_level) else fallback
+	xr.set_cpu_level(PERFORMANCE_LEVELS[level])
+	xr.set_gpu_level(PERFORMANCE_LEVELS[level])
+	performance_levels = level
 	_apply_foveation()
 	DiagnosticLog.record("xr_performance_levels", {"cpu": performance_levels, "gpu": performance_levels})
+
+## Wanted display refresh rate; 0 is the menu rate: the lowest rate from 72 Hz, the cheapest for the
+## compositor menu layers (the runtime otherwise keeps whatever rate the app last requested).
+var refresh_preference := 0.0
+## The runtime switches rates asynchronously, so its reported rate can still be the old one right
+## after a request; compare against the last request and re-request if the runtime diverges.
+var _requested_refresh := 0.0
+var _requested_ms := 0
+const REFRESH_RETRY_MS := 2000
+func set_refresh_preference(rate: float) -> void:
+	if is_equal_approx(rate, refresh_preference): return
+	refresh_preference = rate
+	_apply_refresh()
+
+## Debug A/B only: a fixed rate that wins over the policy (0 = policy).
+var debug_refresh := 0.0
+func set_debug_refresh(rate: float) -> void:
+	debug_refresh = rate; _requested_refresh = 0.0; _apply_refresh()
+
+func _apply_refresh() -> void:
+	if not (xr is OpenXRInterface) or not xr.is_initialized() or preview: return
+	var rate := refresh_preference if refresh_preference > 0.0 else menu_refresh_rate(available_refresh_rates())
+	if debug_refresh > 0.0: rate = debug_refresh
+	if rate <= 0.0 or is_equal_approx(rate, _requested_refresh): return
+	_requested_refresh = rate; _requested_ms = Time.get_ticks_msec()
+	if not is_equal_approx(rate, xr.display_refresh_rate): set_refresh_rate(rate)
+
+## Called every frame: repeats the last request while the runtime reports another rate.
+func check_refresh() -> void:
+	if _requested_refresh <= 0.0 or not (xr is OpenXRInterface) or not xr.is_initialized() or preview: return
+	if is_equal_approx(xr.display_refresh_rate, _requested_refresh): return
+	if Time.get_ticks_msec() - _requested_ms < REFRESH_RETRY_MS: return
+	_requested_ms = Time.get_ticks_msec()
+	set_refresh_rate(_requested_refresh)
+
+func available_refresh_rates() -> Array:
+	if not (xr is OpenXRInterface) or not xr.is_initialized() or preview: return []
+	return xr.get_available_display_refresh_rates()
+
+static func menu_refresh_rate(available: Array) -> float:
+	var rates: Array = available.map(func(rate): return float(rate)).filter(func(rate): return rate >= 71.5)
+	rates.sort()
+	return rates[0] if not rates.is_empty() else 0.0
+
+## Display rate for a video: the lowest rate up to [cap] Hz showing every frame for the same number
+## of refreshes (24 -> 72, 30 -> 90, 60 -> 120 Hz). Without one, a 120 Hz cap shortens the uneven
+## repeats with the fastest panel; lower caps keep the menu rate.
+static func video_refresh_rate(fps: float, available: Array, cap: float) -> float:
+	if not is_finite(fps) or fps < 10.0 or fps > 130.0: return 0.0
+	var rates: Array = available.map(func(rate): return float(rate)).filter(func(rate): return rate >= 59.5 and rate <= cap + 0.5)
+	rates.sort()
+	for rate in rates:
+		var repeats := roundf(rate / fps)
+		if repeats >= 1.0 and absf(rate - repeats * fps) <= rate * 0.005: return rate
+	return rates[-1] if cap > 90.5 and not rates.is_empty() else 0.0
+
+## Display refresh rate; unsupported rates are ignored.
+func set_refresh_rate(rate: float) -> bool:
+	if not (xr is OpenXRInterface) or not xr.is_initialized() or preview: return false
+	var chosen := 0.0
+	for available in xr.get_available_display_refresh_rates():
+		if absf(float(available) - rate) < 0.5: chosen = float(available)
+	if chosen <= 0.0: return false
+	xr.display_refresh_rate = chosen
+	DiagnosticLog.record("xr_refresh_rate", {"requested": rate, "applied": xr.display_refresh_rate})
+	return true
 
 func _on_presence_changed(present: bool) -> void:
 	DiagnosticLog.record("user_presence_changed", {"present": present})

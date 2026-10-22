@@ -37,7 +37,7 @@ func _run() -> void:
 		.replace('#include "res://shaders/video_coordinates.gdshaderinc"', FileAccess.get_file_as_string("res://shaders/video_coordinates.gdshaderinc")) \
 		.replace("varying flat int eye_index;", "uniform int test_eye = 0;\nuniform vec2 test_uv = vec2(0.5);\nvarying flat int eye_index;") \
 		.replace("eye_index = int(VIEW_INDEX);", "eye_index = test_eye;") \
-		.replace("vec2 shown_uv = eye_uv(UV, media_direction);", "vec2 shown_uv = test_uv;")
+		.replace("vec2 shown_uv = eye_uv(pip_uv(UV), sample_direction);", "vec2 shown_uv = test_uv;")
 	var shader := Shader.new()
 	shader.code = code
 	var material := ShaderMaterial.new()

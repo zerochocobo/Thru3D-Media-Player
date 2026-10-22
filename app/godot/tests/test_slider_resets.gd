@@ -117,6 +117,13 @@ func run() -> void:
 		check(settings_events.size() == saved_count, "Other hand cannot commit subtitle reset")
 		menu.release_pointer("right", reset_point, -button.node.global_basis.z, true)
 		check(state[key] == {"subtitle_position": 0.0, "subtitle_distance": 5.0, "subtitle_size": 100.0}[key] and settings_events.size() == saved_count + 1, "Subtitle reset changes once on release")
+	var depth_state := {"has_video": true, "geometry": 0, "depth_requested": true, "depth_strength": 1.8}
+	menu.state_provider = func(): return depth_state.duplicate(true)
+	menu.depth_strength_requested.connect(func(value): depth_state.depth_strength = value)
+	menu._adjustment = ""; menu.section = 0; menu._depth_open = true; menu.refresh()
+	click(menu, menu._buttons.filter(func(button): return button.target == Menu.DEPTH_RESET)[0])
+	check(depth_state.depth_strength == .5 and depth_state.depth_requested and menu._depth_open, "Video strength reset restores 50 percent without disabling conversion")
+	check(not menu._buttons.filter(func(button): return button.target == Menu.DEPTH_RESET)[0].enabled, "Video reset disables at its own 50 percent default")
 	menu.free()
 	var photo_state := {"has_image": true, "count": 12, "layout": 0, "gallery_focus": -1,
 		"screen_distance": 8.0, "screen_scale": 4.0, "inspect_magnification": 7.0,

@@ -34,6 +34,8 @@ func run() -> void:
 func video_recenter() -> void:
 	var main := InputMain.new(); main.settings_path = "user://video-grip-recenter.cfg"
 	var video := preload("res://scripts/mpv_video_display.gd").new(); video.history_enabled = false
+	# Recenter restores distance and size only for an explicitly saved default view (93f77659).
+	main.settings.set_value("screen", "default_view", Vector2(video.SCREEN_DISTANCE, 1.0))
 	root.add_child(video); video.set_process(false); main.video = video
 	video.platform = preload("res://tests/test_player_menu.gd").Host.new()
 	var camera := Camera3D.new(); root.add_child(camera); video.view_camera = camera

@@ -5,7 +5,7 @@ package org.vrpassthroughplayer.plugin
  * A missing native order must not silently trigger a full-directory metadata crawl. */
 internal class CloudSortedPages {
     fun page(client: CloudClient, path: String, offset: Int, refresh: Boolean, order: String): CloudPage {
-        require((order in ORDERS || order == "source") && offset >= 0) { "directory.sort: invalid order or offset" }
+        require(validOrder(order) && offset >= 0) { "directory.sort: invalid order or offset" }
         client.orderedPage(path, offset, refresh, order)?.let { return it }
         if (order == "source") return client.page(path, offset, refresh)
         throw CloudFailure(detail = "directory.sort: native provider sorting unavailable")
@@ -13,6 +13,7 @@ internal class CloudSortedPages {
 
     companion object {
         val ORDERS = setOf("name_asc", "name_desc", "modified_desc", "modified_asc", "size_desc", "size_asc")
+        fun validOrder(order: String): Boolean = order.removePrefix("mixed_").let { it in ORDERS || it == "source" }
         // Used only for bounded legacy search results, never for directory browsing.
         fun comparator(order: String): Comparator<CloudFile> = Comparator { a, b ->
             if (a.folder != b.folder) return@Comparator if (a.folder) -1 else 1

@@ -13,16 +13,28 @@ internal object VideoLayerNative {
     /** Producer surface of a new swapchain; destroys the previous one. */
     @JvmStatic external fun createSurface(width: Int, height: Int): Surface
     @JvmStatic external fun destroySurface()
-    /** 20 floats per layer: see native/xr-layer/video_layer.cpp. Count 0 hides the video. */
+    /** 28 floats per layer: see native/xr-layer/video_layer.cpp. Count 0 hides the video. */
     @JvmStatic external fun setLayers(count: Int, values: FloatArray): Boolean
     /** RGBA picture swapchain (2D->3D pairs, photos) on Godot's render thread: create, acquire,
      * fill (row slices or a GPU copy), then release (optionally mipmapped) before a layer shows it. */
-    /** slot: 0 photos and 2D->3D pairs, 1 subtitles, 2 the photo magnifier. */
+    /** slot: 0 photos and 2D->3D pairs, 1 subtitles, 2 photo magnifier, 3 video PiP atlas. */
     @JvmStatic external fun createImage(slot: Int, width: Int, height: Int, levels: Int, isStatic: Boolean): Boolean
     @JvmStatic external fun destroyImage(slot: Int)
     @JvmStatic external fun acquireImage(slot: Int): Int
     @JvmStatic external fun uploadRows(slot: Int, y: Int, rows: Int, pixels: ByteArray, channels: Int): Boolean
     @JvmStatic external fun copyTexture(slot: Int, texture: Int): Boolean
+    /** Fisheye frame remapped to equirect into the acquired image (params: see video_layer.cpp). */
+    @JvmStatic external fun remapFisheye(slot: Int, texture: Int, external: Boolean, params: FloatArray): Boolean
+    /** Runtime graphics limits: max layer count, swapchain image width, height. */
+    @JvmStatic external fun compositorLimits(): String
+    @JvmStatic external fun pipMetrics(): String
+    @JvmStatic external fun pipSamples(request: Boolean): String
+    @JvmStatic external fun pipMainSamples(request: Boolean): String
+    /** Production shader: active 1..7 selects guttered PiP rows; 8 processes the full main frame. */
+    @JvmStatic external fun renderPip(slot: Int, color: Int, external: Boolean, mask: Int, active: Int, eyes: Int,
+                                      common: FloatArray, windows: FloatArray): Boolean
+    @JvmStatic external fun requestFisheyeReadback(step: Int)
+    @JvmStatic external fun takeFisheyeReadback(): ByteArray
     @JvmStatic external fun copyBand(slot: Int, texture: Int, y: Int, rows: Int): Boolean
     /** A colour band times an R8 mask band of the same size, premultiplied: a photo's portrait cutout. */
     @JvmStatic external fun copyBandMasked(slot: Int, color: Int, mask: Int, y: Int, rows: Int): Boolean

@@ -4,6 +4,14 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class CloudSortedPagesTest {
+    @Test fun mixedOrderIsPassedThroughToProviderWithoutPageLocalSorting() {
+        val client = Client(listOf(file("z.mp4"), CloudFile("a folder", true, 0, "/movies/a")))
+        val page = CloudSortedPages().page(client, "/movies", 0, false, "mixed_modified_desc")
+        assertEquals("mixed_modified_desc", client.calls.single().order)
+        assertEquals(listOf("z.mp4", "a folder"), page.files.map { it.name })
+        assertEquals(0, client.rawCalls)
+        assertFalse(CloudSortedPages.validOrder("mixed_invalid"))
+    }
     private fun file(name: String) = CloudFile(name, false, 100, "/movies/$name")
     private data class Call(val path: String, val offset: Int, val refresh: Boolean, val order: String)
     private class Client(var files: List<CloudFile>, val total: Int = files.size, val native: Boolean = true) : CloudClient {

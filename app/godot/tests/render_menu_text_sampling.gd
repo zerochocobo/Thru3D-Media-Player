@@ -35,11 +35,16 @@ func run() -> void:
 		I18n.use(language)
 		var menu := Menu.new(); viewport.add_child(menu); menu.visible = true
 		var font := menu.ui_font()
-		var old_font := font.duplicate() as SystemFont
+		# The menu font is the bracket font over the system font over the engine fallback; the
+		# "before" chain is the same fonts without mipmaps.
+		var old_font := font.duplicate() as FontFile
 		old_font.generate_mipmaps = false
+		var old_system := (font.fallbacks[0] as SystemFont).duplicate() as SystemFont
+		old_system.generate_mipmaps = false
 		var old_fallback := ThemeDB.fallback_font.duplicate() as FontFile
 		old_fallback.generate_mipmaps = false
-		old_font.fallbacks = [old_fallback]
+		old_system.fallbacks = [old_fallback]
+		old_font.fallbacks = [old_system]
 		var labels: Array[Label3D] = []
 		for row in TEXT.size():
 			var label := menu._label(TEXT[row], Vector3(-0.65, 0.34 - row * 0.11, 0.005), SIZES[row])
