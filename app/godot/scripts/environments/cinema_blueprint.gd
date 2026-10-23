@@ -11,52 +11,63 @@ const SCREEN_Z := -4.0
 # The screen spans almost wall to wall, like a GT laser hall; walls frame nothing.
 const ROOM_HALF_WIDTH := 17.0
 const ROOM_FRONT := -5.0
-const ROOM_BACK := 28.5
+const ROOM_BACK := 32.4
 const ROOM_HEIGHT := 26.0
 const WALL_MARGIN := 0.4
 const ROOM_DEPTH := ROOM_BACK - ROOM_FRONT
 const ROW_COUNT := 14
-const COLUMN_COUNT := 30
+const COLUMN_COUNT := 24
 const FIRST_ROW_Z := 6.0
-const ROW_PITCH := 1.5
+const ROW_PITCH := 1.8
 # A gentler rake than the previous 32.7 degrees keeps rows ahead in peripheral view.
-const ROW_RISER := 0.65
-const STEPS_PER_ROW := 4
+const ROW_RISER := 0.45
+const STEPS_PER_ROW := 3
 const STAIR_TREAD := ROW_PITCH / STEPS_PER_ROW
 const STAIR_RISER := ROW_RISER / STEPS_PER_ROW
-# Premium lounge chairs: roomier than a real auditorium, because VR rewards presence.
-const SEAT_PITCH := 0.80
-const SEAT_Z_OFFSET := -0.25
-const SEAT_EXIT_Z_OFFSET := 0.48
+# Premium lounge chairs: roomier than a real auditorium, because VR rewards
+# presence. Neighbours share one wide armrest console, as real halls do.
+const SEAT_PITCH := 0.90
+const SEAT_Z_OFFSET := -0.40
+const SEAT_EXIT_Z_OFFSET := -1.30
 const SEATED_EYE_HEIGHT := 1.2
 # Chair envelope relative to the seat line; matches tools/cinema/seat_model.py.
 const SEAT_FRONT := 0.42
 const SEAT_REAR := 0.38
 const SEAT_BACK_TOP := 1.08
-const SEAT_HALF_WIDTH := 0.38
-const PLATFORM_HALF_WIDTH := 12.1
+const SEAT_HALF_WIDTH := 0.45
+const TIER_FRONT_OFFSET := -ROW_PITCH + SEAT_Z_OFFSET + SEAT_REAR
+const PLATFORM_HALF_WIDTH := 11.3
 const AISLE_OUTER_X := 13.7
 const RAIL_X := 14.1
 const CEILING_REAR_CLEARANCE := 7.5
 const DEFAULT_ROW := 9
-const DEFAULT_COLUMN := 15
-const SOURCE_VERSION := 4
+const DEFAULT_COLUMN := 12
+const SOURCE_VERSION := 7
 
 static func manifest() -> Dictionary:
 	var seats: Array = []
 	var walkable: Array = []
 	var colliders: Array = []
-	var first_edge := FIRST_ROW_Z - ROW_PITCH * 0.5
+	# Each deck begins at the previous chair's back, leaving the viewer's feet
+	# and the entire front passage on the same level as their own chair.
+	var first_edge := FIRST_ROW_Z + TIER_FRONT_OFFSET
+	var stair_start := first_edge - (STEPS_PER_ROW - 1) * STAIR_TREAD
 	var rear_edge := first_edge + ROW_COUNT * ROW_PITCH
+	var stair_end := stair_start + ROW_COUNT * ROW_PITCH
 	# Extents describe floor support; adjoining rectangles share their boundary.
-	walkable.append(_floor("front", -ROOM_HALF_WIDTH + WALL_MARGIN, SCREEN_Z + 0.3,
-		ROOM_HALF_WIDTH - WALL_MARGIN, first_edge, 0.0))
+	walkable.append(_floor("front", -PLATFORM_HALF_WIDTH, SCREEN_Z + 0.3,
+		PLATFORM_HALF_WIDTH, first_edge, 0.0))
+	for side in [-1.0, 1.0]:
+		var x0 := PLATFORM_HALF_WIDTH if side > 0 else -ROOM_HALF_WIDTH + WALL_MARGIN
+		var x1 := ROOM_HALF_WIDTH - WALL_MARGIN if side > 0 else -PLATFORM_HALF_WIDTH
+		walkable.append(_floor("front_side_%s" % side, x0, SCREEN_Z + 0.3, x1, stair_start, 0.0))
+		walkable.append(_floor("rear_side_%s" % side, x0, stair_end, x1, ROOM_BACK - WALL_MARGIN, ROW_COUNT * ROW_RISER))
 	for row in range(ROW_COUNT):
 		var z := FIRST_ROW_Z + row * ROW_PITCH
 		var seat_z := z + SEAT_Z_OFFSET
 		var level := (row + 1) * ROW_RISER
-		walkable.append(_floor("row_%02d" % (row + 1), -PLATFORM_HALF_WIDTH, z - ROW_PITCH * 0.5,
-			PLATFORM_HALF_WIDTH, z + ROW_PITCH * 0.5, level))
+		walkable.append(_floor("row_%02d" % (row + 1), -PLATFORM_HALF_WIDTH, z + TIER_FRONT_OFFSET,
+			PLATFORM_HALF_WIDTH, z + TIER_FRONT_OFFSET + ROW_PITCH, level))
 		for column in range(COLUMN_COUNT):
 			var x := (column - (COLUMN_COUNT - 1) * 0.5) * SEAT_PITCH
 			var id := "%s%02d" % [String.chr(65 + row), column + 1]
@@ -69,18 +80,18 @@ static func manifest() -> Dictionary:
 			colliders.append(_box_bounds("seat_%s_base" % id, Vector3(x - SEAT_HALF_WIDTH, level, seat_z - SEAT_FRONT),
 				Vector3(x + SEAT_HALF_WIDTH, level + 0.66, seat_z + 0.25)))
 		for step in range(STEPS_PER_ROW):
-			var start_z := z - ROW_PITCH * 0.5 + step * STAIR_TREAD
+			var start_z := stair_start + row * ROW_PITCH + step * STAIR_TREAD
 			var top := (row * STEPS_PER_ROW + step + 1) * STAIR_RISER
 			walkable.append(_floor("stair_left_%02d_%d" % [row + 1, step], -AISLE_OUTER_X, start_z,
 				-PLATFORM_HALF_WIDTH, start_z + STAIR_TREAD, top))
 			walkable.append(_floor("stair_right_%02d_%d" % [row + 1, step], PLATFORM_HALF_WIDTH, start_z,
 				AISLE_OUTER_X, start_z + STAIR_TREAD, top))
-	walkable.append(_floor("rear", -ROOM_HALF_WIDTH + WALL_MARGIN, rear_edge,
-		ROOM_HALF_WIDTH - WALL_MARGIN, ROOM_BACK - WALL_MARGIN, ROW_COUNT * ROW_RISER))
+	walkable.append(_floor("rear", -PLATFORM_HALF_WIDTH, rear_edge,
+		PLATFORM_HALF_WIDTH, ROOM_BACK - WALL_MARGIN, ROW_COUNT * ROW_RISER))
 	# Outer service aisles follow the same small steps and provide room to turn.
 	for side in [-1.0, 1.0]:
 		for step in range(ROW_COUNT * STEPS_PER_ROW):
-			var start_z := first_edge + step * STAIR_TREAD
+			var start_z := stair_start + step * STAIR_TREAD
 			var inner_x := AISLE_OUTER_X if side > 0 else -ROOM_HALF_WIDTH + WALL_MARGIN
 			var outer_x := ROOM_HALF_WIDTH - WALL_MARGIN if side > 0 else -AISLE_OUTER_X
 			walkable.append(_floor("outer_%s_%02d" % ["right" if side > 0 else "left", step],
@@ -108,7 +119,8 @@ static func manifest() -> Dictionary:
 			"row_riser": ROW_RISER, "stair_riser": STAIR_RISER, "stair_tread": STAIR_TREAD,
 			"steps_per_row": STEPS_PER_ROW, "side_aisle_width": AISLE_OUTER_X - PLATFORM_HALF_WIDTH,
 			"seat_pitch": SEAT_PITCH, "seat_z_offset": SEAT_Z_OFFSET,
-			"clear_row_passage": ROW_PITCH * 0.5 - (SEAT_Z_OFFSET + SEAT_REAR),
+			"clear_row_passage": ROW_PITCH - SEAT_FRONT - SEAT_REAR,
+			"tier_front_offset": TIER_FRONT_OFFSET, "stair_start_z": stair_start,
 			"rake_degrees": rad_to_deg(atan(ROW_RISER / ROW_PITCH)), "seated_eye_height": SEATED_EYE_HEIGHT,
 			"first_row_z": FIRST_ROW_Z, "screen_bottom": SCREEN_BOTTOM,
 			"room_front": ROOM_FRONT, "room_back": ROOM_BACK, "room_half_width": ROOM_HALF_WIDTH,

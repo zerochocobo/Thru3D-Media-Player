@@ -30,6 +30,7 @@
 #include <openxr/openxr.h>
 #include <openxr/openxr_platform.h>
 #include "layer_layout.h"
+#include "pip_feather_shader.h"
 #include "layer_extensions.h"
 #include "pip_shader_sources.h"
 
@@ -846,6 +847,48 @@ bool prepare_pip_projection(PipProgram& program, const std::array<float,43>& v, 
     return true;
 }
 } // namespace
+
+/** Static PiP inward masks, redrawn only when the window's feather UV changes.
+ * Uses the same image slot/lifecycle as the alternate video atlas, never a decoder copy. */
+extern "C" JNIEXPORT jboolean JNICALL
+Java_org_vrpassthroughplayer_plugin_VideoLayerNative_renderPipFeatherMask(JNIEnv* env, jclass, jint slot, jfloatArray feathers) {
+    std::lock_guard<std::mutex> lock(mutex);
+    Picture* target = picture(slot);
+    if (!target || !target->acquired || !feathers || env->GetArrayLength(feathers) != 6 ||
+        target->width < 40 || target->height % 3 || target->height / 3 < 40) return JNI_FALSE;
+    std::array<float,6> edges{};
+    env->GetFloatArrayRegion(feathers,0,6,edges.data());
+    for (float v : edges) if (!std::isfinite(v) || v <= 0 || v >= 0.5f) return JNI_FALSE;
+    static EGLContext context = EGL_NO_CONTEXT;
+    static GLuint program = 0, framebuffer = 0;
+    if (context != eglGetCurrentContext()) { context = eglGetCurrentContext(); program = framebuffer = 0; }
+    while (glGetError() != GL_NO_ERROR) {}
+    DrawState saved;
+    if (!program) {
+        const GLuint vs = compile(GL_VERTEX_SHADER,pip_feather_vertex), fs = compile(GL_FRAGMENT_SHADER,pip_feather_fragment);
+        if (!vs || !fs) { if (vs) glDeleteShader(vs); if (fs) glDeleteShader(fs); return JNI_FALSE; }
+        program = glCreateProgram(); glAttachShader(program,vs); glAttachShader(program,fs); glLinkProgram(program);
+        glDeleteShader(vs); glDeleteShader(fs);
+        GLint linked = 0; glGetProgramiv(program,GL_LINK_STATUS,&linked);
+        if (!linked) { glDeleteProgram(program); program = 0; return JNI_FALSE; }
+    }
+    if (!framebuffer) glGenFramebuffers(1,&framebuffer);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER,framebuffer);
+    glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_2D,target->acquired,0);
+    if (glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) return JNI_FALSE;
+    glDisable(GL_BLEND); glDisable(GL_SCISSOR_TEST); glDisable(GL_DEPTH_TEST); glDisable(GL_CULL_FACE);
+    glDisable(GL_STENCIL_TEST); glDisable(GL_DITHER); glColorMask(GL_TRUE,GL_TRUE,GL_TRUE,GL_TRUE);
+    glBindVertexArray(0); glUseProgram(program);
+    const int row_height = target->height / 3;
+    glUniform2f(glGetUniformLocation(program,"tile_size"),target->width - 4,row_height - 4);
+    for (int row = 0; row < 3; ++row) {
+        glViewport(0,row * row_height,target->width,row_height);
+        glUniform1f(glGetUniformLocation(program,"first_row"),static_cast<float>(row * row_height));
+        glUniform2fv(glGetUniformLocation(program,"feather"),1,edges.data()+row*2);
+        glDrawArrays(GL_TRIANGLES,0,3);
+    }
+    return glGetError() == GL_NO_ERROR ? JNI_TRUE : JNI_FALSE;
+}
 
 /** One source lease, one swapchain, up to six small draws. Rows are fixed slot IDs;
  * each eye has a duplicated two-pixel gutter. No readback, frame delay or new decoder. */

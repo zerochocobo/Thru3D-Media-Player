@@ -10,3 +10,5 @@
 - The APK uses an in-process core, a private JNI management interface, and a capability-protected loopback media router. It does not embed OpenList's frontend or the OpenList-Mobile app.
 
 For distribution, provide the player's corresponding source together with this adapter, the build script, upstream source at the pinned revision, module manifests, and dependency licenses. This notice is not a replacement for corresponding-source delivery.
+
+Archive page reading also uses the pinned upstream modules github.com/KirCute/zip v1.0.1, github.com/bodgit/sevenzip v1.6.5 and github.com/nwaples/rardecode/v2 v2.4.1. Their original notices are retained under dependencies/; keep their transitive notices and exact module sources with binary redistribution.

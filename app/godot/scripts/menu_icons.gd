@@ -4,6 +4,8 @@ extends RefCounted
 const PATHS := {
 	"pip": '<rect x="2" y="4" width="20" height="16" rx="2"/><rect x="12" y="11" width="8" height="6" rx="1"/><path d="M5 7H9M5 7V11M5 7L10 12"/>',
 	"camera": '<path d="M3 7H7L9 4H15L17 7H21V20H3Z"/><circle cx="12" cy="13" r="4"/>',
+	"restart": '<path d="M5 12A7 7 0 1 0 7.5 6.6M4 4V9H9"/><path d="M10.5 9.5L15 12 10.5 14.5Z" fill="white" stroke="none"/>',
+	"disc": '<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="2.5"/><path d="M12 5.5A6.5 6.5 0 0 1 18.5 12"/>',
 	"camera_recording": '<path d="M3 7H7L9 4H15L17 7H21V20H3Z"/><circle cx="12" cy="13" r="4"/><circle cx="20" cy="4" r="2.5" fill="white"/>',
 	"record": '<circle cx="12" cy="12" r="7" fill="white" stroke="none"/>',
 	"download": '<path d="M12 3V15M7 10L12 15 17 10M4 16V21H20V16"/>',

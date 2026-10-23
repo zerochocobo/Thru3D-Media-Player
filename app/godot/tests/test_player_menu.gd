@@ -16,6 +16,7 @@ class InputMain extends "res://scripts/main.gd":
 
 class RecentStub extends "res://scripts/recent_menu.gd":
 	func refresh_alpha_sizes() -> void: pass
+	func checkpoint_browse() -> void: pass
 
 class Host extends RefCounted:
 	var calls: Array = []

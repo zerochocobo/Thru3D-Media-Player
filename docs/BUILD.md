@@ -131,3 +131,7 @@ The clip bridge links the pinned libavformat/libavcodec/libavutil dependencies. 
 ## Photo decoder sources
 
 The native TIFF and HDR/OpenEXR targets use five exact-hash upstream source archives under `third_party/tiff` and `third_party/openexr`. Their original licenses accompany them, and CMake checks hashes before extraction. No binary decoder is shipped in Git. See [image formats and limitations](IMAGE_FORMATS.md).
+
+## Required visual resources
+
+Both normal Debug and Release now enable Grand cinema (Test), and Assert-CinemaPackaged verifies the full generated scene, navigation and dual lighting. Prepare the [cinema assets](EXPERIMENTAL_CINEMA.md) and [pinned controller fallbacks](CONTROLLER_ASSETS.md) before complete source/asset suites and APK builds; a fresh clone omits these models/images. Models, authoring snapshots and original inputs are external to public Git. Selected pure host suites do not need these payloads.

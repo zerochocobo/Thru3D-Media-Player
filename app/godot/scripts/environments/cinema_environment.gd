@@ -33,6 +33,11 @@ var _capture: Dictionary = {}
 var _capture_hand := ""
 var _pointer_visuals: Dictionary = {}
 var _sticks_waiting_for_neutral := true
+var light_mode := "auto"
+var lights_on := true
+var _light_mix := 1.0
+var _light_target := 1.0
+var _light_materials: Array[Dictionary] = []
 
 
 func _ready() -> void:
@@ -77,7 +82,7 @@ func set_presented(enabled: bool) -> void:
 
 
 func set_interaction(value: String) -> bool:
-	if value not in ["watch", "seat", "move"] or not active or not _movement:
+	if value not in ["watch", "move"] or not active or not _movement:
 		return false
 	if interaction == value:
 		return true
@@ -120,7 +125,7 @@ func poll_sticks(left: Vector2, right: Vector2, delta: float, blocked: bool = fa
 	if _sticks_waiting_for_neutral:
 		if left.length() <= Locomotion.AXIS_DEADZONE and right.length() <= Locomotion.AXIS_DEADZONE:
 			_sticks_waiting_for_neutral = false
-			_movement.step(left, right.x, delta)
+			_movement.step(Vector2.ZERO, right.x, delta)
 		return true
 	# Real tracking can move the head inside the guardian. Test locomotion from
 	# its current X/Z while preserving the navigation floor beneath the avatar.
@@ -130,7 +135,7 @@ func poll_sticks(left: Vector2, right: Vector2, delta: float, blocked: bool = fa
 	var previous_eye: Vector3 = _movement.eye_position
 	var previous_yaw := _head_yaw()
 	_movement.yaw = previous_yaw
-	_movement.step(left, right.x, delta)
+	_movement.step(Vector2.ZERO, right.x, delta)
 	var translation: Vector3 = _movement.eye_position - previous_eye
 	var turn := wrapf(float(_movement.yaw) - previous_yaw, -PI, PI)
 	if not is_zero_approx(turn):
@@ -141,85 +146,125 @@ func poll_sticks(left: Vector2, right: Vector2, delta: float, blocked: bool = fa
 
 
 func ray_hit(origin: Vector3, direction: Vector3) -> Dictionary:
-	if not active or interaction == "watch" or not origin.is_finite() or not direction.is_finite() or direction.length_squared() < 0.000001:
+	if not active or interaction != "move" or not origin.is_finite() or not direction.is_finite() or direction.length_squared() < 0.000001:
 		return {}
-	var ray := direction.normalized()
-	var obstruction := _nearest_collider(origin, ray)
-	if interaction == "seat":
-		var closest: Dictionary = {}
-		for seat in _manifest.get("seats", []):
-			# The controller can rest inside the user's own seat volume. Ignoring
-			# that seat prevents a zero-distance target from swallowing every ray.
-			if str(seat.id) == str(_movement.selected_seat):
-				continue
-			var eye := _vector(seat.eye_position)
-			var minimum := eye + Vector3(-0.35, -0.95, -0.35)
-			var maximum := eye + Vector3(0.35, 0.20, 0.42)
-			var distance := _ray_box(origin, ray, minimum, maximum)
-			if distance < 0 or (not closest.is_empty() and distance >= float(closest.distance)):
-				continue
-			closest = {"kind": "seat", "id": str(seat.id), "label": str(seat.get("label", seat.id)),
-				"position": origin + ray * distance, "distance": distance, "valid": true}
-		if closest.is_empty():
-			return {}
-		if not obstruction.is_empty() and float(obstruction.distance) + 0.02 < float(closest.distance):
-			# A target seat's own visible cushion/back is a valid selection surface.
-			if not str(obstruction.id).begins_with("seat_%s_" % closest.id):
-				return {}
-		return closest
-	var closest: Dictionary = {}
-	if absf(ray.y) <= 0.0001:
-		return {}
-	for area in _manifest.get("walkable", []):
-		var distance := (float(area.height) - origin.y) / ray.y
-		if distance <= 0.03 or distance > MAX_RAY_DISTANCE or (not closest.is_empty() and distance >= float(closest.distance)):
-			continue
-		var position := origin + ray * distance
-		var minimum := _vector(area.min)
-		var maximum := _vector(area.max)
-		if position.x < minimum.x or position.x > maximum.x or position.z < minimum.z or position.z > maximum.z:
-			continue
-		closest = {"kind": "floor", "id": str(area.get("id", "floor")), "label": "",
-			"position": position, "distance": distance, "valid": false}
-	if closest.is_empty() or (not obstruction.is_empty() and float(obstruction.distance) + 0.02 < float(closest.distance)):
-		return {}
-	var destination: Vector3 = _movement._standing_at(closest.position, Locomotion.MAX_STEP_HEIGHT)
-	if destination.is_finite():
-		var source: Vector3 = _movement.eye_position - Vector3.UP * Locomotion.EYE_HEIGHT
-		closest.valid = _movement._reachable(source, destination)
-	return closest
+	var points := PackedVector3Array([origin])
+	var velocity := direction.normalized() * 8.5
+	var previous := origin
+	for step in range(1, 41):
+		var t := step * 0.075
+		var point := origin + velocity * t + Vector3.DOWN * 4.9 * t * t
+		var hit := _arc_segment(previous, point)
+		if not hit.is_empty():
+			points.append(hit.position)
+			var landing := _landing_destination(hit)
+			hit["valid"] = landing.is_finite()
+			hit["raw_position"] = hit.position
+			hit["snapped"] = landing.is_finite() and not landing.is_equal_approx(hit.position)
+			if landing.is_finite():
+				hit["position"] = landing
+				if hit.snapped: points.append(landing)
+			hit["points"] = points
+			hit["distance"] = origin.distance_to(hit.position)
+			return hit
+		points.append(point)
+		previous = point
+	return {"kind": "miss", "position": previous, "points": points, "valid": false, "distance": origin.distance_to(previous)}
 
+func _arc_segment(start: Vector3, end: Vector3) -> Dictionary:
+	# Reuse the navigation spatial hash; never scan all chairs for every arc segment.
+	var lo: Vector2i = _movement._hash_key(start.min(end) - Vector3.ONE * .035)
+	var hi: Vector2i = _movement._hash_key(start.max(end) + Vector3.ONE * .035)
+	var colliders := {}; var floors := {}
+	for x in range(lo.x, hi.x + 1):
+		for z in range(lo.y, hi.y + 1):
+			for index in _movement._collider_hash.get(Vector2i(x, z), []): colliders[index] = true
+			for index in _movement._floor_hash.get(Vector2i(x, z), []): floors[index] = true
+	var distance := start.distance_to(end)
+	if distance < .00001: return {}
+	var direction := (end - start) / distance
+	var nearest := distance + .001
+	var result := {}
+	for index in colliders:
+		var box: AABB = _movement._colliders[index]
+		box = box.grow(.035)
+		var d := _ray_box(start, direction, box.position, box.end)
+		if d >= 0 and d <= distance and d < nearest:
+			nearest = d; result = {"kind": "blocked", "position": start + direction * d}
+	for index in floors:
+		var area: Dictionary = _movement._walkable[index]
+		var minimum: Vector3 = area.min; var maximum: Vector3 = area.max
+		minimum.y = minf(-.3, float(area.height) - .08); maximum.y = area.height
+		var d := _ray_box(start, direction, minimum, maximum)
+		if d >= 0 and d <= distance and d < nearest:
+			nearest = d
+			var position := start + direction * d
+			var top_hit := absf(position.y - float(area.height)) < .002 and direction.y < 0
+			# A small stair's front face is a landing hint for its top, not a wall.
+			# Tall tier sides and undersides remain blocked.
+			var rise := float(area.height) - position.y
+			var kind := "floor" if top_hit else "riser" if rise >= 0 and rise <= Locomotion.LANDING_SNAP_HEIGHT else "blocked"
+			result = {"kind": kind, "position": position, "floor_y": float(area.height)}
+	return result
+
+func _landing_destination(hit: Dictionary) -> Vector3:
+	if hit.kind not in ["floor", "riser"]: return Vector3.INF
+	var point: Vector3 = hit.position
+	if hit.kind == "floor" and _valid_destination(point): return point
+	for candidate in _movement.landing_candidates(point, float(hit.get("floor_y", point.y))):
+		if not _snap_segment_clear(point, candidate): continue
+		if _valid_destination(candidate): return candidate
+	return Vector3.INF
+
+func _snap_segment_clear(source: Vector3, target: Vector3) -> bool:
+	# A tiny adjustment may move out of a clearance margin, but never cross actual
+	# chair/wall/rail geometry. Check the entire standing column along the offset.
+	var low: Vector2i = _movement._hash_key(source.min(target))
+	var high: Vector2i = _movement._hash_key(source.max(target))
+	var checked := {}
+	var direction := target - source
+	var distance := direction.length()
+	if distance < .00001: return true
+	direction /= distance
+	var height := maxf(Locomotion.EYE_HEIGHT + Locomotion.HEAD_CLEARANCE, _camera.position.y + Locomotion.HEAD_CLEARANCE)
+	for x in range(low.x, high.x + 1):
+		for z in range(low.y, high.y + 1):
+			for index in _movement._collider_hash.get(Vector2i(x, z), []):
+				if checked.has(index): continue
+				checked[index] = true
+				var box: AABB = _movement._colliders[index]
+				var minimum := box.position - Vector3.UP * height
+				var maximum := box.end - Vector3.UP * .03
+				var d := _ray_box(source, direction, minimum, maximum)
+				if d >= 0 and d <= distance: return false
+	return true
+
+func _valid_destination(point: Vector3) -> bool:
+	var standing: Vector3 = _movement._standing_at(point, .04)
+	if not standing.is_finite(): return false
+	var height := maxf(Locomotion.EYE_HEIGHT + Locomotion.HEAD_CLEARANCE, _camera.position.y + Locomotion.HEAD_CLEARANCE)
+	if _movement._body_blocked(standing, standing.y + .03, standing.y + height): return false
+	if _manifest.has("room") and standing.y + height > float(_manifest.room.height): return false
+	var source: Vector3 = _movement.eye_position - Vector3.UP * Locomotion.EYE_HEIGHT
+	return _movement._reachable(source, standing)
 
 func pointer_press(hand: String, origin: Vector3, direction: Vector3) -> bool:
 	if hand.is_empty() or not _capture_hand.is_empty():
 		return false
-	var target := ray_hit(origin, direction)
-	if target.is_empty() or not target.get("valid", false):
-		return false
+	if not active or interaction != "move": return false
 	_capture_hand = hand
-	_capture = target
+	_capture = {"aiming": true}
+	update_pointer(hand, origin, direction)
 	return true
 
-
 func pointer_release(hand: String, origin: Vector3, direction: Vector3, valid: bool) -> bool:
-	if _capture_hand != hand or _capture.is_empty():
-		return false
-	var captured := _capture
-	_capture = {}
-	_capture_hand = ""
-	if not valid:
-		return true
-	var target := ray_hit(origin, direction)
-	if target.is_empty() or not target.get("valid", false) or target.kind != captured.kind or target.id != captured.id:
-		return true
-	if target.kind == "seat":
-		if _movement.select_seat(str(target.id)):
-			interaction = "watch"
-			suspend()
-			_align_head(_movement.eye_position, _movement.yaw)
-			changed.emit()
-	elif Vector3(target.position).distance_to(captured.position) <= 0.4:
+	if _capture_hand != hand or _capture.is_empty(): return false
+	_capture = {}; _capture_hand = ""
+	var target := ray_hit(origin, direction) if valid else {}
+	hide_pointer(hand)
+	if target.get("valid", false) and _valid_destination(target.position):
 		if _movement.teleport_floor(target.position):
+			_movement.yaw = _head_yaw()
 			suspend()
 			_align_head(_movement.eye_position, _movement.yaw)
 			changed.emit()
@@ -234,35 +279,28 @@ func cancel_pointer(hand: String) -> void:
 
 
 func update_pointer(hand: String, origin: Vector3, direction: Vector3, valid: bool = true) -> void:
-	if not valid or hand.is_empty():
-		hide_pointer(hand)
-		return
+	if not valid or hand.is_empty() or hand != _capture_hand:
+		hide_pointer(hand); return
 	var hit := ray_hit(origin, direction)
-	if hit.is_empty() or not hit.get("valid", false):
-		hide_pointer(hand)
-		return
+	if hit.is_empty(): hide_pointer(hand); return
 	var visual := _pointer_visual(hand)
 	var pointer: Node3D = visual.root
-	var seat_marker: MeshInstance3D = visual.seat
-	var floor_ring: MeshInstance3D = visual.floor
-	var label: Label3D = visual.label
-	var seat_mode: bool = hit.kind == "seat"
-	seat_marker.visible = seat_mode
-	floor_ring.visible = not seat_mode
-	label.visible = seat_mode
-	if seat_mode:
-		var anchor: Vector3 = hit.position
-		for seat in _manifest.seats:
-			if str(seat.id) == str(hit.id):
-				anchor = _vector(seat.eye_position) + Vector3.UP * 0.30
-				break
-		pointer.global_position = anchor
-		label.text = str(hit.label)
-	else:
-		pointer.global_position = Vector3(hit.position) + Vector3.UP * 0.025
-		label.text = ""
+	pointer.global_transform = Transform3D.IDENTITY
+	var material: StandardMaterial3D = visual.material
+	material.albedo_color = Color(.35, .95, .68) if hit.valid else Color(1, .18, .12)
+	visual.floor.position = Vector3(hit.position) + Vector3.UP * .025
+	visual.floor.visible = hit.kind != "miss"
+	var mesh := ImmediateMesh.new()
+	mesh.surface_begin(Mesh.PRIMITIVE_TRIANGLES)
+	var points: PackedVector3Array = hit.points
+	for index in range(1, points.size()):
+		var a := points[index - 1]; var b := points[index]
+		var side := (b - a).cross(_camera.global_position - (a + b) * .5).normalized() * .008
+		if side.length_squared() < .000001: side = Vector3.RIGHT * .008
+		for vertex in [a - side, a + side, b + side, a - side, b + side, b - side]: mesh.surface_add_vertex(vertex)
+	mesh.surface_end()
+	visual.arc.mesh = mesh
 	pointer.visible = true
-
 
 func hide_pointer(hand: String) -> void:
 	if _pointer_visuals.has(hand):
@@ -281,17 +319,10 @@ func _pointer_visual(hand: String) -> Dictionary:
 	material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	material.albedo_color = Color(0.35, 0.95, 0.68)
 	material.cull_mode = BaseMaterial3D.CULL_DISABLED
-	var seat_marker := MeshInstance3D.new()
-	seat_marker.name = "SeatMarker"
-	var sphere := SphereMesh.new()
-	sphere.radius = 0.06
-	sphere.height = 0.12
-	sphere.radial_segments = 12
-	sphere.rings = 6
-	seat_marker.mesh = sphere
-	seat_marker.material_override = material
-	seat_marker.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	pointer.add_child(seat_marker)
+	var arc := MeshInstance3D.new()
+	arc.name = "TeleportArc"; arc.material_override = material
+	arc.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	pointer.add_child(arc)
 	var floor_ring := MeshInstance3D.new()
 	floor_ring.name = "FloorRing"
 	var ring := TorusMesh.new()
@@ -303,16 +334,7 @@ func _pointer_visual(hand: String) -> Dictionary:
 	floor_ring.material_override = material
 	floor_ring.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	pointer.add_child(floor_ring)
-	var label := Label3D.new()
-	label.name = "SeatLabel"
-	label.position.y = 0.18
-	label.font_size = 36
-	label.pixel_size = 0.006
-	label.outline_size = 6
-	label.modulate = Color(0.75, 1.0, 0.87)
-	label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-	pointer.add_child(label)
-	var visual := {"root": pointer, "seat": seat_marker, "floor": floor_ring, "label": label}
+	var visual := {"root": pointer, "floor": floor_ring, "arc": arc, "material": material}
 	_pointer_visuals[hand] = visual
 	return visual
 
@@ -353,6 +375,9 @@ func _begin_loading() -> void:
 		_fail("Cinema model unavailable (%s)" % error_string(status))
 		return
 	_requested_model = true
+	# Both independent bakes are required before presenting the room.
+	ResourceLoader.load_threaded_request(Description.LIGHT_PATH, "Texture2D")
+	ResourceLoader.load_threaded_request(Description.LIGHT_OFF_PATH, "Texture2D")
 	_thread = Thread.new()
 	status = _thread.start(_prepare_movement.bind(_manifest.duplicate(true)))
 	if status != OK:
@@ -368,7 +393,32 @@ func _prepare_movement(manifest: Dictionary) -> RefCounted:
 	return movement
 
 
+func set_lighting(mode: String, playing: bool) -> void:
+	light_mode = mode if mode in ["auto", "on", "off"] else "auto"
+	lights_on = light_mode == "on" or (light_mode == "auto" and not playing)
+	_light_target = 1.0 if lights_on else 0.0
+	if not is_equal_approx(_light_mix, _light_target): set_process(true)
+
+func _prepare_light_materials() -> void:
+	_light_materials.clear()
+	var seen := {}
+	for node in _model.find_children("*", "MeshInstance3D", true, false):
+		for index in node.mesh.get_surface_count():
+			var material := node.get_active_material(index) as ShaderMaterial
+			if not material or material.shader not in [Description.SURFACE_SHADER, Description.SEAT_SHADER, Description.FIXTURE_SHADER]: continue
+			if seen.has(material.get_instance_id()): continue
+			seen[material.get_instance_id()] = true
+			_light_materials.append({"material": material})
+	_apply_lighting()
+
+func _apply_lighting() -> void:
+	for entry in _light_materials:
+		entry.material.set_shader_parameter("cinema_light_mix", _light_mix)
+
 func _process(_delta: float) -> void:
+	if not is_equal_approx(_light_mix, _light_target):
+		_light_mix = move_toward(_light_mix, _light_target, _delta * 1.25)
+		_apply_lighting()
 	if _thread and not _thread.is_alive():
 		_movement = _thread.wait_to_finish()
 		_thread = null
@@ -376,7 +426,13 @@ func _process(_delta: float) -> void:
 			_fail("Cinema navigation could not be prepared")
 	if loading and _requested_model and not is_instance_valid(_model):
 		var status := ResourceLoader.load_threaded_get_status(MODEL_PATH)
-		if status == ResourceLoader.THREAD_LOAD_LOADED:
+		var light_status := ResourceLoader.load_threaded_get_status(Description.LIGHT_PATH)
+		var off_status := ResourceLoader.load_threaded_get_status(Description.LIGHT_OFF_PATH)
+		if light_status in [ResourceLoader.THREAD_LOAD_FAILED, ResourceLoader.THREAD_LOAD_INVALID_RESOURCE] or off_status in [ResourceLoader.THREAD_LOAD_FAILED, ResourceLoader.THREAD_LOAD_INVALID_RESOURCE]:
+			_fail("Cinema lighting could not be loaded"); return
+		if status == ResourceLoader.THREAD_LOAD_LOADED and light_status == ResourceLoader.THREAD_LOAD_LOADED and off_status == ResourceLoader.THREAD_LOAD_LOADED:
+			var light := ResourceLoader.load_threaded_get(Description.LIGHT_PATH) as Texture2D
+			var light_off := ResourceLoader.load_threaded_get(Description.LIGHT_OFF_PATH) as Texture2D
 			var packed := ResourceLoader.load_threaded_get(MODEL_PATH) as PackedScene
 			if not packed:
 				_fail("Cinema model contains no scene")
@@ -388,6 +444,9 @@ func _process(_delta: float) -> void:
 			_model.name = "GrandCinema"
 			_normalize_vertex_materials(_model)
 			Description.apply_seat_detail(_model)
+			Description.apply_baked_surfaces(_model, light, light_off)
+			Description.apply_seat_lighting(_model)
+			_prepare_light_materials()
 			_model.visible = false
 			add_child(_model)
 		elif status in [ResourceLoader.THREAD_LOAD_FAILED, ResourceLoader.THREAD_LOAD_INVALID_RESOURCE]:
@@ -397,7 +456,7 @@ func _process(_delta: float) -> void:
 		is_ready = true
 		_update_active()
 		changed.emit()
-	if not loading and not _thread:
+	if not loading and not _thread and is_equal_approx(_light_mix, _light_target):
 		set_process(false)
 
 
@@ -407,6 +466,8 @@ func _update_active() -> void:
 		_model.visible = active
 	if not active:
 		suspend()
+		if _has_original_rig and is_instance_valid(_rig): _rig.global_transform = _original_rig
+		_has_original_rig = false; _position_applied = false
 		return
 	if not _has_original_rig:
 		_original_rig = _rig.global_transform

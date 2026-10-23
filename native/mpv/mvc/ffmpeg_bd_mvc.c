@@ -4,7 +4,10 @@
 #endif
 #include <errno.h>
 #include <stddef.h>
+#include <pthread.h>
 #include <libbluray/bluray.h>
+#include <libbluray/keys.h>
+#include <libbluray/overlay.h>
 #include <libbluray/clpi_data.h>
 #include <libbluray/filesystem.h>
 #include <udfread/udfread.h>
@@ -14,11 +17,18 @@
 #include "libavutil/mem.h"
 #include "libavutil/opt.h"
 #include "libavutil/stereo3d.h"
+#include "libavutil/time.h"
 #include "avformat.h"
 #include "demux.h"
 #include "internal.h"
+#include "url.h"
 
 int avformat_thru3d_bd_probe(const char *url, int *width, int *height, int64_t *duration, int *mvc);
+int avformat_thru3d_bd_titles(const char *url, int playlist, int *width, int *height, int64_t *duration,
+                              int *mvc, int *selected, char *json, int capacity);
+int avformat_thru3d_bd_menu_state(char *json, int capacity);
+int avformat_thru3d_bd_menu_overlay(uint64_t version, uint8_t *rgba, int capacity, int *rect);
+int avformat_thru3d_bd_menu_input(int kind, int x, int y);
 /* Pinned libbluray 1.4.1's internal CPI lookup, linked statically in this library. */
 uint32_t clpi_lookup_spn(const CLPI_CL *cl, uint32_t timestamp, int before, uint8_t stc_id);
 CLPI_CL *thru3d_clpi_from_file(BD_FILE_H *file);
@@ -55,6 +65,27 @@ typedef struct MvcCandidate {
 struct BdMvc {
     const AVClass *class;
     int header_only;
+    int playlist;
+    /* HDMV disc menu session: libbluray navigation, not a seekable title. */
+    int menu;
+    int menu_probing;
+    int menu_started;      /* a menu was reached; data before it is skipped */
+    /* While skipping, the current playlist's data is kept so a menu shown inside
+       First Play still gets its background picture from the playlist start. */
+    uint8_t *replay;
+    int replay_size, replay_pos, replay_overflow;
+    int menu_called;       /* a menu call was issued from a title First Play started */
+    int menu_bdj;          /* navigation reached a BD-J title */
+    int menu_restarts;
+    int menu_top_reached;
+    uint32_t menu_last_still;
+    int64_t menu_probe_started;
+    int64_t still_until; /* 0: no still; INT64_MAX: until skipped */
+    int64_t menu_offset, menu_max_out, menu_epoch_raw;
+    unsigned menu_epoch;
+    int64_t *menu_last_raw;
+    unsigned *menu_stream_epoch;
+    BLURAY_TITLE_INFO *menu_title;
     int is_mvc;
     int title_stream;
     int packet_clip;
@@ -88,6 +119,9 @@ struct BdMvc {
 };
 
 static int64_t ssif_position(BdMvc *s, UDFFILE *file, int64_t position);
+static const BLURAY_CLIP_INFO *reference_clip(const BLURAY_TITLE_INFO *title);
+static int map_late_streams(BdMvc *s);
+static void menu_close(BdMvc *s);
 
 static int64_t index_seek(BD_FILE_H *file, int64_t offset, int32_t whence)
 {
@@ -228,6 +262,7 @@ static void close_clip(BdMvc *s)
 static int close_disc(AVFormatContext *context)
 {
     BdMvc *s = context->priv_data;
+    if (s->menu) menu_close(s);
     clear_views(s);
     close_transport(s);
     close_clip(s);
@@ -385,6 +420,11 @@ static int open_transport(BdMvc *s)
     s->inner->max_analyze_duration = 15000000;
     s->inner->skip_estimate_duration_from_pts = 1;
     s->inner->codec_whitelist = av_strdup(s->is_mvc ? "dca,ac3,eac3,mlp,truehd,pcm_bluray,pgssub" : "h264,hevc,mpeg2video,vc1,dca,ac3,eac3,mlp,truehd,pcm_bluray,pgssub");
+    if (s->title_stream) {
+        /* Probe where the audio starts, not in a silent leader clip. */
+        unsigned first = reference_clip(s->title) - s->title->clips;
+        if (first && avio_seek(s->stream_io, s->clip_offsets[first], SEEK_SET) < 0) return AVERROR(EIO);
+    }
     av_dict_set(&options, "max_packet_size", "16777216", 0);
     ret = avformat_open_input(&s->inner, NULL, av_find_input_format("mpegts"), &options);
     av_dict_free(&options);
@@ -437,6 +477,557 @@ static int switch_mvc_clip(BdMvc *s, unsigned number)
     return 0;
 }
 
+static const int format_widths[] = {0,720,720,720,1920,1280,1920,720,3840};
+static const int format_heights[] = {0,480,576,480,1080,720,1080,576,2160};
+
+/* The clip whose audio/PG layout the title follows: the first with audio.
+   Ordinary titles often wrap the feature in second-long silent leader clips. */
+static const BLURAY_CLIP_INFO *reference_clip(const BLURAY_TITLE_INFO *title)
+{
+    for (unsigned i = 0; i < title->clip_count; i++)
+        if (title->clips[i].audio_stream_count) return &title->clips[i];
+    return &title->clips[0];
+}
+
+/* Every clip keeps the reference clip's video/audio layout (and, for MVC, its
+   rate and PG streams); ordinary titles may also contain silent clips. Shared
+   by playback and the title list, so a listed title passes once selected. */
+static int title_layout(const BLURAY_TITLE_INFO *title, int mvc)
+{
+    const BLURAY_CLIP_INFO *clip;
+    const BLURAY_STREAM_INFO *video;
+    if (!title || !title->clip_count || title->clip_count > 4096) return AVERROR_INVALIDDATA;
+    if (!title->clips[0].video_stream_count || title->clips[0].still_mode != BLURAY_STILL_NONE)
+        return AVERROR_INVALIDDATA;
+    clip = mvc ? &title->clips[0] : reference_clip(title);
+    if (!clip->video_stream_count) return AVERROR_INVALIDDATA;
+    video = &clip->video_streams[0];
+    if (video->format >= FF_ARRAY_ELEMS(format_widths) || !format_widths[video->format]) return AVERROR(ENOSYS);
+    if (mvc && video->format != BLURAY_VIDEO_FORMAT_1080P && video->format != BLURAY_VIDEO_FORMAT_720P)
+        return AVERROR(ENOSYS);
+    for (unsigned i = 0; i < title->clip_count; i++) {
+        const BLURAY_CLIP_INFO *part = &title->clips[i];
+        if (!part->video_stream_count || part->still_mode != BLURAY_STILL_NONE ||
+            part->out_time <= part->in_time ||
+            part->video_streams[0].pid != video->pid ||
+            part->video_streams[0].coding_type != video->coding_type ||
+            part->video_streams[0].format != video->format ||
+            (part->audio_stream_count != clip->audio_stream_count && (mvc || part->audio_stream_count)))
+            return AVERROR(ENOSYS);
+        for (unsigned a = 0; a < part->audio_stream_count; a++)
+            if (part->audio_streams[a].pid != clip->audio_streams[a].pid ||
+                part->audio_streams[a].coding_type != clip->audio_streams[a].coding_type)
+                return AVERROR(ENOSYS);
+        if (mvc) {
+            if (part->video_streams[0].rate != video->rate || part->pg_stream_count != clip->pg_stream_count)
+                return AVERROR(ENOSYS);
+            for (unsigned a = 0; a < part->audio_stream_count; a++)
+                if (part->audio_streams[a].format != clip->audio_streams[a].format ||
+                    part->audio_streams[a].rate != clip->audio_streams[a].rate) return AVERROR(ENOSYS);
+            for (unsigned a = 0; a < part->pg_stream_count; a++)
+                if (part->pg_streams[a].pid != clip->pg_streams[a].pid ||
+                    part->pg_streams[a].coding_type != clip->pg_streams[a].coding_type) return AVERROR(ENOSYS);
+        }
+    }
+    return 0;
+}
+
+static int title_is_mvc(BdMvc *s, const BLURAY_TITLE_INFO *title)
+{
+    char path[128];
+    UDFFILE *file;
+    snprintf(path, sizeof(path), "BDMV/STREAM/SSIF/%s.ssif", title->clips[0].clip_id);
+    file = udfread_file_open(s->udf, path);
+    if (file) udfread_file_close(file);
+    return file != NULL;
+}
+
+/* ---- HDMV disc menu session --------------------------------------------
+   One menu session at a time. The application polls the state and the
+   interactive-graphics plane and sends pointer/key input from another thread.
+   Lock order: menu_input_lock -> libbluray's own lock -> menu_data_lock. */
+#define MENU_PLANE_MAX (1920 * 1080)
+static pthread_mutex_t menu_input_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t menu_data_lock = PTHREAD_MUTEX_INITIALIZER;
+static struct {
+    BdMvc *owner;
+    int width, height;          /* IG plane size */
+    uint32_t *plane, *shown;    /* drawing plane and the last flushed copy */
+    int x0, y0, x1, y1;         /* shown plane's occupied bounds, x1/y1 exclusive */
+    uint64_t version;
+    int title, playlist, chapter, menu, popup, seen, ended, error, unsupported;
+    int64_t chapter_ms;
+    /* The disc's own audio/subtitle choice (stream numbers, subtitle display flag) as
+       the chosen stream's position among the playlist's streams of that type in PID
+       order, which is the transport stream's and so the title demuxer's track order:
+       -1 unknown, and for subtitles -2 off. */
+    int audio_stream, pg_stream, pg_shown, audio_index, pg_index;
+} menu_shared;
+
+static int pid_ordinal(const BLURAY_STREAM_INFO *streams, int count, int number)
+{
+    int rank = 0;
+    if (number < 1 || number > count) return -1;
+    for (int i = 0; i < count; i++) rank += streams[i].pid < streams[number - 1].pid;
+    return rank;
+}
+
+static void menu_update_pids_locked(const BLURAY_TITLE_INFO *title)
+{
+    const BLURAY_CLIP_INFO *clip = title && title->clip_count ? reference_clip(title) : NULL;
+    menu_shared.audio_index = clip ? pid_ordinal(clip->audio_streams, clip->audio_stream_count, menu_shared.audio_stream) : -1;
+    menu_shared.pg_index = !menu_shared.pg_shown ? -2 :
+        clip ? pid_ordinal(clip->pg_streams, clip->pg_stream_count, menu_shared.pg_stream) : -1;
+}
+
+static void menu_publish_locked(void)
+{
+    int x0 = menu_shared.width, y0 = menu_shared.height, x1 = 0, y1 = 0;
+    if (menu_shared.plane && menu_shared.shown) {
+        memcpy(menu_shared.shown, menu_shared.plane, (size_t)menu_shared.width * menu_shared.height * 4);
+        for (int y = 0; y < menu_shared.height; y++) {
+            const uint32_t *row = menu_shared.shown + (size_t)y * menu_shared.width;
+            for (int x = 0; x < menu_shared.width; x++)
+                if (row[x] >> 24) {
+                    if (x < x0) x0 = x;
+                    if (x >= x1) x1 = x + 1;
+                    if (y < y0) y0 = y;
+                    y1 = y + 1;
+                }
+        }
+    }
+    if (x1 <= x0) x0 = y0 = x1 = y1 = 0;
+    else menu_shared.seen = 1;
+    menu_shared.x0 = x0; menu_shared.y0 = y0; menu_shared.x1 = x1; menu_shared.y1 = y1;
+    menu_shared.version++;
+}
+
+static void menu_planes_free_locked(void)
+{
+    av_freep(&menu_shared.plane);
+    av_freep(&menu_shared.shown);
+    menu_shared.width = menu_shared.height = 0;
+}
+
+/* Limited-range YCbCr palette entry to straight ARGB (BT.709 for HD planes). */
+static uint32_t menu_color(const BD_PG_PALETTE_ENTRY *entry, int hd)
+{
+    int y = (entry->Y - 16) * 298, cb = entry->Cb - 128, cr = entry->Cr - 128;
+    int r = hd ? (y + 459 * cr + 128) >> 8 : (y + 409 * cr + 128) >> 8;
+    int g = hd ? (y - 55 * cb - 136 * cr + 128) >> 8 : (y - 100 * cb - 208 * cr + 128) >> 8;
+    int b = hd ? (y + 541 * cb + 128) >> 8 : (y + 516 * cb + 128) >> 8;
+    return (uint32_t)entry->T << 24 | (uint32_t)av_clip_uint8(r) << 16 | (uint32_t)av_clip_uint8(g) << 8 | av_clip_uint8(b);
+}
+
+static void menu_clear_locked(int x, int y, int w, int h)
+{
+    for (int row = FFMAX(0, y); row < FFMIN(menu_shared.height, y + h); row++) {
+        int from = FFMAX(0, x), to = FFMIN(menu_shared.width, x + w);
+        if (to > from) memset(menu_shared.plane + (size_t)row * menu_shared.width + from, 0, (size_t)(to - from) * 4);
+    }
+}
+
+/* HDMV interactive graphics arrive as palette RLE objects; PG is ignored here. */
+static void menu_overlay(void *handle, const BD_OVERLAY *const overlay)
+{
+    pthread_mutex_lock(&menu_data_lock);
+    if (handle != menu_shared.owner || !overlay || overlay->plane != BD_OVERLAY_IG) goto done;
+    switch (overlay->cmd) {
+    case BD_OVERLAY_INIT:
+        menu_planes_free_locked();
+        if (overlay->w && overlay->h && (int)overlay->w * overlay->h <= MENU_PLANE_MAX) {
+            menu_shared.plane = av_calloc((size_t)overlay->w * overlay->h, 4);
+            menu_shared.shown = av_calloc((size_t)overlay->w * overlay->h, 4);
+            if (menu_shared.plane && menu_shared.shown) {
+                menu_shared.width = overlay->w; menu_shared.height = overlay->h;
+            } else menu_planes_free_locked();
+        }
+        menu_publish_locked();
+        break;
+    case BD_OVERLAY_CLOSE:
+        menu_planes_free_locked();
+        menu_publish_locked();
+        break;
+    case BD_OVERLAY_CLEAR:
+        if (menu_shared.plane) menu_clear_locked(0, 0, menu_shared.width, menu_shared.height);
+        break;
+    case BD_OVERLAY_WIPE:
+        if (menu_shared.plane) menu_clear_locked(overlay->x, overlay->y, overlay->w, overlay->h);
+        break;
+    case BD_OVERLAY_HIDE:
+        if (menu_shared.plane) menu_clear_locked(0, 0, menu_shared.width, menu_shared.height);
+        menu_publish_locked();
+        break;
+    case BD_OVERLAY_DRAW: {
+        uint32_t colors[256];
+        const BD_PG_RLE_ELEM *run = overlay->img;
+        if (!menu_shared.plane || !run || !overlay->palette) break;
+        for (int i = 0; i < 256; i++) colors[i] = menu_color(&overlay->palette[i], menu_shared.height >= 720);
+        /* Each row is a run list ended by a zero-length run. */
+        for (int y = 0; y < overlay->h; y++) {
+            int x = 0, row = overlay->y + y;
+            uint32_t *line = row < menu_shared.height ? menu_shared.plane + (size_t)row * menu_shared.width : NULL;
+            for (; run->len; run++) {
+                for (int i = 0; i < run->len && x < overlay->w; i++, x++)
+                    if (line && overlay->x + x < menu_shared.width) line[overlay->x + x] = colors[run->color & 255];
+            }
+            run++; /* end of line */
+        }
+        break;
+    }
+    case BD_OVERLAY_FLUSH:
+        menu_publish_locked();
+        break;
+    }
+done:
+    pthread_mutex_unlock(&menu_data_lock);
+}
+
+static void menu_event(BdMvc *s, const BD_EVENT *event)
+{
+    BLURAY_TITLE_INFO *info = NULL;
+    if (event->event != BD_EVENT_STILL_TIME || !s->still_until)
+        av_log(s->outer, AV_LOG_VERBOSE, "Disc menu event %u param %u\n", event->event, event->param);
+    if (event->event == BD_EVENT_PLAYLIST) info = bd_get_playlist_info(s->disc, event->param, 0);
+    pthread_mutex_lock(&menu_data_lock);
+    switch (event->event) {
+    /* A BD-J title cannot run here: return to the HDMV top menu instead of failing. */
+    case BD_EVENT_ERROR: if (event->param == BD_ERROR_BDJ) s->menu_bdj = 1; else menu_shared.error = 1; break;
+    case BD_EVENT_ENCRYPTED: menu_shared.error = 1; break;
+    case BD_EVENT_TITLE:
+        menu_shared.title = event->param;
+        if (event->param == BLURAY_TITLE_TOP_MENU) s->menu_top_reached = 1;
+        break;
+    case BD_EVENT_PLAYLIST:
+        menu_shared.playlist = event->param; menu_shared.chapter = 0; menu_shared.chapter_ms = 0;
+        if (!s->menu_started) { s->replay_size = s->replay_pos = 0; s->replay_overflow = 0; }
+        if (menu_shared.title == BLURAY_TITLE_TOP_MENU) s->menu_started = 1;
+        if (s->menu_title) bd_free_title_info(s->menu_title);
+        s->menu_title = info; info = NULL;
+        menu_update_pids_locked(s->menu_title);
+        break;
+    case BD_EVENT_AUDIO_STREAM:
+        menu_shared.audio_stream = event->param == 0xff ? 0 : event->param;
+        menu_update_pids_locked(s->menu_title);
+        break;
+    case BD_EVENT_PG_TEXTST_STREAM:
+        menu_shared.pg_stream = event->param == 0xfff ? 0 : event->param;
+        menu_update_pids_locked(s->menu_title);
+        break;
+    case BD_EVENT_PG_TEXTST:
+        menu_shared.pg_shown = event->param;
+        menu_update_pids_locked(s->menu_title);
+        break;
+    case BD_EVENT_CHAPTER:
+        menu_shared.chapter = event->param;
+        menu_shared.chapter_ms = s->menu_title && event->param >= 1 && event->param <= s->menu_title->chapter_count ?
+            s->menu_title->chapters[event->param - 1].start / 90 : 0;
+        break;
+    case BD_EVENT_MENU: menu_shared.menu = event->param; if (event->param) menu_shared.seen = 1; break;
+    case BD_EVENT_POPUP: menu_shared.popup = event->param; break;
+    case BD_EVENT_END_OF_TITLE: break;
+    case BD_EVENT_STILL: if (!event->param) s->still_until = 0; break;
+    case BD_EVENT_STILL_TIME:
+        if (s->still_until && event->param == s->menu_last_still) break; /* repeated while still */
+        s->menu_last_still = event->param;
+        s->still_until = event->param ? av_gettime_relative() + (int64_t)event->param * 1000000 : INT64_MAX;
+        break;
+    }
+    pthread_mutex_unlock(&menu_data_lock);
+    if (info) bd_free_title_info(info);
+}
+
+#define MENU_REPLAY_MAX (48 * 1024 * 1024)
+static void replay_append(BdMvc *s, const uint8_t *data, int count)
+{
+    uint8_t *grown;
+    if (count <= 0 || s->replay_overflow) return;
+    if (s->replay_size + count > MENU_REPLAY_MAX || !(grown = av_realloc(s->replay, s->replay_size + count))) {
+        s->replay_overflow = 1; s->replay_size = 0; av_freep(&s->replay);
+        return;
+    }
+    memcpy(grown + s->replay_size, data, count);
+    s->replay = grown; s->replay_size += count;
+}
+
+/* Navigation data. A still menu has no data: block (interruptibly) until the
+   viewer acts, except while probing, where it ends the probe instead. */
+static int menu_read(void *opaque, uint8_t *buffer, int size)
+{
+    BdMvc *s = opaque;
+    for (;;) {
+        BD_EVENT event;
+        int count;
+        if (ff_check_interrupt(&s->outer->interrupt_callback)) return AVERROR_EXIT;
+        if (s->menu_started && s->replay_pos < s->replay_size) {
+            count = FFMIN(size, s->replay_size - s->replay_pos);
+            memcpy(buffer, s->replay + s->replay_pos, count);
+            if ((s->replay_pos += count) == s->replay_size) { av_freep(&s->replay); s->replay_size = s->replay_pos = 0; }
+            return count;
+        }
+        while (bd_get_event(s->disc, &event)) menu_event(s, &event);
+        count = bd_read_ext(s->disc, buffer, size, &event);
+        if (event.event != BD_EVENT_NONE) menu_event(s, &event);
+        while (bd_get_event(s->disc, &event)) menu_event(s, &event);
+        if (s->menu_bdj) {
+            /* A failed BD-J title leaves libbluray with no title. From a working
+               menu or from First Play, restart and call the top menu; a top menu
+               that itself needs BD-J cannot be shown. */
+            s->menu_bdj = 0;
+            if ((s->menu_top_reached && !s->menu_started) || ++s->menu_restarts > 3 || !bd_play(s->disc)) {
+                av_log(s->outer, AV_LOG_WARNING, "Disc menu requires BD-J\n");
+                return AVERROR(ENOSYS);
+            }
+            /* First Play may mask the menu call; the viewer asked for the menu. */
+            bd_set_player_setting(s->disc, BLURAY_PLAYER_SETTING_UO_RESTRICTION_LEVEL, BLURAY_PLAYER_SETTING_UO_RESTRICTION_DISABLED);
+            bd_menu_call(s->disc, -1);
+            bd_set_player_setting(s->disc, BLURAY_PLAYER_SETTING_UO_RESTRICTION_LEVEL, BLURAY_PLAYER_SETTING_UO_RESTRICTION_RELAXED);
+            continue;
+        }
+        if (count < 0) return AVERROR(EIO);
+        if (!s->menu_started) replay_append(s, buffer, count);
+        if (!s->menu_started && (menu_shared.menu || menu_shared.x1 > menu_shared.x0)) {
+            /* First Play shows its own interactive screen: start at that playlist's beginning. */
+            s->menu_started = 1;
+            s->menu_probe_started = av_gettime_relative();
+            s->replay_pos = 0;
+            continue;
+        }
+        if (!s->menu_started) {
+            if (menu_shared.title >= 1 && menu_shared.title != BLURAY_TITLE_FIRST_PLAY && !s->menu_called) {
+                /* First Play started a title instead of the menu: call the menu from it. */
+                s->menu_called = 1;
+                bd_menu_call(s->disc, -1);
+                continue;
+            } else if (av_gettime_relative() - s->menu_probe_started > 60000000) return AVERROR(ENOSYS);
+            if (!s->menu_started) {
+                if (s->still_until) bd_read_skip_still(s->disc);
+                continue;
+            }
+            s->menu_probe_started = av_gettime_relative();
+        }
+        if (count > 0) return count;
+        if (menu_shared.error) return AVERROR(EIO);
+        if (s->still_until && s->still_until != INT64_MAX && av_gettime_relative() >= s->still_until) {
+            s->still_until = 0;
+            bd_read_skip_still(s->disc);
+            continue;
+        }
+        if (s->menu_probing && (s->still_until || av_gettime_relative() - s->menu_probe_started > 15000000))
+            return AVERROR_EOF;
+        if (event.event == BD_EVENT_NONE || s->still_until) av_usleep(20000);
+    }
+}
+
+static int menu_header(AVFormatContext *context, const BLURAY_DISC_INFO *info)
+{
+    BdMvc *s = context->priv_data;
+    AVDictionary *options = NULL;
+    uint8_t *buffer;
+    int ret;
+    if (!info->top_menu_supported || !info->top_menu || info->top_menu->bdj || s->header_only)
+        return AVERROR(ENOSYS);
+    pthread_mutex_lock(&menu_input_lock);
+    pthread_mutex_lock(&menu_data_lock);
+    if (menu_shared.owner) ret = AVERROR(EBUSY);
+    else {
+        memset(&menu_shared, 0, sizeof(menu_shared));
+        menu_shared.owner = s; menu_shared.title = -1; menu_shared.playlist = -1;
+        menu_shared.audio_index = menu_shared.pg_index = -1;
+        ret = 0;
+    }
+    pthread_mutex_unlock(&menu_data_lock);
+    pthread_mutex_unlock(&menu_input_lock);
+    if (ret < 0) return ret;
+    bd_register_overlay_proc(s->disc, s, menu_overlay);
+    if (!bd_play(s->disc)) return AVERROR_INVALIDDATA;
+    /* First Play runs normally (top menus may depend on its registers), but its
+       logos are not shown: the stream starts at the top menu, whose codec can differ. */
+    if (!(buffer = av_malloc(64 * 1024))) return AVERROR(ENOMEM);
+    s->stream_io = avio_alloc_context(buffer, 64 * 1024, 0, s, menu_read, NULL, NULL);
+    if (!s->stream_io) { av_free(buffer); return AVERROR(ENOMEM); }
+    s->stream_io->seekable = 0;
+    if (!(s->inner = avformat_alloc_context())) return AVERROR(ENOMEM);
+    s->inner->pb = s->stream_io;
+    s->inner->flags |= AVFMT_FLAG_CUSTOM_IO;
+    s->inner->interrupt_callback = s->outer->interrupt_callback;
+    s->inner->probesize = 8 * 1024 * 1024;
+    s->inner->max_analyze_duration = 5000000;
+    s->inner->skip_estimate_duration_from_pts = 1;
+    s->inner->codec_whitelist = av_strdup("h264,hevc,mpeg2video,vc1,dca,ac3,eac3,mlp,truehd,pcm_bluray");
+    av_dict_set(&options, "max_packet_size", "16777216", 0);
+    s->menu_probing = 1; s->menu_probe_started = av_gettime_relative();
+    ret = avformat_open_input(&s->inner, NULL, av_find_input_format("mpegts"), &options);
+    av_dict_free(&options);
+    if (ret >= 0) ret = avformat_find_stream_info(s->inner, NULL);
+    s->menu_probing = 0;
+    if (ret < 0) return ret;
+    /* A probe ended by a still frame is not the end of the menu. */
+    s->stream_io->eof_reached = 0;
+    s->mapped_streams = s->inner->nb_streams;
+    s->stream_map = av_malloc_array(FFMAX(1, s->mapped_streams), sizeof(*s->stream_map));
+    if (!s->stream_map) return AVERROR(ENOMEM);
+    s->video_stream = -1;
+    for (unsigned i = 0; i < s->mapped_streams; i++) {
+        AVStream *in = s->inner->streams[i], *out;
+        enum AVMediaType type = in->codecpar->codec_type;
+        s->stream_map[i] = -1;
+        if ((type != AVMEDIA_TYPE_VIDEO || s->video_stream >= 0) && (type != AVMEDIA_TYPE_AUDIO || in->codecpar->codec_id == AV_CODEC_ID_NONE))
+            continue;
+        if (!(out = avformat_new_stream(context, NULL))) return AVERROR(ENOMEM);
+        s->stream_map[i] = out->index;
+        out->id = in->id;
+        avpriv_set_pts_info(out, 33, 1, 90000);
+        if ((ret = avcodec_parameters_copy(out->codecpar, in->codecpar)) < 0) return ret;
+        out->start_time = 0;
+        if (type == AVMEDIA_TYPE_VIDEO) { s->video_stream = out->index; out->disposition |= AV_DISPOSITION_DEFAULT; }
+    }
+    if (s->video_stream < 0) return AVERROR_INVALIDDATA;
+    s->menu_last_raw = av_malloc_array(context->nb_streams, sizeof(*s->menu_last_raw));
+    s->menu_stream_epoch = av_calloc(context->nb_streams, sizeof(*s->menu_stream_epoch));
+    if (!s->menu_last_raw || !s->menu_stream_epoch) return AVERROR(ENOMEM);
+    for (unsigned i = 0; i < context->nb_streams; i++) s->menu_last_raw[i] = AV_NOPTS_VALUE;
+    s->menu_max_out = -3754;
+    context->ctx_flags |= AVFMTCTX_UNSEEKABLE;
+    context->duration = AV_NOPTS_VALUE;
+    context->start_time = 0;
+    av_dict_set(&context->metadata, "thru3d_disc_menu", "1", 0);
+    av_log(context, AV_LOG_INFO, "HDMV disc menu session with %u streams\n", context->nb_streams);
+    return 0;
+}
+
+/* Menus loop clips and jump between playlists: keep one increasing timeline.
+   A jump on one stream starts an epoch the others adopt when they jump too. */
+static int menu_packet(AVFormatContext *context, AVPacket *output)
+{
+    BdMvc *s = context->priv_data;
+    for (;;) {
+        int ret = av_read_frame(s->inner, output), mapped;
+        int64_t raw;
+        if (ret < 0) return ret;
+        if ((unsigned)output->stream_index >= s->mapped_streams && (ret = map_late_streams(s)) < 0) {
+            av_packet_unref(output); return ret;
+        }
+        mapped = (unsigned)output->stream_index < s->mapped_streams ? s->stream_map[output->stream_index] : -1;
+        if (mapped >= 0 && s->inner->streams[output->stream_index]->codecpar->codec_id != context->streams[mapped]->codecpar->codec_id) {
+            pthread_mutex_lock(&menu_data_lock); menu_shared.unsupported = 1; pthread_mutex_unlock(&menu_data_lock);
+            mapped = -1;
+        }
+        raw = output->dts != AV_NOPTS_VALUE ? output->dts : output->pts;
+        if (mapped < 0 || raw == AV_NOPTS_VALUE) { av_packet_unref(output); continue; }
+        int64_t last = s->menu_last_raw[mapped];
+        if (last == AV_NOPTS_VALUE || raw < last - 45000 || raw > last + 900000) {
+            if (s->menu_epoch && s->menu_stream_epoch[mapped] < s->menu_epoch && llabs(raw - s->menu_epoch_raw) < 900000) {
+                s->menu_stream_epoch[mapped] = s->menu_epoch;
+            } else {
+                s->menu_offset = s->menu_max_out + 3754 - raw;
+                s->menu_epoch_raw = raw;
+                s->menu_stream_epoch[mapped] = ++s->menu_epoch;
+            }
+        }
+        s->menu_last_raw[mapped] = raw;
+        if (output->pts != AV_NOPTS_VALUE) output->pts += s->menu_offset;
+        if (output->dts != AV_NOPTS_VALUE) output->dts += s->menu_offset;
+        s->menu_max_out = FFMAX(s->menu_max_out, raw + s->menu_offset);
+        output->stream_index = mapped;
+        output->pos = -1;
+        return 0;
+    }
+}
+
+static void menu_close(BdMvc *s)
+{
+    pthread_mutex_lock(&menu_input_lock);
+    pthread_mutex_lock(&menu_data_lock);
+    if (menu_shared.owner == s) {
+        menu_planes_free_locked();
+        menu_shared.owner = NULL;
+        menu_shared.version++;
+    }
+    pthread_mutex_unlock(&menu_data_lock);
+    pthread_mutex_unlock(&menu_input_lock);
+    if (s->menu_title) bd_free_title_info(s->menu_title);
+    s->menu_title = NULL;
+    av_freep(&s->replay);
+    av_freep(&s->menu_last_raw);
+    av_freep(&s->menu_stream_epoch);
+}
+
+/* Private application API for the playing menu session. */
+int avformat_thru3d_bd_menu_state(char *json, int capacity)
+{
+    int written;
+    pthread_mutex_lock(&menu_data_lock);
+    if (!menu_shared.owner)
+        written = snprintf(json, capacity, "{\"active\":false}");
+    else
+        written = snprintf(json, capacity, "{\"active\":true,\"version\":%"PRIu64",\"width\":%d,\"height\":%d,"
+            "\"title\":%d,\"playlist\":%d,\"chapter\":%d,\"chapter_ms\":%"PRId64",\"menu\":%s,\"popup\":%s,"
+            "\"seen\":%s,\"error\":%s,\"unsupported\":%s,\"buttons\":%s,\"audio_index\":%d,\"subtitle_index\":%d}",
+            menu_shared.version, menu_shared.width, menu_shared.height, menu_shared.title, menu_shared.playlist,
+            menu_shared.chapter, menu_shared.chapter_ms, menu_shared.menu ? "true" : "false",
+            menu_shared.popup ? "true" : "false", menu_shared.seen ? "true" : "false",
+            menu_shared.error ? "true" : "false", menu_shared.unsupported ? "true" : "false",
+            menu_shared.x1 > menu_shared.x0 ? "true" : "false", menu_shared.audio_index, menu_shared.pg_index);
+    pthread_mutex_unlock(&menu_data_lock);
+    return written >= 0 && written < capacity ? written : AVERROR(ENOSPC);
+}
+
+/* The occupied part of the shown IG plane as straight-to-premultiplied RGBA.
+   rect: x, y, width, height, plane width, plane height. Returns the bytes
+   written, 0 when the plane is empty, or a negative error. */
+int avformat_thru3d_bd_menu_overlay(uint64_t version, uint8_t *rgba, int capacity, int *rect)
+{
+    int ret = 0;
+    pthread_mutex_lock(&menu_data_lock);
+    if (!menu_shared.owner || version != menu_shared.version) { ret = AVERROR(EAGAIN); goto done; }
+    int w = menu_shared.x1 - menu_shared.x0, h = menu_shared.y1 - menu_shared.y0;
+    rect[0] = menu_shared.x0; rect[1] = menu_shared.y0; rect[2] = w; rect[3] = h;
+    rect[4] = menu_shared.width; rect[5] = menu_shared.height;
+    if (w <= 0 || h <= 0) goto done;
+    if ((int64_t)w * h * 4 > capacity) { ret = AVERROR(ENOSPC); goto done; }
+    for (int y = 0; y < h; y++) {
+        const uint32_t *row = menu_shared.shown + (size_t)(menu_shared.y0 + y) * menu_shared.width + menu_shared.x0;
+        uint8_t *out = rgba + (size_t)y * w * 4;
+        for (int x = 0; x < w; x++) {
+            uint32_t p = row[x], a = p >> 24;
+            out[4*x+0] = ((p >> 16 & 255) * a + 127) / 255;
+            out[4*x+1] = ((p >> 8 & 255) * a + 127) / 255;
+            out[4*x+2] = ((p & 255) * a + 127) / 255;
+            out[4*x+3] = a;
+        }
+    }
+    ret = w * h * 4;
+done:
+    pthread_mutex_unlock(&menu_data_lock);
+    return ret;
+}
+
+/* kind: 0 point at plane x/y, 1 activate at x/y, 2..5 up/down/left/right,
+   6 enter, 7 top menu, 8 popup menu. Returns libbluray's result or -1. */
+int avformat_thru3d_bd_menu_input(int kind, int x, int y)
+{
+    static const uint32_t keys[] = {BD_VK_UP, BD_VK_DOWN, BD_VK_LEFT, BD_VK_RIGHT, BD_VK_ENTER};
+    int ret = -1;
+    pthread_mutex_lock(&menu_input_lock);
+    BdMvc *s = menu_shared.owner;
+    if (s && s->disc) {
+        if ((kind == 0 || kind == 1) && x >= 0 && y >= 0 && x < 65536 && y < 65536) {
+            ret = bd_mouse_select(s->disc, -1, x, y);
+            if (kind == 1) ret = bd_user_input(s->disc, -1, BD_VK_MOUSE_ACTIVATE);
+        } else if (kind >= 2 && kind <= 6) ret = bd_user_input(s->disc, -1, keys[kind - 2]);
+        else if (kind == 7) {
+            /* The viewer's own "back to the menu": a top menu usually masks the call. */
+            bd_set_player_setting(s->disc, BLURAY_PLAYER_SETTING_UO_RESTRICTION_LEVEL, BLURAY_PLAYER_SETTING_UO_RESTRICTION_DISABLED);
+            ret = bd_menu_call(s->disc, -1);
+            bd_set_player_setting(s->disc, BLURAY_PLAYER_SETTING_UO_RESTRICTION_LEVEL, BLURAY_PLAYER_SETTING_UO_RESTRICTION_RELAXED);
+        }
+        else if (kind == 8) ret = bd_user_input(s->disc, -1, BD_VK_POPUP);
+    }
+    pthread_mutex_unlock(&menu_input_lock);
+    return ret;
+}
+
 static int disc_header(AVFormatContext *context)
 {
     BdMvc *s = context->priv_data;
@@ -460,34 +1051,45 @@ static int disc_header(AVFormatContext *context)
         av_log(context, AV_LOG_ERROR, "Blu-ray image is unavailable or encrypted\n");
         return AVERROR(EACCES);
     }
-    titles = bd_get_titles(s->disc, TITLES_RELEVANT, 0);
-    for (int i = 0; i < titles; i++) {
-        BLURAY_TITLE_INFO *candidate = bd_get_title_info(s->disc, i, 0);
-        if (candidate && candidate->duration > longest) {
-            selected = i;
-            longest = candidate->duration;
-        }
-        if (candidate) bd_free_title_info(candidate);
-    }
-    if (selected < 0 || !bd_select_title(s->disc, selected))
+    if (s->menu) return menu_header(context, info);
+    s->input.input.read = udf_blocks; s->input.owner = s;
+    s->udf = udfread_init();
+    if (!s->udf || udfread_open_input(s->udf, &s->input.input) < 0)
         return AVERROR_INVALIDDATA;
-    s->title = bd_get_title_info(s->disc, selected, 0);
+    if (s->playlist >= 0) {
+        /* An explicit title chosen from avformat_thru3d_bd_titles(). libbluray
+           expects its title scan before a playlist is opened directly. */
+        bd_get_titles(s->disc, TITLES_RELEVANT, 0);
+        if (!bd_select_playlist(s->disc, s->playlist)) return AVERROR(EINVAL);
+        s->title = bd_get_playlist_info(s->disc, s->playlist, 0);
+    } else {
+        titles = bd_get_titles(s->disc, TITLES_RELEVANT, 0);
+        for (int i = 0; i < titles; i++) {
+            BLURAY_TITLE_INFO *candidate = bd_get_title_info(s->disc, i, 0);
+            /* The longest title this demuxer can play: an incompatible main
+               feature layout must not hide every other title on the disc. */
+            if (candidate && candidate->duration > longest &&
+                title_layout(candidate, candidate->clip_count && candidate->clip_count <= 4096 &&
+                             title_is_mvc(s, candidate)) >= 0) {
+                selected = i;
+                longest = candidate->duration;
+            }
+            if (candidate) bd_free_title_info(candidate);
+        }
+        if (selected < 0 || !bd_select_title(s->disc, selected))
+            return AVERROR_INVALIDDATA;
+        s->title = bd_get_title_info(s->disc, selected, 0);
+    }
     if (!s->title || !s->title->clip_count || s->title->clip_count > 4096) return AVERROR_INVALIDDATA;
     clip = &s->title->clips[0];
     av_log(context, AV_LOG_VERBOSE, "MVC ISO: title %u has %u video streams\n", s->title->playlist, clip->video_stream_count);
     if (!clip->video_stream_count || clip->still_mode != BLURAY_STILL_NONE)
         return AVERROR_INVALIDDATA;
     video = &clip->video_streams[0];
-    static const int widths[] = {0,720,720,720,1920,1280,1920,720,3840};
-    static const int heights[] = {0,480,576,480,1080,720,1080,576,2160};
-    if (video->format >= FF_ARRAY_ELEMS(widths) || !widths[video->format]) return AVERROR(ENOSYS);
-    s->width = widths[video->format]; s->height = heights[video->format];
+    if (video->format >= FF_ARRAY_ELEMS(format_widths) || !format_widths[video->format]) return AVERROR(ENOSYS);
+    s->width = format_widths[video->format]; s->height = format_heights[video->format];
     s->base_pid = video->pid; s->dependent_pid = 0x1012;
     s->origin = clip->in_time; s->end = clip->out_time;
-    s->input.input.read = udf_blocks; s->input.owner = s;
-    s->udf = udfread_init();
-    if (!s->udf || udfread_open_input(s->udf, &s->input.input) < 0)
-        return AVERROR_INVALIDDATA;
     snprintf(path, sizeof(path), "BDMV/STREAM/SSIF/%s.ssif", clip->clip_id);
     s->ssif = udfread_file_open(s->udf, path);
     s->is_mvc = s->ssif != NULL;
@@ -496,34 +1098,10 @@ static int disc_header(AVFormatContext *context)
         s->clip_offsets = av_calloc(s->title->clip_count + 1, sizeof(*s->clip_offsets));
         if (!s->clip_offsets) return AVERROR(ENOMEM);
     }
-    for (unsigned i = 0; i < s->title->clip_count; i++) {
-        BLURAY_CLIP_INFO *part = &s->title->clips[i];
-        if (!part->video_stream_count || part->still_mode != BLURAY_STILL_NONE ||
-            part->out_time <= part->in_time ||
-            part->video_streams[0].pid != video->pid ||
-            part->video_streams[0].coding_type != video->coding_type ||
-            part->video_streams[0].format != video->format ||
-            part->audio_stream_count != clip->audio_stream_count)
-            return AVERROR(ENOSYS);
-        for (unsigned a = 0; a < part->audio_stream_count; a++)
-            if (part->audio_streams[a].pid != clip->audio_streams[a].pid ||
-                part->audio_streams[a].coding_type != clip->audio_streams[a].coding_type)
-                return AVERROR(ENOSYS);
-        if (s->is_mvc) {
-            if (part->video_streams[0].rate != video->rate || part->pg_stream_count != clip->pg_stream_count)
-                return AVERROR(ENOSYS);
-            for (unsigned a = 0; a < part->audio_stream_count; a++)
-                if (part->audio_streams[a].format != clip->audio_streams[a].format ||
-                    part->audio_streams[a].rate != clip->audio_streams[a].rate) return AVERROR(ENOSYS);
-            for (unsigned a = 0; a < part->pg_stream_count; a++)
-                if (part->pg_streams[a].pid != clip->pg_streams[a].pid ||
-                    part->pg_streams[a].coding_type != clip->pg_streams[a].coding_type) return AVERROR(ENOSYS);
-        }
-        if (s->title_stream) s->clip_offsets[i+1] = s->clip_offsets[i] + (int64_t)part->pkt_count * 192;
-    }
+    if ((ret = title_layout(s->title, s->is_mvc)) < 0) return ret;
+    for (unsigned i = 0; s->title_stream && i < s->title->clip_count; i++)
+        s->clip_offsets[i+1] = s->clip_offsets[i] + (int64_t)s->title->clips[i].pkt_count * 192;
     if (s->is_mvc) {
-        if (video->format != BLURAY_VIDEO_FORMAT_1080P && video->format != BLURAY_VIDEO_FORMAT_720P)
-            return AVERROR(ENOSYS);
         s->mvc_clips = av_calloc(s->title->clip_count, sizeof(*s->mvc_clips));
         if (!s->mvc_clips) return AVERROR(ENOMEM);
         /* Validate each independent SSIF/index association during preflight.
@@ -594,12 +1172,13 @@ static int disc_header(AVFormatContext *context)
             *stereo = (AVStereo3D){.type = AV_STEREO3D_SIDEBYSIDE, .view = AV_STEREO3D_VIEW_PACKED};
             out->disposition |= AV_DISPOSITION_DEFAULT;
         }
-        for (unsigned a = 0; a < clip->audio_stream_count; a++)
-            if (clip->audio_streams[a].pid == in->id)
-                av_dict_set(&out->metadata, "language", (const char *)clip->audio_streams[a].lang, 0);
-        for (unsigned p = 0; p < clip->pg_stream_count; p++)
-            if (clip->pg_streams[p].pid == in->id)
-                av_dict_set(&out->metadata, "language", (const char *)clip->pg_streams[p].lang, 0);
+        const BLURAY_CLIP_INFO *named = s->is_mvc ? clip : reference_clip(s->title);
+        for (unsigned a = 0; a < named->audio_stream_count; a++)
+            if (named->audio_streams[a].pid == in->id)
+                av_dict_set(&out->metadata, "language", (const char *)named->audio_streams[a].lang, 0);
+        for (unsigned p = 0; p < named->pg_stream_count; p++)
+            if (named->pg_streams[p].pid == in->id)
+                av_dict_set(&out->metadata, "language", (const char *)named->pg_streams[p].lang, 0);
     }
     if (s->video_stream < 0) return AVERROR_INVALIDDATA;
     context->duration = av_rescale(s->title->duration, AV_TIME_BASE, 90000);
@@ -614,9 +1193,32 @@ static int disc_header(AVFormatContext *context)
     return 0;
 }
 
+/* A clip whose PMT lacks a stream (a silent leader) makes the MPEG-TS demuxer
+   create that PID again under a new index when the next clip's PMT lists it.
+   Route such streams to the output stream of the same PID and type. */
+static int map_late_streams(BdMvc *s)
+{
+    int *grown;
+    unsigned old = s->mapped_streams;
+    if (s->inner->nb_streams <= old) return 0;
+    grown = av_realloc_array(s->stream_map, s->inner->nb_streams, sizeof(*grown));
+    if (!grown) return AVERROR(ENOMEM);
+    s->stream_map = grown;
+    for (unsigned i = old; i < s->inner->nb_streams; i++) {
+        AVStream *in = s->inner->streams[i];
+        s->stream_map[i] = -1;
+        for (unsigned j = 0; in->id != s->dependent_pid && j < s->outer->nb_streams; j++)
+            if (s->outer->streams[j]->id == in->id &&
+                s->outer->streams[j]->codecpar->codec_type == in->codecpar->codec_type) s->stream_map[i] = j;
+    }
+    s->mapped_streams = s->inner->nb_streams;
+    return 0;
+}
+
 static int disc_packet(AVFormatContext *context, AVPacket *output)
 {
     BdMvc *s = context->priv_data;
+    if (s->menu) return menu_packet(context, output);
     for (;;) {
         AVPacket *packet = av_packet_alloc();
         int ret, pid, eye;
@@ -652,6 +1254,9 @@ static int disc_packet(AVFormatContext *context, AVPacket *output)
                 continue;
             }
             return ret;
+        }
+        if ((unsigned)packet->stream_index >= s->mapped_streams && (ret = map_late_streams(s)) < 0) {
+            av_packet_free(&packet); return ret;
         }
         if ((unsigned)packet->stream_index >= s->mapped_streams) { av_packet_free(&packet); continue; }
         pid = s->inner->streams[packet->stream_index]->id;
@@ -837,26 +1442,96 @@ static int disc_probe(const AVProbeData *probe)
     return av_match_ext(probe->filename, "iso") ? AVPROBE_SCORE_EXTENSION / 2 : 0;
 }
 
-/* Private, versioned native preflight. Does no decoding and never creates GL state. */
-int avformat_thru3d_bd_probe(const char *url, int *width, int *height, int64_t *duration, int *mvc)
+/* HDMV navigation needs a MovieObject table libbluray can parse (main or backup copy):
+   the same length check it applies, so a truncated table does not offer a menu. */
+static int movie_objects_valid(BdMvc *s)
+{
+    static const char *const names[] = {"BDMV/MovieObject.bdmv", "BDMV/BACKUP/MovieObject.bdmv"};
+    for (int i = 0; i < 2; i++) {
+        uint8_t header[48];
+        UDFFILE *file = udfread_file_open(s->udf, names[i]);
+        int64_t size;
+        int valid;
+        if (!file) continue;
+        size = udfread_file_size(file);
+        valid = udfread_file_read(file, header, sizeof(header)) == sizeof(header) && !memcmp(header, "MOBJ", 4) &&
+                size - 44 >= (int64_t)AV_RB32(header + 40);
+        udfread_file_close(file);
+        if (valid) return 1;
+    }
+    return 0;
+}
+
+/* Selectable titles of the opened disc as a JSON array. Reuses the preflight's
+   reader and sector cache: no second disc open and no stream probing. */
+static void list_titles(BdMvc *s, char *json, int capacity)
+{
+    unsigned listed = 0;
+    uint32_t count = bd_get_titles(s->disc, TITLES_RELEVANT, 30);
+    const BLURAY_DISC_INFO *info = bd_get_disc_info(s->disc);
+    /* Without a Java VM libbluray leaves a BD-J top menu unsupported (and unnamed):
+       an unplayable top menu on a disc with BD-J is still named as such. */
+    const char *menu = !info ? "none" :
+                       !info->top_menu_supported || !info->top_menu ? (info->bdj_detected ? "bdj" : "none") :
+                       info->top_menu->bdj ? "bdj" : movie_objects_valid(s) ? "hdmv" : "none";
+    snprintf(json, capacity, "{\"menu\":\"%s\",\"titles\":[", menu);
+    for (uint32_t i = 0; i < count && listed < 48; i++) {
+        BLURAY_TITLE_INFO *title = bd_get_title_info(s->disc, i, 0);
+        char item[256];
+        if (!title) continue;
+        int mvc = title->clip_count && title->clip_count <= 4096 && title_is_mvc(s, title);
+        /* Silent playlists are menu loops and logos, not something to watch. */
+        if (title_layout(title, mvc) >= 0 && reference_clip(title)->audio_stream_count) {
+            const BLURAY_CLIP_INFO *clip = reference_clip(title);
+            snprintf(item, sizeof(item), "%s{\"playlist\":%u,\"duration_ms\":%"PRIu64",\"chapters\":%u,"
+                     "\"clips\":%u,\"angles\":%u,\"height\":%d,\"stereo\":%s,\"audio\":%u,\"subtitles\":%u}",
+                     listed ? "," : "", title->playlist, title->duration / 90, title->chapter_count, title->clip_count,
+                     title->angle_count, format_heights[clip->video_streams[0].format], mvc ? "true" : "false",
+                     clip->audio_stream_count, clip->pg_stream_count);
+            if (strlen(json) + strlen(item) + 3 > (size_t)capacity) { bd_free_title_info(title); break; }
+            av_strlcat(json, item, capacity);
+            listed++;
+        }
+        bd_free_title_info(title);
+    }
+    av_strlcat(json, "]}", capacity);
+}
+
+/* Private, versioned native preflight. Does no decoding and never creates GL state.
+   playlist < 0 selects the longest title; json (optional) receives the title list. */
+int avformat_thru3d_bd_titles(const char *url, int playlist, int *width, int *height, int64_t *duration,
+                              int *mvc, int *selected, char *json, int capacity)
 {
     AVFormatContext *context = NULL;
     AVDictionary *options = NULL;
+    if (json && capacity < 3) return AVERROR(EINVAL);
     av_dict_set(&options, "header_only", "1", 0);
     av_dict_set(&options, "rw_timeout", "30000000", 0);
+    av_dict_set_int(&options, "playlist", playlist < 0 ? -1 : playlist, 0);
     int ret = avformat_open_input(&context, url, av_find_input_format("bd_mvc"), &options);
     av_dict_free(&options);
     if (ret >= 0) {
         BdMvc *s = context->priv_data;
         *width = s->width * (s->is_mvc ? 2 : 1); *height = s->height; *duration = context->duration;
         *mvc = s->is_mvc;
+        if (selected) *selected = s->title->playlist;
+        if (json) list_titles(s, json, capacity);
     }
     avformat_close_input(&context);
     return ret;
 }
 
+int avformat_thru3d_bd_probe(const char *url, int *width, int *height, int64_t *duration, int *mvc)
+{
+    return avformat_thru3d_bd_titles(url, -1, width, height, duration, mvc, NULL, NULL, 0);
+}
+
 static const AVOption bd_options[] = {
     { "header_only", "Read Blu-ray title metadata without stream probing", offsetof(BdMvc, header_only), AV_OPT_TYPE_BOOL,
+      { .i64 = 0 }, 0, 1, AV_OPT_FLAG_DECODING_PARAM },
+    { "playlist", "Blu-ray playlist (MPLS) number; -1 selects the longest title", offsetof(BdMvc, playlist), AV_OPT_TYPE_INT,
+      { .i64 = -1 }, -1, 99999, AV_OPT_FLAG_DECODING_PARAM },
+    { "menu", "Play the disc's HDMV top menu instead of a title", offsetof(BdMvc, menu), AV_OPT_TYPE_BOOL,
       { .i64 = 0 }, 0, 1, AV_OPT_FLAG_DECODING_PARAM },
     { NULL }
 };

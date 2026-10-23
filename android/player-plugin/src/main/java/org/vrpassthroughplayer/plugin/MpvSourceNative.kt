@@ -25,9 +25,16 @@ internal object MpvSourceNative {
                                    layerSurface: android.view.Surface? = null, softwareLayer: Boolean = false,
                                    layerWidth: Int = 4096, layerHeight: Int = 4096, isoInput: Boolean = false,
                                    tlsCaFile: String = MpvTlsTrust.prepare(context),
-                                   networkInterleaveCompat: Boolean = false): Long
-    /** ISO header/title preflight on the source worker; width, height, duration-us, MVC flag. */
-    @JvmStatic external fun probeIso(path: String): LongArray
+                                   networkInterleaveCompat: Boolean = false, isoPlaylist: Int = -1): Long
+    /** ISO header/title preflight on the source worker. playlist -1 selects the longest title.
+     * JSON: width, height, duration_us, mvc, playlist (selected) and the selectable titles. */
+    @JvmStatic external fun probeDisc(path: String, playlist: Int): String
+    /** The playing HDMV menu session (isoPlaylist -2): navigation state JSON, {"active":false} without one. */
+    @JvmStatic external fun discMenuState(): String
+    /** Occupied premultiplied RGBA of the menu's button plane at [version]; rect gets x, y, w, h, plane w, plane h. */
+    @JvmStatic external fun discMenuOverlay(version: Long, rect: IntArray): ByteArray
+    /** 0 point / 1 activate at plane x,y; 2..5 arrows, 6 enter, 7 top menu, 8 popup. Negative when no session. */
+    @JvmStatic external fun discMenuInput(kind: Int, x: Int, y: Int): Int
     /** Empty string when no completed image is available. Never waits for the GPU. */
     @JvmStatic external fun acquire(handle: Long): String
     /** Insert consumer-context fence after its last copy/draw; rejects double release. */

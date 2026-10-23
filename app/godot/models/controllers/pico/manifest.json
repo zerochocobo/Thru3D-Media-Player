@@ -1,0 +1,38 @@
+{
+  "repository": "https://github.com/immersive-web/webxr-input-profiles",
+  "revision": "f4992299601614adbfefd398dc8e281556bb7444",
+  "source": "packages/assets/profiles/<profile>/<hand>.glb",
+  "license": "MIT",
+  "files": [
+    {
+      "file": "pico-4-left.glb",
+      "bytes": 769684,
+      "sha256": "0a0cc5101dcc192e30007db6fdcf7bd1a04b2c08bd7c05add8608138f30adb53"
+    },
+    {
+      "file": "pico-4-right.glb",
+      "bytes": 769528,
+      "sha256": "5b5e334bd9b4ea764e88ddf9ed37183e7d56d01d8493bd50273d9dfae8cc5460"
+    },
+    {
+      "file": "pico-4u-left.glb",
+      "bytes": 274916,
+      "sha256": "febc63d7de3acb58dbbdc54759ab87a1c687ab6e1f23a76b8868af3edf97cf91"
+    },
+    {
+      "file": "pico-4u-right.glb",
+      "bytes": 276212,
+      "sha256": "fb3f09849cb1b9d3f4fa434240a57fb475d754fda386ea1b1d36db874f015f8c"
+    },
+    {
+      "file": "pico-neo3-left.glb",
+      "bytes": 171840,
+      "sha256": "68443598d99f3b7273d4f5c4eeeaa7fa47491d7406b8cb3a98ffb1db9b254022"
+    },
+    {
+      "file": "pico-neo3-right.glb",
+      "bytes": 171728,
+      "sha256": "42191f7075c61d7b338b4c9c4618c3e765519798fee12c29b8e79db4b6bab0a7"
+    }
+  ]
+}

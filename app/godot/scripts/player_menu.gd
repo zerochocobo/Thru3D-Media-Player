@@ -17,6 +17,8 @@ const PIP_ADD := PipControls.ADD
 const PIP_CLOSE := PipControls.CLOSE
 var _pip_open := false
 var pip_controls := PipControls.new(self)
+const DiscPanel := preload("res://scripts/disc_titles_panel.gd")
+var disc_titles := DiscPanel.new(self)
 var _capture_open := false
 var _capture_hover_ms := 0
 var _capture_leave_ms := 0
@@ -24,6 +26,7 @@ var _capture_time: Label3D
 signal recent_requested
 signal seek_requested(position_ms: int)
 signal bookmark_requested(operation: String, marker_id: String, scope: String)
+signal bookmark_loop_requested(operation: String, payload: Dictionary, scope: String)
 signal bookmark_mode_requested(mode: String, scope: String)
 signal volume_requested(volume: float, muted: bool)
 signal whisper_requested(level: int, source_uri: String)
@@ -123,6 +126,10 @@ const SCREEN_SETTINGS := 473
 const CINEMA_SEAT := 9101
 const CINEMA_MOVE := 9102
 const CINEMA_HOME := 9103
+const CINEMA_LIGHT_AUTO := 9104
+const CINEMA_LIGHT_ON := 9105
+const CINEMA_LIGHT_OFF := 9106
+const CINEMA_LIGHT_CYCLE := 9107
 const SETTINGS_CLOSE := 474
 const SCREEN_SET_DEFAULT := 475
 const SCREEN_AUTO_DEFAULT := 478
@@ -339,8 +346,9 @@ func _place_upper_surface(surface: Node3D, rect: Rect2) -> void:
 			var head: Variant = layout_head_provider.call() if layout_head_provider.is_valid() else null
 			if space_locked(): head = get_meta("space_head", head)
 			if not head is Transform3D: return
-			_cinema_popup_centres[key] = CinemaMenuLayout.popup_centre(head)
-		surface.global_transform = CinemaMenuLayout.place_popup(_cinema_popup_centres[key], rect)
+			var eye: Vector3 = to_global(_layout_eye) if _layout_eye != null else head.origin
+			_cinema_popup_centres[key] = SurfaceLayout.above(global_transform, eye, panel_centre(), _bar_bounds().end.y, rect, global_basis * _layout_up)
+		surface.global_transform = _cinema_popup_centres[key]
 		surface.set_meta("menu_surface_bounds", rect)
 		composition_layout_changed.emit()
 		return
@@ -408,7 +416,7 @@ func allows_playback_sticks() -> bool:
 ## The small PiP picker blocks playback shortcuts, but not rays outside its buttons.
 func allows_pip_input() -> bool:
 	return visible and section == 0 and _state.get("has_video", false) and _adjustment.is_empty() \
-		and choices.opened.is_empty() and not _audio_open and not _mode_open and not _subtitle_open and not bookmarks.opened and not _failure_open and not has_pointer_capture() and not has_expanded_library()
+		and choices.opened.is_empty() and not _audio_open and not disc_titles.opened and not _mode_open and not _subtitle_open and not bookmarks.opened and not _failure_open and not has_pointer_capture() and not has_expanded_library()
 
 func _finish_depth_drag() -> void:
 	if not _depth_hand.is_empty():
@@ -430,6 +438,8 @@ func navigate_back() -> bool:
 		choices.reset(); refresh()
 	elif _audio_open:
 		_audio_open = false; refresh()
+	elif disc_titles.opened:
+		disc_titles.reset(); refresh()
 	elif bookmarks.opened:
 		bookmarks.reset(); refresh()
 	elif not _adjustment.is_empty():
@@ -472,6 +482,7 @@ func dismiss() -> void:
 	_subtitle_open = false
 	_subtitle_appearance_open = false
 	_subtitle_files_open = false
+	disc_titles.reset()
 	_close_depth_slider()
 	_volume_hand = ""
 	super.dismiss()
@@ -479,6 +490,7 @@ func dismiss() -> void:
 func _reset_navigation() -> void:
 	_pip_open = false
 	_audio_open = false; _narration_more = false; _audio_offset = 0
+	disc_titles.reset()
 	_failure_open = false
 	_error_details_open = false
 	_icon_tap.clear()
@@ -537,7 +549,7 @@ func refresh_values() -> void:
 			button.enabled = _state.get("bookmark_ready", false) and _seek_hand.is_empty()
 			button.node.get_child(1).material_override.albedo_color = button.foreground if button.enabled else MUTED
 			continue
-		if button.target >= BookmarkMenu.GROUP and button.target < BookmarkMenu.GROUP + 1000:
+		if bookmarks.targets.get(button.target, {}).get("kind", "") == "group":
 			button.enabled = _state.get("bookmark_seekable", false)
 			continue
 		if button.target == SEEK:
@@ -603,6 +615,8 @@ func _draw() -> void:
 	if not _track_drag.is_empty() and _track_drag.source != str(_state.get("source_uri", "")): _track_drag.clear()
 	if _audio_open and (_audio_source != str(_state.get("source_uri", "")) or section != 0 or _subtitle_open or _mode_open or _volume_open):
 		_audio_open = false; choices.reset()
+	if disc_titles.opened and (section != 0 or _audio_open or _subtitle_open or _mode_open or _volume_open or _pip_open or bookmarks.opened):
+		disc_titles.reset()
 	_clear_layout()
 	if str(_state.get("error", "")).is_empty():
 		_failure_open = false; _error_details_open = false
@@ -801,10 +815,16 @@ func _draw_bar() -> void:
 	_glyph(MODE, "view_mode", Vector2(0.38 if spatial else 0.41, row), 0.075, true, I18n.t("Video mode"))
 	_glyph(11, "settings", Vector2(0.5, row), 0.075, true, I18n.t("Settings"))
 	_seek_bar(-0.08)
-	_status = _label(_seek_status(), Vector3(0, -0.15, 0.004), 20)
+	# Transient seek feedback must leave the bookmark endpoints readable.
+	var has_markers: bool = not _state.get("bookmarks", []).is_empty()
+	_status = _label(_seek_status(), Vector3(0, -0.044 if has_markers else -0.15, 0.004), 14 if has_markers else 20)
 	_status.modulate = ACCENT
 	_status.modulate.a = float(_state.get("seek_feedback", {}).get("alpha", 1.0))
 	_status.visible = not _status.text.is_empty()
+	if CinemaFeature.enabled() and _state.get("screen_scene_locked", false):
+		var mode: String = str(_state.get("cinema_lights", "auto"))
+		_button(CINEMA_LIGHT_CYCLE, I18n.t({"auto": "Auto lights", "on": "Lights on", "off": "Lights off"}.get(mode, "Auto lights")), Vector2(0, .34), Vector2(.36, .065))
+		set_label_size(_buttons.back().node.get_child(0), TEXT_PAGE_TITLE)
 	# Floating actions above the bar.
 	_round(PIP, "pip", Vector2(-0.28, 0.215), 0.08, bool(_state.get("has_video", false)) and bool(_state.get("pip_available", true)), int(_state.get("pip_count", 0)) > 0,
 		I18n.t("Finish recording to open picture in picture" if not _state.get("pip_available", true) and _state.get("capture", {}).get("recording", false) else "Picture in picture"))
@@ -814,6 +834,7 @@ func _draw_bar() -> void:
 	_round(100, "folder", Vector2(0, 0.215), 0.08, true, false, I18n.t("Library"))
 	_round(108, "recenter", Vector2(0.14, 0.215), 0.08, true, false, I18n.t("Recenter"))
 	_draw_favorite(Vector2(0.28, 0.215))
+	disc_titles.draw_button(Vector2(0.56 if _state.get("capture", {}).get("available", false) else 0.42, 0.215))
 	_draw_capture_action()
 	if _state.get("audio_play_during_video", false):
 		if not music_quick: music_quick = preload("res://scripts/music_quick_controls.gd").new(self, func(): action_requested.emit("music_toggle"))
@@ -833,6 +854,8 @@ func _draw_bar() -> void:
 		_draw_popup(_draw_subtitles)
 	if _audio_open:
 		_draw_popup(_draw_audio)
+	if disc_titles.opened:
+		_draw_popup(disc_titles.draw)
 
 func _draw_audio() -> void:
 	var tracks: Array = _state.get("audio_options", [])
@@ -1128,12 +1151,13 @@ func stick_scroll(y: float, delta: float) -> void:
 	if visible and bookmarks.opened:
 		bookmarks.stick_scroll(y, delta)
 		return
-	if not visible or not (_subtitle_open or _audio_open) or not is_finite(y) or absf(y) < 0.4:
+	if not visible or not (_subtitle_open or _audio_open or disc_titles.opened) or not is_finite(y) or absf(y) < 0.4:
 		_subtitle_scroll = 0.0
 		return
 	_subtitle_scroll -= y * delta * 7.0
 	if absf(_subtitle_scroll) >= 1.0:
 		if _audio_open: _scroll_audio(int(_subtitle_scroll))
+		elif disc_titles.opened: disc_titles.scroll(int(_subtitle_scroll))
 		elif _subtitle_files_open: _scroll_subtitle_files(int(_subtitle_scroll))
 		else: _scroll_subtitles(int(_subtitle_scroll))
 		_subtitle_scroll -= int(_subtitle_scroll)
@@ -1407,10 +1431,10 @@ func press_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: b
 	update_pointer(hand, origin, direction, tracked)
 	var hit := ray_hit(origin, direction) if tracked else {}
 	var clone_row: bool = clone_panel.opened and not hit.is_empty() and clone_panel.actions.get(int(hit.target), {}).get("operation", "") in ["caption", "original", "clone", "save_name", "use", "preview", "rename_name"]
-	if not hit.is_empty() and hit.get("enabled", false) and (clone_row or _audio_ids.has(int(hit.target)) or _subtitle_ids.has(int(hit.target)) or _subtitle_file_ids.has(int(hit.target))):
-		var kind := "clone" if clone_row else ("audio" if _audio_ids.has(int(hit.target)) else ("files" if _subtitle_file_ids.has(int(hit.target)) else "subtitle"))
+	if not hit.is_empty() and hit.get("enabled", false) and (clone_row or _audio_ids.has(int(hit.target)) or disc_titles.has_row(int(hit.target)) or _subtitle_ids.has(int(hit.target)) or _subtitle_file_ids.has(int(hit.target))):
+		var kind := "clone" if clone_row else ("audio" if _audio_ids.has(int(hit.target)) else ("disc" if disc_titles.has_row(int(hit.target)) else ("files" if _subtitle_file_ids.has(int(hit.target)) else "subtitle")))
 		_track_drag = {"hand": hand, "target": int(hit.target), "plane": control_plane(int(hit.target)), "point": control_point(hit), "kind": kind,
-			"offset": clone_panel.offset if kind == "clone" else (_audio_offset if kind == "audio" else (_subtitle_files_offset if kind == "files" else _subtitle_offset)), "moved": false, "source": str(_state.get("source_uri", ""))}
+			"offset": clone_panel.offset if kind == "clone" else (_audio_offset if kind == "audio" else (disc_titles.offset if kind == "disc" else (_subtitle_files_offset if kind == "files" else _subtitle_offset))), "moved": false, "source": str(_state.get("source_uri", ""))}
 		return true
 	if not hit.is_empty() and hit.get("enabled", false) and _press_quick_icon(hand, int(hit.target)): return true
 	if hit.is_empty(): _icon_tap.clear()
@@ -1470,6 +1494,7 @@ func update_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: 
 					var next := int(_track_drag.offset) + roundi(shift / (ClonePanel.ROW_PITCH if _track_drag.kind == "clone" else 0.075))
 					if _track_drag.kind == "clone": clone_panel.move(next - clone_panel.offset)
 					elif _track_drag.kind == "audio": _scroll_audio(next - _audio_offset)
+					elif _track_drag.kind == "disc": disc_titles.scroll(next - disc_titles.offset)
 					elif _track_drag.kind == "files": _scroll_subtitle_files(next - _subtitle_files_offset)
 					else: _scroll_subtitles(next - _subtitle_offset)
 	choices.update(hand, origin, direction, tracked)
@@ -1530,7 +1555,7 @@ func _bar_key() -> String:
 		_state.get("narration_voice_kind", "preset"), _state.get("narration_custom_voice", ""), _state.get("narration_personal_voices", []), _state.get("narration_voice_warning", ""), _state.get("narration_preview_status", ""), _state.get("narration_clone_state", {}).get("revision", 0)]) + _base_bar_key()
 
 func _base_bar_key() -> String:
-	return _capture_key() + str([_state.get("pip_slots", []), _state.get("pip_count", 0), _state.get("pip_available", true), int(_state.get("audio_whisper", 0)) > 0, _state.get("volume_writable", true), _state.get("whisper_available", false), _state.get("clone_voice", false), _state.get("geometry", 0), _state.get("has_video", false),
+	return str([_state.get("screen_scene_locked", false), _state.get("cinema_lights", "auto")]) + _capture_key() + str([_state.get("pip_slots", []), _state.get("pip_count", 0), _state.get("pip_available", true), int(_state.get("audio_whisper", 0)) > 0, _state.get("volume_writable", true), _state.get("whisper_available", false), _state.get("clone_voice", false), _state.get("geometry", 0), _state.get("has_video", false),
 		_state.get("spatial_video", false), _state.get("error", ""),
 		_state.get("source_uri", ""), _subtitle_tracks(), _state.get("subtitle_track", 0), bookmarks.key(), _state.get("audio_options", []), _state.get("audio_track_id", -1), _state.get("audio_delay", 0.0), _state.get("audio_timing_key", ""),
 		_state.get("subtitle_browse_available", false), _state.get("subtitle_files_available", false), _state.get("subtitle_files_revision", 0), _state.get("subtitle_files_state", "idle"), _state.get("subtitle_file_loading", ""), _state.get("subtitle_file_error", ""), _state.get("subtitle_timing_key", ""),
@@ -1741,7 +1766,7 @@ func _settings_key() -> String:
 		_state.get("playback_mode", "single"), _state.get("screen_curve", 0.0), _state.get("seek_mode", "speed"), _state.get("stereo", false), _state.get("geometry", 0),
 		_state.get("show_fps", false), _state.get("viewing_eye", 0), _state.get("swap_eyes", false),
 		_state.get("spatial_metadata", {}), _state.get("spatial_auto_disparity", true),
-		_state.get("screen_cinema", false),
+		_state.get("screen_cinema", false), _state.get("screen_scene_locked", false), _state.get("cinema_lights", "auto"),
 		_state.get("error", ""), _state.get("error_report", {})])
 
 func _setting_choices(operation: String) -> Dictionary:
@@ -1870,9 +1895,13 @@ func _activate(target: int) -> void:
 	if _subtitle_open and target in [NARRATION_CLONE_START, NARRATION_VOICES]:
 		if not _narration_on() or _state.get("narration_voice_kind", "preset") != "custom" or not _state.get("narration_clone_supported", false): return
 		clone_panel.open(target == NARRATION_VOICES); return
-	if target in [CINEMA_SEAT, CINEMA_MOVE, CINEMA_HOME] and _state.get("screen_scene_locked", false):
-		action_requested.emit({CINEMA_SEAT: "cinema_seat", CINEMA_MOVE: "cinema_move", CINEMA_HOME: "cinema_home"}[target])
-		return
+	if CinemaFeature.enabled() and _state.get("screen_scene_locked", false):
+		if target in [CINEMA_MOVE, CINEMA_HOME]:
+			action_requested.emit("cinema_move" if target == CINEMA_MOVE else "cinema_home"); return
+		if target in [CINEMA_LIGHT_AUTO, CINEMA_LIGHT_ON, CINEMA_LIGHT_OFF, CINEMA_LIGHT_CYCLE]:
+			var modes := ["auto", "on", "off"]
+			var index: int = (modes.find(str(_state.get("cinema_lights", "auto"))) + 1) % 3 if target == CINEMA_LIGHT_CYCLE else target - CINEMA_LIGHT_AUTO
+			action_requested.emit("cinema_lights_" + modes[index]); return
 	if target == WHISPER:
 		if not _volume_hand.is_empty() or not _volume_open or not _state.get("has_video", false) or not _state.get("audio_available", false) or not _state.get("whisper_available", false): return
 		whisper_requested.emit(0 if int(_state.get("audio_whisper", 0)) > 0 else 1, str(_state.get("source_uri", "")))
@@ -1898,7 +1927,7 @@ func _activate(target: int) -> void:
 		or target in range(MODE_LENS, MODE_LENS + LENS_FOVS.size()) or target == MODE_PACKED): return
 	if choices.action(target): return
 	if target >= EYE_BUFFER_NOTE and target < EYE_BUFFER_NOTE + 1000: return
-	bookmarks.opened = false
+	bookmarks.reset()
 	if _settings_popup() and _settings_open() and (target in [11, SETTINGS_CLOSE] or _bar_target(target) or target == MODE):
 		# The bar under the popup: its settings button and close fold settings away; other
 		# controls fold it away and act, like the subtitle and video mode popups.
@@ -1923,6 +1952,11 @@ func _activate(target: int) -> void:
 		section = 2 if target == 12 else 1
 		_adjustment = "screen" if target == SCREEN_SETTINGS else ""
 		refresh()
+		return
+	if section == 0 and disc_titles.activate(target):
+		if disc_titles.opened:
+			_audio_open = false; _subtitle_open = false; _mode_open = false; _volume_open = false; _volume_hand = ""
+			_close_depth_slider(); choices.reset(); refresh()
 		return
 	if section == 0 and target == 111:
 		if not _enabled("audio"): return
@@ -2078,7 +2112,7 @@ func _capture_key() -> String:
 	return str([value.get("available", false), value.get("ready", false), value.get("recording", false), value.get("paused", false), value.get("picture_busy", false), value.get("clip_busy", false), _capture_open])
 
 func _capture_popup_allowed() -> bool:
-	return not _pip_open and section == 0 and _adjustment.is_empty() and not _mode_open and not _subtitle_open and not _audio_open and not _volume_open and not _depth_open and not bookmarks.opened and not _failure_open
+	return not _pip_open and section == 0 and _adjustment.is_empty() and not _mode_open and not _subtitle_open and not _audio_open and not disc_titles.opened and not _volume_open and not _depth_open and not bookmarks.opened and not _failure_open
 
 func _process_capture_hover() -> void:
 	if not visible: return
@@ -2301,13 +2335,19 @@ func _slider_tick(target: int, value: float, label: String, y: float) -> void:
 func _draw_screen_settings() -> void:
 	_settings_drawn = _settings_key()
 	if CinemaFeature.enabled() and _state.get("screen_scene_locked", false):
-		var top := _settings_frame(0.40)
+		var top := _settings_frame(0.49)
 		_draw_settings_tabs(top - 0.055)
-		_label(I18n.t("Grand cinema"), Vector3(0, top - 0.16, 0.004), 20)
-		for option in [[CINEMA_SEAT, "Choose seat"], [CINEMA_MOVE, "Move"], [CINEMA_HOME, "Reset seat"]]:
-			var index: int = [CINEMA_SEAT, CINEMA_MOVE, CINEMA_HOME].find(option[0])
-			_button(option[0], I18n.t(option[1]), Vector2(-0.33 + index * 0.33, top - 0.26), Vector2(0.30, 0.06))
+		_label(I18n.t("Grand cinema (Test)"), Vector3(0, top - 0.16, 0.004), 20)
+		for index in 2:
+			var target: int = [CINEMA_MOVE, CINEMA_HOME][index]
+			_button(target, I18n.t(["Free movement", "Return to start"][index]), Vector2(-.22 + index * .44, top - .25), Vector2(.40, .06))
 			set_label_size(_buttons.back().node.get_child(0), TEXT_BODY)
+			if target == CINEMA_MOVE: _tips[target] = I18n.t("Hold A to aim, release to move. Red targets are blocked.")
+		for index in 3:
+			var mode: String = ["auto", "on", "off"][index]
+			_button(CINEMA_LIGHT_AUTO + index, I18n.t(["Auto lights", "Lights on", "Lights off"][index]), Vector2(-.34 + index * .34, top - .35), Vector2(.31, .06))
+			set_label_size(_buttons.back().node.get_child(0), TEXT_BODY)
+			_buttons.back().base_color = SELECTED if _state.get("cinema_lights", "auto") == mode else TILE
 		choices.finish()
 		return
 	var flat: bool = _state.get("has_video", false) and int(_state.get("geometry", 0)) == 0

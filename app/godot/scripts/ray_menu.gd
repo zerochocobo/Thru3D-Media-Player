@@ -16,6 +16,7 @@ var scene_overlay := false
 static var _overlay_shaders: Dictionary = {}
 const FOLLOW := -1001
 const TEMP_PASSTHROUGH := -1002
+const FREE_MOVEMENT := -1003
 const FOOTER_DIAMETER := 0.09
 const FOOTER_HIT_SIZE := 0.105
 const FOOTER_GAP := 0.025
@@ -317,9 +318,11 @@ func _activate_hit(hit: Dictionary) -> void:
 	_activate(int(hit.target))
 
 func _activate_footer(target: int) -> bool:
-	if target not in [FOLLOW, TEMP_PASSTHROUGH]: return false
+	if target not in [FOLLOW, TEMP_PASSTHROUGH, FREE_MOVEMENT]: return false
 	var state := _session_controls()
-	if target == FOLLOW:
+	if target == FREE_MOVEMENT:
+		if state.get("cinema_visible", false): session_control_requested.emit("cinema_move_toggle")
+	elif target == FOLLOW:
 		session_control_requested.emit("follow")
 	elif state.get("passthrough_visible", false) and not state.get("alpha", false):
 		session_control_requested.emit("temporary_passthrough")
@@ -445,22 +448,27 @@ func refresh_session_controls(force: bool = false) -> void:
 	if not force and state == _footer_state: return
 	_footer_state = state.duplicate()
 	for index in range(_buttons.size() - 1, -1, -1):
-		if _buttons[index].target in [FOLLOW, TEMP_PASSTHROUGH]:
+		if _buttons[index].target in [FOLLOW, TEMP_PASSTHROUGH, FREE_MOVEMENT]:
 			_buttons[index].node.free()
 			_buttons.remove_at(index)
 	var show_passthrough: bool = state.get("passthrough_visible", false)
-	var count := 2 if show_passthrough else 1
+	var show_movement: bool = state.get("cinema_visible", false)
+	var count := 1 + int(show_passthrough) + int(show_movement)
 	var span := count * FOOTER_DIAMETER + (count - 1) * FOOTER_GAP
 	var width := span + FOOTER_GAP + STATUS_WIDTH
 	var left := _footer_centre.x - width * 0.5
+	var follow_left := left + (FOOTER_DIAMETER + FOOTER_GAP if show_movement else 0.0)
 	device_status.position = Vector3(left + span + FOOTER_GAP + STATUS_WIDTH * 0.5, _footer_centre.y, 0.002)
-	_footer_button(FOLLOW, "head_follow", Vector2(left + FOOTER_DIAMETER * 0.5, _footer_centre.y),
+	_footer_button(FOLLOW, "head_follow", Vector2(follow_left + FOOTER_DIAMETER * 0.5, _footer_centre.y),
 		state.get("follow", false), true, I18n.t("Disable follow" if state.get("follow", false) else "Enable follow"))
 	if show_passthrough:
 		var alpha: bool = state.get("alpha", false)
-		_footer_button(TEMP_PASSTHROUGH, "passthrough", Vector2(left + span - FOOTER_DIAMETER * 0.5, _footer_centre.y),
+		_footer_button(TEMP_PASSTHROUGH, "passthrough", Vector2(follow_left + FOOTER_DIAMETER * 1.5 + FOOTER_GAP, _footer_centre.y),
 			state.get("passthrough", false), not alpha, I18n.t("Cannot switch during person passthrough" if alpha else
 			("Disable temporary passthrough" if state.get("passthrough", false) else "Enable temporary passthrough")))
+	if show_movement:
+		_footer_button(FREE_MOVEMENT, "standing", Vector2(left + FOOTER_DIAMETER * .5, _footer_centre.y),
+			state.get("cinema_moving", false), true, I18n.t("Free movement"))
 	_update_highlights()
 
 func _footer_button(target: int, icon: String, centre: Vector2, active: bool, enabled: bool, tip: String) -> void:

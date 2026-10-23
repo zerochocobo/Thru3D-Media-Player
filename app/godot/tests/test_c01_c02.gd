@@ -67,7 +67,7 @@ func _check_export_targets() -> void:
 		if not expected.has(name): continue
 		if expected[name] == "pico":
 			_check("pico" in str(presets.get_value(section, "custom_features", "")).split(","), "PICO export must activate its compatibility settings")
-			_check(ProjectSettings.get_setting("xr/openxr/extensions/hand_interaction_profile.pico", true) == false, "PICO keeps the previously usable controller/joint path")
+			_check(ProjectSettings.get_setting("xr/openxr/extensions/hand_interaction_profile.pico", true) == false, "PICO keeps controller poses: hand interaction profile stays disabled")
 			_check(ProjectSettings.get_setting("xr/openxr/extensions/meta/hand_tracking_aim.pico", true) == false, "PICO keeps joint fallback instead of newly enabled Meta aim")
 		var options := section + ".options"
 		for vendor in ["meta", "pico", "khronos", "androidxr"]:

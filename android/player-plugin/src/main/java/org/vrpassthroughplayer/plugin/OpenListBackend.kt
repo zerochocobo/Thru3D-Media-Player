@@ -262,6 +262,31 @@ internal object OpenListBackend {
             val origin = URI(location)
             return CloudLink(location) { emptyMap() }.also { require(origin.host == "127.0.0.1" && origin.scheme == "http") }
         }
+        fun resolveArchive(file: CloudFile): CloudLink {
+            if (canDelete) return resolve(file) // Consume the existing verified 115 receipt.
+            require(!file.folder && file.size > 0)
+            val receipt=synchronized(this){freshlyFound.also {freshlyFound=null}}
+            if (receipt!=null && receipt.file === file) return CloudLink(receipt.stream){emptyMap()}
+            absolutePath(file.id)
+            val data=call("POST","/archive-stream",JSONObject().put("mount",mount).put("path",file.id)
+                .put("id",file.objectId).put("size",file.size).put("modified",file.modified)).getJSONObject("data")
+            val location=data.getString("stream");val origin=URI(location)
+            require(origin.host=="127.0.0.1" && origin.scheme=="http")
+            return CloudLink(location){emptyMap()}
+        }
+        fun findArchiveForPlayback(path: String, selected: CloudFile?): CloudFile {
+            if (canDelete) return findForPlayback(path,selected)
+            absolutePath(path)
+            val known=selected?.takeIf {it.id==path && !it.folder}
+            val data=call("POST","/archive-stream",JSONObject().put("mount",mount).put("path",path)
+                .put("id",known?.objectId.orEmpty()).put("size",known?.size ?: 0).put("modified",known?.modified ?: -1)).getJSONObject("data")
+            val file=CloudFile(data.getString("name"),false,data.getLong("size"),path,
+                objectId=data.getString("id"),modified=data.optLong("modified",-1))
+            val stream=data.getString("stream");val origin=URI(stream)
+            require(origin.host=="127.0.0.1" && origin.scheme=="http" && file.name==path.substringAfterLast('/') && file.size>0)
+            synchronized(this){freshlyFound=Found(file,Long.MAX_VALUE,stream)}
+            return file
+        }
         private fun playbackTiming(fields: String) {
             if (BuildConfig.DEBUG && PlaybackPrivacy.diagnostics) runCatching {
                 android.util.Log.i("QuestCloudPlayback", "provider=115 $fields")

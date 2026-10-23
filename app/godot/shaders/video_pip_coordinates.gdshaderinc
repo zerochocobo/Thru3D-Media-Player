@@ -1,5 +1,6 @@
 // All coordinates remain per-eye. Cropping happens before packing, rotation and AI masks.
 uniform bool pip_enabled = false;
+uniform vec2 pip_edge_feather = vec2(0.0);
 uniform vec2 pip_center = vec2(0.5);
 uniform vec2 pip_span = vec2(0.333333);
 uniform vec3 pip_forward = vec3(0.0, 0.0, -1.0);

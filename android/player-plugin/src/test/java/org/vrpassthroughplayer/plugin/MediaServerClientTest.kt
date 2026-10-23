@@ -179,6 +179,69 @@ class MediaServerClientTest {
             }
         }
     }
+
+    @Test fun archiveRangesAreBoundedAndContinueAcrossWindows() {
+        val bytes = ByteArray(4096) { (it % 251).toByte() }
+        val ranges = java.util.concurrent.CopyOnWriteArrayList<String>()
+        Fixture { _, headers, _ ->
+            val range = headers.getValue("range"); ranges.add(range)
+            val parts = range.removePrefix("bytes=").split('-')
+            val start = parts[0].toInt(); val end = parts[1].toInt()
+            Reply(206, "Content-Range: bytes $start-$end/${bytes.size}\r\n", bytes.copyOfRange(start,end+1))
+        }.use { fixture ->
+            val account = MediaServerAccount("comic", "Comic", fixture.url, "")
+            HttpRangeStreamSource(account) { MediaStreamLink(URI(fixture.url), "comic") }.boundedRanges(64).use { source ->
+                source.open().use { reader ->
+                    val buffer = ByteArray(80)
+                    assertEquals(64,reader.read(100,buffer,80))
+                    assertArrayEquals(bytes.copyOfRange(100,164),buffer.copyOf(64))
+                    assertEquals(64,reader.read(164,buffer,80))
+                }
+            }
+            assertEquals(listOf("bytes=0-0","bytes=100-163","bytes=164-227"),ranges.toList())
+        }
+    }
+    @Test fun archiveHttpLocalRangesDoNotOverfetchTheBoundedEnd() {
+        val ranges=java.util.concurrent.CopyOnWriteArrayList<String>()
+        Fixture {_,headers,_->
+            val range=headers.getValue("range");ranges.add(range)
+            val parts=range.removePrefix("bytes=").split('-');val start=parts[0].toInt();val end=parts[1].toInt()
+            Reply(206,"Content-Range: bytes $start-$end/10000000\r\n",ByteArray(end-start+1))
+        }.use {fixture ->
+            val account=MediaServerAccount("comic","Comic",fixture.url,"")
+            val source=HttpRangeStreamSource(account){MediaStreamLink(URI(fixture.url),"book")}.boundedRanges(1024*1024).forArchiveReading()
+            LocalStreamServer().use {local ->
+                val location=local.publish(source,"book.cbz")
+                val request=URI(location).toURL().openConnection() as java.net.HttpURLConnection
+                request.setRequestProperty("Range","bytes=1000-1999")
+                try {assertEquals(206,request.responseCode);assertEquals(1000,request.inputStream.use {it.readBytes()}.size)}
+                finally {request.disconnect()}
+            }
+            assertEquals(listOf("bytes=0-0","bytes=1000-1999"),ranges.toList())
+        }
+    }
+
+    @Test fun aNewArchiveHttpReaderCancelsTheOldOneBeforeAnotherRequest() {
+        val requests=AtomicInteger()
+        Fixture {_,headers,_->
+            requests.incrementAndGet();val parts=headers.getValue("range").removePrefix("bytes=").split('-')
+            val start=parts[0].toInt();val end=parts[1].toInt()
+            Reply(206,"Content-Range: bytes $start-$end/10\r\n",ByteArray(end-start+1))
+        }.use {fixture ->
+            val source=HttpRangeStreamSource(MediaServerAccount("comic","Comic",fixture.url,"")){
+                MediaStreamLink(URI(fixture.url),"book")}.boundedRanges(64).forArchiveReading()
+            source.use {
+                val obsolete=source.open()
+                source.open().use {latest ->
+                    assertThrows(MediaServerFailure::class.java){obsolete.read(0,ByteArray(10),10)}
+                    assertEquals(10,latest.read(0,ByteArray(10),10))
+                }
+                obsolete.close()
+            }
+            assertEquals(2,requests.get()) // One capability probe, one selected range.
+        }
+    }
+
     @Test fun embyAndJellyfinLoginBrowseChaptersAndDirectStream() {
         for (provider in listOf("emby", "jellyfin")) {
             val failures = java.util.concurrent.ConcurrentLinkedQueue<String>()

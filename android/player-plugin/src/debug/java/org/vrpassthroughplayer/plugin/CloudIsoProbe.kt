@@ -70,8 +70,9 @@ internal object CloudIsoProbe {
                             item.put("stage", "native_preflight")
                             save()
                             try {
-                                val disc = MpvSourceNative.probeIso(url)
-                                item.put("disc", JSONArray(disc.toList())).put("passed", true)
+                                val disc = JSONObject(MpvSourceNative.probeDisc(url, -1))
+                                item.put("disc", JSONArray(listOf(disc.getLong("width"), disc.getLong("height"), disc.getLong("duration_us"),
+                                    if (disc.getBoolean("mvc")) 1L else 0L))).put("titles", disc.getJSONArray("titles").length()).put("passed", true)
                             } catch (e: Exception) { item.put("error", e.message).put("passed", false) }
                         } finally { server.revoke(url) }
                     }

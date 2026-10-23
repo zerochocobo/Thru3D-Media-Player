@@ -23,9 +23,10 @@ import (
 
 type playbackProxyFixture struct {
 	deletionFixture
-	origin   string
-	links    atomic.Int32
-	rotating bool
+	origin     string
+	links      atomic.Int32
+	rotating   bool
+	expiration *time.Duration
 }
 
 func (d *playbackProxyFixture) Get(context.Context, string) (model.Obj, error) {
@@ -35,6 +36,9 @@ func (d *playbackProxyFixture) List(context.Context, model.Obj, model.ListArgs) 
 	panic("proxy enumerated a directory")
 }
 func (d *playbackProxyFixture) Link(_ context.Context, obj model.Obj, args model.LinkArgs) (*model.Link, error) {
+	if args.Header.Get("X-Thru3D-Archive-Read") != "" {
+		return nil, errors.New("internal archive policy reached provider")
+	}
 	if obj.GetID() != "9" || obj.ModTime().Unix() != 0 || args.Header.Get("User-Agent") != "fixture-player" {
 		return nil, errors.New("wrong identity or user agent")
 	}
@@ -43,7 +47,7 @@ func (d *playbackProxyFixture) Link(_ context.Context, obj model.Obj, args model
 	if d.rotating {
 		origin += "?ticket=" + strconv.Itoa(int(ticket))
 	}
-	return &model.Link{URL: origin, Header: http.Header{"User-Agent": []string{"provider-agent"}}}, nil
+	return &model.Link{URL: origin, Header: http.Header{"User-Agent": []string{"provider-agent"}}, Expiration: d.expiration}, nil
 }
 
 func TestBoundPlaybackProxyColdRangesUseOnlySelectedIdentityEvenWithoutTimestamp(t *testing.T) {
@@ -323,5 +327,82 @@ func TestCdnConnectionLimitDoesNotInvalidateTheVerifiedDownloadTicket(t *testing
 	}
 	if d.links.Load() != 1 || len(lease.links) != 1 {
 		t.Fatal("connection quota triggered a credential/ticket refresh")
+	}
+}
+
+func TestArchivePlaybackUsesOneTicketPastTheVideoRefreshPeriod(t *testing.T) {
+	payload := bytes.Repeat([]byte("0123456789abcdef"), 32)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Thru3D-Archive-Read") != "" {
+			t.Error("internal archive policy reached CDN")
+		}
+		http.ServeContent(w, r, "film.mp4", time.Unix(0, 0), bytes.NewReader(payload))
+	}))
+	defer upstream.Close()
+	expiration := 2 * time.Hour
+	d := &playbackProxyFixture{origin: upstream.URL, expiration: &expiration}
+	file := &model.Object{ID: "9", Name: "film.mp4", Size: int64(len(payload)), Modified: time.Unix(0, 0)}
+	handler, uri, lease := playbackRecoveryHandler(t, d, file)
+	read := func() {
+		r := httptest.NewRequest("GET", uri, nil)
+		r.Header.Set("User-Agent", "fixture-player")
+		r.Header.Set("X-Thru3D-Archive-Read", "1")
+		r.Header.Set("Range", "bytes=42-103")
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+		if w.Code != 206 || !bytes.Equal(w.Body.Bytes(), payload[42:104]) {
+			t.Fatalf("archive read failed %d", w.Code)
+		}
+	}
+	read()
+	lease.mu.Lock()
+	previous := lease.links["fixture-player"]
+	if time.Until(previous.archiveExpires) < time.Hour {
+		t.Fatal("provider expiry was replaced by the short video TTL")
+	}
+	previous.expires = time.Now().Add(-time.Minute)
+	lease.links["fixture-player"] = previous
+	lease.mu.Unlock()
+	for i := 0; i < 24; i++ {
+		read()
+	}
+	if d.links.Load() != 1 {
+		t.Fatal("archive page/idle refresh reissued a valid download ticket", d.links.Load())
+	}
+	lease.mu.Lock()
+	previous = lease.links["fixture-player"]
+	previous.archiveExpires = time.Now().Add(-time.Second)
+	lease.links["fixture-player"] = previous
+	lease.mu.Unlock()
+	read()
+	read()
+	if d.links.Load() != 2 {
+		t.Fatal("real expiry did not refresh exactly once", d.links.Load())
+	}
+	t.Logf("archive_ranges=27 ticket_requests=%d (one initial + one actual expiry)", d.links.Load())
+}
+
+func TestCdnRateLimitDoesNotDiscardAnArchiveDownloadTicket(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(403)
+		w.Write([]byte(`{"message":"too many requests"}`))
+	}))
+	defer upstream.Close()
+	d := &playbackProxyFixture{origin: upstream.URL}
+	file := &model.Object{ID: "9", Name: "film.mp4", Size: 1000, Modified: time.Unix(0, 0)}
+	handler, uri, lease := playbackRecoveryHandler(t, d, file)
+	for i := 0; i < 2; i++ {
+		r := httptest.NewRequest("GET", uri, nil)
+		r.Header.Set("User-Agent", "fixture-player")
+		r.Header.Set("X-Thru3D-Archive-Read", "1")
+		r.Header.Set("Range", "bytes=0-0")
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+		if w.Code != 403 || w.Header().Get("X-Thru3D-Upstream-Reason") != "cdn_rate_limited" {
+			t.Fatal(w.Code, w.Header())
+		}
+	}
+	if d.links.Load() != 1 || len(lease.links) != 1 {
+		t.Fatal("rate limit caused a new provider ticket", d.links.Load())
 	}
 }

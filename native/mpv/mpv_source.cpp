@@ -279,6 +279,7 @@ struct Source final {
     jobject layer_surface = nullptr; // global reference, deleted with the source
     bool software_layer = false;
     bool iso_input = false;
+    int iso_playlist = -1; // explicit Blu-ray title; -1 keeps the longest, -2 plays the disc's HDMV menu
     int layer_width = 4096, layer_height = 4096;
     JavaVM* vm = nullptr;
     bool layer() const { return layer_surface != nullptr; }
@@ -660,7 +661,19 @@ struct Source final {
             }
             // Enabled only after the bounded MP4 index probe identified <=128 MiB
             // of almost the entire audio track before video, never for ordinary interleaving.
-            if (network_interleave_compat) option("demuxer-lavf-o", "interleaved_read=no");
+            {
+                std::string lavf;
+                if (network_interleave_compat) lavf = "interleaved_read=no";
+                if (iso_input && iso_playlist >= 0) lavf += (lavf.empty() ? "" : ",") + std::string("playlist=") + std::to_string(iso_playlist);
+                if (iso_input && iso_playlist == -2) lavf += (lavf.empty() ? "" : ",") + std::string("menu=1");
+                if (!lavf.empty()) option("demuxer-lavf-o", lavf.c_str());
+            }
+            if (iso_input && iso_playlist == -2) {
+                // Menu graphics follow navigation reads: keep reading close to what
+                // is shown, and a still menu is waiting, not buffering.
+                option("cache", "no"); option("cache-pause", "no");
+                option("demuxer-readahead-secs", "0.5"); option("demuxer-max-bytes", "16MiB");
+            }
             option("network-timeout", "30");
             option("tls-verify", "yes");
             if (!tls_ca_file.empty()) option("tls-ca-file", tls_ca_file.c_str());
@@ -1480,19 +1493,22 @@ extern "C" JNIEXPORT jlong JNICALL
 Java_org_vrpassthroughplayer_plugin_MpvSourceNative_captureOwner(JNIEnv*, jclass, jlong handle) {
     try { return find(handle)->capture_owner.load(); } catch (...) { return 0; }
 }
-extern "C" JNIEXPORT jlongArray JNICALL
-Java_org_vrpassthroughplayer_plugin_MpvSourceNative_probeIso(JNIEnv* env, jclass, jstring path) {
+extern "C" JNIEXPORT jstring JNICALL
+Java_org_vrpassthroughplayer_plugin_MpvSourceNative_probeDisc(JNIEnv* env, jclass, jstring path, jint playlist) {
     try {
         require(path != nullptr, "Blu-ray image path missing");
+        require(playlist >= -1 && playlist <= 99999, "Blu-ray title out of range");
         const char* chars = env->GetStringUTFChars(path, nullptr);
         require(chars != nullptr, "Blu-ray image path unavailable");
         std::string file(chars); env->ReleaseStringUTFChars(path, chars);
         if (file.rfind("fd://", 0) == 0) file = "/proc/self/fd/" + file.substr(5);
-        using Probe = int (*)(const char*, int*, int*, int64_t*, int*);
-        auto probe = reinterpret_cast<Probe>(dlsym(RTLD_DEFAULT, "avformat_thru3d_bd_probe"));
+        using Probe = int (*)(const char*, int, int*, int*, int64_t*, int*, int*, char*, int);
+        auto probe = reinterpret_cast<Probe>(dlsym(RTLD_DEFAULT, "avformat_thru3d_bd_titles"));
         require(probe != nullptr, "Blu-ray decoder build unavailable");
-        int width = 0, height = 0, mvc = 0; int64_t duration = 0;
-        const int probe_result = probe(file.c_str(), &width, &height, &duration, &mvc);
+        int width = 0, height = 0, mvc = 0, selected = -1; int64_t duration = 0;
+        std::vector<char> titles(16384);
+        const int probe_result = probe(file.c_str(), playlist, &width, &height, &duration, &mvc, &selected,
+                                       titles.data(), static_cast<int>(titles.size()));
         if (probe_result < 0) {
             char reason[192] = {};
             using ErrorText = int (*)(int, char*, size_t);
@@ -1503,19 +1519,53 @@ Java_org_vrpassthroughplayer_plugin_MpvSourceNative_probeIso(JNIEnv* env, jclass
         }
         require(width > 0 && width <= 8192 && height > 0 && height <= 4320 && duration > 0,
                 "Blu-ray video dimensions invalid");
-        jlong values[] = {width, height, duration, mvc};
-        auto result = env->NewLongArray(4);
-        require(result != nullptr, "Blu-ray preflight allocation failed");
-        env->SetLongArrayRegion(result, 0, 4, values);
+        // Fixed numeric fields plus the demuxer's own bounded {"menu":..,"titles":[..]} object.
+        std::string disc(titles.data());
+        require(disc.size() >= 2 && disc.front() == '{' && disc.back() == '}', "Blu-ray title list invalid");
+        const auto json = "{\"width\":" + std::to_string(width) + ",\"height\":" + std::to_string(height) +
+            ",\"duration_us\":" + std::to_string(duration) + ",\"mvc\":" + (mvc ? "true" : "false") +
+            ",\"playlist\":" + std::to_string(selected) + "," + disc.substr(1);
+        return env->NewStringUTF(json.c_str());
+    } catch (const std::exception& failure) { error(env, failure); return nullptr; }
+}
+// The playing HDMV menu session lives inside the demuxer; these reach it directly.
+extern "C" JNIEXPORT jstring JNICALL
+Java_org_vrpassthroughplayer_plugin_MpvSourceNative_discMenuState(JNIEnv* env, jclass) {
+    using State = int (*)(char*, int);
+    auto state = reinterpret_cast<State>(dlsym(RTLD_DEFAULT, "avformat_thru3d_bd_menu_state"));
+    char json[512] = "{\"active\":false}";
+    if (state && state(json, sizeof(json)) < 0) snprintf(json, sizeof(json), "{\"active\":false}");
+    return env->NewStringUTF(json);
+}
+/** rect receives x, y, width, height, plane width, plane height; empty when unchanged or blank. */
+extern "C" JNIEXPORT jbyteArray JNICALL
+Java_org_vrpassthroughplayer_plugin_MpvSourceNative_discMenuOverlay(JNIEnv* env, jclass, jlong version, jintArray rect) {
+    try {
+        require(rect != nullptr && env->GetArrayLength(rect) == 6 && version >= 0, "Disc menu overlay request invalid");
+        using Overlay = int (*)(uint64_t, uint8_t*, int, int*);
+        auto overlay = reinterpret_cast<Overlay>(dlsym(RTLD_DEFAULT, "avformat_thru3d_bd_menu_overlay"));
+        require(overlay != nullptr, "Blu-ray decoder build unavailable");
+        static thread_local std::vector<uint8_t> pixels(1920 * 1080 * 4);
+        int area[6] = {};
+        const int bytes = overlay(static_cast<uint64_t>(version), pixels.data(), static_cast<int>(pixels.size()), area);
+        env->SetIntArrayRegion(rect, 0, 6, area);
+        auto result = env->NewByteArray(bytes > 0 ? bytes : 0);
+        if (result && bytes > 0) env->SetByteArrayRegion(result, 0, bytes, reinterpret_cast<const jbyte*>(pixels.data()));
         return result;
     } catch (const std::exception& failure) { error(env, failure); return nullptr; }
+}
+extern "C" JNIEXPORT jint JNICALL
+Java_org_vrpassthroughplayer_plugin_MpvSourceNative_discMenuInput(JNIEnv*, jclass, jint kind, jint x, jint y) {
+    using Input = int (*)(int, int, int);
+    auto input = reinterpret_cast<Input>(dlsym(RTLD_DEFAULT, "avformat_thru3d_bd_menu_input"));
+    return input && kind >= 0 && kind <= 8 ? input(kind, x, y) : -1;
 }
 extern "C" JNIEXPORT jlong JNICALL
 Java_org_vrpassthroughplayer_plugin_MpvSourceNative_create(JNIEnv* env, jclass, jobject context, jstring path, jint start,
                                                          jboolean hardware, jboolean audio, jint max_width, jobjectArray audio_files,
                                                          jobjectArray subtitle_files, jboolean exact_start, jobject surface,
                                                          jboolean software_layer, jint layer_width, jint layer_height, jboolean iso_input,
-                                                         jstring ca_file, jboolean interleave_compat) {
+                                                         jstring ca_file, jboolean interleave_compat, jint iso_playlist) {
     try {
         require(extension_available(), "MPV source requires the verified private source-frame build");
         require(path && start >= 0, "Invalid MPV local source request");
@@ -1538,6 +1588,7 @@ Java_org_vrpassthroughplayer_plugin_MpvSourceNative_create(JNIEnv* env, jclass, 
         require(local || descriptor || network, "MPV source requires a local path, owned descriptor or HTTP media URL");
         require(interleave_compat != JNI_TRUE || (network && audio == JNI_TRUE), "MPV interleave compatibility requires network audio/video");
         require(max_width >= 0 && max_width <= 8192, "MPV output width cap out of range");
+        require(iso_playlist >= -2 && iso_playlist <= 99999 && (iso_playlist == -1 || iso_input == JNI_TRUE), "Blu-ray title out of range");
         require(layer_width > 0 && layer_width <= 8192 && layer_height > 0 && layer_height <= 8192,
                 "Compositor surface dimensions out of range");
         // Alternating location/title; locations follow the same rules as the video itself.
@@ -1554,6 +1605,7 @@ Java_org_vrpassthroughplayer_plugin_MpvSourceNative_create(JNIEnv* env, jclass, 
                 software_layer == JNI_TRUE, layer_width, layer_height, iso_input == JNI_TRUE, std::move(tls_ca_file), interleave_compat == JNI_TRUE);
         } catch (...) { if (layer_surface) env->DeleteGlobalRef(layer_surface); throw; }
         source->max_output_width.store(max_width); // before any render; fixed for this source
+        source->iso_playlist = iso_playlist;
         std::lock_guard<std::mutex> lock(registry_mutex);
         require(registry.size() < 2 && next_handle < std::numeric_limits<jlong>::max(), "MPV source capacity exhausted");
         const auto id = ++next_handle; source->start(); registry.emplace(id, std::move(source)); return id;

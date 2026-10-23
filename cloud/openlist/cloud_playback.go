@@ -38,9 +38,10 @@ type cloudPlaybackLinks struct {
 	links map[string]cloudPlaybackLink
 }
 type cloudPlaybackLink struct {
-	url     string
-	header  http.Header
-	expires time.Time
+	url            string
+	header         http.Header
+	expires        time.Time
+	archiveExpires time.Time
 }
 
 var cloudPlaybackLeases = struct {
@@ -49,7 +50,11 @@ var cloudPlaybackLeases = struct {
 }{items: map[string]*cloudPlaybackLease{}}
 
 func playbackLeaseURL(storage driver.Driver, mount, remote string, file model.Obj) (string, error) {
-	if streamBase == "" || file == nil || file.IsDir() || !cloudID.MatchString(file.GetID()) || file.GetSize() <= 0 {
+	return boundPlaybackLeaseURL(storage, mount, remote, file, false)
+}
+
+func boundPlaybackLeaseURL(storage driver.Driver, mount, remote string, file model.Obj, archive bool) (string, error) {
+	if streamBase == "" || file == nil || file.IsDir() || (!archive && !cloudID.MatchString(file.GetID())) || file.GetSize() <= 0 {
 		return "", errors.New("playback stream unavailable")
 	}
 	key := searchKey()
@@ -64,7 +69,7 @@ func playbackLeaseURL(storage driver.Driver, mount, remote string, file model.Ob
 		if now.Sub(lease.created) >= 24*time.Hour {
 			delete(cloudPlaybackLeases.items, id)
 		} else if lease.storage == storage && lease.mount == mount && lease.remote == remote &&
-			lease.file.GetID() == file.GetID() && lease.file.GetSize() == file.GetSize() && lease.file.GetName() == file.GetName() {
+			lease.file.GetID() == file.GetID() && lease.file.GetSize() == file.GetSize() && lease.file.GetName() == file.GetName() && lease.file.ModTime().Equal(file.ModTime()) {
 			shared = lease.cloudPlaybackLinks
 		}
 	}
@@ -82,17 +87,29 @@ func playbackLeaseURL(storage driver.Driver, mount, remote string, file model.Ob
 	}
 	cloudPlaybackLeases.items[key] = &cloudPlaybackLease{storage: storage, mount: mount, remote: remote, file: file, created: now, cloudPlaybackLinks: shared}
 	u := url.URL{Path: "/" + file.GetName()}
-	return streamBase + "-115/" + key + u.EscapedPath(), nil
+	prefix := "-115/"
+	if archive {
+		prefix = "-archive/"
+	}
+	return streamBase + prefix + key + u.EscapedPath(), nil
 }
 
 func (lease *cloudPlaybackLease) link(ctx context.Context, header http.Header) (*model.Link, error) {
 	lease.mu.Lock()
 	defer lease.mu.Unlock()
 	ua := header.Get("User-Agent")
-	if cached, ok := lease.links[ua]; ok && time.Now().Before(cached.expires) {
-		return &model.Link{URL: cached.url, Header: cached.header.Clone()}, nil
+	if cached, ok := lease.links[ua]; ok {
+		expires := cached.expires
+		if header.Get("X-Thru3D-Archive-Read") == "1" {
+			expires = cached.archiveExpires
+		}
+		if time.Now().Before(expires) {
+			return &model.Link{URL: cached.url, Header: cached.header.Clone()}, nil
+		}
 	}
-	link, err := lease.storage.Link(ctx, lease.file, model.LinkArgs{Header: header})
+	providerHeader := header.Clone()
+	providerHeader.Del("X-Thru3D-Archive-Read")
+	link, err := lease.storage.Link(ctx, lease.file, model.LinkArgs{Header: providerHeader})
 	if err != nil {
 		return nil, err
 	}
@@ -105,13 +122,20 @@ func (lease *cloudPlaybackLease) link(ctx context.Context, header http.Header) (
 		return nil, errors.New("invalid native playback origin")
 	}
 	expires := time.Now().Add(2 * time.Minute)
+	// Archive ranges reuse the ticket for the driver's declared cache lifetime. When
+	// none is supplied, an explicit auth denial invalidates it; the capability
+	// itself remains bounded to 24 hours and its account/object identity.
+	archiveExpires := time.Now().Add(24 * time.Hour)
+	if link.Expiration != nil && *link.Expiration < 24*time.Hour {
+		archiveExpires = time.Now().Add(*link.Expiration)
+	}
 	if link.Expiration != nil && *link.Expiration < 2*time.Minute {
 		expires = time.Now().Add(*link.Expiration)
 	}
 	if len(lease.links) >= 4 {
 		clear(lease.links)
 	}
-	lease.links[ua] = cloudPlaybackLink{url: link.URL, header: link.Header.Clone(), expires: expires}
+	lease.links[ua] = cloudPlaybackLink{url: link.URL, header: link.Header.Clone(), expires: expires, archiveExpires: archiveExpires}
 	return &model.Link{URL: link.URL, Header: link.Header.Clone()}, nil
 }
 
@@ -142,15 +166,17 @@ func servePlayback115(c *gin.Context, resolve func(string) (driver.Driver, strin
 		return
 	}
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 15*time.Second)
+	archiveRead := c.Request.Header.Get("X-Thru3D-Archive-Read") == "1"
 	link, err := lease.link(ctx, c.Request.Header)
-	cancel() // Only link lookup is bounded here; media may stream for hours.
+	c.Request.Header.Del("X-Thru3D-Archive-Read") // Internal policy never goes to the provider.
+	cancel()                                      // Only link lookup is bounded here; media may stream for hours.
 	if err != nil {
 		c.Status(http.StatusBadGateway)
 		return
 	}
 	defer link.Close()
 	selectedURL := link.URL
-	if storage.GetStorage().ProxyRange {
+	if storage.GetStorage().ProxyRange && !archiveRead {
 		link = common.ProxyRange(c, link, lease.file.GetSize())
 	}
 	writer := &common.WrittenResponseWriter{ResponseWriter: c.Writer}
@@ -164,7 +190,7 @@ func servePlayback115(c *gin.Context, resolve func(string) (driver.Driver, strin
 			status = int(upstream)
 		}
 		reason, message := readDenial(err)
-		if (status == http.StatusUnauthorized || status == http.StatusForbidden || status == http.StatusGone) && reason != "cdn_connections_limited" {
+		if (status == http.StatusUnauthorized || status == http.StatusForbidden || status == http.StatusGone) && reason != "cdn_connections_limited" && reason != "cdn_rate_limited" {
 			lease.invalidate(c.Request.Header, selectedURL)
 		}
 		recordReadDiagnostic(status, reason, message, link.Header.Get("User-Agent") == c.Request.Header.Get("User-Agent"))
@@ -178,4 +204,7 @@ func playback115Routes(streams *gin.Engine, capability string) {
 	base := "/" + strings.TrimPrefix(capability, "/") + "-115/:lease/*name"
 	streams.GET(base, playback115Proxy)
 	streams.HEAD(base, playback115Proxy)
+	archive := "/" + strings.TrimPrefix(capability, "/") + "-archive/:lease/*name"
+	streams.GET(archive, playback115Proxy)
+	streams.HEAD(archive, playback115Proxy)
 }

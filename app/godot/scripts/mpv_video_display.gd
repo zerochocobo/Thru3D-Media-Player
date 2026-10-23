@@ -22,6 +22,10 @@ const Thumbnails := preload("res://scripts/thumbnail_cache.gd")
 const Binding := preload("res://scripts/pair_texture_binding.gd")
 const PlaybackControl := preload("res://scripts/playback_control.gd")
 const SeekPolicy := preload("res://scripts/seek_policy.gd")
+const DiscTitles := preload("res://scripts/disc_titles.gd")
+var disc := DiscTitles.new()
+const DiscMenu := preload("res://scripts/disc_menu.gd")
+var disc_menu := DiscMenu.new()
 var seek_mode := SeekPolicy.SPEED
 var bookmark_seek_mode := SeekPolicy.GLOBAL
 var _last_seek_mode := SeekPolicy.SPEED
@@ -50,6 +54,7 @@ var _bookmark_scope_sequence := 0
 var _bookmark_cache_revision := -1
 var _bookmark_rows: Array = []
 var bookmark_last_added: Dictionary = {}
+var bookmark_loop := preload("res://scripts/bookmark_loop.gd").new(self)
 const Naming := preload("res://scripts/media_naming.gd")
 const AUTOMATIC_PROFILE := "320x320"
 const PROFILES := ["320x320", "384x216", "512x288", "384x384", "512x512", "256x144", "256x256"]
@@ -735,11 +740,13 @@ func open_local(uri: String, title: String, start_ms: int = 0, restore_mode: boo
 	_last_seek_mode = SeekPolicy.normalize(seek_mode)
 	# The cover comes from a displayed frame (never a second decoder). The layer has none to read, so a
 	# layer session leaves it to the next eye-buffer session (Alpha, 3D, effects) instead of switching.
-	var layer := _layer_wanted() and not _eye_buffer_only and uri != _layer_blocked_uri
+	# A disc menu draws its buttons over the eye-buffer picture; it is not a detour to return from.
+	var disc_menu_open := disc.menu_requested(uri)
+	var layer := _layer_wanted() and not _eye_buffer_only and uri != _layer_blocked_uri and not disc_menu_open
 	_layer_alpha_host = layer and alpha_requested and _layer_alpha()
 	# Opened in the eye buffers only for a setting of the moment (colour grade, 3D, Alpha): go to the
 	# layer once that setting is undone, as a session moved off the layer does.
-	if not layer and not _eye_buffer_only and uri != _layer_blocked_uri and layer_enabled \
+	if not layer and not _eye_buffer_only and not disc_menu_open and uri != _layer_blocked_uri and layer_enabled \
 		and video_layer != null and video_layer.available():
 		_layer_return_uri = uri
 	_eye_buffer_only = false
@@ -757,6 +764,8 @@ func open_local(uri: String, title: String, start_ms: int = 0, restore_mode: boo
 		platform.set_mpv_video_layer(layer)
 	if PlatformMethods.supports(platform, "set_mpv_interleave_compat"):
 		platform.set_mpv_interleave_compat(network_interleave)
+	disc.before_open(platform, uri, not restore_mode, restore_mode and recent_files.lookup(uri).is_empty())
+	disc_menu.reset()
 	var id: int = platform.open_mpv_video(uri, maxi(start_ms, 0), stereo_sbs, profile, alpha_requested, true, depth_requested,
 		stereo_sbs and top_bottom, SeekPolicy.normalize(seek_mode) == SeekPolicy.EXACT)
 	media.begin(id)
@@ -834,6 +843,7 @@ func close_video() -> void:
 	_apply_stereo_view()
 	media.format.erase("spatial_video")
 	_bookmark_scope_sequence += 1
+	bookmark_loop.reset()
 	_bookmark_media_id = ""
 	_bookmark_metadata.clear()
 	_bookmark_rows.clear()
@@ -920,7 +930,8 @@ func discard_file_settings() -> void:
 
 func _record_history(force: bool = false) -> void:
 	if recent_files.suppressed.has(ModeMemory.key_for(local_uri)): return
-	if not history_enabled or not _remember_file or not media.accepts(media.session_id) or media.last_pair.is_empty() \
+	# An extra title of a Blu-ray disc keeps the main title's resume position.
+	if not history_enabled or not _remember_file or disc.extra() or not media.accepts(media.session_id) or media.last_pair.is_empty() \
 		or not media.last_pair.get("source_pts_verified", false) or not panel.visible:
 		return
 	var pair: Dictionary = media.last_pair
@@ -1272,6 +1283,94 @@ func set_audio_options(track_id: int, volume: float, muted: bool) -> bool:
 	return true
 
 ## An explicit menu choice wins over automatic dubbing, including before the first frame.
+## Plays another title of the open Blu-ray disc from its start; the main title
+## resumes where it was left.
+func select_disc_title(playlist: int) -> bool:
+	if local_uri.is_empty() or local_uri != disc.uri or (playlist == disc.playing and not disc.menu_session) or \
+		not disc.titles.any(func(row): return int(row.playlist) == playlist):
+		return false
+	if not disc.extra(): _record_history(true)
+	var position := 0
+	if playlist == disc.main and history_enabled and _remember_file:
+		position = maxi(0, int(recent_files.lookup(local_uri).get("position_ms", 0)))
+	_open_disc_title(playlist, position)
+	return true
+
+func _open_disc_title(playlist: int, position_ms: int, disc_tracks: Dictionary = {}) -> void:
+	disc.request(local_uri, playlist)
+	# A menu session ran in the eye buffers; a title may return to the compositor layer.
+	_reopen_at(position_ms, true if disc.menu_session else (_layer_session or _layer_requested))
+	# The disc menu's language choice replaces the menu session's own track state.
+	_disc_tracks = {}
+	for channel in ["audio", "subtitle"]:
+		var choice := int(disc_tracks.get(channel + "_index", -1))
+		if choice >= 0 or (channel == "subtitle" and choice == -2):
+			_disc_tracks[channel] = choice
+			_track_restore.erase(channel); _track_choices.erase(channel)
+	if _disc_tracks.has("subtitle"): _subtitle_auto_pending = false
+	_disc_tracks_deadline_ms = Time.get_ticks_msec() + 15000
+
+## Selects the tracks a disc menu chose once listed: the N-th disc track of that type.
+var _disc_tracks := {}
+var _disc_tracks_deadline_ms := 0
+func _apply_disc_tracks() -> void:
+	if _disc_tracks.is_empty() or not media.accepts(media.session_id): return
+	if Time.get_ticks_msec() > _disc_tracks_deadline_ms: _disc_tracks = {}; return
+	for channel in _disc_tracks.keys():
+		var choice := int(_disc_tracks[channel])
+		if channel == "subtitle" and choice == -2:
+			if set_subtitle_track(0, false): _disc_tracks.erase(channel)
+			continue
+		var disc_tracks := _raw_tracks(channel).filter(func(track): return not track.get("external", false))
+		disc_tracks.sort_custom(func(a, b): return int(a.get("stream_index", 0)) < int(b.get("stream_index", 0)))
+		if choice >= disc_tracks.size(): continue
+		var id := int(disc_tracks[choice].id)
+		if (set_audio_options(id, audio_volume, audio_muted) if channel == "audio" else set_subtitle_track(id, false)):
+			_disc_tracks.erase(channel)
+
+## Leaves a disc menu for the main title: where it was left, or from its start.
+func play_disc_main(from_start: bool) -> bool:
+	if not disc.menu_session or disc.main < 0: return false
+	if not from_start: return select_disc_title(disc.main)
+	_open_disc_title(disc.main, 0)
+	return true
+
+## The disc's own HDMV menu, decoded for the eye buffers so its button plane
+## draws over the picture like a PGS cue.
+func open_disc_menu() -> bool:
+	if local_uri.is_empty() or local_uri != disc.uri or not disc.menu_available() or disc.menu_session: return false
+	if not disc.extra(): _record_history(true)
+	disc.request(local_uri, DiscTitles.MENU)
+	_reopen_at(0, false)
+	return true
+
+func _poll_disc_menu(now_ms: int) -> void:
+	if not disc.menu_session or not media.accepts(media.session_id): return
+	if disc_menu.poll(platform, now_ms): changed.emit()
+	var start := disc_menu.handoff(disc.titles, now_ms)
+	if not start.is_empty(): _open_disc_title(int(start.playlist), int(start.position_ms), start)
+
+## Screen UV (0..1 from the top left) under a ray on the flat or curved screen, or null.
+func screen_uv(origin: Vector3, direction: Vector3) -> Variant:
+	var hit: Variant = screen_hit(origin, direction)
+	if hit == null: return null
+	var local: Vector3 = panel.to_local(hit)
+	var u := local.x / _flat.size.x + 0.5
+	if screen_curve > 0.0:
+		var radius := _curve_radius()
+		u = atan2(local.x, radius - local.z) * radius / _flat.size.x + 0.5
+	return Vector2(u, 0.5 - local.y / _flat.size.y)
+
+## The menu's buttons occupy its plane's drawn area; elsewhere the screen keeps its usual input.
+func disc_menu_uv(origin: Vector3, direction: Vector3) -> Variant:
+	if not disc.menu_session or disc_menu.bitmap.is_empty() or geometry != Geometry.Geometry.FLAT: return null
+	var uv: Variant = screen_uv(origin, direction)
+	if uv == null: return null
+	var b := disc_menu.bitmap
+	var area := Rect2(float(b.x) / float(b.canvas_width), float(b.y) / float(b.canvas_height),
+		float(b.width) / float(b.canvas_width), float(b.height) / float(b.canvas_height))
+	return uv if area.has_point(uv) else null
+
 func select_audio_track(track_id: int) -> bool:
 	if not captures.recording.is_empty(): captures.stop()
 	if not set_audio_options(track_id, audio_volume, audio_muted): return false
@@ -1307,9 +1406,11 @@ func cycle_audio_track(direction: int = 1) -> bool:
 	var index := choices.find(current)
 	return select_audio_track(choices[posmod(index + direction, choices.size())])
 
-func seek_absolute(position_ms: int, mode: String = "") -> bool:
+func seek_absolute(position_ms: int, mode: String = "", loop_return: bool = false) -> bool:
 	if not platform or not media.accepts(media.session_id):
 		return false
+	if not loop_return: bookmark_loop.manual_seek(position_ms)
+	if bookmark_loop.active: mode = SeekPolicy.EXACT
 	captures.stop()
 	control.seek_absolute(position_ms)
 	_request_revision(control.target_ms, mode)
@@ -1341,11 +1442,13 @@ func bookmarks_snapshot() -> Dictionary:
 	if _bookmark_cache_revision != bookmark_store.revision:
 		_bookmark_rows = bookmark_store.list_markers(_bookmark_media_id)
 		_bookmark_cache_revision = bookmark_store.revision
-	return {"bookmark_scope": bookmark_scope(), "bookmarks": _bookmark_rows,
+	var result := {"bookmark_scope": bookmark_scope(), "bookmarks": _bookmark_rows,
 		"bookmark_revision": bookmark_store.revision, "bookmark_undo": bookmark_store.can_undo(),
 		"bookmark_ready": not bookmark_snapshot().is_empty(), "bookmark_seekable": bookmark_seekable(),
 		"seek_mode": SeekPolicy.normalize(seek_mode), "bookmark_seek_mode": SeekPolicy.bookmark_override(bookmark_seek_mode),
 		"bookmark_effective_seek_mode": SeekPolicy.effective(seek_mode, bookmark_seek_mode)}
+	result.merge(bookmark_loop.snapshot())
+	return result
 
 func bookmark_action(operation: String, marker_id: String, scope: String) -> String:
 	if scope != bookmark_scope(): return ""
@@ -1756,6 +1859,15 @@ func _poll_subtitles() -> void:
 		bitmap_subtitles.clear(material)
 		if _subtitle_surface: _subtitle_surface.visible = false
 		return
+	if disc.menu_session:
+		# The menu's button plane takes the PGS overlay; a menu has no captions.
+		if geometry == Geometry.Geometry.FLAT and not disc_menu.bitmap.is_empty():
+			bitmap_subtitles.apply(material, disc_menu.bitmap, -1, disc_menu.pixels)
+		else:
+			bitmap_subtitles.clear(material)
+			if _subtitle_surface: _subtitle_surface.visible = false
+		caption.visible = false
+		return
 	if geometry == Geometry.Geometry.FLAT and not subtitles.bitmap.is_empty():
 		var handle := int(subtitles.cue.get("mpv_source_handle", 0))
 		var pixels := PackedByteArray()
@@ -1809,7 +1921,8 @@ func seek_relative(delta_ms: int) -> bool:
 		return false
 	captures.stop()
 	control.seek_relative(delta_ms)
-	_request_revision(control.target_ms)
+	bookmark_loop.manual_seek(control.target_ms)
+	_request_revision(control.target_ms, SeekPolicy.EXACT if bookmark_loop.active else "")
 	return true
 
 ## A decoded source type, retained until the file is closed.
@@ -2310,6 +2423,14 @@ func _on_error(id: int, payload: String) -> void:
 		if int(report.get("logical_session_id", 0)) != media.logical_session_id or int(report.get("generation", 0)) != media.generation: return
 	_thumbnail_sequence += 1
 	var code := str(report.get("code", "")) if report is Dictionary else ""
+	if disc.menu_session and code != "MPV_GL_CONTEXT_RECREATED" and disc.main >= 0:
+		# A menu the player cannot run (an HDMV stub in front of BD-J): return to the
+		# main title where it was left and stop offering this disc's menu.
+		Log.record("disc_menu_failed", {"code": code})
+		disc.menu_kind = "unsupported"
+		var resume := maxi(0, int(recent_files.lookup(local_uri).get("position_ms", 0))) if history_enabled and _remember_file else 0
+		call_deferred("_open_disc_title", disc.main, resume)
+		return
 	media.error = PlaybackErrors.message(report if report is Dictionary else {})
 	media.error_report = report.duplicate(true) if report is Dictionary else {}
 	media.state = "failed"
@@ -2368,7 +2489,8 @@ func _check_playback_timeout(now_ms: int) -> void:
 ## stall). Reopen once at the shown position, keeping every choice, instead of freezing for good.
 func _check_playback_stall(now_ms: int) -> void:
 	var details: Dictionary = media.playback.get("details", {})
-	var active := requested_play and media.state == "playing" and media.frame_counter > 0 and not _waiting_first \
+	# A disc menu waits on a still picture by design.
+	var active := requested_play and media.state == "playing" and media.frame_counter > 0 and not _waiting_first and not disc.menu_session \
 		and _pending_revision.is_empty() and control.in_flight == 0 and not control.pending \
 		and str(details.get("paused", "yes")) == "no" and str(details.get("paused_for_cache", "no")) != "yes" \
 		and str(details.get("eof_reached", "no")) != "yes"
@@ -2752,6 +2874,9 @@ func _process(_delta: float) -> void:
 	system_volume.poll()
 	narration.apply()
 	_poll_loading(Time.get_ticks_msec())
+	if disc.poll(platform, media.session_id if media.accepts(media.session_id) else 0, Time.get_ticks_msec()): changed.emit()
+	_poll_disc_menu(Time.get_ticks_msec())
+	_apply_disc_tracks()
 	_check_open_timeout(Time.get_ticks_msec())
 	_check_playback_timeout(Time.get_ticks_msec())
 	_restore_tracks()
@@ -2771,9 +2896,11 @@ func _process(_delta: float) -> void:
 	_update_layer()
 	_maybe_capture_thumbnail()
 	_poll_subtitles()
+	bookmark_loop.tick()
 	_process_playback_end()
 
 func _process_playback_end() -> void:
+	if bookmark_loop.active: return
 	if not playback_end_ready(): return
 	if loop_enabled:
 		seek_absolute(0)
@@ -2890,7 +3017,11 @@ func _fisheye_fail(stage: String, size: Vector2i) -> bool:
 	return false
 
 func _layer_presentation() -> bool:
-	return (pip.video_windows().is_empty() or pip.compositor.direct_compatible()) and layer_enabled and video_layer != null and (not alpha_requested or _layer_alpha()) and not depth_requested and not packed_file \
+	# Do not interrupt a native recording when a background change or mask failure
+	# requires sampled PiP edges. Such windows wait hidden until the recording ends.
+	var pip_ready := pip.video_windows().is_empty() or pip.compositor.direct_compatible() \
+		or (_layer_session and not captures.recording.is_empty())
+	return pip_ready and layer_enabled and video_layer != null and (not alpha_requested or _layer_alpha()) and not depth_requested and not packed_file \
 		and video_layer.capacity() >= (2 if stereo_sbs else 1) + 1 \
 		and (local_uri.is_empty() or local_uri != _layer_blocked_uri) \
 		and video_layer.grades(color_grade) and video_layer.supports(geometry, screen_curve > 0.0) \
@@ -2965,7 +3096,7 @@ func _update_layer() -> void:
 	# Profile 5 and a software decoder are known before the surface shows anything (no frame would come).
 	if _recover_layer_output(): return
 	# Back from a temporary shader effect: the layer again, at the shown position.
-	if not _layer_session and not _layer_return_uri.is_empty() and _layer_return_uri == local_uri \
+	if not _layer_session and not _layer_return_uri.is_empty() and _layer_return_uri == local_uri and not disc.menu_session \
 		and media.accepts(media.session_id) and media.frame_counter > 0 and _pending_revision.is_empty() \
 		and captures.recording.is_empty() \
 		and _freeze_request == 0 and not _waiting_first and _thumb_after_ms < 0 and not _thumbnail_busy and _layer_wanted():

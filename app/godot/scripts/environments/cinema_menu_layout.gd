@@ -1,6 +1,6 @@
 extends RefCounted
-## Placement policy for the existing PlayerMenu. The transport depends only on
-## the physical screen; transient tools get one world pose when explicitly opened.
+## Near-viewer placement for the production PlayerMenu. The old screen-relative
+## helper remains for historical geometry fixtures only.
 
 const TRANSPORT_SCALE := 16.0
 const TRANSPORT_TOP := 0.255
@@ -25,3 +25,8 @@ static func popup_centre(head: Transform3D) -> Transform3D:
 
 static func place_popup(centre: Transform3D, bounds: Rect2) -> Transform3D:
 	return centre * Transform3D(Basis.IDENTITY, -Vector3(bounds.get_center().x, bounds.get_center().y, 0))
+
+static func near_transport_pose(head: Transform3D) -> Transform3D:
+	var pose := popup_centre(head)
+	pose.origin.y -= 0.35
+	return pose

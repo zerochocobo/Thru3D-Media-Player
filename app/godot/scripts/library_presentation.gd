@@ -7,6 +7,7 @@ static func mode(value: Variant) -> String:
 	return "list" if value == "list" else "grid"
 
 static func key(row: Dictionary) -> String:
+	if row.has("archive_key"): return str(row.archive_key)
 	for field in ["scene", "container_node", "container", "search_result"]:
 		if row.get(field) is Dictionary:
 			var node: Dictionary = row[field]
@@ -36,6 +37,7 @@ static func anchor_index(rows: Array, saved: Dictionary) -> int:
 	return -1
 
 static func browse_key(row: Dictionary) -> String:
+	if row.has("archive_key"): return key(row)
 	var node: Dictionary = row.get("container", row)
 	var native_id := str(node.get("cloud_id", row.get("cloud_id", "")))
 	if not native_id.is_empty(): return "cloud-id:" + native_id
@@ -88,6 +90,11 @@ static func local_record(catalog: RefCounted, uri: String) -> Dictionary:
 	return {}
 
 static func info(row: Dictionary, catalog: RefCounted = null, recent: bool = false) -> Dictionary:
+	if row.has("archive_path"):
+		var directory: bool = row.get("folder", false)
+		var bytes_text := size(int(row.get("size", -1))) if not directory else ""
+		var detail := str(row.get("detail", bytes_text))
+		return {"subtitle": detail, "status": "", "ratio": -1.0, "badge": bytes_text, "card_detail": detail, "folder": directory}
 	var node: Dictionary = row.get("scene", row.get("container_node", row.get("container", row.get("search_result", row))))
 	var folder: bool = row.has("container") or row.has("container_node") or row.get("folder", false) or row.get("kind") == "folder"
 	var photo: bool = row.get("kind", node.get("kind", "video")) == "image"

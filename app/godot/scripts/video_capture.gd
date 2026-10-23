@@ -49,7 +49,12 @@ func _request(request: Dictionary) -> bool:
 
 func screenshot() -> bool:
 	if not ready() or busy("screenshot"): return false
-	return _request({"kind": "screenshot", "uri": video.local_uri, "mode": mode(), "position_us": int(frame().position_ms) * 1000})
+	var request := {"kind": "screenshot", "uri": video.local_uri, "mode": mode(), "position_us": int(frame().position_ms) * 1000}
+	if video.get("pip") != null and video.pip.active():
+		var layout: Dictionary = preload("res://scripts/pip_screenshot.gd").snapshot(video)
+		if layout.is_empty(): tell(I18n.t("Picture in picture capture unavailable")); return false
+		request["pip"] = layout
+	return _request(request)
 
 func start() -> bool:
 	if not recording.is_empty() or busy("clip") or not ready(): return false

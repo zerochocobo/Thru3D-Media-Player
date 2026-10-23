@@ -35,7 +35,8 @@ struct Reader {
     double read_until=-1;
     bool eof=false, initialized=false;
     bool disc=false;
-    Reader(std::string p,int s,std::string c,bool d=false):path(std::move(p)),ca(std::move(c)),stream(s),disc(d) {}
+    int playlist=-1; // the playing Blu-ray title; stream numbers belong to it
+    Reader(std::string p,int s,std::string c,bool d=false,int t=-1):path(std::move(p)),ca(std::move(c)),stream(s),disc(d),playlist(t) {}
     ~Reader() {avcodec_free_context(&codec);avformat_close_input(&format);}
     static int interrupt(void* p) {auto* r=static_cast<Reader*>(p);return r->cancelled.load()||Clock::now()>r->deadline;}
     void open(double position) {
@@ -49,6 +50,7 @@ struct Reader {
         std::string location=path.rfind("fd://",0)==0?"/proc/self/fd/"+path.substr(5):path;
         const AVInputFormat* demuxer=disc?av_find_input_format("bd_mvc"):nullptr;
         if(disc&&!demuxer){av_dict_free(&options);throw SubtitleError("open");}
+        if(disc)av_dict_set_int(&options,"playlist",playlist,0);
         int result=avformat_open_input(&format,location.c_str(),demuxer,&options);av_dict_free(&options);
         if(result<0)throw SubtitleError(interrupt(this)?"open_timeout":"open",result);
         // Header metadata is sufficient for the selected text stream. Do not call
@@ -159,9 +161,10 @@ extern "C" JNIEXPORT jlong JNICALL Java_org_vrpassthroughplayer_plugin_Narration
 extern "C" JNIEXPORT void JNICALL Java_org_vrpassthroughplayer_plugin_NarrationNative_closeReader(JNIEnv*,jclass,jlong id) {
     std::lock_guard<std::mutex> lock(readers_mutex);auto it=readers.find(id);if(it!=readers.end()) {it->second->cancelled.store(true);readers.erase(it);}
 }
-extern "C" JNIEXPORT jlong JNICALL Java_org_vrpassthroughplayer_plugin_NarrationNative_openReaderConfigured(JNIEnv* e,jclass,jstring path,jint stream,jstring ca,jboolean disc) {
+extern "C" JNIEXPORT jlong JNICALL Java_org_vrpassthroughplayer_plugin_NarrationNative_openReaderConfigured(JNIEnv* e,jclass,jstring path,jint stream,jstring ca,jboolean disc,jint playlist) {
     try {
-        auto reader=std::make_shared<Reader>(narration_utf8(e,path),stream,narration_utf8(e,ca),disc==JNI_TRUE);
+        if(playlist<-1||playlist>99999)throw std::runtime_error("Invalid title");
+        auto reader=std::make_shared<Reader>(narration_utf8(e,path),stream,narration_utf8(e,ca),disc==JNI_TRUE,playlist);
         std::lock_guard<std::mutex> lock(readers_mutex);auto id=++next_reader;readers[id]=reader;return id;
     } catch(const std::exception&) {narration_error(e,"Unable to prepare subtitle reader");return 0;}
 }

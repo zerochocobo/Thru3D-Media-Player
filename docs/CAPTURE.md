@@ -4,7 +4,7 @@ Compatible VR180, fisheye and 360° videos offer a camera action through the exi
 
 ## Output contract
 
-- Screenshots independently decode a full-resolution source frame to PNG under `Pictures/Thru3D/`. They preserve the source stereo/panorama layout, without menus, passthrough backgrounds or viewing effects. The limit is 40 Mi-pixels. PNG is an 8-bit display decode, without preservation of original HDR bit depth.
+- Screenshots independently decode a full-resolution source frame to PNG under `Pictures/Thru3D/`. They preserve the source stereo/panorama layout, without menus or passthrough backgrounds. From 0.13.2, supported screenshots also compose the current video/image PiP windows in the original projection/stereo layout; this is separate from live clip recording. The limit is 40 Mi-pixels. PNG is an 8-bit display decode, without preservation of original HDR bit depth.
 - Recording requires **1× playback speed**. Compressed video packets retain original resolution, codec and available HDR metadata. The current export container is MKV under `Movies/Thru3D/`.
 - Clip audio is the **actually presented application mix**, stored as 48 kHz stereo float32 PCM: original/external audio, volume/mute and dialogue processing, narration, ducking and simultaneously playing app music. Audio Off can still leave audible narration/music. Microphone, other apps and system UI sounds are excluded. Recording does not change playback settings or synthesize unheard speech.
 - Recording observes playback packets and presented audio. It does not open another source reader or resolve another cloud URL. Stop exports the locally staged data, including when the original source is unavailable. The older independent-reader clip API remains in source for compatibility; the camera uses the live path.
@@ -27,3 +27,5 @@ FFmpeg headers in `native/mpv/include/ffmpeg` retain their adjacent LGPL text an
 兼容沉浸视频支持原始排布PNG截图，以及1倍速现场片段录制。录像保留原视频压缩包，音频记录应用实际播放的原声／外挂音轨、朗读和音乐，包含音量、静音及混音处理，不录麦克风或其他应用。截图仍是8位显示解码，不承诺原始HDR位深。
 
 录制复用播放数据，停止后从本地暂存导出MKV，不重新读取片源。起点受关键帧窗口限制；跳转、切音轨／视频、改速或解码器重开会结束片段。只发布完整成功文件；实际录音不随源码公开。宿主测试不等于所有头显、MediaStore及硬件音频时序均已验收。
+
+PiP still composition is in `native/mpv/pip_screenshot_core.h`, with synthetic host pixels in `tools/Test-PipScreenshot.py`. This does not turn the headset view into the source screenshot or add PiP composition to the clip contract.

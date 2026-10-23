@@ -1,0 +1,42 @@
+PICO controller GLB assets from WebXR Input Profiles
+
+Upstream: https://github.com/immersive-web/webxr-input-profiles
+Revision: f4992299601614adbfefd398dc8e281556bb7444
+Source directory: packages/assets/profiles/{pico-neo3,pico-4,pico-4u}/
+Files: left.glb and right.glb, renamed to <profile>-<hand>.glb.
+The six GLB files are byte-for-byte unmodified. See manifest.json for SHA-256.
+License: MIT; see LICENSE.txt. This is the WebXR assets distribution, not a
+copy of the proprietary Unity SDK or assets extracted from a headset.
+
+Godot imports embedded textures as Basis Universal to keep them inside the
+imported scene. Model dimensions and grip origin are preserved. Application
+code animates the supplied min/max/value nodes using existing OpenXR actions.
+OpenXR thumbstick Y is inverted when mapped to the WebXR gamepad Y endpoints.
+Runtime-provided EXT/FB models take precedence over these bundled fallbacks.
+
+No material or mesh edits to the source GLBs. At runtime the player disables
+shadows and applies an unshaded shader with soft world-space directional
+shading, preserving the source albedo color and texture for dark scenes.
+
+
+MIT License
+
+Copyright (c) 2019 Amazon
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is furnished
+to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice (including the next
+paragraph) shall be included in all copies or substantial portions of the
+Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS
+OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
+WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF
+OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.

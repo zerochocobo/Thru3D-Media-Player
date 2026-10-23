@@ -6,6 +6,7 @@
 -keep class org.vrpassthroughplayer.plugin.NarrationNative { *; }
 -keep class org.vrpassthroughplayer.plugin.VoiceCloneNative { *; }
 -keep class org.vrpassthroughplayer.plugin.OriginalClipNative { *; }
+-keep class org.vrpassthroughplayer.plugin.PipScreenshotNative { *; }
 -keep class org.vrpassthroughplayer.plugin.LiveCaptureNative { *; }
 -keep class org.vrpassthroughplayer.plugin.TiffPhotoNative { *; }
 -keep class org.vrpassthroughplayer.plugin.HdrPhotoNative { *; }

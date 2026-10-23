@@ -132,6 +132,8 @@ func start(dataDir, keyHex string) (err error) {
 	api = gin.New()
 	api.Use(gin.Recovery(), middlewares.StoragesLoaded, middlewares.Auth(false), middlewares.AuthAdmin)
 	api.POST("/list", handles.FsListSplit)
+	comicRoutes(api)
+	comicSourceRoutes(api)
 	deletionRoutes(api)
 	cursorListingRoutes(api)
 	searchRoutes(api)
@@ -224,9 +226,13 @@ func Request(method, route, body string) (string, error) {
 }
 
 func requestContext(ctx context.Context, method, route, body string) (string, error) {
+	gate := requestMu
+	if route == "/comic" {
+		gate = comicRequestMu
+	}
 	select {
-	case requestMu <- struct{}{}:
-		defer func() { <-requestMu }()
+	case gate <- struct{}{}:
+		defer func() { <-gate }()
 	case <-ctx.Done():
 		return "", ctx.Err()
 	}

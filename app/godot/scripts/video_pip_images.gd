@@ -7,6 +7,13 @@ var waiting: Array[Dictionary] = []
 var active := {}
 var request := 0
 var thread: Thread
+var loaded := {}
+
+func unload(window: Node3D) -> void:
+	var previous: int = int(window.capture_image.get("id", 0))
+	if previous > 0 and platform: platform.release_pip_image(previous)
+	loaded.erase(window.get_instance_id())
+	window.capture_image.clear()
 
 func _ready() -> void:
 	if platform and platform.has_signal("pip_image_ready"): platform.connect("pip_image_ready", _on_ready)
@@ -30,7 +37,11 @@ func _process(_delta: float) -> void:
 		if is_instance_valid(window) and not window.is_queued_for_deletion():
 			window.image_loading = false
 			if result:
+				unload(window)
+				window.capture_image = {"id": request, "orientation": int(active.get("orientation", 1))}
+				if request > 0: loaded[window.get_instance_id()] = request
 				window.show_image(ImageTexture.create_from_image(result))
+				request = 0 # The displayed window now owns this local preview.
 			else: window.image_error = true; window.refresh()
 		_finish()
 	if not active.is_empty() and not is_instance_valid(active.window.get_ref()):
@@ -56,6 +67,7 @@ func _on_ready(id: int, payload: String) -> void:
 	_start(info)
 
 func _start(info: Dictionary) -> void:
+	active["orientation"] = int(info.get("orientation", 1))
 	thread = Thread.new()
 	if thread.start(_decode.bind(info)) != OK: thread = null; _failed()
 
@@ -84,3 +96,6 @@ func _exit_tree() -> void:
 	if request > 0 and platform: platform.cancel_pip_image(request)
 	if thread: thread.wait_to_finish(); thread = null
 	_finish()
+	if platform:
+		for id in loaded.values(): platform.release_pip_image(int(id))
+	loaded.clear()

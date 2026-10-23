@@ -14,6 +14,8 @@ const NAV_CELL := 0.15
 const HASH_CELL := 2.0
 const MAX_NAV_VISITS := 140000
 const EPSILON := 0.001
+const LANDING_SNAP_RADIUS := 0.40
+const LANDING_SNAP_HEIGHT := 0.18
 
 var eye_position := Vector3.ZERO
 var yaw := 0.0
@@ -151,6 +153,27 @@ func teleport_floor(target: Vector3) -> bool:
 	selected_seat = ""
 	suspend()
 	return true
+
+
+func landing_candidates(hit: Vector3, floor_y: float) -> Array[Vector3]:
+	# Only existing body-safe samples in the current connected component qualify.
+	# This bounded query uses the grid prepared at load time, not a new path search.
+	var candidates: Array[Vector3] = []
+	if not hit.is_finite() or not is_finite(floor_y): return candidates
+	var source := _nav_anchor(eye_position - Vector3.UP * EYE_HEIGHT)
+	if not _nav_components.has(source): return candidates
+	var centre := Vector2i(roundi(hit.x / NAV_CELL), roundi(hit.z / NAV_CELL))
+	var cells := ceili(LANDING_SNAP_RADIUS / NAV_CELL)
+	for x in range(-cells, cells + 1):
+		for z in range(-cells, cells + 1):
+			var key := centre + Vector2i(x, z)
+			if _nav_components.get(key, -1) != _nav_components[source]: continue
+			var point: Vector3 = _nav_cache[key]
+			if absf(point.y - floor_y) > .01: continue
+			if Vector2(point.x - hit.x, point.z - hit.z).length() > LANDING_SNAP_RADIUS: continue
+			candidates.append(point)
+	candidates.sort_custom(func(a: Vector3, b: Vector3): return a.distance_squared_to(hit) < b.distance_squared_to(hit))
+	return candidates
 
 
 func suspend() -> void:

@@ -1,7 +1,7 @@
 extends SceneTree
 const Core := preload("res://tests/test_video_pip.gd")
 const Surface := preload("res://tests/test_video_pip_compositor.gd").Surface
-const Library := preload("res://scripts/library_menu.gd")
+const Library := preload("res://scripts/puzzle/puzzle_library_menu.gd")
 var checks := 0
 var failures: Array[String] = []
 class Host extends RefCounted:
@@ -40,7 +40,7 @@ func run() -> void:
 		if not window.image_loading: break
 	check(window.image_mode and window.size == Vector2(0.48,0.24), "EXIF orientation and full-image aspect are honored")
 	check(window.global_transform == pose and window.zoom == 4, "Image replacement preserves position and video zoom")
-	check(host.released.has(1), "Private transfer file is released after decode")
+	check(not host.released.has(1) and window.capture_image == {"id":1,"orientation":6}, "Displayed image retains its local preview for asynchronous screenshots")
 	window.controls = true; window.refresh()
 	check(window._buttons.all(func(b): return b.target in [1,5,6]), "Image controls contain only close, choose image, and return to video")
 	check(is_equal_approx(window._buttons.filter(func(b): return b.target == 6)[0].rect.get_center().x, mode_position.x), "The mode switch retains its horizontal position after selecting an image")
@@ -71,6 +71,7 @@ func run() -> void:
 	pip.sync(); pip.compositor.commit(true)
 	check(not window.on_compositor and window.frame.material_override == window.image_material and pip.video_windows().size() == 2, "Static images remain visible and are excluded from video sampling")
 	window._activate(6)
+	check(host.released.count(1) == 1 and window.capture_image.is_empty(), "Switching back to video releases the displayed image lease once")
 	check(not window.image_mode and window.size == size and window.zoom == 4 and window.crop_center == Vector2(0.3,0.7), "The explicit video button restores the exact previous crop, zoom, and size")
 	pip.load_image(window,"smb://saved/reference.png"); await create_timer(0.05).timeout
 	var stale := host.serial
@@ -85,6 +86,13 @@ func run() -> void:
 	window.show_image(ImageTexture.create_from_image(image)); window._activate(1)
 	check(not pip.windows.has(1), "X closes the entire window in image mode, exactly as in video mode")
 	var library := Library.new(); root.add_child(library); library.set_process(false)
+	var puzzles: Array = []
+	library.puzzle_requested.connect(func(): puzzles.append(true))
+	library.puzzle_progress_provider = func(): return true
+	library.media_filter = 2; library.refresh()
+	check(library._buttons.any(func(b):return b.target==Library.PUZZLE_OPEN), "Normal image browsing retains its puzzle shortcut")
+	library._activate(Library.PUZZLE_OPEN)
+	check(puzzles.size()==1, "Normal image browsing can still open puzzle mode")
 	library.section = Library.Section.LOCAL; library._local_stack = [{"id":"/original","title":"Original"}]
 	var selected: Array = []; var opened: Array = []; var cancellations: Array = []
 	library.image_selected.connect(func(uri,title):selected.append([uri,title]))
@@ -96,6 +104,9 @@ func run() -> void:
 		var entries: Array = [{"title":"folder","id":"child","container":true}, {"title":"reference.png","uri":"https://fixture/image","kind":"image"}, {"title":"movie.mp4","uri":"https://fixture/video","kind":"video"}]
 		library._local_entries = entries; library._smb_entries = entries; library._dlna_entries = entries; library._cloud_entries = entries
 		library.refresh()
+		check(not library._buttons.any(func(b):return b.target==Library.PUZZLE_OPEN), "Image picker hides puzzle even with unfinished progress for source %d" % source)
+		library._activate(Library.PUZZLE_OPEN)
+		check(puzzles.size()==1 and library.image_picker_mode, "A stale puzzle action cannot leave the image picker")
 		check(library.media_filter == 2 and library.rows.any(func(row):return row.get("kind","")=="image") and not library.rows.any(func(row):return row.get("kind","")=="video"), "Picker retains only images and folders for source %d" % source)
 		check(library._buttons.any(func(b):return b.target==Library.NAV_BASE+Library.Section.DLNA), "DLNA remains available in the image picker")
 		library._choose(library.rows.filter(func(row):return row.get("kind","")=="image")[0])

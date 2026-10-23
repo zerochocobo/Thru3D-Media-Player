@@ -33,6 +33,11 @@ func _run() -> void:
 		trackers.append(tracker)
 	await process_frame
 	visuals.update_visibility(true)
+	visuals.set_cinema_move_hint(true)
+	check(visuals.cinema_move_hint != null and visuals.cinema_move_hint.get_parent() == visuals.hands.right_hand.grip, "Movement A hint follows the right controller grip")
+	check(visuals.cinema_move_hint.is_visible_in_tree(), "Tracked right controller displays the movement hint")
+	visuals.set_cinema_move_hint(false)
+	check(not visuals.cinema_move_hint.visible, "Menu/playback hides the movement hint")
 	for hand in visuals.hands:
 		var entry: Dictionary = visuals.hands[hand]
 		check(entry.controller_gate.visible and not entry.hand_gate.visible, hand + " shows controller only")
@@ -48,19 +53,24 @@ func _run() -> void:
 	visuals.update_visibility(true)
 	check(visuals.hands.right_hand.hand_gate.visible and not visuals.hands.right_hand.controller_gate.visible, "Optical hand suppresses controller duplicate")
 	check(visuals.hands.left_hand.controller_gate.visible, "Other hand ownership is independent")
+	check(visuals.snapshot().right_hand.controller_hidden_reason == "optical_hand", "Diagnostic explains hand ownership")
 	visuals.update_visibility(true, {"left_hand": 1.0, "right_hand": 1.0}, false)
 	check(not visuals.hands.left_hand.controller_gate.visible and not visuals.hands.right_hand.hand_gate.visible, "Hidden panels suppress both controller and optical-hand models without disabling tracking")
 	check(trackers[1].has_tracking_data and controllers[0].get_pose("grip").has_tracking_data, "Presentation visibility leaves both tracking sources active")
+	check(visuals.snapshot().left_hand.controller_hidden_reason == "interaction_hidden", "Diagnostic distinguishes closed panels from missing models")
 	visuals.update_visibility(true, {"left_hand": 1.0, "right_hand": 1.0}, true)
 	check(visuals.hands.left_hand.controller_gate.visible and visuals.hands.right_hand.hand_gate.visible, "Opening a panel restores the currently tracked input models together")
 	visuals.update_visibility(false)
 	check(not visuals.hands.left_hand.controller_gate.visible and not visuals.hands.right_hand.hand_gate.visible, "Lost focus hides both input sources")
+	check(visuals.snapshot().left_hand.controller_hidden_reason == "not_focused_or_head_untracked", "Diagnostic explains focus/head gate")
 	visuals.update_visibility(true, {"left_hand": 0.0, "right_hand": 1.0})
 	check(not visuals.hands.left_hand.controller_gate.visible, "An idle controller model hides independently")
+	check(visuals.snapshot().left_hand.controller_hidden_reason == "feedback_hidden", "Diagnostic explains feedback gate")
 	trackers[1].has_tracking_data = false
 	controllers[1].invalidate_pose("grip")
 	visuals.update_visibility(true)
 	check(not visuals.hands.right_hand.hand_gate.visible and not visuals.hands.right_hand.controller_gate.visible, "Tracking loss hides stale geometry")
+	check(visuals.snapshot().right_hand.controller_hidden_reason == "grip_untracked" and visuals.snapshot().right_hand.aim.tracked, "Diagnostic distinguishes missing grip from working aim")
 	trackers[0].has_tracking_data = true
 	trackers[0].hand_tracking_source = XRHandTracker.HAND_TRACKING_SOURCE_CONTROLLER
 	visuals.update_visibility(true)

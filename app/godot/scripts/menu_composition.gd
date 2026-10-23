@@ -31,7 +31,7 @@ const DENSITY := 1320.0
 ## cannot resolve.
 const LOW_END_SCALE := 0.6875
 const HIDDEN_SIZE := Vector2(0.0005, 0.0005)
-## Layer orders: video/pictures at -8, menu surfaces back-to-front from here, eye buffer at 0.
+## Video/pictures and ordered PiP pairs precede these menus; eye buffer is at 0.
 const ORDER_BASE := -6
 ## Clear after shader video (-10) and subtitles (1), before the menu's eye-buffer UI (10+).
 ## Otherwise a nearby 2D->3D screen paints back into the hole over the compositor menu.
@@ -54,6 +54,7 @@ var _signature := 0
 ## Shader uniform names, by shader instance id.
 var _uniforms := {}
 const HOLE_SHADER := preload("res://shaders/menu_layer_hole.gdshader")
+const OVERLAY_HOLE_SHADER := preload("res://shaders/menu_layer_hole_overlay.gdshader")
 const COPY_SHADER := preload("res://shaders/menu_layer_copy.gdshader")
 const SURFACE_SHADER := preload("res://shaders/menu_surface.gdshader")
 const SUPERSAMPLING_PROPERTY := "XR_FB_composition_layer_settings/manual/supersampling_mode"
@@ -509,6 +510,10 @@ static func _kind(group: Dictionary, root_inverse: Transform3D) -> String:
 
 func _assign(slot: Dictionary, group: Dictionary, root: Transform3D, bit: int) -> void:
 	slot.used = true
+	var overlay: bool = group.owners.keys().any(func(id):
+		var owner: Object = instance_from_id(id)
+		return is_instance_valid(owner) and owner.get("scene_overlay") == true)
+	slot.hole.material_override.shader = OVERLAY_HOLE_SHADER if overlay else HOLE_SHADER
 	slot["companion"] = group.owners.keys().any(func(id):
 		var node: Object = instance_from_id(id)
 		return is_instance_valid(node) and node.get_meta("menu_companion", false))

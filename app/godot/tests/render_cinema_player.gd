@@ -6,7 +6,7 @@ const HostTest := preload("res://tests/test_player_menu.gd")
 const I18n := preload("res://scripts/i18n.gd")
 const Memory := preload("res://scripts/file_mode_memory.gd")
 const Catalog := preload("res://scripts/recent_files.gd")
-var output := ProjectSettings.globalize_path("res://../../build/output/cinema-gt/player")
+var output := ProjectSettings.globalize_path("res://../../build/output/cinema-interaction-revision")
 var main: Node3D
 var viewport: SubViewport
 var checks: Array[Dictionary] = []
@@ -62,7 +62,7 @@ func _run() -> void:
 	main._update_background(); main._sync_cinema_screen()
 	check(main._cinema_scene_active(), "Real bundled GLB and navigation become active", main.cinema_environment.snapshot())
 	if not main._cinema_scene_active(): await _finish(); return
-	check(main.cinema_environment._manifest.seats.size() == 420 and main.cinema_environment.snapshot().seat == "I15", "GT fixture has 420 seats and default I15")
+	check(main.cinema_environment._manifest.seats.size() == 336 and main.cinema_environment.snapshot().seat == "I12", "GT fixture has 336 seats and default I12")
 	check(is_equal_approx(main.xr_camera.fov, 75.0), "Production desktop camera retains its existing 75 degree vertical FOV")
 	_close_menus()
 	_look_at_screen()
@@ -73,8 +73,8 @@ func _run() -> void:
 		var mesh_size: Vector2 = main.video.panel.mesh.size
 		var expected := Vector2(32, 32.0 * format.size.y / format.size.x)
 		check(mesh_size.is_equal_approx(expected), "Real production mesh fits GT envelope for " + format.id, mesh_size)
-		_record_view("I15-" + format.id)
-		await _shot("01-I15-" + format.id)
+		_record_view("I12-" + format.id)
+		await _shot("01-I12-" + format.id)
 	_set_video_source(Vector2i(640, 360))
 	_look_at_screen()
 	var frame := await _shot("01-cinema-video")
@@ -85,9 +85,9 @@ func _run() -> void:
 			var pixel := frame.get_pixel(x, y)
 			if pixel.r > 0.4 and pixel.r - pixel.b > 0.15: colored += 1
 	check(colored > 2000, "Actual rendered production video shader shows original saturated test image", colored)
-	check(_select_scene_seat("N15"), "Actual production ray can select the last row N15")
-	_look_at_screen(); _record_view("N15-16x9")
-	await _shot("01-N15-16x9")
+	check(_teleport_row("N12"), "Production teleport reaches last-row aisle")
+	_look_at_screen(); _record_view("N12-16x9")
+	await _shot("01-N12-16x9")
 	main.cinema_environment.home(); main._sync_cinema_screen(); _look_at_screen()
 	var rig_before: Transform3D = main.xr_origin.global_transform
 	var tracked_before: Transform3D = main.xr_camera.transform
@@ -101,12 +101,16 @@ func _run() -> void:
 	for language in ["en", "zh", "zh_Hant", "ja"]:
 		I18n.use(language)
 		_close_menus(); main._show_player_menu()
+		if language == "zh":
+			main._place_menu(main.player_menu, true)
+			main.rays.clear(); main._update_controller_feedback(0.01)
+			await _shot("02-quick-controls-zh")
 		main.player_menu._adjustment = "screen"; main.player_menu.refresh()
 		main._place_menu(main.player_menu, true)
 		check(main.player_menu._state.get("screen_scene_locked", false), "Scene-locked screen state reaches player menu " + language)
 		var targets: Array = main.player_menu._buttons.map(func(button): return button.target)
-		check([main.player_menu.CINEMA_SEAT, main.player_menu.CINEMA_MOVE, main.player_menu.CINEMA_HOME].all(func(target): return target in targets),
-			"Scene screen page exposes three actions " + language)
+		check([main.player_menu.CINEMA_MOVE, main.player_menu.CINEMA_HOME, main.player_menu.CINEMA_LIGHT_AUTO, main.player_menu.CINEMA_LIGHT_ON, main.player_menu.CINEMA_LIGHT_OFF].all(func(target): return target in targets),
+			"Scene page exposes teleport, home and lighting " + language)
 		check(450 not in targets and 451 not in targets, "Scene screen page omits incompatible distance/size sliders " + language)
 		_check_label_fit(main.player_menu, language)
 		main.rays.clear(); main._update_controller_feedback(0.01)
@@ -117,24 +121,6 @@ func _run() -> void:
 		await _shot("03-background-page-" + language)
 	I18n.use("en")
 	_background_page()
-	check(_choice("cinema_interaction", "seat"), "Background interaction choice activates seat mode through actual controller release")
-	check(main.cinema_environment.interaction == "seat" and main._active_menu() == null, "Choosing seat closes UI and gives scene ownership")
-	var ray := _seat_ray("H16")
-	main.rays.right_hand = ray
-	var seat_hit: Dictionary = main.cinema_environment.ray_hit(ray[0], ray[1])
-	check(seat_hit.get("id", "") == "H16", "Rendered seat feedback uses an actual other-seat hit", seat_hit)
-	if not seat_hit.is_empty(): main.xr_camera.look_at(seat_hit.position + Vector3(0, 0.3, 0), Vector3.UP)
-	main._update_controller_feedback(0.016)
-	_update_feedback()
-	var seat_frame := await _shot("04-seat-ray-feedback")
-	var visual: Node3D = main.cinema_environment.get_node_or_null("CinemaPointer_right_hand")
-	check(visual != null and visual.is_visible_in_tree() and visual.get_node("SeatLabel").text == "H16", "Production seat feedback node and label are visible")
-	check(_green_pixels(seat_frame) > 400, "Seat marker and label produce real visible pixels")
-	main._on_controller_button("trigger_click", "right_hand")
-	check(main.cinema_environment.snapshot().capture_hand == "right_hand", "Seat ray press captures actual authored chair")
-	main._on_controller_release("trigger_click", "right_hand")
-	check(main.cinema_environment.snapshot().seat == "H16" and main._active_menu() == null, "Seat ray release commits without toggling video controls")
-	_background_page()
 	check(_choice("cinema_interaction", "move"), "Background interaction choice activates free movement through actual controller release")
 	_look_at_screen()
 	var head: Vector3 = main.xr_camera.global_position
@@ -144,16 +130,28 @@ func _run() -> void:
 		var candidate_ray := [head + offset, Vector3.DOWN]
 		var candidate: Dictionary = main.cinema_environment.ray_hit(candidate_ray[0], candidate_ray[1])
 		if candidate.get("valid", false): floor_ray = candidate_ray; floor_hit = candidate; break
-	if not floor_ray.is_empty(): main.rays.right_hand = floor_ray
+	if not floor_ray.is_empty():
+		main.rays.right_hand = floor_ray
+		main._on_controller_button("trigger_click", "right_hand")
 	check(floor_hit.get("kind", "") == "floor" and floor_hit.get("valid", false), "Rendered floor feedback uses a valid reachable target", floor_hit)
 	main._update_controller_feedback(0.016)
 	_update_feedback()
 	# Desktop-only viewing adjustment makes the real floor marker visible in the capture.
 	if not floor_hit.is_empty(): main.xr_camera.look_at(floor_hit.position, Vector3.UP)
 	var floor_frame := await _shot("05-floor-ray-feedback")
-	visual = main.cinema_environment.get_node_or_null("CinemaPointer_right_hand")
+	var visual: Node3D = main.cinema_environment.get_node_or_null("CinemaPointer_right_hand")
 	check(visual != null and visual.is_visible_in_tree() and visual.get_node("FloorRing").is_visible_in_tree(), "Production floor feedback ring is visible")
 	check(_green_pixels(floor_frame) > 400, "Valid floor ring produces real visible pixels")
+	main._on_controller_release("trigger_click", "right_hand")
+	_close_menus(); main._cinema_request_interaction("watch")
+	main.xr_camera.look_at(Vector3(8, 7, 20), Vector3.UP)
+	main._on_setting_changed("cinema_lights", "on")
+	for i in 90: await process_frame
+	await _shot("06-lights-on")
+	main._on_setting_changed("cinema_lights", "off")
+	for i in 90: await process_frame
+	await _shot("07-lights-off")
+	main._on_setting_changed("cinema_lights", "auto")
 	await _finish()
 
 func _close_menus() -> void:
@@ -208,16 +206,18 @@ func _seat_ray(id: String) -> Array:
 			return [eye + Vector3(0, -0.1, 0.9), Vector3.FORWARD]
 	return []
 
-func _select_scene_seat(id: String) -> bool:
-	if not main._cinema_request_interaction("seat"): return false
-	var ray := _seat_ray(id)
-	if ray.is_empty(): return false
-	main.rays.right_hand = ray
-	main.controller_feedback.wake("right_hand")
-	main._on_controller_button("trigger_click", "right_hand")
-	main._on_controller_release("trigger_click", "right_hand")
-	main.rays.clear(); main._update_controller_feedback(0.016)
-	return main.cinema_environment.snapshot().seat == id
+func _teleport_row(id: String) -> bool:
+	if not main._cinema_request_interaction("move"): return false
+	for seat in main.cinema_environment._manifest.seats:
+		if seat.id != id: continue
+		var point := Vector3(seat.exit_position[0], seat.exit_position[1], seat.exit_position[2])
+		main.rays.right_hand = [point + Vector3.UP * 1.65, Vector3.DOWN]
+		main.controller_feedback.wake("right_hand")
+		main._on_controller_button("trigger_click", "right_hand")
+		main._on_controller_release("trigger_click", "right_hand")
+		main.rays.clear(); main._update_controller_feedback(.016)
+		return main.xr_camera.global_position.is_equal_approx(point + Vector3.UP * 1.65)
+	return false
 
 func _set_video_source(size: Vector2i) -> void:
 	main.video.media.format.width = size.x; main.video.media.format.height = size.y

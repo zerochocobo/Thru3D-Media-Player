@@ -79,7 +79,7 @@ func _run() -> void:
 	if not main._cinema_scene_active():
 		await _finish(); return
 	check(main.xr_camera.transform.is_equal_approx(original_camera_local), "Entering cinema changes rig without overwriting tracked camera local pose")
-	check(main.cinema_environment.snapshot().seat == "I15", "Production cinema starts at default seat I15")
+	check(main.cinema_environment.snapshot().seat == "I12", "Production cinema starts at default seat I12")
 	var world_screen: Transform3D = main.video.global_transform * main.video.flat_pose
 	check(is_equal_approx(main.video._flat.size.x, 32.0), "Cinema video uses the 32 metre physical screen envelope",
 		{"mesh": main.video._flat.size, "scale": main.video.screen_scale, "base": main.video._screen_base, "saved": main._cinema_screen_saved})
@@ -93,10 +93,28 @@ func _run() -> void:
 	_movement_routes()
 	_menu_and_capture_routes()
 	_context_routes()
+	_return_routes()
+	var expected: Dictionary = main._cinema_screen_saved.duplicate(true)
+	main._reset_picture()
+	main._apply_screen_preset("home150")
+	main._on_playback_adjustment("screen_scale", 3000)
+	main._set_screen_preference("scale", 999)
+	main._save_playback_adjustments()
+	check(_screen_preferences() == preferences, "All screen write paths reject cinema dimensions, even direct preference writes")
+	for choice in ["morning", "dark", "belfast"]:
+		main.background.select(choice); main._update_background()
+		check(main._cinema_screen_saved.is_empty() and is_equal_approx(main.video.screen_scale, float(expected.screen_scale)), "Background switch restores ordinary scale: " + choice)
+		main._on_setting_changed("screen_scale", 999)
+		main.background.select("cinema"); main._update_background()
+	main._sync_cinema_lights()
+	check(not main.cinema_environment.lights_on, "Playing defaults to dark auditorium")
+	main._on_setting_changed("cinema_lights", "on")
+	check(main.cinema_environment.lights_on, "Manual lighting action overrides playback")
+	main._on_setting_changed("cinema_lights", "auto")
 	_close_menus(); main._cinema_request_interaction("watch")
 	main._recenter()
 	check((main.video.global_transform * main.video.flat_pose).is_equal_approx(world_screen), "Explicit recenter preserves world cinema screen")
-	check(main.cinema_environment.snapshot().seat == "I15", "Explicit recenter returns to default cinema seat")
+	check(main.cinema_environment.snapshot().seat == "I12", "Explicit recenter returns to default cinema seat")
 	main._on_system_recentered()
 	check((main.video.global_transform * main.video.flat_pose).is_equal_approx(world_screen), "System recenter preserves world cinema screen")
 	check(_screen_preferences() == preferences, "Seat changes, walking and recenter never overwrite ordinary screen preferences")
@@ -124,6 +142,41 @@ func _screen_preferences() -> Dictionary:
 	for key in ["distance", "scale", "curve", "cinema", "default_view", "default_cinema"]:
 		result[key] = main.settings.get_value("screen", key) if main.settings.has_section_key("screen", key) else null
 	return result
+
+func _return_routes() -> void:
+	_close_menus(); main._cinema_request_interaction("move")
+	main.rays.clear() # Right controller only: no left pose/ray participates.
+	var eye: Vector3 = main.xr_camera.global_position
+	main.rays.right_hand = [eye, Vector3.DOWN]
+	main._on_controller_button("ax_button", "right_hand")
+	check(main.cinema_environment.snapshot().capture_hand == "right_hand", "Right A owns movement aim")
+	main.cinema_environment.update_pointer("right_hand", eye, Vector3.DOWN, true)
+	main._on_controller_button("trigger_click", "right_hand")
+	main._on_controller_release("trigger_click", "right_hand")
+	check(main.cinema_environment.interaction == "move" and main.player_menu.visible, "Right trigger opens menu without changing the movement toggle")
+	check(main.cinema_environment.snapshot().capture_hand.is_empty(), "Opening menu cancels held movement aim")
+	main._on_controller_release("ax_button", "right_hand")
+	check(main.xr_camera.global_position.is_equal_approx(eye), "Releasing A over menu cannot teleport")
+	var button: Dictionary = main.player_menu._buttons.filter(func(item): return item.target == main.player_menu.FREE_MOVEMENT)[0]
+	var follow: Dictionary = main.player_menu._buttons.filter(func(item): return item.target == main.player_menu.FOLLOW)[0]
+	check(button.node.position.x < follow.node.position.x, "Free movement appears to the left of Follow")
+	main.rays.right_hand = [eye, (button.node.global_position - eye).normalized()]
+	main._update_menu_pointer("right_hand")
+	check(main.player_menu._pointers.right_hand.line.visible, "Menu restores the normal straight right-hand ray")
+	check(not main.cinema_environment._pointer_visuals.right_hand.root.visible, "Menu hides the movement arc")
+	main._on_controller_button("ax_button", "right_hand")
+	main._on_controller_release("ax_button", "right_hand")
+	check(main.cinema_environment.snapshot().capture_hand.is_empty(), "A is inert for movement while menus are visible")
+	main._on_controller_button("trigger_click", "right_hand")
+	main._on_controller_release("trigger_click", "right_hand")
+	check(main.cinema_environment.interaction == "watch" and main.player_menu.visible, "Right trigger switches off movement from the shared footer")
+	check(main.xr_camera.global_position.is_equal_approx(eye), "Switching to playback preserves the viewpoint")
+	check(not main._session_controls_state().cinema_moving, "Footer toggle state updates immediately")
+	_close_menus(); main._cinema_request_interaction("move")
+	main._on_controller_button("by_button", "right_hand")
+	main._on_controller_release("by_button", "right_hand")
+	check(main.cinema_environment.interaction == "watch" and main.player_menu.visible, "Right B remains a direct playback exit")
+	_close_menus(); main.rays.clear()
 
 func _neutral() -> void:
 	main._process_sticks(Vector2.ZERO, Vector2.ZERO, 1.0 / 72)
@@ -154,6 +207,7 @@ func _playback_routes(label: String, zoom_expected: bool) -> void:
 			"Fixed cinema ignores physical screen scaling instead of distorting auditorium")
 		check(_screen_preferences() == preferences, "Ignored cinema scaling does not overwrite ordinary screen defaults")
 	main._show_player_menu()
+	check(main.player_menu._buttons.any(func(item): return item.target == main.player_menu.FREE_MOVEMENT) == main._cinema_scene_active(), "Movement footer appears only inside cinema: " + label)
 	check(main.player_menu.allows_playback_sticks(), label + " ordinary control bar allows playback sticks")
 	before = main.video.audio_volume
 	main._process_sticks(Vector2(0, -0.99), Vector2.ZERO, 0.05)
@@ -170,44 +224,28 @@ func _seat_ray(id: String) -> Array:
 
 func _press(hand: String, optical: bool = false) -> void:
 	if optical: main._on_pointer_button("trigger_click", hand)
-	else: main._on_controller_button("trigger_click", hand)
+	else: main._on_controller_button("ax_button", hand)
 
 func _release(hand: String, optical: bool = false) -> void:
 	if optical: main._on_pointer_release("trigger_click", hand)
-	else: main._on_controller_release("trigger_click", hand)
+	else: main._on_controller_release("ax_button", hand)
 
 func _seat_routes() -> void:
-	for optical in [false, true]:
+	check(not main._cinema_request_interaction("seat"), "Stale seat mode is rejected")
+	for optical in [false]:
 		_close_menus()
-		check(main._cinema_request_interaction("seat"), "Explicit seat selection mode accepted")
+		check(main._cinema_request_interaction("move"), "Explicit teleport mode accepted")
 		_neutral()
-		var seat_before: String = main.cinema_environment.snapshot().seat
-		var chosen := "D04" if optical else "C03"
-		var other := "C03" if optical else "D04"
-		main.rays.right_hand = _seat_ray(chosen)
-		main.rays.left_hand = _seat_ray(other)
-		var ray: Array = main.rays.right_hand
-		var hit: Dictionary = main.cinema_environment.ray_hit(ray[0], ray[1])
-		check(hit.get("id", "") == chosen, "Input fixture ray hits actual authored other chair", hit)
+		var before: Vector3 = main.xr_camera.global_position
+		main.rays.right_hand = [before + Vector3(.5, 0, 0), Vector3.DOWN]
+		main.rays.left_hand = main.rays.right_hand
 		_press("right_hand", optical)
-		check(main.cinema_environment.snapshot().capture_hand == "right_hand", "Production trigger captures environment target", optical)
+		check(main.cinema_environment.snapshot().capture_hand == "right_hand", "Controller/optical trigger owns teleport aim")
 		_release("left_hand", optical)
-		check(main.cinema_environment.snapshot().seat == seat_before and main.cinema_environment.snapshot().capture_hand == "right_hand", "Other-hand release cannot select or steal seat", optical)
-		main.rays.right_hand = _seat_ray(other)
+		check(main.cinema_environment.snapshot().capture_hand == "right_hand", "Wrong hand release cannot commit teleport")
 		_release("right_hand", optical)
-		check(main.cinema_environment.snapshot().seat == seat_before, "Release over another seat cancels captured selection", optical)
-		check(main._active_menu() == null and main._video_control_tap.is_empty(), "Cancelled seat trigger cannot reveal video controls", optical)
-		main.rays.right_hand = _seat_ray(chosen)
-		_press("right_hand", optical); _release("right_hand", optical)
-		check(main.cinema_environment.snapshot().seat == chosen, "Same-hand trigger release selects actual cinema chair", optical)
-		check(main._active_menu() == null and main._video_control_tap.is_empty(), "Successful seat selection leaves playback controls hidden", optical)
-		main._cinema_request_interaction("seat")
-		main.rays.right_hand = [main.xr_camera.global_position, Vector3.UP]
-		_press("right_hand", optical); _release("right_hand", optical)
-		check(main._active_menu() == null and main._video_control_tap.is_empty(), "Explicit seat-mode miss is consumed without control-bar toggle", optical)
-		await process_frame
-	main._cinema_request_interaction("watch")
-	_close_menus()
+		check(main.xr_camera.global_position.distance_to(before) > .3, "Owning controller/optical release teleports")
+		check(main._active_menu() == null, "Teleport does not reveal playback controls")
 
 func _movement_routes() -> void:
 	check(main._cinema_request_interaction("move"), "Move mode leaves seat at authored safe aisle exit")
@@ -216,7 +254,7 @@ func _movement_routes() -> void:
 	var volume: float = main.video.audio_volume
 	var sequence: int = main.video.control.sequence
 	for frame in 20: main._process_sticks(Vector2(0.99, 0), Vector2.ZERO, 1.0 / 60)
-	check(main.xr_camera.global_position.distance_to(before) > 0.1, "Main left stick moves real rig through authored aisle")
+	check(main.xr_camera.global_position.is_equal_approx(before), "Teleport mode disables continuous stick translation")
 	check(main.video.audio_volume == volume and main.video.control.sequence == sequence and main.seek_feedback.phase.is_empty(), "Move input cannot seek or change playback volume")
 	var camera_local: Transform3D = main.xr_camera.transform
 	main._process_sticks(Vector2.ZERO, Vector2(0.99, 0), 1.0 / 60)
@@ -243,7 +281,7 @@ func _movement_routes() -> void:
 func _menu_and_capture_routes() -> void:
 	main._show_player_menu()
 	_neutral()
-	check(not main._cinema_interaction_owns(), "Showing ordinary transport releases locomotion input ownership")
+	check(main._cinema_interaction_owns() and main._cinema_input_blocked(), "Menu preserves the movement toggle while suspending locomotion")
 	var position: Vector3 = main.xr_camera.global_position
 	var before: float = main.video.audio_volume
 	main._process_sticks(Vector2(0, -0.99), Vector2.ZERO, 0.05)
@@ -294,6 +332,11 @@ func _context_routes() -> void:
 	for geometry in [1, 2, 3]:
 		main.video.geometry = geometry; main._update_background()
 		check(not main._cinema_scene_active() and not main.cinema_environment.active, "Immersive geometry hides cinema: " + str(geometry))
+		var yaw: float = main.video.view_yaw
+		var zoom: float = main.video.view_zoom
+		main._turn_picture(.1, 0); main._zoom_video(.1)
+		check(not is_equal_approx(yaw, main.video.view_yaw) and not is_equal_approx(zoom, main.video.view_zoom), "Hidden cinema does not block immersive view controls: " + str(geometry))
+		main._reset_picture()
 	main.video.geometry = 0; main._update_background()
 	check(main._cinema_scene_active(), "Returning to flat video restores cinema")
 	main.video.alpha_requested = true; main._update_background()

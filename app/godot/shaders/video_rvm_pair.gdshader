@@ -150,4 +150,10 @@ void fragment() {
 	ALBEDO = composed.rgb;
 	ALPHA = composed.a;
 	}
+	// Eye-buffer PiP only: native atlas extraction ends before the caption block.
+	// Native centres retain their source; their narrow ring uses this same material.
+	if (pip_enabled) {
+		vec2 fade = smoothstep(vec2(0.0), max(pip_edge_feather, vec2(0.00001)), min(UV, vec2(1.0) - UV));
+		ALPHA *= fade.x * fade.y;
+	}
 }

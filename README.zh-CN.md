@@ -4,11 +4,16 @@
 
 面向 Meta Quest 和 PICO 的独立 VR/MR 媒体播放器，可直接在头显中观看视频和照片、浏览媒体库，并使用支持内容的透视与立体效果。
 
-当前源码版本：**0.13.0**，Android versionCode **38**；另提供实验性的标准 OpenXR Android 导出目标。
+当前源码版本：**0.13.2**，Android versionCode **40**；另提供实验性的标准 OpenXR Android 导出目标。
 
 最低兼容目标为 **Quest 2、PICO Neo3**。源码和构建兼容不等于所有机型的性能、显示及交互均已实机验收。
 
 ## 功能
+
+- 统一书签／A–B循环管理，支持从书签选择范围和点击时间跳转。
+- 蓝光标题切换及支持范围内的非3D HDMV射线菜单；BD-J仅识别，见[蓝光范围](docs/BLURAY.md)。
+- 支持兼容加密格式的压缩漫画浏览与私有密码关联，见[压缩漫画](docs/ARCHIVE_COMICS.md)。
+- Debug／Release均可用的巨幕影院(测试)、双套烘焙灯光与移动；[影院生成](docs/EXPERIMENTAL_CINEMA.md)及[手柄模型准备](docs/CONTROLLER_ASSETS.md)所需资源另行提供。
 
 - 最多三个共享视频帧的画中画窗口，支持区域放大、独立摆放与静态图片窗口，见[画中画说明](docs/PICTURE_IN_PICTURE.md)。
 - 徒手腕表显示时间／电量／进度，并提供投影播放控制。

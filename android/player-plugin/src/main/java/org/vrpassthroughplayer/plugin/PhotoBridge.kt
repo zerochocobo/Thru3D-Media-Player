@@ -30,6 +30,7 @@ internal class PhotoBridge(
     private val cacheName: String = "photos",
     private val preload: Boolean = false,
     private val postDepth: ((Runnable, Boolean) -> Unit)? = null,
+    private val resolveRequest: ((Int, String) -> String)? = null,
     private val emit: (String, Int, String) -> Unit,
 ) : Closeable {
     private val current = AtomicInteger(0)
@@ -82,7 +83,8 @@ internal class PhotoBridge(
                 }
                 directory = File(app.cacheDir, "$cacheName/$id").apply { mkdirs() }
                 val source = File(directory, "source")
-                resolved = resolve(uri)
+                checkCurrent(id)
+                resolved = resolveRequest?.invoke(id, uri) ?: resolve(uri)
                 checkCurrent(id)
                 val location = Uri.parse(resolved)
                 state.remote = state.remote || location.scheme in setOf("http", "https")
@@ -225,7 +227,8 @@ internal class PhotoBridge(
                 if (!closed && current.get() == id) android.util.Log.w("QuestPhoto",
                     "request=$id preload=$preload failure=${error.javaClass.simpleName}")
                 if (!closed && current.get() == id) emit("photo_ready", id, JSONObject().put("state", "error")
-                    .put("error", if (error.message == "PHOTO_TOO_LARGE") "PHOTO_TOO_LARGE" else "PHOTO_DECODE_FAILED").toString())
+                    .put("error", if (uri.startsWith("comic://") && error is Exception) ArchiveBridge.safeError(error)
+                        else if (error.message == "PHOTO_TOO_LARGE") "PHOTO_TOO_LARGE" else "PHOTO_DECODE_FAILED").toString())
             } finally {
                 connection?.disconnect(); connection = null
                 if (uri.startsWith("smb://") || uri.startsWith("cloud://") || uri.startsWith("usb://")) releaseStream(resolved)

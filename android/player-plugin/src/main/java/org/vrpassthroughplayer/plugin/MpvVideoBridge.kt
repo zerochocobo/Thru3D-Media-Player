@@ -172,6 +172,8 @@ internal class MpvVideoBridge(
         @Volatile var audioMuted = false
         @Volatile var narrationPath = ""
         @Volatile var discInput = false
+        @Volatile var discPlaylist = -1 // requested Blu-ray title; -1 = the longest, -2 = the disc's HDMV menu
+        @Volatile var discTitles = "" // preflight JSON of the opened disc
         @Volatile var narrationCa = ""
         @Volatile var interleavePolicy = Mp4InterleavePolicy.Decision()
         @Volatile var playbackLayout: Mp4PlaybackLayout? = null
@@ -351,9 +353,10 @@ internal class MpvVideoBridge(
     @Synchronized fun open(uri: String, startMs: Int, stereo: Boolean, profile: String,
                            alpha: Boolean, vulkan: Boolean, hardware: Boolean = true, audio: Boolean = true,
                            depth: Boolean = false, topBottom: Boolean = false, exactSeek: Boolean = false, layer: Boolean = false,
-                           networkInterleaveCompat: Boolean = false): Int {
+                           networkInterleaveCompat: Boolean = false, discPlaylist: Int = -1): Int {
         if (!supported() || sessions.size >= 2 || startMs < 0 || profile !in RvmProfiles.keys || (depth && (alpha || stereo)) ||
-            Uri.parse(uri).scheme !in setOf("content", "file", "usb", "smb", "cloud", "medialib", "dlna", "http", "https")) return -1
+            Uri.parse(uri).scheme !in setOf("content", "file", "usb", "smb", "cloud", "medialib", "dlna", "http", "https") ||
+            discPlaylist !in -2..99999) return -1
         val id = gate.begin(); if (id <= 0) return -1
         val pendingView = synchronized(playbackViewLock) { pendingPlaybackView.also { pendingPlaybackView = null } }
         val preparedView = pendingView?.takeIf { networkInterleaveCompat && it.uri == uri }
@@ -367,6 +370,7 @@ internal class MpvVideoBridge(
         val host = Host(uri, startMs, hardware, audio, exactSeek || preparedView != null, outputWidthCap,
             layer && hardware && !depth && (!alpha || alphaLayer), alphaLayer && layer && hardware)
         host.playbackLayout = preparedView?.layout
+        host.discPlaylist = discPlaylist
         host.networkLease = preparedView?.url
         host.interleaveCheckStarted = preparedView != null
         host.interleavePolicy = if (preparedView != null) Mp4InterleavePolicy.Decision(diagnostic = "reinterleaved_view")
@@ -404,13 +408,23 @@ internal class MpvVideoBridge(
                             it.moveToFirst() && it.getString(0).orEmpty().lowercase().endsWith(".iso")
                         } == true)
                 if (iso) host.loadingPhase = "reading_disc"
-                val disc = if (iso) try { MpvSourceNative.probeIso(path) } finally { finishIsoPreflight(path) } else null
+                val disc = if (iso) try {
+                    // A menu session is sized and described by the disc's default preflight.
+                    DiscPreflight.probe(uri, path, maxOf(-1, host.discPlaylist), MpvSourceNative::probeDisc)
+                } finally { finishIsoPreflight(path) } else null
                 host.discInput=iso
+                if (disc != null && host.discPlaylist == -2) {
+                    if (disc.mvc || JSONObject(disc.json).optString("menu") != "hdmv") error("Disc menu unavailable")
+                    host.discTitles = disc.json
+                } else if (disc != null) {
+                    // A default open plays the selected title explicitly from here on (narration readers too).
+                    host.discPlaylist = disc.playlist; host.discTitles = disc.json
+                }
                 host.loadingPhase = "preparing"
                 val nativePath = if (iso && path.startsWith("fd://")) "/proc/self/fd/${path.removePrefix("fd://")}" else path
                 host.narrationPath = nativePath; host.narrationCa = tlsCaFile
-                val surfaceWidth = disc?.get(0)?.toInt() ?: LAYER_SURFACE_SIZE
-                val surfaceHeight = disc?.get(1)?.toInt() ?: LAYER_SURFACE_SIZE
+                val surfaceWidth = disc?.width ?: LAYER_SURFACE_SIZE
+                val surfaceHeight = disc?.height ?: LAYER_SURFACE_SIZE
                 // Extra audio is optional: a failed lookup plays the video without it.
                 val deferCloud = Uri.parse(uri).scheme == "cloud"
                 val extra = if (audio && !deferCloud) sidecarAudio(uri) else emptyList()
@@ -449,8 +463,8 @@ internal class MpvVideoBridge(
                         host.handle = MpvSourceNative.create(app, nativePath, startMs, hardware, audio, host.maxWidth,
                             extra.flatMap { listOf(it.location, it.title) }.toTypedArray(),
                             captions.flatMap { listOf(it.location, it.title) }.toTypedArray(), host.exactStart,
-                            if (host.layer) host.copy?.surface ?: host.fanout?.surface ?: host.layerSurface else null, disc?.get(3) == 1L, surfaceWidth, surfaceHeight, iso, tlsCaFile,
-                            host.interleavePolicy.sequential)
+                            if (host.layer) host.copy?.surface ?: host.fanout?.surface ?: host.layerSurface else null, disc?.mvc == true, surfaceWidth, surfaceHeight, iso, tlsCaFile,
+                            host.interleavePolicy.sequential, if (iso) host.discPlaylist else -1)
                         check(host.handle > 0)
                         host.markStartup("native_created_ms")
                         host.loadingPhase = "reading"
@@ -500,6 +514,9 @@ internal class MpvVideoBridge(
             }
         }
     }
+
+    /** The opened disc's selectable titles and the playing one; empty for other media or before preflight. */
+    fun discTitles(id: Int): String = sessions[id]?.takeIf(::active)?.host?.discTitles.orEmpty()
 
     /** A nonblocking snapshot, also available while source resolution/ISO probing is on the worker. */
     fun loadingStatus(id: Int): String {
@@ -656,7 +673,7 @@ internal class MpvVideoBridge(
         val controller=synchronized(host) {
             host.voiceClone ?: VoiceCloneController(context,{
                 if(host.closing||stopped||host.handle<=0)null else VoiceCloneController.Source(host.handle,host.narrationPath,host.narrationCa,
-                    host.subtitleDelay,host.userAudioDelay,foreground,host.audioVolume,host.audioMuted,host.discInput,host.narration?.previewVolume ?: 1.0,
+                    host.subtitleDelay,host.userAudioDelay,foreground,host.audioVolume,host.audioMuted,host.discInput,host.discPlaylist,host.narration?.previewVolume ?: 1.0,
                     reference=if(host.uri.startsWith("cloud://"))({
                         val location=referenceSource(host.uri)
                         VoiceClonePolicy.Reference(location) {

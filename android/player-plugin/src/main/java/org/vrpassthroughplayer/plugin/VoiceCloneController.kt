@@ -18,7 +18,7 @@ import kotlin.math.max
 internal class VoiceCloneController(private val context: ()->Context?,private val source: ()->Source?,
     private val onHold: (Boolean)->Unit,private val audioChanged: ()->Unit,private val drain: ()->Unit={},
     private val runtime: SharedNarrationEngine,private val previewCache: ()->NarrationPreviewCache) : AutoCloseable {
-    data class Source(val handle: Long,val path: String,val ca: String,val subtitleDelay: Double,val audioDelay: Double,val allowed: Boolean,val volume: Double,val muted: Boolean,val disc: Boolean=false,val narrationVolume: Double=1.0,
+    data class Source(val handle: Long,val path: String,val ca: String,val subtitleDelay: Double,val audioDelay: Double,val allowed: Boolean,val volume: Double,val muted: Boolean,val disc: Boolean=false,val discPlaylist: Int=-1,val narrationVolume: Double=1.0,
                       val reference: (() -> VoiceClonePolicy.Reference)?=null)
     // All sessions and the global manager share a queue, including engine teardown.
     // A new source must not load TTS while the previous source is still closing it.
@@ -158,7 +158,7 @@ internal class VoiceCloneController(private val context: ()->Context?,private va
         params.put("audio_id",selectedAudio.getInt("id"))
         rows=if(replace)JSONArray() else rows
         publish {it.put("candidates",rows).put("audio_options",audioOptions).put("audio_id",params.getInt("audio_id")).put("eof",false)}
-        val handle=NarrationNative.openReaderConfigured(input.path,input.stream,s.ca,input.disc);reader=handle
+        val handle=NarrationNative.openReaderConfigured(input.path,input.stream,s.ca,input.disc,s.discPlaylist);reader=handle
         val result: VoiceCloneScan.Result
         try {result=VoiceCloneScan.read(start,params.optInt("line",0),rows,
             active={checkActive(token)},progress={found,cursor->
@@ -186,7 +186,7 @@ internal class VoiceCloneController(private val context: ()->Context?,private va
             (if(!track.optBoolean("external"))s.reference?.invoke() else null).use {reference->
                 checkActive(token)
                 val handle=VoiceCloneNative.createJob();nativeJob=handle
-                try {VoiceCloneNative.extract(handle,reference?.path ?: input.path,input.stream,s.ca,start,end,File(dir,"reference.wav").path,input.disc)}
+                try {VoiceCloneNative.extract(handle,reference?.path ?: input.path,input.stream,s.ca,start,end,File(dir,"reference.wav").path,input.disc,s.discPlaylist)}
                 finally {VoiceCloneNative.cancelJob(handle);if(nativeJob==handle)nativeJob=0}
             }
             checkActive(token);referenceKey=key

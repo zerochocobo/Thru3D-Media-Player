@@ -20,6 +20,8 @@ internal class CloudStreamSource(
     @Volatile private var rangeWindow=Long.MAX_VALUE
     @Volatile private var closed = false
     private val readers = ConcurrentHashMap.newKeySet<RemoteReader>()
+    private var archivePacer: ArchiveRangePacer? = null
+    fun forArchiveReading(): CloudStreamSource { archivePacer = ArchiveRangePacer(); return this }
 
     fun prepare() { currentLink() }
     /** Independent reader ownership, retaining this immutable object's resolver and
@@ -28,6 +30,7 @@ internal class CloudStreamSource(
         check(!closed)
         return CloudStreamSource(size, resolve, connect).also {
             it.linkConnection = linkConnection; it.rangeWindow = rangeWindow
+            it.archivePacer = archivePacer
             it.link = link; it.resolvedAt = resolvedAt
         }
     }
@@ -38,7 +41,10 @@ internal class CloudStreamSource(
     }
     @Synchronized private fun currentLink(failed: CloudLink? = null): CloudLink {
         if (closed) throw CloudFailure()
-        if (link == null || failed === link || System.nanoTime() - resolvedAt > 300_000_000_000L) {
+        // OpenList's loopback capability owns provider ticket expiry. Reusing it
+        // avoids another stat/download lookup after an idle period or CDN expiry.
+        val proxyRefresh = archivePacer != null && linkConnection != null && failed === link
+        if (link == null || failed === link && !proxyRefresh || archivePacer == null && System.nanoTime() - resolvedAt > 300_000_000_000L) {
             val resolved = resolve()
             if (closed) throw CloudFailure()
             link = resolved; resolvedAt = System.nanoTime()
@@ -47,6 +53,9 @@ internal class CloudStreamSource(
     }
     override fun open(): StreamSource.Reader = synchronized(this) {
         if (closed) throw CloudFailure()
+        // A cancelled loopback client may disappear while the old handler is
+        // waiting for pacing/headers. Retire it before the next archive range.
+        if (archivePacer != null) readers.forEach { it.close() }
         RemoteReader().also { readers.add(it) }
     }
     override fun close() {
@@ -57,12 +66,16 @@ internal class CloudStreamSource(
         link = null
     }
 
-    private inner class RemoteReader : StreamSource.Reader {
+    private inner class RemoteReader : BoundedStreamReader {
         @Volatile private var done = false
         @Volatile private var connection: HttpURLConnection? = null
         private var input: InputStream? = null
         private var next = -1L
         private var end = -1L
+        private var rangeEnd = size - 1
+        override fun setRangeEnd(endInclusive: Long) {
+            if (archivePacer != null) rangeEnd = minOf(endInclusive, size - 1)
+        }
 
         override fun read(offset: Long, buffer: ByteArray, length: Int): Int {
             try {
@@ -76,7 +89,7 @@ internal class CloudStreamSource(
                         if (count <= 0) throw PlaybackFailureException(PlaybackFailure("stream_interrupted", "reading", "Upstream stream ended before the requested range"))
                         break
                     } catch (error: IOException) {
-                        if (attempt != 0 || closed || done || Thread.currentThread().isInterrupted) throw error
+                        if (archivePacer != null || attempt != 0 || closed || done || Thread.currentThread().isInterrupted) throw error
                         // A server may close an idle body while playback is
                         // paused. Resume at the first byte not returned to the
                         // caller; never restart or duplicate already read audio.
@@ -98,12 +111,13 @@ internal class CloudStreamSource(
             disconnect()
             var selected = currentLink()
             var refreshed=false;var gatewayRetried=false;var busyRetries=0
-            val requestedEnd=offset+minOf(rangeWindow,size-offset)-1
+            val requestedEnd=minOf(rangeEnd, offset+minOf(rangeWindow,size-offset)-1)
             while(true) {
                 var retry=false
                 var target = URI(selected.url)
                 for (redirect in 0..5) {
                     if (closed || done || Thread.currentThread().isInterrupted) throw cancelled()
+                    archivePacer?.await { closed || done }
                     val request = linkConnection?.invoke(target, selected) ?: connect(target)
                     synchronized(this) {
                         if (closed || done) { request.disconnect(); throw cancelled() }
@@ -113,7 +127,9 @@ internal class CloudStreamSource(
                     request.instanceFollowRedirects = false; request.useCaches = false
                     request.setRequestProperty("Accept-Encoding", "identity")
                     selected.headers(target).forEach { (name, value) -> request.setRequestProperty(name, value) }
-                    request.setRequestProperty("Range", if(rangeWindow==Long.MAX_VALUE)"bytes=$offset-" else "bytes=$offset-$requestedEnd")
+                    request.setRequestProperty("Range", if(rangeWindow==Long.MAX_VALUE && archivePacer==null)"bytes=$offset-" else "bytes=$offset-$requestedEnd")
+                    if (archivePacer != null && linkConnection != null && target.host == "127.0.0.1")
+                        request.setRequestProperty("X-Thru3D-Archive-Read", "1")
                     val status = request.responseCode
                     if (status in setOf(301, 302, 303, 307, 308)) {
                         val location = request.getHeaderField("Location") ?: throw PlaybackFailureException(PlaybackFailure("invalid_response", "reading", "Redirect has no Location header", httpStatus = status))
@@ -122,15 +138,15 @@ internal class CloudStreamSource(
                         continue
                     }
                     val reason=request.getHeaderField("X-Thru3D-Upstream-Reason").orEmpty().takeIf { it in upstreamReasons }.orEmpty()
-                    if(status in setOf(403,429,503)&&reason=="cdn_connections_limited"&&busyRetries<6) {
+                    if(archivePacer == null && status in setOf(403,429,503)&&reason=="cdn_connections_limited"&&busyRetries<6) {
                         disconnect();Thread.sleep(250L*++busyRetries);retry=true
                         break
                     }
-                    if (status in setOf(401, 403, 410) && reason!="cdn_connections_limited" && !refreshed) {
+                    if (status in setOf(401, 403, 410) && reason !in setOf("cdn_connections_limited", "cdn_rate_limited") && !refreshed) {
                         disconnect(); selected = currentLink(selected);refreshed=true;retry=true
                         break
                     }
-                    if (status in setOf(502, 503, 504) && reason!="cdn_connections_limited" && !gatewayRetried) {
+                    if (archivePacer == null && status in setOf(502, 503, 504) && reason!="cdn_connections_limited" && !gatewayRetried) {
                         // A transient proxy failure must not become a corrupt MP4
                         // packet in FFmpeg. Retry this exact range once; keep the
                         // verified link instead of repeating provider metadata work.
@@ -150,7 +166,7 @@ internal class CloudStreamSource(
                         if (start != offset || end < offset || end > requestedEnd || match.groupValues[3].toLongOrNull() != size) throw invalidRange(status)
                         val length = request.getHeaderField("Content-Length")?.toLongOrNull()
                         if (length != null && length != end - offset + 1) throw invalidRange(status)
-                    } else if (status == 200 && offset == 0L && requestedEnd==size-1 && request.getHeaderField("Content-Length")?.toLongOrNull() == size) {
+                    } else if (archivePacer == null && status == 200 && offset == 0L && requestedEnd==size-1 && request.getHeaderField("Content-Length")?.toLongOrNull() == size) {
                         end = size - 1
                     } else throw PlaybackFailureException(PlaybackFailure("range_unsupported", "reading", "Upstream ignored the requested byte range", httpStatus = status))
                     input = request.inputStream

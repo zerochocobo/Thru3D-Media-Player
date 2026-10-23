@@ -90,9 +90,12 @@ func _open(slot: int, head: Transform3D) -> void:
 		var width := minf(0.48, 0.6 * aspect)
 		window.size = Vector2(width, width / aspect)
 	owner.add_child(window)
-	var offset: Vector3 = [Vector3(0, 0.64, -1.36), Vector3(-0.95, 0.05, -1.16), Vector3(0.95, 0.05, -1.16)][slot - 1] if window.panorama \
+	var offset: Vector3 = [Vector3(0, 0.18, -1.36), Vector3(-0.95, 0.05, -1.16), Vector3(0.95, 0.05, -1.16)][slot - 1] if window.panorama \
 		else [Vector3(0.75, 0.47, -1.21), Vector3(-0.75, 0.47, -1.21), Vector3(0, 0.75, -1.30)][slot - 1]
-	window.global_transform = (anchor as Transform3D) * Transform3D(Basis.looking_at(offset.normalized()), offset.normalized() * 1.5)
+	# Panoramic slots share a fixed group layout. A newly opened flat window uses
+	# the current viewer, even if another window keeps an older group anchor alive.
+	var placement: Transform3D = anchor if window.panorama else level_head(head)
+	window.global_transform = placement * Transform3D(Basis.looking_at(offset.normalized()), offset.normalized() * 1.5)
 	window.crop_basis = _default_basis()
 	window.requested.connect(_action)
 	windows[slot] = window
@@ -124,7 +127,7 @@ func close(slot: int) -> void:
 	cancel_interaction()
 	var window: Node3D = windows[slot]
 	owner._binding.unshare(window.picture)
-	if is_instance_valid(images): images.cancel(window)
+	if is_instance_valid(images): images.cancel(window); images.unload(window)
 	windows.erase(slot)
 	_stack.erase(slot); _restack()
 	window.queue_free(); window.visible = false
@@ -160,7 +163,7 @@ func _action(slot: int, operation: String, value: float) -> void:
 	match operation:
 		"image": cancel_interaction(); image_requested.emit(windows[slot])
 		"video":
-			if is_instance_valid(images): images.cancel(windows[slot])
+			if is_instance_valid(images): images.cancel(windows[slot]); images.unload(windows[slot])
 			windows[slot].restore_video(); changed.emit()
 		"close": close(slot)
 		"zoom":
@@ -191,7 +194,7 @@ func _raise(slot: int) -> void:
 	if not _stack.is_empty() and _stack.back() == slot: return
 	_stack.erase(slot); _stack.append(slot); _restack()
 
-func press(hand: String, action: String, ray: Variant, pose: Variant, head: Variant) -> bool:
+func press(hand: String, action: String, ray: Variant, pose: Variant, head: Variant, hand_pointer: bool = false) -> bool:
 	if not active(): return false
 	if action in ["by_button", "menu_button"]: return cancel_interaction()
 	if action not in ["trigger_click", "grip_click"] or ray == null: return false
@@ -220,7 +223,9 @@ func press(hand: String, action: String, ray: Variant, pose: Variant, head: Vari
 		for window in windows.values():
 			if window.zoom_open or window.shape_open:
 				window.zoom_open = false; window.shape_open = false; window.refresh(); return true
-		return not target.is_empty()
+		# Optical hands have a pinch but no separate grip. Only a body pinch falls
+		# through to movement; buttons, crop selection and resize keep priority.
+		if not hand_pointer or target.is_empty() or not target.body: return not target.is_empty()
 	if selecting > 0: return true
 	if not target.is_empty() and target.body and pose is Transform3D and head is Transform3D:
 		var window: Node3D = windows[target.slot]

@@ -51,6 +51,7 @@ func _init(owner: Node3D) -> void:
 	menu = owner; rename = Rename.new(owner)
 
 func scope() -> String:
+	if menu.archives.browsing: return JSON.stringify(["archive", menu.archives.target.get("uri", ""), menu.archives.directory]).sha256_text()
 	var location: Array = [menu.section]
 	match menu.section:
 		menu.Section.LOCAL: location.append(menu._local_path())
@@ -76,6 +77,7 @@ func folders_first() -> bool:
 	return bool(preferences().get("folders_first", true))
 
 func grouping_supported() -> bool:
+	if menu.archives.browsing: return true
 	# Other cloud APIs do not expose a verified directory-wide grouping switch.
 	# Do not manufacture it by reordering just one API page or crawling all pages.
 	return menu.section != menu.Section.CLOUD or menu.cloud_pagination.provider() in ["", "115_open", "webdav"]
@@ -103,6 +105,7 @@ func settings_rows() -> Array:
 		[{"value": false, "label": "Off"}, {"value": true, "label": "On"}])]
 
 func folder() -> bool:
+	if menu.archives.browsing: return false # Archive contents are read-only.
 	return (menu.section == menu.Section.LOCAL and not menu._local_stack.is_empty()) or \
 		(menu.section == menu.Section.SMB and not menu._smb_server.is_empty() and not menu._smb_path.is_empty()) or \
 		(menu.section == menu.Section.CLOUD and not menu._cloud_stack.is_empty() and menu.cloud_accounts.mode.is_empty())
@@ -146,9 +149,11 @@ func order() -> String:
 	return value if supports_order(value) else "name_asc"
 
 func sortable() -> bool:
+	if menu.archives.browsing: return true
 	return folder() or (menu.section == menu.Section.DLNA and not menu._dlna_server.is_empty())
 
 func supports_order(value: String) -> bool:
+	if menu.archives.browsing: return value in Order.ORDERS and value != "source"
 	if menu.section == menu.Section.DLNA: return value in ["name_asc", "name_desc"]
 	if menu.section == menu.Section.CLOUD and not menu._cloud_stack.is_empty():
 		var supported: Variant = menu._cloud_stack[0].get("sort_orders", Order.ORDERS)
@@ -280,7 +285,7 @@ func toggle(row: Dictionary) -> void:
 
 func sort_rows() -> void:
 	if not sortable(): return
-	if menu.section == menu.Section.CLOUD: return
+	if menu.section == menu.Section.CLOUD and not menu.archives.browsing: return
 	var selected_order := order()
 	var grouped := folders_first()
 	save_preferences({"order": selected_order, "folders_first": grouped})
@@ -290,7 +295,7 @@ func choose_order(value: String, grouped: Variant = null) -> void:
 	if not sortable() or not supports_order(value): return
 	if grouped != null and not grouping_supported(): return
 	var priority := folders_first() if grouped == null else bool(grouped)
-	if menu.section == menu.Section.CLOUD:
+	if menu.section == menu.Section.CLOUD and not menu.archives.browsing:
 		if not menu.PlatformMethods.supports(menu.platform, "media_cloud_sorted_page") and not menu.PlatformMethods.supports(menu.platform, "media_cloud_directory_page") and not menu.cloud_pagination.supported(): return
 		cloud_requested_order = value if priority or not grouping_supported() else "mixed_" + value
 		cloud_rollback = {"offsets": menu._cloud_offsets.duplicate(), "page": menu._cloud_page}
@@ -302,7 +307,7 @@ func choose_order(value: String, grouped: Variant = null) -> void:
 		menu.scroll = 0.0
 	modal = ""; selected = ""
 	menu.refresh()
-	if menu.section != menu.Section.CLOUD: menu.directory_order_changed.emit()
+	if menu.section != menu.Section.CLOUD or menu.archives.browsing: menu.directory_order_changed.emit()
 
 func commit_cloud(value: String) -> void:
 	cloud_committed_order = value; cloud_requested_order = ""

@@ -145,30 +145,29 @@ func run() -> void:
 	movement.step(Vector2.RIGHT, 0, -1)
 	check(movement.eye_position == initial, "Invalid input and non-positive frame deltas leave the rig stable")
 
-	var manifest_path := "res://environments/grand_cinema/manifest.json"
-	if FileAccess.file_exists(manifest_path):
-		var manifest: Dictionary = JSON.parse_string(FileAccess.get_file_as_string(manifest_path))
-		movement = Locomotion.new()
-		movement.configure(manifest)
-		check(movement.selected_seat == "I15", "The full cinema starts in its authored central ninth-row seat")
-		var valid_seats := 0
-		var valid_exits := 0
-		for seat in manifest.seats:
-			if movement.select_seat(str(seat.id)):
-				valid_seats += 1
-				if movement.set_moving(true):
-					valid_exits += 1
-		check(valid_seats == 420, "All 420 cinema seat eye volumes are clear")
-		check(valid_exits == 420, "All 420 cinema seats have safe standing aisle exits")
-		movement.select_seat("I15")
-		movement.set_moving(true)
-		var front_exit := Vector3.ZERO
-		for seat in manifest.seats:
-			if str(seat.id) == "A15":
-				front_exit = Vector3(seat.exit_position[0], seat.exit_position[1], seat.exit_position[2])
-		check(movement.teleport_floor(front_exit), "Full cinema middle-to-front navigation connects via a side staircase")
-		check(movement.last_teleport_ms < 100, "Static navigation preparation keeps the first long teleport below 100ms on the test host")
-		print("Full cinema navigation: prepare=%dms first_teleport=%dms" % [movement.navigation_prepare_ms, movement.last_teleport_ms])
+	# Pure navigation follows the current source blueprint, never ignored old bake output.
+	var manifest: Dictionary = preload("res://scripts/environments/cinema_blueprint.gd").manifest()
+	movement = Locomotion.new()
+	movement.configure(manifest)
+	check(movement.selected_seat == "I12", "The full cinema starts in its authored central ninth-row seat")
+	var valid_seats := 0
+	var valid_exits := 0
+	for seat in manifest.seats:
+		if movement.select_seat(str(seat.id)):
+			valid_seats += 1
+			if movement.set_moving(true):
+				valid_exits += 1
+	check(valid_seats == 336, "All 336 cinema seat eye volumes are clear")
+	check(valid_exits == 336, "All 336 cinema seats have safe standing aisle exits")
+	movement.select_seat("I12")
+	movement.set_moving(true)
+	var front_exit := Vector3.ZERO
+	for seat in manifest.seats:
+		if str(seat.id) == "A12":
+			front_exit = Vector3(seat.exit_position[0], seat.exit_position[1], seat.exit_position[2])
+	check(movement.teleport_floor(front_exit), "Full cinema middle-to-front navigation connects via a side staircase")
+	check(movement.last_teleport_ms < 100, "Static navigation preparation keeps the first long teleport below 100ms on the test host")
+	print("Full cinema navigation: prepare=%dms first_teleport=%dms" % [movement.navigation_prepare_ms, movement.last_teleport_ms])
 
 	for failure in failures:
 		push_error(failure)

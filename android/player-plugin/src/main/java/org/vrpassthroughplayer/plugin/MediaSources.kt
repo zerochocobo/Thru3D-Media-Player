@@ -297,6 +297,24 @@ internal class MediaSources(
         }
     }
 
+    fun archiveStream(uri: String): String {
+        val app = context() ?: error("Archive unavailable")
+        return when (android.net.Uri.parse(uri).scheme) {
+            "file", "content" -> {
+                val source = ArchiveFileSource(app, uri)
+                try { streams().publish(source, "archive.bin") } catch (e: Exception) { source.close(); throw e }
+            }
+            "cloud" -> { CloudLibrary.start(app); CloudLibrary.audioDownload(uri, streams(), 1024*1024L, archiveReading = true) }
+            "smb", "usb" -> directPlayable(uri)
+            "dlna", "http", "https" -> {
+                val address = if (uri.startsWith("dlna://")) dlna.playable(uri) else uri
+                val source = HttpRangeStreamSource.remote(java.net.URI(address)).boundedRanges(1024*1024L).forArchiveReading()
+                try { streams().publish(source, "archive.bin") } catch (e: Exception) { source.close(); throw e }
+            }
+            else -> error("Archive source is not supported")
+        }
+    }
+
     /** Capture owns its reader; opening it must not revoke playback or its subtitle/audio leases. */
     fun capturePlayable(uri: String): String {
         val target = strm.resolve(uri)

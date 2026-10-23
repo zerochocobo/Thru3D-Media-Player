@@ -64,7 +64,7 @@ func _run() -> void:
 	menu.position = Vector3(0, 0, -2.3)
 	menu.toggle()
 	menu.set_process(false)
-	check(row(menu, "background").choices.any(func(option): return option.value == "cinema" and option.label == "Grand cinema"), "Background choices include the giant-screen auditorium")
+	check(row(menu, "background").choices.any(func(option): return option.value == "cinema" and option.label == "Grand cinema (Test)"), "Background choices include the giant-screen auditorium")
 	check(not row(menu, "background_yaw").is_empty() and not row(menu, "background_brightness").is_empty(), "Panorama controls remain available")
 	check(has_label(menu, I18n.t(PANORAMA_HINT)), "Panorama hint remains on panorama backgrounds")
 	tap(menu, choice_target(menu, "background", null, "open"))
@@ -72,28 +72,28 @@ func _run() -> void:
 	check(events.back() == ["background", "cinema"], "Same-hand ray release chooses the cinema background")
 	check(row(menu, "background_yaw").is_empty() and row(menu, "background_brightness").is_empty(), "Cinema hides unsupported panorama direction and brightness")
 	check(not has_label(menu, I18n.t(PANORAMA_HINT)), "Cinema hides the panorama-only hint")
-	check(row(menu, "cinema_interaction").choices.map(func(option): return option.value) == ["watch", "seat", "move"], "Cinema exposes watch, seat selection and movement")
+	check(row(menu, "cinema_interaction").choices.map(func(option): return option.value) == ["watch", "move"], "Cinema exposes watch and teleport without seat selection")
 	var before := events.size()
 	menu.stick_scroll(-1.0, 0.4)
 	check(events.size() == before and state.cinema_interaction == "watch", "Thumbstick never chooses an interaction mode")
-	var seat_target := choice_target(menu, "cinema_interaction", "seat")
+	var seat_target := choice_target(menu, "cinema_interaction", "move")
 	var point := origin(menu, seat_target)
 	menu.press_pointer("left_hand", point, -menu.global_basis.z, true)
 	check(events.size() == before, "Interaction does not commit on trigger press")
 	menu.release_pointer("right_hand", point, -menu.global_basis.z, true)
 	check(events.size() == before, "The other hand cannot commit a captured interaction")
 	menu.release_pointer("left_hand", point, -menu.global_basis.z, true)
-	check(events.back() == ["cinema_interaction", "seat"], "Owning trigger release enables seat selection")
+	check(events.back() == ["cinema_interaction", "move"], "Owning trigger release enables seat selection")
 	tap(menu, choice_target(menu, "cinema_interaction", "move"))
 	check(events.back() == ["cinema_interaction", "move"], "Movement reports the public setting key")
 	tap(menu, Library.ROW_BASE + 2)
 	check(events.back() == ["cinema_home", true], "Reset seat reports the home action")
-	check(menu.rows[2].detail == "Seat H11", "The seat appears as a short status")
+	check(not menu.rows[2].has("detail"), "No seat number shown in teleport UI")
 	state.cinema_ready = false
 	state.cinema_loading = true
 	menu.refresh()
 	check(menu.status == "Loading cinema…", "Cinema loading has a concise status")
-	for value in ["watch", "seat", "move"]:
+	for value in ["watch", "move"]:
 		check(not bool(button(menu, choice_target(menu, "cinema_interaction", value)).get("enabled", true)), "Unavailable interaction is disabled: " + value)
 	check(not bool(button(menu, Library.ROW_BASE + 2).get("enabled", true)), "Unavailable reset is disabled")
 	before = events.size()
@@ -115,9 +115,9 @@ func _run() -> void:
 		I18n.use(language)
 		menu.refresh()
 		check(row(menu, "cinema_interaction").title == I18n.t("Cinema interaction"), "Interaction title follows " + language)
-		for text in ["Grand cinema", "Cinema interaction", "Watch", "Choose seat", "Move", "Reset seat", "Seat %s", "Loading cinema…", "Cinema unavailable"]:
+		for text in ["Grand cinema (Test)", "Cinema interaction", "Watch", "Free movement", "Return to start", "Auto lights", "Lights on", "Lights off", "Loading cinema…", "Cinema unavailable"]:
 			check(language == "en" or I18n.t(text) != text, "Translation exists: " + language + " " + text)
-		for value in ["watch", "seat", "move"]:
+		for value in ["watch", "move"]:
 			var control := button(menu, choice_target(menu, "cinema_interaction", value))
 			var label: Label3D = control.node.get_child(0)
 			check(menu.text_width(label.text, int(label.font_size / menu.TEXT_RASTER_SCALE)) <= control.rect.size.x,

@@ -8,6 +8,9 @@ var failures: Array[String] = []
 class Host extends RefCounted:
 	var calls: Array = []
 	var draw_ok := true
+	var mask_ok := true
+	func render_pip_feather_mask(slot: int, feather: PackedFloat32Array) -> bool:
+		calls.append(["feather", slot, feather.duplicate()]); return mask_ok
 	func render_pip_atlas(slot: int, _color: int, external: bool, _mask: int, active: int, eyes: int, common: PackedFloat32Array, windows: PackedFloat32Array) -> bool:
 		calls.append(["draw", slot, external, active, eyes, common.duplicate(), windows.duplicate()]); return draw_ok
 	func create_layer_image(slot: int, width: int, height: int, _levels: int, _static: bool) -> bool:
@@ -134,6 +137,8 @@ func run() -> void:
 	for window in pip.windows.values(): window.restore_video()
 	pip.sync()
 	video.geometry = 0; video._binding.layer = true; video._apply_geometry(); pip.sync()
+	check(not renderer.direct_compatible(), "Virtual backgrounds require sampled feather rings")
+	renderer.surface_background = true; layer.alpha_blend = true
 	check(renderer.direct_compatible(), "Stereo main can retain direct Surface crops for mono cameras")
 	for tb in [false, true]:
 		for swap in [false, true]:
@@ -141,17 +146,50 @@ func run() -> void:
 				video.top_bottom = tb; video.swap_eyes = swap; video.viewing_eye = view; video._apply_geometry(); pip.sync()
 				var before := host.count_calls("draw")
 				extras = renderer.prepare(origin, 3)
-				check(extras.size() == 3 and host.count_calls("draw") == before, "Mono SBS/TB and eye swap retain direct Surface crops")
-				var values: PackedFloat32Array = extras[0].values
+				check(extras.size() == 6 and host.count_calls("draw") == before, "Mono SBS/TB and eye swap retain masked Surface crops without resampling video")
+				var values: PackedFloat32Array = extras[1].values
 				var expected_eye: int = 1 if view == 2 else 0
 				if swap: expected_eye = 1 - expected_eye
 				check(values[1] == 0 and values[19] == Layer.SURFACE and (values[10] >= expected_eye * 1024 and values[10] + values[12] <= (expected_eye + 1) * 1024 if tb else values[9] >= expected_eye * 2048 and values[9] + values[11] <= (expected_eye + 1) * 2048), "A direct BOTH-eye crop remains within the chosen source eye")
+	var mask_draws := host.count_calls("feather")
+	video._binding.ticket.slot_token += 1; pip.windows[1].position.x += 0.1
+	pip.windows[1].zoom = 2; pip.windows[1].crop_parameters(); renderer.prepare(origin,3)
+	check(host.count_calls("feather") == mask_draws, "Static masks survive new video frames, magnification and dragging")
+	for i in 3:
+		check(extras[i*2].values[27] == (Layer.MASK_WRITE | Layer.SOURCE_ALPHA) and extras[i*2+1].values[27] == Layer.MASKED,
+			"Each Surface quad has its own preceding mask")
+		check(extras[i*2].order < extras[i*2+1].order and (i == 2 or extras[i*2+1].order < extras[(i+1)*2].order),
+			"Mask/video pairs retain explicit order across overlapping windows")
+	pip.windows[2].set_size(Vector2(0.3,0.3)); renderer.prepare(origin,3)
+	check(host.count_calls("feather") == mask_draws + 1, "Resizing redraws only the procedural mask")
+	layer.alpha_blend = false
+	check(not renderer.direct_compatible(), "Missing blend extension uses the sampled path")
+	layer.alpha_blend = true; layer.runtime_layers = 15
+	check(not renderer.direct_compatible(), "Layer budget includes all three mask/video pairs plus main and subtitle")
+	layer.runtime_layers = 16
+	pip.windows[3].show_image(still_texture)
+	check(not renderer.direct_compatible(), "Mixed image/video windows cannot punch away a lower image")
+	pip.windows[3].restore_video(); pip.sync()
 	video.alignment = Vector2(0.02, 0)
 	check(not renderer.direct_compatible(), "Alignment requiring border clipping selects the complete GPU sampling path")
 	video.alignment = Vector2.ZERO; video.alpha_requested = true
 	check(not renderer.direct_compatible(), "AI effects select their processed frame instead of bypassing the mask")
 	video.alpha_requested = false; video.media.format.source_rotation_degrees = 90
 	check(not renderer.direct_compatible(), "Rotated source metadata uses the sampling path")
+	video.media.format.source_rotation_degrees = 0
+	pip.windows[1].set_size(Vector2(0.31,0.29)); host.mask_ok = false
+	check(renderer.prepare(origin,3).is_empty(), "Failed mask work exposes no unmasked Surface window")
+	renderer.commit(false)
+	check(not renderer.direct_compatible() and pip.windows.values().all(func(w): return not w.frame.visible), "Mask failure requests sampled reopening and hides invalid holes")
+	var failed_masks := host.count_calls("feather")
+	renderer.prepare(origin,3)
+	check(host.count_calls("feather") == failed_masks, "Surface mask failure is not retried each refresh")
+	host.mask_ok = true; layer.generation += 1; pip.sync()
+	check(renderer.direct_compatible() and renderer.prepare(origin,3).size() == 6, "New XR session can retry its own masks")
+	renderer.commit(true)
+	check(pip.windows.values().all(func(w): return w.frame.visible and not w.soft_rim.visible), "Successful Surface transaction restores holes without a sampled ring")
+	renderer.commit(false)
+	check(not renderer.direct_compatible() and renderer.fallback == "surface_submit", "Runtime rejection also requests shared-texture recovery")
 	var q := Quality.new(); q.settle(1000)
 	check(q.update(1500, 1024, 4000, 20, 90, false) == 512, "Startup has a settling window")
 	q.update(4000, 1024, 4000, 20, 90, false)
@@ -170,7 +208,7 @@ func run() -> void:
 	check(cheap.update(16000, 512, 1000, 20, 90, false) == 384, "Meaningful atlas cost still reduces density during sustained overload")
 	check(pip.preferences[2] == 4, "Performance adaptation never overwrites per-slot global magnification")
 	pip.clear()
-	check(host.count_calls("destroy") == 1, "Closing the group destroys its atlas and borrowed references")
+	check(renderer.size == Vector2i.ZERO and renderer._surface_mask_size == Vector2i.ZERO, "Closing the group destroys video and mask atlases")
 	# Opaque panoramas do not require the main to remain in the eye buffer.
 	video._binding.layer = false; video.media.format.clear(); video.geometry = 3; video.top_bottom = false
 	video._apply_geometry(); video.material.set_shader_parameter("source_size", Vector2(4096, 2048))
@@ -321,6 +359,12 @@ func run() -> void:
 		and actual.material.get_shader_parameter("stereo_offset") == Vector2.ZERO, "Generated depth eyes do not inherit previous native-stereo viewing or swap controls")
 	var depth_values: PackedFloat32Array = actual_layer.layer_values(actual, xr_origin, Layer.PICTURE, Vector2(4096, 1024), 1)
 	check(depth_values[9] == 0 and depth_values[Layer.STRIDE + 9] == 2048 and depth_values[11] == 2048, "Generated main layer retains independent, unshifted eyes after native single-eye viewing")
+	actual._layer_session = true; actual._binding.warped = false
+	actual.captures.recording = {"id": 77}; actual.pip.compositor.surface_background = false
+	check(actual._layer_presentation(), "A background transition cannot reopen the decoder owned by an active recording")
+	actual.captures.recording.clear()
+	check(not actual._layer_presentation(), "After recording ends an incompatible background may reopen for sampled edges")
+	actual._layer_session = false
 	actual._binding.color_rid = RID(); actual._binding.alpha_rid = RID(); actual._binding.ticket.clear(); actual.media.close(); actual.queue_free(); xr_origin.queue_free(); await process_frame
 	for failure in failures: push_error(failure)
 	print("Video PiP compositor: %d checks, %d failures" % [checks, failures.size()])

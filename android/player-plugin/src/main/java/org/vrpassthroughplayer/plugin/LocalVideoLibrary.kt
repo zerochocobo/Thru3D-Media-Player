@@ -13,6 +13,8 @@ import android.os.Environment
 import android.os.storage.StorageManager
 import android.os.storage.StorageVolume
 import android.provider.Settings
+import android.system.OsConstants
+import android.util.Log
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -325,6 +327,7 @@ internal class LocalVideoLibrary(
             if (old && !parent.resolve(move.to).exists()) 0 else if (new && !parent.resolve(move.from).exists()) 1 else -1
         }) { from, to ->
             val error = NativeMediaDelete.renameAt(parent.absolutePath.toByteArray(Charsets.UTF_8), from.toByteArray(Charsets.UTF_8), to.toByteArray(Charsets.UTF_8))
+            if (error != 0) Log.w("LocalVideoLibrary", "Native rename failed: errno=$error")
             check(error == 0)
         }.put("moves", preview).put("new_uri", Uri.fromFile(parent.resolve(bundle.moves[0].to)).toString()).put("new_title", bundle.moves[0].to)
     }
@@ -353,8 +356,11 @@ internal class LocalVideoLibrary(
             var removed = 0
             for (entry in plan.entries.sortedByDescending { it.path.count { c -> c == '/' } * 2 + if (it.path.isEmpty()) -1 else 0 }) {
                 val error = NativeMediaDelete.removeAt(file.absolutePath.toByteArray(Charsets.UTF_8), entry.path.toByteArray(Charsets.UTF_8), entry.folder)
-                if (error != 0) return JSONObject().put("partial", removed > 0).put("state", "uncertain")
-                    .put("error", if (removed > 0) "Some contents were deleted; check the folder" else "Delete result needs checking")
+                if (error != 0) {
+                    Log.w("LocalVideoLibrary", "Native tree deletion failed: errno=$error")
+                    return JSONObject().put("partial", removed > 0).put("state", "uncertain")
+                        .put("error", if (removed > 0) "Some contents were deleted; check the folder" else "Delete result needs checking")
+                }
                 removed++
             }
             return JSONObject().put("deleted", true)
@@ -363,7 +369,10 @@ internal class LocalVideoLibrary(
         MediaDeletePolicy.unchanged(file.length(), file.lastModified(), request.getLong("size"), request.getLong("modified"))
         // unlink refuses directories atomically, even when an external writer replaces the path.
         val errno = NativeMediaDelete.unlink(file.absolutePath.toByteArray(Charsets.UTF_8))
-        check(errno == 0) { "File deletion permission denied" }
+        if (errno != 0) {
+            Log.w("LocalVideoLibrary", "Native file deletion failed: errno=$errno")
+            error(if (errno == OsConstants.EACCES || errno == OsConstants.EPERM) "File deletion permission denied" else "File deletion failed")
+        }
         check(!file.exists()) { "Delete result needs checking" }
         return JSONObject().put("deleted", true)
     }

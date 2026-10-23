@@ -7,7 +7,7 @@ import java.util.LinkedHashMap
  * Keep seek landing blocks, not every byte the loopback socket reads ahead.
  * Metadata: 8 MiB (up to 6 MiB protected after preflight); transport: 16 MiB.
  * Neither cache changes the ISO address space or the demuxer's seek targets. */
-internal class IsoReadCache(source: StreamSource, onRead: (Int) -> Unit = {}) : StreamSource {
+internal class IsoReadCache(source: StreamSource, private val memoryKey: String? = null, onRead: (Int) -> Unit = {}) : StreamSource {
     companion object {
         const val BLOCK_BYTES = 64 * 1024
         const val MAX_BLOCKS = 128
@@ -23,6 +23,16 @@ internal class IsoReadCache(source: StreamSource, onRead: (Int) -> Unit = {}) : 
     private var playback = false
     private var metadataHits = 0L
     private var metadataLoads = 0L
+    private var recalledBlocks = 0L
+
+    init {
+        // A reopen of the same disc starts from the previous lease's blocks.
+        memoryKey?.let(IsoMetadataMemory::recall)?.entries?.take(MAX_BLOCKS)?.forEach { (key, data) ->
+            if (key in 0..(size - 1) / BLOCK_BYTES && data.size == minOf(BLOCK_BYTES.toLong(), size - key * BLOCK_BYTES).toInt()) {
+                blocks[key] = Block(data); recalledBlocks++
+            }
+        }
+    }
 
     fun finishPreflight() = synchronized(lock) {
         if (!closed && !playback) {
@@ -37,7 +47,7 @@ internal class IsoReadCache(source: StreamSource, onRead: (Int) -> Unit = {}) : 
         transport.stats() + mapOf("metadata_hits" to metadataHits, "metadata_loads" to metadataLoads,
             "metadata_bytes" to blocks.values.sumOf { it.data.size.toLong() },
             "protected_blocks" to blocks.values.count { it.protected }.toLong(),
-            "playback_phase" to if (playback) 1L else 0L)
+            "playback_phase" to if (playback) 1L else 0L, "recalled_blocks" to recalledBlocks)
     }
 
     override fun open(): StreamSource.Reader {
@@ -88,7 +98,10 @@ internal class IsoReadCache(source: StreamSource, onRead: (Int) -> Unit = {}) : 
         closed = true
         // transport closes the origin before waiting for a blocked IO lock.
         try { transport.close() } finally {
-            synchronized(lock) { blocks.values.forEach { it.data.fill(0) }; blocks.clear() }
+            synchronized(lock) {
+                memoryKey?.let { IsoMetadataMemory.keep(it, blocks.mapValues { entry -> entry.value.data }) }
+                blocks.values.forEach { it.data.fill(0) }; blocks.clear()
+            }
         }
     }
 }

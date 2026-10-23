@@ -55,12 +55,62 @@ func load_environment(model_path: String, manifest_path: String) -> Dictionary:
 				triangle_count += (arrays[Mesh.ARRAY_INDEX].size() if arrays[Mesh.ARRAY_INDEX] != null and not arrays[Mesh.ARRAY_INDEX].is_empty() else arrays[Mesh.ARRAY_VERTEX].size()) / 3
 		for child in node.get_children(): nodes.append(child)
 	apply_seat_detail(scene)
+	apply_baked_surfaces(scene, load(LIGHT_PATH) as Texture2D, load(LIGHT_OFF_PATH) as Texture2D)
+	apply_seat_lighting(scene)
 	return {"root": scene, "manifest": manifest, "stats": {"bytes": bytes.size(), "meshes": mesh_count,
 		"triangles": triangle_count, "seats": manifest.seats.size(), "runtime_glb": true}}
 
-## Chairs ship as coincident near/far meshes per ten-seat run, each centred on
+## Architecture surfaces carry a tiling scan; the light bake ships beside the GLB
+## and is multiplied in by an unlit shader (UV = scan, UV2 = light).
+const SURFACE_SHADER := preload("res://shaders/cinema_baked_surface.gdshader")
+const LIGHT_PATH := "res://environments/grand_cinema/cinema_light.jpg"
+const LIGHT_OFF_PATH := "res://environments/grand_cinema/cinema_light_off.jpg"
+const SEAT_SHADER := preload("res://shaders/cinema_baked_seat.gdshader")
+const FIXTURE_SHADER := preload("res://shaders/cinema_house_fixture.gdshader")
+
+static func apply_baked_surfaces(root: Node, light: Texture2D, light_off: Texture2D = null) -> int:
+	if light == null:
+		return 0
+	var count := 0
+	for node in root.find_children("Hall", "MeshInstance3D", true, false):
+		var instance := node as MeshInstance3D
+		for surface in instance.mesh.get_surface_count():
+			var source := instance.get_active_material(surface) as StandardMaterial3D
+			if source == null or source.albedo_texture == null:
+				continue
+			var material := ShaderMaterial.new()
+			material.shader = SURFACE_SHADER
+			material.set_shader_parameter("surface_texture", source.albedo_texture)
+			material.set_shader_parameter("light_texture", light)
+			material.set_shader_parameter("light_off_texture", light_off if light_off else light)
+			material.set_shader_parameter("tint", Color(source.albedo_color, 1.0))
+			instance.set_surface_override_material(surface, material)
+			count += 1
+	return count
+
+static func apply_seat_lighting(root: Node) -> int:
+	var shared := {}
+	var count := 0
+	for node in root.find_children("*", "MeshInstance3D", true, false):
+		for index in node.mesh.get_surface_count():
+			var source := node.get_active_material(index) as StandardMaterial3D
+			if not source: continue
+			var seat := str(node.name).begins_with("Seats_") and source.resource_name.begins_with("SeatDual")
+			var fixture := source.resource_name in ["Sconce", "Star"]
+			if not seat and not fixture: continue
+			var key: String = "seat" if seat else source.resource_name
+			if not shared.has(key):
+				var material := ShaderMaterial.new()
+				material.shader = SEAT_SHADER if seat else FIXTURE_SHADER
+				if seat: material.set_shader_parameter("surface_texture", source.albedo_texture)
+				else: material.set_shader_parameter("tint", Color(source.albedo_color, 1.0))
+				shared[key] = material
+			node.set_surface_override_material(index, shared[key]); count += 1
+	return count
+
+## Chairs ship as coincident near/far meshes per four-seat run, each centred on
 ## its run. Only runs around the viewer draw the detailed chair.
-const SEAT_DETAIL_RANGE := 7.0
+const SEAT_DETAIL_RANGE := 4.5
 const SEAT_DETAIL_MARGIN := 0.5
 
 static func apply_seat_detail(root: Node) -> int:

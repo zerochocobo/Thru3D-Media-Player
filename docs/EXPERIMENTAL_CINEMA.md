@@ -1,17 +1,20 @@
-# Experimental auditorium (Debug only)
+# Grand cinema (Test)
 
-The auditorium scene, seat selection, movement and desktop prototype are experiments controlled by `OS.is_debug_build()`. Release hides their entries, refuses scene loading/actions and normalizes a saved Debug cinema background to the ordinary background. Existing cinema-style screen positioning remains available in Release. Online panorama entries also remain hidden in the current UI.
+From 0.13.2 the labelled test auditorium is available in **Debug and Release**, including scene loading, dual baked lighting and movement. Saved cinema backgrounds remain selected. This replaces the older Debug-only policy; ordinary cinema screen presets remain available independently. Right A holds the movement target and releasing teleports; trigger operates menus. Right-hand-only use, floor/stair landing checks and restored menu placement follow the current production implementation.
 
-## Generate local geometry
+## Prepare complete scene resources
 
-Generated scene models and baked textures are excluded from public Git. The project-owned blueprint defines navigation geometry and seats; Blender builds and bakes the visible hall from its manifest, without external scene assets or personal media. Use the matching Godot executable and Blender 5.2:
+Generated GLBs, baked textures, authoring .blend files and raw/derived scan images are excluded from public Git. Source blueprints, material shaders, authoring scripts and source/hash metadata are included. Normal Debug/Release packaging requires the complete locally prepared scene and `Assert-CinemaPackaged.ps1` fails if navigation, scene, both light states, nine mobile textures or runtime shaders/scripts are missing. The public build does not silently disable the feature to bypass that check.
+
+Obtain the CC0 ambientCG sets named by `tools/cinema/textures/textures.json` and `tools/cinema/sample/textures/sources.json`. The latter also pins raw Color/Displacement/Roughness inputs. Place each original JPG set under `tmp/textures/raw/<asset-id>/`; original downloads remain external. With NumPy/Pillow and Blender 5.2:
 
 ```powershell
-./tools/Build-CinemaModel.ps1 -Godot godot -Blender blender
-godot --headless --editor --import --xr-mode off --path app/godot
+python tools/cinema/prepare_textures.py tmp/textures/raw
+python tools/cinema/prepare_sample_textures.py
+./tools/Build-CinemaLighting.ps1 -Godot godot -Blender blender
 ```
 
-This writes the ignored manifest, GLB and baked images under `app/godot/environments/grand_cinema/`. The Blender scripts are in `tools/cinema`; Generate-CinemaModel alone produces only the manifest. Generate them before enabling the Debug scene or running its geometry/loading/gate tests. Regeneration is optional for normal Release source builds. It does not enable the scene in Release.
+The first script defaults are not needed when an explicit raw directory is passed. The second uses repository-root tmp/textures/raw. The bake generates a persistent local authoring snapshot and hash record under `tools/cinema/full_hall/` and disposable bake output under `build/output/cinema-full-lighting/`; import copies validated scene/lighting data to the ignored runtime directory. Build-CinemaModel delegates to this dual-state pipeline. Generate-CinemaModel alone writes only navigation. Recreate these resources before full build-gate/geometry tests. The source snapshot supplies no prebuilt scene and does not claim every minimum headset's performance.
 
 ## Optional Windows desktop video
 

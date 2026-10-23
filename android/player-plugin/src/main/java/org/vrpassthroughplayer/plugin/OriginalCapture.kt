@@ -35,7 +35,8 @@ internal object OriginalClipNative {
 internal class OriginalCapture(private val context: () -> Context?, private val resolve: (String) -> String,
                                private val release: (String) -> Unit,
                                private val sidecars: (String, String) -> List<SidecarAudio.Track>,
-                               owner: (Int)->Long,flushAudio: (Int)->Unit) {
+                               owner: (Int)->Long,flushAudio: (Int)->Unit,
+                               private val retainPip: (Int)->File?, private val releasePip: (Int)->Unit) {
     private val screenshots = Executors.newSingleThreadExecutor { Thread(it, "OriginalScreenshot") }
     private val clips = Executors.newSingleThreadExecutor { Thread(it, "OriginalClip") }
     private val pictureBusy = AtomicBoolean()
@@ -66,6 +67,14 @@ internal class OriginalCapture(private val context: () -> Context?, private val 
             return id
         }
         if (movie) OriginalClipNative.prepare(id)
+        // Pin displayed previews before returning to Godot: closing/replacing a window cannot
+        // delete the files under an accepted screenshot. This performs no image/source I/O.
+        var composition: PipScreenshot? = null
+        var invalidComposition = false
+        if (!movie && request.has("pip")) {
+            try { composition = PipScreenshot(request.getJSONObject("pip"), retainPip, releasePip) }
+            catch (_: Exception) { invalidComposition = true }
+        }
         active[id] = source
         results[id] = JSONObject().put("state", "saving").put("kind", if (movie) "clip" else "screenshot").toString()
         (if (movie) clips else screenshots).execute {
@@ -78,6 +87,7 @@ internal class OriginalCapture(private val context: () -> Context?, private val 
             try {
                 android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND)
                 check(!closed)
+                check(!invalidComposition) { "Picture in picture capture unavailable" }
                 app = context() ?: error("Capture unavailable")
                 val mode = CaptureFormat.clean(request.getJSONObject("mode"))
                 require(StatFs(app.filesDir.path).availableBytes > 64L * 1024 * 1024) { "Not enough storage" }
@@ -140,7 +150,9 @@ internal class OriginalCapture(private val context: () -> Context?, private val 
                             ?: error("Could not capture source frame")
                         check(width > 0 && height > 0 && bitmap.width.toLong() * bitmap.height == width.toLong() * height) { "Full resolution capture unavailable" }
                         temporary = File.createTempFile("source-frame-", ".png", app.cacheDir)
-                        temporary!!.outputStream().use { check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)) }
+                        if (composition?.hasWindows() == true) {
+                            composition!!.compose(bitmap, temporary!!, mode, java.util.function.BooleanSupplier { closed })
+                        } else temporary!!.outputStream().use { check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)) }
                         check(!closed)
                         resolver.openOutputStream(pending, "w")!!.use { output -> temporary!!.inputStream().use { CaptureFormat.png(it, output, mode) } }
                         JSONObject().put("state", "saved").put("extension", "png").put("width", bitmap.width).put("height", bitmap.height)
@@ -166,6 +178,7 @@ internal class OriginalCapture(private val context: () -> Context?, private val 
                 if (movie) OriginalClipNative.forget(id)
                 pending?.let { runCatching { app?.contentResolver?.delete(it, null, null) } }
                 temporary?.delete(); descriptor?.close()
+                composition?.close()
                 if (lease.isNotEmpty()) release(lease)
                 extraFiles.forEach { track ->
                     runCatching { track.descriptor?.close() }
@@ -187,6 +200,6 @@ internal class OriginalCapture(private val context: () -> Context?, private val 
         private val errors = setOf("Not enough storage", "This source cannot export clips", "Capture source unavailable", "Capture save failed",
             "Recording is empty", "Recording is too short", "Clip export failed", "Clip export cancelled", "Source interrupted during export",
             "Audio track unavailable for export", "Could not capture source frame", "Full resolution capture unavailable", "Lossless container unavailable",
-            "Keyframe too far from recording start", "Clip timestamps unavailable")
+            "Keyframe too far from recording start", "Clip timestamps unavailable", "Picture in picture capture unavailable")
     }
 }

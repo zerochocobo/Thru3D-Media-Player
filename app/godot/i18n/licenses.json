@@ -116,6 +116,22 @@
     ]
   },
   {
+    "id": "pico-controller-models",
+    "name": "WebXR Input Profiles — PICO controller models",
+    "license": "MIT",
+    "assets": [
+      "player-licenses/pico-controller-models.txt"
+    ]
+  },
+  {
+    "id": "mrtk3",
+    "name": "Mixed Reality Toolkit 3 (hand pinch and ray algorithms)",
+    "license": "BSD-3-Clause",
+    "assets": [
+      "player-licenses/mrtk3.txt"
+    ]
+  },
+  {
     "id": "panorama",
     "name": "Belfast Sunset (Pure Sky)",
     "license": "CC0-1.0",

@@ -2,18 +2,41 @@ extends RefCounted
 ## Prefer the runtime's hand aim/select; joint recognition is a portability fallback.
 ## All distances below are in tracking-space metres; only the output ray is world-scaled.
 const POSITION_FLAGS := XRHandTracker.HAND_JOINT_FLAG_POSITION_VALID | XRHandTracker.HAND_JOINT_FLAG_POSITION_TRACKED
+## Joint fallback ported from MRTK3 (BSD-3-Clause, third_party/player-licenses/mrtk3.txt):
+## thumb-index tip distance over index finger length, pressed at 0.25 and released
+## above 0.30 (MRTKHandsAggregatorConfig + ArticulatedHandController hysteresis).
 const JOINTS := [XRHandTracker.HAND_JOINT_THUMB_TIP, XRHandTracker.HAND_JOINT_INDEX_FINGER_TIP,
-	XRHandTracker.HAND_JOINT_INDEX_FINGER_PHALANX_PROXIMAL, XRHandTracker.HAND_JOINT_PINKY_FINGER_PHALANX_PROXIMAL]
-const PRESS_RATIO := 0.28
-const RELEASE_RATIO := 0.46
-const SETTLE_SECONDS := 0.06
+	XRHandTracker.HAND_JOINT_INDEX_FINGER_PHALANX_PROXIMAL, XRHandTracker.HAND_JOINT_INDEX_FINGER_PHALANX_INTERMEDIATE,
+	XRHandTracker.HAND_JOINT_INDEX_FINGER_PHALANX_DISTAL]
+## Fingertips occlude each other while pinching; runtimes then infer rather than track them.
+const JOINT_FLAGS := XRHandTracker.HAND_JOINT_FLAG_POSITION_VALID
+const PRESS_RATIO := 0.25
+const RELEASE_RATIO := 0.30
+## MRTK3 switches on one frame. Two consecutive samples keep that response while a lone
+## noisy PICO frame cannot click; brief joint dropouts hold the state instead of cancelling.
+const CONFIRM_SAMPLES := 2
+const JOINT_HOLD_SECONDS := 0.25
+## MRTK3 StabilizedRay half-life, in metres of sample movement rather than seconds.
+const RAY_HALF_LIFE := 0.01
 var source := "none"
 var provider := "none"
 var ray: Variant = null
 var down := false
 var armed := false
-var _settled := 0.0
+var _confirmed := 0
+var _lost := 0.0
 var _menu_down := false
+## PICO documents XR_EXT_hand_interaction only for PICO 4 Ultra, with a 5.13.0 pinch-ray
+## defect. A profile that stays silent while joints are tracked is distrusted for this run.
+const RUNTIME_SILENCE_SECONDS := 0.5
+const RUNTIME_MISSED_PINCHES := 2
+const AUDIT_CLOSED_SECONDS := 0.06
+var runtime_trusted := true
+var _runtime_confirmed := false
+var _runtime_silent := 0.0
+var _audit_closed := 0.0
+var _audit_selected := false
+var _audit_missed := 0
 
 const HAND_PROFILES := ["/interaction_profiles/ext/hand_interaction_ext", "/interaction_profiles/microsoft/hand_interaction"]
 const SIMPLE_PROFILE := "/interaction_profiles/khr/simple_controller"
@@ -148,38 +171,58 @@ static func palm_sample(tracker: XRHandTracker, hand: String, head: Transform3D,
 		"position": position, "provider": provider, "space": space,
 		"extended": extended, "in_front": in_front, "facing_dot": facing_dot}
 
+## `trust_runtime` is the pointer's audit of the hand profile (see `_audit_runtime`).
 static func sample(tracker: XRHandTracker, hand: String, head: Transform3D, space: Transform3D, scale: float,
-		meta_aim: XRPositionalTracker = null, interaction: XRPositionalTracker = null) -> Dictionary:
+		meta_aim: XRPositionalTracker = null, interaction: XRPositionalTracker = null, trust_runtime: bool = true) -> Dictionary:
 	if not is_optical(tracker): return {}
 	# A temporarily invalid official pose cancels, rather than changing recognizer mid-pinch.
 	if meta_aim != null: return runtime_sample(meta_aim, space, scale, true)
-	if is_hand_profile(interaction, true): return runtime_sample(interaction, space, scale, false)
-	# Preserve optical ownership on invalid joints; never fall back to an emulated trigger.
-	var result := {"source": "hand", "provider": "joints"}
+	var joints := joint_sample(tracker, hand, head, space, scale)
+	if trust_runtime and is_hand_profile(interaction, true):
+		var result := runtime_sample(interaction, space, scale, false)
+		# Joint geometry audits runtimes that advertise hand selection without delivering it.
+		if joints.has("ratio"): result["joint_ratio"] = joints.ratio
+		return result
+	return joints
+
+## Thumb-index distance normalized by index finger length; INF when joints cannot say.
+static func pinch_ratio(tracker: XRHandTracker) -> float:
 	var points: Array[Vector3] = []
 	for joint in JOINTS:
-		if tracker.get_hand_joint_flags(joint) & POSITION_FLAGS != POSITION_FLAGS: return result
+		if tracker == null or tracker.get_hand_joint_flags(joint) & JOINT_FLAGS != JOINT_FLAGS: return INF
 		var point := tracker.get_hand_joint_transform(joint).origin
-		if not point.is_finite(): return result
+		if not point.is_finite(): return INF
 		points.append(point)
-	var width := points[2].distance_to(points[3])
-	if width < 0.025 or width > 0.14: return result
-	var pinch := (points[0] + points[1]) * 0.5
-	var position := space * (pinch * scale)
-	# A shoulder-to-pinch ray stays stable while fingers close, including on runtimes
-	# without hand aim. Head yaw defines the shoulder; looking down does not tilt it.
+	var finger := points[2].distance_to(points[3]) + points[3].distance_to(points[4]) + points[4].distance_to(points[1])
+	if finger < 0.04 or finger > 0.14: return INF
+	return points[0].distance_to(points[1]) / finger
+
+## MRTK3 HandRay dynamic pivot: a head-relative shoulder estimate that follows the hand.
+static func ray_pivot(hand: String, head: Transform3D, knuckle: Vector3, scale: float) -> Vector3:
+	var basis := head.basis.orthonormalized()
+	var local := basis.inverse() * (knuckle - head.origin) / scale
+	var right := hand == "right_hand"
+	var x := clampf((0.03 if right else -0.03) + 0.65 * local.x, 0.08 if right else -0.15, 0.15 if right else -0.08)
+	var y := clampf(-0.1 + minf(0.65 * local.y, 0), -0.6, -0.2)
+	return head.origin + basis * (Vector3(x, y, -0.08) * scale)
+
+static func joint_sample(tracker: XRHandTracker, hand: String, head: Transform3D, space: Transform3D, scale: float) -> Dictionary:
+	# Preserve optical ownership on invalid joints; never fall back to an emulated trigger.
+	var result := {"source": "hand", "provider": "joints"}
+	var ratio := pinch_ratio(tracker)
+	if not is_finite(ratio) or not head.is_finite() or not space.is_finite() or not is_finite(scale) or scale <= 0: return result
+	# The knuckle does not move as the fingers close, so selecting does not pull the ray.
+	var knuckle := space * (tracker.get_hand_joint_transform(XRHandTracker.HAND_JOINT_INDEX_FINGER_PHALANX_PROXIMAL).origin * scale)
+	var direction := knuckle - ray_pivot(hand, head, knuckle, scale)
 	var forward := -head.basis.z
 	forward.y = 0
 	if forward.length_squared() < 0.001: return result
-	forward = forward.normalized()
-	var right := forward.cross(Vector3.UP)
-	var shoulder := head.origin + right * (0.16 if hand == "right_hand" else -0.16) * scale - Vector3.UP * 0.18 * scale
-	var direction := position - shoulder
 	# Resting hands and hands behind the head must not accidentally open the player.
-	if not position.is_finite() or direction.length() < 0.12 * scale or (position - head.origin).dot(forward) < 0.08 * scale:
+	if not knuckle.is_finite() or direction.length() < 0.05 * scale or (knuckle - head.origin).dot(forward.normalized()) < 0.08 * scale:
 		return result
-	result["ray"] = [position, direction.normalized()]
-	result["ratio"] = points[0].distance_to(points[1]) / clampf(width, 0.045, 0.10)
+	result["ray"] = [knuckle, direction.normalized()]
+	result["ratio"] = ratio
+	result["scale"] = scale
 	return result
 
 func update(input: Dictionary, delta: float) -> Dictionary:
@@ -191,18 +234,24 @@ func update(input: Dictionary, delta: float) -> Dictionary:
 	if next_ray != null and (not next_ray[0].is_finite() or not next_ray[1].is_finite() or next_ray[1].length_squared() < 0.001):
 		next_ray = null
 	if next_source == "hand" and ((native and not input.get("pinched") is bool) or (not native and not is_finite(ratio))): next_ray = null
+	if next_source == "hand" and next_provider == "hand_profile" and runtime_trusted: _audit_runtime(input, delta)
 	var changed := next_source != source or next_provider != provider
+	if not native and next_source == "hand" and not changed and ray != null and next_ray == null:
+		_lost += clampf(delta, 0, 0.1)
+		if _lost < JOINT_HOLD_SECONDS:
+			return {"pressed": false, "released": false, "cancelled": false, "menu": false}
+	_lost = 0
 	var cancelled := changed or (ray != null and next_ray == null)
 	if cancelled:
 		down = false
 		armed = false
-		_settled = 0
+		_confirmed = 0
 	source = next_source
 	provider = next_provider
 	var was_tracked := ray != null
 	if next_ray != null and source == "hand" and not native and was_tracked and not changed:
-		var blend := 1.0 - exp(-25.0 * clampf(delta, 0, 0.1))
-		ray = [ray[0].lerp(next_ray[0], blend), ray[1].lerp(next_ray[1], blend).normalized()]
+		var half := RAY_HALF_LIFE * float(input.get("scale", 1.0))
+		ray = [_decay(ray[0], next_ray[0], half), _decay(ray[1], next_ray[1], RAY_HALF_LIFE).normalized()]
 	else:
 		ray = next_ray
 	var menu_down: bool = native and next_provider == "meta_aim" and input.get("menu_pressed", false) == true
@@ -221,12 +270,12 @@ func update(input: Dictionary, delta: float) -> Dictionary:
 			event["pressed" if down else "released"] = true
 		return event
 	# Reacquisition while pinching cannot activate anything. First open, then pinch.
-	var opening := ratio >= RELEASE_RATIO
+	var opening := ratio > RELEASE_RATIO
 	var closing := ratio <= PRESS_RATIO
 	if (not armed and opening) or (armed and not down and closing) or (down and opening):
-		_settled += clampf(delta, 0, 0.035)
-		if _settled >= SETTLE_SECONDS:
-			_settled = 0
+		_confirmed += 1
+		if _confirmed >= CONFIRM_SAMPLES:
+			_confirmed = 0
 			if not armed:
 				armed = true
 			elif down:
@@ -236,8 +285,34 @@ func update(input: Dictionary, delta: float) -> Dictionary:
 				down = true
 				event.pressed = true
 	else:
-		_settled = 0
+		_confirmed = 0
 	return event
+
+## MRTK3 StabilizedRay.DynamicExpDecay: jitter is damped, deliberate motion passes.
+static func _decay(from: Vector3, to: Vector3, half_life: float) -> Vector3:
+	return from.lerp(to, 1.0 - pow(0.5, from.distance_to(to) / half_life))
+
+func _audit_runtime(input: Dictionary, delta: float) -> void:
+	var joint_ratio := float(input.get("joint_ratio", INF))
+	# Without a tracked joint pinch there is no better recognizer to fall back to.
+	if not is_finite(joint_ratio):
+		_runtime_silent = 0; _audit_closed = 0
+		return
+	if input.get("ray") == null or not input.get("pinched") is bool:
+		_runtime_silent += clampf(delta, 0, 0.1)
+		if _runtime_silent >= RUNTIME_SILENCE_SECONDS: runtime_trusted = false
+		return
+	_runtime_silent = 0
+	if input.pinched:
+		_audit_selected = true; _runtime_confirmed = true
+	if _runtime_confirmed: return
+	if joint_ratio <= PRESS_RATIO:
+		_audit_closed += clampf(delta, 0, 0.035)
+	elif joint_ratio > RELEASE_RATIO:
+		if _audit_closed >= AUDIT_CLOSED_SECONDS and not _audit_selected:
+			_audit_missed += 1
+			if _audit_missed >= RUNTIME_MISSED_PINCHES: runtime_trusted = false
+		_audit_closed = 0; _audit_selected = false
 
 ## Sweeps are displacement gestures. Finger articulation never arms this recognizer.
 static func sweep_sample(tracker: XRHandTracker, head: Transform3D, space: Transform3D, scale: float,

@@ -10,7 +10,7 @@ const PlatformMethods := preload("res://scripts/platform_methods.gd")
 const STRIDE := 28 # floats per layer, see VideoLayerNative.setLayers
 const MAX_LAYERS := 16 # native storage bound; capacity() additionally budgets all providers
 const SURFACE_SIZE := 4096.0 # nominal swapchain units (MpvVideoBridge.LAYER_SURFACE_SIZE)
-const ORDER := -8 # beneath the menu layers (-6..-3) and eye buffers; the video panel punches the hole
+const ORDER := -32 # beneath overlays, ordered PiP pairs, menus (-6..-3), then projection
 ## Layer sources: the decoder's surface, or the RGBA picture swapchain (2D->3D pairs, photos).
 const SURFACE := 0
 const PICTURE := 1
@@ -27,12 +27,13 @@ var runtime_image_size := Vector2i.ZERO
 const OPAQUE := 0
 const SOURCE_ALPHA := 1
 ## Overlays (subtitles, magnifier) above the video, still beneath the menu layers and eye buffers.
-const OVERLAY_ORDER := -7
+const OVERLAY_ORDER := -30
+const PIP_ORDER := -29 # Three adjacent mask/video pairs: -29/-28, -27/-26, -25/-24.
 ## XR_FB_composition_layer_alpha_blend (values[27] bits 2 and 3): a mask layer beneath the video writes
 ## destination colour x (1 - m) and destination alpha m; the video above adds its colour x m.
 const MASK_WRITE := 4
 const MASKED := 8
-const MASK_ORDER := -9 # beneath the video (ORDER), above whatever the mask keeps (passthrough)
+const MASK_ORDER := -33 # beneath the video (ORDER), above whatever the mask keeps (passthrough)
 
 class Provider extends OpenXRExtensionWrapper:
 	## Read by Godot's frame end. Android runs Godot's frame and rendering on one thread.

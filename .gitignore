@@ -80,3 +80,10 @@ thru3d-signing.json
 !third_party/openexr/openexr-3.3.14.tar.gz
 !third_party/tiff/libjpeg-turbo-3.1.2.tar.gz
 !third_party/tiff/tiff-4.7.2.tar.xz
+
+# Separately prepared controller models and local cinema authoring outputs.
+/app/godot/models/controllers/pico/*.glb*
+/tools/cinema/full_hall/
+/tools/cinema/textures/*.jpg
+/tools/cinema/sample/assets/
+/tools/cinema/sample/textures/*.jpg

@@ -403,6 +403,8 @@ try {
     $nativeEvidenceDirectory = Join-Path $artifactDirectory 'native'
     New-Item -ItemType Directory -Path $nativeEvidenceDirectory -Force | Out-Null
     & "$PSScriptRoot\Assert-NarrationPackaged.ps1" -ArchivePath $apkPath
+    # Test auditorium is included in both Debug and Release (2026-10-23).
+    & "$PSScriptRoot\Assert-CinemaPackaged.ps1" -ArchivePath $apkPath
     $rvmLibrary = Join-Path $nativeEvidenceDirectory 'libquest_rvm.so'
     [IO.Compression.ZipFileExtensions]::ExtractToFile($nativeEntry, $rvmLibrary, $true)
 } finally { $apkArchive.Dispose() }

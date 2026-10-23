@@ -215,6 +215,14 @@ func run() -> void:
 	check(main_slot.raw.render_target_update_mode == SubViewport.UPDATE_DISABLED and main_slot.submit.render_target_update_mode == SubViewport.UPDATE_DISABLED, "Hidden capture stops rendering")
 	menu.visible = true; capture.update(); await frames()
 	check(menu._buttons[0].node.layers != 1, "Reopened menu returns to layers")
+	menu.set_scene_overlay(true)
+	capture.invalidate(); capture.update(); await frames()
+	check(slot_with(capture, menu._buttons[0].node).hole.material_override.shader == Capture.OVERLAY_HOLE_SHADER,
+		"Cinema overlay keeps HD capture with a depth-independent compositor hole")
+	menu.set_scene_overlay(false)
+	capture.invalidate(); capture.update(); await frames()
+	check(slot_with(capture, menu._buttons[0].node).hole.material_override.shader == Capture.HOLE_SHADER,
+		"Ordinary menus restore depth-tested compositor holes")
 	var slow_frame_pixels: Array = capture.snapshot().pixels
 	var probe := NativeFrameProbe.new(); viewport.add_child(probe); probe.set_process(false)
 	probe.enabled = true; probe.display = display; probe.fallback_reason = ""

@@ -1,0 +1,152 @@
+{
+  "velour": {
+    "source": "https://ambientcg.com/a/Fabric063",
+    "license": "CC0 1.0",
+    "tile_metres": 0.35,
+    "target_linear_rgb": [
+      0.06,
+      0.007,
+      0.014
+    ],
+    "inputs": {
+      "Color": {
+        "name": "Fabric063_2K-JPG_Color.jpg",
+        "sha256": "1ea81474ff44716711c665532769f21fcb7796d89ceac3d2d91c03670e70f03d"
+      },
+      "Displacement": {
+        "name": "Fabric063_2K-JPG_Displacement.jpg",
+        "sha256": "c7d7de18101399f9504ce1f7b3aad506192770b277da27c7f4559db498dba095"
+      },
+      "Roughness": {
+        "name": "Fabric063_2K-JPG_Roughness.jpg",
+        "sha256": "ee437bce4e2a930688157235a7d8c250c5175e234c5898c9e55be3c4249d1410"
+      }
+    },
+    "scan_contrast": 0.55
+  },
+  "leather": {
+    "source": "https://ambientcg.com/a/Leather030",
+    "license": "CC0 1.0",
+    "tile_metres": 0.45,
+    "target_linear_rgb": [
+      0.022,
+      0.015,
+      0.011
+    ],
+    "inputs": {
+      "Color": {
+        "name": "Leather030_2K-JPG_Color.jpg",
+        "sha256": "01f781b68ed9ceeeed4ec3fa725c94648edcd356f41bec5bc71df5809f6988a4"
+      },
+      "Displacement": {
+        "name": "Leather030_2K-JPG_Displacement.jpg",
+        "sha256": "bf0cd73b6bff0a06b5fa3863792d29c33d9b98bb73652ab6bf67c4d68b0cbfa0"
+      },
+      "Roughness": {
+        "name": "Leather030_2K-JPG_Roughness.jpg",
+        "sha256": "a98cbc31585eb8e9853a8e5bfd9e999955cec77940b575001b9b0fca8f51dd59"
+      }
+    },
+    "scan_contrast": 0.7
+  },
+  "shell": {
+    "source": "https://ambientcg.com/a/Plastic011",
+    "license": "CC0 1.0",
+    "tile_metres": 0.5,
+    "target_linear_rgb": [
+      0.026,
+      0.03,
+      0.035
+    ],
+    "inputs": {
+      "Color": {
+        "name": "Plastic011_2K-JPG_Color.jpg",
+        "sha256": "a6c6ec1ba88779c8804147d304cabf871a638b61c0cb5f0f15f791e0f66ed6a6"
+      },
+      "Displacement": {
+        "name": "Plastic011_2K-JPG_Displacement.jpg",
+        "sha256": "70a0577128fe05ddc6dacd31cfb0f71a1a90c1baab5f2e98b7ea4ed47a6246e4"
+      },
+      "Roughness": {
+        "name": "Plastic011_2K-JPG_Roughness.jpg",
+        "sha256": "72e84a3f7b0c17daaebf2ae749379b6f3e92c7b6e6eab4e0fabc07b2485f1621"
+      }
+    },
+    "scan_contrast": 0.16
+  },
+  "carpet": {
+    "source": "https://ambientcg.com/a/Carpet006",
+    "license": "CC0 1.0",
+    "tile_metres": 1.0,
+    "target_linear_rgb": [
+      0.055,
+      0.048,
+      0.041
+    ],
+    "inputs": {
+      "Color": {
+        "name": "Carpet006_2K-JPG_Color.jpg",
+        "sha256": "fd368d0f926d54f214cecf3f447df1176a7190ca4ab1f94a8f1cb56574e30f53"
+      },
+      "Displacement": {
+        "name": "Carpet006_2K-JPG_Displacement.jpg",
+        "sha256": "08f28e0342cd755446374a1a019e82c9f107a147ac43d987e0862a723db09d8b"
+      },
+      "Roughness": {
+        "name": "Carpet006_2K-JPG_Roughness.jpg",
+        "sha256": "24c9ae9f2f6787db9e71822440d65f409c2fcd3da28c725aa427365e280661f3"
+      }
+    },
+    "scan_contrast": 0.35
+  },
+  "wall": {
+    "source": "https://ambientcg.com/a/Fabric039",
+    "license": "CC0 1.0",
+    "tile_metres": 0.6,
+    "target_linear_rgb": [
+      0.07,
+      0.067,
+      0.061
+    ],
+    "inputs": {
+      "Color": {
+        "name": "Fabric039_2K-JPG_Color.jpg",
+        "sha256": "074b091b75cef2a757e0f51b6bc8fd92c03c06dd35ae497523484d0c90b6edab"
+      },
+      "Displacement": {
+        "name": "Fabric039_2K-JPG_Displacement.jpg",
+        "sha256": "6a6e1184adfccea4b217059a52ac70a5b3bf0cd00b3cec0010aab4187a44f15c"
+      },
+      "Roughness": {
+        "name": "Fabric039_2K-JPG_Roughness.jpg",
+        "sha256": "f99fd82129bb7c855fa6769f5e22aa5b6b2ef88e6394f8e50dc2d0b4b87b05b1"
+      }
+    },
+    "scan_contrast": 0.7
+  },
+  "wood": {
+    "source": "https://ambientcg.com/a/Wood051",
+    "license": "CC0 1.0",
+    "tile_metres": 0.8,
+    "target_linear_rgb": [
+      0.105,
+      0.054,
+      0.024
+    ],
+    "inputs": {
+      "Color": {
+        "name": "Wood051_2K-JPG_Color.jpg",
+        "sha256": "c6d61f6bfd2537f7dcb8e4c2264f77e3d8fdfbca14dcf5ff7bade7637d2125b5"
+      },
+      "Displacement": {
+        "name": "Wood051_2K-JPG_Displacement.jpg",
+        "sha256": "45d7ed4db0f22c37fa7c1f559083ecc364f760abdca8d0c65d16ead163de61c3"
+      },
+      "Roughness": {
+        "name": "Wood051_2K-JPG_Roughness.jpg",
+        "sha256": "b4855f803bbbad6fbe8a78d514f453ba1c9989b2972775f46f835402de302b44"
+      }
+    },
+    "scan_contrast": 0.45
+  }
+}

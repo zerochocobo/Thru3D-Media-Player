@@ -91,29 +91,52 @@ func _run() -> void:
 	check(transport.global_transform.is_equal_approx(bar_pose), "Playback operations preserve the fixed transport world pose")
 	main.xr_camera.look_at(transport.global_position, Vector3.UP)
 	await shot("02-production-controls-below-screen")
-	for id in ["A15", "N15", "I15"]:
-		main._cinema_request_interaction("seat")
-		for seat in main.cinema_environment._manifest.seats:
-			if str(seat.id) != id: continue
-			var eye := Vector3(seat.eye_position[0], seat.eye_position[1], seat.eye_position[2])
-			var origin := eye + Vector3(0, -0.1, 0.9)
-			main.cinema_environment.pointer_press("desktop-test", origin, Vector3.FORWARD)
-			main.cinema_environment.pointer_release("desktop-test", origin, Vector3.FORWARD, true)
-		check(main.cinema_environment.snapshot().seat == id, "Real scene can select " + id)
-		main._sync_cinema_screen(); main._place_menu(transport)
-		check(main.video.panel.global_transform.is_equal_approx(pose), "Seat change preserves movie plane " + id)
-		check(transport.global_transform.is_equal_approx(bar_pose), "Seat change preserves transport anchor " + id)
-	main._look_at_cinema(); main._cinema_request_interaction("move")
+	check(_tap(transport, transport.FREE_MOVEMENT), "Teleport is reachable directly from the playback bar")
+	check(main.cinema_environment.interaction == "move" and main._active_menu() == null, "Quick action starts teleport and dismisses controls")
 	var before: Vector3 = main.xr_camera.global_position
 	main.cinema_environment.poll_sticks(Vector2.ZERO, Vector2.ZERO, 0.016)
 	for frame in 30: main.cinema_environment.poll_sticks(Vector2(1, 0), Vector2.ZERO, 1.0 / 60)
-	check(main.xr_camera.global_position.distance_to(before) > 0.2, "Free movement changes the viewer position")
-	check(main.video.panel.global_transform.is_equal_approx(pose), "Free movement preserves the movie plane")
-	check(transport.global_transform.is_equal_approx(bar_pose), "Free movement preserves the transport anchor")
-	main._cinema_request_interaction("watch"); main._look_at_cinema()
-	await shot("03-movie-after-walking")
+	check(main.xr_camera.global_position.is_equal_approx(before), "Left stick no longer causes continuous movement")
+	var aim := Vector3.ZERO
+	for x in [-2.0, -1.0, 1.0, 2.0]:
+		for z in [-1.0, 0.0, 1.0]:
+			var direction := Vector3(x, -1.65, z).normalized()
+			var hit: Dictionary = main.cinema_environment.ray_hit(before, direction)
+			if hit.get("valid", false): aim = direction; break
+		if aim != Vector3.ZERO: break
+	check(aim != Vector3.ZERO, "Current desktop camera can aim at a clear nearby floor")
+	if aim != Vector3.ZERO:
+		main.xr_camera.look_at(before + aim, Vector3.UP)
+		for pressed in [true, false]:
+			var event := InputEventMouseButton.new(); event.button_index = MOUSE_BUTTON_RIGHT; event.pressed = pressed
+			event.position = viewport.size / 2
+			main._unhandled_input(event)
+			if pressed:
+				check(not main._looking and main.cinema_environment._capture_hand == "desktop", "Right mouse begins movement aim instead of consuming it for camera look")
+				main.cinema_environment.update_pointer("desktop", before, aim, true)
+				check(main.cinema_environment._pointer_visuals.desktop.root.visible, "Right mouse displays the actual movement arc")
+	check(main.xr_camera.global_position.distance_to(before) > .2, "Right mouse hold and release moves through the production input route")
+	check(main.video.panel.global_transform.is_equal_approx(pose), "Teleport preserves the movie plane")
+	var moved_eye: Vector3 = main.xr_camera.global_position
+	main._show_player_menu()
+	check(main.cinema_environment.interaction == "move", "Opening controls keeps free movement selected")
+	await shot("03-free-movement-footer")
+	check(_tap(transport, transport.FREE_MOVEMENT), "Shared footer turns off free movement")
+	check(main.cinema_environment.interaction == "watch" and transport.visible, "Footer returns to playback with controls visible")
+	check(main.xr_camera.global_position.is_equal_approx(moved_eye), "Returning to playback keeps the chosen viewpoint")
+	check(transport.global_position.distance_to(main.xr_camera.global_position) < 2, "Reopened playback bar is near the new viewer position")
+	main._look_at_cinema()
+	await shot("03-movie-after-teleport")
+	main._cinema_request_interaction("move")
+	var escape := InputEventKey.new(); escape.keycode = KEY_ESCAPE; escape.pressed = true
+	main._unhandled_key_input(escape)
+	check(main.cinema_environment.interaction == "watch" and transport.visible, "Escape also exits movement with playback controls visible")
+	main._cinema_request_interaction("move")
+	var held := InputEventMouseButton.new(); held.button_index = MOUSE_BUTTON_RIGHT; held.pressed = true; held.position = viewport.size / 2
+	main._unhandled_input(held)
 	main._notification(main.NOTIFICATION_APPLICATION_FOCUS_OUT)
 	check(not main._input_focused() and not main._looking, "Focus loss suspends desktop interaction")
+	check(main.cinema_environment._capture_hand.is_empty(), "Focus loss cancels held right-button movement")
 	main._notification(main.NOTIFICATION_APPLICATION_FOCUS_IN)
 	await _finish()
 

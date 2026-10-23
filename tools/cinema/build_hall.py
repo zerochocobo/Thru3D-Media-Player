@@ -32,7 +32,7 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--manifest", required=True)
     parser.add_argument("--out", required=True)
-    parser.add_argument("--atlas", type=int, default=4096)
+    parser.add_argument("--atlas", type=int, default=2048)
     parser.add_argument("--samples", type=int, default=160)
     parser.add_argument("--seat-texture", type=int, default=1024)
     parser.add_argument("--preview", default="")
@@ -234,6 +234,89 @@ SURFACES = {
     "Stage": dict(color=(0.005, 0.005, 0.006)),
 }
 
+# Real CC0 scans (tools/cinema/prepare_textures.py) per surface, with a
+# brightness factor so one calibrated scan serves several finishes.
+TEXTURE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "textures")
+with open(os.path.join(TEXTURE_DIR, "textures.json"), encoding="utf-8") as _handle:
+    TEXTURES = json.load(_handle)
+HALL_FINISH = {
+    "Carpet": ("carpet_floor", 1.0),
+    "Tread": ("carpet_tread", 1.0),
+    "Riser": ("carpet_tread", 0.45),
+    "Nosing": ("metal_brushed", 0.7),
+    "Fabric": ("wall_fabric", 1.0),
+    "FabricDeep": ("wall_fabric", 0.6),
+    "Velvet": ("velvet_black", 1.0),
+    "Reveal": ("velvet_black", 0.6),
+    "Wood": ("wood_walnut", 1.0),
+    "Ceiling": ("velvet_black", 1.3),
+    "Cloud": ("cloud_felt", 1.0),
+    "Metal": ("metal_brushed", 0.8),
+    "Rail": ("metal_brushed", 1.6),
+    "Speaker": ("velvet_black", 1.6),
+    "Door": ("wood_walnut", 0.75),
+    "Stage": ("velvet_black", 0.8),
+}
+# Baked irradiance is stored divided by this, leaving headroom near the screen.
+# Must match light_scale in app/godot/shaders/cinema_baked_surface.gdshader.
+LIGHT_SCALE = 2.0
+LIGHT_FILE = "cinema_light.jpg"
+
+
+def preview_material(key, light):
+    """Blender-side stand-in for the runtime shader: scan x factor x decoded light."""
+    texture, factor = HALL_FINISH[key]
+    mat = bpy.data.materials.new("Preview" + key)
+    mat.use_nodes = True
+    nodes, links = mat.node_tree.nodes, mat.node_tree.links
+    nodes.clear()
+    out = nodes.new("ShaderNodeOutputMaterial")
+    em = nodes.new("ShaderNodeEmission")
+    surface = nodes.new("ShaderNodeTexImage")
+    surface.image = bpy.data.images.load(os.path.join(TEXTURE_DIR, TEXTURES[texture]["file"]), check_existing=True)
+    tile_uv = nodes.new("ShaderNodeUVMap")
+    tile_uv.uv_map = "Tile"
+    links.new(tile_uv.outputs[0], surface.inputs["Vector"])
+    baked = nodes.new("ShaderNodeTexImage")
+    decoded = bpy.data.images.load(light.filepath_raw, check_existing=True)
+    decoded.colorspace_settings.name = "sRGB"
+    baked.image = decoded
+    bake_uv = nodes.new("ShaderNodeUVMap")
+    bake_uv.uv_map = "Bake"
+    links.new(bake_uv.outputs[0], baked.inputs["Vector"])
+    mul = nodes.new("ShaderNodeMix")
+    mul.data_type = "RGBA"
+    mul.blend_type = "MULTIPLY"
+    mul.inputs[0].default_value = 1.0
+    links.new(surface.outputs["Color"], mul.inputs[6])
+    links.new(baked.outputs["Color"], mul.inputs[7])
+    links.new(mul.outputs[2], em.inputs["Color"])
+    em.inputs["Strength"].default_value = factor * LIGHT_SCALE
+    links.new(em.outputs[0], out.inputs["Surface"])
+    return mat
+
+
+def hall_export_material(key, images):
+    texture, factor = HALL_FINISH[key]
+    if texture not in images:
+        images[texture] = bpy.data.images.load(os.path.join(TEXTURE_DIR, TEXTURES[texture]["file"]))
+        images[texture].pack()
+    material = unlit_material("Hall" + key, image=images[texture], uv="Tile")
+    if factor != 1.0:
+        # Image x constant exports as baseColorTexture with a baseColorFactor.
+        nodes, links = material.node_tree.nodes, material.node_tree.links
+        emission = next(n for n in nodes if n.type == "EMISSION")
+        source = emission.inputs["Color"].links[0].from_socket
+        mul = nodes.new("ShaderNodeMix")
+        mul.data_type = "RGBA"
+        mul.blend_type = "MULTIPLY"
+        mul.inputs[0].default_value = 1.0
+        mul.inputs[7].default_value = (factor, factor, factor, 1.0)
+        links.new(source, mul.inputs[6])
+        links.new(mul.outputs[2], emission.inputs["Color"])
+    return material
+
+
 # Emitters: (bake colour, bake strength, export colour). Export colours are what
 # the eye sees directly; bake strengths are what they throw onto the room.
 GLOWS = {
@@ -272,7 +355,9 @@ class Hall:
         self.tread = d["stair_tread"]
         self.step_rise = d["stair_riser"]
         self.first_z = d["first_row_z"]
-        self.first_edge = self.first_z - self.pitch * 0.5
+        self.first_edge = self.first_z + d.get("tier_front_offset", -self.pitch * 0.5)
+        self.stair_start = d.get("stair_start_z", self.first_edge)
+        self.stair_end = self.stair_start + self.rows * self.pitch
         self.rear_edge = self.first_edge + self.rows * self.pitch
         self.top = self.rows * self.riser
         self.platform = d["platform_half_width"]
@@ -294,9 +379,9 @@ class Hall:
 
     def floor_line(self, z):
         """Smooth stair nosing line beside the seating, used by wall trims."""
-        if z <= self.first_edge:
+        if z <= self.stair_start:
             return 0.0
-        return min(self.top, (z - self.first_edge) / self.pitch * self.riser)
+        return min(self.top, (z - self.stair_start) / self.pitch * self.riser)
 
     # -- Front: screen wall, masking and stage ---------------------------------
     def build_front(self):
@@ -311,11 +396,15 @@ class Hall:
         # Stage bulkhead below the screen with a warm floor wash.
         stage_front = sz + 0.04  # flush: the transport bar floats here
         h.box((-W, 0, sz - 0.12), (W, self.screen_bottom - 0.08, stage_front), "Stage", faces="+y+z")
-        f.quad_facing((-W + 0.6, 0.04, stage_front + 0.01), (W - 0.6, 0.04, stage_front + 0.01),
-                      (W - 0.6, 0.075, stage_front + 0.01), (-W + 0.6, 0.075, stage_front + 0.01), "StageGlow", (0, 0, 1))
+        # A real diffuser separated from the stage face, not a subpixel sliver.
+        f.quad_facing((-W + 0.6, 0.09, stage_front + 0.04), (W - 0.6, 0.09, stage_front + 0.04),
+                      (W - 0.6, 0.19, stage_front + 0.04), (-W + 0.6, 0.19, stage_front + 0.04), "StageGlow", (0, 0, 1))
         # Front floor from stage to the first tier.
-        h.quad_facing((-W, 0, stage_front), (W, 0, stage_front), (W, 0, self.first_edge), (-W, 0, self.first_edge),
+        P = self.platform
+        h.quad_facing((-P, 0, stage_front), (P, 0, stage_front), (P, 0, self.first_edge), (-P, 0, self.first_edge),
                       "Carpet", (0, 1, 0))
+        for xa, xb in [(-W, -P), (P, W)]:
+            h.quad_facing((xa, 0, stage_front), (xb, 0, stage_front), (xb, 0, self.stair_start), (xa, 0, self.stair_start), "Carpet", (0, 1, 0))
 
     # -- Seating tiers and stairs ------------------------------------------------
     def build_tiers(self):
@@ -338,7 +427,7 @@ class Hall:
                 self.text(letter, (x + side * 0.004, level - 0.32, z0 + 0.25), side, 0.16, "RowLetter")
         # One continuous staircase on each side, from the seating block to the wall.
         for step in range(self.rows * self.steps):
-            z0 = self.first_edge + step * self.tread
+            z0 = self.stair_start + step * self.tread
             z1 = z0 + self.tread
             top = (step + 1) * self.step_rise
             under = step * self.step_rise
@@ -352,20 +441,22 @@ class Hall:
                     f.quad_facing((x - 0.13, top - 0.085, z0 - 0.012), (x + 0.13, top - 0.085, z0 - 0.012),
                                   (x + 0.13, top - 0.04, z0 - 0.012), (x - 0.13, top - 0.04, z0 - 0.012), "StepLed", (0, 0, -1))
         # Rear cross aisle.
-        h.quad_facing((-W, self.top, self.rear_edge), (W, self.top, self.rear_edge), (W, self.top, self.back),
-                      (-W, self.top, self.back), "Carpet", (0, 1, 0))
+        h.quad_facing((-P, self.top, self.rear_edge), (P, self.top, self.rear_edge), (P, self.top, self.back),
+                      (-P, self.top, self.back), "Carpet", (0, 1, 0))
+        for xa, xb in [(-W, -P), (P, W)]:
+            h.quad_facing((xa, self.top, self.stair_end), (xb, self.top, self.stair_end), (xb, self.top, self.back), (xa, self.top, self.back), "Carpet", (0, 1, 0))
 
     def build_rails(self):
         h = self.hall
         for side in (-1.0, 1.0):
             x = side * self.rail
             for row in range(self.rows + 1):
-                z = self.first_edge + row * self.pitch + self.tread * 0.5
+                z = self.stair_start + row * self.pitch + self.tread * 0.5
                 floor = min(self.top, (row * self.steps + 1) * self.step_rise)
                 h.tube((x, floor, z), (x, floor + 0.98, z), 0.022, "Rail", segments=6)
-            start = (x, self.step_rise + 1.0, self.first_edge + self.tread * 0.5)
+            start = (x, self.step_rise + 1.0, self.stair_start + self.tread * 0.5)
             end = (x, min(self.top, (self.rows * self.steps + 1) * self.step_rise) + 1.0,
-                   self.first_edge + self.rows * self.pitch + self.tread * 0.5)
+                   self.stair_end + self.tread * 0.5)
             h.tube(start, end, 0.03, "Rail", segments=8)
             # Glass-free mid rail keeps the edge legible at a distance.
             h.tube((x, start[1] - 0.45, start[2]), (x, end[1] - 0.45, end[2]), 0.012, "Rail", segments=6)
@@ -444,9 +535,12 @@ class Hall:
         for za, zb in ((z0, mid - 0.01), (mid + 0.01, z1)):
             h.quad_facing((xd, 0, za), (xd, 0, zb), (xd, 2.4, zb), (xd, 2.4, za), "Door", inward)
             h.tube((xd - side * 0.09, 1.02, za + 0.12), (xd - side * 0.09, 1.02, zb - 0.12), 0.018, "Metal", segments=6)
-        xs = side * (W - 0.24)
+        # The diffuser must sit in front of the box's inward-facing front.
+        # Previously both faces occupied xs exactly (head-motion Z fighting).
+        housing_x = side * (W - 0.24)
+        xs = housing_x - side * 0.03
         f.quad_facing((xs, 2.78, mid - 0.22), (xs, 2.78, mid + 0.22), (xs, 2.98, mid + 0.22), (xs, 2.98, mid - 0.22), "Exit", inward)
-        h.box((min(xs, xs + side * 0.06), 2.74, mid - 0.25), (max(xs, xs + side * 0.06), 3.02, mid + 0.25), "Speaker",
+        h.box((min(housing_x, housing_x + side * 0.06), 2.74, mid - 0.25), (max(housing_x, housing_x + side * 0.06), 3.02, mid + 0.25), "Speaker",
               faces="+y-y+z-z" + ("-x" if side > 0 else "+x"))
 
     # -- Rear wall, doors and projection ports -----------------------------------
@@ -558,16 +652,22 @@ def seat_rows(manifest):
 
 
 def make_seats(texture_path, args):
-    """Returns (near, far) chair source objects sharing one baked texture."""
+    """Returns ((near seat, near end console), (far seat, far end console)), all
+    sharing one baked texture. Each seat carries the console on its left; the
+    end console closes the right-hand end of every row."""
     if not args.placeholder_seats:
         import seat_model
         seat_model.bake_seat_texture(texture_path, 256 if args.quick else args.seat_texture)
-        return seat_model.build_seat("SeatNear", 0), seat_model.build_seat("SeatFar", 1)
-    near = make_placeholder_seat(texture_path)
-    far = near.copy()
-    far.data = near.data.copy()
-    bpy.context.scene.collection.objects.link(far)
-    return near, far
+        return ((seat_model.build_seat("SeatNear", 0), seat_model.build_end_armrest("EndNear", 0)),
+                (seat_model.build_seat("SeatFar", 1), seat_model.build_end_armrest("EndFar", 1)))
+    sets = []
+    for _ in range(2):
+        seat = make_placeholder_seat(texture_path)
+        end = seat.copy()
+        end.data = seat.data.copy()
+        bpy.context.scene.collection.objects.link(end)
+        sets.append((seat, end))
+    return tuple(sets)
 
 
 def make_placeholder_seat(texture_path):
@@ -590,11 +690,12 @@ def make_placeholder_seat(texture_path):
     return obj
 
 
-SEATS_PER_CHUNK = 10
+SEATS_PER_CHUNK = 4
+SEAT_PITCH = 0.9  # replaced from the manifest at build time
 
 
-def build_seat_chunks(manifest, seat_object, suffix):
-    """Joins ten-seat runs into one mesh: few draw calls, fine-grained culling,
+def build_seat_chunks(manifest, seat_object, end_object, suffix):
+    """Joins four-seat runs into one mesh: modest draw calls, fine-grained culling,
     and a near/far switch that only details the chairs around the viewer.
     Each object's origin is its chunk centre, so distance checks are local."""
     source = seat_object.data
@@ -605,9 +706,13 @@ def build_seat_chunks(manifest, seat_object, suffix):
             picks = origins[index:index + SEATS_PER_CHUNK]
             centre = G(*[sum(o[axis] for o in picks) / len(picks) for axis in range(3)])
             bm = bmesh.new()
-            for origin in picks:
+            parts = [(source, origin) for origin in picks]
+            if picks[-1] == origins[-1]:
+                end = picks[-1]
+                parts.append((end_object.data, (end[0] + SEAT_PITCH * 0.5, end[1], end[2])))
+            for data, origin in parts:
                 count = len(bm.verts)
-                bm.from_mesh(source)
+                bm.from_mesh(data)
                 bm.verts.ensure_lookup_table()
                 bmesh.ops.translate(bm, verts=bm.verts[count:], vec=G(*origin) - centre)
             mesh = bpy.data.meshes.new("Seats_%02d%s_%s" % (row, chr(65 + index // SEATS_PER_CHUNK), suffix))
@@ -667,10 +772,35 @@ def add_screen_emitter(hall):
     return b.to_object({"ScreenLight": mat})
 
 
-def bake_hall(hall_obj, size, margin):
+def add_tile_uvs(hall_obj):
+    """Box-projects every face at its material's real-world texture scale.
+    TEXCOORD_0 is this tiling layer; the light bake becomes TEXCOORD_1."""
     mesh = hall_obj.data
     for uv in list(mesh.uv_layers):
         mesh.uv_layers.remove(uv)
+    layer = mesh.uv_layers.new(name="Tile")
+    coords = [0.0] * (len(mesh.loops) * 2)
+    names = [m.name.split(".")[0] for m in mesh.materials]
+    for polygon in mesh.polygons:
+        tile = TEXTURES[HALL_FINISH[names[polygon.material_index]][0]]["tile_metres"]
+        n = polygon.normal
+        axis = max(range(3), key=lambda i: abs(n[i]))
+        for loop in polygon.loop_indices:
+            co = mesh.vertices[mesh.loops[loop].vertex_index].co
+            if axis == 2:      # floors, treads, ceilings
+                u, v = co.x, co.y
+            elif axis == 0:    # side walls run along Blender Y
+                u, v = co.y * (1 if n.x > 0 else -1), co.z
+            else:              # front, rear and risers
+                u, v = co.x * (-1 if n.y > 0 else 1), co.z
+            coords[loop * 2] = u / tile
+            coords[loop * 2 + 1] = v / tile
+    layer.data.foreach_set("uv", coords)
+
+
+def bake_hall(hall_obj, size, margin):
+    """Bakes lighting only (no surface colour) into the second UV layer."""
+    mesh = hall_obj.data
     bake_uv = mesh.uv_layers.new(name="Bake")
     mesh.uv_layers.active = bake_uv
     select_only(hall_obj)
@@ -686,17 +816,41 @@ def bake_hall(hall_obj, size, margin):
         bpy.ops.uv.pack_islands(rotate=True, margin=0.0006)
     bpy.ops.object.mode_set(mode="OBJECT")
     print("UV unwrap %.1fs" % (time.time() - t))
-    image = bpy.data.images.new("HallLight", size, size, alpha=False, float_buffer=False)
-    image.colorspace_settings.name = "sRGB"
+    image = bpy.data.images.new("HallLightLinear", size, size, alpha=False, float_buffer=True)
+    image.colorspace_settings.name = "Non-Color"
     for material in mesh.materials:
         node = material.node_tree.nodes.new("ShaderNodeTexImage")
         node.image = image
         material.node_tree.nodes.active = node
     t = time.time()
-    bpy.ops.object.bake(type="COMBINED", pass_filter={"EMIT", "DIRECT", "INDIRECT", "DIFFUSE"},
+    bpy.ops.object.bake(type="DIFFUSE", pass_filter={"DIRECT", "INDIRECT"},
                         margin=margin, use_clear=True, target="IMAGE_TEXTURES")
     print("Hall bake %.1fs" % (time.time() - t))
     return image
+
+
+def encode_light(image, path):
+    """Stores irradiance / LIGHT_SCALE sRGB-encoded: 8-bit precision goes to the darks.
+    JPEG is fine as a source: Godot re-encodes it to ETC2/ASTC for headsets anyway."""
+    import numpy as np
+    size = image.size[0]
+    pixels = np.empty(size * size * 4, dtype=np.float32)
+    image.pixels.foreach_get(pixels)
+    pixels = pixels.reshape(size, size, 4)
+    light = pixels[..., :3]
+    print("Light p50=%.3f p99=%.3f max=%.3f scale=%.1f" % (np.percentile(light, 50), np.percentile(light, 99),
+          light.max(), LIGHT_SCALE))
+    value = np.clip(light / LIGHT_SCALE, 0.0, 1.0)
+    value = np.where(value <= 0.0031308, value * 12.92, 1.055 * np.power(value, 1 / 2.4) - 0.055)
+    encoded = bpy.data.images.new("HallLight", size, size, alpha=False, float_buffer=False)
+    encoded.colorspace_settings.name = "Non-Color"  # bytes are written exactly as computed
+    out = np.ones((size, size, 4), dtype=np.float32)
+    out[..., :3] = value
+    encoded.pixels.foreach_set(out.ravel())
+    encoded.filepath_raw = os.path.abspath(path)
+    encoded.file_format = "JPEG"
+    encoded.save(quality=95)
+    return encoded
 
 
 def bake_seat_light(chunks, hidden):
@@ -808,11 +962,15 @@ def main():
     seat_texture_path = os.path.join(work, "seat_baked.png")
     seat_bake_material = _principled("SeatBake", (0.20, 0.06, 0.07), 0.9)
     near_chunks, far_chunks = [], []
-    for source, suffix, target in zip(make_seats(seat_texture_path, args), ("near", "far"), (near_chunks, far_chunks)):
-        source.data.materials.clear()
-        source.data.materials.append(seat_bake_material)
-        target.extend(build_seat_chunks(manifest, source, suffix))
+    global SEAT_PITCH
+    SEAT_PITCH = manifest["design"]["seat_pitch"]
+    for (source, end), suffix, target in zip(make_seats(seat_texture_path, args), ("near", "far"), (near_chunks, far_chunks)):
+        for part in (source, end):
+            part.data.materials.clear()
+            part.data.materials.append(seat_bake_material)
+        target.extend(build_seat_chunks(manifest, source, end, suffix))
         bpy.data.objects.remove(source)
+        bpy.data.objects.remove(end)
     chunks = near_chunks + far_chunks
 
     setup_cycles(16 if args.quick else args.samples)
@@ -820,7 +978,9 @@ def main():
     # Detailed chairs occlude the floor and walls in the hall bake.
     for obj in far_chunks:
         obj.hide_render = True
-    atlas = bake_hall(hall_obj, 1024 if args.quick else args.atlas, 4 if args.quick else 12)
+    add_tile_uvs(hall_obj)
+    linear_light = bake_hall(hall_obj, 1024 if args.quick else args.atlas, 4 if args.quick else 8)
+    light = encode_light(linear_light, os.path.join(os.path.dirname(os.path.abspath(args.out)), LIGHT_FILE))
     bake_seat_light(near_chunks, far_chunks)
     bake_seat_light(far_chunks, near_chunks)
     for obj in chunks:
@@ -828,10 +988,7 @@ def main():
     bpy.data.objects.remove(emitter)
 
     # Swap to unlit export materials.
-    hall_material = unlit_material("Hall", image=atlas, uv="Bake")
-    hall_obj.data.materials.clear()
-    hall_obj.data.materials.append(hall_material)
-    hall_obj.data.polygons.foreach_set("material_index", [0] * len(hall_obj.data.polygons))
+    hall_keys = [m.name.split(".")[0] for m in hall_obj.data.materials]
     export_glow = {key: unlit_material(key, color=export) for key, (_, _, export) in GLOWS.items()}
     export_glow.update({key: unlit_material(key, color=color) for key, color in FIXED.items()})
     fixture_mesh = fixtures.data
@@ -844,10 +1001,16 @@ def main():
     for obj in chunks:
         obj.data.materials.clear()
         obj.data.materials.append(seat_material)
-    atlas.pack()
 
+    hall_mesh = hall_obj.data
     if args.preview:
+        # Preview only: show tiled scan x baked light, as the Godot shader does.
+        for index, key in enumerate(hall_keys):
+            hall_mesh.materials[index] = preview_material(key, light)
         render_preview(manifest, args.preview)
+    images = {}
+    for index, key in enumerate(hall_keys):
+        hall_mesh.materials[index] = hall_export_material(key, images)
     if args.save_blend:
         bpy.ops.wm.save_as_mainfile(filepath=os.path.abspath(args.save_blend))
 

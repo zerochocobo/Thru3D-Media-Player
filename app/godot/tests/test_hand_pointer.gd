@@ -19,6 +19,7 @@ class Cinema extends RefCounted:
 
 class Viewer extends Node3D:
 	var local_uri := "content://hand/video"
+	var disc := preload("res://scripts/disc_titles.gd").new()
 	var cinema := Cinema.new()
 	var geometry := 1
 	var view_camera: XRCamera3D
@@ -46,15 +47,24 @@ func make_tracker() -> XRHandTracker:
 	tracker.name = "/user/hand_tracker/right"
 	tracker.has_tracking_data = true
 	tracker.hand_tracking_source = XRHandTracker.HAND_TRACKING_SOURCE_UNOBSTRUCTED
-	var points := [Vector3(0.16, 1.42, -0.4), Vector3(0.18, 1.42, -0.4), Vector3(0.13, 1.40, -0.38), Vector3(0.20, 1.40, -0.38)]
-	for i in Hand.JOINTS.size():
-		tracker.set_hand_joint_flags(Hand.JOINTS[i], Hand.POSITION_FLAGS)
-		tracker.set_hand_joint_transform(Hand.JOINTS[i], Transform3D(Basis.IDENTITY, points[i]))
+	for joint in Hand.JOINTS: tracker.set_hand_joint_flags(joint, Hand.POSITION_FLAGS)
+	move_hand(tracker, Vector3(0.17, 1.42, -0.4), 2.0 / 7)
 	return tracker
 
+## Tips close around `center`; the index knuckle stays 7cm behind it whatever the ratio.
 func move_hand(tracker: XRHandTracker, center: Vector3, ratio: float) -> void:
-	var points := [center - Vector3(0.07 * ratio * 0.5, 0, 0), center + Vector3(0.07 * ratio * 0.5, 0, 0), center - Vector3(0.035, 0, 0), center + Vector3(0.035, 0, 0)]
+	var index := center + Vector3(0.035 * ratio, 0, 0)
+	var knuckle := center + Vector3(0, 0, 0.07)
+	var points := [center - Vector3(0.035 * ratio, 0, 0), index, knuckle, knuckle.lerp(index, 0.36), knuckle.lerp(index, 0.7)]
 	for i in Hand.JOINTS.size(): tracker.set_hand_joint_transform(Hand.JOINTS[i], Transform3D(Basis.IDENTITY, points[i]))
+
+## Pinch centre whose knuckle ray (MRTK3 dynamic pivot) passes through `target`.
+func aim_center(head: Transform3D, target: Vector3) -> Vector3:
+	var knuckle := head.origin.lerp(target, 0.3)
+	for i in 12:
+		var pivot := Hand.ray_pivot("right_hand", head, knuckle, 1)
+		knuckle = pivot + (target - pivot).normalized() * 0.4
+	return knuckle - Vector3(0, 0, 0.07)
 
 func frames(main: Node3D, tracker: XRHandTracker, center: Vector3, ratio: float) -> void:
 	move_hand(tracker, center, ratio)
@@ -76,11 +86,18 @@ func _run() -> void:
 	settle(pointer, sample(0.8))
 	check(settle(pointer, sample(0.1)).pressed and pointer.down, "Stable pinch presses")
 	check(not settle(pointer, sample(0.1)).pressed, "Held pinch does not repeat")
-	check(not settle(pointer, sample(0.35)).released and pointer.down, "Hysteresis ignores threshold jitter")
+	check(not settle(pointer, sample(0.28)).released and pointer.down, "Hysteresis ignores threshold jitter")
+	check(not pointer.update(sample(0.8), 0.014).released and pointer.down, "Single-frame opening noise does not release")
 	check(settle(pointer, sample(0.8)).released and not pointer.down, "Stable opening releases")
 	settle(pointer, sample(0.1))
 	var lost := pointer.update({"source": "hand"}, 0.014)
-	check(lost.cancelled and not lost.released and pointer.ray == null, "Loss cancels without release activation")
+	check(not lost.cancelled and not lost.released and pointer.down and pointer.ray != null, "Brief joint dropout holds the pinch")
+	check(not settle(pointer, sample(0.1)).released and pointer.down, "Pinch continues after a brief dropout")
+	var loss_events := {"released": false, "cancelled": false}
+	for frame in 30:
+		lost = pointer.update({"source": "hand"}, 0.014)
+		for key in loss_events: loss_events[key] = loss_events[key] or lost[key]
+	check(loss_events.cancelled and not loss_events.released and pointer.ray == null, "Sustained loss cancels without release activation")
 	check(not settle(pointer, sample(0.1)).pressed, "Reacquiring pinched hand requires open")
 	settle(pointer, sample(0.8))
 	settle(pointer, sample(0.1))
@@ -91,7 +108,11 @@ func _run() -> void:
 	settle(other, sample(0.8))
 	check(settle(other, sample(0.1)).pressed and not pointer.down, "Hands have independent state")
 	pointer.update(sample(0.8), 0.014)
-	check(pointer.update(sample(NAN), 0.014).cancelled and pointer.ray == null, "NaN data cannot click")
+	var nan_events := {"pressed": false, "released": false, "cancelled": false}
+	for frame in 30:
+		var nan_event: Dictionary = pointer.update(sample(NAN), 0.014)
+		for key in nan_events: nan_events[key] = nan_events[key] or nan_event[key]
+	check(nan_events.cancelled and not nan_events.pressed and not nan_events.released and pointer.ray == null, "NaN data cannot click")
 	var tracker := make_tracker()
 	check(Hand.grip_pose(tracker,Transform3D.IDENTITY,1)==null,"Missing wrist orientation never invents piece rotation")
 	var wrist := XRHandTracker.HAND_JOINT_WRIST
@@ -115,14 +136,24 @@ func _run() -> void:
 	tracker.set_hand_joint_flags(palm_joint,palm_flags); tracker.set_hand_joint_transform(palm_joint,palm_pose)
 	var head := Transform3D(Basis.IDENTITY, Vector3(0, 1.6, 0))
 	var data := Hand.sample(tracker, "right_hand", head, Transform3D.IDENTITY, 1)
-	check(data.has("ray") and is_equal_approx(data.ratio, 2.0 / 7), "Real XRHandTracker supplies scale-normalized pinch")
-	check(data.ray[1].dot(Vector3.FORWARD) > 0.99, "Shoulder ray points forwards")
+	var tips: float = tracker.get_hand_joint_transform(Hand.JOINTS[0]).origin.distance_to(tracker.get_hand_joint_transform(Hand.JOINTS[1]).origin)
+	var knuckle_origin: Vector3 = tracker.get_hand_joint_transform(Hand.JOINTS[2]).origin
+	var finger: float = knuckle_origin.distance_to(tracker.get_hand_joint_transform(Hand.JOINTS[1]).origin)
+	check(data.has("ray") and is_equal_approx(data.ratio, tips / finger), "Pinch normalized by index finger length")
+	check(data.ray[0].is_equal_approx(knuckle_origin), "Joint ray starts at the index knuckle")
+	check(data.ray[1].dot(Vector3.FORWARD) > 0.95, "Hand ray points forwards")
+	var closed := make_tracker()
+	move_hand(closed, Vector3(0.17, 1.42, -0.4), 0.1)
+	check(Hand.sample(closed, "right_hand", head, Transform3D.IDENTITY, 1).ray[0].is_equal_approx(knuckle_origin), "Closing the pinch does not move the ray origin")
 	var space := Transform3D(Basis(Vector3.UP, 0.6), Vector3(3, 0, -2))
 	var transformed := Hand.sample(tracker, "right_hand", space * Transform3D(Basis.IDENTITY, head.origin * 2), space, 2)
 	check(transformed.ray[0].is_equal_approx(space * (data.ray[0] * 2)), "World scale and recenter applied once")
 	check(is_equal_approx(transformed.ratio, data.ratio), "Pinch threshold independent of world scale")
 	tracker.set_hand_joint_flags(Hand.JOINTS[0], XRHandTracker.HAND_JOINT_FLAG_POSITION_VALID)
-	check(not Hand.sample(tracker, "right_hand", head, Transform3D.IDENTITY, 1).has("ray"), "Stale tip without POSITION_TRACKED rejected")
+	check(Hand.sample(tracker, "right_hand", head, Transform3D.IDENTITY, 1).has("ray"), "Occluded but valid fingertip keeps the pinch available")
+	tracker.set_hand_joint_flags(Hand.JOINTS[0], 0)
+	check(not Hand.sample(tracker, "right_hand", head, Transform3D.IDENTITY, 1).has("ray"), "Invalid fingertip rejected")
+	tracker.set_hand_joint_flags(Hand.JOINTS[0], Hand.POSITION_FLAGS)
 	tracker.hand_tracking_source = XRHandTracker.HAND_TRACKING_SOURCE_CONTROLLER
 	check(not Hand.is_optical(tracker), "Controller-inferred skeleton is not bare hand")
 	tracker.hand_tracking_source = XRHandTracker.HAND_TRACKING_SOURCE_UNKNOWN
@@ -199,7 +230,7 @@ func _run() -> void:
 	library.refresh()
 	if not library.visible: library.toggle()
 	var target := row - Vector3(0, 0, 1)
-	var center := Vector3(0.16, 1.42, 0).lerp(target, 0.3)
+	var center := aim_center(head, target)
 	var initial_picks := picks
 	for ratio in [0.8, 0.1, 0.8]:
 		frames(main, tracker, center, ratio)
@@ -432,6 +463,7 @@ func check_runtime_input() -> void:
 	pointer.update({"source":"hand", "provider":"meta_aim", "ray":[Vector3.ZERO, Vector3.FORWARD], "pinched":true}, 0.014)
 	event = pointer.update({"source":"hand", "provider":"hand_profile", "ray":[Vector3.ZERO, Vector3.FORWARD], "pinched":true}, 0.014)
 	check(event.cancelled and not event.released and not event.pressed and not pointer.down, "Recognizer transition mid-pinch cancels and waits for opening")
+	check_runtime_audit(optical, head)
 	var action_map := load("res://openxr_action_map.tres") as OpenXRActionMap
 	for profile in Hand.HAND_PROFILES:
 		var matches := action_map.interaction_profiles.filter(func(p): return p.interaction_profile_path == profile)
@@ -440,3 +472,60 @@ func check_runtime_input() -> void:
 		for side in ["left", "right"]:
 			var path: String = "/user/hand/" + side + ("/input/pinch_ext/value" if profile == Hand.HAND_PROFILES[0] else "/input/select/value")
 			check(matches[0].bindings.any(func(b): return b.action.resource_name == "trigger_click" and b.binding_path == path), "Both runtime hand selects mapped: " + path)
+
+func audit_frames(pointer: RefCounted, optical: XRHandTracker, head: Transform3D, interaction: XRControllerTracker, ratio: float, count: int) -> Dictionary:
+	move_hand(optical, Vector3(0.2, 1.3, -0.5), ratio)
+	var data := {}
+	for frame in count:
+		data = Hand.sample(optical, "right_hand", head, Transform3D.IDENTITY, 1, null, interaction, pointer.runtime_trusted)
+		pointer.update(data, 1.0 / 72)
+	return data
+
+func check_runtime_audit(optical: XRHandTracker, head: Transform3D) -> void:
+	for joint in Hand.JOINTS: optical.set_hand_joint_flags(joint, Hand.POSITION_FLAGS)
+	optical.hand_tracking_source = XRHandTracker.HAND_TRACKING_SOURCE_UNOBSTRUCTED
+	var profile: String = Hand.HAND_PROFILES[0]
+	# Silent aim while joints are tracked (PICO 5.13.0 pinch-ray defect) falls back to joints.
+	var interaction := make_action_hand(profile)
+	var pointer := Hand.new()
+	audit_frames(pointer, optical, head, interaction, 0.8, 4)
+	interaction.set_pose("aim", Transform3D.IDENTITY, Vector3.ZERO, Vector3.ZERO, XRPose.XR_TRACKING_CONFIDENCE_NONE)
+	var data := audit_frames(pointer, optical, head, interaction, 0.8, 20)
+	check(data.provider == "hand_profile" and pointer.runtime_trusted, "Brief runtime aim loss does not abandon the hand profile")
+	data = audit_frames(pointer, optical, head, interaction, 0.8, 30)
+	check(data.provider == "joints" and not pointer.runtime_trusted, "Runtime aim silent while joints track falls back to joints")
+	data = audit_frames(pointer, optical, head, interaction, 0.1, 10)
+	check(pointer.down, "Joint fallback selects after an open hand")
+	# Selection that never reports (zeroed pinch data) is detected from completed joint pinches.
+	interaction = make_action_hand(profile)
+	pointer = Hand.new()
+	audit_frames(pointer, optical, head, interaction, 0.8, 4)
+	audit_frames(pointer, optical, head, interaction, 0.1, 10)
+	data = audit_frames(pointer, optical, head, interaction, 0.8, 4)
+	check(data.provider == "hand_profile" and pointer.runtime_trusted, "One missed runtime pinch is tolerated")
+	audit_frames(pointer, optical, head, interaction, 0.1, 10)
+	data = audit_frames(pointer, optical, head, interaction, 0.8, 4)
+	check(data.provider == "joints" and not pointer.runtime_trusted, "Repeated runtime pinch silence falls back to joints")
+	# A runtime that has selected once owns selection; joint noise cannot demote it.
+	interaction = make_action_hand(profile)
+	pointer = Hand.new()
+	audit_frames(pointer, optical, head, interaction, 0.8, 4)
+	interaction.set_input("trigger_click", true)
+	var pressed := false
+	move_hand(optical, Vector3(0.2, 1.3, -0.5), 0.1)
+	for frame in 10:
+		pressed = pointer.update(Hand.sample(optical, "right_hand", head, Transform3D.IDENTITY, 1, null, interaction, pointer.runtime_trusted), 1.0 / 72).pressed or pressed
+	check(pressed, "Working runtime pinch selects")
+	interaction.set_input("trigger_click", false)
+	for cycle in 3:
+		audit_frames(pointer, optical, head, interaction, 0.1, 10)
+		audit_frames(pointer, optical, head, interaction, 0.8, 4)
+	check(pointer.runtime_trusted and pointer.provider == "hand_profile", "Confirmed runtime selection is not demoted by joint disagreement")
+	# Missing joints never demote the profile; it is the only recognizer then.
+	interaction = make_action_hand(profile)
+	pointer = Hand.new()
+	for joint in Hand.JOINTS: optical.set_hand_joint_flags(joint, 0)
+	interaction.set_pose("aim", Transform3D.IDENTITY, Vector3.ZERO, Vector3.ZERO, XRPose.XR_TRACKING_CONFIDENCE_NONE)
+	audit_frames(pointer, optical, head, interaction, 0.8, 60)
+	check(pointer.runtime_trusted, "Runtime profile is kept when joints cannot audit it")
+	for joint in Hand.JOINTS: optical.set_hand_joint_flags(joint, Hand.POSITION_FLAGS)

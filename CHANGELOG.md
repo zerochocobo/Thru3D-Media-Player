@@ -4,6 +4,23 @@
 
 Newest first, following product release milestones. Some development/source snapshots contained features before their product release. Original APK identifiers `0.2` and `0.4` are retained; `0.4` was also called `0.4.0` in release notes. Availability depends on device, server and media capabilities.
 
+## 0.13.2 — 2026-10-23
+
+- Unify bookmarks and A–B repeat management, with bookmark-based endpoints, clickable seek times, per-video storage and playback controls.
+- Add Blu-ray ISO title selection with separate main-feature/extra resume handling. Supported non-3D HDMV menus offer ray selection and a sharp dedicated toolbar, menu return and language carry-over. BD-J menus are identified explicitly; Java menu execution is unsupported.
+- Read ZIP/CBZ, RAR/CBR and 7z comics as folders with thumbnails/navigation memory, compatible encryption, password entry and a private password book. Solid archives and some codecs are unsupported; remote sources need bounded random reads. Provider-side extraction is not used.
+- Include current video/image PiP windows in supported original-format VR screenshots while retaining source projection/stereo packing. Screenshot and clip capabilities remain separately documented.
+- Refine inward PiP feathering, pinch dragging, initial placement and remembered image-picker directories; remove the unrelated puzzle entry from that picker.
+- Make Grand cinema (Test) available in Debug and Release, with automatic/manual dual baked lighting and movement. Hold right A to aim, release to teleport, and use trigger for menus. Improve stairs/landings, footwells, fixture depth and restored control placement. This source release supplies the generation pipeline; scene/model assets are prepared separately.
+- Fix local Quest delete/rename using search-only ancestor directory handles, retaining no-follow, no-replace and real write-permission enforcement.
+- Improve ISO/range caching, coalesce rapid comic page requests and fix archive address reuse; refine disc-menu toolbar and tooltip clarity.
+
+## 0.13.1 — 2026-10-22
+
+- Improve PICO controller visuals: prefer runtime-provided geometry, then use interaction-profile-specific Neo3, PICO 4-family or 4 Ultra fallbacks with existing trigger/grip/stick/button animation.
+- Keep controller feedback visible when runtime geometry is unavailable. OpenXR still owns poses and input mappings; this is not hardware acceptance on every PICO model.
+- Retain joint-based ray/pinch fallback code and upstream notices. The final PICO interaction profile follows the current compatibility policy; this does not claim universal PICO hand-tracking enablement.
+
 ## 0.13.0 — 2026-10-22
 
 - Add up to three picture-in-picture windows sharing the current video frame, with region selection, 1–8× zoom, movement/distance, window shapes and individual closing. Zoom is remembered per numbered window.

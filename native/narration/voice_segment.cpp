@@ -34,7 +34,7 @@ extern "C" JNIEXPORT jlong JNICALL Java_org_vrpassthroughplayer_plugin_VoiceClon
 extern "C" JNIEXPORT void JNICALL Java_org_vrpassthroughplayer_plugin_VoiceCloneNative_cancelJob(JNIEnv*,jclass,jlong id){
     std::lock_guard<std::mutex> lock(jobs_mutex);auto it=jobs.find(id);if(it!=jobs.end()){it->second->cancelled=true;jobs.erase(it);}
 }
-extern "C" JNIEXPORT void JNICALL Java_org_vrpassthroughplayer_plugin_VoiceCloneNative_extract(JNIEnv* e,jclass,jlong id,jstring input,jint index,jstring ca,jdouble start,jdouble end,jstring output,jboolean disc){
+extern "C" JNIEXPORT void JNICALL Java_org_vrpassthroughplayer_plugin_VoiceCloneNative_extract(JNIEnv* e,jclass,jlong id,jstring input,jint index,jstring ca,jdouble start,jdouble end,jstring output,jboolean disc,jint playlist){
     try {
         std::shared_ptr<Job> job;{std::lock_guard<std::mutex> lock(jobs_mutex);job=jobs.at(id);}
         if(!std::isfinite(start)||!std::isfinite(end)||start<0||end-start<3-1e-6||end-start>10+1e-6||index<0)throw std::runtime_error("Invalid segment");
@@ -46,6 +46,8 @@ extern "C" JNIEXPORT void JNICALL Java_org_vrpassthroughplayer_plugin_VoiceClone
         auto path=narration_utf8(e,input);if(path.rfind("fd://",0)==0)path="/proc/self/fd/"+path.substr(5);
         const AVInputFormat* demuxer=disc==JNI_TRUE?av_find_input_format("bd_mvc"):nullptr;
         if(disc==JNI_TRUE&&!demuxer){av_dict_free(&options);throw std::runtime_error("Disc demuxer unavailable");}
+        if(playlist<-1||playlist>99999){av_dict_free(&options);throw std::runtime_error("Invalid title");}
+        if(disc==JNI_TRUE)av_dict_set_int(&options,"playlist",playlist,0);
         int status=avformat_open_input(&a.format,path.c_str(),demuxer,&options);av_dict_free(&options);
         if(status<0)throw AudioError("Audio source unavailable",status);
         if(unsigned(index)>=a.format->nb_streams)throw std::runtime_error("Audio track unavailable");

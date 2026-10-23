@@ -108,4 +108,31 @@ class OpenListPlaybackTest {
         client.resolve(fresh)
         assertEquals(2, calls)
     }
+    @Test fun comicSourcesUseAnObjectBoundLeaseForAllGenericProviders() {
+        for(provider in listOf(CloudDrive.BAIDU,CloudDrive.ALIYUN,CloudDrive.QUARK,CloudDrive.ONEDRIVE,CloudDrive.WEBDAV)) {
+            var requests=0
+            val client=OpenListBackend.Client(mount,provider){method,route,body ->
+                assertEquals("POST",method);assertEquals("/archive-stream",route);requests++
+                assertEquals(mount,body!!.getString("mount"));assertEquals("/Comics/book.zip",body.getString("path"))
+                assertEquals(100,body.getLong("size"));assertEquals("object-guid",body.getString("id"))
+                JSONObject().put("data",JSONObject().put("stream","http://127.0.0.1:1234/capability-archive/lease/book.zip"))
+            }
+            val file=CloudFile("book.zip",false,100,"/Comics/book.zip",objectId="object-guid")
+            val link=client.resolveArchive(file)
+            assertTrue(link.url.contains("capability-archive"));assertEquals(1,requests)
+        }
+    }
+
+    @Test fun archiveSelectionAndPreparationShareOneLeaseWithoutListingTheFolder() {
+        var calls=0
+        val client=OpenListBackend.Client(mount,CloudDrive.QUARK){_,route,body ->
+            calls++;assertEquals("/archive-stream",route);assertEquals("/Comics/book.zip",body!!.getString("path"))
+            JSONObject().put("data",JSONObject().put("stream","http://127.0.0.1:1234/capability-archive/lease/book.zip")
+                .put("name","book.zip").put("size",100).put("id","object-guid"))
+        }
+        val file=client.findArchiveForPlayback("/Comics/book.zip",null)
+        val link=client.resolveArchive(file)
+        assertEquals("object-guid",file.objectId);assertTrue(link.url.contains("-archive/"));assertEquals(1,calls)
+    }
+
 }

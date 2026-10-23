@@ -23,6 +23,9 @@ internal interface StreamSource : Closeable {
     interface Reader : Closeable { fun read(offset: Long, buffer: ByteArray, length: Int): Int }
 }
 
+/** Optional capability: ordinary video, ISO and subtitle readers keep their existing ABI. */
+internal interface BoundedStreamReader : StreamSource.Reader { fun setRangeEnd(endInclusive: Long) }
+
 /** Loopback-only HTTP/1.1 server that lets MPV/FFmpeg read network files with seeks
  * (Range requests). Paths are unguessable tokens; nothing listens beyond 127.0.0.1. */
 internal class LocalStreamServer : Closeable {
@@ -61,12 +64,13 @@ internal class LocalStreamServer : Closeable {
     }
 
     /** Returns http://127.0.0.1:port/<token>/<name> for MPV; the name only helps container probing. */
-    fun publish(source: StreamSource, name: String): String {
+    /** isoMemory: a stable disc identity whose metadata blocks may outlive this lease (IsoMetadataMemory). */
+    fun publish(source: StreamSource, name: String, isoMemory: String? = null): String {
         val token = ByteArray(16).also(random::nextBytes).joinToString("") { "%02x".format(it) }
         meters[token] = TransferMeter()
         diagnostics[token] = Diagnostics()
         sources[token] = if (source is CloudStreamSource || source is HttpRangeStreamSource || source.forkable) {
-            if (name.endsWith(".iso", true)) IsoReadCache(source) { meters[token]?.add(it) }
+            if (name.endsWith(".iso", true)) IsoReadCache(source, isoMemory) { meters[token]?.add(it) }
             else AdaptiveInterleaveSource(source, meters[token])
         } else source
         return "http://127.0.0.1:${socket.localPort}/$token/${URLEncoder.encode(name, "UTF-8").replace("+", "%20")}"
@@ -178,6 +182,7 @@ internal class LocalStreamServer : Closeable {
             val opening = diagnostics[token]?.begin() ?: 0
             val opened = try { source.open() } catch (error: Exception) { record(token, source, opening, error); return respond(output, 502, "Bad Gateway") }
             opened.use { reader ->
+                if (reader is BoundedStreamReader) reader.setRangeEnd(end)
                 val buffer = ByteArray(if (reader is UpstreamMeteredReader) 64 * 1024 else 512 * 1024)
                 var offset = start
                 // Validate the upstream status/range before committing a successful HTTP response.

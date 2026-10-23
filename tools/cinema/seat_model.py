@@ -10,6 +10,7 @@ layout is derived from LOD 0, so LOD 0 and LOD 1 share the same texture.
     obj = seat_model.build_seat("Seat", lod=0)
 """
 
+import json
 import math
 import os
 import time
@@ -20,7 +21,7 @@ from mathutils import Vector
 
 MATERIAL_NAME = "CinemaSeat"
 UV_NAME = "UVMap"
-SEAT_PITCH = 0.80  # row spacing used for neighbour occlusion in the bake
+SEAT_PITCH = 0.90  # row spacing used for neighbour occlusion in the bake
 
 # Surface zones (only used while baking).
 FABRIC, SHELL, PAD, METAL, CUP, LEG = range(6)
@@ -110,6 +111,66 @@ def _arc_params(pts, closed=True):
     return [a / acc[-1] for a in acc]
 
 
+def _cross2(o, p, q):
+    return (p[0] - o[0]) * (q[1] - o[1]) - (p[1] - o[1]) * (q[0] - o[0])
+
+
+def _area2(pts, order):
+    return sum(pts[order[i]][0] * pts[order[(i + 1) % len(order)]][1]
+               - pts[order[(i + 1) % len(order)]][0] * pts[order[i]][1] for i in range(len(order)))
+
+
+def _ear_clip_hole(outer, hole):
+    """Triangulates a polygon with one hole (2D) by bridging it into a single loop."""
+    pts = list(outer) + list(hole)
+    o = list(range(len(outer)))
+    h = list(range(len(outer), len(pts)))
+    if _area2(pts, o) < 0:
+        o.reverse()
+    if _area2(pts, h) > 0:
+        h.reverse()
+    k, m = min(((a, b) for a in range(len(o)) for b in range(len(h))),
+               key=lambda ab: math.dist(pts[o[ab[0]]], pts[h[ab[1]]]))
+    order = o[:k + 1] + h[m:] + h[:m + 1] + o[k:]
+    return pts, _ear_clip(pts, order)
+
+
+def _ear_clip(pts, order=None):
+    """Ear-clipping triangulation of a simple 2D polygon (indices into pts)."""
+    cross = _cross2
+    if order is None:
+        order = list(range(len(pts)))
+        if _area2(pts, order) < 0:
+            order.reverse()
+    idx = list(order)
+    tris = []
+    guard = 0
+    while len(idx) > 3 and guard < 10000:
+        guard += 1
+        best = None
+        for k in range(len(idx)):
+            i0, i1, i2 = idx[k - 1], idx[k], idx[(k + 1) % len(idx)]
+            a, b, c = pts[i0], pts[i1], pts[i2]
+            if cross(a, b, c) <= 1e-12:
+                continue
+            if any(cross(a, b, pts[j]) >= 0 and cross(b, c, pts[j]) >= 0 and cross(c, a, pts[j]) >= 0
+                   for j in idx if j not in (i0, i1, i2) and pts[j] not in (a, b, c)):
+                continue
+            # Prefer the fattest ear for well-shaped triangles.
+            la = math.dist(a, b) + math.dist(b, c) + math.dist(c, a)
+            q = cross(a, b, c) / (la * la)
+            if best is None or q > best[0]:
+                best = (q, k)
+        if best is None:
+            break
+        k = best[1]
+        tris.append((idx[k - 1], idx[k], idx[(k + 1) % len(idx)]))
+        idx.pop(k)
+    if len(idx) == 3:
+        tris.append(tuple(idx))
+    return tris
+
+
 def _planar(key, loops, axes, zones, weight=1.0, extra_faces=()):
     """Polygon caps projected on two axes. `loops` is a list of point loops (each
     becomes one n-gon); `extra_faces` are (points, zone) quads sharing the chart."""
@@ -118,9 +179,13 @@ def _planar(key, loops, axes, zones, weight=1.0, extra_faces=()):
     for loop, zone in list(zip(loops, zones)) + list(extra_faces):
         base = len(part.verts)
         part.verts.extend(loop)
-        part.faces.append(tuple(range(base, base + len(loop))))
-        part.uvs.append([(p.dot(a), p.dot(b)) for p in loop])
-        part.zones.append(zone)
+        flat = [(p.dot(a), p.dot(b)) for p in loop]
+        # Triangulate in the projection plane itself so the chart can never fold over.
+        tris = _ear_clip(flat) if len(loop) > 4 else [tuple(range(len(loop)))]
+        for tri in tris:
+            part.faces.append(tuple(base + i for i in tri))
+            part.uvs.append([flat[i] for i in tri])
+            part.zones.append(zone)
     us = [uv[0] for f in part.uvs for uv in f]
     vs = [uv[1] for f in part.uvs for uv in f]
     part.bounds = (min(us), min(vs), max(us), max(vs))
@@ -129,53 +194,58 @@ def _planar(key, loops, axes, zones, weight=1.0, extra_faces=()):
 
 
 # ---- Backrest -------------------------------------------------------------
+#
+# Horizontal cross-sections are smooth closed curves made of pieces (quilted
+# front panel, rolled cushion edge, shell rim, side wall, rear corner, rear).
+# A curve parameter t in [0, 1) runs front centre -> right side -> rear centre
+# -> left side; piece boundaries sit at fixed t, so every LOD samples the same
+# surface at a subset of parameters and zones/UVs stay consistent.
 
 RECLINE = math.radians(12.0)
 BACK_FRONT_Y = -0.175     # cushion front y at z = 0.46
 BACK_REAR_LIMIT = -0.374
 BACK_TOP_Z = 1.068
 ARC = 0.040               # front-view curvature of the headrest top
-
-# name, x, a, b : depth offset d = a - b * depth (0 = cushion front, negative = back)
-BACK_HALF = [
-    ("c", 0.000, 0.006, 0.00),
-    ("g1", 0.068, -0.017, 0.00),
-    ("p1", 0.112, 0.005, 0.00),
-    ("g2", 0.156, -0.017, 0.00),
-    ("p2", 0.196, 0.006, 0.00),
-    ("g3", 0.232, -0.015, 0.00),
-    ("b", 0.263, 0.030, 0.00),
-    ("k", 0.291, 0.000, 0.10),
-    ("s", 0.303, 0.000, 0.30),
-    ("lip", 0.317, 0.002, 0.32),
-    ("sh", 0.323, 0.000, 0.60),
-    ("rc", 0.308, 0.000, 0.84),
-    ("rk", 0.250, -0.002, 0.965),
-    ("rm", 0.130, -0.005, 0.995),
-    ("rear", 0.000, -0.006, 1.00),
-]
-BACK_FRONT_NAMES = {"c", "g1", "p1", "g2", "p2", "g3", "b"}
-# Zone of the segment leaving each half point towards the rear.
-BACK_SEG_ZONE = {n: FABRIC for n in ("c", "g1", "p1", "g2", "p2", "g3", "b", "k")}
-BACK_SEG_ZONE.update({n: SHELL for n in ("s", "lip", "sh", "rc", "rk", "rm")})
+BACK_XF = 0.290           # end of the quilted panel / start of the rolled edge
+BACK_ROLL = 0.036         # radius of the rolled cushion edge (upholstery 0.652 m wide)
+BACK_W = 0.358            # shell half width: tucks 3 mm into the consoles at x = +/-0.355
+BACK_GROOVES = (0.076, 0.173, 0.257)
+BACK_T = (0.0, 0.18, 0.22, 0.235, 0.27, 0.315, 0.5)
+BACK_SEAM_T = BACK_T[4]   # UV seam on the right side (sampled by every LOD)
 
 # name, z, front bulge, x scale, top compression, arc weight, depth
 BACK_ROWS = [
-    ("r0", 0.360, 0.000, 0.950, 1.00, 0.00, 0.120),
-    ("r1", 0.448, 0.004, 0.985, 1.00, 0.00, 0.140),
+    ("r0", 0.360, 0.000, 1.000, 1.00, 0.00, 0.120),
+    ("r1", 0.448, 0.004, 1.000, 1.00, 0.00, 0.140),
     ("r2", 0.560, 0.022, 1.000, 1.00, 0.00, 0.152),
-    ("r3", 0.680, 0.012, 1.000, 1.00, 0.00, 0.152),
-    ("r4", 0.790, 0.004, 1.000, 1.00, 0.00, 0.142),
-    ("r5", 0.852, -0.012, 1.000, 1.00, 0.10, 0.097),   # headrest seam; trim recess on the rear
-    ("r6", 0.900, 0.016, 1.000, 1.00, 0.30, 0.136),    # headrest pad
-    ("r7", 0.980, 0.020, 1.000, 1.00, 0.60, 0.122),
-    ("r8", 1.035, 0.008, 0.995, 0.86, 0.85, 0.104),
-    ("r9", BACK_TOP_Z, 0.000, 0.950, 0.42, 1.00, 0.092),
+    ("r4", 0.750, 0.008, 1.000, 1.00, 0.00, 0.146),
+    ("r5", 0.852, -0.010, 1.000, 1.00, 0.10, 0.097),   # headrest seam; trim recess on the rear
+    ("r6", 0.905, 0.016, 1.000, 1.00, 0.30, 0.136),    # headrest pad
+    ("r7", 0.975, 0.020, 0.995, 1.00, 0.60, 0.122),
+    ("r7b", 1.004, 0.016, 0.988, 0.93, 0.72, 0.113),   # extra row: rounder headrest shoulder
+    ("r8", 1.028, 0.010, 0.975, 0.82, 0.85, 0.104),
+    ("r9", 1.056, 0.004, 0.940, 0.55, 0.95, 0.096),
+    ("r10", BACK_TOP_Z, 0.000, 0.880, 0.25, 1.00, 0.092),
 ]
-BACK_LOD = {
-    0: ([h[0] for h in BACK_HALF], [r[0] for r in BACK_ROWS]),
-    1: (["c", "p2", "b", "s", "sh", "rk", "rear"], ["r0", "r2", "r4", "r6", "r8", "r9"]),
-}
+
+
+def _half_t(lod):
+    """Curve parameters sampled on the right half (0 < t < 0.5)."""
+    T = BACK_T
+    if lod == 0:
+        p1 = [x / BACK_XF for x in (0.038, 0.064, 0.076, 0.088, 0.125, 0.161, 0.173, 0.185,
+                                    0.215, 0.241, 0.257, 0.273)] + [1.0]
+        pieces = (p1, [0.2, 0.4, 0.6, 0.8, 1.0], [0.5, 1.0], [1.0], [0.33, 0.67, 1.0], [0.33, 0.67])
+    else:
+        pieces = ([0.5, 1.0], [1.0], [1.0], [1.0], [1.0], [0.5])  # keeps the shell flush with the consoles
+    out = []
+    for i, ss in enumerate(pieces):
+        out += [T[i] + s * (T[i + 1] - T[i]) for s in ss]
+    return out
+
+
+BACK_LOD = {0: (_half_t(0), [r[0] for r in BACK_ROWS]),
+            1: (_half_t(1), ["r0", "r2", "r4", "r7", "r9", "r10"])}
 
 
 def _back_front_y(z):
@@ -186,55 +256,101 @@ def _back_depth(z, depth):
     return min(depth, _back_front_y(z) - BACK_REAR_LIMIT - 0.006)
 
 
-def _back_loop_names(half_names):
-    """Full loop order starting at the right cushion side so the UV seam sits on the side."""
-    right = [n for n in half_names]                       # front centre -> rear centre (x >= 0)
-    left = [n for n in reversed(half_names[1:-1])]        # rear -> front on the left (x < 0)
-    loop = [(n, 1) for n in right] + [(n, -1) for n in left]
-    start = next(i for i, (n, s) in enumerate(loop) if n in ("sh", "s") and s == 1)
-    return loop[start:] + loop[:start]
+def _back_panel(x, bulge):
+    """Quilted front: soft rounded channel grooves and a bolster rising into the rolled edge."""
+    ax = min(abs(x), BACK_XF)
+    d = 0.004 + bulge
+    for g in BACK_GROOVES:
+        d -= 0.015 * math.exp(-((ax - g) / 0.011) ** 2)
+    return d + 0.022 * math.exp(-((ax - BACK_XF) / 0.024) ** 2)
 
 
-def _back_point(name, side, row):
+def _back_section(t, depth, bulge):
+    """(x, d) on the right half for 0 <= t <= 0.5; d = 0 is the nominal cushion front."""
+    T = BACK_T
+    dF = _back_panel(BACK_XF, bulge)
+    side_len = max(0.004, 0.32 * depth - BACK_ROLL)
+    y1 = dF - BACK_ROLL - side_len
+    wall_top = min(y1 - 0.010, dF - 0.40 * depth)
+    r2 = 0.30 * depth
+    wall_bot = -depth + r2
+    xc = BACK_XF + BACK_ROLL
+    if t <= T[1]:
+        x = BACK_XF * t / T[1]
+        return x, _back_panel(x, bulge)
+    if t <= T[2]:
+        s = (t - T[1]) / (T[2] - T[1])
+        if s <= 0.8:
+            phi = 0.5 * math.pi * (1.0 - s / 0.8)
+            return BACK_XF + BACK_ROLL * math.cos(phi), dF - BACK_ROLL + BACK_ROLL * math.sin(phi)
+        return xc, dF - BACK_ROLL - side_len * (s - 0.8) / 0.2
+    if t <= T[3]:
+        s = (t - T[2]) / (T[3] - T[2])
+        p0, p1, p2 = (xc, y1), (xc + 0.019, y1 - 0.003), (BACK_W, wall_top)
+        a, b, k = (p0, p1, s / 0.5) if s <= 0.5 else (p1, p2, (s - 0.5) / 0.5)
+        return a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k
+    if t <= T[4]:
+        s = (t - T[3]) / (T[4] - T[3])
+        return BACK_W + 0.002 * math.sin(math.pi * s), wall_top + (wall_bot - wall_top) * s
+    if t <= T[5]:
+        s = (t - T[4]) / (T[5] - T[4])
+        phi = -0.5 * math.pi * s
+        return BACK_W - r2 + r2 * math.cos(phi), -depth + r2 + r2 * math.sin(phi)
+    s = (t - T[5]) / (T[6] - T[5])
+    x0 = BACK_W - r2
+    x = x0 * (1.0 - s)
+    return x, -depth - 0.006 * (1.0 - (x / x0) ** 2)
+
+
+def _back_point(t, row):
     _, z, bulge, xs, squash, arc_w, depth = row
-    _, x, a, b = {h[0]: h for h in BACK_HALF}[name]
     depth = _back_depth(z, depth)
-    d = a - b * depth
-    if name in BACK_FRONT_NAMES:
-        d += bulge
+    side = 1.0
+    if t > 0.5:
+        t, side = 1.0 - t, -1.0
+    x, d = _back_section(t, depth, bulge)
     mid = -0.5 * depth
     d = mid + (d - mid) * squash
     x *= xs * side
-    zz = z - ARC * (x / 0.30) ** 2 * arc_w
+    zz = z - ARC * (x / 0.34) ** 2 * arc_w
     return Vector((x, _back_front_y(z) + d, zz))
 
 
+def _back_loop(half):
+    ts = [0.0] + list(half) + [0.5] + [1.0 - t for t in reversed(half)]
+    ts = sorted(set(round(t, 9) for t in ts))
+    start = min(range(len(ts)), key=lambda i: abs(ts[i] - BACK_SEAM_T))
+    return ts[start:] + ts[:start]
+
+
+def _back_zone(t0, t1):
+    if t1 < t0:
+        t1 += 1.0
+    t = ((t0 + t1) * 0.5) % 1.0
+    th = t if t <= 0.5 else 1.0 - t
+    return FABRIC if th < BACK_T[2] else SHELL
+
+
 def _backrest(lod):
-    names, rows = BACK_LOD[lod]
-    rows = [r for r in BACK_ROWS if r[0] in rows]
-    loop = _back_loop_names(names)
-    ref_loop = _back_loop_names(BACK_LOD[0][0])
-    ref_pts = [_back_point(n, s, BACK_ROWS[3]) for n, s in ref_loop]
-    param_of = dict(zip(ref_loop, _arc_params(ref_pts)))
-    ring_params = [param_of[key] for key in loop] + [1.0]
-    ref_rings = [[_back_point(n, s, row) for n, s in ref_loop] for row in BACK_ROWS]
-    centre_line = [_back_point("c", 1, row) for row in BACK_ROWS]
+    half, row_names = BACK_LOD[lod]
+    rows = [r for r in BACK_ROWS if r[0] in row_names]
+    loop = _back_loop(half)
+    ring_params = [(t - BACK_SEAM_T) % 1.0 for t in loop] + [1.0]
+    centre_line = [_back_point(0.0, row) for row in BACK_ROWS]
     acc = [0.0]
     for i in range(len(centre_line) - 1):
         acc.append(acc[-1] + (centre_line[i + 1] - centre_line[i]).length)
     row_param = {row[0]: acc[i] / acc[-1] for i, row in enumerate(BACK_ROWS)}
-    sweep_params = [row_param[r[0]] for r in rows]
-    rings = [[_back_point(n, s, row) for n, s in loop] for row in rows]
-    order = [h[0] for h in BACK_HALF]
-    zones = []
-    for i, (n, _) in enumerate(loop):
-        m = loop[(i + 1) % len(loop)][0]
-        zones.append(BACK_SEG_ZONE[order[min(order.index(n), order.index(m))]])
-    part = _grid("back", rings, ring_params, sweep_params, True, zones, weight=1.3)
+    rings = [[_back_point(t, row) for t in loop] for row in rows]
+    zones = [_back_zone(loop[i], loop[(i + 1) % len(loop)]) for i in range(len(loop))]
+    part = _grid("back", rings, ring_params, [row_param[r[0]] for r in rows], True, zones, weight=1.3)
+    ref_loop = _back_loop(BACK_LOD[0][0])
+    ref_rings = [[_back_point(t, row) for t in ref_loop] for row in BACK_ROWS]
     part.size = (sum(_loop_length(r) for r in ref_rings) / len(ref_rings), acc[-1])
     part.orient("out", Vector((0.0, _back_front_y(0.70) - 0.07, 0.70)))
-    top = _planar("back_top", [rings[-1]], (Vector((1, 0, 0)), Vector((0, 1, 0))), [SHELL], weight=1.0)
-    ref = _planar("back_top", [ref_rings[-1]], (Vector((1, 0, 0)), Vector((0, 1, 0))), [SHELL])
+    axes = (Vector((1, 0, 0)), Vector((0, 1, 0)))
+    top = _planar("back_top", [rings[-1]], axes, [SHELL], weight=1.0)
+    ref = _planar("back_top", [ref_rings[-1]], axes, [SHELL])
     top.bounds, top.size = ref.bounds, ref.size
     top.orient("dir", Vector((0, 0, 1)))
     return [part, top]
@@ -242,45 +358,46 @@ def _backrest(lod):
 
 # ---- Seat cushion -----------------------------------------------------------
 
-SEAT_PROFILE = [  # name, y, z, zone of segment to next, crowned top
-    ("B1", -0.100, 0.325, SHELL, False),
-    ("R0", -0.205, 0.360, FABRIC, False),
-    ("R1", -0.210, 0.410, FABRIC, False),
-    ("T0", -0.190, 0.438, FABRIC, True),
-    ("T1", -0.020, 0.458, FABRIC, True),
-    ("T2", 0.170, 0.466, FABRIC, True),
-    ("T3", 0.310, 0.462, FABRIC, True),
-    ("F0", 0.364, 0.450, FABRIC, True),
-    ("F1", 0.397, 0.426, FABRIC, False),
-    ("F2", 0.408, 0.393, FABRIC, False),
-    ("F3", 0.398, 0.361, FABRIC, False),
-    ("F4", 0.370, 0.343, SHELL, False),
-    ("P0", 0.340, 0.330, SHELL, False),
-    ("P1", 0.250, 0.318, SHELL, False),
-]
-SEAT_HALF_X = 0.275
-SEAT_STATIONS = [  # name, x, ring shrink
-    ("e0", -0.275, 0.80),
-    ("m0", -0.268, 0.95),
-    ("s0", -0.252, 1.00),
+def _seat_profile():
+    """Closed side profile (y, z, zone of segment to next, crown weight) with a round rolled front."""
+    pts = [((-0.100, 0.325), SHELL), ((-0.195, 0.352), FABRIC), ((-0.210, 0.395), FABRIC),
+           ((-0.205, 0.425), FABRIC), ((-0.190, 0.438), FABRIC), ((-0.100, 0.449), FABRIC),
+           ((0.000, 0.456), FABRIC), ((0.100, 0.460), FABRIC), ((0.200, 0.461), FABRIC),
+           ((0.290, 0.4605), FABRIC)]
+    cy, cz, r = 0.360, 0.414, 0.046
+    for deg in (90, 60, 30, 0, -30, -60):
+        a = math.radians(deg)
+        pts.append(((cy + r * math.cos(a), cz + r * math.sin(a)), FABRIC))
+    pts += [((cy, cz - r), SHELL), ((0.320, 0.332), SHELL), ((0.250, 0.320), SHELL)]
+    # Crown weight: full on the top, fading out around the rolled front so the roll never folds.
+    crown = [0.0] * len(pts)
+    for i in range(4, 11):
+        crown[i] = 1.0
+    for i, w in zip(range(11, 16), (0.8, 0.6, 0.4, 0.2, 0.0)):
+        crown[i] = w
+    return [(y, z, zone, crown[i]) for i, ((y, z), zone) in enumerate(pts)]
+
+
+SEAT_PROFILE = _seat_profile()
+SEAT_HALF_X = 0.358       # cushion tucks 3 mm into the standards on both sides
+SEAT_STATIONS = [  # name, x, ring shrink (rounded cushion sides)
+    ("e0", -0.358, 0.84), ("m0", -0.355, 0.92), ("n0", -0.348, 0.97), ("s0", -0.333, 1.00),
     ("c", 0.000, 1.00),
-    ("s1", 0.252, 1.00),
-    ("m1", 0.268, 0.95),
-    ("e1", 0.275, 0.80),
+    ("s1", 0.333, 1.00), ("n1", 0.348, 0.97), ("m1", 0.355, 0.92), ("e1", 0.358, 0.84),
 ]
 SEAT_LOD = {
-    0: ([p[0] for p in SEAT_PROFILE], [s[0] for s in SEAT_STATIONS]),
-    1: (["B1", "R1", "T0", "T2", "F0", "F2", "F4", "P1"], ["e0", "c", "e1"]),
+    0: (list(range(len(SEAT_PROFILE))), [s[0] for s in SEAT_STATIONS]),
+    1: ([0, 2, 4, 7, 10, 13, 16, 18], ["e0", "s0", "s1", "e1"]),
 }
 SEAT_CENTRE = Vector((0.0, 0.10, 0.395))
+SEAT_SEAMS = (0.110, 0.255)     # painted channel seams on the seat
 
 
 def _seat_point(prof, station):
-    _, y, z, _, crowned = prof
+    y, z, _, crown = prof
     _, x, shrink = station
     p = Vector((x, y, z))
-    if crowned:
-        p.z -= 0.012 * (x / 0.26) ** 2
+    p.z -= crown * 0.012 * (x / 0.34) ** 2
     if shrink != 1.0:
         q = SEAT_CENTRE + (Vector((0.0, p.y, p.z)) - SEAT_CENTRE) * shrink
         p = Vector((x, q.y, q.z))
@@ -288,15 +405,15 @@ def _seat_point(prof, station):
 
 
 def _seat(lod):
-    pnames, snames = SEAT_LOD[lod]
-    prof = [p for p in SEAT_PROFILE if p[0] in pnames]
+    idx, snames = SEAT_LOD[lod]
+    prof = [SEAT_PROFILE[i] for i in idx]
     stations = [s for s in SEAT_STATIONS if s[0] in snames]
-    ref_pts = [Vector((0, p[1], p[2])) for p in SEAT_PROFILE]
-    ref_params = dict(zip([p[0] for p in SEAT_PROFILE], _arc_params(ref_pts)))
-    ring_params = [ref_params[p[0]] for p in prof] + [1.0]
+    ref_pts = [Vector((0, p[0], p[1])) for p in SEAT_PROFILE]
+    ref_params = _arc_params(ref_pts)
+    ring_params = [ref_params[i] for i in idx] + [1.0]
     sweep_params = [(s[1] + SEAT_HALF_X) / (2 * SEAT_HALF_X) for s in stations]
     rings = [[_seat_point(p, s) for p in prof] for s in stations]
-    zones = [p[3] for p in prof]
+    zones = [p[2] for p in prof]
     part = _grid("seat", rings, ring_params, sweep_params, True, zones, weight=1.15)
     part.size = (_loop_length(ref_pts), 2 * SEAT_HALF_X)
     part.orient("out", SEAT_CENTRE)
@@ -312,98 +429,116 @@ def _seat(lod):
     return parts
 
 
-# ---- Armrest: leather pad, cup holder pod and side standard ----------------
+# ---- Shared armrest console and its standard ----------------------------------
+#
+# Real cinema rows share one armrest between neighbours (N seats, N + 1 armrests).
+# Each seat carries the console on its -X side, centred on the seat boundary; the
+# hall adds one end console per row. The console is generated around x = 0 and
+# then shifted, so its UV charts are identical wherever it is placed.
 
-ARM_X = 0.330
-PAD_RING = [  # name, dx, z, zone of next segment
-    ("bl", -0.040, 0.605, SHELL),
-    ("br", 0.040, 0.605, PAD),
-    ("rs", 0.045, 0.628, PAD),
-    ("rr", 0.041, 0.650, PAD),
-    ("rt", 0.024, 0.660, PAD),
-    ("t", 0.000, 0.6625, PAD),
-    ("lt", -0.024, 0.660, PAD),
-    ("lr", -0.041, 0.650, PAD),
-    ("ls", -0.045, 0.628, PAD),
+CONSOLE_X = -0.45         # seat boundary (pitch 0.90 m)
+ARM_HW = 0.095            # console half width (0.19 m)
+ARM_YB, ARM_YF = -0.330, 0.400
+ARM_RC_BACK, ARM_RC_FRONT = 0.045, 0.060
+ARM_RINGS = [  # inset from the plan outline, z   (bottom roll -> side -> rolled top edge -> top)
+    (0.010, 0.600), (0.000, 0.612), (0.000, 0.636), (0.0025, 0.651), (0.008, 0.659), (0.018, 0.663)]
+ARM_TOP_Z = ARM_RINGS[-1][1]
+CUP_Y = ARM_YF - 0.075
+CUP_N = 12
+CUP_R, CUP_RIM_R, CUP_RIM_Z = 0.037, 0.0345, ARM_TOP_Z - 0.002
+CUP_FLOOR_R, CUP_FLOOR_Z = 0.031, 0.606
+ARM_LOD = {0: ((0, 22.5, 45, 67.5, 90), list(range(len(ARM_RINGS)))), 1: ((0, 90), [1, 3, 5])}
+
+LEG_RINGS = [  # z, y back, y front, half thickness (as wide as the console: no slot to the seat)
+    (0.000, -0.330, 0.290, ARM_HW),
+    (0.300, -0.300, 0.240, ARM_HW),
+    (0.598, -0.326, 0.300, ARM_HW),
 ]
-PAD_ZC = 0.632
-PAD_STATIONS = [  # name, y, width scale, ring shrink, dz
-    ("pb", -0.272, 1.00, 0.70, 0.0),
-    ("p0", -0.256, 1.00, 1.00, 0.0),
-    ("p1", 0.020, 1.00, 1.00, 0.0),
-    ("p2", 0.240, 1.00, 1.00, 0.0),
-    ("pf", 0.322, 0.92, 1.00, -0.006),
-]
-PAD_LOD = {0: ([r[0] for r in PAD_RING], [s[0] for s in PAD_STATIONS]),
-           1: (["bl", "br", "rt", "lt"], ["p0", "pf"])}
-
-POD_Y = 0.356
-POD_A, POD_B = 0.046, 0.050     # superellipse half sizes (x, y)
-POD_N = 12
-POD_BASE_Z, POD_WALL_Z, POD_TOP_Z = 0.600, 0.656, 0.666
-POD_ROLL = 0.86                 # inset of the rolled top edge
-POD_RIM_R = 0.0345              # thin dim metal rim between RIM_R and HOLE_R
-POD_HOLE_R, POD_FLOOR_R, POD_FLOOR_Z = 0.031, 0.028, 0.614
-POD_LOD = {0: list(range(POD_N)), 1: [0, 3, 6, 9]}
-
-LEG_RINGS = [  # z, y back, y front, half thickness
-    (0.000, -0.285, 0.270, 0.026),
-    (0.300, -0.235, 0.215, 0.022),
-    (0.606, -0.255, 0.245, 0.024),
-]
-LEG_POINTS = ["bo_", "bo", "fo", "fo_", "fi_", "fi", "bi", "bi_"]
-LEG_LOD = {0: (LEG_POINTS, [0, 1, 2]), 1: (["bo", "fo", "fi", "bi"], [0, 2])}
+LEG_CORNER = 0.025
+LEG_LOD = {0: (list(range(12)), [0, 1, 2]), 1: ([1, 4, 7, 10], [0, 2])}
 
 
-def _mirror(p, side):
-    return Vector((p.x * side, p.y, p.z))
-
-
-def _pad(lod, side, tag):
-    rnames, snames = PAD_LOD[lod]
-    ring = [r for r in PAD_RING if r[0] in rnames]
-    stations = [s for s in PAD_STATIONS if s[0] in snames]
-
-    def point(r, s):
-        _, dx, z, _ = r
-        _, y, ws, shrink, dz = s
-        zz = PAD_ZC + (z - PAD_ZC) * shrink - (1 - shrink) * 0.012 + dz
-        return _mirror(Vector((ARM_X + dx * ws * shrink, y, zz)), side)
-
-    ref_ring = [Vector((r[1], 0, r[2])) for r in PAD_RING]
-    params = dict(zip([r[0] for r in PAD_RING], _arc_params(ref_ring)))
-    ring_params = [params[r[0]] for r in ring] + [1.0]
-    y0, y1 = PAD_STATIONS[0][1], PAD_STATIONS[-1][1]
-    sweep_params = [(s[1] - y0) / (y1 - y0) for s in stations]
-    rings = [[point(r, s) for r in ring] for s in stations]
-    zones = [r[3] for r in ring]
-    part = _grid("pad_" + tag, rings, ring_params, sweep_params, True, zones, weight=1.15)
-    part.size = (_loop_length(ref_ring), y1 - y0)
-    part.orient("out", _mirror(Vector((ARM_X, 0.0, PAD_ZC)), side))
-    parts = [part]
-    axes = (Vector((1, 0, 0)), Vector((0, 0, 1)))
-    for key, loop, stn, sign in (("padb_" + tag, rings[0], PAD_STATIONS[0], -1),
-                                 ("padf_" + tag, rings[-1], PAD_STATIONS[-1], 1)):
-        cap = _planar(key, [loop], axes, [PAD], weight=0.5)
-        ref = _planar(key, [[point(r, stn) for r in PAD_RING]], axes, [PAD])
-        cap.bounds, cap.size = ref.bounds, ref.size
-        cap.orient("dir", Vector((0, sign, 0)))
-        parts.append(cap)
+def _shift(parts, dx):
+    for part in parts:
+        part.verts = [v + Vector((dx, 0.0, 0.0)) for v in part.verts]
     return parts
 
 
-def _pod_ring(ids, z, cx, scale=1.0, radius=None):
+def _arm_outline(inset, z, angles):
+    """Plan outline of the console around x = 0 (counter-clockwise from the front-right corner)."""
+    hw = ARM_HW
+    corners = ((hw - ARM_RC_FRONT, ARM_YF - ARM_RC_FRONT, ARM_RC_FRONT, 0),
+               (-hw + ARM_RC_FRONT, ARM_YF - ARM_RC_FRONT, ARM_RC_FRONT, 90),
+               (-hw + ARM_RC_BACK, ARM_YB + ARM_RC_BACK, ARM_RC_BACK, 180),
+               (hw - ARM_RC_BACK, ARM_YB + ARM_RC_BACK, ARM_RC_BACK, 270))
     pts = []
-    for k in ids:
-        t = math.radians(45.0) + 2.0 * math.pi * k / POD_N
-        c, s = math.cos(t), math.sin(t)
-        if radius is None:
-            x = POD_A * scale * math.copysign(abs(c) ** 0.5, c)
-            y = POD_B * scale * math.copysign(abs(s) ** 0.5, s)
-        else:
-            x, y = radius * c, radius * s
-        pts.append(Vector((cx + x, POD_Y + y, z)))
+    for ccx, ccy, r, a0 in corners:
+        rr = max(0.002, r - inset)
+        for a in angles:
+            t = math.radians(a0 + a)
+            pts.append(Vector((ccx + rr * math.cos(t), ccy + rr * math.sin(t), z)))
     return pts
+
+
+def _circle_pts(cx, cy, r, z, n=CUP_N):
+    return [Vector((cx + r * math.cos(2 * math.pi * k / n), cy + r * math.sin(2 * math.pi * k / n), z))
+            for k in range(n)]
+
+
+def _console(lod, cx):
+    angles, ring_ids = ARM_LOD[lod]
+    rings = [_arm_outline(ARM_RINGS[i][0], ARM_RINGS[i][1], angles) for i in ring_ids]
+    ref = _arm_outline(0.0, 0.0, ARM_LOD[0][0])
+    ref_params = _arc_params(ref)
+    per = len(ARM_LOD[0][0])
+    idx = [c * per + ARM_LOD[0][0].index(a) for c in range(4) for a in angles]
+    ring_params = [ref_params[i] for i in idx] + [1.0]
+    prof = [Vector((0.0, -inset, z)) for inset, z in ARM_RINGS]
+    sweep_all = _arc_params(prof, closed=False)
+    walls = _grid("arm", rings, ring_params, [sweep_all[i] for i in ring_ids], True, [PAD] * len(idx), weight=1.1)
+    walls.size = (_loop_length(ref), _loop_length(prof, closed=False))
+    walls.orient("out", Vector((0.0, 0.03, 0.63)))
+    parts = [walls]
+    axes = (Vector((1, 0, 0)), Vector((0, 1, 0)))
+    top_ref = _arm_outline(ARM_RINGS[-1][0], ARM_TOP_Z, ARM_LOD[0][0])
+    bounds = (min(p.x for p in top_ref), min(p.y for p in top_ref), max(p.x for p in top_ref), max(p.y for p in top_ref))
+    if lod == 0:
+        hole = _circle_pts(0.0, CUP_Y, CUP_R, ARM_TOP_Z)
+        rim = _circle_pts(0.0, CUP_Y, CUP_RIM_R, CUP_RIM_Z)
+        floor = _circle_pts(0.0, CUP_Y, CUP_FLOOR_R, CUP_FLOOR_Z)
+        top = _Part("arm_top", 1.0)
+        _, tris = _ear_clip_hole([(p.x, p.y) for p in rings[-1]], [(p.x, p.y) for p in hole])
+        verts3 = list(rings[-1]) + list(hole)
+        for tri in tris:
+            _add_planar_face(top, [verts3[i] for i in tri], PAD, axes)
+        for k in range(CUP_N):
+            k2 = (k + 1) % CUP_N
+            _add_planar_face(top, (hole[k], hole[k2], rim[k2], rim[k]), METAL, axes)
+        for tri in _ear_clip([(p.x, p.y) for p in floor]):
+            _add_planar_face(top, [floor[i] for i in tri], CUP, axes)
+        inner = _grid("arm_cup", [rim, floor], [k / CUP_N for k in range(CUP_N + 1)], [0.0, 1.0],
+                      True, [CUP] * CUP_N, weight=0.5)
+        inner.size = (2 * math.pi * CUP_RIM_R, CUP_RIM_Z - CUP_FLOOR_Z)
+        inner.orient("in", Vector((0.0, CUP_Y, 0.63)))
+        parts.append(inner)
+        bottom = _planar("arm_bot", [rings[0]], axes, [SHELL], weight=0.4)
+        _fix_up(bottom, -1)
+        parts.append(bottom)
+    else:
+        top = _planar("arm_top", [rings[-1]], axes, [PAD], weight=1.0)
+    _fix_up(top, 1)
+    top.bounds, top.size = bounds, (bounds[2] - bounds[0], bounds[3] - bounds[1])
+    parts.append(top)
+    return _shift(parts + _standard(lod), cx)
+
+
+def _add_planar_face(part, pts, zone, axes):
+    a, b = axes
+    base = len(part.verts)
+    part.verts.extend(pts)
+    part.faces.append(tuple(range(base, base + len(pts))))
+    part.uvs.append([(p.dot(a), p.dot(b)) for p in pts])
+    part.zones.append(zone)
 
 
 def _fix_up(part, sign):
@@ -417,83 +552,51 @@ def _fix_up(part, sign):
     part.faces, part.uvs = faces, uvs
 
 
-def _pod(lod, side, tag):
-    ids = POD_LOD[lod]
-    n = len(ids)
-    cx = ARM_X * side
-    base = _pod_ring(ids, POD_BASE_Z, cx, 0.96)
-    wall = _pod_ring(ids, POD_WALL_Z, cx)
-    params = [k / POD_N for k in ids] + [1.0]
-    outer = _grid("pod_out_" + tag, [base, wall], params, [0.0, 1.0], True, [PAD] * n, weight=0.9)
-    outer.size = (2.0 * math.pi * 0.5 * (POD_A + POD_B), POD_WALL_Z - POD_BASE_Z)
-    centre = Vector((cx, POD_Y, 0.63))
-    outer.orient("out", centre)
-    axes = (Vector((1, 0, 0)), Vector((0, 1, 0)))
-    bounds = (cx - POD_A, POD_Y - POD_B, cx + POD_A, POD_Y + POD_B)
-    bottom = _planar("pod_bot_" + tag, [base], axes, [SHELL], weight=0.4)
-    bottom.bounds, bottom.size = bounds, (2 * POD_A, 2 * POD_B)
-    _fix_up(bottom, -1)
-    parts = [outer, bottom]
-    if lod == 0:
-        roll = _pod_ring(ids, POD_TOP_Z, cx, POD_ROLL)
-        rim = _pod_ring(ids, POD_TOP_Z, cx, radius=POD_RIM_R)
-        hole = _pod_ring(ids, POD_TOP_Z - 0.002, cx, radius=POD_HOLE_R)
-        floor = _pod_ring(ids, POD_FLOOR_Z, cx, radius=POD_FLOOR_R)
-        quads = [([wall[i], wall[(i + 1) % n], roll[(i + 1) % n], roll[i]], PAD) for i in range(n)]
-        quads += [([roll[i], roll[(i + 1) % n], rim[(i + 1) % n], rim[i]], PAD) for i in range(n)]
-        quads += [([rim[i], rim[(i + 1) % n], hole[(i + 1) % n], hole[i]], METAL) for i in range(n)]
-        top = _planar("pod_top_" + tag, [floor], axes, [CUP], weight=1.0, extra_faces=quads)
-        inner = _grid("pod_in_" + tag, [hole, floor], params, [0.0, 1.0], True, [CUP] * n, weight=0.5)
-        inner.size = (2 * math.pi * POD_HOLE_R, POD_TOP_Z - POD_FLOOR_Z)
-        inner.orient("in", centre)
-        parts.append(inner)
-    else:
-        top = _planar("pod_top_" + tag, [wall], axes, [PAD], weight=1.0)
-    _fix_up(top, 1)
-    top.bounds, top.size = bounds, (2 * POD_A, 2 * POD_B)
-    parts.append(top)
-    return parts
-
-
-def _leg_point(name, spec):
+def _leg_ring(spec, ids):
+    """Rounded-rectangle plan section around x = 0 (12 points: 3 per corner)."""
     z, yb, yf, t = spec
-    r = 0.028
-    table = {"bo_": (0.55 * t, yb), "bo": (t, yb + r), "fo": (t, yf - r), "fo_": (0.55 * t, yf),
-             "fi_": (-0.55 * t, yf), "fi": (-t, yf - r), "bi": (-t, yb + r), "bi_": (-0.55 * t, yb)}
-    dx, y = table[name]
-    return Vector((ARM_X + dx, y, z))
+    r = LEG_CORNER
+    corners = ((t - r, yf - r, 0), (-t + r, yf - r, 90), (-t + r, yb + r, 180), (t - r, yb + r, 270))
+    pts = []
+    for cxr, cyr, a0 in corners:
+        for k in range(3):
+            a = math.radians(a0 + 45 * k)
+            pts.append(Vector((cxr + r * math.cos(a), cyr + r * math.sin(a), z)))
+    return [pts[i] for i in ids]
 
 
-def _leg(lod, side, tag):
-    pnames, ring_ids = LEG_LOD[lod]
-    ref = [_leg_point(n, LEG_RINGS[-1]) for n in LEG_POINTS]
-    params_all = dict(zip(LEG_POINTS, _arc_params(ref)))
-    rings = [[_mirror(_leg_point(n, LEG_RINGS[i]), side) for n in pnames] for i in ring_ids]
-    ring_params = [params_all[n] for n in pnames] + [1.0]
+def _standard(lod):
+    ids, ring_ids = LEG_LOD[lod]
+    ref = _leg_ring(LEG_RINGS[-1], range(12))
+    params_all = _arc_params(ref)
+    rings = [_leg_ring(LEG_RINGS[i], ids) for i in ring_ids]
+    ring_params = [params_all[i] for i in ids] + [1.0]
     sweep = [LEG_RINGS[i][0] / LEG_RINGS[-1][0] for i in ring_ids]
-    part = _grid("leg_" + tag, rings, ring_params, sweep, True, [LEG] * len(pnames), weight=0.7)
+    part = _grid("leg", rings, ring_params, sweep, True, [LEG] * len(ids), weight=0.7)
     part.size = (_loop_length(ref), LEG_RINGS[-1][0])
-    part.orient("out", _mirror(Vector((ARM_X, 0.0, 0.3)), side))
+    part.orient("out", Vector((0.0, 0.0, 0.3)))
     return [part]
 
 
 def _beam():
-    """Pivot tube carrying the seat between the standards (mostly hidden)."""
+    """Pivot tube carrying the seat between the two standards (hidden under the cushion)."""
     rings = [[Vector((x, y, z)) for y, z in ((0.015, 0.335), (0.045, 0.335), (0.045, 0.365), (0.015, 0.365))]
-             for x in (-0.31, 0.31)]
+             for x in (-0.37, 0.355)]
     part = _grid("beam", rings, [0.0, 0.25, 0.5, 0.75, 1.0], [0.0, 1.0], True, [LEG] * 4, weight=0.3)
-    part.size = (0.12, 0.62)
+    part.size = (0.12, 0.725)
     part.orient("out", Vector((0, 0.03, 0.35)))
     return [part]
 
 
 def _parts(lod):
-    parts = _backrest(lod) + _seat(lod)
-    for side, tag in ((1, "r"), (-1, "l")):
-        parts += _pad(lod, side, tag) + _pod(lod, side, tag) + _leg(lod, side, tag)
+    parts = _backrest(lod) + _seat(lod) + _console(lod, CONSOLE_X)
     if lod == 0:
         parts += _beam()
     return parts
+
+
+def _end_parts(lod):
+    return _console(lod, 0.0)
 
 
 # --------------------------------------------------------------------------
@@ -574,9 +677,9 @@ def seat_material(texture_path=None):
     return mat
 
 
-def _make_mesh(name, lod, zones=False):
+def _make_mesh(name, lod, zones=False, parts=None):
     bounds, rects = _layout()
-    parts = _parts(lod)
+    parts = _parts(lod) if parts is None else parts
     bm = bmesh.new()
     uv_layer = bm.loops.layers.uv.new(UV_NAME)
     zone_layer = bm.faces.layers.int.new("seat_zone") if zones else None
@@ -600,7 +703,7 @@ def _make_mesh(name, lod, zones=False):
     mesh = bpy.data.meshes.new(name)
     bm.to_mesh(mesh)
     bm.free()
-    mesh.set_sharp_from_angle(angle=math.radians(52.0))
+    mesh.set_sharp_from_angle(angle=math.radians(60.0))
     return mesh
 
 
@@ -609,6 +712,21 @@ def build_seat(name, lod=0):
     if lod not in (0, 1):
         raise ValueError("lod must be 0 or 1")
     mesh = _make_mesh(name, lod)
+    mesh.materials.append(seat_material())
+    obj = bpy.data.objects.new(name, mesh)
+    bpy.context.scene.collection.objects.link(obj)
+    return obj
+
+
+def build_end_armrest(name, lod=0):
+    """Creates the standalone row-end console (+ standard) centred at x = 0.
+
+    Seats carry their console on the -X side; place one of these at
+    last_seat_x + SEAT_PITCH / 2 to close each row. Same material and UV layout
+    as the seats, so the one baked seat texture serves both."""
+    if lod not in (0, 1):
+        raise ValueError("lod must be 0 or 1")
+    mesh = _make_mesh(name, lod, parts=_end_parts(lod))
     mesh.materials.append(seat_material())
     obj = bpy.data.objects.new(name, mesh)
     bpy.context.scene.collection.objects.link(obj)
@@ -677,32 +795,11 @@ def _mix(nt, factor, a, b):
     return next(o for o in node.outputs if o.type == "RGBA")
 
 
-def _scaled(base, k):
-    return tuple(min(1.0, c * k) for c in base[:3]) + (1.0,)
-
-
 def _any(nt, sockets):
     out = sockets[0]
     for s in sockets[1:]:
         out = _math(nt, "MAXIMUM", out, s)
     return out
-
-
-def _edge_mask(nt, radius, lo, hi):
-    """Rounded-edge mask from the Bevel node: 0 on flat areas, 1 on rolled edges."""
-    bevel = nt.nodes.new("ShaderNodeBevel")
-    bevel.samples = 4
-    bevel.inputs["Radius"].default_value = radius
-    geo = nt.nodes.new("ShaderNodeNewGeometry")
-    dot = nt.nodes.new("ShaderNodeVectorMath")
-    dot.operation = "DOT_PRODUCT"
-    nt.links.new(bevel.outputs["Normal"], dot.inputs[0])
-    nt.links.new(geo.outputs["Normal"], dot.inputs[1])
-    mr = nt.nodes.new("ShaderNodeMapRange")
-    mr.inputs["From Min"].default_value = 1.0 - lo
-    mr.inputs["From Max"].default_value = 1.0 - hi
-    nt.links.new(dot.outputs["Value"], mr.inputs["Value"])
-    return mr.outputs["Result"], bevel.outputs["Normal"]
 
 
 def _occlusion(nt, distance):
@@ -712,16 +809,75 @@ def _occlusion(nt, distance):
     return ao.outputs["AO"]
 
 
-def _seams(nt, x, y, z, coord, color, base):
-    """Painted channel seams with dashed stitching (matches the modelled channels)."""
+TEXTURE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "textures")
+# Scanned, unlit-calibrated base colours per zone: (manifest key, brightness factor).
+ZONE_SCAN = {
+    FABRIC: ("seat_velour", 1.0),
+    PAD: ("seat_leather", 1.0),
+    SHELL: ("seat_shell", 1.0),
+    LEG: ("seat_shell", 0.8),
+    METAL: ("seat_metal", 1.0),
+}
+SCAN_BOX_BLEND = 0.2
+
+
+def _texture_manifest():
+    path = os.path.join(TEXTURE_DIR, "textures.json")
+    if not os.path.isfile(path):
+        raise FileNotFoundError("seat_model: texture manifest missing: %s" % path)
+    with open(path, encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def _check_textures():
+    manifest = _texture_manifest()
+    for key, _ in ZONE_SCAN.values():
+        entry = manifest.get(key)
+        if entry is None:
+            raise FileNotFoundError("seat_model: '%s' not listed in %s" % (key, TEXTURE_DIR))
+        path = os.path.join(TEXTURE_DIR, entry["file"])
+        if not os.path.isfile(path):
+            raise FileNotFoundError("seat_model: texture missing: %s" % path)
+    return manifest
+
+
+def _scale_col(nt, color, k):
+    node = nt.nodes.new("ShaderNodeVectorMath")
+    node.operation = "SCALE"
+    nt.links.new(color, node.inputs[0])
+    node.inputs["Scale"].default_value = k
+    return node.outputs["Vector"]
+
+
+def _scan(nt, coord, entry, factor):
+    """Box-projected scan at its real-world tile size (object space, metres)."""
+    path = os.path.join(TEXTURE_DIR, entry["file"])
+    image = bpy.data.images.load(path, check_existing=True)
+    image.colorspace_settings.name = "sRGB"
+    scale = nt.nodes.new("ShaderNodeVectorMath")
+    scale.operation = "SCALE"
+    scale.inputs["Scale"].default_value = 1.0 / float(entry["tile_metres"])
+    nt.links.new(coord, scale.inputs[0])
+    tex = nt.nodes.new("ShaderNodeTexImage")
+    tex.image = image
+    tex.projection = "BOX"
+    tex.projection_blend = SCAN_BOX_BLEND
+    tex.interpolation = "Cubic"
+    nt.links.new(scale.outputs["Vector"], tex.inputs["Vector"])
+    color = tex.outputs["Color"]
+    return _scale_col(nt, color, factor) if factor != 1.0 else color
+
+
+def _seams(nt, x, y, z, coord, color):
+    """Tailoring overlays on the velour: channel seams (darkened) and dashed stitching."""
     back = _band(nt, y, -0.36, 0.17, 0.02)        # backrest (y < -0.17)
     seat = _math(nt, "SUBTRACT", 1.0, back)
-    lines = [_math(nt, "MULTIPLY", _band(nt, x, gx, 0.0022, 0.0035, mirror=True), back) for gx in (0.068, 0.156, 0.232)]
-    lines += [_math(nt, "MULTIPLY", _band(nt, x, gx, 0.0022, 0.0035, mirror=True), seat) for gx in (0.085, 0.200)]
+    lines = [_math(nt, "MULTIPLY", _band(nt, x, gx, 0.0022, 0.0035, mirror=True), back) for gx in BACK_GROOVES]
+    lines += [_math(nt, "MULTIPLY", _band(nt, x, gx, 0.0022, 0.0035, mirror=True), seat) for gx in SEAT_SEAMS]
     lines.append(_math(nt, "MULTIPLY", _band(nt, z, 0.852, 0.0022, 0.0035), back))
-    color = _mix(nt, _math(nt, "MULTIPLY", _any(nt, lines), 0.6), color, _scaled(base, 0.4))
+    color = _mix(nt, _math(nt, "MULTIPLY", _any(nt, lines), 0.6), color, _scale_col(nt, color, 0.4))
     stitches = []
-    for gx, mask in ((0.068, back), (0.156, back), (0.232, back), (0.085, seat), (0.200, seat)):
+    for gx, mask in [(g, back) for g in BACK_GROOVES] + [(g, seat) for g in SEAT_SEAMS]:
         for off in (-0.008, 0.008):
             stitches.append(_math(nt, "MULTIPLY", _band(nt, x, gx + off, 0.0006, 0.0010, mirror=True), mask))
     dash = nt.nodes.new("ShaderNodeTexWave")
@@ -731,85 +887,64 @@ def _seams(nt, x, y, z, coord, color, base):
     nt.links.new(coord, dash.inputs["Vector"])
     dashes = _math(nt, "GREATER_THAN", dash.outputs["Fac"], 0.45)
     stitch = _math(nt, "MULTIPLY", _any(nt, stitches), dashes)
-    return _mix(nt, _math(nt, "MULTIPLY", stitch, 0.3), color, _scaled(base, 1.6))
+    return _mix(nt, _math(nt, "MULTIPLY", stitch, 0.3), color, _scale_col(nt, color, 1.6))
 
 
-def _bake_material(zone, image):
+def _bake_material(zone, image, manifest):
     hex_value, rough = ZONE_LOOK[zone]
     mat = bpy.data.materials.new("_seatbake_" + ZONE_NAMES[zone])
     mat.use_nodes = True
     nt = mat.node_tree
     bsdf = nt.nodes["Principled BSDF"]
     bsdf.inputs["Roughness"].default_value = rough
-    base = (*_srgb(hex_value), 1.0)
     coord = nt.nodes.new("ShaderNodeTexCoord")
+    obj_co = coord.outputs["Object"]
     xyz = nt.nodes.new("ShaderNodeSeparateXYZ")
-    nt.links.new(coord.outputs["Object"], xyz.inputs[0])
+    nt.links.new(obj_co, xyz.inputs[0])
     x, y, z = xyz.outputs["X"], xyz.outputs["Y"], xyz.outputs["Z"]
-    # Broad, low-frequency tonal variation only (fine noise would alias at distance).
-    noise = nt.nodes.new("ShaderNodeTexNoise")
-    noise.inputs["Scale"].default_value = {FABRIC: 9.0, PAD: 22.0}.get(zone, 6.0)
-    noise.inputs["Detail"].default_value = 2.0
-    nt.links.new(coord.outputs["Object"], noise.inputs["Vector"])
-    ramp = nt.nodes.new("ShaderNodeValToRGB")
-    lo, hi = {FABRIC: (0.90, 1.08), PAD: (0.88, 1.10)}.get(zone, (0.95, 1.04))
-    ramp.color_ramp.elements[0].position = 0.3
-    ramp.color_ramp.elements[1].position = 0.7
-    ramp.color_ramp.elements[0].color = _scaled(base, lo)
-    ramp.color_ramp.elements[1].color = _scaled(base, hi)
-    nt.links.new(noise.outputs["Fac"], ramp.inputs["Fac"])
-    color = ramp.outputs["Color"]
+    if zone in ZONE_SCAN:
+        key, factor = ZONE_SCAN[zone]
+        color = _scan(nt, obj_co, manifest[key], factor)
+    else:
+        rgb = nt.nodes.new("ShaderNodeRGB")
+        rgb.outputs[0].default_value = (*_srgb(hex_value), 1.0)
+        color = rgb.outputs[0]
+    # The scans already carry their own micro AO/relief; only modelled crevices darken further.
     if zone == FABRIC:
-        # Velvet: crevices sink darker, rolled edges catch a soft sheen.
-        color = _mix(nt, _occlusion(nt, 0.05), _scaled(base, 0.55), color)
-        edge, _ = _edge_mask(nt, 0.018, 0.02, 0.18)
-        color = _mix(nt, _math(nt, "MULTIPLY", edge, 0.55), color, _scaled(base, 1.45))
-        color = _seams(nt, x, y, z, coord.outputs["Object"], color, base)
+        color = _mix(nt, _occlusion(nt, 0.05), _scale_col(nt, color, 0.6), color)
+        color = _seams(nt, x, y, z, obj_co, color)
     elif zone == PAD:
-        color = _mix(nt, _occlusion(nt, 0.03), _scaled(base, 0.6), color)
-        edge, _ = _edge_mask(nt, 0.010, 0.02, 0.2)
-        color = _mix(nt, _math(nt, "MULTIPLY", edge, 0.5), color, _scaled(base, 1.5))
-        geo = nt.nodes.new("ShaderNodeNewGeometry")
-        nz = nt.nodes.new("ShaderNodeSeparateXYZ")
-        nt.links.new(geo.outputs["Normal"], nz.inputs[0])
-        sheen = nt.nodes.new("ShaderNodeMapRange")
-        sheen.interpolation_type = "SMOOTHSTEP"
-        sheen.inputs["From Min"].default_value = 0.85
-        sheen.inputs["From Max"].default_value = 1.0
-        nt.links.new(nz.outputs["Z"], sheen.inputs["Value"])
-        color = _mix(nt, _math(nt, "MULTIPLY", sheen.outputs["Result"], 0.35), color, _scaled(base, 1.4))
+        color = _mix(nt, _occlusion(nt, 0.03), _scale_col(nt, color, 0.7), color)
         # Welt seams along both top edges of the pad.
-        dx = _math(nt, "SUBTRACT", _math(nt, "ABSOLUTE", x), ARM_X)
-        welt = _math(nt, "MULTIPLY", _band(nt, dx, 0.033, 0.0012, 0.0018, mirror=True),
-                     _band(nt, y, 0.02, 0.27, 0.01))
-        color = _mix(nt, _math(nt, "MULTIPLY", welt, 0.7), color, _scaled(base, 0.45))
+        dx = _math(nt, "SUBTRACT", _math(nt, "ABSOLUTE", x), abs(CONSOLE_X))
+        welt = _math(nt, "MULTIPLY", _band(nt, dx, ARM_HW - 0.019, 0.0012, 0.0018, mirror=True),
+                     _band(nt, y, 0.05, 0.30, 0.01))
+        color = _mix(nt, _math(nt, "MULTIPLY", welt, 0.7), color, _scale_col(nt, color, 0.45))
     elif zone in (SHELL, LEG):
-        edge, _ = _edge_mask(nt, 0.008, 0.02, 0.25)
-        color = _mix(nt, _math(nt, "MULTIPLY", edge, 0.6), color, _scaled(base, 1.7))
         if zone == SHELL:
             rear = _band(nt, y, -0.46, 0.15, 0.015)          # rear face only (y < -0.31)
-            inner = _math(nt, "MULTIPLY", _band(nt, x, 0.0, 0.205, 0.006, mirror=True),
+            inner = _math(nt, "MULTIPLY", _band(nt, x, 0.0, 0.225, 0.006, mirror=True),
                           _band(nt, z, 0.640, 0.170, 0.006))
-            outer = _math(nt, "MULTIPLY", _band(nt, x, 0.0, 0.213, 0.003, mirror=True),
+            outer = _math(nt, "MULTIPLY", _band(nt, x, 0.0, 0.233, 0.003, mirror=True),
                           _band(nt, z, 0.640, 0.178, 0.003))
             outline = _math(nt, "MULTIPLY", _math(nt, "SUBTRACT", outer, inner), rear)
-            color = _mix(nt, _math(nt, "MULTIPLY", inner, rear), color, (*_srgb("1d2025"), 1.0))
-            color = _mix(nt, _math(nt, "MULTIPLY", outline, 0.55), color, (*_srgb("0a0b0d"), 1.0))
+            color = _mix(nt, _math(nt, "MULTIPLY", inner, rear), color, _scale_col(nt, color, 1.25))
+            color = _mix(nt, _math(nt, "MULTIPLY", outline, 0.55), color, _scale_col(nt, color, 0.45))
+            # Dim brushed-metal trim in the rear recess.
+            trim = _scan(nt, obj_co, manifest["seat_metal"], 1.0)
             strip = _math(nt, "MULTIPLY", _band(nt, z, 0.852, 0.004, 0.0015), rear)
-            color = _mix(nt, strip, color, (*_srgb("3e4147"), 1.0))
-        else:
-            # Dim number-plate area on the outer face of each standard (no text).
-            outside = _band(nt, x, 0.40, 0.049, 0.002, mirror=True)
-            plate = _math(nt, "MULTIPLY", _band(nt, y, 0.15, 0.040, 0.003), _band(nt, z, 0.50, 0.018, 0.003))
-            frame = _math(nt, "MULTIPLY", _band(nt, y, 0.15, 0.044, 0.002), _band(nt, z, 0.50, 0.022, 0.002))
-            color = _mix(nt, _math(nt, "MULTIPLY", _math(nt, "SUBTRACT", frame, plate), outside), color,
-                         (*_srgb("0c0d0f"), 1.0))
-            color = _mix(nt, _math(nt, "MULTIPLY", plate, outside), color, (*_srgb("2e3136"), 1.0))
+            color = _mix(nt, strip, color, trim)
     nt.links.new(color, bsdf.inputs["Base Color"])
     tex = nt.nodes.new("ShaderNodeTexImage")
     tex.image = image
     nt.nodes.active = tex
     return mat
+
+
+def smooth_terminator(obj):
+    """Hides the shadow-terminator stepping that low-poly smooth meshes show in Cycles."""
+    obj.cycles.shadow_terminator_geometry_offset = 0.6
+    obj.cycles.shadow_terminator_offset = 0.1
 
 
 def _setup_device(scene):
@@ -856,6 +991,7 @@ def _bake_world():
 def bake_seat_texture(path, size=2048):
     """Bakes albedo x occlusion x soft top light for the shared seat UV layout to `path` (PNG)."""
     t0 = time.time()
+    manifest = _check_textures()
     caller_scene = bpy.context.scene
     before = {coll: set(getattr(bpy.data, coll)) for coll in
               ("objects", "meshes", "materials", "images", "worlds", "lights", "scenes", "node_groups")}
@@ -874,17 +1010,19 @@ def bake_seat_texture(path, size=2048):
         image.generated_color = (*_srgb("15171b"), 1.0)
         mesh = _make_mesh("_seatbake_mesh", 0, zones=True)
         for zone in range(len(ZONE_NAMES)):
-            mesh.materials.append(_bake_material(zone, image))
+            mesh.materials.append(_bake_material(zone, image, manifest))
         zone_attr = mesh.attributes["seat_zone"]
         values = [0] * len(mesh.polygons)
         zone_attr.data.foreach_get("value", values)
         mesh.polygons.foreach_set("material_index", values)
         obj = bpy.data.objects.new("_seatbake_obj", mesh)
         scene.collection.objects.link(obj)
+        smooth_terminator(obj)
         # Neighbours and floor give the occlusion seen in a packed row.
         for i, dx in enumerate((-SEAT_PITCH, SEAT_PITCH)):
             other = bpy.data.objects.new("_seatbake_nb%d" % i, mesh)
             other.location.x = dx
+            smooth_terminator(other)
             scene.collection.objects.link(other)
         floor_mesh = bpy.data.meshes.new("_seatbake_floor")
         floor_mesh.from_pydata([(-3, -3, 0), (3, -3, 0), (3, 3, 0), (-3, 3, 0)], [], [(0, 1, 2, 3)])

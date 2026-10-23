@@ -24,6 +24,12 @@ internal class HttpRangeStreamSource(
     override val size: Long
     @Volatile private var closed = false
     private val readers = ConcurrentHashMap.newKeySet<RemoteReader>()
+    private var rangeWindow = Long.MAX_VALUE
+    private var archivePacer: ArchiveRangePacer? = null
+    fun forArchiveReading(): HttpRangeStreamSource { archivePacer = ArchiveRangePacer(); return this }
+    fun boundedRanges(bytes: Long): HttpRangeStreamSource {
+        require(bytes > 0); rangeWindow = bytes; return this
+    }
     init {
         try {
             link = resolve(http)
@@ -47,6 +53,7 @@ internal class HttpRangeStreamSource(
     fun original(): MediaStreamLink = current()
     override fun open(): StreamSource.Reader = synchronized(this) {
         mediaRequire(!closed, "Request cancelled")
+        if (archivePacer != null) readers.forEach { it.close() }
         RemoteReader().also { readers.add(it) }
     }
     override fun close() {
@@ -55,28 +62,36 @@ internal class HttpRangeStreamSource(
         remoteHttp.close()
         java.util.ArrayList(readers).forEach { it.close() }
     }
-    private inner class RemoteReader : StreamSource.Reader {
+    private inner class RemoteReader : BoundedStreamReader {
         @Volatile private var done = false
         private var connection: HttpURLConnection? = null
         private var input: InputStream? = null
         private var next = -1L
         private var end = -1L
+        private var rangeEnd = size - 1
+        override fun setRangeEnd(endInclusive: Long) {
+            if (archivePacer != null) rangeEnd = minOf(endInclusive, size - 1)
+        }
         override fun read(offset: Long, buffer: ByteArray, length: Int): Int {
             mediaRequire(!closed && !done && offset in 0 until size && length in 1..buffer.size)
             if (next != offset || offset > end || input == null) {
                 disconnect()
                 var selected = current()
                 var c: HttpURLConnection? = null
-                try { c = open(selected, "bytes=$offset-") }
+                val requestedEnd = minOf(rangeEnd, offset + minOf(rangeWindow, size-offset)-1)
+                val rangeRequest = if (rangeWindow == Long.MAX_VALUE && archivePacer == null) "bytes=$offset-" else "bytes=$offset-$requestedEnd"
+                try { archivePacer?.await { closed || done }; c = open(selected, rangeRequest) }
                 catch (e: MediaServerFailure) {
                     if (e.code !in setOf("Server authentication required", "Remote media access denied")) throw e
                     selected = current(selected)
-                    c = open(selected, "bytes=$offset-")
+                    archivePacer?.await { closed || done }
+                    c = open(selected, rangeRequest)
                 }
                 val opened = c!!
                 try {
                     val range = validate(opened, offset)
                     mediaRequire(range.third == size, "Video changed; reopen it")
+                    mediaRequire(range.second <= requestedEnd, "Invalid byte range")
                     synchronized(this) {
                         mediaRequire(!closed && !done, "Request cancelled")
                         connection = opened; input = opened.inputStream; next = offset; end = range.second

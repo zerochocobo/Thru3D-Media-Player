@@ -31,3 +31,5 @@ The CodeLibs JCIFS jar is staged by Gradle with unused HTTP/HTTPS NTLM adapters 
 - Capture bridge compile-time FFmpeg headers: copied from the already pinned FFmpeg source, with local Android ARM64 public-header configuration, an adjacent per-header catalog and LGPL v2.1 text under `native/mpv/include/ffmpeg`. The runtime dependency and its separate license/source records are unchanged.
 
 - Image decoders: checksum-pinned libtiff 4.7.2, libjpeg-turbo 3.1.2, OpenEXR 3.3.14, Imath 3.1.12 and libdeflate 1.24 source archives with their original notices under `tiff` and `openexr`. BSD-style, IJG and other included component terms remain applicable; see [image formats](../docs/IMAGE_FORMATS.md). No prebuilt image libraries are included.
+
+- PICO controller fallback meshes: unmodified MIT WebXR Input Profiles assets, supplied separately using the pinned metadata and adjacent notice. MRTK3-derived hand joint interaction retains its notice in third_party/player-licenses/mrtk3.txt. CC0 cinema scan metadata and preparation recipes retain original asset provenance; raw scans, generated scenes and bakes are excluded.

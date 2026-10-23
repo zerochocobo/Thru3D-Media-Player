@@ -31,6 +31,7 @@ internal class PhotoPreviewBridge(
     @Volatile private var connection: HttpURLConnection? = null
     private val lock = PhotoCache.lock
     private val directories = mutableMapOf<Int, File>()
+    private val references = mutableMapOf<Int, Int>()
     private var prepared = false
 
     fun open(id: Int, uri: String): Boolean {
@@ -52,6 +53,7 @@ internal class PhotoPreviewBridge(
                     }
                     directory = File(app.cacheDir, "$cacheName/$id").apply { mkdirs() }
                     directories[id] = directory!!
+                    references[id] = 1
                 }
                 val source = File(directory, "source")
                 resolved = resolve(uri); checkCurrent()
@@ -143,13 +145,26 @@ internal class PhotoPreviewBridge(
             } finally {
                 connection?.disconnect(); connection = null
                 if (uri.startsWith("smb://") || uri.startsWith("cloud://") || uri.startsWith("usb://")) releaseStream(resolved)
-                if (!published) { synchronized(lock) { directories.remove(id) }; directory?.deleteRecursively() }
+                if (!published) { synchronized(lock) { directories.remove(id); references.remove(id) }; directory?.deleteRecursively() }
             }
         }
         return true
     }
     fun cancel(id: Int) { if (current.compareAndSet(id, 0)) connection?.disconnect() }
-    fun release(id: Int) { synchronized(lock) { directories.remove(id) }?.deleteRecursively() }
+    /** Pin an already displayed local preview without touching the source or decoding on the caller. */
+    fun retain(id: Int): File? = synchronized(lock) {
+        val directory = directories[id] ?: return@synchronized null
+        references[id] = (references[id] ?: 1) + 1
+        File(directory, "preview.png")
+    }
+    fun release(id: Int) {
+        val directory = synchronized(lock) {
+            val count = references[id] ?: return@synchronized null
+            if (count > 1) { references[id] = count - 1; null }
+            else { references.remove(id); directories.remove(id) }
+        }
+        directory?.deleteRecursively()
+    }
     fun cacheDirectories(): Set<File> = synchronized(lock) { directories.values.toSet() }
     override fun close() { closed = true; current.set(0); connection?.disconnect(); worker.shutdownNow() }
     companion object {

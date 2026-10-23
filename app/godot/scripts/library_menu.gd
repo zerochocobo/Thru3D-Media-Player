@@ -10,6 +10,7 @@ signal audio_import_cancelled
 signal image_picker_cancelled
 signal image_selected(uri: String, title: String)
 var image_picker_mode := false
+var _image_picker_dlna_retry := {}
 signal subtitle_picker_cancelled
 signal subtitle_selected(uri: String, title: String, location: Dictionary)
 var subtitle_picker_mode := false
@@ -51,6 +52,7 @@ signal file_renamed(old_uri: String, new_uri: String, title: String)
 var current_file_provider: Callable
 const Collections := preload("res://scripts/collection_menu.gd")
 var collections := Collections.new(self)
+var archives := preload("res://scripts/archive_panel.gd").new(self)
 const FileActions := preload("res://scripts/library_file_actions.gd")
 var file_actions := FileActions.new(self)
 
@@ -272,6 +274,7 @@ func remember_playback_context(uri: String = "") -> void:
 			_playback_context.search[key] = value.duplicate(true) if value is Array or value is Dictionary else value
 
 func set_compact(value: bool, restore_playback: bool = false) -> void:
+	if archives.browsing: restore_playback = false
 	if restore_playback and browse_memory.locked(): _playback_context = {}
 	if value: server_browser.sort_query.clear()
 	var keep_current_visible := _current_file_visible()
@@ -309,13 +312,18 @@ func set_compact(value: bool, restore_playback: bool = false) -> void:
 		anchor = capture_position()
 	_layout_anchor = anchor; _layout_scroll = scroll
 	# Search resolution can open a file before its containing folder has ever been listed.
-	if compact and platform and rows.is_empty() and section == Section.CLOUD and not cloud_search.active and not _cloud_stack.is_empty() and cloud_pagination.mode == "paged":
+	if not archives.browsing and compact and platform and rows.is_empty() and section == Section.CLOUD and not cloud_search.active and not _cloud_stack.is_empty() and cloud_pagination.mode == "paged":
 		_load_cloud(false, false, _cloud_page)
 		refresh()
 
 func show_playback_files(restore_playback: bool = false, cursor: Dictionary = {}) -> void:
 	_return_uri = str(current_file_provider.call()) if current_file_provider.is_valid() else _return_uri
+	if _return_uri.begins_with("comic://"): archives.resume(_return_uri)
 	set_compact(true, restore_playback)
+	if archives.browsing:
+		_reveal_current_file(false)
+		_layout_anchor = capture_position(); _layout_scroll = scroll
+		return
 	if section == Section.RECENT:
 		var index := _current_file_index(_recent_all_rows)
 		if index >= 0 and _recent_page != index / RECENT_PAGE_SIZE:
@@ -426,14 +434,15 @@ func toggle() -> void:
 		_browse_return_restore = false
 		var anchor := (_position_to_restore.duplicate(true) if not _position_to_restore.is_empty() else capture_position()) if restore_directory_position or compact else {}
 		var scoped := not compact and not _browse_scope().is_empty()
-		var saved: Dictionary = browse_memory.lookup(_browse_scope(), section != Section.LOCAL) if scoped and restore_directory_position else {}
-		if scoped: anchor = saved.get("position", {}) if section == Section.CLOUD else saved
+		var saved: Dictionary = browse_memory.lookup(_browse_scope(), _browse_network()) if scoped and restore_directory_position else {}
+		if scoped: anchor = saved.get("position", {}) if section == Section.CLOUD and not archives.browsing else saved
 		var recent_page := _recent_page
 		visible = true; _reset_navigation(); _recent_page = recent_page; _position_to_restore = anchor; refresh()
-		if scoped and section == Section.CLOUD and platform and cloud_pagination.mode == "paged" and int(saved.get("page", 0)) != _cloud_page:
+		if not archives.browsing and scoped and section == Section.CLOUD and platform and cloud_pagination.mode == "paged" and int(saved.get("page", 0)) != _cloud_page:
 			_load_cloud(); refresh()
 
 func dismiss() -> void:
+	archives.hide()
 	cloud_pagination.settings_expanded = false
 	file_actions.return_from_settings(false)
 	if voice_manager.opened: voice_manager.close()
@@ -450,7 +459,7 @@ func dismiss() -> void:
 		remember_playback_context(str(_playback_context.get("uri", "")))
 	_save_folder_position()
 	# Manual filters belong to this visit, not the next browser session.
-	media_browse_intent=0; media_filter=0
+	if not archives.browsing: media_browse_intent=0; media_filter=0
 	cloud_search.close()
 	controls_page.reset()
 	file_actions.reset()
@@ -480,13 +489,47 @@ func _capture_file_picker_context() -> void:
 		_audio_import_context[key] = value.duplicate(true) if value is Array or value is Dictionary else value
 	_cancel_cloud()
 	for id in _pending.keys():
-		if _pending[id] in ["local", "smb_browse", "smb_servers", "dlna_browse", "dlna_servers", "dlna_discover"]: _pending.erase(id)
+		if _pending[id] in ["local", "smb_browse", "smb_servers", "dlna_browse", "dlna_servers", "dlna_discover", "dlna_picker_resume"]: _pending.erase(id)
 
 func begin_image_picker() -> void:
 	if subtitle_picker_mode or audio_import_mode or image_picker_mode: return
 	_capture_file_picker_context()
 	image_picker_mode = true
+	_image_picker_dlna_retry.clear()
+	var saved := browse_memory.lookup(ImagePickerLocation.SCOPE, false)
+	if saved.is_empty(): saved = browse_memory.lookup(ImagePickerLocation.SCOPE, true)
+	var location := ImagePickerLocation.clean(saved.get("picker_location"))
+	if not location.is_empty():
+		section = {"local": Section.LOCAL, "smb": Section.SMB, "dlna": Section.DLNA, "cloud": Section.CLOUD}[location.source]
+		match section:
+			Section.LOCAL: _local_stack.assign(location.folders)
+			Section.SMB: _smb_server = location.server; _smb_path = location.path
+			Section.DLNA:
+				_dlna_server = location.server; _dlna_stack.assign(location.folders)
+				_image_picker_dlna_retry = {"server": _dlna_server, "object": str(_dlna_stack.back().id) if not _dlna_stack.is_empty() else "0", "attempted": false}
+			Section.CLOUD: _cloud_stack.assign(location.folders)
+	# Reload the saved route, not cached rows from the underlying video browser.
+	_local_entries = []; _smb_entries = []; _dlna_entries = []; _cloud_entries = []
+	_position_to_restore = {}; _layout_anchor = {}; _return_uri = ""; _restore_folder_key = ""
 	_start_file_picker()
+
+const ImagePickerLocation := preload("res://scripts/image_picker_location.gd")
+
+func _image_picker_dlna_matches() -> bool:
+	return image_picker_mode and section == Section.DLNA and _image_picker_dlna_retry.get("server", "!") == _dlna_server \
+		and _image_picker_dlna_retry.get("object", "!") == (str(_dlna_stack.back().id) if not _dlna_stack.is_empty() else "0")
+
+func _remember_image_picker_location() -> void:
+	var location := {}
+	match section:
+		Section.LOCAL: location = {"source": "local", "folders": _local_stack}
+		Section.SMB: location = {"source": "smb", "server": _smb_server, "path": _smb_path}
+		Section.DLNA: location = {"source": "dlna", "server": _dlna_server, "folders": _dlna_stack}
+		Section.CLOUD: location = {"source": "cloud", "folders": _cloud_stack}
+	location = ImagePickerLocation.clean(location)
+	if not location.is_empty():
+		browse_memory.remember(ImagePickerLocation.SCOPE, section != Section.LOCAL, {"picker_location": location}, _browse_revision)
+		browse_memory.flush()
 
 func begin_subtitle_picker(location: Dictionary = {}) -> void:
 	if subtitle_picker_mode or audio_import_mode or image_picker_mode: return
@@ -527,10 +570,11 @@ func _restore_audio_import_context() -> void:
 	audio_import_mode = false
 	subtitle_picker_mode = false
 	image_picker_mode = false
+	_image_picker_dlna_retry.clear()
 	audio_selection.clear()
 	_cancel_cloud()
 	for id in _pending.keys():
-		if str(_pending[id]) in ["local", "smb_browse", "smb_servers", "dlna_browse", "dlna_servers", "dlna_discover"]: _pending.erase(id)
+		if str(_pending[id]) in ["local", "smb_browse", "smb_servers", "dlna_browse", "dlna_servers", "dlna_discover", "dlna_picker_resume"]: _pending.erase(id)
 	for key in CONTEXT_FIELDS:
 		if _audio_import_context.has(key): set(key, _audio_import_context[key])
 	file_actions.enabled = bool(_audio_import_context.get("editing", false))
@@ -608,9 +652,9 @@ func _row_target(target: int) -> bool:
 ## The list area, gaps between tiles included: a press there can drag the list.
 func _in_list(point: Vector3) -> bool:
 	if cloud_pagination.opened: return false
-	if collections.active(): return false
+	if collections.active() or archives.opened: return false
 	if not file_actions.modal.is_empty(): return false
-	if section == Section.MEDIA_SERVER and server_browser.sorting(): return false
+	if (section == Section.MEDIA_SERVER and not archives.browsing) and server_browser.sorting(): return false
 	if compact:
 		var span := _bar_span()
 		return not rows.is_empty() and absf(point.x) < 0.56 and point.y < span.x + 0.01 and point.y > span.x - span.y - 0.02
@@ -759,9 +803,9 @@ func stick_scroll(y: float, delta: float) -> void:
 	if cloud_pagination.opened: return
 	if voice_manager.opened: voice_manager.stick(y, delta); return
 	if not audio_preview_seek.capture.is_empty(): return
-	if collections.active(): return
-	if section == Section.MEDIA_SERVER and server_browser.sorting(): return
-	if not compact and section == Section.MEDIA_SERVER and not account_panel.active() and server_browser.gallery.fixed():
+	if collections.active() or archives.opened: return
+	if not archives.browsing and section == Section.MEDIA_SERVER and server_browser.sorting(): return
+	if not archives.browsing and not compact and section == Section.MEDIA_SERVER and not account_panel.active() and server_browser.gallery.fixed():
 		server_browser.gallery.vertical_scroll(y, delta); return
 	if controls_page.active() and not controls_page.pending.is_empty(): return
 	if not choices.capture.is_empty(): return
@@ -784,11 +828,13 @@ func media_picture_open() -> bool:
 		and server_browser.keyboard.is_empty() and not server_browser.sorting()
 
 func stick_scroll_horizontal(x: float, delta: float) -> void:
+	if archives.browsing: return
 	if compact: return
 	if visible and section == Section.MEDIA_SERVER and not account_panel.active() and file_actions.modal.is_empty() and _editor.is_empty():
 		server_browser.gallery.stick_scroll(x, delta)
 
 func _process(delta: float) -> void:
+	archives.tick()
 	cloud_pagination.tick()
 	browse_memory.tick()
 	if _browse_save_at > 0 and Time.get_ticks_msec() >= _browse_save_at:
@@ -808,9 +854,9 @@ func _process(delta: float) -> void:
 		_audio_storage_refresh = Time.get_ticks_msec() + 1000
 		AudioStorageView.update(self, _audio_storage_labels, background_audio_provider.call() if background_audio_provider.is_valid() else {})
 	collections.poll()
-	if collections.active(): return
+	if collections.active() or archives.opened: return
 	_poll_cache_usage()
-	if section == Section.MEDIA_SERVER and server_browser.sorting(): return
+	if not archives.browsing and section == Section.MEDIA_SERVER and server_browser.sorting(): return
 	if controls_page.active() and controls_page.modal(): return
 	if not file_actions.modal.is_empty(): return
 	if visible: account_panel.tick(delta)
@@ -830,7 +876,7 @@ func _process(delta: float) -> void:
 func _set_scroll(value: float, user_activity: bool = true) -> void:
 	var clamped := clampf(value, 0.0, _max_scroll())
 	if clamped == scroll:
-		if section == Section.MEDIA_SERVER: server_browser.scroll_changed()
+		if (section == Section.MEDIA_SERVER and not archives.browsing): server_browser.scroll_changed()
 		return
 	var redraw := floori(clamped + 0.001) != _first_line()
 	scroll = clamped
@@ -843,7 +889,7 @@ func _set_scroll(value: float, user_activity: bool = true) -> void:
 		else: _draw()
 	else:
 		_place_list()
-	if section == Section.MEDIA_SERVER: server_browser.scroll_changed()
+	if (section == Section.MEDIA_SERVER and not archives.browsing): server_browser.scroll_changed()
 
 func _scroll_to_bar(y: float) -> void:
 	var span := _bar_span()
@@ -877,6 +923,7 @@ func _place_list() -> void:
 		_bar_thumb.position.y = span.x - travel - thumb * 0.5
 
 func _grid() -> bool:
+	if archives.browsing: return view_mode == "grid"
 	if audio_import_mode or subtitle_picker_mode: return false
 	if cloud_error.opened: return false
 	if compact: return view_mode == "grid"
@@ -888,8 +935,9 @@ func _grid() -> bool:
 	return section != Section.SETTINGS
 
 func browser_content(allow_modal: bool = false) -> bool:
+	if archives.browsing: return true
 	if cloud_pagination.opened: return false
-	if collections.active(): return false
+	if collections.active() or archives.opened: return false
 	if cloud_error.opened: return false
 	if account_panel.active() or not _editor.is_empty() or (not allow_modal and not file_actions.modal.is_empty()): return false
 	if cloud_search.active: return not cloud_search.editing
@@ -932,20 +980,24 @@ func draw_view_modes(y: float = 0.445, left: float = 0.69) -> void:
 			node.add_child(_quad(Vector2(0.028, 0.003), Vector3(0, -0.025, 0.006), ACCENT, 14))
 
 func _header_y() -> float:
+	if archives.browsing: return 0.515
 	return 0.515 if section != Section.RECENT and browser_content() else 0.46
 
 func _action_position(x: float) -> Vector2:
+	if archives.browsing: return Vector2(x, 0.445)
 	if browser_content():
 		return Vector2(x - 0.22, _header_y() if section == Section.RECENT else 0.445)
 	return Vector2(x, 0.46)
 
 func _cols() -> int:
+	if archives.browsing: return (3 if compact else COLS) if _grid() else 1
 	if not compact and section == Section.MEDIA_SERVER and server_browser.media_content(): return server_browser.columns() if _grid() else 1
 	return (3 if compact else COLS) if _grid() else 1
 
 ## Visible lines (tile rows or list rows); [scroll] counts lines.
 func _lines() -> int:
 	if compact: return 2 if _grid() else (4 if file_actions.needs_footer() or collections.has_selection() else 5)
+	if archives.browsing: return GRID_LINES if _grid() else VISIBLE_ROWS
 	if cloud_search.active: return 2 if _grid() else 5
 	if controls_page.active(): return 6
 	if account_panel.active(): return VISIBLE_ROWS
@@ -953,6 +1005,7 @@ func _lines() -> int:
 	return GRID_LINES if _grid() else VISIBLE_ROWS
 
 func _pitch() -> float:
+	if archives.browsing: return GRID_PITCH.y if _grid() else ROW_PITCH
 	if compact: return GRID_PITCH.y if _grid() else ROW_PITCH
 	if controls_page.active(): return 0.10
 	if account_panel.active(): return ROW_PITCH
@@ -965,13 +1018,14 @@ func _line_count() -> int:
 ## Scrollbar track: top and height.
 func _bar_span() -> Vector2:
 	if compact: return Vector2(0.265, _lines() * _pitch() - 0.012)
+	if archives.browsing: return Vector2(GRID_TOP if _grid() else LIST_TOP + 0.05, _lines() * _pitch() - 0.012)
 	if cloud_search.active: return Vector2(0.095, 2 * GRID_PITCH.y - 0.012 if _grid() else 0.54)
 	if controls_page.active(): return Vector2(0.20, 0.60)
 	if section == Section.MEDIA_SERVER and not account_panel.active(): return server_browser.bar_span()
 	return Vector2(GRID_TOP if _grid() else LIST_TOP + 0.05, _lines() * _pitch() - 0.012)
 
 func _max_scroll() -> float:
-	if not compact and section == Section.MEDIA_SERVER and not account_panel.active() and server_browser.gallery.fixed(): return 0.0
+	if not compact and (section == Section.MEDIA_SERVER and not archives.browsing) and not account_panel.active() and server_browser.gallery.fixed(): return 0.0
 	return float(maxi(0, _line_count() - _lines()))
 
 ## External photo/video pickers can explicitly keep their purpose across folders.
@@ -980,6 +1034,7 @@ func begin_media_browse(kind: int) -> void:
 	refresh()
 
 func _filter_location() -> String:
+	if archives.browsing: return str(["archive", archives.target.get("uri", ""), archives.directory])
 	match section:
 		Section.LOCAL: return str([section,_local_stack.map(func(item):return item.get("id",""))])
 		Section.SMB: return str([section,_smb_server,_smb_path])
@@ -994,6 +1049,7 @@ func _sync_media_filter() -> void:
 	elif not _media_filter_location.is_empty() and _media_filter_location!=_filter_location(): media_filter=0
 
 func _folder_key() -> String:
+	if archives.browsing: return archives.position_scope()
 	_sync_media_filter()
 	var location := ""
 	match section:
@@ -1007,13 +1063,17 @@ func _cloud_position_key() -> String:
 	return ("image-picker:" if image_picker_mode else "subtitle:" if subtitle_picker_mode else "audio:" if audio_import_mode else "") + _cloud_path()
 
 func _browse_scope() -> String:
-	if image_picker_mode or subtitle_picker_mode or audio_import_mode: return ""
+	if archives.browsing: return archives.position_scope()
+	if subtitle_picker_mode or audio_import_mode: return ""
 	_sync_media_filter()
 	if section == Section.CLOUD:
 		if _cloud_stack.is_empty(): return ""
 		var directory_id := str(_cloud_stack.back().get("cloud_id", ""))
-		return JSON.stringify(["cloud", _cloud_stack[0].get("id", ""), directory_id if not directory_id.is_empty() else _cloud_path(), media_filter])
+		return ("image-picker:" if image_picker_mode else "") + JSON.stringify(["cloud", _cloud_stack[0].get("id", ""), directory_id if not directory_id.is_empty() else _cloud_path(), media_filter])
 	return _folder_key()
+
+func _browse_network() -> bool:
+	return archives.network() if archives.browsing else section != Section.LOCAL
 
 func _browse_activity() -> void:
 	_browse_revision = browse_memory.revision
@@ -1026,13 +1086,21 @@ func _restore_parent_filter() -> void:
 
 func _change_media_filter(value: int) -> void:
 	if media_filter == value: return
+	if archives.browsing:
+		archives.save_position(); media_filter = value; archives.remembered_filter = value; scroll = 0.0
+		_browse_activity()
+		var route: Dictionary = browse_memory.lookup(archives.route_scope(), archives.network()) if restore_directory_position else {}
+		var directory := str(route.get("archive_directory", archives.directory))
+		if archives.directory_exists(directory): archives.directory = directory
+		_position_to_restore = browse_memory.lookup(archives.position_scope(), archives.network()) if restore_directory_position else {}
+		refresh(); return
 	_save_folder_position()
 	media_browse_intent = 0; media_filter = value; _browse_return_restore = false
 	_browse_activity(); _reset_navigation(); _position_to_restore = {}
 	if not _browse_scope().is_empty():
 		if section == Section.CLOUD and platform and cloud_pagination.mode == "paged": _load_cloud()
 		elif restore_directory_position:
-			var saved := browse_memory.lookup(_browse_scope(), section != Section.LOCAL)
+			var saved := browse_memory.lookup(_browse_scope(), _browse_network())
 			_position_to_restore = saved.get("position", {}) if section == Section.CLOUD else saved
 	refresh()
 
@@ -1082,8 +1150,9 @@ func _saved_cloud_position() -> Dictionary:
 	return saved
 
 func _save_folder_position(opened_folder: Dictionary = {}) -> void:
+	if archives.browsing: archives.save_position(opened_folder); return
 	if cloud_search.active or account_panel.active() or not _editor.is_empty(): return
-	if cloud_pagination.opened or cloud_error.opened or collections.active() or not file_actions.modal.is_empty(): return
+	if cloud_pagination.opened or cloud_error.opened or collections.active() or archives.opened or not file_actions.modal.is_empty(): return
 	if section == Section.CLOUD and not cloud_pagination.batch.is_empty(): return
 	if browse_memory.locked(): return
 	if not _browse_scope().is_empty() and _browse_revision == browse_memory.revision:
@@ -1111,18 +1180,19 @@ func _save_folder_position(opened_folder: Dictionary = {}) -> void:
 		var key := _folder_key()
 		if key.is_empty(): return
 		_folder_positions[key] = anchor
-		if not rows.is_empty(): browse_memory.remember(_browse_scope(), section != Section.LOCAL, anchor, _browse_revision)
+		if not rows.is_empty(): browse_memory.remember(_browse_scope(), _browse_network(), anchor, _browse_revision)
 		while _folder_positions.size() > 64: _folder_positions.erase(_folder_positions.keys()[0])
 
 func _restore_folder_position() -> void:
 	if not _restore_folder_key.is_empty() and _restore_folder_key == _folder_key():
-		var saved: Variant = _folder_positions.get(_restore_folder_key, {}) if _browse_scope().is_empty() else browse_memory.lookup(_browse_scope(), section != Section.LOCAL)
+		var saved: Variant = _folder_positions.get(_restore_folder_key, {}) if _browse_scope().is_empty() else browse_memory.lookup(_browse_scope(), _browse_network())
 		if not _browse_scope().is_empty() and not restore_directory_position and not _browse_return_restore: saved = {}
 		if saved is Dictionary: _position_to_restore = saved.duplicate(true)
 		else: scroll = float(saved)
 		_restore_folder_key = ""
 
 func _plain_file_grid() -> bool:
+	if archives.browsing: return is_instance_valid(_list)
 	return section in [Section.RECENT, Section.LOCAL, Section.SMB, Section.DLNA, Section.CLOUD] \
 		and _editor.is_empty() and not account_panel.active() and not cloud_search.active \
 		and cloud_accounts.mode.is_empty() and file_actions.modal.is_empty() and is_instance_valid(_list)
@@ -1383,6 +1453,21 @@ func _on_media_list(id: int, payload: String) -> void:
 		result = _continue_browse_restore(result)
 		if result.is_empty(): return
 	var state := str(result.get("state", "error"))
+	# Auto-discovered DLNA servers are session-only in the backend. Discover once
+	# on cold resume, then retry the same saved directory, never a media resource URL.
+	if kind == "dlna_picker_resume":
+		if not _image_picker_dlna_matches(): return
+		if state == "ready":
+			_dlna_servers = result.get("servers", [])
+			_request("dlna_browse", platform.media_dlna_browse(_dlna_server, _image_picker_dlna_retry.object))
+			if visible: refresh()
+			return
+	if kind == "dlna_browse" and state == "error" and result.get("error") == "DLNA server unavailable" \
+		and _image_picker_dlna_matches() and not _image_picker_dlna_retry.attempted and PlatformMethods.supports(platform, "media_dlna_discover"):
+		_image_picker_dlna_retry.attempted = true
+		_request("dlna_picker_resume", platform.media_dlna_discover())
+		if visible: refresh()
+		return
 	if kind == "cloud" and state == "ready" and _browse_expired_page:
 		status = "Previous page expired; showing first page"; _browse_expired_page = false
 	if state == "denied":
@@ -1574,17 +1659,25 @@ func _load_section() -> void:
 		Section.SMB:
 			if _smb_server.is_empty():
 				_request("smb_servers", platform.media_smb_servers())
-			elif subtitle_picker_mode:
+			elif subtitle_picker_mode or image_picker_mode:
 				_request("smb_browse", _browse_smb(_smb_server, _smb_path))
 		Section.DLNA:
 			if _dlna_server.is_empty():
 				if PlatformMethods.supports(platform, "media_dlna_servers"):
 					_request("dlna_servers", platform.media_dlna_servers())
 				if _dlna_servers.is_empty(): _request("dlna_discover", platform.media_dlna_discover())
+			elif image_picker_mode:
+				_request("dlna_browse", platform.media_dlna_browse(_dlna_server, str(_dlna_stack.back().id) if not _dlna_stack.is_empty() else "0"))
 
 # --- rows -----------------------------------------------------------------------------------
 
 func _rebuild_rows() -> void:
+	if archives.browsing:
+		rows.assign(archives.directory_rows())
+		if not _position_to_restore.is_empty():
+			scroll = Presentation.position(rows, _position_to_restore, _cols()); _position_to_restore = {}
+		focus_index = clampi(focus_index, 0, maxi(0, rows.size()-1))
+		scroll = clampf(scroll, 0.0, _max_scroll()); return
 	_sync_media_filter()
 	rows.clear()
 	if cloud_error.opened:
@@ -1668,6 +1761,7 @@ func _rebuild_rows() -> void:
 					"selected": armed, "clear_cache": true, "empty": cache.x == 0})
 				rows.append({"title": I18n.t("Privacy settings"), "group_header": true, "icon": "chevron_down" if collections.privacy_expanded else "next"})
 				if collections.privacy_expanded:
+					rows.append({"title": I18n.t("Archive password book"), "icon": "lock", "archive_password_book": true})
 					rows.append(_choice_row("Playback and browsing history", "privacy_mode", settings.get("privacy_mode", "all"),
 						[{"value": "all", "label": "Record all"}, {"value": "local", "label": "Local only"}, {"value": "none", "label": "Do not record"}]))
 					rows.append(_choice_row("Per-file settings", "file_settings_memory", settings.get("file_settings_memory", "all"),
@@ -1716,7 +1810,7 @@ func _rebuild_rows() -> void:
 			elif tab == BACKGROUND_TAB:
 				var selected := CinemaFeature.normalize_background(str(settings.get("background", "belfast")))
 				var backgrounds: Array = []
-				for option in [["belfast", "Belfast sunset", "image"], ["morning", "Morning sky", "image"], ["cinema", "Grand cinema", "video"], ["dark", "Dark background", "circle"], ["passthrough", "Passthrough", "eyes"]]:
+				for option in [["belfast", "Belfast sunset", "image"], ["morning", "Morning sky", "image"], ["cinema", "Grand cinema (Test)", "video"], ["dark", "Dark background", "circle"], ["passthrough", "Passthrough", "eyes"]]:
 					if option[0] == "cinema" and not CinemaFeature.enabled(): continue
 					backgrounds.append({"value": option[0], "label": option[1]})
 				if settings.get("background_custom", false):
@@ -1736,14 +1830,15 @@ func _rebuild_rows() -> void:
 				if selected == "cinema":
 					var ready := bool(settings.get("cinema_ready", false))
 					var interaction := str(settings.get("cinema_interaction", "watch"))
-					if interaction not in ["watch", "seat", "move"]: interaction = "watch"
+					if interaction not in ["watch", "move"]: interaction = "watch"
 					var interaction_row := _choice_row("Cinema interaction", "cinema_interaction", interaction,
-						[{"value": "watch", "label": "Watch"}, {"value": "seat", "label": "Choose seat"}, {"value": "move", "label": "Move"}], true)
+						[{"value": "watch", "label": "Watch"}, {"value": "move", "label": "Free movement"}], true)
 					interaction_row.enabled = ready
 					rows.append(interaction_row)
-					var seat := str(settings.get("cinema_seat", ""))
-					rows.append({"title": I18n.t("Reset seat"), "detail": I18n.t("Seat %s") % seat if not seat.is_empty() else "",
+					rows.append({"title": I18n.t("Return to start"),
 						"icon": "refresh", "setting": ["cinema_home", true], "enabled": ready})
+					rows.append(_choice_row("Cinema lighting", "cinema_lights", str(settings.get("cinema_lights", "auto")),
+						[{"value": "auto", "label": "Auto lights"}, {"value": "on", "label": "Lights on"}, {"value": "off", "label": "Lights off"}], true))
 					status = "Loading cinema…" if settings.get("cinema_loading", false) else str(settings.get("cinema_error", ""))
 					if not ready and status.is_empty(): status = "Cinema unavailable"
 				else:
@@ -1790,7 +1885,7 @@ func _rebuild_rows() -> void:
 	else:
 		rows.assign(rows.filter(func(row): return row.get("kind", "") != "audio"))
 	if not audio_import_mode and not subtitle_picker_mode and media_filter > 0 and section not in [Section.SETTINGS, Section.MEDIA_SERVER]:
-		rows.assign(rows.filter(func(row): return not row.has("uri") or row.get("kind", "") == "folder" or row.get("kind", "video") == ("image" if media_filter == 2 else "video")))
+		rows.assign(rows.filter(func(row): return not row.has("uri") or row.get("kind", "") == "folder" or row.get("kind", "video") in (["image", "archive"] if media_filter == 2 and not image_picker_mode else ["image"] if media_filter == 2 else ["video"])))
 	file_actions.sort_rows()
 	file_actions.reconcile()
 	if section == Section.RECENT:
@@ -1932,6 +2027,8 @@ func _entry_row(entry: Dictionary) -> Dictionary:
 	var subtitle: bool = subtitle_picker_mode and SubtitleSources.supported(str(entry.title))
 	var photo: bool = not subtitle and (entry.get("kind", "") == "image" or ImageInfo.is_image(str(entry.get("uri", "")), str(entry.title)))
 	var row := {"title": str(entry.title), "detail": _size(entry), "kind": "image" if photo else "video", "icon": "image" if photo else "video", "uri": str(entry.get("uri", ""))}
+	if archives.named(str(entry.get("uri", "")), str(entry.title)):
+		row.kind = "archive"; row.icon = "folder"
 	if entry.get("kind", "") == "audio" or AudioCatalog.supported(str(entry.title)):
 		row.kind = "audio"; row.icon = "music"
 	if subtitle:
@@ -1946,11 +2043,13 @@ func _entry_row(entry: Dictionary) -> Dictionary:
 	return row
 
 func photo_directory_context() -> Dictionary:
+	if archives.browsing: return {}
 	if section == Section.CLOUD and not _cloud_stack.is_empty() and not cloud_search.active:
 		return {"path": _cloud_path(), "order": file_actions.cloud_order()}
 	return {}
 
 func image_queue() -> Array[Dictionary]:
+	if archives.browsing: return archives.image_queue()
 	var result: Array[Dictionary] = []
 	for row in (_recent_all_rows if section == Section.RECENT and not _recent_all_rows.is_empty() else rows):
 		if row.get("kind") == "image" and row.has("uri"): result.append(row.duplicate(true))
@@ -1964,7 +2063,7 @@ func video_queue() -> Array[Dictionary]:
 	for row in source:
 		var uri := str(row.get("uri", ""))
 		var title := str(row.get("title", ""))
-		if uri.is_empty() or row.get("kind", "") in ["image", "audio", "subtitle"] or ImageInfo.is_image(uri, title): continue
+		if uri.is_empty() or row.get("kind", "") in ["image", "archive", "audio", "subtitle"] or ImageInfo.is_image(uri, title): continue
 		if row.get("container", false) or row.has("folder") or row.get("kind", "") == "folder": continue
 		var metadata: Dictionary = row.duplicate(true)
 		metadata.location = preload("res://scripts/media_location.gd").capture(self, row)
@@ -2015,6 +2114,7 @@ func _poll_cache_usage() -> void:
 	if visible and section == Section.SETTINGS and tab == GENERAL_TAB: refresh()
 
 func _exit_tree() -> void:
+	archives.close()
 	checkpoint_browse()
 	system_text_input.cancel()
 	if _cache_task >= 0: WorkerThreadPool.wait_for_task_completion(_cache_task); _cache_task = -1
@@ -2045,6 +2145,7 @@ func _activate(target: int) -> void:
 		if files.is_empty(): return
 		_restore_audio_import_context(); dismiss(); audio_import_selected.emit(files); return
 	_local_release_notice = ""
+	if archives.action(target): return
 	if collections.action(target): return
 	if _activate_footer(target): return
 	if cloud_error.action(target): return
@@ -2072,6 +2173,7 @@ func _activate(target: int) -> void:
 		cloud_pagination.settings_expanded = false
 		file_actions.settings_return.clear()
 		_save_folder_position()
+		archives.suspended = true
 		_browse_activity()
 		cloud_search.close()
 		controls_page.reset()
@@ -2146,12 +2248,19 @@ func _activate(target: int) -> void:
 		_editor_input(target)
 
 func _choose(row: Dictionary) -> void:
+	if not bool(row.get("enabled", true)): return
+	if archives.browsing: archives.choose(row); return
+	if row.get("archive_password_book", false): archives.manage(); return
+	if not image_picker_mode and not audio_import_mode and not subtitle_picker_mode and not row.get("folder", false) and row.get("kind", "") != "folder" and row.has("uri") and archives.named(str(row.uri), str(row.get("title", ""))):
+		_save_folder_position(row); archives.open(row); return
 	_browse_return_restore = false
 	_browse_activity()
 	if not bool(row.get("enabled", true)): return
 	if image_picker_mode and row.has("uri") and not str(row.uri).is_empty() and not row.get("folder", false) and row.get("kind", "") != "folder":
 		if row.get("kind", "") != "image" and not ImageInfo.is_image(str(row.uri), str(row.get("title", ""))): return
 		var uri := str(row.uri); var title := str(row.get("title", ""))
+		_save_folder_position(row)
+		_remember_image_picker_location()
 		_restore_audio_import_context(); dismiss(); image_selected.emit(uri, title)
 		return
 	if row.get("cloud_paging_group", false):
@@ -2276,6 +2385,8 @@ func _choose(row: Dictionary) -> void:
 
 ## True when a child layer was consumed; false means the source's top-level list.
 func navigate_back() -> bool:
+	if archives.browsing: archives.back(); return true
+	if archives.opened: archives.close(); refresh(); return true
 	if cloud_pagination.opened: cloud_pagination.action(CloudPagination.CLOSE); return true
 	if section == Section.SETTINGS and tab == GENERAL_TAB and cloud_pagination.settings_expanded:
 		if not choices.opened.is_empty(): choices.reset(); refresh(); return true
@@ -2332,6 +2443,7 @@ func _retire_directory_reads() -> void:
 		if _pending[id] in reads: _pending.erase(id)
 
 func _go_back() -> void:
+	if archives.browsing: archives.back(); return
 	if cloud_pagination.opened:
 		cloud_pagination.action(CloudPagination.CLOSE); return
 	if file_actions.return_from_settings(): return
@@ -2382,6 +2494,7 @@ func _go_back() -> void:
 
 ## Path segments of the current folder, the server (or library) first.
 func _crumbs() -> Array:
+	if archives.browsing: return archives.crumbs()
 	match section:
 		Section.CLOUD:
 			return [] if _cloud_stack.is_empty() else [I18n.t("Cloud drives")] + _cloud_stack.map(func(c): return str(c.title))
@@ -2407,6 +2520,7 @@ func _crumbs() -> Array:
 
 ## Jump to path segment [level] (0: the server or library root).
 func _go_to(level: int) -> void:
+	if archives.browsing: archives.go_to(level); return
 	file_actions.reset()
 	var depth := _crumbs().size() - 1
 	if level < 0 or level >= depth:
@@ -2563,29 +2677,29 @@ func _draw_compact() -> void:
 	_set_backdrop(COMPACT_SIZE)
 	_block_rays(_backdrop, COMPACT_SIZE)
 	var crumbs := _crumbs()
-	_button(BACK, "", Vector2(-0.51, 0.36), Vector2(0.075, 0.065), not crumbs.is_empty() or section == Section.MEDIA_SERVER or cloud_search.active, "up")
-	var heading: String = cloud_search.query if cloud_search.active else (_header_title() if not _header_title().is_empty() else I18n.t(NAV[section]))
-	if section == Section.RECENT:
+	_button(BACK, "", Vector2(-0.51, 0.36), Vector2(0.075, 0.065), not crumbs.is_empty() or section == Section.MEDIA_SERVER or (cloud_search.active and not archives.browsing), "up")
+	var heading: String = cloud_search.query if (cloud_search.active and not archives.browsing) else (_header_title() if not _header_title().is_empty() else I18n.t(NAV[section]))
+	if not archives.browsing and section == Section.RECENT:
 		for i in 2:
 			_button(Collections.HOME_TAB + i, I18n.t("Recent" if i == 0 else "Favorites"), Vector2(-0.20 + i * 0.30, 0.36), Vector2(0.28, 0.065))
 			_lit(collections.home_tab == i)
 	else:
-		var usb := not _external_volumes().is_empty()
+		var usb := not archives.browsing and not _external_volumes().is_empty()
 		var title := _label(_fit_title(heading, "", 0.53 if usb else 0.65, 19), Vector3(-0.32 if usb else -0.45, 0.36, 0.004), 19)
 		title.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
-	_draw_storage_stop(Vector2(-0.40, 0.36))
+	if not archives.browsing: _draw_storage_stop(Vector2(-0.40, 0.36))
 	_button(CLOSE, "", Vector2(0.51, 0.36), Vector2(0.075, 0.065), true, "close")
 	_tips[CLOSE] = I18n.t("Close")
-	if section != Section.RECENT:
+	if archives.browsing or section != Section.RECENT:
 		_button(REFRESH, "", Vector2(0.27, 0.36), Vector2(0.075, 0.065), platform != null and not _cloud_busy, "refresh")
 		_tips[REFRESH] = I18n.t("Refresh")
-	if section == Section.LOCAL and _local_grant_needed():
+	if not archives.browsing and section == Section.LOCAL and _local_grant_needed():
 		_button(GRANT, "", Vector2(-0.49, -0.365), Vector2(0.075, 0.065), not _local_grant_pending, "unlock")
 		_tips[GRANT] = I18n.t("Choose a folder" if _local_access_mode() == "directory" else "Grant")
 	_button(EXPAND_LIBRARY, "", Vector2(0.28, -0.365), Vector2(0.09, 0.065), true, "expand")
 	_tips[EXPAND_LIBRARY] = I18n.t("Expand library")
 	_decoration(Vector2(1.04, 0.002), Vector2(0, 0.305), Color(0.17, 0.2, 0.24))
-	if section != Section.RECENT: collections.draw_folder_header(true)
+	if not archives.browsing and section != Section.RECENT: collections.draw_folder_header(true)
 	file_actions.draw_entry(Vector2(0.0, -0.365))
 	_draw_rows()
 	file_actions.draw_footer()
@@ -2597,10 +2711,10 @@ func _draw_compact() -> void:
 	var next := RECENT_NEXT if section == Section.RECENT else CLOUD_NEXT
 	var page := _recent_page if section == Section.RECENT else _cloud_page
 	var count := str(_recent_page_count()) if section == Section.RECENT else (str(maxi(1, ceili(float(_cloud_total) / _cloud_page_size))) if _cloud_total >= 0 else "…")
-	var paging := section == Section.RECENT or (section == Section.CLOUD and not _cloud_stack.is_empty())
+	var paging := not archives.browsing and (section == Section.RECENT or (section == Section.CLOUD and not _cloud_stack.is_empty()))
 	var can_next := page + 1 < _recent_page_count() if section == Section.RECENT else _cloud_next >= 0
 	var busy := _cloud_busy if section == Section.CLOUD else false
-	if cloud_search.active:
+	if (cloud_search.active and not archives.browsing):
 		previous = CloudSearch.PREVIOUS; next = CloudSearch.NEXT; page = cloud_search.page; count = "…"; paging = true
 		can_next = not cloud_search.next_cursor.is_empty(); busy = cloud_search.pending > 0
 	if paging and not (section == Section.CLOUD and cloud_pagination.draw_footer(-0.365, true)):
@@ -2623,15 +2737,15 @@ func _draw_compact_rows() -> void:
 		if _grid():
 			var center := Vector2(-0.34 + (k % 3) * 0.34, 0.13 - (k / 3) * _pitch())
 			_tile(ROW_BASE + k, row, center)
-			collections.decorate_row(k, row, center, true, _list)
+			if not archives.browsing: collections.decorate_row(k, row, center, true, _list)
 		else:
 			var centre := Vector2(0, 0.215 - k * _pitch())
-			if collections.managed(row):
+			if not archives.browsing and collections.managed(row):
 				collections.draw_list_row(k, row, centre, _list)
-				collections.decorate_row(k, row, centre, false, _list)
+				if not archives.browsing: collections.decorate_row(k, row, centre, false, _list)
 				continue
-			var managing := file_actions.list_management()
-			_button(ROW_BASE + k, _fit_title(str(row.title), "", 0.72 if managing else 0.83, 20), centre + Vector2(0.055 if managing else 0.0, 0), Vector2(0.92 if managing else 1.03, 0.098), true, "", false, _list)
+			var managing := not archives.browsing and file_actions.list_management()
+			_button(ROW_BASE + k, _fit_title(str(row.title), "", 0.72 if managing else 0.83, 20), centre + Vector2(0.055 if managing else 0.0, 0), Vector2(0.92 if managing else 1.03, 0.098), bool(row.get("enabled", true)), "", false, _list)
 			var button: Dictionary = _buttons.back()
 			var node: MeshInstance3D = button.node
 			if _is_current_row(row):
@@ -2643,8 +2757,8 @@ func _draw_compact_rows() -> void:
 			_icon(str(row.get("icon", "video")), Vector3(-0.405 if managing else -0.46, 0, 0.005), 0.04, FOLDER if row.has("container") else MUTED, node)
 			var detail := _label(_fit_title(str(Presentation.info(row, catalog, section == Section.RECENT).subtitle), "", 0.72 if managing else 0.83, 15), Vector3(-0.345 if managing else -0.40, -0.025, 0.004), 15, node)
 			detail.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT; detail.modulate = MUTED
-			file_actions.draw_checkbox(ROW_BASE + k, row, centre + Vector2(-0.48, 0))
-			collections.decorate_row(k, row, centre + Vector2(-0.10, 0), false, _list)
+			if not archives.browsing: file_actions.draw_checkbox(ROW_BASE + k, row, centre + Vector2(-0.48, 0))
+			if not archives.browsing: collections.decorate_row(k, row, centre + Vector2(-0.10, 0), false, _list)
 	if _max_scroll() > 0:
 		var span := _bar_span()
 		_button(SCROLLBAR, "", Vector2(0.55, span.x - span.y * 0.5), Vector2(0.035, span.y))
@@ -2669,6 +2783,8 @@ func _draw() -> void:
 	_backdrop.visible = true
 	if cloud_pagination.opened:
 		cloud_pagination.draw(); return
+	if archives.opened:
+		_side.visible = false; archives.draw(); return
 	if collections.active():
 		_side.visible = false; collections.draw(); return
 	if cloud_error.opened: cloud_error.draw(); return
@@ -2679,12 +2795,12 @@ func _draw() -> void:
 	if compact:
 		_draw_compact()
 		return
-	if account_panel.view == "web":
+	if not archives.browsing and account_panel.view == "web":
 		account_panel.draw(); return
 	# Like common VR players: a navigation column angled towards the viewer, the browser beside
 	# it, and round actions floating under the browser.
 	_set_backdrop(Vector2(1.46, 1.27) if image_picker_mode else Vector2(1.46, 1.12), Vector2(0.13, -0.075 if image_picker_mode else 0))
-	if section == Section.MEDIA_SERVER and server_browser.focused():
+	if (section == Section.MEDIA_SERVER and not archives.browsing) and server_browser.focused():
 		_side.visible = server_browser.sources_open
 		_set_backdrop(Vector2(1.68, 1.44), Vector2(0.13, 0.015))
 	if _side.visible:
@@ -2698,7 +2814,7 @@ func _draw() -> void:
 			var i: int = navigation[position]
 			_nav_button(NAV_BASE + i, I18n.t(NAV[i]), NAV_ICONS[i], Vector2(0, 0.39 - position * 0.13), i == section)
 	if not controls_page.active():
-		var footer_y := -0.80 if section == Section.MEDIA_SERVER and server_browser.focused() else -0.65
+		var footer_y := -0.80 if (section == Section.MEDIA_SERVER and not archives.browsing) and server_browser.focused() else -0.65
 		if not audio_import_mode and not subtitle_picker_mode and not image_picker_mode:
 			if not music_quick: music_quick = preload("res://scripts/music_quick_controls.gd").new(self, func(): music_toggle_requested.emit())
 			music_quick.draw(MUSIC_OPEN, Vector2(-0.48, footer_y), background_audio_provider.call() if background_audio_provider.is_valid() else {})
@@ -2710,24 +2826,24 @@ func _draw() -> void:
 			_place_device_status(Vector2(0.13, -0.79))
 		else:
 			_place_device_status(Vector2(0.13, footer_y + 0.025))
-	if account_panel.active():
+	if not archives.browsing and account_panel.active():
 		account_panel.draw()
 		return
-	if cloud_search.active:
+	if not archives.browsing and cloud_search.active:
 		cloud_search.draw()
 		return
-	if not _editor.is_empty():
+	if not archives.browsing and not _editor.is_empty():
 		_draw_editor()
 		return
-	if section == Section.MEDIA_SERVER:
+	if (section == Section.MEDIA_SERVER and not archives.browsing):
 		server_browser.draw()
 		_update_highlights()
 		return
 	# Keep the global stop alongside the upper actions, clear of Home's undo and Settings tabs.
-	if not subtitle_picker_mode: _draw_storage_stop(_action_position(0.36) if section == Section.RECENT else Vector2(0.80, 0.46) if section == Section.SETTINGS else _action_position(0.47))
+	if not archives.browsing and not subtitle_picker_mode: _draw_storage_stop(_action_position(0.36) if not archives.browsing and section == Section.RECENT else Vector2(0.80, 0.46) if section == Section.SETTINGS else _action_position(0.47))
 	# Right header: sub-tabs at the top level, otherwise a clickable path with back.
 	var crumbs := _crumbs()
-	var cloud_managing: bool = section == Section.CLOUD and not cloud_accounts.mode.is_empty()
+	var cloud_managing: bool = not archives.browsing and section == Section.CLOUD and not cloud_accounts.mode.is_empty()
 	if cloud_managing:
 		pass # Account actions draw their own title and back target below.
 	elif crumbs.is_empty():
@@ -2749,9 +2865,9 @@ func _draw() -> void:
 	else:
 		_button(BACK, "", Vector2(-0.52, _header_y()), Vector2(0.09, 0.07), true, "up")
 		_draw_crumbs(crumbs)
-	if section in [Section.LOCAL, Section.SMB, Section.DLNA, Section.CLOUD] and not cloud_managing:
+	if (archives.browsing or section in [Section.LOCAL, Section.SMB, Section.DLNA, Section.CLOUD]) and not cloud_managing:
 		_button(REFRESH, "", _action_position(0.80), Vector2(0.09, 0.065), platform != null, "refresh")
-	if section == Section.CLOUD:
+	if not archives.browsing and section == Section.CLOUD:
 		cloud_accounts.draw()
 		if not audio_import_mode and not subtitle_picker_mode and cloud_accounts.mode.is_empty() and not _cloud_stack.is_empty() and cloud_search.supported():
 			_button(CloudSearch.OPEN, "", _action_position(0.69), Vector2(0.09, 0.065), not _cloud_busy, "search")
@@ -2759,30 +2875,30 @@ func _draw() -> void:
 		if not cloud_managing and _cloud_stack.is_empty():
 			_button(CLOUD_ACCOUNTS, "", Vector2(0.69, 0.46), Vector2(0.09, 0.07), platform != null, "plus")
 			_tips[CLOUD_ACCOUNTS] = I18n.t("Cloud accounts")
-	if section == Section.LOCAL and _local_access_mode() != "none" and platform:
+	if not archives.browsing and section == Section.LOCAL and _local_access_mode() != "none" and platform:
 		_button(ALL_FILES, "", _action_position(0.69), Vector2(0.09, 0.065), not _local_grant_pending, "unlock")
 		_tips[ALL_FILES] = I18n.t("Choose a folder" if _local_access_mode() == "directory" else "Allow access to all files")
-	if section == Section.LOCAL and not _external_volumes().is_empty():
+	if not archives.browsing and section == Section.LOCAL and not _external_volumes().is_empty():
 		_button(USB_STORAGE,"",_action_position(0.58),Vector2(0.09,0.065),true,"usb")
 		_tips[USB_STORAGE] = I18n.t("USB storage")
-	if section != Section.SETTINGS and not subtitle_picker_mode and not image_picker_mode: collections.draw_header()
-	if section == Section.RECENT and collections.home_tab == 0 and not rows.is_empty():
+	if not archives.browsing and section != Section.SETTINGS and not subtitle_picker_mode and not image_picker_mode: collections.draw_header()
+	if not archives.browsing and section == Section.RECENT and collections.home_tab == 0 and not rows.is_empty():
 		_button(CLEAR_HISTORY, "", _action_position(0.80), Vector2(0.09, 0.065), true, "trash")
 		_tips[CLEAR_HISTORY] = I18n.t("Clear history")
-	if section == Section.DLNA:
+	if not archives.browsing and section == Section.DLNA:
 		if _dlna_server.is_empty():
 			_button(ADD, "", Vector2(0.69, 0.46), Vector2(0.09, 0.07), PlatformMethods.supports(platform, "media_dlna_save"), "plus")
 			_tips[ADD] = I18n.t("Add server")
 		elif _dlna_stack.is_empty() and _dlna_servers.any(func(server): return str(server.id) == _dlna_server and bool(server.get("manual", false))):
 			_button(EDIT, "", _action_position(0.69), Vector2(0.09, 0.065), true, "edit")
-	if section == Section.SMB and _smb_server.is_empty():
+	if not archives.browsing and section == Section.SMB and _smb_server.is_empty():
 		_button(ADD, "", Vector2(0.69, 0.46), Vector2(0.09, 0.07), platform != null, "plus")
-	if section == Section.SMB and not _smb_server.is_empty() and _smb_path.is_empty():
+	if not archives.browsing and section == Section.SMB and not _smb_server.is_empty() and _smb_path.is_empty():
 		_button(EDIT, "", _action_position(0.69), Vector2(0.09, 0.065), true, "edit")
 	file_actions.draw_header()
 	if browser_content() and not subtitle_picker_mode: draw_view_modes(_action_position(0.80).y)
 	_align_folder_tools()
-	if preload("res://scripts/online_panorama_panel.gd").AVAILABLE and media_filter==2 and section!=Section.SETTINGS and not audio_import_mode and not image_picker_mode:
+	if not archives.browsing and preload("res://scripts/online_panorama_panel.gd").AVAILABLE and media_filter==2 and section!=Section.SETTINGS and not audio_import_mode and not image_picker_mode:
 		_round(ONLINE_PANORAMAS,"globe",Vector2(0.80,0.58),0.08,true,false,I18n.t("Online panoramas"))
 	_decoration(Vector2(1.28, 0.002), Vector2(0.19, 0.405), Color(0.17, 0.2, 0.24))
 	_draw_rows()
@@ -2801,7 +2917,7 @@ func _draw() -> void:
 			_tips[BACK] = I18n.t("Back")
 		_button(RESTART_APP, I18n.t("Restart app"), Vector2(0.10, -0.515), Vector2(0.42, 0.07), true, "refresh")
 		_button(QUIT_APP, I18n.t("Close app"), Vector2(0.59, -0.515), Vector2(0.42, 0.07), true, "close")
-	if _local_grant_needed():
+	if not archives.browsing and _local_grant_needed():
 		_button(GRANT, I18n.t("Grant"), Vector2(0.19, -0.34), Vector2(0.3, 0.07), not _local_grant_pending, "", true)
 	if collections.has_selection():
 		collections.draw_footer()
@@ -2819,9 +2935,9 @@ func _draw() -> void:
 		for i in MEDIA_FILTERS.size():
 			_button(FILTER_BASE + i, I18n.t(MEDIA_FILTERS[i]), Vector2(0.36 + i * 0.18, -0.515), Vector2(0.17, 0.06), true, "", media_filter == i)
 			set_label_size(_buttons.back().node.get_child(0), 17)
-	var cloud_paging := section == Section.CLOUD and not _cloud_stack.is_empty()
+	var cloud_paging := not archives.browsing and section == Section.CLOUD and not _cloud_stack.is_empty()
 	var cloud_page_y := -0.59 if file_actions.has_selection() else -0.515
-	if section == Section.RECENT:
+	if not archives.browsing and section == Section.RECENT:
 		_button(RECENT_PREVIOUS, "‹", Vector2(-0.45, -0.515), Vector2(0.09, 0.07), _recent_page > 0)
 		_label("%d / %d" % [_recent_page + 1, _recent_page_count()], Vector3(-0.27, -0.515, 0.004), 18)
 		_button(RECENT_NEXT, "›", Vector2(-0.09, -0.515), Vector2(0.09, 0.07), _recent_page + 1 < _recent_page_count())
@@ -2831,11 +2947,11 @@ func _draw() -> void:
 			var pages := str(maxi(_cloud_page + 1, maxi(1, ceili(float(_cloud_total) / _cloud_page_size)))) if _cloud_total >= 0 else ("…" if _cloud_next >= 0 else str(_cloud_page + 1))
 			_label("%d / %s" % [_cloud_page + 1, pages], Vector3(-0.27, cloud_page_y, 0.004), 18)
 			_button(CLOUD_NEXT, "›", Vector2(-0.09, cloud_page_y), Vector2(0.09, 0.07), not _cloud_busy and _cloud_next >= 0)
-	var footer_status := cloud_error.summary_text() if section == Section.CLOUD else I18n.t(status)
+	var footer_status := cloud_error.summary_text() if not archives.browsing and section == Section.CLOUD else I18n.t(status)
 	if audio_import_mode and not str(_audio_preview_state.get("audio_preview_error", "")).is_empty(): footer_status = I18n.t(str(_audio_preview_state.audio_preview_error))
 	elif audio_import_mode and _audio_preview_state.get("audio_preview_loading", false): footer_status = I18n.t("Loading preview")
 	var line := _label(_fit_title(footer_status, "", 0.46 if audio_import_mode else 0.67, 17), Vector3(-0.45, -0.66 if cloud_paging and file_actions.has_selection() else -0.58 if cloud_paging or file_actions.folder() else -0.52, 0.004), 17)
-	if section == Section.CLOUD and not cloud_error.detail.is_empty():
+	if not archives.browsing and section == Section.CLOUD and not cloud_error.detail.is_empty():
 		_button(CloudBrowseError.OPEN, "", Vector2(0.30, line.position.y), Vector2(0.07, 0.065), true, "info")
 		_tips[CloudBrowseError.OPEN] = I18n.t("Error details")
 	line.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
@@ -2845,7 +2961,7 @@ func _draw() -> void:
 
 ## Pack the visible folder actions against the view buttons, without gaps for absent actions.
 func _align_folder_tools() -> void:
-	if not browser_content() or section == Section.RECENT: return
+	if not browser_content() or (section == Section.RECENT and not archives.browsing): return
 	var tools: Array[Dictionary] = []
 	for target in [FileActions.SORT, FileActions.EDIT_MODE, EJECT_STORAGE, USB_STORAGE, ALL_FILES, CloudSearch.OPEN, EDIT, REFRESH, VIEW_LIST, VIEW_GRID]:
 		for button in _buttons:
@@ -2856,7 +2972,8 @@ func _align_folder_tools() -> void:
 		tools[i].rect.position.x = x - tools[i].rect.size.x * 0.5
 
 ## Path pills (last four segments); every segment but the current one jumps there.
-func _draw_crumbs(crumbs: Array) -> void:
+func _draw_crumbs(crumbs: Array, base: int = CRUMB_BASE) -> void:
+	if archives.browsing: base = archives.CRUMB
 	var x := -0.455
 	# Leave room for account actions; the up button still exposes every parent.
 	var first := maxi(0, crumbs.size() - (2 if section in [Section.CLOUD, Section.LOCAL] or file_actions.sortable() else 4))
@@ -2864,7 +2981,7 @@ func _draw_crumbs(crumbs: Array) -> void:
 		var text := _fit_title(str(crumbs[i]), "", 0.24, 19)
 		var width := text_width(text, 19) + 0.05
 		var current := i == crumbs.size() - 1
-		_button(CRUMB_BASE + i, text, Vector2(x + width * 0.5, _header_y()), Vector2(width, 0.065), not current)
+		_button(base + i, text, Vector2(x + width * 0.5, _header_y()), Vector2(width, 0.065), not current)
 		var label: Label3D = _buttons.back().node.get_child(0)
 		set_label_size(label, 19)
 		label.modulate = ACCENT if current else MUTED
@@ -2875,6 +2992,7 @@ func _draw_crumbs(crumbs: Array) -> void:
 			_label("›", Vector3(x - 0.0175, _header_y(), 0.004), 19).modulate = MUTED
 
 func _header_title() -> String:
+	if archives.browsing: return " / ".join(archives.crumbs())
 	if image_picker_mode: return I18n.t("Choose image")
 	if audio_import_mode: return I18n.t("Import audio")
 	match section:
@@ -2906,29 +3024,29 @@ func _draw_rows() -> void:
 	_decorations.append(_list)
 	_bar_thumb = null
 	var first := _first_line() * _cols()
-	var row_top: float = 0.045 if cloud_search.active else (server_browser.list_top() if section == Section.MEDIA_SERVER and not account_panel.active() else LIST_TOP)
+	var row_top: float = 0.045 if (cloud_search.active and not archives.browsing) else (server_browser.list_top() if (section == Section.MEDIA_SERVER and not archives.browsing) and not account_panel.active() else LIST_TOP)
 	for i in range(first, mini(rows.size(), first + _drawn_slots())):
 		var row: Dictionary = rows[i]
 		var k := i - first
 		if _grid():
-			if section == Section.MEDIA_SERVER:
+			if (section == Section.MEDIA_SERVER and not archives.browsing):
 				var cols := _cols()
 				var size: Vector2 = server_browser.tile_size() if server_browser.media_content() else TILE_SIZE
 				var step: float = size.x + 0.025 if server_browser.media_content() else GRID_PITCH.x
 				var left: float = -0.53 + size.x / 2 if server_browser.media_content() else -0.36
 				server_browser.tile(ROW_BASE + k, row, Vector2(left + (k % cols) * step, server_browser.list_top() - size.y / 2 - (k / cols) * _pitch()))
 			else:
-				var center := Vector2(-0.36 + (k % COLS) * GRID_PITCH.x, (0.095 if cloud_search.active else GRID_TOP) - TILE_SIZE.y * 0.5 - (k / COLS) * GRID_PITCH.y)
+				var center := Vector2(-0.36 + (k % COLS) * GRID_PITCH.x, (0.095 if (cloud_search.active and not archives.browsing) else GRID_TOP) - TILE_SIZE.y * 0.5 - (k / COLS) * GRID_PITCH.y)
 				_tile(ROW_BASE + k, row, center)
-				collections.decorate_row(k, row, center, true, _list)
+				if not archives.browsing: collections.decorate_row(k, row, center, true, _list)
 		else:
-			if section == Section.MEDIA_SERVER and server_browser.media_content():
+			if (section == Section.MEDIA_SERVER and not archives.browsing) and server_browser.media_content():
 				server_browser.media_row(ROW_BASE + k, row, Vector2(0.17, row_top - k * _pitch())); continue
 			if browser_content():
 				var center := Vector2(0.17, row_top - k * _pitch())
 				_media_row_button(ROW_BASE + k, row, center)
 				_decorate_audio_selection(row)
-				collections.decorate_row(k, row, center, false, _list)
+				if not archives.browsing: collections.decorate_row(k, row, center, false, _list)
 				continue
 			if row.get("voice_manager", false):
 				_voice_manager_entry(row, Vector2(0.17, row_top - k * _pitch()), ROW_BASE + k)
@@ -2971,7 +3089,7 @@ func _draw_rows() -> void:
 		# Scrollbar: the thumb shows position and length; pointing at the track jumps there.
 		var top := _bar_span().x
 		var height := _bar_span().y
-		var bar_x := 0.925 if section == Section.MEDIA_SERVER and server_browser.media_content() else 0.835
+		var bar_x := 0.925 if (section == Section.MEDIA_SERVER and not archives.browsing) and server_browser.media_content() else 0.835
 		_button(SCROLLBAR, "", Vector2(bar_x, top - height * 0.5), Vector2(0.04, height))
 		var thumb := height * float(_lines()) / _line_count()
 		_bar_thumb = _decoration(Vector2(0.012, thumb), Vector2(bar_x, top - thumb * 0.5), MUTED)
@@ -3101,7 +3219,7 @@ func _tile(target: int, row: Dictionary, centre: Vector2) -> void:
 	var button: Dictionary = _buttons.back()
 	button.base_color = SELECTED if file_actions.editing and file_actions.is_selected(row) else Color(TILE, 0.0)
 	if (compact and _is_current_row(row)) or (str(row.get("uri", "")) == collections.reveal_uri and not collections.reveal_uri.is_empty()): button.base_color = SELECTED
-	button.enabled = not file_actions.editing or not file_actions.row_uri(row).is_empty()
+	button.enabled = bool(row.get("enabled", true)) and (not file_actions.editing or not file_actions.row_uri(row).is_empty())
 	button.node.material_override.set_shader_parameter("surface_color", button.base_color)
 	var node: MeshInstance3D = button.node
 	var name: Label3D = node.get_child(0)
@@ -3149,6 +3267,7 @@ func _lit(selected: bool) -> void:
 ## A played video's frame, or the cover a DLNA server offers (fetched once, then cached).
 ## Never reads a video to make one.
 func _picture(row: Dictionary) -> Texture2D:
+	if row.has("thumbnail_key"): return Thumbnails.texture(str(row.thumbnail_key))
 	if row.has("scene"):
 		var server_picture: Texture2D = server_browser.cover(row)
 		return server_picture if server_picture else Thumbnails.texture(str(row.get("uri", "")))
@@ -3216,15 +3335,15 @@ func _progress_on(parent: Node3D, ratio: float, center: Vector2, width: float) -
 	parent.add_child(_quad(Vector2(filled, 0.003), Vector3(center.x - width * 0.5 + filled * 0.5, center.y, 0.009), ACCENT, 15))
 
 func _media_row_button(target: int, row: Dictionary, centre: Vector2) -> void:
-	if collections.managed(row):
+	if not archives.browsing and collections.managed(row):
 		collections.draw_list_row(target - ROW_BASE, row, centre, _list); return
 	var info := Presentation.info(row, catalog, section == Section.RECENT)
-	var managing := file_actions.list_management()
+	var managing := not archives.browsing and file_actions.list_management()
 	var status_text := str(info.status)
 	var title_width := (0.76 if not status_text.is_empty() else 1.0) - (0.11 if managing else 0.0)
 	if audio_import_mode: title_width = minf(title_width, 0.90)
 	var body := centre + Vector2(0.055 if managing else 0.0, 0)
-	_button(target, _fit_title(str(row.title), "", title_width, 22), body, Vector2(1.13 if managing else 1.24, 0.098), true, "", false, _list)
+	_button(target, _fit_title(str(row.title), "", title_width, 22), body, Vector2(1.13 if managing else 1.24, 0.098), bool(row.get("enabled", true)), "", false, _list)
 	var selected := file_actions.is_selected(row) or (str(row.get("uri", "")) == collections.reveal_uri and not collections.reveal_uri.is_empty())
 	_lit(selected)
 	var node: MeshInstance3D = _buttons.back().node
@@ -3242,7 +3361,7 @@ func _media_row_button(target: int, row: Dictionary, centre: Vector2) -> void:
 		status_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT; status_label.modulate = ACCENT
 	if info.folder: _icon("next", Vector3(0.51 if managing else 0.565, 0, 0.004), 0.028, MUTED, node)
 	_progress_on(node, float(info.ratio), Vector2(0.405 if managing else 0.46, -0.025), 0.24)
-	file_actions.draw_checkbox(target, row, centre + Vector2(-0.575, 0))
+	if not archives.browsing: file_actions.draw_checkbox(target, row, centre + Vector2(-0.575, 0))
 
 func _row_button(target: int, title: String, detail: String, icon: String, centre: Vector2, selected: bool) -> void:
 	_button(target, _fit_title(title, "", 0.9, TEXT_BODY), centre, Vector2(1.24, 0.098), true, "", false, _list)

@@ -56,7 +56,7 @@ func _boot() -> void:
 	_show_player_menu()
 
 func _show_recent_menu() -> void:
-	# Keep the existing full library at normal size, independent of the giant transport.
+	# Keep the existing full library at normal size beside the near-viewer controls.
 	if not recent_menu: return
 	if recent_menu.section != recent_menu.Section.LOCAL:
 		recent_menu.section = recent_menu.Section.LOCAL; recent_menu.scroll = 0
@@ -78,7 +78,7 @@ func _look_at_cinema() -> void:
 	var eye := xr_camera.global_position
 	var top := Vector3(screen.position[0], screen.position[1] + float(screen.height) * 0.5, screen.position[2])
 	var bottom := video_menu.to_global(Vector3(0, -0.34, 0))
-	# Frame the tall screen and its fixed transport without changing projection or geometry.
+	# Frame the tall screen and near-viewer controls without changing projection or geometry.
 	var direction := (top - eye).normalized() + (bottom - eye).normalized()
 	xr_camera.look_at(eye + direction, Vector3.UP)
 
@@ -102,14 +102,19 @@ func _process(delta: float) -> void:
 		_mouse_owner.cancel_pointer("desktop"); _mouse_owner = null
 	if _cinema_interaction_owns() and not menu and _desktop_focused and not _looking:
 		var point := get_viewport().get_mouse_position()
-		cinema_environment.update_pointer("desktop", xr_camera.project_ray_origin(point), xr_camera.project_ray_normal(point), true)
+		var origin := xr_camera.project_ray_origin(point)
+		var direction := xr_camera.project_ray_normal(point)
+		cinema_environment.update_pointer("desktop", origin, direction, true)
 	elif cinema_environment:
 		cinema_environment.hide_pointer("desktop")
 
 func _unhandled_input(event: InputEvent) -> void:
 	if not CinemaFeature.enabled(): return
 	if not _desktop_focused: return
-	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_RIGHT:
+	if _cinema_interaction_owns() and not _active_menu() and event is InputEventMouseButton and event.button_index in [MOUSE_BUTTON_LEFT, MOUSE_BUTTON_RIGHT]:
+		_cinema_desktop_input(event)
+		get_viewport().set_input_as_handled(); return
+	if event is InputEventMouseButton and (event.button_index == MOUSE_BUTTON_MIDDLE or (event.button_index == MOUSE_BUTTON_RIGHT and not _cinema_interaction_owns())):
 		_looking = event.pressed
 		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED if _looking else Input.MOUSE_MODE_VISIBLE
 		if is_instance_valid(_mouse_owner): _mouse_owner.cancel_pointer("desktop"); _mouse_owner = null
@@ -144,11 +149,16 @@ func _unhandled_input(event: InputEvent) -> void:
 		_menu_touched_ms = Time.get_ticks_msec(); get_viewport().set_input_as_handled(); return
 	super._unhandled_input(event)
 
+func _cinema_request_interaction(value: String) -> bool:
+	_looking = false
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+	return super._cinema_request_interaction(value)
+
 func _unhandled_key_input(event: InputEvent) -> void:
 	if not CinemaFeature.enabled(): return
 	if event is InputEventKey and event.pressed and not event.echo:
 		if event.keycode == KEY_F2:
-			_cinema_request_interaction("seat"); get_viewport().set_input_as_handled(); return
+			_cinema_request_interaction("move"); get_viewport().set_input_as_handled(); return
 		if event.keycode == KEY_F3:
 			_cinema_request_interaction("move"); get_viewport().set_input_as_handled(); return
 		if event.keycode == KEY_HOME and cinema_environment.home():

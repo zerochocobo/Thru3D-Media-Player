@@ -61,6 +61,7 @@ func _ready() -> void:
 	previews.preview_ready.connect(func(_uri): _refresh_textures())
 
 func set_mode(value: int) -> void:
+	if photo and photo.archive_mode and value != Layout.SINGLE: return
 	if value not in [0, 1, 2, 3] or value == mode: return
 	cancel_all(); focus = -1; progress = 0; returning = false; _swap_phase = 0; _swap_alpha = 1.0
 	_scales[mode] = view_scale

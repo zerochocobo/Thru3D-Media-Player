@@ -211,6 +211,7 @@ func _bar_action_x(target: int) -> float:
 		107:-0.14,100:0.0,108:0.14,FAVORITE:0.28,PHOTO_SHUFFLE:0.44}.get(target,0.0)
 
 func _draw_bar() -> void:
+	if _state.get("archive_mode", false): _gallery_open = false; _layout_open = false
 	_set_backdrop(Vector2(1.16, 0.27), Vector2.ZERO)
 	_style_control_bar()
 	_backdrop.material_override.set_shader_parameter("corner_radius", 0.05)
@@ -220,7 +221,7 @@ func _draw_bar() -> void:
 	var has: bool = _state.get("has_image", false) or _state.get("gallery_overview", false)
 	var portrait: bool = _state.get("portrait_requested",false)
 	var swapping: bool = _state.get("gallery_swapping", false)
-	_glyph(PHOTO_GALLERY, "images", Vector2(-0.5, 0.025), 0.075, _state.get("count", 0) > 0, I18n.t("Images"))
+	if not _state.get("archive_mode", false): _glyph(PHOTO_GALLERY, "images", Vector2(-0.5, 0.025), 0.075, _state.get("count", 0) > 0, I18n.t("Images"))
 	_glyph(PHOTO_INSPECT, "zoom", Vector2(-0.39, 0.025), 0.075, has and not portrait, _inspect_tip())
 	_glyph(PHOTO_ADJUST, "adjust", Vector2(-0.28, 0.025), 0.075, has, I18n.t("Adjust image"))
 	_glyph(PHOTO_PREVIOUS, "previous", Vector2(-0.14, 0.025), 0.085, _state.get("can_previous", false) and not swapping, I18n.t("Previous image"))
@@ -245,7 +246,7 @@ func _draw_bar() -> void:
 	if not music_quick: music_quick = preload("res://scripts/music_quick_controls.gd").new(self, func(): action_requested.emit("music_toggle"))
 	music_quick.draw(PHOTO_AUDIO, Vector2(_bar_action_x(PHOTO_AUDIO), 0.215), _state)
 	var layout := clampi(int(_state.get("layout", 0)), 0, 3)
-	_round(PHOTO_LAYOUT, ["image", "photo_sides", "photo_wall", "memory"][layout], Vector2(_bar_action_x(PHOTO_LAYOUT), 0.215), 0.08, has and not portrait, false, I18n.t("Photo layout"))
+	if not _state.get("archive_mode", false): _round(PHOTO_LAYOUT, ["image", "photo_sides", "photo_wall", "memory"][layout], Vector2(_bar_action_x(PHOTO_LAYOUT), 0.215), 0.08, has and not portrait, false, I18n.t("Photo layout"))
 	var caption := _label(I18n.t("Portrait passthrough" if portrait else Photo.Gallery.NAMES[layout]), Vector3(_bar_action_x(PHOTO_LAYOUT), 0.15, 0.004), 12)
 	caption.modulate = MUTED
 	if layout in [2,3] and not portrait and not _depth_open and int(_state.get("gallery_focus", -1)) < 0:
@@ -413,6 +414,7 @@ func stick_scroll(amount: float, delta: float) -> void:
 var _scroll_after := 0
 
 func _activate(target: int) -> void:
+	if _state.get("archive_mode", false) and (target in [PHOTO_GALLERY, PHOTO_LAYOUT, PHOTO_SHUFFLE] or target >= PHOTO_LAYOUT_BASE and target < PHOTO_LAYOUT_BASE + 4): return
 	if target == SPACE_LOCK or _adjustment == "bar_transparency": super._activate(target); return
 	if target==PHOTO_STATIC:
 		action_requested.emit("photo_static"); refresh()

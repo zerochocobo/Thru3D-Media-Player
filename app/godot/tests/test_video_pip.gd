@@ -54,6 +54,8 @@ func run() -> void:
 	var first: Node3D = pip.windows[1]
 	var first_pose: Transform3D = first.global_transform
 	check(first.global_position.y > head.origin.y and is_zero_approx(first.global_position.x), "Panorama slot 1 is above centre")
+	var elevation := atan2(first.global_position.y-head.origin.y, head.origin.z-first.global_position.z)
+	check(elevation > deg_to_rad(4) and elevation < deg_to_rad(10), "Panorama slot 1 is only slightly above centre, within comfortable forward view")
 	pip.set_count(3, Transform3D(Basis(Vector3.UP, PI / 2), head.origin + Vector3(2, 0, 0)))
 	check(pip.windows[2].global_position.x < 0 and pip.windows[3].global_position.x > 0, "Later slots use the original group heading and head position")
 	check(first.global_transform.is_equal_approx(first_pose), "Adding windows never moves existing windows")
@@ -184,6 +186,22 @@ func run() -> void:
 	pip._action(1, "select", 0)
 	check(not main._shortcut_allowed("play"), "Selection blocks button shortcuts")
 	main.video = null; main.queue_free()
+	pip.clear()
+	video.geometry = 0; video._apply_geometry()
+	pip.set_count(2, head)
+	var flat_second: Node3D = pip.windows[2]
+	flat_second.global_position += Vector3(0.2,0.1,0.1)
+	var preserved_flat_pose: Transform3D = flat_second.global_transform
+	pip.close(1)
+	var turned_head := Transform3D(Basis(Vector3.UP, PI/2), head.origin+Vector3(2,0.2,1))
+	pip.toggle_slot(1, turned_head)
+	var opened_relative: Vector3 = pip.level_head(turned_head).affine_inverse()*pip.windows[1].global_position
+	var expected_relative := Vector3(0.75,0.47,-1.21).normalized()*1.5
+	check(opened_relative.is_equal_approx(expected_relative), "Reopening a flat slot uses the current viewer rather than the first group's old anchor")
+	check(flat_second.global_transform.is_equal_approx(preserved_flat_pose), "Opening a flat slot preserves other dragged windows")
+	check(pip.windows[1].global_basis.z.normalized().dot((turned_head.origin-pip.windows[1].global_position).normalized())>0.999, "New flat window faces the current viewer")
+	pip.clear(); pip.toggle_slot(1, turned_head)
+	check((pip.level_head(turned_head).affine_inverse()*pip.windows[1].global_position).is_equal_approx(expected_relative), "Closing all flat slots does not persist their old positions")
 	pip.clear(); menu.queue_free(); video.queue_free()
 	await process_frame
 	var player := Video.new(); root.add_child(player); player.set_process(false)

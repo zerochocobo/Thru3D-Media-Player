@@ -24,6 +24,9 @@ def prepare(tool_root: Path):
     (output / "hands.txt").write_bytes(
         (root / "app/godot/models/hands/NOTICE.txt").read_bytes() + b"\n\n" +
         (root / "app/godot/models/hands/LICENSE.txt").read_bytes())
+    (output / "pico-controller-models.txt").write_bytes(
+        (root / "app/godot/models/controllers/pico/NOTICE.txt").read_bytes() + b"\n\n" +
+        (root / "app/godot/models/controllers/pico/LICENSE.txt").read_bytes())
     with ZipFile(tool_root / "downloads/ncnn-1.0.20260526-cp313-cp313-win_amd64.whl") as archive:
         (output / "ncnn.txt").write_bytes(archive.read("ncnn-1.0.20260526.dist-info/licenses/LICENSE.txt"))
     with ZipFile(tool_root / "downloads/godotopenxrvendorsaddon-5.1.0.zip") as archive:

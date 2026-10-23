@@ -5,6 +5,12 @@
 #include <fcntl.h>
 #include <sys/syscall.h>
 
+// Directory handles are used only for path resolution, never enumeration. Android
+// allows searching system ancestors such as / and /storage but denies reading
+// them, even with all-files access. O_PATH preserves the no-follow directory walk
+// without requesting that unrelated read permission (supported since API 21).
+static constexpr int directoryHandleFlags = O_PATH | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC;
+
 static std::string bytes(JNIEnv* env, jbyteArray source) {
     if (!source) return {};
     const jsize length = env->GetArrayLength(source);
@@ -23,7 +29,7 @@ Java_org_vrpassthroughplayer_plugin_NativeMediaDelete_removeAt(JNIEnv* env, jobj
     if (env->ExceptionCheck() || base.empty() || base[0] != '/' || base.find('\0') != std::string::npos ||
         child.find('\0') != std::string::npos || (!child.empty() && child[0] == '/')) return EINVAL;
     std::string path = base + (child.empty() ? "" : "/" + child);
-    int parent = ::open("/", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    int parent = ::open("/", directoryHandleFlags);
     if (parent < 0) return errno;
     size_t start = 1;
     while (true) {
@@ -35,7 +41,7 @@ Java_org_vrpassthroughplayer_plugin_NativeMediaDelete_removeAt(JNIEnv* env, jobj
             int error = result == 0 ? 0 : errno;
             ::close(parent); return error;
         }
-        int next = ::openat(parent, part.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+        int next = ::openat(parent, part.c_str(), directoryHandleFlags);
         int error = errno;
         ::close(parent);
         if (next < 0) return error;
@@ -66,13 +72,13 @@ Java_org_vrpassthroughplayer_plugin_NativeMediaDelete_renameAt(JNIEnv* env, jobj
     if (env->ExceptionCheck() || parent.empty() || parent[0] != '/' || from.empty() || to.empty() ||
         from.find_first_of("/\0", 0, 2) != std::string::npos || to.find_first_of("/\0", 0, 2) != std::string::npos ||
         from == "." || from == ".." || to == "." || to == ".." || parent.find('\0') != std::string::npos) return EINVAL;
-    int fd = ::open("/", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    int fd = ::open("/", directoryHandleFlags);
     size_t start = 1;
     while (fd >= 0 && start < parent.size()) {
         size_t end = parent.find('/', start);
         std::string part = parent.substr(start, end == std::string::npos ? end : end - start);
         if (part.empty() || part == "." || part == "..") { ::close(fd); return EINVAL; }
-        int next = ::openat(fd, part.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+        int next = ::openat(fd, part.c_str(), directoryHandleFlags);
         int error = errno; ::close(fd);
         if (next < 0) return error;
         fd = next;

@@ -17,39 +17,39 @@ func vector(values: Array) -> Vector3:
 func _initialize() -> void:
 	var data := Blueprint.manifest()
 	check(data.schema_version == 1 and data.units == "metres", "Manifest declares its schema and metre units")
-	check(data.seats.size() == 420 and data.design.row_count == 14 and data.design.seats_per_row == 30,
-		"GT auditorium has fourteen rows and thirty individually selectable seats per row")
+	check(data.seats.size() == 336 and data.design.row_count == 14 and data.design.seats_per_row == 24,
+		"GT auditorium has fourteen rows and twenty-four individually selectable seats per row")
 	check(is_equal_approx(data.screen.width / data.screen.height, 1.43), "The active screen is 1.43:1")
 	check(is_equal_approx(data.screen.width, 32.0) and data.screen.height > 22.3 and data.screen.height < 22.5,
 		"GT active screen measures 32 metres wide and about 22.38 metres high")
-	check(data.room.width == 34.0 and data.room.depth == 33.5 and data.room.height == 26.0,
-		"Architecture encloses a 34 by 33.5 by 26 metre hall")
+	check(data.room.width == 34.0 and is_equal_approx(data.room.depth, 37.4) and data.room.height == 26.0,
+		"Architecture encloses a 34 by 37.4 by 26 metre hall")
 	check(data.room.width - data.screen.width <= 2.0, "The screen spans the front wall instead of hanging inside a frame")
 	check(is_equal_approx(float(data.screen.position[1]) - float(data.screen.height) * 0.5, 1.2)
 		and data.room.height - (float(data.screen.position[1]) + float(data.screen.height) * 0.5) < 2.5,
 		"Tall screen starts near the floor and reaches close to the ceiling")
-	check(data.default_seat == "I15", "Default seat is the ninth row, centre-left")
-	var preferred := vector(_seat(data, "I15").eye_position)
-	var last := vector(_seat(data, "N15").eye_position)
-	check(preferred.is_equal_approx(Vector3(-0.4, 7.05, 17.65)), "Default seat uses the intended human eye position")
+	check(data.default_seat == "I12", "Default seat is the ninth row, centre-left")
+	var preferred := vector(_seat(data, "I12").eye_position)
+	var last := vector(_seat(data, "N12").eye_position)
+	check(preferred.is_equal_approx(Vector3(-0.45, 5.25, 19.9)), "Default seat uses the intended human eye position")
 	var preferred_distance := preferred.z - float(data.screen.position[2])
 	var last_distance := last.z - float(data.screen.position[2])
 	var preferred_fov := rad_to_deg(2.0 * atan(float(data.screen.width) * 0.5 / preferred_distance))
 	var last_fov := rad_to_deg(2.0 * atan(float(data.screen.width) * 0.5 / last_distance))
-	check(preferred_distance > 21.6 and preferred_distance < 21.7 and preferred_fov > 72.5 and preferred_fov < 73.5,
-		"Default seat is 21.65m from the screen with about 72.9 degrees horizontal coverage")
-	check(preferred_distance / float(data.screen.height) > 0.95 and preferred_distance / float(data.screen.height) < 1.0,
-		"Default viewing distance stays just inside one screen height")
-	check(last_distance > 29.1 and last_distance < 29.2 and last_fov > 57.0 and last_fov < 58.0,
-		"Rear row remains 29.15m away with about 57.5 degrees horizontal coverage")
-	check(last_distance / float(data.screen.height) < 1.31, "Rear viewing distance stays within 1.31 screen heights")
-	var first_eye := vector(_seat(data, "A15").eye_position)
+	check(preferred_distance > 23.8 and preferred_distance < 24.0 and preferred_fov > 67 and preferred_fov < 68,
+		"Default seat retains an immersive 67 degree horizontal screen coverage")
+	check(preferred_distance / float(data.screen.height) > 1.0 and preferred_distance / float(data.screen.height) < 1.1,
+		"Default viewing distance stays near one screen height")
+	check(last_distance > 32.8 and last_distance < 33.0 and last_fov > 51 and last_fov < 53,
+		"Wider rows retain over 51 degrees horizontal coverage at the rear")
+	check(last_distance / float(data.screen.height) < 1.5, "Rear viewing distance stays within 1.5 screen heights")
+	var first_eye := vector(_seat(data, "A12").eye_position)
 	var rake := rad_to_deg(atan2(last.y - first_eye.y, last.z - first_eye.z))
-	check(rake > 23.0 and rake < 24.0, "Tiered seating rises about 23.4 degrees so rows ahead stay in view")
-	check(is_equal_approx(vector(_seat(data, "A02").eye_position).x - vector(_seat(data, "A01").eye_position).x, 0.8),
-		"Premium lounge chairs keep a roomy 0.8m pitch")
-	check(data.design.clear_row_passage >= 0.61 and data.design.clear_row_passage <= 0.63,
-		"Forward-offset chairs retain a 0.62m rear passage for body and navigation grid clearance")
+	check(rake > 14.0 and rake < 14.1, "Gentler 14 degree rake avoids the old high seating plinths")
+	check(is_equal_approx(vector(_seat(data, "A02").eye_position).x - vector(_seat(data, "A01").eye_position).x, 0.9),
+		"Premium chairs sharing wide consoles keep a 0.9m pitch")
+	check(data.design.clear_row_passage >= 0.99 and data.design.clear_row_passage <= 1.01,
+		"Each chair shares a full one-metre front footwell/passage with its own deck")
 	var ids := {}
 	for seat: Dictionary in data.seats:
 		check(not ids.has(seat.id), "Seat %s is unique" % seat.id)
@@ -99,10 +99,10 @@ func _initialize() -> void:
 		for floor: Dictionary in data.walkable:
 			if floor.id == stair_id:
 				found = is_equal_approx(float(floor.height), expected)
-		check(found, "Stair %s follows the four-step 0.1625m rise" % stair_id)
-	check(data.walkable.filter(func(area): return str(area.id).begins_with("stair_left_")).size() == 56,
-		"Each side staircase contains 56 human-sized steps")
-	check(Blueprint.STAIR_RISER < 0.17 and Blueprint.STAIR_TREAD > 0.36, "Aisle steps keep a comfortable 16cm rise and 37cm tread")
+		check(found, "Stair %s follows the three-step 0.15m rise" % stair_id)
+	check(data.walkable.filter(func(area): return str(area.id).begins_with("stair_left_")).size() == 42,
+		"Each side staircase contains 42 human-sized steps")
+	check(Blueprint.STAIR_RISER < 0.17 and Blueprint.STAIR_TREAD >= 0.59, "Aisle steps keep a comfortable 15cm rise and 60cm tread")
 	var document := GLTFDocument.new()
 	var state := GLTFState.new()
 	var error := document.append_from_file(MODEL, state)
@@ -119,8 +119,8 @@ func _initialize() -> void:
 			var near := meshes.filter(func(item: MeshInstance3D): return str(item.name).begins_with("Seats_") and str(item.name).ends_with("_near"))
 			var far := meshes.filter(func(item: MeshInstance3D): return str(item.name).begins_with("Seats_") and str(item.name).ends_with("_far"))
 			var chunks := near + far
-			check(near.size() == data.design.row_count * 3 and far.size() == near.size(),
-				"Each row ships three ten-seat runs, each with a detailed and a distant chair mesh")
+			check(near.size() == data.design.row_count * 6 and far.size() == near.size(),
+				"Each row ships six four-seat runs, each with a detailed and a distant chair mesh")
 			check(Loader.apply_seat_detail(loaded) == chunks.size() and near.all(func(item): return item.visibility_range_end == Loader.SEAT_DETAIL_RANGE)
 				and far.all(func(item): return item.visibility_range_begin == Loader.SEAT_DETAIL_RANGE),
 				"Runtime switches every run between detailed and distant chairs at the same distance")
@@ -135,14 +135,16 @@ func _initialize() -> void:
 					var indices: int = item.mesh.surface_get_array_index_len(surface)
 					item_triangles += (indices if indices > 0 else item.mesh.surface_get_array_len(surface)) / 3
 				triangles += item_triangles
+				var detailed := item.transform.origin.distance_to(preferred) < Loader.SEAT_DETAIL_RANGE + Loader.SEAT_DETAIL_MARGIN
 				if item in near:
 					near_max = maxi(near_max, item_triangles)
-					if item.transform.origin.distance_to(preferred) < Loader.SEAT_DETAIL_RANGE + Loader.SEAT_DETAIL_MARGIN:
+					if detailed:
 						drawn += item_triangles
-				else:
+				elif not (item in far and detailed):
 					drawn += item_triangles
-			check(near_max <= 14000, "A detailed ten-seat run stays within 14,000 triangles: %d" % near_max)
+			check(near_max <= 9600, "A detailed four-seat run stays within 9,600 triangles: %d" % near_max)
 			check(drawn < 250000, "Default seat draws fewer than 250,000 triangles for Quest 2: %d" % drawn)
+			print("CINEMA_BUDGET drawn=%d near_run_max=%d" % [drawn, near_max])
 			for item: MeshInstance3D in meshes:
 				for surface in range(item.mesh.get_surface_count()):
 					var material: StandardMaterial3D = item.mesh.surface_get_material(surface) as StandardMaterial3D
@@ -150,9 +152,19 @@ func _initialize() -> void:
 						"%s surface %d is unlit; lighting is baked" % [item.name, surface])
 			if "Hall" in names:
 				var hall: MeshInstance3D = meshes[names.find("Hall")]
-				var material := hall.mesh.surface_get_material(0) as StandardMaterial3D
-				check(hall.mesh.get_surface_count() == 1 and material.albedo_texture != null
-					and material.albedo_texture.get_width() >= 2048, "Hall uses one baked lighting atlas of at least 2048px")
+				var scanned := 0
+				for surface in hall.mesh.get_surface_count():
+					var material := hall.mesh.surface_get_material(surface) as StandardMaterial3D
+					var arrays: Array = hall.mesh.surface_get_arrays(surface)
+					if material.albedo_texture != null and material.albedo_texture.get_width() >= 1024 							and arrays[Mesh.ARRAY_TEX_UV2] != null and not arrays[Mesh.ARRAY_TEX_UV2].is_empty():
+						scanned += 1
+				check(hall.mesh.get_surface_count() >= 8 and scanned == hall.mesh.get_surface_count(),
+					"Every architecture finish carries a 1024px scan plus a light-bake UV2: %d/%d" % [scanned, hall.mesh.get_surface_count()])
+				var light := load(Loader.LIGHT_PATH) as Texture2D
+				check(light != null and light.get_width() >= 2048, "The lighting bake ships beside the model at 2048px or more")
+				check(Loader.apply_baked_surfaces(loaded, light) == hall.mesh.get_surface_count()
+					and hall.get_surface_override_material(0) is ShaderMaterial,
+					"Runtime multiplies every scanned finish by the light bake in one unlit shader")
 			if "Fixtures" in names:
 				var fixtures: MeshInstance3D = meshes[names.find("Fixtures")]
 				check(fixtures.mesh.get_surface_count() >= 6, "Step, sconce, exit and screen fixtures keep their distinct colours")
@@ -163,14 +175,17 @@ func _initialize() -> void:
 				check(material.albedo_texture != null and arrays[Mesh.ARRAY_COLOR] != null and not arrays[Mesh.ARRAY_COLOR].is_empty(),
 					"Seat chunks combine a chair texture with per-vertex baked hall lighting")
 			var chair := _seat_bounds(near, vector(_seat(data, "A01").eye_position))
-			check(chair.size.x > 0.7 and chair.size.x <= 0.765 and chair.size.z > 0.6 and chair.size.z <= 0.805,
-				"Actual GLB premium chair stays inside its 0.76m by 0.80m envelope: %s" % chair.size)
+			check(chair.size.x > 0.85 and chair.size.x <= 0.91 and chair.size.z > 0.6 and chair.size.z <= 0.805,
+				"Actual GLB chair plus its shared console spans one 0.9m pitch and 0.80m depth: %s" % chair.size)
 			check(chair.size.y > 1.0 and chair.size.y <= 1.09, "Actual chair height remains human-sized: %s" % chair.size)
 			loaded.free()
-	check(triangles > 0 and triangles < 800000, "Both chair detail levels together stay below 800,000 stored triangles")
-	check(surfaces <= 96, "Auditorium stores at most 96 surfaces")
-	check(FileAccess.get_file_as_bytes(MODEL).size() < 24 * 1024 * 1024, "Baked GLB stays below 24 MiB")
-	for texture in ["cinema_HallLight.jpg", "cinema_seat_baked.jpg"]:
+	check(triangles > 0 and triangles < 1000000, "Both chair detail levels together stay below 1,000,000 stored triangles")
+	check(surfaces <= 200, "Auditorium stores at most 200 surfaces")
+	check(FileAccess.get_file_as_bytes(MODEL).size() < 28 * 1024 * 1024, "Baked GLB with real scans stays below 28 MiB")
+	var textures := Array(DirAccess.get_files_at("res://environments/grand_cinema")).filter(
+		func(file: String): return file.get_extension() in ["jpg", "png"])
+	check(textures.size() >= 9 and "cinema_light.jpg" in textures, "Scans, chair texture and light bake are all extracted")
+	for texture in textures:
 		var settings := FileAccess.get_file_as_string("res://environments/grand_cinema/%s.import" % texture)
 		check("compress/mode=2" in settings and "mipmaps/generate=true" in settings,
 			"Extracted %s imports VRAM-compressed with mipmaps for headsets" % texture)
@@ -205,7 +220,7 @@ func _seat_bounds(chunks: Array, eye: Vector3) -> AABB:
 		var arrays := chunk.mesh.surface_get_arrays(0)
 		for local: Vector3 in arrays[Mesh.ARRAY_VERTEX]:
 			var point := chunk.transform * local
-			if absf(point.x - eye.x) < 0.395 and absf(point.z - (eye.z + 0.10)) < 0.5 and point.y < eye.y:
+			if point.x > eye.x - 0.55 and point.x < eye.x + 0.36 and absf(point.z - (eye.z + 0.10)) < 0.5 and point.y < eye.y:
 				minimum = minimum.min(point)
 				maximum = maximum.max(point)
 	return AABB(minimum, maximum - minimum)

@@ -96,7 +96,8 @@ func run() -> void:
 	aims.clear()
 	for index in trackers.size():
 		var center := Vector3(-0.2 if index == 0 else 0.2, 1.4, -0.4)
-		var points := [center - Vector3(0.03, 0, 0), center + Vector3(0.03, 0, 0), center - Vector3(0.035, 0, 0), center + Vector3(0.035, 0, 0)]
+		var knuckle := center + Vector3(0.03, 0, 0.07)
+		var points := [center - Vector3(0.03, 0, 0), center + Vector3(0.03, 0, 0), knuckle, knuckle.lerp(center + Vector3(0.03, 0, 0), 0.36), knuckle.lerp(center + Vector3(0.03, 0, 0), 0.7)]
 		for joint in Main.HandPointer.JOINTS.size():
 			trackers[index].set_hand_joint_flags(Main.HandPointer.JOINTS[joint], Main.HandPointer.POSITION_FLAGS)
 			trackers[index].set_hand_joint_transform(Main.HandPointer.JOINTS[joint], Transform3D(Basis.IDENTITY, points[joint]))

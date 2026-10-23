@@ -11,6 +11,10 @@ const Methods := preload("res://scripts/platform_methods.gd")
 const Gallery := preload("res://scripts/photo_gallery.gd")
 const Directory := preload("res://scripts/photo_directory.gd")
 var gallery := Gallery.new()
+var archive_mode := false
+var archive_origin := ""
+var archive_browser_session := false
+var _archive_previous_layout := 0
 var directory := Directory.new()
 var queue_complete := true
 var directory_error := ""
@@ -317,6 +321,10 @@ func open_image(uri: String, title: String, entries: Array = [], location: Dicti
 	source_location = location.duplicate(true) if not location.is_empty() else preload("res://scripts/media_location.gd").infer(uri)
 	var retain_frame := not local_uri.is_empty() and geometry == Geometry.Geometry.FLAT and gallery.mode in [Gallery.Layout.SINGLE, Gallery.Layout.SIDES] and not portrait_requested
 	close_image(true, uri if source_location.has("online_source") else "")
+	archive_mode = uri.begins_with("comic://")
+	if archive_mode:
+		_archive_previous_layout = gallery.mode
+		gallery.set_mode(Gallery.Layout.SINGLE)
 	placement_pending = not retain_frame
 	queue.clear()
 	for entry in entries:
@@ -347,6 +355,7 @@ func reorder(entries: Array[Dictionary], context: Dictionary) -> void:
 	if not loading and not _thread: _replace_directory()
 
 func set_layout_mode(value: int) -> void:
+	if archive_mode and value != Gallery.Layout.SINGLE: return
 	if spatial_requested: set_spatial(false, true)
 	if portrait_requested: set_portrait(false)
 	gallery.set_mode(value)
@@ -499,6 +508,7 @@ func _on_ready(id: int, payload: String) -> void:
 	if not info is Dictionary or info.get("state") != "ready":
 		loading = false
 		error = "Image too large" if info is Dictionary and info.get("error") == "PHOTO_TOO_LARGE" else "Image unavailable"
+		if archive_mode and info is Dictionary and str(info.get("error", "")).begins_with("Archive "): error = str(info.error)
 		_restore_display()
 		changed.emit(); return
 	_on_metadata(id, _serial, pending_index, info)
@@ -782,6 +792,7 @@ func _remember_files(target: int) -> void:
 		_recent_files.erase(oldest)
 
 func _pump_prefetch() -> void:
+	if archive_mode: return
 	_prune_prefetch()
 	if index < 0 or geometry != Geometry.Geometry.FLAT or not _cache_supported(): return
 	if _prefetch_depth_request != 0: return
@@ -993,9 +1004,10 @@ func _accept(result: Dictionary, job: Dictionary) -> void:
 	mark = _mark("display", mark)
 	if auto_depth and geometry == 0 and not stereo_sbs and retained.is_empty(): set_depth(true)
 	mark = _mark("depth", mark)
-	if not result.get("thumbnail_cached", false) or not Thumbnails.has(local_uri):
-		var stored := Thumbnails.store_encoded(local_uri, result.thumbnail_jpg) if result.has("thumbnail_jpg") \
-			else Thumbnails.store(local_uri, result.thumbnail)
+	var thumbnail_key := str(queue[index].get("thumbnail_key", local_uri)) if index >= 0 and index < queue.size() else local_uri
+	if not result.get("thumbnail_cached", false) or not Thumbnails.has(thumbnail_key):
+		var stored := Thumbnails.store_encoded(thumbnail_key, result.thumbnail_jpg) if result.has("thumbnail_jpg") \
+			else Thumbnails.store(thumbnail_key, result.thumbnail)
 		if stored: result["thumbnail_cached"] = true
 	mark = _mark("thumbnail", mark)
 	if catalog and history_enabled and not source_location.has("online_source"):
@@ -1557,7 +1569,7 @@ func snapshot() -> Dictionary:
 	progress.elapsed_ms = Time.get_ticks_msec() - _loading_started_ms
 	return {"spatial_preferred":spatial_preferred,"spatial_requested":spatial_requested,"spatial_ready":_spatial.prepared if is_instance_valid(_spatial) else false,"spatial_available":can_spatial(),"spatial_error":spatial_error,
 		"spatial_report":_spatial.report if is_instance_valid(_spatial) else {},"has_image": _texture != null, "loading": loading, "loading_caption": Loading.caption(progress) if loading else "", "placeholder": placeholder_visible(), "preparing_depth": not _pending_display.is_empty(), "title": title, "index": position, "count": queue.size(),
-		"source_uri": local_uri, "layout": gallery.mode, "gallery_overview": gallery.overview(), "wall_rows": gallery.wall_rows, "gallery_scale": gallery.view_scale, "gallery_distance": gallery.view_distance, "gallery_swapping": gallery._swap_phase != 0, "gallery_focus": gallery.focus, "directory_loading": directory.loading, "directory_error": directory_error, "queue_complete": queue_complete,
+		"archive_mode": archive_mode, "source_uri": local_uri, "layout": gallery.mode, "gallery_overview": gallery.overview(), "wall_rows": gallery.wall_rows, "gallery_scale": gallery.view_scale, "gallery_distance": gallery.view_distance, "gallery_swapping": gallery._swap_phase != 0, "gallery_focus": gallery.focus, "directory_loading": directory.loading, "directory_error": directory_error, "queue_complete": queue_complete,
 		"can_save_pictures":can_save_pictures(), "pictures_save":pictures_status(),
 		"can_background": can_background(), "panorama_detail_error": panorama_tiles.error,
 		"can_previous": not portrait_requested and queue.size() > 1 and (((geometry == Geometry.Geometry.FLAT or gallery.mode != 0) and queue_complete) or position > 0),
@@ -1763,6 +1775,14 @@ func _release_full_photo(release_runtime: bool = true) -> void:
 	hide_inspect_pointer()
 
 func close_image(notify: bool = true, next_online_uri: String = "") -> void:
+	var restore_archive_layout := archive_mode
+	if archive_mode:
+		var key := local_uri.get_slice("/", 2)
+		if key.is_empty() and not queue.is_empty(): key = str(queue[0].uri).get_slice("/", 2)
+		if not archive_browser_session and not key.is_empty() and Methods.supports(platform, "archive_close"): platform.archive_close(key)
+		archive_mode = false
+	archive_browser_session = false
+	archive_origin = ""
 	_release_full_photo()
 	if _catalog_save_ms > 0 and catalog:
 		_catalog_save_ms = 0
@@ -1771,6 +1791,9 @@ func close_image(notify: bool = true, next_online_uri: String = "") -> void:
 	gallery.clear()
 	if Methods.supports(platform, "panorama_original_view"): platform.panorama_original_view(next_online_uri)
 	local_uri = ""; display_name = ""; error = ""; index = -1; pending_index = -1
+	if restore_archive_layout:
+		queue.clear()
+		gallery.set_mode(_archive_previous_layout)
 	if notify: changed.emit()
 
 func _exit_tree() -> void:

@@ -1,0 +1,112 @@
+{
+ "carpet_floor": {
+  "asset": "Carpet006",
+  "file": "carpet_floor.jpg",
+  "license": "CC0 1.0",
+  "mean_linear_albedo": 0.03,
+  "size": 1024,
+  "source": "ambientCG",
+  "tile_metres": 1.0,
+  "url": "https://ambientcg.com/a/Carpet006"
+ },
+ "carpet_tread": {
+  "asset": "Carpet016",
+  "file": "carpet_tread.jpg",
+  "license": "CC0 1.0",
+  "mean_linear_albedo": 0.026,
+  "size": 1024,
+  "source": "ambientCG",
+  "tile_metres": 0.8,
+  "url": "https://ambientcg.com/a/Carpet016"
+ },
+ "cloud_felt": {
+  "asset": "Fabric030",
+  "file": "cloud_felt.jpg",
+  "license": "CC0 1.0",
+  "mean_linear_albedo": 0.02,
+  "size": 1024,
+  "source": "ambientCG",
+  "tile_metres": 1.0,
+  "url": "https://ambientcg.com/a/Fabric030"
+ },
+ "metal_brushed": {
+  "asset": "Metal009",
+  "file": "metal_brushed.jpg",
+  "license": "CC0 1.0",
+  "mean_linear_albedo": 0.11,
+  "size": 1024,
+  "source": "ambientCG",
+  "tile_metres": 0.6,
+  "url": "https://ambientcg.com/a/Metal009"
+ },
+ "seat_leather": {
+  "asset": "Leather030",
+  "file": "seat_leather.jpg",
+  "license": "CC0 1.0",
+  "mean_linear_albedo": 0.018,
+  "size": 2048,
+  "source": "ambientCG",
+  "tile_metres": 0.45,
+  "url": "https://ambientcg.com/a/Leather030"
+ },
+ "seat_metal": {
+  "asset": "Metal009",
+  "file": "seat_metal.jpg",
+  "license": "CC0 1.0",
+  "mean_linear_albedo": 0.04,
+  "size": 2048,
+  "source": "ambientCG",
+  "tile_metres": 0.4,
+  "url": "https://ambientcg.com/a/Metal009"
+ },
+ "seat_shell": {
+  "asset": "Plastic011",
+  "file": "seat_shell.jpg",
+  "license": "CC0 1.0",
+  "mean_linear_albedo": 0.01,
+  "size": 2048,
+  "source": "ambientCG",
+  "tile_metres": 0.5,
+  "url": "https://ambientcg.com/a/Plastic011"
+ },
+ "seat_velour": {
+  "asset": "Fabric063",
+  "file": "seat_velour.jpg",
+  "license": "CC0 1.0",
+  "mean_linear_albedo": 0.04,
+  "size": 2048,
+  "source": "ambientCG",
+  "tile_metres": 0.35,
+  "url": "https://ambientcg.com/a/Fabric063"
+ },
+ "velvet_black": {
+  "asset": "Fabric042",
+  "file": "velvet_black.jpg",
+  "license": "CC0 1.0",
+  "mean_linear_albedo": 0.007,
+  "size": 1024,
+  "source": "ambientCG",
+  "tile_metres": 0.5,
+  "url": "https://ambientcg.com/a/Fabric042"
+ },
+ "wall_fabric": {
+  "asset": "Fabric039",
+  "file": "wall_fabric.jpg",
+  "license": "CC0 1.0",
+  "mean_linear_albedo": 0.032,
+  "size": 1024,
+  "source": "ambientCG",
+  "tile_metres": 0.6,
+  "url": "https://ambientcg.com/a/Fabric039"
+ },
+ "wood_walnut": {
+  "asset": "Wood051",
+  "file": "wood_walnut.jpg",
+  "license": "CC0 1.0",
+  "mean_linear_albedo": 0.06,
+  "size": 1024,
+  "source": "ambientCG",
+  "tile_metres": 0.8,
+  "url": "https://ambientcg.com/a/Wood051"
+ }
+}

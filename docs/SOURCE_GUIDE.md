@@ -138,7 +138,7 @@ History (`privacy/history`) controls recent items, resume progress and thumbnail
 
 Narration exposes 19 text languages, 12 preset voice origins and locally created custom voices. The voice manager auditions, renames/deletes and chooses defaults; new videos still start with narration off. Audition streaming/cache, rhythm and level processing share production paths; matching voice-encoder assets are separately required. Photos use global viewing preferences; video/photo depth strengths use separate global preferences. Spatial relief follows physical display size.
 
-The auditorium experiment is [Debug-only](EXPERIMENTAL_CINEMA.md), distinct from released cinema screen placement. Online panorama entry points remain hidden. No personal voices or model payloads accompany this source.
+Grand cinema (Test) is available in Debug and Release; [prepare its required scene resources](EXPERIMENTAL_CINEMA.md) separately. Online panorama entry points remain hidden. No personal voices or model payloads accompany this source.
 
 ## 0.12.3 source capture and remote reads
 

@@ -90,7 +90,7 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
         mpv.awaitFileRelease(uri)
     }) { id, json -> if (!closed.get()) emitSignal("media_list", id, json) }
     private val originalCapture = OriginalCapture({ activity?.applicationContext }, sources::capturePlayable, sources::releaseMediaStream, sources::captureAudio,
-        { id->mpv.captureOwner(id) },{id->mpv.captureAudioFlush(id)})
+        { id->mpv.captureOwner(id) },{id->mpv.captureAudioFlush(id)}, { id->pipImages.retain(id) }, { id->pipImages.release(id) })
     @UsedByGodot fun original_capture_supported(): Boolean = !closed.get() && originalCapture.supported()
     @UsedByGodot fun original_capture_request(json: String): Int = if (closed.get()) 0 else originalCapture.request(json)
     @UsedByGodot fun original_capture_status(id: Int): String = if (closed.get()) "{}" else originalCapture.status(id)
@@ -142,7 +142,15 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     @UsedByGodot fun audio_preview_status(): String = musicPreview.status()
     @UsedByGodot fun stop_audio_preview() = musicPreview.stop()
 
-    private val photos = PhotoBridge({ activity?.applicationContext }, sources::playable, sources::releasePhotoStream) { name, id, json ->
+    private val archives = ArchiveBridge({ activity?.applicationContext }, sources) { id, json ->
+        if (!closed.get()) emitSignal("archive_ready", id, json)
+    }
+    @UsedByGodot fun archive_open(uri: String, title: String, password: String, persist: Boolean): Int =
+        if (closed.get()) -1 else archives.open(sources.nextId(), uri, title, password, persist)
+    @UsedByGodot fun archive_close(session: String) = archives.stop(session)
+    @UsedByGodot fun archive_passwords(operation: String, value: String): String = archives.passwords(operation, value).toString()
+    private val photos = PhotoBridge({ activity?.applicationContext }, sources::playable, sources::releasePhotoStream,
+        resolveRequest = { id, uri -> if (uri.startsWith("comic://")) archives.resolve(id, uri) else sources.playable(uri) }) { name, id, json ->
         if (!closed.get()) emitSignal(name, id, json)
     }
     private val photoPreloads = PhotoBridge({ activity?.applicationContext }, sources::playable, sources::releasePhotoStream,
@@ -152,6 +160,7 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     @UsedByGodot fun open_photo(uri: String): Int {
         if (closed.get()) return -1
         val id = requestId.incrementAndGet()
+        archives.selectPage(id, uri)
         return if (photos.open(id, uri)) id else -1
     }
     @UsedByGodot fun get_photo_loading_status(id: Int): String = if (closed.get()) "" else photos.loadingStatus(id)
@@ -185,7 +194,7 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
         if (photos.activate(id)) return@synchronized true
         photoPreloads.promoteTo(id, photos)
     }
-    @UsedByGodot fun cancel_photo(id: Int) { photos.cancel(id); photoPreloads.cancel(id) }
+    @UsedByGodot fun cancel_photo(id: Int) { archives.cancelPage(id); photos.cancel(id); photoPreloads.cancel(id) }
     @UsedByGodot fun release_photo(id: Int) { photos.release(id); photoPreloads.release(id) }
     @UsedByGodot fun prepare_photo_portrait(id: Int, token: Int, strength: Double): Boolean = !closed.get() && photos.portrait(id,token,strength.toFloat())
     @UsedByGodot fun cancel_photo_portrait(token: Int) = photos.cancelPortrait(token)
@@ -244,6 +253,7 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
         SignalInfo("photo_scene_depth", Int::class.javaObjectType, String::class.java),
         SignalInfo("photo_preload_depth", Int::class.javaObjectType, String::class.java),
         SignalInfo("media_list", Int::class.javaObjectType, String::class.java),
+        SignalInfo("archive_ready", Int::class.javaObjectType, String::class.java),
         SignalInfo("local_video_selected", String::class.java),
         SignalInfo("local_video_access", Int::class.javaObjectType, String::class.java),
         SignalInfo("media_state", Int::class.javaObjectType, String::class.java),
@@ -425,9 +435,34 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
                                     depth: Boolean, topBottom: Boolean, exactSeek: Boolean): Int {
         val interleave = videoInterleaveCompat
         videoInterleaveCompat = false
+        val title = discTitle
+        discTitle = -1
         return if (closed.get()) -1 else mpv.open(uri, startMs, stereo, profile, alpha, vulkan, depth = depth, topBottom = topBottom,
-            exactSeek = exactSeek, layer = videoLayer, networkInterleaveCompat = interleave)
+            exactSeek = exactSeek, layer = videoLayer, networkInterleaveCompat = interleave, discPlaylist = title)
     }
+    @Volatile private var discTitle = -1
+    /** One next open only: the Blu-ray playlist to play; -1 plays the longest title, -2 the disc's HDMV menu. */
+    @UsedByGodot fun set_mpv_disc_title(playlist: Int): Boolean {
+        if (playlist !in -2..99999) return false
+        discTitle = playlist
+        return true
+    }
+    /** JSON with the opened disc's titles and the playing playlist; empty for other media. */
+    @UsedByGodot fun mpv_disc_titles(id: Int): String = if (closed.get()) "" else mpv.discTitles(id)
+    /** The HDMV menu session's navigation state JSON. */
+    @UsedByGodot fun mpv_disc_menu_state(): String = if (closed.get()) "{\"active\":false}" else MpvSourceNative.discMenuState()
+    /** 24 bytes of little-endian int32 x, y, w, h, plane w, plane h, then premultiplied RGBA w*h; empty when unchanged. */
+    @UsedByGodot fun mpv_disc_menu_overlay(version: Long): ByteArray {
+        if (closed.get()) return ByteArray(0)
+        val rect = IntArray(6)
+        val pixels = runCatching { MpvSourceNative.discMenuOverlay(version, rect) }.getOrNull() ?: return ByteArray(0)
+        if (rect[4] <= 0) return ByteArray(0)
+        val header = java.nio.ByteBuffer.allocate(24).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+        rect.forEach { header.putInt(it) }
+        return header.array() + pixels
+    }
+    /** Pointer and key input for the HDMV menu session (MpvSourceNative.discMenuInput). */
+    @UsedByGodot fun mpv_disc_menu_input(kind: Int, x: Int, y: Int): Int = if (closed.get()) -1 else MpvSourceNative.discMenuInput(kind, x, y)
     @Volatile private var videoInterleaveCompat = false
     /** One next open only; Godot sends this after structural confirmation for the current source. */
     @UsedByGodot fun set_mpv_interleave_compat(enabled: Boolean) { videoInterleaveCompat = enabled; mpv.setInterleaveReopen(enabled) }
@@ -457,6 +492,8 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     @UsedByGodot fun render_pip_atlas(slot: Int, color: Int, external: Boolean, mask: Int, active: Int, eyes: Int,
                                       common: FloatArray, windows: FloatArray): Boolean =
         runCatching { VideoLayerNative.renderPip(slot, color, external, mask, active, eyes, common, windows) }.getOrDefault(false)
+    @UsedByGodot fun render_pip_feather_mask(slot: Int, feathers: FloatArray): Boolean =
+        runCatching { VideoLayerNative.renderPipFeatherMask(slot, feathers) }.getOrDefault(false)
     @UsedByGodot fun remap_layer_fisheye(slot: Int, texture: Int, external: Boolean, params: FloatArray): Boolean =
         runCatching { VideoLayerNative.remapFisheye(slot, texture, external, params) }.getOrDefault(false)
     /** Debug builds only: reads back the next remapped fisheye picture (every [step]th pixel). */
@@ -657,6 +694,6 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     override fun onGodotTerminating() { close() }
 
     private fun close() {
-        if (closed.compareAndSet(false, true)) { originalCapture.close(); systemVolume.close(); favoritesTasks.close(); accounts.close(); panoramaBrowser.close(); panoramaRegions.close(); panoramaPictures.close(); panoramaOriginals.close(); musicPlayback.close(); musicPreview.close(); backgroundAudio.close(); photos.close(); photoPreloads.close(); photoPreviews.close(); pipImages.close(); PhotoDepthRuntime.release(); picker.close(); localAccess.close(); probe.shutdownNow(); media.shutdown(); controlled.shutdown(); mpv.shutdown(); rvm.close(); sources.close() }
+        if (closed.compareAndSet(false, true)) { archives.close(); originalCapture.close(); systemVolume.close(); favoritesTasks.close(); accounts.close(); panoramaBrowser.close(); panoramaRegions.close(); panoramaPictures.close(); panoramaOriginals.close(); musicPlayback.close(); musicPreview.close(); backgroundAudio.close(); photos.close(); photoPreloads.close(); photoPreviews.close(); pipImages.close(); PhotoDepthRuntime.release(); picker.close(); localAccess.close(); probe.shutdownNow(); media.shutdown(); controlled.shutdown(); mpv.shutdown(); rvm.close(); sources.close() }
     }
 }

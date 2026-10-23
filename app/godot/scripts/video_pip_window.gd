@@ -4,6 +4,8 @@ signal requested(slot: int, operation: String, value: float)
 const ZOOMS := [1.0, 1.5, 2.0, 3.0, 4.0, 6.0, 8.0]
 const ASPECTS := [0.0, 16.0 / 9.0, 4.0 / 3.0, 1.0, 9.0 / 16.0]
 const ASPECT_LABELS := ["Source aspect", "16:9", "4:3", "1:1", "9:16"]
+const SOFT_EDGE_METRES := 0.012
+const Edges := preload("res://scripts/video_pip_edges.gd")
 var slot := 1
 var zoom := 1.0
 var size := Vector2(0.48, 0.27)
@@ -21,6 +23,9 @@ var draw_order := 0
 var hover_since := -1
 var last_hover := -1
 var frame: MeshInstance3D
+var soft_rim: MeshInstance3D
+var _rim_key := []
+var _compositor_cut := Rect2(Vector2.ZERO, Vector2.ONE)
 var picture := ShaderMaterial.new()
 var hole := ShaderMaterial.new()
 var on_compositor := false
@@ -28,6 +33,7 @@ var image_mode := false
 var image_loading := false
 var image_error := false
 var image_material := ShaderMaterial.new()
+var capture_image: Dictionary = {} # Private preview lease, never a source URI or GPU readback.
 var _video_size := Vector2.ZERO
 
 func show_image(texture: Texture2D) -> void:
@@ -63,6 +69,10 @@ func _ready() -> void:
 	frame.visible = false
 	frame.set_meta("menu_eye_buffer", true)
 	add_child(frame)
+	soft_rim = MeshInstance3D.new(); soft_rim.mesh = ImmediateMesh.new()
+	# Same material and display lease as fallback video; only rasterize the ring.
+	soft_rim.material_override = picture
+	soft_rim.visible = false; add_child(soft_rim)
 	controls_root = Node3D.new(); add_child(controls_root)
 	refresh()
 
@@ -113,17 +123,18 @@ func _draw() -> void:
 	if not frame: return
 	controls_root.visible = controls or selecting or zoom_open or shape_open
 	frame.mesh.size = size
-	var color := ACCENT if selecting or identified else Color(0.26, 0.32, 0.37)
-	for edge in [Vector4(0, size.y / 2, size.x + 0.008, 0.004), Vector4(0, -size.y / 2, size.x + 0.008, 0.004),
-		Vector4(-size.x / 2, 0, 0.004, size.y), Vector4(size.x / 2, 0, 0.004, size.y)]:
-		var border := _quad(Vector2(edge.z, edge.w), Vector3(edge.x, edge.y, 0.001), color, 3)
-		add_child(border); _decorations.append(border)
-	if not controls_root.visible:
-		set_draw_order(draw_order); return
+	picture.set_shader_parameter("pip_edge_feather", edge_feather())
+	image_material.set_shader_parameter("edge_feather", edge_feather())
+	_update_rim_mesh(_compositor_cut)
+	# Keep the resting picture borderless. Corner cues identify the target without
+	# drawing a permanent opaque outline across its feathered perimeter.
 	for corner in 4:
+		if not controls_root.visible and not identified: break
 		var p := corner_point(corner)
 		var handle := _quad(Vector2.ONE * 0.018, Vector3(p.x, p.y, 0.003), ACCENT, 4)
 		add_child(handle); _decorations.append(handle)
+	if not controls_root.visible:
+		set_draw_order(draw_order); return
 	for edge in (0 if image_mode else 4):
 		var p := edge_point(edge)
 		var handle := _quad(Vector2(0.024, 0.008) if edge < 2 else Vector2(0.008, 0.024), Vector3(p.x, p.y, 0.003), ACCENT, 4)
@@ -172,14 +183,20 @@ func _draw() -> void:
 ## Keep each window's picture and controls together, below the main ray menus (10+).
 func set_draw_order(order: int) -> void:
 	draw_order = clampi(order, 0, 2)
-	picture.render_priority = draw_order * 3
+	picture.render_priority = draw_order * 3 + 1
 	image_material.render_priority = draw_order * 3
 	hole.render_priority = draw_order * 3
+	if soft_rim: soft_rim.material_override.render_priority = draw_order * 3 + 1
 	for node in _decorations + _labels: _paint_order(node)
 	for button in _buttons: _paint_order(button.node)
 
-func set_compositor(value: bool) -> void:
+func set_compositor(value: bool, cut := Rect2(Vector2.ZERO, Vector2.ONE), ring := false) -> void:
 	on_compositor = value and not image_mode
+	_compositor_cut = cut if on_compositor else Rect2(Vector2.ZERO, Vector2.ONE)
+	hole.set_shader_parameter("keep_rect", Edges.vector(_compositor_cut))
+	if soft_rim:
+		soft_rim.visible = on_compositor and ring and frame.visible
+		if soft_rim.visible: _update_rim_mesh(_compositor_cut)
 	if frame: frame.material_override = image_material if image_mode else (hole if value else picture)
 
 func _paint_order(node: Node3D) -> void:
@@ -248,6 +265,26 @@ func hover(active: bool, now: int) -> void:
 	if wanted != controls:
 		controls = wanted; refresh()
 
+func edge_feather() -> Vector2:
+	var width := minf(SOFT_EDGE_METRES, minf(size.x, size.y) * 0.08)
+	return Vector2.ONE * width / size
+
+func _update_rim_mesh(cut: Rect2) -> void:
+	if _rim_key == [size, cut]: return
+	_rim_key = [size, cut]
+	var mesh: ImmediateMesh = soft_rim.mesh
+	mesh.clear_surfaces()
+	if cut == Rect2(Vector2.ZERO, Vector2.ONE): return
+	mesh.surface_begin(Mesh.PRIMITIVE_TRIANGLES)
+	# Rasterize only the narrow ring, never a second full picture-sized pass.
+	for rect in [Rect2(0,0,1,cut.position.y),Rect2(0,cut.end.y,1,1-cut.end.y),
+		Rect2(0,cut.position.y,cut.position.x,cut.size.y),Rect2(cut.end.x,cut.position.y,1-cut.end.x,cut.size.y)]:
+		for corner in [Vector2.ZERO,Vector2.RIGHT,Vector2.ONE,Vector2.ZERO,Vector2.ONE,Vector2.DOWN]:
+			var uv: Vector2 = rect.position + corner * rect.size
+			mesh.surface_set_uv(uv)
+			mesh.surface_add_vertex(Vector3((uv.x-0.5)*size.x,(0.5-uv.y)*size.y,0))
+	mesh.surface_end()
+
 func set_size(value: Vector2) -> void:
 	if size.is_equal_approx(value): return
 	size = value; refresh()
@@ -265,6 +302,7 @@ func crop_parameters(candidate: Dictionary = {}) -> void:
 	var span := crop_span()
 	center = center.clamp(span / 2, Vector2.ONE - span / 2)
 	picture.set_shader_parameter("pip_enabled", true)
+	picture.set_shader_parameter("pip_edge_feather", edge_feather())
 	picture.set_shader_parameter("pip_center", center)
 	picture.set_shader_parameter("pip_span", span)
 	picture.set_shader_parameter("pip_forward", -basis.z)

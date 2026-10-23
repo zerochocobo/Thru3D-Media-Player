@@ -129,7 +129,7 @@ func set_audio_options(track_id: int, volume: float, muted: bool) -> bool:
 	return true
 
 
-func seek_absolute(position_ms: int, _mode: String = "") -> bool:
+func seek_absolute(position_ms: int, _mode: String = "", _loop_return: bool = false) -> bool:
 	if not _has_desktop_video() or control.duration_ms <= 0:
 		return false
 	control.seek_absolute(position_ms)

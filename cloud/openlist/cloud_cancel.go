@@ -53,6 +53,14 @@ func CancelRequest(key string) {
 func RequestCancelable(method, route, body, key string) (string, error) {
 	cloudRequestContexts.Lock()
 	item, ok := cloudRequestContexts.items[key]
+	// A remote RAR may have many separated headers. Keep its user-cancellable
+	// index operation alive without changing the ordinary 25-second API budget.
+	if ok && route == "/comic" && item.context.Err() == nil {
+		item.cancel()
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		item = pendingCloudRequest{ctx, cancel, time.Now().Add(10 * time.Minute)}
+		cloudRequestContexts.items[key] = item
+	}
 	cloudRequestContexts.Unlock()
 	if !ok {
 		return "", errors.New("cloud request expired")

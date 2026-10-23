@@ -30,6 +30,7 @@ internal object VideoLayerNative {
     @JvmStatic external fun pipMetrics(): String
     @JvmStatic external fun pipSamples(request: Boolean): String
     @JvmStatic external fun pipMainSamples(request: Boolean): String
+    @JvmStatic external fun renderPipFeatherMask(slot: Int, feathers: FloatArray): Boolean
     /** Production shader: active 1..7 selects guttered PiP rows; 8 processes the full main frame. */
     @JvmStatic external fun renderPip(slot: Int, color: Int, external: Boolean, mask: Int, active: Int, eyes: Int,
                                       common: FloatArray, windows: FloatArray): Boolean

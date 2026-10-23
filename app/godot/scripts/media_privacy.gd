@@ -20,14 +20,17 @@ static func restore(settings: ConfigFile) -> void:
 	configure_file_settings(str(settings.get_value("privacy", "file_settings", ALL)))
 
 static func is_local(uri: String) -> bool:
+	if uri.begins_with("archive-image://"): return is_local(uri.get_slice("/", 2).uri_decode())
 	if sources.has(uri): return bool(sources[uri])
 	if uri.get_file().get_slice("?", 0).to_lower().ends_with(".strm"): return false
 	return uri.begins_with("file://") or uri.begins_with("usb://") or uri.begins_with("content://media/") or uri.begins_with("content://com.android.externalstorage.documents/")
 
 static func record_allowed(uri: String) -> bool:
+	if uri.begins_with("comic://"): return false
 	return mode == ALL or (mode == LOCAL and is_local(uri))
 
 static func settings_allowed(uri: String) -> bool:
+	if uri.begins_with("comic://"): return false
 	return file_settings == ALL or (file_settings == LOCAL and is_local(uri))
 
 static func protected_uri(uri: String) -> bool:

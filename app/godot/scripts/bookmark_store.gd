@@ -2,7 +2,9 @@ extends RefCounted
 ## Each movie has two verified banks. Failed mutations leave both memory and disk unchanged.
 const MAX_MARKERS := 500
 const MAX_BYTES := 262144
-const VERSION := 1
+const VERSION := 2
+const MAX_LOOPS := 500
+const MIN_LOOP_MS := 2000
 const MAX_TIME := 2147483647
 const Memory := preload("res://scripts/file_mode_memory.gd")
 var directory: String
@@ -37,7 +39,7 @@ func _read(path: String, id: String) -> Dictionary:
 	if integer(envelope.get("schema_version"), VERSION + 1, 9007199254740991):
 		blocked[id] = true
 		return {}
-	if envelope.get("schema_version") != VERSION or not envelope.get("payload_json") is String: return {}
+	if (envelope.get("schema_version") != 1 and envelope.get("schema_version") != VERSION) or not envelope.get("payload_json") is String: return {}
 	if envelope.payload_json.sha256_text() != envelope.get("payload_sha256"): return {}
 	if parser.parse(envelope.payload_json) != OK: return {}
 	var value: Variant = parser.data
@@ -54,8 +56,24 @@ func _read(path: String, id: String) -> Dictionary:
 		marker.position_ms = int(marker.position_ms)
 		marker.created_at_ms = int(marker.created_at_ms)
 		ids[marker.id] = true
+	if envelope.schema_version == 1: value.loops = []
+	if not _valid_loops(value): return {}
 	value.sequence = int(value.sequence)
 	return value
+
+func _valid_loops(record: Dictionary) -> bool:
+	if not record.get("loops") is Array or record.loops.size() > MAX_LOOPS: return false
+	var times := {}
+	for marker in record.markers: times[marker.id] = int(marker.position_ms)
+	var ids := {}; var pairs := {}
+	for segment in record.loops:
+		if not segment is Dictionary or not segment.get("id") is String or segment.id.length() != 32 or not segment.id.is_valid_hex_number(false) or ids.has(segment.id): return false
+		if not segment.get("a") is String or not segment.get("b") is String or not times.has(segment.a) or not times.has(segment.b): return false
+		if times[segment.b] - times[segment.a] < MIN_LOOP_MS: return false
+		var pair: String = segment.a + segment.b
+		if pairs.has(pair): return false
+		ids[segment.id] = true; pairs[pair] = true
+	return true
 
 func load_saved() -> void:
 	records.clear(); blocked.clear(); undo.clear()
@@ -80,6 +98,7 @@ func _save(record: Dictionary) -> bool:
 	var sequence := int(records.get(id, {}).get("sequence", 0)) + 1
 	if sequence > 9007199254740990: return false
 	var proposed := record.duplicate(true)
+	if not proposed.has("loops"): proposed.loops = []
 	proposed.sequence = sequence
 	var payload := JSON.stringify(proposed)
 	var encoded := JSON.stringify({"schema_version": VERSION, "payload_json": payload, "payload_sha256": payload.sha256_text()})
@@ -127,7 +146,9 @@ func relocate(old_uri: String, new_uri: String, basename: String, size: int = -1
 		copied.aliases = [new_alias]; copied.fingerprint = feature
 		if not _save(copied): return false
 		if record.aliases.size() > 1: record.aliases.erase(old_alias)
-		else: record.markers = [] # Persist an empty old record; its old hash must not recover the moved markers.
+		else:
+			record.markers = [] # Persist an empty old record; its old hash must not recover the moved markers.
+			record.loops = []
 		if not _save(record): return false
 		if not undo.is_empty() and str(undo.get("media_id", "")) == id: undo.media_id = copied.id
 		return true
@@ -167,9 +188,11 @@ func remove(id: String, marker_id: String) -> bool:
 	for index in record.markers.size():
 		if record.markers[index].id != marker_id: continue
 		var marker: Dictionary = record.markers[index].duplicate(true)
+		var removed: Array = record.get("loops", []).filter(func(segment): return segment.a == marker_id or segment.b == marker_id)
+		record.loops = record.get("loops", []).filter(func(segment): return segment.a != marker_id and segment.b != marker_id)
 		record.markers.remove_at(index)
 		if not _save(record): return false
-		undo = {"media_id": id, "marker": marker, "until": Time.get_ticks_msec() + 8000}
+		undo = {"media_id": id, "marker": marker, "loops": removed, "until": Time.get_ticks_msec() + 8000}
 		return true
 	return false
 
@@ -179,10 +202,65 @@ func can_undo() -> bool:
 func restore() -> bool:
 	if not can_undo(): return false
 	var record: Dictionary = records[undo.media_id].duplicate(true)
-	if record.markers.size() >= MAX_MARKERS: return false
-	# Another add near the deleted time must not make undo create duplicate IDs.
-	if record.markers.any(func(item): return item.id == undo.marker.id): return false
-	record.markers.append(undo.marker.duplicate(true))
+	if not undo.marker.is_empty():
+		if record.markers.size() >= MAX_MARKERS: return false
+		# Another add near the deleted time must not make undo create duplicate IDs.
+		if record.markers.any(func(item): return item.id == undo.marker.id): return false
+		record.markers.append(undo.marker.duplicate(true))
+	record.loops = record.get("loops", []) + undo.get("loops", []).duplicate(true)
+	# Keep legacy definitions readable, but undo must not reintroduce a shared A.
+	for restored in undo.get("loops", []):
+		if record.loops.any(func(item): return item.id != restored.id and item.a == restored.a):
+			last_error = "Loop restore conflict"
+			return false
+	if not _valid_loops(record):
+		last_error = "Loop restore conflict"
+		return false
 	if not _save(record): return false
 	undo.clear()
 	return true
+
+func list_loops(id: String) -> Array:
+	var record: Dictionary = records.get(id, {})
+	var times := {}
+	for marker in record.get("markers", []): times[marker.id] = int(marker.position_ms)
+	var result: Array = record.get("loops", []).duplicate(true)
+	for segment in result:
+		segment.a_ms = times[segment.a]; segment.b_ms = times[segment.b]
+	result.sort_custom(func(a, b): return a.a_ms < b.a_ms if a.a_ms != b.a_ms else (a.b_ms < b.b_ms if a.b_ms != b.b_ms else a.id < b.id))
+	return result
+
+## Only IDs are saved; inserting a marker can never retarget an existing segment.
+func save_loop(id: String, a: String, b: String, loop_id: String = "") -> Dictionary:
+	last_error = "Invalid loop range"
+	if not records.has(id): return {}
+	var record: Dictionary = records[id].duplicate(true)
+	var segments: Array = record.get("loops", [])
+	if not loop_id.is_empty() and not segments.any(func(item): return item.id == loop_id): return {}
+	for segment in segments:
+		if segment.a == a and segment.id != loop_id and segment.b != b:
+			last_error = "Start bookmark already used"
+			return {}
+		if segment.a == a and segment.b == b:
+			if loop_id.is_empty() or segment.id == loop_id: return segment.duplicate(true)
+			last_error = "Loop already exists"
+			return {}
+	var item := {"id": Crypto.new().generate_random_bytes(16).hex_encode() if loop_id.is_empty() else loop_id, "a": a, "b": b}
+	if loop_id.is_empty(): segments.append(item)
+	else:
+		for index in segments.size():
+			if segments[index].id == loop_id: segments[index] = item
+	record.loops = segments
+	if not _valid_loops(record): return {}
+	return item.duplicate(true) if _save(record) else {}
+
+func remove_loop(id: String, loop_id: String) -> bool:
+	if not records.has(id): return false
+	var record: Dictionary = records[id].duplicate(true)
+	for segment in record.get("loops", []):
+		if segment.id != loop_id: continue
+		record.loops = record.loops.filter(func(item): return item.id != loop_id)
+		if not _save(record): return false
+		undo = {"media_id": id, "marker": {}, "loops": [segment.duplicate(true)], "until": Time.get_ticks_msec() + 8000}
+		return true
+	return false

@@ -3,6 +3,13 @@ extends RefCounted
 ## Native sampling is generated from the production pair shaders, including both eyes' masks.
 const Layer := preload("res://scripts/video_layer.gd")
 const Methods := preload("res://scripts/platform_methods.gd")
+const Edges := preload("res://scripts/video_pip_edges.gd")
+var surface_background := false # Set only for an actual transparent projection background.
+var _surface_mask_size := Vector2i.ZERO
+var _surface_mask_key := PackedFloat32Array()
+var _surface_mask_generation := -1
+var _surface_failed_generation := -1
+var _pending_cuts := {}
 const COMMON := ["video_geometry", "stereo_sbs", "top_bottom", "stereo_half", "swap_eyes", "viewing_eye",
 	"rotation_degrees", "fisheye_fov", "source_size", "color_uv_scale", "stereo_offset", "alpha_enabled",
 	"depth_enabled", "depth_shift", "depth_convergence", "alpha_edge", "model_size", "model_content_rect",
@@ -73,12 +80,16 @@ func direct_compatible(count: int = -1) -> bool:
 	var video: Node3D = manager.owner
 	var layer: RefCounted = video.get("video_layer")
 	if not layer or not layer.pip_supported() or not layer._types.get("quad", false): return false
+	if not surface_background or not layer.alpha_blend or _surface_failed_generation == layer.generation: return false
+	if not Methods.supports(video.platform, "render_pip_feather_mask"): return false
+	if manager.video_windows().size() != manager.windows.size(): return false
+	if layer.runtime_image_size.x < Edges.MASK_TILE + 4 or layer.runtime_image_size.y < (Edges.MASK_TILE + 4) * 3: return false
 	if video.geometry != 0 or video.alpha_requested or video.depth_requested or video.packed_file: return false
 	if int(video.media.format.get("source_rotation_degrees", 0)) != 0 or video.stereo_offset_uv() != Vector2.ZERO: return false
 	var eyes := 1
 	var total: int = manager.video_windows().size() if count < 0 else count
 	# Main eyes + a subtitle are reserved even if no cue is currently visible.
-	return layer.capacity() >= (2 if video.stereo_sbs else 1) + 1 + total * eyes
+	return layer.capacity() >= (2 if video.stereo_sbs else 1) + 1 + total * eyes * 2
 
 func window_eyes(_window: Node3D) -> int:
 	return 1 # One selected source eye, shown to BOTH display eyes.
@@ -87,12 +98,13 @@ func _surface_extras(origin: Node3D, occupied: int) -> Array:
 	var video: Node3D = manager.owner
 	var layer: RefCounted = video.video_layer
 	if not direct_compatible(): fallback = "surface_sampling"; return []
-	if size != Vector2i.ZERO or main_size != Vector2i.ZERO: release() # direct crops need no retained allocation
+	if size != Vector2i.ZERO or main_size != Vector2i.ZERO: release()
+	if not _prepare_surface_mask(): return _fail_surface()
 	var image := Vector2(float(video.media.playback.get("layer_surface_width", Layer.SURFACE_SIZE)),
 		float(video.media.playback.get("layer_surface_height", Layer.SURFACE_SIZE)))
 	var source: PackedFloat32Array = layer.layer_values(video, origin, Layer.SURFACE, image)
 	var required := 0
-	for window in manager.video_windows(): required += window_eyes(window)
+	for window in manager.video_windows(): required += window_eyes(window) * 2
 	if occupied + required > layer.capacity(): fallback = "budget"; return []
 	var extras: Array = []
 	for slot in manager._stack:
@@ -108,16 +120,55 @@ func _surface_extras(origin: Node3D, occupied: int) -> Array:
 			var rect := Rect2(whole.position + (center - span / 2) * whole.size, span * whole.size)
 			var first := rect.position.ceil(); var last := rect.end.floor()
 			rect = Rect2(first, last - first)
-			var values: PackedFloat32Array = layer.quad_values(origin, window.global_transform, window.size, 0, image, rect, Layer.OPAQUE, eye + 1 if eyes == 2 else 0)
+			var mask_rect := Rect2(2, (slot - 1) * (Edges.MASK_TILE + 4) + 2, Edges.MASK_TILE, Edges.MASK_TILE)
+			var mask_values: PackedFloat32Array = layer.quad_values(origin, window.global_transform, window.size,
+				Layer.PIP_SLOT, Vector2(_surface_mask_size), mask_rect, Layer.MASK_WRITE | Layer.SOURCE_ALPHA)
+			mask_values[18] = 0 # Sharpening a coverage mask creates a halo.
+			var order: int = Layer.PIP_ORDER + manager._stack.find(slot) * 2
+			extras.append({"values": mask_values, "order": order, "group": slot})
+			var values: PackedFloat32Array = layer.quad_values(origin, window.global_transform, window.size, 0, image, rect, Layer.MASKED, eye + 1 if eyes == 2 else 0)
 			for index in range(17, 26): values[index] = source[offset + index]
 			values[19] = Layer.SURFACE
-			extras.append({"values": values, "order": Layer.OVERLAY_ORDER, "group": slot})
+			extras.append({"values": values, "order": order + 1, "group": slot})
 		pending.append(slot)
 	fallback = ""
 	return extras
 
+func _prepare_surface_mask() -> bool:
+	var video: Node3D = manager.owner
+	var layer: RefCounted = video.video_layer
+	var key := PackedFloat32Array()
+	for slot in [1, 2, 3]:
+		var feather: Vector2 = manager.windows[slot].edge_feather() if manager.windows.has(slot) else Vector2.ONE * 0.02
+		key.append_array(PackedFloat32Array([feather.x, feather.y]))
+	var wanted := Vector2i(Edges.MASK_TILE + 4, (Edges.MASK_TILE + 4) * 3)
+	if _surface_mask_size != wanted or _surface_mask_generation != layer.generation:
+		if not video.platform.create_layer_image(Layer.PIP_SLOT, wanted.x, wanted.y, 1, false): return false
+		layer.invalidate(); _surface_mask_size = wanted; _surface_mask_generation = layer.generation
+		_surface_mask_key.clear()
+	if key == _surface_mask_key: return true
+	if video.platform.acquire_layer_image(Layer.PIP_SLOT) <= 0: return false
+	var drawn: bool = video.platform.render_pip_feather_mask(Layer.PIP_SLOT, key)
+	var released: bool = video.platform.release_layer_image(Layer.PIP_SLOT, false)
+	if not drawn or not released: return false
+	_surface_mask_key = key
+	return true
+
+func _release_surface_mask() -> void:
+	if _surface_mask_size != Vector2i.ZERO:
+		manager.owner.video_layer.invalidate()
+		manager.owner.platform.destroy_layer_image(Layer.PIP_SLOT)
+	_surface_mask_size = Vector2i.ZERO; _surface_mask_key.clear(); _surface_mask_generation = -1
+
+func _fail_surface() -> Array:
+	_surface_failed_generation = manager.owner.video_layer.generation
+	_release_surface_mask(); pending.clear(); fallback = "surface_mask"
+	return [] # Next layer presentation check reopens on the shared-texture path.
+
 func release() -> void:
-	commit(false)
+	commit(false, false)
+	_release_surface_mask()
+	if manager.video_windows().is_empty(): _surface_failed_generation = -1
 	release_main()
 	var video: Node3D = manager.owner
 	if size != Vector2i.ZERO and video.get("video_layer"):
@@ -232,9 +283,15 @@ func _fail_main() -> bool:
 	_main_retry_after = Time.get_ticks_msec() + 2000; _main_frame.clear()
 	return false
 
-func commit(submitted: bool) -> void:
+func commit(submitted: bool, attempted := true) -> void:
+	if attempted and not submitted and not pending.is_empty() and manager.owner._binding.layer:
+		_surface_failed_generation = manager.owner.video_layer.generation
+		fallback = "surface_submit"
 	for slot in manager.windows:
-		manager.windows[slot].set_compositor(submitted and pending.has(slot))
+		var window: Node3D = manager.windows[slot]
+		var accepted: bool = submitted and pending.has(slot)
+		if manager.owner._binding.layer and not window.image_mode: window.frame.visible = accepted
+		window.set_compositor(accepted, _pending_cuts.get(slot, Rect2(Vector2.ZERO, Vector2.ONE)), _pending_cuts.has(slot))
 	if not submitted: pending.clear()
 
 func request_samples() -> bool:
@@ -248,8 +305,9 @@ func request_samples() -> bool:
 
 func prepare(origin: Node3D, occupied: int) -> Array:
 	pending.clear()
+	_pending_cuts.clear()
 	if manager.video_windows().is_empty():
-		if size != Vector2i.ZERO or main_size != Vector2i.ZERO: release()
+		if size != Vector2i.ZERO or main_size != Vector2i.ZERO or _surface_mask_size != Vector2i.ZERO: release()
 		return []
 	if not enabled: fallback = "debug_disabled"; return []
 	var video: Node3D = manager.owner
@@ -260,6 +318,7 @@ func prepare(origin: Node3D, occupied: int) -> Array:
 		fallback = "native_draw"; return []
 	var binding: RefCounted = video._binding
 	if binding.layer and video.panel.visible: return _surface_extras(origin, occupied)
+	_release_surface_mask()
 	if not binding.material or not video.panel.visible:
 		fallback = "source"; return []
 	if needs_main() and not main_ready:
@@ -317,10 +376,13 @@ func prepare(origin: Node3D, occupied: int) -> Array:
 		var layer_eyes := window_eyes(window)
 		for eye in layer_eyes:
 			var rect := Rect2(Vector2(eye * (tile.x + 4) + 2, (slot - 1) * (tile.y + 4) + 2), Vector2(tile))
-			var values: PackedFloat32Array = layer.quad_values(origin, window.global_transform, window.size, Layer.PIP_SLOT,
-				Vector2(size), rect, Layer.SOURCE_ALPHA, eye + 1 if layer_eyes == 2 else 0)
+			var inner := Edges.centre(rect, window.edge_feather())
+			var uv := Edges.coverage(rect, inner)
+			_pending_cuts[slot] = Edges.hole(uv, window.size)
+			var values: PackedFloat32Array = layer.quad_values(origin, Edges.cropped_pose(window.global_transform, window.size, uv),
+				window.size * uv.size, Layer.PIP_SLOT, Vector2(size), inner, Layer.SOURCE_ALPHA, eye + 1 if layer_eyes == 2 else 0)
 			values[18] = 0 # the atlas already matches display density; avoid per-layer supersampling
-			extras.append({"values": values, "order": Layer.OVERLAY_ORDER, "group": slot})
+			extras.append({"values": values, "order": Layer.PIP_ORDER + manager._stack.find(slot) * 2 + 1, "group": slot})
 	fallback = "budget" if pending.size() < manager.video_windows().size() else ""
 	return extras
 
@@ -383,5 +445,7 @@ func snapshot() -> Dictionary:
 			"position": [window.global_position.x, window.global_position.y, window.global_position.z],
 			"size": [window.size.x, window.size.y], "on_layer": window.on_compositor})
 	return {"windows": windows, "preferences": manager.preferences.duplicate(), "layers": pending.duplicate(), "atlas": [size.x, size.y], "tile": [tile.x, tile.y],
+		"edge_path": "surface_mask" if _surface_mask_size != Vector2i.ZERO else ("centre_ring" if not pending.is_empty() else "shared_texture"),
+		"surface_background": surface_background, "mask_atlas": [_surface_mask_size.x, _surface_mask_size.y],
 		"width": width, "draws": draws, "fallback": fallback, "metrics": metrics.duplicate(), "main_image": [main_size.x, main_size.y], "main_ready": main_ready, "main_cost_fallback": main_cost_fallback,
 		"samples": samples if OS.is_debug_build() else "", "main_samples": main_samples if OS.is_debug_build() else "", "sampling": sampling}

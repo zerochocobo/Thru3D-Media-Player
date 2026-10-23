@@ -1,0 +1,19 @@
+PICO controller GLB assets from WebXR Input Profiles
+
+Upstream: https://github.com/immersive-web/webxr-input-profiles
+Revision: f4992299601614adbfefd398dc8e281556bb7444
+Source directory: packages/assets/profiles/{pico-neo3,pico-4,pico-4u}/
+Files: left.glb and right.glb, renamed to <profile>-<hand>.glb.
+The six GLB files are byte-for-byte unmodified. See manifest.json for SHA-256.
+License: MIT; see LICENSE.txt. This is the WebXR assets distribution, not a
+copy of the proprietary Unity SDK or assets extracted from a headset.
+
+Godot imports embedded textures as Basis Universal to keep them inside the
+imported scene. Model dimensions and grip origin are preserved. Application
+code animates the supplied min/max/value nodes using existing OpenXR actions.
+OpenXR thumbstick Y is inverted when mapped to the WebXR gamepad Y endpoints.
+Runtime-provided EXT/FB models take precedence over these bundled fallbacks.
+
+No material or mesh edits to the source GLBs. At runtime the player disables
+shadows and applies an unshaded shader with soft world-space directional
+shading, preserving the source albedo color and texture for dark scenes.

@@ -110,10 +110,10 @@ internal object CloudLibrary {
         if (retired > 0) runCatching { OpenListBackend.remove(retired) }
         CloudAccountChanges.emit()
     }
-    private fun source(account: JSONObject, client: CloudClient, file: CloudFile): CloudStreamSource {
+    private fun source(account: JSONObject, client: CloudClient, file: CloudFile, archiveReading: Boolean = false): CloudStreamSource {
         val resolve = {
             if (identity(credentials(account.getString("id"))) != identity(account)) throw CloudFailure("cloud_login_required")
-            client.resolve(file)
+            if (archiveReading && client is OpenListBackend.Client) client.resolveArchive(file) else client.resolve(file)
         }
         return if (OpenListBackend.supported(account.getString("provider")))
             CloudStreamSource(file.size, resolve, linkConnection = OpenListBackend::connection)
@@ -145,6 +145,7 @@ internal object CloudLibrary {
         if (disconnectDav) metadata.remove(id)
         activeStreams.remove(id)?.forEach { (server, url) -> server.revoke(url) }
         if (disconnectDav) CloudWebDav.disconnectClients()
+        if (disconnectDav) { IsoMetadataMemory.clear(); DiscPreflight.clear() }
     }
     @Synchronized fun stopStreams() { activeStreams.keys.toList().forEach { revoke(it, false) } }
 
@@ -296,14 +297,17 @@ internal object CloudLibrary {
         }
     }
     /** Independent download lease: browsing photos or starting another video must not revoke it. */
-    fun audioDownload(uri: String, server: LocalStreamServer, rangeWindow: Long = Long.MAX_VALUE): String = safe {
+    fun audioDownload(uri: String, server: LocalStreamServer, rangeWindow: Long = Long.MAX_VALUE, archiveReading: Boolean = false): String = safe {
         val (id, remote) = split(CloudPaths.path(uri))
         val account = credentials(id)
         val companions = playbackPages.forVideo(id, identity(account), remote)
         val client = drive(account, folderId = companions.folderId)
-        val file = client.findForPlayback(remote, companions.files.singleOrNull { it.id == remote && !it.folder })
-        val source = source(account, client, file)
+        val selected = companions.files.singleOrNull { it.id == remote && !it.folder }
+        val file = if (archiveReading && client is OpenListBackend.Client) client.findArchiveForPlayback(remote,selected)
+            else client.findForPlayback(remote, selected)
+        val source = source(account, client, file, archiveReading)
         if(rangeWindow<Long.MAX_VALUE)source.boundedRanges(rangeWindow)
+        if(archiveReading)source.forArchiveReading()
         try {
             source.prepare()
             synchronized(this) {
@@ -324,7 +328,7 @@ internal object CloudLibrary {
         synchronized(this) {
             if (identity(credentials(id)) != identity(account)) throw CloudFailure("cloud_login_required")
             stopStreams()
-            val url = server.publish(source, file.name)
+            val url = server.publish(source, file.name, IsoMetadataMemory.key(identity(account), id, file.objectId, file.size, file.modified))
             activeStreams.getOrPut(id) { ArrayList() }.add(server to url)
             playbackCompanions[id] = CloudPlaybackPages.Playback(remote, identity(account), companions)
             url

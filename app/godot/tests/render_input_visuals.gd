@@ -34,6 +34,9 @@ func _render() -> void:
 		entry.controller_gate.rotation_degrees.x = 25
 		entry.hand_gate.position.x = -0.085 if left else 0.085
 		entry.hand_gate.rotation_degrees.x = -90
+	if OS.get_environment("CINEMA_HINT_PREVIEW") == "1":
+		preload("res://scripts/i18n.gd").use("zh")
+		visuals.set_cinema_move_hint(true)
 	await process_frame
 	await RenderingServer.frame_post_draw
 	await RenderingServer.frame_post_draw

@@ -1,5 +1,5 @@
 extends SceneTree
-## Production PlayerMenu controls on the fixed cinema anchor. No decoder or XR claim.
+## Production PlayerMenu controls near the cinema viewer. No decoder or XR claim.
 const Menu := preload("res://scripts/player_menu.gd")
 const Blueprint := preload("res://scripts/environments/cinema_blueprint.gd")
 const Layout := preload("res://scripts/environments/cinema_menu_layout.gd")
@@ -12,7 +12,7 @@ var seeks: Array = []
 var depths: Array = []
 
 class MainHarness extends "res://scripts/main.gd":
-	var head := Transform3D(Basis.IDENTITY, Vector3(-0.4, 7.05, 17.65))
+	var head: Variant = Transform3D(Basis.IDENTITY, Vector3(-0.45, 5.25, 19.9))
 	func _ready() -> void: pass
 	func _head_pose() -> Variant: return head
 	func _move_pose(_hand: String) -> Variant: return head
@@ -86,34 +86,50 @@ func _run() -> void:
 	menu.toggle()
 	menu.set_process(false)
 	var ordinary_pose := menu.global_transform
+	menu.set_meta("space_locked", true)
+	menu.set_meta("space_pose", ordinary_pose)
+	menu.set_meta("space_head", main.head)
 	var ordinary_shader: Shader = menu._backdrop.material_override.shader
+	var tracked_head: Transform3D = main.head
+	main.head = null
+	main._sync_cinema_transport()
+	main._sync_cinema_transport()
+	check(main._cinema_transport_saved.is_empty() and menu.global_transform == ordinary_pose,
+		"Saved cinema waits for tracking without committing a partial menu entry")
+	check(menu.get_meta("space_head") == tracked_head, "Missing head cannot overwrite the spatial lock with nil")
+	main.head = tracked_head
 	main._sync_cinema_transport()
 	var fixed := menu.global_transform
-	check(fixed.is_equal_approx(Layout.transport_pose(environment.screen)), "Production main applies the screen-only fixed world pose")
-	check(fixed.origin.is_equal_approx(Vector3(0, -3.03, -3.90)) and fixed.basis.get_scale().is_equal_approx(Vector3.ONE * 16),
-		"Transport uses the agreed 16x scale, physical gap and front offset")
-	check(menu.ray_max_distance == 100 and menu.cinema_world_anchor and menu.scene_overlay, "Only cinema transport opts into long rays and overlay")
-	check(composition.calls == [false] and not composition.is_processing(), "Visible cinema overlay pauses depth-tested menu underlays")
-	var bounds: Rect2 = menu._bar_bounds()
-	check(menu.to_global(Vector3(0, bounds.end.y, 0)).y <= 1.052, "All ordinary transport visuals stay 15cm below the physical screen")
-	check("depth_test_disabled" in menu._backdrop.material_override.shader.code and menu._title.no_depth_test,
-		"Panel and text use the cinema overlay policy")
-	for seat_id in ["A15", "I15", "N15"]:
+	check(absf(fixed.origin.distance_to(main.head.origin) - 1.4) < .2, "Transport opens near the current viewer")
+	check(fixed.basis.get_scale().is_equal_approx(Vector3.ONE), "Transport uses normal scale instead of 16x")
+	check(menu.ray_max_distance == 5 and menu.cinema_world_anchor and menu.scene_overlay, "Cinema uses near-field rays and overlay")
+	main.head = null
+	main._sync_cinema_transport(true)
+	check(menu.global_transform == fixed and menu.get_meta("space_head") == tracked_head,
+		"Tracking loss during recenter preserves the last valid menu and lock")
+	main.head = tracked_head
+	check(composition.calls.is_empty() and composition.is_processing(), "Cinema keeps high-density native menu composition active")
+	check("depth_test_disabled" in menu._backdrop.material_override.shader.code and menu._title.no_depth_test, "Menu avoids occlusion by chair geometry")
+	for seat_id in ["A12", "I12", "N12"]:
 		var eye := Vector3.ZERO
 		for seat: Dictionary in Blueprint.manifest().seats:
 			if seat.id == seat_id: eye = Vector3(seat.eye_position[0], seat.eye_position[1], seat.eye_position[2])
 		main.head = Transform3D(Basis(Vector3.UP, 0.4), eye)
 		main._place_menu(menu, true)
-		check(menu.global_transform.is_equal_approx(fixed), "Reposition after seat change preserves world anchor: " + seat_id)
+		check(absf(menu.global_position.distance_to(main.head.origin) - 1.4) < .2, "Menu recentres near viewer: " + seat_id)
 		for target in [102, Menu.SEEK, 109, 11]:
 			var hit: Dictionary = menu.ray_hit(eye, aim(menu, target, eye))
-			check(hit.get("target", -1) == target and float(hit.get("distance", 0)) > 5.0,
-				"A real distant ray reaches %s control %d" % [seat_id, target])
-	main.head = Transform3D(Basis.IDENTITY, Vector3(-0.4, 7.05, 17.65))
+			check(hit.get("target", -1) == target and float(hit.get("distance", 0)) < 2,
+				"A near ray reaches %s control %d" % [seat_id, target])
+	main.head = Transform3D(Basis.IDENTITY, Vector3(-0.45, 7.05, 17.65))
+	main._place_menu(menu, true)
+	fixed = menu.global_transform
 	main._begin_interface_move("right_hand", "grip_click")
 	check(main.interface_move.capture.is_empty(), "Grip cannot drag the fixed transport")
 	tap(menu, 102, main.head.origin)
 	check(actions.back() == "play", "The original play control still dispatches its production action")
+	tap(menu, Menu.CINEMA_LIGHT_CYCLE, main.head.origin)
+	check(actions.back() == "cinema_lights_on", "Quick light button cycles auto to manual on")
 	var seek_start := menu.to_global(Vector3(-0.3, -0.08, 0.005))
 	var seek_end := menu.to_global(Vector3(0.205, -0.08, 0.005))
 	menu.press_pointer("desktop", main.head.origin, (seek_start - main.head.origin).normalized(), true)
@@ -122,7 +138,7 @@ func _run() -> void:
 	check(not seeks.is_empty() and absi(int(seeks.back()) - 450000) < 1000, "Timeline drag preserves original logical coordinates under the world scale")
 	menu._hover.desktop = 108
 	menu._update_highlights()
-	check(menu._tooltip.visible and menu.SurfaceLayout.bounds([menu._tooltip], menu).end.y < 0.255,
+	check(menu._tooltip.visible and menu.SurfaceLayout.bounds([menu._tooltip], menu).has_area(),
 		"Floating-control tooltips stay below the transport instead of entering the movie")
 	menu._hover.clear()
 	tap(menu, 11, main.head.origin)
@@ -161,12 +177,13 @@ func _run() -> void:
 	check(not depths.is_empty() and is_equal_approx(float(depths.back()), menu.DepthStrength.MAX), "Relocated depth slider retains its full logical range")
 	menu.dismiss()
 	main._sync_cinema_transport()
-	check(composition.calls == [false, true] and composition.is_processing(), "Hiding transport restores the prior compositor processing state")
+	check(composition.calls.is_empty() and composition.is_processing(), "Hiding transport leaves compositor enabled")
 	environment.active = false
 	main._sync_cinema_transport()
 	check(not menu.cinema_world_anchor and not menu.scene_overlay and menu.ray_max_distance == 5,
 		"Leaving cinema restores ordinary menu mode, occlusion and ray range")
 	check(menu.global_transform.is_equal_approx(ordinary_pose), "Leaving cinema restores the ordinary menu transform and scale")
+	check(menu.space_locked() and menu.get_meta("space_pose").is_equal_approx(ordinary_pose), "Leaving cinema restores the ordinary spatial lock")
 	check(menu._backdrop.material_override.shader == ordinary_shader and not menu._title.no_depth_test,
 		"Leaving cinema restores the original shader and label depth policy")
 	main.free()

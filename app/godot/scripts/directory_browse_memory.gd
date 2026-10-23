@@ -92,7 +92,8 @@ func _trim(entries: Dictionary) -> void:
 	while entries.size() > LIMIT: entries.erase(entries.keys()[0])
 
 func _clean(value: Dictionary) -> Dictionary:
-	# Persist only positional hints, never filenames, credentials or resolved URLs.
+	# Positional hints hash item identities. Picker navigation separately needs a
+	# validated directory route; selected media URLs and credentials are excluded.
 	var result := {}
 	for field in ["index", "fraction", "line_offset", "item_offset", "columns", "page", "offset", "page_size", "filter", "scroll"]:
 		if value.get(field) is int or value.get(field) is float: result[field] = value[field]
@@ -102,4 +103,11 @@ func _clean(value: Dictionary) -> Dictionary:
 	if value.get("browse", false): result.browse = true
 	if value.get("position") is Dictionary: result.position = _clean(value.position)
 	if value.get("order") is String: result.order = str(value.order).left(64)
+	if value.get("archive_directory") is String:
+		var directory := str(value.archive_directory)
+		if directory.length() <= 4096 and not directory.begins_with("/") and not directory.contains("\\") and not directory.to_utf8_buffer().has(0) and not Array(directory.split("/", false)).any(func(part): return part in [".", ".."]):
+			result.archive_directory = directory
+	if value.get("picker_location") is Dictionary:
+		var location := preload("res://scripts/image_picker_location.gd").clean(value.picker_location)
+		if not location.is_empty(): result.picker_location = location
 	return result
