@@ -331,7 +331,9 @@ GLOWS = {
 FIXED = {
     # Visible but not lighting anything (black masking, unlit screen surface).
     "Masking": (0.0035, 0.0035, 0.004),
-    "ScreenIdle": (0.011, 0.0115, 0.013),
+    # Same black as the masking: a smaller or letterboxed picture floats in a
+    # black void instead of revealing a grey screen surface around it.
+    "ScreenIdle": (0.0035, 0.0035, 0.004),
 }
 
 
@@ -486,7 +488,8 @@ class Hall:
                 deep = (b % 2 == 0)
                 depth = 0.20 if deep else 0.08
                 inset = 0.06
-                material = "FabricDeep" if z1 < self.screen_z + 6.0 else "Fabric"
+                # Black velvet near the screen, like the front of a GT hall.
+                material = "Velvet" if z1 < self.screen_z + 6.0 else "Fabric"
                 bottom0, bottom1 = self.floor_line(z0) + 1.2, self.floor_line(z1) + 1.2
                 top0, top1 = self.ceiling(z0) - 0.9, self.ceiling(z1) - 0.9
                 x = wall_x - side * depth

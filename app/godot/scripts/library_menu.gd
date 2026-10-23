@@ -5,11 +5,16 @@ extends "res://scripts/ray_menu.gd"
 ## asynchronously through the platform's media_list(id, json) signal. Selection is controller ray + trigger only.
 
 signal chosen(uri: String, title: String)
+signal cast_requested(action: String)
+var cast_state := {}
+func text_entry_active() -> bool: return system_text_input.active() or (visible and not _editor.is_empty())
+const CastPanel := preload("res://scripts/cast_panel.gd")
 signal directory_order_changed
 signal audio_import_cancelled
 signal image_picker_cancelled
 signal image_selected(uri: String, title: String)
 var image_picker_mode := false
+var voice_picker_mode := false
 var _image_picker_dlna_retry := {}
 signal subtitle_picker_cancelled
 signal subtitle_selected(uri: String, title: String, location: Dictionary)
@@ -442,6 +447,7 @@ func toggle() -> void:
 			_load_cloud(); refresh()
 
 func dismiss() -> void:
+	if voice_picker_mode: finish_voice_picker(); return
 	archives.hide()
 	cloud_pagination.settings_expanded = false
 	file_actions.return_from_settings(false)
@@ -476,8 +482,21 @@ func dismiss() -> void:
 		else: image_picker_cancelled.emit()
 	composition_layout_changed.emit()
 
+func begin_voice_picker() -> void:
+	if audio_import_mode or subtitle_picker_mode or image_picker_mode or voice_picker_mode: return
+	_capture_file_picker_context()
+	voice_picker_mode = true; voice_manager.opened = false
+	_start_file_picker()
+
+func finish_voice_picker(uri: String = "", title: String = "") -> void:
+	_restore_audio_import_context()
+	voice_manager.opened = true
+	if not uri.is_empty(): voice_manager.sample.selected(uri, title)
+	else: voice_manager.sample.reset(); voice_manager.library = true; voice_manager.command({"operation": "list"})
+	refresh()
+
 func begin_audio_import() -> void:
-	if audio_import_mode or subtitle_picker_mode or image_picker_mode: return
+	if audio_import_mode or subtitle_picker_mode or image_picker_mode or voice_picker_mode: return
 	_capture_file_picker_context()
 	audio_import_mode = true
 	_start_file_picker()
@@ -492,7 +511,7 @@ func _capture_file_picker_context() -> void:
 		if _pending[id] in ["local", "smb_browse", "smb_servers", "dlna_browse", "dlna_servers", "dlna_discover", "dlna_picker_resume"]: _pending.erase(id)
 
 func begin_image_picker() -> void:
-	if subtitle_picker_mode or audio_import_mode or image_picker_mode: return
+	if subtitle_picker_mode or audio_import_mode or image_picker_mode or voice_picker_mode: return
 	_capture_file_picker_context()
 	image_picker_mode = true
 	_image_picker_dlna_retry.clear()
@@ -532,7 +551,7 @@ func _remember_image_picker_location() -> void:
 		browse_memory.flush()
 
 func begin_subtitle_picker(location: Dictionary = {}) -> void:
-	if subtitle_picker_mode or audio_import_mode or image_picker_mode: return
+	if subtitle_picker_mode or audio_import_mode or image_picker_mode or voice_picker_mode: return
 	_capture_file_picker_context()
 	subtitle_picker_mode = true
 	section = {"local": Section.LOCAL, "smb": Section.SMB, "cloud": Section.CLOUD}.get(str(location.get("source", "")), Section.LOCAL)
@@ -560,8 +579,8 @@ func _start_file_picker() -> void:
 	audio_selection.clear()
 	collections.selection.clear(); file_actions.reset(); file_actions.enabled = false
 	cloud_search.close(); choices.reset(); account_panel.close()
-	if section not in ([Section.LOCAL, Section.SMB, Section.DLNA, Section.CLOUD] if image_picker_mode else [Section.LOCAL, Section.SMB, Section.CLOUD]): section = Section.LOCAL
-	media_browse_intent = 2 if image_picker_mode else 0
+	if section not in ([Section.LOCAL, Section.SMB, Section.DLNA, Section.CLOUD] if image_picker_mode or voice_picker_mode else [Section.LOCAL, Section.SMB, Section.CLOUD]): section = Section.LOCAL
+	media_browse_intent = 2 if image_picker_mode else 1 if voice_picker_mode else 0
 	media_filter = media_browse_intent; view_mode = str(_audio_import_context.get("view_mode", "grid")) if image_picker_mode else "list"; scroll = 0
 	_load_section(); refresh()
 
@@ -570,6 +589,7 @@ func _restore_audio_import_context() -> void:
 	audio_import_mode = false
 	subtitle_picker_mode = false
 	image_picker_mode = false
+	voice_picker_mode = false
 	_image_picker_dlna_retry.clear()
 	audio_selection.clear()
 	_cancel_cloud()
@@ -584,13 +604,15 @@ func _restore_audio_import_context() -> void:
 	_rebuild_rows()
 
 func _on_choice_changed(key: String, value: Variant) -> void:
+	if voice_manager.sample.choose(key, value): return
 	if controls_page.choose(key, value): return
 	setting_changed.emit(key, value)
 
 func _ready() -> void:
 	super()
 	choices.changed.connect(_on_choice_changed)
-	choices.previewed.connect(func(key, value): setting_previewed.emit(key, value))
+	choices.previewed.connect(func(key, value):
+		if not voice_manager.sample.preview(key, value): setting_previewed.emit(key, value))
 	_side = Node3D.new()
 	_side.transform = Transform3D(Basis(Vector3.UP, deg_to_rad(24)), Vector3(-0.84, 0, 0.1))
 	add_child(_side)
@@ -654,7 +676,7 @@ func _in_list(point: Vector3) -> bool:
 	if cloud_pagination.opened: return false
 	if collections.active() or archives.opened: return false
 	if not file_actions.modal.is_empty(): return false
-	if (section == Section.MEDIA_SERVER and not archives.browsing) and server_browser.sorting(): return false
+	if (section == Section.MEDIA_SERVER and not archives.browsing) and server_browser.modal_open(): return false
 	if compact:
 		var span := _bar_span()
 		return not rows.is_empty() and absf(point.x) < 0.56 and point.y < span.x + 0.01 and point.y > span.x - span.y - 0.02
@@ -665,13 +687,14 @@ func _in_list(point: Vector3) -> bool:
 		and point.y < span.x + 0.01 and point.y > span.x - span.y - 0.02
 
 func press_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: bool) -> bool:
+	if voice_manager.opened and choices.press(hand, origin, direction, tracked): return true
 	if voice_manager.opened:
 		if not _voice_drag.is_empty(): return true
 		update_pointer(hand, origin, direction, tracked)
 		var voice_hit := ray_hit(origin, direction) if tracked else {}
 		if voice_hit.is_empty() or not voice_hit.get("enabled", false): return not voice_hit.is_empty()
 		var voice_target := int(voice_hit.target)
-		if voice_manager.actions.get(voice_target, {}).get("operation", "") in ["use", "preview", "rename_name"]:
+		if voice_manager.actions.get(voice_target, {}).get("operation", "") in ["use", "preview", "rename_name", "original", "clone", "save_name"]:
 			_voice_drag = {"hand": hand, "target": voice_target, "plane": control_plane(voice_target), "start_y": float(control_point(voice_hit).y), "offset": voice_manager.offset, "moved": false}
 		else: _activate_hit(voice_hit)
 		return true
@@ -727,12 +750,13 @@ func cancel_pointer(hand: String) -> void:
 func update_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: bool) -> void:
 	super(hand, origin, direction, tracked)
 	if voice_manager.opened:
+		choices.update(hand, origin, direction, tracked)
 		if _voice_drag.get("hand", "") == hand:
 			var projected: Variant = project_pointer(origin, direction, _voice_drag.plane) if tracked else null
 			if projected == null: _voice_drag.clear(); return
 			var distance := float(projected.y) - float(_voice_drag.start_y)
 			if absf(distance) > DRAG_START: _voice_drag.moved = true
-			if _voice_drag.moved: voice_manager.move(int(_voice_drag.offset) + roundi(distance / VoiceManagerPanel.ROW_PITCH) - voice_manager.offset)
+			if _voice_drag.moved: voice_manager.move(int(_voice_drag.offset) + roundi(distance / (voice_manager.sample.ROW_PITCH if voice_manager.sample.active else VoiceManagerPanel.ROW_PITCH)) - voice_manager.offset)
 		return
 	audio_preview_seek.move(hand, origin, direction, tracked)
 	collections.update_hover()
@@ -768,6 +792,8 @@ func update_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: 
 		_drag.at_us = now
 
 func release_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: bool) -> void:
+	if voice_manager.opened and choices.capture.get("hand", "") == hand:
+		choices.release(hand, origin, direction, tracked); return
 	if voice_manager.opened:
 		if _voice_drag.get("hand", "") == hand:
 			var captured := _voice_drag.duplicate(); _voice_drag.clear()
@@ -801,10 +827,12 @@ func release_pointer(hand: String, origin: Vector3, direction: Vector3, tracked:
 ## Thumbstick y (up positive) scrolls the list; it never selects.
 func stick_scroll(y: float, delta: float) -> void:
 	if cloud_pagination.opened: return
-	if voice_manager.opened: voice_manager.stick(y, delta); return
+	if voice_manager.opened:
+		if not choices.stick_scroll(y, delta): voice_manager.stick(y, delta)
+		return
 	if not audio_preview_seek.capture.is_empty(): return
 	if collections.active() or archives.opened: return
-	if not archives.browsing and section == Section.MEDIA_SERVER and server_browser.sorting(): return
+	if not archives.browsing and section == Section.MEDIA_SERVER and server_browser.modal_open(): return
 	if not archives.browsing and not compact and section == Section.MEDIA_SERVER and not account_panel.active() and server_browser.gallery.fixed():
 		server_browser.gallery.vertical_scroll(y, delta); return
 	if controls_page.active() and not controls_page.pending.is_empty(): return
@@ -825,11 +853,12 @@ func stick_scroll(y: float, delta: float) -> void:
 func media_picture_open() -> bool:
 	return visible and not compact and section == Section.MEDIA_SERVER and server_browser.view == "picture" \
 		and not account_panel.active() and file_actions.modal.is_empty() and _editor.is_empty() \
-		and server_browser.keyboard.is_empty() and not server_browser.sorting()
+		and server_browser.keyboard.is_empty() and not server_browser.modal_open()
 
 func stick_scroll_horizontal(x: float, delta: float) -> void:
 	if archives.browsing: return
 	if compact: return
+	if section == Section.MEDIA_SERVER and server_browser.modal_open(): return
 	if visible and section == Section.MEDIA_SERVER and not account_panel.active() and file_actions.modal.is_empty() and _editor.is_empty():
 		server_browser.gallery.stick_scroll(x, delta)
 
@@ -844,7 +873,7 @@ func _process(delta: float) -> void:
 	server_browser.backdrop.tick(delta)
 	if voice_manager.opened and visible:
 		var current: Dictionary = settings_provider.call().get("voice_manager", {}) if settings_provider.is_valid() else {}
-		if int(current.get("narration_clone_state", {}).get("revision", 0)) != _voice_revision: refresh()
+		if int(current.get("narration_clone_state", {}).get("revision", 0)) != _voice_revision and not has_pointer_capture(): refresh()
 		return
 	if not _audio_preview_scope.is_empty() and (not visible or not audio_import_mode or _audio_preview_scope != _audio_preview_scope_key()): _stop_audio_preview()
 	audio_preview_seek.poll(delta)
@@ -856,7 +885,7 @@ func _process(delta: float) -> void:
 	collections.poll()
 	if collections.active() or archives.opened: return
 	_poll_cache_usage()
-	if not archives.browsing and section == Section.MEDIA_SERVER and server_browser.sorting(): return
+	if not archives.browsing and section == Section.MEDIA_SERVER and server_browser.modal_open(): return
 	if controls_page.active() and controls_page.modal(): return
 	if not file_actions.modal.is_empty(): return
 	if visible: account_panel.tick(delta)
@@ -1064,7 +1093,7 @@ func _cloud_position_key() -> String:
 
 func _browse_scope() -> String:
 	if archives.browsing: return archives.position_scope()
-	if subtitle_picker_mode or audio_import_mode: return ""
+	if subtitle_picker_mode or audio_import_mode or voice_picker_mode: return ""
 	_sync_media_filter()
 	if section == Section.CLOUD:
 		if _cloud_stack.is_empty(): return ""
@@ -1659,14 +1688,14 @@ func _load_section() -> void:
 		Section.SMB:
 			if _smb_server.is_empty():
 				_request("smb_servers", platform.media_smb_servers())
-			elif subtitle_picker_mode or image_picker_mode:
+			elif subtitle_picker_mode or image_picker_mode or voice_picker_mode:
 				_request("smb_browse", _browse_smb(_smb_server, _smb_path))
 		Section.DLNA:
 			if _dlna_server.is_empty():
 				if PlatformMethods.supports(platform, "media_dlna_servers"):
 					_request("dlna_servers", platform.media_dlna_servers())
 				if _dlna_servers.is_empty(): _request("dlna_discover", platform.media_dlna_discover())
-			elif image_picker_mode:
+			elif image_picker_mode or voice_picker_mode:
 				_request("dlna_browse", platform.media_dlna_browse(_dlna_server, str(_dlna_stack.back().id) if not _dlna_stack.is_empty() else "0"))
 
 # --- rows -----------------------------------------------------------------------------------
@@ -1782,13 +1811,11 @@ func _rebuild_rows() -> void:
 					rows.append({"title": I18n.t("Confirm clearing network file settings" if _confirm == str(["file_settings_clear", "network"]) else "Clear network file settings"), "icon": "check" if _confirm == str(["file_settings_clear", "network"]) else "trash", "selected": _confirm == str(["file_settings_clear", "network"]), "setting": ["file_settings_clear", "network"]})
 			elif tab == DISPLAY_TAB:
 				rows.append({"title": I18n.t("Control bar transparency"), "icon": "settings", "setting": ["bar_transparency", true]})
-				rows.append(_choice_row("Library background", "library_backdrop", settings.get("library_backdrop", "static"),
-					[{"value": "off", "label": "Off"}, {"value": "static", "label": "Still image"}, {"value": "slideshow", "label": "Slideshow"}], true))
 				var quality_choices: Array = [{"value": Quality.AUTO, "label": "Auto", "hint": Quality.SCALE_AUTO_HINT}]
 				for i in Quality.SCALES.size():
 					quality_choices.append({"value": i, "label": Quality.NAMES[i], "hint": Quality.SCALE_HINTS[i]})
 				var scale_row := _choice_row("Render scale", "display_quality", int(settings.get("display_quality", Quality.DEFAULT)),
-					quality_choices, false, "Restart to apply" if settings.get("display_quality_pending", false) else "")
+					quality_choices, true, "Restart to apply" if settings.get("display_quality_pending", false) else "")
 				scale_row.info = Quality.SCALE_INFO; rows.append(scale_row)
 				var refresh_choices: Array = []
 				for cap in Quality.refresh_choices(bool(settings.get("low_end_gpu", false))):
@@ -2130,7 +2157,9 @@ func _read_cache_usage() -> Vector2i:
 ## Video state changes arrive several times a second: redraw only when the Alpha profiles
 ## (current, compiling, cold) shown on the Alpha tab change.
 func _activate(target: int) -> void:
-	if image_picker_mode and target == CLOSE: dismiss(); return
+	var cast_action := CastPanel.action(target)
+	if not cast_action.is_empty(): cast_requested.emit(cast_action); return
+	if (image_picker_mode or voice_picker_mode) and target == CLOSE: dismiss(); return
 	if cloud_pagination.action(target): return
 	if voice_manager.opened: voice_manager.activate(target); return
 	if target==ONLINE_PANORAMAS: online_panoramas_requested.emit(); return
@@ -2238,7 +2267,7 @@ func _activate(target: int) -> void:
 	elif target >= CRUMB_BASE and target < CRUMB_BASE + 10:
 		_go_to(target - CRUMB_BASE)
 	elif target >= FILTER_BASE and target < FILTER_BASE + MEDIA_FILTERS.size():
-		if image_picker_mode: return
+		if image_picker_mode or voice_picker_mode: return
 		_change_media_filter(target - FILTER_BASE)
 	elif _row_target(target):
 		var index := _first_line() * _cols() + target - ROW_BASE
@@ -2251,11 +2280,14 @@ func _choose(row: Dictionary) -> void:
 	if not bool(row.get("enabled", true)): return
 	if archives.browsing: archives.choose(row); return
 	if row.get("archive_password_book", false): archives.manage(); return
-	if not image_picker_mode and not audio_import_mode and not subtitle_picker_mode and not row.get("folder", false) and row.get("kind", "") != "folder" and row.has("uri") and archives.named(str(row.uri), str(row.get("title", ""))):
+	if not image_picker_mode and not voice_picker_mode and not audio_import_mode and not subtitle_picker_mode and not row.get("folder", false) and row.get("kind", "") != "folder" and row.has("uri") and archives.named(str(row.uri), str(row.get("title", ""))):
 		_save_folder_position(row); archives.open(row); return
 	_browse_return_restore = false
 	_browse_activity()
 	if not bool(row.get("enabled", true)): return
+	if voice_picker_mode and row.has("uri") and not str(row.uri).is_empty() and not row.get("folder", false) and row.get("kind", "") != "folder":
+		if row.get("kind", "video") != "video": return
+		finish_voice_picker(str(row.uri), str(row.get("title", ""))); return
 	if image_picker_mode and row.has("uri") and not str(row.uri).is_empty() and not row.get("folder", false) and row.get("kind", "") != "folder":
 		if row.get("kind", "") != "image" and not ImageInfo.is_image(str(row.uri), str(row.get("title", ""))): return
 		var uri := str(row.uri); var title := str(row.get("title", ""))
@@ -2583,6 +2615,7 @@ func _refresh_source() -> void:
 # --- Network server editor with a ray keyboard --------------------------------------------------
 
 func _open_editor(server: Dictionary) -> void:
+	system_text_input.cancel()
 	file_actions.reset()
 	_editor = {"id": str(server.get("id", "")), "name": str(server.get("name", "")), "host": str(server.get("host", "")),
 		"user": str(server.get("user", "")), "password": "", "has_password": bool(server.get("has_password", false))}
@@ -2776,6 +2809,11 @@ func _draw() -> void:
 	audio_preview_seek.clear_layout()
 	_audio_preview_state = background_audio_provider.call() if audio_import_mode and background_audio_provider.is_valid() else {}
 	_clear_layout()
+	if not cast_state.get("pending", {}).is_empty() or cast_state.get("return_available", false):
+		_side.visible = false; _backdrop.visible = true
+		_set_backdrop(Vector2(1.16, 0.34), Vector2.ZERO)
+		CastPanel.draw(self, cast_state, 0.0)
+		return
 	if voice_manager.opened:
 		_state = settings_provider.call().get("voice_manager", {}) if settings_provider.is_valid() else {}
 		_voice_revision = int(_state.get("narration_clone_state", {}).get("revision", 0))
@@ -2809,20 +2847,20 @@ func _draw() -> void:
 		_decorations.append(column)
 		# A tap on the column between its buttons is inside the menu, not a tap away.
 		_block_rays(column, Vector2(0.42, 1.12))
-		var navigation: Array = [Section.LOCAL, Section.SMB, Section.DLNA, Section.CLOUD] if image_picker_mode else [Section.LOCAL, Section.SMB, Section.CLOUD] if audio_import_mode or subtitle_picker_mode else NAV_ORDER
+		var navigation: Array = [Section.LOCAL, Section.SMB, Section.DLNA, Section.CLOUD] if image_picker_mode or voice_picker_mode else [Section.LOCAL, Section.SMB, Section.CLOUD] if audio_import_mode or subtitle_picker_mode else NAV_ORDER
 		for position in navigation.size():
 			var i: int = navigation[position]
 			_nav_button(NAV_BASE + i, I18n.t(NAV[i]), NAV_ICONS[i], Vector2(0, 0.39 - position * 0.13), i == section)
 	if not controls_page.active():
 		var footer_y := -0.80 if (section == Section.MEDIA_SERVER and not archives.browsing) and server_browser.focused() else -0.65
-		if not audio_import_mode and not subtitle_picker_mode and not image_picker_mode:
+		if not audio_import_mode and not subtitle_picker_mode and not image_picker_mode and not voice_picker_mode:
 			if not music_quick: music_quick = preload("res://scripts/music_quick_controls.gd").new(self, func(): music_toggle_requested.emit())
 			music_quick.draw(MUSIC_OPEN, Vector2(-0.48, footer_y), background_audio_provider.call() if background_audio_provider.is_valid() else {})
 		# Closing the menu is the shared footer's job and recentering the player's; only collapse floats here.
 		if playback_expanded: _round(EXPAND_LIBRARY, "collapse", Vector2(0.13, footer_y), 0.08, true, false, I18n.t("Collapse library"))
 		# With no floating row left, the footer takes its place right under the browser.
-		if image_picker_mode:
-			_button(CLOSE, I18n.t("Close"), Vector2(0.13, -0.65), Vector2(0.30, 0.075))
+		if image_picker_mode or voice_picker_mode:
+			_button(CLOSE, I18n.t("Cancel" if voice_picker_mode else "Close"), Vector2(0.13, -0.65), Vector2(0.30, 0.075))
 			_place_device_status(Vector2(0.13, -0.79))
 		else:
 			_place_device_status(Vector2(0.13, footer_y + 0.025))
@@ -2881,11 +2919,14 @@ func _draw() -> void:
 	if not archives.browsing and section == Section.LOCAL and not _external_volumes().is_empty():
 		_button(USB_STORAGE,"",_action_position(0.58),Vector2(0.09,0.065),true,"usb")
 		_tips[USB_STORAGE] = I18n.t("USB storage")
-	if not archives.browsing and section != Section.SETTINGS and not subtitle_picker_mode and not image_picker_mode: collections.draw_header()
+	if not archives.browsing and section != Section.SETTINGS and not subtitle_picker_mode and not image_picker_mode and not voice_picker_mode: collections.draw_header()
 	if not archives.browsing and section == Section.RECENT and collections.home_tab == 0 and not rows.is_empty():
 		_button(CLEAR_HISTORY, "", _action_position(0.80), Vector2(0.09, 0.065), true, "trash")
 		_tips[CLEAR_HISTORY] = I18n.t("Clear history")
 	if not archives.browsing and section == Section.DLNA:
+		if not subtitle_picker_mode and not image_picker_mode and not audio_import_mode and not voice_picker_mode and PlatformMethods.supports(platform, "dlna_receiver_enable"):
+			_button(CastPanel.TOGGLE, I18n.t("Stop receiving" if cast_state.get("enabled", false) else "Receive video"), Vector2(0.43, 0.46), Vector2(0.32, 0.07))
+			CastPanel.draw(self, cast_state, -0.79)
 		if _dlna_server.is_empty():
 			_button(ADD, "", Vector2(0.69, 0.46), Vector2(0.09, 0.07), PlatformMethods.supports(platform, "media_dlna_save"), "plus")
 			_tips[ADD] = I18n.t("Add server")
@@ -2931,7 +2972,7 @@ func _draw() -> void:
 		add_child(storage_panel); _decorations.append(storage_panel); _block_rays(storage_panel, Vector2(1.46, 0.14))
 		_audio_storage_labels = AudioStorageView.draw(self, background_audio_provider.call() if background_audio_provider.is_valid() else {}, Vector2(0.13, -0.61), 1.26, true)
 		_place_device_status(Vector2(0.13, -0.79))
-	elif section != Section.SETTINGS and not cloud_managing and not subtitle_picker_mode and not image_picker_mode:
+	elif section != Section.SETTINGS and not cloud_managing and not subtitle_picker_mode and not image_picker_mode and not voice_picker_mode:
 		for i in MEDIA_FILTERS.size():
 			_button(FILTER_BASE + i, I18n.t(MEDIA_FILTERS[i]), Vector2(0.36 + i * 0.18, -0.515), Vector2(0.17, 0.06), true, "", media_filter == i)
 			set_label_size(_buttons.back().node.get_child(0), 17)
@@ -2993,6 +3034,7 @@ func _draw_crumbs(crumbs: Array, base: int = CRUMB_BASE) -> void:
 
 func _header_title() -> String:
 	if archives.browsing: return " / ".join(archives.crumbs())
+	if voice_picker_mode: return I18n.t("Choose video")
 	if image_picker_mode: return I18n.t("Choose image")
 	if audio_import_mode: return I18n.t("Import audio")
 	match section:

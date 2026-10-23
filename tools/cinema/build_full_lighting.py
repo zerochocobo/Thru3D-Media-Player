@@ -24,6 +24,12 @@ import build_sample as study
 import seat_model as seats
 
 LIGHT_SCALE = 8.0
+# Left/centre/right screen strips; packed as R/G/B of the screen light map and
+# as TEXCOORD_2.x, TEXCOORD_2.y, TEXCOORD_3.x on chairs (Godot CUSTOM0.xyz).
+SCREEN_ZONES = 3
+# Watts per zone for a white strip; runtime divides film linear colour by the
+# reference grey the old fixed 14500 W bounce stood for.
+SCREEN_ZONE_WATTS = 14500 / 3
 OUT = ROOT / 'build/output/cinema-full-lighting'
 SOURCE = HERE / 'full_hall'
 
@@ -32,8 +38,26 @@ def sha(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def upholstered_back():
+    material = study.scan('velour', .92)
+    material.name = 'Study_back'
+    nodes, links = material.node_tree.nodes, material.node_tree.links
+    bsdf = nodes.get('Principled BSDF')
+    source = bsdf.inputs['Base Color'].links[0].from_socket
+    darker = nodes.new('ShaderNodeMix'); darker.data_type = 'RGBA'; darker.blend_type = 'MULTIPLY'
+    darker.inputs[0].default_value = 1.0
+    darker.inputs[7].default_value = (BACK_SHADE, BACK_SHADE, BACK_SHADE, 1.0)
+    links.new(source, darker.inputs[6]); links.new(darker.outputs[2], bsdf.inputs['Base Color'])
+    return material
+
+
+BACK_SHADE = .55
+
+
 def setup_materials():
-    chair = [study.scan('velour', .92), study.scan('shell', .52), study.scan('leather', .48),
+    # Fully upholstered chairs: the back and shell use the same woven fabric,
+    # darker, so the backs viewers study show a real weave instead of plastic noise.
+    chair = [study.scan('velour', .92), upholstered_back(), study.scan('leather', .48),
              hall._principled('Study_dark_metal', (.075, .077, .080), .42),
              hall._principled('Study_cup', (.013, .015, .018), .42),
              hall._principled('Study_leg', (.028, .031, .035), .55)]
@@ -81,14 +105,21 @@ def lighting(h, mode):
     for obj in bpy.context.scene.objects:
         if obj.type == 'LIGHT' and obj.get('house_watts') is not None:
             obj.data.energy = obj['house_watts'] if enabled else 0
-    for key in ['Sconce', 'Star']:
+    for key in ['Sconce', 'Star', 'StageGlow']:
         material = bpy.data.materials[key]
         node = next(n for n in material.node_tree.nodes if n.type == 'EMISSION')
         node.inputs['Strength'].default_value = hall.GLOWS[key][1] if enabled else 0
 
 
 def add_lights(h):
-    study.area('ScreenBounce', (0, 10.2, -3.9), (0, 6, 17), 14500, 31, (.73, .83, 1), 17)
+    # The screen is no longer a fixed light: three white zone emitters are baked
+    # alone and scaled at runtime by the film's left/centre/right colour.
+    width = h.screen_w / SCREEN_ZONES
+    for zone in range(SCREEN_ZONES):
+        x = -h.screen_w / 2 + (zone + .5) * width
+        obj = study.area('ScreenZone%d' % zone, (x, h.screen_y, h.screen_z + .1), (x, h.screen_y, h.screen_z + 20),
+                         0, width, (1, 1, 1), h.screen_h)
+        obj['screen_zone'] = zone
     # Repeated ceiling bays use the reviewed study's warm, broad house lighting.
     for row in [2, 5, 8, 11, 14]:
         z = h.first_edge + (row - .5) * h.pitch
@@ -141,6 +172,46 @@ def bake_chairs(chunks, hidden, mode):
     print('FULL_CHAIRS_BAKED', mode, chunks[0].name, flush=True)
 
 
+def bake_screen_zones(architecture, near, far, size):
+    """Each zone alone, everything else dark: house lights, sconces, safety and step glows."""
+    lighting(None, 'off')
+    glows = {}
+    for key in hall.GLOWS:
+        node = next(n for n in bpy.data.materials[key].node_tree.nodes if n.type == 'EMISSION')
+        glows[key] = node.inputs['Strength'].default_value; node.inputs['Strength'].default_value = 0
+    zones = [obj for obj in bpy.context.scene.objects if obj.type == 'LIGHT' and obj.get('screen_zone') is not None]
+    channels = []
+    for zone in range(SCREEN_ZONES):
+        for obj in zones: obj.data.energy = SCREEN_ZONE_WATTS if obj['screen_zone'] == zone else 0
+        for obj in near: obj.hide_render = False
+        for obj in far: obj.hide_render = True
+        image = bake_irradiance(architecture, size, 'Zone%d' % zone)
+        pixels = np.empty(size * size * 4, dtype=np.float32); image.pixels.foreach_get(pixels)
+        channels.append(pixels.reshape(size, size, 4)[..., :3] @ np.array([.2126, .7152, .0722], dtype=np.float32))
+        bake_chairs(near, far, 'zone%d' % zone); bake_chairs(far, near, 'zone%d' % zone)
+    for obj in zones: obj.data.energy = 0
+    for key, value in glows.items():
+        next(n for n in bpy.data.materials[key].node_tree.nodes if n.type == 'EMISSION').inputs['Strength'].default_value = value
+    packed = bpy.data.images.new('ScreenZones', size, size, alpha=False, float_buffer=True)
+    rgba = np.ones((size, size, 4), dtype=np.float32); rgba[..., :3] = np.stack(channels, axis=-1)
+    packed.pixels.foreach_set(rgba.ravel())
+    hall.LIGHT_SCALE = LIGHT_SCALE
+    hall.encode_light(packed, str(OUT / 'cinema_screen_light.jpg'))
+    print('FULL_SCREEN_ZONES_BAKED', flush=True)
+
+
+def bake_irradiance(obj, size, name):
+    obj.data.uv_layers.active = obj.data.uv_layers['Bake']
+    image = bpy.data.images.new('Hall_' + name, size, size, alpha=False, float_buffer=True)
+    image.colorspace_settings.name = 'Non-Color'
+    for material in obj.data.materials:
+        node = material.node_tree.nodes.new('ShaderNodeTexImage'); node.image = image
+        material.node_tree.nodes.active = node
+    hall.select_only(obj)
+    bpy.ops.object.bake(type='DIFFUSE', pass_filter={'DIRECT', 'INDIRECT'}, margin=12, use_clear=True)
+    return image
+
+
 def pack_chair_light(obj):
     mesh = obj.data
     count = len(mesh.vertices)
@@ -149,6 +220,12 @@ def pack_chair_light(obj):
         pixels = np.empty(count * 4, dtype=np.float32)
         mesh.color_attributes['Irradiance_' + mode].data.foreach_get('color', pixels)
         values[mode] = np.sqrt(np.clip(pixels.reshape(count, 4)[:, :3] / LIGHT_SCALE, 0, 1))
+    zones = []
+    for zone in range(SCREEN_ZONES):
+        pixels = np.empty(count * 4, dtype=np.float32)
+        mesh.color_attributes['Irradiance_zone%d' % zone].data.foreach_get('color', pixels)
+        rgb = pixels.reshape(count, 4)[:, :3]
+        zones.append(np.sqrt(np.clip((rgb @ np.array([.2126, .7152, .0722], dtype=np.float32)) / LIGHT_SCALE, 0, 1)))
     for attr in list(mesh.color_attributes): mesh.color_attributes.remove(attr)
     packed = mesh.color_attributes.new('DualLight', 'FLOAT_COLOR', 'POINT')
     rgba = np.ones((count, 4), dtype=np.float32)
@@ -159,6 +236,12 @@ def pack_chair_light(obj):
     uv = values['off'][indices, :2].copy()
     # glTF flips Blender UV V; encode so exported TEXCOORD_1 contains R,G directly.
     uv[:, 1] = 1 - uv[:, 1]; layer.data.foreach_set('uv', uv.ravel())
+    # Screen zones: TEXCOORD_2 = (left, centre), TEXCOORD_3 = (right, 0); Godot reads
+    # both as CUSTOM0.xyzw. V is flipped by the exporter like TEXCOORD_1 above.
+    for name, pair in [('ScreenLC', (zones[0], zones[1])), ('ScreenR', (zones[2], np.zeros(count, dtype=np.float32)))]:
+        layer = mesh.uv_layers.new(name=name)
+        uv = np.stack([pair[0][indices], 1 - pair[1][indices]], axis=1).astype(np.float32)
+        layer.data.foreach_set('uv', uv.ravel())
 
 
 def verify_safety_diffusers(architecture, fixtures):
@@ -223,6 +306,7 @@ def main():
         for obj in far: obj.hide_render = True
         bake_hall(architecture, args.atlas, mode)
         bake_chairs(near, far, mode); bake_chairs(far, near, mode)
+    bake_screen_zones(architecture, near, far, args.atlas // 2)
     # Shared base color; no second copy of geometry and no per-seat light textures.
     image = bpy.data.images.load(str(albedo), check_existing=False); image.pack()
     seat_material = hall.unlit_material('SeatDual', image=image, uv=seats.UV_NAME, color_attribute='DualLight')
@@ -250,12 +334,13 @@ def main():
         primitive = mesh['primitives'][0]
         assert document['accessors'][primitive['attributes']['COLOR_0']]['type'] == 'VEC4', 'Off-blue channel omitted'
         assert 'TEXCOORD_1' in primitive['attributes'], 'Off red/green channels omitted'
+        assert 'TEXCOORD_2' in primitive['attributes'] and 'TEXCOORD_3' in primitive['attributes'], 'Screen zone channels omitted'
     result = {'samples': args.samples, 'atlas': args.atlas, 'light_scale': LIGHT_SCALE, 'seconds':time.time()-started,
               'safety_diffusers': diffuser_clearances,
               'manifest_sha256':sha(manifest_path), 'triangles':sum(seats.triangle_count(o) for o in [architecture,fixtures]+near+far),
               'chair_encoding':'COLOR_0.rgb=sqrt(on/8); TEXCOORD_1.rg,COLOR_0.a=sqrt(off/8); opaque custom shader',
               'lighting':'Independent Cycles direct+indirect solves; fixed screen and safety lights; warm house area lights on/off',
-              'files':{name: {'bytes':(OUT/name).stat().st_size,'sha256':sha(OUT/name)} for name in ['cinema.glb','cinema_light.jpg','cinema_light_off.jpg']}}
+              'files':{name: {'bytes':(OUT/name).stat().st_size,'sha256':sha(OUT/name)} for name in ['cinema.glb','cinema_light.jpg','cinema_light_off.jpg','cinema_screen_light.jpg']}}
     (SOURCE/'build.json').write_text(json.dumps(result,indent=2)+'\n',encoding='utf-8')
     print('CINEMA_FULL_LIGHTING_OK',json.dumps(result),flush=True)
 

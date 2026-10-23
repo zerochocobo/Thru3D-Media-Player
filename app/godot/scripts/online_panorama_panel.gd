@@ -139,7 +139,7 @@ func _web() -> void:
 				var key: String=KEYS[row][column]
 				menu._button(KEY+row*10+column,key.to_upper() if shift else key,Vector2(-0.73+column*0.16,-0.64-row*0.085),Vector2(0.15,0.075))
 		for spec in [[40,"⇧",-0.67],[41,"␣",-0.32],[42,"⌫",0.03],[43,"↵",0.38],[44,"↓",0.73]]:
-			menu._button(KEY+int(spec[0]),str(spec[1]),Vector2(float(spec[2]),-1.0),Vector2(0.27,0.075))
+			menu._button(KEY+int(spec[0]),str(spec[1]),Vector2(float(spec[2]),-1.0),Vector2(0.27,0.075),true,"",spec[0]==40 and shift)
 func activate(target: int) -> bool:
 	if not opened: return false
 	if target==menu.CLOSE: hide(); menu.refresh(); return true

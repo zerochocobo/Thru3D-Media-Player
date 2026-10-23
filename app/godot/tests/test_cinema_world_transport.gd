@@ -24,6 +24,8 @@ class EnvironmentFixture extends Node3D:
 	var active := true
 	var screen: Dictionary
 	func snapshot() -> Dictionary: return {"screen": screen}
+	var light_mode := "auto"
+	func set_lighting(mode: String, _playing: bool) -> void: light_mode = mode
 
 class CompositionFixture extends Node:
 	var enabled := true
@@ -128,8 +130,12 @@ func _run() -> void:
 	check(main.interface_move.capture.is_empty(), "Grip cannot drag the fixed transport")
 	tap(menu, 102, main.head.origin)
 	check(actions.back() == "play", "The original play control still dispatches its production action")
-	tap(menu, Menu.CINEMA_LIGHT_CYCLE, main.head.origin)
-	check(actions.back() == "cinema_lights_on", "Quick light button cycles auto to manual on")
+	# The light switch lives in the footer beside free movement: auto -> on -> off.
+	main.settings.set_value("appearance", "cinema_lights", "auto")
+	main._on_session_control("cinema_lights_cycle")
+	check(main.settings.get_value("appearance", "cinema_lights") == "on", "Footer light switch cycles auto to manual on")
+	main._on_session_control("cinema_lights_cycle"); main._on_session_control("cinema_lights_cycle")
+	check(main.settings.get_value("appearance", "cinema_lights") == "auto", "Three presses return to auto")
 	var seek_start := menu.to_global(Vector3(-0.3, -0.08, 0.005))
 	var seek_end := menu.to_global(Vector3(0.205, -0.08, 0.005))
 	menu.press_pointer("desktop", main.head.origin, (seek_start - main.head.origin).normalized(), true)
@@ -157,6 +163,9 @@ func _run() -> void:
 	check(menu._popup_surfaces.size() == 1 and control(menu, Menu.VOLUME).node.get_parent() != menu,
 		"The original volume quick slider is separated from the transport footprint")
 	var volume_surface: Node3D = menu._popup_surfaces[0]
+	var volume_x := menu.to_local(volume_surface.to_global(Vector3(menu.VOLUME_X, 0, 0))).x
+	check(absf(volume_x - menu.VOLUME_X) < .02, "Volume slider stays above its own button, not centred: %s" % volume_x)
+	check(volume_surface.global_transform.is_equal_approx(menu.global_transform), "Volume slider sits exactly where it does outside the cinema")
 	var volume_from := volume_surface.to_global(Vector3(menu.VOLUME_X, menu.VOLUME_SPAN.x + 0.02, 0.025))
 	var volume_to := volume_surface.to_global(Vector3(menu.VOLUME_X, menu.VOLUME_SPAN.y, 0.025))
 	menu.press_pointer("desktop", main.head.origin, (volume_from - main.head.origin).normalized(), true)
@@ -169,6 +178,9 @@ func _run() -> void:
 	check(menu._popup_surfaces.size() == 1 and control(menu, Menu.DEPTH).node.get_parent() != menu,
 		"The original depth quick slider is also independent from the transport")
 	var depth_surface: Node3D = menu._popup_surfaces[0]
+	var depth_x := menu.to_local(depth_surface.to_global(Vector3(menu.DEPTH_X, 0, 0))).x
+	check(absf(depth_x - menu.DEPTH_X) < .02, "3D strength slider stays above its own button, not centred: %s" % depth_x)
+	check(depth_surface.global_transform.is_equal_approx(menu.global_transform), "3D strength slider sits exactly where it does outside the cinema")
 	var depth_from := depth_surface.to_global(Vector3(menu.DEPTH_X, menu.DEPTH_SPAN.x + 0.02, 0.025))
 	var depth_to := depth_surface.to_global(Vector3(menu.DEPTH_X, menu.DEPTH_SPAN.y, 0.025))
 	menu.press_pointer("desktop", main.head.origin, (depth_from - main.head.origin).normalized(), true)

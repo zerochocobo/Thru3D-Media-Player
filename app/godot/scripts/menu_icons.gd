@@ -117,6 +117,9 @@ const PATHS := {
 	"depth": '<rect x="2" y="8" width="13" height="11" rx="1.5"/><path d="M6 8V5H22V16H15"/><path d="M6 15L9 12 12 15"/>',
 	"stacked": '<rect x="4" y="2" width="16" height="20" rx="3"/><path d="M4 12H20"/>',
 	"light": '<path d="M9 16C9 13 6.5 12 6.5 9A5.5 5.5 0 0 1 17.5 9C17.5 12 15 13 15 16ZM9.5 19H14.5M10.5 22H13.5M12 0.5V1.5M3.5 4L4.5 5M20.5 4L19.5 5M1.5 10H2.5M21.5 10H22.5"/>',
+	# Cinema house lights: off is the bare bulb struck through; auto carries an "A".
+	"light_off": '<path d="M9 16C9 13 6.5 12 6.5 9A5.5 5.5 0 0 1 17.5 9C17.5 12 15 13 15 16ZM9.5 19H14.5M10.5 22H13.5M3 3L21 21"/>',
+	"light_auto": '<path d="M7 16C7 13 4.5 12 4.5 9A5.5 5.5 0 0 1 15.5 9C15.5 12 13 13 13 16ZM7.5 19H12.5M8.5 22H11.5M16 23L19.5 13 23 23M17.3 19.5H21.7"/>',
 	"history": '<path d="M3 12A9 9 0 1 0 6 5.3M3 3V8H8"/><path d="M12 7V12L15 14"/>',
 	"usb": '<path d="M12 2V17M12 2L9 5M12 2L15 5M12 11L7 8V6M12 13L17 10V8"/><circle cx="12" cy="19" r="2.5"/><rect x="5.5" y="4.5" width="3" height="2"/><circle cx="17" cy="7" r="1.3"/>',
 	"eject": '<path d="M4 14L12 4 20 14Z"/><path d="M4 20H20"/>',

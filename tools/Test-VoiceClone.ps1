@@ -8,7 +8,7 @@ if (Test-Path -LiteralPath $consolePath) { $godotPath = $consolePath }
 if (-not (Test-Path -LiteralPath $godotPath)) { throw 'Set GODOT_EXE to the Godot console executable.' }
 $output = Join-Path $workspace 'build/output/voice-clone-regression'
 New-Item -ItemType Directory -Path $output -Force | Out-Null
-foreach ($case in @('test_narration_voice_feedback', 'test_narration_clone', 'test_narration', 'test_narration_status', 'test_library_menu', 'test_choice_fields', 'test_controller_bindings')) {
+foreach ($case in @('test_voice_samples', 'test_narration_voice_feedback', 'test_narration_clone', 'test_narration', 'test_narration_status', 'test_library_menu', 'test_choice_fields', 'test_controller_bindings')) {
     $log = Join-Path $output ($case + '.log')
     & $godotPath --headless --xr-mode off --path (Join-Path $workspace 'app/godot') --quit-after 1800 --script ('res://tests/' + $case + '.gd') 2>&1 | Out-File $log -Encoding utf8
     $result = Get-Content -LiteralPath $log -Raw

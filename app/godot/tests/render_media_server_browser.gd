@@ -90,6 +90,7 @@ func _check_play_outline(image: Image, camera: Camera3D, menu: Node) -> void:
 
 func _check_native_hover(capture: Node, menu: Node, page: String, output: String) -> void:
 	var target: int = Menu.ROW_BASE if page == "scenes" else (menu.server_browser.gallery.PART + 1 if page == "detail_favorite" else Browser.ACTION + 170)
+	if page == "settings": target = Browser.ACTION + 183
 	var button: Dictionary = menu._buttons.filter(func(item): return item.target == target)[0]
 	var slot: Dictionary = capture.slots.filter(func(item): return item.used and item.nodes.has(button.node))[0]
 	var pixel := _hover_pixel(button, slot.camera)
@@ -225,9 +226,11 @@ func _run() -> void:
 			b.textures[b._request_image_key(b._image_request({"cover_image": thumb.merged({"max_width": width})}))] = b.textures[b._request_image_key(b._image_request({"cover_image": images[i % images.size()].merged({"max_width": 256})}))]
 	for language in ["zh", "zh_Hant", "en", "ja"]:
 		preload("res://scripts/i18n.gd").use(language)
-		for page in ["home", "home_more", "home_single", "home_recent_more", "home_empty", "scenes", "scenes_small", "scenes_large", "scenes_thumb", "scenes_list", "sort", "facets", "candidates", "folders", "folders_sources", "detail", "detail_favorite", "detail_cd2", "detail_parts_more", "detail_images", "detail_long", "detail_title", "overview", "overview_end", "picture", "filters", "filters_sources", "options", "saved", "search", "favorites"]:
+		for page in ["servers", "server_settings", "home_settings", "home", "home_more", "home_single", "home_recent_more", "home_empty", "scenes", "scenes_small", "scenes_large", "scenes_thumb", "scenes_list", "sort", "facets", "candidates", "folders", "folders_sources", "detail", "detail_favorite", "detail_cd2", "detail_parts_more", "detail_images", "detail_long", "detail_title", "overview", "overview_end", "picture", "filters", "filters_sources", "options", "saved", "search", "favorites"]:
 			b.view = page; b.query = {"page": 1, "q": "", "all_tags": true}; b.folder_path.clear(); b.entries = movies.duplicate(true); b.candidates = []; b.detail = {}
 			b.sort_query.clear()
+			b.settings_open = page in ["server_settings", "home_settings"]
+			if page == "server_settings": b.view = "servers"
 			if page == "sort": b.view = "scenes"; b.sort_query = {"sort": "duration", "direction": "ASC"}
 			b.sources_open = page in ["folders_sources", "filters_sources"]; b.keyboard = ""
 			if page == "search": b.view = "scenes"; b.keyboard = "search"; b.text = "寻找影片 / Find a movie"
@@ -277,12 +280,14 @@ func _run() -> void:
 			_check_detail_text(menu, page, language)
 			if page == "detail_favorite": _check_play_outline(viewport.get_texture().get_image(), camera, menu)
 			viewport.get_texture().get_image().save_png(output.path_join(language + "-" + page + ".png"))
-			if language == "zh" and page in ["home", "scenes", "scenes_thumb", "scenes_list", "detail_favorite", "detail_images", "sort", "folders_sources", "filters", "options", "search"]:
+			if language == "zh" and page in ["home", "scenes", "scenes_thumb", "scenes_list", "detail_favorite", "detail_images", "sort", "server_settings", "home_settings", "folders_sources", "filters", "options", "search"]:
 				await _check_hover_sweep(menu, page, viewport, camera, output)
 	var capture := Capture.new(); viewport.add_child(capture)
 	capture.configure(camera, camera, Display.new(), [menu], false, true); capture.set_process(false)
-	for page in ["scenes", "detail", "detail_favorite", "sources", "sort"]:
+	for page in ["scenes", "detail", "detail_favorite", "sources", "sort", "settings"]:
+		b.settings_open = page == "settings"
 		b.sources_open = page == "sources"; b.keyboard = ""; b.view = "scenes" if page in ["sources", "sort"] else page; b.entries = movies; b.detail = capture_detail; b.display_preferences.profile = {"mode": "poster", "size": 1}; b.sort_query = {"sort": "title", "direction": "DESC"} if page == "sort" else {}; menu.refresh()
+		if page == "settings": b.view = "home"; menu.refresh()
 		if page == "detail_favorite": b.view = "detail"; b.detail = capture_detail.merged({"favorite": true}, true); menu.refresh()
 		capture.update(); await process_frame; await RenderingServer.frame_post_draw; capture.update()
 		check(capture.active == menu, "Compositor activates the complete media page: " + page)
@@ -299,7 +304,7 @@ func _run() -> void:
 			if page == "detail_favorite" and slot.used and slot.nodes.has(menu._backdrop):
 				_check_play_outline(slot.raw.get_texture().get_image(), slot.camera, menu)
 			if slot.used: slot.raw.get_texture().get_image().save_png(output.path_join("composition-" + page + "-%d.png" % slot.index))
-		if page in ["scenes", "detail_favorite", "sort"]: await _check_native_hover(capture, menu, page, output)
+		if page in ["scenes", "detail_favorite", "sort", "settings"]: await _check_native_hover(capture, menu, page, output)
 		if page == "detail_favorite": await _check_artwork_capture(capture, menu)
 		if page == "sources": check(menu._backdrop.material_override.shader == menu.SURFACE, "Leaving details restores the ordinary library panel")
 	capture.shutdown("test_complete")

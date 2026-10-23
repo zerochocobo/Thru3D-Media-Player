@@ -53,6 +53,9 @@ internal object VoiceClonePolicy {
         error.message=="voice_pause_timeout"->"pause_failed"
         error.message=="voice_synthesis_failed"->"synthesis_failed"
         error.message=="voice_reference_too_quiet"->"reference_too_quiet"
+        error.message=="voice_invalid_range"->"invalid_range"
+        stage=="probing"->"source_failed"
+        stage=="scanning"->"scan_failed"
         stage=="extracting"->"extract_failed"
         stage=="encoding"->"encode_failed"
         stage=="generating"->"synthesis_failed"
@@ -63,6 +66,9 @@ internal object VoiceClonePolicy {
     }
     fun failureMessage(code: String): String = when(code) {
         "no_candidates"->"This video has no subtitles suitable for a 3–10 second voice sample."
+        "invalid_range"->"Choose a valid time range. Samples must be 3–10 seconds."
+        "source_failed"->"Unable to read this video. Choose another source."
+        "scan_failed"->"Unable to finish speech analysis. Retry or adjust the range."
         "no_candidates_in_range"->"No suitable samples found yet. Continue searching."
         "audio_required"->"No usable reference audio track. Choose another audio track."
         "preview_muted"->"Unmute and raise the video and narration volume to preview voices."

@@ -10,6 +10,7 @@ const Description := preload("res://scripts/environments/cinema_loader.gd")
 const MODEL_PATH := "res://environments/grand_cinema/cinema.glb"
 const MANIFEST_PATH := "res://environments/grand_cinema/manifest.json"
 const MAX_RAY_DISTANCE := 100.0
+const CHAIR_LANDING_TRIES := 24
 
 var is_ready := false
 var loading := false
@@ -35,6 +36,8 @@ var _pointer_visuals: Dictionary = {}
 var _sticks_waiting_for_neutral := true
 var light_mode := "auto"
 var lights_on := true
+const FILM_UNIFORMS := ["film_left", "film_center", "film_right"]
+var film_light: Array = [Color.BLACK, Color.BLACK, Color.BLACK]
 var _light_mix := 1.0
 var _light_target := 1.0
 var _light_materials: Array[Dictionary] = []
@@ -155,6 +158,11 @@ func ray_hit(origin: Vector3, direction: Vector3) -> Dictionary:
 		var t := step * 0.075
 		var point := origin + velocity * t + Vector3.DOWN * 4.9 * t * t
 		var hit := _arc_segment(previous, point)
+		if not hit.is_empty() and hit.kind in ["floor", "riser"]:
+			var seat_id: String = _movement.seat_at(hit.position)
+			if not seat_id.is_empty():
+				points.append(hit.position)
+				return _seat_target(seat_id, points, origin)
 		if not hit.is_empty():
 			points.append(hit.position)
 			var landing := _landing_destination(hit)
@@ -186,6 +194,8 @@ func _arc_segment(start: Vector3, end: Vector3) -> Dictionary:
 	var nearest := distance + .001
 	var result := {}
 	for index in colliders:
+		# Like system teleports, the arc passes over seat backs; chairs still block bodies.
+		if _movement._chair_colliders.has(index): continue
 		var box: AABB = _movement._colliders[index]
 		box = box.grow(.035)
 		var d := _ray_box(start, direction, box.position, box.end)
@@ -207,6 +217,15 @@ func _arc_segment(start: Vector3, end: Vector3) -> Dictionary:
 			result = {"kind": kind, "position": position, "floor_y": float(area.height)}
 	return result
 
+## Aiming at a chair: sit there, eyes at the seat, facing the screen.
+func _seat_target(seat_id: String, points: PackedVector3Array, origin: Vector3) -> Dictionary:
+	var eye := _vector(_movement._seats[seat_id].eye_position)
+	var seated := float(_movement._design.get("seated_eye_height", 1.2))
+	# Marker rests on the cushion: seat line 10 cm behind the eye, cushion top ~0.47 m.
+	var cushion := Vector3(eye.x, eye.y - seated + 0.47, eye.z + 0.05)
+	return {"kind": "seat", "id": seat_id, "position": cushion, "points": points, "valid": true,
+		"distance": origin.distance_to(cushion)}
+
 func _landing_destination(hit: Dictionary) -> Vector3:
 	if hit.kind not in ["floor", "riser"]: return Vector3.INF
 	var point: Vector3 = hit.position
@@ -214,6 +233,12 @@ func _landing_destination(hit: Dictionary) -> Vector3:
 	for candidate in _movement.landing_candidates(point, float(hit.get("floor_y", point.y))):
 		if not _snap_segment_clear(point, candidate): continue
 		if _valid_destination(candidate): return candidate
+	# Floor under or between chairs: land in the row passage nearest the aim.
+	var tries := 0
+	for candidate in _movement.chair_landing_candidates(point):
+		if _valid_destination(candidate): return candidate
+		tries += 1
+		if tries >= CHAIR_LANDING_TRIES: break
 	return Vector3.INF
 
 func _snap_segment_clear(source: Vector3, target: Vector3) -> bool:
@@ -262,6 +287,14 @@ func pointer_release(hand: String, origin: Vector3, direction: Vector3, valid: b
 	_capture = {}; _capture_hand = ""
 	var target := ray_hit(origin, direction) if valid else {}
 	hide_pointer(hand)
+	if target.get("kind", "") == "seat":
+		# Sitting ends free movement: the view settles facing the screen.
+		if _movement.select_seat(str(target.id)):
+			interaction = "watch"
+			suspend()
+			_align_head(_movement.eye_position, _movement.yaw)
+			changed.emit()
+		return true
 	if target.get("valid", false) and _valid_destination(target.position):
 		if _movement.teleport_floor(target.position):
 			_movement.yaw = _head_yaw()
@@ -289,6 +322,8 @@ func update_pointer(hand: String, origin: Vector3, direction: Vector3, valid: bo
 	var material: StandardMaterial3D = visual.material
 	material.albedo_color = Color(.35, .95, .68) if hit.valid else Color(1, .18, .12)
 	visual.floor.position = Vector3(hit.position) + Vector3.UP * .025
+	# A seat target shows a wider ring on the cushion: release to sit.
+	visual.floor.scale = Vector3.ONE * (1.35 if hit.kind == "seat" else 1.0)
 	visual.floor.visible = hit.kind != "miss"
 	var mesh := ImmediateMesh.new()
 	mesh.surface_begin(Mesh.PRIMITIVE_TRIANGLES)
@@ -378,6 +413,7 @@ func _begin_loading() -> void:
 	# Both independent bakes are required before presenting the room.
 	ResourceLoader.load_threaded_request(Description.LIGHT_PATH, "Texture2D")
 	ResourceLoader.load_threaded_request(Description.LIGHT_OFF_PATH, "Texture2D")
+	ResourceLoader.load_threaded_request(Description.SCREEN_LIGHT_PATH, "Texture2D")
 	_thread = Thread.new()
 	status = _thread.start(_prepare_movement.bind(_manifest.duplicate(true)))
 	if status != OK:
@@ -415,6 +451,16 @@ func _apply_lighting() -> void:
 	for entry in _light_materials:
 		entry.material.set_shader_parameter("cinema_light_mix", _light_mix)
 
+## Film colours (linear, normalised) for the left, centre and right screen strips.
+func set_film_light(colors: Array) -> void:
+	if colors.size() < 3: return
+	film_light = colors.duplicate()
+	for entry in _light_materials:
+		if entry.material.shader == Description.FIXTURE_SHADER: continue
+		for index in 3:
+			var color: Color = colors[index]
+			entry.material.set_shader_parameter(FILM_UNIFORMS[index], Vector3(color.r, color.g, color.b))
+
 func _process(_delta: float) -> void:
 	if not is_equal_approx(_light_mix, _light_target):
 		_light_mix = move_toward(_light_mix, _light_target, _delta * 1.25)
@@ -428,11 +474,17 @@ func _process(_delta: float) -> void:
 		var status := ResourceLoader.load_threaded_get_status(MODEL_PATH)
 		var light_status := ResourceLoader.load_threaded_get_status(Description.LIGHT_PATH)
 		var off_status := ResourceLoader.load_threaded_get_status(Description.LIGHT_OFF_PATH)
+		var screen_status := ResourceLoader.load_threaded_get_status(Description.SCREEN_LIGHT_PATH)
 		if light_status in [ResourceLoader.THREAD_LOAD_FAILED, ResourceLoader.THREAD_LOAD_INVALID_RESOURCE] or off_status in [ResourceLoader.THREAD_LOAD_FAILED, ResourceLoader.THREAD_LOAD_INVALID_RESOURCE]:
 			_fail("Cinema lighting could not be loaded"); return
-		if status == ResourceLoader.THREAD_LOAD_LOADED and light_status == ResourceLoader.THREAD_LOAD_LOADED and off_status == ResourceLoader.THREAD_LOAD_LOADED:
+		var lights_loaded := light_status == ResourceLoader.THREAD_LOAD_LOADED and off_status == ResourceLoader.THREAD_LOAD_LOADED
+		if status == ResourceLoader.THREAD_LOAD_LOADED and lights_loaded and screen_status != ResourceLoader.THREAD_LOAD_IN_PROGRESS:
 			var light := ResourceLoader.load_threaded_get(Description.LIGHT_PATH) as Texture2D
 			var light_off := ResourceLoader.load_threaded_get(Description.LIGHT_OFF_PATH) as Texture2D
+			# Without the screen map the hall still works, lit by its house states only.
+			var screen: Texture2D = null
+			if screen_status == ResourceLoader.THREAD_LOAD_LOADED:
+				screen = ResourceLoader.load_threaded_get(Description.SCREEN_LIGHT_PATH) as Texture2D
 			var packed := ResourceLoader.load_threaded_get(MODEL_PATH) as PackedScene
 			if not packed:
 				_fail("Cinema model contains no scene")
@@ -444,7 +496,7 @@ func _process(_delta: float) -> void:
 			_model.name = "GrandCinema"
 			_normalize_vertex_materials(_model)
 			Description.apply_seat_detail(_model)
-			Description.apply_baked_surfaces(_model, light, light_off)
+			Description.apply_baked_surfaces(_model, light, light_off, screen)
 			Description.apply_seat_lighting(_model)
 			_prepare_light_materials()
 			_model.visible = false

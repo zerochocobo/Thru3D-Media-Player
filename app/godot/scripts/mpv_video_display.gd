@@ -78,7 +78,42 @@ var alpha_edge := Vector2(0.0, 1.0)
 var depth_requested := false
 var auto_depth := false # This file's conversion choice, retained while changing its projection.
 var depth_enabled := false
-const DEPTH_STRENGTHS := [0.5, 1.0, 1.5, 2.0]
+var cast_token := 0
+var cast_capability_cache := {}
+const CastCapabilities := preload("res://scripts/cast_capabilities.gd")
+
+func cast_allows(operation: String) -> bool:
+	return cast_token == 0 or CastCapabilities.allows(CastCapabilities.capabilities(self), operation)
+
+func capture_cast_view() -> Dictionary:
+	var result := {}
+	for key in ["geometry", "stereo_sbs", "top_bottom", "stereo_half", "swap_eyes", "fisheye_fov", "depth_requested", "auto_depth", "depth_strength", "alpha_requested", "profile", "screen_rotation", "playback_speed", "viewing_eye", "stereo_horizontal", "stereo_vertical", "loop_enabled", "audio_track_id", "audio_delay", "subtitle_delay"]:
+		result[key] = get(key)
+	result.tracks = _capture_track_choices()
+	return result
+
+func restore_cast_view(value: Dictionary) -> void:
+	for key in value:
+		if key != "tracks": set(key, value[key])
+	_layout_pending = null; _capture_layout_pending = false
+	_queue_track_restore(value.get("tracks", {}))
+	subtitles.set_delay(subtitle_delay)
+	_audio_delay_pending = true; _subtitle_delay_pending = true
+	_apply_geometry(); _request_revision()
+	set_playback_speed(playback_speed)
+
+func open_cast(uri: String, title: String, token: int, start_ms: int) -> bool:
+	cast_token = token
+	cast_capability_cache = {}
+	geometry = Geometry.Geometry.FLAT; stereo_sbs = false; top_bottom = false; stereo_half = false
+	swap_eyes = false; alpha_requested = false; depth_requested = false; auto_depth = false
+	depth_strength = preferred_depth_strength; loop_enabled = false; requested_play = true
+	_layer_return_uri = ""; _eye_buffer_only = true
+	var opened := open_local(uri, title, start_ms, false)
+	# Ephemeral URLs have no durable media identity. Never reuse unrelated cached file settings.
+	_subtitle_auto_pending = subtitle_auto_load
+	return opened
+const DEPTH_STRENGTHS := [0.5, 0.75, 1.0]
 const DepthStrength := preload("res://scripts/depth_strength.gd")
 ## Eye-width fraction of the full parallax at strength 1 (PTMediaServer), and the near value kept on
 ## the screen plane (nearer content comes out of the screen).
@@ -390,6 +425,7 @@ static func _thumbnail_source(uri: String) -> bool:
 	return not ModeMemory.key_for(uri).is_empty()
 
 func _maybe_capture_thumbnail() -> void:
+	if cast_token > 0: return
 	if _thumb_after_ms < 0 or _thumbnail_busy or _layer_thumbnail_busy or _pixel_busy or _waiting_first or not _pending_revision.is_empty() \
 		or media.state not in ["playing", "paused", "ended"] or media.last_pair.is_empty() \
 		or not (video_layer_shown if _binding.layer else _binding.material != null):
@@ -570,6 +606,7 @@ func cancel_pending_open() -> void:
 # Library selection: MediaStore content URIs are readable through the media permission;
 # network URIs (smb://, DLNA http) have no document grant to check.
 func open_library(uri: String, title: String, metadata: Dictionary = {}, from_start: bool = false) -> bool:
+	cast_token = 0
 	var cover := str(metadata.get("cover", recent_files.lookup(uri).get("cover", "")))
 	var opened := false
 	if uri.begins_with("medialib://") and not metadata.is_empty():
@@ -1109,6 +1146,7 @@ func set_packed_mask(enabled: bool) -> void:
 	changed.emit()
 
 func set_alpha(enabled: bool) -> bool:
+	if enabled and not cast_allows("alpha"): return false
 	if packed_file:
 		packed_alpha = enabled
 		_apply_packed()
@@ -1124,6 +1162,7 @@ func set_alpha(enabled: bool) -> bool:
 
 ## 2D->3D for mono sources; switching it on ends Alpha.
 func set_depth(enabled: bool) -> bool:
+	if enabled and not cast_allows("depth"): return false
 	if is_spatial_video(): return false
 	if enabled and (stereo_sbs or geometry != Geometry.Geometry.FLAT):
 		return false
@@ -1205,6 +1244,7 @@ func alpha_ready() -> bool:
 	return alpha_enabled and not media.last_pair.is_empty() and media.last_pair.get("inference_ran", false)
 
 func set_playback_speed(value: float) -> bool:
+	if not is_equal_approx(value, 1.0) and not cast_allows("playback_speed"): return false
 	if not is_finite(value) or value < 0.25 or value > 3.0 or not media.accepts(media.session_id): return false
 	if not is_equal_approx(playback_speed, value): captures.stop()
 	if not PlatformMethods.supports(platform, "set_mpv_speed") or not platform.set_mpv_speed(media.session_id, value): return false
@@ -1407,6 +1447,7 @@ func cycle_audio_track(direction: int = 1) -> bool:
 	return select_audio_track(choices[posmod(index + direction, choices.size())])
 
 func seek_absolute(position_ms: int, mode: String = "", loop_return: bool = false) -> bool:
+	if not cast_allows("seek"): return false
 	if not platform or not media.accepts(media.session_id):
 		return false
 	if not loop_return: bookmark_loop.manual_seek(position_ms)
@@ -1417,6 +1458,8 @@ func seek_absolute(position_ms: int, mode: String = "", loop_return: bool = fals
 	return true
 
 func _bookmark_resolve() -> void:
+	if cast_token > 0:
+		_bookmark_media_id = ""; _bookmark_cache_revision = -1; return
 	_bookmark_media_id = bookmark_store.resolve(local_uri, str(_bookmark_metadata.get("basename", "")), _bookmark_metadata.get("size", -1))
 	_bookmark_cache_revision = -1
 
@@ -1451,6 +1494,7 @@ func bookmarks_snapshot() -> Dictionary:
 	return result
 
 func bookmark_action(operation: String, marker_id: String, scope: String) -> String:
+	if cast_token > 0: return ""
 	if scope != bookmark_scope(): return ""
 	match operation:
 		"add":
@@ -1513,6 +1557,7 @@ func _reset_subtitle_files() -> void:
 	_subtitle_restore_attempted = false; _subtitle_files_session = media.session_id
 
 func subtitle_files_available() -> bool:
+	if cast_token > 0: return false
 	if not PlatformMethods.supports(platform, "list_mpv_subtitle_files") or not PlatformMethods.supports(platform, "load_mpv_subtitle_file"): return false
 	return local_uri.begins_with("file://") or local_uri.begins_with("usb://") or local_uri.begins_with("smb://") or local_uri.begins_with("cloud://") \
 		or (local_uri.begins_with("content://com.android.externalstorage.documents/tree/"))
@@ -1917,6 +1962,7 @@ func _place_caption() -> void:
 	projected_subtitles.update_patch(caption, material, anchor_basis, subtitle_distance, subtitle_direction == 1, subtitle_size, subtitle_style, pose, viewer_position, XRServer.world_scale)
 
 func seek_relative(delta_ms: int) -> bool:
+	if not cast_allows("seek"): return false
 	if not platform or not media.accepts(media.session_id):
 		return false
 	captures.stop()
@@ -1958,6 +2004,7 @@ func match_spatial_fov() -> bool:
 	return true
 
 func mode_action_allowed(operation: String) -> bool:
+	if not cast_allows(operation): return false
 	if not is_spatial_video(): return true
 	return operation not in ["stereo", "projection", "lock_mode", "depth", "depth_strength"] \
 		and not operation.begins_with("stereo_") and not operation.begins_with("projection_") \
@@ -3061,6 +3108,7 @@ func _layer_turns() -> bool:
 	return geometry == Geometry.Geometry.FLAT and screen_curve <= 0.0 and not stereo_sbs
 
 func _layer_wanted() -> bool:
+	if cast_token > 0: return false # Keep frames available for effects without reopening the LAN source.
 	if video_layer: video_layer.update_session()
 	return video_layer != null and video_layer.available() and _layer_presentation()
 

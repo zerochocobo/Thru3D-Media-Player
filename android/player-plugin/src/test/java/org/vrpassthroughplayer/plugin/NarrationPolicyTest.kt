@@ -5,6 +5,15 @@ import org.junit.Test
 import org.json.JSONArray
 
 class NarrationPolicyTest {
+    @Test fun cloneSamplesUseTheConfirmedSentenceInAllSupportedLanguages() {
+        assertEquals(NarrationPolicy.languages,VoiceClonePreviewText.languages)
+        assertEquals("你好，很高兴认识你。今天天气很舒服，我们可以聊聊最近的计划、喜欢的音乐，也分享一些温暖有趣的想法。",VoiceClonePreviewText.text("zh"))
+        val samples=VoiceClonePreviewText.languages.map {VoiceClonePreviewText.text(it)}
+        assertEquals(19,samples.toSet().size)
+        assertTrue(samples.all {it.length in 40..240 && !it.contains('\n')})
+        assertThrows(IllegalArgumentException::class.java){VoiceClonePreviewText.text("und")}
+        assertNotEquals(NarrationPolicy.previewText("en"),VoiceClonePreviewText.text("en"))
+    }
     @Test fun pinnedLanguagesAcceptAliasesAndUseTheirOwnPreviewText() {
         val expected=setOf("zh","en","ja","de","es","fr","it","hu","ko","ru","fa","ar","pl","pt","cs","da","sv","el","tr")
         assertEquals(expected,NarrationPolicy.languages)

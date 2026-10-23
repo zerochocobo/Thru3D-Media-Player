@@ -4,16 +4,19 @@
 
 Standalone Android VR/MR media player for Meta Quest and PICO. Play videos and photos, explore media libraries, and combine supported content with passthrough and stereo effects directly on your headset.
 
-Current source version: **0.13.2** (Android versionCode **40**). An experimental standard OpenXR Android export is also available.
+Current source version: **0.13.3** (Android versionCode **41**). An experimental standard OpenXR Android export is also available.
 
 Minimum compatibility targets are **Quest 2** and **PICO Neo3**. Source/build compatibility does not establish hardware performance or interaction acceptance on every device.
 
 ## Features
 
+- Local-network DLNA video casting into the VR player, with explicit reception and active-media replacement confirmation; see [receiver scope](docs/DLNA_CASTING.md).
+- Subtitle-free custom voice sampling, speech candidates and inline trimming; [VAD and voice assets](docs/MODELS.md) are prepared separately.
+
 - Bookmark-based A–B repeat playback with unified bookmark/loop management.
 - Blu-ray title switching and supported non-3D HDMV menus with ray selection; BD-J is identified but not executed. See [Blu-ray scope](docs/BLURAY.md).
 - Compressed comic reading, including compatible encrypted archives and private password associations; see [archive scope](docs/ARCHIVE_COMICS.md).
-- Grand cinema (Test) with dual baked lighting and movement in Debug/Release; [scene generation](docs/EXPERIMENTAL_CINEMA.md) and [controller model preparation](docs/CONTROLLER_ASSETS.md) use separately prepared resources.
+- Grand cinema (Test) with film-driven screen illumination, dual baked house lighting, chair seating and movement in Debug/Release; [scene generation](docs/EXPERIMENTAL_CINEMA.md) and [controller model preparation](docs/CONTROLLER_ASSETS.md) use separately prepared resources.
 
 - Up to three shared-frame video PiP windows, region zoom, independent placement and optional static image windows; see [PiP scope](docs/PICTURE_IN_PICTURE.md).
 - Hand-tracked wrist watch with time/battery/progress and projected playback controls.
@@ -88,7 +91,7 @@ Minimum compatibility targets are **Quest 2** and **PICO Neo3**. Source/build co
 
 - Independent all/local/none policies and clearing for playback history and per-file settings; disabling history preserves settings memory by default.
 - Head-tracked Spatial Stereo / Static 3D photo modes, global photo preferences and separately remembered global video/photo depth strengths. Native Apple static viewing retains the original stereo pair.
-- Custom voice creation from a suitable paused-video audio reference, with audition, rename/delete and default-voice management. Personal voice data stays local and outside this source release.
+- Custom voice creation from suitable caller-selected media/audio references, with speech detection, trimming, audition, rename/delete and default-voice management. Personal voice data stays local and outside this source release.
 
 - Compatible immersive-video capture: full-resolution source PNG screenshots and original-video MKV clips with live app audio (including narration/music) at 1× speed. Keyframe/source limits apply; see [capture](docs/CAPTURE.md).
 

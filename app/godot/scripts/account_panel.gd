@@ -44,6 +44,7 @@ func close() -> void:
 	web_cancel()
 	if session > 0 and menu.platform: menu.platform.account_cancel(session)
 	session = 0; view = ""; data = {}; items = []; fields.clear(); field = ""
+	shift = false; symbols = false
 	prompt = null; choices = null; web_texture = null; web_node = null; selected.clear()
 	license_lines.clear(); revision = -1; challenge_revision = -1; paused = false; _defaults = {}
 
@@ -64,6 +65,8 @@ func load_accounts() -> void:
 	if not parsed is Array: menu.status = "Account settings unavailable"
 
 func start(type: String, selected_provider: String = "", id: String = "", defaults: Dictionary = {}) -> void:
+	shift = false; symbols = false
+	menu.system_text_input.cancel()
 	if session > 0: menu.platform.account_cancel(session)
 	web_cancel(); web_texture = null; prompt = null; choices = null; selected.clear()
 	provider = selected_provider
@@ -187,9 +190,14 @@ func action(target: int) -> bool:
 		if not data.get("busy", false) and selected.size() < 4: selected.append(target - CAPTCHA); menu.refresh()
 		return true
 	if target >= KEY and target < KEY + 40:
+		if data.get("busy", false): return true
 		var layer: Array = menu.SYMBOLS if symbols else menu.KEYS
 		var value: String = layer[(target - KEY) / 10][(target - KEY) % 10]
-		input("append", value.to_upper() if shift else value); shift = false; return true
+		var uppercase := shift
+		shift = false # poll() can redraw synchronously; publish the next state first.
+		input("append", value.to_upper() if uppercase else value)
+		if uppercase: menu.refresh() # Web input need not change the account snapshot.
+		return true
 	match target - BASE:
 		1: shift = not shift; menu.refresh()
 		2: symbols = not symbols; menu.refresh()
@@ -323,7 +331,7 @@ func draw_keyboard(enabled: bool, offset: Vector2 = Vector2.ZERO) -> void:
 			var value: String = layer[row][col]
 			menu._button(KEY + row * 10 + col, value.to_upper() if shift else value, Vector2(-0.40 + col * 0.125, -0.10 - row * 0.071) + offset, Vector2(0.114, 0.061), enabled)
 	for spec in [[1,"⇧",-0.36,0.16],[2,"#+=" if not symbols else "abc",-0.16,0.2],[3,"␣",0.15,0.36],[4,"⌫",0.46,0.2],[5,I18n.t("Paste"),0.7,0.22]]:
-		menu._button(BASE + int(spec[0]), str(spec[1]), Vector2(float(spec[2]), -0.405) + offset, Vector2(float(spec[3]), 0.073), enabled)
+		menu._button(BASE + int(spec[0]), str(spec[1]), Vector2(float(spec[2]), -0.405) + offset, Vector2(float(spec[3]), 0.073), enabled, "", (spec[0] == 1 and shift) or (spec[0] == 2 and symbols))
 
 func texture_node(texture: Texture2D, centre: Vector2, size: Vector2) -> MeshInstance3D:
 	var node := MeshInstance3D.new(); var mesh := QuadMesh.new(); mesh.size = size; node.mesh = mesh

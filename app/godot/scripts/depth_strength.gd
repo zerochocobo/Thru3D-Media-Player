@@ -1,8 +1,7 @@
 extends RefCounted
-## Shared photo/video parallax scale. 1.0 is the original parallax; 2.0 is PTMediaServer's
-## highest 2D->3D strength (its realtime menu offers 50..200%), which this player does not exceed.
-const MAX := 2.0
-const PHOTO_MAX := 2.0 # stills match video; photo_limit_gradient keeps 200% hole fills clean
+## Shared parallax scale: videos stop at 100%, photos retain their 200% range.
+const MAX := 1.0
+const PHOTO_MAX := 2.0 # photo_limit_gradient keeps 200% hole fills clean
 const DEFAULT := 1.0
 const VIDEO_DEFAULT := 0.5
 const PHOTO_DEFAULT := 1.0
@@ -21,8 +20,8 @@ static func load_preference(settings: ConfigFile, for_photo: bool) -> float:
 	var value: Variant = settings.get_value("photo" if for_photo else "video", "depth_strength", fallback)
 	return remembered(float(value), PHOTO_MAX if for_photo else MAX, fallback) if value is float or value is int else fallback
 
-## The first fifth of the travel covers 0..50% (the bottom snaps to off); the rest is PTMediaServer's
-## 50..200% range, linear.
+## The first fifth covers 0..50% (the bottom snaps to off); the rest reaches
+## the media-specific maximum linearly.
 static func from_fraction(fraction: float, maximum: float = MAX) -> float:
 	var f := clampf(fraction, 0.0, 1.0)
 	return clamp_value(f * 2.5 if f < 0.2 else 0.5 + (f - 0.2) * ((maximum - 0.5) / 0.8), maximum)

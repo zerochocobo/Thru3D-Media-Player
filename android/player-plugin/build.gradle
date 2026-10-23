@@ -15,7 +15,8 @@ def includeDiagnostics = providers.gradleProperty('includeDiagnostics').map { it
 // Subtitle narration is included in both normal Debug and Release builds.
 def narrationManifest = new groovy.json.JsonSlurper().parse(file('../../third_party/narration/model.json'))
 def cloneManifest = new groovy.json.JsonSlurper().parse(file('../../third_party/narration/clone_model.json'))
-def narrationBundles = [narrationManifest, cloneManifest]
+def vadManifest = new groovy.json.JsonSlurper().parse(file('../../third_party/narration/vad_model.json'))
+def narrationBundles = [narrationManifest, cloneManifest, vadManifest]
 def narrationModels = file("../../models/narration/${narrationManifest.id}")
 def playerAssets = layout.buildDirectory.dir('playerAssets')
 def stagePlayerAssets = tasks.register('stagePlayerAssets', Sync) {

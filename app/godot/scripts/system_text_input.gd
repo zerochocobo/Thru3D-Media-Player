@@ -28,13 +28,15 @@ func begin(tag: String, value: String, limit: int, on_change: Callable, on_submi
 		editor.modulate.a = 0.0
 		editor.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		editor.virtual_keyboard_type = LineEdit.KEYBOARD_TYPE_DEFAULT
-		editor.virtual_keyboard_enabled = true
 		editor.virtual_keyboard_show_on_focus = true
 		editor.text_changed.connect(_changed)
 		editor.text_submitted.connect(_submitted)
 		editor.gui_input.connect(_gui_input)
 		host.add_child(editor)
 	context = tag; changed = on_change; submitted = on_submit; cancelled = on_cancel
+	editor.focus_mode = Control.FOCUS_ALL
+	editor.virtual_keyboard_enabled = true
+	editor.show()
 	editor.max_length = clampi(limit, 1, 200)
 	editor.text = clean(value, editor.max_length)
 	editor.caret_column = editor.text.length()
@@ -84,6 +86,10 @@ func _end() -> void:
 		if editor.is_inside_tree():
 			editor.cancel_ime()
 			editor.release_focus()
+		# Alpha alone leaves this editor in focus navigation after the session ends.
+		editor.virtual_keyboard_enabled = false
+		editor.focus_mode = Control.FOCUS_NONE
+		editor.hide()
 		editor.text = ""
 	if DisplayServer.has_feature(DisplayServer.FEATURE_VIRTUAL_KEYBOARD): DisplayServer.virtual_keyboard_hide()
 

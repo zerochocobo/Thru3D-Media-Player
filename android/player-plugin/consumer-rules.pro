@@ -5,6 +5,7 @@
 -keep class org.vrpassthroughplayer.plugin.UsbFsNative { *; }
 -keep class org.vrpassthroughplayer.plugin.NarrationNative { *; }
 -keep class org.vrpassthroughplayer.plugin.VoiceCloneNative { *; }
+-keep class * implements org.vrpassthroughplayer.plugin.VoiceCloneNative$ScanListener { *; }
 -keep class org.vrpassthroughplayer.plugin.OriginalClipNative { *; }
 -keep class org.vrpassthroughplayer.plugin.PipScreenshotNative { *; }
 -keep class org.vrpassthroughplayer.plugin.LiveCaptureNative { *; }

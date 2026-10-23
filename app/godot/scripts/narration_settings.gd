@@ -26,6 +26,9 @@ var _clone_session := 0
 var _clone_identity_session := 0
 var _clone_saved := ""
 var _clone_save_request := -1
+var _clone_save_use := true
+var _global_save_request := -1
+var _global_save_use := false
 var _personal_voices: Array = []
 var _voice_catalog_revision := -1
 var _clone_request := 0
@@ -106,7 +109,7 @@ func save(settings: ConfigFile) -> void:
 	for key in Memory.FIELDS:
 		if key != "enabled": settings.set_value("narration", key, _defaults[key])
 	var uri := _video_source if not _video_source.is_empty() else (str(video.local_uri) if video.media.session_id > 0 else "")
-	if memory.remember(uri, _values()): memory.save()
+	if not video.get("cast_token") and memory.remember(uri, _values()): memory.save()
 
 	for key in ["enabled", "rate", "voice_rates"]:
 		if settings.has_section_key("narration", key): settings.erase_section_key("narration", key)
@@ -133,7 +136,7 @@ func reset_source(uri: String = "") -> void:
 		_preview_ui_request = -1; _preview_ui_busy = false; _preview_ui_until = 0
 		_preview_feedback = ""
 		var values := _defaults.duplicate(true)
-		values.merge(memory.lookup(uri), true)
+		if not video.get("cast_token"): values.merge(memory.lookup(uri), true)
 		_restore_values(values)
 	_sync_profile()
 
@@ -304,6 +307,7 @@ func snapshot() -> Dictionary:
 		"narration_source_uri": str(video.local_uri),
 		"narration_voice_kind": voice_kind, "narration_custom_voice": custom_voice, "narration_personal_voices": _personal_voices.duplicate(true),
 		"narration_clone_state": clone_state, "narration_clone_supported": Methods.supports(video.platform, "mpv_voice_clone_request"),
+		"narration_sample_available": video.media.session_id > 0,
 		"narration_voice_warning": _voice_warning,
 		"narration_resolved_language": lang, "narration_language_required": lang.is_empty(), "narration_voice": selected_voice(), "narration_voice_origin": selected_origin(), "narration_resolved_origin": selected_origin(),
 		"narration_profile": profile if not profile.is_empty() else "default", "narration_line": line, "narration_hide_subtitles": hide_subtitles,
@@ -383,26 +387,27 @@ static func status_label(code: String) -> String:
 	return {"loading": "Preparing narration…", "verifying": "Checking narration model…", "model_loading": "Loading narration model…", "preparing": "Preparing speech…", "preview_buffering": "Preparing voice preview…", "subtitle_loading": "Reading subtitle timeline…", "ready": "Narration ready", "speaking": "Reading subtitles…", "model_missing": "Narration model not installed", "model_error": "Unable to load narration model", "subtitle_required": "Choose subtitles", "language_required": "Choose language", "unsupported_subtitle": "Text subtitles required", "timeline_error": "Unable to prepare subtitles", "speech_error": "Unable to read subtitle", "line_missing": "Selected line has no text"}.get(code, "")
 
 func clone_command(value: Dictionary) -> bool:
+	if video.get("cast_token") and str(value.get("operation", "")) not in ["list", "use", "cancel", "close", "stop"]: return false
 	if not Methods.supports(video.platform, "mpv_voice_clone_request") or video.media.session_id <= 0: return false
 	var command := value.duplicate(true)
 	var operation := str(command.get("operation", ""))
 	if operation == "use": return set_option("narration_custom_voice", str(command.get("id", "")))
-	if operation in ["open", "preview", "original", "clone", "save", "rename", "delete"] or (operation == "list" and command.get("pause", false)):
+	if operation in ["open", "scan", "manual", "trim", "preview", "original", "clone", "save", "rename", "delete"] or (operation == "list" and command.get("pause", false)):
 		video.pause_for_voice_clone()
 	if operation == "preview": _preview_feedback = "clone"
 	if operation == "open":
-		clone_state.opened = true
 		var track := selected_track()
-		if track.is_empty() or resolved_language().is_empty(): return false
-		command.merge({"subtitle_id": int(track.id), "line": line, "language": resolved_language(), "audio_id": video.audio_track_id, "position": video.control.display_position_ms() / 1000.0}, true)
-		command.subtitle_delay = video.subtitle_delay if source < 0 else video.subtitle_timing.for_track(video.local_uri, Timing.track_key(track))
+		if command.get("mode", "subtitles") == "subtitles" and (track.is_empty() or resolved_language().is_empty()): return false
+		clone_state.opened = true
+		command.merge({"subtitle_id": int(track.get("id", 0)), "line": line, "language": resolved_language() if not resolved_language().is_empty() else default_profile(I18n.language).get_slice("_", 0), "audio_id": video.audio_track_id, "position": video.control.display_position_ms() / 1000.0}, true)
+		command.subtitle_delay = video.subtitle_delay if source < 0 or track.is_empty() else video.subtitle_timing.for_track(video.local_uri, Timing.track_key(track))
 		command.audio_delays = {}
 		for audio_track in video._raw_tracks("audio"):
 			var track_id := int(audio_track.get("id", 0))
 			command.audio_delays[str(track_id)] = video.audio_delay if track_id == video.audio_track_id else video.audio_timing.for_track(video.local_uri, video.AudioTiming.track_key(audio_track))
 	_clone_request += 1; command.request = _clone_request
 	var accepted := bool(video.platform.mpv_voice_clone_request(video.media.session_id, JSON.stringify(command)))
-	if accepted and operation == "save": _clone_save_request = _clone_request
+	if accepted and operation == "save": _clone_save_request = _clone_request; _clone_save_use = bool(command.get("apply", true))
 	if accepted and Methods.supports(video.platform, "mpv_voice_clone_status"):
 		var immediate: Variant = JSON.parse_string(video.platform.mpv_voice_clone_status(video.media.session_id))
 		if immediate is Dictionary: clone_state = immediate
@@ -428,7 +433,7 @@ func _poll_clone() -> void:
 	if _clone_save_request >= 0 and int(clone_state.get("save_request", -2)) == _clone_save_request and not saved.is_empty() and str(saved.get("id", "")) != _clone_saved:
 		_clone_saved = str(saved.id)
 		_clone_save_request = -1
-		if set_option("narration_custom_voice", _clone_saved): voice_choice_changed.emit()
+		if _clone_save_use and set_option("narration_custom_voice", _clone_saved): voice_choice_changed.emit()
 	if catalog_ready and voice_kind == "custom" and not _has_voice(custom_voice):
 		var missing := not custom_voice.is_empty()
 		custom_voice = _fallback_voice()
@@ -485,13 +490,15 @@ func _repair_voice_defaults(voices: Array) -> void:
 func global_voice_command(value: Dictionary) -> bool:
 	if not Methods.supports(video.platform, "narration_voice_manager_request"): return false
 	var command := value.duplicate(true)
-	if (command.get("operation", "") in ["preview", "rename", "delete", "use"] or command.get("pause", false)) and video.media.session_id > 0: video.pause_for_voice_clone()
+	_clone_request += 1; command.request = _clone_request
+	if (command.get("operation", "") in ["open_source", "scan", "manual", "trim", "original", "clone", "preview", "rename", "delete", "use"] or command.get("pause", false)) and video.media.session_id > 0: video.pause_for_voice_clone()
 	if command.get("operation", "") == "use":
 		var id := str(command.get("id", ""))
 		if not Memory.valid_custom_voice(id) or not _global_voice_state.get("voices", []).any(func(voice): return str(voice.get("id", "")) == id): return false
 		_defaults.voice_kind = "custom"; _defaults.custom_voice = id; voice_choice_changed.emit(); return true
 	if command.get("operation", "") == "preview": command.language = resolved_language() if not resolved_language().is_empty() else default_profile(I18n.language).get_slice("_", 0)
 	var accepted := bool(video.platform.narration_voice_manager_request(JSON.stringify(command)))
+	if accepted and command.get("operation", "") == "save": _global_save_request = _clone_request; _global_save_use = bool(command.get("apply", false))
 	if accepted: _global_voice_poll_at = 0
 	return accepted
 
@@ -506,7 +513,13 @@ func voice_manager_snapshot() -> Dictionary:
 		if parsed is Dictionary and not parsed.is_empty():
 			var previous_voices: Array = _personal_voices.duplicate(true)
 			_global_voice_state = parsed
+			if _global_save_request >= 0 and int(parsed.get("save_request", -2)) == _global_save_request:
+				_global_save_request = -1
+				if _global_save_use:
+					_defaults.voice_kind = "custom"; _defaults.custom_voice = str(parsed.get("saved", {}).get("id", "")); voice_choice_changed.emit()
 			if _accept_voice_catalog(parsed) and _personal_voices != previous_voices and not clone_state.get("opened", false) and not _clone_preview_busy(): _clone_session = 0
 	return {"source_uri": "global-voice-manager", "global_voice_manager": true, "narration_clone_supported": supported,
+		"narration_current_uri": str(video.local_uri) if video.media.session_id > 0 else "", "position_ms": video.control.display_position_ms(),
+		"narration_resolved_language": resolved_language() if not resolved_language().is_empty() else default_profile(I18n.language).get_slice("_", 0),
 		"narration_clone_state": _global_voice_state, "narration_personal_voices": _personal_voices.duplicate(true),
 		"narration_voice_kind": _defaults.get("voice_kind", "preset"), "narration_custom_voice": _defaults.get("custom_voice", ""), "narration_available": false}

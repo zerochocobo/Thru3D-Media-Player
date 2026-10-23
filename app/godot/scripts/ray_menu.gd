@@ -17,6 +17,9 @@ static var _overlay_shaders: Dictionary = {}
 const FOLLOW := -1001
 const TEMP_PASSTHROUGH := -1002
 const FREE_MOVEMENT := -1003
+const CINEMA_LIGHTS := -1004
+const LIGHT_ICONS := {"auto": "light_auto", "on": "light", "off": "light_off"}
+const LIGHT_TIPS := {"auto": "Auto lights: off while a film plays, on when it stops", "on": "Lights on", "off": "Lights off"}
 const FOOTER_DIAMETER := 0.09
 const FOOTER_HIT_SIZE := 0.105
 const FOOTER_GAP := 0.025
@@ -318,9 +321,11 @@ func _activate_hit(hit: Dictionary) -> void:
 	_activate(int(hit.target))
 
 func _activate_footer(target: int) -> bool:
-	if target not in [FOLLOW, TEMP_PASSTHROUGH, FREE_MOVEMENT]: return false
+	if target not in [FOLLOW, TEMP_PASSTHROUGH, FREE_MOVEMENT, CINEMA_LIGHTS]: return false
 	var state := _session_controls()
-	if target == FREE_MOVEMENT:
+	if target == CINEMA_LIGHTS:
+		if state.get("cinema_visible", false): session_control_requested.emit("cinema_lights_cycle")
+	elif target == FREE_MOVEMENT:
 		if state.get("cinema_visible", false): session_control_requested.emit("cinema_move_toggle")
 	elif target == FOLLOW:
 		session_control_requested.emit("follow")
@@ -448,16 +453,17 @@ func refresh_session_controls(force: bool = false) -> void:
 	if not force and state == _footer_state: return
 	_footer_state = state.duplicate()
 	for index in range(_buttons.size() - 1, -1, -1):
-		if _buttons[index].target in [FOLLOW, TEMP_PASSTHROUGH, FREE_MOVEMENT]:
+		if _buttons[index].target in [FOLLOW, TEMP_PASSTHROUGH, FREE_MOVEMENT, CINEMA_LIGHTS]:
 			_buttons[index].node.free()
 			_buttons.remove_at(index)
 	var show_passthrough: bool = state.get("passthrough_visible", false)
 	var show_movement: bool = state.get("cinema_visible", false)
-	var count := 1 + int(show_passthrough) + int(show_movement)
+	# In the cinema: lights, free movement, then follow and passthrough.
+	var count := 1 + int(show_passthrough) + 2 * int(show_movement)
 	var span := count * FOOTER_DIAMETER + (count - 1) * FOOTER_GAP
 	var width := span + FOOTER_GAP + STATUS_WIDTH
 	var left := _footer_centre.x - width * 0.5
-	var follow_left := left + (FOOTER_DIAMETER + FOOTER_GAP if show_movement else 0.0)
+	var follow_left := left + (2.0 * (FOOTER_DIAMETER + FOOTER_GAP) if show_movement else 0.0)
 	device_status.position = Vector3(left + span + FOOTER_GAP + STATUS_WIDTH * 0.5, _footer_centre.y, 0.002)
 	_footer_button(FOLLOW, "head_follow", Vector2(follow_left + FOOTER_DIAMETER * 0.5, _footer_centre.y),
 		state.get("follow", false), true, I18n.t("Disable follow" if state.get("follow", false) else "Enable follow"))
@@ -467,7 +473,10 @@ func refresh_session_controls(force: bool = false) -> void:
 			state.get("passthrough", false), not alpha, I18n.t("Cannot switch during person passthrough" if alpha else
 			("Disable temporary passthrough" if state.get("passthrough", false) else "Enable temporary passthrough")))
 	if show_movement:
-		_footer_button(FREE_MOVEMENT, "standing", Vector2(left + FOOTER_DIAMETER * .5, _footer_centre.y),
+		var lights := str(state.get("cinema_lights", "auto"))
+		_footer_button(CINEMA_LIGHTS, LIGHT_ICONS.get(lights, "light_auto"), Vector2(left + FOOTER_DIAMETER * .5, _footer_centre.y),
+			false, true, I18n.t(LIGHT_TIPS.get(lights, LIGHT_TIPS.auto)))
+		_footer_button(FREE_MOVEMENT, "standing", Vector2(left + FOOTER_DIAMETER * 1.5 + FOOTER_GAP, _footer_centre.y),
 			state.get("cinema_moving", false), true, I18n.t("Free movement"))
 	_update_highlights()
 
@@ -707,7 +716,9 @@ func _hide_tooltip() -> void:
 		var changed := _tooltip.visible
 		_tooltip.visible = false
 		(_tooltip.get_child(0) as Label3D).text = ""
-		if changed: composition_changed.emit()
+		# Visibility changes the set of planes competing for the fixed HD slots.
+		# Repaint alone leaves an overflow plane in the eye buffer after this tip hides.
+		if changed: composition_layout_changed.emit()
 
 func _fit_title(title: String, suffix: String, width: float = 1.32, font_size: int = 26) -> String:
 	var key := str([ui_font().get_instance_id(), I18n.language, title, suffix, width, font_size])

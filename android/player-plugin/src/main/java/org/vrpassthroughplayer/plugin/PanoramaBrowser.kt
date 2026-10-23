@@ -13,7 +13,6 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
-import android.view.inputmethod.InputMethodManager
 import android.webkit.*
 import android.widget.FrameLayout
 import org.json.JSONObject
@@ -55,12 +54,10 @@ internal class PanoramaBrowser(private val host: () -> Activity?, originals: Pan
     private var navigationFailed = false
     private var navigation = 0
 
-    private inner class BrowserView(context: Context) : WebView(context) {
+    private inner class BrowserView(context: Context, window: android.view.Window) : RayKeyboardWebView(context, window) {
         override fun onCreateInputConnection(info: EditorInfo): InputConnection? {
             editor = super.onCreateInputConnection(info)
             editing = editor != null && info.inputType != 0
-            handler.post { (context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager)
-                ?.hideSoftInputFromWindow(windowToken, 0) }
             return null
         }
         fun captureEditor() {
@@ -95,7 +92,7 @@ internal class PanoramaBrowser(private val host: () -> Activity?, originals: Pan
             val activity = host() ?: error("No activity")
             val layout = WebLoginViewport.Geometry(activity); geometry = layout
             val context = WebLoginViewport.context(activity)
-            val view = BrowserView(context); web = view
+            val view = BrowserView(context, activity.window); web = view
             view.isSaveEnabled = false
             view.importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS
             val container = WebLoginViewport.container(context, layout); viewport = container
@@ -247,7 +244,7 @@ internal class PanoramaBrowser(private val host: () -> Activity?, originals: Pan
                 commons.cancel(); imageLookupPage=""
                 val event = MotionEvent.obtain(downAt, SystemClock.uptimeMillis(), MotionEvent.ACTION_CANCEL, 0f, 0f, 0)
                 try { view.dispatchTouchEvent(event) } finally { event.recycle() }
-                touchActive = false; view.onPause()
+                touchActive = false; editing = false; editor = null; view.onPause()
             } else view.onResume()
         } }
     }

@@ -47,3 +47,9 @@ Generate the optional auditorium geometry before its source/gate tests; see [exp
 ## 0.12.3 capture and remote-reader checks
 
 Capture state/format and UI tests use synthetic/fake inputs; the Linux/WSL packet-copy integration compares source/output compressed packets and supports file-descriptor output. Voice reference/subtitle host tests generate indexed MP4/MKV plus delayed-caption fixtures and loopback HTTP ranges. `tools/Test-VoiceCloneHost.sh` prepares its host libraries; `tools/media/test_voice_clone_sources.py` uses the companion MP4 inspector. None needs credentials or a headset. Debug cloud denial diagnostics must retain only bounded/redacted reasons, never full URLs or tickets.
+
+## 0.13.3 focused checks
+
+DLNA receiver JVM tests use loopback sockets and synthetic offers; `test_cast_receiver.gd` covers transport ownership, acceptance/restore and cast storage boundaries. They do not prove discovery or sender compatibility on a real LAN. `test_voice_samples`, `test_account_panel`, `test_system_search_input` and `test_dropdown_composition` cover sampling UI, Shift/editor focus and menu-plane allocation; use OpenGL for actual dropdown plane/texture checks.
+
+`tools/Test-VoiceScanHost.sh` compiles the production scanner against separately prepared host FFmpeg/ONNX Runtime; `tools/media/test_voice_scan.py --speech-wav <synthetic-speech.wav>` exercises synthetic containers, ranges and cancellation with the separately supplied pinned VAD. It requires its declared host dependencies and does not use user recordings. Generate archive fixtures with `tools/Generate-ComicFixtures.py` for Quick Open/encryption checks; ZIP64 regressions also generate their own offset fixtures. Do not report asset-dependent or headset behavior as verified by these host suites.

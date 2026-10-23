@@ -16,6 +16,8 @@ const MAX_NAV_VISITS := 140000
 const EPSILON := 0.001
 const LANDING_SNAP_RADIUS := 0.40
 const LANDING_SNAP_HEIGHT := 0.18
+# Floor under a chair moves to the nearest free floor of that row's passage.
+const CHAIR_LANDING_RADIUS := 1.0
 
 var eye_position := Vector3.ZERO
 var yaw := 0.0
@@ -28,9 +30,12 @@ var navigation_prepare_ms := 0
 var last_teleport_ms := 0
 
 var _seats: Dictionary = {}
+var _design: Dictionary = {}
 var _walkable: Array[Dictionary] = []
 var _floor_hash: Dictionary = {}
 var _colliders: Array[AABB] = []
+# Chair colliders block bodies, not the teleport arc (it passes over seat backs).
+var _chair_colliders: Dictionary = {}
 var _collider_hash: Dictionary = {}
 var _nav_cache: Dictionary = {}
 var _nav_components: Dictionary = {}
@@ -40,9 +45,11 @@ var _has_position := false
 
 func configure(manifest: Dictionary) -> void:
 	_seats.clear()
+	_design = manifest.get("design", {}).duplicate() if manifest.get("design") is Dictionary else {}
 	_walkable.clear()
 	_floor_hash.clear()
 	_colliders.clear()
+	_chair_colliders.clear()
 	_collider_hash.clear()
 	_nav_cache.clear()
 	_nav_components.clear()
@@ -79,6 +86,8 @@ func configure(manifest: Dictionary) -> void:
 		var minimum := _vector(value.min)
 		var maximum := _vector(value.max)
 		if minimum.is_finite() and maximum.is_finite() and maximum.x > minimum.x and maximum.y > minimum.y and maximum.z > minimum.z:
+			if str(value.get("id", "")).begins_with("seat_"):
+				_chair_colliders[_colliders.size()] = true
 			_add_collider(AABB(minimum, maximum - minimum))
 	# Do static navigation work while the scene is loading, never on a user's
 	# teleport click. Each component includes body clearance and stair limits.
@@ -173,6 +182,45 @@ func landing_candidates(hit: Vector3, floor_y: float) -> Array[Vector3]:
 			if Vector2(point.x - hit.x, point.z - hit.z).length() > LANDING_SNAP_RADIUS: continue
 			candidates.append(point)
 	candidates.sort_custom(func(a: Vector3, b: Vector3): return a.distance_squared_to(hit) < b.distance_squared_to(hit))
+	return candidates
+
+
+## The seat whose floor footprint contains [point], or "". Aiming the arc at a
+## chair means "sit here"; the passage around it remains a standing target.
+func seat_at(point: Vector3) -> String:
+	if not point.is_finite(): return ""
+	var half := float(_design.get("seat_pitch", 0.9)) * 0.5
+	var front := float(_design.get("seat_front", 0.42))
+	var rear := float(_design.get("seat_rear", 0.38))
+	var seated := float(_design.get("seated_eye_height", 1.2))
+	for id in _seats:
+		var eye := _vector(_seats[id].eye_position)
+		# The seat line sits 10 cm behind the seated eye (see cinema_blueprint.gd).
+		var seat_z := eye.z + 0.10
+		var inside := absf(point.x - eye.x) <= half and point.z >= seat_z - front and point.z <= seat_z + rear
+		if inside and absf(point.y - (eye.y - seated)) <= 0.3:
+			return str(id)
+	return ""
+
+
+func chair_landing_candidates(hit: Vector3) -> Array[Vector3]:
+	# Same bounded grid query as landing_candidates, wider and limited to the
+	# chair's own tier, so a landing below a seat lands in front of or behind it.
+	var candidates: Array[Vector3] = []
+	if not hit.is_finite(): return candidates
+	var source := _nav_anchor(eye_position - Vector3.UP * EYE_HEIGHT)
+	if not _nav_components.has(source): return candidates
+	var centre := Vector2i(roundi(hit.x / NAV_CELL), roundi(hit.z / NAV_CELL))
+	var cells := ceili(CHAIR_LANDING_RADIUS / NAV_CELL)
+	for x in range(-cells, cells + 1):
+		for z in range(-cells, cells + 1):
+			var key := centre + Vector2i(x, z)
+			if _nav_components.get(key, -1) != _nav_components[source]: continue
+			var point: Vector3 = _nav_cache[key]
+			if absf(point.y - hit.y) > MAX_STEP_HEIGHT * 2.0: continue
+			if Vector2(point.x - hit.x, point.z - hit.z).length() > CHAIR_LANDING_RADIUS: continue
+			candidates.append(point)
+	candidates.sort_custom(func(a: Vector3, b: Vector3): return Vector2(a.x - hit.x, a.z - hit.z).length_squared() < Vector2(b.x - hit.x, b.z - hit.z).length_squared())
 	return candidates
 
 

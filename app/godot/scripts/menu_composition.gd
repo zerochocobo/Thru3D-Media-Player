@@ -12,15 +12,17 @@ extends Node
 ##   the layer, detaching or resizing its viewport) corrupts the render target and crashed the
 ##   Quest GL thread. Each slot therefore has a fixed pixel size, is never hidden or detached, and
 ##   keeps its swapchain for the session; an idle slot shrinks to a sub-pixel quad instead.
-## Render bits 16-19 tag the captured planes; a plane's bit follows its slot for the current page.
-const GROUP_BIT := 16
-const MAX_GROUPS := 4
-const GROUP_MASK := ((1 << MAX_GROUPS) - 1) << GROUP_BIT
 ## The compositor reads every pixel of a slot each frame, for each eye, whatever it shows, so the
 ## swapchains match the planes the menus actually have: main panel, tall side column, two popups,
 ## and the short playback/photo control bar (a square slot read 2.4x its area for it).
 ## Sizes in metres at the capture density below; a larger plane is captured less densely.
 const SLOT_METRES := [Vector2(1.56, 1.36), Vector2(0.5, 1.2), Vector2(0.93, 0.93), Vector2(0.93, 0.93), Vector2(1.2, 0.66)]
+## Use all five already-reserved providers: attached library, side column, transport,
+## dropdown and its hover tip must stay sharp together. Godot render bits end at 19.
+## A plane's bit follows its slot for the current page; band bits sit below this range.
+const MAX_GROUPS := 5
+const GROUP_BIT := 20 - MAX_GROUPS
+const GROUP_MASK := ((1 << MAX_GROUPS) - 1) << GROUP_BIT
 const SLOT_PREFERENCE := {"panel": [0, 2, 3, 4, 1], "tall": [1, 0, 2, 3, 4], "popup": [2, 3, 0, 4, 1], "bar": [4, 0, 2, 3, 1]}
 ## Capture pixels per metre: about 1.4x the display density of Quest 3 at the menu's distance,
 ## confirmed legible on the headset (2026-10-16). 1.7x (1650 px/m) cost the compositor 50% more
@@ -70,7 +72,7 @@ const BAND_POOLS := {
 		"block": Vector2i(2560, 960)},
 	"tall": {"pixels": Vector2i(1024, 480), "count": 4, "bit": 1 << (GROUP_BIT - 2), "slot": 1},
 }
-## Render layers stop at bit 19 and slots own 16-19; band bits 14-15 are otherwise unused.
+## Slots own bits 15-19; diagnostic band bits 13-14 are otherwise unused.
 const BAND_MASK := 3 << (GROUP_BIT - 2)
 ## After the panel's own eye-buffer content (priority <= 18), before popups and pointers.
 const BAND_HOLE_PRIORITY := 25

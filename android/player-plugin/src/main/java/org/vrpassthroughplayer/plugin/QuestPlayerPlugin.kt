@@ -33,6 +33,46 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     @UsedByGodot fun system_media_volume(): String = systemVolume.status()
     @UsedByGodot fun set_system_media_volume(percent: Double, showUi: Boolean): Long = systemVolume.set(percent, showUi)
     @Volatile private var signalsReady = false
+    // The renderer (cast ownership/state) outlives the network receiver: backgrounding (e.g. the
+    // headset taken off) stops LAN exposure, and resuming reopens it on the same port.
+    private var dlnaRenderer: DlnaRenderer? = null
+    private var dlnaReceiver: DlnaReceiver? = null
+    private var dlnaLock: android.net.wifi.WifiManager.MulticastLock? = null
+    private var dlnaPort = 0
+    @UsedByGodot @Synchronized fun dlna_receiver_enable(enabled: Boolean): Boolean {
+        stopDlnaNetwork(); dlnaRenderer?.detach(); dlnaRenderer = null; dlnaPort = 0
+        if (!enabled || closed.get()) return !enabled
+        dlnaRenderer = DlnaRenderer()
+        return startDlnaNetwork() || run { dlna_receiver_enable(false); false }
+    }
+    private fun startDlnaNetwork(): Boolean {
+        val renderer = dlnaRenderer ?: return false
+        val app = activity?.applicationContext ?: return false
+        val preferences = app.getSharedPreferences("dlna_receiver", android.content.Context.MODE_PRIVATE)
+        val id = preferences.getString("udn", null) ?: ("uuid:" + java.util.UUID.randomUUID()).also { preferences.edit().putString("udn", it).apply() }
+        return runCatching {
+            dlnaLock = (app.getSystemService(android.content.Context.WIFI_SERVICE) as? android.net.wifi.WifiManager)?.createMulticastLock("Thru3DReceiver")?.apply { setReferenceCounted(false); acquire() }
+            dlnaReceiver = DlnaReceiver(id, renderer = renderer).also { it.start(preferredPort = dlnaPort) }
+            true
+        }.getOrElse { stopDlnaNetwork(); false }
+    }
+    private fun stopDlnaNetwork() {
+        dlnaReceiver?.let { if (it.port > 0) dlnaPort = it.port; it.close() }; dlnaReceiver = null
+        runCatching { if (dlnaLock?.isHeld == true) dlnaLock?.release() }; dlnaLock = null
+    }
+    @Synchronized private fun dlnaForeground(foreground: Boolean) {
+        if (dlnaRenderer == null) return
+        if (!foreground) stopDlnaNetwork() else if (dlnaReceiver == null) startDlnaNetwork()
+    }
+    @UsedByGodot @Synchronized fun dlna_receiver_poll(): String {
+        val renderer = dlnaRenderer ?: return "{}"
+        return (dlnaReceiver?.status() ?: renderer.poll().put("running", false).put("name", "Thru3D").put("address", "").put("error", "")).toString()
+    }
+    @UsedByGodot @Synchronized fun dlna_receiver_accept(token: Long): String = dlnaRenderer?.accept(token)?.toString() ?: "{}"
+    @UsedByGodot @Synchronized fun dlna_receiver_reject(token: Long) { dlnaRenderer?.reject(token) }
+    @UsedByGodot @Synchronized fun dlna_receiver_finish(token: Long) { dlnaRenderer?.finish(token) }
+    @UsedByGodot @Synchronized fun dlna_receiver_detach() { dlnaRenderer?.detach() }
+    @UsedByGodot @Synchronized fun dlna_receiver_publish(json: String) { runCatching { dlnaRenderer?.publish(JSONObject(json)) } }
     private val favoritesVault = FavoritesVault()
     private val favoritesTasks = FavoritesVaultTasks(favoritesVault)
     @UsedByGodot fun favorites_vault_begin(operation: String, path: String, password: String, payload: String): Int =
@@ -688,12 +728,12 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
 
     // Android can resume before Godot registers the plugin's native signals.
     override fun onGodotSetupCompleted() { signalsReady = true; clear_photo_cache(); runCatching { panoramaOriginals.prepare() } }
-    override fun onMainPause() { if (!closed.get()) { systemVolume.foreground(false); musicPlayback.foreground(false); musicPreview.foreground(false); accounts.pause(true); panoramaBrowser.foreground(false); media.pause(); controlled.pause(); mpv.pause(); if (signalsReady) emitSignal("android_lifecycle", "pause") } }
-    override fun onMainResume() { if (!closed.get()) { activity?.volumeControlStream = AudioManager.STREAM_MUSIC; systemVolume.foreground(true); musicPlayback.foreground(true); musicPreview.foreground(true); accounts.pause(false); panoramaBrowser.foreground(true); media.resume(); controlled.resume(); mpv.resume(); if (signalsReady) { sources.refreshLocalStorage(); emitSignal("android_lifecycle", "resume") } } }
+    override fun onMainPause() { if (!closed.get()) { dlnaForeground(false); systemVolume.foreground(false); musicPlayback.foreground(false); musicPreview.foreground(false); accounts.pause(true); panoramaBrowser.foreground(false); media.pause(); controlled.pause(); mpv.pause(); if (signalsReady) emitSignal("android_lifecycle", "pause") } }
+    override fun onMainResume() { if (!closed.get()) { activity?.volumeControlStream = AudioManager.STREAM_MUSIC; dlnaForeground(true); systemVolume.foreground(true); musicPlayback.foreground(true); musicPreview.foreground(true); accounts.pause(false); panoramaBrowser.foreground(true); media.resume(); controlled.resume(); mpv.resume(); if (signalsReady) { sources.refreshLocalStorage(); emitSignal("android_lifecycle", "resume") } } }
     override fun onMainDestroy() { close() }
     override fun onGodotTerminating() { close() }
 
     private fun close() {
-        if (closed.compareAndSet(false, true)) { archives.close(); originalCapture.close(); systemVolume.close(); favoritesTasks.close(); accounts.close(); panoramaBrowser.close(); panoramaRegions.close(); panoramaPictures.close(); panoramaOriginals.close(); musicPlayback.close(); musicPreview.close(); backgroundAudio.close(); photos.close(); photoPreloads.close(); photoPreviews.close(); pipImages.close(); PhotoDepthRuntime.release(); picker.close(); localAccess.close(); probe.shutdownNow(); media.shutdown(); controlled.shutdown(); mpv.shutdown(); rvm.close(); sources.close() }
+        if (closed.compareAndSet(false, true)) { dlna_receiver_enable(false); archives.close(); originalCapture.close(); systemVolume.close(); favoritesTasks.close(); accounts.close(); panoramaBrowser.close(); panoramaRegions.close(); panoramaPictures.close(); panoramaOriginals.close(); musicPlayback.close(); musicPreview.close(); backgroundAudio.close(); photos.close(); photoPreloads.close(); photoPreviews.close(); pipImages.close(); PhotoDepthRuntime.release(); picker.close(); localAccess.close(); probe.shutdownNow(); media.shutdown(); controlled.shutdown(); mpv.shutdown(); rvm.close(); sources.close() }
     }
 }

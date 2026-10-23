@@ -66,6 +66,9 @@ func _appearance(option: Dictionary) -> void:
 	label.render_priority += 1
 
 func field(parent: Node3D, row: Dictionary, centre: Vector2, width: float, height: float = 0.06) -> void:
+	if row.get("range_slider", false):
+		_range_slider(parent, row, centre, width, height)
+		return
 	if row.get("slider", false):
 		_slider(parent, row, centre, width, height)
 		return
@@ -190,9 +193,65 @@ func _refresh_slider(target: int, value: float) -> void:
 		if slider.get("reset_when_changed", false): slider.reset.node.visible = slider.reset.enabled
 		slider.reset.node.get_child(1).material_override.albedo_color = menu.ACCENT if slider.reset.enabled else menu.MUTED
 
+func _range_slider(parent: Node3D, row: Dictionary, centre: Vector2, width: float, height: float) -> void:
+	var target := _button({"kind": "range_slider", "key": row.key, "span": row.span, "gap": row.get("gap", 3.0), "value": row.value}, "", centre, Vector2(width, height), parent)
+	var button: Dictionary = menu._buttons.back()
+	button.enabled = not row.get("disabled", false)
+	button.base_color = Color(menu.TILE, 0)
+	button.node.material_override.set_shader_parameter("surface_color", button.base_color)
+	var node: MeshInstance3D = button.node
+	var left := -width / 2 + 0.025
+	var rail_width := width - 0.05
+	var rail: MeshInstance3D = menu._quad(Vector2(rail_width, 0.006), Vector3(0, 0, 0.004), menu.MUTED, 14)
+	node.add_child(rail)
+	var fill: MeshInstance3D = menu._quad(Vector2(rail_width, 0.008), Vector3(0, 0, 0.005), menu.ACCENT, 15)
+	node.add_child(fill)
+	var bars: Array = []
+	var wave: Array = row.get("waveform", [])
+	var maximum := 0.001
+	for v in wave: maximum = maxf(maximum, float(v))
+	for i in wave.size():
+		var bar: MeshInstance3D = menu._quad(Vector2(0.004, maxf(0.004, float(wave[i]) / maximum * 0.033)), Vector3(left + (i + 0.5) / wave.size() * rail_width, 0, 0.006), menu.ACCENT, 16)
+		node.add_child(bar); bars.append(bar)
+	var handles: Array = []
+	for i in 2:
+		var knob: MeshInstance3D = menu._quad(Vector2(0.018, 0.050), Vector3(left + i * rail_width, 0, 0.008), Color.WHITE, 17)
+		node.add_child(knob); handles.append(knob)
+	sliders[target] = {"span": row.span, "left": left, "width": rail_width, "fill": fill, "handles": handles, "bars": bars}
+	var value: Vector2 = capture.value if capture.get("item", {}).get("key", "") == row.key and capture.has("value") else row.value
+	_refresh_range(target, value)
+	menu._tips[target] = menu.I18n.t("Drag either end to trim. Minimum 3 seconds.")
+
+func _refresh_range(target: int, value: Vector2) -> void:
+	if not sliders.has(target): return
+	var slider: Dictionary = sliders[target]
+	var lower := clampf(inverse_lerp(slider.span.x, slider.span.y, value.x), 0, 1)
+	var upper := clampf(inverse_lerp(slider.span.x, slider.span.y, value.y), lower, 1)
+	slider.fill.mesh.size.x = maxf(0.001, (upper - lower) * slider.width)
+	slider.fill.position.x = slider.left + (lower + upper) * slider.width / 2
+	slider.fill.material_override.set_shader_parameter("surface_size", slider.fill.mesh.size)
+	slider.handles[0].position.x = slider.left + lower * slider.width
+	slider.handles[1].position.x = slider.left + upper * slider.width
+	for i in slider.bars.size():
+		var fraction: float = (i + 0.5) / slider.bars.size()
+		slider.bars[i].material_override.set_shader_parameter("surface_color", menu.ACCENT if fraction >= lower and fraction <= upper else menu.MUTED)
+
+static func trim_range(value: Vector2, edge: int, position: float, span: Vector3, gap: float) -> Vector2:
+	var number := clampf(span.x + snappedf(position - span.x, span.z), span.x, span.y)
+	if edge == 0: value.x = clampf(number, span.x, value.y - gap)
+	else: value.y = clampf(number, value.x + gap, span.y)
+	return value
+
 func _preview_slider(point: Vector3) -> void:
 	var span: Vector3 = capture.item.span
 	var fraction := clampf((point.x - float(capture.left)) / float(capture.width), 0, 1)
+	if capture.item.kind == "range_slider":
+		var range_value := trim_range(capture.get("value", capture.item.value), int(capture.edge), lerpf(span.x, span.y, fraction), span, float(capture.item.gap))
+		if capture.has("value") and absf(capture.value.x - range_value.x) < 0.0001 and absf(capture.value.y - range_value.y) < 0.0001: return
+		capture.value = range_value
+		_refresh_range(int(capture.target), range_value)
+		previewed.emit(str(capture.item.key), range_value)
+		return
 	var value := clampf(snappedf(lerpf(span.x, span.y, fraction), span.z), span.x, span.y)
 	if capture.has("value") and is_equal_approx(capture.value, value): return
 	capture.value = value
@@ -200,7 +259,7 @@ func _preview_slider(point: Vector3) -> void:
 	previewed.emit(str(capture.item.key), _scoped_value(capture.item, value))
 
 func _finish_slider() -> bool:
-	if capture.get("item", {}).get("kind", "") != "slider": return false
+	if capture.get("item", {}).get("kind", "") not in ["slider", "range_slider"]: return false
 	var request := capture.duplicate(true)
 	capture.clear()
 	if request.has("value"): changed.emit(str(request.item.key), _scoped_value(request.item, request.value))
@@ -306,10 +365,12 @@ func press(hand: String, origin: Vector3, direction: Vector3, tracked: bool) -> 
 		return false
 	capture = {"hand": hand, "target": target, "scope": scope, "item": targets[target].duplicate(true),
 		"point": menu.control_point(hit), "plane": menu.control_plane(target), "offset": offset, "moved": false}
-	if capture.item.kind == "slider":
+	if capture.item.kind in ["slider", "range_slider"]:
 		var slider: Dictionary = sliders[target]
 		capture.left = slider.left
 		capture.width = slider.width
+		if capture.item.kind == "range_slider":
+			capture.edge = 0 if absf(capture.point.x - slider.handles[0].position.x) <= absf(capture.point.x - slider.handles[1].position.x) else 1
 		_preview_slider(capture.point)
 	return true
 
@@ -322,7 +383,7 @@ func update(hand: String, origin: Vector3, direction: Vector3, tracked: bool) ->
 	if point == null:
 		if not _finish_slider(): capture.clear()
 		return
-	if capture.item.kind == "slider":
+	if capture.item.kind in ["slider", "range_slider"]:
 		_preview_slider(point)
 		return
 	var delta: Vector2 = Vector2(point.x-capture.point.x, point.y-capture.point.y)

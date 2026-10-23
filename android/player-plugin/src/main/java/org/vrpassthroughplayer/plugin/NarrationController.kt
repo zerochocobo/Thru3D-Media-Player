@@ -646,7 +646,7 @@ internal class NarrationController(private val context: () -> Context?, private 
         }
         if(state=="ready") {
             if(previewPending) {
-                val text=NarrationPolicy.previewText(lang)
+                val text=if(PersonalVoiceStore.isVoice(config.voice(lang)))VoiceClonePreviewText.text(lang) else NarrationPolicy.previewText(lang)
                 // Audition the voice on its own clock, including when the video is paused.
                 // The clock starts with output, so model preparation cannot expire the sample.
                 windows=listOf(NarrationPolicy.Cue(0.0,NarrationPolicy.PREVIEW_WINDOW_SECONDS,text));previewPending=false;previewActive=true

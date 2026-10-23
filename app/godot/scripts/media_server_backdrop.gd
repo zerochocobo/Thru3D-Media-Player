@@ -4,7 +4,7 @@ const SHADER := preload("res://shaders/library_backdrop.gdshader")
 const INTERVAL := 12.0
 const FADE := 0.7
 var _owner: WeakRef
-var mode := "static"
+var mode := "slideshow"
 var key := ""
 var pictures: Array = []
 var index := 0

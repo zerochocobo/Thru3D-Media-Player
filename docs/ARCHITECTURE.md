@@ -103,3 +103,9 @@ The source-capture pipeline separates frame decode/MediaStore publication from t
 From 0.13.0, shared-frame PiP views and bounded static-image windows use the existing main frame and an adaptive compositor atlas; see [PiP](PICTURE_IN_PICTURE.md). The hand-tracked watch is a normal feature, separate from the labelled test auditorium. DirectoryBrowseMemory keys positions by source/account, directory and media filter, follows playback-history privacy/clearing and never backfills private-session positions. Provider-aware page limits and explicit load-all remain separate from bounded restoration; no automatic directory crawl is introduced. The pinned mpv AAudio clock patch 0005 follows the live-capture layer and recovers when timestamp queries fail after seeking.
 
 From 0.13.2, archive pages use bounded local/stream indexers and encrypted app-private password associations. The disc title list and non-3D HDMV menu session have separate resume/input routing; BD-J is detected but not executed. PiP screenshots use the production native still-composition core. See [archives](ARCHIVE_COMICS.md) and [local file operations](LOCAL_FILE_MANAGEMENT.md).
+
+## DLNA receiver and input isolation in 0.13.3
+
+`DlnaReceiver` owns bounded foreground LAN HTTP/SSDP/GENA handling; `DlnaRenderer` owns transport tokens independently of MPV generations. Godot `cast_session.gd` accepts/rejects offers, isolates temporary cast playback from ordinary history/configuration, and retains an explicit return to prior media. See [receiver scope](DLNA_CASTING.md).
+
+`RayKeyboardWebView` shares a per-window `RayKeyboardImeGate` while ray-driven web input owns focus, releasing it on pause/detach/destroy without replacing unrelated window flags. Inactive transparent Godot editors are hidden and unfocusable. Normal search IME remains independent. Menu composition reuses five fixed slots and regroups after hint dismissal; render scale uses inline choices.

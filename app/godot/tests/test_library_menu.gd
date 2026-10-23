@@ -318,6 +318,7 @@ func _run() -> void:
 	choose_setting(menu, "file_settings_memory", "none")
 	check(settings_events.back() == ["file_settings_memory", "none"], "Per-file memory has its own selection event")
 	menu._activate(Menu.TAB_BASE + Menu.DISPLAY_TAB)
+	check(not menu.rows.any(func(row): return row.get("key", "") == "library_backdrop"), "Media background is configured in the server browser, not global Display")
 	check(menu.rows.any(func(row): return row.get("key", "") == "show_fps" and row.value == false), "Display settings offer the FPS display, off by default")
 	choose_setting(menu, "show_fps", true)
 	check(settings_events.back() == ["show_fps", true], "FPS display can be switched on from Display settings")

@@ -33,3 +33,5 @@ The CodeLibs JCIFS jar is staged by Gradle with unused HTTP/HTTPS NTLM adapters 
 - Image decoders: checksum-pinned libtiff 4.7.2, libjpeg-turbo 3.1.2, OpenEXR 3.3.14, Imath 3.1.12 and libdeflate 1.24 source archives with their original notices under `tiff` and `openexr`. BSD-style, IJG and other included component terms remain applicable; see [image formats](../docs/IMAGE_FORMATS.md). No prebuilt image libraries are included.
 
 - PICO controller fallback meshes: unmodified MIT WebXR Input Profiles assets, supplied separately using the pinned metadata and adjacent notice. MRTK3-derived hand joint interaction retains its notice in third_party/player-licenses/mrtk3.txt. CC0 cinema scan metadata and preparation recipes retain original asset provenance; raw scans, generated scenes and bakes are excluded.
+
+- Silero VAD v6.2: original MIT notice and revision/hash-pinned model metadata in `third_party/narration`; no model weight or reference recording is included.

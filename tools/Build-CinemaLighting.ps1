@@ -14,6 +14,8 @@ New-Item -ItemType Directory -Path $output -Force | Out-Null
 function Invoke-CinemaProcess([string]$Executable, [string[]]$Arguments, [string]$Log) {
     $quoted = @($Arguments | ForEach-Object { '"' + $_.Replace('"','\"') + '"' })
     $p = Start-Process -FilePath $Executable -ArgumentList $quoted -WorkingDirectory $workspace -WindowStyle Hidden -PassThru -RedirectStandardOutput $Log -RedirectStandardError ($Log + '.errors')
+    # Windows PowerShell 5.1 only reports ExitCode if the handle is opened before exit.
+    $null = $p.Handle
     $p.WaitForExit()
     if ($p.ExitCode -ne 0) { throw "Cinema process failed ($($p.ExitCode)); see $Log" }
 }
@@ -24,12 +26,12 @@ if (-not $ImportOnly) {
 }
 $record = Get-Content (Join-Path $workspace 'tools/cinema/full_hall/build.json') -Raw | ConvertFrom-Json
 if ((Get-FileHash (Join-Path $assets 'manifest.json')).Hash.ToLowerInvariant() -ne $record.manifest_sha256) { throw 'Navigation manifest changed since this bake.' }
-foreach ($name in @('cinema.glb','cinema_light.jpg','cinema_light_off.jpg')) {
+foreach ($name in @('cinema.glb','cinema_light.jpg','cinema_light_off.jpg','cinema_screen_light.jpg')) {
     $source = Join-Path $output $name
     if ((Get-FileHash -LiteralPath $source).Hash.ToLowerInvariant() -ne $record.files.$name.sha256) { throw "Baked output mismatch: $name" }
 }
 if ((Get-Item (Join-Path $output 'cinema.glb')).Length -gt 32MB) { throw 'GLB exceeds the existing mobile authoring budget.' }
-foreach ($name in @('cinema.glb','cinema_light.jpg','cinema_light_off.jpg')) { Copy-Item -LiteralPath (Join-Path $output $name) -Destination (Join-Path $assets $name) -Force }
+foreach ($name in @('cinema.glb','cinema_light.jpg','cinema_light_off.jpg','cinema_screen_light.jpg')) { Copy-Item -LiteralPath (Join-Path $output $name) -Destination (Join-Path $assets $name) -Force }
 $engine = (Get-Command $Godot).Source
 Invoke-CinemaProcess $engine @('--headless','--xr-mode','off','--path',$project,'--editor','--import') (Join-Path $output 'import.log')
 foreach ($settings in Get-ChildItem -LiteralPath $assets -Filter '*.import' | Where-Object { $_.Name -match '\.(jpg|png)\.import$' }) {

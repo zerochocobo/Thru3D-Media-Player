@@ -88,6 +88,7 @@ func _run() -> void:
 	main._update_view_follow(); main._place_screen(); main._sync_cinema_screen()
 	check((main.video.global_transform * main.video.flat_pose).is_equal_approx(world_screen), "Room-scale head movement and screen placement keep cinema screen fixed")
 	main.xr_camera.transform = original_camera_local
+	_picture_size_routes(world_screen, preferences)
 	_playback_routes("cinema-watch", false)
 	await _seat_routes()
 	_movement_routes()
@@ -111,6 +112,7 @@ func _run() -> void:
 	main._on_setting_changed("cinema_lights", "on")
 	check(main.cinema_environment.lights_on, "Manual lighting action overrides playback")
 	main._on_setting_changed("cinema_lights", "auto")
+	_auto_light_routes()
 	_close_menus(); main._cinema_request_interaction("watch")
 	main._recenter()
 	check((main.video.global_transform * main.video.flat_pose).is_equal_approx(world_screen), "Explicit recenter preserves world cinema screen")
@@ -131,6 +133,55 @@ func _run() -> void:
 	check(main.video._flat.size.is_equal_approx(original_size), "Leaving cinema restores pre-cinema video dimensions")
 	check(_screen_preferences() == preferences, "Leaving cinema restores without saving scene dimensions")
 	await _finish()
+
+func _auto_light_routes() -> void:
+	var requested: bool = main.video.requested_play
+	var state: String = main.video.media.state
+	var uri: String = main.video.local_uri
+	# A stale play request with nothing open must not keep the house dark.
+	main.video.local_uri = ""; main.video.requested_play = true; main.video.media.state = "idle"
+	main._cinema_lights_idle_since = 0
+	main._sync_cinema_lights()
+	check(main.cinema_environment.lights_on, "Auto keeps the lights up when no film is open")
+	main.video.local_uri = uri if not uri.is_empty() else "file:///film.mp4"
+	main.video.requested_play = true
+	main.video.media.state = "idle"
+	main._sync_cinema_lights()
+	check(not main.cinema_environment.lights_on, "Auto keeps the house dark while a requested film is still opening")
+	main.video.media.state = "paused"
+	main._sync_cinema_lights()
+	check(not main.cinema_environment.lights_on, "A brief stop does not flash the house lights")
+	main._cinema_lights_idle_since = Time.get_ticks_msec() - main.CINEMA_LIGHTS_UP_DELAY_MS - 1
+	main._sync_cinema_lights()
+	check(main.cinema_environment.lights_on, "Auto raises the house lights once playback has really stopped")
+	main._on_setting_changed("cinema_lights", "off")
+	check(not main.cinema_environment.lights_on, "Manual off keeps the house dark while stopped")
+	main._on_setting_changed("cinema_lights", "auto")
+	main.video.requested_play = requested
+	main.video.media.state = state
+	main.video.local_uri = uri
+	main._cinema_lights_idle_since = 0
+	main._sync_cinema_lights()
+
+func _picture_size_routes(full_screen: Transform3D, preferences: Dictionary) -> void:
+	var full_scale: float = main.video.screen_scale
+	var full_height: float = main.video._flat.size.y
+	main._on_playback_adjustment("cinema_picture_size", 60.0)
+	var smaller: Transform3D = main.video.global_transform * main.video.flat_pose
+	check(is_equal_approx(main.video.screen_scale, full_scale * 0.6) and is_equal_approx(main.video._flat.size.y, full_height * 0.6),
+		"Picture size scales only the picture inside the fixed cinema screen")
+	check(is_equal_approx(smaller.origin.x, full_screen.origin.x) and is_equal_approx(smaller.origin.z, full_screen.origin.z)
+		and is_equal_approx(full_screen.origin.y - smaller.origin.y, full_height * 0.4 * main.CINEMA_PICTURE_DROP),
+		"A smaller picture stays centred across and settles slightly below the screen centre")
+	check(is_equal_approx(float(main.settings.get_value("appearance", "cinema_picture_size")), 0.6) and _screen_preferences() == preferences,
+		"Picture size is its own cinema preference and never writes ordinary screen settings")
+	check(is_equal_approx(float(main._menu_state().get("cinema_picture_size", 0)), 60.0),
+		"Menu state reports the cinema picture size")
+	main._on_playback_adjustment("cinema_picture_size", 10.0)
+	check(is_equal_approx(main._cinema_picture_size(), main.CINEMA_PICTURE_MIN), "Picture size never shrinks below its minimum")
+	main._on_playback_adjustment("cinema_picture_size", 100.0)
+	check((main.video.global_transform * main.video.flat_pose).is_equal_approx(full_screen) and is_equal_approx(main.video.screen_scale, full_scale),
+		"Full size restores the original fixed cinema picture")
 
 func _close_menus() -> void:
 	for menu in [main.recent_menu, main.video_menu, main.photo_menu, main.music_menu]:

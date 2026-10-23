@@ -9,3 +9,5 @@
 
 The copied notices retain their copyright statements and conditions; trailing whitespace and extra blank lines at EOF are normalized.
 Normal Debug and Release packages include the verified INT8 model payload and built-in prompt codes from the Git-ignored models/narration cache. Raw reference audio is not included. The model/repository declare Apache-2.0; recording-by-recording provenance for the 12 selected presets remains unverified in the separate licensing review. Project authorization to bundle them does not itself establish third-party recording rights.
+
+- Speech activity detection: Silero VAD v6.2, revision be95df9152c0d7618fa1edfeb296fc3dae32376f, MIT. See SILERO_LICENSE.txt and vad_model.json for the pinned upstream URL and SHA-256. Weights remain outside Git under models/narration. Streaming inference follows the upstream 512-sample / 64-context / recurrent-state interface. No speaker diarization or source separation is included.

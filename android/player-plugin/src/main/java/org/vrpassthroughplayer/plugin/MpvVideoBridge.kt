@@ -697,17 +697,36 @@ internal class MpvVideoBridge(
     @Synchronized fun voiceManagerRequest(json: String): Boolean {
         if(stopped||!foreground||json.length>8192)return false
         val operation=runCatching {JSONObject(json).optString("operation")}.getOrNull()
-        if(operation !in setOf("list","preview","rename","delete","stop","close"))return false
-        if(operation in setOf("preview","rename","delete")||JSONObject(json).optBoolean("pause"))sessions.values.filter {active(it)}.forEach {setPlaying(it.id,false)}
+        if(operation !in setOf("list","open_source","mode","scan","manual","trim","original","clone","save","preview","rename","delete","stop","close"))return false
+        if(operation in setOf("open_source","scan","manual","trim","original","clone","preview","rename","delete")||JSONObject(json).optBoolean("pause"))sessions.values.filter {active(it)}.forEach {setPlaying(it.id,false)}
         if(operation!="list")hosts.forEach {it.voiceClone?.close();it.voiceClone=null}
         val controller=globalVoiceManager ?: VoiceCloneController(context,{
             val host=hosts.firstOrNull {!it.closing&&it.handle>0}
             VoiceCloneController.Source(0,"","",0.0,0.0,foreground&&!stopped,host?.audioVolume ?: 100.0,host?.audioMuted ?: false,narrationVolume=host?.narration?.previewVolume ?: 1.0)
         },{value->globalVoiceHolds.addAndGet(if(value)1 else -1);hosts.forEach {it.narration?.suspendForClone(globalVoiceHolding||it.cloneHolding)}},
-            {refreshPlayback(explicit=true)},{hosts.forEach {it.narration?.awaitCloneDrain()}},narrationRuntime,{narrationPreviewCache}).also {globalVoiceManager=it}
+            {refreshPlayback(explicit=true)},{hosts.forEach {it.narration?.awaitCloneDrain()}},narrationRuntime,{narrationPreviewCache},::openVoiceSample).also {globalVoiceManager=it}
         return controller.request(json)
     }
     fun voiceManagerStatus(): String=globalVoiceManager?.status()?.toString() ?: "{}"
+    /** Independent reader lease: never opens an MPV session or changes playback history. */
+    private fun openVoiceSample(uri: String): VoiceCloneController.Source {
+        require(uri.length<=4096&&Uri.parse(uri).scheme in setOf("file","content","usb","smb","cloud","medialib","dlna","http","https"))
+        val app=context() ?: error("voice_unavailable")
+        val resolved=if(uri.startsWith("cloud://"))referenceSource(uri) else resolveNetwork(uri)
+        var descriptor: ParcelFileDescriptor?=null
+        try {
+            val parsed=Uri.parse(resolved)
+            val path=when(parsed.scheme){
+                "file"->parsed.path ?: error("voice_input_unavailable")
+                "http","https"->resolved
+                else->{descriptor=app.contentResolver.openFileDescriptor(parsed,"r") ?: error("voice_input_unavailable");"fd://${descriptor!!.fd}"}
+            }
+            val disc=parsed.path.orEmpty().endsWith(".iso",true)||Uri.parse(uri).path.orEmpty().endsWith(".iso",true)
+            val held=descriptor
+            return VoiceCloneController.Source(0,path,MpvTlsTrust.prepare(app),0.0,0.0,true,100.0,false,disc=disc,
+                release={try {held?.close()} finally {releaseNetwork(resolved)}})
+        }catch(error: Throwable){try {descriptor?.close()}finally {releaseNetwork(resolved)};throw error}
+    }
     /** Explicit Debug fixture tests only; no user-media details or subtitle text. */
     fun narrationTestStatus(id: Int): JSONObject {
         check(BuildConfig.DEBUG)
@@ -1589,6 +1608,7 @@ internal class MpvVideoBridge(
     fun close(id: Int) { sessions[id]?.let { gate.invalidate(id); dispose(it, true) } }
     /** File-management worker only. close() invalidates playback before GL retires its reader. */
     fun awaitFileRelease(uri: String) {
+        globalVoiceManager?.close();globalVoiceManager=null
         val deadline = System.nanoTime() + 5_000_000_000L
         val prefix = uri.trimEnd('/') + "/"
         while (true) {

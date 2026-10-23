@@ -5,6 +5,8 @@ plugins {
 
 def sharedViewport = tasks.register('stageWebLoginViewport', Copy) {
     from '../player-plugin/src/main/java/org/vrpassthroughplayer/plugin/WebLoginViewport.kt'
+    from '../player-plugin/src/main/java/org/vrpassthroughplayer/plugin/RayKeyboardWebView.kt'
+    from '../player-plugin/src/main/java/org/vrpassthroughplayer/plugin/RayKeyboardImeGate.kt'
     into layout.buildDirectory.dir('sharedViewport')
 }
 android {

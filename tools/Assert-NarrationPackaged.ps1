@@ -1,8 +1,9 @@
-param([string]$ArchivePath = '', [string]$ManifestPath = '', [string]$CloneManifestPath = '')
+param([string]$ArchivePath = '', [string]$ManifestPath = '', [string]$CloneManifestPath = '', [string]$VadManifestPath = '')
 $ErrorActionPreference = 'Stop'
 $workspace = Split-Path -Parent $PSScriptRoot
 if (-not $ManifestPath) { $ManifestPath = Join-Path $workspace 'third_party/narration/model.json' }
 if (-not $CloneManifestPath) { $CloneManifestPath = Join-Path $workspace 'third_party/narration/clone_model.json' }
+if (-not $VadManifestPath) { $VadManifestPath = Join-Path $workspace 'third_party/narration/vad_model.json' }
 $sourceChecks = @(
     @('app/godot/scripts/narration_settings.gd', '(?m)^static var FEATURE_ENABLED := true\s*$'),
     @('android/player-plugin/src/main/java/org/vrpassthroughplayer/plugin/NarrationPolicy.kt', '(?m)^\s*const val FEATURE_ENABLED = BuildConfig\.NARRATION_ENABLED\s*$')
@@ -19,7 +20,7 @@ try {
         $entry = $zip.GetEntry($name)
         if (-not $entry -or $entry.Length -le 0) { throw "Narration package is missing: $name" }
     }
-    foreach ($bundle in @(@{ path=$ManifestPath; asset='model.json' }, @{ path=$CloneManifestPath; asset='clone_model.json' })) {
+    foreach ($bundle in @(@{ path=$ManifestPath; asset='model.json' }, @{ path=$CloneManifestPath; asset='clone_model.json' }, @{ path=$VadManifestPath; asset='vad_model.json' })) {
     $manifestBytes = [IO.File]::ReadAllBytes($bundle.path)
     $manifest = [Text.Encoding]::UTF8.GetString($manifestBytes) | ConvertFrom-Json
     if ($manifest.directory -match '(^/|\\|(^|/)\.\.(/|$)|:)') { throw 'Unsafe model directory.' }

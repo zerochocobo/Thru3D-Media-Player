@@ -52,6 +52,7 @@ var display_preferences := {}
 var folder_artwork := {}
 var sort_query := {}
 var sources_open := false
+var settings_open := false
 var display_preferences_path := "user://settings/server_views.cfg"
 var _location_pending := {}
 
@@ -74,6 +75,7 @@ func _init(owner: Node) -> void:
 			if value is Array: favorites[id] = value.filter(func(item): return item is Dictionary and str(item.get("uri", "")).begins_with("medialib://" + str(id) + "/scene/")).slice(0, 1000)
 
 func cancel() -> void:
+	settings_open = false
 	menu.system_text_input.cancel("media_server_search")
 	_location_pending.clear()
 	sort_query.clear()
@@ -262,6 +264,7 @@ func _remember() -> void:
 	if history.size() > 12: history.pop_front()
 
 func back() -> void:
+	if settings_open: settings_open = false; menu.refresh(); return
 	if sorting(): sort_query.clear(); menu.refresh(); return
 	cancel(); keyboard = ""
 	if not history.is_empty():
@@ -377,6 +380,9 @@ func sort_caption(short: bool = false) -> String:
 
 func sorting() -> bool:
 	return not sort_query.is_empty() and view == "scenes" and not menu.compact and keyboard.is_empty()
+
+func modal_open() -> bool:
+	return settings_open or sorting()
 
 func _apply_sort() -> void:
 	var sort := str(sort_query.get("sort", "created_at")); var direction := str(sort_query.get("direction", "DESC"))
@@ -653,6 +659,15 @@ func _navigate(section: String) -> void:
 
 func action(target: int) -> bool:
 	if target < ACTION: return false
+	if settings_open:
+		if target in [ACTION, ACTION + 180, ACTION + 181]: settings_open = false
+		elif target >= ACTION + 182 and target <= ACTION + 184:
+			backdrop.mode = ["off", "static", "slideshow"][target - ACTION - 182]
+			menu.setting_changed.emit("library_backdrop", backdrop.mode)
+		menu.refresh(); return true
+	if target == ACTION + 180 and view in ["servers", "home"] and keyboard.is_empty():
+		settings_open = true; gallery.capture.clear(); menu._drag.clear(); menu._fling = 0.0
+		menu.refresh(); return true
 	if sorting():
 		if target >= ACTION + 170 and target < ACTION + 170 + SORTS.size():
 			var sort: String = SORTS[target - ACTION - 170]
@@ -883,10 +898,13 @@ func draw() -> void:
 	menu._button(ACTION, "", Vector2(-0.40 if focused() else -0.52, top), Vector2(0.09, 0.07), view != "servers", "up")
 	var management := view in ["servers", "remove_servers", "confirm_remove"]
 	var caption := I18n.t("Remove server") if view in ["remove_servers", "confirm_remove"] else str(server.get("name", I18n.t("Media servers")))
-	var heading: Label3D = menu._label(menu._fit_title(caption, "", 0.73 if focused() else 0.77, 22), Vector3(-0.32 if focused() else -0.43, top, 0.004), 22); heading.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+	var heading: Label3D = menu._label(menu._fit_title(caption, "", 0.64 if view == "servers" else (0.73 if focused() else 0.77), 22), Vector3(-0.32 if focused() else -0.43, top, 0.004), 22); heading.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
 	if view == "servers":
-		for item in [[1, "plus"], [14, "edit"], [12, "refresh"], [13, "trash"]]: menu._button(ACTION + item[0], "", Vector2(0.43 + (0.12 * ([1, 14, 12, 13].find(item[0]))), 0.46), Vector2(0.09, 0.07), not busy or int(item[0]) in [1, 14], item[1])
+		for item in [[1, "plus"], [14, "edit"], [12, "refresh"], [13, "trash"], [180, "settings"]]: menu._button(ACTION + item[0], "", Vector2(0.31 + (0.12 * ([1, 14, 12, 13, 180].find(item[0]))), 0.46), Vector2(0.09, 0.07), not busy or int(item[0]) in [1, 14, 180], item[1])
+		menu._tips[ACTION + 180] = I18n.t("Settings")
 	elif not management:
+		if view == "home" and focused():
+			menu._button(ACTION + 180, "", Vector2(0.91, top), Vector2(0.09, 0.07), true, "settings"); menu._tips[ACTION + 180] = I18n.t("Settings")
 		if capabilities.get("search", true) or query.get("favorites", false) or view in ["facets", "candidates"]: menu._button(ACTION + 2, "", Vector2(0.55, top), Vector2(0.09, 0.07), view != "filters", "search")
 		menu._button(ACTION + 17, "", Vector2(0.67, top), Vector2(0.09, 0.07), not busy and view != "filters", "heart"); menu._tips[ACTION + 17] = I18n.t("Favorites" if capabilities.get("favorite_scope", "local") == "server" else "On-device favorites")
 		menu._button(ACTION + 15, "", Vector2(0.79, top), Vector2(0.09, 0.07), view != "filters", "more"); menu._tips[ACTION + 15] = I18n.t("Server options")
@@ -942,35 +960,49 @@ func draw() -> void:
 	elif view in ["detail", "metadata"] and not detail.is_empty(): _draw_detail()
 	else: menu._draw_rows()
 	if sorting(): _draw_sort()
+	elif settings_open: _draw_settings()
+
+func _draw_settings() -> void:
+	_dialog_panel(Vector2(1.02, 0.40), Vector2(0.12, 0.11), ACTION + 181)
+	var title: Label3D = menu._label(I18n.t("Settings"), Vector3(-0.325, 0.25, 0.043), 21)
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT; title.render_priority = 32
+	_dialog_button(ACTION + 181, "", Vector2(0.56, 0.25), Vector2(0.06, 0.06), false, "close")
+	var label: Label3D = menu._label(I18n.t("Library background"), Vector3(-0.325, 0.14, 0.043), 18)
+	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT; label.render_priority = 32
+	for i in 3:
+		_dialog_button(ACTION + 182 + i, I18n.t(["Off", "Still image", "Slideshow"][i]), Vector2(-0.19 + i * 0.31, 0.02), Vector2(0.29, 0.08), backdrop.mode == ["off", "static", "slideshow"][i])
 
 func _draw_sources_button() -> void:
 	menu._button(ACTION + 19, "", Vector2(-0.59, 0.62), Vector2(0.16, 0.07), true, "menu")
 	menu._lit(sources_open); menu._tips[ACTION + 19] = I18n.t("Main menu")
 	if sources_open: menu._buttons.back().node.material_override.set_shader_parameter("surface_color", menu.SELECTED)
 
-func _draw_sort() -> void:
+func _dialog_panel(size: Vector2, center: Vector2, dismiss: int) -> void:
 	for button in menu._buttons: button.enabled = false
 	var dim: MeshInstance3D = menu._quad(menu._backdrop.mesh.size, menu._backdrop.position + Vector3(0, 0, 0.02), Color(0, 0, 0, 0.15), 24)
 	# UI plates become opaque in compositor captures; the dimmer must retain its alpha.
 	dim.material_override = menu._material(Color(0, 0, 0, 0.15), 24)
 	menu.add_child(dim); menu._decorations.append(dim)
-	menu._text_button(ACTION + 177, "", Vector2(menu._backdrop.position.x, menu._backdrop.position.y), menu._backdrop.mesh.size)
+	menu._text_button(dismiss, "", Vector2(menu._backdrop.position.x, menu._backdrop.position.y), menu._backdrop.mesh.size)
 	menu._buttons.back().node.position.z = 0.026
+	var panel: MeshInstance3D = menu._quad(size, Vector3(center.x, center.y, 0.032), menu.PANEL, 30)
+	menu.add_child(panel); menu._decorations.append(panel); menu._block_rays(panel, size)
+
+func _draw_sort() -> void:
 	var sorts := available_sorts(); var rows := ceili(sorts.size() / 2.0)
 	var direction_y := 0.16 - rows * 0.09 - 0.035; var apply_y := direction_y - 0.13
 	var size := Vector2(1.02, 0.31 - apply_y + 0.065)
-	var panel: MeshInstance3D = menu._quad(size, Vector3(0.12, 0.31 - size.y / 2, 0.032), menu.PANEL, 30)
-	menu.add_child(panel); menu._decorations.append(panel); menu._block_rays(panel, size)
+	_dialog_panel(size, Vector2(0.12, 0.31 - size.y / 2), ACTION + 177)
 	var label: Label3D = menu._label(I18n.t("Sort"), Vector3(-0.325, 0.25, 0.043), 21); label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT; label.render_priority = 32
-	_sort_button(ACTION + 177, "", Vector2(0.56, 0.25), Vector2(0.06, 0.06), false, "close")
+	_dialog_button(ACTION + 177, "", Vector2(0.56, 0.25), Vector2(0.06, 0.06), false, "close")
 	for index in sorts.size():
 		var i: int = SORTS.find(sorts[index])
-		_sort_button(ACTION + 170 + i, I18n.t(SORT_NAMES[i]), Vector2(-0.115 + (index % 2) * 0.46, 0.16 - (index / 2) * 0.09), Vector2(0.42, 0.065), sort_query.sort == SORTS[i])
+		_dialog_button(ACTION + 170 + i, I18n.t(SORT_NAMES[i]), Vector2(-0.115 + (index % 2) * 0.46, 0.16 - (index / 2) * 0.09), Vector2(0.42, 0.065), sort_query.sort == SORTS[i])
 	for i in 2:
-		_sort_button(ACTION + 175 + i, I18n.t("Ascending" if i == 0 else "Descending") + (" ↑" if i == 0 else " ↓"), Vector2(-0.115 + i * 0.46, direction_y), Vector2(0.42, 0.065), sort_query.direction == ("ASC" if i == 0 else "DESC"))
-	_sort_button(ACTION + 11, I18n.t("Apply"), Vector2(0.12, apply_y), Vector2(0.30, 0.065))
+		_dialog_button(ACTION + 175 + i, I18n.t("Ascending" if i == 0 else "Descending") + (" ↑" if i == 0 else " ↓"), Vector2(-0.115 + i * 0.46, direction_y), Vector2(0.42, 0.065), sort_query.direction == ("ASC" if i == 0 else "DESC"))
+	_dialog_button(ACTION + 11, I18n.t("Apply"), Vector2(0.12, apply_y), Vector2(0.30, 0.065))
 
-func _sort_button(target: int, text_value: String, center: Vector2, size: Vector2, selected: bool = false, icon: String = "") -> void:
+func _dialog_button(target: int, text_value: String, center: Vector2, size: Vector2, selected: bool = false, icon: String = "") -> void:
 	menu._button(target, text_value, center, size, true, icon)
 	menu._lit(selected)
 	var node: MeshInstance3D = menu._buttons.back().node

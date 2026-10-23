@@ -1,5 +1,11 @@
 [
   {
+    "id": "silero-vad",
+    "name": "Silero VAD",
+    "license": "MIT",
+    "assets": ["narration/SILERO_LICENSE.txt", "narration/vad_model.json"]
+  },
+  {
     "id": "cjk-brackets",
     "name": "Noto Sans CJK bracket subset",
     "license": "SIL Open Font License 1.1",

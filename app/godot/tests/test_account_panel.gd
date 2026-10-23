@@ -10,6 +10,11 @@ class JavaMethods extends Object:
 func check(value: bool, label: String) -> void:
 	checks += 1
 	if not value: failures.append(label)
+func button(menu: Node, target: int) -> Dictionary:
+	return menu._buttons.filter(func(b): return b.target == target)[0]
+func check_case(menu: Node, upper: bool, context: String) -> void:
+	check(button(menu, Accounts.KEY + 10).node.get_child(0).text == ("Q" if upper else "q"), context + ": keycap matches the next character")
+	check((button(menu, Accounts.BASE + 1).base_color == menu.ACCENT) == upper, context + ": Shift visibly reflects its state")
 func _initialize() -> void: call_deferred("_run")
 func _run() -> void:
 	var platform := Platform.new()
@@ -30,6 +35,20 @@ func _run() -> void:
 	panel.choose(menu.rows[5])
 	check(panel.view == "form" and panel.provider == "webdav" and panel.fields == ["name", "base", "username", "password"] and panel.field == "base", "WebDAV is a remote connection form inside the cloud library")
 	check(menu._buttons.any(func(b): return b.target == Accounts.BASE + 6) and not menu._buttons.any(func(b): return b.target in [Accounts.BASE + 7, Accounts.BASE + 14]), "WebDAV uses test/save without web login or a local service toggle")
+	panel.field = "username"
+	panel.action(Accounts.BASE + 1); check_case(menu, true, "Form Shift")
+	panel.action(Accounts.KEY + 10)
+	check(panel.data.fields.username == "Q" and not panel.shift, "Form Shift produces one uppercase character")
+	check_case(menu, false, "Form after uppercase")
+	panel.action(Accounts.KEY + 10)
+	check(panel.data.fields.username == "Qq", "Next form character agrees with the lowercase keycap")
+	panel.action(Accounts.BASE + 1)
+	panel.data.busy = true; panel.action(Accounts.KEY + 10)
+	check(panel.shift and panel.data.fields.username == "Qq", "Ignored busy input does not consume Shift")
+	panel.data.busy = false; panel.action(Accounts.BASE + 1)
+	panel.action(Accounts.BASE + 2)
+	check(button(menu, Accounts.BASE + 2).base_color == menu.ACCENT, "Symbols mode is visibly selected")
+	panel.action(Accounts.BASE + 2)
 	panel.field = "password"; panel.input("append", "private-dav-secret")
 	check(not JSON.stringify(panel.data).contains("private-dav-secret"), "WebDAV password remains masked in the snapshot")
 	panel.action(Accounts.BASE + 6)
@@ -40,6 +59,12 @@ func _run() -> void:
 	check(menu._buttons.filter(func(b): return b.target >= Accounts.FIELD and b.target < Accounts.FIELD + 4).all(func(b): return b.rect.position.y > remote_key.rect.end.y), "four WebDAV fields stay above the keyboard")
 	panel.open("cloud")
 	panel.start("cloud", "115", "first") # Existing legacy accounts retain their management form.
+	panel.action(Accounts.BASE + 1); panel.action(Accounts.BASE + 2)
+	menu.system_text_input.begin("previous_search", "draft", 128, Callable(), Callable())
+	panel.start("cloud", "115", "first")
+	await process_frame
+	check(not menu.system_text_input.active() and not menu.system_text_input.editor.has_focus(), "Opening a ray form cancels pending system keyboard focus")
+	check(not panel.shift and not panel.symbols, "New account session starts in lowercase letters")
 	check(panel.view == "form" and panel.provider == "115" and panel.session > 0, "115 uses backend authentication session")
 	var web_login: Dictionary = menu._buttons.filter(func(button): return button.target == Accounts.BASE + 7)[0]
 	var first_key: Dictionary = menu._buttons.filter(func(button): return button.target == Accounts.KEY)[0]
@@ -109,6 +134,13 @@ func _run() -> void:
 	check(first_key.rect.end.y < page_rect.position.y, "website keyboard sits below the full webpage")
 	panel.input("append", "x")
 	check(platform.web_calls.back()[1] == "text" and platform.web_calls.back()[4] == "x", "ray keyboard commits into webpage")
+	panel.action(Accounts.BASE + 1); check_case(menu, true, "Web Shift")
+	panel.action(Accounts.KEY + 10)
+	check(platform.web_calls.back()[4] == "Q" and not panel.shift, "Web Shift produces one uppercase character")
+	# The web snapshot is deliberately unchanged: typing must redraw the keyboard itself.
+	check_case(menu, false, "Web after uppercase without a snapshot change")
+	panel.action(Accounts.KEY + 10)
+	check(platform.web_calls.back()[4] == "q", "Next web character agrees with the lowercase keycap")
 	menu._activate(Menu.NAV_BASE + Menu.Section.SETTINGS)
 	check(not panel.active() and id in platform.account_cancels, "leaving section cancels login and clears textures")
 	menu.tab = Menu.ABOUT_TAB; menu.refresh(); menu._open_licenses()

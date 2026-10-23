@@ -475,9 +475,11 @@ $pickerCancelMethod = Get-Content $pickerCancelPath -Raw
 if (-not $pickerCancelMethod.Contains('.method public final cancel_local_video_pick(I)V') -or -not $pickerCancelMethod.Contains('.annotation runtime Lorg/godotengine/godot/plugin/UsedByGodot;') -or -not $pickerCancelMethod.Contains('runOnHostThread')) { throw 'APK picker cancellation Godot/UI binding differs.' }
 $narrationBundle = Get-Content (Join-Path $workspace 'third_party/narration/model.json') -Raw | ConvertFrom-Json
 $voiceEncoderBundle = Get-Content (Join-Path $workspace 'third_party/narration/clone_model.json') -Raw | ConvertFrom-Json
+$voiceVadBundle = Get-Content (Join-Path $workspace 'third_party/narration/vad_model.json') -Raw | ConvertFrom-Json
 $buildManifest = [ordered]@{
     subtitle_narration = @{ enabled = $true; model_id = $narrationBundle.id; model_files = @($narrationBundle.files.PSObject.Properties).Count; model_bytes = ($narrationBundle.files.PSObject.Properties.Value.bytes | Measure-Object -Sum).Sum; bundled = $true }
     voice_reference_encoder = @{ enabled = $true; model_id = $voiceEncoderBundle.id; model_files = @($voiceEncoderBundle.files.PSObject.Properties).Count; model_bytes = ($voiceEncoderBundle.files.PSObject.Properties.Value.bytes | Measure-Object -Sum).Sum; process = ':voice_clone'; bundled = $true }
+    voice_activity_detector = @{ enabled = $true; model_id = $voiceVadBundle.id; model_files = @($voiceVadBundle.files.PSObject.Properties).Count; model_bytes = ($voiceVadBundle.files.PSObject.Properties.Value.bytes | Measure-Object -Sum).Sum; bundled = $true }
     schema_version = 1
     built_utc = [DateTime]::UtcNow.ToString('o')
     application_id = $applicationId

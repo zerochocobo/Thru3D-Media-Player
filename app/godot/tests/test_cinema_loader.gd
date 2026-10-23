@@ -34,7 +34,7 @@ func _run() -> void:
 		"Detailed GT hall with both chair detail levels stays below 28 MiB and 1M stored triangles without raising model resource limits")
 	_check(Loader.MAX_SEATS == 1024 and Loader.MAX_BYTES == 32 * 1024 * 1024 and Loader.MAX_VERTICES == 1000000 and Loader.MAX_AREAS == 4096,
 		"336-seat support retains bounded seats, bytes, vertices and navigation areas")
-	_check(_colored_surfaces_normalized(retained), "Imported COLOR_0 surfaces use vertex albedo including first primitive")
+	_check(_colored_surfaces_normalized(retained), "Imported COLOR_0 surfaces feed the dual-light seat shader or vertex albedo")
 	var cases := [
 		["wrong_schema", ["schema_version"], 2],
 		["string_schema", ["schema_version"], "1"],
@@ -134,7 +134,11 @@ func _colored_surfaces_normalized(node: Node) -> bool:
 				var arrays: Array = current.mesh.surface_get_arrays(surface)
 				if arrays[Mesh.ARRAY_COLOR] != null and not arrays[Mesh.ARRAY_COLOR].is_empty():
 					found = true
-					var material := current.get_active_material(surface) as StandardMaterial3D
+					# Seats read COLOR_0 as dual baked light in their own shader; any
+					# remaining standard material must still use it as albedo.
+					var active: Material = current.get_active_material(surface)
+					if active is ShaderMaterial and active.shader == Loader.SEAT_SHADER: continue
+					var material := active as StandardMaterial3D
 					if material == null or not material.vertex_color_use_as_albedo: return false
 		for child in current.get_children(): nodes.append(child)
 	return found

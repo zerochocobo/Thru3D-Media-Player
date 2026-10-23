@@ -29,6 +29,8 @@ $adapters = @(Sort-BindingInputs @(Get-ChildItem (Join-Path $workspace 'cloud\op
 $adapterHashes = ($adapters | ForEach-Object { "$($_.Name):$((Get-FileHash $_.FullName -Algorithm SHA256).Hash)" }) -join '/'
 $searchAdapters = @(Sort-BindingInputs @(Get-ChildItem (Join-Path $workspace 'cloud\openlist\search') -File -Filter '*.go' -Recurse | Where-Object { $_.Name -notlike '*_test.go' }))
 $adapterHashes += '/' + (($searchAdapters | ForEach-Object { "$($_.Directory.Name)/$($_.Name):$((Get-FileHash $_.FullName -Algorithm SHA256).Hash)" }) -join '/')
+$zipCompatibility = Join-Path $PSScriptRoot 'Set-OpenListZipCompatibility.ps1'
+$adapterHashes += '/zip-compatibility:' + (Get-FileHash -LiteralPath $zipCompatibility -Algorithm SHA256).Hash
 $fingerprint = "$revision/$mobileVersion/$adapterHashes/$((Get-FileHash $PSCommandPath -Algorithm SHA256).Hash)"
 $stamp = Join-Path $cache 'build.stamp'
 if (!$Force -and (Test-Path $output) -and (Test-Path $stamp) -and (Get-Content $stamp -Raw).Trim() -eq $fingerprint) { return }
@@ -67,6 +69,9 @@ if (!$modelText.Contains($originalTag) -and !$modelText.Contains($encryptedTag))
 Set-Content "$source\public\dist\index.html" '<!doctype html><title>VR Player Cloud</title>' -Encoding utf8
 Push-Location $source
 try {
+    & go mod download 'github.com/KirCute/zip@v1.0.1'
+    if ($LASTEXITCODE) { throw 'Pinned archive ZIP dependency download failed' }
+    & $zipCompatibility -Source $source -Go "$cache\go\bin\go.exe" -ModuleCache "$cache\modules"
     & go install "golang.org/x/mobile/cmd/gomobile@$mobileVersion"
     if ($LASTEXITCODE) { throw 'gomobile installation failed' }
     & go install "golang.org/x/mobile/cmd/gobind@$mobileVersion"

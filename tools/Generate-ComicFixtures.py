@@ -30,7 +30,9 @@ seven('plain.7z',['-t7z','-ms=off','-md=1m'])
 seven('encrypted.7z',['-t7z','-ms=off','-md=1m','-mhe=on','-pcomic-test'])
 seven('encrypted-data.7z',['-t7z','-ms=off','-md=1m','-mhe=off','-pcomic-test'])
 seven('solid.7z',['-t7z','-ms=on','-md=1m'])
-for name,args in [('plain.rar',['-s-']),('encrypted.rar',['-s-','-hpcomic-test']),('solid.rar',['-s'])]:
+for name,args in [('plain.rar',['-s-']),('encrypted.rar',['-s-','-hpcomic-test']),('solid.rar',['-s']),
+                  ('quickopen.rar',['-s-', '-qo+']),
+                  ('quickopen-encrypted-data.rar',['-s-', '-qo+', '-pcomic-test'])]:
     out=root/name
     if out.exists(): out.unlink()
     subprocess.run([a.rar,'a','-idq','-ma5',*args,str(out),'*.png'],cwd=source,check=True)

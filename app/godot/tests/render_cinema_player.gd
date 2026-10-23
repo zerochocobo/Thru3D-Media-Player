@@ -76,6 +76,13 @@ func _run() -> void:
 		_record_view("I12-" + format.id)
 		await _shot("01-I12-" + format.id)
 	_set_video_source(Vector2i(640, 360))
+	# A reduced picture must sit in a black screen wall, not a grey frame.
+	main._on_playback_adjustment("cinema_picture_size", 60.0)
+	_look_at_screen()
+	var reduced := await _shot("01-I12-16x9-picture-60")
+	var outside := reduced.get_pixel(reduced.get_width() / 2, int(reduced.get_height() * 0.12))
+	check(outside.get_luminance() < 0.05, "Screen wall around a reduced picture stays black", outside)
+	main._on_playback_adjustment("cinema_picture_size", 100.0)
 	_look_at_screen()
 	var frame := await _shot("01-cinema-video")
 	check(is_equal_approx(main.video._flat.size.x, 32.0), "Rendered production screen has 32 metre width", main.video._flat.size)
@@ -109,8 +116,8 @@ func _run() -> void:
 		main._place_menu(main.player_menu, true)
 		check(main.player_menu._state.get("screen_scene_locked", false), "Scene-locked screen state reaches player menu " + language)
 		var targets: Array = main.player_menu._buttons.map(func(button): return button.target)
-		check([main.player_menu.CINEMA_MOVE, main.player_menu.CINEMA_HOME, main.player_menu.CINEMA_LIGHT_AUTO, main.player_menu.CINEMA_LIGHT_ON, main.player_menu.CINEMA_LIGHT_OFF].all(func(target): return target in targets),
-			"Scene page exposes teleport, home and lighting " + language)
+		check([main.player_menu.CINEMA_MOVE, main.player_menu.CINEMA_HOME, main.player_menu.CINEMA_LIGHT_AUTO, main.player_menu.CINEMA_LIGHT_ON, main.player_menu.CINEMA_LIGHT_OFF, main.player_menu.CINEMA_PICTURE_SIZE].all(func(target): return target in targets),
+			"Scene page exposes teleport, home, lighting and picture size " + language)
 		check(450 not in targets and 451 not in targets, "Scene screen page omits incompatible distance/size sliders " + language)
 		_check_label_fit(main.player_menu, language)
 		main.rays.clear(); main._update_controller_feedback(0.01)
@@ -132,7 +139,7 @@ func _run() -> void:
 		if candidate.get("valid", false): floor_ray = candidate_ray; floor_hit = candidate; break
 	if not floor_ray.is_empty():
 		main.rays.right_hand = floor_ray
-		main._on_controller_button("trigger_click", "right_hand")
+		main._on_controller_button("ax_button", "right_hand")
 	check(floor_hit.get("kind", "") == "floor" and floor_hit.get("valid", false), "Rendered floor feedback uses a valid reachable target", floor_hit)
 	main._update_controller_feedback(0.016)
 	_update_feedback()
@@ -142,7 +149,7 @@ func _run() -> void:
 	var visual: Node3D = main.cinema_environment.get_node_or_null("CinemaPointer_right_hand")
 	check(visual != null and visual.is_visible_in_tree() and visual.get_node("FloorRing").is_visible_in_tree(), "Production floor feedback ring is visible")
 	check(_green_pixels(floor_frame) > 400, "Valid floor ring produces real visible pixels")
-	main._on_controller_release("trigger_click", "right_hand")
+	main._on_controller_release("ax_button", "right_hand")
 	_close_menus(); main._cinema_request_interaction("watch")
 	main.xr_camera.look_at(Vector3(8, 7, 20), Vector3.UP)
 	main._on_setting_changed("cinema_lights", "on")
@@ -213,8 +220,9 @@ func _teleport_row(id: String) -> bool:
 		var point := Vector3(seat.exit_position[0], seat.exit_position[1], seat.exit_position[2])
 		main.rays.right_hand = [point + Vector3.UP * 1.65, Vector3.DOWN]
 		main.controller_feedback.wake("right_hand")
-		main._on_controller_button("trigger_click", "right_hand")
-		main._on_controller_release("trigger_click", "right_hand")
+		# Teleport is hold right A to aim, release to move; the trigger owns menus.
+		main._on_controller_button("ax_button", "right_hand")
+		main._on_controller_release("ax_button", "right_hand")
 		main.rays.clear(); main._update_controller_feedback(.016)
 		return main.xr_camera.global_position.is_equal_approx(point + Vector3.UP * 1.65)
 	return false

@@ -46,9 +46,20 @@ const SeekFeedback := preload("res://scripts/seek_feedback.gd")
 const SeekOverlay := preload("res://scripts/seek_overlay.gd")
 const Background := preload("res://scripts/app_background.gd")
 const CinemaEnvironment := preload("res://scripts/environments/cinema_environment.gd")
+const CinemaFilmLight := preload("res://scripts/environments/cinema_film_light.gd")
 const CinemaFeature := preload("res://scripts/environments/cinema_feature.gd")
 const CinemaMenuLayout := preload("res://scripts/environments/cinema_menu_layout.gd")
+## Picture size on the fixed cinema screen, as a fraction of the largest fit.
+const CINEMA_PICTURE_MIN := 0.4
+## Shrinking moves the picture centre down by this share of the freed height.
+const CINEMA_PICTURE_DROP := 0.2
+## Automatic house lights wait this long after playback stops before rising.
+const CINEMA_LIGHTS_UP_DELAY_MS := 1500
+## -1 while playback is requested; otherwise when it stopped (0 = long ago).
+var _cinema_lights_idle_since := 0
 var cinema_environment: Node3D
+## Samples the picture so the baked screen light follows the film.
+var cinema_film_light: Node
 var _cinema_screen_saved := {}
 var _cinema_transport_saved := {}
 var _cinema_desktop_look := false
@@ -149,6 +160,7 @@ var seek_overlay: Node3D
 var seek_feedback := SeekFeedback.new()
 var stick_controls := StickControls.new()
 var recent_menu: Node3D
+var cast_session := preload("res://scripts/cast_session.gd").new()
 var player_menu: Node3D
 var settings := ConfigFile.new()
 var settings_path := SETTINGS_PATH
@@ -359,6 +371,7 @@ func _ready() -> void:
 	recent_menu.file_deleted.connect(_forget_deleted_file)
 	recent_menu.settings_provider = _library_settings
 	recent_menu.chosen.connect(_on_library_chosen)
+	recent_menu.cast_requested.connect(cast_session.command)
 	recent_menu.archives.opening.connect(func():
 		if photo and photo.archive_mode: photo.close_image())
 	recent_menu.archives.closing.connect(func():
@@ -400,6 +413,7 @@ func _ready() -> void:
 	player_menu.favorite_provider = _favorite_state
 	player_menu.favorite_requested.connect(_toggle_favorite)
 	player_menu.action_requested.connect(_on_menu_action)
+	player_menu.cast_requested.connect(cast_session.command)
 	player_menu.recent_requested.connect(_show_recent_menu)
 	player_menu.seek_requested.connect(_on_menu_seek)
 	player_menu.bookmark_requested.connect(_on_bookmark_request)
@@ -480,6 +494,7 @@ func _ready() -> void:
 	report_timer = Timer.new()
 	report_timer.wait_time = REPORT_INTERVAL
 	report_timer.timeout.connect(_on_report_timer)
+	cast_session.bind(self, video.platform)
 	add_child(report_timer)
 	report_timer.start()
 	_update_status()
@@ -1117,6 +1132,7 @@ func _on_system_recentered() -> void:
 	_recenter()
 
 func _process(delta: float) -> void:
+	cast_session.tick()
 	if video:
 		if video.video_layer:
 			video.video_layer.reserved_layers = 2 + (menu_composition.layer_reservation() if menu_composition else 5)
@@ -1138,6 +1154,7 @@ func _process(delta: float) -> void:
 	display.set_video_layer((video != null and not photo_active and video.video_layer_shown) or (photo != null and photo_active and photo.layer_shown))
 	_sync_display_policy()
 	_sync_cinema_screen()
+	_update_cinema_film_light(delta)
 	_update_view_follow()
 	_refresh_session_controls()
 	if _gallery_save_after > 0 and Time.get_ticks_msec() >= _gallery_save_after:
@@ -2282,9 +2299,15 @@ func _finish_bar_appearance() -> void:
 func _viewer() -> Node3D:
 	return photo if photo_active and photo else video
 
+func _prepare_cast_switch() -> void:
+	_clear_controls_locks()
+	_grab.clear(); interface_move.cancel(); stick_controls.suspend()
+	photo_hands.cancel(); photo_swipe.cancel(); memory_swipe.cancel()
+
 func _on_library_chosen(uri: String, title: String, retained_photo: Dictionary = {}) -> void:
 	if preload("res://scripts/archive_panel.gd").named(uri, title):
 		recent_menu.show(); recent_menu.archives.open({"uri":uri,"title":title}); return
+	cast_session.local_selection()
 	if video_directory: video_directory.cancel()
 	if puzzle_game and puzzle_game.active:
 		puzzle_game.finish()
@@ -2459,6 +2482,9 @@ func _open_queued_video(item: Dictionary, automatic: bool) -> void:
 
 func _set_playback_mode(value: String) -> void:
 	if value not in PLAYBACK_MODES: return
+	if video and video.cast_token > 0:
+		if not video.cast_allows(value): return
+		playback_mode = value; video.loop_enabled = value == "repeat_one"; video.changed.emit(); return
 	_cancel_video_queue_wait()
 	playback_mode = value
 	video.loop_enabled = value == "repeat_one"
@@ -2466,9 +2492,12 @@ func _set_playback_mode(value: String) -> void:
 	video.changed.emit()
 
 func _cycle_playback_mode() -> void:
+	if video and video.cast_token > 0:
+		_set_playback_mode("single" if playback_mode == "repeat_one" else "repeat_one"); return
 	_set_playback_mode(PLAYBACK_MODES[(PLAYBACK_MODES.find(playback_mode) + 1) % PLAYBACK_MODES.size()])
 
 func _on_video_completed() -> void:
+	if cast_session.token > 0: return
 	if photo_active or playback_mode not in ["sequence", "repeat_all"]: return
 	_advance_completed_video.call_deferred(video.local_uri, video.media.session_id, video.control.sequence)
 
@@ -3088,6 +3117,7 @@ func _playback_browser_cursor() -> Dictionary:
 	return {}
 
 func _close_current_media(restore_browser: bool = true) -> void:
+	if cast_session.token > 0: cast_session.detach()
 	_clear_controls_locks()
 	if puzzle_game and puzzle_game.active:
 		puzzle_game.finish()
@@ -3123,7 +3153,7 @@ func _restore_seek_settings() -> void:
 func _library_settings() -> Dictionary:
 	return {"cloud_page_sizes": settings.get_value("library", "cloud_page_sizes", {}), "output_width": Quality.load_output_choice(settings), "alpha_fps": _alpha_fps(),
 		"bar_transparency": float(settings.get_value("ui", "bar_transparency", 14.0)),
-		"library_backdrop": str(settings.get_value("ui", "library_backdrop", "static")),
+		"library_backdrop": str(settings.get_value("ui", "library_backdrop", "slideshow")),
 		"voice_manager": video.narration.voice_manager_snapshot(),
 		"alpha_profile": video.default_profile, "alpha_warming": video.warming.keys(),
 		"alpha_cold": video.ALPHA_PROFILES.filter(func(p): return not video.profile_ready(p)),
@@ -3171,7 +3201,6 @@ func _on_setting_changed(key: String, value: Variant) -> void:
 			if str(value) not in ["off", "static", "slideshow"]: return
 			settings.set_value("ui", key, str(value)); settings.save(settings_path)
 			recent_menu.server_browser.backdrop.mode = str(value)
-			recent_menu.refresh()
 		"narration_voice_manager": video.narration.global_voice_command(value)
 		"controller_bindings":
 			controller_bindings.restore(value)
@@ -3417,6 +3446,21 @@ func _on_menu_seek(position_ms: int) -> void:
 	video.seek_absolute(position_ms)
 
 func _on_player_setting(key: String, value: Variant) -> void:
+	if not photo_active and video and not video.cast_allows(key): return
+	if not photo_active and video and video.cast_token > 0 and key.begins_with("narration_clone"): return
+	if key == "playback_mode" and not photo_active and video and not video.cast_allows(str(value)): return
+	if key == "narration_add_voice":
+		_show_full_library()
+		recent_menu.section = LibraryMenu.Section.SETTINGS
+		recent_menu._state = video.narration.voice_manager_snapshot()
+		recent_menu.voice_manager.open(true)
+		recent_menu.voice_manager.sample.begin()
+		return
+	if key == "cinema_picture_size":
+		# The cinema screen itself stays fixed; this only scales the picture on it.
+		settings.set_value("appearance", "cinema_picture_size", clampf(float(value) / 100.0, CINEMA_PICTURE_MIN, 1.0))
+		_sync_cinema_screen()
+		return
 	if _cinema_video_locked() and key.begins_with("screen_"): return
 	if photo_active: return
 	if key.begins_with("narration_"):
@@ -3462,6 +3506,7 @@ func _on_bookmark_mode_requested(mode: String, scope: String) -> void:
 	Log.record("setting_changed", {"key": "bookmark_seek_mode", "value": mode})
 
 func _on_bookmark_loop_request(operation: String, payload: Dictionary, scope: String) -> void:
+	if video and video.cast_token > 0: return
 	if photo_active: return
 	_menu_touched_ms = Time.get_ticks_msec()
 	var message: String = video.bookmark_loop.action(operation, payload, scope)
@@ -3508,6 +3553,7 @@ func _save_audio_preferences() -> void:
 	settings.save(settings_path)
 
 func _exit_tree() -> void:
+	cast_session.close()
 	if is_instance_valid(recent_menu): recent_menu.checkpoint_browse()
 	_cancel_video_queue_wait()
 	video_queue_pages.dispose()
@@ -3585,6 +3631,7 @@ func _menu_state() -> Dictionary:
 		"screen_is_default": _flat_video_is_default(), "screen_default_locked": settings.has_section_key("screen", "default_view"), "screen_cinema": video.cinema.enabled,
 		"screen_scene_locked": _cinema_video_locked(),
 		"cinema_lights": str(settings.get_value("appearance", "cinema_lights", "auto")),
+		"cinema_picture_size": _cinema_picture_size() * 100.0,
 		"screen_preset": _active_screen_preset(), "screen_dimensions": video._flat.size,
 		"screen_eye_level": video.cinema.eye_level(video, _eye()),
 		"screen_scale": video.screen_scale * 100.0, "screen_rotation": video.screen_rotation, "playback_speed": video.playback_speed,
@@ -3625,6 +3672,7 @@ func _menu_state() -> Dictionary:
 	result["pip_available"] = video.pip_available()
 	result.merge(video.narration.snapshot())
 	if background_audio: result.merge(background_audio.snapshot())
+	if video.cast_token > 0: result = preload("res://scripts/cast_capabilities.gd").apply(result, preload("res://scripts/cast_capabilities.gd").capabilities(video))
 	return result
 
 ## Preserve native titles/IDs for sidecar recognition; localize their presentation only.
@@ -3894,18 +3942,48 @@ func _sync_cinema_screen() -> void:
 	video.cinema.enabled = false
 	video.screen_preset = ""
 	var dimensions: Vector2 = video._screen_base
-	var scale := minf(float(screen.width) / maxf(dimensions.x, 0.01), float(screen.height) / maxf(dimensions.y, 0.01))
+	var fit := minf(float(screen.width) / maxf(dimensions.x, 0.01), float(screen.height) / maxf(dimensions.y, 0.01))
+	var scale := fit * _cinema_picture_size()
 	var anchor := Transform3D(Basis(Vector3.UP, float(screen.get("yaw", 0.0))), Vector3(float(screen.position[0]), float(screen.position[1]), float(screen.position[2])))
 	anchor.origin += anchor.basis.z * 0.035
+	# A smaller picture settles a little below the screen centre: 30% of the freed
+	# height above it, 70% below, which is easier on the neck from the seats.
+	anchor.origin -= anchor.basis.y * (dimensions.y * (fit - scale) * CINEMA_PICTURE_DROP)
 	if not is_equal_approx(video.screen_scale, scale) or video.screen_curve != 0 or video.screen_rotation != 0:
 		video.screen_scale = scale; video.screen_curve = 0.0; video.screen_rotation = 0.0
 		video._apply_geometry()
 	if not (video.global_transform * video.flat_pose).is_equal_approx(anchor): video.set_flat_world_pose(anchor)
 
+func _update_cinema_film_light(delta: float) -> void:
+	if not cinema_environment or not cinema_environment.active or not video: return
+	if not cinema_film_light:
+		cinema_film_light = CinemaFilmLight.new(); cinema_film_light.name = "CinemaFilmLight"; add_child(cinema_film_light)
+	var screen: Dictionary = cinema_environment._manifest.get("screen", {})
+	var fraction := 1.0
+	if not screen.is_empty():
+		# The picture lights the room in proportion to how much of the screen it fills.
+		var area := maxf(float(screen.width) * float(screen.height), 0.01)
+		fraction = clampf(video._flat.size.x * video._flat.size.y / area, 0.0, 1.0)
+	if cinema_film_light.update(delta, video, _cinema_scene_active() and not photo_active, fraction):
+		cinema_environment.set_film_light(cinema_film_light.colors)
+
+func _cinema_picture_size() -> float:
+	return clampf(float(settings.get_value("appearance", "cinema_picture_size", 1.0)), CINEMA_PICTURE_MIN, 1.0)
+
 func _sync_cinema_lights() -> void:
 	if not cinema_environment or not video: return
-	cinema_environment.set_lighting(str(settings.get_value("appearance", "cinema_lights", "auto")),
-		video.requested_play and video.media.state not in ["idle", "paused", "ended", "error"])
+	# Requested playback keeps the house dark, including while a newly opened file
+	# is still loading; otherwise auto would flash the lights up between films.
+	var now := Time.get_ticks_msec()
+	# Only an open file can be "loading": with nothing open, auto keeps the lights up.
+	var opening := not str(video.get("local_uri") if video.get("local_uri") != null else "").is_empty()
+	if opening and video.get("requested_play") == true and video.media.state not in ["paused", "ended", "error"]:
+		_cinema_lights_idle_since = -1
+	elif _cinema_lights_idle_since < 0:
+		_cinema_lights_idle_since = now
+	# Lights come up only once playback has really stopped for a moment.
+	var dark := _cinema_lights_idle_since < 0 or now - _cinema_lights_idle_since < CINEMA_LIGHTS_UP_DELAY_MS
+	cinema_environment.set_lighting(str(settings.get_value("appearance", "cinema_lights", "auto")), dark)
 
 func _sync_cinema_transport(recenter: bool = false) -> void:
 	if not video_menu: return
@@ -4009,7 +4087,7 @@ func _update_background() -> void:
 
 func _connect_session_controls(menu: Node3D) -> void:
 	if menu == recent_menu:
-		recent_menu.server_browser.backdrop.mode = str(settings.get_value("ui", "library_backdrop", "static"))
+		recent_menu.server_browser.backdrop.mode = str(settings.get_value("ui", "library_backdrop", "slideshow"))
 	if menu.has_method("set_bar_transparency"):
 		menu.set_bar_transparency(float(settings.get_value("ui", "bar_transparency", 14.0)))
 	menu.layout_head_provider = _head_pose
@@ -4030,13 +4108,20 @@ func _session_controls_state() -> Dictionary:
 	return {"follow": view_follow.enabled,
 		"passthrough_visible": background != null and background.choice != "passthrough" and display.supports_passthrough(),
 		"passthrough": display.applied_passthrough, "alpha": _person_passthrough(),
-		"cinema_visible": _cinema_scene_active() and not photo_active, "cinema_moving": _cinema_interaction_owns()}
+		"cinema_visible": _cinema_scene_active() and not photo_active, "cinema_moving": _cinema_interaction_owns(),
+		"cinema_lights": str(settings.get_value("appearance", "cinema_lights", "auto"))}
 
 func _refresh_session_controls() -> void:
 	for menu in [recent_menu, video_menu, photo_menu, music_menu]:
 		if menu and menu.visible: menu.refresh_session_controls()
 
 func _on_session_control(operation: String) -> void:
+	if operation == "cinema_lights_cycle":
+		if not _cinema_scene_active() or photo_active: return
+		var modes := ["auto", "on", "off"]
+		var current := modes.find(str(settings.get_value("appearance", "cinema_lights", "auto")))
+		_on_setting_changed("cinema_lights", modes[(current + 1) % modes.size()])
+		_refresh_session_controls(); return
 	if operation == "cinema_move_toggle":
 		if not _cinema_scene_active() or photo_active: return
 		_cinema_request_interaction("watch" if _cinema_interaction_owns() else "move")
@@ -4259,8 +4344,15 @@ func _update_status() -> void:
 
 
 func _on_playback_adjustment(key: String, value: Variant) -> void:
+	if not photo_active and video and not video.cast_allows(key): return
+	if not photo_active and video and key.begins_with("grade_") and not video.cast_allows("color_grade"): return
 	if key == "bar_transparency":
 		_set_bar_transparency(float(value)); return
+	if key == "cinema_picture_size":
+		# The cinema screen itself stays fixed; this only scales the picture on it.
+		settings.set_value("appearance", "cinema_picture_size", clampf(float(value) / 100.0, CINEMA_PICTURE_MIN, 1.0))
+		_sync_cinema_screen()
+		return
 	if _cinema_video_locked() and key.begins_with("screen_"): return
 	if key.begins_with("narration_"):
 		video.narration.set_option(key, value)
@@ -4365,7 +4457,7 @@ func _video_loading_caption() -> String:
 func _stick_seek_sample() -> Dictionary:
 	if not video or photo_active: return {}
 	var details: Dictionary = video.media.playback.get("details", {})
-	return {"active": video.media.accepts(video.media.session_id) and video.picker_error.is_empty() and details.get("seekable", "yes") != "no",
+	return {"active": video.cast_allows("seek") and video.media.accepts(video.media.session_id) and video.picker_error.is_empty() and details.get("seekable", "yes") != "no",
 		"uri": video.local_uri, "session": video.media.session_id, "sequence": video.control.sequence,
 		"position_ms": video.control.display_position_ms(), "duration_ms": video.control.duration_ms}
 
@@ -4751,6 +4843,7 @@ func _favorite_state() -> Dictionary:
 	return {"enabled": enabled, "selected": favorites.contains(viewer.local_uri) if enabled else false, "locked": favorites.locked}
 
 func _toggle_favorite() -> void:
+	if not photo_active and video and video.cast_token > 0: return
 	if not _favorite_state().enabled: return
 	if favorites.locked:
 		_show_recent_menu(); recent_menu.collections.open_password("unlock", _toggle_favorite); return
@@ -4780,6 +4873,11 @@ func _on_favorites_changed() -> void:
 
 func _on_favorites_lock_changed() -> void:
 	if not favorites.locked: return
+	# Independent sampling must release its reader even when normal playback stays open.
+	if video: video.narration.global_voice_command({"operation": "close"})
+	if recent_menu:
+		if recent_menu.voice_picker_mode: recent_menu.finish_voice_picker()
+		if recent_menu.voice_manager.opened: recent_menu.voice_manager.close()
 	if _playing_protected and video and photo:
 		video.close_video(); photo.close_image(); video_queue.clear(); _playing_protected = false
 		_show_full_library()

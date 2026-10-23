@@ -173,14 +173,14 @@ func _run() -> void:
 	var converted_uri := "file:///v/clip.mp4"
 	video.set_projection(0); video.set_stereo_layout(0)
 	check(video.set_depth(true) and video.mode_memory.lookup(converted_uri).depth_requested, "Manual conversion is saved for the current file")
-	video.set_depth_strength(1.65); video._remember_mode()
+	video.set_depth_strength(.65); video._remember_mode()
 	check(not video.mode_memory.lookup(converted_uri).has("depth_strength"),"Per-file conversion records no longer store global strength")
 	var old_strength: Dictionary = video.mode_memory.lookup(converted_uri)
 	old_strength.depth_strength = 1.95
 	video.mode_memory.remember(converted_uri, old_strength); video.mode_memory.save()
 	check(video.open_local("file:///other/clip.mp4", "clip.mp4") and not video.depth_requested and not video.auto_depth and not host.depths.back(),
 		"Another URI with the same filename never inherits conversion")
-	check(is_equal_approx(video.depth_strength,1.65),"Another URI inherits the global video strength without enabling conversion")
+	check(is_equal_approx(video.depth_strength,.65),"Another URI inherits the global video strength without enabling conversion")
 	video.media.format = {"width": 8192, "height": 4096, "pixel_aspect": 1.0}
 	video._complete_layout()
 	check(video.geometry == 1 and video.stereo_sbs and not video.depth_requested and not video._pending_revision.depth,
@@ -190,7 +190,7 @@ func _run() -> void:
 	video.mode_memory = Memory.new(test_path.path_join("integration")); video.mode_memory.load_saved()
 	check(video.open_local(converted_uri, "clip.mp4") and video.depth_requested and video.auto_depth and host.depths.back(),
 		"A fresh store restores this file's conversion before the native open")
-	check(is_equal_approx(video.depth_strength,1.65),"Legacy per-file strength cannot override the global video choice")
+	check(is_equal_approx(video.depth_strength,.65),"Legacy per-file strength cannot override the global video choice")
 	video.media.format = {"width": 8192, "height": 4096, "pixel_aspect": 1.0}
 	video._complete_layout()
 	check(video.geometry == 0 and not video.stereo_sbs and video.depth_requested and video._layout_pending == null,

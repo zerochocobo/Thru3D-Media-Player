@@ -1,6 +1,7 @@
 #include "jni_text.h"
 #include <algorithm>
 #include "voice_io.h"
+#include "voice_jobs.h"
 extern "C" {
 #include <libavformat/avformat.h>
 #include <libavcodec/avcodec.h>
@@ -15,17 +16,16 @@ namespace {
 struct AudioError : std::runtime_error {
     AudioError(const char* stage,int code):std::runtime_error(std::string(stage)+":"+std::to_string(code)) {}
 };
-struct Job {
-    std::atomic<bool> cancelled{false};
-    std::chrono::steady_clock::time_point deadline=std::chrono::steady_clock::now()+std::chrono::seconds(30);
-    static int interrupt(void* p){auto& j=*static_cast<Job*>(p);return j.cancelled.load()||std::chrono::steady_clock::now()>j.deadline;}
-};
+using Job=VoiceJob;
 std::mutex jobs_mutex;std::map<int64_t,std::shared_ptr<Job>> jobs;int64_t next_job=0;
 struct Audio {
     AVFormatContext* format=nullptr;AVCodecContext* codec=nullptr;SwrContext* swr=nullptr;SwrContext* center_swr=nullptr;
     AVPacket* packet=av_packet_alloc();AVFrame* frame=av_frame_alloc();
     ~Audio(){av_frame_free(&frame);av_packet_free(&packet);swr_free(&swr);swr_free(&center_swr);avcodec_free_context(&codec);avformat_close_input(&format);}
 };
+}
+std::shared_ptr<VoiceJob> voice_job(int64_t id) {
+    std::lock_guard<std::mutex> lock(jobs_mutex);return jobs.at(id);
 }
 extern "C" JNIEXPORT jlong JNICALL Java_org_vrpassthroughplayer_plugin_VoiceCloneNative_createJob(JNIEnv* e,jclass){
     std::lock_guard<std::mutex> lock(jobs_mutex);if(jobs.size()>=8){narration_error(e,"Too many voice tasks");return 0;}

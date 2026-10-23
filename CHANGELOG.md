@@ -4,6 +4,16 @@
 
 Newest first, following product release milestones. Some development/source snapshots contained features before their product release. Original APK identifiers `0.2` and `0.4` are retained; `0.4` was also called `0.4.0` in release notes. Availability depends on device, server and media capabilities.
 
+## 0.13.3 — 2026-10-23
+
+- Receive compatible DLNA HTTP(S) video casts on the local network in the existing VR player. Enable reception explicitly; replacing active media requires confirmation, and ended casts can return to the previous media. Support transport/volume feedback and keep cast links out of ordinary history, favorites and per-file memory. This is video casting, not phone-screen mirroring or universal app/DRM support.
+- Harden sender compatibility and lifecycle: accept vendor SOAP arguments, HTTP/1.0 and absolute seeks; keep newer offers after Stop, restore audible unmute volume, suspend network reception in the background and retain active transport state. Defer offers during text entry and restrict literal headset-local addresses.
+- Add subtitle-free custom voice sampling from caller-selected media/audio tracks, bounded speech detection and candidate selection, inline trimming/audition, and preview text in 19 languages. Silero VAD metadata, MIT notice and preparation recipe are included; weights, reference recordings and personal voices remain excluded.
+- Add film-driven three-zone baked screen illumination, automatic/manual house-light controls, a faint idle screen glow and chair-target seating in Grand cinema (Test). Improve screen-wall darkness, screen size, fixture/row visibility and floor/seat teleport checks; keep Debug/Release resource validation.
+- Improve large non-solid RAR indexing with bounded Quick Open handling, including encrypted-data cases, and fix conditional ZIP64 size/offset parsing without modifying shared upstream module caches.
+- Fix ray-keyboard Shift feedback and prevent inactive editors/web panels from requesting the system keyboard; retain the normal system-input path for searches. Host checks do not establish all headset IME behavior.
+- Keep up to five menu planes sharp when tooltips coexist, regroup after tooltip dismissal, and show the four render-scale choices inline. Move server background settings into the server browser and cap video 2D-to-3D strength at 100% with the 50% default retained; photo strength remains independent.
+
 ## 0.13.2 — 2026-10-23
 
 - Unify bookmarks and A–B repeat management, with bookmark-based endpoints, clickable seek times, per-video storage and playback controls.

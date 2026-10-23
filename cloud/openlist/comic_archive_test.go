@@ -40,11 +40,11 @@ func comicFixture(t *testing.T, name string) (*comicSource, *int64) {
 	return s, &sent
 }
 func TestComicFormatsPasswordsAndRandomPages(t *testing.T) {
-	for _, name := range []string{"plain.zip", "store.cbz", "zipcrypto.zip", "aes.zip", "plain.rar", "encrypted.rar", "plain.7z", "encrypted.7z", "encrypted-data.7z"} {
+	for _, name := range []string{"plain.zip", "store.cbz", "zipcrypto.zip", "aes.zip", "plain.rar", "encrypted.rar", "quickopen.rar", "quickopen-encrypted-data.rar", "plain.7z", "encrypted.7z", "encrypted-data.7z"} {
 		t.Run(name, func(t *testing.T) {
 			s, _ := comicFixture(t, name)
 			pass := ""
-			if name == "zipcrypto.zip" || name == "aes.zip" || name == "encrypted.rar" || name == "encrypted.7z" || name == "encrypted-data.7z" {
+			if name == "zipcrypto.zip" || name == "aes.zip" || name == "encrypted.rar" || name == "quickopen-encrypted-data.rar" || name == "encrypted.7z" || name == "encrypted-data.7z" {
 				pass = "comic-test"
 			}
 			c, e := comicIndex(s, name, pass)
@@ -82,7 +82,7 @@ func TestComicRejectsSolidAndWrongPasswords(t *testing.T) {
 			}
 		})
 	}
-	for _, name := range []string{"zipcrypto.zip", "aes.zip", "encrypted.rar", "encrypted.7z", "encrypted-data.7z"} {
+	for _, name := range []string{"zipcrypto.zip", "aes.zip", "encrypted.rar", "quickopen-encrypted-data.rar", "encrypted.7z", "encrypted-data.7z"} {
 		t.Run(name, func(t *testing.T) {
 			s, _ := comicFixture(t, name)
 			c, e := comicIndex(s, name, "wrong")
@@ -268,6 +268,7 @@ func TestComicLargeUserSampleOptional(t *testing.T) {
 	}
 	defer file.Close()
 	stat, _ := file.Stat()
+	name := "sample" + strings.ToLower(filepath.Ext(filename))
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		f, e := os.Open(filename)
 		if e != nil {
@@ -275,24 +276,31 @@ func TestComicLargeUserSampleOptional(t *testing.T) {
 			return
 		}
 		defer f.Close()
-		http.ServeContent(w, r, "sample.zip", stat.ModTime(), f)
+		http.ServeContent(w, r, name, stat.ModTime(), f)
 	}))
 	defer server.Close()
 	s, e := newComicSource(context.Background(), server.URL)
 	if e != nil {
 		t.Fatal(e)
 	}
-	c, e := comicIndex(s, "sample.zip", "")
+	s.remote = true // Apply cloud index budgets and request pacing to real samples.
+	c, e := comicIndex(s, name, "")
 	if e != nil {
-		t.Fatal(e)
+		t.Fatalf("index: %v ranges=%d bytes=%d", e, s.reads, s.bytes)
 	}
 	c.dir = t.TempDir()
-	if s.reads > 4 || s.bytes > 512<<10 {
-		t.Fatal("index read page payloads", s.reads, s.bytes)
-	}
+	// Real directories vary in size; enforce the production remote budgets.
+	// Synthetic tests separately assert that indexing never fetches page data.
+	t.Logf("size=%d entries=%d pages=%d quick_open_records=%d index_ranges=%d index_bytes=%d", stat.Size(), len(c.entries), len(c.pages), len(s.rarHeaders), s.reads, s.bytes)
 	for _, i := range []int{0, 1, len(c.pages) / 2, len(c.pages) - 1} {
 		if _, e := c.page(i); e != nil {
 			t.Fatal(e)
+		}
+	}
+	reads := s.reads
+	for _, i := range []int{len(c.pages) - 1, len(c.pages) / 2, len(c.pages) - 1} {
+		if _, e := c.page(i); e != nil || s.reads != reads {
+			t.Fatal("revisited sample page fetched again", e)
 		}
 	}
 	t.Logf("pages=%d range_reads=%d bytes=%d", len(c.pages), s.reads, s.bytes)

@@ -19,13 +19,14 @@ import android.webkit.WebViewClient
 import android.widget.FrameLayout
 import org.json.JSONObject
 import org.vrpassthroughplayer.plugin.WebLoginViewport
+import org.vrpassthroughplayer.plugin.RayKeyboardWebView
 import java.io.File
 
 /** Separate local-only APK: executes the production viewport on a real Android WebView. */
 @SuppressLint("SetJavaScriptEnabled")
 class WebLoginFixtureActivity : Activity() {
     private val handler = Handler(Looper.getMainLooper())
-    private class FixtureView(context: Context) : WebView(context) {
+    private class FixtureView(context: Context, window: android.view.Window) : RayKeyboardWebView(context, window) {
         override fun onCreateInputConnection(info: EditorInfo) = null
         fun editor() = super.onCreateInputConnection(EditorInfo())
     }
@@ -53,7 +54,7 @@ class WebLoginFixtureActivity : Activity() {
         }
         val context = if (fixed) WebLoginViewport.context(host) else host
         geometry = WebLoginViewport.Geometry(this)
-        web = FixtureView(context)
+        web = FixtureView(context, window)
         viewport = if (fixed) WebLoginViewport.container(context, geometry) else FrameLayout(context)
         viewport.addView(web, FrameLayout.LayoutParams(if (fixed) geometry.width else WebLoginViewport.WIDTH,
             if (fixed) geometry.height else WebLoginViewport.HEIGHT))
@@ -134,12 +135,17 @@ class WebLoginFixtureActivity : Activity() {
 
     private fun testInput() {
         tap("phone") {
+            val imeFlag = android.view.WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM
+            checks.put("ray_focus_blocks_system_ime", window.attributes.flags and imeFlag != 0)
             val connection = web.editor()
             checks.put("input_connection_commit", connection?.commitText("13800138000", 1) == true)
             // Read only the fixture's known dummy text, never a remote login page.
             handler.postDelayed({ web.evaluateJavascript("document.activeElement.id==='phone' && document.getElementById('phone').value==='13800138000'") { raw ->
                 checks.put("touch_focus_and_input_match_pixels", raw == "true")
                 connection?.closeConnection()
+                web.onPause()
+                checks.put("pause_restores_system_ime", window.attributes.flags and imeFlag == 0)
+                web.onResume()
                 tap("login") { handler.postDelayed({ inspect("captcha") { resizeHost() } }, 300) }
             } }, 150)
         }

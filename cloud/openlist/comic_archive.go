@@ -44,20 +44,21 @@ type comicRange struct {
 	data  []byte
 }
 type comicSource struct {
-	ctx      context.Context
-	url      string
-	size     int64
-	client   *http.Client
-	blocks   []comicRange
-	bytes    int64
-	reads    int
-	etag     string
-	modified string
-	remote   bool
-	lastRead time.Time
-	payload  comicRange
-	pageRead bool
-	indexing bool
+	ctx        context.Context
+	url        string
+	size       int64
+	client     *http.Client
+	blocks     []comicRange
+	bytes      int64
+	reads      int
+	etag       string
+	modified   string
+	remote     bool
+	lastRead   time.Time
+	payload    comicRange
+	pageRead   bool
+	indexing   bool
+	rarHeaders []comicRange
 }
 
 func newComicSource(ctx context.Context, address string) (*comicSource, error) {
@@ -488,6 +489,9 @@ func comicIndex(s *comicSource, name, password string) (*comicSession, error) {
 			}
 		}
 	case ".rar", ".cbr":
+		if e := comicPrepareRARQuickOpen(s); e != nil {
+			return nil, e
+		}
 		opts := []rardecode.Option{rardecode.FileSystem(comicFS{s}), rardecode.MaxDictionarySize(64 << 20)}
 		if password != "" {
 			opts = append(opts, rardecode.Password(password))
@@ -535,16 +539,44 @@ func (f comicFS) Open(name string) (fs.File, error) {
 	if name != "book.rar" {
 		return nil, errComicUnsupported
 	}
-	return &comicFile{io.NewSectionReader(f.s, 0, f.s.size), f.s.size}, nil
+	return &comicFile{SectionReader: io.NewSectionReader(f.s, 0, f.s.size), source: f.s}, nil
 }
 
 type comicFile struct {
 	*io.SectionReader
-	size int64
+	source *comicSource
+}
+
+// Return short reads at Quick Open cache boundaries. Filling the decoder's
+// 4 KiB buffer across a cached header would otherwise fetch each image payload
+// while merely listing. Use this same view for listing and File.Open, as RAR's
+// format requires when Quick Open copies differ from the original headers.
+func (f *comicFile) Read(p []byte) (int, error) {
+	if e := f.source.ctx.Err(); e != nil {
+		return 0, e
+	}
+	off, e := f.Seek(0, io.SeekCurrent)
+	if e != nil {
+		return 0, e
+	}
+	headers := f.source.rarHeaders
+	i := sort.Search(len(headers), func(i int) bool { return headers[i].start > off })
+	if i > 0 {
+		h := headers[i-1]
+		if off-h.start < int64(len(h.data)) {
+			n := copy(p, h.data[off-h.start:])
+			_, e = f.Seek(int64(n), io.SeekCurrent)
+			return n, e
+		}
+	}
+	if i < len(headers) && int64(len(p)) > headers[i].start-off {
+		p = p[:headers[i].start-off]
+	}
+	return f.SectionReader.Read(p)
 }
 
 func (f *comicFile) Close() error               { return nil }
-func (f *comicFile) Stat() (fs.FileInfo, error) { return comicStat{f.size}, nil }
+func (f *comicFile) Stat() (fs.FileInfo, error) { return comicStat{f.source.size}, nil }
 
 type comicStat struct{ size int64 }
 

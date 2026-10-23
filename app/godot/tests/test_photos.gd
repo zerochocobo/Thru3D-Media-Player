@@ -200,6 +200,16 @@ func _run() -> void:
 	main.settings_path = folder.path_join("settings.cfg")
 	root.add_child(main)
 	check(main.video.depth_strength == .5 and main.photo.depth_strength == 1.0, "Fresh settings use independent video 50% and photo 100% defaults")
+	var legacy_strength := ConfigFile.new()
+	legacy_strength.set_value("video", "depth_strength", 2.0)
+	legacy_strength.set_value("photo", "depth_strength", 2.0)
+	check(main.video.DepthStrength.load_preference(legacy_strength, false) == 1.0 and main.photo.DepthStrength.load_preference(legacy_strength, true) == 2.0,
+		"Legacy 200% preference clamps video to 100% while preserving photo 200%")
+	legacy_strength.set_value("video", "depth_strength", .6)
+	check(main.video.DepthStrength.load_preference(legacy_strength, false) == .6, "An existing video preference within range survives the new default")
+	for invalid in [0, -1, NAN, INF, "bad"]:
+		legacy_strength.set_value("video", "depth_strength", invalid)
+		check(main.video.DepthStrength.load_preference(legacy_strength, false) == .5, "Invalid video preference falls back to 50%: " + str(invalid))
 	check(not main.photo.spatial_preferred, "Fresh settings default to static 3D for photos")
 	main.photo.history_enabled = false
 	main.photo.mode_memory = Memory.new(folder.path_join("main_modes"))
@@ -280,7 +290,8 @@ func _run() -> void:
 	controls.press_pointer("left_hand", controls.to_global(Vector3(Menu.DEPTH_X,y,1)), -controls.global_basis.z, true)
 	check(is_equal_approx(main.photo.depth_strength, 2.0) and is_equal_approx(main.photo.material.get_shader_parameter("depth_strength"),2.0)
 		and is_equal_approx(main.photo._detail_material.get_shader_parameter("depth_strength"),2.0), "Slider top gives photo and detail shaders live 200% strength")
-	check(host.inference == 1 and main.photo._depth_texture == original_texture and controls._depth_knob == original_knob, "Dragging reuses depth map and UI meshes")
+	check(host.inference == 1 and main.photo._depth_texture == original_texture and controls._depth_knob == original_knob,
+		"Dragging reuses depth map and UI meshes (inference=%d, same_depth=%s, same_knob=%s)" % [host.inference, main.photo._depth_texture == original_texture, controls._depth_knob == original_knob])
 	controls.release_pointer("left_hand",Vector3.ZERO,Vector3.ZERO,false)
 	controls._activate(Menu.PHOTO_SPATIAL)
 	check(main.photo.spatial_preferred and not is_instance_valid(controls._depth_knob), "Main routes the spatial radio to fixed-depth viewing")
@@ -314,7 +325,7 @@ func _run() -> void:
 	main.video._remember_file = true; main.video.stereo_sbs = false; main.video.geometry = 0
 	main._on_depth_strength(1.9, false); main._save_depth_strength(false)
 	var static_restart := Main.new(); static_restart.settings_path = main.settings_path; root.add_child(static_restart)
-	check(not static_restart.photo.spatial_preferred and is_equal_approx(static_restart.photo.depth_strength,1.5) and is_equal_approx(static_restart.video.depth_strength,1.9),
+	check(not static_restart.photo.spatial_preferred and is_equal_approx(static_restart.photo.depth_strength,1.5) and is_equal_approx(static_restart.video.depth_strength,1.0),
 		"Restart independently restores the video and static-photo strengths committed by their controls")
 	static_restart.queue_free(); await process_frame
 	main._on_photo_action("photo_spatial_on")
@@ -326,7 +337,7 @@ func _run() -> void:
 	var restored := Main.new()
 	restored.settings_path = main.settings_path
 	root.add_child(restored)
-	check(not restored.video.auto_depth and restored.photo.auto_depth and restored.photo.spatial_preferred and is_equal_approx(restored.photo.depth_strength, 1.5) and is_equal_approx(restored.video.depth_strength,1.9),
+	check(not restored.video.auto_depth and restored.photo.auto_depth and restored.photo.spatial_preferred and is_equal_approx(restored.photo.depth_strength, 1.5) and is_equal_approx(restored.video.depth_strength,1.0),
 		"Restart restores both global strengths while video conversion still awaits its own file record")
 	check(restored.photo.mode_lock.geometry == 3 and restored.video.mode_lock.is_empty(), "Restart restores panorama photo lock without locking videos")
 	main._on_photo_action("lock_mode"); saved.load(main.settings_path)

@@ -4,7 +4,7 @@ From 0.13.2 the labelled test auditorium is available in **Debug and Release**, 
 
 ## Prepare complete scene resources
 
-Generated GLBs, baked textures, authoring .blend files and raw/derived scan images are excluded from public Git. Source blueprints, material shaders, authoring scripts and source/hash metadata are included. Normal Debug/Release packaging requires the complete locally prepared scene and `Assert-CinemaPackaged.ps1` fails if navigation, scene, both light states, nine mobile textures or runtime shaders/scripts are missing. The public build does not silently disable the feature to bypass that check.
+Generated GLBs, baked textures, authoring .blend files and raw/derived scan images are excluded from public Git. Source blueprints, material shaders, authoring scripts and source/hash metadata are included. Normal Debug/Release packaging requires the complete locally prepared scene and `Assert-CinemaPackaged.ps1` fails if navigation, scene, both light states, ten mobile textures or runtime shaders/scripts are missing. The public build does not silently disable the feature to bypass that check.
 
 Obtain the CC0 ambientCG sets named by `tools/cinema/textures/textures.json` and `tools/cinema/sample/textures/sources.json`. The latter also pins raw Color/Displacement/Roughness inputs. Place each original JPG set under `tmp/textures/raw/<asset-id>/`; original downloads remain external. With NumPy/Pillow and Blender 5.2:
 
@@ -23,3 +23,9 @@ The first script defaults are not needed when an explicit raw directory is passe
 The extension carries the recorded MIT notices; the pinned FFmpeg dependency carries its own LGPL v3 text and recorded build configuration. The project license does not replace these notices. Source recipes and local preparation do not establish completion of binary redistribution obligations. See [licensing](LICENSING.md).
 
 `tools/Test-CinemaBuildGate.ps1` checks real Debug and Release Windows engines, including stale settings and direct loading/actions. Geometry, loader and locomotion scripts use generated local assets. Desktop source checks do not prove headset performance or interaction acceptance.
+
+## Film illumination and seating in 0.13.3
+
+The current bake supplies a screen-light mask as well as both house-light states. `cinema_film_light.gd` samples the picture into three smoothed linear color zones; shaders modulate baked irradiance. Compatible layer playback uses a bounded tiny PixelCopy, with an eye-buffer sampling fallback. This does not introduce real-time scene lighting or guarantee a device frame rate. Automatic house lighting stays up without a film; a faint screen glow remains when lights are off.
+
+Hold the existing right-A teleport action and aim at a compatible chair to sit; floor, stair and seat-crossing checks remain active. The footer controls house lights, and screen size/volume/stereo controls retain their normal placement. Regenerate the full current scene, including the screen-light texture, before packaging; old bakes do not satisfy current resource validation.

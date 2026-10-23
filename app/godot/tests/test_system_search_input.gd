@@ -49,6 +49,9 @@ func run() -> void:
 	await process_frame
 	check(platform.requests.size() == before + 1 and platform.requests.back().query == "旅电影", "Keyboard submit sends the completed Chinese query once")
 	check(not input.active() and root.gui_get_focus_owner() != input.editor, "Submitting releases text focus and the keyboard")
+	check(not input.editor.visible and input.editor.focus_mode == Control.FOCUS_NONE and not input.editor.virtual_keyboard_enabled, "Inactive transparent editor cannot reopen the system keyboard")
+	key(KEY_TAB)
+	check(root.gui_get_focus_owner() != input.editor, "Focus navigation cannot revive a completed input session")
 	platform.search_reply(platform.requests.size(), [platform.result("中文:0")])
 	menu._activate(Search.INPUT)
 	await process_frame
@@ -87,6 +90,12 @@ func run() -> void:
 	input.begin("stale", "old", 128, Callable(), Callable())
 	input.cancel(); input._focus(first)
 	check(not input.active() and not input.editor.has_focus(), "Obsolete deferred focus cannot steal input")
+	input.begin("before_smb", "draft", 128, Callable(), Callable())
+	menu.section = Menu.Section.SMB
+	menu._open_editor({})
+	await process_frame
+	check(not input.active() and not input.editor.has_focus(), "Opening the built-in server keyboard cancels pending system input")
+	menu._editor = {}
 	check(SystemInput.clean("中文🙂日本語", 4) == "中文🙂日", "Sanitization truncates by Unicode character without splitting a supplementary character")
 	input.begin("teardown", "关闭测试", 128, Callable(), Callable())
 	await process_frame

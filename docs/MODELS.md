@@ -71,3 +71,9 @@ Runtime notices and model metadata do not grant rights to excluded voice inputs.
 The separate `third_party/narration/clone_model.json` pins two reference-encoder files. Prepare them with `tools/environment/Prepare-VoiceCloneModels.ps1 -SourceDirectory <bundle>` or `THRU3D_NARRATION_CLONE_SOURCE`; storage is the ignored `models/narration/<clone-id>/`. Normal builds require both the existing 11-file narration bundle and this two-file encoder bundle. No missing-input fallback disables the feature silently.
 
 The UI supports 19 text languages; the 12 preset voice origins are unchanged. Custom voice creation requires a suitable caller-provided audio reference and saves reference audio, codes and metadata in persistent app-private storage. None of these personal inputs/voices are published here, and runtime source/metadata do not confer rights to a person's voice or reference recording.
+
+### Subtitle-free voice sampling in 0.13.3
+
+`third_party/narration/vad_model.json` pins the MIT Silero VAD v6.2 model to its upstream revision, size and SHA-256; `SILERO_LICENSE.txt` retains the original notice. Supply the matching `silero_vad.onnx` with `tools/environment/Prepare-VoiceVadModel.ps1 -SourceDirectory <bundle>` or `THRU3D_VOICE_VAD_SOURCE`. The checked payload stays in ignored `models/narration/<vad-id>/`. Normal narration preparation and AAR/APK validation require this third bundle in addition to the INT8 narration and reference encoder files. No VAD weight is committed.
+
+The unified sampling flow uses a caller-selected audio/video source and track, a bounded scan range, streaming speech activity detection, candidates, inline cropping and audition before saving a custom voice. Preview text covers the existing 19 text languages. Speech detection is not speaker diarization, separation or recording-rights clearance. References, cloned codes and personal voices remain app-private and excluded from public Git.

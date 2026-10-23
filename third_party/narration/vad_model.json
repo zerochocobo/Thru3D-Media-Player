@@ -1,0 +1,13 @@
+{
+  "id": "silero-vad-be95df9152c0",
+  "directory": "narration/silero-vad-be95df9152c0",
+  "source": "https://raw.githubusercontent.com/snakers4/silero-vad/be95df9152c0d7618fa1edfeb296fc3dae32376f/src/silero_vad/data/silero_vad.onnx",
+  "revision": "be95df9152c0d7618fa1edfeb296fc3dae32376f",
+  "license": "MIT",
+  "files": {
+    "silero_vad.onnx": {
+      "bytes": 2327524,
+      "sha256": "1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3"
+    }
+  }
+}

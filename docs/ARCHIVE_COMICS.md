@@ -9,3 +9,5 @@ Solid archives and some algorithms are unsupported; maximum entry/page/index lim
 `tools/Generate-ComicFixtures.py` generates disposable fixtures under `build/output/` using 7-Zip/WinRAR. Go `comic_*_test.go` uses `COMIC_FIXTURES`; optional `COMIC_LARGE_SAMPLE` tests caller-owned samples and should remain unset during synthetic verification. Use a read-only Go source overlay when exercising the pinned OpenList cache; do not overwrite a shared cache or substitute an AAR/APK for current source.
 
 压缩漫画复用媒体库、缩略图和图片导航；支持兼容的ZIP／RAR／7z及部分加密格式，不支持固实压缩和所有算法。密码簿与成功解锁关联保存在应用私有加密存储，不随源码分发；远程读取仍受有界索引、随机读取和取消规则限制。
+
+From 0.13.3, RAR5 Quick Open can reduce scattered header reads for large non-solid comics. Optional index parsing stays bounded and falls back to normal capped reads for absent/unusable data; it is not universal RAR support. The pinned ZIP module is copied into a private build dependency directory by `Set-OpenListZipCompatibility.ps1`, then patched for conditional ZIP64 fields with an exact upstream hash check. Shared Go module sources are not modified.

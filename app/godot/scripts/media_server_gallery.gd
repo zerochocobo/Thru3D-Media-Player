@@ -133,7 +133,7 @@ func action(target: int) -> bool:
 
 func stick_scroll(x: float, delta: float) -> void:
 	if browser.view == "picture":
-		if not capture.is_empty() or browser.menu.has_pointer_capture() or not browser.keyboard.is_empty() or browser.sorting(): return
+		if not capture.is_empty() or browser.menu.has_pointer_capture() or not browser.keyboard.is_empty() or browser.modal_open(): return
 		if images().size() < 2 or not is_finite(x) or absf(x) < 0.55 or Time.get_ticks_msec() < stick_at: return
 		stick_at = Time.get_ticks_msec() + 300
 		var next_image := clampi(selected_image + (1 if x > 0 else -1), 0, images().size() - 1)
@@ -160,6 +160,7 @@ func _home_strip_at(point: Vector3) -> String:
 	return ""
 
 func press(hand: String, origin: Vector3, direction: Vector3, tracked: bool) -> bool:
+	if browser.modal_open(): return false
 	if rich_detail() or browser.view == "overview": return detail_press(hand, origin, direction, tracked)
 	if not home() and not rich_detail(): return false
 	if not capture.is_empty(): return true

@@ -149,3 +149,9 @@ Cloud reference sampling now uses independent bounded readers, shared verified 1
 ## PiP, watch and browse continuity
 
 The video bar provides [PiP and static image windows](PICTURE_IN_PICTURE.md) and a hand-tracked watch toggle. Directory positions are remembered separately per account/source, directory and All/Video/Photo filter. The default-on resume setting follows history privacy: All may persist, Local Only keeps network positions in memory, None keeps all positions within the current run. Clearing history clears positions; enabling history later never backfills private-session positions. Disabling resume starts ordinary re-entry at the top while explicit parent navigation retains context. Per-directory sorting and provider-supported page sizes are separate preferences; load-all requires explicit selection.
+
+## 0.13.3 reception, sampling and menus
+
+Enable [DLNA video reception](DLNA_CASTING.md) explicitly to accept compatible LAN casts. Confirm replacing current media, and use the return action after a cast ends; this does not mirror a phone screen. Adding a custom voice now selects a media source/audio track, scans a bounded speech range and supports inline candidate trimming/audition without subtitles. The voice editor and passwords defer incoming cast offers.
+
+Cinema house lights are controlled from the footer; film-driven screen light and chair-target seating use regenerated resources. Server background settings are inside the server browser. Render scale uses four inline choices. Video depth strength is capped at 100% with 50% default; the independent photo control retains its own range.

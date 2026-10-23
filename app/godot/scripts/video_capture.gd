@@ -19,6 +19,7 @@ func supported() -> bool:
 	return Methods.supports(video.platform, "original_capture_supported") and video.platform.original_capture_supported()
 
 func ready() -> bool:
+	if video.get("cast_token"): return false
 	return supported() and video.geometry in [1, 2, 3] and not video.packed_file and not frame().is_empty()
 
 func frame() -> Dictionary:
@@ -125,6 +126,8 @@ func status() -> Dictionary:
 
 func snapshot() -> Dictionary:
 	var value := status()
+	if video.get("cast_token"):
+		value["available"] = false; value["ready"] = false; return value
 	value["available"] = supported() and video.geometry in [1, 2, 3] and not video.local_uri.is_empty() and not video.packed_file
 	value["ready"] = ready()
 	return value

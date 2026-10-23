@@ -24,3 +24,5 @@ foreach ($entry in $manifest.files.PSObject.Properties) {
 }
 Write-Output "Verified bundled narration models: $(@($manifest.files.PSObject.Properties).Count) files in models/narration/$($manifest.id)."
 & (Join-Path $PSScriptRoot 'Prepare-VoiceCloneModels.ps1')
+
+& (Join-Path $PSScriptRoot 'Prepare-VoiceVadModel.ps1')

@@ -19,7 +19,7 @@ add_library(narration_avcodec SHARED IMPORTED)
 set_target_properties(narration_avcodec PROPERTIES IMPORTED_LOCATION "${CMAKE_CURRENT_LIST_DIR}/../../android/player-plugin/src/main/jniLibs/arm64-v8a/libavcodec.so")
 add_library(narration_swresample SHARED IMPORTED)
 set_target_properties(narration_swresample PROPERTIES IMPORTED_LOCATION "${CMAKE_CURRENT_LIST_DIR}/../../android/player-plugin/src/main/jniLibs/arm64-v8a/libswresample.so")
-add_library(quest_narration SHARED narration_jni.cpp subtitle_reader.cpp voice_encoder.cpp voice_segment.cpp)
+add_library(quest_narration SHARED narration_jni.cpp subtitle_reader.cpp voice_encoder.cpp voice_segment.cpp voice_scan.cpp)
 target_compile_features(quest_narration PRIVATE cxx_std_17)
 target_compile_options(quest_narration PRIVATE -O2 -fexceptions -fno-fast-math -Wall -Wextra -Werror)
 target_include_directories(quest_narration SYSTEM PRIVATE "${NARRATION_DEPS}" "${NARRATION_DEPS}/sentencepiece-0.2.1/src"

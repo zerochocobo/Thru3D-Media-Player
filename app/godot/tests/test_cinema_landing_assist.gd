@@ -70,7 +70,8 @@ func run() -> void:
 	for point in [Vector3(0, .2, 5.1), Vector3(16.7, 1, 0), Vector3(14.1, 2, 6)]:
 		check(not env.ray_hit(point, Vector3.DOWN).get("valid", false), "Obstruction cannot become a landing: " + str(point))
 	var chair: Dictionary = env.ray_hit(Vector3(-.45, 2.5, 5.6), Vector3.DOWN)
-	check(not chair.get("valid", false), "Chair top never snaps onto a passage behind it")
+	# Aiming at a chair sits there; it is never a standing landing on the chair.
+	check(chair.get("kind", "") == "seat" and chair.get("valid", false), "Chair top targets that seat for sitting: %s" % chair)
 	var tall: Dictionary = env._arc_segment(Vector3(0, .1, 4.03), Vector3(0, .1, 4.28))
 	check(tall.get("kind") == "blocked" and not env._landing_destination(tall).is_finite(), "High platform side stays blocked")
 	# Snap cannot cross a thin wall even when both sides share a route elsewhere.

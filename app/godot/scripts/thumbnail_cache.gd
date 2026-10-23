@@ -167,9 +167,9 @@ static func crop_for(geometry: int, eye_size: Vector2) -> Vector4:
 ## Renders the left eye of a bound video frame (an RGBA texture, or the decoder's external image)
 ## into SIZE. Call while that frame is bound; resolves after the frame is drawn.
 static func capture(parent: Node, color: RID, decoder: bool, stereo_sbs: bool, crop: Vector4,
-		uv_scale: Vector2 = Vector2.ONE, top_bottom: bool = false) -> Image:
+		uv_scale: Vector2 = Vector2.ONE, top_bottom: bool = false, size: Vector2i = SIZE) -> Image:
 	var viewport := SubViewport.new()
-	viewport.size = SIZE
+	viewport.size = size
 	viewport.own_world_3d = true
 	viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
 	var camera := Camera3D.new()
@@ -179,7 +179,7 @@ static func capture(parent: Node, color: RID, decoder: bool, stereo_sbs: bool, c
 	viewport.add_child(camera)
 	var quad := MeshInstance3D.new()
 	var mesh := QuadMesh.new()
-	mesh.size = Vector2(float(SIZE.x) / SIZE.y, 1.0)
+	mesh.size = Vector2(float(size.x) / size.y, 1.0)
 	quad.mesh = mesh
 	var material := ShaderMaterial.new()
 	material.shader = SHADER_OES if decoder else SHADER_2D

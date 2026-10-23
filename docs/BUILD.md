@@ -135,3 +135,7 @@ The native TIFF and HDR/OpenEXR targets use five exact-hash upstream source arch
 ## Required visual resources
 
 Both normal Debug and Release now enable Grand cinema (Test), and Assert-CinemaPackaged verifies the full generated scene, navigation and dual lighting. Prepare the [cinema assets](EXPERIMENTAL_CINEMA.md) and [pinned controller fallbacks](CONTROLLER_ASSETS.md) before complete source/asset suites and APK builds; a fresh clone omits these models/images. Models, authoring snapshots and original inputs are external to public Git. Selected pure host suites do not need these payloads.
+
+## 0.13.3 additional source inputs
+
+Normal narration preparation also requires the separately supplied pinned Silero VAD payload; see [model preparation](MODELS.md). Current cinema resources include ten mobile textures and the film-driven screen-light mask; regenerate the full [cinema scene](EXPERIMENTAL_CINEMA.md) before a complete build. The source export supplies these preparation and verification recipes without model/scene payloads.

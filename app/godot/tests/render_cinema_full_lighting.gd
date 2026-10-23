@@ -53,6 +53,8 @@ func _run() -> void:
 		["05-rear", Vector3(0, 7.95, 31), Vector3(0, 10, -4), 75.0],
 		["06-centre", Vector3(-.45, 5.25, 19.9), Vector3(0, 10, -4), 75.0],
 		["09-footwell", Vector3(-.45, 5.25, 19.9), Vector3(-.45, 4.05, 19.0), 75.0],
+		# The back of the chair ahead is what a seated viewer studies most closely.
+		["10-seatback", Vector3(-.45, 5.25, 19.9), Vector3(-.45, 4.35, 18.4), 40.0],
 	]
 	for view in views:
 		main.xr_camera.global_position = view[1]; main.xr_camera.look_at(view[2], Vector3.UP); main.xr_camera.fov = view[3]
@@ -67,6 +69,8 @@ func _run() -> void:
 				"objects": viewport.get_render_info(Viewport.RENDER_INFO_TYPE_VISIBLE, Viewport.RENDER_INFO_OBJECTS_IN_FRAME)})
 			if view[0] == "06-centre":
 				main.video.requested_play = mode == "off"
+				# Auto raises the lights only after playback has stopped for a moment.
+				main._cinema_lights_idle_since = -1 if mode == "off" else Time.get_ticks_msec() - main.CINEMA_LIGHTS_UP_DELAY_MS - 1
 				main._on_setting_changed("cinema_lights", "auto"); environment._process(1.0)
 				var automatic := await _shot("07-auto-" + ("playing" if mode == "off" else "paused"))
 				check(frame.get_data() == automatic.get_data(), "Auto " + mode + " renders identically to manual bake")
@@ -76,8 +80,11 @@ func _run() -> void:
 	main._on_setting_changed("cinema_lights", "on"); main.video.requested_play = true; main._sync_cinema_lights(); environment._process(1.0)
 	check(environment._light_mix == 1, "Manual on survives playback")
 	main._on_setting_changed("cinema_lights", "auto")
-	main.video.media.state = "paused"; main._sync_cinema_lights(); environment._process(1.0)
-	check(environment._light_mix == 1, "Observed pause opens house lights even before play intent updates")
+	main.video.media.state = "paused"; main._sync_cinema_lights()
+	check(not environment.lights_on, "A pause does not flash the house lights at once")
+	main._cinema_lights_idle_since = Time.get_ticks_msec() - main.CINEMA_LIGHTS_UP_DELAY_MS - 1
+	main._sync_cinema_lights(); environment._process(1.0)
+	check(environment._light_mix == 1, "A sustained pause opens house lights even before play intent updates")
 	main.video.media.state = "playing"
 	# Move the actual camera across the old coplanar fixtures. Both bakes must
 	# retain their safety diffusers instead of alternating with the dark backing.
@@ -97,7 +104,12 @@ func _run() -> void:
 				# glTF unlit factors are linear; Compatibility presents sRGB pixels.
 				var expected := (Color(.85, .50, .26) if fixture[0] == "stage" else Color(.20, .95, .50)).linear_to_srgb()
 				var visible_light := absf(pixel.r - expected.r) < .04 and absf(pixel.g - expected.g) < .04 and absf(pixel.b - expected.b) < .04
-				check(visible_light, "Safety diffuser remains visible during head shift: %s %s %s" % [fixture[0], mode, shift], pixel)
+				if fixture[0] == "stage" and mode == "off":
+					# The stage strip is house lighting: dark while the house is dark, so it
+					# cannot shimmer under the picture during playback. Exits stay lit.
+					check(pixel.get_luminance() < .02, "Stage strip goes dark with the house lights: %s" % shift, pixel)
+				else:
+					check(visible_light, "Fixture remains visible during head shift: %s %s %s" % [fixture[0], mode, shift], pixel)
 				if shift == 0.0: frame.save_png(output.path_join("10-%s-%s.png" % [fixture[0], mode]))
 	for i in 40:
 		environment.set_lighting("on" if i % 2 else "off", true); environment._process(.05)
@@ -113,6 +125,24 @@ func _run() -> void:
 				for key in ["surface_texture", "light_texture", "light_off_texture"]:
 					var texture: Variant = material.get_shader_parameter(key)
 					if texture is Texture2D: textures[texture.get_instance_id()] = texture
+	# Film light: a red left strip reddens the left wall, a blue right strip the
+	# right wall, with the house dark. Baked screen zones scaled by film colour.
+	main._on_setting_changed("cinema_lights", "off"); environment._process(1.0)
+	main.xr_camera.global_position = Vector3(0, 6.5, 22); main.xr_camera.look_at(Vector3(0, 6, -4), Vector3.UP); main.xr_camera.fov = 95.0
+	var dark := Color.BLACK
+	environment.set_film_light([dark, dark, dark])
+	var unlit := await _shot("11-film-none")
+	environment.set_film_light([Color(4, 0, 0), dark, Color(0, 0, 4)])
+	var film := await _shot("11-film-red-left-blue-right")
+	var left_before := unlit.get_pixel(60, 480); var left_after := film.get_pixel(60, 480)
+	var right_before := unlit.get_pixel(1380, 480); var right_after := film.get_pixel(1380, 480)
+	check(left_after.r > left_before.r + .05 and left_after.r > left_after.b, "Red left strip reddens the left wall", [left_before, left_after])
+	check(right_after.b > right_before.b + .05 and right_after.b > right_after.r, "Blue right strip blues the right wall", [right_before, right_after])
+	environment.set_film_light([Color(1, 1, 1), Color(1, 1, 1), Color(1, 1, 1)])
+	var grey := await _shot("11-film-reference-grey")
+	environment.set_film_light([dark, dark, dark])
+	main._on_setting_changed("cinema_lights", "auto")
+	check(grey.get_pixel(60, 480).get_luminance() > unlit.get_pixel(60, 480).get_luminance() + .02, "A reference-grey film lights the hall")
 	var texture_report: Array = []
 	var texture_bytes := 0
 	for texture: Texture2D in textures.values():

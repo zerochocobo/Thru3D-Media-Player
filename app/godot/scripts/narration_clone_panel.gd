@@ -17,6 +17,7 @@ var draft := ""
 var confirm_delete := ""
 var saving := false
 var source := ""
+var sample := preload("res://scripts/voice_sample_panel.gd").new(self)
 
 func _init(owner: Node3D) -> void:
 	menu = owner; editor = TextInput.new(owner)
@@ -26,11 +27,13 @@ func command(value: Dictionary) -> void:
 	else: menu.setting_requested.emit("narration_clone", value)
 
 func open(show_library: bool = false) -> void:
+	sample.reset()
 	opened = true; library = show_library; offset = 0; naming.clear(); confirm_delete = ""
 	source = str(menu._state.get("source_uri", "")); menu.choices.reset()
 	command({"operation": "list", "pause": true} if library else {"operation": "open"}); menu.refresh()
 
 func close() -> void:
+	sample.reset()
 	editor.cancel(); naming.clear(); opened = false; confirm_delete = ""
 	command({"operation": "close"}); menu.refresh()
 
@@ -38,19 +41,21 @@ func back() -> void:
 	if editor.active(): editor.cancel(); menu.refresh()
 	elif not naming.is_empty(): naming.clear(); menu.refresh()
 	elif not confirm_delete.is_empty(): confirm_delete = ""; menu.refresh()
+	elif sample.active: sample.back()
 	else: close()
 
 func rows() -> Array:
-	return menu._state.get("narration_personal_voices", []) if library else menu._state.get("narration_clone_state", {}).get("candidates", [])
+	return menu._state.get("narration_personal_voices", []) if library and not sample.active else menu._state.get("narration_clone_state", {}).get("candidates", [])
 
 static func status_text(state: Dictionary) -> String:
 	return VoiceStatus.label(state)
 
 func move(amount: int) -> void:
-	var next := clampi(offset + amount, 0, maxi(0, rows().size() - COUNT))
+	var next := clampi(offset + amount, 0, maxi(0, rows().size() - (sample.ROW_COUNT if sample.active else COUNT)))
 	if offset != next: offset = next; menu.refresh()
 
 func stick(value: float, delta: float) -> void:
+	if sample.active and sample.page != "results": return
 	if not naming.is_empty() or absf(value) < 0.4: scroll = 0; return
 	scroll -= value * delta * 7.0
 	if absf(scroll) >= 1: var amount := int(scroll); scroll -= amount; move(amount)
@@ -105,6 +110,8 @@ func draw() -> void:
 	if source != str(menu._state.get("source_uri", "")):
 		opened = false; editor.cancel(); return
 	var backend: Dictionary = menu._state.get("narration_clone_state", {})
+	if saving and backend.get("state", "") == "saved": saving = false; naming.clear()
+	if sample.active: sample.draw(); return
 	if not library and backend.has("opened") and not backend.opened:
 		opened = false; editor.cancel(); return
 	actions.clear()
@@ -121,7 +128,7 @@ func draw() -> void:
 	menu.add_child(panel); menu._decorations.append(panel); menu._block_rays(panel, Vector2(1.46, height))
 	button("‹", Vector2(-0.65, 1.36), 0.07, {"operation": "back"})
 	label(menu.I18n.t("My voices" if library else "Clone voice"), Vector2(-0.56, 1.36), menu.TEXT_TITLE).font = menu.ui_bold_font()
-	if library and naming.is_empty() and confirm_delete.is_empty() and not menu._state.get("global_voice_manager", false): button("Start cloning", Vector2(0.25, 1.36), 0.34, {"operation": "start"}, bool(menu._state.get("narration_available", false)))
+	if library and naming.is_empty() and confirm_delete.is_empty(): button("Add voice", Vector2(0.25, 1.36), 0.34, {"operation": "add_sample"}, bool(menu._state.get("narration_clone_supported", false)))
 	button("Close", Vector2(0.58, 1.36), 0.20, {"operation": "close"})
 	if not naming.is_empty(): _draw_name(); return
 	if not confirm_delete.is_empty():
@@ -190,7 +197,10 @@ func _draw_name() -> void:
 	label(menu.I18n.t("Voice name"), Vector2(-0.64, 1.23), menu.TEXT_BODY)
 	button(menu._fit_title(draft, "", 1.20, menu.TEXT_BODY), Vector2(0, 1.10), 1.28, {"operation": "edit_name"})
 	button("Cancel", Vector2(-0.36, 0.96), 0.48, {"operation": "cancel_name"})
-	button("Save and use" if naming.operation == "save" else "Save", Vector2(0.30, 0.96), 0.62, {"operation": "submit_name"}, not draft.strip_edges().is_empty())
+	if sample.active:
+		button("Save", Vector2(0.09, 0.96), 0.32, {"operation": "submit_name", "apply": false}, not draft.strip_edges().is_empty())
+		button("Save and use", Vector2(0.48, 0.96), 0.40, {"operation": "submit_name", "apply": true}, not draft.strip_edges().is_empty())
+	else: button("Save and use" if naming.operation == "save" else "Save", Vector2(0.30, 0.96), 0.62, {"operation": "submit_name"}, not draft.strip_edges().is_empty())
 	var state: Dictionary = menu._state.get("narration_clone_state", {})
 	var message := "Unable to save voice. Check the name and storage." if state.get("state") == "error" else status_text(state)
 	if not message.is_empty(): label(menu.I18n.t(message), Vector2(0, 0.85), menu.TEXT_AUX).horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -207,19 +217,24 @@ func submit() -> void:
 	menu.refresh()
 
 func activate(target: int) -> bool:
+	if sample.active and menu.choices.action(target): return true
 	if not actions.has(target): return false
 	var value: Dictionary = actions[target].duplicate(true)
+	if sample.action(value): return true
 	match str(value.operation):
 		"back": back()
 		"close": close()
 		"start": open(false)
+		"add_sample": sample.begin()
 		"up": move(-COUNT)
 		"down": move(COUNT)
 		"nearby": command({"operation": "candidates", "start": maxf(0, float(menu._state.get("position_ms", 0)) / 1000.0 - 20)}); offset = 0
-		"save_name": naming = {"operation": "save", "key": value.key}; draft = menu.I18n.t("My voice") + " %d" % (menu._state.get("narration_personal_voices", []).size() + 1); edit()
+		"save_name": naming = {"operation": "save", "key": value.key, "apply": not sample.active}; draft = menu.I18n.t("My voice") + " %d" % (menu._state.get("narration_personal_voices", []).size() + 1); edit()
 		"rename_name": naming = {"operation": "rename", "id": value.id}; draft = value.name; edit()
 		"edit_name": edit()
-		"submit_name": submit()
+		"submit_name":
+			if value.has("apply"): naming.apply = value.apply
+			submit()
 		"cancel_name": editor.cancel(); naming.clear()
 		"confirm_delete": confirm_delete = value.id
 		"cancel_delete": confirm_delete = ""

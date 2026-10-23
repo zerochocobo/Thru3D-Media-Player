@@ -14,7 +14,6 @@ import android.view.View
 import android.widget.FrameLayout
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
-import android.view.inputmethod.InputMethodManager
 import android.webkit.*
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
@@ -55,15 +54,13 @@ internal class InAppWebLogin(private val host: () -> Activity?, private val prov
     private var oauthSession = if (oauth) OpenListOAuthSession(provider) else null
     private val start = if (oauth) OpenListAuth.requestUrl(provider) else if (provider == CloudDrive.P115) "https://115.com/" else "https://pan.baidu.com/disk/main"
 
-    private inner class LoginView(context: Context) : WebView(context) {
+    private inner class LoginView(context: Context, window: android.view.Window) : RayKeyboardWebView(context, window) {
         override fun onCreateInputConnection(info: EditorInfo): InputConnection? {
             val connection = super.onCreateInputConnection(info)
             editor = connection
             editing = connection != null && info.inputType != 0
-            // Input is supplied by the app's ray keyboard, never a vendor 2D IME window.
-            handler.post {
-                (context.getSystemService(Activity.INPUT_METHOD_SERVICE) as? InputMethodManager)?.hideSoftInputFromWindow(windowToken, 0)
-            }
+            // The focus-scoped window gate prevents IME display before this callback.
+            // Keep the connection privately for ray input; never publish it to the IME.
             return null
         }
         fun documentHeight() = computeVerticalScrollRange().coerceAtLeast(height)
@@ -90,7 +87,7 @@ internal class InAppWebLogin(private val host: () -> Activity?, private val prov
             val layout = WebLoginViewport.Geometry(activity)
             geometry = layout
             val webContext = WebLoginViewport.context(activity)
-            val view = LoginView(webContext)
+            val view = LoginView(webContext, activity.window)
             web = view
             view.isSaveEnabled = false
             view.importantForAutofill = android.view.View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS
@@ -388,7 +385,7 @@ internal class InAppWebLogin(private val host: () -> Activity?, private val prov
     fun pause(value: Boolean) {
         paused = value
         handler.post { web?.let { view ->
-            if (value) { actionCancel(view); view.onPause() } else view.onResume()
+            if (value) { actionCancel(view); editing = false; editor = null; view.onPause() } else view.onResume()
         } }
     }
     private fun actionCancel(view: WebView) {

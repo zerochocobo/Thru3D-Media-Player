@@ -12,9 +12,12 @@ $manifestPath = Join-Path $output 'model.json'
 $cloneManifestPath = Join-Path $output 'clone_model.json'
 $cloneManifest = @{ id='clone-test'; directory='narration/clone-test'; files=@{ 'encoder.data'=@{ bytes=$bytes.Length; sha256=$hash } } } | ConvertTo-Json -Depth 5
 [IO.File]::WriteAllText($cloneManifestPath,$cloneManifest,[Text.UTF8Encoding]::new($false))
+$vadManifestPath = Join-Path $output 'vad_model.json'
+$vadManifest = $cloneManifest.Replace('clone-test','vad-test')
+[IO.File]::WriteAllText($vadManifestPath,$vadManifest,[Text.UTF8Encoding]::new($false))
 $checks = 0
 foreach ($format in @('aar','apk')) {
-    foreach ($fault in @('none','runtime','manifest','weights','length','digest','manifest-drift','clone-manifest','clone-weights','clone-digest')) {
+    foreach ($fault in @('none','runtime','manifest','weights','length','digest','manifest-drift','clone-manifest','clone-weights','clone-digest','vad-manifest','vad-weights','vad-digest')) {
         $path = Join-Path $output "$format-$fault.$format"
         $zip = [IO.Compression.ZipFile]::Open($path,[IO.Compression.ZipArchiveMode]::Create)
         try {
@@ -24,6 +27,8 @@ foreach ($format in @('aar','apk')) {
                 "$prefix/arm64-v8a/libonnxruntime.so"=[byte[]]@(1)
                 'assets/narration/model.json'=[IO.File]::ReadAllBytes($manifestPath)
                 'assets/narration/clone_model.json'=[IO.File]::ReadAllBytes($cloneManifestPath)
+                'assets/narration/vad_model.json'=[IO.File]::ReadAllBytes($vadManifestPath)
+                'assets/narration/vad-test/encoder.data'=$bytes
                 'assets/narration/clone-test/encoder.data'=$bytes
                 'assets/narration/test/model/weights.data'=$bytes
             }
@@ -34,6 +39,9 @@ foreach ($format in @('aar','apk')) {
                 'length' { $entries['assets/narration/test/model/weights.data']=[byte[]]@(1) }
                 'digest' { $entries['assets/narration/test/model/weights.data']=[byte[]]::new($bytes.Length) }
                 'manifest-drift' { $entries['assets/narration/model.json']=[Text.Encoding]::UTF8.GetBytes('{}') }
+                'vad-manifest' { $entries.Remove('assets/narration/vad_model.json') }
+                'vad-weights' { $entries.Remove('assets/narration/vad-test/encoder.data') }
+                'vad-digest' { $entries['assets/narration/vad-test/encoder.data']=[byte[]]::new($bytes.Length) }
                 'clone-manifest' { $entries.Remove('assets/narration/clone_model.json') }
                 'clone-weights' { $entries.Remove('assets/narration/clone-test/encoder.data') }
                 'clone-digest' { $entries['assets/narration/clone-test/encoder.data']=[byte[]]::new($bytes.Length) }
@@ -44,7 +52,7 @@ foreach ($format in @('aar','apk')) {
             }
         } finally { $zip.Dispose() }
         $rejected=$false
-        try { & "$workspace/tools/Assert-NarrationPackaged.ps1" -ArchivePath $path -ManifestPath $manifestPath -CloneManifestPath $cloneManifestPath }
+        try { & "$workspace/tools/Assert-NarrationPackaged.ps1" -ArchivePath $path -ManifestPath $manifestPath -CloneManifestPath $cloneManifestPath -VadManifestPath $vadManifestPath }
         catch { $rejected=$true }
         if ($rejected -ne ($fault -ne 'none')) { throw "Wrong narration package result: $format/$fault" }
         $checks++

@@ -24,6 +24,12 @@ class Fixture extends "res://scripts/environments/cinema_environment.gd":
 		loading = false
 
 
+func _inside_chair(point: Vector3) -> bool:
+	# Chair A2 footprint grown by the standing body radius.
+	var inside_x := point.x > 1.65 - Locomotion.BODY_RADIUS and point.x < 2.35 + Locomotion.BODY_RADIUS
+	return inside_x and point.z > 0.6 - Locomotion.BODY_RADIUS and point.z < 1.3 + Locomotion.BODY_RADIUS
+
+
 func check(ok: bool, message: String) -> void:
 	checks += 1
 	if not ok:
@@ -76,7 +82,9 @@ func run() -> void:
 	var floor_origin := Vector3(2, 2.5, 3)
 	var hit: Dictionary = environment.ray_hit(floor_origin, Vector3.DOWN)
 	check(hit.get("valid", false) and hit.points.size() > 2, "Parabolic trace resolves connected floor")
-	check(not environment.ray_hit(Vector3(2, 2.5, 1), Vector3.DOWN).get("valid", false), "Chair top cannot become a landing point")
+	var chair_hit: Dictionary = environment.ray_hit(Vector3(2, 2.5, 1), Vector3.DOWN)
+	check(chair_hit.get("valid", false) and chair_hit.get("kind", "") == "seat" and chair_hit.get("id", "") == "A2",
+		"Aiming the arc at a chair targets that seat")
 	var edge_hit: Dictionary = environment.ray_hit(Vector3(4.9, 2.5, 3), Vector3.DOWN)
 	check(edge_hit.get("valid", false) and edge_hit.snapped and edge_hit.position.x <= 4.78, "Floor edge snaps inward to a fully supported body footprint")
 	check(environment.pointer_press("left_hand", floor_origin, Vector3.DOWN), "Owning trigger starts aiming")
@@ -92,7 +100,12 @@ func run() -> void:
 	before = camera.global_position
 	environment.pointer_press("left_hand", floor_origin, Vector3.DOWN)
 	environment.pointer_release("left_hand", Vector3(2, 2.5, 1), Vector3.DOWN, true)
-	check(camera.global_position.is_equal_approx(before), "Release revalidates and rejects a chair")
+	check(camera.global_position.is_equal_approx(Vector3(2, 1.2, 1)) and environment.snapshot().seat == "A2",
+		"Release on a chair sits there at the seated eye position")
+	check(environment.interaction == "watch" and is_equal_approx(environment._head_yaw(), 0.0),
+		"Sitting ends free movement and faces the screen")
+	check(environment.set_interaction("move"), "Free movement resumes from the chosen seat")
+	before = camera.global_position
 	environment.pointer_press("left_hand", floor_origin, Vector3.DOWN)
 	environment.suspend()
 	environment.pointer_release("left_hand", Vector3(-2, 2.5, 3), Vector3.DOWN, true)

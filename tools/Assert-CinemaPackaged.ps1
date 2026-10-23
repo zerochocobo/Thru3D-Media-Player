@@ -18,7 +18,7 @@ try {
     }
     $manifest = Read-EntryText 'environments/grand_cinema/manifest.json'
     if ($manifest -ne [IO.File]::ReadAllText((Join-Path $project 'environments/grand_cinema/manifest.json'))) { throw 'Packaged cinema navigation differs from source.' }
-    $resources = @('cinema.glb','cinema_light.jpg','cinema_light_off.jpg','cinema_seat_albedo.jpg',
+    $resources = @('cinema.glb','cinema_light.jpg','cinema_light_off.jpg','cinema_screen_light.jpg','cinema_seat_albedo.jpg',
         'cinema_carpet_color.jpg','cinema_wall_color.jpg','cinema_wood_color.jpg',
         'cinema_metal_brushed.jpg','cinema_cloud_felt.jpg','cinema_velvet_black.jpg')
     foreach ($name in $resources) {
@@ -33,11 +33,11 @@ try {
         $relative = "shaders/$shader.gdshader"
         if ((Read-EntryText $relative) -ne [IO.File]::ReadAllText((Join-Path $project $relative))) { throw "Packaged cinema shader differs: $shader" }
     }
-    foreach ($script in @('cinema_environment','cinema_feature','cinema_loader','cinema_locomotion')) {
+    foreach ($script in @('cinema_environment','cinema_feature','cinema_film_light','cinema_loader','cinema_locomotion')) {
         $mapping = Read-EntryText "scripts/environments/$script.gd.remap"
         $match = [regex]::Match($mapping, 'path="res://([^"]+)"')
         if (-not $match.Success) { throw "Cinema script remap is missing: $script" }
         $null = Require-Entry $match.Groups[1].Value
     }
-    Write-Output 'Cinema package verified: scene, navigation, both lighting states, 9 mobile textures, shaders and runtime scripts.'
+    Write-Output 'Cinema package verified: scene, navigation, both lighting states, film screen light, 10 mobile textures, shaders and runtime scripts.'
 } finally { $zip.Dispose() }

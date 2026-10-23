@@ -5,6 +5,8 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <functional>
+#include <algorithm>
 #define JNIEXPORT
 #define JNICALL
 using jlong = int64_t;
@@ -14,11 +16,23 @@ using jboolean = unsigned char;
 using jchar = char16_t;
 using jsize = int32_t;
 using jclass = void*;
+using jobject = void*;
+using jmethodID = void*;
+using jfloatArray = std::vector<float>*;
 using jstring = const std::u16string*;
 constexpr jboolean JNI_TRUE = 1;
+constexpr jboolean JNI_FALSE = 0;
 struct JNIEnv {
     std::string error;
     std::vector<std::unique_ptr<std::u16string>> strings;
+    std::vector<std::unique_ptr<std::vector<float>>> arrays;
+    std::function<jboolean(jdouble,jfloatArray,jfloatArray,jfloatArray,jboolean)> onFrames;
+    jclass GetObjectClass(jobject) { return nullptr; }
+    jmethodID GetMethodID(jclass,const char*,const char*) { return reinterpret_cast<jmethodID>(1); }
+    jfloatArray NewFloatArray(jsize count) { arrays.push_back(std::make_unique<std::vector<float>>(count));return arrays.back().get(); }
+    void SetFloatArrayRegion(jfloatArray out,jsize start,jsize count,const float* input) { std::copy_n(input,count,out->begin()+start); }
+    jboolean CallBooleanMethod(jobject,jmethodID,jdouble start,jfloatArray p,jfloatArray r,jfloatArray k,jboolean done) {return onFrames(start,p,r,k,done);}
+    void DeleteLocalRef(void* ref) {arrays.erase(std::remove_if(arrays.begin(),arrays.end(),[&](const auto& item){return item.get()==ref;}),arrays.end());}
     const jchar* GetStringChars(jstring value, void*) { return value->data(); }
     jsize GetStringLength(jstring value) { return jsize(value->size()); }
     void ReleaseStringChars(jstring, const jchar*) {}
