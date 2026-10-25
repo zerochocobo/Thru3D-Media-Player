@@ -297,14 +297,14 @@ internal class MediaSources(
         }
     }
 
-    fun archiveStream(uri: String): String {
+    fun archiveStream(uri: String, cache: SmallRarCache? = null): String {
         val app = context() ?: error("Archive unavailable")
         return when (android.net.Uri.parse(uri).scheme) {
             "file", "content" -> {
                 val source = ArchiveFileSource(app, uri)
                 try { streams().publish(source, "archive.bin") } catch (e: Exception) { source.close(); throw e }
             }
-            "cloud" -> { CloudLibrary.start(app); CloudLibrary.audioDownload(uri, streams(), 1024*1024L, archiveReading = true) }
+            "cloud" -> { CloudLibrary.start(app); CloudLibrary.audioDownload(uri, streams(), 1024*1024L, archiveReading = true, archiveCache = cache) }
             "smb", "usb" -> directPlayable(uri)
             "dlna", "http", "https" -> {
                 val address = if (uri.startsWith("dlna://")) dlna.playable(uri) else uri
@@ -314,6 +314,9 @@ internal class MediaSources(
             else -> error("Archive source is not supported")
         }
     }
+
+    fun cachedArchive(uri: String): Boolean = streams().cachedArchive(uri)
+    fun hasPhotoStream(uri: String): Boolean = server?.hasSource(uri) == true
 
     /** Capture owns its reader; opening it must not revoke playback or its subtitle/audio leases. */
     fun capturePlayable(uri: String): String {

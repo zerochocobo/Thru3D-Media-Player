@@ -11,6 +11,10 @@ const MODEL_PATH := "res://environments/grand_cinema/cinema.glb"
 const MANIFEST_PATH := "res://environments/grand_cinema/manifest.json"
 const MAX_RAY_DISTANCE := 100.0
 const CHAIR_LANDING_TRIES := 24
+const VIEWING_LIGHT_LEVELS := {"low": 0.0, "dim": 0.08, "soft": 0.20}
+## Manual "off" with no film: a blank screen throws no light, so a little house
+## light keeps the hall from going pitch black.
+const OFF_IDLE_LEVEL := 0.12
 
 var is_ready := false
 var loading := false
@@ -18,6 +22,8 @@ var error := ""
 var interaction := "watch"
 var selected := false
 var active := false
+## Global last seated location, independent of the current movie and roaming.
+var saved_seat := ""
 
 var _rig: Node3D
 var _camera: Camera3D
@@ -36,6 +42,9 @@ var _pointer_visuals: Dictionary = {}
 var _sticks_waiting_for_neutral := true
 var light_mode := "auto"
 var lights_on := true
+var _playing := false
+var viewing_brightness := "low"
+var _viewing_preview := false
 const FILM_UNIFORMS := ["film_left", "film_center", "film_right"]
 var film_light: Array = [Color.BLACK, Color.BLACK, Color.BLACK]
 var _light_mix := 1.0
@@ -62,6 +71,7 @@ func select(enabled: bool) -> void:
 	if selected == enabled:
 		return
 	selected = enabled
+	if enabled and is_ready: _restore_saved_seat()
 	if enabled and not is_ready and not loading:
 		_begin_loading()
 	if not enabled:
@@ -106,11 +116,32 @@ func home() -> bool:
 		return false
 	if not _movement.select_seat(str(_manifest.get("default_seat", ""))):
 		return false
+	saved_seat = str(_movement.selected_seat)
 	interaction = "watch"
 	suspend()
 	_align_head(_movement.eye_position, _movement.yaw)
 	changed.emit()
 	return true
+
+func recenter_view() -> bool:
+	if not active or not _movement or not is_instance_valid(_rig) or not is_instance_valid(_camera): return false
+	var screen: Dictionary = _manifest.get("screen", {})
+	var position: Array = screen.get("position", [])
+	if position.size() < 3: return false
+	var direction := Vector3(float(position[0]), _camera.global_position.y, float(position[2])) - _camera.global_position
+	if not direction.is_finite() or direction.length_squared() < .000001: return false
+	suspend()
+	# Turn around the tracked eye, preserving its world position and the selected
+	# seat. The physical screen and the camera's tracking transform stay fixed.
+	var heading := atan2(-direction.x, -direction.z)
+	_rotate_around_head(wrapf(heading - _head_yaw(), -PI, PI))
+	_movement.yaw = _head_yaw()
+	changed.emit()
+	return true
+
+func _restore_saved_seat() -> void:
+	if _movement and not saved_seat.is_empty() and _movement.select_seat(saved_seat):
+		interaction = "watch"
 
 
 func poll_sticks(left: Vector2, right: Vector2, delta: float, blocked: bool = false) -> bool:
@@ -123,8 +154,7 @@ func poll_sticks(left: Vector2, right: Vector2, delta: float, blocked: bool = fa
 		return false
 	if interaction != "move":
 		return true
-	# Locomotion only consumes right.x for snap turning. The host still owns
-	# both full sticks, so right.y must also return to centre before rearming.
+	# Both sticks must return to centre before movement gestures can resume.
 	if _sticks_waiting_for_neutral:
 		if left.length() <= Locomotion.AXIS_DEADZONE and right.length() <= Locomotion.AXIS_DEADZONE:
 			_sticks_waiting_for_neutral = false
@@ -138,7 +168,8 @@ func poll_sticks(left: Vector2, right: Vector2, delta: float, blocked: bool = fa
 	var previous_eye: Vector3 = _movement.eye_position
 	var previous_yaw := _head_yaw()
 	_movement.yaw = previous_yaw
-	_movement.step(Vector2.ZERO, right.x, delta)
+	var sideways := absf(right.x) > absf(right.y)
+	_movement.step(Vector2.ZERO, right.x if sideways else 0.0, delta, not sideways and right.y <= -.65)
 	var translation: Vector3 = _movement.eye_position - previous_eye
 	var turn := wrapf(float(_movement.yaw) - previous_yaw, -PI, PI)
 	if not is_zero_approx(turn):
@@ -290,6 +321,7 @@ func pointer_release(hand: String, origin: Vector3, direction: Vector3, valid: b
 	if target.get("kind", "") == "seat":
 		# Sitting ends free movement: the view settles facing the screen.
 		if _movement.select_seat(str(target.id)):
+			saved_seat = str(_movement.selected_seat)
 			interaction = "watch"
 			suspend()
 			_align_head(_movement.eye_position, _movement.yaw)
@@ -431,8 +463,27 @@ func _prepare_movement(manifest: Dictionary) -> RefCounted:
 
 func set_lighting(mode: String, playing: bool) -> void:
 	light_mode = mode if mode in ["auto", "on", "off"] else "auto"
+	_playing = playing
 	lights_on = light_mode == "on" or (light_mode == "auto" and not playing)
-	_light_target = 1.0 if lights_on else 0.0
+	_update_light_target()
+
+func set_viewing_brightness(value: String, preview: bool = false) -> void:
+	var normalized := value if VIEWING_LIGHT_LEVELS.has(value) else "low"
+	var changed := viewing_brightness != normalized or _viewing_preview != preview
+	viewing_brightness = normalized
+	_viewing_preview = preview
+	_update_light_target()
+	# A setting click previews the actual baked lighting in the same frame,
+	# including with no movie open or with a manual house-light override.
+	if preview and changed:
+		_light_mix = _light_target
+		_apply_lighting()
+
+func _update_light_target() -> void:
+	if _viewing_preview: _light_target = float(VIEWING_LIGHT_LEVELS[viewing_brightness])
+	elif lights_on: _light_target = 1.0
+	elif light_mode == "auto": _light_target = float(VIEWING_LIGHT_LEVELS[viewing_brightness])
+	else: _light_target = 0.0 if _playing else OFF_IDLE_LEVEL
 	if not is_equal_approx(_light_mix, _light_target): set_process(true)
 
 func _prepare_light_materials() -> void:
@@ -506,6 +557,7 @@ func _process(_delta: float) -> void:
 	if loading and _model and _movement:
 		loading = false
 		is_ready = true
+		_restore_saved_seat()
 		_update_active()
 		changed.emit()
 	if not loading and not _thread and is_equal_approx(_light_mix, _light_target):

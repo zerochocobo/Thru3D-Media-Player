@@ -4,6 +4,29 @@
 
 Newest first, following product release milestones. Some development/source snapshots contained features before their product release. Original APK identifiers `0.2` and `0.4` are retained; `0.4` was also called `0.4.0` in release notes. Availability depends on device, server and media capabilities.
 
+## 0.13.5 — 2026-10-25
+
+- Add Comic reading (Beta): on-device OCR of eligible dialogue bubbles, dwell speech with preset/custom voices, cancellation and bounded next-page OCR/audio preparation. Enable it per reading batch; other preferences persist. Conservative source-language/layout coverage can skip uncertain content; this is not full-page transcription.
+- Add Comic translation (Beta): online batched Bing translation with Edge fallback, 19 narration-language targets (Simplified/Traditional Chinese separately), translated-text speech, text size and remembered light/dark appearance, defaulting to light. Non-reading ray hover reveals original text. Improve fitting, opaque page-edge coverage and overlays across supported generated 2D-to-3D viewing. Selected recognized dialogue is sent to providers; no offline translation or universal availability/accuracy claim.
+- Add saved left/right/both hand selection for picture pinch gestures and menu invocation, defaulting to the right hand.
+- Add recording-save progress/cancellation, improve multichannel original audio and narration capture, and fix image-PiP screenshot/recording cases. Flat/VR output limits remain explicit.
+- Reduce PDF rendering/encoding work and reuse bounded page/spread caches. Prepare neighboring decoded pages/OCR/audio within memory budgets; remove neighboring photo-3D caching.
+- Extend DLNA preset/next URI handling, Previous/Next navigation and continuation when the sender provides the next item; show the enabled green Receiving casts state with localized connection hints, and improve folder-toolbar placement.
+- Make Grand cinema the new-user global background and remove its test label, retaining saved choices. Photos independently default to Belfast Sunset. Refine hall details/lighting, controls locking/dragging and background restoration after reading.
+- Default video compositor sharpening to Off, preserving saved choices and the independent gentle photo default. Improve cloud range continuation/cache reuse and non-interleaved multi-audio MP4 reads.
+- Fix zero-parallax pointer/icon alignment and scope experimental menu depth to VR video. Improve sample-time controls, voice naming, photo-background save feedback and panorama continuity when menus toggle.
+
+## 0.13.4 — 2026-10-24
+
+- Add local/supported cloud PDF reading, single/two-page and right-to-left layouts, PiP paging, and history/favorite reopening without whole-directory rescans. Retain bounded range/cache behavior and explicit unsupported/password errors.
+- Add magazine/comic paired-image reading with pairing offsets, separate PDF/archive/photo layout memory and supported generated 3D/portrait paths. Restore archive inner directories and eligible folder favorites.
+- Export saved bookmark A–B loops as named keyframe clips with progress, duplicate-save feedback and cancellation. Improve endpoint guidance, timeline bookmark selection and stale-frame protection; cuts are not frame-exact.
+- Add flat-video screenshots/live recording and VR PiP clip composition. Full-resolution screenshots use quality-100 JPEG; live clips include actually heard audio/narration/music. Fix PTS-only MKV muxing and prefer eligible embedded thumbnail covers. JPEG remains lossy; PiP clips use bounded SDR H.264 composition.
+- Add independent photo backgrounds/orientation/brightness and recoverable conversion failures; experimental VR menu depth, settings scroll hints, wrist-watch palettes and a thumbstick seek-feedback toggle.
+- Add independent subtitle display-line selection and two-axis centers, legacy migration and separate horizontal/vertical memories. Simplify narration controls and add a shortcut with remembered preferences.
+- Align supported video-layer release timing to compositor cadence, default the refresh preference to up to 120 Hz and reduce menu/ray/diagnostic work. Actual refresh/performance remains device/content dependent.
+- Add cinema viewing-brightness tiers, last-seat memory, position preservation on recenter, movement/control occlusion fixes and automatic house lights after film close. Improve bounded legacy-RAR reads and small-archive caching.
+
 ## 0.13.3 — 2026-10-23
 
 - Receive compatible DLNA HTTP(S) video casts on the local network in the existing VR player. Enable reception explicitly; replacing active media requires confirmation, and ended casts can return to the previous media. Support transport/volume feedback and keep cast links out of ordinary history, favorites and per-file memory. This is video casting, not phone-screen mirroring or universal app/DRM support.

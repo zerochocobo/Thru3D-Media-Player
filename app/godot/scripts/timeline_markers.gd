@@ -1,6 +1,9 @@
 extends RefCounted
 ## Bound each group's visual span; chaining adjacent points cannot collapse the whole timeline.
-static func groups(markers: Array, duration_ms: int, width: float, pitch: float = 0.05) -> Array:
+# Share the hit width with the renderer: spare padding must not hide distinct markers.
+const MARKER_WIDTH := 0.044
+
+static func groups(markers: Array, duration_ms: int, width: float, pitch: float = MARKER_WIDTH) -> Array:
 	var result: Array = []
 	if duration_ms <= 0: return result
 	for marker in markers:

@@ -27,8 +27,8 @@ func _run() -> void:
 	camera.add_child(menu); menu.position.y = -0.35; menu.toggle(); menu.set_process(false); menu._subtitle_open = true
 	for language in ["zh", "zh_Hant", "ja", "en"]:
 		I18n.use(language)
-		for view in ["settings", "preset", "custom-on", "preset-choices", "preset-choices-last", "preset-playing", "custom-playing", "custom-loading", "custom-finished", "language-choices", "language-choices-last", "language-long", "empty-custom", "advanced", "appearance", "many-tracks", "subtitle-loading", "external-files", "candidates", "single-unnamed-audio", "audio-tracks", "audio-tracks-open", "library", "library-loading", "naming", "saving", "encoding", "model-loading", "error", "hover"]:
-			var settings_view: bool = view in ["settings", "preset", "custom-on", "preset-choices", "preset-choices-last", "preset-playing", "custom-playing", "custom-loading", "custom-finished", "language-choices", "language-choices-last", "language-long", "empty-custom", "advanced", "appearance", "many-tracks", "subtitle-loading", "external-files"]
+		for view in ["settings", "preset", "custom-on", "preset-choices", "preset-choices-last", "preset-playing", "custom-playing", "custom-loading", "custom-finished", "language-choices", "language-choices-last", "language-long", "empty-custom", "hidden", "appearance", "many-tracks", "subtitle-loading", "external-files", "candidates", "single-unnamed-audio", "audio-tracks", "audio-tracks-open", "library", "library-loading", "naming", "saving", "encoding", "model-loading", "error", "hover"]:
+			var settings_view: bool = view in ["settings", "preset", "custom-on", "preset-choices", "preset-choices-last", "preset-playing", "custom-playing", "custom-loading", "custom-finished", "language-choices", "language-choices-last", "language-long", "empty-custom", "hidden", "appearance", "many-tracks", "subtitle-loading", "external-files"]
 			menu.clone_panel.opened = not settings_view; menu.clone_panel.library = view.begins_with("library"); menu.clone_panel.source = state.source_uri; menu.clone_panel.naming = {}; menu.clone_panel.saving = false
 			state.narration_voice_kind = "preset" if view.begins_with("preset") else "custom"; state.narration_enabled = settings_view and view != "settings"
 			state.narration_voice = "Xiaoyu"; state.narration_voice_origin = "zh"; state.narration_resolved_origin = "zh"; state.narration_status = "ready"
@@ -41,7 +41,7 @@ func _run() -> void:
 			state.subtitle_options = [{"id": 1, "title": "中文", "codec": "subrip"}]
 			if view == "many-tracks":
 				for index in range(2, 9): state.subtitle_options.append({"id": index, "title": "字幕 %d" % index, "codec": "subrip"})
-			menu.choices.reset(); menu._narration_more = view == "advanced"; menu._subtitle_appearance_open = view == "appearance"; menu._subtitle_files_open = view == "external-files"
+			menu.choices.reset(); state.narration_hide_subtitles = view == "hidden"; menu._subtitle_appearance_open = view == "appearance"; menu._subtitle_files_open = view == "external-files"
 			camera.fov = 80 if state.narration_enabled else 70; menu.position.y = -0.55 if state.narration_enabled else -0.35
 			state.narration_clone_state.state = "encoding" if view == "encoding" else "error" if view == "error" else "ready"
 			state.narration_clone_state.operation = "clone" if view == "encoding" else ""; state.narration_clone_state.active_key = "b" if view == "encoding" else ""
@@ -72,8 +72,8 @@ func _run() -> void:
 				var panels := menu._decorations.filter(func(node): return node is MeshInstance3D and node.mesh is QuadMesh and is_equal_approx(node.mesh.size.x, 1.10))
 				var panel_height := 0.0
 				for panel in panels: panel_height = maxf(panel_height, panel.mesh.size.y)
-				# Previous one-track, narration-on layout was 1.305m high for both categories.
-				if panel_height <= 0 or panel_height > 1.305 * 0.8: failures.append("compact height " + view)
+				# Keep the prior compact layout budget plus the newly exposed hide-display row.
+				if panel_height <= 0 or panel_height > 1.305 * 0.8 + menu.SUBTITLE_SETTING_PITCH: failures.append("compact height " + view)
 				print("Compact narration %s %s height=%.3fm reduction=%.1f%%" % [language, view, panel_height, (1.0 - panel_height / 1.305) * 100])
 			menu._hover.clear(); menu._hide_tooltip()
 			for button in menu._buttons:

@@ -74,6 +74,26 @@ func field(parent: Node3D, row: Dictionary, centre: Vector2, width: float, heigh
 		return
 	var options: Array = row.choices
 	var key: String = row.key
+	if row.get("swatches", false):
+		var pitch := minf(width / options.size(), height + 0.032)
+		for index in options.size():
+			var option: Dictionary = options[index]
+			var selected := same(row.value, option.value)
+			var target := _button({"kind": "choose", "key": key, "value": option.value}, "",
+				centre + Vector2(-width / 2 + pitch / 2 + index * pitch, 0), Vector2.ONE * height, parent)
+			var button: Dictionary = menu._buttons.back()
+			button.base_color = Color.WHITE if selected else menu.TILE
+			button.hover_color = Color.WHITE
+			button.node.material_override.set_shader_parameter("surface_color", button.base_color)
+			button.node.material_override.set_shader_parameter("corner_radius", height / 2)
+			var disc: MeshInstance3D = menu._quad(Vector2.ONE * (height - 0.012), Vector3(0, 0, 0.004), option.swatch, 14)
+			disc.material_override.set_shader_parameter("corner_radius", height / 2)
+			button.node.add_child(disc)
+			if selected:
+				var mark: MeshInstance3D = menu._icon("check", Vector3(0, 0, 0.006), height * 0.44, Color("17232c"), button.node)
+				mark.material_override.render_priority = 15
+			menu._tips[target] = menu.I18n.t(option.label)
+		return
 	if row.get("switch", false):
 		var on := bool(row.value)
 		var target := _button({"kind": "choose", "key": key, "value": not on}, "", centre, Vector2(width, height), parent)

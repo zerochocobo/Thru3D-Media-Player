@@ -61,6 +61,12 @@ func _present_offer() -> void:
 	if pending.is_empty() or _presented == int(pending.token): return
 	if (host.puzzle_game and host.puzzle_game.active) or host.recent_menu.voice_manager.opened or _typing(): return
 	if host.recent_menu.has_pointer_capture() or (host.player_menu and host.player_menu.has_pointer_capture()): return
+	var from_token := int(pending.get("from_token", 0))
+	if from_token > 0:
+		if from_token == token: accept()
+		else:
+			platform.dlna_receiver_reject(int(pending.token)); pending = {}
+		return
 	_presented = int(pending.token)
 	if not busy(): accept()
 	elif host.photo_active: host._show_full_library()
@@ -75,10 +81,11 @@ func tick() -> void:
 	if token > 0 and int(data.get("active_token", 0)) != token: finish()
 	if not pending.is_empty() and int(data.get("pending_token", 0)) != int(pending.token): pending = {}
 	if data.is_empty(): enabled = false
+	if token > 0 and int(data.get("active_token", 0)) == token: _update_navigation(data)
 	for event in data.get("events", []):
 		if not event is Dictionary: continue
 		if event.get("action") == "request":
-			pending = event
+			if int(event.get("token", 0)) == int(data.get("pending_token", 0)): pending = event
 		elif int(event.get("token", 0)) == token and token > 0:
 			var video: Node = host.video
 			match str(event.get("action")):
@@ -88,6 +95,7 @@ func tick() -> void:
 					if video.requested_play: video.toggle_play()
 				"stop": finish()
 				"seek": video.seek_absolute(int(event.position_ms))
+				"next_end": navigate(1)
 				"volume": host._on_menu_volume(float(event.value), false)
 				"mute": host._on_menu_volume(unmute_level(video), bool(event.value))
 	_present_offer()
@@ -97,8 +105,27 @@ func tick() -> void:
 		if video.media.state in ["failed", "closed", "ended"]: state = "STOPPED"
 		elif not video._waiting_first and video.media.state in ["playing", "paused", "ready"]: state = "PLAYING" if video.requested_play else "PAUSED_PLAYBACK"
 		var caps := Capabilities.capabilities(video)
-		platform.dlna_receiver_publish(JSON.stringify({"token": token, "state": state, "position_ms": video.control.observed_position_ms, "duration_ms": video.control.duration_ms, "seekable": caps.seek, "volume": video.system_volume.level() if video.system_volume.supported() else video.audio_volume, "muted": video.audio_muted or (video.system_volume.supported() and video.system_volume.level() == 0), "error": video.media.state == "failed"}))
+		platform.dlna_receiver_publish(JSON.stringify({"token": token, "state": state, "position_ms": video.control.observed_position_ms, "duration_ms": video.control.duration_ms, "seekable": caps.seek, "volume": video.system_volume.level() if video.system_volume.supported() else video.audio_volume, "muted": video.audio_muted or (video.system_volume.supported() and video.system_volume.level() == 0), "error": video.media.state == "failed", "ended": not video.loop_enabled and video.playback_end_ready()}))
 	refresh()
+
+func _update_navigation(data: Dictionary) -> void:
+	var navigation := {"has_previous": bool(data.get("has_previous", false)), "has_next": bool(data.get("has_next", false)), "navigation_pending": bool(data.get("navigation_pending", false))}
+	if host.video.cast_navigation == navigation: return
+	host.video.cast_navigation = navigation
+	host.video.changed.emit()
+
+## Query the renderer atomically; stale UI or a pending foreign offer must never trigger fallback.
+func navigate(direction: int) -> bool:
+	if token <= 0 or host.video.cast_token != token or direction not in [-1, 1]: return false
+	if Methods.supports(platform, "dlna_receiver_navigate"):
+		var result := int(platform.dlna_receiver_navigate(token, direction))
+		if result < 0: return false
+		if result > 0:
+			_update_navigation({"navigation_pending": true}); _next_poll = 0
+			return true
+	if direction < 0 or not host.video.skip_cast_to_end(): return false
+	host.playback_mode = "single"
+	return true
 
 ## System volume reads 0 while muted; unmuting must return to the last audible level.
 static func unmute_level(video: Node) -> float:
@@ -131,13 +158,14 @@ func accept() -> void:
 	host.video.close_video()
 	token = int(offer.token)
 	host.playback_mode = "single"
-	host.video.open_cast(str(offer.uri), str(offer.title), token, int(offer.get("start_ms", 0)))
+	host.video.open_cast(str(offer.uri), str(offer.title), token, int(offer.get("start_ms", 0)), bool(offer.get("playing", true)))
+	_update_navigation(offer)
 	host._show_player_menu()
 	refresh()
 
 func detach() -> void:
 	if supported(): platform.dlna_receiver_detach()
-	token = 0; pending = {}; _presented = 0; host.video.cast_token = 0
+	token = 0; pending = {}; _presented = 0; host.video.cast_token = 0; host.video.cast_navigation = {}
 	refresh()
 
 func local_selection() -> void:
@@ -149,7 +177,7 @@ func local_selection() -> void:
 func finish() -> void:
 	var ended := token
 	if ended > 0 and Methods.supports(platform, "dlna_receiver_finish"): platform.dlna_receiver_finish(ended)
-	token = 0; host.video.cast_token = 0
+	token = 0; host.video.cast_token = 0; host.video.cast_navigation = {}
 	if ended > 0: host._close_current_media()
 	refresh()
 

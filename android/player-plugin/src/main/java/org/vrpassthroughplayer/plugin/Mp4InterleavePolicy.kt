@@ -298,9 +298,19 @@ internal object Mp4InterleavePolicy {
         require(boxes.none { it.type == "mvex" })
         val tracks = boxes.filter { it.type == "trak" }.mapNotNull { track(bytes, it) }
         require(tracks.all { it.sampleBytes <= fileSize && it.offsets.all { offset -> offset in 1 until fileSize } })
-        // Different audio/video selections must not inherit a guess about the first track.
-        val audio = tracks.filter { it.kind == "soun" }.single()
         val video = tracks.filter { it.kind == "vide" }.single()
+        val audios = tracks.filter { it.kind == "soun" }
+        require(audios.isNotEmpty())
+        if (audios.size > 1) {
+            // Multi-language files (e.g. each track stored whole after the video):
+            // lavf alternates only between video and the selected track, so the
+            // two upstream windows fit any selection. No per-track guess is made:
+            // neither the leading-audio switch nor one track's packet cache.
+            val videoTimes = chunkTimes(bytes, video)
+            return if (audios.any { separated(it, chunkTimes(bytes, it), video, videoTimes) != 0 })
+                Decision(diagnostic = "noninterleaved_tracks", regionCache = true) else Decision()
+        }
+        val audio = audios.single()
         val videoStart = video.offsets.first()
         val prefixBytes = videoStart - audio.offsets.first()
         // Preserve the previously validated leading-audio compatibility path.
@@ -309,19 +319,24 @@ internal object Mp4InterleavePolicy {
             prefixBytes >= audio.sampleBytes - 1024 * 1024 &&
             audio.offsets.count { it < videoStart } >= audio.offsets.size - 1)
             return Decision(true, prefixBytes, "leading_audio")
-        val audioTimes = chunkTimes(bytes, audio); val videoTimes = chunkTimes(bytes, video)
-        // Follow physical chunk order. A chunk ending >1 second ahead of the
-        // other track forces lavf away from its physical-order preference.
-        // No file/audio size, duration or minimum chunk-count eligibility gate.
+        return when (separated(audio, chunkTimes(bytes, audio), video, chunkTimes(bytes, video))) {
+            0 -> Decision()
+            1 -> Decision(diagnostic = "noninterleaved_tracks", regionCache = true, audioChunks = chunkSpans(bytes, audio, fileSize))
+            else -> Decision(diagnostic = "noninterleaved_tracks", regionCache = true)
+        }
+    }
+
+    /** Follow physical chunk order. A chunk ending >1 second ahead of the other
+     * track forces lavf away from its physical-order preference: 1 when audio
+     * leads, -1 when video leads, 0 when interleaved. No size or duration gate. */
+    private fun separated(audio: Track, audioTimes: DoubleArray, video: Track, videoTimes: DoubleArray): Int {
         var a = 0; var v = 0; var audioEnd = 0.0; var videoEnd = 0.0
         while (a < audio.offsets.size && v < video.offsets.size) {
             if (audio.offsets[a] < video.offsets[v]) audioEnd = audioTimes[++a]
             else videoEnd = videoTimes[++v]
-            if (kotlin.math.abs(audioEnd - videoEnd) > 1.0)
-                return Decision(diagnostic = "noninterleaved_tracks", regionCache = true,
-                    audioChunks = if (audioEnd - videoEnd > 1.0) chunkSpans(bytes, audio, fileSize) else emptyList())
+            if (kotlin.math.abs(audioEnd - videoEnd) > 1.0) return if (audioEnd > videoEnd) 1 else -1
         }
-        return Decision()
+        return 0
     }
 
     /** Locate compressed payload, excluding the potentially huge video gaps

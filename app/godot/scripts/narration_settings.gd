@@ -6,6 +6,8 @@ const I18n := preload("res://scripts/i18n.gd")
 const Memory := preload("res://scripts/file_narration_memory.gd")
 const Languages := preload("res://scripts/narration_languages.gd")
 const VoiceStatus := preload("res://scripts/narration_voice_status.gd")
+const VOICE_FIELDS := ["profile", "voice_origin", "voice_id", "zh_voice", "en_voice", "ja_voice", "voice_kind", "custom_voice"]
+const BASIC_FIELDS := VOICE_FIELDS + ["language", "line", "hide_subtitles", "duck", "volume"]
 var memory := Memory.new()
 var _defaults := {}
 # Available in normal Debug and Release; text subtitle selection controls visibility.
@@ -70,8 +72,8 @@ func _init(owner: Node) -> void:
 	_defaults = _values()
 
 func load_settings(settings: ConfigFile) -> void:
-	# Legacy global preferences are defaults only; the global On bit never opts
-	# every video into narration. Current-file overrides are stored separately.
+	# Last-used basic preferences are defaults only; the global On bit never
+	# opts every video into narration. Current-file overrides stay independent.
 	_load_values(settings, false)
 	_defaults = _values()
 	var saved := memory.lookup(video.local_uri)
@@ -102,7 +104,7 @@ func _load_values(settings: ConfigFile, restore_enabled: bool = true) -> void:
 	hide_subtitles = bool(settings.get_value("narration", "hide_subtitles", false))
 	_sync_profile()
 	timing = "interrupt"
-	for key in ["duck", "volume", "offset"]: set_option("narration_" + key, settings.get_value("narration", key, get(key)))
+	for key in ["duck", "volume", "offset"]: set_option("narration_" + key, settings.get_value("narration", key, get(key)), false)
 
 func save(settings: ConfigFile) -> void:
 	settings.set_value("narration", "language_choice_version", 1)
@@ -166,8 +168,16 @@ func current_text_subtitles() -> bool:
 	if id < 0: id = int(video.media.playback.get("details", {}).get("subtitle", {}).get("track_id", 0))
 	return id > 0 and bool(_text_tracks.get(id, false))
 
-func set_option(key: String, value: Variant) -> bool:
+func set_option(key: String, value: Variant, remember_defaults: bool = true) -> bool:
 	if not FEATURE_ENABLED: return false
+	if key == "narration_toggle":
+		if video.media.session_id <= 0 or not available(): return false
+		if not enabled:
+			# A shortcut explicitly uses the latest basic preferences, even if this
+			# video's saved settings are older. Track/timing remain per-video.
+			for field in BASIC_FIELDS: set(field, _defaults[field])
+			_voice_warning = ""
+		return set_option("narration_enabled", not enabled)
 	if key == "narration_clone": return clone_command(value) if value is Dictionary else false
 	# A slider can release while auto-next is already opening another movie.
 	# Its final value belongs to the captured source and must never modify that movie.
@@ -232,7 +242,12 @@ func set_option(key: String, value: Variant) -> bool:
 		_: return false
 	if key in ["narration_voice_kind", "narration_custom_voice", "narration_voice", "narration_voice_origin", "narration_profile"]:
 		_voice_warning = ""
-		for field in ["profile", "voice_origin", "voice_id", "zh_voice", "en_voice", "ja_voice", "voice_kind", "custom_voice"]: _defaults[field] = get(field)
+	if remember_defaults:
+		var field := key.trim_prefix("narration_")
+		if field in BASIC_FIELDS or key == "narration_voice" or (key in ["narration_enabled", "narration_current"] and enabled):
+			# Keep one coherent last-used configuration, including when editing an
+			# older file. Merely restoring a file must never replace these defaults.
+			for basic in BASIC_FIELDS: _defaults[basic] = get(basic)
 	apply(); video.changed.emit(); return true
 
 func selected_track() -> Dictionary:
@@ -347,7 +362,7 @@ static func progress_percent(report: Dictionary) -> int:
 static func toggle(key: String, value: bool) -> Dictionary:
 	return {"key": key, "value": value, "choices": [{"value": false, "label": "Off"}, {"value": true, "label": "On"}]}
 
-static func rows(state: Dictionary, more: bool = false) -> Array:
+static func rows(state: Dictionary) -> Array:
 	if not FEATURE_ENABLED: return []
 	var result: Array = [{"title": "Subtitle narration", "field": toggle("narration_enabled", bool(state.get("narration_enabled", false)))}]
 	if not state.get("narration_enabled", false): return result
@@ -373,10 +388,9 @@ static func rows(state: Dictionary, more: bool = false) -> Array:
 	var lines: Array = [{"value": 0, "label": "All lines"}]
 	for index in range(1, 3): lines.append({"value": index, "label": I18n.t("Line %d") % index})
 	result.append({"title": "Read line", "field": {"key": "narration_line", "value": state.get("narration_line", 0), "choices": lines, "compact": true}})
-	if more:
-		result.append({"title": "Hide subtitle display", "field": toggle("narration_hide_subtitles", bool(state.get("narration_hide_subtitles", false)))})
-		for field in [{"key": "offset", "title": "Narration sync", "span": Vector3(-2, 2, 0.1), "unit": " s"}]:
-			result.append({"title": field.title, "field": {"key": "narration_" + field.key, "value": state.get("narration_" + field.key, 1.0 if field.key == "rate" else (100.0 if field.key == "volume" else 0.0)), "slider": true, "span": field.span, "unit": field.unit, "source_uri": uri}})
+	var hide := toggle("narration_hide_subtitles", bool(state.get("narration_hide_subtitles", false)))
+	hide["switch"] = true; hide.hint = "Hide subtitle display"
+	result.append({"title": "Hide subtitle display", "field": hide})
 	return result
 
 func hides_display() -> bool:

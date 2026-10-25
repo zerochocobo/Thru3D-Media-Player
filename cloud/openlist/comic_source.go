@@ -5,12 +5,24 @@ import (
 	"errors"
 	"path"
 	"strings"
+	"time"
 
 	"github.com/OpenListTeam/OpenList/v4/internal/driver"
 	"github.com/OpenListTeam/OpenList/v4/internal/model"
 	"github.com/OpenListTeam/OpenList/v4/internal/op"
 	"github.com/gin-gonic/gin"
 )
+
+// Exact metadata APIs only; implementations must never enumerate a directory.
+// Some providers return a download address with metadata; reuse it for first IO.
+type comicSourceReader interface {
+	PlayerArchiveTarget(context.Context, string, string) (model.Obj, *model.Link, error)
+}
+type comicRecoveredSource struct {
+	model.Obj
+	link    *model.Link
+	created time.Time
+}
 
 // A generic OpenList Link without Expiration is tied to one HTTP request's
 // SyncClosers. Pin the verified object and snapshot its URL/header in our own
@@ -117,6 +129,23 @@ func comicSourceObject(ctx context.Context, storage driver.Driver, q cloudTarget
 	}
 	if selected != nil {
 		return selected, nil
+	}
+	if reader, ok := storage.(comicSourceReader); ok {
+		if len(q.ID) > 2048 || strings.ContainsAny(q.ID, "\x00\r\n") {
+			return nil, errors.New("invalid archive identity")
+		}
+		id := q.ID
+		if id == q.Path {
+			id = ""
+		}
+		obj, link, err := reader.PlayerArchiveTarget(ctx, q.Path, id)
+		if err != nil {
+			return nil, err
+		}
+		if obj == nil {
+			return nil, errors.New("archive file missing")
+		}
+		return &comicRecoveredSource{Obj: obj, link: link, created: time.Now()}, nil
 	}
 	if _, ok := storage.(driver.Getter); ok {
 		return op.GetUnwrap(ctx, storage, q.Path)

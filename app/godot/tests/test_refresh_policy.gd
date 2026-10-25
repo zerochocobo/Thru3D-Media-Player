@@ -32,16 +32,26 @@ func _initialize() -> void:
 	if not is_equal_approx(Display.menu_refresh_rate([60.0, 90.0]), 90.0): failures.append("Menus skip rates below 72 Hz")
 	checks += 1
 	if Display.menu_refresh_rate([]) != 0.0: failures.append("No reported rates leave the rate alone")
-	# The setting: 90 Hz by default; low-end GPUs never offer or keep 120 Hz.
+	# The setting: 120 Hz by default; low-end GPUs never offer or keep 120 Hz.
 	var settings := ConfigFile.new()
-	setting(Quality.load_refresh_cap(settings, false) == 90, "Default cap is 90 Hz")
+	setting(Quality.load_refresh_cap(settings, false) == 120, "Default cap is 120 Hz")
+	setting(Quality.load_refresh_cap(settings, true) == 90, "Low-end GPUs default to 90 Hz")
 	settings.set_value("video", "refresh_cap", 120)
 	setting(Quality.load_refresh_cap(settings, false) == 120, "120 Hz is kept on capable GPUs")
 	setting(Quality.load_refresh_cap(settings, true) == 90, "Low-end GPUs stop at 90 Hz")
 	settings.set_value("video", "refresh_cap", 75)
-	setting(Quality.load_refresh_cap(settings, false) == 90, "Unknown values fall back to the default")
+	setting(Quality.load_refresh_cap(settings, false) == 120, "Unknown values fall back to the default")
 	setting(Quality.refresh_choices(false) == [120, 90, 72] and Quality.refresh_choices(true) == [90, 72], "Low-end devices do not list 120 Hz")
 	setting(Quality.REFRESH_NAMES.keys().all(func(cap): return Quality.REFRESH_HINTS.has(cap)), "Every choice explains its refresh rates")
+	# Cinema relief: high foveation and at most 1.0x eye buffers, restored when it ends.
+	var display = Display.new()
+	display.foveation_level = 1; display.render_scale = 1.1
+	display.set_scene_relief(true)
+	setting(display.scene_relief and display.foveation_level == 1 and display.render_scale == 1.1, "Relief keeps the user's own foveation and scale")
+	setting(Display.SCENE_RELIEF_FOVEATION == 3 and Display.SCENE_RELIEF_MAX_SCALE == 1.0, "Relief uses high foveation and 1.0x eye buffers")
+	display.set_scene_relief(false)
+	setting(not display.scene_relief, "Relief ends")
+	if display is Node: display.free()
 	print("Refresh policy: %d checks, %d failures" % [checks, failures.size()])
 	for failure in failures: print("FAIL: " + failure)
 	quit(1 if failures.size() else 0)

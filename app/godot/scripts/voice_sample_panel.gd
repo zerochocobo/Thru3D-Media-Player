@@ -17,10 +17,10 @@ var audio_id := 0
 var language := "zh"
 var title := ""
 var _source_pending := false
-var _time_error := false
 var pending_crop := {}
 var crop_preview_key := ""
 var crop_labels := {}
+var start_label: Label3D
 
 func _init(owner: RefCounted) -> void: _owner = weakref(owner)
 func state() -> Dictionary: return panel.menu._state.get("narration_clone_state", {})
@@ -59,15 +59,15 @@ func _button(label: String, x: float, y: float, width: float, operation: String,
 		button.base_color = panel.menu.SELECTED
 		button.node.material_override.set_shader_parameter("surface_color", button.base_color)
 
-func _field(row: Dictionary, y: float, width: float = 0.92) -> void:
-	panel.menu.choices.field(null, row, Vector2(0.0 if width > 1.1 else 0.16, y - (0.75 if global_manager() else 0.0)), width, 0.065)
+func _field(row: Dictionary, y: float, width: float = 0.92, x: float = 0.16) -> void:
+	panel.menu.choices.field(null, row, Vector2(x, y - (0.75 if global_manager() else 0.0)), width, 0.065)
 
 func _start_row(y: float) -> void:
 	panel.label(panel.menu.I18n.t("Start position"), Vector2(-0.64, y), 18)
-	_button("−", -0.29, y, 0.09, "step", {"amount": -30.0})
-	_button(panel.time(start).left(8), 0.04, y, 0.53, "time")
-	_button("+", 0.37, y, 0.09, "step", {"amount": 30.0})
-	panel.menu._tips[panel.BASE + panel.actions.size() - 2] = panel.menu.I18n.t("Enter time as hh:mm:ss or seconds")
+	start_label = panel.label(panel.time(start).left(8), Vector2(0.0, y), 20)
+	start_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_button("−", -0.59, y - 0.11, 0.09, "step", {"amount": -30.0})
+	_button("+", 0.59, y - 0.11, 0.09, "step", {"amount": 30.0})
 
 func _options(y: float) -> void:
 	var tracks: Array = []
@@ -91,7 +91,7 @@ func draw() -> void:
 	var centre := (1.435 + bottom) / 2 - (0.75 if global_manager() else 0.0)
 	var tile: MeshInstance3D = menu._quad(Vector2(1.46, height), Vector3(0, centre, 0.001), Color(menu.PANEL, 0.98), 10)
 	menu.add_child(tile); menu._decorations.append(tile); menu._block_rays(tile, Vector2(1.46, height))
-	_button("‹", -0.65, 1.36, 0.07, "back")
+	panel.button("‹", Vector2(-0.65, 1.36), 0.07, {"operation": "back"})
 	panel.label(menu.I18n.t("Add voice"), Vector2(-0.55, 1.36), menu.TEXT_TITLE)
 	panel.button("Close", Vector2(0.58, 1.36), 0.20, {"operation": "close"})
 	if not panel.naming.is_empty(): panel._draw_name(); return
@@ -99,7 +99,7 @@ func draw() -> void:
 	if page == "setup":
 		_start_row(1.09)
 		if duration > 3:
-			_field({"key": "voice_sample_start", "value": start, "slider": true, "span": Vector3(0, duration - 3, 1), "unit": " s", "hide_value": true}, 0.98, 1.22)
+			_field({"key": "voice_sample_start", "value": start, "slider": true, "span": Vector3(0, duration - 3, 1), "unit": " s", "hide_value": true}, 0.98, 1.02, 0.0)
 		panel.label(menu.I18n.t("Search duration"), Vector2(-0.64, 0.85), 18)
 		for i in 3: _button(["2 min", "5 min", "10 min"][i], -0.44 + i * 0.44, 0.74, 0.40, "preset", {"seconds": [120, 300, 600][i]})
 		_options(0.60)
@@ -144,7 +144,6 @@ func draw() -> void:
 				menu.add_child(bar); menu._decorations.append(bar)
 	var message: String = panel.status_text(backend)
 	if message.is_empty(): message = str(backend.get("notice", ""))
-	if _time_error: message = "Enter time as hh:mm:ss or seconds"
 	panel.label(menu._fit_title(menu.I18n.t(message), "", 1.28, 16), Vector2(0, bottom + 0.04), 16).horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	menu.choices.finish()
 
@@ -168,6 +167,9 @@ func _sync_crop(backend: Dictionary) -> void:
 	if row.is_empty() or backend.get("state", "") == "error" or same_range(Vector2(float(row.start), float(row.end)), pending_crop.value): pending_crop.clear()
 
 func preview(key: String, value: Variant) -> bool:
+	if active and key == "voice_sample_start":
+		if is_instance_valid(start_label): start_label.text = panel.time(float(value)).left(8)
+		return true
 	if not active or not key.begins_with("voice_sample_crop:"): return false
 	var id := key.trim_prefix("voice_sample_crop:")
 	if crop_preview_key != key:
@@ -196,17 +198,6 @@ func _clamp_range() -> void:
 	finish = start + scan_seconds
 	if duration > 0: finish = minf(finish, duration)
 
-static func parse_time(text: String) -> float:
-	var parts := text.strip_edges().split(":")
-	if parts.size() > 3 or parts.is_empty(): return -1
-	var result := 0.0
-	for i in parts.size():
-		if not parts[i].is_valid_float(): return -1
-		var number := float(parts[i])
-		if not is_finite(number) or number < 0 or (i > 0 and number >= 60): return -1
-		result = result * 60 + number
-	return result
-
 func choose(key: String, value: Variant) -> bool:
 	if not active or not key.begins_with("voice_sample_"): return false
 	if key.begins_with("voice_sample_crop:"): crop(key.trim_prefix("voice_sample_crop:"), value); return true
@@ -218,16 +209,10 @@ func choose(key: String, value: Variant) -> bool:
 
 func action(value: Dictionary) -> bool:
 	if not str(value.operation).begins_with("sample_"): return false
-	_time_error = false
 	match str(value.operation):
 		"sample_back": back()
 		"sample_preset": scan_seconds = float(value.seconds); _clamp_range()
 		"sample_step": start = maxf(0, start + float(value.amount)); _clamp_range()
-		"sample_time":
-			panel.editor.begin("voice-time", panel.time(start).left(8), 16, func(_text: String): pass, func(text: String):
-				var parsed := parse_time(text); _time_error = parsed < 0
-				if not _time_error: start = parsed; _clamp_range()
-				panel.editor.cancel(); panel.menu.refresh())
 		"sample_setup": setup()
 		"sample_reset_clip":
 			var row := _row(str(value.key))

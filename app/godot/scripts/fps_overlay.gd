@@ -2,6 +2,8 @@ extends Label3D
 ## Head-locked frame-rate readout: presented video frames (with the Alpha cap) and the headset's render rate.
 
 const WINDOW := 0.5 # seconds per sample
+## Shared upper-left anchor for passive playback feedback, in camera-local metres.
+const HUD_POSITION := Vector3(-0.42, 0.30, -0.75)
 
 ## Returns {"frames": int presented-pair count, "target": int Alpha cap or 0, "active": bool}.
 var source: Callable
@@ -9,7 +11,7 @@ var _elapsed := 0.0
 var _frames := -1
 
 func _ready() -> void:
-	position = Vector3(-0.17, 0.15, -0.75)
+	position = HUD_POSITION
 	pixel_size = 0.0007
 	font_size = 32
 	outline_size = 8

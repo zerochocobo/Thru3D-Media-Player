@@ -3,6 +3,7 @@ extends SceneTree
 const State := preload("res://scripts/mpv_subtitle_state.gd")
 const Video := preload("res://scripts/mpv_video_display.gd")
 const I18n := preload("res://scripts/i18n.gd")
+const Style := preload("res://scripts/subtitle_style.gd")
 var failures: Array[String] = []
 var checks := 0
 
@@ -24,6 +25,15 @@ func check(value: bool, message: String) -> void:
 
 func _initialize() -> void:
 	I18n.use("en")
+	for sample_text in ["单行字幕 😀", "\n 单行字幕 \r\n", ""]:
+		check(Style.display_text(sample_text, 2) == sample_text, "Missing second line preserves the complete original cue")
+	for newline in ["\n", "\r\n", "\r"]:
+		var multiline: String = "第一行" + newline + "  " + newline + "Second line 😀" + newline + "Third line"
+		check(Style.display_text(multiline, 0) == multiline, "All lines preserves original text and whitespace")
+		check(Style.display_text(multiline, 1) == "第一行", "First authored nonblank line")
+		check(Style.display_text(multiline, 2) == "Second line 😀", "Second authored nonblank line")
+	for invalid in [-1, 3, 1.5, "2", null, {}, NAN, INF]:
+		check(Style.normalize_line(invalid) == 0, "Invalid display selection defaults to all: " + str(invalid))
 	var state := State.new()
 	var pair := {"session_id": 7, "generation": 3, "source_epoch": 2, "mpv_source_handle": 55}
 	var sample := {"session_id": 7, "sequence": 1, "generation": 3, "source_epoch": 2,

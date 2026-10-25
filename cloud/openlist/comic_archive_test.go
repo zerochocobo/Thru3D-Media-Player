@@ -305,3 +305,38 @@ func TestComicLargeUserSampleOptional(t *testing.T) {
 	}
 	t.Logf("pages=%d range_reads=%d bytes=%d", len(c.pages), s.reads, s.bytes)
 }
+
+// The JVM fixture serves a completed production SmallRarCache through the real
+// LocalStreamServer. A completed cache is classified local by ArchiveBridge.
+func TestComicCachedLoopbackOptional(t *testing.T) {
+	address := os.Getenv("COMIC_CACHED_LOOPBACK")
+	if address == "" {
+		t.Skip("Optional JVM cache-to-decoder integration")
+	}
+	started := time.Now()
+	s, e := newComicSource(context.Background(), address)
+	if e != nil {
+		t.Fatal(e)
+	}
+	c, e := comicIndex(s, "sample.rar", "")
+	if e != nil {
+		t.Fatal(e)
+	}
+	if len(c.pages) == 0 {
+		t.Fatal("Cached RAR has no image pages")
+	}
+	t.Logf("cached index: entries=%d pages=%d local_ranges=%d local_bytes=%d elapsed_ms=%d", len(c.entries), len(c.pages), s.reads, s.bytes, time.Since(started).Milliseconds())
+	c.dir = t.TempDir()
+	for _, i := range []int{0, 1, len(c.pages) / 2, len(c.pages) - 1} {
+		if _, e := c.page(i); e != nil {
+			t.Fatal(e)
+		}
+	}
+	reads := s.reads
+	for _, i := range []int{len(c.pages) - 1, len(c.pages) / 2} {
+		if _, e := c.page(i); e != nil || s.reads != reads {
+			t.Fatal("Cached page reread contacted source", e)
+		}
+	}
+	t.Logf("cached index and four CRC-verified pages: elapsed_ms=%d", time.Since(started).Milliseconds())
+}

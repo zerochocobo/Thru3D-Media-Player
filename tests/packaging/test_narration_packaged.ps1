@@ -15,9 +15,12 @@ $cloneManifest = @{ id='clone-test'; directory='narration/clone-test'; files=@{ 
 $vadManifestPath = Join-Path $output 'vad_model.json'
 $vadManifest = $cloneManifest.Replace('clone-test','vad-test')
 [IO.File]::WriteAllText($vadManifestPath,$vadManifest,[Text.UTF8Encoding]::new($false))
+$comicManifestPath = Join-Path $output 'comic_model.json'
+$comicManifest = @{ id='comic-test'; directory='comic-ocr/comic-test'; files=@{ 'detector.onnx'=@{ bytes=$bytes.Length; sha256=$hash }; 'recognizer.onnx'=@{ bytes=$bytes.Length; sha256=$hash } } } | ConvertTo-Json -Depth 5
+[IO.File]::WriteAllText($comicManifestPath,$comicManifest,[Text.UTF8Encoding]::new($false))
 $checks = 0
 foreach ($format in @('aar','apk')) {
-    foreach ($fault in @('none','runtime','manifest','weights','length','digest','manifest-drift','clone-manifest','clone-weights','clone-digest','vad-manifest','vad-weights','vad-digest')) {
+    foreach ($fault in @('none','runtime','manifest','weights','length','digest','manifest-drift','clone-manifest','clone-weights','clone-digest','vad-manifest','vad-weights','vad-digest','comic-manifest','comic-manifest-drift','comic-detector','comic-recognizer','comic-length','comic-digest')) {
         $path = Join-Path $output "$format-$fault.$format"
         $zip = [IO.Compression.ZipFile]::Open($path,[IO.Compression.ZipArchiveMode]::Create)
         try {
@@ -31,6 +34,9 @@ foreach ($format in @('aar','apk')) {
                 'assets/narration/vad-test/encoder.data'=$bytes
                 'assets/narration/clone-test/encoder.data'=$bytes
                 'assets/narration/test/model/weights.data'=$bytes
+                'assets/comic-ocr/model.json'=[IO.File]::ReadAllBytes($comicManifestPath)
+                'assets/comic-ocr/comic-test/detector.onnx'=$bytes
+                'assets/comic-ocr/comic-test/recognizer.onnx'=$bytes
             }
             switch ($fault) {
                 'runtime' { $entries.Remove("$prefix/arm64-v8a/libonnxruntime.so") }
@@ -45,6 +51,12 @@ foreach ($format in @('aar','apk')) {
                 'clone-manifest' { $entries.Remove('assets/narration/clone_model.json') }
                 'clone-weights' { $entries.Remove('assets/narration/clone-test/encoder.data') }
                 'clone-digest' { $entries['assets/narration/clone-test/encoder.data']=[byte[]]::new($bytes.Length) }
+                'comic-manifest' { $entries.Remove('assets/comic-ocr/model.json') }
+                'comic-manifest-drift' { $entries['assets/comic-ocr/model.json']=[Text.Encoding]::UTF8.GetBytes('{}') }
+                'comic-detector' { $entries.Remove('assets/comic-ocr/comic-test/detector.onnx') }
+                'comic-recognizer' { $entries.Remove('assets/comic-ocr/comic-test/recognizer.onnx') }
+                'comic-length' { $entries['assets/comic-ocr/comic-test/detector.onnx']=[byte[]]@(1) }
+                'comic-digest' { $entries['assets/comic-ocr/comic-test/recognizer.onnx']=[byte[]]::new($bytes.Length) }
             }
             foreach ($name in $entries.Keys) {
                 $stream=$zip.CreateEntry($name).Open()
@@ -52,7 +64,7 @@ foreach ($format in @('aar','apk')) {
             }
         } finally { $zip.Dispose() }
         $rejected=$false
-        try { & "$workspace/tools/Assert-NarrationPackaged.ps1" -ArchivePath $path -ManifestPath $manifestPath -CloneManifestPath $cloneManifestPath -VadManifestPath $vadManifestPath }
+        try { & "$workspace/tools/Assert-NarrationPackaged.ps1" -ArchivePath $path -ManifestPath $manifestPath -CloneManifestPath $cloneManifestPath -VadManifestPath $vadManifestPath -ComicManifestPath $comicManifestPath }
         catch { $rejected=$true }
         if ($rejected -ne ($fault -ne 'none')) { throw "Wrong narration package result: $format/$fault" }
         $checks++

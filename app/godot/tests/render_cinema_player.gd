@@ -126,6 +126,7 @@ func _run() -> void:
 		I18n.use(language); _background_page()
 		main.rays.clear(); main._update_controller_feedback(0.01)
 		await _shot("03-background-page-" + language)
+	await _check_menu_occlusion()
 	I18n.use("en")
 	_background_page()
 	check(_choice("cinema_interaction", "move"), "Background interaction choice activates free movement through actual controller release")
@@ -139,17 +140,17 @@ func _run() -> void:
 		if candidate.get("valid", false): floor_ray = candidate_ray; floor_hit = candidate; break
 	if not floor_ray.is_empty():
 		main.rays.right_hand = floor_ray
-		main._on_controller_button("ax_button", "right_hand")
+		main._process_sticks(Vector2.ZERO, Vector2.ZERO, .016)
+		main._process_sticks(Vector2.ZERO, Vector2(0, 1), .016)
 	check(floor_hit.get("kind", "") == "floor" and floor_hit.get("valid", false), "Rendered floor feedback uses a valid reachable target", floor_hit)
 	main._update_controller_feedback(0.016)
-	_update_feedback()
 	# Desktop-only viewing adjustment makes the real floor marker visible in the capture.
 	if not floor_hit.is_empty(): main.xr_camera.look_at(floor_hit.position, Vector3.UP)
 	var floor_frame := await _shot("05-floor-ray-feedback")
 	var visual: Node3D = main.cinema_environment.get_node_or_null("CinemaPointer_right_hand")
 	check(visual != null and visual.is_visible_in_tree() and visual.get_node("FloorRing").is_visible_in_tree(), "Production floor feedback ring is visible")
 	check(_green_pixels(floor_frame) > 400, "Valid floor ring produces real visible pixels")
-	main._on_controller_release("ax_button", "right_hand")
+	main._process_sticks(Vector2.ZERO, Vector2.ZERO, .016)
 	_close_menus(); main._cinema_request_interaction("watch")
 	main.xr_camera.look_at(Vector3(8, 7, 20), Vector3.UP)
 	main._on_setting_changed("cinema_lights", "on")
@@ -165,6 +166,33 @@ func _close_menus() -> void:
 	for menu in [main.recent_menu, main.video_menu, main.photo_menu, main.music_menu]:
 		if menu: menu.dismiss()
 	main.player_menu = main.video_menu
+
+func _check_menu_occlusion() -> void:
+	var menu: Node3D = main.recent_menu
+	var controls: Array = menu._buttons.filter(func(button): return button.target == menu.FOLLOW)
+	check(not controls.is_empty(), "Lower-left library footer has a production control")
+	if controls.is_empty(): return
+	var point: Vector3 = controls[0].node.global_position
+	var pixel := Vector2i(main.xr_camera.unproject_position(point).round())
+	var reference := await _shot("04-menu-unobstructed")
+	var blocker := MeshInstance3D.new()
+	blocker.mesh = QuadMesh.new(); blocker.mesh.size = Vector2(.3, .3)
+	var material := StandardMaterial3D.new()
+	material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	material.albedo_color = Color.MAGENTA
+	blocker.material_override = material
+	viewport.add_child(blocker)
+	blocker.global_transform = Transform3D(main.xr_camera.global_basis, main.xr_camera.global_position.lerp(point, .6))
+	menu.set_scene_overlay(false)
+	var obstructed := await _shot("04-menu-occlusion-control")
+	menu.set_scene_overlay(true)
+	var protected := await _shot("04-menu-occlusion-fixed")
+	var before := reference.get_pixelv(pixel)
+	check(Vector3(before.r, before.g, before.b).distance_to(Vector3(obstructed.get_pixelv(pixel).r, obstructed.get_pixelv(pixel).g, obstructed.get_pixelv(pixel).b)) > .2,
+		"Opaque foreground reproduces lower-left menu occlusion with protection disabled")
+	check(Vector3(before.r, before.g, before.b).distance_to(Vector3(protected.get_pixelv(pixel).r, protected.get_pixelv(pixel).g, protected.get_pixelv(pixel).b)) < .03,
+		"Cinema overlay preserves the actual lower-left footer pixels through foreground geometry")
+	blocker.free()
 
 func _look_at_screen() -> void:
 	main.xr_camera.look_at((main.video.global_transform * main.video.flat_pose).origin, Vector3.UP)
@@ -220,9 +248,10 @@ func _teleport_row(id: String) -> bool:
 		var point := Vector3(seat.exit_position[0], seat.exit_position[1], seat.exit_position[2])
 		main.rays.right_hand = [point + Vector3.UP * 1.65, Vector3.DOWN]
 		main.controller_feedback.wake("right_hand")
-		# Teleport is hold right A to aim, release to move; the trigger owns menus.
-		main._on_controller_button("ax_button", "right_hand")
-		main._on_controller_release("ax_button", "right_hand")
+		# Hold the right stick forward to aim, release to move; trigger owns menus.
+		main._process_sticks(Vector2.ZERO, Vector2.ZERO, .016)
+		main._process_sticks(Vector2.ZERO, Vector2(0, 1), .016)
+		main._process_sticks(Vector2.ZERO, Vector2.ZERO, .016)
 		main.rays.clear(); main._update_controller_feedback(.016)
 		return main.xr_camera.global_position.is_equal_approx(point + Vector3.UP * 1.65)
 	return false
@@ -254,11 +283,6 @@ func _record_view(label: String) -> void:
 		"camera_vertical_fov_degrees": camera.fov,
 		"camera_horizontal_fov_degrees": rad_to_deg(2 * atan(tan(deg_to_rad(camera.fov) / 2) * float(viewport.size.x) / viewport.size.y)),
 		"viewport_pixels": [viewport.size.x, viewport.size.y]})
-
-func _update_feedback() -> void:
-	# Production main is manually clocked in this fixture. Its normal frame
-	# route updates actual environment feedback for the injected tracked rays.
-	main._process(0.016)
 
 func _green_pixels(image: Image) -> int:
 	var count := 0

@@ -1,0 +1,15 @@
+{
+  "id": "v6-small",
+  "directory": "comic-ocr/v6-small",
+  "source": "RapidAI/RapidOCR v3.10.0; PP-OCRv6 Small ONNX. Separately supplied payloads; original URLs and preparation are documented in docs/COMIC_READING.md.",
+  "files": {
+    "multi_PP-OCRv6_det_small.onnx": {
+      "bytes": 9929594,
+      "sha256": "090f04abcd9d9a7498bc4ebf677e4cb9bdce1fe4197ddb7e529f1ef44e1ff94f"
+    },
+    "multi_PP-OCRv6_rec_small.onnx": {
+      "bytes": 21234383,
+      "sha256": "6f327246b50388f3c176ae304bd95767ea6dc0c9ae92153ef8cbe210b3c14884"
+    }
+  }
+}

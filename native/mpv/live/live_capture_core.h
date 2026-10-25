@@ -12,7 +12,7 @@
 #include <unistd.h>
 
 namespace quest::live {
-constexpr int sample_rate = 48000, audio_frames = 1024;
+constexpr int sample_rate = 48000, audio_frames = 1024, max_audio_channels = 8;
 constexpr size_t video_budget = 64u * 1024u * 1024u;
 inline int64_t monotonic_ns() {
     return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -30,6 +30,39 @@ inline Codec retain(const AVCodecParameters* codec) {
     Codec result(copy, [](AVCodecParameters* p) { avcodec_parameters_free(&p); });
     capture::check(avcodec_parameters_copy(copy, codec)); return result;
 }
+// Matroska stores presentation timestamps, but libavformat's mux API still requires
+// a nondecreasing decode ordering key. mpv MKV packets can omit every DTS (and use
+// -1 seconds for unknown duration). Never substitute PTS directly: B pictures reorder.
+// A bounded lookahead produces a lower envelope of the untouched presentation times.
+// Equal ordering keys are valid for Matroska (AVFMT_TS_NONSTRICT); no FPS is invented.
+// 32 packets cover H.264/HEVC's bounded picture reordering. Fail explicitly if a source
+// exceeds that bound, rather than changing its PTS or silently dropping pictures.
+class MatroskaTimeline {
+    std::deque<Packet> pending;
+    bool repair=false;
+    int64_t last=AV_NOPTS_VALUE;
+    template<class Sink> void emit(Sink& sink) {
+        for(const auto& packet:pending)if(packet->dts==AV_NOPTS_VALUE)repair=true;
+        auto packet=std::move(pending.front());pending.pop_front();
+        if(repair) {
+            int64_t lower=packet->pts;
+            for(const auto& future:pending)lower=std::min(lower,future->pts);
+            packet->dts=lower;
+        }
+        if(packet->pts==AV_NOPTS_VALUE||packet->dts==AV_NOPTS_VALUE||packet->dts>packet->pts||
+            (last!=AV_NOPTS_VALUE&&packet->dts<last))throw std::runtime_error("Clip timestamps unavailable");
+        last=packet->dts;
+        if(packet->duration<0)packet->duration=0;
+        sink(std::move(packet));
+    }
+public:
+    template<class Sink> void push(Packet packet,Sink& sink) {
+        pending.push_back(std::move(packet));
+        if(pending.size()>32)emit(sink);
+    }
+    template<class Sink> void finish(Sink& sink) {while(!pending.empty())emit(sink);}
+};
+
 // Bounded MPSC queue. Producers never acquire a lock or wait for the disk worker.
 template<class T, size_t N> class Queue {
     struct Cell { std::atomic<size_t> sequence{}; T value{}; };
@@ -58,7 +91,8 @@ public:
 };
 struct Audio {
     uint64_t owner=0; int frames=0, rate=0, channels=0, format=0; int64_t ns=0;
-    float gain=1; std::array<unsigned char,audio_frames*2*sizeof(float)> bytes{};
+    uint64_t layout=0;
+    float gain=1; std::array<unsigned char,audio_frames*max_audio_channels*sizeof(float)> bytes{};
     int64_t end_ns() const { return ns+static_cast<int64_t>(frames)*1000000000/rate; }
 };
 struct FileClose {void operator()(FILE* file)const{if(file)std::fclose(file);}};
@@ -104,19 +138,29 @@ public:
 
 class Wave {
     FILE* file=nullptr;
+    const uint64_t channel_mask;
+    const int channels,header_bytes;
     int64_t cursor=0;
-    std::map<int64_t,std::array<float,960>> blocks; // 10 ms, stereo
+    std::map<int64_t,std::array<float,480*max_audio_channels>> blocks; // 10 ms
     std::unordered_map<uint64_t,int64_t> heard;
     static void put(FILE* f,uint64_t value,int count) { for(int i=0;i<count;++i) { if(std::fputc(value&255,f)==EOF) throw std::runtime_error("Not enough storage"); value>>=8; } }
     static void bytes(FILE* f,const void* data,size_t size) { if(std::fwrite(data,1,size,f)!=size) throw std::runtime_error("Not enough storage"); }
 public:
-    explicit Wave(const std::string& path) {
+    explicit Wave(const std::string& path,uint64_t mask=3)
+        :channel_mask(mask),channels(av_popcount64(mask)),header_bytes(channels>2?104:80) {
+        if(channels<2||channels>max_audio_channels||mask>UINT32_MAX)throw std::runtime_error("Capture audio format unavailable");
         file=std::fopen(path.c_str(),"wb+"); if(!file) throw std::runtime_error("Capture save failed");
         // RF64 avoids the 4 GiB WAV limit without a second encoding pass.
         bytes(file,"RF64",4);put(file,0xffffffff,4);bytes(file,"WAVEds64",8);put(file,28,4);
         put(file,0,8);put(file,0,8);put(file,0,8);put(file,0,4);
-        bytes(file,"fmt ",4);put(file,16,4);put(file,3,2);put(file,2,2);put(file,sample_rate,4);
-        put(file,sample_rate*8,4);put(file,8,2);put(file,32,2);bytes(file,"data",4);put(file,0xffffffff,4);
+        bytes(file,"fmt ",4);put(file,channels>2?40:16,4);put(file,channels>2?0xfffe:3,2);put(file,channels,2);put(file,sample_rate,4);
+        put(file,sample_rate*channels*4,4);put(file,channels*4,2);put(file,32,2);
+        if(channels>2) {
+            put(file,22,2);put(file,32,2);put(file,mask,4);
+            const uint8_t ieee_float[]={3,0,0,0,0,0,0x10,0,0x80,0,0,0xaa,0,0x38,0x9b,0x71};
+            bytes(file,ieee_float,sizeof(ieee_float));
+        }
+        bytes(file,"data",4);put(file,0xffffffff,4);
     }
     ~Wave(){if(file)std::fclose(file);}
     void add(const Audio& audio,const Clock& clock,int64_t base_us,int64_t begin_ns,int64_t end_ns) {
@@ -126,8 +170,20 @@ public:
         const int64_t last=std::min(audio.end_ns(),end_ns);
         previous=std::max(previous,last);
         if(last<=first) return;
+        // AAudio uses WAVE/Android speaker-bit order. Preserve the source's
+        // complete output layout; independent stereo speech is mixed into FL/FR.
+        const auto layout=audio.layout?audio.layout:audio.channels==channels?channel_mask:audio.channels==1?uint64_t(4):uint64_t(3);
+        if(av_popcount64(layout)!=audio.channels||(! (channels==2&&audio.channels==1) && (layout&~channel_mask)))
+            throw std::runtime_error("Capture audio format unavailable");
+        std::array<int,max_audio_channels> mapped{};mapped.fill(-1);
+        int destination=0;
+        for(int bit=0;bit<32;++bit)if(channel_mask&(uint64_t(1)<<bit)) {
+            if(channels==2&&audio.channels==1)mapped[destination++]=0;
+            else mapped[destination++]=(layout&(uint64_t(1)<<bit))?av_popcount64(layout&((uint64_t(1)<<bit)-1)):-1;
+        }
         auto sample=[&](int frame,int channel) {
-            const int index=frame*audio.channels+std::min(channel,audio.channels-1);
+            if(mapped[channel]<0)return 0.f;
+            const int index=frame*audio.channels+mapped[channel];
             if(audio.format==1) { float value;std::memcpy(&value,audio.bytes.data()+index*4,4);return std::isfinite(value)?value*audio.gain:0.f; }
             if(audio.format==3) {int32_t value;std::memcpy(&value,audio.bytes.data()+index*4,4);return static_cast<float>(value/2147483648.0)*audio.gain;}
             int16_t value;std::memcpy(&value,audio.bytes.data()+index*2,2);return value/32768.f*audio.gain;
@@ -145,24 +201,25 @@ public:
             const float mix=static_cast<float>(source-a);
             auto& block=blocks[output/480];
             if(blocks.size()>500)throw std::runtime_error("Capture clock stalled");
-            for(int channel=0;channel<2;++channel)block[(output%480)*2+channel]+=sample(a,channel)*(1-mix)+sample(b,channel)*mix;
+            for(int channel=0;channel<channels;++channel)block[(output%480)*channels+channel]+=sample(a,channel)*(1-mix)+sample(b,channel)*mix;
         }
     }
     void flush(int64_t frames) {
         while(cursor<frames) {
             const int count=static_cast<int>(std::min<int64_t>(480-cursor%480,frames-cursor));
             auto found=blocks.find(cursor/480);
-            std::array<float,960> data{};
-            if(found!=blocks.end())for(int i=0;i<count*2;++i)data[i]=std::clamp(found->second[(cursor%480)*2+i],-1.f,1.f);
-            bytes(file,data.data(),count*2*sizeof(float)); cursor+=count;
+            std::array<float,480*max_audio_channels> data{};
+            if(found!=blocks.end())for(int i=0;i<count*channels;++i)data[i]=std::clamp(found->second[(cursor%480)*channels+i],-1.f,1.f);
+            bytes(file,data.data(),count*channels*sizeof(float)); cursor+=count;
             if(cursor%480==0&&found!=blocks.end())blocks.erase(found);
         }
     }
     void finish(int64_t frames) {
         flush(frames);
         // Buffered future output past the stop boundary must never appear in the file.
-        if(std::fflush(file)||ftruncate(fileno(file),80+frames*8))throw std::runtime_error("Capture save failed");
-        std::fseek(file,20,SEEK_SET);put(file,72+frames*8,8);put(file,frames*8,8);put(file,frames,8);
+        const auto size=frames*channels*4;
+        if(std::fflush(file)||ftruncate(fileno(file),header_bytes+size))throw std::runtime_error("Capture save failed");
+        std::fseek(file,20,SEEK_SET);put(file,header_bytes-8+size,8);put(file,size,8);put(file,frames,8);
         if(std::fflush(file))throw std::runtime_error("Capture save failed");
     }
 };
@@ -180,6 +237,7 @@ class Session {
     std::atomic<int64_t> latest_us{0};
     std::atomic<int64_t> source_us{0}, clock_deviation_us{0};
     std::atomic<int> failure{0};
+    std::atomic<int> export_progress{0};
     std::atomic<size_t> peak_bytes{0}, video_packets{0}, audio_samples{0}, lost_blocks{0};
     std::atomic<int64_t> callback_max_ns{0}, io_max_ns{0};
     template<class T> static void maximum(std::atomic<T>& target,T value){auto before=target.load();while(before<value&&!target.compare_exchange_weak(before,value)) {}}
@@ -200,21 +258,25 @@ class Session {
             capture::check(avformat_write_header(video.ctx,nullptr));
             std::unique_ptr<FILE,FileClose> index(std::fopen(index_path.c_str(),"wb"));
             if(!index)throw std::runtime_error("Capture save failed");
-            Wave wave(audio_path);
+            Wave wave(audio_path,channel_mask);
+            MatroskaTimeline timeline;
+            auto write_video=[&](Packet packet) {
+                queued_bytes.fetch_sub(packet->size);
+                const Stamp stamp{packet->pts,packet->dts,packet->duration,packet->flags,packet->size};
+                if(std::fwrite(&stamp,sizeof(stamp),1,index.get())!=1)throw std::runtime_error("Not enough storage");
+                packet->pts-=base_us;packet->dts-=base_us;
+                av_packet_rescale_ts(packet.get(),AVRational{1,1000000},stream->time_base);
+                packet->stream_index=0;packet->pos=-1;
+                const auto started=monotonic_ns();
+                capture::check(av_interleaved_write_frame(video.ctx,packet.get()));
+                maximum(io_max_ns,monotonic_ns()-started);
+            };
             for(;;) {
                 if(cancelled.load())throw std::runtime_error("Clip export cancelled");
                 if(failure.load())throw std::runtime_error(failure.load()==2?"Capture audio format unavailable":failure.load()==4?"Capture audio clock unavailable":"Capture writer could not keep up");
                 bool worked=false; Packet packet;
                 for(int i=0;i<32&&packets.take(packet);++i) {
-                    worked=true;queued_bytes.fetch_sub(packet->size);
-                    const Stamp stamp{packet->pts,packet->dts,packet->duration,packet->flags,packet->size};
-                    if(std::fwrite(&stamp,sizeof(stamp),1,index.get())!=1)throw std::runtime_error("Not enough storage");
-                    packet->pts-=base_us;if(packet->dts!=AV_NOPTS_VALUE)packet->dts-=base_us;
-                    av_packet_rescale_ts(packet.get(),AVRational{1,1000000},stream->time_base);
-                    packet->stream_index=0;packet->pos=-1;
-                    const auto started=monotonic_ns();
-                    capture::check(av_interleaved_write_frame(video.ctx,packet.get()));packet.reset();
-                    maximum(io_max_ns,monotonic_ns()-started);
+                    worked=true;timeline.push(std::move(packet),write_video);
                 }
                 Audio chunk;
                 for(int i=0;i<128&&audio.take(chunk);++i) {
@@ -228,7 +290,7 @@ class Session {
                         wave.add(chunk,segments[segment],base_us,std::max(begin_ns,segments[segment].ns),std::min(stop_ns.load(),last));
                     }
                 }
-                if(finishing.load()&&!worked)break;
+                if(finishing.load()&&!worked){timeline.finish(write_video);break;}
                 // One second of local mixing headroom covers queued AAudio and heard-PCM reports.
                 const auto safe_ns=monotonic_ns()-1000000000;
                 Clock safe_clock;
@@ -247,9 +309,10 @@ class Session {
     }
 public:
     const int64_t base_us, begin_us, begin_ns;
+    const uint64_t channel_mask;
     const std::string video_path, audio_path, index_path;
-    Session(Codec params,int64_t first,int64_t begin,int64_t ns,bool playing,const std::string& path)
-        :codec(std::move(params)),base_us(first),begin_us(begin),begin_ns(ns),video_path(path+".mkv"),audio_path(path+".wav"),index_path(path+".idx") {
+    Session(Codec params,int64_t first,int64_t begin,int64_t ns,bool playing,const std::string& path,uint64_t mask=3)
+        :codec(std::move(params)),base_us(first),begin_us(begin),begin_ns(ns),channel_mask(mask),video_path(path+".mkv"),audio_path(path+".wav"),index_path(path+".idx") {
         clocks.push_back({ns,begin,playing});
         latest_us.store(begin);
         source_us.store(begin);
@@ -272,7 +335,7 @@ public:
     }
     void push(const Audio& chunk) noexcept {
         const auto started=monotonic_ns();
-        if(chunk.channels<1||chunk.channels>2||chunk.rate<8000||chunk.rate>192000||chunk.format<1||chunk.format>3){fail(2);return;}
+        if(chunk.channels<1||chunk.channels>max_audio_channels||chunk.rate<8000||chunk.rate>192000||chunk.format<1||chunk.format>3){fail(2);return;}
         if(!audio.offer([&](Audio& value){value=chunk;})){++lost_blocks;fail();}
         audio_samples.fetch_add(chunk.frames);maximum(callback_max_ns,monotonic_ns()-started);
     }
@@ -298,6 +361,7 @@ public:
     void cancel(){cancelled.store(true);stop(begin_us);}
     void stop(int64_t position,int64_t ns=monotonic_ns()) {if(end_us.load()==INT64_MAX)limit(position,ns);finishing.store(true);}
     bool done()const{return finished.load();}
+    int export_percent()const{return export_progress.load();}
     int64_t end()const{return end_us.load();}
     int64_t position()const{return source_us.load();}
     int64_t audio_duration() {
@@ -309,6 +373,7 @@ public:
     }
     std::string export_file(const std::string& path,const std::string& mode) {
         try {
+            export_progress.store(0);
             if(!done()||audio_duration()<=0)throw std::runtime_error("Recording is empty");
             struct Local {
                 AVFormatContext* ctx=nullptr;
@@ -331,6 +396,7 @@ public:
             capture::check(avcodec_parameters_copy(out_audio->codecpar,pcm.ctx->streams[0]->codecpar));out_audio->codecpar->codec_tag=0;
             out_audio->time_base=pcm.ctx->streams[0]->time_base;
             av_dict_set(&output.ctx->metadata,"thru3d_mode",mode.c_str(),0);
+            if(av_popcount64(channel_mask)>2)av_dict_set(&output.ctx->metadata,"thru3d_audio_channel_mask",std::to_string(channel_mask).c_str(),0);
             av_dict_set(&out_audio->metadata,"title","Live audio",0);
             output.ctx->avoid_negative_ts=AVFMT_AVOID_NEG_TS_MAKE_NON_NEGATIVE;
             capture::check(avio_open(&output.ctx->pb,path.c_str(),AVIO_FLAG_WRITE));
@@ -364,6 +430,7 @@ public:
                 const auto audio_time=have_a?av_rescale_q(a->pts,pcm.ctx->streams[0]->time_base,AVRational{1,1000000}):INT64_MAX;
                 const bool is_video=have_v&&video_time<=audio_time;
                 auto* packet=is_video?v.get():a.get();
+                const auto copied_us=is_video?video_time:audio_time;
                 // Playback keeps the I/O budget. Local finishing must not saturate
                 // shared storage while the user has continued watching another video.
                 if(playback_busy.load()) {
@@ -378,15 +445,20 @@ public:
                 av_packet_rescale_ts(packet,is_video?AVRational{1,1000000}:pcm.ctx->streams[0]->time_base,is_video?out_video->time_base:out_audio->time_base);
                 packet->stream_index=is_video?0:1;packet->pos=-1;
                 capture::check(av_interleaved_write_frame(output.ctx,packet));av_packet_unref(packet);
+                const auto span=std::max<int64_t>(1,end()-base_us);
+                const int percent=static_cast<int>(std::clamp<int64_t>(copied_us*100/span,0,99));
+                maximum(export_progress,percent);
                 if(is_video){have_v=false;++count;}else have_a=false;
             }
             if(count<2)throw std::runtime_error("Recording is too short");
             capture::check(av_write_trailer(output.ctx));avio_flush(output.ctx->pb);capture::check(output.ctx->pb->error);
+            export_progress.store(100);
             return "{\"state\":\"saved\",\"extension\":\"mkv\",\"start_us\":"+std::to_string(base_us)+",\"end_us\":"+std::to_string(end())+",\"video_packets\":"+std::to_string(count)+"}";
         }catch(const std::exception& problem){return "{\"state\":\"error\",\"error\":"+json_quote(problem.what())+"}";}
     }
     std::string metrics()const {
         return "{\"video_packets\":"+std::to_string(video_packets.load())+",\"audio_frames\":"+std::to_string(audio_samples.load())+
+            ",\"audio_channels\":"+std::to_string(av_popcount64(channel_mask))+",\"audio_channel_mask\":"+std::to_string(channel_mask)+
             ",\"video_queue_peak_bytes\":"+std::to_string(peak_bytes.load())+",\"lost_blocks\":"+std::to_string(lost_blocks.load())+
             ",\"callback_max_us\":"+std::to_string(callback_max_ns.load()/1000)+",\"writer_max_io_us\":"+std::to_string(io_max_ns.load()/1000)+
             ",\"source_clock_deviation_us\":"+std::to_string(clock_deviation_us.load())+"}";
@@ -427,13 +499,13 @@ public:
             if(auto value=std::atomic_load(&active))value->push(packet);
         }catch(...){if(auto value=std::atomic_load(&active))value->fail();}
     }
-    std::shared_ptr<Session> start(int64_t position,int64_t ns,bool playing,const std::string& path) {
+    std::shared_ptr<Session> start(int64_t position,int64_t ns,bool playing,const std::string& path,uint64_t mask=3) {
         std::lock_guard<std::mutex> lock(mutex);
         if(gap.load())throw std::runtime_error("Keyframe unavailable for recording");
         auto first=recent.end();
         for(auto at=recent.begin();at!=recent.end();++at)if(((*at)->flags&AV_PKT_FLAG_KEY)&&(*at)->pts<=position)first=at;
         if(first==recent.end()||!codec||position-(*first)->pts>10000000)throw std::runtime_error("Keyframe unavailable for recording");
-        auto result=std::make_shared<Session>(codec,(*first)->pts,position,ns,playing,path);
+        auto result=std::make_shared<Session>(codec,(*first)->pts,position,ns,playing,path,mask);
         for(auto at=first;at!=recent.end();++at)if(!result->push(at->get()))throw std::runtime_error("Capture writer could not keep up");
         std::atomic_store(&active,result);if(gap.load())result->fail();result->launch();return result;
     }

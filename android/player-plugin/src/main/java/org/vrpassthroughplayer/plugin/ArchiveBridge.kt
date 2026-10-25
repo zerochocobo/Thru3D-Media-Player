@@ -19,9 +19,10 @@ internal class ArchiveBridge(private val context: () -> Context?, private val so
     @Volatile private var cancellation: CloudCancellation? = null
     private val pages = ArchivePageRequests()
     @Volatile private var session = ""
-    private var sourceUri = ""
-    private var sourceLease = ""
+    @Volatile private var sourceUri = ""
+    @Volatile private var sourceLease = ""
     private var cacheCleaned = false
+    private var cacheInUse = false // guarded by PhotoCache.lock, including queued opens/closes
     private var sessionData: JSONObject? = null
     private var sessionPassword = ""
     private val unlocks by lazy {
@@ -44,6 +45,7 @@ internal class ArchiveBridge(private val context: () -> Context?, private val so
     fun open(id: Int, uri: String, title: String, password: String, persist: Boolean): Int {
         if (closed) return -1
         val serial = generation.incrementAndGet(); cancellation?.cancel(); cancelPage()
+        synchronized(PhotoCache.lock) { cacheInUse = true }
         worker.execute {
             if (serial != generation.get() || closed) return@execute
             val cancel = CloudCancellation(); cancellation = cancel
@@ -56,18 +58,22 @@ internal class ArchiveBridge(private val context: () -> Context?, private val so
                 }.getOrDefault("")
                 val cache = File(app().cacheDir, "comic-pages")
                 if (!cacheCleaned) {
-                    // Only disposable extracted pages owned by this bridge, never the source archive.
+                    // Disposable extracted pages and downloaded copies, never the user's original.
                     cache.listFiles()?.filter { it.name.startsWith("comic-") }?.forEach { it.deleteRecursively() }
                     cacheCleaned = true
                 }
                 if (sourceUri != uri || sourceLease.isEmpty()) {
                     releaseSession()
-                    sourceLease = sources.archiveStream(uri); sourceUri = uri
+                    val download = SmallRarCache(cache, cancel) { received, total ->
+                        if (serial == generation.get() && !closed)
+                            emit(id, JSONObject().put("state", "loading").put("received", received).put("total", total).toString())
+                    }
+                    sourceLease = sources.archiveStream(uri, download); sourceUri = uri
                 }
                 val retained = sessionData?.takeIf { session.isNotEmpty() }
                 val data = retained?.let { JSONObject(it.toString()) }
                     ?: core(JSONObject().put("op", "open").put("url", sourceLease).put("name", title.ifEmpty { Uri.parse(uri).lastPathSegment.orEmpty() })
-                        .put("password", candidate).put("remote", Uri.parse(uri).scheme !in setOf("file", "content", "usb"))
+                        .put("password", candidate).put("remote", Uri.parse(uri).scheme !in setOf("file", "content", "usb") && !sources.cachedArchive(sourceLease))
                         .put("cache", cache.absolutePath), cancel)
                 session = data.getString("session")
                 if (serial != generation.get() || closed) throw InterruptedException()
@@ -98,10 +104,40 @@ internal class ArchiveBridge(private val context: () -> Context?, private val so
         return Uri.fromFile(File(result.getString("path"))).toString()
     }
     fun cancelPage(id: Int? = null) { pages.cancel(id) }
+    fun validatePage(uri: String) {
+        val value = Uri.parse(uri)
+        check(!closed && value.scheme == "comic" && value.host == session && session.isNotEmpty() &&
+            sources.hasPhotoStream(sourceLease)) { "Archive session ended" }
+    }
+    fun takePage(uri: String, cancel: CloudCancellation): File {
+        validatePage(uri)
+        val value = Uri.parse(uri)
+        val page = value.path?.removePrefix("/")?.toIntOrNull() ?: error("Archive unavailable")
+        val ticket = java.util.UUID.randomUUID().toString().replace("-", "")
+        val result = try {
+            core(JSONObject().put("op", "take-page").put("session", value.host).put("page", page).put("transfer", ticket), cancel)
+        } catch (error: Exception) {
+            // A disconnected response can still have completed extraction. The core serializes
+            // cleanup after that request, so a late rename cannot resurrect an orphan.
+            runCatching { worker.execute { runCatching {
+                core(JSONObject().put("op", "discard-page").put("session", value.host).put("transfer", ticket))
+            } } }
+            throw error
+        }
+        val file = File(result.getString("path"))
+        try { validatePage(uri); return file }
+        catch (error: Exception) { file.delete(); throw error }
+    }
     fun stop(expected: String = "") {
         if (expected.isNotEmpty() && expected != session) return
-        generation.incrementAndGet(); cancellation?.cancel(); cancelPage()
-        worker.execute { releaseSession() }
+        val serial = generation.incrementAndGet(); cancellation?.cancel(); cancelPage()
+        worker.execute {
+            releaseSession()
+            synchronized(PhotoCache.lock) { if (serial == generation.get()) cacheInUse = false }
+        }
+    }
+    fun cacheDirectories(): Set<File> = synchronized(PhotoCache.lock) {
+        if (cacheInUse) setOf(File(app().cacheDir, "comic-pages")) else emptySet()
     }
     private fun releaseSession() {
         val key = session; session = ""

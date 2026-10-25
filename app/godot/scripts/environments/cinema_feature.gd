@@ -1,5 +1,5 @@
 extends RefCounted
-## The explicitly labelled test auditorium is available in Debug and Release.
+## The default auditorium is available in Debug and Release.
 
 static func enabled() -> bool:
 	return true

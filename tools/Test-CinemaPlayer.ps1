@@ -15,6 +15,7 @@ $cases = @(
     @('test_cinema_environment', 'Cinema environment: \d+ checks, 0 failures', $false),
     @('test_cinema_background_menu', 'CINEMA_BACKGROUND_MENU checks=\d+ failures=0', $true),
     @('test_cinema_player_integration', 'Cinema player integration: \d+ checks, 0 failures', $false),
+    @('test_cinema_world_transport', 'CINEMA_WORLD_TRANSPORT checks=\d+ failures=0', $false),
     @('render_cinema_player', 'Cinema player render: \d+ checks, 0 failures', $true)
 )
 foreach ($case in $cases) {

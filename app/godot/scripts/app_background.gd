@@ -21,6 +21,7 @@ var sky := Sky.new()
 var _material := PanoramaSkyMaterial.new()
 var _builtin: Texture2D
 var _custom: Texture2D
+var _custom_source := {}
 var _builtin_requested := ""
 var _thread: Thread
 var _job := {}
@@ -60,6 +61,12 @@ func _request_builtin() -> void:
 func has_custom() -> bool:
 	return _custom != null or (_owns_custom(custom_path) and FileAccess.file_exists(custom_path))
 
+func matches_photo(source: Dictionary) -> bool:
+	return not source.is_empty() and source == _custom_source and choice == "custom" and has_custom() and not loading and error.is_empty()
+
+func is_loading_custom() -> bool:
+	return _thread != null
+
 func _owns_custom(path: String) -> bool:
 	var clean := path.simplify_path()
 	return clean.get_base_dir() == directory.simplify_path() and clean.get_file().begins_with("custom_") and clean.ends_with(".image")
@@ -72,6 +79,7 @@ func remove_custom() -> bool:
 
 	_generation += 1
 	_custom = null; custom_path = ""; custom_title = ""; custom_orientation = 1
+	_custom_source.clear()
 	if choice == "custom": select("belfast")
 	else: error = ""; _apply()
 	return true
@@ -89,6 +97,7 @@ func _start_custom(path: String, orientation: int, copy: bool, title: String, so
 		error = "Background unavailable"; changed.emit(); return false
 	var destination := directory.path_join("custom_%d_%d.image" % [int(Time.get_unix_time_from_system()), Time.get_ticks_usec()]) if copy else path
 	_job = {"path": destination, "orientation": orientation, "copy": copy, "title": title, "generation": _generation}
+	_job["source"] = source.duplicate(true)
 	_job["stereo"] = bool(source.get("stereo", false))
 	_job["top_bottom"] = bool(source.get("top_bottom", false))
 	_job["swap_eyes"] = bool(source.get("swap_eyes", false))
@@ -185,6 +194,7 @@ func _process(_delta: float) -> void:
 		_thread = null
 		if result.has("image"):
 			_custom = ImageTexture.create_from_image(result.image)
+			_custom_source = _job.source
 			if _job.copy:
 				var previous := custom_path
 				custom_path = str(_job.path); custom_title = str(_job.title); custom_orientation = int(result.orientation)

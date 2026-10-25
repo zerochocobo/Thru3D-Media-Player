@@ -154,7 +154,7 @@ func _run() -> void:
 	for kind in ["preset", "custom"]:
 		ui.narration_voice_kind = kind; ui.narration_enabled = false; menu.refresh()
 		check(menu.choices.targets.values().all(func(item): return item.get("key", "") == "narration_enabled"), "Off hides every narration setting in " + kind)
-		check(not menu._buttons.any(func(item): return item.target in [menu.NARRATION_PREVIEW, menu.NARRATION_VOICES, menu.NARRATION_CLONE_START, menu.NARRATION_MORE]), "Off hides all narration actions in " + kind)
+		check(not menu._buttons.any(func(item): return item.target in [menu.NARRATION_PREVIEW, menu.NARRATION_VOICES, menu.NARRATION_CLONE_START]), "Off hides all narration actions in " + kind)
 		menu._activate(menu.NARRATION_CLONE_START); check(not menu.clone_panel.opened, "Off rejects a stale clone entry")
 	ui.narration_enabled = true
 	ui.narration_voice_kind = "preset"; menu.refresh()

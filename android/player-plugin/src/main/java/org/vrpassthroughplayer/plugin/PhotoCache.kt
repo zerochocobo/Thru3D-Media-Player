@@ -4,10 +4,10 @@ import java.io.File
 import java.nio.file.Files
 import java.nio.file.LinkOption.NOFOLLOW_LINKS
 
-/** Only photo transfer caches; never model programs, media originals or credentials. */
+/** Disposable photo/archive caches; never model programs, media originals or credentials. */
 internal object PhotoCache {
     val lock = Any()
-    private val names = listOf("photos", "photo-preloads", "photo-gallery", "pip-images")
+    private val names = listOf("photos", "photo-preloads", "photo-gallery", "pip-images", "comic-pages", "pdf-pages", "pdf-sources")
 
     fun usage(cache: File): Pair<Long, Long> = synchronized(lock) {
         var count = 0L
@@ -29,6 +29,8 @@ internal object PhotoCache {
         val active = protected.map { it.absoluteFile.toPath().normalize() }.toSet()
         for (name in names) {
             val root = File(cache, name).absoluteFile.toPath().normalize()
+            // An archive owns its original cache and extracted pages as one live session.
+            if (root in active) continue
             if (!Files.isDirectory(root, NOFOLLOW_LINKS)) continue
             Files.list(root).use { entries -> entries.forEach { entry ->
                 if (entry !in active) {

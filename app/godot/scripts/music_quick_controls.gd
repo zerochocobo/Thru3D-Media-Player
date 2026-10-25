@@ -50,11 +50,12 @@ func activate(target: int) -> bool:
 	if toggle_playback.is_valid(): toggle_playback.call()
 	return true
 
-func update(hand: String, origin: Vector3, direction: Vector3, tracked: bool) -> void:
+## [known_hit]: the host's ray_hit() for this ray when the caller already has it.
+func update(hand: String, origin: Vector3, direction: Vector3, tracked: bool, known_hit: Variant = null) -> void:
 	if not active or not host.visible:
 		reset(); return
 	var now := Time.get_ticks_msec()
-	var hit: Dictionary = host.ray_hit(origin, direction) if tracked else {}
+	var hit: Dictionary = (known_hit if known_hit is Dictionary else host.ray_hit(origin, direction)) if tracked else {}
 	var target := int(hit.get("target", host.NONE))
 	var over := target == open_target or (expanded and target == PLAY)
 	if expanded and not hit.is_empty() and target == host.NONE:

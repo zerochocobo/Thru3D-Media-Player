@@ -2,11 +2,14 @@
   "revision": "094a2f8a2a5e7fa64736e067de224ce28fdf5979",
   "archive_sha256": "3633c09eb65cba9864fe4ca1eff75ca1423174869e423e5fe9d8fce028fcf66a",
   "headers": {
+    "libavcodec/avcodec.h": "bb25f6590d93e65d1c303230a29d3adaf0def38e00068d9c0858ce03417ef472",
     "libavcodec/codec.h": "199d906581b4fd6b0076d36b9f27202d373a2694e0eb4e7dc3a97d4fc55e4bef",
+    "libavcodec/codec_desc.h": "d1fc6e89a3a7e49e61893620e00256d4f00db994764435ebe159b46a3c4326b5",
     "libavcodec/codec_id.h": "cc9a36c2d970e5a1ee0709113ffda577ceeb574956d34fa6f22eadbfce0206f1",
     "libavcodec/codec_par.h": "c33270179f2d44d94a75438923400f6a1c6dacf7b755692e723e3101cbeb65d3",
     "libavcodec/defs.h": "11bae649e58ccb373fdef106369816308683a2eae03d4e6b40876a95293b15f1",
     "libavcodec/packet.h": "2e10c19c2fd953a5f18198eea1106334254d963f86df7999857c293dee8ac056",
+    "libavcodec/version.h": "ac210110564acfb7cb1f2c55478b0f5ab7f7b5b1b6c2d090628e7dc0e24076b7",
     "libavcodec/version_major.h": "35121ed4ad0c5a4785dd4d80a2de618d2d4381ba6430c1cd9853950ce2325650",
     "libavformat/avformat.h": "3168d2209bc34f61478c1c6fef01a157545502217d79750ff09f54f4c1ef20d0",
     "libavformat/avio.h": "30312971fc299e65bc69cf1beddb76f50394e044d9c71fe32fec3ae9c13bd1af",
@@ -40,6 +43,9 @@
     "libavutil/riscv/intmath.h": "41e5aaaa8ff7020114a542a2f0536904e845e818c7fa9bdbda55e3bb4fc55092",
     "libavutil/samplefmt.h": "02b96f08ae94b165b740f034764ffbb6e25d065bd73e59c3fde3d5400490fbd5",
     "libavutil/version.h": "0f349d4b9b9bf119d317f56fd3776877ce5f9ea9b002c0f8f75ac2fcab3d0391",
-    "libavutil/x86/intmath.h": "afd21859af78b60d14206e97145c6f371c3452d56441c540364f6167507da220"
+    "libavutil/x86/intmath.h": "afd21859af78b60d14206e97145c6f371c3452d56441c540364f6167507da220",
+    "libswscale/swscale.h": "3c3c7c2aec2494f4881e8fed8baf01ef0db8c08e7c01a3300946ea3bb102a162",
+    "libswscale/version.h": "2f170002f8dee766a0f0a06de0cb5721b0935efdbeb334ecc3e6728be3b73182",
+    "libswscale/version_major.h": "b5981c7a57dda91c1b58aa9df212dd0214091f9d87448f2d86dac07f0ea17549"
   }
 }

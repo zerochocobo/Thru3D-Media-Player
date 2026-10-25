@@ -45,6 +45,7 @@ func _run() -> void:
 		check(has_off_blue, "Off-state blue is baked data, not default alpha: " + node.name)
 		seats += 1
 	check(seats == 168, "Original 84 near/far chunk pairs retained")
+	await _viewing_level_renders(environment)
 	var views := [
 		["01-overview", Vector3(13, 10, 28), Vector3(0, 4, 15), 75.0],
 		["02-aisle", Vector3(12.4, 5.25, 16.9), Vector3(9.3, 3.85, 17.6), 62.0],
@@ -55,10 +56,17 @@ func _run() -> void:
 		["09-footwell", Vector3(-.45, 5.25, 19.9), Vector3(-.45, 4.05, 19.0), 75.0],
 		# The back of the chair ahead is what a seated viewer studies most closely.
 		["10-seatback", Vector3(-.45, 5.25, 19.9), Vector3(-.45, 4.35, 18.4), 40.0],
+		# Close details: the exit beside the screen, the projection booth, the armrest.
+		["13-door", Vector3(13.0, 1.65, 4.2), Vector3(16.7, 1.2, 1.4), 60.0],
+		["13-booth", Vector3(0, 7.95, 28.0), Vector3(0, 10.3, 32.4), 50.0],
+		["13-armrest", Vector3(-.45, 5.25, 19.9), Vector3(-.9, 4.71, 19.75), 45.0],
 	]
 	for view in views:
 		main.xr_camera.global_position = view[1]; main.xr_camera.look_at(view[2], Vector3.UP); main.xr_camera.fov = view[3]
 		for mode in ["on", "off"]:
+			# The off bake is the playing state; off with no film keeps a little house light.
+			if mode == "off":
+				main.video.requested_play = true; main._cinema_lights_idle_since = -1
 			main._on_setting_changed("cinema_lights", mode)
 			environment._process(1.0)
 			var frame := await _shot(view[0] + "-" + mode)
@@ -131,6 +139,9 @@ func _run() -> void:
 	main.xr_camera.global_position = Vector3(0, 6.5, 22); main.xr_camera.look_at(Vector3(0, 6, -4), Vector3.UP); main.xr_camera.fov = 95.0
 	var dark := Color.BLACK
 	environment.set_film_light([dark, dark, dark])
+	# Let newly imported material pipelines finish before comparing screenshots.
+	for frame in 20:
+		await process_frame; await RenderingServer.frame_post_draw
 	var unlit := await _shot("11-film-none")
 	environment.set_film_light([Color(4, 0, 0), dark, Color(0, 0, 4)])
 	var film := await _shot("11-film-red-left-blue-right")
@@ -157,3 +168,30 @@ func _run() -> void:
 	file.store_string(JSON.stringify({"views": performance_views, "room_textures": texture_report, "room_texture_bytes": texture_bytes,
 		"lighting_materials": ids.size(), "hardware_scope": "Desktop GL only. Geometry and memory budgets are not Quest 2/PICO Neo3 frame-time measurements."}, "\t")); file.close()
 	await _finish()
+
+func _viewing_level_renders(environment: Node3D) -> void:
+	var samples: Array = []
+	var dark := Color.BLACK
+	environment.set_film_light([dark, dark, dark])
+	for view in [
+		["overview", Vector3(13, 10, 28), Vector3(0, 4, 15), 75.0],
+		["seatback", Vector3(-.45, 5.25, 19.9), Vector3(-.45, 4.35, 18.4), 40.0]]:
+		main.xr_camera.global_position = view[1]
+		main.xr_camera.look_at(view[2], Vector3.UP); main.xr_camera.fov = view[3]
+		var previous := -1.0
+		for level in ["low", "dim", "soft"]:
+			environment.set_viewing_brightness(level, true)
+			var frame := await _shot("12-viewing-" + view[0] + "-" + level)
+			var luminance := 0.0
+			var count := 0
+			for y in range(0, frame.get_height(), 8):
+				# The overview's screen is on the right; measure room lighting only.
+				for x in range(0, frame.get_width() / 2, 8):
+					luminance += frame.get_pixel(x, y).get_luminance(); count += 1
+			luminance /= count
+			check(previous < 0 or luminance > previous + .002, "Viewing tiers visibly brighten real room pixels: " + view[0] + " " + level, luminance)
+			previous = luminance
+			samples.append({"view": view[0], "level": level, "mix": environment._light_mix, "mean_luminance": luminance})
+	environment.set_viewing_brightness("low", false)
+	var file := FileAccess.open(output.path_join("viewing-levels.json"), FileAccess.WRITE)
+	file.store_string(JSON.stringify(samples, "\t")); file.close()

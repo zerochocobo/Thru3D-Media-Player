@@ -103,7 +103,7 @@ class PhotoPreloadTest {
         } finally { foreground.close(); closed.close(); work.forEach { it.run() }; root.deleteRecursively() }
     }
 
-    @Test fun backgroundCancellationDoesNotCancelForegroundWorkOnTheSameBridge() {
+    @Test fun backgroundDepthIsRejectedWithoutQueuingOrDisturbingCurrentWork() {
         val root = Files.createTempDirectory("vrpp-photo-depth-priority").toFile()
         val work = mutableListOf<Runnable>()
         val priorities = mutableListOf<Boolean>()
@@ -114,16 +114,33 @@ class PhotoPreloadTest {
             assertTrue(foreground.adopt(1, source(root, 1)))
             assertTrue(foreground.adopt(2, source(root, 2)))
             assertTrue(foreground.depth(1, 1f, true))
-            assertTrue(foreground.depth(2, 1f, true, true))
-            assertEquals(listOf(true, false), priorities)
+            assertFalse(foreground.depth(2, 1f, true, true))
+            assertEquals(listOf(true), priorities)
             foreground.cancelBackgroundDepth()
             assertTrue(foreground.depth(1, .8f, true))
-            assertEquals("Foreground work must still be joined", 2, work.size)
-            assertTrue(foreground.depth(2, .8f, true, true))
-            assertEquals("Cancelled background work needs a new request", 3, work.size)
+            assertEquals("Foreground work must still be joined", 1, work.size)
+            assertFalse(foreground.depth(2, .8f, true, true))
+            assertEquals("Background retry cannot allocate or queue", 1, work.size)
             assertTrue(foreground.activate(2))
             assertTrue(foreground.depth(2, .8f, true))
-            assertEquals("Activation promotes the existing background work", 3, work.size)
+            assertEquals("Only activation permits a new foreground task", 2, work.size)
         } finally { foreground.close(); work.forEach { it.run() }; root.deleteRecursively() }
+    }
+
+    @Test fun discardedDepthWaitsForWorkerAndPreservesOriginalSource() {
+        val root = Files.createTempDirectory("vrpp-photo-depth-discard").toFile()
+        try {
+            val original = source(root, 1)
+            val owner = PhotoSource(original)
+            val worker = owner.retain()
+            val depth = File(original.parentFile, "depth.bin").apply { writeText("depth") }
+            val pair = File(original.parentFile, "stereo-v2-100-2048x1536.rgba").apply { writeText("pair") }
+            owner.discardDepth()
+            assertTrue("An active worker retains its files", depth.isFile && pair.isFile)
+            worker.release()
+            assertFalse(depth.exists()); assertFalse(pair.exists())
+            assertTrue(original.isFile)
+            owner.release(); assertFalse(original.exists())
+        } finally { root.deleteRecursively() }
     }
 }

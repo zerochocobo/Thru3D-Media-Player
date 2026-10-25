@@ -10,6 +10,8 @@ import java.nio.ByteBuffer
 internal object MpvSourceNative {
     @JvmStatic external fun captureOwner(handle: Long): Long
     @JvmStatic external fun setPrivacy(enabled: Boolean)
+    /** Compositor cadence for layer releases; false without the MPV vsync patch. */
+    @JvmStatic external fun setVsync(displayNs: Long, periodNs: Long, latchLeadNs: Long): Boolean
     private val loaded = try { System.loadLibrary("quest_mpv"); true } catch (_: UnsatisfiedLinkError) { false }
     fun supported() = loaded && available()
     @JvmStatic private external fun available(): Boolean
@@ -25,7 +27,8 @@ internal object MpvSourceNative {
                                    layerSurface: android.view.Surface? = null, softwareLayer: Boolean = false,
                                    layerWidth: Int = 4096, layerHeight: Int = 4096, isoInput: Boolean = false,
                                    tlsCaFile: String = MpvTlsTrust.prepare(context),
-                                   networkInterleaveCompat: Boolean = false, isoPlaylist: Int = -1): Long
+                                   networkInterleaveCompat: Boolean = false, isoPlaylist: Int = -1,
+                                   networkCacheMiB: Int = 256): Long
     /** ISO header/title preflight on the source worker. playlist -1 selects the longest title.
      * JSON: width, height, duration_us, mvc, playlist (selected) and the selectable titles. */
     @JvmStatic external fun probeDisc(path: String, playlist: Int): String

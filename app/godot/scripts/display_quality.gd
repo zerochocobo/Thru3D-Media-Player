@@ -9,7 +9,11 @@ const TIER_DEFAULT := 1
 ## Matches the compositor's two sharpening filters; the value is the shader strength off the layer.
 const SHARPNESS := [0.0, 0.2, 0.6]
 const SHARPNESS_NAMES := ["Off", "Normal", "Quality"]
+## Photos keep gentle sharpening by default. Video starts without it: compositor sharpening on moving
+## 8K made fine detail flicker and felt harsh (Quest 3 tester, 2026-10-25); Skybox/Pigasus do not sharpen.
+## A saved choice still applies to both.
 const DEFAULT_SHARPNESS := 0.2
+const DEFAULT_VIDEO_SHARPNESS := 0.0
 ## Video output width: -1 follows the device tier, 0 keeps the source size.
 const AUTO_OUTPUT := -1
 ## XR2 Gen1 class GPUs (Quest 2/Pro, PICO Neo3/4) lack the bandwidth to resample 8K60
@@ -51,6 +55,10 @@ static func is_low_end_gpu(adapter: String) -> bool:
 static func default_sharpness(low_end: bool) -> float:
 	return 0.0 if low_end else DEFAULT_SHARPNESS
 
+static func load_video_sharpness(settings: ConfigFile) -> float:
+	if not settings.has_section_key("video", "sharpness"): return DEFAULT_VIDEO_SHARPNESS
+	return load_sharpness(settings)
+
 static func load_sharpness(settings: ConfigFile, low_end: bool = false) -> float:
 	var fallback := default_sharpness(low_end)
 	var value := float(settings.get_value("video", "sharpness", fallback))
@@ -63,8 +71,10 @@ static func load_supersampling(settings: ConfigFile) -> int:
 
 ## Playback refresh rate: the highest rate a video may raise the display to. Matching the video's
 ## frame rate shows every frame for the same number of refreshes; higher rates cost GPU time and heat.
+## 120 Hz by default: below it 60 fps has no even rate and plays at 72 Hz, repeating one frame in
+## five. Quest 3 holds 120 fps for 8K60 layer playback (2026-10-24); low-end GPUs stop at 90 Hz.
 const REFRESH_CAPS := [120, 90, 72]
-const DEFAULT_REFRESH_CAP := 90
+const DEFAULT_REFRESH_CAP := 120
 const REFRESH_NAMES := {120: "Up to 120 Hz", 90: "Up to 90 Hz", 72: "72 Hz · Power saving"}
 const REFRESH_INFO := "Steadier motion at higher refresh rates, with a higher GPU load."
 const REFRESH_HINTS := {120: "60 fps → 120 Hz, 30 fps → 90 Hz · steadiest picture, highest GPU load",

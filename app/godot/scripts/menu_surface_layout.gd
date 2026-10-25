@@ -9,7 +9,7 @@ static func facing(pose: Transform3D, eye: Vector3, centre: Vector3, up: Vector3
 	var vertical := up.normalized()
 	if absf(direction.normalized().dot(vertical)) > 0.999: vertical = pose.basis.y.normalized()
 	if absf(direction.normalized().dot(vertical)) > 0.999: vertical = pose.basis.x.normalized()
-	var basis := Basis.looking_at(direction.normalized(), vertical)
+	var basis := Basis.looking_at(direction.normalized(), vertical).scaled(pose.basis.get_scale())
 	return Transform3D(basis, point - basis * centre)
 
 ## Use complete visual bounds, including floating actions and text, in the surface's own space.
@@ -43,14 +43,15 @@ static func above(base: Transform3D, eye: Vector3, centre: Vector3, top: float, 
 	var anchor := base * centre
 	var radius := anchor.distance_to(eye)
 	if radius < 0.01: return base
+	var scale := base.basis.get_scale()
 	var direction := (anchor - eye) / radius
 	var vertical := up - direction * up.dot(direction)
 	if vertical.length_squared() < 0.0001: vertical = base.basis.y
 	vertical = vertical.normalized()
 	var top_direction := base * Vector3(centre.x, top, centre.z) - eye
 	var top_angle := maxf(0, atan2(top_direction.dot(vertical), top_direction.dot(direction)))
-	var angle := top_angle + atan2(rect.size.y * 0.5, radius) + atan2(GAP_METRES, radius)
+	var angle := top_angle + atan2(rect.size.y * scale.y * 0.5, radius) + atan2(GAP_METRES * scale.y, radius)
 	var point := eye + radius * (direction * cos(angle) + vertical * sin(angle))
-	var pose := Transform3D(Basis.IDENTITY, point)
+	var pose := Transform3D(Basis.IDENTITY.scaled(scale), point)
 	pose = facing(pose, eye, Vector3.ZERO, up)
 	return pose * Transform3D(Basis.IDENTITY, -Vector3(rect.get_center().x, rect.get_center().y, 0))

@@ -1,18 +1,21 @@
-# Immersive video screenshots and live clips
+# Video screenshots and live clips
 
-Compatible VR180, fisheye and 360° videos offer a camera action through the existing ray/trigger menu. Recording status, elapsed time and stop remain accessible after hiding playback controls; right-controller B stops recording before ordinary Back actions.
+Compatible flat 2D, VR180, fisheye and 360° videos offer a camera action through the existing ray/trigger menu. Recording status, elapsed time and stop remain accessible after hiding playback controls; right-controller B stops recording before ordinary Back actions.
 
 ## Output contract
 
-- Screenshots independently decode a full-resolution source frame to PNG under `Pictures/Thru3D/`. They preserve the source stereo/panorama layout, without menus or passthrough backgrounds. From 0.13.2, supported screenshots also compose the current video/image PiP windows in the original projection/stereo layout; this is separate from live clip recording. The limit is 40 Mi-pixels. PNG is an 8-bit display decode, without preservation of original HDR bit depth.
-- Recording requires **1× playback speed**. Compressed video packets retain original resolution, codec and available HDR metadata. The current export container is MKV under `Movies/Thru3D/`.
+- Screenshots independently decode a full-resolution source frame to maximum-quality JPEG (100) under `Pictures/Thru3D/`. Playing uses the nearest keyframe; user-paused capture first tries the displayed source time, with keyframe and independent software recovery when needed. They preserve the source stereo/panorama layout, without menus or passthrough backgrounds. From 0.13.2, supported screenshots also compose the current video/image PiP windows in the original projection/stereo layout; the clip composition path is described below. The limit is 40 Mi-pixels. JPEG is an 8-bit display decode and remains lossy even at quality 100, without preservation of original HDR bit depth.
+- Recording requires **1× playback speed**. Without PiP, compressed video packets retain original resolution, codec and available HDR metadata. The current export container is MKV under `Movies/Thru3D/`.
+- Flat 2D movies always use the source-only picture path, even if a previous VR PiP remains open. Their live recordings include actually heard subtitle narration through the same audio mix as VR recordings.
+- With PiP in VR, recording tracks window movement, crop, opening/closing and image/page changes, then composes the locally recorded frames after Stop. Output is lossy 8-bit SDR H.264, up to a 3840-pixel long edge and 30 fps, reduced to supported hardware encoder sizes where needed. PQ/HLG PiP composition is currently rejected explicitly. The original VR/stereo layout remains portable; finishing can take longer than playback. Opening PiP during a recording also selects composition. A limit of 60000 layout changes and 128 distinct previews fails explicitly rather than dropping content.
 - Clip audio is the **actually presented application mix**, stored as 48 kHz stereo float32 PCM: original/external audio, volume/mute and dialogue processing, narration, ducking and simultaneously playing app music. Audio Off can still leave audible narration/music. Microphone, other apps and system UI sounds are excluded. Recording does not change playback settings or synthesize unheard speech.
 - Recording observes playback packets and presented audio. It does not open another source reader or resolve another cloud URL. Stop exports the locally staged data, including when the original source is unavailable. The older independent-reader clip API remains in source for compatibility; the camera uses the live path.
+- PTS-only MKV input is normalized for Matroska muxing without changing display timestamps or encoded pictures. A bounded 32-packet reorder buffer supplies nondecreasing mux ordering; unknown durations become unspecified, never negative. Unsupported reorder bounds fail explicitly. This applies to both flat and VR recordings.
 - Start includes the preceding keyframe within a bounded 10-second/64 MiB GOP window; missing eligible data fails explicitly. End can retain video dependency frames. Frame-exact boundaries are not promised.
 - Seeking, audio/video changes, speed changes, end, failure or an internal decoder reopen finish the clip. Pausing adds no recording time and does not automatically resume playback. Closing the video normally submits the staged export; process death has no recovery guarantee.
 - Pending MediaStore entries publish only complete successful exports. `thru3d_mode` metadata preserves projection, stereo packing, eye order and fisheye FOV, without source names, URLs, accounts or viewing timestamps. Saved per-file choices retain priority; other players may ignore this field.
 
-Flat video, photos, embedded-mask sources, unseekable/live streams, DRM and ISO are outside the stated capture scope. Exported media is independent of history-memory settings; actual recordings are excluded from this repository. Host tests do not establish Android MediaStore, hardware audio timestamps, HDR screenshot color or every headset/provider's compatibility.
+Photos, embedded-mask sources, unseekable/live streams, DRM and ISO are outside the stated capture scope. Exported media is independent of history-memory settings; actual recordings are excluded from this repository. Host tests do not establish Android MediaStore, hardware audio timestamps, HDR screenshot color or every headset/provider's compatibility.
 
 ## Source and build
 
@@ -24,8 +27,16 @@ FFmpeg headers in `native/mpv/include/ffmpeg` retain their adjacent LGPL text an
 
 ## 中文说明
 
-兼容沉浸视频支持原始排布PNG截图，以及1倍速现场片段录制。录像保留原视频压缩包，音频记录应用实际播放的原声／外挂音轨、朗读和音乐，包含音量、静音及混音处理，不录麦克风或其他应用。截图仍是8位显示解码，不承诺原始HDR位深。
+兼容2D电影和沉浸视频支持原始排布、完整分辨率的JPEG最高质量100截图，以及1倍速现场片段录制。播放中取最近关键帧，用户暂停时优先当前源时间点；失败时自动恢复。画中画也直接逐行编码JPEG。JPEG100仍有损，截图是8位显示解码，不承诺原始HDR位深。2D不合成画中画，字幕朗读与VR录像一样按实际听到的声音保留。无画中画录像保留原视频压缩包；有画中画时记录窗口移动、开关与图片翻页，停止后从本地录制合成最高3840长边/30帧的SDR H.264，按硬件能力降档，暂不支持PQ/HLG画中画录像。音频记录应用实际播放的原声／外挂音轨、朗读和音乐，包含音量、静音及混音处理，不录麦克风或其他应用。
 
 录制复用播放数据，停止后从本地暂存导出MKV，不重新读取片源。起点受关键帧窗口限制；跳转、切音轨／视频、改速或解码器重开会结束片段。只发布完整成功文件；实际录音不随源码公开。宿主测试不等于所有头显、MediaStore及硬件音频时序均已验收。
 
-PiP still composition is in `native/mpv/pip_screenshot_core.h`, with synthetic host pixels in `tools/Test-PipScreenshot.py`. This does not turn the headset view into the source screenshot or add PiP composition to the clip contract.
+PiP still composition is in `native/mpv/pip_screenshot_core.h`, with synthetic host pixels in `tools/Test-PipScreenshot.py`. It is also reused by `pip_clip_core.h` for composed clips; neither path records the headset menus or passthrough. `PipClipTimeline.kt` pins displayed image previews until export finishes, and `PipClipEncoder.kt` uses Android hardware AVC encoding. `tools/Test-PipClip.ps1`, `Test-PipClipHost.sh` and `Test-PipClip.py` cover source-time layouts, pixel plane strides, frame cadence and unchanged audio. Host checks do not validate the Android encoder on a headset.
+
+`tools/Test-PipScreenshotHost.sh` builds the compositor and the existing pinned libjpeg-turbo for host checks; `Test-PipScreenshot.py --host build/output/pip-screenshot/pip-screenshot-host --jpeg` compares lossless composition pixels and the streaming JPEG against independent reference encoding. Layout metadata is stored near the start of JPEG (APP15 with CRC); existing PNG captures remain readable. Ordinary screenshots stream directly into pending MediaStore output, while PiP composes row by row into a temporary JPEG without another full-resolution bitmap.
+
+MKV library thumbnails prefer embedded JPEG/PNG artwork (landscape cover first), while existing server artwork/cache keeps its priority. The optional reader inspects container headers on a worker using the existing source lease; absent, invalid, oversized or timed-out artwork falls back to the normal displayed-frame thumbnail. Encoded covers are limited to 8 MiB, decoded dimensions to 40 Mi-pixels, and previews to a 1024-pixel long edge. Cover caching follows the existing history/privacy policy. Closing or changing the source cancels the read. Manual screenshots continue to capture the video frame.
+
+## Loop export and save control
+
+Saved A–B loops export named keyframe clips without playing the full range, with progress, duplicate-save feedback and cancellation on close/source change. Source access and keyframe/dependency limits still apply. Live recording finalization also provides progress/cancellation and publishes only a complete success. User recordings/source names are not distributed in Git.

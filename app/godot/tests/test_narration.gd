@@ -107,9 +107,13 @@ func _run() -> void:
 	var language_target: int = menu.choices.targets.keys().filter(func(target):return menu.choices.targets[target].get("key","")=="narration_language")[0]
 	check(is_equal_approx(button(menu,enable_target).node.position.y,button(menu,language_target).node.position.y),"Narration toggle and target language share one row")
 	check(button(menu,language_target).node is MeshInstance3D and button(menu,language_target).node.get_child(0).text.begins_with("Read: English"),"Target language is a visible button with an explicit reading label")
-	check(["narration_duck","narration_volume"].all(func(key):return menu.choices.targets.values().any(func(item):return item.get("key","")==key)) and not menu.choices.targets.values().any(func(item):return item.get("key","") in ["narration_offset","narration_hide_subtitles"]),"Narration and original audio levels are directly visible; secondary controls stay hidden")
-	check(video.narration.set_option("narration_hide_subtitles",true) and video.narration.hides_display(),"Optional hiding retains narration and selected track")
-	video.narration.set_option("narration_hide_subtitles",false)
+	check(["narration_duck","narration_volume"].all(func(key):return menu.choices.targets.values().any(func(item):return item.get("key","")==key)) and not menu.choices.targets.values().any(func(item):return item.get("key","")=="narration_offset") and option(menu,"narration_hide_subtitles",true)>=0,"Narration levels and hide switch are directly visible without sync controls")
+	var hide_target := option(menu,"narration_hide_subtitles",true)
+	check(is_equal_approx(button(menu,hide_target).rect.size.x,0.09),"Hide subtitles uses the compact slide switch")
+	tap(menu,hide_target)
+	check(video.narration.hides_display() and video.narration.enabled and video.subtitles.requested_track==3 and menu.choices.opened.is_empty(),"Ray switch hides display while retaining narration and track without opening a subpage")
+	tap(menu,option(menu,"narration_hide_subtitles",false))
+	check(not video.narration.hides_display(),"Ray switch restores subtitle display")
 	video.subtitles.select(1);video.narration.apply();menu.refresh()
 	check(video.narration.resolved_language()=="en" and host.calls.back()[1].language=="en","Concrete default starts narration without a language prompt or metadata override")
 	var language_rows := video.NarrationSettings.rows(video.narration.snapshot())
@@ -176,10 +180,8 @@ func _run() -> void:
 	video.narration.set_option("narration_profile","ja_male");video.narration.set_option("narration_language","ja")
 	check(video.narration.set_option("narration_line",2) and host.calls.back()[1].line==2,"Second authored line reaches Android")
 	check(not video.narration.set_option("narration_line",3) and not video.narration.set_option("narration_line",-1) and not video.narration.set_option("narration_line",1.5),"Invalid line selections rejected")
-	menu.refresh();tap(menu,menu.NARRATION_MORE)
-	check(not menu.text_snapshot().contains("Base reading speed") and not menu.text_snapshot().contains("Reading speed") and menu.text_snapshot().contains("Narration sync"),"Advanced narration controls stay in subtitles")
-	check(not menu.text_snapshot().contains("Sentence timing") and not menu.text_snapshot().contains("Finish sentences") and menu.choices.targets.values().any(func(item):return item.get("key","")=="narration_hide_subtitles") and not menu.choices.targets.values().any(func(item):return item.get("key","")=="narration_duck"),"Advanced panel keeps secondary controls and omits the main ducking control and long timing note")
-	tap(menu,menu.NARRATION_MORE)
+	menu.refresh()
+	check(not menu.text_snapshot().contains("Narration sync") and not menu._buttons.any(func(item): return item.target==524),"Narration sync and the advanced settings entry are removed")
 	check(not button(menu,menu.NARRATION_PREVIEW).is_empty(),"Subtitle voice has preview")
 	var before := host.calls.size();video.narration.apply();check(host.calls.size()==before,"Unchanged configuration is not resent each frame")
 	var tracks: Array = video.media.playback.details.subtitle_tracks.duplicate(true)
@@ -198,7 +200,7 @@ func _run() -> void:
 	video.narration.profile="";video.narration.load_settings(saved)
 	check(video.narration.selected_profile()=="ja_male" and video.narration.line==2,"Profile and line persist")
 	video.narration.reset_source("file:///another.mp4")
-	check(video.narration.source==-1 and not video.narration.enabled and video.narration.language=="en" and video.narration.line==0,"A different video starts off with its own default settings")
+	check(video.narration.source==-1 and not video.narration.enabled and video.narration.language=="ja" and video.narration.line==2,"A different video starts off with last-used basic preferences")
 	video.narration.reset_source(video.local_uri)
 	check(video.narration.enabled and video.narration.language=="ja" and video.narration.line==2,"Returning to the original video restores its narration settings")
 	for stage in ["verifying", "model_loading", "preparing", "speaking", "model_error"]:
@@ -213,6 +215,7 @@ func _run() -> void:
 	for locale in ["zh","zh_Hant","ja","en"]:
 		I18n.use(locale);menu.refresh();check(not button(menu,menu.SUBTITLE_CLOSE).is_empty(),"Subtitle panel draws " + locale)
 	_test_per_video(main, video, host, narration_path + "-scope")
+	_test_shortcut(main, video, host, narration_path + "-shortcut")
 	_finish(menu, video, main)
 
 func _text_track(video: Node) -> void:
@@ -233,14 +236,14 @@ func _test_per_video(main: Node, video: Node, host: RefCounted, directory: Strin
 		main._on_player_setting("narration_"+choice[0],choice[1])
 	var a: Dictionary=video.narration.memory.lookup(A)
 	check(a.enabled and a.language=="ja" and a.voice_id=="Umiri" and a.line==2 and a.hide_subtitles and a.offset==0.4,"A stores its complete independent narration configuration")
-	check(not main.settings.has_section_key("narration","enabled") and main.settings.get_value("narration","language")=="en","Saving A removes global On and does not replace defaults with A's language")
-	check(video.open_local(B,"B") and not video.narration.enabled and video.narration.language=="en" and video.narration.line==0 and not video.narration.hide_subtitles and video.narration.offset==0,"Opening B does not inherit A's narration or adjustments")
+	check(not main.settings.has_section_key("narration","enabled") and main.settings.get_value("narration","language")=="ja","Saving A remembers its basic language preference without global On")
+	check(video.open_local(B,"B") and not video.narration.enabled and video.narration.language=="ja" and video.narration.line==2 and video.narration.hide_subtitles and video.narration.offset==0,"Opening B inherits basic preferences but not A's On or timing")
 	_text_track(video)
 	check(host.calls.filter(func(call):return call[0]==video.media.session_id).all(func(call):return not call[1].enabled),"Native narration remains disabled for unconfigured B")
 	main._on_player_setting("narration_offset",{"value":1.8,"source_uri":A})
 	check(video.narration.offset==0 and video.narration.memory.lookup(B).is_empty(),"A delayed slider release from A cannot change or save B")
 	main._on_playback_adjustment("narration_volume",{"value":5,"source_uri":A})
-	check(video.narration.volume==100,"A delayed slider preview cannot change B's narration volume")
+	check(video.narration.volume==80,"A delayed slider preview cannot change B's inherited narration volume")
 	check(video.narration.set_option("narration_duck",{"value":55.0,"source_uri":B}) and video.narration.duck==55,"The current video's scoped slider remains adjustable")
 	main._on_player_setting("narration_enabled",true);main._on_player_setting("narration_language","zh")
 	main._on_player_setting("narration_voice_origin","zh");main._on_player_setting("narration_voice","Junhao")
@@ -270,11 +273,56 @@ func _test_per_video(main: Node, video: Node, host: RefCounted, directory: Strin
 	check(cleared.entries.is_empty(),"Cleared narration cannot recover from the older bank")
 	video.close_video()
 
+func _test_shortcut(main: Node, video: Node, host: RefCounted, directory: String) -> void:
+	const A := "file:///narration-shortcut/a.mp4"
+	const B := "file:///narration-shortcut/b.mp4"
+	video.close_video()
+	video.narration.memory = video.NarrationSettings.Memory.new(directory)
+	main.settings = ConfigFile.new(); video.narration.load_settings(main.settings)
+	video.open_local(A, "A"); _text_track(video)
+	for choice in [["language", "en"], ["voice", "Adam"], ["hide_subtitles", false], ["volume", 35.0], ["duck", 10.0], ["line", 2], ["offset", 0.6]]:
+		main._on_player_setting("narration_" + choice[0], choice[1])
+	video.open_local(B, "B"); _text_track(video)
+	for choice in [["language", "zh"], ["voice", "Junhao"], ["line", 1], ["hide_subtitles", true], ["volume", 85.0], ["duck", 60.0]]:
+		main._on_player_setting("narration_" + choice[0], choice[1])
+	var defaults: Dictionary = video.narration._defaults.duplicate(true)
+	video.open_local(A, "A"); _text_track(video)
+	check(video.narration.language == "en" and video.narration.volume == 35 and video.narration._defaults == defaults, "Restoring an older film never overwrites the latest basic defaults")
+	for track in [0, 4]:
+		video.media.playback.details.subtitle_tracks.append({"id": 4, "codec": "hdmv_pgs_subtitle"})
+		video.subtitles.select(track); video.narration.apply()
+		var before: Dictionary = video.narration._values()
+		main._execute_shortcut("narration_toggle")
+		check(video.narration._values() == before and video.narration._defaults == defaults and video.subtitles.requested_track == track, "Off/bitmap subtitles block the shortcut without changing tracks or preferences")
+	_text_track(video)
+	main._execute_shortcut("narration_toggle")
+	check(video.narration.enabled and video.narration.language == "zh" and video.narration.selected_voice() == "Junhao" and video.narration.hides_display(), "Shortcut enables the last-used language, voice and hidden display")
+	check(video.narration.volume == 85 and video.narration.duck == 60 and video.narration.line == 1 and is_equal_approx(video.narration.offset, 0.6), "Shortcut restores basic levels and line choice while preserving the film's sync")
+	check(host.calls.back()[1].enabled and host.calls.back()[1].voice_override == "Junhao" and is_equal_approx(host.calls.back()[1].volume, 0.85) and is_equal_approx(host.calls.back()[1].duck, 0.6), "Shortcut sends the restored configuration to the runtime")
+	main._execute_shortcut("narration_toggle")
+	check(not video.narration.enabled and not video.narration.hides_display() and not host.calls.back()[1].enabled and video.subtitles.requested_track == 1, "Second shortcut stops narration and restores subtitle display without disabling the track")
+	check(not video.narration.memory.lookup(A).enabled and main.settings.get_value("narration", "volume") == 85, "Shortcut persists the file's Off choice and retains basic defaults")
+	video.close_video()
+	var saved := ConfigFile.new(); check(saved.load(main.settings_path) == OK, "Shortcut settings are saved to disk")
+	video.narration = video.NarrationSettings.new(video)
+	video.narration.memory = video.NarrationSettings.Memory.new(directory + "-fresh")
+	video.narration.load_settings(saved)
+	video.open_local("file:///narration-shortcut/new.mp4", "New"); _text_track(video)
+	check(not video.narration.enabled and video.narration.language == "zh" and video.narration.line == 1 and video.narration.volume == 85 and video.narration.duck == 60 and video.narration.hide_subtitles and video.narration.selected_voice() == "Junhao", "All basic defaults survive a fresh settings instance without automatically enabling narration")
+	var custom := "custom:12345678-1234-1234-1234-123456789abc"
+	main._on_player_setting("narration_custom_voice", custom)
+	video.narration.voice_kind = "preset"
+	main._execute_shortcut("narration_toggle")
+	check(video.narration.enabled and video.narration.selected_voice() == custom and host.calls.back()[1].voice_override == custom, "Shortcut also reuses the last selected custom voice")
+	video.close_video()
+	main._execute_shortcut("narration_toggle")
+	check(not video.narration.enabled, "Shortcut cannot enable narration without a playback session")
+
 func _test_hidden(main: Node, video: Node, menu: Node, host: RefCounted) -> void:
 	var previous := ConfigFile.new();previous.set_value("narration", "enabled", true)
 	video.narration.load_settings(previous)
 	check(not video.narration.enabled and not video.narration.available(), "Saved state cannot enable ordinary builds")
-	for key in ["narration_enabled", "narration_profile", "narration_preview", "narration_retry"]:
+	for key in ["narration_enabled", "narration_toggle", "narration_profile", "narration_preview", "narration_retry"]:
 		check(not video.narration.set_option(key, true), "Withheld setting rejected " + key)
 	video.narration.enabled=true;video.narration.apply()
 	check(host.calls.is_empty(), "Withheld runtime never called")

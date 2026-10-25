@@ -20,6 +20,7 @@ func run() -> void:
 		for page in ["entry", "request", "vod", "live", "return"]:
 			state = Caps.apply({"has_video": true, "title": "Phone video", "duration_ms": 120000, "position_ms": 43000, "geometry": 0, "playing": true, "playback_state": "playing", "volume": 65}, {"seek": page != "live", "effects": page != "live"})
 			if page == "live": state.duration_ms = 0
+			if page == "vod": state = Caps.apply(state, {"seek": true, "effects": true, "has_previous": true, "has_next": true})
 			menu.cast_state = {"enabled": true, "active": page in ["vod", "live"]}
 			library.cast_state = {"enabled": true, "name": "Thru3D"}
 			if page == "request": menu.cast_state.pending = {"title": "Cast video"}

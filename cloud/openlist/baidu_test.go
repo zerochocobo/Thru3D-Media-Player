@@ -23,9 +23,20 @@ func (f baiduTransport) RoundTrip(r *http.Request) (*http.Response, error) { ret
 // Exercise the pinned Baidu driver and real JNI/stream adapters without accounts
 // or upstream network. No request may escape this fixture.
 func assertBaiduCore(t *testing.T, call func(string, string, any) map[string]any) {
+	assertBaiduFile(t, call, false)
+	t.Run("BaiduPdfDirectoryAndRanges", func(t *testing.T) { assertBaiduFile(t, call, true) })
+}
+
+func assertBaiduFile(t *testing.T, call func(string, string, any) map[string]any, pdf bool) {
 	t.Helper()
+	name := "中文 #%.mp4"
 	payload := bytes.Repeat([]byte("baidu-original-fixture"), 2048)
+	if pdf {
+		name = "漫画 #?%.PDF"
+		payload = append([]byte("%PDF-1.7\n"), bytes.Repeat([]byte("PDF-range-fixture"), 200000)...)
+	}
 	var reads atomic.Int32
+	var tickets atomic.Int32
 	var rotated atomic.Bool
 	media := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("User-Agent") != "pan.baidu.com" {
@@ -63,6 +74,10 @@ func assertBaiduCore(t *testing.T, call func(string, string, any) map[string]any
 		case r.URL.Path == "/rest/2.0/xpan/nas":
 			body = `{"errno":0,"vip_type":0}`
 		case r.URL.Query().Get("method") == "filemetas":
+			tickets.Add(1)
+			if r.URL.Query().Get("fsids") != "[9007199254740994]" {
+				t.Error("PDF file ID lost precision")
+			}
 			body = `{"errno":0,"list":[{"dlink":"https://baidu-fixture.invalid/redirect"}]}`
 		case r.URL.Query().Get("method") == "list":
 			if r.URL.Query().Get("dir") == "/" && !rotated.Swap(true) {
@@ -70,7 +85,7 @@ func assertBaiduCore(t *testing.T, call func(string, string, any) map[string]any
 			} else if r.URL.Query().Get("dir") == "/" {
 				body = `{"errno":0,"list":[{"fs_id":9007199254740993,"server_filename":"旅行","path":"/旅行","isdir":1}]}`
 			} else if r.URL.Query().Get("dir") == "/旅行" {
-				body = fmt.Sprintf(`{"errno":0,"list":[{"fs_id":9007199254740994,"server_filename":"中文 #%%.mp4","path":"/旅行/中文 #%%.mp4","isdir":0,"size":%d,"server_mtime":123}]}`, len(payload))
+				body = fmt.Sprintf(`{"errno":0,"list":[{"fs_id":9007199254740994,"server_filename":%q,"path":%q,"isdir":0,"size":%d,"server_mtime":123}]}`, name, "/旅行/"+name, len(payload))
 			} else {
 				return nil, fmt.Errorf("unexpected directory")
 			}
@@ -84,6 +99,9 @@ func assertBaiduCore(t *testing.T, call func(string, string, any) map[string]any
 	defer func() { base.RestyClient.SetTransport(original); base.NoRedirectClient.SetTransport(originalHead) }()
 	addition, _ := json.Marshal(map[string]any{"root_folder_path": "/", "AccessToken": "access-fixture", "refresh_token": "refresh-fixture", "use_online_api": true, "api_url_address": "https://api.oplist.org/baiduyun/renewapi", "download_api": "official"})
 	mount := "/baidu-fixture"
+	if pdf {
+		mount = "/12345678-1234-1234-1234-123456789bcd"
+	}
 	created := call("POST", "/create", map[string]any{"mount_path": mount, "driver": "BaiduNetdisk", "addition": string(addition), "cache_expiration": 5, "web_proxy": true})
 	id := int(created["data"].(map[string]any)["id"].(float64))
 	defer func() { Request("POST", "/delete?id="+fmtInt(id), "") }()
@@ -100,10 +118,39 @@ func assertBaiduCore(t *testing.T, call func(string, string, any) map[string]any
 		t.Fatal("Baidu rotated credential storage failed", err)
 	}
 	files := call("POST", "/list", map[string]any{"path": mount + "/旅行", "page": 1, "per_page": 48})["data"].(map[string]any)["content"].([]any)
-	if len(files) != 1 || files[0].(map[string]any)["name"] != "中文 #%.mp4" || reads.Load() != 0 {
+	if len(files) != 1 || files[0].(map[string]any)["name"] != name || reads.Load() != 0 {
 		t.Fatal("Baidu browse downloaded media or changed metadata")
 	}
-	link, err := Stream(mount + "/旅行/中文 #%.mp4")
+	if pdf {
+		// Use the app's native directory and document source route, not video Stream().
+		page := call("POST", "/directory", map[string]any{"mount": mount, "path": "/旅行", "page_size": 48, "order": "source"})["data"].(map[string]any)
+		item := page["content"].([]any)[0].(map[string]any)
+		if item["name"] != name || item["id"] != "9007199254740994" {
+			t.Fatal("PDF native listing changed identity", item)
+		}
+		data := call("POST", "/archive-stream", map[string]any{"mount": mount, "path": "/旅行/" + name, "id": item["id"], "size": len(payload)})["data"].(map[string]any)
+		for _, offset := range []int{0, len(payload) - 197, 1048576} {
+			end := min(offset+1048576, len(payload)) - 1
+			req, _ := http.NewRequest("GET", data["stream"].(string), nil)
+			req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", offset, end))
+			req.Header.Set("X-Thru3D-Archive-Read", "1")
+			response, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body, err := io.ReadAll(response.Body)
+			response.Body.Close()
+			if err != nil || response.StatusCode != 206 || !bytes.Equal(body, payload[offset:end+1]) || response.Header.Get("Content-Range") != fmt.Sprintf("bytes %d-%d/%d", offset, end, len(payload)) {
+				t.Fatal("Baidu PDF exact range failed", response.StatusCode, err)
+			}
+		}
+		if tickets.Load() != 1 || reads.Load() != 3 {
+			t.Fatal("Baidu PDF repeated address resolution", tickets.Load(), reads.Load())
+		}
+		t.Logf("PDF ranges=%d download_address_requests=%d", reads.Load(), tickets.Load())
+		return
+	}
+	link, err := Stream(mount + "/旅行/" + name)
 	if err != nil {
 		t.Fatal(err)
 	}

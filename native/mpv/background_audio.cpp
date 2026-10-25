@@ -14,7 +14,7 @@ struct Audio {
     bool loaded = false, ended = false, failed = false;
     uint64_t capture_owner = 0;
     double duration = 0, position = 0;
-    ~Audio() { if (core) mpv_terminate_destroy(core); quest::live::source_close(capture_owner); }
+    ~Audio() { quest::live::source_closing(capture_owner); if (core) mpv_terminate_destroy(core); quest::live::source_close(capture_owner); }
 };
 void check(int value) { if (value < 0) throw std::runtime_error("Audio decoder unavailable"); }
 double number(mpv_handle* core, const char* key, double fallback = 0) {

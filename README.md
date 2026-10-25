@@ -4,11 +4,15 @@
 
 Standalone Android VR/MR media player for Meta Quest and PICO. Play videos and photos, explore media libraries, and combine supported content with passthrough and stereo effects directly on your headset.
 
-Current source version: **0.13.3** (Android versionCode **41**). An experimental standard OpenXR Android export is also available.
+Current source version: **0.13.5** (Android versionCode **43**). An experimental standard OpenXR Android export is also available.
 
 Minimum compatibility targets are **Quest 2** and **PICO Neo3**. Source/build compatibility does not establish hardware performance or interaction acceptance on every device.
 
 ## Features
+
+- Local/cloud PDF and paired magazine/comic reading, including RTL and PiP paging; see [document scope](docs/PDF_READING.md).
+- Comic reading/translation (Beta): dwell speech, translated overlays and existing voices, with bounded OCR and 19 targets; [network/model limits](docs/COMIC_READING.md) apply.
+- Saved bookmark-loop export and flat/VR live capture with supported PiP composition; see [capture output](docs/CAPTURE.md).
 
 - Local-network DLNA video casting into the VR player, with explicit reception and active-media replacement confirmation; see [receiver scope](docs/DLNA_CASTING.md).
 - Subtitle-free custom voice sampling, speech candidates and inline trimming; [VAD and voice assets](docs/MODELS.md) are prepared separately.
@@ -16,13 +20,13 @@ Minimum compatibility targets are **Quest 2** and **PICO Neo3**. Source/build co
 - Bookmark-based A–B repeat playback with unified bookmark/loop management.
 - Blu-ray title switching and supported non-3D HDMV menus with ray selection; BD-J is identified but not executed. See [Blu-ray scope](docs/BLURAY.md).
 - Compressed comic reading, including compatible encrypted archives and private password associations; see [archive scope](docs/ARCHIVE_COMICS.md).
-- Grand cinema (Test) with film-driven screen illumination, dual baked house lighting, chair seating and movement in Debug/Release; [scene generation](docs/EXPERIMENTAL_CINEMA.md) and [controller model preparation](docs/CONTROLLER_ASSETS.md) use separately prepared resources.
+- Grand cinema as the new-user global background, with film-driven lighting, dual bakes, seat memory and movement in Debug/Release; saved backgrounds remain and photos default independently to Belfast Sunset; [scene generation](docs/EXPERIMENTAL_CINEMA.md) and [controller model preparation](docs/CONTROLLER_ASSETS.md) use separately prepared resources.
 
 - Up to three shared-frame video PiP windows, region zoom, independent placement and optional static image windows; see [PiP scope](docs/PICTURE_IN_PICTURE.md).
 - Hand-tracked wrist watch with time/battery/progress and projected playback controls.
 - Remembered directory sorting and filter-specific browse positions, following playback-history privacy; provider-aware cloud page sizes and explicit load-all.
 - Playback-control spatial locking/transparency, compatible 180° image backgrounds and Emby detail artwork.
-- Runtime-dependent playback refresh choices up to 120 Hz, up to 90 Hz (default), or 72 Hz; AI/depth modes retain their bounded policy.
+- Runtime-dependent playback refresh choices up to 120 Hz (default), up to 90 Hz, or 72 Hz; AI/depth modes retain their bounded policy.
 
 - Video and photo viewing: flat, 180° and 360° projections; mono and side-by-side stereo.
 - Person matting and passthrough composition for supported 180° video projections.
@@ -93,7 +97,7 @@ Minimum compatibility targets are **Quest 2** and **PICO Neo3**. Source/build co
 - Head-tracked Spatial Stereo / Static 3D photo modes, global photo preferences and separately remembered global video/photo depth strengths. Native Apple static viewing retains the original stereo pair.
 - Custom voice creation from suitable caller-selected media/audio references, with speech detection, trimming, audition, rename/delete and default-voice management. Personal voice data stays local and outside this source release.
 
-- Compatible immersive-video capture: full-resolution source PNG screenshots and original-video MKV clips with live app audio (including narration/music) at 1× speed. Keyframe/source limits apply; see [capture](docs/CAPTURE.md).
+- Compatible flat and immersive-video capture: full-resolution, maximum-quality JPEG screenshots and MKV clips with live app audio at 1× speed; VR PiP uses bounded SDR composition. JPEG remains lossy; keyframe/source limits apply. See [capture](docs/CAPTURE.md).
 
 ## Spatial media and photo layouts
 

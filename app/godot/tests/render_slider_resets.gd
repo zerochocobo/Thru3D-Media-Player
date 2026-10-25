@@ -13,7 +13,7 @@ var state := {"has_video": true, "has_image": true, "title": "旅行 · Travel",
 	"source_uri": "file:///fixture.mp4", "duration_ms": 120000, "position_ms": 60000, "stereo": true,
 	"viewing_eye": 0, "stereo_horizontal": 2.5, "stereo_vertical": -1.0,
 	"screen_distance": 4.5, "screen_scale": 150.0, "screen_rotation": 15.0,
-	"subtitle_position": 15.0, "subtitle_distance": 1.5, "subtitle_size": 150.0,
+	"subtitle_vertical_position": 15.0, "subtitle_distance": 1.5, "subtitle_size": 150.0,
 	"playback_speed": 1.5, "alpha_fps": 35.0, "playing": true,
 	"depth_requested": true, "depth_available": true, "depth_strength": 1.8,
 	"layout": 0, "gallery_focus": -1, "gallery_scale": 1.5, "gallery_distance": 6.0, "inspect_magnification": 6.0}
@@ -67,7 +67,7 @@ func run() -> void:
 		menu._adjustment = "stereo_view"; menu.refresh(); await snapshot("stereo-" + language)
 		menu._adjustment = ""; menu.section = 0; state.geometry = 1
 		menu.refresh(); menu._activate(110); menu._activate(Menu.SUBTITLE_APPEARANCE)
-		check(menu.choices.sliders.size() == 4, "Subtitle appearance actually shows all four slider fields")
+		check(menu.choices.sliders.size() == 5, "Subtitle appearance actually shows all four slider fields")
 		await snapshot("subtitles-" + language)
 		state.geometry = 0
 	I18n.use("zh"); make_menu(); menu.section = 1; menu._adjustment = "screen"

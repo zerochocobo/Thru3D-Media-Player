@@ -2,16 +2,17 @@
 #include "jni_text.h"
 #include "sentencepiece_processor.h"
 #include "pcg64.h"
+#include "ort_environment.h"
 #include <atomic>
 #include <random>
 #include <set>
 #include <functional>
 #include <fstream>
+#include <future>
 
 namespace moss {
 struct Engine {
-    Ort::ThreadingOptions threading;
-    std::unique_ptr<Ort::Env> env;
+    narration_ort::Lease environment;
     Ort::PrepackedWeightsContainer prepacked;
     Ort::SessionOptions options;
     std::map<std::string,std::unique_ptr<Session>> sessions;
@@ -23,10 +24,6 @@ struct Engine {
     std::atomic<int64_t> epoch{0};
     std::mutex running;
     explicit Engine(const std::string& root) {
-        threading.SetGlobalIntraOpNumThreads(2); threading.SetGlobalInterOpNumThreads(1); threading.SetGlobalSpinControl(0);
-        env=std::make_unique<Ort::Env>(threading, ORT_LOGGING_LEVEL_ERROR, "subtitle-narration");
-        auto info=Ort::MemoryInfo::CreateCpu(OrtArenaAllocator,OrtMemTypeDefault);
-        Ort::ArenaCfg arena(0,0,4*1024*1024,0); env->CreateAndRegisterAllocator(info,arena);
         options.DisablePerSessionThreads();
         options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
         options.AddConfigEntry("session.use_env_allocators","1");
@@ -36,9 +33,17 @@ struct Engine {
         fallback_path=t+"moss_tts_local_fallback.onnx";
         fallback_available=std::ifstream(fallback_path).good();
         if(!tokenizer.Load(t+"tokenizer.model").ok()) throw std::runtime_error("Tokenizer unavailable");
+        // Two loaders only. ORT 1.28 serializes shared prepack access internally;
+        // graph parsing/optimization can overlap without duplicating weights.
+        // The future joins on exceptions before environment/options can be freed.
+        auto local=std::async(std::launch::async,[&,path=t+"moss_tts_local_fixed_sampled_frame.onnx"] {
+            auto local_options=options.Clone();
+            return std::make_unique<Session>(*environment->env,local_options,path,static_cast<OrtPrepackedWeightsContainer*>(prepacked));
+        });
         for (auto item : {std::pair{"prefill",t+"moss_tts_prefill.onnx"}, {"decode",t+"moss_tts_decode_step.onnx"},
-                          {"local",t+"moss_tts_local_fixed_sampled_frame.onnx"}, {"codec",c+"moss_audio_tokenizer_decode_step.onnx"}})
-            sessions[item.first]=std::make_unique<Session>(*env,options,item.second,static_cast<OrtPrepackedWeightsContainer*>(prepacked));
+                          {"codec",c+"moss_audio_tokenizer_decode_step.onnx"}})
+            sessions[item.first]=std::make_unique<Session>(*environment->env,options,item.second,static_cast<OrtPrepackedWeightsContainer*>(prepacked));
+        sessions["local"]=local.get();
     }
     J generate(const std::string& text,const std::string& voice,int64_t token, const std::function<bool(const std::vector<float>&)>& output, int max_frames=250, int random_skip=0, bool precision_recovery=false) {
         std::lock_guard<std::mutex> lock(running);
@@ -82,7 +87,7 @@ struct Engine {
         double recovery_load_seconds=0;
         if(recovery&&!sessions.count("local_fallback")) {
             auto load_started=Clock::now();
-            sessions["local_fallback"]=std::make_unique<Session>(*env,options,fallback_path,static_cast<OrtPrepackedWeightsContainer*>(prepacked));
+            sessions["local_fallback"]=std::make_unique<Session>(*environment->env,options,fallback_path,static_cast<OrtPrepackedWeightsContainer*>(prepacked));
             recovery_load_seconds=elapsed(load_started);
         }
         if(cancelled())return {{"cancelled",true}};

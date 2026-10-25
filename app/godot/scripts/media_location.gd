@@ -2,6 +2,14 @@ extends RefCounted
 ## Store browser identities and paths, never a resolved stream, login token or credential.
 static func clean(value: Variant) -> Dictionary:
 	if not value is Dictionary: return {}
+	if value.get("type") == "archive":
+		var source := str(value.get("source_uri", ""))
+		var path := str(value.get("path", ""))
+		if preload("res://scripts/file_mode_memory.gd").key_for(source).is_empty() or path.length() > 8192 \
+			or path.begins_with("/") or path.contains("\\") or path.split("/").has("..") or path.split("/").has("."): return {}
+		var parent: Variant = value.get("parent", {})
+		return {"type":"archive", "source_uri":source, "source_file":cloud_file(value.get("source_file", {}), source), "source_title":str(value.get("source_title", "")).left(256), "path":path.trim_suffix("/"),
+			"parent":clean(parent) if parent is Dictionary and parent.get("type") != "archive" else {}}
 	var result := {}
 	for key in ["type", "server_id", "path", "title", "item_id", "library_id"]:
 		if value.get(key) is String and value[key].length() <= 8192: result[key] = value[key]
@@ -22,6 +30,16 @@ static func clean(value: Variant) -> Dictionary:
 	if kind in ["smb", "dlna", "server"] and str(result.get("server_id", "")).is_empty(): return {}
 	if kind == "smb" and not result.has("path"): result.path = ""
 	return result
+
+static func cloud_file(value: Variant, uri: String) -> Dictionary:
+	if not uri.begins_with("cloud://") or not value is Dictionary or value.get("uri") != uri: return {}
+	var id := str(value.get("id", ""))
+	if id.is_empty() or id.length() > 2048 or id.contains("://"): return {}
+	for i in id.length():
+		if id.unicode_at(i) < 32 or id.unicode_at(i) == 127: return {}
+	var size := int(value.get("size", 0))
+	if size <= 0: return {}
+	return {"uri":uri, "id":id, "size":size, "modified":int(value.get("modified", -1))}
 
 static func infer(uri: String) -> Dictionary:
 	if uri.begins_with("dlna://"):
@@ -64,11 +82,14 @@ static func capture(menu: Node, row: Dictionary) -> Dictionary:
 	return infer(str(row.get("uri", "")))
 
 static func folder_uri(location: Dictionary) -> String:
+	if location.get("type") == "archive": return "folder://" + JSON.stringify(["archive", location.get("source_uri", ""), location.get("path", "")]).sha256_text()
 	var stack: Array = location.get("stack", location.get("folder_path", []))
 	var container := str(stack.back().id) if not stack.is_empty() else "0"
 	return "folder://" + JSON.stringify([location.get("type", ""), location.get("server_id", ""), location.get("path", ""), location.get("library_id", ""), container]).sha256_text()
 
 static func folder_title(location: Dictionary, fallback: String = "") -> String:
+	if location.get("type") == "archive":
+		return str(location.get("source_title", fallback)) + (" / " + str(location.path).get_file() if not str(location.get("path", "")).is_empty() else "")
 	var stack: Array = location.get("stack", location.get("folder_path", []))
 	if not stack.is_empty() and not str(stack.back().get("title", "")).strip_edges().is_empty(): return str(stack.back().title)
 	var path := str(location.get("path", "")).trim_suffix("/")
@@ -77,6 +98,7 @@ static func folder_title(location: Dictionary, fallback: String = "") -> String:
 	return title if not title.is_empty() else fallback
 
 static func folder_path(location: Dictionary) -> String:
+	if location.get("type") == "archive": return str(location.get("source_title", "")) + (" / " + str(location.path) if not str(location.get("path", "")).is_empty() else "")
 	var path := str(location.get("path", ""))
 	if not path.is_empty() and not path.contains("://") and location.get("type") in ["local", "smb"]: return path
 	var stack: Array = location.get("stack", location.get("folder_path", []))

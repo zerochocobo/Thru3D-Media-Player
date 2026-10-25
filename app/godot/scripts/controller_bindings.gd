@@ -9,6 +9,7 @@ const SCOPES := ["video", "video_flat", "video_immersive", "photo"]
 const FIXED_ACTIONS := ["move_video", "move_photo"]
 var overrides := {}
 var move_scope := "panel"
+var pinch_hand := "right_hand"
 var down := {"left_hand": {}, "right_hand": {}}
 var blocked := {"left_hand": {}, "right_hand": {}}
 var press_sequence := 0
@@ -45,6 +46,7 @@ func _init() -> void:
 		entry("move_video", "Move picture / interfaces", "video", [bind("left_hand", "grip_click"), bind("right_hand", "grip_click")], false, true),
 		entry("move_photo", "Move picture / interfaces", "photo", [bind("left_hand", "grip_click"), bind("right_hand", "grip_click")], false, true),
 		entry("subtitles", "Subtitle panel", "video", []),
+		entry("narration_toggle", "Toggle subtitle narration", "video", []),
 		entry("turn_180_video", "Turn 180° (360°)", "video_immersive", []),
 		entry("turn_180_photo", "Turn 180° (360°)", "photo", []),
 		entry("previous_video", "Previous video", "video", []),
@@ -185,15 +187,19 @@ func restore_one(id: String) -> bool:
 	reset_inputs(); return true
 
 func restore_all() -> void:
-	overrides.clear(); move_scope = "panel"; reset_inputs()
+	overrides.clear(); move_scope = "panel"; pinch_hand = "right_hand"; reset_inputs()
+
+func allows_picture_pinch(hand: String) -> bool:
+	return hand in HANDS and (pinch_hand == "both" or pinch_hand == hand)
 
 func snapshot() -> Dictionary:
-	return {"version": 1, "bindings": overrides.duplicate(true), "move_scope": move_scope}
+	return {"version": 1, "bindings": overrides.duplicate(true), "move_scope": move_scope, "pinch_hand": pinch_hand}
 
 func restore(data: Variant) -> void:
 	restore_all()
 	if not data is Dictionary or data.get("version", 0) != 1: return
 	if data.get("move_scope", "") in ["panel", "media", "all"]: move_scope = data.move_scope
+	if data.get("pinch_hand", "") in ["left_hand", "right_hand", "both"]: pinch_hand = data.pinch_hand
 	var saved: Variant = data.get("bindings", {})
 	if not saved is Dictionary: return
 	# Validate the whole map first; malformed/conflicting files fall back to usable defaults.

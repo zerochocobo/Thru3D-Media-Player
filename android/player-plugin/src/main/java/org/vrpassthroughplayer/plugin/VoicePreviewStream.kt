@@ -5,7 +5,8 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 
 /** Bounded producer/consumer: native generation never retains a complete float utterance. */
-internal class VoicePreviewStream(private val active: ()->Boolean,private val output: Output) : AutoCloseable {
+internal class VoicePreviewStream(private val active: ()->Boolean,private val output: Output,private val startSamples: Int=START_SAMPLES) : AutoCloseable {
+    init {require(startSamples in 2..START_SAMPLES&&startSamples%2==0)}
     interface Output : AutoCloseable {
         fun start()
         fun write(pcm: FloatArray)
@@ -33,7 +34,7 @@ internal class VoicePreviewStream(private val active: ()->Boolean,private val ou
                 val block=queue.poll(40,TimeUnit.MILLISECONDS)
                 if(block==null){if(ended)break;continue}
                 if(!started){lead+=block;buffered+=block.size
-                    if(buffered<START_SAMPLES&&!ended)continue
+                    if(buffered<startSamples&&!ended)continue
                     checkActive();output.start();started=true
                     lead.forEach {output.write(it);samples+=it.size};lead.clear()
                 } else {output.write(block);samples+=block.size}

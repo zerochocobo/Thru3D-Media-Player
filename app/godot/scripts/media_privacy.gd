@@ -26,11 +26,11 @@ static func is_local(uri: String) -> bool:
 	return uri.begins_with("file://") or uri.begins_with("usb://") or uri.begins_with("content://media/") or uri.begins_with("content://com.android.externalstorage.documents/")
 
 static func record_allowed(uri: String) -> bool:
-	if uri.begins_with("comic://"): return false
+	if preload("res://scripts/pdf_pages.gd").container_page(uri): return false
 	return mode == ALL or (mode == LOCAL and is_local(uri))
 
 static func settings_allowed(uri: String) -> bool:
-	if uri.begins_with("comic://"): return false
+	if preload("res://scripts/pdf_pages.gd").container_page(uri): return false
 	return file_settings == ALL or (file_settings == LOCAL and is_local(uri))
 
 static func protected_uri(uri: String) -> bool:

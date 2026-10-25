@@ -1,6 +1,13 @@
 extends "res://scripts/player_menu.gd"
 ## Photo controls share the existing ray-menu surface, glyphs and projection picker, with no
 ## video timeline. Background audio belongs to the application, independent of the image queue.
+const PHOTO_COMIC := 986060
+const PHOTO_COMIC_VOICE := 986061
+const PHOTO_COMIC_PREVIEW := 986062
+const PHOTO_COMIC_MANAGE := 986064
+const PHOTO_TRANSLATION := 986065
+const PHOTO_TRANSLATION_RETRY := 986066
+const ComicSettings := preload("res://scripts/comic_reading_settings.gd")
 const PHOTO_PREVIOUS := 400
 signal online_image_requested(item: Dictionary, spherical: bool)
 const PHOTO_ONLINE := 985002
@@ -59,6 +66,7 @@ const PHOTO_CURVE := 409
 const PHOTO_PAGE_BACK := 410
 const PHOTO_PAGE_NEXT := 411
 const PHOTO_BACKGROUND := 412
+const PHOTO_GLOBAL_BACKGROUND := 433
 const PHOTO_ADJUST := 413
 const PHOTO_ADJUST_BACK := 414
 const PHOTO_LAYOUT := 415
@@ -69,9 +77,22 @@ const PHOTO_SPATIAL := 419
 const PHOTO_AUDIO := 430
 const PHOTO_STATIC := 432
 const PHOTO_LAYOUT_BASE := 470
+const PHOTO_SCENERY := 986000
+const PHOTO_SCENERY_BASE := 986010
+const PHOTO_SCENERY_YAW := 986020
+const PHOTO_SCENERY_LIGHT := 986021
+const PHOTO_SCENERY_IMPORT := 986022
+const PHOTO_SCENERY_BACK := 986023
+const PHOTO_MAGAZINE_ORDER := 986050
+const SCENERIES := ["belfast", "morning", "dark", "passthrough", "custom", "global_custom"]
+const SCENERY_NAMES := ["Belfast sunset", "Morning sky", "Dark background", "Passthrough", "Custom panorama", "Global custom panorama"]
+const LAYOUT_ORDER := [0, 4, 1, 2, 3]
+const LAYOUT_ICONS := ["image", "photo_sides", "photo_wall", "memory", "magazine"]
+var _scenery_open := false
 const PHOTO_WALL_ROWS := 490
 var _layout_open := false
 var _wall_rows_open := false
+var _magazine_order_open := false
 const Photo := preload("res://scripts/photo_display.gd")
 const PHOTO_THUMB := 420
 var queue_provider: Callable
@@ -156,11 +177,15 @@ func _reset_navigation() -> void:
 	_gallery_open = false
 	_layout_open = false
 	_wall_rows_open = false
+	_magazine_order_open = false
+	_scenery_open = false
 
 func navigate_back() -> bool:
 	if online.back(): return true
 	if has_pointer_capture() or not choices.opened.is_empty(): return super.navigate_back()
-	if _wall_rows_open: _wall_rows_open = false
+	if _scenery_open: _scenery_open = false
+	elif _magazine_order_open: _magazine_order_open = false
+	elif _wall_rows_open: _wall_rows_open = false
 	elif _layout_open: _layout_open = false
 	elif _gallery_open: _gallery_open = false
 	else: return super.navigate_back()
@@ -173,6 +198,13 @@ func refresh_values() -> void:
 	if not visible: return
 	if online.opened: return
 	var latest: Dictionary = state_provider.call() if state_provider.is_valid() else {}
+	latest["bar_transparency"] = bar_transparency
+	if _adjustment in ["comic_voice", "comic_translation"] and has_pointer_capture():
+		_state = latest
+		if is_instance_valid(_status): _status.text = _fitted_photo_status()
+		return
+	if _adjustment == "comic_voice" and _comic_preview_busy(latest) != _comic_preview_drawn_busy:
+		_state = latest; _draw(); return
 	if _adjustment == "photo_view":
 		var layout_changed: bool = latest.get("geometry", 0) != _state.get("geometry", 0) or latest.get("has_image", false) != _state.get("has_image", false) or latest.get("layout", 0) != _state.get("layout", 0) or (int(latest.get("gallery_focus", -1)) < 0) != (int(_state.get("gallery_focus", -1)) < 0) \
 			or latest.get("native_stereo", false) != _state.get("native_stereo", false) or latest.get("loading", false) != _state.get("loading", false) \
@@ -188,7 +220,9 @@ func refresh_values() -> void:
 	if latest != _state:
 		var old_layout := _state.duplicate()
 		var new_layout := latest.duplicate()
-		for key in ["depth_strength", "depth_requested", "depth_enabled", "depth_error", "stereo_strategy", "stereo_ready", "render_strength", "portrait_enabled", "loading_caption", "audio_storage"]:
+		# The music clock is not drawn here. Its regular updates must not rebuild
+		# photo buttons and clear the ray hover, pointer dot and tooltip.
+		for key in ["translation_state", "translation_count", "translation_total", "translation_provider", "comic_state", "comic_speech", "comic_ready_audio", "comic_readable", "comic_candidates", "depth_strength", "depth_requested", "depth_enabled", "depth_error", "stereo_strategy", "stereo_ready", "render_strength", "portrait_enabled", "loading_caption", "audio_storage", "audio_position", "audio_duration"]:
 			old_layout.erase(key); new_layout.erase(key)
 		_state = latest
 		if old_layout != new_layout:
@@ -196,7 +230,7 @@ func refresh_values() -> void:
 		else:
 			_refresh_depth()
 			_tips[PHOTO_DEPTH] = _depth_tip()
-			if is_instance_valid(_status): _status.text = _photo_status()
+			if is_instance_valid(_status): _status.text = _fitted_photo_status()
 			for button in _buttons:
 				if button.target == PHOTO_STRENGTH:
 					button.node.get_child(0).text = I18n.t("3D depth") + "  " + _depth_caption()
@@ -206,12 +240,23 @@ func _can_depth() -> bool:
 	return _state.get("has_image", false) and not _state.get("loading", false) and int(_state.get("geometry", 0)) == 0 \
 		and (_state.get("native_stereo",false) or (not _state.get("stereo", false) and _state.get("depth_available", false)))
 
+func _bar_has_return() -> bool:
+	return _state.get("portrait_requested", false) or int(_state.get("gallery_focus", -1)) >= 0
+
+func _bar_has_group() -> bool:
+	var layout := int(_state.get("layout", 0))
+	return layout in [2,3] and not _bar_has_return() and not _depth_open
+
 func _bar_action_x(target: int) -> float:
-	return {PHOTO_AUDIO:-0.58,PHOTO_LAYOUT:-0.30,PHOTO_RETURN:-0.44,
-		107:-0.14,100:0.0,108:0.14,FAVORITE:0.28,PHOTO_SHUFFLE:0.44}.get(target,0.0)
+	var online_x := 0.56 + (0.14 if _bar_has_group() else 0.0)
+	return {PHOTO_AUDIO:-0.56 if _bar_has_return() else -0.42,PHOTO_LAYOUT:-0.28,PHOTO_RETURN:-0.42,
+		107:-0.14,100:0.0,108:0.14,FAVORITE:0.28,PHOTO_SCENERY:0.42,PHOTO_SHUFFLE:0.56,
+		PHOTO_ONLINE:online_x,PHOTO_SAVE:online_x + (0.14 if OnlinePanorama.AVAILABLE else 0.0)}.get(target,0.0)
 
 func _draw_bar() -> void:
-	if _state.get("archive_mode", false): _gallery_open = false; _layout_open = false
+	if _scenery_open:
+		_draw_scenery(); return
+	if _state.get("archive_mode", false): _gallery_open = false
 	_set_backdrop(Vector2(1.16, 0.27), Vector2.ZERO)
 	_style_control_bar()
 	_backdrop.material_override.set_shader_parameter("corner_radius", 0.05)
@@ -225,29 +270,39 @@ func _draw_bar() -> void:
 	_glyph(PHOTO_INSPECT, "zoom", Vector2(-0.39, 0.025), 0.075, has and not portrait, _inspect_tip())
 	_glyph(PHOTO_ADJUST, "adjust", Vector2(-0.28, 0.025), 0.075, has, I18n.t("Adjust image"))
 	_glyph(PHOTO_PREVIOUS, "previous", Vector2(-0.14, 0.025), 0.085, _state.get("can_previous", false) and not swapping, I18n.t("Previous image"))
-	_label("%d / %d" % [maxi(0, int(_state.get("index", -1)) + 1), int(_state.get("count", 0))], Vector3(0, 0.025, 0.004), 18)
+	var start := maxi(0, int(_state.get("index", -1)) + 1)
+	var pages := int(_state.get("magazine_pages", 1))
+	var counter := "%d–%d / %d" % [start, start + pages - 1, int(_state.get("count", 0))] if pages > 1 and start > 0 else "%d / %d" % [start, int(_state.get("count", 0))]
+	_label(counter, Vector3(0, 0.025, 0.004), 16 if pages > 1 else 18)
 	_glyph(PHOTO_NEXT, "next", Vector2(0.14, 0.025), 0.085, _state.get("can_next", false) and not swapping, I18n.t("Next image"))
 	_glyph(PHOTO_PORTRAIT, "alpha", Vector2(0.23, 0.025), 0.075, portrait or _state.get("portrait_available",false), I18n.t("Exit portrait" if portrait else "Portrait passthrough"))
 	if int(_state.get("geometry", 0)) == 0:
 		_glyph(PHOTO_DEPTH, "depth", Vector2(DEPTH_X, 0.025), 0.075, _can_depth(), _depth_tip())
-	_glyph(MODE, "view_mode", Vector2(0.41, 0.025), 0.075, has and not portrait, I18n.t("Image mode"))
+	_glyph(MODE, "view_mode", Vector2(0.41, 0.025), 0.075, has and not portrait and int(_state.get("layout", 0)) != 4, I18n.t("Image mode"))
 	_glyph(11, "settings", Vector2(0.5, 0.025), 0.075, has, I18n.t("Settings"))
-	_status = _label(_photo_status(), Vector3(0, -0.075, 0.004), 15)
+	_status = _label(_fit_title(_photo_status(), "", 0.76, 15), Vector3(-0.11, -0.075, 0.004), 15)
 	_status.modulate = MUTED
-	_round(107, "close", Vector2(_bar_action_x(107), 0.215), 0.08, has or _state.get("loading", false), false, I18n.t("Close image"))
+	_round(PHOTO_TRANSLATION, "translate", Vector2(0.4, -0.075), 0.065, has and _state.get("comic_supported", false), _state.get("translation_enabled", false), I18n.t("Comic translation (Beta)"))
+	_round(PHOTO_COMIC_VOICE, "comic_voice", Vector2(0.5, -0.075), 0.065, has and _state.get("comic_supported", false), _state.get("comic_enabled", false), I18n.t("Comic reading (Beta)"))
+	var has_selection: bool = has or _state.get("loading", false) or int(_state.get("count", 0)) > 0 or not str(_state.get("error", "")).is_empty()
+	_round(107, "close", Vector2(_bar_action_x(107), 0.215), 0.08, has_selection, false, I18n.t("Close image"))
 	_round(100, "folder", Vector2(_bar_action_x(100), 0.215), 0.08, true, false, I18n.t("Library"))
 	_round(108, "recenter", Vector2(_bar_action_x(108), 0.215), 0.08, true, false, I18n.t("Recenter"))
 	if OnlinePanorama.AVAILABLE:
-		_round(PHOTO_ONLINE, "globe", Vector2(0.56, 0.215), 0.08, true, online.opened, I18n.t("Online panoramas"))
+		_round(PHOTO_ONLINE, "globe", Vector2(_bar_action_x(PHOTO_ONLINE), 0.215), 0.08, true, online.opened, I18n.t("Online panoramas"))
 	if _state.get("can_save_pictures",false):
 		var saving: String=_state.get("pictures_save",{}).get("state","")
-		_round(PHOTO_SAVE,"check" if saving=="saved" else "download",Vector2(0.68,0.215),0.08,saving not in ["saving","saved"],saving=="saved",I18n.t("Saved to Pictures" if saving=="saved" else "Save to Pictures"))
+		_round(PHOTO_SAVE,"check" if saving=="saved" else "download",Vector2(_bar_action_x(PHOTO_SAVE),0.215),0.08,saving not in ["saving","saved"],saving=="saved",I18n.t("Saved to Pictures" if saving=="saved" else "Save to Pictures"))
 	_draw_favorite(Vector2(_bar_action_x(FAVORITE), 0.215))
+	_round(PHOTO_SCENERY, "panorama", Vector2(_bar_action_x(PHOTO_SCENERY), 0.215), 0.08, true, _scenery_open, I18n.t("Photo background"))
 	if not music_quick: music_quick = preload("res://scripts/music_quick_controls.gd").new(self, func(): action_requested.emit("music_toggle"))
 	music_quick.draw(PHOTO_AUDIO, Vector2(_bar_action_x(PHOTO_AUDIO), 0.215), _state)
-	var layout := clampi(int(_state.get("layout", 0)), 0, 3)
-	if not _state.get("archive_mode", false): _round(PHOTO_LAYOUT, ["image", "photo_sides", "photo_wall", "memory"][layout], Vector2(_bar_action_x(PHOTO_LAYOUT), 0.215), 0.08, has and not portrait, false, I18n.t("Photo layout"))
-	var caption := _label(I18n.t("Portrait passthrough" if portrait else Photo.Gallery.NAMES[layout]), Vector3(_bar_action_x(PHOTO_LAYOUT), 0.15, 0.004), 12)
+	var layout := clampi(int(_state.get("layout", 0)), 0, 4)
+	_round(PHOTO_LAYOUT, LAYOUT_ICONS[layout], Vector2(_bar_action_x(PHOTO_LAYOUT), 0.215), 0.08, has_selection and not portrait, false, I18n.t("Photo layout"))
+	var layout_caption := I18n.t("Portrait passthrough" if portrait else Photo.Gallery.NAMES[layout])
+	if layout == 2 and not portrait: layout_caption += " · " + I18n.t(["1 row", "2 rows", "3 rows"][clampi(int(_state.get("wall_rows", 1)), 1, 3) - 1])
+	if layout == 4: layout_caption += " · " + I18n.t("Right to left" if _state.get("magazine_rtl", false) else "Left to right")
+	var caption := _label(layout_caption, Vector3(_bar_action_x(PHOTO_LAYOUT), 0.15, 0.004), 12)
 	caption.modulate = MUTED
 	if layout in [2,3] and not portrait and not _depth_open and int(_state.get("gallery_focus", -1)) < 0:
 		_round(PHOTO_SHUFFLE, "photo_batch" if layout == 2 else "dice", Vector2(_bar_action_x(PHOTO_SHUFFLE), 0.215), 0.08, has and not swapping, false, I18n.t("Next group" if layout == 2 else "Shuffle memories"))
@@ -272,6 +327,13 @@ func _draw_bar() -> void:
 		_draw_depth()
 
 func _draw_layouts() -> void:
+	if _magazine_order_open:
+		for direction in 2:
+			_button(PHOTO_MAGAZINE_ORDER + direction, I18n.t("Left to right" if direction == 0 else "Right to left"), Vector2((direction - 0.5) * 0.29, 0.46), Vector2(0.275, 0.13), true, "magazine")
+			if bool(direction) == bool(_state.get("magazine_rtl", false)):
+				_buttons.back().base_color = SELECTED
+				_icon("check", Vector3(0.105, 0.040, 0.006), 0.028, ACCENT, _buttons.back().node)
+		return
 	if _wall_rows_open:
 		for rows in range(1, 4):
 			_button(PHOTO_WALL_ROWS + rows, I18n.t(["1 row", "2 rows", "3 rows"][rows - 1]), Vector2(-0.29 + (rows - 1) * 0.29, 0.46), Vector2(0.275, 0.13), true, "photo_wall")
@@ -279,12 +341,41 @@ func _draw_layouts() -> void:
 				_buttons.back().base_color = SELECTED
 				_icon("check", Vector3(0.105, 0.040, 0.006), 0.028, ACCENT, _buttons.back().node)
 		return
-	var icons := ["image", "photo_sides", "photo_wall", "memory"]
-	for i in 4:
-		_button(PHOTO_LAYOUT_BASE + i, I18n.t(Photo.Gallery.NAMES[i]), Vector2(-0.435 + i * 0.29, 0.46), Vector2(0.275, 0.13), true, icons[i])
+	var order: Array = [0, 4] if _state.get("archive_mode", false) else LAYOUT_ORDER
+	for slot in order.size():
+		var i: int = order[slot]
+		_button(PHOTO_LAYOUT_BASE + i, I18n.t(Photo.Gallery.NAMES[i]), Vector2((slot - (order.size() - 1) * 0.5) * 0.29, 0.46), Vector2(0.275, 0.13), true, LAYOUT_ICONS[i])
 		if i == int(_state.get("layout", 0)):
 			_buttons.back().base_color = SELECTED
 			_icon("check", Vector3(0.105, 0.040, 0.006), 0.028, ACCENT, _buttons.back().node)
+
+func _draw_scenery() -> void:
+	var choices := [0, 1, 2, 3]
+	if _state.get("photo_background_custom", false): choices.append(4)
+	if _state.get("photo_global_custom", false): choices.append(5)
+	var rows := ceili(choices.size() / 2.0)
+	var bottom := 0.14 - (rows - 1) * 0.13
+	var sky: bool = _state.get("photo_background", "belfast") in ["belfast", "morning", "custom"]
+	if sky: bottom -= 0.14
+	var can_import: bool = _state.get("can_background", false)
+	if can_import: bottom -= 0.12
+	_set_backdrop(Vector2(1.16, 0.37 - bottom + 0.15), Vector2(0, (0.37 + bottom - 0.15) * 0.5))
+	_button(PHOTO_SCENERY_BACK, "", Vector2(-0.49, 0.29), Vector2(0.08, 0.065), true, "up")
+	_button(CLOSE, "", Vector2(0.49, 0.29), Vector2(0.08, 0.065), true, "close")
+	_label(I18n.t("Photo background"), Vector3(0, 0.29, 0.004), TEXT_PAGE_TITLE).font = ui_bold_font()
+	for slot in choices.size():
+		var i: int = choices[slot]
+		_button(PHOTO_SCENERY_BASE + i, I18n.t(SCENERY_NAMES[i]), Vector2(-0.26 + (slot % 2) * 0.52, 0.14 - (slot / 2) * 0.13), Vector2(0.49, 0.105), i != 5 or not _state.get("photo_background_loading", false))
+		if _state.get("photo_background", "belfast") == SCENERIES[i]: _buttons.back().base_color = SELECTED
+	var controls_y := 0.14 - (rows - 1) * 0.13 - 0.14
+	if sky:
+		_button(PHOTO_SCENERY_YAW, I18n.t("Direction") + "  %d°" % int(_state.get("photo_background_yaw", 0)), Vector2(-0.26, controls_y), Vector2(0.49, 0.075))
+		_button(PHOTO_SCENERY_LIGHT, I18n.t("Brightness") + "  %d%%" % roundi(float(_state.get("photo_background_brightness", 1.0)) * 100), Vector2(0.26, controls_y), Vector2(0.49, 0.075))
+	if can_import:
+		_photo_background_button(PHOTO_SCENERY_IMPORT, "Use current panorama", Vector2(0, bottom), Vector2(0.74, 0.075))
+	_status = _label(_photo_status(), Vector3(0, bottom - 0.09, 0.004), 15)
+	_status.modulate = MUTED
+	_place_device_status(Vector2(0, bottom - 0.21))
 
 ## Photo controls keep their full panels in place of the bar.
 func _settings_popup() -> bool:
@@ -302,11 +393,15 @@ func _adjustment_row(target: int, key: String, title: String, span: Vector3, y: 
 
 func _adjustment_default(key: String) -> Variant:
 	if _adjustment != "photo_view": return super._adjustment_default(key)
-	if key == "gallery_distance": return Photo.Gallery.DEFAULT_DISTANCES[clampi(int(_state.get("layout", 0)), 0, 3)]
+	if key == "gallery_distance": return Photo.Gallery.DEFAULT_DISTANCES[clampi(int(_state.get("layout", 0)), 0, 4)]
 	return {"screen_distance": Photo.DEFAULT_DISTANCE, "screen_scale": 1.0,
 		"gallery_scale": 1.0, "inspect_magnification": Photo.DEFAULT_MAGNIFICATION}.get(key)
 
 func _draw_adjustments() -> void:
+	if _adjustment == "comic_translation":
+		_draw_translation_settings(); return
+	if _adjustment == "comic_voice":
+		_draw_comic_settings(); return
 	if _adjustment != "photo_view":
 		super._draw_adjustments()
 		return
@@ -341,6 +436,7 @@ func _draw_adjustments() -> void:
 	_refresh_adjustments()
 
 func _refresh_adjustments() -> void:
+	if _adjustment in ["comic_voice", "comic_translation"]: return
 	if _adjustment != "photo_view":
 		super._refresh_adjustments()
 		return
@@ -358,18 +454,28 @@ func _refresh_adjustments() -> void:
 		row.knob.position.x = 0.03 + fraction * 0.6
 	_refresh_slider_resets()
 
+func _photo_background_button(target: int, caption: String, centre: Vector2, size: Vector2) -> void:
+	var applied: bool = _state.get("photo_background_applied", false)
+	var busy: bool = _state.get("photo_background_saving", false)
+	_button(target, I18n.t("Background set" if applied else ("Saving…" if busy else caption)), centre, size,
+		_state.get("can_background", false) and not applied and not busy, "check" if applied else "image")
+	if applied: _buttons.back().base_color = SELECTED
+
 func _draw_panel() -> void:
-	_set_backdrop(Vector2(1.16, 0.55))
+	_set_backdrop(Vector2(1.16, 0.71), Vector2(0, -0.08))
 	_button(10, "", Vector2(-0.48, 0.2), Vector2(0.085, 0.065), true, "up")
 	_label(I18n.t("Images"), Vector3(0, 0.2, 0.004), 21)
 	_button(PHOTO_STRENGTH, I18n.t("3D depth") + "  " + _depth_caption(), Vector2(-0.26, 0.035), Vector2(0.49, 0.105), _can_depth(), "depth")
 	var names := ["Off", "Slight", "Medium", "Full"]
 	var curve := [0.0, 0.35, 0.7, 1.0].find(float(_state.get("screen_curve", 0)))
 	_button(PHOTO_CURVE, I18n.t("Screen curve") + "  " + I18n.t(names[maxi(0, curve)]), Vector2(0.26, 0.035), Vector2(0.49, 0.105), int(_state.get("geometry", 0)) == 0 and not _state.get("portrait_requested",false), "screen")
-	_button(PHOTO_BACKGROUND, I18n.t("Use as background"), Vector2(0, -0.10), Vector2(0.56, 0.08), _state.get("can_background", false), "image")
-	_status = _label(_photo_status(), Vector3(0, -0.19, 0.004), 15)
+	_photo_background_button(PHOTO_BACKGROUND, "Set photo background", Vector2(-0.26, -0.10), Vector2(0.49, 0.08))
+	_button(PHOTO_GLOBAL_BACKGROUND, I18n.t("Set global background"), Vector2(0.26, -0.10), Vector2(0.49, 0.08), _state.get("can_background", false), "image")
+	_button(PHOTO_COMIC, I18n.t("Comic reading (Beta)") + "  " + I18n.t("On" if _state.get("comic_enabled", false) else "Off"), Vector2(-0.26, -0.235), Vector2(0.49, 0.08), _state.get("comic_supported", false), "comic_voice")
+	_button(PHOTO_COMIC_VOICE, I18n.t("Voice"), Vector2(0.26, -0.235), Vector2(0.49, 0.08), _state.get("comic_supported", false), "comic_voice")
+	_status = _label(_photo_status(), Vector3(0, -0.35, 0.004), 15)
 	_status.modulate = MUTED
-	_place_device_status(Vector2(0, -0.32))
+	_place_device_status(Vector2(0, -0.48))
 
 func _draw_gallery() -> void:
 	var entries: Array = queue_provider.call() if queue_provider.is_valid() else []
@@ -412,9 +518,118 @@ func stick_scroll(amount: float, delta: float) -> void:
 	_draw()
 
 var _scroll_after := 0
+var _comic_preview_drawn_busy := false
+
+func _comic_preview_busy(value: Dictionary) -> bool:
+	return value.get("comic_speech", "idle") in ["preparing", "speaking"]
+
+func _draw_comic_settings() -> void:
+	_comic_preview_drawn_busy = _comic_preview_busy(_state)
+	var rows := ComicSettings.rows(_state)
+	var custom: bool = _state.get("comic_voice_kind", "preset") == "custom"
+	var has_voice_row: bool = rows.any(func(row): return row.field.key in ["comic_voice", "comic_custom_voice"])
+	var count := rows.size() - 1 + (1 if custom else 0)
+	var height := 0.24 + count * SUBTITLE_SETTING_PITCH
+	var top := height / 2.0
+	_set_backdrop(Vector2(1.08, height))
+	_button(PHOTO_ADJUST_BACK, "", Vector2(-0.47, top - 0.06), Vector2(0.075, SUBTITLE_SETTING_HEIGHT), true, "up")
+	_button(CLOSE, "", Vector2(0.47, top - 0.06), Vector2(0.075, SUBTITLE_SETTING_HEIGHT), true, "close")
+	_label(I18n.t("Comic reading (Beta)"), Vector3(0, top - 0.06, 0.004), TEXT_PAGE_TITLE)
+	# PlayerMenu already began this choice scope. Beginning a second scope here
+	# resets the just-opened dropdown on every redraw (including pointer release).
+	choices.bounds = Vector2(-top + 0.045, top - 0.105)
+	var y := top - 0.16
+	for row: Dictionary in rows:
+		if row.field.key == "comic_language": continue
+		var label := _label(I18n.t(row.title), Vector3(-0.48, y, 0.004), TEXT_BODY)
+		label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+		var voice_row: bool = row.field.key in ["comic_voice", "comic_custom_voice"]
+		if row.field.key == "comic_enabled":
+			row.field["switch"] = true; row.field.hint = "Comic reading (Beta)"
+			choices.field(null, row.field, Vector2(-0.135, y), 0.09, SUBTITLE_SETTING_HEIGHT)
+			if _state.get("translation_enabled", false):
+				var target: String = {"zh-Hans": "简体中文", "zh-Hant": "繁體中文", "ja": "日本語", "en": "English"}.get(_state.get("translation_target", "zh-Hans"), "")
+				_label(I18n.t("Translate to") + " · " + target, Vector3(0.21, y, 0.004), TEXT_BODY)
+			else: choices.field(null, rows[1].field, Vector2(0.21, y), 0.50, SUBTITLE_SETTING_HEIGHT)
+		else:
+			choices.field(null, row.field, Vector2(0.09 if voice_row else 0.14, y), 0.54 if voice_row else 0.64, SUBTITLE_SETTING_HEIGHT)
+			if voice_row: _draw_voice_preview(PHOTO_COMIC_PREVIEW, y, _comic_preview_busy(_state), _state.get("comic_supported", false) and (not custom or not str(_state.get("comic_custom_voice", "")).is_empty()))
+		y -= SUBTITLE_SETTING_PITCH
+		if custom and (voice_row or (not has_voice_row and row.field.key == "comic_voice_kind")):
+			_button(PHOTO_COMIC_MANAGE, I18n.t("Manage my voices"), Vector2(0.14, y), Vector2(0.64, SUBTITLE_SETTING_HEIGHT))
+			y -= SUBTITLE_SETTING_PITCH
+	_status = _label(_fit_title(_photo_status(), "", 0.94, TEXT_AUX), Vector3(0, -top + 0.035, 0.004), TEXT_AUX)
+	_status.modulate = MUTED
+	choices.finish()
+
+func _draw_translation_settings() -> void:
+	var source_languages := [{"value": "zh-Hans", "label": "简体中文"}, {"value": "zh-Hant", "label": "繁體中文"},
+		{"value": "ja", "label": "日本語"}, {"value": "en", "label": "English"}]
+	var languages := preload("res://scripts/comic_translation_protocol.gd").target_choices()
+	var sources := [{"value": "auto", "label": "From OCR"}] + source_languages
+	var rows := [
+		{"title": "Online translation", "field": {"key": "translation_enabled", "switch": true, "value": _state.get("translation_enabled", false), "choices": [{"value": false, "label": "Off"}, {"value": true, "label": "On"}]}},
+		{"title": "Translate to", "field": {"key": "translation_target", "value": _state.get("translation_target", "zh-Hans"), "choices": languages}},
+		{"title": "Source language", "field": {"key": "translation_source", "value": _state.get("translation_source", "auto"), "choices": sources}},
+		{"title": "Text size", "field": {"key": "translation_size", "value": _state.get("translation_size", 1.0), "choices": [{"value": 0.85, "label": "Small"}, {"value": 1.0, "label": "Standard"}, {"value": 1.2, "label": "Large"}]}},
+		{"title": "Translation style", "field": {"key": "translation_appearance", "value": _state.get("translation_appearance", "light"), "dropdown":true, "choices":[{"value":"light","label":"Black on white"},{"value":"dark","label":"White on black"}]}}]
+	var height := 0.32 + rows.size() * SUBTITLE_SETTING_PITCH
+	var top := height / 2.0
+	_set_backdrop(Vector2(1.08, height))
+	_button(PHOTO_ADJUST_BACK, "", Vector2(-0.47, top - 0.06), Vector2(0.075, SUBTITLE_SETTING_HEIGHT), true, "up")
+	_button(CLOSE, "", Vector2(0.47, top - 0.06), Vector2(0.075, SUBTITLE_SETTING_HEIGHT), true, "close")
+	_label(I18n.t("Comic translation (Beta)"), Vector3(0, top - 0.06, 0.004), TEXT_PAGE_TITLE)
+	choices.bounds = Vector2(-top + 0.12, top - 0.105)
+	var y := top - 0.16
+	for row: Dictionary in rows:
+		var label := _label(I18n.t(row.title), Vector3(-0.48, y, 0.004), TEXT_BODY)
+		label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+		var toggle: bool = row.field.get("switch", false)
+		choices.field(null, row.field, Vector2(0.40 if toggle else 0.15, y), 0.09 if toggle else 0.64, SUBTITLE_SETTING_HEIGHT)
+		y -= SUBTITLE_SETTING_PITCH
+	_status = _label(_fit_title(_translation_status(), "", 0.78, TEXT_AUX), Vector3(-0.06, -top + 0.09, 0.004), TEXT_AUX)
+	_status.modulate = MUTED
+	_button(PHOTO_TRANSLATION_RETRY, "", Vector2(0.46, -top + 0.09), Vector2(0.065, 0.065), _state.get("translation_enabled", false), "restart")
+	_tips[PHOTO_TRANSLATION_RETRY] = I18n.t("Retry translation")
+	var notice := _label(I18n.t("Recognized text is sent to Microsoft"), Vector3(0, -top + 0.035, 0.004), TEXT_AUX)
+	notice.modulate = MUTED
+	choices.finish()
+
+func _translation_status() -> String:
+	if not _state.get("translation_enabled", false): return I18n.t("Off")
+	var status: String = _state.get("translation_state", "waiting")
+	var count := int(_state.get("translation_count", 0))
+	var total := int(_state.get("translation_total", 0))
+	if status == "translating": return I18n.t("Translating… %d/%d") % [count, total]
+	if status == "error": return I18n.t("Translation unavailable · original shown")
+	if status == "partial": return I18n.t("Translated %d/%d · retry available") % [count, total]
+	if status == "ready": return I18n.t("Translated dialogues: %d") % count
+	return I18n.t({"recognizing": "Reading page…", "no_dialogue": "No stable dialogue", "unsupported": "Flat images only", "unavailable": "Comic reading unavailable", "ready": "No translation needed"}.get(str(_state.get("comic_state", "")), "Reading page…"))
 
 func _activate(target: int) -> void:
-	if _state.get("archive_mode", false) and (target in [PHOTO_GALLERY, PHOTO_LAYOUT, PHOTO_SHUFFLE] or target >= PHOTO_LAYOUT_BASE and target < PHOTO_LAYOUT_BASE + 4): return
+	if target == PHOTO_TRANSLATION: _adjustment = "comic_translation"; refresh(); return
+	if target == PHOTO_TRANSLATION_RETRY: action_requested.emit("translation_retry"); return
+	if target == PHOTO_COMIC: action_requested.emit("comic_toggle"); return
+	if target == PHOTO_COMIC_VOICE: _adjustment = "comic_voice"; refresh(); return
+	if target == PHOTO_COMIC_PREVIEW: action_requested.emit("comic_stop" if _comic_preview_busy(_state) else "comic_preview"); return
+	if target == PHOTO_COMIC_MANAGE: action_requested.emit("comic_voices"); return
+	if _adjustment in ["comic_voice", "comic_translation"] and target == PHOTO_ADJUST_BACK:
+		choices.reset(); _adjustment = ""; refresh(); return
+	if target == PHOTO_SCENERY_BACK:
+		_scenery_open = false; refresh(); return
+	if target == PHOTO_SCENERY_IMPORT:
+		action_requested.emit("photo_scenery_import"); refresh(); return
+	if target == PHOTO_SCENERY:
+		_scenery_open = not _scenery_open
+		_layout_open = false; _gallery_open = false; _mode_open = false; _wall_rows_open = false; _close_depth_slider()
+		_magazine_order_open = false
+		refresh(); return
+	if target >= PHOTO_SCENERY_BASE and target < PHOTO_SCENERY_BASE + SCENERIES.size():
+		action_requested.emit("photo_scenery_" + SCENERIES[target - PHOTO_SCENERY_BASE]); refresh(); return
+	if target in [PHOTO_SCENERY_YAW, PHOTO_SCENERY_LIGHT]:
+		action_requested.emit("photo_scenery_yaw" if target == PHOTO_SCENERY_YAW else "photo_scenery_brightness"); refresh(); return
+	_scenery_open = false
+	if _state.get("archive_mode", false) and (target in [PHOTO_GALLERY, PHOTO_SHUFFLE] or target in [PHOTO_LAYOUT_BASE + 1, PHOTO_LAYOUT_BASE + 2, PHOTO_LAYOUT_BASE + 3]): return
 	if target == SPACE_LOCK or _adjustment == "bar_transparency": super._activate(target); return
 	if target==PHOTO_STATIC:
 		action_requested.emit("photo_static"); refresh()
@@ -436,7 +651,14 @@ func _activate(target: int) -> void:
 		_layout_open = false; _wall_rows_open = false
 		action_requested.emit("photo_wall_rows_%d" % (target - PHOTO_WALL_ROWS))
 		refresh(); return
-	if target >= PHOTO_LAYOUT_BASE and target < PHOTO_LAYOUT_BASE + 4:
+	if target in [PHOTO_MAGAZINE_ORDER, PHOTO_MAGAZINE_ORDER + 1]:
+		_layout_open = false; _magazine_order_open = false
+		action_requested.emit("photo_magazine_ltr" if target == PHOTO_MAGAZINE_ORDER else "photo_magazine_rtl")
+		refresh(); return
+	if target >= PHOTO_LAYOUT_BASE and target < PHOTO_LAYOUT_BASE + 5:
+		_magazine_order_open = target == PHOTO_LAYOUT_BASE + 4
+		if _magazine_order_open:
+			_wall_rows_open = false; refresh(); return
 		if target == PHOTO_LAYOUT_BASE + 2:
 			_wall_rows_open = true; refresh(); return
 		_layout_open = false
@@ -444,6 +666,7 @@ func _activate(target: int) -> void:
 		action_requested.emit("photo_layout_%d" % (target - PHOTO_LAYOUT_BASE))
 		refresh(); return
 	if target == PHOTO_LAYOUT:
+		_magazine_order_open = false
 		_wall_rows_open = false
 		_layout_open = not _layout_open; _gallery_open = false; _mode_open = false; _close_depth_slider()
 		refresh(); return
@@ -493,6 +716,7 @@ func _activate(target: int) -> void:
 		PHOTO_PAGE_BACK: _gallery_start -= 5
 		PHOTO_PAGE_NEXT: _gallery_start += 5
 		PHOTO_BACKGROUND: action_requested.emit("photo_background")
+		PHOTO_GLOBAL_BACKGROUND: action_requested.emit("global_background")
 		PHOTO_GALLERY:
 			_gallery_open = not _gallery_open; _mode_open = false
 			_gallery_start = maxi(0, int(_state.get("index", 0)) - 2)
@@ -511,7 +735,29 @@ func _activate(target: int) -> void:
 func _inspect_tip() -> String:
 	return I18n.t("Inspect") + "  %.1f×" % float(_state.get("inspect_magnification", Photo.DEFAULT_MAGNIFICATION))
 
+func _fitted_photo_status() -> String:
+	if _adjustment == "comic_translation": return _fit_title(_translation_status(), "", 0.78, TEXT_AUX)
+	if _adjustment == "comic_voice": return _fit_title(_photo_status(), "", 0.94, TEXT_AUX)
+	if section == 0 and _adjustment.is_empty() and not _scenery_open: return _fit_title(_photo_status(), "", 0.76, 15)
+	return _photo_status()
+
 func _photo_status() -> String:
+	if _adjustment == "comic_translation" or (_adjustment != "comic_voice" and _state.get("translation_enabled", false)):
+		return _translation_status()
+	if _adjustment == "comic_voice" or _state.get("comic_enabled", false):
+		if _state.get("comic_speech") == "preparing": return I18n.t("Preparing speech…")
+		if _state.get("comic_speech") == "speaking": return I18n.t("Reading dialogue…")
+		if _state.get("comic_speech") == "error": return I18n.t("Unable to read dialogue")
+	if _scenery_open or section == 1:
+		if _state.get("photo_background_loading", false): return I18n.t("Loading…")
+		if not str(_state.get("photo_background_error", "")).is_empty(): return I18n.t(str(_state.photo_background_error))
+		if _scenery_open: return ""
+	if _state.get("comic_enabled", false):
+		if _state.get("comic_state") == "ready" and int(_state.get("comic_ready_audio", 0)) == 0: return I18n.t("Preparing speech…")
+		if _state.get("comic_state") == "ready": return I18n.t("Readable dialogues: %d") % int(_state.get("comic_readable", 0))
+		if _state.get("comic_state") == "no_dialogue" and int(_state.get("comic_candidates", 0)) > 0: return I18n.t("Dialogue needs verification")
+		var comic_caption: String = {"recognizing": "Reading page…", "ready": "Point to read", "unavailable": "Comic reading unavailable", "unsupported": "Flat images only", "no_dialogue": "No stable dialogue", "speech_error": "Unable to read dialogue"}.get(str(_state.get("comic_state", "")), "")
+		if not comic_caption.is_empty(): return I18n.t(comic_caption)
 	if not str(_state.get("spatial_error","")).is_empty(): return I18n.t(str(_state.spatial_error))
 	if _state.get("spatial_requested",false): return I18n.t("Spatial view" if _state.get("spatial_ready",false) else "Preparing spatial view")
 	if not _favorite_notice.is_empty(): return I18n.t(_favorite_notice)

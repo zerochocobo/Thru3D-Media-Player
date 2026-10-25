@@ -56,7 +56,7 @@ func assertAliyunCore(t *testing.T, call func(string,string,any) map[string]any)
                     if params["parent_file_id"]=="root" {
                         response=`{"items":[{"file_id":"folder-fixture","name":"directory","type":"folder","updated_at":"2026-10-09T00:00:00Z"}]}`
                     } else if params["parent_file_id"]=="folder-fixture" {
-                        response=fmt.Sprintf(`{"items":[{"file_id":"video-fixture","name":"clip #%%.mp4","type":"file","size":%d,"updated_at":"2026-10-09T00:00:00Z"}]}`,len(payload))
+                        response=fmt.Sprintf(`{"items":[{"file_id":"video-fixture","name":"clip #?%%.PDF","type":"file","size":%d,"updated_at":"2026-10-09T00:00:00Z"}]}`,len(payload))
                     } else { return nil,fmt.Errorf("unexpected folder") }
                 case "/adrive/v1.0/openFile/getDownloadUrl":
                     if params["file_id"]!="video-fixture" { t.Error("wrong download object") }
@@ -84,7 +84,7 @@ func assertAliyunCore(t *testing.T, call func(string,string,any) map[string]any)
         !strings.HasPrefix(stored,"vrpp1:") || strings.Contains(stored,"ali-refresh") || strings.Contains(stored,"ali-access") { t.Fatal("Aliyun refreshed credentials not encrypted") }
     decoded:=call("GET","/account?id="+fmtInt(id),nil)["data"].(map[string]any)["addition"].(string)
     if !strings.Contains(decoded,"ali-refresh-rotated") { t.Fatal("Aliyun refresh not persisted") }
-    stream,err:=Stream(mount+"/directory/clip #%.mp4")
+    stream,err:=Stream(mount+"/directory/clip #?%.PDF")
     if err!=nil { t.Fatal(err) }
     for _,offset:=range []int{0,len(payload)/2} {
         request,_:=http.NewRequest("GET",stream,nil)

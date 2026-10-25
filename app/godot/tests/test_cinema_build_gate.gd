@@ -19,8 +19,8 @@ func _run() -> void:
 	var debug := OS.is_debug_build()
 	var expected := "--expect-debug" if debug else "--expect-release"
 	check(expected in OS.get_cmdline_user_args(), "The actual engine build matches the requested test variant")
-	check(Feature.enabled(), "Test cinema is available in Debug and Release")
-	check(Feature.normalize_background("cinema") == "cinema", "Saved experimental background is safe for this build")
+	check(Feature.enabled(), "Cinema is available in Debug and Release")
+	check(Feature.normalize_background("cinema") == "cinema", "Saved cinema background is safe for this build")
 	for choice in ["belfast", "dark", "passthrough", "custom"]:
 		check(Feature.normalize_background(choice) == choice, "Ordinary background is unchanged: " + choice)
 	I18n.use("en")
@@ -53,8 +53,8 @@ func _run() -> void:
 	library.section = Library.Section.SETTINGS; library.tab = Library.BACKGROUND_TAB
 	get_tree().root.add_child(library); library.toggle(); library.set_process(false)
 	var background_row: Dictionary = library.rows[0]
-	check(background_row.choices.any(func(option): return option.value == "cinema") , "Both builds show the labelled test auditorium")
-	check(background_row.choices.any(func(option): return option.value == "cinema" and option.label == "Grand cinema (Test)"), "Cinema entry carries the Test label")
+	check(background_row.choices.any(func(option): return option.value == "cinema") , "Both builds show the auditorium")
+	check(background_row.choices.any(func(option): return option.value == "cinema" and option.label == "Grand cinema"), "Cinema entry uses the final name")
 	check(str(background_row.value) == "cinema", "Background menu normalizes stale release settings")
 	check(library.rows.any(func(row): return row.get("key", "") == "cinema_interaction") , "Both builds provide movement settings")
 	check(library.rows.any(func(row): return row.get("setting", []) == ["cinema_home", true]) , "Both builds provide the return-to-start action")

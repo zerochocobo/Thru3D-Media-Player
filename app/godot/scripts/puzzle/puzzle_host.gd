@@ -97,6 +97,11 @@ func _update_photo_entry() -> void:
 		if key!=_photo_entry_key or (app.photo_menu.visible and not _photo_controls_visible): photo_entry.global_transform=comfortable
 		_photo_entry_key=key
 	_photo_controls_visible=app.photo_menu.visible
+	# Keep the optional puzzle entry below the photo-attached magazine actions.
+	if photo.magazine.active() and is_instance_valid(app.photo_magazine_controls):
+		app.photo_magazine_controls.sync()
+		photo_entry.global_transform = app.photo_magazine_controls.global_transform * Transform3D(Basis.IDENTITY, Vector3(0,-0.22,0))
+	photo_entry.ray_max_distance = maxf(photo_entry.MAX_RAY_METRES, photo_entry.global_position.distance_to(camera.global_position) + 2.0)
 	photo_entry.visible=true
 	# Input asks for the active surface several times per frame. Rebuild pointer
 	# meshes only once; ray hits at press time are still computed from the latest ray.

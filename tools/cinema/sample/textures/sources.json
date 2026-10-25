@@ -75,26 +75,26 @@
     "scan_contrast": 0.16
   },
   "carpet": {
-    "source": "https://ambientcg.com/a/Carpet006",
+    "source": "https://ambientcg.com/a/Carpet013",
     "license": "CC0 1.0",
-    "tile_metres": 1.0,
+    "tile_metres": 0.6,
     "target_linear_rgb": [
-      0.055,
-      0.048,
-      0.041
+      0.025,
+      0.022,
+      0.021
     ],
     "inputs": {
       "Color": {
-        "name": "Carpet006_2K-JPG_Color.jpg",
-        "sha256": "fd368d0f926d54f214cecf3f447df1176a7190ca4ab1f94a8f1cb56574e30f53"
+        "name": "Carpet013_2K-JPG_Color.jpg",
+        "sha256": "4b3f4898a0d10f1c2ca1f3773ada25b1855d19d3bf212815ed01145db6a83b2b"
       },
       "Displacement": {
-        "name": "Carpet006_2K-JPG_Displacement.jpg",
-        "sha256": "08f28e0342cd755446374a1a019e82c9f107a147ac43d987e0862a723db09d8b"
+        "name": "Carpet013_2K-JPG_Displacement.jpg",
+        "sha256": "cb3ece7f45aa866c56b142fb2b37448a4898733a5b343a0c0801492da7fef3c9"
       },
       "Roughness": {
-        "name": "Carpet006_2K-JPG_Roughness.jpg",
-        "sha256": "24c9ae9f2f6787db9e71822440d65f409c2fcd3da28c725aa427365e280661f3"
+        "name": "Carpet013_2K-JPG_Roughness.jpg",
+        "sha256": "42b7fd35ed61ad75fc8777e6fde26d31250e2aada7e9caeeaf31bab095d1b5de"
       }
     },
     "scan_contrast": 0.35
@@ -104,9 +104,9 @@
     "license": "CC0 1.0",
     "tile_metres": 0.6,
     "target_linear_rgb": [
-      0.07,
-      0.067,
-      0.061
+      0.038,
+      0.035,
+      0.032
     ],
     "inputs": {
       "Color": {
@@ -127,11 +127,11 @@
   "wood": {
     "source": "https://ambientcg.com/a/Wood051",
     "license": "CC0 1.0",
-    "tile_metres": 0.8,
+    "tile_metres": 0.6,
     "target_linear_rgb": [
-      0.105,
-      0.054,
-      0.024
+      0.05,
+      0.031,
+      0.02
     ],
     "inputs": {
       "Color": {

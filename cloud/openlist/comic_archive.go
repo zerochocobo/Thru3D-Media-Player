@@ -31,6 +31,12 @@ const comicMaxEntries = 20000
 const comicMaxRemoteIndexReads = 128
 const comicMaxRemoteIndexBytes = 16 << 20
 
+// RAR4 and RAR5 without usable Quick Open copies need one request per scattered
+// header. Use small reads and allow ordinary books, while bounding a scan to
+// roughly two minutes of pacing (plus network time), rather than unbounded I/O.
+const comicMaxRemoteRARIndexReads = 512
+const comicRARIndexWindow = 4 << 10
+
 var errComicUnsupported = errors.New("Archive format or compression is not supported")
 var errComicSolid = errors.New("Solid archives are not supported")
 var errComicPassword = errors.New("Archive password required or incorrect")
@@ -58,6 +64,7 @@ type comicSource struct {
 	payload    comicRange
 	pageRead   bool
 	indexing   bool
+	rarIndex   bool
 	rarHeaders []comicRange
 }
 
@@ -97,7 +104,11 @@ func (s *comicSource) fetch(off, n int64) ([]byte, error) {
 	if off < 0 || n < 0 || off > s.size || n > s.size-off || n > comicMaxPage+256*1024 {
 		return nil, errComicLimit
 	}
-	if s.remote && s.indexing && (s.reads >= comicMaxRemoteIndexReads || n > comicMaxRemoteIndexBytes-s.bytes) {
+	indexReads := comicMaxRemoteIndexReads
+	if s.rarIndex {
+		indexReads = comicMaxRemoteRARIndexReads
+	}
+	if s.remote && s.indexing && (s.reads >= indexReads || n > comicMaxRemoteIndexBytes-s.bytes) {
 		return nil, errComicLimit
 	}
 	s.reads++
@@ -228,7 +239,11 @@ func (s *comicSource) ReadAt(p []byte, off int64) (int, error) {
 		data := s.cachedAt(off)
 		if len(data) == 0 {
 			window := int64(128 << 10)
-			if s.pageRead {
+			if s.indexing && s.rarIndex {
+				// Decoder buffers are 4 KiB. Large read-ahead at every header
+				// downloads image data that listing immediately seeks over.
+				window = comicRARIndexWindow
+			} else if s.pageRead {
 				window = 1 << 20
 			}
 			end := min(s.size, off+max(int64(len(p)-read), window))
@@ -376,7 +391,7 @@ func comicNatural(a, b string) bool {
 
 func comicIndex(s *comicSource, name, password string) (*comicSession, error) {
 	s.indexing = true
-	defer func() { s.indexing = false }()
+	defer func() { s.indexing, s.rarIndex = false, false }()
 	c := &comicSession{source: s, cached: map[int]string{}}
 	addEntry := func(name string, size int64, directory bool) error {
 		if directory {
@@ -492,6 +507,9 @@ func comicIndex(s *comicSource, name, password string) (*comicSession, error) {
 		if e := comicPrepareRARQuickOpen(s); e != nil {
 			return nil, e
 		}
+		// QO loading keeps its contiguous reads; only subsequent scattered
+		// header misses use the smaller scan window and RAR request budget.
+		s.rarIndex = true
 		opts := []rardecode.Option{rardecode.FileSystem(comicFS{s}), rardecode.MaxDictionarySize(64 << 20)}
 		if password != "" {
 			opts = append(opts, rardecode.Password(password))
@@ -649,6 +667,36 @@ func (c *comicSession) touch(index int) {
 	c.recent = append(c.recent, index)
 }
 
+// Transfer a verified extracted file to the reader's bounded window. A unique
+// path keeps a retired, still-leased page safe when the same index is reopened.
+func (c *comicSession) transferPath(ticket string) (string, error) {
+	if len(ticket) != 32 || strings.Trim(ticket, "0123456789abcdef") != "" {
+		return "", errComicDamaged
+	}
+	return filepath.Join(c.dir, "reading-"+ticket), nil
+}
+func (c *comicSession) takePage(index int, ticket string) (string, error) {
+	target, err := c.transferPath(ticket)
+	if err != nil {
+		return "", err
+	}
+	name, err := c.page(index)
+	if err != nil {
+		return "", err
+	}
+	if err = os.Rename(name, target); err != nil {
+		return "", err
+	}
+	delete(c.cached, index)
+	// The reader now owns retention, including the initial password-check page.
+	for old, file := range c.cached {
+		os.Remove(file)
+		delete(c.cached, old)
+	}
+	c.recent = nil
+	return target, nil
+}
+
 func comicError(e error, password string) string {
 	if e == nil {
 		return ""
@@ -684,6 +732,7 @@ func comicRoutes(api *gin.Engine) {
 			Cache    string `json:"cache"`
 			Page     int    `json:"page"`
 			Remote   bool   `json:"remote"`
+			Transfer string `json:"transfer"`
 		}
 		if g.ShouldBindJSON(&q) != nil {
 			g.JSON(200, gin.H{"code": 200, "data": gin.H{"error": errComicDamaged.Error()}})
@@ -745,7 +794,7 @@ func comicRoutes(api *gin.Engine) {
 			if e != nil && comicError(e, q.Password) == errComicPassword.Error() {
 				comicPending = s
 			}
-		case "page":
+		case "page", "take-page":
 			c := comicSessions[q.Session]
 			if c == nil {
 				e = errComicDamaged
@@ -754,9 +803,22 @@ func comicRoutes(api *gin.Engine) {
 				c.source.reads = 0
 				c.source.bytes = 0
 				var p string
-				p, e = c.page(q.Page)
+				if q.Op == "take-page" {
+					p, e = c.takePage(q.Page, q.Transfer)
+				} else {
+					p, e = c.page(q.Page)
+				}
 				if e == nil {
 					result["path"] = p
+				}
+			}
+		case "discard-page":
+			// Runs under comicRequestMu after even a cancelled take-page request.
+			if c := comicSessions[q.Session]; c != nil {
+				var target string
+				target, e = c.transferPath(q.Transfer)
+				if e == nil {
+					os.Remove(target)
 				}
 			}
 		case "close":

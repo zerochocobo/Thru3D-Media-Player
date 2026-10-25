@@ -41,6 +41,44 @@ func direction(menu: Node3D, target: int) -> Vector3:
 	return control(menu, target).node.global_position.normalized()
 func hover(menu: Node3D, target: int, hand: String = "left_hand") -> void:
 	menu.update_pointer(hand, Vector3.ZERO, direction(menu, target), true)
+func photo_music_progress(audio: Node, photo: Node3D) -> void:
+	for paused in [true, false]:
+		audio.paused = paused; photo.refresh_values()
+		for hand in ["left_hand", "right_hand"]:
+			hover(photo, 100, hand)
+			var generation: int = photo._buttons_generation
+			var button_id: int = control(photo, 100).node.get_instance_id()
+			var color: Color = control(photo, 100).node.material_override.get_shader_parameter("surface_color")
+			var stable_controls := true; var stable_hover := true; var stable_feedback := true
+			for tick in range(8):
+				if not paused: audio._resume_position += 0.25
+				# Exercise the actual 250 ms photo-menu poll before the next ray update.
+				photo._refresh_ms = 0; photo._process(0)
+				stable_controls = stable_controls and photo._buttons_generation == generation and control(photo, 100).node.get_instance_id() == button_id
+				stable_hover = stable_hover and photo._hover.get(hand, photo.NONE) == 100
+				stable_feedback = stable_feedback and photo._pointers[hand].dot.visible and photo._tooltip.visible \
+					and control(photo, 100).node.material_override.get_shader_parameter("surface_color") == color
+				hover(photo, 100, hand)
+			var context: String = hand + (" paused" if paused else " playing")
+			check(stable_controls, "Photo controls survive repeated music progress polls: " + context)
+			check(stable_hover, "Music polling preserves photo button hover: " + context)
+			check(stable_feedback, "Music polling preserves photo pointer dot, tooltip and highlight: " + context)
+	var generation: int = photo._buttons_generation
+	audio._remembered_duration = 180; photo.refresh_values()
+	check(photo._buttons_generation == generation and photo._state.audio_duration == 180,
+		"Music duration updates the snapshot without rebuilding photo controls")
+	photo.music_quick.expanded = true; photo.refresh()
+	for paused in [true, false]:
+		audio.paused = paused; photo.refresh_values()
+		var icon: Texture2D = control(photo, Quick.PLAY).node.get_child(1).material_override.albedo_texture
+		check(icon == photo.Icons.texture("play" if paused else "pause"),
+			"Photo quick transport still updates the real pause state: " + str(paused))
+	generation = photo._buttons_generation
+	audio.current = "xingmian"; audio._loaded = "xingmian"; photo.refresh_values()
+	check(photo._buttons_generation > generation and photo._state.audio_title == "Starlit Rest",
+		"Changing music still refreshes the photo quick transport title")
+	audio.current = "yunhai"; audio._loaded = "yunhai"
+	photo.music_quick.reset(); photo.refresh_values()
 func run() -> void:
 	var audio := Audio.new(); audio.player = AudioStreamPlayer.new()
 	audio.current = "yunhai"; audio._loaded = "yunhai"; audio.paused = false; audio.queue.assign(["yunhai"])
@@ -82,6 +120,7 @@ func run() -> void:
 	photo.state_provider = func():
 		var state: Dictionary = audio.snapshot(); state.merge({"has_image": true, "count": 3, "index": 0, "title": "Photo"}); return state
 	photo.visible = true; photo.refresh_values()
+	photo_music_progress(audio, photo)
 	var ops := []; photo.action_requested.connect(func(op): ops.append(op))
 	hover(photo, Photo.PHOTO_AUDIO); photo.music_quick._entered.left_hand = Time.get_ticks_msec() - Quick.ENTER_MS - 1; hover(photo, Photo.PHOTO_AUDIO)
 	check(photo.music_quick.expanded, "Photo entry uses the same hover interaction")

@@ -9,6 +9,10 @@ class PlaybackMain extends "res://scripts/main.gd":
 	func _show_player_menu() -> void: pass
 class Viewer extends Node3D:
 	var platform: Object
+	var cast_token := 0
+	var cast_state := {}
+	func has_pointer_capture() -> bool: return false
+	func refresh() -> void: pass
 	var source_location := {}
 	var calls := []
 	func dismiss() -> void: pass
@@ -16,7 +20,7 @@ class Viewer extends Node3D:
 	func close_video() -> void: pass
 	func open_library(uri: String, title: String, metadata: Dictionary) -> bool:
 		calls.append([uri, title, metadata]); return true
-	func open_image(uri: String, title: String, queue: Array[Dictionary], location: Dictionary, _retained: Dictionary = {}) -> void:
+	func open_image(uri: String, title: String, queue: Array[Dictionary], location: Dictionary, _retained: Dictionary = {}, _container: Dictionary = {}) -> void:
 		calls.append([uri, title, queue, location])
 	func start_directory(_value: Dictionary) -> void: pass
 class NativeVault extends RefCounted:
@@ -143,12 +147,13 @@ func layout_checks(menu: Node3D, store: RefCounted, recent: RefCounted) -> void:
 	check(menu.collections.selection.is_empty(), "Changing filters clears the previous selection")
 	menu._activate(menu.NAV_BASE + menu.Section.SETTINGS)
 	check(not menu.SETTING_TABS.has("Privacy") and menu.SETTING_ORDER.size() == 6, "Privacy does not occupy a top tab")
-	check(menu.rows.size() == 4 and not menu.rows.any(func(row):return row.get("key") == "privacy_mode"), "General starts with a collapsed Privacy group")
+	check(menu.rows.any(func(row):return row.get("group_header", false)) and not menu.rows.any(func(row):return row.get("key") == "privacy_mode"), "General starts with a collapsed Privacy group")
 	for compact in [false, true]:
 		menu.set_compact(compact); menu.collections.privacy_expanded = false; menu.scroll = 0; menu.refresh()
-		var privacy_index: int = menu.rows.find(menu.rows.filter(func(row):return row.get("group_header", false))[0])
-		tap(menu, menu.ROW_BASE + privacy_index)
-		check(menu.rows[privacy_index + 1].get("key") == "privacy_mode" and menu.rows[privacy_index + 2].get("key") == "file_settings_memory", "Privacy offers independent history and per-file memory controls")
+		var privacy_index: int = menu.rows.find(menu.rows.filter(func(row):return row.get("title") == "Privacy settings")[0])
+		menu._set_scroll(float(privacy_index))
+		tap(menu, menu.ROW_BASE + privacy_index - menu._first_line())
+		check(menu.rows.any(func(row):return row.get("key") == "privacy_mode") and menu.rows.any(func(row):return row.get("key") == "file_settings_memory"), "Privacy offers independent history and per-file memory controls")
 		var password_index: int = menu.rows.find(menu.rows.filter(func(row): return row.get("privacy_action") == "enable")[0])
 		if password_index - menu._first_line() >= menu._lines(): menu._set_scroll(float(password_index - menu._lines() + 1))
 		var password_slot: int = password_index - menu._first_line()
@@ -214,6 +219,7 @@ func run() -> void:
 	var main := PlaybackMain.new(); main.recent_menu = menu
 	var video := Viewer.new(); var photo := Viewer.new(); var controls := Viewer.new()
 	main.video = video; main.photo = photo; main.video_menu = controls; main.photo_menu = controls
+	main.cast_session.bind(main, null)
 	menu.chosen.connect(main._on_library_chosen)
 	for mode in ["list", "grid"]:
 		for uri in ["file:///Series/episode.mp4", "file:///Series/photo.jpg"]:

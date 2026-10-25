@@ -6,9 +6,17 @@ var checks := 0
 var failures: Array[String] = []
 class Platform extends RefCounted:
 	var requests: Array = []
+	var samples: Array = []
+	var stops: Array = []
 	func original_capture_supported() -> bool: return true
 	func original_capture_request(value: String) -> int:
 		requests.append(JSON.parse_string(value)); return requests.size()
+	func original_capture_stop(id: int, end_us: int) -> bool:
+		stops.append([id, end_us]); return true
+	func original_capture_clock(_id: int, _position: int, _playing: bool) -> void: pass
+	func original_capture_pip(id: int, position: int, value: String) -> void:
+		samples.append([id, position, JSON.parse_string(value)])
+	func original_capture_status(_id: int) -> String: return "{}"
 class Binding extends RefCounted:
 	func unshare(_material: ShaderMaterial) -> void: pass
 class Video extends Node3D:
@@ -22,7 +30,9 @@ class Video extends Node3D:
 	var swap_eyes := false
 	var fisheye_fov := 180
 	var local_uri := "cloud://test/film.mp4"
-	var media := {"state": "paused"}
+	var media := {"state": "paused", "session_id": 7, "playback": {}}
+	var requested_play := false
+	var playback_speed := 1.0
 	var view_camera: Camera3D
 	var panel: MeshInstance3D
 	var pip: RefCounted
@@ -69,6 +79,23 @@ func run() -> void:
 	check(Recipe.snapshot(video).windows.size() == 1, "Hidden windows are omitted")
 	video.pip.clear(); capture.jobs.clear()
 	check(capture.screenshot() and not video.platform.requests[-1].has("pip"), "Closing the windows immediately restores the original path")
+	capture.jobs.clear()
+	check(capture.start() and not video.platform.requests[-1].has("pip"), "No PiP recording keeps the packet path")
+	video.pip.set_count(1, Transform3D.IDENTITY)
+	video.pip.windows[1].frame.visible = true
+	capture.tick()
+	check(video.platform.samples.size() == 1 and video.platform.samples[-1][2].windows.size() == 1, "Opening PiP mid-recording promotes the local export with source-time samples")
+	video.pip.windows[1].global_position.x = 0.5
+	capture._pip_after = 0; capture.tick()
+	check(video.platform.samples.size() == 2 and video.platform.samples[0][2] != video.platform.samples[1][2], "Window motion updates the recorded recipe")
+	video.pip.clear(); capture._pip_after = 0; capture.tick()
+	check(video.platform.samples[-1][2].windows.is_empty(), "Closing all windows records an empty layout")
+	check(capture.stop() and video.platform.stops.size() == 1, "Composed recording uses the existing stop path")
+	capture.jobs.clear(); video.pip.set_count(1, Transform3D.IDENTITY)
+	video.pip.windows[1].frame.visible = true
+	check(capture.start() and video.platform.requests[-1].pip.windows.size() == 1, "Starting with PiP pins an initial layout")
+	video.geometry = 3; capture.tick()
+	check(capture.recording.is_empty(), "Projection changes finish the clip before inconsistent metadata is recorded")
 	video.free()
 	print("PiP screenshot checks: %d, %d failures" % [checks, failures.size()])
 	for failure in failures: push_error(failure)

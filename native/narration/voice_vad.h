@@ -1,11 +1,12 @@
 #pragma once
 #include "onnxruntime_cxx_api.h"
+#include "ort_environment.h"
 #include <array>
 #include <algorithm>
 // Silero v6.2 streaming ABI; pinned model and license in third_party/narration.
 // 512 new 16kHz samples, 64 context samples, independent recurrent state per scan.
 class VoiceVad {
-    Ort::Env env{ORT_LOGGING_LEVEL_ERROR,"voice-vad"};
+    narration_ort::Lease environment;
     Ort::SessionOptions options;
     std::unique_ptr<Ort::Session> session;
     std::array<float,576> input{};
@@ -14,7 +15,7 @@ public:
     explicit VoiceVad(const char* path) {
         options.SetIntraOpNumThreads(1);options.SetInterOpNumThreads(1);
         options.AddConfigEntry("session.intra_op.allow_spinning","0");
-        session=std::make_unique<Ort::Session>(env,path,options);
+        session=std::make_unique<Ort::Session>(*environment->env,path,options);
     }
     void reset() {input.fill(0);state.fill(0);}
     float run(const float* samples) {

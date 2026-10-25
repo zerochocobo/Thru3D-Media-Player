@@ -9,6 +9,8 @@ const RESET_ALL := 7011
 const SWAP := 7057
 const CANCEL := 7058
 const REPLAY := 7070
+const PINCH_HAND := 7071
+const PINCH_HANDS := ["left_hand", "right_hand", "both"]
 const BINDING_KEY := "control_binding/"
 const SCOPE_KEY := "control_move_scope"
 const GESTURES := [
@@ -69,6 +71,9 @@ func items() -> Array[Dictionary]:
 
 func action(target: int) -> bool:
 	if not active(): return false
+	if mode == 1 and target in range(PINCH_HAND, PINCH_HAND + 3):
+		bindings.pinch_hand = PINCH_HANDS[target - PINCH_HAND]
+		save(); menu.refresh(); return true
 	if target in range(MODE, MODE + 3):
 		menu.choices.reset(); mode = target - MODE; menu.scroll = 0; reset(); menu.refresh(); return true
 	if target == FILTER:
@@ -184,6 +189,13 @@ func draw() -> void:
 	for i in 3:
 		menu._button(MODE + i, I18n.t(["Controllers", "Gestures", "Combinations"][i]), Vector2(-0.31 + i * 0.29, 0.35), Vector2(0.275, 0.065), true, "", mode == i)
 		menu.set_label_size(menu._buttons.back().node.get_child(0), 18)
+	if mode == 1:
+		label("Picture gesture hand", Vector2(-0.51, 0.265), 18, INK, menu, 0.49)
+		for i in PINCH_HANDS.size():
+			menu._button(PINCH_HAND + i, I18n.t(["Left hand", "Right hand", "Both hands"][i]),
+				Vector2(0.10 + i * 0.25, 0.265), Vector2(0.235, 0.06), true, "", bindings.pinch_hand == PINCH_HANDS[i])
+			menu._tips[PINCH_HAND + i] = I18n.t("Pinch to move the picture or show controls")
+			menu.set_label_size(menu._buttons.back().node.get_child(0), 18)
 	if mode != 1:
 		menu._glyph(RESET_ALL, "refresh", Vector2(0.77, 0.35), 0.065, true, I18n.t("Restore defaults"))
 		if mode == 0 and pending.is_empty():
@@ -324,6 +336,7 @@ func draw_gesture() -> void:
 	var row: Dictionary = GESTURES[selected_gesture]
 	menu._decoration(Vector2(0.68, 0.49), Vector2(0.38, -0.02), Color(0.045, 0.075, 0.085))
 	demo = Demo.new(); demo.kind = row.kind; demo.position = Vector3(0.38, 0.0, 0.015)
+	if row.kind in ["controls", "drag"] and bindings.pinch_hand == "left_hand": demo.scale.x = -1
 	menu.add_child(demo); menu._decorations.append(demo)
 	label(row.title, Vector2(0.07, 0.18), 20, INK, menu, 0.60)
 	label(row.hint, Vector2(0.07, -0.20), 18, INK, menu, 0.60)

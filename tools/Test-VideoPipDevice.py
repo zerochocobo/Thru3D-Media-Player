@@ -51,6 +51,8 @@ class Device:
             arguments += ["--ei", "projection", str(parameters.get("projection", 0))]
         if operation in ("subtitle", "audio"):
             arguments += ["--ei", "track_id", str(parameters.get("track_id", 0))]
+        if operation == "narration":
+            arguments += ["--es", "options", json.dumps(parameters.get("options", {}), separators=(",", ":"))]
         self.shell(*arguments)
         deadline = time.monotonic() + 15
         while time.monotonic() < deadline:
@@ -118,7 +120,14 @@ class Device:
         self.shell("run-as", self.package, "mkdir", "-p", "files/fixtures")
         transfer = shlex.join(["run-as", self.package, "sh", "-c", "cat > " + shlex.quote(relative)])
         self.command("exec-in", transfer, data=fixture.read_bytes())
-        actual = self.shell("run-as", self.package, "sha256sum", relative).decode().split()[0]
+        # exec-in can close its transport before the device-side cat has finished
+        # draining a large fixture. Wait for its complete hash before playback.
+        deadline = time.monotonic() + 15
+        while True:
+            actual = self.shell("run-as", self.package, "sha256sum", relative).decode().split()[0]
+            if actual == expected or time.monotonic() >= deadline:
+                break
+            time.sleep(.15)
         assert actual == expected, "Fixture bytes changed during transfer"
         return "file:///data/user/0/" + self.package + "/" + relative
 

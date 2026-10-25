@@ -18,7 +18,8 @@ def main():
     destination = ROOT / "native/mpv/include/ffmpeg"
     with tarfile.open(args.archive) as archive:
         members = {m.name.partition("/")[2]: m for m in archive.getmembers() if m.isfile()}
-        todo = ["libavformat/avformat.h", "libavutil/opt.h", "libavutil/mathematics.h"]
+        todo = ["libavformat/avformat.h", "libavcodec/avcodec.h", "libswscale/swscale.h",
+                "libavutil/opt.h", "libavutil/mathematics.h"]
         exported = {}
         while todo:
             name = todo.pop()
@@ -34,12 +35,12 @@ def main():
             target.write_bytes(content)
             for include in re.findall(rb'#\s*include\s+"([^"]+)"', content):
                 value = include.decode()
-                dependency = value if value.startswith("libav") else str(Path(name).parent / value).replace("\\", "/")
+                dependency = value if value.startswith(("libav", "libsw")) else str(Path(name).parent / value).replace("\\", "/")
                 if dependency in members or dependency == "libavutil/avconfig.h":
                     todo.append(dependency)
         (destination / "COPYING.LGPLv2.1").write_bytes(archive.extractfile(members["COPYING.LGPLv2.1"]).read())
     manifest = {"revision": pin["revision"], "archive_sha256": pin["sha256"], "headers": dict(sorted(exported.items()))}
-    (destination / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    (destination / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8", newline="\n")
     print(f"Exported {len(exported)} pinned public headers")
 
 

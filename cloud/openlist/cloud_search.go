@@ -107,7 +107,8 @@ func matchesSearch(obj model.Obj, query, kind string) bool {
 	ext := strings.ToLower(path.Ext(obj.GetName()))
 	image := strings.Contains("|.jpg|.jpeg|.png|.webp|.heic|.heif|", "|"+ext+"|")
 	video := strings.Contains("|.mp4|.mkv|.webm|.mov|.m4v|.avi|.ts|.m2ts|.mpg|.mpeg|.wmv|.flv|", "|"+ext+"|")
-	return kind == "all" && (image || video) || kind == "image" && image || kind == "video" && video
+	document := ext == ".pdf"
+	return kind == "all" && (image || video || document) || kind == "image" && image || kind == "video" && video
 }
 
 func searchCloud(c *gin.Context) {

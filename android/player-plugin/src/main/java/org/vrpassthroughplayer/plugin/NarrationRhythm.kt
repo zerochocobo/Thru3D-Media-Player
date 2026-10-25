@@ -6,7 +6,7 @@ import kotlin.math.sqrt
 /** Bounded playback copy: retain weak edges, shorten only confidently quiet long
  * gaps and gently pace an identifiable short opening clause. Never edits a voice
  * or its raw disk cache, and never applies a blanket utterance speed. */
-internal class NarrationRhythm(text: String, language: String, private val emit: (FloatArray)->Unit) {
+internal class NarrationRhythm(text: String, language: String, fastStart: Boolean=false, private val emit: (FloatArray)->Unit) {
     companion object {
         const val FRAME_SAMPLES=960 // 10 ms, 48 kHz stereo
         const val BLOCK_SAMPLES=30_720
@@ -32,7 +32,8 @@ internal class NarrationRhythm(text: String, language: String, private val emit:
                      val removedDragSamples: Int,val localTempo: Double,val maxBufferedSamples: Int)
     private val target=openingTarget(text,language)
     private val wholeShortClause=text.trim().trimEnd('.', '。','!','！','?','？','؟').none {it in ",，;；:：.!?。！？؟\n"}
-    private var holdFirst=target!=null
+    private var holdFirst=target!=null&&!fastStart
+    private val blockSamples=if(fastStart)9600 else BLOCK_SAMPLES
     private var first=ArrayList<FloatArray>()
     private var firstSamples=0
     private var firstSignalSamples=0
@@ -43,7 +44,7 @@ internal class NarrationRhythm(text: String, language: String, private val emit:
     private var peakRms=0.0
     private var frame=FloatArray(FRAME_SAMPLES)
     private var frameUsed=0
-    private var block=FloatArray(BLOCK_SAMPLES)
+    private var block=FloatArray(blockSamples)
     private var blockUsed=0
     private var inputSamples=0
     private var outputSamples=0
@@ -161,7 +162,7 @@ internal class NarrationRhythm(text: String, language: String, private val emit:
     private fun flushBlock() {
         if(blockUsed==0)return
         val ready=if(blockUsed==block.size)block else block.copyOf(blockUsed)
-        block=FloatArray(BLOCK_SAMPLES);blockUsed=0;outputSamples+=ready.size;emit(ready)
+        block=FloatArray(blockSamples);blockUsed=0;outputSamples+=ready.size;emit(ready)
     }
     fun finish() {
         if(ended)return

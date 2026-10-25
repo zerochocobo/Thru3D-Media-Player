@@ -21,7 +21,7 @@ func _run() -> void:
 	camera.add_child(menu);menu.position.y=-0.35;menu.toggle();menu.set_process(false)
 	for language in ["zh","zh_Hant","ja","en"]:
 		I18n.use(language)
-		for view in ["chinese","english","unknown","more","loading","preparing","preview","sample-playing","failed"]:
+		for view in ["chinese","english","unknown","hidden","loading","preparing","preview","sample-playing","failed"]:
 			state.narration_resolved_language="" if view=="unknown" else ("zh" if view in ["chinese","loading","preparing","preview","failed"] else "en")
 			state.narration_language="auto" if view=="unknown" else state.narration_resolved_language
 			state.narration_voice="Xiaoyu" if state.narration_resolved_language=="zh" else "Ava"
@@ -34,14 +34,14 @@ func _run() -> void:
 			state.subtitle_options=[{"id":1,"title":"中文 / English / 日本語","codec":"subrip"}];state.subtitle_track=1
 			state.narration_profile="ja_male" if view=="unknown" else "zh_female" if view=="chinese" else "en_female"
 			state.narration_line=2
-			menu._audio_open=false;menu._subtitle_open=true;menu._narration_more=view=="more";menu.refresh()
+			menu._audio_open=false;menu._subtitle_open=true;state.narration_hide_subtitles=view=="hidden";menu.refresh()
 			if Menu.NarrationSettings.FEATURE_ENABLED:
-				if menu.choices.targets.size()<(3 if view=="more" else 6):failures.append("Missing narration fields")
+				if menu.choices.targets.size()<6:failures.append("Missing narration fields")
 			else:
 				for target in menu.choices.targets:
 					if str(menu.choices.targets[target].get("key", "")).begins_with("narration_"): failures.append("Withheld narration field visible")
 				for button in menu._buttons:
-					if button.target in [menu.NARRATION_MORE, menu.NARRATION_PREVIEW, menu.NARRATION_RETRY]: failures.append("Withheld narration action visible")
+					if button.target in [menu.NARRATION_PREVIEW, menu.NARRATION_RETRY]: failures.append("Withheld narration action visible")
 			await process_frame;await RenderingServer.frame_post_draw;await RenderingServer.frame_post_draw
 			if viewport.get_texture().get_image().save_png(output.path_join(language+"-"+view+".png"))!=OK:failures.append("save")
 			for button in menu._buttons:

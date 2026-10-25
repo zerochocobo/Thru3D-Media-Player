@@ -90,7 +90,7 @@ func update(inputs: Dictionary, enabled: bool, zoom: float,
 			if sample.get("down", false) and absf(offset.x) > maxf(absf(offset.y), absf(offset.z)) * 1.5:
 				preview = offset.x
 			if sample.get("released", false):
-				if not moved: actions.append({"operation": "tap"})
+				if not moved: actions.append({"operation": "tap", "hand": hand})
 				elif absf(offset.x) >= SWIPE_METRES and absf(offset.x) > maxf(absf(offset.y), absf(offset.z)) * 1.5:
 					actions.append({"operation": "navigate", "direction": 1 if offset.x < 0 else -1, "hand": hand})
 				cancel()

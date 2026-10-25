@@ -109,7 +109,7 @@ internal class PhotoPreviewBridge(
                     try { bitmap = Bitmap.createScaledBitmap(decoded, size.first, size.second, true) }
                     catch (error: Throwable) { decoded.recycle(); throw error }
                     if (bitmap !== decoded) decoded.recycle()
-                    metadata.put("orientation", runCatching { ExifInterface(source.path).getAttributeInt(ExifInterface.TAG_ORIENTATION, 1) }.getOrDefault(1))
+                    metadata.put("orientation", PhotoBitmap.orientation(source))
                     val header = source.inputStream().use { stream ->
                         val bytes = ByteArray(minOf(source.length(), 1024L * 1024).toInt()); var count = 0
                         while (count < bytes.size) {
@@ -144,7 +144,7 @@ internal class PhotoPreviewBridge(
                 }
             } finally {
                 connection?.disconnect(); connection = null
-                if (uri.startsWith("smb://") || uri.startsWith("cloud://") || uri.startsWith("usb://")) releaseStream(resolved)
+                if (uri.startsWith("smb://") || uri.startsWith("cloud://") || uri.startsWith("usb://") || uri.startsWith("pdfpage://")) releaseStream(resolved)
                 if (!published) { synchronized(lock) { directories.remove(id); references.remove(id) }; directory?.deleteRecursively() }
             }
         }

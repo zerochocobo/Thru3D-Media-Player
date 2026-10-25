@@ -64,10 +64,10 @@ internal class PhotoBridge(
             }.toString()
     }
 
-    fun open(id: Int, uri: String): Boolean {
+    fun open(id: Int, uri: String, bounded: Boolean = false): Boolean {
         if (closed) return false
         synchronized(PhotoCache.lock) { current.set(id) }
-        val state = Loading(id, Uri.parse(uri).scheme !in setOf("file", "content"))
+        val state = Loading(id, Uri.parse(uri).scheme !in setOf("file", "content", "pdfpage"))
         loading = state
         cancelDepth(); connection?.disconnect()
         worker.execute {
@@ -119,7 +119,7 @@ internal class PhotoBridge(
                     while (true) {
                         checkCurrent(id)
                         val count = input.read(bytes); if (count < 0) break
-                        total += count; require(total <= MAX_BYTES) { "PHOTO_TOO_LARGE" }
+                        total += count; require(total <= if (bounded) 32L * 1024 * 1024 else MAX_BYTES) { "PHOTO_TOO_LARGE" }
                         if(total/(1024*1024) != (total-count)/(1024*1024)) require(directory.usableSpace>64L*1024*1024) { "PHOTO_TOO_LARGE" }
                         if (state.remote) state.meter.add(count)
                         output.write(bytes, 0, count)
@@ -138,6 +138,21 @@ internal class PhotoBridge(
                 } }
                 }
                 state.phase = "preparing"
+                if (bounded) {
+                    require(source.length() <= 32L * 1024 * 1024) { "PHOTO_TOO_LARGE" }
+                    // Inspect original dimensions before NativePhoto/HEIF/downsample allocation.
+                    val header = source.inputStream().use { input ->
+                        val bytes = ByteArray(minOf(source.length(), PhotoHeader.MAX_BYTES.toLong()).toInt())
+                        var count = 0
+                        while (count < bytes.size) {
+                            val read = input.read(bytes, count, bytes.size - count)
+                            if (read < 0) break
+                            count += read
+                        }
+                        PhotoHeader.read(bytes.copyOf(count))
+                    }
+                    require(header != null && ReadingRenderPolicy.accepts(header.width, header.height)) { "PHOTO_TOO_LARGE" }
+                }
                 if (PhotoBitmap.isNative(source)) {
                     val ready = NativePhoto.prepare(source, directory, { checkCurrent(id) },
                         { metadata -> emit("photo_ready", id, metadata.toString()) })
@@ -165,7 +180,7 @@ internal class PhotoBridge(
                     PhotoHeader.normalizedOrientation(ExifInterface(source.path).getAttributeInt(ExifInterface.TAG_ORIENTATION, 1))
                 }.getOrDefault(1)
                 metadata.put("orientation", orientation)
-                source.inputStream().use { CaptureFormat.readPng(it) }?.let { metadata.put("capture_mode", it) }
+                source.inputStream().use { CaptureFormat.read(it) }?.let { metadata.put("capture_mode", it) }
                 // GPano is a positive hint only; ordinary 2:1 photos stay flat.
                 val header = source.inputStream().use { input ->
                     val bytes = ByteArray(minOf(source.length(), 1024L * 1024).toInt())
@@ -200,7 +215,7 @@ internal class PhotoBridge(
                         output.outputStream().use { require(bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)) }
                     } finally { bitmap.recycle() }
                 }
-                if (preload) {
+                if (preload && !uri.startsWith("pdfpage://")) {
                     var thumbSample = 1
                     while (maxOf(bounds.outWidth, bounds.outHeight) / thumbSample > 768) thumbSample *= 2
                     val bitmap = BitmapFactory.decodeFile(source.path, BitmapFactory.Options().apply { inSampleSize = thumbSample })
@@ -231,7 +246,7 @@ internal class PhotoBridge(
                         else if (error.message == "PHOTO_TOO_LARGE") "PHOTO_TOO_LARGE" else "PHOTO_DECODE_FAILED").toString())
             } finally {
                 connection?.disconnect(); connection = null
-                if (uri.startsWith("smb://") || uri.startsWith("cloud://") || uri.startsWith("usb://")) releaseStream(resolved)
+                if (uri.startsWith("smb://") || uri.startsWith("cloud://") || uri.startsWith("usb://") || uri.startsWith("pdfpage://") || uri.startsWith("comic://")) releaseStream(resolved)
                 // A published preload may already have been adopted by the foreground bridge.
                 if (!published) directory?.deleteRecursively()
             }
@@ -254,6 +269,10 @@ internal class PhotoBridge(
     }
     fun cancelBackgroundDepth() = synchronized(PhotoCache.lock) {
         depthJobs.entries.filter { it.value.background }.forEach { it.value.cancelled = true; depthJobs.remove(it.key) }
+    }
+    fun discardDepth(id: Int) = synchronized(PhotoCache.lock) {
+        depthJobs.remove(id)?.cancelled = true
+        files[id]?.discardDepth()
     }
     fun updateDepthStrength(strength: Float) = synchronized(PhotoCache.lock) {
         if (strength.isFinite() && strength in 0f..2f)
@@ -304,6 +323,8 @@ internal class PhotoBridge(
     /** One inference per photo on the shared model thread, using the independent photo model.
      * Color stays at source display resolution; only content contributes to depth normalization. */
     fun depth(id: Int, strength: Float = 1f, stereo: Boolean = false, background: Boolean = preload, sceneToken: Int = 0): Boolean {
+        // Neighbour preparation is strictly colour/file-only, on every device.
+        if (background) return false
         if (!strength.isFinite() || strength !in 0f..2f) return false
         val job = synchronized(PhotoCache.lock) {
             if (closed) return false

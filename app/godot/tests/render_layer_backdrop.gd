@@ -60,10 +60,34 @@ func run() -> void:
 			worst = maxf(worst, mean)
 			check(mean < 0.05, "Backdrop matches sky at yaw %s look %s: mean error %.3f" % [yaw, look, mean])
 	await check_seam()
+	await check_menu_registration()
 	await check_live_brightness()
 	print("Layer backdrop: %d checks, %d failures, worst %.4f" % [checks, failures.size(), worst])
 	for failure in failures: push_error(failure)
 	quit(1 if not failures.is_empty() else 0)
+
+func check_menu_registration() -> void:
+	# Fine longitude/latitude detail exposes angular drift hidden by a smooth gradient
+	# and by the seam test's one-pixel envelope. Compare the actual engine sky pixels.
+	var source := Image.create(2048, 1024, false, Image.FORMAT_RGB8)
+	for y in 1024:
+		for x in 2048:
+			source.set_pixel(x, y, Color(0.5 + 0.4 * sin(TAU * x / 32.0),
+				0.5 + 0.4 * sin(TAU * y / 32.0), 0.3))
+	var texture := ImageTexture.create_from_image(source)
+	for yaw in [0.0, 37.0]:
+		for look in [Vector3.ZERO, Vector3(0.3, 1.2, 0.15), Vector3(-0.65, -2.3, -0.1), Vector3(1.3, 0.4, 0)]:
+			var sky_image: Image = await render(true, yaw, texture, look)
+			for menu_layer in [false, true]:
+				var layer_image: Image = await render(false, yaw, texture, look, menu_layer)
+				var total := 0.0
+				var samples := 0
+				for y in range(12, 228, 3):
+					for x in range(12, 308, 3):
+						total += color_error(sky_image.get_pixel(x, y), layer_image.get_pixel(x, y))
+						samples += 1
+				var error := total / samples
+				check(error < 0.003, "Menu/video transition preserves fine panorama registration yaw %s look %s menu %s: error %.5f" % [yaw, look, menu_layer, error])
 
 func check_seam() -> void:
 	# Both image edges are identical. Only the distant centre is bright: a line at the

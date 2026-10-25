@@ -160,7 +160,7 @@ internal class DlnaReceiver(val udn: String, val name: String = "Thru3D", val re
                 if (soap[1] !in actions(service).keys) throw DlnaRenderer.Fault(401, "Invalid Action")
                 // Controllers add vendor arguments (Bilibili: SourceId, ExtendData) or omit optional
                 // metadata. Pass only declared inputs; each action validates the values it needs.
-                val declared = actions(service).getValue(soap[1]).filter { it.direction == "in" }.associate { it.name to args[it.name].orEmpty() }
+                val declared = actions(service).getValue(soap[1]).filter { it.direction == "in" && args.containsKey(it.name) }.associate { it.name to args.getValue(it.name) }
                 val result = renderer.action(service, soap[1], declared, peer).entries.joinToString("") { "<${it.key}>${DlnaRenderer.escape(it.value)}</${it.key}>" }
                 respond(client, 200, envelope("<u:${soap[1]}Response xmlns:u=\"${soap[0]}\">$result</u:${soap[1]}Response>"))
             } catch (e: DlnaRenderer.Fault) { respond(client, 500, fault(e.code, e.message)) }
@@ -231,11 +231,14 @@ internal class DlnaReceiver(val udn: String, val name: String = "Thru3D", val re
             return when (service) {
                 "AVTransport" -> linkedMapOf(
                     "SetAVTransportURI" to avt(arg("CurrentURI", type = "uri", variable = "AVTransportURI"), arg("CurrentURIMetaData", variable = "AVTransportURIMetaData")),
+                    "SetNextAVTransportURI" to avt(arg("NextURI", type = "uri", variable = "NextAVTransportURI"), arg("NextURIMetaData", variable = "NextAVTransportURIMetaData")),
+                    "Next" to avt(), "Previous" to avt(),
                     "Play" to avt(arg("Speed", variable = "TransportPlaySpeed")), "Pause" to avt(), "Stop" to avt(),
                     "Seek" to avt(arg("Unit", variable = "A_ARG_TYPE_SeekMode"), arg("Target", variable = "A_ARG_TYPE_SeekTarget")),
                     "GetTransportInfo" to avt(arg("CurrentTransportState", "out", variable = "TransportState"), arg("CurrentTransportStatus", "out", variable = "TransportStatus"), arg("CurrentSpeed", "out", variable = "TransportPlaySpeed")),
                     "GetPositionInfo" to (avt(arg("Track", "out", "ui4", "CurrentTrack")) + outputs("TrackDuration", "TrackMetaData", "TrackURI", "RelTime", "AbsTime") + listOf(arg("RelCount", "out", "i4"), arg("AbsCount", "out", "i4"))),
-                    "GetMediaInfo" to (avt(arg("NrTracks", "out", "ui4")) + outputs("MediaDuration", "CurrentURI", "CurrentURIMetaData", "NextURI", "NextURIMetaData", "PlayMedium", "RecordMedium", "WriteStatus")),
+                    "GetMediaInfo" to (avt(arg("NrTracks", "out", "ui4")) + outputs("MediaDuration", "CurrentURI", "CurrentURIMetaData") +
+                        listOf(arg("NextURI", "out", "uri", "NextAVTransportURI"), arg("NextURIMetaData", "out", variable = "NextAVTransportURIMetaData")) + outputs("PlayMedium", "RecordMedium", "WriteStatus")),
                     "GetDeviceCapabilities" to (avt() + outputs("PlayMedia", "RecMedia", "RecQualityModes")),
                     "GetTransportSettings" to (avt() + outputs("PlayMode", "RecQualityMode")),
                     "GetCurrentTransportActions" to avt(arg("Actions", "out", variable = "CurrentTransportActions")))

@@ -12,6 +12,156 @@ class DlnaReceiverTest {
     private fun set(renderer: DlnaRenderer, uri: String = "http://192.168.0.5/movie.mp4") = renderer.action("AVTransport", "SetAVTransportURI", mapOf("InstanceID" to "0", "CurrentURI" to uri, "CurrentURIMetaData" to "<DIDL-Lite xmlns:dc=\"http://purl.org/dc/elements/1.1/\"><item><dc:title>A &amp; B</dc:title></item></DIDL-Lite>"), peer)
     private fun play(renderer: DlnaRenderer) = renderer.action("AVTransport", "Play", mapOf("InstanceID" to "0", "Speed" to "1"), peer)
     private fun fault(code: Int, block: () -> Unit) { try { block(); fail("Expected fault") } catch (e: DlnaRenderer.Fault) { assertEquals(code, e.code) } }
+    private fun command(r: DlnaRenderer, name: String, extra: Map<String, String> = emptyMap(), sender: String = peer) =
+        r.action("AVTransport", name, mapOf("InstanceID" to "0") + extra, sender)
+    private fun next(r: DlnaRenderer, uri: String = "http://192.168.0.5/next.mp4", metadata: String = "") =
+        command(r, "SetNextAVTransportURI", mapOf("NextURI" to uri, "NextURIMetaData" to metadata))
+    private fun start(r: DlnaRenderer): Long {
+        set(r); play(r); val id = r.poll().getLong("pending_token"); r.accept(id); return id
+    }
+    @Test fun presetBeforePlayIsReportedAndConsumedOnlyAfterAcceptance() {
+        val r = DlnaRenderer(); set(r)
+        val uri = "http://192.168.0.5/next.mp4?a=1&b=2"
+        val metadata = "<DIDL-Lite><item><title>Next &amp; title</title></item></DIDL-Lite>"
+        next(r, uri, metadata)
+        assertEquals(uri, command(r, "GetMediaInfo")["NextURI"])
+        assertEquals(metadata, command(r, "GetMediaInfo")["NextURIMetaData"])
+        val event = DlnaRenderer.xml(r.eventBody("AVTransport")).getElementsByTagName("LastChange").item(0).textContent
+        assertTrue(event.contains("NextAVTransportURI")); assertTrue(event.contains("a=1&amp;b=2"))
+        play(r); val first = r.poll().getLong("pending_token"); r.accept(first)
+        assertTrue(r.poll().getBoolean("has_next"))
+        assertEquals(1, r.navigate(first, 1))
+        val batch = r.poll(); val offer = batch.getJSONArray("events").getJSONObject(0)
+        assertEquals(first, offer.getLong("from_token")); assertEquals("Next & title", offer.getString("title"))
+        assertEquals(first, batch.getLong("active_token")); assertTrue(batch.getBoolean("navigation_pending"))
+        assertEquals(-1, r.navigate(first, 1)) // repeated press cannot consume two resources
+        val accepted = r.accept(offer.getLong("token"))
+        assertEquals(uri, accepted.getString("uri")); assertTrue(accepted.getBoolean("has_previous"))
+        assertFalse(accepted.getBoolean("has_next")); assertEquals("", command(r, "GetMediaInfo")["NextURI"])
+        r.publish(JSONObject().put("token", first).put("state", "PLAYING").put("duration_ms", 999000))
+        assertEquals("00:00:00", command(r, "GetMediaInfo")["MediaDuration"])
+    }
+    @Test fun previousAndNextRoundTripPreservesTheFollowingPreset() {
+        val r = DlnaRenderer(); val a = start(r); next(r, "http://192.168.0.5/b.mp4")
+        assertEquals(1, r.navigate(a, 1)); val b = r.poll().getLong("pending_token"); r.accept(b)
+        next(r, "http://192.168.0.5/c.mp4")
+        command(r, "Previous")
+        val back = r.accept(r.poll().getLong("pending_token"))
+        assertTrue(back.getString("uri").endsWith("movie.mp4")); assertFalse(back.getBoolean("has_previous"))
+        assertTrue(command(r, "GetMediaInfo")["NextURI"]!!.endsWith("b.mp4"))
+        command(r, "Next"); val forward = r.accept(r.poll().getLong("pending_token"))
+        assertTrue(forward.getString("uri").endsWith("b.mp4"))
+        assertTrue(command(r, "GetMediaInfo")["NextURI"]!!.endsWith("c.mp4"))
+        command(r, "Next"); assertTrue(r.accept(r.poll().getLong("pending_token")).getString("uri").endsWith("c.mp4"))
+        fault(711) { command(r, "Next") }
+    }
+    @Test fun presetCanBeReplacedClearedAndValidatedWithoutLosingValidValue() {
+        val r = DlnaRenderer(); start(r); next(r)
+        for (uri in listOf("file:///secret", "http://127.0.0.1/local", "http://user:pass@host/x")) {
+            fault(716) { next(r, uri) }
+            assertTrue(command(r, "GetMediaInfo")["NextURI"]!!.endsWith("next.mp4"))
+        }
+        fault(402) { next(r, metadata = "x".repeat(32769)) }
+        next(r, "http://192.168.0.5/replaced.mp4")
+        assertTrue(command(r, "GetCurrentTransportActions")["Actions"]!!.contains("Next"))
+        next(r, "")
+        assertEquals("", command(r, "GetMediaInfo")["NextURI"])
+        assertFalse(r.poll().getBoolean("has_next")); fault(711) { command(r, "Next") }
+        fault(711) { command(r, "Previous") }
+    }
+    @Test fun nextWithoutPresetFallsBackOnlyForSeekableCurrentResource() {
+        val r = DlnaRenderer(); val id = start(r)
+        fault(711) { command(r, "Next") }
+        r.publish(JSONObject().put("token", id).put("state", "PLAYING").put("duration_ms", 90000).put("seekable", true))
+        command(r, "Next")
+        val event = r.poll().getJSONArray("events").getJSONObject(0)
+        assertEquals("next_end", event.getString("action")); assertEquals(id, event.getLong("token"))
+        assertEquals(0, r.navigate(id, 1)); fault(711) { command(r, "Previous") }
+    }
+    @Test fun navigationRetainsProtocolPauseAndPendingPlayPauseIntent() {
+        val r = DlnaRenderer(); val id = start(r); next(r)
+        r.publish(JSONObject().put("token", id).put("state", "PAUSED_PLAYBACK"))
+        command(r, "Next"); val pending = r.poll().getLong("pending_token")
+        play(r); command(r, "Pause")
+        assertFalse(r.accept(pending).getBoolean("playing"))
+        command(r, "Previous"); play(r)
+        assertTrue(r.accept(r.poll().getLong("pending_token")).getBoolean("playing"))
+    }
+    @Test fun nextFromStoppedRemainsStoppedUntilPlay() {
+        val r = DlnaRenderer(); val id = start(r); next(r)
+        r.publish(JSONObject().put("token", id).put("state", "STOPPED"))
+        command(r, "Next"); val target = r.poll().getLong("pending_token")
+        assertFalse(r.accept(target).getBoolean("playing"))
+        r.publish(JSONObject().put("token", target).put("state", "PAUSED_PLAYBACK"))
+        assertEquals("STOPPED", command(r, "GetTransportInfo")["CurrentTransportState"])
+        r.publish(JSONObject().put("token", target).put("state", "PLAYING")) // Headset Play, without a SOAP command.
+        assertEquals("PLAYING", command(r, "GetTransportInfo")["CurrentTransportState"])
+        r.publish(JSONObject().put("token", target).put("state", "PAUSED_PLAYBACK"))
+        assertEquals("PAUSED_PLAYBACK", command(r, "GetTransportInfo")["CurrentTransportState"])
+    }
+    @Test fun onlyVerifiedEofAdvancesAndDuplicateOldEofCannotSkipAgain() {
+        val r = DlnaRenderer(); val id = start(r); next(r)
+        r.publish(JSONObject().put("token", id).put("state", "STOPPED"))
+        assertEquals(0, r.poll().getLong("pending_token"))
+        r.publish(JSONObject().put("token", id).put("state", "STOPPED").put("ended", true).put("error", true))
+        assertEquals(0, r.poll().getLong("pending_token"))
+        val eof = JSONObject().put("token", id).put("state", "STOPPED").put("ended", true)
+        r.publish(eof); r.publish(eof)
+        val batch = r.poll(); assertEquals(1, batch.getJSONArray("events").length())
+        val second = r.accept(batch.getLong("pending_token")); assertTrue(second.getBoolean("playing"))
+        next(r, "http://192.168.0.5/c.mp4"); r.publish(eof)
+        assertEquals(0, r.poll().getLong("pending_token"))
+    }
+    @Test fun foreignOffersAndStaleTokensCannotConsumeTheQueue() {
+        val r = DlnaRenderer(); val id = start(r); next(r)
+        val foreign = "192.168.0.20"
+        for (action in listOf("Next", "Previous", "SetNextAVTransportURI")) fault(701) { command(r, action, sender = foreign) }
+        assertEquals(-1, r.navigate(id + 1, 1))
+        command(r, "SetAVTransportURI", mapOf("CurrentURI" to "http://192.168.0.20/other.mp4"), foreign)
+        assertEquals(-1, r.navigate(id, 1))
+        assertEquals("", command(r, "GetMediaInfo")["NextURI"])
+        r.reject(r.poll().getLong("pending_token"))
+        assertTrue(command(r, "GetMediaInfo")["NextURI"]!!.endsWith("next.mp4"))
+        command(r, "SetAVTransportURI", mapOf("CurrentURI" to "http://192.168.0.20/other.mp4"), foreign)
+        command(r, "Play", mapOf("Speed" to "1"), foreign)
+        val accepted = r.accept(r.poll().getLong("pending_token"))
+        assertFalse(accepted.getBoolean("has_previous")); assertFalse(accepted.getBoolean("has_next"))
+    }
+    @Test fun replacementUriKeepsOnlySameControllerHistoryAndItsOwnPreset() {
+        val r = DlnaRenderer(); start(r); next(r, "http://192.168.0.5/old-next.mp4")
+        set(r, "http://192.168.0.5/new.mp4"); next(r, "http://192.168.0.5/new-next.mp4"); play(r)
+        val accepted = r.accept(r.poll().getLong("pending_token"))
+        assertTrue(accepted.getBoolean("has_previous")); assertTrue(accepted.getBoolean("has_next"))
+        assertTrue(command(r, "GetMediaInfo")["NextURI"]!!.endsWith("new-next.mp4"))
+        command(r, "Previous")
+        assertTrue(r.accept(r.poll().getLong("pending_token")).getString("uri").endsWith("movie.mp4"))
+        command(r, "Next"); r.accept(r.poll().getLong("pending_token"))
+        assertTrue(command(r, "GetMediaInfo")["NextURI"]!!.endsWith("new-next.mp4"))
+    }
+    @Test fun expiredRejectedAndStoppedNavigationLeavesNoStraySwitch() {
+        var now = 0L; val r = DlnaRenderer { now }; val id = start(r); next(r)
+        r.navigate(id, 1); val pending = r.poll().getLong("pending_token"); now += 60001
+        assertEquals(0, r.accept(pending).length()); assertEquals(1, r.navigate(id, 1))
+        r.reject(r.poll().getLong("pending_token")); assertEquals(1, r.navigate(id, 1))
+        command(r, "Stop"); val batch = r.poll()
+        assertEquals(0, batch.getLong("pending_token")); assertEquals("stop", batch.getJSONArray("events").getJSONObject(0).getString("action"))
+        r.finish(id)
+        assertFalse(r.poll().getBoolean("has_previous")); assertEquals("", command(r, "GetMediaInfo")["NextURI"])
+        assertEquals(-1, r.navigate(id, 1))
+    }
+    @Test fun fullEventQueueDoesNotLosePresetAndHistoryIsBounded() {
+        val r = DlnaRenderer(); var id = start(r); next(r)
+        repeat(64) { play(r) }; fault(501) { r.navigate(id, 1) }
+        assertEquals(0, r.poll().getLong("pending_token")); assertEquals(1, r.navigate(id, 1))
+        id = r.poll().getLong("pending_token"); r.accept(id)
+        repeat(40) { i ->
+            next(r, "http://192.168.0.5/$i.mp4"); assertEquals(1, r.navigate(id, 1))
+            id = r.poll().getLong("pending_token"); r.accept(id)
+        }
+        repeat(32) { assertEquals(1, r.navigate(id, -1)); id = r.poll().getLong("pending_token"); r.accept(id) }
+        assertEquals(0, r.navigate(id, -1))
+        r.detach(); assertFalse(r.poll().getBoolean("has_next")); assertFalse(r.poll().getBoolean("has_previous"))
+    }
     @Test fun offerWaitsForPlayAndHeadsetAcceptance() {
         val r = DlnaRenderer(); set(r)
         assertEquals(0, r.poll().getJSONArray("events").length())
@@ -126,6 +276,31 @@ class DlnaReceiverTest {
             val response = request(r, "GET", "/$service.xml"); assertTrue(response.startsWith("HTTP/1.1 200"))
             val xml = DlnaRenderer.xml(response.substringAfter("\r\n\r\n")); assertEquals(DlnaReceiver.actions(service).size, xml.getElementsByTagName("action").length)
         }
+        val avt = DlnaReceiver.actions("AVTransport")
+        assertTrue(avt.keys.containsAll(listOf("Next", "Previous", "SetNextAVTransportURI")))
+        for (name in listOf("NextURI", "NextURIMetaData")) {
+            assertEquals(avt.getValue("SetNextAVTransportURI").first { it.name == name }.variable,
+                avt.getValue("GetMediaInfo").first { it.name == name }.variable)
+        }
+    }
+    @Test fun realSoapPresetNextPreviousAndClearing() = server { r ->
+        fun soap(name: String, args: String = ""): String {
+            val service = DlnaReceiver.serviceType("AVTransport")
+            val body = DlnaReceiver.envelope("<u:$name xmlns:u=\"$service\"><InstanceID>0</InstanceID>$args</u:$name>")
+            return request(r, "POST", "/AVTransport/control", "SOAPAction: \"$service#$name\"\r\n", body)
+        }
+        val id = start(r.renderer)
+        assertTrue(soap("SetNextAVTransportURI", "<NextURI>http://192.168.0.5/soap.mp4?a=1&amp;b=2</NextURI><NextURIMetaData/>").startsWith("HTTP/1.1 200"))
+        assertTrue(soap("GetMediaInfo").contains("<NextURI>http://192.168.0.5/soap.mp4?a=1&amp;b=2</NextURI>"))
+        assertTrue(soap("Next").startsWith("HTTP/1.1 200"))
+        val batch = r.renderer.poll(); assertEquals(id, batch.getLong("active_token"))
+        assertEquals("http://192.168.0.5/soap.mp4?a=1&b=2", r.renderer.accept(batch.getLong("pending_token")).getString("uri"))
+        assertTrue(soap("Previous").startsWith("HTTP/1.1 200"))
+        assertTrue(r.renderer.accept(r.renderer.poll().getLong("pending_token")).getString("uri").endsWith("movie.mp4"))
+        assertTrue(soap("SetNextAVTransportURI", "<NextURI/><NextURIMetaData/>").startsWith("HTTP/1.1 200"))
+        assertTrue(soap("GetMediaInfo").contains("<NextURI></NextURI>"))
+        assertTrue(soap("Next").contains("<errorCode>711</errorCode>"))
+        assertTrue(soap("SetNextAVTransportURI", "<NextURIMetaData/>").contains("<errorCode>402</errorCode>"))
     }
     @Test fun realSoapDispatchAndFaults() = server { r ->
         val service = DlnaReceiver.serviceType("AVTransport")
@@ -169,6 +344,9 @@ class DlnaReceiverTest {
             set(r.renderer); play(r.renderer); val id = r.renderer.poll().getLong("pending_token"); r.renderer.accept(id)
             r.renderer.publish(JSONObject().put("token", id).put("state", "PAUSED_PLAYBACK"))
             assertTrue(notification().contains("PAUSED_PLAYBACK"))
+            next(r.renderer, "http://192.168.0.5/notified.mp4")
+            val presetEvent = notification()
+            assertTrue(presetEvent.contains("NextAVTransportURI")); assertTrue(presetEvent.contains("notified.mp4"))
         }
     }
 }

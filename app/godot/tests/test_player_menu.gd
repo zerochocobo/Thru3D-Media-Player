@@ -426,9 +426,9 @@ func _run() -> void:
 	var layout_calls := host.calls.size()
 	check(click(menu, 110) and menu._subtitle_open and menu.choices.sliders.is_empty(),
 		"VR CC popup focuses on subtitle selection with appearance collapsed")
-	check(click(menu, Menu.SUBTITLE_APPEARANCE) and menu._subtitle_open and menu.choices.sliders.size() == 4,
+	check(click(menu, Menu.SUBTITLE_APPEARANCE) and menu._subtitle_open and menu.choices.sliders.size() == 5,
 		"Appearance disclosure opens distance, angle, size and styles")
-	check(choose_setting(menu, "subtitle_position", -60) and video.subtitle_position == -60 and main.settings.get_value("subtitles", "elevation_degrees") == -60 and menu._subtitle_open,
+	check(choose_setting(menu, "subtitle_vertical_position", -60) and video.subtitle_vertical_position == -60 and main.settings.get_value("subtitles", "horizontal_center_y_degrees") == -60 and menu._subtitle_open,
 		"CC angle applies and persists while keeping the popup open")
 	check(choose_setting(menu, "subtitle_distance", 2.0) and is_equal_approx(video.subtitle_distance, 2.0) and menu._subtitle_open,
 		"CC distance slider applies without closing subtitle controls")
@@ -436,15 +436,15 @@ func _run() -> void:
 		and main.settings.get_value("subtitles", "direction") == 1 and main._library_settings().subtitle_direction == 1 and menu._subtitle_open,
 		"Vertical direction persists and is shared with global settings")
 	var anchor: Array = video._subtitle_anchor_direction()
-	check(is_equal_approx(anchor[0], sin(deg_to_rad(-60))) and is_zero_approx(anchor[1]),
-		"Vertical mode places the angle horizontally in video coordinates")
+	check(is_zero_approx(anchor[0]) and is_zero_approx(anchor[1]),
+		"Vertical mode retains its independent centre when horizontal subtitles move")
 	choose_setting(menu, "subtitle_direction", 0)
 	check(host.calls.size() == layout_calls, "Changing subtitle layout never switches tracks or rebuilds playback")
-	check(choose_setting(menu, "subtitle_position", 60) and video.subtitle_position == 60 and main._library_settings().subtitle_position == 60, "CC and global settings share the VR angle")
-	main._on_setting_changed("subtitle_position", 0)
+	check(choose_setting(menu, "subtitle_vertical_position", 60) and video.subtitle_vertical_position == 60 and main._library_settings().subtitle_vertical_position == 60, "CC and global settings share the VR angle")
+	main._on_setting_changed("subtitle_vertical_position", 0)
 	menu.refresh_values()
 	for target in menu.choices.sliders:
-		if menu.choices.targets[target].key == "subtitle_position":
+		if menu.choices.targets[target].key == "subtitle_vertical_position":
 			var slider: Dictionary = menu.choices.sliders[target]
 			check(is_equal_approx(slider.knob.position.x, slider.left + slider.width / 2), "External position changes refresh the CC centre knob")
 	check(click(menu, 110), "Close CC to return to transport")

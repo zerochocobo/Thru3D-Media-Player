@@ -11,3 +11,5 @@ The bounded HTTP/SOAP layer accepts supported vendor arguments and transport act
 The repository contains protocol source, synthetic/loopback tests and UI fixtures only. It contains no captured phone traffic, signed CDN links, personal titles or account credentials. Real LAN discovery, headset lifecycle and individual sender compatibility need separate device verification.
 
 0.13.3 新增局域网 DLNA 视频接收，手动开启、正在播放时确认替换，停止后可返回原媒体；不是手机屏幕镜像。投屏地址不进入普通历史／收藏／逐片记忆。此协议未提供配对认证，启用期间兼容局域网控制端可发起请求；后台暂停网络接收，兼容性受发送端、媒体地址及设备限制。
+
+From 0.13.5 the receiver supports compatible preset/next URIs, Previous/Next and continuation when the sender supplies another item. Transport ownership and capability checks remain; this does not create a remote library or revive expired URLs.

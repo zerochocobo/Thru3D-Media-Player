@@ -1,4 +1,5 @@
 #include "live_capture_core.h"
+#include "../capture_audio_layout.h"
 #include <filesystem>
 #include <iostream>
 
@@ -11,11 +12,11 @@ static Audio signal(int frame,int frames,int rate) {
     }
     return audio;
 }
-static std::vector<float> read(const std::string& path) {
+static std::vector<float> read(const std::string& path,int header=80) {
     std::unique_ptr<FILE,FileClose> file(std::fopen(path.c_str(),"rb"));
     if(!file)throw std::runtime_error("Missing audio fixture");
-    std::fseek(file.get(),0,SEEK_END);auto size=std::ftell(file.get());std::fseek(file.get(),80,SEEK_SET);
-    std::vector<float> values((size-80)/4);
+    std::fseek(file.get(),0,SEEK_END);auto size=std::ftell(file.get());std::fseek(file.get(),header,SEEK_SET);
+    std::vector<float> values((size-header)/4);
     if(std::fread(values.data(),sizeof(float),values.size(),file.get())!=values.size())throw std::runtime_error("Short WAV fixture");
     return values;
 }
@@ -66,7 +67,34 @@ int main(int argc,char** argv) {
          wave.finish(48000);}
         auto converted=read(converted_path);
         for(auto value:converted)if(std::abs(value-.125f)>1e-6)throw std::runtime_error("Resampled block endpoints inserted a hole or overlap");
+        for(int channels:{2,6,8})for(int format:{1,2,3}) {
+            const uint64_t layout=channels==6?0x60f:channels==8?0x63f:3;
+            const auto file=std::string(argv[1])+"/channels-"+std::to_string(channels)+"-format-"+std::to_string(format)+".wav";
+            Audio source;source.owner=1;source.ns=ns;source.rate=48000;source.frames=480;
+            source.channels=channels;source.layout=layout;source.format=format;
+            for(int frame=0;frame<480;++frame)for(int channel=0;channel<channels;++channel) {
+                const float value=(channel+1)/32.f;const int at=frame*channels+channel;
+                if(format==1)std::memcpy(source.bytes.data()+at*4,&value,4);
+                else if(format==2){const auto integer=static_cast<int16_t>(value*32768);std::memcpy(source.bytes.data()+at*2,&integer,2);}
+                else {const auto integer=static_cast<int32_t>(double(value)*2147483648.);std::memcpy(source.bytes.data()+at*4,&integer,4);}
+            }
+            auto speech=signal(0,480,48000);speech.owner=2;speech.ns=ns;
+            std::array<float,960> voice;voice.fill(.125f);std::memcpy(speech.bytes.data(),voice.data(),sizeof(voice));
+            {Wave wave(file,layout);wave.add(source,{ns,0,true},0,ns,INT64_MAX);wave.add(speech,{ns,0,true},0,ns,INT64_MAX);wave.finish(480);}
+            const auto values=read(file,channels>2?104:80);
+            if(values.size()!=size_t(480*channels))throw std::runtime_error("Multichannel PCM length changed");
+            for(int frame=0;frame<480;++frame)for(int channel=0;channel<channels;++channel)
+                if(std::abs(values[frame*channels+channel]-((channel+1)/32.f+(channel<2?.125f:0.f)))>1e-6)
+                    throw std::runtime_error("Surround channel or stereo narration lost/remapped");
+        }
+        const auto filter=quest::capture::audio_layout_filter("1551",6);
+        if(filter.find("map=0|1|2|3|4|5:channel_layout=0x60f")==std::string::npos||
+           !quest::capture::audio_layout_filter("1551",2).empty()||
+           !quest::capture::audio_layout_filter("1551:volume=0",6).empty()||
+           !quest::capture::audio_layout_filter("99999999999999999999",6).empty())
+            throw std::runtime_error("Recorded speaker mask validation failed");
         std::cout<<"{\"real_gap_preserved\":true,\"resampled_44100_holes\":0}\n";
+        std::cout<<"{\"pcm_formats\":[1,2,3],\"channel_layouts\":[\"stereo\",\"5.1(side)\",\"7.1\"],\"all_channels_and_narration_preserved\":true}\n";
         return 0;
     }catch(const std::exception& failure){std::cerr<<failure.what()<<'\n';return 1;}
 }

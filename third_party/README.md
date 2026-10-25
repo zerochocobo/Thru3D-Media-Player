@@ -35,3 +35,5 @@ The CodeLibs JCIFS jar is staged by Gradle with unused HTTP/HTTPS NTLM adapters 
 - PICO controller fallback meshes: unmodified MIT WebXR Input Profiles assets, supplied separately using the pinned metadata and adjacent notice. MRTK3-derived hand joint interaction retains its notice in third_party/player-licenses/mrtk3.txt. CC0 cinema scan metadata and preparation recipes retain original asset provenance; raw scans, generated scenes and bakes are excluded.
 
 - Silero VAD v6.2: original MIT notice and revision/hash-pinned model metadata in `third_party/narration`; no model weight or reference recording is included.
+
+- Comic translation protocol reference: plainheart/bing-translate-api, pinned revision and original MIT notice under `third_party/bing-translate-api`. Runtime sessions are excluded. Adapted Godot sky coordinates retain `third_party/player-licenses/godot-sky.txt`. OCR payloads stay separate; see `docs/COMIC_READING.md`.

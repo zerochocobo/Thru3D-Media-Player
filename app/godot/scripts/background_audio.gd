@@ -14,6 +14,7 @@ var queue_name := ""
 var queue_source := ""
 var current := ""
 var volume := 45.0
+var _speech_gain := 1.0
 var mode := "sequence"
 var _mode_selected := false
 var _queue_finished := false
@@ -184,11 +185,15 @@ func _apply_context() -> void:
 	if _preview_token > 0: importer.platform.control_audio_preview(_preview_token, focused and not video_blocks_audio() and not _preview_scrubbing, volume)
 	if _end_pending and not blocked(): _end_pending = false; adjacent(1, true)
 
+func set_speech_gain(value: float) -> void:
+	if is_equal_approx(value, _speech_gain): return
+	_speech_gain = clampf(value, 0, 1); _apply_gain()
+
 func _apply_gain() -> void:
 	var tail := clampf((duration() - position()) / 0.12, 0, 1) if duration() > 0 else 1.0
-	player.volume_linear = volume / 100.0 * minf(_entry_gain, tail)
+	player.volume_linear = volume / 100.0 * minf(_entry_gain, tail) * _speech_gain
 	if _native_token > 0:
-		importer.platform.control_background_audio(_native_token, not blocked(), volume * minf(_entry_gain, tail), -1.0)
+		importer.platform.control_background_audio(_native_token, not blocked(), volume * minf(_entry_gain, tail) * _speech_gain, -1.0)
 
 func _stop_native() -> void:
 	if _native_token > 0 and is_instance_valid(importer.platform): importer.platform.stop_background_audio()
@@ -261,7 +266,7 @@ func seek(seconds: Variant) -> bool:
 	if player.stream: player.seek(_resume_position)
 	if _native_token > 0:
 		if _native_ended: _loaded = ""; _request()
-		else: importer.platform.control_background_audio(_native_token, not blocked(), volume * _entry_gain, _resume_position)
+		else: importer.platform.control_background_audio(_native_token, not blocked(), volume * _entry_gain * _speech_gain, _resume_position)
 	_notify(); return true
 
 func can_advance(step: int) -> bool:

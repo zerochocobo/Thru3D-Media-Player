@@ -121,6 +121,14 @@ func check_main(origin: Vector3, left: Vector3) -> void:
 		main.hand_pointers[hand].source = "hand"
 		main.hand_pointers[hand].ray = [Vector3(0,1.6,0), Vector3.RIGHT]
 	check(photo.screen_curve == Photo.DEFAULT_CURVE and photo._flat.size.x > 3.0, "Fresh photo has a large slightly curved default screen")
+	for preferred in ["right_hand", "left_hand", "both"]:
+		main.controller_bindings.pinch_hand = preferred
+		for side in ["left_hand", "right_hand"]:
+			main._dispatch_hand_input({side:sample(origin, true, true)})
+			main._dispatch_hand_input({side:sample(origin, false, false, true)})
+			check(main.photo_menu.visible == (preferred == "both" or preferred == side), "Photo pinch menu respects selected hand: " + preferred + "/" + side)
+			main.photo_menu.dismiss()
+	main.controller_bindings.pinch_hand = "right_hand"
 	main._dispatch_hand_input({"right_hand":sample(origin, true, true)})
 	main._dispatch_hand_input({"right_hand":sample(origin - Vector3(.12,0,0), false, false, true)})
 	check(photo.pending_index == 1 and main._grab.is_empty() and not main.photo_menu.visible, "Unmagnified pinch swipe navigates without a screen grab")

@@ -69,11 +69,48 @@ func present(main: Node3D, host: RefCounted, actual_ms: int) -> void:
 	main.video._pending_pair = host.pair
 	main.video._present_pending()
 
+func check_bookmarks_while_seeking(main: Node3D, host: RefCounted, menu: Node3D, video: Node3D) -> void:
+	reset(main, host, 60000, 2400000)
+	var Store := preload("res://scripts/bookmark_store.gd")
+	var directory := ProjectSettings.globalize_path("res://../../build/output/seek-feedback/bookmarks-" + str(Time.get_ticks_usec()))
+	video.bookmark_store = Store.new(directory)
+	video._bookmark_metadata = {"basename": "movie.mp4", "size": 5000}; video._bookmark_resolve()
+	video.media.generation = 3; video.panel.visible = true
+	video._binding.ticket = {"session_id": 7, "generation": 3, "pts_us": 60000000, "slot_token": 9, "source_pts_verified": true}
+	var old: Dictionary = video.bookmark_store.add(video.local_uri, "movie.mp4", 5000, 30000)
+	var scope: String = video.bookmark_scope()
+	menu.toggle()
+	check(menu._state.bookmark_ready, "Confirmed playback frame permits adding a bookmark")
+	var revision: int = video.bookmark_store.revision
+	main._begin_stick_seek("left_hand", "stick_right", 240000)
+	menu.refresh_values()
+	check(main.seek_feedback.phase == "preview" and menu._elapsed.text == "05:00" and video.control.observed_position_ms == 60000, "Four-minute preview moves the UI clock while the displayed frame remains at one minute")
+	check(not menu._state.bookmark_ready, "Four-minute seek preview disables bookmark creation before the decoder seek exists")
+	check(not menu._buttons.filter(func(item): return item.target == menu.BookmarkMenu.ADD)[0].enabled, "Preview disables the real add control")
+	main._on_bookmark_request("add", "", scope)
+	check(video.bookmark_store.revision == revision and video.bookmark_store.list_markers(video._bookmark_media_id).size() == 1, "Stale add request during preview cannot save the original frame behind the target clock")
+	main.seek_feedback.poll(Vector2.ZERO, 0.05)
+	main.seek_feedback.sequence = video.control.sequence + 1
+	video.seek_absolute(main.seek_feedback.target_ms)
+	menu.refresh_values(); main._on_bookmark_request("add", "", scope)
+	check(not menu._state.bookmark_ready and video.bookmark_store.revision == revision, "Waiting for the actual seek frame still prevents adding")
+	present(main, host, 299000)
+	check(main.seek_feedback.phase == "done" and menu._state.bookmark_ready, "Acknowledged seek landing re-enables add while its feedback fades")
+	main._on_bookmark_request("add", "", scope)
+	var markers: Array = video.bookmark_store.list_markers(video._bookmark_media_id)
+	check(markers.size() == 2 and markers[0].id == old.id and markers[1].position_ms == 299000, "After seeking, bookmark uses the confirmed source time rather than the old frame or predicted target")
+	var groups: Array = menu._buttons.filter(func(item): return menu.bookmarks.targets.get(item.target, {}).get("kind") == "group")
+	check(groups.size() == 2 and groups.all(func(item): return menu.bookmarks.targets[item.target].ids.size() == 1), "Bookmarks four minutes apart in a forty-minute movie stay in separate timeline positions")
+	if groups.size() == 2:
+		check(is_equal_approx(groups[1].node.position.x, -menu.BAR_SEEK / 2 + menu.BAR_SEEK * 299000.0 / 2400000), "Post-seek marker is placed at its own confirmed timestamp")
+	menu.dismiss()
+
 func run() -> void:
 	var host := Host.new()
 	var video := Video.new(); root.add_child(video); video.set_process(false)
 	video.platform = host; video._binding = BindingProbe.new(); video._remember_file = false
 	var main := InputMain.new(); main.video = video
+	main.settings_path = "user://seek_visibility_%d.cfg" % Time.get_ticks_usec()
 	video.changed.connect(main._on_video_changed)
 	video.seek_presented.connect(main._on_stick_seek_presented)
 	var menu := CountMenu.new(); menu.state_provider = main._menu_state
@@ -81,6 +118,22 @@ func run() -> void:
 	var camera := XRCamera3D.new(); root.add_child(camera); main.xr_camera = camera
 	var overlay := Overlay.new(); overlay.source = main._seek_overlay_sample
 	camera.add_child(overlay); overlay.set_process(false); main.seek_overlay = overlay
+	check_bookmarks_while_seeking(main, host, menu, video)
+	reset(main, host)
+	tick(main, Vector2.ZERO, Vector2.RIGHT)
+	check(overlay.visible, "Missing visibility setting preserves the existing progress HUD")
+	main._on_setting_changed("stick_seek_overlay", false)
+	check(not overlay.visible and main.seek_feedback.phase == "preview" and main.seek_feedback.target_ms == 40000, "Turning off HUD immediately hides it without cancelling the seek preview")
+	var saved := ConfigFile.new(); saved.load(main.settings_path)
+	check(saved.get_value("ui", "stick_seek_overlay", true) == false, "Progress visibility persists across config reload")
+	tick(main, Vector2.ZERO, Vector2.ZERO)
+	check(not overlay.visible and host.revisions.size() == 1 and host.revisions[0][1] == 40000, "Hidden HUD still submits the same seek on release")
+	main._on_setting_changed("stick_seek_overlay", true)
+	check(overlay.visible, "Turning HUD back on restores current feedback")
+	reset(main, host); main._on_setting_changed("stick_seek_overlay", false); main._show_player_menu()
+	tick(main, Vector2.ZERO, Vector2.RIGHT)
+	check(menu._elapsed.text == "00:40" and not overlay.visible, "Hiding passive HUD preserves visible transport timeline feedback")
+	main._on_setting_changed("stick_seek_overlay", true)
 	for geometry in [0, 1, 2, 3]:
 		for hand in ["left_hand", "right_hand"]:
 			for direction in [-1, 1]:
@@ -239,6 +292,7 @@ func run() -> void:
 	main.recent_menu = null; library.free()
 	video.changed.disconnect(main._on_video_changed); video.seek_presented.disconnect(main._on_stick_seek_presented)
 	video._binding.ticket.clear(); video.platform = null
+	DirAccess.remove_absolute(main.settings_path)
 	camera.free(); menu.free(); main.free(); video.free()
 	for failure in failures: push_error(failure)
 	print("Seek feedback checks=%d failures=%d" % [checks, failures.size()])

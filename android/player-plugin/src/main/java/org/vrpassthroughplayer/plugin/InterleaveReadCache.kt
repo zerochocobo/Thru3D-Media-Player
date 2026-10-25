@@ -143,9 +143,19 @@ internal class AdaptiveInterleaveSource(private val source: StreamSource,
     override val size get() = source.size
     @Volatile private var cache: InterleaveReadCache? = null
     @Volatile private var closed = false
+    // MPV curl ends a bounded request every 32 MiB (about 2.5 s of 100 Mbit/s
+    // video). A cloud reader released exactly there continues the same upstream
+    // range for the next request instead of a new proxy/CDN connection with TLS
+    // and slow start. Only the exact next byte reuses it; seeks open as before.
+    private class Parked(val reader: StreamSource.Reader, val next: Long, val at: Long)
+    private val parked = ArrayList<Parked>(PARKED_READERS)
+    private var continuedReads = 0L
     @Synchronized fun enable(audioChunks: List<AudioReadSpan> = emptyList()): Boolean {
         if (closed) return false
-        if (cache == null) cache = InterleaveReadCache(source, onRead = { meter?.add(it) }, audioChunks = audioChunks)
+        if (cache == null) {
+            releaseParked()
+            cache = InterleaveReadCache(source, onRead = { meter?.add(it) }, audioChunks = audioChunks)
+        }
         return true
     }
     fun stats(): Map<String, Long>? = cache?.stats()
@@ -155,10 +165,58 @@ internal class AdaptiveInterleaveSource(private val source: StreamSource,
         cache?.cachedAudioEnd(offset)?.let { minOf(requestedEnd, it - 1) } ?: requestedEnd
     override fun open(): StreamSource.Reader {
         check(!closed)
-        return cache?.open() ?: source.open()
+        cache?.let { return it.open() }
+        return if ((source as? CloudStreamSource)?.continuable == true) ContinuingReader() else source.open()
     }
     override fun close() {
-        val active = synchronized(this) { closed = true; cache }
+        val active = synchronized(this) { closed = true; releaseParked(); cache }
         if (active == null) source.close() else active.close()
+    }
+    @Synchronized private fun take(offset: Long): StreamSource.Reader? {
+        val now = System.nanoTime()
+        // An idle CDN body may have been dropped without FIN; never wait on it.
+        parked.removeAll { (now - it.at > PARKED_IDLE_NS).also { stale -> if (stale) runCatching { it.reader.close() } } }
+        val match = parked.firstOrNull { it.next == offset } ?: return null
+        parked.remove(match); continuedReads++
+        return match.reader
+    }
+    private fun park(reader: StreamSource.Reader, next: Long) {
+        val keep = synchronized(this) {
+            if (closed || cache != null) false else {
+                if (parked.size >= PARKED_READERS) parked.removeAt(0).reader.let { runCatching { it.close() } }
+                parked.add(Parked(reader, next, System.nanoTime())); true
+            }
+        }
+        if (!keep) runCatching { reader.close() }
+    }
+    private fun releaseParked() { parked.forEach { runCatching { it.reader.close() } }; parked.clear() }
+    @Synchronized fun continuedReads() = continuedReads
+
+    private inner class ContinuingReader : BoundedStreamReader {
+        private var reader: StreamSource.Reader? = null
+        private var next = -1L
+        private var failed = false
+        @Volatile private var done = false
+        override fun setRangeEnd(endInclusive: Long) { (reader as? BoundedStreamReader)?.setRangeEnd(endInclusive) }
+        override fun read(offset: Long, buffer: ByteArray, length: Int): Int {
+            if (done) throw IOException("Request cancelled")
+            val current = reader ?: (take(offset) ?: source.open()).also { reader = it }
+            try {
+                val count = current.read(offset, buffer, length)
+                next = offset + count
+                return count
+            } catch (error: Exception) { failed = true; throw error }
+        }
+        override fun close() {
+            if (done) return
+            done = true
+            val current = reader ?: return
+            reader = null
+            if (failed || next < 0 || next >= size) runCatching { current.close() } else park(current, next)
+        }
+    }
+    private companion object {
+        const val PARKED_READERS = 2 // video plus one alternating reader (narration, subtitles)
+        const val PARKED_IDLE_NS = 15_000_000_000L
     }
 }

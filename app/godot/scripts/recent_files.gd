@@ -98,7 +98,7 @@ func opened(uri: String, title: String, persisted: bool, kind: String = "video")
 		return false
 	var old := lookup(uri)
 	entries[key] = {"uri": uri, "title": title.replace("\n", " ").replace("\r", " ").replace("\t", " ").left(256),
-		"kind": "image" if kind == "image" else "video",
+		"kind": kind if kind in ["image", "archive", "pdf"] else "video",
 		"persisted": persisted, "position_ms": int(old.get("position_ms", 0)),
 		"duration_ms": int(old.get("duration_ms", -1)), "opened": sequence + 1, "opened_at": Time.get_unix_time_from_system()}
 	if valid_cover(old.get("cover", "")): entries[key]["cover"] = old.cover
@@ -114,6 +114,23 @@ func opened(uri: String, title: String, persisted: bool, kind: String = "video")
 
 static func valid_cover(value: Variant) -> bool:
 	return value is String and value.length() <= 2048 and (value.begins_with("http://") or value.begins_with("https://"))
+
+## Called only after a contained image/page has reached the display.
+func opened_container(entry: Dictionary) -> bool:
+	var uri := str(entry.get("uri", ""))
+	var kind := str(entry.get("kind", ""))
+	if kind not in ["archive", "pdf"] or not opened(uri, str(entry.get("title", "")), bool(entry.get("persisted", false)), kind): return false
+	set_location(uri, entry.get("location", Location.infer(uri)))
+	return true
+
+func relocate(old_uri: String, new_uri: String, title: String = "") -> bool:
+	if not super(old_uri, new_uri, title): return false
+	var entry: Dictionary = entries[key_for(new_uri)]
+	if entry.get("location", {}).get("type") == "archive":
+		entry.location.source_uri = new_uri
+		if not title.is_empty(): entry.location.source_title = title
+		entry.location.parent = Location.infer(new_uri)
+	return true
 
 func set_cover(uri: String, cover: String) -> bool:
 	if not Privacy.record_allowed(uri): return false

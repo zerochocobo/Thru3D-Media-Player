@@ -146,8 +146,17 @@ $vcvars = 'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Aux
 if (-not (Test-Path -LiteralPath $vcvars)) { throw "MSVC Build Tools are required for the editor stub: $vcvars" }
 cmd /c "`"$vcvars`" >nul 2>nul && cl /nologo /LD /std:c++17 /O2 /EHsc /W3 /WX /I`"$layerSource\gdextension`" /Fo`"$stubBuild\\`" /Fe`"$stubBuild\layer_extensions_stub.dll`" `"$layerSource\layer_extensions.cpp`"" 2>&1 | Out-File (Join-Path $logDirectory 'layer-extension-stub.log') -Encoding utf8
 if ($LASTEXITCODE -ne 0) { throw 'Layer extension editor stub failed; inspect build/output/logs/layer-extension-stub.log.' }
-# Only the DLL enters the project: Godot would import MSVC's .obj as a 3D model.
-Copy-Item -LiteralPath (Join-Path $stubBuild 'layer_extensions_stub.dll') -Destination $stubDirectory -Force
+# A running desktop preview may retain the previous stub. Never overwrite its
+# mapped DLL or stop that process: select a verified, content-addressed copy.
+# Only the DLL enters the project; Godot would import MSVC's .obj as a 3D model.
+$stubBinary = Join-Path $stubBuild 'layer_extensions_stub.dll'
+$stubHash = (Get-FileHash -LiteralPath $stubBinary -Algorithm SHA256).Hash.ToLowerInvariant()
+$stubFilename = 'layer_extensions_stub_' + $stubHash.Substring(0,16) + '.dll'
+$stubTarget = Join-Path $stubDirectory $stubFilename
+if (-not (Test-Path -LiteralPath $stubTarget)) { Copy-Item -LiteralPath $stubBinary -Destination $stubTarget }
+if ((Get-FileHash -LiteralPath $stubTarget -Algorithm SHA256).Hash.ToLowerInvariant() -ne $stubHash) {
+    throw 'Layer extension editor stub content hash mismatch.'
+}
 # The declaration names the Android library at a project path, as the vendors addon does.
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $layerVariant = $BuildType.ToLowerInvariant()
@@ -158,7 +167,8 @@ try {
     New-Item -ItemType Directory -Path (Join-Path $pluginDirectory 'android\arm64') -Force | Out-Null
     [IO.Compression.ZipFileExtensions]::ExtractToFile($entry, (Join-Path $pluginDirectory 'android\arm64\libquest_video_layer.so'), $true)
 } finally { $pluginArchive.Dispose() }
-Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'environment\godot\layer_extensions.gdextension') -Destination $layerExtension -Force
+$extensionDeclaration = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'environment\godot\layer_extensions.gdextension')).Replace('layer_extensions_stub.dll', $stubFilename)
+[IO.File]::WriteAllText($layerExtension, $extensionDeclaration, [Text.UTF8Encoding]::new($false))
 $vendorsDirectory = Join-Path $projectDirectory 'addons\godotopenxrvendors'
 if (-not (Test-Path -LiteralPath $vendorsDirectory)) {
     Copy-Item -LiteralPath (Join-Path $ToolRoot 'openxr-vendors\5.1.0\asset\addons\godotopenxrvendors') -Destination (Split-Path $vendorsDirectory) -Recurse

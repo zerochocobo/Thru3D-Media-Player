@@ -77,23 +77,24 @@ func check_png_backgrounds(main: Node, viewport: SubViewport) -> void:
 		var buttons: Array = main.photo_menu._buttons.filter(func(button): return button.target == main.photo_menu.PHOTO_BACKGROUND)
 		check(buttons.size()==1 and buttons[0].enabled, "Screenshot settings expose an enabled background action %d" % index)
 		field_tap(main.photo_menu, main.photo_menu.PHOTO_BACKGROUND)
-		await settle(main.background)
-		check(main.background.error.is_empty() and main.background.choice == "custom", "PNG import succeeds %d" % index)
-		check(not main.photo_active and main.player_menu == main.video_menu and not main.photo_menu.visible and not main._has_open_media(), "Background import leaves no empty photo bar or disabled X %d" % index)
-		check(main.recent_menu.visible and main.recent_menu.get_parent() == main and main.recent_menu.tab == main.recent_menu.BACKGROUND_TAB, "Import returns to standalone background settings %d" % index)
-		var saved := str(main.background.custom_path)
+		await settle(main.photo_background)
+		check(main.photo_background.error.is_empty() and main.photo_background.choice == "custom", "PNG photo background import succeeds %d" % index)
+		check(main.photo_active and main.player_menu == main.photo_menu and main.photo.panel.visible, "Photo background import retains the current image and controls %d" % index)
+		check(main.background.choice == "passthrough", "Photo import leaves the global background unchanged %d" % index)
+		var saved := str(main.photo_background.custom_path)
 		var header := preload("res://scripts/image_info.gd").read_header(saved)
 		check(header.width == header.height * 2, "Stored sky is one complete 2:1 eye %d" % index)
-		var sky_image: Image = main.background._custom.get_image()
+		var sky_image: Image = main.photo_background._custom.get_image()
 		var color := sky_image.get_pixel(sky_image.get_width()/2,sky_image.get_height()/2)
 		check(color.is_equal_approx(Color.BLUE if item[3] else Color.RED), "Sky respects selected left eye and swap %d" % index)
 		var restored := Background.new()
-		restored.directory = main.background.directory; restored.choice = "custom"; restored.custom_path = saved; restored.custom_orientation = main.background.custom_orientation
+		restored.directory = main.photo_background.directory; restored.choice = "custom"; restored.custom_path = saved; restored.custom_orientation = main.photo_background.custom_orientation
 		root.add_child(restored); await settle(restored)
-		check(restored.error.is_empty() and restored.ready_sky()!=null and restored._custom.get_size() == main.background._custom.get_size(), "Normalized PNG sky reloads without cropping twice %d" % index)
+		check(restored.error.is_empty() and restored.ready_sky()!=null and restored._custom.get_size() == main.photo_background._custom.get_size(), "Normalized PNG sky reloads without cropping twice %d" % index)
 		restored.free()
 		check(FileAccess.file_exists(source), "PNG source survives import %d" % index)
 	# Deleting an active custom sky requires its own two trigger releases.
+	main._on_photo_action("global_background"); await settle(main.background)
 	if DisplayServer.get_name() != "headless": await frame(viewport,"custom-delete")
 	var saved := str(main.background.custom_path)
 	check(delete_target(main)>=0, "Custom background has a delete row")
@@ -111,11 +112,11 @@ func check_png_backgrounds(main: Node, viewport: SubViewport) -> void:
 	main._on_library_chosen("file://"+source,source.get_file()); await photo_ready(main)
 	var source_bytes := FileAccess.get_file_as_bytes(source)
 	FileAccess.open(source,FileAccess.WRITE).store_string("broken")
-	main._on_photo_action("photo_background"); await settle(main.background)
+	main._on_photo_action("global_background"); await settle(main.background)
 	check(not main.background.error.is_empty() and main.photo_active and main.photo.panel.visible and main.background.choice=="belfast", "Failed background decode preserves the photo and previous sky")
 	FileAccess.open(source,FileAccess.WRITE).store_buffer(source_bytes)
 	main.background.set_process(false)
-	main._on_photo_action("photo_background")
+	main._on_photo_action("global_background")
 	check(not main.background.remove_custom(), "Deletion cannot race a pending background import")
 	main._on_setting_changed("background","dark")
 	main._on_library_chosen("file://"+source,source.get_file()); await photo_ready(main)
@@ -178,9 +179,33 @@ func check_panorama_direction() -> void:
 	check(rotated.get_pixel(128,128).r > .8 and rotated.get_pixel(128,128).g < .1, "User 180-degree rotation still rotates relative to the image centre")
 	viewport.queue_free(); await process_frame
 
+func check_first_run_backgrounds() -> void:
+	var main := Main.new()
+	main.settings_path = folder.path_join("first-run.cfg")
+	root.add_child(main)
+	main.set_process(false)
+	main.report_timer.stop()
+	check(main.background.choice == "cinema", "Fresh settings select the cinema without a manual background change")
+	var deadline := Time.get_ticks_msec() + 15000
+	while main.cinema_environment.loading and Time.get_ticks_msec() < deadline:
+		await create_timer(.01).timeout
+	check(main.cinema_environment.is_ready and main.cinema_environment.active, "Fresh launch loads and presents the bundled cinema")
+	check(main.photo_background.choice == main.photo_menu.SCENERIES[0], "Fresh photo background selects the first panorama independently")
+	await settle(main.photo_background)
+	main.photo_active = true
+	main._update_background()
+	check(not main.cinema_environment.active and main._active_background() == main.photo_background, "Entering photo mode hides the default cinema")
+	check(main.photo_background.ready_sky() != null and main.display.environment.background_mode == Environment.BG_SKY, "Photo mode displays a loaded panorama instead of a black background")
+	main.photo_active = false
+	main._update_background()
+	check(main.cinema_environment.active and main.background.choice == "cinema", "Leaving photo mode restores the default cinema")
+	main.queue_free()
+	await process_frame
+
 func _run() -> void:
 	DirAccess.make_dir_recursive_absolute(folder)
 	DirAccess.make_dir_recursive_absolute(output)
+	await check_first_run_backgrounds()
 	if DisplayServer.get_name() != "headless": await check_panorama_direction()
 	var config := ConfigFile.new()
 	config.set_value("appearance", "background", "dark")
@@ -198,11 +223,13 @@ func _run() -> void:
 	check(main.settings.get_value("alpha", "model") == "fast" and main.video.profile == main.video.AUTOMATIC_PROFILE, "Legacy quality model migrates to the unified playback configuration")
 	main.photo.history_enabled = false
 	main.background.directory = folder.path_join("backgrounds")
+	main.photo_background.directory = folder.path_join("photo-backgrounds")
 	check(main.background.choice == "dark" and main.display.environment.background_mode == Environment.BG_COLOR, "Saved dark background applies at startup")
 	main._on_setting_changed("background", "belfast")
 	await settle(main.background)
 	check(main.display.environment.background_mode == Environment.BG_SKY and not viewport.transparent_bg, "Belfast is opaque application sky")
 	check(main.background._builtin.get_size() == Vector2(8192,4096), "Packaged sky retains full 8K dimensions")
+	main._show_recent_menu()
 	main.recent_menu.section = main.recent_menu.Section.SETTINGS
 	main.recent_menu.tab = main.recent_menu.BACKGROUND_TAB
 	main.recent_menu.refresh()
@@ -272,7 +299,7 @@ func _run() -> void:
 	while main.photo.loading and Time.get_ticks_msec() < deadline: await create_timer(.01).timeout
 	check(main.photo.geometry == 3 and main.photo.can_background(), "Full mono panorama offers use-as-background")
 	check(main.display.environment.background_mode == Environment.BG_COLOR, "Immersive media temporarily hides scenery")
-	main._on_photo_action("photo_background")
+	main._on_photo_action("global_background")
 	await settle(main.background)
 	check(main.background.choice == "custom" and not main.photo.panel.visible and main.display.environment.background_mode == Environment.BG_SKY, "Using panorama as background closes viewer and restores app sky")
 	check(not main.photo_active and not main.photo_menu.visible and not main._has_open_media(), "JPG import fully exits photo playback")
@@ -368,6 +395,8 @@ func _run() -> void:
 	check(supported.applied_passthrough, "Passthrough stays active after closing video")
 	main.photo_active = true
 	main.photo.local_uri = "file://photo.jpg"
+	check(main.photo_background.choice != "passthrough", "Global passthrough does not overwrite photo scenery")
+	main.photo_background.select("passthrough")
 	for geometry in [0, 1, 2, 3]:
 		main.photo.geometry = geometry
 		main._update_background()
@@ -379,7 +408,7 @@ func _run() -> void:
 		check(transparent_frame.get_pixel(80,100).a == 0.0, "Rendered passthrough background has zero alpha")
 	supported._on_session_event("session_begun")
 	check(viewport.transparent_bg and supported.environment.background_color.a == 0.0, "Session resume preserves transparent background")
-	main.background.select("dark")
+	main.photo_background.select("dark")
 	check(not supported.applied_passthrough and not viewport.transparent_bg and supported.environment.background_color.a == 1.0, "Dark is opaque and distinct from passthrough")
 	main.visible = true
 	await check_png_backgrounds(main,viewport)

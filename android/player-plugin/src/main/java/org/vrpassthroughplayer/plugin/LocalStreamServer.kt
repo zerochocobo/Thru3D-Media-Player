@@ -79,6 +79,7 @@ internal class LocalStreamServer : Closeable {
     private fun token(url: String) = url.takeIf { it.startsWith("http://127.0.0.1:${socket.localPort}/") }
         ?.substringAfter(":${socket.localPort}/")?.substringBefore('/')
     fun hasSource(url: String): Boolean = token(url)?.let { sources.containsKey(it) } == true
+    fun cachedArchive(url: String): Boolean = token(url)?.let { sources[it] is CachedRarSource } == true
     fun progress(url: String): TransferMeter.Snapshot? = token(url)?.let { meters[it]?.snapshot() }
     fun failure(url: String): PlaybackFailure? = token(url)?.let { diagnostics[it]?.failure() }
     fun enableInterleaveCache(url: String): Boolean = enableInterleaveCache(url, emptyList())

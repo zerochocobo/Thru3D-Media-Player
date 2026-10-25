@@ -19,6 +19,7 @@ class Cinema extends RefCounted:
 
 class Viewer extends Node3D:
 	var local_uri := "content://hand/video"
+	var media := {"state": "playing"}
 	var disc := preload("res://scripts/disc_titles.gd").new()
 	var cinema := Cinema.new()
 	var geometry := 1
@@ -252,6 +253,35 @@ func _run() -> void:
 	frames(main, tracker, center + Vector3(0.12, 0, 0), 0.1)
 	frames(main, tracker, center + Vector3(0.12, 0, 0), 0.8)
 	check(viewer.turned.length() > 0.01 and not player.visible, "Held pinch moves picture without opening controls on release")
+	# The preference filters picture gestures, without suppressing menu input or controllers.
+	main.hand_pointers["left_hand"] = Hand.new()
+	for preferred in ["right_hand", "left_hand", "both"]:
+		main.controller_bindings.pinch_hand = preferred
+		for side in ["left_hand", "right_hand"]:
+			var side_pointer: RefCounted = main.hand_pointers[side]
+			side_pointer.source = "hand"; side_pointer.ray = [Vector3(0, 1.6, 0), Vector3.FORWARD]
+			var allowed: bool = preferred == "both" or preferred == side
+			main._dispatch_hand_input({side: {"source":"hand", "tracked":true, "pressed":true, "down":true}})
+			check((not main._grab.is_empty()) == allowed, "Only selected hand starts picture grab: " + preferred + "/" + side)
+			main._dispatch_hand_input({side: {"source":"hand", "tracked":true, "released":true}})
+			check(player.visible == allowed, "Only selected hand opens controls: " + preferred + "/" + side)
+			player.dismiss()
+			var turned_before: Vector2 = viewer.turned
+			main._on_pointer_button("trigger_click", side)
+			side_pointer.ray[1] = Vector3(-0.25, 0, -1).normalized(); main._update_grab()
+			main._on_pointer_release("trigger_click", side)
+			check((viewer.turned != turned_before) == allowed and not player.visible, "Only selected hand drags picture without a menu tap: " + preferred + "/" + side)
+	main.controller_bindings.pinch_hand = "right_hand"
+	library.toggle()
+	main.hand_pointers.left_hand.ray = [row, direction]
+	var left_picks := picks
+	main._on_pointer_button("trigger_click", "left_hand")
+	main._on_pointer_release("trigger_click", "left_hand")
+	check(picks == left_picks + 1, "Non-selected left hand can still select an open menu row")
+	library.dismiss()
+	main.hand_pointers.left_hand.source = "controller"
+	check(main._picture_pinch_allowed("left_hand"), "Gesture preference leaves physical controller input unchanged")
+	main._grab.clear(); main.hand_pointers.erase("left_hand")
 	# Follow the actual Vendors tracker contract through Main, even when joint flags
 	# cannot support the fallback. No middle finger pose participates in selection.
 	var aim := make_aim()
@@ -336,6 +366,10 @@ func _run() -> void:
 	left_aim.set_input("menu_pressed", true)
 	left_aim.set_input("index_pinch", true)
 	main._update_hand_input(1.0 / 72)
+	check(not player.visible and main._grab.is_empty(), "Default right-hand preference blocks left official menu pinch")
+	left_aim.set_input("menu_pressed", false); main._update_hand_input(1.0 / 72)
+	main.controller_bindings.pinch_hand = "left_hand"
+	left_aim.set_input("menu_pressed", true); main._update_hand_input(1.0 / 72)
 	check(player.visible and main._grab.is_empty(), "Left official palm menu pinch opens controls without a picture grab")
 	main._update_hand_input(1.0 / 72)
 	check(player.visible, "Holding left official menu pinch cannot toggle twice")

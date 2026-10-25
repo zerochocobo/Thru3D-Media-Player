@@ -100,12 +100,12 @@ func run() -> void:
 	menu.free(); main.free(); video.free()
 	# Shared subtitle fields own reset clicks until release; no preview writes or double commits.
 	var state := {"has_video": true, "source_uri": "file:///subtitle.mp4", "geometry": 1,
-		"subtitle_position": 20.0, "subtitle_distance": 1.5, "subtitle_size": 150.0}
+		"subtitle_vertical_position": 20.0, "subtitle_distance": 1.5, "subtitle_size": 150.0}
 	menu = Menu.new(); root.add_child(menu); menu.set_process(false); menu.state_provider = func(): return state
 	var settings_events: Array = []
 	menu.setting_requested.connect(func(key, value): state[key] = value; settings_events.append([key, value]))
 	menu.toggle(); menu._activate(110); menu._activate(Menu.SUBTITLE_APPEARANCE)
-	for key in ["subtitle_position", "subtitle_distance", "subtitle_size"]:
+	for key in ["subtitle_vertical_position", "subtitle_distance", "subtitle_size"]:
 		var reset_target: int = menu.choices.targets.keys().filter(func(target): return menu.choices.targets[target].get("kind") == "reset" and menu.choices.targets[target].key == key)[0]
 		var button: Dictionary = menu._buttons.filter(func(item): return item.target == reset_target)[0]
 		var reset_point: Vector3 = button.node.to_global(Vector3(0, 0, 1))
@@ -116,7 +116,7 @@ func run() -> void:
 		menu.release_pointer("left", reset_point, -button.node.global_basis.z, true)
 		check(settings_events.size() == saved_count, "Other hand cannot commit subtitle reset")
 		menu.release_pointer("right", reset_point, -button.node.global_basis.z, true)
-		check(state[key] == {"subtitle_position": 0.0, "subtitle_distance": 5.0, "subtitle_size": 100.0}[key] and settings_events.size() == saved_count + 1, "Subtitle reset changes once on release")
+		check(state[key] == {"subtitle_vertical_position": 0.0, "subtitle_distance": 5.0, "subtitle_size": 100.0}[key] and settings_events.size() == saved_count + 1, "Subtitle reset changes once on release")
 	var depth_state := {"has_video": true, "geometry": 0, "depth_requested": true, "depth_strength": 1.8}
 	menu.state_provider = func(): return depth_state.duplicate(true)
 	menu.depth_strength_requested.connect(func(value): depth_state.depth_strength = value)

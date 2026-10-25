@@ -23,6 +23,46 @@ type comicProxyFixture struct {
 	selected model.Obj
 }
 
+type comicColdFixture struct {
+	comicProxyFixture
+	lookups int
+}
+
+func (d *comicColdFixture) PlayerArchiveTarget(_ context.Context, remote, id string) (model.Obj, *model.Link, error) {
+	d.lookups++
+	if remote != "/Comics/book.pdf" || id != "stable-id" {
+		return nil, nil, errors.New("identity lost")
+	}
+	return &model.Object{ID: id, Name: "book.pdf", Path: remote, Size: 1024}, &model.Link{URL: "https://fixture.invalid/seed", Header: http.Header{"Cookie": []string{"fixture"}}}, nil
+}
+
+func TestPdfColdSourceReusesMetadataTicketAndRefreshesAfterDenial(t *testing.T) {
+	d := &comicColdFixture{}
+	d.MountPath = "/12345678-1234-1234-1234-123456789bbb"
+	obj, err := comicSourceObject(context.Background(), d, cloudTarget{Mount: d.MountPath, Path: "/Comics/book.pdf", ID: "stable-id", Size: 1024})
+	if err != nil || d.lookups != 1 {
+		t.Fatal(err, d.lookups)
+	}
+	d.selected = obj
+	d.origin = "https://fixture.invalid/refreshed"
+	lease := &cloudPlaybackLease{storage: d, file: obj, cloudPlaybackLinks: &cloudPlaybackLinks{links: map[string]cloudPlaybackLink{}}}
+	header := http.Header{"User-Agent": []string{"fixture"}, "X-Thru3d-Archive-Read": []string{"1"}}
+	for i := 0; i < 5; i++ {
+		link, e := lease.link(context.Background(), header)
+		if e != nil || link.URL != "https://fixture.invalid/seed" || link.Header.Get("Cookie") != "fixture" {
+			t.Fatal(e)
+		}
+	}
+	if d.links.Load() != 0 || d.lookups != 1 {
+		t.Fatal("duplicate metadata/download request")
+	}
+	lease.invalidate(header, "https://fixture.invalid/seed")
+	link, e := lease.link(context.Background(), header)
+	if e != nil || link.URL != d.origin || d.links.Load() != 1 || d.lookups != 1 {
+		t.Fatal("ticket denial did not use ordinary refresh", e)
+	}
+}
+
 func (d *comicProxyFixture) Link(_ context.Context, file model.Obj, args model.LinkArgs) (*model.Link, error) {
 	if file != d.selected || args.Header.Get("X-Thru3D-Archive-Read") != "" {
 		return nil, errors.New("archive object or provider header changed")

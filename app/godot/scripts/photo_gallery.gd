@@ -2,8 +2,8 @@ extends Node3D
 ## World-fixed layouts. All cards are bounded previews; the existing photo surface owns focus.
 const Previews := preload("res://scripts/photo_preview_cache.gd")
 const SHADER := preload("res://shaders/photo_gallery.gdshader")
-enum Layout { SINGLE, SIDES, WALL, FRAGMENTS }
-const NAMES := ["Single image", "Side previews", "Photo wall", "Memory fragments"]
+enum Layout { SINGLE, SIDES, WALL, FRAGMENTS, MAGAZINE }
+const NAMES := ["Single image", "Side previews", "Photo wall", "Memory fragments", "Magazine / Comics"]
 const RECT := [Vector2(-0.5, 0.5), Vector2(0.5, 0.5), Vector2(0.5, -0.5), Vector2(-0.5, -0.5)]
 const SHAPES := [
 	[Vector2(-0.5, 0.28), Vector2(0.3, 0.5), Vector2(0.5, -0.35), Vector2(-0.32, -0.5)],
@@ -14,7 +14,7 @@ const SHAPES := [
 const MAX_CARDS := 40
 const SCALE_LIMITS := Vector2(0.5, 2.0)
 const DISTANCE_LIMITS := Vector2(1.5, 8.0)
-const DEFAULT_DISTANCES := [3.0, 3.0, 4.0, 3.6]
+const DEFAULT_DISTANCES := [3.0, 3.0, 4.0, 3.6, 3.0]
 const ANIMATION_SECONDS := 0.34
 var photo: Node3D
 var previews := Previews.new()
@@ -22,7 +22,7 @@ var mode := Layout.SINGLE
 var view_scale := 1.0
 var wall_rows := 1
 const WALL_FLOOR_MARGIN := 1.0
-var _scales := [1.0, 1.0, 1.0, 1.0]
+var _scales := [1.0, 1.0, 1.0, 1.0, 1.0]
 var view_distance := 3.0
 var _distances := DEFAULT_DISTANCES.duplicate()
 var _pool := {}
@@ -61,8 +61,8 @@ func _ready() -> void:
 	previews.preview_ready.connect(func(_uri): _refresh_textures())
 
 func set_mode(value: int) -> void:
-	if photo and photo.archive_mode and value != Layout.SINGLE: return
-	if value not in [0, 1, 2, 3] or value == mode: return
+	if photo and photo.archive_mode and value not in [Layout.SINGLE, Layout.MAGAZINE]: return
+	if value not in [0, 1, 2, 3, 4] or value == mode: return
 	cancel_all(); focus = -1; progress = 0; returning = false; _swap_phase = 0; _swap_alpha = 1.0
 	_scales[mode] = view_scale
 	_distances[mode] = view_distance
@@ -73,7 +73,7 @@ func set_mode(value: int) -> void:
 		photo.material.render_priority = 0; photo.set_target_feedback(0)
 		if photo._hole_material: photo._hole_material.render_priority = -128
 		if photo._placeholder_material: photo._placeholder_material.render_priority = -10
-		if value in [Layout.SINGLE, Layout.SIDES] and photo._texture != null: photo.panel.visible = true
+		if value in [Layout.SINGLE, Layout.SIDES, Layout.MAGAZINE] and photo._texture != null: photo.panel.visible = true
 		recenter(false); synchronize()
 
 func recenter(reset_viewing: bool = true) -> void:
@@ -161,9 +161,9 @@ func set_view_distance(value: float) -> void:
 	view_distance = next; _distances[mode] = next; _reflow = true; _wall_column = -1
 
 func restore_settings(settings: ConfigFile) -> void:
-	mode = clampi(int(settings.get_value("photo_screen", "layout", 0)), 0, 3)
+	mode = clampi(int(settings.get_value("photo_screen", "layout", 0)), 0, 4)
 	wall_rows = clampi(int(settings.get_value("photo_screen", "wall_rows", 1)), 1, 3)
-	for layout in 4:
+	for layout in 5:
 		var scale := float(settings.get_value("photo_screen", "layout_%d_scale" % layout,
 			settings.get_value("photo_screen", "gallery_scale", 1.0) if layout == mode else 1.0))
 		var distance := float(settings.get_value("photo_screen", "layout_%d_distance" % layout, DEFAULT_DISTANCES[layout]))
@@ -175,7 +175,7 @@ func save_settings(settings: ConfigFile) -> void:
 	settings.set_value("photo_screen", "layout", mode)
 	settings.set_value("photo_screen", "wall_rows", wall_rows)
 	settings.set_value("photo_screen", "gallery_scale", view_scale)
-	for layout in 4:
+	for layout in 5:
 		settings.set_value("photo_screen", "layout_%d_scale" % layout, _scales[layout])
 		settings.set_value("photo_screen", "layout_%d_distance" % layout, _distances[layout])
 
@@ -325,7 +325,7 @@ func synchronize() -> void:
 	if not photo or photo.queue.is_empty() or (photo.local_uri.is_empty() and not photo.loading):
 		if not cards.is_empty(): clear()
 		visible = false; return
-	if mode == Layout.SINGLE:
+	if mode in [Layout.SINGLE, Layout.MAGAZINE]:
 		if not cards.is_empty(): clear(false)
 		visible = false; return
 	visible = true
@@ -672,7 +672,7 @@ func _animate_focus() -> void:
 func _refresh_visibility() -> void:
 	if photo and photo.portrait_requested:
 		visible = false; photo.panel.visible = true; return
-	if mode == Layout.SINGLE: return
+	if mode in [Layout.SINGLE, Layout.MAGAZINE]: return
 	var focused_ready: bool = focus >= 0 and progress >= 1 and not returning and photo.index == focus and not photo.loading and photo._texture != null
 	var foreground: bool = focus >= 0
 	photo.material.render_priority = 1 if focused_ready else 0
@@ -713,11 +713,11 @@ func _refresh_visibility() -> void:
 func ray_hit(origin: Vector3, direction: Vector3) -> Dictionary:
 	if _swap_phase != 0 or not _dual.is_empty() or not photo or photo.portrait_requested or photo.inspect or not origin.is_finite() or not direction.is_finite() or direction.length_squared() < 0.00001: return {}
 	var nearest := {}
-	if mode in [Layout.SINGLE, Layout.SIDES] and photo.panel.visible and photo.geometry == 0:
+	if mode in [Layout.SINGLE, Layout.SIDES, Layout.MAGAZINE] and photo.panel.visible and photo.geometry == 0:
 		var point: Variant = photo.screen_point(origin, direction)
 		if point != null and absf(point.x) <= photo._flat.size.x * 0.5 and absf(point.y) <= photo._flat.size.y * 0.5:
 			nearest = {"index": photo.index, "distance": origin.distance_to(photo.panel.global_transform * point), "point": photo.panel.global_transform * point}
-	if not visible and mode != Layout.SINGLE: return {}
+	if not visible and mode not in [Layout.SINGLE, Layout.MAGAZINE]: return {}
 	if focus >= 0 and progress >= 1 and not returning and photo.panel.visible:
 		if photo.geometry != 0: return {"index": focus, "distance": 2.0, "point": origin + direction.normalized() * 2.0}
 		var point: Variant = photo.screen_point(origin, direction)
@@ -746,7 +746,7 @@ func ray_hit(origin: Vector3, direction: Vector3) -> Dictionary:
 func press_pointer(hand: String, origin: Vector3, direction: Vector3) -> bool:
 	if has_capture(): return true
 	var hit := ray_hit(origin, direction)
-	if hit.is_empty() or (mode in [Layout.SINGLE, Layout.SIDES] and not cards.has(int(hit.index))): return false
+	if hit.is_empty() or (mode in [Layout.SINGLE, Layout.SIDES, Layout.MAGAZINE] and not cards.has(int(hit.index))): return false
 	capture = {"hand": hand, "index": int(hit.index), "start": direction.normalized(), "last": direction.normalized(), "moved": false}
 	if int(hit.index) == focus and progress >= 1 and not returning and photo.geometry == 0:
 		var eye := _focus_eye()

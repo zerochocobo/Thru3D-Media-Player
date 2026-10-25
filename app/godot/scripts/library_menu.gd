@@ -14,6 +14,7 @@ signal audio_import_cancelled
 signal image_picker_cancelled
 signal image_selected(uri: String, title: String)
 var image_picker_mode := false
+var selected_pdf := {}
 var voice_picker_mode := false
 var _image_picker_dlna_retry := {}
 signal subtitle_picker_cancelled
@@ -82,6 +83,8 @@ var cloud_error := CloudBrowseError.new(self)
 const AccountPanel := preload("res://scripts/account_panel.gd")
 var account_panel: RefCounted = AccountPanel.new(self)
 const Quality := preload("res://scripts/display_quality.gd")
+const WatchPalette := preload("res://scripts/watch_palette.gd")
+const PlaybackMenuDepth := preload("res://scripts/playback_menu_depth.gd")
 const SeekPolicy := preload("res://scripts/seek_policy.gd")
 const ChoiceFields := preload("res://scripts/choice_fields.gd")
 var choices := ChoiceFields.new(self)
@@ -114,6 +117,9 @@ const STICK_DEADZONE := 0.2
 const STICK_SPEED := 1.5           # visible pages per second at full deflection
 const LIST_TOP := 0.33
 const ROW_PITCH := 0.112
+const SCROLL_HINT_PERIOD := 3.2
+const SCROLL_HINT_AMPLITUDE := 0.0025
+const SCROLL_HINT_GAP := 0.005
 const FIELDS := ["name", "host", "user", "password"]
 const FIELD_NAMES := ["Name", "Address", "User", "Password"]
 const KEYS := [["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"], ["q", "w", "e", "r", "t", "y", "u", "i", "o", "p"],
@@ -187,6 +193,9 @@ var _fling := 0.0                  # lines per second left by a released drag
 var _stick_ms := -1000             # last thumbstick scroll; the list settles once the stick is released
 var _list: Node3D                  # drawn rows; moved for fractional scrolling
 var _bar_thumb: MeshInstance3D
+var _settings_scroll_hint: MeshInstance3D
+var _settings_scroll_hint_y := 0.0
+var _settings_scroll_hint_time := 0.0
 var focus_index := 0 # Desktop keyboard preview only.
 var rows: Array[Dictionary] = []
 var _media_filter_location := ""
@@ -323,7 +332,7 @@ func set_compact(value: bool, restore_playback: bool = false) -> void:
 
 func show_playback_files(restore_playback: bool = false, cursor: Dictionary = {}) -> void:
 	_return_uri = str(current_file_provider.call()) if current_file_provider.is_valid() else _return_uri
-	if _return_uri.begins_with("comic://"): archives.resume(_return_uri)
+	if preload("res://scripts/pdf_pages.gd").container_page(_return_uri): archives.resume(_return_uri)
 	set_compact(true, restore_playback)
 	if archives.browsing:
 		_reveal_current_file(false)
@@ -585,6 +594,7 @@ func _start_file_picker() -> void:
 	_load_section(); refresh()
 
 func _restore_audio_import_context() -> void:
+	if image_picker_mode and archives.pdf: archives.close()
 	_stop_audio_preview()
 	audio_import_mode = false
 	subtitle_picker_mode = false
@@ -863,6 +873,7 @@ func stick_scroll_horizontal(x: float, delta: float) -> void:
 		server_browser.gallery.stick_scroll(x, delta)
 
 func _process(delta: float) -> void:
+	_animate_settings_scroll_hint(delta)
 	archives.tick()
 	cloud_pagination.tick()
 	browse_memory.tick()
@@ -939,17 +950,32 @@ func _place_list() -> void:
 	var fraction := scroll - _first_line()
 	_list.position.y = fraction * _pitch()
 	composition_changed.emit()
+	var last_row_bottom := INF
 	for button in _buttons:
 		var row_target := int(button.get("list_row", button.target))
 		if _row_target(row_target):
 			var line := float((row_target - ROW_BASE) / _cols()) - fraction
 			button.node.visible = line > -0.35 and line < _lines() - 0.65
+			if is_instance_valid(_settings_scroll_hint) and button.node.visible:
+				last_row_bottom = minf(last_row_bottom, to_local(button.node.global_position).y - button.rect.size.y / 2)
 	collections.update_hover()
 	if is_instance_valid(_bar_thumb):
 		var span := _bar_span()
 		var thumb: float = _bar_thumb.mesh.size.y
 		var travel := (span.y - thumb) * (scroll / _max_scroll() if _max_scroll() > 0 else 0.0)
 		_bar_thumb.position.y = span.x - travel - thumb * 0.5
+	if is_instance_valid(_settings_scroll_hint):
+		_settings_scroll_hint.visible = scroll < _max_scroll() - 0.001
+		if is_finite(last_row_bottom):
+			_settings_scroll_hint_y = last_row_bottom - _settings_scroll_hint.mesh.size.y / 2 - SCROLL_HINT_GAP - SCROLL_HINT_AMPLITUDE
+		_animate_settings_scroll_hint(0.0)
+
+func _animate_settings_scroll_hint(delta: float) -> void:
+	if not is_instance_valid(_settings_scroll_hint) or not _settings_scroll_hint.is_visible_in_tree():
+		_settings_scroll_hint_time = 0.0
+		return
+	_settings_scroll_hint_time = fmod(_settings_scroll_hint_time + delta, SCROLL_HINT_PERIOD)
+	_settings_scroll_hint.position.y = _settings_scroll_hint_y + sin(_settings_scroll_hint_time / SCROLL_HINT_PERIOD * TAU) * SCROLL_HINT_AMPLITUDE
 
 func _grid() -> bool:
 	if archives.browsing: return view_mode == "grid"
@@ -1830,19 +1856,30 @@ func _rebuild_rows() -> void:
 				var sharpness_choices: Array = []
 				for i in Quality.SHARPNESS.size():
 					sharpness_choices.append({"value": Quality.SHARPNESS[i], "label": Quality.SHARPNESS_NAMES[i], "hint": Quality.SHARPNESS_HINTS[i]})
-				var sharpness_row := _choice_row("Sharpness", "sharpness", float(settings.get("sharpness", Quality.DEFAULT_SHARPNESS)), sharpness_choices, true)
+				var sharpness_row := _choice_row("Sharpness", "sharpness", float(settings.get("sharpness", Quality.DEFAULT_VIDEO_SHARPNESS)), sharpness_choices, true)
 				sharpness_row.info = Quality.SHARPNESS_INFO; rows.append(sharpness_row)
 				rows.append(_choice_row("Show FPS", "show_fps", bool(settings.get("show_fps", false)),
 					[{"value": false, "label": "Off"}, {"value": true, "label": "On"}]))
+				var watch_row := WatchPalette.row(settings.get("watch_color", WatchPalette.DEFAULT))
+				watch_row.title = I18n.t(watch_row.title); rows.append(watch_row)
+				rows.append(_choice_row(PlaybackMenuDepth.TITLE, PlaybackMenuDepth.KEY,
+					str(settings.get(PlaybackMenuDepth.KEY, PlaybackMenuDepth.DEFAULT)), PlaybackMenuDepth.choices(), true))
+				var seek_row := _choice_row("Thumbstick progress bar", "stick_seek_overlay", bool(settings.get("stick_seek_overlay", true)),
+					[{"value": false, "label": "Off"}, {"value": true, "label": "On"}])
+				seek_row.info = "Show a progress bar when seeking with the thumbstick. Turn off for greater immersion."
+				for option in seek_row.choices: option.hint = seek_row.info
+				rows.append(seek_row)
 			elif tab == BACKGROUND_TAB:
-				var selected := CinemaFeature.normalize_background(str(settings.get("background", "belfast")))
+				var selected := CinemaFeature.normalize_background(str(settings.get("background", "cinema")))
 				var backgrounds: Array = []
-				for option in [["belfast", "Belfast sunset", "image"], ["morning", "Morning sky", "image"], ["cinema", "Grand cinema (Test)", "video"], ["dark", "Dark background", "circle"], ["passthrough", "Passthrough", "eyes"]]:
+				for option in [["belfast", "Belfast sunset", "image"], ["morning", "Morning sky", "image"], ["cinema", "Grand cinema", "video"], ["dark", "Dark background", "circle"], ["passthrough", "Passthrough", "eyes"]]:
 					if option[0] == "cinema" and not CinemaFeature.enabled(): continue
 					backgrounds.append({"value": option[0], "label": option[1]})
 				if settings.get("background_custom", false):
 					backgrounds.append({"value": "custom", "label": "Custom panorama"})
-				rows.append(_choice_row("Background", "background", selected, backgrounds))
+				var background_row := _choice_row("Background", "background", selected, backgrounds)
+				background_row.info = "Photo mode saves its background separately. Change it from the photo toolbar."
+				rows.append(background_row)
 				if selected in ["belfast", "morning", "custom"]:
 					var directions: Array = []
 					for angle in range(0, 360, 45): directions.append({"value": angle, "label": str(angle) + "°"})
@@ -1866,6 +1903,10 @@ func _rebuild_rows() -> void:
 						"icon": "refresh", "setting": ["cinema_home", true], "enabled": ready})
 					rows.append(_choice_row("Cinema lighting", "cinema_lights", str(settings.get("cinema_lights", "auto")),
 						[{"value": "auto", "label": "Auto lights"}, {"value": "on", "label": "Lights on"}, {"value": "off", "label": "Lights off"}], true))
+					rows.append(_choice_row("Viewing brightness", "cinema_viewing_brightness", str(settings.get("cinema_viewing_brightness", "low")),
+						[{"value": "soft", "label": "Soft light"}, {"value": "dim", "label": "Dim"}, {"value": "low", "label": "Low light"}], true))
+					rows.append(_choice_row("Screen ambient light", "cinema_screen_light", bool(settings.get("cinema_screen_light", true)),
+						[{"value": true, "label": "On"}, {"value": false, "label": "Off"}], true))
 					status = "Loading cinema…" if settings.get("cinema_loading", false) else str(settings.get("cinema_error", ""))
 					if not ready and status.is_empty(): status = "Cinema unavailable"
 				else:
@@ -1912,7 +1953,7 @@ func _rebuild_rows() -> void:
 	else:
 		rows.assign(rows.filter(func(row): return row.get("kind", "") != "audio"))
 	if not audio_import_mode and not subtitle_picker_mode and media_filter > 0 and section not in [Section.SETTINGS, Section.MEDIA_SERVER]:
-		rows.assign(rows.filter(func(row): return not row.has("uri") or row.get("kind", "") == "folder" or row.get("kind", "video") in (["image", "archive"] if media_filter == 2 and not image_picker_mode else ["image"] if media_filter == 2 else ["video"])))
+		rows.assign(rows.filter(func(row): return not row.has("uri") or row.get("kind", "") == "folder" or row.get("kind", "video") in (["image", "archive", "pdf"] if media_filter == 2 and not image_picker_mode else ["image", "pdf"] if media_filter == 2 else ["video"])))
 	file_actions.sort_rows()
 	file_actions.reconcile()
 	if section == Section.RECENT:
@@ -2055,7 +2096,7 @@ func _entry_row(entry: Dictionary) -> Dictionary:
 	var photo: bool = not subtitle and (entry.get("kind", "") == "image" or ImageInfo.is_image(str(entry.get("uri", "")), str(entry.title)))
 	var row := {"title": str(entry.title), "detail": _size(entry), "kind": "image" if photo else "video", "icon": "image" if photo else "video", "uri": str(entry.get("uri", ""))}
 	if archives.named(str(entry.get("uri", "")), str(entry.title)):
-		row.kind = "archive"; row.icon = "folder"
+		row.kind = "pdf" if preload("res://scripts/pdf_pages.gd").named(str(entry.get("uri", "")), str(entry.title)) else "archive"; row.icon = "folder"
 	if entry.get("kind", "") == "audio" or AudioCatalog.supported(str(entry.title)):
 		row.kind = "audio"; row.icon = "music"
 	if subtitle:
@@ -2090,7 +2131,7 @@ func video_queue() -> Array[Dictionary]:
 	for row in source:
 		var uri := str(row.get("uri", ""))
 		var title := str(row.get("title", ""))
-		if uri.is_empty() or row.get("kind", "") in ["image", "archive", "audio", "subtitle"] or ImageInfo.is_image(uri, title): continue
+		if uri.is_empty() or row.get("kind", "") in ["image", "archive", "pdf", "audio", "subtitle"] or ImageInfo.is_image(uri, title): continue
 		if row.get("container", false) or row.has("folder") or row.get("kind", "") == "folder": continue
 		var metadata: Dictionary = row.duplicate(true)
 		metadata.location = preload("res://scripts/media_location.gd").capture(self, row)
@@ -2280,7 +2321,7 @@ func _choose(row: Dictionary) -> void:
 	if not bool(row.get("enabled", true)): return
 	if archives.browsing: archives.choose(row); return
 	if row.get("archive_password_book", false): archives.manage(); return
-	if not image_picker_mode and not voice_picker_mode and not audio_import_mode and not subtitle_picker_mode and not row.get("folder", false) and row.get("kind", "") != "folder" and row.has("uri") and archives.named(str(row.uri), str(row.get("title", ""))):
+	if (not image_picker_mode or preload("res://scripts/pdf_pages.gd").named(str(row.get("uri", "")), str(row.get("title", "")))) and not voice_picker_mode and not audio_import_mode and not subtitle_picker_mode and not row.get("folder", false) and row.get("kind", "") != "folder" and row.has("uri") and (row.get("kind", "") in ["archive", "pdf"] or archives.named(str(row.uri), str(row.get("title", "")))):
 		_save_folder_position(row); archives.open(row); return
 	_browse_return_restore = false
 	_browse_activity()
@@ -2732,7 +2773,7 @@ func _draw_compact() -> void:
 	_button(EXPAND_LIBRARY, "", Vector2(0.28, -0.365), Vector2(0.09, 0.065), true, "expand")
 	_tips[EXPAND_LIBRARY] = I18n.t("Expand library")
 	_decoration(Vector2(1.04, 0.002), Vector2(0, 0.305), Color(0.17, 0.2, 0.24))
-	if not archives.browsing and section != Section.RECENT: collections.draw_folder_header(true)
+	if not image_picker_mode and (archives.browsing or section != Section.RECENT): collections.draw_folder_header(true)
 	file_actions.draw_entry(Vector2(0.0, -0.365))
 	_draw_rows()
 	file_actions.draw_footer()
@@ -2809,6 +2850,7 @@ func _draw() -> void:
 	audio_preview_seek.clear_layout()
 	_audio_preview_state = background_audio_provider.call() if audio_import_mode and background_audio_provider.is_valid() else {}
 	_clear_layout()
+	_settings_scroll_hint = null
 	if not cast_state.get("pending", {}).is_empty() or cast_state.get("return_available", false):
 		_side.visible = false; _backdrop.visible = true
 		_set_backdrop(Vector2(1.16, 0.34), Vector2.ZERO)
@@ -2845,12 +2887,16 @@ func _draw() -> void:
 		var column := _quad(Vector2(0.42, 1.12), Vector3.ZERO, PANEL, 10)
 		_side.add_child(column)
 		_decorations.append(column)
+		var logo := preload("res://scripts/main_logo.gd").new(0.16)
+		logo.position = Vector3(0, 0.49, 0.006)
+		logo.align_navigation(-0.13, -0.08)
+		column.add_child(logo)
 		# A tap on the column between its buttons is inside the menu, not a tap away.
 		_block_rays(column, Vector2(0.42, 1.12))
 		var navigation: Array = [Section.LOCAL, Section.SMB, Section.DLNA, Section.CLOUD] if image_picker_mode or voice_picker_mode else [Section.LOCAL, Section.SMB, Section.CLOUD] if audio_import_mode or subtitle_picker_mode else NAV_ORDER
 		for position in navigation.size():
 			var i: int = navigation[position]
-			_nav_button(NAV_BASE + i, I18n.t(NAV[i]), NAV_ICONS[i], Vector2(0, 0.39 - position * 0.13), i == section)
+			_nav_button(NAV_BASE + i, I18n.t(NAV[i]), NAV_ICONS[i], Vector2(0, 0.36 - position * 0.13), i == section)
 	if not controls_page.active():
 		var footer_y := -0.80 if (section == Section.MEDIA_SERVER and not archives.browsing) and server_browser.focused() else -0.65
 		if not audio_import_mode and not subtitle_picker_mode and not image_picker_mode and not voice_picker_mode:
@@ -2920,12 +2966,15 @@ func _draw() -> void:
 		_button(USB_STORAGE,"",_action_position(0.58),Vector2(0.09,0.065),true,"usb")
 		_tips[USB_STORAGE] = I18n.t("USB storage")
 	if not archives.browsing and section != Section.SETTINGS and not subtitle_picker_mode and not image_picker_mode and not voice_picker_mode: collections.draw_header()
+	elif archives.browsing and not image_picker_mode: collections.draw_folder_header(false)
 	if not archives.browsing and section == Section.RECENT and collections.home_tab == 0 and not rows.is_empty():
 		_button(CLEAR_HISTORY, "", _action_position(0.80), Vector2(0.09, 0.065), true, "trash")
 		_tips[CLEAR_HISTORY] = I18n.t("Clear history")
 	if not archives.browsing and section == Section.DLNA:
 		if not subtitle_picker_mode and not image_picker_mode and not audio_import_mode and not voice_picker_mode and PlatformMethods.supports(platform, "dlna_receiver_enable"):
-			_button(CastPanel.TOGGLE, I18n.t("Stop receiving" if cast_state.get("enabled", false) else "Receive video"), Vector2(0.43, 0.46), Vector2(0.32, 0.07))
+			var receiving: bool = cast_state.get("enabled", false)
+			_button(CastPanel.TOGGLE, I18n.t("Receiving casts" if receiving else "Receive video"), _action_position(0.43), Vector2(0.32, 0.07), true, "", receiving)
+			_tips[CastPanel.TOGGLE] = I18n.t("Cast reception is on.\nChoose %s from your phone's cast list. Click to turn off." if receiving else "Enable cast reception, then choose %s from your phone's cast list.") % str(cast_state.get("name", "Thru3D"))
 			CastPanel.draw(self, cast_state, -0.79)
 		if _dlna_server.is_empty():
 			_button(ADD, "", Vector2(0.69, 0.46), Vector2(0.09, 0.07), PlatformMethods.supports(platform, "media_dlna_save"), "plus")
@@ -2947,7 +2996,7 @@ func _draw() -> void:
 		_draw_about()
 	var background_settings: Dictionary = settings_provider.call() if settings_provider.is_valid() else {}
 	if section == Section.SETTINGS and tab == BACKGROUND_TAB and CinemaFeature.normalize_background(str(background_settings.get("background", "belfast"))) != "cinema":
-		var hint := _label(I18n.t("When viewing a 360° panorama, use image settings to set it as this player's background."), Vector3(-0.38, -0.10, 0.004), 16)
+		var hint := _label(I18n.t("Photo mode saves its background separately. Change it from the photo toolbar."), Vector3(-0.38, -0.10, 0.004), 16)
 		hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
 		hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		hint.width = 1.16 / hint.pixel_size
@@ -3004,13 +3053,16 @@ func _draw() -> void:
 func _align_folder_tools() -> void:
 	if not browser_content() or (section == Section.RECENT and not archives.browsing): return
 	var tools: Array[Dictionary] = []
-	for target in [FileActions.SORT, FileActions.EDIT_MODE, EJECT_STORAGE, USB_STORAGE, ALL_FILES, CloudSearch.OPEN, EDIT, REFRESH, VIEW_LIST, VIEW_GRID]:
+	for target in [CastPanel.TOGGLE, FileActions.SORT, FileActions.EDIT_MODE, EJECT_STORAGE, USB_STORAGE, ALL_FILES, CloudSearch.OPEN, EDIT, REFRESH, VIEW_LIST, VIEW_GRID]:
 		for button in _buttons:
 			if button.target == target and is_equal_approx(button.rect.get_center().y, 0.445): tools.append(button)
-	for i in tools.size():
-		var x := 0.80 - (tools.size() - 1 - i) * 0.11
+	var right := 0.845
+	for i in range(tools.size() - 1, -1, -1):
+		var width: float = tools[i].rect.size.x
+		var x := right - width * 0.5
 		tools[i].node.position.x = x
-		tools[i].rect.position.x = x - tools[i].rect.size.x * 0.5
+		tools[i].rect.position.x = x - width * 0.5
+		right -= width + 0.02
 
 ## Path pills (last four segments); every segment but the current one jumps there.
 func _draw_crumbs(crumbs: Array, base: int = CRUMB_BASE) -> void:
@@ -3136,6 +3188,16 @@ func _draw_rows() -> void:
 		var thumb := height * float(_lines()) / _line_count()
 		_bar_thumb = _decoration(Vector2(0.012, thumb), Vector2(bar_x, top - thumb * 0.5), MUTED)
 		_bar_thumb.material_override.render_priority = 13
+		if section == Section.SETTINGS:
+			# Follow the last visible row, reserving clearance for the entire bob cycle.
+			# Decorative only: no registered button or ray blocker can steal its input.
+			_settings_scroll_hint = _icon("scroll_more", Vector3(0.17, -0.451, 0.006), 0.038, ACCENT)
+			# Same path as gesture_demo: animation must not repaint the menu's XR layers.
+			_settings_scroll_hint.set_meta("menu_eye_buffer", true)
+			_settings_scroll_hint.mesh.size = Vector2(0.088, 0.038)
+			for side in [-1, 1]:
+				var rail := _quad(Vector2(0.065, 0.0015), Vector3(side * 0.085, 0, 0), Color(ACCENT, 0.25), 12)
+				_settings_scroll_hint.add_child(rail)
 	elif rows.is_empty() and status.is_empty():
 		var empty := _label("—", Vector3(0.19, 0.0, 0.004), 30)
 		empty.modulate = MUTED
@@ -3185,12 +3247,13 @@ func _setting_field(row: Dictionary, centre: Vector2, target: int) -> void:
 	var node: MeshInstance3D = button.node
 	if node.get_child_count() > 1: node.get_child(1).visible = false
 	var title: Label3D = node.get_child(0)
-	title.position = Vector3(-0.55, 0.014 if not str(row.get("hint", "")).is_empty() else 0, 0.004)
+	var inline_hint: bool = not str(row.get("hint", "")).is_empty() and not row.get("switch", false)
+	title.position = Vector3(-0.55, 0.014 if inline_hint else 0, 0.004)
 	set_label_size(title, 18); title.text = _fit_title(str(row.title), "", 0.43, 18)
 	if row.get("key", "") == "file_editing" and not file_actions.settings_return.is_empty():
 		title.modulate = ACCENT
 		node.add_child(_quad(Vector2(0.004, 0.065), Vector3(-0.60, 0, 0.004), ACCENT, 14))
-	if not str(row.get("hint", "")).is_empty():
+	if inline_hint:
 		var hint := _label(_fit_title(I18n.t(row.hint), "", 0.43, TEXT_AUX), Vector3(-0.55, -0.022, 0.004), TEXT_AUX, node)
 		hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT; hint.modulate = MUTED
 	if not str(row.get("info", "")).is_empty():
@@ -3198,7 +3261,7 @@ func _setting_field(row: Dictionary, centre: Vector2, target: int) -> void:
 		button.hover_disabled = true; _tips[target] = I18n.t(row.info)
 		_icon("info", Vector3(-0.55 + minf(text_width(title.text, 18), 0.43) + 0.022, title.position.y, 0.004), 0.026, MUTED, node)
 	var first_field := _buttons.size()
-	choices.field(node, row, Vector2(0.225, 0), 0.72)
+	choices.field(node, row, Vector2(0.54, 0) if row.get("switch", false) else Vector2(0.225, 0), 0.09 if row.get("switch", false) else 0.72)
 	for index in range(first_field, _buttons.size()):
 		_buttons[index]["list_row"] = target
 		if not bool(row.get("enabled", true)):
@@ -3243,13 +3306,15 @@ func _subtitle_rows(settings: Dictionary) -> Array[Dictionary]:
 	size_row.title = I18n.t("Subtitle size"); result.append(size_row)
 	var style_row := SubtitleStyle.style_row(settings.get("subtitle_style", SubtitleStyle.DEFAULT))
 	style_row.title = I18n.t("Subtitle color style"); result.append(style_row)
-	for key in ["subtitle_distance", "subtitle_direction", "subtitle_position"]:
+	var line_row := SubtitleStyle.line_row(settings.get("subtitle_line", 0))
+	line_row.title = I18n.t("Subtitle display"); result.append(line_row)
+	for key in ["subtitle_distance", "subtitle_direction", "subtitle_horizontal_position", "subtitle_vertical_position"]:
 		if key == "subtitle_direction":
 			var row := SubtitleDepth.direction_row(int(settings.get(key, 0)))
 			row.title = I18n.t("Subtitle direction"); result.append(row)
 		else:
 			var row := SubtitleDepth.slider_row(key, float(settings.get(key, SubtitleDepth.DEFAULT if key == "subtitle_distance" else SubtitleDepth.DEFAULT_POSITION)))
-			row.title = I18n.t("Subtitle distance" if key == "subtitle_distance" else ("Horizontal position" if int(settings.get("subtitle_direction", 0)) == 1 else "Subtitle position"))
+			row.title = I18n.t("Subtitle distance" if key == "subtitle_distance" else ("Horizontal position" if key == "subtitle_horizontal_position" else "Vertical position"))
 			result.append(row)
 	return result
 

@@ -49,6 +49,8 @@ internal class PipScreenshot(pip: JSONObject, retain: (Int) -> File?, private va
         } catch (error: Throwable) { close(); throw error }
     }
     fun hasWindows() = parameters.isNotEmpty()
+    fun packed() = parameters.toFloatArray()
+    fun previews() = leases.toList()
     fun compose(source: Bitmap, target: File, mode: JSONObject, cancelled: BooleanSupplier) {
         check(PipScreenshotNative.available()) { "Picture in picture capture unavailable" }
         val images = mutableListOf<Bitmap>()

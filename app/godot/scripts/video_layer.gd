@@ -104,6 +104,42 @@ func _init(target_platform: Object) -> void:
 		_types[probe[0]] = probe[1].is_natively_supported()
 		probe[1].free()
 
+## Compositor cadence for the decoder surface: MPV releases each MediaCodec frame half a refresh
+## before the compositor latch it aims for, instead of drifting across latches (59.94 fps on 120 Hz
+## otherwise judders for about a second every ~11 s). Refreshed four times a second; the native side
+## treats data older than two seconds as absent and then releases as before.
+const CADENCE_INTERVAL_MS := 250
+## How long before a predicted display time the compositor takes the surface's newest buffer.
+## Quest 3 atrace: latches 14.9/17.1/16.2 ms before display at 120/90/72 Hz; one 16 ms lead keeps
+## releases within ~1 ms of mid-interval at each rate (docs/PLAYBACK_CADENCE_NOISE_20261024_CN.md).
+const META_LATCH_LEAD_NS := 16_000_000
+var latch_lead_ns := META_LATCH_LEAD_NS
+## Measured on the Meta compositor only; other runtimes release as before until calibrated.
+var cadence_supported := false
+var cadence_enabled := true
+var _cadence_ms := -CADENCE_INTERVAL_MS
+
+static func cadence_runtime(runtime_name: String, pico_build: bool) -> bool:
+	var runtime := runtime_name.strip_edges().to_lower()
+	return not pico_build and (runtime.begins_with("oculus") or runtime.begins_with("meta"))
+
+## Debug A/B: off sends no-cadence data, so MPV releases at its own targets again.
+func set_cadence_enabled(enabled: bool) -> void:
+	cadence_enabled = enabled; _cadence_ms = -CADENCE_INTERVAL_MS
+	if not enabled and PlatformMethods.supports(platform, "set_mpv_vsync"): platform.set_mpv_vsync(0, 0, 0)
+
+func sync_cadence(active: bool) -> void:
+	if not active or not cadence_enabled or not cadence_supported or not _api or not bound: return
+	var now := Time.get_ticks_msec()
+	if now - _cadence_ms < CADENCE_INTERVAL_MS: return
+	_cadence_ms = now
+	var xr := XRServer.find_interface("OpenXR") as OpenXRInterface
+	var rate := xr.display_refresh_rate if xr and xr.is_initialized() else 0.0
+	var display := _api.get_predicted_display_time()
+	if rate < 30.0 or display <= 0: return
+	if not PlatformMethods.supports(platform, "set_mpv_vsync") or not platform.set_mpv_vsync(display, roundi(1e9 / rate), latch_lead_ns):
+		cadence_supported = false
+
 ## Normal playback can use layers on this runtime (session bound, swapchain functions present).
 func available() -> bool:
 	return bound and _flip
@@ -184,6 +220,7 @@ func update_session() -> void:
 	var pico_build := OS.has_feature("pico")
 	var driver := RenderingServer.get_current_rendering_driver_name()
 	_surface_flip = _surface_vertical_flip(runtime_name, driver, pico_build, system_name)
+	cadence_supported = cadence_runtime(runtime_name, pico_build)
 	_sent_count = -1
 	DiagnosticLog.record("video_layer_bound", {"bound": bound, "types": _types, "vertical_flip": _flip,
 		"surface_vertical_flip": _surface_flip, "runtime": runtime_name, "system": system_name,

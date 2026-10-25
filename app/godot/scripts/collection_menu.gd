@@ -104,7 +104,7 @@ func draw_list_row(slot: int, row: Dictionary, centre: Vector2, parent: Node3D) 
 	var compact: bool = menu.compact
 	var width := 0.71 if compact else 0.90
 	var body := Vector2(-0.05 if compact else 0.10, centre.y)
-	if row.get("kind") == "folder":
+	if row.get("kind") in ["folder", "archive", "pdf"]:
 		var extra := 0.10 if compact else 0.12
 		width += extra; body.x += extra * 0.5
 	menu._button(menu.ROW_BASE + slot, "", body, Vector2(width, 0.098), true, "", false, parent)
@@ -190,7 +190,8 @@ func home_rows() -> Array[Dictionary]:
 		var row: Dictionary = entry.duplicate(true)
 		row.kind = str(entry.get("kind", "image" if menu.ImageInfo.is_image(str(entry.get("uri", "")), str(entry.get("title", ""))) else "video"))
 		if row.kind == "folder": row.title = Location.folder_title(location_for(row), str(entry.get("title", "")))
-		row.icon = "folder" if row.kind == "folder" else ("image" if row.kind == "image" else "video")
+		elif row.kind in ["archive", "pdf"] and location_for(row).get("type") == "archive": row.title = Location.folder_title(location_for(row), str(entry.get("title", "")))
+		row.icon = "folder" if row.kind in ["folder", "archive", "pdf"] else ("image" if row.kind == "image" else "video")
 		row.detail = ""; row.position_ms = int(entry.get("position_ms", 0)); row.duration_ms = int(entry.get("duration_ms", -1))
 		if home_tab == 1 and store.protected:
 			var recent: Dictionary = entry.get("private", {}).get("recent", {})
@@ -222,7 +223,7 @@ func draw_header() -> void:
 		draw_folder_header(false)
 
 func draw_folder_header(compact: bool) -> void:
-	var location := Location.capture(menu, {})
+	var location: Dictionary = menu.archives.favorite_location() if menu.archives.browsing else Location.capture(menu, {})
 	var toolbar_left := Vector2(-0.40, 0.445)
 	if not location.is_empty() and not menu._crumbs().is_empty():
 		var selected: bool = store != null and store.contains(Location.folder_uri(location))
@@ -237,7 +238,7 @@ func draw_folder_header(compact: bool) -> void:
 func decorate_row(slot: int, row: Dictionary, centre: Vector2, grid: bool, parent: Node3D) -> void:
 	if not managed(row): return
 	var location := location_for(row)
-	var folder: bool = row.get("kind") == "folder"
+	var folder: bool = row.get("kind") in ["folder", "archive", "pdf"]
 	if grid:
 		var spacing := 0.05 if folder else 0.085
 		_row_button(PLAY_ROW, slot, centre + Vector2(-spacing, 0.04), "folder" if folder else "play", "Open" if folder else "Play", not location.is_empty() if folder else true, parent, true)
@@ -327,6 +328,7 @@ func action(id: int) -> bool:
 	if id == LOCK: store.lock(); return true
 	if id == RETURN_HOME:
 		if home_return.is_empty(): return true
+		if menu.archives.browsing: menu.archives.close()
 		reveal_uri = ""; reveal_pending = false
 		menu.section = menu.Section.RECENT; home_tab = int(home_return.tab); menu._recent_page = int(home_return.page); menu.scroll = float(home_return.scroll)
 		home_return.clear(); menu.refresh(); return true
@@ -340,7 +342,7 @@ func action(id: int) -> bool:
 			else: catalog.restore()
 		menu.refresh(); return true
 	if id == FAVORITE_FOLDER:
-		var location := Location.capture(menu, {})
+		var location: Dictionary = menu.archives.favorite_location() if menu.archives.browsing else Location.capture(menu, {})
 		if location.is_empty(): menu.status = "Location unavailable"; menu.refresh(); return true
 		var uri := Location.folder_uri(location)
 		var title := Location.folder_title(location, menu._header_title())
@@ -474,6 +476,9 @@ func open_location(row: Dictionary) -> void:
 	menu._save_folder_position(); menu._browse_activity(); menu._browse_return_restore = false
 	var location: Dictionary = location_for(row)
 	if location.is_empty(): menu.status = "Location unavailable"; menu.refresh(); return
+	if location.get("type") == "archive":
+		if menu.section == menu.Section.RECENT: home_return = {"tab":home_tab, "page":menu._recent_page, "scroll":menu.scroll}
+		menu.archives.open({"uri":location.source_uri, "title":location.source_title, "location":location}); return
 	reveal_uri = str(row.get("uri", "")); reveal_pending = true
 	if menu.section == menu.Section.RECENT: home_return = {"tab": home_tab, "page": menu._recent_page, "scroll": menu.scroll}
 	menu.file_actions.reset(); menu.cloud_search.close(); menu._cancel_cloud(); menu.scroll = 0; menu.media_filter = 0

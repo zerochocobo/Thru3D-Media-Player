@@ -233,7 +233,7 @@ func _run() -> void:
 	menu._activate(Menu.SUBTITLE_APPEARANCE)
 	# Capture the complete expanded list, including its header and close control.
 	camera.fov = 75
-	if menu.choices.sliders.size() != 4:
+	if menu.choices.sliders.size() != 5:
 		failures.append("Expanded VR subtitle appearance must show position, distance and size")
 	await RenderingServer.frame_post_draw
 	await RenderingServer.frame_post_draw

@@ -1,4 +1,5 @@
 #include "pip_screenshot_core.h"
+#include "pip_screenshot_jpeg.h"
 #include <android/bitmap.h>
 #include <jni.h>
 #include <memory>
@@ -43,8 +44,11 @@ Java_org_vrpassthroughplayer_plugin_PipScreenshotNative_compose(JNIEnv* env,jcla
         }
         const jclass type=env->GetObjectClass(cancelled);const auto get=env->GetMethodID(type,"getAsBoolean","()Z");env->DeleteLocalRef(type);
         if(!get||env->ExceptionCheck())return false;
-        quest::pipshot::compose(main.image,images,{mode[0],bool(mode[1]),bool(mode[2]),bool(mode[3]),bool(mode[4]),double(mode[5])},
-            windows,path.c_str(),[&](){return env->CallBooleanMethod(cancelled,get)||env->ExceptionCheck();});
+        quest::pipshot::Jpeg jpeg(path.c_str(),main.image.width,main.image.height);
+        quest::pipshot::compose_rows(main.image,images,{mode[0],bool(mode[1]),bool(mode[2]),bool(mode[3]),bool(mode[4]),double(mode[5])},
+            windows,[&](const uint8_t* row){jpeg.row(row);},
+            [&](){return env->CallBooleanMethod(cancelled,get)||env->ExceptionCheck();});
+        jpeg.finish();
         return true;
     } catch(...) {return false;}
 }

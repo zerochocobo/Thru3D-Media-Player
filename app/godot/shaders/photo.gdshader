@@ -35,6 +35,9 @@ uniform vec2 target_width = vec2(0.008);
 // Surface UV rectangle shown by the compositor picture layer (zero size: none).
 // The feathered edge around it remains in the eye buffers.
 uniform vec4 layer_cut = vec4(0.0);
+// Translation is part of the photo's eye-buffer draw, including its feathered rim.
+uniform bool comic_overlay_enabled = false;
+uniform sampler2D comic_overlay_texture : source_color, filter_linear, repeat_disable;
 
 vec4 photo_color(vec2 p) {
 	if (photo_stereo) {
@@ -48,7 +51,9 @@ vec4 photo_color(vec2 p) {
 void vertex() { eye_index = test_eye >= 0 ? test_eye : int(VIEW_INDEX); media_direction = VERTEX; }
 void fragment() {
 	if (spatial_hidden) { discard; }
-	if (layer_cut.z > 0.0 && all(greaterThanEqual(UV, layer_cut.xy)) && all(lessThanEqual(UV, layer_cut.xy + layer_cut.zw))) { discard; }
+	vec4 comic = comic_overlay_enabled ? texture(comic_overlay_texture, UV) : vec4(0.0);
+	bool translated = comic.a > 0.5;
+	if (!translated && layer_cut.z > 0.0 && all(greaterThanEqual(UV, layer_cut.xy)) && all(lessThanEqual(UV, layer_cut.xy + layer_cut.zw))) { discard; }
 	vec3 direction = media_direction;
 	if (detail_projection) {
 		// Match the 0.8 x 0.5 m window at 1.4 m: 1x shows its natural angular coverage.
@@ -96,4 +101,11 @@ void fragment() {
 		ALPHA *= outside ? 0.0 : smoothstep(0.02, 0.98, texture(portrait_texture, mask_uv).r);
 	}
 	ALPHA *= presentation_opacity * photo_reveal_clear(UV, reveal_progress);
+	// OCR masks must cover the source ink even at the image's soft outer edge.
+	// Keep readable text on the screen plane while the photo uses generated stereo.
+	if (translated) {
+		// The viewport stores premultiplied colour; avoid a grey seam on white masks.
+		ALBEDO = clamp(comic.rgb / max(comic.a, 0.001), vec3(0.0), vec3(1.0));
+		ALPHA = 1.0;
+	}
 }

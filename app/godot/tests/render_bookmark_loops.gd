@@ -27,15 +27,17 @@ func run() -> void:
 		I18n.use(language)
 		var menu := Menu.new(); menu.state_provider = func(): return state
 		camera.add_child(menu); menu.toggle(); menu.set_process(false)
-		for mode in ["active", "hover", "wide", "disabled", "seeking", "bookmarks", "create", "edit", "picker", "shared", "dense", "empty", "paged"]:
+		for mode in ["active", "hover", "wide", "disabled", "seeking", "bookmarks", "create", "edit", "picker", "shared", "dense", "empty", "paged", "two-create", "two-a", "two-ready", "two-short", "reported", "exporting"]:
 			menu.update_pointer("right_hand", Vector3.ZERO, Vector3.FORWARD, false)
 			menu.bookmarks.reset()
+			state.duration_ms = 7200000; state.position_ms = 1200000
+			state["capture"] = {"loop_available": true, "clip_busy": mode == "exporting", "loop_exports": {"one": 42} if mode == "exporting" else {}}
 			state.bookmark_loop_active = mode not in ["disabled", "empty"]
 			state.bookmarks = markers
 			state.seek_feedback = {"origin_ms": 1200000, "target_ms": 600000, "delta_ms": -600000, "alpha": 1.0, "phase": "waiting"} if mode == "seeking" else {}
 			state.bookmark_loop = segments[1] if mode == "wide" else segments[0]
 			state.bookmark_loops = [] if mode == "empty" else segments
-			if mode not in ["active", "hover", "wide", "disabled", "dense", "seeking"]: menu.bookmarks.opened = true
+			if mode not in ["active", "hover", "wide", "disabled", "dense", "seeking", "reported"]: menu.bookmarks.opened = true
 			if mode == "create": menu.bookmarks.editing = {"id": "", "a": "", "b": ""}; menu.bookmarks.picker = "a"
 			if mode == "shared":
 				state.bookmark_loops = [segments[0], {"id": "adjacent", "a": "b", "b": "d", "a_ms": 1800000, "b_ms": 5400000}]
@@ -46,6 +48,15 @@ func run() -> void:
 				state.bookmark_loop = state.bookmark_loops[0]
 			if mode == "edit": menu.bookmarks.editing = segments[0].duplicate(true); menu.bookmarks.picker = "b"
 			if mode == "picker": menu.bookmarks.editing = {"id": "", "a": "inside", "b": ""}; menu.bookmarks.picker = "b"
+			if mode.begins_with("two-"):
+				state.bookmarks = [{"id": "a", "position_ms": 10000}, {"id": "b", "position_ms": 11500 if mode == "two-short" else 30000}]
+				state.bookmark_loops = []; state.bookmark_loop_active = false
+				menu.bookmarks.editing = {"id": "", "a": "" if mode == "two-create" else "a", "b": "b" if mode == "two-ready" else ""}
+				menu.bookmarks.picker = "a" if mode == "two-create" else "b"
+			if mode == "reported":
+				state.duration_ms = 1094719; state.position_ms = 268685
+				state.bookmarks = [{"id": "p1", "position_ms": 128712}, {"id": "p2", "position_ms": 202411}, {"id": "p3", "position_ms": 268685}]
+				state.bookmark_loops = []; state.bookmark_loop_active = false
 			if mode == "paged":
 				state.bookmarks = []; state.bookmark_loops = []
 				for index in 14: state.bookmarks.append({"id": str(index), "position_ms": 300000 * (index + 1)})
@@ -53,11 +64,16 @@ func run() -> void:
 				menu.bookmarks.editing = state.bookmark_loops[2].duplicate(true); menu.bookmarks.picker = "b"
 				menu.bookmarks.offset = 9; menu.bookmarks.loop_offset = 2
 			# Frame the actual UI in the rendering camera, without cropping screenshots.
-			var bar_only: bool = mode in ["active", "hover", "wide", "disabled", "dense", "seeking"]
+			var bar_only: bool = mode in ["active", "hover", "wide", "disabled", "dense", "seeking", "reported"]
 			viewport.size = Vector2i(1400, 760 if bar_only else 1250)
 			camera.fov = 28 if bar_only else 56
 			menu.position.y = 0.04 if bar_only else -0.13
 			menu.refresh()
+			if mode == "reported":
+				check(menu.bookmarks.targets.values().filter(func(item): return item.kind == "group").size() == 3, language + "/reported device timestamps must render three separate markers")
+			if mode == "two-short":
+				var invalid: Dictionary = menu._buttons.filter(func(button): return button.target == Menu.BookmarkMenu.ROW + 1)[0]
+				menu.update_pointer("right_hand", invalid.node.global_position + invalid.node.global_basis.z, -invalid.node.global_basis.z, true)
 			if mode == "hover":
 				var band: Dictionary = menu._buttons.filter(func(button): return button.node.get_meta("bookmark_loop_id", "") == "two")[0]
 				var pointer_origin: Vector3 = menu.to_global(Vector3(band.rect.get_center().x, band.rect.get_center().y, 1))
@@ -70,6 +86,10 @@ func run() -> void:
 				if not label.text.is_empty():
 					var width: float = label.font.get_string_size(label.text, HORIZONTAL_ALIGNMENT_LEFT, -1, label.font_size).x * label.pixel_size
 					check(width <= button.rect.size.x - 0.012, language + "/" + mode + " text exceeds button: " + label.text)
+			for label in menu._labels:
+				if label.text not in ["← " + I18n.t("Choose start bookmark"), "← " + I18n.t("Choose end bookmark")]: continue
+				var width: float = label.font.get_string_size(label.text, HORIZONTAL_ALIGNMENT_LEFT, -1, label.font_size).x * label.pixel_size
+				check(label.horizontal_alignment == HORIZONTAL_ALIGNMENT_LEFT and label.position.x >= -0.13 and label.position.x + width <= 0.54 and is_equal_approx(label.position.y, 0.49), language + "/" + mode + " endpoint guidance stays left-aligned above the editor")
 			var seek: Dictionary = menu._buttons.filter(func(button): return button.target == Menu.SEEK)[0]
 			var point := menu.to_global(Vector3(seek.rect.get_center().x, seek.rect.get_center().y, 1))
 			check(menu.ray_hit(point, -menu.global_basis.z).get("target") == Menu.SEEK, language + "/" + mode + " range cannot cover slider")

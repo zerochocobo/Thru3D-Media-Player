@@ -2,6 +2,10 @@ extends RefCounted
 
 # Original vector glyphs, generated once and shared by both ray menus.
 const PATHS := {
+	"translate": '<path d="M2 5H14M8 2V5M5 5Q5 12 13 16M12 5Q11 12 3 17M14 22L18 12 22 22M15.5 18H20.5"/>',
+	"pair_previous": '<path d="M6 10V3H21V20H14M10 3V10M11 16H2M6 12L2 16 6 20"/>',
+	"pair_next": '<path d="M18 10V3H3V20H10M14 3V10M13 16H22M18 12L22 16 18 20"/>',
+	"single_page": '<rect x="5" y="2" width="14" height="20" rx="1.5"/><path d="M9 7H15M9 11H15M9 15H13"/>',
 	"pip": '<rect x="2" y="4" width="20" height="16" rx="2"/><rect x="12" y="11" width="8" height="6" rx="1"/><path d="M5 7H9M5 7V11M5 7L10 12"/>',
 	"camera": '<path d="M3 7H7L9 4H15L17 7H21V20H3Z"/><circle cx="12" cy="13" r="4"/>',
 	"restart": '<path d="M5 12A7 7 0 1 0 7.5 6.6M4 4V9H9"/><path d="M10.5 9.5L15 12 10.5 14.5Z" fill="white" stroke="none"/>',
@@ -9,6 +13,7 @@ const PATHS := {
 	"camera_recording": '<path d="M3 7H7L9 4H15L17 7H21V20H3Z"/><circle cx="12" cy="13" r="4"/><circle cx="20" cy="4" r="2.5" fill="white"/>',
 	"record": '<circle cx="12" cy="12" r="7" fill="white" stroke="none"/>',
 	"download": '<path d="M12 3V15M7 10L12 15 17 10M4 16V21H20V16"/>',
+	"film_cut": '<rect x="2" y="3" width="12" height="18" rx="1"/><path d="M5 3V21M11 3V21M2 8H14M2 16H14M17 14L22 7M18 18L13 11"/><circle cx="16" cy="16" r="2"/><circle cx="20" cy="20" r="2"/>',
 	"globe": '<circle cx="12" cy="12" r="10"/><ellipse cx="12" cy="12" rx="4" ry="10"/><path d="M2 12H22M4 6H20M4 18H20"/>',
 	"seated": '<circle cx="10" cy="4" r="2"/><path d="M10 7V13H17V21M5 8V16H13M5 16V22M13 16V22"/>',
 	"standing": '<circle cx="12" cy="4" r="2"/><path d="M12 7V14M6 10L12 8 18 10M12 14L8 22M12 14L16 22"/>',
@@ -40,6 +45,7 @@ const PATHS := {
 	"dice": '<rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="7" cy="7" r="1"/><circle cx="17" cy="7" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="7" cy="17" r="1"/><circle cx="17" cy="17" r="1"/>',
 	"photo_batch": '<path d="M3 9V21H15M7 4H17A2 2 0 0 1 19 6V11M7 4V17H11M9 11L12 8 15 11M22 17A5 5 0 1 1 20.5 13.5M22 12V16H18"/>',
 	"photo_layout": '<rect x="8" y="5" width="8" height="14"/><path d="M2 8H5V16H2ZM19 8H22V16H19Z"/>',
+	"magazine": '<path d="M12 6C9 4 5 3.5 2 4V19C5 18.5 9 19 12 21C15 19 19 18.5 22 19V4C19 3.5 15 4 12 6ZM12 6V21M5 8L9 9M5 12L9 13M15 9L19 8M15 13L19 12"/>',
 	"photo_sides": '<rect x="8" y="4" width="8" height="16"/><path d="M2 8H5V16H2ZM19 8H22V16H19Z"/>',
 	"photo_wall": '<path d="M2 7L7 5V19L2 17ZM9 4H15V20H9ZM17 5L22 7V17L17 19Z"/>',
 	"memory": '<path d="M3 3L11 5 8 12 2 10ZM15 2L22 5 20 12 13 9ZM9 14L20 15 16 22 6 20Z"/>',
@@ -84,6 +90,7 @@ const PATHS := {
 	"mute": '<path d="M3 9H7L12 5V19L7 15H3ZM16 9L22 15M22 9L16 15"/>',
 	"audio": '<path d="M6 16V4H19V16M6 7H19"/><circle cx="3.5" cy="17" r="3"/><circle cx="16.5" cy="17" r="3"/>',
 	"subtitle_voice": '<rect x="2" y="5" width="13" height="14" rx="2"/><path d="M10 9C5 7 5 17 10 15M17 9A4 4 0 0 1 17 15M20 6A8 8 0 0 1 20 18"/>',
+	"comic_voice": '<path d="M13 4H5A3 3 0 0 0 2 7V14A3 3 0 0 0 5 17V21L10 17H13A3 3 0 0 0 16 14V7A3 3 0 0 0 13 4ZM6 8H12M6 12H10M19 8Q22 11 19 14M21 5Q27 11 21 17"/>',
 	"subtitle": '<rect x="2" y="5" width="20" height="14" rx="3"/><path d="M10 9C5 7 5 17 10 15M18 9C13 7 13 17 18 15"/>',
 	"info": '<circle cx="12" cy="12" r="9"/><path d="M12 11V17M12 7V7.1"/>',
 	"device": '<rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20H16M12 16V20"/>',
@@ -95,6 +102,7 @@ const PATHS := {
 	"up": '<path d="M15 6L9 12 15 18"/>',
 	"next": '<path d="M9 6L15 12 9 18"/>',
 	"chevron_down": '<path d="M6 9L12 15 18 9"/>',
+	"scroll_more": '<path d="M6 5L12 11 18 5M6 13L12 19 18 13"/>',
 	"arrow_up": '<path d="M6 15L12 9 18 15"/>',
 	"arrow_down": '<path d="M6 9L12 15 18 9"/>',
 	"keyboard_hide": '<rect x="3" y="3" width="18" height="11" rx="2"/><path d="M6 7H7M11 7H12M16 7H17M7 11H17M8 18L12 22 16 18"/>',
@@ -132,15 +140,16 @@ const PATHS := {
 	"voice": '<circle cx="8" cy="8" r="3.5"/><path d="M2 21C2 15.5 14 15.5 14 21M17 6.5A4 4 0 0 1 17 12.5M20 4A8 8 0 0 1 20 15"/>'}
 static var _textures: Dictionary = {}
 
-static func texture(key: String) -> Texture2D:
-	if not _textures.has(key):
+static func texture(key: String, pixels: int = 96) -> Texture2D:
+	var cache_key := key if pixels == 96 else "%s@%d" % [key, pixels]
+	if not _textures.has(cache_key):
 		var image := Image.new()
-		var svg := '<svg xmlns="http://www.w3.org/2000/svg" width="96" height="96" viewBox="0 0 24 24"><g fill="none" stroke="white" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">%s</g></svg>' % PATHS.get(key, PATHS.info)
+		var svg := '<svg xmlns="http://www.w3.org/2000/svg" width="%d" height="%d" viewBox="0 0 24 24"><g fill="none" stroke="white" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">%s</g></svg>' % [pixels, pixels, PATHS.get(key, PATHS.info)]
 		if image.load_svg_from_string(svg) != OK:
 			return null
 		# Prefilter white strokes at their small angular size; extend RGB into transparent
 		# texels before mip generation so the edges do not acquire dark fringes.
 		image.fix_alpha_edges()
 		image.generate_mipmaps()
-		_textures[key] = ImageTexture.create_from_image(image)
-	return _textures[key]
+		_textures[cache_key] = ImageTexture.create_from_image(image)
+	return _textures[cache_key]

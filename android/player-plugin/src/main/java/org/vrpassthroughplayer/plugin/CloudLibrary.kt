@@ -238,22 +238,27 @@ internal object CloudLibrary {
                     offset == 0 && page.nextOffset < 0, folderId)
             }
             for (file in page.files) {
-                if (!file.folder && !(if (subtitlesOnly) SidecarSubtitles.supportedFile(file.name) else MediaKinds.supported(file.name))) continue
-                val child = CloudPaths.child(path, file.name)
-                entries.put(JSONObject().put("id", child).put("title", file.name).put("container", file.folder)
-                    .put("size", file.size).put("modified", file.modified).put("can_delete", client.canDelete && file.canDelete)
-                    .put("can_rename", client.canRename && file.canRename)
-                    .put("cloud_id", file.objectId).put("delete_effect", if (client.canDelete) "recycle" else "")
-                    .put("delete_reason", "File deletion unavailable for this source").apply {
-                        if (file.folder && (client.canDelete || client.canRename)) put("delete_uri", CloudPaths.uri(child))
-                        if (!file.folder) put("uri", CloudPaths.uri(child)).put("kind", MediaKinds.kind(file.name))
-                    })
+                directoryEntry(path, file, client, subtitlesOnly)?.let { entries.put(it) }
             }
         }
         JSONObject().put("path", path).put("offset", offset).put("order", actualOrder).put("order_fallback", actualOrder != order).put("next_offset", nextOffset)
             .put("total", total).put("page_size", pageSize).put("raw_count", rawCount).put("raw_ids", JSONArray(rawIds))
             .put("direct_jump", CloudPaging.direct(provider)).put("entries", entries)
             .apply { if (provider.isNotEmpty()) put("search_scopes", searchScopes(provider)).put("sort_orders", sortOrders(provider)) }
+    }
+
+    /** Provider metadata contains literal names, not URLs with query/fragment delimiters. */
+    internal fun directoryEntry(path: String, file: CloudFile, client: CloudClient, subtitlesOnly: Boolean = false): JSONObject? {
+        if (!file.folder && !(if (subtitlesOnly) SidecarSubtitles.supportedFile(file.name) else MediaKinds.supportedFileName(file.name))) return null
+        val child = CloudPaths.child(path, file.name)
+        return JSONObject().put("id", child).put("title", file.name).put("container", file.folder)
+            .put("size", file.size).put("modified", file.modified).put("can_delete", client.canDelete && file.canDelete)
+            .put("can_rename", client.canRename && file.canRename)
+            .put("cloud_id", file.objectId).put("delete_effect", if (client.canDelete) "recycle" else "")
+            .put("delete_reason", "File deletion unavailable for this source").apply {
+                if (file.folder && (client.canDelete || client.canRename)) put("delete_uri", CloudPaths.uri(child))
+                if (!file.folder) put("uri", CloudPaths.uri(child)).put("kind", MediaKinds.fileNameKind(file.name))
+            }
     }
     fun renameFile(request: JSONObject, prepare: Boolean, authorized: () -> Unit): JSONObject {
         val (id, remote) = split(CloudPaths.path(request.getString("uri")))
@@ -296,8 +301,35 @@ internal object CloudLibrary {
             }
         }
     }
+    /** Independent PDF byte source: account validation remains active even for cached blocks. */
+    fun pdfSource(uri: String, cancellation: CloudCancellation, hint: JSONObject = JSONObject()): PdfNetworkSource = safe {
+        val transport = CloudCancellation()
+        cancellation.attachAction { transport.cancel() }
+        val (id, remote) = split(CloudPaths.path(uri))
+        val account = credentials(id)
+        val companions = playbackPages.forVideo(id, identity(account), remote)
+        val client = drive(account, transport, companions.folderId)
+        val selected = PdfSourceIdentity.selected(uri, remote, hint)
+            ?: companions.files.singleOrNull { it.id == remote && !it.folder }
+        // Reuse the archive provider route: stable object-bound link and no playback switch.
+        val file = if (client is OpenListBackend.Client) client.findArchiveForPlayback(remote, selected)
+            else client.findForPlayback(remote, selected)
+        val source = source(account, client, file, true).boundedRanges(PdfReadCache.BLOCK_BYTES.toLong()).forPdfReading()
+        try {
+            cancellation.attachAction { source.close(); transport.cancel() }
+            source.prepare()
+            val validate = {
+                if (cancellation.cancelled) throw CloudFailure()
+                if (identity(credentials(id)) != identity(account)) throw CloudFailure("cloud_login_required")
+            }
+            validate()
+            PdfNetworkSource(source, validate).also { it.identity = PdfSourceIdentity.from(uri, file) }
+        } catch (error: Exception) { source.close(); throw error }
+    }
+
     /** Independent download lease: browsing photos or starting another video must not revoke it. */
-    fun audioDownload(uri: String, server: LocalStreamServer, rangeWindow: Long = Long.MAX_VALUE, archiveReading: Boolean = false): String = safe {
+    fun audioDownload(uri: String, server: LocalStreamServer, rangeWindow: Long = Long.MAX_VALUE, archiveReading: Boolean = false,
+        archiveCache: SmallRarCache? = null): String = safe {
         val (id, remote) = split(CloudPaths.path(uri))
         val account = credentials(id)
         val companions = playbackPages.forVideo(id, identity(account), remote)
@@ -308,13 +340,19 @@ internal object CloudLibrary {
         val source = source(account, client, file, archiveReading)
         if(rangeWindow<Long.MAX_VALUE)source.boundedRanges(rangeWindow)
         if(archiveReading)source.forArchiveReading()
+        var published: StreamSource = source
         try {
             source.prepare()
-            synchronized(this) {
+            val validate = {
                 if (identity(credentials(id)) != identity(account)) throw CloudFailure("cloud_login_required")
-                server.publish(source, file.name)
             }
-        } catch (error: Exception) { source.close(); throw error }
+            if (archiveReading && archiveCache != null) published = archiveCache.prepare(source, file.name, validate)
+            synchronized(this) {
+                validate()
+                if (archiveCache?.cancelled == true) throw CloudFailure()
+                server.publish(published, file.name)
+            }
+        } catch (error: Exception) { published.close(); if (published !== source) source.close(); throw error }
     }
 
     fun playable(uri: String, server: LocalStreamServer): String = safe {

@@ -38,29 +38,80 @@ def sha(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def upholstered_back():
-    material = study.scan('velour', .92)
-    material.name = 'Study_back'
+def shaded_scan(scan, roughness, shade, name):
+    material = study.scan(scan, roughness)
+    material.name = name
     nodes, links = material.node_tree.nodes, material.node_tree.links
     bsdf = nodes.get('Principled BSDF')
     source = bsdf.inputs['Base Color'].links[0].from_socket
     darker = nodes.new('ShaderNodeMix'); darker.data_type = 'RGBA'; darker.blend_type = 'MULTIPLY'
     darker.inputs[0].default_value = 1.0
-    darker.inputs[7].default_value = (BACK_SHADE, BACK_SHADE, BACK_SHADE, 1.0)
+    darker.inputs[7].default_value = (shade, shade, shade, 1.0)
     links.new(source, darker.inputs[6]); links.new(darker.outputs[2], bsdf.inputs['Base Color'])
     return material
 
 
+def tailored(material):
+    """Channel seams and stitching painted into the velour, as the original
+    single-state seat bake had: without them cushions read as moulded foam."""
+    nt = material.node_tree
+    bsdf = nt.nodes.get('Principled BSDF')
+    colour = bsdf.inputs['Base Color'].links[0].from_socket
+    coord = nt.nodes.new('ShaderNodeTexCoord').outputs['Object']
+    xyz = nt.nodes.new('ShaderNodeSeparateXYZ')
+    nt.links.new(coord, xyz.inputs[0])
+    nt.links.new(seats._seams(nt, xyz.outputs['X'], xyz.outputs['Y'], xyz.outputs['Z'], coord, colour), bsdf.inputs['Base Color'])
+    return material
+
+
+def walnut_armrest():
+    """Dark walnut armrest tops. The scan's grain already runs along the armrest
+    (chair Y); the leather scan baked into blotchy suede at this size."""
+    return shaded_scan('wood', .4, ARMREST_SHADE, 'Study_armrest')
+
+
+ARMREST_SHADE = .6
+
+
+def kick_plate(material):
+    """Brushed metal band with a shadow line at the foot of each standard. Painted
+    into the shared albedo atlas: 4 mm of relief would cost a megabyte of chair
+    vertices and is invisible at this scale."""
+    nodes, links = material.node_tree.nodes, material.node_tree.links
+    bsdf = nodes.get('Principled BSDF')
+    source = bsdf.inputs['Base Color'].links[0].from_socket
+    height = nodes.new('ShaderNodeSeparateXYZ')
+    links.new(nodes.new('ShaderNodeTexCoord').outputs['Object'], height.inputs[0])
+    colour = source
+    for top, rgb in [(KICK_HEIGHT + KICK_LINE, (.008, .008, .009)), (KICK_HEIGHT, (.034, .035, .037))]:
+        below = nodes.new('ShaderNodeMath'); below.operation = 'LESS_THAN'
+        below.inputs[1].default_value = top
+        links.new(height.outputs['Z'], below.inputs[0])
+        mix = nodes.new('ShaderNodeMix'); mix.data_type = 'RGBA'
+        mix.inputs[7].default_value = (*rgb, 1.0)
+        links.new(below.outputs[0], mix.inputs[0]); links.new(colour, mix.inputs[6])
+        colour = mix.outputs[2]
+    links.new(colour, bsdf.inputs['Base Color'])
+    return material
+
+
+KICK_HEIGHT = .075
 BACK_SHADE = .55
+LEG_SHADE = .28
+KICK_LINE = .006
+# Crevice shadow baked into the chair albedo: chairs are lit per vertex, which
+# cannot resolve seams, the cushion/back joint or the gaps around the consoles.
+CREVICE_DISTANCE = .05
+CREVICE_STRENGTH = .7
 
 
 def setup_materials():
-    # Fully upholstered chairs: the back and shell use the same woven fabric,
-    # darker, so the backs viewers study show a real weave instead of plastic noise.
-    chair = [study.scan('velour', .92), upholstered_back(), study.scan('leather', .48),
-             hall._principled('Study_dark_metal', (.075, .077, .080), .42),
+    # Velour front and back (the back darker, so the backs viewers study show a
+    # real weave), dark leather side standards with brushed metal kick plates.
+    chair = [tailored(study.scan('velour', .92)), shaded_scan('velour', .92, BACK_SHADE, 'Study_back'), walnut_armrest(),
+             hall._principled('Study_dark_metal', (.040, .041, .043), .42),
              hall._principled('Study_cup', (.013, .015, .018), .42),
-             hall._principled('Study_leg', (.028, .031, .035), .55)]
+             kick_plate(shaded_scan('leather', .5, LEG_SHADE, 'Study_leg'))]
     scan_names = {'Carpet': 'carpet', 'Tread': 'carpet', 'Riser': 'carpet',
                   'Fabric': 'wall', 'FabricDeep': 'wall', 'Wood': 'wood', 'Door': 'wood'}
     scan_materials = {name: study.scan(name, .95 if name != 'wood' else .52) for name in set(scan_names.values())}
@@ -74,7 +125,8 @@ def setup_materials():
     for key, name in scan_names.items():
         texture_key = 'study_' + name
         hall.TEXTURES[texture_key] = {'file': str(study.TEXTURES / (name + '_color.jpg')), 'tile_metres': data[name]['tile_metres']}
-        hall.HALL_FINISH[key] = (texture_key, .65 if key in ['FabricDeep', 'Riser'] else 1.0)
+        # Darker risers separate each step from the tread above it.
+        hall.HALL_FINISH[key] = (texture_key, {'FabricDeep': .65, 'Riser': .4, 'Door': .55}.get(key, 1.0))
     return chair, materials
 
 
@@ -95,6 +147,15 @@ def bake_albedo(obj):
         node.image = image; material.node_tree.nodes.active = node
     hall.select_only(obj)
     bpy.ops.object.bake(type='DIFFUSE', pass_filter={'COLOR'}, margin=12, use_clear=True)
+    albedo = np.empty(2048 * 2048 * 4, dtype=np.float32); image.pixels.foreach_get(albedo)
+    world = bpy.context.scene.world or bpy.data.worlds.new('CreviceWorld')
+    bpy.context.scene.world = world
+    world.light_settings.distance = CREVICE_DISTANCE
+    bpy.ops.object.bake(type='AO', margin=12, use_clear=True)
+    occlusion = np.empty_like(albedo); image.pixels.foreach_get(occlusion)
+    albedo = albedo.reshape(-1, 4); occlusion = occlusion.reshape(-1, 4)
+    albedo[:, :3] *= 1 - CREVICE_STRENGTH * (1 - occlusion[:, :1])
+    image.pixels.foreach_set(albedo.ravel())
     path = OUT / 'seat_albedo.png'
     image.save_render(str(path), scene=bpy.context.scene)
     return path
@@ -141,7 +202,9 @@ def unwrap_hall(obj):
     obj.data.uv_layers.active = obj.data.uv_layers.new(name='Bake')
     hall.select_only(obj)
     bpy.ops.object.mode_set(mode='EDIT'); bpy.ops.mesh.select_all(action='SELECT')
-    bpy.ops.uv.smart_project(angle_limit=math.radians(60), island_margin=.001, area_weight=0)
+    # Below 45 degrees: panel chamfers get their own islands. Sharing one with the
+    # face put a light-to-dark step along the rake, which texels render as stairs.
+    bpy.ops.uv.smart_project(angle_limit=math.radians(40), island_margin=.001, area_weight=0)
     bpy.ops.uv.pack_islands(udim_source='CLOSEST_UDIM', rotate=True, margin_method='FRACTION', margin=.0015, shape_method='AABB')
     bpy.ops.object.mode_set(mode='OBJECT')
 

@@ -1,0 +1,17 @@
+{
+  "purpose": "Release MediaCodec layer frames between compositor latches (59.94 fps on 120 Hz cadence bursts)",
+  "base_files_sha256": {
+    "video/out/vo_mediacodec_embed.c": "4da09e0d69ee52b7e25429f4006e88e6db4273696f195ec67491ddb305f096ea"
+  },
+  "patched_files_sha256": {
+    "video/out/vo_mediacodec_embed.c": "c45eb169b6f2f077b1dae5ae77b0c115b77df6a5a05c3e6ad3c4ae5862d81866"
+  },
+  "patch_sha256": "fc2d1907643af88c949b430fc2dafb2c46a9b082021668716253bcc0bc18d448",
+  "api_version": 1,
+  "inputs_sha256": {
+    "tools/environment/mpv-linux/create_vsync_patch.py": "08ce0c8617b6ccd0b97c59eb6643ff03c5b0a9396f03c760b881cf951d9f0e88"
+  },
+  "reference_inputs_sha256": {
+    "tools/environment/mpv-linux/create_vsync_patch.py": "eced8a9cd33853a02b686e6e85a958808bd89c862f8bddc40a6a876a96b223c4"
+  }
+}

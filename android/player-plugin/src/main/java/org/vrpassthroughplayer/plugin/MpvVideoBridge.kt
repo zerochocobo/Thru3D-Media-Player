@@ -1,5 +1,6 @@
 package org.vrpassthroughplayer.plugin
 
+import android.app.ActivityManager
 import android.content.Context
 import android.net.Uri
 import android.opengl.EGL14
@@ -95,6 +96,7 @@ internal class MpvVideoBridge(
         }, 15_000)
         return true
     }
+    @Volatile private var comicReader: ComicReaderController? = null
     @Volatile private var globalVoiceManager: VoiceCloneController? = null
     private val globalVoiceHolds=java.util.concurrent.atomic.AtomicInteger()
     private val globalVoiceHolding get()=globalVoiceHolds.get()>0
@@ -341,6 +343,14 @@ internal class MpvVideoBridge(
         }
         return true
     }
+    /** 512 MiB (~40 s of 100 Mbit/s 8K) only for remote playback without Alpha/2D->3D
+     * and with memory to spare; Alpha's held frames leave Quest 3 under 1 GB free. */
+    private fun networkCacheMiB(app: Context, remote: Boolean, inference: Boolean): Int {
+        if (!remote || inference) return 256
+        val memory = ActivityManager.MemoryInfo()
+        (app.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager)?.getMemoryInfo(memory) ?: return 256
+        return if (!memory.lowMemory && memory.availMem >= 3L shl 30) 512 else 256
+    }
     private fun frameCap(session: Session) = if (BuildConfig.DEBUG && debugFrameCapOverride >= 0) debugFrameCapOverride
         // 2D->3D shows every frame with the latest depth map; only Alpha needs one result per frame.
         else if (session.alpha && !session.layerAlpha) alphaFps else 0
@@ -464,7 +474,8 @@ internal class MpvVideoBridge(
                             extra.flatMap { listOf(it.location, it.title) }.toTypedArray(),
                             captions.flatMap { listOf(it.location, it.title) }.toTypedArray(), host.exactStart,
                             if (host.layer) host.copy?.surface ?: host.fanout?.surface ?: host.layerSurface else null, disc?.mvc == true, surfaceWidth, surfaceHeight, iso, tlsCaFile,
-                            host.interleavePolicy.sequential, if (iso) host.discPlaylist else -1)
+                            host.interleavePolicy.sequential, if (iso) host.discPlaylist else -1,
+                            networkCacheMiB(app, host.remote, session.inference))
                         check(host.handle > 0)
                         host.markStartup("native_created_ms")
                         host.loadingPhase = "reading"
@@ -699,6 +710,7 @@ internal class MpvVideoBridge(
         val operation=runCatching {JSONObject(json).optString("operation")}.getOrNull()
         if(operation !in setOf("list","open_source","mode","scan","manual","trim","original","clone","save","preview","rename","delete","stop","close"))return false
         if(operation in setOf("open_source","scan","manual","trim","original","clone","preview","rename","delete")||JSONObject(json).optBoolean("pause"))sessions.values.filter {active(it)}.forEach {setPlaying(it.id,false)}
+        if(operation!="list")comicReader?.suspend()
         if(operation!="list")hosts.forEach {it.voiceClone?.close();it.voiceClone=null}
         val controller=globalVoiceManager ?: VoiceCloneController(context,{
             val host=hosts.firstOrNull {!it.closing&&it.handle>0}
@@ -707,6 +719,28 @@ internal class MpvVideoBridge(
             {refreshPlayback(explicit=true)},{hosts.forEach {it.narration?.awaitCloneDrain()}},narrationRuntime,{narrationPreviewCache},::openVoiceSample).also {globalVoiceManager=it}
         return controller.request(json)
     }
+    @Synchronized private fun comicController(): ComicReaderController? {
+        if(stopped||!foreground||!NarrationPolicy.FEATURE_ENABLED||!NarrationNative.supported())return null
+        return comicReader ?: ComicReaderController(context,{foreground&&!stopped&&!globalVoiceHolding&&!hosts.any {it.cloneHolding}},narrationRuntime,{refreshPlayback(explicit=true)}).also {comicReader=it}
+    }
+    fun comicConfigure(voice: String,language: String)=comicController()?.configure(voice,language) ?: false
+    fun comicSpeechEnabled(value: Boolean){comicController()?.setSpeechEnabled(value)}
+    fun comicTranslationMode(mode: String,language: String)=comicController()?.translationMode(mode,language) ?: false
+    fun comicTranslations(epoch: Long,mode: String,json: String)=comicController()?.translations(epoch,mode,json) ?: false
+    fun comicPrepare(epoch: Long,page: Int,block: Int)=comicReader?.prepare(epoch,page,block) ?: false
+    fun comicPreview(voice: String,language: String,volume: Double)=comicController()?.preview(voice,language,volume) ?: false
+    @Synchronized fun comicBegin(epoch: Long): Boolean {
+        if(stopped||!foreground||!NarrationPolicy.FEATURE_ENABLED||!NarrationNative.supported())return false
+        return comicController()?.begin(epoch) ?: false
+    }
+    fun comicPage(epoch: Long,page: Int,width: Int,height: Int,rgb: ByteArray)=comicReader?.page(epoch,page,width,height,rgb) ?: false
+    fun comicAhead(epoch: Long,page: Int,width: Int,height: Int,rgb: ByteArray)=comicReader?.page(epoch,page,width,height,rgb,true) ?: false
+    fun comicWarm(){comicController()?.warm()}
+    fun comicStatus(epoch: Long,revision: Long)=comicReader?.status(epoch,revision) ?: "{}"
+    fun comicRead(epoch: Long,page: Int,block: Int,voice: String,volume: Double)=comicReader?.read(epoch,page,block,voice,volume) ?: false
+    fun comicStop(){comicReader?.cancelSpeech()}
+    fun comicClear(){comicReader?.clear()}
+    fun comicRelease(){comicReader?.release()}
     fun voiceManagerStatus(): String=globalVoiceManager?.status()?.toString() ?: "{}"
     /** Independent reader lease: never opens an MPV session or changes playback history. */
     private fun openVoiceSample(uri: String): VoiceCloneController.Source {
@@ -897,7 +931,7 @@ internal class MpvVideoBridge(
     }
     private fun refreshPlayback(explicit: Boolean = false) {
         worker.post {
-            val needsAudio = !stopped && foreground && (globalVoiceManager?.wantsAudio==true || hosts.any {
+            val needsAudio = !stopped && foreground && (comicReader?.wantsAudio==true || globalVoiceManager?.wantsAudio==true || hosts.any {
                 !it.closing && it.handle > 0 && (it.playing || it.narration?.wantsPreview == true || it.narration?.wantsPauseDrain == true || it.voiceClone?.wantsAudio==true) && it.needsAudio()
             })
             if (needsAudio && audioFocus == null) context()?.let { app ->
@@ -910,7 +944,7 @@ internal class MpvVideoBridge(
                         it.voiceClone?.allow(false)
                         if (it.handle > 0) MpvSourceNative.setPlaying(it.handle, false)
                     }
-                    if(change != MpvAudioFocusGate.Change.GAIN)globalVoiceManager?.allow(false)
+                    if(change != MpvAudioFocusGate.Change.GAIN){globalVoiceManager?.allow(false);comicReader?.audioFocus(false)}
                     if (change == MpvAudioFocusGate.Change.LOSS) sessions.values.filter { active(it) && it.host.needsAudio() }.forEach {
                         event("mpv_state", it, JSONObject().put("state", "paused").put("audio_focus_change", "loss"))
                     }
@@ -920,6 +954,7 @@ internal class MpvVideoBridge(
             val granted = if (needsAudio) audioFocus?.acquire(explicit) == true else {
                 audioFocus?.release(); true
             }
+            if(comicReader?.wantsAudio==true)comicReader?.audioFocus(foreground&&granted)
             audioFocusState = if (needsAudio) audioFocus?.state() ?: "unavailable" else "none"
             if(!foreground||!granted)globalVoiceManager?.allow(false)
             hosts.forEach { host -> if (!stopped && !host.closing && host.handle > 0) {
@@ -1620,6 +1655,7 @@ internal class MpvVideoBridge(
         }
     }
     fun pause() {
+        comicReader?.suspend()
         globalVoiceManager?.allow(false)
         foreground = false; hosts.forEach { it.narration?.allow(false); it.voiceClone?.allow(false); if (it.handle > 0) MpvSourceNative.setPlaying(it.handle, false) }
         refreshPlayback()
@@ -1658,6 +1694,7 @@ internal class MpvVideoBridge(
     }
     fun shutdown() {
         stopped = true
+        comicReader?.close();comicReader=null
         setInterleaveReopen(false)
         globalVoiceManager?.close();globalVoiceManager=null
         gate.shutdown(); sessions.values.forEach { dispose(it, true) }

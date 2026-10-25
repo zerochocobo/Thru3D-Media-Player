@@ -65,6 +65,11 @@ func action(operation: String, payload: Dictionary, media_scope: String) -> Stri
 	sync()
 	var id := str(payload.get("id", ""))
 	match operation:
+		"export":
+			for segment in segments:
+				if segment.id == id and valid(segment):
+					return "" if player.captures.export_loop(segment) else "Clip export unavailable"
+			return "Clip export unavailable"
 		"save":
 			if not player.bookmark_seekable(): return "Loop unavailable"
 			var times := {}

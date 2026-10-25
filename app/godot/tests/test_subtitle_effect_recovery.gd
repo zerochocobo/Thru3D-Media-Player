@@ -110,7 +110,7 @@ func run() -> void:
 	check(video.narration.enabled and video.narration.language == "ja" and video.narration.volume == 37.0,
 		"Graphics recovery retains the same video's live narration as well")
 	video.open_local("cloud://fixture/Films/other.mp4", "other.mp4")
-	check(not video.narration.enabled and video.narration.language == "en", "Opening another video still starts with its own narration preferences")
+	check(not video.narration.enabled and video.narration.language == "ja", "Opening another video retains basic narration preferences without enabling narration")
 	state(video, [track(54)])
 	check(video.subtitles.requested_track == 54 and video.track_memory.lookup(video.local_uri).is_empty(), "Automatic selection supplies a live choice without writing a manual preference")
 	video._layer_session = true; video.set_alpha(true); state(video, []); load_error(video, host)

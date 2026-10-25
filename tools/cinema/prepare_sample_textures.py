@@ -5,6 +5,8 @@ live beside this script in sample/textures, not in the disposable cache.
 """
 import hashlib
 import json
+import os
+import time
 from pathlib import Path
 
 import numpy as np
@@ -16,10 +18,27 @@ SPECS = {
     'velour': ('Fabric063', (0.060, 0.007, 0.014), 0.35),
     'leather': ('Leather030', (0.022, 0.015, 0.011), 0.45),
     'shell': ('Plastic011', (0.026, 0.030, 0.035), 0.5),
-    'carpet': ('Carpet006', (0.055, 0.048, 0.041), 1.0),
-    'wall': ('Fabric039', (0.070, 0.067, 0.061), 0.6),
-    'wood': ('Wood051', (0.105, 0.054, 0.024), 0.8),
+    # Plain dark cut pile: a large regular pattern reads as a repeating game tile.
+    'carpet': ('Carpet013', (0.025, 0.022, 0.021), 0.6),
+    # Dark warm grey: a pale wall made the lit hall read as a conference room.
+    'wall': ('Fabric039', (0.038, 0.035, 0.032), 0.6),
+    # Dark walnut veneer; the earlier target turned the scan orange.
+    'wood': ('Wood051', (0.050, 0.031, 0.020), 0.6),
 }
+
+
+def _save(image, dest):
+    """Writes beside the target and swaps it in. A just-written scan can stay
+    briefly locked by real-time file scanning; retry instead of failing."""
+    temp = dest.with_name(dest.stem + '.part.jpg')
+    image.save(temp, quality=95)
+    for attempt in range(20):
+        try:
+            os.replace(temp, dest)
+            return
+        except OSError:
+            time.sleep(.5)
+    raise OSError('Could not replace ' + str(dest))
 
 
 def main():
@@ -47,7 +66,7 @@ def main():
             else:
                 im = im.convert('L')
             dest = OUT / (name + '_' + channel.lower() + '.jpg')
-            im.save(dest, quality=95)
+            _save(im, dest)
         records[name] = record
     (OUT / 'sources.json').write_text(json.dumps(records, indent=2) + '\n', encoding='utf8')
 

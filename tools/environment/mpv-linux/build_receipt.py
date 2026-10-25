@@ -23,6 +23,7 @@ def inputs():
              'native/mpv/patches/pgs-bitmap-manifest.json',
              'native/mpv/patches/live-capture-manifest.json',
              'native/mpv/patches/aaudio-clock-manifest.json',
+             'native/mpv/patches/layer-cadence-manifest.json',
              'native/mpv/patches/dovi-rpu-manifest.json',
              'tools/environment/mpv-linux/host-tools.lock.txt']
     files += ['third_party/edge264-mvc/manifest.json', 'third_party/bluray/source-lock.json',

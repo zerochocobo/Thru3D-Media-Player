@@ -22,7 +22,7 @@ import (
 // credentials/Range forwarding. No personal cloud account is needed.
 func TestBrowseAndRangeStream(t *testing.T) {
 	dir := t.TempDir()
-	name := "中文 #%.mp4"
+	name := "中文 #%.PDF"
 	payload := bytes.Repeat([]byte("0123456789abcdef"), 1024)
 	if err := os.WriteFile(filepath.Join(dir, name), payload, 0600); err != nil {
 		t.Fatal(err)

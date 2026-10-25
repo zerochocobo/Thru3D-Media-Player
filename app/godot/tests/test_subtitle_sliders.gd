@@ -2,7 +2,7 @@ extends SceneTree
 const Depth := preload("res://scripts/subtitle_depth.gd")
 const Menu := preload("res://scripts/player_menu.gd")
 var failures: Array[String] = []
-var state := {"has_video": true, "geometry": 1, "subtitle_distance": 5.0, "subtitle_position": 0.0}
+var state := {"has_video": true, "geometry": 1, "subtitle_distance": 5.0, "subtitle_vertical_position": 0.0}
 var saves: Array = []
 var checks := 0
 
@@ -45,7 +45,7 @@ func _run() -> void:
 	menu._activate(110)
 	check(menu.choices.sliders.is_empty() and not menu._subtitle_appearance_open, "CC opens with appearance collapsed")
 	menu._activate(Menu.SUBTITLE_APPEARANCE)
-	check(menu.choices.sliders.size() == 4 and menu.choices.opened.is_empty(), "CC uses sync, angle, distance and text-size sliders")
+	check(menu.choices.sliders.size() == 5 and menu.choices.opened.is_empty(), "CC uses sync, both centre axes, distance and text-size sliders")
 	for target in menu.choices.sliders.keys():
 		var slider: Dictionary = menu.choices.sliders[target]
 		var key: String = menu.choices.targets[target].key
@@ -65,12 +65,12 @@ func _run() -> void:
 		menu.release_pointer("right", Vector3.ZERO, Vector3.ZERO, false)
 		check(saves.size() == before + 1 and not menu.has_pointer_capture(), "Tracking loss commits last preview once")
 	# Closing an active drag also saves once.
-	var target: int = menu.choices.sliders.keys().filter(func(id): return menu.choices.targets[id].key == "subtitle_position")[0]
+	var target: int = menu.choices.sliders.keys().filter(func(id): return menu.choices.targets[id].key == "subtitle_vertical_position")[0]
 	var slider: Dictionary = menu.choices.sliders[target]
 	var centre: Vector3 = menu.to_local(slider.node.global_position)
 	var point := Vector3(centre.x + slider.left + slider.width / 2, centre.y, 1)
 	menu.press_pointer("right", menu.to_global(point), -menu.global_basis.z, true)
-	check(state.subtitle_position == 0, "Angle midpoint returns to centre")
+	check(state.subtitle_vertical_position == 0, "Angle midpoint returns to centre")
 	var before := saves.size()
 	menu.dismiss()
 	check(saves.size() == before + 1 and not menu.has_pointer_capture(), "Dismiss saves and clears slider capture")

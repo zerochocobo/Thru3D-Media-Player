@@ -11,24 +11,6 @@ var _material: ShaderMaterial
 var _diagnostics_enabled := false
 var _diagnostics_at := 0
 var _last_diagnostics := {}
-var cinema_move_hint: Label3D
-
-func set_cinema_move_hint(enabled: bool) -> void:
-	if enabled and not cinema_move_hint and hands.has("right_hand"):
-		cinema_move_hint = Label3D.new()
-		cinema_move_hint.name = "CinemaMoveHint"
-		cinema_move_hint.font = preload("res://scripts/ray_menu.gd").ui_font()
-		cinema_move_hint.font_size = 32
-		cinema_move_hint.pixel_size = .00065
-		cinema_move_hint.position = Vector3(.075, .075, -.015)
-		cinema_move_hint.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-		cinema_move_hint.no_depth_test = true
-		cinema_move_hint.modulate = Color(.54, .93, .77)
-		cinema_move_hint.outline_size = 8
-		hands.right_hand.grip.add_child(cinema_move_hint)
-	if cinema_move_hint:
-		cinema_move_hint.visible = enabled
-		if enabled: cinema_move_hint.text = preload("res://scripts/i18n.gd").t("Hold A to move")
 
 func _ready() -> void:
 	_material = ShaderMaterial.new()

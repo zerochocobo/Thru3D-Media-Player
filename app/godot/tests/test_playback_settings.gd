@@ -8,6 +8,14 @@ var checks := 0
 var failures: Array[String] = []
 
 class Host extends RefCounted:
+	var sequence := 0
+	var cue_text := "第一行\nSecond line"
+	func get_mpv_subtitles(_id: int, after: int) -> String:
+		sequence = maxi(sequence, after) + 1
+		return JSON.stringify({"session_id": 7, "sequence": sequence, "generation": 3, "source_epoch": 2,
+			"mpv_source_handle": 55, "command_id": 1, "required_command_id": 1, "track_id": "1",
+			"timeline_valid": true, "age_ms": 0, "start_seconds": "1", "end_seconds": "3",
+			"position_seconds": "2", "text": cue_text})
 	var rates: Array = []
 	var alpha_fps: Array = []
 	func set_mpv_alpha_fps(fps: int) -> bool:
@@ -215,7 +223,7 @@ func _run() -> void:
 	library.setting_previewed.connect(main._on_playback_adjustment)
 	root.add_child(library)
 	library.toggle(); library.section = Library.Section.SETTINGS; library.tab = Library.VIDEO_TAB; library.refresh()
-	check(library.rows.size() == 11 and library.rows[6].value == video.subtitle_size * 100, "Global size reflects playback's current value")
+	check(library.rows.size() == 13 and library.rows[6].value == video.subtitle_size * 100, "Global size reflects playback's current value")
 	main._on_setting_changed("subtitle_size", 125)
 	check(video.subtitle_size == 1.25 and main._menu_state().subtitle_size == 125 and main._library_settings().subtitle_size == 125, "Global and playback size agree")
 	for preset in Style.PRESETS:
@@ -236,11 +244,43 @@ func _run() -> void:
 				check(video.projected_subtitles.vertical_text.text_color == preset.text_color and video.projected_subtitles.vertical_text.outline_color == preset.outline_color, "Vertical projected colors")
 		video.geometry = 0; video._apply_geometry()
 	main._on_player_setting("subtitle_style", "cyan_black")
+	# Both real ray menus control one display preference without changing narration.
+	video.narration.line = 1
+	library.scroll = library._max_scroll(); library.refresh()
+	var line_target := -1
+	for id in library.choices.targets:
+		if library.choices.targets[id].get("key") == "subtitle_line" and library.choices.targets[id].get("value") == 2: line_target = id
+	check(click(library, line_target) and video.subtitle_line == 2 and main._menu_state().subtitle_line == 2, "Global ray chooses second display line")
+	check(video.narration.line == 1, "Display line selection leaves narration independent")
+	menu.refresh(); click(menu, Menu.SUBTITLE_APPEARANCE)
+	line_target = -1
+	for id in menu.choices.targets:
+		if menu.choices.targets[id].get("key") == "subtitle_line" and menu.choices.targets[id].get("value") == 1: line_target = id
+	check(click(menu, line_target) and video.subtitle_line == 1 and main._library_settings().subtitle_line == 1, "Playback ray chooses first display line and updates global state")
+	video.media.last_pair = {"session_id": 7, "generation": 3, "source_epoch": 2, "mpv_source_handle": 55}
+	for geometry in [0, 1, 2, 3]:
+		video.geometry = geometry; video._apply_geometry()
+		for direction in [0, 1]:
+			video.subtitle_direction = direction
+			for line in [0, 1, 2]:
+				main._on_player_setting("subtitle_line", line)
+				host.cue_text = "第一行\nSecond line"
+				video._subtitle_poll_ms = 0; video._poll_subtitles()
+				check(video.caption.visible and video.caption.text == [host.cue_text, "第一行", "Second line"][line], "Renderer selects authored line in geometry %d direction %d line %d" % [geometry, direction, line])
+				check(video.subtitles.text == host.cue_text, "Display filtering preserves the source cue")
+				host.cue_text = "仅有一行 😀"
+				video._subtitle_poll_ms = 0; video._poll_subtitles()
+				check(video.caption.visible and video.caption.text == host.cue_text, "Single line stays visible for every display selection")
+				host.cue_text = ""
+				video._subtitle_poll_ms = 0; video._poll_subtitles()
+				check(not video.caption.visible, "Cue gap clears the selected line")
+	main._on_player_setting("subtitle_line", 2)
 	main._save_playback_adjustments()
 	var appearance_saved := ConfigFile.new()
 	check(appearance_saved.load(main.settings_path) == OK and appearance_saved.get_value("subtitles", "style") == "cyan_black" and appearance_saved.get_value("subtitles", "size") == 1.25, "Style and size persist together")
-	video.subtitle_size = 1.0; video.subtitle_style = Style.DEFAULT
+	video.subtitle_size = 1.0; video.subtitle_style = Style.DEFAULT; video.subtitle_line = 0
 	main.settings = appearance_saved; main._restore_subtitle_settings()
+	check(video.subtitle_line == 2 and appearance_saved.get_value("subtitles", "line") == 2, "Display line persists and restores")
 	check(video.subtitle_size == 1.25 and video.subtitle_style == "cyan_black", "Startup restores the actual saved appearance")
 	for old_distance in [10.0, 0.5, 0.1]:
 		main.settings.set_value("subtitles", "distance", old_distance)
@@ -254,7 +294,9 @@ func _run() -> void:
 	main._restore_subtitle_settings()
 	check(is_equal_approx(video.subtitle_distance, 0.1), "Nearest test distance survives reload")
 	main.settings.set_value("subtitles", "style", {"bad": true}); main.settings.set_value("subtitles", "size", INF)
+	main.settings.set_value("subtitles", "line", 99)
 	main._restore_subtitle_settings()
+	check(video.subtitle_line == 0, "Malformed saved display line restores all lines")
 	check(video.subtitle_style == Style.DEFAULT and video.subtitle_size == 1.0, "Malformed style and non-finite size return to readable defaults")
 	main._on_setting_changed("subtitle_size", 10)
 	check(video.subtitle_size == 0.5, "Global size clamps the minimum")

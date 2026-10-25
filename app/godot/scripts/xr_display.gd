@@ -153,9 +153,24 @@ func set_foveation(level: int) -> void:
 
 func _apply_foveation() -> void:
 	if xr is OpenXRInterface and xr.is_initialized() and "foveation_level" in xr:
+		var level := maxi(foveation_level, SCENE_RELIEF_FOVEATION) if scene_relief else foveation_level
 		xr.foveation_dynamic = false
-		xr.foveation_level = foveation_level
-		DiagnosticLog.record("xr_foveation", {"level": foveation_level, "applied": xr.foveation_level})
+		xr.foveation_level = level
+		DiagnosticLog.record("xr_foveation", {"level": level, "applied": xr.foveation_level, "scene_relief": scene_relief})
+
+## A heavy eye-buffer scene (the cinema hall) above 90 Hz: high fixed foveation and at most 1.0x
+## eye buffers. Quest 3 cinema 2D at 120 Hz: 85 fps / Stale 44/s -> 120 fps / Stale 0.7/s; video
+## and menus are compositor layers and keep their resolution. Both apply and restore at runtime.
+const SCENE_RELIEF_FOVEATION := 3
+const SCENE_RELIEF_MAX_SCALE := 1.0
+var scene_relief := false
+func set_scene_relief(enabled: bool) -> void:
+	if enabled == scene_relief: return
+	scene_relief = enabled
+	_apply_foveation()
+	if xr is OpenXRInterface and xr.is_initialized() and "render_target_size_multiplier" in xr:
+		xr.render_target_size_multiplier = minf(render_scale, SCENE_RELIEF_MAX_SCALE) if enabled else render_scale
+	DiagnosticLog.record("xr_scene_relief", {"enabled": enabled, "render_scale": render_scale})
 ## Debug A/B only: one of PERFORMANCE_LEVELS' keys.
 var debug_performance_level := ""
 var performance_demand := false

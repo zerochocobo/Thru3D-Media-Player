@@ -8,6 +8,8 @@
 int main(int argc,char** argv) {
     if(argc!=4&&argc!=5)return 2;
     const bool normal=argc==5&&std::string(argv[4])=="normal";
+    const bool surround=argc==5&&std::string(argv[4])=="surround";
+    const bool missing_timestamps=surround||(argc==5&&std::string(argv[4])=="mkv");
     try {
         quest::live::Queue<int,4> queue;
         for(int i=0;i<4;++i)assert(queue.offer([&](int& value){value=i;}));
@@ -60,15 +62,21 @@ int main(int argc,char** argv) {
         // Deliberately remove only this regenerable test copy before recording stops.
         if(!std::filesystem::remove(source_path))throw std::runtime_error("Could not close fixture source");
         quest::live::Tap tap;size_t next=0;
-        while(next<packets.size()&&packets[next]->dts<2500000)tap.video(index,codec.get(),packets[next++].get());
+        auto feed=[&](size_t at) {
+            auto observed=quest::live::retain(packets[at].get());
+            // mpv's MKV demux packets may have PTS only and duration=-1 seconds.
+            if(missing_timestamps){observed->dts=AV_NOPTS_VALUE;observed->duration=-1000000;}
+            tap.video(index,codec.get(),observed.get());
+        };
+        while(next<packets.size()&&packets[next]->dts<2500000)feed(next++);
         const auto ns=quest::live::monotonic_ns();
-        auto session=tap.start(2500000,ns,true,argv[2]);
+        auto session=tap.start(2500000,ns,true,argv[2],surround?0x60f:3);
         std::vector<float> normal_reference(static_cast<size_t>((session->begin_us-session->base_us)*96000/1000000),0.f);
         session->clock(ns+500000000,2800000,true); // Simulated displayed-frame jitter must not erase or overlap heard words.
         session->clock(ns+1000000000,3500000,false);
         session->clock(ns+2000000000,3500000,true);
         session->clock(ns+3000000000,4500000,true);
-        while(next<packets.size()&&packets[next]->dts<4600000)tap.video(index,codec.get(),packets[next++].get());
+        while(next<packets.size()&&packets[next]->dts<4600000)feed(next++);
         // 3 seconds actually heard with a one-second video pause removed, no re-synthesis.
         for(int part=0;part<150;++part) {
             // Deliver the synthetic trace at its real device cadence. Bursting
@@ -77,6 +85,18 @@ int main(int argc,char** argv) {
             if(normal&&part>=50&&part<100)continue;
             quest::live::Audio audio;audio.owner=1;audio.frames=960;audio.rate=48000;audio.channels=2;audio.format=1;
             audio.ns=ns+part*20000000LL;
+            if(surround) {
+                audio.channels=6;audio.layout=0x60f;
+                for(int frame=0;frame<audio.frames;++frame)for(int channel=0;channel<6;++channel) {
+                    const float value=(channel+1)/32.f;std::memcpy(audio.bytes.data()+(frame*6+channel)*4,&value,4);
+                }
+                session->push(audio);
+                audio.owner=2;audio.channels=2;audio.layout=3;
+                for(int frame=0;frame<audio.frames;++frame)for(int channel=0;channel<2;++channel) {
+                    const float value=channel==0?.125f:.1875f;std::memcpy(audio.bytes.data()+(frame*2+channel)*4,&value,4);
+                }
+                session->push(audio);continue;
+            }
             std::array<float,1920> data{};
             if(normal) {
                 // A normal player's output, with no narration controller or TTS callback.
@@ -98,13 +118,23 @@ int main(int argc,char** argv) {
         for(int i=0;i<5000&&!session->done();++i)std::this_thread::sleep_for(std::chrono::milliseconds(2));
         std::cout<<session->status()<<'\n';
         if(session->status().find("\"ready\"")==std::string::npos)return 1;
-        const auto result=session->export_file(argv[3],"{\"version\":1,\"geometry\":3}");
+        std::atomic<bool> exported{false};std::vector<int> progress;
+        std::thread monitor([&]{while(!exported.load()){progress.push_back(session->export_percent());std::this_thread::sleep_for(std::chrono::milliseconds(1));}});
+        const auto result=session->export_file(argv[3],missing_timestamps?"{\"version\":1,\"geometry\":0}":"{\"version\":1,\"geometry\":3}");
+        exported.store(true);monitor.join();progress.push_back(session->export_percent());
+        assert(session->export_percent()==100);
+        assert(std::is_sorted(progress.begin(),progress.end()));
+        assert(std::any_of(progress.begin(),progress.end(),[](int value){return value>0&&value<100;}));
         for(size_t i=0;i<packets.size();++i)assert(hashes[i]==fingerprint(*packets[i])&&pts[i]==packets[i]->pts&&dts[i]==packets[i]->dts);
         if(normal) {
             auto* reference=std::fopen((std::string(argv[2])+".reference.f32").c_str(),"wb");assert(reference);
             assert(std::fwrite(normal_reference.data(),sizeof(float),normal_reference.size(),reference)==normal_reference.size());std::fclose(reference);
         }
         std::cout<<result<<'\n';
+        session->cancel();const auto cancelled_path=std::string(argv[3])+".cancelled";
+        const auto cancelled=session->export_file(cancelled_path,"{}");
+        assert(cancelled.find("Clip export cancelled")!=std::string::npos&&session->export_percent()<100);
+        std::filesystem::remove(cancelled_path);
         return result.find("\"saved\"")==std::string::npos?1:0;
     }catch(const std::exception& failure){std::cerr<<failure.what()<<'\n';return 1;}
 }

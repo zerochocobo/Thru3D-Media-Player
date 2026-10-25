@@ -92,6 +92,7 @@ def main():
         'live_capture_patch_sha256': sha(ROOT/'native/mpv/patches/0004-mpv-live-capture.patch'),
         'live_capture_header_sha256': sha(ROOT/'native/mpv/include/mpv/quest_capture.h'),
         'aaudio_clock_patch_sha256': sha(ROOT/'native/mpv/patches/0005-mpv-aaudio-clock.patch'),
+        'layer_cadence_patch_sha256': sha(ROOT/'native/mpv/patches/0006-mpv-layer-cadence.patch'),
         'dovi_rpu_patch_sha256': sha(ROOT/'native/mpv/patches/0002-ffmpeg-profile5-rpu.patch'),
         'architecture': 'arm64-v8a', 'elf_page_alignment': 16384,
         'build_command': 'buildall.sh --arch arm64 mpv',

@@ -34,6 +34,7 @@ var image_loading := false
 var image_error := false
 var image_material := ShaderMaterial.new()
 var capture_image: Dictionary = {} # Private preview lease, never a source URI or GPU readback.
+var pdf_document := {} # Runtime document lease and page index; never persisted.
 var _video_size := Vector2.ZERO
 
 func show_image(texture: Texture2D) -> void:
@@ -154,6 +155,14 @@ func _draw() -> void:
 		image_mode or not image_loading, I18n.t("Switch to video mode" if image_mode else "Switch to image mode"))
 	if image_mode:
 		_glyph(5, "image", Vector2(0.09, y), 0.064, not image_loading, I18n.t("Replace image"))
+		if not pdf_document.is_empty():
+			var page_y := y - 0.085
+			var page_bar := _quad(Vector2(0.28, 0.075), Vector3(0, page_y, 0.001), PANEL, 10)
+			add_child(page_bar); _decorations.append(page_bar); _block_rays(page_bar, page_bar.mesh.size)
+			_glyph(7, "previous", Vector2(-0.095, page_y), 0.055, not image_loading and int(pdf_document.page) > 0, I18n.t("Previous page"))
+			_label("%d / %d" % [int(pdf_document.page) + 1, int(pdf_document.pages)], Vector3(0, page_y, 0.004), 16)
+			_glyph(8, "next", Vector2(0.095, page_y), 0.055, not image_loading and int(pdf_document.page) + 1 < int(pdf_document.pages), I18n.t("Next page"))
+			controls_root.set_meta("menu_surface_bounds", Rect2(Vector2(-0.14, page_y - 0.04), Vector2(0.28, 0.17)))
 	elif image_loading:
 		_glyph(6, "video", Vector2(0.10, y), 0.064, true, I18n.t("Switch to video mode"))
 	else:
@@ -161,7 +170,7 @@ func _draw() -> void:
 		_glyph(4, "aspect", Vector2(0.10, y), 0.064, true, I18n.t("Aspect ratio"))
 		_button(3, "%.1f×" % zoom, Vector2(0.19, y), Vector2(0.09, 0.055))
 	if image_loading or image_error:
-		_label(I18n.t("Loading…" if image_loading else "Image unavailable"), Vector3(0, y - 0.07, 0.004), 18)
+		_label(I18n.t("Loading…" if image_loading else "Image unavailable"), Vector3(0, y - (0.16 if not pdf_document.is_empty() else 0.07), 0.004), 18)
 	if zoom_open:
 		var panel := _quad(Vector2(0.43, 0.072), Vector3(0, y - 0.082, 0.001), PANEL, 10)
 		add_child(panel); _decorations.append(panel); _block_rays(panel, panel.mesh.size)
@@ -207,8 +216,10 @@ func _paint_order(node: Node3D) -> void:
 		if child is Node3D: _paint_order(child)
 
 func _activate(target: int) -> void:
-	if image_mode and target not in [1, 5, 6]: return
+	if image_mode and target not in [1, 5, 6, 7, 8]: return
 	match target:
+		7, 8:
+			if not pdf_document.is_empty() and not image_loading: requested.emit(slot, "page", -1 if target == 7 else 1)
 		5: requested.emit(slot, "image", 0)
 		6: requested.emit(slot, "video", 0)
 		1: requested.emit(slot, "close", 0)
@@ -250,7 +261,7 @@ func window_hit(origin: Vector3, direction: Vector3) -> Dictionary:
 		for i in 4:
 			if point.distance_to(edge_point(i)) < 0.027: edge = i
 	# Includes the invisible corridor between picture, toolbar and zoom choices.
-	var below := 0.18 if zoom_open or shape_open else 0.095
+	var below := 0.18 if zoom_open or shape_open or not pdf_document.is_empty() else 0.095
 	var width := maxf(size.x, 0.55)
 	if corner < 0 and edge < 0 and not Rect2(Vector2(-width / 2, -size.y / 2 - below), Vector2(width, size.y + below)).has_point(point): return {}
 	return {"point": p, "corner": corner, "edge": edge, "body": absf(p.x) <= size.x / 2 and absf(p.y) <= size.y / 2,

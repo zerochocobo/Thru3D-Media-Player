@@ -1,6 +1,8 @@
-# Grand cinema (Test)
+# Grand cinema
 
-From 0.13.2 the labelled test auditorium is available in **Debug and Release**, including scene loading, dual baked lighting and movement. Saved cinema backgrounds remain selected. This replaces the older Debug-only policy; ordinary cinema screen presets remain available independently. Right A holds the movement target and releasing teleports; trigger operates menus. Right-hand-only use, floor/stair landing checks and restored menu placement follow the current production implementation.
+From 0.13.5, Grand cinema is the new-user default global background and no longer has a test label. Saved choices remain. Photos independently default to Belfast Sunset. Debug and Release require complete scene resources, dual baked lighting and movement support.
+
+Movement uses the current in-app controller bindings and `cinema_locomotion.gd`, including free movement and floor/chair targeting. Recenter preserves the cinema position, the last seat is remembered, and viewing-brightness tiers preview immediately. Controls retain current locking/dragging behavior.
 
 ## Prepare complete scene resources
 
@@ -28,4 +30,4 @@ The extension carries the recorded MIT notices; the pinned FFmpeg dependency car
 
 The current bake supplies a screen-light mask as well as both house-light states. `cinema_film_light.gd` samples the picture into three smoothed linear color zones; shaders modulate baked irradiance. Compatible layer playback uses a bounded tiny PixelCopy, with an eye-buffer sampling fallback. This does not introduce real-time scene lighting or guarantee a device frame rate. Automatic house lighting stays up without a film; a faint screen glow remains when lights are off.
 
-Hold the existing right-A teleport action and aim at a compatible chair to sit; floor, stair and seat-crossing checks remain active. The footer controls house lights, and screen size/volume/stereo controls retain their normal placement. Regenerate the full current scene, including the screen-light texture, before packaging; old bakes do not satisfy current resource validation.
+Use the current configured teleport action and aim at a compatible chair to sit; floor, stair and seat-crossing checks remain active. The footer controls house lights, and screen size/volume/stereo controls retain their normal placement. Regenerate the full current scene, including the screen-light texture, before packaging; old bakes do not satisfy current resource validation.

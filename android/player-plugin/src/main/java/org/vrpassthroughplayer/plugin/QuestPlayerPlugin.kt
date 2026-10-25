@@ -69,6 +69,8 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
         return (dlnaReceiver?.status() ?: renderer.poll().put("running", false).put("name", "Thru3D").put("address", "").put("error", "")).toString()
     }
     @UsedByGodot @Synchronized fun dlna_receiver_accept(token: Long): String = dlnaRenderer?.accept(token)?.toString() ?: "{}"
+    @UsedByGodot @Synchronized fun dlna_receiver_navigate(token: Long, direction: Int): Int =
+        runCatching { dlnaRenderer?.navigate(token, direction) ?: -1 }.getOrDefault(-1)
     @UsedByGodot @Synchronized fun dlna_receiver_reject(token: Long) { dlnaRenderer?.reject(token) }
     @UsedByGodot @Synchronized fun dlna_receiver_finish(token: Long) { dlnaRenderer?.finish(token) }
     @UsedByGodot @Synchronized fun dlna_receiver_detach() { dlnaRenderer?.detach() }
@@ -131,11 +133,18 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     }) { id, json -> if (!closed.get()) emitSignal("media_list", id, json) }
     private val originalCapture = OriginalCapture({ activity?.applicationContext }, sources::capturePlayable, sources::releaseMediaStream, sources::captureAudio,
         { id->mpv.captureOwner(id) },{id->mpv.captureAudioFlush(id)}, { id->pipImages.retain(id) }, { id->pipImages.release(id) })
+    private val embeddedCover = EmbeddedCover({ activity?.applicationContext }, sources::capturePlayable, sources::releaseMediaStream)
+    @UsedByGodot fun request_embedded_cover(uri: String): Int = if(closed.get())0 else embeddedCover.request(uri)
+    @UsedByGodot fun embedded_cover_state(id: Int): String = embeddedCover.state(id)
+    @UsedByGodot fun take_embedded_cover(id: Int): ByteArray = embeddedCover.take(id)
+    @UsedByGodot fun cancel_embedded_cover(id: Int) { embeddedCover.cancel(id) }
     @UsedByGodot fun original_capture_supported(): Boolean = !closed.get() && originalCapture.supported()
     @UsedByGodot fun original_capture_request(json: String): Int = if (closed.get()) 0 else originalCapture.request(json)
     @UsedByGodot fun original_capture_status(id: Int): String = if (closed.get()) "{}" else originalCapture.status(id)
     @UsedByGodot fun original_capture_clock(id: Int,positionUs: Long,playing: Boolean) {if(!closed.get())originalCapture.clock(id,positionUs,playing)}
+    @UsedByGodot fun original_capture_pip(id: Int,positionUs: Long,recipe: String) {if(!closed.get())originalCapture.pip(id,positionUs,recipe)}
     @UsedByGodot fun original_capture_stop(id: Int,endUs: Long): Boolean = !closed.get() && originalCapture.stop(id,endUs)
+    @UsedByGodot fun original_capture_cancel(id: Int): Boolean = !closed.get() && originalCapture.cancel(id)
     private val accounts = AccountManager { activity }
     private val panoramaOriginals = PanoramaOriginals { activity?.applicationContext?.filesDir?.let { java.io.File(it, "online-panoramas") } }
     private val panoramaBrowser = PanoramaBrowser({ activity }, panoramaOriginals)
@@ -182,6 +191,17 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     @UsedByGodot fun audio_preview_status(): String = musicPreview.status()
     @UsedByGodot fun stop_audio_preview() = musicPreview.stop()
 
+    private val pdfs = PdfBridge({ activity?.applicationContext }) { id, json ->
+        if (!closed.get()) emitSignal("archive_ready", id, json)
+    }
+    @UsedByGodot fun pdf_open(uri: String): Int = if (closed.get()) -1 else pdfs.open(sources.nextId(), uri)
+    @UsedByGodot fun pdf_open_at(uri: String, identity: String): Int = if (closed.get()) -1 else pdfs.openAt(sources.nextId(), uri, identity)
+    @UsedByGodot fun pdf_retain(session: String): Boolean = !closed.get() && pdfs.retain(session)
+    @UsedByGodot fun pdf_close(session: String) = pdfs.release(session)
+    private fun resolveImage(uri: String, edge: Int): String = if (uri.startsWith("pdfpage://")) pdfs.resolve(uri, edge) else sources.playable(uri)
+    private fun releaseImage(uri: String) {
+        if (!readingPages.release(uri)) { pdfs.releaseImage(uri); sources.releasePhotoStream(uri) }
+    }
     private val archives = ArchiveBridge({ activity?.applicationContext }, sources) { id, json ->
         if (!closed.get()) emitSignal("archive_ready", id, json)
     }
@@ -189,18 +209,35 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
         if (closed.get()) -1 else archives.open(sources.nextId(), uri, title, password, persist)
     @UsedByGodot fun archive_close(session: String) = archives.stop(session)
     @UsedByGodot fun archive_passwords(operation: String, value: String): String = archives.passwords(operation, value).toString()
-    private val photos = PhotoBridge({ activity?.applicationContext }, sources::playable, sources::releasePhotoStream,
-        resolveRequest = { id, uri -> if (uri.startsWith("comic://")) archives.resolve(id, uri) else sources.playable(uri) }) { name, id, json ->
+    private val readingPages = ReadingPageCache(
+        load = { uri, cancel -> if (uri.startsWith("comic://")) archives.takePage(uri, cancel)
+            else java.io.File(java.net.URI(pdfs.resolveReading(uri, cancel))) },
+        validate = { uri -> if (uri.startsWith("comic://")) archives.validatePage(uri) else pdfs.validate(uri) },
+        dispose = { file -> pdfs.releaseImage(file.toURI().toString()); file.delete() })
+    @UsedByGodot fun reading_page_window(payload: String) {
+        if (closed.get() || payload.length > 16384) return
+        runCatching {
+            val data = JSONObject(payload)
+            fun list(key: String): List<String> = data.optJSONArray(key)?.let { values ->
+                (0 until minOf(values.length(), 6)).map { values.getString(it) }
+            } ?: emptyList()
+            readingPages.window(list("keep"), list("ahead"))
+        }
+    }
+    private val photos = PhotoBridge({ activity?.applicationContext }, sources::playable, ::releaseImage,
+        resolveRequest = { id, uri -> if (ReadingPageCache.supported(uri)) readingPages.resolve(id, uri) else resolveImage(uri, 3072) }) { name, id, json ->
         if (!closed.get()) emitSignal(name, id, json)
     }
-    private val photoPreloads = PhotoBridge({ activity?.applicationContext }, sources::playable, sources::releasePhotoStream,
-        "photo-preloads", true) { name, id, json ->
+    private val photoPreloads = PhotoBridge({ activity?.applicationContext }, sources::playable, ::releaseImage,
+        "photo-preloads", true,
+        resolveRequest = { _, uri -> if (ReadingPageCache.supported(uri)) readingPages.acquireCached(uri) else sources.playable(uri) }) { name, id, json ->
         if (!closed.get()) emitSignal(if (name == "photo_depth") "photo_preload_depth" else name, id, json)
     }
     @UsedByGodot fun open_photo(uri: String): Int {
         if (closed.get()) return -1
         val id = requestId.incrementAndGet()
         archives.selectPage(id, uri)
+        readingPages.select(id, uri)
         return if (photos.open(id, uri)) id else -1
     }
     @UsedByGodot fun get_photo_loading_status(id: Int): String = if (closed.get()) "" else photos.loadingStatus(id)
@@ -215,7 +252,7 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     @UsedByGodot fun cancel_photo_preview(id: Int) = photoPreviews.cancel(id)
     @UsedByGodot fun release_photo_preview(id: Int) = photoPreviews.release(id)
     // Independent channel: gallery thumbnails must not cancel or release a PiP image request.
-    private val pipImages = PhotoPreviewBridge({ activity?.applicationContext }, sources::playable, sources::releasePhotoStream,
+    private val pipImages = PhotoPreviewBridge({ activity?.applicationContext }, { resolveImage(it, 2048) }, ::releaseImage,
         "pip-images", 2048) { id, json -> if (!closed.get()) emitSignal("pip_image_ready", id, json) }
     @UsedByGodot fun open_pip_image(uri: String): Int {
         if (closed.get()) return -1
@@ -229,13 +266,39 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
         val id = requestId.incrementAndGet()
         return if (photoPreloads.open(id, uri)) id else -1
     }
+    @UsedByGodot fun reading_page_cached(uri: String): Boolean = !closed.get() && readingPages.cached(uri)
+    private fun readingMemory(double: Boolean): ReadingMemoryPolicy.Policy = runCatching {
+            val manager = activity?.getSystemService(android.content.Context.ACTIVITY_SERVICE) as? android.app.ActivityManager
+                ?: error("MEMORY_UNAVAILABLE")
+            val memory = android.app.ActivityManager.MemoryInfo()
+            manager.getMemoryInfo(memory)
+            ReadingMemoryPolicy.evaluate(memory.totalMem, memory.availMem, memory.threshold,
+                memory.lowMemory, manager.isLowRamDevice, double)
+        }.getOrElse { ReadingMemoryPolicy.evaluate(0, 0, 0, true, true, double) }
+    @UsedByGodot fun reading_render_policy(double: Boolean): String {
+        val value = readingMemory(double)
+        return JSONObject().put("budget", value.budget).put("color", value.color)
+            .put("low_tier", value.lowTier).put("retain", value.retain).toString()
+    }
+    @UsedByGodot fun preload_reading_photo(uri: String): Int {
+        if (closed.get()) return -1
+        val id = requestId.incrementAndGet()
+        return if (photoPreloads.open(id, uri, bounded = true)) id else -1
+    }
     @UsedByGodot fun activate_photo(id: Int): Boolean = synchronized(PhotoCache.lock) {
         if (closed.get()) return@synchronized false
         if (photos.activate(id)) return@synchronized true
         photoPreloads.promoteTo(id, photos)
     }
-    @UsedByGodot fun cancel_photo(id: Int) { archives.cancelPage(id); photos.cancel(id); photoPreloads.cancel(id) }
+    @UsedByGodot fun activate_reading_photo(id: Int, uri: String): Boolean {
+        if (!activate_photo(id)) return false
+        archives.selectPage(id, uri)
+        readingPages.select(id, uri)
+        return true
+    }
+    @UsedByGodot fun cancel_photo(id: Int) { readingPages.cancel(id); archives.cancelPage(id); photos.cancel(id); photoPreloads.cancel(id) }
     @UsedByGodot fun release_photo(id: Int) { photos.release(id); photoPreloads.release(id) }
+    @UsedByGodot fun discard_photo_depth(id: Int) { photos.discardDepth(id); photoPreloads.discardDepth(id) }
     @UsedByGodot fun prepare_photo_portrait(id: Int, token: Int, strength: Double): Boolean = !closed.get() && photos.portrait(id,token,strength.toFloat())
     @UsedByGodot fun cancel_photo_portrait(token: Int) = photos.cancelPortrait(token)
     @UsedByGodot fun prepare_photo_depth(id: Int): Boolean = !closed.get() && photos.depth(id)
@@ -259,7 +322,7 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
         val app = activity?.applicationContext ?: return false
         return runCatching {
             synchronized(PhotoCache.lock) {
-                PhotoCache.clear(app.cacheDir, photos.cacheDirectories() + photoPreloads.cacheDirectories() + photoPreviews.cacheDirectories() + pipImages.cacheDirectories())
+                PhotoCache.clear(app.cacheDir, photos.cacheDirectories() + photoPreloads.cacheDirectories() + photoPreviews.cacheDirectories() + pipImages.cacheDirectories() + archives.cacheDirectories() + pdfs.cacheDirectories() + readingPages.files())
             }
             true
         }.getOrElse { Log.w("QuestPhotoCache", "Photo cache cleanup failed", it); false }
@@ -572,11 +635,34 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     @UsedByGodot fun set_mpv_audio(id: Int, trackId: Int, volume: Double, muted: Boolean): Boolean =
         !closed.get() && mpv.setAudio(id, trackId, volume, muted)
     @UsedByGodot fun set_mpv_whisper(id: Int, level: Int): Long = if (closed.get()) 0 else mpv.setWhisper(id, level)
+    /** Compositor cadence for layer playback: a predicted display time (OpenXR clock), the refresh
+     * period and the compositor's latch lead. The trace counter (display time minus System.nanoTime)
+     * verifies the clock and calibrates the lead against compositor latches in atrace. */
+    @UsedByGodot fun set_mpv_vsync(displayNs: Long, periodNs: Long, latchLeadNs: Long): Boolean {
+        if (closed.get() || !MpvSourceNative.supported()) return false
+        if (android.os.Build.VERSION.SDK_INT >= 29) android.os.Trace.setCounter("T3D.vsyncAheadUs", (displayNs - System.nanoTime()) / 1000)
+        return MpvSourceNative.setVsync(displayNs, periodNs, latchLeadNs)
+    }
     @UsedByGodot fun set_mpv_narration(id: Int, options: String): Boolean = !closed.get() && mpv.setNarration(id, options)
     @UsedByGodot fun mpv_voice_clone_request(id: Int, options: String): Boolean = !closed.get() && mpv.voiceCloneRequest(id, options)
     @UsedByGodot fun mpv_voice_clone_status(id: Int): String = if(closed.get()) "{}" else mpv.voiceCloneStatus(id)
     @UsedByGodot fun narration_voice_manager_request(options: String): Boolean = !closed.get() && mpv.voiceManagerRequest(options)
     @UsedByGodot fun narration_voice_manager_status(): String = if(closed.get()) "{}" else mpv.voiceManagerStatus()
+    @UsedByGodot fun comic_reader_configure(voice: String,language: String): Boolean = !closed.get() && mpv.comicConfigure(voice,language)
+    @UsedByGodot fun comic_reader_speech_enabled(enabled: Boolean) { if(!closed.get())mpv.comicSpeechEnabled(enabled) }
+    @UsedByGodot fun comic_reader_translation_mode(mode: String,language: String): Boolean = !closed.get() && mpv.comicTranslationMode(mode,language)
+    @UsedByGodot fun comic_reader_translations(epoch: Long,mode: String,json: String): Boolean = !closed.get() && mpv.comicTranslations(epoch,mode,json)
+    @UsedByGodot fun comic_reader_prepare(epoch: Long,page: Int,block: Int): Boolean = !closed.get() && mpv.comicPrepare(epoch,page,block)
+    @UsedByGodot fun comic_reader_preview(voice: String,language: String,volume: Double): Boolean = !closed.get() && mpv.comicPreview(voice,language,volume)
+    @UsedByGodot fun comic_reader_begin(epoch: Long): Boolean = !closed.get() && mpv.comicBegin(epoch)
+    @UsedByGodot fun comic_reader_page(epoch: Long,page: Int,width: Int,height: Int,rgb: ByteArray): Boolean = !closed.get() && mpv.comicPage(epoch,page,width,height,rgb)
+    @UsedByGodot fun comic_reader_ahead(epoch: Long,page: Int,width: Int,height: Int,rgb: ByteArray): Boolean = !closed.get() && mpv.comicAhead(epoch,page,width,height,rgb)
+    @UsedByGodot fun comic_reader_warm() { if(!closed.get())mpv.comicWarm() }
+    @UsedByGodot fun comic_reader_status(epoch: Long,revision: Long): String = if(closed.get()) "{}" else mpv.comicStatus(epoch,revision)
+    @UsedByGodot fun comic_reader_read(epoch: Long,page: Int,block: Int,voice: String,volume: Double): Boolean = !closed.get() && mpv.comicRead(epoch,page,block,voice,volume)
+    @UsedByGodot fun comic_reader_stop() { if(!closed.get())mpv.comicStop() }
+    @UsedByGodot fun comic_reader_clear() { if(!closed.get())mpv.comicClear() }
+    @UsedByGodot fun comic_reader_release() { if(!closed.get())mpv.comicRelease() }
     @UsedByGodot fun narration_supported(): Boolean = !closed.get() && NarrationPolicy.FEATURE_ENABLED && NarrationNative.supported()
     @UsedByGodot fun set_mpv_speed(id: Int, speed: Double): Boolean = !closed.get() && mpv.setSpeed(id, speed)
     @UsedByGodot fun set_mpv_subtitle(id: Int, trackId: Int): Boolean = !closed.get() && mpv.setSubtitle(id, trackId)
@@ -728,12 +814,12 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
 
     // Android can resume before Godot registers the plugin's native signals.
     override fun onGodotSetupCompleted() { signalsReady = true; clear_photo_cache(); runCatching { panoramaOriginals.prepare() } }
-    override fun onMainPause() { if (!closed.get()) { dlnaForeground(false); systemVolume.foreground(false); musicPlayback.foreground(false); musicPreview.foreground(false); accounts.pause(true); panoramaBrowser.foreground(false); media.pause(); controlled.pause(); mpv.pause(); if (signalsReady) emitSignal("android_lifecycle", "pause") } }
-    override fun onMainResume() { if (!closed.get()) { activity?.volumeControlStream = AudioManager.STREAM_MUSIC; dlnaForeground(true); systemVolume.foreground(true); musicPlayback.foreground(true); musicPreview.foreground(true); accounts.pause(false); panoramaBrowser.foreground(true); media.resume(); controlled.resume(); mpv.resume(); if (signalsReady) { sources.refreshLocalStorage(); emitSignal("android_lifecycle", "resume") } } }
+    override fun onMainPause() { if (!closed.get()) { readingPages.foreground(false); dlnaForeground(false); systemVolume.foreground(false); musicPlayback.foreground(false); musicPreview.foreground(false); accounts.pause(true); panoramaBrowser.foreground(false); media.pause(); controlled.pause(); mpv.pause(); if (signalsReady) emitSignal("android_lifecycle", "pause") } }
+    override fun onMainResume() { if (!closed.get()) { activity?.volumeControlStream = AudioManager.STREAM_MUSIC; readingPages.foreground(true); dlnaForeground(true); systemVolume.foreground(true); musicPlayback.foreground(true); musicPreview.foreground(true); accounts.pause(false); panoramaBrowser.foreground(true); media.resume(); controlled.resume(); mpv.resume(); if (signalsReady) { sources.refreshLocalStorage(); emitSignal("android_lifecycle", "resume") } } }
     override fun onMainDestroy() { close() }
     override fun onGodotTerminating() { close() }
 
     private fun close() {
-        if (closed.compareAndSet(false, true)) { dlna_receiver_enable(false); archives.close(); originalCapture.close(); systemVolume.close(); favoritesTasks.close(); accounts.close(); panoramaBrowser.close(); panoramaRegions.close(); panoramaPictures.close(); panoramaOriginals.close(); musicPlayback.close(); musicPreview.close(); backgroundAudio.close(); photos.close(); photoPreloads.close(); photoPreviews.close(); pipImages.close(); PhotoDepthRuntime.release(); picker.close(); localAccess.close(); probe.shutdownNow(); media.shutdown(); controlled.shutdown(); mpv.shutdown(); rvm.close(); sources.close() }
+        if (closed.compareAndSet(false, true)) { dlna_receiver_enable(false); readingPages.close(); archives.close(); pdfs.close(); originalCapture.close(); embeddedCover.close(); systemVolume.close(); favoritesTasks.close(); accounts.close(); panoramaBrowser.close(); panoramaRegions.close(); panoramaPictures.close(); panoramaOriginals.close(); musicPlayback.close(); musicPreview.close(); backgroundAudio.close(); photos.close(); photoPreloads.close(); photoPreviews.close(); pipImages.close(); PhotoDepthRuntime.release(); picker.close(); localAccess.close(); probe.shutdownNow(); media.shutdown(); controlled.shutdown(); mpv.shutdown(); rvm.close(); sources.close() }
     }
 }

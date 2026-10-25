@@ -16,12 +16,23 @@ class Bridge extends "res://tests/test_file_mode_memory.gd".Host:
 	var rejected: Array = []
 	var published := {}
 	var revisions: Array = []
+	var navigation_result := 0
+	var navigation_offer := {}
+	var navigation_calls: Array = []
+	var navigation_state := {}
+	func dlna_receiver_navigate(id: int, direction: int) -> int:
+		navigation_calls.append([id, direction])
+		if navigation_result == 1:
+			offer = navigation_offer.duplicate(true); batch.append(offer.duplicate(true))
+		return navigation_result
 	func dlna_receiver_enable(value: bool) -> bool: enabled = value; return true
 	func dlna_receiver_poll() -> String:
 		var result := {"running": enabled, "events": batch.duplicate(), "pending_token": offer.get("token", 0), "active_token": active}
+		result.merge(navigation_state, true)
 		batch.clear(); return JSON.stringify(result)
 	func dlna_receiver_accept(id: int) -> String:
 		if id != offer.get("token", 0): return "{}"
+		navigation_state = {"has_previous": offer.get("has_previous", false), "has_next": offer.get("has_next", false)}
 		active = id; var result := JSON.stringify(offer); offer = {}; return result
 	func dlna_receiver_reject(id: int) -> void: rejected.append(id); offer = {}
 	func dlna_receiver_detach() -> void: active = 0; offer = {}; batch.clear()
@@ -143,16 +154,36 @@ func run() -> void:
 	var state := {"has_video": true, "title": "Phone video", "duration_ms": 120000, "position_ms": 12000, "geometry": 0, "stereo": false, "playing": true, "playback_state": "playing", "subtitle_browse_available": true}
 	state = Caps.apply(state, Caps.capabilities(video)); menu.state_provider = func(): return state
 	menu.show(); menu.refresh()
-	for target in [101, 103, menu.FAVORITE, menu.CAPTURE]:
+	for target in [101, menu.FAVORITE, menu.CAPTURE]:
 		check(not menu._buttons.any(func(b): return b.target == target), "Unsupported cast button hidden: %d" % target)
+	check(menu._buttons.any(func(b): return b.target == 103 and b.enabled), "Seekable cast shows the next-video ray button")
 	check(menu._buttons.any(func(b): return b.target == 112 and b.enabled), "2D to 3D remains on cast bar")
 	check(menu._buttons.any(func(b): return b.target == 100), "Library remains available")
 	check(menu._setting_choices("loop").get("choices", []).size() == 2, "Only single/repeat-one remain without cast queue")
-	var main := preload("res://scripts/main.gd").new(); main.video = video; main.playback_mode = "single"
+	var main := preload("res://scripts/main.gd").new(); main.video = video; main.playback_mode = "single"; main.cast_session = session
 	main._cycle_playback_mode()
 	check(main.playback_mode == "repeat_one" and video.loop_enabled, "Cast loop shortcut enters repeat-one without a directory queue")
 	main._cycle_playback_mode()
 	check(main.playback_mode == "single" and not video.loop_enabled, "Cast loop shortcut returns to single")
+	menu.action_requested.connect(main._on_menu_action)
+	main.playback_mode = "repeat_one"; video.loop_enabled = true; video.requested_play = false
+	var next_sequence: int = video.control.sequence
+	menu._activate(103)
+	check(video.control.sequence == next_sequence + 1 and video.control.target_ms == 119999, "Next button uses the same clamped endpoint as the timeline")
+	check(video.requested_play and not video.loop_enabled and main.playback_mode == "single", "Next resumes a paused cast and disables repeat-one")
+	check(session.token == 2 and video.cast_token == 2 and session.previous.position == 43000 and bridge.calls.size() == opens, "Next retains ownership, return context and current URL without reopening")
+	video.media.state = "ended"; video._waiting_first = false
+	poll(session)
+	check(bridge.published.state == "STOPPED" and session.token == 2, "Real EOF is published without detaching the sender")
+	main._navigate_video(1)
+	check(video.control.target_ms == 119999 and video.requested_play, "Next at EOF does not restart the current clip")
+	next_sequence = video.control.sequence
+	main._navigate_video(-1)
+	check(video.control.sequence == next_sequence, "Cast previous cannot navigate the local queue")
+	video.media.playback = {"details": {"seekable": "yes", "partially_seekable": "yes"}}
+	main._on_menu_action("next_video")
+	check(video.control.sequence == next_sequence, "Partially seekable casts reject next at execution")
+	video.media.playback = {"details": {"seekable": "yes"}}
 	main.free()
 	video.media.state = "ended"; video.requested_play = true
 	var eof_sequence: int = video.control.sequence
@@ -160,8 +191,11 @@ func run() -> void:
 	check(video.control.sequence > eof_sequence, "Phone Play after EOF restarts the current movie")
 	video.media.playback = {"details": {"seekable": "no"}}; video.control.duration_ms = 0
 	check(not video.seek_relative(1000) and not video.set_depth(true) and not video.set_playback_speed(2.0), "Live capability changes block actual seek, 3D and speed operations")
+	next_sequence = video.control.sequence
+	check(not video.skip_cast_to_end() and video.control.sequence == next_sequence, "Live next is rejected without issuing a seek")
 	state.cast = {"seek": false, "effects": false}; state.duration_ms = 0
 	menu.refresh(); check(not menu._can_seek() and not menu._can_depth(), "Live stream disables timeline and AI controls")
+	check(not menu._buttons.any(func(b): return b.target == 103), "Live stream hides next-video control")
 	menu.section = 1; menu.refresh()
 	check(not menu._buttons.any(func(b): return b.target == 453), "Live source has no speed slider")
 	var library := Library.new(); root.add_child(library)
@@ -171,6 +205,7 @@ func run() -> void:
 	check(video.local_uri.ends_with("original.mp4") and not video.requested_play, "Return restores original paused movie")
 	check(bridge.calls.back()[1] == 43000 and video.auto_depth, "Return restores exact in-memory position and 3D choice")
 	check(owner.video_queue.size() == 1 and owner.playback_mode == "sequence", "Return restores directory queue and playback mode")
+	check(not video.skip_cast_to_end(), "Cast endpoint action cannot affect a restored local source")
 	bridge.send(4); poll(session); session.command("accept")
 	bridge.batch.append({"action": "pause", "token": 2}); session.local_selection(); poll(session)
 	check(session.token == 0 and session.previous.is_empty() and bridge.active == 0, "Local selection revokes remote control and return context")
@@ -185,6 +220,44 @@ func run() -> void:
 	check(session.token == 0 and int(session.pending.get("token", 0)) == 6 and session.snapshot().pending.is_empty(), "Typing defers an idle cast instead of interrupting input")
 	owner.recent_menu.typing = false; poll(session)
 	check(session.token == 6, "Deferred cast starts once typing ends")
+	var return_context := session.previous.duplicate(true)
+	video.media.playback = {"details": {"seekable": "no"}}; video.control.duration_ms = 0
+	bridge.navigation_state = {"has_previous": false, "has_next": true}; poll(session)
+	state = Caps.apply(state, Caps.capabilities(video)); menu.section = 0; menu.refresh()
+	check(menu._buttons.any(func(b): return b.target == 103 and b.enabled), "Preset next is available even for an unseekable current stream")
+	bridge.navigation_result = 1
+	bridge.navigation_offer = {"action": "request", "token": 7, "from_token": 6, "uri": "http://192.168.1.20/next.mp4", "title": "Next", "playing": true, "has_previous": true}
+	next_sequence = video.control.sequence
+	check(session.navigate(1) and video.control.sequence == next_sequence, "Known next queues a URI transition without seeking to EOF")
+	poll(session)
+	check(session.token == 7 and bridge.active == 7 and video.local_uri.ends_with("next.mp4"), "Authorized navigation is accepted without a replacement prompt")
+	check(session.previous == return_context and video.requested_play, "Next preserves the original return context and starts playback")
+	state = Caps.apply(state, Caps.capabilities(video)); menu.refresh()
+	check(menu._buttons.any(func(b): return b.target == 101 and b.enabled), "Known history exposes previous-video control")
+	bridge.offer = {"action": "request", "token": 8, "from_token": 7, "uri": "http://192.168.1.20/movie.mp4", "title": "Previous", "playing": false, "has_next": true}
+	bridge.batch.append(bridge.offer.duplicate(true)); poll(session)
+	check(session.token == 8 and video.local_uri.ends_with("movie.mp4") and not video.requested_play, "Remote previous preserves paused intent across open")
+	video.control.duration_ms = 120000; video.media.playback = {"details": {"seekable": "no"}}
+	check(not video.skip_cast_to_end() and not video.requested_play, "Known next capability alone cannot enable endpoint fallback or unpause an unseekable source")
+	bridge.navigation_result = -1; next_sequence = video.control.sequence
+	check(not session.navigate(1) and video.control.sequence == next_sequence, "Busy or stale native navigation cannot fall back to an endpoint seek")
+	bridge.offer = {"action": "request", "token": 9, "from_token": 6, "uri": "http://192.168.1.20/stale.mp4", "title": "Stale"}
+	bridge.batch.append(bridge.offer.duplicate(true)); poll(session)
+	check(session.token == 8 and 9 in bridge.rejected, "Stale navigation cannot replace the current cast")
+	bridge.navigation_result = 0
+	video.control.duration_ms = 120000; video.media.playback = {"details": {"seekable": "yes"}}
+	bridge.batch.append({"action": "next_end", "token": 8}); poll(session)
+	check(video.control.target_ms == 119999 and video.requested_play, "Protocol Next without a preset uses the existing endpoint fallback")
+	video._pending_revision.clear(); video._waiting_first = false; video.control.pending = false; video.control.in_flight = 0
+	video.media.state = "ended"; video.media.error = ""
+	var final_ticket := {"source_epoch": 1, "frame_id": 7, "pts_us": 119990000}
+	video.media.last_pair = final_ticket.duplicate(); video.media.last_pair.slot_token = 11
+	video.media.playback = {"eof_source_resolved": true, "eof_pair_post_draw": true, "eof_source_ticket": final_ticket, "eof_presented_slot": 11}
+	poll(session); check(bridge.published.ended, "Verified presented EOF permits native preset continuation")
+	video.loop_enabled = true; poll(session)
+	check(not bridge.published.ended, "Repeat-one suppresses automatic preset continuation")
+	video.loop_enabled = false; video.media.state = "failed"; poll(session)
+	check(not bridge.published.ended and bridge.published.error, "Playback failure cannot consume the preset as natural EOF")
 	session.finish()
 	session.close(); menu.free(); library.free(); video.free(); owner.dispose()
 	await process_frame

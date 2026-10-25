@@ -32,12 +32,12 @@ uniform vec3 apex = vec3(0.0, 0.0, -0.085);
 uniform float apex_radius = 0.016;
 uniform float base_radius = 0.112;
 uniform vec4 accent : source_color = vec4(0.54, 0.93, 0.77, 1.0);
-uniform vec4 secondary : source_color = vec4(0.36, 0.84, 1.0, 1.0);
+uniform vec4 secondary : source_color = vec4(0.54, 0.93, 0.77, 1.0);
 uniform vec4 warning : source_color = vec4(1.0, 0.42, 0.38, 1.0);
 uniform int mark_count = 0;
 uniform float marks[16];
 
-const vec3 GLASS = vec3(0.008, 0.022, 0.03);
+uniform vec4 glass : source_color = vec4(0.0162, 0.0279, 0.0231, 1.0);
 const vec3 AMBER = vec3(1.0, 0.76, 0.36);
 
 varying float cone_v;
@@ -99,13 +99,13 @@ vec4 face(vec2 uv) {
 	float flick = reveal < 1.0 ? 0.75 + 0.25 * step(0.4, hash(floor(t * 30.0))) : 1.0;
 	vec4 c = vec4(0.0);
 	float plate = 1.0 - smoothstep(0.95 - aa, 0.95 + aa, r);
-	add(c, GLASS * 0.8, plate * 0.72 * reveal);
+	add(c, glass.rgb * 0.8, plate * 0.72 * reveal);
 	float disc = 1.0 - smoothstep(0.66 - aa, 0.66 + aa, r);
 	vec2 h = p * 9.0;
 	h.x *= 1.1547; h.y += mod(floor(h.x), 2.0) * 0.5;
 	vec2 cell = abs(fract(h) - 0.5);
 	float lattice = smoothstep(0.43, 0.5, max(cell.x * 1.5 + cell.y, cell.y * 2.0));
-	add(c, GLASS + secondary.rgb * 0.06 * (1.0 - r), disc * 0.85 * reveal);
+	add(c, glass.rgb + secondary.rgb * 0.06 * (1.0 - r), disc * 0.85 * reveal);
 	add(c, secondary.rgb, line(r - 0.66, 0.006, aa) * 0.35 * reveal);
 	add(c, secondary.rgb, disc * lattice * 0.07 * reveal * (1.0 - r));
 	float behind = fract(fract(t * 0.25) - a);
@@ -160,7 +160,7 @@ vec4 ring(vec2 uv) {
 	float t = TIME;
 	vec4 c = vec4(0.0);
 	float body = 1.0 - smoothstep(0.85, 1.0, abs(y));
-	add(c, GLASS, body * 0.5);
+	add(c, glass.rgb, body * 0.5);
 	// The whole track must read as a ring even where nothing has played yet.
 	add(c, secondary.rgb, glow(abs(y) - 0.9, 0.25) * (0.16 + hover * 0.3));
 	float rails = line(abs(y) - 0.86, 0.04, aa);
@@ -217,7 +217,7 @@ vec4 button(vec2 uv) {
 	vec4 c = vec4(0.0);
 	float lit = mix(0.35, 1.0, enabled);
 	float disc = 1.0 - smoothstep(0.72 - aa, 0.72 + aa, r);
-	add(c, GLASS + accent.rgb * 0.12 * hover, disc * (0.8 + hover * 0.1));
+	add(c, glass.rgb + accent.rgb * 0.12 * hover, disc * (0.8 + hover * 0.1));
 	float crescent = (1.0 - smoothstep(0.0, 0.05, abs(length(p - vec2(0.0, -0.22)) - 0.86))) * smoothstep(0.1, 0.5, p.y) * disc;
 	add(c, vec3(1.0), crescent * 0.12);
 	add(c, accent.rgb, disc * glow(r - 0.72, 0.2) * 0.12 * (1.0 + hover * 2.0) * enabled);
@@ -301,7 +301,7 @@ vec4 plate(vec2 uv) {
 		add(c, secondary.rgb, line(r - 0.8, 0.006, aa) * 0.25);
 	} else {
 		// Clear in the middle so the beam stays visible through the disc.
-		add(c, GLASS, (1.0 - smoothstep(0.96 - aa, 0.96 + aa, r)) * mix(0.06, 0.28, smoothstep(0.4, 0.95, r)));
+		add(c, glass.rgb, (1.0 - smoothstep(0.96 - aa, 0.96 + aa, r)) * mix(0.06, 0.28, smoothstep(0.4, 0.95, r)));
 		add(c, secondary.rgb, glow(r - 0.97, 0.04) * 0.25 + line(r - 0.97, 0.006, aa) * 0.7);
 		float tick = 1.0 - smoothstep(0.004, 0.004 + aa, abs(fract(a * 72.0 + 0.5) - 0.5) / 72.0 * TAU * r);
 		add(c, secondary.rgb, tick * step(0.9, r) * step(r, 0.95) * 0.5);
@@ -324,7 +324,7 @@ vec4 tag(vec2 uv) {
 	float d = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - radius;
 	float aa = fwidth(d) * 1.2;
 	vec4 c = vec4(0.0);
-	add(c, GLASS, (1.0 - smoothstep(-aa, aa, d)) * 0.85);
+	add(c, glass.rgb, (1.0 - smoothstep(-aa, aa, d)) * 0.85);
 	add(c, accent.rgb, line(d, 0.00035, aa) * 0.95);
 	add(c, accent.rgb, glow(max(d, 0.0), 0.0012) * 0.35 * step(0.0, d));
 	c.a *= reveal;

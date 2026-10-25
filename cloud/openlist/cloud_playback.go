@@ -109,7 +109,19 @@ func (lease *cloudPlaybackLease) link(ctx context.Context, header http.Header) (
 	}
 	providerHeader := header.Clone()
 	providerHeader.Del("X-Thru3D-Archive-Read")
-	link, err := lease.storage.Link(ctx, lease.file, model.LinkArgs{Header: providerHeader})
+	var link *model.Link
+	var err error
+	if recovered, ok := lease.file.(*comicRecoveredSource); ok && recovered.link != nil {
+		if time.Since(recovered.created) < time.Minute {
+			link = recovered.link
+		} else {
+			recovered.link.Close()
+		}
+		recovered.link = nil // Only the first ticket; normal expiry/denial refresh stays intact.
+	}
+	if link == nil {
+		link, err = lease.storage.Link(ctx, lease.file, model.LinkArgs{Header: providerHeader})
+	}
 	if err != nil {
 		return nil, err
 	}

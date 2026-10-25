@@ -8,6 +8,7 @@
 -keep class * implements org.vrpassthroughplayer.plugin.VoiceCloneNative$ScanListener { *; }
 -keep class org.vrpassthroughplayer.plugin.OriginalClipNative { *; }
 -keep class org.vrpassthroughplayer.plugin.PipScreenshotNative { *; }
+-keep class org.vrpassthroughplayer.plugin.PipClipNative { *; }
 -keep class org.vrpassthroughplayer.plugin.LiveCaptureNative { *; }
 -keep class org.vrpassthroughplayer.plugin.TiffPhotoNative { *; }
 -keep class org.vrpassthroughplayer.plugin.HdrPhotoNative { *; }

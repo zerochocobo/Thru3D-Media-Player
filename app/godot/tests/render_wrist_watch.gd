@@ -112,6 +112,10 @@ func run() -> void:
 	image = await shot("expanded", 70.0, view)
 	check(lit_pixels(image) > 300, "Projection draws its cone, ring and keys")
 	await shot("expanded-wide", 90.0, view)
+	for option in Watch.Palette.OPTIONS:
+		watch.set_color(option.value)
+		await shot("color-" + option.value, 70.0, view)
+	watch.set_color(Watch.Palette.DEFAULT)
 	var eye := head
 	head = Transform3D(Basis.IDENTITY, face_origin + side * 0.45 + Vector3.UP * 0.12 + to_eye * 0.1)
 	await shot("side", 50.0, face_origin + normal * 0.07)

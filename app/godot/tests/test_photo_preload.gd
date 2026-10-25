@@ -29,7 +29,7 @@ class Host extends RefCounted:
 	var pair_paths := {}
 	var runtime_releases := 0
 	func has_java_method(method: String) -> bool:
-		return method in ["preload_photo", "activate_photo", "prepare_photo_depth", "prepare_preloaded_photo_depth", "cancel_preloaded_photo_depth"] \
+		return method in ["preload_photo", "activate_photo", "prepare_photo_depth", "prepare_preloaded_photo_depth", "cancel_preloaded_photo_depth", "discard_photo_depth"] \
 			or method == "release_photo_depth_runtime" \
 			or (use_stereo and method in ["prepare_photo_3d", "prepare_preloaded_photo_3d", "update_photo_3d_strength"])
 	func make_file(uri: String) -> Dictionary:
@@ -62,6 +62,10 @@ class Host extends RefCounted:
 		if pair_paths.has(id): DirAccess.remove_absolute(str(pair_paths[id])); pair_paths.erase(id)
 		depth_pending.erase(id); background_depth.erase(id)
 	func cancel_photo(id: int) -> void: cancelled.append(id); release_photo(id)
+	func discard_photo_depth(id: int) -> void:
+		depth_pending.erase(id); background_depth.erase(id)
+		if depth_paths.has(id): DirAccess.remove_absolute(str(depth_paths[id])); depth_paths.erase(id)
+		if pair_paths.has(id): DirAccess.remove_absolute(str(pair_paths[id])); pair_paths.erase(id)
 	func prepare_photo_depth(id: int) -> bool:
 		if not held.has(id): return false
 		if depth_pending.has(id): return true
@@ -132,9 +136,6 @@ func preloads_ready(photo: Node3D, host: RefCounted) -> bool:
 		if not photo._prefetched.has(target): return false
 		var entry: Dictionary = photo._prefetched[target]
 		if not entry.get("decoded", false): return false
-		if photo.auto_depth:
-			if not entry.has("depth_data"): return false
-			if host.use_stereo and not is_equal_approx(float(entry.depth_data.get("strength", -1)), photo.depth_strength): return false
 	return true
 
 func _run() -> void:
@@ -243,132 +244,70 @@ func wait_depth(photo: Node3D) -> void:
 	while photo._pending_display.is_empty() and Time.get_ticks_msec() < deadline: await create_timer(.01).timeout
 	check(not photo._pending_display.is_empty(), "Decoded photo waits for its conversion result")
 
+func current_depth(photo: Node3D, host: RefCounted) -> void:
+	host.complete_depth(photo._request)
+	var until := Time.get_ticks_msec()+4000
+	while not photo.depth_enabled and Time.get_ticks_msec()<until: await create_timer(.01).timeout
+	check(photo.depth_enabled, "Current page conversion completes")
+
 func check_converted(entries: Array[Dictionary]) -> void:
-	var photo := Photo.new(); photo.auto_depth = true; photo.history_enabled = false
-	photo.mode_memory = Memory.new(folder.path_join("converted_modes"))
-	root.add_child(photo)
-	var host := Host.new(); host.folder = ProjectSettings.globalize_path(folder)
-	host.ready = photo._on_ready; host.depth = photo._on_depth; host.preload_depth = photo._on_prefetch_depth; photo.platform = host
-	photo.open_image(entries[0].uri, entries[0].title, entries)
-	await wait_depth(photo)
-	check(photo.loading and not photo.panel.visible and photo.index == -1, "First photo cannot appear as 2D while conversion is pending")
-	host.complete_depth(photo._request); await settle(photo)
-	check(photo.depth_enabled and photo.material.get_shader_parameter("photo_depth"), "Initial display starts with its colour and depth together")
-	await warm(photo,host)
-	var original_id: int = photo._display_request
-	var original_value: float = host.depth_values[original_id]
-	var next_id: int = photo._prefetched[3].id
-	var next_value: float = host.depth_values[next_id]
-	var calls: int = host.depth_calls
-	photo.navigate(-1)
-	check(not photo.loading and photo.index == 3 and photo.depth_enabled and host.depth_calls == calls, "Preconverted neighbour switches immediately without another inference")
-	check(is_equal_approx(photo._depth_texture.get_image().get_pixel(0,0).r, next_value), "Incoming photo uses its own preloaded depth map")
-	check(photo._departing.material_override.get_shader_parameter("photo_depth") \
-		and is_equal_approx(photo._departing.material_override.get_shader_parameter("depth_texture").get_image().get_pixel(0,0).r, original_value),
-		"Departing transition keeps the previous photo's depth")
-	photo.set_hand_scale(2)
-	var depth_texture: Texture2D = photo._depth_texture
-	photo.pan_hand(Vector2(.1,.05))
-	check(photo.depth_enabled and photo._depth_texture == depth_texture and host.depth_calls == calls, "Whole-photo zoom and pan preserve depth without reinference")
-	photo.finish_transition()
-	photo.navigate(1)
-	check(photo.index == 0 and photo.depth_enabled and is_equal_approx(photo._depth_texture.get_image().get_pixel(0,0).r, original_value), "Wrapping back restores original depth with its colour")
-	photo.finish_transition()
-	photo._drop_prefetch(1)
-	photo.navigate(1)
-	await wait_depth(photo)
-	check(photo.index == 0 and photo.depth_enabled and photo.loading, "Uncached conversion keeps the previous 3D photo visible")
-	photo._on_prefetch_depth(photo._request, '{"state":"error"}')
-	check(photo.loading and not photo._pending_display.is_empty(), "Late background error cannot fail a foreground retry with the same file ID")
-	host.complete_depth(photo._request, false); await process_frame
-	check(photo.index == 0 and photo.depth_enabled and photo.error == "3D unavailable" and not photo.loading, "Conversion failure never flashes a new 2D photo")
-	photo.close_image(); photo.queue_free(); await process_frame
-	check(host.held.is_empty() and host.depth_paths.is_empty(), "Converted colour and depth caches release together")
+	await check_current_only(entries, false)
 
 func check_baked(entries: Array[Dictionary]) -> void:
-	var photo := Photo.new(); photo.auto_depth = true; photo.history_enabled = false
-	photo.mode_memory = Memory.new(folder.path_join("baked_modes")); root.add_child(photo)
-	var host := Host.new(); host.use_stereo = true; host.folder = ProjectSettings.globalize_path(folder)
-	host.ready = photo._on_ready; host.depth = photo._on_depth; host.preload_depth = photo._on_prefetch_depth; photo.platform = host
-	photo.open_image(entries[0].uri,entries[0].title,entries)
-	await wait_depth(photo)
-	check(not photo.panel.visible, "Native first photo remains hidden until repaired eyes decode")
-	host.complete_depth(photo._request); await settle(photo)
-	check(photo.depth_enabled and photo._stereo_texture != null and photo.material.get_shader_parameter("photo_stereo"), "Native photo atomically starts with a repaired stereo pair")
-	await warm(photo,host)
-	var calls: int = host.depth_calls
-	var original: Texture2D = photo._stereo_texture
-	photo.navigate(-1)
-	check(photo.index == 3 and not photo.loading and host.depth_calls == calls and photo._stereo_texture != original, "Preloaded generated eyes wrap immediately with the matching source")
-	check(photo._departing.material_override.get_shader_parameter("stereo_texture") == original and photo._departing.material_override.get_shader_parameter("photo_stereo"), "Departing transition retains its own repaired eyes")
-	photo.finish_transition(); original = photo._stereo_texture
-	photo.set_hand_scale(2); photo.pan_hand(Vector2(.1,.05))
-	check(photo._stereo_texture == original and host.depth_calls == calls, "Pinch pan/zoom reuse repaired eyes")
-	photo.set_depth_strength(0.75)
-	check(photo._stereo_texture == original, "Strength adjustment keeps the previous repaired pair during rebuilding")
-	await create_timer(.2).timeout
-	var id: int = photo._display_request
-	check(host.strengths[id] == 0.75, "Debounced strength rebuild requests the selected strength")
-	host.complete_depth(id)
-	var until := Time.get_ticks_msec()+4000
-	while photo.snapshot().render_strength != 0.75 and Time.get_ticks_msec()<until: await create_timer(.01).timeout
-	check(photo.snapshot().render_strength == 0.75 and photo._stereo_texture != original, "Latest rebuilt pair replaces the old pair after decoding")
-	await warm(photo,host)
-	check(photo._neighbors(photo.index).all(func(target): return is_equal_approx(float(photo._prefetched[target].depth_data.strength), .75)),
-		"Strength changes refresh preloaded stereo pairs to the selected value")
-	photo.set_projection(3)
-	check(not photo.material.get_shader_parameter("photo_stereo"), "Panorama bypasses generated eyes")
-	photo.close_image(); photo.queue_free(); await process_frame
-	check(host.held.is_empty() and host.pair_paths.is_empty(), "Generated pair files release with their source")
-	check(host.runtime_releases > 0, "Closing the viewer releases the resident photo model")
+	await check_current_only(entries, true)
 
-func check_joined(entries: Array[Dictionary], baked: bool) -> void:
+func check_current_only(entries: Array[Dictionary], baked: bool) -> void:
 	var photo := Photo.new(); photo.auto_depth = true; photo.history_enabled = false
-	photo.mode_memory = Memory.new(folder.path_join("joined_%s_modes" % baked)); root.add_child(photo)
+	photo.mode_memory = Memory.new(folder.path_join("current_%s_modes" % baked)); root.add_child(photo)
 	var host := Host.new(); host.use_stereo = baked; host.folder = ProjectSettings.globalize_path(folder)
 	host.ready = photo._on_ready; host.depth = photo._on_depth; host.preload_depth = photo._on_prefetch_depth; photo.platform = host
 	photo.open_image(entries[0].uri,entries[0].title,entries)
 	await wait_depth(photo); host.complete_depth(photo._request); await settle(photo)
-	photo.finish_transition()
-	var deadline := Time.get_ticks_msec()+4000
-	while photo._prefetch_depth_request == 0 and Time.get_ticks_msec()<deadline:
-		host.complete(); photo._pump_prefetch(); await create_timer(.01).timeout
-	var id: int = photo._prefetch_depth_request
-	check(id != 0 and host.depth_pending.has(id), "Background conversion is in flight before promotion")
-	while photo._thread: await create_timer(.01).timeout
-	photo.set_process(false)
-	photo._prefetched[1].erase("result") # Force colour decoding to finish after the joined depth.
+	check(photo.depth_enabled, "First selected photo still supports 3D")
+	await warm(photo,host)
+	var previous_id: int = photo._display_request
 	var calls: int = host.depth_calls
+	check(calls == 1 and host.background_depth.is_empty(), "Warming neighbours never runs 3D")
+	photo.navigate(-1)
+	check(photo.index == 3 and not photo.loading and not photo.depth_enabled and host.depth_calls == calls + 1, "Cached colour displays before current-page conversion")
+	check(photo._stereo_texture == null and photo._depth_texture == null, "Old GPU depth/stereo are not used by incoming colour")
+	check(not host.depth_paths.has(previous_id) and not host.pair_paths.has(previous_id), "Previous generated files are discarded")
+	check(photo._prefetched.values().all(func(entry): return not entry.has("depth_data") and not entry.get("result", {}).has("depth_data")), "No neighbouring entry retains generated data")
+	await current_depth(photo,host)
+	var current: Texture2D = photo._stereo_texture if baked else photo._depth_texture
+	photo.set_hand_scale(2); photo.pan_hand(Vector2(.1,.05))
+	check((photo._stereo_texture if baked else photo._depth_texture) == current and host.depth_calls == calls + 1, "Zoom/pan reuse only the currently displayed 3D")
+	if baked:
+		photo.set_depth_strength(.75); await create_timer(.2).timeout
+		check(host.strengths[photo._display_request] == .75, "Current strength adjustment remains supported")
+		host.complete_depth(photo._display_request)
+		var until := Time.get_ticks_msec()+4000
+		while photo.snapshot().render_strength != .75 and Time.get_ticks_msec()<until: await create_timer(.01).timeout
+		check(photo.snapshot().render_strength == .75, "Rebuilt current pair uses the new strength")
+	await warm(photo,host)
+	calls = host.depth_calls
 	photo.navigate(1)
-	check(photo._promoted_depth_request == id and host.depth_pending.has(id) and host.depth_calls == calls,
-		"Selecting a converting neighbour retains its original work")
-	if baked:
-		photo.set_depth_strength(.65)
-		check(is_equal_approx(float(host.strengths[id]), .65), "Promoted work receives the latest strength without restarting depth")
-	host.complete_depth(id)
-	await process_frame
-	if baked:
-		photo._process_depth_jobs()
-		while photo._depth_thread and photo._depth_thread.is_alive(): await create_timer(.01).timeout
-		photo._process_depth_jobs()
-	check(int(photo._incoming_depth_result.get("id", 0)) == id, "Early joined result waits for its matching colour decoder")
-	photo.set_process(true); await settle(photo)
-	check(photo.index == 1 and photo.depth_enabled and host.depth_calls == calls,
-		"Joined preload becomes the displayed photo with no duplicate conversion")
-	if baked: check(is_equal_approx(float(photo.snapshot().render_strength), .65), "Promoted eyes use the new strength")
-	photo.finish_transition()
-	deadline = Time.get_ticks_msec()+4000
-	while photo._prefetch_depth_request == 0 and Time.get_ticks_msec()<deadline:
-		host.complete(); photo._pump_prefetch(); await create_timer(.01).timeout
-	var late: int = photo._prefetch_depth_request
-	photo.navigate(1); photo.navigate(-1)
-	photo._on_prefetch_depth(late, '{"state":"error"}')
-	check(photo.index == 1 and not photo.loading and photo.depth_enabled, "Reversing a promoted selection rejects its late result and keeps the displayed photo")
-	photo.finish_transition()
-	photo._navigation_direction = -1
-	check(photo._neighbors(1) == [0,2], "Previous direction gets preload priority")
+	check(photo.index == 0 and not photo.loading and not photo.depth_enabled and host.depth_calls == calls+1, "Returning reuses colour but recomputes 3D")
+	host.complete_depth(photo._request,false); await process_frame
+	check(photo.panel.visible and not photo.loading and not photo.depth_enabled and photo.depth_error == "3D unavailable", "Failed current 3D leaves colour visible")
 	photo.close_image(); photo.queue_free(); await process_frame
-	check(host.held.is_empty() and host.depth_pending.is_empty(), "Joined work and source ownership release together")
+	check(host.held.is_empty() and host.depth_paths.is_empty() and host.pair_paths.is_empty(), "Close releases sources and current 3D")
+
+func check_joined(entries: Array[Dictionary], baked: bool) -> void:
+	var photo := Photo.new(); photo.auto_depth = true; photo.history_enabled = false
+	photo.mode_memory = Memory.new(folder.path_join("late_%s_modes" % baked)); root.add_child(photo)
+	var host := Host.new(); host.use_stereo = baked; host.folder = ProjectSettings.globalize_path(folder)
+	host.ready = photo._on_ready; host.depth = photo._on_depth; host.preload_depth = photo._on_prefetch_depth; photo.platform = host
+	photo.open_image(entries[0].uri,entries[0].title,entries)
+	await wait_depth(photo); host.complete_depth(photo._request); await settle(photo); await warm(photo,host)
+	photo.navigate(1)
+	var late: int = photo._request
+	photo.navigate(-1)
+	photo._on_prefetch_depth(late, '{"state":"error"}')
+	check(photo.index == 0 and not photo.loading and photo._depth_queue.is_empty(), "Rapid reversal ignores stale neighbour conversions")
+	await current_depth(photo,host)
+	photo.close_image(); photo.queue_free(); await process_frame
+	check(host.held.is_empty() and host.depth_pending.is_empty(), "Rapid turns release sources and pending work")
 
 func check_recent_files(entries: Array[Dictionary]) -> void:
 	var photo := Photo.new(); photo.auto_depth = true; photo.history_enabled = false
@@ -383,10 +322,10 @@ func check_recent_files(entries: Array[Dictionary]) -> void:
 	check(photo._recent_files.has(0) and int(photo._recent_files[0].id) == original, "Recently viewed source survives outside the adjacent window")
 	check(not photo._recent_files[0].has("result") and not photo._recent_files[0].has("depth_data"), "Recent cache retains files without decoded images")
 	var opens: int = host.opens; var models: int = host.model_calls
-	photo._select(0,-1); await wait_depth(photo)
-	host.complete_depth(photo._request); await settle(photo)
-	check(photo.index == 0 and photo._display_request == original and host.opens == opens and host.model_calls == models,
-		"Returning to a recent file reuses its source and depth without transfer or model inference")
+	photo._select(0,-1); await settle(photo)
+	await current_depth(photo,host)
+	check(photo.index == 0 and photo._display_request == original and host.opens == opens and host.model_calls == models+1,
+		"Returning to a recent file reuses its source but regenerates discarded depth")
 	photo.finish_transition()
 	var neighbours: Array = photo._neighbors(photo.index)
 	await warm(photo,host)

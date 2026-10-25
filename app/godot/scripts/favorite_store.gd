@@ -57,6 +57,9 @@ func load_saved() -> void:
 
 func contains(uri: String) -> bool: return has_record(uri) and entries[key_for(uri)].get("favorite", true)
 func has_record(uri: String) -> bool: return not locked and entries.has(key_for(uri))
+func has_container_record(uri: String) -> bool:
+	if has_record(uri): return true
+	return not locked and entries.values().any(func(entry): return entry.get("location", {}).get("type") == "archive" and entry.location.get("source_uri") == uri)
 func can_undo() -> bool: return not locked and not undo.is_empty() and Time.get_ticks_msec() < int(undo.until)
 func lookup(uri: String) -> Dictionary: return entries.get(key_for(uri), {}).duplicate(true) if not locked else {}
 func list_favorites() -> Array[Dictionary]:
@@ -108,6 +111,17 @@ func toggle(uri: String, title: String, kind: String, location: Dictionary = {})
 
 func remove(uri: String) -> bool:
 	return remove_many([uri])
+
+func refresh_container_identity(uri: String, identity: Dictionary) -> bool:
+	var hint := Location.cloud_file(identity, uri)
+	if locked or hint.is_empty(): return false
+	var proposed := entries.duplicate(true)
+	var changed := false
+	for record in proposed.values():
+		var location: Dictionary = record.get("location", {})
+		if location.get("type") == "archive" and location.get("source_uri") == uri and location.get("source_file", {}) != hint:
+			location.source_file = hint.duplicate(); changed = true
+	return _save(proposed) if changed else true
 
 func remove_many(uris: Array) -> bool:
 	var removed := []
@@ -249,9 +263,17 @@ func reset_locked() -> bool:
 	lock_changed.emit(); changed.emit(); return true
 
 func relocate(old_uri: String, new_uri: String, title: String) -> bool:
-	if not has_record(old_uri): return true
+	if not has_container_record(old_uri): return true
 	var proposed := entries.duplicate(true)
-	var entry := lookup(old_uri); proposed.erase(key_for(old_uri))
-	entry.uri = new_uri; entry.title = title; entry.location = Location.infer(new_uri)
-	proposed[key_for(new_uri)] = entry
+	if has_record(old_uri):
+		var entry := lookup(old_uri); proposed.erase(key_for(old_uri))
+		entry.uri = new_uri; entry.title = title; entry.location = Location.infer(new_uri)
+		proposed[key_for(new_uri)] = entry
+	for key in entries:
+		var entry: Dictionary = entries[key]
+		if entry.get("location", {}).get("type") != "archive" or entry.location.get("source_uri") != old_uri: continue
+		entry = entry.duplicate(true); proposed.erase(key)
+		entry.location.source_uri = new_uri; entry.location.source_title = title; entry.location.parent = Location.infer(new_uri)
+		entry.uri = Location.folder_uri(entry.location); entry.title = Location.folder_title(entry.location)
+		proposed[key_for(entry.uri)] = entry
 	return _save(proposed)

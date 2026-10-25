@@ -2,7 +2,7 @@ extends SceneTree
 
 const Library := preload("res://scripts/library_menu.gd")
 const I18n := preload("res://scripts/i18n.gd")
-const PANORAMA_HINT := "When viewing a 360° panorama, use image settings to set it as this player's background."
+const PANORAMA_HINT := "Photo mode saves its background separately. Change it from the photo toolbar."
 var checks := 0
 var failures: Array[String] = []
 var events: Array = []
@@ -64,14 +64,21 @@ func _run() -> void:
 	menu.position = Vector3(0, 0, -2.3)
 	menu.toggle()
 	menu.set_process(false)
-	check(row(menu, "background").choices.any(func(option): return option.value == "cinema" and option.label == "Grand cinema (Test)"), "Background choices include the giant-screen auditorium")
+	check(row(menu, "background").choices.any(func(option): return option.value == "cinema" and option.label == "Grand cinema"), "Background choices include the giant-screen auditorium")
 	check(not row(menu, "background_yaw").is_empty() and not row(menu, "background_brightness").is_empty(), "Panorama controls remain available")
-	check(has_label(menu, I18n.t(PANORAMA_HINT)), "Panorama hint remains on panorama backgrounds")
+	check(has_label(menu, I18n.t(PANORAMA_HINT)), "Photo independence hint is visible on global panorama backgrounds")
 	tap(menu, choice_target(menu, "background", null, "open"))
 	tap(menu, choice_target(menu, "background", "cinema"))
 	check(events.back() == ["background", "cinema"], "Same-hand ray release chooses the cinema background")
 	check(row(menu, "background_yaw").is_empty() and row(menu, "background_brightness").is_empty(), "Cinema hides unsupported panorama direction and brightness")
-	check(not has_label(menu, I18n.t(PANORAMA_HINT)), "Cinema hides the panorama-only hint")
+	check(not has_label(menu, I18n.t(PANORAMA_HINT)), "Cinema keeps its full controls; background independence remains in the info tooltip")
+	check(row(menu, "cinema_viewing_brightness").value == "low", "Viewing brightness defaults to the original darkest tier")
+	for level in ["soft", "dim", "low"]:
+		tap(menu, choice_target(menu, "cinema_viewing_brightness", level))
+		check(events.back() == ["cinema_viewing_brightness", level], "Viewing brightness uses the real setting dispatch: " + level)
+	check(row(menu, "cinema_screen_light").value == true, "Screen ambient light defaults on")
+	tap(menu, choice_target(menu, "cinema_screen_light", false))
+	check(events.back() == ["cinema_screen_light", false], "Ray toggles screen light independently")
 	check(row(menu, "cinema_interaction").choices.map(func(option): return option.value) == ["watch", "move"], "Cinema exposes watch and teleport without seat selection")
 	var before := events.size()
 	menu.stick_scroll(-1.0, 0.4)
@@ -115,7 +122,7 @@ func _run() -> void:
 		I18n.use(language)
 		menu.refresh()
 		check(row(menu, "cinema_interaction").title == I18n.t("Cinema interaction"), "Interaction title follows " + language)
-		for text in ["Grand cinema (Test)", "Cinema interaction", "Watch", "Free movement", "Return to start", "Auto lights", "Lights on", "Lights off", "Loading cinema…", "Cinema unavailable"]:
+		for text in ["Grand cinema", "Cinema interaction", "Screen ambient light", "Viewing brightness", "Soft light", "Dim", "Low light", "Watch", "Free movement", "Return to start", "Auto lights", "Lights on", "Lights off", "Loading cinema…", "Cinema unavailable"]:
 			check(language == "en" or I18n.t(text) != text, "Translation exists: " + language + " " + text)
 		for value in ["watch", "move"]:
 			var control := button(menu, choice_target(menu, "cinema_interaction", value))

@@ -139,3 +139,7 @@ Both normal Debug and Release now enable Grand cinema (Test), and Assert-CinemaP
 ## 0.13.3 additional source inputs
 
 Normal narration preparation also requires the separately supplied pinned Silero VAD payload; see [model preparation](MODELS.md). Current cinema resources include ten mobile textures and the film-driven screen-light mask; regenerate the full [cinema scene](EXPERIMENTAL_CINEMA.md) before a complete build. The source export supplies these preparation and verification recipes without model/scene payloads.
+
+## Comic OCR inputs
+
+Complete 0.13.5 builds also require two size/hash-pinned PP-OCRv6 Small files under ignored `models/comic-ocr/v6-small/`; see [OCR scope](COMIC_READING.md). Gradle and the packaging guard reject missing/corrupt files. Source-only tests use fake OCR. Rebuild the current mpv cadence patch with its manifest/recipe.

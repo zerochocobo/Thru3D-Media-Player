@@ -66,7 +66,7 @@ func _run() -> void:
 	menu._activate(Library.TAB_BASE + Library.VIDEO_TAB)
 	menu.release_pointer("left_hand", point, -menu.global_basis.z, true)
 	check(events.size() == 1 and menu.choices.capture.is_empty() and menu.choices.opened.is_empty(), "Tab switch cancels old dropdown ownership and stale release")
-	check(menu.rows.size() == 11 and menu.rows[0].choices.size() == 2 and menu.rows[1].compact
+	check(menu.rows[0].key == "seek_mode" and menu.rows[0].choices.size() == 2 and menu.rows[1].key == "output_width" and menu.rows[1].compact
 		and menu.rows.any(func(row): return row.get("key", "") == "subtitle_direction"), "Video groups compact playback choices and subtitle controls")
 	check(menu.rows[2].key == "alpha_profile" and menu.rows[2].compact and menu.rows[2].value == "320x320"
 		and menu.rows[2].choices.map(func(o): return o.value) == ["256x256", "320x320", "384x384", "512x512"]
@@ -102,6 +102,63 @@ func _run() -> void:
 	menu.update_pointer("left_hand", Vector3.ZERO, Vector3.ZERO, false)
 	menu.release_pointer("left_hand", point, -menu.global_basis.z, true)
 	check(state.background == "belfast", "Tracking loss cancels a pending background choice")
+	menu._activate(Library.TAB_BASE + Library.DISPLAY_TAB)
+	check(is_instance_valid(menu._settings_scroll_hint) and menu._settings_scroll_hint.visible,
+		"Overflowing settings show a downward cue on first opening")
+	for position in [0.0, 0.34, 0.66, menu._max_scroll()]:
+		menu._set_scroll(position)
+		var hint: MeshInstance3D = menu._settings_scroll_hint
+		check(hint.visible == (position < menu._max_scroll()), "Down cue disappears exactly at the end")
+		if not hint.visible:
+			var stopped := hint.position.y
+			menu._animate_settings_scroll_hint(1.0)
+			check(hint.position.y == stopped and menu._settings_scroll_hint_time == 0, "At the end the hidden cue stops animating")
+			continue
+		var positions: Array[float] = []
+		menu._settings_scroll_hint_time = 0.0
+		for phase in 4:
+			menu._animate_settings_scroll_hint(Library.SCROLL_HINT_PERIOD / 4)
+			positions.append(hint.position.y)
+			var top: float = hint.position.y + hint.mesh.size.y / 2
+			var hint_bottom: float = hint.position.y - hint.mesh.size.y / 2
+			for button in menu._buttons:
+				if not button.node.visible: continue
+				if menu._row_target(int(button.get("list_row", button.target))):
+					var bottom: float = menu.to_local(button.node.global_position).y - button.rect.size.y / 2
+					check(bottom - top >= Library.SCROLL_HINT_GAP - 0.0001, "Floating cue stays clear of every fractional last-row control")
+				elif button.target in [Library.RESTART_APP, Library.QUIT_APP]:
+					check(hint_bottom > button.rect.end.y, "Lowest animation position also clears the footer buttons")
+		check(is_equal_approx(positions.max() - positions.min(), 0.005), "Floating is limited to 5 mm total travel")
+		if position == 0:
+			check(positions.min() > -0.43, "The cue stays closer to the settings than the previous -0.451 m position")
+		var ray := hint.to_global(Vector3(0, 0, 1))
+		var with_hint: Dictionary = menu.ray_hit(ray, -menu.global_basis.z)
+		hint.visible = false
+		check(menu.ray_hit(ray, -menu.global_basis.z).get("target", -1) == with_hint.get("target", -1), "Scroll cue never captures a ray")
+		hint.visible = true
+	menu._set_scroll(0)
+	tap(menu, target(menu, "watch_color", "violet"))
+	check(state.watch_color == "violet" and menu._settings_scroll_hint.visible, "Last visible row remains operable beside the scroll cue")
+	menu._set_scroll(menu._max_scroll())
+	point = origin(menu, target(menu, "watch_color", "blue"))
+	before = events.size()
+	menu.press_pointer("right_hand", point, -menu.global_basis.z, true)
+	menu.release_pointer("left_hand", point, -menu.global_basis.z, true)
+	check(events.size() == before, "Watch swatch waits for its owning hand to release")
+	menu.cancel_pointer("right_hand")
+	menu.release_pointer("right_hand", point, -menu.global_basis.z, true)
+	check(events.size() == before, "Cancelled swatch leaves the watch unchanged")
+	for option in Library.WatchPalette.OPTIONS:
+		tap(menu, target(menu, "watch_color", option.value))
+		check(events.back() == ["watch_color", option.value] and state.watch_color == option.value,
+			"Ray selects watch color: " + option.value)
+		var chosen := 0
+		for button in menu._buttons:
+			if menu.choices.targets.get(button.target, {}).get("key") != "watch_color": continue
+			if button.base_color == Color.WHITE: chosen += 1
+		check(chosen == 1, "Exactly one watch swatch is selected")
+	menu._activate(Library.TAB_BASE + Library.BACKGROUND_TAB)
+	check(menu._max_scroll() == 0 and not is_instance_valid(menu._settings_scroll_hint), "Short settings pages have no scrolling cue")
 	menu.dismiss()
 	check(menu.choices.opened.is_empty() and menu.choices.capture.is_empty(), "Closing settings clears popup and capture")
 	menu.queue_free()

@@ -34,9 +34,49 @@ func tap(menu: Node3D, target: int, hand: String = "left_hand") -> void:
 func _initialize() -> void:
 	call_deferred("_run")
 
+func check_seek_then_bookmark(path: String, times: Array, duration: int) -> void:
+	var video := Video.new(); video.bookmark_store = Store.new(path)
+	root.add_child(video); video.set_process(false)
+	video.platform = Host.new(); video.local_uri = "file:///timeline-fixture.mp4"
+	video.media.begin(7); video.media.generation = 3; video.media.state = "paused"
+	video.media.playback = {"details": {"seekable": "yes"}}; video.control.observe(0, duration)
+	video._bookmark_metadata = {"basename": "timeline-fixture.mp4", "size": 5000}; video._bookmark_resolve()
+	var menu := Menu.new()
+	menu.state_provider = func(): return video.bookmarks_snapshot().merged({"has_video": true, "duration_ms": video.control.duration_ms, "position_ms": video.control.display_position_ms()})
+	menu.seek_requested.connect(video.seek_absolute)
+	menu.bookmark_requested.connect(func(operation, id, scope):
+		var message: String = video.bookmark_action(operation, id, scope)
+		if not message.is_empty(): menu.bookmarks.notify(message))
+	root.add_child(menu); menu.toggle(); menu.set_process(false)
+	for time in times:
+		var x: float = -menu.BAR_SEEK / 2 + menu.BAR_SEEK * float(time) / duration
+		var ray: Vector3 = menu.to_global(Vector3(x, -0.08, 1))
+		menu.press_pointer("left_hand", ray, -menu.global_basis.z, true)
+		menu.release_pointer("left_hand", ray, -menu.global_basis.z, true)
+		check(absi(video.control.target_ms - int(time)) <= 1, "Timeline click requests its actual timestamp")
+		# Confirm the requested frame, without sleeping between seek/add/next seek.
+		video._pending_revision.clear(); video._waiting_first = false
+		video.control.take_pending(); video.control.first_frame(int(time))
+		video._binding.ticket = {"session_id": 7, "generation": 3, "pts_us": int(time) * 1000, "source_pts_verified": true}
+		video.panel.visible = true; menu.refresh_values()
+		tap(menu, menu.BookmarkMenu.ADD)
+	var markers: Array = video.bookmark_store.list_markers(video._bookmark_media_id)
+	check(markers.map(func(item): return item.position_ms) == times, "Rapid seek/add retains every distinct list timestamp")
+	var groups: Array = menu._buttons.filter(func(item): return menu.bookmarks.targets.get(item.target, {}).get("kind") == "group")
+	check(groups.size() == times.size() and groups.all(func(item): return menu.bookmarks.targets[item.target].ids.size() == 1), "Rapid seek/add leaves visually separated bookmarks at separate positions")
+	for group in groups:
+		var marker: Dictionary = markers.filter(func(item): return item.id == menu.bookmarks.targets[group.target].ids[0])[0]
+		check(is_equal_approx(group.node.position.x, -menu.BAR_SEEK / 2 + menu.BAR_SEEK * float(marker.position_ms) / duration), "Timeline marker stays at its saved timestamp")
+		check(menu.ray_hit(origin(menu, int(group.target)), -menu.global_basis.z).get("target") == group.target, "Each separate bookmark retains its own ray hit target")
+	tap(menu, menu.BookmarkMenu.LIST)
+	check(menu.bookmarks.targets.values().filter(func(item): return item.get("column") == "markers" and item.kind == "seek").size() == times.size(), "List retains the same timestamps shown on the playback bar")
+	menu.free(); video._binding.ticket.clear(); video.free()
+
 func _run() -> void:
 	preload("res://scripts/i18n.gd").use("en")
 	var path := ProjectSettings.globalize_path("res://../../build/output/bookmarks-host/" + str(Time.get_ticks_usec()))
+	check_seek_then_bookmark(path + "-reported-device-records", [128712, 202411, 268685], 1094719)
+	check_seek_then_bookmark(path + "-four-eight-minutes", [240000, 480000], 2400000)
 	var store := Store.new(path)
 	var uri := "smb://server/old/movie.mp4"
 	var id := store.resolve(uri, "movie.mp4", 5000000)
@@ -93,7 +133,9 @@ func _run() -> void:
 	check(clusters.size() == 2 and clusters[0].markers.size() == 2, "Dense timestamps cluster by visible distance and EOS is excluded")
 	var dense: Array = []
 	for index in 500: dense.append({"id": str(index), "position_ms": index * 14000})
-	check(Timeline.groups(dense, 7200000, 0.82).size() <= 17, "500 markers produce bounded, non-overlapping groups")
+	check(Timeline.groups(dense, 7200000, 0.82).size() <= 19, "500 markers produce bounded, non-overlapping 44 mm targets")
+	check(Timeline.groups([{"position_ms": 0}, {"position_ms": 44100}], 820000, 0.82).size() == 2, "Non-overlapping bookmark targets stay separate")
+	check(Timeline.groups([{"position_ms": 0}, {"position_ms": 43900}], 820000, 0.82).size() == 1, "Overlapping bookmark targets still group")
 
 	var menu := Menu.new()
 	var state := {"has_video": true, "duration_ms": 7200000, "position_ms": 30000,

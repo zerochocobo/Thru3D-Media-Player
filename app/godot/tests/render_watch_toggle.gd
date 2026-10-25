@@ -46,7 +46,18 @@ func _run() -> void:
 	menu.refresh()
 	menu._activate(Menu.WATCH)
 	check(actions == ["wrist_watch_toggle"], "Touching the watch glyph asks to toggle it")
-	menu.free(); viewport.free()
+	menu.free()
+	viewport.size = Vector2i(1400, 900); camera.fov = 60
+	var library := preload("res://scripts/library_menu.gd").new()
+	library.settings_provider = func(): return {"watch_color": "violet"}
+	camera.add_child(library); library.set_process(false); library.visible = true
+	library.section = library.Section.SETTINGS; library.tab = library.DISPLAY_TAB
+	for language in ["zh", "en", "zh_Hant", "ja"]:
+		library.I18n.use(language); library.refresh()
+		library._set_scroll(library._max_scroll())
+		await process_frame; await RenderingServer.frame_post_draw; await RenderingServer.frame_post_draw
+		check(viewport.get_texture().get_image().save_png(output.path_join("colors-settings-" + language + ".png")) == OK, "Save watch color settings: " + language)
+	library.free(); viewport.free()
 	for failure in failures: push_error(failure)
 	print("Watch toggle render: %d checks, %d failures" % [checks, failures.size()])
 	quit(0 if failures.is_empty() else 1)

@@ -1,4 +1,5 @@
 #include "../../native/mpv/pip_screenshot_core.h"
+#include "../../native/mpv/pip_screenshot_jpeg.h"
 #include <fstream>
 #include <iostream>
 #include <iterator>
@@ -22,8 +23,14 @@ int main(int argc,char** argv) {
             const int w=std::stoi(argv[7]),h=std::stoi(argv[8]);if(picture.size()!=size_t(w)*h*4)return 6;
             images.push_back({picture.data(),w,h,w*4,false});}
         const auto started=std::chrono::steady_clock::now();const auto cpu=std::clock();
-        quest::pipshot::compose({pixels.data(),width,height,width*4,false},images,
-            {geometry,bool(stereo),bool(tb),bool(half),bool(swap),double(fov)},windows,argv[4],[]{return false;});
+        const quest::pipshot::Image source{pixels.data(),width,height,width*4,false};
+        const quest::pipshot::Mode mode{geometry,bool(stereo),bool(tb),bool(half),bool(swap),double(fov)};
+        const std::string output=argv[4];
+        if(output.size()>=4&&output.substr(output.size()-4)==".jpg") {
+            quest::pipshot::Jpeg jpeg(argv[4],width,height);
+            quest::pipshot::compose_rows(source,images,mode,windows,[&](const uint8_t* row){jpeg.row(row);},[]{return false;});
+            jpeg.finish();
+        }else quest::pipshot::compose(source,images,mode,windows,argv[4],[]{return false;});
         std::cout<<"{\"compose_seconds\":"<<std::chrono::duration<double>(std::chrono::steady_clock::now()-started).count()
             <<",\"cpu_seconds\":"<<double(std::clock()-cpu)/CLOCKS_PER_SEC<<"}\n";
         return 0;

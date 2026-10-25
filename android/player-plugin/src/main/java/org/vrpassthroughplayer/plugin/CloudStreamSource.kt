@@ -21,9 +21,13 @@ internal class CloudStreamSource(
     @Volatile private var closed = false
     private val readers = ConcurrentHashMap.newKeySet<RemoteReader>()
     private var archivePacer: ArchiveRangePacer? = null
+    private var completeRanges = false
     fun forArchiveReading(): CloudStreamSource { archivePacer = ArchiveRangePacer(); return this }
+    fun forPdfReading(): CloudStreamSource { forArchiveReading(); completeRanges = true; return this }
 
     fun prepare() { currentLink() }
+    /** Open-ended media ranges only: archive pacing retires readers per range, bounded reads release slots. */
+    val continuable: Boolean @Synchronized get() = archivePacer == null && rangeWindow == Long.MAX_VALUE
     /** Independent reader ownership, retaining this immutable object's resolver and
      * identity-bound connection factory. The caller registers the new media lease. */
     @Synchronized override fun fork(): CloudStreamSource {
@@ -31,6 +35,7 @@ internal class CloudStreamSource(
         return CloudStreamSource(size, resolve, connect).also {
             it.linkConnection = linkConnection; it.rangeWindow = rangeWindow
             it.archivePacer = archivePacer
+            it.completeRanges = completeRanges
             it.link = link; it.resolvedAt = resolvedAt
         }
     }
@@ -56,7 +61,13 @@ internal class CloudStreamSource(
         // A cancelled loopback client may disappear while the old handler is
         // waiting for pacing/headers. Retire it before the next archive range.
         if (archivePacer != null) readers.forEach { it.close() }
-        RemoteReader().also { readers.add(it) }
+        RemoteReader(completeRange = completeRanges).also { readers.add(it) }
+    }
+    /** Explicit, bounded small-RAR transfer; ordinary archive ranges retain their cap. */
+    fun openSmallRarDownload(): StreamSource.Reader = synchronized(this) {
+        check(!closed && archivePacer != null && size in 8L..SmallRarCache.MAX_BYTES)
+        readers.forEach { it.close() }
+        RemoteReader(size, completeRange = true).also { readers.add(it) }
     }
     override fun close() {
         closed = true
@@ -66,7 +77,8 @@ internal class CloudStreamSource(
         link = null
     }
 
-    private inner class RemoteReader : BoundedStreamReader {
+    private inner class RemoteReader(private val windowBytes: Long = rangeWindow,
+        private val completeRange: Boolean = false) : BoundedStreamReader {
         @Volatile private var done = false
         @Volatile private var connection: HttpURLConnection? = null
         private var input: InputStream? = null
@@ -111,7 +123,7 @@ internal class CloudStreamSource(
             disconnect()
             var selected = currentLink()
             var refreshed=false;var gatewayRetried=false;var busyRetries=0
-            val requestedEnd=minOf(rangeEnd, offset+minOf(rangeWindow,size-offset)-1)
+            val requestedEnd=minOf(rangeEnd, offset+minOf(windowBytes,size-offset)-1)
             while(true) {
                 var retry=false
                 var target = URI(selected.url)
@@ -127,7 +139,7 @@ internal class CloudStreamSource(
                     request.instanceFollowRedirects = false; request.useCaches = false
                     request.setRequestProperty("Accept-Encoding", "identity")
                     selected.headers(target).forEach { (name, value) -> request.setRequestProperty(name, value) }
-                    request.setRequestProperty("Range", if(rangeWindow==Long.MAX_VALUE && archivePacer==null)"bytes=$offset-" else "bytes=$offset-$requestedEnd")
+                    request.setRequestProperty("Range", if(windowBytes==Long.MAX_VALUE && archivePacer==null)"bytes=$offset-" else "bytes=$offset-$requestedEnd")
                     if (archivePacer != null && linkConnection != null && target.host == "127.0.0.1")
                         request.setRequestProperty("X-Thru3D-Archive-Read", "1")
                     val status = request.responseCode
@@ -164,6 +176,8 @@ internal class CloudStreamSource(
                         val start = match.groupValues[1].toLongOrNull() ?: throw invalidRange(status)
                         end = match.groupValues[2].toLongOrNull() ?: throw invalidRange(status)
                         if (start != offset || end < offset || end > requestedEnd || match.groupValues[3].toLongOrNull() != size) throw invalidRange(status)
+                        // Do not silently turn the one-body cache transfer into hundreds of ranges.
+                        if (completeRange && end != requestedEnd) throw invalidRange(status)
                         val length = request.getHeaderField("Content-Length")?.toLongOrNull()
                         if (length != null && length != end - offset + 1) throw invalidRange(status)
                     } else if (archivePacer == null && status == 200 && offset == 0L && requestedEnd==size-1 && request.getHeaderField("Content-Length")?.toLongOrNull() == size) {

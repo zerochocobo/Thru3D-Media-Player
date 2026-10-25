@@ -14,6 +14,10 @@ const SELECT := BASE + 20
 const DELETE := BASE + 30
 const CRUMB := BASE + 1000
 const EXTENSIONS := ["zip", "cbz", "rar", "cbr", "7z", "tar", "gz", "tgz", "xz", "bz2", "zipx", "001"]
+const Pdf := preload("res://scripts/pdf_pages.gd")
+var pdf := false
+var _pdf_request := 0
+var origin_location := {}
 var menu: Node
 var opened := false
 var managing := false
@@ -34,18 +38,20 @@ var _browsing := false
 var suspended := false
 var browser_section := -1
 var browsing: bool:
-	get: return _browsing and not suspended and menu.section == browser_section and not menu.image_picker_mode and not menu.audio_import_mode and not menu.subtitle_picker_mode
+	get: return _browsing and not suspended and menu.section == browser_section and (not menu.image_picker_mode or pdf) and not menu.audio_import_mode and not menu.subtitle_picker_mode
 var parent_context := {}
 var directory := ""
 var remembered_filter := 0
 var parent_position := {}
 var parent_status := ""
 var session := ""
+var progress := -1.0
+var progress_label: Label3D
 
 func _init(owner: Node) -> void: menu = owner
 
 static func named(uri: String, title: String = "") -> bool:
-	return title.get_extension().to_lower() in EXTENSIONS or uri.get_slice("?", 0).get_extension().to_lower() in EXTENSIONS
+	return Pdf.named(uri, title) or title.get_extension().to_lower() in EXTENSIONS or uri.get_slice("?", 0).get_extension().to_lower() in EXTENSIONS
 
 func book(operation: String = "list", value: String = "") -> bool:
 	if not menu.PlatformMethods.supports(menu.platform, "archive_passwords"):
@@ -69,6 +75,10 @@ func manage() -> void:
 func open(row: Dictionary) -> void:
 	if _browsing and str(target.get("uri", "")) == str(row.get("uri", "")):
 		resume()
+		var requested: Dictionary = preload("res://scripts/media_location.gd").clean(row.get("location", {}))
+		if requested.get("type") == "archive":
+			if directory_exists(str(requested.path)): change_directory(str(requested.path), false)
+			else: change_directory("", false); menu.status = "Folder no longer exists"
 		menu.refresh(); return
 	opening.emit()
 	var replacing := browsing
@@ -86,8 +96,14 @@ func open(row: Dictionary) -> void:
 			var value: Variant = menu.cloud_search.get(key)
 			parent_context.search[key] = value.duplicate(true) if value is Array or value is Dictionary else value
 	target = row.duplicate(true); entries.clear()
-	if not menu.PlatformMethods.supports(menu.platform, "archive_open"):
-		message = "Archive reading unavailable"; menu.refresh(); return
+	var location := preload("res://scripts/media_location.gd").capture(menu, target)
+	origin_location = location.get("parent", {}).duplicate(true) if location.get("type") == "archive" else location
+	if location.get("type") == "archive": target.title = str(location.source_title)
+	target.source_file = preload("res://scripts/media_location.gd").cloud_file(location.get("source_file", {
+		"uri":target.get("uri", ""), "id":target.get("cloud_id", ""), "size":target.get("size", 0), "modified":target.get("modified", -1)}), str(target.get("uri", "")))
+	pdf = Pdf.named(str(target.get("uri", "")), str(target.get("title", "")))
+	if not menu.PlatformMethods.supports(menu.platform, "pdf_open" if pdf else "archive_open"):
+		message = "PDF could not be opened" if pdf else "Archive reading unavailable"; menu.refresh(); return
 	if connected != menu.platform:
 		if is_instance_valid(connected) and connected.is_connected("archive_ready", receive): connected.disconnect("archive_ready", receive)
 		connected = menu.platform
@@ -101,8 +117,14 @@ func submit() -> void:
 	if managing:
 		if not password.is_empty() and book("add", password): password = ""; message = ""
 		menu.refresh(); return
-	pending = menu.platform.archive_open(str(target.get("uri", "")), str(target.get("title", "")), password, persist)
-	message = "Loading…" if pending > 0 else "Archive could not be opened"; menu.refresh()
+	if pdf:
+		if menu.PlatformMethods.supports(menu.platform, "pdf_open_at"):
+			pending = menu.platform.pdf_open_at(str(target.get("uri", "")), JSON.stringify(target.get("source_file", {})))
+		else: pending = menu.platform.pdf_open(str(target.get("uri", "")))
+		_pdf_request = pending
+	else: pending = menu.platform.archive_open(str(target.get("uri", "")), str(target.get("title", "")), password, persist)
+	progress = -1.0
+	message = "Loading…" if pending > 0 else ("PDF could not be opened" if pdf else "Archive could not be opened"); menu.refresh()
 
 func receive(id: int, payload: String) -> void:
 	accept_result.call_deferred(id, payload)
@@ -112,10 +134,23 @@ func accept_result(id: int, payload: String) -> void:
 
 func tick() -> void:
 	if result.is_empty(): return
-	var parsed: Variant = JSON.parse_string(result); result = ""; pending = 0
+	var parsed: Variant = JSON.parse_string(result); result = ""
 	if not opened: return
+	if parsed is Dictionary and parsed.get("state") == "loading":
+		var total := float(parsed.get("total", 0))
+		if total > 0:
+			progress = clampf(float(parsed.get("received", 0)) / total, 0.0, 1.0)
+			if is_instance_valid(progress_label) and progress_label.text != loading_text():
+				progress_label.text = loading_text()
+				menu.composition_changed.emit()
+		return
+	pending = 0; progress = -1.0
 	if not parsed is Dictionary or parsed.get("state") != "ready":
 		message = str(parsed.get("error", "Archive could not be opened")) if parsed is Dictionary else "Archive could not be opened"
+		if pdf:
+			message = Pdf.error_text(message)
+			# The pending browser reference also exists for failed opens.
+			menu.platform.pdf_close(str(_pdf_request)); _pdf_request = 0
 		if message == "Archive password required or incorrect":
 			book()
 			message = "Archive password required or incorrect"
@@ -128,6 +163,9 @@ func tick() -> void:
 
 func finish_open() -> void:
 	session = str(ready_data.get("session", ""))
+	if pdf:
+		target.source_file = preload("res://scripts/media_location.gd").cloud_file(ready_data.get("source_file", target.get("source_file", {})), str(target.get("uri", "")))
+		if menu.collections.store: menu.collections.store.refresh_container_identity(str(target.get("uri", "")), target.source_file)
 	ready_data.clear()
 	password = ""; passwords.clear(); opened = false; history = false
 	_browsing = true; suspended = false; browser_section = menu.section; directory = ""; remembered_filter = menu.media_filter
@@ -136,6 +174,10 @@ func finish_open() -> void:
 		var saved := str(route.get("archive_directory", ""))
 		if directory_exists(saved): directory = saved
 	menu.file_actions.reset(); menu.collections.selection.clear(); menu.scroll = 0.0; menu.status = ""
+	var requested := preload("res://scripts/media_location.gd").clean(target.get("location", {}))
+	if requested.get("type") == "archive":
+		if directory_exists(str(requested.path)): directory = str(requested.path)
+		else: directory = ""; menu.status = "Folder no longer exists"
 	menu._browse_activity()
 	menu._position_to_restore = menu.browse_memory.lookup(position_scope(), network()) if menu.restore_directory_position else {}
 	menu.refresh()
@@ -176,7 +218,7 @@ func directory_rows() -> Array[Dictionary]:
 		var row: Dictionary = entry.duplicate(true) if not folder else {}
 		row.title = name; row.archive_path = prefix + name; row.folder = folder
 		row.archive_key = "archive-image://" + str(target.get("uri", "")).uri_encode() + "/" + source_key().sha256_text() + "/" + str(row.archive_path).uri_encode()
-		if not folder and row.get("kind", "image") == "image": row.thumbnail_key = row.archive_key
+		if not pdf and not folder and row.get("kind", "image") == "image": row.thumbnail_key = row.archive_key
 		if folder: row.container = {"id": row.archive_path, "title": name}
 		row.kind = "folder" if folder else str(entry.get("kind", "image"))
 		row.icon = "folder" if folder else "image" if row.kind == "image" else "info"
@@ -189,7 +231,10 @@ func directory_rows() -> Array[Dictionary]:
 		result_rows.assign(result_rows.filter(func(row): return row.folder or row.kind == ("image" if menu.media_filter == 2 else "video")))
 	var order: String = menu.file_actions.order()
 	var grouped: bool = menu.file_actions.folders_first()
-	result_rows.sort_custom(func(a, b): return menu.file_actions.Order.before(a, b, order, grouped))
+	if pdf:
+		result_rows.sort_custom(func(a, b): return int(a.get("pdf_page", 0)) < int(b.get("pdf_page", 0)))
+		for row in result_rows: row.title = menu.I18n.t("Page %d") % (int(row.pdf_page) + 1)
+	else: result_rows.sort_custom(func(a, b): return menu.file_actions.Order.before(a, b, order, grouped))
 	return result_rows
 
 func image_queue() -> Array[Dictionary]:
@@ -197,6 +242,14 @@ func image_queue() -> Array[Dictionary]:
 	for row in directory_rows():
 		if row.get("kind", "") == "image": images.append(row)
 	return images
+
+func history_entry() -> Dictionary:
+	return {"uri":str(target.get("uri", "")), "title":str(target.get("title", "")), "kind":"pdf" if pdf else "archive",
+		"persisted":bool(target.get("persisted", false)), "location":favorite_location()}
+
+func favorite_location() -> Dictionary:
+	return preload("res://scripts/media_location.gd").clean({"type":"archive", "source_uri":str(target.get("uri", "")),
+		"source_title":str(target.get("title", "")), "source_file":target.get("source_file", {}), "path":directory, "parent":origin_location})
 
 func change_directory(value: String, returning: bool = false, folder: Dictionary = {}) -> void:
 	save_position(folder)
@@ -213,7 +266,17 @@ func choose(row: Dictionary) -> void:
 	if not row.get("enabled", true): return
 	if row.get("folder", false): change_directory(str(row.archive_path), false, row); return
 	if row.get("kind", "") != "image" or str(row.get("uri", "")).is_empty(): return
-	menu.collections.selected_location = preload("res://scripts/media_location.gd").capture(menu, target)
+	if pdf and menu.image_picker_mode:
+		var key := session
+		if not menu.platform.pdf_retain(key): return
+		menu.selected_pdf = {"session":key, "page":int(row.pdf_page), "pages":int(row.pdf_pages), "source":history_entry()}
+		var uri := str(row.uri); var title := str(row.title)
+		close()
+		menu._restore_audio_import_context(); menu.dismiss()
+		menu.image_selected.emit(uri, title)
+		menu.selected_pdf.clear(); menu.platform.pdf_close(key)
+		return
+	menu.collections.selected_location = origin_location.duplicate(true)
 	menu.collections.selected_entry = target.duplicate(true)
 	save_position()
 	menu.dismiss()
@@ -265,7 +328,7 @@ func restore_parent() -> void:
 	if not parent_context.is_empty(): menu.cloud_pagination.restore(parent_context.get("paging", {}))
 
 func resume(uri: String = "") -> void:
-	if not _browsing or (not uri.is_empty() and not uri.begins_with("comic://" + session + "/")): return
+	if not _browsing or (not uri.is_empty() and not uri.begins_with(("pdfpage://" if pdf else "comic://") + session + "/")): return
 	restore_parent(); suspended = false
 	menu.media_filter = remembered_filter
 	menu._position_to_restore = menu.browse_memory.lookup(position_scope(), network())
@@ -276,14 +339,20 @@ func close() -> void:
 	if was_browsing: save_position()
 	if _browsing: closing.emit()
 	menu.system_text_input.cancel("archive_password")
-	if not managing and menu.PlatformMethods.supports(menu.platform, "archive_close"): menu.platform.archive_close("")
+	if pdf and menu.PlatformMethods.supports(menu.platform, "pdf_close"):
+		menu.platform.pdf_close(session if not session.is_empty() else str(_pdf_request))
+	elif not managing and menu.PlatformMethods.supports(menu.platform, "archive_close"): menu.platform.archive_close("")
 	if was_browsing:
 		restore_parent()
 		menu._position_to_restore = parent_position.duplicate(true); menu.status = parent_status
 	_browsing = false; suspended = false; directory = ""; entries.clear(); session = ""; parent_context.clear()
 	opened = false; pending = 0; result = ""; password = ""; passwords.clear(); target.clear(); message = ""; warning = ""; ready_data.clear()
+	progress = -1.0; progress_label = null
+	pdf = false; _pdf_request = 0
+	origin_location.clear()
 
 func action(id: int) -> bool:
+	if menu.collections.active() or id in [menu.Collections.FAVORITE_FOLDER, menu.Collections.RETURN_HOME]: return false
 	if browsing: return browser_action(id)
 	if not opened: return false
 	if id == CLOSE or id == menu.BACK: close(); menu.refresh(); return true
@@ -306,10 +375,13 @@ func action(id: int) -> bool:
 	menu.refresh(); return true
 
 func draw() -> void:
-	menu._label(menu.I18n.t("Archive password book" if managing else "Comic archive"), Vector3(0, 0.49, 0.004), 25)
+	# Library/compact/cast views leave different backdrop sizes and centres.
+	# This modal owns its panel geometry as well as its fixed control coordinates.
+	menu._set_backdrop(Vector2(1.36, 1.18), Vector2.ZERO)
+	menu._label("PDF" if pdf else menu.I18n.t("Archive password book" if managing else "Comic archive"), Vector3(0, 0.49, 0.004), 25)
 	menu._button(CLOSE, "", Vector2(0.58, 0.49), Vector2(0.08, 0.08), true, "close")
 	if not managing and pending > 0:
-		menu._label(menu.I18n.t("Loading…"), Vector3(0, 0.1, 0.004), 22); return
+		progress_label = menu._label(loading_text(), Vector3(0, 0, 0.004), 22); return
 	if not ready_data.is_empty():
 		menu._label(menu.I18n.t(message), Vector3(0, 0.15, 0.004), 19)
 		menu._button(SUBMIT, menu.I18n.t("Open"), Vector2(0, -0.03), Vector2(0.25, 0.085), true); return
@@ -333,3 +405,6 @@ func draw() -> void:
 		menu._button(NEXT, "", Vector2(0.12, -0.43), Vector2(0.10, 0.07), (page+1)*5<passwords.size(), "next")
 	if message != "Archive password required or incorrect" and not message.is_empty(): menu._label(menu.I18n.t(message), Vector3(0,-0.53,0.004),16)
 	elif not warning.is_empty(): menu._label(menu.I18n.t(warning), Vector3(0,-0.53,0.004),16)
+
+func loading_text() -> String:
+	return menu.I18n.t("Loading…") + (" %d%%" % roundi(progress * 100.0) if progress >= 0 else "")

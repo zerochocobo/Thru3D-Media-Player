@@ -33,6 +33,7 @@ def execute():
     binary = OUT / "clip-host"
     cases = [
         ("avc-selected", "avc.mp4", 2500000, 5750000, 2, ""),
+        ("avc-auto", "avc.mp4", 2500000, 5750000, -2, ""),
         ("avc-muted", "avc.mp4", 2500000, 5750000, -1, ""),
         ("external", "avc.mp4", 2500000, 5750000, -1, "sidecar.m4a"),
         ("mkv-pcm", "pcm.mkv", 2500000, 5750000, 1, ""),
@@ -74,6 +75,7 @@ def verify():
             checks.append(name + ": rejected")
             continue
         assert report["state"] == "saved", report
+        assert report["progress"] == 99, report  # 100 belongs to MediaStore publication.
         output = OUT / (name + ".output")
         source = inspect(OUT / report["source"], True)
         saved = inspect(output, True)
@@ -100,6 +102,8 @@ def verify():
             assert len(audio) == 1
             audio_source = inspect(OUT / report["sidecar"], True) if report["sidecar"] else source
             audio_index = 0 if report["sidecar"] else report["audio"]
+            if audio_index == -2:
+                audio_index = next(s["index"] for s in source["streams"] if s["codec_type"] == "audio")
             original_audio = [p["data_hash"] for p in audio_source["packets"] if p["stream_index"] == audio_index]
             copied_audio = [p["data_hash"] for p in saved["packets"] if p["stream_index"] == audio[0]["index"]]
             begin = original_audio.index(copied_audio[0])

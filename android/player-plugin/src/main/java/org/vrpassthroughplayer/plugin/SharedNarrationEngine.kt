@@ -8,6 +8,7 @@ import java.util.concurrent.atomic.AtomicLong
 /** One TTS instance per player bridge. Leases share weights, never concurrent inference. */
 internal class SharedNarrationEngine(private val backend: Backend) : AutoCloseable {
     interface Backend {
+        fun preparationTimings(): JSONObject=JSONObject()
         fun create(active: ()->Boolean, progress: (String,Long,Long)->Unit): Long
         fun destroy(handle: Long)
         fun cancel(handle: Long, token: Long)
@@ -73,11 +74,14 @@ internal class SharedNarrationEngine(private val backend: Backend) : AutoCloseab
         check(!closed&&active()){"voice_cancelled"};destroyLocked();block()
     }
     private fun destroyLocked(){if(handle>0){val old=handle;handle=0;registered="";backend.destroy(old);destroyed++}}
-    fun stats()=JSONObject().put("instances",if(handle>0)1 else 0).put("created",created).put("destroyed",destroyed).put("warm_reuses",reused)
+    fun stats()=JSONObject().put("instances",if(handle>0)1 else 0).put("created",created).put("destroyed",destroyed).put("warm_reuses",reused).put("preparation_ms",backend.preparationTimings())
     override fun close(){closed=true;running?.let {runCatching {backend.cancel(it.handle,serial.incrementAndGet())}};synchronized(gate){destroyLocked();owners.forEach {it.released=true};owners.clear()}}
 
     companion object {
         fun native(context: ()->Context?)=SharedNarrationEngine(object:Backend {
+            @Volatile private var verificationMs=0L
+            @Volatile private var loadingMs=0L
+            override fun preparationTimings()=JSONObject().put("verify",verificationMs).put("load",loadingMs)
             override fun create(active: ()->Boolean,progress: (String,Long,Long)->Unit): Long {
                 val app=context() ?: error("voice_unavailable")
                 val manifest=app.assets.open("narration/model.json").bufferedReader().use {JSONObject(it.readText())}
@@ -85,9 +89,12 @@ internal class SharedNarrationEngine(private val backend: Backend) : AutoCloseab
                 require(directory.path.startsWith(app.filesDir.canonicalPath+File.separator))
                 val files=manifest.getJSONObject("files");val total=files.keys().asSequence().sumOf {files.getJSONObject(it).getLong("bytes")};var bytes=0L
                 progress("verifying",0,total)
+                val started=System.nanoTime()
                 NarrationModels.ensure(directory,files,{app.assets.open(manifest.getString("directory")+"/"+it)},active,{bytes+=it;progress("verifying",bytes,total)})
+                verificationMs=(System.nanoTime()-started)/1_000_000
                 check(active()){"voice_cancelled"};progress("loading",bytes,total)
-                return NarrationNative.create(directory.path)
+                val loading=System.nanoTime()
+                return NarrationNative.create(directory.path).also {loadingMs=(System.nanoTime()-loading)/1_000_000}
             }
             override fun destroy(handle: Long)=NarrationNative.destroy(handle)
             override fun cancel(handle: Long,token: Long)=NarrationNative.cancel(handle,token)

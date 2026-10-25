@@ -4,6 +4,18 @@ const FilmLight := preload("res://scripts/environments/cinema_film_light.gd")
 var checks := 0
 var failures: Array[String] = []
 
+class DelayedLight extends "res://scripts/environments/cinema_film_light.gd":
+	signal sample_ready
+	func _layer_image(_video: Node, _pair: Dictionary) -> Image:
+		await sample_ready
+		var image := Image.create(32, 18, false, Image.FORMAT_RGBA8)
+		image.fill(Color.RED)
+		return image
+
+class VideoFixture extends Node:
+	var media := {"state": "playing", "last_pair": {"pts_us": 100}}
+	var _binding := {"layer": true}
+
 func check(ok: bool, message: String, detail: Variant = null) -> void:
 	checks += 1
 	if not ok: failures.append(message + ("" if detail == null else ": " + str(detail)))
@@ -33,8 +45,22 @@ func _initialize() -> void:
 	check(light.update(.05, null, false, 1.0), "Without a picture the colours start fading")
 	check(light.colors[0].r < 2 and light.colors[0].r > 1, "Fading is smoothed, not an instant cut", light.colors[0])
 	for i in 60: light.update(.05, null, false, 1.0)
-	check(light.colors[0].is_equal_approx(FilmLight.IDLE_GLOW) or absf(light.colors[0].r - FilmLight.IDLE_GLOW.r) < .01,
-		"Stopped playback settles to the faint idle screen glow, never pitch black", light.colors[0])
+	check(light.colors[0].r < .01, "With no film the blank screen throws no light", light.colors[0])
+	light.set_enabled(false)
+	for i in 60: light.update(.05, null, true, 1.0)
+	check(light.colors.all(func(color): return color == Color.BLACK), "Disabled screen light stays black without idle glow")
+	light.set_enabled(true); light.update(.1, null, false, 1.0)
+	check(light.enabled and light.colors[0].r < .01, "Re-enabling with no film keeps the blank screen dark")
+	var delayed := DelayedLight.new()
+	var video := VideoFixture.new()
+	root.add_child(delayed); root.add_child(video)
+	delayed.update(.016, video, true, 1.0)
+	check(delayed._busy, "Fixture holds a real asynchronous sample in flight")
+	delayed.set_enabled(false); delayed.set_enabled(true)
+	delayed.sample_ready.emit()
+	check(delayed._target[0] == Color.BLACK and delayed._last_pts == -1 and delayed.samples == 0,
+		"An in-flight sample cannot restore stale colours after toggling off and on")
+	delayed.free(); video.free(); light.free()
 	for failure in failures: push_error(failure)
 	print("Cinema film light: %d checks, %d failures" % [checks, failures.size()])
 	quit(0 if failures.is_empty() else 1)

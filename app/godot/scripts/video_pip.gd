@@ -5,6 +5,7 @@ signal changed
 signal zoom_changed(slot: int, zoom: float)
 signal window_opened(window: Node3D)
 signal image_requested(window: Node3D)
+signal container_opened(entry: Dictionary)
 var images: Node
 const PipWindow := preload("res://scripts/video_pip_window.gd")
 const Move := preload("res://scripts/interface_move.gd")
@@ -29,17 +30,26 @@ func _init(video: Node3D) -> void:
 func video_windows() -> Array:
 	return windows.values().filter(func(window): return not window.image_mode)
 
-func load_image(window: Node3D, uri: String) -> void:
+func load_image(window: Node3D, uri: String, document: Dictionary = {}) -> void:
 	if not is_instance_valid(window) or windows.get(window.slot) != window: return
 	cancel_interaction()
 	if not is_instance_valid(images):
 		images = preload("res://scripts/video_pip_images.gd").new()
 		images.platform = owner.platform
+		images.container_opened.connect(func(entry): container_opened.emit(entry))
 		owner.add_child(images)
-	images.load_window(window, uri)
+	images.load_window(window, uri, document)
 
 func active() -> bool:
 	return not windows.is_empty()
+
+func close_protected_documents(store: RefCounted) -> void:
+	for window in windows.values().duplicate():
+		var documents: Array = [window.pdf_document]
+		if is_instance_valid(images):
+			for job in images.waiting + [images.active]:
+				if not job.is_empty() and job.window.get_ref() == window: documents.append(job.get("document", {}))
+		if documents.any(func(doc): return not doc.is_empty() and store.has_container_record(str(doc.get("source", {}).get("uri", "")))): close(window.slot)
 
 func identify(slots: Array) -> void:
 	for slot in windows: windows[slot].set_identified(slots.has(slot))
@@ -161,6 +171,8 @@ func _action(slot: int, operation: String, value: float) -> void:
 	if not windows.has(slot): return
 	if windows[slot].image_mode and operation in ["zoom", "select", "shape", "view"]: return
 	match operation:
+		"page":
+			if is_instance_valid(images): images.turn_page(windows[slot], int(value))
 		"image": cancel_interaction(); image_requested.emit(windows[slot])
 		"video":
 			if is_instance_valid(images): images.cancel(windows[slot]); images.unload(windows[slot])

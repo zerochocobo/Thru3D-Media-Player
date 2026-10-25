@@ -11,6 +11,11 @@ class FailedWrite extends Store:
 
 class Host extends RefCounted:
 	var requests: Array = []
+	var exports: Array = []
+	func original_capture_supported() -> bool: return true
+	func original_capture_request(request: String) -> int:
+		exports.append(JSON.parse_string(request)); return exports.size()
+	func original_capture_status(_id: int) -> String: return '{"state":"saved","kind":"clip","directory":"Movies/Thru3D","name":"test.mkv"}'
 	func close_mpv_video(_id: int) -> void: pass
 	func set_mpv_playing(_id: int, _playing: bool) -> void: pass
 	func revise_mpv_video(_id: int, _stereo: bool, _alpha: bool, _profile: String, time: int, _depth: bool, _top_bottom: bool, exact: bool = false) -> int:
@@ -39,12 +44,68 @@ func landed(video: Node3D, position: int, playing: bool = true) -> void:
 
 func _initialize() -> void: call_deferred("run")
 
+func check_two_marker_loop(path: String) -> void:
+	var video := Video.new(); video.bookmark_store = Store.new(path)
+	root.add_child(video); video.set_process(false)
+	video.media.begin(8); video.control.duration_ms = 120000; video.local_uri = "file:///two-markers.mp4"
+	video._bookmark_metadata = {"basename": "two-markers.mp4", "size": 5000}; video._bookmark_resolve()
+	var a := video.bookmark_store.add(video.local_uri, "two-markers.mp4", 5000, 10000)
+	var b := video.bookmark_store.add(video.local_uri, "two-markers.mp4", 5000, 30000)
+	var host := Host.new(); video.platform = host; landed(video, 5000, false)
+	var menu := Menu.new()
+	menu.state_provider = func():
+		var state: Dictionary = video.bookmarks_snapshot()
+		state.merge({"has_video": true, "duration_ms": 120000, "position_ms": video.control.observed_position_ms})
+		state["capture"] = video.captures.snapshot()
+		return state
+	menu.bookmark_loop_requested.connect(func(operation, data, scope): video.bookmark_loop.action(operation, data, scope))
+	root.add_child(menu); menu.toggle(); menu.set_process(false)
+	tap(menu, menu.BookmarkMenu.LIST); tap(menu, menu.BookmarkMenu.NEW_LOOP)
+	tap(menu, menu.BookmarkMenu.EDIT_A); tap(menu, menu.BookmarkMenu.ROW)
+	tap(menu, menu.BookmarkMenu.EDIT_B); tap(menu, menu.BookmarkMenu.ROW + 1)
+	tap(menu, menu.BookmarkMenu.SAVE)
+	var media_id: String = video._bookmark_media_id
+	var saved: Array = Store.new(path).list_loops(media_id)
+	check(saved.size() == 1 and saved[0].a == a.id and saved[0].b == b.id, "Exactly two markers save their chosen loop to the real store")
+	check(not video.bookmark_loop.active and host.requests.is_empty(), "Creating a two-marker loop leaves playback in place")
+	tap(menu, menu.BookmarkMenu.LOOP_EXPORT)
+	check(host.exports.size() == 1 and host.exports[0].start_us == 10000000 and host.exports[0].end_us == 30000000, "The loop row exports its stored endpoints through the real controller")
+	check(not video.bookmark_loop.active and not video.requested_play and host.requests.is_empty(), "Exporting a saved loop never seeks, starts playback or enables a loop")
+	video.bookmark_loop.action("export", {"id": "missing", "a_ms": 0, "b_ms": 1}, video.bookmark_scope())
+	check(host.exports.size() == 1, "Untrusted or missing definitions cannot export supplied timestamps")
+	video.captures._poll_after = 0; video.captures.tick(); menu.refresh()
+	tap(menu, menu.BookmarkMenu.LOOP_ROW)
+	check(video.bookmark_loop.active and video.requested_play and host.requests.back() == [10000, true], "Saved two-marker A starts playback at its actual endpoint")
+	landed(video, 10000); video.bookmark_loop.tick()
+	video.control.observe(30000, 120000); video.bookmark_loop.tick()
+	check(host.requests.size() == 2 and host.requests.back() == [10000, true], "Two-marker loop returns from B to A")
+	landed(video, 10000); video.bookmark_loop.tick(); menu.refresh()
+	tap(menu, menu.BookmarkMenu.LOOP_END)
+	check(not video.bookmark_loop.active and host.requests.back() == [30000, true], "Two-marker B exits the loop at its actual endpoint")
+	landed(video, 30000); menu.refresh()
+	tap(menu, menu.BookmarkMenu.LOOP_ROW)
+	landed(video, 10000); video.bookmark_loop.tick()
+	var c := video.bookmark_store.add(video.local_uri, "two-markers.mp4", 5000, 50000)
+	menu.refresh()
+	var request_count := host.requests.size()
+	tap(menu, menu.BookmarkMenu.NEW_LOOP)
+	tap(menu, menu.BookmarkMenu.LOOP_BAND)
+	check(video.bookmark_loop.active and host.requests.size() == request_count, "Range body cannot restart playback while choosing endpoints")
+	tap(menu, menu.BookmarkMenu.GROUP + 1)
+	check(menu.bookmarks.editing.a == b.id and video.bookmark_loop.active and host.requests.size() == request_count, "Existing timeline B chooses a draft A instead of exiting the playing loop")
+	tap(menu, menu.BookmarkMenu.GROUP + 2)
+	check(menu.bookmarks.editing.b == c.id and video.bookmark_loop.active and host.requests.size() == request_count, "Timeline choice completes the draft without changing active playback")
+	tap(menu, menu.BookmarkMenu.CANCEL_EDIT)
+	check(video.bookmark_store.list_loops(media_id).size() == 1 and video.bookmark_loop.active, "Cancelling timeline endpoint choices preserves the saved playing definition")
+	menu.free(); video._binding.ticket.clear(); video.free()
+
 func run() -> void:
 	preload("res://scripts/i18n.gd").use("en")
 	var desktop := Desktop.new()
 	check(desktop is Video, "Experimental desktop subclass retains a compatible seek signature")
 	desktop.free()
 	var path := ProjectSettings.globalize_path("res://../../build/output/bookmark-loops/store-" + str(Time.get_ticks_usec()))
+	check_two_marker_loop(path.path_join("two-marker-player"))
 	var store := Store.new(path)
 	var uri := "file:///loop-test.mp4"
 	var id := store.resolve(uri, "loop-test.mp4", 5000)

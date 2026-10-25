@@ -17,28 +17,40 @@ const LAYER_INTERVAL_MS := 100
 const EYE_BUFFER_INTERVAL_MS := 250
 ## Seconds for colours to settle: fast enough for cuts, slow enough not to flicker.
 const SMOOTHING := 0.3
-## Linear grey the previous fixed screen light stood for: a mid-grey film frame
-## lights the hall as before; brighter frames light it more.
-const REFERENCE := 0.18
-const MAX_GAIN := 4.0
-## With no film the screen keeps a faint glow, so a dark (lights off) hall is
-## never pitch black: a quarter of a typical film frame's light.
-const IDLE_GLOW := Color(.25, .25, .25)
+## Linear grey that throws the full baked screen light. Twice a typical frame:
+## real halls reflect far less than the bake, so a mid-grey frame lights at half.
+const REFERENCE := 0.36
+const MAX_GAIN := 2.0
+## With no film the blank screen throws no light; the house lights keep a dark
+## hall from going pitch black (see CinemaEnvironment.OFF_IDLE_LEVEL).
+const IDLE_GLOW := Color.BLACK
 
 ## Smoothed, normalised linear colours for the three zones (shader inputs).
 var colors: Array[Color] = [Color.BLACK, Color.BLACK, Color.BLACK]
 var samples := 0
 var failures := 0
 var path := ""
+var enabled := true
+var _generation := 0
 
 var _target: Array[Color] = [Color.BLACK, Color.BLACK, Color.BLACK]
 var _busy := false
 var _next_ms := 0
 var _last_pts := -1
 
+func set_enabled(value: bool) -> bool:
+	if enabled == value: return false
+	enabled = value
+	_generation += 1
+	_last_pts = -1; _next_ms = 0
+	colors = [Color.BLACK, Color.BLACK, Color.BLACK]
+	_target = colors.duplicate()
+	return true
+
 
 ## Advances smoothing and starts a sample when due. Returns true when colours changed.
 func update(delta: float, video: Node, active: bool, picture_fraction: float) -> bool:
+	if not enabled: return false
 	var showing: bool = active and video != null and video.media.state in ["playing", "paused", "ended"] \
 		and not video.media.last_pair.is_empty()
 	if not showing:
@@ -66,10 +78,12 @@ func _sample(video: Node, picture_fraction: float) -> void:
 	# A paused frame does not change: keep its colours without copying again.
 	if int(pair.get("pts_us", -1)) == _last_pts: return
 	_busy = true
+	var generation := _generation
 	var image: Image
 	if layer: image = await _layer_image(video, pair)
 	else: image = await _eye_buffer_image(video, pair)
 	_busy = false
+	if generation != _generation or not enabled: return
 	if image == null or image.is_empty():
 		failures += 1
 		return

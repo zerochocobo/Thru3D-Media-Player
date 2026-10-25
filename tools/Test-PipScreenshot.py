@@ -2,6 +2,7 @@
 import argparse
 import binascii
 import json
+import io
 import math
 from pathlib import Path
 import subprocess
@@ -117,6 +118,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--host", type=Path, required=True)
     parser.add_argument("--benchmark", action="store_true")
+    parser.add_argument("--jpeg", action="store_true", help="Also compare streaming JPEG100 against independent encoding of the lossless oracle")
     args = parser.parse_args(); OUT.mkdir(parents=True, exist_ok=True)
     yy, xx = np.mgrid[:240, :480]
     source = np.stack(((xx*3+yy)%256, (yy*2)%256, np.where(xx < 240, 32, 224), np.full_like(xx, 255)), axis=-1).astype('u1')
@@ -159,11 +161,15 @@ def main():
             big=np.stack((xx%256, yy%256, (xx+yy)%256, np.full_like(xx,255)),axis=-1).astype('u1')
             path=OUT/f"benchmark-{width}.rgba";big.tofile(path);del big,yy,xx
             add(f"benchmark-{width}",(3,1,0,0,0,180),[window(),window(center=(-.4,.1,-1.4)),window(center=(.4,.1,-1.4),image=0)],path,width,height)
+    png_jobs=list(jobs)
+    if args.jpeg:
+        for job in png_jobs:
+            jpeg=job.copy(); jpeg[4]=job[4][:-4]+'.jpg'; jobs.append(jpeg)
     plan=OUT/"jobs.json";plan.write_text(json.dumps(jobs))
     worker = "import json,subprocess,sys,time; jobs=json.load(open(sys.argv[1])); times=[]\nfor job in jobs:\n t=time.monotonic(); result=subprocess.run(job,check=True,capture_output=True,text=True); item=json.loads(result.stdout); item['process_seconds']=time.monotonic()-t; times.append(item)\nprint(json.dumps(times))"
     command = ["wsl","--exec","python3","-c",worker,linux(plan)] if sys.platform == "win32" else [sys.executable,"-c",worker,str(plan)]
     elapsed=json.loads(subprocess.run(command,check=True,capture_output=True,text=True).stdout)
-    maximum=0; changed=0
+    maximum=0; changed=0; jpeg_mae=0.; jpeg_p99=0.
     for name,flags,windows in cases:
         actual=np.array(Image.open(OUT/(name+".png")))
         raw=(OUT/(name+".png")).read_bytes(); offset=8
@@ -179,8 +185,23 @@ def main():
         if windows: assert delta.any(),name
         else: assert np.array_equal(actual,source),"Empty composition modified source pixels"
         changed+=int(delta.sum())
+        if args.jpeg:
+            jpeg=Image.open(OUT/(name+".jpg"))
+            assert jpeg.format=="JPEG" and jpeg.size==(480,240),name
+            assert all(value==1 for table in jpeg.quantization.values() for value in table),(name,"JPEG100 quantization")
+            reference=io.BytesIO();Image.fromarray(actual).convert("RGB").save(reference,format="JPEG",quality=100,subsampling=2)
+            expected_jpeg=np.array(Image.open(io.BytesIO(reference.getvalue())))
+            delta=np.abs(np.array(jpeg).astype(int)-expected_jpeg.astype(int))
+            # Pinned libjpeg 3.1 enables fancy chroma downsampling; Pillow can use older
+            # box downsampling. Compare whole-image error, allowing their colored edges
+            # to differ, rather than claiming lossy JPEG pixels are identical.
+            mean_error=float(np.mean(delta)); percentile=float(np.quantile(delta,.99))
+            assert mean_error<2 and percentile<=20,(name,"independent JPEG",mean_error,percentile)
+            jpeg_mae=max(jpeg_mae,mean_error);jpeg_p99=max(jpeg_p99,percentile)
     report=dict(state="passed",cases=len(cases),compared_pixels=len(cases)*480*240,changed_pixels=changed,max_channel_error=maximum,
-                host_seconds={Path(job[4]).stem:{key:round(value,4) for key,value in t.items()} for job,t in zip(jobs,elapsed)},headset_performance_tested=False)
+                jpeg_cases=len(cases) if args.jpeg else 0,
+                jpeg_max_mean_reference_error=round(jpeg_mae,4),jpeg_max_p99_reference_error=jpeg_p99,
+                host_seconds={Path(job[4]).name:{key:round(value,4) for key,value in t.items()} for job,t in zip(jobs,elapsed)},headset_performance_tested=False)
     (OUT/"verification.json").write_text(json.dumps(report,indent=2))
     print(json.dumps({k:v for k,v in report.items() if k!="host_seconds"}))
     if args.benchmark: print(json.dumps({k:v for k,v in report["host_seconds"].items() if k.startswith("benchmark")}))

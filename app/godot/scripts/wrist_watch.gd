@@ -9,6 +9,7 @@ const Menu := preload("res://scripts/ray_menu.gd")
 const Icons := preload("res://scripts/menu_icons.gd")
 const Methods := preload("res://scripts/platform_methods.gd")
 const SHADER := preload("res://shaders/wrist_watch.gdshader")
+const Palette := preload("res://scripts/watch_palette.gd")
 enum Kind { FACE, RING, BUTTON, GUIDE, CONE, CURSOR, PLATE, TAG }
 
 const FACE_SIZE := 0.05
@@ -20,8 +21,10 @@ const CURSOR_SIZE := 0.022
 const TAG_SIZE := Vector2(0.05, 0.017)
 const READOUT_LIFT := 0.03
 const TEXT := Color(0.93, 0.98, 1.0)
-const DIM := Color(0.62, 0.78, 0.82)
-const GLOW := Color(0.54, 0.93, 0.77, 0.22)
+var _dim := Color(0.62, 0.78, 0.82)
+var _glow := Color(0.54, 0.93, 0.77, 0.22)
+var color_choice := Palette.DEFAULT
+var _materials: Array[ShaderMaterial] = []
 const POLL_MS := 2000
 const ICONS := {"rewind": "back", "play": "pause", "forward": "forward", "menu": "menu"}
 
@@ -71,7 +74,7 @@ func _ready() -> void:
 	_clock.position = Vector3(0, 0.0015, 0.0006)
 	_remaining = _label(_face_root, 40, 0.000105, 33, false)
 	_remaining.position = Vector3(0, -0.0068, 0.0006)
-	_remaining.modulate = DIM
+	_remaining.modulate = _dim
 	_state_icon = _icon(_face_root, "pause", 0.0062, 33)
 	_state_icon.position = Vector3(0, 0.0094, 0.0006)
 	_holo_root = _root("WatchProjection")
@@ -102,7 +105,7 @@ func _ready() -> void:
 	_readout.position = Vector3(0, 0.004, 0)
 	_detail = _label(_readout_root, 40, 0.00015, 33, false)
 	_detail.position = Vector3(0, -0.0085, 0)
-	_detail.modulate = DIM
+	_detail.modulate = _dim
 	_tag_root = Node3D.new()
 	_holo_root.add_child(_tag_root)
 	_tag = _quad(_tag_root, TAG_SIZE, Kind.TAG, 35)
@@ -110,7 +113,22 @@ func _ready() -> void:
 	_tag_label = _label(_tag_root, 52, 0.00015, 36, true)
 	_tag_label.position.z = 0.0006
 	_cursor = _quad(_holo_root, Vector2.ONE * CURSOR_SIZE, Kind.CURSOR, 34)
+	set_color(color_choice)
 	visible = false
+
+func set_color(value: Variant) -> void:
+	color_choice = Palette.normalize(value)
+	var tone := Palette.color(color_choice)
+	_dim = tone.lerp(Color.WHITE, 0.25).darkened(0.18)
+	_glow = Color(tone, 0.22)
+	for material in _materials:
+		material.set_shader_parameter("accent", tone)
+		material.set_shader_parameter("secondary", tone)
+		material.set_shader_parameter("glass", tone.darkened(0.97))
+	for label in [_clock, _remaining, _readout, _detail, _tag_label]:
+		if label: label.outline_modulate = Color(tone, label.outline_modulate.a)
+	for label in [_remaining, _detail]:
+		if label: label.modulate = Color(_dim, label.modulate.a)
 
 ## frame as in Logic.update. Returns the logic actions for the owner to apply.
 func step(frame: Dictionary, delta: float) -> Array[Dictionary]:
@@ -178,7 +196,7 @@ func _present_face(head: Transform3D, delta: float, media: Dictionary, playing: 
 	# The time stays readable on the face while it projects.
 	var text_fade := clampf(face_reveal * 1.6 - 0.6, 0.0, 1.0)
 	_clock.modulate.a = text_fade; _remaining.modulate.a = text_fade * 0.9
-	_clock.outline_modulate.a = GLOW.a * text_fade; _remaining.outline_modulate.a = GLOW.a * text_fade
+	_clock.outline_modulate.a = _glow.a * text_fade; _remaining.outline_modulate.a = _glow.a * text_fade
 	# Only an interruption is worth a glyph; a running video needs none.
 	_state_icon.visible = not playing
 	(_state_icon.material_override as StandardMaterial3D).albedo_color = Color(TEXT, text_fade * 0.85)
@@ -216,7 +234,7 @@ func _present_buttons(delta: float, keys: float) -> void:
 			"active": 1.0 if logic.pressed == id else 0.0})
 		var key := ("pause" if bool(logic.media.get("playing", false)) else "play") if id == "play" else str(entry.icon_key)
 		_set_icon(entry.icon, key)
-		var tone := TEXT if enabled else DIM
+		var tone := TEXT if enabled else _dim
 		(entry.icon.material_override as StandardMaterial3D).albedo_color = Color(tone, t * (1.0 if enabled else 0.35))
 
 func _present_readout(head: Transform3D, media: Dictionary, dragging: bool, ring: float) -> void:
@@ -236,7 +254,7 @@ func _present_readout(head: Transform3D, media: Dictionary, dragging: bool, ring
 	var far := Vector3(0, Logic.PROGRESS_RING + RING_WIDTH * 0.5 + 0.022, READOUT_LIFT)
 	_billboard(_readout_root, logic.holo * far, head)
 	_readout.modulate.a = fade; _detail.modulate.a = fade * 0.9
-	_readout.outline_modulate.a = GLOW.a * fade; _detail.outline_modulate.a = GLOW.a * fade
+	_readout.outline_modulate.a = _glow.a * fade; _detail.outline_modulate.a = _glow.a * fade
 	# A tag stands on the scrub head so the target time is where the finger is.
 	_tag_root.visible = dragging
 	if dragging:
@@ -338,6 +356,7 @@ func _material(kind: Kind, priority: int) -> ShaderMaterial:
 	material.shader = SHADER
 	material.render_priority = priority
 	material.set_shader_parameter("kind", kind)
+	_materials.append(material)
 	return material
 
 func _quad(parent: Node3D, size: Vector2, kind: Kind, priority: int) -> MeshInstance3D:
@@ -409,7 +428,7 @@ func _label(parent: Node3D, font_size: int, pixel: float, priority: int, bold: b
 	label.font_size = font_size
 	label.pixel_size = pixel
 	label.outline_size = 10
-	label.outline_modulate = GLOW
+	label.outline_modulate = _glow
 	label.modulate = TEXT
 	label.render_priority = priority
 	label.outline_render_priority = priority - 1

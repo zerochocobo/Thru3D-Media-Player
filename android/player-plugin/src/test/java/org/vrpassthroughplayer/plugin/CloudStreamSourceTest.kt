@@ -133,6 +133,46 @@ class CloudStreamSourceTest {
             }
         } finally { server.stop(0) }
     }
+    @Test fun consecutiveBoundedClientsContinueOneUpstreamRangeAndSeeksReconnect() {
+        val requests = AtomicInteger()
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        server.createContext("/file") { exchange ->
+            requests.incrementAndGet()
+            val start = exchange.requestHeaders.getFirst("Range")!!.removePrefix("bytes=").substringBefore('-').toInt()
+            exchange.responseHeaders.add("Content-Range", "bytes $start-${bytes.lastIndex}/${bytes.size}")
+            exchange.sendResponseHeaders(206, (bytes.size - start).toLong())
+            runCatching { exchange.responseBody.use { it.write(bytes, start, bytes.size - start) } }
+            exchange.close()
+        }
+        server.start()
+        // One transient loopback client per bounded MPV segment, as LocalStreamServer serves them.
+        fun segment(source: StreamSource, start: Long, length: Int) = source.open().use { reader ->
+            val buffer = ByteArray(4096); var offset = start
+            while (offset < start + length) {
+                val count = reader.read(offset, buffer, minOf(buffer.size.toLong(), start + length - offset).toInt())
+                assertArrayEquals(bytes.copyOfRange(offset.toInt(), offset.toInt() + count), buffer.copyOf(count))
+                offset += count
+            }
+        }
+        try {
+            val link = CloudLink("http://127.0.0.1:${server.address.port}/file") { emptyMap() }
+            AdaptiveInterleaveSource(CloudStreamSource(bytes.size.toLong(), { link }, ::localConnection)).use { source ->
+                for (i in 0 until 5) segment(source, 1000L + i * 50000L, 50000)
+                assertEquals(1, requests.get()); assertEquals(4, source.continuedReads())
+                segment(source, 500000, 20000) // seek: a fresh range
+                assertEquals(2, requests.get())
+                segment(source, 251000, 10000) // the earlier reader still waits at its next byte
+                assertEquals(2, requests.get())
+                segment(source, 520000, 10000)
+                assertEquals(2, requests.get()); assertEquals(6, source.continuedReads())
+                // Activating the interleave windows retires parked readers.
+                assertTrue(source.enable()); segment(source, 530000, 1000)
+                assertEquals(3, requests.get())
+            }
+            val bounded = AdaptiveInterleaveSource(CloudStreamSource(bytes.size.toLong(), { link }, ::localConnection).boundedRanges(1L shl 20))
+            bounded.use { repeat(2) { i -> segment(it, i * 1000L, 1000) }; assertEquals(0, it.continuedReads()) }
+        } finally { server.stop(0) }
+    }
     @Test fun rejectedRangeBecomes502BeforeAnySuccessHeaders() {
         for (kind in listOf("ignored", "wrong-offset", "wrong-size")) {
             val upstream = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)

@@ -77,7 +77,7 @@ class Mp4InterleavePolicyTest {
     }
     private fun timedFixture(skewed: Boolean, corrupt: Boolean = false, chunks: Int = 32,
                              spacing: Long = 64 * mib, audioLength: Long = 1000, ticks: Long = 1000,
-                             videoLeads: Boolean = false, variableAudio: Boolean = false): SparseReader {
+                             videoLeads: Boolean = false, variableAudio: Boolean = false, audioTracks: Int = 1): SparseReader {
         fun timed(kind: String, positions: LongArray, length: Long) = box("trak", box("mdia",
             box("hdlr", numbers(0, 0), kind.toByteArray()),
             box("mdhd", numbers(0, 0, 0, 1000, chunks * ticks, 0)),
@@ -94,7 +94,8 @@ class Mp4InterleavePolicyTest {
         val mdat = ByteArrayOutputStream().also { out -> DataOutputStream(out).use {
             it.writeInt(1); it.writeBytes("mdat"); it.writeLong(moovAt - ftyp.size)
         } }.toByteArray()
-        return SparseReader(ftyp + mdat, box("moov", timed("vide", video, 64), timed("soun", audio, audioLength)), moovAt)
+        val sound = timed("soun", audio, audioLength)
+        return SparseReader(ftyp + mdat, box("moov", timed("vide", video, 64), *Array(audioTracks) { sound }), moovAt)
     }
     @Test fun distributedFutureAudioIncludesExactPayloadRangesWithoutChangingDemuxOrder() {
         val decision = Mp4InterleavePolicy.inspect(timedFixture(true))
@@ -120,6 +121,15 @@ class Mp4InterleavePolicyTest {
             assertFalse(decision.sequential)
             assertTrue(decision.regionCache)
         }
+    }
+    @Test fun multiLanguageTracksStoredAfterTheVideoUseRegionWindowsWithoutTrackGuesses() {
+        for (leads in listOf(true, false)) {
+            val decision = Mp4InterleavePolicy.inspect(timedFixture(true, videoLeads = leads, audioTracks = 3))
+            assertTrue(decision.regionCache); assertFalse(decision.sequential)
+            assertEquals("noninterleaved_tracks", decision.diagnostic)
+            assertTrue(decision.audioChunks.isEmpty()); assertNull(decision.playbackLayout)
+        }
+        assertFalse(Mp4InterleavePolicy.inspect(timedFixture(false, audioTracks = 3)).regionCache)
     }
     @Test fun variableAudioSampleSizesExcludeInterveningVideoBytesFromCachedSpans() {
         val decision = Mp4InterleavePolicy.inspect(timedFixture(true, chunks = 4, spacing = 65536,

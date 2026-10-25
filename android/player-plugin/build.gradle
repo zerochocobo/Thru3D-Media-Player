@@ -16,7 +16,9 @@ def includeDiagnostics = providers.gradleProperty('includeDiagnostics').map { it
 def narrationManifest = new groovy.json.JsonSlurper().parse(file('../../third_party/narration/model.json'))
 def cloneManifest = new groovy.json.JsonSlurper().parse(file('../../third_party/narration/clone_model.json'))
 def vadManifest = new groovy.json.JsonSlurper().parse(file('../../third_party/narration/vad_model.json'))
+def comicManifest = new groovy.json.JsonSlurper().parse(file('../../third_party/comic-ocr/model.json'))
 def narrationBundles = [narrationManifest, cloneManifest, vadManifest]
+def assetBundles = narrationBundles.collect { [bundle: it, root: "../../models/narration/${it.id}"] } + [[bundle: comicManifest, root: "../../models/comic-ocr/${comicManifest.id}"]]
 def narrationModels = file("../../models/narration/${narrationManifest.id}")
 def playerAssets = layout.buildDirectory.dir('playerAssets')
 def stagePlayerAssets = tasks.register('stagePlayerAssets', Sync) {
@@ -26,17 +28,18 @@ def stagePlayerAssets = tasks.register('stagePlayerAssets', Sync) {
     exclude 'openexr/*.tar.gz'
     from('../../app/godot/i18n')
     into(playerAssets)
-    narrationBundles.each { bundle ->
-        from(file("../../models/narration/${bundle.id}")) {
+    assetBundles.each { entry ->
+        def bundle = entry.bundle
+        from(file(entry.root)) {
             into(bundle.directory)
             include(bundle.files.keySet() as String[])
         }
     }
     doFirst {
-        narrationBundles.each { bundle -> bundle.files.each { name, expected ->
-            def model = new File(file("../../models/narration/${bundle.id}"), name)
+        assetBundles.each { entry -> entry.bundle.files.each { name, expected ->
+            def model = new File(file(entry.root), name)
             if (!model.isFile() || model.length() != expected.bytes) {
-                throw new GradleException("Missing narration model: ${name}. Run tools/environment/Prepare-NarrationModels.ps1.")
+                throw new GradleException("Missing model: ${model}. Restore the pinned model files before building.")
             }
             def digest = java.security.MessageDigest.getInstance('SHA-256')
             model.withInputStream { input ->
@@ -45,7 +48,7 @@ def stagePlayerAssets = tasks.register('stagePlayerAssets', Sync) {
                 while ((count = input.read(buffer)) > 0) { digest.update(buffer, 0, count) }
             }
             if (digest.digest().encodeHex().toString() != expected.sha256) {
-                throw new GradleException("Narration model digest differs: ${name}")
+                throw new GradleException("Model digest differs: ${name}")
             }
         } }
     }

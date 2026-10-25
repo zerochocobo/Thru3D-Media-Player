@@ -2,6 +2,7 @@ extends SceneTree
 const Quality := preload("res://scripts/display_quality.gd")
 const Main := preload("res://scripts/main.gd")
 const I18n := preload("res://scripts/i18n.gd")
+const Palette := preload("res://scripts/watch_palette.gd")
 class HostProbe extends RefCounted:
 	var requests: Array[bool] = []
 	func finish_app(restart: bool) -> void: requests.append(restart)
@@ -14,7 +15,8 @@ func _run() -> void:
 	check(Quality.load_quality(settings) == Quality.AUTO, "Default quality is auto")
 	check(Quality.render_scale(Quality.AUTO, false) == 1.1 and Quality.render_scale(Quality.AUTO, true) == 1.0, "Auto quality: Enhanced, or Standard on low end")
 	check(Quality.render_scale(2, true) == 1.25, "Explicit quality is respected on low end")
-	check(Quality.load_sharpness(settings) == 0.2, "Default sharpness is gentle")
+	check(Quality.load_sharpness(settings) == 0.2, "Photos default to gentle sharpening")
+	check(Quality.load_video_sharpness(settings) == 0.0, "Video defaults to no sharpening")
 	for adapter in ["Adreno (TM) 650", "Adreno (TM) 540"]:
 		check(Quality.is_low_end_gpu(adapter), "XR2 Gen1 class is low end: " + adapter)
 	for adapter in ["Adreno (TM) 740", "Adreno (TM) 830", "NVIDIA GeForce RTX 3060", ""]:
@@ -29,23 +31,53 @@ func _run() -> void:
 	check(Quality.load_output_choice(explicit) == 0 and Quality.load_sharpness(explicit, true) == 0.6, "Saved choices override tier defaults")
 	explicit.set_value("video", "sharpness", 0.6)
 	check(Quality.load_sharpness(explicit) == 0.6, "The former High level stays at Quality strength")
+	check(Quality.load_video_sharpness(explicit) == 0.6, "A saved sharpness applies to video too")
 	explicit.set_value("video", "output_width", 1234)
 	check(Quality.load_output_choice(explicit) == Quality.AUTO_OUTPUT, "Unknown output width falls back to auto")
 	var path := "user://quality_test_%d.cfg" % Time.get_ticks_usec()
 	settings.set_value("appearance", "background", "dark")
+	check(Palette.load_choice(settings) == "mint", "Old settings use the unified mint watch")
+	settings.set_value("watch", "color", "blue")
 	settings.save(path)
 	var main := Main.new()
 	main.settings_path = path
 	root.add_child(main)
+	check(main.wrist_watch.color_choice == "blue", "Watch restores its saved color on startup")
 	main.recent_menu.section = main.recent_menu.Section.SETTINGS
 	main.recent_menu.tab = main.recent_menu.DISPLAY_TAB
 	main.recent_menu.refresh()
-	var rows: Array = main.recent_menu.rows
-	check(rows.size() == 5 and rows[0].choices.size() == 4 and rows[0].choices[0].value == Quality.AUTO
+	# The transparency editor is an action row; these assertions describe choice fields.
+	var watch_rows: Array = main.recent_menu.rows.filter(func(row): return row.get("key") == "watch_color")
+	check(watch_rows.size() == 1 and watch_rows[0].get("swatches", false) and watch_rows[0].choices.size() == 5,
+		"Display offers five inline watch color swatches")
+	var watch_index: int = main.recent_menu.rows.find(watch_rows[0])
+	check(main.recent_menu.rows[watch_index - 1].key == "show_fps", "Watch color sits directly below Show FPS")
+	main.recent_menu._set_scroll(main.recent_menu._max_scroll())
+	for option in Palette.OPTIONS:
+		var target := -1
+		for id in main.recent_menu.choices.targets:
+			var item: Dictionary = main.recent_menu.choices.targets[id]
+			if item.get("key") == "watch_color" and item.get("value") == option.value: target = id
+		check(target >= 0, "Visible watch color target: " + option.value)
+		if target < 0: continue
+		main.recent_menu.choices.action(target)
+		settings.load(path)
+		check(Palette.load_choice(settings) == option.value and main.wrist_watch.color_choice == option.value,
+			"Swatch updates the live watch and persists: " + option.value)
+		for material in main.wrist_watch._materials:
+			check(material.get_shader_parameter("accent") == option.swatch and material.get_shader_parameter("secondary") == option.swatch,
+				"All dial, control and projection materials share " + option.value)
+	main.recent_menu._set_scroll(0)
+	var rows: Array = main.recent_menu.rows.filter(func(row): return row.has("key") and row.key != "watch_color")
+	check(rows.size() == 7 and rows[0].choices.size() == 4 and rows[0].choices[0].value == Quality.AUTO
 		and rows[1].key == "refresh_cap" and rows[1].value == Quality.DEFAULT_REFRESH_CAP
 		and rows[2].key == "supersampling" and rows[2].choices.size() == 3 and rows[2].value == 1
 		and rows[3].key == "sharpness" and rows[3].choices.size() == 3 and rows[4].key == "show_fps",
 		"Render scale, playback refresh rate, supersampling (off/normal/quality) and sharpness each occupy one field, followed by the FPS display")
+	check(rows[-2].key == "playback_menu_depth" and rows[-2].choices.size() == 3 and rows[-2].value == "default",
+		"Experimental VR playback control depth keeps its unchanged default above progress visibility")
+	check(rows.back().key == "stick_seek_overlay" and rows.back().value and not rows.back().get("switch", false) and rows.back().choices.size() == 2,
+		"Thumbstick progress visibility is the final Display row and defaults on")
 	var refresh_values: Array = rows[1].choices.map(func(option): return option.value)
 	var expected_caps: Array = Quality.refresh_choices(main.low_end_gpu)
 	check(refresh_values == expected_caps and rows[1].choices.all(func(option): return str(option.label).contains("Hz") and not str(option.get("hint", "")).is_empty()),
@@ -55,7 +87,7 @@ func _run() -> void:
 		var tip := str(main.recent_menu._tips.get(button.target, ""))
 		if tip in [I18n.t(Quality.SCALE_INFO), I18n.t(Quality.REFRESH_INFO), I18n.t(Quality.SUPERSAMPLING_INFO), I18n.t(Quality.SHARPNESS_INFO)] and not button.enabled and button.get("hover_disabled", false): explained += 1
 	check(explained == 4, "Pointing at the render scale, refresh rate, supersampling and sharpness titles explains them without making the rows clickable")
-	check(main.recent_menu.rows[3].choices.all(func(option): return not str(option.get("hint", "")).is_empty())
+	check(rows[3].choices.all(func(option): return not str(option.get("hint", "")).is_empty())
 		and main.recent_menu._tips.values().has(I18n.t(Quality.SHARPNESS_HINTS[2])), "Each sharpness choice has a technical hint")
 	main._on_setting_changed("display_quality",2)
 	main._on_setting_changed("sharpness",0.6)
@@ -87,19 +119,22 @@ func _run() -> void:
 	main.recent_menu._activate(main.recent_menu.RESTART_APP)
 	check(host.requests == [true], "Restart button calls Android once and saves settings")
 	main.platform_plugin = null
-	main.queue_free()
+	main.recent_menu.dismiss(); main.queue_free()
 	await process_frame
 	main = Main.new()
 	main.settings_path = path
 	root.add_child(main)
 	check(main.display.render_scale == 1.25, "Restart applies saved quality globally")
+	check(main.wrist_watch.color_choice == "white", "Restart restores the last watch color selected")
+	main._on_setting_changed("watch_color", "unknown")
+	check(main.wrist_watch.color_choice == "mint" and main._library_settings().watch_color == "mint", "Unknown color falls back consistently")
 	check(not main._library_settings().display_quality_pending, "Restart clears pending label")
 	check(not main.low_end_gpu and main.video.sharpness == 0.0, "Desktop renderer is not low end and keeps the saved sharpness")
 	main.platform_plugin = host
 	main.recent_menu._activate(main.recent_menu.QUIT_APP)
 	check(host.requests == [true, false], "Close button requests actual application exit")
 	main.platform_plugin = null
-	main.queue_free()
+	main.recent_menu.dismiss(); main.queue_free()
 	await process_frame
 	DirAccess.remove_absolute(path)
 	var fresh_path := "user://quality_low_end_%d.cfg" % Time.get_ticks_usec()
@@ -118,7 +153,7 @@ func _run() -> void:
 	main.recent_menu.refresh()
 	var resolution: Array = main.recent_menu.rows.filter(func(row): return row.get("key", "") == "output_width")
 	check(resolution.size() == 1 and resolution[0].value == Quality.AUTO_OUTPUT and resolution[0].choices[0].value == Quality.AUTO_OUTPUT, "Resolution offers auto first")
-	main.queue_free()
+	main.recent_menu.dismiss(); main.queue_free()
 	await process_frame
 	DirAccess.remove_absolute(fresh_path)
 	for failure in failures: push_error(failure)

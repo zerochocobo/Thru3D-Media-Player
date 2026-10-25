@@ -14,12 +14,17 @@ class Platform extends RefCounted:
 	var support_reads := 0
 	var stops: Array[Dictionary] = []
 	var clocks: Array[Dictionary] = []
+	var cancels: Array[int] = []
+	var accept_cancel := true
 	func original_capture_supported() -> bool:
 		support_reads += 1
 		return true
 	func original_capture_request(json: String) -> int:
 		requests.append(JSON.parse_string(json)); return requests.size()
-	func original_capture_status(id: int) -> String: return JSON.stringify(results.get(id, {"state": "saving"}))
+	func original_capture_status(id: int) -> String:
+		return JSON.stringify(results.get(id, {"state": "recording" if requests[id - 1].kind == "live_clip" else "saving"}))
+	func original_capture_cancel(id: int) -> bool:
+		cancels.append(id); return accept_cancel
 	func original_capture_stop(id: int, end_us: int) -> bool:
 		stops.append({"id": id, "end_us": end_us}); return true
 	func original_capture_clock(id: int, position_us: int, playing: bool) -> void:
@@ -35,6 +40,8 @@ class Video extends Node3D:
 	var swap_eyes := false
 	var fisheye_fov := 180
 	var local_uri := "smb://server/video_180_sbs.mp4"
+	var _bookmark_metadata := {"basename": "Film.mp4"}
+	var display_name := "Film.mp4"
 	var requested_play := false
 	var audio_track_id := -1
 	var playback_speed := 1.0
@@ -62,7 +69,111 @@ func check(value: bool, message: String) -> void:
 
 func _initialize() -> void: call_deferred("run")
 
+func check_live_saving() -> void:
+	var video := Video.new()
+	var capture := Capture.new(video)
+	var overlay := Overlay.new(); root.add_child(overlay)
+	var saved: Array = []; capture.saved.connect(func(result): saved.append(result))
+	overlay.cancel_requested.connect(capture.cancel_save)
+	check(capture.start() and capture.status().export_progress == -1 and not capture.cancel_save(), "Active live recording keeps Stop and cannot cancel an unstarted save")
+	video.source_ms += 12000; capture.tick(); capture.stop()
+	overlay.sync(capture.status())
+	check(capture.status().export_progress == 0 and capture.status().export_cancellable and overlay._time.text.contains("0%"), "Stopping immediately shows a cancellable 0 percent save")
+	video.platform.results[1] = {"state": "saving", "progress": 47}
+	capture._poll_after = 0; capture.tick(); overlay.sync(capture.status())
+	check(capture.status().export_progress == 47 and overlay._time.text.contains("47%") and is_equal_approx(overlay._progress.mesh.size.x, 0.28 * 0.47), "Live copy and composition progress reaches the existing HUD bar")
+	video.platform.results[1].progress = 20; capture._poll_after = 0; capture.tick()
+	check(capture.status().export_progress == 47, "Delayed stage observations cannot move live save progress backwards")
+	check(not capture.cancel_export(video.local_uri), "Closing playback preserves the already stopped live save")
+	var button: Dictionary = overlay._buttons.filter(func(item): return item.target == Overlay.CANCEL)[0]
+	var point: Vector2 = button.rect.get_center()
+	check(overlay.press_pointer("right_hand", overlay.to_global(Vector3(point.x, point.y, 0.2)), -overlay.global_basis.z, true), "A real trigger ray can cancel live recording finalization")
+	check(video.platform.cancels == [1] and capture.status().export_cancelling and capture.busy("clip"), "Live cancellation waits for native cleanup and keeps the worker occupied")
+	check(not capture.cancel_save() and not capture.start(), "Repeated cancellation and a new recording cannot race cleanup")
+	overlay.sync(capture.status())
+	check(overlay._time.text == "Cancelling…" and not overlay._buttons.filter(func(item): return item.target == Overlay.CANCEL)[0].enabled, "Live cancellation disables the action while cleaning")
+	video.platform.results[1] = {"state": "cancelled"}; capture._poll_after = 0; capture.tick()
+	check(saved.is_empty() and not capture.busy("clip") and capture.notice.contains("cancelled"), "A cleaned live save releases the slot without a success event")
+	check(capture.start(), "A live recording can restart after cancellation")
+	video.platform.results[2] = {"state": "saving", "progress": 18}; capture._poll_after = 0; capture.tick()
+	check(capture.recording.is_empty() and capture.status().export_cancellable, "Native EOF also changes recording into a cancellable save")
+	video.platform.accept_cancel = false
+	check(not capture.cancel_save() and not capture.status().export_cancelling, "A publication that won the race rejects late live cancellation")
+	video.platform.results[2] = {"state": "saved", "directory": "Movies/Thru3D", "name": "recording.mkv"}
+	capture._poll_after = 0; capture.tick()
+	check(saved.size() == 1 and capture.notice.contains("recording.mkv") and not capture.status().export_cancellable, "Successful live publication still reports its filename and removes Cancel")
+	overlay.free(); video.free()
+
+func check_loop_exports() -> void:
+	preload("res://scripts/i18n.gd").use("en")
+	var video := Video.new(); video.geometry = 0; video.valid_frame = false; video.playback_speed = 1.5
+	var capture := Capture.new(video)
+	var loop := {"id": "loop", "a_ms": 240000, "b_ms": 480000}
+	var saved: Array = []; capture.saved.connect(func(result): saved.append(result))
+	check(capture.export_loop(loop), "A saved flat loop exports without seeking, playing or requiring a live source frame")
+	var request: Dictionary = video.platform.requests[0]
+	check(request.kind == "clip" and request.start_us == 240000000 and request.end_us == 480000000 and request.source_name == "Film.mp4", "Loop export submits the saved range and stable original name")
+	check(request.audio_index == 3 and request.mode.geometry == 0 and not video.requested_play, "Independent export preserves selected audio and flat layout without starting playback")
+	check(not capture.export_loop(loop), "Repeated clicks cannot queue duplicate exports")
+	video.platform.results[1] = {"state": "saving", "progress": 42}
+	capture._poll_after = 0; capture.tick()
+	check(capture.status().loop_exports.loop == 42 and capture.status().export_progress == 42, "Native copying progress reaches both the row and persistent status")
+	var overlay := Overlay.new(); root.add_child(overlay); overlay.sync(capture.status())
+	check(overlay._time.text.contains("42%") and is_equal_approx(overlay._progress.mesh.size.x, 0.28 * 0.42), "Saving HUD displays measured percent and progress bar")
+	video.platform.results[1] = {"state": "exists", "directory": "Movies/Thru3D", "name": "Film_00-04-00.000--00-08-00.000.mkv"}
+	capture._poll_after = 0; capture.tick()
+	check(capture.notice.contains("Already saved") and capture.notice.contains("Movies/Thru3D") and capture.notice.contains("Film_00-04-00.000--00-08-00.000.mkv"), "Duplicate result gives the actual target folder and file name")
+	check(not capture.busy("clip") and saved.is_empty(), "Already-saved result releases the slot without announcing a new output")
+	check(capture.export_loop(loop), "The same definition remains usable after a duplicate check")
+	video.platform.results[2] = {"state": "saved", "directory": "Movies/Thru3D", "name": "Film_00-04-00.000--00-08-00.000.mp4"}
+	capture._poll_after = 0; capture.tick()
+	check(saved.size() == 1 and capture.notice.contains("Film_00-04-00.000--00-08-00.000.mp4"), "Successful publication shows its final container and filename")
+	check(Format.clean({"version": 1, "geometry": 0}, true).geometry == 0 and Format.clean({"version": 1, "geometry": 0}).is_empty(), "Flat clip metadata requires explicit parser opt-in")
+	video.media.playback.details.audio_track_id = "-1"; video.media.playback.details.audio_tracks = []
+	check(capture.export_loop(loop) and video.platform.requests[-1].audio_index == -2, "Unresolved automatic audio asks the source reader to discover audio instead of silently dropping it")
+	var cancelled := [0]
+	overlay.cancel_requested.connect(func(): cancelled[0] += 1; capture.cancel_export())
+	overlay.sync(capture.status())
+	var cancel_button: Dictionary = overlay._buttons.filter(func(item): return item.target == Overlay.CANCEL)[0]
+	var point: Vector2 = cancel_button.rect.get_center()
+	check(overlay.press_pointer("left_hand", overlay.to_global(Vector3(point.x, point.y, 0.2)), -overlay.global_basis.z, true), "Actual trigger ray can press the cancel button with transport hidden")
+	check(cancelled[0] == 1 and video.platform.cancels == [3], "Cancel button reaches the active independent native export once")
+	check(capture.status().export_cancelling and capture.busy("clip") and not capture.export_loop(loop), "Cancelling keeps the slot until native output cleanup finishes")
+	check(not capture.cancel_export() and video.platform.cancels.size() == 1, "Repeated cancel cannot interrupt the same worker twice")
+	overlay.sync(capture.status())
+	check(overlay._time.text == "Cancelling…" and not overlay._buttons.filter(func(item): return item.target == Overlay.CANCEL)[0].enabled, "Cancelling state replaces percent and disables the button")
+	video.platform.results[3] = {"state": "cancelled"}
+	capture._poll_after = 0; capture.tick(); overlay.sync(capture.status())
+	check(not capture.busy("clip") and not capture.status().export_cancellable and saved.size() == 1 and capture.notice.contains("cancelled"), "Native cleanup acknowledgement releases the slot without a saved event")
+	check(not overlay._buttons.any(func(item): return item.target == Overlay.CANCEL), "Finished export removes the cancel action")
+	check(capture.export_loop(loop), "Cancelled loop can be exported again")
+	video.platform.accept_cancel = false
+	check(not capture.cancel_export() and not capture.status().export_cancelling, "Cancellation rejected after publication does not fabricate a cancelling state")
+	video.platform.results[4] = {"state": "saved", "directory": "Movies/Thru3D", "name": "Film.mp4"}
+	capture._poll_after = 0; capture.tick()
+	check(saved.size() == 2 and capture.notice.contains("Film.mp4"), "Completed publication wins a late cancel and still reports the saved file")
+	overlay.free(); video.free()
+	var closing := CapturedVideo.new()
+	root.add_child(closing); closing.set_process(false)
+	var host := Platform.new(); closing.platform = host
+	closing.local_uri = "file:///Film.mp4"; closing.geometry = 0
+	closing._bookmark_metadata = {"basename": "Film.mp4"}
+	check(closing.captures.export_loop(loop), "Real video controller starts independent range export")
+	check(not closing.captures.cancel_export("file:///other.mp4") and host.cancels.is_empty(), "Closing an unrelated source cannot cancel this clip")
+	closing.pip.reopening = true; closing.close_video(); closing.pip.reopening = false
+	check(host.cancels.is_empty() and closing.captures.busy("clip"), "Internal decoder reopen keeps the same source export")
+	closing.close_video()
+	check(host.cancels == [1] and closing.captures.status().export_cancelling, "Closing actual playback cancels its export before tearing down the video")
+	closing.close_video()
+	check(host.cancels.size() == 1, "Repeated close does not duplicate native cancellation")
+	host.results[1] = {"state": "cancelled"}
+	closing.captures._poll_after = 0; closing.captures.tick()
+	check(not closing.captures.busy("clip"), "Cleanup acknowledgement releases export even after playback closes")
+	closing.free()
+
 func run() -> void:
+	check_loop_exports()
+	check_live_saving()
 	var video := Video.new()
 	video.captures = Capture.new(video)
 	var capture: RefCounted = video.captures
@@ -74,6 +185,7 @@ func run() -> void:
 	check(capture.screenshot(), "Screenshot works during a paused recording")
 	check(video.platform.requests[0].kind == "live_clip" and video.platform.requests[0].session_id == 7, "Recording attaches to the current playback, without another reader")
 	check(video.platform.requests[1].position_us == 12345000 and video.platform.requests[1].mode.stereo_sbs, "Screenshot uses source PTS and complete stereo layout")
+	check(video.platform.requests[1].exact_frame, "User-paused screenshots request the displayed time before keyframe fallback")
 	video.platform.results[2] = {"state": "saved", "directory": "Pictures/Thru3D", "uri": "content://image/1"}
 	capture._poll_after = 0; capture.tick()
 	check(capture.notice.contains("Pictures/Thru3D"), "Publication success reports the actual directory")
@@ -141,6 +253,9 @@ func run() -> void:
 	check(not overlay._pointers.left_hand.line.visible, "Recording indicator leaves no permanent ray over the video")
 	overlay.sync({"clip_busy": true})
 	check(overlay.visible, "Finalizing remains visible with controls hidden")
+	check(not overlay._buttons.any(func(item): return item.target == Overlay.CANCEL), "Live recording finalization never offers an unsupported range cancel")
+	overlay.sync({"picture_busy": true})
+	check(not overlay._buttons.any(func(item): return item.target == Overlay.CANCEL), "Screenshot saving has no unrelated clip cancel action")
 	overlay.sync({})
 	check(not overlay.visible, "Indicator disappears only after work and notices finish")
 	var state := {"has_video": true, "geometry": 1, "source_uri": "file:///x.mp4", "capture": {"available": true, "ready": true}}
@@ -179,6 +294,11 @@ func run() -> void:
 	# This layout-only fixture never runs Photo._ready(), which normally parents this helper.
 	photo.panorama_tiles.free()
 	exported_video.free(); photo.free(); Privacy.file_settings = original_memory
+	var playing_video := Video.new()
+	playing_video.requested_play = true; playing_video.media.state = "playing"
+	var playing_capture := Capture.new(playing_video)
+	check(playing_capture.screenshot() and not playing_video.platform.requests[0].exact_frame, "Playing screenshots use the fast keyframe path")
+	playing_video.free()
 	menu.free(); overlay.free(); video.free()
 	print("Original capture checks: %s (%d)" % ["passed" if failures.is_empty() else "FAILED", checks])
 	for failure in failures: push_error(failure)

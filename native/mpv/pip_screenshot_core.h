@@ -1,6 +1,6 @@
 #pragma once
 // Still-only CPU projection, shared by Android JNI and the host pixel oracle.
-// Reads the source bitmap without copying it; streams a single PNG row at a time.
+// Reads the source bitmap without copying it; emits one composed RGBA row at a time.
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstring>
 #include <functional>
+#include <memory>
 #include <stdexcept>
 #include <vector>
 #include <zlib.h>
@@ -204,8 +205,9 @@ public:
     void finish() {feed(nullptr,0,true);chunk("IEND",nullptr,0);if(std::fflush(file))throw std::runtime_error("PNG flush failed");}
     ~Png(){if(initialized)deflateEnd(&stream);if(file)std::fclose(file);}
 };
-inline void compose(const Image& source,const std::vector<Image>& images,const Mode& mode,
-    const std::vector<Window>& windows,const char* path,const std::function<bool()>& cancelled) {
+inline void compose_rows(const Image& source,const std::vector<Image>& images,const Mode& mode,
+    const std::vector<Window>& windows,const std::function<void(const uint8_t*)>& emit,
+    const std::function<bool()>& cancelled) {
     if(!source.data||source.width<=0||source.height<=0||source.width>65535||source.height>65535||int64_t(source.width)*source.height>40*1024*1024||
        source.pitch<source.width*4||mode.geometry<1||mode.geometry>3||mode.fov<180||mode.fov>220||windows.size()>3||
        (mode.stereo&&(mode.top_bottom?source.height:source.width)%2))throw std::runtime_error("Invalid source");
@@ -216,9 +218,8 @@ inline void compose(const Image& source,const std::vector<Image>& images,const M
     // Longitude trigonometry is reused across every row, eye and window.
     std::vector<double> sx(ew),cx(ew);
     if(mode.geometry!=2)for(int x=0;x<ew;++x){const double lon=((x+.5)/ew-.5)*(mode.geometry==3?2*pi:pi);sx[x]=std::sin(lon);cx[x]=std::cos(lon);}
-    std::vector<uint8_t> row(size_t(source.width)*4),filtered(row.size()+1);filtered[0]=1;
+    std::vector<uint8_t> row(size_t(source.width)*4);
     std::vector<Vec> lens(mode.geometry==2?ew:0);std::vector<uint8_t> lens_valid(lens.size());
-    Png png(path,source.width,source.height);
     for(int y=0;y<source.height;++y) {
         if(y%16==0&&cancelled())throw std::runtime_error("Cancelled screenshot");
         std::memcpy(row.data(),source.pixel(0,y),row.size());
@@ -258,11 +259,23 @@ inline void compose(const Image& source,const std::vector<Image>& images,const M
                 }
             }
         }
-        // PNG Sub filter: bounded scratch, fast compression, no second full-resolution bitmap.
-        for(size_t i=0;i<row.size();++i)filtered[i+1]=uint8_t(row[i]-(i>=4?row[i-4]:0));
-        png.feed(filtered.data(),filtered.size());
+        emit(row.data());
     }
     if(cancelled())throw std::runtime_error("Cancelled screenshot");
-    png.finish();
+}
+// Lossless host oracle and compatibility output; Android saves JPEG directly from compose_rows.
+inline void compose(const Image& source,const std::vector<Image>& images,const Mode& mode,
+    const std::vector<Window>& windows,const char* path,const std::function<bool()>& cancelled) {
+    std::unique_ptr<Png> png;
+    std::vector<uint8_t> filtered;
+    compose_rows(source,images,mode,windows,[&](const uint8_t* row) {
+        if(!png) {
+            png=std::make_unique<Png>(path,source.width,source.height);
+            filtered.resize(size_t(source.width)*4+1);filtered[0]=1;
+        }
+        for(size_t i=0;i+1<filtered.size();++i)filtered[i+1]=uint8_t(row[i]-(i>=4?row[i-4]:0));
+        png->feed(filtered.data(),filtered.size());
+    },cancelled);
+    png->finish();
 }
 } // namespace quest::pipshot

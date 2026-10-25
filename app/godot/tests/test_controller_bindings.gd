@@ -22,6 +22,17 @@ func _initialize() -> void: call_deferred("run")
 
 func run() -> void:
 	var bindings := Bindings.new()
+	check(bindings.pinch_hand == "right_hand", "Picture pinches default to the right hand")
+	for preferred in ["left_hand", "right_hand", "both"]:
+		bindings.pinch_hand = preferred
+		var restored := Bindings.new(); restored.restore(bindings.snapshot())
+		check(restored.pinch_hand == preferred, "Gesture hand survives settings reload: " + preferred)
+		for hand in Bindings.HANDS:
+			check(restored.allows_picture_pinch(hand) == (preferred == "both" or preferred == hand), "Gesture hand selection: " + preferred + "/" + hand)
+	bindings.restore({"version": 1, "bindings": {}, "pinch_hand": "invalid"})
+	check(bindings.pinch_hand == "right_hand", "Invalid gesture hand falls back to right")
+	bindings.restore({"version": 1, "bindings": {}})
+	check(bindings.pinch_hand == "right_hand", "Existing settings without a gesture hand default to right")
 	var page_menu := Node3D.new()
 	var page := preload("res://scripts/controls_page.gd").new(page_menu)
 	var ordinary := page.items().filter(func(item): return item.has("id")).map(func(item): return item.id)
@@ -32,7 +43,15 @@ func run() -> void:
 	var combinations := page.items().map(func(item): return item.id)
 	check(not combinations.is_empty() and combinations.all(func(id): return id not in ordinary), "Combinations omit the ordinary controller operations")
 	check(["play", "back10", "forward10", "volume_up", "zoom_in", "reset_video", "projection_video", "photo_next"].all(func(id): return id not in combinations), "Playback, navigation and other standard operations are absent from combinations")
-	check(["subtitles", "passthrough_video", "grade_next", "subtitle_next", "audio_next"].all(func(id): return id in combinations), "Combinations retain the supplementary operations")
+	check(["subtitles", "narration_toggle", "passthrough_video", "grade_next", "subtitle_next", "audio_next"].all(func(id): return id in combinations), "Combinations retain the supplementary operations including narration")
+	check(bindings.bindings("narration_toggle").is_empty(), "Narration does not claim an existing default button")
+	for hand in Bindings.HANDS:
+		var narration_bindings := Bindings.new()
+		check(narration_bindings.assign("narration_toggle", Bindings.bind(hand, "by_button", Bindings.MODIFIERS), true).ok, "Narration accepts either controller's chord")
+		var reloaded := Bindings.new(); reloaded.restore(narration_bindings.snapshot())
+		for modifier in Bindings.MODIFIERS: reloaded.press(hand, modifier)
+		check(reloaded.resolve(hand, "by_button", "video_flat") == "narration_toggle" and reloaded.resolve(hand, "by_button", "video_immersive") == "narration_toggle", "Saved narration chord works in flat and immersive video")
+		check(reloaded.resolve(hand, "by_button", "photo").is_empty(), "Narration chord does not apply to photos")
 	check(["turn_180_video", "turn_180_photo", "previous_video", "next_video"].all(func(id): return id in combinations and bindings.bindings(id).is_empty()), "360 turns and video navigation are optional combinations without new defaults")
 	page.bindings.clear("play")
 	check(not page.items().any(func(item): return item.id == "play"), "Clearing a standard binding does not reinsert it in combinations")

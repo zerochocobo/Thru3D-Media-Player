@@ -4,7 +4,8 @@ import kotlin.math.*
 
 /** Shared bounded speech leveller. Measures speech, never boosts each word or pause
  * independently. Stereo-linked lookahead limits peaks without hard clipping. */
-internal class NarrationLevel(private val emit: (FloatArray)->Unit) : AutoCloseable {
+internal class NarrationLevel(private val initialFrames: Int=64,private val emit: (FloatArray)->Unit) : AutoCloseable {
+    init {require(initialFrames in 8..64)}
     data class Stats(var initialGainDb: Double=0.0,var gainDb: Double=0.0,
                      var limitedFrames: Int=0,var maxBufferedSamples: Int=0)
     val stats=Stats()
@@ -44,7 +45,7 @@ internal class NarrationLevel(private val emit: (FloatArray)->Unit) : AutoClosea
         if(!ready&&lead.isEmpty()&&energy<1e-6){enqueue(pcm);return}
         powers.addLast(energy);while(powers.size>80)powers.removeFirst()
         if(!ready){lead+=pcm;stats.maxBufferedSamples=maxOf(stats.maxBufferedSamples,lead.sumOf {it.size}+output.size+frame.size)
-            if(lead.size<64)return
+            if(lead.size<initialFrames)return
             start()
         }else{
             // A 1.6s speech window and <=1.5 dB/s correction preserve local stress.

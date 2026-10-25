@@ -109,3 +109,7 @@ From 0.13.2, archive pages use bounded local/stream indexers and encrypted app-p
 `DlnaReceiver` owns bounded foreground LAN HTTP/SSDP/GENA handling; `DlnaRenderer` owns transport tokens independently of MPV generations. Godot `cast_session.gd` accepts/rejects offers, isolates temporary cast playback from ordinary history/configuration, and retains an explicit return to prior media. See [receiver scope](DLNA_CASTING.md).
 
 `RayKeyboardWebView` shares a per-window `RayKeyboardImeGate` while ray-driven web input owns focus, releasing it on pause/detach/destroy without replacing unrelated window flags. Inactive transparent Godot editors are hidden and unfocusable. Normal search IME remains independent. Menu composition reuses five fixed slots and regroups after hint dismissal; render scale uses inline choices.
+
+## Document and comic pipelines
+
+`PdfDocuments`/`PdfReadCache` and `ReadingPageCache` provide bounded pages/spreads. `photo_comic_reader.gd` owns selection/cancellation, `ComicReaderController` owns OCR jobs, and `ComicSpeechPrefetch` leases shared narration. `comic_translation.gd` owns online batches and memory caches; its overlay composes an atlas through the photo shader. See [data boundaries](COMIC_READING.md) and [documents](PDF_READING.md).

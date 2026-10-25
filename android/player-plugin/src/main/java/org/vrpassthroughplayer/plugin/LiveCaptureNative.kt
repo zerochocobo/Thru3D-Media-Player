@@ -13,6 +13,7 @@ internal object LiveCaptureNative {
     @JvmStatic external fun stop(id: Long,positionUs: Long,presentationNs: Long)
     @JvmStatic external fun status(id: Long): String
     @JvmStatic external fun export(id: Long,output: String,mode: String): String
+    @JvmStatic external fun exportProgress(id: Long): Int
     @JvmStatic external fun forget(id: Long)
     @JvmStatic external fun narration(pcm: FloatArray,count: Int,presentationNs: Long,gain: Float)
 }

@@ -13,12 +13,17 @@ var depths: Array = []
 
 class MainHarness extends "res://scripts/main.gd":
 	var head: Variant = Transform3D(Basis.IDENTITY, Vector3(-0.45, 5.25, 19.9))
+	var hand_pose := Transform3D.IDENTITY
+	var ray: Variant = null
 	func _ready() -> void: pass
 	func _head_pose() -> Variant: return head
-	func _move_pose(_hand: String) -> Variant: return head
+	func _move_pose(_hand: String) -> Variant: return hand_pose
+	func _ray(_hand: String) -> Variant: return ray
+	func _input_focused() -> bool: return true
 
 class VideoFixture extends Node3D:
 	var geometry := 0
+	var local_uri := ""
 
 class EnvironmentFixture extends Node3D:
 	var active := true
@@ -26,6 +31,7 @@ class EnvironmentFixture extends Node3D:
 	func snapshot() -> Dictionary: return {"screen": screen}
 	var light_mode := "auto"
 	func set_lighting(mode: String, _playing: bool) -> void: light_mode = mode
+	func set_viewing_brightness(_value: String, _preview: bool = false) -> void: pass
 
 class CompositionFixture extends Node:
 	var enabled := true
@@ -79,6 +85,8 @@ func _run() -> void:
 	menu.layout_head_provider = main._head_pose
 	menu.session_controls_provider = func(): return {"follow": false, "passthrough_visible": false}
 	menu.action_requested.connect(func(action): actions.append(action))
+	menu.action_requested.connect(func(action):
+		if action == "space_lock": main._on_menu_action(action))
 	menu.volume_requested.connect(func(value, _muted): volumes.append(value); state.volume = value)
 	menu.seek_requested.connect(func(value): seeks.append(value))
 	menu.depth_strength_requested.connect(func(value): depths.append(value); state.depth_strength = value; state.depth_requested = true)
@@ -112,6 +120,7 @@ func _run() -> void:
 	main.head = tracked_head
 	check(composition.calls.is_empty() and composition.is_processing(), "Cinema keeps high-density native menu composition active")
 	check("depth_test_disabled" in menu._backdrop.material_override.shader.code and menu._title.no_depth_test, "Menu avoids occlusion by chair geometry")
+	main._toggle_controls_lock()
 	for seat_id in ["A12", "I12", "N12"]:
 		var eye := Vector3.ZERO
 		for seat: Dictionary in Blueprint.manifest().seats:
@@ -126,8 +135,9 @@ func _run() -> void:
 	main.head = Transform3D(Basis.IDENTITY, Vector3(-0.45, 7.05, 17.65))
 	main._place_menu(menu, true)
 	fixed = menu.global_transform
+	main._toggle_controls_lock()
 	main._begin_interface_move("right_hand", "grip_click")
-	check(main.interface_move.capture.is_empty(), "Grip cannot drag the fixed transport")
+	check(main.interface_move.capture.is_empty(), "Grip cannot drag the locked transport")
 	tap(menu, 102, main.head.origin)
 	check(actions.back() == "play", "The original play control still dispatches its production action")
 	# The light switch lives in the footer beside free movement: auto -> on -> off.
@@ -187,6 +197,7 @@ func _run() -> void:
 	menu.update_pointer("desktop", main.head.origin, (depth_to - main.head.origin).normalized(), true)
 	menu.release_pointer("desktop", main.head.origin, (depth_to - main.head.origin).normalized(), true)
 	check(not depths.is_empty() and is_equal_approx(float(depths.back()), menu.DepthStrength.MAX), "Relocated depth slider retains its full logical range")
+	_lock_routes(main, menu)
 	menu.dismiss()
 	main._sync_cinema_transport()
 	check(composition.calls.is_empty() and composition.is_processing(), "Hiding transport leaves compositor enabled")
@@ -202,3 +213,53 @@ func _run() -> void:
 	for failure in failures: push_error(failure)
 	print("CINEMA_WORLD_TRANSPORT checks=%d failures=%d" % [checks, failures.size()])
 	quit(0 if failures.is_empty() else 1)
+
+func _lock_routes(main: Node3D, menu: Node3D) -> void:
+	menu._depth_open = false
+	menu.refresh()
+	var locked_pose: Transform3D = menu.global_transform
+	var locked_head: Transform3D = menu.get_meta("space_head")
+	menu.dismiss()
+	main.head.origin += Vector3(0.3, 0.1, 0.2)
+	main._place_menu(menu)
+	menu.toggle()
+	check(menu.space_locked() and menu.global_transform.is_equal_approx(locked_pose),
+		"Locked cinema controls keep their world pose after hiding and reopening from a moved head")
+	check(menu.get_meta("space_head") == locked_head, "Reopening cannot replace the locked popup head reference")
+	main._sync_cinema_transport(true)
+	check(menu.global_transform.is_equal_approx(locked_pose), "Cinema placement requests respect the spatial lock")
+	tap(menu, Menu.SPACE_LOCK, menu.global_position + menu.global_basis.z)
+	check(not menu.space_locked() and menu.global_transform.is_equal_approx(locked_pose), "The actual unlock button releases cinema controls without a jump")
+	check(menu._tips[Menu.SPACE_LOCK] == I18n.t("Lock spatial position"), "Unlock refreshes the cinema lock tooltip")
+	menu._activate(Menu.PLAYBACK_SETTINGS)
+	var screen_pose: Transform3D = main.video.global_transform
+	for scope in ["panel", "all"]:
+		main.controller_bindings.move_scope = scope
+		var before: Transform3D = menu.global_transform
+		var popup_local: Transform3D = menu._popup_surfaces[0].transform
+		main.hand_pose = Transform3D(Basis.IDENTITY, main.head.origin)
+		main.ray = [main.head.origin, aim(menu, 102, main.head.origin)]
+		main._begin_interface_move("right_hand", "grip_click")
+		check(not main.interface_move.capture.is_empty(), "Unlocked cinema controls accept a grip: " + scope)
+		if not main.interface_move.capture.is_empty():
+			check(main.interface_move.capture.targets.all(func(target): return target.kind == "menu"), "Cinema grip never targets the movie screen: " + scope)
+		main.hand_pose.origin.x += 0.2
+		main._update_interface_move()
+		main.interface_move.cancel()
+		check(not menu.global_transform.is_equal_approx(before), "Grip motion moves unlocked cinema controls: " + scope)
+		check(menu._popup_surfaces[0].transform.is_equal_approx(popup_local), "Cinema settings move with the dragged bar: " + scope)
+		var popup_world: Transform3D = menu._popup_surfaces[0].global_transform
+		menu.refresh()
+		check(menu._popup_surfaces[0].global_transform.is_equal_approx(popup_world), "Refreshing dragged cinema settings does not snap them back: " + scope)
+	check(main.video.global_transform == screen_pose, "Unlock and drag leave the cinema screen fixed")
+	menu._activate(Menu.SETTINGS_CLOSE)
+	tap(menu, Menu.SPACE_LOCK, main.head.origin)
+	locked_pose = menu.global_transform
+	main.ray = [main.head.origin, aim(menu, 102, main.head.origin)]
+	main._begin_interface_move("right_hand", "grip_click")
+	check(menu.space_locked() and main.interface_move.capture.is_empty(), "Relocked cinema controls reject grip movement")
+	menu.dismiss(); main.head.origin += Vector3(0.2, 0, 0)
+	main._place_menu(menu); menu.toggle()
+	check(menu.global_transform.is_equal_approx(locked_pose), "Relocking preserves the dragged position across reopening")
+	main._clear_controls_locks(); main._place_menu(menu, true)
+	check(not menu.space_locked() and not menu.global_transform.is_equal_approx(locked_pose), "Clearing locks lets explicit recenter retrieve cinema controls")

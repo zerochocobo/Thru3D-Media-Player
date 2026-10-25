@@ -34,6 +34,7 @@
 #include "frame_geometry.h"
 #include "playback_failure.h"
 #include "whisper_audio.h"
+#include "capture_audio_layout.h"
 
 void quest_mpv_initialize_android(JNIEnv*, jobject);
 
@@ -263,6 +264,7 @@ struct Source final {
     int desired_audio_id = -1; double desired_volume = 100; bool desired_mute = false, audio_dirty = false;
     int desired_whisper = 0; uint64_t whisper_request = 0; bool whisper_dirty = false; // commands_mutex
     int whisper_level = 0; uint64_t whisper_serial = 0; std::string whisper_error; // control thread
+    bool capture_audio_layout_applied = false; // control thread, only our tagged PCM recordings
     double narration_gain = 1.0; bool narration_gain_dirty = false; // temporary; never changes aid/base volume
     uint64_t snapshot_sequence = 0; // control thread only
     std::string state = "opening", details = "{}", error, render_error, tls_ca_file, failure_reason, failure_stage;
@@ -280,6 +282,7 @@ struct Source final {
     bool software_layer = false;
     bool iso_input = false;
     int iso_playlist = -1; // explicit Blu-ray title; -1 keeps the longest, -2 plays the disc's HDMV menu
+    int network_cache_mib = 256; // forward demux cache; the bridge raises it only with memory to spare
     int layer_width = 4096, layer_height = 4096;
     JavaVM* vm = nullptr;
     bool layer() const { return layer_surface != nullptr; }
@@ -417,6 +420,20 @@ struct Source final {
         { std::lock_guard<std::mutex> lock(commands_mutex); subtitle_file_busy = false; }
     }
     void snapshot(mpv_handle* core) {
+        if(!capture_audio_layout_applied) {
+            auto mask=property(core,"metadata/by-key/THRU3D_AUDIO_CHANNEL_MASK");
+            if(mask.empty())mask=property(core,"metadata/by-key/thru3d_audio_channel_mask");
+            if(!mask.empty()) {
+                const auto channels=property(core,"audio-params/channel-count");
+                const int count=channels.size()==1&&channels[0]>='0'&&channels[0]<='8'?channels[0]-'0':0;
+                const auto filter=quest::capture::audio_layout_filter(mask,count);
+                if(!filter.empty()) {
+                    const char* command[]={"af","add",filter.c_str(),nullptr};
+                    checked(mpv_command(core,command),"recorded audio channel layout");
+                    capture_audio_layout_applied=true;
+                }
+            }
+        }
         // All property reads happen before taking the status lock.
         const auto codec = property(core, "video-codec"), hwdec = property(core, "hwdec-current");
         const auto duration = property(core, "duration");
@@ -428,6 +445,7 @@ struct Source final {
         const auto aid = property(core, "current-tracks/audio/id");
         const auto volume = property(core, "volume"), mute = property(core, "mute");
         const auto rate = property(core, "audio-params/samplerate"), channels = property(core, "audio-params/channel-count");
+        const auto output_channels=property(core,"audio-out-params/channel-count"), output_layout=property(core,"audio-out-params/channels");
         const auto avsync = property(core, "avsync"), cache_pause = property(core, "paused-for-cache");
         const auto decoder_drops = property(core, "decoder-frame-drop-count");
         // Layer mode has no frame tickets: the frames MPV released to the surface, minus its drops.
@@ -494,6 +512,7 @@ struct Source final {
             ",\"dolby_color_path\":" + quote(dolby_profile5.load() ? "GPU_RPU_RGBA16F_PQ_to_SDR" : "existing") +
             ",\"dolby_rendered_frames\":" + std::to_string(dolby_frames.load()) +
             ",\"capture_mode\":" + quote(capture_metadata(core)) +
+            ",\"capture_audio_layout_applied\":" + (capture_audio_layout_applied?"true":"false") +
             ",\"position_seconds\":" + quote(position) + ",\"duration_seconds\":" + quote(duration) +
             ",\"container_fps\":" + quote(property(core, "container-fps")) +
             ",\"seekable\":" + quote(seekable) + ",\"partially_seekable\":" + quote(partial) + ",\"file_size\":" + quote(file_size) +
@@ -507,7 +526,8 @@ struct Source final {
             ",\"subtitle_tracks\":" + subtitles_json + ",\"subtitle\":" + subtitle_json +
             ",\"pgs_supported\":" + (pgs_read ? "true" : "false") +
             ",\"playback_speed\":" + quote(property(core, "speed")) + ",\"volume\":" + quote(volume) + ",\"mute\":" + quote(mute) + ",\"audio_samplerate\":" + quote(rate) +
-            ",\"audio_channels\":" + quote(channels) + ",\"avsync_seconds\":" + quote(avsync) +
+            ",\"audio_channels\":" + quote(channels) + ",\"audio_output_channels\":" + quote(output_channels) +
+            ",\"audio_output_layout\":" + quote(output_layout) + ",\"avsync_seconds\":" + quote(avsync) +
             ",\"whisper_level\":" + std::to_string(whisper_level) + ",\"whisper_serial\":" + std::to_string(whisper_serial) +
             ",\"whisper_error\":" + quote(whisper_error) +
             ",\"paused_for_cache\":" + quote(cache_pause) + ",\"cache_speed\":" + quote(property(core, "cache-speed")) + ",\"decoder_frame_drop_count\":" + quote(decoder_drops) +
@@ -653,7 +673,9 @@ struct Source final {
             option("hr-seek", exact_start ? "yes" : "no");
             if (audio) { option("ao", "aaudio"); option("aaudio-performance-mode", "low-latency"); }
             // Network sources: a deep read-ahead absorbs Wi-Fi jitter for 8K bitrates.
-            option("cache", "auto"); option("demuxer-max-bytes", "256MiB"); option("demuxer-readahead-secs", "20");
+            option("cache", "auto"); option("demuxer-readahead-secs", "20");
+            // 256 MiB holds only ~20 s of 100 Mbit/s 8K; a deeper reserve rides out CDN dips.
+            option("demuxer-max-bytes", (std::to_string(network_cache_mib) + "MiB").c_str());
             if (path.rfind("http://127.0.0.1:", 0) == 0 && path.find("?thru3d_interleaved=1") != std::string::npos) {
                 // Only our verified playback view: build a small time reserve
                 // before output so a bitrate peak does not immediately underrun.
@@ -1000,6 +1022,7 @@ struct Source final {
         closing.store(true); wake.notify_all();
         // Rendering disposes its context before this ordinary API destroys the core.
         if (render_thread.joinable()) render_thread.join();
+        quest::live::source_closing(capture_owner.load());
         if (core) mpv_terminate_destroy(core);
         quest::live::source_close(capture_owner.exchange(0));
         done.store(true);
@@ -1468,6 +1491,7 @@ struct Source final {
             ",\"software_layer\":" + (software_layer ? "true" : "false") +
             ",\"network_interleave_compat\":" + (network_interleave_compat ? "true" : "false") +
             ",\"network_interleave_suspect\":" + (interleave_suspect.load() ? "true" : "false") +
+            ",\"network_cache_mib\":" + std::to_string(network_cache_mib) +
             ",\"layer_software_fallback\":" + (software_fallback.load() ? "true" : "false") +
             ",\"layer_surface_width\":" + std::to_string(layer_width) +
             ",\"layer_surface_height\":" + std::to_string(layer_height) +
@@ -1565,7 +1589,8 @@ Java_org_vrpassthroughplayer_plugin_MpvSourceNative_create(JNIEnv* env, jclass, 
                                                          jboolean hardware, jboolean audio, jint max_width, jobjectArray audio_files,
                                                          jobjectArray subtitle_files, jboolean exact_start, jobject surface,
                                                          jboolean software_layer, jint layer_width, jint layer_height, jboolean iso_input,
-                                                         jstring ca_file, jboolean interleave_compat, jint iso_playlist) {
+                                                         jstring ca_file, jboolean interleave_compat, jint iso_playlist,
+                                                         jint network_cache_mib) {
     try {
         require(extension_available(), "MPV source requires the verified private source-frame build");
         require(path && start >= 0, "Invalid MPV local source request");
@@ -1588,6 +1613,7 @@ Java_org_vrpassthroughplayer_plugin_MpvSourceNative_create(JNIEnv* env, jclass, 
         require(local || descriptor || network, "MPV source requires a local path, owned descriptor or HTTP media URL");
         require(interleave_compat != JNI_TRUE || (network && audio == JNI_TRUE), "MPV interleave compatibility requires network audio/video");
         require(max_width >= 0 && max_width <= 8192, "MPV output width cap out of range");
+        require(network_cache_mib >= 64 && network_cache_mib <= 1024, "MPV network cache out of range");
         require(iso_playlist >= -2 && iso_playlist <= 99999 && (iso_playlist == -1 || iso_input == JNI_TRUE), "Blu-ray title out of range");
         require(layer_width > 0 && layer_width <= 8192 && layer_height > 0 && layer_height <= 8192,
                 "Compositor surface dimensions out of range");
@@ -1606,6 +1632,7 @@ Java_org_vrpassthroughplayer_plugin_MpvSourceNative_create(JNIEnv* env, jclass, 
         } catch (...) { if (layer_surface) env->DeleteGlobalRef(layer_surface); throw; }
         source->max_output_width.store(max_width); // before any render; fixed for this source
         source->iso_playlist = iso_playlist;
+        source->network_cache_mib = network_cache_mib;
         std::lock_guard<std::mutex> lock(registry_mutex);
         require(registry.size() < 2 && next_handle < std::numeric_limits<jlong>::max(), "MPV source capacity exhausted");
         const auto id = ++next_handle; source->start(); registry.emplace(id, std::move(source)); return id;
@@ -1854,4 +1881,16 @@ Java_org_vrpassthroughplayer_plugin_MpvSourceNative_requestClose(JNIEnv* env, jc
 extern "C" JNIEXPORT void JNICALL
 Java_org_vrpassthroughplayer_plugin_MpvSourceNative_setPrivacy(JNIEnv*, jclass, jboolean enabled) {
     playback_privacy.store(enabled == JNI_TRUE);
+}
+// Compositor cadence for layer playback (patch 0006): one predicted display time on the OpenXR
+// clock (CLOCK_MONOTONIC on Android runtimes) and the refresh period. MediaCodec releases then
+// land between compositor latches instead of drifting across them. No-op on other MPV builds.
+extern "C" JNIEXPORT jboolean JNICALL
+Java_org_vrpassthroughplayer_plugin_MpvSourceNative_setVsync(JNIEnv*, jclass, jlong display_ns, jlong period_ns, jlong latch_lead_ns) {
+    using Update = void (*)(int64_t, int64_t, int64_t);
+    static const auto version = reinterpret_cast<uint32_t (*)()>(dlsym(RTLD_DEFAULT, "mpv_quest_vsync_api_version"));
+    static const auto update = version && version() == 1 ? reinterpret_cast<Update>(dlsym(RTLD_DEFAULT, "mpv_quest_vsync_update")) : nullptr;
+    if (!update) return JNI_FALSE;
+    update(display_ns, period_ns, latch_lead_ns);
+    return JNI_TRUE;
 }

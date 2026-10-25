@@ -74,7 +74,7 @@ func (f comicRARSparse) ReadAt(p []byte, off int64) (int, error) {
 
 // 300 real-sized sparse image gaps (> 8 GiB), without allocating/downloading
 // their payloads. QO has more than 512 records to cover the old block-cache cap.
-func comicRARTestSparseBook() (comicRARSparse, []byte, int64, []comicRange) {
+func comicRARTestSparseBook(pages int) (comicRARSparse, []byte, int64, []comicRange) {
 	payload := []byte("\x89PNG\r\n\x1a\n")
 	main := func(offset uint64) []byte {
 		locator := comicRARTestNumbers(1, 1)
@@ -92,7 +92,7 @@ func comicRARTestSparseBook() (comicRARSparse, []byte, int64, []comicRange) {
 	f := comicRARSparse{blocks: []comicRange{{0, head}}}
 	pos := int64(len(head))
 	var copies []comicRange
-	for i := 0; i < 300; i++ {
+	for i := 0; i < pages; i++ {
 		makeFile := func(prefix string) []byte {
 			name := []byte(fmt.Sprintf("%s/%04d.png", prefix, i))
 			body := comicRARTestNumbers(4, uint64(len(payload)), 32)
@@ -154,7 +154,7 @@ func comicRARTestSource(t *testing.T, f comicRARSparse) *comicSource {
 }
 
 func TestComicRARQuickOpenAvoidsSparseHeaderScan(t *testing.T) {
-	f, payload, _, copies := comicRARTestSparseBook()
+	f, payload, _, copies := comicRARTestSparseBook(300)
 	legacy := comicRARTestSource(t, f)
 	legacy.indexing = true
 	_, e := rardecode.List("book.rar", rardecode.FileSystem(comicFS{legacy}))
@@ -216,7 +216,7 @@ func TestComicRARQuickOpenRejectsInvalidSparseCopies(t *testing.T) {
 }
 
 func TestComicRARQuickOpenInvalidCacheKeepsRemoteBudget(t *testing.T) {
-	f, _, qo, _ := comicRARTestSparseBook()
+	f, _, qo, _ := comicRARTestSparseBook(comicMaxRemoteRARIndexReads + 1)
 	for i := range f.blocks {
 		if f.blocks[i].start == qo {
 			h, ok := comicRARParseHeader(f.blocks[i].data)
@@ -227,7 +227,7 @@ func TestComicRARQuickOpenInvalidCacheKeepsRemoteBudget(t *testing.T) {
 		}
 	}
 	s := comicRARTestSource(t, f)
-	if _, e := comicIndex(s, "book.rar", ""); !errors.Is(e, errComicLimit) || s.reads != comicMaxRemoteIndexReads || len(s.rarHeaders) != 0 {
+	if _, e := comicIndex(s, "book.rar", ""); !errors.Is(e, errComicLimit) || s.reads != comicMaxRemoteRARIndexReads || s.bytes > comicMaxRemoteIndexBytes || len(s.rarHeaders) != 0 {
 		t.Fatal("invalid QO bypassed remote bounds", s.reads, e)
 	}
 }

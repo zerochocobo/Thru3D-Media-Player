@@ -1,7 +1,6 @@
 extends SceneTree
 const Library := preload("res://scripts/library_menu.gd")
 const Video := preload("res://scripts/mpv_video_display.gd")
-const Sample := preload("res://scripts/voice_sample_panel.gd")
 const Host := preload("res://tests/test_narration_clone.gd").Host
 class VoiceEntryMain extends "res://scripts/main.gd":
 	var library_shown := false
@@ -13,9 +12,6 @@ func check(value: bool, message: String) -> void:
 	if not value: failures.append(message); push_error(message)
 func _initialize() -> void: call_deferred("_run")
 func _run() -> void:
-	check(is_equal_approx(Sample.parse_time("00:10:12.3"), 612.3), "Timestamp precision")
-	check(Sample.parse_time("600") == 600, "Seconds input")
-	for bad in ["", "NaN", "-1", "1:60", "1:2:3:4", "abc"]: check(Sample.parse_time(bad) < 0, "Reject invalid time " + bad)
 	var backend := {"state": "ready", "source_ready": true, "duration": 1200.0, "audio_id": 2, "audio_options": [{"id": 2, "language": "en"}, {"id": 5, "language": "ja"}], "candidates": [], "voices": []}
 	var ui := {"source_uri": "global-voice-manager", "global_voice_manager": true, "narration_clone_supported": true, "narration_current_uri": "file:///current.mp4", "narration_clone_state": backend, "narration_personal_voices": []}
 	var menu := Library.new(); menu.settings_provider = func(): return {"voice_manager": ui}
@@ -29,6 +25,26 @@ func _run() -> void:
 	menu.finish_voice_picker("file:///selected.mp4", "Selected video")
 	check(events.back()[1].operation == "open_source" and events.back()[1].uri == "file:///selected.mp4", "Selected video uses independent source")
 	menu.refresh(); check(sample.audio_id == 2 and sample.duration == 1200, "Probe metadata reaches UI")
+	check(not menu.voice_manager.actions.values().any(func(v): return v.operation == "sample_time"), "Timestamp has no text-input action")
+	var time_ray: Vector3 = sample.start_label.to_global(Vector3(0, 0, 1))
+	var initial_events := events.size()
+	menu.press_pointer("left_hand", time_ray, -menu.global_basis.z, true)
+	menu.release_pointer("left_hand", time_ray, -menu.global_basis.z, true)
+	check(not menu.voice_manager.editor.active() and events.size() == initial_events, "Clicking timestamp leaves native input closed and sends no command")
+	var start_id: int = menu.choices.targets.keys().filter(func(k): return menu.choices.targets[k].get("key", "") == "voice_sample_start")[0]
+	var start_button: Dictionary = menu._buttons.filter(func(b): return b.target == start_id)[0]
+	var step_buttons: Array = menu._buttons.filter(func(b): return menu.voice_manager.actions.get(b.target, {}).get("operation", "") == "sample_step")
+	check(step_buttons.size() == 2 and step_buttons[0].rect.end.x < start_button.rect.position.x and start_button.rect.end.x < step_buttons[1].rect.position.x, "Slider fits between minus and plus without overlap")
+	check(is_equal_approx(step_buttons[0].node.position.y, start_button.node.position.y) and is_equal_approx(step_buttons[1].node.position.y, start_button.node.position.y) and sample.start_label.position.y > start_button.node.position.y, "Time appears above a shared minus-slider-plus row")
+	var start_slider: Dictionary = menu.choices.sliders[start_id]
+	var slider_ray: Vector3 = start_button.node.to_global(Vector3(start_slider.left, 0, 1))
+	var slider_end: Vector3 = start_button.node.to_global(Vector3(start_slider.left + start_slider.width * 0.5, 0, 1))
+	menu.press_pointer("left_hand", slider_ray, -menu.global_basis.z, true)
+	menu.update_pointer("left_hand", slider_end, -menu.global_basis.z, true)
+	check(menu.has_pointer_capture() and sample.start_label.text != "00:00:00", "Dragging updates read-only timestamp live")
+	menu.release_pointer("left_hand", slider_end, -menu.global_basis.z, true)
+	check(sample.start > 500 and sample.finish == sample.start + 120 and not menu.has_pointer_capture(), "Slider release commits start while preserving search duration")
+	sample.choose("voice_sample_start", 0)
 	check(menu.choices.targets.values().any(func(v): return v.get("key", "") == "voice_sample_track") and menu.choices.targets.values().any(func(v): return v.get("key", "") == "voice_sample_language"), "Track and preview language are directly visible")
 	check(not menu.voice_manager.actions.values().any(func(v): return v.operation in ["sample_mode", "sample_current"] or v.get("key", "") == "finish"), "Unified setup has no mode, current video or end-time controls")
 	var previous_revision: int = menu._voice_revision

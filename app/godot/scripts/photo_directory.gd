@@ -55,7 +55,7 @@ func receive(id: int, payload: String) -> void:
 		if not item is Dictionary or item.get("container", false) or str(item.get("uri", "")).is_empty(): continue
 		var uri := str(item.uri)
 		var image: bool = item.get("kind", "") == "image" or Info.is_image(uri, str(item.get("title", "")))
-		var supported: bool = image if _context.get("kind", "image") == "image" else not image and item.get("kind", "") not in ["audio", "subtitle"] and not Audio.supported(str(item.get("title", "")))
+		var supported: bool = image if _context.get("kind", "image") == "image" else not image and item.get("kind", "") not in ["audio", "subtitle", "pdf"] and not Audio.supported(str(item.get("title", "")))
 		if not _uris.has(uri) and supported:
 			var entry: Dictionary = item.duplicate(true)
 			entry["browse_offset"] = _offset

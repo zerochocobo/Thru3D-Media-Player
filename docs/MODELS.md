@@ -77,3 +77,7 @@ The UI supports 19 text languages; the 12 preset voice origins are unchanged. Cu
 `third_party/narration/vad_model.json` pins the MIT Silero VAD v6.2 model to its upstream revision, size and SHA-256; `SILERO_LICENSE.txt` retains the original notice. Supply the matching `silero_vad.onnx` with `tools/environment/Prepare-VoiceVadModel.ps1 -SourceDirectory <bundle>` or `THRU3D_VOICE_VAD_SOURCE`. The checked payload stays in ignored `models/narration/<vad-id>/`. Normal narration preparation and AAR/APK validation require this third bundle in addition to the INT8 narration and reference encoder files. No VAD weight is committed.
 
 The unified sampling flow uses a caller-selected audio/video source and track, a bounded scan range, streaming speech activity detection, candidates, inline cropping and audition before saving a custom voice. Preview text covers the existing 19 text languages. Speech detection is not speaker diarization, separation or recording-rights clearance. References, cloned codes and personal voices remain app-private and excluded from public Git.
+
+## Comic OCR
+
+Two external PP-OCRv6 Small files are pinned in `third_party/comic-ocr/model.json`, separately from narration/reference/VAD. See [preparation/data boundaries](COMIC_READING.md). No OCR weight, training page or private transcript is published; existing voice provenance limitations remain.

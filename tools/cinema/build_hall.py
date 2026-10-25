@@ -15,6 +15,7 @@ import argparse
 import json
 import math
 import os
+import random
 import sys
 import time
 
@@ -219,7 +220,7 @@ SURFACES = {
     "Carpet": dict(color=(0.022, 0.024, 0.034), noise=dict(scale=38.0, amount=0.35, detail=4.0)),
     "Riser": dict(color=(0.010, 0.010, 0.012)),
     "Tread": dict(color=(0.028, 0.030, 0.038), noise=dict(scale=40.0, amount=0.3)),
-    "Nosing": dict(color=(0.085, 0.085, 0.09), roughness=0.5),
+    "Nosing": dict(color=(0.040, 0.040, 0.043), roughness=0.5),
     "Fabric": dict(color=(0.030, 0.032, 0.040), noise=dict(scale=6.0, amount=0.18)),
     "FabricDeep": dict(color=(0.022, 0.023, 0.029), noise=dict(scale=6.0, amount=0.18)),
     "Velvet": dict(color=(0.006, 0.006, 0.007)),
@@ -228,7 +229,7 @@ SURFACES = {
     "Ceiling": dict(color=(0.010, 0.010, 0.012)),
     "Cloud": dict(color=(0.020, 0.021, 0.024), noise=dict(scale=3.0, amount=0.12)),
     "Metal": dict(color=(0.09, 0.095, 0.10), roughness=0.35),
-    "Rail": dict(color=(0.20, 0.205, 0.21), roughness=0.3),
+    "Rail": dict(color=(0.070, 0.072, 0.075), roughness=0.3),
     "Speaker": dict(color=(0.012, 0.012, 0.013), noise=dict(scale=80.0, amount=0.4)),
     "Door": dict(color=(0.050, 0.030, 0.020), stripes=dict(scale=5.0, amount=0.25, direction="Z")),
     "Stage": dict(color=(0.005, 0.005, 0.006)),
@@ -243,7 +244,7 @@ HALL_FINISH = {
     "Carpet": ("carpet_floor", 1.0),
     "Tread": ("carpet_tread", 1.0),
     "Riser": ("carpet_tread", 0.45),
-    "Nosing": ("metal_brushed", 0.7),
+    "Nosing": ("metal_brushed", 0.4),
     "Fabric": ("wall_fabric", 1.0),
     "FabricDeep": ("wall_fabric", 0.6),
     "Velvet": ("velvet_black", 1.0),
@@ -252,7 +253,7 @@ HALL_FINISH = {
     "Ceiling": ("velvet_black", 1.3),
     "Cloud": ("cloud_felt", 1.0),
     "Metal": ("metal_brushed", 0.8),
-    "Rail": ("metal_brushed", 1.6),
+    "Rail": ("metal_brushed", 0.65),
     "Speaker": ("velvet_black", 1.6),
     "Door": ("wood_walnut", 0.75),
     "Stage": ("velvet_black", 0.8),
@@ -260,6 +261,57 @@ HALL_FINISH = {
 # Baked irradiance is stored divided by this, leaving headroom near the screen.
 # Must match light_scale in app/godot/shaders/cinema_baked_surface.gdshader.
 LIGHT_SCALE = 2.0
+
+# Side wall detailing (metres): fabric-wrapped acoustic panels and wainscot boards.
+PANEL_COLUMNS = 2
+PANEL_HEIGHT = 2.6
+PANEL_JOINT = 0.012     # half of the dark reveal between neighbouring panels
+PANEL_CHAMFER = 0.03
+PANEL_BACKING = 0.05    # reveal backing sits this far behind the panel faces
+PANEL_BACKING_STRIP = 0.05  # half width of the backing behind each joint
+WAINSCOT_STEPS = 4      # straight pieces per board, following the stair line
+WAINSCOT_JOINT = 0.006
+WAINSCOT_TRIM = 0.015
+# Surround speakers and door hardware.
+SPEAKER_STANDOFF = 0.08
+SPEAKER_DEPTH = 0.34
+SPEAKER_RIM = 0.035
+SPEAKER_RECESS = 0.015
+KICK_PLATE_HEIGHT = 0.25
+KICK_PLATE_PROUD = 0.006
+DOOR_HEIGHT = 2.4
+DOOR_FRAME = 0.10
+DOOR_FRAME_PROUD = 0.03
+DOOR_GAP = 0.006
+SIDE_DOOR_LEAF = 0.24   # just in front of the deepest side wall panels (0.20)
+REAR_DOOR_LEAF = 0.10
+# Projection booth niche in the rear wall (heights above the rear aisle).
+BOOTH_HALF_WIDTH = 2.6
+BOOTH_BOTTOM = 3.4
+BOOTH_TOP = 4.6
+BOOTH_DEPTH = 0.45
+BOOTH_PORT_X = 1.15
+LENS_RADIUS = 0.07
+# Ceiling pin lights, exit pictograms, row letter plaques.
+STAR_SEED = 23
+STARS_PER_CLOUD = (3, 9)
+STAR_MARGIN = 0.25
+STAR_SPACING = 0.45
+STAR_RADIUS = (0.03, 0.06)
+EXIT_MARK_PROUD = 0.015
+PLAQUE_PROUD = 0.008
+# Screen wall: stage fascia boards, black velvet drapes and the screen border.
+FASCIA_BOARD = 2.4
+FASCIA_JOINT = 0.008
+FASCIA_PROUD = 0.02
+FASCIA_BOTTOM = 0.30    # the glow strip stays visible below the boards
+PLEAT_WIDTH = 0.32      # one full fold
+PLEAT_STEPS = 6
+PLEAT_DEPTH = 0.06
+DRAPE_OFFSET = 0.35     # in front of the screen plane
+DRAPE_CLEARANCE = 0.30  # beyond the screen edge: no seat sees a drape across the picture
+SCREEN_FRAME = 0.22
+FRAME_PROUD = 0.04
 LIGHT_FILE = "cinema_light.jpg"
 
 
@@ -325,7 +377,7 @@ GLOWS = {
     "StageGlow": ((1.0, 0.60, 0.32), 5.0, (0.85, 0.50, 0.26)),
     "Exit": ((0.10, 0.90, 0.40), 4.0, (0.20, 0.95, 0.50)),
     "Star": ((1.0, 0.85, 0.65), 1.5, (0.62, 0.52, 0.40)),
-    "Booth": ((0.45, 0.60, 1.0), 2.0, (0.10, 0.15, 0.24)),
+    "Booth": ((0.45, 0.60, 1.0), 2.0, (0.030, 0.040, 0.062)),
     "RowLetter": ((1.0, 0.72, 0.45), 2.0, (0.95, 0.70, 0.45)),
 }
 FIXED = {
@@ -374,6 +426,7 @@ class Hall:
         self.screen_top = self.screen_y + self.screen_h * 0.5
         self.hall = Builder("Hall")
         self.fix = Builder("Fixtures")
+        self.stars = random.Random(STAR_SEED)
 
     def ceiling(self, z):
         t = (z - self.front) / (self.back - self.front)
@@ -401,12 +454,57 @@ class Hall:
         # A real diffuser separated from the stage face, not a subpixel sliver.
         f.quad_facing((-W + 0.6, 0.09, stage_front + 0.04), (W - 0.6, 0.09, stage_front + 0.04),
                       (W - 0.6, 0.19, stage_front + 0.04), (-W + 0.6, 0.19, stage_front + 0.04), "StageGlow", (0, 0, 1))
+        self.build_stage_fascia(stage_front)
+        self.build_drapes()
         # Front floor from stage to the first tier.
         P = self.platform
         h.quad_facing((-P, 0, stage_front), (P, 0, stage_front), (P, 0, self.first_edge), (-P, 0, self.first_edge),
                       "Carpet", (0, 1, 0))
         for xa, xb in [(-W, -P), (P, W)]:
             h.quad_facing((xa, 0, stage_front), (xb, 0, stage_front), (xb, 0, self.stair_start), (xa, 0, self.stair_start), "Carpet", (0, 1, 0))
+
+    def build_stage_fascia(self, stage_front):
+        """Walnut boards (the door finish) with shadow joints above the glow strip,
+        a metal edge on top."""
+        h, W = self.hall, self.W
+        top = self.screen_bottom - 0.08
+        z = stage_front + FASCIA_PROUD
+        boards = max(1, round(2 * W / FASCIA_BOARD))
+        width = 2 * W / boards
+        for i in range(boards):
+            x0, x1 = -W + i * width + FASCIA_JOINT, -W + (i + 1) * width - FASCIA_JOINT
+            h.quad_facing((x0, FASCIA_BOTTOM, z), (x1, FASCIA_BOTTOM, z), (x1, top - 0.04, z), (x0, top - 0.04, z), "Door", (0, 0, 1))
+        h.box((-W, FASCIA_BOTTOM, stage_front), (W, FASCIA_BOTTOM + 0.001, z), "Door", faces="-y")
+        h.box((-W, top - 0.04, stage_front), (W, top, z + 0.006), "Metal", faces="+y+z-y")
+
+    def pleats(self, x0, x1, y0, y1, z, depth):
+        """Velvet folds hanging between x0 and x1, swinging `depth` either side of z."""
+        steps = max(PLEAT_STEPS, round(abs(x1 - x0) / PLEAT_WIDTH * PLEAT_STEPS))
+        points = []
+        for i in range(steps + 1):
+            x = x0 + (x1 - x0) * i / steps
+            points.append((x, z + depth * math.sin(math.tau * i / PLEAT_STEPS)))
+        for (xa, za), (xb, zb) in zip(points, points[1:]):
+            self.hall.quad_facing((xa, y0, za), (xb, y0, zb), (xb, y1, zb), (xa, y1, za), "Speaker", (0, 0, 1))
+
+    def build_drapes(self):
+        """Black velvet legs beside the screen and a valance above it. They stay
+        outside every seat's sight line to the screen edges. They share the grille
+        cloth material: the hall stays within its shared-material budget."""
+        W, sz = self.W, self.screen_z
+        hw = self.screen_w * 0.5 + DRAPE_CLEARANCE
+        ceiling = self.ceiling(sz)
+        z = sz + DRAPE_OFFSET
+        # The legs hang in front of the stage, down to the floor.
+        for side in (-1.0, 1.0):
+            self.pleats(side * hw, side * W, 0.0, ceiling, z, PLEAT_DEPTH)
+        self.pleats(-W, W, self.screen_top + DRAPE_CLEARANCE, ceiling, z, PLEAT_DEPTH * 0.6)
+        # Velvet border framing the screen, standing just proud of its surface.
+        x, b, t = self.screen_w * 0.5, self.screen_bottom, self.screen_top
+        f = SCREEN_FRAME
+        for lo, hi in [((-x - f, b - f, sz - 0.06), (x + f, b, sz + FRAME_PROUD)), ((-x - f, t, sz - 0.06), (x + f, t + f, sz + FRAME_PROUD)),
+                       ((-x - f, b, sz - 0.06), (-x, t, sz + FRAME_PROUD)), ((x, b, sz - 0.06), (x + f, t, sz + FRAME_PROUD))]:
+            self.hall.box(lo, hi, "Speaker", faces="+z+x-x+y-y")
 
     # -- Seating tiers and stairs ------------------------------------------------
     def build_tiers(self):
@@ -426,7 +524,9 @@ class Hall:
                 h.quad_facing((x, prev, z0), (x, prev, z1), (x, level, z1), (x, level, z0), "Riser", (side, 0, 0))
                 # Row letters glow at both aisle ends of every tier.
                 letter = chr(65 + row)
-                self.text(letter, (x + side * 0.004, level - 0.32, z0 + 0.25), side, 0.16, "RowLetter")
+                h.box((min(x, x + side * PLAQUE_PROUD), level - 0.43, z0 + 0.14), (max(x, x + side * PLAQUE_PROUD), level - 0.21, z0 + 0.36),
+                      "Nosing", faces="+y-y+z-z" + ("+x" if side > 0 else "-x"))
+                self.text(letter, (x + side * (PLAQUE_PROUD + 0.004), level - 0.32, z0 + 0.25), side, 0.16, "RowLetter")
         # One continuous staircase on each side, from the seating block to the wall.
         for step in range(self.rows * self.steps):
             z0 = self.stair_start + step * self.tread
@@ -455,13 +555,13 @@ class Hall:
             for row in range(self.rows + 1):
                 z = self.stair_start + row * self.pitch + self.tread * 0.5
                 floor = min(self.top, (row * self.steps + 1) * self.step_rise)
-                h.tube((x, floor, z), (x, floor + 0.98, z), 0.022, "Rail", segments=6)
+                h.tube((x, floor, z), (x, floor + 0.98, z), 0.022, "Rail", segments=12)
             start = (x, self.step_rise + 1.0, self.stair_start + self.tread * 0.5)
             end = (x, min(self.top, (self.rows * self.steps + 1) * self.step_rise) + 1.0,
                    self.stair_end + self.tread * 0.5)
-            h.tube(start, end, 0.03, "Rail", segments=8)
+            h.tube(start, end, 0.03, "Rail", segments=16)
             # Glass-free mid rail keeps the edge legible at a distance.
-            h.tube((x, start[1] - 0.45, start[2]), (x, end[1] - 0.45, end[2]), 0.012, "Rail", segments=6)
+            h.tube((x, start[1] - 0.45, start[2]), (x, end[1] - 0.45, end[2]), 0.012, "Rail", segments=12)
 
     # -- Side walls: wood wainscot, pleated acoustic bays, sconces, speakers -------
     def build_walls(self):
@@ -473,15 +573,28 @@ class Hall:
         for side in (-1.0, 1.0):
             inward = (-side, 0, 0)
             wall_x = side * W
-            # Wainscot follows the stair line so the wall reads at human scale.
-            samples = 48
-            for i in range(samples):
-                za = self.front + (self.back - self.front) * i / samples
-                zb = self.front + (self.back - self.front) * (i + 1) / samples
-                ya, yb = self.floor_line(za), self.floor_line(zb)
-                x = wall_x - side * 0.06
-                h.quad_facing((x, ya - 0.3, za), (x, yb - 0.3, zb), (x, yb + 1.15, zb), (x, ya + 1.15, za), "Wood", inward)
-                h.quad_facing((x, ya + 1.15, za), (x, yb + 1.15, zb), (wall_x, yb + 1.15, zb), (wall_x, ya + 1.15, za), "Wood", (0, 1, 0))
+            # Wainscot follows the stair line so the wall reads at human scale: one
+            # board per bay with a shadow joint, capped by a brushed metal trim.
+            x = wall_x - side * 0.06
+            xt = x - side * WAINSCOT_TRIM
+            for b in range(bays):
+                z0 = self.front + b * bay
+                for i in range(WAINSCOT_STEPS):
+                    za = z0 + bay * i / WAINSCOT_STEPS + (WAINSCOT_JOINT if i == 0 else 0.0)
+                    zb = z0 + bay * (i + 1) / WAINSCOT_STEPS - (WAINSCOT_JOINT if i == WAINSCOT_STEPS - 1 else 0.0)
+                    ya, yb = self.floor_line(za), self.floor_line(zb)
+                    h.quad_facing((x, ya - 0.3, za), (x, yb - 0.3, zb), (x, yb + 1.13, zb), (x, ya + 1.13, za), "Wood", inward)
+                    # Trim: front, top back to the wall, underside.
+                    za, zb = z0 + bay * i / WAINSCOT_STEPS, z0 + bay * (i + 1) / WAINSCOT_STEPS
+                    ya, yb = self.floor_line(za), self.floor_line(zb)
+                    h.quad_facing((xt, ya + 1.13, za), (xt, yb + 1.13, zb), (xt, yb + 1.17, zb), (xt, ya + 1.17, za), "Metal", inward)
+                    h.quad_facing((xt, ya + 1.17, za), (xt, yb + 1.17, zb), (wall_x, yb + 1.17, zb), (wall_x, ya + 1.17, za), "Metal", (0, 1, 0))
+                    h.quad_facing((xt, ya + 1.13, za), (xt, yb + 1.13, zb), (x, yb + 1.13, zb), (x, ya + 1.13, za), "Metal", (0, -1, 0))
+                # Dark joint behind the gap between neighbouring boards.
+                for zj in (z0, z0 + bay):
+                    ya, yb = self.floor_line(zj - 0.03), self.floor_line(zj + 0.03)
+                    h.quad_facing((x + side * 0.02, ya - 0.3, zj - 0.03), (x + side * 0.02, yb - 0.3, zj + 0.03),
+                                  (x + side * 0.02, yb + 1.13, zj + 0.03), (x + side * 0.02, ya + 1.13, zj - 0.03), "Reveal", inward)
             for b in range(bays):
                 z0 = self.front + b * bay
                 z1 = z0 + bay
@@ -497,7 +610,8 @@ class Hall:
                 bza = self.floor_line(za) + 1.2
                 bzb = self.floor_line(zb) + 1.2
                 tza, tzb = self.ceiling(za) - 0.9, self.ceiling(zb) - 0.9
-                h.quad_facing((x, bza, za), (x, bzb, zb), (x, tzb, zb), (x, tza, za), material, inward)
+                # Fabric-wrapped acoustic panels with chamfered edges.
+                self.panels(x, side, (za, bza, tza), (zb, bzb, tzb), material)
                 # Chamfered returns give each bay a lit edge and a shadowed edge.
                 h.quad_facing((wall_x, bza, z0), (x, bza, za), (x, tza, za), (wall_x, tza, z0), material, (0, 0, -1))
                 h.quad_facing((x, bzb, zb), (wall_x, bzb, z1), (wall_x, tzb, z1), (x, tzb, zb), material, (0, 0, 1))
@@ -516,35 +630,150 @@ class Hall:
                           faces="+y-y+z-z" + ("-x" if side > 0 else "+x"))
                 # Surround loudspeakers high on alternate bays.
                 if b % 2 == 1 and zc > self.screen_z + 4.0:
-                    y = self.floor_line(zc) + 5.6
-                    xi = wall_x - side * (depth + 0.38)
-                    lo = (min(xi, wall_x - side * depth), y - 0.45, zc - 0.30)
-                    hi = (max(xi, wall_x - side * depth), y + 0.45, zc + 0.30)
-                    h.box(lo, hi, "Speaker", faces="+y-y+z-z" + ("-x" if side > 0 else "+x"))
+                    self.surround_speaker(wall_x - side * depth, side, self.floor_line(zc) + 5.6, zc)
             self.build_side_door(side)
+
+    def panels(self, x, side, near, far, material):
+        """Splits a raked bay face into chamfered panels. `near`/`far` are
+        (z, bottom y, top y) at the bay's two edges; joints follow the rake."""
+        za, bza, tza = near
+        zb, bzb, tzb = far
+        inward = Vector((-side, 0, 0))
+        height = ((tza - bza) + (tzb - bzb)) * 0.5
+        bands = max(1, round(height / PANEL_HEIGHT))
+        width = zb - za
+
+        def at(s, t, depth):
+            z = za + width * s
+            y0, y1 = bza + (bzb - bza) * s, tza + (tzb - tza) * s
+            return (x + side * depth, y0 + (y1 - y0) * t, z)
+
+        gs, gt = PANEL_JOINT / width, PANEL_JOINT / height
+        cs, ct = PANEL_CHAMFER / width, PANEL_CHAMFER / height
+        # Dark backing only behind the joints: a full backing would spend as much
+        # lightmap area as the wall itself on surfaces that are never seen.
+        bs, bt = PANEL_BACKING_STRIP / width, PANEL_BACKING_STRIP / height
+        strips = [(column / PANEL_COLUMNS - bs, column / PANEL_COLUMNS + bs, 0.0, 1.0) for column in range(1, PANEL_COLUMNS)]
+        strips += [(0.0, 1.0, band / bands - bt, band / bands + bt) for band in range(1, bands)]
+        for s0, s1, t0, t1 in strips:
+            self.hall.quad_facing(at(s0, t0, PANEL_BACKING), at(s1, t0, PANEL_BACKING), at(s1, t1, PANEL_BACKING),
+                                  at(s0, t1, PANEL_BACKING), "Reveal", tuple(inward))
+        for column in range(PANEL_COLUMNS):
+            s0 = column / PANEL_COLUMNS + (gs if column else 0.0)
+            s1 = (column + 1) / PANEL_COLUMNS - (gs if column < PANEL_COLUMNS - 1 else 0.0)
+            for band in range(bands):
+                t0 = band / bands + (gt if band else 0.0)
+                t1 = (band + 1) / bands - (gt if band < bands - 1 else 0.0)
+                outer = [at(s0, t0, PANEL_CHAMFER), at(s1, t0, PANEL_CHAMFER), at(s1, t1, PANEL_CHAMFER), at(s0, t1, PANEL_CHAMFER)]
+                inner = [at(s0 + cs, t0 + ct, 0.0), at(s1 - cs, t0 + ct, 0.0), at(s1 - cs, t1 - ct, 0.0), at(s0 + cs, t1 - ct, 0.0)]
+                self.hall.quad_facing(*inner, material, tuple(inward))
+                centre = sum((Vector(p) for p in inner), Vector()) / 4
+                for k in range(4):
+                    a, b = outer[k], outer[(k + 1) % 4]
+                    out = (Vector(a) + Vector(b)) * 0.5 - centre
+                    out.x = 0
+                    self.hall.quad_facing(a, b, inner[(k + 1) % 4], inner[k], material, tuple(inward + out.normalized()))
+
+    def surround_speaker(self, wall, side, y, zc):
+        """Cabinet on a short wall bracket, framed grille cloth recessed in front."""
+        h = self.hall
+        inward = (-side, 0, 0)
+        back = wall - side * SPEAKER_STANDOFF
+        front = back - side * SPEAKER_DEPTH
+        hh, hw, rim = 0.45, 0.30, SPEAKER_RIM
+        h.box((min(back, front), y - hh, zc - hw), (max(back, front), y + hh, zc + hw), "Reveal", faces="+y-y+z-z")
+        grille = front + side * SPEAKER_RECESS
+        outer = [(y - hh, zc - hw), (y - hh, zc + hw), (y + hh, zc + hw), (y + hh, zc - hw)]
+        inner = [(y - hh + rim, zc - hw + rim), (y - hh + rim, zc + hw - rim), (y + hh - rim, zc + hw - rim), (y + hh - rim, zc - hw + rim)]
+        for k in range(4):
+            (ya, za), (yb, zb) = outer[k], outer[(k + 1) % 4]
+            (yc, zcc), (yd, zd) = inner[(k + 1) % 4], inner[k]
+            h.quad_facing((front, ya, za), (front, yb, zb), (front, yc, zcc), (front, yd, zd), "Metal", inward)
+            h.quad_facing((front, yd, zd), (front, yc, zcc), (grille, yc, zcc), (grille, yd, zd), "Metal",
+                          tuple(Vector(inward) + (Vector((0, (y - yd) + (y - yc), (zc - zd) + (zc - zcc))).normalized())))
+        h.quad_facing(*[(grille, a, b) for a, b in inner], "Speaker", inward)
+        h.tube((wall, y, zc), (back, y, zc), 0.035, "Metal", segments=8)
 
     def build_side_door(self, side):
         h, f = self.hall, self.fix
         W = self.W
         z0, z1 = 0.4, 2.4
-        x = side * (W - 0.21)
         inward = (-side, 0, 0)
-        # Opening frame, two leaves and push bars, then the exit sign above.
-        h.box((min(x, x - side * 0.12), 0, z0 - 0.12), (max(x, x - side * 0.12), 2.52, z0), "Metal", faces="+y+z-z" + ("-x" if side > 0 else "+x"))
-        h.box((min(x, x - side * 0.12), 0, z1), (max(x, x - side * 0.12), 2.52, z1 + 0.12), "Metal", faces="+y+z-z" + ("-x" if side > 0 else "+x"))
-        h.box((min(x, x - side * 0.12), 2.4, z0), (max(x, x - side * 0.12), 2.52, z1), "Metal", faces="-y" + ("-x" if side > 0 else "+x"))
-        xd = side * (W - 0.15)
         mid = (z0 + z1) * 0.5
-        for za, zb in ((z0, mid - 0.01), (mid + 0.01, z1)):
-            h.quad_facing((xd, 0, za), (xd, 0, zb), (xd, 2.4, zb), (xd, 2.4, za), "Door", inward)
-            h.tube((xd - side * 0.09, 1.02, za + 0.12), (xd - side * 0.09, 1.02, zb - 0.12), 0.018, "Metal", segments=6)
+        # Leaves stand in front of the deepest acoustic panels, which used to hide
+        # their upper half and leave only the frame showing.
+        self.double_door(lambda u, y, d: (side * (W - d), y, u), mid, z1 - z0, 0.0, SIDE_DOOR_LEAF)
         # The diffuser must sit in front of the box's inward-facing front.
         # Previously both faces occupied xs exactly (head-motion Z fighting).
         housing_x = side * (W - 0.24)
         xs = housing_x - side * 0.03
         f.quad_facing((xs, 2.78, mid - 0.22), (xs, 2.78, mid + 0.22), (xs, 2.98, mid + 0.22), (xs, 2.98, mid - 0.22), "Exit", inward)
+        xm = xs - side * EXIT_MARK_PROUD
+        self.exit_mark(lambda a, b: (xm, 2.78 + b, mid - side * (a - 0.22)), inward)
         h.box((min(housing_x, housing_x + side * 0.06), 2.74, mid - 0.25), (max(housing_x, housing_x + side * 0.06), 3.02, mid + 0.25), "Speaker",
               faces="+y-y+z-z" + ("-x" if side > 0 else "+x"))
+
+    def double_door(self, at, centre, width, floor, leaf):
+        """Pair of walnut leaves in a frame on a wall. `at(u, y, d)` maps the
+        position along the wall, height and distance in front of it to Godot."""
+        h = self.hall
+        wall = Vector(at(0, 0, 0)) - Vector(at(0, 0, 1))
+        back = next(sign + axis for axis, value in zip("xyz", wall) for sign in "+-"
+                    if abs(value) > .5 and (value > 0) == (sign == "+"))
+        inward = tuple(-wall)
+
+        def box(u0, u1, y0, y1, d0, d1, key):
+            a, b = Vector(at(u0, y0, d0)), Vector(at(u1, y1, d1))
+            lo = tuple(min(a[i], b[i]) for i in range(3))
+            hi = tuple(max(a[i], b[i]) for i in range(3))
+            faces = "".join(face for face in ["+x", "-x", "+y", "-y", "+z", "-z"] if face != back and not (face == "-y" and y0 <= floor))
+            h.box(lo, hi, key, faces=faces)
+
+        def quad(u0, u1, y0, y1, d, key):
+            h.quad_facing(at(u0, y0, d), at(u1, y0, d), at(u1, y1, d), at(u0, y1, d), key, inward)
+
+        u0, u1 = centre - width * 0.5, centre + width * 0.5
+        top = floor + DOOR_HEIGHT
+        f = DOOR_FRAME
+        # Frame: jambs and head standing proud of the leaves.
+        box(u0 - f, u0, floor, top + f, 0.0, leaf + DOOR_FRAME_PROUD, "Wood")
+        box(u1, u1 + f, floor, top + f, 0.0, leaf + DOOR_FRAME_PROUD, "Wood")
+        box(u0, u1, top, top + f, 0.0, leaf + DOOR_FRAME_PROUD, "Wood")
+        quad(centre - 0.02, centre + 0.02, floor, top, leaf - 0.02, "Reveal")
+        for a, b in ((u0, centre - DOOR_GAP), (centre + DOOR_GAP, u1)):
+            quad(a, b, floor + 0.01, top - 0.005, leaf, "Door")
+            quad(a + 0.04, b - 0.04, floor + 0.02, floor + KICK_PLATE_HEIGHT, leaf + KICK_PLATE_PROUD, "Nosing")
+            # Push bar on two short standoffs.
+            bar = leaf + 0.075
+            h.tube(at(a + 0.12, floor + 1.02, bar), at(b - 0.12, floor + 1.02, bar), 0.018, "Metal", segments=10)
+            for u in (a + 0.14, b - 0.14):
+                h.tube(at(u, floor + 1.02, leaf), at(u, floor + 1.02, bar), 0.012, "Metal", segments=8)
+
+    def port(self, x, y, w, ht, z, lens):
+        """One projection port in the booth niche: dark glass in a metal frame,
+        with a lens bezel and glow behind the glass when `lens`."""
+        h, f = self.hall, self.fix
+        rim = 0.04
+        f.quad_facing((x - w / 2, y - ht / 2, z - 0.01), (x + w / 2, y - ht / 2, z - 0.01),
+                      (x + w / 2, y + ht / 2, z - 0.01), (x - w / 2, y + ht / 2, z - 0.01), "Booth", (0, 0, -1))
+        for lo, hi in (((x - w / 2 - rim, y - ht / 2 - rim), (x + w / 2 + rim, y - ht / 2)),
+                       ((x - w / 2 - rim, y + ht / 2), (x + w / 2 + rim, y + ht / 2 + rim)),
+                       ((x - w / 2 - rim, y - ht / 2), (x - w / 2, y + ht / 2)),
+                       ((x + w / 2, y - ht / 2), (x + w / 2 + rim, y + ht / 2))):
+            h.box((lo[0], lo[1], z - 0.035), (hi[0], hi[1], z), "Metal", faces="-z+x-x+y-y")
+        if lens:
+            self.disc(h, (x, y, z - 0.015), LENS_RADIUS + 0.03, "Metal")
+            self.disc(f, (x, y, z - 0.02), LENS_RADIUS, "Sconce")
+
+    def disc(self, builder, centre, radius, key, n=16):
+        cx, cy, cz = centre
+        for k in range(n):
+            a, b = math.tau * k / n, math.tau * (k + 1) / n
+            pts = [Vector(centre), Vector((cx + radius * math.cos(a), cy + radius * math.sin(a), cz)),
+                   Vector((cx + radius * math.cos(b), cy + radius * math.sin(b), cz))]
+            if (pts[1] - pts[0]).cross(pts[2] - pts[0]).dot(Vector((0, 0, -1))) < 0:
+                pts[1], pts[2] = pts[2], pts[1]
+            builder.poly([tuple(p) for p in pts], key)
 
     # -- Rear wall, doors and projection ports -----------------------------------
     def build_rear(self):
@@ -552,25 +781,31 @@ class Hall:
         W, z = self.W, self.back
         y0, y1 = self.top, self.ceiling(self.back)
         h.quad_facing((-W, y0 - 0.3, z), (W, y0 - 0.3, z), (W, y0 + 1.15, z), (-W, y0 + 1.15, z), "Wood", (0, 0, -1))
-        h.quad_facing((-W, y0 + 1.15, z), (W, y0 + 1.15, z), (W, y1, z), (-W, y1, z), "FabricDeep", (0, 0, -1))
-        # Projection ports: a dark glass band with two faint lens glows.
-        f.quad_facing((-3.6, y0 + 3.6, z - 0.02), (3.6, y0 + 3.6, z - 0.02), (3.6, y0 + 4.5, z - 0.02), (-3.6, y0 + 4.5, z - 0.02), "Booth", (0, 0, -1))
-        h.box((-3.75, y0 + 3.45, z - 0.18), (3.75, y0 + 3.6, z), "Metal", faces="+y-z")
-        for x in (-1.2, 1.2):
-            f.quad_facing((x - 0.18, y0 + 3.86, z - 0.03), (x + 0.18, y0 + 3.86, z - 0.03),
-                          (x + 0.18, y0 + 4.18, z - 0.03), (x - 0.18, y0 + 4.18, z - 0.03), "Sconce", (0, 0, -1))
+        # Fabric wall around the projection booth niche.
+        nx, nb, nt = BOOTH_HALF_WIDTH, y0 + BOOTH_BOTTOM, y0 + BOOTH_TOP
+        for (xa, ya), (xb, yb) in (((-W, y0 + 1.15), (-nx, y1)), ((nx, y0 + 1.15), (W, y1)),
+                                   ((-nx, y0 + 1.15), (nx, nb)), ((-nx, nt), (nx, y1))):
+            h.quad_facing((xa, ya, z), (xb, ya, z), (xb, yb, z), (xa, yb, z), "FabricDeep", (0, 0, -1))
+        # Niche: dark reveals, a back wall carrying the ports, a metal sill.
+        zb = z + BOOTH_DEPTH
+        h.quad_facing((-nx, nb, zb), (nx, nb, zb), (nx, nt, zb), (-nx, nt, zb), "Reveal", (0, 0, -1))
+        h.quad_facing((-nx, nt, z), (nx, nt, z), (nx, nt, zb), (-nx, nt, zb), "Reveal", (0, -1, 0))
+        h.quad_facing((-nx, nb, z), (nx, nb, z), (nx, nb, zb), (-nx, nb, zb), "Reveal", (0, 1, 0))
+        for x, n in ((-nx, 1), (nx, -1)):
+            h.quad_facing((x, nb, z), (x, nb, zb), (x, nt, zb), (x, nt, z), "Reveal", (n, 0, 0))
+        h.box((-nx - 0.08, nb - 0.06, z - 0.10), (nx + 0.08, nb, z), "Metal", faces="+y-y-z+x-x")
+        mid = (nb + nt) * 0.5
+        for x in (-BOOTH_PORT_X, BOOTH_PORT_X):
+            self.port(x, mid, 0.80, 0.56, zb, True)
+        self.port(0.0, mid, 0.46, 0.34, zb, False)
         # Rear exits beside the cross aisle.
         for side in (-1.0, 1.0):
             xc = side * (self.rail + W) * 0.5
             x0, x1 = xc - 0.95, xc + 0.95
-            h.quad_facing((x0, y0, z - 0.1), (x1, y0, z - 0.1), (x1, y0 + 2.4, z - 0.1), (x0, y0 + 2.4, z - 0.1), "Door", (0, 0, -1))
-            for lo, hi in (((x0 - 0.12, y0, z - 0.2), (x0, y0 + 2.52, z)), ((x1, y0, z - 0.2), (x1 + 0.12, y0 + 2.52, z)),
-                           ((x0 - 0.12, y0 + 2.4, z - 0.2), (x1 + 0.12, y0 + 2.52, z))):
-                h.box(lo, hi, "Metal", faces="-z+y-x+x-y")
-            for xa, xb in ((x0, xc - 0.01), (xc + 0.01, x1)):
-                h.tube((xa + 0.12, y0 + 1.02, z - 0.19), (xb - 0.12, y0 + 1.02, z - 0.19), 0.018, "Metal", segments=6)
+            self.double_door(lambda u, y, d: (u, y, z - d), xc, x1 - x0, y0, REAR_DOOR_LEAF)
             f.quad_facing((xc - 0.22, y0 + 2.8, z - 0.03), (xc + 0.22, y0 + 2.8, z - 0.03),
                           (xc + 0.22, y0 + 3.0, z - 0.03), (xc - 0.22, y0 + 3.0, z - 0.03), "Exit", (0, 0, -1))
+            self.exit_mark(lambda a, b: (xc + side * (0.22 - a), y0 + 2.8 + b, z - 0.03 - EXIT_MARK_PROUD), (0, 0, -1))
 
     # -- Ceiling with floating acoustic clouds and pin-point downlights ------------
     def build_ceiling(self):
@@ -590,15 +825,56 @@ class Hall:
                 h.quad_facing((x0, y0, z0), (x1, y0, z0), (x1, y1, z1), (x0, y1, z1), "Cloud", (0, -1, 0))
                 h.quad_facing((x0, y0, z0), (x1, y0, z0), (x1, y0 + 0.14, z0), (x0, y0 + 0.14, z0), "Cloud", (0, 0, -1))
                 h.quad_facing((x0, y1, z1), (x1, y1, z1), (x1, y1 + 0.14, z1), (x0, y1 + 0.14, z1), "Cloud", (0, 0, 1))
-                for ix in range(3):
-                    for iz in range(2):
-                        px = x0 + (ix + 0.5) * (x1 - x0) / 3
-                        pz = z0 + (iz + 0.5) * cloud_depth / 2
-                        py = self.ceiling(pz) - 1.1 - 0.004
-                        f.quad_facing((px - 0.05, py, pz - 0.05), (px + 0.05, py, pz - 0.05), (px + 0.05, py, pz + 0.05),
-                                      (px - 0.05, py, pz + 0.05), "Star", (0, -1, 0))
+                for px, pz, r in self.star_layout(x0, x1, z0, z1):
+                    py = self.ceiling(pz) - 1.1 - 0.004
+                    f.quad_facing((px - r, py, pz - r), (px + r, py, pz - r), (px + r, py, pz + r),
+                                  (px - r, py, pz + r), "Star", (0, -1, 0))
             z += cloud_depth + gap
         # Side walls continue above the cove up to the sloped ceiling (front and rear covered elsewhere).
+
+    def star_layout(self, x0, x1, z0, z1):
+        """Irregular pin lights on one cloud: a regular grid read as graph paper
+        from the rear rows. Seeded, so every bake places them identically."""
+        count = self.stars.randint(*STARS_PER_CLOUD)
+        placed = []
+        for attempt in range(200):
+            if len(placed) == count:
+                break
+            px = self.stars.uniform(x0 + STAR_MARGIN, x1 - STAR_MARGIN)
+            pz = self.stars.uniform(z0 + STAR_MARGIN, z1 - STAR_MARGIN)
+            if all((px - qx) ** 2 + (pz - qz) ** 2 >= STAR_SPACING ** 2 for qx, qz, _ in placed):
+                placed.append((px, pz, self.stars.uniform(*STAR_RADIUS)))
+        return placed
+
+    def exit_mark(self, at, normal):
+        """Running figure and arrow on an exit sign, kept clear of its centre.
+        `at(a, b)` maps metres across (0..0.44) and up (0..0.20) to Godot."""
+        f = self.fix
+
+        def line(points, width):
+            for (a0, b0), (a1, b1) in zip(points, points[1:]):
+                d = Vector((a1 - a0, b1 - b0)).normalized() * width * 0.5
+                n = Vector((-d.y, d.x))
+                f.quad_facing(at(a0 + n.x - d.x, b0 + n.y - d.y), at(a1 + n.x + d.x, b1 + n.y + d.y),
+                              at(a1 - n.x + d.x, b1 - n.y + d.y), at(a0 - n.x - d.x, b0 - n.y - d.y), "Masking", normal)
+
+        def fan(points):
+            centre = Vector(at(*points[0]))
+            for p, q in zip(points[1:], points[2:]):
+                tri = [centre, Vector(at(*p)), Vector(at(*q))]
+                if (tri[1] - tri[0]).cross(tri[2] - tri[0]).dot(Vector(normal)) < 0:
+                    tri[1], tri[2] = tri[2], tri[1]
+                f.poly([tuple(v) for v in tri], "Masking")
+
+        head = [(0.088 + 0.016 * math.cos(math.tau * k / 8), 0.158 + 0.016 * math.sin(math.tau * k / 8)) for k in range(9)]
+        fan([(0.088, 0.158)] + head)
+        line([(0.082, 0.136), (0.066, 0.088)], 0.018)
+        line([(0.066, 0.088), (0.044, 0.062), (0.030, 0.026)], 0.013)
+        line([(0.066, 0.088), (0.092, 0.058), (0.098, 0.022)], 0.013)
+        line([(0.080, 0.124), (0.102, 0.104), (0.118, 0.116)], 0.011)
+        line([(0.080, 0.124), (0.058, 0.112), (0.046, 0.096)], 0.011)
+        line([(0.330, 0.100), (0.398, 0.100)], 0.022)
+        fan([(0.396, 0.064), (0.396, 0.136), (0.428, 0.100)])
 
     def text(self, value, position, side, size, key):
         curve = bpy.data.curves.new("RowLetter", "FONT")

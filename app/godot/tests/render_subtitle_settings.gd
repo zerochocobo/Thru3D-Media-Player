@@ -32,8 +32,9 @@ func _run() -> void:
 		I18n.use(language)
 		state.subtitle_distance = 5.0; state.subtitle_position = 0.0; state.subtitle_direction = 0
 		state.subtitle_size = 125.0; state.subtitle_style = "yellow_black"
+		state.subtitle_line = 2
 		menu.scroll = 0; menu.refresh()
-		check(menu.rows.size() == 11, "All video and subtitle settings present: " + language)
+		check(menu.rows.size() == 13, "All video and subtitle settings present: " + language)
 		await shot(viewport, output.path_join("video_" + language + ".png"))
 		menu._set_scroll(menu._max_scroll())
 		await shot(viewport, output.path_join("subtitles_" + language + ".png"))
@@ -51,6 +52,7 @@ func _run() -> void:
 			check(width + label.outline_size * 2 * label.pixel_size < button.rect.size.x, "Style sample fits its hit area")
 			if button.base_color == menu.SELECTED: selected += 1
 		check(previews == 5 and selected == 1, "Five visible styles and exactly one selection")
+		check_line_choices(menu, language)
 		check(menu.text_snapshot().contains(I18n.t("Subtitle direction")), "Explicit subtitle direction visible: " + language)
 		for button in menu._buttons:
 			if str(menu.choices.targets.get(button.target, {}).get("value", "")) != "cyan_black": continue
@@ -71,7 +73,7 @@ func _run() -> void:
 		for direction in [0, 1]:
 			state.subtitle_direction = direction
 			for angle in [-60.0, 0.0, 60.0]:
-				state.subtitle_position = angle
+				state.subtitle_horizontal_position = angle; state.subtitle_vertical_position = -angle / 2
 				state.subtitle_distance = 0.1 if angle < 0 else 5.0
 				menu.refresh()
 				await shot(viewport, output.path_join("settings_%s_direction%d_%d.png" % [language, direction, angle]))
@@ -82,7 +84,7 @@ func _run() -> void:
 	player.set_process(false)
 	var player_state := {"has_video": true, "source_uri": "file:///movie.mp4", "title": "影片", "duration_ms": 120000,
 		"subtitle_track": 1, "subtitle_options": [{"id": 1, "codec": "subrip", "title": "简体中文"}, {"id": 2, "codec": "subrip", "title": "English"}],
-		"subtitle_size": 125.0, "subtitle_style": "yellow_black", "text_subtitle_tracks": 2}
+		"subtitle_size": 125.0, "subtitle_style": "yellow_black", "subtitle_line": 2, "text_subtitle_tracks": 2}
 	player.state_provider = func(): return player_state
 	var track_names := {"zh": ["中文字幕", "英文字幕"], "zh_Hant": ["中文字幕", "英文字幕"], "en": ["Chinese subtitles", "English subtitles"], "ja": ["中国語字幕", "英語字幕"]}
 	for language in ["zh", "zh_Hant", "en", "ja"]:
@@ -95,9 +97,10 @@ func _run() -> void:
 			check(player._subtitle_open and not player._subtitle_appearance_open and player.choices.sliders.is_empty(), "Player appearance starts collapsed")
 			await shot(viewport, output.path_join("player_%s_%s_collapsed.png" % [language, "flat" if geometry == 0 else "immersive"]))
 			player._activate(Player.SUBTITLE_APPEARANCE)
-			check(player._subtitle_appearance_open and player.choices.sliders.size() == (3 if geometry == 0 else 4), "Player disclosure opens all appropriate controls")
+			check(player._subtitle_appearance_open and player.choices.sliders.size() == (3 if geometry == 0 else 5), "Player disclosure opens all appropriate controls")
 			var visual_styles := player.choices.targets.values().filter(func(item): return item.get("key") == "subtitle_style")
 			check(visual_styles.size() == 5, "Player appearance contains the five visual samples")
+			check_line_choices(player, language)
 			await shot(viewport, output.path_join("player_%s_%s_expanded.png" % [language, "flat" if geometry == 0 else "immersive"]))
 			player._activate(Player.SUBTITLE_APPEARANCE)
 			check(player._subtitle_open and player.choices.sliders.is_empty(), "Player collapse retains subtitle selection panel")
@@ -105,6 +108,7 @@ func _run() -> void:
 		player_state.subtitle_options[0].codec = "hdmv_pgs_subtitle"
 		player.dismiss(); player.toggle(); player._activate(110); player._activate(Player.SUBTITLE_APPEARANCE)
 		check(player.choices.sliders.size() == 3 and not player.choices.targets.values().any(func(item): return item.get("key") == "subtitle_style"), "PGS exposes sync/size/position in every language")
+		check(not player.choices.targets.values().any(func(item): return item.get("key") == "subtitle_line"), "PGS does not offer text line filtering")
 		await shot(viewport, output.path_join("player_%s_pgs.png" % language))
 		for seconds in [-1.5, 2.0]:
 			player_state.subtitle_delay = seconds; player.refresh()
@@ -123,6 +127,22 @@ func _run() -> void:
 	for failure in failures: push_error(failure)
 	print("Subtitle settings render: %d checks, %d failures" % [checks, failures.size()])
 	quit(0 if failures.is_empty() else 1)
+
+func check_line_choices(menu: Node3D, language: String) -> void:
+	var count := 0
+	var selected := 0
+	for button in menu._buttons:
+		var item: Dictionary = menu.choices.targets.get(button.target, {})
+		if item.get("key") != "subtitle_line": continue
+		count += 1
+		var label: Label3D = button.node.get_child(0)
+		check(label.text == I18n.t(Style.LINE_CHOICES[int(item.value)].label), "Localized display line choice: " + language)
+		var width := label.font.get_string_size(label.text, HORIZONTAL_ALIGNMENT_LEFT, -1, label.font_size).x * label.pixel_size
+		check(width < button.rect.size.x and button.node.visible, "Display line label fits visible ray target: " + language)
+		if button.base_color == menu.SELECTED:
+			selected += 1
+			check(item.value == 2, "Second display line has selection highlight")
+	check(count == 3 and selected == 1, "Three display choices and one selection: " + language)
 
 func shot(viewport: SubViewport, path: String) -> void:
 	await process_frame

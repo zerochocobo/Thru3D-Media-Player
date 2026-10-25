@@ -17,6 +17,7 @@ extern "C" {
 namespace quest::capture {
 struct Control {
     std::atomic<bool> cancelled{false};
+    std::atomic<int> progress{0};
     std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::minutes(30);
     static int interrupt(void* value) {
         auto* self = static_cast<Control*>(value);
@@ -104,6 +105,10 @@ inline std::string clip(const std::string& path, const std::string& output_path,
         if (!audio_path.empty()) {
             extra.open(audio_path, ca, control); audio_source = &extra;
             audio = av_find_best_stream(extra.ctx, AVMEDIA_TYPE_AUDIO, -1, -1, nullptr, 0); check(audio);
+        } else if (audio == -2) {
+            audio = av_find_best_stream(input.ctx, AVMEDIA_TYPE_AUDIO, -1, -1, nullptr, 0);
+            if (audio == AVERROR_STREAM_NOT_FOUND) audio = -1;
+            else check(audio);
         }
         if (audio >= static_cast<int>(audio_source->ctx->nb_streams) || (audio >= 0 &&
             audio_source->ctx->streams[audio]->codecpar->codec_type != AVMEDIA_TYPE_AUDIO))
@@ -193,7 +198,10 @@ inline std::string clip(const std::string& path, const std::string& output_path,
             auto* item = from_audio ? audio_packet.get() : main_packet.get();
             const bool is_video = !from_audio && item->stream_index == video;
             const auto source_base = source.ctx->streams[item->stream_index]->time_base;
-            if (is_video) { ++video_packets; last_video = std::max(last_video, timestamp(source, item, false)); }
+            if (is_video) {
+                ++video_packets; last_video = std::max(last_video, timestamp(source, item, false));
+                control.progress.store(int(std::clamp<int64_t>((last_video - first) * 98 / (end - first), 0, 98)));
+            }
             const auto offset = av_rescale_q(first + source.origin(), AV_TIME_BASE_Q, source_base);
             if (item->pts != AV_NOPTS_VALUE) item->pts -= offset;
             if (item->dts != AV_NOPTS_VALUE) item->dts -= offset;
@@ -206,6 +214,7 @@ inline std::string clip(const std::string& path, const std::string& output_path,
         if (Control::interrupt(&control)) throw std::runtime_error("Clip export cancelled");
         if (!video_packets || last_video <= first) throw std::runtime_error("Recording is too short");
         check(av_write_trailer(output.ctx)); avio_flush(output.ctx->pb); check(output.ctx->pb->error);
+        control.progress.store(99); // Publication, not packet copying, owns completion.
         return "{\"state\":\"saved\",\"extension\":\"" + std::string(use_mp4 ? "mp4" : "mkv") +
             "\",\"start_us\":" + std::to_string(first) + ",\"end_us\":" + std::to_string(last_video) +
             ",\"lead_us\":" + std::to_string(std::max<int64_t>(0, start - first)) + ",\"video_packets\":" + std::to_string(video_packets) + "}";

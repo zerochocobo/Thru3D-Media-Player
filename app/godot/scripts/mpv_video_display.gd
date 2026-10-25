@@ -80,6 +80,7 @@ var auto_depth := false # This file's conversion choice, retained while changing
 var depth_enabled := false
 var cast_token := 0
 var cast_capability_cache := {}
+var cast_navigation := {}
 const CastCapabilities := preload("res://scripts/cast_capabilities.gd")
 
 func cast_allows(operation: String) -> bool:
@@ -102,12 +103,13 @@ func restore_cast_view(value: Dictionary) -> void:
 	_apply_geometry(); _request_revision()
 	set_playback_speed(playback_speed)
 
-func open_cast(uri: String, title: String, token: int, start_ms: int) -> bool:
+func open_cast(uri: String, title: String, token: int, start_ms: int, playing: bool = true) -> bool:
 	cast_token = token
 	cast_capability_cache = {}
+	cast_navigation = {}
 	geometry = Geometry.Geometry.FLAT; stereo_sbs = false; top_bottom = false; stereo_half = false
 	swap_eyes = false; alpha_requested = false; depth_requested = false; auto_depth = false
-	depth_strength = preferred_depth_strength; loop_enabled = false; requested_play = true
+	depth_strength = preferred_depth_strength; loop_enabled = false; requested_play = playing
 	_layer_return_uri = ""; _eye_buffer_only = true
 	var opened := open_local(uri, title, start_ms, false)
 	# Ephemeral URLs have no durable media identity. Never reuse unrelated cached file settings.
@@ -163,6 +165,8 @@ var subtitle_size := 1.0:
 	set(value): subtitle_size = SubtitleStyle.size_ratio(value)
 var subtitle_style := SubtitleStyle.DEFAULT:
 	set(value): subtitle_style = SubtitleStyle.normalize(value)
+var subtitle_line := 0:
+	set(value): subtitle_line = SubtitleStyle.normalize_line(value)
 var subtitle_flat_position := 0.0:
 	set(value): subtitle_flat_position = clampf(value, 0.0, 1.0) if is_finite(value) else 0.0
 var _subtitle_surface: MeshInstance3D
@@ -175,9 +179,24 @@ const SubtitleDepth := preload("res://scripts/subtitle_depth.gd")
 var subtitle_distance := 5.0:
 	set(value):
 		subtitle_distance = SubtitleDepth.distance(value)
+var subtitle_horizontal_center := Vector2.ZERO
+var subtitle_vertical_center := Vector2.ZERO
+var subtitle_horizontal_position: float:
+	get: return subtitle_center().x
+	set(value):
+		if subtitle_direction == 1: subtitle_vertical_center.x = SubtitleDepth.position(value)
+		else: subtitle_horizontal_center.x = SubtitleDepth.position(value)
+var subtitle_vertical_position: float:
+	get: return subtitle_center().y
+	set(value):
+		if subtitle_direction == 1: subtitle_vertical_center.y = SubtitleDepth.position(value)
+		else: subtitle_horizontal_center.y = SubtitleDepth.position(value)
+# Compatibility input for legacy settings and diagnostic probes only.
 var subtitle_position := SubtitleDepth.DEFAULT_POSITION:
 	set(value):
 		subtitle_position = SubtitleDepth.position(value)
+		subtitle_horizontal_center = Vector2(0, subtitle_position)
+		subtitle_vertical_center = Vector2(subtitle_position, 0)
 var subtitle_direction := 0:
 	set(value):
 		subtitle_direction = clampi(value, 0, 1)
@@ -251,6 +270,8 @@ var _buffering_deadline_ms := 0
 const OPEN_TIMEOUT_MS := 60000
 const OUTPUT_TIMEOUT_MS := 30000
 var _thumbnail_busy := false
+var _cover_request := 0
+var _cover_checked := false
 ## A layer copy pins nothing, so pairs keep presenting while it runs.
 var _layer_thumbnail_busy := false
 var _thumbnail_sequence := 0
@@ -424,12 +445,40 @@ var _thumb_tries := 0
 static func _thumbnail_source(uri: String) -> bool:
 	return not ModeMemory.key_for(uri).is_empty()
 
+var _cover_deadline := 0
+
+func _wants_embedded_cover() -> bool:
+	return display_name.get_extension().to_lower() == "mkv" or local_uri.get_slice("?", 0).get_extension().to_lower() == "mkv"
+
+func _cancel_embedded_cover() -> void:
+	if _cover_request > 0 and PlatformMethods.supports(platform, "cancel_embedded_cover"):
+		platform.cancel_embedded_cover(_cover_request)
+	_cover_request = 0
+
 func _maybe_capture_thumbnail() -> void:
 	if cast_token > 0: return
 	if _thumb_after_ms < 0 or _thumbnail_busy or _layer_thumbnail_busy or _pixel_busy or _waiting_first or not _pending_revision.is_empty() \
 		or media.state not in ["playing", "paused", "ended"] or media.last_pair.is_empty() \
 		or not (video_layer_shown if _binding.layer else _binding.material != null):
 		return
+	if not _cover_checked:
+		_cover_checked = true
+		if _wants_embedded_cover() and PlatformMethods.supports(platform, "request_embedded_cover"):
+			_cover_request = platform.request_embedded_cover(local_uri)
+			_cover_deadline = Time.get_ticks_msec() + 4500
+	if _cover_request > 0:
+		var state: String = platform.embedded_cover_state(_cover_request)
+		if state == "pending" and Time.get_ticks_msec() < _cover_deadline: return
+		if state == "ready":
+			var bytes: PackedByteArray = platform.take_embedded_cover(_cover_request)
+			_cover_request = 0
+			var cover := Image.new()
+			if not bytes.is_empty() and cover.load_png_from_buffer(bytes) == OK and Thumbnails.store(local_uri, cover):
+				_thumb_after_ms = -1
+				_thumbnail_result = {"state": "stored", "source": "embedded_cover", "width": cover.get_width(), "height": cover.get_height()}
+				thumbnail_ready.emit(local_uri)
+				return
+		else: _cancel_embedded_cover()
 	if int(media.last_pair.get("pts_us", 0)) / 1000 < _thumb_after_ms:
 		return
 	var uri := local_uri
@@ -741,6 +790,8 @@ func open_local(uri: String, title: String, start_ms: int = 0, restore_mode: boo
 		auto_depth = depth_requested
 	# Manual Alpha is never restored from memory; explicit filename markers still opt in.
 	alpha_requested = (alpha or (restore_mode and bool(stated.get("alpha", false)))) and not packed_file
+	_cancel_embedded_cover()
+	_cover_checked = false
 	_thumb_tries = 0
 	_thumbnail_result = {}
 	_thumb_after_ms = -1
@@ -863,6 +914,8 @@ func _unbind() -> void:
 		caption.visible = false
 
 func close_video() -> void:
+	# Decoder reopens retain the same video; an actual close or file switch cancels its export.
+	if not pip.reopening: captures.cancel_export(local_uri)
 	if not pip.reopening: pip.clear()
 	else: pip.cancel_interaction()
 	captures.stop()
@@ -885,6 +938,7 @@ func close_video() -> void:
 	_bookmark_metadata.clear()
 	_bookmark_rows.clear()
 	_bookmark_cache_revision = -1
+	_cancel_embedded_cover()
 	_thumbnail_sequence += 1
 	_library_cover = ""
 	_record_history(true)
@@ -956,6 +1010,7 @@ func _resume(uri: String) -> int:
 	return recent_files.resume_position(uri) if history_enabled else 0
 
 func discard_history_thumbnail() -> void:
+	_cancel_embedded_cover()
 	_thumbnail_sequence += 1
 	_thumb_after_ms = -1
 
@@ -1446,6 +1501,17 @@ func cycle_audio_track(direction: int = 1) -> bool:
 	var index := choices.find(current)
 	return select_audio_track(choices[posmod(index + direction, choices.size())])
 
+## Same endpoint as dragging the timeline to its end. The sender owns the next URL.
+func skip_cast_to_end() -> bool:
+	if cast_token <= 0 or control.duration_ms <= 0 or not cast_allows("seek") \
+		or not platform or not media.accepts(media.session_id): return false
+	# Resume through the normal seek handoff, without toggle_play's EOF restart.
+	requested_play = true
+	loop_enabled = false
+	var accepted := seek_absolute(control.duration_ms)
+	changed.emit()
+	return accepted
+
 func seek_absolute(position_ms: int, mode: String = "", loop_return: bool = false) -> bool:
 	if not cast_allows("seek"): return false
 	if not platform or not media.accepts(media.session_id):
@@ -1922,8 +1988,8 @@ func _poll_subtitles() -> void:
 	else:
 		bitmap_subtitles.clear(material)
 		if _subtitle_surface: _subtitle_surface.visible = false
-	caption.text = subtitles.text
-	caption.visible = not subtitles.text.is_empty()
+	caption.text = SubtitleStyle.display_text(subtitles.text, subtitle_line)
+	caption.visible = not caption.text.is_empty()
 	if caption.visible:
 		_place_caption()
 	else:
@@ -1955,7 +2021,7 @@ func _place_caption() -> void:
 		return
 	# Anchor in the video's coordinates, like burned-in captions. Head pose never changes it.
 	# Direction/recenter/zoom move captions with the video; roll is excluded by the independent surface.
-	var anchor_basis := SubtitleDepth.anchor(subtitle_position, subtitle_direction == 1)
+	var anchor_basis := SubtitleDepth.center_anchor(subtitle_center())
 	caption.layers = 0 # The live text patch is drawn only by the video's shader.
 	var pose := subtitle_transform()
 	var viewer_position := view_camera.global_position if view_camera and view_camera.is_inside_tree() else pose.origin
@@ -2206,7 +2272,7 @@ func _restore_capture_layout() -> bool:
 	if not details.has("capture_mode"): return false
 	_capture_layout_pending = false
 	var exported: Variant = JSON.parse_string(str(media.playback.get("details", {}).get("capture_mode", "")))
-	var capture_mode: Dictionary = preload("res://scripts/capture_mode.gd").clean(exported)
+	var capture_mode: Dictionary = preload("res://scripts/capture_mode.gd").clean(exported, true)
 	if not capture_mode.is_empty() and not _capture_preference_exists and not _mode_user_changed:
 		geometry = int(capture_mode.geometry)
 		stereo_sbs = bool(capture_mode.stereo_sbs)
@@ -2468,6 +2534,7 @@ func _on_error(id: int, payload: String) -> void:
 	if report.has("session_id") and int(report.session_id) != id: return
 	if media.logical_session_id > 0 and (report.has("logical_session_id") or report.has("generation")):
 		if int(report.get("logical_session_id", 0)) != media.logical_session_id or int(report.get("generation", 0)) != media.generation: return
+	_cancel_embedded_cover()
 	_thumbnail_sequence += 1
 	var code := str(report.get("code", "")) if report is Dictionary else ""
 	if disc.menu_session and code != "MPV_GL_CONTEXT_RECREATED" and disc.main >= 0:
@@ -2759,6 +2826,7 @@ func _write_debug_report() -> void:
 	var report := {"schema_version": 1, "request_id": _debug_request, "commands": _debug_commands,
 		"seek_policy_ui": host.seek_policy_probe_result if host and host.get("seek_policy_probe_result") is Dictionary else {},
 		"pip_probe": host.pip_probe_result if host and host.get("pip_probe_result") is Dictionary else {},
+		"capture": captures.status(), "capture_result": captures.last_result,
 		"open_trace": _open_trace.duplicate(true),
 		"media": media.snapshot(), "layout": layout_snapshot(), "pairs": _debug_pairs,
 		"native_status": _debug_status, "engine_fps": Engine.get_frames_per_second(),
@@ -2884,6 +2952,7 @@ func layout_snapshot() -> Dictionary:
 				else ("independent_Label3D" if geometry == Geometry.Geometry.FLAT else "video_projection_overlay"),
 			"size": subtitle_size, "flat_position": subtitle_flat_position, "rotation_independent": true,
 			"distance_m": subtitle_distance, "position": subtitle_position, "direction": subtitle_direction,
+			"center_degrees": [subtitle_horizontal_position, subtitle_vertical_position],
 			"runtime_ipd_m": ProjectedSubtitles.runtime_ipd(),
 			"projection": "flat_Label3D" if geometry == Geometry.Geometry.FLAT else "per_eye_ray_plane",
 			"plane_center_world": [] if geometry == Geometry.Geometry.FLAT else [projected_subtitles.plane_pose.origin.x, projected_subtitles.plane_pose.origin.y, projected_subtitles.plane_pose.origin.z],
@@ -2895,8 +2964,11 @@ func layout_snapshot() -> Dictionary:
 			"frozen_frame_id": int(_binding.ticket.get("frozen_frame_id", 0)),
 			"freeze_copy_us": int(_binding.ticket.get("freeze_copy_us", 0))}, "device_validation": "pending"}
 
+func subtitle_center() -> Vector2:
+	return subtitle_vertical_center if subtitle_direction == 1 else subtitle_horizontal_center
+
 func _subtitle_anchor_direction() -> Array:
-	var anchor := SubtitleDepth.anchor(subtitle_position, subtitle_direction == 1) * Vector3.FORWARD
+	var anchor := SubtitleDepth.center_anchor(subtitle_center()) * Vector3.FORWARD
 	return [anchor.x, anchor.y, anchor.z]
 
 func _can_loop() -> bool:

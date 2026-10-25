@@ -10,12 +10,20 @@ import javax.xml.parsers.DocumentBuilderFactory
 
 /** Protocol state only. Playback is owned by Godot; transport IDs never alias MPV generations. */
 internal class DlnaRenderer(private val now: () -> Long = System::currentTimeMillis) {
+    data class Resource(val uri: String, val metadata: String, val title: String)
     data class Offer(val id: Long, val peer: String, val uri: String, val metadata: String, val title: String,
-                     var requested: Boolean = false, var start: Long = 0, val expires: Long)
+                     var requested: Boolean = false, var start: Long = 0, val expires: Long,
+                     val from: Long = 0, val direction: Int = 0, var playing: Boolean = true, var stopped: Boolean = false,
+                     var nextSet: Boolean = false, var next: Resource? = null) {
+        fun resource() = Resource(uri, metadata, title)
+    }
     class Fault(val code: Int, override val message: String) : Exception(message)
     private var serial = 0L
     private var pending: Offer? = null
     private var active: Offer? = null
+    // Session-only navigation. Never persist signed URLs or expose another controller's queue.
+    private val previous = ArrayDeque<Resource>()
+    private val following = ArrayDeque<Resource>()
     private val events = ArrayDeque<JSONObject>()
     private var state = "NO_MEDIA_PRESENT"
     private var position = 0L
@@ -37,15 +45,25 @@ internal class DlnaRenderer(private val now: () -> Long = System::currentTimeMil
         expire()
         val batch = JSONArray()
         while (events.isNotEmpty()) batch.put(events.removeFirst())
-        return JSONObject().put("events", batch).put("pending_token", pending?.id ?: 0).put("active_token", active?.id ?: 0)
+        return navigation(JSONObject()).put("events", batch).put("pending_token", pending?.id ?: 0).put("active_token", active?.id ?: 0)
     }
     /** Acknowledge only after the headset user grants replacement. Returns current queued seek. */
     @Synchronized fun accept(id: Long): JSONObject {
         expire()
         val offer = pending?.takeIf { it.id == id && it.requested } ?: return JSONObject()
+        val old = active
+        if (offer.from != 0L && offer.from != old?.id) { reject(id); return JSONObject() }
+        if (old == null || old.peer != offer.peer) { previous.clear(); following.clear() }
+        else when (offer.direction) {
+            -1 -> { previous.removeLast(); following.addFirst(old.resource()) }
+            1 -> { following.removeFirst(); remember(old.resource()) }
+            else -> { remember(old.resource()); following.clear() }
+        }
+        if (offer.nextSet) { following.clear(); offer.next?.let { following.addLast(it) } }
         active = offer; pending = null; state = "TRANSITIONING"; position = offer.start
         duration = 0; seekable = false; error = false
-        return offerJson(offer)
+        events.removeIf { it.optLong("token") == id || it.optLong("token") == old?.id }
+        return navigation(offerJson(offer))
     }
     @Synchronized fun reject(id: Long) {
         if (pending?.id == id) pending = null
@@ -53,24 +71,67 @@ internal class DlnaRenderer(private val now: () -> Long = System::currentTimeMil
     }
     @Synchronized fun detach() {
         pending = null; active = null; events.clear(); state = "NO_MEDIA_PRESENT"
+        previous.clear(); following.clear()
         position = 0; duration = 0; seekable = false; error = false
     }
     /** Ends only the given active cast. A newer pending offer (Stop → SetAVTransportURI → Play) survives. */
     @Synchronized fun finish(id: Long) {
         if (active?.id != id) return
+        pending?.takeIf { it.from == id }?.let { reject(it.id) }
         active = null; events.removeIf { it.optLong("token") == id }
+        previous.clear(); following.clear()
         state = "NO_MEDIA_PRESENT"; position = 0; duration = 0; seekable = false; error = false
     }
     @Synchronized fun publish(json: JSONObject) {
         if (json.optLong("token") != active?.id) return
         state = json.optString("state").takeIf { it in setOf("PLAYING", "PAUSED_PLAYBACK", "STOPPED", "TRANSITIONING") } ?: "STOPPED"
+        if (state == "PLAYING") active!!.stopped = false // Headset Play also releases stopped intent.
+        if (active!!.stopped && state == "PAUSED_PLAYBACK") state = "STOPPED"
+        if (state == "PLAYING" || state == "PAUSED_PLAYBACK") active!!.playing = state == "PLAYING"
         position = json.optLong("position_ms").coerceAtLeast(0)
         duration = json.optLong("duration_ms").coerceAtLeast(0)
         seekable = json.optBoolean("seekable")
         volume = json.optInt("volume", volume).coerceIn(0, 100); muted = json.optBoolean("muted", muted)
         error = json.optBoolean("error")
+        // Only the player's verified natural EOF may consume a preset, never pause/failure/Stop.
+        if (json.optBoolean("ended") && !error && state == "STOPPED" && pending == null && following.isNotEmpty()) {
+            navigate(active!!.id, 1, true)
+        }
+    }
+    private fun remember(resource: Resource) {
+        if (previous.size >= 32) previous.removeFirst()
+        previous.addLast(resource)
+    }
+    private fun navigation(json: JSONObject) = json.put("has_previous", active != null && pending == null && previous.isNotEmpty())
+        .put("has_next", active != null && pending == null && following.isNotEmpty())
+        .put("navigation_pending", pending != null)
+    private fun nextResource(): Resource? {
+        val offer = pending ?: return following.peekFirst()
+        if (offer.nextSet) return offer.next
+        return when (offer.direction) { 1 -> following.elementAtOrNull(1); -1 -> active?.resource(); else -> null }
+    }
+    private fun transportActions(): String = if (pending != null) "Play,Pause,Stop" else if (active == null) "" else
+        "Play,Pause,Stop" + (if (seekable) ",Seek" else "") + (if (following.isNotEmpty() || seekable) ",Next" else "") + (if (previous.isNotEmpty()) ",Previous" else "")
+    private fun resource(uri: String, metadata: String): Resource {
+        if (!validUri(uri)) throw Fault(716, "Resource not found")
+        if (metadata.length > 32768) throw Fault(402, "Invalid Args")
+        val title = if (metadata.isBlank()) null else runCatching { xml(metadata).getElementsByTagNameNS("*", "title").item(0)?.textContent }.getOrNull()
+        return Resource(uri, metadata, title?.take(256)?.takeIf { it.isNotBlank() } ?: "Cast video")
+    }
+    /** 1: reserved a known resource; 0: no neighbor; -1: stale/busy. No seek fallback here. */
+    @Synchronized fun navigate(id: Long, direction: Int, playing: Boolean = true): Int {
+        expire()
+        val old = active ?: return -1
+        if (id != old.id || pending != null || direction !in listOf(-1, 1)) return -1
+        val item = (if (direction > 0) following.peekFirst() else previous.peekLast()) ?: return 0
+        val offer = Offer(++serial, old.peer, item.uri, item.metadata, item.title, requested = true,
+            expires = now() + 60000, from = old.id, direction = direction, playing = playing, stopped = !playing && state == "STOPPED")
+        enqueue(offerJson(offer)) // Reserve only after queue capacity is checked.
+        pending = offer
+        return 1
     }
     private fun offerJson(o: Offer) = event("request", o).put("uri", o.uri).put("title", o.title).put("start_ms", o.start)
+        .put("from_token", o.from).put("playing", o.playing)
     private fun owned(peer: String): Offer {
         expire()
         val offer = pending ?: active ?: throw Fault(701, "Transition not available")
@@ -87,29 +148,49 @@ internal class DlnaRenderer(private val now: () -> Long = System::currentTimeMil
         val transport = if (pending != null) (if (pending!!.requested) "TRANSITIONING" else "STOPPED") else state
         when ("$service/$action") {
             "AVTransport/SetAVTransportURI" -> {
-                val uri = args["CurrentURI"].orEmpty()
-                if (!validUri(uri)) throw Fault(716, "Resource not found")
-                val metadata = args["CurrentURIMetaData"].orEmpty()
-                if (metadata.length > 32768) throw Fault(402, "Invalid Args")
+                val item = resource(args["CurrentURI"].orEmpty(), args["CurrentURIMetaData"].orEmpty())
                 // A different controller may offer media, but cannot take transport ownership before acceptance.
                 if (pending != null && pending!!.peer != peer) throw Fault(701, "Transition not available")
                 pending?.let { old -> events.removeIf { it.optLong("token") == old.id } }
-                val title = if (metadata.isBlank()) null else runCatching { xml(metadata).getElementsByTagNameNS("*", "title").item(0)?.textContent }.getOrNull()
-                pending = Offer(++serial, peer, uri, metadata, title?.take(256)?.takeIf { it.isNotBlank() } ?: "Cast video", expires = now() + 60000)
+                pending = Offer(++serial, peer, item.uri, item.metadata, item.title, expires = now() + 60000)
+            }
+            "AVTransport/SetNextAVTransportURI" -> {
+                val target = owned(peer)
+                if (!args.containsKey("NextURI")) throw Fault(402, "Invalid Args")
+                val uri = args["NextURI"].orEmpty()
+                val metadata = args["NextURIMetaData"].orEmpty()
+                if (metadata.length > 32768) throw Fault(402, "Invalid Args")
+                val item = if (uri.isEmpty()) null else resource(uri, metadata)
+                if (target === pending) { target.nextSet = true; target.next = item }
+                else { following.clear(); item?.let { following.addLast(it) } }
+            }
+            "AVTransport/Next", "AVTransport/Previous" -> {
+                val target = owned(peer)
+                val result = navigate(target.id, if (action == "Next") 1 else -1, target.playing && state != "STOPPED")
+                if (result < 0) throw Fault(701, "Transition not available")
+                if (result == 0) {
+                    if (action != "Next" || !seekable) throw Fault(711, "Illegal seek target")
+                    enqueue(event("next_end", target))
+                }
             }
             "AVTransport/Play" -> {
                 if (args["Speed"] != "1") throw Fault(717, "Play speed not supported")
                 val target = owned(peer)
                 if (target === pending) {
+                    target.playing = true; target.stopped = false
                     if (!target.requested) { enqueue(offerJson(target)); target.requested = true }
-                } else enqueue(event("play", target))
+                } else { enqueue(event("play", target)); target.playing = true; target.stopped = false }
             }
             "AVTransport/Pause", "AVTransport/Stop" -> {
                 // Controllers commonly send Stop before their first SetAVTransportURI.
                 if (action == "Stop" && offer == null) return emptyMap()
                 val target = owned(peer)
-                if (target === pending) reject(target.id)
-                else enqueue(event(if (action == "Stop") "stop" else "pause", target))
+                if (target === pending && target.from != 0L) {
+                    if (action == "Pause") { target.playing = false; target.stopped = false }
+                    else { enqueue(event("stop", active!!)); reject(target.id) }
+                }
+                else if (target === pending) reject(target.id)
+                else { enqueue(event(if (action == "Stop") "stop" else "pause", target)); target.playing = false }
             }
             "AVTransport/Seek" -> {
                 // One track per transport: absolute and relative time are the same position.
@@ -136,10 +217,10 @@ internal class DlnaRenderer(private val now: () -> Long = System::currentTimeMil
             }
             "AVTransport/GetTransportInfo" -> return mapOf("CurrentTransportState" to transport, "CurrentTransportStatus" to if (error) "ERROR_OCCURRED" else "OK", "CurrentSpeed" to "1")
             "AVTransport/GetPositionInfo" -> return mapOf("Track" to if (offer == null) "0" else "1", "TrackDuration" to time(mediaDuration), "TrackMetaData" to offer?.metadata.orEmpty(), "TrackURI" to offer?.uri.orEmpty(), "RelTime" to time(mediaPosition), "AbsTime" to time(mediaPosition), "RelCount" to "2147483647", "AbsCount" to "2147483647")
-            "AVTransport/GetMediaInfo" -> return mapOf("NrTracks" to if (offer == null) "0" else "1", "MediaDuration" to time(mediaDuration), "CurrentURI" to offer?.uri.orEmpty(), "CurrentURIMetaData" to offer?.metadata.orEmpty(), "NextURI" to "", "NextURIMetaData" to "", "PlayMedium" to "NETWORK", "RecordMedium" to "NOT_IMPLEMENTED", "WriteStatus" to "NOT_IMPLEMENTED")
+            "AVTransport/GetMediaInfo" -> return mapOf("NrTracks" to if (offer == null) "0" else "1", "MediaDuration" to time(mediaDuration), "CurrentURI" to offer?.uri.orEmpty(), "CurrentURIMetaData" to offer?.metadata.orEmpty(), "NextURI" to nextResource()?.uri.orEmpty(), "NextURIMetaData" to nextResource()?.metadata.orEmpty(), "PlayMedium" to "NETWORK", "RecordMedium" to "NOT_IMPLEMENTED", "WriteStatus" to "NOT_IMPLEMENTED")
             "AVTransport/GetDeviceCapabilities" -> return mapOf("PlayMedia" to "NETWORK", "RecMedia" to "NOT_IMPLEMENTED", "RecQualityModes" to "NOT_IMPLEMENTED")
             "AVTransport/GetTransportSettings" -> return mapOf("PlayMode" to "NORMAL", "RecQualityMode" to "NOT_IMPLEMENTED")
-            "AVTransport/GetCurrentTransportActions" -> return mapOf("Actions" to if (offer == null) "" else "Play,Pause,Stop" + if (seekable) ",Seek" else "")
+            "AVTransport/GetCurrentTransportActions" -> return mapOf("Actions" to transportActions())
             "RenderingControl/GetVolume" -> return mapOf("CurrentVolume" to volume.toString())
             "RenderingControl/GetMute" -> return mapOf("CurrentMute" to if (muted) "1" else "0")
             "RenderingControl/ListPresets" -> return mapOf("CurrentPresetNameList" to "FactoryDefaults")
@@ -157,7 +238,10 @@ internal class DlnaRenderer(private val now: () -> Long = System::currentTimeMil
         expire()
         val o = pending ?: active
         val values = if (service == "RenderingControl") "<Volume channel=\"Master\" val=\"$volume\"/><Mute channel=\"Master\" val=\"${if (muted) 1 else 0}\"/>"
-        else "<TransportState val=\"${if (pending != null) (if (pending!!.requested) "TRANSITIONING" else "STOPPED") else state}\"/><TransportStatus val=\"${if (error) "ERROR_OCCURRED" else "OK"}\"/><AVTransportURI val=\"${escape(o?.uri.orEmpty())}\"/><CurrentTrackURI val=\"${escape(o?.uri.orEmpty())}\"/><CurrentTrackDuration val=\"${time(duration)}\"/><CurrentTransportActions val=\"${if (o == null) "" else "Play,Pause,Stop" + if (seekable) ",Seek" else ""}\"/>"
+        else "<TransportState val=\"${if (pending != null) (if (pending!!.requested) "TRANSITIONING" else "STOPPED") else state}\"/><TransportStatus val=\"${if (error) "ERROR_OCCURRED" else "OK"}\"/>" +
+            "<AVTransportURI val=\"${escape(o?.uri.orEmpty())}\"/><AVTransportURIMetaData val=\"${escape(o?.metadata.orEmpty())}\"/>" +
+            "<NextAVTransportURI val=\"${escape(nextResource()?.uri.orEmpty())}\"/><NextAVTransportURIMetaData val=\"${escape(nextResource()?.metadata.orEmpty())}\"/>" +
+            "<CurrentTrackURI val=\"${escape(o?.uri.orEmpty())}\"/><CurrentTrackDuration val=\"${time(if (pending == null) duration else 0)}\"/><CurrentTransportActions val=\"${transportActions()}\"/>"
         val property = if (service == "ConnectionManager") "<SourceProtocolInfo/></e:property><e:property><SinkProtocolInfo>${escape(PROTOCOLS)}</SinkProtocolInfo></e:property><e:property><CurrentConnectionIDs>0</CurrentConnectionIDs>"
         else "<LastChange>${escape("<Event xmlns=\"urn:schemas-upnp-org:metadata-1-0/${if (service == "RenderingControl") "RCS" else "AVT"}/\"><InstanceID val=\"0\">$values</InstanceID></Event>")}</LastChange>"
         return "<e:propertyset xmlns:e=\"urn:schemas-upnp-org:event-1-0\"><e:property>$property</e:property></e:propertyset>"

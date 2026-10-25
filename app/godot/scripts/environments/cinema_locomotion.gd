@@ -229,21 +229,21 @@ func suspend() -> void:
 	_turn_latched = true
 
 
-func step(input: Vector2, turn: float, delta: float) -> void:
+func step(input: Vector2, turn: float, delta: float, turn_back: bool = false) -> void:
 	if not input.is_finite() or not is_finite(turn) or not is_finite(delta):
 		return
-	var neutral := input.length() <= AXIS_DEADZONE and absf(turn) <= AXIS_DEADZONE
+	var neutral := input.length() <= AXIS_DEADZONE and absf(turn) <= AXIS_DEADZONE and not turn_back
 	if waiting_for_neutral:
 		if neutral:
 			waiting_for_neutral = false
 			_turn_latched = false
 		return
-	if absf(turn) <= AXIS_DEADZONE:
+	if absf(turn) <= AXIS_DEADZONE and not turn_back:
 		_turn_latched = false
 	if mode != Mode.MOVE or delta <= 0.0:
 		return
-	if absf(turn) >= 0.65 and not _turn_latched:
-		yaw = wrapf(yaw - signf(turn) * SNAP_ANGLE, -PI, PI)
+	if (absf(turn) >= 0.65 or turn_back) and not _turn_latched:
+		yaw = wrapf(yaw + (PI if turn_back else -signf(turn) * SNAP_ANGLE), -PI, PI)
 		_turn_latched = true
 	if input.length() <= AXIS_DEADZONE:
 		return

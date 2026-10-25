@@ -11,10 +11,17 @@ const Methods := preload("res://scripts/platform_methods.gd")
 const Gallery := preload("res://scripts/photo_gallery.gd")
 const Directory := preload("res://scripts/photo_directory.gd")
 var gallery := Gallery.new()
+const Magazine := preload("res://scripts/photo_magazine.gd")
+var magazine := Magazine.new(self)
+const ComicReader := preload("res://scripts/photo_comic_reader.gd")
+var comic := ComicReader.new(self)
 var archive_mode := false
+var _pdf_session := ""
 var archive_origin := ""
+var archive_entry := {}
 var archive_browser_session := false
 var _archive_previous_layout := 0
+var reading_layout := -1 # Shared PDF/archive preference; -1 migrates from the ordinary layout.
 var directory := Directory.new()
 var queue_complete := true
 var directory_error := ""
@@ -24,6 +31,8 @@ const CACHE_IMAGE_BYTES := 32 * 1024 * 1024
 const RECENT_FILE_BYTES := 128 * 1024 * 1024
 const RECENT_FILE_COUNT := 4
 var _recent_files := {} # Source/depth/pair files only; no extra decoded images or textures.
+var reading_cache := preload("res://scripts/reading_page_window.gd").new(self)
+var reading_render := preload("res://scripts/reading_render_cache.gd").new(self)
 var _prefetched := {}
 var _prefetch_failed := {}
 var _prefetch_request := 0
@@ -34,6 +43,7 @@ var _display_info := {}
 var _display_result := {}
 var _requested_direction := 0
 var _deferred_release_ids := {}
+var _deferred_depth_clear_ids := {}
 var _pending_display := {}
 var _display_depth_data := {}
 var _prefetch_depth_request := 0
@@ -166,12 +176,15 @@ var _logged_key := ""
 
 func _init() -> void:
 	gallery.photo = self
-	add_child(gallery); add_child(directory)
+	add_child(gallery); add_child(directory); add_child(panorama_tiles)
 	screen_curve = DEFAULT_CURVE
 	screen_distance = DEFAULT_DISTANCE
 	flat_pose.origin.z = -DEFAULT_DISTANCE
 
 func restore_view_settings(settings: ConfigFile) -> void:
+	magazine.right_to_left = bool(settings.get_value("photo_screen", "magazine_rtl", false))
+	reading_layout = int(settings.get_value("photo_screen", "reading_layout", -1))
+	if reading_layout not in [Gallery.Layout.SINGLE, Gallery.Layout.MAGAZINE]: reading_layout = -1
 	spatial_preferred = bool(settings.get_value("photo", "spatial_preferred", false))
 	var distance := float(settings.get_value("photo_screen", "distance", DEFAULT_DISTANCE))
 	var scale := float(settings.get_value("photo_screen", "scale", 1.0))
@@ -182,6 +195,13 @@ func restore_view_settings(settings: ConfigFile) -> void:
 	screen_curve = clampf(curve, 0.0, 1.0) if is_finite(curve) else DEFAULT_CURVE
 	inspect_magnification = clampf(zoom, INSPECT_LIMITS.x, INSPECT_LIMITS.y) if is_finite(zoom) else DEFAULT_MAGNIFICATION
 	gallery.restore_settings(settings)
+
+func save_layout_settings(settings: ConfigFile) -> void:
+	gallery.save_settings(settings)
+	# The temporary container layout must not replace the ordinary photo layout on disk.
+	if archive_mode: settings.set_value("photo_screen", "layout", _archive_previous_layout)
+	if reading_layout in [Gallery.Layout.SINGLE, Gallery.Layout.MAGAZINE]:
+		settings.set_value("photo_screen", "reading_layout", reading_layout)
 
 func set_target_feedback(_state: int) -> void:
 	# Full photographs keep their feathered edge; only overview cards have selection outlines.
@@ -231,7 +251,7 @@ func pan_hand(step: Vector2) -> void:
 func _ready() -> void:
 	initialize_surface(SHADER)
 	panorama_tiles.photo = self
-	panel.add_child(panorama_tiles)
+	panorama_tiles.reparent(panel)
 	changed.connect(gallery._refresh_textures)
 	directory.completed.connect(func(entries, complete, failure): _directory_result = {"entries": entries, "complete": complete, "error": failure, "reorder":_directory_reorder})
 	_placeholder = MeshInstance3D.new()
@@ -317,14 +337,20 @@ func _ready() -> void:
 func _source_size() -> Vector2:
 	return _size
 
-func open_image(uri: String, title: String, entries: Array = [], location: Dictionary = {}, retained: Dictionary = {}) -> bool:
+func open_image(uri: String, title: String, entries: Array = [], location: Dictionary = {}, retained: Dictionary = {}, container: Dictionary = {}) -> bool:
+	var pdf_key := preload("res://scripts/pdf_pages.gd").session(uri)
+	if not pdf_key.is_empty() and (not Methods.supports(platform, "pdf_retain") or not platform.pdf_retain(pdf_key)): return false
 	source_location = location.duplicate(true) if not location.is_empty() else preload("res://scripts/media_location.gd").infer(uri)
 	var retain_frame := not local_uri.is_empty() and geometry == Geometry.Geometry.FLAT and gallery.mode in [Gallery.Layout.SINGLE, Gallery.Layout.SIDES] and not portrait_requested
 	close_image(true, uri if source_location.has("online_source") else "")
-	archive_mode = uri.begins_with("comic://")
+	_pdf_session = pdf_key
+	archive_mode = preload("res://scripts/pdf_pages.gd").container_page(uri)
+	archive_entry = container.duplicate(true) if archive_mode else {}
 	if archive_mode:
 		_archive_previous_layout = gallery.mode
-		gallery.set_mode(Gallery.Layout.SINGLE)
+		if reading_layout < 0:
+			reading_layout = Gallery.Layout.MAGAZINE if _archive_previous_layout == Gallery.Layout.MAGAZINE else Gallery.Layout.SINGLE
+		gallery.set_mode(reading_layout)
 	placement_pending = not retain_frame
 	queue.clear()
 	for entry in entries:
@@ -355,11 +381,17 @@ func reorder(entries: Array[Dictionary], context: Dictionary) -> void:
 	if not loading and not _thread: _replace_directory()
 
 func set_layout_mode(value: int) -> void:
-	if archive_mode and value != Gallery.Layout.SINGLE: return
+	if archive_mode and value not in [Gallery.Layout.SINGLE, Gallery.Layout.MAGAZINE]: return
+	if archive_mode: reading_layout = value
+	if value not in [0, 1, 2, 3, 4] or value == gallery.mode: return
+	var reload_spread: bool = magazine.active() or value == Gallery.Layout.MAGAZINE
+	magazine.cancel()
 	if spatial_requested: set_spatial(false, true)
 	if portrait_requested: set_portrait(false)
 	gallery.set_mode(value)
-	if gallery.overview():
+	if reload_spread:
+		magazine.reload()
+	elif gallery.overview():
 		suspend_gallery_photo()
 	elif _texture == null and not loading and index >= 0:
 		_select(index)
@@ -390,6 +422,7 @@ func _replace_directory() -> void:
 
 func navigate(direction: int) -> bool:
 	if portrait_requested or queue.size() <= 1 or direction == 0 or gallery._swap_phase != 0 or (_directory_reorder and directory.loading): return false
+	if magazine.active(): return select_image(magazine.target(direction), 1 if direction > 0 else -1)
 	var target := (pending_index if pending_index >= 0 else index) + direction
 	if (geometry == Geometry.Geometry.FLAT or gallery.mode != 0) and queue_complete: target = posmod(target, queue.size())
 	return select_image(target, 1 if direction > 0 else -1)
@@ -422,11 +455,14 @@ func _select(target: int, direction: int = 0) -> bool:
 	_portrait_texture = null; _portrait_mask = PackedByteArray(); _portrait_strength = -1.0; portrait_error = ""
 	if target < 0 or target >= queue.size(): return false
 	if target == index and not loading and _texture != null: return false
+	comic.clear()
+	magazine.cancel()
 	var swipe_offset := _swipe_offset
 	finish_transition()
 	if _reveal_seconds > 0:
 		_placeholder.visible = false; _reveal_seconds = 0.0
 	var cached: Dictionary = _prefetched.get(target, {})
+	if not reading_render.complete(cached): cached = {}
 	if cached.is_empty(): cached = _recent_files.get(target, {})
 	_promoted_depth_request = 0
 	_incoming_depth_result = {}
@@ -438,14 +474,19 @@ func _select(target: int, direction: int = 0) -> bool:
 	_next_decode = {}
 	if platform and _request > 0 and _request != _display_request: _release_photo(_request, true)
 	if target == index and _texture != null and _cache_supported():
-		if platform: platform.activate_photo(_display_request)
+		if platform: reading_render.activate(_display_request, target)
+		if reading_render.active(): reading_cache.sync(target, false)
 		_request = _display_request; pending_index = -1; loading = false; error = ""
 		_restore_display()
+		# The interrupted turn already cleared OCR. Restoring only the texture
+		# leaves this page permanently idle until another successful page load.
+		if not _display_result.is_empty(): comic.accept(_display_result)
 		changed.emit()
 		return true
 	pending_index = target
 	_requested_direction = direction if direction != 0 else (1 if target > index else -1)
 	_navigation_direction = _requested_direction
+	reading_cache.sync(target, false)
 	loading = true
 	error = ""
 	var item := queue[target]
@@ -455,12 +496,12 @@ func _select(target: int, direction: int = 0) -> bool:
 		var outgoing := _placeholder if placeholder_visible() else panel
 		outgoing.position += flat_pose.basis * Vector3(swipe_offset, 0, 0)
 	_show_placeholder(target, cached.get("info", cached.get("metadata", item.get("photo_info", {}))))
-	if cached.has("info") and (not platform or platform.activate_photo(int(cached.id))):
+	if cached.has("info") and reading_render.activate(int(cached.id), target):
 		_prefetched.erase(target)
 		_recent_files.erase(target)
 		_request = int(cached.id)
 		var job := {"id": _request, "serial": _serial, "index": target, "info": cached.info, "direction": _requested_direction,
-			"depth_data": cached.get("depth_data", {})}
+			"depth_data": cached.get("depth_data", {}), "instant":true}
 		if cached.get("result", {}).has("image"): _prepare_display(cached.result, job)
 		else: _next_decode = job
 		changed.emit()
@@ -470,6 +511,7 @@ func _select(target: int, direction: int = 0) -> bool:
 		if _recent_files.has(target):
 			_release_photo(int(_recent_files[target].id), true); _recent_files.erase(target)
 		else: _drop_prefetch(target)
+	if reading_render.active(): _prune_prefetch(target)
 	_request = platform.open_photo(str(item.uri)) if platform else _serial
 	if _request <= 0:
 		loading = false; error = "Image unavailable"; _restore_display(); changed.emit(); return false
@@ -483,6 +525,8 @@ func _select(target: int, direction: int = 0) -> bool:
 
 func _on_ready(id: int, payload: String) -> void:
 	var info: Variant = JSON.parse_string(payload)
+	if reading_render.ready(id, info): return
+	if magazine.ready(id, info): return
 	if info is Dictionary and info.get("state") == "metadata":
 		if id == _request and loading: _on_metadata(id, _serial, pending_index, info)
 		elif id == _prefetch_request:
@@ -509,14 +553,17 @@ func _on_ready(id: int, payload: String) -> void:
 		loading = false
 		error = "Image too large" if info is Dictionary and info.get("error") == "PHOTO_TOO_LARGE" else "Image unavailable"
 		if archive_mode and info is Dictionary and str(info.get("error", "")).begins_with("Archive "): error = str(info.error)
+		magazine.cancel()
 		_restore_display()
 		changed.emit(); return
 	_on_metadata(id, _serial, pending_index, info)
 	_next_decode = {"id": id, "serial": _serial, "index": pending_index, "info": info, "direction": _requested_direction}
+	magazine.decorate(_next_decode)
 
 func _on_metadata(id: int, serial: int, target: int, info: Dictionary) -> void:
 	if serial != _serial or id != _request or not loading or target != pending_index: return
 	if float(info.get("width", 0)) <= 0 or float(info.get("height", 0)) <= 0: return
+	if not magazine.first.is_empty(): return
 	queue[target]["photo_info"] = info
 	_size_placeholder(target, info)
 
@@ -546,6 +593,7 @@ func _copy_departing(surface: MeshInstance3D) -> void:
 	_departing = MeshInstance3D.new()
 	_departing.mesh = surface.mesh.duplicate() as Mesh
 	_departing.material_override = surface.material_override.duplicate() as ShaderMaterial
+	_departing.material_override.set_shader_parameter("comic_overlay_enabled", false)
 	_departing.material_override.render_priority = -11
 	_departing.transform = surface.transform
 	add_child(_departing)
@@ -587,6 +635,8 @@ func preview_navigation(offset: float) -> void:
 	surface.position += flat_pose.basis * Vector3(_swipe_offset, 0, 0)
 
 static func _decode(job: Dictionary) -> Dictionary:
+	var decode_started := Time.get_ticks_usec()
+	var spread_encode_ms := 0.0
 	var path := str(job.info.path)
 	var raw: bool = job.info.get("raw_rgba", false)
 	var header := {"width":int(job.info.get("decoded_width", 0)), "height":int(job.info.get("decoded_height", 0)),
@@ -598,8 +648,17 @@ static func _decode(job: Dictionary) -> Dictionary:
 	if int(header.width) > 8192 or int(header.height) > 8192 or int(header.width) * int(header.height) > 32 * 1024 * 1024:
 		return {"error": "Image too large"}
 	if job.get("prefetch", false):
-		var estimate := int(header.width) * int(header.height) * (3 if header.codec == "jpg" else 4) * 4 / 3
-		if estimate > CACHE_IMAGE_BYTES:
+		var estimate := int(header.width) * int(header.height) * 16 / 3
+		var limit: int = preload("res://scripts/reading_render_cache.gd").IMAGE_BYTES if job.get("reading", false) else CACHE_IMAGE_BYTES
+		if job.has("magazine_first"):
+			var first_image: Image = job.magazine_first.image
+			var width := int(header.height) if int(info.get("orientation", 1)) >= 5 else int(header.width)
+			var height := int(header.width) if int(info.get("orientation", 1)) >= 5 else int(header.height)
+			var ratio := float(first_image.get_width()) / first_image.get_height() + float(width) / height
+			var joined_height := mini(4096, mini(maxi(first_image.get_height(), height), int(8192.0 / ratio)))
+			estimate = maxi(estimate, int(ratio * joined_height * joined_height * 16.0 / 3.0))
+			if ratio * joined_height >= 7680: return {"uncached":true,"info":info}
+		if maxi(int(header.width), int(header.height)) >= 7680 or estimate > limit:
 			var small := str(job.info.get("thumbnail_path", ""))
 			if not small.is_empty():
 				var thumbnail := Image.new()
@@ -616,13 +675,33 @@ static func _decode(job: Dictionary) -> Dictionary:
 		var code := image.load_jpg_from_buffer(bytes) if header.codec == "jpg" else (image.load_png_from_buffer(bytes) if header.codec == "png" else image.load_webp_from_buffer(bytes))
 		if code != OK or image.is_empty(): return {"error": "Image unavailable"}
 	Info.orient(image, int(info.get("orientation", 1)))
-	var thumbnail := Image.new()
-	var thumb_path := str(job.info.get("thumbnail_path", ""))
-	if thumb_path.is_empty() or thumbnail.load_jpg_from_buffer(FileAccess.get_file_as_bytes(thumb_path)) != OK:
-		thumbnail = image.duplicate() as Image
-		var ratio := 384.0 / maxf(image.get_width(), image.get_height())
-		thumbnail.resize(maxi(1, int(image.get_width() * ratio)), maxi(1, int(image.get_height() * ratio)), Image.INTERPOLATE_BILINEAR)
-	else: Info.orient(thumbnail, int(info.get("orientation", 1)))
+	var thumbnail: Image = null
+	# PDF directory previews must not generate thumbnails from rendered pages.
+	if not job.get("skip_thumbnail", false):
+		thumbnail = Image.new()
+		var thumb_path := str(job.info.get("thumbnail_path", ""))
+		if thumb_path.is_empty() or thumbnail.load_jpg_from_buffer(FileAccess.get_file_as_bytes(thumb_path)) != OK:
+			thumbnail = image.duplicate() as Image
+			var ratio := 384.0 / maxf(image.get_width(), image.get_height())
+			thumbnail.resize(maxi(1, int(image.get_width() * ratio)), maxi(1, int(image.get_height() * ratio)), Image.INTERPOLATE_BILINEAR)
+		else: Info.orient(thumbnail, int(info.get("orientation", 1)))
+	var spread := job.has("magazine_first")
+	var source_info := info
+	var comic_rects := [Rect2(0, 0, 1, 1)]
+	if spread:
+		var second_page := image
+		image = Magazine.compose(job.magazine_first.image, image, bool(job.get("magazine_rtl", false)))
+		var left_width: int = second_page.get_width() if job.get("magazine_rtl", false) else job.magazine_first.image.get_width()
+		var split := float(left_width) / image.get_width()
+		comic_rects = [Rect2(0, 0, split, 1), Rect2(split, 0, 1 - split, 1)]
+		source_info = job.magazine_first.info
+		info = {"width":image.get_width(), "height":image.get_height(), "orientation":1, "panorama":false, "magazine_unregistered":true}
+		thumbnail = job.magazine_first.get("thumbnail")
+		if job.has("magazine_path"):
+			var encode_started := Time.get_ticks_usec()
+			if str(job.magazine_path).get_extension() == "jpg": image.save_jpg(str(job.magazine_path), 0.98)
+			else: image.save_png(str(job.magazine_path))
+			spread_encode_ms = (Time.get_ticks_usec() - encode_started) / 1000.0
 	# RGBA here, off the render thread: the picture layer copies RGBA bands on the GPU (RGB textures
 	# cannot be copied into its RGBA swapchain), and RGBA textures upload without conversion.
 	if image.get_format() != Image.FORMAT_RGBA8: image.convert(Image.FORMAT_RGBA8)
@@ -637,10 +716,15 @@ static func _decode(job: Dictionary) -> Dictionary:
 	# Mipmaps improve stability when the source is much larger than its angular screen size.
 	image.generate_mipmaps()
 	# The library picture encoded here too: the render thread only writes the file.
-	return {"image": image, "proxy": proxy, "thumbnail": thumbnail, "thumbnail_jpg": Thumbnails.encode(thumbnail), "info": info}
+	var result := {"image": image, "proxy": proxy, "info": info,
+		"source_info": source_info, "magazine": spread, "comic_rects": comic_rects,
+		"decode_ms":(Time.get_ticks_usec() - decode_started) / 1000.0, "spread_encode_ms":spread_encode_ms}
+	if thumbnail: result.merge({"thumbnail": thumbnail, "thumbnail_jpg": Thumbnails.encode(thumbnail)})
+	return result
 
 var _catalog_save_ms := 0
 func _process(delta: float) -> void:
+	if reading_render.active(): reading_render.refresh_policy()
 	if loading and Time.get_ticks_msec() >= _loading_poll_ms:
 		_loading_poll_ms = Time.get_ticks_msec() + 500
 		if Methods.supports(platform, "get_photo_loading_status"):
@@ -677,11 +761,12 @@ func _process(delta: float) -> void:
 			elif int(_decoding.epoch) == _cache_epoch and _prefetched.has(int(_decoding.index)) \
 				and int(_prefetched[int(_decoding.index)].id) == int(_decoding.id):
 				var entry: Dictionary = _prefetched[int(_decoding.index)]
-				entry["decoded"] = true
-				if result.has("info"):
-					entry["info"] = result.info
-					queue[int(_decoding.index)]["photo_info"] = result.info
-				if result.has("image") and result.image.get_data_size() <= CACHE_IMAGE_BYTES: entry["result"] = result
+				if not reading_render.decoded(result, _decoding):
+					entry["decoded"] = true
+					if result.has("info"):
+						entry["info"] = result.info
+						queue[int(_decoding.index)]["photo_info"] = result.info
+					if result.has("image") and result.image.get_data_size() <= CACHE_IMAGE_BYTES: entry["result"] = result
 				var prefetched_uri := str(queue[int(_decoding.index)].uri)
 				if result.has("thumbnail_jpg") and Thumbnails.store_encoded(prefetched_uri, result.thumbnail_jpg):
 					result["thumbnail_cached"] = true
@@ -693,6 +778,7 @@ func _process(delta: float) -> void:
 			_release_photo(int(_decoding.id))
 		if _deferred_release_ids.erase(int(_decoding.id)) and int(_decoding.id) not in [_request, _display_request]:
 			_release_photo(int(_decoding.id))
+		magazine.cleanup_job(_decoding)
 		_decoding = {}
 	if not _thread and (not _next_decode.is_empty() or not _prefetch_decode.is_empty()):
 		var foreground := not _next_decode.is_empty()
@@ -700,6 +786,9 @@ func _process(delta: float) -> void:
 		if foreground: _decoding["metadata_ready"] = _on_metadata
 		if foreground: _next_decode = {}
 		else: _prefetch_decode = {}
+		var decode_index := int(_decoding.index)
+		_decoding["skip_thumbnail"] = decode_index >= 0 and decode_index < queue.size() \
+			and preload("res://scripts/pdf_pages.gd").page(str(queue[decode_index].uri))
 		_thread = Thread.new()
 		var code := _thread.start(_decode.bind(_decoding))
 		if code != OK:
@@ -718,10 +807,25 @@ func _process(delta: float) -> void:
 		if _reveal_seconds == 0: _placeholder.visible = false
 	_maybe_start_spatial()
 	if not spatial_requested and not portrait_requested and not loading and not _transition_active and _reveal_seconds == 0 and not gallery.overview(): _pump_prefetch()
+	reading_cache.sync(pending_index if loading else index, not loading and not _transition_active and _reveal_seconds == 0 \
+		and not _depth_busy and not spatial_requested and not portrait_requested and _thread == null and _depth_thread == null)
 
 func _cache_supported() -> bool:
+	if reading_render.active():
+		return gallery.mode in [Gallery.Layout.SINGLE, Gallery.Layout.MAGAZINE] and (not platform or \
+			(Methods.supports(platform, "preload_reading_photo") and Methods.supports(platform, "activate_photo")))
 	if gallery.mode in [Gallery.Layout.WALL, Gallery.Layout.FRAGMENTS]: return false
 	return not platform or (Methods.supports(platform, "preload_photo") and Methods.supports(platform, "activate_photo"))
+
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_APPLICATION_PAUSED:
+		reading_render.suspended = true
+		if reading_render.active():
+			_pause_prefetch()
+			for at in _prefetched.keys(): _drop_prefetch(at)
+	elif what == NOTIFICATION_APPLICATION_RESUMED:
+		reading_render.suspended = false
+		_prefetch_failed.clear()
 
 func _release_photo(id: int, cancel: bool = false) -> void:
 	if not platform: return
@@ -734,14 +838,17 @@ func _release_photo(id: int, cancel: bool = false) -> void:
 func _neighbors(position: int) -> Array[int]:
 	var result: Array[int] = []
 	if queue.size() <= 1 or position < 0: return result
-	for adjacent in [position + _navigation_direction, position - _navigation_direction]:
-		var target: int = posmod(adjacent, queue.size()) if queue_complete else adjacent
+	var steps: Array = [position + _navigation_direction, position - _navigation_direction]
+	if magazine.active(): steps = [magazine.target_from(position, _navigation_direction), magazine.target_from(position, -_navigation_direction)]
+	for adjacent in steps:
+		var target: int = posmod(adjacent, queue.size()) if queue_complete and not reading_render.active() else adjacent
 		if target >= 0 and target < queue.size() and target not in result and target != position: result.append(target)
 	return result
 
 func _drop_prefetch(target: int) -> void:
 	if not _prefetched.has(target): return
 	var id := int(_prefetched[target].id)
+	reading_render.cleanup(_prefetched[target])
 	_prefetched.erase(target)
 	if int(_prefetch_decode.get("id", 0)) == id: _prefetch_decode = {}
 	if _prefetch_request == id: _prefetch_request = 0
@@ -752,6 +859,7 @@ func _drop_prefetch(target: int) -> void:
 	_release_photo(id, true)
 
 func _pause_prefetch(except_id: int = 0) -> void:
+	reading_render.pause()
 	if _prefetch_depth_request != 0:
 		if _prefetch_depth_request == except_id:
 			_promoted_depth_request = except_id
@@ -762,11 +870,14 @@ func _pause_prefetch(except_id: int = 0) -> void:
 			if int(_prefetched[target].id) == _prefetch_request: _drop_prefetch(target)
 	_prefetch_decode = {}
 
-func _prune_prefetch() -> void:
-	var wanted: Array = _neighbors(index) if geometry == Geometry.Geometry.FLAT and _cache_supported() else []
+func _prune_prefetch(at: int = -1) -> void:
+	var wanted: Array = _neighbors(index if at < 0 else at) if geometry == Geometry.Geometry.FLAT and _cache_supported() else []
+	if reading_render.active():
+		for failed in _prefetch_failed.keys():
+			if failed not in wanted: _prefetch_failed.erase(failed)
 	for target in _prefetched.keys():
 		if target not in wanted:
-			if geometry == Geometry.Geometry.FLAT: _remember_files(target)
+			if geometry == Geometry.Geometry.FLAT and not reading_render.active(): _remember_files(target)
 			else: _drop_prefetch(target)
 	if geometry != Geometry.Geometry.FLAT:
 		for entry in _recent_files.values(): _release_photo(int(entry.id), true)
@@ -792,8 +903,9 @@ func _remember_files(target: int) -> void:
 		_recent_files.erase(oldest)
 
 func _pump_prefetch() -> void:
-	if archive_mode: return
+	if reading_render.active(): reading_render.pump(); return
 	_prune_prefetch()
+	if _depth_busy or _depth_thread: return # Current-page 3D owns the heavy-work slot.
 	if index < 0 or geometry != Geometry.Geometry.FLAT or not _cache_supported(): return
 	if _prefetch_depth_request != 0: return
 	for target in _neighbors(index):
@@ -805,15 +917,6 @@ func _pump_prefetch() -> void:
 			if entry.has("info") and not entry.get("decoded", false) and _prefetch_decode.is_empty() \
 				and not (_decoding.get("prefetch", false) and int(_decoding.id) == int(entry.id)):
 				_prefetch_decode = {"id": entry.id, "index": target, "info": entry.info, "prefetch": true, "epoch": _cache_epoch}
-			var needs_depth: bool = not entry.has("depth_data") or (Methods.supports(platform, "prepare_photo_3d") \
-				and not is_equal_approx(float(entry.get("depth_data", {}).get("strength", -1)), depth_strength))
-			if entry.has("info") and _requires_depth(target, entry.info) and needs_depth and _depth_rebuild_seconds == 0 \
-				and not entry.get("depth_failed", false) and _prefetch_request == 0 \
-				and Methods.supports(platform, "prepare_preloaded_photo_depth"):
-				_prefetch_depth_request = int(entry.id)
-				if not _prepare_depth(_prefetch_depth_request, true):
-					_prefetch_depth_request = 0; entry["depth_failed"] = true
-				else: return
 			continue
 		if _prefetch_request != 0 or _prefetch_failed.has(target): continue
 		var uri := str(queue[target].uri)
@@ -827,6 +930,7 @@ func _pump_prefetch() -> void:
 			_on_ready(id, JSON.stringify({"state": "ready", "path": path}) if path.is_absolute_path() else '{"state":"error"}')
 
 func _resolved_mode(target: int, info: Dictionary) -> Dictionary:
+	if magazine.active(): return {"geometry": 0, "stereo_sbs": false, "top_bottom": false, "swap_eyes": false, "fisheye_fov": 180}
 	var retained: Dictionary = queue[target].get("retained_source", {})
 	if not retained.is_empty():
 		return {"geometry":3 if retained.get("projection")=="sphere" else 0,"stereo_sbs":int(retained.get("layout",0))!=0,
@@ -835,7 +939,7 @@ func _resolved_mode(target: int, info: Dictionary) -> Dictionary:
 	var stated := {} if native_stereo else Naming.from_name(str(queue[target].get("title", "")))
 	var saved := mode_memory.lookup(str(queue[target].uri))
 	if saved.is_empty():
-		var captured: Dictionary = preload("res://scripts/capture_mode.gd").clean(info.get("capture_mode"))
+		var captured: Dictionary = preload("res://scripts/capture_mode.gd").clean(info.get("capture_mode"), true)
 		if not captured.is_empty(): saved = captured
 	var mode := {"geometry": int(saved.get("geometry", stated.get("geometry", Geometry.Geometry.EQUIRECT_360 if info.get("panorama", false) else Geometry.Geometry.FLAT))),
 		"stereo_sbs": bool(saved.get("stereo_sbs", stated.get("stereo", native_stereo))),
@@ -850,16 +954,20 @@ func _resolved_mode(target: int, info: Dictionary) -> Dictionary:
 	return mode
 
 func _requires_depth(target: int, info: Dictionary) -> bool:
+	if info.get("magazine_unregistered", false): return false
 	if gallery.mode in [Gallery.Layout.WALL, Gallery.Layout.FRAGMENTS] and (gallery.focus != target or gallery.returning): return false
 	if queue[target].has("retained_source"): return false
 	var mode := _resolved_mode(target, info)
-	return auto_depth and not info.get("native_stereo", false) and platform != null and int(mode.geometry) == Geometry.Geometry.FLAT and not mode.stereo_sbs
+	return auto_depth and not comic.active() and not info.get("native_stereo", false) and platform != null and int(mode.geometry) == Geometry.Geometry.FLAT and not mode.stereo_sbs
 
 func _prepare_display(result: Dictionary, job: Dictionary) -> void:
-	if result.has("error") or not _requires_depth(int(job.index), result.info):
+	if magazine.prepare(result, job): return
+	if job.get("instant", false) or result.has("error") or result.get("depth_failed", false) or not _requires_depth(int(job.index), result.info):
 		_accept(result, job)
 		return
-	var depth_data: Dictionary = result.get("depth_data", job.get("depth_data", {}))
+	_pending_display = {"result": result, "job": job, "serial": _serial}
+	var depth_data: Dictionary = job.get("depth_data", {})
+	if depth_data.is_empty(): depth_data = result.get("depth_data", {})
 	if int(_incoming_depth_result.get("id", 0)) == int(job.id):
 		depth_data = _incoming_depth_result.data
 		_incoming_depth_result = {}
@@ -869,15 +977,22 @@ func _prepare_display(result: Dictionary, job: Dictionary) -> void:
 	if not depth_data.is_empty() and (not Methods.supports(platform, "prepare_photo_3d") or
 		(depth_data.has("stereo_image") and is_equal_approx(float(depth_data.get("strength", -1)), depth_strength))):
 		result["depth_data"] = depth_data
+		_pending_display = {}
 		_accept(result, job)
 		return
-	_pending_display = {"result": result, "job": job, "serial": _serial}
 	if _promoted_depth_request == int(job.id): changed.emit()
 	elif not _prepare_depth(int(job.id)): _fail_pending_depth()
 	else: changed.emit()
 
 func _fail_pending_depth() -> void:
 	_promoted_depth_request = 0; _incoming_depth_result = {}
+	# A conversion failure must not discard a successfully decoded colour image.
+	# Keep the source lease for an explicit retry and all normal photo controls.
+	if not _pending_display.is_empty() and int(_pending_display.serial) == _serial:
+		var pending := _pending_display; _pending_display = {}
+		pending.result["depth_failed"] = true
+		_accept(pending.result, pending.job)
+		return
 	_pending_display = {}; loading = false; error = "3D unavailable"
 	_restore_display()
 	if _request != _display_request: _release_photo(_request, true)
@@ -891,6 +1006,8 @@ func _mark(stage: String, since: int) -> int:
 	return now
 
 func _accept(result: Dictionary, job: Dictionary) -> void:
+	var depth_failed := bool(result.get("depth_failed", false))
+	result.erase("depth_failed") # A later explicit retry or cache promotion may succeed.
 	if spatial_requested: set_spatial(false, true)
 	spatial_error=""
 	_accept_timing = {}
@@ -907,14 +1024,16 @@ func _accept(result: Dictionary, job: Dictionary) -> void:
 	var previous_index := index
 	var previous_request := _display_request
 	var previous_info := _display_info
-	var previous_result := _display_result
-	var previous_depth_data := _cache_depth(_display_depth_data)
+	var previous_result := _display_result.duplicate()
+	previous_result.erase("depth_data")
+	if previous_request != int(job.id): _discard_native_depth(previous_request)
 	var previous_flat := _texture != null and geometry == Geometry.Geometry.FLAT and panel.visible
 	var old_surface: MeshInstance3D
 	if previous_flat and not had_placeholder:
 		old_surface = MeshInstance3D.new()
 		old_surface.mesh = panel.mesh.duplicate() as Mesh
 		old_surface.material_override = material.duplicate() as ShaderMaterial
+		old_surface.material_override.set_shader_parameter("comic_overlay_enabled", false)
 		old_surface.transform = panel.transform
 	_display_request = int(job.id)
 	index = int(job.index)
@@ -929,7 +1048,7 @@ func _accept(result: Dictionary, job: Dictionary) -> void:
 		_metadata["spatial_disparity"] = float(retained.get("spatial_disparity",0))
 		if retained.get("depth") is Image:
 			result["depth_data"] = {"image":retained.depth,"rect":retained.depth_rect,"strength":depth_strength}
-	queue[index]["photo_info"] = result.info
+	queue[index]["photo_info"] = result.get("source_info", result.info)
 	var mode := _resolved_mode(index, _metadata)
 	_hide_layer()
 	_upload = {}
@@ -938,11 +1057,11 @@ func _accept(result: Dictionary, job: Dictionary) -> void:
 	mark = _mark("before_texture", mark)
 	var proxy: Image = result.get("proxy")
 	if proxy and _layer_possible(int(mode.geometry)):
-		_texture = ImageTexture.create_from_image(proxy)
+		_texture = result.ready_texture if result.get("ready_proxy", false) and result.has("ready_texture") else ImageTexture.create_from_image(proxy)
 		_full_image = result.image
 		_texture_full = false
 	else:
-		_texture = ImageTexture.create_from_image(result.image)
+		_texture = result.ready_texture if not result.get("ready_proxy", false) and result.has("ready_texture") else ImageTexture.create_from_image(result.image)
 		_full_image = null
 		_texture_full = true
 	mark = _mark("texture", mark)
@@ -956,24 +1075,33 @@ func _accept(result: Dictionary, job: Dictionary) -> void:
 		_use_depth_textures()
 		depth_requested = auto_depth or retained.get("kind")=="relief"; depth_enabled = depth_requested
 	_display_info = result.info
-	_display_result = result if geometry == Geometry.Geometry.FLAT and result.image.get_data_size() <= CACHE_IMAGE_BYTES else {}
+	var image_limit: int = reading_render.IMAGE_BYTES if reading_render.active() else CACHE_IMAGE_BYTES
+	var cacheable: bool = not reading_render.active() or maxi(result.image.get_width(), result.image.get_height()) < 7680
+	_display_result = result if cacheable and geometry == Geometry.Geometry.FLAT and result.image.get_data_size() <= image_limit else {}
+	comic.accept(result)
 	_prefetch_failed.erase(index)
 	if previous_flat and geometry == Geometry.Geometry.FLAT and previous_index in _neighbors(index) and _cache_supported() \
 		and not previous_info.is_empty() and previous_request != _display_request:
 		_drop_prefetch(previous_index)
-		_prefetched[previous_index] = {"id": previous_request, "info": previous_info, "result": previous_result,
-			"decoded": not previous_result.is_empty(), "depth_data": previous_depth_data} if not previous_depth_data.is_empty() else \
-			{"id": previous_request, "info": previous_info, "result": previous_result, "decoded": not previous_result.is_empty()}
+		_prefetched[previous_index] = {"id": previous_request, "info": previous_info, "result": previous_result, "decoded": not previous_result.is_empty()}
+		if reading_render.active():
+			_prefetched[previous_index]["stage"] = "done"
+			# Oversized prior pages keep only the original file window, never retry render prefetch.
+			if previous_result.is_empty(): reading_render.fail(previous_index)
 	elif platform and previous_request > 0 and previous_request != _display_request:
 		_release_photo(previous_request)
 	_prune_prefetch()
+	if reading_render.active(): reading_render.trim()
 	reset_view()
 	material.set_shader_parameter("photo_texture", _texture)
 	_detail_material.set_shader_parameter("sharpness", sharpness)
 	_detail_material.set_shader_parameter("photo_texture", _texture)
 	_apply_geometry()
 	panel.visible = true
-	if had_placeholder:
+	if job.get("instant", false):
+		finish_transition(); _placeholder.visible = false; _reveal_seconds = 0
+		if old_surface != null: old_surface.free()
+	elif had_placeholder:
 		# Keep the selection's slide in progress; a slow decode must not start a second slide.
 		if geometry == Geometry.Geometry.FLAT and placeholder_time < TRANSITION_SECONDS:
 			_placeholder.visible = false
@@ -1002,23 +1130,29 @@ func _accept(result: Dictionary, job: Dictionary) -> void:
 	elif old_surface != null:
 		old_surface.free()
 	mark = _mark("display", mark)
-	if auto_depth and geometry == 0 and not stereo_sbs and retained.is_empty(): set_depth(true)
+	if depth_failed:
+		depth_error = "3D unavailable"; _spatial_auto_due = false
+	elif auto_depth and not comic.active() and geometry == 0 and not stereo_sbs and retained.is_empty(): set_depth(true)
 	mark = _mark("depth", mark)
 	var thumbnail_key := str(queue[index].get("thumbnail_key", local_uri)) if index >= 0 and index < queue.size() else local_uri
-	if not result.get("thumbnail_cached", false) or not Thumbnails.has(thumbnail_key):
+	if result.has("thumbnail") and (not result.get("thumbnail_cached", false) or not Thumbnails.has(thumbnail_key)):
 		var stored := Thumbnails.store_encoded(thumbnail_key, result.thumbnail_jpg) if result.has("thumbnail_jpg") \
 			else Thumbnails.store(thumbnail_key, result.thumbnail)
 		if stored: result["thumbnail_cached"] = true
 	mark = _mark("thumbnail", mark)
 	if catalog and history_enabled and not source_location.has("online_source"):
-		catalog.opened(local_uri, display_name, false, "image")
-		catalog.set_location(local_uri, source_location if not source_location.is_empty() else preload("res://scripts/media_location.gd").infer(local_uri))
+		if archive_mode: catalog.opened_container(archive_entry)
+		else:
+			catalog.opened(local_uri, display_name, false, "image")
+			catalog.set_location(local_uri, source_location if not source_location.is_empty() else preload("res://scripts/media_location.gd").infer(local_uri))
 		_catalog_save_ms = Time.get_ticks_msec() + 1000 # not in the frame that shows the photo
 	mark = _mark("catalog", mark)
 	changed.emit()
 	mark = _mark("changed", mark)
 	_spatial_auto_due=true
 	_accept_timing["total"] = Time.get_ticks_usec() - accept_started
+	_accept_timing["decode_ms"] = result.get("decode_ms", 0.0)
+	_accept_timing["spread_encode_ms"] = result.get("spread_encode_ms", 0.0)
 	DiagnosticLog.record("photo_accept_timing", _accept_timing)
 
 func _update_transition() -> void:
@@ -1103,6 +1237,7 @@ func _apply_geometry() -> void:
 	_update_inspect()
 
 func set_projection(value: int) -> void:
+	if magazine.active(): return
 	if spatial_requested: set_spatial(false, true)
 	if portrait_requested: set_portrait(false)
 	if value not in [0, 1, 2, 3]: return
@@ -1116,13 +1251,14 @@ func cycle_projection() -> void:
 	set_projection((geometry + 1) % 4)
 
 func set_stereo_layout(layout: int) -> void:
+	if magazine.active(): return
 	if spatial_requested: set_spatial(false, true)
 	if portrait_requested: set_portrait(false)
 	if layout not in [0, 1, 2]: return
 	if layout != current_lock().layout: _unlock_mode()
 	stereo_sbs = layout != 0; top_bottom = layout == 2
 	if stereo_sbs: depth_requested = false; depth_enabled = false
-	elif auto_depth and geometry == 0: set_depth(true)
+	elif auto_depth and not magazine.active() and geometry == 0: set_depth(true)
 	_apply_geometry(); _remember_mode(); changed.emit()
 
 func toggle_stereo() -> void:
@@ -1358,6 +1494,7 @@ func _update_inspect() -> void:
 	_detail_material.set_shader_parameter("detail_up", right.cross(forward).normalized())
 
 func set_depth(enabled: bool) -> bool:
+	if enabled and _metadata.get("magazine_unregistered", false): return false
 	if spatial_requested: set_spatial(false, true)
 	if not enabled and portrait_requested: set_portrait(false)
 	if enabled and (_metadata.get("native_stereo", false) or stereo_sbs or geometry != 0 or not platform or _display_request <= 0): return false
@@ -1376,23 +1513,24 @@ func set_depth(enabled: bool) -> bool:
 		if not _depth_busy: depth_error = "3D unavailable"
 	_apply_geometry(); changed.emit(); return true
 
-func _on_prefetch_depth(id: int, payload: String) -> void:
-	if _queue_depth_payload(id, payload, true): return
-	_finish_depth(id, _read_depth(payload), true)
+func _discard_native_depth(id: int) -> void:
+	if id <= 0: return
+	if _depth_thread and int(_depth_job.get("id", 0)) == id:
+		_deferred_depth_clear_ids[id] = true
+	elif Methods.supports(platform, "discard_photo_depth"):
+		platform.discard_photo_depth(id)
+
+func _on_prefetch_depth(_id: int, _payload: String) -> void:
+	pass # Ignore legacy/late neighbour results without reading their files.
 
 func _prepare_depth(id: int, background: bool = false) -> bool:
-	if not background: _depth_rebuild_seconds = 0.0
-	var method := "prepare_preloaded_photo_3d" if background else "prepare_photo_3d"
-	if Methods.supports(platform, method): return bool(platform.call(method, id, depth_strength))
-	method = "prepare_preloaded_photo_depth" if background else "prepare_photo_depth"
-	return Methods.supports(platform, method) and bool(platform.call(method, id))
-
-static func _cache_depth(data: Dictionary) -> Dictionary:
-	var cached := data.duplicate()
-	if cached.has("stereo_image") and cached.stereo_image.get_data_size() > CACHE_IMAGE_BYTES: cached.erase("stereo_image")
-	return cached
+	if background: return false
+	_depth_rebuild_seconds = 0.0
+	if Methods.supports(platform, "prepare_photo_3d"): return bool(platform.prepare_photo_3d(id, depth_strength))
+	return Methods.supports(platform, "prepare_photo_depth") and bool(platform.prepare_photo_depth(id))
 
 func _queue_depth_payload(id: int, payload: String, background: bool) -> bool:
+	if background: return false
 	var info: Variant = JSON.parse_string(payload)
 	if not info is Dictionary or not info.has("stereo_path"): return false
 	# At most one queued result per source; pair loading and mip generation run off the frame thread.
@@ -1407,6 +1545,7 @@ func _process_depth_jobs() -> void:
 		var id := int(_depth_job.id)
 		if bool(_depth_job.background) or int(_depth_job.serial) == _serial: _finish_depth(id, data, bool(_depth_job.background))
 		_depth_job = {}
+		if _deferred_depth_clear_ids.erase(id) and id != _display_request: _discard_native_depth(id)
 		if _deferred_release_ids.erase(id) and id not in [_request, _display_request]: _release_photo(id)
 	if _depth_thread: return
 	while not _depth_queue.is_empty():
@@ -1428,16 +1567,7 @@ func _finish_depth(id: int, data: Dictionary, background: bool) -> void:
 		_depth_busy = _prepare_depth(id)
 		return
 	if not background and data.has("strength"): _depth_rebuild_seconds = 0.0
-	if background:
-	# A cancelled background error must not fail a foreground retry of the same file ID.
-		if id != _prefetch_depth_request or id == 0: return
-		_prefetch_depth_request = 0
-		for target in _prefetched:
-			if int(_prefetched[target].id) != id: continue
-			if data.is_empty(): _prefetched[target]["depth_failed"] = true
-			else: _prefetched[target]["depth_data"] = _cache_depth(data)
-			return
-		return
+	if background: return
 	if id == _request and loading and _pending_display.is_empty():
 		# The joined conversion can finish before the colour decoder. Keep its matching result.
 		_incoming_depth_result = {"id": id, "data": data}
@@ -1535,6 +1665,7 @@ func set_depth_strength(value: float) -> bool:
 	return true
 
 func spatial_metadata() -> Dictionary:
+	if magazine.active(): return {}
 	return SpatialCapture.normalize(_metadata.get("spatial_metadata", {})) if _metadata.get("native_stereo", false) else {}
 
 func spatial_fov_scale() -> float:
@@ -1569,17 +1700,18 @@ func snapshot() -> Dictionary:
 	progress.elapsed_ms = Time.get_ticks_msec() - _loading_started_ms
 	return {"spatial_preferred":spatial_preferred,"spatial_requested":spatial_requested,"spatial_ready":_spatial.prepared if is_instance_valid(_spatial) else false,"spatial_available":can_spatial(),"spatial_error":spatial_error,
 		"spatial_report":_spatial.report if is_instance_valid(_spatial) else {},"has_image": _texture != null, "loading": loading, "loading_caption": Loading.caption(progress) if loading else "", "placeholder": placeholder_visible(), "preparing_depth": not _pending_display.is_empty(), "title": title, "index": position, "count": queue.size(),
+		"magazine_single": magazine.single(position), "magazine_pages": magazine.count(position) if magazine.active() else 1, "magazine_rtl": magazine.right_to_left,
 		"archive_mode": archive_mode, "source_uri": local_uri, "layout": gallery.mode, "gallery_overview": gallery.overview(), "wall_rows": gallery.wall_rows, "gallery_scale": gallery.view_scale, "gallery_distance": gallery.view_distance, "gallery_swapping": gallery._swap_phase != 0, "gallery_focus": gallery.focus, "directory_loading": directory.loading, "directory_error": directory_error, "queue_complete": queue_complete,
 		"can_save_pictures":can_save_pictures(), "pictures_save":pictures_status(),
 		"can_background": can_background(), "panorama_detail_error": panorama_tiles.error,
-		"can_previous": not portrait_requested and queue.size() > 1 and (((geometry == Geometry.Geometry.FLAT or gallery.mode != 0) and queue_complete) or position > 0),
-		"can_next": not portrait_requested and queue.size() > 1 and (((geometry == Geometry.Geometry.FLAT or gallery.mode != 0) and queue_complete) or (position >= 0 and position < queue.size() - 1)),
+		"can_previous": (position > 0) if magazine.active() else not portrait_requested and queue.size() > 1 and (((geometry == Geometry.Geometry.FLAT or gallery.mode != 0) and queue_complete) or position > 0),
+		"can_next": (position >= 0 and magazine.target(1) < queue.size()) if magazine.active() else not portrait_requested and queue.size() > 1 and (((geometry == Geometry.Geometry.FLAT or gallery.mode != 0) and queue_complete) or (position >= 0 and position < queue.size() - 1)),
 		"geometry": geometry, "stereo": stereo_sbs, "top_bottom": top_bottom, "swap_eyes": swap_eyes, "fisheye_fov": fisheye_fov, "mode_lock": mode_lock.duplicate(),
 		"inspect": inspect, "zoom": magnification, "inspect_magnification": inspect_magnification,
 		"screen_distance": screen_distance, "screen_scale": screen_scale,
 		"portrait_requested": portrait_requested, "portrait_enabled": portrait_enabled, "portrait_available": can_portrait(), "portrait_error": portrait_error,
 		"depth_requested": depth_requested, "depth_enabled": depth_enabled,
-		"depth_available": platform != null and not _metadata.get("native_stereo", false), "native_stereo": _metadata.get("native_stereo", false), "depth_strength": depth_strength, "depth_error": depth_error,
+		"depth_available": platform != null and not _metadata.get("magazine_unregistered", false) and not _metadata.get("native_stereo", false), "native_stereo": not magazine.active() and _metadata.get("native_stereo", false), "depth_strength": depth_strength, "depth_error": depth_error,
 		"spatial_metadata": spatial_metadata(), "spatial_fov_available": spatial_fov_scale() > 0.0,
 		"stereo_strategy":_display_depth_data.get("strategy", "inverse_shader"), "stereo_ready":_stereo_texture != null,
 		"render_strength":_display_depth_data.get("strength", depth_strength),
@@ -1738,7 +1870,9 @@ func suspend_gallery_photo() -> void:
 
 ## Full-size colour, generated eyes and native leases belong only to the expanded photo.
 ## Album identity, the directory scan and bounded preview cards have independent lifetimes.
-func _release_full_photo(release_runtime: bool = true) -> void:
+func _release_full_photo(release_runtime: bool = true, release_reading_cache: bool = true) -> void:
+	if release_reading_cache: reading_cache.clear()
+	magazine.cancel()
 	if spatial_requested: set_spatial(false, true)
 	_spatial_auto_due = false; spatial_error=""
 	panorama_tiles.clear()
@@ -1775,14 +1909,20 @@ func _release_full_photo(release_runtime: bool = true) -> void:
 	hide_inspect_pointer()
 
 func close_image(notify: bool = true, next_online_uri: String = "") -> void:
+	comic.end_batch()
+	magazine.reset()
 	var restore_archive_layout := archive_mode
 	if archive_mode:
+		reading_layout = gallery.mode
 		var key := local_uri.get_slice("/", 2)
 		if key.is_empty() and not queue.is_empty(): key = str(queue[0].uri).get_slice("/", 2)
-		if not archive_browser_session and not key.is_empty() and Methods.supports(platform, "archive_close"): platform.archive_close(key)
+		if _pdf_session.is_empty() and not archive_browser_session and not key.is_empty() and Methods.supports(platform, "archive_close"): platform.archive_close(key)
 		archive_mode = false
+	if not _pdf_session.is_empty() and Methods.supports(platform, "pdf_close"): platform.pdf_close(_pdf_session)
+	_pdf_session = ""
 	archive_browser_session = false
 	archive_origin = ""
+	archive_entry.clear()
 	_release_full_photo()
 	if _catalog_save_ms > 0 and catalog:
 		_catalog_save_ms = 0
@@ -1797,8 +1937,9 @@ func close_image(notify: bool = true, next_online_uri: String = "") -> void:
 	if notify: changed.emit()
 
 func _exit_tree() -> void:
+	comic.close()
 	close_image(false)
-	if _thread: _thread.wait_to_finish(); _thread = null
+	if _thread: _thread.wait_to_finish(); magazine.cleanup_job(_decoding); _thread = null
 	if _depth_thread: _depth_thread.wait_to_finish(); _depth_thread = null
 	if _portrait_thread: _portrait_thread.wait_to_finish(); _portrait_thread = null
 	for id in _deferred_release_ids: _release_photo(int(id))
@@ -1806,8 +1947,9 @@ func _exit_tree() -> void:
 
 
 func can_portrait() -> bool:
-	var selected: bool = gallery.mode in [Gallery.Layout.SINGLE, Gallery.Layout.SIDES] or (gallery.focus == index and gallery.progress >= 1 and not gallery.returning)
+	var selected: bool = gallery.mode in [Gallery.Layout.SINGLE, Gallery.Layout.SIDES, Gallery.Layout.MAGAZINE] or (gallery.focus == index and gallery.progress >= 1 and not gallery.returning)
 	return selected and not spatial_requested and not loading and _texture != null and geometry == 0 and not stereo_sbs \
+		and not _metadata.get("magazine_unregistered", false) \
 		and not _metadata.get("native_stereo",false) and _display_request > 0 \
 		and Methods.supports(platform,"prepare_photo_3d") and Methods.supports(platform,"prepare_photo_portrait")
 
@@ -1906,7 +2048,8 @@ func _layer_source() -> Dictionary:
 		return {"key": "portrait:%d:%d" % [_display_request, _portrait_serial], "image": pair, "mask": _portrait_mask,
 			"stereo": 1, "blend": VideoLayer.SOURCE_ALPHA}
 	if depth_enabled and _display_depth_data.has("stereo_image"):
-		return {"key": "stereo:%d:%.3f" % [_display_request, float(_display_depth_data.get("strength", 0))],
+		var pair: Image = _display_depth_data.stereo_image
+		return {"key": "stereo:%d:%.3f:%dx%d" % [_display_request, float(_display_depth_data.get("strength", 0)), pair.get_width(), pair.get_height()],
 			"image": _display_depth_data.stereo_image, "stereo": 1}
 	if depth_enabled:
 		return {} # the shader's own depth parallax
@@ -2060,6 +2203,11 @@ func _ensure_full_texture() -> void:
 ## left in the eye buffers needs it to stand at the pair's depth. Without it the edge took one
 ## uniform disparity and framed the picture in front of its own 3D. Only the large pair waits.
 func _use_depth_textures() -> void:
+	if _display_depth_data.has("ready_depth") and _display_depth_data.has("ready_stereo"):
+		_depth_texture = _display_depth_data.ready_depth
+		_stereo_texture = _display_depth_data.ready_stereo
+		_depth_textures_pending = false
+		return
 	if _texture_full:
 		_create_depth_textures()
 		return

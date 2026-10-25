@@ -114,6 +114,10 @@ var _layout_up := Vector3.UP
 var layout_head_provider: Callable
 var _layout_following := false
 var music_quick: RefCounted
+## Bumped whenever the buttons are rebuilt; with the frame and hover it lets both hands share one
+## highlight pass per frame.
+var _buttons_generation := 0
+var _highlight_pass := []
 
 func panel_centre() -> Vector3:
 	return _backdrop.position if is_instance_valid(_backdrop) else Vector3.ZERO
@@ -159,8 +163,26 @@ func control_plane(target: int) -> Transform3D:
 func control_point(hit: Dictionary) -> Vector3:
 	return control_plane(int(hit.target)).affine_inverse() * Vector3(hit.point)
 
+## A zero-disparity capture has one angular cursor shared by both eyes. Project
+## the controller beam's visible far endpoint from that capture's viewing centre.
+## Descendant menus inherit the same projection, including an attached browser.
+func _interaction_ray(origin: Vector3, direction: Vector3) -> Array[Vector3]:
+	var node: Node = self
+	while node is Node3D:
+		if node.has_meta("menu_mono_pointer"):
+			var projection: Dictionary = node.get_meta("menu_mono_pointer")
+			var eye: Node3D = projection.eye
+			if is_instance_valid(eye):
+				var endpoint := origin + direction.normalized() * float(projection.distance)
+				return [eye.global_position, (endpoint - eye.global_position).normalized()]
+			break
+		node = node.get_parent()
+	return [origin, direction]
+
 func project_pointer(origin: Vector3, direction: Vector3, plane: Transform3D) -> Variant:
 	if not origin.is_finite() or not direction.is_finite() or direction.length_squared() < 0.000001: return null
+	var input := _interaction_ray(origin, direction)
+	origin = input[0]; direction = input[1]
 	var inverse := (global_transform * plane).affine_inverse()
 	var start := inverse * origin
 	var delta := inverse.basis * direction.normalized()
@@ -214,6 +236,8 @@ func ray_hit(origin: Vector3, direction: Vector3) -> Dictionary:
 func _nearest_hit(origin: Vector3, direction: Vector3, surfaces: Array, best: Dictionary = {}) -> Dictionary:
 	if not visible or not origin.is_finite() or not direction.is_finite() or direction.length_squared() < 0.000001:
 		return {}
+	var input := _interaction_ray(origin, direction)
+	origin = input[0]; direction = input[1]
 	var ray := direction.normalized()
 	for button in surfaces:
 		if (not button.enabled and not button.get("hover_disabled", false)) or not button.node.is_visible_in_tree():
@@ -239,6 +263,10 @@ func _nearest_hit(origin: Vector3, direction: Vector3, surfaces: Array, best: Di
 
 ## Use the current mesh size/radius: backgrounds can resize or move on every refresh.
 func pointer_hit(origin: Vector3, direction: Vector3) -> Dictionary:
+	return _pointer_hit_over(origin, direction, ray_hit(origin, direction))
+
+## [button_hit]: ray_hit() for the same ray; the panels behind the buttons are added to it.
+func _pointer_hit_over(origin: Vector3, direction: Vector3, button_hit: Dictionary) -> Dictionary:
 	var surfaces: Array = []
 	var panels: Array = [_backdrop]
 	panels.append_array(_pointer_panels)
@@ -249,7 +277,7 @@ func pointer_hit(origin: Vector3, direction: Vector3) -> Dictionary:
 		surfaces.append({"target": NONE, "rect": Rect2(-size / 2, size), "enabled": false,
 			"hover_disabled": true, "node": panel,
 			"radius": panel.material_override.get_shader_parameter("corner_radius")})
-	return _nearest_hit(origin, direction, surfaces, ray_hit(origin, direction))
+	return _nearest_hit(origin, direction, surfaces, button_hit)
 
 func _block_rays(panel: MeshInstance3D, size: Vector2, radius: float = 0.025) -> void:
 	_ray_blockers.append({"target": NONE, "rect": Rect2(-size / 2, size), "enabled": false,
@@ -259,6 +287,8 @@ func _block_rays(panel: MeshInstance3D, size: Vector2, radius: float = 0.025) ->
 func grab_hit(origin: Vector3, direction: Vector3) -> Dictionary:
 	var hit := ray_hit(origin, direction)
 	if not visible or not origin.is_finite() or not direction.is_finite() or direction.length_squared() < 0.000001: return hit
+	var input := _interaction_ray(origin, direction)
+	origin = input[0]; direction = input[1]
 	var inverse := _backdrop.global_transform.affine_inverse()
 	var start: Vector3 = inverse * origin
 	var delta: Vector3 = inverse.basis * direction.normalized()
@@ -274,14 +304,27 @@ func grab_hit(origin: Vector3, direction: Vector3) -> Dictionary:
 func update_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: bool) -> void:
 	if not visible:
 		return
-	if music_quick: music_quick.update(hand, origin, direction, tracked)
-	var hit := pointer_hit(origin, direction) if tracked else {}
+	# One button hit test per hand: the quick controls and the pointer share it, unless the quick
+	# controls just rebuilt the buttons.
+	var button_hit := ray_hit(origin, direction) if tracked else {}
+	if music_quick:
+		var generation := _buttons_generation
+		music_quick.update(hand, origin, direction, tracked, button_hit)
+		if generation != _buttons_generation and tracked: button_hit = ray_hit(origin, direction)
+	var hit := _pointer_hit_over(origin, direction, button_hit) if tracked else {}
 	_hover[hand] = int(hit.get("target", NONE))
 	var valid := tracked and origin.is_finite() and direction.is_finite() and direction.length_squared() > 0.000001
 	var endpoint := Vector3.ZERO
 	if valid: endpoint = to_global(hit.point) if not hit.is_empty() else origin + direction.normalized() * ray_max_distance
 	_draw_pointer(hand, origin, endpoint, valid, not hit.is_empty())
-	_update_highlights()
+	# Both hands update every frame; the second colour pass would repeat the first unless something
+	# changed. The tooltip (cheap) always follows the current tips.
+	var pass_key := [Engine.get_process_frames(), _buttons_generation, _hover.duplicate()]
+	if pass_key != _highlight_pass:
+		_highlight_pass = pass_key
+		_update_highlights()
+	else:
+		_update_tooltip()
 
 func update_move_pointer(hand: String, origin: Vector3, point: Vector3, tracked: bool) -> void:
 	_hover[hand] = NONE
@@ -296,7 +339,9 @@ func _draw_pointer(hand: String, origin: Vector3, endpoint: Vector3, valid: bool
 		var mesh: ImmediateMesh = pointer.line.mesh
 		mesh.clear_surfaces()
 		mesh.surface_begin(Mesh.PRIMITIVE_LINES)
+		mesh.surface_set_color(Color(1, 1, 1, 0))
 		mesh.surface_add_vertex(to_local(origin))
+		mesh.surface_set_color(Color.WHITE)
 		mesh.surface_add_vertex(to_local(endpoint) + Vector3(0, 0, 0.006))
 		mesh.surface_end()
 		if hit:
@@ -353,6 +398,7 @@ func _clear_layout() -> void:
 		# A badge nested in another button's tile is freed with it.
 		if is_instance_valid(button.node): button.node.free()
 	_buttons.clear()
+	_buttons_generation += 1
 	_ray_blockers.clear()
 	_pointer_panels.clear()
 	for label in _labels:
@@ -631,8 +677,10 @@ func _pointer(hand: String) -> Dictionary:
 
 func _update_highlights() -> void:
 	var changed := false
+	# Runs for each hand every frame while a menu is open: build the hovered set once.
+	var hovered_targets: Array = _hover.values()
 	for button in _buttons:
-		var hovered: bool = button.enabled and _hover.values().has(button.target)
+		var hovered: bool = button.enabled and hovered_targets.has(button.target)
 		if button.has("select_arrow"):
 			var ink: Color = (ACCENT if hovered and button.has("hover_labels") else button.foreground) if button.enabled else MUTED
 			if button.select_arrow.material_override.albedo_color != ink:
@@ -660,10 +708,13 @@ func _update_highlights() -> void:
 func _update_tooltip() -> void:
 	var shown := {}
 	var tip := ""
+	# Cheap checks first: only a hovered button's tip is translated (same result, far less work).
+	var hovered_targets: Array = _hover.values()
 	for button in _buttons:
+		if not hovered_targets.has(button.target) or not (button.enabled or button.get("hover_disabled", false)): continue
 		if not button.node.is_visible_in_tree(): continue
 		var candidate := tooltip_text(_tips.get(button.target))
-		if not candidate.is_empty() and (button.enabled or button.get("hover_disabled", false)) and _hover.values().has(button.target):
+		if not candidate.is_empty():
 			shown = button
 			tip = candidate
 			break
