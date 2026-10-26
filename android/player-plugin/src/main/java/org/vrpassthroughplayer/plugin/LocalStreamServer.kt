@@ -15,12 +15,22 @@ import java.util.concurrent.Executors
 internal interface StreamSource : Closeable {
     val size: Long
     fun open(): Reader
+    /** Audio lookahead may consume retained packets without waiting for origin IO. */
+    fun openAudio(): Reader = open()
+    /** Opt-in for an additional audio lookahead consumer; keeps the same byte address space. */
+    fun shareReadAhead(onRead: (Int) -> Unit = {}) {}
+    fun retainAudio(spans: List<AudioReadSpan>) {}
+    fun readSnapshot(): Map<String,Long> = emptyMap()
+    val sharedReadAheadActive: Boolean get() = false
     /** An independent source for the same bytes (a playback view outlives its parent), or null. */
     fun fork(): StreamSource? = null
     /** Reopenable byte sources that can carry the read cache and a playback view. */
     val forkable: Boolean get() = false
     override fun close() {}
-    interface Reader : Closeable { fun read(offset: Long, buffer: ByteArray, length: Int): Int }
+    interface Reader : Closeable {
+        fun read(offset: Long, buffer: ByteArray, length: Int): Int
+        fun counters(): Map<String,Long> = emptyMap()
+    }
 }
 
 /** Optional capability: ordinary video, ISO and subtitle readers keep their existing ABI. */
@@ -82,6 +92,29 @@ internal class LocalStreamServer : Closeable {
     fun cachedArchive(url: String): Boolean = token(url)?.let { sources[it] is CachedRarSource } == true
     fun progress(url: String): TransferMeter.Snapshot? = token(url)?.let { meters[it]?.snapshot() }
     fun failure(url: String): PlaybackFailure? = token(url)?.let { diagnostics[it]?.failure() }
+    fun shareReadAhead(url: String) { token(url)?.let { key -> sources[key]?.shareReadAhead { meters[key]?.add(it) } } }
+    fun listeningInput(url: String): ListeningInput? {
+        val key=token(url) ?: return null
+        val source=sources[key] ?: return null
+        return ListeningInput(source.size,source.openAudio(),source::readSnapshot) { reader,offset,buffer,length ->
+            check(sources[key]===source)
+            read(key,source,reader,offset,buffer,length).also {
+                if(reader !is UpstreamMeteredReader && !source.sharedReadAheadActive)meters[key]?.add(it)
+            }
+        }
+    }
+    fun retainAudio(url: String, ranges: LongArray) {
+        val source=token(url)?.let {sources[it]} ?: return
+        if(ranges.isEmpty())return
+        require(ranges.size%2==0 && ranges.size<=400000)
+        val spans=ArrayList<AudioReadSpan>(ranges.size/2)
+        for(i in ranges.indices step 2){
+            val start=ranges[i];val end=ranges[i+1]
+            require(start>=0&&end>start&&end<=source.size&&(spans.isEmpty()||start>=spans.last().end))
+            spans.add(AudioReadSpan(start,end))
+        }
+        source.retainAudio(spans)
+    }
     fun enableInterleaveCache(url: String): Boolean = enableInterleaveCache(url, emptyList())
     fun enableInterleaveCache(url: String, audioChunks: List<AudioReadSpan>): Boolean = token(url)?.let {
         (sources[it] as? AdaptiveInterleaveSource)?.enable(audioChunks)
@@ -190,13 +223,13 @@ internal class LocalStreamServer : Closeable {
                 val first = try { read(token, source, reader, offset, buffer, minOf(buffer.size.toLong(), end - offset + 1).toInt()) }
                     catch (_: Exception) { return respond(output, 502, "Bad Gateway") }
                 if (first <= 0) return respond(output, 502, "Bad Gateway")
-                if (reader !is UpstreamMeteredReader) meter?.add(first)
+                if (reader !is UpstreamMeteredReader && !source.sharedReadAheadActive) meter?.add(first)
                 output.write(responseHead)
                 output.write(buffer, 0, first); offset += first
                 while (offset <= end && !closed) {
                     val count = read(token, source, reader, offset, buffer, minOf(buffer.size.toLong(), end - offset + 1).toInt())
                     if (count <= 0) break
-                    if (reader !is UpstreamMeteredReader) meter?.add(count)
+                    if (reader !is UpstreamMeteredReader && !source.sharedReadAheadActive) meter?.add(count)
                     output.write(buffer, 0, count)
                     offset += count
                 }

@@ -53,3 +53,7 @@ Vendor SDK terms, the actual combined binary, distribution-channel terms and any
 ## Embedded OpenList
 
 OpenList v4.2.6 and the JNI adapter are distributed with their AGPL-3.0 obligations. The original project-owned source remains GPL-3.0-only; the combined application must also satisfy AGPL requirements applicable to its OpenList component. GPL v3 section 13 permits combination with AGPL v3. Replacing the frontend does not remove those obligations. Keep the exact upstream revision, modified Storage.Addition serializer, adapter, Go module manifests, dependency notices and build/install scripts with the binary's corresponding source. See third_party/openlist/NOTICE.md and tools/environment/Prepare-OpenList.ps1.
+
+## Additional 0.14.0 components
+
+Moonshine v0.1.5 retains its full upstream license; the selected Tiny Streaming zh/en/ja models are explicitly covered by its MIT section, while enumerated legacy and TTS data have separate terms. The Git source publishes only preparation code, header and metadata. OkHttp/Okio retain Apache-2.0 notices, including the public-suffix attribution. Provider icon sources/derivatives retain GPL-3.0, AGPL-3.0, CC BY/CC BY-SA and original attributions under third_party/provider-icons; these terms apply to the respective assets and do not replace project-owned code GPL-3.0-only. Marks do not imply endorsement or a trademark grant.

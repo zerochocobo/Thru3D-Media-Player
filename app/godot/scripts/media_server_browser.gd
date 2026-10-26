@@ -58,6 +58,13 @@ var _location_pending := {}
 
 func open_location(location: Dictionary) -> void:
 	cancel(); server = {"id": str(location.server_id)}
+	var accounts: Array = servers
+	if Methods.supports(menu.platform, "account_list"):
+		var saved: Variant = JSON.parse_string(menu.platform.account_list("server"))
+		if saved is Array: accounts = saved
+	for account in accounts:
+		if account is Dictionary and str(account.get("id", "")) == str(location.server_id):
+			server = account.duplicate(true); break
 	_location_pending = location.duplicate(true)
 	view = "home"; entries.clear(); detail.clear(); home_data.clear(); folder_path.clear()
 	request("home", {"library_id": str(location.get("library_id", ""))})
@@ -412,7 +419,7 @@ func rows() -> Array[Dictionary]:
 	if not keyboard.is_empty(): return result
 	match view:
 		"servers":
-			for item in servers: result.append({"title": str(item.name), "detail": str(item.get("provider", "")).capitalize(), "icon": "media_library", "server_account": item})
+			for item in servers: result.append({"title": str(item.name), "detail": menu.account_panel.provider_name(str(item.get("provider", ""))), "icon": menu.Icons.provider(str(item.get("provider", "")), "media_library"), "server_account": item})
 		"remove_servers":
 			for item in servers: result.append({"title": str(item.name), "detail": menu.account_panel.provider_name(str(item.get("provider", ""))), "icon": "trash", "remove_server": item})
 		"confirm_remove":
@@ -898,7 +905,12 @@ func draw() -> void:
 	menu._button(ACTION, "", Vector2(-0.40 if focused() else -0.52, top), Vector2(0.09, 0.07), view != "servers", "up")
 	var management := view in ["servers", "remove_servers", "confirm_remove"]
 	var caption := I18n.t("Remove server") if view in ["remove_servers", "confirm_remove"] else str(server.get("name", I18n.t("Media servers")))
-	var heading: Label3D = menu._label(menu._fit_title(caption, "", 0.64 if view == "servers" else (0.73 if focused() else 0.77), 22), Vector3(-0.32 if focused() else -0.43, top, 0.004), 22); heading.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+	var heading_x := -0.32 if focused() else -0.43
+	var heading_width := 0.64 if view == "servers" else (0.73 if focused() else 0.77)
+	if not management:
+		menu._icon(menu.Icons.provider(str(server.get("provider", "")), "media_library"), Vector3(heading_x + 0.025, top, 0.004), 0.055, Color(0.9, 0.9, 0.9))
+		heading_x += 0.070; heading_width -= 0.070
+	var heading: Label3D = menu._label(menu._fit_title(caption, "", heading_width, 22), Vector3(heading_x, top, 0.004), 22); heading.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
 	if view == "servers":
 		for item in [[1, "plus"], [14, "edit"], [12, "refresh"], [13, "trash"], [180, "settings"]]: menu._button(ACTION + item[0], "", Vector2(0.31 + (0.12 * ([1, 14, 12, 13, 180].find(item[0]))), 0.46), Vector2(0.09, 0.07), not busy or int(item[0]) in [1, 14, 180], item[1])
 		menu._tips[ACTION + 180] = I18n.t("Settings")

@@ -5,3 +5,5 @@
 The exact generator, patch and SHA-256 manifest accompany the pinned mpv recipe. Public normalization updates changed generator input digests and retains reference hashes; altered pins/mismatched source fail verification. Keep source and receipts together when rebuilding.
 
 Experimental control depth applies to VR video, with default/medium/zero-parallax modes. Captured visuals and pointer mapping share the current layout; flat/photo menus retain normal behavior. Five fixed composition slots, hint regrouping and inline render-scale choices work within the existing budget. Host/OpenGL checks do not establish physical-headset or sustained-performance acceptance.
+
+The 0.14.0 FFmpeg patch 0007 requests MediaCodec real-time priority and source frame rate, with a retry without both hints on rejected configuration. The pinned generator/manifest accompany the dependency build. This is not an unconditional high-bitrate or 8K performance claim.

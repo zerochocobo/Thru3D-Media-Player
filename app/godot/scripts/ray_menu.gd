@@ -166,17 +166,21 @@ func control_point(hit: Dictionary) -> Vector3:
 ## A zero-disparity capture has one angular cursor shared by both eyes. Project
 ## the controller beam's visible far endpoint from that capture's viewing centre.
 ## Descendant menus inherit the same projection, including an attached browser.
-func _interaction_ray(origin: Vector3, direction: Vector3) -> Array[Vector3]:
+func _mono_pointer_projection() -> Dictionary:
 	var node: Node = self
 	while node is Node3D:
 		if node.has_meta("menu_mono_pointer"):
 			var projection: Dictionary = node.get_meta("menu_mono_pointer")
 			var eye: Node3D = projection.eye
-			if is_instance_valid(eye):
-				var endpoint := origin + direction.normalized() * float(projection.distance)
-				return [eye.global_position, (endpoint - eye.global_position).normalized()]
-			break
+			return projection if is_instance_valid(eye) else {}
 		node = node.get_parent()
+	return {}
+
+func _interaction_ray(origin: Vector3, direction: Vector3) -> Array[Vector3]:
+	var projection := _mono_pointer_projection()
+	if not projection.is_empty():
+		var endpoint := origin + direction.normalized() * float(projection.distance)
+		return [projection.eye.global_position, (endpoint - projection.eye.global_position).normalized()]
 	return [origin, direction]
 
 func project_pointer(origin: Vector3, direction: Vector3, plane: Transform3D) -> Variant:
@@ -336,16 +340,21 @@ func _draw_pointer(hand: String, origin: Vector3, endpoint: Vector3, valid: bool
 	pointer.line.visible = valid
 	pointer.dot.visible = valid and hit
 	if valid:
+		var mono := not _mono_pointer_projection().is_empty()
+		var tip := to_local(endpoint)
+		# Mono capture already draws the reticle above the menu. Separate Z biases
+		# would move its angular centre away from the eye-buffer line's endpoint.
+		var line_tip := tip if mono else tip + Vector3(0, 0, 0.006)
 		var mesh: ImmediateMesh = pointer.line.mesh
 		mesh.clear_surfaces()
 		mesh.surface_begin(Mesh.PRIMITIVE_LINES)
 		mesh.surface_set_color(Color(1, 1, 1, 0))
 		mesh.surface_add_vertex(to_local(origin))
 		mesh.surface_set_color(Color.WHITE)
-		mesh.surface_add_vertex(to_local(endpoint) + Vector3(0, 0, 0.006))
+		mesh.surface_add_vertex(line_tip)
 		mesh.surface_end()
 		if hit:
-			pointer.dot.position = to_local(endpoint) + Vector3(0, 0, 0.008)
+			pointer.dot.position = tip if mono else tip + Vector3(0, 0, 0.008)
 
 func cancel_pointer(hand: String) -> void:
 	update_pointer(hand, Vector3.ZERO, Vector3.ZERO, false)
@@ -543,6 +552,10 @@ func _decoration(size: Vector2, centre: Vector2, color: Color) -> MeshInstance3D
 	return node
 
 func _icon(key: String, location: Vector3, size: float, color: Color, parent: Node = self) -> MeshInstance3D:
+	if Icons.Providers.TEXTURES.has(key):
+		var gray := maxf(color.r, maxf(color.g, color.b))
+		color = Color(gray, gray, gray, color.a)
+		size *= float(Icons.Providers.MARK_SCALE.get(key, 1.0))
 	var node := MeshInstance3D.new()
 	var mesh := QuadMesh.new()
 	mesh.size = Vector2.ONE * size

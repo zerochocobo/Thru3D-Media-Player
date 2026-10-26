@@ -6,7 +6,8 @@ extends RefCounted
 
 const SCREEN_WIDTH := 32.0
 const SCREEN_HEIGHT := SCREEN_WIDTH / 1.43
-const SCREEN_BOTTOM := 1.2
+# Lowered with the steeper rake so the middle rows look near the screen centre.
+const SCREEN_BOTTOM := 0.7
 const SCREEN_Z := -4.0
 # The screen spans almost wall to wall, like a GT laser hall; walls frame nothing.
 const ROOM_HALF_WIDTH := 17.0
@@ -19,9 +20,11 @@ const ROW_COUNT := 14
 const COLUMN_COUNT := 24
 const FIRST_ROW_Z := 6.0
 const ROW_PITCH := 1.8
-# A gentler rake than the previous 32.7 degrees keeps rows ahead in peripheral view.
-const ROW_RISER := 0.45
-const STEPS_PER_ROW := 3
+# About 22 degrees: at 14 degrees (0.45 m) most rows looked 20-48 degrees up at
+# the screen centre and over 35 degrees to its top (the SMPTE EG-18 discomfort
+# point). 32.7 degrees once hid the rows ahead; this keeps them in lower view.
+const ROW_RISER := 0.72
+const STEPS_PER_ROW := 4
 const STAIR_TREAD := ROW_PITCH / STEPS_PER_ROW
 const STAIR_RISER := ROW_RISER / STEPS_PER_ROW
 # Premium lounge chairs: roomier than a real auditorium, because VR rewards
@@ -29,11 +32,18 @@ const STAIR_RISER := ROW_RISER / STEPS_PER_ROW
 const SEAT_PITCH := 0.90
 const SEAT_Z_OFFSET := -0.40
 const SEAT_EXIT_Z_OFFSET := -1.30
-const SEATED_EYE_HEIGHT := 1.2
+# Seated eye height used in cinema sightline design (1120 mm), with the eye a head
+# depth in front of the headrest: at 1.2 m and 0.37 m forward the viewer's head
+# floated above and ahead of the chair.
+const SEATED_EYE_HEIGHT := 1.12
+const SEAT_LINE_FROM_EYE := -0.10
 # Chair envelope relative to the seat line; matches tools/cinema/seat_model.py.
 const SEAT_FRONT := 0.42
 const SEAT_REAR := 0.38
-const SEAT_BACK_TOP := 1.08
+const SEAT_BACK_TOP := 1.16
+# The collider stops below the seated head band (eye - 0.1 m): the headrest above
+# it is visual, and walking is already blocked by a 1 m back.
+const SEAT_BACK_COLLIDER_TOP := 1.0
 const SEAT_HALF_WIDTH := 0.45
 const TIER_FRONT_OFFSET := -ROW_PITCH + SEAT_Z_OFFSET + SEAT_REAR
 const PLATFORM_HALF_WIDTH := 11.3
@@ -42,7 +52,7 @@ const RAIL_X := 14.1
 const CEILING_REAR_CLEARANCE := 7.5
 const DEFAULT_ROW := 9
 const DEFAULT_COLUMN := 12
-const SOURCE_VERSION := 7
+const SOURCE_VERSION := 9
 
 static func manifest() -> Dictionary:
 	var seats: Array = []
@@ -72,11 +82,11 @@ static func manifest() -> Dictionary:
 			var x := (column - (COLUMN_COUNT - 1) * 0.5) * SEAT_PITCH
 			var id := "%s%02d" % [String.chr(65 + row), column + 1]
 			seats.append({"id": id, "label": id, "row": row + 1, "column": column + 1,
-				"eye_position": [x, level + SEATED_EYE_HEIGHT, seat_z - 0.10], "yaw": 0.0,
+				"eye_position": [x, level + SEATED_EYE_HEIGHT, seat_z - SEAT_LINE_FROM_EYE], "yaw": 0.0,
 				"exit_position": [x, level, z + SEAT_EXIT_Z_OFFSET]})
 			# Seat backs and cushions block free walking; selecting a seat is explicit.
 			colliders.append(_box_bounds("seat_%s_back" % id, Vector3(x - SEAT_HALF_WIDTH + 0.01, level + 0.45, seat_z + 0.10),
-				Vector3(x + SEAT_HALF_WIDTH - 0.01, level + SEAT_BACK_TOP, seat_z + SEAT_REAR)))
+				Vector3(x + SEAT_HALF_WIDTH - 0.01, level + SEAT_BACK_COLLIDER_TOP, seat_z + SEAT_REAR)))
 			colliders.append(_box_bounds("seat_%s_base" % id, Vector3(x - SEAT_HALF_WIDTH, level, seat_z - SEAT_FRONT),
 				Vector3(x + SEAT_HALF_WIDTH, level + 0.66, seat_z + 0.25)))
 		for step in range(STEPS_PER_ROW):
@@ -128,6 +138,7 @@ static func manifest() -> Dictionary:
 			"aisle_outer_x": AISLE_OUTER_X, "rail_x": RAIL_X,
 			"ceiling_rear": ROW_COUNT * ROW_RISER + CEILING_REAR_CLEARANCE,
 			"seat_front": SEAT_FRONT, "seat_rear": SEAT_REAR, "seat_back_top": SEAT_BACK_TOP,
+			"seat_line_from_eye": SEAT_LINE_FROM_EYE,
 			"reference": "Original GT-scale 1.43 auditorium study; independent prototype, not a certified venue."}}
 
 static func _floor(id: String, x0: float, z0: float, x1: float, z1: float, height: float) -> Dictionary:

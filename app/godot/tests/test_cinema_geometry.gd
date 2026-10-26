@@ -25,27 +25,27 @@ func _initialize() -> void:
 	check(data.room.width == 34.0 and is_equal_approx(data.room.depth, 37.4) and data.room.height == 26.0,
 		"Architecture encloses a 34 by 37.4 by 26 metre hall")
 	check(data.room.width - data.screen.width <= 2.0, "The screen spans the front wall instead of hanging inside a frame")
-	check(is_equal_approx(float(data.screen.position[1]) - float(data.screen.height) * 0.5, 1.2)
-		and data.room.height - (float(data.screen.position[1]) + float(data.screen.height) * 0.5) < 2.5,
+	check(is_equal_approx(float(data.screen.position[1]) - float(data.screen.height) * 0.5, Blueprint.SCREEN_BOTTOM)
+		and data.room.height - (float(data.screen.position[1]) + float(data.screen.height) * 0.5) < 3.0,
 		"Tall screen starts near the floor and reaches close to the ceiling")
 	check(data.default_seat == "I12", "Default seat is the ninth row, centre-left")
 	var preferred := vector(_seat(data, "I12").eye_position)
 	var last := vector(_seat(data, "N12").eye_position)
-	check(preferred.is_equal_approx(Vector3(-0.45, 5.25, 19.9)), "Default seat uses the intended human eye position")
+	check(preferred.is_equal_approx(Vector3(-0.45, 7.6, 20.1)), "Default seat uses the intended human eye position")
 	var preferred_distance := preferred.z - float(data.screen.position[2])
 	var last_distance := last.z - float(data.screen.position[2])
 	var preferred_fov := rad_to_deg(2.0 * atan(float(data.screen.width) * 0.5 / preferred_distance))
 	var last_fov := rad_to_deg(2.0 * atan(float(data.screen.width) * 0.5 / last_distance))
-	check(preferred_distance > 23.8 and preferred_distance < 24.0 and preferred_fov > 67 and preferred_fov < 68,
+	check(preferred_distance > 24.0 and preferred_distance < 24.2 and preferred_fov > 67 and preferred_fov < 68,
 		"Default seat retains an immersive 67 degree horizontal screen coverage")
 	check(preferred_distance / float(data.screen.height) > 1.0 and preferred_distance / float(data.screen.height) < 1.1,
 		"Default viewing distance stays near one screen height")
-	check(last_distance > 32.8 and last_distance < 33.0 and last_fov > 51 and last_fov < 53,
+	check(last_distance > 33.0 and last_distance < 33.2 and last_fov > 51 and last_fov < 53,
 		"Wider rows retain over 51 degrees horizontal coverage at the rear")
 	check(last_distance / float(data.screen.height) < 1.5, "Rear viewing distance stays within 1.5 screen heights")
 	var first_eye := vector(_seat(data, "A12").eye_position)
 	var rake := rad_to_deg(atan2(last.y - first_eye.y, last.z - first_eye.z))
-	check(rake > 14.0 and rake < 14.1, "Gentler 14 degree rake avoids the old high seating plinths")
+	check(rake > 21.7 and rake < 21.9, "22 degree rake keeps the middle rows near the screen centre without the old 33 degree plinths")
 	check(is_equal_approx(vector(_seat(data, "A02").eye_position).x - vector(_seat(data, "A01").eye_position).x, 0.9),
 		"Premium chairs sharing wide consoles keep a 0.9m pitch")
 	check(data.design.clear_row_passage >= 0.99 and data.design.clear_row_passage <= 1.01,
@@ -99,10 +99,10 @@ func _initialize() -> void:
 		for floor: Dictionary in data.walkable:
 			if floor.id == stair_id:
 				found = is_equal_approx(float(floor.height), expected)
-		check(found, "Stair %s follows the three-step 0.15m rise" % stair_id)
-	check(data.walkable.filter(func(area): return str(area.id).begins_with("stair_left_")).size() == 42,
-		"Each side staircase contains 42 human-sized steps")
-	check(Blueprint.STAIR_RISER < 0.17 and Blueprint.STAIR_TREAD >= 0.59, "Aisle steps keep a comfortable 15cm rise and 60cm tread")
+		check(found, "Stair %s follows the four-step 0.18m rise" % stair_id)
+	check(data.walkable.filter(func(area): return str(area.id).begins_with("stair_left_")).size() == Blueprint.ROW_COUNT * 4,
+		"Each side staircase contains 56 human-sized steps")
+	check(Blueprint.STAIR_RISER <= 0.18 and Blueprint.STAIR_TREAD >= 0.44, "Aisle steps keep a comfortable 18cm rise and 45cm tread")
 	var document := GLTFDocument.new()
 	var state := GLTFState.new()
 	var error := document.append_from_file(MODEL, state)
@@ -177,7 +177,7 @@ func _initialize() -> void:
 			var chair := _seat_bounds(near, vector(_seat(data, "A01").eye_position))
 			check(chair.size.x > 0.85 and chair.size.x <= 0.91 and chair.size.z > 0.6 and chair.size.z <= 0.805,
 				"Actual GLB chair plus its shared console spans one 0.9m pitch and 0.80m depth: %s" % chair.size)
-			check(chair.size.y > 1.0 and chair.size.y <= 1.09, "Actual chair height remains human-sized: %s" % chair.size)
+			check(chair.size.y > 1.0 and chair.size.y <= 1.17, "Actual high-back chair height remains human-sized: %s" % chair.size)
 			loaded.free()
 	check(triangles > 0 and triangles < 1000000, "Both chair detail levels together stay below 1,000,000 stored triangles")
 	check(surfaces <= 200, "Auditorium stores at most 200 surfaces")

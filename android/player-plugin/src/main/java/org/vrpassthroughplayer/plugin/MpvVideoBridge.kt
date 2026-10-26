@@ -41,6 +41,9 @@ internal class MpvVideoBridge(
     private val referenceSource: (String) -> String = { it },
     private val openSubtitleUri: (String) -> SidecarSubtitles.Track = { error("Subtitle unavailable") },
     private val createNetworkPlaybackView: (String, Mp4PlaybackLayout) -> String? = { _, _ -> null },
+    private val prepareListeningSource: (String) -> Unit = {},
+    private val retainListeningAudio: (String, LongArray) -> Unit = { _, _ -> },
+    private val listeningInput: (String) -> ListeningInput? = { null },
 ) {
     private val worker = RvmWorkers.video
     private val subtitleWorker = Executors.newSingleThreadExecutor { Thread(it, "QuestSubtitleFiles") }
@@ -168,11 +171,14 @@ internal class MpvVideoBridge(
         var speed = 1.0 // synchronized(host), retained across processing revisions
         @Volatile var subtitleDelay = 0.0 // also read by the narration clock
         @Volatile var audioEnabled = audio
+        @Volatile var requestedAudioTrack = -1
         @Volatile var audioVolume = 100.0
         @Volatile var userAudioDelay = 0.0
         @Volatile var pipelineAudioDelay = 0.0
         @Volatile var audioMuted = false
         @Volatile var narrationPath = ""
+        @Volatile var listeningOutputReady = false
+        @Volatile var listening: ListeningController? = null
         @Volatile var discInput = false
         @Volatile var discPlaylist = -1 // requested Blu-ray title; -1 = the longest, -2 = the disc's HDMV menu
         @Volatile var discTitles = "" // preflight JSON of the opened disc
@@ -202,6 +208,7 @@ internal class MpvVideoBridge(
         var cloudCompanionsStarted = false // GL thread; discovery starts after first published frame
         /** Only once MPV no longer reads them. */
         fun closeDescriptors() = synchronized(this) {
+            listening?.close(); listening=null
             voiceClone?.close(); voiceClone=null
             narration?.close(); narration = null
             networkLease?.let(releaseNetwork); networkLease = null
@@ -597,6 +604,7 @@ internal class MpvVideoBridge(
         if (host.layer && (depth || (alpha && !host.alphaLayer))) return -1
         if (positionMs >= 0 && (host.handle <= 0 || !MpvSourceNative.seek(host.handle, positionMs.toLong(), exactSeek))) return -1
         if (positionMs >= 0) host.narration?.transportChanged()
+        if (positionMs >= 0) host.listening?.transportChanged()
         val next = gate.replace(id); if (next <= 0) return -1
         val session = Session(gate.current(next) ?: return -1, host, stereo, profile, alpha, old.vulkan, old.normalFastPath, depth,
             stereo && topBottom)
@@ -637,7 +645,8 @@ internal class MpvVideoBridge(
         if (!active(session) || session.host.handle <= 0) return false
         if (trackId != 0 && !session.host.audioEnabled) MpvSourceNative.setPlaying(session.host.handle, false)
         val accepted = MpvSourceNative.setAudio(session.host.handle, trackId, volume, muted)
-        if (accepted) { session.host.audioEnabled = trackId != 0; session.host.audioVolume = volume; session.host.audioMuted = muted }
+        if (accepted && trackId != session.host.requestedAudioTrack) session.host.listening?.transportChanged()
+        if (accepted) { session.host.requestedAudioTrack = trackId; session.host.audioEnabled = trackId != 0; session.host.audioVolume = volume; session.host.audioMuted = muted }
         refreshPlayback(explicit = accepted && trackId != 0)
         return accepted
     }
@@ -674,6 +683,20 @@ internal class MpvVideoBridge(
         if (accepted) refreshPlayback(explicit = controller.enabled)
         return accepted
     }
+    fun setListening(id: Int,json: String): Boolean {
+        val session=sessions[id] ?: return false
+        if(!active(session)||session.host.closing)return false
+        val host=session.host
+        val requested=runCatching {ListeningPolicy.Config.parse(json)}.getOrNull() ?: return false
+        if(host.listening==null&&!requested.enabled)return true
+        val controller=synchronized(host){host.listening ?: ListeningController(context,{
+            if(host.closing||stopped||host.handle<=0)null else ListeningController.Source(host.handle,host.narrationPath,host.narrationCa,
+                foreground&&host.listeningOutputReady&&!host.cloneHolding&&!globalVoiceHolding,host.discInput,host.discPlaylist,host.userAudioDelay,host.uri.startsWith("cloud://"))
+        },{refreshPlayback()},prepareListeningSource,networkFailure,retainListeningAudio,listeningInput).also {host.listening=it}}
+        return controller.configure(json)
+    }
+    fun listeningStatus(id: Int)=sessions[id]?.takeIf {active(it)}?.host?.listening?.status() ?: "{}"
+    fun listeningReady(id: Int,epoch: Long){sessions[id]?.takeIf {active(it)}?.host?.listening?.ready(epoch)}
     fun voiceCloneRequest(id: Int,json: String): Boolean {
         val session=sessions[id] ?: return false
         if(!active(session)||session.host.closing||!foreground)return false
@@ -1054,8 +1077,13 @@ internal class MpvVideoBridge(
                     session.model?.stats()?.forEach { (key, value) -> status.put(key, value) }
                     session.depthModel?.stats()?.forEach { (key, value) -> status.put(key, value) }
                     val details = status.optJSONObject("details")
-                    if (status.optJSONObject("startup_native")?.optLong("first_published_us", -1)?.let { it >= 0 } == true)
+                    if (status.optJSONObject("startup_native")?.optLong("first_published_us", -1)?.let { it >= 0 } == true) {
+                        // Audio metadata can arrive before the video output exists.
+                        // An ASR startup hold must not prevent that first frame and
+                        // trigger MPV's output-initialization watchdog.
+                        session.host.listeningOutputReady = true
                         discoverCloudCompanions(session.host)
+                    }
                     if (session.host.subtitleMemoryId.isNotEmpty()) status.put("subtitle_memory_id", session.host.subtitleMemoryId)
                     subtitleFileResult(session, details)
                     if (!details?.optString("codec").isNullOrEmpty()) {
@@ -1592,6 +1620,7 @@ internal class MpvVideoBridge(
             } else {
                 // The lost owner context cannot insert a consumer release fence.
                 session.host.narration?.close(); session.host.narration = null
+                session.host.listening?.close(); session.host.listening = null
                 session.host.closing = true
                 MpvSourceNative.close(session.host.handle, true)
             }
@@ -1622,6 +1651,7 @@ internal class MpvVideoBridge(
         synchronized(session.lock) { session.display.close() }
         if (closeHost) {
             session.host.narration?.close(); session.host.narration = null
+            session.host.listening?.close(); session.host.listening = null
             session.host.closing = true
             if (session.host.handle > 0) MpvSourceNative.setPlaying(session.host.handle, false)
             refreshPlayback()

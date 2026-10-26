@@ -63,6 +63,28 @@ func tap(menu: Node3D, target: int) -> void:
 	menu.press_pointer("right_hand", origin, -menu.global_basis.z, true)
 	menu.release_pointer("right_hand", origin, -menu.global_basis.z, true)
 
+func single_to_magazine_checks(app: Node3D, source: String) -> void:
+	var menu: Node3D = app.photo_menu
+	menu.visible = true; menu.section = 0
+	for remembered in [false, true]:
+		for selected in [false, true]:
+			app._on_photo_action("photo_layout_0"); await settle(app.photo)
+			app.photo.magazine.right_to_left = remembered
+			menu.refresh()
+			tap(menu, Menu.PHOTO_LAYOUT); tap(menu, Menu.PHOTO_LAYOUT_BASE + 4)
+			await settle(app.photo)
+			check(app.photo.gallery.mode == 4 and menu._magazine_order_open, source + ": magazine choice applies before the optional direction selection")
+			var default_pixel: Color = app.photo._texture.get_image().get_pixel(30, 100)
+			check(app.photo.magazine.right_to_left == remembered and (default_pixel.b > .9 if remembered else default_pixel.r > .9), source + ": immediate spread uses the remembered direction")
+			tap(menu, Menu.PHOTO_MAGAZINE_ORDER + int(selected)); await settle(app.photo)
+			var context := "%s: remembered RTL=%s, selected RTL=%s" % [source, remembered, selected]
+			check(app.photo.magazine.active() and app.photo._size == Vector2(220, 200), context + " enters a full two-page spread on the first click")
+			var pixel: Color = app.photo._texture.get_image().get_pixel(30, 100)
+			check(app.photo.magazine.right_to_left == selected and (pixel.b > .9 if selected else pixel.r > .9), context + " composes the selected page order")
+			check(not menu._layout_open and not menu._magazine_order_open, context + " closes the picker")
+			var saved := ConfigFile.new(); saved.load(app.settings_path)
+			check(saved.get_value("photo_screen", "magazine_rtl") == selected and saved.get_value("photo_screen", "reading_layout" if app.photo.archive_mode else "layout") == 4, context + " persists both direction and layout")
+
 func run() -> void:
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(folder))
 	for i in 7:
@@ -227,7 +249,7 @@ func app_checks() -> void:
 	tap(menu, Menu.PHOTO_LAYOUT)
 	check(button(menu, Menu.PHOTO_LAYOUT_BASE + 4).rect.position.x > button(menu, Menu.PHOTO_LAYOUT_BASE).rect.position.x and button(menu, Menu.PHOTO_LAYOUT_BASE + 4).rect.position.x < button(menu, Menu.PHOTO_LAYOUT_BASE + 1).rect.position.x, "Magazine follows Single image in the picker")
 	tap(menu, Menu.PHOTO_LAYOUT_BASE + 4)
-	check(menu._magazine_order_open and app.photo.gallery.mode == 0, "Magazine opens a second-stage reading-order choice before switching layouts")
+	check(menu._magazine_order_open and app.photo.gallery.mode == 4, "Magazine switches layouts immediately and offers reading-order adjustment")
 	check(button(menu, Menu.PHOTO_MAGAZINE_ORDER).base_color == menu.SELECTED, "Default left-to-right preference is selected")
 	tap(menu, Menu.PHOTO_MAGAZINE_ORDER + 1); await settle(app.photo)
 	check(app.photo.magazine.active(), "Real ray activation enters magazine mode")
@@ -241,6 +263,9 @@ func app_checks() -> void:
 	tap(menu, Menu.PHOTO_LAYOUT); tap(menu, Menu.PHOTO_LAYOUT_BASE + 4)
 	check(button(menu, Menu.PHOTO_MAGAZINE_ORDER + 1).base_color == menu.SELECTED, "Reopening the second-stage picker inherits the saved reading habit")
 	check(menu.navigate_back() and not menu._magazine_order_open and menu._layout_open, "Back from reading order returns to layouts without changing the preference")
+	check(menu.navigate_back(), "Close layouts before repeated single-to-magazine transitions")
+	await single_to_magazine_checks(app, "Photo album")
+	tap(menu, Menu.PHOTO_LAYOUT)
 	tap(menu, Menu.PHOTO_LAYOUT_BASE + 4); tap(menu, Menu.PHOTO_MAGAZINE_ORDER); await settle(app.photo)
 	check(not app.photo.magazine.right_to_left and app.photo._texture.get_image().get_pixel(30,100).r > .9, "Explicit left-to-right selection replaces the saved preference")
 	app._on_photo_action("photo_magazine_rtl"); await settle(app.photo)
@@ -355,6 +380,7 @@ func reading_preference_checks() -> void:
 	for i in entries.size(): pages.append({"uri":"comic://first/%d" % i,"title":"%d.png" % i,"kind":"image"})
 	app.photo.open_image(pages[0].uri,pages[0].title,pages); await settle(app.photo)
 	check(app.photo.gallery.mode == 0, "First container read migrates unsupported photo-wall preference to single page")
+	await single_to_magazine_checks(app, "Comic archive")
 	app._on_photo_action("photo_magazine_rtl"); await settle(app.photo)
 	config.load(path)
 	check(config.get_value("photo_screen","reading_layout",-1) == 4 and config.get_value("photo_screen","layout",-1) == 2, "Magazine selection immediately saves reading mode without overwriting the ordinary wall")
@@ -370,6 +396,7 @@ func reading_preference_checks() -> void:
 	for page in pages: page.uri = str(page.uri).replace("comic://first/", "pdfpage://second/")
 	app.photo.open_image(pages[0].uri,pages[0].title,pages); await settle(app.photo)
 	check(app.photo.gallery.mode == 4 and app.photo._size == Vector2(220,200), "A different PDF inherits the saved archive mode and actually composes two pages")
+	await single_to_magazine_checks(app, "PDF magazine")
 	app._on_photo_action("photo_layout_0"); await settle(app.photo)
 	config.load(path)
 	check(config.get_value("photo_screen","reading_layout",-1) == 0 and config.get_value("photo_screen","layout",-1) == 2, "Selecting single-page PDF mode persists immediately without changing ordinary photos")

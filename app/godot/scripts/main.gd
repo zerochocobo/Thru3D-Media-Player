@@ -333,6 +333,7 @@ func _ready() -> void:
 	video.thumbnail_ready.connect(_on_video_thumbnail_ready)
 	video.prefer_clone_voice = bool(settings.get_value("audio", "prefer_clone_voice", false))
 	video.narration.load_settings(settings)
+	video.listening.load_settings(settings)
 	video.pip.load_settings(settings)
 	video.pip.compositor.density = 20.0 if low_end_gpu else 26.0
 	video.pip.image_requested.connect(_begin_pip_image)
@@ -2478,6 +2479,8 @@ func _relocate_file_records(old_uri: String, new_uri: String, title: String, siz
 	if not video.whisper_memory.save(): recent_menu.file_actions.rename.migration_failed = true
 	video.subtitle_timing.relocate(old_uri, new_uri)
 	if not video.subtitle_timing.save(): recent_menu.file_actions.rename.migration_failed = true
+	video.listening.memory.relocate(old_uri, new_uri)
+	if not video.listening.memory.save(): recent_menu.file_actions.rename.migration_failed = true
 	video.narration.memory.relocate(old_uri, new_uri)
 	if not video.narration.memory.save(): recent_menu.file_actions.rename.migration_failed = true
 	photo.mode_memory.relocate(old_uri, new_uri)
@@ -2773,6 +2776,7 @@ func _on_photo_action(operation: String) -> void:
 		temporary_passthrough = false
 		_save_photo_background(); _update_background(); return
 	if operation in ["photo_magazine_ltr", "photo_magazine_rtl"]:
+		Log.record("photo_layout_action", {"operation": operation, "layout": photo.gallery.mode, "archive": photo.archive_mode})
 		_grab = {}; photo_hands.cancel(); photo_swipe.cancel(); memory_swipe.cancel(); stick_controls.suspend()
 		var was_magazine: bool = photo.magazine.active()
 		photo.magazine.right_to_left = operation == "photo_magazine_rtl"
@@ -2783,6 +2787,7 @@ func _on_photo_action(operation: String) -> void:
 		return
 	if operation.begins_with("magazine_"):
 		if not photo.magazine.active(): return
+		Log.record("photo_layout_action", {"operation": operation, "layout": photo.gallery.mode, "index": photo.index, "single": photo.magazine.single(photo.index)})
 		_grab = {}; photo_hands.cancel(); photo_swipe.cancel(); stick_controls.suspend()
 		match operation:
 			"magazine_previous": photo.magazine.shift(-1)
@@ -2796,6 +2801,7 @@ func _on_photo_action(operation: String) -> void:
 		_save_photo_adjustments()
 		return
 	if operation.begins_with("photo_layout_"):
+		Log.record("photo_layout_action", {"operation": operation, "layout": photo.gallery.mode, "archive": photo.archive_mode})
 		_grab = {}; photo_hands.cancel(); photo_swipe.cancel(); memory_swipe.cancel(); stick_controls.suspend()
 		photo.set_layout_mode(int(operation.trim_prefix("photo_layout_")))
 		_save_photo_adjustments()
@@ -3678,6 +3684,11 @@ func _on_player_setting(key: String, value: Variant) -> void:
 		return
 	if _cinema_video_locked() and key.begins_with("screen_"): return
 	if photo_active: return
+	if key.begins_with("listening_"):
+		if video.listening.set_option(key, value):
+			video.listening.save(settings); settings.save(settings_path)
+			video.changed.emit()
+		return
 	if key.begins_with("narration_"):
 		if video.narration.set_option(key, value):
 			video.narration.save(settings); settings.save(settings_path)
@@ -3893,6 +3904,7 @@ func _menu_state() -> Dictionary:
 	result["pip_slots"] = video.pip.windows.keys()
 	result["pip_available"] = video.pip_available()
 	result.merge(video.narration.snapshot())
+	result.merge(video.listening.snapshot())
 	if background_audio: result.merge(background_audio.snapshot())
 	if video.cast_token > 0: result = preload("res://scripts/cast_capabilities.gd").apply(result, preload("res://scripts/cast_capabilities.gd").capabilities(video))
 	return result
@@ -4764,7 +4776,7 @@ func _fps_sample() -> Dictionary:
 
 func _playback_status_sample() -> Dictionary:
 	if not video or photo_active or (video_menu and video_menu.visible) or not _seek_overlay_sample().is_empty(): return {}
-	return {"caption": _video_loading_caption(), "fps_visible": fps_overlay != null and fps_overlay.visible}
+	return {"caption": I18n.t("Loading next video…") if not _video_queue_wait.is_empty() else video.hud_caption(), "fps_visible": fps_overlay != null and fps_overlay.visible}
 
 func _video_loading_caption() -> String:
 	return I18n.t("Loading next video…") if not _video_queue_wait.is_empty() else video.loading_caption()
@@ -4940,6 +4952,11 @@ func _on_display_debug_command(_id: int, payload: String) -> void:
 		# Hold one stick at (x, y) for ms milliseconds; then it returns to center.
 		var hand := "left_hand" if str(command.get("hand", "right")) == "left" else "right_hand"
 		_debug_sticks[hand] = [Vector2(float(command.get("x", 0.0)), float(command.get("y", 0.0))), Time.get_ticks_msec() + clampi(int(command.get("ms", 100)), 16, 10000)]
+	elif operation == "library_open" and OS.is_debug_build():
+		# Device probes: open a file exactly as choosing it in the library does (layout from the
+		# name, saved per-file settings, history), unlike "open", which drives the player directly.
+		var uri := str(command.get("uri", ""))
+		if not uri.is_empty(): _on_library_chosen(uri, str(command.get("title", uri.get_file().uri_decode())))
 	elif operation == "menu_action" and OS.is_debug_build():
 		# Device probes: a player-menu action by name, as its button would send it.
 		if str(command.get("target", "")) == "capture_cancel": capture_overlay._activate(capture_overlay.CANCEL)
@@ -5248,18 +5265,18 @@ func _migrate_protected_favorites() -> void:
 		var key := Video.ModeMemory.key_for(uri)
 		var success := true
 		var has_public_data := false
-		for memory in [video.mode_memory, video.track_memory, video.subtitle_timing, video.whisper_memory, video.narration.memory, photo.mode_memory]:
+		for memory in [video.mode_memory, video.track_memory, video.subtitle_timing, video.whisper_memory, video.narration.memory, video.listening.memory, photo.mode_memory]:
 			var memory_key: String = memory.entry_key(uri)
 			if memory.entries.has(memory_key):
 				has_public_data = true
 				success = favorites.private_remember(uri, memory.directory.get_file() + "/" + memory._value_field(), memory.entries[memory_key].get(memory._value_field(), {})) and success
 		if success and has_public_data: keys.append(key); ThumbnailCache.forget(uri)
 		if success and has_public_data:
-			for memory in [video.track_memory, video.subtitle_timing, video.whisper_memory, video.narration.memory]:
+			for memory in [video.track_memory, video.subtitle_timing, video.whisper_memory, video.narration.memory, video.listening.memory]:
 				var memory_key: String = memory.entry_key(uri)
 				if not keys.has(memory_key): keys.append(memory_key)
 	if not keys.is_empty():
-		for memory in [video.mode_memory, video.track_memory, video.subtitle_timing, video.whisper_memory, video.narration.memory, photo.mode_memory]:
+		for memory in [video.mode_memory, video.track_memory, video.subtitle_timing, video.whisper_memory, video.narration.memory, video.listening.memory, photo.mode_memory]:
 			if not memory.purge_keys(keys):
 				favorites.last_error = "Privacy cleanup failed"
 				if recent_menu: recent_menu.status = favorites.last_error
@@ -5302,11 +5319,14 @@ func _clear_file_settings(network_only: bool) -> void:
 	video.commit_stereo_view()
 	if not network_only or not Privacy.is_local(video.local_uri): video.discard_file_settings()
 	for memory in [video.mode_memory, video.track_memory, video.subtitle_timing, video.audio_timing,
-			video.whisper_memory, video.narration.memory, photo.mode_memory]:
+			video.whisper_memory, video.narration.memory, video.listening.memory, photo.mode_memory]:
 		var keys: Array = memory.entries.keys()
 		if network_only:
 			keys = keys.filter(func(key): return memory.entries[key].get("network", false))
 		if not memory.purge_keys(keys): _privacy_cleanup_failed(); return
+	# Recognized live-subtitle text belongs to per-file settings, not history.
+	if PlatformMethods.supports(platform_plugin, "clear_listening_cache") and not platform_plugin.clear_listening_cache(network_only):
+		_privacy_cleanup_failed(); return
 	if favorites and not favorites.clear_private_records(network_only, true): _privacy_cleanup_failed()
 
 func _privacy_cleanup_failed() -> void:

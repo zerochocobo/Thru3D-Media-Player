@@ -15,13 +15,16 @@ class DebugDiagnosticsReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val request = intent.getStringExtra("request") ?: return
         if (!request.matches(Regex("[A-Za-z0-9_-]{1,64}"))) return
+        val receivedUs = System.nanoTime()/1000
         val pending = goAsync()
         try {
             worker.execute {
                 val report = JSONObject().put("request", request).put("action", intent.action)
                     .put("diagnostic_process", DiagnosticRequests.processId)
                 try {
-                    val id = if (intent.action == "com.wapok.thru3d.DEBUG_PHOTO_PORTRAIT") {
+                    val id = if (intent.action == "com.wapok.thru3d.DEBUG_LISTENING_NETWORK") {
+                        ListeningNetworkProbe.request(context.applicationContext,request)
+                    } else if (intent.action == "com.wapok.thru3d.DEBUG_PHOTO_PORTRAIT") {
                         PhotoPortraitProbe.request(context.applicationContext,request)
                     } else if (intent.action in setOf("com.wapok.thru3d.DEBUG_LAUNCH", "com.wapok.thru3d.DEBUG_LAUNCH_2D")) {
                         // XR probes must enter through the normal VR launcher. Starting
@@ -100,7 +103,7 @@ class DebugDiagnosticsReceiver : BroadcastReceiver() {
                         when (intent.action) {
                         "com.wapok.thru3d.DEBUG_PLAYER_MPV" -> {
                             val operation = intent.getStringExtra("operation") ?: "open"
-                            require(operation in setOf("open", "alpha", "depth", "playing", "seek", "hold_pixels", "observe", "stereo", "profile", "close", "pixels", "subtitle", "audio", "audio_delay", "narration", "narration_status", "display_quality", "sharpness", "cloud_accounts", "cloud_page_probe", "display_menu", "player_menu", "restart_app", "quit_app", "seek_policy_ui", "media_library_ui", "comic", "photo_open", "photo_step", "photo_depth", "photo_inspect", "photo_portrait", "alpha_blend_probe", "layer_flip", "layer_order", "hide_menus", "menu_layers", "menu_layer_filter", "menu_layer_holes", "menu_action", "menu_nav", "menu_bench", "perf_tune", "perf_sample", "stick", "pip_probe"))
+                            require(operation in setOf("open", "alpha", "depth", "playing", "seek", "hold_pixels", "observe", "stereo", "profile", "close", "pixels", "subtitle", "audio", "audio_delay", "narration", "narration_status", "listening", "display_quality", "sharpness", "cloud_accounts", "cloud_page_probe", "display_menu", "player_menu", "restart_app", "quit_app", "seek_policy_ui", "media_library_ui", "comic", "photo_open", "photo_step", "photo_depth", "photo_inspect", "photo_portrait", "alpha_blend_probe", "layer_flip", "layer_order", "hide_menus", "menu_layers", "menu_layer_filter", "menu_layer_holes", "menu_action", "menu_nav", "menu_bench", "perf_tune", "perf_sample", "library_open", "stick", "pip_probe"))
                             val command = JSONObject().put("operation", operation).put("request_key", request)
                                 .put("value", intent.getFloatExtra("value", 0f).toDouble())
                                 .put("benchmark", intent.getBooleanExtra("benchmark", false))
@@ -197,7 +200,8 @@ class DebugDiagnosticsReceiver : BroadcastReceiver() {
                                 command.put("track_id", track)
                             }
                             if (operation == "audio_delay") command.put("seconds", intent.getFloatExtra("seconds", Float.NaN).toDouble())
-                            if (operation == "narration") command.put("options", JSONObject(intent.getStringExtra("options") ?: "{}"))
+                            if (operation == "narration" || operation == "listening") command.put("options", JSONObject(intent.getStringExtra("options") ?: "{}"))
+                            command.put("diagnostic_received_us",receivedUs).put("diagnostic_emitted_us",System.nanoTime()/1000)
                             plugin.requestMpvPlayerCommand(command.toString())
                         }
                         "com.wapok.thru3d.DEBUG_CANCEL_CONTROLLED" ->

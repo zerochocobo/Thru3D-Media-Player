@@ -76,7 +76,7 @@ func snapshot(catalog: Array) -> Dictionary:
 		"comic_personal_voices": catalog}
 
 static func rows(state: Dictionary) -> Array:
-	var result := [{"title": "Comic reading (Beta)", "field": Narration.toggle("comic_enabled", state.get("comic_enabled", false))},
+	var result := [{"title": "Comic reading", "field": Narration.toggle("comic_enabled", state.get("comic_enabled", false))},
 		{"title": "Reading language", "field": {"key": "comic_language", "value": state.get("comic_language", "auto"), "choices": [
 			{"value": "auto", "label": "Automatic"}, {"value": "zh", "label": "Chinese"}, {"value": "en", "label": "English"}, {"value": "ja", "label": "Japanese"}]}}]
 	var shared := {"narration_enabled": true, "narration_voice_kind": state.get("comic_voice_kind", "preset"),

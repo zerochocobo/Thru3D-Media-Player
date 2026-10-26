@@ -60,9 +60,12 @@ func _run() -> void:
 		["13-door", Vector3(13.0, 1.65, 4.2), Vector3(16.7, 1.2, 1.4), 60.0],
 		["13-booth", Vector3(0, 7.95, 28.0), Vector3(0, 10.3, 32.4), 50.0],
 		["13-armrest", Vector3(-.45, 5.25, 19.9), Vector3(-.9, 4.71, 19.75), 45.0],
+		# Seated in the default chair: the headrest behind, the row ahead in front.
+		["14-seated-back", Vector3(-.45, 5.17, 20.1), Vector3(-.45, 4.9, 21.3), 75.0],
+		["14-seated-front", Vector3(-.45, 5.17, 20.1), Vector3(-.45, 4.6, 17.5), 75.0],
 	]
 	for view in views:
-		main.xr_camera.global_position = view[1]; main.xr_camera.look_at(view[2], Vector3.UP); main.xr_camera.fov = view[3]
+		main.xr_camera.global_position = _lift(view[1]); main.xr_camera.look_at(_lift(view[2]), Vector3.UP); main.xr_camera.fov = view[3]
 		for mode in ["on", "off"]:
 			# The off bake is the playing state; off with no film keeps a little house light.
 			if mode == "off":
@@ -104,7 +107,7 @@ func _run() -> void:
 		for mode in ["on", "off"]:
 			main._on_setting_changed("cinema_lights", mode); environment._process(1.0)
 			for shift in [-.08, 0.0, .08]:
-				main.xr_camera.global_position = Vector3(shift, 5.25 + shift * .3, 19.9)
+				main.xr_camera.global_position = _lift(Vector3(shift, 5.25 + shift * .3, 19.9))
 				main.xr_camera.look_at(fixture[1], Vector3.UP)
 				await process_frame; await process_frame
 				var frame := viewport.get_texture().get_image()
@@ -136,7 +139,7 @@ func _run() -> void:
 	# Film light: a red left strip reddens the left wall, a blue right strip the
 	# right wall, with the house dark. Baked screen zones scaled by film colour.
 	main._on_setting_changed("cinema_lights", "off"); environment._process(1.0)
-	main.xr_camera.global_position = Vector3(0, 6.5, 22); main.xr_camera.look_at(Vector3(0, 6, -4), Vector3.UP); main.xr_camera.fov = 95.0
+	main.xr_camera.global_position = _lift(Vector3(0, 6.5, 22)); main.xr_camera.look_at(Vector3(0, 6, -4), Vector3.UP); main.xr_camera.fov = 95.0
 	var dark := Color.BLACK
 	environment.set_film_light([dark, dark, dark])
 	# Let newly imported material pipelines finish before comparing screenshots.
@@ -146,7 +149,8 @@ func _run() -> void:
 	environment.set_film_light([Color(4, 0, 0), dark, Color(0, 0, 4)])
 	var film := await _shot("11-film-red-left-blue-right")
 	var left_before := unlit.get_pixel(60, 480); var left_after := film.get_pixel(60, 480)
-	var right_before := unlit.get_pixel(1380, 480); var right_after := film.get_pixel(1380, 480)
+	# Raised with the steeper rake, the near right wall catches both strips; probe further along.
+	var right_before := unlit.get_pixel(1200, 300); var right_after := film.get_pixel(1200, 300)
 	check(left_after.r > left_before.r + .05 and left_after.r > left_after.b, "Red left strip reddens the left wall", [left_before, left_after])
 	check(right_after.b > right_before.b + .05 and right_after.b > right_after.r, "Blue right strip blues the right wall", [right_before, right_after])
 	environment.set_film_light([Color(1, 1, 1), Color(1, 1, 1), Color(1, 1, 1)])
@@ -169,6 +173,13 @@ func _run() -> void:
 		"lighting_materials": ids.size(), "hardware_scope": "Desktop GL only. Geometry and memory budgets are not Quest 2/PICO Neo3 frame-time measurements."}, "\t")); file.close()
 	await _finish()
 
+## Views were composed on the 0.45 m rake; keep each on the same row of the
+## current blueprint (everything in front of the first row stays put).
+func _lift(point: Vector3) -> Vector3:
+	var first_edge := CinemaBlueprint.FIRST_ROW_Z + CinemaBlueprint.TIER_FRONT_OFFSET
+	var rows := clampf(floorf((point.z - first_edge) / CinemaBlueprint.ROW_PITCH) + 1.0, 0.0, CinemaBlueprint.ROW_COUNT)
+	return point + Vector3.UP * rows * (CinemaBlueprint.ROW_RISER - 0.45)
+
 func _viewing_level_renders(environment: Node3D) -> void:
 	var samples: Array = []
 	var dark := Color.BLACK
@@ -176,8 +187,8 @@ func _viewing_level_renders(environment: Node3D) -> void:
 	for view in [
 		["overview", Vector3(13, 10, 28), Vector3(0, 4, 15), 75.0],
 		["seatback", Vector3(-.45, 5.25, 19.9), Vector3(-.45, 4.35, 18.4), 40.0]]:
-		main.xr_camera.global_position = view[1]
-		main.xr_camera.look_at(view[2], Vector3.UP); main.xr_camera.fov = view[3]
+		main.xr_camera.global_position = _lift(view[1])
+		main.xr_camera.look_at(_lift(view[2]), Vector3.UP); main.xr_camera.fov = view[3]
 		var previous := -1.0
 		for level in ["low", "dim", "soft"]:
 			environment.set_viewing_brightness(level, true)

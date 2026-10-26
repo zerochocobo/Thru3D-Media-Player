@@ -65,7 +65,7 @@ func footer_check(menu: Node3D, name: String) -> void:
 	check(not follow.is_empty() and not pass_button.is_empty(), name + " includes both global footer controls")
 	if follow.is_empty() or pass_button.is_empty(): return
 	check(not follow.rect.intersects(pass_button.rect), name + " has separate ray targets")
-	check(follow.node.mesh.size.y > menu.device_status.HEIGHT * 1.8, name + " controls exceed status height")
+	check(is_equal_approx(follow.node.mesh.size.y, menu.device_status.HEIGHT), name + " controls and branded status share height")
 	check(follow.node.position.y + Menu.FOOTER_HIT_SIZE / 2 < menu._backdrop.position.y - menu._backdrop.mesh.size.y / 2,
 		name + " controls clear the panel")
 	for other in menu._buttons:
@@ -155,6 +155,8 @@ func _run() -> void:
 	main.video.mode_memory = Memory.new(directory.path_join("modes.cfg"))
 	main.video.recent_files = Catalog.new(directory.path_join("recent.cfg"))
 	main.video.load_mode_lock({})
+	# The startup logo defers presenting the library; this fixture tests its controls.
+	main._show_full_library()
 	check(not main.view_follow.enabled and not main.temporary_passthrough, "Every startup disables session modes")
 	check(button(main.recent_menu, Menu.FOLLOW).base_color == Menu.TILE, "Initial follow button is off")
 	footer_check(main.recent_menu, "Empty library")

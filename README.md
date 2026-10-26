@@ -4,14 +4,16 @@
 
 Standalone Android VR/MR media player for Meta Quest and PICO. Play videos and photos, explore media libraries, and combine supported content with passthrough and stereo effects directly on your headset.
 
-Current source version: **0.13.5** (Android versionCode **43**). An experimental standard OpenXR Android export is also available.
+Current source version: **0.14.0** (Android versionCode **45**). An experimental standard OpenXR Android export is also available.
 
 Minimum compatibility targets are **Quest 2** and **PICO Neo3**. Source/build compatibility does not establish hardware performance or interaction acceptance on every device.
 
 ## Features
 
+- Live subtitles for videos without subtitle tracks/files: on-device Chinese/English/Japanese recognition, optional online translation and bilingual display, with privacy-aware per-video cue reuse; see [scope and preparation delay](docs/LIVE_SUBTITLES.md).
+
 - Local/cloud PDF and paired magazine/comic reading, including RTL and PiP paging; see [document scope](docs/PDF_READING.md).
-- Comic reading/translation (Beta): dwell speech, translated overlays and existing voices, with bounded OCR and 19 targets; [network/model limits](docs/COMIC_READING.md) apply.
+- Comic reading/translation: dwell speech, translated overlays and existing voices, with bounded OCR and 19 targets; [network/model limits](docs/COMIC_READING.md) apply.
 - Saved bookmark-loop export and flat/VR live capture with supported PiP composition; see [capture output](docs/CAPTURE.md).
 
 - Local-network DLNA video casting into the VR player, with explicit reception and active-media replacement confirmation; see [receiver scope](docs/DLNA_CASTING.md).

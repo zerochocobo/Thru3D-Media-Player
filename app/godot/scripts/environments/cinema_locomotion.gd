@@ -195,8 +195,8 @@ func seat_at(point: Vector3) -> String:
 	var seated := float(_design.get("seated_eye_height", 1.2))
 	for id in _seats:
 		var eye := _vector(_seats[id].eye_position)
-		# The seat line sits 10 cm behind the seated eye (see cinema_blueprint.gd).
-		var seat_z := eye.z + 0.10
+		# Seat line relative to the seated eye (see cinema_blueprint.gd).
+		var seat_z := eye.z + float(_design.get("seat_line_from_eye", 0.10))
 		var inside := absf(point.x - eye.x) <= half and point.z >= seat_z - front and point.z <= seat_z + rear
 		if inside and absf(point.y - (eye.y - seated)) <= 0.3:
 			return str(id)

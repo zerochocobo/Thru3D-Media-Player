@@ -93,6 +93,42 @@ std::string package_version(JNIEnv* env, jobject context) {
     if (env->ExceptionCheck()) env->ExceptionClear();
     return version.find_first_of(" \r\n()") == std::string::npos ? version : "";
 }
+constexpr uint64_t kDecoderRateHook = 90;
+
+std::string property(mpv_handle* core, const char* key);
+
+// MediaCodec KEY_OPERATING_RATE for this file: the fastest video track's frame rate, rounded up
+// (59.94 -> 60), as ExoPlayer configures it. Unknown rates leave it unset; priority stays real time.
+void set_decoder_rate(mpv_handle* core) {
+    int64_t count = 0;
+    double fps = 0.0;
+    if (mpv_get_property(core, "track-list/count", MPV_FORMAT_INT64, &count) >= 0) {
+        for (int64_t i = 0; i < count && i < 64; ++i) {
+            const auto prefix = "track-list/" + std::to_string(i) + "/";
+            if (property(core, (prefix + "type").c_str()) != "video") continue;
+            int albumart = 0;
+            if (mpv_get_property(core, (prefix + "albumart").c_str(), MPV_FORMAT_FLAG, &albumart) >= 0 && albumart) continue;
+            double rate = 0.0;
+            if (mpv_get_property(core, (prefix + "demux-fps").c_str(), MPV_FORMAT_DOUBLE, &rate) >= 0 &&
+                std::isfinite(rate) && rate > fps) fps = rate;
+        }
+    }
+    std::string options = "priority=0";
+    int rate = fps >= 1.0 && fps <= 240.0 ? static_cast<int>(std::ceil(fps - 0.01)) : 0;
+#ifndef NDEBUG
+    // Device probes of the decoder fallback: force a rate the decoder cannot sustain.
+    char forced[PROP_VALUE_MAX] = {};
+    if (__system_property_get("debug.vrpp.mpv.operating_rate", forced) > 0 && atoi(forced) > 0) rate = atoi(forced);
+    // FFmpeg patch 0007 then emulates a decoder refusing the hints, exercising its retry.
+    char reject[PROP_VALUE_MAX] = {};
+    if (__system_property_get("debug.vrpp.mpv.reject_hints", reject) > 0 && reject[0] == '1') setenv("THRU3D_MEDIACODEC_REJECT_HINTS", "1", 1);
+    else unsetenv("THRU3D_MEDIACODEC_REJECT_HINTS");
+#endif
+    if (rate > 0) options += ",operating_rate=" + std::to_string(rate);
+    mpv_set_property_string(core, "file-local-options/vd-lavc-o", options.c_str());
+    __android_log_print(ANDROID_LOG_INFO, "QuestMpvSource", "Decoder options %s", options.c_str());
+}
+
 std::string property(mpv_handle* core, const char* key) {
     char* text = mpv_get_property_string(core, key);
     std::string value = text ? text : ""; mpv_free(text); return value;
@@ -185,6 +221,7 @@ struct Source final {
     std::atomic<int> source_rotation{0}; // output-frame rotation; RGBA bakes it once, decoder images do not
     std::atomic<uint64_t> rendered{0}, skipped{0}, published{0}, acquired{0}, released{0};
     std::atomic<uint64_t> seeks_started{0}, seeks_completed{0}, invalid_frames{0};
+    std::atomic<uint64_t> listening_cache_refreshes{0};
     // The last rejected ticket, so a source that never publishes can be diagnosed.
     std::atomic<uint64_t> invalid_flags{0}, invalid_frame_id{0};
     std::atomic<int64_t> invalid_pts_us{0};
@@ -251,6 +288,7 @@ struct Source final {
     bool awaiting_seek_event = false; // control thread only
     bool desired_play = false, playing_dirty = false;
     double desired_speed = 1.0; bool speed_dirty = false; // commands_mutex; last request wins
+    double desired_listening_cache = 0.0; bool listening_cache_dirty = false;
 #ifndef NDEBUG
     // One outstanding forward step, only for the bounded offline motion probe.
     bool debug_step_pending = false; // commands_mutex
@@ -514,6 +552,11 @@ struct Source final {
             ",\"capture_mode\":" + quote(capture_metadata(core)) +
             ",\"capture_audio_layout_applied\":" + (capture_audio_layout_applied?"true":"false") +
             ",\"position_seconds\":" + quote(position) + ",\"duration_seconds\":" + quote(duration) +
+            ",\"demuxer_start_time\":" + quote(property(core, "demuxer-start-time")) +
+            ",\"cache_seconds\":" + quote(property(core, "cache-secs")) +
+            ",\"listening_cache_refreshes\":" + quote(std::to_string(listening_cache_refreshes.load())) +
+            ",\"readahead_seconds\":" + quote(property(core, "demuxer-readahead-secs")) +
+            ",\"cache_duration\":" + quote(property(core, "demuxer-cache-duration")) +
             ",\"container_fps\":" + quote(property(core, "container-fps")) +
             ",\"seekable\":" + quote(seekable) + ",\"partially_seekable\":" + quote(partial) + ",\"file_size\":" + quote(file_size) +
             ",\"paused\":" + quote(paused) + ",\"color_matrix\":" + quote(matrix) +
@@ -663,6 +706,12 @@ struct Source final {
             }
             option("hwdec-codecs", "all");
             option("vd-lavc-spatial-video", "yes");
+            // Configure MediaCodec as ExoPlayer based players (Skybox, Pigasus) do: real-time
+            // priority (KEY_PRIORITY, FFmpeg patch 0007) here, and the video's own frame rate as
+            // KEY_OPERATING_RATE per file (decoder_rate_hook). Without them the Qualcomm decoder
+            // sizes its clocks from observed load; a Quest 3 tester saw 8K60 stutter only in the
+            // highest-bitrate motion (~40 Mbit/s) of a clip those players show smoothly.
+            option("vd-lavc-o", "priority=0");
             // Godot restores the per-eye display aspect. MPV must fill the packed FBO;
             // letterboxing here would change the eye rectangles before the VR shader splits them.
             option("keepaspect", "no");
@@ -739,6 +788,7 @@ struct Source final {
 #endif
             checked(mpv_request_log_messages(core, "debug"), "MPV source log subscription");
             checked(mpv_initialize(core), "MPV source initialize");
+            checked(mpv_hook_add(core, kDecoderRateHook, "on_preloaded", 0), "MPV decoder rate hook");
             capture_owner.store(quest::live::source_open(core));
             auto pgs_api = reinterpret_cast<uint32_t (*)()>(dlsym(RTLD_DEFAULT, "mpv_quest_pgs_api_version"));
             if (pgs_api && pgs_api() == QUEST_MPV_PGS_API_VERSION)
@@ -768,6 +818,9 @@ struct Source final {
                 load_submitted_us.store(startup_us());
             }
             bool loaded = false;
+            double ordinary_cache_seconds = 3600000.0, ordinary_readahead_seconds = 20.0;
+            mpv_get_property(core, "cache-secs", MPV_FORMAT_DOUBLE, &ordinary_cache_seconds);
+            mpv_get_property(core, "demuxer-readahead-secs", MPV_FORMAT_DOUBLE, &ordinary_readahead_seconds);
             auto format_deadline = std::chrono::steady_clock::time_point::max();
             quest::NetworkSeekPattern network_seeks;
             auto next_snapshot = std::chrono::steady_clock::now();
@@ -781,6 +834,7 @@ struct Source final {
                 dolby_color_mode(core);
                 bool set_play = false, play = false, set_audio = false, muted = false, set_subtitle = false, seek_exact = true, set_speed = false;
                 double speed = 1.0, subtitle_delay = 0.0;
+                bool set_listening_cache = false; double listening_cache = 0.0;
                 bool set_subtitle_delay = false, set_audio_delay = false;
                 double audio_delay = 0.0;
                 uint64_t subtitle_delay_command = 0;
@@ -795,6 +849,8 @@ struct Source final {
                 std::vector<std::pair<std::string, std::string>> extra_audio, extra_captions;
                 {
                     std::lock_guard<std::mutex> lock(commands_mutex);
+                    set_listening_cache = listening_cache_dirty; listening_cache = desired_listening_cache;
+                    listening_cache_dirty = false;
                     if (loaded) {
                         set_play = playing_dirty; play = desired_play; playing_dirty = false;
                         set_speed = speed_dirty; speed = desired_speed; speed_dirty = false;
@@ -817,6 +873,23 @@ struct Source final {
                     }
                 }
                 if (set_play && !play) checked(mpv_set_property_string(core, "pause", "yes"), "MPV source pause before audio");
+                if (set_listening_cache) {
+                    double seconds = listening_cache > 0 ? listening_cache : ordinary_cache_seconds;
+                    double readahead = listening_cache > 0 ? listening_cache : ordinary_readahead_seconds;
+                    // cache=auto uses cache-secs, which otherwise fills the byte
+                    // budget far beyond demuxer-readahead-secs. Keep the network
+                    // reader near ASR while listening; restore on disable.
+                    const int result = mpv_set_property(core, "cache-secs", MPV_FORMAT_DOUBLE, &seconds);
+                    if (result < 0) __android_log_print(ANDROID_LOG_WARN, "QuestMpvSource", "Listening cache policy: %d", result);
+                    // cache-secs is a floor together with demuxer-readahead-secs.
+                    // Keep both at the ASR frontier: a farther video frontier
+                    // would compete for a second range after old buffers drain.
+                    const int ahead_result = mpv_set_property(core, "demuxer-readahead-secs", MPV_FORMAT_DOUBLE, &readahead);
+                    if (ahead_result < 0) __android_log_print(ANDROID_LOG_WARN, "QuestMpvSource", "Listening readahead policy: %d", ahead_result);
+                    // Keep already decoded/buffered video intact. Background ASR
+                    // must never force a seek or drop the film's buffers on enable.
+                    next_snapshot = std::chrono::steady_clock::now();
+                }
                 const auto whisper_now = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
                 if (set_whisper) whisper.request(requested_whisper, requested_whisper_serial, whisper_now);
                 if (whisper.pending()) whisper.tick(whisper_now, property(core, "pause") != "yes" &&
@@ -929,6 +1002,10 @@ struct Source final {
                     if (!loaded && log->log_level <= MPV_LOG_LEVEL_ERROR && source_failure.reason.empty()) {
                         source_failure = quest::playback_log_failure(log->prefix, log->text);
                     }
+                } else if (event->event_id == MPV_EVENT_HOOK && event->reply_userdata == kDecoderRateHook) {
+                    // The file is open and its decoders do not exist yet.
+                    set_decoder_rate(core);
+                    mpv_hook_continue(core, static_cast<const mpv_event_hook*>(event->data)->id);
                 } else if (event->event_id == MPV_EVENT_PROPERTY_CHANGE && event->reply_userdata >= 41 && event->reply_userdata <= 44) {
                     next_snapshot = std::chrono::steady_clock::now();
                 } else if (event->event_id == MPV_EVENT_FILE_LOADED) {
@@ -1668,6 +1745,16 @@ Java_org_vrpassthroughplayer_plugin_MpvMotionDiagnostics_stepFrame(JNIEnv* env, 
     } catch (const std::exception& failure) { error(env, failure); return JNI_FALSE; }
 }
 #endif
+extern "C" JNIEXPORT jboolean JNICALL
+Java_org_vrpassthroughplayer_plugin_MpvSourceNative_setListeningCache(JNIEnv* env, jclass, jlong handle, jdouble seconds) {
+    try {
+        if (!std::isfinite(seconds) || (seconds != 0 && (seconds < 8 || seconds > 180))) return JNI_FALSE;
+        auto source = find(handle); std::lock_guard<std::mutex> lock(source->commands_mutex);
+        if (source->closing.load()) return JNI_FALSE;
+        source->desired_listening_cache = seconds; source->listening_cache_dirty = true;
+        source->wake.notify_one(); return JNI_TRUE;
+    } catch (const std::exception& failure) { error(env, failure); return JNI_FALSE; }
+}
 extern "C" JNIEXPORT jboolean JNICALL
 Java_org_vrpassthroughplayer_plugin_MpvSourceNative_setSpeed(JNIEnv* env, jclass, jlong handle, jdouble speed) {
     try {

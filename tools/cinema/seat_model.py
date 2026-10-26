@@ -203,8 +203,11 @@ def _planar(key, loops, axes, zones, weight=1.0, extra_faces=()):
 
 RECLINE = math.radians(12.0)
 BACK_FRONT_Y = -0.175     # cushion front y at z = 0.46
-BACK_REAR_LIMIT = -0.374
-BACK_TOP_Z = 1.068
+BACK_REAR_LIMIT = -0.40
+# High-back headrest: the seated eye (1.12 m) sits just below its top, so the
+# viewer's head rests against it instead of floating above the chair.
+HEADREST_LIFT = 0.08
+BACK_TOP_Z = 1.068 + HEADREST_LIFT
 ARC = 0.040               # front-view curvature of the headrest top
 BACK_XF = 0.290           # end of the quilted panel / start of the rolled edge
 BACK_ROLL = 0.036         # radius of the rolled cushion edge (upholstery 0.652 m wide)
@@ -219,12 +222,12 @@ BACK_ROWS = [
     ("r1", 0.448, 0.004, 1.000, 1.00, 0.00, 0.140),
     ("r2", 0.560, 0.022, 1.000, 1.00, 0.00, 0.152),
     ("r4", 0.750, 0.008, 1.000, 1.00, 0.00, 0.146),
-    ("r5", 0.852, -0.010, 1.000, 1.00, 0.10, 0.097),   # headrest seam; trim recess on the rear
-    ("r6", 0.905, 0.016, 1.000, 1.00, 0.30, 0.136),    # headrest pad
-    ("r7", 0.975, 0.020, 0.995, 1.00, 0.60, 0.122),
-    ("r7b", 1.004, 0.016, 0.988, 0.93, 0.72, 0.113),   # extra row: rounder headrest shoulder
-    ("r8", 1.028, 0.010, 0.975, 0.82, 0.85, 0.104),
-    ("r9", 1.056, 0.004, 0.940, 0.55, 0.95, 0.096),
+    ("r5", 0.852 + HEADREST_LIFT, -0.010, 1.000, 1.00, 0.10, 0.097),   # headrest seam; trim recess on the rear
+    ("r6", 0.905 + HEADREST_LIFT, 0.016, 1.000, 1.00, 0.30, 0.136),    # headrest pad
+    ("r7", 0.975 + HEADREST_LIFT, 0.020, 0.995, 1.00, 0.60, 0.122),
+    ("r7b", 1.004 + HEADREST_LIFT, 0.016, 0.988, 0.93, 0.72, 0.113),   # extra row: rounder headrest shoulder
+    ("r8", 1.028 + HEADREST_LIFT, 0.010, 0.975, 0.82, 0.85, 0.104),
+    ("r9", 1.056 + HEADREST_LIFT, 0.004, 0.940, 0.55, 0.95, 0.096),
     ("r10", BACK_TOP_Z, 0.000, 0.880, 0.25, 1.00, 0.092),
 ]
 
@@ -874,7 +877,7 @@ def _seams(nt, x, y, z, coord, color):
     seat = _math(nt, "SUBTRACT", 1.0, back)
     lines = [_math(nt, "MULTIPLY", _band(nt, x, gx, 0.0022, 0.0035, mirror=True), back) for gx in BACK_GROOVES]
     lines += [_math(nt, "MULTIPLY", _band(nt, x, gx, 0.0022, 0.0035, mirror=True), seat) for gx in SEAT_SEAMS]
-    lines.append(_math(nt, "MULTIPLY", _band(nt, z, 0.852, 0.0022, 0.0035), back))
+    lines.append(_math(nt, "MULTIPLY", _band(nt, z, 0.852 + HEADREST_LIFT, 0.0022, 0.0035), back))
     color = _mix(nt, _math(nt, "MULTIPLY", _any(nt, lines), 0.6), color, _scale_col(nt, color, 0.4))
     stitches = []
     for gx, mask in [(g, back) for g in BACK_GROOVES] + [(g, seat) for g in SEAT_SEAMS]:

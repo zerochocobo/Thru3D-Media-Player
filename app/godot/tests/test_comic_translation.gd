@@ -262,7 +262,7 @@ func run() -> void:
 	menu.state_provider = func(): return ui
 	root.add_child(menu); menu.set_process(false); menu.visible = true; menu.refresh()
 	var button: Dictionary = menu._buttons.filter(func(item): return item.target == Menu.PHOTO_TRANSLATION)[0]
-	check(menu._tips[Menu.PHOTO_TRANSLATION] == menu.I18n.t("Comic translation (Beta)"), "Comic translation entry identifies the beta")
+	check(menu._tips[Menu.PHOTO_TRANSLATION] == menu.I18n.t("Comic translation"), "Comic translation entry shows its name")
 	for other: Dictionary in menu._buttons:
 		if other.target != Menu.PHOTO_TRANSLATION: check(not button.rect.intersects(other.rect), "Translation button does not overlap existing controls")
 	menu._activate(Menu.PHOTO_TRANSLATION)

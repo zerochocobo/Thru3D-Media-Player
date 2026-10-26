@@ -28,7 +28,7 @@ func run() -> void:
 	for language in ["zh", "en", "zh_Hant", "ja"]:
 		I18n.use(language)
 		menu.tab = Menu.VIDEO_TAB; menu.refresh()
-		check(menu.rows.any(func(row): return row.get("key", "") == "subtitle_distance"), "Video contains subtitle controls: " + language)
+		check(menu.rows.any(func(row): return row.get("video_settings_group", "") == "subtitles"), "Video contains a subtitle group: " + language)
 		check(not menu._buttons.any(func(button): return button.target == Menu.TAB_BASE + Menu.SUBTITLES_TAB), "Separate subtitle tab is absent: " + language)
 		await shot(viewport, menu, output.path_join(language + "-video.png"))
 		menu.tab = Menu.CONTROLS_TAB; menu.controls_page.mode = 0; menu.scroll = 0; menu.refresh()

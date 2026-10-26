@@ -1,0 +1,17 @@
+{
+  "purpose": "MediaCodec KEY_PRIORITY option for real-time video decoding",
+  "dovi_patch_sha256": "ac25f48b5dce159a0cdf5880500dbe13055b8b72bf03fd8763971ddd0367ad3a",
+  "base_files_sha256": {
+    "libavcodec/mediacodecdec.c": "5e6011fcee888fb77cc43478bead9a5fedd9f627d599579b700baae4151a20a4"
+  },
+  "patched_files_sha256": {
+    "libavcodec/mediacodecdec.c": "9694eccdaa9ae8a07f6c86fc20168c99e1b1ecd102255c1f8e5823a11919dfa9"
+  },
+  "patch_sha256": "df1b36c3dcdf97ce273f0ef13adffe3d565c99ce8f94334acb1533f6b271ee11",
+  "inputs_sha256": {
+    "tools/environment/mpv-linux/create_mediacodec_priority_patch.py": "7505873763c6a84c94e1d5b3ef52913813cc276b85b5edfd3e55183d6039678e"
+  },
+  "reference_inputs_sha256": {
+    "tools/environment/mpv-linux/create_mediacodec_priority_patch.py": "26c48642da6b6ab0a0c06e75f6b157350605eab9afcdee5a983588026abc3cd8"
+  }
+}

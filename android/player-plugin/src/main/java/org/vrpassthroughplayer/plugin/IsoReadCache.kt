@@ -14,7 +14,10 @@ internal class IsoReadCache(source: StreamSource, private val memoryKey: String?
         private const val PROTECTED_BLOCKS = 96
     }
     override val size = source.size
-    private val transport = InterleaveReadCache(source, onRead = onRead)
+    private val origin = source
+    override fun shareReadAhead(onRead: (Int) -> Unit) = origin.shareReadAhead(onRead)
+    override val sharedReadAheadActive get() = origin.sharedReadAheadActive
+    private val transport = InterleaveReadCache(source, onRead = { if (!origin.sharedReadAheadActive) onRead(it) })
     private val lock = Any()
     private class Block(val data: ByteArray, var protected: Boolean = false)
     private val blocks = LinkedHashMap<Long, Block>(MAX_BLOCKS, .75f, true)

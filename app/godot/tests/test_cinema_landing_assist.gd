@@ -67,7 +67,8 @@ func run() -> void:
 					check(env._valid_destination(hit.position), "Snapped point retains full body support")
 	var sample_us := Time.get_ticks_usec() - started
 	# An actual chair, tall tier face, outer wall and rail must remain blocked.
-	for point in [Vector3(0, .2, 5.1), Vector3(16.7, 1, 0), Vector3(14.1, 2, 6)]:
+	# The rail probe starts above the handrail, which rises with the stairs.
+	for point in [Vector3(0, .2, 5.1), Vector3(16.7, 1, 0), Vector3(14.1, 3, 6)]:
 		check(not env.ray_hit(point, Vector3.DOWN).get("valid", false), "Obstruction cannot become a landing: " + str(point))
 	var chair: Dictionary = env.ray_hit(Vector3(-.45, 2.5, 5.6), Vector3.DOWN)
 	# Aiming at a chair sits there; it is never a standing landing on the chair.

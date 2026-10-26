@@ -228,11 +228,10 @@ func draw_folder_header(compact: bool) -> void:
 	if not location.is_empty() and not menu._crumbs().is_empty():
 		var selected: bool = store != null and store.contains(Location.folder_uri(location))
 		var locked: bool = store != null and store.locked
-		var favorite_position := toolbar_left + Vector2(0.11 if not home_return.is_empty() else 0.0, 0)
-		menu._button(FAVORITE_FOLDER, "", Vector2(0.39, 0.36) if compact else favorite_position, Vector2(0.075, 0.065), store != null and not store.busy, "lock" if locked else "star_filled" if selected else "star")
+		menu._button(FAVORITE_FOLDER, "", Vector2(0.39, 0.36) if compact else toolbar_left, Vector2(0.075, 0.065), store != null and not store.busy, "lock" if locked else "star_filled" if selected else "star")
 		menu._tips[FAVORITE_FOLDER] = menu.I18n.t("Unlock favorites" if locked else "Remove favorite" if selected else "Favorite this location")
 	if not home_return.is_empty():
-		menu._button(RETURN_HOME, "", Vector2(0.12, -0.365) if compact else toolbar_left, Vector2(0.075, 0.065), true, "history")
+		menu._button(RETURN_HOME, "", Vector2(0.12, -0.365) if compact else Vector2(-0.52, menu._header_y()), Vector2(0.075, 0.065), true, "history")
 		menu._tips[RETURN_HOME] = menu.I18n.t("Back to recent and favorites")
 
 func decorate_row(slot: int, row: Dictionary, centre: Vector2, grid: bool, parent: Node3D) -> void:

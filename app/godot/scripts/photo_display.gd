@@ -350,7 +350,7 @@ func open_image(uri: String, title: String, entries: Array = [], location: Dicti
 		_archive_previous_layout = gallery.mode
 		if reading_layout < 0:
 			reading_layout = Gallery.Layout.MAGAZINE if _archive_previous_layout == Gallery.Layout.MAGAZINE else Gallery.Layout.SINGLE
-		gallery.set_mode(reading_layout)
+		gallery.set_mode(reading_layout, "open_container")
 	placement_pending = not retain_frame
 	queue.clear()
 	for entry in entries:
@@ -388,7 +388,7 @@ func set_layout_mode(value: int) -> void:
 	magazine.cancel()
 	if spatial_requested: set_spatial(false, true)
 	if portrait_requested: set_portrait(false)
-	gallery.set_mode(value)
+	gallery.set_mode(value, "layout_selection")
 	if reload_spread:
 		magazine.reload()
 	elif gallery.overview():
@@ -958,7 +958,8 @@ func _requires_depth(target: int, info: Dictionary) -> bool:
 	if gallery.mode in [Gallery.Layout.WALL, Gallery.Layout.FRAGMENTS] and (gallery.focus != target or gallery.returning): return false
 	if queue[target].has("retained_source"): return false
 	var mode := _resolved_mode(target, info)
-	return auto_depth and not comic.active() and not info.get("native_stereo", false) and platform != null and int(mode.geometry) == Geometry.Geometry.FLAT and not mode.stereo_sbs
+	# OCR reads the decoded colour image; speech/translation do not override the user's 3D choice.
+	return auto_depth and not info.get("native_stereo", false) and platform != null and int(mode.geometry) == Geometry.Geometry.FLAT and not mode.stereo_sbs
 
 func _prepare_display(result: Dictionary, job: Dictionary) -> void:
 	if magazine.prepare(result, job): return
@@ -1132,7 +1133,7 @@ func _accept(result: Dictionary, job: Dictionary) -> void:
 	mark = _mark("display", mark)
 	if depth_failed:
 		depth_error = "3D unavailable"; _spatial_auto_due = false
-	elif auto_depth and not comic.active() and geometry == 0 and not stereo_sbs and retained.is_empty(): set_depth(true)
+	elif auto_depth and geometry == 0 and not stereo_sbs and retained.is_empty(): set_depth(true)
 	mark = _mark("depth", mark)
 	var thumbnail_key := str(queue[index].get("thumbnail_key", local_uri)) if index >= 0 and index < queue.size() else local_uri
 	if result.has("thumbnail") and (not result.get("thumbnail_cached", false) or not Thumbnails.has(thumbnail_key)):
@@ -1933,7 +1934,7 @@ func close_image(notify: bool = true, next_online_uri: String = "") -> void:
 	local_uri = ""; display_name = ""; error = ""; index = -1; pending_index = -1
 	if restore_archive_layout:
 		queue.clear()
-		gallery.set_mode(_archive_previous_layout)
+		gallery.set_mode(_archive_previous_layout, "close_container")
 	if notify: changed.emit()
 
 func _exit_tree() -> void:

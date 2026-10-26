@@ -55,6 +55,7 @@ const SubtitleDepth := preload("res://scripts/subtitle_depth.gd")
 const SubtitleStyle := preload("res://scripts/subtitle_style.gd")
 const SubtitleTiming := preload("res://scripts/file_subtitle_timing.gd")
 const NarrationSettings := preload("res://scripts/narration_settings.gd")
+const Listening := preload("res://scripts/live_interpretation.gd")
 const AUDIO_CLOSE := 520
 const AUDIO_UP := 521
 const AUDIO_DOWN := 522
@@ -71,6 +72,7 @@ var _audio_offset := 0
 var _audio_ids := {}
 var _track_drag := {}
 var _narration_busy: MeshInstance3D
+var _listening_status: Label3D
 var _audio_source := ""
 var choices := ChoiceFields.new(self)
 signal setting_requested(key: String, value: Variant)
@@ -593,7 +595,7 @@ func refresh_values() -> void:
 	if is_instance_valid(_status):
 		_status.text = _seek_status()
 		_status.visible = not _status.text.is_empty()
-		_status.modulate.a = float(_state.get("seek_feedback", {}).get("alpha", 1.0))
+		_status.modulate.a = 1.0 if _listening_preparing() else float(_state.get("seek_feedback", {}).get("alpha", 1.0))
 	if is_instance_valid(_panel_status):
 		_panel_status.text = _status_text()
 	if is_instance_valid(_info):
@@ -643,6 +645,7 @@ func _draw() -> void:
 	_elapsed = null
 	_duration = null
 	_status = null
+	_listening_status = null
 	_panel_status = null
 	_modes = {}
 	_volume_fill = null
@@ -834,7 +837,7 @@ func _draw_bar() -> void:
 	var has_markers: bool = not _state.get("bookmarks", []).is_empty()
 	_status = _label(_seek_status(), Vector3(0, -0.044 if has_markers else -0.15, 0.004), 14 if has_markers else 20)
 	_status.modulate = ACCENT
-	_status.modulate.a = float(_state.get("seek_feedback", {}).get("alpha", 1.0))
+	_status.modulate.a = 1.0 if _listening_preparing() else float(_state.get("seek_feedback", {}).get("alpha", 1.0))
 	_status.visible = not _status.text.is_empty()
 	# Floating actions above the bar.
 	_round(PIP, "pip", Vector2(-0.28, 0.215), 0.08, bool(_state.get("has_video", false)) and bool(_state.get("pip_available", true)), int(_state.get("pip_count", 0)) > 0,
@@ -853,6 +856,7 @@ func _draw_bar() -> void:
 	elif music_quick: music_quick.reset()
 	_place_device_status(Vector2(0, -0.245))
 	if _cast_allowed("bookmarks"): bookmarks.draw()
+	_expand_bar_action_hits()
 	if _mode_open:
 		_draw_popup(_draw_modes)
 	if _volume_open:
@@ -936,7 +940,15 @@ func _subtitle_label(track: Dictionary) -> String:
 func _subtitle_controls() -> Array:
 	var pgs := _subtitle_tracks().any(func(track): return int(track.id) == int(_state.get("subtitle_track", 0)) and str(track.get("codec", "")) == "hdmv_pgs_subtitle")
 	if _subtitle_files_open and _has_other_subtitles(): return []
-	var rows: Array = [{"title": "Subtitle adjustments", "disclosure": true}]
+	var rows: Array = []
+	var listening_rows := Listening.rows(_state)
+	if not listening_rows.is_empty():
+		rows.append(listening_rows[0])
+		if not _state.get("listening_enabled", false):
+			_subtitle_appearance_open = false
+			return rows
+		if not _subtitle_appearance_open: rows.append_array(listening_rows.slice(1))
+	rows.append({"title": "Subtitle adjustments", "disclosure": true})
 	if not _subtitle_appearance_open and NarrationSettings.FEATURE_ENABLED and _state.get("narration_available", false):
 		var narration_rows := NarrationSettings.rows(_state)
 		var language_field: Dictionary = {}
@@ -953,7 +965,8 @@ func _subtitle_controls() -> Array:
 			rows.append(row)
 			if row.field.key == clone_after and _state.get("narration_voice_kind", "preset") == "custom" and _state.get("narration_clone_supported", false): rows.append({"clone_actions": true})
 	if not _subtitle_appearance_open: return rows
-	rows.append({"title": "Subtitle sync", "field": SubtitleTiming.slider_row(float(_state.get("subtitle_delay", 0.0)), str(_state.get("source_uri", "")), str(_state.get("subtitle_timing_key", "")))})
+	if not _state.get("listening_enabled", false):
+		rows.append({"title": "Subtitle sync", "field": SubtitleTiming.slider_row(float(_state.get("subtitle_delay", 0.0)), str(_state.get("source_uri", "")), str(_state.get("subtitle_timing_key", "")))})
 	if _immersive_subtitles():
 		rows.append({"title": "Subtitle direction", "field": SubtitleDepth.direction_row(int(_state.get("subtitle_direction", 0)))})
 		for axis in ["horizontal", "vertical"]:
@@ -981,11 +994,13 @@ func _draw_subtitles() -> void:
 	var scrolling := tracks.size() > SUBTITLE_ROWS
 	var other_subtitles := _has_other_subtitles()
 	var files_error: bool = not str(_state.get("subtitle_file_error", "")).is_empty()
+	var listening_only := bool(_state.get("listening_available", false)) and tracks.is_empty() and not other_subtitles
 	if not other_subtitles and _state.get("subtitle_files_state", "idle") == "ready": _subtitle_files_open = false
-	var height := 0.13 + (1 + mini(tracks.size(), SUBTITLE_ROWS)) * 0.075 + rows.size() * SUBTITLE_SETTING_PITCH + (0.06 if scrolling else 0.0)
+	var height := 0.13 + ((0 if listening_only else 1) + mini(tracks.size(), SUBTITLE_ROWS)) * 0.075 + rows.size() * SUBTITLE_SETTING_PITCH + (0.06 if scrolling else 0.0)
 	if other_subtitles: height += _subtitle_files_height()
 	elif files_error: height += 0.075
 	var status := _narration_status()
+	if _state.get("listening_enabled", false): status = _listening_status_text()
 	if not status.is_empty(): height += 0.05
 	var top := 0.285 + height
 	var panel := _quad(Vector2(1.10, height), Vector3(0, 0.285 + height / 2, 0.001), Color(PANEL, 0.96), 10)
@@ -1011,8 +1026,9 @@ func _draw_subtitles() -> void:
 	toggle.node.add_child(knob)
 	_tips[SUBTITLE_AUTO] = I18n.t("Auto-load subtitles") + " · " + I18n.t("On" if automatic else "Off")
 	var y := top - 0.12
-	_subtitle_row(SUBTITLE_ROW, 0, I18n.t("Off"), y)
-	y -= 0.075
+	if not listening_only:
+		_subtitle_row(SUBTITLE_ROW, 0, I18n.t("Off"), y)
+		y -= 0.075
 	for index in range(_subtitle_offset, mini(tracks.size(), _subtitle_offset + SUBTITLE_ROWS)):
 		var track: Dictionary = tracks[index]
 		_subtitle_row(SUBTITLE_ROW + index + 1, int(track.id), _subtitle_label(track), y)
@@ -1046,7 +1062,7 @@ func _draw_subtitles() -> void:
 			continue
 		var title := _label(I18n.t(row.title), Vector3(-0.48, y, 0.004), TEXT_BODY)
 		title.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
-		if row.field.key == "narration_enabled":
+		if row.field.key in ["narration_enabled", "listening_enabled"]:
 			choices.field(null, row.field, Vector2(-0.135, y), 0.09, SUBTITLE_SETTING_HEIGHT)
 			if row.has("language_field"): choices.field(null, row.language_field, Vector2(0.21, y), 0.50, SUBTITLE_SETTING_HEIGHT)
 			y -= SUBTITLE_SETTING_PITCH
@@ -1063,6 +1079,7 @@ func _draw_subtitles() -> void:
 		var label := _label(_fit_title(status, "", 0.86, TEXT_AUX), Vector3(0, y + 0.005, 0.004), TEXT_AUX)
 		label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		label.modulate = ACCENT if _narration_preparing() or _state.get("narration_preview_busy", false) else MUTED
+		if _state.get("listening_enabled", false): _listening_status = label
 		if str(_state.get("narration_status", "")) in ["model_missing", "model_error", "timeline_error", "speech_error"]:
 			_glyph(NARRATION_RETRY, "refresh", Vector2(0.46, y + 0.005), 0.05, true, I18n.t("Retry"))
 	choices.bounds = Vector2(0.285, top - 0.08)
@@ -1128,7 +1145,7 @@ func _subtitle_row(target: int, id: int, text: String, y: float) -> void:
 	set_label_size(label, TEXT_BODY)
 	label.position.x = -0.42
 	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
-	if id == int(_state.get("subtitle_track", 0)):
+	if id == int(_state.get("subtitle_track", 0)) and not _state.get("listening_enabled", false):
 		button.base_color = SELECTED
 		_icon("check", Vector3(0.414, 0, 0.004), 0.029, ACCENT, button.node)
 
@@ -1547,7 +1564,7 @@ func _bar_key() -> String:
 		_state.get("narration_voice_kind", "preset"), _state.get("narration_custom_voice", ""), _state.get("narration_personal_voices", []), _state.get("narration_voice_warning", ""), _state.get("narration_preview_status", ""), _state.get("narration_clone_state", {}).get("revision", 0)]) + _base_bar_key()
 
 func _base_bar_key() -> String:
-	return str([_state.get("cast", {}), cast_state]) + str([_state.get("screen_scene_locked", false), _state.get("cinema_lights", "auto")]) + _capture_key() + str([_state.get("pip_slots", []), _state.get("pip_count", 0), _state.get("pip_available", true), int(_state.get("audio_whisper", 0)) > 0, _state.get("volume_writable", true), _state.get("whisper_available", false), _state.get("clone_voice", false), _state.get("geometry", 0), _state.get("has_video", false),
+	return str([_state.get("listening_available", false), _state.get("listening_enabled", false), _state.get("listening_source", "ja"), _state.get("listening_target", ""), _state.get("listening_lead", 12), _state.get("listening_state", "off")]) + str([_state.get("cast", {}), cast_state]) + str([_state.get("screen_scene_locked", false), _state.get("cinema_lights", "auto")]) + _capture_key() + str([_state.get("pip_slots", []), _state.get("pip_count", 0), _state.get("pip_available", true), int(_state.get("audio_whisper", 0)) > 0, _state.get("volume_writable", true), _state.get("whisper_available", false), _state.get("clone_voice", false), _state.get("geometry", 0), _state.get("has_video", false),
 		_state.get("spatial_video", false), _state.get("error", ""),
 		_state.get("source_uri", ""), _subtitle_tracks(), _state.get("subtitle_track", 0), bookmarks.key(), _state.get("audio_options", []), _state.get("audio_track_id", -1), _state.get("audio_delay", 0.0), _state.get("audio_timing_key", ""),
 		_state.get("subtitle_browse_available", false), _state.get("subtitle_files_available", false), _state.get("subtitle_files_revision", 0), _state.get("subtitle_files_state", "idle"), _state.get("subtitle_file_loading", ""), _state.get("subtitle_file_error", ""), _state.get("subtitle_timing_key", ""),
@@ -1835,7 +1852,7 @@ func _seek_status() -> String:
 	var caption := str(_state.get("loading_caption", ""))
 	if feedback.is_empty(): return caption
 	var text := "%s → %s   %s" % [SeekFeedback.time(feedback.origin_ms), SeekFeedback.time(feedback.target_ms), SeekFeedback.offset(feedback.delta_ms)]
-	if feedback.phase == "waiting": text += " · " + (caption if not caption.is_empty() else "…")
+	if feedback.phase == "waiting" or (_listening_preparing() and not caption.is_empty()): text += " · " + (caption if not caption.is_empty() else "…")
 	return text
 
 func _time(milliseconds: int) -> String:
@@ -2097,6 +2114,16 @@ func _activate(target: int) -> void:
 			else:
 				refresh_values()
 
+## Only the compact floating row gets extra ray tolerance; meshes stay unchanged.
+## Expanded music controls and panel controls keep their own tighter spacing.
+## The 0.14 centre pitch leaves a 0.04 dead zone between these 0.10 hit areas.
+func _expand_bar_action_hits() -> void:
+	for button in _buttons:
+		var node: Node3D = button.node
+		if node.get_parent() != self or not is_equal_approx(node.position.y, 0.215): continue
+		if not button.rect.size.is_equal_approx(Vector2(0.08, 0.08)): continue
+		button.rect = Rect2(button.rect.get_center() - Vector2(0.05, 0.05), Vector2(0.10, 0.10))
+
 func _draw_favorite(position: Vector2) -> void:
 	if not favorite_provider.is_valid(): return
 	var favorite: Dictionary = favorite_provider.call()
@@ -2153,10 +2180,13 @@ func _update_highlights() -> void:
 			button.node.material_override.set_shader_parameter("surface_color", SELECTED)
 	if _depth_busy:
 		_depth_busy.visible = _depth_preparing()
-	if _narration_busy: _narration_busy.visible = _narration_preparing()
+	if _narration_busy: _narration_busy.visible = _narration_preparing() or _listening_preparing()
+	if is_instance_valid(_listening_status):
+		_listening_status.text = _fit_title(_listening_status_text(), "", 0.86, TEXT_AUX)
+		_listening_status.modulate = ACCENT if _listening_preparing() else MUTED
 	for button in _buttons:
 		if button.target == 110:
-			var active: bool = button.enabled and int(_state.get("subtitle_track", 0)) != 0
+			var active: bool = button.enabled and (int(_state.get("subtitle_track", 0)) != 0 or _state.get("listening_enabled", false))
 			button.node.get_child(1).material_override.albedo_color = (WARNING if str(_state.get("narration_status", "")) in ["model_missing", "model_error", "timeline_error", "speech_error", "line_missing"] else ACCENT) if _narration_on() or active else (button.foreground if button.enabled else MUTED)
 			if active and not _hover.values().has(button.target):
 				button.node.material_override.set_shader_parameter("surface_color", SELECTED)
@@ -2176,6 +2206,13 @@ func _narration_on() -> bool:
 
 func _narration_preparing() -> bool:
 	return _narration_on() and str(_state.get("narration_status", "off")) in ["loading", "verifying", "model_loading", "preparing", "preview_buffering", "subtitle_loading"]
+
+func _listening_preparing() -> bool:
+	return _state.get("listening_enabled", false) and str(_state.get("listening_state", "off")) in ["preparing", "catching_up"]
+
+func _listening_status_text() -> String:
+	var caption := str(_state.get("listening_caption", ""))
+	return caption if not caption.is_empty() else I18n.t(Listening.status_label(str(_state.get("listening_state", "off"))))
 
 func _depth_preparing() -> bool:
 	return _enabled("depth") and _state.get("depth_requested", false) 		and not _state.get("depth_enabled", false) and str(_state.get("depth_error", "")).is_empty()
@@ -2286,6 +2323,7 @@ func _status_text() -> String:
 	return I18n.t(str(_state.get("playback_state", "Ready")).capitalize())
 
 func _subtitle_name() -> String:
+	if _state.get("listening_enabled", false): return I18n.t("Live subtitles")
 	return I18n.t("Off") if int(_state.get("subtitle_track", 0)) == 0 else I18n.t("On")
 
 func _info_text() -> String:

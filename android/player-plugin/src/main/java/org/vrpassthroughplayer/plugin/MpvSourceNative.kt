@@ -45,6 +45,8 @@ internal object MpvSourceNative {
     @JvmStatic external fun setPlaying(handle: Long, playing: Boolean)
     /** Positive playback rate; media timestamps and subtitle timing remain in source time. */
     @JvmStatic external fun setSpeed(handle: Long, speed: Double): Boolean
+    /** 0 restores the source's ordinary cache horizon; positive values are media seconds. */
+    @JvmStatic external fun setListeningCache(handle: Long, seconds: Double): Boolean
     /** Coalesced control request. -1 auto, 0 disabled, or an actual track-list id; volume 0..100. */
     @JvmStatic external fun setAudio(handle: Long, trackId: Int, volume: Double, muted: Boolean): Boolean
     /** Per-video whisper enhancement: 0 off; 1..51 enable compression with continuous 0..50 boost; serial 0 rejects. */

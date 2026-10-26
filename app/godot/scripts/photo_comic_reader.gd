@@ -189,6 +189,7 @@ func prefetch_next(now: int = -1) -> void:
 
 static func hit(pages_data: Array, regions: Array, uv: Vector2) -> Dictionary:
 	var matches := []
+	var fallback_matches := []
 	for page: Dictionary in pages_data:
 		var index := int(page.get("page", -1))
 		if index < 0 or index >= regions.size(): continue
@@ -206,8 +207,13 @@ static func hit(pages_data: Array, regions: Array, uv: Vector2) -> Dictionary:
 			var spans: Array = block.get("hit_rows", [])
 			var debug_rect: bool = OS.is_debug_build() and block.get("verified", true) == false and spans.is_empty()
 			if not debug_rect and (row < 0 or row >= spans.size() or point.x < spans[row][0] or point.x >= spans[row][1]): continue
-			matches.append({"key": "%d:%d" % [index, block.id], "page": index, "id": int(block.id),
-				"rect": Rect2(region.position + box.position / Vector2(size[0], size[1]) * region.size, box.size / Vector2(size[0], size[1]) * region.size)})
+			var target := {"key": "%d:%d" % [index, block.id], "page": index, "id": int(block.id),
+				"rect": Rect2(region.position + box.position / Vector2(size[0], size[1]) * region.size, box.size / Vector2(size[0], size[1]) * region.size)}
+			# Debug text rectangles can overlap a complete balloon. Prefer its
+			# verified contour, while genuine contour conflicts still select none.
+			if block.get("geometry_verified", block.get("verified", true)): matches.append(target)
+			else: fallback_matches.append(target)
+	if matches.is_empty(): matches = fallback_matches
 	return matches[0] if matches.size() == 1 else {}
 
 func tick(rays: Array, allowed: bool, voice: String, volume: float, active_view: bool = true) -> void:

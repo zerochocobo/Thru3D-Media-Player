@@ -8,6 +8,18 @@ import java.net.URL
 import java.util.concurrent.atomic.AtomicInteger
 
 class Mp4AudioPacketCacheTest {
+    @Test fun smallAacPacketsUseTheByteBudgetAcrossDeepVideoPrefetch() {
+        val spans=(0 until 30000).map {AudioReadSpan(it*70000L,it*70000L+350)}
+        val cache=Mp4AudioPacketCache(spans);val packet=ByteArray(350){42};val out=ByteArray(350)
+        repeat(9000){cache.capture(spans[it].start,packet,packet.size)}
+        // Hundreds of MiB of video carry only a few MiB of tiny AAC packets.
+        // A 4096-entry cap used to evict upcoming speech despite unused budget.
+        assertEquals(350,cache.read(0,out,out.size));assertArrayEquals(packet,out)
+        for(i in 9000 until spans.size)cache.capture(spans[i].start,packet,packet.size)
+        assertTrue(cache.sizeBytes()<=Mp4AudioPacketCache.DEFAULT_BUDGET_BYTES)
+        assertEquals(350,cache.read(spans.last().start,out,out.size))
+        cache.close();assertEquals(0L,cache.sizeBytes())
+    }
     private fun bytes(at: Long, count: Int) = ByteArray(count) { ((at + it) % 251).toByte() }
 
     @Test fun indexedAudioGapsKeepVideoOnTheSameOriginConnection() {

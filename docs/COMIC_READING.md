@@ -1,4 +1,4 @@
-# Comic reading and translation (Beta)
+# Comic reading and translation
 
 Enable comic speech or translation for the current reading batch; reopening starts disabled. Global language/voice/volume/appearance preferences persist. Eligible OCR dialogue is spoken after ray dwell with existing preset or caller-owned custom voices. Menus, page/source/voice changes and stale generations cancel work. Text, translations and speech use bounded runtime caches rather than a new content disk archive.
 
@@ -19,4 +19,4 @@ Supply matching files under ignored `models/comic-ocr/v6-small/`, with manifest 
 
 Only source, metadata and instructions are published: no OCR weights, original pages, transcripts, recordings, voice codes or device captures. Project GPL permissions do not grant rights to excluded models/pages/voices; consult their original redistribution notices. The protocol reference is plainheart/bing-translate-api revision f37b17b8bc7848b3be38f4440bec5285ad1fd3e2, with its original MIT notice in `third_party/bing-translate-api/LICENSE.txt`.
 
-漫画朗读／翻译仍为测试版，开关按本次阅读生效。OCR本地处理，在线翻译发送所选识别对白；19种目标语言不等于19种源OCR已验证。权重、原页面、个人声音及研发资料不公开。
+漫画朗读／翻译开关按本次阅读生效。OCR本地处理，在线翻译发送所选识别对白；19种目标语言不等于19种源OCR已验证。权重、原页面、个人声音及研发资料不公开。

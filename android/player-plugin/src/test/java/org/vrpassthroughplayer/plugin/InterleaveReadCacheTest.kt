@@ -6,6 +6,7 @@ import java.io.IOException
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.Executors
 
 class InterleaveReadCacheTest {
     private class Origin : StreamSource {
@@ -139,5 +140,41 @@ class InterleaveReadCacheTest {
         try { source.close(); fail("origin failure") } catch (_: IOException) {}
         assertEquals(origin.opens.get(), origin.closes.get())
         assertEquals(0L, source.stats().getValue("capacity_bytes"))
+    }
+    @Test fun sparseAudioPacketsReuseOneCloudConnectionAcrossVideoGaps() {
+        for(limit in listOf(64*1024,2*1024*1024)) {
+            val origin=Origin()
+            InterleaveReadCache(origin,8*1024*1024,maxForwardGapBytes=limit,upstreams=1).use { cache ->
+                cache.open().use {reader -> repeat(32){verify(reader,20_000_000L+it*512*1024L,350)} }
+                assertEquals(if(limit==64*1024)32 else 1,origin.opens.get())
+                assertEquals(origin.opens.get().toLong(),cache.readSnapshot()["reader_opens"])
+            }
+        }
+    }
+    @Test fun retainedAudioDoesNotWaitBehindBlockedVideoNetworkRead() {
+        val entered=CountDownLatch(1);val release=CountDownLatch(1)
+        val origin=object:StreamSource {
+            override val size=8_000_000L
+            override fun open()=object:StreamSource.Reader {
+                override fun read(offset:Long,buffer:ByteArray,length:Int):Int {
+                    if(offset>=2_000_000){entered.countDown();check(release.await(5,TimeUnit.SECONDS))}
+                    repeat(length){buffer[it]=((offset+it)%251).toByte()};return length
+                }
+                override fun close(){}
+            }
+            override fun close(){release.countDown()}
+        }
+        val pool=Executors.newSingleThreadExecutor()
+        InterleaveReadCache(origin,65536,audioChunks=listOf(AudioReadSpan(0,350))).use {cache ->
+            cache.open().use {verify(it,0,1000)}
+            val network=Thread {cache.open().use {verify(it,2_000_000,1000)}}.apply {start()}
+            try {
+                assertTrue(entered.await(2,TimeUnit.SECONDS))
+                val result=pool.submit<Int>{cache.openAudio().use {r -> val b=ByteArray(350);val n=r.read(0,b,b.size)
+                    assertArrayEquals(ByteArray(350){(it%251).toByte()},b);n}}
+                assertEquals(350,result.get(500,TimeUnit.MILLISECONDS).toInt())
+                assertTrue(network.isAlive)
+            } finally {release.countDown();network.join(2000);pool.shutdownNow()}
+        }
     }
 }

@@ -85,6 +85,9 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
         PlaybackPrivacy.protectedFavorites = protectedFavorites
         runCatching { MpvSourceNative.setPrivacy(!PlaybackPrivacy.diagnostics) }
     }
+    /** Per-file settings cleanup of recognized live-subtitle text. */
+    @UsedByGodot fun clear_listening_cache(networkOnly: Boolean): Boolean =
+        activity?.applicationContext?.let { ListeningCueCache.clear(it.filesDir, networkOnly) } ?: false
     @UsedByGodot fun clear_playback_private_data() {
         sources.clearPlaybackReferences()
         activity?.applicationContext?.let { app ->
@@ -170,7 +173,7 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     }, { name, id, json -> if (!closed.get()) emitSignal(name, id, json) }, sources::playable, sources::sidecarAudio,
         sources::releaseMediaStream, sources::sidecarSubtitles, sources::streamProgress, sources::streamFailure,
         sources::subtitleFiles, sources::openSubtitleFile, sources::subtitleIdentity, sources::enableInterleaveCache,
-        sources::finishIsoPreflight, sources::voiceReference, sources::openSubtitleUri, sources::playbackView)
+        sources::finishIsoPreflight, sources::voiceReference, sources::openSubtitleUri, sources::playbackView, sources::prepareListening, sources::retainListeningAudio, sources::listeningInput)
     private val backgroundAudio = BackgroundAudioImport({ activity?.applicationContext }, sources::audioDownload, sources::releasePhotoStream) { id, json ->
         if (!closed.get()) emitSignal("background_audio_imported", id, json)
     }
@@ -632,6 +635,9 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
         return !closed.get() && runCatching { DepthWarmup.ready(host) }.getOrDefault(false)
     }
     @UsedByGodot fun set_mpv_playing(id: Int, playing: Boolean) { if (!closed.get()) mpv.setPlaying(id, playing) }
+    @UsedByGodot fun set_mpv_listening(id: Int,json: String): Boolean = !closed.get() && mpv.setListening(id,json)
+    @UsedByGodot fun get_mpv_listening(id: Int): String = if(closed.get()) "{}" else mpv.listeningStatus(id)
+    @UsedByGodot fun listening_ready(id: Int,epoch: Long) {if(!closed.get())mpv.listeningReady(id,epoch)}
     @UsedByGodot fun set_mpv_audio(id: Int, trackId: Int, volume: Double, muted: Boolean): Boolean =
         !closed.get() && mpv.setAudio(id, trackId, volume, muted)
     @UsedByGodot fun set_mpv_whisper(id: Int, level: Int): Long = if (closed.get()) 0 else mpv.setWhisper(id, level)
@@ -692,6 +698,7 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     @UsedByGodot fun request_mpv_pixel_mask(request: Int, id: Int, token: Long): Boolean =
         !closed.get() && mpv.requestPixelMask(request, id, token)
     @UsedByGodot fun release_mpv_pixel_pin(id: Int, token: Long): Boolean = mpv.unpinPixelPair(id, token)
+    @UsedByGodot fun debug_monotonic_us(): Long = if (BuildConfig.DEBUG) System.nanoTime()/1000 else 0
     internal fun requestMpvPlayerCommand(json: String): Int {
         if (closed.get()) return -1
         if (BuildConfig.DEBUG) {

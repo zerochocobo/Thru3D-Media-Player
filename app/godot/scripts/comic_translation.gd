@@ -7,6 +7,7 @@ const I18n := preload("res://scripts/i18n.gd")
 const SECTION := "comic_translation"
 const EDGE := "https://edge.microsoft.com/translate/translatetext"
 const UA := "Thru3D/ComicTranslation"
+const RETRY_MS := 60000
 var photo: Node3D
 var overlay: RefCounted
 var enabled := false
@@ -18,7 +19,7 @@ var state := "off"
 var provider := ""
 var entries := []
 var cache := {} # Bounded, memory only; no OCR text or translations on disk.
-var failed := {}
+var failed := {} # key -> failure time; retried once RETRY_MS has passed
 var jobs := []
 var current := []
 var epoch := -1
@@ -36,10 +37,12 @@ var _next_at := 0
 var _cooldown := {"Bing": 0, "Edge": 0}
 var _active := false
 var _overlay_dirty := false
+var request_spacing_ms := 500
+var cache_limit := 256 # entries; video subtitles keep more so seeking back needs no request
 
-func _init(owner: Node3D) -> void:
+func _init(owner: Node3D, visual: bool = true) -> void:
 	photo = owner
-	overlay = Overlay.new(owner)
+	if visual: overlay = Overlay.new(owner)
 
 func load_settings(settings: ConfigFile) -> void:
 	target = Protocol.language(str(settings.get_value(SECTION, "target", I18n.language)))
@@ -83,8 +86,9 @@ func reset(clear_cache: bool = false) -> void:
 	jobs.clear(); current.clear(); entries.clear(); failed.clear()
 	_signature = ""; epoch = -1; _regions = []; _overlay_dirty = false
 	state = "waiting" if enabled else "off"
-	if clear_cache: overlay.close()
-	else: overlay.clear()
+	if overlay:
+		if clear_cache: overlay.close()
+		else: overlay.clear()
 	if clear_cache:
 		cache.clear(); _cookies.clear(); _session.clear(); _expires = 0
 
@@ -95,6 +99,20 @@ func _cancel_request() -> void:
 
 func retry() -> void:
 	failed.clear(); _signature = "" # Existing provider cooldowns remain in force.
+
+func observe_sentences(sentences: Array, source_language: String, target_language: String) -> void:
+	# Shared verified transport for video ASR; only finalized, bounded sentences.
+	source = source_language; target = target_language
+	var next := []
+	for sentence: Dictionary in sentences:
+		var text := Protocol.normalize(str(sentence.get("text", "")), source)
+		if text.is_empty() or text.length() > 1000 or "T3D" in text or source == target: continue
+		next.append({"text": text, "source": source, "target": target, "key": Protocol.cache_key(text, source, target)})
+		if next.size() >= 64: break
+	var signature := str(next).sha256_text()
+	if signature == _signature: return
+	_signature = signature; entries = next
+	_schedule()
 
 func observe(pages: Array, regions: Array, page_epoch: int) -> void:
 	if not enabled: return
@@ -129,7 +147,8 @@ func _schedule() -> void:
 	var unique := {}; var pending := {}
 	for entry: Dictionary in current: pending[entry.key] = true
 	for entry: Dictionary in entries:
-		if cache.has(entry.key) or failed.has(entry.key) or pending.has(entry.key): continue
+		if cache.has(entry.key) or pending.has(entry.key): continue
+		if failed.has(entry.key) and Time.get_ticks_msec() - int(failed[entry.key]) < RETRY_MS: continue
 		unique[entry.key] = entry
 	jobs = Protocol.batches(unique.values())
 	_next_at = maxi(_next_at, Time.get_ticks_msec() + 300) # Coalesce newly recognized spread pages.
@@ -141,10 +160,11 @@ func tick(active: bool) -> void:
 	if not active:
 		if is_instance_valid(_request):
 			generation += 1; _cancel_request(); current = []; _signature = ""
-		overlay.visible(false); return
-	if _overlay_dirty:
+		if overlay: overlay.visible(false)
+		return
+	if overlay and _overlay_dirty:
 		overlay.update(entries, cache, text_size, appearance); _overlay_dirty = false
-	overlay.sync(true)
+	if overlay: overlay.sync(true)
 	if _request or not current.is_empty() or jobs.is_empty() or Time.get_ticks_msec() < _next_at: return
 	current = jobs.pop_front()
 	state = "translating"
@@ -190,7 +210,12 @@ func _bing() -> void:
 	_send("bing", _origin + "/ttranslatev3?" + query, headers, HTTPClient.METHOD_POST, body)
 
 func _edge() -> void:
-	if Time.get_ticks_msec() < int(_cooldown.Edge): _finish([]); return
+	if Time.get_ticks_msec() < int(_cooldown.Edge):
+		# Both providers are cooling down. Keep the sentences queued instead
+		# of failing them without a request; resume when one is available.
+		jobs.push_front(current); current = []
+		_next_at = mini(int(_cooldown.Bing), int(_cooldown.Edge))
+		_status(); return
 	var query := {"to": target, "isEnterpriseClient": "false"}
 	if current[0].source != "auto": query["from"] = current[0].source
 	var texts := []
@@ -265,11 +290,13 @@ func _finish(outputs: Array) -> void:
 	for i in current.size():
 		var key: String = current[i].key
 		if outputs.size() == current.size():
-			while cache.size() >= 256: cache.erase(cache.keys()[0])
+			while cache.size() >= cache_limit: cache.erase(cache.keys()[0])
 			cache[key] = {"text": outputs[i], "provider": provider}
-		else: failed[key] = true
+		else:
+			while failed.size() >= 256: failed.erase(failed.keys()[0])
+			failed[key] = Time.get_ticks_msec()
 	current = []; _overlay_dirty = true
-	_next_at = Time.get_ticks_msec() + 500
+	_next_at = Time.get_ticks_msec() + maxi(500, request_spacing_ms)
 	_status()
 
 func _status() -> void:
@@ -277,6 +304,21 @@ func _status() -> void:
 	elif not jobs.is_empty() or not current.is_empty(): state = "translating"
 	elif not failed.is_empty(): state = "partial" if translated_count() > 0 else "error"
 	else: state = "ready" if not entries.is_empty() else "waiting"
+
+## Milliseconds until a provider is available again; 0 when one can be asked now.
+func cooldown_ms() -> int:
+	return maxi(0, mini(int(_cooldown.Bing), int(_cooldown.Edge)) - Time.get_ticks_msec())
+
+func pending_count() -> int:
+	var count := current.size()
+	for batch: Array in jobs: count += batch.size()
+	return count
+
+## A shown entry failed recently and will be retried later.
+func failing() -> bool:
+	for entry: Dictionary in entries:
+		if failed.has(entry.key) and Time.get_ticks_msec() - int(failed[entry.key]) < RETRY_MS: return true
+	return false
 
 func translated_count() -> int:
 	var count := 0
@@ -307,4 +349,6 @@ func snapshot() -> Dictionary:
 		"translation_size": text_size, "translation_appearance": appearance, "translation_state": state,
 		"translation_count": translated_count(), "translation_total": entries.size(), "translation_provider": provider}
 
-func close() -> void: reset(true); overlay.close()
+func close() -> void:
+	reset(true)
+	if overlay: overlay.close()

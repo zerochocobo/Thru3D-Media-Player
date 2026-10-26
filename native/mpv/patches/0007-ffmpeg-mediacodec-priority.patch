@@ -1,0 +1,83 @@
+--- a/libavcodec/mediacodecdec.c
++++ b/libavcodec/mediacodecdec.c
+@@ -23,6 +23,7 @@
+ #include "config_components.h"
+ 
+ #include <stdint.h>
++#include <stdlib.h>
+ #include <string.h>
+ 
+ #include "libavutil/avassert.h"
+@@ -61,6 +62,8 @@
+     int use_ndk_codec;
+     // Ref. MediaFormat KEY_OPERATING_RATE
+     int operating_rate;
++    // Ref. MediaFormat KEY_PRIORITY (Thru3D patch 0007): -1 unspecified, 0 real time, 1 best effort
++    int priority;
+     QuestDoviContext quest_dovi;
+ } MediaCodecContext;
+ 
+@@ -310,7 +313,7 @@
+ }
+ #endif
+ 
+-static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
++static av_cold int mediacodec_decode_init_once(AVCodecContext *avctx)
+ {
+     int ret;
+     int sdk_int;
+@@ -445,6 +448,8 @@
+     }
+     if (s->operating_rate > 0)
+         ff_AMediaFormat_setInt32(format, "operating-rate", s->operating_rate);
++    if (s->priority >= 0)
++        ff_AMediaFormat_setInt32(format, "priority", s->priority);
+ 
+     s->ctx = av_mallocz(sizeof(*s->ctx));
+     if (!s->ctx) {
+@@ -457,6 +462,13 @@
+     s->ctx->delay_flush = s->delay_flush;
+     s->ctx->use_ndk_codec = s->use_ndk_codec;
+ 
++    if (getenv("THRU3D_MEDIACODEC_REJECT_HINTS") && (s->operating_rate > 0 || s->priority >= 0)) {
++        // Device probes only (Debug builds set it): emulate a decoder refusing the hints, with
++        // the state a failed ff_mediacodec_dec_init() leaves (its context already released).
++        av_freep(&s->ctx);
++        ret = AVERROR_EXTERNAL;
++        goto done;
++    }
+     if ((ret = ff_mediacodec_dec_init(avctx, s->ctx, codec_mime, format)) < 0) {
+         s->ctx = NULL;
+         goto done;
+@@ -489,6 +501,22 @@
+         mediacodec_decode_close(avctx);
+     }
+ 
++    return ret;
++}
++
++// A decoder may refuse an operating rate or real-time priority it cannot sustain; then retry
++// once without them (as ExoPlayer does), so playback never depends on these hints.
++static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
++{
++    MediaCodecContext *s = avctx->priv_data;
++    int ret = mediacodec_decode_init_once(avctx);
++    if (ret < 0 && avctx->codec_type == AVMEDIA_TYPE_VIDEO && (s->operating_rate > 0 || s->priority >= 0)) {
++        av_log(avctx, AV_LOG_WARNING, "MediaCodec rejected operating rate %d / priority %d; "
++               "retrying without them\n", s->operating_rate, s->priority);
++        s->operating_rate = 0;
++        s->priority = -1;
++        ret = mediacodec_decode_init_once(avctx);
++    }
+     return ret;
+ }
+ 
+@@ -619,6 +647,8 @@
+                    OFFSET(use_ndk_codec), AV_OPT_TYPE_BOOL, {.i64 = -1}, -1, 1, VD },
+     { "operating_rate", "The desired operating rate that the codec will need to operate at, zero for unspecified",
+             OFFSET(operating_rate), AV_OPT_TYPE_INT, {.i64 = 0}, 0, INT_MAX, VD },
++    { "priority", "Codec priority: 0 real time, 1 best effort, -1 unspecified",
++            OFFSET(priority), AV_OPT_TYPE_INT, {.i64 = -1}, -1, 1, VD },
+     { NULL }
+ };
+ 

@@ -102,6 +102,18 @@ func run() -> void:
 	check(Reader.hit(pages, rects, Vector2(0.52, 0.2)).is_empty(), "Uncertain text cannot be selected")
 	block.eligible = true; pages[0].blocks.append(block.duplicate(true))
 	check(Reader.hit(pages, rects, Vector2(0.52, 0.2)).is_empty(), "Overlapping candidates are skipped")
+	var fallback := block.duplicate(true); fallback.id = 4; fallback.verified = false; fallback.geometry_verified = false; fallback.hit_rows = []
+	pages[0].blocks = [block, fallback]
+	check(Reader.hit(pages, rects, Vector2(0.52, 0.2)).get("key") == "1:3", "Complete contour wins over an overlapping Debug rectangle")
+	pages[0].blocks = [fallback]
+	check(Reader.hit(pages, rects, Vector2(0.52, 0.2)).get("key") == "1:4", "Debug rectangle remains selectable when no contour covers it")
+	var uncertain_contour := block.duplicate(true); uncertain_contour.id = 5; uncertain_contour.verified = false; uncertain_contour.geometry_verified = true
+	pages[0].blocks = [uncertain_contour, fallback]
+	check(Reader.hit(pages, rects, Vector2(0.52, 0.2)).get("key") == "1:5", "Geometry priority is independent of transcription confidence")
+	pages[0].blocks = [block, uncertain_contour]
+	check(Reader.hit(pages, rects, Vector2(0.52, 0.2)).is_empty(), "Two complete overlapping contours remain ambiguous")
+	pages[0].blocks = [fallback, fallback.duplicate(true)]
+	check(Reader.hit(pages, rects, Vector2(0.52, 0.2)).is_empty(), "Two overlapping Debug rectangles remain ambiguous")
 	var source := Image.create(400, 200, false, Image.FORMAT_RGBA8); source.fill(Color.RED)
 	source.fill_rect(Rect2i(160, 0, 240, 200), Color.BLUE)
 	var prepared := Reader.prepare({"image": source, "rects": rects, "epoch": 8})
@@ -188,7 +200,7 @@ func run() -> void:
 	menu.state_provider = func(): return state
 	root.add_child(menu); menu.set_process(false); menu.visible = true; menu.refresh()
 	var entry: Dictionary = menu._buttons.filter(func(button): return button.target == Menu.PHOTO_COMIC_VOICE)[0]
-	check(menu._tips[Menu.PHOTO_COMIC_VOICE] == menu.I18n.t("Comic reading (Beta)"), "Comic reading entry identifies the beta")
+	check(menu._tips[Menu.PHOTO_COMIC_VOICE] == menu.I18n.t("Comic reading"), "Comic reading entry shows its name")
 	check(entry.rect.get_center().is_equal_approx(Vector2(0.5, -0.075)), "Comic entry occupies the bar status row instead of the music toolbar")
 	for other: Dictionary in menu._buttons:
 		if other.target == Menu.PHOTO_COMIC_VOICE: continue

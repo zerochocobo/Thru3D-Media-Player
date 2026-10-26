@@ -1,4 +1,4 @@
-param([switch]$RenderUI, [switch]$SkipJvm, [string[]]$Cases = @('test_reading_render_cache', 'test_reading_page_window', 'test_pdf_reading', 'test_container_locations', 'test_archive_comics', 'test_archive_memory', 'test_photo_magazine', 'test_photo_recovery', 'test_video_pip_images', 'test_image_picker_memory', 'test_privacy_memory', 'test_recent_files', 'test_library_menu'))
+param([switch]$RenderUI, [switch]$SkipJvm, [string[]]$Cases = @('test_reading_render_cache', 'test_reading_page_window', 'test_pdf_reading', 'test_pdf_layout_menu', 'test_container_locations', 'test_archive_comics', 'test_archive_memory', 'test_photo_magazine', 'test_photo_recovery', 'test_video_pip_images', 'test_image_picker_memory', 'test_privacy_memory', 'test_recent_files', 'test_library_menu'))
 $ErrorActionPreference = 'Stop'
 $workspace = Split-Path -Parent $PSScriptRoot
 $output = Join-Path $workspace 'build/output/pdf'

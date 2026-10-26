@@ -21,6 +21,8 @@ local.properties
 *.aar
 *.so
 *.onnx
+*.ort
+*.model
 *.mnn
 *.pt
 *.pth
@@ -67,6 +69,7 @@ thru3d-signing.json
 /app/godot/assets/audio/CREDITS.txt
 
 /models/narration/
+/models/listening/
 
 /app/godot/environments/grand_cinema/
 /narration/voices/

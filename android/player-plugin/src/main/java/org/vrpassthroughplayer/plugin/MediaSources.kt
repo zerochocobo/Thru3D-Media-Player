@@ -50,6 +50,9 @@ internal class MediaSources(
     fun releasePhotoStream(uri: String) { if (uri.isNotEmpty()) { usb.forgetStream(uri); server?.revoke(uri) } }
     fun streamProgress(uri: String): TransferMeter.Snapshot? = server?.progress(uri)
     fun streamFailure(uri: String): PlaybackFailure? = server?.failure(uri)
+    fun prepareListening(uri: String) { server?.shareReadAhead(uri) }
+    fun retainListeningAudio(uri: String, ranges: LongArray) { server?.retainAudio(uri,ranges) }
+    fun listeningInput(uri: String): ListeningInput? = server?.listeningInput(uri)
     fun enableInterleaveCache(uri: String, audioChunks: List<AudioReadSpan>): Boolean = server?.enableInterleaveCache(uri, audioChunks) ?: false
     // Non-cloud views (SMB) are owned by the player's network lease, released like the parent.
     fun playbackView(uri: String, layout: Mp4PlaybackLayout): String? = server?.let {

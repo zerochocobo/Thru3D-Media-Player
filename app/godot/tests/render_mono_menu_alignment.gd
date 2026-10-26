@@ -2,6 +2,7 @@ extends SceneTree
 const Player := preload("res://scripts/player_menu.gd")
 const Composition := preload("res://scripts/menu_composition.gd")
 const Mono := preload("res://scripts/mono_menu_capture.gd")
+const PointerTest := preload("res://tests/test_mono_menu_pointer.gd")
 var failures: Array[String] = []
 var checks := 0
 var output := ProjectSettings.globalize_path("res://../../build/output/mono-scope-alignment-20261025")
@@ -22,6 +23,7 @@ func run() -> void:
 	menu.layout_head_provider = func(): return eye.global_transform
 	menu.global_transform = Transform3D(Basis.IDENTITY,Vector3(0,-0.45,-1.4))
 	menu.set_layout_viewer(eye.global_transform); menu.toggle()
+	menu.set_process(false) # Keep the captured fixture stable while checking saved ink transforms.
 	var originals: Array[Dictionary] = []
 	for button in menu._buttons:
 		originals.append({"node":button.node,"pose":button.node.transform,"button":true})
@@ -48,6 +50,19 @@ func run() -> void:
 				check(offset.length() < 0.05,"Floating glyph and plate share a capture centre: %d" % button.target)
 				aligned += 1
 		check(aligned >= 5,"Alignment checks cover both ends of the floating row")
+		for button in menu._buttons:
+			if not is_equal_approx(button.rect.get_center().y,0.215): continue
+			for side in [-1,1]:
+				var hand := "left_hand" if side < 0 else "right_hand"
+				var start := eye.global_position + Vector3(side*0.25,-0.2,-0.3)
+				var direction := PointerTest.aim(menu,eye.global_position,start,button.node.global_position)
+				menu.update_pointer(hand,start,direction,true); mono.update()
+				var pointer: Dictionary = menu._pointers[hand]
+				var vertices: PackedVector3Array = pointer.line.mesh.surface_get_arrays(0)[Mesh.ARRAY_VERTEX]
+				var tip: Vector3 = pointer.line.to_global(vertices[1])
+				var delta := mono.camera.unproject_position(tip)-mono.camera.unproject_position(pointer.dot.global_position)
+				check(delta.length()<0.05,"Captured reticle centre and line tip share one screen pixel after head motion")
+				check(pointer.line.material_override is ShaderMaterial,"Ray still uses the hand-anchored eye-buffer path")
 		await frames()
 		for saved in originals:
 			check(saved.node.transform.is_equal_approx(saved.pose),"Original button and ink transforms restored after drawing")

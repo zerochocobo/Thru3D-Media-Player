@@ -1,0 +1,153 @@
+{
+  "version": "0.1.5",
+  "revision": "234f60faa0eb388b01cdf7e60aca232af37aefda",
+  "source": {
+    "repository": "https://github.com/moonshine-ai/moonshine.git"
+  },
+  "library": {
+    "build": "source",
+    "onnxruntime_version": "1.28.0"
+  },
+  "models": {
+    "zh": {
+      "id": "moonshine-tiny-streaming-zh",
+      "directory": "listening/zh",
+      "files": {
+        "adapter.ort": {
+          "bytes": 1318472,
+          "sha256": "84d1bed88310f5b6dd452203bcaffb765f017a7d06da8d84a898235ef5c90e12",
+          "url": "https://download.moonshine.ai/model/tiny-streaming-zh/quantized_26_08_24/adapter.ort"
+        },
+        "cross_kv.ort": {
+          "bytes": 1288120,
+          "sha256": "22c2261f3120b766a91deceb4f32ca0bef0a8f2b181509ad0dc9fe6adbd0c23a",
+          "url": "https://download.moonshine.ai/model/tiny-streaming-zh/quantized_26_08_24/cross_kv.ort"
+        },
+        "decoder_kv.ort": {
+          "bytes": 19717336,
+          "sha256": "5caf9e4e9eaa39b93122338bfbad2917630afc51293f6229b935ae7df28bed33",
+          "url": "https://download.moonshine.ai/model/tiny-streaming-zh/quantized_26_08_24/decoder_kv.ort"
+        },
+        "encoder.ort": {
+          "bytes": 7772792,
+          "sha256": "4270ca0e1ecd10e78d658b08b91d81c7f913511177e1ad461c8a9d9d0903503d",
+          "url": "https://download.moonshine.ai/model/tiny-streaming-zh/quantized_26_08_24/encoder.ort"
+        },
+        "frontend.model.ort": {
+          "bytes": 27608,
+          "sha256": "d27a9c994b43fa6568121f502e8b99d511ffd0425d4090ffddcc82c9a5667971",
+          "url": "https://download.moonshine.ai/model/tiny-streaming-zh/quantized_26_08_24/frontend.model.ort"
+        },
+        "frontend.weights.ort": {
+          "bytes": 2090728,
+          "sha256": "ac56e8ee7780e1f254ee26f2d9c9a3b3c6cfd2f6822cb3944924ae321f86dc50",
+          "url": "https://download.moonshine.ai/model/tiny-streaming-zh/quantized_26_08_24/frontend.weights.ort"
+        },
+        "streaming_config.json": {
+          "bytes": 509,
+          "sha256": "d31afd7c2dd5ee9ae3fa232312c5b42cb3e4fe1c6e9c53d885f2bea63023790a",
+          "url": "https://download.moonshine.ai/model/tiny-streaming-zh/quantized_26_08_24/streaming_config.json"
+        },
+        "tokenizer.bin": {
+          "bytes": 74587,
+          "sha256": "f172da002a818b9968d5c7a995cc7c51acf2168331ab5f914b5b0860ceab8236",
+          "url": "https://download.moonshine.ai/model/tiny-streaming-zh/quantized_26_08_24/tokenizer.bin"
+        }
+      }
+    },
+    "en": {
+      "id": "moonshine-tiny-streaming-en",
+      "directory": "listening/en",
+      "files": {
+        "adapter.ort": {
+          "bytes": 1319664,
+          "sha256": "22ecc949e146c49667fda28d102d4e30749a107dc88a396292aa8f277ef1347c",
+          "url": "https://download.moonshine.ai/model/tiny-streaming-en/quantized_26_08_21/adapter.ort"
+        },
+        "cross_kv.ort": {
+          "bytes": 1287544,
+          "sha256": "143a36667b8d05fd9d04e8c337b7ee121f37ef299aea6b3d82bdb3d3401950b4",
+          "url": "https://download.moonshine.ai/model/tiny-streaming-en/quantized_26_08_21/cross_kv.ort"
+        },
+        "decoder_kv.ort": {
+          "bytes": 32583720,
+          "sha256": "8852553f312adb6c9aa4d17418015049b30f412209ee569d336548c0044627de",
+          "url": "https://download.moonshine.ai/model/tiny-streaming-en/quantized_26_08_21/decoder_kv.ort"
+        },
+        "encoder.ort": {
+          "bytes": 7675440,
+          "sha256": "a8414e1a5dedf9f2093d7680601dd8a9b0433e7020260eafe0e370ead91134ca",
+          "url": "https://download.moonshine.ai/model/tiny-streaming-en/quantized_26_08_21/encoder.ort"
+        },
+        "frontend.model.ort": {
+          "bytes": 23344,
+          "sha256": "5121b561417b638afce0c6c31b760e37c93cf97f80d9b0031aad1fe7b6f25d61",
+          "url": "https://download.moonshine.ai/model/tiny-streaming-en/quantized_26_08_21/frontend.model.ort"
+        },
+        "frontend.weights.ort": {
+          "bytes": 2093464,
+          "sha256": "217da24ac6f522ebf02da8ef288e77d1ac68d50d4a6821433182e4fbf4204bbd",
+          "url": "https://download.moonshine.ai/model/tiny-streaming-en/quantized_26_08_21/frontend.weights.ort"
+        },
+        "streaming_config.json": {
+          "bytes": 509,
+          "sha256": "74fe5ddebd63b17caf59e8a3b18c17547ff7bce1642050edbb1c3962674f8950",
+          "url": "https://download.moonshine.ai/model/tiny-streaming-en/quantized_26_08_21/streaming_config.json"
+        },
+        "tokenizer.bin": {
+          "bytes": 249974,
+          "sha256": "6884b35fd6377d4c4d32336a0bc152f36b64d1e45b6503683cdc238250a8472d",
+          "url": "https://download.moonshine.ai/model/tiny-streaming-en/quantized_26_08_21/tokenizer.bin"
+        }
+      }
+    },
+    "ja": {
+      "id": "moonshine-tiny-streaming-ja",
+      "directory": "listening/ja",
+      "files": {
+        "adapter.ort": {
+          "bytes": 1318472,
+          "sha256": "25f302e6203028e487d1b1f93db6fe5baf587373498062190160de70e0c4ae58",
+          "url": "https://download.moonshine.ai/model/tiny-streaming-ja/quantized_26_08_23/adapter.ort"
+        },
+        "cross_kv.ort": {
+          "bytes": 1288120,
+          "sha256": "170ee70aeb3c82fd067193add0d1a8619cd16d4de80a5e0239dac12d956e8575",
+          "url": "https://download.moonshine.ai/model/tiny-streaming-ja/quantized_26_08_23/cross_kv.ort"
+        },
+        "decoder_kv.ort": {
+          "bytes": 19717336,
+          "sha256": "ccc047610727f9fe039212a0b2370a7f970e80776376a229181a76998ff5af20",
+          "url": "https://download.moonshine.ai/model/tiny-streaming-ja/quantized_26_08_23/decoder_kv.ort"
+        },
+        "encoder.ort": {
+          "bytes": 7772792,
+          "sha256": "6420c180be55732d10db7a85f8966237bbbeee3b47addab4790ed81c22dde2cf",
+          "url": "https://download.moonshine.ai/model/tiny-streaming-ja/quantized_26_08_23/encoder.ort"
+        },
+        "frontend.model.ort": {
+          "bytes": 27608,
+          "sha256": "c6fdee4c81d421617b9571e43cf952dc1e7e4f45d0cb1dbf13104ee8af4ffd45",
+          "url": "https://download.moonshine.ai/model/tiny-streaming-ja/quantized_26_08_23/frontend.model.ort"
+        },
+        "frontend.weights.ort": {
+          "bytes": 2093288,
+          "sha256": "673a7177f030da9ce948daa1af44ec5425b6f0825348aacb80f6a01c18e42a07",
+          "url": "https://download.moonshine.ai/model/tiny-streaming-ja/quantized_26_08_23/frontend.weights.ort"
+        },
+        "streaming_config.json": {
+          "bytes": 509,
+          "sha256": "d31afd7c2dd5ee9ae3fa232312c5b42cb3e4fe1c6e9c53d885f2bea63023790a",
+          "url": "https://download.moonshine.ai/model/tiny-streaming-ja/quantized_26_08_23/streaming_config.json"
+        },
+        "tokenizer.bin": {
+          "bytes": 101836,
+          "sha256": "9f2599f20c3a9b03d79dbe122e443647c6589ce8e5c73e65e5c5d6f73485d5de",
+          "url": "https://download.moonshine.ai/model/tiny-streaming-ja/quantized_26_08_23/tokenizer.bin"
+        }
+      }
+    }
+  },
+  "license_note": "Pinned upstream LICENSE expressly covers all streaming speech-to-text models in every language under MIT. The Community restriction applies only to the enumerated legacy non-streaming non-English models. This bundle uses Tiny Streaming zh/en/ja; see the retained upstream LICENSE.",
+  "license_source": "https://github.com/moonshine-ai/moonshine/blob/234f60faa0eb388b01cdf7e60aca232af37aefda/LICENSE"
+}

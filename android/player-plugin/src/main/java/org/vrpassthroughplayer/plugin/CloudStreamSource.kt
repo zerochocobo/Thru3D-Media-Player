@@ -5,6 +5,9 @@ import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URI
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.locks.ReentrantReadWriteLock
+import kotlin.concurrent.read
+import kotlin.concurrent.write
 
 /** Reuses one upstream range stream per MPV connection, never buffers the whole video. */
 internal class CloudStreamSource(
@@ -20,6 +23,39 @@ internal class CloudStreamSource(
     @Volatile private var rangeWindow=Long.MAX_VALUE
     @Volatile private var closed = false
     private val readers = ConcurrentHashMap.newKeySet<RemoteReader>()
+    private val readMode = ReentrantReadWriteLock(true)
+    @Volatile private var sharedReadAhead: InterleaveReadCache? = null
+    /** Called on the listening worker. Existing logical clients migrate without
+     * waiting for a stalled body to release the mode gate. */
+    override val sharedReadAheadActive get() = sharedReadAhead != null
+    override fun shareReadAhead(onRead: (Int) -> Unit) = readMode.write {
+        check(!closed)
+        if (sharedReadAhead == null && archivePacer == null && rangeWindow == Long.MAX_VALUE) {
+            // Mark retirement before disconnect: an interrupted read must not
+            // auto-reconnect its old body while shared ownership is published.
+            readers.forEach { it.retireOrigin() }
+            val origin = object : StreamSource {
+                override val size get() = this@CloudStreamSource.size
+                override fun open(): StreamSource.Reader = synchronized(this@CloudStreamSource) {
+                    check(!closed)
+                    RemoteReader(backing = true).also { readers.add(it) }
+                }
+                override fun close() { readers.filter { it.backing }.forEach { it.close() } }
+            }
+            // Bounded RAM only, scoped to this media lease; no plaintext disk
+            // cache. Header, tail index, playback and ASR can all be active;
+            // four smaller windows keep the same 32-MiB transport budget.
+            // 115 allows two long bodies per file: playback and ASR each keep
+            // a sequential one instead of reconnecting the other at every turn.
+            // A 4-MiB gap reads through the widest audio interleave seen (3.4 MB).
+            sharedReadAhead = InterleaveReadCache(origin, 8 * 1024 * 1024, onRead,
+                maxForwardGapBytes = 4 * 1024 * 1024, upstreams = 2, readAheadBytes = 2 * 1024 * 1024,
+                windowCount = 4,readAheadBudgetMs = 500)
+        }
+    }
+    fun readAheadStats(): Map<String, Long>? = sharedReadAhead?.stats()
+    override fun readSnapshot(): Map<String,Long> = sharedReadAhead?.readSnapshot() ?: emptyMap()
+    override fun retainAudio(spans: List<AudioReadSpan>) { sharedReadAhead?.retainAudio(spans) }
     private var archivePacer: ArchiveRangePacer? = null
     private var completeRanges = false
     fun forArchiveReading(): CloudStreamSource { archivePacer = ArchiveRangePacer(); return this }
@@ -56,12 +92,14 @@ internal class CloudStreamSource(
         }
         return link!!
     }
-    override fun open(): StreamSource.Reader = synchronized(this) {
+    override fun open(): StreamSource.Reader = openReader(false)
+    override fun openAudio(): StreamSource.Reader = openReader(true)
+    private fun openReader(preferAudio: Boolean): StreamSource.Reader = synchronized(this) {
         if (closed) throw CloudFailure()
         // A cancelled loopback client may disappear while the old handler is
         // waiting for pacing/headers. Retire it before the next archive range.
         if (archivePacer != null) readers.forEach { it.close() }
-        RemoteReader(completeRange = completeRanges).also { readers.add(it) }
+        RemoteReader(completeRange = completeRanges,preferAudio=preferAudio).also { readers.add(it) }
     }
     /** Explicit, bounded small-RAR transfer; ordinary archive ranges retain their cap. */
     fun openSmallRarDownload(): StreamSource.Reader = synchronized(this) {
@@ -74,24 +112,46 @@ internal class CloudStreamSource(
         // KeySetView.forEach tolerates concurrent removals. Kotlin toList's
         // size==1 shortcut can call next() after the last reader disappears.
         readers.forEach { it.close() }
+        sharedReadAhead?.close()
         link = null
     }
 
     private inner class RemoteReader(private val windowBytes: Long = rangeWindow,
-        private val completeRange: Boolean = false) : BoundedStreamReader {
+        private val completeRange: Boolean = false, val backing: Boolean = false,
+        private val preferAudio: Boolean = false) : BoundedStreamReader, OriginProgress {
+        @Volatile override var awaitingResponse = false
         @Volatile private var done = false
+        @Volatile private var originRetired = false
         @Volatile private var connection: HttpURLConnection? = null
         private var input: InputStream? = null
+        private var shared: StreamSource.Reader? = null
         private var next = -1L
         private var end = -1L
         private var rangeEnd = size - 1
+        override fun counters(): Map<String,Long> = shared?.counters() ?: emptyMap()
         override fun setRangeEnd(endInclusive: Long) {
             if (archivePacer != null) rangeEnd = minOf(endInclusive, size - 1)
         }
 
         override fun read(offset: Long, buffer: ByteArray, length: Int): Int {
+            while (true) {
+                // Only choose ownership under the gate. Network IO never keeps
+                // shareReadAhead's writer waiting for the 20-second read timeout.
+                val cache = readMode.read {
+                    if (closed || done || Thread.currentThread().isInterrupted) throw cancelled()
+                    if (backing) null else sharedReadAhead
+                }
+                if (cache != null) {
+                    val delegate = shared ?: (if(preferAudio)cache.openAudio() else cache.open()).also { shared = it }
+                    return delegate.read(offset, buffer, length)
+                }
+                try { return readOrigin(offset, buffer, length) }
+                catch (_: OriginSwitched) { /* Retry this byte through the published shared cache. */ }
+            }
+        }
+        private fun readOrigin(offset: Long, buffer: ByteArray, length: Int): Int {
             try {
-                if (closed || done || Thread.currentThread().isInterrupted) throw cancelled()
+                if (closed || done || originRetired || Thread.currentThread().isInterrupted) throw cancelled()
                 require(offset in 0 until size && length in 1..buffer.size)
                 if (offset != next || offset > end || input == null) openRange(offset)
                 var count = 0
@@ -101,7 +161,7 @@ internal class CloudStreamSource(
                         if (count <= 0) throw PlaybackFailureException(PlaybackFailure("stream_interrupted", "reading", "Upstream stream ended before the requested range"))
                         break
                     } catch (error: IOException) {
-                        if (archivePacer != null || attempt != 0 || closed || done || Thread.currentThread().isInterrupted) throw error
+                        if (archivePacer != null || attempt != 0 || closed || done || originRetired || Thread.currentThread().isInterrupted) throw error
                         // A server may close an idle body while playback is
                         // paused. Resume at the first byte not returned to the
                         // caller; never restart or duplicate already read audio.
@@ -112,6 +172,9 @@ internal class CloudStreamSource(
                 next = offset + count
                 return count
             } catch (error: Exception) {
+                if (originRetired && !closed && !done && !Thread.currentThread().isInterrupted) {
+                    disconnect(); throw OriginSwitched()
+                }
                 val wasCancelled = closed || done || Thread.currentThread().isInterrupted
                 close()
                 if (wasCancelled) throw cancelled()
@@ -120,6 +183,10 @@ internal class CloudStreamSource(
         }
 
         private fun openRange(offset: Long) {
+            awaitingResponse = true
+            try { requestRange(offset) } finally { awaitingResponse = false }
+        }
+        private fun requestRange(offset: Long) {
             disconnect()
             var selected = currentLink()
             var refreshed=false;var gatewayRetried=false;var busyRetries=0
@@ -128,11 +195,11 @@ internal class CloudStreamSource(
                 var retry=false
                 var target = URI(selected.url)
                 for (redirect in 0..5) {
-                    if (closed || done || Thread.currentThread().isInterrupted) throw cancelled()
+                    if (closed || done || originRetired || Thread.currentThread().isInterrupted) throw cancelled()
                     archivePacer?.await { closed || done }
                     val request = linkConnection?.invoke(target, selected) ?: connect(target)
                     synchronized(this) {
-                        if (closed || done) { request.disconnect(); throw cancelled() }
+                        if (closed || done || originRetired) { request.disconnect(); throw cancelled() }
                         connection = request
                     }
                     request.connectTimeout = 15000; request.readTimeout = 20000
@@ -183,30 +250,36 @@ internal class CloudStreamSource(
                     } else if (archivePacer == null && status == 200 && offset == 0L && requestedEnd==size-1 && request.getHeaderField("Content-Length")?.toLongOrNull() == size) {
                         end = size - 1
                     } else throw PlaybackFailureException(PlaybackFailure("range_unsupported", "reading", "Upstream ignored the requested byte range", httpStatus = status))
-                    input = request.inputStream
-                    next = offset
+                    synchronized(this) {
+                        if (closed || done || originRetired) { request.disconnect(); throw cancelled() }
+                        input = request.inputStream
+                        next = offset
+                    }
                     return
                 }
                 if(!retry)throw PlaybackFailureException(PlaybackFailure("redirect_failed", "reading", "Upstream redirect limit exceeded"))
             }
         }
-        private fun disconnect() {
+        fun disconnect() {
             // Disconnect first to unblock a pending read during logout or player shutdown.
             connection?.disconnect(); connection = null
             runCatching { input?.close() }; input = null
         }
+        fun retireOrigin() = synchronized(this) { originRetired = true; disconnect() }
         override fun close() {
             synchronized(this) { done = true; disconnect() }
+            shared?.close()
             readers.remove(this)
         }
     }
     companion object {
+        private class OriginSwitched : IOException("Origin ownership changed")
         val upstreamReasons=setOf("upstream_error","cdn_cookie_missing","cdn_cookie_invalid","cdn_ua_missing","cdn_expired","cdn_signature_invalid","cdn_signature_missing","cdn_ip_mismatch","cdn_rate_limited","cdn_connections_limited")
         private fun cancelled() = PlaybackFailureException(PlaybackFailure("cancelled", "reading", "Request cancelled"))
         private fun invalidRange(status: Int) = PlaybackFailureException(PlaybackFailure("invalid_range", "reading", "Upstream returned an invalid byte range", httpStatus = status))
         private fun openMediaConnection(uri: URI): HttpURLConnection {
             if (!CloudDrive.allowedMediaUri(uri)) throw CloudFailure()
-            return uri.toURL().openConnection() as HttpURLConnection
+            return CancellableMediaConnection.open(uri)
         }
     }
 }

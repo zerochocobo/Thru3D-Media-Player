@@ -8,6 +8,8 @@ const Fps := preload("res://scripts/fps_overlay.gd")
 const I18n := preload("res://scripts/i18n.gd")
 var checks := 0
 var failures: Array[String] = []
+class ListeningPlatform extends RefCounted:
+	func set_mpv_listening(_id: int, _value: String) -> bool: return true
 
 func check(value: bool, message: String) -> void:
 	checks += 1
@@ -39,6 +41,28 @@ func run() -> void:
 	video._loading_status = {"remote": true, "phase": "reading", "bytes_per_second": 2300000}
 	video.changed.emit()
 	check(not overlay.visible and not menu.visible, "Uninterrupted playback has no status or transport")
+	var previous_platform = video.platform
+	video.platform = ListeningPlatform.new()
+	video.media.playback = {"details": {"audio_tracks": [{"id": 1}]}}
+	video.listening.enabled = true
+	video.listening.report = {"state": "preparing", "phase": "models", "model_progress": 25}
+	main._show_player_menu(); menu.refresh_values()
+	check(menu._status.visible and menu._status.text.ends_with("25%"), "ASR preparation progress is visible on the playback control bar")
+	var status_label := menu._status
+	video.listening.report = {"state": "preparing", "phase": "recognition", "buffer_progress": 75}
+	menu.refresh_values()
+	check(menu._status == status_label and menu._status.text.ends_with("75%"), "Measured preparation progress updates without rebuilding the controls")
+	check(video.requested_play and video.media.state == "playing", "Preparation feedback preserves video playback and never opens a modal")
+	menu.state_provider = func():
+		var sample: Dictionary = main._menu_state()
+		sample.seek_feedback = {"phase": "done", "alpha": 0.05, "origin_ms": 0, "target_ms": 1000, "delta_ms": 1000}
+		return sample
+	menu.refresh_values()
+	check(menu._status.text.ends_with("75%") and is_equal_approx(menu._status.modulate.a, 1.0), "Seek feedback fading never hides active ASR preparation progress")
+	menu.state_provider = main._menu_state
+	video.listening.set_option("listening_enabled", false); menu.refresh_values()
+	check(not menu._status.visible, "Closing listening in its menu immediately clears preparation feedback")
+	video.platform = previous_platform; video.media.playback = {}; menu.dismiss()
 	for language in ["en", "zh", "zh_Hant", "ja"]:
 		I18n.use(language)
 		for uri in ["smb://fixture/Share/movie.mp4", "http://127.0.0.1/dlna/movie", "cloud://fixture/movie.mp4", "medialib://fixture/movie"]:

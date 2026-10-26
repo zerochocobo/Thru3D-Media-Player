@@ -81,3 +81,7 @@ The unified sampling flow uses a caller-selected audio/video source and track, a
 ## Comic OCR
 
 Two external PP-OCRv6 Small files are pinned in `third_party/comic-ocr/model.json`, separately from narration/reference/VAD. See [preparation/data boundaries](COMIC_READING.md). No OCR weight, training page or private transcript is published; existing voice provenance limitations remain.
+
+## Live subtitle recognition
+
+Three separately prepared Moonshine Tiny Streaming language bundles (24 pinned files) are required by normal Debug/Release builds. No ASR payload is committed. See [live subtitle preparation, privacy and limits](LIVE_SUBTITLES.md).

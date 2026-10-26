@@ -87,7 +87,9 @@ func _run() -> void:
 	var manager := Library.new(); manager.settings_provider = func(): return {"voice_manager": global_state}
 	camera.add_child(manager); manager.position.y = -0.10; manager.set_process(false); manager.visible = true; manager.section = manager.Section.SETTINGS; manager.voice_manager.opened = true; manager.voice_manager.library = true; manager.voice_manager.source = global_state.source_uri
 	for language in ["zh", "zh_Hant", "ja", "en"]:
-		I18n.use(language); manager._cache_usage = Vector2i.ZERO; manager.tab = manager.VIDEO_TAB; manager.voice_manager.opened = false; manager.refresh()
+		I18n.use(language); manager._cache_usage = Vector2i.ZERO; manager.voice_manager.opened = false
+		manager._activate(Library.TAB_BASE + Library.VIDEO_TAB)
+		manager._choose(manager.rows.filter(func(row): return row.get("video_settings_group", "") == "subtitles")[0])
 		await process_frame; await RenderingServer.frame_post_draw; await RenderingServer.frame_post_draw
 		if viewport.get_texture().get_image().save_png(output.path_join(language + "-global-settings.png")) != OK: failures.append("global entry render")
 		if not manager._list.get_children().any(func(node): return node is Label3D and node.text == I18n.t("Subtitle narration")) or not manager.text_snapshot().contains(I18n.t("Manage my voices")): failures.append("global entry labels " + language)

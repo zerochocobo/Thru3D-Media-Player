@@ -30,19 +30,25 @@ internal class Mp4PlaybackLayout(val originalSize: Long, val header: ByteArray,
 internal class Mp4PlaybackSource(private val origin: StreamSource, val layout: Mp4PlaybackLayout,
     onRead: (Int) -> Unit = {}) : StreamSource {
     override val size = layout.size
-    private val transport = InterleaveReadCache(origin, onRead = onRead, audioChunks = layout.audioChunks,
+    override fun shareReadAhead(onRead: (Int) -> Unit) = origin.shareReadAhead(onRead)
+    override val sharedReadAheadActive get() = origin.sharedReadAheadActive
+    private val transport = InterleaveReadCache(origin, onRead = { if (!origin.sharedReadAheadActive) onRead(it) }, audioChunks = layout.audioChunks,
         maxForwardGapBytes = 1024 * 1024)
     @Volatile private var closed = false
     init { require(origin.size == layout.originalSize) }
     val cloud get() = origin is CloudStreamSource
     fun forkOrigin(): StreamSource? = origin.fork()
     fun stats() = transport.stats()
-    override fun open(): StreamSource.Reader {
+    override fun readSnapshot() = origin.readSnapshot() + transport.readSnapshot().mapKeys {"view_"+it.key}
+    override fun open(): StreamSource.Reader = openReader(false)
+    override fun openAudio(): StreamSource.Reader = openReader(true)
+    private fun openReader(audioOnly: Boolean): StreamSource.Reader {
         check(!closed)
-        val reader = transport.open()
+        val reader = if(audioOnly)transport.openAudio() else transport.open()
         return object : UpstreamMeteredReader {
             @Volatile private var done = false
             private val scratch = ByteArray(64 * 1024)
+            override fun counters()=reader.counters()
             override fun read(offset: Long, buffer: ByteArray, length: Int): Int {
                 if (closed || done || Thread.currentThread().isInterrupted) throw IOException("Request cancelled")
                 require(offset in 0 until size && length in 1..buffer.size)

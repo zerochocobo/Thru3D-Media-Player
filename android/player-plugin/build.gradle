@@ -19,6 +19,8 @@ def vadManifest = new groovy.json.JsonSlurper().parse(file('../../third_party/na
 def comicManifest = new groovy.json.JsonSlurper().parse(file('../../third_party/comic-ocr/model.json'))
 def narrationBundles = [narrationManifest, cloneManifest, vadManifest]
 def assetBundles = narrationBundles.collect { [bundle: it, root: "../../models/narration/${it.id}"] } + [[bundle: comicManifest, root: "../../models/comic-ocr/${comicManifest.id}"]]
+def listeningManifest = new groovy.json.JsonSlurper().parse(file('../../third_party/moonshine/model.json'))
+listeningManifest.models.each { language, bundle -> assetBundles += [[bundle: bundle, root: "../../models/listening/${language}"]] }
 def narrationModels = file("../../models/narration/${narrationManifest.id}")
 def playerAssets = layout.buildDirectory.dir('playerAssets')
 def stagePlayerAssets = tasks.register('stagePlayerAssets', Sync) {
@@ -73,7 +75,7 @@ android {
         externalNativeBuild {
             cmake {
                 // Normal playback includes offline subtitle narration.
-                targets 'quest_rvm', 'quest_render_bridge', 'quest_mpv', 'quest_video_layer', 'quest_usb', 'quest_narration', 'quest_tiff', 'quest_hdr'
+                targets 'quest_rvm', 'quest_render_bridge', 'quest_mpv', 'quest_video_layer', 'quest_usb', 'quest_narration', 'quest_listening', 'quest_tiff', 'quest_hdr'
                 arguments "-Dncnn_DIR=${ncnnRoot.get().replace('\\', '/')}/lib/cmake/ncnn", '-DANDROID_STL=c++_shared',
                 '-DQUEST_NARRATION_ENABLED=ON',
                 "-DQUEST_DIAGNOSTIC_MODELS=${includeDiagnostics ? 'ON' : 'OFF'}",
@@ -122,6 +124,8 @@ dependencies {
     compileOnly files(godotApi.get())
     compileOnly files("../../app/godot/addons/quest_player/bin/cloudcore.aar")
     implementation 'androidx.media3:media3-exoplayer:1.10.1'
+    // Explicit socket cancellation for shared cloud-media seek/pre-read handoff.
+    implementation 'com.squareup.okhttp3:okhttp:4.12.0'
     // Preserve SMB2/3, NTLM authentication, signing and encryption (LGPL-2.1).
     smbUpstream 'org.codelibs:jcifs:3.0.4'
     implementation files(smbClientJar)

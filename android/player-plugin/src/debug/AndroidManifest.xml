@@ -11,6 +11,7 @@
         <receiver android:name="org.vrpassthroughplayer.plugin.DebugDiagnosticsReceiver"
             android:exported="true" android:permission="android.permission.DUMP">
             <intent-filter>
+                <action android:name="com.wapok.thru3d.DEBUG_LISTENING_NETWORK" />
                 <action android:name="com.wapok.thru3d.DEBUG_PHOTO_PORTRAIT" />
                 <action android:name="com.wapok.thru3d.DEBUG_RVM_STANDALONE" />
                 <action android:name="com.wapok.thru3d.DEBUG_RVM" />

@@ -107,6 +107,7 @@ if ($UsePreparedModelAssets) {
 & "$workspace\tools\environment\Prepare-MpvAndroid.ps1" -ToolRoot $ToolRoot -Candidate $MpvCandidate
 & "$workspace\tools\environment\Prepare-Narration.ps1"
 & "$workspace\tools\environment\Prepare-NarrationModels.ps1"
+& "$workspace\tools\environment\Prepare-Listening.ps1"
 
 # Extract the Java API from the matching official template, not a second engine dependency.
 Add-Type -AssemblyName System.IO.Compression.FileSystem
@@ -132,6 +133,7 @@ $pluginDirectory = Join-Path $projectDirectory 'addons\quest_player\bin'
 New-Item -ItemType Directory -Path $pluginDirectory -Force | Out-Null
 foreach ($variant in @('debug','release')) {
     & "$PSScriptRoot\Assert-NarrationPackaged.ps1" -ArchivePath "$workspace\android\player-plugin\build\outputs\aar\player-plugin-$variant.aar"
+    & "$PSScriptRoot\Assert-ListeningPackaged.ps1" -ArchivePath "$workspace\android\player-plugin\build\outputs\aar\player-plugin-$variant.aar"
     Copy-Item -LiteralPath "$workspace\android\player-plugin\build\outputs\aar\player-plugin-$variant.aar" -Destination $pluginDirectory -Force
 }
 # OpenXR layer extensions Godot does not request (native/xr-layer/layer_extensions.cpp): a GDExtension
@@ -413,6 +415,7 @@ try {
     $nativeEvidenceDirectory = Join-Path $artifactDirectory 'native'
     New-Item -ItemType Directory -Path $nativeEvidenceDirectory -Force | Out-Null
     & "$PSScriptRoot\Assert-NarrationPackaged.ps1" -ArchivePath $apkPath
+    & "$PSScriptRoot\Assert-ListeningPackaged.ps1" -ArchivePath $apkPath
     # Test auditorium is included in both Debug and Release (2026-10-23).
     & "$PSScriptRoot\Assert-CinemaPackaged.ps1" -ArchivePath $apkPath
     $rvmLibrary = Join-Path $nativeEvidenceDirectory 'libquest_rvm.so'
@@ -443,7 +446,7 @@ if ($dexReport -match 'org\.codelibs\.jcifs\.smb1?\.(http|https)(\.|\s|$)') {
 foreach ($smbClass in @('org.codelibs.jcifs.smb.impl.SmbFile','org.codelibs.jcifs.smb.impl.SmbRandomAccessFile','org.codelibs.jcifs.smb.impl.NtlmPasswordAuthenticator')) {
     if ($dexReport -notmatch ('(?m)\s' + [regex]::Escape($smbClass) + '\r?$')) { throw "APK is missing required SMB class: $smbClass" }
 }
-foreach ($expectedClass in @('androidx.media3.exoplayer.ExoPlayer','org.vrpassthroughplayer.plugin.LocalVideoBridge','org.vrpassthroughplayer.plugin.LocalVideoPicker','org.vrpassthroughplayer.plugin.MediaSessionGate','org.vrpassthroughplayer.plugin.RvmNative','org.vrpassthroughplayer.plugin.RvmBenchmarkRunner','org.vrpassthroughplayer.plugin.RvmRuntime','org.vrpassthroughplayer.plugin.RvmProfiles','org.vrpassthroughplayer.plugin.FramePairGate','org.vrpassthroughplayer.plugin.RvmVideoProbe')) {
+foreach ($expectedClass in @('androidx.media3.exoplayer.ExoPlayer','okhttp3.OkHttpClient','okhttp3.Call','okio.BufferedSource','org.vrpassthroughplayer.plugin.CancellableMediaConnection','org.vrpassthroughplayer.plugin.LocalVideoBridge','org.vrpassthroughplayer.plugin.LocalVideoPicker','org.vrpassthroughplayer.plugin.MediaSessionGate','org.vrpassthroughplayer.plugin.RvmNative','org.vrpassthroughplayer.plugin.RvmBenchmarkRunner','org.vrpassthroughplayer.plugin.RvmRuntime','org.vrpassthroughplayer.plugin.RvmProfiles','org.vrpassthroughplayer.plugin.FramePairGate','org.vrpassthroughplayer.plugin.RvmVideoProbe')) {
     if ($dexReport -notmatch ('(?m)\s' + [regex]::Escape($expectedClass) + '\r?$')) { throw "APK is missing required media class: $expectedClass" }
 }
 & "$env:ANDROID_HOME\cmdline-tools\latest\bin\apkanalyzer.bat" dex code --class org.vrpassthroughplayer.plugin.QuestPlayerPlugin --method 'restart_video_at(III)I' $apkPath 2>&1 | Out-File (Join-Path $logDirectory 'c05-plugin-method.log') -Encoding utf8

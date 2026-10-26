@@ -155,6 +155,7 @@ var whisper_error := ""
 var subtitles := SubtitleState.new()
 const NarrationSettings := preload("res://scripts/narration_settings.gd")
 var narration := NarrationSettings.new(self)
+var listening := preload("res://scripts/live_interpretation.gd").new(self)
 var subtitle_auto_load := true
 var _subtitle_auto_pending := false
 ## Text subtitles: on the flat screen near its lower edge; in immersive modes floating at
@@ -377,6 +378,7 @@ func _ready() -> void:
 	audio_timing.load_saved()
 	whisper_memory.load_saved()
 	narration.memory.load_saved()
+	listening.memory.load_saved()
 	recent_files.load_saved()
 	initialize_surface(load("res://shaders/video_rvm_pair.gdshader"))
 	color_grade.apply(material)
@@ -858,6 +860,7 @@ func open_local(uri: String, title: String, start_ms: int = 0, restore_mode: boo
 		stereo_sbs and top_bottom, SeekPolicy.normalize(seek_mode) == SeekPolicy.EXACT)
 	media.begin(id)
 	narration.reset_source(uri)
+	listening.reset_source(uri)
 	playback_speed = 1.0
 	screen_rotation = 0.0
 	if PlatformMethods.supports(platform, "set_mpv_speed"): platform.set_mpv_speed(id, playback_speed)
@@ -952,6 +955,7 @@ func close_video() -> void:
 	if audio_timing.dirty: audio_timing.save()
 	if whisper_memory.dirty: whisper_memory.save()
 	if narration.memory.dirty: narration.memory.save()
+	if listening.memory.dirty: listening.memory.save()
 	if recent_files.dirty:
 		recent_files.save()
 	_unbind()
@@ -972,6 +976,7 @@ func close_video() -> void:
 		platform.close_mpv_video(media.session_id)
 	media.close()
 	narration.reset_source()
+	listening.reset_source()
 	_pending_pair = {}
 	_pending_revision = {}
 	_freeze_request = 0
@@ -1015,6 +1020,7 @@ func discard_history_thumbnail() -> void:
 	_thumb_after_ms = -1
 
 func discard_file_settings() -> void:
+	listening.enabled = false
 	commit_stereo_view()
 	_mode_memory_cleared = true
 	_whisper_remember = false
@@ -1587,6 +1593,9 @@ func set_subtitle_track(track_id: int, remember: bool = true) -> bool:
 		return false
 	if not platform.set_mpv_subtitle(media.session_id, track_id):
 		return false
+	if remember and listening.enabled:
+		listening.set_option("listening_enabled", false)
+		if listening.memory.remember(local_uri, {"enabled": false}): listening.memory.save()
 	var track: Dictionary = {}
 	for item in _raw_tracks("subtitle"):
 		if int(item.get("id", 0)) == track_id: track = item; break
@@ -1988,7 +1997,8 @@ func _poll_subtitles() -> void:
 	else:
 		bitmap_subtitles.clear(material)
 		if _subtitle_surface: _subtitle_surface.visible = false
-	caption.text = SubtitleStyle.display_text(subtitles.text, subtitle_line)
+	var text := listening.text_at(listening.playback_position(control.display_position_ms() / 1000.0 - audio_delay)) if listening.active() else subtitles.text
+	caption.text = SubtitleStyle.display_text(text, subtitle_line)
 	caption.visible = not caption.text.is_empty()
 	if caption.visible:
 		_place_caption()
@@ -2481,6 +2491,10 @@ func _on_state(id: int, payload: String) -> void:
 		subtitle_timing.register_usb_identity(local_uri, subtitle_identity)
 		audio_timing.register_usb_identity(local_uri, subtitle_identity)
 		var early_narration := narration.memory.lookup(local_uri)
+		var early_listening := listening.memory.lookup(local_uri)
+		listening.memory.register_usb_identity(local_uri, subtitle_identity)
+		if not early_listening.is_empty() and listening.memory.remember(local_uri, early_listening): listening.memory.save()
+		if _remember_file: listening.reset_source(); listening.reset_source(local_uri)
 		narration.memory.register_usb_identity(local_uri, subtitle_identity)
 		if not early_narration.is_empty() and narration.memory.remember(local_uri, early_narration): narration.memory.save()
 		if _remember_file: narration.reset_source(); narration.reset_source(local_uri)
@@ -2621,7 +2635,17 @@ func _on_released(id: int, _payload: String) -> void:
 		call_deferred("_reopen_after_context_loss", local_uri, display_name, _recover_ms, _remember_file, id)
 	_write_debug_report()
 
+## Head-locked status while the control bar is hidden. Loading/preparation
+## first; then live transcription/translation progress, which is long-lived
+## and so is kept out of loading_caption (that one holds the bar open).
+func hud_caption() -> String:
+	var caption := loading_caption()
+	if not caption.is_empty(): return caption
+	return listening.status_caption(listening.playback_position(control.display_position_ms() / 1000.0 - audio_delay))
+
 func loading_caption() -> String:
+	var listening_caption: String = listening.preparation_caption()
+	if not listening_caption.is_empty(): return listening_caption
 	if not media.accepts(media.session_id) or not media.error.is_empty(): return ""
 	if NarrationSettings.FEATURE_ENABLED and narration.enabled:
 		var report: Dictionary = media.playback.get("narration", {})
@@ -2675,6 +2699,7 @@ func _reopen_after_context_loss(uri: String, title: String, position_ms: int, re
 	var spatial := [_spatial_video, spatial_metadata(), spatial_auto_disparity]
 	var tracks := _capture_track_choices()
 	var narration_state := narration.capture_reopen()
+	var listening_state := listening.enabled
 	var timing := [_subtitle_timing_key, subtitle_delay]
 	var whisper := audio_whisper
 	var boost_mark := audio_boost_saved
@@ -2686,6 +2711,7 @@ func _reopen_after_context_loss(uri: String, title: String, position_ms: int, re
 	if not reopened: pip.clear()
 	if reopened:
 		narration.restore_reopen(narration_state)
+		listening.enabled = listening_state
 		_subtitle_auto_pending = auto_subtitle
 		_queue_track_restore(tracks)
 		_subtitle_timing_key = timing[0]; subtitle_delay = timing[1]; subtitles.set_delay(subtitle_delay); _subtitle_delay_pending = true
@@ -2709,6 +2735,7 @@ func _on_debug_command(id: int, payload: String) -> void:
 		seek_mode = command.seek_mode
 	if not command is Dictionary:
 		return
+	var diagnostic_start: int = int(platform.debug_monotonic_us()) if command.has("diagnostic_emitted_us") else 0
 	_debug_request = id
 	if command.operation == "open":
 		_debug_benchmark = bool(command.get("benchmark", false))
@@ -2740,6 +2767,14 @@ func _on_debug_command(id: int, payload: String) -> void:
 			if not narration.set_option("narration_" + str(key), command.options[key]): command.accepted = false
 	elif command.operation == "narration_status":
 		command["health"] = platform.save_narration_test_status(media.session_id, str(command.request_key))
+	elif command.operation == "listening":
+		# User-media diagnostics require explicit shell opt-in; never save preferences.
+		command["accepted"] = local_uri.get_base_dir().ends_with("/files/fixtures") or bool(command.get("allow_user_media", false))
+		if command.accepted:
+			for key in command.get("options", {}):
+				if not listening.set_option("listening_" + str(key), command.options[key]): command.accepted = false
+			command["listening"] = listening.report.duplicate(true)
+			command["caption"] = caption.text
 	elif command.operation == "subtitle":
 		command["accepted"] = set_subtitle_track(int(command.track_id))
 	elif command.operation == "playing":
@@ -2784,6 +2819,11 @@ func _on_debug_command(id: int, payload: String) -> void:
 		else:
 			_debug_pixels["error"] = "Paused immutable binding required"
 	command["request_id"] = id
+	if diagnostic_start > 0:
+		var diagnostic_end: int = int(platform.debug_monotonic_us())
+		command["diagnostic_queue_us"] = diagnostic_start - int(command.diagnostic_emitted_us)
+		command["diagnostic_handler_us"] = diagnostic_end - diagnostic_start
+		command["diagnostic_application_us"] = diagnostic_end - int(command.diagnostic_received_us)
 	_debug_commands.append(command)
 	if _debug_commands.size() > 32:
 		_debug_commands.pop_front()
@@ -2835,6 +2875,8 @@ func _write_debug_report() -> void:
 		"pixel_probe": _debug_pixels,
 		"seek_trace": _seek_trace,
 		"player_menu_progress": progress,
+		"loading_caption": loading_caption(),
+		"hud_caption": hud_caption(),
 		"thumbnail": {"available": Thumbnails.has(local_uri), "capture": _thumbnail_result, "busy": _thumbnail_busy or _layer_thumbnail_busy},
 		"diagnostic_2d": OS.get_cmdline_user_args().has("--mpv-diagnostic-2d"),
 		"scope": "Production MPV/RVM/Godot ownership trace; independent pixel, audio and performance validation pending"}
@@ -2992,6 +3034,7 @@ func playback_end_ready() -> bool:
 func _process(_delta: float) -> void:
 	system_volume.poll()
 	narration.apply()
+	listening.tick()
 	_poll_loading(Time.get_ticks_msec())
 	if disc.poll(platform, media.session_id if media.accepts(media.session_id) else 0, Time.get_ticks_msec()): changed.emit()
 	_poll_disc_menu(Time.get_ticks_msec())
@@ -3533,6 +3576,7 @@ func _reopen_at(position_ms: int, layer: bool) -> void:
 	var speed := playback_speed
 	var tracks := _capture_track_choices()
 	var narration_state := narration.capture_reopen()
+	var listening_state := listening.enabled
 	var timing := [_subtitle_timing_key, subtitle_delay]
 	var whisper := audio_whisper
 	var boost_mark := audio_boost_saved
@@ -3552,6 +3596,7 @@ func _reopen_at(position_ms: int, layer: bool) -> void:
 	if not capture_reopened: captures.stop()
 	if capture_reopened:
 		narration.restore_reopen(narration_state)
+		listening.enabled = listening_state
 		audio_whisper = whisper; audio_boost_saved = boost_mark; _whisper_restore_pending = whisper > 0 or whisper_save; _whisper_restore_remember = whisper_save
 		_subtitle_auto_pending = auto_subtitle
 		_queue_track_restore(tracks)

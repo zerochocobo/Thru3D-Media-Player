@@ -4,6 +4,16 @@
 
 Newest first, following product release milestones. Some development/source snapshots contained features before their product release. Original APK identifiers `0.2` and `0.4` are retained; `0.4` was also called `0.4.0` in release notes. Availability depends on device, server and media capabilities.
 
+## 0.14.0 — 2026-10-26
+
+- Add live subtitles for videos without existing subtitle tracks/files: on-device Chinese, English and Japanese speech recognition, optional online translation, bilingual lines and existing subtitle styles. Playback continues during preparation with progress feedback. Recognition is not guaranteed accurate; some sources and seeks still have substantial first-subtitle delays. This feature does not add interpreted speech.
+- Reuse recognized original cues per video under the independent per-file privacy policy, including backward seeks; keep the model loaded across seeks, restart recognition at the new target and retry translation failures.
+- Improve shared cloud/115 range reads, cancellation, stalled-connection handoff, bounded pre-read and audio/video cache coordination when enabling live subtitles or seeking. Source concurrency limits can still apply.
+- Improve comic bubble grouping, dense/mixed-script text and selective OCR recovery; retain generated 3D while paging with speech/translation, and enter paired reading directly from the magazine action. Remove Beta labels from comic reading/translation.
+- Request real-time MediaCodec priority and source frame rate for compatible hardware decoding, retrying without those hints if configuration is rejected. Actual 8K/high-bitrate performance remains device/content dependent.
+- Refine cinema seat steps, screen height, seated viewpoint and landing alignment. Enlarge video/photo top-bar hit regions and correct zero-parallax pointer alignment.
+- Add consistent media-server/cloud provider icons and refine account/library headings, collection-return placement, footer clock/battery branding and collapsible AI portrait/subtitle settings.
+
 ## 0.13.5 — 2026-10-25
 
 - Add Comic reading (Beta): on-device OCR of eligible dialogue bubbles, dwell speech with preset/custom voices, cancellation and bounded next-page OCR/audio preparation. Enable it per reading batch; other preferences persist. Conservative source-language/layout coverage can skip uncertain content; this is not full-page transcription.

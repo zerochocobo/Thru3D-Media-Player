@@ -31,13 +31,13 @@ func fresh(memory: RefCounted) -> RefCounted:
 
 func stores(main: Node) -> Array:
 	return [main.video.mode_memory, main.video.track_memory, main.video.subtitle_timing,
-		main.video.audio_timing, main.video.whisper_memory, main.video.narration.memory, main.photo.mode_memory]
+		main.video.audio_timing, main.video.whisper_memory, main.video.narration.memory, main.video.listening.memory, main.photo.mode_memory]
 
 func values(main: Node) -> Array:
 	var mode := {"geometry": 1, "stereo_sbs": true, "swap_eyes": true, "alpha_requested": false,
 		"profile": "320x320", "stereo_horizontal": 2.5, "stereo_vertical": -1.0}
 	return [mode, {"audio": {"id": 0}, "subtitle": {"id": 0}}, {"delay_seconds": 1.5},
-		{"delay_seconds": 0.5}, {"enabled": true, "boost": 32}, main.video.narration._values(), mode]
+		{"delay_seconds": 0.5}, {"enabled": true, "boost": 32}, main.video.narration._values(), {"enabled": true}, mode]
 
 func seed_settings(main: Node) -> void:
 	var data := values(main); var memories := stores(main)

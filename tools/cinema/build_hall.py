@@ -925,7 +925,7 @@ def seat_rows(manifest):
     for seat in manifest["seats"]:
         ex, ey, ez = seat["eye_position"]
         level = ey - manifest["design"]["seated_eye_height"]
-        origin = (ex, level, ez + 0.10)
+        origin = (ex, level, ez + manifest["design"].get("seat_line_from_eye", 0.10))
         rows.setdefault(seat["row"], []).append(origin)
     return rows
 

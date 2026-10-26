@@ -143,3 +143,7 @@ Normal narration preparation also requires the separately supplied pinned Silero
 ## Comic OCR inputs
 
 Complete 0.13.5 builds also require two size/hash-pinned PP-OCRv6 Small files under ignored `models/comic-ocr/v6-small/`; see [OCR scope](COMIC_READING.md). Gradle and the packaging guard reject missing/corrupt files. Source-only tests use fake OCR. Rebuild the current mpv cadence patch with its manifest/recipe.
+
+## Live subtitle runtime
+
+Normal Build-Player also calls Prepare-Listening.ps1 and Assert-ListeningPackaged.ps1 for source-built Moonshine and the separate Chinese/English/Japanese streaming models. It shares the unchanged pinned ONNX Runtime with narration/OCR. See [live subtitles](LIVE_SUBTITLES.md) for source/model preparation, receipts and exclusions; no original signing identity or model payload is provided.

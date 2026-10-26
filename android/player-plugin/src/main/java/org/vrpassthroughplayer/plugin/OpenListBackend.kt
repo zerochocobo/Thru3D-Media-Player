@@ -297,6 +297,6 @@ internal object OpenListBackend {
     fun connection(uri: URI, link: CloudLink): HttpURLConnection {
         if (uri.toASCIIString() != link.url || uri.host != "127.0.0.1" || uri.scheme != "http" ||
             uri.rawUserInfo != null || uri.port !in 1..65535) throw CloudFailure()
-        return uri.toURL().openConnection() as HttpURLConnection
+        return CancellableMediaConnection.open(uri)
     }
 }

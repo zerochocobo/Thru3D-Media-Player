@@ -44,6 +44,12 @@ func run() -> void:
 					check(menu._hover.get(hand) == target,"Visible mono beam endpoint hits %d with %s after head motion" % [target,hand])
 					var hit: Dictionary = menu.ray_hit(origin,direction)
 					check(hit.get("target") == target,"Trigger hit agrees with rendered pointer for %d/%s" % [target,hand])
+					var pointer: Dictionary = menu._pointers[hand]
+					var vertices: PackedVector3Array = pointer.line.mesh.surface_get_arrays(0)[Mesh.ARRAY_VERTEX]
+					var line_tip: Vector3 = pointer.line.to_global(vertices[1])
+					check(pointer.line.to_global(vertices[0]).is_equal_approx(origin),"Mono line still starts at the tracked hand")
+					check(line_tip.is_equal_approx(pointer.dot.global_position),"Mono line ends at the dot centre for %d/%s" % [target,hand])
+					check((pointer.dot.global_position-main.head_pose.origin).normalized().is_equal_approx((menu.to_global(hit.point)-main.head_pose.origin).normalized()),"Reticle keeps the hit's exact centre-eye direction")
 	for side in [-1,1]:
 		menu.section = 1; menu.refresh(); main.mono_menu_capture.update()
 		var close: Dictionary = menu._buttons.filter(func(button): return button.target == menu.SETTINGS_CLOSE)[0]
@@ -65,6 +71,9 @@ func run() -> void:
 	check(projected != null and absf(projected.x-expected.x) < 0.002,"Captured slider projection agrees with initial hit")
 	menu.update_pointer("right_hand",start,aim(menu,main.head_pose.origin,start,centre+menu.global_basis.x*0.15),true)
 	check(menu._seek_preview > menu._seek_start,"Mono drag moves the seek preview along the visible timeline")
+	var drag_pointer: Dictionary = menu._pointers.right_hand
+	var drag_vertices: PackedVector3Array = drag_pointer.line.mesh.surface_get_arrays(0)[Mesh.ARRAY_VERTEX]
+	check(drag_pointer.line.to_global(drag_vertices[1]).is_equal_approx(drag_pointer.dot.global_position),"Seeking keeps the line joined to the reticle")
 	menu.cancel_pointer("right_hand")
 	# Attached browser uses the projection of its captured parent.
 	main._show_recent_menu()
@@ -73,11 +82,25 @@ func run() -> void:
 	var browser_close: Dictionary = browser._buttons.filter(func(button): return button.target == browser.CLOSE)[0]
 	direction = aim(menu,main.head_pose.origin,start,browser_close.node.global_position)
 	check(browser.ray_hit(start,direction).get("target") == browser.CLOSE,"Attached browser close inherits the mono cursor")
+	browser.update_pointer("right_hand",start,direction,true)
+	var browser_pointer: Dictionary = browser._pointers.right_hand
+	var browser_vertices: PackedVector3Array = browser_pointer.line.mesh.surface_get_arrays(0)[Mesh.ARRAY_VERTEX]
+	check(browser_pointer.line.to_global(browser_vertices[1]).is_equal_approx(browser_pointer.dot.global_position),"Attached browser also joins its mono line to its dot")
 	main.rays.right_hand = [start,direction]
 	main._on_controller_button("trigger_click","right_hand"); main._on_controller_release("trigger_click","right_hand")
 	check(not browser.visible and menu.visible,"Closing the attached browser through its visible button keeps the transport open")
 	main._on_setting_changed(Depth.KEY,Depth.DEFAULT)
 	check(not menu.has_meta("menu_mono_pointer"),"Changing depth restores ordinary picking immediately")
+	for mode in [Depth.DEFAULT,Depth.MEDIUM]:
+		main._on_setting_changed(Depth.KEY,mode)
+		var finite_close: Dictionary = menu._buttons.filter(func(button): return button.target == 107)[0]
+		direction = finite_close.node.global_position-start
+		menu.update_pointer("right_hand",start,direction,true)
+		var finite_hit: Dictionary = menu.ray_hit(start,direction)
+		var finite_pointer: Dictionary = menu._pointers.right_hand
+		var finite_vertices: PackedVector3Array = finite_pointer.line.mesh.surface_get_arrays(0)[Mesh.ARRAY_VERTEX]
+		check(finite_vertices[1].is_equal_approx(Vector3(finite_hit.point)+Vector3(0,0,0.006)),"Finite-depth line keeps its existing surface bias")
+		check(finite_pointer.dot.position.is_equal_approx(Vector3(finite_hit.point)+Vector3(0,0,0.008)),"Finite-depth dot keeps its existing surface bias")
 	# Both hands close media through the production controller route.
 	for side in [-1,1]:
 		main.video.local_uri = "file:///pointer-fixture.mp4"; main.video.media.begin(2); main.video.media.state = "playing"

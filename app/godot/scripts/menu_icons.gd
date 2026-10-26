@@ -1,5 +1,10 @@
 extends RefCounted
 
+const Providers := preload("res://scripts/provider_icons.gd")
+
+static func provider(name: String, fallback: String = "cloud") -> String:
+	return Providers.key(name, fallback)
+
 # Original vector glyphs, generated once and shared by both ray menus.
 const PATHS := {
 	"translate": '<path d="M2 5H14M8 2V5M5 5Q5 12 13 16M12 5Q11 12 3 17M14 22L18 12 22 22M15.5 18H20.5"/>',
@@ -144,6 +149,13 @@ static func texture(key: String, pixels: int = 96) -> Texture2D:
 	var cache_key := key if pixels == 96 else "%s@%d" % [key, pixels]
 	if not _textures.has(cache_key):
 		var image := Image.new()
+		if Providers.TEXTURES.has(key):
+			image = Providers.TEXTURES[key].get_image()
+			image.resize(pixels, pixels, Image.INTERPOLATE_LANCZOS)
+			image.fix_alpha_edges()
+			image.generate_mipmaps()
+			_textures[cache_key] = ImageTexture.create_from_image(image)
+			return _textures[cache_key]
 		var svg := '<svg xmlns="http://www.w3.org/2000/svg" width="%d" height="%d" viewBox="0 0 24 24"><g fill="none" stroke="white" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">%s</g></svg>' % [pixels, pixels, PATHS.get(key, PATHS.info)]
 		if image.load_svg_from_string(svg) != OK:
 			return null

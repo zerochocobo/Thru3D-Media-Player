@@ -150,16 +150,16 @@ func rows() -> Array[Dictionary]:
 	var result: Array[Dictionary] = []
 	if view == "choose":
 		if kind == "cloud":
-			for p in ["115_open", "baidu", "aliyun_open", "quark_open", "onedrive", "webdav"]: result.append({"title": provider_name(p), "icon": "cloud", "account_provider": p})
+			for p in ["115_open", "baidu", "aliyun_open", "quark_open", "onedrive", "webdav"]: result.append({"title": provider_name(p), "icon": menu.Icons.provider(p), "account_provider": p})
 		else:
 			result.append({"title": I18n.t("Search local network"), "icon": "refresh", "account_discover": true})
-			for p in ["emby", "jellyfin", "plex", "stash", "xbvr"]: result.append({"title": provider_name(p), "icon": "server", "account_provider": p})
+			for p in ["emby", "jellyfin", "plex", "stash", "xbvr"]: result.append({"title": provider_name(p), "icon": menu.Icons.provider(p, "server"), "account_provider": p})
 	elif view == "accounts":
-		for item in items: result.append({"title": str(item.name), "detail": provider_name(str(item.provider)), "icon": "edit", "account_edit": item})
+		for item in items: result.append({"title": str(item.name), "detail": provider_name(str(item.provider)), "icon": menu.Icons.provider(str(item.provider), "server" if kind == "server" else "cloud"), "account_edit": item})
 	elif view == "discover":
-		for item in items: result.append({"title": str(item.name) if not str(item.name).is_empty() else I18n.t("Server"), "detail": str(item.base), "icon": "server", "account_found": item})
+		for item in items: result.append({"title": str(item.name) if not str(item.name).is_empty() else I18n.t("Server"), "detail": str(item.base), "icon": menu.Icons.provider(str(item.get("provider", "")), "server"), "account_found": item})
 	elif view == "plex_servers":
-		for item in items: result.append({"title": str(item.name), "icon": "server", "plex_server": str(item.id)})
+		for item in items: result.append({"title": str(item.name), "icon": menu.Icons.provider("plex", "server"), "plex_server": str(item.id)})
 	elif view == "license":
 		for i in range(0, license_lines.size(), 2):
 			result.append({"title": license_lines[i], "detail": license_lines[i + 1] if i + 1 < license_lines.size() else "", "icon": "info", "about_info": true})
@@ -243,7 +243,10 @@ func _draw_server_choices() -> void:
 	menu._list = Node3D.new(); menu.add_child(menu._list); menu._decorations.append(menu._list); menu._bar_thumb = null
 	for i in range(1, menu.rows.size()):
 		var k := i - 1; var row: Dictionary = menu.rows[i]
-		menu._button(menu.ROW_BASE + i, str(row.title), Vector2(-0.17 + (k % 2) * 0.65, 0.24 - (k / 2) * 0.19), Vector2(0.60, 0.16), true, "media_library", false, menu._list)
+		menu._button(menu.ROW_BASE + i, str(row.title), Vector2(-0.17 + (k % 2) * 0.65, 0.24 - (k / 2) * 0.19), Vector2(0.60, 0.16), true, "", false, menu._list)
+		var card: MeshInstance3D = menu._buttons.back().node
+		card.get_child(0).position.y = -0.048
+		menu._icon(str(row.icon), Vector3(0, 0.028, 0.004), 0.078, Color(0.9, 0.9, 0.9), card)
 	if not menu.rows.is_empty():
 		menu._button(menu.ROW_BASE, str(menu.rows[0].title), Vector2(0.155, -0.36), Vector2(1.25, 0.095), true, "", false, menu._list)
 

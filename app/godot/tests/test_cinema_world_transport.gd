@@ -12,7 +12,7 @@ var seeks: Array = []
 var depths: Array = []
 
 class MainHarness extends "res://scripts/main.gd":
-	var head: Variant = Transform3D(Basis.IDENTITY, Vector3(-0.45, 5.25, 19.9))
+	var head: Variant = Transform3D(Basis.IDENTITY, Vector3(-0.45, 7.6, 20.1))
 	var hand_pose := Transform3D.IDENTITY
 	var ray: Variant = null
 	func _ready() -> void: pass

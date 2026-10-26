@@ -175,7 +175,7 @@ func run() -> void:
 	check(real_environment.active and real_environment.has_node("GrandCinema"), "Asynchronous completion presents the real auditorium")
 	check(real_environment.snapshot().seat == "I12", "Real auditorium selects the ninth-row centre seat")
 	check(real_environment._manifest.seats.size() == 336, "Expanded auditorium exposes all 14 by 24 seats")
-	check(camera.global_position.is_equal_approx(Vector3(-0.45, 5.25, 19.9)), "Expanded default seat uses its designed giant-screen sightline")
+	check(camera.global_position.is_equal_approx(Vector3(-0.45, 7.6, 20.1)), "Expanded default seat uses its designed giant-screen sightline")
 	check(frames > 1, "The main loop remains responsive while cinema navigation is prepared")
 	print("Cinema environment load: select=%dms complete=%dms frames=%d" % [selection_ms, Time.get_ticks_msec() - started, frames])
 	_validate_expanded_auditorium(real_environment, camera)

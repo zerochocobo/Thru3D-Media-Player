@@ -106,6 +106,7 @@ const BACKGROUND_TAB := 2
 const ABOUT_TAB := 3
 const ABOUT_HOME := 36
 var _about_page := 0 # app, credits
+var _video_settings_expanded := {}
 ## VR subtitle distances (metres); the text keeps its angular size at any distance.
 const SubtitleDepth := preload("res://scripts/subtitle_depth.gd")
 const SubtitleStyle := preload("res://scripts/subtitle_style.gd")
@@ -459,6 +460,7 @@ func dismiss() -> void:
 	if voice_picker_mode: finish_voice_picker(); return
 	archives.hide()
 	cloud_pagination.settings_expanded = false
+	_video_settings_expanded.clear()
 	file_actions.return_from_settings(false)
 	if voice_manager.opened: voice_manager.close()
 	_voice_drag.clear()
@@ -1037,6 +1039,12 @@ func draw_view_modes(y: float = 0.445, left: float = 0.69) -> void:
 func _header_y() -> float:
 	if archives.browsing: return 0.515
 	return 0.515 if section != Section.RECENT and browser_content() else 0.46
+
+## Reserve the first header slot for the collection return before the parent/path.
+func _folder_header_inset() -> float:
+	if collections.home_return.is_empty() or image_picker_mode: return 0.0
+	if not archives.browsing and (subtitle_picker_mode or voice_picker_mode): return 0.0
+	return 0.11
 
 func _action_position(x: float) -> Vector2:
 	if archives.browsing: return Vector2(x, 0.445)
@@ -1776,7 +1784,6 @@ func _rebuild_rows() -> void:
 			if tab == CONTROLS_TAB:
 				rows.assign(controls_page.items())
 			elif tab == VIDEO_TAB or tab == SUBTITLES_TAB:
-				if settings.get("voice_manager", {}).get("narration_clone_supported", false): rows.append({"title": I18n.t("Subtitle narration"), "voice_manager": true})
 				var seek: String = SeekPolicy.normalize(settings.get("seek_mode", SeekPolicy.SPEED))
 				rows.append(_choice_row("Video time positioning", "seek_mode", seek,
 					[{"value": SeekPolicy.SPEED, "label": "Speed", "hint": "Faster jumps, less precise"},
@@ -1787,15 +1794,20 @@ func _rebuild_rows() -> void:
 					outputs.append({"value": option[0], "label": option[1], "hint": Quality.OUTPUT_HINTS[option[0]]})
 				var output_row := _choice_row("Output resolution", "output_width", int(settings.get("output_width", Quality.AUTO_OUTPUT)), outputs, true)
 				output_row.info = Quality.OUTPUT_INFO; rows.append(output_row)
-				rows.append(_alpha_size_row(settings))
-				rows.append({"title": I18n.t("Alpha passthrough FPS limit"), "key": "alpha_fps", "value": int(settings.get("alpha_fps", 30)),
-					"slider": true, "span": Vector3(10, 40, 1), "unit": " FPS", "reset_value": 30.0, "hint": "Headset performance limits keep the cut-out a little behind the picture"})
-				# The same Alpha edge as the player settings (AlphaEdge defaults).
-				rows.append({"title": I18n.t("Alpha feather"), "key": "alpha_feather", "value": int(settings.get("alpha_feather", 100)),
-					"slider": true, "span": Vector3(0, 100, 1), "unit": "%", "reset_value": 100.0})
-				rows.append({"title": I18n.t("Alpha edge shrink"), "key": "alpha_shrink", "value": int(settings.get("alpha_shrink", 40)),
-					"slider": true, "span": Vector3(0, 100, 1), "unit": "%", "reset_value": 40.0})
-				rows.append_array(_subtitle_rows(settings))
+				rows.append(_video_settings_group("alpha", "AI portrait passthrough (Alpha)"))
+				if _video_settings_expanded.get("alpha", false):
+					rows.append(_alpha_size_row(settings))
+					rows.append({"title": I18n.t("Alpha passthrough FPS limit"), "key": "alpha_fps", "value": int(settings.get("alpha_fps", 30)),
+						"slider": true, "span": Vector3(10, 40, 1), "unit": " FPS", "reset_value": 30.0, "hint": "Headset performance limits keep the cut-out a little behind the picture"})
+					# The same Alpha edge as the player settings (AlphaEdge defaults).
+					rows.append({"title": I18n.t("Alpha feather"), "key": "alpha_feather", "value": int(settings.get("alpha_feather", 100)),
+						"slider": true, "span": Vector3(0, 100, 1), "unit": "%", "reset_value": 100.0})
+					rows.append({"title": I18n.t("Alpha edge shrink"), "key": "alpha_shrink", "value": int(settings.get("alpha_shrink", 40)),
+						"slider": true, "span": Vector3(0, 100, 1), "unit": "%", "reset_value": 40.0})
+				rows.append(_video_settings_group("subtitles", "Subtitles"))
+				if _video_settings_expanded.get("subtitles", false):
+					if settings.get("voice_manager", {}).get("narration_clone_supported", false): rows.append({"title": I18n.t("Subtitle narration"), "voice_manager": true})
+					rows.append_array(_subtitle_rows(settings))
 			elif tab == GENERAL_TAB:
 				var languages: Array = []
 				for value in I18n.CHOICES: languages.append({"value": value, "label": LANGUAGE_NAMES[value]})
@@ -2089,6 +2101,8 @@ func _entry_row(entry: Dictionary) -> Dictionary:
 	if bool(entry.get("container", false)):
 		var folder_row := {"title": str(entry.title), "detail": "", "icon": "folder", "container": entry, "folder": true,
 			"delete_uri": str(entry.get("delete_uri", "")), "can_delete": bool(entry.get("can_delete", false)), "delete_reason": str(entry.get("delete_reason", "File deletion unavailable for this source"))}
+		if section == Section.CLOUD and _cloud_stack.is_empty() and not cloud_search.active:
+			folder_row.icon = Icons.provider(str(entry.get("provider", "")))
 		for field in ["size", "modified", "cloud_id", "delete_effect", "child_count", "type", "can_rename"]:
 			if entry.has(field): folder_row[field] = entry[field]
 		return folder_row
@@ -2241,6 +2255,7 @@ func _activate(target: int) -> void:
 	elif target >= NAV_BASE and target < NAV_BASE + NAV.size():
 		_browse_return_restore = false
 		cloud_pagination.settings_expanded = false
+		_video_settings_expanded.clear()
 		file_actions.settings_return.clear()
 		_save_folder_position()
 		archives.suspended = true
@@ -2265,6 +2280,7 @@ func _activate(target: int) -> void:
 		refresh()
 	elif target >= TAB_BASE and target < TAB_BASE + SETTING_TABS.size():
 		cloud_pagination.settings_expanded = false
+		_video_settings_expanded.clear()
 		controls_page.reset()
 		tab = VIDEO_TAB if target == TAB_BASE + SUBTITLES_TAB else target - TAB_BASE
 		scroll = 0.0
@@ -2339,6 +2355,15 @@ func _choose(row: Dictionary) -> void:
 	if row.get("cloud_paging_group", false):
 		cloud_pagination.settings_expanded = not cloud_pagination.settings_expanded
 		choices.reset(); refresh(); return
+	if row.has("video_settings_group"):
+		var group := str(row.video_settings_group)
+		var expanded := not bool(_video_settings_expanded.get(group, false))
+		choices.reset()
+		_video_settings_expanded[group] = expanded
+		var index := maxi(0, rows.find(row))
+		scroll = float(index) if expanded else minf(scroll, float(index))
+		_drag.clear(); _fling = 0.0
+		refresh(); return
 	if not bool(row.get("enabled", true)): return
 	if subtitle_picker_mode and row.has("uri") and not str(row.uri).is_empty() and not row.get("folder", false):
 		var uri := str(row.uri)
@@ -2759,7 +2784,13 @@ func _draw_compact() -> void:
 			_lit(collections.home_tab == i)
 	else:
 		var usb := not archives.browsing and not _external_volumes().is_empty()
-		var title := _label(_fit_title(heading, "", 0.53 if usb else 0.65, 19), Vector3(-0.32 if usb else -0.45, 0.36, 0.004), 19)
+		var title_x := -0.32 if usb else -0.45
+		var title_width := 0.53 if usb else 0.65
+		var provider_icon := _header_provider_icon()
+		if not provider_icon.is_empty():
+			_icon(provider_icon, Vector3(title_x + 0.022, 0.36, 0.004), 0.048, Color(0.9, 0.9, 0.9))
+			title_x += 0.060; title_width -= 0.060
+		var title := _label(_fit_title(heading, "", title_width, 19), Vector3(title_x, 0.36, 0.004), 19)
 		title.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
 	if not archives.browsing: _draw_storage_stop(Vector2(-0.40, 0.36))
 	_button(CLOSE, "", Vector2(0.51, 0.36), Vector2(0.075, 0.065), true, "close")
@@ -2947,7 +2978,7 @@ func _draw() -> void:
 			var title := _label(I18n.t(NAV[section]), Vector3(-0.42, _header_y(), 0.004), 24)
 			title.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
 	else:
-		_button(BACK, "", Vector2(-0.52, _header_y()), Vector2(0.09, 0.07), true, "up")
+		_button(BACK, "", Vector2(-0.52 + _folder_header_inset(), _header_y()), Vector2(0.09, 0.07), true, "up")
 		_draw_crumbs(crumbs)
 	if (archives.browsing or section in [Section.LOCAL, Section.SMB, Section.DLNA, Section.CLOUD]) and not cloud_managing:
 		_button(REFRESH, "", _action_position(0.80), Vector2(0.09, 0.065), platform != null, "refresh")
@@ -3064,13 +3095,22 @@ func _align_folder_tools() -> void:
 		tools[i].rect.position.x = x - width * 0.5
 		right -= width + 0.02
 
+func _header_provider_icon() -> String:
+	if archives.browsing: return ""
+	if section == Section.CLOUD and not _cloud_stack.is_empty(): return Icons.provider(cloud_pagination.provider())
+	if section == Section.MEDIA_SERVER and not server_browser.server.is_empty(): return Icons.provider(str(server_browser.server.get("provider", "")), "media_library")
+	return ""
+
 ## Path pills (last four segments); every segment but the current one jumps there.
 func _draw_crumbs(crumbs: Array, base: int = CRUMB_BASE) -> void:
 	if archives.browsing: base = archives.CRUMB
-	var x := -0.455
+	var x := -0.455 + _folder_header_inset()
 	# Leave room for account actions; the up button still exposes every parent.
 	var first := maxi(0, crumbs.size() - (2 if section in [Section.CLOUD, Section.LOCAL] or file_actions.sortable() else 4))
 	for i in range(first, crumbs.size()):
+		if not archives.browsing and section == Section.CLOUD and not _cloud_stack.is_empty() and i == maxi(1, first):
+			_icon(Icons.provider(cloud_pagination.provider()), Vector3(x + 0.025, _header_y(), 0.004), 0.055, Color(0.9, 0.9, 0.9))
+			x += 0.070
 		var text := _fit_title(str(crumbs[i]), "", 0.24, 19)
 		var width := text_width(text, 19) + 0.05
 		var current := i == crumbs.size() - 1
@@ -3092,6 +3132,8 @@ func _header_title() -> String:
 	match section:
 		Section.CLOUD:
 			return " / ".join(_cloud_stack.map(func(c): return str(c.title)))
+		Section.MEDIA_SERVER:
+			return str(server_browser.server.get("name", I18n.t("Media servers")))
 		Section.LOCAL:
 			return " / ".join(_local_stack.map(func(c): return str(c.title)))
 		Section.SMB:
@@ -3289,6 +3331,7 @@ static func _alpha_size_row(settings: Dictionary) -> Dictionary:
 var _alpha_sizes_shown := ""
 func refresh_alpha_sizes() -> void:
 	if not visible or section != Section.SETTINGS or tab != VIDEO_TAB or not settings_provider.is_valid() \
+		or not _video_settings_expanded.get("alpha", false) \
 		or not choices.opened.is_empty() or not choices.capture.is_empty():
 		return
 	var settings: Dictionary = settings_provider.call()
@@ -3299,6 +3342,10 @@ func refresh_alpha_sizes() -> void:
 
 func _choice_row(title: String, key: String, value: Variant, options: Array, compact: bool = false, hint: String = "") -> Dictionary:
 	return {"title": I18n.t(title), "key": key, "value": value, "choices": options, "compact": compact, "hint": hint}
+
+func _video_settings_group(group: String, title: String) -> Dictionary:
+	return {"title": I18n.t(title), "group_header": true, "video_settings_group": group,
+		"icon": "chevron_down" if _video_settings_expanded.get(group, false) else "next"}
 
 func _subtitle_rows(settings: Dictionary) -> Array[Dictionary]:
 	var result: Array[Dictionary] = []

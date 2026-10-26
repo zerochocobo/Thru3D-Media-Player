@@ -37,3 +37,5 @@ The CodeLibs JCIFS jar is staged by Gradle with unused HTTP/HTTPS NTLM adapters 
 - Silero VAD v6.2: original MIT notice and revision/hash-pinned model metadata in `third_party/narration`; no model weight or reference recording is included.
 
 - Comic translation protocol reference: plainheart/bing-translate-api, pinned revision and original MIT notice under `third_party/bing-translate-api`. Runtime sessions are excluded. Adapted Godot sky coordinates retain `third_party/player-licenses/godot-sky.txt`. OCR payloads stay separate; see `docs/COMIC_READING.md`.
+
+- Live subtitle recognition: Moonshine v0.1.5 source pin, C API header and full upstream LICENSE in `third_party/moonshine`; source runtime patch/preparation in `tools/moonshine` and `tools/environment`. Tiny Streaming zh/en/ja metadata only, no weights or runtime binaries. OkHttp 4.12.0 and Okio 3.6.0 retain Apache-2.0 and public-suffix notices. Provider vectors retain source/modification credits in `provider-icons/SOURCES.md`, GPL/AGPL/CC license texts and packaged notices; trademark rights remain separate.

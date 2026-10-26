@@ -60,9 +60,11 @@ func _init() -> void:
 func _ready() -> void:
 	previews.preview_ready.connect(func(_uri): _refresh_textures())
 
-func set_mode(value: int) -> void:
+func set_mode(value: int, reason: String = "layout") -> void:
 	if photo and photo.archive_mode and value not in [Layout.SINGLE, Layout.MAGAZINE]: return
 	if value not in [0, 1, 2, 3, 4] or value == mode: return
+	preload("res://scripts/diagnostic_log.gd").record("photo_layout_changed", {"from": mode, "to": value, "reason": reason,
+		"archive": photo.archive_mode if photo else false, "index": photo.index if photo else -1})
 	cancel_all(); focus = -1; progress = 0; returning = false; _swap_phase = 0; _swap_alpha = 1.0
 	_scales[mode] = view_scale
 	_distances[mode] = view_distance

@@ -252,8 +252,9 @@ func _arc_segment(start: Vector3, end: Vector3) -> Dictionary:
 func _seat_target(seat_id: String, points: PackedVector3Array, origin: Vector3) -> Dictionary:
 	var eye := _vector(_movement._seats[seat_id].eye_position)
 	var seated := float(_movement._design.get("seated_eye_height", 1.2))
-	# Marker rests on the cushion: seat line 10 cm behind the eye, cushion top ~0.47 m.
-	var cushion := Vector3(eye.x, eye.y - seated + 0.47, eye.z + 0.05)
+	# Marker rests on the cushion, just in front of the seat line, top ~0.47 m.
+	var seat_line := eye.z + float(_movement._design.get("seat_line_from_eye", 0.10))
+	var cushion := Vector3(eye.x, eye.y - seated + 0.47, seat_line - 0.05)
 	return {"kind": "seat", "id": seat_id, "position": cushion, "points": points, "valid": true,
 		"distance": origin.distance_to(cushion)}
 
@@ -560,7 +561,9 @@ func _process(_delta: float) -> void:
 		_restore_saved_seat()
 		_update_active()
 		changed.emit()
-	if not loading and not _thread and is_equal_approx(_light_mix, _light_target):
+	if active and not _position_applied:
+		_update_active()
+	if not loading and not _thread and is_equal_approx(_light_mix, _light_target) and (_position_applied or not active):
 		set_process(false)
 
 
@@ -577,8 +580,26 @@ func _update_active() -> void:
 		_original_rig = _rig.global_transform
 		_has_original_rig = true
 	if not _position_applied:
+		# Before the headset reports a pose the camera sits at the rig origin; seating
+		# it then lifts the viewer by their whole real head height once tracking starts.
+		if not _head_tracked():
+			set_process(true)
+			return
 		_align_head(_movement.eye_position, _movement.yaw)
 		_position_applied = true
+
+
+## True on desktop and in tests (no running XR interface), or once the headset
+## reports a tracked head pose.
+static func _head_tracked() -> bool:
+	var xr := XRServer.primary_interface
+	if xr == null or not xr.is_initialized():
+		return true
+	var head := XRServer.get_tracker("head") as XRPositionalTracker
+	if not head or not head.has_pose("default"):
+		return false
+	var pose := head.get_pose("default")
+	return pose.has_tracking_data and pose.tracking_confidence != XRPose.XR_TRACKING_CONFIDENCE_NONE
 
 
 func _fail(message: String) -> void:

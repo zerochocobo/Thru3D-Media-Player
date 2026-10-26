@@ -1,5 +1,11 @@
 [
   {
+    "id": "provider-icons",
+    "name": "Media server and cloud drive icons",
+    "license": "Third-party artwork notices",
+    "assets": ["player-licenses/provider-icons.txt"]
+  },
+  {
     "id": "silero-vad",
     "name": "Silero VAD",
     "license": "MIT",
@@ -84,6 +90,12 @@
     "assets": [
       "player-licenses/media3.txt"
     ]
+  },
+  {
+    "id": "okhttp",
+    "name": "OkHttp 4.12.0 and Okio 3.6.0",
+    "license": "Apache-2.0; public suffix data notices",
+    "assets": ["okhttp/LICENSE.txt", "okio/LICENSE.txt", "okhttp/PUBLIC_SUFFIX_NOTICE.txt"]
   },
   {
     "id": "jcifs",

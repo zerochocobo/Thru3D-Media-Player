@@ -133,6 +133,17 @@ func _check_device_status() -> void:
 	status.clear()
 	pill.refresh(true)
 	check(pill.text_snapshot() == "13:05" and not pill._battery.visible and not pill._bolt.visible, "Status pill: clock only without a battery source")
+	var brand_nodes := pill.get_child_count()
+	for language in ["zh", "zh_Hant", "en", "ja"]:
+		I18n.use(language)
+		for level in [100, 9, -1]:
+			status.merge({"level": level, "charging": level == 100, "clock24": false}, true)
+			pill.refresh(true)
+			check(is_equal_approx(pill._pill.mesh.size.x, pill.WIDTH) and is_equal_approx(pill._pill.mesh.size.y, pill.Menu.FOOTER_DIAMETER), "Branded footer fits fixed equal-height slot: " + language + str(level))
+			check(pill._label.position.y < 0 and pill._wordmark.position.y > 0 and pill.get_child_count() == brand_nodes, "Status refresh preserves both rows without duplicating brand: " + language + str(level))
+			var right: float = pill._label.position.x + pill.Menu.text_width(pill.text_snapshot(), pill.FONT_SIZE)
+			check(right <= pill._pill.mesh.size.x * 0.5 - 0.012, "Longest status keeps right inset: " + language + str(level))
+	I18n.use("en")
 	pill.free()
 
 func setting_click(menu: Node3D, target: int) -> bool:

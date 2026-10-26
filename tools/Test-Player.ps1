@@ -3,6 +3,11 @@ $ErrorActionPreference = 'Stop'
 $workspace = Split-Path -Parent $PSScriptRoot
 . "$PSScriptRoot\environment\Activate-QuestEnvironment.ps1" -ToolRoot $ToolRoot
 $projectDirectory = Join-Path $workspace 'app\godot'
+$listeningOutput = Join-Path $workspace 'build/output/live-interpretation'
+New-Item -ItemType Directory -Path $listeningOutput -Force | Out-Null
+$listeningLog = Join-Path $listeningOutput 'test-live_interpretation.log'
+& $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_live_interpretation.gd 2>&1 | Tee-Object -FilePath $listeningLog
+if ($LASTEXITCODE -ne 0 -or (Get-Content $listeningLog -Raw) -match '(?m)^(SCRIPT ERROR:|ERROR:)' -or (Get-Content $listeningLog -Raw) -notmatch 'Live interpretation: [0-9]+ checks, 0 failures') { throw 'Live interpretation regression failed.' }
 & "$PSScriptRoot\Test-VideoPip.ps1" -Godot $env:GODOT_EXE
 $orderOutput = Join-Path $workspace 'build/output/media-browse-order'
 New-Item -ItemType Directory -Path $orderOutput -Force | Out-Null
@@ -131,6 +136,8 @@ if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'photo-input-v
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'photo-palm-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)') { throw 'Photo palm swipe regression failed.' }
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_photo_preload.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'photo-preload-host.log')
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'photo-preload-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)') { throw 'Photo preload/cycle regression failed.' }
+& $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_comic_depth_navigation.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'comic-depth-navigation-host.log')
+if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'comic-depth-navigation-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)' -or (Get-Content (Join-Path $logDirectory 'comic-depth-navigation-host.log') -Raw) -notmatch 'Comic depth navigation: [0-9]+ checks, 0 failures') { throw 'Comic depth navigation regression failed.' }
 & $env:GODOT_EXE --xr-mode off --rendering-method gl_compatibility --rendering-driver opengl3 --path $projectDirectory --quit-after 1800 --script res://tests/render_photo_immersive.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'photo-immersive-render.log')
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'photo-immersive-render.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)') { throw 'Immersive photo rendering failed.' }
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_c01_c02.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'host-regression.log')
@@ -289,6 +296,9 @@ if ($LASTEXITCODE -ne 0) { throw 'Screen curve render regression failed.' }
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_player_menu.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'player-menu-host.log')
 if ($LASTEXITCODE -ne 0) { throw 'Player menu host regression failed.' }
 if ((Get-Content (Join-Path $logDirectory 'player-menu-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)') { throw 'Player menu host regression reported runtime errors.' }
+& $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1200 --script res://tests/test_bar_action_hits.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'bar-action-hits.log')
+$barHitLog = Get-Content (Join-Path $logDirectory 'bar-action-hits.log') -Raw
+if ($LASTEXITCODE -ne 0 -or $barHitLog -match '(?m)^(SCRIPT ERROR:|ERROR:)' -or $barHitLog -notmatch 'Bar action hits: [0-9]+ checks, 0 failures') { throw 'Floating action hit areas and safety gaps regression failed.' }
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_bookmarks.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'bookmarks-host.log')
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'bookmarks-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)') { throw 'Bookmark storage and pointer regression failed.' }
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_bookmark_loops.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'bookmark-loops-host.log')

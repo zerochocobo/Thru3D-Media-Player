@@ -282,8 +282,8 @@ func _draw_bar() -> void:
 	_glyph(11, "settings", Vector2(0.5, 0.025), 0.075, has, I18n.t("Settings"))
 	_status = _label(_fit_title(_photo_status(), "", 0.76, 15), Vector3(-0.11, -0.075, 0.004), 15)
 	_status.modulate = MUTED
-	_round(PHOTO_TRANSLATION, "translate", Vector2(0.4, -0.075), 0.065, has and _state.get("comic_supported", false), _state.get("translation_enabled", false), I18n.t("Comic translation (Beta)"))
-	_round(PHOTO_COMIC_VOICE, "comic_voice", Vector2(0.5, -0.075), 0.065, has and _state.get("comic_supported", false), _state.get("comic_enabled", false), I18n.t("Comic reading (Beta)"))
+	_round(PHOTO_TRANSLATION, "translate", Vector2(0.4, -0.075), 0.065, has and _state.get("comic_supported", false), _state.get("translation_enabled", false), I18n.t("Comic translation"))
+	_round(PHOTO_COMIC_VOICE, "comic_voice", Vector2(0.5, -0.075), 0.065, has and _state.get("comic_supported", false), _state.get("comic_enabled", false), I18n.t("Comic reading"))
 	var has_selection: bool = has or _state.get("loading", false) or int(_state.get("count", 0)) > 0 or not str(_state.get("error", "")).is_empty()
 	_round(107, "close", Vector2(_bar_action_x(107), 0.215), 0.08, has_selection, false, I18n.t("Close image"))
 	_round(100, "folder", Vector2(_bar_action_x(100), 0.215), 0.08, true, false, I18n.t("Library"))
@@ -308,6 +308,7 @@ func _draw_bar() -> void:
 		_round(PHOTO_SHUFFLE, "photo_batch" if layout == 2 else "dice", Vector2(_bar_action_x(PHOTO_SHUFFLE), 0.215), 0.08, has and not swapping, false, I18n.t("Next group" if layout == 2 else "Shuffle memories"))
 	if portrait or int(_state.get("gallery_focus", -1)) >= 0:
 		_round(PHOTO_RETURN, "up", Vector2(_bar_action_x(PHOTO_RETURN), 0.215), 0.08, true, false, I18n.t("Back"))
+	_expand_bar_action_hits()
 	_place_device_status(Vector2(0, -0.175))
 	if _layout_open:
 		_draw_layouts()
@@ -471,7 +472,7 @@ func _draw_panel() -> void:
 	_button(PHOTO_CURVE, I18n.t("Screen curve") + "  " + I18n.t(names[maxi(0, curve)]), Vector2(0.26, 0.035), Vector2(0.49, 0.105), int(_state.get("geometry", 0)) == 0 and not _state.get("portrait_requested",false), "screen")
 	_photo_background_button(PHOTO_BACKGROUND, "Set photo background", Vector2(-0.26, -0.10), Vector2(0.49, 0.08))
 	_button(PHOTO_GLOBAL_BACKGROUND, I18n.t("Set global background"), Vector2(0.26, -0.10), Vector2(0.49, 0.08), _state.get("can_background", false), "image")
-	_button(PHOTO_COMIC, I18n.t("Comic reading (Beta)") + "  " + I18n.t("On" if _state.get("comic_enabled", false) else "Off"), Vector2(-0.26, -0.235), Vector2(0.49, 0.08), _state.get("comic_supported", false), "comic_voice")
+	_button(PHOTO_COMIC, I18n.t("Comic reading") + "  " + I18n.t("On" if _state.get("comic_enabled", false) else "Off"), Vector2(-0.26, -0.235), Vector2(0.49, 0.08), _state.get("comic_supported", false), "comic_voice")
 	_button(PHOTO_COMIC_VOICE, I18n.t("Voice"), Vector2(0.26, -0.235), Vector2(0.49, 0.08), _state.get("comic_supported", false), "comic_voice")
 	_status = _label(_photo_status(), Vector3(0, -0.35, 0.004), 15)
 	_status.modulate = MUTED
@@ -534,7 +535,7 @@ func _draw_comic_settings() -> void:
 	_set_backdrop(Vector2(1.08, height))
 	_button(PHOTO_ADJUST_BACK, "", Vector2(-0.47, top - 0.06), Vector2(0.075, SUBTITLE_SETTING_HEIGHT), true, "up")
 	_button(CLOSE, "", Vector2(0.47, top - 0.06), Vector2(0.075, SUBTITLE_SETTING_HEIGHT), true, "close")
-	_label(I18n.t("Comic reading (Beta)"), Vector3(0, top - 0.06, 0.004), TEXT_PAGE_TITLE)
+	_label(I18n.t("Comic reading"), Vector3(0, top - 0.06, 0.004), TEXT_PAGE_TITLE)
 	# PlayerMenu already began this choice scope. Beginning a second scope here
 	# resets the just-opened dropdown on every redraw (including pointer release).
 	choices.bounds = Vector2(-top + 0.045, top - 0.105)
@@ -545,7 +546,7 @@ func _draw_comic_settings() -> void:
 		label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
 		var voice_row: bool = row.field.key in ["comic_voice", "comic_custom_voice"]
 		if row.field.key == "comic_enabled":
-			row.field["switch"] = true; row.field.hint = "Comic reading (Beta)"
+			row.field["switch"] = true; row.field.hint = "Comic reading"
 			choices.field(null, row.field, Vector2(-0.135, y), 0.09, SUBTITLE_SETTING_HEIGHT)
 			if _state.get("translation_enabled", false):
 				var target: String = {"zh-Hans": "简体中文", "zh-Hant": "繁體中文", "ja": "日本語", "en": "English"}.get(_state.get("translation_target", "zh-Hans"), "")
@@ -578,7 +579,7 @@ func _draw_translation_settings() -> void:
 	_set_backdrop(Vector2(1.08, height))
 	_button(PHOTO_ADJUST_BACK, "", Vector2(-0.47, top - 0.06), Vector2(0.075, SUBTITLE_SETTING_HEIGHT), true, "up")
 	_button(CLOSE, "", Vector2(0.47, top - 0.06), Vector2(0.075, SUBTITLE_SETTING_HEIGHT), true, "close")
-	_label(I18n.t("Comic translation (Beta)"), Vector3(0, top - 0.06, 0.004), TEXT_PAGE_TITLE)
+	_label(I18n.t("Comic translation"), Vector3(0, top - 0.06, 0.004), TEXT_PAGE_TITLE)
 	choices.bounds = Vector2(-top + 0.12, top - 0.105)
 	var y := top - 0.16
 	for row: Dictionary in rows:
@@ -658,7 +659,10 @@ func _activate(target: int) -> void:
 	if target >= PHOTO_LAYOUT_BASE and target < PHOTO_LAYOUT_BASE + 5:
 		_magazine_order_open = target == PHOTO_LAYOUT_BASE + 4
 		if _magazine_order_open:
-			_wall_rows_open = false; refresh(); return
+			_wall_rows_open = false
+			# Enter immediately using the saved reading direction; the picker only adjusts it.
+			if int(_state.get("layout", 0)) != 4: action_requested.emit("photo_layout_4")
+			refresh(); return
 		if target == PHOTO_LAYOUT_BASE + 2:
 			_wall_rows_open = true; refresh(); return
 		_layout_open = false
