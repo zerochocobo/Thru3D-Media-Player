@@ -6,6 +6,16 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class ComicSpeechRoutingTest {
+    @Test fun shortKanaRepliesOverrideAutoOcrButNeverManualLanguage() {
+        assertEquals("ja",ComicSpeechRouting.originalLanguage("auto","zh","何だ！"))
+        assertEquals("ja",ComicSpeechRouting.originalLanguage("auto","ja","先生！"))
+        assertEquals("ja",ComicSpeechRouting.originalLanguage("auto","zh","ｶ"))
+        assertEquals("zh",ComicSpeechRouting.originalLanguage("auto","zh","今天。"))
+        assertEquals("zh",ComicSpeechRouting.originalLanguage("auto","zh","好ｰ"))
+        assertEquals("en",ComicSpeechRouting.originalLanguage("auto","en","Hello!"))
+        assertEquals("zh",ComicSpeechRouting.originalLanguage("zh","ja","何だ！"))
+        assertEquals("ja",ComicSpeechRouting.originalLanguage("ja","zh","先生！"))
+    }
     @Test fun everyNarrationLanguageCanRouteTranslatedComicText(){
         assertEquals(19,NarrationPolicy.languages.size)
         val r=ComicSpeechRouting();r.page(1)

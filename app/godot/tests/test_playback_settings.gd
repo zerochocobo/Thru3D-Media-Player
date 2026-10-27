@@ -180,7 +180,9 @@ func _run() -> void:
 	video.geometry = 1
 	video._apply_geometry()
 	menu.refresh()
-	check(menu._adjust_rows.has(454) and menu._adjust_rows[454].label.text == "30 FPS", "VR180 playback settings show the Alpha frame rate at 30")
+	check(not menu._adjust_rows.has(454) and menu._buttons.any(func(button): return button.target == menu.ALPHA_GROUP), "Alpha settings start folded under their header")
+	menu._activate(menu.ALPHA_GROUP)
+	check(menu._adjust_rows.has(454) and menu._adjust_rows.has(455) and menu._adjust_rows.has(456) and menu._adjust_rows[454].label.text == "30 FPS", "The Alpha header unfolds frame rate, feather and edge shrink")
 	drag(menu, 454, 1.0)
 	check(host.alpha_fps.back() == 40 and main._menu_state().alpha_fps == 40 and menu._adjust_rows[454].label.text == "40 FPS", "Alpha frame rate reaches the bridge while dragging")
 	drag(menu, 454, 0.0)

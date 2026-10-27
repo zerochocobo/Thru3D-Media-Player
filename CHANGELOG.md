@@ -4,6 +4,17 @@
 
 Newest first, following product release milestones. Some development/source snapshots contained features before their product release. Original APK identifiers `0.2` and `0.4` are retained; `0.4` was also called `0.4.0` in release notes. Availability depends on device, server and media capabilities.
 
+## 0.14.1 — 2026-10-27
+
+- Add app-wide full-film original/bilingual subtitle preparation with queue management, pause/resume, priority, cancellation and retry. Reuse shared original/translated cue caches under per-file privacy rules; scheduling favors foreground playback or explicitly waits for idle resources. Saved eligible jobs can be restored; transient sessions remain session-only.
+- Allow live subtitles with existing subtitle tracks/files. Fix stalled 0% progress and repeated audio-source reopening, identify prepared-task results, explain untranslated lines and automatically retry visible translation failures. Accuracy, cloud service limits and first-cue delays still apply.
+- Add Emby/Jellyfin media-version selection in film details, retaining source-specific playback progress and viewing settings for each selected file.
+- Add Automatic/Standard/Memory saver choices, mainly reducing AI portrait passthrough's additional buffers and limiting Auto output to 4096 pixels in saver mode. 2D-to-3D retains its frame slots and mainly receives a smaller network cache; plain playback is unchanged. Bound mask waits and improve passthrough recovery. Hide the experimental precision control and run FP16 for existing choices.
+- Add diagnostic log settings: recent warnings/errors, compact/full detail, export to Download/Thru3D/logs and explicit temporary Wi-Fi sharing. Redact known sensitive fields, reduce periodic noise and show saved-log location. Logs are not automatically uploaded.
+- Improve comic balloon selection, guarded missed-text recovery and complete speech requests; add Japanese word-boundary/reading preparation using Kuromoji/IPADIC. Package a separately supplied auxiliary manga detector, retaining conservative budgets and uncertainty limits. Reading errors and variable device cost remain possible.
+- Preserve complete page edges only in magazine/comic layouts; ordinary single-image PDF/archive viewing retains its existing edge treatment. Fix music-hover actions unexpectedly changing the file-browser panel size/placement.
+- Improve cancellation/timeouts and subsequent playback recovery after a failed Blu-ray ISO preflight. This does not add encrypted-disc or BD-J support.
+
 ## 0.14.0 — 2026-10-26
 
 - Add live subtitles for videos without existing subtitle tracks/files: on-device Chinese, English and Japanese speech recognition, optional online translation, bilingual lines and existing subtitle styles. Playback continues during preparation with progress feedback. Recognition is not guaranteed accurate; some sources and seeks still have substantial first-subtitle delays. This feature does not add interpreted speech.

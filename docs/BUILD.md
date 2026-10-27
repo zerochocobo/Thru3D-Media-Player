@@ -147,3 +147,5 @@ Complete 0.13.5 builds also require two size/hash-pinned PP-OCRv6 Small files un
 ## Live subtitle runtime
 
 Normal Build-Player also calls Prepare-Listening.ps1 and Assert-ListeningPackaged.ps1 for source-built Moonshine and the separate Chinese/English/Japanese streaming models. It shares the unchanged pinned ONNX Runtime with narration/OCR. See [live subtitles](LIVE_SUBTITLES.md) for source/model preparation, receipts and exclusions; no original signing identity or model payload is provided.
+
+0.14.1 also stages the externally obtained Kuromoji/IPADIC 0.9.0 reader/dictionary and validates its exact resources/notices with Assert-ComicJapanesePackaged.ps1. Three OCR model files are now required. See [comic resources](COMIC_READING.md).

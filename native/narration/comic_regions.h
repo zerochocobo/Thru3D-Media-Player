@@ -96,6 +96,24 @@ inline double silhouetteSolidity(const std::vector<std::pair<int,int>>& rows){
     double area=0;for(size_t i=1;i<hull.size();++i)area+=double(hull[i-1].x)*hull[i].y-double(hull[i].x)*hull[i-1].y;
     return area>0?filled/(area*.5):0;
 }
+// Joined speech lobes can be concave as a whole. Split only in the blank
+// vertical gaps between established paragraphs, and require each lobe to pass
+// the same convexity test. This never joins different connected components.
+inline bool paragraphLobes(const std::vector<std::pair<int,int>>& rows,int top,std::vector<Rect> cores){
+    if(cores.size()<2||cores.size()>6||rows.empty())return false;
+    std::sort(cores.begin(),cores.end(),[](Rect a,Rect b){return a.y0<b.y0;});
+    int start=0;
+    for(size_t i=0;i<cores.size();++i){
+        if(cores[i].y0<top||cores[i].y1>top+int(rows.size()))return false;
+        if(i+1<cores.size()&&cores[i].y1>=cores[i+1].y0)return false;
+        int end=i+1==cores.size()?int(rows.size()):(cores[i].y1+cores[i+1].y0)/2-top;
+        if(end<=start)return false;
+        std::vector<std::pair<int,int>> lobe(rows.begin()+start,rows.begin()+end);
+        if(std::any_of(lobe.begin(),lobe.end(),[](auto row){return row.second<=row.first;})||silhouetteSolidity(lobe)<.8)return false;
+        start=end;
+    }
+    return true;
+}
 // Opening of the light background = closing of the ink outline. Replicated
 // image edges keep cropped balloons attached to the exterior (never invent a
 // frame around an open page). Integral sums make each scale O(width*height).

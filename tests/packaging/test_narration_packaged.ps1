@@ -16,11 +16,11 @@ $vadManifestPath = Join-Path $output 'vad_model.json'
 $vadManifest = $cloneManifest.Replace('clone-test','vad-test')
 [IO.File]::WriteAllText($vadManifestPath,$vadManifest,[Text.UTF8Encoding]::new($false))
 $comicManifestPath = Join-Path $output 'comic_model.json'
-$comicManifest = @{ id='comic-test'; directory='comic-ocr/comic-test'; files=@{ 'detector.onnx'=@{ bytes=$bytes.Length; sha256=$hash }; 'recognizer.onnx'=@{ bytes=$bytes.Length; sha256=$hash } } } | ConvertTo-Json -Depth 5
+$comicManifest = @{ id='comic-test'; directory='comic-ocr/comic-test'; files=@{ 'detector.onnx'=@{ bytes=$bytes.Length; sha256=$hash }; 'recognizer.onnx'=@{ bytes=$bytes.Length; sha256=$hash }; 'auxiliary.onnx'=@{ bytes=$bytes.Length; sha256=$hash } } } | ConvertTo-Json -Depth 5
 [IO.File]::WriteAllText($comicManifestPath,$comicManifest,[Text.UTF8Encoding]::new($false))
 $checks = 0
 foreach ($format in @('aar','apk')) {
-    foreach ($fault in @('none','runtime','manifest','weights','length','digest','manifest-drift','clone-manifest','clone-weights','clone-digest','vad-manifest','vad-weights','vad-digest','comic-manifest','comic-manifest-drift','comic-detector','comic-recognizer','comic-length','comic-digest')) {
+    foreach ($fault in @('none','runtime','manifest','weights','length','digest','manifest-drift','clone-manifest','clone-weights','clone-digest','vad-manifest','vad-weights','vad-digest','comic-manifest','comic-manifest-drift','comic-detector','comic-recognizer','comic-length','comic-digest','comic-auxiliary','comic-auxiliary-length','comic-auxiliary-digest')) {
         $path = Join-Path $output "$format-$fault.$format"
         $zip = [IO.Compression.ZipFile]::Open($path,[IO.Compression.ZipArchiveMode]::Create)
         try {
@@ -37,6 +37,7 @@ foreach ($format in @('aar','apk')) {
                 'assets/comic-ocr/model.json'=[IO.File]::ReadAllBytes($comicManifestPath)
                 'assets/comic-ocr/comic-test/detector.onnx'=$bytes
                 'assets/comic-ocr/comic-test/recognizer.onnx'=$bytes
+                'assets/comic-ocr/comic-test/auxiliary.onnx'=$bytes
             }
             switch ($fault) {
                 'runtime' { $entries.Remove("$prefix/arm64-v8a/libonnxruntime.so") }
@@ -57,6 +58,9 @@ foreach ($format in @('aar','apk')) {
                 'comic-recognizer' { $entries.Remove('assets/comic-ocr/comic-test/recognizer.onnx') }
                 'comic-length' { $entries['assets/comic-ocr/comic-test/detector.onnx']=[byte[]]@(1) }
                 'comic-digest' { $entries['assets/comic-ocr/comic-test/recognizer.onnx']=[byte[]]::new($bytes.Length) }
+                'comic-auxiliary' { $entries.Remove('assets/comic-ocr/comic-test/auxiliary.onnx') }
+                'comic-auxiliary-length' { $entries['assets/comic-ocr/comic-test/auxiliary.onnx']=[byte[]]@(1) }
+                'comic-auxiliary-digest' { $entries['assets/comic-ocr/comic-test/auxiliary.onnx']=[byte[]]::new($bytes.Length) }
             }
             foreach ($name in $entries.Keys) {
                 $stream=$zip.CreateEntry($name).Open()

@@ -1988,7 +1988,7 @@ func _poll_subtitles() -> void:
 			if _subtitle_surface: _subtitle_surface.visible = false
 		caption.visible = false
 		return
-	if geometry == Geometry.Geometry.FLAT and not subtitles.bitmap.is_empty():
+	if not listening.active() and geometry == Geometry.Geometry.FLAT and not subtitles.bitmap.is_empty():
 		var handle := int(subtitles.cue.get("mpv_source_handle", 0))
 		var pixels := PackedByteArray()
 		if bitmap_subtitles.needs_pixels(subtitles.bitmap, handle):

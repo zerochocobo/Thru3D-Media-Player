@@ -150,10 +150,10 @@ internal class MediaServerLibrary(private val context: () -> Context?, private v
             ?: throw MediaServerFailure("Cover unavailable") } finally { decoder.recycle() }
     }
     fun playable(uri: String, captureReader: Boolean = false): String {
-        val (server, scene) = MediaLibraryUri.parse(uri)
+        val (server, scene, sourceId) = MediaLibraryUri.identity(uri)
         val account = getAccount(server)
         val source = HttpRangeStreamSource(account) { http ->
-            mediaClient(account, http).stream(scene)
+            mediaClient(account, http).stream(scene, sourceId)
         }
         try {
             synchronized(MediaServerStore) {

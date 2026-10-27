@@ -25,6 +25,19 @@ func _run() -> void:
 	check(Quality.load_output_choice(settings) == Quality.AUTO_OUTPUT, "Output width defaults to auto")
 	check(Quality.output_width(Quality.AUTO_OUTPUT, true) == 4096 and Quality.output_width(Quality.AUTO_OUTPUT, false) == 0, "Auto output follows tier")
 	check(Quality.output_width(0, true) == 0 and Quality.output_width(5760, true) == 5760, "Explicit output width is respected")
+	check(Quality.load_memory_choice(settings) == Quality.MEMORY_AUTO, "Memory mode defaults to auto")
+	check(not Quality.memory_saver(Quality.MEMORY_AUTO, false, 7757) and not Quality.memory_saver(Quality.MEMORY_AUTO, false, 0),
+		"Auto keeps standard memory on Quest 3 class RAM or when RAM is unknown")
+	check(Quality.memory_saver(Quality.MEMORY_AUTO, false, 5650) and Quality.memory_saver(Quality.MEMORY_AUTO, true, 7757),
+		"Auto saves memory on 6 GB headsets and XR2 Gen1 class GPUs")
+	check(Quality.memory_saver(Quality.MEMORY_SAVER, false, 12000) and not Quality.memory_saver(Quality.MEMORY_STANDARD, true, 5650),
+		"An explicit memory mode overrides the device")
+	check(Quality.load_alpha_precision(settings) == Quality.ALPHA_PRECISION_AUTO and not Quality.alpha_fp32(Quality.ALPHA_PRECISION_AUTO)
+		and not Quality.alpha_fp32(Quality.ALPHA_PRECISION_FAST) and Quality.alpha_fp32(Quality.ALPHA_PRECISION_PRECISE) == Quality.ALPHA_PRECISION_SHOWN,
+		"AI precision defaults to auto (FP16); Precise runs FP32 only while the setting is shown")
+	var memory_choice := ConfigFile.new()
+	memory_choice.set_value("video", "memory_mode", 7)
+	check(Quality.load_memory_choice(memory_choice) == Quality.MEMORY_AUTO, "Unknown memory mode falls back to auto")
 	var explicit := ConfigFile.new()
 	explicit.set_value("video", "output_width", 0)
 	explicit.set_value("video", "sharpness", 0.4)
@@ -153,6 +166,14 @@ func _run() -> void:
 	main.recent_menu.refresh()
 	var resolution: Array = main.recent_menu.rows.filter(func(row): return row.get("key", "") == "output_width")
 	check(resolution.size() == 1 and resolution[0].value == Quality.AUTO_OUTPUT and resolution[0].choices[0].value == Quality.AUTO_OUTPUT, "Resolution offers auto first")
+	var memory_rows: Array = main.recent_menu.rows.filter(func(row): return row.get("key", "") == "memory_mode")
+	check(memory_rows.size() == 1 and main.recent_menu.rows.find(memory_rows[0]) == main.recent_menu.rows.find(resolution[0]) + 1
+		and memory_rows[0].value == Quality.MEMORY_AUTO and memory_rows[0].choices.size() == 3
+		and memory_rows[0].choices.all(func(option): return not str(option.get("hint", "")).is_empty()),
+		"Memory follows output resolution with auto, standard and saver")
+	check(main.memory_saver, "XR2 Gen1 class GPU uses the memory saver automatically")
+	main._on_setting_changed("memory_mode", Quality.MEMORY_STANDARD)
+	check(not main.memory_saver and Quality.load_memory_choice(main.settings) == Quality.MEMORY_STANDARD, "Standard memory overrides the device and persists")
 	main.recent_menu.dismiss(); main.queue_free()
 	await process_frame
 	DirAccess.remove_absolute(fresh_path)

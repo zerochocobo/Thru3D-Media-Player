@@ -5,13 +5,22 @@ const Privacy := preload("res://scripts/media_privacy.gd")
 const Menu := preload("res://scripts/player_menu.gd")
 const Main := preload("res://scripts/main.gd")
 const Style := preload("res://scripts/subtitle_style.gd")
+const Player := preload("res://scripts/mpv_video_display.gd")
 class Platform extends RefCounted:
 	var configurations := []
+	var narration := []
 	var ready := []
 	var report := {"epoch": 1, "buffered": true, "state": "ready", "cues": []}
 	func set_mpv_listening(_id: int, value: String) -> bool: configurations.append(JSON.parse_string(value)); return true
 	func get_mpv_listening(_id: int) -> String: return JSON.stringify(report)
 	func listening_ready(_id: int, epoch: int) -> void: ready.append(epoch)
+	func set_mpv_narration(_id: int, value: String) -> bool: narration.append(JSON.parse_string(value)); return true
+	func set_mpv_subtitle(_id: int, _track: int) -> bool: return true
+	func set_mpv_subtitle_delay(_id: int, _delay: float) -> bool: return true
+	func close_mpv_video(_id: int) -> void: pass
+	func get_mpv_subtitle_bitmap(_id: int, _version: int) -> PackedByteArray: return PackedByteArray([255, 255, 255, 255])
+	func list_mpv_subtitle_files(_id: int, _request: int) -> bool: return true
+	func load_mpv_subtitle_file(_id: int, _request: int, _filename: String) -> bool: return true
 class Video extends Node3D:
 	var platform := Platform.new()
 	var media := {"session_id": 1, "playback": {"details": {"audio_tracks": [{"id": 1}]}}}
@@ -66,13 +75,14 @@ func run() -> void:
 	check(not item.enabled and item.source == "en" and item.lead == 20, "Next video off, global choices retained")
 	item.reset_source("file:///movie-a.mp4")
 	check(item.enabled, "Original video's activation restored")
-	video.tracks = [{"id": 2}]; check(not item.active(), "Actual subtitle suppresses listening")
-	video.tracks.clear(); video.subtitle_files = ["movie.srt"]; check(not item.available(), "Available sidecar suppresses listening")
+	video.tracks = [{"id": 2, "language": "en"}]; check(item.available() and item.active(), "Embedded subtitles do not block listening")
+	video.tracks.clear(); video.subtitle_files = ["movie.srt"]; check(item.available(), "Sidecar candidates do not block listening")
 	video.subtitle_files.clear(); video.cast_token = 3; check(not item.available(), "Ephemeral casting does not inherit activation")
 	video.cast_token = 0
 	video.media.playback.details.audio_tracks = []; item._poll_at = Time.get_ticks_msec() + 60000; item.tick()
 	check(item.active() and video.platform.configurations[-1].enabled, "A seek's empty track list keeps the running session and its model")
 	check(not item.available(), "Switching on still requires an audio track")
+	check(item.snapshot().listening_available, "Running listening switch remains visible while seek metadata is empty")
 	var sent: Dictionary = video.platform.configurations[-1]
 	check(sent.media == Memory.key_for("file:///movie-a.mp4") and sent.persist and not sent.network, "Recognized text may persist per file under the per-file settings policy")
 	Privacy.configure_file_settings("none"); item._payload = ""; item.tick()
@@ -98,6 +108,8 @@ func run() -> void:
 	check(item.preparation_caption().ends_with("25%"), "Model verification shows measured progress")
 	item.report.phase = "recognition"; item.report.buffer_progress = 40; item.report.buffered = false
 	check(item.preparation_caption().ends_with("40%"), "Ahead buffer shows measured progress")
+	item.report.phase = "task"; item.report.cache_progress = 48
+	check(item.preparation_caption() == Listening.I18n.t("Pre-generating · %d%%") % 48, "A pre-generation task for this film shows its progress, not a model check")
 	item.report.phase = "model_load"
 	check(not "%" in item.preparation_caption(), "Unknown model load progress is not fabricated")
 	item.report.state = "ready"; item.report.buffered = true
@@ -122,11 +134,17 @@ func run() -> void:
 	client.failed[key] = Time.get_ticks_msec() - client.RETRY_MS - 1; client.jobs.clear(); client._signature = ""
 	client.observe_sentences([cue], "en", "zh-Hans")
 	check(client.jobs.size() == 1, "A failed sentence is retried after the retry interval")
+	client.jobs.clear(); client.failed[key] = Time.get_ticks_msec() - client.RETRY_MS - 1; client._next_at = 0
+	client.tick(true)
+	check(client.jobs.size() == 1, "A failed line still on screen retries without new text arriving")
 	client.failed.clear(); client.jobs.clear(); client._cooldown = {"Bing": 0, "Edge": 0}
 	# Head-locked status without opening the control bar.
 	var saved_target: String = item.target; var saved_report: Dictionary = item.report
 	item.target = ""; item.report = {"state": "ready", "buffered": true, "ahead": 12.4, "cues": []}
 	check(item.status_caption(100.0) == Listening.I18n.t("Transcribing · %d s ahead") % 12, "Silent stretches show that transcription is running")
+	item.report.phase = "task"
+	check(item.status_caption(100.0) == Listening.I18n.t("Pre-generated · %d s ahead") % 12, "Subtitles read from a pre-generation task say so")
+	item.report.erase("phase")
 	item.report.cues = [{"start": 99.0, "end": 101.0, "text": "Hello"}]
 	check(item.status_caption(100.0).is_empty(), "A shown subtitle needs no status")
 	item.target = "zh-Hans"; item.report.cues = []
@@ -136,10 +154,22 @@ func run() -> void:
 	check(item.status_caption(100.0) == Listening.I18n.t("Translation busy · retrying in %d s, showing original") % 30, "Provider cooldown explains the original text")
 	client._cooldown = {"Bing": 0, "Edge": 0}; client.jobs.clear(); client.failed[key] = Time.get_ticks_msec()
 	check(item.status_caption(100.0) == Listening.I18n.t("Some lines untranslated · showing original"), "Failed lines are explained")
+	client.failed.clear(); item.report.cues = [{"start": 99.0, "end": 101.0, "text": "Hello"}]
+	var shown_key: String = item.Protocol.cache_key(item.Protocol.normalize("Hello", item.Protocol.language(item.source)), item.Protocol.language(item.source), item.target)
+	client.cache[shown_key] = {"text": "你好"}
+	check(item.status_caption(100.0).is_empty(), "A translated shown line needs no status")
+	client.cache.erase(shown_key)
+	client.jobs = [[{"key": key}]]
+	check(item.status_caption(100.0) == Listening.I18n.t("Translating · %d pending") % 1, "A shown original still being translated says so")
+	client.jobs.clear()
+	check(item.status_caption(100.0) == Listening.I18n.t("Some lines untranslated · showing original"), "A shown original with no translation work is explained")
+	item.report.state = "preparing"; item.report.phase = "recognition"; client.jobs = [[{"key": key}], [{"key": "other"}]]
+	check(item.preparation_caption() == Listening.I18n.t("Translating · %d pending") % 2, "Preparing translation counts its queue")
+	client.jobs.clear()
 	item.report = {"state": "audio_error"}
 	check(item.status_caption(100.0) == Listening.I18n.t("Unable to open the audio track"), "Errors stay visible without the control bar")
 	client.failed.clear(); client.entries = []; item.target = saved_target; item.report = saved_report
-	check(Listening.rows({"listening_available": false}).is_empty(), "No irrelevant controls with subtitles")
+	check(Listening.rows({"listening_available": false}).is_empty(), "Unsupported playback has no listening controls")
 	var rows := Listening.rows({"listening_available": true, "listening_enabled": true})
 	check(rows.size() == 4 and rows.all(func(row): return not str(row.field.key).begins_with("narration")), "Source, translation and lead controls; no TTS")
 	var menu := Menu.new()
@@ -168,17 +198,30 @@ func run() -> void:
 	menu.refresh(); controls = menu._subtitle_controls()
 	check(controls.size() == 1 and controls[0].field.key == "listening_enabled", "Appearance is offered only after enabling listening")
 	check(menu._buttons.all(func(button): return button.target != menu.SUBTITLE_ROW), "Disabled listening does not add a redundant Off row")
-	menu.state_provider = func(): return {"has_video": true, "subtitle_options": [{"id": 1, "title": "English", "codec": "subrip"}], "subtitle_track": 1, "listening_available": false}
+	var with_subtitles := {"has_video": true, "subtitle_options": [{"id": 1, "title": "English", "codec": "subrip"}], "subtitle_track": 1,
+		"listening_available": true, "listening_enabled": false, "narration_available": true,
+		"subtitle_files_available": true, "subtitle_files_state": "ready", "subtitle_files": ["movie.en.srt"]}
+	menu.state_provider = func(): return with_subtitles
 	menu.refresh()
 	check(menu._buttons.any(func(button): return button.target == menu.SUBTITLE_ROW), "Authored subtitles retain their Off choice")
-	check(menu.choices.targets.values().all(func(field): return not str(field.get("key", "")).begins_with("listening_")), "Imported subtitles replace listening controls")
+	controls = menu._subtitle_controls()
+	check(controls[0].field.key == "listening_enabled" and controls.any(func(row): return row.get("disclosure", false)), "Embedded subtitles retain listening and appearance controls")
+	check(controls.any(func(row): return row.get("field", {}).get("key", "") == "narration_enabled"), "Authored subtitle narration remains available with listening off")
+	check(choose(menu, "listening_enabled", true) and item.enabled, "Ray can enable listening with authored subtitles present")
+	with_subtitles.listening_enabled = true; menu._subtitle_appearance_open = true
+	with_subtitles.subtitle_options[0].codec = "hdmv_pgs_subtitle"; menu.refresh()
+	controls = menu._subtitle_controls()
+	check(controls.any(func(row): return row.get("field", {}).get("key", "") == "subtitle_line"), "A selected PGS track does not hide live text appearance controls")
+	check(controls.all(func(row): return not str(row.get("field", {}).get("key", "")).begins_with("narration_")), "Listening does not offer authored subtitle narration")
+	menu._subtitle_files_open = true; menu.refresh()
+	check(menu._subtitle_controls()[0].field.key == "listening_enabled" and choose(menu, "listening_enabled", false), "Listening switch remains usable while browsing sidecars")
 	item.set_option("listening_enabled", true); item._poll_at = 0; item.tick()
 	video.subtitle_file_loading = "file:///movie.srt"; item.tick()
-	check(not item.available() and video.platform.configurations[-1].enabled == false and item.report.is_empty(), "Importing external subtitles stops ASR and clears displayed listening cues")
+	check(item.available() and video.platform.configurations[-1].enabled, "Pending subtitle import keeps listening available and running")
 	video.subtitle_file_loading = ""; item._poll_at = 0; item.tick()
-	check(item.available() and video.platform.configurations[-1].enabled, "Cancelled or failed import restores listening availability")
+	check(item.available() and video.platform.configurations[-1].enabled, "Cancelled or failed import leaves listening running")
 	video.tracks = [{"id": 7, "external": true, "codec": "subrip"}]; item.tick()
-	check(not item.available() and video.platform.configurations[-1].enabled == false, "Successful external subtitle import removes and stops listening")
+	check(item.available() and video.platform.configurations[-1].enabled, "Automatic external subtitle discovery does not stop listening")
 	video.tracks.clear()
 	var restored := Listening.new(video); restored.memory = Memory.new(item.memory.directory); restored.memory.load_saved(); restored.load_settings(settings)
 	restored.reset_source("file:///movie-a.mp4")
@@ -186,8 +229,47 @@ func run() -> void:
 	Privacy.configure_file_settings("none")
 	check(not restored.memory.remember("file:///private.mp4", {"enabled": true}), "Privacy disables new activation persistence")
 	Privacy.configure_file_settings("all")
+	check_player_switching()
 	restored.translator.close(); menu.free()
 	item.memory.entries.clear(); item.memory.dirty = true; item.memory.save()
 	item.translator.close(); video.free()
 	print("Live interpretation: %d checks, %d failures" % [checks, failures.size()])
 	quit(0 if failures.is_empty() else 1)
+
+func check_player_switching() -> void:
+	var player := Player.new(); root.add_child(player); player.set_process(false)
+	var host := Platform.new(); player.platform = host
+	player.media.begin(19); player.local_uri = "file:///listening-switch.mp4"
+	player._remember_file = false; player.listening.memory.read_only = true
+	player.media.playback = {"details": {"audio_tracks": [{"id": 1}], "subtitle_tracks": [{"id": 2, "codec": "subrip", "language": "en"}]}}
+	player.media.last_pair = {"session_id": 19}; player._waiting_first = false; player.panel.visible = true
+	player._subtitle_poll_ms = Time.get_ticks_msec() + 60000; player._subtitle_received_ms = Time.get_ticks_msec()
+	player.subtitles.select(2); player.subtitles.text = "Authored English"
+	player.narration.enabled = true; player.narration.hide_subtitles = true; player.narration.apply()
+	check(host.narration.back().enabled and player.narration.hides_display(), "Original text subtitle supports narration before switching")
+	check(player.listening.set_option("listening_enabled", true), "Production controller enables listening over an embedded track")
+	player.listening.report = {"cues": [{"start": 0.0, "end": 10.0, "text": "Live text"}]}
+	player.narration.apply(); player._poll_subtitles()
+	check(not host.narration.back().enabled and player.narration.enabled and not player.narration.hides_display(), "Listening suspends TTS without erasing narration preferences")
+	check(player.caption.visible and player.caption.text == "Live text" and player.subtitles.requested_track == 2, "Live text owns the display and retains the original track")
+	player.listening.set_option("listening_enabled", false); player.narration.hide_subtitles = false
+	player.narration.apply(); player._poll_subtitles()
+	check(host.narration.back().enabled and player.caption.text == "Authored English", "Turning listening off restores original text and narration")
+	player.subtitles.text = ""; player.subtitles.bitmap = {"visible": true, "version": 1, "x": 0, "y": 0, "width": 1, "height": 1, "canvas_width": 1, "canvas_height": 1}
+	player._poll_subtitles()
+	check(player.bitmap_subtitles.texture != null, "Original bitmap subtitle is displayed before switching")
+	player.listening.set_option("listening_enabled", true); player._poll_subtitles()
+	check(player.bitmap_subtitles.texture == null and not player.material.get_shader_parameter("bitmap_subtitle_enabled"), "Listening removes bitmap overlays even while preparing")
+	player.listening.set_option("listening_enabled", false); player._poll_subtitles()
+	check(player.bitmap_subtitles.texture != null, "Turning listening off restores original bitmap display")
+	player.listening.set_option("listening_enabled", true)
+	check(player.set_subtitle_track(0) and not player.listening.enabled, "Manual subtitle Off exits listening")
+	player.listening.set_option("listening_enabled", true)
+	check(player.set_subtitle_track(2) and not player.listening.enabled, "Manual embedded track selection exits listening")
+	player.listening.set_option("listening_enabled", true)
+	player.subtitles.select(0); player.subtitle_files.append("movie.en.srt")
+	check(player.select_subtitle_file("movie.en.srt") and player.listening.active(), "Import keeps listening running until a replacement is ready")
+	player.media.playback.details.subtitle_tracks.append({"id": 7, "codec": "subrip", "external": true})
+	player._on_subtitle_files(19, JSON.stringify({"operation": "load", "request": player._subtitle_load_request, "state": "ready", "track_id": 7}))
+	check(player.subtitles.requested_track == 7 and not player.listening.enabled and player.listening.available(), "Successful manual import exits listening but retains its entry")
+	player.free()

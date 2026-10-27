@@ -145,6 +145,8 @@ internal class MpvVideoBridge(
         @Volatile var fanout: LayerFanout? = null
         /** GPU copy prototype (debug: setprop debug.vrpp.layer.copy 1): frames drawn into the layer surface. */
         @Volatile var copy: LayerCopy? = null
+        /** The memory saver as it was when this source opened. */
+        @Volatile var memorySaver = false
         /** Where this host's decoder writes for the layer: the GPU copy (Alpha) or the debug hand-off. */
         val frames: LayerFrames? get() = copy ?: fanout
         val debugCopy = BuildConfig.DEBUG && debugProperty("debug.vrpp.layer.copy") == "1"
@@ -165,6 +167,8 @@ internal class MpvVideoBridge(
         val startup = ConcurrentHashMap<String, Double>()
         fun markStartup(stage: String) { startup.putIfAbsent(stage, (System.nanoTime() - openNs) / 1_000_000.0) }
         @Volatile var handle = 0L
+        @Volatile var sourcePreparing = true // includes preflight; handle == 0 does not mean its reader is idle
+        @Volatile var discProbe = 0L
         @Volatile var owner: EGLContext? = null
         @Volatile var closing = false
         @Volatile var playing = true
@@ -331,6 +335,9 @@ internal class MpvVideoBridge(
     fun captureAudioFlush(id: Int){sessions[id]?.host?.narration?.captureFlush()}
     /** User setting: decoded color width cap for sources opened from now on (0 = source size). */
     @Volatile var outputWidthCap = 0
+    /** Memory saver (low-memory headsets or the user's choice), for sources opened from now on: Alpha
+     * holds packed copies instead of decoder buffers and keeps a smaller network cache. */
+    @Volatile var memorySaver = false
     /** User setting: Alpha passthrough reads the source at this rate, one RVM pair per presented frame. */
     @Volatile private var alphaFps = RVM_VIDEO_FPS
     /** The player's Alpha edge: mask values remapped from [low, high] to [0, 1] (0, 1: unchanged). */
@@ -352,7 +359,9 @@ internal class MpvVideoBridge(
     }
     /** 512 MiB (~40 s of 100 Mbit/s 8K) only for remote playback without Alpha/2D->3D
      * and with memory to spare; Alpha's held frames leave Quest 3 under 1 GB free. */
-    private fun networkCacheMiB(app: Context, remote: Boolean, inference: Boolean): Int {
+    private fun networkCacheMiB(app: Context, remote: Boolean, inference: Boolean, saver: Boolean): Int {
+        // About 8 s of 100 Mbit/s: enough to ride out Wi-Fi dips on a headset short of memory.
+        if (remote && inference && saver) return 96
         if (!remote || inference) return 256
         val memory = ActivityManager.MemoryInfo()
         (app.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager)?.getMemoryInfo(memory) ?: return 256
@@ -387,6 +396,7 @@ internal class MpvVideoBridge(
         val host = Host(uri, startMs, hardware, audio, exactSeek || preparedView != null, outputWidthCap,
             layer && hardware && !depth && (!alpha || alphaLayer), alphaLayer && layer && hardware)
         host.playbackLayout = preparedView?.layout
+        host.memorySaver = memorySaver
         host.discPlaylist = discPlaylist
         host.networkLease = preparedView?.url
         host.interleaveCheckStarted = preparedView != null
@@ -425,10 +435,26 @@ internal class MpvVideoBridge(
                             it.moveToFirst() && it.getString(0).orEmpty().lowercase().endsWith(".iso")
                         } == true)
                 if (iso) host.loadingPhase = "reading_disc"
-                val disc = if (iso) try {
+                val disc = if (iso) {
                     // A menu session is sized and described by the disc's default preflight.
-                    DiscPreflight.probe(uri, path, maxOf(-1, host.discPlaylist), MpvSourceNative::probeDisc)
-                } finally { finishIsoPreflight(path) } else null
+                    val result = DiscPreflight.probe(uri, path, maxOf(-1, host.discPlaylist)) { input, playlist ->
+                        val probe = synchronized(host) {
+                            check(!host.closing && !stopped) { "Blu-ray probe cancelled" }
+                            MpvSourceNative.beginDiscProbe().also { host.discProbe = it }
+                        }
+                        try { MpvSourceNative.probeDisc(probe, input, playlist) }
+                        finally {
+                            synchronized(host) { host.discProbe = 0 }
+                            MpvSourceNative.closeDiscProbe(probe)
+                        }
+                    }
+                    // A failed/cancelled reader may still be unwinding network
+                    // IO. Do not wait on its metadata lock just to protect a
+                    // cache which will never be used for playback.
+                    if (host.closing || stopped) return@post
+                    finishIsoPreflight(path)
+                    result
+                } else null
                 host.discInput=iso
                 if (disc != null && host.discPlaylist == -2) {
                     if (disc.mvc || JSONObject(disc.json).optString("menu") != "hdmv") error("Disc menu unavailable")
@@ -470,7 +496,8 @@ internal class MpvVideoBridge(
                                 LayerCopy(host.layerSurface!!, surfaceWidth, surfaceHeight, host.copyFlip, holdable = host.alphaLayer,
                                     heldLimit = debugInt("debug.vrpp.layer.held", 8).coerceIn(2, 12),
                                     // The output resolution setting caps the compositor window as it caps the RGBA frames.
-                                    maxOutputWidth = debugInt("debug.vrpp.layer.window_max", host.maxWidth))
+                                    maxOutputWidth = debugInt("debug.vrpp.layer.window_max", host.maxWidth),
+                                    compact = debugProperty("debug.vrpp.layer.compact").let { if (BuildConfig.DEBUG && it.isNotEmpty()) it == "1" else host.memorySaver })
                                     .also { it.keepFrames = host.alphaLayer }
                             }.onFailure { android.util.Log.w("QuestPlayer", "Layer copy unavailable", it) }.getOrNull()
                             if (host.layer && host.copy == null && host.debugFanout) host.fanout = runCatching {
@@ -482,7 +509,7 @@ internal class MpvVideoBridge(
                             captions.flatMap { listOf(it.location, it.title) }.toTypedArray(), host.exactStart,
                             if (host.layer) host.copy?.surface ?: host.fanout?.surface ?: host.layerSurface else null, disc?.mvc == true, surfaceWidth, surfaceHeight, iso, tlsCaFile,
                             host.interleavePolicy.sequential, if (iso) host.discPlaylist else -1,
-                            networkCacheMiB(app, host.remote, session.inference))
+                            networkCacheMiB(app, host.remote, session.inference, host.memorySaver))
                         check(host.handle > 0)
                         host.markStartup("native_created_ms")
                         host.loadingPhase = "reading"
@@ -500,6 +527,7 @@ internal class MpvVideoBridge(
                     } catch (failure: Throwable) { fail(session, "MPV_SOURCE_START_FAILED", failure) }
                 })
             } catch (failure: Throwable) { fail(session, (failure as? StrmFailure)?.code ?: "MPV_LOCAL_SOURCE_FAILED", failure) }
+            finally { host.sourcePreparing = false }
         }
         return id
     }
@@ -697,6 +725,31 @@ internal class MpvVideoBridge(
     }
     fun listeningStatus(id: Int)=sessions[id]?.takeIf {active(it)}?.host?.listening?.status() ?: "{}"
     fun listeningReady(id: Int,epoch: Long){sessions[id]?.takeIf {active(it)}?.host?.listening?.ready(epoch)}
+    fun listeningSharedPath(uri: String): String? = sessions.values.firstOrNull{active(it)&&!it.host.closing&&it.host.uri==uri}?.host?.narrationPath
+    fun listeningTaskContext(request: JSONObject): JSONObject {
+        val session=sessions[request.optInt("session_id")]
+        if(session==null||!active(session)||session.host.closing)return request.put("playing",false).put("listening",false).put("buffering",false)
+        val host=session.host
+        val details=runCatching{JSONObject(MpvSourceNative.narrationStatus(host.handle)).getJSONObject("details")}.getOrNull() ?: return request
+        val selected=details.optString("audio_track_id").toIntOrNull() ?: -1
+        val tracks=details.optJSONArray("audio_tracks") ?: JSONArray()
+        val track=(0 until tracks.length()).map{tracks.getJSONObject(it)}.firstOrNull{it.optInt("id")==selected}
+        return request.put("track",track?.optInt("stream_index",-1) ?: -1).put("playlist",host.discPlaylist)
+    }
+    fun listeningTask(id: Int,request: JSONObject): ListeningTaskSpec? = runCatching {
+        val session=sessions[id] ?: return null
+        check(active(session)&&!session.host.closing)
+        val host=session.host
+        val details=JSONObject(MpvSourceNative.narrationStatus(host.handle)).getJSONObject("details")
+        val selected=details.getString("audio_track_id").toInt()
+        val tracks=details.getJSONArray("audio_tracks")
+        val track=(0 until tracks.length()).map{tracks.getJSONObject(it)}.first{it.optInt("id")==selected}
+        check(!track.optBoolean("external"))
+        ListeningTaskSpec.parse(JSONObject(request.toString()).put("uri",host.uri)
+            .put("duration",details.getString("duration_seconds").toDouble()).put("track",track.getInt("stream_index"))
+            .put("playlist",host.discPlaylist).put("disc",host.discInput)
+            .put("origin",details.optString("demuxer_start_time").toDoubleOrNull() ?: 0.0))
+    }.getOrNull()
     fun voiceCloneRequest(id: Int,json: String): Boolean {
         val session=sessions[id] ?: return false
         if(!active(session)||session.host.closing||!foreground)return false
@@ -1038,8 +1091,9 @@ internal class MpvVideoBridge(
                         "pending=${session.pendingSource != null} model=${session.model?.isReady()} captured=${session.captured} masks=${session.layerMasks} " +
                         "playing=${session.host.playing} uploads=${session.alphaUploads.size}")
                 // Alpha turned off in place: frames go on unheld (and the audio delay returns to zero below).
-                session.host.frames?.hold = session.layerAlpha
+                // The rate first: held frames above it (all of them at startup) would fill every packed copy.
                 session.host.copy?.maxFps = if (session.layerAlpha) alphaFps else 0
+                session.host.frames?.hold = session.layerAlpha
                 if (session.layerAlpha) session.host.frames?.releaseStale(HOLD_LIMIT_MS)
                 if (session.layerAlpha) showPresentedMasks(session)
                 if (session.layerAlpha && session.copying == null && session.maskInFlightNs == 0L && session.model?.isReady() == true)
@@ -1121,7 +1175,7 @@ internal class MpvVideoBridge(
                 }
             } catch (failure: Throwable) { fail(session, "MPV_FRAME_PIPELINE_FAILED", failure) }
         }
-        for (host in hosts) if (host.closing && sessions.values.none { it.host === host }) {
+        for (host in hosts) if (host.closing && !host.sourcePreparing && sessions.values.none { it.host === host }) {
             try {
                 if (host.handle == 0L || MpvSourceNative.close(host.handle, host.owner != EGL14.eglGetCurrentContext())) {
                     host.handle = 0; host.closeDescriptors(); hosts.remove(host)
@@ -1152,6 +1206,10 @@ internal class MpvVideoBridge(
             if (session.renderer == 0L) {
                 session.owner = EGL14.eglGetCurrentContext()
                 session.renderer = RenderBridgeNative.create(width, height, session.dims[0], session.dims[1], session.stereo, session.topBottom)
+                // Debug A/B only: 2D->3D keeps 6 of 7 slots busy (a full-size color each, 232 MB at 4K), but
+                // 5 slots skipped 11% of the frames and 4 slots 30% on Quest 3, so the saver leaves them.
+                val slotLimit = debugInt("debug.vrpp.bridge.slots", 0)
+                if (slotLimit > 0) RenderBridgeNative.setSlotLimit(session.renderer, slotLimit)
                 if (session.alpha && session.vulkan && !debugZeroCopyDisabled)
                     session.zeroCopy = RenderBridgeNative.enableZeroCopy(session.renderer)
                 // Alpha keeps each captured MPV slot for the pair's life instead of copying 8K (~270MB
@@ -1257,7 +1315,7 @@ internal class MpvVideoBridge(
             session.copying = ticket to token; session.copyingPair = pair
             if (session.captureNs.size > 16) session.captureNs.clear() // tokens the model dropped
             session.maskInFlightNs = System.nanoTime(); session.captureNs[token] = session.maskInFlightNs
-        } finally { frame.buffer.close() } // the capture's EGLImage holds the buffer now
+        } finally { frame.release() } // the capture's EGLImage holds the buffer now
     }
     /** GPU copy: a finished mask goes up once the copy thread has drawn its frame; of several, the newest
      * shown (the others are retired). Masks never wait for long: a stalled copy lets them through. */
@@ -1277,7 +1335,9 @@ internal class MpvVideoBridge(
         val width = pair.getInt("width"); val height = pair.getInt("height")
         // An ROI window puts the model's pixels on a small part of the frame: a coarse mask swapchain blurred
         // its edges into a halo of the video's background. 2048 per eye keeps the model's detail.
-        val scale = minOf(1.0, (if (layout == 1) 4096.0 else 2048.0) / width)
+        // The memory saver keeps 1536 per eye: the RGBA swapchain is 100 MB at 4096 x 2048 x 3 images.
+        val perEye = if (session.host.memorySaver) 1536.0 else 2048.0
+        val scale = minOf(1.0, (if (layout == 1) perEye * 2 else perEye) / width)
         val maskWidth = maxOf(2, Math.round(width * scale).toInt()); val maskHeight = maxOf(2, Math.round(height * scale).toInt())
         val values = pair.getJSONArray("model_content_rect")
         val rect = FloatArray(4) { values.getDouble(it).toFloat() }
@@ -1653,6 +1713,8 @@ internal class MpvVideoBridge(
             session.host.narration?.close(); session.host.narration = null
             session.host.listening?.close(); session.host.listening = null
             session.host.closing = true
+            synchronized(session.host) { MpvSourceNative.closeDiscProbe(session.host.discProbe) }
+            if (session.host.handle > 0) MpvSourceNative.requestClose(session.host.handle)
             if (session.host.handle > 0) MpvSourceNative.setPlaying(session.host.handle, false)
             refreshPlayback()
         }
@@ -1715,8 +1777,7 @@ internal class MpvVideoBridge(
         /** Alpha plan B: masks shown so far in this Alpha layer session and the mask swapchain size, "count w h". */
         @Volatile var layerMask = "0 0 0"
         const val MASK_SLOT = 2 // the picture swapchain slot Godot shows as the mask layer
-        const val HOLD_LIMIT_MS = 250L // a held layer frame goes on without its mask after this
-        /** Nominal swapchain size: the decoder sets the buffer size; layer rects are in these units. */
+        const val HOLD_LIMIT_MS = 250L // a held layer frame goes on without its mask after this        /** Nominal swapchain size: the decoder sets the buffer size; layer rects are in these units. */
         const val LAYER_SURFACE_SIZE = 4096
         const val RVM_VIDEO_FPS = 30
         val ALPHA_FPS_RANGE = 10..40
@@ -1740,6 +1801,7 @@ internal class MpvVideoBridge(
                     if (MpvSourceNative.close(host.handle, true)) { host.handle = 0; break }
                     Thread.sleep(20)
                 }
+                while (host.sourcePreparing) Thread.sleep(20)
                 host.closeDescriptors()
             }
         }, "QuestMpvDispose").start()

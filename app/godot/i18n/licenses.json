@@ -322,5 +322,15 @@
       "usb/LICENSE.libaums",
       "usb/source-lock.json"
     ]
+  },
+  {
+    "id": "kuromoji",
+    "name": "Kuromoji IPADIC 0.9.0",
+    "license": "Apache-2.0 / IPADIC notices",
+    "assets": [
+      "kuromoji/LICENSE.md",
+      "kuromoji/NOTICE.md",
+      "kuromoji/CONTRIBUTORS.md"
+    ]
   }
 ]

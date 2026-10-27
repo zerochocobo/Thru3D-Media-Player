@@ -1,7 +1,7 @@
 {
   "id": "v6-small",
   "directory": "comic-ocr/v6-small",
-  "source": "RapidAI/RapidOCR v3.10.0; PP-OCRv6 Small ONNX. Separately supplied payloads; original URLs and preparation are documented in docs/COMIC_READING.md.",
+  "source": "RapidAI/RapidOCR v3.10.0; PP-OCRv6 Small ONNX. Separately supplied payloads; original URLs and preparation are documented in docs/COMIC_READING.md.; auxiliary detector: Kellenok/PP-OCRv6_manga v0.2, revision 62375557b5b0a4b2bc8e05484a97c7ea1df7229e",
   "files": {
     "multi_PP-OCRv6_det_small.onnx": {
       "bytes": 9929594,
@@ -10,6 +10,10 @@
     "multi_PP-OCRv6_rec_small.onnx": {
       "bytes": 21234383,
       "sha256": "6f327246b50388f3c176ae304bd95767ea6dc0c9ae92153ef8cbe210b3c14884"
+    },
+    "manga_det_v0.2.onnx": {
+      "bytes": 1816954,
+      "sha256": "d132078c46e292b226fb5a2ca52a7612ad319262dfdf493e7d8e3be435295978"
     }
   }
 }

@@ -133,6 +133,7 @@ $pluginDirectory = Join-Path $projectDirectory 'addons\quest_player\bin'
 New-Item -ItemType Directory -Path $pluginDirectory -Force | Out-Null
 foreach ($variant in @('debug','release')) {
     & "$PSScriptRoot\Assert-NarrationPackaged.ps1" -ArchivePath "$workspace\android\player-plugin\build\outputs\aar\player-plugin-$variant.aar"
+    & "$PSScriptRoot\Assert-ComicJapanesePackaged.ps1" -ArchivePath "$workspace\android\player-plugin\build\outputs\aar\player-plugin-$variant.aar"
     & "$PSScriptRoot\Assert-ListeningPackaged.ps1" -ArchivePath "$workspace\android\player-plugin\build\outputs\aar\player-plugin-$variant.aar"
     Copy-Item -LiteralPath "$workspace\android\player-plugin\build\outputs\aar\player-plugin-$variant.aar" -Destination $pluginDirectory -Force
 }
@@ -415,6 +416,7 @@ try {
     $nativeEvidenceDirectory = Join-Path $artifactDirectory 'native'
     New-Item -ItemType Directory -Path $nativeEvidenceDirectory -Force | Out-Null
     & "$PSScriptRoot\Assert-NarrationPackaged.ps1" -ArchivePath $apkPath
+    & "$PSScriptRoot\Assert-ComicJapanesePackaged.ps1" -ArchivePath $apkPath
     & "$PSScriptRoot\Assert-ListeningPackaged.ps1" -ArchivePath $apkPath
     # Test auditorium is included in both Debug and Release (2026-10-23).
     & "$PSScriptRoot\Assert-CinemaPackaged.ps1" -ArchivePath $apkPath
@@ -440,6 +442,7 @@ foreach ($symbol in @('Java_org_vrpassthroughplayer_plugin_RvmNative_runBenchmar
 & "$env:ANDROID_HOME\cmdline-tools\latest\bin\apkanalyzer.bat" dex packages --defined-only $apkPath 2>&1 | Out-File (Join-Path $logDirectory 'apk-dex-packages.log') -Encoding utf8
 if ($LASTEXITCODE -ne 0) { throw 'APK DEX inspection failed.' }
 $dexReport = Get-Content (Join-Path $logDirectory 'apk-dex-packages.log') -Raw
+if ($dexReport -notmatch '(?m)\scom\.atilika\.kuromoji\.ipadic\.Tokenizer\r?$') { throw 'APK is missing the Japanese reading tokenizer.' }
 if ($dexReport -match 'org\.codelibs\.jcifs\.smb1?\.(http|https)(\.|\s|$)') {
     throw 'APK contains unused jcifs HTTP NTLM/TLS adapters; check the filtered SMB dependency.'
 }

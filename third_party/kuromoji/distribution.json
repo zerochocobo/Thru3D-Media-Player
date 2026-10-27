@@ -1,0 +1,50 @@
+{
+  "version": "0.9.0",
+  "source": "https://github.com/atilika/kuromoji/tree/0.9.0",
+  "modules": {
+    "core": {
+      "url": "https://repo.maven.apache.org/maven2/com/atilika/kuromoji/kuromoji-core/0.9.0/kuromoji-core-0.9.0.jar",
+      "bytes": 99147,
+      "sha256": "9dec317cab2879474d39bffea4f3f481288d87952c9b5e19d6897b0d5e0d3613"
+    },
+    "ipadic": {
+      "url": "https://repo.maven.apache.org/maven2/com/atilika/kuromoji/kuromoji-ipadic/0.9.0/kuromoji-ipadic-0.9.0.jar",
+      "bytes": 13343016,
+      "sha256": "24909fd751c0b439f7af5131b080eb65bc85062f0c4977ca4a71c76abe74e0b6"
+    }
+  },
+  "dictionary": {
+    "com/atilika/kuromoji/ipadic/characterDefinitions.bin": {
+      "bytes": 398718,
+      "sha256": "01c110da81135a32205da569b0378cab327b804c82341651bc55bd54b9d13370"
+    },
+    "com/atilika/kuromoji/ipadic/connectionCosts.bin": {
+      "bytes": 3463720,
+      "sha256": "e5901a20a644adb0b1cc6b19029af47492aa51e8221547dbf3b500ce86206929"
+    },
+    "com/atilika/kuromoji/ipadic/doubleArrayTrie.bin": {
+      "bytes": 5649577,
+      "sha256": "80d1c8ce6000d261351f4798e9bd38bc207b3c3c2a59b6caee63b42629dcb26c"
+    },
+    "com/atilika/kuromoji/ipadic/tokenInfoDictionary.bin": {
+      "bytes": 9411048,
+      "sha256": "b5bd52a59ebe3901a06ae149637ac57c8f31af79e3f6458b6eeb77d163266464"
+    },
+    "com/atilika/kuromoji/ipadic/tokenInfoFeaturesMap.bin": {
+      "bytes": 8987055,
+      "sha256": "48fd13fc57f7071cf3a5b7544475e4dc293993666e35129827cc1abcc18c6ac0"
+    },
+    "com/atilika/kuromoji/ipadic/tokenInfoPartOfSpeechMap.bin": {
+      "bytes": 2734,
+      "sha256": "4a84a0c91ef03dd8f4484318ed5230e0b56baa087460a4dfa27c202ffadd2478"
+    },
+    "com/atilika/kuromoji/ipadic/tokenInfoTargetMap.bin": {
+      "bytes": 5511352,
+      "sha256": "626185aa6d0aba1760ea23d40a818b48bcefe3250f89823da3bf87aa33d4063d"
+    },
+    "com/atilika/kuromoji/ipadic/unknownDictionary.bin": {
+      "bytes": 2586,
+      "sha256": "ab1cc944ebc5d38a2e1558c7c09a1b3277f27f3613465c14c49115870d127987"
+    }
+  }
+}

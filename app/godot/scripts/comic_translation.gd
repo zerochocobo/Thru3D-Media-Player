@@ -4,6 +4,7 @@ extends RefCounted
 const Protocol := preload("res://scripts/comic_translation_protocol.gd")
 const Overlay := preload("res://scripts/comic_translation_overlay.gd")
 const I18n := preload("res://scripts/i18n.gd")
+const WorkGate := preload("res://scripts/translation_work_gate.gd")
 const SECTION := "comic_translation"
 const EDGE := "https://edge.microsoft.com/translate/translatetext"
 const UA := "Thru3D/ComicTranslation"
@@ -34,7 +35,8 @@ var _session := {}
 var _expires := 0
 var _redirects := 0
 var _next_at := 0
-var _cooldown := {"Bing": 0, "Edge": 0}
+var _cooldown := WorkGate.cooldown
+var priority := 1
 var _active := false
 var _overlay_dirty := false
 var request_spacing_ms := 500
@@ -83,6 +85,7 @@ func option(key: String, value: Variant) -> bool:
 func reset(clear_cache: bool = false) -> void:
 	generation += 1
 	_cancel_request()
+	WorkGate.release(self)
 	jobs.clear(); current.clear(); entries.clear(); failed.clear()
 	_signature = ""; epoch = -1; _regions = []; _overlay_dirty = false
 	state = "waiting" if enabled else "off"
@@ -106,7 +109,7 @@ func observe_sentences(sentences: Array, source_language: String, target_languag
 	var next := []
 	for sentence: Dictionary in sentences:
 		var text := Protocol.normalize(str(sentence.get("text", "")), source)
-		if text.is_empty() or text.length() > 1000 or "T3D" in text or source == target: continue
+		if text.is_empty() or text.length() > 1000 or source == target: continue
 		next.append({"text": text, "source": source, "target": target, "key": Protocol.cache_key(text, source, target)})
 		if next.size() >= 64: break
 	var signature := str(next).sha256_text()
@@ -160,14 +163,26 @@ func tick(active: bool) -> void:
 	if not active:
 		if is_instance_valid(_request):
 			generation += 1; _cancel_request(); current = []; _signature = ""
+		WorkGate.release(self)
 		if overlay: overlay.visible(false)
 		return
 	if overlay and _overlay_dirty:
 		overlay.update(entries, cache, text_size, appearance); _overlay_dirty = false
 	if overlay: overlay.sync(true)
-	if _request or not current.is_empty() or jobs.is_empty() or Time.get_ticks_msec() < _next_at: return
+	if _request or not current.is_empty() or Time.get_ticks_msec() < _next_at: return
+	# Failed lines still on screen retry once their interval passes, not only when new text arrives.
+	if jobs.is_empty() and entries.any(func(entry): return failed.has(entry.key) and not cache.has(entry.key) and Time.get_ticks_msec() - int(failed[entry.key]) >= RETRY_MS):
+		_schedule(); return
+	if jobs.is_empty(): return
+	while not jobs.is_empty():
+		jobs[0] = jobs[0].filter(func(entry): return not cache.has(entry.key))
+		if not jobs[0].is_empty(): break
+		jobs.pop_front()
+	if jobs.is_empty(): _status(); return
+	if not WorkGate.acquire(self, priority): return
 	current = jobs.pop_front()
 	state = "translating"
+	if current.any(func(entry): return "T3D" in str(entry.text)): _edge(); return
 	if Time.get_ticks_msec() < int(_cooldown.Bing): _edge(); return
 	if _session.is_empty() or Time.get_ticks_msec() >= _expires:
 		_session.clear(); _origin = "https://www.bing.com"; _redirects = 0
@@ -214,6 +229,7 @@ func _edge() -> void:
 		# Both providers are cooling down. Keep the sentences queued instead
 		# of failing them without a request; resume when one is available.
 		jobs.push_front(current); current = []
+		WorkGate.release(self)
 		_next_at = mini(int(_cooldown.Bing), int(_cooldown.Edge))
 		_status(); return
 	var query := {"to": target, "isEnterpriseClient": "false"}
@@ -225,7 +241,7 @@ func _edge() -> void:
 func _reply(result: int, code: int, headers: PackedStringArray, body: PackedByteArray, stamp: int, stage: String) -> void:
 	if stamp != generation: return
 	_cancel_request()
-	if not enabled or not _active or current.is_empty(): return
+	if not enabled or not _active or current.is_empty(): WorkGate.release(self); return
 	if stage != "edge": _remember_cookies(headers)
 	if stage == "session" and code in [301, 302, 303, 307, 308] and _redirects < 3:
 		var destination := header(headers, "location")
@@ -233,6 +249,7 @@ func _reply(result: int, code: int, headers: PackedStringArray, body: PackedByte
 		if destination.begins_with("https://") and host in ["www.bing.com", "cn.bing.com", "bing.com"]:
 			_origin = "https://" + host; _redirects += 1; _bootstrap(); return
 	if result != HTTPRequest.RESULT_SUCCESS or code != 200:
+		push_warning("Translation %s failed: result %d, HTTP %d" % [stage, result, code]) # No text or URL.
 		_failure(stage, code, headers); return
 	if stage == "session":
 		if not _parse_session(body.get_string_from_utf8()): _failure(stage, 0, headers); return
@@ -242,7 +259,9 @@ func _reply(result: int, code: int, headers: PackedStringArray, body: PackedByte
 	if stage == "edge": outputs = Protocol.parse_edge(data, current.size(), target)
 	elif data is Array and not data.is_empty():
 		outputs = Protocol.split_bing(Protocol.translated(data[0], target), current.size())
-	if outputs.size() != current.size(): _failure(stage, 0, headers); return
+	if outputs.size() != current.size():
+		push_warning("Translation %s reply did not match the request" % stage)
+		_failure(stage, 0, headers); return
 	provider = "Edge" if stage == "edge" else "Bing"
 	_finish(outputs)
 
@@ -287,6 +306,7 @@ func _failure(stage: String, code: int, headers: PackedStringArray) -> void:
 	else: _finish([])
 
 func _finish(outputs: Array) -> void:
+	WorkGate.release(self, maxi(500, request_spacing_ms))
 	for i in current.size():
 		var key: String = current[i].key
 		if outputs.size() == current.size():

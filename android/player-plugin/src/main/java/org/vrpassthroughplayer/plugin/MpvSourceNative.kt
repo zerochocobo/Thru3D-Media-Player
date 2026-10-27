@@ -31,7 +31,10 @@ internal object MpvSourceNative {
                                    networkCacheMiB: Int = 256): Long
     /** ISO header/title preflight on the source worker. playlist -1 selects the longest title.
      * JSON: width, height, duration_us, mvc, playlist (selected) and the selectable titles. */
-    @JvmStatic external fun probeDisc(path: String, playlist: Int): String
+    @JvmStatic external fun beginDiscProbe(): Long
+    /** Cancel a pending/running probe without waiting on its source worker. Idempotent. */
+    @JvmStatic external fun closeDiscProbe(handle: Long)
+    @JvmStatic external fun probeDisc(handle: Long, path: String, playlist: Int): String
     /** The playing HDMV menu session (isoPlaylist -2): navigation state JSON, {"active":false} without one. */
     @JvmStatic external fun discMenuState(): String
     /** Occupied premultiplied RGBA of the menu's button plane at [version]; rect gets x, y, w, h, plane w, plane h. */

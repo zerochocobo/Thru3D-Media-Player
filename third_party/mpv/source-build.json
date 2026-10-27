@@ -122,9 +122,9 @@
     },
     {
       "name": "libavformat.so",
-      "sha256": "0923b196e0687ab630c9ddd6bd3c23008847dcb11fafc9907b4ca05c8826cdcb",
-      "bytes": 4333624,
-      "built_sha256": "1fed29369ed8afb716b96bfd0d523f05df2f2027a8b46d6347492e92df84e8fc",
+      "sha256": "4327a3b3cc416033a890ea7891928ce2ab3d4389da8f980c97eca4dbdf57b18e",
+      "bytes": 4333944,
+      "built_sha256": "4e621a0df99bbfd1aeb48565672498a73cb8c67665b20c374d8bbbaa5c86bb13",
       "needed": [
         "libavcodec.so",
         "libavutil.so",
@@ -170,7 +170,7 @@
     }
   ],
   "host_packages_sha256": "0d42dd4ec021254111a439214a2681bf37ca44ba2af04a9d97af479f2bd1dd33",
-  "build_receipt_sha256": "b4eb6a8905a509be5ba646a23ce52eb990ccc8f1876a14521e3c5a5bd557e886",
+  "build_receipt_sha256": "99b365a2a4baeef72e79185a87471d6a56573ec296f3567a0c6c7118a022cb08",
   "meson": "1.11.0",
   "ninja": "1.11.1",
   "mvc_inputs_sha256": {
@@ -182,7 +182,7 @@
     "tools/environment/mpv-linux/build_bluray.sh": "be189cd78bdbb02081ac0b65aee99fc6f16b1650fd3648ae825832c3940e4815",
     "native/mpv/mvc/bluray_clpi_reader.c": "3b177cbdaeaadfa3221039cbbc04928cddd74603d3fe99b82c5efd76cf9ebc51",
     "native/mpv/mvc/edge264mvc_all.c": "d23091d4f6559c828a5a8e70bb609487d484ea30176c6e60773f492661750382",
-    "native/mpv/mvc/ffmpeg_bd_mvc.c": "93bce56f36aaeb88a1a5a431d32dd142433974469e839d8203eaa0b079351893",
+    "native/mpv/mvc/ffmpeg_bd_mvc.c": "f713ff03f94f6af05450051b0a428b9950a6cb7d45a6835f31c588a5bec7fc3a",
     "native/mpv/mvc/ffmpeg_h264_mvc.c": "cb1298e1430a6a282fd713ea338a9d7179a018340e5d3a78b4f02fbd6ae920a6",
     "native/mpv/mvc/mvc_recovery.h": "8ee01cca57e2e807cfcaf5956652dc54b67d3ae5395993277c5ccefb45138fd5"
   },
@@ -199,7 +199,7 @@
     "tools/environment/mpv-linux/build_bluray.sh": "276e35a7ccf1dff02cd6e317fe839e2afee9cbf7e644601bc05bf6469db3b3cd",
     "native/mpv/mvc/bluray_clpi_reader.c": "3b177cbdaeaadfa3221039cbbc04928cddd74603d3fe99b82c5efd76cf9ebc51",
     "native/mpv/mvc/edge264mvc_all.c": "d23091d4f6559c828a5a8e70bb609487d484ea30176c6e60773f492661750382",
-    "native/mpv/mvc/ffmpeg_bd_mvc.c": "93bce56f36aaeb88a1a5a431d32dd142433974469e839d8203eaa0b079351893",
+    "native/mpv/mvc/ffmpeg_bd_mvc.c": "f713ff03f94f6af05450051b0a428b9950a6cb7d45a6835f31c588a5bec7fc3a",
     "native/mpv/mvc/ffmpeg_h264_mvc.c": "cb1298e1430a6a282fd713ea338a9d7179a018340e5d3a78b4f02fbd6ae920a6",
     "native/mpv/mvc/mvc_recovery.h": "8ee01cca57e2e807cfcaf5956652dc54b67d3ae5395993277c5ccefb45138fd5"
   }

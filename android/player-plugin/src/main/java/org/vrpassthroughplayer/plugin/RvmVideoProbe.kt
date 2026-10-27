@@ -68,7 +68,7 @@ internal class RvmVideoProbe(
             try {
                 if (synchronized(lock) { closed }) return@post
                 val host = context() ?: error("RVM probe activity unavailable")
-                RvmNative.configureGpu(RvmWarmup.cacheDirectory(host).absolutePath, true)
+                RvmNative.configureGpu(RvmWarmup.cacheDirectory(host).absolutePath, RvmNative.fp16())
                 val generation = gate.modelGeneration()
                 val prepared = RvmRuntime.prepare(host.assets, vulkan, profile,
                     scope.logicalSessionId.toLong(), generation)

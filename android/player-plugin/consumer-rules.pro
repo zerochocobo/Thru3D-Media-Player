@@ -1,4 +1,6 @@
 # Called by JNI through GetMethodID, including when the consuming APK uses R8.
+# Kuromoji resolves its dictionary relative to Tokenizer.class's package.
+-keepnames class com.atilika.kuromoji.ipadic.Tokenizer
 -keepclassmembers class org.vrpassthroughplayer.plugin.UsbStorage$PartitionReader {
     public int read(long, byte[]);
 }

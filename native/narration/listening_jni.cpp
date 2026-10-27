@@ -260,6 +260,7 @@ struct Engine {
     std::unique_ptr<AudioReader> reader;
     double offset=0;
     bool stopped=false;
+    uint64_t emitted=0;
     ~Engine(){if(stream>=0)moonshine_free_stream(model,stream);if(model>=0)moonshine_free_transcriber(model);}
 };
 #ifdef __ANDROID__
@@ -298,7 +299,7 @@ static void listening_open(JNIEnv* env,jlong id,jstring path,jint track,jstring 
         e->reader=std::make_unique<AudioReader>(&e->cancelled);
         e->reader->open(narration_utf8(env,path),narration_utf8(env,ca),track,start,disc==JNI_TRUE,playlist,origin,directAudio,
                         input?std::make_unique<ListeningJavaInput>(env,input):nullptr);
-        e->offset=start;e->stream=moonshine_create_stream(e->model,0);ok(e->stream);ok(moonshine_start_stream(e->model,e->stream));e->stopped=false;
+        e->offset=start;e->stream=moonshine_create_stream(e->model,0);ok(e->stream);ok(moonshine_start_stream(e->model,e->stream));e->stopped=false;e->emitted=0;
     }catch(const std::exception& error){narration_error(env,error.what());}
 }
 extern "C" JNIEXPORT void JNICALL Java_org_vrpassthroughplayer_plugin_ListeningNative_open(JNIEnv* env,jclass,jlong id,jstring path,jint track,jstring ca,jdouble start,jboolean disc,jint playlist){
@@ -317,14 +318,26 @@ static std::string listening_step(const std::shared_ptr<Engine>& e){
         transcript_t* transcript=nullptr;ok(moonshine_transcribe_stream(e->model,e->stream,0,&transcript));
         if(e->cancelled)throw std::runtime_error("listening_cancelled");
         const double through=e->reader->start+e->reader->cursor/16000.;
+        // Do not certify a time range while speech spanning it can still finish.
+        // The configured VAD cap is 6s; retain 8s for input/VAD look-behind too.
+        double settled=e->stopped?through:std::max(e->offset,through-8.0);
+        if(!e->stopped&&transcript&&transcript->line_count){const auto& last=transcript->lines[transcript->line_count-1];
+            if(!last.is_complete&&std::isfinite(last.start_time))settled=std::min(settled,e->offset+last.start_time);}
         const auto recognized=std::chrono::steady_clock::now();
-        std::ostringstream json;json.precision(12);json<<"{\"through\":"<<through<<",\"eof\":"<<(e->stopped?"true":"false")
+        const auto* audioStream=e->reader->format->streams[e->reader->index];
+        const double audioEnd=audioStream->duration==AV_NOPTS_VALUE?0:
+            (audioStream->duration+(audioStream->start_time==AV_NOPTS_VALUE?0:audioStream->start_time))*av_q2d(audioStream->time_base)-e->reader->origin;
+        std::ostringstream json;json.precision(12);json<<"{\"through\":"<<through<<",\"settled\":"<<settled<<",\"eof\":"<<(e->stopped?"true":"false")
+            <<",\"audio_end\":"<<audioEnd
+            <<",\"duration\":"<<(e->reader->format->duration==AV_NOPTS_VALUE?0:e->reader->format->duration/double(AV_TIME_BASE))
             <<",\"read_ms\":"<<std::chrono::duration<double,std::milli>(decoded-began).count()
             <<",\"inference_ms\":"<<std::chrono::duration<double,std::milli>(recognized-decoded).count()<<",\"cues\":[";bool first=true;
-        if(transcript)for(uint64_t i=0;i<transcript->line_count;++i){auto& line=transcript->lines[i];
-            if(!line.is_complete||!line.text||!line.text[0]||!std::isfinite(line.start_time)||!std::isfinite(line.duration)||line.duration<=0)continue;
+        if(transcript)for(uint64_t i=e->emitted;i<transcript->line_count;++i){auto& line=transcript->lines[i];
+            if(!line.is_complete)break;
+            e->emitted=i+1;
+            if(!line.text||!line.text[0]||!std::isfinite(line.start_time)||!std::isfinite(line.duration)||line.duration<=0)continue;
             double begin=e->offset+line.start_time,end=std::min(through,begin+line.duration);
-            if(end<=begin||end<through-45)continue;
+            if(end<=begin)continue;
             if(!first)json<<',';first=false;json<<"{\"start\":"<<begin<<",\"end\":"<<end<<",\"text\":"<<quote(line.text)<<'}';
         }
         json<<"]}";

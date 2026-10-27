@@ -9,6 +9,8 @@ const HUD_POSITION := Vector3(-0.42, 0.30, -0.75)
 var source: Callable
 var _elapsed := 0.0
 var _frames := -1
+## Previous decoder drops, VO drops and late frames, for per-window increments.
+var _counters := [-1, -1, -1]
 
 func _ready() -> void:
 	position = HUD_POSITION
@@ -38,9 +40,19 @@ func _process(delta: float) -> void:
 	text = "%s %.1f%s · %s FPS" % ["Alpha" if target > 0 else "Video", video, " / %d" % target if target > 0 else "", render]
 	# Compositor layer (L) or eye buffers (E): the path decides most of the GPU cost.
 	if sample.has("path"): text += " " + str(sample.path)
+	# Second line: decoder drops / VO drops / late frames in this window, A/V offset, cache wait.
+	if sample.has("vo_drops"):
+		var now := [int(sample.decoder_drops), int(sample.vo_drops), int(sample.vo_late)]
+		var added := []
+		for i in now.size(): added.append(maxi(0, now[i] - _counters[i]) if _counters[i] >= 0 else 0)
+		_counters = now
+		var avsync: String = str(sample.get("avsync", ""))
+		var offset := "%+d ms" % roundi(avsync.to_float() * 1000.0) if avsync.is_valid_float() else "-"
+		text += "\nD%d V%d L%d · AV %s%s" % [added[0], added[1], added[2], offset, " · CACHE" if sample.get("cache", false) else ""]
 
 func set_shown(shown: bool) -> void:
 	visible = shown
 	_elapsed = 0.0
 	_frames = -1
+	_counters = [-1, -1, -1]
 	text = ""

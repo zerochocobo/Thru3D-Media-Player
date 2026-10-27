@@ -226,10 +226,14 @@ func _curve_radius() -> float:
 	# Keep the edges in front even when a large photo reaches the shared arc limit.
 	return maxf(super._curve_radius(), _flat.size.x * _flat.size.x / (4.0 * screen_distance))
 
+func _edge_feather() -> Vector2:
+	# Only Magazine / Comics disables feathering, including its standalone cover and last page.
+	return Vector2.ZERO if magazine.active() else Vector2.ONE * SOFT_EDGE_METRES / _flat.size
+
 func _shape_screen() -> void:
 	super._shape_screen()
 	if material:
-		material.set_shader_parameter("edge_feather", Vector2.ONE * SOFT_EDGE_METRES / _flat.size)
+		material.set_shader_parameter("edge_feather", _edge_feather())
 		material.set_shader_parameter("target_width", Vector2.ONE * clampf(screen_distance * 0.004, 0.008, 0.035) / _flat.size)
 	if placeholder_visible() and pending_index >= 0:
 		_size_placeholder(pending_index, queue[pending_index].get("photo_info", {}))
@@ -2092,8 +2096,8 @@ func _process_layer() -> void:
 	var shown: bool = origin != null and eligible and _layer_key == str(source.key)
 	if shown:
 		var flat := geometry == Geometry.Geometry.FLAT
-		# A flat photo's soft edge stays in the eye buffers: the layer shows the inner part.
-		var inset := Vector2.ONE * SOFT_EDGE_METRES / _flat.size if flat else Vector2.ZERO
+		# Match the eye-buffer edge: reading pages use the full compositor image as well.
+		var inset := _edge_feather() if flat else Vector2.ZERO
 		# The opaque edge covers the layer's outer rim: the compositor's filtered quad edge and the
 		# antialiased hole edge are both part transparent, and meeting on one line they showed a
 		# see-through frame between the soft edge and the picture.

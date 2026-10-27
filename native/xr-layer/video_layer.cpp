@@ -45,6 +45,8 @@ struct Picture {
     int width = 0, height = 0, levels = 0;
     bool is_static = false;
     GLuint acquired = 0; // texture of the acquired image, 0 when none
+    int waiting = -1; // index acquired whose wait timed out: waited on again next time
+    uint64_t timeouts = 0;
 };
 union Layer {
     XrCompositionLayerBaseHeader base;
@@ -538,11 +540,25 @@ Java_org_vrpassthroughplayer_plugin_VideoLayerNative_acquireImage(JNIEnv*, jclas
     if (!target) return 0;
     Picture& p = *target;
     if (p.image == XR_NULL_HANDLE || p.acquired) return static_cast<jint>(p.acquired);
-    XrSwapchainImageAcquireInfo acquire{}; acquire.type = XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO;
     uint32_t index = 0;
-    if (XR_FAILED(state.acquire_image(p.image, &acquire, &index)) || index >= p.textures.size()) return 0;
-    XrSwapchainImageWaitInfo wait{}; wait.type = XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO; wait.timeout = XR_INFINITE_DURATION;
-    if (XR_FAILED(state.wait_image(p.image, &wait))) {
+    if (p.waiting >= 0) index = static_cast<uint32_t>(p.waiting);
+    else {
+        XrSwapchainImageAcquireInfo acquire{}; acquire.type = XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO;
+        if (XR_FAILED(state.acquire_image(p.image, &acquire, &index)) || index >= p.textures.size()) return 0;
+    }
+    // Bounded: this runs on the render thread under the layer mutex. A runtime that keeps the image
+    // (a PICO 4 Pro user saw AI passthrough freeze the app with drifting controllers) skips this
+    // frame's update instead of stopping every frame; the same image is waited on again next time.
+    XrSwapchainImageWaitInfo wait{}; wait.type = XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO; wait.timeout = 50'000'000;
+    const XrResult waited = state.wait_image(p.image, &wait);
+    if (waited == XR_TIMEOUT_EXPIRED) {
+        p.waiting = static_cast<int>(index);
+        if (p.timeouts++ % 100 == 0)
+            log(ANDROID_LOG_WARN, "picture slot " + std::to_string(slot) + " image wait timed out (" + std::to_string(p.timeouts) + " times)");
+        return 0;
+    }
+    p.waiting = -1;
+    if (XR_FAILED(waited)) {
         XrSwapchainImageReleaseInfo release{}; release.type = XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO;
         state.release_image(p.image, &release);
         return 0;

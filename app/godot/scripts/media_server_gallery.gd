@@ -26,6 +26,7 @@ var actor_start := 0
 var selected_image := 0
 var part_start := 0
 var selected_part := 0
+var selected_versions := {}
 var detail_start := 0
 var tag_start := 0
 var overview_start := 0
@@ -40,20 +41,33 @@ func _init(owner: RefCounted) -> void: _owner = weakref(owner)
 func home() -> bool: return browser.view == "home" and browser.capabilities.get("home_layout", "") == "libraries"
 func rich_detail() -> bool: return browser.view == "detail" and browser.capabilities.get("artwork", false)
 func fixed() -> bool: return home() or rich_detail() or browser.view in ["picture", "overview"]
-func state() -> Dictionary: return {"library_start": library_start, "recent_start": recent_start, "home_strip": home_strip, "image_start": image_start, "actor_start": actor_start, "selected_image": selected_image, "part_start": part_start, "selected_part": selected_part, "detail_start": detail_start, "tag_start": tag_start, "overview_start": overview_start}
+func state() -> Dictionary: return {"library_start": library_start, "recent_start": recent_start, "home_strip": home_strip, "image_start": image_start, "actor_start": actor_start, "selected_image": selected_image, "part_start": part_start, "selected_part": selected_part, "selected_versions": selected_versions.duplicate(), "detail_start": detail_start, "tag_start": tag_start, "overview_start": overview_start}
 func restore(value: Dictionary) -> void:
 	library_start = int(value.get("library_start", 0)); image_start = int(value.get("image_start", 0))
 	recent_start = int(value.get("recent_start", 0)); home_strip = str(value.get("home_strip", "libraries"))
 	actor_start = int(value.get("actor_start", 0)); selected_image = int(value.get("selected_image", 0))
 	part_start = int(value.get("part_start", 0)); selected_part = int(value.get("selected_part", 0))
+	selected_versions = value.get("selected_versions", {}).duplicate()
 	detail_start = int(value.get("detail_start", 0)); tag_start = int(value.get("tag_start", 0)); overview_start = int(value.get("overview_start", 0))
 func libraries() -> Array: return browser.home_data.get("libraries", [])
 func recent() -> Array: return browser.home_recent_entries()
 func images() -> Array: return browser.detail.get("images", [])
 func actors() -> Array: return browser.detail.get("actors", [])
 func parts() -> Array: return browser.detail.get("parts", [])
-func playback_node() -> Dictionary:
+func base_playback_node() -> Dictionary:
 	return parts()[clampi(selected_part, 0, parts().size() - 1)] if parts().size() > 1 else browser.detail
+func versions() -> Array: return base_playback_node().get("versions", [])
+func playback_node() -> Dictionary:
+	return version_node(base_playback_node())
+func version_node(base: Dictionary) -> Dictionary:
+	var choices: Array = base.get("versions", [])
+	if choices.size() < 2: return base
+	var wanted := str(selected_versions.get(str(base.get("id", "")), ""))
+	for version in choices:
+		if str(version.source_id) == wanted: return base.merged(version, true)
+	for version in choices:
+		if version.get("default_version", false): return base.merged(version, true)
+	return base.merged(choices[0], true)
 func part_picture(part: Dictionary) -> Dictionary:
 	return part.merged({"cover_image": part.get("part_image", part.get("cover_image", {}))}, true)
 
@@ -104,6 +118,8 @@ func action(target: int) -> bool:
 		browser.open_actor(actors()[target - ACTOR]); return true
 	if rich_detail() and target >= PART and target < PART + parts().size():
 		selected_part = target - PART; browser.menu.refresh(); return true
+	if rich_detail() and target == browser.ACTION + 59:
+		browser.open_versions(); return true
 	if rich_detail() and target >= PHOTO and target < PHOTO + images().size():
 		browser._remember(); browser.cancel(); selected_image = target - PHOTO
 		browser.view = "picture"; browser.menu._reset_navigation(); browser.menu.refresh(); return true
@@ -296,9 +312,14 @@ func draw_detail() -> void:
 		meta.append((resolution + " · " if not resolution.is_empty() else "") + "%d × %d" % [width, height])
 	_label(" · ".join(meta), Vector2(-0.015, 0.385), 16).modulate = menu.MUTED
 	var lines: Array[String] = browser.wrapped_lines(str(detail.get("description", "")), 0.78, 18)
-	var overview := _label("\n".join(lines.slice(0, 3)), Vector2(-0.015, 0.34), 18)
+	var overview_count := 2 if versions().size() > 1 else 3
+	var overview := _label("\n".join(lines.slice(0, overview_count)), Vector2(-0.015, 0.34), 18)
 	overview.vertical_alignment = VERTICAL_ALIGNMENT_TOP
-	if lines.size() > 3: menu._button(browser.ACTION + 56, I18n.t("More"), Vector2(0.65, 0.215), Vector2(0.19, 0.06))
+	if lines.size() > overview_count: menu._button(browser.ACTION + 56, I18n.t("More"), Vector2(0.65, 0.215), Vector2(0.19, 0.06))
+	if versions().size() > 1:
+		var version_label := I18n.t("Version") + ": " + str(playback.get("version_name", ""))
+		menu._button(browser.ACTION + 59, menu._fit_title(version_label, "", 0.42, 18) + " ▾", Vector2(0.19, 0.215), Vector2(0.48, 0.06), not browser.busy)
+		menu._tips[browser.ACTION + 59] = version_label + "\n" + str(playback.get("basename", ""))
 	var play_label := I18n.t("Continue watching" if int(playback.get("position_ms", 0)) > 0 else "Play / resume")
 	if parts().size() > 1: play_label += " · " + str(playback.get("part_label", ""))
 	menu._button(browser.ACTION + 30, play_label, Vector2(0.19, 0.135), Vector2(0.48, 0.075), not browser.busy, "play")

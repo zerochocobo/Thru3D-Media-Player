@@ -18,8 +18,13 @@ func run() -> void:
 	camera.add_child(menu); menu.position.y = -.35; menu.toggle(); menu.set_process(false)
 	for locale in ["zh", "zh_Hant", "en", "ja"]:
 		I18n.use(locale)
-		for mode in ["bilingual", "original", "off", "appearance"]:
-			state.listening_enabled = mode != "off"; state.listening_target = "" if mode == "original" else "zh-Hans"
+		for mode in ["bilingual", "original", "off", "appearance", "embedded-off", "embedded-on", "pgs", "sidecars", "sidecars-open"]:
+			state.listening_enabled = mode not in ["off", "embedded-off"]; state.listening_target = "" if mode == "original" else "zh-Hans"
+			state.subtitle_options = [{"id": 1, "title": "English", "codec": "hdmv_pgs_subtitle" if mode == "pgs" else "subrip"}] if mode in ["embedded-off", "embedded-on", "pgs"] else []
+			state.subtitle_track = 0 if state.subtitle_options.is_empty() else 1
+			state.subtitle_files_available = mode in ["sidecars", "sidecars-open"]
+			state.subtitle_files = ["movie.en.srt", "movie.ja.ass"] if state.subtitle_files_available else []
+			menu._subtitle_files_open = mode == "sidecars-open"
 			menu._subtitle_open = true; menu._subtitle_appearance_open = mode == "appearance"; menu.refresh()
 			await process_frame; await RenderingServer.frame_post_draw; await RenderingServer.frame_post_draw
 			if viewport.get_texture().get_image().save_png(output.path_join(locale + "-" + mode + ".png")) != OK: failures.append("save")

@@ -4,9 +4,15 @@ import android.hardware.HardwareBuffer
 import android.view.Surface
 import org.json.JSONObject
 
-/** A decoded frame's buffer for the RVM input (Alpha plan B); the taker closes [buffer]. */
+/** A decoded frame's buffer for the RVM input (Alpha plan B); the taker calls [release]. [image]: the
+ * reader image still owning the buffer (memory saver), returned to the decoder on release. */
 internal class LayerFrame(val buffer: HardwareBuffer, val width: Int, val height: Int, val bufferWidth: Int, val bufferHeight: Int,
-                          val sequence: Long, val timestampNs: Long)
+                          val sequence: Long, val timestampNs: Long, private val image: AutoCloseable? = null) {
+    fun release() {
+        buffer.close()
+        image?.let { runCatching { it.close() } }
+    }
+}
 
 /**
  * Alpha plan B: where the decoder writes while its frames reach the compositor layer and RVM sees them.

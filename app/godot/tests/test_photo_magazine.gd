@@ -101,7 +101,9 @@ func run() -> void:
 	var worker_job := {}; photo.magazine.decorate(worker_job); photo.magazine.cancel()
 	check(worker_job.magazine_first.get("image") is Image, "Cancelling a spread cannot erase a running decoder's source snapshot")
 	photo.open_image(entries[0].uri, entries[0].title, entries); await settle(photo)
+	check(photo.material.get_shader_parameter("edge_feather") != Vector2.ZERO, "Ordinary photographs retain their soft edge")
 	photo.set_layout_mode(4); await settle(photo)
+	check_page_edges(photo)
 	check(photo.index == 0 and photo._size == Vector2(220,200), "Two full sources join at equal height without stretching")
 	var pixels: Image = photo._texture.get_image()
 	check(pixels.get_pixel(30,100).r > .9 and pixels.get_pixel(190,100).b > .9, "Left and right source pixels survive composition")
@@ -112,6 +114,7 @@ func run() -> void:
 	photo.navigate(-1); await settle(photo); check(photo.index == 0, "Previous reverses a full spread")
 	photo.magazine.toggle_single(); await settle(photo)
 	check(photo._size == Vector2(100,200) and photo.snapshot().magazine_single, "Cover can be shown alone")
+	check_page_edges(photo)
 	photo.navigate(1); await settle(photo); check(photo.index == 1, "Turn after a single cover starts a new pair")
 	photo.navigate(1); await settle(photo); check(photo.index == 3, "Following turns continue by pairs")
 	photo.navigate(-1); await settle(photo); check(photo.index == 1, "Back navigation preserves cover pairing")
@@ -126,6 +129,7 @@ func run() -> void:
 	check(photo.snapshot().magazine_pages == 1 and not photo.navigate(1) and not photo.snapshot().can_next, "Odd last image stands alone and does not wrap to the cover")
 	photo.set_layout_mode(0); await settle(photo)
 	check(photo._size == Vector2(220,200) and photo.gallery.mode == 0, "Leaving magazine reloads the original source")
+	check(photo.material.get_shader_parameter("edge_feather") != Vector2.ZERO, "Leaving ordinary magazine mode restores the photographic edge")
 	photo.select_image(0); await settle(photo); check(photo._size == Vector2(100,200), "Single view never retains composed pixels")
 	photo.close_image()
 	await archive_checks(photo)
@@ -136,6 +140,18 @@ func run() -> void:
 	for failure in failures: push_error(failure)
 	quit(0 if failures.is_empty() else 1)
 
+func check_page_edges(photo: Node3D, full_page: bool = true) -> void:
+	var feather: Vector2 = photo.material.get_shader_parameter("edge_feather")
+	check(feather == Vector2.ZERO if full_page else feather.x > 0 and feather.y > 0, "Only Magazine / Comics disables edge feathering")
+	check(photo.material.get_shader_parameter("content_zoom") == 1.0 and photo.material.get_shader_parameter("crop_center") == Vector2(.5,.5), "Reading shows the complete original at 100% content zoom")
+	var layer := Photo.VideoLayer.new(null)
+	var values := layer.layer_values(photo, photo, Photo.VideoLayer.PICTURE, photo._size, 0, photo._edge_feather())
+	var rect := Rect2(values[9],values[10],values[11],values[12])
+	if full_page:
+		check(rect.position == Vector2.ZERO and rect.size.is_equal_approx(photo._size), "Magazine compositor source rectangle includes the entire page")
+	else:
+		check(rect.position.x > 0 and rect.position.y > 0 and rect.end.x < photo._size.x and rect.end.y < photo._size.y, "Single-page compositor leaves the feathered edge in the eye buffers")
+
 func archive_checks(photo: Node3D) -> void:
 	photo.auto_depth = false # The archive fixture implements 2D decoding, not the native depth service.
 	var host := Host.new()
@@ -144,7 +160,10 @@ func archive_checks(photo: Node3D) -> void:
 	for i in entries.size(): pages.append({"uri":"comic://test/%d" % i, "title":"%d.png" % i, "kind":"image"})
 	photo.platform = host; host.photo_ready.connect(photo._on_ready)
 	photo.open_image(pages[0].uri, pages[0].title, pages); await settle(photo)
+	photo.set_layout_mode(0); await settle(photo)
+	check_page_edges(photo, false)
 	photo.set_layout_mode(4); await settle(photo)
+	check_page_edges(photo)
 	check(photo.archive_mode and photo.gallery.mode == 4 and photo._size == Vector2(220,200), "Archive pages use the same full-resolution composition")
 	check(not photo.snapshot().depth_available, "A spread without native registration never exposes conversion of an individual page")
 	check(host.requests.slice(-2) == ["comic://test/0", "comic://test/1"], "Only the selected two pages are requested in order")
@@ -396,8 +415,10 @@ func reading_preference_checks() -> void:
 	for page in pages: page.uri = str(page.uri).replace("comic://first/", "pdfpage://second/")
 	app.photo.open_image(pages[0].uri,pages[0].title,pages); await settle(app.photo)
 	check(app.photo.gallery.mode == 4 and app.photo._size == Vector2(220,200), "A different PDF inherits the saved archive mode and actually composes two pages")
+	check_page_edges(app.photo)
 	await single_to_magazine_checks(app, "PDF magazine")
 	app._on_photo_action("photo_layout_0"); await settle(app.photo)
+	check_page_edges(app.photo, false)
 	config.load(path)
 	check(config.get_value("photo_screen","reading_layout",-1) == 0 and config.get_value("photo_screen","layout",-1) == 2, "Selecting single-page PDF mode persists immediately without changing ordinary photos")
 	app.photo.close_image(); app._on_photo_action("photo_magazine_ltr")

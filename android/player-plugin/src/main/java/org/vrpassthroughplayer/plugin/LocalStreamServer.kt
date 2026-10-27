@@ -150,7 +150,19 @@ internal class LocalStreamServer : Closeable {
     }
     fun finishIsoPreflight(url: String) { token(url)?.let { (sources[it] as? IsoReadCache)?.finishPreflight() } }
     fun isoCacheStats(url: String): Map<String, Long>? = token(url)?.let { (sources[it] as? IsoReadCache)?.stats() }
-    fun revoke(url: String) { token(url)?.let { meters.remove(it); sources.remove(it)?.close(); diagnostics.remove(it) } }
+    /** Retain the same read cache while the foreground player changes files. */
+    @Synchronized fun retain(url: String): String? {
+        val parent=token(url) ?: return null
+        val source=sources[parent] ?: return null
+        if(closed)return null
+        val key=ByteArray(16).also(random::nextBytes).joinToString(""){"%02x".format(it)}
+        sources[key]=source;meters[key]=meters[parent] ?: TransferMeter();diagnostics[key]=Diagnostics()
+        return "http://127.0.0.1:${socket.localPort}/$key/${url.substringAfterLast('/')}"
+    }
+    @Synchronized fun revoke(url: String) { token(url)?.let { key ->
+        meters.remove(key);val source=sources.remove(key);diagnostics.remove(key)
+        if(source!=null && sources.values.none{it===source})source.close()
+    } }
 
     private fun record(token: String, source: StreamSource, attempt: Long, error: Exception) {
         if (!closed && sources[token] === source && !Thread.currentThread().isInterrupted && !PlaybackFailure.cancelled(error)) {
@@ -255,12 +267,12 @@ internal class LocalStreamServer : Closeable {
         }
     }
 
-    override fun close() {
+    @Synchronized override fun close() {
         closed = true
         try { socket.close() } catch (_: Throwable) {}
         pool.shutdownNow()
         clients.toList().forEach { runCatching { it.close() } }; clients.clear()
-        sources.values.forEach { runCatching { it.close() } }
+        sources.values.distinct().forEach { runCatching { it.close() } }
         diagnostics.clear()
         sources.clear()
         meters.clear()

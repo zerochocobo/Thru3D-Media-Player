@@ -57,3 +57,5 @@ OpenList v4.2.6 and the JNI adapter are distributed with their AGPL-3.0 obligati
 ## Additional 0.14.0 components
 
 Moonshine v0.1.5 retains its full upstream license; the selected Tiny Streaming zh/en/ja models are explicitly covered by its MIT section, while enumerated legacy and TTS data have separate terms. The Git source publishes only preparation code, header and metadata. OkHttp/Okio retain Apache-2.0 notices, including the public-suffix attribution. Provider icon sources/derivatives retain GPL-3.0, AGPL-3.0, CC BY/CC BY-SA and original attributions under third_party/provider-icons; these terms apply to the respective assets and do not replace project-owned code GPL-3.0-only. Marks do not imply endorsement or a trademark grant.
+
+Kuromoji/IPADIC 0.9.0 source/dependency metadata retain Apache-2.0 and the full IPADIC/NAIST notice in third_party/kuromoji. The reader/dictionary binaries are external build inputs; no license is replaced by project GPL. The auxiliary manga detector remains an excluded model with pinned provenance; see [comic resources](COMIC_READING.md).

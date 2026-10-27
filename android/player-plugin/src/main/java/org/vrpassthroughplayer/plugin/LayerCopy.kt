@@ -32,17 +32,21 @@ import java.util.concurrent.atomic.AtomicLong
  */
 internal class LayerCopy(private val target: Surface, width: Int, height: Int, private val flip: Boolean = true,
                          private val holdable: Boolean = false, private val heldLimit: Int = HELD_LIMIT,
-                         private val maxOutputWidth: Int = 0) : LayerFrames {
+                         private val maxOutputWidth: Int = 0, private val compact: Boolean = false) : LayerFrames {
     private val thread = HandlerThread("LayerCopy").apply { start() }
     private val handler = Handler(thread.looper)
-    private val reader = ImageReader.newInstance(width, height, ImageFormat.PRIVATE, if (holdable) heldLimit + 2 else IMAGES,
+    private val reader = ImageReader.newInstance(width, height, ImageFormat.PRIVATE,
+        if (!holdable) IMAGES else if (compact) COMPACT_IMAGES else heldLimit + 2,
         HardwareBuffer.USAGE_GPU_SAMPLED_IMAGE)
     private var display: EGLDisplay = EGL14.EGL_NO_DISPLAY // copy thread
     private var context: EGLContext = EGL14.EGL_NO_CONTEXT
     private var config: EGLConfig? = null
     private var window: EGLSurface = EGL14.EGL_NO_SURFACE
     private var windowSize = 0 to 0
-    private class Held(val image: Image, val sequence: Long, val arrivedMs: Long)
+    private class Held(val image: Image?, val sequence: Long, val arrivedMs: Long,
+                       val slot: Int = -1, val outWidth: Int = 0, val outHeight: Int = 0) // slot: a packed copy
+    private val freeSlots = ArrayDeque<Int>() // copy thread: packed copies made and free
+    private var packedSlots = 0 // copy thread: packed copies made (each stays allocated)
     private val held = ArrayDeque<Held>() // copy thread, oldest first
     private var latest: LayerFrame? = null // guarded by this
     private val arrived = AtomicLong()
@@ -91,11 +95,12 @@ internal class LayerCopy(private val target: Surface, width: Int, height: Int, p
                 }
                 lastKeptNs = image.timestamp
             } else lastKeptNs = Long.MIN_VALUE
+            if (compact && hold) { holdPacked(image, sequence); return@setOnImageAvailableListener }
             if (keepFrames) runCatching { image.hardwareBuffer }.getOrNull()?.let { buffer ->
                 val crop = image.cropRect
                 val frame = LayerFrame(buffer, crop.width().takeIf { it > 0 } ?: image.width, crop.height().takeIf { it > 0 } ?: image.height,
                     image.width, image.height, sequence, image.timestamp)
-                synchronized(this) { latest?.buffer?.close(); latest = frame }
+                synchronized(this) { latest?.release(); latest = frame }
             }
             val frame = Held(image, sequence, SystemClock.uptimeMillis())
             if (!hold) { draw(frame); return@setOnImageAvailableListener }
@@ -112,16 +117,77 @@ internal class LayerCopy(private val target: Surface, width: Int, height: Int, p
         while (held.isNotEmpty() && now - held.peekFirst()!!.arrivedMs >= delayMs) draw(held.removeFirst())
     }
 
-    private fun draw(frame: Held) {
-        val image = frame.image
+    /** The visible size of [image] and the window size it is drawn at. */
+    private fun sizes(image: Image): IntArray {
+        val crop = image.cropRect
+        val w = crop.width().takeIf { it > 0 } ?: image.width
+        val h = crop.height().takeIf { it > 0 } ?: image.height
+        // The compositor surface may be narrower than the video (memory): the copy scales it down.
+        val outW = if (maxOutputWidth in 1 until w) maxOutputWidth else w
+        val outH = if (outW == w) h else (h.toLong() * outW / w).toInt() and 1.inv()
+        return intArrayOf(w, h, outW, outH)
+    }
+
+    /** Memory saver: packs [image] into a free slot, returns its buffer to the decoder (the newest
+     * stays open for RVM until taken) and holds the copy for its delay. */
+    private fun holdPacked(image: Image, sequence: Long) {
+        var keep = false
         try {
             if (closed || context == EGL14.EGL_NO_CONTEXT) return
-            val crop = image.cropRect
-            val w = crop.width().takeIf { it > 0 } ?: image.width
-            val h = crop.height().takeIf { it > 0 } ?: image.height
-            // The compositor surface may be narrower than the video (memory): the copy scales it down.
-            val outW = if (maxOutputWidth in 1 until w) maxOutputWidth else w
-            val outH = if (outW == w) h else (h.toLong() * outW / w).toInt() and 1.inv()
+            val (w, h, outW, outH) = sizes(image)
+            lastSize = "${w}x$h of ${image.width}x${image.height} to ${outW}x$outH packed"
+            if (!ensureWindow(outW, outH)) return
+            if (freeSlots.isEmpty() && packedSlots < packedLimit()) freeSlots.addFirst(packedSlots++)
+            if (freeSlots.isEmpty() && held.isNotEmpty()) { early.incrementAndGet(); draw(held.removeFirst()) }
+            val slot = freeSlots.pollFirst() ?: return
+            val buffer = image.hardwareBuffer
+            val packed = try {
+                buffer != null && VideoLayerNative.packBuffer(buffer, w, h, image.width, image.height, outW, outH, flip, slot)
+            } finally { buffer?.close() }
+            if (!packed) { failed.incrementAndGet(); freeSlots.addFirst(slot); return }
+            if (keepFrames) runCatching { image.hardwareBuffer }.getOrNull()?.let { frameBuffer ->
+                val frame = LayerFrame(frameBuffer, w, h, image.width, image.height, sequence, image.timestamp, image)
+                synchronized(this) { latest?.release(); latest = frame }
+                keep = true
+            }
+            val frame = Held(null, sequence, SystemClock.uptimeMillis(), slot, outW, outH)
+            held.addLast(frame)
+            handler.postAtTime({ drawDue() }, this, frame.arrivedMs + delayMs)
+        } catch (failure: Throwable) {
+            failed.incrementAndGet(); lastError = failure.toString().take(160)
+        } finally {
+            if (!keep) image.close()
+        }
+    }
+
+    /** Copies that can wait at once: the current delay plus jitter at the Alpha rate, and one being made.
+     * At startup the decoder bursts ahead of real time; without this cap every slot got allocated then. */
+    private fun packedLimit(): Int {
+        val fps = maxFps.takeIf { it > 0 } ?: return heldLimit + 1
+        return (Math.ceil((delayMs + PACKED_JITTER_MS) * fps / 1000.0).toInt() + 1).coerceIn(2, heldLimit + 1)
+    }
+
+    private fun drawPacked(frame: Held) {
+        try {
+            if (closed || context == EGL14.EGL_NO_CONTEXT || !ensureWindow(frame.outWidth, frame.outHeight)) return
+            val started = SystemClock.elapsedRealtimeNanos()
+            if (!VideoLayerNative.drawPacked(frame.slot)) { failed.incrementAndGet(); return }
+            if (EGL14.eglSwapBuffers(display, window)) { drawn.incrementAndGet(); presented = frame.sequence }
+            else { failed.incrementAndGet(); lastError = "swap 0x" + Integer.toHexString(EGL14.eglGetError()) }
+            val ms = (SystemClock.elapsedRealtimeNanos() - started) / 1e6
+            drawMs = if (drawMs == 0.0) ms else drawMs * 0.95 + ms * 0.05
+        } catch (failure: Throwable) {
+            failed.incrementAndGet(); lastError = failure.toString().take(160)
+        } finally {
+            freeSlots.addFirst(frame.slot) // reused first: only as many copies as wait at once are allocated
+        }
+    }
+
+    private fun draw(frame: Held) {
+        val image = frame.image ?: return drawPacked(frame)
+        try {
+            if (closed || context == EGL14.EGL_NO_CONTEXT) return
+            val (w, h, outW, outH) = sizes(image)
             lastSize = "${w}x$h of ${image.width}x${image.height} to ${outW}x$outH"
             if (!ensureWindow(outW, outH)) return
             val buffer = image.hardwareBuffer ?: return
@@ -179,7 +245,7 @@ internal class LayerCopy(private val target: Surface, width: Int, height: Int, p
     }
 
     override fun stats(): JSONObject = JSONObject().put("arrived", arrived.get()).put("drawn", drawn.get()).put("failed", failed.get())
-        .put("early", early.get()).put("held_limit", heldLimit).put("skipped", skipped.get()).put("max_fps", maxFps).put("hold", hold).put("delay_ms", delayMs).put("presented", presented)
+        .put("early", early.get()).put("held_limit", heldLimit).put("compact", compact).put("packed_slots", packedSlots).put("skipped", skipped.get()).put("max_fps", maxFps).put("hold", hold).put("delay_ms", delayMs).put("presented", presented)
         .put("distinct_buffers", bufferIds.size).put("draw_ms", drawMs).put("size", lastSize).put("error", lastError)
 
     /** Waits (up to a second) for the copy thread to let go of the compositor surface, which its owner
@@ -190,8 +256,8 @@ internal class LayerCopy(private val target: Surface, width: Int, height: Int, p
         val done = CountDownLatch(1)
         handler.post {
             handler.removeCallbacksAndMessages(this)
-            while (held.isNotEmpty()) runCatching { held.removeFirst().image.close() }
-            synchronized(this) { latest?.buffer?.close(); latest = null }
+            while (held.isNotEmpty()) runCatching { held.removeFirst().image?.close() }
+            synchronized(this) { latest?.release(); latest = null }
             if (context != EGL14.EGL_NO_CONTEXT) {
                 if (window != EGL14.EGL_NO_SURFACE) EGL14.eglMakeCurrent(display, window, window, context)
                 VideoLayerNative.releaseBlit()
@@ -209,6 +275,10 @@ internal class LayerCopy(private val target: Surface, width: Int, height: Int, p
 
     companion object {
         private const val IMAGES = 4
+        // Memory saver: the frame being packed, the newest kept for RVM and the one RVM is reading.
+        private const val COMPACT_IMAGES = 4
+        // Quest 3, RVM 320 at 30 FPS: delay 113 ms, 3-4 copies waiting; 40 ms covers the mask jitter.
+        private const val PACKED_JITTER_MS = 40.0
         private const val HELD_LIMIT = 8 // frames held for their masks at once (about 130 ms at 60 fps)
         private const val DEFAULT_DELAY_MS = 120L
         private const val MIN_DELAY_MS = 40L

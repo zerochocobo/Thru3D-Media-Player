@@ -19,9 +19,11 @@ internal object RvmWarmup {
         val app = context.applicationContext
         RvmWorkers.prepare.post {
             try {
-                RvmNative.configureGpu(cacheDirectory(app).absolutePath, true)
-                // Caches are named after model bytes; keep only the models shipped in this build.
-                val keep = models.map { File(RvmNative.gpuCachePath(app.assets, profile, it)) }.toSet()
+                RvmNative.configureGpu(cacheDirectory(app).absolutePath, RvmNative.fp16())
+                // Caches are named after model bytes; keep only the models shipped in this build, in
+                // both precisions (switching the AI precision back must not compile again).
+                val keep = models.map { RvmNative.gpuCachePath(app.assets, profile, it) }
+                    .flatMap { listOf(it, it.replace("_fp16_", "_fp32_"), it.replace("_fp32_", "_fp16_")) }.map(::File).toSet()
                 cacheDirectory(app).listFiles { file -> file.name.startsWith("mnn_rvm_${profile}_") && file !in keep }
                     ?.forEach { it.delete() }
             } catch (error: Throwable) {
@@ -35,8 +37,9 @@ internal object RvmWarmup {
     /** Compiled programs of [model] for [profile] are cached: an Alpha session starts in ~1 s. */
     fun ready(context: Context, profile: String, model: String): Boolean =
         profile in RvmProfiles.keys && model in models && RvmNative.unavailable == null &&
-            // A cache under the size of compiled programs only holds the header.
-            File(RvmNative.gpuCachePath(context.assets, profile, model)).length() > 4096
+            // The cache of the current AI precision. One under the size of compiled programs only holds the header.
+            File(RvmNative.configureGpu(cacheDirectory(context).absolutePath, RvmNative.fp16())
+                .let { RvmNative.gpuCachePath(context.assets, profile, model) }).length() > 4096
 
     private fun warm(app: Context, profile: String, model: String, report: (JSONObject) -> Unit) {
         val base = JSONObject().put("profile_key", profile).put("model", model)

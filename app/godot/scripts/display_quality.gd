@@ -32,7 +32,7 @@ const SUPERSAMPLING_HINTS := ["No filtering, lowest GPU cost", "System normal su
 const SHARPNESS_INFO := "Edge sharpening for video and photos, independent of supersampling."
 const SHARPNESS_HINTS := ["No sharpening", "System normal sharpening; shader strength 0.2", "System quality sharpening; shader strength 0.6"]
 const OUTPUT_INFO := "Maximum decoded width for shader playback and Alpha on the compositor layer; plain compositor-layer playback ignores it."
-const OUTPUT_HINTS := {AUTO_OUTPUT: "4096 px on Quest 2 / PICO Neo3 class GPUs, source width otherwise", 0: "Source width",
+const OUTPUT_HINTS := {AUTO_OUTPUT: "4096 px with the memory saver or on Quest 2 / PICO Neo3 class GPUs, source width otherwise", 0: "Source width",
 	5760: "Max 5760 px wide", 4096: "Max 4096 px wide"}
 
 static func load_quality(settings: ConfigFile) -> int:
@@ -98,6 +98,48 @@ static func load_output_choice(settings: ConfigFile) -> int:
 	var value := int(settings.get_value("video", "output_width", AUTO_OUTPUT))
 	return value if value == AUTO_OUTPUT or value in [0, 5760, 4096] else AUTO_OUTPUT
 
+## low_end: an XR2 Gen1 class GPU or the memory saver.
 static func output_width(choice: int, low_end: bool) -> int:
 	if choice != AUTO_OUTPUT: return choice
 	return LOW_END_OUTPUT_WIDTH if low_end else 0
+
+## Memory: the saver holds AI passthrough's waiting frames as compact copies instead of decoded
+## frames, keeps a smaller network cache with AI and caps Auto output at 4096. Quest 3, 8K 10 bit:
+## each held decoded frame is 65 MB; AI used about 1.2 GB more than plain playback (2026-10-27).
+const MEMORY_AUTO := -1
+const MEMORY_STANDARD := 0
+const MEMORY_SAVER := 1
+## Automatic saver below this much RAM (Quest 2 and PICO Neo3 have 6 GB; Quest 3 reports 7.6 GB).
+const MEMORY_SAVER_BELOW_MB := 7000
+const MEMORY_INFO := "Mainly lowers AI portrait passthrough memory; 2D→3D only gets a smaller network cache; plain playback is unchanged."
+const MEMORY_HINTS := {MEMORY_AUTO: "Saver on headsets under 7 GB or with Quest 2 / PICO Neo3 class GPUs",
+	MEMORY_STANDARD: "Most memory, original output size", MEMORY_SAVER: "AI passthrough uses about half its extra memory; smaller network cache, Auto output 4K"}
+
+## AI precision (RVM on the GPU): FP16 is fast; FP32 computes in full precision for GPUs whose
+## FP16 cut-out comes out empty or wrong. Auto stays FP16 until a headset is known to need FP32.
+const ALPHA_PRECISION_AUTO := -1
+const ALPHA_PRECISION_FAST := 0
+const ALPHA_PRECISION_PRECISE := 1
+const ALPHA_PRECISION_INFO := "FP32 is about 1.6× slower than FP16: fewer cut-outs per second and the picture may drop frames (Quest 3: 12 → 8 per second, 72 → 58 FPS). It can fix an empty or wrong cut-out on some headsets. The first switch to a precision compiles the model, about 1 minute."
+const ALPHA_PRECISION_HINTS := {ALPHA_PRECISION_AUTO: "FP16 on every headset for now",
+	ALPHA_PRECISION_FAST: "FP16, fastest", ALPHA_PRECISION_PRECISE: "FP32, about 1.6× slower; for an empty or wrong cut-out"}
+
+static func load_alpha_precision(settings: ConfigFile) -> int:
+	var value := int(settings.get_value("alpha", "precision", ALPHA_PRECISION_AUTO))
+	return value if value in [ALPHA_PRECISION_AUTO, ALPHA_PRECISION_FAST, ALPHA_PRECISION_PRECISE] else ALPHA_PRECISION_AUTO
+
+## Hidden (2026-10-27): FP32 did not help the PICO 4 Pro report and costs Quest 3 a quarter of
+## its frame rate. While hidden every saved choice runs FP16, so nobody is stuck on FP32 unseen.
+const ALPHA_PRECISION_SHOWN := false
+
+static func alpha_fp32(choice: int) -> bool:
+	return ALPHA_PRECISION_SHOWN and choice == ALPHA_PRECISION_PRECISE
+
+static func load_memory_choice(settings: ConfigFile) -> int:
+	var value := int(settings.get_value("video", "memory_mode", MEMORY_AUTO))
+	return value if value in [MEMORY_AUTO, MEMORY_STANDARD, MEMORY_SAVER] else MEMORY_AUTO
+
+## total_mb: the headset's RAM, 0 when unknown.
+static func memory_saver(choice: int, low_end: bool, total_mb: int) -> bool:
+	if choice != MEMORY_AUTO: return choice == MEMORY_SAVER
+	return low_end or (total_mb > 0 and total_mb < MEMORY_SAVER_BELOW_MB)

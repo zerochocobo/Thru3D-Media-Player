@@ -279,8 +279,11 @@ static jstring process(JNIEnv* env, jlong handle, jlong generation, jlong frame,
         if (runtime->closed.load() || generation != runtime->generation.load() || generation != runtime->applied_generation)
             throw std::runtime_error("RVM obsolete generation");
         if (stream != 0 && !runtime->gpu) throw std::runtime_error("RVM scout stream requires the GPU runtime");
-        if (frame < 0 || frame <= runtime->last_frame[stream] || pts < 0 || pts < runtime->last_pts[stream])
-            throw std::runtime_error("RVM nonmonotonic frame identity/PTS; reset on discontinuity");
+        if (frame < 0 || frame <= runtime->last_frame[stream] || pts < 0)
+            throw std::runtime_error("RVM nonmonotonic frame identity");
+        // A timestamp stepping back (a damaged, joined or transport stream) is a discontinuity: the
+        // recurrent state starts over instead of failing the playback.
+        if (pts < runtime->last_pts[stream]) reset_first = true;
         const auto shape = runtime->profile.rgb;
         const size_t alpha_bytes = static_cast<size_t>(shape.width) * shape.height * sizeof(float);
         std::array<Buffer, 4> buffers{{direct(env, left, alpha_bytes * 3), direct(env, right, alpha_bytes * 3),
@@ -424,8 +427,9 @@ Java_org_vrpassthroughplayer_plugin_RvmNative_processRuntimeAhb(JNIEnv* env, jcl
         if (!runtime->gpu) throw std::runtime_error("Zero-copy RVM requires the GPU runtime");
         if (runtime->closed.load() || generation != runtime->generation.load() || generation != runtime->applied_generation)
             throw std::runtime_error("RVM obsolete generation");
-        if (frame < 0 || frame <= runtime->last_frame[stream] || pts < 0 || pts < runtime->last_pts[stream])
-            throw std::runtime_error("RVM nonmonotonic frame identity/PTS; reset on discontinuity");
+        if (frame < 0 || frame <= runtime->last_frame[stream] || pts < 0)
+            throw std::runtime_error("RVM nonmonotonic frame identity");
+        if (pts < runtime->last_pts[stream]) reset_first = JNI_TRUE; // a discontinuity, as in process()
         auto buffer = [](jlong value) { return reinterpret_cast<AHardwareBuffer*>(static_cast<uintptr_t>(value)); };
         const bool healthy = runtime->gpu->process_ahb({{buffer(left), buffer(right)}}, {{buffer(left_alpha), buffer(right_alpha)}},
                                                        stream, reset_first == JNI_TRUE);

@@ -57,7 +57,7 @@ static func infer(uri: String) -> Dictionary:
 		var parent := "/" + server + ("/" + path if not path.is_empty() else "")
 		return {"type": scheme, "path": parent, "stack": [{"id": parent, "title": path.get_file() if not path.is_empty() else server}]}
 	if uri.begins_with("medialib://"):
-		return {"type": "server", "server_id": uri.trim_prefix("medialib://").get_slice("/", 0), "item_id": uri.get_file()}
+		return {"type": "server", "server_id": uri.trim_prefix("medialib://").get_slice("/", 0), "item_id": uri.get_slice("?", 0).get_file()}
 	return {}
 
 static func capture(menu: Node, row: Dictionary) -> Dictionary:

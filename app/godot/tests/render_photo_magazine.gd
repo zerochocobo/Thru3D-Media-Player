@@ -92,6 +92,11 @@ func render_spread(view: SubViewport, camera: Camera3D) -> void:
 	for i in 2:
 		var pixels := Image.create(600,800,false,Image.FORMAT_RGB8)
 		pixels.fill(Color("ebe6db"))
+		# Full-bleed border and marks in the page-number margin expose unwanted edge fading.
+		for rect in [Rect2i(0,0,600,16),Rect2i(0,784,600,16),Rect2i(0,0,16,800),Rect2i(584,0,16,800)]:
+			pixels.fill_rect(rect,Color.WHITE)
+		pixels.fill_rect(Rect2i(40,780,20,8),Color.BLACK)
+		pixels.fill_rect(Rect2i(540,780,20,8),Color.BLACK)
 		pixels.fill_rect(Rect2i(40,40,520,300), Color("d25440") if i == 0 else Color("3489ad"))
 		for line in 11: pixels.fill_rect(Rect2i(40,380+line*30,450 if line%3 else 350,10),Color("43505a"))
 		var path := ProjectSettings.globalize_path(output.path_join("page-%d.png" % i)); pixels.save_png(path)
@@ -113,6 +118,14 @@ func render_spread(view: SubViewport, camera: Camera3D) -> void:
 	var right := camera.unproject_position(photo.panel.to_global(Vector3(dimensions.x*.25,dimensions.y*.23,0)))
 	var lc := spread.get_pixelv(Vector2i(left)); var rc := spread.get_pixelv(Vector2i(right))
 	check(lc.r > lc.b and rc.b > rc.r,"Actual rendered spread preserves both colored page headers in reading order")
+	for uv in [Vector2(.005,.5),Vector2(.995,.5),Vector2(.25,.005),Vector2(.75,.995),Vector2(.005,.005),Vector2(.995,.995)]:
+		var point := Vector3((uv.x-.5)*dimensions.x,(.5-uv.y)*dimensions.y,0)
+		if photo.screen_curve > 0:
+			var radius: float = photo._curve_radius()
+			var angle := point.x / radius
+			point.x = sin(angle)*radius; point.z = radius*(1.0-cos(angle))
+		var pixel := spread.get_pixelv(Vector2i(camera.unproject_position(photo.panel.to_global(point))))
+		check(minf(pixel.r,minf(pixel.g,pixel.b)) > .95,"Full-bleed edge remains opaque at %s" % uv)
 	await render_inline_controls(view,camera,photo)
 	photo.toggle_inspect()
 	check(photo.inspect,"The existing magnifier remains available for magazine reading")

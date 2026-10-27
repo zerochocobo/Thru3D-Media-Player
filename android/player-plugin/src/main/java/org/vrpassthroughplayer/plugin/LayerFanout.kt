@@ -77,7 +77,7 @@ internal class LayerFanout(target: Surface, width: Int, height: Int, private val
                 val crop = image.cropRect
                 val frame = LayerFrame(buffer, crop.width().takeIf { it > 0 } ?: image.width, crop.height().takeIf { it > 0 } ?: image.height,
                     image.width, image.height, sequence, image.timestamp)
-                synchronized(this) { latest?.buffer?.close(); latest = frame }
+                synchronized(this) { latest?.release(); latest = frame }
             }
             if (!hold) { queue(image); return@setOnImageAvailableListener }
             val overflow = synchronized(this) {
@@ -141,7 +141,7 @@ internal class LayerFanout(target: Surface, width: Int, height: Int, private val
     override fun close() {
         closed = true
         synchronized(this) {
-            latest?.buffer?.close(); latest = null
+            latest?.release(); latest = null
             held.forEach { runCatching { it.image.close() } }; held.clear()
         }
         reader.setOnImageAvailableListener(null, null)

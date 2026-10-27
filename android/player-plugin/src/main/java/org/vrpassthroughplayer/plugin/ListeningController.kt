@@ -33,6 +33,8 @@ internal class ListeningController(private val context: ()->Context?,private val
     @Volatile private var deadline=0L
     private var anchor=0.0
     private var through=0.0
+    private var readerThrough=0.0
+    private var preroll=0.0
     private var readMs=0.0
     private var inferenceMs=0.0
     @Volatile private var verifiedBytes=0L
@@ -57,6 +59,11 @@ internal class ListeningController(private val context: ()->Context?,private val
     private var coverFrom=0.0
     private var duration=0.0
     private var modelIdentity=""
+    private var identityLanguage=""
+    private var cacheMedia=""
+    private var cacheLanguage=""
+    private var cacheTrack=-1
+    private var cachePlaylist=-1
     @Volatile private var readerEpoch=-1L
     private var modelLanguage=""
     @Volatile private var engine=0L
@@ -97,7 +104,11 @@ internal class ListeningController(private val context: ()->Context?,private val
         .put("io_offset",activeInput?.offset ?: 0L).put("audio_gap_max",audioGapMax).put("audio_gap_average",audioGapAverage)
         .put("through",through).put("position",position).put("playing",playing).put("speed",speed).put("observed_ns",System.nanoTime())
         .put("cached_until",cueCache?.coveredEnd(position) ?: 0.0)
-        .put("ahead",maxOf(0.0,through-position)).put("cues",JSONArray(cues.values.map {it.json()})).toString()}
+        .put("cache_key",cueCache?.key.orEmpty()).put("cache_instance",cueCache?.instance ?: 0L)
+        .put("cache_complete",cueCache?.complete(duration) ?: false).put("cache_persistent",cueCache?.persistent ?: false)
+        .put("cache_progress",ListeningPolicy.percent(cueCache?.coveredSeconds(duration) ?: 0.0,duration))
+        .put("translation_complete",cueCache?.let{it.complete(duration)&&it.translated(config.target)==it.count()&&it.translationsSaved()} ?: false)
+        .put("ahead",maxOf(0.0,through-position)).put("cues",cueCache?.rows(cues.values.toList(),config.target) ?: JSONArray(cues.values.map {it.json()})).toString()}
     private fun tick()=synchronized(lock){
         if(closed)return@synchronized
         if(preparing&&System.nanoTime()>=deadline){preparing=false;state="catching_up";publish();playbackChanged()}
@@ -127,18 +138,24 @@ internal class ListeningController(private val context: ()->Context?,private val
         val metadata=(0 until tracks.length()).map {tracks.getJSONObject(it)}.find {it.optInt("id")==selected} ?: return@synchronized
         val track=metadata.optInt("stream_index",-1)
         if(track<0||metadata.optBoolean("external")){fail("unsupported_audio");return@synchronized}
+        if(cueCache?.revoked==true || cacheMedia!=config.media || cacheLanguage!=config.language || cacheTrack!=track || cachePlaylist!=current.playlist || cueCache?.persistent!=config.persist){
+            val previous=cueCache;cueCache=null;cues.clear()
+            if(previous!=null&&!previous.revoked&&previous.persistent==config.persist)worker.execute{previous.flush(true)}
+        }
         val key="${current.handle}:$selected:$track:$seek:${current.playlist}:${config.language}:${config.target}:${config.lead}"
         // Fast seeks can settle on an earlier keyframe after the optimistic
         // target clock was published. Do not miss that speech or wait for an
         // anchor horizon which the current-position work limit cannot reach.
         // Only once this epoch's reader is open: model loading may legitimately
         // take longer than the gap, and restarting it would never finish.
-        if(identity!=key||position<anchor-.5||readerEpoch==epoch&&ListeningPolicy.behind(through,position)){
+        if(identity!=key||position<anchor-.5||readerEpoch==epoch&&ListeningPolicy.behind(through+preroll,position)){
             // Already recognized media time shows at once after a seek back.
             invalidate();identity=key;anchor=maxOf(0.0,position-.25);through=maxOf(anchor,cueCache?.coveredEnd(anchor) ?: anchor)
             deadline=System.nanoTime()+45_000_000_000;preparing=true;state="preparing";playbackChanged()
         }
         if(preparing&&System.nanoTime()>=deadline){preparing=false;state="catching_up";playbackChanged()}
+        if(!busy)through=maxOf(through,cueCache?.coveredEnd(position) ?: 0.0)
+        if(cueCache?.analyzed(duration)==true)eof=true
         cueCache?.cues(position-.25,minOf(through,position+65))?.forEach {cues[it.key]=it}
         val retained=ListeningPolicy.retain(cues.values,position);cues.clear();retained.forEach {cues[it.key]=it}
         // A seek may publish its settled position after the initial anchor.
@@ -146,7 +163,14 @@ internal class ListeningController(private val context: ()->Context?,private val
         buffered=eof||through>=ListeningPolicy.horizon(position,speed,config.lead)
         if(buffered&&preparing&&!config.translation){preparing=false;state="ready";playbackChanged()}
         if(!preparing)state=if(through<position+1&&!eof)"catching_up" else "ready"
+        // A queued task for this film transcribes for both; say so instead of a stale stage.
+        val handedOff=cueCache!=null && ListeningWorkGate.delegated(config.media,config.language,track,current.playlist)
+        if(handedOff)phase="task" else if(phase=="task")phase="idle"
         publish()
+        if(!busy && handedOff){
+            if(engine>0){busy=true;worker.execute{try{releaseEngine()}finally{synchronized(lock){busy=false}}}}
+            return@synchronized
+        }
         if(busy||eof||through>=ListeningPolicy.workHorizon(anchor,position,preparing,speed,config.lead))return@synchronized
         val token=epoch;val requested=config;busy=true
         worker.execute {
@@ -154,8 +178,13 @@ internal class ListeningController(private val context: ()->Context?,private val
             phase=stage
             try {
                 Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND)
+                loadCueCache(requested,track,current.playlist)
+                if(!synchronized(lock){!closed&&token==epoch})return@execute
+                synchronized(lock){through=maxOf(through,cueCache?.coveredEnd(position) ?: 0.0);if(cueCache?.analyzed(duration)==true)eof=true}
+                if(ListeningWorkGate.delegated(requested.media,requested.language,track,current.playlist)) { phase="task";releaseEngine();return@execute }
+                if(synchronized(lock){eof || through>=ListeningPolicy.workHorizon(anchor,position,preparing,speed,config.lead)})return@execute
                 if(engine==0L||modelLanguage!=requested.language){
-                    unload();val app=context() ?: error("listening_unavailable")
+                    releaseEngine();val app=context() ?: error("listening_unavailable")
                     val manifest=app.assets.open("moonshine/model.json").bufferedReader().use {JSONObject(it.readText())}
                         .getJSONObject("models").getJSONObject(requested.language)
                     val directory=File(app.filesDir,"listening/${requested.language}")
@@ -163,18 +192,20 @@ internal class ListeningController(private val context: ()->Context?,private val
                     NarrationModels.ensure(directory,files,{app.assets.open(manifest.getString("directory")+"/"+it)},
                         {synchronized(lock){!closed&&epoch==token}}, {verifiedBytes+=it})
                     stage="model_load";phase=stage
-                    engine=ListeningNative.create(directory.path,requested.language);check(engine>0);modelLoads++;modelLanguage=requested.language
-                    modelIdentity=ListeningCueCache.modelIdentity(app.assets.open("moonshine/model.json").bufferedReader().use {JSONObject(it.readText())},requested.language)
+                    engine=synchronized(ListeningWorkGate.lock){ListeningNative.create(directory.path,requested.language)};check(engine>0);modelLoads++;modelLanguage=requested.language
                 }
                 if(!synchronized(lock){!closed&&token==epoch})return@execute
                 stage="audio_open";phase=stage
                 if(readerEpoch!=token){
-                    loadCueCache(requested)
                     // Models may take seconds to initialize while the film keeps
                     // playing. Start from the latest clock, not that old position,
                     // and after any media time this video already has cues for.
+                    // The reader starts one settle window early for VAD context, but
+                    // that pre-roll is not progress: through stays at coverFrom, or
+                    // the behind() check restarts this epoch forever at 0%.
                     val readingFrom=synchronized(lock){
-                        anchor=maxOf(0.0,position-.25);through=maxOf(anchor,cueCache?.coveredEnd(anchor) ?: anchor);coverFrom=through;through}
+                        anchor=maxOf(0.0,position-.25);coverFrom=maxOf(anchor,cueCache?.coveredEnd(anchor) ?: anchor)
+                        through=coverFrom;maxOf(0.0,coverFrom-ListeningCueCache.SETTLE_SECONDS).also{preroll=coverFrom-it}}
                     if(synchronized(lock){token==epoch&&through>=ListeningPolicy.workHorizon(anchor,position,preparing,speed,config.lead)})return@execute
                     prepareAudio(current.path)
                     if(!synchronized(lock){
@@ -186,7 +217,8 @@ internal class ListeningController(private val context: ()->Context?,private val
                     val directInput=if(current.directAudio)input(current.path) else null
                     activeInput=directInput
                     try {
-                        ListeningNative.openWithClock(engine,current.path,track,current.ca,readingFrom,current.disc,current.playlist,mediaOrigin,current.directAudio,directInput)
+                    synchronized(ListeningWorkGate.lock){ListeningNative.openWithClock(engine,current.path,track,current.ca,readingFrom,current.disc,current.playlist,mediaOrigin,current.directAudio,directInput)}
+                    readerThrough=readingFrom
                     } catch(error: Throwable){directInput?.close();throw error}
                     val spans=ListeningNative.audioSpans(engine);retainAudio(current.path,spans)
                     var totalGap=0L;audioGapMax=0L
@@ -196,51 +228,57 @@ internal class ListeningController(private val context: ()->Context?,private val
                 }
                 if(!synchronized(lock){!closed&&token==epoch})return@execute
                 stage="recognition";phase=stage
-                val result=JSONObject(ListeningNative.step(engine))
+                val result=JSONObject(synchronized(ListeningWorkGate.lock){ListeningNative.step(engine)})
                 synchronized(lock){if(!closed&&token==epoch){
-                    val end=result.getDouble("through");require(end.isFinite()&&end>=through&&end<=through+1.01)
-                    through=end;eof=result.optBoolean("eof")
+                    val end=result.getDouble("through");require(end.isFinite()&&end>=readerThrough&&end<=readerThrough+1.01)
+                    readerThrough=end;through=maxOf(through,end);eof=result.optBoolean("eof")
                     readMs=result.optDouble("read_ms",0.0);inferenceMs=result.optDouble("inference_ms",0.0)
                     val rows=result.getJSONArray("cues")
                     for(i in 0 until minOf(rows.length(),128))ListeningPolicy.Cue.parse(rows.getJSONObject(i))?.let {cue->
                         if(!ListeningPolicy.accept(cue,requested.language))filteredUpdates++
                         else {
-                            if(cue.end<=through+.01&&cue.start>=coverFrom-.01)cueCache?.add(cue)
+                            if(cue.end<=through+.01&&cue.end>coverFrom)cueCache?.add(cue)
                             if(cue.end>position&&cue.end<=through+.01&&cue.start>=anchor)cues[cue.key]=cue
                         }
                     }
                     // A line still being spoken completes in a later step; only
                     // settled time counts as covered.
-                    cueCache?.cover(coverFrom,if(eof)through else through-ListeningCueCache.SETTLE_SECONDS)
+                    cueCache?.cover(coverFrom,result.optDouble("settled",if(eof)through else through-ListeningCueCache.SETTLE_SECONDS))
+                    if(eof)cueCache?.finish(end,duration,result.optDouble("audio_end",0.0).takeIf{it>0} ?: duration)
                 }}
             }catch(error: Throwable){
                 val upstream=if(stage in setOf("audio_open","recognition")) runCatching {audioFailure(current.path)}.getOrNull() else null
                 synchronized(lock){if(!closed&&token==epoch){diagnose(stage,error);fail(ListeningPolicy.failureState(stage,upstream))}}
             }
             finally {
-                flushCueCache(false)
+                flushCueCache(eof)
                 synchronized(lock){busy=false};if(closed||!synchronized(lock){config.enabled})unload()
             }
         }
     }
     private fun unload(){
         flushCueCache(true);synchronized(lock){cueCache=null}
-        val previous=engine;engine=0;readerEpoch=-1;modelLanguage="";if(previous>0)ListeningNative.destroy(previous);activeInput=null
+        releaseEngine()
     }
+    private fun releaseEngine(){val previous=engine;engine=0;readerEpoch=-1;modelLanguage="";if(previous>0)synchronized(ListeningWorkGate.lock){ListeningNative.destroy(previous)};activeInput=null}
     /** Worker thread: file IO outside the lock. */
-    private fun loadCueCache(requested: ListeningPolicy.Config){
+    private fun loadCueCache(requested: ListeningPolicy.Config,track: Int,playlist: Int){
         val (seconds,current)=synchronized(lock){duration to cueCache}
+        if(identityLanguage!=requested.language){
+            val app=context() ?: return
+            modelIdentity=ListeningCueCache.modelIdentity(app.assets.open("moonshine/model.json").bufferedReader().use{JSONObject(it.readText())},requested.language)
+            identityLanguage=requested.language
+        }
         if(requested.media.isEmpty()||seconds<=0||modelIdentity.isEmpty()){synchronized(lock){cueCache=null};return}
-        val key=ListeningCueCache.key(requested.media,seconds,requested.language,modelIdentity)
+        val key=ListeningCueCache.key(requested.media,seconds,requested.language,modelIdentity,track,playlist)
         if(current?.key==key&&current.persistent==requested.persist)return
         flushCueCache(true)
         val directory=if(requested.persist)context()?.let {ListeningCueCache.directory(it.filesDir)} else null
-        val loaded=ListeningCueCache.load(directory,key,requested.network)
-        synchronized(lock){if(!closed)cueCache=loaded}
+        val loaded=ListeningCueCache.obtain(directory,key,requested.network)
+        synchronized(lock){if(!closed){cueCache=loaded;cacheMedia=requested.media;cacheLanguage=requested.language;cacheTrack=track;cachePlaylist=playlist}}
     }
     private fun flushCueCache(force: Boolean){
-        val (cache,json)=synchronized(lock){cueCache.let {it to it?.snapshot(force)}}
-        if(cache!=null&&json!=null)cache.write(json)
+        synchronized(lock){cueCache}?.flush(force)
     }
     private fun updateReadAhead(current: Source?) {
         val handle=if(config.enabled&&!failure&&!closed&&current?.directAudio==true&&sharedHandle==current.handle)current.handle else 0L

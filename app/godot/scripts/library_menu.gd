@@ -31,6 +31,9 @@ signal audio_preview_scrubbed(token: int, position_seconds: float, active: bool)
 var audio_preview_seek := preload("res://scripts/audio_preview_seek.gd").new(self)
 const AUDIO_PREVIEW_BASE := 5400
 var _audio_preview_rows := {}
+## Inline subtitle task buttons: target -> {"operation", "id"}; up to four per drawn row.
+const SUBTITLE_TASK_BASE := 5500
+var _subtitle_task_buttons := {}
 var _audio_preview_scope := ""
 var _audio_preview_state := {}
 var _audio_preview_dirty := false
@@ -90,6 +93,9 @@ const ChoiceFields := preload("res://scripts/choice_fields.gd")
 var choices := ChoiceFields.new(self)
 const VoiceManagerPanel := preload("res://scripts/narration_clone_panel.gd")
 var voice_manager := VoiceManagerPanel.new(self)
+var subtitle_queue_open := false
+var _subtitle_queue_poll := 0
+var _subtitle_queue_signature := ""
 var _state := {}
 var _voice_revision := -1
 var _voice_drag := {}
@@ -875,6 +881,11 @@ func stick_scroll_horizontal(x: float, delta: float) -> void:
 		server_browser.gallery.stick_scroll(x, delta)
 
 func _process(delta: float) -> void:
+	if visible and subtitle_queue_open and section == Section.SETTINGS and tab == VIDEO_TAB and Time.get_ticks_msec() > _subtitle_queue_poll and not has_pointer_capture() and choices.opened.is_empty():
+		_subtitle_queue_poll = Time.get_ticks_msec() + 800
+		var queue: Dictionary = settings_provider.call().get("subtitle_defaults", {}).get("subtitle_tasks", {})
+		var signature := str(queue)
+		if signature != _subtitle_queue_signature: _subtitle_queue_signature = signature; refresh()
 	_animate_settings_scroll_hint(delta)
 	archives.tick()
 	cloud_pagination.tick()
@@ -1268,7 +1279,7 @@ func _redraw_file_rows() -> void:
 	# their own target IDs but are freed with the list. Unregister by ownership,
 	# not just the main row's numeric target range, before destroying that subtree.
 	audio_preview_seek.clear_layout()
-	_audio_preview_rows.clear()
+	_audio_preview_rows.clear(); _subtitle_task_buttons.clear()
 	var removed := {}
 	for index in range(_buttons.size() - 1, -1, -1):
 		var button: Dictionary = _buttons[index]
@@ -1318,6 +1329,9 @@ func _update_highlights() -> void:
 	if changed: composition_changed.emit()
 
 func refresh_music_quick_controls() -> void:
+	if not audio_import_mode and music_quick and music_quick.active:
+		music_quick.redraw(background_audio_provider.call() if background_audio_provider.is_valid() else {})
+		return
 	_draw(); _align_playback_panel()
 
 ## Editing and checkmarks change visible controls only; directory rows/order stay intact.
@@ -1735,6 +1749,9 @@ func _load_section() -> void:
 # --- rows -----------------------------------------------------------------------------------
 
 func _rebuild_rows() -> void:
+	if subtitle_queue_open and section == Section.SETTINGS and tab == VIDEO_TAB:
+		rows.assign(preload("res://scripts/subtitle_task_rows.gd").rows(settings_provider.call().get("subtitle_defaults", {}).get("subtitle_tasks", {})))
+		scroll = clampf(scroll, 0, _max_scroll()); return
 	if archives.browsing:
 		rows.assign(archives.directory_rows())
 		if not _position_to_restore.is_empty():
@@ -1794,6 +1811,11 @@ func _rebuild_rows() -> void:
 					outputs.append({"value": option[0], "label": option[1], "hint": Quality.OUTPUT_HINTS[option[0]]})
 				var output_row := _choice_row("Output resolution", "output_width", int(settings.get("output_width", Quality.AUTO_OUTPUT)), outputs, true)
 				output_row.info = Quality.OUTPUT_INFO; rows.append(output_row)
+				var memories: Array = []
+				for option in [[Quality.MEMORY_AUTO, "Auto"], [Quality.MEMORY_STANDARD, "Standard"], [Quality.MEMORY_SAVER, "Saver"]]:
+					memories.append({"value": option[0], "label": option[1], "hint": Quality.MEMORY_HINTS[option[0]]})
+				var memory_row := _choice_row("Memory", "memory_mode", int(settings.get("memory_mode", Quality.MEMORY_AUTO)), memories, true)
+				memory_row.info = Quality.MEMORY_INFO; rows.append(memory_row)
 				rows.append(_video_settings_group("alpha", "AI portrait passthrough (Alpha)"))
 				if _video_settings_expanded.get("alpha", false):
 					rows.append(_alpha_size_row(settings))
@@ -1804,6 +1826,12 @@ func _rebuild_rows() -> void:
 						"slider": true, "span": Vector3(0, 100, 1), "unit": "%", "reset_value": 100.0})
 					rows.append({"title": I18n.t("Alpha edge shrink"), "key": "alpha_shrink", "value": int(settings.get("alpha_shrink", 40)),
 						"slider": true, "span": Vector3(0, 100, 1), "unit": "%", "reset_value": 40.0})
+					if Quality.ALPHA_PRECISION_SHOWN:
+						var precisions: Array = []
+						for option in [[Quality.ALPHA_PRECISION_AUTO, "Auto"], [Quality.ALPHA_PRECISION_FAST, "Fast"], [Quality.ALPHA_PRECISION_PRECISE, "Precise"]]:
+							precisions.append({"value": option[0], "label": option[1], "hint": Quality.ALPHA_PRECISION_HINTS[option[0]]})
+						var precision_row := _choice_row("AI precision", "alpha_precision", int(settings.get("alpha_precision", Quality.ALPHA_PRECISION_AUTO)), precisions, true)
+						precision_row.info = Quality.ALPHA_PRECISION_INFO; rows.append(precision_row)
 				rows.append(_video_settings_group("subtitles", "Subtitles"))
 				if _video_settings_expanded.get("subtitles", false):
 					if settings.get("voice_manager", {}).get("narration_clone_supported", false): rows.append({"title": I18n.t("Subtitle narration"), "voice_manager": true})
@@ -1847,6 +1875,7 @@ func _rebuild_rows() -> void:
 					rows.append({"title": I18n.t("Confirm clearing network history" if _confirm == str(["privacy_clear", "network"]) else "Clear network history"), "icon": "check" if _confirm == str(["privacy_clear", "network"]) else "trash", "selected": _confirm == str(["privacy_clear", "network"]), "setting": ["privacy_clear", "network"]})
 					rows.append({"title": I18n.t("Confirm clearing file settings" if _confirm == str(["file_settings_clear", "all"]) else "Clear file settings"), "icon": "check" if _confirm == str(["file_settings_clear", "all"]) else "trash", "selected": _confirm == str(["file_settings_clear", "all"]), "setting": ["file_settings_clear", "all"]})
 					rows.append({"title": I18n.t("Confirm clearing network file settings" if _confirm == str(["file_settings_clear", "network"]) else "Clear network file settings"), "icon": "check" if _confirm == str(["file_settings_clear", "network"]) else "trash", "selected": _confirm == str(["file_settings_clear", "network"]), "setting": ["file_settings_clear", "network"]})
+				rows.append_array(_diagnostic_rows(settings.get("diagnostic_log", {})))
 			elif tab == DISPLAY_TAB:
 				rows.append({"title": I18n.t("Control bar transparency"), "icon": "settings", "setting": ["bar_transparency", true]})
 				var quality_choices: Array = [{"value": Quality.AUTO, "label": "Auto", "hint": Quality.SCALE_AUTO_HINT}]
@@ -2218,6 +2247,8 @@ func _activate(target: int) -> void:
 	if cloud_pagination.action(target): return
 	if voice_manager.opened: voice_manager.activate(target); return
 	if target==ONLINE_PANORAMAS: online_panoramas_requested.emit(); return
+	if _subtitle_task_buttons.has(target):
+		setting_changed.emit("subtitle_task_command", _subtitle_task_buttons[target].duplicate()); return
 	if _audio_preview_rows.has(target):
 		var row: Dictionary = _audio_preview_rows[target]
 		_audio_preview_scope = _audio_preview_scope_key()
@@ -2253,6 +2284,7 @@ func _activate(target: int) -> void:
 	elif target == QUIT_APP:
 		setting_changed.emit("quit_app", true)
 	elif target >= NAV_BASE and target < NAV_BASE + NAV.size():
+		subtitle_queue_open = false
 		_browse_return_restore = false
 		cloud_pagination.settings_expanded = false
 		_video_settings_expanded.clear()
@@ -2279,6 +2311,7 @@ func _activate(target: int) -> void:
 		_load_section()
 		refresh()
 	elif target >= TAB_BASE and target < TAB_BASE + SETTING_TABS.size():
+		subtitle_queue_open = false
 		cloud_pagination.settings_expanded = false
 		_video_settings_expanded.clear()
 		controls_page.reset()
@@ -2354,6 +2387,12 @@ func _choose(row: Dictionary) -> void:
 		return
 	if row.get("cloud_paging_group", false):
 		cloud_pagination.settings_expanded = not cloud_pagination.settings_expanded
+		choices.reset(); refresh(); return
+	if row.get("diagnostic_group", false):
+		_diagnostic_expanded = not _diagnostic_expanded
+		if _diagnostic_expanded:
+			scroll = float(maxi(0, rows.find(row)))
+			setting_changed.emit("diagnostic_log", "recent")
 		choices.reset(); refresh(); return
 	if row.has("video_settings_group"):
 		var group := str(row.video_settings_group)
@@ -2467,6 +2506,8 @@ func _choose(row: Dictionary) -> void:
 		if PlatformMethods.supports(platform, "clear_photo_cache"): platform.clear_photo_cache()
 		_cache_usage = null
 		refresh()
+	elif row.get("subtitle_queue", false):
+		subtitle_queue_open = true; scroll = 0; choices.reset(); refresh()
 	elif row.get("voice_manager", false):
 		_state = settings_provider.call().get("voice_manager", {})
 		voice_manager.open(true)
@@ -2483,6 +2524,9 @@ func _choose(row: Dictionary) -> void:
 
 ## True when a child layer was consumed; false means the source's top-level list.
 func navigate_back() -> bool:
+	if subtitle_queue_open and section == Section.SETTINGS and tab == VIDEO_TAB:
+		if not choices.opened.is_empty(): choices.reset(); refresh(); return true
+		subtitle_queue_open = false; scroll = 0; refresh(); return true
 	if archives.browsing: archives.back(); return true
 	if archives.opened: archives.close(); refresh(); return true
 	if cloud_pagination.opened: cloud_pagination.action(CloudPagination.CLOSE); return true
@@ -2494,6 +2538,8 @@ func navigate_back() -> bool:
 	if collections.active(): collections.close(); return true
 	if section == Section.SETTINGS and tab == GENERAL_TAB and collections.privacy_expanded:
 		collections.privacy_expanded = false; choices.reset(); refresh(); return true
+	if section == Section.SETTINGS and tab == GENERAL_TAB and _diagnostic_expanded:
+		_diagnostic_expanded = false; choices.reset(); refresh(); return true
 	if collections.has_selection(): collections.selection.clear(); refresh(); return true
 	if has_pointer_capture() or not server_browser.gallery.capture.is_empty():
 		for hand in ["left_hand", "right_hand"]: cancel_pointer(hand)
@@ -2877,7 +2923,7 @@ func _draw_compact_rows() -> void:
 func _draw() -> void:
 	server_browser.backdrop.clear_surface()
 	_audio_storage_labels.clear()
-	_audio_preview_rows.clear()
+	_audio_preview_rows.clear(); _subtitle_task_buttons.clear()
 	audio_preview_seek.clear_layout()
 	_audio_preview_state = background_audio_provider.call() if audio_import_mode and background_audio_provider.is_valid() else {}
 	_clear_layout()
@@ -2961,6 +3007,9 @@ func _draw() -> void:
 	var cloud_managing: bool = not archives.browsing and section == Section.CLOUD and not cloud_accounts.mode.is_empty()
 	if cloud_managing:
 		pass # Account actions draw their own title and back target below.
+	elif subtitle_queue_open and section == Section.SETTINGS and tab == VIDEO_TAB:
+		_button(BACK, "", Vector2(-0.52, 0.46), Vector2(0.09, 0.07), true, "back")
+		_label(I18n.t("Subtitle tasks"), Vector3(0.13, 0.46, 0.004), 24)
 	elif crumbs.is_empty():
 		var tabs: Array = SETTING_TABS if section == Section.SETTINGS else []
 		if section == Section.SETTINGS and tab == ABOUT_TAB and _about_page != 0:
@@ -3187,11 +3236,15 @@ func _draw_rows() -> void:
 			if row.get("voice_manager", false):
 				_voice_manager_entry(row, Vector2(0.17, row_top - k * _pitch()), ROW_BASE + k)
 				continue
+			if row.has("task_actions"):
+				_subtitle_task_entry(row, Vector2(0.17, row_top - k * _pitch()), ROW_BASE + k)
+				continue
 			if row.has("choices") or row.get("slider", false):
 				_setting_field(row, Vector2(0.17, row_top - k * _pitch()), ROW_BASE + k)
 				continue
 			_row_button(ROW_BASE + k, str(row.title), "" if row.get("about_info", false) else str(row.get("detail", "")), str(row.get("icon", "video")),
 				Vector2(0.17, row_top - k * _pitch()), bool(row.get("selected", false)))
+			if row.has("tip"): _tips[ROW_BASE + k] = I18n.t(str(row.tip))
 			if not bool(row.get("enabled", true)):
 				_buttons.back().enabled = false
 				_buttons.back().foreground = MUTED
@@ -3302,6 +3355,7 @@ func _setting_field(row: Dictionary, centre: Vector2, target: int) -> void:
 		# Pointing at the title explains the setting; the row itself stays inert.
 		button.hover_disabled = true; _tips[target] = I18n.t(row.info)
 		_icon("info", Vector3(-0.55 + minf(text_width(title.text, 18), 0.43) + 0.022, title.position.y, 0.004), 0.026, MUTED, node)
+	if row.has("task_progress"): _progress_on(node, float(row.task_progress), Vector2(0, -0.038), 1.1)
 	var first_field := _buttons.size()
 	choices.field(node, row, Vector2(0.54, 0) if row.get("switch", false) else Vector2(0.225, 0), 0.09 if row.get("switch", false) else 0.72)
 	for index in range(first_field, _buttons.size()):
@@ -3311,13 +3365,44 @@ func _setting_field(row: Dictionary, centre: Vector2, target: int) -> void:
 			_buttons[index].foreground = MUTED
 			_buttons[index].node.get_child(0).modulate = MUTED
 
+## A queued subtitle task: name, state and progress, with its actions as icon buttons on the right.
+func _subtitle_task_entry(row: Dictionary, centre: Vector2, target: int) -> void:
+	_row_button(target, str(row.title), "", "", centre, false)
+	var button: Dictionary = _buttons.back()
+	button.enabled = false
+	var node: MeshInstance3D = button.node
+	if node.get_child_count() > 1: node.get_child(1).visible = false
+	var title: Label3D = node.get_child(0)
+	title.position = Vector3(-0.55, 0.014, 0.004)
+	set_label_size(title, 18); title.text = _fit_title(str(row.title), "", 0.62, 18)
+	var hint := _label(_fit_title(str(row.get("hint", "")), "", 0.66, TEXT_AUX), Vector3(-0.55, -0.016, 0.004), TEXT_AUX, node)
+	hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT; hint.modulate = MUTED
+	if not str(row.get("info", "")).is_empty():
+		button.hover_disabled = true; _tips[target] = I18n.t(row.info)
+	_progress_on(node, float(row.get("task_progress", -1.0)), Vector2(-0.18, -0.036), 0.74)
+	var actions: Array = row.get("task_actions", [])
+	for index in actions.size():
+		var action: Dictionary = actions[index]
+		var id := SUBTITLE_TASK_BASE + (target - ROW_BASE) * 4 + index
+		_subtitle_task_buttons[id] = {"operation": str(action.operation), "id": str(row.task_id)}
+		_round(id, str(action.icon), Vector2.ZERO, 0.056, true, false, I18n.t(str(action.get("tip", ""))))
+		var icon: MeshInstance3D = _buttons.back().node
+		icon.reparent(node, false); icon.position = Vector3(0.53 - (actions.size() - 1 - index) * 0.07, 0, 0.012)
+		icon.material_override.render_priority = 13
+		for child in icon.get_children():
+			if child is MeshInstance3D: child.material_override.render_priority = 14
+			elif child is Label3D: child.render_priority = 14
+
 ## Alpha model size: larger inputs cut out finer and cost RVM more time. The trade-off is a tooltip (info
 ## mark and each option), no line of text; a size not compiled yet says so on its own option instead.
 const ALPHA_SIZE_HINT := "Larger sizes are slower; smaller sizes cut out less precisely"
 static func _alpha_size_row(settings: Dictionary) -> Dictionary:
 	var options: Array = []
 	for value in ["256x256", "320x320", "384x384", "512x512"]:
-		var option := {"value": value, "label": value.get_slice("x", 0), "hint": ALPHA_SIZE_HINT}
+		var label: String = value.get_slice("x", 0)
+		# Marked so a changed size can be put back.
+		if value == "320x320": label += " " + I18n.t("Default")
+		var option := {"value": value, "label": label, "hint": ALPHA_SIZE_HINT}
 		if value in settings.get("alpha_warming", []): option.hint = "Preparing the model"
 		elif value in settings.get("alpha_cold", []): option.hint = "First use prepares the model, about 1 minute"
 		options.append(option)
@@ -3343,12 +3428,56 @@ func refresh_alpha_sizes() -> void:
 func _choice_row(title: String, key: String, value: Variant, options: Array, compact: bool = false, hint: String = "") -> Dictionary:
 	return {"title": I18n.t(title), "key": key, "value": value, "choices": options, "compact": compact, "hint": hint}
 
+## Diagnostic log, last in General: save it to Download/Thru3D/logs, or serve it on the headset's
+## Wi-Fi address (a headset has no share target to a phone), and read recent warnings in place.
+var _diagnostic_expanded := false
+const DIAGNOSTIC_SAVE_TIP := "Saved in the headset's Download/Thru3D/logs folder. Copy it with a USB cable to a computer, or send it from the headset's file manager."
+const DIAGNOSTIC_COMPACT_HINT := "Frame-rate lines every 10 s and whenever playback struggles; warnings and errors all kept"
+func _diagnostic_rows(state: Dictionary) -> Array:
+	var header := {"title": I18n.t("Diagnostic log"), "group_header": true, "diagnostic_group": true,
+		"icon": "chevron_down" if _diagnostic_expanded else "next"}
+	if not _diagnostic_expanded: return [header]
+	var busy := str(state.get("busy", ""))
+	var rows: Array = [header]
+	rows.append(_choice_row("Log detail", "diagnostic_detail", bool(state.get("full", false)),
+		[{"value": false, "label": "Compact", "hint": DIAGNOSTIC_COMPACT_HINT}, {"value": true, "label": "Full", "hint": "Every line"}]))
+	var saved := str(state.get("path", ""))
+	if busy == "save":
+		rows.append({"title": I18n.t("Saving…"), "icon": "save", "enabled": false})
+	elif saved.is_empty():
+		rows.append({"title": I18n.t("Save log"), "icon": "save", "detail": str(state.get("save_error", "")),
+			"setting": ["diagnostic_log", "save"], "tip": DIAGNOSTIC_SAVE_TIP})
+	else:
+		# Saved: say where, and how it leaves the headset; choosing it again saves a new file.
+		rows.append({"title": I18n.t("Saved to %s") % saved.get_base_dir(), "icon": "check", "selected": true,
+			"detail": saved.get_file(), "setting": ["diagnostic_log", "save"], "tip": DIAGNOSTIC_SAVE_TIP})
+	var url := str(state.get("url", ""))
+	if url.is_empty():
+		rows.append({"title": I18n.t("Preparing…" if busy == "share" else "Share on Wi-Fi"), "icon": "globe",
+			"detail": str(state.get("share_error", "")), "setting": ["diagnostic_log", "share"], "enabled": busy != "share"})
+	else:
+		# The address is the title: it is read in the headset and typed on a phone or computer.
+		rows.append({"title": url, "icon": "stop", "detail": I18n.t("Until %s · tap to stop") % str(state.get("until", "")),
+			"setting": ["diagnostic_log", "stop"], "diagnostic_url": true})
+	rows.append({"title": I18n.t("Recent warnings and errors"), "icon": "refresh", "setting": ["diagnostic_log", "recent"]})
+	for line in state.get("lines", []):
+		rows.append({"title": str(line).left(96), "icon": "info", "enabled": false, "diagnostic_line": true})
+	return rows
+
 func _video_settings_group(group: String, title: String) -> Dictionary:
 	return {"title": I18n.t(title), "group_header": true, "video_settings_group": group,
 		"icon": "chevron_down" if _video_settings_expanded.get(group, false) else "next"}
 
 func _subtitle_rows(settings: Dictionary) -> Array[Dictionary]:
 	var result: Array[Dictionary] = []
+	var defaults: Dictionary = settings.get("subtitle_defaults", {})
+	result.append({"title": I18n.t("Subtitle tasks"), "icon": "subtitle", "subtitle_queue": true})
+	result.append(_choice_row("Original language", "listening_source", defaults.get("listening_source", "ja"), [{"value": "ja", "label": "Japanese"}, {"value": "zh", "label": "Chinese"}, {"value": "en", "label": "English"}]))
+	var translation := _choice_row("Translation", "listening_target", defaults.get("listening_target", ""), [{"value": "", "label": "No translation"}] + preload("res://scripts/comic_translation_protocol.gd").target_choices())
+	translation.info = "Recognized text is sent to Microsoft"; result.append(translation)
+	result.append(_choice_row("Pre-generate", "subtitle_task_mode", defaults.get("subtitle_task_mode", "original"), [{"value": "original", "label": "Original subtitles"}, {"value": "translated", "label": "Original and translation"}]))
+	result.append(_choice_row("Background processing", "subtitle_task_policy", defaults.get("subtitle_task_policy", "playback"), [{"value": "playback", "label": "Playback first"}, {"value": "idle", "label": "Only while idle"}]))
+
 	var size_row := SubtitleStyle.size_row(float(settings.get("subtitle_size", 100.0)))
 	size_row.title = I18n.t("Subtitle size"); result.append(size_row)
 	var style_row := SubtitleStyle.style_row(settings.get("subtitle_style", SubtitleStyle.DEFAULT))

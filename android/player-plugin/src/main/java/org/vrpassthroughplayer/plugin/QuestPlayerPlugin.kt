@@ -86,8 +86,10 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
         runCatching { MpvSourceNative.setPrivacy(!PlaybackPrivacy.diagnostics) }
     }
     /** Per-file settings cleanup of recognized live-subtitle text. */
-    @UsedByGodot fun clear_listening_cache(networkOnly: Boolean): Boolean =
-        activity?.applicationContext?.let { ListeningCueCache.clear(it.filesDir, networkOnly) } ?: false
+    @UsedByGodot fun clear_listening_cache(networkOnly: Boolean): Boolean {
+        listeningTasks.clear(networkOnly)
+        return activity?.applicationContext?.let { ListeningCueCache.clear(it.filesDir, networkOnly) } ?: false
+    }
     @UsedByGodot fun clear_playback_private_data() {
         sources.clearPlaybackReferences()
         activity?.applicationContext?.let { app ->
@@ -350,6 +352,7 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
         SignalInfo("capabilities_ready", Int::class.javaObjectType, String::class.java),
         SignalInfo("android_lifecycle", String::class.java),
         SignalInfo("rvm_warmup", String::class.java),
+        SignalInfo("diagnostic_log", String::class.java),
         SignalInfo("pip_image_ready", Int::class.javaObjectType, String::class.java),
         SignalInfo("photo_ready", Int::class.javaObjectType, String::class.java),
         SignalInfo("background_audio_imported", Int::class.javaObjectType, String::class.java),
@@ -439,6 +442,20 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     }
     @UsedByGodot fun mpv_supported(): Boolean = !closed.get() && mpv.supported()
     @UsedByGodot fun set_mpv_output_width(width: Int) { if (width in 0..8192) mpv.outputWidthCap = width }
+    @UsedByGodot fun set_mpv_memory_saver(enabled: Boolean) { mpv.memorySaver = enabled }
+    /** Diagnostic log: "save", "share", "stop" or "recent" ([full]: every line, not the compact log);
+     * the result arrives as "diagnostic_log". */
+    @UsedByGodot fun diagnostic_log(action: String, header: String, full: Boolean) {
+        val host = activity ?: return
+        if (!closed.get()) DiagnosticLogs.request(host, action, header, full) { emitSignal("diagnostic_log", it.toString()) }
+    }
+    /** The headset's RAM in MiB (0 if unknown), for the automatic memory mode. */
+    @UsedByGodot fun total_memory_mb(): Long = runCatching {
+        val manager = activity?.getSystemService(android.content.Context.ACTIVITY_SERVICE) as? android.app.ActivityManager
+        val memory = android.app.ActivityManager.MemoryInfo()
+        manager?.getMemoryInfo(memory)
+        memory.totalMem shr 20
+    }.getOrDefault(0L)
     /** Alpha source frame rate; applies to the running Alpha session as well. */
     @UsedByGodot fun set_mpv_alpha_fps(fps: Int): Boolean = !closed.get() && mpv.setAlphaFps(fps)
     /** Alpha mask edge (feather/shrink) as the mask value range mapped to [0, 1]. */
@@ -528,6 +545,8 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
         val host = activity ?: return false
         return !closed.get() && RvmWarmup.ready(host, profile, rvmModel)
     }
+    /** AI precision: FP32 for AI passthrough and photo portraits started afterwards (slower than FP16). */
+    @UsedByGodot fun set_rvm_fp32(enabled: Boolean) { RvmNative.fp32 = enabled }
     @Volatile private var rvmModel = "fast"
     /** "fast" (default) or "quality"; Alpha sessions opened afterwards use it. */
     @UsedByGodot fun set_rvm_model(model: String): Boolean {
@@ -638,6 +657,20 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     @UsedByGodot fun set_mpv_listening(id: Int,json: String): Boolean = !closed.get() && mpv.setListening(id,json)
     @UsedByGodot fun get_mpv_listening(id: Int): String = if(closed.get()) "{}" else mpv.listeningStatus(id)
     @UsedByGodot fun listening_ready(id: Int,epoch: Long) {if(!closed.get())mpv.listeningReady(id,epoch)}
+    private val listeningTasks by lazy { ListeningTasks({activity?.applicationContext},sources::capturePlayable,
+        sources::retainListening,mpv::listeningSharedPath,sources::releaseMediaStream,sources::prepareListening,
+        sources::listeningInput,sources::retainListeningAudio) }
+    @UsedByGodot fun subtitle_tasks_request(json: String): Boolean = !closed.get() && runCatching {
+        val request=JSONObject(json)
+        if(request.optString("operation")=="enqueue") {
+            val spec=mpv.listeningTask(request.getInt("session_id"),request) ?: return@runCatching false
+            val manifest=activity?.assets?.open("moonshine/model.json")?.bufferedReader()?.use{JSONObject(it.readText())} ?: return@runCatching false
+            listeningTasks.enqueue(spec.copy(model=ListeningCueCache.modelIdentity(manifest,spec.language)))
+        } else listeningTasks.command(if(request.optString("operation")=="context")mpv.listeningTaskContext(request) else request)
+    }.getOrDefault(false)
+    @UsedByGodot fun subtitle_tasks_status(): String = if(closed.get()) "{}" else listeningTasks.status()
+    @UsedByGodot fun subtitle_translation_work(): String = if(closed.get()) "{}" else listeningTasks.translationWork()
+    @UsedByGodot fun subtitle_translation_store(json: String): Boolean = !closed.get() && runCatching{listeningTasks.translations(JSONObject(json))}.getOrDefault(false)
     @UsedByGodot fun set_mpv_audio(id: Int, trackId: Int, volume: Double, muted: Boolean): Boolean =
         !closed.get() && mpv.setAudio(id, trackId, volume, muted)
     @UsedByGodot fun set_mpv_whisper(id: Int, level: Int): Long = if (closed.get()) 0 else mpv.setWhisper(id, level)
@@ -821,12 +854,12 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
 
     // Android can resume before Godot registers the plugin's native signals.
     override fun onGodotSetupCompleted() { signalsReady = true; clear_photo_cache(); runCatching { panoramaOriginals.prepare() } }
-    override fun onMainPause() { if (!closed.get()) { readingPages.foreground(false); dlnaForeground(false); systemVolume.foreground(false); musicPlayback.foreground(false); musicPreview.foreground(false); accounts.pause(true); panoramaBrowser.foreground(false); media.pause(); controlled.pause(); mpv.pause(); if (signalsReady) emitSignal("android_lifecycle", "pause") } }
-    override fun onMainResume() { if (!closed.get()) { activity?.volumeControlStream = AudioManager.STREAM_MUSIC; readingPages.foreground(true); dlnaForeground(true); systemVolume.foreground(true); musicPlayback.foreground(true); musicPreview.foreground(true); accounts.pause(false); panoramaBrowser.foreground(true); media.resume(); controlled.resume(); mpv.resume(); if (signalsReady) { sources.refreshLocalStorage(); emitSignal("android_lifecycle", "resume") } } }
+    override fun onMainPause() { if (!closed.get()) { listeningTasks.foreground(false); readingPages.foreground(false); dlnaForeground(false); systemVolume.foreground(false); musicPlayback.foreground(false); musicPreview.foreground(false); accounts.pause(true); panoramaBrowser.foreground(false); media.pause(); controlled.pause(); mpv.pause(); if (signalsReady) emitSignal("android_lifecycle", "pause") } }
+    override fun onMainResume() { if (!closed.get()) { activity?.volumeControlStream = AudioManager.STREAM_MUSIC; listeningTasks.foreground(true); readingPages.foreground(true); dlnaForeground(true); systemVolume.foreground(true); musicPlayback.foreground(true); musicPreview.foreground(true); accounts.pause(false); panoramaBrowser.foreground(true); media.resume(); controlled.resume(); mpv.resume(); if (signalsReady) { sources.refreshLocalStorage(); emitSignal("android_lifecycle", "resume") } } }
     override fun onMainDestroy() { close() }
     override fun onGodotTerminating() { close() }
 
     private fun close() {
-        if (closed.compareAndSet(false, true)) { dlna_receiver_enable(false); readingPages.close(); archives.close(); pdfs.close(); originalCapture.close(); embeddedCover.close(); systemVolume.close(); favoritesTasks.close(); accounts.close(); panoramaBrowser.close(); panoramaRegions.close(); panoramaPictures.close(); panoramaOriginals.close(); musicPlayback.close(); musicPreview.close(); backgroundAudio.close(); photos.close(); photoPreloads.close(); photoPreviews.close(); pipImages.close(); PhotoDepthRuntime.release(); picker.close(); localAccess.close(); probe.shutdownNow(); media.shutdown(); controlled.shutdown(); mpv.shutdown(); rvm.close(); sources.close() }
+        if (closed.compareAndSet(false, true)) { dlna_receiver_enable(false); listeningTasks.close(); readingPages.close(); archives.close(); pdfs.close(); originalCapture.close(); embeddedCover.close(); systemVolume.close(); favoritesTasks.close(); accounts.close(); panoramaBrowser.close(); panoramaRegions.close(); panoramaPictures.close(); panoramaOriginals.close(); musicPlayback.close(); musicPreview.close(); backgroundAudio.close(); photos.close(); photoPreloads.close(); photoPreviews.close(); pipImages.close(); PhotoDepthRuntime.release(); picker.close(); localAccess.close(); probe.shutdownNow(); media.shutdown(); controlled.shutdown(); mpv.shutdown(); rvm.close(); sources.close() }
     }
 }

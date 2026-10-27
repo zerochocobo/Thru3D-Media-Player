@@ -1,0 +1,7 @@
+# Memory and diagnostic settings
+
+0.14.1 provides Automatic, Standard and Memory saver choices. Automatic selects saver on headsets below the configured 7 GB RAM threshold or with Quest 2 / PICO Neo3 class GPUs. Saver mainly reduces extra AI portrait-passthrough buffers, bounds Auto output to 4096 pixels and reduces network cache with AI. It does not halve total application memory; 2D-to-3D retains its frame slots, and ordinary playback is unchanged. Actual memory and performance depend on device, content and settings. The experimental FP32 switch is hidden and saved precision choices currently execute FP16; do not infer an FP32 fix for all headsets.
+
+General settings expose recent warnings/errors and compact/full diagnostic detail. Save log writes a user-requested copy to Download/Thru3D/logs; temporary Wi-Fi sharing starts only on request, uses a random URL token, expires after ten minutes and can be stopped. Compact mode thins periodic healthy lines while retaining warnings/errors and playback trouble. Recent in-headset lines omit process/thread identifiers. Known media/account/URL-sensitive fields are redacted, but users should inspect a log before sharing it. No automatic upload or claim of complete anonymization is made. User-generated logs, download copies, temporary share tokens and device data are excluded from public Git.
+
+自动／标准／省内存主要控制AI人像透视额外缓冲，不等同于所有模式内存减半。诊断日志由用户手动保存或临时Wi-Fi分享，保留已知字段脱敏；源码仓库不包含真实日志、设备数据和分享口令。

@@ -25,8 +25,17 @@ internal object RvmNative {
         left: Long, right: Long, leftAlpha: Long, rightAlpha: Long, stream: Int, resetFirst: Boolean): String
     /** R channel of two zero-copy Alpha buffers into [output] (left plane, then right), for ROI analysis. */
     @JvmStatic external fun readAlphaPlanes(left: Long, right: Long, output: ByteBuffer): Boolean
-    /** GPU runtimes use MNN OpenCL. Cache keeps compiled programs/tuning per profile; fp16 is the production default. */
+    /** GPU runtimes use MNN OpenCL. Cache keeps compiled programs/tuning per profile and precision. */
     @JvmStatic external fun configureGpu(cacheDirectory: String?, fp16: Boolean)
+    /** AI precision setting: FP32 compute for GPUs whose FP16 masks come out wrong; FP16 is faster.
+     * Applies to runtimes prepared afterwards. Debug A/B: adb shell setprop debug.vrpp.rvm.precision fp32|fp16 */
+    @Volatile var fp32 = false
+    fun fp16(): Boolean {
+        if (BuildConfig.DEBUG) when (runCatching {
+            Class.forName("android.os.SystemProperties").getMethod("get", String::class.java).invoke(null, "debug.vrpp.rvm.precision") as String
+        }.getOrDefault("")) { "fp32" -> return false; "fp16" -> return true }
+        return !fp32
+    }
     /** Compile/tune once into the cache; returns {"profile_key","prepare_ms","gpu_ops"}. */
     /** "fast" (distilled, default) or "quality"; applies to GPU runtimes prepared afterwards. */
     @JvmStatic external fun selectGpuModel(model: String)

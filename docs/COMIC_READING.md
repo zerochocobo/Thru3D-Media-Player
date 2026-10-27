@@ -10,7 +10,7 @@ Targets match the existing 19 narration languages, with separate Simplified/Trad
 
 ## Separate OCR payloads
 
-`third_party/comic-ocr/model.json` pins two PP-OCRv6 Small ONNX files from RapidAI/RapidOCR v3.10.0:
+`third_party/comic-ocr/model.json` pins the two original PP-OCRv6 Small ONNX files from RapidAI/RapidOCR v3.10.0:
 
 - Detector: https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.10.0/onnx/PP-OCRv6/det/PP-OCRv6_det_small.onnx
 - Recognizer: https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.10.0/onnx/PP-OCRv6/rec/PP-OCRv6_rec_small.onnx
@@ -20,3 +20,11 @@ Supply matching files under ignored `models/comic-ocr/v6-small/`, with manifest 
 Only source, metadata and instructions are published: no OCR weights, original pages, transcripts, recordings, voice codes or device captures. Project GPL permissions do not grant rights to excluded models/pages/voices; consult their original redistribution notices. The protocol reference is plainheart/bing-translate-api revision f37b17b8bc7848b3be38f4440bec5285ad1fd3e2, with its original MIT notice in `third_party/bing-translate-api/LICENSE.txt`.
 
 漫画朗读／翻译开关按本次阅读生效。OCR本地处理，在线翻译发送所选识别对白；19种目标语言不等于19种源OCR已验证。权重、原页面、个人声音及研发资料不公开。
+
+## Additional reading resources in 0.14.1
+
+The same manifest now also requires `manga_det_v0.2.onnx` (1,816,954 bytes, SHA-256 d132078c46e292b226fb5a2ca52a7612ad319262dfdf493e7d8e3be435295978), from Kellenok/PP-OCRv6_manga revision 62375557b5b0a4b2bc8e05484a97c7ea1df7229e: https://huggingface.co/Kellenok/PP-OCRv6_manga/resolve/62375557b5b0a4b2bc8e05484a97c7ea1df7229e/det/manga_det_v0.2.onnx . The retained private provenance review records the upstream model-card Apache-2.0 declaration; no model payload is published here or relicensed by project GPL. Supply all three matching files in the ignored model directory. Bounded auxiliary recovery keeps verified original text and can return the original result when its recognition budget is exhausted; it does not guarantee wall-clock latency or perfect coverage.
+
+Japanese synthesis prepares dictionary-based readings and word boundaries using Kuromoji/IPADIC 0.9.0; OCR display text and translations remain unchanged. Gradle obtains the pinned reader/dictionary dependencies and assembles them for the plugin. `third_party/kuromoji/distribution.json` records exact module/dictionary hashes; Apache-2.0, IPADIC notice and contributor credits are retained. `Assert-ComicJapanesePackaged.ps1` checks dictionary bytes and packaged notices in normal AAR/APK builds. No compiled jar or dictionary binary is committed. Proper names, mixed scripts and pronunciations can still be wrong.
+
+Complete unfeathered page edges apply to magazine/comic layouts. Ordinary single-image archive/PDF viewing retains its prior edge treatment. Original pages, sampled speech and evaluation records remain excluded.

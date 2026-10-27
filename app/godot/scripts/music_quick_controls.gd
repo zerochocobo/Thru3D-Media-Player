@@ -13,6 +13,7 @@ var open_target := 0
 var _inside := {}
 var _entered := {}
 var _last_inside := 0
+var _panel: MeshInstance3D
 
 func _init(menu: Node3D, toggle_action: Callable) -> void:
 	host = menu; toggle_playback = toggle_action
@@ -22,6 +23,26 @@ func reset() -> void:
 
 func begin_layout() -> void:
 	active = false
+	_panel = null # The host frees the previous layout.
+
+## Music changes must not recreate the browser's rows, thumbnails or navigation.
+func redraw(state: Dictionary) -> void:
+	if not active: return
+	for index in range(host._buttons.size() - 1, -1, -1):
+		var button: Dictionary = host._buttons[index]
+		if button.target not in [open_target, PLAY]: continue
+		host._tips.erase(button.target)
+		button.node.free()
+		host._buttons.remove_at(index)
+	if is_instance_valid(_panel):
+		for index in range(host._ray_blockers.size() - 1, -1, -1):
+			if host._ray_blockers[index].node == _panel: host._ray_blockers.remove_at(index)
+		host._decorations.erase(_panel)
+		_panel.free(); _panel = null
+	host._buttons_generation += 1
+	draw(open_target, anchor, state)
+	host._update_highlights()
+	host.composition_layout_changed.emit()
 
 func draw(target: int, point: Vector2, state: Dictionary) -> void:
 	active = true; anchor = point; open_target = target
@@ -32,18 +53,30 @@ func draw(target: int, point: Vector2, state: Dictionary) -> void:
 			host._buttons.back().node.material_override.set_shader_parameter("surface_color", Color(0.16, 0.31, 0.27))
 		return
 	var centre := point - Vector2((WIDTH - 0.08) / 2, 0)
-	var panel: MeshInstance3D = host._quad(Vector2(WIDTH, 0.115), Vector3(centre.x, centre.y, 0.004), host.PANEL, 10)
+	# This is a popup plane: growing the main panel's capture to include this leftward
+	# extension can stretch its previous XR image for a frame and changes stereo depth.
+	var panel: MeshInstance3D = host._quad(Vector2(WIDTH, 0.115), Vector3(centre.x, centre.y, 0.004), host.PANEL, 30)
+	_panel = panel
 	panel.material_override.set_shader_parameter("corner_radius", 0.035)
 	host.add_child(panel); host._decorations.append(panel); host._block_rays(panel, Vector2(WIDTH, 0.115), 0.035)
 	var title: String = host.I18n.t(str(state.get("audio_title", "Choose audio")))
 	var label: Label3D = host._label(host._fit_title(title, "", 0.40, 20), Vector3(-WIDTH / 2 + 0.025, 0, 0.008), 20, panel)
 	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+	label.render_priority = 32
 	label.set_meta("music_text_width", 0.40)
 	var paused: bool = state.get("audio_paused", true) or str(state.get("audio_current", "")).is_empty()
 	host._round(PLAY, "play" if paused else "pause", point - Vector2(0.105, 0), 0.082, true, true, host.I18n.t("Play" if paused else "Pause"))
 	host._buttons.back().node.position.z = 0.012
+	_popup_button(host._buttons.back().node)
 	host._round(target, "expand", point, 0.075, true, false, host.I18n.t("Manage music"))
 	host._buttons.back().node.position.z = 0.012
+	_popup_button(host._buttons.back().node)
+
+func _popup_button(node: MeshInstance3D) -> void:
+	node.material_override.render_priority = 31
+	for child in node.get_children():
+		if child is Label3D: child.render_priority = 32
+		elif child is MeshInstance3D: child.material_override.render_priority = 32
 
 func activate(target: int) -> bool:
 	if not active or not expanded or target != PLAY: return false

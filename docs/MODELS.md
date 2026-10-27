@@ -85,3 +85,5 @@ Two external PP-OCRv6 Small files are pinned in `third_party/comic-ocr/model.jso
 ## Live subtitle recognition
 
 Three separately prepared Moonshine Tiny Streaming language bundles (24 pinned files) are required by normal Debug/Release builds. No ASR payload is committed. See [live subtitle preparation, privacy and limits](LIVE_SUBTITLES.md).
+
+0.14.1 requires a third, pinned auxiliary manga detector alongside the original two OCR files; the runtime does not use the compared manga recognizer. See [comic preparation and reading dictionary](COMIC_READING.md). No new weight or private sample is published.

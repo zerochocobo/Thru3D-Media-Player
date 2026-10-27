@@ -103,6 +103,18 @@ tasks.named('preBuild').configure { dependsOn stagePlayerAssets }
 // local jar so the Godot export cannot reintroduce these unused adapters.
 configurations {
     smbUpstream { canBeConsumed = false; transitive = false }
+    japaneseReadingUpstream { canBeConsumed = false; transitive = true }
+}
+// Embed the reader and dictionary together, as for the SMB client below. Keep
+// upstream license/notice copies in third_party/kuromoji (staged as assets);
+// duplicate META-INF notices from the two jars must not break the Godot export.
+def japaneseReadingJar = tasks.register('japaneseReadingJar', Jar) {
+    archiveFileName = 'kuromoji-ipadic-reader-0.9.0.jar'
+    destinationDirectory = layout.buildDirectory.dir('japanese-reading')
+    from({ configurations.japaneseReadingUpstream.collect { zipTree(it) } })
+    exclude 'META-INF/**'
+    preserveFileTimestamps = false
+    reproducibleFileOrder = true
 }
 def smbClientJar = tasks.register('smbClientJar', Jar) {
     archiveFileName = 'jcifs-3.0.4-smb-client.jar'
@@ -126,6 +138,9 @@ dependencies {
     implementation 'androidx.media3:media3-exoplayer:1.10.1'
     // Explicit socket cancellation for shared cloud-media seek/pre-read handoff.
     implementation 'com.squareup.okhttp3:okhttp:4.12.0'
+    // Offline Japanese readings for comic speech; pin the matching dictionary.
+    japaneseReadingUpstream 'com.atilika.kuromoji:kuromoji-ipadic:0.9.0'
+    implementation files(japaneseReadingJar)
     // Preserve SMB2/3, NTLM authentication, signing and encryption (LGPL-2.1).
     smbUpstream 'org.codelibs:jcifs:3.0.4'
     implementation files(smbClientJar)

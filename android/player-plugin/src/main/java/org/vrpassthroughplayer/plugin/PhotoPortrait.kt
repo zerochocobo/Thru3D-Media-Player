@@ -34,7 +34,7 @@ internal object PhotoPortrait {
             val other = ByteBuffer.allocateDirect(EDGE*EDGE*4).order(ByteOrder.LITTLE_ENDIAN)
             val secondRgb = ByteBuffer.allocateDirect(rgb.capacity()).order(ByteOrder.LITTLE_ENDIAN)
             secondRgb.put(rgb.duplicate()); secondRgb.rewind()
-            RvmNative.configureGpu(RvmWarmup.cacheDirectory(context).absolutePath,true)
+            RvmNative.configureGpu(RvmWarmup.cacheDirectory(context).absolutePath,RvmNative.fp16())
             val runtime = ModelPreparationGate.run {
                 check(); RvmRuntime.prepare(context.assets,true,"512x512",token.toLong(),1)
             }

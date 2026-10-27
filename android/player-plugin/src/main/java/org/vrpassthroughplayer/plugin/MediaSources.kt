@@ -53,6 +53,7 @@ internal class MediaSources(
     fun prepareListening(uri: String) { server?.shareReadAhead(uri) }
     fun retainListeningAudio(uri: String, ranges: LongArray) { server?.retainAudio(uri,ranges) }
     fun listeningInput(uri: String): ListeningInput? = server?.listeningInput(uri)
+    fun retainListening(uri: String): String? = server?.retain(uri)
     fun enableInterleaveCache(uri: String, audioChunks: List<AudioReadSpan>): Boolean = server?.enableInterleaveCache(uri, audioChunks) ?: false
     // Non-cloud views (SMB) are owned by the player's network lease, released like the parent.
     fun playbackView(uri: String, layout: Mp4PlaybackLayout): String? = server?.let {

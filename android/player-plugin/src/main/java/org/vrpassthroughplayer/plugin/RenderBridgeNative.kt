@@ -33,6 +33,8 @@ internal object RenderBridgeNative {
     @JvmStatic external fun readScoutInputs(handle: Long, token: Long, left: ByteBuffer, right: ByteBuffer): Boolean
     /** Stage model inputs into per-slot AHardwareBuffers shared with MNN OpenCL (no PBO readback). */
     @JvmStatic external fun enableZeroCopy(handle: Long): Boolean
+    /** Memory saver: at most [limit] (2..7) slots in flight, each holding a full-size color. */
+    @JvmStatic external fun setSlotLimit(handle: Long, limit: Int): Boolean
     /** Captures keep the producer texture instead of a full-resolution copy; the caller holds the
      * producer lease until [retired] reports the slot free. */
     @JvmStatic external fun enableBorrowedColor(handle: Long): Boolean

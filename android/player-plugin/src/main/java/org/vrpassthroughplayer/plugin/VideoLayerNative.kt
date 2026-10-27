@@ -52,6 +52,12 @@ internal object VideoLayerNative {
      * [outHeight] (copy thread); flip puts its first row on top. */
     @JvmStatic external fun blitBuffer(buffer: android.hardware.HardwareBuffer, width: Int, height: Int, bufferWidth: Int, bufferHeight: Int,
                                        outWidth: Int, outHeight: Int, flip: Boolean): Boolean
+    /** Memory saver: copies a decoder buffer into packed [slot] (luma + half-size chroma) at [outWidth] x
+     * [outHeight] on the copy thread; the buffer is free for the decoder when this returns. */
+    @JvmStatic external fun packBuffer(buffer: android.hardware.HardwareBuffer, width: Int, height: Int, bufferWidth: Int, bufferHeight: Int,
+                                       outWidth: Int, outHeight: Int, flip: Boolean, slot: Int): Boolean
+    /** Draws packed [slot] over the current EGL surface (the layer window). */
+    @JvmStatic external fun drawPacked(slot: Int): Boolean
     @JvmStatic external fun releaseBlit()
     @JvmStatic external fun releaseImage(slot: Int, mipmaps: Boolean): Boolean
     @JvmStatic external fun runtimeExtensions(): String

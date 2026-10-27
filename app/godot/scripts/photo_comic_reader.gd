@@ -246,6 +246,11 @@ func tick(rays: Array, allowed: bool, voice: String, volume: float, active_view:
 		if ray == null: continue
 		selected = hit(pages, rects, photo._inspect_uv(ray[0], ray[1]))
 		if not selected.is_empty(): break
+	update_selection(selected, now, voice, volume)
+
+# Keep the real hover-to-speech path replayable with a monotonic clock. Corpus
+# checks can exercise missing bubbles and dwell without an XR device or audio.
+func update_selection(selected: Dictionary, now: int, voice: String, volume: float) -> void:
 	# Do not consume the dwell while a translation is pending; re-arm when it arrives.
 	if translation.enabled and not selected.is_empty() and not _speech_ready.has(selected.key):
 		if not dwell.target.is_empty(): stop()

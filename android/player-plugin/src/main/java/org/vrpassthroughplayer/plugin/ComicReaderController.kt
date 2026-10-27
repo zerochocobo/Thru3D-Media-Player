@@ -86,7 +86,7 @@ internal class ComicReaderController(private val context: ()->Context?,private v
         if(epoch!=document)return null
         val rows=pages[page]?.optJSONArray("blocks") ?: return null
         val row=(0 until rows.length()).map {rows.getJSONObject(it)}.singleOrNull {it.optInt("id",-1)==block&&it.optBoolean("eligible")} ?: return null
-        val lang=if(language=="auto")row.getString("language") else language
+        val lang=ComicSpeechRouting.originalLanguage(language,row.getString("language"),row.getString("text"))
         val text=routing.resolve(page,block,row.getString("text"),lang) ?: return null
         ComicSpeechPrefetch.Request(ComicPageCache.speechKey(pageKeys[page] ?: return null,block,voice,text.language)+text.suffix,text.text,text.language,voice)
     }
@@ -155,7 +155,7 @@ internal class ComicReaderController(private val context: ()->Context?,private v
                         // Current-page audio was queued first. Ahead work never requests audio focus.
                         val rows=result.optJSONArray("blocks") ?: JSONArray()
                         (0 until rows.length()).map {rows.getJSONObject(it)}.filter {speechEnabled&&!routing.translated&&it.optBoolean("eligible")}.take(4).forEach {row->
-                            val lang=if(language=="auto")row.getString("language") else language
+                            val lang=ComicSpeechRouting.originalLanguage(language,row.getString("language"),row.getString("text"))
                             val audioKey=ComicPageCache.speechKey(key,row.getInt("id"),voice,lang)
                             aheadAudioKeys.add(audioKey)
                             prefetch.prepare(ComicSpeechPrefetch.Request(audioKey,row.getString("text"),lang,voice),false)

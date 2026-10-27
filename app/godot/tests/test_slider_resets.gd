@@ -93,7 +93,7 @@ func run() -> void:
 	click(menu, row_for(menu, "screen_scale").reset)
 	check(video.screen_scale == 1.0 and video.screen_distance == 2.0, "Video percentage reset restores physical scale one")
 	video.geometry = 1; video._apply_geometry(); main.settings.set_value("video", "alpha_fps", 35)
-	menu._adjustment = ""; menu.refresh()
+	menu._adjustment = ""; menu.refresh(); menu._activate(menu.ALPHA_GROUP)
 	click(menu, row_for(menu, "alpha_fps").reset)
 	var saved_fps := ConfigFile.new(); saved_fps.load(main.settings_path)
 	check(main._alpha_fps() == 30 and saved_fps.get_value("video", "alpha_fps") == 30, "Alpha FPS resets and persists without touching other playback settings")

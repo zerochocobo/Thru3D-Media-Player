@@ -74,7 +74,12 @@ void fineScalePockets(Components& whites,const std::vector<uint8_t>& white,int w
 class Engine {
     narration_ort::Lease environment;
     Ort::SessionOptions options;
-    std::unique_ptr<Ort::Session> detector,recognizer;
+    std::unique_ptr<Ort::Session> detector,recognizer,rescue_detector;
+    Ort::Session* active_detector=nullptr;
+    struct RescueBudget {};
+    int rescue_reading_limit=-1;
+    // Keep first-pass decisions intact while the auxiliary detector searches gaps.
+    std::vector<Rect> protected_contours;
     Ort::AllocatorWithDefaultOptions allocator;
     std::vector<std::string> alphabet;
     std::atomic<int64_t> epoch{0};
@@ -93,6 +98,7 @@ class Engine {
 #endif
     }
     std::vector<Ort::Value> run(Ort::Session& session,std::vector<float>& data,int h,int w,int batch=1){
+        if(active_detector && &session==recognizer.get() && reading_runs>=rescue_reading_limit)throw RescueBudget{};
         std::array<int64_t,4> shape{batch,3,h,w};
         auto info=Ort::MemoryInfo::CreateCpu(OrtArenaAllocator,OrtMemTypeDefault);
         auto tensor=Ort::Value::CreateTensor<float>(info,data.data(),data.size(),shape.data(),4);
@@ -111,7 +117,7 @@ class Engine {
         std::vector<float> data(size_t(3)*dw*dh);const double mean[]={.485,.456,.406},sd[]={.229,.224,.225};
         for(int c=0;c<3;++c)for(int y=0;y<dh;++y)for(int x=0;x<dw;++x)
             data[(c*dh+y)*dw+x]=float((sample(rgb,w,h,(x+.5)*w/dw-.5,(y+.5)*h/dh-.5,2-c)/255.-mean[c])/sd[c]);
-        check(token);auto output=run(*detector,data,dh,dw);check(token);
+        check(token);auto output=run(active_detector?*active_detector:*detector,data,dh,dw);check(token);
         auto shape=output[0].GetTensorTypeAndShapeInfo().GetShape();
         if(shape.size()!=4||shape[0]!=1||shape[1]!=1)throw std::runtime_error("detector_shape");
         int mh=int(shape[2]),mw=int(shape[3]);const float* scores=output[0].GetTensorData<float>();
@@ -194,24 +200,33 @@ class Engine {
         return passes;
     }
 
-    int localDetections(const uint8_t* rgb,int w,int h,int64_t token,const J& original,std::vector<Detection>& boxes){
+    int localDetections(const uint8_t* rgb,int w,int h,int64_t token,const J& original,const J& recovered,std::vector<Detection>& boxes){
         std::map<std::array<int,4>,int> regions;
         for(const auto& block:original["blocks"]){
             if(block["verified"].get<bool>())continue;
             bool missing=false,uncertain=false;
             for(const auto& reason:block["skip_reasons"]){missing=missing||reason=="unrecognized_ink";
                 uncertain=uncertain||reason=="recognition_disagrees"||reason=="low_confidence";}
-            if(!missing||!uncertain)continue;
+            // The manga detector may find a complete but weak short line, or
+            // confident fragments with missing ink. Either warrants a local
+            // retry; requiring both conditions misses these distinct failures.
+            // Keep the established primary pass unchanged.
+            if(active_detector?(!missing&&!uncertain):(!missing||!uncertain))continue;
             for(const auto& id:block["line_ids"]){const auto& line=original["lines"][id.get<int>()];
                 auto r=line["white_rect"].get<std::array<int,4>>();Rect b{r[0],r[1],r[2],r[3]};
-                if(b.x0<=0||b.y0<=0||b.x1>=w||b.y1>=h||b.area()>w*h*.12||std::min(b.w(),b.h())<24)continue;
+                if((!active_detector&&(b.x0<=0||b.y0<=0||b.x1>=w||b.y1>=h))||b.area()>w*h*.12||std::min(b.w(),b.h())<24)continue;
                 auto core=line["core_rect"].get<std::array<int,4>>();
                 regions[r]=std::max(regions[r],std::min(core[2]-core[0],core[3]-core[1]));
             }
         }
         int passes=0;
-        for(const auto& entry:regions){if(passes>=4)break;check(token);
-            const auto& r=entry.first;Rect b{r[0],r[1],r[2],r[3]};int pad=std::max(8,entry.second);
+        // At most two auxiliary ROIs, sharing the existing 128-read budget.
+        // Do not re-detect a contour already completed by the coarse pass.
+        for(const auto& entry:regions){if(passes>=(active_detector?2:4))break;check(token);
+            const auto& r=entry.first;
+            if(active_detector&&std::any_of(recovered["blocks"].begin(),recovered["blocks"].end(),[&](const J& b){
+                return b["verified"].get<bool>()&&b["hit_rect"]==r;}))continue;
+            Rect b{r[0],r[1],r[2],r[3]};int pad=std::max(8,entry.second);
             Rect roi{std::max(0,b.x0-pad),std::max(0,b.y0-pad),std::min(w,b.x1+pad),std::min(h,b.y1+pad)};
             double scale=std::min(2.,1280./std::max(roi.w(),roi.h()));
             int rw=std::max(16,int(std::round(roi.w()*scale))),rh=std::max(16,int(std::round(roi.h()*scale)));
@@ -295,10 +310,9 @@ class Engine {
         const auto key=crop.key(binary);
         auto cached=readings.find(key);
         if(cached!=readings.end()){++reading_hits;return cached->second;}
-        ++reading_runs;
         std::vector<float> data(size_t(3)*48*crop.tw,0);
         cropPixels(rgb,w,h,crop,data.data(),binary);
-        check(token);auto output=run(*recognizer,data,48,crop.tw);check(token);
+        check(token);auto output=run(*recognizer,data,48,crop.tw);++reading_runs;check(token);
         auto shape=output[0].GetTensorTypeAndShapeInfo().GetShape();
         if(shape.size()!=3||shape[0]!=1||size_t(shape[2])!=alphabet.size())throw std::runtime_error("recognizer_shape");
         auto reading=decodeReading(output[0].GetTensorData<float>(),int(shape[1]),int(shape[2]));
@@ -310,6 +324,9 @@ public:
         options.SetIntraOpNumThreads(2);options.SetInterOpNumThreads(1);options.DisableCpuMemArena();
         options.AddConfigEntry("session.intra_op.allow_spinning","0");options.AddConfigEntry("session.inter_op.allow_spinning","0");
         detector=load(root+"/multi_PP-OCRv6_det_small.onnx");recognizer=load(root+"/multi_PP-OCRv6_rec_small.onnx");
+        // Pinned Kellenok/PP-OCRv6_manga v0.2 detector; keep the original
+        // recognizer. Android validates all three assets against model.json.
+        if(std::ifstream(root+"/manga_det_v0.2.onnx").good())rescue_detector=load(root+"/manga_det_v0.2.onnx");
         auto metadata=recognizer->GetModelMetadata();auto chars=metadata.LookupCustomMetadataMapAllocated("character",allocator);
         if(!chars)throw std::runtime_error("missing_alphabet");
         alphabet.push_back("");std::istringstream input(chars.get());std::string line;
@@ -336,6 +353,7 @@ public:
         detect_ms+=milliseconds(stage);stage=Clock::now();std::vector<Line> lines,candidates;
         int filtered_regions=0;
         for(const auto& detection:boxes){
+            if(std::any_of(protected_contours.begin(),protected_contours.end(),[&](Rect r){return intersection(r,detection.core)>.5*detection.core.area();}))continue;
             Rect box=detection.box;
             Line line;line.box=box;line.core=detection.core;line.vertical=detection.orientation?detection.orientation==1:box.h()>1.35*box.w();line.region_recovered=detection.recovered;
             std::map<int,int> votes;
@@ -343,6 +361,9 @@ public:
             int most=0;for(auto v:votes)if(v.second>most){most=v.second;line.white=v.first;}
             if(most<box.area()*.25)line.white=0;
             const auto& region=whites.regions[line.white];
+            // Every final enclosure path requires these same bounds.
+            // Auxiliary output only admits verified bubbles, even in Debug.
+            if(active_detector&&(region.pixels>=w*h*.15||region.pixels<=region.box.area()*.4||region.pixels>=region.box.area()*.94))continue;
             // These regions cannot pass the bubble gate at any confidence. Avoid
             // spending two neural runs on page furniture or open page backgrounds.
             if(!unrestricted&&(!line.white||(!bounded(region,w,h)&&!clippedBalloon(region,w,h)))){++filtered_regions;continue;}
@@ -489,9 +510,12 @@ public:
         double recognize_ms=milliseconds(stage);stage=Clock::now();
         // Short square glyphs and detached punctuation inherit the orientation
         // of the enclosing balloon's long text lines, not their own aspect.
+        // The same applies to a valid page-edge balloon: otherwise its final
+        // square glyph becomes a separate horizontal group, rejecting the
+        // complete contour and leaving the earlier incomplete Debug candidate.
         for(auto& line:lines){
             auto cp=codepoints(line.first.text);
-            if(!line.white||!bounded(whites.regions[line.white],w,h)||(cp.size()>2&&!(line.first.cjk_only&&!line.first.body_count&&cp.size()<=8))||line.box.h()>1.5*line.box.w()||line.box.w()>1.5*line.box.h()
+            if(!line.white||(!bounded(whites.regions[line.white],w,h)&&!clippedBalloon(whites.regions[line.white],w,h))||(cp.size()>2&&!(line.first.cjk_only&&!line.first.body_count&&cp.size()<=8))||line.box.h()>1.5*line.box.w()||line.box.w()>1.5*line.box.h()
                ||line.first.text!=line.second.text||(!line.speech_verified&&std::min(line.first.confidence,line.second.confidence)<.96))continue;
             int vertical=0,horizontal=0;
             for(const auto& other:lines)if(other.white==line.white&&other.first.text.size()>line.first.text.size()){
@@ -518,6 +542,23 @@ public:
             }
             if(parents.size()==1)a.ruby=parents[0];
         }
+        // Debug permits open/uncertain contours. In a dense Japanese speech
+        // region, detector unclip makes tiny handwritten asides look as wide
+        // as body columns, while the gaps between connected lobes look too
+        // large. Use the dominant printed glyph width only in these complex
+        // regions. Ordinary replies and the conservative path keep their
+        // existing grouping; this does not certify an uncertain enclosure.
+        int kana_columns=0;
+        for(const auto& line:lines){auto cp=codepoints(line.first.text);
+            if(line.vertical&&line.first.confidence>=.94&&std::count_if(cp.begin(),cp.end(),kana)>=2)++kana_columns;}
+        const bool japanese_columns=unrestricted&&kana_columns>=3;
+        std::map<int,std::vector<int>> print_widths;
+        if(japanese_columns)for(const auto& line:lines)
+            if(line.vertical&&line.first.body_count>=4&&line.first.confidence>=.94&&line.core.h()>3*line.core.w()
+               &&bounded(whites.regions[line.white],w,h))print_widths[line.white].push_back(line.core.w());
+        std::map<int,double> complex_print;
+        for(auto entry:print_widths)if(entry.second.size()>=5){auto widths=entry.second;std::sort(widths.begin(),widths.end());
+            if(widths[widths.size()/2]>=10)complex_print[entry.first]=widths[widths.size()/2];}
         std::vector<int> parent(lines.size());std::iota(parent.begin(),parent.end(),0);
         auto find=[&](int i){while(parent[i]!=i){parent[i]=parent[parent[i]];i=parent[i];}return i;};
         for(size_t i=0;i<lines.size();++i)for(size_t j=0;j<i;++j){
@@ -527,14 +568,18 @@ public:
             // one-character column look like a different font size. Keep the
             // established proximity/overlap grouping for every region, including
             // Debug's open/shared backgrounds and independently verified rows.
-            bool recovered=a.region_recovered||b.region_recovered;
+            const bool repair=japanese_columns&&complex_print.count(a.white);
+            bool recovered=a.region_recovered||b.region_recovered||repair;
             double fa=a.vertical?(recovered?a.core.w():r.w()):(recovered?a.core.h():r.h());
             double fb=b.vertical?(recovered?b.core.w():s.w()):(recovered?b.core.h():s.h()),font=(fa+fb)/2;
             bool punctuation=((a.first.cjk_only&&!a.first.body_count&&speechAgreement(a.first,a.second))
                 ||(b.first.cjk_only&&!b.first.body_count&&speechAgreement(b.first,b.second)))
                 &&bounded(whites.regions[a.white],w,h);
             if(std::min(fa,fb)/std::max(fa,fb)<(punctuation?.25:a.vertical?.6:.45))continue;
-            bool adjacent=a.vertical?std::abs(r.cx()-s.cx())<1.65*font&&overlap(r.y0,r.y1,s.y0,s.y1)>.38*std::min(r.h(),s.h())
+            if(repair&&((fa<complex_print[a.white]*.75)!=(fb<complex_print[a.white]*.75)))continue;
+            double spacing=repair&&a.vertical&&std::min(fa,fb)>=complex_print[a.white]*.75
+                &&std::min(fa,fb)/std::max(fa,fb)>=.75?5.5:1.65;
+            bool adjacent=a.vertical?std::abs(r.cx()-s.cx())<spacing*font&&overlap(r.y0,r.y1,s.y0,s.y1)>.38*std::min(r.h(),s.h())
                                     :std::abs(r.cy()-s.cy())<1.65*font&&overlap(r.x0,r.x1,s.x0,s.x1)>.38*std::min(r.w(),s.w());
             bool fragment=a.vertical?std::abs(r.cx()-s.cx())<.28*font&&std::max(r.y0,s.y0)-std::min(r.y1,s.y1)<.7*font
                                     :std::abs(r.cy()-s.cy())<.28*font&&std::max(r.x0,s.x0)-std::min(r.x1,s.x1)<.7*font;
@@ -555,10 +600,13 @@ public:
             bool safe=true;std::vector<Rect> cores;double smallest=1e9,largest=0;
             for(int root:roots){Rect core=lines[groups[root][0]].core;
                 for(int id:groups[root]){const auto& line=lines[id];core=merge(core,line.core);
-                    double font=vertical?line.core.w():line.core.h();smallest=std::min(smallest,font);largest=std::max(largest,font);
+                    // A standalone ellipsis/question mark is narrower than a
+                    // body glyph; it cannot establish a different print size.
+                    if(!(line.first.cjk_only&&!line.first.body_count)){
+                        double font=vertical?line.core.w():line.core.h();smallest=std::min(smallest,font);largest=std::max(largest,font);}
                     if(line.vertical!=vertical)safe=false;}
                 cores.push_back(core);}
-            if(!safe||smallest<largest*.6)continue;
+            if(!safe||largest<=0||smallest<largest*.6)continue;
             Rect combined=cores[0];for(Rect core:cores)combined=merge(combined,core);
             // Two fragments of one narrow column are not separate paragraphs.
             // Their large gap must not bypass the established missing-ink gate.
@@ -569,7 +617,7 @@ public:
             std::vector<std::pair<int,int>> rows(bounds.h(),{w,0});
             for(int y=bounds.y0;y<bounds.y1;++y)for(int x=bounds.x0;x<bounds.x1;++x)if(whites.labels[y*w+x]==region){
                 auto& row=rows[y-bounds.y0];row.first=std::min(row.first,x);row.second=std::max(row.second,x+1);}
-            if(rectangularRim(rows,bounds.w())||silhouetteSolidity(rows)<.8)continue;
+            if(rectangularRim(rows,bounds.w())||(silhouetteSolidity(rows)<.8&&!paragraphLobes(rows,bounds.y0,cores)))continue;
             for(int root:roots)for(int id:groups[root]){Rect core=lines[id].core;int support=0;
                 for(int y=std::max(core.y0,bounds.y0);y<std::min(core.y1,bounds.y1);++y){auto row=rows[y-bounds.y0];support+=overlap(core.x0,core.x1,row.first,row.second);}
                 if(support<core.area()*.98||(!clipContainsText(c,core,w,h,vertical?core.w():core.h())&&!bounded(c,w,h)))safe=false;
@@ -635,7 +683,11 @@ public:
             if(chars.size()<2&&std::all_of(ids.begin(),ids.end(),[&](int id){return lines[id].region_recovered;}))reasons.push_back("unsupported_text");
             const int region=lines[ids[0]].white;Rect hit=box;bool enclosure=false;J rows=J::array();
             if(region){auto&c=whites.regions[region];Rect b=c.box;
-                bool safe_region=bounded(c,w,h)||clipContainsText(c,core,w,h,vertical?core.w():core.h());
+                // A multi-column union is wider than one printed character.
+                // Test each line with its own font size at a clipped page edge.
+                bool safe_region=bounded(c,w,h);
+                if(!safe_region){safe_region=true;for(int id:ids){const auto& l=lines[id];
+                    if(!clipContainsText(c,l.core,w,h,l.vertical?l.core.w():l.core.h()))safe_region=false;}}
                 // Bold horizontal handwriting fills much more of the bubble than
                 // thin vertical print. Still require an enclosed, unique region,
                 // complete text containment and a nonrectangular speech contour.
@@ -732,24 +784,120 @@ public:
                 {"line_ids",ids},{"paragraph_count",parts.size()},{"eligible",eligible},{"verified",verified},{"geometry_verified",geometry_verified},{"skip_reasons",reasons},
                 {"language",cjk==0?"en":japanese?"ja":"zh"},{"direction",vertical?"vertical_rtl":"horizontal_ltr"}});
         }
-        return {{"schema_version",3},{"profile",unrestricted?"v6_small_debug_unrestricted":"v6_small_conservative_v15"},{"page_size",{w,h}},{"blocks",blocks},
+        return {{"schema_version",3},{"profile",unrestricted?"v6_small_debug_unrestricted":"v6_small_conservative_v16"},{"page_size",{w,h}},{"blocks",blocks},
             {"lines",raw},{"eligible_count",accepted},{"detected_count",lines.size()},{"filtered_open_regions",filtered_regions},{"state","ready"},
             {"full_page_detections",full_page_detections},{"bubble_passes",bubble_passes},{"recognition_runs",reading_runs},{"recognition_cache_hits",reading_hits},
             {"timings_ms",{{"model_load",load_ms},{"white_regions",white_ms},{"detection",detect_ms},{"recognition",recognize_ms},{"layout",milliseconds(stage)},{"total",milliseconds(started)}}}};
     }
+
     J analyze(const uint8_t* rgb,int w,int h,int64_t token,bool unrestricted=false){
         std::lock_guard<std::mutex> lock(running);check(token);
         readings.clear();reading_runs=0;reading_hits=0;
+        auto started=Clock::now();
+        auto original=analyzePasses(rgb,w,h,token,unrestricted);
+        if(!rescue_detector)return original;
+        original["profile"]=unrestricted?"v6_small_debug_unrestricted":"v6_small_conservative_v18";
+        for(const auto& b:original["blocks"]){
+            bool protected_region=b["verified"].get<bool>();
+            for(const auto& reason:b["skip_reasons"])
+                if(reason=="non_balloon_shape"||reason=="rectangular_heading"||(b["geometry_verified"].get<bool>()&&reason=="recognition_disagrees"))protected_region=true;
+            if(protected_region){auto r=b[b["geometry_verified"].get<bool>()?"hit_rect":"rect"].get<std::array<int,4>>();
+                protected_contours.push_back({r[0],r[1],r[2],r[3]});}
+        }
+        // Bound extra recognition work on dense/handwritten pages. Exceeding
+        // the budget discards the auxiliary pass, never the original result.
+        rescue_reading_limit=reading_runs+128;
+        original["auxiliary_recognition_budget"]=128;
+        auto rescue_started=Clock::now();
+        active_detector=rescue_detector.get();J alternative;
+        try{alternative=analyzePasses(rgb,w,h,token,unrestricted);active_detector=nullptr;protected_contours.clear();}
+        catch(const RescueBudget&){active_detector=nullptr;protected_contours.clear();check(token);
+            original["auxiliary_budget_exhausted"]=true;original["auxiliary_detector_recovered"]=0;
+            original["auxiliary_ms"]=milliseconds(rescue_started);
+            original["recognition_runs"]=reading_runs;original["recognition_cache_hits"]=reading_hits;
+            original["timings_ms"]["total"]=milliseconds(started);return original;}
+        catch(...){active_detector=nullptr;protected_contours.clear();throw;}
+        original["auxiliary_local_detector_passes"]=alternative["local_detector_passes"];
+        original["auxiliary_local_budget_exhausted"]=alternative["local_recognition_budget_exhausted"];
+        J additions=J::array();std::vector<bool> replaced(original["blocks"].size());
+        int offset=int(original["lines"].size());
+        for(auto row:alternative["blocks"]){
+            if(!row["verified"].get<bool>())continue;
+            auto a=row["hit_rect"].get<std::array<int,4>>(),t=row["rect"].get<std::array<int,4>>();
+            Rect hit{a[0],a[1],a[2],a[3]},text{t[0],t[1],t[2],t[3]};
+            bool unsafe=false;std::vector<size_t> matches;
+            for(size_t i=0;i<original["blocks"].size();++i){const auto& old=original["blocks"][i];
+                auto b=old[old["geometry_verified"].get<bool>()?"hit_rect":"rect"].get<std::array<int,4>>();
+                Rect prior{b[0],b[1],b[2],b[3]};
+                if(intersection(hit,prior)<=.3*std::min(hit.area(),prior.area()))continue;
+                if(old["verified"].get<bool>())unsafe=true;
+                for(const auto& reason:old["skip_reasons"]){
+                    if(reason=="non_balloon_shape"||reason=="rectangular_heading")unsafe=true;
+                    // A different detector is still the same recognizer. It
+                    // cannot resolve a known conflict by silently losing a glyph.
+                    if(old["geometry_verified"].get<bool>()&&reason=="recognition_disagrees")unsafe=true;
+                }
+                for(const auto& id:old["line_ids"]){const auto& line=original["lines"][id.get<int>()];
+                    if(line["ruby_parent"].get<int>()>=0)continue;
+                    auto c=line["core_rect"].get<std::array<int,4>>();Rect core{c[0],c[1],c[2],c[3]};
+                    if(intersection(core,text)<.95*core.area())unsafe=true;
+                }
+                matches.push_back(i);
+            }
+            if(unsafe)continue;
+            for(size_t i:matches)replaced[i]=true;
+            for(auto& id:row["line_ids"])id=id.get<int>()+offset;
+            row["auxiliary_detector_recovered"]=true;
+            row["merge_order"]=matches.empty()?int(original["blocks"].size()+additions.size()):int(matches.front());
+            additions.push_back(std::move(row));
+        }
+        const int recovered=int(additions.size());
+        if(recovered){
+            bool japanese=false;for(const auto& row:original["blocks"])if(row["language"]=="ja")japanese=true;
+            if(japanese)for(auto& row:additions)if(row["language"]=="zh")row["language"]="ja";
+            for(size_t i=0;i<original["blocks"].size();++i)if(!replaced[i]){
+                auto row=original["blocks"][i];row["merge_order"]=i;additions.push_back(std::move(row));}
+            std::stable_sort(additions.begin(),additions.end(),[](const J& a,const J& b){return a["merge_order"].get<int>()<b["merge_order"].get<int>();});
+            for(auto line:alternative["lines"]){line["id"]=line["id"].get<int>()+offset;
+                if(line["ruby_parent"].get<int>()>=0)line["ruby_parent"]=line["ruby_parent"].get<int>()+offset;
+                original["lines"].push_back(std::move(line));}
+            int eligible=0;for(size_t i=0;i<additions.size();++i){additions[i].erase("merge_order");additions[i]["id"]=i;if(additions[i]["eligible"].get<bool>())++eligible;}
+            original["blocks"]=std::move(additions);original["eligible_count"]=eligible;
+            original["hypothesis_line_count"]=original["lines"].size();
+        }
+        original["auxiliary_detector_recovered"]=recovered;
+        original["auxiliary_timings_ms"]=alternative["timings_ms"];
+        original["auxiliary_ms"]=milliseconds(rescue_started);original["auxiliary_budget_exhausted"]=false;
+        original["profile"]=unrestricted?"v6_small_debug_unrestricted":"v6_small_conservative_v18";
+        original["recognition_runs"]=reading_runs;original["recognition_cache_hits"]=reading_hits;
+        original["timings_ms"]["total"]=milliseconds(started);
+        check(token);return original;
+    }
+
+    J analyzePasses(const uint8_t* rgb,int w,int h,int64_t token,bool unrestricted){
+        check(token);
         if(!rgb||w<16||h<16||w>1600||h>1600)throw std::runtime_error("page_size");
         auto started=Clock::now(),stage=Clock::now();auto initial=detect(rgb,w,h,token);double detection_ms=milliseconds(stage);
         auto original=analyzePass(rgb,w,h,token,unrestricted,initial,true);
         auto recovered=analyzePass(rgb,w,h,token,unrestricted,initial,false);
 
         auto local_boxes=initial;stage=Clock::now();
-        const int local_passes=localDetections(rgb,w,h,token,original,local_boxes);
+        const int local_passes=localDetections(rgb,w,h,token,original,recovered,local_boxes);
         const double local_detection_ms=milliseconds(stage);
+        bool local_budget_exhausted=false;
         if(local_passes){
-            auto localized=analyzePass(rgb,w,h,token,unrestricted,local_boxes,true);
+            // Optional local repair must not consume the entire auxiliary
+            // result when a difficult line exhausts its verification budget.
+            // Commit this hypothesis only after it completes; preserve the
+            // already verified fine/coarse results on local budget exhaustion.
+            const int saved_limit=rescue_reading_limit;
+            if(active_detector)rescue_reading_limit=std::min(saved_limit,reading_runs+12);
+            J localized;
+            try{localized=analyzePass(rgb,w,h,token,unrestricted,local_boxes,true);}
+            catch(const RescueBudget&){rescue_reading_limit=saved_limit;check(token);local_budget_exhausted=true;}
+            catch(...){rescue_reading_limit=saved_limit;throw;}
+            rescue_reading_limit=saved_limit;
+            if(!localized.is_null()){
             int offset=int(recovered["lines"].size());
             for(auto row:localized["blocks"]){if(!row["verified"].get<bool>())continue;
                 auto r=row["rect"].get<std::array<int,4>>();Rect box{r[0],r[1],r[2],r[3]};bool duplicate=false;
@@ -771,9 +919,11 @@ public:
                 if(line["ruby_parent"].get<int>()>=0)line["ruby_parent"]=line["ruby_parent"].get<int>()+offset;
                 recovered["lines"].push_back(std::move(line));}
             for(const char* key:{"white_regions","recognition","layout"})recovered["timings_ms"][key]=recovered["timings_ms"][key].get<double>()+localized["timings_ms"][key].get<double>();
+            }
         }
         recovered["timings_ms"]["detection"]=recovered["timings_ms"]["detection"].get<double>()+local_detection_ms;
         original["local_detector_passes"]=local_passes;
+        original["local_recognition_budget_exhausted"]=local_budget_exhausted;
 
         // Prefer an independently verified balloon. Keep the original Debug
         // candidate for every unverified/ambiguous background instead of
@@ -841,7 +991,7 @@ public:
         original["blocks"]=std::move(selected);original["eligible_count"]=eligible;
         original["hypothesis_line_count"]=original["lines"].size();
         original["detected_count"]=std::max(original["detected_count"].get<int>(),recovered["detected_count"].get<int>());
-        original["profile"]=unrestricted?"v6_small_debug_unrestricted":"v6_small_conservative_v15";
+        original["profile"]=unrestricted?"v6_small_debug_unrestricted":"v6_small_conservative_v16";
         original["bubble_passes"]=recovered["bubble_passes"];
         original["recognition_runs"]=reading_runs;original["recognition_cache_hits"]=reading_hits;
         for(const char* key:{"white_regions","recognition","layout"})original["timings_ms"][key]=original["timings_ms"][key].get<double>()+recovered["timings_ms"][key].get<double>();

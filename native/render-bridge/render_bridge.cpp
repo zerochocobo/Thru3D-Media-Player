@@ -512,6 +512,12 @@ struct Bridge final {
     // only the model inputs and the R8 mask, so five cost little. 2D->3D keeps each slot until its
     // stereo pair is rendered: two more slots keep 60 fps sources from running out.
     std::array<Slot, 7> slots;
+    // Memory saver: captures use only the first slot_limit slots (each holds a full-size color).
+    size_t slot_limit = 7;
+    Slot* free_slot() {
+        for (size_t i = 0; i < std::min(slot_limit, slots.size()); ++i) if (slots[i].phase == Phase::free) return &slots[i];
+        return nullptr;
+    }
     uint64_t copies = 0, opaque_copies = 0, opaque_uploads = 0, alpha_uploads = 0;
     uint64_t input_stages = 0, copy_pending_polls = 0, retire_pending_polls = 0, slot_exhaustions = 0;
     std::array<float, 4> content_rect{{0, 0, 1, 1}};
@@ -623,7 +629,7 @@ struct Bridge final {
         // retired() is the owner's acknowledgement of the release fence. A
         // signalled fence alone must not let capture overwrite its old token
         // while the caller still keeps that token in its retirement set.
-        for (auto& slot : slots) { if (slot.phase == Phase::free && !free) free = &slot; }
+        free = free_slot();
         if (!free) return 0;
         free->alpha_valid = false;
         free->opaque_pending = false;
@@ -652,9 +658,7 @@ struct Bridge final {
         current(); drain_gl("bridge texture capture"); State state;
         if (!source || !glIsTexture(source)) throw std::runtime_error("Shared MPV color texture unavailable");
         Slot* free = nullptr;
-        for (auto& slot : slots) {
-            if (slot.phase == Phase::free && !free) free = &slot;
-        }
+        free = free_slot();
         if (!free) { slot_exhaustions++; return 0; }
         free->alpha_valid = false;
         free->opaque_pending = opaque;
@@ -700,7 +704,7 @@ struct Bridge final {
         if (!api.available()) throw std::runtime_error("EGLImage/AHardwareBuffer interop unavailable");
         if (!scale_oes) scale_oes = program(scale_oes_fragment);
         Slot* free = nullptr;
-        for (auto& slot : slots) if (slot.phase == Phase::free && !free) free = &slot;
+        free = free_slot();
         if (!free) { slot_exhaustions++; return 0; }
         release_decoder(*free);
         free->alpha_valid = false; free->opaque_pending = false; free->borrowed = 0;
@@ -1216,6 +1220,16 @@ Java_org_vrpassthroughplayer_plugin_RenderBridgeNative_captureTextureRoi(JNIEnv*
         if (token_sequence == std::numeric_limits<jlong>::max()) throw std::runtime_error("Render bridge lease space exhausted");
         return find(id).capture_texture(static_cast<GLuint>(texture), ++token_sequence, true, false, window.data(), scout == JNI_TRUE);
     } catch (const std::exception& e) { error(env, e.what()); return 0; }
+}
+/** Memory saver: at most [limit] slots in flight (2..7). */
+extern "C" JNIEXPORT jboolean JNICALL
+Java_org_vrpassthroughplayer_plugin_RenderBridgeNative_setSlotLimit(JNIEnv* env, jclass, jlong id, jint limit) {
+    try {
+        std::lock_guard<std::mutex> guard(registry_mutex); auto& bridge = find(id);
+        if (limit < 2 || limit > static_cast<jint>(bridge.slots.size())) return JNI_FALSE;
+        bridge.slot_limit = static_cast<size_t>(limit);
+        return JNI_TRUE;
+    } catch (const std::exception& e) { error(env, e.what()); return JNI_FALSE; }
 }
 extern "C" JNIEXPORT jboolean JNICALL
 Java_org_vrpassthroughplayer_plugin_RenderBridgeNative_enableZeroCopy(JNIEnv* env, jclass, jlong id) {

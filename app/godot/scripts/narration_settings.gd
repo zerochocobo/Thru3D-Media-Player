@@ -157,6 +157,9 @@ func available() -> bool:
 	return FEATURE_ENABLED and Methods.supports(video.platform, "set_mpv_narration") and current_text_subtitles()
 
 func current_text_subtitles() -> bool:
+	# Keep the authored track selected for switching back, but never narrate it
+	# while live subtitles own the display. Live transcription has no TTS path.
+	if video.listening.active(): return false
 	if _text_uri != video.local_uri: _text_uri = video.local_uri; _text_tracks.clear()
 	var tracks: Array = video.subtitle_tracks()
 	# A seek/revision can temporarily omit metadata. Explicit Off still wins;

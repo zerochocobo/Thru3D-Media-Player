@@ -81,5 +81,22 @@ int main(){
     auto unsafe=components(mask,w,h);int prior=unsafe.labels[35*w+80];
     recoverPockets(unsafe,mask,w,h,1,{{65,43,90,84}});
     assert(unsafe.labels[35*w+80]==prior);
-    std::cout<<"comic_regions: 11 topology/shape/ink/clip/seed/panel/rim cases passed\n";
+    // Two offset lobes form a concave connected bubble. Each paragraph's
+    // lobe remains convex, unlike an unrelated concavity inside a text span.
+    std::vector<std::pair<int,int>> joined;
+    for(int y=0;y<140;++y){int left=y<60?60:y>=80?0:60-(y-60)*3;joined.push_back({left,left+60});}
+    std::vector<Rect> paragraphs{{70,20,95,50},{15,90,35,125}};
+    assert(silhouetteSolidity(joined)<.8&&paragraphLobes(joined,0,paragraphs));
+    assert(!paragraphLobes(joined,0,{{70,20,95,110},{15,100,35,125}}));
+    assert(!paragraphLobes(joined,0,{paragraphs[0]}));
+    auto broken=joined;broken[70]={0,0};assert(!paragraphLobes(broken,0,paragraphs));
+    auto pinched=joined;for(int y=20;y<45;++y)pinched[y]={85,95};
+    assert(!paragraphLobes(pinched,0,paragraphs));
+    // Page margin is measured in single-line print size, not the combined
+    // width of several columns. Truly clipped glyphs must still fail.
+    Component bottom{{50,h-100,190,h},10000,0};
+    assert(clipContainsText(bottom,{70,h-80,90,h-8},w,h,20));
+    assert(!clipContainsText(bottom,{70,h-80,170,h-8},w,h,100));
+    assert(!clipContainsText(bottom,{70,h-80,90,h-2},w,h,20));
+    std::cout<<"comic_regions: 13 topology/shape/ink/clip/seed/panel/rim/lobe cases passed\n";
 }

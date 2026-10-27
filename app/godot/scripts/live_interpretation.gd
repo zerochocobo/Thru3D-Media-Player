@@ -5,6 +5,7 @@ const TranslationClient := preload("res://scripts/comic_translation.gd")
 const Memory := preload("res://scripts/file_listening_memory.gd")
 const Privacy := preload("res://scripts/media_privacy.gd")
 const I18n := preload("res://scripts/i18n.gd")
+const Tasks := preload("res://scripts/subtitle_tasks.gd")
 const SECTION := "live_interpretation"
 var video: Node3D
 var memory := Memory.new()
@@ -20,10 +21,13 @@ var _session := 0
 var _epoch := -1
 var _poll_at := 0
 var _received_at := 0
+var _stored := {}
+var _cache_instance := -1
 
 func _init(owner: Node3D) -> void:
 	video = owner
 	translator = TranslationClient.new(owner, false)
+	translator.priority = 2
 	translator.request_spacing_ms = 2000
 	translator.cache_limit = 2000
 
@@ -44,6 +48,7 @@ func reset_source(uri: String = "") -> void:
 	var same := not uri.is_empty() and uri == _source
 	_source = uri; _payload = ""; _session = 0; _epoch = -1; report = {}
 	translator.reset(true)
+	_stored.clear()
 	if not same: enabled = not video.cast_token and bool(memory.lookup(uri).get("enabled", false))
 
 func available() -> bool:
@@ -53,8 +58,7 @@ func available() -> bool:
 ## switching on only, so a running session keeps its loaded speech model.
 func _allowed() -> bool:
 	return video.media.session_id > 0 and not video.cast_token and not video.disc.menu_session \
-		and Methods.supports(video.platform, "set_mpv_listening") and video.subtitle_tracks().is_empty() \
-		and video.subtitle_files.is_empty() and video.subtitle_file_loading.is_empty()
+		and Methods.supports(video.platform, "set_mpv_listening")
 
 func set_option(key: String, value: Variant) -> bool:
 	match key:
@@ -71,7 +75,7 @@ func set_option(key: String, value: Variant) -> bool:
 			if not (value is int or value is float) or float(value) not in [8.0, 12.0, 20.0]: return false
 			lead = int(value)
 		_: return false
-	translator.reset(true); report = {}; _epoch = -1; _payload = ""
+	translator.reset(true); _stored.clear(); report = {}; _epoch = -1; _payload = ""
 	return true
 
 func active() -> bool: return enabled and _allowed()
@@ -95,6 +99,8 @@ func tick() -> void:
 	var incoming: Variant = JSON.parse_string(video.platform.get_mpv_listening(video.media.session_id))
 	if not incoming is Dictionary: return
 	report = incoming
+	if int(report.get("cache_instance", -1)) != _cache_instance:
+		_cache_instance = int(report.get("cache_instance", -1)); _stored.clear()
 	_received_at = Time.get_ticks_msec()
 	var epoch := int(report.get("epoch", -1))
 	if epoch != _epoch:
@@ -103,13 +109,24 @@ func tick() -> void:
 	translator.enabled = translate
 	var cues: Array = report.get("cues", [])
 	if translate:
+		Tasks.seed(cues, translator, Protocol.language(source), target)
 		translator.observe_sentences(cues, Protocol.language(source), target)
 		translator.tick(true)
+		Tasks.store(video.platform, report, cues, translator, _stored)
 	# Readiness controls subtitle availability only; the video keeps playing.
 	# A failed provider falls back to original text.
 	var pending: bool = not translator.current.is_empty() or not translator.jobs.is_empty()
 	if report.get("buffered", false) and (not translate or not pending):
 		video.platform.listening_ready(video.media.session_id, epoch)
+
+## -1 when no line shows at [position], 0 when it shows untranslated, 1 when translated.
+func translation_at(position: float) -> int:
+	if not active() or not is_finite(position): return -1
+	for cue: Dictionary in report.get("cues", []):
+		if position < float(cue.get("start", -1)) or position >= float(cue.get("end", -1)): continue
+		var key := Protocol.cache_key(Protocol.normalize(str(cue.get("text", "")), Protocol.language(source)), Protocol.language(source), target)
+		return 0 if str(translator.cache.get(key, {}).get("text", "")).is_empty() else 1
+	return -1
 
 func text_at(position: float) -> String:
 	if not active() or not is_finite(position): return ""
@@ -136,19 +153,23 @@ static func status_label(value: String) -> String:
 		"source_error": "Unable to read audio from the source", "audio_error": "Unable to open the audio track"}.get(value, "")
 
 func snapshot() -> Dictionary:
-	return {"listening_available": available(), "listening_enabled": active(), "listening_source": source,
+	return {"listening_available": available() or active(), "listening_enabled": active(), "listening_source": source,
 		"listening_target": target, "listening_lead": lead, "listening_state": report.get("state", "off"),
-		"listening_caption": preparation_caption()}
+		"listening_caption": preparation_caption(), "listening_cache_complete": report.get("cache_complete", false),
+		"listening_cache_persistent": report.get("cache_persistent", false), "listening_translation_complete": report.get("translation_complete", false)}
 
 func preparation_caption() -> String:
 	if not active() or report.get("state", "preparing") not in ["preparing", "catching_up"]: return ""
 	var phase := str(report.get("phase", "models"))
+	if phase == "task": return I18n.t("Pre-generating · %d%%") % clampi(int(report.get("cache_progress", 0)), 0, 100)
 	if phase == "models":
 		var progress := int(report.get("model_progress", -1))
 		return I18n.t("Checking speech model…") + (" · %d%%" % progress if progress >= 0 else "")
 	if phase == "model_load": return I18n.t("Loading speech model…")
 	if phase == "audio_open": return I18n.t("Opening audio…")
-	if report.get("buffered", false) and not target.is_empty() and Protocol.language(source) != target: return I18n.t("Preparing translation…")
+	if report.get("buffered", false) and not target.is_empty() and Protocol.language(source) != target:
+		var queued: int = translator.pending_count()
+		return I18n.t("Translating · %d pending") % queued if queued > 0 else I18n.t("Preparing translation…")
 	return I18n.t("Preparing live subtitles…") + " · %d%%" % clampi(int(report.get("buffer_progress", 0)), 0, 100)
 
 ## Head-locked status while the control bar is hidden: what is happening when
@@ -164,11 +185,14 @@ func status_caption(position: float) -> String:
 		if waiting > 0 and translator.pending_count() > 0:
 			return I18n.t("Translation busy · retrying in %d s, showing original") % ceili(waiting / 1000.0)
 		if translator.failing(): return I18n.t("Some lines untranslated · showing original")
-		if not text_at(position).is_empty(): return ""
+		# A shown line hides the status only once it is translated; otherwise say why not.
+		var shown := translation_at(position)
+		if shown == 1: return ""
 		var pending: int = translator.pending_count()
 		if pending > 0: return I18n.t("Translating · %d pending") % pending
+		if shown == 0: return I18n.t("Some lines untranslated · showing original")
 	elif not text_at(position).is_empty(): return ""
-	return I18n.t("Transcribing · %d s ahead") % maxi(0, int(report.get("ahead", 0.0)))
+	return I18n.t("Pre-generated · %d s ahead" if report.get("phase", "") == "task" else "Transcribing · %d s ahead") % maxi(0, int(report.get("ahead", 0.0)))
 
 static func rows(state: Dictionary) -> Array:
 	if not state.get("listening_available", false): return []
@@ -177,6 +201,9 @@ static func rows(state: Dictionary) -> Array:
 	if not state.get("listening_enabled", false): return result
 	result.append({"title": "Original language", "field": {"key": "listening_source", "value": state.get("listening_source", "ja"), "choices": [
 		{"value": "ja", "label": "Japanese"}, {"value": "zh", "label": "Chinese"}, {"value": "en", "label": "English"}]}})
+	if state.get("subtitle_task_supported", false):
+		result.append({"subtitle_task": true})
+		if not state.get("subtitle_task", {}).is_empty() or state.get("listening_cache_complete", false) or not str(state.get("subtitle_task_notice", "")).is_empty(): result.append({"subtitle_task_status": true})
 	result.append({"title": "Translation", "field": {"key": "listening_target", "value": state.get("listening_target", ""), "hint": "Recognized text is sent to Microsoft", "choices": [{"value": "", "label": "No translation"}] + Protocol.target_choices()}})
 	result.append({"title": "Audio lookahead", "field": {"key": "listening_lead", "value": state.get("listening_lead", 12), "choices": [
 		{"value": 8, "label": "8 s"}, {"value": 12, "label": "12 s"}, {"value": 20, "label": "20 s"}]}})

@@ -33,6 +33,7 @@
 #include "pgs_bitmap.h"
 #include "frame_geometry.h"
 #include "playback_failure.h"
+#include "disc_probe.h"
 #include "whisper_audio.h"
 #include "capture_audio_layout.h"
 
@@ -488,6 +489,7 @@ struct Source final {
         const auto decoder_drops = property(core, "decoder-frame-drop-count");
         // Layer mode has no frame tickets: the frames MPV released to the surface, minus its drops.
         const auto frame_number = property(core, "estimated-frame-number"), vo_drops = property(core, "frame-drop-count");
+        const auto vo_delayed = property(core, "vo-delayed-frame-count");
         std::string tracks_json = "["; std::vector<int64_t> track_ids;
         std::string subtitles_json = "["; std::vector<int64_t> subtitle_ids;
         OwnedNode tracks;
@@ -575,6 +577,7 @@ struct Source final {
             ",\"whisper_error\":" + quote(whisper_error) +
             ",\"paused_for_cache\":" + quote(cache_pause) + ",\"cache_speed\":" + quote(property(core, "cache-speed")) + ",\"decoder_frame_drop_count\":" + quote(decoder_drops) +
             ",\"estimated_frame_number\":" + quote(frame_number) + ",\"vo_frame_drop_count\":" + quote(vo_drops) +
+            ",\"vo_delayed_frame_count\":" + quote(vo_delayed) +
             ",\"snapshot_sequence\":" + std::to_string(++snapshot_sequence) +
             ",\"observed_monotonic_ns\":" + std::to_string(observed_ns) +
             ",\"clock_observation_scope\":\"MPV_audio_pts_including_AO_delay;_not_same_render_source_ticket_or_Godot_presentation\",\"eof_reached\":" + quote(eof) + "}";
@@ -1579,6 +1582,7 @@ struct Source final {
 std::mutex registry_mutex;
 std::unordered_map<jlong, std::shared_ptr<Source>> registry;
 jlong next_handle = 0;
+quest::DiscProbes disc_probes;
 std::shared_ptr<Source> find(jlong handle) {
     std::lock_guard<std::mutex> lock(registry_mutex);
     const auto it = registry.find(handle); require(it != registry.end(), "Unknown MPV source handle"); return it->second;
@@ -1594,22 +1598,37 @@ extern "C" JNIEXPORT jlong JNICALL
 Java_org_vrpassthroughplayer_plugin_MpvSourceNative_captureOwner(JNIEnv*, jclass, jlong handle) {
     try { return find(handle)->capture_owner.load(); } catch (...) { return 0; }
 }
+extern "C" JNIEXPORT jlong JNICALL
+Java_org_vrpassthroughplayer_plugin_MpvSourceNative_beginDiscProbe(JNIEnv* env, jclass) {
+    try { return disc_probes.begin(); }
+    catch (const std::exception& failure) { error(env, failure); return 0; }
+}
+extern "C" JNIEXPORT void JNICALL
+Java_org_vrpassthroughplayer_plugin_MpvSourceNative_closeDiscProbe(JNIEnv*, jclass, jlong handle) {
+    disc_probes.close(handle);
+}
 extern "C" JNIEXPORT jstring JNICALL
-Java_org_vrpassthroughplayer_plugin_MpvSourceNative_probeDisc(JNIEnv* env, jclass, jstring path, jint playlist) {
+Java_org_vrpassthroughplayer_plugin_MpvSourceNative_probeDisc(JNIEnv* env, jclass, jlong handle, jstring path, jint playlist) {
     try {
+        const auto job = disc_probes.get(handle);
         require(path != nullptr, "Blu-ray image path missing");
         require(playlist >= -1 && playlist <= 99999, "Blu-ray title out of range");
         const char* chars = env->GetStringUTFChars(path, nullptr);
         require(chars != nullptr, "Blu-ray image path unavailable");
         std::string file(chars); env->ReleaseStringUTFChars(path, chars);
         if (file.rfind("fd://", 0) == 0) file = "/proc/self/fd/" + file.substr(5);
-        using Probe = int (*)(const char*, int, int*, int*, int64_t*, int*, int*, char*, int);
-        auto probe = reinterpret_cast<Probe>(dlsym(RTLD_DEFAULT, "avformat_thru3d_bd_titles"));
+        using Probe = int (*)(const char*, int, int*, int*, int64_t*, int*, int*, char*, int, int (*)(void*), void*);
+        auto probe = reinterpret_cast<Probe>(dlsym(RTLD_DEFAULT, "avformat_thru3d_bd_titles_v2"));
         require(probe != nullptr, "Blu-ray decoder build unavailable");
         int width = 0, height = 0, mvc = 0, selected = -1; int64_t duration = 0;
         std::vector<char> titles(16384);
         const int probe_result = probe(file.c_str(), playlist, &width, &height, &duration, &mvc, &selected,
-                                       titles.data(), static_cast<int>(titles.size()));
+                                       titles.data(), static_cast<int>(titles.size()), quest::DiscProbe::interrupt, job.get());
+        if (!job->cancelled.load() && quest::DiscProbe::interrupt(job.get())) {
+            auto type = env->FindClass("java/net/SocketTimeoutException");
+            if (type) env->ThrowNew(type, "Blu-ray preflight timed out");
+            return nullptr;
+        }
         if (probe_result < 0) {
             char reason[192] = {};
             using ErrorText = int (*)(int, char*, size_t);

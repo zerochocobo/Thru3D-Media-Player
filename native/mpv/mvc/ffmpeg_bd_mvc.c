@@ -26,6 +26,9 @@
 int avformat_thru3d_bd_probe(const char *url, int *width, int *height, int64_t *duration, int *mvc);
 int avformat_thru3d_bd_titles(const char *url, int playlist, int *width, int *height, int64_t *duration,
                               int *mvc, int *selected, char *json, int capacity);
+int avformat_thru3d_bd_titles_v2(const char *url, int playlist, int *width, int *height, int64_t *duration,
+                               int *mvc, int *selected, char *json, int capacity,
+                               int (*interrupt)(void *), void *opaque);
 int avformat_thru3d_bd_menu_state(char *json, int capacity);
 int avformat_thru3d_bd_menu_overlay(uint64_t version, uint8_t *rgba, int capacity, int *rect);
 int avformat_thru3d_bd_menu_input(int kind, int x, int y);
@@ -156,6 +159,7 @@ static int disc_blocks(void *opaque, void *buffer, int lba, int blocks)
 {
     BdMvc *s = opaque;
     int ret;
+    if (ff_check_interrupt(&s->outer->interrupt_callback)) return 0;
     if (lba < 0 || blocks <= 0 || blocks > 8192 ||
         !s->outer->pb)
         return 0;
@@ -1065,6 +1069,7 @@ static int disc_header(AVFormatContext *context)
     } else {
         titles = bd_get_titles(s->disc, TITLES_RELEVANT, 0);
         for (int i = 0; i < titles; i++) {
+            if (ff_check_interrupt(&context->interrupt_callback)) return AVERROR_EXIT;
             BLURAY_TITLE_INFO *candidate = bd_get_title_info(s->disc, i, 0);
             /* The longest title this demuxer can play: an incompatible main
                feature layout must not hide every other title on the disc. */
@@ -1106,8 +1111,10 @@ static int disc_header(AVFormatContext *context)
         if (!s->mvc_clips) return AVERROR(ENOMEM);
         /* Validate each independent SSIF/index association during preflight.
            Only the active clip's file handles and parsed indexes stay resident. */
-        for (unsigned i = 0; i < s->title->clip_count; i++)
+        for (unsigned i = 0; i < s->title->clip_count; i++) {
+            if (ff_check_interrupt(&context->interrupt_callback)) return AVERROR_EXIT;
             if ((ret = select_mvc_clip(s, i)) < 0) return ret;
+        }
         if (s->packet_clip && (ret = select_mvc_clip(s, 0)) < 0) return ret;
     } else {
         snprintf(path, sizeof(path), "BDMV/STREAM/%s.m2ts", clip->clip_id);
@@ -1476,6 +1483,7 @@ static void list_titles(BdMvc *s, char *json, int capacity)
                        info->top_menu->bdj ? "bdj" : movie_objects_valid(s) ? "hdmv" : "none";
     snprintf(json, capacity, "{\"menu\":\"%s\",\"titles\":[", menu);
     for (uint32_t i = 0; i < count && listed < 48; i++) {
+        if (ff_check_interrupt(&s->outer->interrupt_callback)) break;
         BLURAY_TITLE_INFO *title = bd_get_title_info(s->disc, i, 0);
         char item[256];
         if (!title) continue;
@@ -1502,9 +1510,19 @@ static void list_titles(BdMvc *s, char *json, int capacity)
 int avformat_thru3d_bd_titles(const char *url, int playlist, int *width, int *height, int64_t *duration,
                               int *mvc, int *selected, char *json, int capacity)
 {
-    AVFormatContext *context = NULL;
+    return avformat_thru3d_bd_titles_v2(url, playlist, width, height, duration, mvc, selected,
+                                      json, capacity, NULL, NULL);
+}
+
+int avformat_thru3d_bd_titles_v2(const char *url, int playlist, int *width, int *height, int64_t *duration,
+                               int *mvc, int *selected, char *json, int capacity,
+                               int (*interrupt)(void *), void *opaque)
+{
+    AVFormatContext *context = avformat_alloc_context();
     AVDictionary *options = NULL;
-    if (json && capacity < 3) return AVERROR(EINVAL);
+    if (!context) return AVERROR(ENOMEM);
+    if (json && capacity < 3) { avformat_free_context(context); return AVERROR(EINVAL); }
+    context->interrupt_callback = (AVIOInterruptCB){interrupt, opaque};
     av_dict_set(&options, "header_only", "1", 0);
     av_dict_set(&options, "rw_timeout", "30000000", 0);
     av_dict_set_int(&options, "playlist", playlist < 0 ? -1 : playlist, 0);
@@ -1517,6 +1535,9 @@ int avformat_thru3d_bd_titles(const char *url, int playlist, int *width, int *he
         if (selected) *selected = s->title->playlist;
         if (json) list_titles(s, json, capacity);
     }
+    /* libbluray represents a cancelled block read as an invalid disc. Preserve
+       cancellation even after a partial title scan appeared successful. */
+    if (interrupt && interrupt(opaque)) ret = AVERROR_EXIT;
     avformat_close_input(&context);
     return ret;
 }

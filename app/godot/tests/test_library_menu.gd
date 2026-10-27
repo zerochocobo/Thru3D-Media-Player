@@ -323,9 +323,9 @@ func _run() -> void:
 	choose_setting(menu, "show_fps", true)
 	check(settings_events.back() == ["show_fps", true], "FPS display can be switched on from Display settings")
 	menu._activate(Menu.TAB_BASE + Menu.SUBTITLES_TAB)
-	check(menu.tab == Menu.VIDEO_TAB and menu.rows.size() == 4, "Legacy subtitle tab opens the compact video settings")
+	check(menu.tab == Menu.VIDEO_TAB and menu.rows.size() == 5 and menu.rows[2].get("key", "") == "memory_mode", "Legacy subtitle tab opens the compact video settings")
 	menu._choose(menu.rows.filter(func(row): return row.get("video_settings_group", "") == "subtitles")[0])
-	var subtitle_rows: Array = menu.rows.filter(func(row): return str(row.get("key", "")).begins_with("subtitle_"))
+	var subtitle_rows: Array = menu.rows.filter(func(row): return str(row.get("key", "")).begins_with("subtitle_") and row.get("key", "") not in ["subtitle_task_mode", "subtitle_task_policy"])
 	check(subtitle_rows.size() == 7 and subtitle_rows[3].slider and subtitle_rows[3].value == 5.0,
 		"Subtitle distance is a slider, 5 m by default")
 	check(subtitle_rows[5].key == "subtitle_horizontal_position" and subtitle_rows[5].slider and subtitle_rows[5].value == 0,

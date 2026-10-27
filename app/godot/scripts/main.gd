@@ -105,6 +105,8 @@ var display_quality := Quality.DEFAULT
 ## GPU name used for the quality tier; empty reads the active renderer (tests may preset it).
 var gpu_adapter := ""
 var low_end_gpu := false
+## The memory saver in effect (Quality.memory_saver), for sources opened from now on.
+var memory_saver := false
 var status_label: Label3D
 ## The capability report is built and written on the main thread (about 8-12 ms on Quest 3), so
 ## it follows state changes instead of a fixed clock; a steady cadence cost a late frame each time.
@@ -295,6 +297,7 @@ func _ready() -> void:
 	if gpu_adapter.is_empty(): gpu_adapter = RenderingServer.get_video_adapter_name()
 	low_end_gpu = Quality.is_low_end_gpu(gpu_adapter)
 	display.render_scale = Quality.render_scale(display_quality, low_end_gpu)
+	_apply_memory_mode(null)
 	display.configure(get_viewport(), world.environment, XRServer.find_interface("OpenXR"), desktop)
 	display.attach_backdrop(camera)
 	input_visuals = InputVisuals.new()
@@ -334,6 +337,8 @@ func _ready() -> void:
 	video.prefer_clone_voice = bool(settings.get_value("audio", "prefer_clone_voice", false))
 	video.narration.load_settings(settings)
 	video.listening.load_settings(settings)
+	subtitle_tasks = preload("res://scripts/subtitle_tasks.gd").new(video)
+	subtitle_tasks.load_settings(settings)
 	video.pip.load_settings(settings)
 	video.pip.compositor.density = 20.0 if low_end_gpu else 26.0
 	video.pip.image_requested.connect(_begin_pip_image)
@@ -428,9 +433,12 @@ func _ready() -> void:
 		var plugin := Engine.get_singleton("QuestPlayer")
 		recent_menu.attach_platform(plugin)
 		plugin.connect("mpv_debug_command", _on_display_debug_command)
-		plugin.set_mpv_output_width(Quality.output_width(Quality.load_output_choice(settings), low_end_gpu))
+		if plugin.has_signal("diagnostic_log"): plugin.connect("diagnostic_log", _on_diagnostic_log)
+		_apply_memory_mode(plugin)
 		if PlatformMethods.supports(plugin, "set_mpv_alpha_fps"):
 			plugin.set_mpv_alpha_fps(_alpha_fps())
+		if PlatformMethods.supports(plugin, "set_rvm_fp32"):
+			plugin.set_rvm_fp32(Quality.alpha_fp32(Quality.load_alpha_precision(settings)))
 		video.set_alpha_edge(_alpha_edge_value("alpha_feather"), _alpha_edge_value("alpha_shrink"))
 	player_menu = PlayerMenu.new()
 	player_menu.state_provider = _menu_state
@@ -1178,7 +1186,10 @@ func _on_system_recentered() -> void:
 	if controller_feedback: controller_feedback.rebase()
 	_recenter()
 
+var subtitle_tasks: RefCounted
+
 func _process(delta: float) -> void:
+	if subtitle_tasks: subtitle_tasks.tick()
 	cast_session.tick()
 	if video:
 		if video.video_layer:
@@ -3331,19 +3342,61 @@ func _restore_subtitle_settings() -> void:
 	video.subtitle_flat_position = float(settings.get_value("subtitles", "flat_position", 0.0))
 	video.subtitle_direction = int(settings.get_value("subtitles", "direction", 0))
 
+## Diagnostic log (Settings > General): the plugin's last result per action.
+var diagnostic_state := {}
+
+## Versions and the settings that shape playback, on top of the log.
+func _diagnostic_header() -> String:
+	var info := {"version": str(ProjectSettings.get_setting("application/config/version", "")), "debug": OS.is_debug_build(),
+		"gpu": gpu_adapter, "low_end_gpu": low_end_gpu, "memory_mode": Quality.load_memory_choice(settings), "memory_saver": memory_saver,
+		"render_scale": display.render_scale, "refresh_cap": Quality.load_refresh_cap(settings, low_end_gpu), "output_width": Quality.load_output_choice(settings),
+		"alpha_fps": _alpha_fps(), "alpha_profile": video.default_profile, "background": str(settings.get_value("appearance", "background", "")),
+		"language": I18n.choice, "xr": display.capabilities() if display.has_method("capabilities") else {}}
+	return "Player: " + JSON.stringify(info)
+
+func _on_diagnostic_log(payload: String) -> void:
+	var result: Variant = JSON.parse_string(payload)
+	if not result is Dictionary: return
+	diagnostic_state.erase("busy")
+	var ok := bool(result.get("ok", false))
+	match str(result.get("action", "")):
+		"save":
+			diagnostic_state["path"] = str(result.get("path", "")) if ok else ""
+			if ok: diagnostic_state.erase("save_error")
+			else: diagnostic_state["save_error"] = I18n.t("Could not save")
+		"share":
+			if ok:
+				diagnostic_state["url"] = str(result.get("url", "")); diagnostic_state.erase("share_error")
+				var until := int(float(result.get("expires_ms", 0)) / 1000.0) + int(Time.get_time_zone_from_system().get("bias", 0)) * 60
+				diagnostic_state["until"] = Time.get_time_string_from_unix_time(until).left(5)
+			else: diagnostic_state.erase("url"); diagnostic_state["share_error"] = I18n.t("Connect to Wi-Fi first")
+		"stop":
+			diagnostic_state.erase("url")
+		"recent":
+			if ok: diagnostic_state["lines"] = result.get("lines", [])
+	if recent_menu and recent_menu.visible: recent_menu.refresh()
+
+## Output width and memory saver for sources opened from now on.
+func _apply_memory_mode(plugin: Object) -> void:
+	var total_mb := int(plugin.total_memory_mb()) if plugin and PlatformMethods.supports(plugin, "total_memory_mb") else 0
+	memory_saver = Quality.memory_saver(Quality.load_memory_choice(settings), low_end_gpu, total_mb)
+	if not plugin: return
+	if PlatformMethods.supports(plugin, "set_mpv_memory_saver"): plugin.set_mpv_memory_saver(memory_saver)
+	plugin.set_mpv_output_width(Quality.output_width(Quality.load_output_choice(settings), low_end_gpu or memory_saver))
+
 func _restore_seek_settings() -> void:
 	video.seek_mode = video.SeekPolicy.normalize(settings.get_value("video", "seek_mode", video.SeekPolicy.SPEED))
 	video.bookmark_seek_mode = video.SeekPolicy.bookmark_override(settings.get_value("video", "bookmark_seek_mode", video.SeekPolicy.GLOBAL))
 
 func _library_settings() -> Dictionary:
-	return {"cloud_page_sizes": settings.get_value("library", "cloud_page_sizes", {}), "output_width": Quality.load_output_choice(settings), "alpha_fps": _alpha_fps(),
+	return {"subtitle_defaults": subtitle_tasks.snapshot() if subtitle_tasks else {},"cloud_page_sizes": settings.get_value("library", "cloud_page_sizes", {}), "output_width": Quality.load_output_choice(settings), "memory_mode": Quality.load_memory_choice(settings), "diagnostic_log": diagnostic_state, "alpha_fps": _alpha_fps(),
 		"watch_color": WristWatch.Palette.load_choice(settings),
 		"playback_menu_depth": PlaybackMenuDepth.load_mode(settings),
 		"stick_seek_overlay": bool(settings.get_value("ui", "stick_seek_overlay", true)),
 		"bar_transparency": float(settings.get_value("ui", "bar_transparency", 14.0)),
 		"library_backdrop": str(settings.get_value("ui", "library_backdrop", "slideshow")),
 		"voice_manager": video.narration.voice_manager_snapshot(),
-		"alpha_profile": video.default_profile, "alpha_warming": video.warming.keys(),
+		"alpha_profile": video.default_profile, "alpha_precision": Quality.load_alpha_precision(settings), "alpha_warming": video.warming.keys(),
 		"alpha_cold": video.ALPHA_PROFILES.filter(func(p): return not video.profile_ready(p)),
 		"alpha_feather": _alpha_edge_value("alpha_feather"), "alpha_shrink": _alpha_edge_value("alpha_shrink"),
 		"show_fps": fps_overlay != null and fps_overlay.visible,
@@ -3380,6 +3433,14 @@ func _library_settings() -> Dictionary:
 		"version": str(ProjectSettings.get_setting("application/config/version", ""))}
 
 func _on_setting_changed(key: String, value: Variant) -> void:
+	if key.begins_with("listening_"):
+		if video.listening.set_option(key, value): video.listening.save(settings); settings.save(settings_path)
+		recent_menu.refresh(); video.changed.emit(); return
+	if key.begins_with("subtitle_task_action/"):
+		if str(value) != "": subtitle_tasks.command({"operation": str(value), "id": key.trim_prefix("subtitle_task_action/")})
+		recent_menu.refresh(); return
+	if key == "subtitle_task_command": subtitle_tasks.command(value); recent_menu.refresh(); return
+	if subtitle_tasks and subtitle_tasks.option(key, value, settings): settings.save(settings_path); recent_menu.refresh(); return
 	if key.begins_with("cloud_page_size/"):
 		var provider := key.trim_prefix("cloud_page_size/")
 		if not recent_menu.CloudPagination.DEFAULTS.has(provider): return
@@ -3487,6 +3548,13 @@ func _on_setting_changed(key: String, value: Variant) -> void:
 				settings.set_value("alpha", "profile", str(value))
 				settings.save(settings_path)
 				video.select_profile(str(value))
+		"alpha_precision":
+			settings.set_value("alpha", "precision", int(value))
+			settings.save(settings_path)
+			if platform_plugin and PlatformMethods.supports(platform_plugin, "set_rvm_fp32"):
+				platform_plugin.set_rvm_fp32(Quality.alpha_fp32(Quality.load_alpha_precision(settings)))
+				# A precision not used before compiles in the background now, not when AI passthrough starts.
+				video._warm_rvm()
 		"alpha_feather", "alpha_shrink":
 			_apply_alpha_edge(key, value)
 			settings.save(settings_path)
@@ -3502,8 +3570,17 @@ func _on_setting_changed(key: String, value: Variant) -> void:
 		"output_width":
 			settings.set_value("video", "output_width", int(value))
 			settings.save(settings_path)
-			if platform_plugin:
-				platform_plugin.set_mpv_output_width(Quality.output_width(Quality.load_output_choice(settings), low_end_gpu))
+			_apply_memory_mode(platform_plugin)
+		"diagnostic_log":
+			if platform_plugin and PlatformMethods.supports(platform_plugin, "diagnostic_log"):
+				diagnostic_state["busy"] = str(value)
+				platform_plugin.diagnostic_log(str(value), _diagnostic_header(), bool(diagnostic_state.get("full", false)))
+		"diagnostic_detail":
+			diagnostic_state["full"] = bool(value)
+		"memory_mode":
+			settings.set_value("video", "memory_mode", int(value))
+			settings.save(settings_path)
+			_apply_memory_mode(platform_plugin)
 		"history":
 			if recent_menu: recent_menu.checkpoint_browse()
 			Privacy.configure(Privacy.ALL if bool(value) else Privacy.NONE)
@@ -3667,6 +3744,11 @@ func _on_menu_seek(position_ms: int) -> void:
 	video.seek_absolute(position_ms)
 
 func _on_player_setting(key: String, value: Variant) -> void:
+	if key == "listening_generate": subtitle_tasks.enqueue(); video.changed.emit(); return
+	if key == "listening_cancel": subtitle_tasks.command({"operation": "cancel", "id": str(value)}); video.changed.emit(); return
+	if key == "subtitle_tasks_open":
+		_show_full_library(); recent_menu.section = recent_menu.Section.SETTINGS; recent_menu.tab = recent_menu.VIDEO_TAB
+		recent_menu.subtitle_queue_open = true; recent_menu.scroll = 0; recent_menu.refresh(); return
 	if not photo_active and video and not video.cast_allows(key): return
 	if not photo_active and video and video.cast_token > 0 and key.begins_with("narration_clone"): return
 	if key == "playback_mode" and not photo_active and video and not video.cast_allows(str(value)): return
@@ -3905,6 +3987,7 @@ func _menu_state() -> Dictionary:
 	result["pip_available"] = video.pip_available()
 	result.merge(video.narration.snapshot())
 	result.merge(video.listening.snapshot())
+	if subtitle_tasks: result.merge(subtitle_tasks.snapshot())
 	if background_audio: result.merge(background_audio.snapshot())
 	if video.cast_token > 0: result = preload("res://scripts/cast_capabilities.gd").apply(result, preload("res://scripts/cast_capabilities.gd").capabilities(video))
 	return result
@@ -4771,8 +4854,14 @@ func _save_playback_adjustments() -> void:
 
 func _fps_sample() -> Dictionary:
 	if not video or photo_active or not video.panel or not video.panel.visible: return {}
+	var details: Dictionary = video.media.playback.get("details", {})
 	return {"frames": video.presented_frames(), "target": _alpha_fps() if video.alpha_enabled else 0,
-		"active": video.media.state == "playing", "path": "L" if video.video_layer_shown else "E:" + video.layer_block_reason()}
+		"active": video.media.state == "playing", "path": "L" if video.video_layer_shown else "E:" + video.layer_block_reason(),
+		# Timing counters for the second line: decoder drops, VO drops, late frames, A/V offset, cache wait.
+		"decoder_drops": str(details.get("decoder_frame_drop_count", "")).to_int(),
+		"vo_drops": str(details.get("vo_frame_drop_count", "")).to_int(),
+		"vo_late": str(details.get("vo_delayed_frame_count", "")).to_int(),
+		"avsync": str(details.get("avsync_seconds", "")), "cache": str(details.get("paused_for_cache", "")) in ["yes", "true"]}
 
 func _playback_status_sample() -> Dictionary:
 	if not video or photo_active or (video_menu and video_menu.visible) or not _seek_overlay_sample().is_empty(): return {}

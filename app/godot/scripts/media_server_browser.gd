@@ -187,6 +187,7 @@ func receive(id: int, payload: String) -> bool:
 			detail = data.get("detail", {}); view = "detail"
 			gallery.image_start = 0; gallery.actor_start = 0; gallery.selected_image = 0
 			gallery.part_start = 0; gallery.selected_part = 0
+			gallery.selected_versions.clear()
 			gallery.detail_start = 0; gallery.tag_start = 0; gallery.overview_start = 0
 			var resume_part := false
 			var local_detail: Dictionary = menu.Presentation.local_record(menu.catalog, str(detail.get("uri", "")))
@@ -207,6 +208,7 @@ func receive(id: int, payload: String) -> bool:
 					if str(detail.parts[index].get("id", "")) == str(expected.scene_id):
 						detail.parts[index].position_ms = int(expected.recent_position_ms)
 						gallery.selected_part = index; gallery.part_start = mini((index / 2) * 2, maxi(0, detail.parts.size() - 2))
+			_restore_version_progress(str(expected.get("recent_uri", "")))
 		"favorite":
 			if str(detail.get("id", "")) == str(data.get("scene_id", "")):
 				detail.favorite = bool(data.get("favorite", false))
@@ -228,7 +230,7 @@ func _local_resume() -> Array:
 	var prefix := "medialib://" + str(server.get("id", "")) + "/scene/"
 	for item in menu.catalog.list_recent():
 		if str(item.get("uri", "")).begins_with(prefix) and int(item.get("position_ms", 0)) > 0 and (int(item.get("duration_ms", 0)) <= 0 or int(item.position_ms) < int(item.duration_ms) - 1000):
-			var node: Dictionary = item.duplicate(true); node.id = str(item.uri).trim_prefix(prefix); node.resume_source = "local"; node.kind = "video"
+			var node: Dictionary = item.duplicate(true); node.id = str(item.uri).trim_prefix(prefix).get_slice("?", 0); node.resume_source = "local"; node.kind = "video"
 			result.append(node)
 	return result
 
@@ -247,12 +249,31 @@ func home_recent_entries() -> Array:
 		for local in menu.catalog.list_recent():
 			var uri := str(local.get("uri", ""))
 			if not uri.begins_with(prefix) or local.get("kind", "video") == "image": continue
-			var id := uri.trim_prefix(prefix)
+			var id := uri.trim_prefix(prefix).get_slice("?", 0)
 			var node: Dictionary = metadata.get(id, {}).duplicate(true)
 			node.merge(local, true); node.id = id; node.kind = "video"; node.recent_source = "local"
 			_append_unique(result, [node])
 	_append_unique(result, remote.filter(func(node): return node is Dictionary and str(node.get("uri", "")).begins_with(prefix) and not node.get("container", false)))
 	return result.slice(0, 32)
+
+func _restore_version_progress(recent_uri: String) -> void:
+	var records: Array = menu.catalog.list_recent() if menu.catalog else []
+	for base in [detail] + detail.get("parts", []):
+		var versions: Array = base.get("versions", [])
+		for version in versions:
+			var local: Dictionary = menu.Presentation.local_record(menu.catalog, str(version.uri))
+			if not local.is_empty(): version.position_ms = int(local.get("position_ms", 0))
+		var ordered: Array = [{"uri": recent_uri}] + records
+		for record in ordered:
+			var found := false
+			for version in versions:
+				if str(record.get("uri", "")) == str(version.uri):
+					gallery.selected_versions[str(base.id)] = str(version.source_id); found = true; break
+			if found: break
+
+func open_versions() -> void:
+	if busy or gallery.versions().size() < 2: return
+	_remember(); cancel(); view = "versions"; menu._reset_navigation(); menu.refresh()
 
 func context_state() -> Dictionary:
 	return {"view": view, "query": query.duplicate(true), "entries": entries.duplicate(true), "candidates": candidates.duplicate(true), "detail": detail.duplicate(true), "kind": kind,
@@ -457,9 +478,16 @@ func rows() -> Array[Dictionary]:
 			for item in candidates:
 				var id := str(item.id); var included: bool = id in query.get(kind, []); var excluded: bool = id in query.get("exclude_" + kind, [])
 				result.append({"title": str(item.name), "detail": "−" if excluded else ("+" if included else ""), "icon": "check" if included else ("minus" if excluded else "circle"), "selected": included or excluded, "candidate": item})
+		"versions":
+			var selected: Dictionary = gallery.playback_node()
+			for version in gallery.versions():
+				var active: bool = version.source_id == selected.get("source_id", "")
+				result.append({"title": str(version.version_name), "detail": str(version.get("basename", "")), "tip": str(version.version_name) + "\n" + str(version.get("basename", "")), "icon": "check" if active else "video", "selected": active, "version": version})
 		"detail", "metadata":
 			if not detail.is_empty():
-				result.append({"title": I18n.t("Continue watching" if int(detail.get("position_ms", 0)) > 0 else "Play / resume"), "icon": "play", "play_scene": detail})
+				var playback: Dictionary = gallery.playback_node()
+				result.append({"title": I18n.t("Continue watching" if int(playback.get("position_ms", 0)) > 0 else "Play / resume"), "icon": "play", "play_scene": playback})
+				if gallery.versions().size() > 1: result.append({"title": I18n.t("Version") + ": " + str(playback.get("version_name", "")), "icon": "video", "open_versions": true})
 				result.append({"title": I18n.t("Favorited" if _is_favorite(detail) else "Favorite"), "icon": "heart", "favorite": true})
 				for category in capabilities.get("facets", []):
 					for item in detail.get(category, []): result.append({"title": str(item.name), "detail": I18n.t(FILTER_NAMES.get(category, category)), "icon": "plus", "detail_filter": item, "category": category})
@@ -483,7 +511,12 @@ func _time(ms: int) -> String:
 	return "%d:%02d" % [seconds / 60, seconds % 60]
 
 func choose(row: Dictionary) -> void:
-	if row.has("remove_server"): removing = row.remove_server.duplicate(true); view = "confirm_remove"; menu._reset_navigation()
+	if row.has("open_versions"): open_versions(); return
+	elif row.has("version"):
+		var base_id: String = str(gallery.base_playback_node().get("id", ""))
+		var source_id: String = str(row.version.source_id)
+		back(); gallery.selected_versions[base_id] = source_id
+	elif row.has("remove_server"): removing = row.remove_server.duplicate(true); view = "confirm_remove"; menu._reset_navigation()
 	elif row.has("confirm_remove"):
 		if busy: return
 		cancel(); server = removing.duplicate(true); request("remove")
@@ -508,7 +541,7 @@ func choose(row: Dictionary) -> void:
 	elif row.has("scene"):
 		var args := {"scene_id": str(row.scene.id)}
 		if row.get("recent_opened", false):
-			args.recent_position_ms = int(row.scene.get("position_ms", 0)); entries = home_recent_entries()
+			args.recent_position_ms = int(row.scene.get("position_ms", 0)); args.recent_uri = str(row.scene.get("uri", "")); entries = home_recent_entries()
 		_remember(); cancel(); detail = {}; view = "detail"; menu._reset_navigation(); request("detail", args)
 	elif row.has("category"):
 		_remember(); cancel(); kind = str(row.category); exclude = false; view = "candidates"; candidate_q = ""; candidate_page = 1; get_candidates()
@@ -556,8 +589,9 @@ func playback_entries() -> Array:
 	var parts: Array = detail.get("parts", [])
 	var uri := str(selection.get("uri", ""))
 	if uri.is_empty() and (view == "detail" or menu.compact) and menu.current_file_provider.is_valid(): uri = str(menu.current_file_provider.call())
-	if parts.any(func(part): return part.get("uri", "") == uri): return parts
-	return entries
+	if parts.any(func(part): return part.get("uri", "") == uri or part.get("versions", []).any(func(version): return version.get("uri", "") == uri)):
+		return parts.map(func(part): return gallery.version_node(part))
+	return entries.map(func(item): return selection if selection.has("source_id") and str(item.get("uri", "")).get_slice("?", 0) == str(selection.get("uri", "")).get_slice("?", 0) else item)
 
 func _is_favorite(node: Dictionary) -> bool:
 	if capabilities.get("favorite_scope", "local") == "server": return bool(node.get("favorite", false))
@@ -920,7 +954,7 @@ func draw() -> void:
 		if capabilities.get("search", true) or query.get("favorites", false) or view in ["facets", "candidates"]: menu._button(ACTION + 2, "", Vector2(0.55, top), Vector2(0.09, 0.07), view != "filters", "search")
 		menu._button(ACTION + 17, "", Vector2(0.67, top), Vector2(0.09, 0.07), not busy and view != "filters", "heart"); menu._tips[ACTION + 17] = I18n.t("Favorites" if capabilities.get("favorite_scope", "local") == "server" else "On-device favorites")
 		menu._button(ACTION + 15, "", Vector2(0.79, top), Vector2(0.09, 0.07), view != "filters", "more"); menu._tips[ACTION + 15] = I18n.t("Server options")
-		var tabs: Array = [] if view in ["detail", "picture", "overview"] and capabilities.get("artwork", false) else _navigation()
+		var tabs: Array = [] if view in ["detail", "picture", "overview", "versions"] and capabilities.get("artwork", false) else _navigation()
 		for i in tabs.size():
 			var name: String = {"home": "Home", "all": "All", "folders": "Folders"}.get(tabs[i], FILTER_NAMES.get(tabs[i], tabs[i]))
 			menu._button(ACTION + 100 + i, I18n.t(name), Vector2(-0.37 + i * 0.263, 0.49 if focused() else 0.345), Vector2(0.25, 0.063), view != "filters")
@@ -1035,6 +1069,7 @@ func _draw_context() -> void:
 		if str(library.id) == library_id: context = str(library.title)
 	if view in ["facets", "candidates"]: context = I18n.t(FILTER_NAMES.get(kind, kind))
 	elif view in ["detail", "metadata", "picture"]: context = str(detail.get("title", "…"))
+	elif view == "versions": context = I18n.t("Version") + " · " + str(detail.get("title", ""))
 	elif view == "filters": context = I18n.t("Filters")
 	elif view == "saved": context = I18n.t("Saved searches")
 	elif query.get("favorites", false): context = I18n.t("Favorites" if capabilities.get("favorite_scope", "local") == "server" else "On-device favorites")

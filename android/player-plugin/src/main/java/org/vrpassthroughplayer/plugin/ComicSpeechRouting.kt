@@ -5,6 +5,15 @@ import java.security.MessageDigest
 
 /** Accessed under the controller lock. A translated page never falls back to original audio. */
 internal class ComicSpeechRouting {
+    companion object {
+        fun originalLanguage(selected: String,detected: String,text: String): String {
+            if(selected!="auto")return selected
+            // Even one actual kana is Japanese evidence. Do not depend on the
+            // OCR page's two-high-confidence-kana threshold for a short reply.
+            if(text.any {it in '\u3041'..'\u3096'||it in '\u30a1'..'\u30fa'||it in '\uff66'..'\uff6f'||it in '\uff71'..'\uff9d'})return "ja"
+            return detected
+        }
+    }
     data class Text(val text: String,val language: String,val suffix: String)
     private var epoch=0L
     private var mode=""

@@ -4,6 +4,51 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class ComicNarrationSessionTest {
+    @Test fun japaneseExpandedWordsAndMoraStayTogetherAtChunkBoundaries() {
+        val text="でもあんなまぐれはもう一生ない気もする…"
+        val chunks=ComicNarrationSession.speechSegments(text,"ja")
+        assertTrue(chunks.any {"いっしょう" in it})
+        assertFalse(chunks.any {it.startsWith('っ')||it.endsWith("い。")})
+        val prepared=ComicJapaneseReading.prepare(ComicNarrationSession.spokenText(text,"ja"))
+        assertEquals(prepared.text.replace("。",""),chunks.joinToString("").replace("。",""))
+        assertTrue(chunks.all {it.codePointCount(0,it.length)<=25})
+        for(n in 23..65){
+            val kana="あ".repeat(n)+"きゃっとーだよ"
+            val split=ComicNarrationSession.speechSegments(kana,"ja")
+            assertEquals(kana,split.joinToString("").replace("。",""))
+            assertTrue(split.none {it.first() in "ゃっー"})
+        }
+    }
+    @Test fun japaneseHanPrefixesHaveReadingsBeforeSynthesisRegardlessOfVoice() {
+        val examples=mapOf("先生！" to "せんせい!", "大丈夫？" to "だいじょうぶ?",
+            "今日も学校に行きます。" to "きょうもがっこうにいきます。",
+            "日本語を話してください。" to "にほんごをはなしてください。")
+        for((text,expected) in examples)assertEquals(expected,ComicNarrationSession.speechSegments(text,"ja").joinToString(""))
+        assertEquals("にほんご",ComicJapaneseReading.convert("日本語"))
+        assertEquals("ABC 𠮷 😀!",ComicJapaneseReading.convert("ABC 𠮷 😀!"))
+        assertEquals("さ、し、は、ら、リ、の!",ComicNarrationSession.speechSegments("さ！し！は！ら！リ！の！","ja").single())
+        val text="今日は先生と一緒に学校に行きます。".repeat(6)
+        val chunks=ComicNarrationSession.speechSegments(text,"ja")
+        assertEquals(ComicJapaneseReading.convert(text).replace("。",""),chunks.joinToString("").replace("。",""))
+        assertTrue(chunks.all {it.codePointCount(0,it.length)<=25&&it.endsWith("。")})
+        assertEquals("今天去学校。",ComicNarrationSession.speechSegments("今天去学校。","zh").single())
+        assertEquals("Hello!",ComicNarrationSession.speechSegments("Hello!","en").single())
+    }
+    @Test fun japaneseReadingReachesSharedEngineWithoutReplacingPresetOrClone() {
+        val backend=FakeNarrationBackend();val texts=mutableListOf<String>();val voices=mutableListOf<String>()
+        val runtime=SharedNarrationEngine(object:SharedNarrationEngine.Backend by backend {
+            override fun synthesize(handle: Long,text: String,voice: String,token: Long,frames: Int,precision: Boolean,sink: NarrationNative.Sink): String {
+                texts+=text;voices+=voice
+                return backend.synthesize(handle,text,voice,token,frames,precision,sink)
+            }
+        })
+        val reader=ComicNarrationSession(runtime)
+        val clone="custom:12345678-1234-1234-1234-123456789abc"
+        for(voice in listOf("Mei","Xiaoyu",clone))reader.play("先生！","ja",voice,{IntArray(592)},1,{true},{Output()})
+        assertEquals(listOf("せんせい!","せんせい!","せんせい!"),texts)
+        assertEquals(listOf("Mei","Xiaoyu",clone),voices)
+        reader.close();runtime.close()
+    }
     @Test fun kanaChantsAndShortDialogueKeepContextAndNeverLeaveSingleGlyphTails() {
         val chant="さ！し！は！ら！リ！の！"
         assertEquals(listOf(chant),ComicNarrationSession.segments(chant))
