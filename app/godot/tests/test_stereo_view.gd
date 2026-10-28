@@ -41,13 +41,13 @@ func check_persistence(video: Node, path: String) -> void:
 		drag_alignment(menu, "stereo_horizontal", 0.7)
 		drag_alignment(menu, "stereo_vertical", 0.4)
 		var reloaded := Memory.new(path); reloaded.load_saved()
-		check(is_equal_approx(float(reloaded.lookup(uri).get("stereo_horizontal", 0)), 2.0)
+		check(is_equal_approx(float(reloaded.lookup(uri).get("stereo_horizontal", 0)), 4.0)
 			and is_equal_approx(float(reloaded.lookup(uri).get("stereo_vertical", 0)), -1.0), "Real slider release saves both axes: " + prefix)
 		video.close_video(); video.mode_memory = reloaded
 		video.open_library(prefix + "other_TB.mp4", "other_TB.mp4")
 		check(video.stereo_horizontal == 0 and video.stereo_vertical == 0, "Different movie starts neutral: " + prefix)
 		video.open_library(uri, "saved_LR.mp4")
-		check(is_equal_approx(video.stereo_horizontal, 2.0) and is_equal_approx(video.stereo_vertical, -1.0), "Fresh memory reader restores the movie's own adjustments: " + prefix)
+		check(is_equal_approx(video.stereo_horizontal, 4.0) and is_equal_approx(video.stereo_vertical, -1.0), "Fresh memory reader restores the movie's own adjustments: " + prefix)
 		video.close_video()
 	menu.free()
 	# Backgrounding can happen while the trigger is held, before a release event.
@@ -156,7 +156,7 @@ func _run() -> void:
 	var memory := Memory.new(path)
 	var base := {"geometry": 0, "stereo_sbs": true, "swap_eyes": false, "alpha_requested": false, "profile": "320x320"}
 	check(Memory.valid_mode(base), "Old saved modes without new fields remain readable")
-	for bad in [{"viewing_eye": 3}, {"viewing_eye": 0.5}, {"viewing_eye": "1"}, {"stereo_horizontal": NAN}, {"stereo_vertical": INF}, {"stereo_horizontal": 5.01}, {"stereo_vertical": "0"}]:
+	for bad in [{"viewing_eye": 3}, {"viewing_eye": 0.5}, {"viewing_eye": "1"}, {"stereo_horizontal": NAN}, {"stereo_vertical": INF}, {"stereo_horizontal": 10.01}, {"stereo_horizontal": -10.01}, {"stereo_vertical": 5.01}, {"stereo_vertical": "0"}]:
 		var invalid := base.duplicate(); invalid.merge(bad, true)
 		check(not Memory.valid_mode(invalid), "Reject malformed display state " + str(bad))
 	var host := ExistingTests.Host.new()
@@ -171,7 +171,10 @@ func _run() -> void:
 	check(video._hole_material.next_pass == null, "Neutral alignment adds no extra surface draw pass")
 	var calls := host.calls.size()
 	var session := video.media.session_id
-	check(video.set_stereo_alignment("stereo_horizontal", 2.03) and is_equal_approx(video.stereo_horizontal, 2.05), "Alignment rounds to 0.05 percent")
+	check(video.set_stereo_alignment("stereo_horizontal", 99) and video.stereo_horizontal == 10, "Horizontal alignment reaches +10 percent")
+	check(video.set_stereo_alignment("stereo_horizontal", -99) and video.stereo_horizontal == -10, "Horizontal alignment clamps at -10 percent")
+	check(video.set_stereo_alignment("stereo_horizontal", 2.14) and is_equal_approx(video.stereo_horizontal, 2.25), "Horizontal alignment rounds to 0.25 percent")
+	check(video.set_stereo_alignment("stereo_vertical", .13) and is_equal_approx(video.stereo_vertical, .15), "Vertical alignment keeps 0.05 percent precision")
 	check(video.set_stereo_alignment("stereo_vertical", -99) and video.stereo_vertical == -5, "Clamp excessive alignment")
 	check(video._hole_material.next_pass == video._alignment_border, "Nonzero alignment enables the black-edge pass")
 	check(not video.set_stereo_alignment("stereo_horizontal", NAN) and not video.set_stereo_alignment("unrelated", 1), "Reject nonfinite and unknown adjustments")
@@ -186,7 +189,7 @@ func _run() -> void:
 	var stored := Memory.new(path); stored.load_saved()
 	check(stored.lookup(video.local_uri).viewing_eye == 2 and stored.lookup(video.local_uri).swap_eyes, "Eye selection and swap survive a fresh memory reader")
 	video._reopen_after_context_loss(video.local_uri, video.display_name, 2000, true)
-	check(video.viewing_eye == 2 and is_equal_approx(video.stereo_horizontal, 2.05), "Graphics context recovery keeps current viewing choice")
+	check(video.viewing_eye == 2 and is_equal_approx(video.stereo_horizontal, 2.25), "Graphics context recovery keeps current viewing choice")
 	check(video.open_local("file:///b_TB.mp4", "b_TB.mp4") and video.viewing_eye == 0 and video.stereo_horizontal == 0 and video.stereo_vertical == 0, "Unseen next video starts without prior correction")
 	check(video.open_local("file:///a_LR.mp4", "a_LR.mp4") and video.viewing_eye == 2 and video.stereo_vertical == -5, "Reopening the original file restores its own correction")
 	video.set_viewing_eye(0)
@@ -208,13 +211,13 @@ func _run() -> void:
 	var layer := preload("res://scripts/video_layer.gd").new(null)
 	var origin := Node3D.new(); root.add_child(origin)
 	var legacy_uri := "cloud://old-account/previously-unopenable_LR_180.mp4"
-	for offset in [Vector2(-5, 0), Vector2(5, 0), Vector2(0, -5), Vector2(0, 5), Vector2(2.5, -1.5)]:
+	for offset in [Vector2(-10, 0), Vector2(10, 0), Vector2(-5, 0), Vector2(5, 0), Vector2(0, -5), Vector2(0, 5), Vector2(2.05, -1.45)]:
 		var legacy := base.duplicate(true)
 		legacy.merge({"geometry": 1, "stereo_horizontal": offset.x, "stereo_vertical": offset.y, "viewing_eye": 0}, true)
 		check(memory.remember(legacy_uri, legacy) and memory.save(), "Write old schema-1 alignment save")
 		var fresh := Memory.new(path); fresh.load_saved(); video.mode_memory = fresh
 		check(video.open_local(legacy_uri, "previously-unopenable_LR_180.mp4") and video.geometry == 1
-			and video.stereo_horizontal == offset.x and video.stereo_vertical == offset.y, "Previously broken file opens with its saved correction after restart")
+			and is_equal_approx(video.stereo_horizontal, offset.x) and is_equal_approx(video.stereo_vertical, offset.y), "Saved correction including old fine steps survives restart")
 		var values: PackedFloat32Array = layer.layer_values(video, origin)
 		for eye in 2:
 			var start := eye * layer.STRIDE

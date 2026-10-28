@@ -140,22 +140,23 @@ void MnnRvmBackend::reset(int eye, int stream) {
 }
 
 void MnnRvmBackend::process_alpha_stereo(const std::array<const float*, 2>& rgb, const std::array<float*, 2>& alpha,
-                                         int stream, bool reset_first) {
+                                         int stream, bool reset_first, int eye_count) {
     require(stream >= 0 && stream < kStreams, "RVM stream index out of range");
+    require(eye_count == 1 || eye_count == 2, "RVM eye count must be one or two");
     auto& eyes = eyes_[stream];
     using Clock = std::chrono::steady_clock;
     std::array<Clock::time_point, 5> mark{};
     mark[0] = Clock::now();
     const size_t plane = static_cast<size_t>(report_.width) * report_.height;
     // Reject invalid input in either eye before any GPU work, so neither eye advances.
-    for (int i = 0; i < 2; ++i) {
+    for (int i = 0; i < eye_count; ++i) {
         require(rgb[i] != nullptr && alpha[i] != nullptr, "RVM stereo buffers missing");
         for (size_t p = 0; p < plane * 3; ++p)
             if (!(rgb[i][p] >= 0.f && rgb[i][p] <= 1.f)) throw std::runtime_error("RVM RGB outside [0,1]");
     }
     mark[1] = Clock::now();
     if (reset_first) { reset(0, stream); reset(1, stream); }
-    for (int i = 0; i < 2; ++i) {
+    for (int i = 0; i < eye_count; ++i) {
         auto& eye = *eyes[i];
         // The graph takes 0..255 (the zero-copy import is unnormalized); scale the float path to match.
         float* host = eye.src_host->host<float>();
@@ -165,7 +166,7 @@ void MnnRvmBackend::process_alpha_stereo(const std::array<const float*, 2>& rgb,
         require(net_->runSession(eye.session) == MNN::NO_ERROR, "MNN RVM inference failed");
     }
     mark[2] = Clock::now();
-    for (int i = 0; i < 2; ++i) {
+    for (int i = 0; i < eye_count; ++i) {
         auto& eye = *eyes[i];
         eye.pha->copyToHostTensor(eye.pha_host.get()); // Blocking read: completes this queue's work.
         const float* values = eye.pha_host->host<float>();
@@ -174,7 +175,7 @@ void MnnRvmBackend::process_alpha_stereo(const std::array<const float*, 2>& rgb,
     }
     mark[3] = Clock::now();
     // Alpha is computed from the states, so a nonfinite state surfaces in Alpha above.
-    for (int i = 0; i < 2; ++i) {
+    for (int i = 0; i < eye_count; ++i) {
         auto& eye = *eyes[i];
         std::memcpy(alpha[i], eye.pha_host->host<float>(), plane * sizeof(float));
         for (int s = 0; s < 4; ++s) eye.state_in[s]->copyFromHostTensor(eye.state_out[s]); // device -> device
@@ -202,13 +203,67 @@ MNN::Tensor* MnnRvmBackend::shared(AHardwareBuffer* buffer, const MNN::Tensor* l
     return slot.get();
 }
 
+namespace {
+// Fills (value >= 0) or checks R of every pixel against [value]; false when the buffer cannot be locked.
+bool fill_or_differs(AHardwareBuffer* buffer, int value, bool fill, bool& differs) {
+    AHardwareBuffer_Desc desc{};
+    AHardwareBuffer_describe(buffer, &desc);
+    void* pixels = nullptr;
+    const uint64_t usage = fill ? AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN : AHARDWAREBUFFER_USAGE_CPU_READ_OFTEN;
+    if (AHardwareBuffer_lock(buffer, usage, -1, nullptr, &pixels) != 0 || !pixels) return false;
+    differs = false;
+    for (uint32_t y = 0; y < desc.height; ++y) {
+        auto* row = static_cast<uint8_t*>(pixels) + static_cast<size_t>(y) * desc.stride * 4;
+        if (fill) { std::memset(row, value, static_cast<size_t>(desc.width) * 4); continue; }
+        for (uint32_t x = 0; x < desc.width && !differs; ++x) differs = row[x * 4] != value;
+        if (differs) break;
+    }
+    AHardwareBuffer_unlock(buffer, nullptr);
+    return true;
+}
+} // namespace
+
+bool MnnRvmBackend::zero_copy_self_test() {
+    constexpr int kSentinel = 0x5A;
+    AHardwareBuffer_Desc desc{};
+    desc.width = static_cast<uint32_t>(report_.width); desc.height = static_cast<uint32_t>(report_.height); desc.layers = 1;
+    desc.format = AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM;
+    desc.usage = AHARDWAREBUFFER_USAGE_CPU_READ_OFTEN | AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN |
+        AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE | AHARDWAREBUFFER_USAGE_GPU_COLOR_OUTPUT;
+    AHardwareBuffer* input = nullptr;
+    AHardwareBuffer* output = nullptr;
+    bool written = false, differs = false;
+    if (AHardwareBuffer_allocate(&desc, &input) == 0 && AHardwareBuffer_allocate(&desc, &output) == 0 &&
+        fill_or_differs(input, 0x80, true, differs) && fill_or_differs(output, kSentinel, true, differs)) {
+        try {
+            auto& eye = *eyes_[0][0];
+            eye.src->copyFromHostTensor(shared(input, eye.src));
+            if (net_->runSession(eye.session) == MNN::NO_ERROR) {
+                eye.pha_u8->copyToHostTensor(shared(output, eye.pha_u8));
+                eye.pha_u8->wait(MNN::Tensor::MAP_TENSOR_READ, true);
+                // A grey frame has no person: a working export overwrites the sentinel with ~0.
+                written = fill_or_differs(output, kSentinel, false, differs) && differs;
+            }
+        } catch (const std::exception&) {}
+        reset(0, 0); reset(1, 0);
+    }
+    for (AHardwareBuffer* buffer : {input, output}) {
+        if (!buffer) continue;
+        auto imported = shared_.find(buffer);
+        if (imported != shared_.end()) { imported->second.reset(); AHardwareBuffer_release(buffer); shared_.erase(imported); }
+        AHardwareBuffer_release(buffer);
+    }
+    return written;
+}
+
 bool MnnRvmBackend::process_ahb(const std::array<AHardwareBuffer*, 2>& rgb, const std::array<AHardwareBuffer*, 2>& alpha,
-                                int stream, bool reset_first) {
+                                int stream, bool reset_first, int eye_count) {
     require(stream >= 0 && stream < kStreams, "RVM stream index out of range");
+    require(eye_count == 1 || eye_count == 2, "RVM eye count must be one or two");
     // The scout stream (1) only looks for people outside the ROI window. Both eyes of a stereo
     // frame show the same scene, so the left eye answers that at half the cost: the full scout
     // inference landed on one display frame and was the main source of dropped 8K Alpha pairs.
-    const int count = stream == 1 ? 1 : 2;
+    const int count = stream == 1 ? 1 : eye_count;
     for (int i = 0; i < count; ++i) require(rgb[i] && alpha[i] && rgb[i] != alpha[i], "Zero-copy buffers missing or aliased");
     auto& eyes = eyes_[stream];
     if (reset_first) { reset(0, stream); reset(1, stream); }

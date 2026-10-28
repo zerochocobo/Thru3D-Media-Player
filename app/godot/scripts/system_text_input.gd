@@ -37,7 +37,7 @@ func begin(tag: String, value: String, limit: int, on_change: Callable, on_submi
 	editor.focus_mode = Control.FOCUS_ALL
 	editor.virtual_keyboard_enabled = true
 	editor.show()
-	editor.max_length = clampi(limit, 1, 200)
+	editor.max_length = clampi(limit, 1, 4096)
 	editor.text = clean(value, editor.max_length)
 	editor.caret_column = editor.text.length()
 	editor.size = Vector2(640, 56)

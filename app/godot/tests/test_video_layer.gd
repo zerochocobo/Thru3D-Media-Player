@@ -104,7 +104,7 @@ func _run() -> void:
 			video.top_bottom = tb
 			for swap in [false, true]:
 				video.swap_eyes = swap
-				for offset in [Vector2(-0.05, 0), Vector2(0.05, 0), Vector2(0, -0.05), Vector2(0, 0.05), Vector2(-0.05, 0.05), Vector2(0.05, -0.05)]:
+				for offset in [Vector2(-0.10, 0), Vector2(0.10, 0), Vector2(0, -0.05), Vector2(0, 0.05), Vector2(-0.10, 0.05), Vector2(0.10, -0.05)]:
 					video.offset = offset
 					for dimensions in [Vector2(4096, 4096), Vector2(2160, 3840), Vector2(3840, 1080)]:
 						values = layer.layer_values(video, origin, VideoLayer.SURFACE, dimensions)

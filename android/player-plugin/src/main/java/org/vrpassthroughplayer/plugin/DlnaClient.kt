@@ -220,22 +220,27 @@ internal object DlnaClient {
             val resources = item.getElementsByTagNameNS("*", "res")
             val itemClass = item.getElementsByTagNameNS("*", "class").item(0)?.textContent.orEmpty()
             val imageItem = itemClass.startsWith("object.item.imageItem")
+            val audioItem = itemClass.startsWith("object.item.audioItem")
+            var kind = if (imageItem) "image" else "video"
             var chosen: Element? = null
+            var audio: Element? = null
             var largest = -1L
             for (r in 0 until resources.length) {
                 val res = resources.item(r) as Element
                 val info = res.getAttribute("protocolInfo")
-                if (!imageItem && (info.contains(":video/") || isVideoName(res.textContent))) { chosen = res; break }
+                if (!imageItem && audio == null && (info.contains(":audio/") || MediaKinds.audio(res.textContent))) audio = res
+                if (!imageItem && !audioItem && (info.contains(":video/") || isVideoName(res.textContent))) { chosen = res; break }
                 if (imageItem && (info.contains(":image/") || MediaKinds.image(res.textContent))) {
                     val dimensions = res.getAttribute("resolution").split('x').mapNotNull { it.toLongOrNull() }
                     val area = if (dimensions.size == 2) dimensions[0] * dimensions[1] else 0L
                     if (area > largest) { chosen = res; largest = area }
                 }
             }
+            if (chosen == null && audio != null) { chosen = audio; kind = "audio" }
             val res = chosen ?: continue
-            val entry = JSONObject().put("id", item.getAttribute("id")).put("title", mediaTitle(title(item), res, imageItem)).put("container", false)
-                .put("uri", httpUri(res.textContent.trim(), base)?.toString() ?: res.textContent.trim()).put("kind", if (imageItem) "image" else "video")
-            if (!imageItem) entry.put("subtitles", subtitles(item, base))
+            val entry = JSONObject().put("id", item.getAttribute("id")).put("title", mediaTitle(title(item), res, kind)).put("container", false)
+                .put("uri", httpUri(res.textContent.trim(), base)?.toString() ?: res.textContent.trim()).put("kind", kind)
+            if (kind == "video") entry.put("subtitles", subtitles(item, base))
             item.getAttribute("parentID").takeIf { it.isNotBlank() && it != "-1" }?.let { entry.put("parent_id", it) }
             res.getAttribute("size").toLongOrNull()?.let { entry.put("size", it) }
             parseDuration(res.getAttribute("duration"))?.let { entry.put("duration_ms", it) }
@@ -249,8 +254,8 @@ internal object DlnaClient {
     }
 
     /** Keep the server's title, including an original suffix when it offers a transcoded stream. */
-    private fun mediaTitle(title: String, resource: Element, image: Boolean): String {
-        val extensions = if (image) MediaKinds.images else VIDEO_EXTENSIONS
+    private fun mediaTitle(title: String, resource: Element, kind: String): String {
+        val extensions = when (kind) { "image" -> MediaKinds.images; "audio" -> MediaKinds.audio; else -> VIDEO_EXTENSIONS }
         if (title.substringAfterLast('.', "").lowercase() in extensions) return title
         // URI.path decodes escaped filenames and excludes query parameters. MIME alone does not
         // identify the original container (e.g. video/mpeg may mean mpg, ts or m2ts).

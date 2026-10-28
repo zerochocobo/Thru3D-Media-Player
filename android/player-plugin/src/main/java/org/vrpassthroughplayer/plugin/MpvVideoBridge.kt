@@ -206,6 +206,8 @@ internal class MpvVideoBridge(
         val subtitleLocations = ConcurrentHashMap<String, String>() // original filename -> current lease
         val subtitleLanguages = ConcurrentHashMap<String, String>() // lease -> server language metadata
         val subtitleTrackIds = ConcurrentHashMap<String, Int>()
+        val subtitleText = SubtitleTextSources(SubtitleCharsetDetector::detect)
+        @Volatile var subtitleEncodingLoad: SubtitleEncodingLoad? = null
         @Volatile var subtitleFileLoad: SubtitleFileLoad? = null
         @Volatile var subtitleMemoryId = ""
         @Volatile var audioLeases: List<String> = emptyList()
@@ -215,6 +217,7 @@ internal class MpvVideoBridge(
             listening?.close(); listening=null
             voiceClone?.close(); voiceClone=null
             narration?.close(); narration = null
+            subtitleText.close()
             networkLease?.let(releaseNetwork); networkLease = null
             playbackLayout = null
             subtitleLeases.forEach(releaseNetwork); subtitleLeases = emptyList()
@@ -257,7 +260,7 @@ internal class MpvVideoBridge(
     private data class Lease(val ticket: DecodedFrameGate.Ticket, val pair: JSONObject,
                              val left: ByteBuffer, val right: ByteBuffer,
                              val producer: Long = 0L) // Borrowed MPV slot, released when this lease retires.
-    private data class Alpha(val pair: JSONObject, val left: ByteBuffer, val right: ByteBuffer)
+    private data class Alpha(val pair: JSONObject, val left: ByteBuffer, val right: ByteBuffer, var portraitPending: Boolean = false)
     /** depth: realtime 2D->3D on a mono source; its near map rides in the Alpha mask slot. Never with alpha. */
     private class Session(val scope: MediaSessionGate.Scope, val host: Host, private val requestedStereo: Boolean,
                           val profile: String, val alpha: Boolean, val vulkan: Boolean, val normalFastPath: Boolean,
@@ -298,6 +301,11 @@ internal class MpvVideoBridge(
         @Volatile var roi: RoiController? = null // Alpha only; created with the renderer on the GL thread.
         val roiEnabled = alpha
         var zeroCopy = false // GL thread: the bridge stages inputs into AHardwareBuffers shared with MNN
+        var portraitFailed = false // Shape failures retain the ordinary mono Alpha path.
+        val portraitShots = PortraitShotDetector()
+        val portraitThumbnail = ByteBuffer.allocateDirect(PortraitShotDetector.WIDTH * PortraitShotDetector.HEIGHT * 4)
+        var portraitDepth: PortraitDepth? = null
+        var portraitDepthAllowed: Boolean? = null
         var borrow = false // GL thread: pairs show the MPV slot itself; no 8K copy per captured frame
         var copyingProducer = 0L // GL thread: producer lease held by the slot being staged
         var renderer = 0L // GL only under lock
@@ -307,8 +315,11 @@ internal class MpvVideoBridge(
         var pendingSource: JSONObject? = null // Retain producer lease until a consumer slot accepts the copy.
         var deferredCopies = 0L
         val leases = HashMap<Long, Lease>()
-        val buffers = HashMap<Int, Pair<ByteBuffer, ByteBuffer>>()
-        val scoutBuffers = HashMap<Int, Pair<ByteBuffer, ByteBuffer>>()
+        // Host-copy model inputs: taken per capture, back when the lease retires. (Keyed by colour texture,
+        // they grew by a pair per frame where each capture has a new texture, the layer path without
+        // zero-copy: 256 MB of Java heap gone in seconds.)
+        val buffers = ArrayDeque<Pair<ByteBuffer, ByteBuffer>>()
+        val scoutBuffers = ArrayList<Pair<ByteBuffer, ByteBuffer>>() // a small ring: scout inputs are read at once
         val alphaUploads = HashMap<Long, Alpha>()
         val pairs = HashMap<Long, JSONObject>()
         val retiring = HashSet<Long>()
@@ -474,7 +485,7 @@ internal class MpvVideoBridge(
                 host.markStartup("audio_sidecars_resolved_ms")
                 host.sidecars = extra.mapNotNull { it.descriptor }
                 host.audioLeases = extra.filter { it.location.startsWith("http://127.0.0.1:") }.map { it.location }
-                val captions = if (deferCloud) emptyList() else sidecarSubtitles(uri)
+                val captions = if (deferCloud) emptyList() else prepareSubtitles(host, sidecarSubtitles(uri))
                 host.subtitleMemoryId = runCatching { subtitleIdentity(uri) }.getOrDefault("")
                 host.markStartup("subtitle_sidecars_resolved_ms")
                 host.subtitleLeases = captions.map { it.location }
@@ -509,7 +520,8 @@ internal class MpvVideoBridge(
                             captions.flatMap { listOf(it.location, it.title) }.toTypedArray(), host.exactStart,
                             if (host.layer) host.copy?.surface ?: host.fanout?.surface ?: host.layerSurface else null, disc?.mvc == true, surfaceWidth, surfaceHeight, iso, tlsCaFile,
                             host.interleavePolicy.sequential, if (iso) host.discPlaylist else -1,
-                            networkCacheMiB(app, host.remote, session.inference, host.memorySaver))
+                            networkCacheMiB(app, host.remote, session.inference, host.memorySaver),
+                            requiredPrimaryAudio = extra.any { it.requiredPrimary })
                         check(host.handle > 0)
                         host.markStartup("native_created_ms")
                         host.loadingPhase = "reading"
@@ -538,7 +550,7 @@ internal class MpvVideoBridge(
         companionWorker.execute {
             if (host.closing || stopped) return@execute
             val audio = if (host.audio) runCatching { sidecarAudio(host.uri) }.getOrDefault(emptyList()) else emptyList()
-            val captions = if (!host.closing && !stopped) runCatching { sidecarSubtitles(host.uri) }.getOrDefault(emptyList()) else emptyList()
+            val captions = if (!host.closing && !stopped) runCatching { prepareSubtitles(host, sidecarSubtitles(host.uri)) }.getOrDefault(emptyList()) else emptyList()
             synchronized(host) {
                 val freshCaptions = captions.filter { !host.subtitleLocations.containsKey(it.title) && host.subtitleFileLoad?.name != it.title }
                 val accepted = !host.closing && !stopped && host.handle > 0 && runCatching {
@@ -554,9 +566,9 @@ internal class MpvVideoBridge(
                     host.markStartup("cloud_companions_queued_ms")
                 } else {
                     audio.forEach { it.descriptor?.close(); if (it.location.startsWith("http://127.0.0.1:")) releaseNetwork(it.location) }
-                    freshCaptions.forEach { releaseNetwork(it.location) }
+                    freshCaptions.forEach { host.subtitleText.release(it.location) }
                 }
-                captions.filter { it !in freshCaptions }.forEach { releaseNetwork(it.location) }
+                captions.filter { it !in freshCaptions }.forEach { host.subtitleText.release(it.location) }
             }
         }
     }
@@ -878,6 +890,81 @@ internal class MpvVideoBridge(
         session.host.narration?.timelineChanged()
         return true
     }
+    private fun prepareSubtitles(host: Host, tracks: List<SidecarSubtitles.Track>): List<SidecarSubtitles.Track> =
+        tracks.mapNotNull { track ->
+            try { if (host.closing || stopped) null else host.subtitleText.prepare(track) }
+            catch (_: Exception) { null } // One inaccessible/binary subtitle cannot stop video playback.
+            finally { releaseNetwork(track.location) }
+        }
+    private data class SubtitleEncodingLoad(val session: Int, val request: Int, val oldId: Int,
+        val oldLocation: String, val choice: String, val location: String = "", val serial: Long = 0)
+
+    fun setSubtitleEncoding(id: Int, request: Int, trackId: Int, choice: String): Boolean {
+        val session = sessions[id] ?: return false
+        val host = session.host
+        val encoding = SubtitleEncoding.canonical(choice) ?: return false
+        val pending: SubtitleEncodingLoad
+        synchronized(host) {
+            if (!active(session) || request <= 0 || host.handle <= 0 || host.cloneHolding ||
+                host.subtitleFileLoad != null || host.subtitleEncodingLoad != null) return false
+            val tracks = JSONObject(MpvSourceNative.narrationStatus(host.handle)).optJSONObject("details")?.optJSONArray("subtitle_tracks") ?: return false
+            val track = (0 until tracks.length()).map(tracks::getJSONObject).find { it.optInt("id") == trackId && it.optBoolean("external") } ?: return false
+            val location = track.optString("filename")
+            if (host.subtitleText.get(location) == null) return false
+            pending = SubtitleEncodingLoad(id, request, trackId, location, encoding)
+            host.subtitleEncodingLoad = pending
+        }
+        subtitleWorker.execute {
+            var location = ""
+            try {
+                check(active(session))
+                val track = host.subtitleText.recode(pending.oldLocation, encoding)
+                location = track.location
+                synchronized(host) {
+                    check(active(session) && !host.closing && host.subtitleEncodingLoad === pending)
+                    val serial = MpvSourceNative.addSubtitleFile(host.handle, location, track.title, trackId)
+                    check(serial > 0)
+                    host.subtitleEncodingLoad = pending.copy(location = location, serial = serial)
+                }
+            } catch (_: Exception) {
+                if (location.isNotEmpty()) host.subtitleText.release(location)
+                synchronized(host) { if (host.subtitleEncodingLoad === pending) host.subtitleEncodingLoad = null }
+                if (active(session)) event("mpv_subtitle_files", session, JSONObject().put("operation", "encoding")
+                    .put("request", request).put("state", "error").put("error", "Unable to change subtitle encoding"))
+            }
+        }
+        return true
+    }
+    private fun subtitleEncodingResult(session: Session, tracks: JSONArray) {
+        val host = session.host
+        val pending = host.subtitleEncodingLoad ?: return
+        if (pending.serial <= 0) return
+        val raw = MpvSourceNative.subtitleFileStatus(host.handle, pending.serial)
+        if (raw.isEmpty()) return
+        val trackId = JSONObject(raw).optInt("track_id")
+        val track = (0 until tracks.length()).map(tracks::getJSONObject).find { it.optInt("id") == trackId }
+        if (trackId > 0 && track == null) return
+        synchronized(host) {
+            if (host.subtitleEncodingLoad !== pending) return
+            host.subtitleEncodingLoad = null
+            if (trackId > 0) {
+                for ((key, location) in host.subtitleLocations) if (location == pending.oldLocation) {
+                    host.subtitleLocations[key] = pending.location; host.subtitleTrackIds[key] = trackId
+                    track?.put(if (key.contains("://")) "source_uri" else "source_file", key)
+                }
+                host.subtitleLanguages.remove(pending.oldLocation)?.let { language ->
+                    host.subtitleLanguages[pending.location] = language; track?.put("server_language", language)
+                }
+                host.subtitleLeases = host.subtitleLeases - pending.oldLocation + pending.location
+                host.narration?.subtitleReplaced(pending.oldId, trackId)
+                host.subtitleText.release(pending.oldLocation)
+            } else host.subtitleText.release(pending.location)
+        }
+        if (active(session)) event("mpv_subtitle_files", session, JSONObject().put("operation", "encoding")
+            .put("request", pending.request).put("state", if (trackId > 0) "ready" else "error")
+            .put("old_track_id", pending.oldId).put("track_id", trackId).put("encoding", pending.choice)
+            .put("error", if (trackId > 0) "" else "Unable to change subtitle encoding"))
+    }
     fun listSubtitleFiles(id: Int, request: Int): Boolean {
         val session = sessions[id] ?: return false
         if (!active(session) || request <= 0 || !SidecarSubtitles.supportsDirectory(session.host.uri)) return false
@@ -902,7 +989,7 @@ internal class MpvVideoBridge(
         val host = session.host
         val key = uri.ifEmpty { name }
         synchronized(host) {
-            if (!active(session) || host.handle <= 0 || request <= 0 || host.subtitleFileLoad != null ||
+            if (!active(session) || host.handle <= 0 || request <= 0 || host.subtitleFileLoad != null || host.subtitleEncodingLoad != null ||
                 (uri.isEmpty() && !SidecarSubtitles.supportsDirectory(host.uri)) || !SidecarSubtitles.supportedFile(name)) return false
             host.subtitleFileLoad = SubtitleFileLoad(id, request, key)
         }
@@ -921,10 +1008,11 @@ internal class MpvVideoBridge(
                         .put("request", request).put("file", name).put("state", "ready").put("track_id", existing))
                     return@execute
                 }
-                location = (if (uri.isEmpty()) openSubtitleFile(host.uri, name) else openSubtitleUri(uri)).location
+                val raw = if (uri.isEmpty()) openSubtitleFile(host.uri, name) else openSubtitleUri(uri)
+                location = try { host.subtitleText.prepare(raw).location } finally { releaseNetwork(raw.location) }
                 synchronized(host) {
                     if (!active(session) || host.closing || host.handle <= 0) {
-                        releaseNetwork(location); host.subtitleFileLoad = null; return@execute
+                        host.subtitleText.release(location); host.subtitleFileLoad = null; return@execute
                     }
                     val serial = MpvSourceNative.addSubtitleFile(host.handle, location, name)
                     check(serial > 0)
@@ -933,7 +1021,7 @@ internal class MpvVideoBridge(
                     host.subtitleFileLoad = SubtitleFileLoad(id, request, key, serial, location)
                 }
             } catch (_: Exception) {
-                if (location.isNotEmpty()) releaseNetwork(location)
+                if (location.isNotEmpty()) host.subtitleText.release(location)
                 synchronized(host) { host.subtitleFileLoad = null }
                 if (active(session)) event("mpv_subtitle_files", session, JSONObject().put("operation", "load")
                     .put("request", request).put("file", name).put("state", "error").put("error", "Unable to load subtitle"))
@@ -949,11 +1037,15 @@ internal class MpvVideoBridge(
             val track = tracks.getJSONObject(i)
             // Retain MPV's raw identity fields for saved choices and per-track timing.
             host.subtitleLanguages[track.optString("filename")]?.let { track.put("server_language", it) }
+            host.subtitleText.get(track.optString("filename"))?.let { entry ->
+                track.put("encoding", entry.choice).put("detected_encoding", entry.encoding).put("source_file", entry.identity)
+            }
             val name = host.subtitleLocations.entries.firstOrNull { it.value == track.optString("filename") }?.key ?: continue
             track.put(if (name.contains("://")) "source_uri" else "source_file", name)
             if (track.optString("codec") in setOf("subrip", "ass", "ssa", "webvtt", "sami", "microdvd", "subviewer", "text", "ttml"))
                 host.subtitleTrackIds[name] = track.getInt("id")
         }
+        subtitleEncodingResult(session, tracks)
         val pending = host.subtitleFileLoad ?: return
         if (pending.serial <= 0) return
         val raw = MpvSourceNative.subtitleFileStatus(host.handle, pending.serial)
@@ -966,7 +1058,7 @@ internal class MpvVideoBridge(
             if (track <= 0) {
                 host.subtitleLocations.remove(pending.name, pending.location)
                 host.subtitleLeases = host.subtitleLeases - pending.location
-                releaseNetwork(pending.location)
+                host.subtitleText.release(pending.location)
             }
         }
         if (pending.session == session.id && active(session)) event("mpv_subtitle_files", session, JSONObject()
@@ -1130,6 +1222,7 @@ internal class MpvVideoBridge(
                     session.roi?.status()?.forEach { (key, value) -> status.put(key, if (value is List<*>) JSONArray(value) else value) }
                     session.model?.stats()?.forEach { (key, value) -> status.put(key, value) }
                     session.depthModel?.stats()?.forEach { (key, value) -> status.put(key, value) }
+                    session.portraitDepth?.let { status.put("portrait_depth", JSONObject(it.stats())) }
                     val details = status.optJSONObject("details")
                     if (status.optJSONObject("startup_native")?.optLong("first_published_us", -1)?.let { it >= 0 } == true) {
                         // Audio metadata can arrive before the video output exists.
@@ -1210,7 +1303,8 @@ internal class MpvVideoBridge(
                 // 5 slots skipped 11% of the frames and 4 slots 30% on Quest 3, so the saver leaves them.
                 val slotLimit = debugInt("debug.vrpp.bridge.slots", 0)
                 if (slotLimit > 0) RenderBridgeNative.setSlotLimit(session.renderer, slotLimit)
-                if (session.alpha && session.vulkan && !debugZeroCopyDisabled)
+                // Not on GPUs whose drivers cannot share AHardwareBuffers with MNN (masks stayed empty).
+                if (session.alpha && session.vulkan && !debugZeroCopyDisabled && RvmNative.zeroCopySupport() != 0)
                     session.zeroCopy = RenderBridgeNative.enableZeroCopy(session.renderer)
                 // Alpha keeps each captured MPV slot for the pair's life instead of copying 8K (~270MB
                 // of bus traffic per frame); MPV has spare slots for the frames in flight.
@@ -1244,6 +1338,7 @@ internal class MpvVideoBridge(
                 return false
             }
             if (session.borrow) { session.copyingProducer = producer; releaseProducer = false }
+            if (session.alpha && !session.stereo && !session.layerAlpha) RenderBridgeNative.stagePortraitShot(session.renderer, token)
             val ticket = DecodedFrameGate.Ticket(session.scope, source.getLong("frame_id"), source.getLong("pts_us"), 1, 1)
             val sourceAspect = eyeWidth.toDouble()/eyeHeight
             val inputAspect = session.dims[0].toDouble()/session.dims[1]
@@ -1284,7 +1379,8 @@ internal class MpvVideoBridge(
             if (session.renderer == 0L) {
                 session.owner = EGL14.eglGetCurrentContext()
                 session.renderer = RenderBridgeNative.create(width, height, session.dims[0], session.dims[1], session.stereo, session.topBottom)
-                if (session.vulkan && !debugZeroCopyDisabled) session.zeroCopy = RenderBridgeNative.enableZeroCopy(session.renderer)
+                if (session.vulkan && !debugZeroCopyDisabled && RvmNative.zeroCopySupport() != 0)
+                    session.zeroCopy = RenderBridgeNative.enableZeroCopy(session.renderer)
                 if (session.roiEnabled && !debugRoiDisabled) session.roi = RoiController(RenderBridgeNative.fullInputRect(session.renderer),
                     session.dims[0], session.dims[1], eyeWidth, eyeHeight)
             }
@@ -1399,10 +1495,25 @@ internal class MpvVideoBridge(
         val texture = RenderBridgeNative.texture(session.renderer, copying.second)
         val bytes = session.dims[0]*session.dims[1]*3*4
         val pair = session.copyingPair ?: error("Immutable copy descriptor missing")
-        // Decoder images get a new texture each frame and always use zero-copy: no CPU planes.
-        val buffers = if (pair.has("hardware_buffer")) NO_PLANES else session.buffers.getOrPut(texture) {
-            ByteBuffer.allocateDirect(bytes).order(ByteOrder.LITTLE_ENDIAN) to ByteBuffer.allocateDirect(bytes).order(ByteOrder.LITTLE_ENDIAN)
+        if (session.alpha && !session.stereo && !session.layerAlpha && !pair.has("portrait_shot_id")) {
+            RenderBridgeNative.readPortraitShot(session.renderer, copying.second, session.portraitThumbnail)
+            val shot = session.portraitShots.observe(session.portraitThumbnail, pair.getLong("pts_us"))
+            pair.put("portrait_shot_id", shot.shot).put("portrait_shot_cut", shot.cut)
+                .put("portrait_shot_reason", shot.reason).put("portrait_shot_difference", shot.difference)
+                .put("portrait_shot_correlation", shot.correlation)
+            if (shot.cut) session.roi?.let { roi ->
+                val full = roi.resetShot()
+                val zoomed = pair.optBoolean("roi_zoomed")
+                pair.put("model_content_rect", JSONArray(full.rect.toList())).put("roi_window_id", full.windowId)
+                    .put("roi_zoomed", false).put("roi_scout", false)
+                // The cut was detected after input staging. Re-stage this very colour, so the first
+                // new-shot RVM result does not inherit the old person's crop or recurrent state.
+                if (zoomed) { RenderBridgeNative.restagePortraitFull(session.renderer, copying.second); return }
+            }
         }
+        // Decoder images get a new texture each frame and always use zero-copy: no CPU planes.
+        val buffers = if (pair.has("hardware_buffer")) NO_PLANES else session.buffers.removeFirstOrNull()
+            ?: (ByteBuffer.allocateDirect(bytes).order(ByteOrder.LITTLE_ENDIAN) to ByteBuffer.allocateDirect(bytes).order(ByteOrder.LITTLE_ENDIAN))
         pair.put("color_texture_id", texture).put("consumer_copy_fence_ready", true)
         val image = RenderBridgeNative.colorImage(session.renderer, copying.second)
         // A string: Godot's JSON parses numbers as doubles, which cannot hold a 64-bit (tagged) pointer.
@@ -1419,9 +1530,13 @@ internal class MpvVideoBridge(
             session.model!!.submitShared(copying.first, copying.second, shared, pair, scout)
         } else if (session.alpha) {
             check(RenderBridgeNative.readInputs(session.renderer, copying.second, buffers.first, buffers.second))
-            val scout = if (pair.optBoolean("roi_scout")) session.scoutBuffers.getOrPut(texture) {
-                ByteBuffer.allocateDirect(bytes).order(ByteOrder.LITTLE_ENDIAN) to ByteBuffer.allocateDirect(bytes).order(ByteOrder.LITTLE_ENDIAN)
-            }.also { check(RenderBridgeNative.readScoutInputs(session.renderer, copying.second, it.first, it.second)) } else null
+            val scout = if (pair.optBoolean("roi_scout")) {
+                val ring = (session.captured % SCOUT_BUFFERS).toInt()
+                // Scouts skip frames, so the ring index can jump past the buffers made so far.
+                while (session.scoutBuffers.size <= ring) session.scoutBuffers.add(
+                    ByteBuffer.allocateDirect(bytes).order(ByteOrder.LITTLE_ENDIAN) to ByteBuffer.allocateDirect(bytes).order(ByteOrder.LITTLE_ENDIAN))
+                session.scoutBuffers[ring].also { check(RenderBridgeNative.readScoutInputs(session.renderer, copying.second, it.first, it.second)) }
+            } else null
             session.model!!.submit(copying.first, copying.second, buffers.first, buffers.second, pair, scout?.first, scout?.second)
         } else if (session.depth) {
             // Mono: both staged eyes hold the same frame; the model reads one. Frames the model skips
@@ -1444,13 +1559,42 @@ internal class MpvVideoBridge(
         check(session.leases.containsKey(token)) { "Alpha color lease unavailable" }
         if (pair.optString("alpha_transport") == "zero_copy") check(RenderBridgeNative.commitZeroCopyAlpha(session.renderer, token))
         else check(RenderBridgeNative.uploadAlpha(session.renderer, token, left, right))
+        var portraitPending = false
+        if (session.alpha && !session.stereo && !pair.optBoolean("layer_alpha") && !session.portraitFailed) {
+            if (session.portraitDepthAllowed == null) {
+                val gpu = android.opengl.GLES20.glGetString(android.opengl.GLES20.GL_RENDERER).orEmpty()
+                val adreno = Regex("Adreno.*?(\\d{3})", RegexOption.IGNORE_CASE).find(gpu)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+                session.portraitDepthAllowed = session.vulkan && adreno >= 700
+            }
+            portraitPending = session.portraitDepth != null && session.portraitDepthAllowed == true &&
+                runCatching { RenderBridgeNative.stagePortraitMask(session.renderer, token); true }.getOrDefault(false)
+            if (!portraitPending) preparePortrait(session, pair)
+        }
+        if (session.alpha && !session.stereo && session.portraitFailed)
+            pair.put("source_layout", "mono").put("presentation_mode", "portrait_flat").put("portrait_fallback", "shape_unavailable")
         if (session.depth && pair.optBoolean("depth_ran")) {
             val stereo = RenderBridgeNative.warp(session.renderer, token, session.depthShift, session.depthConvergence)
             if (stereo > 0) pair.put("warp_texture_id", stereo) else pair.remove("warp_texture_id")
         }
-        session.alphaUploads[token] = Alpha(pair, left, right)
+        session.alphaUploads[token] = Alpha(pair, left, right, portraitPending)
+    }
+    private fun preparePortrait(session: Session, pair: JSONObject) {
+        val token = pair.getLong("slot_token")
+        val residual = session.portraitDepth?.frame(session.renderer, token, pair, session.portraitDepthAllowed == true, alphaFps)
+        session.portraitDepth?.let { pair.put("portrait_depth", JSONObject(it.stats())) }
+        val rect = pair.getJSONArray("model_content_rect")
+        val full = RenderBridgeNative.fullInputRect(session.renderer)
+        val zoom = (rect.getDouble(2) / full[2]).coerceIn(0.25, 16.0)
+        val shape = runCatching { RenderBridgeNative.preparePortrait(session.renderer, token,
+            (kotlin.math.ln(zoom) / kotlin.math.ln(2.0)).toFloat(), residual) }.getOrDefault(0)
+        session.portraitFailed = shape <= 0
+        if (shape > 0) pair.put("portrait_texture_id", shape).put("portrait_frame_id", pair.getLong("frame_id"))
+            .put("portrait_slot_token", token).put("portrait_pts_us", pair.getLong("pts_us"))
+            .put("source_layout", "mono").put("presentation_mode", "portrait_mesh")
+        else pair.put("presentation_mode", "portrait_flat").put("portrait_fallback", "shape_unavailable")
     }
     private fun finishUploads(session: Session) {
+        session.portraitDepth?.pollInput(session.renderer)
         val iterator = session.alphaUploads.iterator()
         while (iterator.hasNext()) {
             val (token, upload) = iterator.next()
@@ -1458,6 +1602,13 @@ internal class MpvVideoBridge(
                 iterator.remove(); retire(session, token); continue
             }
             if (!RenderBridgeNative.alphaReady(session.renderer, token)) continue
+            if (upload.portraitPending) {
+                upload.portraitPending = false
+                preparePortrait(session, upload.pair)
+                // The final shape has its own fence. Never publish the lease between the mask
+                // readback and shape completion, or expose a texture still being written.
+                continue
+            }
             iterator.remove()
             if (upload.pair.optBoolean("layer_alpha")) {
                 // Capture to finished mask: delayed presentation waits as long (and the audio with it).
@@ -1490,6 +1641,26 @@ internal class MpvVideoBridge(
     private fun identity(pair: JSONObject) = FramePairGate.Identity(pair.getInt("session_id"), pair.getInt("logical_session_id"),
         pair.getInt("generation"), pair.getLong("frame_id"), pair.getLong("pts_us"), pair.getInt("format_revision"),
         pair.getLong("effect_revision"), pair.getLong("model_generation"), pair.getLong("slot_token"))
+    fun setPortraitDepth(id: Int, enabled: Boolean): Boolean {
+        val session = sessions[id]?.takeIf(::active) ?: return false
+        if (!session.alpha || session.stereo || session.layerAlpha) return false
+        render(Runnable {
+            synchronized(session.lock) {
+                if (!active(session)) return@synchronized
+                if (enabled) {
+                    if (session.portraitDepth == null) session.portraitDepth = PortraitDepth(context) {
+                        render(Runnable {
+                            if (active(session) && session.host.handle > 0 && !session.host.playing)
+                                MpvSourceNative.requestTextureFrame(session.host.handle)
+                        })
+                    }
+                    session.portraitDepth!!.configure(true)
+                } else { session.portraitDepth?.close(); session.portraitDepth = null }
+                if (session.host.handle > 0 && !session.host.playing) MpvSourceNative.requestTextureFrame(session.host.handle)
+            }
+        })
+        return true
+    }
     fun setDepthView(id: Int, shift: Double, convergence: Double): Boolean {
         val session = sessions[id] ?: return false
         if (!session.depth || shift !in 0.0..0.2 || convergence !in 0.0..1.0) return false
@@ -1544,6 +1715,8 @@ internal class MpvVideoBridge(
                         .put("color_target", "texture").put("color_texture_id", copy[1])
                         .put("alpha_texture_id", copy[2]).put("color_egl_image", "0")
                         .put("warp_texture_id", if (warp) copy[1] else 0)
+                    if (copy.size > 6 && copy[6] > 0) pair.put("portrait_texture_id", copy[6])
+                    else pair.remove("portrait_texture_id")
                     report.put("pair", pair).put("state", "ready")
                 } catch (failure: Throwable) {
                     report.put("state", "failed").put("error", failure.message)
@@ -1607,6 +1780,7 @@ internal class MpvVideoBridge(
         check(!session.display.owns(token)) { "Cannot retire a Godot display claim" }
         val lease = session.leases.remove(token) ?: return
         session.pairs.remove(token)
+        if (lease.left.capacity() > 0) session.buffers.addLast(lease.left to lease.right)
         if (session.renderer > 0 && lease.pair.optString("color_target") != "layer") {
             RenderBridgeNative.retire(session.renderer, token); session.retiring.add(token)
         }
@@ -1707,7 +1881,7 @@ internal class MpvVideoBridge(
     }
     private fun dispose(session: Session, closeHost: Boolean) {
         if (!session.disposed.compareAndSet(false, true)) return
-        session.model?.close(); session.depthModel?.close(); session.normal.close()
+        session.model?.close(); session.depthModel?.close(); session.portraitDepth?.close(); session.normal.close()
         synchronized(session.lock) { session.display.close() }
         if (closeHost) {
             session.host.narration?.close(); session.host.narration = null
@@ -1722,6 +1896,7 @@ internal class MpvVideoBridge(
     }
     private fun fail(session: Session, code: String, failure: Throwable) {
         if (session.disposed.get()) return
+        android.util.Log.w("QuestPlayer", "$code in session ${session.id}", failure) // the stack, for the diagnostic log
         val stage = when (session.host.loadingPhase) {
             "connecting" -> "resolving"
             "reading_disc" -> "parsing"
@@ -1781,6 +1956,7 @@ internal class MpvVideoBridge(
         const val LAYER_SURFACE_SIZE = 4096
         const val RVM_VIDEO_FPS = 30
         val ALPHA_FPS_RANGE = 10..40
+        private const val SCOUT_BUFFERS = 4
         private val NO_PLANES: Pair<ByteBuffer, ByteBuffer> = ByteBuffer.allocateDirect(0) to ByteBuffer.allocateDirect(0)
     }
     fun shutdown() {

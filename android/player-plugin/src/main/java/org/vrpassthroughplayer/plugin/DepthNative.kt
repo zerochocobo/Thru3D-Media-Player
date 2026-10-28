@@ -21,6 +21,8 @@ internal object DepthNative {
     @JvmStatic external fun process(handle: Long, rgb: ByteBuffer, near: ByteBuffer, reset: Boolean, frameStep: Int): String
     /** No temporal history; padding outside the content rectangle never contributes to near depth. */
     @JvmStatic external fun processPhoto(handle: Long, rgb: ByteBuffer, near: ByteBuffer, x: Int, y: Int, width: Int, height: Int): String
+    /** Video-model ROI without temporal history; distinct from the still-photo model entry point. */
+    @JvmStatic external fun processPortrait(handle: Long, rgb: ByteBuffer, near: ByteBuffer, x: Int, y: Int, width: Int, height: Int): String
     @JvmStatic external fun close(handle: Long)
     /** Video model from a file (debug A/B of the input size), same session setup as [create]. */
     @JvmStatic external fun createFromFile(modelPath: String, cacheDirectory: String?): Long

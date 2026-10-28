@@ -7,6 +7,7 @@ const Privacy := preload("res://scripts/media_privacy.gd")
 const LIMIT := 128
 const MAX_BYTES := 262144
 const StereoView := preload("res://scripts/stereo_view.gd")
+const ImmersiveAdjustments := preload("res://scripts/immersive_adjustments.gd")
 const PROFILES := ["320x320", "384x216", "512x288", "384x384", "512x512", "256x144", "256x256"]
 var directory := "user://settings"
 var entries: Dictionary = {}
@@ -41,10 +42,13 @@ static func valid_mode(value: Variant) -> bool:
 	for name in ["stereo_sbs", "swap_eyes", "alpha_requested"]:
 		if not value.get(name) is bool:
 			return false
-	for name in ["top_bottom", "stereo_half", "depth_requested", "packed_mask"]:
+	for name in ["top_bottom", "stereo_half", "depth_requested", "packed_mask", "portrait_auto", "portrait_auto_explicit", "portrait_enhanced"]:
 		if value.has(name) and not value[name] is bool:
 			return false
-	return StereoView.valid(value)
+	if value.has("portrait_strength"):
+		var strength: Variant = value.portrait_strength
+		if not (strength is float or strength is int) or not is_finite(float(strength)) or float(strength) < 0.0 or float(strength) > 1.0: return false
+	return StereoView.valid(value) and ImmersiveAdjustments.valid(value)
 
 func _bank_path(bank: int) -> String:
 	return directory.path_join("file_modes_%d.json" % bank)
@@ -62,15 +66,17 @@ func _normalize_value(value: Dictionary) -> Dictionary:
 
 func _recover_saved_value(value: Variant) -> Variant:
 	if _valid_value(value): return _normalize_value(value)
-	# Only display alignment may be repaired. Preserve the projection/layout and all
+	# Only display alignment and placement may be repaired. Preserve the projection/layout and all
 	# other valid per-file choices; other stores derived from this class keep strict reads.
 	if _value_field() != "mode" or not value is Dictionary: return null
 	var repaired: Dictionary = value.duplicate(true)
-	for field in ["viewing_eye", "stereo_horizontal", "stereo_vertical", "spatial_auto_disparity"]: repaired.erase(field)
+	for field in ["viewing_eye", "stereo_horizontal", "stereo_vertical", "spatial_auto_disparity"] + ImmersiveAdjustments.KEYS: repaired.erase(field)
 	if not valid_mode(repaired): return null
 	for field in ["viewing_eye", "stereo_horizontal", "stereo_vertical", "spatial_auto_disparity"]:
 		if value.has(field):
 			repaired[field] = value[field] if StereoView.valid({field: value[field]}) else (true if field == "spatial_auto_disparity" else 0)
+	for field in ImmersiveAdjustments.KEYS:
+		if value.has(field): repaired[field] = value[field] if ImmersiveAdjustments.valid({field: value[field]}) else 0.0
 	return _normalize_value(repaired)
 
 static func _decode(text: String) -> Variant:

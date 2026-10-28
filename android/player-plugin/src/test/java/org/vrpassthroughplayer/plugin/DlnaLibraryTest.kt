@@ -52,6 +52,37 @@ class DlnaLibraryTest {
         assertEquals("旅行.PNG", entries.getJSONObject(1).getString("title"))
     }
 
+    @Test fun audioSamplesUseAudioResourcesInsteadOfAlbumArtOrVideoPreviews() {
+        val entries = DlnaClient.didl(xml("""<item id="a"><dc:title>Sample</dc:title><class>object.item.audioItem.musicTrack</class>
+            <res protocolInfo="http-get:*:image/jpeg:*">http://nas:8200/cover.jpg</res>
+            <res protocolInfo="http-get:*:video/mp4:*">/preview.mp4</res>
+            <res protocolInfo="http-get:*:audio/mpeg:*" duration="0:00:12.000">/sample.MP3?token=x</res></item>
+            <item id="b"><dc:title>Speech</dc:title><res protocolInfo="http-get:*:audio/mpeg:*">/stream/42</res></item>
+            <item id="c"><dc:title>Reference.mp3</dc:title><res protocolInfo="http-get:*:application/octet-stream:*">/reference.mp3</res></item>
+            <item id="v"><dc:title>Movie</dc:title><class>object.item.videoItem</class>
+            <res protocolInfo="http-get:*:audio/mpeg:*">/audio-preview.mp3</res><res protocolInfo="http-get:*:video/mp4:*">/movie.mp4</res></item>
+            <item id="d"><dc:title>Recording</dc:title><res protocolInfo="http-get:*:application/octet-stream:*">/recording.M4A</res></item>
+            <item id="e"><dc:title>Reference</dc:title><res protocolInfo="http-get:*:audio/wav:*">/reference.wav</res></item>"""), "http://nas:8200/description.xml")
+        assertEquals(6, entries.length())
+        val audio = entries.getJSONObject(0)
+        assertEquals("audio", audio.getString("kind"))
+        assertEquals("Sample.MP3", audio.getString("title"))
+        assertEquals("http://nas:8200/sample.MP3?token=x", audio.getString("uri"))
+        assertEquals(12000L, audio.getLong("duration_ms"))
+        assertEquals("http://nas:8200/cover.jpg", audio.getString("cover"))
+        assertFalse(audio.has("subtitles"))
+        assertEquals("audio", entries.getJSONObject(1).getString("kind"))
+        assertEquals("Speech", entries.getJSONObject(1).getString("title"))
+        assertEquals("audio", entries.getJSONObject(2).getString("kind"))
+        assertEquals("Reference.mp3", entries.getJSONObject(2).getString("title"))
+        assertEquals("video", entries.getJSONObject(3).getString("kind"))
+        assertEquals("http://nas:8200/movie.mp4", entries.getJSONObject(3).getString("uri"))
+        assertEquals("audio", entries.getJSONObject(4).getString("kind"))
+        assertEquals("Recording.M4A", entries.getJSONObject(4).getString("title"))
+        assertEquals("audio", entries.getJSONObject(5).getString("kind"))
+        assertEquals("Reference.wav", entries.getJSONObject(5).getString("title"))
+    }
+
     private inner class CaptionFixture : java.io.Closeable {
         var mode = "full"
         var parentCaptions = true
@@ -547,7 +578,7 @@ class DlnaLibraryTest {
             val offset = Regex("<StartingIndex>([0-9]+)</StartingIndex>").find(body)!!.groupValues[1].toInt()
             offsets.add(offset)
             val children = when (offset) {
-                0 -> """<container id="10"><dc:title>Folder10</dc:title></container><item id="audio"><dc:title>Audio</dc:title><res protocolInfo="http-get:*:audio/mpeg:*">/a.mp3</res></item>"""
+                0 -> """<container id="10"><dc:title>Folder10</dc:title></container><item id="document"><dc:title>Document</dc:title><res protocolInfo="http-get:*:application/pdf:*">/a.pdf</res></item>"""
                 2 -> """<item id="video"><dc:title>Movie10</dc:title><res protocolInfo="http-get:*:video/mp4:*">/v.mp4</res></item><container id="2"><dc:title>Folder2</dc:title></container>"""
                 else -> error("Wrong offset $offset")
             }

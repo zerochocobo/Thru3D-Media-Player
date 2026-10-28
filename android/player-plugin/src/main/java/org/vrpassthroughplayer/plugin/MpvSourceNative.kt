@@ -20,7 +20,8 @@ internal object MpvSourceNative {
      * carry only their identity (color_target "layer"). MVC has an explicit software Surface route;
      * unsupported ordinary software/rotated/Profile 5 sources report layer_compatible=false.
      * maxWidth > 0 scales the decoded color down to that width (aspect kept); 0 keeps the source size.
-     * audioFiles: location/title pairs added as unselected audio tracks once the video loads. */
+     * audioFiles: location/title pairs added as unselected audio tracks once the video loads.
+     * requiredPrimaryAudio: the sole external track belongs to split A/V; select it by default. */
     @JvmStatic external fun create(context: Context, localPath: String, startMs: Int, hardware: Boolean, audio: Boolean,
                                    maxWidth: Int = 0, audioFiles: Array<String> = emptyArray(),
                                    subtitleFiles: Array<String> = emptyArray(), exactStart: Boolean = true,
@@ -28,7 +29,7 @@ internal object MpvSourceNative {
                                    layerWidth: Int = 4096, layerHeight: Int = 4096, isoInput: Boolean = false,
                                    tlsCaFile: String = MpvTlsTrust.prepare(context),
                                    networkInterleaveCompat: Boolean = false, isoPlaylist: Int = -1,
-                                   networkCacheMiB: Int = 256): Long
+                                   networkCacheMiB: Int = 256, requiredPrimaryAudio: Boolean = false): Long
     /** ISO header/title preflight on the source worker. playlist -1 selects the longest title.
      * JSON: width, height, duration_us, mvc, playlist (selected) and the selectable titles. */
     @JvmStatic external fun beginDiscProbe(): Long
@@ -59,7 +60,7 @@ internal object MpvSourceNative {
     /** 0 rejected; positive coalesced command serial. -1 auto, 0 off, actual subtitle id. */
     @JvmStatic external fun setSubtitle(handle: Long, trackId: Int): Long
     /** Optional unselected subtitle, queued on MPV's control thread. Failure never stops video. */
-    @JvmStatic external fun addSubtitleFile(handle: Long, location: String, title: String): Long
+    @JvmStatic external fun addSubtitleFile(handle: Long, location: String, title: String, replaceTrackId: Int = 0): Long
     /** Deferred unselected cloud companions; queued once after the first video frame. */
     @JvmStatic external fun addCompanions(handle: Long, audioFiles: Array<String>, subtitleFiles: Array<String>): Boolean
     @JvmStatic external fun subtitleFileStatus(handle: Long, request: Long): String
@@ -78,6 +79,8 @@ internal object MpvSourceNative {
     @JvmStatic external fun setDirect(handle: Long, enabled: Boolean)
     /** Re-render a retained paused frame; its original frame ID/PTS/epoch remain unchanged. */
     @JvmStatic external fun requestFrame(handle: Long)
+    /** Paused portrait redraw: decoder AImages cannot be exported twice; render an owned texture. */
+    @JvmStatic external fun requestTextureFrame(handle: Long)
     /** Debug calibration only: 24 sparse RGBA samples, no full source readback. */
     @JvmStatic external fun readFrameCode(handle: Long, producerToken: Long, output: ByteBuffer)
     /** position_seconds is a playback clock observation, never a source-frame PTS. */

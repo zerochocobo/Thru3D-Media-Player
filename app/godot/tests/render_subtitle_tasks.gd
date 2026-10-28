@@ -16,7 +16,7 @@ func run() -> void:
 	var menu := Library.new(); camera.add_child(menu); menu.set_process(false); menu.visible = true
 	menu.section = menu.Section.SETTINGS; menu.tab = menu.VIDEO_TAB; menu.settings_provider = func(): return {"subtitle_defaults": defaults}
 	for language in ["zh", "en", "ja", "zh_Hant"]:
-		I18n.use(language); menu.subtitle_queue_open = false; menu._video_settings_expanded["subtitles"] = true; menu.scroll = 0; menu.refresh()
+		I18n.use(language); menu.subtitle_queue_open = false; menu._video_settings_expanded["subtitles"] = true; menu._subtitle_settings_expanded = "listening"; menu.scroll = 0; menu.refresh()
 		await shot(viewport, output.path_join(language + "-defaults.png"))
 		menu.subtitle_queue_open = true; menu.scroll = 0; menu.refresh()
 		await shot(viewport, output.path_join(language + "-queue.png"))
@@ -25,7 +25,7 @@ func run() -> void:
 	var state := {"has_video": true, "title": "Film", "duration_ms": 600000, "subtitle_options": [], "subtitle_track": 0, "listening_available": true, "listening_enabled": true,
 		"listening_source": "ja", "listening_target": "zh-Hans", "subtitle_task_mode": "translated", "subtitle_task_supported": true}
 	player.state_provider = func(): return state
-	player.toggle(); player._subtitle_open = true
+	player.toggle(); player._subtitle_open = true; player._set_subtitle_detail("listening")
 	for language in ["zh", "en", "ja", "zh_Hant"]:
 		I18n.use(language)
 		for kind in ["start", "progress", "complete"]:

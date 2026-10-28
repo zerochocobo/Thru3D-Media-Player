@@ -99,10 +99,10 @@ func _run() -> void:
 		"Only the 320 size is marked as the default")
 	menu._set_scroll(menu._max_scroll())
 	tap(menu, Library.ROW_BASE + 8 - menu._first_line())
-	check(menu.rows.size() == 21 and menu._video_settings_expanded.get("alpha") and menu._video_settings_expanded.get("subtitles"), "Subtitle group expands independently beside Alpha with the five task settings")
+	check(menu.rows.size() == 11 and menu._video_settings_expanded.get("alpha") and menu._video_settings_expanded.get("subtitles"), "Subtitle group opens with two collapsed categories beside Alpha")
 	var saved_events := events.size()
 	menu._set_scroll(2.0); tap(menu, Library.ROW_BASE + 3 - menu._first_line())
-	check(menu.rows.size() == 17 and menu._video_settings_expanded.get("subtitles") and not menu._video_settings_expanded.get("alpha"), "Collapsing Alpha keeps subtitle appearance and task settings expanded")
+	check(menu.rows.size() == 7 and menu._video_settings_expanded.get("subtitles") and not menu._video_settings_expanded.get("alpha"), "Collapsing Alpha keeps the subtitle category entries visible")
 	menu._set_scroll(3.0); tap(menu, Library.ROW_BASE + 4 - menu._first_line())
 	check(menu.rows.size() == 5 and menu.scroll == 0 and not is_instance_valid(menu._settings_scroll_hint) and events.size() == saved_events,
 		"Collapsing both groups removes scrolling without changing preferences")
@@ -110,7 +110,9 @@ func _run() -> void:
 	menu.refresh()
 	check(not menu.rows.any(func(row): return row.get("voice_manager", false)), "Narration management stays inside collapsed subtitles")
 	tap(menu, Library.ROW_BASE + 4)
-	check(menu.rows.any(func(row): return row.get("voice_manager", false)), "Expanding subtitles exposes narration management")
+	check(menu.rows.any(func(row): return row.get("subtitle_settings_group", "") == "narration"), "Expanding subtitles exposes the narration category")
+	menu._choose(menu.rows.filter(func(row): return row.get("subtitle_settings_group", "") == "narration")[0])
+	check(menu.rows.any(func(row): return row.get("voice_manager", false)), "Expanding narration exposes its unchanged voice manager")
 	menu.settings_provider = func(): return state
 	menu._set_scroll(0)
 	tap(menu, target(menu, "seek_mode", "exact"))

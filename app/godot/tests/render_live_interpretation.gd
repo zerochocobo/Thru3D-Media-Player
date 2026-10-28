@@ -25,7 +25,7 @@ func run() -> void:
 			state.subtitle_files_available = mode in ["sidecars", "sidecars-open"]
 			state.subtitle_files = ["movie.en.srt", "movie.ja.ass"] if state.subtitle_files_available else []
 			menu._subtitle_files_open = mode == "sidecars-open"
-			menu._subtitle_open = true; menu._subtitle_appearance_open = mode == "appearance"; menu.refresh()
+			menu._subtitle_open = true; menu._set_subtitle_detail("appearance" if mode == "appearance" else "listening"); menu.refresh()
 			await process_frame; await RenderingServer.frame_post_draw; await RenderingServer.frame_post_draw
 			if viewport.get_texture().get_image().save_png(output.path_join(locale + "-" + mode + ".png")) != OK: failures.append("save")
 			for button in menu._buttons:

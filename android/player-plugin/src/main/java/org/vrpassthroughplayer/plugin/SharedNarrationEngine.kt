@@ -13,7 +13,7 @@ internal class SharedNarrationEngine(private val backend: Backend) : AutoCloseab
         fun destroy(handle: Long)
         fun cancel(handle: Long, token: Long)
         fun register(handle: Long, voice: String, codes: IntArray)
-        fun synthesize(handle: Long,text: String,voice: String,token: Long,frames: Int,precision: Boolean,sink: NarrationNative.Sink): String
+        fun synthesize(handle: Long,text: String,voice: String,token: Long,frames: Int,precision: Boolean,sink: NarrationNative.Sink,randomSkip: Int=0): String
     }
     private val gate=Any()
     private val owners=HashSet<Lease>()
@@ -53,7 +53,7 @@ internal class SharedNarrationEngine(private val backend: Backend) : AutoCloseab
         handle=loaded;registered="";progress("ready",0,0)
     }
     fun synthesize(lease: Lease,text: String,voice: String,epoch: Long,frames: Int,precision: Boolean,
-                   active: ()->Boolean,codes: ()->IntArray,sink: NarrationNative.Sink): String=synchronized(gate) {
+                   active: ()->Boolean,codes: ()->IntArray,sink: NarrationNative.Sink,randomSkip: Int=0): String=synchronized(gate) {
         check(!closed&&!lease.released&&lease in owners&&handle>0&&active()){"voice_cancelled"}
         val current=handle;val token=serial.incrementAndGet()
         try {
@@ -66,7 +66,7 @@ internal class SharedNarrationEngine(private val backend: Backend) : AutoCloseab
             check(active()&&!closed){"voice_cancelled"}
             backend.synthesize(current,text,voice,token,frames,precision,object:NarrationNative.Sink {
                 override fun onChunk(epochIgnored: Long,pcm: FloatArray)=active()&&!lease.released&&sink.onChunk(epoch,pcm)
-            })
+            },randomSkip)
         } finally {running=null}
     }
     /** Encoder process and TTS cannot overlap, even while another source is being opened. */
@@ -99,8 +99,8 @@ internal class SharedNarrationEngine(private val backend: Backend) : AutoCloseab
             override fun destroy(handle: Long)=NarrationNative.destroy(handle)
             override fun cancel(handle: Long,token: Long)=NarrationNative.cancel(handle,token)
             override fun register(handle: Long,voice: String,codes: IntArray)=NarrationNative.registerVoice(handle,voice,codes)
-            override fun synthesize(handle: Long,text: String,voice: String,token: Long,frames: Int,precision: Boolean,sink: NarrationNative.Sink)=
-                NarrationNative.synthesizePrecisionConfigured(handle,text,voice,token,frames,0,precision,sink)
+            override fun synthesize(handle: Long,text: String,voice: String,token: Long,frames: Int,precision: Boolean,sink: NarrationNative.Sink,randomSkip: Int)=
+                NarrationNative.synthesizePrecisionConfigured(handle,text,voice,token,frames,randomSkip,precision,sink)
         })
     }
 }

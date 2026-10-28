@@ -314,7 +314,7 @@ func _run() -> void:
 	photo_menu._activate(Photo.PHOTO_AUDIO)
 	check(operations == ["music_open"] and photo_menu._adjustment != "photo_audio", "Photo entry delegates to global player instead of a dual mixer")
 	var browser := Library.new(); root.add_child(browser); browser.section = Library.Section.LOCAL
-	browser._local_entries = [{"title": "a.mp3", "uri": "file:///a.mp3", "kind": "audio"}, {"title": "b.ogg", "uri": "file:///b.ogg", "kind": "audio"}, {"title": "photo.jpg", "uri": "file:///photo.jpg", "kind": "image"}]
+	browser._local_entries = [{"title": "a.mp3", "uri": "file:///a.mp3", "kind": "audio"}, {"title": "Recording.M4A", "uri": "file:///recording.M4A"}, {"title": "photo.jpg", "uri": "file:///photo.jpg", "kind": "image"}]
 	browser._rebuild_rows(); check(browser.rows.size() == 1, "Normal media browsing excludes audio import files")
 	browser.visible = true; browser.refresh()
 	check(not button(browser, Library.MUSIC_OPEN).is_empty(), "Home entry is available before any song is selected")
@@ -328,6 +328,7 @@ func _run() -> void:
 	check(button(browser, Library.ROW_BASE).base_color == browser.SELECTED, "Selected import rows stay visibly marked in the root list")
 	browser._activate(Library.AUDIO_IMPORT_DONE)
 	check(selected.size() == 1 and selected[0].size() == 2 and not browser.audio_import_mode, "Add returns a batch and restores media browser context")
+	check(selected[0].any(func(row): return row.title == "Recording.M4A" and row.uri == "file:///recording.M4A"), "Music import selection includes recorder M4A files")
 	check(not browser._pending.has(12001), "Late source listings cannot overwrite restored browsing")
 	var main := Main.new(); main.background_audio = restored; main.music_menu = music; main.recent_menu = browser; main.photo_menu = photo_menu; main.player_menu = photo_menu
 	main.video = VideoStub.new(); main.display.preview = true; main.settings_path = directory.path_join("main-settings.cfg")

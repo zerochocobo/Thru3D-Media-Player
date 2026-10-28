@@ -1,0 +1,49 @@
+plugins {
+    id 'com.android.library'
+    id 'org.jetbrains.kotlin.android'
+}
+
+android {
+    namespace 'org.vrpassthroughplayer.browser'
+    compileSdkVersion 'android-37.2'
+    buildToolsVersion '36.1.0'
+    defaultConfig {
+        minSdk 29
+        consumerProguardFiles 'consumer-rules.pro'
+        ndk { abiFilters 'arm64-v8a' }
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+    kotlinOptions { jvmTarget = '17' }
+}
+
+dependencies {
+    implementation 'org.mozilla.geckoview:geckoview-arm64-v8a:159.0.20261022150525'
+    testImplementation 'junit:junit:4.13.2'
+    testImplementation 'org.json:json:20250517'
+}
+
+configurations {
+    browserEngine { canBeConsumed = false; transitive = false }
+}
+dependencies { browserEngine 'org.mozilla.geckoview:geckoview-arm64-v8a:159.0.20261022150525' }
+def verifyBrowserEngine = tasks.register('verifyBrowserEngine') {
+    inputs.files(configurations.browserEngine)
+    inputs.file('../../third_party/geckoview/runtime.json')
+    doLast {
+        def expected = new groovy.json.JsonSlurper().parse(file('../../third_party/geckoview/runtime.json'))
+        def engine = configurations.browserEngine.singleFile
+        def digest = java.security.MessageDigest.getInstance('SHA-256')
+        engine.withInputStream { input ->
+            byte[] bytes = new byte[131072]
+            int count
+            while ((count = input.read(bytes)) > 0) { digest.update(bytes, 0, count) }
+        }
+        if (engine.length() != expected.bytes || digest.digest().encodeHex().toString() != expected.sha256) {
+            throw new GradleException('GeckoView does not match the pinned official ARM64 artifact.')
+        }
+    }
+}
+tasks.named('preBuild').configure { dependsOn verifyBrowserEngine }

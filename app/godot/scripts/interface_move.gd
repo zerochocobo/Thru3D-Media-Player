@@ -166,6 +166,12 @@ func update(pose: Transform3D, head: Variant, follow: RefCounted) -> bool:
 				world.origin -= normal * (clampf(distance, target.distance_limits.x, target.distance_limits.y) - distance)
 			elif capture.head is Transform3D: world = motion * world
 			else: world.origin += displacement
+			if target.has("face_center") and head is Transform3D:
+				# An off-centre grip moves the complete browser, but its normal points
+				# from the panel centre to the viewer, never from the grabbed corner.
+				var centre: Vector3 = world * target.face_center
+				world.basis = face_viewer(centre, head).scaled(target.pose.basis.get_scale())
+				world.origin = centre - world.basis * target.face_center
 			if target.kind == "screen": target.node.set_flat_world_pose(world)
 			else:
 				target.node.global_transform = world

@@ -26,6 +26,7 @@ class Surface extends "res://tests/test_video_pip.gd".Surface:
 	var platform: RefCounted
 	var video_layer: RefCounted
 	var alpha_requested := false
+	func portrait_requested() -> bool: return false
 	var depth_requested := false
 	var packed_file := false
 	var viewing_eye := 0

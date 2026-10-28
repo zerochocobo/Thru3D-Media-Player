@@ -35,7 +35,7 @@ func _run() -> void:
 	root.add_child(menu)
 	menu.set_process(false)
 	main.player_menu = menu
-	main.recent_menu = Node3D.new()
+	main.recent_menu = preload("res://scripts/library_menu.gd").new()
 	main.recent_menu.visible = false
 	# Verify the visible per-eye aspect, including anamorphic PAR without double correction.
 	for case in [[1920, 1080, 1.0, 1, 8.0/9.0], [1920, 1080, 1.0, 2, 32.0/9.0],

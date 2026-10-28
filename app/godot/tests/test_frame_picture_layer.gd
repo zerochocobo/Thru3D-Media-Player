@@ -189,6 +189,21 @@ func _run() -> void:
 	network._update_layer()
 	check(network.opens.size() == 1, "Consumed compatibility retry cannot reopen the replacement again")
 	network.free()
+	# Closing a temporary effect must not run the deferred layer/network retry on the old file.
+	for retry in ["layer", "network"]:
+		var closing := Reopen.new()
+		origin.add_child(closing); closing.set_process(false)
+		closing.platform = Host.new(); closing.video_layer = Layers.new(null)
+		closing.local_uri = "https://media.example.test/closing.mp4"
+		closing.stereo_sbs = false; closing.media.begin(8); closing.media.state = "playing"
+		closing.media.frame_counter = 4
+		if retry == "layer":
+			closing._layer_return_uri = closing.local_uri
+			check(closing._layer_wanted(), "Layer return is eligible before closing the old source")
+		else: closing.media.playback["network_interleave_retry"] = true
+		closing.close_video()
+		check(closing.opens.is_empty(), "Close cancels the old %s reopen before updating layers" % retry)
+		closing.free()
 	origin.free()
 	print("Frame picture layer checks=%d failures=%d" % [checks, failures.size()])
 	for failure in failures: push_error(failure)

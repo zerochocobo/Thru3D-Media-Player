@@ -15,6 +15,7 @@ class InputMain extends "res://scripts/main.gd":
 	func _ray(hand: String) -> Variant: return test_rays.get(hand)
 
 class RecentStub extends "res://scripts/recent_menu.gd":
+	var web_browser := preload("res://scripts/web_browser_panel.gd").new(self)
 	func refresh_alpha_sizes() -> void: pass
 	func checkpoint_browse() -> void: pass
 
@@ -239,7 +240,17 @@ func _run() -> void:
 	check(click(menu, 102, "left_hand") and not video.requested_play and host.calls.back() == ["play", 7, false], "Left pointer pauses actual player")
 	check(click(menu, 102) and video.requested_play and host.calls.back() == ["play", 7, true], "Right pointer resumes actual player")
 	var shown := func(target: int) -> bool: return menu._buttons.any(func(b): return b.target == target)
-	check(shown.call(112) and shown.call(104) and not click(menu, 104), "Flat screen keeps both effects on the bar, with unsupported Alpha disabled")
+	check(shown.call(112) and shown.call(104) and click(menu, 104) and video.alpha_requested,
+		"Ordinary mono video opens Alpha directly from the bar")
+	var portrait_revisions := host.calls.filter(func(call): return call[0] == "revise").size()
+	check(main._menu_state().portrait_requested and not main._menu_state().portrait_auto and main._menu_state().depth_strength == 1.0,
+		"Mono Alpha requests default relief while retaining screen distance")
+	check(double_click(menu,112) and is_zero_approx(video.portrait.strength) and video.alpha_requested and not video.depth_requested,
+		"Portrait double-click turns relief off while retaining Alpha")
+	check(double_click(menu,112) and video.portrait.strength == 1.0 and video.alpha_requested \
+		and host.calls.filter(func(call): return call[0] == "revise").size() == portrait_revisions,
+		"Portrait relief restores without model revision")
+	check(click(menu,104) and not video.alpha_requested, "Leaving portrait restores ordinary 2D conversion controls")
 	check(not menu._mode_open and click(menu, 112, "left_hand") and not video.depth_requested and menu._depth_open,
 		"Single 3D click opens adjustment without enabling inference")
 	menu.release_pointer("left_hand", Vector3.ZERO, Vector3.ZERO, true)
@@ -429,7 +440,7 @@ func _run() -> void:
 	check(click(menu, Menu.VIEWING_EYE) and video.viewing_eye == 0 and menu._adjust_rows.has(Menu.ALIGNMENT_HORIZONTAL), "Binocular viewing restores alignment controls")
 	menu._adjust_target = Menu.ALIGNMENT_HORIZONTAL
 	menu._set_adjustment_at(Menu.SLIDER_LEFT + 0.6 * Menu.SLIDER_WIDTH)
-	check(is_equal_approx(video.stereo_horizontal, 1.0) and not menu.allows_playback_sticks(), "Alignment slider reaches production controller and blocks playback sticks")
+	check(is_equal_approx(video.stereo_horizontal, 2.0) and not menu.allows_playback_sticks(), "Expanded alignment slider reaches production controller and blocks playback sticks")
 	check(click(menu, Menu.ALIGNMENT_RESET) and video.stereo_horizontal == 0.0 and video.stereo_vertical == 0.0, "Alignment reset reaches production controller")
 	check(click(menu, 400) and click(menu, Menu.MODE) and menu.section == 0 and menu._mode_open, "Eye settings give way to the mode popup")
 	check(click(menu, Menu.MODE_PROJECTION + 1) and video.geometry == 1, "Projection tile sets actual video geometry")

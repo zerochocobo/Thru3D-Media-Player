@@ -39,12 +39,16 @@ public:
     /** rgb: float32 CHW in [0, 1]; alpha: float32 HxW. Both eyes or neither advance.
      * reset_first zeroes this stream's states before inference (ROI window change). */
     void process_alpha_stereo(const std::array<const float*, 2>& rgb, const std::array<float*, 2>& alpha,
-                              int stream = 0, bool reset_first = false);
+                              int stream = 0, bool reset_first = false, int eye_count = 2);
     /** Zero-copy: RGBA8 AHardwareBuffers (width x height) in, Alpha as R of RGBA8 out (rounded
      * alpha*255). The GPU never hands pixels to the CPU. Returns false when a periodic state check
      * found nonfinite values; that stream was reset and the Alpha of this call must not be shown. */
     bool process_ahb(const std::array<AHardwareBuffer*, 2>& rgb, const std::array<AHardwareBuffer*, 2>& alpha,
-                     int stream = 0, bool reset_first = false);
+                     int stream = 0, bool reset_first = false, int eye_count = 2);
+    /** True when MNN actually reads and writes AHardwareBuffers on this GPU. Some drivers cannot
+     * import them into OpenCL (PICO 4 Pro, Android 10, Adreno 650): MNN then only logs an error
+     * and process_ahb returns without writing Alpha. One stereo-free inference; resets stream 0. */
+    bool zero_copy_self_test();
     const MnnRvmReport& report() const { return report_; }
     int width() const { return report_.width; }
     int height() const { return report_.height; }

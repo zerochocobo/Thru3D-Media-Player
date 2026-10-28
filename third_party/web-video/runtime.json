@@ -1,0 +1,7 @@
+{
+  "version": "2026.10.26",
+  "url": "https://github.com/yt-dlp/yt-dlp/releases/download/2026.10.26/yt-dlp",
+  "sha256": "e51e69e89489f199530f13d32a4342da3ddb2cf34842f364603a066db05afbf3",
+  "bytes": 3073072,
+  "android_runtime": "io.github.junkfood02.youtubedl-android:library:0.18.1"
+}

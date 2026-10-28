@@ -1,0 +1,1 @@
+-keep class org.vrpassthroughplayer.plugin.WebBrowserSurfaceBridge { public static *; }

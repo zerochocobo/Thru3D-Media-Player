@@ -1,4 +1,9 @@
 pluginManagement {
+    plugins {
+        id 'com.android.application' version '9.3.3'
+        id 'com.android.library' version '9.3.3'
+        id 'org.jetbrains.kotlin.android' version '2.4.21'
+    }
     repositories {
         google()
         mavenCentral()
@@ -10,10 +15,16 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
+        maven {
+            url 'https://maven.mozilla.org/maven2/'
+            content { includeGroup 'org.mozilla.geckoview' }
+        }
     }
 }
 rootProject.name = 'VRPassthroughPlayerAndroid'
 include ':player-plugin'
+// Browser engine is an independent AAR; it can be compiled without rebuilding native playback.
+include ':web-browser'
 // Test-only APK in a different UID; never included in a normal player build.
 if (providers.gradleProperty('includeUriFixture').orNull == 'true') { include ':uri-fixture' }
 

@@ -67,7 +67,7 @@ internal object VoiceClonePolicy {
     fun failureMessage(code: String): String = when(code) {
         "no_candidates"->"This video has no subtitles suitable for a 3–10 second voice sample."
         "invalid_range"->"Choose a valid time range. Samples must be 3–10 seconds."
-        "source_failed"->"Unable to read this video. Choose another source."
+        "source_failed"->"Unable to read this media. Choose another source."
         "scan_failed"->"Unable to finish speech analysis. Retry or adjust the range."
         "no_candidates_in_range"->"No suitable samples found yet. Continue searching."
         "audio_required"->"No usable reference audio track. Choose another audio track."

@@ -34,14 +34,15 @@ func _run() -> void:
 		state.subtitle_size = 125.0; state.subtitle_style = "yellow_black"
 		state.subtitle_line = 2
 		menu._activate(Library.TAB_BASE + Library.VIDEO_TAB)
-		check(menu.rows.size() == 4 and menu._max_scroll() == 0, "Video defaults to four rows with collapsed groups: " + language)
+		check(menu.rows.size() == 5 and menu._max_scroll() == 0, "Video defaults to five rows with collapsed groups: " + language)
 		await shot(viewport, output.path_join("video_" + language + ".png"))
 		menu._choose(menu.rows.filter(func(row): return row.get("video_settings_group", "") == "alpha")[0])
-		check(menu.rows.size() == 8, "All four Alpha controls expand: " + language)
+		check(menu.rows.size() == 9, "All four Alpha controls expand: " + language)
 		await shot(viewport, output.path_join("alpha_" + language + ".png"))
 		menu._choose(menu.rows.filter(func(row): return row.get("video_settings_group", "") == "alpha")[0])
 		menu._choose(menu.rows.filter(func(row): return row.get("video_settings_group", "") == "subtitles")[0])
-		check(menu.rows.size() == 11, "All seven subtitle controls expand: " + language)
+		menu._choose(menu.rows.filter(func(row): return row.get("subtitle_settings_group", "") == "appearance")[0])
+		check(menu.rows.size() == 14, "All seven subtitle controls expand in their category: " + language)
 		await shot(viewport, output.path_join("subtitles_top_" + language + ".png"))
 		menu._set_scroll(menu._max_scroll())
 		await shot(viewport, output.path_join("subtitles_" + language + ".png"))

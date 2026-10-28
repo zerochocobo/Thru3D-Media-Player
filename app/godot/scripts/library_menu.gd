@@ -1,10 +1,13 @@
 extends "res://scripts/ray_menu.gd"
 
+const Distribution := preload("res://scripts/distribution_channel.gd")
+
 ## Library: left navigation (recent, local disk, SMB, DLNA, settings), right content with sub-tabs,
 ## breadcrumbs and a scrolling list (ray drag anywhere on the list, or either thumbstick). Sources answer
 ## asynchronously through the platform's media_list(id, json) signal. Selection is controller ray + trigger only.
 
 signal chosen(uri: String, title: String)
+signal browser_opened
 signal cast_requested(action: String)
 var cast_state := {}
 func text_entry_active() -> bool: return system_text_input.active() or (visible and not _editor.is_empty())
@@ -65,10 +68,12 @@ var archives := preload("res://scripts/archive_panel.gd").new(self)
 const FileActions := preload("res://scripts/library_file_actions.gd")
 var file_actions := FileActions.new(self)
 
-enum Section { RECENT, LOCAL, SMB, DLNA, CLOUD, SETTINGS, MEDIA_SERVER }
-const NAV := ["Home", "Local files", "SMB network", "DLNA network", "Cloud drives", "Settings", "Media servers"]
-const NAV_ICONS := ["history", "device", "server", "cast", "cloud", "settings", "media_library"]
-const NAV_ORDER := [Section.RECENT, Section.LOCAL, Section.SMB, Section.DLNA, Section.CLOUD, Section.MEDIA_SERVER, Section.SETTINGS]
+enum Section { RECENT, LOCAL, SMB, DLNA, CLOUD, SETTINGS, MEDIA_SERVER, WEB }
+const NAV := ["Home", "Local files", "SMB network", "DLNA network", "Cloud drives", "Settings", "Media servers", "Web videos"]
+const NAV_ICONS := ["history", "device", "server", "cast", "cloud", "settings", "media_library", "globe"]
+const NAV_ORDER := [Section.RECENT, Section.LOCAL, Section.SMB, Section.DLNA, Section.CLOUD, Section.WEB, Section.MEDIA_SERVER, Section.SETTINGS]
+var web_video := preload("res://scripts/web_video_panel.gd").new(self)
+var web_browser := preload("res://scripts/web_browser_panel.gd").new(self)
 const ServerBrowser := preload("res://scripts/media_server_browser.gd")
 const PlatformMethods := preload("res://scripts/platform_methods.gd")
 const SystemTextInput := preload("res://scripts/system_text_input.gd")
@@ -113,6 +118,7 @@ const ABOUT_TAB := 3
 const ABOUT_HOME := 36
 var _about_page := 0 # app, credits
 var _video_settings_expanded := {}
+var _subtitle_settings_expanded := ""
 ## VR subtitle distances (metres); the text keeps its angular size at any distance.
 const SubtitleDepth := preload("res://scripts/subtitle_depth.gd")
 const SubtitleStyle := preload("res://scripts/subtitle_style.gd")
@@ -422,7 +428,7 @@ func _align_playback_panel() -> void:
 	transform = Transform3D(Basis.IDENTITY, Vector3(0, top + 0.08 - bottom, 0))
 
 func has_pointer_capture() -> bool:
-	return not _voice_drag.is_empty() or not audio_preview_seek.capture.is_empty() or not _drag.is_empty() or not choices.capture.is_empty() or not account_panel.web_hand.is_empty()
+	return not web_browser.hand.is_empty() or not _voice_drag.is_empty() or not audio_preview_seek.capture.is_empty() or not _drag.is_empty() or not choices.capture.is_empty() or not account_panel.web_hand.is_empty()
 
 func _place_device_status(centre: Vector2) -> void:
 	if compact or playback_expanded:
@@ -432,6 +438,7 @@ func _place_device_status(centre: Vector2) -> void:
 	device_status.visible = true
 
 func refresh_session_controls(force: bool = false) -> void:
+	if web_browser.active(): return
 	if not compact and not playback_expanded: super(force)
 
 func refresh_background_audio() -> void:
@@ -463,10 +470,12 @@ func toggle() -> void:
 			_load_cloud(); refresh()
 
 func dismiss() -> void:
+	web_browser.close()
 	if voice_picker_mode: finish_voice_picker(); return
 	archives.hide()
 	cloud_pagination.settings_expanded = false
 	_video_settings_expanded.clear()
+	_subtitle_settings_expanded = ""
 	file_actions.return_from_settings(false)
 	if voice_manager.opened: voice_manager.close()
 	_voice_drag.clear()
@@ -498,6 +507,9 @@ func dismiss() -> void:
 		elif cancel_subtitle: subtitle_picker_cancelled.emit()
 		else: image_picker_cancelled.emit()
 	composition_layout_changed.emit()
+
+func _voice_sample_source(row: Dictionary) -> bool:
+	return row.get("kind", "video") in ["video", "audio"]
 
 func begin_voice_picker() -> void:
 	if audio_import_mode or subtitle_picker_mode or image_picker_mode or voice_picker_mode: return
@@ -597,7 +609,7 @@ func _start_file_picker() -> void:
 	collections.selection.clear(); file_actions.reset(); file_actions.enabled = false
 	cloud_search.close(); choices.reset(); account_panel.close()
 	if section not in ([Section.LOCAL, Section.SMB, Section.DLNA, Section.CLOUD] if image_picker_mode or voice_picker_mode else [Section.LOCAL, Section.SMB, Section.CLOUD]): section = Section.LOCAL
-	media_browse_intent = 2 if image_picker_mode else 1 if voice_picker_mode else 0
+	media_browse_intent = 2 if image_picker_mode else 0
 	media_filter = media_browse_intent; view_mode = str(_audio_import_context.get("view_mode", "grid")) if image_picker_mode else "list"; scroll = 0
 	_load_section(); refresh()
 
@@ -648,6 +660,7 @@ func attach_platform(value: Object) -> void:
 		platform.media_local_refresh_storage()
 
 func _on_android_lifecycle(state: String) -> void:
+	if state == "resume" and web_browser.active(): platform.web_browser_action("resume")
 	if state == "resume" and _local_grant_pending:
 		_local_grant_pending = false
 		if section == Section.LOCAL and not account_panel.active():
@@ -705,6 +718,7 @@ func _in_list(point: Vector3) -> bool:
 		and point.y < span.x + 0.01 and point.y > span.x - span.y - 0.02
 
 func press_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: bool) -> bool:
+	if web_browser.press(hand, origin, direction, tracked): return true
 	if voice_manager.opened and choices.press(hand, origin, direction, tracked): return true
 	if voice_manager.opened:
 		if not _voice_drag.is_empty(): return true
@@ -755,6 +769,7 @@ func press_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: b
 	return true
 
 func cancel_pointer(hand: String) -> void:
+	if web_browser.hand == hand: web_browser.cancel()
 	if _voice_drag.get("hand", "") == hand: _voice_drag.clear()
 	audio_preview_seek.cancel(hand)
 	choices.cancel(hand)
@@ -767,6 +782,8 @@ func cancel_pointer(hand: String) -> void:
 
 func update_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: bool) -> void:
 	super(hand, origin, direction, tracked)
+	web_browser.move(hand, origin, direction, tracked)
+	if web_browser.hand == hand: return
 	if voice_manager.opened:
 		choices.update(hand, origin, direction, tracked)
 		if _voice_drag.get("hand", "") == hand:
@@ -810,6 +827,7 @@ func update_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: 
 		_drag.at_us = now
 
 func release_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: bool) -> void:
+	if web_browser.release(hand, origin, direction, tracked): return
 	if voice_manager.opened and choices.capture.get("hand", "") == hand:
 		choices.release(hand, origin, direction, tracked); return
 	if voice_manager.opened:
@@ -844,6 +862,7 @@ func release_pointer(hand: String, origin: Vector3, direction: Vector3, tracked:
 
 ## Thumbstick y (up positive) scrolls the list; it never selects.
 func stick_scroll(y: float, delta: float) -> void:
+	if web_browser.scroll(y, delta): return
 	if cloud_pagination.opened: return
 	if voice_manager.opened:
 		if not choices.stick_scroll(y, delta): voice_manager.stick(y, delta)
@@ -881,6 +900,8 @@ func stick_scroll_horizontal(x: float, delta: float) -> void:
 		server_browser.gallery.stick_scroll(x, delta)
 
 func _process(delta: float) -> void:
+	web_video.tick()
+	web_browser.tick()
 	if visible and subtitle_queue_open and section == Section.SETTINGS and tab == VIDEO_TAB and Time.get_ticks_msec() > _subtitle_queue_poll and not has_pointer_capture() and choices.opened.is_empty():
 		_subtitle_queue_poll = Time.get_ticks_msec() + 800
 		var queue: Dictionary = settings_provider.call().get("subtitle_defaults", {}).get("subtitle_tasks", {})
@@ -991,6 +1012,7 @@ func _animate_settings_scroll_hint(delta: float) -> void:
 	_settings_scroll_hint.position.y = _settings_scroll_hint_y + sin(_settings_scroll_hint_time / SCROLL_HINT_PERIOD * TAU) * SCROLL_HINT_AMPLITUDE
 
 func _grid() -> bool:
+	if section == Section.WEB: return false
 	if archives.browsing: return view_mode == "grid"
 	if audio_import_mode or subtitle_picker_mode: return false
 	if cloud_error.opened: return false
@@ -1155,7 +1177,7 @@ func _browse_activity() -> void:
 	_browse_save_at = Time.get_ticks_msec() + 500
 
 func _restore_parent_filter() -> void:
-	if image_picker_mode or subtitle_picker_mode or audio_import_mode or media_browse_intent > 0: return
+	if image_picker_mode or voice_picker_mode or subtitle_picker_mode or audio_import_mode or media_browse_intent > 0: return
 	media_filter = int(_browse_parent_filters.get(file_actions.scope(), {}).get("filter", 0))
 
 func _change_media_filter(value: int) -> void:
@@ -1298,6 +1320,9 @@ func _redraw_file_rows() -> void:
 	composition_layout_changed.emit()
 
 func refresh() -> void:
+	if section == Section.WEB and not Distribution.web_browser_enabled():
+		web_browser.close()
+		section = Section.RECENT
 	if not voice_manager.opened: _rebuild_rows()
 	_draw()
 	_align_playback_panel()
@@ -1329,6 +1354,7 @@ func _update_highlights() -> void:
 	if changed: composition_changed.emit()
 
 func refresh_music_quick_controls() -> void:
+	if web_browser.active(): return
 	if not audio_import_mode and music_quick and music_quick.active:
 		music_quick.redraw(background_audio_provider.call() if background_audio_provider.is_valid() else {})
 		return
@@ -1820,7 +1846,7 @@ func _rebuild_rows() -> void:
 				if _video_settings_expanded.get("alpha", false):
 					rows.append(_alpha_size_row(settings))
 					rows.append({"title": I18n.t("Alpha passthrough FPS limit"), "key": "alpha_fps", "value": int(settings.get("alpha_fps", 30)),
-						"slider": true, "span": Vector3(10, 40, 1), "unit": " FPS", "reset_value": 30.0, "hint": "Headset performance limits keep the cut-out a little behind the picture"})
+						"slider": true, "span": Vector3(10, 40, 1), "unit": " FPS", "reset_value": float(settings.get("alpha_fps_default", 30)), "hint": "Headset performance limits keep the cut-out a little behind the picture"})
 					# The same Alpha edge as the player settings (AlphaEdge defaults).
 					rows.append({"title": I18n.t("Alpha feather"), "key": "alpha_feather", "value": int(settings.get("alpha_feather", 100)),
 						"slider": true, "span": Vector3(0, 100, 1), "unit": "%", "reset_value": 100.0})
@@ -1834,7 +1860,6 @@ func _rebuild_rows() -> void:
 						precision_row.info = Quality.ALPHA_PRECISION_INFO; rows.append(precision_row)
 				rows.append(_video_settings_group("subtitles", "Subtitles"))
 				if _video_settings_expanded.get("subtitles", false):
-					if settings.get("voice_manager", {}).get("narration_clone_supported", false): rows.append({"title": I18n.t("Subtitle narration"), "voice_manager": true})
 					rows.append_array(_subtitle_rows(settings))
 			elif tab == GENERAL_TAB:
 				var languages: Array = []
@@ -1982,6 +2007,8 @@ func _rebuild_rows() -> void:
 					rows.append(_entry_row(entry))
 	if section == Section.MEDIA_SERVER:
 		rows = server_browser.rows()
+	elif section == Section.WEB:
+		rows.assign(web_video.rows())
 	if compact:
 		if section == Section.MEDIA_SERVER:
 			rows.assign(rows.filter(func(row): return row.has("scene") or row.has("container_node") or row.has("library") or row.has("server_account") or row.has("open_libraries")))
@@ -1991,9 +2018,11 @@ func _rebuild_rows() -> void:
 		rows.assign(rows.filter(func(row): return row.get("folder", false) or not row.has("uri") or SubtitleSources.supported(str(row.get("title", "")))))
 	elif audio_import_mode:
 		rows.assign(rows.filter(func(row): return not row.has("uri") or str(row.get("uri", "")).is_empty() or row.get("kind", "") == "folder" or AudioCatalog.supported(str(row.get("title", "")))))
+	elif voice_picker_mode:
+		rows.assign(rows.filter(func(row): return not row.has("uri") or row.get("folder", false) or row.get("kind", "") == "folder" or _voice_sample_source(row)))
 	else:
 		rows.assign(rows.filter(func(row): return row.get("kind", "") != "audio"))
-	if not audio_import_mode and not subtitle_picker_mode and media_filter > 0 and section not in [Section.SETTINGS, Section.MEDIA_SERVER]:
+	if not audio_import_mode and not subtitle_picker_mode and not voice_picker_mode and media_filter > 0 and section not in [Section.SETTINGS, Section.MEDIA_SERVER]:
 		rows.assign(rows.filter(func(row): return not row.has("uri") or row.get("kind", "") == "folder" or row.get("kind", "video") in (["image", "archive", "pdf"] if media_filter == 2 and not image_picker_mode else ["image", "pdf"] if media_filter == 2 else ["video"])))
 	file_actions.sort_rows()
 	file_actions.reconcile()
@@ -2225,6 +2254,8 @@ func _poll_cache_usage() -> void:
 	if visible and section == Section.SETTINGS and tab == GENERAL_TAB: refresh()
 
 func _exit_tree() -> void:
+	web_browser.close()
+	web_video.close()
 	archives.close()
 	checkpoint_browse()
 	system_text_input.cancel()
@@ -2241,6 +2272,8 @@ func _read_cache_usage() -> Vector2i:
 ## Video state changes arrive several times a second: redraw only when the Alpha profiles
 ## (current, compiling, cold) shown on the Alpha tab change.
 func _activate(target: int) -> void:
+	if web_browser.action(target): return
+	if web_video.home.action(target): return
 	var cast_action := CastPanel.action(target)
 	if not cast_action.is_empty(): cast_requested.emit(cast_action); return
 	if (image_picker_mode or voice_picker_mode) and target == CLOSE: dismiss(); return
@@ -2284,10 +2317,14 @@ func _activate(target: int) -> void:
 	elif target == QUIT_APP:
 		setting_changed.emit("quit_app", true)
 	elif target >= NAV_BASE and target < NAV_BASE + NAV.size():
+		if target == NAV_BASE + Section.WEB and not Distribution.web_browser_enabled(): return
+		web_video.close()
+		web_browser.close()
 		subtitle_queue_open = false
 		_browse_return_restore = false
 		cloud_pagination.settings_expanded = false
 		_video_settings_expanded.clear()
+		_subtitle_settings_expanded = ""
 		file_actions.settings_return.clear()
 		_save_folder_position()
 		archives.suspended = true
@@ -2314,6 +2351,7 @@ func _activate(target: int) -> void:
 		subtitle_queue_open = false
 		cloud_pagination.settings_expanded = false
 		_video_settings_expanded.clear()
+		_subtitle_settings_expanded = ""
 		controls_page.reset()
 		tab = VIDEO_TAB if target == TAB_BASE + SUBTITLES_TAB else target - TAB_BASE
 		scroll = 0.0
@@ -2367,6 +2405,8 @@ func _activate(target: int) -> void:
 		_editor_input(target)
 
 func _choose(row: Dictionary) -> void:
+	if web_browser.choose(row): return
+	if web_video.choose(row): return
 	if not bool(row.get("enabled", true)): return
 	if archives.browsing: archives.choose(row); return
 	if row.get("archive_password_book", false): archives.manage(); return
@@ -2376,7 +2416,7 @@ func _choose(row: Dictionary) -> void:
 	_browse_activity()
 	if not bool(row.get("enabled", true)): return
 	if voice_picker_mode and row.has("uri") and not str(row.uri).is_empty() and not row.get("folder", false) and row.get("kind", "") != "folder":
-		if row.get("kind", "video") != "video": return
+		if not _voice_sample_source(row): return
 		finish_voice_picker(str(row.uri), str(row.get("title", ""))); return
 	if image_picker_mode and row.has("uri") and not str(row.uri).is_empty() and not row.get("folder", false) and row.get("kind", "") != "folder":
 		if row.get("kind", "") != "image" and not ImageInfo.is_image(str(row.uri), str(row.get("title", ""))): return
@@ -2394,6 +2434,17 @@ func _choose(row: Dictionary) -> void:
 			scroll = float(maxi(0, rows.find(row)))
 			setting_changed.emit("diagnostic_log", "recent")
 		choices.reset(); refresh(); return
+	if row.has("subtitle_settings_group"):
+		var group := str(row.subtitle_settings_group)
+		choices.reset()
+		_subtitle_settings_expanded = "" if _subtitle_settings_expanded == group else group
+		_rebuild_rows()
+		for index in rows.size():
+			if rows[index].get("subtitle_settings_group", "") == group:
+				scroll = minf(float(index), _max_scroll())
+				break
+		_drag.clear(); _fling = 0.0
+		refresh(); return
 	if row.has("video_settings_group"):
 		var group := str(row.video_settings_group)
 		var expanded := not bool(_video_settings_expanded.get(group, false))
@@ -2535,6 +2586,12 @@ func navigate_back() -> bool:
 		cloud_pagination.settings_expanded = false; refresh(); return true
 	if voice_manager.opened: voice_manager.back(); return true
 	if system_text_input.active(): system_text_input.cancel("", true); return true
+	if web_browser.active():
+		if web_browser.tabs_open: web_browser.tabs_open = false; web_browser.refresh_windows()
+		elif web_browser.data.get("editing", false): platform.web_browser_input("close", "")
+		else: web_browser.close(); refresh()
+		return true
+	if web_browser.library.back(): return true
 	if collections.active(): collections.close(); return true
 	if section == Section.SETTINGS and tab == GENERAL_TAB and collections.privacy_expanded:
 		collections.privacy_expanded = false; choices.reset(); refresh(); return true
@@ -2928,6 +2985,11 @@ func _draw() -> void:
 	_audio_preview_state = background_audio_provider.call() if audio_import_mode and background_audio_provider.is_valid() else {}
 	_clear_layout()
 	_settings_scroll_hint = null
+	if web_browser.active():
+		_side.visible = false; _backdrop.visible = false
+		if is_instance_valid(device_status): device_status.visible = false
+		web_browser.refresh_windows(); return
+	if is_instance_valid(device_status): device_status.visible = true
 	if not cast_state.get("pending", {}).is_empty() or cast_state.get("return_available", false):
 		_side.visible = false; _backdrop.visible = true
 		_set_backdrop(Vector2(1.16, 0.34), Vector2.ZERO)
@@ -2946,6 +3008,7 @@ func _draw() -> void:
 		_side.visible = false; collections.draw(); return
 	if cloud_error.opened: cloud_error.draw(); return
 	_side.visible = not compact
+	if web_browser.library.draw_modal(): return
 	if not file_actions.modal.is_empty():
 		file_actions.draw_modal()
 		return
@@ -2971,11 +3034,13 @@ func _draw() -> void:
 		# A tap on the column between its buttons is inside the menu, not a tap away.
 		_block_rays(column, Vector2(0.42, 1.12))
 		var navigation: Array = [Section.LOCAL, Section.SMB, Section.DLNA, Section.CLOUD] if image_picker_mode or voice_picker_mode else [Section.LOCAL, Section.SMB, Section.CLOUD] if audio_import_mode or subtitle_picker_mode else NAV_ORDER
+		if not Distribution.web_browser_enabled(): navigation = navigation.filter(func(item): return item != Section.WEB)
 		for position in navigation.size():
 			var i: int = navigation[position]
-			_nav_button(NAV_BASE + i, I18n.t(NAV[i]), NAV_ICONS[i], Vector2(0, 0.36 - position * 0.13), i == section)
+			_nav_button(NAV_BASE + i, I18n.t(NAV[i]), NAV_ICONS[i], Vector2(0, 0.36 - position * minf(0.13, 0.80 / maxf(1, navigation.size() - 1))), i == section, "Beta" if i == Section.WEB else "")
 	if not controls_page.active():
 		var footer_y := -0.80 if (section == Section.MEDIA_SERVER and not archives.browsing) and server_browser.focused() else -0.65
+		if web_video.home.active(): footer_y = web_video.home.footer_y()
 		if not audio_import_mode and not subtitle_picker_mode and not image_picker_mode and not voice_picker_mode:
 			if not music_quick: music_quick = preload("res://scripts/music_quick_controls.gd").new(self, func(): music_toggle_requested.emit())
 			music_quick.draw(MUSIC_OPEN, Vector2(-0.48, footer_y), background_audio_provider.call() if background_audio_provider.is_valid() else {})
@@ -2990,6 +3055,9 @@ func _draw() -> void:
 	if not archives.browsing and account_panel.active():
 		account_panel.draw()
 		return
+	if web_browser.active():
+		web_browser.draw(); return
+	if web_video.home.draw(): return
 	if not archives.browsing and cloud_search.active:
 		cloud_search.draw()
 		return
@@ -3009,7 +3077,7 @@ func _draw() -> void:
 		pass # Account actions draw their own title and back target below.
 	elif subtitle_queue_open and section == Section.SETTINGS and tab == VIDEO_TAB:
 		_button(BACK, "", Vector2(-0.52, 0.46), Vector2(0.09, 0.07), true, "back")
-		_label(I18n.t("Subtitle tasks"), Vector3(0.13, 0.46, 0.004), 24)
+		_label(I18n.t("Subtitle pre-generation tasks"), Vector3(0.13, 0.46, 0.004), 24)
 	elif crumbs.is_empty():
 		var tabs: Array = SETTING_TABS if section == Section.SETTINGS else []
 		if section == Section.SETTINGS and tab == ABOUT_TAB and _about_page != 0:
@@ -3023,8 +3091,8 @@ func _draw() -> void:
 		if controls_page.active():
 			controls_page.draw()
 			return
-		if section in [Section.LOCAL, Section.SMB, Section.DLNA, Section.CLOUD]:
-			var title := _label(I18n.t(NAV[section]), Vector3(-0.42, _header_y(), 0.004), 24)
+		if section in [Section.LOCAL, Section.SMB, Section.DLNA, Section.CLOUD, Section.WEB]:
+			var title := _label(web_browser.library.title() if web_browser.library.active() else I18n.t(NAV[section]), Vector3(-0.42, _header_y(), 0.004), 24)
 			title.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
 	else:
 		_button(BACK, "", Vector2(-0.52 + _folder_header_inset(), _header_y()), Vector2(0.09, 0.07), true, "up")
@@ -3066,12 +3134,14 @@ func _draw() -> void:
 	if not archives.browsing and section == Section.SMB and not _smb_server.is_empty() and _smb_path.is_empty():
 		_button(EDIT, "", _action_position(0.69), Vector2(0.09, 0.065), true, "edit")
 	file_actions.draw_header()
+	web_browser.library.draw_header()
 	if browser_content() and not subtitle_picker_mode: draw_view_modes(_action_position(0.80).y)
 	_align_folder_tools()
 	if not archives.browsing and preload("res://scripts/online_panorama_panel.gd").AVAILABLE and media_filter==2 and section!=Section.SETTINGS and not audio_import_mode and not image_picker_mode:
 		_round(ONLINE_PANORAMAS,"globe",Vector2(0.80,0.58),0.08,true,false,I18n.t("Online panoramas"))
 	_decoration(Vector2(1.28, 0.002), Vector2(0.19, 0.405), Color(0.17, 0.2, 0.24))
 	_draw_rows()
+	web_browser.library.draw_footer()
 	if section == Section.SETTINGS and tab == ABOUT_TAB:
 		_draw_about()
 	var background_settings: Dictionary = settings_provider.call() if settings_provider.is_valid() else {}
@@ -3101,7 +3171,7 @@ func _draw() -> void:
 		add_child(storage_panel); _decorations.append(storage_panel); _block_rays(storage_panel, Vector2(1.46, 0.14))
 		_audio_storage_labels = AudioStorageView.draw(self, background_audio_provider.call() if background_audio_provider.is_valid() else {}, Vector2(0.13, -0.61), 1.26, true)
 		_place_device_status(Vector2(0.13, -0.79))
-	elif section != Section.SETTINGS and not cloud_managing and not subtitle_picker_mode and not image_picker_mode and not voice_picker_mode:
+	elif section not in [Section.SETTINGS, Section.WEB] and not cloud_managing and not subtitle_picker_mode and not image_picker_mode and not voice_picker_mode:
 		for i in MEDIA_FILTERS.size():
 			_button(FILTER_BASE + i, I18n.t(MEDIA_FILTERS[i]), Vector2(0.36 + i * 0.18, -0.515), Vector2(0.17, 0.06), true, "", media_filter == i)
 			set_label_size(_buttons.back().node.get_child(0), 17)
@@ -3175,7 +3245,7 @@ func _draw_crumbs(crumbs: Array, base: int = CRUMB_BASE) -> void:
 
 func _header_title() -> String:
 	if archives.browsing: return " / ".join(archives.crumbs())
-	if voice_picker_mode: return I18n.t("Choose video")
+	if voice_picker_mode: return I18n.t("Choose audio or video")
 	if image_picker_mode: return I18n.t("Choose image")
 	if audio_import_mode: return I18n.t("Import audio")
 	match section:
@@ -3243,7 +3313,7 @@ func _draw_rows() -> void:
 				_setting_field(row, Vector2(0.17, row_top - k * _pitch()), ROW_BASE + k)
 				continue
 			_row_button(ROW_BASE + k, str(row.title), "" if row.get("about_info", false) else str(row.get("detail", "")), str(row.get("icon", "video")),
-				Vector2(0.17, row_top - k * _pitch()), bool(row.get("selected", false)))
+				Vector2(0.17, row_top - k * _pitch()), bool(row.get("selected", false)), section == Section.WEB)
 			if row.has("tip"): _tips[ROW_BASE + k] = I18n.t(str(row.tip))
 			if not bool(row.get("enabled", true)):
 				_buttons.back().enabled = false
@@ -3256,6 +3326,12 @@ func _draw_rows() -> void:
 				heading.node.material_override.set_shader_parameter("surface_color", Color(TILE, 0))
 				set_label_size(heading.node.get_child(0), TEXT_TITLE)
 				heading.node.get_child(0).font = ui_bold_font()
+				if row.get("subgroup", false):
+					# Nested sections step in and drop to body weight beneath their parent heading.
+					set_label_size(heading.node.get_child(0), TEXT_BODY)
+					heading.node.get_child(0).font = ui_font()
+					for child in heading.node.get_children():
+						if child is Node3D: child.position.x += 0.05
 			if bool(row.get("about_info", false)):
 				_buttons.back().enabled = false
 				var node: MeshInstance3D = _buttons.back().node
@@ -3332,7 +3408,7 @@ func _stop_audio_preview() -> void:
 func _voice_manager_entry(row: Dictionary, centre: Vector2, target: int) -> void:
 	var title := _label(_fit_title(str(row.title), "", 0.43, TEXT_BODY), Vector3(centre.x - 0.55, centre.y, 0.004), TEXT_BODY, _list)
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
-	_button(target, _fit_title(I18n.t("Manage my voices"), "", 0.68, TEXT_BODY), centre + Vector2(0.225, 0), Vector2(0.72, 0.065), true, "", false, _list)
+	_button(target, _fit_title(I18n.t("My cloned voices"), "", 0.68, TEXT_BODY), centre + Vector2(0.225, 0), Vector2(0.72, 0.065), true, "", false, _list)
 	set_label_size(_buttons.back().node.get_child(0), TEXT_BODY)
 
 func _setting_field(row: Dictionary, centre: Vector2, target: int) -> void:
@@ -3401,12 +3477,12 @@ static func _alpha_size_row(settings: Dictionary) -> Dictionary:
 	for value in ["256x256", "320x320", "384x384", "512x512"]:
 		var label: String = value.get_slice("x", 0)
 		# Marked so a changed size can be put back.
-		if value == "320x320": label += " " + I18n.t("Default")
+		if value == str(settings.get("alpha_profile_default", "320x320")): label += " " + I18n.t("Default")
 		var option := {"value": value, "label": label, "hint": ALPHA_SIZE_HINT}
 		if value in settings.get("alpha_warming", []): option.hint = "Preparing the model"
 		elif value in settings.get("alpha_cold", []): option.hint = "First use prepares the model, about 1 minute"
 		options.append(option)
-	var row := {"title": I18n.t("Alpha model size"), "key": "alpha_profile", "value": str(settings.get("alpha_profile", "320x320")),
+	var row := {"title": I18n.t("Alpha model size"), "key": "alpha_profile", "value": str(settings.get("alpha_profile", settings.get("alpha_profile_default", "320x320"))),
 		"choices": options, "compact": true}
 	row.info = ALPHA_SIZE_HINT
 	return row
@@ -3470,13 +3546,31 @@ func _video_settings_group(group: String, title: String) -> Dictionary:
 
 func _subtitle_rows(settings: Dictionary) -> Array[Dictionary]:
 	var result: Array[Dictionary] = []
+	var groups := [{"id": "listening", "title": "Live captions"}]
+	if settings.get("voice_manager", {}).get("narration_clone_supported", false):
+		groups.append({"id": "narration", "title": "Subtitle narration"})
+	groups.append({"id": "appearance", "title": "Subtitle adjustments"})
+	for group in groups:
+		var expanded: bool = _subtitle_settings_expanded == group.id
+		result.append({"title": I18n.t(group.title), "group_header": true, "subgroup": true, "subtitle_settings_group": group.id,
+			"icon": "chevron_down" if expanded else "next"})
+		if not expanded: continue
+		if group.id == "narration": result.append({"title": I18n.t("Subtitle narration"), "voice_manager": true})
+		else: result.append_array(_subtitle_group_rows(settings, str(group.id)))
+	return result
+
+func _subtitle_group_rows(settings: Dictionary, group: String) -> Array[Dictionary]:
+	var result: Array[Dictionary] = []
 	var defaults: Dictionary = settings.get("subtitle_defaults", {})
-	result.append({"title": I18n.t("Subtitle tasks"), "icon": "subtitle", "subtitle_queue": true})
-	result.append(_choice_row("Original language", "listening_source", defaults.get("listening_source", "ja"), [{"value": "ja", "label": "Japanese"}, {"value": "zh", "label": "Chinese"}, {"value": "en", "label": "English"}]))
-	var translation := _choice_row("Translation", "listening_target", defaults.get("listening_target", ""), [{"value": "", "label": "No translation"}] + preload("res://scripts/comic_translation_protocol.gd").target_choices())
-	translation.info = "Recognized text is sent to Microsoft"; result.append(translation)
-	result.append(_choice_row("Pre-generate", "subtitle_task_mode", defaults.get("subtitle_task_mode", "original"), [{"value": "original", "label": "Original subtitles"}, {"value": "translated", "label": "Original and translation"}]))
-	result.append(_choice_row("Background processing", "subtitle_task_policy", defaults.get("subtitle_task_policy", "playback"), [{"value": "playback", "label": "Playback first"}, {"value": "idle", "label": "Only while idle"}]))
+	if group == "listening":
+		result.append(_choice_row("Original language", "listening_source", defaults.get("listening_source", "ja"), [{"value": "ja", "label": "Japanese"}, {"value": "zh", "label": "Chinese"}, {"value": "en", "label": "English"}]))
+		var translation := _choice_row("Translation", "listening_target", defaults.get("listening_target", ""), [{"value": "", "label": "No translation"}] + preload("res://scripts/comic_translation_protocol.gd").target_choices())
+		translation.info = "Recognized text is sent to Microsoft"; result.append(translation)
+		result.append(_choice_row("Pre-generate", "subtitle_task_mode", defaults.get("subtitle_task_mode", "original"), [{"value": "original", "label": "Original subtitles"}, {"value": "translated", "label": "Original and translation"}]))
+		result.append(_choice_row("Background processing", "subtitle_task_policy", defaults.get("subtitle_task_policy", "playback"), [{"value": "playback", "label": "Playback first"}, {"value": "idle", "label": "Only while idle"}]))
+		# The task manager closes the section, matching the player column.
+		result.append({"title": I18n.t("Subtitle pre-generation tasks"), "icon": "subtitle", "subtitle_queue": true})
+		return result
 
 	var size_row := SubtitleStyle.size_row(float(settings.get("subtitle_size", 100.0)))
 	size_row.title = I18n.t("Subtitle size"); result.append(size_row)
@@ -3646,7 +3740,7 @@ func _media_row_button(target: int, row: Dictionary, centre: Vector2) -> void:
 	_progress_on(node, float(info.ratio), Vector2(0.405 if managing else 0.46, -0.025), 0.24)
 	if not archives.browsing: file_actions.draw_checkbox(target, row, centre + Vector2(-0.575, 0))
 
-func _row_button(target: int, title: String, detail: String, icon: String, centre: Vector2, selected: bool) -> void:
+func _row_button(target: int, title: String, detail: String, icon: String, centre: Vector2, selected: bool, two_lines: bool = false) -> void:
 	_button(target, _fit_title(title, "", 0.9, TEXT_BODY), centre, Vector2(1.24, 0.098), true, "", false, _list)
 	_lit(selected)
 	var node: MeshInstance3D = _buttons.back().node
@@ -3656,12 +3750,14 @@ func _row_button(target: int, title: String, detail: String, icon: String, centr
 	set_label_size(label, TEXT_BODY)
 	_icon(icon, Vector3(-0.565, 0, 0.004), 0.045, _buttons.back().foreground, node)
 	if not detail.is_empty():
-		var info := _label(detail, Vector3(0.58, 0, 0.004), TEXT_AUX, node)
-		info.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+		if two_lines: label.position.y = 0.022
+		var info := _label(_fit_title(detail, "", 1.04, TEXT_AUX) if two_lines else detail,
+			Vector3(-0.48, -0.025, 0.004) if two_lines else Vector3(0.58, 0, 0.004), TEXT_AUX, node)
+		info.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT if two_lines else HORIZONTAL_ALIGNMENT_RIGHT
 		info.modulate = MUTED
 
 ## Navigation entry on the angled column: the current one is lit by colour, not a solid fill.
-func _nav_button(target: int, text: String, icon: String, centre: Vector2, selected: bool) -> void:
+func _nav_button(target: int, text: String, icon: String, centre: Vector2, selected: bool, badge: String = "") -> void:
 	_button(target, text, centre, Vector2(0.36, 0.11), true, "", false, _side)
 	var button: Dictionary = _buttons.back()
 	button.base_color = SELECTED if selected else Color(TILE, 0.0)
@@ -3670,6 +3766,11 @@ func _nav_button(target: int, text: String, icon: String, centre: Vector2, selec
 	label.position.x = -0.08
 	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
 	label.modulate = ACCENT if selected else button.foreground
+	if not badge.is_empty():
+		label.position.y = 0.018
+		var status := _label(badge, Vector3(-0.08, -0.025, 0.004), 14, node)
+		status.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+		status.modulate = MUTED
 	_icon(icon, Vector3(-0.13, 0, 0.004), 0.05, ACCENT if selected else button.foreground, node)
 
 func _draw_about() -> void:

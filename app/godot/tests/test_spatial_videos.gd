@@ -8,6 +8,7 @@ var failures: Array[String] = []
 var checks := 0
 
 class Probe extends "res://scripts/mpv_video_display.gd":
+	func _ready() -> void: pass # This fixture initializes only the source-format state below.
 	var revisions := 0
 	var advance_session := false
 	var requests: Array[Dictionary] = []
@@ -39,6 +40,8 @@ func click(menu: Node3D, target: int) -> bool:
 func _run() -> void:
 	I18n.use("en")
 	var video := Probe.new()
+	root.add_child(video)
+	video.set_process(false)
 	video.material = ShaderMaterial.new()
 	video.local_uri = "file:///spatial-test.mov"
 	video.media.begin(1)
@@ -127,7 +130,7 @@ func _run() -> void:
 	video.set_stereo_layout(0)
 	check(video.stereo_layout() == 0, "An ordinary next video regains manual mono layout")
 	menu.refresh_values()
-	check(menu._buttons.any(func(b): return b.target == 112) and not menu._enabled("alpha"), "Ordinary flat video restores Auto 3D and its existing Alpha policy")
+	check(menu._buttons.any(func(b): return b.target == 112) and menu._enabled("alpha"), "Ordinary flat video offers Auto 3D and mono portrait Alpha")
 	check(not menu._labels.any(func(label): return label.text.contains("MV-HEVC")), "Changing to ordinary video removes the source badge in an open mode panel")
 	check(menu._buttons.filter(func(b): return b.target in range(130, 134)).all(func(b): return b.enabled), "Ordinary projection choices become clickable again")
 	menu._depth_open = true # A source can be recognized while this popup is open.

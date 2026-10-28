@@ -4,6 +4,24 @@
 
 Newest first, following product release milestones. Some development/source snapshots contained features before their product release. Original APK identifiers `0.2` and `0.4` are retained; `0.4` was also called `0.4.0` in release notes. Availability depends on device, server and media capabilities.
 
+## 0.15.1 — 2026-10-29
+
+- Add up to four browser tabs and two visible windows, split/merge, dragging/resizing, floating/cinema modes and system-keyboard editing. Refine titled tab navigation, nearby draggable cinema controls, paused/inactive-session recovery and bounded background work.
+- Automatically hand off eligible fullscreen web video to native playback, retaining manual handoff and return to its original tab. Use actual stream projection for flat/VR180/360° playback; add pre-resolution, network retries, recovered Bilibili page context and additional supported site adapters. Subscription/DRM playback is not native extraction support; Douyin stays in the browser, and Twitch/Niconico availability remains unreliable.
+- Add optional temporary LAN bookmark/history management for phone/computer: search, edit, batch import/export of bookmarks, copy/remove history, optional pairing code and confirmed access closure. No library/cookies/credentials or share tokens are included in source.
+- Add fixed grip/thumbstick VR picture adjustments, recenter/per-file memory, ±10% horizontal stereo alignment and live numeric/scale guidance. Refine mutually exclusive subtitle side panels, retained collapse/status, task access and sync controls.
+- Add automatic external-subtitle charset detection and per-track overrides for common UTF/Chinese/Japanese/Korean/Western encodings. Convert a bounded copy for playback/narration without rewriting the original file.
+- Extend voice-sampling/music format support, including MP3 and M4A, and verify long preview clauses finish before playback. The reference-sampling precision experiment was reverted; this release does not claim all cloned-voice failures are fixed.
+- Add a PICO China store build channel with browser entry/direct-open disabled; normal channel retains it and account web login is independent. Separate display version from explicit upload versionCode, preserve the same package/signing identity and validate channel metadata. Source defaults to standard; no store-acceptance claim.
+
+## 0.15.0 — 2026-10-28
+
+- Add stereo person passthrough for eligible ordinary flat 2D videos, adjustable depth strength, independent remembered size/distance and continuity from cinema placement. Optional enhanced depth is device dependent and can reduce frame rate; automatic distance starts disabled.
+- Add the GeckoView browser (Beta): address/navigation, ray keyboard and website login, bookmarks/history search/edit/batch removal, and improved normal shutdown/restart persistence. Clearing history does not clear website login; no guarantee against forced-termination data loss.
+- Add native YouTube/Bilibili web-video handoff with eligible passthrough/2D-to-3D playback, stream-authored YouTube VR180/360°/EAC and bounded up-to-4K SDR selection. Format, site, account and device limits apply.
+- Improve AI passthrough compatibility/fallback, lighter low-end defaults, sustained-frame-drop adaptation, bounded mask/depth work and paused portrait redraws. Do not infer acceptance on every PICO headset.
+- Correct live-subtitle status when reusable cues exist, so model-checking messages do not hide translation progress.
+
 ## 0.14.1 — 2026-10-27
 
 - Add app-wide full-film original/bilingual subtitle preparation with queue management, pause/resume, priority, cancellation and retry. Reuse shared original/translated cue caches under per-file privacy rules; scheduling favors foreground playback or explicitly waits for idle resources. Saved eligible jobs can be restored; transient sessions remain session-only.

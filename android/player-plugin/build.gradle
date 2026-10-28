@@ -29,6 +29,7 @@ def stagePlayerAssets = tasks.register('stagePlayerAssets', Sync) {
     exclude 'tiff/*.tar.xz', 'tiff/*.tar.gz'
     exclude 'openexr/*.tar.gz'
     from('../../app/godot/i18n')
+    from('../../build/web-video') { include 'yt-dlp.zip'; into 'web-video' }
     into(playerAssets)
     assetBundles.each { entry ->
         def bundle = entry.bundle
@@ -38,6 +39,12 @@ def stagePlayerAssets = tasks.register('stagePlayerAssets', Sync) {
         }
     }
     doFirst {
+        def webRuntime = new groovy.json.JsonSlurper().parse(file('../../third_party/web-video/runtime.json'))
+        def extractor = file('../../build/web-video/yt-dlp.zip')
+        if (!extractor.isFile() || extractor.length() != webRuntime.bytes ||
+                java.security.MessageDigest.getInstance('SHA-256').digest(extractor.bytes).encodeHex().toString() != webRuntime.sha256) {
+            throw new GradleException('Missing or damaged web video runtime. Run tools/environment/Prepare-WebVideo.ps1.')
+        }
         assetBundles.each { entry -> entry.bundle.files.each { name, expected ->
             def model = new File(file(entry.root), name)
             if (!model.isFile() || model.length() != expected.bytes) {
@@ -61,7 +68,7 @@ def stagePlayerAssets = tasks.register('stagePlayerAssets', Sync) {
 
 android {
     namespace 'org.vrpassthroughplayer.plugin'
-    compileSdk 36
+    compileSdkVersion 'android-37.2'
     buildToolsVersion '36.1.0'
     ndkVersion '29.0.14206865'
     buildFeatures { buildConfig true }
@@ -104,6 +111,25 @@ tasks.named('preBuild').configure { dependsOn stagePlayerAssets }
 configurations {
     smbUpstream { canBeConsumed = false; transitive = false }
     japaneseReadingUpstream { canBeConsumed = false; transitive = true }
+    subtitleCharsetUpstream { canBeConsumed = false; transitive = false }
+}
+// CharsetDetector is hidden in Android's ICU API. Bundle only ICU's self-contained
+// detection classes (no Unicode data/converters); Java Charset performs decoding.
+def subtitleCharsetJar = tasks.register('subtitleCharsetJar', Jar) {
+    archiveFileName = 'icu-subtitle-charset-78.1.jar'
+    destinationDirectory = layout.buildDirectory.dir('subtitle-charset')
+    from({ zipTree(configurations.subtitleCharsetUpstream.singleFile) }) {
+        include 'com/ibm/icu/text/Charset*.class'
+    }
+    from('../../third_party/icu-charset/LICENSE.txt') { into 'META-INF'; rename { 'ICU-LICENSE.txt' } }
+    inputs.file('../../third_party/icu-charset/distribution.json')
+    doFirst {
+        def receipt = new groovy.json.JsonSlurper().parse(file('../../third_party/icu-charset/distribution.json'))
+        def actual = java.security.MessageDigest.getInstance('SHA-256').digest(configurations.subtitleCharsetUpstream.singleFile.bytes).encodeHex().toString()
+        if (actual != receipt.upstream_jar_sha256) { throw new GradleException('Subtitle charset detector digest differs.') }
+    }
+    preserveFileTimestamps = false
+    reproducibleFileOrder = true
 }
 // Embed the reader and dictionary together, as for the SMB client below. Keep
 // upstream license/notice copies in third_party/kuromoji (staged as assets);
@@ -135,9 +161,14 @@ dependencies {
     // The exported Godot APK supplies this library. Never package a second engine.
     compileOnly files(godotApi.get())
     compileOnly files("../../app/godot/addons/quest_player/bin/cloudcore.aar")
-    implementation 'androidx.media3:media3-exoplayer:1.10.1'
+    implementation 'androidx.media3:media3-exoplayer:1.11.1'
+    implementation project(':web-browser')
     // Explicit socket cancellation for shared cloud-media seek/pre-read handoff.
     implementation 'com.squareup.okhttp3:okhttp:4.12.0'
+    implementation('io.github.junkfood02.youtubedl-android:library:0.18.1') {
+        // Extraction uses no Activity UI; Godot supplies its own matching Fragment runtime.
+        exclude group: 'androidx.appcompat', module: 'appcompat'
+    }
     // Offline Japanese readings for comic speech; pin the matching dictionary.
     japaneseReadingUpstream 'com.atilika.kuromoji:kuromoji-ipadic:0.9.0'
     implementation files(japaneseReadingJar)
@@ -148,6 +179,8 @@ dependencies {
     implementation 'org.slf4j:slf4j-api:1.7.36'
     implementation 'org.bouncycastle:bcprov-jdk18on:1.85'
     testImplementation 'junit:junit:4.13.2'
+    subtitleCharsetUpstream 'com.ibm.icu:icu4j:78.1'
+    implementation files(subtitleCharsetJar)
     // JVM tests exercise org.json; android.jar only provides stubs.
     testImplementation 'org.json:json:20240303'
     // Debug Activity subclasses GodotActivity. The matching Godot export template

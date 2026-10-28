@@ -320,7 +320,9 @@ internal class VoiceCloneController(private val context: ()->Context?,private va
                 .put("rhythm_pause_removed_ms",stats.removedPauseSamples/96.0).put("rhythm_drag_removed_ms",stats.removedDragSamples/96.0)
                 .put("rhythm_local_tempo",stats.localTempo).put("rhythm_buffer_samples",stats.maxBufferedSamples)}},
             levelInfo={stats->publishCurrent(token){it.put("level_initial_gain_db",stats.initialGainDb).put("level_gain_db",stats.gainDb)
-                .put("level_limited_frames",stats.limitedFrames).put("level_buffer_samples",stats.maxBufferedSamples)}})
+                .put("level_limited_frames",stats.limitedFrames).put("level_buffer_samples",stats.maxBufferedSamples)}},
+            generationInfo={stats->publishCurrent(token){it.put("preview_segments",stats.segments).put("preview_attempts",stats.attempts)
+                .put("preview_recovered_segments",stats.recovered).put("preview_subdivided_segments",stats.subdivided)}})
     }
     private fun streamOutput(token: Long)=object:VoicePreviewStream.Output {
         private var track: AudioTrack?=null

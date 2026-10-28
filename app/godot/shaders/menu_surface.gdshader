@@ -5,6 +5,9 @@ render_mode unshaded, cull_disabled, depth_draw_never, blend_mix;
 uniform vec4 surface_color : source_color = vec4(0.07, 0.08, 0.10, 0.97);
 uniform vec2 surface_size = vec2(1.0);
 uniform float corner_radius = 0.02;
+// Adjacent subtitle columns share an outer plate with square internal edges.
+uniform bool round_left = true;
+uniform bool round_right = true;
 // Debug text bands: plates that are partly in the eye buffer and partly in band layers render solid
 // in both, so the two halves match.
 uniform bool solid = false;
@@ -14,6 +17,7 @@ uniform bool hovered = false;
 
 void fragment() {
     float radius = min(corner_radius, min(surface_size.x, surface_size.y) * 0.5);
+    if ((UV.x < 0.5 && !round_left) || (UV.x >= 0.5 && !round_right)) radius = 0.0;
     vec2 q = abs((UV - vec2(0.5)) * surface_size) - (surface_size * 0.5 - vec2(radius));
     float distance = length(max(q, vec2(0.0))) + min(max(q.x, q.y), 0.0) - radius;
     float edge = max(fwidth(distance), 0.0003);

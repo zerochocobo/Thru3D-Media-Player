@@ -85,7 +85,7 @@ func _run() -> void:
 	tap(menu,111)
 	check(menu._audio_open and not menu.allows_playback_sticks(),"Audio panel isolates playback shortcuts")
 	check(not menu.text_snapshot().contains("Subtitle narration") and not menu._audio_ids.is_empty(),"Audio panel has a direct list and no narration")
-	menu.navigate_back();tap(menu,110)
+	menu.navigate_back();tap(menu,110); tap(menu,menu.SUBTITLE_NARRATION)
 	check(option(menu,"narration_enabled",true)>=0,"Only subtitle panel offers narration")
 	tap(menu,option(menu,"narration_enabled",true))
 	check(not menu.text_snapshot().contains("Voice sample") and button(menu,menu.NARRATION_PREVIEW).rect.size.x>0.06 and menu._tips[menu.NARRATION_PREVIEW]=="Preview voice","Voice audition is an icon with a hover hint, without a separate sample row")
@@ -105,7 +105,7 @@ func _run() -> void:
 	var enable_target: int = enable_targets[0]
 	check(enable_targets.size()==1 and menu.choices.targets[enable_target].value==false and button(menu,enable_target).node.get_child_count()==2 and button(menu,enable_target).node.get_child(0).text.is_empty(),"Narration uses one slider-style toggle that offers the opposite state on release")
 	var language_target: int = menu.choices.targets.keys().filter(func(target):return menu.choices.targets[target].get("key","")=="narration_language")[0]
-	check(is_equal_approx(button(menu,enable_target).node.position.y,button(menu,language_target).node.position.y),"Narration toggle and target language share one row")
+	check(button(menu,enable_target).rect.position.y > button(menu,language_target).rect.end.y,"Narration toggle and target language have separate hit areas in the narrow right column")
 	check(button(menu,language_target).node is MeshInstance3D and button(menu,language_target).node.get_child(0).text.begins_with("Read: English"),"Target language is a visible button with an explicit reading label")
 	check(["narration_duck","narration_volume"].all(func(key):return menu.choices.targets.values().any(func(item):return item.get("key","")==key)) and not menu.choices.targets.values().any(func(item):return item.get("key","")=="narration_offset") and option(menu,"narration_hide_subtitles",true)>=0,"Narration levels and hide switch are directly visible without sync controls")
 	var hide_target := option(menu,"narration_hide_subtitles",true)
@@ -194,7 +194,7 @@ func _run() -> void:
 		check(option(menu,"narration_enabled",true)<0 and button(menu,menu.NARRATION_PREVIEW).is_empty(),"Off/PGS hides switch and voice controls")
 		check(not host.calls.back()[1].enabled,"Off/PGS sends runtime disable")
 		check(not video.narration.set_option("narration_preview",true),"Off/PGS rejects stale preview actions")
-	video.subtitles.select(3);video.narration.apply();menu.refresh()
+	video.subtitles.select(3);video.narration.apply();menu.refresh(); menu._activate(menu.SUBTITLE_NARRATION)
 	check(video.narration.available() and host.calls.back()[1].enabled,"Text subtitle restores remembered narration preference")
 	var saved := ConfigFile.new();video.narration.save(saved)
 	video.narration.profile="";video.narration.load_settings(saved)

@@ -1,0 +1,158 @@
+extends Node3D
+## Android Surface producer and OpenXR consumer have independent threads. Keep this root outside
+## the menu's visibility tree; a menu refresh/hide must not destroy a Surface still used by Gecko.
+const PIXELS := Vector2i(2560, 1600)
+const LOW_END_PIXELS := Vector2i(1920, 1200)
+const HIDDEN := Vector2(0.0005, 0.0005)
+const HOLE := preload("res://shaders/web_browser_hole.gdshader")
+var target: WeakRef
+var platform: Object
+var layer: OpenXRCompositionLayerQuad
+var hole: MeshInstance3D
+var bridge: JavaClass
+var xr: OpenXRInterface
+var window_id := 1
+var generation := 0
+var attached := false
+var ending := false
+var shown := false
+var rect := Rect2(-0.59, -0.48, 1.44, 0.90)
+var status := ""
+var retry_at := 0
+var state_poll := 0
+var state := {}
+var _state_raw := ""
+var surface_retries := 0
+var pixels := PIXELS
+
+func configure(menu: Node3D, backend: Object, id: int = 1) -> void:
+	window_id = id
+	target = weakref(menu); platform = backend
+	pixels = LOW_END_PIXELS if menu.browser.low_end else PIXELS
+	set_meta("menu_eye_buffer", true)
+
+func _ready() -> void:
+	if OS.get_name() != "Android": status = "headset_only"; set_process(false); return
+	xr = XRServer.find_interface("OpenXR") as OpenXRInterface
+	if not xr or not xr.is_initialized(): status = "xr_unavailable"; set_process(false); return
+	bridge = JavaClassWrapper.wrap("org.vrpassthroughplayer.plugin.WebBrowserSurfaceBridge")
+	if not bridge or JavaClassWrapper.get_exception(): status = "bridge_unavailable"; set_process(false); return
+	xr.session_stopping.connect(_session_stop)
+	xr.session_loss_pending.connect(_session_stop)
+	xr.instance_exiting.connect(_session_stop)
+	xr.session_begun.connect(_session_start)
+	_create_layer()
+	if not layer: set_process(false); return
+	hole = MeshInstance3D.new()
+	hole.mesh = QuadMesh.new()
+	var material := ShaderMaterial.new(); material.shader = HOLE; material.render_priority = 25
+	hole.material_override = material; hole.visible = false
+	hole.set_meta("menu_eye_buffer", true); add_child(hole)
+	var menu: Node = target.get_ref()
+	if menu: menu.set_meta("menu_browser_layer", true)
+
+func _create_layer() -> void:
+	layer = OpenXRCompositionLayerQuad.new()
+	layer.name = "WebBrowserLayer"
+	layer.use_android_surface = true
+	layer.android_surface_size = pixels
+	layer.sort_order = -7 # Behind sharp menu chrome, above ordinary video layers.
+	layer.quad_size = HIDDEN
+	var system: Dictionary = xr.get_system_info()
+	var flip := preload("res://scripts/video_layer.gd")._surface_vertical_flip(str(system.get("XRRuntimeName", "")),
+		RenderingServer.get_current_rendering_driver_name(), OS.has_feature("pico"))
+	layer.set("XR_FB_composition_layer_image_layout/vertical_flip", flip)
+	add_child(layer)
+	if not layer.is_natively_supported():
+		status = "surface_unavailable"; layer.queue_free(); layer = null
+
+func present(value: bool, bounds: Rect2) -> void:
+	shown = value; rect = bounds
+
+func _session_start() -> void:
+	attached = false; ending = false; retry_at = 0; state = {}; _state_raw = ""; surface_retries = 0
+
+func _session_stop() -> void:
+	if not bridge or generation <= 0: return
+	var stopped: bool = bridge.detachWindowBeforeSessionStop(window_id, generation)
+	var failed := JavaClassWrapper.get_exception() != null
+	if not stopped or failed: status = "surface_stop_timeout"
+	attached = false; ending = true
+	if hole: hole.visible = false
+
+func _process(_delta: float) -> void:
+	var menu: Node3D = target.get_ref() if target else null
+	if not menu:
+		_session_stop(); queue_free(); return
+	if not menu.browser.active():
+		_release_idle_surface()
+		return
+	if ending: return
+	if not layer:
+		if Time.get_ticks_msec() < retry_at: return
+		_create_layer(); retry_at = Time.get_ticks_msec() + 500
+		if not layer: return
+	var layout: Dictionary = menu.page_layout()
+	global_transform = layout.pose
+	var distance: float = global_position.distance_to(menu.head().origin)
+	var nearer := 0
+	for peer in menu.browser.windows.values():
+		if peer != menu and peer.visible and peer.page_layout().pose.origin.distance_to(menu.head().origin) < distance: nearer += 1
+	layer.sort_order = -7 - nearer
+	var visible_now := shown and menu.is_visible_in_tree()
+	if not visible_now:
+		layer.quad_size = HIDDEN
+		hole.visible = false
+		return
+	if ending: return
+	if Time.get_ticks_msec() >= state_poll:
+		state_poll = Time.get_ticks_msec() + 250
+		var raw := str(platform.web_browser_status())
+		var parsed: Variant = null if raw == _state_raw else JSON.parse_string(raw)
+		_state_raw = raw
+		if parsed is Dictionary:
+			for item in parsed.get("windows", []):
+				if int(item.id) == window_id: state = item
+	if int(state.get("generation", 0)) == generation and state.get("needs_surface", false):
+		hole.visible = false; layer.quad_size = HIDDEN
+		if surface_retries >= 3: status = "surface_recreate_failed"; return
+		if Time.get_ticks_msec() < retry_at: return
+		var stopped: bool = bridge.detachWindowBeforeSessionStop(window_id, generation)
+		if JavaClassWrapper.get_exception() or not stopped: status = "surface_stop_timeout"; retry_at = Time.get_ticks_msec() + 2000; return
+		# Gecko has acknowledged release; only now destroy the OpenXR producer.
+		layer.free(); layer = null; attached = false; state = {}; _state_raw = ""; surface_retries += 1
+		_create_layer(); retry_at = Time.get_ticks_msec() + 250
+		platform.web_browser_action("resume")
+		return
+	if not attached and Time.get_ticks_msec() >= retry_at:
+		retry_at = Time.get_ticks_msec() + 500
+		var surface := layer.get_android_surface()
+		if surface:
+			generation += 1
+			attached = bool(bridge.attachWindow(window_id, surface, pixels.x, pixels.y, generation))
+			if JavaClassWrapper.get_exception(): attached = false; status = "surface_attach_failed"
+	if attached and int(state.get("generation", 0)) == generation and state.get("attached", false):
+		layer.quad_size = layout.size
+		hole.mesh.size = layout.size
+		hole.visible = true
+	else:
+		layer.quad_size = HIDDEN; hole.visible = false
+
+func _release_idle_surface() -> void:
+	if hole: hole.visible = false
+	if not layer: return
+	layer.quad_size = HIDDEN
+	if attached:
+		# Each attempt can block this thread for up to 1.5 s; never retry every frame.
+		if Time.get_ticks_msec() < retry_at: return
+		# Producer acknowledgement is required before destroying its swapchain.
+		var stopped: bool = bridge.detachWindowBeforeSessionStop(window_id, generation)
+		if JavaClassWrapper.get_exception() or not stopped:
+			status = "surface_stop_timeout"; retry_at = Time.get_ticks_msec() + 2000; return
+	attached = false; state = {}; _state_raw = ""; surface_retries = 0
+	layer.free(); layer = null
+
+func _exit_tree() -> void:
+	_session_stop()
+	var menu: Node = target.get_ref() if target else null
+	if menu: menu.remove_meta("menu_browser_layer")

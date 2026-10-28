@@ -1,0 +1,287 @@
+extends "res://scripts/ray_menu.gd"
+## Independent browser chrome. Reuses RayMenu hit testing and InterfaceMove placement math.
+const Move := preload("res://scripts/interface_move.gd")
+const RECT := Rect2(-0.59, -0.48, 1.44, 0.90)
+const MOVE := 986030
+const WEB := 986020
+const RESIZE := 986031
+const RESIZE_LEFT := 986032
+const CENTRE := Vector3(0.13, 0, 0)
+var controller: WeakRef
+var window_id := 1
+var mode := "floating"
+var surface: Node3D
+var drag := {}
+var title_move := Move.new()
+var placed := false
+var _save_at := 0
+var _last_pose := Transform3D.IDENTITY
+var _screen_attached := false
+var _floating_pose := Transform3D.IDENTITY
+# Cinema mode: the page fills the far screen while its controls float near the viewer,
+# placed once like the cinema playback bar and left in place as the head turns.
+const CinemaMenuLayout := preload("res://scripts/environments/cinema_menu_layout.gd")
+var _near_pose: Variant = null
+var _near_applied: Variant = null
+var browser: RefCounted:
+	get: return controller.get_ref()
+
+func configure(owner: RefCounted, id: int) -> void:
+	controller = weakref(owner); window_id = id
+	set_meta("menu_browser_layer", true)
+	ray_max_distance = 100.0
+func composition_root() -> Node3D: return self
+func _ready() -> void:
+	super()
+	surface = preload("res://scripts/web_browser_surface.gd").new()
+	surface.configure(self, browser.menu.platform, window_id)
+	get_tree().root.add_child(surface)
+func head() -> Transform3D:
+	var provider: Callable = browser.menu.layout_head_provider
+	var value: Variant = provider.call() if provider.is_valid() else null
+	return value if value is Transform3D else Transform3D(Basis.IDENTITY, Vector3(0, 1.6, 0))
+func show_window() -> void:
+	visible = true
+	if not placed:
+		placed = true; recenter(true)
+	refresh()
+func recenter(load_saved: bool = false) -> void:
+	_screen_attached = false; _near_pose = null; _near_applied = null
+	var frame := Move.menu_head(head())
+	var offset := Vector3(-0.78 if window_id == 1 else 0.78, -0.05, -2.2) if browser.paired_layout else Vector3(0, -0.05, -1.8)
+	var factor := 0.9 if browser.paired_layout else 1.0
+	if load_saved and OS.get_name() == "Android":
+		var config := ConfigFile.new()
+		if config.load("user://browser_windows.cfg") == OK:
+			var section := layout_section()
+			# Keep existing single-window placements, but do not import the old
+			# right-biased layout into the new symmetric pair defaults.
+			if not browser.paired_layout and not config.has_section(section): section = str(window_id)
+			var saved: Variant = config.get_value(section, "offset", offset)
+			if saved is Vector3 and saved.is_finite() and saved.length() >= 0.6 and saved.length() <= 8: offset = saved
+			factor = clampf(float(config.get_value(section, "scale", factor)), 0.6, 2.5)
+			mode = str(config.get_value(section, "mode", mode))
+			if mode not in ["floating", "cinema"]: mode = "floating"
+	var centre := frame * offset
+	global_transform = Transform3D(Move.face_viewer(centre, head()).scaled(Vector3.ONE * factor), centre)
+	global_position -= global_basis * Vector3(0.13, 0, 0)
+	_sync_presentation()
+	_save_at = Time.get_ticks_msec() + 700
+func layout_section() -> String:
+	return ("pair_" if browser.paired_layout else "single_") + str(window_id)
+func save_layout() -> void:
+	if not placed or OS.get_name() != "Android": return
+	var config := ConfigFile.new(); config.load("user://browser_windows.cfg")
+	var pose := _floating_pose if _screen_attached else global_transform
+	config.set_value(layout_section(), "offset", Move.menu_head(head()).affine_inverse() * (pose * CENTRE))
+	config.set_value(layout_section(), "scale", pose.basis.get_scale().x)
+	config.set_value(layout_section(), "mode", mode)
+	config.save("user://browser_windows.cfg")
+func cinema() -> Dictionary:
+	return browser.cinema_provider.call() if browser.cinema_provider.is_valid() else {}
+func on_screen() -> bool: return mode == "cinema" and not cinema().is_empty()
+func set_mode(value: String) -> void:
+	end_drag(); clear_pointer_visuals()
+	mode = value
+	_sync_presentation()
+func _sync_presentation() -> void:
+	if on_screen():
+		if not _screen_attached: _floating_pose = global_transform; _screen_attached = true
+		var anchor := Vector3(0.13, 0.04 if browser.tabs_open and browser.focused_window == window_id else 0.505, 0)
+		# A title or grip drag moved the bar: keep it where it was put.
+		if _near_pose != null and _near_applied != null and not global_transform.is_equal_approx(_near_applied):
+			_near_pose = Transform3D(global_basis, global_transform * anchor)
+		if _near_pose == null: _near_pose = CinemaMenuLayout.near_transport_pose(head())
+		var near: Transform3D = _near_pose
+		global_transform = Transform3D(near.basis, near.origin - near.basis * anchor)
+		_near_applied = global_transform
+	elif _screen_attached:
+		global_transform = _floating_pose; _screen_attached = false; _near_pose = null; _near_applied = null
+func page_layout() -> Dictionary:
+	if on_screen():
+		var screen := cinema()
+		var size := RECT.size * minf(float(screen.width) / RECT.size.x, float(screen.height) / RECT.size.y)
+		var basis := Basis(Vector3.UP, float(screen.get("yaw", 0.0)))
+		var pose := Transform3D(basis, Vector3(float(screen.position[0]), float(screen.position[1]), float(screen.position[2])) + basis.z * 0.06)
+		return {"pose": pose, "size": size}
+	var pose := global_transform * Transform3D(Basis.IDENTITY, Vector3(RECT.get_center().x, RECT.get_center().y, 0.012))
+	var size := RECT.size * Vector2(pose.basis.get_scale().x, pose.basis.get_scale().y)
+	pose.basis = pose.basis.orthonormalized()
+	return {"pose": pose, "size": size}
+func page_point(origin: Vector3, direction: Vector3) -> Variant:
+	var layout := page_layout()
+	var point: Variant = project_pointer(origin, direction, global_transform.affine_inverse() * layout.pose)
+	if point == null: return null
+	return Vector2(point.x / layout.size.x + 0.5, 0.5 - point.y / layout.size.y)
+func _process(_delta: float) -> void:
+	if not browser: queue_free(); return
+	if not browser.active():
+		if visible: dismiss()
+		if surface: surface.present(false, RECT)
+		return
+	if visible:
+		_sync_presentation()
+		if not _screen_attached and not global_transform.is_equal_approx(_last_pose):
+			_last_pose = global_transform; _save_at = Time.get_ticks_msec() + 700
+		if _save_at > 0 and drag.is_empty() and Time.get_ticks_msec() >= _save_at:
+			_save_at = 0; save_layout()
+		for button in _buttons:
+			if button.target == WEB:
+				var layout := page_layout()
+				button.node.global_transform = layout.pose
+				button.node.mesh.size = layout.size
+				button.rect.size = layout.size
+	if surface: surface.present(visible and not (browser.tabs_open and browser.focused_window == window_id), RECT)
+func _place_device_status(_centre: Vector2) -> void: pass
+func _draw() -> void:
+	_clear_layout()
+	_sync_presentation()
+	if browser: browser.draw_window(self)
+	# Above the distant page's alpha hole (25) yet below MenuComposition.POPUP_PRIORITY (30):
+	# popup-classed chrome was squeezed into a 0.93 m popup slot and blurred.
+	_backdrop.material_override.render_priority = 26 if on_screen() else 10
+	if on_screen():
+		# Transparent menu tiles do not write depth. Draw near controls after the
+		# distant page's alpha hole (priority 25), without raising its hit tile.
+		for button in _buttons:
+			if button.target != WEB: _raise_chrome(button.node)
+		for label in _labels: _raise_chrome(label)
+		for decoration in _decorations: _raise_chrome(decoration)
+func _raise_chrome(node: Node) -> void:
+	if node is Label3D:
+		if not node.has_meta("browser_priority"): node.set_meta("browser_priority", node.render_priority)
+		node.render_priority = int(node.get_meta("browser_priority")) + 16
+	elif node is MeshInstance3D and node.material_override:
+		var material: Material = node.material_override
+		if not material.has_meta("browser_priority"): material.set_meta("browser_priority", material.render_priority)
+		material.render_priority = int(material.get_meta("browser_priority")) + 16
+	for child in node.get_children(): _raise_chrome(child)
+func _activate(target: int) -> void:
+	browser.focus_window(window_id)
+	browser.action(target)
+func _activate_hit(hit: Dictionary) -> void:
+	var peer: Node = browser.windows.get(int(hit.get("window", window_id)), self)
+	if peer != self: peer._activate(int(hit.target))
+	else: super(hit)
+func local_hit(origin: Vector3, direction: Vector3) -> Dictionary:
+	var hit := super.ray_hit(origin, direction)
+	if not hit.is_empty(): hit.window = window_id
+	return hit
+func ray_hit(origin: Vector3, direction: Vector3) -> Dictionary:
+	var hit := local_hit(origin, direction)
+	if window_id == 1 and browser:
+		for peer in browser.windows.values():
+			if peer == self or not peer.visible: continue
+			var candidate: Dictionary = peer.local_hit(origin, direction)
+			if not candidate.is_empty() and (hit.is_empty() or candidate.distance < hit.distance):
+				candidate.point = to_local(peer.to_global(candidate.point)); hit = candidate
+	return hit
+func grab_hit(origin: Vector3, direction: Vector3) -> Dictionary:
+	var hit := _local_grab_hit(origin, direction)
+	if window_id == 1:
+		for peer in browser.windows.values():
+			if peer == self: continue
+			var candidate: Dictionary = peer._local_grab_hit(origin, direction)
+			if not candidate.is_empty() and (hit.is_empty() or candidate.distance < hit.distance):
+				candidate.point = to_local(peer.to_global(candidate.point)); hit = candidate
+	return hit
+func _local_grab_hit(origin: Vector3, direction: Vector3) -> Dictionary:
+	if not visible: return {}
+	var hit := _pointer_hit_over(origin, direction, local_hit(origin, direction))
+	# In cinema mode only the near controls move; the page stays on the far screen.
+	if on_screen() and int(hit.get("target", -1)) == WEB: return {}
+	if not hit.is_empty(): hit.window = window_id
+	return hit
+func draw_frame_panels() -> void:
+	# The separate web layer sits below the menu layers. Capture a transparent
+	# centre rather than an opaque backdrop that would paint over the page.
+	for bounds in [Rect2(-0.60, 0.42, 1.46, 0.17), Rect2(-0.60, -0.50, 1.46, 0.02),
+		Rect2(-0.60, -0.48, 0.01, 0.90), Rect2(0.85, -0.48, 0.01, 0.90)]:
+		var centre: Vector2 = bounds.get_center()
+		var panel := _quad(bounds.size, Vector3(centre.x, centre.y, 0), PANEL, 10)
+		panel.material_override.set_shader_parameter("corner_radius", 0.004)
+		add_child(panel); _decorations.append(panel); _pointer_panels.append(panel)
+func draw_resize_corners() -> void:
+	# Match the playback screen's lower corner borders; no extra caption or drag bar.
+	for side in [-1, 1]:
+		var x: float = 0.13 + side * 0.68
+		_button(RESIZE_LEFT if side < 0 else RESIZE, "", Vector2(x, -0.47), Vector2(0.12, 0.12))
+		var tile: Dictionary = _buttons.back()
+		tile.node.position.z = 0.025
+		tile.base_color = Color(0, 0, 0, 0); tile.node.material_override.set_shader_parameter("surface_color", tile.base_color)
+		for edge in [Vector4(side * 0.04, 0, 0.008, 0.08), Vector4(0, -0.04, 0.08, 0.008)]:
+			var mark := _quad(Vector2(edge.z, edge.w), Vector3(edge.x, edge.y, 0.005), Color(0.7, 0.85, 0.82), 12)
+			tile.node.add_child(mark)
+func end_drag() -> void:
+	drag.clear(); title_move.cancel()
+func dismiss() -> void:
+	end_drag(); super()
+static func ray_pose(origin: Vector3, direction: Vector3) -> Transform3D:
+	var up := Vector3.FORWARD if absf(direction.normalized().dot(Vector3.UP)) > 0.99 else Vector3.UP
+	return Transform3D(Basis.looking_at(direction.normalized(), up), origin)
+func has_pointer_capture() -> bool:
+	return not browser.hand.is_empty() or browser.windows.values().any(func(item): return not item.drag.is_empty())
+func press_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: bool) -> bool:
+	if has_pointer_capture(): return true
+	var hit := ray_hit(origin, direction) if tracked else {}
+	if hit.is_empty(): return false
+	var peer: Node = browser.windows.get(int(hit.get("window", window_id)), self)
+	browser.focus_window(peer.window_id)
+	if int(hit.target) == MOVE:
+		if peer.title_move.begin(hand, "trigger", ray_pose(origin, direction),
+			[{"node": peer, "kind": "detail", "key": "browser", "pose": peer.global_transform, "upright_facing": true, "face_center": CENTRE}], to_global(hit.point), peer.head()):
+			peer.drag = {"hand": hand, "kind": MOVE}
+		return true
+	if int(hit.target) in [RESIZE_LEFT, RESIZE] and not peer.on_screen():
+		var point: Variant = peer.project_pointer(origin, direction, Transform3D.IDENTITY)
+		if point != null:
+			peer.drag = {"hand": hand, "kind": int(hit.target), "pose": peer.global_transform, "start": point}
+		return true
+	if int(hit.target) == WEB: return browser.press(hand, origin, direction, tracked)
+	peer._activate(int(hit.target)); return true
+func update_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: bool) -> void:
+	browser.menu.clear_pointer_visuals()
+	for peer in browser.windows.values():
+		if peer != self: peer.clear_pointer_visuals()
+	super(hand, origin, direction, tracked)
+	for peer in browser.windows.values():
+		if peer.drag.get("hand", "") != hand: continue
+		if not tracked or not origin.is_finite() or not direction.is_finite() or direction.length_squared() < 0.00001: peer.end_drag(); return
+		if peer.drag.kind == MOVE:
+			peer.title_move.update(ray_pose(origin, direction), peer.head(), null)
+			if peer.title_move.capture.is_empty(): peer.end_drag()
+			return
+		var capture: Dictionary = peer.drag
+		var point: Variant = peer.project_pointer(origin, direction, peer.global_transform.affine_inverse() * capture.pose)
+		if point != null:
+			var factor := clampf((Vector3(point) - CENTRE).length() / maxf((Vector3(capture.start) - CENTRE).length(), 0.1) * capture.pose.basis.get_scale().x, 0.6, 2.5)
+			peer._scale_about_centre(factor, capture.pose)
+		return
+	browser.move(hand, origin, direction, tracked)
+func release_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: bool) -> void:
+	for peer in browser.windows.values():
+		if peer.drag.get("hand", "") == hand: peer.end_drag(); peer.save_layout(); return
+	browser.release(hand, origin, direction, tracked)
+func cancel_pointer(hand: String) -> void:
+	for peer in browser.windows.values():
+		if peer.drag.get("hand", "") == hand: peer.end_drag()
+	if browser.hand == hand: browser.cancel()
+	super(hand)
+func stick_scroll(amount: float, delta: float) -> void:
+	for peer in browser.windows.values():
+		if not peer.drag.is_empty(): return
+	browser.scroll(amount, delta)
+func _scale_about_centre(factor: float, pose: Transform3D) -> void:
+	var centre := pose * CENTRE
+	var basis := pose.basis.orthonormalized().scaled(Vector3.ONE * factor)
+	global_transform = Transform3D(basis, centre - basis * CENTRE)
+func adjust_size(amount: float) -> void:
+	if on_screen(): return
+	var factor := clampf(global_basis.get_scale().x + amount, 0.6, 2.5)
+	_scale_about_centre(factor, global_transform); save_layout()
+func adjust_distance(amount: float) -> void:
+	var centre := to_global(Vector3(0.13, 0, 0)); var offset := centre - head().origin
+	var distance := clampf(offset.length() + amount, 0.6, 8.0)
+	global_position += offset.normalized() * (distance - offset.length()); save_layout()
+func _exit_tree() -> void:
+	if is_instance_valid(surface): surface.queue_free()

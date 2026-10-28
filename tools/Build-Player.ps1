@@ -1,3 +1,4 @@
+[CmdletBinding()]
 param([string]$ToolRoot = $(if ($env:THRU3D_TOOL_ROOT) { $env:THRU3D_TOOL_ROOT } else { Join-Path ([Environment]::GetFolderPath('UserProfile')) '.cache\thru3d-toolchain' }),
     [ValidateSet('OfficialRelease','SourceFrame')][string]$MpvCandidate = 'SourceFrame',
     [ValidatePattern('^[A-Za-z0-9][A-Za-z0-9_.-]*\.apk$')][string]$ApkName = '',
@@ -15,18 +16,25 @@ param([string]$ToolRoot = $(if ($env:THRU3D_TOOL_ROOT) { $env:THRU3D_TOOL_ROOT }
     [string]$SigningDirectory = '',
     # A separate package keeps emulator Debug diagnostics apart from an installed Release.
     [ValidateSet('','com.wapok.thru3d.emulator')][string]$DebugApplicationId = '',
-    # Meta Quest Store uses a separate Android application identity.
-    [switch]$QuestStore)
+    # PICO China uses the same identity, with a distinct channel and upload build number.
+    [switch]$PicoChinaStore,
+    # Comparison build: store native libraries without ZIP compression, retaining extraction.
+    [switch]$UncompressedNativeLibraries,
+    [ValidateRange(0,2100000000)][int]$AndroidVersionCode = 0)
 $ErrorActionPreference = 'Stop'
-if ($QuestStore -and ($BuildType -ne 'Release' -or $XrVendor -ne 'Quest')) {
-    throw 'QuestStore is limited to QUEST Release builds.'
+if (($PicoChinaStore -or $AndroidVersionCode -gt 0) -and ($BuildType -ne 'Release' -or $XrVendor -ne 'Pico')) {
+    throw 'PicoChinaStore and AndroidVersionCode are limited to PICO Release builds.'
 }
+if ($PicoChinaStore -and $AndroidVersionCode -eq 0) { throw 'PICO China requires an explicit AndroidVersionCode greater than the last PICO upload.' }
+$distributionChannel = if ($PicoChinaStore) { 'pico_cn_store' } else { 'standard' }
+if ($UncompressedNativeLibraries -and ($BuildType -ne 'Release' -or $XrVendor -ne 'Quest')) { throw 'UncompressedNativeLibraries is limited to QUEST Release comparison builds.' }
+$customApkName = [bool]$ApkName
 if (-not $ApkName) {
     $ApkName = if ($BuildType -eq 'Release') {
         switch ($XrVendor) {
-            'Pico' { 'Thru3D-PICO-release.apk' }
+            'Pico' { if ($PicoChinaStore) { 'Thru3D-PICO-CN-STORE-release.apk' } else { 'Thru3D-PICO-release.apk' } }
             'OpenXR' { 'Thru3D-OpenXR-release.apk' }
-            default { if ($QuestStore) { 'Thru3D-QUEST-META-STORE-release.apk' } else { 'Thru3D-QUEST-release.apk' } }
+            default { 'Thru3D-QUEST-release.apk' }
         }
     } else {
         switch ($XrVendor) {
@@ -44,7 +52,7 @@ $exportPreset = switch ($XrVendor) {
 if ($XrVendor -eq 'OpenXR') {
     Write-Output 'Experimental standard OpenXR target: device runtime, full controller input and passthrough require device validation.'
 }
-$applicationId = if ($QuestStore) { 'com.thru3d.quest' } else { 'com.wapok.thru3d' }
+$applicationId = 'com.wapok.thru3d'
 if ($DebugApplicationId) {
     if ($BuildType -ne 'Debug' -or $XrVendor -ne 'Pico') { throw 'The emulator application id is limited to PICO Debug builds.' }
     $applicationId = $DebugApplicationId
@@ -57,10 +65,15 @@ $workspace = Split-Path -Parent $PSScriptRoot
 $buildMutex = [Threading.Mutex]::new($false, 'Local\VRPassthroughPlayer-Build')
 $buildLockHeld = $false
 $originalExportPresets = $null
+$originalAndroidBuildScript = $null
+$uncompressedAndroidBuildScript = $null
+$originalProjectConfig = $null
+$channelProjectConfig = $null
 $originalSigningEnvironment = @{}
 foreach ($key in @('GODOT_ANDROID_KEYSTORE_DEBUG_PATH','GODOT_ANDROID_KEYSTORE_DEBUG_USER','GODOT_ANDROID_KEYSTORE_DEBUG_PASSWORD','GODOT_ANDROID_KEYSTORE_RELEASE_PATH','GODOT_ANDROID_KEYSTORE_RELEASE_USER','GODOT_ANDROID_KEYSTORE_RELEASE_PASSWORD','ORG_GRADLE_PROJECT_android.jetifier.ignorelist')) {
     $originalSigningEnvironment[$key] = [Environment]::GetEnvironmentVariable($key, 'Process')
 }
+$projectConfigPath = Join-Path $workspace 'app/godot/project.godot'
 $exportPresetsPath = Join-Path $workspace 'app\godot\export_presets.cfg'
 try {
     try { $buildLockHeld = $buildMutex.WaitOne(0) }
@@ -83,8 +96,32 @@ if ($BuildType -eq 'Release') {
 }
 $projectDirectory = Join-Path $workspace 'app\godot'
 $appVersion = [regex]::Match((Get-Content (Join-Path $projectDirectory 'project.godot') -Raw), '(?m)^config/version="([^"]+)"').Groups[1].Value
-if ($DebugApplicationId -or $QuestStore) {
+$presetText = [IO.File]::ReadAllText($exportPresetsPath)
+$presetHeader = [regex]::Match($presetText, '(?m)^\[preset\.(\d+)\]\r?\nname="' + [regex]::Escape($exportPreset) + '"')
+if (-not $presetHeader.Success) { throw 'Export preset not found.' }
+$presetOptions = [regex]::Match($presetText, '(?ms)^\[preset\.' + $presetHeader.Groups[1].Value + '\.options\]\r?\n(.*?)(?=^\[|\z)').Groups[1].Value
+$sourceVersionCode = [int][regex]::Match($presetOptions, '(?m)^version/code=(\d+)').Groups[1].Value
+if ($sourceVersionCode -lt 1) { throw 'Export preset has no valid Android versionCode.' }
+$expectedVersionCode = if ($AndroidVersionCode -gt 0) { $AndroidVersionCode } else { $sourceVersionCode }
+if ($AndroidVersionCode -gt 0 -and $AndroidVersionCode -le $sourceVersionCode) { throw 'Upload AndroidVersionCode must exceed the source versionCode. Choose a value above the last code already uploaded to either PICO channel.' }
+if ($XrVendor -eq 'Pico' -and $BuildType -eq 'Release' -and -not $customApkName) {
+    $channelName = if ($PicoChinaStore) { 'PICO-CN-STORE' } else { 'PICO' }
+    $ApkName = "Thru3D-$channelName-$appVersion-vc$expectedVersionCode-release-$(Get-Date -Format 'yyyyMMdd').apk"
+}
+if ($UncompressedNativeLibraries -and -not $customApkName) {
+    $ApkName = "Thru3D-QUEST-$appVersion-NO-NATIVE-COMPRESSION-release-$(Get-Date -Format 'yyyyMMdd').apk"
+}
+$originalProjectConfig = [IO.File]::ReadAllBytes($projectConfigPath)
+$projectText = [Text.Encoding]::UTF8.GetString($originalProjectConfig)
+if ($projectText -notmatch '(?m)^config/distribution_channel="standard"\r?$') { throw 'Source distribution channel must remain standard.' }
+$channelProjectConfig = [Text.UTF8Encoding]::new($false).GetBytes($projectText.Replace('config/distribution_channel="standard"', 'config/distribution_channel="' + $distributionChannel + '"'))
+[IO.File]::WriteAllBytes($projectConfigPath, $channelProjectConfig)
+if ($AndroidVersionCode -gt 0) {
     $originalExportPresets = [IO.File]::ReadAllBytes($exportPresetsPath)
+    [IO.File]::WriteAllText($exportPresetsPath, [regex]::Replace($presetText, '(?m)^version/code=\d+', "version/code=$expectedVersionCode"), [Text.UTF8Encoding]::new($false))
+}
+if ($DebugApplicationId) {
+    if ($null -eq $originalExportPresets) { $originalExportPresets = [IO.File]::ReadAllBytes($exportPresetsPath) }
     $packagePresets = [Text.Encoding]::UTF8.GetString($originalExportPresets).Replace('package/unique_name="com.wapok.thru3d"', 'package/unique_name="' + $applicationId + '"')
     [IO.File]::WriteAllText($exportPresetsPath, $packagePresets, [Text.UTF8Encoding]::new($false))
 }
@@ -108,6 +145,8 @@ if ($UsePreparedModelAssets) {
 & "$workspace\tools\environment\Prepare-Narration.ps1"
 & "$workspace\tools\environment\Prepare-NarrationModels.ps1"
 & "$workspace\tools\environment\Prepare-Listening.ps1"
+& "$workspace\tools\environment\Prepare-WebVideo.ps1"
+& "$workspace\tools\environment\Prepare-WebBrowserToolchain.ps1" -ToolRoot $ToolRoot
 
 # Extract the Java API from the matching official template, not a second engine dependency.
 Add-Type -AssemblyName System.IO.Compression.FileSystem
@@ -125,8 +164,8 @@ if (-not (Test-Path -LiteralPath $godotApi)) {
 & "$PSScriptRoot\environment\Prepare-OpenList.ps1" -ToolRoot $ToolRoot
 # A cold Gradle daemon prints an SDK XML warning on stderr; only the exit code decides.
 $ErrorActionPreference = 'Continue'
-[string[]]$pluginTasks = @(':player-plugin:assembleDebug', ':player-plugin:assembleRelease')
-& "$workspace\android\gradlew.bat" -p "$workspace\android" "-PgodotAarPath=$godotApi" "-PincludeDiagnostics=$($IncludeDiagnostics.IsPresent.ToString().ToLowerInvariant())" @pluginTasks $(if ($SkipUnitTests) { @() } else { @(':player-plugin:testDebugUnitTest') }) --console=plain 2>&1 | Out-File (Join-Path $logDirectory 'plugin-build.log') -Encoding utf8
+[string[]]$pluginTasks = @(':player-plugin:assembleDebug', ':player-plugin:assembleRelease', ':web-browser:assembleDebug', ':web-browser:assembleRelease')
+& "$workspace\android\gradlew.bat" -p "$workspace\android" "-PgodotAarPath=$godotApi" "-PincludeDiagnostics=$($IncludeDiagnostics.IsPresent.ToString().ToLowerInvariant())" @pluginTasks $(if ($SkipUnitTests) { @() } else { @(':player-plugin:testDebugUnitTest', ':web-browser:testDebugUnitTest') }) --console=plain 2>&1 | Out-File (Join-Path $logDirectory 'plugin-build.log') -Encoding utf8
 $ErrorActionPreference = 'Stop'
 if ($LASTEXITCODE -ne 0) { throw 'Android plugin build failed; inspect build/output/logs/plugin-build.log.' }
 $pluginDirectory = Join-Path $projectDirectory 'addons\quest_player\bin'
@@ -136,6 +175,7 @@ foreach ($variant in @('debug','release')) {
     & "$PSScriptRoot\Assert-ComicJapanesePackaged.ps1" -ArchivePath "$workspace\android\player-plugin\build\outputs\aar\player-plugin-$variant.aar"
     & "$PSScriptRoot\Assert-ListeningPackaged.ps1" -ArchivePath "$workspace\android\player-plugin\build\outputs\aar\player-plugin-$variant.aar"
     Copy-Item -LiteralPath "$workspace\android\player-plugin\build\outputs\aar\player-plugin-$variant.aar" -Destination $pluginDirectory -Force
+    Copy-Item -LiteralPath "$workspace\android\web-browser\build\outputs\aar\web-browser-$variant.aar" -Destination $pluginDirectory -Force
 }
 # OpenXR layer extensions Godot does not request (native/xr-layer/layer_extensions.cpp): a GDExtension
 # declared for this export only. Its Android library ships in the plugin AAR; the editor loads an empty
@@ -198,6 +238,9 @@ if ($XrVendor -eq 'Pico') {
     & (Join-Path $workspace '.venv\Scripts\python.exe') (Join-Path $PSScriptRoot 'environment\prepare_pico_emulator_egl.py') --workspace $workspace --tool-root $ToolRoot
     if ($LASTEXITCODE -ne 0) { throw 'PICO emulator EGL compatibility overlay failed.' }
 }
+# The browser AAR declares SDK37.2, and Godot's generated build must use the same
+# compiler/runtime dependency versions as the plugin. Keep the device target unchanged.
+& "$workspace\tools\environment\Prepare-WebBrowserToolchain.ps1" -ToolRoot $ToolRoot -ForExport
 # These are desktop OSGi manifests in multi-release jars, not Android runtime code.
 # BC and jspecify both provide them; keep the dependency classes and license resources.
 $osgiExclusion = "        exclude 'META-INF/versions/*/OSGI-INF/MANIFEST.MF'"
@@ -206,6 +249,14 @@ if (-not $androidBuildText.Contains($osgiExclusion)) {
     if (-not $androidBuildText.Contains('    packagingOptions {')) { throw 'Godot Android packaging block changed.' }
     $androidBuildText = $androidBuildText.Replace('    packagingOptions {', "    packagingOptions {`n$osgiExclusion")
     [IO.File]::WriteAllText($androidBuildScript, $androidBuildText, [Text.UTF8Encoding]::new($false))
+}
+if ($UncompressedNativeLibraries) {
+    # Godot couples extraction to its legacy flag. Override only ZIP compression,
+    # preserving installed executable Python/QuickJS and the current resolver.
+    $originalAndroidBuildScript = [IO.File]::ReadAllBytes($androidBuildScript)
+    $rule = "`n// Uncompressed native comparison build, with install extraction.`nandroid { androidResources { noCompress += 'so' } }`n"
+    $uncompressedAndroidBuildScript = [Text.UTF8Encoding]::new($false).GetBytes([Text.Encoding]::UTF8.GetString($originalAndroidBuildScript) + $rule)
+    [IO.File]::WriteAllBytes($androidBuildScript, $uncompressedAndroidBuildScript)
 }
 $exportArguments += @($(if ($BuildType -eq 'Release') { '--export-release' } else { '--export-debug' }),$exportPreset,$apkPath)
 $ErrorActionPreference = 'Continue'
@@ -220,6 +271,13 @@ $exportExitCode = $LASTEXITCODE
 $ErrorActionPreference = 'Stop'
 if ($exportExitCode -ne 0) { throw 'APK export failed; inspect build/output/logs/godot-export.log.' }
 if ((Get-Content (Join-Path $logDirectory 'godot-export.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)') { throw 'Godot export reported errors.' }
+if ($UncompressedNativeLibraries) {
+    # Legacy extraction does not page-align stored libraries. Finish this new APK
+    # with zipalign and the same prepared signing identity before normal assertions.
+    & "$PSScriptRoot/environment/Complete-UncompressedNativeApk.ps1" -ApkPath $apkPath -BuildType $BuildType
+}
+& (Join-Path $workspace '.venv/Scripts/python.exe') (Join-Path $PSScriptRoot 'assert_native_compression.py') $apkPath $(if ($UncompressedNativeLibraries) { 'stored' } else { 'deflate' })
+if ($LASTEXITCODE -ne 0) { throw 'APK native library compression policy differs.' }
 & "$env:ANDROID_HOME\build-tools\36.1.0\apksigner.bat" verify --verbose $apkPath 2>&1 | Out-File (Join-Path $logDirectory 'apk-signature.log') -Encoding utf8
 if ($LASTEXITCODE -ne 0) { throw 'APK signature validation failed.' }
 & "$env:ANDROID_HOME\build-tools\36.1.0\apksigner.bat" verify --print-certs $apkPath 2>&1 | Out-File (Join-Path $logDirectory 'apk-signer-certificate.log') -Encoding utf8
@@ -253,9 +311,14 @@ if ($XrVendor -in @('Pico','OpenXR') -and $androidSdk.minSdkVersion -ne 29) {
 if ($manifestText -notmatch 'android:requestLegacyExternalStorage[^\r\n]*=true') {
     throw 'APK lost Android 10 legacy shared-storage compatibility.'
 }
+if ($manifestText -notmatch 'android:extractNativeLibs[^\r\n]*=true') {
+    throw 'The web extractor requires installed executable native libraries; enable compressed native libraries in the Godot export preset.'
+}
 foreach ($storagePermission in @('android.permission.READ_EXTERNAL_STORAGE','android.permission.MANAGE_EXTERNAL_STORAGE')) {
     if (-not $manifestText.Contains($storagePermission)) { throw "APK is missing local storage permission: $storagePermission" }
 }
+if ($manifestText -notmatch ('android:versionCode[^\r\n]*=' + $expectedVersionCode + '\b')) { throw 'APK Android versionCode differs from the requested build number.' }
+& "$PSScriptRoot/Assert-DistributionPackaged.ps1" -ArchivePath $apkPath -ExpectedChannel $distributionChannel
 if ($manifestText -notmatch ('android:versionName[^\r\n]*="' + [regex]::Escape($appVersion) + '"')) {
     throw 'APK version differs from the project version.'
 }
@@ -418,6 +481,7 @@ try {
     & "$PSScriptRoot\Assert-NarrationPackaged.ps1" -ArchivePath $apkPath
     & "$PSScriptRoot\Assert-ComicJapanesePackaged.ps1" -ArchivePath $apkPath
     & "$PSScriptRoot\Assert-ListeningPackaged.ps1" -ArchivePath $apkPath
+    & "$PSScriptRoot\Assert-WebVideoPackaged.ps1" -ArchivePath $apkPath
     # Test auditorium is included in both Debug and Release (2026-10-23).
     & "$PSScriptRoot\Assert-CinemaPackaged.ps1" -ArchivePath $apkPath
     $rvmLibrary = Join-Path $nativeEvidenceDirectory 'libquest_rvm.so'
@@ -443,6 +507,7 @@ foreach ($symbol in @('Java_org_vrpassthroughplayer_plugin_RvmNative_runBenchmar
 if ($LASTEXITCODE -ne 0) { throw 'APK DEX inspection failed.' }
 $dexReport = Get-Content (Join-Path $logDirectory 'apk-dex-packages.log') -Raw
 if ($dexReport -notmatch '(?m)\scom\.atilika\.kuromoji\.ipadic\.Tokenizer\r?$') { throw 'APK is missing the Japanese reading tokenizer.' }
+if ($dexReport -notmatch '(?m)\scom\.ibm\.icu\.text\.CharsetDetector\r?$') { throw 'APK is missing the subtitle charset detector.' }
 if ($dexReport -match 'org\.codelibs\.jcifs\.smb1?\.(http|https)(\.|\s|$)') {
     throw 'APK contains unused jcifs HTTP NTLM/TLS adapters; check the filtered SMB dependency.'
 }
@@ -499,7 +564,12 @@ $buildManifest = [ordered]@{
     schema_version = 1
     built_utc = [DateTime]::UtcNow.ToString('o')
     application_id = $applicationId
-    distribution_channel = if ($QuestStore) { 'quest_store' } else { 'standard' }
+    distribution_channel = $distributionChannel
+    native_library_compression = if ($UncompressedNativeLibraries) { 'stored' } else { 'deflate' }
+    native_library_install_extraction = $true
+    android_version_code = $expectedVersionCode
+    source_android_version_code = $sourceVersionCode
+    web_browser_entry_enabled = -not $PicoChinaStore
     xr_vendor = $XrVendor
     hand_tracking = 'OpenXR runtime aim/select preferred; joint pinch fallback; physical validation pending'
     app_version = $appVersion
@@ -605,8 +675,10 @@ if ($BuildType -eq 'Release') {
     $releaseDate = Get-Date -Format 'yyyyMMdd'
     $releaseDirectory = Join-Path $workspace ("releases/$appVersion/$releaseDate/" + $buildManifest.apk_sha256.Substring(0,12))
     New-Item -ItemType Directory -Path $releaseDirectory -Force | Out-Null
-    if ($QuestStore) { $platformName = 'QUEST-META-STORE' }
-    $releaseApk = Join-Path $releaseDirectory "Thru3D-$platformName-$appVersion-release-$releaseDate.apk"
+    if ($PicoChinaStore) { $platformName = 'PICO-CN-STORE' }
+    $codeSuffix = if ($XrVendor -eq 'Pico') { "-vc$expectedVersionCode" } else { '' }
+    $compressionSuffix = if ($UncompressedNativeLibraries) { '-NO-NATIVE-COMPRESSION' } else { '' }
+    $releaseApk = Join-Path $releaseDirectory "Thru3D-$platformName-$appVersion$codeSuffix$compressionSuffix-release-$releaseDate.apk"
     if (Test-Path -LiteralPath $releaseApk) {
         if ((Get-FileHash -LiteralPath $releaseApk).Hash.ToLowerInvariant() -ne $buildManifest.apk_sha256) { throw 'Permanent release archive already contains different bytes.' }
     } else { Copy-Item -LiteralPath $apkPath -Destination $releaseApk }
@@ -620,10 +692,20 @@ $buildManifest | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $artifactDirec
 Write-Output "Built: $apkPath"
 Write-Output "SHA256: $($buildManifest.apk_sha256)"
 } finally {
+    if ($null -ne $originalAndroidBuildScript) {
+        if ([Convert]::ToBase64String([IO.File]::ReadAllBytes($androidBuildScript)) -eq [Convert]::ToBase64String($uncompressedAndroidBuildScript)) {
+            [IO.File]::WriteAllBytes($androidBuildScript, $originalAndroidBuildScript)
+        } else { Write-Warning 'Android build script changed concurrently; preserving edits.' }
+    }
     foreach ($key in $originalSigningEnvironment.Keys) {
         [Environment]::SetEnvironmentVariable($key, $originalSigningEnvironment[$key], 'Process')
     }
     if ($null -ne $originalExportPresets) { [IO.File]::WriteAllBytes($exportPresetsPath, $originalExportPresets) }
+    if ($null -ne $originalProjectConfig -and $null -ne $channelProjectConfig) {
+        $currentProject = [Convert]::ToBase64String([IO.File]::ReadAllBytes($projectConfigPath))
+        if ($currentProject -eq [Convert]::ToBase64String($channelProjectConfig)) { [IO.File]::WriteAllBytes($projectConfigPath, $originalProjectConfig) }
+        else { Write-Warning 'Project changed during build; preserving concurrent edits instead of restoring it.' }
+    }
     # The export-only GDExtension declaration never stays in the project.
     $layerExtensionFile = Join-Path $workspace 'app\godot\addons\quest_player\layer_extensions.gdextension'
     # Its .uid stays (git-ignored): deleting it makes the next import warn about the cached UID.

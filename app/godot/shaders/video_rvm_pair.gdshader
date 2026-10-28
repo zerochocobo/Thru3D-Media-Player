@@ -26,6 +26,8 @@ uniform bool packed_alpha = false;
 #include "res://shaders/projected_subtitles.gdshaderinc"
 #include "res://shaders/bitmap_subtitles.gdshaderinc"
 uniform bool separate_subtitles = false;
+uniform bool projection_mesh = false;
+uniform bool projection_uv_packed = false;
 
 vec3 clarity_sample(vec2 p, vec2 lo, vec2 hi, vec3 center) {
 	vec2 q = clamp(p, lo, hi);
@@ -99,18 +101,19 @@ void vertex() {
 }
 
 void fragment() {
+	if (projection_mesh && abs(COLOR.r - float(source_eye())) > 0.25) { discard; }
 	vec3 sample_direction = pip_direction(UV, media_direction);
-	vec2 shown_uv = eye_uv(pip_uv(UV), sample_direction);
+	vec2 shown_uv = projection_mesh ? UV : eye_uv(pip_uv(UV), sample_direction);
 	shown_uv = aligned_eye_uv(shown_uv);
 	if (depth_enabled && !stereo_sbs && !pip_enabled) { shown_uv = depth_parallax(shown_uv, pip_viewing_eye > 0 ? pip_viewing_eye - 1 : eye_index); }
 	vec2 local_uv = raw_eye_uv(shown_uv);
 	int eye = source_eye();
-	vec2 eye_size = view_size();
+	vec2 eye_size = projection_uv_packed ? source_size : view_size();
 	vec2 color_p = clamp(local_uv, vec2(0.5) / eye_size, vec2(1.0) - vec2(0.5) / eye_size);
-	if (stereo_sbs && top_bottom) { color_p.y = (color_p.y + float(eye)) * 0.5; }
-	else if (stereo_sbs) { color_p.x = (color_p.x + float(eye)) * 0.5; }
+	if (!projection_uv_packed && stereo_sbs && top_bottom) { color_p.y = (color_p.y + float(eye)) * 0.5; }
+	else if (!projection_uv_packed && stereo_sbs) { color_p.x = (color_p.x + float(eye)) * 0.5; }
 	vec3 rgb = texture(color_texture, color_p).rgb;
-	if (sharpness > 0.0) {
+	if (sharpness > 0.0 && !projection_mesh) {
 		vec2 lo = vec2(0.5) / source_size;
 		vec2 hi = vec2(1.0) - lo;
 		if (stereo_sbs && top_bottom) { lo.y += float(eye) * 0.5; hi.y -= float(1 - eye) * 0.5; }

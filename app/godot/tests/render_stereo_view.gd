@@ -109,6 +109,11 @@ func _run() -> void:
 			material.set_shader_parameter("video_geometry", geometry)
 			var left := await _pixel(0); var right := await _pixel(1)
 			check(absf(left.r - right.r) < 0.006 and absf(left.g - right.g) < 0.006, variant + " immersive projection applies alignment " + str(geometry))
+			for offset in [-0.10, 0.10]:
+				material.set_shader_parameter("stereo_offset", Vector2(offset, 0.015625))
+				var shifted_left := await _pixel(0); var shifted_right := await _pixel(1)
+				check((shifted_left.r - left.r) * signf(offset - .03125) < -.01 and (shifted_right.r - right.r) * signf(offset - .03125) > .01, variant + " expanded horizontal limit shifts eyes oppositely " + str([geometry, offset]))
+			material.set_shader_parameter("stereo_offset", Vector2(.03125, .015625))
 		material.set_shader_parameter("test_direction", Vector3(0.001, 0, 1))
 		var seam := await _pixel(1)
 		check(seam.b > 0.7 and seam.r < 0.02 and seam.a > 0.99, variant + " 360 wraps longitude inside the selected eye")

@@ -45,7 +45,7 @@ internal object RenderBridgeNative {
     @JvmStatic external fun captureOpaqueBuffer(handle: Long, buffer: Long, bufferWidth: Int, bufferHeight: Int): Long
     /** EGLImage of a held decoder-buffer slot for Godot's ExternalTexture; 0 for RGBA colors. */
     @JvmStatic external fun colorImage(handle: Long, token: Long): Long
-    /** One independent GPU transition copy: {handle, RGBA texture, R8 mask, width, height, copy us}.
+    /** One independent GPU transition copy: {handle, RGBA texture, R8 mask, width, height, copy us, R8 portrait or 0}.
      * Completes before returning so a subsequent MediaCodec seek can safely flush its surface. */
     @JvmStatic external fun freezePair(handle: Long, token: Long, warped: Boolean): LongArray
     @JvmStatic external fun releaseFrozen(handle: Long)
@@ -60,6 +60,16 @@ internal object RenderBridgeNative {
     /** Both eyes validated before upload. Never overwrite a mask still owned by this token. */
     @JvmStatic external fun uploadAlpha(handle: Long, token: Long, left: ByteBuffer, right: ByteBuffer): Boolean
     @JvmStatic external fun alphaReady(handle: Long, token: Long): Boolean
+    /** Mono R8 shape decoded by *1.5; optional 64x64 signed residual uses 128 as zero.
+     * Resolves private mip levels before Godot's single-level import. */
+    @JvmStatic external fun preparePortrait(handle: Long, token: Long, lodBias: Float, residual: ByteBuffer? = null): Int
+    @JvmStatic external fun stagePortraitMask(handle: Long, token: Long)
+    @JvmStatic external fun readPortraitMask(handle: Long, token: Long, mask: ByteBuffer)
+    @JvmStatic external fun stagePortraitInput(handle: Long, token: Long, rect: FloatArray, width: Int, height: Int)
+    @JvmStatic external fun readPortraitInput(handle: Long, rgb: ByteBuffer): Boolean
+    @JvmStatic external fun stagePortraitShot(handle: Long, token: Long)
+    @JvmStatic external fun readPortraitShot(handle: Long, token: Long, rgba: ByteBuffer)
+    @JvmStatic external fun restagePortraitFull(handle: Long, token: Long)
     /** 2D->3D: renders the held mono color's stereo pair (2W x H) from the near map just uploaded
      * (PTMediaServer soft_shift with its hole fill); readiness follows alphaReady. 0: unsupported. */
     @JvmStatic external fun warp(handle: Long, token: Long, shift: Float, convergence: Float): Int

@@ -33,12 +33,16 @@ internal class MediaSources(
         DlnaLibrary({ prefs.getString("catalog", "").orEmpty() }, { check(prefs.edit().putString("catalog", it).commit()) { "Could not save DLNA server" } })
     }
     @Volatile private var server: LocalStreamServer? = null
+    private val webVideo = WebVideoStreams(::streams)
+    fun rememberWebVideo(descriptor: WebVideoDescriptor) = webVideo.remember(descriptor)
+    fun webVideoProjection(uri: String): String = webVideo.descriptor(uri)?.projection?.toString() ?: "{}"
     private val smb by lazy { SmbLibrary(context() ?: error("Activity unavailable")) { streams() } }
     private val mediaServers = MediaServerLibrary(::context, ::streams, ::nextId, emit = emit)
     fun serverRequest(json: String): Int = mediaServers.request(json)
     fun serverCancel(id: Int) = mediaServers.cancel(id)
     fun clearPlaybackReferences() { network.execute { runCatching { dlna.clearPlaybackReferences() } } }
     fun releaseMediaStream(uri: String) {
+        webVideo.release(uri)
         usb.forgetStream(uri)
         mediaServers.release(uri)
         server?.revoke(uri)
@@ -337,6 +341,8 @@ internal class MediaSources(
         mediaServers.captureAudio(reader) ?: sidecarAudio(uri)
 
     private fun directPlayable(uri: String): String = when {
+        webVideo.descriptor(uri) != null -> webVideo.prepare(webVideo.descriptor(uri)!!)
+        runCatching { WebVideoPage.parse(uri) }.isSuccess -> error("Resolve this video from the browser before playing")
         uri.startsWith("dlna://") -> dlna.playable(uri)
         (uri.startsWith("http://") || uri.startsWith("https://")) && java.net.URI(uri).path.orEmpty().endsWith(".iso", true) -> {
             // Blu-ray preflight uses FFmpeg's independent HTTP reader; route it through Android TLS too.
@@ -356,7 +362,11 @@ internal class MediaSources(
 
     /** Extra M4A tracks beside a video (clone voice first). Local files, the MediaStore library and
      * SMB; DLNA servers expose no sibling files. Blocks; worker threads only. Never throws. */
-    fun sidecarAudio(uri: String): List<SidecarAudio.Track> = try {
+    fun sidecarAudio(uri: String): List<SidecarAudio.Track> {
+        // A separate web soundtrack is required, unlike optional sibling files. Do not hide a
+        // missing handoff behind the optional-sidecar catch and play a silently broken video.
+        if (webVideo.descriptor(uri) != null) return webVideo.audio(uri)
+        return try {
         val source = android.net.Uri.parse(uri)
         when (source.scheme) {
             "file" -> source.path?.let { SidecarAudio.forFile(it) } ?: emptyList()
@@ -386,6 +396,7 @@ internal class MediaSources(
     } catch (error: Throwable) {
         android.util.Log.w("QuestSidecarAudio", "Sidecar audio lookup failed: ${error.javaClass.simpleName}")
         emptyList()
+    }
     }
 
     fun sidecarSubtitles(uri: String): List<SidecarSubtitles.Track> = try {
@@ -503,6 +514,7 @@ internal class MediaSources(
 
     fun close() {
         stopped = true
+        webVideo.close()
         CloudAccountChanges.unsubscribe(cloudAccountChanged)
         mediaServers.close()
         cloudBrowseRequests.close(); photoDirectoryRequests.close()

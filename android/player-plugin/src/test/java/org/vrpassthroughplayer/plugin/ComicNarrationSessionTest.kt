@@ -37,9 +37,9 @@ class ComicNarrationSessionTest {
     @Test fun japaneseReadingReachesSharedEngineWithoutReplacingPresetOrClone() {
         val backend=FakeNarrationBackend();val texts=mutableListOf<String>();val voices=mutableListOf<String>()
         val runtime=SharedNarrationEngine(object:SharedNarrationEngine.Backend by backend {
-            override fun synthesize(handle: Long,text: String,voice: String,token: Long,frames: Int,precision: Boolean,sink: NarrationNative.Sink): String {
+            override fun synthesize(handle: Long,text: String,voice: String,token: Long,frames: Int,precision: Boolean,sink: NarrationNative.Sink,randomSkip: Int): String {
                 texts+=text;voices+=voice
-                return backend.synthesize(handle,text,voice,token,frames,precision,sink)
+                return backend.synthesize(handle,text,voice,token,frames,precision,sink,randomSkip)
             }
         })
         val reader=ComicNarrationSession(runtime)

@@ -127,7 +127,7 @@ func draw() -> void:
 	var panel: MeshInstance3D = menu._quad(Vector2(1.46, height), Vector3(0, centre, 0.001), Color(menu.PANEL, 0.98), 10)
 	menu.add_child(panel); menu._decorations.append(panel); menu._block_rays(panel, Vector2(1.46, height))
 	button("‹", Vector2(-0.65, 1.36), 0.07, {"operation": "back"})
-	label(menu.I18n.t("My voices" if library else "Clone voice"), Vector2(-0.56, 1.36), menu.TEXT_TITLE).font = menu.ui_bold_font()
+	label(menu.I18n.t("My cloned voices" if library else "Clone voice"), Vector2(-0.56, 1.36), menu.TEXT_TITLE).font = menu.ui_bold_font()
 	if library and naming.is_empty() and confirm_delete.is_empty(): button("Add voice", Vector2(0.25, 1.36), 0.34, {"operation": "add_sample"}, bool(menu._state.get("narration_clone_supported", false)))
 	button("Close", Vector2(0.58, 1.36), 0.20, {"operation": "close"})
 	if not naming.is_empty(): _draw_name(); return
@@ -229,7 +229,7 @@ func activate(target: int) -> bool:
 		"up": move(-COUNT)
 		"down": move(COUNT)
 		"nearby": command({"operation": "candidates", "start": maxf(0, float(menu._state.get("position_ms", 0)) / 1000.0 - 20)}); offset = 0
-		"save_name": naming = {"operation": "save", "key": value.key, "apply": not sample.active}; draft = menu.I18n.t("My voice") + " %d" % (menu._state.get("narration_personal_voices", []).size() + 1); edit()
+		"save_name": naming = {"operation": "save", "key": value.key, "apply": not sample.active}; draft = menu.I18n.t("My cloned voice") + " %d" % (menu._state.get("narration_personal_voices", []).size() + 1); edit()
 		"rename_name": naming = {"operation": "rename", "id": value.id}; draft = value.name; edit()
 		"edit_name": edit()
 		"submit_name":

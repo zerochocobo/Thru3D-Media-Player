@@ -73,6 +73,12 @@ internal class RoiController(
         return Plan(window.rect(), windowId, scout, zoomed)
     }
 
+    @Synchronized fun resetShot(): Plan {
+        window = full; windowId++; zoomed = false; since = 0; agree = 0
+        scoutWanted = false; scoutIssuedAt = -1; decided = 0
+        return Plan(full.rect(), windowId, false, false)
+    }
+
     @Synchronized fun status(): Map<String, Any> = mapOf("roi_mode" to if (zoomed) "zoom" else "full",
         "roi_window" to listOf(window.x, window.y, window.w, window.h), "roi_window_id" to windowId,
         "roi_switches" to switches, "roi_scouts" to scouts, "roi_results" to results, "roi_analysis_ms" to analysisMs)

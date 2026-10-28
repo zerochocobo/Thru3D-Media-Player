@@ -14,7 +14,7 @@ const AMBIENCE := [
 	{"id": "gentle_rain", "label": "Gentle rain"},
 	{"id": "summer_night", "label": "Night crickets"},
 	{"id": "distant_city", "label": "Distant city"}]
-const EXTENSIONS := ["mp3", "ogg", "wav", "flac", "dts", "dtshd"]
+const EXTENSIONS := ["mp3", "m4a", "ogg", "wav", "flac", "dts", "dtshd"]
 const MAX_BYTES := 64 * 1024 * 1024
 
 static func extension(name: String) -> String:

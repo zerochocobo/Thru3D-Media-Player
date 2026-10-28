@@ -70,7 +70,7 @@ class MediaSourcesTest {
             <item id="64$1$1"><dc:title>Song</dc:title><res protocolInfo="http-get:*:audio/mpeg:*">http://192.168.1.5:8200/2.mp3</res></item>
             </DIDL-Lite>"""
         val entries = DlnaClient.didl(didl)
-        assertEquals(2, entries.length())
+        assertEquals(3, entries.length())
         assertTrue(entries.getJSONObject(0).getBoolean("container"))
         assertEquals(3, entries.getJSONObject(0).getInt("child_count"))
         val video = entries.getJSONObject(1)
@@ -80,6 +80,8 @@ class MediaSourcesTest {
         assertEquals(1234567L, video.getLong("size"))
         // The server's thumbnail resource is the cover; the video itself is never read for one.
         assertEquals("http://192.168.1.5:8200/thumb.jpg", video.getString("cover"))
+        assertEquals("audio", entries.getJSONObject(2).getString("kind"))
+        assertEquals("Song.mp3", entries.getJSONObject(2).getString("title"))
     }
 
     @Test fun dlnaCoverPrefersAlbumArtAndIsOptional() {

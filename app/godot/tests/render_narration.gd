@@ -34,7 +34,7 @@ func _run() -> void:
 			state.subtitle_options=[{"id":1,"title":"中文 / English / 日本語","codec":"subrip"}];state.subtitle_track=1
 			state.narration_profile="ja_male" if view=="unknown" else "zh_female" if view=="chinese" else "en_female"
 			state.narration_line=2
-			menu._audio_open=false;menu._subtitle_open=true;state.narration_hide_subtitles=view=="hidden";menu.refresh()
+			menu._audio_open=false;menu._subtitle_open=true;menu._set_subtitle_detail("narration");state.narration_hide_subtitles=view=="hidden";menu.refresh()
 			if Menu.NarrationSettings.FEATURE_ENABLED:
 				if menu.choices.targets.size()<6:failures.append("Missing narration fields")
 			else:

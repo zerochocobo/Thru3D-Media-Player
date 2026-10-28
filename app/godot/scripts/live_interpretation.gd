@@ -196,15 +196,15 @@ func status_caption(position: float) -> String:
 
 static func rows(state: Dictionary) -> Array:
 	if not state.get("listening_available", false): return []
-	var result := [{"title": "Live subtitles", "field": {"key": "listening_enabled", "value": state.get("listening_enabled", false), "switch": true, "hint": "Live subtitles",
+	var result := [{"title": "Live captions", "field": {"key": "listening_enabled", "value": state.get("listening_enabled", false), "switch": true, "hint": "Live captions",
 		"choices": [{"value": false, "label": "Off"}, {"value": true, "label": "On"}]}}]
 	if not state.get("listening_enabled", false): return result
 	result.append({"title": "Original language", "field": {"key": "listening_source", "value": state.get("listening_source", "ja"), "choices": [
 		{"value": "ja", "label": "Japanese"}, {"value": "zh", "label": "Chinese"}, {"value": "en", "label": "English"}]}})
-	if state.get("subtitle_task_supported", false):
-		result.append({"subtitle_task": true})
-		if not state.get("subtitle_task", {}).is_empty() or state.get("listening_cache_complete", false) or not str(state.get("subtitle_task_notice", "")).is_empty(): result.append({"subtitle_task_status": true})
 	result.append({"title": "Translation", "field": {"key": "listening_target", "value": state.get("listening_target", ""), "hint": "Recognized text is sent to Microsoft", "choices": [{"value": "", "label": "No translation"}] + Protocol.target_choices()}})
 	result.append({"title": "Audio lookahead", "field": {"key": "listening_lead", "value": state.get("listening_lead", 12), "choices": [
 		{"value": 8, "label": "8 s"}, {"value": 12, "label": "12 s"}, {"value": 20, "label": "20 s"}]}})
+	if state.get("subtitle_task_supported", false):
+		result.append({"subtitle_task": true})
+		if not state.get("subtitle_task", {}).is_empty() or state.get("listening_cache_complete", false) or not str(state.get("subtitle_task_notice", "")).is_empty(): result.append({"subtitle_task_status": true})
 	return result

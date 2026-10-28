@@ -182,7 +182,8 @@ internal class ListeningController(private val context: ()->Context?,private val
                 if(!synchronized(lock){!closed&&token==epoch})return@execute
                 synchronized(lock){through=maxOf(through,cueCache?.coveredEnd(position) ?: 0.0);if(cueCache?.analyzed(duration)==true)eof=true}
                 if(ListeningWorkGate.delegated(requested.media,requested.language,track,current.playlist)) { phase="task";releaseEngine();return@execute }
-                if(synchronized(lock){eof || through>=ListeningPolicy.workHorizon(anchor,position,preparing,speed,config.lead)})return@execute
+                // Cached text already covers the horizon: no model work, so no stale "checking model" stage.
+                if(synchronized(lock){eof || through>=ListeningPolicy.workHorizon(anchor,position,preparing,speed,config.lead)}){phase="idle";return@execute}
                 if(engine==0L||modelLanguage!=requested.language){
                     releaseEngine();val app=context() ?: error("listening_unavailable")
                     val manifest=app.assets.open("moonshine/model.json").bufferedReader().use {JSONObject(it.readText())}
@@ -206,7 +207,7 @@ internal class ListeningController(private val context: ()->Context?,private val
                     val readingFrom=synchronized(lock){
                         anchor=maxOf(0.0,position-.25);coverFrom=maxOf(anchor,cueCache?.coveredEnd(anchor) ?: anchor)
                         through=coverFrom;maxOf(0.0,coverFrom-ListeningCueCache.SETTLE_SECONDS).also{preroll=coverFrom-it}}
-                    if(synchronized(lock){token==epoch&&through>=ListeningPolicy.workHorizon(anchor,position,preparing,speed,config.lead)})return@execute
+                    if(synchronized(lock){token==epoch&&through>=ListeningPolicy.workHorizon(anchor,position,preparing,speed,config.lead)}){phase="idle";return@execute}
                     prepareAudio(current.path)
                     if(!synchronized(lock){
                         if(closed||token!=epoch)false else {

@@ -210,6 +210,9 @@ func toggle() -> void:
 func dismiss() -> void:
 	if music_quick: music_quick.reset()
 	visible = false
+	clear_pointer_visuals()
+
+func clear_pointer_visuals() -> void:
 	_hover.clear()
 	_hide_tooltip()
 	for pointer in _pointers.values():

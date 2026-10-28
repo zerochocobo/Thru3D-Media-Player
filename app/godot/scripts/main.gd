@@ -98,6 +98,8 @@ var interface_move := InterfaceMove.new()
 var _controller_consumed := {}
 const RVM_PROFILES := ["256x144", "384x216", "512x288", "256x256", "384x384", "512x512", "320x320"]
 const ALPHA_FPS_DEFAULT := 30
+## XR2 Gen1 class GPUs (Adreno 6xx): a PICO 4 Pro fell to 11-18 FPS with RVM 320 at 30 FPS.
+const LOW_END_ALPHA_FPS := 15
 const ALPHA_FPS_LIMITS := Vector2i(10, 40)
 
 var display := DisplayController.new()
@@ -170,8 +172,14 @@ var playback_status_overlay: Label3D
 var capture_overlay: Node3D
 var disc_menu_bar: Node3D
 var seek_overlay: Node3D
+var immersive_adjustment_overlay: Node3D
 var seek_feedback := SeekFeedback.new()
 var stick_controls := StickControls.new()
+const ImmersiveAdjustments := preload("res://scripts/immersive_adjustments.gd")
+var immersive_sticks := ImmersiveAdjustments.new()
+var _immersive_adjusting := false
+var _immersive_zoom_pending := false
+var _immersive_stick_media := ""
 var recent_menu: Node3D
 var cast_session := preload("res://scripts/cast_session.gd").new()
 var player_menu: Node3D
@@ -291,6 +299,9 @@ func _ready() -> void:
 	seek_overlay = SeekOverlay.new()
 	seek_overlay.source = _seek_overlay_sample
 	camera.add_child(seek_overlay)
+	immersive_adjustment_overlay = preload("res://scripts/immersive_adjustment_overlay.gd").new()
+	immersive_adjustment_overlay.source = _immersive_adjustment_sample
+	camera.add_child(immersive_adjustment_overlay)
 	# Eye-buffer render scale: the background and shader-drawn media. Compositor layers (menus,
 	# layer video and photos) keep their own resolution.
 	display_quality = Quality.load_quality(settings)
@@ -398,6 +409,8 @@ func _ready() -> void:
 	recent_menu.file_deleted.connect(_forget_deleted_file)
 	recent_menu.settings_provider = _library_settings
 	recent_menu.chosen.connect(_on_library_chosen)
+	recent_menu.browser_opened.connect(video.pause_playback)
+	recent_menu.web_browser.cinema_provider = func(): return cinema_environment.snapshot().get("screen", {}) if _cinema_scene_active() else {}
 	recent_menu.cast_requested.connect(cast_session.command)
 	recent_menu.archives.opening.connect(func():
 		if photo and photo.archive_mode: photo.close_image())
@@ -495,6 +508,8 @@ func _ready() -> void:
 		menu_composition.debug_pixel_scale = float(settings.get_value("debug", "menu_layer_scale", 0.0))
 		menu_composition.debug_bands = bool(settings.get_value("debug", "menu_layer_bands", false))
 	menu_composition.configure(origin, camera, display, [recent_menu, video_menu, photo_menu, music_menu], low_end_gpu)
+	recent_menu.web_browser.low_end = low_end_gpu
+	recent_menu.web_browser.window_created = menu_composition.register_companion
 	menu_composition.register_companion(disc_menu_bar)
 	photo_magazine_controls = PhotoMagazineControls.new(); add_child(photo_magazine_controls)
 	photo_magazine_controls.setup(self)
@@ -600,6 +615,8 @@ func _unhandled_input(event: InputEvent) -> void:
 			_update_photo_inspect()
 		elif _viewer().geometry != Geometry.Geometry.FLAT:
 			_viewer().zoom_view(0.05 * forward)
+			_show_immersive_adjustment("view_zoom")
+			video.commit_stereo_view()
 		else:
 			_push_screen(0.1 * forward)
 			_save_screen()
@@ -690,6 +707,9 @@ func _unhandled_key_input(event: InputEvent) -> void:
 # Menus are ray + trigger only. A list row clicks on release unless the ray dragged to scroll.
 # Video triggers select controls or resize flat corners; grips move pictures. Photo/hand dragging is separate.
 func _on_controller_release(action: String, hand: String = "") -> void:
+	if action == "grip_click":
+		immersive_sticks.poll(hand, Vector2.ZERO, false)
+		_finish_immersive_adjustment()
 	if puzzle_game and puzzle_game.active:
 		puzzle_game.button(action, hand, true); return
 	controller_bindings.release(hand, action)
@@ -785,6 +805,15 @@ func _on_controller_button(action: String, hand: String = "") -> void:
 	if action not in ControllerBindings.BUTTONS: return
 	if controller_bindings.blocked[hand].has(action): return
 	var first_press := controller_bindings.press(hand, action)
+	if action == "primary_click" and controller_bindings.down[hand].has("grip_click") \
+		and not controller_bindings.down[hand].has("trigger_click") and _immersive_adjustment_context():
+		if first_press:
+			video.reset_immersive_adjustments()
+			immersive_sticks.clear_feedback()
+			immersive_sticks.suspend(); stick_controls.suspend()
+			if not interface_move.capture.is_empty(): interface_move.capture["vr_adjusting"] = true
+		_controller_consumed[hand + "/" + action] = true
+		return
 	if action == "ax_button" and hand == "right_hand" and _cinema_interaction_owns():
 		return
 	if action == "trigger_click" and first_press and _cinema_interaction_owns() and not _cinema_input_blocked():
@@ -1020,6 +1049,13 @@ func _begin_interface_move(hand: String, input: String) -> void:
 	var menu := _active_menu()
 	var ray: Variant = _ray(hand)
 	var hit: Dictionary = menu.grab_hit(ray[0], ray[1]) if menu and ray != null else {}
+	if recent_menu and recent_menu.web_browser.active():
+		if hit.is_empty(): return
+		var host: Node3D = recent_menu.web_browser.windows.get(int(hit.get("window", 1)))
+		var world_point: Vector3 = menu.to_global(hit.point)
+		recent_menu.web_browser.focus_window(host.window_id)
+		if interface_move.begin(hand, input, pose, [{"node": host, "kind": "detail", "pose": host.global_transform, "key": _menu_key(host), "upright_facing": true, "face_center": host.CENTRE}], world_point, head): stick_controls.suspend()
+		return
 	var surface := _viewer()
 	var media_anchor: Variant = _media_move_anchor(surface, ray)
 	if _cinema_scene_active() and not photo_active: media_anchor = null
@@ -1041,6 +1077,7 @@ func _begin_interface_move(hand: String, input: String) -> void:
 		if photo_active and photo.gallery.overview():
 			targets.append({"node": photo.gallery, "kind": "gallery", "pose": photo.gallery.anchor, "key": "gallery"})
 		else:
+			if surface == video and portrait_screen.active: video.manual_portrait_pose()
 			targets.append({"node": surface, "kind": "screen" if surface.geometry == Geometry.Geometry.FLAT else "immersive", "pose": surface.global_transform * surface.flat_pose, "key": _surface_key(surface)})
 	if targets.is_empty(): return
 	targets = targets.filter(func(target): return target.kind != "menu" or not target.node.space_locked())
@@ -1080,6 +1117,7 @@ func _update_interface_move() -> void:
 	var pose: Variant = _move_pose(interface_move.capture.hand)
 	var head: Variant = _head_pose()
 	if pose == null or head == null or not _input_focused(): interface_move.cancel(); stick_controls.suspend(); return
+	if interface_move.capture.get("vr_adjusting", false): return
 	if interface_move.update(pose, head, view_follow):
 		stick_controls.suspend(); _menu_touched_ms = Time.get_ticks_msec()
 		if photo_active and photo.inspect:
@@ -1190,6 +1228,7 @@ var subtitle_tasks: RefCounted
 
 func _process(delta: float) -> void:
 	if subtitle_tasks: subtitle_tasks.tick()
+	_guard_alpha_rate(delta)
 	cast_session.tick()
 	if video:
 		if video.video_layer:
@@ -1276,9 +1315,12 @@ func _sync_display_policy() -> void:
 	var saving: bool = Quality.load_refresh_cap(settings, low_end_gpu) == Quality.POWER_SAVING_CAP
 	display.set_performance_demand((playing and not saving) or inference or (photo_active and photo != null and photo.depth_requested))
 	var rate := 0.0
+	# Opening the browser only pauses the native video. Its 90/120 Hz video rate then made Gecko
+	# and the menu miss 8–44 frames a second on Quest 3; a paused frame needs no extra refresh.
+	var browsing: bool = recent_menu != null and recent_menu.web_browser.active()
 	# GPU inference shares the GPU with every extra refresh: 8K VR180 Alpha ran 62 fps at 72 Hz,
 	# 40 at 90 and 25 at 120 on Quest 3 (2026-10-21). Alpha and 2D->3D keep the menu rate.
-	if playing and not video.alpha_requested and not video.depth_requested:
+	if playing and not browsing and not video.alpha_requested and not video.depth_requested:
 		var fps := str(video.media.playback.get("details", {}).get("container_fps", ""))
 		if fps.is_valid_float():
 			# Eye-buffer video (shaped screens, packed masks) renders every refresh: at most 90 Hz.
@@ -1321,6 +1363,9 @@ func _stills_playback_priority(menu: Node3D) -> bool:
 	return menu == recent_menu or (menu == player_menu and _library_is_attached())
 
 func _process_stick_input(left: Vector2, right: Vector2, delta: float) -> void:
+	if _immersive_zoom_pending and ((left.length() < 0.3 and right.length() < 0.3) or not _immersive_adjustment_context()):
+		_immersive_zoom_pending = false
+		if video: video.commit_stereo_view()
 	if cinema_environment and _cinema_input_blocked(): cinema_environment.suspend()
 	if not _cinema_interaction_owns() or _cinema_input_blocked(): _suspend_cinema_move_stick()
 	if not _flat_zoom_hand.is_empty() and (photo_active or video.geometry != Geometry.Geometry.FLAT \
@@ -1330,6 +1375,9 @@ func _process_stick_input(left: Vector2, right: Vector2, delta: float) -> void:
 	if menu:
 		_update_menu_pointer("left_hand")
 		_update_menu_pointer("right_hand")
+	if _process_immersive_sticks(left, right, delta):
+		stick_controls.suspend()
+		return
 	if not photo_active and video and video.get("pip") and video.pip.blocked():
 		var capture: Dictionary = video.pip.movement.capture
 		if not capture.is_empty() and _input_focused():
@@ -1398,6 +1446,64 @@ func _process_stick_input(left: Vector2, right: Vector2, delta: float) -> void:
 			_menu_touched_ms = Time.get_ticks_msec()
 			player_menu.refresh_values()
 		_update_controls_visibility(menu)
+
+## Fixed VR grip controls take only media input. UI grabs, sliders, PiP and
+## grip+trigger custom chords keep their existing ownership.
+func _immersive_adjustment_context() -> bool:
+	if photo_active or not video or not video.has_method("set_immersive_adjustment") or video.geometry == Geometry.Geometry.FLAT: return false
+	if not _input_focused() or video.local_uri.is_empty() or not video.media.accepts(video.media.session_id): return false
+	if _watch_owned or not _grab.is_empty() or (puzzle_game and puzzle_game.active) or video.pip.blocked(): return false
+	var menu := _active_menu()
+	if menu and (menu != player_menu or not player_menu.allows_playback_sticks() or _menu_captured(menu)): return false
+	if not interface_move.capture.is_empty() and not interface_move.capture.targets.all(func(target): return target.node == video and target.kind == "immersive"): return false
+	return true
+
+func _finish_immersive_adjustment() -> void:
+	if not _immersive_adjusting: return
+	_immersive_adjusting = false
+	if video: video.commit_stereo_view()
+
+func _process_immersive_sticks(left: Vector2, right: Vector2, delta: float) -> bool:
+	if not _immersive_adjustment_context():
+		immersive_sticks.suspend(); _finish_immersive_adjustment(); return false
+	var identity: String = video.local_uri + ":" + str(video.media.session_id)
+	if identity != _immersive_stick_media:
+		_immersive_stick_media = identity; immersive_sticks.suspend()
+	var owned := false
+	var adjusting := false
+	for hand in ControllerBindings.HANDS:
+		var down: Dictionary = controller_bindings.down[hand]
+		var held := down.has("grip_click") and not down.has("trigger_click") and _controller_allowed(hand) \
+			and (display.preview or _move_pose(hand) != null)
+		owned = owned or held
+		var action := immersive_sticks.poll(hand, left if hand == "left_hand" else right, held)
+		if action.is_empty() or not is_finite(delta) or delta <= 0.0: continue
+		if not interface_move.capture.is_empty(): interface_move.capture["vr_adjusting"] = true
+		var amount: float = float(action.amount) * minf(delta, 0.1)
+		if action.key == "stereo_horizontal":
+			if not video.stereo_sbs or video.viewing_eye != 0: continue
+			if not is_finite(immersive_sticks.alignment_value): immersive_sticks.alignment_value = video.stereo_horizontal
+			var span: Vector3 = video.StereoView.HORIZONTAL
+			immersive_sticks.alignment_value = clampf(immersive_sticks.alignment_value + amount * ImmersiveAdjustments.ALIGNMENT_SPEED, span.x, span.y)
+			video.set_stereo_alignment("stereo_horizontal", immersive_sticks.alignment_value)
+		else:
+			video.set_immersive_adjustment(action.key, float(video.get(action.key)) + amount * (ZOOM_SPEED if action.key == "view_zoom" else ImmersiveAdjustments.MOVE_SPEED))
+		adjusting = true
+		_show_immersive_adjustment(action.key)
+		if controller_feedback: controller_feedback.wake(hand)
+	if adjusting:
+		_immersive_adjusting = true; _menu_touched_ms = Time.get_ticks_msec()
+	elif _immersive_adjusting: _finish_immersive_adjustment()
+	return owned
+
+func _show_immersive_adjustment(key: String) -> void:
+	immersive_sticks.show_feedback(key, float(video.get(key)), video.local_uri + ":" + str(video.media.session_id))
+
+func _immersive_adjustment_sample() -> Array[Dictionary]:
+	if immersive_sticks.feedback.is_empty(): return []
+	if not _immersive_adjustment_context():
+		immersive_sticks.clear_feedback(); return []
+	return immersive_sticks.feedback_snapshot(video.local_uri + ":" + str(video.media.session_id))
 
 func _update_controls_visibility(menu: Node3D) -> void:
 	if menu != player_menu or menu == null or not menu.visible: return
@@ -1711,6 +1817,12 @@ func _cancel_pointer(hand: String) -> void:
 		if is_instance_valid(menu) and menu.has_method("cancel_pointer"): menu.cancel_pointer(hand)
 
 func _on_input_session_changed() -> void:
+	immersive_sticks.suspend()
+	immersive_sticks.clear_feedback()
+	_finish_immersive_adjustment()
+	if _immersive_zoom_pending:
+		_immersive_zoom_pending = false
+		if video: video.commit_stereo_view()
 	if cinema_environment: cinema_environment.suspend()
 	if not _input_focused() and _cinema_desktop_look:
 		_cinema_desktop_look = false; Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
@@ -1834,6 +1946,7 @@ func _update_controller_feedback(delta: float) -> void:
 		var world_pointer: bool = not (photo_active and photo.inspect) and not (_cinema_interaction_owns() and not menu)
 		if not photo_active and video and video.geometry != Geometry.Geometry.FLAT: world_pointer = captured
 		elif not photo_active and stick_controls.active_hands.has(hand.trim_suffix("_hand")) and not captured: world_pointer = false
+		if recent_menu and recent_menu.web_browser.active(): world_pointer = false
 		if not photo_active and video and video.get("pip") and ray != null and (not video.pip.hit(ray[0], ray[1]).is_empty() \
 			or video.pip.resize.get("hand", "") == hand or video.pip.movement.capture.get("hand", "") == hand \
 			or (video.pip.selecting > 0 and video.pip.selection_hand == hand)):
@@ -1857,6 +1970,8 @@ func _update_controller_feedback(delta: float) -> void:
 
 func _menu_pointer_owned(menu: Node3D, hand: String) -> bool:
 	if menu == null: return false
+	if recent_menu and recent_menu.web_browser.active() and menu == recent_menu.web_browser.input_host():
+		return recent_menu.web_browser.hand == hand or recent_menu.web_browser.windows.values().any(func(item): return item.drag.get("hand", "") == hand)
 	if menu==photo_menu and photo_menu.online.hand==hand: return true
 	if menu is PlayerMenu:
 		if hand in [menu._seek_hand, menu._volume_hand, menu._depth_hand, menu._adjust_hand] or menu.choices.capture.get("hand", "") == hand or menu.bookmarks.capture.get("hand", "") == hand: return true
@@ -1999,6 +2114,7 @@ static func _ray_angles(direction: Vector3) -> Vector2:
 func _turn_picture(yaw: float, pitch: float) -> void:
 	if _cinema_video_locked() and video.geometry == Geometry.Geometry.FLAT: return
 	if photo_active and photo.inspect: return
+	if not photo_active and video and (not is_zero_approx(yaw) or not is_zero_approx(pitch)): video.manual_portrait_pose()
 	if not photo_active and video.cinema.active(video):
 		var pose: Transform3D = video.global_transform * video.flat_pose
 		pose.origin += pose.basis.x * (-yaw * video.screen_distance) + Vector3.UP * pitch * video.screen_distance
@@ -2039,6 +2155,16 @@ func _turn_picture(yaw: float, pitch: float) -> void:
 ## The flat screen nearer (negative) or farther along the line from the eyes, still facing them.
 func _push_screen(amount: float) -> void:
 	if _cinema_video_locked(): return
+	if not photo_active and video and not is_zero_approx(amount): video.manual_portrait_pose()
+	if not photo_active and portrait_screen.active:
+		var world: Transform3D = video.global_transform * video.flat_pose
+		var before := _surface_distance(video)
+		var after := clampf(before + amount, video.DISTANCE_LIMITS.x, video.DISTANCE_LIMITS.y)
+		world.origin -= world.basis.z.normalized() * (after - before)
+		video.set_screen_distance(after)
+		video.set_flat_world_pose(world)
+		_capture_follow_screen(video, _head_pose())
+		return
 	if not photo_active and video.cinema.active(video):
 		video.cinema.push(video, _eye(), amount)
 		return
@@ -2057,6 +2183,9 @@ func _push_screen(amount: float) -> void:
 
 ## Explicit defaults are separate from the last viewing state written by gestures and sliders.
 func _surface_distance(surface: Node3D) -> float:
+	if surface == video and portrait_screen.active:
+		var pose: Transform3D = video.portrait_world_pose()
+		return (_eye() - pose.origin).dot(pose.basis.z.normalized())
 	if surface == video and video.cinema.active(video): return video.cinema.distance(video, _eye())
 	return (surface.global_transform * surface.flat_pose).origin.distance_to(_eye())
 
@@ -2144,15 +2273,20 @@ func _current_cinema_state() -> Dictionary:
 	return {"enabled": video.cinema.enabled, "height": height, "preset": video.screen_preset}
 
 func _cinema_video_locked() -> bool:
+	if portrait_screen.active and not photo_active: return false
 	return not photo_active and (not _cinema_screen_saved.is_empty() or
 		(CinemaFeature.enabled() and background != null and background.choice == "cinema"))
 
 func _set_screen_preference(key: String, value: Variant) -> void:
+	if portrait_screen.active: return
 	# Last write boundary also covers a photo/context switch before screen restoration.
 	if not _cinema_screen_saved.is_empty() or _cinema_video_locked(): return
 	settings.set_value("screen", key, value)
 
 func _remember_current_screen() -> void:
+	if portrait_screen.active:
+		portrait_screen.remember(self)
+		return
 	if _cinema_video_locked(): return
 	_set_screen_preference("distance", video.screen_distance)
 	_set_screen_preference("scale", video.screen_scale)
@@ -2162,6 +2296,7 @@ func _remember_current_screen() -> void:
 		_set_screen_preference("cinema", cinema)
 
 func _save_flat_video_defaults(locked: bool = true) -> void:
+	if portrait_screen.active: return
 	if _cinema_video_locked(): return
 	if photo_active or not video or video.local_uri.is_empty() or video.geometry != Geometry.Geometry.FLAT: return
 	var value := Vector2(_surface_distance(video) if video.cinema.active(video) else video.screen_distance, video.screen_scale)
@@ -2190,6 +2325,10 @@ func _save_flat_video_defaults(locked: bool = true) -> void:
 	else: video.cinema.height = cinema.height
 
 func _save_screen() -> void:
+	if portrait_screen.active and not photo_active:
+		portrait_screen.remember(self)
+		settings.save(settings_path)
+		return
 	if _cinema_video_locked(): return
 	if photo_active:
 		_save_photo_adjustments()
@@ -2205,7 +2344,10 @@ func _zoom_video(amount: float, hand: String = "right_hand") -> void:
 		video.set_screen_scale(video.screen_scale * exp(amount))
 		_set_screen_preference("scale", video.screen_scale)
 		_flat_zoom_hand = hand
-	else: video.zoom_view(amount)
+	else:
+		video.zoom_view(amount)
+		_immersive_zoom_pending = true
+		_show_immersive_adjustment("view_zoom")
 
 func _finish_flat_zoom() -> void:
 	if _flat_zoom_hand.is_empty(): return
@@ -2216,6 +2358,7 @@ func _finish_flat_zoom() -> void:
 ## Right stick press: the picture back at its natural size and distance (the curve stays). It stays
 ## where it is: only the menu's recenter button brings the screen in front of the head again.
 func _reset_picture() -> void:
+	immersive_sticks.clear_feedback()
 	if _cinema_video_locked() and video.geometry != Geometry.Geometry.FLAT:
 		video.reset_view(); return
 	if _cinema_video_locked(): return
@@ -2230,6 +2373,8 @@ func _reset_picture() -> void:
 
 func _update_menu_pointer(hand: String, pressed: bool = false) -> bool:
 	var menu := _active_menu()
+	for previous in [recent_menu, video_menu, photo_menu, music_menu]:
+		if is_instance_valid(previous) and previous != menu: previous.clear_pointer_visuals()
 	if not menu or hand not in ["left_hand", "right_hand"]:
 		return false
 	var ray: Variant = _ray(hand)
@@ -2375,11 +2520,15 @@ func _viewer() -> Node3D:
 	return photo if photo_active and photo else video
 
 func _prepare_cast_switch() -> void:
+	if recent_menu: recent_menu.web_browser.playback_return.clear()
 	_clear_controls_locks()
 	_grab.clear(); interface_move.cancel(); stick_controls.suspend()
 	photo_hands.cancel(); photo_swipe.cancel(); memory_swipe.cancel()
 
 func _on_library_chosen(uri: String, title: String, retained_photo: Dictionary = {}) -> void:
+	if recent_menu:
+		var selected: Dictionary = recent_menu.collections.selected_entry
+		recent_menu.web_browser.playback_selected(uri, selected.get("uri", "") == uri and selected.get("web_handoff", false))
 	if preload("res://scripts/archive_panel.gd").named(uri, title):
 		recent_menu.show(); recent_menu.archives.open({"uri":uri,"title":title}); return
 	cast_session.local_selection()
@@ -2436,10 +2585,20 @@ func _on_library_chosen(uri: String, title: String, retained_photo: Dictionary =
 		if not uri.begins_with("medialib://"):
 			for row in recent_menu.rows:
 				if str(row.get("uri", "")) == uri: metadata = row.duplicate(true); break
+			var selected: Dictionary = recent_menu.collections.selected_entry
+			if selected.get("uri", "") == uri and selected.get("web_handoff", false): metadata = selected.duplicate(true)
 		recent_menu.server_browser.selection = {}
 		if metadata.get("uri", "") != uri: metadata = {}
 		metadata.location = location
-		if video.open_library(uri, title, metadata): _show_player_menu()
+		var browser_return: bool = metadata.get("web_handoff", false) and recent_menu.web_browser.has_playback_return(uri)
+		if browser_return: recent_menu.web_browser.playback_return.opening = true
+		video.loop_enabled = playback_mode == "repeat_one"
+		var opened: bool = video.open_library(uri, title, metadata)
+		if browser_return:
+			recent_menu.web_browser.playback_return.opening = false
+			if metadata.get("web_fullscreen", false): video.loop_enabled = false
+			if not opened: _return_to_web_video.call_deferred(true, uri)
+		if opened: _show_player_menu()
 		var context: Dictionary = recent_menu._playback_context.get("photo_directory", {}) if recent_menu._playback_context.get("uri", "") == uri else recent_menu.photo_directory_context()
 		if not context.is_empty(): _start_video_directory(context)
 	# Switching sources through the attached browser must not copy a VR depth pose
@@ -2490,6 +2649,8 @@ func _relocate_file_records(old_uri: String, new_uri: String, title: String, siz
 	if not video.whisper_memory.save(): recent_menu.file_actions.rename.migration_failed = true
 	video.subtitle_timing.relocate(old_uri, new_uri)
 	if not video.subtitle_timing.save(): recent_menu.file_actions.rename.migration_failed = true
+	video.subtitle_encoding.relocate(old_uri, new_uri)
+	if not video.subtitle_encoding.save(): recent_menu.file_actions.rename.migration_failed = true
 	video.listening.memory.relocate(old_uri, new_uri)
 	if not video.listening.memory.save(): recent_menu.file_actions.rename.migration_failed = true
 	video.narration.memory.relocate(old_uri, new_uri)
@@ -2588,6 +2749,8 @@ func _cycle_playback_mode() -> void:
 	_set_playback_mode(PLAYBACK_MODES[(PLAYBACK_MODES.find(playback_mode) + 1) % PLAYBACK_MODES.size()])
 
 func _on_video_completed() -> void:
+	if recent_menu and recent_menu.web_browser.has_playback_return(video.local_uri):
+		_return_to_web_video.call_deferred(false, video.local_uri); return
 	if cast_session.token > 0: return
 	if photo_active or playback_mode not in ["sequence", "repeat_all"]: return
 	_advance_completed_video.call_deferred(video.local_uri, video.media.session_id, video.control.sequence)
@@ -2870,6 +3033,8 @@ func _on_photo_action(operation: String) -> void:
 			if operation.begins_with("photo_index_"): photo.select_image(int(operation.trim_prefix("photo_index_")))
 
 var _screen_uri := ""
+var portrait_screen := preload("res://scripts/video_portrait_placement.gd").new()
+var _background_updating := false
 
 ## Preserve the full tracked pose; each surface chooses its placement frame.
 func _head_pose() -> Variant:
@@ -2894,6 +3059,14 @@ func _view_pose(distance: float, drop: float) -> Variant:
 	return Transform3D(Basis(Vector3.UP, atan2(-forward.x, -forward.z)), head.origin + forward * distance + Vector3(0, -drop, 0))
 
 func _place_screen(recenter: bool = false) -> void:
+	if portrait_screen.active and not photo_active:
+		if not portrait_screen.pending and recenter:
+			var pose: Variant = _view_pose(video.screen_distance, 0.0)
+			if pose != null:
+				video.portrait.reset()
+				video.set_flat_world_pose(pose)
+		return
+	if recenter and not photo_active and video: video.portrait.reset()
 	if _cinema_scene_active() and not photo_active and video and video.geometry == Geometry.Geometry.FLAT:
 		_sync_cinema_screen(); return
 	var head: Variant = _head_pose()
@@ -2922,6 +3095,7 @@ func _flat_followable(surface: Node3D) -> bool:
 	return surface != null and surface.geometry == Geometry.Geometry.FLAT and (surface != photo or photo.gallery.mode in [0, 4] or photo.portrait_requested)
 
 func _surface_key(surface: Node3D) -> StringName:
+	if surface == video and portrait_screen.active: return &"video_portrait"
 	return &"photo" if surface == photo else &"video"
 
 func _menu_key(menu: Node3D) -> StringName:
@@ -3113,6 +3287,7 @@ func _disc_menu_hover() -> void:
 func _active_menu() -> Node3D:
 	if puzzle_game and puzzle_game.active: return puzzle_game.input_menu()
 	if music_menu and music_menu.visible: return music_menu
+	if recent_menu and recent_menu.web_browser.active(): return recent_menu.web_browser.input_host()
 	if recent_menu and recent_menu.visible:
 		if _library_is_attached(): return recent_menu.get_parent() as Node3D
 		return recent_menu
@@ -3307,6 +3482,9 @@ func _playback_browser_cursor() -> Dictionary:
 	return {}
 
 func _close_current_media(restore_browser: bool = true) -> void:
+	if restore_browser and recent_menu and recent_menu.web_browser.has_playback_return(video.local_uri):
+		_return_to_web_video(false, video.local_uri); return
+	if not restore_browser and recent_menu: recent_menu.web_browser.playback_return.clear()
 	if cast_session.token > 0: cast_session.detach()
 	_clear_controls_locks()
 	if puzzle_game and puzzle_game.active:
@@ -3396,7 +3574,8 @@ func _library_settings() -> Dictionary:
 		"bar_transparency": float(settings.get_value("ui", "bar_transparency", 14.0)),
 		"library_backdrop": str(settings.get_value("ui", "library_backdrop", "slideshow")),
 		"voice_manager": video.narration.voice_manager_snapshot(),
-		"alpha_profile": video.default_profile, "alpha_precision": Quality.load_alpha_precision(settings), "alpha_warming": video.warming.keys(),
+		"alpha_profile": video.default_profile, "alpha_profile_default": _alpha_profile_default(), "alpha_fps_default": _alpha_fps_default(),
+		"alpha_precision": Quality.load_alpha_precision(settings), "alpha_warming": video.warming.keys(),
 		"alpha_cold": video.ALPHA_PROFILES.filter(func(p): return not video.profile_ready(p)),
 		"alpha_feather": _alpha_edge_value("alpha_feather"), "alpha_shrink": _alpha_edge_value("alpha_shrink"),
 		"show_fps": fps_overlay != null and fps_overlay.visible,
@@ -3558,6 +3737,8 @@ func _on_setting_changed(key: String, value: Variant) -> void:
 		"alpha_feather", "alpha_shrink":
 			_apply_alpha_edge(key, value)
 			settings.save(settings_path)
+		"portrait_auto": video.set_portrait_auto(bool(value))
+		"portrait_enhanced": video.set_portrait_enhanced(bool(value))
 		"show_fps":
 			if fps_overlay: fps_overlay.set_shown(bool(value))
 			settings.set_value("ui", "show_fps", bool(value))
@@ -3701,7 +3882,7 @@ func _on_menu_action(operation: String) -> void:
 		"play": video.toggle_play()
 		"alpha": video.set_alpha(not video.alpha_wanted())
 		"depth":
-			video.set_depth(not video.depth_requested)
+			video.toggle_depth()
 		"depth_strength":
 			video.cycle_depth_strength()
 			_save_depth_strength(false)
@@ -3780,6 +3961,9 @@ func _on_player_setting(key: String, value: Variant) -> void:
 			video.set_subtitle_auto_load(bool(value))
 			settings.set_value("subtitles", "auto_load", video.subtitle_auto_load)
 			settings.save(settings_path)
+		"subtitle_encoding":
+			if value is Dictionary and not video.set_subtitle_encoding(value):
+				if is_instance_valid(player_menu): player_menu.refresh()
 		"audio_delay":
 			if value is Dictionary and not video.commit_audio_delay(float(value.value), str(value.source_uri), str(value.audio_key)):
 				if is_instance_valid(player_menu): player_menu.refresh()
@@ -3891,6 +4075,9 @@ func _on_mode_lock_changed(lock: Dictionary, media_kind: String) -> void:
 
 func _save_depth_strength(for_photo: bool = false) -> void:
 	# Keep dragging live without writing settings on every pointer movement.
+	if not for_photo and video and video.portrait_requested():
+		video._remember_mode()
+		return
 	if for_photo: settings.save(settings_path)
 	elif video and video._remember_file and video.media.accepts(video.media.session_id):
 		settings.set_value("video", "depth_strength", video.preferred_depth_strength)
@@ -3916,6 +4103,7 @@ func _menu_state() -> Dictionary:
 		"alpha_requested": video.alpha_wanted(), "alpha_enabled": video.alpha_enabled,
 		"loop": video.loop_enabled, "playback_mode": playback_mode, "stereo": video.stereo_sbs, "swap_eyes": video.swap_eyes,
 		"viewing_eye": video.viewing_eye, "stereo_horizontal": video.stereo_horizontal, "stereo_vertical": video.stereo_vertical,
+		"view_horizontal": video.view_horizontal * 100.0, "view_vertical": video.view_vertical * 100.0, "view_zoom": video.view_zoom * 100.0,
 		"top_bottom": video.stereo_sbs and video.top_bottom, "stereo_half": video.stereo_sbs and video.stereo_half, "fisheye_fov": video.fisheye_fov,
 		"packed_mask": video.packed_mask_on(), "packed_mask_available": video.packed_mask_available(),
 		"projection": ["Flat", "VR180", "Fisheye", "360"][video.geometry], "geometry": video.geometry, "profile": video.profile,
@@ -3937,7 +4125,14 @@ func _menu_state() -> Dictionary:
 		"audio_delay": video.audio_delay, "audio_timing_key": video.audio_timing_key(),
 		"audio_tracks": details.get("audio_tracks", []).size(), "audio_track": _audio_track_name(details),
 		"clone_voice": video.clone_voice_track() > 0, "clone_voice_active": video.clone_voice_active(),
-		"depth_requested": video.depth_requested, "depth_enabled": video.depth_enabled, "depth_strength": video.depth_strength,
+		"depth_requested": video.portrait.strength > 0.0 if video.portrait_requested() else video.depth_requested,
+		"depth_enabled": video.portrait.active if video.portrait_requested() else video.depth_enabled,
+		"depth_strength": video.portrait.strength if video.portrait_requested() else video.depth_strength,
+		"portrait_requested": video.portrait_requested(), "portrait_auto": video.portrait.automatic,
+		"portrait_distance": _surface_distance(video),
+		"portrait_scale": video.screen_scale * 100.0,
+		"portrait_enhanced": video.portrait.enhanced,
+		"portrait_depth_status": video.portrait_depth_status(),
 		"screen_curve": video.screen_curve, "screen_distance": _surface_distance(video) if video.cinema.active(video) else video.screen_distance,
 		"screen_is_default": _flat_video_is_default(), "screen_default_locked": settings.has_section_key("screen", "default_view"), "screen_cinema": video.cinema.enabled,
 		"screen_scene_locked": _cinema_video_locked(),
@@ -3960,12 +4155,13 @@ func _menu_state() -> Dictionary:
 		# Options that leave the compositor layer carry a warning only where the layer exists.
 		"layer_available": video.video_layer != null and video.video_layer.available(),
 		"grade_on_layer": video.video_layer != null and video.video_layer.color_scale_bias,
-		"depth_error": str(video.media.playback.get("depth_error", "")),
+		"depth_error": video.portrait_error() if video.portrait_requested() else str(video.media.playback.get("depth_error", "")),
 		"text_subtitle_tracks": text_tracks.size(), "subtitle_options": text_tracks,
 		"subtitle_track": video.subtitles.requested_track, "source_uri": video.local_uri,
 		"subtitle_auto_load": video.subtitle_auto_load,
 		"subtitle_delay": video.subtitle_delay,
 		"subtitle_timing_key": video.subtitle_timing_key(),
+		"subtitle_encoding_row": video.subtitle_encoding_row(),
 		"subtitle_files_available": video.subtitle_files_available(), "subtitle_files": video.subtitle_files,
 		"subtitle_browse_available": video.PlatformMethods.supports(video.platform, "load_mpv_subtitle_uri"),
 		"subtitle_files_revision": video.subtitle_files_revision,
@@ -4144,12 +4340,27 @@ func _on_video_thumbnail_ready(_uri: String) -> void:
 	if recent_menu and recent_menu.visible: recent_menu.refresh()
 
 func _on_video_playback_failed() -> void:
+	if recent_menu and recent_menu.web_browser.has_playback_return(video.local_uri):
+		_return_to_web_video.call_deferred(true, str(recent_menu.web_browser.playback_return.get("native_uri", ""))); return
 	_cancel_video_queue_wait()
 	if photo_active or not video_menu: return
 	_grab = {}; stick_controls.suspend(); interface_move.cancel()
 	player_menu = video_menu
 	_show_player_menu()
 	player_menu.show_playback_error()
+
+func _return_to_web_video(failed: bool, uri: String) -> void:
+	if not recent_menu or str(recent_menu.web_browser.playback_return.get("native_uri", "")) != uri: return
+	_clear_controls_locks()
+	var position: int = video.control.display_position_ms() if video.local_uri == uri and video.media.frame_counter > 0 else -1
+	_cancel_video_queue_wait()
+	_grab = {}; interface_move.cancel(); stick_controls.suspend()
+	if video_directory: video_directory.cancel()
+	video.pause_playback(); video.close_video()
+	video.loop_enabled = playback_mode == "repeat_one"
+	_show_full_library()
+	recent_menu._playback_context.clear()
+	recent_menu.web_browser.restore_playback(failed, position)
 
 var _thumbnail_history_sequence := -1
 func _update_thumbnail_protection() -> void:
@@ -4265,6 +4476,8 @@ func _reposition_cinema_menus() -> void:
 			if menu.visible: _place_menu(menu, true)
 
 func _sync_cinema_screen() -> void:
+	if video and recent_menu:
+		video.set_browser_screen_owned(recent_menu.web_browser.active() and recent_menu.web_browser.windows.values().any(func(item): return item.visible and item.on_screen()))
 	_sync_cinema_lights()
 	_sync_cinema_transport()
 	if not video: return
@@ -4436,7 +4649,9 @@ func _active_background() -> Node:
 	return photo_background if photo_active and photo_background and not (puzzle_game and puzzle_game.active) else background
 
 func _update_background() -> void:
-	if not background or not display.environment: return
+	if not background or not display.environment or _background_updating: return
+	_background_updating = true
+	portrait_screen.prepare(self)
 	var scenery := _active_background()
 	var immersive := false
 	var alpha := false
@@ -4463,6 +4678,7 @@ func _update_background() -> void:
 	var passthrough: bool = wants_passthrough and display.supports_passthrough()
 	if display.applied_passthrough != passthrough or display.requested_passthrough != passthrough:
 		display.set_passthrough(passthrough)
+	portrait_screen.finish(self)
 	if photo: photo.transparent_background = display.applied_passthrough and not display.preview
 	if video:
 		# A native Surface mask cannot recover scenery erased from the projection.
@@ -4470,6 +4686,7 @@ func _update_background() -> void:
 		video.pip.compositor.surface_background = display.applied_passthrough and not display.preview \
 			and not photo_active and not _cinema_scene_active() and not (puzzle_game and puzzle_game.active)
 	_refresh_session_controls()
+	_background_updating = false
 
 func _connect_session_controls(menu: Node3D) -> void:
 	if menu == recent_menu:
@@ -4593,11 +4810,14 @@ func _on_custom_background_saved(path: String, title: String, orientation: int) 
 		_close_current_media(false)
 
 func _recenter(restore_defaults: bool = true) -> void:
+	immersive_sticks.clear_feedback()
 	if restore_defaults: _clear_controls_locks()
 	if _cinema_scene_active():
 		interface_move.cancel(); _grab.clear(); stick_controls.suspend()
 		_suspend_cinema_move_stick()
 		cinema_environment.recenter_view(); _sync_cinema_screen(); _reposition_cinema_menus()
+		if recent_menu is LibraryMenu and recent_menu.web_browser.active():
+			for host in recent_menu.web_browser.windows.values(): host.recenter()
 		return
 	interface_move.cancel()
 	stick_controls.suspend()
@@ -4606,7 +4826,7 @@ func _recenter(restore_defaults: bool = true) -> void:
 		view_follow.forget(&"video")
 		# Only an explicit save locks a baseline. Otherwise recenter uses the latest
 		# live dimensions and mode, including legacy settings restored on startup.
-		if video and not photo_active and video.geometry == Geometry.Geometry.FLAT and settings.has_section_key("screen", "default_view"):
+		if video and not photo_active and not portrait_screen.active and video.geometry == Geometry.Geometry.FLAT and settings.has_section_key("screen", "default_view"):
 			var defaults := _flat_video_defaults()
 			var cinema_saved := _cinema_default()
 			_set_cinema_mode(cinema_saved.enabled)
@@ -4635,7 +4855,7 @@ func _recenter(restore_defaults: bool = true) -> void:
 				interface_move.placements[&"photo"] = head.affine_inverse() * pose
 				view_follow.capture(&"photo", head, pose)
 		if _viewer().geometry != Geometry.Geometry.FLAT:
-			_viewer().reset_view()
+			_viewer().reset_view(restore_defaults or photo_active)
 	if photo_active:
 		photo.gallery.recenter(false)
 		if photo.inspect: photo._place_detail()
@@ -4643,6 +4863,8 @@ func _recenter(restore_defaults: bool = true) -> void:
 		if menu and menu.visible:
 			_place_menu(menu, restore_defaults)
 	Log.record("recenter_requested")
+	if recent_menu is LibraryMenu and recent_menu.web_browser.active():
+		for host in recent_menu.web_browser.windows.values(): host.recenter()
 
 func request_capabilities() -> void:
 	if platform_plugin:
@@ -4752,6 +4974,14 @@ func _on_playback_adjustment(key: String, value: Variant) -> void:
 	if not photo_active and video and key.begins_with("grade_") and not video.cast_allows("color_grade"): return
 	if key == "bar_transparency":
 		_set_bar_transparency(float(value)); return
+	if key == "portrait_distance":
+		if photo_active or not portrait_screen.active or not is_finite(float(value)): return
+		_push_screen(clampf(float(value), video.DISTANCE_LIMITS.x, video.DISTANCE_LIMITS.y) - _surface_distance(video))
+		return
+	if key == "portrait_scale":
+		if photo_active or not portrait_screen.active or not is_finite(float(value)): return
+		video.set_screen_scale(float(value) / 100.0)
+		return
 	if key == "cinema_picture_size":
 		# The cinema screen itself stays fixed; this only scales the picture on it.
 		settings.set_value("appearance", "cinema_picture_size", clampf(float(value) / 100.0, CINEMA_PICTURE_MIN, 1.0))
@@ -4763,6 +4993,14 @@ func _on_playback_adjustment(key: String, value: Variant) -> void:
 		return
 	if key in ["stereo_horizontal", "stereo_vertical"]:
 		if not photo_active: video.set_stereo_alignment(key, float(value))
+		return
+	elif key in ImmersiveAdjustments.KEYS:
+		if not photo_active: video.set_immersive_adjustment(key, float(value) / 100.0)
+		return
+	elif key == "immersive_reset":
+		if not photo_active:
+			video.reset_immersive_adjustments(); immersive_sticks.suspend(); stick_controls.suspend()
+			immersive_sticks.clear_feedback()
 		return
 	elif key == "stereo_reset":
 		if not photo_active: video.reset_stereo_alignment()
@@ -4915,12 +5153,49 @@ func _apply_alpha_edge(key: String, value: Variant) -> void:
 	settings.set_value("video", key, clampf(roundf(float(value)), 0.0, 100.0))
 	if video: video.set_alpha_edge(_alpha_edge_value("alpha_feather"), _alpha_edge_value("alpha_shrink"))
 
+## The model size and Alpha rate a headset starts with until the user picks one. (The size stays out of the
+## header: tools check that its quoted sizes there are exactly the RVM profiles.)
+const LOW_END_ALPHA_PROFILE := "256x256"
+func _alpha_profile_default() -> String:
+	return LOW_END_ALPHA_PROFILE if low_end_gpu else video.AUTOMATIC_PROFILE
+
+func _alpha_fps_default() -> int:
+	return LOW_END_ALPHA_FPS if low_end_gpu else ALPHA_FPS_DEFAULT
+
 func _alpha_profile() -> String:
-	var value := str(settings.get_value("alpha", "profile", video.AUTOMATIC_PROFILE))
-	return value if value in video.ALPHA_PROFILES else video.AUTOMATIC_PROFILE
+	var value := str(settings.get_value("alpha", "profile", _alpha_profile_default()))
+	return value if value in video.ALPHA_PROFILES else _alpha_profile_default()
 
 func _alpha_fps() -> int:
-	return clampi(int(settings.get_value("video", "alpha_fps", ALPHA_FPS_DEFAULT)), ALPHA_FPS_LIMITS.x, ALPHA_FPS_LIMITS.y)
+	return clampi(int(settings.get_value("video", "alpha_fps", _alpha_fps_default())), ALPHA_FPS_LIMITS.x, ALPHA_FPS_LIMITS.y)
+
+## While AI passthrough runs, a frame rate held under 45 for 3 s lowers the Alpha rate a step for
+## this session only: RVM shares the GPU with the frames, and on Adreno 650 it starved them
+## (drifting controllers). Not saved; the chosen rate returns when Alpha stops.
+const ALPHA_GUARD_FPS := 45.0
+const ALPHA_GUARD_SECONDS := 3.0
+const ALPHA_GUARD_STEPS := [20, 15, 10]
+var _alpha_guard_rate := 0
+var _alpha_guard_slow := 0.0
+func _guard_alpha_rate(delta: float) -> void:
+	if not video or not platform_plugin or not PlatformMethods.supports(platform_plugin, "set_mpv_alpha_fps"): return
+	var active: bool = video.alpha_enabled and video.has_active_presentation()
+	if not active:
+		if _alpha_guard_rate > 0:
+			_alpha_guard_rate = 0
+			platform_plugin.set_mpv_alpha_fps(_alpha_fps())
+		_alpha_guard_slow = 0.0
+		return
+	_alpha_guard_slow = _alpha_guard_slow + delta if Engine.get_frames_per_second() < ALPHA_GUARD_FPS else 0.0
+	if _alpha_guard_slow < ALPHA_GUARD_SECONDS: return
+	_alpha_guard_slow = 0.0
+	var current := _alpha_guard_rate if _alpha_guard_rate > 0 else _alpha_fps()
+	for step in ALPHA_GUARD_STEPS:
+		if step < current:
+			_alpha_guard_rate = step
+			platform_plugin.set_mpv_alpha_fps(step)
+			DiagnosticLog.record("alpha_rate_lowered", {"fps": Engine.get_frames_per_second(), "alpha_fps": step})
+			return
 
 func _apply_alpha_fps(value: Variant) -> void:
 	if not is_finite(float(value)): return
@@ -4949,7 +5224,39 @@ func _on_display_debug_command(_id: int, payload: String) -> void:
 		_report_tooling_until = Time.get_ticks_msec() + REPORT_TOOLING_MS
 		if first: _save_report()
 	var operation := str(command.get("operation", ""))
-	if operation == "seek_policy_ui" and OS.is_debug_build():
+	if operation == "web_browser_ui" and OS.is_debug_build():
+		match str(command.get("step", "")):
+			"open":
+				_show_full_library()
+				recent_menu._activate(recent_menu.NAV_BASE + recent_menu.Section.WEB)
+				recent_menu.web_browser.open(str(command.get("url", "")))
+			"window_state":
+				var entries: Array = []
+				for item in recent_menu.web_browser.windows.values():
+					var page: Dictionary = item.page_layout()
+					entries.append({"id": item.window_id, "visible": item.visible, "mode": item.mode, "cinema": item.on_screen(),
+						"size": [page.size.x, page.size.y], "position": [page.pose.origin.x, page.pose.origin.y, page.pose.origin.z],
+						"scale": item.global_basis.get_scale().x, "surface_status": item.surface.status})
+				var file := FileAccess.open("user://diagnostics/browser_windows.json", FileAccess.WRITE)
+				if file: file.store_string(JSON.stringify({"request": command.get("request_key", ""), "windows": entries}))
+			"handoff": recent_menu.web_browser.action(recent_menu.web_browser.BASE + 6)
+			"close": recent_menu.web_browser.close(); recent_menu.refresh()
+			"click":
+				if recent_menu.web_browser.active():
+					var browser: RefCounted = recent_menu.web_browser
+					var host: Node = browser.windows.get(browser.focused_window)
+					var layout: Dictionary = host.page_layout()
+					var point := Vector3((clampf(float(command.get("x", 0.5)), 0, 1) - 0.5) * layout.size.x,
+						(0.5 - clampf(float(command.get("y", 0.5)), 0, 1)) * layout.size.y, 0.2)
+					var origin: Vector3 = layout.pose * point
+					var direction: Vector3 = -layout.pose.basis.z
+					browser.input_host().press_pointer("left", origin, direction, true)
+					await get_tree().create_timer(0.12).timeout
+					browser.input_host().release_pointer("left", origin, direction, true)
+			"key": recent_menu.web_browser.action(int(command.get("target", 0)))
+			"scroll":
+				if recent_menu.web_browser.active(): recent_menu.stick_scroll(clampf(float(command.get("scroll", -1)), -1, 1), 0.1)
+	elif operation == "seek_policy_ui" and OS.is_debug_build():
 		var probe := preload("res://scripts/seek_policy_device_probe.gd").new()
 		seek_policy_probe_result = probe.run(self, str(command.step), str(command.get("marker_id", "")))
 		seek_policy_probe_result.request_key = str(command.request_key)
@@ -5012,6 +5319,12 @@ func _on_display_debug_command(_id: int, payload: String) -> void:
 		menu_composition.set_filter(code % 10, code / 10 % 10)
 	elif operation == "perf_tune" and OS.is_debug_build():
 		# Device A/B of frame pacing and idle cost; nothing is saved to user settings.
+		if video and command.has("portrait_enhanced"):
+			video.portrait.enhanced = bool(command.portrait_enhanced)
+			video._sync_portrait()
+		if video and command.has("portrait_auto"):
+			video.portrait.automatic = bool(command.portrait_auto)
+			video.portrait.reset(); video._sync_portrait()
 		if command.has("keepalive_ms") and menu_composition: menu_composition.keepalive_ms = int(command.keepalive_ms)
 		if command.has("refresh_rate"): display.set_debug_refresh(float(command.refresh_rate))
 		if command.has("max_fps"): Engine.max_fps = int(command.max_fps)
@@ -5225,7 +5538,7 @@ func _begin_audio_import(destination: String) -> void:
 		if not _audio_file_dialog:
 			_audio_file_dialog = FileDialog.new(); _audio_file_dialog.use_native_dialog = true
 			_audio_file_dialog.access = FileDialog.ACCESS_FILESYSTEM; _audio_file_dialog.file_mode = FileDialog.FILE_MODE_OPEN_FILES
-			_audio_file_dialog.filters = PackedStringArray(["*.mp3,*.ogg,*.wav,*.flac,*.dts,*.dtshd;Audio"])
+			_audio_file_dialog.filters = PackedStringArray(["*.mp3,*.m4a,*.ogg,*.wav,*.flac,*.dts,*.dtshd;Audio"])
 			_audio_file_dialog.files_selected.connect(func(paths):
 				var files: Array = []
 				for path in paths: files.append({"uri": path, "title": str(path).get_file()})
@@ -5354,18 +5667,18 @@ func _migrate_protected_favorites() -> void:
 		var key := Video.ModeMemory.key_for(uri)
 		var success := true
 		var has_public_data := false
-		for memory in [video.mode_memory, video.track_memory, video.subtitle_timing, video.whisper_memory, video.narration.memory, video.listening.memory, photo.mode_memory]:
+		for memory in [video.mode_memory, video.track_memory, video.subtitle_timing, video.subtitle_encoding, video.whisper_memory, video.narration.memory, video.listening.memory, photo.mode_memory]:
 			var memory_key: String = memory.entry_key(uri)
 			if memory.entries.has(memory_key):
 				has_public_data = true
 				success = favorites.private_remember(uri, memory.directory.get_file() + "/" + memory._value_field(), memory.entries[memory_key].get(memory._value_field(), {})) and success
 		if success and has_public_data: keys.append(key); ThumbnailCache.forget(uri)
 		if success and has_public_data:
-			for memory in [video.track_memory, video.subtitle_timing, video.whisper_memory, video.narration.memory, video.listening.memory]:
+			for memory in [video.track_memory, video.subtitle_timing, video.subtitle_encoding, video.whisper_memory, video.narration.memory, video.listening.memory]:
 				var memory_key: String = memory.entry_key(uri)
 				if not keys.has(memory_key): keys.append(memory_key)
 	if not keys.is_empty():
-		for memory in [video.mode_memory, video.track_memory, video.subtitle_timing, video.whisper_memory, video.narration.memory, video.listening.memory, photo.mode_memory]:
+		for memory in [video.mode_memory, video.track_memory, video.subtitle_timing, video.subtitle_encoding, video.whisper_memory, video.narration.memory, video.listening.memory, photo.mode_memory]:
 			if not memory.purge_keys(keys):
 				favorites.last_error = "Privacy cleanup failed"
 				if recent_menu: recent_menu.status = favorites.last_error
@@ -5407,7 +5720,7 @@ func _clear_file_settings(network_only: bool) -> void:
 	# Commit a held preview first, so a later pointer release cannot restore deleted settings.
 	video.commit_stereo_view()
 	if not network_only or not Privacy.is_local(video.local_uri): video.discard_file_settings()
-	for memory in [video.mode_memory, video.track_memory, video.subtitle_timing, video.audio_timing,
+	for memory in [video.mode_memory, video.track_memory, video.subtitle_timing, video.subtitle_encoding, video.audio_timing,
 			video.whisper_memory, video.narration.memory, video.listening.memory, photo.mode_memory]:
 		var keys: Array = memory.entries.keys()
 		if network_only:

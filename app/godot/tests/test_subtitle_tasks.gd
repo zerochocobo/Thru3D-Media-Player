@@ -87,10 +87,14 @@ func run() -> void:
 	var menu := Menu.new(); root.add_child(menu); menu.set_process(false)
 	menu.state_provider = func(): return state
 	menu.setting_requested.connect(func(key, value): actions.append([key, value]))
-	menu.toggle(); menu._subtitle_open = true; menu.refresh()
+	menu.toggle(); menu._subtitle_open = true; menu.refresh(); menu._activate(menu.SUBTITLE_LISTENING)
 	check(tap(menu, menu.SUBTITLE_TASK_CANCEL) and actions.back() == ["listening_cancel", "job"], "Ray cancels correct task")
 	check(tap(menu, menu.SUBTITLE_TASKS) and actions.back()[0] == "subtitle_tasks_open", "Ray opens global queue")
 	state.subtitle_task = {}; menu.refresh()
+	var generate: Dictionary = menu._buttons.filter(func(button): return button.target == menu.SUBTITLE_GENERATE)[0]
+	var queue_button: Dictionary = menu._buttons.filter(func(button): return button.target == menu.SUBTITLE_TASKS)[0]
+	check(menu.choices.targets.keys().all(func(id): return menu._buttons.filter(func(button): return button.target == id)[0].node.position.y > generate.node.position.y), "Pregeneration follows every listening option")
+	check(is_equal_approx(generate.node.position.y, menu._subtitle_panel_bounds.position.y + 0.06) and is_equal_approx(queue_button.node.position.y, generate.node.position.y), "Generate and management share the bottom row")
 	check(tap(menu, menu.SUBTITLE_GENERATE) and actions.back()[0] == "listening_generate", "Ray starts pregeneration")
 	check(not str(menu._tips.get(menu.SUBTITLE_GENERATE, "")).is_empty(), "Generation tooltip supplied")
 	state.listening_cache_complete = true; state.listening_cache_persistent = true; menu.refresh()

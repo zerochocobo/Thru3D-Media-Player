@@ -5,12 +5,15 @@ extends RefCounted
 
 const PAIR_SHADER := preload("res://shaders/video_rvm_pair.gdshader")
 const DECODER_SHADER := preload("res://shaders/video_rvm_pair_oes.gdshader")
+const PORTRAIT_SHADER := preload("res://shaders/video_portrait.gdshader")
+const PORTRAIT_DECODER_SHADER := preload("res://shaders/video_portrait_oes.gdshader")
 
 var material: ShaderMaterial
 var color_rid := RID()
 # Decoder images (MPV direct mode) arrive as EGLImages; one external texture is rebound per pair.
 var _decoder_color: ExternalTexture
 var alpha_rid := RID()
+var portrait_rid := RID()
 var ticket: Dictionary = {}
 ## 2D->3D: the bridge rendered this mono frame's stereo pair (side by side, 2W x H); it is shown
 ## instead of the color, with no shader parallax.
@@ -36,25 +39,27 @@ func shared_parameters() -> Dictionary:
 	for name in _shared_uniforms: values[name] = material.get_shader_parameter(name)
 	return values
 
-func share_with(target: ShaderMaterial, parameters: Dictionary = {}) -> void:
+func share_with(target: ShaderMaterial, parameters: Dictionary = {}, portrait: bool = false) -> void:
 	if not material or layer: return
 	if not _consumers.has(target): _consumers.append(target)
 	if parameters.is_empty(): parameters = shared_parameters()
-	if target.shader != material.shader:
-		target.shader = material.shader; _shared_values.erase(target.get_instance_id())
+	var shader := (PORTRAIT_DECODER_SHADER if material.shader == DECODER_SHADER else PORTRAIT_SHADER) if portrait else material.shader
+	if target.shader != shader:
+		target.shader = shader; _shared_values.erase(target.get_instance_id())
 	var values: Dictionary = _shared_values.get_or_add(target.get_instance_id(), {})
 	for name in parameters:
 		var value: Variant = parameters[name]
 		if not values.has(name) or values[name] != value:
 			target.set_shader_parameter(name, value); values[name] = value
-	for name in ["color_texture", "alpha_texture"]:
-		var texture := color_texture() if name == "color_texture" else alpha_rid
+	for name in ["color_texture", "alpha_texture", "portrait_texture"]:
+		var texture := color_texture() if name == "color_texture" else (alpha_rid if name == "alpha_texture" else portrait_rid)
 		if values.get(name) != texture:
 			RenderingServer.material_set_param(target.get_rid(), name, texture); values[name] = texture
 
 func unshare(target: ShaderMaterial) -> void:
 	RenderingServer.material_set_param(target.get_rid(), "color_texture", null)
 	RenderingServer.material_set_param(target.get_rid(), "alpha_texture", null)
+	RenderingServer.material_set_param(target.get_rid(), "portrait_texture", null)
 	_consumers.erase(target); _shared_values.erase(target.get_instance_id())
 
 func bind(target: ShaderMaterial, pair: Dictionary) -> bool:
@@ -83,7 +88,10 @@ func bind(target: ShaderMaterial, pair: Dictionary) -> bool:
 			Image.FORMAT_RGBA8, int(pair.color_texture_id), int(pair.width), int(pair.height), 1)
 	alpha_rid = RenderingServer.texture_create_from_native_handle(RenderingServer.TEXTURE_TYPE_2D,
 		Image.FORMAT_R8, int(pair.alpha_texture_id), int(pair.alpha_width), int(pair.alpha_height), 1)
-	if (not decoder and not color_rid.is_valid()) or not alpha_rid.is_valid():
+	if int(pair.get("portrait_texture_id", 0)) > 0:
+		portrait_rid = RenderingServer.texture_create_from_native_handle(RenderingServer.TEXTURE_TYPE_2D,
+			Image.FORMAT_R8, int(pair.portrait_texture_id), int(pair.input_width), int(pair.input_height), 1)
+	if (not decoder and not color_rid.is_valid()) or not alpha_rid.is_valid() or (pair.has("portrait_texture_id") and not portrait_rid.is_valid()):
 		_free_wrappers()
 		return false
 	_use_shader(target, DECODER_SHADER if decoder else PAIR_SHADER)
@@ -120,8 +128,9 @@ func unbind() -> Dictionary:
 	for target in _consumers:
 		RenderingServer.material_set_param(target.get_rid(), "color_texture", null)
 		RenderingServer.material_set_param(target.get_rid(), "alpha_texture", null)
+		RenderingServer.material_set_param(target.get_rid(), "portrait_texture", null)
 		var values: Dictionary = _shared_values.get(target.get_instance_id(), {})
-		values.erase("color_texture"); values.erase("alpha_texture")
+		values.erase("color_texture"); values.erase("alpha_texture"); values.erase("portrait_texture")
 	if material:
 		RenderingServer.material_set_param(material.get_rid(), "color_texture", null)
 		RenderingServer.material_set_param(material.get_rid(), "alpha_texture", null)
@@ -153,11 +162,12 @@ static func _use_shader(target: ShaderMaterial, shader: Shader) -> void:
 			target.set_shader_parameter(name, values[name])
 
 func _free_wrappers() -> void:
-	for rid in [color_rid, alpha_rid]:
+	for rid in [color_rid, alpha_rid, portrait_rid]:
 		if rid.is_valid():
 			RenderingServer.free_rid(rid)
 	color_rid = RID()
 	alpha_rid = RID()
+	portrait_rid = RID()
 
 static func _valid_identity(pair: Dictionary) -> bool:
 	for key in ["session_id", "logical_session_id", "generation", "frame_id", "pts_us", "slot_token", "width", "height"]:
@@ -187,6 +197,12 @@ static func _valid(pair: Dictionary) -> bool:
 		return false
 	if pair.alpha_slot_token != pair.slot_token or pair.alpha_frame_id != pair.frame_id or pair.alpha_pts_us != pair.pts_us:
 		return false
+	if pair.has("portrait_texture_id"):
+		if bool(pair.stereo_sbs) or int(pair.get("warp_texture_id", 0)) > 0 or int(pair.portrait_texture_id) <= 0 \
+			or pair.portrait_texture_id in [pair.color_texture_id, pair.alpha_texture_id] \
+			or pair.get("portrait_slot_token") != pair.slot_token or pair.get("portrait_frame_id") != pair.frame_id \
+			or pair.get("portrait_pts_us") != pair.pts_us:
+			return false
 	if int(pair.alpha_width) != int(pair.input_width) * 2 or int(pair.alpha_height) != int(pair.input_height):
 		return false
 	if int(pair.rotation_degrees) not in [0, 90, 180, 270] or (bool(pair.stereo_sbs) and int(pair.width) % 2 != 0):

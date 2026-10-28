@@ -69,7 +69,8 @@ extern "C" JNIEXPORT void JNICALL Java_org_vrpassthroughplayer_plugin_VoiceClone
         for(unsigned i=0;i<a.format->nb_streams;++i)if(int(i)!=index)a.format->streams[i]->discard=AVDISCARD_ALL;
         const bool indexed=a.format->iformat&&std::string(a.format->iformat->name).find("mov")!=std::string::npos;
         int anchor=index;
-        if(!indexed)for(unsigned i=0;i<a.format->nb_streams;++i)if(a.format->streams[i]->codecpar->codec_type==AVMEDIA_TYPE_VIDEO){anchor=int(i);a.format->streams[i]->discard=AVDISCARD_DEFAULT;break;}
+        if(!indexed)for(unsigned i=0;i<a.format->nb_streams;++i)if(a.format->streams[i]->codecpar->codec_type==AVMEDIA_TYPE_VIDEO&&
+            !(a.format->streams[i]->disposition&AV_DISPOSITION_ATTACHED_PIC)){anchor=int(i);a.format->streams[i]->discard=AVDISCARD_DEFAULT;break;}
         const double origin=a.format->start_time==AV_NOPTS_VALUE?0:a.format->start_time/double(AV_TIME_BASE);
         const auto stamp=int64_t(std::llround((start+origin)/av_q2d(a.format->streams[anchor]->time_base)));
         if(avformat_seek_file(a.format,anchor,INT64_MIN,stamp,stamp,AVSEEK_FLAG_BACKWARD)<0)throw std::runtime_error("voice_seek_failed");

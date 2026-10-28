@@ -1,6 +1,7 @@
 extends Node3D
 
 const SpatialCapture := preload("res://scripts/spatial_video_metadata.gd")
+const ImmersiveAdjustments := preload("res://scripts/immersive_adjustments.gd")
 ## Shared spatial surface only: decoding, playback clocks and photo queues live in their owners.
 signal mode_lock_changed(lock: Dictionary)
 
@@ -47,7 +48,9 @@ const SPHERE_RADIUS := 50.0
 var view_yaw := 0.0
 var view_pitch := 0.0
 var view_zoom := 0.0
-const ZOOM_LIMITS := Vector2(-0.5, 0.6)
+var view_horizontal := 0.0
+var view_vertical := 0.0
+const ZOOM_LIMITS := ImmersiveAdjustments.ZOOM_LIMITS
 var _view_basis := Basis.IDENTITY # World orientation captured once, independent of later head turns.
 var _applied_geometry := Geometry.Geometry.FLAT
 
@@ -73,7 +76,7 @@ func _apply_geometry() -> void:
 	if geometry != _applied_geometry:
 		_applied_geometry = geometry
 		if geometry != Geometry.Geometry.FLAT:
-			reset_view()
+			_reset_projection_view()
 	if geometry == Geometry.Geometry.FLAT:
 		_apply_flat_pose()
 		var dimensions := _source_size()
@@ -116,15 +119,15 @@ func _apply_flat_pose() -> void:
 func _screen_dimensions(aspect: float) -> Vector2:
 	return Vector2(minf(1.9, aspect), minf(1.9, aspect) / aspect)
 
-## Immersive projections are centred on the eyes every frame. Runs on every presented video frame
-## too, so it must never put the sphere anywhere else (that alternated with _process and shook the view).
+## Share one head-relative sphere pose across both eyes and every presented frame.
+## Picture-relative offsets must also apply here so frame updates cannot undo them.
 func _center_on_view() -> void:
 	panel.global_basis = _view_basis * Basis(Vector3.UP, view_yaw) * Basis(Vector3.RIGHT, view_pitch) * Basis(Vector3.FORWARD, deg_to_rad(screen_rotation))
 	if view_camera and view_camera.is_inside_tree():
 		panel.global_position = view_camera.global_position
 	else:
 		panel.position = Vector3(0, 1.6, 0)
-	panel.global_position += panel.global_basis * Vector3(0, 0, -view_zoom * SPHERE_RADIUS)
+	panel.global_position += panel.global_basis * Vector3(view_horizontal, view_vertical, -view_zoom) * SPHERE_RADIUS
 
 ## Drag: the picture follows the controller (radians; positive yaw turns it left, pitch up).
 func turn_view(yaw: float, pitch: float) -> void:
@@ -133,7 +136,7 @@ func turn_view(yaw: float, pitch: float) -> void:
 	if geometry != Geometry.Geometry.FLAT:
 		_center_on_view()
 
-## Positive brings the picture nearer.
+## Move the shared sphere along its depth axis using the existing zoom direction.
 func zoom_view(amount: float) -> void:
 	view_zoom = clampf(view_zoom + amount, ZOOM_LIMITS.x, ZOOM_LIMITS.y)
 	if geometry != Geometry.Geometry.FLAT:
@@ -333,10 +336,16 @@ func _unlock_mode() -> void:
 	mode_lock = {}
 	mode_lock_changed.emit(mode_lock.duplicate())
 
-func reset_view() -> void:
+func _reset_projection_view() -> void:
+	reset_view()
+
+func reset_view(reset_adjustments: bool = true) -> void:
 	view_yaw = 0.0
 	view_pitch = 0.0
-	view_zoom = 0.0
+	if reset_adjustments:
+		view_zoom = 0.0
+		view_horizontal = 0.0
+		view_vertical = 0.0
 	if view_camera and view_camera.is_inside_tree():
 		# Centre on the gaze once, keeping the picture free of head roll.
 		var forward := -view_camera.global_basis.orthonormalized().z

@@ -24,17 +24,17 @@ class NarrationPreviewSessionTest {
     @Test fun switchesStayWarmAndFirstAuditionStartsBeforeGenerationEnds() {
         val backend=FakeNarrationBackend();val runtime=SharedNarrationEngine(backend);val normal=runtime.acquire({true})
         val session=NarrationPreviewSession(runtime,{cache()},{})
-        // A longer utterance proves that the bounded loudness observation window
-        // still starts playback before the producer reaches EOS.
+        // The first verified clause plays while the next one is still generating.
+        val text="你好，很高兴认识你。今天天气很舒服。"
         backend.chunkCount=6
-        val began=CountDownLatch(1);backend.hook={if(it==4)check(began.await(3,TimeUnit.SECONDS))}
+        val began=CountDownLatch(1);backend.hook={if(backend.syntheses==2&&it==4)check(began.await(3,TimeUnit.SECONDS))}
         val output=Output {began.countDown()};var hit=false
-        session.play("Xiaoyu","zh","hello",intArrayOf(),true,"model",{true},{output},{},{a,_->hit=a},{fail("cache failure")})
-        assertFalse(hit);assertTrue(output.done);assertEquals(184320,output.samples)
+        session.play("Xiaoyu","zh",text,intArrayOf(),true,"model",{true},{output},{},{a,_->hit=a},{fail("cache failure")})
+        assertFalse(hit);assertTrue(output.done);assertEquals(2,backend.syntheses);assertTrue(output.samples>0)
         backend.hook={}
         session.play("Ava","en","hello",intArrayOf(),true,"model",{true},{Output()},{},{_,_->},{fail("cache failure")})
-        session.play("Xiaoyu","zh","hello",intArrayOf(),true,"model",{true},{Output()},{},{a,_->hit=a},{fail("cache failure")})
-        assertTrue(hit);assertEquals(2,backend.syntheses);assertEquals(1,backend.created)
+        session.play("Xiaoyu","zh",text,intArrayOf(),true,"model",{true},{Output()},{},{a,_->hit=a},{fail("cache failure")})
+        assertTrue(hit);assertEquals(3,backend.syntheses);assertEquals(1,backend.created)
         session.close();assertEquals(1,backend.live);normal.close();assertEquals(0,backend.live)
     }
     @Test fun persistentHitWorksInANewSessionWithoutLoadingAnyModel() {
@@ -53,12 +53,43 @@ class NarrationPreviewSessionTest {
         assertTrue(hit);assertEquals(1,backend.syntheses)
         assertFalse(File(folder.root,"saved").exists());assertTrue(File(folder.root,"temporary").listFiles()!!.any {it.extension=="pcm"})
     }
-    @Test fun anIncompleteSentenceIsNotAutomaticallyReplayedAfterOutputStarts() {
-        val backend=FakeNarrationBackend();backend.eos=false;val runtime=SharedNarrationEngine(backend);val began=CountDownLatch(1)
-        backend.chunkCount=6;backend.hook={if(it==4)check(began.await(3,TimeUnit.SECONDS))}
+    @Test fun aClauseThatNeverEndsIsNeverHeardAndFailsAfterTheBoundedLadder() {
+        val backend=FakeNarrationBackend();backend.eos=false;val runtime=SharedNarrationEngine(backend);var started=false
         NarrationPreviewSession(runtime,{cache()},{ }).use {session->
-            assertThrows(IllegalStateException::class.java){session.play(id,"zh","sample",IntArray(592),true,"v1",{true},{Output {began.countDown()}},{},{_,_->},{})}}
-        assertEquals(1,backend.syntheses);assertFalse(File(folder.root,"saved").walkTopDown().any {it.isFile})
+            assertThrows(IllegalStateException::class.java){session.play(id,"zh","sample",IntArray(592),true,"v1",{true},{Output {started=true}},{},{_,_->},{})}}
+        assertFalse(started);assertEquals(listOf(false to 0,true to 0,false to 17,true to 17),backend.calls.map {it.second to it.third})
+        assertFalse(File(folder.root,"saved").walkTopDown().any {it.isFile})
+    }
+    @Test fun aRecoveredClausePlaysOnlyItsCompleteRetry() {
+        val backend=FakeNarrationBackend();backend.eosFor={_,precision,_->precision};val runtime=SharedNarrationEngine(backend)
+        val output=Output();var generation: NarrationPreviewSession.Generation?=null
+        NarrationPreviewSession(runtime,{cache()},{ }).use {session->
+            session.play(id,"zh","你好，很高兴认识你。",IntArray(592),true,"v1",{true},{output},{},{_,_->},{fail("cache failure")},generationInfo={generation=it})}
+        assertTrue(output.done);assertEquals(NarrationPreviewSession.Generation(1,2,1,0),generation)
+        val key=NarrationPreviewCache.key(id,"zh","你好，很高兴认识你。","v1",IntArray(592))
+        assertEquals(4*30720,cache().find(id,"zh",key,true){true}!!.samples)
+    }
+    @Test fun aMergedClauseThatNeverEndsIsRetriedAsItsOwnClauses() {
+        val backend=FakeNarrationBackend();backend.eosFor={text,_,_->"、" !in text};val runtime=SharedNarrationEngine(backend)
+        var generation: NarrationPreviewSession.Generation?=null
+        NarrationPreviewSession(runtime,{cache()},{ }).use {session->
+            session.play(id,"zh","计划、音乐。",IntArray(592),true,"v1",{true},{Output()},{},{_,_->},{fail("cache failure")},generationInfo={generation=it})}
+        assertEquals(listOf("计划。","音乐。"),backend.calls.drop(4).map {it.first})
+        assertEquals(NarrationPreviewSession.Generation(1,6,0,1),generation)
+    }
+    @Test fun previewTextIsSegmentedIntoShortClausesWithoutLosingText() {
+        val zh=VoiceClonePreviewText.text("zh")
+        assertEquals(listOf("你好，很高兴认识你。","今天天气很舒服。","我们可以聊聊最近的计划。","喜欢的音乐。","也分享一些温暖有趣的想法。"),
+            NarrationPreviewSession.segments(zh,"zh"))
+        assertEquals(listOf("Hello, it's nice to meet you.","The weather is lovely today.","We can talk about our recent plans and favorite music.",
+            "and share some warm, interesting ideas."),NarrationPreviewSession.segments(VoiceClonePreviewText.text("en"),"en"))
+        assertEquals(listOf("3.5 euros.","¿Qué?"),NarrationPreviewSession.segments("3.5 euros. ¿Qué?","es"))
+        fun letters(value: String)=value.filter {it.isLetterOrDigit()}
+        for(language in VoiceClonePreviewText.languages){
+            val text=VoiceClonePreviewText.text(language);val segments=NarrationPreviewSession.segments(text,language)
+            assertEquals(language,letters(text),letters(segments.joinToString("")))
+            assertTrue(language,segments.size>=3)
+        }
     }
     @Test fun cancellationNeverCommitsAPartialPersistentSample() {
         val backend=FakeNarrationBackend();val runtime=SharedNarrationEngine(backend);val active=AtomicBoolean(true)

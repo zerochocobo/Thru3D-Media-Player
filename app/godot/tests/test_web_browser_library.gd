@@ -1,0 +1,91 @@
+extends SceneTree
+const Menu := preload("res://scripts/library_menu.gd")
+const Fixture := preload("res://tests/test_web_browser_panel.gd")
+const Library := preload("res://scripts/web_browser_library_panel.gd")
+var checks := 0
+var failures: Array[String] = []
+func check(ok: bool, message: String) -> void:
+	checks += 1
+	if not ok: failures.append(message)
+func _initialize() -> void: call_deferred("_run")
+func _run() -> void:
+	preload("res://scripts/i18n.gd").use("en")
+	var platform := Fixture.Platform.new()
+	platform.library = {"bookmarks": [{"url": "https://example.com/a", "title": "A"}, {"url": "https://example.com/b", "title": "B"}],
+		"history": [{"url": "https://example.com/history", "title": "History"}]}
+	var menu := Menu.new(); root.add_child(menu); menu.attach_platform(platform); menu.toggle()
+	menu._activate(Menu.NAV_BASE + Menu.Section.WEB)
+	var browser: RefCounted = menu.web_browser
+	var library: RefCounted = browser.library
+	browser.choose({"web_browser": "bookmarks"}); browser.tick()
+	check(menu.rows.size() == 2 and library.title() == "Bookmarks", "Bookmarks have their own heading and entries")
+	check(menu._buttons.any(func(b): return b.target == Library.BASE + Library.Action.MANAGE and b.enabled), "Manage is reachable in list header")
+	menu._activate(Library.BASE + Library.Action.MANAGE)
+	menu._activate(Menu.ROW_BASE)
+	check(not browser.opened and library.selection.has("https://example.com/a"), "Management row selects without navigating")
+	menu._activate(Library.BASE + Library.Action.ALL)
+	check(library.selection.size() == 2, "Select all includes the whole saved list")
+	menu._activate(Library.BASE + Library.Action.DELETE)
+	check(library.modal == "delete" and platform.library_commands.is_empty(), "Delete opens confirmation without mutating storage")
+	var old_scroll: float = menu.scroll
+	menu.stick_scroll(1, 0.1)
+	check(menu.scroll == old_scroll, "Confirmation consumes stick scrolling without moving its hidden list")
+	menu._activate(Library.BASE + Library.Action.CANCEL)
+	check(library.modal.is_empty() and library.selection.size() == 2, "Cancel preserves selected records")
+	menu._activate(Library.BASE + Library.Action.DELETE)
+	menu._activate(Library.BASE + Library.Action.CONFIRM)
+	check(platform.library_commands.size() == 1 and platform.library_commands[0].collection == "bookmarks" and platform.library_commands[0].urls.size() == 2, "Confirmed batch removes only specified collection and URLs")
+	menu._activate(Library.BASE + Library.Action.CONFIRM)
+	check(platform.library_commands.size() == 1, "Pending write cannot submit twice")
+	platform.library.operation = {"id": 100, "state": "saved"}
+	browser.saved_poll = 0; browser.tick()
+	check(library.pending == 1 and library.modal == "delete", "Unrelated acknowledgement cannot finish a write")
+	platform.library.operation = {"id": 1, "state": "error", "error": "storage_failed"}
+	browser.saved_poll = 0; browser.tick()
+	check(library.pending == 0 and library.modal == "delete" and not library.error.is_empty(), "Failed write retains confirmation and supports retry")
+	menu._activate(Library.BASE + Library.Action.CONFIRM)
+	platform.library.bookmarks = []; platform.library.operation = {"id": 2, "state": "saved"}
+	browser.saved_poll = 0; browser.tick()
+	check(library.modal.is_empty() and library.selection.is_empty() and menu.rows[0].get("enabled") == false, "Committed delete refreshes empty state and selection")
+	menu._activate(Library.BASE + Library.Action.MANAGE)
+	menu._activate(Library.BASE + Library.Action.ADD)
+	check(library.modal == "edit" and library.draft.previous == "", "New bookmark opens an empty editor")
+	menu._activate(Library.BASE + Library.Action.TITLE)
+	menu.system_text_input.set_text("web_library_title", "中文书签")
+	menu._activate(Library.BASE + Library.Action.URL)
+	menu.system_text_input.set_text("web_library_url", "https://example.com/new")
+	menu._activate(Library.BASE + Library.Action.SAVE)
+	check(platform.library_commands.back().title == "中文书签" and platform.library_commands.back().url == "https://example.com/new", "Both editor fields are committed through Unicode input")
+	check(not menu.system_text_input.active(), "Saving closes the input session")
+	platform.library.operation = {"id": 3, "state": "error", "error": "invalid_address"}
+	browser.saved_poll = 0; browser.tick()
+	check(library.modal == "edit" and library.draft.title == "中文书签" and library.error == "invalid_address", "Validation failure preserves the draft")
+	menu._activate(Library.BASE + Library.Action.CANCEL)
+	check(library.modal.is_empty() and not menu.system_text_input.active(), "Cancel retires field callbacks")
+	browser.choose({"web_browser": "history"}); browser.saved_poll = 0; browser.tick()
+	menu._activate(Library.BASE + Library.Action.MANAGE); menu._activate(Menu.ROW_BASE)
+	menu._activate(Library.BASE + Library.Action.EDIT)
+	check(library.modal == "edit" and library.draft.previous == "" and library.draft.url == "https://example.com/history", "History entry can be saved as a new bookmark without rewriting history")
+	menu._activate(Library.BASE + Library.Action.CANCEL)
+	menu._activate(Library.BASE + Library.Action.MANAGE)
+	menu._activate(Library.BASE + Library.Action.CLEAR)
+	check(library.removal.action == "clear_history" and platform.library_commands.size() == 3, "Clear history also requires confirmation")
+	menu.navigate_back()
+	check(library.modal.is_empty() and browser.list_mode == "history", "Back from confirmation returns to the same history list")
+	menu._activate(Library.BASE + Library.Action.CLEAR); menu._activate(Library.BASE + Library.Action.CONFIRM)
+	check(platform.library_commands.back() == {"action": "clear_history"}, "History clear is a browser-library command, not site-data or playback-history clear")
+	platform.library.history = []; platform.library.operation = {"id": 4, "state": "saved"}
+	browser.saved_poll = 0; browser.tick()
+	platform.library.bookmarks = [{"url": "https://example.com/a", "title": "Alpha"}, {"url": "https://example.com/b", "title": "Beta"}]
+	browser.choose({"web_browser": "bookmarks"}); browser.saved_poll = 0; browser.tick()
+	library._search("Alpha"); menu._activate(Library.BASE + Library.Action.MANAGE); menu._activate(Library.BASE + Library.Action.ALL)
+	check(menu.rows.size() == 1 and library.selection.keys() == ["https://example.com/a"], "Filtered select-all does not select hidden records")
+	menu._activate(Library.BASE + Library.Action.EDIT)
+	check(library.draft.previous == "https://example.com/a", "Editing uses stable URL identity, not a row number")
+	menu._activate(Library.BASE + Library.Action.URL)
+	menu._activate(Menu.NAV_BASE + Menu.Section.RECENT)
+	check(not menu.system_text_input.active() and library.modal.is_empty() and library.selection.is_empty(), "Leaving the source cancels management and text editing")
+	menu.free(); platform.free()
+	print("Web library: %d checks, %d failures" % [checks, failures.size()])
+	for failure in failures: push_error(failure)
+	quit(0 if failures.is_empty() else 1)

@@ -183,6 +183,7 @@ func release() -> void:
 
 func needs_main() -> bool:
 	var video: Node3D = manager.owner
+	if video.portrait_requested(): return false
 	var material: ShaderMaterial = video._binding.material
 	return enabled and not manager.video_windows().is_empty() and material != null and not video._binding.layer and (
 		(material.get_shader_parameter("alpha_enabled") == true and material.get_shader_parameter("depth_enabled") != true)
@@ -311,6 +312,8 @@ func prepare(origin: Node3D, occupied: int) -> Array:
 		return []
 	if not enabled: fallback = "debug_disabled"; return []
 	var video: Node3D = manager.owner
+	# A compositor copy would flatten the main mesh and cover eye-buffer geometry.
+	if video.portrait_requested(): fallback = "portrait_mesh"; return []
 	var layer: RefCounted = video.get("video_layer")
 	if manager.video_windows().is_empty() or not layer or not layer.pip_supported() or origin == null:
 		fallback = "unavailable"; return []

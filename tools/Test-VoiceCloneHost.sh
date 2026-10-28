@@ -11,9 +11,9 @@ if [[ ! -f config.h || ! -f fixture-config.sha256 || $(cat fixture-config.sha256
     "$source/configure" --disable-everything --disable-autodetect --disable-doc --disable-programs \
         --disable-debug --disable-x86asm --enable-shared --disable-static \
         --disable-avdevice --disable-avfilter --disable-swscale --enable-swresample \
-        --enable-demuxer=mov,matroska,mpegts,srt,ass,webvtt \
-        --enable-decoder=aac,ac3,eac3,pcm_s16le,subrip,ass,webvtt,movtext \
-        --enable-parser=aac,ac3 --enable-protocol=file,http,tcp
+        --enable-demuxer=mov,matroska,mpegts,srt,ass,webvtt,mp3,wav \
+        --enable-decoder=aac,ac3,eac3,pcm_s16le,pcm_s24le,subrip,ass,webvtt,movtext,mp3float,mjpeg,alac \
+        --enable-parser=aac,ac3,mpegaudio,mjpeg --enable-protocol=file,http,tcp
     printf '%s' "$fingerprint" >fixture-config.sha256
 fi
 make -j4 >"$output/ffmpeg-host-build.log" 2>&1

@@ -13,7 +13,7 @@ $env:GODOT_EXE = (Get-Command godot).Source
 
 ## Pinned toolchain
 
-The versions/hashes used by this source snapshot are in `tools/environment/toolchain.lock.json`, the Gradle wrapper, and third-party source locks. The application build checks Godot `4.7.2.stable.official.ed1daf0bf`; use its corresponding Android templates and Godot OpenXR Vendors `5.1.0`. Android plugin configuration uses Java 17, compile SDK 36, build-tools 36.1.0, NDK 29.0.14206865 and CMake 3.31.6. The current Quest export uses min SDK 32 / target SDK 34; PICO and experimental standard OpenXR use 29 / 36. The separately built mpv dependency uses its own locked Linux NDK r30. Do not silently mix these toolchains.
+The versions/hashes used by this source snapshot are in `tools/environment/toolchain.lock.json`, the Gradle wrapper, and third-party source locks. The application build checks Godot `4.7.2.stable.official.ed1daf0bf`; use its corresponding Android templates and Godot OpenXR Vendors `5.1.0`. Android plugin configuration uses Java 17, browser compile SDK android-37.2, build-tools 36.1.0, NDK 29.0.14206865 and CMake 3.31.6. The current Quest export uses min SDK 32 / target SDK 34; PICO and experimental standard OpenXR use 29 / 36. The separately built mpv dependency uses its own locked Linux NDK r30. Do not silently mix these toolchains.
 
 Set your own paths:
 
@@ -106,7 +106,11 @@ The updated FFmpeg build includes the adapters in native/mpv/mvc and pinned edge
 
 The Windows application export now also requires Visual Studio 2022 Build Tools with the C++ toolset. Build-Player uses its vcvars64.bat and MSVC to create a disposable editor-only GDExtension stub; Android packages load the native layer library from the player AAR. The extension declaration is added only during export and removed afterward. Host source tests do not require this Android export step.
 
--QuestStore is limited to QUEST Release and selects a separate application identity; ordinary builds keep their existing package identity. Use your own signing material for either identity. This option supplies packaging support, not a store upload or an official distribution credential.
+Supported Release outputs are QUEST, PICO, OpenXR and PICO China Store. The former `-QuestStore` option is removed. Standard PICO keeps the browser entry. China uses `-XrVendor Pico -BuildType Release -PicoChinaStore -AndroidVersionCode 49` (49 is an example; select a new number above all uploads to either PICO channel). Both keep `com.wapok.thru3d` and the existing signature; they replace each other rather than installing side by side.
+
+Software `versionName` is independent of upload `versionCode`. One ordinary upload consumes one code; adding China consumes a second. Always start from the highest used code plus one: ordinary48/China49, then ordinary50/China51. Additional ordinary PICO uploads can also set `-AndroidVersionCode`. Do not infer a new upload code from an unchanged source baseline.
+
+The packaged `application/config/distribution_channel` is `pico_cn_store` for China and `standard` otherwise. China hides browser navigation and blocks direct entry; account web login remains available. Build-Player verifies the compiled channel and Android build number, writes both to build.json and restores temporary source settings. PICO archive names include `vc<number>` and China uses `PICO-CN-STORE`. This provides packaging, not a store upload or approval guarantee. Test with `tools/Test-DistributionChannel.ps1`.
 
 ## USB filesystem sources
 
@@ -149,3 +153,11 @@ Complete 0.13.5 builds also require two size/hash-pinned PP-OCRv6 Small files un
 Normal Build-Player also calls Prepare-Listening.ps1 and Assert-ListeningPackaged.ps1 for source-built Moonshine and the separate Chinese/English/Japanese streaming models. It shares the unchanged pinned ONNX Runtime with narration/OCR. See [live subtitles](LIVE_SUBTITLES.md) for source/model preparation, receipts and exclusions; no original signing identity or model payload is provided.
 
 0.14.1 also stages the externally obtained Kuromoji/IPADIC 0.9.0 reader/dictionary and validates its exact resources/notices with Assert-ComicJapanesePackaged.ps1. Three OCR model files are now required. See [comic resources](COMIC_READING.md).
+
+## Browser runtime and distribution channels
+
+The pinned browser toolchain in third_party/geckoview/runtime.json uses compile SDK android-37.2, AGP 9.3.3, Kotlin 2.4.21, Gradle 9.5.0 and Media3 1.11.1. The source pin supplies the public toolchain lock; platform runtime min/target SDK remain controlled by export presets. Prepare-WebBrowserToolchain.ps1 validates this compile API and patches the generated Godot export consistently. Prepare-WebVideo.ps1 verifies the separately downloaded pinned extractor; no browser AAR/extractor or Python runtime is bundled in Git.
+
+Release targets are QUEST, PICO, OpenXR and optional PICO-CN-STORE. Three-target requests exclude the China channel; four include it. PICO China uses Build-Player.ps1 -XrVendor Pico -BuildType Release -PicoChinaStore -AndroidVersionCode <new-code>. Normal PICO can also receive an explicit upload code. Display version is separate: choose a code strictly above the highest already delivered/uploaded across both PICO channels, allocate two successive codes when both channels are needed, and do not mechanically increment an old source preset. The reference preset is not the next-upload allocator. Source channel must remain standard; the build restores temporary channel/code changes. Same package/signing identity replaces the other channel. PICO archive names include channel and vc; no new signing identity is supplied. See [channel scope](WEB_BROWSER.md).
+
+Optional QUEST Release comparison builds can use -UncompressedNativeLibraries. The included alignment/signing/compression checks use caller-prepared signing environment variables; they generate no replacement key and publish no identity. This option is separate from normal release defaults.

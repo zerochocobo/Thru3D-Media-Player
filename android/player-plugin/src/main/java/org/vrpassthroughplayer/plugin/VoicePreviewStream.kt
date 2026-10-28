@@ -5,15 +5,16 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 
 /** Bounded producer/consumer: native generation never retains a complete float utterance. */
-internal class VoicePreviewStream(private val active: ()->Boolean,private val output: Output,private val startSamples: Int=START_SAMPLES) : AutoCloseable {
-    init {require(startSamples in 2..START_SAMPLES&&startSamples%2==0)}
+internal class VoicePreviewStream(private val active: ()->Boolean,private val output: Output,private val startSamples: Int=START_SAMPLES,
+                                  queueBlocks: Int=QUEUE_BLOCKS) : AutoCloseable {
+    init {require(startSamples in 2..START_SAMPLES&&startSamples%2==0&&queueBlocks in 1..64)}
     interface Output : AutoCloseable {
         fun start()
         fun write(pcm: FloatArray)
         fun finish(samples: Int)
     }
     companion object {const val BLOCK_LIMIT=96_000;const val QUEUE_BLOCKS=4;const val START_SAMPLES=38_400}
-    private val queue=ArrayBlockingQueue<FloatArray>(QUEUE_BLOCKS)
+    private val queue=ArrayBlockingQueue<FloatArray>(queueBlocks)
     private val failure=AtomicReference<Throwable?>()
     @Volatile private var ended=false
     @Volatile private var stopped=false

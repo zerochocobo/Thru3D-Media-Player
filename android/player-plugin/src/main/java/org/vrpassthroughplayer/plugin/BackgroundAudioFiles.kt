@@ -9,7 +9,7 @@ import java.util.UUID
 /** Transactional private copies, independent of a remote account's lifetime. */
 internal object BackgroundAudioFiles {
     const val MAX_BYTES = 512L * 1024 * 1024
-    val extensions = setOf("mp3", "ogg", "wav", "flac", "dts", "dtshd")
+    val extensions = setOf("mp3", "m4a", "ogg", "wav", "flac", "dts", "dtshd")
     data class Saved(val id: String, val file: File, val bytes: Long, val created: Boolean)
     data class Storage(val used: Long, val free: Long, val total: Long)
 
@@ -61,7 +61,7 @@ internal object BackgroundAudioFiles {
 
     fun remove(directory: File, path: String): Boolean {
         val file = File(path).canonicalFile
-        if (file.parentFile != directory.canonicalFile || !file.name.matches(Regex("import_[a-f0-9]{64}\\.(mp3|ogg|wav|flac|dts|dtshd)"))) return false
+        if (file.parentFile != directory.canonicalFile || !file.name.matches(Regex("import_[a-f0-9]{64}\\.(mp3|m4a|ogg|wav|flac|dts|dtshd)"))) return false
         return !file.exists() || file.delete()
     }
 }

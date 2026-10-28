@@ -6,8 +6,8 @@ import java.io.ByteArrayInputStream
 import java.nio.file.Files
 
 class BackgroundAudioFilesTest {
-    @Test fun losslessAndDtsFilesFollowTheSameTransactionalLibraryRules() {
-        for (extension in listOf("flac", "dts", "dtshd")) {
+    @Test fun recordingLosslessAndDtsFilesFollowTheSameTransactionalLibraryRules() {
+        for (extension in listOf("m4a", "wav", "flac", "dts", "dtshd")) {
             assertTrue(MediaKinds.audio("Music.$extension".uppercase()))
             assertTrue(MediaKinds.supportedFileName("music #1?.$extension"))
             val directory = folder()
@@ -79,6 +79,8 @@ class BackgroundAudioFilesTest {
     @Test fun audioClassificationPreservesLiteralFilenames() {
         assertTrue(MediaKinds.supported("calm.MP3")); assertEquals("audio", MediaKinds.kind("rain.ogg"))
         assertTrue(MediaKinds.supportedFileName("night #1?.wav")); assertEquals("audio", MediaKinds.fileNameKind("night #1?.wav"))
+        assertTrue(MediaKinds.supportedFileName("Recording #1?.M4A")); assertEquals("audio", MediaKinds.fileNameKind("Recording #1?.M4A"))
+        assertTrue(MediaKinds.audio("https://recorder/Recording.M4A?download=1#track"))
         assertEquals("image", MediaKinds.kind("photo.jpg")); assertEquals("video", MediaKinds.kind("movie.mp4"))
     }
     @Test fun remoteCopySurvivesServerShutdown() {

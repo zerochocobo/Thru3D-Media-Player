@@ -24,7 +24,7 @@
     <!-- DLNA media servers describe themselves and answer Browse over plain LAN HTTP; Android
          blocks cleartext HttpURLConnection traffic unless the app allows it. -->
     <!-- Horizontal Quest/Android launchers read the application banner before the square icon. -->
-    <application android:usesCleartextTraffic="true"
+    <application android:usesCleartextTraffic="true" android:extractNativeLibs="true"
         android:banner="@drawable/thru3d_launcher_banner">
         <service android:name="org.vrpassthroughplayer.plugin.VoiceCloneService"
             android:exported="false" android:process=":voice_clone" android:stopWithTask="true" />

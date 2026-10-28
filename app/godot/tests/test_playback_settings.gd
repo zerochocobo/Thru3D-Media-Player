@@ -226,6 +226,7 @@ func _run() -> void:
 	root.add_child(library)
 	library.toggle(); library.section = Library.Section.SETTINGS; library.tab = Library.VIDEO_TAB; library.refresh()
 	library._choose(library.rows.filter(func(row): return row.get("video_settings_group", "") == "subtitles")[0])
+	library._choose(library.rows.filter(func(row): return row.get("subtitle_settings_group", "") == "appearance")[0])
 	check(library.rows.filter(func(row): return row.get("key", "") == "subtitle_size")[0].value == video.subtitle_size * 100, "Expanded global size reflects playback's current value")
 	main._on_setting_changed("subtitle_size", 125)
 	check(video.subtitle_size == 1.25 and main._menu_state().subtitle_size == 125 and main._library_settings().subtitle_size == 125, "Global and playback size agree")

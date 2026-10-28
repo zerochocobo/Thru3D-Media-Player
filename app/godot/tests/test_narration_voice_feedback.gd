@@ -50,7 +50,7 @@ func _run() -> void:
 	video.narration.enabled = true
 	var ui := state.duplicate(true); ui.merge({"has_video": true, "source_uri": video.local_uri, "subtitle_options": [{"id": 1, "codec": "subrip"}], "subtitle_track": 1, "narration_enabled": true, "narration_personal_voices": []}, true)
 	var menu := Menu.new(); menu.state_provider = func(): return ui
-	root.add_child(menu); menu.toggle(); menu.set_process(false); menu._subtitle_open = true; menu.refresh()
+	root.add_child(menu); menu.toggle(); menu.set_process(false); menu._subtitle_open = true; menu._set_subtitle_detail("narration"); menu.refresh()
 	check(not menu.choices.targets.values().any(func(item): return item.get("key", "") == "narration_custom_voice"), "A still-loading empty chooser starts hidden")
 	ui.narration_personal_voices = [VOICE]; menu.refresh_values()
 	check(menu.choices.targets.values().any(func(item): return item.get("key", "") == "narration_custom_voice"), "Late catalog arrival redraws without toggling categories or a new backend revision")

@@ -1327,8 +1327,8 @@ func _place_detail() -> void:
 	_detail.global_transform = pose * local
 	_detail_direction = panel.global_basis.inverse() * -pose.basis.z
 
-func reset_view() -> void:
-	super.reset_view()
+func reset_view(reset_adjustments: bool = true) -> void:
+	super.reset_view(reset_adjustments)
 	inspect = false; magnification = 1.0; crop_center = Vector2(0.5, 0.5)
 	if _detail_material: _update_inspect()
 

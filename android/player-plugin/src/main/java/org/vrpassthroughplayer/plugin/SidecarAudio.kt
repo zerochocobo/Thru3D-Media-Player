@@ -19,7 +19,8 @@ internal object SidecarAudio {
     private const val LIMIT = 32
 
     /** An MPV location for one track; [descriptor] stays open until the source closes. */
-    data class Track(val location: String, val title: String, val descriptor: ParcelFileDescriptor? = null)
+    data class Track(val location: String, val title: String, val descriptor: ParcelFileDescriptor? = null,
+                     val requiredPrimary: Boolean = false)
 
     /** Sibling names for [video] among [names], clone voice first, then by name. */
     fun select(video: String, names: Collection<String>): List<String> {

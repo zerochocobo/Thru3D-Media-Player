@@ -137,10 +137,11 @@ func field(parent: Node3D, row: Dictionary, centre: Vector2, width: float, heigh
 # A wide invisible hit target surrounds the rail; graphics follow the button's plane.
 func _slider(parent: Node3D, row: Dictionary, centre: Vector2, width: float, height: float) -> void:
 	var reset_width := 0.08 if row.has("reset_value") else 0.0
-	var nudge_width := 0.12 if row.has("nudge_step") else 0.0
-	var field_width := width - reset_width - nudge_width
-	var field_centre := centre - Vector2((width - field_width) * 0.5, 0)
-	var rail_width := field_width - (0.03 if row.get("hide_value", false) else 0.15)
+	var nudge_sides: bool = row.get("nudge_sides", false) and row.has("nudge_step")
+	var nudge_width := (0.14 if nudge_sides else 0.12) if row.has("nudge_step") else 0.0
+	var field_width := width - (0.0 if nudge_sides else reset_width) - nudge_width
+	var field_centre := centre if nudge_sides else centre - Vector2((width - field_width) * 0.5, 0)
+	var rail_width := field_width - (0.03 if nudge_sides or row.get("hide_value", false) else 0.15)
 	var target := _button({"kind": "slider", "key": row.key, "span": row.span}, "", field_centre, Vector2(field_width, height), parent)
 	if row.has("source_uri"): targets[target].source_uri = row.source_uri
 	if row.has("subtitle_key"): targets[target].subtitle_key = row.subtitle_key
@@ -166,6 +167,9 @@ func _slider(parent: Node3D, row: Dictionary, centre: Vector2, width: float, hei
 	label.visible = not row.get("hide_value", false)
 	label.position = Vector3(field_width / 2 - 0.005, 0, 0.006)
 	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	if nudge_sides:
+		label.position = Vector3(0, 0.045, 0.006)
+		label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	sliders[target] = {"span": row.span, "left": left, "width": rail_width, "fill": fill, "knob": knob,
 		"label": label, "unit": row.unit, "node": node, "signed": row.get("signed", false), "decimals": row.get("decimals", 1)}
 	if row.has("nudge_step"):
@@ -175,13 +179,16 @@ func _slider(parent: Node3D, row: Dictionary, centre: Vector2, width: float, hei
 			if row.has("source_uri"): item.source_uri = row.source_uri
 			if row.has("subtitle_key"): item.subtitle_key = row.subtitle_key
 			if row.has("audio_key"): item.audio_key = row.audio_key
-			_button(item, "−" if index == 0 else "+", centre + Vector2(width / 2 - reset_width - nudge_width + 0.03 + index * 0.06, 0), Vector2(0.055, height), parent)
+			var position := centre + Vector2((-1 if index == 0 else 1) * (width / 2 - 0.035), 0) if nudge_sides else centre + Vector2(width / 2 - reset_width - nudge_width + 0.03 + index * 0.06, 0)
+			_button(item, "−" if index == 0 else "+", position, Vector2(0.07 if nudge_sides else 0.055, height), parent)
 			var nudge: Dictionary = menu._buttons.back()
+			# Flanking steppers are the primary fine control, so their signs read at a glance.
+			if nudge_sides: menu.set_label_size(nudge.node.get_child(0), menu.TEXT_PAGE_TITLE + 4)
 			nudge.enabled = not same(clampf(float(row.value) + step, row.span.x, row.span.y), row.value)
 			if not nudge.enabled: nudge.node.get_child(0).modulate = menu.MUTED
 	if row.has("reset_value"):
 		var reset_target := _button({"kind": "reset", "key": row.key, "value": row.reset_value}, "",
-			centre + Vector2(width / 2 - 0.0325, 0), Vector2(0.065, height), parent)
+			centre + Vector2(width / 2 - 0.0325, 0.055 if nudge_sides else 0), Vector2(0.065, 0.04 if nudge_sides else height), parent)
 		var reset: Dictionary = menu._buttons.back()
 		if row.has("source_uri"): targets[reset_target].source_uri = row.source_uri
 		if row.has("subtitle_key"): targets[reset_target].subtitle_key = row.subtitle_key

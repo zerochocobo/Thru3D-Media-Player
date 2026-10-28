@@ -557,7 +557,7 @@ func _draw_comic_settings() -> void:
 			if voice_row: _draw_voice_preview(PHOTO_COMIC_PREVIEW, y, _comic_preview_busy(_state), _state.get("comic_supported", false) and (not custom or not str(_state.get("comic_custom_voice", "")).is_empty()))
 		y -= SUBTITLE_SETTING_PITCH
 		if custom and (voice_row or (not has_voice_row and row.field.key == "comic_voice_kind")):
-			_button(PHOTO_COMIC_MANAGE, I18n.t("Manage my voices"), Vector2(0.14, y), Vector2(0.64, SUBTITLE_SETTING_HEIGHT))
+			_button(PHOTO_COMIC_MANAGE, I18n.t("My cloned voices"), Vector2(0.14, y), Vector2(0.64, SUBTITLE_SETTING_HEIGHT))
 			y -= SUBTITLE_SETTING_PITCH
 	_status = _label(_fit_title(_photo_status(), "", 0.94, TEXT_AUX), Vector3(0, -top + 0.035, 0.004), TEXT_AUX)
 	_status.modulate = MUTED

@@ -172,6 +172,9 @@ func _run() -> void:
 		and memory_rows[0].choices.all(func(option): return not str(option.get("hint", "")).is_empty()),
 		"Memory follows output resolution with auto, standard and saver")
 	check(main.memory_saver, "XR2 Gen1 class GPU uses the memory saver automatically")
+	check(main._alpha_fps() == main.LOW_END_ALPHA_FPS and main._alpha_profile() == main.LOW_END_ALPHA_PROFILE
+		and main._library_settings().alpha_profile_default == main.LOW_END_ALPHA_PROFILE and main._library_settings().alpha_fps_default == main.LOW_END_ALPHA_FPS,
+		"XR2 Gen1 class GPU starts AI passthrough at 15 FPS with the 256 model and marks them as its defaults")
 	main._on_setting_changed("memory_mode", Quality.MEMORY_STANDARD)
 	check(not main.memory_saver and Quality.load_memory_choice(main.settings) == Quality.MEMORY_STANDARD, "Standard memory overrides the device and persists")
 	main.recent_menu.dismiss(); main.queue_free()

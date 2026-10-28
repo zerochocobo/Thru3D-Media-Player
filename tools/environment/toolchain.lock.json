@@ -11,17 +11,17 @@
   "sdk": {
     "command_line_tools": "22.0",
     "platform_tools": "37.0.1",
-    "platform": "android-36",
-    "platform_revision": 2,
+    "platform": "android-37.2",
+    "platform_revision": 1,
     "build_tools": "36.1.0",
     "ndk": "29.0.14206865",
     "cmake": "3.31.6",
     "ninja": "1.12.1"
   },
   "gradle": {
-    "wrapper": "8.11.1",
-    "android_gradle_plugin": "8.6.1",
-    "kotlin": "2.1.21"
+    "wrapper": "9.5.0",
+    "android_gradle_plugin": "9.3.3",
+    "kotlin": "2.4.21"
   },
   "ncnn": {
     "version": "20260526",

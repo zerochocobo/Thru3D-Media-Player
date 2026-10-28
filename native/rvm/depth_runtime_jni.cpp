@@ -211,10 +211,9 @@ struct Depth final {
         last_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
     }
 
-    void process_photo(const float* rgb, float* near, int x, int y, int cw, int ch) {
-        require(photo, "Photo processing needs the photo depth model");
+    void process_crop(const float* rgb, float* near, int x, int y, int cw, int ch) {
         require(x >= 0 && y >= 0 && cw > 0 && ch > 0 && cw <= width && ch <= height &&
-                x <= width - cw && y <= height - ch, "Invalid photo depth content rectangle");
+                x <= width - cw && y <= height - ch, "Invalid depth content rectangle");
         const auto started = std::chrono::steady_clock::now();
         infer(rgb);
         const auto inferred = std::chrono::steady_clock::now();
@@ -309,11 +308,11 @@ Java_org_vrpassthroughplayer_plugin_DepthNative_createPhoto(JNIEnv* env, jclass,
     } catch (const std::exception& error) { fail(env, error.what()); return 0; }
 }
 
-extern "C" JNIEXPORT jstring JNICALL
-Java_org_vrpassthroughplayer_plugin_DepthNative_processPhoto(JNIEnv* env, jclass, jlong handle, jobject rgb, jobject near,
-                                                            jint x, jint y, jint width, jint height) {
+static jstring process_crop(JNIEnv* env, jlong handle, jobject rgb, jobject near,
+                            jint x, jint y, jint width, jint height, bool photo) {
     try {
         const auto depth = find(handle);
+        require(depth->photo == photo, "Crop processing model type differs");
         std::unique_lock<std::mutex> guard(depth->operation, std::try_to_lock);
         require(guard.owns_lock(), "Depth runtime busy; no requests queued");
         const size_t plane = static_cast<size_t>(depth->width) * depth->height;
@@ -321,12 +320,26 @@ Java_org_vrpassthroughplayer_plugin_DepthNative_processPhoto(JNIEnv* env, jclass
         float* output = direct(env, near, plane);
         for (size_t p = 0; p < plane * 3; ++p)
             if (!(input[p] >= 0.f && input[p] <= 1.f)) throw std::runtime_error("Depth RGB outside [0,1]");
-        depth->process_photo(input, output, x, y, width, height);
+        depth->process_crop(input, output, x, y, width, height);
         std::ostringstream json;
         json << "{\"state\":\"" << (depth->closed.load() ? "stale" : "ready") << "\",\"depth_ms\":" << depth->last_ms
              << ",\"normalize_ms\":" << depth->stabilize_ms << ",\"frames\":" << depth->frames << '}';
         return env->NewStringUTF(json.str().c_str());
     } catch (const std::exception& error) { fail(env, error.what()); return nullptr; }
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_org_vrpassthroughplayer_plugin_DepthNative_processPhoto(JNIEnv* env, jclass, jlong handle, jobject rgb, jobject near,
+                                                            jint x, jint y, jint width, jint height) {
+    return process_crop(env, handle, rgb, near, x, y, width, height, true);
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_org_vrpassthroughplayer_plugin_DepthNative_processPortrait(JNIEnv* env, jclass, jlong handle, jobject rgb, jobject near,
+                                                               jint x, jint y, jint width, jint height) {
+    // Reuse content-only normalization, but retain the video model and its low-priority queue.
+    // Moving portrait ROIs must not share the full-frame video's temporal depth band.
+    return process_crop(env, handle, rgb, near, x, y, width, height, false);
 }
 
 extern "C" JNIEXPORT jstring JNICALL

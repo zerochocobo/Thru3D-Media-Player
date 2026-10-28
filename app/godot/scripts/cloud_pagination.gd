@@ -287,14 +287,17 @@ func _finish_view() -> void:
 		order_change_pending = false
 		menu.directory_order_changed.emit()
 
-func _filter() -> String: return str([menu.media_filter, menu.audio_import_mode, menu.subtitle_picker_mode])
+func _filter() -> String: return str([menu.media_filter, menu.audio_import_mode, menu.subtitle_picker_mode, menu.voice_picker_mode])
 
 func _append_row(entry: Dictionary) -> void:
 	var row: Dictionary = menu._entry_row(entry)
 	if not row.has("container"):
-		if menu.audio_import_mode and row.get("kind", "") != "audio": return
-		if not menu.audio_import_mode and row.get("kind", "") == "audio": return
-		if not menu.subtitle_picker_mode and not menu.audio_import_mode and menu.media_filter > 0 and row.get("kind", "video") != ("image" if menu.media_filter == 2 else "video"): return
+		if menu.voice_picker_mode:
+			if not menu._voice_sample_source(row): return
+		else:
+			if menu.audio_import_mode and row.get("kind", "") != "audio": return
+			if not menu.audio_import_mode and row.get("kind", "") == "audio": return
+			if not menu.subtitle_picker_mode and not menu.audio_import_mode and menu.media_filter > 0 and row.get("kind", "video") != ("image" if menu.media_filter == 2 else "video"): return
 	visible_rows.append(row)
 	row_index_dirty = true
 

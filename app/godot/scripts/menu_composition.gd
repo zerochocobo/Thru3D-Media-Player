@@ -109,7 +109,10 @@ func layer_reservation() -> int:
 	if not enabled: return 0
 	# Normal slots may be attached later in the same frame. Extra diagnostic bands
 	# already own viewports, so include those providers even while their quad is tiny.
-	return SLOT_METRES.size() + bands.size()
+	var browser_layers := 0
+	for menu in menus:
+		if is_instance_valid(menu) and menu.get_meta("menu_browser_layer", false): browser_layers += 1
+	return SLOT_METRES.size() + bands.size() + browser_layers
 
 func configure(target_origin: Node3D, target_camera: Camera3D, target_display: RefCounted,
 		target_menus: Array, is_low_end: bool, host_capture: bool = false) -> void:
@@ -423,14 +426,14 @@ func _collect() -> void:
 	for item in items:
 		var joined := false
 		for group in groups:
-			if group.tooltip == item.tooltip and group.popup == item.popup and group.normal.dot(item.normal) > NORMAL_DOT and item.offset - group.last <= PLANE_GAP:
+			if group.region == item.region and group.tooltip == item.tooltip and group.popup == item.popup and group.normal.dot(item.normal) > NORMAL_DOT and item.offset - group.last <= PLANE_GAP:
 				group.nodes.append(item); group.last = item.offset
 				group.shown += int(item.shown)
 				group.owners[item.owner]=true
 				joined = true; break
 		if not joined:
 			groups.append({"normal": item.normal, "basis": item.basis, "first": item.offset, "last": item.offset,
-				"nodes": [item], "popup": item.popup, "tooltip": item.tooltip, "shown": int(item.shown),"owners":{item.owner:true}})
+				"nodes": [item], "region": item.region, "popup": item.popup, "tooltip": item.tooltip, "shown": int(item.shown),"owners":{item.owner:true}})
 	# Visible, larger groups claim slots first; any surplus geometry stays in the eye buffer.
 	groups.sort_custom(func(a, b): return a.shown > b.shown or (a.shown == b.shown and a.nodes.size() > b.nodes.size()))
 	# A small companion caption must not lose all HD slots to a large menu's
@@ -450,7 +453,7 @@ func _collect() -> void:
 		if not selected.has(group): selected.append(group)
 	groups=selected
 	for group in groups.slice(0, MAX_GROUPS):
-		var key := "%d:%d:%d:%d:%d:%d" % [int(group.popup), int(group.tooltip), roundi(group.normal.x * 50), roundi(group.normal.y * 50), roundi(group.normal.z * 50), roundi(group.first / PLANE_GAP)]
+		var key := "%s:%d:%d:%d:%d:%d:%d" % [group.region, int(group.popup), int(group.tooltip), roundi(group.normal.x * 50), roundi(group.normal.y * 50), roundi(group.normal.z * 50), roundi(group.first / PLANE_GAP)]
 		group["key"] = key
 	for slot in slots: slot.used = false; slot.nodes = []
 	banded = {}
@@ -642,7 +645,9 @@ func _capture_band(band: Dictionary, rect: Rect2) -> void:
 	band.submit.render_target_update_mode = SubViewport.UPDATE_ALWAYS
 	band.tail = 2
 
-func _gather(node: Node, items: Array[Dictionary], inverse: Transform3D, popup: bool, tooltip: bool = false) -> void:
+func _gather(node: Node, items: Array[Dictionary], inverse: Transform3D, popup: bool, tooltip: bool = false, region: String = "") -> void:
+	# Wide subtitle plates opt into per-column captures without adding XR providers.
+	region = str(node.get_meta("menu_capture_region", region))
 	tooltip = tooltip or node.get_meta("menu_tooltip", false)
 	if node.has_meta("menu_pointer") or node.has_meta("menu_eye_buffer"): return
 	if node is CanvasItem or node is Viewport: return
@@ -656,8 +661,8 @@ func _gather(node: Node, items: Array[Dictionary], inverse: Transform3D, popup: 
 		var normal := basis.z
 		popup = popup or _priority(node) >= POPUP_PRIORITY
 		items.append({"node": node, "normal": normal, "basis": basis, "offset": normal.dot(local.origin), "popup": popup,
-			"tooltip": tooltip, "shown": node.is_visible_in_tree()})
-	for child in node.get_children(): _gather(child, items, inverse, popup, tooltip)
+			"region": region, "tooltip": tooltip, "shown": node.is_visible_in_tree()})
+	for child in node.get_children(): _gather(child, items, inverse, popup, tooltip, region)
 
 static func _priority(node: VisualInstance3D) -> int:
 	if node is Label3D: return node.render_priority

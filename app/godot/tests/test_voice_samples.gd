@@ -21,7 +21,7 @@ func _run() -> void:
 	var sample: RefCounted = menu.voice_manager.sample
 	check(menu.voice_manager.actions.values().any(func(v): return v.operation == "add_sample"), "Global manager offers addition without subtitles")
 	sample.begin()
-	check(menu.voice_picker_mode and not menu.voice_manager.opened, "Add voice goes directly to video selection")
+	check(menu.voice_picker_mode and not menu.voice_manager.opened, "Add voice goes directly to audio/video selection")
 	menu.finish_voice_picker("file:///selected.mp4", "Selected video")
 	check(events.back()[1].operation == "open_source" and events.back()[1].uri == "file:///selected.mp4", "Selected video uses independent source")
 	menu.refresh(); check(sample.audio_id == 2 and sample.duration == 1200, "Probe metadata reaches UI")
@@ -103,13 +103,47 @@ func _run() -> void:
 	sample.duration = 4; sample.start = 1; sample.finish = 7; sample._clamp_range(); check(sample.finish <= 4, "Clamp to source duration")
 	sample.duration = 2; sample._clamp_range(); check(not sample.valid_range(), "Short source cannot produce three seconds")
 	sample.begin()
-	check(menu.voice_picker_mode and not menu.voice_manager.opened and menu.media_filter == 1, "Video picker excludes images")
+	check(menu.voice_picker_mode and not menu.voice_manager.opened and menu.media_filter == 0, "Voice picker accepts both audio and video")
+	check(menu._header_title() == menu.I18n.t("Choose audio or video"), "Picker title includes audio")
+	var sources := [{"id": "folder", "title": "Samples", "container": true},
+		{"uri": "file:///sample.MP3", "title": "Sample.MP3", "kind": "audio"},
+		{"uri": "file:///recording.M4A", "title": "Recording.M4A", "kind": "audio"},
+		{"uri": "file:///reference.wav", "title": "Reference.wav", "kind": "audio"},
+		{"uri": "file:///sample.mp4", "title": "Sample.mp4", "kind": "video"},
+		{"uri": "file:///cover.jpg", "title": "Cover.jpg", "kind": "image"},
+		{"uri": "file:///book.pdf", "title": "Book.pdf", "kind": "pdf"},
+		{"uri": "file:///book.zip", "title": "Book.zip", "kind": "archive"}]
+	menu._local_entries.assign(sources); menu._smb_entries.assign(sources); menu._dlna_entries.assign(sources); menu._cloud_entries.assign(sources)
+	menu._smb_server = "test"; menu._dlna_server = "test"
+	for source_section in [menu.Section.LOCAL, menu.Section.SMB, menu.Section.DLNA, menu.Section.CLOUD]:
+		menu.section = source_section; menu._rebuild_rows()
+		check(menu.rows.size() == 5 and menu.rows.filter(func(row): return row.get("kind", "") == "audio").size() == 3 and menu.rows.any(func(row): return row.get("kind", "") == "video"), "Every source picker keeps folders, MP3, WAV, M4A and video while excluding images and archives")
+	var paging: RefCounted = menu.cloud_pagination
+	var picker_filter: String = paging._filter()
+	paging.visible_rows.clear()
+	for entry in sources: paging._append_row(entry)
+	check(paging.visible_rows.size() == 5 and paging.visible_rows.filter(func(row): return row.get("kind", "") == "audio").size() == 3, "Cloud incremental rows keep MP3, WAV and M4A samples")
+	menu.voice_picker_mode = false; paging.visible_rows.clear()
+	for entry in sources: paging._append_row(entry)
+	check(paging._filter() != picker_filter and not paging.visible_rows.any(func(row): return row.get("kind", "") == "audio"), "Leaving picker invalidates cloud rows and restores ordinary audio filtering")
+	menu.section = menu.Section.LOCAL; menu._rebuild_rows()
+	check(not menu.rows.any(func(row): return row.get("kind", "") == "audio"), "Normal library keeps its existing audio visibility")
+	menu.voice_picker_mode = true; menu._rebuild_rows()
+	var before_rejected := events.size()
+	menu._choose({"uri": "file:///cover.jpg", "title": "Cover.jpg", "kind": "image"})
+	check(menu.voice_picker_mode and events.size() == before_rejected, "Images cannot be submitted as voice sources")
 	check(menu._browse_scope().is_empty(), "Sampling never saves browse position")
 	var chosen: Array = []; menu.chosen.connect(func(uri, _title): chosen.append(uri))
 	menu._choose({"uri": "file:///chosen.mp4", "title": "Chosen", "kind": "video"})
 	check(chosen.is_empty(), "Selecting a sample never invokes normal playback")
 	check(not menu.voice_picker_mode and menu.voice_manager.opened and menu.section == menu.Section.SETTINGS, "Picker restores manager context")
 	check(events.back()[1].operation == "open_source" and events.back()[1].uri == "file:///chosen.mp4", "Chosen source reaches clone controller")
+	for filename in ["Sample.MP3", "Reference.wav", "Recording.M4A"]:
+		sample.begin()
+		var uri: String = "file:///" + filename
+		menu._choose(menu._entry_row({"uri": uri, "title": filename}))
+		check(not menu.voice_picker_mode and menu.voice_manager.opened and events.back()[1].operation == "open_source" and events.back()[1].uri == uri, filename + " opens the independent sampling controller")
+		check(chosen.is_empty() and sample.title == filename, filename + " selection preserves its title without starting normal playback")
 	sample.begin(); menu.dismiss(); check(menu.voice_manager.opened and menu.voice_manager.library and not sample.active, "Picker cancellation returns directly to My voices")
 	menu.voice_manager.close(); menu.free()
 	var video := Video.new(); var host := Host.new(); video.platform = host; video.media.session_id = 4; video.local_uri = "file:///no-subtitles.mp4"

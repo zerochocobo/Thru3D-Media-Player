@@ -49,6 +49,10 @@ internal class RvmVideoProbe(
     private var skipped = 0L
     private var appliedGeneration = 0L // RVM worker only.
     private var appliedWindow = 0L // RVM worker only: ROI window the display states belong to.
+    private var appliedShot = -1L
+    private var appliedScoutShot = -1L
+    private var appliedFrame = -1L
+    private var appliedPts = -1L
     // Worker timing (exponential averages, ms): inference call, whole drain, idle gap before a drain.
     @Volatile var processMs = 0.0; private set
     @Volatile var drainMs = 0.0; private set
@@ -147,19 +151,30 @@ internal class RvmVideoProbe(
             if (appliedGeneration != id.modelGeneration) {
                 check(active.reset(id.modelGeneration)) { "Video RVM format reset failed" }
                 appliedGeneration = id.modelGeneration
+                appliedFrame = -1L; appliedPts = -1L
             }
             val started = System.nanoTime()
             // A new ROI window starts the display stream from zero states, even when the
             // first input of that window was dropped in favour of a newer one.
-            val resetFirst = input.windowId != appliedWindow
             val shared = input.shared
+            // Source packing, never the number of XR viewing eyes. Unknown diagnostic descriptors
+            // retain the legacy stereo contract; spatial SBS descriptors already carry true here.
+            val descriptor = JSONObject(input.descriptor)
+            val eyes = if (descriptor.optBoolean("stereo_sbs", true)) 2 else 1
+            val shot = descriptor.optLong("portrait_shot_id", -1L)
+            val shotChanged = eyes == 1 && shot != appliedShot
+            val redraw = id.frameId == appliedFrame && id.ptsUs == appliedPts
+            val resetFirst = input.windowId != appliedWindow || shotChanged || redraw
+            descriptor.put("portrait_shot_cut", shotChanged)
             val output = if (shared != null)
-                active.processAhb(id.modelGeneration, id.frameId, id.ptsUs, shared.copyOfRange(0, 2), shared.copyOfRange(2, 4), 0, resetFirst)
+                active.processAhb(id.modelGeneration, id.frameId, id.ptsUs, shared.copyOfRange(0, 2), shared.copyOfRange(2, 4), 0, resetFirst, eyes)
             else active.process(id.modelGeneration, id.frameId, id.ptsUs,
-                input.left, input.right, leftAlpha, rightAlpha, 0, resetFirst)
+                input.left, input.right, leftAlpha, rightAlpha, 0, resetFirst, eyes)
+            appliedFrame = id.frameId; appliedPts = id.ptsUs
             // A periodic check found nonfinite recurrent states: they were reset, skip this Alpha.
             if (output.optString("state") == "state_reset") return
             appliedWindow = input.windowId
+            appliedShot = shot
             val elapsedMs = (System.nanoTime() - started) / 1e6
             processMs = processMs * 0.9 + elapsedMs * 0.1
             if (synchronized(lock) { closed } || !gate.accepts(id) || output.optString("state") == "stale") return
@@ -181,7 +196,7 @@ internal class RvmVideoProbe(
                 val crc = CRC32().apply { update(buffer.duplicate().apply { clear() }) }.value
                 files.put(name, JSONObject().put("file", target.name).put("bytes", buffer.capacity()).put("crc32", crc))
             }
-            val result = JSONObject(input.descriptor).put("effect_revision", id.effectRevision)
+            val result = descriptor.put("effect_revision", id.effectRevision).put("inference_eyes", eyes)
                 .put("session_id", id.decoderId).put("logical_session_id", id.logicalSessionId).put("generation", id.generation)
                 .put("model_generation", id.modelGeneration).put("inference_ran", true)
                 .put("pair_identity_verified", true).put("rvm_backend", if (vulkan) "vulkan" else "cpu")
@@ -201,17 +216,19 @@ internal class RvmVideoProbe(
                 if (controller.wantsAlpha(window)) {
                     readback = true
                     val planes = ByteBuffer.allocateDirect(size / 2)
-                    check(RvmNative.readAlphaPlanes(shared[2], shared[3], planes))
+                    check(RvmNative.readAlphaPlanes(shared[2], shared[if (eyes == 1) 2 else 3], planes))
+                    if (eyes == 1) portraitObservation(result, planes, rect)
                     RvmWorkers.roi.post { controller.onMainPlanes(window, rect, planes) }
                 } else RvmWorkers.roi.post { controller.onMainSkipped(window) }
                 input.scoutShared?.let { scout ->
                     // The scout input belongs to this slot: run it while this worker still holds the lease.
                     scoutAfterPublish = {
                         val scouted = active.processAhb(id.modelGeneration, id.frameId, id.ptsUs, scout.copyOfRange(0, 2),
-                            scout.copyOfRange(2, 4), 1, false)
+                            scout.copyOfRange(2, 4), 1, shot != appliedScoutShot || redraw, eyes = 1)
                         if (scouted.optString("state") == "ready") {
+                            appliedScoutShot = shot
                             val scoutPlanes = ByteBuffer.allocateDirect(size / 2)
-                            check(RvmNative.readAlphaPlanes(scout[2], scout[3], scoutPlanes))
+                            check(RvmNative.readAlphaPlanes(scout[2], scout[2], scoutPlanes))
                             RvmWorkers.roi.post { controller.onScoutPlanes(window, scoutPlanes) }
                         }
                     }
@@ -225,10 +242,20 @@ internal class RvmVideoProbe(
                     val scoutLeftAlpha = ByteBuffer.allocateDirect(size).order(ByteOrder.LITTLE_ENDIAN)
                     val scoutRightAlpha = ByteBuffer.allocateDirect(size).order(ByteOrder.LITTLE_ENDIAN)
                     val scouted = active.process(id.modelGeneration, id.frameId, id.ptsUs, input.scoutLeft, input.scoutRight,
-                        scoutLeftAlpha, scoutRightAlpha, 1, false)
+                        scoutLeftAlpha, scoutRightAlpha, 1, shot != appliedScoutShot || redraw, eyes = 1)
+                    if (scouted.optString("state") == "ready") appliedScoutShot = shot
                     if (scouted.optString("state") == "ready") controller.onScout(input.windowId, scoutLeftAlpha, scoutRightAlpha)
                 }
                 result.put("roi_reset", resetFirst).put("roi_scout_ran", input.scoutLeft != null)
+            }
+            // First mono result establishes an observation; later samples reuse the ROI cadence.
+            // Debug ROI-off still gets bounded observations, never a per-XR-frame readback.
+            if (eyes == 1 && !result.has("portrait_observation") && (shotChanged || ordinal == 1 || ((controller == null || shared == null) && ordinal % 10 == 0)) && input.rect != null) {
+                val planes = ByteBuffer.allocateDirect(size / 2)
+                if (shared != null) check(RvmNative.readAlphaPlanes(shared[2], shared[2], planes))
+                else for (i in 0 until size / 4) planes.put(i, (leftAlpha.getFloat(i * 4).coerceIn(0f, 1f) * 255).toInt().toByte())
+                readback = true
+                portraitObservation(result, planes, input.rect)
             }
             val publish = synchronized(lock) {
                 if (closed || !gate.accepts(id)) false
@@ -266,6 +293,13 @@ internal class RvmVideoProbe(
         // Immediate native invalidation; the in-flight process retains its own inputs.
         previous?.close()
         obsolete.forEach { it.releaseBuffers(); release(it.identity.slotToken) }
+    }
+    private fun portraitObservation(result: JSONObject, planes: ByteBuffer, rect: FloatArray) {
+        val dimensions = profile.split('x').map { it.toInt() }
+        val observation = PortraitMask.observe(planes, dimensions[0], dimensions[1], rect)
+        result.put("portrait_observation", JSONObject().put("bounds", org.json.JSONArray(observation.bounds))
+            .put("subjects", observation.subjects).put("cropped", observation.cropped)
+            .put("frame_id", result.getLong("frame_id")).put("pts_us", result.getLong("pts_us")))
     }
     companion object {
         const val LIMIT = 8

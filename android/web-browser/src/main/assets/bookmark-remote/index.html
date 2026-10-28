@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="light"><title>Thru3D · Bookmarks</title>
+  <link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script>
+</head>
+<body>
+<header class="top"><a class="brand" href="/">Thru<span>3D</span><i> / </i><span data-t="Browser library"></span></a>
+  <select id="language" aria-label="Language"><option value="en">English</option><option value="zh">简体中文</option><option value="zh_Hant">繁體中文</option><option value="ja">日本語</option></select>
+</header>
+<main>
+  <section id="pair" class="pair panel">
+    <div class="orbit" aria-hidden="true">✦</div><p class="eyebrow">THRU3D CONNECT</p>
+    <h1 id="pair-title" data-t="Your next stop, in VR."></h1><p id="pair-message" class="muted" data-t="Connecting…"></p>
+    <form id="pair-form" hidden><label for="code" data-t="Pairing code"></label><input id="code" name="code" pattern="[A-Za-z]{4}" maxlength="4" autocapitalize="characters" spellcheck="false" autocomplete="one-time-code" required placeholder="ABCD">
+      <button class="primary" data-t="Connect"></button></form><button id="retry" data-t="Retry" hidden></button>
+    <p class="fine" data-t="Bookmarks & history · This Wi-Fi session only"></p>
+  </section>
+  <section id="workspace" hidden>
+    <div class="hero"><div><p id="connection" class="eyebrow" data-t="Connected to your headset"></p><h1 data-t="Your web. Ready for VR."></h1><p data-t="Save here. Find it in your headset."></p></div><div class="hero-star" aria-hidden="true">✦</div></div>
+    <nav class="tabs" aria-label="Browser library"><button id="tab-bookmarks" aria-pressed="true" data-t="Bookmarks"></button><button id="tab-history" aria-pressed="false" data-t="Browsing history"></button></nav>
+    <div id="bookmark-tools" class="toolbar"><button id="add" class="primary" data-t="Add bookmark"></button><button id="bulk" data-t="Paste links"></button><button id="import" data-t="Import bookmarks"></button><button id="export" data-t="Export"></button><input id="file" type="file" accept=".html,.htm,.json,.txt" hidden></div>
+    <div id="history-tools" class="toolbar" hidden><button id="clear-history" class="danger" data-t="Clear browsing history"></button></div>
+    <div class="list-top"><h2><span id="list-title" data-t="Bookmarks"></span> <span id="count" class="count">0</span></h2><input id="search" type="search" data-placeholder="Search bookmarks" aria-label="Search bookmarks"></div>
+    <div class="selection"><label><input type="checkbox" id="all"><span data-t="Select all"></span></label><span id="selected"></span><button id="copy-selected" data-t="Copy links" hidden></button><button id="feedback-selected" data-t="Prepare feedback" hidden></button><button id="delete-selected" class="danger" data-t="Delete" hidden></button></div>
+    <div id="cards" class="cards"></div>
+    <div id="empty" class="empty" hidden><span aria-hidden="true">☆</span><h2 data-t="Make room for your favorites"></h2><p data-t="Paste a link, or bring your bookmarks along."></p></div>
+    <p id="no-results" class="empty" data-t="No items" hidden></p>
+    <footer><div class="footer-status"><span data-t="Changes appear automatically in your headset"></span><button id="refresh" data-t="Refresh"></button></div><button id="disconnect" class="end-session"><span data-t="Close remote access"></span><small data-t="All devices will be disconnected"></small></button></footer>
+  </section>
+</main>
+<div id="toast" role="status" aria-live="polite" hidden></div>
+<dialog id="editor"><form id="edit-form"><div class="dialog-head"><h2 id="edit-title"></h2><button type="button" class="icon close" aria-label="Close">×</button></div>
+  <label for="url" data-t="Address"></label><input id="url" type="text" inputmode="url" autocomplete="off" maxlength="4096" placeholder="https://" required>
+  <label for="name" data-t="Name"></label><input id="name" type="text" maxlength="512" autocomplete="off">
+  <p class="dialog-error" role="alert"></p><div class="dialog-actions"><button type="button" class="close" data-t="Cancel"></button><button class="primary" data-t="Save"></button></div></form></dialog>
+<dialog id="importer"><div class="dialog-head"><h2 data-t="Bring your favorites along"></h2><button class="icon close" aria-label="Close">×</button></div>
+  <label for="links" data-t="One address per line"></label><textarea id="links" rows="5" placeholder="youtube.com&#10;bilibili.com&#10;vimeo.com"></textarea>
+  <div class="import-tools"><button id="preview" data-t="Preview"></button><button id="pick-file" data-t="Choose bookmark file"></button></div>
+  <p id="import-summary" class="muted"></p><ul id="preview-list"></ul><p class="dialog-error" role="alert"></p>
+  <div class="dialog-actions"><button class="close" data-t="Cancel"></button><button id="import-save" class="primary" data-t="Add bookmarks" disabled></button></div>
+</dialog>
+<dialog id="confirmation"><div class="dialog-head"><h2 id="delete-title" data-t="Delete bookmarks?"></h2></div><p id="delete-summary"></p><p id="delete-note" data-t="Website logins are kept" hidden></p><p class="dialog-error" role="alert"></p><div class="dialog-actions"><button class="close" data-t="Cancel"></button><button id="delete-confirm" class="danger solid" data-t="Delete"></button></div></dialog>
+<dialog id="copy-dialog"><div class="dialog-head"><h2 id="copy-title" data-t="Copy links"></h2><button class="icon close" aria-label="Close">×</button></div><label for="copy-text" data-t="Text to copy"></label><textarea id="copy-text" rows="9" spellcheck="false"></textarea><p id="copy-hint" class="muted" data-t="Add a short description before copying"></p><p class="dialog-error" role="alert"></p><div class="dialog-actions"><button class="close" data-t="Close"></button><button id="copy-text-button" class="primary" data-t="Copy"></button></div></dialog>
+<dialog id="access-confirmation"><div class="dialog-head"><h2 data-t="Close remote access?"></h2></div><p data-t="All devices will be disconnected"></p><p class="muted" data-t="Reopen access from your headset"></p><p class="dialog-error" role="alert"></p><div class="dialog-actions"><button class="close" data-t="Cancel" autofocus></button><button id="access-confirm" class="danger solid" data-t="Confirm close"></button></div></dialog>
+</body></html>

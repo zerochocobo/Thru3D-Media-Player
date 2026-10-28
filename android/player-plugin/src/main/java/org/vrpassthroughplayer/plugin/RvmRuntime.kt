@@ -39,25 +39,27 @@ internal class RvmRuntime private constructor(
         process(generation, frameId, ptsUs, left, right, leftAlpha, rightAlpha, 0, false)
 
     fun process(generation: Long, frameId: Long, ptsUs: Long, left: ByteBuffer, right: ByteBuffer,
-                leftAlpha: ByteBuffer, rightAlpha: ByteBuffer, stream: Int, resetFirst: Boolean): JSONObject {
+                leftAlpha: ByteBuffer, rightAlpha: ByteBuffer, stream: Int, resetFirst: Boolean, eyes: Int = 2): JSONObject {
+        require(eyes in 1..2)
         val id = handle.get()
         check(id > 0 && epoch.get() == generation) { "RVM runtime closed or stale" }
         checkBuffer(left, alphaBytes * 3, false)
         checkBuffer(right, alphaBytes * 3, false)
         checkBuffer(leftAlpha, alphaBytes, true)
         checkBuffer(rightAlpha, alphaBytes, true)
-        val result = JSONObject(RvmNative.processRuntimeStream(id, generation, frameId, ptsUs, left, right,
-            leftAlpha, rightAlpha, stream, resetFirst))
+        val result = JSONObject(RvmNative.processRuntimeStreamEyes(id, generation, frameId, ptsUs, left, right,
+            leftAlpha, rightAlpha, stream, resetFirst, eyes))
         return if (handle.get() == id && epoch.get() == generation) result else JSONObject().put("state", "stale")
     }
 
     fun processAhb(generation: Long, frameId: Long, ptsUs: Long, buffers: LongArray, alpha: LongArray,
-                   stream: Int, resetFirst: Boolean): JSONObject {
+                   stream: Int, resetFirst: Boolean, eyes: Int = 2): JSONObject {
+        require(eyes in 1..2)
         val id = handle.get()
         check(id > 0 && epoch.get() == generation) { "RVM runtime closed or stale" }
         require(buffers.size == 2 && alpha.size == 2 && (buffers + alpha).all { it != 0L }) { "Zero-copy buffers missing" }
-        val result = JSONObject(RvmNative.processRuntimeAhb(id, generation, frameId, ptsUs, buffers[0], buffers[1],
-            alpha[0], alpha[1], stream, resetFirst))
+        val result = JSONObject(RvmNative.processRuntimeAhbEyes(id, generation, frameId, ptsUs, buffers[0], buffers[1],
+            alpha[0], alpha[1], stream, resetFirst, eyes))
         return if (handle.get() == id && epoch.get() == generation) result else JSONObject().put("state", "stale")
     }
 

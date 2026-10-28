@@ -35,7 +35,7 @@ func _create_video_display() -> Node3D:
 	var result := DesktopVideo.new()
 	var state_directory := run_directory.path_join("state")
 	DirAccess.make_dir_recursive_absolute(state_directory)
-	for field in ["mode_memory", "track_memory", "subtitle_timing", "audio_timing", "whisper_memory", "recent_files"]:
+	for field in ["mode_memory", "track_memory", "subtitle_timing", "subtitle_encoding", "audio_timing", "whisper_memory", "recent_files"]:
 		result.get(field).directory = state_directory
 	result.narration.memory.directory = state_directory
 	result.bookmark_store = result.bookmark_store.get_script().new(state_directory.path_join("bookmarks"))

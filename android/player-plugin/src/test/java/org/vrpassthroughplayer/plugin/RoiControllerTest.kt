@@ -6,6 +6,19 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
 class RoiControllerTest {
+    @Test fun cutResetsCropAndRejectsOldAnalysis() {
+        val roi = RoiController(floatArrayOf(0f,0f,1f,1f),320,320,4096,4096)
+        feed(roi,30,doubleArrayOf(.45,.45,.55,.6))
+        val old = roi.plan()
+        assertTrue(old.zoomed)
+        val reset = roi.resetShot()
+        assertFalse(reset.zoomed); assertFalse(reset.scout); assertTrue(reset.windowId > old.windowId)
+        assertArrayEquals(floatArrayOf(0f,0f,1f,1f),reset.rect,0f)
+        val stale = alpha(old.rect,doubleArrayOf(.45,.45,.55,.6))
+        repeat(100) { roi.onMain(old.windowId,old.rect,stale,stale) }
+        assertEquals(reset.windowId,roi.plan().windowId)
+        assertFalse(roi.plan().zoomed)
+    }
     private val size = 320
     private val full = floatArrayOf(0f, 0f, 1f, 1f) // square eye, square model
 

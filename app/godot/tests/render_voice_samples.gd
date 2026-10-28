@@ -20,13 +20,13 @@ func _run() -> void:
 		I18n.use(lang)
 		# Render the actual picker entered by Add voice, using synthetic local rows.
 		menu.position.z = -1.75
-		sample.begin(); menu.status = ""; menu._local_stack = [{"id": "/demo", "title": "Videos"}]
-		menu._local_entries = [{"uri": "file:///demo/interview.mp4", "title": "访谈片段.mp4", "kind": "video"}, {"uri": "file:///demo/movie.mkv", "title": "示例影片.mkv", "kind": "video"}, {"uri": "file:///demo/documentary.mp4", "title": "纪录片.mp4", "kind": "video"}]
+		sample.begin(); menu.status = ""; menu._local_stack = [{"id": "/demo", "title": "Samples"}]
+		menu._local_entries = [{"uri": "file:///demo/speech.mp3", "title": "参考声音.mp3", "kind": "audio"}, {"uri": "file:///demo/recording.m4a", "title": "录音机录音.m4a", "kind": "audio"}, {"uri": "file:///demo/reference.wav", "title": "参考录音.wav", "kind": "audio"}, {"uri": "file:///demo/movie.mkv", "title": "示例影片.mkv", "kind": "video"}]
 		menu._rebuild_rows(); menu.refresh()
 		if not menu.voice_picker_mode or menu.voice_manager.opened: failures += 1
 		await process_frame; await RenderingServer.frame_post_draw; await RenderingServer.frame_post_draw
 		viewport.get_texture().get_image().save_png(output.path_join(lang + "-picker.png")); layouts += 1
-		menu.finish_voice_picker("file:///demo/movie.mkv", "示例影片.mkv")
+		menu.finish_voice_picker("file:///demo/speech.mp3", "参考声音.mp3")
 		menu.position.z = -1.15
 		for view in ["setup", "results", "cropped", "scanning", "naming"]:
 			sample.page = "setup" if view == "setup" else "results"
@@ -42,7 +42,7 @@ func _run() -> void:
 			state.narration_clone_state.next = 738.0 if view == "scanning" else 900.0
 			state.narration_clone_state.ready_key = "sample-0" if view not in ["cropped", "scanning"] else ""
 			menu.voice_manager.naming = {"operation": "save", "key": "sample-0", "apply": false} if view == "naming" else {}
-			menu.voice_manager.draft = "My voice 1"; menu.refresh()
+			menu.voice_manager.draft = I18n.t("My cloned voice") + " 1"; menu.refresh()
 			if menu._buttons.size() < 4 or not menu.text_snapshot().contains(I18n.t("Add voice")): failures += 1
 			await process_frame; await RenderingServer.frame_post_draw; await RenderingServer.frame_post_draw
 			viewport.get_texture().get_image().save_png(output.path_join(lang + "-" + view + ".png")); layouts += 1

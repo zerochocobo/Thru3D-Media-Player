@@ -84,7 +84,8 @@ func _run() -> void:
 	check(menu.choices.sliders.size() == 3 and not menu.choices.targets.values().any(func(item): return item.get("key") == "subtitle_style"), "PGS has sync, size and position with no text-only style")
 	var blocker: Dictionary = menu._ray_blockers[0]
 	var top: float = blocker.node.position.y + blocker.rect.size.y / 2.0
-	for point_local in [Vector3(-0.51, top - 0.35, 1), Vector3(0, top - 0.23, 1), Vector3(0, 0.30, 1)]:
+	var left_x: float = menu._subtitle_main_bounds.get_center().x
+	for point_local in [Vector3(menu._subtitle_main_bounds.position.x + 0.015, top - 0.35, 1), Vector3(left_x, top - 0.19 - Menu.SUBTITLE_MAIN_PITCH / 2, 1), Vector3(left_x, 0.30, 1)]:
 		var origin := menu.to_global(point_local)
 		var hit := menu.ray_hit(origin, -menu.global_basis.z)
 		check(not hit.is_empty() and not hit.enabled and hit.target == menu.NONE, "Panel margin/row gap stops the ray")

@@ -1,0 +1,10 @@
+{
+  "component": "ICU4J charset detector",
+  "version": "78.1",
+  "source": "https://github.com/unicode-org/icu/releases/tag/release-78.1",
+  "maven": "com.ibm.icu:icu4j:78.1",
+  "upstream_jar_sha256": "bbb70d3be23110d7295823eee0c2e896ac3b619b3c0f26168f65eb972df51d2a",
+  "packaged_classes": "com/ibm/icu/text/Charset*.class",
+  "license": "Unicode-3.0; see LICENSE.txt",
+  "scope": "Detection only. Java Charset decodes original bytes. No ICU locale data or converter tables."
+}

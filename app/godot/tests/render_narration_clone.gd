@@ -41,7 +41,7 @@ func _run() -> void:
 			state.subtitle_options = [{"id": 1, "title": "中文", "codec": "subrip"}]
 			if view == "many-tracks":
 				for index in range(2, 9): state.subtitle_options.append({"id": index, "title": "字幕 %d" % index, "codec": "subrip"})
-			menu.choices.reset(); state.narration_hide_subtitles = view == "hidden"; menu._subtitle_appearance_open = view == "appearance"; menu._subtitle_files_open = view == "external-files"
+			menu.choices.reset(); state.narration_hide_subtitles = view == "hidden"; menu._set_subtitle_detail("appearance" if view == "appearance" else "narration"); menu._subtitle_files_open = view == "external-files"
 			camera.fov = 80 if state.narration_enabled else 70; menu.position.y = -0.55 if state.narration_enabled else -0.35
 			state.narration_clone_state.state = "encoding" if view == "encoding" else "error" if view == "error" else "ready"
 			state.narration_clone_state.operation = "clone" if view == "encoding" else ""; state.narration_clone_state.active_key = "b" if view == "encoding" else ""
@@ -69,7 +69,7 @@ func _run() -> void:
 			layouts += 1
 			if menu.allows_playback_sticks(): failures.append("playback shortcuts " + view)
 			if view in ["preset", "custom-on"]:
-				var panels := menu._decorations.filter(func(node): return node is MeshInstance3D and node.mesh is QuadMesh and is_equal_approx(node.mesh.size.x, 1.10))
+				var panels := menu._decorations.filter(func(node): return node is MeshInstance3D and node.mesh is QuadMesh and is_equal_approx(node.mesh.size.x, Menu.SUBTITLE_DETAIL_WIDTH))
 				var panel_height := 0.0
 				for panel in panels: panel_height = maxf(panel_height, panel.mesh.size.y)
 				# Keep the prior compact layout budget plus the newly exposed hide-display row.
@@ -90,9 +90,10 @@ func _run() -> void:
 		I18n.use(language); manager._cache_usage = Vector2i.ZERO; manager.voice_manager.opened = false
 		manager._activate(Library.TAB_BASE + Library.VIDEO_TAB)
 		manager._choose(manager.rows.filter(func(row): return row.get("video_settings_group", "") == "subtitles")[0])
+		manager._choose(manager.rows.filter(func(row): return row.get("subtitle_settings_group", "") == "narration")[0])
 		await process_frame; await RenderingServer.frame_post_draw; await RenderingServer.frame_post_draw
 		if viewport.get_texture().get_image().save_png(output.path_join(language + "-global-settings.png")) != OK: failures.append("global entry render")
-		if not manager._list.get_children().any(func(node): return node is Label3D and node.text == I18n.t("Subtitle narration")) or not manager.text_snapshot().contains(I18n.t("Manage my voices")): failures.append("global entry labels " + language)
+		if not manager._list.get_children().any(func(node): return node is Label3D and node.text == I18n.t("Subtitle narration")) or not manager.text_snapshot().contains(I18n.t("My cloned voices")): failures.append("global entry labels " + language)
 		layouts += 1
 		manager.voice_manager.opened = true; manager.refresh()
 		await process_frame; await RenderingServer.frame_post_draw; await RenderingServer.frame_post_draw

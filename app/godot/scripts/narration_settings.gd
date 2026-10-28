@@ -301,7 +301,7 @@ func apply() -> void:
 	# Voice profile stays explicit across subtitle track changes.
 	_language_source = identity
 	if not Methods.supports(video.platform, "set_mpv_narration") or video.media.session_id <= 0 or (not enabled and _last_payload.is_empty()): return
-	var payload := {"enabled": enabled and current_text_subtitles(), "source": source, "language": language, "zh_voice": zh_voice, "en_voice": en_voice, "ja_voice": ja_voice, "voice_override": selected_voice(), "line": line,
+	var payload := {"enabled": enabled and current_text_subtitles() and video.subtitle_encoding_ready(int(track.get("id", 0))), "source": source, "language": language, "zh_voice": zh_voice, "en_voice": en_voice, "ja_voice": ja_voice, "voice_override": selected_voice(), "line": line,
 		"duck": duck / 100.0, "volume": volume / 100.0, "offset": offset, "retry": retry, "preview": preview, "timing": timing}
 	if source >= 0:
 		payload.source_delay = video.subtitle_timing.for_track(video.local_uri, Timing.track_key(selected_track()))
@@ -372,12 +372,12 @@ static func rows(state: Dictionary) -> Array:
 	var default_lang := default_profile(I18n.language).get_slice("_", 0)
 	result.append({"title": "Reading language", "field": {"key": "narration_language", "value": state.get("narration_language", default_lang), "choices": Languages.choices(), "rows": 6, "heading": "Reading language"}})
 	var custom: bool = state.get("narration_voice_kind", "preset") == "custom"
-	result.append({"title": "Voice type", "field": {"key": "narration_voice_kind", "value": "custom" if custom else "preset", "choices": [{"value": "preset", "label": "Preset voices"}, {"value": "custom", "label": "Cloned voices"}]}})
+	result.append({"title": "Voice type", "field": {"key": "narration_voice_kind", "value": "custom" if custom else "preset", "choices": [{"value": "preset", "label": "Preset voices"}, {"value": "custom", "label": "My cloned voices"}]}})
 	var origin := str(state.get("narration_resolved_origin", default_lang))
 	var voices: Array = []
 	if custom:
 		for voice in state.get("narration_personal_voices", []): voices.append({"value": voice.id, "label": voice.name, "literal": true})
-		if not voices.is_empty(): result.append({"title": "My voices", "field": {"key": "narration_custom_voice", "value": state.get("narration_custom_voice", ""), "choices": voices, "rows": 4, "dropdown": true}})
+		if not voices.is_empty(): result.append({"title": "My cloned voices", "field": {"key": "narration_custom_voice", "value": state.get("narration_custom_voice", ""), "choices": voices, "rows": 4, "dropdown": true}})
 	else:
 		for lang in ["zh", "en", "ja"]:
 			var native_label := I18n.t({"zh": "Native Chinese", "en": "Native English", "ja": "Native Japanese"}[lang])
@@ -388,9 +388,8 @@ static func rows(state: Dictionary) -> Array:
 	var uri := str(state.get("narration_source_uri", state.get("source_uri", "")))
 	result.append({"title": "Narration volume", "field": {"key": "narration_volume", "value": state.get("narration_volume", 100.0), "slider": true, "span": Vector3(0, 100, 5), "unit": "%", "source_uri": uri}})
 	result.append({"title": "Lower original audio", "field": {"key": "narration_duck", "value": state.get("narration_duck", 75.0), "slider": true, "span": Vector3(0, 100, 5), "unit": "%", "source_uri": uri}})
-	var lines: Array = [{"value": 0, "label": "All lines"}]
-	for index in range(1, 3): lines.append({"value": index, "label": I18n.t("Line %d") % index})
-	result.append({"title": "Read line", "field": {"key": "narration_line", "value": state.get("narration_line", 0), "choices": lines, "compact": true}})
+	# Same line labels as the subtitle display choice beside it.
+	result.append({"title": "Read line", "field": {"key": "narration_line", "value": state.get("narration_line", 0), "choices": preload("res://scripts/subtitle_style.gd").LINE_CHOICES, "compact": true}})
 	var hide := toggle("narration_hide_subtitles", bool(state.get("narration_hide_subtitles", false)))
 	hide["switch"] = true; hide.hint = "Hide subtitle display"
 	result.append({"title": "Hide subtitle display", "field": hide})

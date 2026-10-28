@@ -4,6 +4,8 @@ const Binding := preload("res://scripts/pair_texture_binding.gd")
 const MaterialProbe := preload("res://scripts/pair_material_probe.gd")
 
 static func capture(parent: Node, pair: Dictionary, request: int) -> Dictionary:
+	if not parent._stream_projection.is_empty():
+		return await preload("res://scripts/stream_projection_probe.gd").capture(parent, pair, request)
 	var result := {"state": "failed", "request_id": request, "pair": pair.duplicate(true), "images": [],
 		"scope": "Adreno Godot SubViewport using production shader and pinned MPV/RVM native textures; XR and main viewport unverified",
 		"renderer": RenderingServer.get_video_adapter_name(), "shader": "res://shaders/video_rvm_pair.gdshader"}

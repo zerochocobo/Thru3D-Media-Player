@@ -1,8 +1,10 @@
 #include "rvm_backend.h"
+#include "rvm_frame_identity.h"
 #include "rvm_mnn_backend.h"
 #include <android/hardware_buffer.h>
 #include "rvm_profiles.generated.h"
 #include <android/asset_manager_jni.h>
+#include <android/log.h>
 #include <jni.h>
 #include <atomic>
 #include <cstdint>
@@ -43,6 +45,7 @@ std::mutex config_mutex;
 std::string cache_directory; // config_mutex
 bool gpu_fp16 = true;        // config_mutex
 std::string gpu_model = "fast"; // config_mutex: model of GPU runtimes prepared from now on
+std::atomic<int> zero_copy_support{-1}; // -1 untested, 0 no, 1 yes (MnnRvmBackend::zero_copy_self_test)
 
 // "fast": distilled narrow-decoder RVM (default); "quality": the fused upstream network.
 const char* model_asset(const std::string& model) {
@@ -130,6 +133,7 @@ struct Runtime final {
     // Per stream: 0 display, 1 ROI scout (same frame may run on both streams).
     std::array<jlong, 2> last_frame{{-1, -1}};
     std::array<jlong, 2> last_pts{{-1, -1}};
+    std::array<int, 2> last_eye_count{};
     const quest::RvmProfile& profile;
     std::unique_ptr<quest::RvmBackend> cpu;     // ncnn CPU reference path
     std::unique_ptr<quest::MnnRvmBackend> gpu;  // MNN OpenCL production path
@@ -140,7 +144,16 @@ struct Runtime final {
 #if !QUEST_DIAGNOSTIC_MODELS
         if (!use_gpu) throw std::runtime_error("CPU RVM is available only in the diagnostic build");
 #endif
-        if (use_gpu) gpu = make_mnn(manager, profile, current_model());
+        if (use_gpu) {
+            gpu = make_mnn(manager, profile, current_model());
+            // The GPU's answer does not change within a process: test with the first runtime only.
+            if (zero_copy_support.load() < 0) {
+                const bool supported = gpu->zero_copy_self_test();
+                zero_copy_support.store(supported ? 1 : 0);
+                __android_log_print(supported ? ANDROID_LOG_INFO : ANDROID_LOG_WARN, "QuestRvm", supported
+                    ? "RVM zero-copy verified" : "RVM zero-copy unavailable on this GPU: Alpha uses host copies");
+            }
+        }
         else cpu = std::make_unique<quest::RvmBackend>(manager, false, profile);
         const size_t plane = static_cast<size_t>(profile.rgb.width) * profile.rgb.height;
         alpha[0].resize(plane);
@@ -270,20 +283,24 @@ Java_org_vrpassthroughplayer_plugin_RvmNative_resetRuntime(JNIEnv* env, jclass, 
 }
 
 static jstring process(JNIEnv* env, jlong handle, jlong generation, jlong frame, jlong pts, jobject left, jobject right,
-                jobject left_alpha, jobject right_alpha, int stream, bool reset_first) {
+                jobject left_alpha, jobject right_alpha, int stream, bool reset_first, int eye_count = 2) {
     try {
         if (stream < 0 || stream > 1) throw std::runtime_error("RVM stream must be 0 (display) or 1 (scout)");
+        if (eye_count != 1 && eye_count != 2) throw std::runtime_error("RVM eye count must be one or two");
         const auto runtime = instance(handle);
         std::unique_lock<std::mutex> guard(runtime->operation, std::try_to_lock);
         if (!guard.owns_lock()) throw std::runtime_error("RVM runtime busy; no requests queued");
         if (runtime->closed.load() || generation != runtime->generation.load() || generation != runtime->applied_generation)
             throw std::runtime_error("RVM obsolete generation");
         if (stream != 0 && !runtime->gpu) throw std::runtime_error("RVM scout stream requires the GPU runtime");
-        if (frame < 0 || frame <= runtime->last_frame[stream] || pts < 0)
+        // A paused source may explicitly redraw the exact frame after an effect change. Reset
+        // recurrent state for that replay; older frames and mismatched timestamps remain invalid.
+        if (!quest::accepts_rvm_frame(runtime->last_frame[stream], runtime->last_pts[stream], frame, pts, reset_first))
             throw std::runtime_error("RVM nonmonotonic frame identity");
         // A timestamp stepping back (a damaged, joined or transport stream) is a discontinuity: the
         // recurrent state starts over instead of failing the playback.
         if (pts < runtime->last_pts[stream]) reset_first = true;
+        if (runtime->last_eye_count[stream] != eye_count) reset_first = true;
         const auto shape = runtime->profile.rgb;
         const size_t alpha_bytes = static_cast<size_t>(shape.width) * shape.height * sizeof(float);
         std::array<Buffer, 4> buffers{{direct(env, left, alpha_bytes * 3), direct(env, right, alpha_bytes * 3),
@@ -292,25 +309,32 @@ static jstring process(JNIEnv* env, jlong handle, jlong generation, jlong frame,
         if (runtime->gpu) {
             runtime->gpu->process_alpha_stereo(
                 {{reinterpret_cast<const float*>(buffers[0].address), reinterpret_cast<const float*>(buffers[1].address)}},
-                {{runtime->alpha[0].data(), runtime->alpha[1].data()}}, stream, reset_first);
+                {{runtime->alpha[0].data(), runtime->alpha[1].data()}}, stream, reset_first, eye_count);
         } else {
             if (reset_first) runtime->reset();
-            const auto outputs = runtime->cpu->process_alpha_stereo({{copy_rgb(buffers[0], shape), copy_rgb(buffers[1], shape)}});
-            for (int eye = 0; eye < 2; ++eye)
-                std::memcpy(runtime->alpha[eye].data(), static_cast<const float*>(outputs[eye].channel(0)), alpha_bytes);
+            if (eye_count == 1) {
+                const auto outputs = runtime->cpu->process(0, copy_rgb(buffers[0], shape));
+                std::memcpy(runtime->alpha[0].data(), static_cast<const float*>(outputs[1].channel(0)), alpha_bytes);
+            } else {
+                const auto outputs = runtime->cpu->process_alpha_stereo({{copy_rgb(buffers[0], shape), copy_rgb(buffers[1], shape)}});
+                for (int eye = 0; eye < 2; ++eye)
+                    std::memcpy(runtime->alpha[eye].data(), static_cast<const float*>(outputs[eye].channel(0)), alpha_bytes);
+            }
         }
         // Results are written to the caller only for a still-current generation.
         if (runtime->closed.load() || runtime->generation.load() != generation)
             return env->NewStringUTF("{\"state\":\"stale\"}");
         std::memcpy(buffers[2].address, runtime->alpha[0].data(), alpha_bytes);
-        std::memcpy(buffers[3].address, runtime->alpha[1].data(), alpha_bytes);
+        std::memcpy(buffers[3].address, runtime->alpha[eye_count - 1].data(), alpha_bytes);
+        runtime->last_eye_count[stream] = eye_count;
         runtime->last_frame[stream] = frame;
         runtime->last_pts[stream] = pts;
         std::ostringstream json;
         json << "{\"state\":\"ready\",\"session_id\":" << runtime->session << ",\"generation\":" << generation
              << ",\"frame_id\":" << frame << ",\"pts_us\":" << pts << ",\"profile_key\":\""
              << runtime->profile.key << "\",\"source_pts_verified\":false,\"video_integrated\":false,"
-             << "\"stream\":" << stream << ",\"reset_first\":" << (reset_first ? "true" : "false") << ',';
+             << "\"stream\":" << stream << ",\"inference_eyes\":" << eye_count
+             << ",\"reset_first\":" << (reset_first ? "true" : "false") << ',';
         if (runtime->gpu) {
             const auto& r = runtime->gpu->report();
             json << "\"backend\":\"MNN_OpenCL\",\"precision\":\"" << (r.fp16 ? "fp16" : "fp32")
@@ -342,6 +366,12 @@ extern "C" JNIEXPORT jstring JNICALL
 Java_org_vrpassthroughplayer_plugin_RvmNative_processRuntimeStream(JNIEnv* env, jclass, jlong handle, jlong generation,
     jlong frame, jlong pts, jobject left, jobject right, jobject left_alpha, jobject right_alpha, jint stream, jboolean reset_first) {
     return process(env, handle, generation, frame, pts, left, right, left_alpha, right_alpha, stream, reset_first == JNI_TRUE);
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_org_vrpassthroughplayer_plugin_RvmNative_processRuntimeStreamEyes(JNIEnv* env, jclass, jlong handle, jlong generation,
+    jlong frame, jlong pts, jobject left, jobject right, jobject left_alpha, jobject right_alpha, jint stream, jboolean reset_first, jint eyes) {
+    return process(env, handle, generation, frame, pts, left, right, left_alpha, right_alpha, stream, reset_first == JNI_TRUE, eyes);
 }
 
 extern "C" JNIEXPORT void JNICALL
@@ -416,39 +446,54 @@ Java_org_vrpassthroughplayer_plugin_RvmNative_warmupGpu(JNIEnv* env, jclass, job
 
 // Zero-copy display stream: AHardwareBuffer handles come from the render bridge, whose slot lease
 // keeps them alive for this call. Alpha lands in the output buffers; nothing returns to the CPU.
-extern "C" JNIEXPORT jstring JNICALL
-Java_org_vrpassthroughplayer_plugin_RvmNative_processRuntimeAhb(JNIEnv* env, jclass, jlong handle, jlong generation,
-    jlong frame, jlong pts, jlong left, jlong right, jlong left_alpha, jlong right_alpha, jint stream, jboolean reset_first) {
+static jstring process_ahb(JNIEnv* env, jlong handle, jlong generation,
+    jlong frame, jlong pts, jlong left, jlong right, jlong left_alpha, jlong right_alpha, jint stream, jboolean reset_first, int eye_count) {
     try {
         if (stream < 0 || stream > 1) throw std::runtime_error("RVM stream must be 0 (display) or 1 (scout)");
+        if (eye_count != 1 && eye_count != 2) throw std::runtime_error("RVM eye count must be one or two");
+        if (stream == 1) eye_count = 1;
         const auto runtime = instance(handle);
         std::unique_lock<std::mutex> guard(runtime->operation, std::try_to_lock);
         if (!guard.owns_lock()) throw std::runtime_error("RVM runtime busy; no requests queued");
         if (!runtime->gpu) throw std::runtime_error("Zero-copy RVM requires the GPU runtime");
         if (runtime->closed.load() || generation != runtime->generation.load() || generation != runtime->applied_generation)
             throw std::runtime_error("RVM obsolete generation");
-        if (frame < 0 || frame <= runtime->last_frame[stream] || pts < 0)
+        if (!quest::accepts_rvm_frame(runtime->last_frame[stream], runtime->last_pts[stream], frame, pts, reset_first == JNI_TRUE))
             throw std::runtime_error("RVM nonmonotonic frame identity");
         if (pts < runtime->last_pts[stream]) reset_first = JNI_TRUE; // a discontinuity, as in process()
+        if (runtime->last_eye_count[stream] != eye_count) reset_first = JNI_TRUE;
         auto buffer = [](jlong value) { return reinterpret_cast<AHardwareBuffer*>(static_cast<uintptr_t>(value)); };
         const bool healthy = runtime->gpu->process_ahb({{buffer(left), buffer(right)}}, {{buffer(left_alpha), buffer(right_alpha)}},
-                                                       stream, reset_first == JNI_TRUE);
+                                                       stream, reset_first == JNI_TRUE, eye_count);
         if (runtime->closed.load() || runtime->generation.load() != generation)
             return env->NewStringUTF("{\"state\":\"stale\"}");
         runtime->last_frame[stream] = frame;
         runtime->last_pts[stream] = pts;
+        runtime->last_eye_count[stream] = eye_count;
         const auto& r = runtime->gpu->report();
         std::ostringstream json;
         json << "{\"state\":\"" << (healthy ? "ready" : "state_reset") << "\",\"session_id\":" << runtime->session
              << ",\"generation\":" << generation << ",\"frame_id\":" << frame << ",\"pts_us\":" << pts
              << ",\"profile_key\":\"" << runtime->profile.key << "\",\"stream\":" << stream
-             << ",\"reset_first\":" << (reset_first == JNI_TRUE ? "true" : "false")
+             << ",\"inference_eyes\":" << eye_count << ",\"reset_first\":" << (reset_first == JNI_TRUE ? "true" : "false")
              << ",\"backend\":\"MNN_OpenCL\",\"precision\":\"" << (r.fp16 ? "fp16" : "fp32")
              << "\",\"transport\":\"AHardwareBuffer_zero_copy\",\"gpu_ops\":" << r.gpu_ops
              << ",\"cpu_fallback_ops\":" << r.host_ops.size() << ",\"state_checks\":" << r.state_checks
              << ",\"nonfinite_resets\":" << r.nonfinite_resets << '}';
         return env->NewStringUTF(json.str().c_str());
     } catch (const std::exception& error) { fail(env, error.what()); return nullptr; }
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_org_vrpassthroughplayer_plugin_RvmNative_processRuntimeAhb(JNIEnv* env, jclass, jlong handle, jlong generation,
+    jlong frame, jlong pts, jlong left, jlong right, jlong left_alpha, jlong right_alpha, jint stream, jboolean reset_first) {
+    return process_ahb(env, handle, generation, frame, pts, left, right, left_alpha, right_alpha, stream, reset_first, 2);
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_org_vrpassthroughplayer_plugin_RvmNative_processRuntimeAhbEyes(JNIEnv* env, jclass, jlong handle, jlong generation,
+    jlong frame, jlong pts, jlong left, jlong right, jlong left_alpha, jlong right_alpha, jint stream, jboolean reset_first, jint eyes) {
+    return process_ahb(env, handle, generation, frame, pts, left, right, left_alpha, right_alpha, stream, reset_first, eyes);
 }
 
 // ROI analysis input: copy the R channel (round(alpha*255)) of two zero-copy Alpha buffers into
@@ -484,3 +529,7 @@ Java_org_vrpassthroughplayer_plugin_RvmNative_readAlphaPlanes(JNIEnv* env, jclas
         return JNI_TRUE;
     } catch (const std::exception& error) { fail(env, error.what()); return JNI_FALSE; }
 }
+
+/** MnnRvmBackend::zero_copy_self_test of this process: -1 untested, 0 unavailable, 1 verified. */
+extern "C" JNIEXPORT jint JNICALL
+Java_org_vrpassthroughplayer_plugin_RvmNative_zeroCopySupport(JNIEnv*, jclass) { return zero_copy_support.load(); }

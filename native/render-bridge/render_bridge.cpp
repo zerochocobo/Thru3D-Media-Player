@@ -361,9 +361,49 @@ GLuint compute_program(const char* body) {
     return id;
 }
 GLuint warp_frame_program(const char* header) { return program((std::string(header) + warp_frame_body).c_str()); }
-void image(GLuint& id, int width, int height, GLenum format = GL_RGBA8) {
+int mip_levels(int width, int height) {
+    int levels = 1;
+    for (int size = std::max(width, height); size > 1; size /= 2) ++levels;
+    return levels;
+}
+constexpr const char* portrait_fragment = R"(#version 300 es
+precision highp float;
+uniform sampler2D source;
+uniform sampler2D residual_map;
+uniform bool residual_enabled;
+uniform float lod_bias;
+in vec2 uv;
+out vec4 result;
+void main() {
+    float shape = textureLod(source, uv, max(0.0, 3.0 + lod_bias)).r * 0.5
+                + textureLod(source, uv, max(0.0, 4.0 + lod_bias)).r * 0.3
+                + textureLod(source, uv, max(0.0, 5.0 + lod_bias)).r * 0.2;
+    if (residual_enabled) shape += (texture(residual_map, uv).r - 128.0/255.0) * (255.0/254.0) * 0.7;
+    // Reserve headroom above the base body's 1.0: a near hand must rise in front of an
+    // already opaque torso instead of saturating at the same depth. R8 decodes by *1.5.
+    result = vec4(clamp(shape, 0.0, 1.5)/1.5, 0.0, 0.0, 1.0);
+})";
+constexpr const char* portrait_mask_fragment = R"(#version 300 es
+precision highp float;
+uniform sampler2D source;
+in vec2 uv;
+out vec4 result;
+void main() { result = vec4(texture(source,vec2(uv.x*0.5,uv.y)).rrr,1.0); }
+)";
+struct TextureUnitOne final {
+    GLint texture, sampler;
+    TextureUnitOne() {
+        glActiveTexture(GL_TEXTURE1); glGetIntegerv(GL_TEXTURE_BINDING_2D, &texture);
+        glGetIntegerv(GL_SAMPLER_BINDING, &sampler); glBindSampler(1, 0);
+    }
+    ~TextureUnitOne() {
+        glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_2D, texture); glBindSampler(1, sampler);
+        glActiveTexture(GL_TEXTURE0);
+    }
+};
+void image(GLuint& id, int width, int height, GLenum format = GL_RGBA8, int levels = 1) {
     glGenTextures(1, &id); glBindTexture(GL_TEXTURE_2D, id);
-    glTexStorage2D(GL_TEXTURE_2D, 1, format, width, height);
+    glTexStorage2D(GL_TEXTURE_2D, levels, format, width, height);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR); glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE); glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 }
@@ -479,6 +519,11 @@ constexpr uint64_t kOutputUsage = AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE | AHAR
 enum class Phase { free, copying, held, retiring };
 struct Slot {
     GLuint color = 0, alpha = 0;
+    GLuint shot_pbo = 0;
+    GLuint portrait_mask_pbo = 0;
+    bool portrait_mask_staged = false;
+    GLuint portrait = 0, portrait_mips = 0; // Shape and private mip source, leased with this exact color/Alpha.
+    bool portrait_valid = false;
     // Borrowed color: the producer's own immutable texture, kept leased by the owner until this
     // slot retires, instead of a full-resolution copy into `color` (allocated only when copying).
     GLuint borrowed = 0;
@@ -533,7 +578,14 @@ struct Bridge final {
     std::vector<unsigned char> map_near; // near map the current `warp_map` was built from
     float map_half = -1.f, map_convergence = -1.f;
     uint64_t warp_frames = 0, warp_maps = 0;
-    GpuTimer map_timer, frame_timer;
+    GpuTimer map_timer, frame_timer, portrait_timer;
+    uint64_t portrait_frames = 0;
+    GLuint portrait_program = 0;
+    GLuint shot_image = 0;
+    GLuint portrait_mask_program = 0, portrait_mask_image = 0, portrait_input_image = 0, portrait_residual_image = 0;
+    int portrait_input_width = 0, portrait_input_height = 0;
+    GLuint portrait_input_pbo = 0;
+    GLsync portrait_input_fence = nullptr;
     Bridge(int w, int h, int iw, int ih, int l) : width(w), height(h), input_width(iw), input_height(ih), layout(l) {}
     float eye_width() const { return width / (layout == 1 ? 2.f : 1.f); }
     float eye_height() const { return height / (layout == 2 ? 2.f : 1.f); }
@@ -577,6 +629,10 @@ struct Bridge final {
             if (slot.fence) glDeleteSync(slot.fence);
             if (slot.alpha_fence) glDeleteSync(slot.alpha_fence);
             glDeleteBuffers(2, slot.pbo.data()); glDeleteTextures(1, &slot.color); glDeleteTextures(1, &slot.alpha);
+            glDeleteTextures(1, &slot.portrait);
+            glDeleteTextures(1, &slot.portrait_mips);
+            glDeleteBuffers(1, &slot.shot_pbo);
+            glDeleteBuffers(1, &slot.portrait_mask_pbo);
             if (slot.warp) glDeleteTextures(1, &slot.warp);
             if (slot.scout_pbo[0]) glDeleteBuffers(2, slot.scout_pbo.data());
             for (auto* set : {&slot.zc_in, &slot.zc_out, &slot.zc_scout_in}) for (auto& image : *set) destroy_shared_image(image);
@@ -586,6 +642,13 @@ struct Bridge final {
         glDeleteTextures(1, &small); glDeleteTextures(1, &oes); glDeleteFramebuffers(1, &fbo); glDeleteVertexArrays(1, &vao);
         if (copy) glDeleteProgram(copy);
         if (copy_2d) glDeleteProgram(copy_2d);
+        if (portrait_program) glDeleteProgram(portrait_program);
+        glDeleteTextures(1, &shot_image);
+        if (portrait_mask_program) glDeleteProgram(portrait_mask_program);
+        glDeleteTextures(1, &portrait_mask_image); glDeleteTextures(1, &portrait_input_image);
+        glDeleteTextures(1, &portrait_residual_image);
+        glDeleteBuffers(1, &portrait_input_pbo);
+        if (portrait_input_fence) glDeleteSync(portrait_input_fence);
         if (scale) glDeleteProgram(scale);
         if (scale_oes) glDeleteProgram(scale_oes);
         if (freeze_oes) glDeleteProgram(freeze_oes);
@@ -631,7 +694,7 @@ struct Bridge final {
         // while the caller still keeps that token in its retirement set.
         free = free_slot();
         if (!free) return 0;
-        free->alpha_valid = false;
+        free->alpha_valid = false; free->portrait_valid = false;
         free->opaque_pending = false;
         free->borrowed = 0;
         if (!free->color) image(free->color, width, height);
@@ -660,7 +723,7 @@ struct Bridge final {
         Slot* free = nullptr;
         free = free_slot();
         if (!free) { slot_exhaustions++; return 0; }
-        free->alpha_valid = false;
+        free->alpha_valid = false; free->portrait_valid = false;
         free->opaque_pending = opaque;
         if (borrow) {
             // The owner keeps the producer lease until this slot retires; staging samples it directly.
@@ -707,7 +770,7 @@ struct Bridge final {
         free = free_slot();
         if (!free) { slot_exhaustions++; return 0; }
         release_decoder(*free);
-        free->alpha_valid = false; free->opaque_pending = false; free->borrowed = 0;
+        free->alpha_valid = false; free->portrait_valid = false; free->opaque_pending = false; free->borrowed = 0;
         const EGLint attributes[] = {EGL_IMAGE_PRESERVED_KHR, EGL_TRUE, EGL_NONE};
         free->decoder_image = api.create(eglGetCurrentDisplay(), EGL_NO_CONTEXT, EGL_NATIVE_BUFFER_ANDROID, api.client(buffer), attributes);
         if (free->decoder_image == EGL_NO_IMAGE_KHR) throw std::runtime_error("Decoder EGLImage creation failed");
@@ -762,6 +825,38 @@ struct Bridge final {
             glReadPixels(0, 0, input_width, input_height, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
         }
     }
+    // Tiny full-source colour fingerprint, staged before the existing copy fence is consumed.
+    // Keep this independent of the inference crop and of zero-copy vs host-copy transport.
+    void stage_shot(jlong token) {
+        current(); auto& slot = find(token);
+        if (layout != 0 || slot.phase != Phase::copying || !slot.fence)
+            throw std::runtime_error("Shot staging requires a copying mono frame");
+        State state;
+        if (!shot_image) image(shot_image, 48, 32);
+        if (!slot.shot_pbo) {
+            glGenBuffers(1, &slot.shot_pbo); glBindBuffer(GL_PIXEL_PACK_BUFFER, slot.shot_pbo);
+            glBufferData(GL_PIXEL_PACK_BUFFER, 48*32*4, nullptr, GL_STREAM_READ);
+        }
+        target(shot_image, 48, 32);
+        const float rect[] = {0.f, 0.f, 1.f, 1.f};
+        const GLuint prog = bind_scale(slot, rect); eye_rect(prog, 0);
+        glUniform2f(glGetUniformLocation(prog, "footprint"), 1.f/48, 1.f/32);
+        glDrawArrays(GL_TRIANGLES, 0, 3); glBindBuffer(GL_PIXEL_PACK_BUFFER, slot.shot_pbo);
+        glReadPixels(0, 0, 48, 32, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+        check_gl("Portrait shot staging");
+        glDeleteSync(slot.fence); slot.fence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+        if (!slot.fence) throw std::runtime_error("Shot staging fence unavailable");
+        glFlush();
+    }
+    void read_shot(jlong token, unsigned char* bytes) {
+        current(); auto& slot = find(token);
+        if (slot.phase != Phase::held || !slot.shot_pbo) throw std::runtime_error("Shot read requires completed staging");
+        State state; glBindBuffer(GL_PIXEL_PACK_BUFFER, slot.shot_pbo);
+        const auto* mapped = glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, 48*32*4, GL_MAP_READ_BIT);
+        if (!mapped) throw std::runtime_error("Shot PBO mapping failed");
+        std::memcpy(bytes, mapped, 48*32*4);
+        if (!glUnmapBuffer(GL_PIXEL_PACK_BUFFER)) throw std::runtime_error("Shot PBO corrupted");
+    }
     void ensure_shared(std::array<SharedImage, 2>& images, uint64_t usage) {
         for (auto& image : images) if (!image.buffer) image = make_shared_image(input_width, input_height, usage);
     }
@@ -783,13 +878,14 @@ struct Bridge final {
         if (!zero_copy || !slot.zc_out[0].buffer || slot.phase != Phase::held || slot.alpha_fence || slot.alpha_valid)
             throw std::runtime_error("Zero-copy Alpha commit requires a held color with no existing mask");
         State state;
+        slot.portrait_valid = false;
         if (!slot.alpha) image(slot.alpha, input_width*2, input_height, GL_R8);
         glBindFramebuffer(GL_FRAMEBUFFER, fbo); glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, slot.alpha, 0);
         if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) throw std::runtime_error("Zero-copy mask framebuffer incomplete");
         glBindVertexArray(vao); glUseProgram(copy_2d); glUniform1i(glGetUniformLocation(copy_2d, "source"), 0);
         for (int eye = 0; eye < 2; ++eye) {
             glViewport(eye * input_width, 0, input_width, input_height);
-            glBindTexture(GL_TEXTURE_2D, slot.zc_out[eye].texture);
+            glBindTexture(GL_TEXTURE_2D, slot.zc_out[layout == 0 ? 0 : eye].texture);
             glDrawArrays(GL_TRIANGLES, 0, 3);
         }
         slot.opaque_cached = false;
@@ -828,6 +924,7 @@ struct Bridge final {
         }
         // Validate both eyes before modifying the slot. Rows are canonical top-left.
         State state;
+        slot.portrait_valid = false;
         if (!slot.alpha) image(slot.alpha, input_width*2, input_height, GL_R8);
         glBindTexture(GL_TEXTURE_2D, slot.alpha);
         glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, input_width*2, input_height, GL_RED, GL_UNSIGNED_BYTE, packed.data());
@@ -838,6 +935,125 @@ struct Bridge final {
         if (!slot.alpha_fence) throw std::runtime_error("Alpha upload fence unavailable");
         alpha_uploads++;
         glFlush();
+    }
+    // Extend the upload's completion fence: consumers never see a partially generated mip chain.
+    GLuint prepare_portrait(jlong token, float lod_bias, const unsigned char* residual = nullptr) {
+        current(); auto& slot = find(token);
+        if (layout != 0 || slot.phase != Phase::held || (!slot.alpha_valid && !slot.alpha_fence))
+            throw std::runtime_error("Portrait shape requires a fresh held mono Alpha upload");
+        State state;
+        if (!portrait_program) portrait_program = program(portrait_fragment);
+        if (!slot.portrait) image(slot.portrait, input_width, input_height, GL_R8);
+        if (!slot.portrait_mips) image(slot.portrait_mips, input_width, input_height, GL_R8, mip_levels(input_width, input_height));
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, slot.alpha, 0);
+        if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+            throw std::runtime_error("Portrait Alpha framebuffer incomplete");
+        portrait_timer.start();
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, slot.portrait_mips);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+        glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0, input_width, input_height);
+        glGenerateMipmap(GL_TEXTURE_2D);
+        // Godot's native-handle wrapper treats imported textures as single-level. Resolve the
+        // three mip samples here; the renderer receives a normal R8 shape (one small extra pass).
+        target(slot.portrait, input_width, input_height);
+        glUseProgram(portrait_program);
+        glUniform1i(glGetUniformLocation(portrait_program, "source"), 0);
+        glUniform1f(glGetUniformLocation(portrait_program, "lod_bias"), lod_bias);
+        glUniform1i(glGetUniformLocation(portrait_program, "residual_enabled"), residual ? 1 : 0);
+        glUniform1i(glGetUniformLocation(portrait_program, "residual_map"), 1);
+        TextureUnitOne unit;
+        if (residual) {
+            if (!portrait_residual_image) image(portrait_residual_image, 64, 64, GL_R8);
+            glBindTexture(GL_TEXTURE_2D, portrait_residual_image);
+            glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 64, 64, GL_RED, GL_UNSIGNED_BYTE, residual);
+        } else glBindTexture(GL_TEXTURE_2D, slot.portrait_mips);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        portrait_timer.stop();
+        check_gl("Portrait mip generation");
+        if (slot.alpha_fence) glDeleteSync(slot.alpha_fence);
+        slot.alpha_fence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+        if (!slot.alpha_fence) throw std::runtime_error("Portrait fence unavailable");
+        slot.alpha_valid = false;
+        slot.portrait_valid = true; ++portrait_frames;
+        glFlush();
+        return slot.portrait;
+    }
+    // Schedule the tiny mask readback behind Alpha, under its existing nonblocking publication fence.
+    void stage_portrait_mask(jlong token) {
+        current(); auto& slot = find(token);
+        if (layout != 0 || slot.phase != Phase::held || !slot.alpha_fence || slot.alpha_valid)
+            throw std::runtime_error("Portrait mask sampling requires fresh mono Alpha");
+        State state;
+        if (!portrait_mask_program) portrait_mask_program = program(portrait_mask_fragment);
+        if (!portrait_mask_image) image(portrait_mask_image, 64, 64);
+        target(portrait_mask_image, 64, 64); glUseProgram(portrait_mask_program);
+        glBindTexture(GL_TEXTURE_2D, slot.alpha); glUniform1i(glGetUniformLocation(portrait_mask_program, "source"), 0);
+        glDrawArrays(GL_TRIANGLES, 0, 3); glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+        if (!slot.portrait_mask_pbo) {
+            glGenBuffers(1, &slot.portrait_mask_pbo);
+            glBindBuffer(GL_PIXEL_PACK_BUFFER, slot.portrait_mask_pbo);
+            glBufferData(GL_PIXEL_PACK_BUFFER, 64*64*4, nullptr, GL_STREAM_READ);
+        } else glBindBuffer(GL_PIXEL_PACK_BUFFER, slot.portrait_mask_pbo);
+        glReadPixels(0, 0, 64, 64, GL_RGBA, GL_UNSIGNED_BYTE, nullptr); check_gl("Portrait mask staging");
+        glDeleteSync(slot.alpha_fence);
+        slot.alpha_fence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+        if (!slot.alpha_fence) throw std::runtime_error("Portrait mask fence unavailable");
+        slot.portrait_mask_staged = true; glFlush();
+    }
+    void read_portrait_mask(jlong token, unsigned char* output) {
+        current(); auto& slot = find(token);
+        if (layout != 0 || slot.phase != Phase::held || !slot.alpha_valid || !slot.portrait_mask_staged)
+            throw std::runtime_error("Portrait mask requires a completed Alpha fence");
+        State state;
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, slot.portrait_mask_pbo);
+        const auto* rgba = static_cast<const unsigned char*>(glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, 64*64*4, GL_MAP_READ_BIT));
+        if (!rgba) throw std::runtime_error("Portrait mask PBO unavailable");
+        for (size_t i = 0; i < 64*64; ++i) output[i] = rgba[i*4];
+        const bool valid = glUnmapBuffer(GL_PIXEL_PACK_BUFFER) == GL_TRUE;
+        slot.portrait_mask_staged = false;
+        if (!valid) throw std::runtime_error("Portrait mask PBO invalidated");
+    }
+    // One model-size crop when DA2 is idle (at most 3 Hz). The slot's colour lease stays held.
+    void stage_portrait_input(jlong token, const float* rect, int iw, int ih) {
+        current(); auto& slot = find(token);
+        if (layout != 0 || slot.phase != Phase::held) throw std::runtime_error("Portrait input requires a held mono colour");
+        State state;
+        if (iw != portrait_input_width || ih != portrait_input_height) {
+            glDeleteTextures(1, &portrait_input_image); portrait_input_image = 0;
+            image(portrait_input_image, iw, ih); portrait_input_width = iw; portrait_input_height = ih;
+        }
+        target(portrait_input_image, iw, ih);
+        const GLuint prog = bind_scale(slot, rect); eye_rect(prog, 0);
+        glUniform2f(glGetUniformLocation(prog, "footprint"), 1.f/iw/rect[2], 1.f/ih/rect[3]);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        const size_t pixels = static_cast<size_t>(iw)*ih;
+        if (!portrait_input_pbo) glGenBuffers(1, &portrait_input_pbo);
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, portrait_input_pbo);
+        // Orphan a cancelled controller's pending storage; GPU commands retain the old allocation.
+        glBufferData(GL_PIXEL_PACK_BUFFER, pixels*4, nullptr, GL_STREAM_READ);
+        glReadPixels(0, 0, iw, ih, GL_RGBA, GL_UNSIGNED_BYTE, nullptr); check_gl("Portrait crop staging");
+        if (portrait_input_fence) glDeleteSync(portrait_input_fence);
+        portrait_input_fence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+        if (!portrait_input_fence) throw std::runtime_error("Portrait crop fence unavailable");
+        glFlush();
+    }
+    bool read_portrait_input(float* output) {
+        current();
+        if (!portrait_input_fence) return false;
+        const auto ready = glClientWaitSync(portrait_input_fence, 0, 0);
+        if (ready == GL_TIMEOUT_EXPIRED) return false;
+        if (ready == GL_WAIT_FAILED) throw std::runtime_error("Portrait crop fence failed");
+        State state; glBindBuffer(GL_PIXEL_PACK_BUFFER, portrait_input_pbo);
+        const size_t pixels = static_cast<size_t>(portrait_input_width)*portrait_input_height;
+        const auto* rgba = static_cast<const unsigned char*>(glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, pixels*4, GL_MAP_READ_BIT));
+        if (!rgba) throw std::runtime_error("Portrait crop PBO unavailable");
+        for (size_t i = 0; i < pixels; ++i) for (size_t c = 0; c < 3; ++c) output[c*pixels+i] = rgba[i*4+c]/255.f;
+        const bool valid = glUnmapBuffer(GL_PIXEL_PACK_BUFFER) == GL_TRUE;
+        glDeleteSync(portrait_input_fence); portrait_input_fence = nullptr;
+        if (!valid) throw std::runtime_error("Portrait crop PBO invalidated");
+        return true;
     }
     // 2D->3D: renders the held color's stereo pair from its just-uploaded near map. shift is the
     // eye-width fraction of the full parallax, convergence the near value left on the screen plane.
@@ -975,10 +1191,10 @@ std::unordered_map<jlong, std::unique_ptr<Bridge>> registry;
 // can be displayed; no resource growth when many seek requests are coalesced.
 struct FrozenFrame final {
     const EGLContext context = eglGetCurrentContext();
-    GLuint color = 0, alpha = 0;
+    GLuint color = 0, alpha = 0, portrait = 0;
     ~FrozenFrame() {
         if (context != eglGetCurrentContext()) return;
-        glDeleteTextures(1, &color); glDeleteTextures(1, &alpha);
+        glDeleteTextures(1, &color); glDeleteTextures(1, &alpha); glDeleteTextures(1, &portrait);
     }
 };
 std::unordered_map<jlong, std::unique_ptr<FrozenFrame>> frozen_frames;
@@ -1135,16 +1351,20 @@ Java_org_vrpassthroughplayer_plugin_RenderBridgeNative_freezePair(JNIEnv* env, j
             copy(slot.decoder_texture, GL_TEXTURE_EXTERNAL_OES, frozen->color, width, b.height, b.freeze_oes);
         } else copy(warp ? slot.warp : slot.source(), GL_TEXTURE_2D, frozen->color, width, b.height, b.copy_2d);
         copy(slot.alpha, GL_TEXTURE_2D, frozen->alpha, b.input_width * 2, b.input_height, b.copy_2d);
+        if (slot.portrait_valid && !warp) {
+            image(frozen->portrait, b.input_width, b.input_height, GL_R8);
+            copy(slot.portrait, GL_TEXTURE_2D, frozen->portrait, b.input_width, b.input_height, b.copy_2d);
+        }
         // A seek may flush MediaCodec on a different context/thread as soon as
         // this callback returns. Complete this one transition copy before it.
         glFinish(); check_gl("Freeze frame GPU completion");
         if (sequence == std::numeric_limits<jlong>::max()) throw std::runtime_error("Frozen handle space exhausted");
         const jlong handle = ++sequence;
         const jlong values[] = {handle, frozen->color, frozen->alpha, width, b.height,
-            std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - started).count()};
-        auto result = env->NewLongArray(6);
+            std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - started).count(), frozen->portrait};
+        auto result = env->NewLongArray(7);
         if (!result) return nullptr;
-        env->SetLongArrayRegion(result, 0, 6, values);
+        env->SetLongArrayRegion(result, 0, 7, values);
         if (env->ExceptionCheck()) return nullptr;
         frozen_frames.emplace(handle, std::move(frozen));
         return result;
@@ -1374,6 +1594,8 @@ Java_org_vrpassthroughplayer_plugin_RenderBridgeNative_stats(JNIEnv* env, jclass
             ",\"warp_half_shift_px\":" + std::to_string(b.map_half) +
             ",\"warp_failed\":" + (b.warp_failed ? "true" : "false") +
             ",\"warp_map_gpu_ms\":" + std::to_string(b.map_timer.ms) + ",\"warp_frame_gpu_ms\":" + std::to_string(b.frame_timer.ms) +
+            ",\"portrait_frames\":" + std::to_string(b.portrait_frames) + ",\"portrait_gpu_ms\":" + std::to_string(b.portrait_timer.ms) +
+            ",\"portrait_gpu_samples\":" + std::to_string(b.portrait_timer.samples) +
             ",\"free_slots\":" + std::to_string(phases[0]) + ",\"copying_slots\":" + std::to_string(phases[1]) +
             ",\"held_slots\":" + std::to_string(phases[2]) + ",\"retiring_slots\":" + std::to_string(phases[3]) + "}";
         return env->NewStringUTF(json.c_str());
@@ -1456,6 +1678,15 @@ Java_org_vrpassthroughplayer_plugin_RenderBridgeNative_alphaReady(JNIEnv* env, j
     catch (const std::exception& e) { error(env, e.what()); return JNI_FALSE; }
 }
 extern "C" JNIEXPORT jint JNICALL
+Java_org_vrpassthroughplayer_plugin_RenderBridgeNative_preparePortrait(JNIEnv* env, jclass, jlong id, jlong token, jfloat lod_bias, jobject residual) {
+    try {
+        if (!std::isfinite(lod_bias) || lod_bias < -4.f || lod_bias > 4.f) throw std::runtime_error("Portrait mip scale invalid");
+        const auto* bytes = residual ? static_cast<unsigned char*>(direct_buffer(env, residual, 64*64, false)) : nullptr;
+        std::lock_guard<std::mutex> guard(registry_mutex); return static_cast<jint>(find(id).prepare_portrait(token, lod_bias, bytes));
+    }
+    catch (const std::exception& e) { error(env, e.what()); return 0; }
+}
+extern "C" JNIEXPORT jint JNICALL
 Java_org_vrpassthroughplayer_plugin_RenderBridgeNative_alphaTexture(JNIEnv* env, jclass, jlong id, jlong token) {
     try {
         std::lock_guard<std::mutex> guard(registry_mutex); auto& slot = find(id).find(token);
@@ -1479,6 +1710,63 @@ Java_org_vrpassthroughplayer_plugin_RenderBridgeNative_readAlpha(JNIEnv* env, jc
         for (size_t i = 0; i < pixels; ++i) destination[i] = rgba[i*4];
         return JNI_TRUE;
     } catch (const std::exception& e) { error(env, e.what()); return JNI_FALSE; }
+}
+extern "C" JNIEXPORT void JNICALL
+Java_org_vrpassthroughplayer_plugin_RenderBridgeNative_stagePortraitMask(JNIEnv* env, jclass, jlong id, jlong token) {
+    try { std::lock_guard<std::mutex> guard(registry_mutex); find(id).stage_portrait_mask(token); }
+    catch (const std::exception& e) { error(env, e.what()); }
+}
+extern "C" JNIEXPORT void JNICALL
+Java_org_vrpassthroughplayer_plugin_RenderBridgeNative_readPortraitMask(JNIEnv* env, jclass, jlong id, jlong token, jobject output) {
+    try {
+        std::lock_guard<std::mutex> guard(registry_mutex);
+        find(id).read_portrait_mask(token, static_cast<unsigned char*>(direct_buffer(env, output, 64*64, true)));
+    } catch (const std::exception& e) { error(env, e.what()); }
+}
+extern "C" JNIEXPORT void JNICALL
+Java_org_vrpassthroughplayer_plugin_RenderBridgeNative_stagePortraitInput(JNIEnv* env, jclass, jlong id, jlong token,
+                                                                        jfloatArray rect, jint width, jint height) {
+    try {
+        if (width < 16 || height < 16 || width > 1024 || height > 1024 || !rect || env->GetArrayLength(rect) != 4)
+            throw std::runtime_error("Portrait depth crop dimensions invalid");
+        std::array<float, 4> window{}; env->GetFloatArrayRegion(rect, 0, 4, window.data());
+        if (env->ExceptionCheck()) return;
+        for (float value : window) if (!std::isfinite(value)) throw std::runtime_error("Portrait crop nonfinite");
+        if (window[2] <= 0 || window[3] <= 0) throw std::runtime_error("Portrait crop scale invalid");
+        std::lock_guard<std::mutex> guard(registry_mutex); find(id).stage_portrait_input(token, window.data(), width, height);
+    } catch (const std::exception& e) { error(env, e.what()); }
+}
+extern "C" JNIEXPORT jboolean JNICALL
+Java_org_vrpassthroughplayer_plugin_RenderBridgeNative_readPortraitInput(JNIEnv* env, jclass, jlong id, jobject output) {
+    try {
+        std::lock_guard<std::mutex> guard(registry_mutex); auto& bridge = find(id);
+        auto* rgb = static_cast<float*>(direct_buffer(env, output,
+            static_cast<size_t>(bridge.portrait_input_width)*bridge.portrait_input_height*3*sizeof(float), true));
+        return bridge.read_portrait_input(rgb) ? JNI_TRUE : JNI_FALSE;
+    } catch (const std::exception& e) { error(env, e.what()); return JNI_FALSE; }
+}
+extern "C" JNIEXPORT void JNICALL
+Java_org_vrpassthroughplayer_plugin_RenderBridgeNative_stagePortraitShot(JNIEnv* env, jclass, jlong id, jlong token) {
+    try { std::lock_guard<std::mutex> guard(registry_mutex); find(id).stage_shot(token); }
+    catch (const std::exception& e) { error(env, e.what()); }
+}
+extern "C" JNIEXPORT void JNICALL
+Java_org_vrpassthroughplayer_plugin_RenderBridgeNative_restagePortraitFull(JNIEnv* env, jclass, jlong id, jlong token) {
+    try {
+        std::lock_guard<std::mutex> guard(registry_mutex); auto& bridge = find(id); bridge.current();
+        auto& slot = bridge.find(token);
+        if (slot.phase != Phase::held || slot.alpha_fence || slot.alpha_valid)
+            throw std::runtime_error("Portrait restaging requires a held colour without Alpha");
+        State state; slot.scout_staged = false;
+        bridge.stage(slot, token, true, bridge.content_rect.data());
+    } catch (const std::exception& e) { error(env, e.what()); }
+}
+extern "C" JNIEXPORT void JNICALL
+Java_org_vrpassthroughplayer_plugin_RenderBridgeNative_readPortraitShot(JNIEnv* env, jclass, jlong id, jlong token, jobject output) {
+    try {
+        std::lock_guard<std::mutex> guard(registry_mutex);
+        find(id).read_shot(token, static_cast<unsigned char*>(direct_buffer(env, output, 48*32*4, true)));
+    } catch (const std::exception& e) { error(env, e.what()); }
 }
 extern "C" JNIEXPORT void JNICALL
 Java_org_vrpassthroughplayer_plugin_RenderBridgeNative_close(JNIEnv*, jclass, jlong id) {

@@ -33,7 +33,7 @@ func start(uri: String, title: String, playlist: String = "") -> bool:
 	if busy: return false
 	error = ""; progress = 0.0; destination = playlist; _cancel = false
 	var filename := title.get_file()
-	if not Catalog.supported(filename): error = "Use MP3, OGG, WAV, FLAC or DTS audio"; changed.emit(); return false
+	if not Catalog.supported(filename): error = "Use MP3, M4A, OGG, WAV, FLAC or DTS audio"; changed.emit(); return false
 	_title = filename.get_basename().left(150) + "." + Catalog.extension(filename)
 	if Methods.supports(platform, "import_background_audio"):
 		if _connected != platform:

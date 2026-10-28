@@ -3,11 +3,22 @@ $ErrorActionPreference = 'Stop'
 $workspace = Split-Path -Parent $PSScriptRoot
 . "$PSScriptRoot\environment\Activate-QuestEnvironment.ps1" -ToolRoot $ToolRoot
 $projectDirectory = Join-Path $workspace 'app\godot'
+& "$PSScriptRoot/Test-DistributionChannel.ps1" -ToolRoot $ToolRoot
 $listeningOutput = Join-Path $workspace 'build/output/live-interpretation'
 New-Item -ItemType Directory -Path $listeningOutput -Force | Out-Null
 $listeningLog = Join-Path $listeningOutput 'test-live_interpretation.log'
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_live_interpretation.gd 2>&1 | Tee-Object -FilePath $listeningLog
 if ($LASTEXITCODE -ne 0 -or (Get-Content $listeningLog -Raw) -match '(?m)^(SCRIPT ERROR:|ERROR:)' -or (Get-Content $listeningLog -Raw) -notmatch 'Live interpretation: [0-9]+ checks, 0 failures') { throw 'Live interpretation regression failed.' }
+$subtitlePanelOutput = Join-Path $workspace 'build/output/subtitle-side-panels'
+New-Item -ItemType Directory -Path $subtitlePanelOutput -Force | Out-Null
+$subtitlePanelLog = Join-Path $subtitlePanelOutput 'side-panels.log'
+& $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 3000 --script res://tests/test_subtitle_side_panels.gd 2>&1 | Tee-Object -FilePath $subtitlePanelLog
+if ($LASTEXITCODE -ne 0 -or (Get-Content $subtitlePanelLog -Raw) -match '(?m)^(SCRIPT ERROR:|ERROR:)' -or (Get-Content $subtitlePanelLog -Raw) -notmatch 'Subtitle side panels: [0-9]+ checks, 0 failures') { throw 'Subtitle column navigation and composition regression failed.' }
+if ($RenderPreview) {
+    $subtitlePanelRenderLog = Join-Path $subtitlePanelOutput 'render.log'
+    & $env:GODOT_EXE --xr-mode off --rendering-method gl_compatibility --rendering-driver opengl3 --path $projectDirectory --quit-after 3000 --script res://tests/render_subtitle_side_panels.gd 2>&1 | Tee-Object -FilePath $subtitlePanelRenderLog
+    if ($LASTEXITCODE -ne 0 -or (Get-Content $subtitlePanelRenderLog -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:)' -or (Get-Content $subtitlePanelRenderLog -Raw) -notmatch 'Subtitle side panel render: [0-9]+ checks, 0 failures') { throw 'Subtitle column render failed.' }
+}
 & "$PSScriptRoot\Test-VideoPip.ps1" -Godot $env:GODOT_EXE
 $orderOutput = Join-Path $workspace 'build/output/media-browse-order'
 New-Item -ItemType Directory -Path $orderOutput -Force | Out-Null
@@ -161,6 +172,10 @@ if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'frame-picture
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'subtitle-layers-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)' -or (Get-Content (Join-Path $logDirectory 'subtitle-layers-host.log') -Raw) -notmatch 'Subtitle layers: [0-9]+ checks, 0 failures') { throw 'PGS compositor layers and depth conversion regression failed.' }
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_alpha_profile.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'alpha-profile-host.log')
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'alpha-profile-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)') { throw 'Alpha model size regression failed.' }
+& $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_video_portrait.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'video-portrait-host.log')
+if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'video-portrait-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)') { throw 'Mono portrait policy regression failed.' }
+& $env:GODOT_EXE --xr-mode off --rendering-method gl_compatibility --rendering-driver opengl3 --path $projectDirectory --quit-after 1800 --script res://tests/render_video_portrait.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'video-portrait-gles.log')
+if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'video-portrait-gles.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:)') { throw 'Mono portrait GLES regression failed.' }
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_packed_mask.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'packed-mask-host.log')
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'packed-mask-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)') { throw 'Built-in Alpha mask regression failed.' }
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_c05_playback.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'c05-host-regression.log')
@@ -197,9 +212,13 @@ if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'file-track-me
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_player_sticks.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'player-sticks-host.log')
 if ($LASTEXITCODE -ne 0) { throw 'Player stick host regression failed.' }
 if ((Get-Content (Join-Path $logDirectory 'player-sticks-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)') { throw 'Player stick host regression reported runtime errors.' }
+& $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_immersive_adjustments.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'immersive-adjustments-host.log')
+if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'immersive-adjustments-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)' -or (Get-Content (Join-Path $logDirectory 'immersive-adjustments-host.log') -Raw) -notmatch 'Immersive adjustments: [0-9]+ checks, 0 failures') { throw 'Immersive grip controls and per-file adjustments regression failed.' }
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_seek_feedback.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'seek-feedback-host.log')
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'seek-feedback-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)' -or (Get-Content (Join-Path $logDirectory 'seek-feedback-host.log') -Raw) -notmatch 'Seek feedback checks=\d+ failures=0') { throw 'Deferred stick seek feedback regression failed.' }
 if ($RenderPreview) {
+    & $env:GODOT_EXE --xr-mode off --rendering-method gl_compatibility --rendering-driver opengl3 --path $projectDirectory --quit-after 1800 --script res://tests/render_immersive_adjustments.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'immersive-adjustments-render.log')
+    if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'immersive-adjustments-render.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)' -or (Get-Content (Join-Path $logDirectory 'immersive-adjustments-render.log') -Raw) -notmatch 'Immersive adjustments render: [0-9]+ checks, 0 failures') { throw 'Immersive settings and fixed controls visual regression failed.' }
     $env:THRU3D_TEST_OUTPUT = Join-Path $logDirectory 'seek-feedback-previews'
     & $env:GODOT_EXE --xr-mode off --rendering-method gl_compatibility --rendering-driver opengl3 --path $projectDirectory --quit-after 1800 --script res://tests/render_seek_feedback.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'seek-feedback-render.log')
     if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'seek-feedback-render.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)' -or (Get-Content (Join-Path $logDirectory 'seek-feedback-render.log') -Raw) -notmatch 'Seek feedback previews cases=28 checks=\d+ failures=0') { throw 'Seek feedback visual regression failed.' }

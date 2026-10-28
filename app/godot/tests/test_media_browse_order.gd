@@ -84,6 +84,7 @@ func flow_cases() -> void:
 	var photo_menu := Compact.PhotoMenu.new(); main.add_child(photo_menu); photo_menu.set_process(false); main.photo_menu = photo_menu
 	photo_menu.state_provider = photo.snapshot
 	var menu := Menu.new(); main.add_child(menu); menu.set_process(false); main.recent_menu = menu
+	main.cast_session.bind(main, null)
 	menu.current_file_provider = func():return main._viewer().local_uri
 	menu.chosen.connect(main._on_library_chosen); menu.directory_order_changed.connect(main._on_directory_order_changed)
 	player.expanded_library = menu; photo_menu.expanded_library = menu

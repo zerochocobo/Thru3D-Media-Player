@@ -22,10 +22,12 @@ internal class FakeNarrationBackend: SharedNarrationEngine.Backend {
     override fun destroy(handle: Long){destroyed++;live--}
     override fun cancel(handle: Long,token: Long){this.token.set(token)}
     override fun register(handle: Long,voice: String,codes: IntArray){registered+=voice}
-    override fun synthesize(handle: Long,text: String,voice: String,token: Long,frames: Int,precision: Boolean,sink: NarrationNative.Sink): String {
-        syntheses++
+    val calls=ArrayList<Triple<String,Boolean,Int>>()
+    var eosFor: (String,Boolean,Int)->Boolean={_,_,_->eos}
+    override fun synthesize(handle: Long,text: String,voice: String,token: Long,frames: Int,precision: Boolean,sink: NarrationNative.Sink,randomSkip: Int): String {
+        syntheses++;calls+=Triple(text,precision,randomSkip)
         for(i in 0 until chunkCount){hook(i);if(this.token.get()!=token||!sink.onChunk(token,FloatArray(30720){.25f}))return "{\"cancelled\":true}"}
-        return "{\"eos\":$eos,\"cancelled\":false}"
+        return "{\"eos\":${eosFor(text,precision,randomSkip)},\"cancelled\":false}"
     }
 }
 class SharedNarrationEngineTest {

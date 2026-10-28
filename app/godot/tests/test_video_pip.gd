@@ -12,6 +12,7 @@ class Host extends "res://tests/test_player_menu.gd".Host:
 		return 0 if fail else super.open_mpv_video(uri, start, stereo, profile, alpha, vulkan, depth, tb, exact)
 
 class Surface extends "res://scripts/media_surface.gd":
+	func portrait_requested() -> bool: return false
 	var _binding := preload("res://scripts/pair_texture_binding.gd").new()
 	var pip := preload("res://scripts/video_pip.gd").new(self)
 	func _ready() -> void:

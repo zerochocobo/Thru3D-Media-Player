@@ -3,11 +3,17 @@ const Audio := preload("res://scripts/background_audio.gd")
 var checks := 0
 var failures := 0
 class Platform extends RefCounted:
+	signal background_audio_imported(id: int, payload: String)
 	var generation := 0
 	var value := {}
 	var commands: Array = []
 	var stops := 0
-	func load_background_audio(_path: String, position: float) -> int:
+	var imports: Array = []
+	var paths: Array[String] = []
+	func import_background_audio(uri: String, title: String) -> int:
+		imports.append([uri, title]); return imports.size()
+	func load_background_audio(path: String, position: float) -> int:
+		paths.append(path)
 		generation += 1; value = {"generation": generation, "state": "loading", "position": position, "duration": 6.0}; return generation
 	func control_background_audio(id: int, playing: bool, volume: float, seek: float) -> bool:
 		commands.append([id, playing, volume, seek]); return true
@@ -52,6 +58,15 @@ func run() -> void:
 	check(audio.current == "import_b" and audio._native_token != current_token, "Single repeat reopens native decoder")
 	platform.value.state = "failed"; audio._process(0.1)
 	check(audio.paused and audio._native_token == 0 and not audio.error.is_empty(), "Decode failure stops without advancing")
+	var before_import: String = audio.current
+	audio.import_tracks([{"uri": "cloud:///Recording.M4A", "title": "Recording.M4A"}])
+	check(audio.importer.busy and platform.imports.back() == ["cloud:///Recording.M4A", "Recording.m4a"], "M4A import uses the native importer with a normalized extension")
+	platform.background_audio_imported.emit(1, JSON.stringify({"state": "ready", "id": "import_m4a", "path": "/private/recording.m4a", "label": "Recording.m4a", "decoded": true, "created": true, "bytes": 12000}))
+	check(not audio.importer.busy and audio.library.resolve("import_m4a").path == "/private/recording.m4a" and audio.current == before_import, "Validated M4A is saved without changing the playing track")
+	check(audio.play_tracks(["import_m4a"], "import_m4a") and platform.paths.back() == "/private/recording.m4a" and audio.player.stream == null, "M4A playback uses the existing native transport")
+	platform.value.state = "ready"; audio._process(0.1)
+	audio.toggle_pause(); audio.seek(2)
+	check(audio._loaded == "import_m4a" and not platform.commands.back()[1] and platform.commands.back()[3] == 2, "M4A reaches ready and supports paused seeking")
 	audio.play_tracks(["import_a"], "import_a"); audio.select_track("yunhai")
 	check(audio._native_token == 0, "Switch to built-in audio closes native transport")
 	audio.queue_free(); await process_frame

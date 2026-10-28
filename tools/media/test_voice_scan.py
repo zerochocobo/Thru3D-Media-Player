@@ -32,31 +32,53 @@ def main():
         assert (result.returncode == 0) == success, (mode, source, result.stderr)
         return json.loads(result.stdout) if result.stdout and success else result
 
-    for extension in ('mp4', 'mkv'):
+    cover = output / 'cover.jpg'
+    subprocess.run([args.ffmpeg, '-hide_banner', '-loglevel', 'error', '-y', '-f', 'lavfi', '-i', 'color=c=navy:s=64x64',
+                    '-frames:v', '1', media_path(cover)], check=True)
+    cases = [('mp4', None), ('mkv', None), ('cbr-mono.mp3', ['-c:a', 'libmp3lame', '-ar', '44100', '-ac', '1', '-b:a', '128k']),
+             ('vbr-stereo.mp3', ['-c:a', 'libmp3lame', '-ar', '48000', '-ac', '2', '-q:a', '3']),
+             ('vbr-cover.mp3', ['-c:a', 'libmp3lame', '-ar', '44100', '-ac', '2', '-q:a', '3']),
+             ('pcm16-mono.wav', ['-c:a', 'pcm_s16le', '-ar', '44100', '-ac', '1']),
+             ('pcm24-stereo.wav', ['-c:a', 'pcm_s24le', '-ar', '48000', '-ac', '2']),
+             ('aac-mono.m4a', ['-c:a', 'aac', '-ar', '44100', '-ac', '1', '-b:a', '64k', '-movflags', '+faststart']),
+             ('aac-stereo.m4a', ['-c:a', 'aac', '-ar', '48000', '-ac', '2', '-b:a', '128k']),
+             ('alac-stereo.m4a', ['-c:a', 'alac', '-ar', '44100', '-ac', '2'])]
+    for extension, audio_options in cases:
         source = output / ('fixture.' + extension)
-        subprocess.run([args.ffmpeg, '-hide_banner', '-loglevel', 'error', '-y', '-f', 'lavfi', '-i', 'color=c=black:s=160x90:r=1',
+        if audio_options is not None:
+            inputs = ['-i', media_path(args.speech_wav)]
+            cover_options = []
+            if extension == 'vbr-cover.mp3':
+                inputs += ['-i', media_path(cover)]
+                cover_options = ['-map', '1:v', '-c:v', 'copy', '-disposition:v', 'attached_pic']
+            subprocess.run([args.ffmpeg, '-hide_banner', '-loglevel', 'error', '-y', *inputs, '-map', '0:a',
+                            *cover_options, *audio_options, '-t', '14', media_path(source)], check=True)
+        else:
+            subprocess.run([args.ffmpeg, '-hide_banner', '-loglevel', 'error', '-y', '-f', 'lavfi', '-i', 'color=c=black:s=160x90:r=1',
                         '-i', media_path(args.speech_wav), '-f', 'lavfi', '-i', 'anullsrc=r=16000:cl=mono',
                         '-map', '0:v', '-map', '1:a', '-map', '2:a', '-t', '14', '-c:v', 'libx264', '-preset', 'ultrafast',
                         '-c:a', 'aac', '-metadata:s:a:0', 'language=eng', media_path(source)], check=True)
         probe = run('probe', source)
-        assert len(probe['audio_tracks']) == 2 and probe['audio_tracks'][0]['stream_index'] == 1
+        stream = 0 if audio_options is not None else 1
+        assert len(probe['audio_tracks']) == (1 if audio_options is not None else 2) and probe['audio_tracks'][0]['stream_index'] == stream
         assert 13 < probe['duration'] < 15
-        speech = run('scan', source)
+        speech = run('scan', source, stream=stream)
         assert speech['done'] and not speech['cancelled'] and speech['callbacks'] >= 7
         assert len(speech['frames']) == 250
         assert sum(frame[1] > .55 for frame in speech['frames']) > 100
         assert abs(speech['frames'][0][0] - 2) < .001 and speech['frames'][-1][0] < 10
-        silence = run('scan', source, stream=2)
-        assert sum(frame[1] > .55 for frame in silence['frames']) == 0
-        cancelled = run('cancel', source)
+        if audio_options is None:
+            silence = run('scan', source, stream=2)
+            assert sum(frame[1] > .55 for frame in silence['frames']) == 0
+        cancelled = run('cancel', source, stream=stream)
         assert cancelled['callbacks'] == 1 and cancelled['cancelled'] and not cancelled['done']
-        eof = run('scan', source, start=11, end=40)
+        eof = run('scan', source, stream=stream, start=11, end=40)
         assert eof['done'] and eof['frames'][-1][0] < 15
-        run('scan', source, stream=0, success=False)
-        run('scan', source, start=0, end=601, success=False)
-        run('scan', source, target=output / 'missing.onnx', success=False)
+        run('scan', source, stream=1 if audio_options is not None else 0, success=False)
+        run('scan', source, stream=stream, start=0, end=601, success=False)
+        run('scan', source, stream=stream, target=output / 'missing.onnx', success=False)
         wav = output / ('manual-' + extension + '.wav')
-        run('extract', source, start=3, end=9, target=wav)
+        run('extract', source, stream=stream, start=3, end=9, target=wav)
         with wave.open(str(wav)) as audio:
             assert audio.getframerate() == 48000 and audio.getnchannels() == 2 and audio.getnframes() == 288000
         data = source.read_bytes()
@@ -83,7 +105,7 @@ def main():
         server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
         thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
         try:
-            remote = run('scan', f'http://127.0.0.1:{server.server_port}/fixture.{extension}')
+            remote = run('scan', f'http://127.0.0.1:{server.server_port}/fixture.{extension}', stream=stream)
             assert remote['frames'] == speech['frames']
             assert len(transfers) < 20 and sum(transfers) < len(data)*10
         finally:

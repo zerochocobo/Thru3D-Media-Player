@@ -2,6 +2,10 @@
     <!-- Hand tracking declarations come from the selected OpenXR vendor export
          preset in both Debug and Release; this shared AAR is platform neutral. -->
     <application>
+        <receiver android:name="org.vrpassthroughplayer.plugin.WebVideoDiagnosticsReceiver"
+            android:exported="true" android:permission="android.permission.DUMP">
+            <intent-filter><action android:name="com.wapok.thru3d.DEBUG_WEB_VIDEO" /></intent-filter>
+        </receiver>
         <provider android:name="org.vrpassthroughplayer.plugin.LocalAccessTestProvider"
             android:authorities="${applicationId}.accessfixture" android:exported="false" />
         <activity android:name="org.vrpassthroughplayer.plugin.MpvDiagnosticActivity"

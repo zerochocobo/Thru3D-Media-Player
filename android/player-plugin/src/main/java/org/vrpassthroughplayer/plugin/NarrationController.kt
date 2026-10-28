@@ -228,6 +228,11 @@ internal class NarrationController(private val context: () -> Context?, private 
     }
     fun timelineChanged() = synchronized(lock) { if(config.source<0) {invalidate();sourceKey=""} }
     fun transportChanged() = synchronized(lock) {invalidate();sourceKey="";nextPoll=0}
+    fun subtitleReplaced(oldId: Int, newId: Int) = synchronized(lock) {
+        if (config.source >= 0 && config.source != oldId) return@synchronized
+        if (config.source == oldId) config = config.copy(source = newId)
+        invalidate(); sourceKey = ""; timelineKey = ""; nextPoll = 0
+    }
     fun pauseWithVideo() = synchronized(lock) {
         // A user pause is asynchronous in MPV. Keep the current sentence aligned
         // until its clock actually stops; never start another one during this wait.

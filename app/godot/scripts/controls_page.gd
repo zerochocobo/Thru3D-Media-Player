@@ -59,13 +59,19 @@ func items() -> Array[Dictionary]:
 		if bindings.is_fixed(item.id): row["fixed"] = bindings.label(item.id)
 		result.append(row)
 	if mode == 0:
+		result.append({"title": "Horizontal position", "fixed": "Left grip + stick ← / →", "scope": "Immersive video"})
+		result.append({"title": "Vertical position", "fixed": "Left grip + stick ↑ / ↓", "scope": "Immersive video"})
+		result.append({"title": "Depth / zoom", "fixed": "Right grip + stick ↑ / ↓", "scope": "Immersive video"})
+		result.append({"title": "Stereo horizontal alignment", "fixed": "Right grip + stick ← / →", "scope": "Stereo VR video"})
+		result.append({"title": "Reset VR adjustments", "fixed": "Either grip + same stick press", "scope": "Immersive video"})
 		result.append({"title": "Push away / pull closer", "fixed": "Grip + stick ↑ / ↓", "scope": "Interfaces / flat media"})
 		result.append({"title": "Push away / pull closer", "fixed": "Trigger + stick ↑ / ↓", "scope": "Flat photos"})
 		var ranks := {"play": 0, "Show / hide controls": 1, "Menu selection": 2, "Back": 3, "Close video and return": 4,
 			"back10": 5, "forward10": 6, "flat_zoom_in": 7, "flat_zoom_out": 8, "zoom_in": 9, "zoom_out": 10,
-			"volume_up": 11, "volume_down": 12, "Hands / controllers": 13, "Resize picture": 14}
+			"volume_up": 11, "volume_down": 12, "Hands / controllers": 13, "Resize picture": 14,
+			"Horizontal position": 15, "Vertical position": 16, "Depth / zoom": 17, "Stereo horizontal alignment": 18, "Reset VR adjustments": 19}
 		var order: Array = bindings.definitions().map(func(item): return item.id)
-		result.sort_custom(func(a, b): return int(ranks.get(a.get("id", a.title), 20 + order.find(a.get("id", "")))) < int(ranks.get(b.get("id", b.title), 20 + order.find(b.get("id", "")))))
+		result.sort_custom(func(a, b): return int(ranks.get(a.get("id", a.title), 30 + order.find(a.get("id", "")))) < int(ranks.get(b.get("id", b.title), 30 + order.find(b.get("id", "")))))
 		result.append({"title": "Movement range", "move_scope": true, "scope": "All media"})
 	return result
 
@@ -237,7 +243,7 @@ func draw() -> void:
 	elif not notice.is_empty() and pending.is_empty():
 		label(notice, Vector2(-0.48, -0.50), menu.TEXT_AUX, menu.ACCENT, menu, 0.64)
 	elif mode == 0 and pending.is_empty():
-		label("While gripping: ↑ away · ↓ closer", Vector2(-0.48, -0.50), menu.TEXT_AUX, menu.MUTED, menu, 0.80)
+		label("Flat media: grip + ↑ away / ↓ closer", Vector2(-0.48, -0.50), menu.TEXT_AUX, menu.MUTED, menu, 0.80)
 	elif mode == 2 and pending.is_empty():
 		label("Same hand · either order", Vector2(-0.48, -0.50), menu.TEXT_AUX, menu.MUTED, menu, 0.80)
 	if menu._max_scroll() > 0:

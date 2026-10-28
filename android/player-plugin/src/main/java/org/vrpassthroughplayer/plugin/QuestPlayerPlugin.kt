@@ -83,6 +83,7 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     @UsedByGodot fun set_playback_privacy(mode: String, protectedFavorites: Boolean) {
         PlaybackPrivacy.mode = mode.takeIf { it in setOf("all", "local", "none") } ?: "none"
         PlaybackPrivacy.protectedFavorites = protectedFavorites
+        webBrowser.setHistoryEnabled(PlaybackPrivacy.mode == "all" && !protectedFavorites)
         runCatching { MpvSourceNative.setPrivacy(!PlaybackPrivacy.diagnostics) }
     }
     /** Per-file settings cleanup of recognized live-subtitle text. */
@@ -91,6 +92,7 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
         return activity?.applicationContext?.let { ListeningCueCache.clear(it.filesDir, networkOnly) } ?: false
     }
     @UsedByGodot fun clear_playback_private_data() {
+        webBrowser.clearHistory()
         sources.clearPlaybackReferences()
         activity?.applicationContext?.let { app ->
             File(app.filesDir, "diagnostics").listFiles()?.filter {
@@ -170,6 +172,34 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     @UsedByGodot fun panorama_regions_status(id: Int): String = if (closed.get()) "{}" else panoramaRegions.snapshot(id)
     @UsedByGodot fun panorama_regions_request(id: Int, column: Int, row: Int): Boolean = !closed.get() && panoramaRegions.request(id, column, row)
     @UsedByGodot fun panorama_regions_close(id: Int) { if (!closed.get()) panoramaRegions.release(id) }
+    private val webBrowser = WebBrowser { activity }
+    private val webVideoResolver = WebVideoResolver({ activity?.applicationContext }, sources::rememberWebVideo, webBrowser::cookiesForExtraction, webBrowser::mediaForExtraction)
+    @UsedByGodot fun web_browser_navigate(url: String) { if (!closed.get()) webBrowser.navigate(url) }
+    @UsedByGodot fun web_browser_status(): String {
+        if (closed.get()) return "{}"
+        return runCatching {
+            JSONObject(webBrowser.snapshot()).also { state ->
+                state.put("native_supported", runCatching { WebVideoPage.parse(state.optString("url")) }.isSuccess)
+            }.toString()
+        }.getOrDefault("{}")
+    }
+    @UsedByGodot fun web_browser_library(): String = if (closed.get()) "{}" else webBrowser.librarySnapshot()
+    @UsedByGodot fun web_browser_library_edit(request: String): Int = if (closed.get()) -1 else webBrowser.editLibrary(request)
+    @UsedByGodot fun web_browser_action(command: String) { if (!closed.get()) webBrowser.action(command) }
+    @UsedByGodot fun web_browser_command(request: String) { if (!closed.get()) webBrowser.command(request) }
+    @UsedByGodot fun web_browser_window_pointer(window: Int, command: String, x: Float, y: Float, scroll: Float) {
+        if (!closed.get()) webBrowser.windowPointer(window, command, x, y, scroll)
+    }
+    @UsedByGodot fun web_browser_input(command: String, text: String) { if (!closed.get()) webBrowser.input(command, text) }
+    fun captureWebBrowserForDiagnostics(done: (android.graphics.Bitmap?) -> Unit) = webBrowser.captureFrame(done)
+    fun probeWebBrowserSystemInput(done: (JSONObject) -> Unit) = webBrowser.probeSystemInput(done)
+    @UsedByGodot fun web_browser_pointer(command: String, x: Float, y: Float, scroll: Float) {
+        if (!closed.get()) webBrowser.pointer(command, x, y, scroll)
+    }
+    @UsedByGodot fun web_video_resolve(url: String): Int = if (closed.get()) 0 else webVideoResolver.begin(url)
+    @UsedByGodot fun web_video_status(): String = if (closed.get()) "{}" else webVideoResolver.snapshot()
+    @UsedByGodot fun web_video_projection(uri: String): String = if (closed.get()) "{}" else sources.webVideoProjection(uri)
+    @UsedByGodot fun web_video_cancel() = webVideoResolver.cancel()
     private val mpv: MpvVideoBridge = MpvVideoBridge({ activity?.applicationContext }, {
         check(controlledRenderTasks.offer(it)) { "Player render task capacity exhausted" }
     }, { name, id, json -> if (!closed.get()) emitSignal(name, id, json) }, sources::playable, sources::sidecarAudio,
@@ -340,7 +370,9 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     @UsedByGodot fun finish_app(restart: Boolean) {
         if (!closed.get()) runOnHostThread {
             val host = activity as? GodotHost ?: return@runOnHostThread
-            if (restart) host.onGodotRestartRequested(godot) else host.onGodotForceQuit(godot)
+            webBrowser.shutdownForAppExit {
+                if (restart) host.onGodotRestartRequested(godot) else host.onGodotForceQuit(godot)
+            }
         }
     }
 
@@ -709,12 +741,16 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     @UsedByGodot fun load_mpv_subtitle_file(id: Int, request: Int, name: String): Boolean = !closed.get() && mpv.loadSubtitleFile(id, request, name)
     @UsedByGodot fun load_mpv_subtitle_uri(id: Int, request: Int, uri: String): Boolean = !closed.get() && mpv.loadSubtitleUri(id, request, uri)
     @UsedByGodot fun set_mpv_subtitle_delay(id: Int, seconds: Double): Boolean = !closed.get() && mpv.setSubtitleDelay(id, seconds)
+    @UsedByGodot fun set_mpv_subtitle_encoding(id: Int, request: Int, trackId: Int, encoding: String): Boolean =
+        !closed.get() && mpv.setSubtitleEncoding(id, request, trackId, encoding)
     @UsedByGodot fun set_mpv_audio_delay(id: Int, seconds: Double): Boolean = !closed.get() && mpv.setAudioDelay(id, seconds)
     @UsedByGodot fun get_mpv_subtitles(id: Int, afterSequence: Long): String = if (closed.get()) "" else mpv.subtitles(id, afterSequence)
     @UsedByGodot fun get_mpv_loading_status(id: Int): String = if (closed.get()) "" else mpv.loadingStatus(id)
     @UsedByGodot fun get_mpv_subtitle_bitmap(id: Int, version: Long): ByteArray = if (closed.get()) ByteArray(0) else mpv.subtitleBitmap(id, version)
     @UsedByGodot fun set_mpv_depth_view(id: Int, shift: Double, convergence: Double): Boolean =
         !closed.get() && mpv.setDepthView(id, shift, convergence)
+    @UsedByGodot fun set_mpv_portrait_depth(id: Int, enabled: Boolean): Boolean =
+        !closed.get() && mpv.setPortraitDepth(id, enabled)
     @UsedByGodot fun claim_mpv_pair(id: Int, token: Long): String = if (closed.get()) "" else mpv.claim(id, token)
     @UsedByGodot fun acknowledge_mpv_pair(id: Int, token: Long): Boolean = !closed.get() && mpv.acknowledge(id, token)
     @UsedByGodot fun detach_mpv_pair(id: Int, token: Long): Boolean = mpv.detach(id, token)
@@ -854,12 +890,14 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
 
     // Android can resume before Godot registers the plugin's native signals.
     override fun onGodotSetupCompleted() { signalsReady = true; clear_photo_cache(); runCatching { panoramaOriginals.prepare() } }
-    override fun onMainPause() { if (!closed.get()) { listeningTasks.foreground(false); readingPages.foreground(false); dlnaForeground(false); systemVolume.foreground(false); musicPlayback.foreground(false); musicPreview.foreground(false); accounts.pause(true); panoramaBrowser.foreground(false); media.pause(); controlled.pause(); mpv.pause(); if (signalsReady) emitSignal("android_lifecycle", "pause") } }
+    override fun onMainPause() { if (!closed.get()) { webBrowser.action("pause"); listeningTasks.foreground(false); readingPages.foreground(false); dlnaForeground(false); systemVolume.foreground(false); musicPlayback.foreground(false); musicPreview.foreground(false); accounts.pause(true); panoramaBrowser.foreground(false); media.pause(); controlled.pause(); mpv.pause(); if (signalsReady) emitSignal("android_lifecycle", "pause") } }
     override fun onMainResume() { if (!closed.get()) { activity?.volumeControlStream = AudioManager.STREAM_MUSIC; listeningTasks.foreground(true); readingPages.foreground(true); dlnaForeground(true); systemVolume.foreground(true); musicPlayback.foreground(true); musicPreview.foreground(true); accounts.pause(false); panoramaBrowser.foreground(true); media.resume(); controlled.resume(); mpv.resume(); if (signalsReady) { sources.refreshLocalStorage(); emitSignal("android_lifecycle", "resume") } } }
     override fun onMainDestroy() { close() }
     override fun onGodotTerminating() { close() }
 
     private fun close() {
+        webVideoResolver.close()
+        webBrowser.close()
         if (closed.compareAndSet(false, true)) { dlna_receiver_enable(false); listeningTasks.close(); readingPages.close(); archives.close(); pdfs.close(); originalCapture.close(); embeddedCover.close(); systemVolume.close(); favoritesTasks.close(); accounts.close(); panoramaBrowser.close(); panoramaRegions.close(); panoramaPictures.close(); panoramaOriginals.close(); musicPlayback.close(); musicPreview.close(); backgroundAudio.close(); photos.close(); photoPreloads.close(); photoPreviews.close(); pipImages.close(); PhotoDepthRuntime.release(); picker.close(); localAccess.close(); probe.shutdownNow(); media.shutdown(); controlled.shutdown(); mpv.shutdown(); rvm.close(); sources.close() }
     }
 }

@@ -1,5 +1,8 @@
 extends "res://scripts/media_surface.gd"
 var source_location := {}
+const StreamProjection := preload("res://scripts/stream_projection.gd")
+var _stream_projection := {}
+var _stream_mesh: ArrayMesh
 
 signal changed
 signal thumbnail_ready(uri: String)
@@ -20,6 +23,8 @@ var _loading_bytes := -1
 const State := preload("res://scripts/mpv_media_state.gd")
 const Thumbnails := preload("res://scripts/thumbnail_cache.gd")
 const Binding := preload("res://scripts/pair_texture_binding.gd")
+var portrait := preload("res://scripts/video_portrait.gd").new()
+var _portrait_auto_explicit := false
 const PlaybackControl := preload("res://scripts/playback_control.gd")
 const SeekPolicy := preload("res://scripts/seek_policy.gd")
 const DiscTitles := preload("res://scripts/disc_titles.gd")
@@ -38,11 +43,13 @@ var bitmap_subtitles := BitmapSubtitles.new()
 const ModeMemory := preload("res://scripts/file_mode_memory.gd")
 const TrackMemory := preload("res://scripts/file_track_memory.gd")
 const SubtitleTiming := preload("res://scripts/file_subtitle_timing.gd")
+const SubtitleEncoding := preload("res://scripts/file_subtitle_encoding.gd")
 const StereoView := preload("res://scripts/stereo_view.gd")
 var viewing_eye := 0 # 0 binocular; 1/2 duplicate the logical left/right view after eye swap.
 var stereo_horizontal := 0.0
 var stereo_vertical := 0.0
 var _stereo_view_dirty := false
+var _immersive_view_dirty := false
 var _mode_user_changed := false # Late USB identity must not replace this open's manual choices.
 var _mode_memory_cleared := false # Automatic frames must not resurrect explicitly cleared settings.
 const RecentFiles := preload("res://scripts/recent_files.gd")
@@ -88,6 +95,7 @@ func cast_allows(operation: String) -> bool:
 
 func capture_cast_view() -> Dictionary:
 	var result := {}
+	for key in ImmersiveAdjustments.KEYS: result[key] = get(key)
 	for key in ["geometry", "stereo_sbs", "top_bottom", "stereo_half", "swap_eyes", "fisheye_fov", "depth_requested", "auto_depth", "depth_strength", "alpha_requested", "profile", "screen_rotation", "playback_speed", "viewing_eye", "stereo_horizontal", "stereo_vertical", "loop_enabled", "audio_track_id", "audio_delay", "subtitle_delay"]:
 		result[key] = get(key)
 	result.tracks = _capture_track_choices()
@@ -122,6 +130,8 @@ const DepthStrength := preload("res://scripts/depth_strength.gd")
 const DEPTH_SHIFT := 0.035
 const DEPTH_CONVERGENCE := 0.35
 var _depth_view_sent := ""
+var _portrait_depth_sent := ""
+var _debug_portrait_shots: Array[Dictionary] = []
 var depth_strength := DepthStrength.VIDEO_DEFAULT
 var preferred_depth_strength := DepthStrength.VIDEO_DEFAULT # Global choice; diagnostic opens cannot replace it.
 ## Pick the clone-voice track (an extra M4A beside the video) whenever a video has one.
@@ -217,6 +227,11 @@ var audio_delay := 0.0
 var _audio_delay_pending := false
 var _audio_timing_key := ""
 var subtitle_timing := SubtitleTiming.new()
+var subtitle_encoding := SubtitleEncoding.new()
+var _encoding_pending: Dictionary = {}
+var _encoding_result: Dictionary = {}
+var _encoding_attempts: Dictionary = {}
+var _encoding_choices: Dictionary = {}
 var subtitle_delay := 0.0
 var _subtitle_delay_pending := false
 var _subtitle_timing_key := ""
@@ -375,6 +390,7 @@ func _ready() -> void:
 	mode_memory.load_saved()
 	track_memory.load_saved()
 	subtitle_timing.load_saved()
+	subtitle_encoding.load_saved()
 	audio_timing.load_saved()
 	whisper_memory.load_saved()
 	narration.memory.load_saved()
@@ -660,7 +676,10 @@ func open_library(uri: String, title: String, metadata: Dictionary = {}, from_st
 	cast_token = 0
 	var cover := str(metadata.get("cover", recent_files.lookup(uri).get("cover", "")))
 	var opened := false
-	if uri.begins_with("medialib://") and not metadata.is_empty():
+	if metadata.get("web_handoff", false) and uri.begins_with("https://"):
+		requested_play = true
+		opened = open_local(uri, title, 0 if from_start else clampi(int(metadata.get("start_ms", 0)), 0, 604800000), true, false, "", metadata)
+	elif uri.begins_with("medialib://") and not metadata.is_empty():
 		requested_play = true
 		var start: int = int(metadata.get("start_ms", -1))
 		opened = open_local(uri, title, 0 if from_start else (_resume(uri) if start < 0 else start), true, false, str(metadata.get("basename", "")), metadata)
@@ -754,6 +773,8 @@ func open_local(uri: String, title: String, start_ms: int = 0, restore_mode: boo
 	_keep_interleave_during_close = network_interleave
 	close_video()
 	_keep_interleave_during_close = false
+	_stream_projection = StreamProjection.read(platform, uri)
+	_stream_mesh = StreamProjection.mesh(_stream_projection)
 	_capture_layout_pending = restore_mode
 	_capture_preference_exists = not mode_memory.lookup(uri).is_empty()
 	# Alpha-packed and Alpha-wanted files say so in their names (PTMediaServer / DeoVR markers).
@@ -764,6 +785,10 @@ func open_local(uri: String, title: String, start_ms: int = 0, restore_mode: boo
 	packed_alpha = packed_file and (alpha or restore_mode)
 	_layout_pending = null
 	if restore_mode:
+		portrait.automatic = false
+		_portrait_auto_explicit = false
+		portrait.enhanced = false
+		portrait.strength = 1.0
 		# Ignore legacy per-file model choices: every file uses the size chosen in the settings.
 		profile = default_profile
 		depth_strength = preferred_depth_strength
@@ -790,7 +815,24 @@ func open_local(uri: String, title: String, start_ms: int = 0, restore_mode: boo
 			if not stated.has("geometry") or not stated.has("stereo") or (geometry in [Geometry.Geometry.FLAT, Geometry.Geometry.FISHEYE] and not stated.has("stereo_half")):
 				_layout_pending = stated
 		auto_depth = depth_requested
+	if not _stream_projection.is_empty():
+		_layout_pending = null
+		if not restore_mode or mode_memory.lookup(uri).is_empty():
+			geometry = int(_stream_projection.geometry)
+			stereo_sbs = StreamProjection.stereo(_stream_projection)
+			top_bottom = int(_stream_projection.stereo_mode) == 1
+			swap_eyes = int(_stream_projection.stereo_mode) == 4
+			stereo_half = false; depth_requested = false; auto_depth = false
 	# Manual Alpha is never restored from memory; explicit filename markers still opt in.
+	if metadata.get("web_fullscreen", false):
+		# A fullscreen request follows the resolved video format, never a title guess,
+		# the previous video's lock or remembered conversion settings.
+		_layout_pending = null; _capture_layout_pending = false
+		geometry = int(_stream_projection.get("geometry", Geometry.Geometry.FLAT))
+		stereo_sbs = StreamProjection.stereo(_stream_projection)
+		top_bottom = int(_stream_projection.get("stereo_mode", 0)) == 1
+		swap_eyes = int(_stream_projection.get("stereo_mode", 0)) == 4
+		stereo_half = false; depth_requested = false; auto_depth = false
 	alpha_requested = (alpha or (restore_mode and bool(stated.get("alpha", false)))) and not packed_file
 	_cancel_embedded_cover()
 	_cover_checked = false
@@ -814,6 +856,7 @@ func open_local(uri: String, title: String, start_ms: int = 0, restore_mode: boo
 	_warm_rvm()
 	display_name = title
 	_bookmark_metadata = metadata.duplicate(true)
+	_bookmark_metadata.erase("web_fullscreen") # This invocation's trigger is not a per-file preference.
 	if not basename.is_empty(): _bookmark_metadata.basename = basename
 	if str(_bookmark_metadata.get("basename", "")).is_empty():
 		if uri.begins_with("file://") or uri.begins_with("smb://") or uri.begins_with("cloud://"):
@@ -885,7 +928,7 @@ func open_local(uri: String, title: String, start_ms: int = 0, restore_mode: boo
 	_apply_subtitle_delay()
 	bitmap_subtitles.clear(material)
 	if _subtitle_surface: _subtitle_surface.visible = false
-	reset_view() # every video starts straight ahead at its natural size
+	reset_view(false) # Face the new video ahead while keeping its own saved adjustments.
 	_audio_pending = id > 0
 	if id <= 0:
 		picker_error = "Player resources are still closing"
@@ -917,6 +960,7 @@ func _unbind() -> void:
 		caption.visible = false
 
 func close_video() -> void:
+	if not pip.reopening: portrait.reset()
 	# Decoder reopens retain the same video; an actual close or file switch cancels its export.
 	if not pip.reopening: captures.cancel_export(local_uri)
 	if not pip.reopening: pip.clear()
@@ -930,6 +974,7 @@ func close_video() -> void:
 	viewing_eye = 0
 	stereo_horizontal = 0.0
 	stereo_vertical = 0.0
+	for key in ImmersiveAdjustments.KEYS: set(key, 0.0)
 	_spatial_video = false
 	_spatial_metadata.clear()
 	spatial_auto_disparity = true
@@ -952,6 +997,7 @@ func close_video() -> void:
 		track_memory.save()
 	if subtitle_timing.dirty:
 		subtitle_timing.save()
+	if subtitle_encoding.dirty: subtitle_encoding.save()
 	if audio_timing.dirty: audio_timing.save()
 	if whisper_memory.dirty: whisper_memory.save()
 	if narration.memory.dirty: narration.memory.save()
@@ -961,6 +1007,8 @@ func close_video() -> void:
 	_unbind()
 	_layer_session = false
 	_layer_requested = false # this close must not reopen the file again
+	_layer_return_uri = ""
+	media.playback.erase("network_interleave_retry")
 	_layer_seek_hold = false
 	_update_layer()
 	_picture_token = -1
@@ -975,6 +1023,9 @@ func close_video() -> void:
 	if platform and media.session_id > 0:
 		platform.close_mpv_video(media.session_id)
 	media.close()
+	_stream_projection = {}; _stream_mesh = null
+	material.set_shader_parameter("projection_mesh", false)
+	material.set_shader_parameter("projection_uv_packed", false)
 	narration.reset_source()
 	listening.reset_source()
 	_pending_pair = {}
@@ -1020,6 +1071,9 @@ func discard_history_thumbnail() -> void:
 	_thumb_after_ms = -1
 
 func discard_file_settings() -> void:
+	_encoding_choices.clear()
+	# A late successful conversion may remain active, but cannot undo an explicit clear.
+	if not _encoding_pending.is_empty(): _encoding_pending.persist = false
 	listening.enabled = false
 	commit_stereo_view()
 	_mode_memory_cleared = true
@@ -1122,10 +1176,12 @@ func _on_frozen_pair(id: int, payload: String) -> void:
 	var previous := _binding.unbind()
 	if not _binding.bind(material, pair):
 		_binding.bind(material, previous)
+		_sync_portrait()
 		platform.release_mpv_frozen_frame(int(pair.frozen_frame_id))
 		_abort_frozen_seek("Frozen video frame could not be bound")
 		return
 	platform.detach_mpv_pair(int(previous.session_id), int(previous.slot_token))
+	_sync_portrait()
 	_freeze_request = 0
 	_seek_event("frozen")
 	_try_revision()
@@ -1214,6 +1270,7 @@ func set_alpha(enabled: bool) -> bool:
 		changed.emit()
 		return true
 	alpha_requested = enabled
+	portrait.reset()
 	if enabled:
 		depth_requested = false
 	_remember_mode()
@@ -1221,8 +1278,15 @@ func set_alpha(enabled: bool) -> bool:
 	changed.emit()
 	return true
 
-## 2D->3D for mono sources; switching it on ends Alpha.
+## Portrait Alpha controls local relief; ordinary mono conversion uses the depth model.
+func toggle_depth() -> bool:
+	return set_depth(is_zero_approx(portrait.strength) if portrait_requested() else not depth_requested)
+
 func set_depth(enabled: bool) -> bool:
+	if portrait_requested():
+		var applied := set_depth_strength(1.0 if enabled else 0.0)
+		_remember_mode()
+		return applied
 	if enabled and not cast_allows("depth"): return false
 	if is_spatial_video(): return false
 	if enabled and (stereo_sbs or geometry != Geometry.Geometry.FLAT):
@@ -1259,10 +1323,19 @@ func depth_model_ready() -> bool:
 	return true
 
 func cycle_depth_strength() -> void:
+	if portrait_requested():
+		set_depth_strength(DEPTH_STRENGTHS[(DEPTH_STRENGTHS.find(portrait.strength) + 1) % DEPTH_STRENGTHS.size()])
+		_remember_mode()
+		return
 	if set_depth_strength(DEPTH_STRENGTHS[(DEPTH_STRENGTHS.find(depth_strength) + 1) % DEPTH_STRENGTHS.size()]):
 		_remember_mode()
 
 func set_depth_strength(value: float) -> bool:
+	if portrait_requested():
+		portrait.strength = DepthStrength.clamp_value(value)
+		_sync_portrait()
+		changed.emit()
+		return true
 	if is_spatial_video(): return false
 	var strength := DepthStrength.clamp_value(value)
 	if strength > 0.0 and (stereo_sbs or geometry != 0 or local_uri.is_empty() or media.state == "closed"): return false
@@ -1327,6 +1400,9 @@ func toggle_play() -> void:
 	changed.emit()
 
 func pause_for_voice_clone() -> void:
+	pause_playback()
+
+func pause_playback() -> void:
 	requested_play = false
 	if platform and media.accepts(media.session_id): platform.set_mpv_playing(media.session_id, false)
 	changed.emit()
@@ -1589,6 +1665,8 @@ func bookmark_action(operation: String, marker_id: String, scope: String) -> Str
 func set_subtitle_track(track_id: int, remember: bool = true) -> bool:
 	if track_id < -1 or not platform or not media.accepts(media.session_id):
 		return false
+	if not remember and not subtitle_encoding_ready(track_id):
+		return false
 	if track_id > 0 and not subtitle_tracks().any(func(t): return int(t.id) == track_id):
 		return false
 	if not platform.set_mpv_subtitle(media.session_id, track_id):
@@ -1603,6 +1681,14 @@ func set_subtitle_track(track_id: int, remember: bool = true) -> bool:
 	if not timing_key.is_empty() and timing_key != _subtitle_timing_key:
 		var legacy := not remember and _subtitle_timing_key.is_empty() and _remember_file
 		var seconds := subtitle_timing.for_track(local_uri, timing_key, legacy)
+		# Older server tracks used metadata/ID before normalized files had a stable name.
+		var saved_timing := subtitle_timing.lookup(local_uri)
+		if track.has("encoding") and track.has("source_file") and not track.has("source_uri") and not saved_timing.get("tracks", {}).has(timing_key):
+			var old_track := track.duplicate(true); old_track.erase("source_file")
+			var old_key := SubtitleTiming.track_key(old_track)
+			if saved_timing.get("tracks", {}).has(old_key):
+				seconds = float(saved_timing.tracks[old_key])
+				if _remember_file and subtitle_timing.remember_track(local_uri, timing_key, seconds): subtitle_timing.save()
 		_subtitle_timing_key = timing_key
 		if not set_subtitle_delay(seconds):
 			subtitle_delay = seconds; subtitles.set_delay(seconds); _subtitle_delay_pending = true
@@ -1626,6 +1712,7 @@ func set_subtitle_track(track_id: int, remember: bool = true) -> bool:
 	return true
 
 func _reset_subtitle_files() -> void:
+	_encoding_pending.clear(); _encoding_result.clear(); _encoding_attempts.clear(); _encoding_choices.clear()
 	subtitle_files_revision += 1
 	subtitle_files.clear(); subtitle_files_state = "idle"; subtitle_file_error = ""; subtitle_file_loading = ""
 	_subtitle_list_request = 0; _subtitle_load_request = 0; _subtitle_loaded_track = 0
@@ -1677,6 +1764,11 @@ func _on_subtitle_files(id: int, payload: String) -> void:
 	var result: Variant = JSON.parse_string(payload)
 	if not result is Dictionary: return
 	var request := int(result.get("request", 0))
+	if result.get("operation") == "encoding" and request > 0 and request == int(_encoding_pending.get("request", 0)):
+		_encoding_result = result
+		_finish_subtitle_encoding()
+		changed.emit()
+		return
 	if result.get("operation") == "list" and request > 0 and request == _subtitle_list_request:
 		_subtitle_list_request = 0
 		subtitle_files_state = str(result.get("state", "error"))
@@ -1699,6 +1791,8 @@ func _on_subtitle_files(id: int, payload: String) -> void:
 func _finish_subtitle_file() -> void:
 	if _subtitle_load_request <= 0 or _subtitle_loaded_track <= 0: return
 	if not subtitle_tracks().any(func(track): return int(track.id) == _subtitle_loaded_track): return
+	_restore_subtitle_encodings()
+	if _encoding_pending.get("restoring", false): return
 	var selected := _subtitle_loaded_track
 	var restore := _subtitle_load_restore
 	_subtitle_load_request = 0; _subtitle_loaded_track = 0; subtitle_file_loading = ""
@@ -1709,6 +1803,72 @@ func _finish_subtitle_file() -> void:
 	else: subtitle_file_error = "Unable to load subtitle"
 
 func subtitle_timing_key() -> String: return _subtitle_timing_key
+
+func subtitle_encoding_row() -> Dictionary:
+	if not PlatformMethods.supports(platform, "set_mpv_subtitle_encoding"): return {}
+	for track in _raw_tracks("subtitle"):
+		if int(track.get("id", 0)) == subtitles.requested_track:
+			return SubtitleEncoding.row(track, local_uri)
+	return {}
+
+func subtitle_encoding_ready(track_id: int) -> bool:
+	if _encoding_pending.get("restoring", false) and int(_encoding_pending.get("track_id", 0)) == track_id: return false
+	for track in _raw_tracks("subtitle"):
+		if int(track.get("id", 0)) != track_id or not track.has("encoding"): continue
+		var key := SubtitleTiming.track_key(track)
+		var wanted := str(_encoding_choices.get(key, subtitle_encoding.for_track(local_uri, key) if _remember_file else "auto"))
+		if wanted == str(track.encoding): return true
+		# A failed restore can fall back to the existing track; an in-flight one must wait.
+		return _encoding_attempts.get(key) == wanted and int(_encoding_pending.get("track_id", 0)) != track_id
+	return true
+
+func set_subtitle_encoding(value: Dictionary, restoring: bool = false) -> bool:
+	if not _encoding_pending.is_empty() or not media.accepts(media.session_id) or not PlatformMethods.supports(platform, "set_mpv_subtitle_encoding"): return false
+	if str(value.get("source_uri", "")) != local_uri or not SubtitleEncoding.valid_choice(value.get("encoding")): return false
+	var id := int(value.get("track_id", 0))
+	var tracks := _raw_tracks("subtitle").filter(func(track): return int(track.get("id", 0)) == id and track.has("encoding"))
+	if tracks.is_empty() or SubtitleTiming.track_key(tracks[0]) != str(value.get("subtitle_key", "")): return false
+	_subtitle_file_sequence += 1
+	if not platform.set_mpv_subtitle_encoding(media.session_id, _subtitle_file_sequence, id, str(value.encoding)): return false
+	_encoding_pending = value.duplicate(true)
+	_encoding_pending.request = _subtitle_file_sequence
+	_encoding_pending.restoring = restoring
+	_encoding_pending.persist = not restoring and _remember_file and ModeMemory.Privacy.settings_allowed(local_uri)
+	_encoding_attempts[value.subtitle_key] = value.encoding
+	subtitle_file_error = ""
+	changed.emit()
+	return true
+
+func _finish_subtitle_encoding() -> void:
+	if _encoding_pending.is_empty() or _encoding_result.is_empty(): return
+	var pending := _encoding_pending.duplicate(true)
+	var result := _encoding_result.duplicate(true)
+	var id := int(result.get("track_id", 0))
+	if result.get("state") == "ready" and not _raw_tracks("subtitle").any(func(track): return int(track.get("id", 0)) == id): return
+	_encoding_pending.clear(); _encoding_result.clear()
+	if result.get("state") != "ready":
+		subtitle_file_error = "Unable to change subtitle encoding"
+		return
+	_encoding_choices[pending.subtitle_key] = pending.encoding
+	if _subtitle_loaded_track == int(pending.track_id): _subtitle_loaded_track = id
+	if subtitles.requested_track == int(pending.track_id):
+		set_subtitle_track(id, false)
+		if _track_choices.has("subtitle"): _track_choices.subtitle = TrackMemory.describe(id, _raw_tracks("subtitle"))
+	if narration.source == int(pending.track_id): narration.source = id
+	if pending.get("persist", false) and _remember_file and ModeMemory.Privacy.settings_allowed(local_uri):
+		if subtitle_encoding.remember_track(local_uri, pending.subtitle_key, pending.encoding) and not subtitle_encoding.save():
+			Log.record("file_subtitle_encoding_save_failed", {"error": subtitle_encoding.last_error})
+	changed.emit()
+
+func _restore_subtitle_encodings() -> void:
+	_finish_subtitle_encoding()
+	if not _encoding_pending.is_empty(): return
+	for track in _raw_tracks("subtitle"):
+		if not track.has("encoding") or not track.get("external", false): continue
+		var key := SubtitleTiming.track_key(track)
+		var encoding := str(_encoding_choices.get(key, subtitle_encoding.for_track(local_uri, key) if _remember_file else "auto"))
+		if encoding == str(track.encoding) or _encoding_attempts.get(key) == encoding: continue
+		if set_subtitle_encoding({"encoding": encoding, "source_uri": local_uri, "track_id": int(track.id), "subtitle_key": key}, true): return
 
 func _raw_tracks(channel: String) -> Array:
 	return media.playback.get("details", {}).get(channel + "_tracks", [])
@@ -1750,6 +1910,7 @@ func _restore_tracks() -> void:
 		_subtitle_restore_attempted = false
 		if subtitle_files_state == "loading": subtitle_files_state = "idle"
 	_finish_subtitle_file()
+	_restore_subtitle_encodings()
 	_apply_subtitle_delay()
 	for channel in _track_restore.keys():
 		var id := TrackMemory.resolve(_track_restore[channel], _raw_tracks(channel))
@@ -2131,7 +2292,7 @@ func set_stereo_layout(layout: int) -> void:
 	var old_depth := depth_requested
 	if stereo_sbs:
 		depth_requested = false
-	elif auto_depth and geometry == Geometry.Geometry.FLAT:
+	elif auto_depth and geometry == Geometry.Geometry.FLAT and not alpha_requested:
 		depth_requested = true
 		alpha_requested = false
 	_remember_mode()
@@ -2168,12 +2329,12 @@ func set_projection(value: int) -> void:
 	if geometry != Geometry.Geometry.FLAT and stereo != stereo_sbs:
 		stereo_sbs = stereo
 		revise = true
-	# 2D -> 3D applies to the flat screen, Alpha to VR180 and fisheye: stop effects when switching
+	# 2D -> 3D applies to the flat screen, Alpha to flat/VR180/fisheye: stop effects when switching
 	# to an unsupported projection, where their persistent bar buttons are disabled.
 	if geometry != Geometry.Geometry.FLAT and depth_requested:
 		depth_requested = false
 		revise = true
-	if not stereo and alpha_requested:
+	if geometry == Geometry.Geometry.EQUIRECT_360 and alpha_requested:
 		alpha_requested = false
 		revise = true
 	# The built-in mask belongs to the fisheye layout: other projections leave it.
@@ -2181,7 +2342,7 @@ func set_projection(value: int) -> void:
 		packed_file = false
 		packed_alpha = false
 		_apply_packed()
-	if geometry == Geometry.Geometry.FLAT and not stereo_sbs and auto_depth and not depth_requested:
+	if geometry == Geometry.Geometry.FLAT and not stereo_sbs and auto_depth and not depth_requested and not alpha_requested:
 		depth_requested = true
 		revise = true
 	if revise:
@@ -2237,7 +2398,8 @@ func set_viewing_eye(value: int) -> bool:
 func set_stereo_alignment(key: String, value: float) -> bool:
 	if not stereo_sbs or viewing_eye != 0 or not is_finite(value): return false
 	if key not in ["stereo_horizontal", "stereo_vertical"]: return false
-	set(key, clampf(snappedf(value, StereoView.STEP), -StereoView.LIMIT, StereoView.LIMIT))
+	var span := StereoView.limits(key)
+	set(key, clampf(snappedf(value, StereoView.step(key)), span.x, span.y))
 	_stereo_view_dirty = true
 	_mode_user_changed = true
 	_apply_stereo_view()
@@ -2252,9 +2414,44 @@ func reset_stereo_alignment() -> void:
 	changed.emit()
 
 func commit_stereo_view() -> void:
-	if not _stereo_view_dirty: return
+	if not _stereo_view_dirty and not _immersive_view_dirty: return
 	_stereo_view_dirty = false
+	_immersive_view_dirty = false
 	_remember_mode()
+
+func set_immersive_adjustment(key: String, value: float) -> bool:
+	if geometry == Geometry.Geometry.FLAT or key not in ImmersiveAdjustments.KEYS or not is_finite(value): return false
+	var span := ImmersiveAdjustments.limits(key)
+	value = clampf(value, span.x, span.y)
+	if is_equal_approx(float(get(key)), value): return true
+	set(key, value)
+	_immersive_view_dirty = true
+	_mode_user_changed = true
+	_center_on_view()
+	return true
+
+func zoom_view(amount: float) -> void:
+	set_immersive_adjustment("view_zoom", view_zoom + amount)
+
+func _reset_projection_view() -> void:
+	reset_view(false)
+
+func reset_view(reset_adjustments: bool = true) -> void:
+	var changed_adjustments := reset_adjustments and (view_zoom != 0.0 or view_horizontal != 0.0 or view_vertical != 0.0)
+	super.reset_view(reset_adjustments)
+	if changed_adjustments:
+		_immersive_view_dirty = true
+		_mode_user_changed = true
+
+## Either grip-stick click and the VR settings button reset exactly these four values.
+func reset_immersive_adjustments() -> void:
+	if geometry == Geometry.Geometry.FLAT: return
+	for key in ImmersiveAdjustments.KEYS: set_immersive_adjustment(key, 0.0)
+	stereo_horizontal = 0.0
+	_stereo_view_dirty = true
+	_apply_stereo_view()
+	commit_stereo_view()
+	changed.emit()
 
 func _apply_stereo_view() -> void:
 	if not material: return
@@ -2340,6 +2537,7 @@ func _apply_packed() -> void:
 	alpha_enabled = _rvm_alpha or shown
 
 func _restore_saved_mode(saved: Dictionary) -> void:
+	for key in ImmersiveAdjustments.KEYS: set(key, float(saved.get(key, 0.0)))
 	geometry = int(saved.geometry)
 	stereo_sbs = bool(saved.stereo_sbs)
 	top_bottom = stereo_sbs and bool(saved.get("top_bottom", false))
@@ -2350,6 +2548,10 @@ func _restore_saved_mode(saved: Dictionary) -> void:
 	stereo_horizontal = float(saved.get("stereo_horizontal", 0.0))
 	stereo_vertical = float(saved.get("stereo_vertical", 0.0))
 	spatial_auto_disparity = bool(saved.get("spatial_auto_disparity", true))
+	_portrait_auto_explicit = bool(saved.get("portrait_auto_explicit", false))
+	portrait.automatic = _portrait_auto_explicit and bool(saved.get("portrait_auto", false))
+	portrait.enhanced = bool(saved.get("portrait_enhanced", false))
+	portrait.strength = float(saved.get("portrait_strength", 1.0))
 	depth_requested = bool(saved.get("depth_requested", false)) and not stereo_sbs
 	# Conversion On/Off is per file; legacy per-file strengths must not override the global choice.
 	auto_depth = depth_requested
@@ -2387,6 +2589,9 @@ func _remember_mode(user_change: bool = true) -> void:
 	if user_change: _mode_memory_cleared = false
 	_mode_user_changed = _mode_user_changed or user_change
 	var mode := {"geometry": geometry, "stereo_sbs": stereo_sbs, "swap_eyes": swap_eyes,
+		"view_horizontal": view_horizontal, "view_vertical": view_vertical, "view_zoom": view_zoom,
+		"portrait_auto": portrait.automatic, "portrait_auto_explicit": _portrait_auto_explicit,
+		"portrait_strength": portrait.strength, "portrait_enhanced": portrait.enhanced,
 		"viewing_eye": viewing_eye, "stereo_horizontal": stereo_horizontal, "stereo_vertical": stereo_vertical,
 		"spatial_auto_disparity": spatial_auto_disparity,
 		"alpha_requested": false, "profile": profile, "depth_requested": depth_requested,
@@ -2411,7 +2616,11 @@ func _present_pending() -> void:
 		return
 	var offered := _pending_pair
 	_pending_pair = {}
-	var claimed: Variant = JSON.parse_string(platform.claim_mpv_pair(media.session_id, int(offered.slot_token)))
+	var claim_json: String = platform.claim_mpv_pair(media.session_id, int(offered.slot_token))
+	# A newer offer may retire this token before Godot claims it. Empty is the bridge's
+	# normal unavailable result, not malformed JSON to log on the XR thread.
+	if claim_json.is_empty(): return
+	var claimed: Variant = JSON.parse_string(claim_json)
 	if not claimed is Dictionary:
 		return
 	_unbind()
@@ -2445,6 +2654,7 @@ func _present_pending() -> void:
 	material.set_shader_parameter("alpha_enabled", _rvm_alpha)
 	material.set_shader_parameter("alpha_edge", alpha_edge) # a bind may have switched the shader
 	_send_depth_view()
+	var previous_portrait_distance := portrait.distance
 	_apply_geometry()
 	panel.visible = true
 	if not platform.acknowledge_mpv_pair(media.session_id, int(claimed.slot_token)):
@@ -2470,6 +2680,14 @@ func _present_pending() -> void:
 		_remember_mode(false)
 		Log.record("mpv_pair_bound", media.frame_identity())
 	_record_history()
+	if OS.is_debug_build() and _debug_request > 0 and claimed.has("portrait_shot_id"):
+		var shot := int(claimed.portrait_shot_id)
+		if _debug_portrait_shots.is_empty() or _debug_portrait_shots.back().shot != shot or _debug_portrait_shots.back().generation != media.generation:
+			_debug_portrait_shots.append({"shot": shot, "generation": media.generation, "pts_us": int(claimed.pts_us),
+				"frame": int(claimed.frame_id), "reason": claimed.get("portrait_shot_reason", ""),
+				"difference": claimed.get("portrait_shot_difference", 0.0), "correlation": claimed.get("portrait_shot_correlation", 1.0),
+				"distance": portrait.distance, "previous_distance": previous_portrait_distance, "depth": claimed.get("portrait_depth", {})})
+			if _debug_portrait_shots.size() > 64: _debug_portrait_shots.pop_front()
 	if _debug_request > 0 and not _debug_benchmark and _debug_pairs.size() < 128:
 		_debug_pairs.append(claimed.duplicate(true))
 		_write_debug_report()
@@ -2489,6 +2707,7 @@ func _on_state(id: int, payload: String) -> void:
 	if not subtitle_identity.is_empty(): _restore_usb_mode(subtitle_identity)
 	if track_memory.register_usb_identity(local_uri, subtitle_identity):
 		subtitle_timing.register_usb_identity(local_uri, subtitle_identity)
+		subtitle_encoding.register_usb_identity(local_uri, subtitle_identity)
 		audio_timing.register_usb_identity(local_uri, subtitle_identity)
 		var early_narration := narration.memory.lookup(local_uri)
 		var early_listening := listening.memory.lookup(local_uri)
@@ -2696,9 +2915,11 @@ func _reopen_after_context_loss(uri: String, title: String, position_ms: int, re
 	var mode_memory_cleared := _mode_memory_cleared
 	var eye := viewing_eye
 	var alignment := Vector2(stereo_horizontal, stereo_vertical)
+	var placement := Vector3(view_horizontal, view_vertical, view_zoom)
 	var spatial := [_spatial_video, spatial_metadata(), spatial_auto_disparity]
 	var tracks := _capture_track_choices()
 	var narration_state := narration.capture_reopen()
+	var encoding_state := _encoding_choices.duplicate()
 	var listening_state := listening.enabled
 	var timing := [_subtitle_timing_key, subtitle_delay]
 	var whisper := audio_whisper
@@ -2711,6 +2932,7 @@ func _reopen_after_context_loss(uri: String, title: String, position_ms: int, re
 	if not reopened: pip.clear()
 	if reopened:
 		narration.restore_reopen(narration_state)
+		_encoding_choices = encoding_state
 		listening.enabled = listening_state
 		_subtitle_auto_pending = auto_subtitle
 		_queue_track_restore(tracks)
@@ -2727,6 +2949,8 @@ func _reopen_after_context_loss(uri: String, title: String, position_ms: int, re
 		_spatial_metadata = spatial[1]
 		spatial_auto_disparity = spatial[2]
 		if is_spatial_video(): _complete_layout()
+		view_horizontal = placement.x; view_vertical = placement.y; view_zoom = placement.z
+		if geometry != Geometry.Geometry.FLAT: _center_on_view()
 		_apply_stereo_view()
 
 func _on_debug_command(id: int, payload: String) -> void:
@@ -2745,6 +2969,7 @@ func _on_debug_command(id: int, payload: String) -> void:
 			geometry = int(command.get("projection", 0))
 		_debug_commands = []
 		_debug_pairs = []
+		_debug_portrait_shots.clear()
 		stereo_sbs = bool(command.get("stereo", true))
 		profile = str(command.profile)
 		alpha_requested = bool(command.enabled)
@@ -2869,6 +3094,7 @@ func _write_debug_report() -> void:
 		"capture": captures.status(), "capture_result": captures.last_result,
 		"open_trace": _open_trace.duplicate(true),
 		"media": media.snapshot(), "layout": layout_snapshot(), "pairs": _debug_pairs,
+		"portrait_shots": _debug_portrait_shots,
 		"native_status": _debug_status, "engine_fps": Engine.get_frames_per_second(),
 		"sample_monotonic_us": now, "engine_drawn_frames": Engine.get_frames_drawn(),
 		"benchmark": _debug_benchmark,
@@ -2888,13 +3114,13 @@ func _source_size() -> Vector2:
 func _sync_subtitle_surface() -> void:
 	if not _subtitle_surface or not material: return
 	# The layer shows no shader overlays: subtitles go on their own surface above the hole.
-	var separate := not is_zero_approx(screen_rotation) or _layer_session or video_layer_shown
+	var separate := portrait.active or not is_zero_approx(screen_rotation) or _layer_session or video_layer_shown
 	material.set_shader_parameter("separate_subtitles", separate)
 	_subtitle_surface.visible = separate and panel.visible and not _subtitle_on_layer \
 		and (material.get_shader_parameter("subtitle_enabled") == true or material.get_shader_parameter("bitmap_subtitle_enabled") == true)
 	if not _subtitle_surface.visible: return
 	if geometry == Geometry.Geometry.FLAT:
-		_subtitle_surface.mesh = panel.mesh
+		_subtitle_surface.mesh = _flat if portrait.active else panel.mesh
 		_subtitle_surface.global_transform = subtitle_transform()
 	else:
 		# Each eye's ray through the sphere meets the caption plane where it would meet the plane
@@ -2925,10 +3151,12 @@ func _apply_flat_pose() -> void:
 	_sync_subtitle_surface()
 
 func set_flat_world_pose(pose: Transform3D) -> void:
+	if portrait_requested() and not portrait.automatic and not (global_transform * flat_pose).is_equal_approx(pose): portrait.reset()
 	if cinema.active(self): cinema.capture(self, pose)
 	super.set_flat_world_pose(pose)
 
 func set_screen_scale(value: float) -> void:
+	if portrait.active and not is_equal_approx(value, screen_scale): manual_portrait_pose()
 	# Leaving a preset must not move the visible bottom edge before manual resizing.
 	if not screen_preset.is_empty() and cinema.active(self) and cinema.bottom is Transform3D:
 		cinema.height += (screen_frame_height() - _flat.size.y) * 0.5
@@ -2936,6 +3164,82 @@ func set_screen_scale(value: float) -> void:
 	screen_preset = ""
 	super.set_screen_scale(value)
 	if cinema.active(self): _apply_flat_pose()
+	_sync_portrait()
+
+func set_screen_distance(value: float) -> void:
+	if portrait.active and not is_equal_approx(value, screen_distance): manual_portrait_pose()
+	super.set_screen_distance(value)
+
+func portrait_requested() -> bool:
+	return alpha_requested and geometry == Geometry.Geometry.FLAT and not stereo_sbs and not packed_file and not is_spatial_video()
+
+func portrait_world_pose() -> Transform3D:
+	var pose := global_transform * flat_pose
+	if portrait.active and portrait.reference.z > 0.0:
+		var ratio := portrait.distance / portrait.reference.z
+		pose.origin = panel.to_global(Vector3(portrait.reference.x * (1.0-ratio), portrait.reference.y * (1.0-ratio), portrait.reference.z-portrait.distance))
+	return pose
+
+func manual_portrait_pose() -> void:
+	if not portrait_requested() or not portrait.automatic: return
+	portrait.automatic = false
+	# Bake the virtual anchor into the actual movable canvas before resetting calibration.
+	# The first manual movement must start at the visible plane, not the old cinema plane.
+	if portrait.active and portrait.reference.z > 0.0:
+		var pose := portrait_world_pose()
+		screen_scale *= portrait.distance / portrait.reference.z
+		screen_preset = ""
+		screen_distance = (view_camera.global_position - pose.origin).dot(pose.basis.z.normalized()) if view_camera else portrait.distance
+		set_flat_world_pose(pose)
+		portrait.reset()
+		_apply_geometry()
+	_remember_mode()
+
+func set_portrait_auto(enabled: bool) -> void:
+	_portrait_auto_explicit = true
+	if not enabled: manual_portrait_pose()
+	portrait.automatic = enabled
+	if enabled: portrait.reset()
+	_sync_portrait()
+	_remember_mode()
+	changed.emit()
+
+func set_portrait_enhanced(enabled: bool) -> void:
+	portrait.enhanced = enabled
+	_sync_portrait()
+	_remember_mode()
+	changed.emit()
+
+func _send_portrait_depth() -> void:
+	if not portrait_requested() or media.session_id <= 0 or not platform: return
+	if not Engine.has_singleton("QuestPlayer") and not platform.has_method("set_mpv_portrait_depth"): return
+	var enabled := portrait_requested() and portrait.enhanced and portrait.strength > 0.0 and screen_curve <= 0.0
+	var key := "%d:%s" % [media.session_id, enabled]
+	if key != _portrait_depth_sent and platform.set_mpv_portrait_depth(media.session_id, enabled):
+		_portrait_depth_sent = key
+
+func _sync_portrait() -> void:
+	_send_portrait_depth()
+	if not panel or not material: return
+	var ready := portrait_requested() and screen_curve <= 0.0 and _rvm_alpha \
+		and _binding.portrait_rid.is_valid() and not _binding.layer and not _binding.warped
+	if ready:
+		var eye := panel.to_local(view_camera.global_position) if view_camera else Vector3(0, 0, screen_distance)
+		if portrait.update(_binding, panel, _flat.size, eye): return
+	portrait.active = false
+	portrait.fallback = "curved_screen" if screen_curve > 0.0 else ("shape_unavailable" if _rvm_alpha else "")
+	if panel.material_override == portrait.material:
+		panel.material_override = material
+		if geometry == Geometry.Geometry.FLAT: _shape_screen()
+		panel.custom_aabb = AABB()
+
+func portrait_error() -> String:
+	return I18n.t("Flat portrait") if portrait_requested() and not portrait.fallback.is_empty() else ""
+
+func portrait_depth_status() -> String:
+	if not portrait_requested() or not portrait.enhanced or portrait.strength <= 0.0: return ""
+	if portrait.enhancement.get("active", false): return I18n.t("Detailed depth")
+	return I18n.t("Preparing the model") if portrait.enhancement.get("reason", "") == "preparing" else I18n.t("Basic depth")
 
 func screen_frame_height() -> float:
 	var preset: Dictionary = ScreenPresets.find(screen_preset)
@@ -2947,6 +3251,10 @@ func corner_at(origin: Vector3, direction: Vector3) -> int:
 
 func _apply_geometry() -> void:
 	super._apply_geometry()
+	var stream_mesh_active := _stream_mesh_active()
+	if stream_mesh_active: panel.mesh = _stream_mesh
+	material.set_shader_parameter("projection_mesh", stream_mesh_active)
+	material.set_shader_parameter("projection_uv_packed", stream_mesh_active and int(_stream_projection.get("stereo_mode", 0)) == 3)
 	if geometry == Geometry.Geometry.FLAT and not ScreenPresets.find(screen_preset).is_empty():
 		super.set_screen_scale(ScreenPresets.scale_for(screen_preset, _screen_base))
 	# Metadata/aspect changes can alter height after the initial pose was applied.
@@ -2965,6 +3273,7 @@ func _apply_geometry() -> void:
 	material.set_shader_parameter("stereo_sbs", stereo_sbs or _binding.warped)
 	material.set_shader_parameter("depth_enabled", depth_enabled and not _binding.warped)
 	material.set_shader_parameter("depth_shift", DEPTH_SHIFT * depth_strength if depth_requested else 0.0)
+	_sync_portrait()
 
 func layout_snapshot() -> Dictionary:
 	var playback := control.snapshot()
@@ -2974,6 +3283,10 @@ func layout_snapshot() -> Dictionary:
 	playback["bookmark_seek_mode"] = SeekPolicy.bookmark_override(bookmark_seek_mode)
 	playback["source_frame_pts_verified"] = not media.last_pair.is_empty()
 	return {"geometry": ["flat", "half_equirect_180", "fisheye_180", "equirect_360"][geometry], "stereo_sbs": stereo_sbs,
+		"stream_projection": {"kind": _stream_projection.get("kind", "none"), "mesh_active": _stream_mesh_active(),
+			"mesh_count": _stream_projection.get("meshes", []).size(), "stereo_mode": _stream_projection.get("stereo_mode", 0),
+			"source": _stream_projection.get("source", "")},
+		"portrait": portrait.snapshot() if portrait_requested() else {"requested": false, "active": false},
 		"viewing_eye": viewing_eye, "stereo_horizontal": stereo_horizontal, "stereo_vertical": stereo_vertical,
 		"spatial_video": is_spatial_video(), "spatial_metadata": spatial_metadata(), "spatial_auto_disparity": spatial_auto_disparity,
 		"top_bottom": stereo_sbs and top_bottom, "stereo_half": stereo_sbs and stereo_half, "fisheye_fov": fisheye_fov,
@@ -3100,6 +3413,7 @@ func layer_capable() -> bool:
 
 ## A native recording owns its decoder session. Do not silently end it to change outputs.
 func pip_available(count: int = 1) -> bool:
+	if _stream_mesh_active(): return false # Rectangular PiP needs a mesh-to-ray remap.
 	return media.frame_counter > 0 and (pip.compositor.direct_compatible(count) or not ((_layer_session or _layer_requested) and not captures.recording.is_empty()))
 
 func set_pip_count(count: int, head: Transform3D) -> void:
@@ -3179,6 +3493,7 @@ func _fisheye_fail(stage: String, size: Vector2i) -> bool:
 	return false
 
 func _layer_presentation() -> bool:
+	if _stream_mesh_active(): return false
 	# Do not interrupt a native recording when a background change or mask failure
 	# requires sampled PiP edges. Such windows wait hidden until the recording ends.
 	var pip_ready := pip.video_windows().is_empty() or pip.compositor.direct_compatible() \
@@ -3193,11 +3508,12 @@ func _layer_presentation() -> bool:
 ## (XR_FB_composition_layer_alpha_blend). Without that blend the video layer would show uncut, so
 ## Alpha uses the eye buffers instead.
 func _layer_alpha() -> bool:
-	return _layer_alpha_allowed and video_layer != null and video_layer.alpha_blend
+	return not portrait_requested() and _layer_alpha_allowed and video_layer != null and video_layer.alpha_blend
 
 ## Short code for the FPS overlay: why playback is in the eye buffers ("" when on the layer).
 func layer_block_reason() -> String:
 	if video_layer_shown: return ""
+	if portrait_requested(): return "portrait"
 	if not pip.video_windows().is_empty(): return "pip"
 	if video_layer == null or not video_layer.available(): return "xr"
 	# Alpha itself blocks the layer only where it may not use it; otherwise name the real blocker.
@@ -3222,6 +3538,9 @@ func _accept_source_rotation(rotation: int) -> void:
 func _layer_turns() -> bool:
 	return geometry == Geometry.Geometry.FLAT and screen_curve <= 0.0 and not stereo_sbs
 
+func _stream_mesh_active() -> bool:
+	return _stream_mesh != null and geometry == int(_stream_projection.get("geometry", -1))
+
 func _layer_wanted() -> bool:
 	if cast_token > 0: return false # Keep frames available for effects without reopening the LAN source.
 	if video_layer: video_layer.update_session()
@@ -3239,10 +3558,26 @@ func _recover_layer_output() -> bool:
 	return true
 
 ## Keep the layer, the hole and the subtitles in step with the video surface every frame.
+var browser_screen_owned := false
+var _browser_panel_was_visible := false
+func set_browser_screen_owned(value: bool) -> void:
+	if browser_screen_owned == value: return
+	browser_screen_owned = value
+	if value:
+		_browser_panel_was_visible = panel.visible
+		panel.visible = false
+	else:
+		panel.visible = _browser_panel_was_visible and not local_uri.is_empty()
+	_update_layer()
+
 func _update_layer() -> void:
 	if not video_layer:
 		return
 	video_layer.update_session()
+	if browser_screen_owned:
+		video_layer.hide(self); video_layer_shown = false; panel.visible = false
+		_subtitle_on_layer = false; _sync_subtitle_surface()
+		return
 	if _layer_session and media.accepts(media.session_id) and media.frame_counter > 0 and media.state != "failed" \
 		and _pending_revision.is_empty() and not _layer_presentation():
 		_reopen_on_eye_buffer(-1)
@@ -3315,6 +3650,7 @@ func _update_layer() -> void:
 		panel.material_override = _hole_material
 	elif panel.material_override == _hole_material:
 		panel.material_override = material
+	if not shown: _sync_portrait()
 	# A picture layer replaces the video shader too. Keep captions above its hole when
 	# their own layer is unavailable, and restore the shader overlay on video-layer failure.
 	_sync_subtitle_surface()
@@ -3571,11 +3907,12 @@ func _reopen_at(position_ms: int, layer: bool) -> void:
 	var eye := viewing_eye
 	var alignment := Vector2(stereo_horizontal, stereo_vertical)
 	var spatial := [_spatial_video, spatial_metadata(), spatial_auto_disparity]
-	var view := [_view_basis, view_yaw, view_pitch, view_zoom]
+	var view := [_view_basis, view_yaw, view_pitch, view_zoom, view_horizontal, view_vertical]
 	var rotation := screen_rotation
 	var speed := playback_speed
 	var tracks := _capture_track_choices()
 	var narration_state := narration.capture_reopen()
+	var encoding_state := _encoding_choices.duplicate()
 	var listening_state := listening.enabled
 	var timing := [_subtitle_timing_key, subtitle_delay]
 	var whisper := audio_whisper
@@ -3596,6 +3933,7 @@ func _reopen_at(position_ms: int, layer: bool) -> void:
 	if not capture_reopened: captures.stop()
 	if capture_reopened:
 		narration.restore_reopen(narration_state)
+		_encoding_choices = encoding_state
 		listening.enabled = listening_state
 		audio_whisper = whisper; audio_boost_saved = boost_mark; _whisper_restore_pending = whisper > 0 or whisper_save; _whisper_restore_remember = whisper_save
 		_subtitle_auto_pending = auto_subtitle
@@ -3616,6 +3954,8 @@ func _reopen_at(position_ms: int, layer: bool) -> void:
 		view_yaw = view[1]
 		view_pitch = view[2]
 		view_zoom = view[3]
+		view_horizontal = view[4]
+		view_vertical = view[5]
 		screen_rotation = rotation
 		set_playback_speed(speed)
 		_apply_stereo_view()

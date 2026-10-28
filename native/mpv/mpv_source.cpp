@@ -212,9 +212,11 @@ struct Source final {
     // Extra audio tracks beside the video (location, title), e.g. a clone-voice M4A. Added unselected
     // once the file loads; a track that fails to open is logged and skipped.
     const std::vector<std::pair<std::string, std::string>> audio_files;
+    bool required_primary_audio = false; // fixed before start(); split A/V, not optional dubbing
     const std::vector<std::pair<std::string, std::string>> subtitle_files;
     std::atomic<bool> closing{false}, abandoned{false}, done{false}, render_ready{false};
     std::atomic<bool> render_failed{false}, render_pending{true}, force_redraw{false};
+    std::atomic<bool> force_texture_redraw{false};
     std::atomic<bool> core_eof{false};
     std::atomic<bool> seek_in_progress{false}, render_in_progress{false};
     std::atomic<uint64_t> stale_seek_frames_discarded{0};
@@ -252,7 +254,7 @@ struct Source final {
     double desired_subtitle_delay = 0.0, subtitle_delay_applied = 0.0;
     uint64_t desired_subtitle_delay_command = 0;
     bool subtitle_delay_dirty = false;
-    struct SubtitleFile { uint64_t request = 0; std::string location, title; };
+    struct SubtitleFile { uint64_t request = 0; std::string location, title; int replace_id = 0; };
     SubtitleFile pending_subtitle_file; // commands_mutex; one optional file at a time
     uint64_t subtitle_file_requests = 0;
     bool subtitle_file_busy = false;
@@ -433,7 +435,8 @@ struct Source final {
         pgs_copy_failed = false;
         if (pgs_read(core, cw, ch, pts, pgs_callback, this) < 0 || pgs_copy_failed) clear_pgs();
     }
-    void add_subtitle_file(mpv_handle* core, const SubtitleFile& file) {
+    int add_subtitle_file(mpv_handle* core, const SubtitleFile& file) {
+        const bool selected = file.replace_id > 0 && property(core, "sid") == std::to_string(file.replace_id);
         const char* add[] = {"sub-add", file.location.c_str(), "auto", file.title.c_str(), nullptr};
         const int result = mpv_command(core, add);
         int64_t id = 0;
@@ -455,8 +458,16 @@ struct Source final {
                 }
             }
         }
+        // Add and validate first: a failed encoding change leaves the original track intact.
+        if (id > 0 && file.replace_id > 0) {
+            if (selected) mpv_set_property_string(core, "sid", std::to_string(id).c_str());
+            const auto old = std::to_string(file.replace_id);
+            const char* remove[] = {"sub-remove", old.c_str(), nullptr};
+            mpv_command(core, remove);
+        }
         { std::lock_guard<std::mutex> lock(status_mutex); subtitle_file_completed = file.request; subtitle_file_track = id; }
         { std::lock_guard<std::mutex> lock(commands_mutex); subtitle_file_busy = false; }
+        return static_cast<int>(id);
     }
     void snapshot(mpv_handle* core) {
         if(!capture_audio_layout_applied) {
@@ -910,7 +921,9 @@ struct Source final {
                     next_snapshot = std::chrono::steady_clock::now();
                 }
                 if (subtitle_file.request) {
-                    add_subtitle_file(core, subtitle_file);
+                    const int replacement = add_subtitle_file(core, subtitle_file);
+                    if (replacement > 0 && subtitle_file.replace_id > 0 && subtitle_id == subtitle_file.replace_id)
+                        subtitle_id = replacement;
                     next_snapshot = std::chrono::steady_clock::now();
                 }
                 if (set_speed) checked(mpv_set_property(core, "speed", MPV_FORMAT_DOUBLE, &speed), "MPV playback speed");
@@ -1014,9 +1027,15 @@ struct Source final {
                 } else if (event->event_id == MPV_EVENT_FILE_LOADED) {
                     source_failure = {}; // Opening recovered; ignore later sidecar warnings.
                     if (!loaded && audio) for (const auto& [location, title] : audio_files) {
-                        // "auto": listed for the user, never selected over the video's own audio.
-                        const char* add[] = {"audio-add", location.c_str(), "auto", title.c_str(), nullptr};
+                        bool select_primary = false;
+                        {
+                            std::lock_guard<std::mutex> lock(commands_mutex);
+                            // Preserve an explicit off/track choice already applied while loading.
+                            select_primary = required_primary_audio && desired_audio_id < 0;
+                        }
+                        const char* add[] = {"audio-add", location.c_str(), select_primary ? "select" : "auto", title.c_str(), nullptr};
                         const int added = mpv_command(core, add);
+                        if (required_primary_audio) checked(added, "MPV required primary audio");
                         __android_log_print(added < 0 ? ANDROID_LOG_WARN : ANDROID_LOG_INFO, "QuestMpvSource",
                             "Extra audio track '%s': %s", title.c_str(), mpv_error_string(added));
                     }
@@ -1168,7 +1187,8 @@ struct Source final {
                     if (closing.load() && (abandoned.load() || !consumer_holds())) break;
                 }
                 if (render_pending.exchange(false)) needs_frame |= (mpv_render_context_update(renderer) & MPV_RENDER_UPDATE_FRAME) != 0;
-                const bool forced = force_redraw.exchange(false);
+                const bool texture_redraw = force_texture_redraw.load();
+                const bool forced = force_redraw.exchange(false) || texture_redraw;
                 needs_frame |= forced;
                 bool final_render = false;
                 if (resolve_final && !needs_frame) {
@@ -1272,7 +1292,10 @@ struct Source final {
                 // eye pair at full size, including when Alpha requested direct mode.
                 // Rotated decoder images would leave Alpha/depth inputs sideways. Let MPV's existing
                 // GPU pass normalize them before staging; zero-rotation sources keep direct export.
-                const bool direct_render = direct.load() && rotation == 0 && !dolby_profile5.load() && hardware_decoding.load();
+                // A decoder image can only be exported once. An explicit portrait effect refresh
+                // renders the retained source into a new full-size immutable colour lease instead.
+                if (texture_redraw) force_texture_redraw.store(false);
+                const bool direct_render = direct.load() && !texture_redraw && rotation == 0 && !dolby_profile5.load() && hardware_decoding.load();
                 if (direct_render) { out_width = 16; out_height = 8; } // MPV still selects and times the frame
                 if (target->color && (target->out_width != out_width || target->out_height != out_height)) {
                     glDeleteFramebuffers(1, &target->fbo); glDeleteTextures(1, &target->color); target->fbo = target->color = 0;
@@ -1686,7 +1709,7 @@ Java_org_vrpassthroughplayer_plugin_MpvSourceNative_create(JNIEnv* env, jclass, 
                                                          jobjectArray subtitle_files, jboolean exact_start, jobject surface,
                                                          jboolean software_layer, jint layer_width, jint layer_height, jboolean iso_input,
                                                          jstring ca_file, jboolean interleave_compat, jint iso_playlist,
-                                                         jint network_cache_mib) {
+                                                         jint network_cache_mib, jboolean required_primary_audio) {
     try {
         require(extension_available(), "MPV source requires the verified private source-frame build");
         require(path && start >= 0, "Invalid MPV local source request");
@@ -1726,6 +1749,9 @@ Java_org_vrpassthroughplayer_plugin_MpvSourceNative_create(JNIEnv* env, jclass, 
                 read_extra_tracks(env, audio_files), read_extra_tracks(env, subtitle_files), exact_start == JNI_TRUE, layer_surface, vm,
                 software_layer == JNI_TRUE, layer_width, layer_height, iso_input == JNI_TRUE, std::move(tls_ca_file), interleave_compat == JNI_TRUE);
         } catch (...) { if (layer_surface) env->DeleteGlobalRef(layer_surface); throw; }
+        source->required_primary_audio = required_primary_audio == JNI_TRUE;
+        require(!source->required_primary_audio || (audio == JNI_TRUE && source->audio_files.size() == 1),
+                "Split A/V requires exactly one primary audio track");
         source->max_output_width.store(max_width); // before any render; fixed for this source
         source->iso_playlist = iso_playlist;
         source->network_cache_mib = network_cache_mib;
@@ -1815,7 +1841,7 @@ Java_org_vrpassthroughplayer_plugin_MpvSourceNative_setNarrationGain(JNIEnv* env
     } catch (const std::exception& failure) { error(env, failure); return JNI_FALSE; }
 }
 extern "C" JNIEXPORT jlong JNICALL
-Java_org_vrpassthroughplayer_plugin_MpvSourceNative_addSubtitleFile(JNIEnv* env, jclass, jlong handle, jstring location, jstring title) {
+Java_org_vrpassthroughplayer_plugin_MpvSourceNative_addSubtitleFile(JNIEnv* env, jclass, jlong handle, jstring location, jstring title, jint replace_id) {
     try {
         const char* path_chars = env->GetStringUTFChars(location, nullptr);
         if (!path_chars) return 0;
@@ -1823,10 +1849,10 @@ Java_org_vrpassthroughplayer_plugin_MpvSourceNative_addSubtitleFile(JNIEnv* env,
         const char* title_chars = env->GetStringUTFChars(title, nullptr);
         if (!title_chars) return 0;
         std::string label(title_chars); env->ReleaseStringUTFChars(title, title_chars);
-        if (path.empty() || path.size() > 32768 || label.empty() || label.size() > 4096) return 0;
+        if (path.empty() || path.size() > 32768 || label.empty() || label.size() > 4096 || replace_id < 0) return 0;
         auto source = find(handle); std::lock_guard<std::mutex> lock(source->commands_mutex);
         if (source->closing.load() || source->subtitle_file_busy || source->subtitle_file_requests >= static_cast<uint64_t>(std::numeric_limits<jlong>::max())) return 0;
-        source->pending_subtitle_file = {++source->subtitle_file_requests, std::move(path), std::move(label)};
+        source->pending_subtitle_file = {++source->subtitle_file_requests, std::move(path), std::move(label), replace_id};
         source->subtitle_file_busy = true; source->wake.notify_one();
         return static_cast<jlong>(source->subtitle_file_requests);
     } catch (const std::exception& failure) { error(env, failure); return 0; }
@@ -1957,6 +1983,13 @@ extern "C" JNIEXPORT void JNICALL
 Java_org_vrpassthroughplayer_plugin_MpvSourceNative_requestFrame(JNIEnv* env, jclass, jlong handle) {
     try { auto source = find(handle); source->force_redraw.store(true); source->wake.notify_one(); }
     catch (const std::exception& failure) { error(env, failure); }
+}
+extern "C" JNIEXPORT void JNICALL
+Java_org_vrpassthroughplayer_plugin_MpvSourceNative_requestTextureFrame(JNIEnv* env, jclass, jlong handle) {
+    try {
+        auto source = find(handle);
+        source->force_texture_redraw.store(true); source->force_redraw.store(true); source->wake.notify_one();
+    } catch (const std::exception& failure) { error(env, failure); }
 }
 extern "C" JNIEXPORT void JNICALL
 Java_org_vrpassthroughplayer_plugin_MpvSourceNative_readFrameCode(JNIEnv* env, jclass, jlong handle, jlong token, jobject output) {

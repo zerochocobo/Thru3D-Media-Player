@@ -89,7 +89,8 @@ class CloudSortedPagesTest {
         assertEquals(names, page.files.map { it.name })
         assertEquals(6, page.total)
         val media = page.files.filter { MediaKinds.supported(it.name) }
-        assertEquals(listOf("film.mp4", "notes.pdf"), media.map { it.name })
+        // M4A is a supported audio entry even when it also serves as a video sidecar.
+        assertEquals(listOf("film.mp4", "film.si.mix.m4a", "notes.pdf"), media.map { it.name })
         assertEquals(listOf("film.srt"), SidecarSubtitles.files(page.files.map { it.name }))
     }
 

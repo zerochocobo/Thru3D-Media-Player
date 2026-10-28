@@ -90,3 +90,11 @@ thru3d-signing.json
 /tools/cinema/textures/*.jpg
 /tools/cinema/sample/assets/
 /tools/cinema/sample/textures/*.jpg
+
+# Local browser/extractor state and separately supplied metadata fixtures.
+/android/player-plugin/src/test/resources/spherical/
+**/cookies.sqlite*
+**/cookies.txt
+**/places.sqlite*
+**/logins.json
+**/key4.db

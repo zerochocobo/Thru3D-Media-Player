@@ -29,7 +29,7 @@ internal class RemoteMediaHttp : Closeable {
                     if ((sameOrigin(uri, target) || key in setOf("user-agent", "accept", "accept-language")) && key !in setOf("host", "range", "content-length", "connection", "accept-encoding")) c.setRequestProperty(name, value)
                 }
                 c.setRequestProperty("Accept-Encoding", "identity")
-                c.setRequestProperty("Range", range)
+                if (range.isNotEmpty()) c.setRequestProperty("Range", range)
                 val status = c.responseCode
                 if (status in setOf(301, 302, 303, 307, 308)) {
                     target = target.resolve(c.getHeaderField("Location") ?: throw MediaServerFailure("Invalid remote media response"))

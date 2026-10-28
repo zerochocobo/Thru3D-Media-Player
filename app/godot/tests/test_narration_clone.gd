@@ -80,7 +80,7 @@ func check_clone_close(menu: Node3D, ui: Dictionary, commands: Array) -> void:
 			{"state": "playing_clone", "library": true}, {"state": "ready", "naming": true},
 			{"state": "ready", "library": true, "delete": true}]:
 		ui.narration_clone_state.state = item.state
-		menu._subtitle_open = true
+		menu._subtitle_open = true; menu._set_subtitle_detail("narration")
 		menu.clone_panel.open(item.get("library", false))
 		if item.get("naming", false):
 			menu.clone_panel.naming = {"operation": "save", "key": "b"}
@@ -108,7 +108,7 @@ func check_clone_close(menu: Node3D, ui: Dictionary, commands: Array) -> void:
 	menu._activate(107)
 	check(video_actions == ["stop", "stop"], "Plain transport X still dispatches the original close-video action")
 	menu.action_requested.disconnect(listener)
-	menu._subtitle_open = true
+	menu._subtitle_open = true; menu._set_subtitle_detail("narration")
 
 func _initialize() -> void: call_deferred("_run")
 func _run() -> void:
@@ -150,7 +150,7 @@ func _run() -> void:
 	check(migrated.voice_kind == "preset" and migrated.custom_voice == "" and migrated.enabled == old.enabled, "Legacy migration preserves On bit")
 	var menu := Menu.new(); var ui: Dictionary = video.narration.snapshot(); ui.merge({"has_video": true, "source_uri": video.local_uri, "subtitle_options": [{"id": 1, "codec": "subrip"}], "subtitle_track": 1})
 	menu.state_provider = func(): return ui
-	root.add_child(menu); menu.toggle(); menu.set_process(false); menu._subtitle_open = true
+	root.add_child(menu); menu.toggle(); menu.set_process(false); menu._subtitle_open = true; menu._set_subtitle_detail("narration")
 	for kind in ["preset", "custom"]:
 		ui.narration_voice_kind = kind; ui.narration_enabled = false; menu.refresh()
 		check(menu.choices.targets.values().all(func(item): return item.get("key", "") == "narration_enabled"), "Off hides every narration setting in " + kind)
@@ -171,7 +171,7 @@ func _run() -> void:
 	var action_buttons: Array = menu._buttons.filter(func(item): return item.target in [menu.NARRATION_CLONE_START, menu.NARRATION_VOICES])
 	check(action_buttons.size() == 2 and action_buttons.all(func(item): return item.node.position.x - item.rect.size.x / 2 >= -0.1801 and not item.node.get_child(0).text.is_empty()), "Clone creation and management are two text buttons confined to the value column")
 	var personal_dropdown: Array = menu.choices.targets.values().filter(func(item): return item.get("key", "") == "narration_custom_voice")
-	check(personal_dropdown.size() == 1 and personal_dropdown[0].kind == "open" and menu.text_snapshot().contains(menu.I18n.t("My voices")), "My voices is a dropdown even with one saved voice")
+	check(personal_dropdown.size() == 1 and personal_dropdown[0].kind == "open" and menu.text_snapshot().contains(menu.I18n.t("My cloned voices")), "My voices is a dropdown even with one saved voice")
 	var choice_target: int = menu.choices.targets.keys().filter(func(target): return menu.choices.targets[target].get("key", "") == "narration_custom_voice")[0]
 	var choice_button: Dictionary = menu._buttons.filter(func(item): return item.target == choice_target)[0]
 	var preview_button: Dictionary = menu._buttons.filter(func(item): return item.target == menu.NARRATION_PREVIEW)[0]
@@ -189,12 +189,12 @@ func _run() -> void:
 	check(line_buttons.size() == 3, "Reading line buttons are shared by preset and clone categories")
 	menu._activate(menu.SUBTITLE_APPEARANCE)
 	check(menu._subtitle_appearance_open and not menu.choices.targets.values().any(func(item): return str(item.get("key", "")).begins_with("narration_")), "Opening subtitle appearance replaces narration controls instead of stacking both groups")
-	menu._activate(menu.SUBTITLE_APPEARANCE)
-	check(menu.choices.targets.values().any(func(item): return item.get("key", "") == "narration_duck"), "Closing subtitle appearance restores narration controls")
+	menu._activate(menu.SUBTITLE_NARRATION)
+	check(menu.choices.targets.values().any(func(item): return item.get("key", "") == "narration_duck"), "Selecting narration restores its original controls")
 	ui.merge({"subtitle_files_available": true, "subtitle_files_state": "ready", "subtitle_files": ["other.srt"]}, true)
 	menu._activate(menu.SUBTITLE_FILES)
 	check(menu._subtitle_files_open and menu._subtitle_controls().is_empty() and not menu.choices.targets.values().any(func(item): return str(item.get("key", "")).begins_with("narration_")), "Opening external subtitles hides the other settings groups")
-	menu._activate(menu.SUBTITLE_FILES)
+	menu._activate(menu.SUBTITLE_FILES); menu._activate(menu.SUBTITLE_NARRATION)
 	check(menu.choices.targets.values().any(func(item): return item.get("key", "") == "narration_duck"), "Closing the external file list restores narration settings")
 	ui.subtitle_files_available = false
 	ui.narration_voice_kind = "custom"; ui.narration_enabled = false
@@ -275,8 +275,10 @@ func _run() -> void:
 	manager.setting_changed.connect(func(key: String, value: Variant):
 		if key == "narration_voice_manager": video.narration.global_voice_command(value))
 	root.add_child(manager); manager.set_process(false); manager.section = manager.Section.SETTINGS; manager.tab = manager.VIDEO_TAB; manager.visible = true; manager.refresh()
+	manager._choose(manager.rows.filter(func(row): return row.get("video_settings_group", "") == "subtitles")[0])
+	manager._choose(manager.rows.filter(func(row): return row.get("subtitle_settings_group", "") == "narration")[0])
 	check(manager.rows.any(func(row): return row.get("voice_manager", false)), "Global settings contains voice manager entry")
-	check(manager.rows.any(func(row): return row.get("voice_manager", false) and row.title == manager.I18n.t("Subtitle narration")) and manager.text_snapshot().contains(manager.I18n.t("Manage my voices")), "Global settings exposes Subtitle narration with a direct Manage my voices button")
+	check(manager.rows.any(func(row): return row.get("voice_manager", false) and row.title == manager.I18n.t("Subtitle narration")) and manager.text_snapshot().contains(manager.I18n.t("My cloned voices")), "Global settings exposes Subtitle narration with a direct Manage my voices button")
 	manager._choose({"voice_manager": true})
 	check(manager.voice_manager.opened and manager.voice_manager.library and not manager.voice_manager.actions.is_empty(), "Global entry opens the shared manager")
 	check(manager.voice_manager.actions.values().any(func(action): return action.operation == "preview") and manager.voice_manager.actions.values().any(func(action): return action.operation == "confirm_delete"), "Global manager offers preview and deletion")
