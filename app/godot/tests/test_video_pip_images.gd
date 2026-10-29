@@ -50,13 +50,13 @@ func run() -> void:
 	check(window.size == still_size and window.zoom == 4 and pip.selecting == 0, "Image mode rejects aspect presets, content zoom, and crop actions")
 	for dimensions in [Vector2i(640,320),Vector2i(320,640)]:
 		var texture := ImageTexture.create_from_image(Image.create(dimensions.x,dimensions.y,false,Image.FORMAT_RGBA8))
-		for corner in 4:
+		for corner in [3]:
 			for requested_scale in [0.05,1.6,10.0]:
 				window.show_image(texture); window.global_transform = pose
 				var before: Vector2 = window.size
 				var point: Vector2 = window.corner_point(corner)
 				var anchor: Vector3 = window.to_global(Vector3(-point.x,-point.y,0))
-				check(pip.press("right_hand","trigger_click",ray_to(window,point),null,head) and not pip.resize.is_empty(), "Every image corner captures the trigger")
+				check(pip.press("right_hand","trigger_click",ray_to(window,point),null,head) and not pip.resize.is_empty(), "The bottom-right image corner captures the trigger")
 				var drag := ray_to(window,point + 2 * point * (requested_scale - 1))
 				pip.update_input({"right_hand":drag},{},head,1000)
 				check(is_equal_approx(window.size.x / window.size.y, before.x / before.y) and maxf(window.size.x,window.size.y) >= 0.2199 and maxf(window.size.x,window.size.y) <= 1.2001, "Portrait and landscape corner resizing preserve aspect and bound the long edge")
@@ -65,6 +65,8 @@ func run() -> void:
 				pip.release("right_hand","trigger_click")
 		for edge in 4:
 			check(window.window_hit.callv(ray_to(window,window.edge_point(edge))).get("edge",-1) == -1, "Images never expose free-aspect edge targets")
+		for corner in [0, 1, 2]:
+			check(window.window_hit.callv(ray_to(window,window.corner_point(corner))).get("corner",-1) == -1, "Removed image corners have no resize target")
 	var ray := ray_to(window,Vector2.ZERO)
 	check(pip.press("right_hand","grip_click",ray,head,head), "Image frames can still be moved")
 	pip.release("right_hand","grip_click")

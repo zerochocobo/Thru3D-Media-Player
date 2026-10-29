@@ -31,7 +31,7 @@ import java.util.concurrent.TimeUnit
 import android.util.AtomicFile
 import java.io.File
 
-/** Bounded tabs and two display slots. All Gecko and Surface calls run on Android UI. */
+/** Bounded tabs and peer display slots. All Gecko and Surface calls run on Android UI. */
 class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
     companion object {
         private const val EXTENSION_ID = "web-video@thru3d.local"
@@ -39,6 +39,9 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
         // Gecko owns a profile separate from Android WebView / the cloud account login flow.
         // A process has one runtime; recreating an Activity closes its sessions, not Gecko itself.
         private var runtime: GeckoRuntime? = null
+        private var runtimeViewport: WebBrowserViewport? = null
+        @Synchronized private fun viewport(lowEnd: Boolean = false): WebBrowserViewport =
+            runtimeViewport ?: WebBrowserViewport(lowEnd).also { runtimeViewport = it }
     }
     private class Tab(val id: Int, val session: GeckoSession, var window: Int, val opener: Int = 0) {
         var openerLinked = opener != 0
@@ -60,6 +63,7 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
         var navigation = 0L
         var playback: MediaSession? = null
         var playing = false
+        var pauseToken = 0L
         val ports = mutableMapOf<WebExtension.Port, Long>()
         val media = mutableMapOf<WebExtension.Port, JSONArray>()
         val fullscreen = WebBrowserFullscreen()
@@ -89,16 +93,23 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
         var detachedThrough = 0L
         var needsSurface = false
     }
-    private val windows = listOf(Window(1), Window(2))
+    private val windows = (1..4).map(::Window)
+    private val windowLimit: Int get() = if (viewport().lowEnd) 2 else 4
+    private var changingLayout = false
+    private var layoutRevision = 0L
+    private fun liveLimit(count: Int = windows.count { it.tab != 0 }) = maxOf(2, count).coerceAtMost(windowLimit)
+    private fun freeWindow(): Int? = (1..windowLimit).firstOrNull { id -> tabs.none { it.window == id } }
     private var focusedWindow = 1
     private var nextTabId = 0
     private var operationError = ""
     private fun window(id: Int = focusedWindow) = windows.first { it.id == id }
     private fun current(): Tab? = tabs.firstOrNull { it.id == window().tab }
+    private fun displayed(tab: Tab): Boolean = active && tab.awake && window(tab.window).tab == tab.id
     private var active = false
     private var downTime = 0L
     private var input: BrowserInput? = null
     private var library: WebBrowserLibrary? = null
+    private var networkPolicy: WebBrowserNetworkPolicy? = null
     private var recordHistory = false
     @Volatile private var libraryState = "{\"bookmarks\":[],\"history\":[]}"
     private val libraryRequest = java.util.concurrent.atomic.AtomicInteger()
@@ -128,6 +139,10 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
     )
     @Volatile private var state = "{}"
     init { WebBrowserSurfaceBridge.install(this) }
+
+    // Select once before Gecko starts. The returned tier also keeps Godot in sync
+    // if an earlier non-UI request has already created the process-wide runtime.
+    fun configureViewport(lowEnd: Boolean): Boolean = viewport(lowEnd).lowEnd
 
     // Called from Godot's main thread several times per second: append, never reparse.
     @Volatile private var memoryCheckedAt = 0L
@@ -247,6 +262,19 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
         }) { json -> write(json, sequence.incrementAndGet()) }.also { it.recordHistory = recordHistory; library = it }
     }
     private fun publishLibrary() { libraryState = library?.snapshot()?.toString() ?: libraryState }
+    private fun networkPolicy(): WebBrowserNetworkPolicy? {
+        networkPolicy?.let { return it }
+        val app = activity()?.applicationContext ?: return null
+        val preferences = app.getSharedPreferences("browser-network-media", android.content.Context.MODE_PRIVATE)
+        return WebBrowserNetworkPolicy(preferences.getString("origins", "{}").orEmpty(), { value ->
+            check(preferences.edit().putString("origins", value).commit())
+        }).also { networkPolicy = it }
+    }
+    private fun networkEnabled(tab: Tab) = networkPolicy()?.enabled(tab.url) == true
+    private fun sendNetworkPolicy(tab: Tab) {
+        val message = JSONObject().put("action", "network_policy").put("enabled", networkEnabled(tab))
+        tab.ports.keys.forEach { runCatching { it.postMessage(message) } }
+    }
     private fun dispatch(action: () -> Unit) {
         if (closed.get()) return
         val runnable = Runnable {
@@ -265,18 +293,18 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
         if (tabs.isNotEmpty()) {
             if (!roomForTab(null)) return null
             val created = createTab(focusedWindow)
-            tabs.add(created); window().tab = created.id
+            tabs.add(created); window().tab = created.id; layoutRevision++
             created.session.open(runtime!!); bindExtension(created)
             return created
         }
         val owner = activity() ?: return null
+        val viewport = viewport()
         val engine = runtime ?: GeckoRuntime.create(owner.applicationContext,
             GeckoRuntimeSettings.Builder().remoteDebuggingEnabled(false).consoleOutput(false)
-                // Rasterize text at 2x CSS density; increasing Surface pixels alone makes
-                // the desktop layout smaller instead of making its letters sharper.
-                .displayDensityOverride(2f).displayDpiOverride(320).build()).also { runtime = it }
+                .displayDensityOverride(viewport.density).displayDpiOverride(viewport.dpi)
+                .screenSizeOverride(viewport.width, viewport.height).build()).also { runtime = it }
         val tab = createTab(focusedWindow)
-        tabs.add(tab); window().tab = tab.id
+        tabs.add(tab); window().tab = tab.id; layoutRevision++
         tab.session.open(engine)
         engine.webExtensionController.ensureBuiltIn("resource://android/assets/web-browser/", EXTENSION_ID)
             .accept({ installed ->
@@ -312,13 +340,13 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
         session.mediaSessionDelegate = object : MediaSession.Delegate {
             override fun onActivated(session: GeckoSession, mediaSession: MediaSession) {
                 tab.playback = mediaSession
-                if (!active || current() !== tab) mediaSession.pause()
+                if (!displayed(tab)) mediaSession.pause()
                 else restoreMedia(tab)
             }
             override fun onDeactivated(session: GeckoSession, mediaSession: MediaSession) { tab.playback = null; tab.playing = false; publish() }
             override fun onPlay(session: GeckoSession, mediaSession: MediaSession) {
                 tab.playing = true
-                if (!active || current() !== tab) mediaSession.pause()
+                if (!displayed(tab)) mediaSession.pause()
                 publish()
             }
             override fun onPause(session: GeckoSession, mediaSession: MediaSession) { tab.playing = false; publish() }
@@ -335,6 +363,7 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                     if (!tab.editing) tab.protectedInput = false
                 }
                 tab.url = url ?: "about:blank"
+                sendNetworkPolicy(tab)
                 // Re-evaluate the old automatic Netflix denial without clearing login data.
                 // Reset only this EME decision; the normal delegate still checks focus/origin.
                 for (perm in perms) {
@@ -373,7 +402,7 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                 if (current() !== tab || !WebBrowserAddress.navigable(uri) || !roomForTab(tab, true)) return null
                 hideInput(); suspendTab(tab); releaseDisplay(window(tab.window))
                 val child = createTab(tab.window, tab.id)
-                tabs.add(child); window(tab.window).tab = child.id
+                tabs.add(child); window(tab.window).tab = child.id; layoutRevision++
                 bindExtension(child)
                 bindDisplay(child) // Gecko opens the returned session.
                 publish()
@@ -439,6 +468,7 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                     override fun onPortMessage(message: Any, port: WebExtension.Port) {
                         if (closed.get() || !tab.awake || tab.ports[port] != tab.navigation) return
                         val data = message as? JSONObject ?: return
+                        if (data.toString().length > 256 * 1024) return
                         if (data.optString("type") == "restore_video_result") {
                             if (port === tab.fullscreenPort && tab.fullscreen.matches(data.optLong("request"))) {
                                 tab.restoreThroughScript = false
@@ -453,8 +483,15 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                         for (index in 0 until minOf(16, items.length())) {
                             val item = items.optJSONObject(index) ?: continue
                             val id = item.optString("id").take(64)
+                            val networkEnabled = networkEnabled(tab)
+                            val network = if (networkEnabled) WebBrowserNetworkMedia.candidates(item) else JSONArray()
+                            val server = !item.optBoolean("protected") && WebBrowserServerMedia.original(item.optString("source"), tab.url) != null
                             safe.put(JSONObject().put("width", item.optInt("width").coerceIn(0, 32768))
-                                .put("id", id).put("fullscreen", item.optBoolean("fullscreen"))
+                                .put("id", id).put("fullscreen", item.optBoolean("fullscreen") || server && item.optBoolean("server_play"))
+                                .put("server_play", server && item.optBoolean("server_play"))
+                                .put("server_media", server)
+                                .put("network_media", networkEnabled && (network.length() > 0 || !item.optBoolean("protected") && WebBrowserNetworkMedia.address(item.optString("source")) != null))
+                                .put("media_epoch", "${System.identityHashCode(port)}:$id:${item.optLong("network_epoch")}")
                                 .put("protected", item.optBoolean("protected"))
                                 .put("height", item.optInt("height").coerceIn(0, 32768))
                                 .put("playing", item.optBoolean("playing"))
@@ -462,7 +499,11 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                             val source = item.optString("source")
                             if (item.optString("frame").length <= 8192 && item.optString("agent").length <= 2048 &&
                                 (source.isEmpty() || (source.length <= 16384 && (source.startsWith("https://") || source.startsWith("http://"))) || item.optBoolean("protected"))) {
-                                privateSources.put(JSONObject(item.toString()).put("source", source.take(16384)))
+                                privateSources.put(JSONObject(item.toString()).put("source", source.take(16384)).put("server", server)
+                                    .put("network", network)
+                                    .put("network_enabled", networkEnabled)
+                                    .put("capture_identity", "${tab.id}:${tab.navigation}:${System.identityHashCode(port)}:$id:${item.optLong("network_epoch")}")
+                                    .put("fullscreen", item.optBoolean("fullscreen") || server && item.optBoolean("server_play")))
                             }
                         }
                         tab.media[port] = safe
@@ -475,7 +516,8 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                         updateFullscreen(tab); publish()
                     }
                 })
-                port.postMessage(JSONObject().put("action", if (active && current() === tab) "resume" else "suspend"))
+                port.postMessage(JSONObject().put("action", if (displayed(tab)) "resume" else "suspend"))
+                port.postMessage(JSONObject().put("action", "network_policy").put("enabled", networkEnabled(tab)))
             }
         }, NATIVE_APP)
     }
@@ -486,7 +528,8 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                 .filter { it.optBoolean("fullscreen") && it.optString("id").isNotEmpty() }.map { port to it }
         }.maxWithOrNull(compareBy<Pair<WebExtension.Port, JSONObject>> { it.second.optBoolean("playing") }
             .thenBy { it.second.optLong("width") * it.second.optLong("height") })
-        tab.fullscreen.update(tab.fullScreen, candidate?.let { "${System.identityHashCode(it.first)}:${it.second.optString("id")}" }.orEmpty())
+        tab.fullscreen.update(tab.fullScreen || candidate?.second?.optBoolean("server_play") == true,
+            candidate?.let { "${System.identityHashCode(it.first)}:${it.second.optString("id")}" }.orEmpty())
         if (tab.fullscreen.active) tab.fullscreenPort = candidate?.first
     }
 
@@ -548,19 +591,35 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
     }
 
     fun attach(value: Surface, w: Int, h: Int, id: Long, windowId: Int = 1): Boolean {
-        if (closed.get() || windowId !in 1..2 || !value.isValid || w !in 256..4096 || h !in 256..4096 || id <= 0) return false
+        if (closed.get() || windowId !in 1..windowLimit || !value.isValid || w !in 256..4096 || h !in 256..4096 || id <= 0) return false
         dispatch {
             val slot = window(windowId)
             if (id < slot.generation || id <= slot.detachedThrough || !value.isValid) return@dispatch
             releaseDisplay(slot)
             slot.surface = value; slot.width = w; slot.height = h; slot.generation = id; slot.needsSurface = false
-            if (tabs.isEmpty()) ensure()
+            // Late Surface callbacks after the last close must not resurrect a blank tab.
             tabs.firstOrNull { it.id == slot.tab }?.let(::bindDisplay)
             publish()
         }
         return true
     }
-    fun detach(id: Long, windowId: Int = 1) = dispatch { if (windowId in 1..2) detachNow(id, window(windowId)) }
+    fun detach(id: Long, windowId: Int = 1) = dispatch { if (windowId in 1..4) detachNow(id, window(windowId)) }
+    fun releaseForResize(id: Long, windowId: Int): Boolean {
+        if (windowId !in 1..4) return false
+        val finished = CountDownLatch(1)
+        val release = {
+            try {
+                val slot = window(windowId)
+                if (id == slot.generation) { releaseDisplay(slot); slot.surface = null }
+                slot.detachedThrough = maxOf(slot.detachedThrough, id)
+                publish()
+            } finally { finished.countDown() }
+        }
+        if (Looper.myLooper() == Looper.getMainLooper()) release() else ui.post { release() }
+        return try { finished.await(1500, TimeUnit.MILLISECONDS) } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt(); false
+        }
+    }
     private fun detachNow(id: Long, slot: Window) {
         if (id == slot.generation) {
             slot.owner?.let(::suspendTab)
@@ -571,7 +630,7 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
         publish()
     }
     fun detachBeforeSessionStop(id: Long, windowId: Int = 1): Boolean {
-        if (windowId !in 1..2) return false
+        if (windowId !in 1..4) return false
         if (Looper.myLooper() == Looper.getMainLooper()) { detachNow(id, window(windowId)); return true }
         val finished = CountDownLatch(1)
         ui.post { try { detachNow(id, window(windowId)) } finally { finished.countDown() } }
@@ -594,7 +653,7 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
         tab.session.setActive(true)
         tab.session.setFocused(slot.id == focusedWindow)
         if (slot.id == focusedWindow) attachInput(tab)
-        tab.ports.keys.forEach { runCatching { it.postMessage(JSONObject().put("action", if (slot.id == focusedWindow) "resume" else "suspend")) } }
+        tab.ports.keys.forEach { runCatching { it.postMessage(JSONObject().put("action", "resume")) } }
     }
     private fun releaseDisplay(slot: Window) {
         val old = slot.display; val owner = slot.owner
@@ -636,7 +695,12 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                 windows.forEach { slot -> tabs.firstOrNull { it.id == slot.tab }?.let { wakeTab(it); bindDisplay(it) } }
             }
             "blur" -> { tab.session.setFocused(false); hideInput() }
-            "bookmark" -> { store()?.bookmark(tab.url, tab.title); publishLibrary() }
+            "bookmark" -> {
+                operationError = try {
+                    store()?.edit(JSONObject().put("action", "toggle_bookmark").put("url", tab.url).put("title", tab.title)) ?: "storage_failed"
+                } catch (_: Exception) { "storage_failed" }
+                publishLibrary()
+            }
         }
         publish()
     }
@@ -667,17 +731,17 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
         tab.error = error
         publish()
     }
-    /** Never discard editors or opener chains to meet the two-live-session budget. */
-    private fun roomForTab(replacing: Tab?, popup: Boolean = false): Boolean {
+    /** Extra visible windows expand the budget; background tabs still use the original two slots. */
+    private fun roomForTab(replacing: Tab?, popup: Boolean = false, expanding: Boolean = false): Boolean {
         val manager = activity()?.getSystemService(android.content.Context.ACTIVITY_SERVICE) as? android.app.ActivityManager
         val memory = android.app.ActivityManager.MemoryInfo()
         manager?.getMemoryInfo(memory)
-        if (memory.lowMemory) { operationError = "tabs_busy"; publish(); return false }
+        if (memory.lowMemory || (expanding && memoryTight())) { operationError = "tabs_busy"; publish(); return false }
         if (tabs.size >= 4) { operationError = "tab_limit"; publish(); return false }
-        return roomForSession(replacing, popup)
+        return roomForSession(replacing, popup, liveLimit(windows.count { it.tab != 0 } + if (expanding) 1 else 0))
     }
-    private fun roomForSession(replacing: Tab?, popup: Boolean = false): Boolean {
-        if (tabs.count { it.awake } < 2) return true
+    private fun roomForSession(replacing: Tab?, popup: Boolean = false, limit: Int = liveLimit()): Boolean {
+        if (tabs.count { it.awake } < limit) return true
         val candidate = tabs.filter { it.awake && !it.protectedInput && !linked(it) &&
             (windows.none { slot -> slot.tab == it.id } || (!popup && it === replacing)) &&
             (it.savedState != null || it.url == "about:blank") }.minByOrNull { it.touched }
@@ -721,12 +785,12 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
         focusWindow(slot.id); bindDisplay(tab); publish(); return true
     }
     private fun focusWindow(id: Int) {
-        if (id !in 1..2) return
+        if (id !in 1..windowLimit || window(id).tab == 0) return
         if (id != focusedWindow) {
             hideInput()
             current()?.let { old ->
-                old.playback?.pause(); old.session.setFocused(false)
-                old.ports.keys.forEach { runCatching { it.postMessage(JSONObject().put("action", "suspend")) } }
+                // Focus moves the input/keyboard only. A second visible window keeps playing.
+                old.session.setFocused(false)
             }
         }
         focusedWindow = id
@@ -736,56 +800,117 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
             }
         }
     }
-    private fun closeTab(tab: Tab) {
-        val slot = window(tab.window)
-        if (slot.tab == tab.id) { hideInput(); releaseDisplay(slot); slot.tab = 0 }
-        suspendTab(tab); tab.ports.keys.toList().forEach { it.disconnect() }
-        tab.session.textInput.setView(null); if (tab.awake) tab.session.close()
-        tabs.remove(tab)
-        if (slot.tab == 0) {
-            val next = tabs.firstOrNull { it.id == tab.opener && it.window == slot.id }
-                ?: tabs.lastOrNull { it.window == slot.id }
-            if (next != null) selectTab(next)
-            else if (tabs.isNotEmpty()) focusWindow(tabs.first().window)
-            else { focusedWindow = 1; ensure()?.let(::bindDisplay) }
+    private fun layout() = WebBrowserWindowLayout(tabs.map { WebBrowserWindowLayout.Tab(it.id, it.window, it.opener) },
+        windows.filter { it.tab != 0 }.associate { it.id to it.tab }, focusedWindow)
+
+    private fun applyLayout(plan: WebBrowserWindowLayout): Boolean {
+        val before = layout()
+        if (before == plan) return true
+        val retained = plan.tabs.map { it.id }.toSet()
+        val visible = plan.selected.values.toSet()
+        val required = tabs.count { it.id in retained && (it.awake || it.id in visible) }
+        val limit = liveLimit(plan.selected.size)
+        val reclaimable = tabs.filter { it.id in retained && it.awake && it.id !in visible && !it.protectedInput && !linked(it) &&
+            (it.savedState != null || it.url == "about:blank") }.sortedBy { it.touched }
+        // Merging must not discard unsent fields or opener chains to meet the smaller
+        // background target. Keep those sessions within the device's hard window budget.
+        if ((plan.selected.size > before.selected.size && memoryTight()) || required - windowLimit > reclaimable.size) {
+            operationError = "tabs_busy"; publish(); return false
         }
-        publish()
+        changingLayout = true
+        try {
+            hideInput(); downTime = 0
+            // Only changed displays are released: a surviving cinema page never blinks or pauses.
+            windows.filter { it.tab != (plan.selected[it.id] ?: 0) }.forEach(::releaseDisplay)
+            tabs.filter { it.id !in visible }.forEach(::suspendTab)
+            val removed = tabs.filter { it.id !in retained }
+            tabs.removeAll(removed.toSet())
+            removed.forEach { tab ->
+                val wasAwake = tab.awake; tab.awake = false
+                unlinkSession(tab)
+                tab.ports.keys.toList().forEach { runCatching { it.disconnect() } }; tab.ports.clear()
+                tab.session.textInput.setView(null)
+                if (input?.tab === tab) input?.tab = null
+                if (wasAwake) tab.session.close()
+            }
+            val byId = tabs.associateBy { it.id }
+            tabs.clear()
+            plan.tabs.forEach { entry -> byId[entry.id]?.let { it.window = entry.window; tabs.add(it) } }
+            windows.forEach { it.tab = plan.selected[it.id] ?: 0 }
+            reclaimable.take(maxOf(0, required - limit)).forEach(::parkTab)
+            if (tabs.isEmpty()) { active = false; focusedWindow = 1 }
+            else {
+                plan.selected.values.forEach { id -> tabs.first { it.id == id }.let { wakeTab(it); bindDisplay(it) } }
+                focusWindow(plan.focused)
+            }
+            layoutRevision++
+        } finally { changingLayout = false }
+        publish(); return true
     }
+    private fun closeTab(tab: Tab) { applyLayout(layout().close(setOf(tab.id))) }
     fun command(value: String) = dispatch {
         if (value.length > 8192) return@dispatch
         val request = JSONObject(value)
         val id = request.optInt("window", focusedWindow)
-        if (id !in 1..2) return@dispatch
+        if (id !in 1..windowLimit) return@dispatch
         operationError = ""
         when (request.optString("action")) {
+            "network_capture" -> {
+                val tab = tabs.firstOrNull { it.id == window(id).tab } ?: return@dispatch
+                networkPolicy()?.set(tab.url, request.optBoolean("enabled"))
+                tabs.filter { WebBrowserNetworkPolicy.origin(it.url) == WebBrowserNetworkPolicy.origin(tab.url) }.forEach { item ->
+                    item.sources.clear()
+                    item.media.values.forEach { list -> for (index in 0 until list.length()) list.getJSONObject(index).put("network_media", false) }
+                    sendNetworkPolicy(item)
+                }
+            }
             "capture_video", "restore_video" -> videoReturn(request)
+            "pause_tab", "resume_tab" -> {
+                val tab = tabs.firstOrNull { it.id == request.optInt("tab") && it.window == id } ?: return@dispatch
+                if (!tab.awake || window(id).tab != tab.id || tab.navigation != request.optLong("navigation", -1) ||
+                    tab.url != request.optString("origin")) return@dispatch
+                if (request.optString("action") == "pause_tab") {
+                    tab.pauseToken = request.optLong("pause_token")
+                    tab.playback?.pause()
+                    tab.ports.keys.forEach { runCatching { it.postMessage(JSONObject().put("action", "pause_media")) } }
+                } else if (tab.pauseToken == request.optLong("pause_token")) {
+                    tab.pauseToken = 0
+                    if (request.optBoolean("was_playing")) tab.playback?.play()
+                }
+            }
             "focus" -> focusWindow(id)
-            "new" -> {
+            "new", "new_window" -> {
                 if (runtime == null) { ensure(); return@dispatch }
-                if (!roomForTab(tabs.firstOrNull { it.id == window(id).tab })) return@dispatch
-                val tab = createTab(id); tabs.add(tab); tab.session.open(runtime!!); bindExtension(tab)
+                val separate = request.optString("action") == "new_window"
+                val destination = if (separate) freeWindow() else id
+                if (destination == null) { operationError = "window_limit"; publish(); return@dispatch }
+                if (!roomForTab(if (separate) null else tabs.firstOrNull { it.id == window(id).tab }, expanding = separate)) return@dispatch
+                val tab = createTab(destination); tabs.add(tab); layoutRevision++; tab.session.open(runtime!!); bindExtension(tab)
                 selectTab(tab); tab.session.loadUri("about:blank")
             }
             "select" -> tabs.firstOrNull { it.id == request.optInt("tab") && it.window == id }?.let(::selectTab)
             "close" -> tabs.firstOrNull { it.id == request.optInt("tab") && it.window == id }?.let(::closeTab)
-            "detach", "merge" -> {
-                val tab = tabs.firstOrNull { it.id == request.optInt("tab") && it.window == id } ?: return@dispatch
-                val destination = if (request.optString("action") == "merge") 1 else 2
-                if (id == destination || (destination == 2 && window(2).tab != 0)) {
+            "close_window" -> applyLayout(layout().close(tabs.filter { it.window == id }.map { it.id }.toSet()))
+            "detach", "merge", "move_tab", "merge_window" -> {
+                val action = request.optString("action")
+                val moving = tabs.filter { it.window == id && (action == "merge_window" || it.id == request.optInt("tab")) }
+                if (moving.isEmpty()) return@dispatch
+                val destination = when {
+                    request.optInt("destination") > 0 -> request.optInt("destination")
+                    action == "detach" || action == "move_tab" -> freeWindow()
+                    else -> windows.firstOrNull { it.id != id && it.tab != 0 }?.id
+                }
+                if (destination == null || destination !in 1..windowLimit || destination == id ||
+                    (action == "merge_window" && window(destination).tab == 0)) {
                     operationError = "window_limit"; publish(); return@dispatch
                 }
-                if (!tab.awake && !selectTab(tab)) return@dispatch
-                hideInput(); suspendTab(tab); releaseDisplay(window(id)); window(id).tab = 0
-                tab.window = destination
-                if (!selectTab(tab)) return@dispatch
-                tabs.firstOrNull { it.window == id && it.awake }?.let(::selectTab)
-                focusWindow(destination)
+                applyLayout(layout().move(moving.map { it.id }.toSet(), destination))
             }
         }
         publish()
     }
     fun windowPointer(windowId: Int, command: String, x: Float, y: Float, scroll: Float) = dispatch {
-        if (windowId !in 1..2) return@dispatch
+        if (windowId !in 1..windowLimit) return@dispatch
         if (command == "down") focusWindow(windowId)
         if (windowId == focusedWindow) pointer(command, x, y, scroll)
     }
@@ -930,13 +1055,19 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
         val videos = JSONArray()
         tab?.media?.values?.forEach { list -> for (index in 0 until list.length()) if (videos.length() < 16) videos.put(list.getJSONObject(index)) }
         return JSONObject().put("tab_id", tab?.id ?: 0).put("navigation", tab?.navigation ?: 0)
+            .put("network_capture_available", tab != null && WebBrowserNetworkPolicy.available(tab.url))
+            .put("network_capture_enabled", tab != null && networkEnabled(tab))
             .put("fullscreen_request", tab?.fullscreen?.request ?: 0).put("fullscreen_video", tab?.fullscreen?.active == true)
             .put("captured_fullscreen_request", tab?.capturedFullscreenRequest ?: 0)
             .put("url", tab?.url ?: "about:blank").put("title", tab?.title.orEmpty())
+            .put("bookmark_url", tab?.url?.let(WebBrowserAddress::recordable).orEmpty())
             .put("progress", tab?.progress ?: 0).put("back", tab?.back == true || tab?.fullScreen == true).put("forward", tab?.forward == true)
+            .put("pause_token", tab?.pauseToken ?: 0)
+            .put("playing", tab != null && (tab.playing || tab.media.values.any { list -> (0 until list.length()).any { i -> list.getJSONObject(i).optBoolean("playing") } }))
             .put("error", tab?.error.orEmpty()).put("editing", tab?.editing == true).put("videos", videos).put("fullscreen", tab?.fullScreen == true)
     }
     private fun publish() {
+        if (changingLayout) return
         val slots = JSONArray()
         windows.forEach { slot ->
             slots.put(tabState(tabs.firstOrNull { it.id == slot.tab }).put("id", slot.id)
@@ -953,6 +1084,7 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
             .put("playing", tabs.any { it.playing || it.media.values.any { list -> (0 until list.length()).any { i -> list.getJSONObject(i).optBoolean("playing") } } })
             .put("focused_window", focusedWindow).put("windows", slots).put("tab_list", entries)
             .put("operation_error", operationError).put("live_tabs", tabs.count { it.awake })
+            .put("max_windows", windowLimit).put("max_live_tabs", windowLimit).put("layout_revision", layoutRevision)
             .put("extension", extensionState).put("tabs", tabs.size).toString()
     }
 

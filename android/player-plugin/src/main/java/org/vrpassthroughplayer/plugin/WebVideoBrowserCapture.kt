@@ -6,9 +6,19 @@ import java.net.URI
 
 /** An already-playing HTML5 resource, captured inside the user's browser session. */
 internal object WebVideoBrowserCapture {
+    fun serverPage(page: String, media: JSONObject): WebVideoPage? = runCatching {
+        require(media.optBoolean("server") && !media.optBoolean("protected"))
+        val source = URI(WebBrowserServerMedia.original(media.optString("source"), page) ?: return null)
+        val frame = URI(page)
+        // A stable in-memory identity without the signed media URL or site credentials.
+        val item = source.path.substringBeforeLast('/').substringAfterLast('/')
+        val version = source.rawQuery.split('&').first { it.startsWith("MediaSourceId=") }
+        WebVideoPage("media_server", item, "${frame.scheme}://${frame.rawAuthority}${frame.rawPath}#thru3d-video=$item&$version")
+    }.getOrNull()
     fun formats(media: JSONObject, cookies: JSONArray = JSONArray()): JSONObject? = runCatching {
         require(!media.optBoolean("protected"))
-        val uri = URI(media.getString("source"))
+        val uri = URI(if (media.optBoolean("server")) WebBrowserServerMedia.original(media.getString("source"), media.getString("frame")) ?: return null
+            else media.getString("source"))
         require(uri.scheme in setOf("https", "http") && !uri.host.isNullOrEmpty() && uri.rawUserInfo == null && uri.fragment == null)
         require(!uri.path.endsWith(".mpd", true)) // Blob/MSE and DRM stay in the browser.
         val frame = URI(media.getString("frame"))

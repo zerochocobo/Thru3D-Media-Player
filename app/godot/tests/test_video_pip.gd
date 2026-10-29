@@ -169,7 +169,7 @@ func run() -> void:
 	var main := RoutingMain.new(); root.add_child(main); main.video = video
 	main.player_menu = menu; main.test_menu = menu
 	pip.set_count(1, head); window = pip.windows[1]
-	main.test_ray = ray_to(window, window.corner_point(0))
+	main.test_ray = ray_to(window, window.corner_point(3))
 	menu._pip_open = true
 	check(main._pip_pointer_press("trigger_click", "right_hand") and not pip.resize.is_empty(), "A newly added frame accepts rays outside the open picker")
 	main._update_pip_input()
@@ -178,7 +178,7 @@ func run() -> void:
 	var slot_button: Dictionary = menu._buttons.filter(func(b): return b.target == Menu.PIP_COUNT + 1)[0]
 	main.test_ray = [slot_button.node.to_global(Vector3(0,0,0.5)), -slot_button.node.global_basis.z]
 	check(not main._pip_pointer_press("trigger_click", "right_hand"), "The picker button keeps priority when actually hit")
-	main.test_ray = ray_to(window, window.corner_point(0))
+	main.test_ray = ray_to(window, window.corner_point(3))
 	menu._pip_open = false
 	main.test_menu = null
 	check(main._pip_pointer_press("trigger_click", "right_hand") and not pip.resize.is_empty(), "Main dispatch routes corner to PiP")

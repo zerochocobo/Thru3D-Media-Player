@@ -180,6 +180,7 @@ func _run() -> void:
 	video.pick_file()
 	video._on_selected(JSON.stringify({"state": "error", "picker_request": video._picker_request, "error": "LOCAL_DOCUMENT_TIMEOUT"}))
 	check(video.local_uri == a and video._picker_request == 0 and video.picker_error == "LOCAL_DOCUMENT_TIMEOUT", "Timed-out picker clears ticket and retains source")
+	web_handoff_history_checks(video, host)
 	video.queue_free()
 	menu.queue_free()
 	await process_frame
@@ -189,3 +190,40 @@ func _run() -> void:
 	print("Recent files host checks: %s (%d), evidence=%s" % [report.state, checks, directory])
 	for failure in failures: push_error(failure)
 	quit(0 if failures.is_empty() else 1)
+
+func displayed_frame(video: Node, position_ms: int) -> void:
+	video.media.generation = 2
+	video.media.state = "paused"
+	video.media.last_pair = {"session_id": video.media.session_id, "generation": 2, "pts_us": position_ms * 1000, "source_pts_verified": true}
+	video.control.duration_ms = 60000
+	video.panel.visible = true
+
+func web_handoff_history_checks(video: Node, host: RefCounted) -> void:
+	var direct := "https://media.example.test/video.mp4"
+	check(video.open_library(direct, "Direct network video"), "Ordinary HTTP video opens through the library")
+	displayed_frame(video, 12000)
+	for automatic in [false, true]:
+		var page := "https://www.youtube.com/watch?v=" + ("BaW_jenozKc" if automatic else "abcdefghijk")
+		check(video.open_library(page, "Browser video", {"web_handoff": true, "web_fullscreen": automatic, "start_ms": 43250}), "Browser handoff opens in manual/fullscreen mode: " + str(automatic))
+		check(host.calls.back() == ["open", page, 43250] and video._remember_file, "Browser position and per-file settings stay enabled")
+		check(video.recent_files.resume_position(direct) == 12000, "Switching into the browser handoff checkpoints the preceding ordinary video")
+		displayed_frame(video, 45000)
+		video.checkpoint_playback()
+		check(video.recent_files.lookup(page).is_empty() and video._thumb_after_ms == -1, "Browser playback creates neither global history nor a history thumbnail")
+		video.stereo_sbs = true
+		video.set_stereo_alignment("stereo_horizontal", 1.0); video.commit_stereo_view()
+		check(video.mode_memory.lookup(page).get("stereo_horizontal") == 1.0, "History exclusion preserves per-file viewing memory")
+		video._reopen_after_context_loss(page, "Browser video", 45000, true)
+		displayed_frame(video, 46000); video.checkpoint_playback()
+		check(video.recent_files.lookup(page).is_empty() and video._thumb_after_ms == -1, "Context recovery keeps browser playback out of global history")
+		video._reopen_at(46000, false)
+		displayed_frame(video, 47000); video.checkpoint_playback()
+		check(video.recent_files.lookup(page).is_empty() and video._thumb_after_ms == -1, "Renderer reopening keeps browser playback out of global history")
+		video.close_video()
+		check(video.recent_files.lookup(page).is_empty(), "Closing browser playback cannot record a late global entry")
+	check(video.open_library(direct, "Direct network video") and host.calls.back() == ["open", direct, 12000], "Ordinary network videos still resume after browser playback")
+	displayed_frame(video, 19000); video.checkpoint_playback()
+	check(video.recent_files.resume_position(direct) == 19000, "Ordinary history recording resumes after browser playback")
+	var restored := Catalog.new(video.recent_files.directory)
+	restored.load_saved()
+	check(restored.list_recent().filter(func(entry): return str(entry.uri).begins_with("https://www.youtube.com/")).is_empty(), "Browser handoff history stays absent after catalog reload")

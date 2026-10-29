@@ -1,0 +1,17 @@
+Robust Video Matting (RVM) / MobileNetV3
+Shanchuan Lin, Linjie Yang and contributors
+https://github.com/PeterL1n/RobustVideoMatting
+License: GPL-3.0; see rvm.txt.
+Thru3D uses converted and optimized MNN graphs, including a project-trained
+student variant. Original and derived model hashes, profiles and conversion
+records are preserved in models/manifest. The bundled model is not an
+unmodified upstream checkpoint.
+
+Depth Anything V2 Small
+Depth Anything contributors
+https://github.com/DepthAnything/Depth-Anything-V2
+https://huggingface.co/depth-anything/Depth-Anything-V2-Small
+License: Apache-2.0 for the Small model; see depth.txt.
+Thru3D converts the Small model to MNN and adapts graph layout, input shape and
+upsampling for video and photo inference. This notice refers to Small, not
+the differently licensed Base, Large or Giant checkpoints.

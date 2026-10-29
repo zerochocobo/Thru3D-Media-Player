@@ -8,9 +8,9 @@ import urllib.request
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def main():
-    lock = json.loads((ROOT / 'third_party/bluray/source-lock.json').read_text())
-    cache = ROOT / 'tmp/bluray-sources'
+def main(kind='bluray'):
+    lock = json.loads((ROOT / f'third_party/{kind}/source-lock.json').read_text())
+    cache = ROOT / f'tmp/{kind}-sources'
     cache.mkdir(parents=True, exist_ok=True)
     sources = {}
     for record in lock['libraries']:

@@ -354,7 +354,7 @@ func _run() -> void:
 		and about_text.contains("https://github.com/zerochocobo/Thru3D-Media-Player"), "About brand and support")
 	menu._activate(Menu.ROW_BASE + 5)
 	check(menu.rows[0].title == "Belfast Sunset (Pure Sky)" and menu.rows[0].detail.contains("Poly Haven · CC0 1.0")
-		and menu.rows[0].detail.contains("Dimitrios Savva / Greg Zaal / Jarod Guest") and menu.rows[1].title == "Godot",
+		and menu.rows[0].detail.contains("Dimitrios Savva / Greg Zaal / Jarod Guest") and menu.rows[1].title.begins_with("Godot "),
 		"One panorama entry contains its source, license and all authors")
 	var credit_detail: Label3D = menu._buttons.filter(func(button): return button.target == Menu.ROW_BASE)[0].node.get_child(2)
 	check(credit_detail.text == menu.rows[0].detail, "Combined panorama attribution remains visible without truncation")
@@ -366,7 +366,7 @@ func _run() -> void:
 	check(menu.scroll > 0, "Ray dragging still scrolls informational credits")
 	menu.scroll = menu._max_scroll()
 	menu._draw()
-	check(menu.text_snapshot().contains("p115rsacipher") and menu._max_scroll() > 0, "Copyright list scrolls to its final component")
+	check(menu.text_snapshot().contains(menu.rows.back().title) and menu._max_scroll() > 0, "Copyright list scrolls to its final component")
 	menu._activate(Menu.ABOUT_HOME)
 	check(menu.rows[0].title == "Thru3D Media Player" and menu.scroll == 0, "Return from credits resets scrolling")
 	# Long lists scroll with the stick (whole rows) and the scrollbar track; no pages.

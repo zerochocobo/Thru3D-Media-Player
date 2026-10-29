@@ -1,0 +1,262 @@
+{
+  "checked_on": "2026-10-29",
+  "files": [
+    {
+      "path": "comic-ocr/LICENSE.PaddleOCR",
+      "source": "https://raw.githubusercontent.com/PaddlePaddle/PaddleOCR/v3.6.0/LICENSE",
+      "sha256": "3840c5c0c61c294264d2dd77b8777be6ddd90121ef4e0e64abcd22edea581d6e"
+    },
+    {
+      "path": "geckoview/ThirdPartyNotices-1.txt",
+      "source": "org.mozilla.geckoview:geckoview-arm64-v8a:159.0.20261022150525!/assets/omni.ja!/chrome/toolkit/content/global/license.html",
+      "sha256": "92efd649c8df5ae9a1476d94304305bdb7e537870a71d67ea5ecee2d74b9cdc2",
+      "archive_sha256": "fe774fc331941c8d9bab342426286ca168420de0a1d763eead64bb64191925a8",
+      "upstream_sha256": "be9e3031f93eb89fce9ce435c97bdbe5d771b6016f7741bacad1eea4377c7489",
+      "transformation": "HTML markup removed; all text retained in ordered UTF-8 parts"
+    },
+    {
+      "path": "geckoview/ThirdPartyNotices-2.txt",
+      "source": "org.mozilla.geckoview:geckoview-arm64-v8a:159.0.20261022150525!/assets/omni.ja!/chrome/toolkit/content/global/license.html",
+      "sha256": "b468ae22050b11d40ea5f5669652ca5039601366050ffc5f2b9001082fe47ea6",
+      "archive_sha256": "fe774fc331941c8d9bab342426286ca168420de0a1d763eead64bb64191925a8",
+      "upstream_sha256": "be9e3031f93eb89fce9ce435c97bdbe5d771b6016f7741bacad1eea4377c7489",
+      "transformation": "HTML markup removed; all text retained in ordered UTF-8 parts"
+    },
+    {
+      "path": "moonshine/dependency-notices/Eigen.txt",
+      "source": "https://github.com/moonshine-ai/moonshine/blob/234f60faa0eb388b01cdf7e60aca232af37aefda/core/third-party/Eigen/COPYING.MPL2",
+      "sha256": "1f256ecad192880510e84ad60474eab7589218784b9a50bc7ceee34c2b91f1d5"
+    },
+    {
+      "path": "moonshine/dependency-notices/cpp-annote.txt",
+      "source": "https://github.com/moonshine-ai/moonshine/blob/234f60faa0eb388b01cdf7e60aca232af37aefda/core/cpp-annote/LICENSE",
+      "sha256": "13f73297830e0a900097bd86f88e7a89059de1298741aff3c5a1a9c22868e51a"
+    },
+    {
+      "path": "moonshine/dependency-notices/kaldi-native-fbank.txt",
+      "source": "https://github.com/moonshine-ai/moonshine/blob/234f60faa0eb388b01cdf7e60aca232af37aefda/core/third-party/kaldi-native-fbank/LICENSE",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    },
+    {
+      "path": "moonshine/dependency-notices/kissfft.txt",
+      "source": "https://github.com/moonshine-ai/moonshine/blob/234f60faa0eb388b01cdf7e60aca232af37aefda/core/third-party/kissfft/COPYING",
+      "sha256": "ebc691b0a7fe08c12a0009abb35bda2199165a0593170c5117bcf173b713bb27",
+      "license_text_source": "https://raw.githubusercontent.com/mborgerding/kissfft/131.1.0/LICENSES/BSD-3-Clause"
+    },
+    {
+      "path": "moonshine/dependency-notices/utf-8.txt",
+      "source": "https://github.com/moonshine-ai/moonshine/blob/234f60faa0eb388b01cdf7e60aca232af37aefda/core/third-party/utf-8/LICENSE.txt",
+      "sha256": "c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566"
+    },
+    {
+      "path": "moonshine/dependency-notices/utf8proc.txt",
+      "source": "https://github.com/moonshine-ai/moonshine/blob/234f60faa0eb388b01cdf7e60aca232af37aefda/core/third-party/utf8proc/LICENSE.md",
+      "sha256": "3b510150d34f248a221bb88e1d811238d6c6c18b51231822c42974c39bb07256"
+    },
+    {
+      "path": "mpv/dependency-notices/curl.txt",
+      "source": "https://curl.se/download/curl-8.21.0.tar.gz",
+      "sha256": "a78ace21a19264f31cd27351a5d09b7067b42a45365874c787ffbaf62b8f2cac",
+      "archive_sha256": "d9b327997999045a24cda50f3983e69e51c516bd8be6ef9842fc7f99135e33bb"
+    },
+    {
+      "path": "mpv/dependency-notices/dav1d.txt",
+      "source": "https://codeload.github.com/videolan/dav1d/tar.gz/362bc1138228390a0a521ecf3af18b23c6afeb9e",
+      "sha256": "b23ca152fc6804d17eeb6a44c8c8f1f0bc75d650c2049811ef7beb89af77a0d7",
+      "archive_sha256": "0ac7c8f7a5cd1d5dbcb24ebaf8f204a44686a80f837c5dfaa5a9775d1841ed8b"
+    },
+    {
+      "path": "mpv/dependency-notices/fast_float.txt",
+      "source": "https://codeload.github.com/fastfloat/fast_float/tar.gz/97b54ca9e75f5303507699d27c6b4f4efe4641a1",
+      "sha256": "28e5f4094d73fb8148c0f7d251434bdc779f8923e6425c3cad15fbda07343a44",
+      "archive_sha256": "2b132274539286e41f37857cac22aa8441d21bd86d55de825a3342b149f66801"
+    },
+    {
+      "path": "mpv/dependency-notices/ffmpeg.txt",
+      "source": "https://codeload.github.com/FFmpeg/FFmpeg/tar.gz/094a2f8a2a5e7fa64736e067de224ce28fdf5979",
+      "sha256": "31b0cbf722633428527928ca4d3435ddbe5262f0f2a4753fab159331db145279",
+      "archive_sha256": "3633c09eb65cba9864fe4ca1eff75ca1423174869e423e5fe9d8fce028fcf66a"
+    },
+    {
+      "path": "mpv/dependency-notices/fontconfig.txt",
+      "source": "https://gitlab.freedesktop.org/fontconfig/fontconfig/-/archive/2.18.3/fontconfig-2.18.3.tar.gz",
+      "sha256": "5a956350fae57ea3832c1967dccfea9602e863032dfb44fe23b19e3f61852bfa",
+      "archive_sha256": "9ae01e1d53acdef56010c5451cd34aa41d325b2faccd8606448d8fa01b2496b3"
+    },
+    {
+      "path": "mpv/dependency-notices/freetype2.txt",
+      "source": "https://download.savannah.gnu.org/releases/freetype/freetype-2.14.3.tar.xz",
+      "sha256": "ffde6eef501a73e4da5a64ad0dc3ea24df4c80437900f0cd8afed37da124aa25",
+      "archive_sha256": "36bc4f1cc413335368ee656c42afca65c5a3987e8768cc28cf11ba775e785a5f"
+    },
+    {
+      "path": "mpv/dependency-notices/fribidi.txt",
+      "source": "https://github.com/fribidi/fribidi/releases/download/v1.0.16/fribidi-1.0.16.tar.xz",
+      "sha256": "c0aea0b1a816ce945682d7277a00bdd185a59755968ab69f74263d3fc83c4d47",
+      "archive_sha256": "1b1cde5b235d40479e91be2f0e88a309e3214c8ab470ec8a2744d82a5a9ea05c"
+    },
+    {
+      "path": "mpv/dependency-notices/glad.txt",
+      "source": "https://codeload.github.com/Dav1dde/glad/tar.gz/73db193f853e2ee079bf3ca8a64aa2eaf6459043",
+      "sha256": "80211bd7cba584b37a0ecdfa7e80dbd66610dda60a295fb1c070db6c0e0c4fbb",
+      "archive_sha256": "33dbeae44d8315ece57e14eba4b1b4a02ac5406d1c4f49cd20048c91522a6b9a"
+    },
+    {
+      "path": "mpv/dependency-notices/harfbuzz.txt",
+      "source": "https://github.com/harfbuzz/harfbuzz/releases/download/14.4.0/harfbuzz-14.4.0.tar.xz",
+      "sha256": "df79b76b70afe7e97186f8722ee0cc4a22fecdc3ed55342723fc03d1e833cde6",
+      "archive_sha256": "2357ed966c6ced7bfa720b0640c0231065af01158fbea215093ffa15aed44371"
+    },
+    {
+      "path": "mpv/dependency-notices/libass.txt",
+      "source": "https://codeload.github.com/libass/libass/tar.gz/b2fe9d8770678a7b5271387d38c20657ebf3429a",
+      "sha256": "b8073e1153dca73dad3fbbf241085fea7fb1bab272b3afe4848168ef8c5690d7",
+      "archive_sha256": "1f8d0547aa6a40895baee0338adaaae7d8e94406f971a4602957cdbbe6f7d495"
+    },
+    {
+      "path": "mpv/dependency-notices/libplacebo.txt",
+      "source": "https://codeload.github.com/haasn/libplacebo/tar.gz/3330a515d62139259c26239014f286e233bd3a5c",
+      "sha256": "ef7bad93761899c5f34653c1d96a8832fb902e7da3cac50538dec0fafdc3ffc4",
+      "archive_sha256": "57b8b2beaba218523cef9839af12c9d44785b6cf8e5f79ca3aa55367d7420c80"
+    },
+    {
+      "path": "mpv/dependency-notices/libxml2.txt",
+      "source": "https://download.gnome.org/sources/libxml2/2.15/libxml2-2.15.4.tar.xz",
+      "sha256": "54d82a78105bdd99b51538c23931fd8e00e16846b3c56698bd379b95a53a7e26",
+      "archive_sha256": "98087fd181d9070724f3fbc65c7377db03038eb92bd882374daff44940138821"
+    },
+    {
+      "path": "mpv/dependency-notices/lua.txt",
+      "source": "https://www.lua.org/ftp/lua-5.2.4.tar.gz",
+      "sha256": "43679807bb5bea24763c35734e0f72f4d4c17e5199f0adbb37dbe70740826fce",
+      "archive_sha256": "b9e2e4aad6789b3b63a056d442f7b39f0ecfca3ae0f1fc0ae4e9614401b69f4b"
+    },
+    {
+      "path": "mpv/dependency-notices/mbedtls.txt",
+      "source": "https://github.com/Mbed-TLS/mbedtls/releases/download/mbedtls-3.6.7/mbedtls-3.6.7.tar.bz2",
+      "sha256": "2042fb540545b40a163d6a8c36168e962f16b6be7d78d5fb5dccd35a80c69e37",
+      "archive_sha256": "a7e8bcbec0e6f761b4af24f25677626b35f762f68eef79c08677a363212d11f6"
+    },
+    {
+      "path": "mpv/dependency-notices/mpv.txt",
+      "source": "https://codeload.github.com/mpv-player/mpv/tar.gz/0b7ed670f7c353dd3dd4f8ae0fc788a181a15aa6",
+      "sha256": "4b201e7fee6ea46e37ed0f5f1a4138d68e2816529195042a09d6eae9331880eb",
+      "archive_sha256": "d84b3c706592558bfba8e6305d00f86406c647c3b8b317236433e25caf4d9d91"
+    },
+    {
+      "path": "mpv/dependency-notices/unibreak.txt",
+      "source": "https://github.com/adah1972/libunibreak/releases/download/libunibreak_8_0/libunibreak-8.0.tar.gz",
+      "sha256": "c4d5dd3bd24152586d8dd79cc2ef97fef8fe73d544511c3213bf8c52d2c0c556",
+      "archive_sha256": "9c4fad6e517338a098373acc9f35579ae2c325e6446666fb9ac2666ba15ceba4"
+    },
+    {
+      "path": "narration/ThirdPartyNotices.onnxruntime-1.txt",
+      "source": "https://raw.githubusercontent.com/microsoft/onnxruntime/v1.28.0/ThirdPartyNotices.txt",
+      "sha256": "1977bcb7715098e737ddb9ea3ab00f7d7c53f867eaf1f23beb9d9163a5fff1d2",
+      "upstream_sha256": "0e07b95f3a8d6230037707c5c4a2b554d12c4cb67369669ac255635528ffcee2",
+      "transformation": "Split into ordered UTF-8 parts"
+    },
+    {
+      "path": "narration/ThirdPartyNotices.onnxruntime-2.txt",
+      "source": "https://raw.githubusercontent.com/microsoft/onnxruntime/v1.28.0/ThirdPartyNotices.txt",
+      "sha256": "34f015a2466da8836813aafe317be26e020d7cd90fa3b53a4ddbd3c01f1f7b9f",
+      "upstream_sha256": "0e07b95f3a8d6230037707c5c4a2b554d12c4cb67369669ac255635528ffcee2",
+      "transformation": "Split into ordered UTF-8 parts"
+    },
+    {
+      "path": "player-licenses/java/bcprov-jdk18on-1.85.txt",
+      "source": "org.bouncycastle:bcprov-jdk18on:1.85",
+      "sha256": "5d5629e3bf012ef69b942e0a65325b609982ca65acef367739fbaffdbba31bf4",
+      "archive_sha256": "20af26bf6060bb8005cc2389916812c1e0e998dc48d2ced7131b89461b54cff7"
+    },
+    {
+      "path": "player-licenses/java/commons-io-2.5.txt",
+      "source": "commons-io:commons-io:2.5",
+      "sha256": "d499b63bbf5a1517dce08e4c423794774fad6c212063cb1b3656f552318225b9",
+      "archive_sha256": "a10418348d234968600ccb1d988efcbbd08716e1d96936ccc1880e7d22513474"
+    },
+    {
+      "path": "player-licenses/java/jackson-annotations-2.11.1.txt",
+      "source": "com.fasterxml.jackson.core:jackson-annotations:2.11.1",
+      "sha256": "a541eb1bc57abf26e4e5f2d0c786c549c25a5a4d1641b6a36df5780f066cb1f0",
+      "archive_sha256": "045e61b0b4a347d12b86cf2d0e776dea6a79204ae12095c2b08906d29e594a5a"
+    },
+    {
+      "path": "player-licenses/java/jackson-core-2.11.1.txt",
+      "source": "com.fasterxml.jackson.core:jackson-core:2.11.1",
+      "sha256": "4bfcbca32b86aa8ec048511daedee986af53ea4117d9a4cc9e146471ebe3318f",
+      "archive_sha256": "25461dbfb431cb48e30118a0277671de8e8a56a3b1198492e24b2fb605d7575e"
+    },
+    {
+      "path": "player-licenses/java/jackson-databind-2.11.1.txt",
+      "source": "com.fasterxml.jackson.core:jackson-databind:2.11.1",
+      "sha256": "79aa8e90d02b26ac6af80115e42834cbad1e0a0ec191134d91cf59513f053cab",
+      "archive_sha256": "b486be39d9ff4ae8bc7782792f2ea70f3a7bdaee5bd13780d295d7674231afd6"
+    },
+    {
+      "path": "tiff/LIBJPEG-TURBO-IJG.txt",
+      "source": "libjpeg-turbo 3.1.2 source archive!/libjpeg-turbo-3.1.2/README.ijg",
+      "sha256": "75815e3bf6484201a3c3d17a1bbf10f2e8e3237f84df10a2357ea896db2a81d6",
+      "archive_sha256": "560f6338b547544c4f9721b18d8b87685d433ec78b3c644c70d77adad22c55e6"
+    },
+    {
+      "path": "web-video/LICENSE.python",
+      "source": "https://raw.githubusercontent.com/python/cpython/v3.12.11/LICENSE",
+      "sha256": "3b2f81fe21d181c499c59a256c8e1968455d6689d269aa85373bfb6af41da3bf"
+    },
+    {
+      "path": "web-video/LICENSE.quickjs",
+      "source": "https://bellard.org/quickjs/quickjs-2025-04-26.tar.xz!/quickjs-2025-04-26/LICENSE",
+      "sha256": "598fd7fc928e4350abce36e337ba5a1346923c5c692f5be92c3d8e29ddd7c18d",
+      "archive_sha256": "2f20074c25166ef6f781f381c50d57b502cb85d470d639abccebbef7954c83bf"
+    },
+    {
+      "path": "web-video/NOTICE.ejs.txt",
+      "source": "https://github.com/yt-dlp/yt-dlp/releases/download/2026.10.26/yt-dlp",
+      "sha256": "f973b327a7897dc56ef2c78322ecae0d24b36ac65ffb03aa39632e34c6f38ee3",
+      "archive_sha256": "e51e69e89489f199530f13d32a4342da3ddb2cf34842f364603a066db05afbf3",
+      "component": "yt-dlp-ejs 0.8.0"
+    },
+    {
+      "path": "player-licenses/java/slf4j-api-1.7.36.txt",
+      "source": "https://raw.githubusercontent.com/qos-ch/slf4j/v_1.7.36/LICENSE.txt",
+      "sha256": "8e0d2e086db1da82238c27929308de11db7453a29bc0da50331379105e5da8fd"
+    },
+    {
+      "path": "player-licenses/java/kotlin.txt",
+      "source": "https://raw.githubusercontent.com/JetBrains/kotlin/v2.4.21/license/LICENSE.txt",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    },
+    {
+      "path": "comic-ocr/LICENSE.RapidOCR",
+      "source": "https://raw.githubusercontent.com/RapidAI/RapidOCR/v3.10.0/LICENSE",
+      "sha256": "3e0af25fdd06aa9586ae97adb00ea927ebe5a3805ac77d2d3a81ce5f55693333"
+    },
+    {
+      "path": "player-licenses/java/guava.txt",
+      "source": "https://raw.githubusercontent.com/google/guava/v33.3.1/LICENSE",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    },
+    {
+      "path": "player-licenses/java/kotlinx-coroutines.txt",
+      "source": "https://raw.githubusercontent.com/Kotlin/kotlinx.coroutines/1.9.0/LICENSE.txt",
+      "sha256": "b1febe6399dffb10d19d35e7663ab16300c93cb0476a94115df1cc0097a8ffd8"
+    },
+    {
+      "path": "player-licenses/java/jetbrains-annotations.txt",
+      "source": "https://raw.githubusercontent.com/JetBrains/java-annotations/23.0.0/LICENSE.txt",
+      "sha256": "8c1e966c7855fb54027bcaf6ebe7a43abe4785791e8cf9148c363761d493d097"
+    },
+    {
+      "path": "gradle/LICENSE.txt",
+      "source": "Gradle 9.5.0 distribution/LICENSE",
+      "sha256": "cf234c4188d773406f640bf89be680d9288f40ff96901c70d643fcea96ad46df"
+    },
+    {
+      "path": "gradle/NOTICE.txt",
+      "source": "Gradle 9.5.0 distribution/NOTICE",
+      "sha256": "c2de5fd9adc7ccc4e1382a0e1f38ec6e14f8ca6e28d3c20289fe80353b019aa1"
+    }
+  ],
+  "text_normalization": "UTF-8, LF line endings, trailing whitespace removed; license wording unchanged."
+}

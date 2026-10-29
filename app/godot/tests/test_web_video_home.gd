@@ -12,9 +12,9 @@ func check(ok: bool, message: String) -> void:
 func _initialize() -> void: call_deferred("_run")
 func _run() -> void:
 	for locale in ["zh", "zh_Hant", "zh-CN", "zh-TW"]:
-		check(Sites.ordered_indexes(locale).slice(0, 6) == [0, 1, 2, 3, 4, 5], "Chinese sites and YouTube lead for " + locale)
+		check(Sites.ordered_indexes(locale).slice(0, 8) == [0, 1, 2, 3, 4, 5, 17, 18], "Chinese sites and YouTube lead for " + locale)
 	for locale in ["en", "ja", "ko"]:
-		check(Sites.ordered_indexes(locale).slice(-5) == [0, 2, 3, 4, 5], "International sites lead for " + locale)
+		check(Sites.ordered_indexes(locale).slice(-7) == [0, 2, 3, 4, 5, 17, 18], "International sites lead for " + locale)
 	check(Sites.ordered_indexes("ja").slice(0, 2) == [1, 16], "YouTube and Niconico lead for Japanese")
 	var future := [{"languages": ["zh"]}, {"languages": []}, {"languages": ["ja"]}, {"languages": ["ko"]}]
 	check(Sites.ordered_indexes("ja-JP", future) == [2, 1, 3, 0], "Japanese audience sites precede international and Chinese sites")
@@ -24,6 +24,8 @@ func _run() -> void:
 	var platform := Fixture.Platform.new(); menu.attach_platform(platform); menu.toggle()
 	menu._activate(Menu.NAV_BASE + Menu.Section.WEB)
 	check(menu.web_video.home.active(), "Browser section presents home")
+	var frame: Array = menu.web_video.home.backdrop()
+	check(frame[0].is_equal_approx(Vector2(1.46, 1.12)) and is_zero_approx(frame[1].y), "Expanded browser home shares the navigation panel height and centre")
 	menu.web_browser.tick()
 	var resume: Node = menu._buttons.filter(func(button): return button.target == Home.BASE + 2)[0].node
 	var captions: Array = resume.get_children().filter(func(node): return node is Label3D).map(func(node): return node.text)
@@ -31,6 +33,18 @@ func _run() -> void:
 	check(shown.size() == 1 and shown[0].contains("Video"), "Continue shows the destination title on one compact line")
 	check(menu._tips.get(Home.BASE + 2) == platform.browser.url, "Continue hover exposes the exact destination")
 	check(menu._buttons.any(func(b): return b.target == Home.SITE_BASE), "Featured links start expanded with ray targets")
+	var first_cards := menu._buttons.filter(func(b): return b.target >= Home.SITE_BASE and b.target < Home.SITE_BASE + Sites.FEATURED.size())
+	check(first_cards.size() == 15, "Compact featured page holds fifteen sites")
+	for card in first_cards:
+		var site: Dictionary = Sites.FEATURED[card.target - Home.SITE_BASE]
+		check(card.node.has_node("NativePlaybackBadge") == Sites.supports_native(site), "Only supported sites show the player badge: " + site.name)
+		var labels: Array = card.node.get_children().filter(func(node): return node is Label3D and not node.text.is_empty())
+		check(labels.size() == 1 and is_zero_approx(labels[0].position.y) and labels[0].horizontal_alignment == HORIZONTAL_ALIGNMENT_LEFT, "Site name sits beside the icon")
+		check(menu._tips[card.target] == I18n.t(site.name) + "\n" + (I18n.t(Home.NATIVE_TIP) if Sites.supports_native(site) else str(site.url)), "Hover describes partial native support or the site address")
+	check(not Sites.supports_native(Sites.FEATURED[17]) and not Sites.supports_native(Sites.FEATURED[18]), "iQIYI and Douyin are browser entries without a native support claim")
+	menu._activate(Home.SITE_BASE + 18)
+	check(menu.web_browser.opened and platform.browser.url == "https://www.douyin.com/", "Douyin card opens its website")
+	menu.web_browser.close(); menu.refresh()
 	menu._activate(Home.BASE + 5)
 	check(not menu._buttons.any(func(b): return b.target >= Home.SITE_BASE and b.target < Home.SITE_BASE + 100), "Folding hides the featured links")
 	menu._activate(Home.BASE + 5)

@@ -10,9 +10,9 @@
   "api_version": 2,
   "ndk": "30.0.16248370",
   "android_api": 23,
-  "pgs_bitmap_patch_sha256": "33cd8a5ff7078b86366db820a9c5a2d88308f8bb24326fba9c4d1af1f911dd77",
+  "pgs_bitmap_patch_sha256": "6b121f4a18142855aba600acffa51c1bc5b9c34419fd3577a05ca879f0505197",
   "pgs_bitmap_header_sha256": "d5f16d18dbef6042570adad52c42cee9df6cd35a27ddf067611ff4c0addb7261",
-  "live_capture_patch_sha256": "9a15a88c8dd53be2b19717c3e73e78a4c95ae0450586de2ab7af6f4a8b676937",
+  "live_capture_patch_sha256": "c7167a9835038c375ef991eac5229082f83c0ee44cfd6e2fa162e87609e5dd4a",
   "live_capture_header_sha256": "7cb1040bb604f0e7c2a2ce47b7b3d869da1f81c3cd0d32eded9e5e9b388c648f",
   "aaudio_clock_patch_sha256": "394eda7da3d4d81196c1708a458cf78b677163cf7007ceed89696f659ea55451",
   "layer_cadence_patch_sha256": "fc2d1907643af88c949b430fc2dafb2c46a9b082021668716253bcc0bc18d448",
@@ -24,7 +24,7 @@
   "build_scripts_sha256": {
     "scripts/mbedtls.sh": "b5ec1bbf8ff077c4d1a97f07b4c8c2d42320586f245286a643b1a3e654ad8b12",
     "scripts/libplacebo.sh": "7cd7f3a6c9f7da6176be5bfc0c6d3c0be39ea5582919f3b6dd2ddb82a6342953",
-    "scripts/ffmpeg.sh": "9fa7986cc385cbee67a3e3eb3bf7154e2b9049a1c2ed589226e92022c9fc4871",
+    "scripts/ffmpeg.sh": "c6ab8b6ee165b20c7bf3a73357032deb6887f6e45aa5bb4f1799ed2d24a456bc",
     "scripts/mpv-android.sh": "33fd2e40e11c45dc3ebd92f6b1bca51aba79339e31abdfc4545cab280fd5e95c",
     "scripts/dav1d.sh": "8717a693b35c5e6100917f9d4dcca5d589c39fec431ff32f09989187b5b2785a",
     "scripts/libxml2.sh": "c1ae9c57f149501539a82348fa07bda1bd83784038835db37280311c9af8649f",
@@ -57,9 +57,9 @@
   "libraries": [
     {
       "name": "libmpv.so",
-      "sha256": "ea5ed90b3d7120693f8669afc1c88784d2587d17b4487414a4c0c9494b58a6e4",
-      "bytes": 8268240,
-      "built_sha256": "3ba15da641f58e8175d4ffe72d35d2caee6557d94d54a61c24b1c79d9bdae58f",
+      "sha256": "3beec06babdb97f211cac460a536f12ca5ddcb52de4902358ebb983c517245f0",
+      "bytes": 8268272,
+      "built_sha256": "73082e05eafc2fdd19ae2177fd530865aba7a59db6b9467dfe666249aea427b2",
       "needed": [
         "libm.so",
         "libz.so",
@@ -80,9 +80,9 @@
     },
     {
       "name": "libavcodec.so",
-      "sha256": "6d49b406c319e57905aa0d8a556193d9d7ea27517813ffaab63a985a187d180c",
+      "sha256": "40c79f1a78392e51912dce18a180608c520deafce9bed30bfb3bcff4f4ccd3ab",
       "bytes": 12561544,
-      "built_sha256": "05853709a5c18fd0ef2cd7d36ae358c84648ce81ecb634f106768d351ad914ad",
+      "built_sha256": "bfc9da31345fc4602b230c15ff279b7c32226f6978d7c5aab5e21a0b3699d07c",
       "needed": [
         "libswresample.so",
         "libavutil.so",
@@ -96,9 +96,9 @@
     },
     {
       "name": "libavdevice.so",
-      "sha256": "21ba6e29d4418f31cb597d32c6ae3913974eeae00def6f37c361099f1e903c8a",
-      "bytes": 9264,
-      "built_sha256": "05d4db7b29bc19db8530ee12ca5797a742b18f4aae00a569dc540133b09fe3e0",
+      "sha256": "176a16f4d06572f742a178b3b1380dca2a24215bd4716037c79af56945fbc849",
+      "bytes": 9296,
+      "built_sha256": "bf91c4e0b3cf9a9c077d20b3edc2575ca8b545a0979d485b66e5231b3409075c",
       "needed": [
         "libavformat.so",
         "libavutil.so",
@@ -107,9 +107,9 @@
     },
     {
       "name": "libavfilter.so",
-      "sha256": "cf56dc6cf0ba851bac2117b67c00d53c5d1883ecafb683d782de24cf3fba28aa",
-      "bytes": 4300640,
-      "built_sha256": "e701f33df292cc09c5eabf43876a43e238cb576c74193d664ea38ee8248fc8af",
+      "sha256": "fa23d08d8488178c11bf14c82710b595867729582c165e1264bbd4aaec3bf522",
+      "bytes": 4300656,
+      "built_sha256": "6fab43e4a04198585be364cf80b6ce60bb8ed373c96aa049ca5925f58aac430c",
       "needed": [
         "libswscale.so",
         "libavformat.so",
@@ -122,9 +122,9 @@
     },
     {
       "name": "libavformat.so",
-      "sha256": "4327a3b3cc416033a890ea7891928ce2ab3d4389da8f980c97eca4dbdf57b18e",
-      "bytes": 4333944,
-      "built_sha256": "4e621a0df99bbfd1aeb48565672498a73cb8c67665b20c374d8bbbaa5c86bb13",
+      "sha256": "c94f8b187416249429c4664f8a053298fcd2b81ddb358ef8e8f9f2df5386c290",
+      "bytes": 4549864,
+      "built_sha256": "593182360fb8acb094135628bff294010190aecd7cf9abf9392c3e590385ec5a",
       "needed": [
         "libavcodec.so",
         "libavutil.so",
@@ -136,9 +136,9 @@
     },
     {
       "name": "libavutil.so",
-      "sha256": "68b8b1c3e2b96bc590c2dc93203be01e4681a215d7d6f267c35d2abed38f12fc",
-      "bytes": 740424,
-      "built_sha256": "c0466ff850b645539a0807035fae5a907c3970051dccc41a25bc0512efb9947e",
+      "sha256": "cf2c00d45d8071d91c3328d2cd1d7dc629a8abc6bd8c2dbc0b1251ed61f7fc7a",
+      "bytes": 740456,
+      "built_sha256": "08ea61760becc441060fae9573d49b87f94a3def8879563c3ab1e4308a27c920",
       "needed": [
         "libm.so",
         "libandroid.so",
@@ -148,9 +148,9 @@
     },
     {
       "name": "libswresample.so",
-      "sha256": "ed361b6adef770433aec116311908350f62a3eacf3ce13a9ced260a8c5d91952",
-      "bytes": 100736,
-      "built_sha256": "cffe17c4a14771898be7e68a410f256c354fe05a6598c6b0dbcd92c15808b4ae",
+      "sha256": "c04246063903701a664dae21c31c112197c17837de5c9ab323a798eb817b8bd7",
+      "bytes": 100784,
+      "built_sha256": "22ec6c134225cd65672b1ef736b8145f80e59bdf19ac592b435e0b47b14a9574",
       "needed": [
         "libavutil.so",
         "libm.so",
@@ -159,9 +159,9 @@
     },
     {
       "name": "libswscale.so",
-      "sha256": "42d11b5a5acc4d041bd33c9e7d38ec8454e918ef0bc5f0fb17e6df8bec72fd6d",
-      "bytes": 1246696,
-      "built_sha256": "16948350263dfe77a388f520db47d7a5ecb14d8a29401bc20099ce067b974eff",
+      "sha256": "d70be8db35da0fad80180559dabcf37b144a17de8e0b04c400a58ae7ccb97507",
+      "bytes": 1246744,
+      "built_sha256": "9b93ba3618539b86949f16324ce78aa75a384292f3e2f61bc0782168bf5119e3",
       "needed": [
         "libavutil.so",
         "libm.so",
@@ -170,19 +170,24 @@
     }
   ],
   "host_packages_sha256": "0d42dd4ec021254111a439214a2681bf37ca44ba2af04a9d97af479f2bd1dd33",
-  "build_receipt_sha256": "99b365a2a4baeef72e79185a87471d6a56573ec296f3567a0c6c7118a022cb08",
+  "build_receipt_sha256": "51312ff092df76d9392130a16304ae504a45ed6430fafa4667f63470c3ce02f0",
   "meson": "1.11.0",
   "ninja": "1.11.1",
   "mvc_inputs_sha256": {
     "third_party/edge264-mvc/manifest.json": "59d1c887ed3d5bd1fda6902ee5de0c8343c9a4ff0e93f2941f117aa894e32ebf",
     "third_party/bluray/source-lock.json": "7eabc13232bc1587c1baf21c836869afc8948fea1dde1f04af826c34a54e84f3",
-    "tools/environment/mpv-linux/mvc_patch.py": "2861df08d03a2a5049beca755c1ef14f0ac0b57117afe96f37d9f64c513c8f96",
+    "tools/environment/mpv-linux/mvc_patch.py": "8cbf2b3ff82331804cb7b1204e6d9e3c19db769ecda429b9060bc5b9fd8a70c6",
     "tools/environment/Prepare-MvcDecoder.py": "ac33805b5d397d14b8b78e6b9d65abdc7609d0ee375245b160c4968097eac52c",
-    "tools/environment/Prepare-BluraySources.py": "d5988db75da92f8b511a095bae6a5760faeb1618d3d320a1c4f3fab802ed6045",
+    "tools/environment/Prepare-BluraySources.py": "1785866879b1c42abc32e596948dc898d1b09ff5c4942218eae8531b5865dc1e",
     "tools/environment/mpv-linux/build_bluray.sh": "be189cd78bdbb02081ac0b65aee99fc6f16b1650fd3648ae825832c3940e4815",
+    "third_party/dvd/source-lock.json": "77a80c79129cac630a3b2c22db1d5a9a32e8360e2e210aa2eecf6e9f9468719a",
+    "tools/environment/Prepare-DvdSources.py": "79aa6d55c1575f7cc2426a098c2474d3e4b0f1ef8b757dcbb50e6a99474e2972",
+    "tools/environment/mpv-linux/build_dvd.sh": "82858a86bf686cdfdd575cf407984623f7c04aebc4846372d72717fd6e86908d",
     "native/mpv/mvc/bluray_clpi_reader.c": "3b177cbdaeaadfa3221039cbbc04928cddd74603d3fe99b82c5efd76cf9ebc51",
+    "native/mpv/mvc/dvd_nav.h": "25b541d04108c145d89b18c4f1cb790005a8c909ee26e7fe8459803813f83d79",
     "native/mpv/mvc/edge264mvc_all.c": "d23091d4f6559c828a5a8e70bb609487d484ea30176c6e60773f492661750382",
-    "native/mpv/mvc/ffmpeg_bd_mvc.c": "f713ff03f94f6af05450051b0a428b9950a6cb7d45a6835f31c588a5bec7fc3a",
+    "native/mpv/mvc/ffmpeg_bd_mvc.c": "ba260d9fe515f6e8a1ac0b8f47c0f4517b215535d64b1d2d8ebdf7765b431949",
+    "native/mpv/mvc/ffmpeg_dvd_nav.c": "4bebd3f6cb04561d95a7d7e491bf9824fc2ab71ba07480d16b9df0a90def1aea",
     "native/mpv/mvc/ffmpeg_h264_mvc.c": "cb1298e1430a6a282fd713ea338a9d7179a018340e5d3a78b4f02fbd6ae920a6",
     "native/mpv/mvc/mvc_recovery.h": "8ee01cca57e2e807cfcaf5956652dc54b67d3ae5395993277c5ccefb45138fd5"
   },
@@ -193,13 +198,18 @@
   "reference_mvc_inputs_sha256": {
     "third_party/edge264-mvc/manifest.json": "59d1c887ed3d5bd1fda6902ee5de0c8343c9a4ff0e93f2941f117aa894e32ebf",
     "third_party/bluray/source-lock.json": "7eabc13232bc1587c1baf21c836869afc8948fea1dde1f04af826c34a54e84f3",
-    "tools/environment/mpv-linux/mvc_patch.py": "2861df08d03a2a5049beca755c1ef14f0ac0b57117afe96f37d9f64c513c8f96",
+    "tools/environment/mpv-linux/mvc_patch.py": "8cbf2b3ff82331804cb7b1204e6d9e3c19db769ecda429b9060bc5b9fd8a70c6",
     "tools/environment/Prepare-MvcDecoder.py": "ac33805b5d397d14b8b78e6b9d65abdc7609d0ee375245b160c4968097eac52c",
-    "tools/environment/Prepare-BluraySources.py": "d5988db75da92f8b511a095bae6a5760faeb1618d3d320a1c4f3fab802ed6045",
+    "tools/environment/Prepare-BluraySources.py": "1785866879b1c42abc32e596948dc898d1b09ff5c4942218eae8531b5865dc1e",
     "tools/environment/mpv-linux/build_bluray.sh": "276e35a7ccf1dff02cd6e317fe839e2afee9cbf7e644601bc05bf6469db3b3cd",
+    "third_party/dvd/source-lock.json": "77a80c79129cac630a3b2c22db1d5a9a32e8360e2e210aa2eecf6e9f9468719a",
+    "tools/environment/Prepare-DvdSources.py": "79aa6d55c1575f7cc2426a098c2474d3e4b0f1ef8b757dcbb50e6a99474e2972",
+    "tools/environment/mpv-linux/build_dvd.sh": "68145331e16be3a84f848e93aeebcb4517445e366b8a261182e522feeb6c8de6",
     "native/mpv/mvc/bluray_clpi_reader.c": "3b177cbdaeaadfa3221039cbbc04928cddd74603d3fe99b82c5efd76cf9ebc51",
+    "native/mpv/mvc/dvd_nav.h": "25b541d04108c145d89b18c4f1cb790005a8c909ee26e7fe8459803813f83d79",
     "native/mpv/mvc/edge264mvc_all.c": "d23091d4f6559c828a5a8e70bb609487d484ea30176c6e60773f492661750382",
-    "native/mpv/mvc/ffmpeg_bd_mvc.c": "f713ff03f94f6af05450051b0a428b9950a6cb7d45a6835f31c588a5bec7fc3a",
+    "native/mpv/mvc/ffmpeg_bd_mvc.c": "ba260d9fe515f6e8a1ac0b8f47c0f4517b215535d64b1d2d8ebdf7765b431949",
+    "native/mpv/mvc/ffmpeg_dvd_nav.c": "4bebd3f6cb04561d95a7d7e491bf9824fc2ab71ba07480d16b9df0a90def1aea",
     "native/mpv/mvc/ffmpeg_h264_mvc.c": "cb1298e1430a6a282fd713ea338a9d7179a018340e5d3a78b4f02fbd6ae920a6",
     "native/mpv/mvc/mvc_recovery.h": "8ee01cca57e2e807cfcaf5956652dc54b67d3ae5395993277c5ccefb45138fd5"
   }

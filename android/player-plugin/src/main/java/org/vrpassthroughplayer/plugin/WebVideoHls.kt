@@ -14,8 +14,12 @@ internal class WebVideoHls(private val server: LocalStreamServer) : Closeable {
     private var cachedBytes = 0L
     private val transfers = java.util.concurrent.Semaphore(2)
     @Volatile private var closed = false
+    private var browserHeaders: WebVideoRequestHeaders? = null
 
-    fun prepare(track: WebVideoTrack): String = manifest(track.url, track.headers, 0)
+    fun prepare(track: WebVideoTrack): String {
+        browserHeaders = track.browserHeaders
+        return manifest(track.url, track.headers, 0)
+    }
 
     private fun bytes(uri: URI, headers: Map<String, String>, limit: Int): Pair<URI, ByteArray> {
         check(transfers.tryAcquire(30, java.util.concurrent.TimeUnit.SECONDS)) { "Media transfer busy" }
@@ -23,6 +27,21 @@ internal class WebVideoHls(private val server: LocalStreamServer) : Closeable {
     }
 
     private fun fetch(uri: URI, headers: Map<String, String>, limit: Int): Pair<URI, ByteArray> {
+        // Some headset network paths cut connections in short bursts (Quest 3, 2026-10-29: a
+        // resolved Niconico playlist failed on one timeout). Request a complete resource again a
+        // little later; a site's own answer (an HTTP status) is final.
+        val started = System.nanoTime()
+        var attempt = 0
+        while (true) {
+            try { return fetchOnce(uri, headers, limit) } catch (error: Exception) {
+                val transport = error is java.io.IOException || (error is MediaServerFailure && error.transportError.isNotEmpty())
+                if (!transport || ++attempt > 2 || closed || System.nanoTime() - started > 20_000_000_000L) throw error
+                Thread.sleep(1500L * attempt)
+            }
+        }
+    }
+
+    private fun fetchOnce(uri: URI, headers: Map<String, String>, limit: Int): Pair<URI, ByteArray> {
         check(!closed)
         // Complete bounded resources: dynamic playlist endpoints may implement Range incorrectly.
         val c = http.open(uri, "", headers)
@@ -51,6 +70,7 @@ internal class WebVideoHls(private val server: LocalStreamServer) : Closeable {
     }
 
     private fun headersFor(origin: URI, target: URI, headers: Map<String, String>): Map<String, String> {
+        browserHeaders?.let { return it.forUrl(target, headers) }
         fun port(uri: URI) = if (uri.port >= 0) uri.port else if (uri.scheme == "https") 443 else 80
         val same = origin.scheme == target.scheme && origin.host.equals(target.host, true) && port(origin) == port(target)
         return if (same) headers else headers.filterKeys { it.lowercase() in setOf("user-agent", "accept", "accept-language", "referer", "origin") }

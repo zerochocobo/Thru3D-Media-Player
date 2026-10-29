@@ -1,0 +1,18 @@
+Moonshine Voice 0.1.5
+Copyright (c) Moonshine AI / Useful Sensors and contributors.
+https://github.com/moonshine-ai/moonshine/tree/234f60faa0eb388b01cdf7e60aca232af37aefda
+
+Thru3D uses Moonshine's streaming speech recognition runtime and the
+tiny-streaming-zh, tiny-streaming-en and tiny-streaming-ja models.
+The model downloads and exact file hashes are recorded in model.json.
+The upstream LICENSE explicitly places all streaming speech-to-text models
+under MIT. Its legacy non-streaming, non-English Community License section
+does not describe the three streaming recognition models bundled here.
+
+The runtime is built from the pinned source with Thru3D lifetime fixes in
+tools/moonshine/patch_runtime.py and the shared ONNX Runtime 1.28.0 library.
+The original upstream LICENSE is retained in full, including its explanations
+of separately licensed components. Runtime dependencies have separate notices
+under dependency-notices, including utf8proc, UTF8-CPP, kaldi-native-fbank,
+Kiss FFT, Eigen and cpp-annote. nlohmann/json and ONNX Runtime have their own
+entries in the application's license catalog.

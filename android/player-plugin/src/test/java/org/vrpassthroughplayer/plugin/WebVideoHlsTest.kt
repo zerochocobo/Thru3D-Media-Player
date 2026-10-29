@@ -74,6 +74,25 @@ class WebVideoHlsTest {
         } } } }
     }
 
+    @Test fun requestsAgainAfterACutConnectionButNotAfterARefusal() {
+        val requests = java.util.concurrent.atomic.AtomicInteger()
+        Fixture { request, _, _ ->
+            // The host JDK silently resends a GET once after a closed connection; cut past that.
+            if (request.contains("/list") && requests.incrementAndGet() <= 2) error("Connection cut")
+            if (request.contains("/list")) Reply(200, body = "#EXTM3U\n#EXTINF:1,\nsegment.ts\n#EXT-X-ENDLIST\n".toByteArray())
+            else Reply(200, body = ByteArray(8) { 1 })
+        }.use { origin -> LocalStreamServer().use { local -> WebVideoHls(local).use { hls ->
+            val text = read(hls.prepare(track(origin.url + "/list"))).toString(Charsets.UTF_8)
+            assertEquals(3, requests.get())
+            assertEquals(8, read(text.lines().first { it.startsWith("http") }).size)
+        } } }
+        val refused = java.util.concurrent.atomic.AtomicInteger()
+        Fixture { _, _, _ -> refused.incrementAndGet(); Reply(403, body = ByteArray(0)) }.use { origin -> LocalStreamServer().use { local ->
+            WebVideoHls(local).use { hls -> assertThrows(MediaServerFailure::class.java) { hls.prepare(track(origin.url + "/list")) } }
+        } }
+        assertEquals(1, refused.get())
+    }
+
     @Test fun rejectsProtectedLiveCyclicAndNonHttpManifests() {
         for (body in listOf(
             "#EXTM3U\n#EXT-X-KEY:METHOD=SAMPLE-AES,URI=\"key\"\n#EXT-X-ENDLIST\n",

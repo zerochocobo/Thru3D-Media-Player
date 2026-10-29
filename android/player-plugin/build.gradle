@@ -23,7 +23,33 @@ def listeningManifest = new groovy.json.JsonSlurper().parse(file('../../third_pa
 listeningManifest.models.each { language, bundle -> assetBundles += [[bundle: bundle, root: "../../models/listening/${language}"]] }
 def narrationModels = file("../../models/narration/${narrationManifest.id}")
 def playerAssets = layout.buildDirectory.dir('playerAssets')
+def validateLicenseCatalog = tasks.register('validateLicenseCatalog') {
+    doLast {
+        // Every About row must resolve to readable packaged text, including
+        // newly added dependencies. Engine notices use Godot's runtime API.
+        def catalog = new groovy.json.JsonSlurper().parse(file('../../app/godot/i18n/licenses.json'))
+        def licenseIds = new HashSet<String>()
+        catalog.each { entry ->
+            if (!entry.id || !entry.name || !entry.license || !licenseIds.add(entry.id as String) ||
+                    !(entry.assets instanceof List) ||
+                    (entry.assets.isEmpty() && !(entry.id in ['godot', 'godot-third-party']))) {
+                throw new GradleException("Invalid About license entry: ${entry.id}")
+            }
+            entry.assets.each { path ->
+                if (!(path instanceof String) || path.startsWith('/') || path.contains('..') || path.contains(':') || path.contains('\\')) {
+                    throw new GradleException("Invalid About license path: ${entry.id}")
+                }
+                def notice = file("../../third_party/${path}")
+                if (!notice.isFile() || notice.length() == 0 || notice.length() > 256 * 1024) {
+                    throw new GradleException("Missing or unreadable About license: ${path}")
+                }
+            }
+        }
+    }
+}
+
 def stagePlayerAssets = tasks.register('stagePlayerAssets', Sync) {
+    dependsOn validateLicenseCatalog
     from('src/main/assets')
     from('../../third_party')
     exclude 'tiff/*.tar.xz', 'tiff/*.tar.gz'

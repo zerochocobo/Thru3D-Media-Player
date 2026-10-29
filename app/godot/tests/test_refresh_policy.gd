@@ -32,15 +32,15 @@ func _initialize() -> void:
 	if not is_equal_approx(Display.menu_refresh_rate([60.0, 90.0]), 90.0): failures.append("Menus skip rates below 72 Hz")
 	checks += 1
 	if Display.menu_refresh_rate([]) != 0.0: failures.append("No reported rates leave the rate alone")
-	# The setting: 120 Hz by default; low-end GPUs never offer or keep 120 Hz.
+	# The setting: 72 Hz by default; low-end GPUs never offer or keep 120 Hz.
 	var settings := ConfigFile.new()
-	setting(Quality.load_refresh_cap(settings, false) == 120, "Default cap is 120 Hz")
-	setting(Quality.load_refresh_cap(settings, true) == 90, "Low-end GPUs default to 90 Hz")
+	setting(Quality.load_refresh_cap(settings, false) == 72, "Default cap is 72 Hz")
+	setting(Quality.load_refresh_cap(settings, true) == 72, "Low-end GPUs also default to 72 Hz")
 	settings.set_value("video", "refresh_cap", 120)
 	setting(Quality.load_refresh_cap(settings, false) == 120, "120 Hz is kept on capable GPUs")
 	setting(Quality.load_refresh_cap(settings, true) == 90, "Low-end GPUs stop at 90 Hz")
 	settings.set_value("video", "refresh_cap", 75)
-	setting(Quality.load_refresh_cap(settings, false) == 120, "Unknown values fall back to the default")
+	setting(Quality.load_refresh_cap(settings, false) == 72, "Unknown values fall back to the default")
 	setting(Quality.refresh_choices(false) == [120, 90, 72] and Quality.refresh_choices(true) == [90, 72], "Low-end devices do not list 120 Hz")
 	setting(Quality.REFRESH_NAMES.keys().all(func(cap): return Quality.REFRESH_HINTS.has(cap)), "Every choice explains its refresh rates")
 	# Cinema relief: high foveation and at most 1.0x eye buffers, restored when it ends.

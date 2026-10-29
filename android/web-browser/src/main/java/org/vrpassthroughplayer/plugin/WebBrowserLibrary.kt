@@ -34,11 +34,7 @@ internal class WebBrowserLibrary(saved: String,
         if (recordHistory) { prepend(history, entry, 200); (saveLater ?: save)(document()) }
     }
     fun bookmark(url: String, title: String): Boolean {
-        val clean = WebBrowserAddress.recordable(url) ?: return false
-        val existing = bookmarks.indexOfFirst { it.url == clean }
-        if (existing >= 0) bookmarks.removeAt(existing)
-        else { if (bookmarks.size >= 1000) return false; prepend(bookmarks, Entry(clean, title.take(512), System.currentTimeMillis()), 1000) }
-        persist(); return true
+        return edit(JSONObject().put("action", "toggle_bookmark").put("url", url).put("title", title)).isEmpty()
     }
     fun clearHistory() { session.clear(); history.clear(); persist() }
     /** All management writes commit atomically; failed disk writes leave the visible lists intact. */
@@ -48,6 +44,15 @@ internal class WebBrowserLibrary(saved: String,
         val oldSession = session.toList()
         try {
             when (request.optString("action")) {
+                "toggle_bookmark" -> {
+                    val url = WebBrowserAddress.recordable(request.optString("url")) ?: return "invalid_address"
+                    val existing = bookmarks.indexOfFirst { it.url == url }
+                    if (existing >= 0) bookmarks.removeAt(existing)
+                    else {
+                        if (bookmarks.size >= 1000) return "bookmark_limit"
+                        prepend(bookmarks, Entry(url, request.optString("title").take(512), System.currentTimeMillis()), 1000)
+                    }
+                }
                 "import_bookmarks" -> {
                     val items = request.optJSONArray("items") ?: return "invalid_request"
                     if (items.length() !in 1..1000) return "invalid_request"

@@ -76,13 +76,17 @@ internal class EmbyClient(private val account: MediaServerAccount, private val h
             "movies" -> "Movie,Video,BoxSet"
             else -> "Movie,Series,Video,BoxSet"
         }
-        val args = linkedMapOf<String, Any>("Recursive" to !folders, "IncludeItemTypes" to if (folders)
-            "CollectionFolder,Folder,Series,Season,Movie,Episode,Video,BoxSet,Playlist"
-            else if (request.optString("mode") == "library") libraryTypes else "Movie,Episode,Video",
+        val args = linkedMapOf<String, Any>("Recursive" to !folders,
             "StartIndex" to (page - 1) * 48, "Limit" to 48, "EnableTotalRecordCount" to true,
             "Fields" to "MediaSources,MediaStreams,Overview,People,Genres,Studios,Chapters,Tags,Path,ParentId,ChildCount,PrimaryImageAspectRatio",
             "SortBy" to (mapOf("title" to "SortName", "date" to "PremiereDate", "duration" to "Runtime", "rating100" to "CommunityRating")[request.optString("sort")] ?: "DateCreated"),
             "SortOrder" to if (request.optString("direction") == "ASC") "Ascending" else "Descending")
+        if (folders) {
+            // A container's Type need not be Folder (e.g. UserView or a plugin type).
+            // Keep generic directory navigation and server counts intact; only exclude
+            // known non-video leaf types. summary() uses IsFolder for navigation.
+            args["ExcludeItemTypes"] = "Audio,AudioBook,Book,Game,Photo"
+        } else args["IncludeItemTypes"] = if (request.optString("mode") == "library") libraryTypes else "Movie,Episode,Video"
         val parent = if (request.optBoolean("all_libraries")) "" else request.optString("parent_id").ifBlank { request.optString("library_id") }
         if (parent.isNotBlank()) args["ParentId"] = mediaId(parent)
         val q = request.optString("q").take(200)

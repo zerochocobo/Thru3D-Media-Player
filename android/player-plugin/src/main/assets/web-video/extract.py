@@ -170,6 +170,31 @@ def normalize_manifests(info, ydl):
     return info
 
 
+def retry_transport(ydl):
+    """Resend only the request a headset network path cut, spaced past the cut.
+
+    Quest 3 (2026-10-29): Niconico failed 4 of 10 sandbox runs on TLS EOF; the cuts come in
+    bursts (two whole-extraction attempts 0.6 s apart both failed), so redoing everything at once
+    hits the same burst while repeating the site's access-rights request.
+    """
+    from yt_dlp.networking.exceptions import CertificateVerifyError, ProxyError, TransportError
+    urlopen = ydl.urlopen
+
+    def patient(req):
+        for attempt in range(3):
+            started = time.monotonic()
+            try:
+                return urlopen(req)
+            except (CertificateVerifyError, ProxyError):
+                raise
+            except TransportError:
+                # A request that already waited out the socket timeout is not a short cut.
+                if attempt == 2 or time.monotonic() - started > 10:
+                    raise
+                time.sleep(2.0 * (attempt + 1))
+    ydl.urlopen = patient
+
+
 def main():
     runtime, quickjs, page = sys.argv[1:]
     sys.path.insert(0, runtime)
@@ -193,6 +218,7 @@ def main():
     with YoutubeDL(options, auto_init=False) as ydl:
         add_spatial_extractor(ydl)
         ydl.add_default_info_extractors()
+        retry_transport(ydl)
         load_cookies(ydl.cookiejar, cookies, page)
         cookies.clear()
         if urlsplit(page).hostname == "v.douyin.com":
@@ -205,7 +231,8 @@ def main():
             page = "https://www.douyin.com/video/" + match.group(1)
         # Some headset network paths intermittently cut TLS mid-handshake (seen on Quest 3 for
         # Streamable/Odysee/Archive.org: 2 of 3 runs). Metadata requests are not retried by
-        # yt-dlp itself, so retry transient transport failures within the caller's deadline.
+        # yt-dlp itself. retry_transport resends a cut request; this outer pass covers a cut while
+        # a response body is read, spaced past the burst, within the caller's deadline.
         from yt_dlp.utils import DownloadError
         for attempt in range(3):
             try:
@@ -215,7 +242,7 @@ def main():
                 transient = any(term in str(error) for term in ("SSL:", "EOF occurred", "Connection reset", "timed out", "Remote end closed"))
                 if attempt == 2 or not transient:
                     raise
-                time.sleep(0.5 * (attempt + 1))
+                time.sleep(2.0 * (attempt + 1))
         info = normalize_manifests(single_video(extracted), ydl)
         scope_headers(info, ydl.cookiejar)
         # Never return requested_formats/cookie jars or unrelated extractor internals.

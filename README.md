@@ -4,13 +4,16 @@
 
 Standalone Android VR/MR media player for Meta Quest and PICO. Play videos and photos, explore media libraries, and combine supported content with passthrough and stereo effects directly on your headset.
 
-Current source version: **0.15.1** (Android versionCode **49**). An experimental standard OpenXR Android export is also available.
+Current source version: **0.15.2** (Android versionCode **51**). An experimental standard OpenXR Android export is also available.
 
 Minimum compatibility targets are **Quest 2** and **PICO Neo3**. Source/build compatibility does not establish hardware performance or interaction acceptance on every device.
 
 ## Features
 
-- Built-in web browser (Beta), up to four tabs/two visible windows, floating/cinema modes, bookmarks/history and optional temporary LAN management; eligible web video supports fullscreen/manual native handoff. See [browser and channel scope](docs/WEB_BROWSER.md).
+- Supported unencrypted DVD ISOs with title/chapter selection and controller-ray disc menus; pinned source recipes and limits are in [disc playback](docs/BLURAY.md).
+- Browser peer windows (up to four on the higher tier), site/bookmark start pages and opt-in media detection with source-page-scoped handoff; unsupported/protected content stays in the website.
+- Dedicated compositor layers for eligible flat text subtitles, immersive-picture alignment guidance and clearer PiP resize feedback.
+- Built-in web browser (Beta), up to four tabs/four visible windows on the higher-performance tier (two windows on the lower tier), floating/cinema modes, bookmarks/history and optional temporary LAN management; eligible web video supports fullscreen/manual native handoff. See [browser and channel scope](docs/WEB_BROWSER.md).
 - Stereo person passthrough for eligible ordinary flat videos, with independent size/distance memory and optional enhanced depth; see [portrait scope](docs/VIDEO_PORTRAIT.md).
 - External-subtitle encoding detection/per-track override, grip-based VR adjustment and ±10% horizontal stereo alignment.
 
@@ -36,7 +39,7 @@ Minimum compatibility targets are **Quest 2** and **PICO Neo3**. Source/build co
 - Hand-tracked wrist watch with time/battery/progress and projected playback controls.
 - Remembered directory sorting and filter-specific browse positions, following playback-history privacy; provider-aware cloud page sizes and explicit load-all.
 - Playback-control spatial locking/transparency, compatible 180° image backgrounds and Emby detail artwork.
-- Runtime-dependent playback refresh choices up to 120 Hz (default), up to 90 Hz, or 72 Hz; AI/depth modes retain their bounded policy.
+- Runtime-dependent playback refresh choices of 72 Hz power saving (default), up to 90 Hz, or up to 120 Hz; saved choices are preserved, and AI/depth modes retain their bounded policy.
 
 - Video and photo viewing: flat, 180° and 360° projections; mono and side-by-side stereo.
 - Person matting and passthrough composition for supported 180° video projections.

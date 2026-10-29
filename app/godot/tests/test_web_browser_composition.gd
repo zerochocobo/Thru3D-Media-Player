@@ -19,10 +19,14 @@ func run() -> void:
 	var browser: RefCounted = menu.web_browser
 	browser.window_created = capture.register_companion
 	browser.open("https://example.com/page"); browser.tick()
-	for count in [1, 2]:
-		if count == 2:
-			platform.browser.tab_list = [{"id": 1, "window": 1}, {"id": 2, "window": 2}]
+	for count in [1, 2, 3, 4]:
+		if count > 1:
+			platform.browser.tab_list = []; platform.browser.windows = []
+			for id in range(1, count + 1):
+				platform.browser.tab_list.append({"id": id, "window": id, "url": "https://example.com/" + str(id)})
+				platform.browser.windows.append({"id": id, "tab_id": id, "url": "https://example.com/" + str(id)})
 			browser.next_poll = 0; browser.tick()
+			browser.windows[2].page_size = Vector2(2.4, 0.65); browser.windows[2].refresh()
 		capture.update()
 		check(capture.layer_reservation() == 5 + count, "Chrome providers plus one page layer per window")
 		for window in browser.windows.values():

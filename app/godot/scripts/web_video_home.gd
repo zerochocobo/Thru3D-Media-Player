@@ -4,17 +4,22 @@ const I18n := preload("res://scripts/i18n.gd")
 const Sites := preload("res://scripts/web_video_sites.gd")
 const BASE := 985000
 const SITE_BASE := BASE + 100
-const PAGE_SIZE := 9
+const COLUMNS := 3
+const ROWS := 5
+const PAGE_SIZE := COLUMNS * ROWS
+const NATIVE_TIP := "Some videos can play in the built-in player.\nOpen a video, then choose Play with player."
 var owner_ref: WeakRef
 var panel: RefCounted:
 	get: return owner_ref.get_ref()
 var expanded := true # Featured sites are the main entry; most people never open a folded list.
 var site_page := 0
 var site_language := ""
+var site_channel := ""
 
 func visible_sites() -> Array[int]:
-	if site_language != I18n.language:
-		site_page = 0; site_language = I18n.language
+	var channel := Sites.Channel.current()
+	if site_language != I18n.language or site_channel != channel:
+		site_page = 0; site_language = I18n.language; site_channel = channel
 	var order := Sites.ordered_indexes(I18n.language)
 	site_page = clampi(site_page, 0, maxi(0, ceili(order.size() / float(PAGE_SIZE)) - 1))
 	return order.slice(site_page * PAGE_SIZE, (site_page + 1) * PAGE_SIZE)
@@ -30,7 +35,7 @@ func _caption(text: String, point: Vector2, size: int, color: Color, parent: Nod
 	return label
 
 func backdrop() -> Array:
-	return [Vector2(1.46, 1.24 if expanded else 0.64), Vector2(0.13, -0.06 if expanded else 0.24)]
+	return [Vector2(1.46, 1.12 if expanded else 0.64), Vector2(0.13, 0.0 if expanded else 0.24)]
 ## Shared footer row (music, collapse) just below this home's own panel.
 func footer_y() -> float:
 	var frame := backdrop()
@@ -68,8 +73,8 @@ func draw() -> bool:
 	menu._tips[BASE + 3] = I18n.t("Bookmarks")
 	menu._button(BASE + 4, "", Vector2(0.725, 0.135), Vector2(0.12, 0.10), true, "history")
 	menu._tips[BASE + 4] = I18n.t("Browsing history")
-	var pages := ceili(Sites.FEATURED.size() / float(PAGE_SIZE))
 	var order := visible_sites()
+	var pages := ceili(Sites.ordered_indexes(I18n.language).size() / float(PAGE_SIZE))
 	var paged := expanded and pages > 1
 	menu._text_button(BASE + 5, "", Vector2(-0.10 if paged else 0.13, 0.0), Vector2(0.83 if paged else 1.29, 0.095))
 	var fold: Node3D = menu._buttons.back().node
@@ -85,14 +90,21 @@ func draw() -> bool:
 		for slot in order.size():
 			var index: int = order[slot]
 			var site: Dictionary = Sites.FEATURED[index]
-			var center := Vector2(-0.30 + (slot % 3) * 0.435, -0.14 - floori(slot / 3.0) * 0.20)
-			menu._button(SITE_BASE + index, "", center, Vector2(0.40, 0.18))
+			var center := Vector2(-0.30 + (slot % COLUMNS) * 0.435, -0.11 - floori(slot / float(COLUMNS)) * 0.09)
+			menu._button(SITE_BASE + index, "", center, Vector2(0.40, 0.076))
 			var card: Dictionary = menu._buttons.back()
 			card.base_color = Color("15212e"); card.hover_color = Color("253e4a")
 			card.node.material_override.set_shader_parameter("surface_color", card.base_color)
-			card.node.material_override.set_shader_parameter("corner_radius", 0.018)
-			menu._icon(str(site.icon), Vector3(0, 0.028, 0.009), 0.073, site.color, card.node)
-			_caption(menu._fit_title(I18n.t(site.name), "", 0.35, 18), Vector2(0, -0.055), 18, Color("dbe6ef"), card.node)
+			card.node.material_override.set_shader_parameter("corner_radius", 0.014)
+			menu._icon(str(site.icon), Vector3(-0.158, 0, 0.009), 0.044, site.color, card.node)
+			var native_playback := Sites.supports_native(site)
+			var name := I18n.t(site.name)
+			var label := _caption(menu._fit_title(name, "", 0.244 if native_playback else 0.292, 18), Vector2(-0.116, 0), 18, Color("dbe6ef"), card.node)
+			label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+			if native_playback:
+				var badge: Node = menu._icon("player_supported", Vector3(0.166, 0, 0.009), 0.03, Color("70dfb6"), card.node)
+				badge.name = "NativePlaybackBadge"
+			menu._tips[SITE_BASE + index] = name + "\n" + (I18n.t(NATIVE_TIP) if native_playback else str(site.url))
 	menu._update_highlights()
 	return true
 

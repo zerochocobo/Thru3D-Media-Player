@@ -145,8 +145,19 @@ func _run() -> void:
 	check(not panel.active() and id in platform.account_cancels, "leaving section cancels login and clears textures")
 	menu.tab = Menu.ABOUT_TAB; menu.refresh(); menu._open_licenses()
 	check(menu.rows.any(func(row): return row.license_id == "115"), "115 notice lives in global About")
+	var catalog: Array = JSON.parse_string(FileAccess.get_file_as_string("res://i18n/licenses.json"))
+	check(menu.rows.size() == catalog.size(), "Every catalog entry is reachable in About")
+	for entry in catalog:
+		if entry.id in ["godot", "godot-third-party"]: continue
+		check(not menu._desktop_license_text(entry.id).is_empty(), "Bundled license text is readable: " + str(entry.id))
+	check(menu._desktop_license_text("yt-dlp").contains("Meriyah") or menu._desktop_license_text("yt-dlp").contains("meriyah"), "yt-dlp includes its EJS dependency notices")
+	check(menu._desktop_license_text("moonshine").contains("tiny-streaming-ja"), "Moonshine names the actual bundled streaming models")
+	check(menu._desktop_license_text("moss-tts").contains("INT8"), "Narration identifies the adapted bundled model")
+	menu._about_page = 2; menu.refresh()
+	check(menu.rows.size() == catalog.size() and menu.rows.any(func(row): return row.title.contains("yt-dlp")), "Credits uses the same complete catalog")
+	menu._open_licenses()
 	check(menu._engine_notices().contains("Permission is hereby granted"), "engine third-party notices include full license texts")
-	menu._choose(menu.rows[0])
+	menu._choose(menu.rows.filter(func(row): return row.license_id == "godot")[0])
 	check(panel.view == "license" and panel.license_lines.size() > 10, "full engine license has scrollable text")
 	check(not menu._grid() and menu._max_scroll() > 0, "license is a scrolling reader")
 	for button in menu._buttons:

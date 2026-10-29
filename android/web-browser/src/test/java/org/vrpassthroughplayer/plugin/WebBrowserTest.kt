@@ -5,6 +5,37 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class WebBrowserTest {
+    @Test fun embyHttpBookmarkUsesTheSameIdentityAcrossRoutesAndRestarts() {
+        var disk = "{}"
+        val home = "http://192.168.31.185:8096/web/index.html#!/home"
+        val details = "http://192.168.31.185:8096/web/index.html#!/item?id=42&serverId=local"
+        val library = WebBrowserLibrary(disk) { disk = it }
+        assertTrue(library.bookmark(home, "Emby"))
+        val saved = WebBrowserLibrary(disk) {}.snapshot().getJSONArray("bookmarks")
+        assertEquals(1, saved.length())
+        assertEquals(WebBrowserAddress.recordable(details), saved.getJSONObject(0).getString("url"))
+        assertEquals("http://192.168.31.185:8096/web/index.html", saved.getJSONObject(0).getString("url"))
+        assertTrue(library.bookmark(details, "Emby"))
+        assertEquals(0, WebBrowserLibrary(disk) {}.snapshot().getJSONArray("bookmarks").length())
+        assertTrue(library.bookmark("http://192.168.31.185:8096", "Emby"))
+        assertEquals("http://192.168.31.185:8096", WebBrowserLibrary(disk) {}.snapshot().getJSONArray("bookmarks").getJSONObject(0).getString("url"))
+    }
+    @Test fun toolbarBookmarkFailuresRollBackAndRetryWithoutSilentlyToggling() {
+        var disk = "{}"
+        var failWrite = true
+        val library = WebBrowserLibrary(disk) { if (failWrite) throw java.io.IOException("fixture"); disk = it }
+        val request = JSONObject().put("action", "toggle_bookmark").put("url", "http://192.168.31.185:8096/web/index.html#!/home")
+        try { library.edit(request); fail("Expected write failure") } catch (_: java.io.IOException) { }
+        assertEquals(0, library.snapshot().getJSONArray("bookmarks").length())
+        failWrite = false
+        assertEquals("", library.edit(request))
+        val before = disk
+        failWrite = true
+        try { library.edit(request); fail("Expected write failure") } catch (_: java.io.IOException) { }
+        assertEquals(1, library.snapshot().getJSONArray("bookmarks").length())
+        assertEquals(before, disk)
+        assertEquals("invalid_address", library.edit(JSONObject().put("action", "toggle_bookmark").put("url", "https://example.com/?access_token=secret")))
+    }
     @Test fun onlyWebAddressesEnterTheBrowser() {
         assertEquals("https://www.bilibili.com", WebBrowserAddress.normalize(" www.bilibili.com "))
         assertEquals("http://192.168.1.2:8000/video", WebBrowserAddress.normalize("http://192.168.1.2:8000/video"))

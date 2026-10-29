@@ -8,12 +8,73 @@ func check(ok: bool, message: String) -> void:
 	checks += 1
 	if not ok: failures.append(message)
 func _initialize() -> void: call_deferred("run")
+func ray_to(window: Node3D, point: Vector2) -> Array:
+	return [window.to_global(Vector3(point.x, point.y, 0.8)), -window.global_basis.z]
+
+func check_resize_feedback(pip: RefCounted, window: Node3D, head: Transform3D) -> void:
+	var initial: Transform3D = window.global_transform
+	var initial_size: Vector2 = window.size
+	window.controls = false; window.refresh()
+	check(window._resize_handles.size() == 3 and window._resize_handles.values().all(func(h): return not h.node.visible), "Exactly three resize cues are hidden at rest")
+	for point in [window.corner_point(0), window.corner_point(1), window.corner_point(2), window.edge_point(0), window.edge_point(2)]:
+		var hit: Dictionary = window.window_hit.callv(ray_to(window, point))
+		check(window.resize_handle(hit) == -1, "Removed corners and edges cannot capture resize")
+	var corner: Array = ray_to(window, window.corner_point(3))
+	var right: Array = ray_to(window, window.edge_point(3))
+	var handle: Dictionary = window._resize_handles[3]
+	var generation: int = window._buttons_generation
+	pip.update_input({"right_hand": corner}, {}, head, 100)
+	check(not window.controls and handle.node.visible and handle.halo.visible and handle.mark.scale.x > 1, "A direct handle hit gives immediate feedback before the toolbar delay")
+	check(handle.mark.material_override.get_shader_parameter("surface_color") == Color.WHITE and window._pointers.right_hand.dot.visible, "Hover brightens the actual handle and places the ray reticle on it")
+	check(window._buttons_generation == generation, "Hover feedback does not rebuild the toolbar")
+	pip.update_input({"left_hand": right, "right_hand": corner}, {}, head, 110)
+	check(handle.halo.visible and window._resize_handles[7].halo.visible, "Both rays can identify their own handles")
+	pip.cancel_pointer("left_hand")
+	check(handle.halo.visible and not window._resize_handles[7].halo.visible, "Losing one pointer preserves the other hand's feedback")
+	pip.update_input({}, {}, head, 120)
+	check(window._resize_handles.values().all(func(h): return not h.halo.visible and not h.node.visible), "Losing both pointers clears hover without leaving invisible targets lit")
+	# The generous bottom hit area must end before the toolbar begins.
+	window.controls = true; window.refresh()
+	var padded: Array = ray_to(window, window.edge_point(1) + Vector2(0, -0.024))
+	check(window.resize_handle(window.window_hit.callv(padded)) == 5 and window.ray_hit.callv(padded).is_empty(), "Bottom handle padding does not overlap the toolbar")
+	var button: Dictionary = window._buttons.filter(func(b): return b.target == 5)[0]
+	var toolbar := [button.node.to_global(Vector3(0, 0, 0.8)), -window.global_basis.z]
+	pip.update_input({"right_hand": toolbar}, {}, head, 200)
+	check(window._resize_handles.values().all(func(h): return not h.halo.visible), "Toolbar hover never advertises a resize operation")
+	for edge in [3, 1]:
+		window.set_size(initial_size); window.global_transform = initial
+		var point: Vector2 = window.edge_point(edge)
+		var anchor: Vector3 = window.to_global(Vector3(-point.x, -point.y, 0))
+		var ray := ray_to(window, point)
+		check(pip.press("right_hand", "trigger_click", ray, null, head) and pip.resize.get("edge", -1) == edge, "Right and bottom handles capture the correct resize axis")
+		var held: Dictionary = window._resize_handles[4 + edge]
+		check(held.halo.visible and held.mark.scale.x == 1.5 and held.mark.material_override.get_shader_parameter("surface_color").r == 1.0, "Held feedback appears immediately on trigger down")
+		var delta := Vector2(0.12, 0) if edge == 3 else Vector2(0, -0.12)
+		pip.update_input({"right_hand": ray_to(window, point + delta)}, {}, head, 1000)
+		var axis := 0 if edge == 3 else 1
+		check(window.size[axis] > initial_size[axis] and is_equal_approx(window.size[1 - axis], initial_size[1 - axis]), "Edge dragging changes only its own dimension")
+		point = -window.edge_point(edge)
+		check(window.to_global(Vector3(point.x, point.y, 0)).distance_to(anchor) < 0.0001, "Edge dragging leaves the opposite edge anchored")
+		pip.update_input({"right_hand": [Vector3.ZERO, Vector3.UP]}, {}, head, 2000)
+		check(window.controls and window._resize_handles[4 + edge].halo.visible, "Captured handle stays lit even when the ray misses the window")
+		check(not pip.release("left_hand", "trigger_click") and window._resize_active == 4 + edge, "The other hand cannot release active feedback")
+		check(pip.release("right_hand", "trigger_click") and window._resize_active == -1, "Owner release clears held feedback")
+	window.set_size(initial_size); window.global_transform = initial
+	for cancel in ["tracking", "pointer", "interaction"]:
+		pip.press("right_hand", "trigger_click", ray_to(window, window.corner_point(3)), null, head)
+		if cancel == "tracking": pip.update_input({}, {}, head, 3000)
+		elif cancel == "pointer": pip.cancel_pointer("right_hand")
+		else: pip.cancel_interaction()
+		check(pip.resize.is_empty() and window._resize_active == -1 and window._resize_handles.values().all(func(h): return not h.halo.visible), "Cancellation clears the resize owner and its visual feedback: " + cancel)
+	window.controls = false; window.refresh()
+
 func run() -> void:
 	var video := PipTest.Surface.new(); root.add_child(video); video.geometry = 3; video._apply_geometry()
 	var head := Transform3D(Basis(Vector3.FORWARD, 0.3), Vector3(0, 1.5, 0))
 	video.pip.set_count(1, head)
 	var pip: RefCounted = video.pip
 	var window: Node3D = pip.windows[1]
+	check_resize_feedback(pip, window, head)
 	window.global_basis *= Basis(Vector3.FORWARD, 0.4)
 	var direction: Vector3 = (window.global_position - head.origin).normalized()
 	var pose := Transform3D(Basis.looking_at(direction), head.origin)

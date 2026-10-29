@@ -19,7 +19,7 @@ class Cinema extends RefCounted:
 
 class Viewer extends Node3D:
 	var local_uri := "content://hand/video"
-	var media := {"state": "playing"}
+	var media := {"state": "playing", "session_id": 1}
 	var disc := preload("res://scripts/disc_titles.gd").new()
 	var cinema := Cinema.new()
 	var geometry := 1
@@ -27,6 +27,7 @@ class Viewer extends Node3D:
 	var turned := Vector2.ZERO
 	func corner_at(_origin: Vector3, _direction: Vector3) -> int: return -1
 	func set_corner_hover(_corner: int) -> void: pass
+	func manual_portrait_pose() -> void: pass
 	func turn_view(yaw: float, pitch: float) -> void: turned += Vector2(yaw, pitch)
 
 func check(ok: bool, label: String) -> void:

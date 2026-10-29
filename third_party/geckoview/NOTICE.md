@@ -9,6 +9,10 @@ The player plugin and Godot Android export include this module and its pinned en
 - Corresponding source: https://hg.mozilla.org/releases/mozilla-release/rev/5add844c26613d7e4d84c799d6e23cf987b1240d
 - Java sources: https://maven.mozilla.org/maven2/org/mozilla/geckoview/geckoview/159.0.20261022150525/geckoview-159.0.20261022150525-sources.jar
 - License: Mozilla Public License 2.0; see LICENSE-MPL-2.0.txt. Preserve upstream third-party notices when packaging the engine.
+- In-app third-party notices: ThirdPartyNotices-1.txt and ThirdPartyNotices-2.txt,
+  extracted from this exact AAR's assets/omni.ja license.html. HTML markup was
+  removed, all notice text retained, and the result split to fit the reader's
+  per-file limit. Provenance and text hashes are in ../player-licenses/additional-sources.json.
 - ARM64 AAR: 91,438,730 bytes; SHA-256 `fe774fc331941c8d9bab342426286ca168420de0a1d763eead64bb64191925a8`, verified against Mozilla's published Gradle module metadata.
 
 Do not strip the AAR's SDK requirements to make it build: the published artifact

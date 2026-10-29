@@ -1,9 +1,9 @@
 {
   "manifest_version": 2,
   "name": "Thru3D video handoff",
-  "version": "1.4",
+  "version": "1.8",
   "browser_specific_settings": { "gecko": { "id": "web-video@thru3d.local" } },
-  "permissions": ["nativeMessaging", "nativeMessagingFromContent", "geckoViewAddons", "cookies",
+  "permissions": ["nativeMessaging", "nativeMessagingFromContent", "geckoViewAddons", "cookies", "webRequest", "http://*/*", "https://*/*",
     "https://*.youtube.com/*", "https://*.bilibili.com/*", "https://*.douyin.com/*", "https://*.iesdouyin.com/*",
     "https://*.weibo.com/*", "https://*.weibo.cn/*", "https://*.iqiyi.com/*", "https://*.mgtv.com/*",
     "https://*.qq.com/*", "https://*.youku.com/*", "https://*.vimeo.com/*", "https://*.dailymotion.com/*",
@@ -13,7 +13,7 @@
     "https://*.twitter.com/*", "https://*.x.com/*", "https://*.reddit.com/*", "https://*.redd.it/*",
     "https://*.streamable.com/*", "https://*.ted.com/*", "https://*.archive.org/*", "https://*.rumble.com/*",
     "https://*.odysee.com/*", "https://*.nicovideo.jp/*", "https://*.nico.ms/*", "https://*.naver.com/*", "https://*.kakao.com/*"],
-  "background": { "scripts": ["background.js"], "persistent": true },
+  "background": { "scripts": ["background.js", "network.js"], "persistent": true },
   "content_scripts": [{
     "matches": ["http://*/*", "https://*/*"],
     "js": ["media.js"],

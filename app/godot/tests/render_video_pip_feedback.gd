@@ -43,8 +43,28 @@ func run() -> void:
 			var row_image: Image = await draw()
 			check(row_image.save_png(output.path_join("entry-row-%d-%d.png" % [int(bookmarks),int(music)]))==OK,"Optional entry row rendered")
 	menu.queue_free(); await process_frame
-	camera.size = 0.7
+	camera.size = 0.85
 	var window := WindowScript.new(); viewport.add_child(window); window.position = Vector3(0, 0.05, -2)
+	window.frame.visible = true
+	window.frame.material_override = window._material(Color(0.12, 0.22, 0.28), 1)
+	window.controls = true; window.refresh()
+	for state_name in ["rest", "right", "bottom", "corner", "held"]:
+		window.set_resize_feedback({}, true)
+		window.cancel_pointer("right_hand")
+		var point: Vector2 = window.corner_point(3) if state_name in ["corner", "held"] else window.edge_point(3 if state_name == "right" else 1)
+		if state_name == "held": window.set_resize_feedback({"corner": 3}, false)
+		elif state_name != "rest": window.update_pointer("right_hand", window.to_global(Vector3(point.x, point.y, 0.8)), -window.global_basis.z, true)
+		var feedback: Image = await draw()
+		check(feedback.save_png(output.path_join("resize-feedback-%s.png" % state_name)) == OK, "Resize state rendered: " + state_name)
+		if state_name != "rest":
+			var centre := Vector2i(camera.unproject_position(window.to_global(Vector3(point.x, point.y, 0))))
+			var ink := 0
+			for y in range(centre.y - 18, centre.y + 18):
+				for x in range(centre.x - 18, centre.x + 18):
+					var pixel := feedback.get_pixel(x, y)
+					if pixel.r > 0.85 and pixel.g > 0.6: ink += 1
+			check(ink > 20, "Resize feedback produces bright pixels at the hit location: " + state_name)
+	window.set_resize_feedback({}, true); window.cancel_pointer("right_hand")
 	window.controls = true; window.shape_open = true; window.refresh()
 	for shape in [0, 3]:
 		window.set_aspect(shape)

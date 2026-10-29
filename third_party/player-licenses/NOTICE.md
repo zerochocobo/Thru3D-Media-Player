@@ -10,7 +10,7 @@ They do not replace each dependency's original notices or source records.
 - Godot OpenXR Vendors: all six original vendor license files from addon 5.1.0.
 - RVM and Depth Anything: the model license files already recorded in this repository.
 - Hands and panorama: existing source/author notices beside the shipped assets.
-- Media3: the unmodified Apache 2.0 text; upstream is AndroidX Media3 1.10.1
+- Media3: the unmodified Apache 2.0 text; upstream is AndroidX Media3 1.11.1
   (https://github.com/androidx/media), licensed by The Android Open Source Project.
 - CodeLibs JCIFS: the unmodified LGPL 2.1 text; upstream version 3.0.4
   (https://github.com/codelibs/jcifs). Source files retain their original author notices.
@@ -22,3 +22,12 @@ They do not replace each dependency's original notices or source records.
 Godot engine and its compiled dependency notices are read from Engine's runtime
 license/copyright APIs. MPV/FFmpeg, p115rsacipher, Gradle and CC0 use existing
 third_party assets directly. The index is app/godot/i18n/licenses.json.
+
+The same index now supplies both Credits and Open source licenses. Additional
+runtime notices were checked against the pinned source archives, model records,
+Gradle dependencies and Android runtime payloads on 2026-10-29. Exact upstream
+URLs, archive hashes and extracted-text hashes are in additional-sources.json.
+GeckoView's built-in license page and ONNX Runtime's ThirdPartyNotices are split
+into ordered text assets to respect the reader's 256 KiB per-file bound.
+Full upstream texts remain in English. Component names and license identifiers
+are shared across the four interface languages.

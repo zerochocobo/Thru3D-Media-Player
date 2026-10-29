@@ -7,6 +7,8 @@ uniform float cinema_light_mix : hint_range(0.0, 1.0) = 1.0;
 uniform vec3 film_left = vec3(0.0);
 uniform vec3 film_center = vec3(0.0);
 uniform vec3 film_right = vec3(0.0);
+// Debug A/B only: 1 skips the sRGB conversions, 2 draws flat colour without texture reads.
+uniform int debug_probe = 0;
 varying vec3 baked_light;
 
 vec3 decode_srgb(vec3 v) {
@@ -27,8 +29,13 @@ void vertex() {
 }
 
 void fragment() {
-	vec3 surface = texture(surface_texture, UV).rgb;
-	if (OUTPUT_IS_SRGB) surface = decode_srgb(surface);
-	vec3 color = surface * baked_light;
-	ALBEDO = OUTPUT_IS_SRGB ? encode_srgb(color) : color;
+	if (debug_probe == 2) {
+		ALBEDO = vec3(0.2);
+	} else {
+		bool srgb = OUTPUT_IS_SRGB && debug_probe == 0;
+		vec3 surface = texture(surface_texture, UV).rgb;
+		if (srgb) surface = decode_srgb(surface);
+		vec3 color = surface * baked_light;
+		ALBEDO = srgb ? encode_srgb(color) : color;
+	}
 }

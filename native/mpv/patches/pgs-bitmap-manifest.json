@@ -9,13 +9,13 @@
     "demux/demux.h": "b711e530a1c63caa4d746b178f67da10e325f32342dc65f3540a7fac9052b793"
   },
   "patched_files_sha256": {
-    "player/client.c": "b5f4323a4f41d824011ec24c1ef8fbc6d57188b8a9b935bc85a4e06f11652b52",
+    "player/client.c": "402b1a4d3b6d47052ccd295b0ad8d58f31594ddc3a6421a68234d6a627e7a1d6",
     "demux/demux.h": "a9c56fe1075387d515878316c9e92f1102aa8d757d8536fbcc7265855f566937",
     "demux/demux.c": "538c076dbb45a2383e095294e67f65633be4585082b4cc1e73212748089d7836",
     "sub/dec_sub.h": "16cb233af2640dc87fcfd53b9c8c0a583f204f65f0e24c42ffb368b7547d5e45",
     "sub/dec_sub.c": "addb8644847e6947e83c8d5143b0bed6a104949e36e5bfa2794c996c0e520786",
     "include/mpv/quest_subtitle.h": "d5f16d18dbef6042570adad52c42cee9df6cd35a27ddf067611ff4c0addb7261"
   },
-  "patch_sha256": "33cd8a5ff7078b86366db820a9c5a2d88308f8bb24326fba9c4d1af1f911dd77",
+  "patch_sha256": "6b121f4a18142855aba600acffa51c1bc5b9c34419fd3577a05ca879f0505197",
   "private_header_sha256": "d5f16d18dbef6042570adad52c42cee9df6cd35a27ddf067611ff4c0addb7261"
 }

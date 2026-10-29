@@ -1,0 +1,18 @@
+MOSS-TTS-Nano 100M / MOSS-Audio-Tokenizer-Nano
+OpenMOSS and contributors
+https://github.com/OpenMOSS/MOSS-TTS-Nano/tree/8b7bcc9341b3b4ef3a3a58ba1338a7d85ff133eb
+
+Speech model and preset prompt-code source:
+https://huggingface.co/OpenMOSS-Team/MOSS-TTS-Nano-100M-ONNX/tree/f52645cb467506d8e18e746ddd59482685b74e58
+Audio tokenizer / reference encoder:
+https://huggingface.co/OpenMOSS-Team/MOSS-Audio-Tokenizer-Nano-ONNX/tree/ceff0d0749bfb3fa2d61149794ec6feef0d1e1ae
+
+The upstream repository and model metadata declare Apache License 2.0.
+See LICENSE.MOSS for the full text. Thru3D uses an adapted native inference
+implementation, locally prepared INT8 weights and 12 selected preset prompt
+codes. Original reference recordings are not included in the application.
+The packaged model and encoder files are pinned by model.json and clone_model.json.
+
+The model license is not a separate verification of the provenance or rights
+of every reference recording used to create preset prompt codes. That
+recording-by-recording review remains unresolved.

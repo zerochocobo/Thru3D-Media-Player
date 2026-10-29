@@ -120,6 +120,7 @@ internal class WebVideoTrack(
     val formatId: String, val url: URI, headers: Map<String, String>, val extension: String,
     val videoCodec: String, val audioCodec: String, val width: Int, val height: Int, val fps: Double,
     val bitrate: Double = 0.0, val chunkBytes: Long = 0, val projectionHint: String = "", val transport: String = "file", val pageLayout: String = "", val sourcePreference: Double = 0.0,
+    val browserHeaders: WebVideoRequestHeaders? = null,
 ) {
     val headers: Map<String, String> = java.util.Collections.unmodifiableMap(LinkedHashMap(headers))
     val hasVideo get() = videoCodec.isNotBlank() && videoCodec != "none"
@@ -200,6 +201,7 @@ internal object WebVideoFormats {
             f.optJSONObject("downloader_options")?.optLong("http_chunk_size", 0) ?: 0,
             f.optString("format_note").lowercase(Locale.ROOT).let { note ->
                 when { Regex("\\bmesh\\b").containsMatchIn(note) -> "mesh"; "equirectangular" in note -> "equirectangular"; else -> "" }
-            }, if (hls) "hls" else "file", f.optString("web_layout"), f.optDouble("quality", 0.0).takeIf { it.isFinite() } ?: 0.0)
+            }, if (hls) "hls" else "file", f.optString("web_layout"), f.optDouble("quality", 0.0).takeIf { it.isFinite() } ?: 0.0,
+            WebVideoRequestHeaders.parse(f))
     }
 }

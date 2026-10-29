@@ -1,0 +1,28 @@
+Web video extraction runtime
+
+yt-dlp 2026.10.26 — yt-dlp contributors — Unlicense
+https://github.com/yt-dlp/yt-dlp/tree/2026.10.26
+yt-dlp-ejs 0.8.0 — yt-dlp contributors — Unlicense
+https://github.com/yt-dlp/ejs/tree/0.8.0
+The EJS solver bundles Meriyah and Astring. Their original attribution and
+license text are copied from the shipped solver headers into NOTICE.ejs.txt.
+
+youtubedl-android 0.18.1 — yausername, junkfood02 and contributors — GPL-3.0
+https://github.com/yausername/youtubedl-android/tree/0.18.1
+Maven artifact: io.github.junkfood02.youtubedl-android:library:0.18.1
+The application uses the library/common runtime and a local extraction wrapper.
+Its optional FFmpeg and aria2c packages are not used.
+
+CPython 3.12.11 — Python Software Foundation and contributors
+https://github.com/python/cpython/tree/v3.12.11
+See LICENSE.python for the PSF license and historical license notices.
+QuickJS 2025-04-26 — Fabrice Bellard, Charlie Gordon and contributors — MIT
+https://bellard.org/quickjs/quickjs-2025-04-26.tar.xz
+See LICENSE.quickjs. Versions were read from the pinned Android ARM64 runtime.
+
+The Android Python distribution also contains OpenSSL, SQLite, libffi, Expat,
+zlib, bzip2, XZ/liblzma, ncurses, GNU Readline, GDBM, libcrypt, Android support
+libraries and the C++ runtime. These components retain their respective
+licenses; the Python PSF license does not replace them. The exact source and
+notice inventory for this prebuilt native dependency bundle remains part of
+the separate distribution review.

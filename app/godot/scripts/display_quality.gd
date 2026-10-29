@@ -71,10 +71,10 @@ static func load_supersampling(settings: ConfigFile) -> int:
 
 ## Playback refresh rate: the highest rate a video may raise the display to. Matching the video's
 ## frame rate shows every frame for the same number of refreshes; higher rates cost GPU time and heat.
-## 120 Hz by default: below it 60 fps has no even rate and plays at 72 Hz, repeating one frame in
-## five. Quest 3 holds 120 fps for 8K60 layer playback (2026-10-24); low-end GPUs stop at 90 Hz.
+## Default to the 72 Hz power-saving cap. Higher caps remain opt-in for steadier video cadence;
+## saved choices are preserved, and low-end GPUs stop at 90 Hz.
 const REFRESH_CAPS := [120, 90, 72]
-const DEFAULT_REFRESH_CAP := 120
+const DEFAULT_REFRESH_CAP := 72
 const REFRESH_NAMES := {120: "Up to 120 Hz", 90: "Up to 90 Hz", 72: "72 Hz · Power saving"}
 const REFRESH_INFO := "Steadier motion at higher refresh rates, with a higher GPU load."
 const REFRESH_HINTS := {120: "60 fps → 120 Hz, 30 fps → 90 Hz · steadiest picture, highest GPU load",

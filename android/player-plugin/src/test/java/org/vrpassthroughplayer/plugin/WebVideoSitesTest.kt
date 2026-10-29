@@ -5,6 +5,30 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class WebVideoSitesTest {
+    @Test fun serverPlaybackKeepsVersionAndCredentialsPrivate() {
+        for ((base, id) in listOf("http://192.168.1.20:8096" to "21", "https://example.test/jellyfin" to "a123bc")) {
+            val frame = "$base/web/index.html#!/videoosd?api_key=page-secret"
+            val tokenName = if (base.contains("jellyfin")) "ApiKey" else "api_key"
+            val media = JSONObject().put("server", true).put("frame", frame)
+                .put("source", "$base/Videos/$id/master.m3u8?MediaSourceId=version_2&$tokenName=test-secret&StartTimeTicks=450000000&VideoCodec=h264")
+            val page = WebVideoBrowserCapture.serverPage(frame, media)!!
+            val result = WebVideoFormats.select(page, WebVideoBrowserCapture.formats(media)!!) { true }
+            assertEquals("media_server", page.site)
+            assertEquals("file", result.video.transport)
+            assertTrue(result.video.url.path.endsWith("/Videos/$id/stream"))
+            assertTrue(result.video.url.rawQuery.contains("Static=true&MediaSourceId=version_2"))
+            assertFalse(result.video.url.rawQuery.contains("StartTimeTicks"))
+            assertTrue(result.video.url.rawQuery.contains("$tokenName=test-secret"))
+            assertFalse(result.publicJson().toString().contains("secret"))
+            assertTrue(page.url.contains("MediaSourceId=version_2"))
+            assertNull(WebVideoBrowserCapture.serverPage(frame, JSONObject(media.toString()).put("protected", true)))
+            assertNull(WebVideoBrowserCapture.serverPage(frame, JSONObject(media.toString()).put("server", false)))
+            for (source in listOf("http://another.test/Videos/$id/stream?api_key=x&MediaSourceId=y", "$base/Videos/$id/stream?MediaSourceId=y",
+                "$base/Videos/$id/stream?api_key=x&MediaSourceId=y&LiveStreamId=live", "$base/Videos/$id/hls/1.ts?api_key=x&MediaSourceId=y")) {
+                assertNull(WebVideoBrowserCapture.serverPage(frame, JSONObject(media.toString()).put("source", source)))
+            }
+        }
+    }
     @Test fun mediaAccessFailureKeepsItsCauseDuringProjectionInspection() {
         for (status in listOf(401, 403)) {
             assertEquals("site_rejected", WebVideoResolver.failureCode(MediaServerFailure("denied", status), "projection"))

@@ -47,3 +47,8 @@ def verifyBrowserEngine = tasks.register('verifyBrowserEngine') {
     }
 }
 tasks.named('preBuild').configure { dependsOn verifyBrowserEngine }
+
+// The visibility policy test checks the featured-site badges in the Godot catalog.
+tasks.withType(Test).configureEach {
+    inputs.file('../../app/godot/scripts/web_video_sites.gd')
+}

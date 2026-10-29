@@ -9,7 +9,7 @@
  
  /*
   * Locking hierarchy:
-@@ -2247,3 +2249,75 @@
+@@ -2247,3 +2249,76 @@
      mp_mutex_unlock(&clients->lock);
      return found;
  }
@@ -53,7 +53,8 @@
 +    struct track *track = ctx->mpctx->current_track[0][STREAM_SUB];
 +    struct sub_bitmaps *images = NULL;
 +    if (track && track->d_sub && track->stream &&
-+        !strcmp(track->stream->codec->codec, "hdmv_pgs_subtitle"))
++        (!strcmp(track->stream->codec->codec, "hdmv_pgs_subtitle") ||
++         !strcmp(track->stream->codec->codec, "dvd_subtitle")))
 +    {
 +        frame.track_id = track->user_tid;
 +        // Hidden bitmap subtitles do not get VO redraws. A paused track switch

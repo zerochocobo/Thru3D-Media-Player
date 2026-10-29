@@ -15,6 +15,7 @@ exec 9>"$work/build-source.lock"
 flock -n 9 || { echo 'A source build already owns this environment' >&2; exit 3; }
 python3 "$repo/tools/environment/mpv-linux/prepare_sources.py"
 bash "$repo/tools/environment/mpv-linux/build_bluray.sh"
+bash "$repo/tools/environment/mpv-linux/build_dvd.sh"
 
 log="$repo/build/output/logs/mpv-source-build-$(date -u +%Y%m%dT%H%M%SZ).log"
 options=(--arch arm64)

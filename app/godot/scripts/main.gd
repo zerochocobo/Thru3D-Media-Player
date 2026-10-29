@@ -173,6 +173,7 @@ var capture_overlay: Node3D
 var disc_menu_bar: Node3D
 var seek_overlay: Node3D
 var immersive_adjustment_overlay: Node3D
+var picture_center_guide: Node3D
 var seek_feedback := SeekFeedback.new()
 var stick_controls := StickControls.new()
 const ImmersiveAdjustments := preload("res://scripts/immersive_adjustments.gd")
@@ -302,6 +303,10 @@ func _ready() -> void:
 	immersive_adjustment_overlay = preload("res://scripts/immersive_adjustment_overlay.gd").new()
 	immersive_adjustment_overlay.source = _immersive_adjustment_sample
 	camera.add_child(immersive_adjustment_overlay)
+	picture_center_guide = preload("res://scripts/picture_center_guide.gd").new()
+	picture_center_guide.source = _picture_center_sample
+	picture_center_guide.aligned.connect(_on_picture_center_aligned)
+	add_child(picture_center_guide)
 	# Eye-buffer render scale: the background and shader-drawn media. Compositor layers (menus,
 	# layer video and photos) keep their own resolution.
 	display_quality = Quality.load_quality(settings)
@@ -409,8 +414,9 @@ func _ready() -> void:
 	recent_menu.file_deleted.connect(_forget_deleted_file)
 	recent_menu.settings_provider = _library_settings
 	recent_menu.chosen.connect(_on_library_chosen)
-	recent_menu.browser_opened.connect(video.pause_playback)
+	recent_menu.browser_opened.connect(_on_web_browser_opened)
 	recent_menu.web_browser.cinema_provider = func(): return cinema_environment.snapshot().get("screen", {}) if _cinema_scene_active() else {}
+	recent_menu.web_browser.cinema_video_provider = _browser_keeps_cinema_video
 	recent_menu.cast_requested.connect(cast_session.command)
 	recent_menu.archives.opening.connect(func():
 		if photo and photo.archive_mode: photo.close_image())
@@ -508,7 +514,7 @@ func _ready() -> void:
 		menu_composition.debug_pixel_scale = float(settings.get_value("debug", "menu_layer_scale", 0.0))
 		menu_composition.debug_bands = bool(settings.get_value("debug", "menu_layer_bands", false))
 	menu_composition.configure(origin, camera, display, [recent_menu, video_menu, photo_menu, music_menu], low_end_gpu)
-	recent_menu.web_browser.low_end = low_end_gpu
+	recent_menu.web_browser.configure_quality(low_end_gpu)
 	recent_menu.web_browser.window_created = menu_composition.register_companion
 	menu_composition.register_companion(disc_menu_bar)
 	photo_magazine_controls = PhotoMagazineControls.new(); add_child(photo_magazine_controls)
@@ -727,6 +733,7 @@ func _on_controller_release(action: String, hand: String = "") -> void:
 
 func _finish_interface_move() -> void:
 	if interface_move.capture.is_empty(): return
+	if picture_center_guide: picture_center_guide.release(str(interface_move.capture.hand))
 	if interface_move.capture.moved:
 		_menu_touched_ms = Time.get_ticks_msec()
 		var head: Variant = _head_pose()
@@ -771,6 +778,7 @@ func _on_pointer_release(action: String, hand: String) -> void:
 		stick_controls.suspend()
 		return
 	if action == "trigger_click" and not _grab.is_empty() and _grab.hand == hand:
+		if picture_center_guide: picture_center_guide.release(hand)
 		var grab := _grab
 		_grab = {}
 		_viewer().set_corner_hover(-1)
@@ -1054,7 +1062,7 @@ func _begin_interface_move(hand: String, input: String) -> void:
 		var host: Node3D = recent_menu.web_browser.windows.get(int(hit.get("window", 1)))
 		var world_point: Vector3 = menu.to_global(hit.point)
 		recent_menu.web_browser.focus_window(host.window_id)
-		if interface_move.begin(hand, input, pose, [{"node": host, "kind": "detail", "pose": host.global_transform, "key": _menu_key(host), "upright_facing": true, "face_center": host.CENTRE}], world_point, head): stick_controls.suspend()
+		if interface_move.begin(hand, input, pose, [host.move_target(_menu_key(host))], world_point, head): stick_controls.suspend()
 		return
 	var surface := _viewer()
 	var media_anchor: Variant = _media_move_anchor(surface, ray)
@@ -1088,7 +1096,52 @@ func _begin_interface_move(hand: String, input: String) -> void:
 			target["cinema"] = target.node == video and video.cinema.active(video)
 		elif target.kind == "gallery": target["distance_limits"] = photo.gallery.DISTANCE_LIMITS
 	var anchor: Vector3 = menu.to_global(hit.point) if not hit.is_empty() else media_anchor
-	if interface_move.begin(hand, input, pose, targets, anchor, head, view_follow.enabled): stick_controls.suspend()
+	if interface_move.begin(hand, input, pose, targets, anchor, head, view_follow.enabled):
+		stick_controls.suspend()
+		if surface: interface_move.capture["picture_center_identity"] = _picture_center_identity(surface)
+		if picture_center_guide: picture_center_guide.clear()
+
+func _picture_center_identity(surface: Node3D) -> String:
+	var session: int = photo.index if photo_active else video.media.session_id
+	return "%s:%s:%s:%s" % [surface.get_instance_id(), surface.local_uri, session, surface.geometry]
+
+## Both references are passive; capture ownership stays with the existing movement code.
+func _picture_center_sample() -> Dictionary:
+	if interface_move.capture.is_empty() and _grab.is_empty() and (not picture_center_guide or picture_center_guide.identity.is_empty()): return {}
+	if not _input_focused() or _watch_owned or (puzzle_game and puzzle_game.active): return {}
+	var head: Variant = _head_pose()
+	if not head is Transform3D: return {}
+	var surface := _viewer()
+	if not surface or surface.local_uri.is_empty() or not surface.panel or not surface.panel.visible: return {}
+	# Direction alignment is useful for immersive content, not movable flat screens.
+	if surface.geometry == Geometry.Geometry.FLAT: return {}
+	if photo_active and (photo.inspect or photo.gallery.overview()): return {}
+	if not photo_active and video.pip.blocked(): return {}
+	var menu := _active_menu()
+	if menu and (_menu_captured(menu) or (menu != player_menu and menu != photo_menu)): return {}
+	if not photo_active and menu and menu == player_menu and not player_menu.allows_playback_sticks(): return {}
+	var hand := ""
+	var identity := _picture_center_identity(surface)
+	if not interface_move.capture.is_empty():
+		if not interface_move.capture.targets.any(func(target): return target.node == surface and target.kind == "immersive"): return {}
+		if interface_move.capture.get("picture_center_identity", "") != identity: return {}
+		hand = str(interface_move.capture.hand)
+		if _move_pose(hand) == null: return {}
+	elif not _grab.is_empty():
+		if _grab.has("resize") or _grab.has("inspect") or _grab.get("tap_only", false): return {}
+		if _grab.get("picture_center_identity", "") != identity: return {}
+		hand = str(_grab.hand)
+		if _ray(hand) == null: return {}
+	return {"head": head, "centre": surface.picture_center_world(), "held": not hand.is_empty(), "hand": hand,
+		"identity": identity}
+
+func _on_picture_center_aligned(hand: String) -> void:
+	if not _input_focused() or hand not in ["left_hand", "right_hand"]: return
+	var sample := _picture_center_sample()
+	if not sample.get("held", false) or sample.get("hand", "") != hand: return
+	var controller := left_controller if hand == "left_hand" else right_controller
+	if controller is XRController3D and _controller_allowed(hand) and controller.get_is_active() and controller.get_has_tracking_data():
+		controller.trigger_haptic_pulse("haptic", 0.0, picture_center_guide.HAPTIC_AMPLITUDE, picture_center_guide.HAPTIC_DURATION, 0.0)
 
 func _media_move_anchor(surface: Node3D, ray: Variant) -> Variant:
 	if surface == null or surface.local_uri.is_empty() or ray == null: return null
@@ -2032,7 +2085,8 @@ func _begin_grab(hand: String, keep_controls: bool = false) -> void:
 		return
 	var angles := _ray_angles(ray[1])
 	_grab = {"hand": hand, "start": angles, "last": angles, "moved": false,
-		"start_direction": ray[1], "last_direction": ray[1]}
+		"start_direction": ray[1], "last_direction": ray[1], "picture_center_identity": _picture_center_identity(_viewer())}
+	if picture_center_guide: picture_center_guide.clear()
 	if _is_photo_hand(hand) or (photo_active and photo.gallery.overview()):
 		_grab["tap_only"] = true
 		return
@@ -2526,6 +2580,7 @@ func _prepare_cast_switch() -> void:
 	photo_hands.cancel(); photo_swipe.cancel(); memory_swipe.cancel()
 
 func _on_library_chosen(uri: String, title: String, retained_photo: Dictionary = {}) -> void:
+	var keep_browser: bool = recent_menu != null and recent_menu.web_browser.active() and recent_menu.collections.selected_entry.get("uri", "") == uri and recent_menu.collections.selected_entry.get("web_handoff", false) and recent_menu.collections.selected_entry.get("keep_browser", false)
 	if recent_menu:
 		var selected: Dictionary = recent_menu.collections.selected_entry
 		recent_menu.web_browser.playback_selected(uri, selected.get("uri", "") == uri and selected.get("web_handoff", false))
@@ -2552,7 +2607,7 @@ func _on_library_chosen(uri: String, title: String, retained_photo: Dictionary =
 	video_queue_pages.platform = video.platform
 	if is_comic: video_queue_pages.cancel(); video_queue_pages.context = {}
 	else: video_queue_pages.capture(recent_menu, uri)
-	recent_menu.dismiss()
+	if not keep_browser: recent_menu.dismiss()
 	if player_menu: player_menu.dismiss()
 	_grab = {}
 	stick_controls.suspend()
@@ -2598,7 +2653,9 @@ func _on_library_chosen(uri: String, title: String, retained_photo: Dictionary =
 			recent_menu.web_browser.playback_return.opening = false
 			if metadata.get("web_fullscreen", false): video.loop_enabled = false
 			if not opened: _return_to_web_video.call_deferred(true, uri)
-		if opened: _show_player_menu()
+		if opened:
+			if keep_browser: recent_menu.web_browser.prepare_native_playback()
+			else: _show_player_menu()
 		var context: Dictionary = recent_menu._playback_context.get("photo_directory", {}) if recent_menu._playback_context.get("uri", "") == uri else recent_menu.photo_directory_context()
 		if not context.is_empty(): _start_video_directory(context)
 	# Switching sources through the attached browser must not copy a VR depth pose
@@ -3366,6 +3423,12 @@ func _show_player_menu() -> void:
 		_place_menu(player_menu)
 		_menu_touched_ms = Time.get_ticks_msec()
 		player_menu.toggle()
+
+func _browser_keeps_cinema_video() -> bool:
+	return _cinema_scene_active() and not photo_active and video != null and not video.local_uri.is_empty() and video.geometry == Geometry.Geometry.FLAT
+
+func _on_web_browser_opened() -> void:
+	if not _browser_keeps_cinema_video(): video.pause_playback()
 
 func _show_recent_menu() -> void:
 	memory_swipe.cancel()
@@ -4477,7 +4540,10 @@ func _reposition_cinema_menus() -> void:
 
 func _sync_cinema_screen() -> void:
 	if video and recent_menu:
-		video.set_browser_screen_owned(recent_menu.web_browser.active() and recent_menu.web_browser.windows.values().any(func(item): return item.visible and item.on_screen()))
+		var browser_owns: bool = recent_menu.web_browser.active() and recent_menu.web_browser.windows.values().any(func(item): return item.visible and item.on_screen())
+		# Explicitly putting a webpage on the movie screen replaces its presentation.
+		if browser_owns and not video.browser_screen_owned: video.pause_playback()
+		video.set_browser_screen_owned(browser_owns)
 	_sync_cinema_lights()
 	_sync_cinema_transport()
 	if not video: return
@@ -5335,6 +5401,7 @@ func _on_display_debug_command(_id: int, payload: String) -> void:
 			_save_fisheye_readback()
 		if command.has("perf_level"): display.debug_performance_level = str(command.perf_level); display.apply_performance_levels()
 		if command.has("foveation"): display.set_foveation(int(command.foveation))
+		if command.has("cinema_probe") and cinema_environment: cinema_environment.set_debug_shader_probe(int(command.cinema_probe))
 		if command.has("render_scale") and display.xr != null and "render_target_size_multiplier" in display.xr:
 			display.xr.render_target_size_multiplier = float(command.render_scale)
 		if video and video.video_layer:

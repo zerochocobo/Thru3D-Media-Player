@@ -9,6 +9,11 @@ class Platform extends Fixture.Platform:
 	var inputs: Array = []
 	var library := {"bookmarks": [], "history": []}
 	var library_commands: Array = []
+	var browser_commands: Array = []
+	func web_browser_command(value: String) -> void:
+		var command: Dictionary = JSON.parse_string(value); browser_commands.append(command)
+		if command.action == "network_capture": browser.network_capture_enabled = bool(command.enabled)
+		if command.action == "pause_tab": browser.pause_token = command.pause_token
 	func web_browser_library_edit(request: String) -> int:
 		library_commands.append(JSON.parse_string(request)); return library_commands.size()
 	func web_browser_input(action: String, text: String) -> void: inputs.append([action, text])
@@ -31,6 +36,27 @@ func _run() -> void:
 	menu.web_browser.open("https://www.youtube.com/watch?v=jNQXAC9IVRw")
 	menu.web_browser.tick()
 	check(menu.web_browser.active(), "Browser is active inside web section")
+	platform.browser.network_capture_available = false; platform.browser.network_capture_enabled = false
+	menu.web_browser.next_poll = 0; menu.web_browser.tick()
+	check(not menu.web_browser.input_host()._buttons.any(func(button): return button.target == Browser.BASE + 15), "Marked native sites hide the toolbar detection entry")
+	menu.web_browser.tabs_open = true; menu.refresh()
+	check(not menu.web_browser.input_host()._buttons.any(func(button): return button.target == Browser.BASE + 15), "Marked native sites also hide the tab-menu detection entry")
+	var commands_before := platform.browser_commands.size()
+	menu.web_browser.action(Browser.BASE + 15)
+	check(platform.browser_commands.size() == commands_before, "A stale hidden detection target cannot change the site preference")
+	menu.web_browser.tabs_open = false; menu.refresh()
+	platform.browser.network_capture_available = true; platform.browser.network_capture_enabled = false
+	menu.web_browser.next_poll = 0; menu.web_browser.tick()
+	check(menu.web_browser.input_host()._buttons.any(func(button): return button.target == Browser.BASE + 15 and button.enabled), "This site's media detection has a ray-selectable toggle")
+	menu.web_browser.tabs_open = true; menu.refresh()
+	check(menu.web_browser.input_host()._buttons.any(func(button): return button.target == Browser.BASE + 15), "Unmarked sites show the tab-menu detection entry even when manually off")
+	menu.web_browser.tabs_open = false; menu.refresh()
+	menu.web_browser.action(Browser.BASE + 15); menu.web_browser.next_poll = 0; menu.web_browser.tick()
+	var capture_command: Dictionary = platform.browser_commands.back()
+	check(capture_command.action == "network_capture" and int(capture_command.window) == 1 and capture_command.enabled == true, "The toggle enables only the current window's site")
+	check(menu.web_browser.data.network_capture_enabled, "The UI reflects the confirmed native preference")
+	menu.web_browser.action(Browser.BASE + 15); menu.web_browser.next_poll = 0; menu.web_browser.tick()
+	check(not menu.web_browser.data.network_capture_enabled, "A second press switches detection off")
 	platform.browser.editing = true; menu.web_browser.next_poll = 0; menu.web_browser.tick()
 	check(not menu.web_browser.input_host()._buttons.any(func(button): return button.target == Browser.KEY), "System input does not draw a second ray keyboard")
 	check(not menu.web_browser.action(Browser.KEY), "Old ray keys cannot commit into a system editor")
@@ -66,7 +92,7 @@ func _run() -> void:
 	platform.web_state = {"id": menu.web_video.pending, "state": "ready", "uri": platform.browser.url, "title": "Video", "height": 1080}
 	menu.web_video.next_poll = 0; menu.web_video.tick()
 	menu.web_browser.next_poll = 0; menu.web_browser.tick()
-	check(chosen.is_empty() and platform.actions.back() == "pause", "Resolved video waits for web playback to pause")
+	check(chosen.is_empty() and platform.browser_commands.back().action == "pause_tab", "Resolved video waits for its source tab to pause")
 	platform.browser.active = false
 	menu.web_browser.next_poll = 0; menu.web_browser.tick()
 	check(chosen.is_empty(), "Inactive browser alone is not proof that audio stopped")

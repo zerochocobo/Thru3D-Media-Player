@@ -4,6 +4,16 @@
 
 Newest first, following product release milestones. Some development/source snapshots contained features before their product release. Original APK identifiers `0.2` and `0.4` are retained; `0.4` was also called `0.4.0` in release notes. Availability depends on device, server and media capabilities.
 
+## 0.15.2 — 2026-10-30
+
+- Add supported unencrypted DVD ISO playback, title/chapter selection and interactive disc menus with controller rays and return-to-menu controls. Include pinned libdvdread/libdvdnav source recipes and notices; encrypted discs and universal disc compatibility are outside this scope.
+- Upgrade the browser to peer windows: up to four visible windows on the higher-performance tier and two on the lower tier, with four total tabs. Add explicit close/merge/tab transfer, bounded viewport resizing, featured-site/bookmark start pages, cinema controls and improved ray/drag behavior. Multiple windows do not imply simultaneous native video playback.
+- Add per-site, opt-in network media detection for eligible browser streams, retaining the website-selected quality when transferable; unsupported/protected streams stay in the browser. Scope handoff progress/cancellation/errors to the source page and keep other browser windows available. Native handoffs no longer add global playback history. Improve Emby/Jellyfin web direct-play/resume handoff and Emby bookmark feedback.
+- Improve interrupted HTTP/TLS recovery and unavailable-video feedback; fix missing Emby folders when media-type filters are active. Site/account/region/codec restrictions still apply; native iQIYI/Douyin handoff is not advertised.
+- Render eligible flat text subtitles on a dedicated compositor layer for clearer edges, retaining size/position/style and fallback. Refine PiP edge/corner resizing, hover and drag feedback.
+- Add fading center-alignment rings/crosshairs and gentle alignment feedback when moving immersive VR180/360/fisheye pictures. Reduce redundant cinema shader work and default playback to 72 Hz power saving while preserving saved refresh choices.
+- Enable the browser in the PICO China channel; curated recommendations show only explicitly marked Chinese sites in every language. Add native-playback compatibility badges and expand in-app third-party credits/notices. No browser profiles, cookies, tokens, media, model weights, keys or personal backups are distributed.
+
 ## 0.15.1 — 2026-10-29
 
 - Add up to four browser tabs and two visible windows, split/merge, dragging/resizing, floating/cinema modes and system-keyboard editing. Refine titled tab navigation, nearby draggable cinema controls, paused/inactive-session recovery and bounded background work.

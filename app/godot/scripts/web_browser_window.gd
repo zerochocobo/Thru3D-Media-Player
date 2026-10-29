@@ -1,12 +1,18 @@
 extends "res://scripts/ray_menu.gd"
 ## Independent browser chrome. Reuses RayMenu hit testing and InterfaceMove placement math.
 const Move := preload("res://scripts/interface_move.gd")
+const Surface := preload("res://scripts/web_browser_surface.gd")
 const RECT := Rect2(-0.59, -0.48, 1.44, 0.90)
 const MOVE := 986030
 const WEB := 986020
 const RESIZE := 986031
-const RESIZE_LEFT := 986032
-const CENTRE := Vector3(0.13, 0, 0)
+const RESIZE_RIGHT := 986032
+const RESIZE_BOTTOM := 986033
+const MIN_PAGE := Vector2(1.44, 1.44 / Surface.MAX_RATIO)
+const MAX_PAGE := Vector2(2.88, 1.80)
+var page_size := RECT.size
+var CENTRE: Vector3:
+	get: return Vector3(0.13 + (page_size.x - RECT.size.x) / 2, -(page_size.y - RECT.size.y) / 2, 0)
 var controller: WeakRef
 var window_id := 1
 var mode := "floating"
@@ -33,7 +39,7 @@ func configure(owner: RefCounted, id: int) -> void:
 func composition_root() -> Node3D: return self
 func _ready() -> void:
 	super()
-	surface = preload("res://scripts/web_browser_surface.gd").new()
+	surface = Surface.new()
 	surface.configure(self, browser.menu.platform, window_id)
 	get_tree().root.add_child(surface)
 func head() -> Transform3D:
@@ -48,46 +54,64 @@ func show_window() -> void:
 func recenter(load_saved: bool = false) -> void:
 	_screen_attached = false; _near_pose = null; _near_applied = null
 	var frame := Move.menu_head(head())
-	var offset := Vector3(-0.78 if window_id == 1 else 0.78, -0.05, -2.2) if browser.paired_layout else Vector3(0, -0.05, -1.8)
-	var factor := 0.9 if browser.paired_layout else 1.0
+	var offset: Vector3 = browser.default_window_offset(window_id)
+	var factor := 1.0
 	if load_saved and OS.get_name() == "Android":
 		var config := ConfigFile.new()
 		if config.load("user://browser_windows.cfg") == OK:
 			var section := layout_section()
-			# Keep existing single-window placements, but do not import the old
-			# right-biased layout into the new symmetric pair defaults.
-			if not browser.paired_layout and not config.has_section(section): section = str(window_id)
+			# Migrate the old layouts once; peers retain one placement regardless of count.
+			if not config.has_section(section): section = ("pair_" if browser.paired_layout else "single_") + str(window_id)
+			if not config.has_section(section): section = str(window_id)
 			var saved: Variant = config.get_value(section, "offset", offset)
 			if saved is Vector3 and saved.is_finite() and saved.length() >= 0.6 and saved.length() <= 8: offset = saved
 			factor = clampf(float(config.get_value(section, "scale", factor)), 0.6, 2.5)
+			var dimensions: Variant = config.get_value(section, "page_size", RECT.size)
+			page_size = clamp_page_size(dimensions) if dimensions is Vector2 and dimensions.is_finite() else RECT.size
 			mode = str(config.get_value(section, "mode", mode))
 			if mode not in ["floating", "cinema"]: mode = "floating"
 	var centre := frame * offset
 	global_transform = Transform3D(Move.face_viewer(centre, head()).scaled(Vector3.ONE * factor), centre)
-	global_position -= global_basis * Vector3(0.13, 0, 0)
+	global_position -= global_basis * CENTRE
 	_sync_presentation()
 	_save_at = Time.get_ticks_msec() + 700
 func layout_section() -> String:
-	return ("pair_" if browser.paired_layout else "single_") + str(window_id)
+	return "window_" + str(window_id)
 func save_layout() -> void:
 	if not placed or OS.get_name() != "Android": return
 	var config := ConfigFile.new(); config.load("user://browser_windows.cfg")
 	var pose := _floating_pose if _screen_attached else global_transform
 	config.set_value(layout_section(), "offset", Move.menu_head(head()).affine_inverse() * (pose * CENTRE))
 	config.set_value(layout_section(), "scale", pose.basis.get_scale().x)
+	config.set_value(layout_section(), "page_size", page_size)
 	config.set_value(layout_section(), "mode", mode)
 	config.save("user://browser_windows.cfg")
 func cinema() -> Dictionary:
 	return browser.cinema_provider.call() if browser.cinema_provider.is_valid() else {}
 func on_screen() -> bool: return mode == "cinema" and not cinema().is_empty()
+func move_centre() -> Vector3:
+	return Vector3(0.13, 0.04 if (browser.tabs_open and browser.focused_window == window_id) or browser.start_page.active(window_id) else 0.505, 0) if on_screen() else CENTRE
+func move_target(key: String) -> Dictionary:
+	return {"node": self, "kind": "detail", "key": key, "pose": global_transform, "upright_facing": true, "face_center": move_centre()}
 func set_mode(value: String) -> void:
 	end_drag(); clear_pointer_visuals()
 	mode = value
 	_sync_presentation()
+func page_rect() -> Rect2:
+	return Rect2(Vector2(RECT.position.x, RECT.end.y - page_size.y), page_size)
+static func clamp_page_size(value: Vector2, edge: int = RESIZE) -> Vector2:
+	var dimensions := value.clamp(MIN_PAGE, MAX_PAGE)
+	# Stop the dragged edge before the CSS viewport falls below the desktop minimum.
+	# Keep the other axis fixed, and apply the same bound when restoring old layouts.
+	if edge == RESIZE_RIGHT:
+		dimensions.x = clampf(dimensions.x, dimensions.y * Surface.MIN_RATIO, dimensions.y * Surface.MAX_RATIO)
+	else:
+		dimensions.y = clampf(dimensions.y, dimensions.x / Surface.MAX_RATIO, dimensions.x / Surface.MIN_RATIO)
+	return dimensions
 func _sync_presentation() -> void:
 	if on_screen():
 		if not _screen_attached: _floating_pose = global_transform; _screen_attached = true
-		var anchor := Vector3(0.13, 0.04 if browser.tabs_open and browser.focused_window == window_id else 0.505, 0)
+		var anchor := move_centre()
 		# A title or grip drag moved the bar: keep it where it was put.
 		if _near_pose != null and _near_applied != null and not global_transform.is_equal_approx(_near_applied):
 			_near_pose = Transform3D(global_basis, global_transform * anchor)
@@ -100,12 +124,13 @@ func _sync_presentation() -> void:
 func page_layout() -> Dictionary:
 	if on_screen():
 		var screen := cinema()
-		var size := RECT.size * minf(float(screen.width) / RECT.size.x, float(screen.height) / RECT.size.y)
+		var size := page_size * minf(float(screen.width) / page_size.x, float(screen.height) / page_size.y)
 		var basis := Basis(Vector3.UP, float(screen.get("yaw", 0.0)))
 		var pose := Transform3D(basis, Vector3(float(screen.position[0]), float(screen.position[1]), float(screen.position[2])) + basis.z * 0.06)
 		return {"pose": pose, "size": size}
-	var pose := global_transform * Transform3D(Basis.IDENTITY, Vector3(RECT.get_center().x, RECT.get_center().y, 0.012))
-	var size := RECT.size * Vector2(pose.basis.get_scale().x, pose.basis.get_scale().y)
+	var bounds := page_rect()
+	var pose := global_transform * Transform3D(Basis.IDENTITY, Vector3(bounds.get_center().x, bounds.get_center().y, 0.012))
+	var size := page_size * Vector2(pose.basis.get_scale().x, pose.basis.get_scale().y)
 	pose.basis = pose.basis.orthonormalized()
 	return {"pose": pose, "size": size}
 func page_point(origin: Vector3, direction: Vector3) -> Variant:
@@ -131,16 +156,21 @@ func _process(_delta: float) -> void:
 				button.node.global_transform = layout.pose
 				button.node.mesh.size = layout.size
 				button.rect.size = layout.size
-	if surface: surface.present(visible and not (browser.tabs_open and browser.focused_window == window_id), RECT)
+	if surface: surface.present(visible and not browser.start_page.active(window_id) and not (browser.tabs_open and browser.focused_window == window_id), RECT)
 func _place_device_status(_centre: Vector2) -> void: pass
 func _draw() -> void:
 	_clear_layout()
 	_sync_presentation()
 	if browser: browser.draw_window(self)
+	# Disabled controls still occlude other windows and the header drag surface.
+	for button in _buttons: button.hover_disabled = true
 	# Above the distant page's alpha hole (25) yet below MenuComposition.POPUP_PRIORITY (30):
 	# popup-classed chrome was squeezed into a 0.93 m popup slot and blurred.
 	_backdrop.material_override.render_priority = 26 if on_screen() else 10
 	if on_screen():
+		if not browser.start_page.active(window_id) and not (browser.tabs_open and browser.focused_window == window_id):
+			# The near bar uses the same empty-header drag surface as floating windows.
+			_ray_blockers.append({"target": MOVE, "rect": Rect2(-_backdrop.mesh.size / 2, _backdrop.mesh.size), "enabled": true, "node": _backdrop, "radius": 0.025})
 		# Transparent menu tiles do not write depth. Draw near controls after the
 		# distant page's alpha hole (priority 25), without raising its hit tile.
 		for button in _buttons:
@@ -160,16 +190,19 @@ func _activate(target: int) -> void:
 	browser.focus_window(window_id)
 	browser.action(target)
 func _activate_hit(hit: Dictionary) -> void:
+	if not hit.get("enabled", true): return
 	var peer: Node = browser.windows.get(int(hit.get("window", window_id)), self)
 	if peer != self: peer._activate(int(hit.target))
 	else: super(hit)
 func local_hit(origin: Vector3, direction: Vector3) -> Dictionary:
-	var hit := super.ray_hit(origin, direction)
+	# Include the whole visible frame before choosing the nearest window. Otherwise
+	# the secondary's empty chrome is invisible to both the ray and trigger routing.
+	var hit := _pointer_hit_over(origin, direction, super.ray_hit(origin, direction))
 	if not hit.is_empty(): hit.window = window_id
 	return hit
 func ray_hit(origin: Vector3, direction: Vector3) -> Dictionary:
 	var hit := local_hit(origin, direction)
-	if window_id == 1 and browser:
+	if browser:
 		for peer in browser.windows.values():
 			if peer == self or not peer.visible: continue
 			var candidate: Dictionary = peer.local_hit(origin, direction)
@@ -178,7 +211,7 @@ func ray_hit(origin: Vector3, direction: Vector3) -> Dictionary:
 	return hit
 func grab_hit(origin: Vector3, direction: Vector3) -> Dictionary:
 	var hit := _local_grab_hit(origin, direction)
-	if window_id == 1:
+	if browser:
 		for peer in browser.windows.values():
 			if peer == self: continue
 			var candidate: Dictionary = peer._local_grab_hit(origin, direction)
@@ -187,7 +220,7 @@ func grab_hit(origin: Vector3, direction: Vector3) -> Dictionary:
 	return hit
 func _local_grab_hit(origin: Vector3, direction: Vector3) -> Dictionary:
 	if not visible: return {}
-	var hit := _pointer_hit_over(origin, direction, local_hit(origin, direction))
+	var hit := local_hit(origin, direction)
 	# In cinema mode only the near controls move; the page stays on the far screen.
 	if on_screen() and int(hit.get("target", -1)) == WEB: return {}
 	if not hit.is_empty(): hit.window = window_id
@@ -195,21 +228,29 @@ func _local_grab_hit(origin: Vector3, direction: Vector3) -> Dictionary:
 func draw_frame_panels() -> void:
 	# The separate web layer sits below the menu layers. Capture a transparent
 	# centre rather than an opaque backdrop that would paint over the page.
-	for bounds in [Rect2(-0.60, 0.42, 1.46, 0.17), Rect2(-0.60, -0.50, 1.46, 0.02),
-		Rect2(-0.60, -0.48, 0.01, 0.90), Rect2(0.85, -0.48, 0.01, 0.90)]:
+	var page := page_rect()
+	var header := Rect2(-0.60, 0.42, page.size.x + 0.02, 0.17)
+	for bounds in [header, Rect2(-0.60, page.position.y - 0.02, page.size.x + 0.02, 0.02),
+		Rect2(-0.60, page.position.y, 0.01, page.size.y), Rect2(page.end.x, page.position.y, 0.01, page.size.y)]:
 		var centre: Vector2 = bounds.get_center()
 		var panel := _quad(bounds.size, Vector3(centre.x, centre.y, 0), PANEL, 10)
 		panel.material_override.set_shader_parameter("corner_radius", 0.004)
 		add_child(panel); _decorations.append(panel); _pointer_panels.append(panel)
-func draw_resize_corners() -> void:
-	# Match the playback screen's lower corner borders; no extra caption or drag bar.
-	for side in [-1, 1]:
-		var x: float = 0.13 + side * 0.68
-		_button(RESIZE_LEFT if side < 0 else RESIZE, "", Vector2(x, -0.47), Vector2(0.12, 0.12))
+		if bounds == header:
+			# The existing header mesh doubles as a drag surface behind its controls.
+			_ray_blockers.append({"target": MOVE, "rect": bounds, "enabled": true, "node": panel, "radius": 0.004})
+func draw_resize_handles() -> void:
+	# All three hit regions stay outside the webpage, including its fullscreen button.
+	var page := page_rect()
+	for spec in [[RESIZE_RIGHT, Vector2(page.end.x + 0.035, page.get_center().y), Vector2(0.05, 0.14)],
+		[RESIZE_BOTTOM, Vector2(page.get_center().x, page.position.y - 0.045), Vector2(0.14, 0.05)],
+		[RESIZE, Vector2(page.end.x + 0.035, page.position.y - 0.045), Vector2(0.05, 0.05)]]:
+		_button(spec[0], "", spec[1], spec[2])
 		var tile: Dictionary = _buttons.back()
 		tile.node.position.z = 0.025
 		tile.base_color = Color(0, 0, 0, 0); tile.node.material_override.set_shader_parameter("surface_color", tile.base_color)
-		for edge in [Vector4(side * 0.04, 0, 0.008, 0.08), Vector4(0, -0.04, 0.08, 0.008)]:
+		var marks := [Vector4(0, 0, 0.004, 0.06)] if spec[0] == RESIZE_RIGHT else [Vector4(0, 0, 0.06, 0.004)] if spec[0] == RESIZE_BOTTOM else [Vector4(0.009, 0.001, 0.004, 0.025), Vector4(-0.001, -0.009, 0.025, 0.004)]
+		for edge in marks:
 			var mark := _quad(Vector2(edge.z, edge.w), Vector3(edge.x, edge.y, 0.005), Color(0.7, 0.85, 0.82), 12)
 			tile.node.add_child(mark)
 func end_drag() -> void:
@@ -225,17 +266,18 @@ func press_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: b
 	if has_pointer_capture(): return true
 	var hit := ray_hit(origin, direction) if tracked else {}
 	if hit.is_empty(): return false
+	if not hit.get("enabled", true): return true
 	var peer: Node = browser.windows.get(int(hit.get("window", window_id)), self)
 	browser.focus_window(peer.window_id)
 	if int(hit.target) == MOVE:
 		if peer.title_move.begin(hand, "trigger", ray_pose(origin, direction),
-			[{"node": peer, "kind": "detail", "key": "browser", "pose": peer.global_transform, "upright_facing": true, "face_center": CENTRE}], to_global(hit.point), peer.head()):
+			[peer.move_target("browser")], to_global(hit.point), peer.head()):
 			peer.drag = {"hand": hand, "kind": MOVE}
 		return true
-	if int(hit.target) in [RESIZE_LEFT, RESIZE] and not peer.on_screen():
+	if int(hit.target) in [RESIZE_RIGHT, RESIZE_BOTTOM, RESIZE] and not peer.on_screen():
 		var point: Variant = peer.project_pointer(origin, direction, Transform3D.IDENTITY)
 		if point != null:
-			peer.drag = {"hand": hand, "kind": int(hit.target), "pose": peer.global_transform, "start": point}
+			peer.drag = {"hand": hand, "kind": int(hit.target), "pose": peer.global_transform, "start": point, "size": peer.page_size}
 		return true
 	if int(hit.target) == WEB: return browser.press(hand, origin, direction, tracked)
 	peer._activate(int(hit.target)); return true
@@ -254,8 +296,11 @@ func update_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: 
 		var capture: Dictionary = peer.drag
 		var point: Variant = peer.project_pointer(origin, direction, peer.global_transform.affine_inverse() * capture.pose)
 		if point != null:
-			var factor := clampf((Vector3(point) - CENTRE).length() / maxf((Vector3(capture.start) - CENTRE).length(), 0.1) * capture.pose.basis.get_scale().x, 0.6, 2.5)
-			peer._scale_about_centre(factor, capture.pose)
+			var change: Vector3 = Vector3(point) - Vector3(capture.start)
+			var dimensions: Vector2 = capture.size + Vector2(0.0 if capture.kind == RESIZE_BOTTOM else change.x, 0.0 if capture.kind == RESIZE_RIGHT else -change.y)
+			dimensions = clamp_page_size(dimensions, capture.kind)
+			if not peer.page_size.is_equal_approx(dimensions):
+				peer.page_size = dimensions; peer.refresh()
 		return
 	browser.move(hand, origin, direction, tracked)
 func release_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: bool) -> void:
@@ -280,7 +325,7 @@ func adjust_size(amount: float) -> void:
 	var factor := clampf(global_basis.get_scale().x + amount, 0.6, 2.5)
 	_scale_about_centre(factor, global_transform); save_layout()
 func adjust_distance(amount: float) -> void:
-	var centre := to_global(Vector3(0.13, 0, 0)); var offset := centre - head().origin
+	var centre := to_global(CENTRE); var offset := centre - head().origin
 	var distance := clampf(offset.length() + amount, 0.6, 8.0)
 	global_position += offset.normalized() * (distance - offset.length()); save_layout()
 func _exit_tree() -> void:

@@ -1,5 +1,5 @@
 extends RefCounted
-## The playing HDMV disc menu: its button plane (drawn like a PGS cue), ray input
+## The playing DVD/HDMV disc menu: its button plane (drawn like a bitmap cue), ray input
 ## at plane coordinates, and the moment a menu choice starts a real title.
 const PlatformMethods := preload("res://scripts/platform_methods.gd")
 const POINT := 0

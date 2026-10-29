@@ -57,6 +57,18 @@ class DiscTitlesCacheTest {
         assertEquals(1, IsoMetadataMemory.recall("disc3").size)
     }
 
+    @Test fun dvdKeepsAllNinetyNineTitles() {
+        val rows = (1..99).joinToString(",") { "{\"playlist\":$it,\"dvd_title\":$it}" }
+        val json = """{"width":720,"height":576,"mvc":false,"playlist":1,"disc_type":"dvd","menu":"dvd","titles":[$rows]}"""
+        assertEquals(1, DiscPreflight.parse(json).playlist)
+        assertThrows(IllegalArgumentException::class.java) {
+            DiscPreflight.parse(json.replace("\"disc_type\":\"dvd\",", ""))
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            DiscPreflight.parse(json.replace("[$rows]", "[$rows,{\"playlist\":100}]"))
+        }
+    }
+
     @Test fun preflightIsReusedForTheDefaultAndSelectedTitle() {
         val calls = AtomicInteger()
         val json = """{"width":1920,"height":1080,"duration_us":5,"mvc":false,"playlist":100,"titles":[{"playlist":100},{"playlist":201}]}"""

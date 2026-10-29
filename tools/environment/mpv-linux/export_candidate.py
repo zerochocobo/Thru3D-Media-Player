@@ -102,11 +102,13 @@ def main():
         'host_packages_sha256': sha(host_packages),
         'build_receipt_sha256': sha(receipt_path), 'meson': receipt['meson'], 'ninja': receipt['ninja'],
         'mvc_inputs_sha256': {name: digest for name, digest in receipt['inputs'].items()
-                             if name.startswith(('native/mpv/mvc/', 'third_party/edge264-mvc/', 'third_party/bluray/'))
+                             if name.startswith(('native/mpv/mvc/', 'third_party/edge264-mvc/', 'third_party/bluray/', 'third_party/dvd/'))
                              or name in ('tools/environment/Prepare-MvcDecoder.py',
                                          'tools/environment/Prepare-BluraySources.py',
                                          'tools/environment/mpv-linux/mvc_patch.py',
-                                         'tools/environment/mpv-linux/build_bluray.sh')},
+                                         'tools/environment/mpv-linux/build_bluray.sh',
+                                         'tools/environment/Prepare-DvdSources.py',
+                                         'tools/environment/mpv-linux/build_dvd.sh')},
         'cxx_runtime_policy': 'Use the existing Godot/project libc++_shared; do not package a duplicate; device compatibility pending',
         'license_profile': 'Upstream default GPL MPV and FFmpeg gpl/version3; Debug candidate only',
         'reproducibility': 'Exact sources/options/toolchain recorded; independent second-build byte comparison pending',

@@ -88,6 +88,8 @@ static func apply_baked_surfaces(root: Node, light: Texture2D, light_off: Textur
 			material.set_shader_parameter("light_off_texture", light_off if light_off else light)
 			if screen: material.set_shader_parameter("screen_texture", screen)
 			material.set_shader_parameter("tint", Color(source.albedo_color, 1.0))
+			var linear := Color(source.albedo_color, 1.0).srgb_to_linear()
+			material.set_shader_parameter("linear_tint", Vector3(linear.r, linear.g, linear.b))
 			instance.set_surface_override_material(surface, material)
 			count += 1
 	return count

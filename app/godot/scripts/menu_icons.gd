@@ -7,6 +7,8 @@ static func provider(name: String, fallback: String = "cloud") -> String:
 
 # Original vector glyphs, generated once and shared by both ray menus.
 const PATHS := {
+	"cinema_screen": '<path d="M2 3Q12 5 22 3V13Q12 11 2 13ZM3 19V16H7V19M10 19V16H14V19M17 19V16H21V19M2 22V19H8V22M9 22V19H15V22M16 22V19H22V22"/>',
+	"floating_window": '<rect x="2" y="3" width="16" height="12" rx="1.5"/><rect x="8" y="10" width="14" height="11" rx="1.5"/><path d="M11 13H19"/>',
 	"site_tiktok": '<path d="M13 3V15.5A3.5 3.5 0 1 1 9.5 12M13 3Q14 7.5 19 8" stroke-width="2.4"/><path d="M15 5.5V16.5A3.5 3.5 0 0 1 11.5 20" stroke-width="1.2"/>',
 	"site_niconico": '<rect x="2" y="7" width="20" height="14" rx="3"/><path d="M8 2L12 7 16 2M7 21L6 23M17 21L18 23"/>',
 	"site_netflix": '<path d="M7 3V21M17 3V21M7 3L17 21" stroke-width="3"/>',
@@ -24,6 +26,8 @@ const PATHS := {
 	"site_tencent": '<path d="M5 3Q3 2 3 5V19Q3 22 6 20L21 13Q24 12 21 10Z"/><path d="M8 7L18 12 8 17Z" fill="white" stroke="none"/>',
 	"site_mango": '<rect x="2" y="3" width="20" height="18" rx="6"/><path d="M6 17V8L12 14 18 8V17" stroke-width="2.8"/>',
 	"site_youku": '<path d="M3 5L9 12V20M15 4L22 12 15 20M9 12L14 6" stroke-width="3"/>',
+	"site_iqiyi": '<rect x="2" y="5" width="20" height="14" rx="4"/><path d="M6 9V15M18 9V15M13 14L15 16"/><rect x="9" y="9" width="6" height="6" rx="2"/>',
+	"player_supported": '<rect x="2" y="3" width="20" height="15" rx="3"/><path d="M8 22H16M12 18V22"/><path d="M10 7L16 10.5 10 14Z" fill="white" stroke="none"/>',
 	"paste": '<rect x="5" y="4" width="14" height="18" rx="2"/><path d="M9 2H15V6H9ZM8 11H16M8 15H16M8 19H13"/>',
 	"translate": '<path d="M2 5H14M8 2V5M5 5Q5 12 13 16M12 5Q11 12 3 17M14 22L18 12 22 22M15.5 18H20.5"/>',
 	"pair_previous": '<path d="M6 10V3H21V20H14M10 3V10M11 16H2M6 12L2 16 6 20"/>',
@@ -145,6 +149,8 @@ const PATHS := {
 	"fisheye": '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4"/>',
 	"more": '<circle cx="5" cy="12" r="1.6" fill="white"/><circle cx="12" cy="12" r="1.6" fill="white"/><circle cx="19" cy="12" r="1.6" fill="white"/>',
 	"hourglass": '<path d="M6 3H18M6 21H18M7 3C7 9 17 9 17 12S7 15 7 21M17 3C17 9 7 9 7 12S17 15 17 21"/>',
+	# Media detection: a playable frame with signal arcs picked up from the page.
+	"media_detect": '<rect x="2" y="8" width="14" height="12" rx="2"/><path d="M7 11.5L11.5 14 7 16.5Z" fill="white" stroke="none"/><path d="M17 2A5 5 0 0 1 22 7M17 4.5A2.5 2.5 0 0 1 19.5 7"/>',
 	"video": '<rect x="2" y="5" width="15" height="14" rx="2"/><path d="M17 10L22 7V17L17 14"/>',
 	"depth": '<rect x="2" y="8" width="13" height="11" rx="1.5"/><path d="M6 8V5H22V16H15"/><path d="M6 15L9 12 12 15"/>',
 	"stacked": '<rect x="4" y="2" width="16" height="20" rx="3"/><path d="M4 12H20"/>',

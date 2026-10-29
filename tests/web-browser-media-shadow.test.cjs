@@ -22,7 +22,9 @@ const context = {
   MutationObserver: class { constructor() {} observe(target) { observed.push(target); } disconnect() {} },
   setTimeout(fn) { timers.push(fn); },
   addEventListener() {},
-  browser: { runtime: { connectNative() {
+  browser: { runtime: { connect() {
+    return { onMessage: { addListener() {} }, onDisconnect: { addListener() {} }, postMessage() {} };
+  }, connectNative() {
     const port = { onMessage: signal(), onDisconnect: signal(), messages: [],
       postMessage(message) { this.messages.push(JSON.parse(JSON.stringify(message))); }, disconnect() {} };
     ports.push(port); return port;

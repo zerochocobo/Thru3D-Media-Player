@@ -1,25 +1,25 @@
 {
   "api_version": 2,
-  "pgs_patch_sha256": "33cd8a5ff7078b86366db820a9c5a2d88308f8bb24326fba9c4d1af1f911dd77",
+  "pgs_patch_sha256": "6b121f4a18142855aba600acffa51c1bc5b9c34419fd3577a05ca879f0505197",
   "inputs_sha256": {
     "native/mpv/live/quest_capture_client.c.inc": "c3745c12e89365ed16bcf49648d3f5f31df2edc191ddef15e11a969b1ae4a2c8",
     "native/mpv/include/mpv/quest_capture.h": "7cb1040bb604f0e7c2a2ce47b7b3d869da1f81c3cd0d32eded9e5e9b388c648f",
     "tools/environment/mpv-linux/create_capture_patch.py": "72ec374fdb16ab3380ed4ccbece43787f6779d06035f8d8bc35a1961dcc09c89"
   },
   "base_files_sha256": {
-    "player/client.c": "b5f4323a4f41d824011ec24c1ef8fbc6d57188b8a9b935bc85a4e06f11652b52",
+    "player/client.c": "402b1a4d3b6d47052ccd295b0ad8d58f31594ddc3a6421a68234d6a627e7a1d6",
     "demux/demux.c": "538c076dbb45a2383e095294e67f65633be4585082b4cc1e73212748089d7836",
     "audio/out/ao_aaudio.c": "3a665c554401bcddf1cc32037f60bc198a243b357bbaafaacc4cdc7b1cbf9886",
     "common/global.h": "d82fb6c8b863e88931e95605b5c2a05886663948626ff950382e8e07939ae4d3"
   },
   "patched_files_sha256": {
-    "player/client.c": "53a77564df6d850ba58822a444d4c8dfeb8a73f2c72b58ddbda16a16239b9446",
+    "player/client.c": "248ced832261f2665396d96a7636b422915d1ec41d038a87b522c4c434f728e2",
     "demux/demux.c": "6facf024eec2bb052be38ee541c3b47c2f2ba8468560697fd89a2fc28536606e",
     "audio/out/ao_aaudio.c": "835a416f398d2fc37d9ad51b23bbad959dae25a92a5c4c47d94001b16777f445",
     "common/global.h": "aa1fef38cd7a1ded810e54e585259f9949da520807a87f3cf0af2133605392fc",
     "include/mpv/quest_capture.h": "7cb1040bb604f0e7c2a2ce47b7b3d869da1f81c3cd0d32eded9e5e9b388c648f"
   },
-  "patch_sha256": "9a15a88c8dd53be2b19717c3e73e78a4c95ae0450586de2ab7af6f4a8b676937",
+  "patch_sha256": "c7167a9835038c375ef991eac5229082f83c0ee44cfd6e2fa162e87609e5dd4a",
   "private_header_sha256": "7cb1040bb604f0e7c2a2ce47b7b3d869da1f81c3cd0d32eded9e5e9b388c648f",
   "reference_inputs_sha256": {
     "native/mpv/live/quest_capture_client.c.inc": "c3745c12e89365ed16bcf49648d3f5f31df2edc191ddef15e11a969b1ae4a2c8",

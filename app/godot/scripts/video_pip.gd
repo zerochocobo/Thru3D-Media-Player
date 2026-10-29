@@ -155,6 +155,8 @@ func cancel_interaction() -> bool:
 	selecting = 0; selection_hand = ""; candidate.clear(); resize.clear(); movement.cancel()
 	if _outline: _outline.visible = false
 	for window in windows.values():
+		window.set_resize_feedback({}, true)
+		window.cancel_pointer("left_hand"); window.cancel_pointer("right_hand")
 		if window.selecting or window.zoom_open or window.shape_open:
 			window.selecting = false; window.zoom_open = false; window.shape_open = false; window.refresh()
 	return was
@@ -166,6 +168,7 @@ func cancel_pointer(hand: String) -> void:
 		candidate.clear()
 		if _outline: _outline.visible = false
 	for window in windows.values(): window.cancel_pointer(hand)
+	_update_resize_feedback()
 
 func _action(slot: int, operation: String, value: float) -> void:
 	if not windows.has(slot): return
@@ -231,6 +234,7 @@ func press(hand: String, action: String, ray: Variant, pose: Variant, head: Vari
 			var window: Node3D = windows[target.slot]
 			resize = {"slot": target.slot, "hand": hand, "corner": target.corner,
 				"edge": target.edge, "pose": window.global_transform, "size": window.size, "point": Vector2(target.point.x, target.point.y)}
+			_update_resize_feedback()
 			return true
 		for window in windows.values():
 			if window.zoom_open or window.shape_open:
@@ -250,7 +254,7 @@ func press(hand: String, action: String, ray: Variant, pose: Variant, head: Vari
 
 func release(hand: String, action: String) -> bool:
 	if action == "trigger_click" and resize.get("hand", "") == hand:
-		resize.clear(); return true
+		resize.clear(); _update_resize_feedback(); return true
 	if movement.capture.get("hand", "") == hand and movement.capture.get("input", "") == action:
 		movement.cancel(); return true
 	return false
@@ -270,6 +274,7 @@ func update_input(rays: Dictionary, poses: Dictionary, head: Variant, now: int) 
 		var ray: Variant = rays.get(resize.hand)
 		if ray == null: resize.clear()
 		else: _resize_to(ray[0], ray[1])
+	_update_resize_feedback()
 	var hovered := {}
 	for hand in ["left_hand", "right_hand"]:
 		var ray: Variant = rays.get(hand)
@@ -286,6 +291,11 @@ func update_input(rays: Dictionary, poses: Dictionary, head: Variant, now: int) 
 		candidate.clear()
 		if _outline: _outline.visible = false
 	for slot in windows: windows[slot].hover(hovered.has(slot), now)
+
+func _update_resize_feedback() -> void:
+	var available := selecting == 0 and resize.is_empty() and movement.capture.is_empty()
+	for slot in windows:
+		windows[slot].set_resize_feedback(resize if resize.get("slot", 0) == slot else {}, available)
 
 func _resize_to(origin: Vector3, direction: Vector3) -> void:
 	var initial: Transform3D = resize.pose

@@ -1,15 +1,36 @@
 [
   {
+    "id": "panorama",
+    "name": "Belfast Sunset (Pure Sky)",
+    "license": "CC0-1.0",
+    "assets": [
+      "player-licenses/panorama-notice.txt",
+      "polyhaven/CC0-1.0.txt"
+    ],
+    "credit": "Poly Haven · CC0 1.0 · Dimitrios Savva / Greg Zaal / Jarod Guest"
+  },
+  {
+    "id": "godot",
+    "name": "Godot 4.7.2",
+    "license": "MIT",
+    "assets": []
+  },
+  {
     "id": "provider-icons",
     "name": "Media server and cloud drive icons",
     "license": "Third-party artwork notices",
-    "assets": ["player-licenses/provider-icons.txt"]
+    "assets": [
+      "player-licenses/provider-icons.txt"
+    ]
   },
   {
     "id": "silero-vad",
     "name": "Silero VAD",
     "license": "MIT",
-    "assets": ["narration/SILERO_LICENSE.txt", "narration/vad_model.json"]
+    "assets": [
+      "narration/SILERO_LICENSE.txt",
+      "narration/vad_model.json"
+    ]
   },
   {
     "id": "cjk-brackets",
@@ -18,12 +39,6 @@
     "assets": [
       "player-licenses/cjk-brackets.txt"
     ]
-  },
-  {
-    "id": "godot",
-    "name": "Godot 4.7.2",
-    "license": "MIT",
-    "assets": []
   },
   {
     "id": "godot-third-party",
@@ -36,11 +51,15 @@
     "name": "Thru3D / MPV / FFmpeg",
     "license": "GPL-3.0",
     "assets": [
+      "mpv/dependency-notices/mpv.txt",
       "mpv/LICENSE.GPL",
       "mpv/LICENSE.LGPL",
       "edge264-mvc/LICENSE.BSD",
       "bluray/LICENSE.libbluray",
-      "bluray/LICENSE.libudfread"
+      "bluray/LICENSE.libudfread",
+      "dvd/LICENSE.libdvdread",
+      "dvd/LICENSE.libdvdnav",
+      "mpv/dependency-notices/ffmpeg.txt"
     ]
   },
   {
@@ -56,6 +75,7 @@
     "name": "RVM MobileNetV3",
     "license": "GPL-3.0",
     "assets": [
+      "player-licenses/model-adaptations.txt",
       "player-licenses/rvm.txt"
     ]
   },
@@ -80,12 +100,13 @@
     "name": "Depth Anything V2 Small",
     "license": "Apache-2.0",
     "assets": [
+      "player-licenses/model-adaptations.txt",
       "player-licenses/depth.txt"
     ]
   },
   {
     "id": "media3",
-    "name": "AndroidX Media3",
+    "name": "AndroidX Media3 1.11.1",
     "license": "Apache-2.0",
     "assets": [
       "player-licenses/media3.txt"
@@ -95,7 +116,11 @@
     "id": "okhttp",
     "name": "OkHttp 4.12.0 and Okio 3.6.0",
     "license": "Apache-2.0; public suffix data notices",
-    "assets": ["okhttp/LICENSE.txt", "okio/LICENSE.txt", "okhttp/PUBLIC_SUFFIX_NOTICE.txt"]
+    "assets": [
+      "okhttp/LICENSE.txt",
+      "okio/LICENSE.txt",
+      "okhttp/PUBLIC_SUFFIX_NOTICE.txt"
+    ]
   },
   {
     "id": "jcifs",
@@ -150,17 +175,8 @@
     ]
   },
   {
-    "id": "panorama",
-    "name": "Belfast Sunset (Pure Sky)",
-    "license": "CC0-1.0",
-    "assets": [
-      "player-licenses/panorama-notice.txt",
-      "polyhaven/CC0-1.0.txt"
-    ]
-  },
-  {
     "id": "gradle",
-    "name": "Gradle wrapper 8.11.1",
+    "name": "Gradle wrapper 9.5.0",
     "license": "Apache-2.0",
     "assets": [
       "gradle/NOTICE.txt",
@@ -331,6 +347,284 @@
       "kuromoji/LICENSE.md",
       "kuromoji/NOTICE.md",
       "kuromoji/CONTRIBUTORS.md"
+    ]
+  },
+  {
+    "id": "yt-dlp",
+    "name": "yt-dlp 2026.10.26 / EJS 0.8.0",
+    "license": "Unlicense / ISC / MIT",
+    "assets": [
+      "web-video/RUNTIME-NOTICE.txt",
+      "web-video/LICENSE.yt-dlp",
+      "web-video/NOTICE.ejs.txt"
+    ]
+  },
+  {
+    "id": "youtubedl-android",
+    "name": "youtubedl-android 0.18.1",
+    "license": "GPL-3.0",
+    "assets": [
+      "web-video/RUNTIME-NOTICE.txt",
+      "web-video/LICENSE.youtubedl-android"
+    ]
+  },
+  {
+    "id": "python",
+    "name": "Python 3.12.11",
+    "license": "PSF-2.0 / historical notices",
+    "assets": [
+      "web-video/RUNTIME-NOTICE.txt",
+      "web-video/LICENSE.python"
+    ]
+  },
+  {
+    "id": "quickjs",
+    "name": "QuickJS 2025-04-26",
+    "license": "MIT",
+    "assets": [
+      "web-video/RUNTIME-NOTICE.txt",
+      "web-video/LICENSE.quickjs"
+    ]
+  },
+  {
+    "id": "geckoview",
+    "name": "Mozilla GeckoView 159",
+    "license": "MPL-2.0 / third-party notices",
+    "assets": [
+      "geckoview/NOTICE.md",
+      "geckoview/LICENSE-MPL-2.0.txt",
+      "geckoview/ThirdPartyNotices-1.txt",
+      "geckoview/ThirdPartyNotices-2.txt"
+    ]
+  },
+  {
+    "id": "moss-tts",
+    "name": "MOSS-TTS-Nano 100M / Audio Tokenizer",
+    "license": "Apache-2.0",
+    "assets": [
+      "narration/MODEL-NOTICE.txt",
+      "narration/LICENSE.MOSS"
+    ]
+  },
+  {
+    "id": "onnxruntime",
+    "name": "ONNX Runtime 1.28.0",
+    "license": "MIT / third-party notices",
+    "assets": [
+      "narration/LICENSE.onnxruntime",
+      "narration/ThirdPartyNotices.onnxruntime-1.txt",
+      "narration/ThirdPartyNotices.onnxruntime-2.txt"
+    ]
+  },
+  {
+    "id": "sentencepiece",
+    "name": "SentencePiece 0.2.1",
+    "license": "Apache-2.0 / BSD-3-Clause",
+    "assets": [
+      "narration/LICENSE.sentencepiece",
+      "narration/LICENSE.sentencepiece-absl",
+      "narration/LICENSE.sentencepiece-darts_clone",
+      "narration/LICENSE.sentencepiece-protobuf-lite"
+    ]
+  },
+  {
+    "id": "nlohmann-json",
+    "name": "nlohmann/json 3.12.0",
+    "license": "MIT",
+    "assets": [
+      "narration/LICENSE.nlohmann-json"
+    ]
+  },
+  {
+    "id": "moonshine",
+    "name": "Moonshine Voice / streaming ASR models",
+    "license": "MIT / third-party notices",
+    "assets": [
+      "moonshine/NOTICE.txt",
+      "moonshine/LICENSE",
+      "moonshine/dependency-notices/cpp-annote.txt",
+      "moonshine/dependency-notices/Eigen.txt",
+      "moonshine/dependency-notices/kaldi-native-fbank.txt",
+      "moonshine/dependency-notices/kissfft.txt",
+      "moonshine/dependency-notices/utf-8.txt",
+      "moonshine/dependency-notices/utf8proc.txt"
+    ]
+  },
+  {
+    "id": "comic-ocr",
+    "name": "PP-OCRv6 Small / RapidOCR",
+    "license": "Apache-2.0",
+    "assets": [
+      "comic-ocr/NOTICE.txt",
+      "comic-ocr/LICENSE.PaddleOCR",
+      "comic-ocr/LICENSE.RapidOCR"
+    ]
+  },
+  {
+    "id": "manga-ocr",
+    "name": "PP-OCRv6_manga detector",
+    "license": "Apache-2.0",
+    "assets": [
+      "comic-ocr/NOTICE.txt",
+      "comic-ocr/LICENSE.PaddleOCR",
+      "comic-ocr/LICENSE.RapidOCR"
+    ]
+  },
+  {
+    "id": "bing-translate-api",
+    "name": "bing-translate-api",
+    "license": "MIT",
+    "assets": [
+      "bing-translate-api/LICENSE.txt"
+    ]
+  },
+  {
+    "id": "icu-charset",
+    "name": "ICU4J 78.1 charset detection",
+    "license": "Unicode-3.0",
+    "assets": [
+      "icu-charset/LICENSE.txt"
+    ]
+  },
+  {
+    "id": "tiff",
+    "name": "libtiff 4.7.2 / libjpeg-turbo 3.1.2",
+    "license": "libtiff / BSD-3-Clause / IJG / zlib",
+    "assets": [
+      "tiff/LICENSE.md",
+      "tiff/LIBJPEG-TURBO-LICENSE.md",
+      "tiff/LIBJPEG-TURBO-IJG.txt"
+    ]
+  },
+  {
+    "id": "openexr",
+    "name": "OpenEXR 3.3.14 / Imath / libdeflate",
+    "license": "BSD-3-Clause / MIT",
+    "assets": [
+      "openexr/LICENSE.md",
+      "openexr/IMATH-LICENSE.md",
+      "openexr/LIBDEFLATE-LICENSE.txt"
+    ]
+  },
+  {
+    "id": "mpv-dependencies",
+    "name": "MPV / FFmpeg dependencies",
+    "license": "Third-party license notices",
+    "assets": [
+      "mpv/dependency-notices/curl.txt",
+      "mpv/dependency-notices/dav1d.txt",
+      "mpv/dependency-notices/fast_float.txt",
+      "mpv/dependency-notices/fontconfig.txt",
+      "mpv/dependency-notices/freetype2.txt",
+      "mpv/dependency-notices/fribidi.txt",
+      "mpv/dependency-notices/glad.txt",
+      "mpv/dependency-notices/harfbuzz.txt",
+      "mpv/dependency-notices/libass.txt",
+      "mpv/dependency-notices/libplacebo.txt",
+      "mpv/dependency-notices/libxml2.txt",
+      "mpv/dependency-notices/lua.txt",
+      "mpv/dependency-notices/mbedtls.txt",
+      "mpv/dependency-notices/unibreak.txt"
+    ]
+  },
+  {
+    "id": "openxr",
+    "name": "Khronos OpenXR headers",
+    "license": "Apache-2.0",
+    "assets": [
+      "openxr/LICENSE"
+    ]
+  },
+  {
+    "id": "godot-sky",
+    "name": "Godot sky panorama shader",
+    "license": "MIT",
+    "assets": [
+      "player-licenses/godot-sky.txt"
+    ]
+  },
+  {
+    "id": "bouncycastle",
+    "name": "Bouncy Castle 1.85",
+    "license": "MIT",
+    "assets": [
+      "player-licenses/java/bcprov-jdk18on-1.85.txt"
+    ]
+  },
+  {
+    "id": "slf4j",
+    "name": "SLF4J 1.7.36",
+    "license": "MIT",
+    "assets": [
+      "player-licenses/java/slf4j-api-1.7.36.txt"
+    ]
+  },
+  {
+    "id": "jackson",
+    "name": "Jackson 2.11.1",
+    "license": "Apache-2.0",
+    "assets": [
+      "player-licenses/java/jackson-annotations-2.11.1.txt",
+      "player-licenses/java/jackson-core-2.11.1.txt",
+      "player-licenses/java/jackson-databind-2.11.1.txt",
+      "narration/LICENSE.sentencepiece"
+    ]
+  },
+  {
+    "id": "commons-io",
+    "name": "Apache Commons IO 2.5",
+    "license": "Apache-2.0",
+    "assets": [
+      "player-licenses/java/commons-io-2.5.txt"
+    ]
+  },
+  {
+    "id": "kotlin",
+    "name": "Kotlin runtime",
+    "license": "Apache-2.0",
+    "assets": [
+      "player-licenses/java/kotlin.txt"
+    ]
+  },
+  {
+    "id": "androidx",
+    "name": "AndroidX support libraries",
+    "license": "Apache-2.0",
+    "assets": [
+      "player-licenses/media3.txt"
+    ]
+  },
+  {
+    "id": "cinema-textures",
+    "name": "Grand cinema / ambientCG textures",
+    "license": "CC0-1.0",
+    "assets": [
+      "player-licenses/cinema-textures.txt",
+      "polyhaven/CC0-1.0.txt"
+    ]
+  },
+  {
+    "id": "guava",
+    "name": "Guava 33.3.1 / failureaccess",
+    "license": "Apache-2.0",
+    "assets": [
+      "player-licenses/java/guava.txt"
+    ]
+  },
+  {
+    "id": "kotlinx-coroutines",
+    "name": "Kotlin coroutines 1.9.0",
+    "license": "Apache-2.0",
+    "assets": [
+      "player-licenses/java/kotlinx-coroutines.txt"
+    ]
+  },
+  {
+    "id": "jetbrains-annotations",
+    "name": "JetBrains annotations 23.0.0",
+    "license": "Apache-2.0",
+    "assets": [
+      "player-licenses/java/jetbrains-annotations.txt"
     ]
   }
 ]

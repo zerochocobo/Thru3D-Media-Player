@@ -110,7 +110,7 @@ Supported Release outputs are QUEST, PICO, OpenXR and PICO China Store. The form
 
 Software `versionName` is independent of upload `versionCode`. One ordinary upload consumes one code; adding China consumes a second. Always start from the highest used code plus one: ordinary48/China49, then ordinary50/China51. Additional ordinary PICO uploads can also set `-AndroidVersionCode`. Do not infer a new upload code from an unchanged source baseline.
 
-The packaged `application/config/distribution_channel` is `pico_cn_store` for China and `standard` otherwise. China hides browser navigation and blocks direct entry; account web login remains available. Build-Player verifies the compiled channel and Android build number, writes both to build.json and restores temporary source settings. PICO archive names include `vc<number>` and China uses `PICO-CN-STORE`. This provides packaging, not a store upload or approval guarantee. Test with `tools/Test-DistributionChannel.ps1`.
+The packaged `application/config/distribution_channel` is `pico_cn_store` for China and `standard` otherwise. China enables the browser and restricts featured sites to explicitly marked Chinese services in every UI language; account web login remains available. Build-Player verifies the compiled channel and Android build number, writes both to build.json and restores temporary source settings. PICO archive names include `vc<number>` and China uses `PICO-CN-STORE`. This provides packaging, not a store upload or approval guarantee. Test with `tools/Test-DistributionChannel.ps1`.
 
 ## USB filesystem sources
 

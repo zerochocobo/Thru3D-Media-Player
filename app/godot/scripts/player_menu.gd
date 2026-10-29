@@ -1001,7 +1001,7 @@ func _subtitle_groups() -> Array:
 func _subtitle_controls() -> Array:
 	var group := _subtitle_detail_group()
 	var listening: bool = _state.get("listening_enabled", false)
-	var pgs := not listening and _subtitle_tracks().any(func(track): return int(track.id) == int(_state.get("subtitle_track", 0)) and str(track.get("codec", "")) == "hdmv_pgs_subtitle")
+	var pgs := not listening and _subtitle_tracks().any(func(track): return int(track.id) == int(_state.get("subtitle_track", 0)) and str(track.get("codec", "")) in ["hdmv_pgs_subtitle", "dvd_subtitle"])
 	var rows: Array = []
 	if group == "listening": return Listening.rows(_state)
 	if group == "narration" and not listening and NarrationSettings.FEATURE_ENABLED and _state.get("narration_available", false):

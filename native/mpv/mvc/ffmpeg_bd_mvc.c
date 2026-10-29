@@ -22,6 +22,7 @@
 #include "demux.h"
 #include "internal.h"
 #include "url.h"
+#include "dvd_nav.h"
 
 int avformat_thru3d_bd_probe(const char *url, int *width, int *height, int64_t *duration, int *mvc);
 int avformat_thru3d_bd_titles(const char *url, int playlist, int *width, int *height, int64_t *duration,
@@ -67,6 +68,7 @@ typedef struct MvcCandidate {
 
 struct BdMvc {
     const AVClass *class;
+    ThruDvd *dvd;
     int header_only;
     int playlist;
     /* HDMV disc menu session: libbluray navigation, not a seekable title. */
@@ -266,6 +268,7 @@ static void close_clip(BdMvc *s)
 static int close_disc(AVFormatContext *context)
 {
     BdMvc *s = context->priv_data;
+    thru_dvd_close(&s->dvd);
     if (s->menu) menu_close(s);
     clear_views(s);
     close_transport(s);
@@ -960,6 +963,8 @@ static void menu_close(BdMvc *s)
 /* Private application API for the playing menu session. */
 int avformat_thru3d_bd_menu_state(char *json, int capacity)
 {
+    int dvd = thru_dvd_menu_state(json, capacity);
+    if (dvd) return dvd;
     int written;
     pthread_mutex_lock(&menu_data_lock);
     if (!menu_shared.owner)
@@ -982,6 +987,9 @@ int avformat_thru3d_bd_menu_state(char *json, int capacity)
    written, 0 when the plane is empty, or a negative error. */
 int avformat_thru3d_bd_menu_overlay(uint64_t version, uint8_t *rgba, int capacity, int *rect)
 {
+    char state[512];
+    if (thru_dvd_menu_state(state, sizeof(state)) > 0)
+        return thru_dvd_menu_overlay(version, rgba, capacity, rect);
     int ret = 0;
     pthread_mutex_lock(&menu_data_lock);
     if (!menu_shared.owner || version != menu_shared.version) { ret = AVERROR(EAGAIN); goto done; }
@@ -1011,6 +1019,9 @@ done:
    6 enter, 7 top menu, 8 popup menu. Returns libbluray's result or -1. */
 int avformat_thru3d_bd_menu_input(int kind, int x, int y)
 {
+    char state[512];
+    if (thru_dvd_menu_state(state, sizeof(state)) > 0)
+        return thru_dvd_menu_input(kind, x, y);
     static const uint32_t keys[] = {BD_VK_UP, BD_VK_DOWN, BD_VK_LEFT, BD_VK_RIGHT, BD_VK_ENTER};
     int ret = -1;
     pthread_mutex_lock(&menu_input_lock);
@@ -1045,6 +1056,13 @@ static int disc_header(AVFormatContext *context)
     av_log(context, AV_LOG_VERBOSE, "MVC ISO: opening sector reader\n");
     if (!context->pb || !(context->pb->seekable & AVIO_SEEKABLE_NORMAL))
         return AVERROR(ENOSYS);
+    ret = thru_dvd_open(&s->dvd, context, s, disc_blocks, s->playlist, s->menu, s->header_only);
+    if (ret < 0) return ret;
+    if (ret > 0) {
+        int selected;
+        thru_dvd_info(s->dvd, &s->width, &s->height, &selected, NULL, 0);
+        return 0;
+    }
     s->disc = bd_init();
     if (!s->disc || !bd_open_stream(s->disc, s, disc_blocks))
         return AVERROR_INVALIDDATA;
@@ -1225,6 +1243,7 @@ static int map_late_streams(BdMvc *s)
 static int disc_packet(AVFormatContext *context, AVPacket *output)
 {
     BdMvc *s = context->priv_data;
+    if (s->dvd) return thru_dvd_packet(s->dvd, output);
     if (s->menu) return menu_packet(context, output);
     for (;;) {
         AVPacket *packet = av_packet_alloc();
@@ -1398,6 +1417,7 @@ static int64_t ssif_position(BdMvc *s, UDFFILE *file, int64_t position)
 static int disc_seek(AVFormatContext *context, int stream, int64_t timestamp, int flags)
 {
     BdMvc *s = context->priv_data;
+    if (s->dvd) return thru_dvd_seek(s->dvd, stream, timestamp, flags);
     int64_t position, base, dependent;
     if (stream >= 0)
         timestamp = av_rescale_q(timestamp, context->streams[stream]->time_base, (AVRational){1,90000});
@@ -1532,8 +1552,14 @@ int avformat_thru3d_bd_titles_v2(const char *url, int playlist, int *width, int 
         BdMvc *s = context->priv_data;
         *width = s->width * (s->is_mvc ? 2 : 1); *height = s->height; *duration = context->duration;
         *mvc = s->is_mvc;
-        if (selected) *selected = s->title->playlist;
-        if (json) list_titles(s, json, capacity);
+        if (s->dvd) {
+            int dvd_selected;
+            ret = thru_dvd_info(s->dvd, width, height, &dvd_selected, json, capacity);
+            if (selected) *selected = dvd_selected;
+        } else {
+            if (selected) *selected = s->title->playlist;
+            if (json) list_titles(s, json, capacity);
+        }
     }
     /* libbluray represents a cancelled block read as an invalid disc. Preserve
        cancellation even after a partial title scan appeared successful. */
@@ -1548,16 +1574,16 @@ int avformat_thru3d_bd_probe(const char *url, int *width, int *height, int64_t *
 }
 
 static const AVOption bd_options[] = {
-    { "header_only", "Read Blu-ray title metadata without stream probing", offsetof(BdMvc, header_only), AV_OPT_TYPE_BOOL,
+    { "header_only", "Read optical-disc title metadata without stream probing", offsetof(BdMvc, header_only), AV_OPT_TYPE_BOOL,
       { .i64 = 0 }, 0, 1, AV_OPT_FLAG_DECODING_PARAM },
-    { "playlist", "Blu-ray playlist (MPLS) number; -1 selects the longest title", offsetof(BdMvc, playlist), AV_OPT_TYPE_INT,
+    { "playlist", "Blu-ray playlist or DVD title number; -1 selects the longest title", offsetof(BdMvc, playlist), AV_OPT_TYPE_INT,
       { .i64 = -1 }, -1, 99999, AV_OPT_FLAG_DECODING_PARAM },
-    { "menu", "Play the disc's HDMV top menu instead of a title", offsetof(BdMvc, menu), AV_OPT_TYPE_BOOL,
+    { "menu", "Play the disc's DVD/HDMV menu instead of a title", offsetof(BdMvc, menu), AV_OPT_TYPE_BOOL,
       { .i64 = 0 }, 0, 1, AV_OPT_FLAG_DECODING_PARAM },
     { NULL }
 };
 static const AVClass bd_class = {
-    .class_name = "Thru3D Blu-ray ISO",
+    .class_name = "Thru3D optical-disc ISO",
     .item_name = av_default_item_name,
     .option = bd_options,
     .version = LIBAVUTIL_VERSION_INT,
@@ -1565,7 +1591,7 @@ static const AVClass bd_class = {
 
 const FFInputFormat ff_bd_mvc_demuxer = {
     .p.name = "bd_mvc",
-    .p.long_name = NULL_IF_CONFIG_SMALL("Blu-ray MVC ISO (UDF/playlist/SSIF)"),
+    .p.long_name = NULL_IF_CONFIG_SMALL("DVD/Blu-ray ISO (navigation/playlist/MVC)"),
     .p.extensions = "iso",
     .p.flags = AVFMT_TS_DISCONT,
     .p.priv_class = &bd_class,

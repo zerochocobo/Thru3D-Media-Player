@@ -46,7 +46,7 @@ func run() -> void:
 				check(pip.movement.capture.is_empty() and window.global_transform.is_equal_approx(released), "Pinch release stops movement without a playback tap")
 	main.hand_pointers={"right_hand":Pointer.new()}; main.hand_pointers.right_hand.source="hand"
 	window.global_transform=start; window.controls=true; window.refresh()
-	main.test_ray=ray_to(window,window.corner_point(0)); main._pip_pointer_press("trigger_click","right_hand")
+	main.test_ray=ray_to(window,window.corner_point(3)); main._pip_pointer_press("trigger_click","right_hand")
 	check(not pip.resize.is_empty() and pip.movement.capture.is_empty(), "Corner pinch resizes rather than moving the body")
 	main._on_pointer_release("trigger_click","right_hand")
 	var mode: Dictionary = window._buttons.filter(func(b):return b.target==6)[0]

@@ -39,10 +39,10 @@ func run() -> void:
 				var inner:=pixel(image,Vector2(sign_axis*(x-feather*1.1),0)).a
 				check(outer<0.12 and middle>0.25 and middle<0.75 and inner>0.99,"Both side edges fade smoothly into transparency")
 				check(pixel(image,Vector2(0,sign_axis*(y-feather*0.1))).a<0.12,"Top and bottom use the same physical feather width")
-			check(window._decorations.is_empty(),"A resting frame has no opaque border meshes")
+			check(window._decorations.all(func(node): return not node.visible),"A resting frame has no visible opaque border meshes")
 			image.save_png(output.path_join("soft-edge-%s-%s.png" % [mode,"wide" if dimensions.x>dimensions.y else "tall"]))
 	window.identified=true; window.refresh()
-	check(window._decorations.size()==4 and not window.controls_root.visible,"Identification shows corner cues without a hard outline or toolbar")
+	check(window._resize_handles.size()==3 and window._resize_handles.values().all(func(h): return h.node.visible and not h.halo.visible) and not window.controls_root.visible,"Identification shows the three resize cues without a hard outline or toolbar")
 	window.identified=false; window.set_size(Vector2(0.48,0.24)); window.refresh()
 	var edges := preload("res://scripts/video_pip_edges.gd")
 	var whole := Rect2(2,2,512,256)

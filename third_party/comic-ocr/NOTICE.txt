@@ -1,0 +1,17 @@
+PP-OCRv6 Small / RapidOCR
+
+PP-OCR models: PaddlePaddle / PaddleOCR contributors.
+https://github.com/PaddlePaddle/PaddleOCR
+ONNX distribution: RapidAI / RapidOCR v3.10.0.
+https://www.modelscope.cn/models/RapidAI/RapidOCR/files?Revision=v3.10.0
+The application bundles the Small detector and recognizer, using ONNX Runtime.
+See LICENSE.PaddleOCR and LICENSE.RapidOCR for Apache License 2.0 and attribution.
+
+Manga text detector: Kellenok / PP-OCRv6_manga v0.2.
+https://huggingface.co/Kellenok/PP-OCRv6_manga/tree/62375557b5b0a4b2bc8e05484a97c7ea1df7229e
+The upstream model card declares Apache-2.0. Only manga_det_v0.2.onnx is bundled;
+the manga recognizer and example images are not included.
+
+All three model files are used without weight modifications. Their exact sizes
+and SHA-256 hashes are recorded in model.json. Model inference, region selection
+and reading order are implemented locally by Thru3D.

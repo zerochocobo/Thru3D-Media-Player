@@ -184,7 +184,7 @@ internal class MpvVideoBridge(
         @Volatile var listeningOutputReady = false
         @Volatile var listening: ListeningController? = null
         @Volatile var discInput = false
-        @Volatile var discPlaylist = -1 // requested Blu-ray title; -1 = the longest, -2 = the disc's HDMV menu
+        @Volatile var discPlaylist = -1 // requested DVD/Blu-ray title; -1 = the longest, -2 = the disc menu
         @Volatile var discTitles = "" // preflight JSON of the opened disc
         @Volatile var narrationCa = ""
         @Volatile var interleavePolicy = Mp4InterleavePolicy.Decision()
@@ -450,7 +450,7 @@ internal class MpvVideoBridge(
                     // A menu session is sized and described by the disc's default preflight.
                     val result = DiscPreflight.probe(uri, path, maxOf(-1, host.discPlaylist)) { input, playlist ->
                         val probe = synchronized(host) {
-                            check(!host.closing && !stopped) { "Blu-ray probe cancelled" }
+                            check(!host.closing && !stopped) { "Disc probe cancelled" }
                             MpvSourceNative.beginDiscProbe().also { host.discProbe = it }
                         }
                         try { MpvSourceNative.probeDisc(probe, input, playlist) }
@@ -468,7 +468,7 @@ internal class MpvVideoBridge(
                 } else null
                 host.discInput=iso
                 if (disc != null && host.discPlaylist == -2) {
-                    if (disc.mvc || JSONObject(disc.json).optString("menu") != "hdmv") error("Disc menu unavailable")
+                    if (disc.mvc || JSONObject(disc.json).optString("menu") !in setOf("hdmv", "dvd")) error("Disc menu unavailable")
                     host.discTitles = disc.json
                 } else if (disc != null) {
                     // A default open plays the selected title explicitly from here on (narration readers too).

@@ -20,6 +20,7 @@ if ($RenderPreview) {
     if ($LASTEXITCODE -ne 0 -or (Get-Content $subtitlePanelRenderLog -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:)' -or (Get-Content $subtitlePanelRenderLog -Raw) -notmatch 'Subtitle side panel render: [0-9]+ checks, 0 failures') { throw 'Subtitle column render failed.' }
 }
 & "$PSScriptRoot\Test-VideoPip.ps1" -Godot $env:GODOT_EXE
+& "$PSScriptRoot\Test-PictureCenterGuide.ps1" -Godot $env:GODOT_EXE -Focused
 $orderOutput = Join-Path $workspace 'build/output/media-browse-order'
 New-Item -ItemType Directory -Path $orderOutput -Force | Out-Null
 $orderLog = Join-Path $orderOutput 'test_media_browse_order.log'
@@ -170,6 +171,8 @@ if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'mpv-rotation-
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'frame-picture-layer-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)') { throw 'Frame picture layer regression failed.' }
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_subtitle_layers.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'subtitle-layers-host.log')
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'subtitle-layers-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)' -or (Get-Content (Join-Path $logDirectory 'subtitle-layers-host.log') -Raw) -notmatch 'Subtitle layers: [0-9]+ checks, 0 failures') { throw 'PGS compositor layers and depth conversion regression failed.' }
+& $env:GODOT_EXE --xr-mode off --rendering-method gl_compatibility --rendering-driver opengl3 --path $projectDirectory --quit-after 1800 --script res://tests/render_flat_subtitle_layers.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'flat-subtitle-layers.log')
+if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'flat-subtitle-layers.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)' -or (Get-Content (Join-Path $logDirectory 'flat-subtitle-layers.log') -Raw) -notmatch 'Flat subtitle layers: [0-9]+ checks, 0 failures') { throw 'Flat text subtitle capture, menu budget and clarity regression failed.' }
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_alpha_profile.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'alpha-profile-host.log')
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'alpha-profile-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)') { throw 'Alpha model size regression failed.' }
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_video_portrait.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'video-portrait-host.log')

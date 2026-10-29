@@ -9,7 +9,7 @@
  #include "sub/dec_sub.h"
  #include "mpv/quest_subtitle.h"
  
-@@ -2321,3 +2323,46 @@
+@@ -2322,3 +2324,46 @@
      unlock_core(ctx);
      return 0;
  }

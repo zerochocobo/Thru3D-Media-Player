@@ -179,7 +179,12 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
         if (closed.get()) return "{}"
         return runCatching {
             JSONObject(webBrowser.snapshot()).also { state ->
-                state.put("native_supported", runCatching { WebVideoPage.parse(state.optString("url")) }.isSuccess)
+                val videos = state.optJSONArray("videos")
+                val server = videos != null && (0 until videos.length()).any {
+                    val item = videos.optJSONObject(it)
+                    item != null && !item.optBoolean("protected") && (item.optBoolean("server_media") || item.optBoolean("network_media"))
+                }
+                state.put("native_supported", server || runCatching { WebVideoPage.parse(state.optString("url")) }.isSuccess)
             }.toString()
         }.getOrDefault("{}")
     }
@@ -192,6 +197,31 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     }
     @UsedByGodot fun web_browser_input(command: String, text: String) { if (!closed.get()) webBrowser.input(command, text) }
     fun captureWebBrowserForDiagnostics(done: (android.graphics.Bitmap?) -> Unit) = webBrowser.captureFrame(done)
+    /** Worker-only, deliberately excludes media URLs, cookies and header values. */
+    fun probeWebBrowserMediaForDiagnostics(): JSONObject {
+        val page = JSONObject(webBrowser.snapshot()).optString("url")
+        val media = webBrowser.mediaForExtraction(page) ?: return JSONObject().put("available", false)
+        val result = JSONObject().put("available", true)
+        for (key in listOf("id", "width", "height", "duration", "playing", "protected", "blob", "network_enabled", "network_epoch"))
+            result.put(key, media.opt(key))
+        val source = runCatching { java.net.URI(media.optString("source")) }.getOrNull()
+        result.put("source_scheme", source?.scheme.orEmpty())
+        result.put("source_extension", source?.path?.substringAfterLast('.', "")?.takeIf { it.matches(Regex("[A-Za-z0-9]{1,8}")) }.orEmpty())
+        // Shape only: identifier-like path segments masked, query parameter names without values.
+        result.put("source_shape", source?.rawPath.orEmpty().split('/').joinToString("/") {
+            if (it.length > 24 || it.any(Char::isDigit) && !it.contains('.')) "{id}" else it.take(32) })
+        result.put("source_query_keys", JSONArray(source?.rawQuery.orEmpty().split('&').map { it.substringBefore('=').take(32) }.filter(String::isNotEmpty).take(24)))
+        result.put("server", media.optBoolean("server"))
+        val network = media.optJSONArray("network") ?: JSONArray()
+        val summary = JSONArray()
+        for (i in 0 until network.length()) {
+            val item = network.getJSONObject(i)
+            val uri = runCatching { java.net.URI(item.optString("url")) }.getOrNull()
+            summary.put(JSONObject().put("kind", item.optString("kind")).put("mime", item.optString("mime"))
+                .put("extension", uri?.path?.substringAfterLast('.', "")?.takeIf { it.matches(Regex("[A-Za-z0-9]{1,8}")) }.orEmpty()))
+        }
+        return result.put("network", summary)
+    }
     fun probeWebBrowserSystemInput(done: (JSONObject) -> Unit) = webBrowser.probeSystemInput(done)
     @UsedByGodot fun web_browser_pointer(command: String, x: Float, y: Float, scroll: Float) {
         if (!closed.get()) webBrowser.pointer(command, x, y, scroll)

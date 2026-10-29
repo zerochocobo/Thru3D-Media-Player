@@ -1,6 +1,6 @@
 {
   "purpose": "AAudio clock without timestamps after a flush (seek freeze: audio plays, video frozen)",
-  "capture_patch_sha256": "9a15a88c8dd53be2b19717c3e73e78a4c95ae0450586de2ab7af6f4a8b676937",
+  "capture_patch_sha256": "c7167a9835038c375ef991eac5229082f83c0ee44cfd6e2fa162e87609e5dd4a",
   "base_files_sha256": {
     "audio/out/ao_aaudio.c": "835a416f398d2fc37d9ad51b23bbad959dae25a92a5c4c47d94001b16777f445"
   },

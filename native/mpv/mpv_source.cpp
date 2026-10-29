@@ -322,7 +322,7 @@ struct Source final {
     jobject layer_surface = nullptr; // global reference, deleted with the source
     bool software_layer = false;
     bool iso_input = false;
-    int iso_playlist = -1; // explicit Blu-ray title; -1 keeps the longest, -2 plays the disc's HDMV menu
+    int iso_playlist = -1; // explicit DVD/Blu-ray title; -1 keeps the longest, -2 plays the disc menu
     int network_cache_mib = 256; // forward demux cache; the bridge raises it only with memory to spare
     int layer_width = 4096, layer_height = 4096;
     JavaVM* vm = nullptr;
@@ -423,8 +423,9 @@ struct Source final {
     void update_pgs(mpv_handle* core, bool valid) {
         double pts = 0;
         const auto packed = dimensions.load();
+        const auto codec = property(core, "current-tracks/sub/codec");
         if (!pgs_read || !valid || !packed ||
-            property(core, "current-tracks/sub/codec") != "hdmv_pgs_subtitle" ||
+            (codec != "hdmv_pgs_subtitle" && codec != "dvd_subtitle") ||
             mpv_get_property(core, "time-pos", MPV_FORMAT_DOUBLE, &pts) < 0 || !std::isfinite(pts) || pts < 0) {
             clear_pgs(); return;
         }
@@ -754,9 +755,16 @@ struct Source final {
                 if (!lavf.empty()) option("demuxer-lavf-o", lavf.c_str());
             }
             if (iso_input && iso_playlist == -2) {
+                // DVD still menus contain one MPEG picture. MediaCodec may
+                // retain it waiting for another picture; software presents it
+                // immediately. Keep acceleration for HD Blu-ray menu codecs.
+                option("hwdec-codecs", "h264,hevc,vc1");
                 // Menu graphics follow navigation reads: keep reading close to what
                 // is shown, and a still menu is waiting, not buffering.
                 option("cache", "no"); option("cache-pause", "no");
+                // Disc menu headers already describe the streams. A still DVD
+                // waits for pointer input, so probing must not read past it.
+                option("demuxer-lavf-probe-info", "no");
                 option("demuxer-readahead-secs", "0.5"); option("demuxer-max-bytes", "16MiB");
             }
             option("network-timeout", "30");
@@ -1634,22 +1642,22 @@ extern "C" JNIEXPORT jstring JNICALL
 Java_org_vrpassthroughplayer_plugin_MpvSourceNative_probeDisc(JNIEnv* env, jclass, jlong handle, jstring path, jint playlist) {
     try {
         const auto job = disc_probes.get(handle);
-        require(path != nullptr, "Blu-ray image path missing");
-        require(playlist >= -1 && playlist <= 99999, "Blu-ray title out of range");
+        require(path != nullptr, "Disc image path missing");
+        require(playlist >= -1 && playlist <= 99999, "Disc title out of range");
         const char* chars = env->GetStringUTFChars(path, nullptr);
-        require(chars != nullptr, "Blu-ray image path unavailable");
+        require(chars != nullptr, "Disc image path unavailable");
         std::string file(chars); env->ReleaseStringUTFChars(path, chars);
         if (file.rfind("fd://", 0) == 0) file = "/proc/self/fd/" + file.substr(5);
         using Probe = int (*)(const char*, int, int*, int*, int64_t*, int*, int*, char*, int, int (*)(void*), void*);
         auto probe = reinterpret_cast<Probe>(dlsym(RTLD_DEFAULT, "avformat_thru3d_bd_titles_v2"));
-        require(probe != nullptr, "Blu-ray decoder build unavailable");
+        require(probe != nullptr, "Disc decoder build unavailable");
         int width = 0, height = 0, mvc = 0, selected = -1; int64_t duration = 0;
-        std::vector<char> titles(16384);
+        std::vector<char> titles(32768);
         const int probe_result = probe(file.c_str(), playlist, &width, &height, &duration, &mvc, &selected,
                                        titles.data(), static_cast<int>(titles.size()), quest::DiscProbe::interrupt, job.get());
         if (!job->cancelled.load() && quest::DiscProbe::interrupt(job.get())) {
             auto type = env->FindClass("java/net/SocketTimeoutException");
-            if (type) env->ThrowNew(type, "Blu-ray preflight timed out");
+            if (type) env->ThrowNew(type, "Disc preflight timed out");
             return nullptr;
         }
         if (probe_result < 0) {
@@ -1658,13 +1666,13 @@ Java_org_vrpassthroughplayer_plugin_MpvSourceNative_probeDisc(JNIEnv* env, jclas
             auto error_text = reinterpret_cast<ErrorText>(dlsym(RTLD_DEFAULT, "av_strerror"));
             if (error_text) error_text(probe_result, reason, sizeof(reason));
             __android_log_print(ANDROID_LOG_ERROR, "QuestMpvIso", "Preflight failed: %d %s", probe_result, reason);
-            throw std::runtime_error("Blu-ray preflight " + std::to_string(probe_result) + ": " + reason);
+            throw std::runtime_error("Disc preflight " + std::to_string(probe_result) + ": " + reason);
         }
         require(width > 0 && width <= 8192 && height > 0 && height <= 4320 && duration > 0,
-                "Blu-ray video dimensions invalid");
+                "Disc video dimensions invalid");
         // Fixed numeric fields plus the demuxer's own bounded {"menu":..,"titles":[..]} object.
         std::string disc(titles.data());
-        require(disc.size() >= 2 && disc.front() == '{' && disc.back() == '}', "Blu-ray title list invalid");
+        require(disc.size() >= 2 && disc.front() == '{' && disc.back() == '}', "Disc title list invalid");
         const auto json = "{\"width\":" + std::to_string(width) + ",\"height\":" + std::to_string(height) +
             ",\"duration_us\":" + std::to_string(duration) + ",\"mvc\":" + (mvc ? "true" : "false") +
             ",\"playlist\":" + std::to_string(selected) + "," + disc.substr(1);
@@ -1687,7 +1695,7 @@ Java_org_vrpassthroughplayer_plugin_MpvSourceNative_discMenuOverlay(JNIEnv* env,
         require(rect != nullptr && env->GetArrayLength(rect) == 6 && version >= 0, "Disc menu overlay request invalid");
         using Overlay = int (*)(uint64_t, uint8_t*, int, int*);
         auto overlay = reinterpret_cast<Overlay>(dlsym(RTLD_DEFAULT, "avformat_thru3d_bd_menu_overlay"));
-        require(overlay != nullptr, "Blu-ray decoder build unavailable");
+        require(overlay != nullptr, "Disc decoder build unavailable");
         static thread_local std::vector<uint8_t> pixels(1920 * 1080 * 4);
         int area[6] = {};
         const int bytes = overlay(static_cast<uint64_t>(version), pixels.data(), static_cast<int>(pixels.size()), area);
@@ -1733,7 +1741,7 @@ Java_org_vrpassthroughplayer_plugin_MpvSourceNative_create(JNIEnv* env, jclass, 
         require(interleave_compat != JNI_TRUE || (network && audio == JNI_TRUE), "MPV interleave compatibility requires network audio/video");
         require(max_width >= 0 && max_width <= 8192, "MPV output width cap out of range");
         require(network_cache_mib >= 64 && network_cache_mib <= 1024, "MPV network cache out of range");
-        require(iso_playlist >= -2 && iso_playlist <= 99999 && (iso_playlist == -1 || iso_input == JNI_TRUE), "Blu-ray title out of range");
+        require(iso_playlist >= -2 && iso_playlist <= 99999 && (iso_playlist == -1 || iso_input == JNI_TRUE), "Disc title out of range");
         require(layer_width > 0 && layer_width <= 8192 && layer_height > 0 && layer_height <= 8192,
                 "Compositor surface dimensions out of range");
         // Alternating location/title; locations follow the same rules as the video itself.

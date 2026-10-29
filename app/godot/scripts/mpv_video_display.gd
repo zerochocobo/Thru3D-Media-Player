@@ -253,6 +253,7 @@ var _remember_file := false
 var recent_files := RecentFiles.new()
 ## Settings: when off, nothing new is recorded and videos start from the beginning.
 var history_enabled := true
+var _web_handoff := false
 var _history_started := false
 var _file_permission_persisted := false
 var _history_save_ms := 0
@@ -339,6 +340,10 @@ var _subtitle_layer_generation := -1
 var _subtitle_layer_failed := false
 var _subtitle_copy_after := -1 # frames_drawn after which a redrawn canvas has rendered
 var _subtitle_texture: ImageTexture
+const FlatSubtitleCanvas := preload("res://scripts/flat_subtitle_canvas.gd")
+var _flat_subtitle_canvas: Node
+var _flat_subtitle_layer_version := -1
+var _flat_subtitle_on_layer := false
 ## Debug prototype of Alpha plan B (compositor alpha blending): 0 off, 1 a test mask over what lies
 ## beneath (passthrough), 2 the same over a test backdrop layer, so a capture shows the blend.
 var alpha_probe := 0
@@ -676,7 +681,7 @@ func open_library(uri: String, title: String, metadata: Dictionary = {}, from_st
 	cast_token = 0
 	var cover := str(metadata.get("cover", recent_files.lookup(uri).get("cover", "")))
 	var opened := false
-	if metadata.get("web_handoff", false) and uri.begins_with("https://"):
+	if metadata.get("web_handoff", false) and (uri.begins_with("https://") or uri.begins_with("http://") or uri.begins_with("webvideo://capture/")):
 		requested_play = true
 		opened = open_local(uri, title, 0 if from_start else clampi(int(metadata.get("start_ms", 0)), 0, 604800000), true, false, "", metadata)
 	elif uri.begins_with("medialib://") and not metadata.is_empty():
@@ -773,6 +778,7 @@ func open_local(uri: String, title: String, start_ms: int = 0, restore_mode: boo
 	_keep_interleave_during_close = network_interleave
 	close_video()
 	_keep_interleave_during_close = false
+	_web_handoff = bool(metadata.get("web_handoff", false))
 	_stream_projection = StreamProjection.read(platform, uri)
 	_stream_mesh = StreamProjection.mesh(_stream_projection)
 	_capture_layout_pending = restore_mode
@@ -841,7 +847,7 @@ func open_local(uri: String, title: String, start_ms: int = 0, restore_mode: boo
 	_thumb_after_ms = -1
 	# A server cover (DLNA albumArt, media servers) is the library picture: no frame is needed.
 	var server_cover := str(metadata.get("cover", recent_files.lookup(uri).get("cover", "")))
-	if _thumbnail_source(uri) and Thumbnails.texture(uri) == null and not RecentFiles.valid_cover(server_cover):
+	if not _web_handoff and _thumbnail_source(uri) and Thumbnails.texture(uri) == null and not RecentFiles.valid_cover(server_cover):
 		_thumb_after_ms = 0
 	local_uri = uri
 	var saved_whisper := whisper_memory.lookup(uri) if restore_mode else {}
@@ -1016,6 +1022,7 @@ func close_video() -> void:
 		platform.destroy_layer_image(VideoLayer.PICTURE_SLOT)
 		platform.destroy_layer_image(VideoLayer.SUBTITLE_SLOT)
 		_subtitle_layer_version = -1; _bitmap_layer_texture = null; _bitmap_layer_size = Vector2i.ZERO
+		_flat_subtitle_layer_version = -1
 		_subtitle_layer_failed = false
 		if video_layer:
 			video_layer.invalidate()
@@ -1046,6 +1053,7 @@ func close_video() -> void:
 	_reset_subtitle_files()
 	control.close()
 	_remember_file = false
+	_web_handoff = false
 	_mode_user_changed = false
 	_mode_memory_cleared = false
 	subtitles.clear(true)
@@ -1081,6 +1089,8 @@ func discard_file_settings() -> void:
 	_whisper_restore_remember = false
 
 func _record_history(force: bool = false) -> void:
+	# Browser handoffs need their live page/session to reopen. Keep per-file settings independent.
+	if _web_handoff: return
 	if recent_files.suppressed.has(ModeMemory.key_for(local_uri)): return
 	# An extra title of a Blu-ray disc keeps the main title's resume position.
 	if not history_enabled or not _remember_file or disc.extra() or not media.accepts(media.session_id) or media.last_pair.is_empty() \
@@ -2927,7 +2937,7 @@ func _reopen_after_context_loss(uri: String, title: String, position_ms: int, re
 	var whisper_save := _whisper_remember or _whisper_restore_remember
 	var auto_subtitle := _subtitle_auto_pending # An internal reopen keeps an unfinished automatic choice.
 	pip.reopening = true
-	var reopened := open_local(uri, title, position_ms, false, alpha_wanted())
+	var reopened := open_local(uri, title, position_ms, false, alpha_wanted(), "", {"web_handoff": _web_handoff})
 	pip.reopening = false
 	if not reopened: pip.clear()
 	if reopened:
@@ -3112,6 +3122,9 @@ func _source_size() -> Vector2:
 	return Vector2(float(media.format.width), float(media.format.height))
 
 func _sync_subtitle_surface() -> void:
+	# Hide the eye-buffer glyphs only after their exact current cue was submitted.
+	if caption and geometry == Geometry.Geometry.FLAT:
+		caption.layers = 0 if _flat_subtitle_on_layer and _flat_subtitle_canvas and _flat_subtitle_canvas.matches(caption) else 1
 	if not _subtitle_surface or not material: return
 	# The layer shows no shader overlays: subtitles go on their own surface above the hole.
 	var separate := portrait.active or not is_zero_approx(screen_rotation) or _layer_session or video_layer_shown
@@ -3264,7 +3277,7 @@ func _apply_geometry() -> void:
 		bitmap_subtitles.clear(material)
 		if _subtitle_surface: _subtitle_surface.visible = false
 		for track in media.playback.get("details", {}).get("subtitle_tracks", []):
-			if track is Dictionary and int(track.get("id", 0)) == subtitles.requested_track and str(track.get("codec", "")) == "hdmv_pgs_subtitle":
+			if track is Dictionary and int(track.get("id", 0)) == subtitles.requested_track and str(track.get("codec", "")) in ["hdmv_pgs_subtitle", "dvd_subtitle"]:
 				var choice := TrackMemory.describe(subtitles.requested_track, _raw_tracks("subtitle"))
 				if set_subtitle_track(0, false) and not choice.is_empty(): _track_restore.subtitle = choice
 	_apply_packed()
@@ -3368,9 +3381,9 @@ func _process(_delta: float) -> void:
 		_try_revision()
 	_present_pending()
 	pip.sync()
+	_poll_subtitles()
 	_update_layer()
 	_maybe_capture_thumbnail()
-	_poll_subtitles()
 	bookmark_loop.tick()
 	_process_playback_end()
 
@@ -3576,7 +3589,7 @@ func _update_layer() -> void:
 	video_layer.update_session()
 	if browser_screen_owned:
 		video_layer.hide(self); video_layer_shown = false; panel.visible = false
-		_subtitle_on_layer = false; _sync_subtitle_surface()
+		_subtitle_on_layer = false; _flat_subtitle_on_layer = false; _sync_subtitle_surface()
 		return
 	if _layer_session and media.accepts(media.session_id) and media.frame_counter > 0 and media.state != "failed" \
 		and _pending_revision.is_empty() and not _layer_presentation():
@@ -3622,6 +3635,11 @@ func _update_layer() -> void:
 	if _layer_session or _layer_seek_hold or _frame_picture or _fisheye_picture or _binding.warped:
 		main_layers = 2 if stereo_sbs or _binding.warped else 1
 	if _processed_picture: main_layers = pip.compositor.main_eyes
+	# Menu providers have already been reserved by main. A tight runtime budget drops
+	# only the new text overlay, leaving the original Label3D and the video available.
+	if _flat_subtitle_on_layer and main_layers + extras.size() > video_layer.capacity():
+		extras = extras.filter(func(extra): return int(extra.values[26]) != VideoLayer.SUBTITLE_SLOT)
+		_subtitle_on_layer = false; _flat_subtitle_on_layer = false
 	var pip_layers: Array = pip.compositor.prepare(origin, main_layers + extras.size()) if pip.active() else []
 	extras.append_array(pip_layers)
 	var shown := (_layer_session or _layer_seek_hold) and media.accepts(media.session_id) \
@@ -3640,7 +3658,8 @@ func _update_layer() -> void:
 	if not shown and not pip_layers.is_empty() and not pip.compositor.needs_main():
 		overlays_shown = video_layer.show_overlays(self, pip_layers)
 	pip.compositor.commit((shown or overlays_shown) and not pip_layers.is_empty())
-	if not shown: _subtitle_on_layer = false
+	if not shown:
+		_subtitle_on_layer = false; _flat_subtitle_on_layer = false
 	video_layer_shown = shown
 	if not shown and not overlays_shown:
 		video_layer.hide(self)
@@ -3713,7 +3732,10 @@ func _alpha_probe_layers(origin: XROrigin3D, layer_size: Vector2, extras: Array)
 ## canvas reaches the swapchain one frame after each redraw; the previous copy stays up meanwhile.
 func _subtitle_layer_extras(origin: XROrigin3D) -> Array:
 	_subtitle_on_layer = false
-	if geometry == Geometry.Geometry.FLAT: return _bitmap_layer_extras(origin)
+	_flat_subtitle_on_layer = false
+	if geometry == Geometry.Geometry.FLAT:
+		if caption and caption.visible and not caption.text.is_empty(): return _flat_text_layer_extras(origin)
+		return _bitmap_layer_extras(origin)
 	if not (_layer_session or _frame_picture or _fisheye_picture or _processed_picture) or _subtitle_layer_failed \
 		or material.get_shader_parameter("subtitle_enabled") != true or not projected_subtitles or not projected_subtitles.viewport \
 		or not PlatformMethods.supports(platform, "copy_layer_texture"):
@@ -3741,10 +3763,39 @@ func _subtitle_layer_extras(origin: XROrigin3D) -> Array:
 	return [{"values": video_layer.quad_values(origin, pose, size, VideoLayer.SUBTITLE_SLOT, Vector2(canvas.size)),
 		"order": VideoLayer.OVERLAY_ORDER}]
 
+func _flat_text_layer_extras(origin: XROrigin3D) -> Array:
+	if not (_layer_session or _frame_picture or _processed_picture or _binding.warped) or _subtitle_layer_failed \
+		or not panel.visible or not video_layer.available() or not video_layer.supports(Geometry.Geometry.FLAT, false) \
+		or not PlatformMethods.supports(platform, "copy_layer_texture"):
+		return []
+	var eyes := pip.compositor.main_eyes if _processed_picture else (2 if stereo_sbs or _binding.warped else 1)
+	if video_layer.capacity() < eyes + 1: return []
+	_check_subtitle_generation()
+	if not _flat_subtitle_canvas:
+		_flat_subtitle_canvas = FlatSubtitleCanvas.new()
+		add_child(_flat_subtitle_canvas)
+	# A changed cue uses the original glyphs until its new capture is ready, never the old cue.
+	if not _flat_subtitle_canvas.request(caption, video_layer.runtime_image_size): return []
+	if not _flat_subtitle_canvas.fits_surface(caption, subtitle_transform(), _flat.size): return []
+	if _flat_subtitle_layer_version != _flat_subtitle_canvas.version:
+		_subtitle_layer_version = -1
+		if not _copy_subtitle_canvas(_flat_subtitle_canvas.viewport):
+			_subtitle_layer_failed = true
+			DiagnosticLog.record("subtitle_layer_failed", {"flat_text": true})
+			return []
+		_flat_subtitle_layer_version = _flat_subtitle_canvas.version
+	var values := video_layer.quad_values(origin, _flat_subtitle_canvas.pose(caption),
+		_flat_subtitle_canvas.physical_size(caption), VideoLayer.SUBTITLE_SLOT, Vector2(_flat_subtitle_canvas.viewport.size))
+	# Subtitle filtering follows the requested sampling quality, without video sharpening.
+	values[18] = [0, VideoLayer.NORMAL_SUPER_SAMPLING, VideoLayer.QUALITY_SUPER_SAMPLING][clampi(video_layer.supersampling, 0, 2)] if video_layer._settings else 0
+	_subtitle_on_layer = true; _flat_subtitle_on_layer = true
+	return [{"values": values, "order": VideoLayer.OVERLAY_ORDER}]
+
 func _check_subtitle_generation() -> void:
 	if video_layer.generation != _subtitle_layer_generation:
 		_subtitle_layer_generation = video_layer.generation # a new session dropped the swapchain
 		_subtitle_layer_version = -1
+		_flat_subtitle_layer_version = -1
 		_bitmap_layer_texture = null
 		_bitmap_layer_size = Vector2i.ZERO
 
@@ -3798,6 +3849,7 @@ func _bitmap_layer_extras(origin: XROrigin3D) -> Array:
 ## The cue's premultiplied pixels at the top left of a transparent bucket-sized image, copied once.
 func _copy_bitmap_cue(bucket: Vector2i) -> bool:
 	_subtitle_layer_version = -1 # the immersive canvas no longer is in the swapchain
+	_flat_subtitle_layer_version = -1
 	var cue: Image = bitmap_subtitles.image
 	if cue == null or cue.is_empty(): return false
 	if cue.get_format() != Image.FORMAT_RGBA8: cue.convert(Image.FORMAT_RGBA8)
@@ -3812,10 +3864,11 @@ func _copy_bitmap_cue(bucket: Vector2i) -> bool:
 
 func _copy_subtitle_canvas(canvas: SubViewport) -> bool:
 	_bitmap_layer_texture = null; _bitmap_layer_size = Vector2i.ZERO # the PGS cue no longer is in the swapchain
+	_flat_subtitle_layer_version = -1
 	var size := Vector2i(canvas.size)
 	if not platform.create_layer_image(VideoLayer.SUBTITLE_SLOT, size.x, size.y, 1, false): return false
 	# A viewport texture has no GL texture of its own in this renderer: read the canvas back once per
-	# cue into a plain texture (700 px square, on caption changes only) and copy that.
+	# cue into a plain texture (on caption changes only) and copy that.
 	var image := canvas.get_texture().get_image()
 	if image == null or image.is_empty(): return false
 	if image.get_format() != Image.FORMAT_RGBA8: image.convert(Image.FORMAT_RGBA8)
@@ -3927,7 +3980,7 @@ func _reopen_at(position_ms: int, layer: bool) -> void:
 	if _network_interleave_compat and PlatformMethods.supports(platform, "set_mpv_interleave_compat"):
 		platform.set_mpv_interleave_compat(true)
 	pip.reopening = true
-	var capture_reopened := open_local(local_uri, display_name, position, false, alpha_wanted())
+	var capture_reopened := open_local(local_uri, display_name, position, false, alpha_wanted(), "", {"web_handoff": _web_handoff})
 	pip.reopening = false
 	if not capture_reopened: pip.clear()
 	if not capture_reopened: captures.stop()

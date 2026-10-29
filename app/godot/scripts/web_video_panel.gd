@@ -64,7 +64,9 @@ func choose(row: Dictionary) -> bool:
 				if row.has("start_ms"):
 					menu.collections.selected_entry.merge({"web_handoff": true, "start_ms": row.start_ms})
 				if row.get("web_fullscreen", false): menu.collections.selected_entry.web_fullscreen = true
-				menu.dismiss()
+				var keep_browser: bool = row.get("keep_browser", false) and menu.web_browser.active()
+				if keep_browser: menu.collections.selected_entry.keep_browser = true
+				else: menu.dismiss()
 				menu.chosen.emit(uri, title)
 	return true
 

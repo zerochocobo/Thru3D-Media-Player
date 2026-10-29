@@ -102,6 +102,7 @@ func draw() -> void:
 		menu._button(target, "", Vector2(centre_x, y), Vector2(WIDTH - 0.06, 0.065))
 		var button: Dictionary = menu._buttons.back()
 		var name := I18n.t("Main title") if playlist == main else I18n.t("Extra %d") % (index + (0 if main_index >= 0 and main_index < index else 1))
+		if row.has("dvd_title"): name = I18n.t("Title %d") % int(row.dvd_title)
 		if row.get("stereo", false): name += "  3D"
 		var caption: Label3D = menu._label(name, Vector3(-(WIDTH - 0.06) / 2 + 0.02, 0, 0.004), menu.TEXT_BODY, button.node)
 		caption.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT

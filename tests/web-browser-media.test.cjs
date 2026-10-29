@@ -23,7 +23,9 @@ const context = {
   MutationObserver: class { constructor(fn) { this.callback = fn; observer = this; } observe() {} disconnect() {} },
   setTimeout(fn) { timers.push(fn); },
   addEventListener(name, fn) { (pageEvents[name] ??= []).push(fn); },
-  browser: { runtime: { connectNative(name) {
+  browser: { runtime: { connect() {
+    return { onMessage: { addListener() {} }, onDisconnect: { addListener() {} }, postMessage() {}, disconnect() {} };
+  }, connectNative(name) {
     assert.equal(name, 'thru3d_video');
     const port = { onMessage: signal(), onDisconnect: signal(), messages: [],
       postMessage(message) { this.messages.push(JSON.parse(JSON.stringify(message))); },

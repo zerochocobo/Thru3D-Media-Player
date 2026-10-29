@@ -13,6 +13,16 @@ class WebVideoDiagnosticsReceiver : BroadcastReceiver() {
         if (!request.matches(Regex("[A-Za-z0-9_-]{1,64}"))) return
         if (intent.getStringExtra("operation") == "browser_capture") { capture(context, request); return }
         if (intent.getStringExtra("operation") == "browser_system_input") { systemInput(context, request); return }
+        if (intent.getStringExtra("operation") == "browser_media") {
+            val pending = goAsync()
+            Thread({
+                val result = JSONObject().put("request", request)
+                try { result.put("media", DiagnosticRequests.current()?.probeWebBrowserMediaForDiagnostics()).put("ok", true) }
+                catch (_: Exception) { result.put("ok", false) }
+                finally { writeResult(context, request, result); pending.finish() }
+            }, "BrowserMediaProbe").start()
+            return
+        }
         val result = JSONObject().put("request", request)
         try {
             val plugin = DiagnosticRequests.current() ?: error("Player not running")
@@ -24,7 +34,7 @@ class WebVideoDiagnosticsReceiver : BroadcastReceiver() {
                     val source = JSONObject(plugin.web_browser_status())
                     val safe = JSONObject()
                     for (key in listOf("engine", "progress", "error", "active", "attached", "playing", "generation",
-                        "detached_through", "needs_surface", "extension", "videos", "tabs", "native_supported", "editing", "session_ready", "tab_id", "navigation", "focused_window", "operation_error", "live_tabs")) {
+                        "detached_through", "needs_surface", "extension", "videos", "tabs", "native_supported", "editing", "session_ready", "tab_id", "navigation", "focused_window", "operation_error", "live_tabs", "network_capture_enabled", "network_capture_available")) {
                         if (source.has(key)) safe.put(key, source.get(key))
                     }
                     safe.put("page", runCatching { WebVideoPage.parse(source.optString("url")).url }.getOrDefault(""))

@@ -15,3 +15,9 @@ tools/media/Test-MultiClipMvcHost.py and benchmarks/native_mvc/iso_multiclip_pro
 ## Disc menu scope
 
 The longest supported playlist remains the default. The title list exposes other cuts/extras without overwriting main-feature resume data. Supported HDMV menu sessions use eye-buffer disc presentation with controller rays and a dedicated sharp toolbar, dwell selection for submenus, menu return and language carry-over. MVC/3D discs and BD-J are outside this menu implementation. Menu detection is not a promise that every disc script is compatible. Current FFmpeg adapters require a matching rebuilt source receipt; no movie ISO or menu imagery is distributed.
+
+## DVD ISO playback (0.15.2)
+
+Supported unencrypted DVD ISOs use the seekable source adapter, title/chapter selection and libdvdnav controller-ray menu navigation. Return-to-menu is available during disc playback. Inputs must support random reads; network behavior and individual disc scripts can limit compatibility. No libdvdcss dependency, decryption or universal menu guarantee is provided.
+
+`third_party/dvd/source-lock.json` pins libdvdread 7.0.1 and libdvdnav 7.0.0, both GPL-2.0-or-later. `tools/environment/Prepare-DvdSources.py`, `tools/environment/mpv-linux/build_dvd.sh` and the FFmpeg adapter build the corresponding native component. `tools/media/Test-DvdIsoHost.py` is an optional external-media check, not bundled film data. Source receipt and native libraries must be rebuilt together. No ISO, menu imagery or third-party binary is included.

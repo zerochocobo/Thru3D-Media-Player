@@ -1978,19 +1978,14 @@ func _rebuild_rows() -> void:
 				else:
 					status = "Loading…" if settings.get("background_loading", false) else str(settings.get("background_error", ""))
 			elif tab == ABOUT_TAB:
-				if _about_page == 3:
+				if _about_page in [2, 3]:
 					var licenses: Variant = JSON.parse_string(FileAccess.get_file_as_string("res://i18n/licenses.json"))
 					if licenses is Array:
 						for license in licenses:
-							rows.append({"title": str(license.name), "detail": str(license.license), "icon": "info", "license_id": str(license.id)})
-				elif _about_page == 2:
-					for credit in [
-						["Belfast Sunset (Pure Sky)", "Poly Haven · CC0 1.0 · Dimitrios Savva / Greg Zaal / Jarod Guest"],
-						["Godot", "MIT"], ["Godot OpenXR Vendors", "Vendor license notices"],
-						["RVM MobileNetV3", "GPL-3.0"], ["MNN", "Apache-2.0"], ["ncnn", "BSD-3-Clause"],
-						["Depth Anything V2 Small", "Apache-2.0"], ["MPV / FFmpeg", "Bundled license notices"],
-						["AndroidX Media3", "Apache-2.0"], ["CodeLibs JCIFS", "LGPL-2.1"], ["p115rsacipher", "MIT"]]:
-						rows.append(_about_info(I18n.t(credit[0]), I18n.t(credit[1])))
+							if _about_page == 3:
+								rows.append({"title": str(license.name), "detail": str(license.license), "icon": "info", "license_id": str(license.id)})
+							else:
+								rows.append(_about_info(I18n.t(str(license.name)), str(license.get("credit", license.license))))
 				else:
 					rows.append(_about_info("Thru3D Media Player", str(settings.get("version", ""))))
 					rows.append(_about_info("FFSky Studio", "© 2026 FFSky Studio"))

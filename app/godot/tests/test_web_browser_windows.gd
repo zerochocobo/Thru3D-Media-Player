@@ -18,6 +18,14 @@ func run() -> void:
 	var browser: RefCounted = menu.web_browser
 	browser.open("https://example.com/a"); browser.tick()
 	var primary: Node3D = browser.windows[1]
+	for low in [false, true]:
+		browser.configure_quality(low)
+		var surface := preload("res://scripts/web_browser_surface.gd").new()
+		surface.configure(primary, platform, 1)
+		check(surface.pixels == (surface.LOW_END_PIXELS if low else surface.PIXELS), "Window starts with the runtime-selected raster quality")
+		check(surface.pixels * (45 if low else 36) == Vector2i(1440, 900) * 60, "Both window qualities start with the same 1440x900 CSS layout")
+		surface.free()
+	browser.configure_quality(false)
 	check(primary.get_parent() == root, "Window is outside the library transform tree")
 	var pose: Transform3D = primary.global_transform
 	menu.position += Vector3(3, 1, 2)
@@ -34,23 +42,41 @@ func run() -> void:
 	primary.adjust_size(-100)
 	check(is_equal_approx(primary.global_basis.get_scale().x, 0.6), "Size has a lower bound")
 	primary.recenter(); primary._process(0)
-	for corner in [primary.RESIZE_LEFT, primary.RESIZE]:
+	for corner in [primary.RESIZE_RIGHT, primary.RESIZE_BOTTOM, primary.RESIZE]:
 		var button: Dictionary = primary._buttons.filter(func(item): return item.target == corner)[0]
 		var old_pose: Transform3D = primary.global_transform
-		var centre: Vector3 = old_pose * primary.CENTRE
+		var old_size: Vector2 = primary.page_size
+		check(not button.rect.intersects(primary.page_rect()), "Resize target is wholly outside webpage")
 		var local := Vector3(button.rect.get_center().x, button.rect.get_center().y, 0)
 		var ray_start: Vector3 = old_pose * (local + Vector3(0, 0, 0.3))
 		check(primary.press_pointer("left", ray_start, -old_pose.basis.z, true), "Lower corner starts resize " + str(corner))
-		var enlarged: Vector3 = primary.CENTRE + (local - primary.CENTRE) * 1.3
+		var enlarged: Vector3 = local + Vector3(0.4, -0.3, 0)
 		primary.update_pointer("left", old_pose * (enlarged + Vector3(0, 0, 0.3)), -old_pose.basis.z, true)
-		check(is_equal_approx(primary.global_basis.get_scale().x, old_pose.basis.get_scale().x * 1.3), "Both borders resize through the real ray path")
-		check((primary.global_transform * primary.CENTRE).distance_to(centre) < 0.001, "Corner resize preserves panel centre")
+		var expected := old_size + Vector2(0.0 if corner == primary.RESIZE_BOTTOM else 0.4, 0.0 if corner == primary.RESIZE_RIGHT else 0.3)
+		if corner == primary.RESIZE_BOTTOM: expected.y = minf(expected.y, expected.x / primary.Surface.MIN_RATIO)
+		check(primary.page_size.is_equal_approx(expected), "Right/bottom/corner independently resize width/height through ray input")
+		check(primary.global_transform.is_equal_approx(old_pose), "Resize keeps the top-left anchor and toolbar scale fixed")
+		var resized: Dictionary = primary.page_layout()
+		var bottom_right: Vector3 = resized.pose * Vector3(resized.size.x * 0.49, -resized.size.y * 0.49, 0.3)
+		check(primary.local_hit(bottom_right, -resized.pose.basis.z).get("target") == browser.WEB, "Website fullscreen corner remains clickable after resize")
+		check(primary.page_point(bottom_right, -resized.pose.basis.z).distance_to(Vector2(0.99, 0.99)) < 0.001, "Resized ray coordinates match webpage pixels")
 		primary.release_pointer("left", ray_start, -old_pose.basis.z, true)
 		check(primary.drag.is_empty(), "Release ends corner capture")
-		primary.recenter(); primary._process(0)
+		primary.page_size = primary.RECT.size; primary.recenter(); primary.refresh(); primary._process(0)
+	verify_minimum_width(primary)
+	verify_minimum_height(primary)
 	check(not primary._buttons.any(func(button): return button.target >= browser.BASE + 9 and button.target <= browser.BASE + 13), "No redundant bottom controls return")
-	for target in [browser.BASE + 2, browser.BASE + 4, browser.BASE + 8]:
+	for target in [browser.BASE + 2, browser.BASE + 4]:
 		check(primary._buttons.any(func(button): return button.target == target), "Refresh, bookmark and cinema are exposed without a menu")
+	check(not primary._buttons.any(func(button): return button.target == browser.BASE + 8), "Cinema action is absent outside cinema")
+	browser.action(browser.BASE + 8)
+	check(primary.mode == "floating", "Hidden cinema action cannot switch presentation")
+	for dimensions in [Vector2(2.88, 0.45), Vector2(1.44, 1.8), Vector2(2.0, 0.7)]:
+		dimensions = primary.clamp_page_size(dimensions)
+		for low in [false, true]:
+			var pixels := preload("res://scripts/web_browser_surface.gd").pixels_for(dimensions, low)
+			check(absf(float(pixels.x) / pixels.y - dimensions.x / dimensions.y) < 0.01, "Wide/tall viewport preserves its aspect ratio")
+			check(pixels.x * pixels.y <= (1920 * 1200 if low else 2560 * 1600) + 4096, "Viewport stays within the device pixel budget")
 	var close: Dictionary = primary._buttons.filter(func(button): return button.target == browser.BASE + 5)[0]
 	var address: Dictionary = primary._buttons.filter(func(button): return button.target == browser.BASE + 3)[0]
 	check(close.rect.get_center().y > address.rect.end.y and address.rect.size.x < 0.65, "Close occupies the narrow title row above a shorter URL field")
@@ -70,6 +96,8 @@ func run() -> void:
 	check(uv.distance_to(Vector2(0.01, 0.01)) < 0.001, "Transformed corner maps to correct page pixel")
 	var pose_before_cinema: Transform3D = primary.global_transform
 	browser.cinema_provider = func(): return {"position": [0, 3, -12], "width": 10.0, "height": 5.625, "yaw": 0.0}
+	browser.refresh_windows()
+	check(primary._buttons.any(func(button): return button.target == browser.BASE + 8), "Cinema action appears in the cinema scene")
 	browser.action(browser.BASE + 8)
 	check(primary.on_screen(), "Cinema mode uses existing screen anchor")
 	check(primary._backdrop.material_override.render_priority > 25 and primary._buttons.filter(func(button): return button.target != browser.WEB).all(func(button): return button.node.material_override.render_priority > 25), "Near cinema controls render after the distant page alpha hole")
@@ -97,13 +125,14 @@ func run() -> void:
 	platform.browser.windows = [{"id": 1, "tab_id": 1, "url": "https://example.com/a", "title": "First"}, {"id": 2, "tab_id": 3, "url": "https://example.com/b", "title": "Second"}]
 	platform.browser.tab_list = [{"id": 1, "window": 1, "url": "https://example.com/a", "title": "First"}, {"id": 7, "window": 1, "url": "https://example.com/c", "title": "Dormant", "sleeping": true}, {"id": 3, "window": 2, "url": "https://example.com/b", "title": "Second"}]
 	platform.browser.focused_window = 1; platform.browser.tab_id = 1
+	var retained_pose: Transform3D = primary.global_transform
 	browser.next_poll = 0; browser.tick()
 	check(browser.windows.size() == 2 and browser.windows[2].visible, "Detached tabs show a second window")
 	var secondary: Node3D = browser.windows[2]
 	var first_centre := primary.to_global(Vector3(0.13, 0, 0))
 	var second_centre := secondary.to_global(Vector3(0.13, 0, 0))
-	check(first_centre.x < 0 and second_centre.x > 0 and absf(first_centre.x + second_centre.x) < 0.001, "Default pair is symmetric around the viewer")
-	check(is_equal_approx(first_centre.z, second_centre.z) and first_centre.distance_to(second_centre) > 1.5, "Default pair shares depth without overlapping")
+	check(primary.global_transform.is_equal_approx(retained_pose), "Opening a peer preserves the existing window placement")
+	check(first_centre.distance_to(second_centre) > 1.5, "New peer is placed away from the existing window")
 	primary.adjust_distance(0.3)
 	var adjusted: Transform3D = primary.global_transform
 	browser.next_poll = 0; browser.tick()
@@ -115,7 +144,9 @@ func run() -> void:
 	check(platform.pointers.back()[4] == 2, "Pointer is tagged with owning window")
 	primary.release_pointer("left", start, -layout.pose.basis.z, true)
 	check(platform.pointers.back()[0] == "up" and browser.hand.is_empty(), "Release reaches captured second page")
+	secondary.page_size = Vector2(2.2, 1.5); secondary.refresh()
 	verify_title_drag(primary, secondary)
+	verify_window_occlusion(primary, secondary)
 	browser.focus_window(1); browser.refresh_windows()
 	var title_target: Dictionary = primary._buttons.filter(func(button): return button.target == browser.BASE + 201)[0]
 	var tab_close: Dictionary = primary._buttons.filter(func(button): return button.target == browser.BASE + 221)[0]
@@ -147,9 +178,12 @@ func run() -> void:
 	browser.action(browser.BASE + 201)
 	check(platform.commands.back().action == "select" and int(platform.commands.back().window) == 1 and int(platform.commands.back().tab) == 7, "Selection sends stable ID")
 	browser.action(browser.BASE + 210)
-	check(platform.commands.back().action == "detach", "Tab can move into separate window")
+	check(browser.window_action.get("command") == "move_tab", "Moving a tab opens a destination picker")
+	browser.action(browser.WINDOW_TARGET)
+	check(platform.commands.back().action == "move_tab" and platform.commands.back().destination == 0, "Tab can move into a new separate window")
 	browser.focus_window(2); browser.action(browser.BASE + 210)
-	check(platform.commands.back().action == "merge" and platform.commands.back().tab == 3, "Detached tab can merge back")
+	browser.action(browser.WINDOW_TARGET + 1)
+	check(platform.commands.back().action == "move_tab" and platform.commands.back().tab == 3 and platform.commands.back().destination == 1, "Detached tab can move to a selected peer")
 	browser.focus_window(1); browser.action(browser.BASE + 6)
 	platform.browser.tab_id = 7; browser.next_poll = 0; browser.tick()
 	check(not browser.handoff, "Tab change cancels source-bound extraction")
@@ -167,6 +201,138 @@ func run() -> void:
 	print("Browser windows: %d checks, %d failures" % [checks, failures.size()])
 	for failure in failures: push_error(failure)
 	quit(0 if failures.is_empty() else 1)
+
+func verify_minimum_width(window: Node3D) -> void:
+	for edge in [window.RESIZE_RIGHT, window.RESIZE_BOTTOM, window.RESIZE]:
+		window.page_size = Vector2(2.4, 1.8) if edge == window.RESIZE_RIGHT else window.RECT.size
+		window.refresh(); window._process(0)
+		var original: Vector2 = window.page_size
+		var button: Dictionary = window._buttons.filter(func(item): return item.target == edge)[0]
+		var pose: Transform3D = window.global_transform
+		var start := Vector3(button.rect.get_center().x, button.rect.get_center().y, 0.3)
+		check(window.press_pointer("left", pose * start, -pose.basis.z, true), "Edge captures before reaching desktop minimum")
+		window.update_pointer("left", pose * (start + Vector3(-10, -10, 0)), -pose.basis.z, true)
+		var bounded: Vector2 = window.page_size
+		var logical: Vector2i = window.Surface.logical_for(bounded)
+		check(logical.x >= 1280 and logical.x < 1283, "Right, bottom and corner drags stop at the shared desktop minimum")
+		check((is_equal_approx(bounded.y, original.y) if edge == window.RESIZE_RIGHT else is_equal_approx(bounded.x, original.x)), "Minimum-width stop preserves the untouched axis")
+		window.update_pointer("left", pose * (start + Vector3(-20, -20, 0)), -pose.basis.z, true)
+		check(window.page_size.is_equal_approx(bounded), "Further outward dragging cannot shrink the logical viewport")
+		check(window.global_transform.is_equal_approx(pose), "Minimum-width stop keeps the top-left anchor fixed")
+		window.release_pointer("left", pose * start, -pose.basis.z, true)
+	window.page_size = window.RECT.size; window.recenter(); window.refresh(); window._process(0)
+
+func verify_minimum_height(window: Node3D) -> void:
+	for low in [false, true]:
+		window.browser.configure_quality(low)
+		for edge in [window.RESIZE_RIGHT, window.RESIZE_BOTTOM, window.RESIZE]:
+			window.page_size = window.RECT.size
+			window.refresh(); window._process(0)
+			var original: Vector2 = window.page_size
+			var button: Dictionary = window._buttons.filter(func(item): return item.target == edge)[0]
+			var pose: Transform3D = window.global_transform
+			var start := Vector3(button.rect.get_center().x, button.rect.get_center().y, 0.3)
+			check(window.press_pointer("left", pose * start, -pose.basis.z, true), "Edge captures before reaching minimum height")
+			window.update_pointer("left", pose * (start + Vector3(10, 10, 0)), -pose.basis.z, true)
+			var bounded: Vector2 = window.page_size
+			var logical: Vector2i = window.Surface.logical_for(bounded)
+			var pixels: Vector2i = window.Surface.pixels_for(bounded, low)
+			check(logical.y == 720 and pixels * (45 if low else 36) == logical * 60, "Each resize handle stops at the same 720 CSS height on both device tiers")
+			check(logical.x >= 1280 and pixels.x * pixels.y <= (1920 * 1200 if low else 2560 * 1600), "Minimum height preserves minimum width and raster budget")
+			if edge != window.RESIZE:
+				check((is_equal_approx(bounded.y, original.y) if edge == window.RESIZE_RIGHT else is_equal_approx(bounded.x, original.x)), "Minimum-height stop preserves the untouched axis")
+			window.update_pointer("left", pose * (start + Vector3(20, 20, 0)), -pose.basis.z, true)
+			check(window.page_size.is_equal_approx(bounded), "Further dragging cannot flatten the window below minimum height")
+			check(window.global_transform.is_equal_approx(pose), "Minimum-height stop keeps the top-left anchor fixed")
+			var layout: Dictionary = window.page_layout()
+			var point: Vector3 = layout.pose * Vector3(layout.size.x * 0.49, -layout.size.y * 0.49, 0.3)
+			check(window.page_point(point, -layout.pose.basis.z).distance_to(Vector2(0.99, 0.99)) < 0.001, "Ray coordinates still cover the bottom-right corner at minimum height")
+			window.release_pointer("left", pose * start, -pose.basis.z, true)
+			check(window.drag.is_empty(), "Release ends capture at the height limit")
+	window.browser.configure_quality(false)
+	window.page_size = window.RECT.size; window.recenter(); window.refresh(); window._process(0)
+
+func verify_window_occlusion(router: Node3D, secondary: Node3D) -> void:
+	var browser: RefCounted = router.browser
+	var poses := [router.global_transform, secondary.global_transform]
+	var sizes := [router.page_size, secondary.page_size]
+	var eye: Vector3 = router.head().origin
+	# Exercise either window in front, including the secondary's empty chrome.
+	for front in [router, secondary]:
+		var rear: Node3D = secondary if front == router else router
+		for scale_factor in [0.6, 1.0, 2.5]:
+			front.page_size = Vector2(2.2, 1.5)
+			var basis := (Basis(Vector3.UP, 0.12) * Basis(Vector3.RIGHT, -0.08)).scaled(Vector3.ONE * scale_factor)
+			front.global_transform = Transform3D(basis, eye + Vector3(0, -0.3, -2.5))
+			rear.page_size = rear.MAX_PAGE
+			rear.global_transform = Transform3D(Basis.IDENTITY.scaled(Vector3.ONE * 2.5), eye + Vector3(0, 1.5, -7))
+			browser.focus_window(rear.window_id); browser.refresh_windows()
+			for window in [front, rear]: window._process(0)
+			# These are blank parts of the header, outside the small dotted handle.
+			for local in [Vector3(0.13 + (front.page_size.x - front.RECT.size.x) / 2, 0.515, 0), Vector3(front.page_rect().end.x - 0.05, 0.555, 0)]:
+				var point: Vector3 = front.to_global(local)
+				var direction := (point - eye).normalized()
+				var hit: Dictionary = router.ray_hit(eye, direction)
+				check(int(hit.get("window", 0)) == front.window_id and int(hit.get("target", -1)) == front.MOVE, "Blank header belongs to the nearer window and can drag")
+				router.update_pointer("left", eye, direction, true)
+				var dot: Node3D = router._pointers.left.dot
+				check(dot.visible and dot.global_position.distance_to(point) < 0.025, "Ray stops on the front header, including the secondary window")
+				var grab: Dictionary = router.grab_hit(eye, direction)
+				check(int(grab.get("window", 0)) == front.window_id, "Grip and trigger agree on the visible front window")
+				var before: Transform3D = front.global_transform
+				var rear_before: Transform3D = rear.global_transform
+				var pointers: int = browser.menu.platform.pointers.size()
+				check(router.press_pointer("left", eye, direction, true) and front.drag.get("kind") == front.MOVE, "Blank header starts a trigger drag")
+				var moved := Basis(Vector3.UP, 0.08) * direction
+				router.update_pointer("left", eye, moved, true)
+				check(not front.global_transform.is_equal_approx(before) and rear.global_transform.is_equal_approx(rear_before), "Dragging the header moves only its owning window")
+				check(browser.menu.platform.pointers.size() == pointers, "Header drag never sends webpage input behind it")
+				router.release_pointer("left", eye, moved, true)
+				check(front.drag.is_empty(), "Release ends blank-header capture")
+				front.global_transform = before; front._process(0)
+			# Disabled controls must remain inert instead of becoming drag handles.
+			browser.focus_window(rear.window_id)
+			var disabled: Dictionary = front._buttons.filter(func(button): return button.target == browser.BASE + 1)[0]
+			var direction: Vector3 = (disabled.node.global_position - eye).normalized()
+			var hit: Dictionary = router.ray_hit(eye, direction)
+			check(int(hit.get("window", 0)) == front.window_id and not hit.get("enabled", true), "Disabled chrome blocks the rear window")
+			var commands: int = browser.menu.platform.commands.size()
+			var actions: int = browser.menu.platform.actions.size()
+			check(router.press_pointer("left", eye, direction, true) and front.drag.is_empty(), "Disabled chrome consumes a press without starting a drag")
+			router._activate_hit(hit)
+			check(browser.menu.platform.commands.size() == commands and browser.menu.platform.actions.size() == actions, "Disabled chrome performs no action or focus change")
+			var reload: Dictionary = front._buttons.filter(func(button): return button.target == browser.BASE + 2)[0]
+			direction = (reload.node.global_position - eye).normalized()
+			hit = router.ray_hit(eye, direction)
+			check(int(hit.get("window", 0)) == front.window_id and int(hit.get("target", -1)) == browser.BASE + 2, "Enabled controls stay in front of the header drag surface")
+			router.press_pointer("left", eye, direction, true)
+			check(browser.focused_window == front.window_id and browser.menu.platform.actions.back() == "reload" and front.drag.is_empty(), "Front window reload still activates without dragging")
+			# Side borders block clicks but remain grabbable; the page stays clickable.
+			# Aim at the outer edge: the page is slightly raised and can visually
+			# cover the inner border when the panel is large and viewed obliquely.
+			var edge := Vector3(front.page_rect().position.x - 0.009, -0.1, 0)
+			direction = (front.to_global(edge) - eye).normalized()
+			hit = router.ray_hit(eye, direction)
+			check(int(hit.get("window", 0)) == front.window_id and int(hit.get("target", 0)) == front.NONE, "Window border occludes the rear webpage")
+			var pointers: int = browser.menu.platform.pointers.size()
+			router.press_pointer("left", eye, direction, true)
+			check(browser.menu.platform.pointers.size() == pointers and browser.hand.is_empty(), "Border press cannot click through to a webpage")
+			router.release_pointer("left", eye, direction, true)
+			var page: Dictionary = front.page_layout()
+			direction = (page.pose.origin - eye).normalized()
+			hit = router.ray_hit(eye, direction)
+			check(int(hit.get("window", 0)) == front.window_id and int(hit.get("target", -1)) == front.WEB, "Visible webpage still owns page input")
+			# The tabs overlay has empty background too, but it is not a title bar.
+			browser.focus_window(front.window_id); browser.tabs_open = true; browser.refresh_windows()
+			direction = (front.to_global(Vector3(-0.50, -0.20, 0)) - eye).normalized()
+			hit = router.ray_hit(eye, direction)
+			check(int(hit.get("window", 0)) == front.window_id and int(hit.get("target", 0)) == front.NONE, "Tabs background blocks rear content without becoming a drag handle")
+			browser.tabs_open = false; browser.refresh_windows()
+	for i in 2:
+		var window: Node3D = [router, secondary][i]
+		window.global_transform = poses[i]; window.page_size = sizes[i]
+	browser.refresh_windows()
+	for window in [router, secondary]: window._process(0)
 
 func verify_title_drag(router: Node3D, window: Node3D) -> void:
 	var pose: Transform3D = window.global_transform

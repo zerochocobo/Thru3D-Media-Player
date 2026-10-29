@@ -18,7 +18,9 @@ test('fullscreen capture and source-bound return preserve the actual video', asy
   const context = { document, location: { href: 'https://example.test/video' }, navigator: { userAgent: 'fixture' },
     MutationObserver: class { observe() {} disconnect() {} },
     setTimeout(fn) { timers.push(fn); }, addEventListener(name, fn) { (events[name] ??= []).push(fn); },
-    browser: { runtime: { connectNative() {
+    browser: { runtime: { connect() {
+      return { onMessage: { addListener() {} }, onDisconnect: { addListener() {} }, postMessage() {} };
+    }, connectNative() {
       const port = { onMessage: signal(), onDisconnect: signal(), messages: [],
         postMessage(v) { this.messages.push(JSON.parse(JSON.stringify(v))); }, disconnect() { this.onDisconnect.emit(); } };
       ports.push(port); return port;

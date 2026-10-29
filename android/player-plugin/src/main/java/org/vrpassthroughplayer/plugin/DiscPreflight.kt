@@ -2,7 +2,7 @@ package org.vrpassthroughplayer.plugin
 
 import org.json.JSONObject
 
-/** Blu-ray ISO preflight results. Reopening the same disc (title switch, layer
+/** Optical-disc ISO preflight results. Reopening the same disc (title switch, layer
  * change, resume) reuses them instead of scanning UDF and playlists over the
  * network again. Memory only and short-lived: the demuxer still validates the
  * disc on every real open, so a stale entry can only fail that open. */
@@ -18,7 +18,8 @@ internal object DiscPreflight {
     fun parse(json: String): Result {
         val value = JSONObject(json)
         val result = Result(value.getInt("width"), value.getInt("height"), value.getBoolean("mvc"), value.getInt("playlist"), json)
-        require(result.width in 1..8192 && result.height in 1..4320 && result.playlist in 0..99999 && value.getJSONArray("titles").length() <= 48)
+        require(result.width in 1..8192 && result.height in 1..4320 && result.playlist in 0..99999 &&
+            value.getJSONArray("titles").length() <= if (value.optString("disc_type") == "dvd") 99 else 48)
         return result
     }
 

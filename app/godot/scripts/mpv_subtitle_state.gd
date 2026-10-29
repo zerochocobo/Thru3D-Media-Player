@@ -75,4 +75,4 @@ static func text_codec(codec: String) -> bool:
 	return codec in ["subrip", "ass", "ssa", "webvtt", "mov_text", "text", "sami", "microdvd", "subviewer", "ttml"]
 
 static func supported_codec(codec: String, flat: bool, pgs_supported: bool) -> bool:
-	return text_codec(codec) or (flat and pgs_supported and codec == "hdmv_pgs_subtitle")
+	return text_codec(codec) or (flat and pgs_supported and codec in ["hdmv_pgs_subtitle", "dvd_subtitle"])

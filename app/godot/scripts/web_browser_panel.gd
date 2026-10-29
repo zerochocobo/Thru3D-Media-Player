@@ -7,6 +7,7 @@ const BASE := 986000
 const WEB := BASE + 20
 const KEY := BASE + 100
 const KEY_CONTROL := BASE + 40
+const WINDOW_TARGET := BASE + 300
 const RECT := Rect2(-0.59, -0.48, 1.44, 0.90)
 var menu: Node
 var opened := false
@@ -21,9 +22,13 @@ var paired_layout := false
 var focused_window := 1
 var pointer_window := 1
 var tabs_open := false
+var window_action := {}
+var opening := false
+var force_floating_on_open := false
 var handoff_tab := 0
 var handoff_navigation := 0
 var cinema_provider: Callable
+var cinema_video_provider: Callable
 var next_poll := 0
 var handoff := false
 var handoff_uri := ""
@@ -33,6 +38,7 @@ var handoff_auto := false
 var handoff_started_ms := 0
 var capture_started_ms := 0
 var handoff_context := {}
+var handoff_error := {}
 # Background resolution of the video already playing on a supported page, so a later
 # fullscreen hands off immediately instead of starting extraction from zero.
 const PREFETCH_DELAY_MS := 3000
@@ -41,6 +47,7 @@ var prefetch_uri := ""
 var prefetch_id := 0
 var prefetch_result := {}
 var prefetch_ms := 0
+var prefetch_media_key := ""
 var playing_since := 0
 var fullscreen_seen := {}
 var playback_return := {}
@@ -51,18 +58,36 @@ var saved_poll := 0
 var _saved_raw := ""
 var _status_raw := ""
 var library := preload("res://scripts/web_browser_library_panel.gd").new(self)
+var start_page := preload("res://scripts/web_browser_start_page.gd").new(self)
 
 func _init(owner: Node) -> void: menu = owner
+func configure_quality(value: bool) -> void:
+	low_end = value
+	if OS.get_name() != "Android": return
+	# Gecko's process-wide density must be selected before navigation or extraction
+	# starts it. Reuse the selected tier after an Activity/runtime recreation.
+	var bridge := JavaClassWrapper.wrap("org.vrpassthroughplayer.plugin.WebBrowserSurfaceBridge")
+	if bridge and not JavaClassWrapper.get_exception():
+		var selected: bool = bridge.configureViewport(value)
+		if not JavaClassWrapper.get_exception(): low_end = selected
 func supported() -> bool: return Distribution.web_browser_enabled() and Methods.supports(menu.platform, "web_browser_navigate")
 func active() -> bool: return opened and menu.visible and menu.section == menu.Section.WEB
+func cinema_video_active() -> bool:
+	return cinema_video_provider.is_valid() and bool(cinema_video_provider.call())
 
 func open(url: String = "") -> void:
 	if not supported(): return
 	menu.browser_opened.emit()
 	if menu.compact: menu.layout_requested.emit()
 	opened = true
+	opening = true
+	force_floating_on_open = cinema_video_active()
 	menu.clear_pointer_visuals()
-	ensure_window(1)
+	# Keep a hidden input router while waiting for the native session snapshot.
+	if windows.is_empty(): ensure_window(1, false)
+	# An existing cinema movie keeps its screen, including when saved web layouts used it.
+	if cinema_video_active():
+		for item in windows.values(): item.set_mode("floating")
 	if not url.is_empty():
 		draft = url; menu.platform.web_browser_navigate(url)
 	else: menu.platform.web_browser_action("resume")
@@ -76,6 +101,7 @@ func close() -> void:
 	menu.system_text_input.cancel("web_browser")
 	if opened and supported(): menu.platform.web_browser_action("hibernate")
 	opened = false; handoff = false; pause_started = 0
+	opening = false; window_action.clear()
 	handoff_auto = false; handoff_context.clear()
 	for item in windows.values(): item.save_layout(); item.dismiss()
 	tabs_open = false
@@ -105,19 +131,27 @@ func tick() -> void:
 		var parsed: Variant = JSON.parse_string(raw)
 		if not parsed is Dictionary: return
 		_status_raw = raw; data = parsed
-	focused_window = int(data.get("focused_window", 1))
-	var paired: bool = data.get("tab_list", []).any(func(item): return int(item.window) == 2)
-	var layout_changed := paired != paired_layout
-	if layout_changed:
-		for item in windows.values(): item.save_layout()
-		paired_layout = paired
-	for id in [1, 2]:
-		var exists: bool = id == 1 or paired
-		if exists: ensure_window(id)
-		elif windows.has(id): windows[id].dismiss()
-	if layout_changed:
-		for item in windows.values():
-			if item.visible: item.recenter(true)
+	var next_focus := int(data.get("focused_window", 1))
+	if focused_window != next_focus:
+		cancel(); menu.system_text_input.cancel("web_browser")
+		tabs_open = false; window_action.clear(); _signature = ""
+	focused_window = next_focus
+	if window_action.get("command") == "move_tab" and not data.get("tab_list", []).any(func(item): return int(item.id) == int(window_action.get("tab", 0)) and int(item.window) == focused_window):
+		window_action.clear()
+	var ids := live_window_ids()
+	if opening and data.get("active", false) and not ids.is_empty(): opening = false
+	if not opening and ids.is_empty():
+		close(); list_mode = ""; menu.refresh(); return
+	paired_layout = ids.size() > 1
+	for item in windows.values():
+		if item.visible and item.window_id not in ids:
+			cancel(); item.save_layout(); item.dismiss(); item.placed = false
+	for id in ids:
+		var created: bool = not windows.has(id) or not windows[id].placed
+		ensure_window(id)
+		if (created and windows.values().any(func(item): return item.window_id != id and item.visible and item.on_screen())) or force_floating_on_open:
+			windows[id].set_mode("floating")
+	if not opening: force_floating_on_open = false
 	if handoff and (str(data.get("url", "")) != handoff_uri or int(data.get("tab_id", 0)) != handoff_tab or int(data.get("navigation", 0)) != handoff_navigation):
 		_cancel_handoff()
 	if not menu.system_text_input.active("web_browser"):
@@ -131,24 +165,26 @@ func tick() -> void:
 				if not handoff_auto or _capture_ready():
 					handoff_start_ms = _playhead()
 					if handoff_auto: handoff_context.position_ms = handoff_start_ms
-					pause_started = Time.get_ticks_msec(); menu.platform.web_browser_action("pause")
-			elif not data.get("active", true) and not data.get("playing", true):
+					pause_started = Time.get_ticks_msec()
+					handoff_context.pause_token = pause_started + 1
+					_video_command("pause_tab", handoff_context)
+			elif int(data.get("pause_token", 0)) == int(handoff_context.get("pause_token", -1)) and not window_state(focused_window).get("playing", true):
 				var automatic := handoff_auto
 				_keep_prefetch(handoff_uri, menu.web_video.result)
 				playback_return = handoff_context.duplicate(true)
 				playback_return.native_uri = str(menu.web_video.result.get("uri", ""))
 				handoff = false; pause_started = 0
 				handoff_auto = false
-				menu.web_video.choose({"web_video": "play", "start_ms": handoff_start_ms, "web_fullscreen": automatic}); return
+				menu.web_video.choose({"web_video": "play", "start_ms": handoff_start_ms, "web_fullscreen": automatic, "keep_browser": live_window_ids().size() > 1}); return
 			elif Time.get_ticks_msec() - pause_started > 5000:
 				_handoff_failed()
 		else: _handoff_failed()
 	# Only fields the chrome draws. Window states also carry each video's advancing time;
 	# comparing those rebuilt every browser window four times a second during playback.
 	var chrome: Array = data.get("windows", []).map(func(item): return [item.get("id"), item.get("tab_id"), item.get("url"),
-		item.get("title"), item.get("back"), item.get("forward"), item.get("error"), item.get("editing"), int(item.get("progress", 0)) / 10])
-	var signature := str([draft, data.get("back"), data.get("forward"), data.get("error"),
-		chrome, data.get("tab_list", []), data.get("operation_error", ""), int(data.get("progress", 0)) / 10, data.get("videos", []).size(), handoff, data.get("editing", false), menu.web_video.result.get("state", "")])
+		item.get("title"), item.get("back"), item.get("forward"), item.get("error"), item.get("editing"), item.get("network_capture_available"), item.get("network_capture_enabled"), int(item.get("progress", 0)) / 10])
+	var signature := str([draft, data.get("back"), data.get("forward"), data.get("error"), handoff_error,
+		chrome, not (cinema_provider.call() if cinema_provider.is_valid() else {}).is_empty(), data.get("tab_list", []), data.get("operation_error", ""), int(data.get("progress", 0)) / 10, data.get("videos", []).size(), handoff, data.get("editing", false), data.get("network_capture_available"), data.get("network_capture_enabled"), menu.web_video.result.get("state", "")])
 	if signature != _signature:
 		_signature = signature
 		if hand.is_empty(): menu.refresh()
@@ -163,12 +199,16 @@ func _poll_fullscreen() -> void:
 	var request := int(data.get("fullscreen_request", 0))
 	if id <= 0 or request <= 0 or int(fullscreen_seen.get(id, 0)) == request: return
 	fullscreen_seen[id] = request
+	# Browsing beside an existing cinema presentation must not replace it automatically.
+	# The explicit Play in player action remains available.
+	if cinema_video_active() or (paired_layout and windows.values().any(func(item): return item.visible and item.on_screen())): return
 	# Encrypted video stays in the website-owned playback path.
 	if data.get("videos", []).any(func(item): return item.get("fullscreen", false) and item.get("protected", false)): return
 	_begin_handoff(true)
 
 func _begin_handoff(automatic: bool = false) -> void:
 	if handoff: _cancel_handoff()
+	handoff_error.clear()
 	handoff_auto = automatic
 	handoff_started_ms = Time.get_ticks_msec(); pause_started = 0; capture_started_ms = 0
 	handoff_uri = str(data.get("url", ""))
@@ -176,8 +216,12 @@ func _begin_handoff(automatic: bool = false) -> void:
 	handoff_context = {"tab": handoff_tab, "window": focused_window, "navigation": handoff_navigation,
 		"fullscreen": automatic,
 		"origin": handoff_uri, "request": int(data.get("fullscreen_request", 0)), "position_ms": _playhead(),
-		"was_playing": data.get("videos", []).any(func(item): return item.get("fullscreen", false) and item.get("playing", false))}
+		"was_playing": data.get("videos", []).any(func(item): return (not automatic or item.get("fullscreen", false)) and item.get("playing", false))}
 	menu.web_video.address = handoff_uri
+	_refresh_media_key()
+	# Media servers can advance episodes/versions without changing the page URL.
+	if data.get("videos", []).any(func(item): return item.get("server_media", false) or item.get("server_play", false)):
+		prefetch_uri = ""; prefetch_result = {}; prefetch_id = 0
 	if prefetch_uri == handoff_uri and prefetch_id > 0 and menu.web_video.pending == prefetch_id:
 		handoff = true # Adopt the extraction that is already running for this page.
 		return
@@ -187,9 +231,12 @@ func _begin_handoff(automatic: bool = false) -> void:
 		return
 	menu.web_video.resolve(); handoff = menu.web_video.pending > 0
 	prefetch_uri = handoff_uri; prefetch_id = 0; prefetch_result = {}
-	if automatic and not handoff: _handoff_failed()
+	if not handoff: _handoff_failed()
 
 func _poll_prefetch() -> void:
+	_refresh_media_key()
+	if cinema_video_active(): return
+	if data.get("videos", []).any(func(item): return item.get("server_media", false) or item.get("server_play", false)): return
 	var uri := str(data.get("url", ""))
 	if prefetch_id > 0:
 		if menu.web_video.pending == prefetch_id:
@@ -212,6 +259,20 @@ func _poll_prefetch() -> void:
 	menu.web_video.address = uri; menu.web_video.resolve()
 	prefetch_uri = uri; prefetch_result = {}; prefetch_id = menu.web_video.pending
 
+func _refresh_media_key() -> void:
+	# Feeds and SPA players can replace a video without changing the address. Never reuse
+	# their previous representation; new network media or a quality change also invalidate it.
+	var keys: Array[String] = []
+	for item in data.get("videos", []):
+		if item.has("media_epoch"):
+			keys.append(str(item.media_epoch) + ":%dx%d" % [int(item.get("width", 0)), int(item.get("height", 0))] + (":network" if item.get("network_media", false) else ""))
+	keys.sort()
+	var key := "|".join(keys) + (":capture" if data.get("network_capture_enabled", false) else "")
+	if key == prefetch_media_key: return
+	prefetch_media_key = key
+	if prefetch_id > 0 and menu.web_video.pending == prefetch_id: menu.web_video.close()
+	prefetch_uri = ""; prefetch_result = {}; prefetch_id = 0; playing_since = 0
+
 func _keep_prefetch(uri: String, result: Dictionary) -> void:
 	prefetch_uri = uri
 	prefetch_result = result.duplicate(true) if result.get("state", "") == "ready" else {}
@@ -228,21 +289,32 @@ func _capture_ready() -> bool:
 
 func _cancel_handoff() -> void:
 	menu.web_video.close()
-	if pause_started > 0: menu.platform.web_browser_action("resume")
+	if pause_started > 0: _video_command("resume_tab", handoff_context)
 	handoff = false; handoff_auto = false; pause_started = 0; handoff_context = {}
 
 func _handoff_failed() -> void:
 	var automatic := handoff_auto
 	var paused := pause_started > 0
 	var context := handoff_context.duplicate(true)
+	if not automatic: handoff_error = context.merged({"message": menu.web_video.error_hint()})
 	_cancel_handoff()
+	menu.web_video.result = {}
 	if automatic:
 		menu.web_video.result = {}
 		if paused:
 			context.play = bool(context.get("was_playing", false)); context.exit_fullscreen = false
 			_video_command("restore_video", context)
-	elif paused:
-		menu.web_video.result = {"state": "error"}
+
+func owns_handoff(host: Node, context: Dictionary) -> bool:
+	var current := window_state(host.window_id)
+	return not context.is_empty() and int(context.get("window", 0)) == host.window_id and int(context.get("tab", 0)) == int(current.get("tab_id", 0)) and int(context.get("navigation", 0)) == int(current.get("navigation", 0)) and str(context.get("origin", "")) == str(current.get("url", ""))
+
+func prepare_native_playback() -> void:
+	# Explicit player takeover owns the cinema screen. Keep browser pages available
+	# as floating windows; no second extraction or playback request is issued.
+	for item in windows.values():
+		if item.visible and item.on_screen(): item.set_mode("floating")
+	refresh_windows()
 
 func _video_command(action: String, context: Dictionary) -> void:
 	if not Methods.supports(menu.platform, "web_browser_command"): return
@@ -270,87 +342,125 @@ func restore_playback(failed: bool, position_ms: int = -1) -> void:
 		_video_command("select", context)
 	menu.web_video.result = {}; next_poll = 0
 
-func ensure_window(id: int) -> void:
+func live_window_ids() -> Array:
+	if data.has("windows"):
+		return data.windows.filter(func(item): return int(item.get("tab_id", 0)) > 0).map(func(item): return int(item.id))
+	return [int(data.get("focused_window", 1))] if not data.get("url", "").is_empty() else []
+func max_windows() -> int: return int(data.get("max_windows", 2 if low_end else 4))
+func default_window_offset(id: int) -> Vector3:
+	var peers: Array = windows.values().filter(func(item): return item.window_id != id and item.visible)
+	if peers.is_empty(): return Vector3(0, -0.05, -1.8)
+	var frame: Transform3D = preload("res://scripts/interface_move.gd").menu_head(peers[0].head())
+	var candidates := [Vector3(1.55, -0.05, -2.2), Vector3(-1.55, -0.05, -2.2), Vector3(0, 1.15, -2.2), Vector3(0, -1.25, -2.2)]
+	var best: Vector3 = candidates[0]; var clearance := -1.0
+	for candidate in candidates:
+		var gap := INF
+		for peer in peers: gap = minf(gap, (frame * candidate).distance_to(peer.to_global(peer.move_centre())))
+		if gap > clearance: best = candidate; clearance = gap
+	return best
+func ensure_window(id: int, show: bool = true) -> void:
 	if not menu.is_inside_tree(): return
 	if not windows.has(id):
 		var item := preload("res://scripts/web_browser_window.gd").new()
 		item.configure(self, id); menu.get_tree().root.add_child(item); windows[id] = item
 		if window_created.is_valid(): window_created.call(item)
 		menu.tree_exiting.connect(item.queue_free, CONNECT_ONE_SHOT)
-	if not windows[id].visible: windows[id].show_window()
+	if show and not windows[id].visible: windows[id].show_window()
 func refresh_windows() -> void:
 	for item in windows.values():
 		if item.visible: item.refresh()
 func window_state(id: int) -> Dictionary:
 	for item in data.get("windows", []):
 		if int(item.id) == id: return item
-	return data if id == 1 else {}
+	return data if id == int(data.get("focused_window", 1)) else {}
 func focus_window(id: int) -> void:
 	if focused_window == id: return
+	window_action.clear()
 	cancel(); menu.system_text_input.cancel("web_browser")
 	if handoff: _cancel_handoff()
 	focused_window = id
 	if Methods.supports(menu.platform, "web_browser_command"):
 		menu.platform.web_browser_command(JSON.stringify({"action": "focus", "window": id}))
 	data.merge(window_state(id), true); _status_raw = ""; draft = str(data.get("url", "")); refresh_windows()
-func tab_command(command: String, id: int = 0) -> void:
+func tab_command(command: String, id: int = 0, destination: int = 0) -> void:
 	cancel(); menu.system_text_input.cancel("web_browser")
+	for item in windows.values(): item.end_drag(); item.clear_pointer_visuals()
 	if handoff: _cancel_handoff()
 	if Methods.supports(menu.platform, "web_browser_command"):
-		menu.platform.web_browser_command(JSON.stringify({"action": command, "window": focused_window, "tab": id}))
-	tabs_open = false; next_poll = 0
+		menu.platform.web_browser_command(JSON.stringify({"action": command, "window": focused_window, "tab": id, "destination": destination}))
+	tabs_open = false; window_action.clear(); next_poll = 0
 func draw() -> void: refresh_windows()
 func draw_window(host: Node) -> void:
 	var current := window_state(host.window_id)
 	var address: String = draft if focused_window == host.window_id else str(current.get("url", ""))
 	var on_screen: bool = host.on_screen()
-	host._set_backdrop(Vector2(1.46, 0.17) if on_screen else Vector2(1.46, 1.09), Vector2(0.13, 0.505 if on_screen else 0.045))
+	var bounds: Rect2 = host.page_rect()
+	host._set_backdrop(Vector2(1.46, 0.17) if on_screen else bounds.size + Vector2(0.02, 0.19), Vector2(0.13, 0.505) if on_screen else Vector2(bounds.get_center().x, bounds.get_center().y + 0.075))
 	if tabs_open and focused_window == host.window_id:
 		host._backdrop.visible = true; draw_tabs(host); return
-	host._backdrop.visible = on_screen
+	var home: bool = start_page.active(host.window_id)
+	if home and on_screen: host._set_backdrop(Vector2(1.46, 1.12), Vector2(0.13, 0.04))
+	host._backdrop.visible = on_screen or home
 	if not on_screen: host.draw_frame_panels()
 	for button in [[0, -0.55, "previous", "Back"], [1, -0.455, "next", "Forward"], [2, -0.36, "refresh", "Reload"]]:
 		host._button(BASE + int(button[0]), "", Vector2(button[1], 0.47), Vector2(0.08, 0.075), (button[0] == 2 or current.get("back" if button[0] == 0 else "forward", false)), button[2])
 		host._tips[BASE + int(button[0])] = I18n.t(button[3])
 	var title := str(current.get("title", ""))
 	draw_tab_strip(host, current)
-	var issue := str(data.get("operation_error", ""))
-	var status := I18n.t("Finding video…") if handoff else ""
+	var issue := str(data.get("operation_error", "")) if host.window_id == focused_window else ""
+	var status := I18n.t("Finding video…") if handoff and owns_handoff(host, handoff_context) else ""
 	if not str(current.get("error", "")).is_empty(): status = I18n.t("Unable to load page")
-	elif menu.web_video.result.get("state", "") == "error" and (handoff or prefetch_id == 0 or int(menu.web_video.result.get("id", 0)) != prefetch_id): status = menu.web_video.error_hint()
+	elif owns_handoff(host, handoff_error): status = str(handoff_error.message)
 	elif not issue.is_empty():
-		var messages := {"tab_limit": "Maximum 4 tabs", "tabs_busy": "Close a tab to free memory", "window_limit": "Maximum 2 windows"}
+		var messages := {"tab_limit": "Maximum 4 tabs", "tabs_busy": "Close a tab to free memory", "window_limit": "Window limit reached",
+			"invalid_address": "Invalid address", "bookmark_limit": "Bookmark limit reached", "storage_failed": "Unable to save changes"}
 		status = I18n.t(messages.get(issue, "Unable to open page"))
 	var caption: String = status if not status.is_empty() else address if not address.is_empty() else I18n.t("Enter URL")
 	host._button(BASE + 3, host._fit_title(caption, "", 0.46, host.TEXT_BODY), Vector2(-0.06, 0.47), Vector2(0.50, 0.075))
 	host._tips[BASE + 3] = (title + "\n" if not title.is_empty() else "") + address
-	for spec in [[4, 0.235, "star_filled" if saved.get("bookmarks", []).any(func(entry): return str(entry.url) == address) else "star", "Bookmark"],
-		[8, 0.335, "screen", "Floating window" if on_screen else "Cinema screen"]]:
-		var enabled: bool = (not host.cinema().is_empty()) if spec[0] == 8 else true
-		host._button(BASE + int(spec[0]), "", Vector2(spec[1], 0.47), Vector2(0.08, 0.075), enabled, spec[2])
+	# Native canonicalisation matches storage (e.g. Emby's #!/home route), not the URL draft.
+	var bookmark_url := str(current.get("bookmark_url", str(current.get("url", "")).split("#", true, 1)[0]))
+	for spec in [[4, 0.235, "star_filled" if saved.get("bookmarks", []).any(func(entry): return str(entry.url) == bookmark_url) else "star", "Bookmark"],
+		[8, 0.335, "floating_window" if on_screen else "cinema_screen", "Floating window" if on_screen else "Cinema screen"]]:
+		if spec[0] == 8 and host.cinema().is_empty(): continue
+		host._button(BASE + int(spec[0]), "", Vector2(spec[1], 0.47), Vector2(0.08, 0.075), not home if spec[0] == 4 else true, spec[2])
 		host._tips[BASE + int(spec[0])] = I18n.t(spec[3])
 	draw_play_button(host)
 	if current.get("editing", false):
 		host._button(KEY_CONTROL + 7, "", Vector2(0.725, 0.47), Vector2(0.08, 0.075), true, "keyboard_hide")
 		host._tips[KEY_CONTROL + 7] = I18n.t("Close keyboard")
-	host._button(WEB, "", RECT.get_center(), RECT.size)
-	host._buttons.back().node.set_meta("menu_eye_buffer", true)
-	var page: Dictionary = host.page_layout()
-	host._buttons.back().node.global_transform = page.pose
-	host._buttons.back().node.mesh.size = page.size
-	host._buttons.back().rect.size = page.size
-	if not on_screen: host.draw_resize_corners()
+	elif current.get("network_capture_available", false):
+		var enabled: bool = current.get("network_capture_enabled", false)
+		host._button(BASE + 15, "", Vector2(0.725, 0.47), Vector2(0.08, 0.075), current.get("network_capture_available", false), "media_detect", enabled)
+		host._tips[BASE + 15] = I18n.t("Media detection on this site") + " · " + I18n.t("On" if enabled else "Off") + "\n" + I18n.t("Replay the video after enabling")
+	if not on_screen:
+		var offset := (bounds.size.x - RECT.size.x) / 2
+		for button in host._buttons:
+			button.node.position.x += offset; button.rect.position.x += offset
+		for label in host._labels: label.position.x += offset
+		for decoration in host._decorations:
+			if not host._pointer_panels.has(decoration): decoration.position.x += offset
+	if home: start_page.draw(host)
+	else:
+		host._button(WEB, "", bounds.get_center(), bounds.size)
+		host._buttons.back().node.set_meta("menu_eye_buffer", true)
+		var page: Dictionary = host.page_layout()
+		host._buttons.back().node.global_transform = page.pose
+		host._buttons.back().node.mesh.size = page.size
+		host._buttons.back().rect.size = page.size
+	if not on_screen: host.draw_resize_handles()
 
 ## The native handoff is the browser's main action: an accent pill with icon and words,
 ## muted on pages the player cannot take over.
 func draw_play_button(host: Node) -> void:
-	var ready: bool = handoff or (data.get("native_supported", false) and focused_window == host.window_id)
-	var label := I18n.t("Cancel" if handoff else "Play in player")
+	var own: bool = handoff and owns_handoff(host, handoff_context)
+	var ready: bool = own or (not handoff and data.get("native_supported", false) and focused_window == host.window_id)
+	var label := I18n.t("Cancel" if own else "Play in player")
 	host._button(BASE + 6, "", Vector2(0.545, 0.47), Vector2(0.26, 0.075), ready, "", ready)
 	var node: Node3D = host._buttons.back().node
 	node.material_override.set_shader_parameter("corner_radius", 0.0375)
 	var color: Color = host._buttons.back().foreground if ready else host.MUTED
-	host._icon("stop" if handoff else "play", Vector3(-0.095, 0, 0.004), 0.036, color, node)
+	host._icon("stop" if own else "play", Vector3(-0.095, 0, 0.004), 0.036, color, node)
 	var caption: Label3D = host._label(host._fit_title(label, "", 0.18, host.TEXT_BODY), Vector3(0.02, 0, 0.004), host.TEXT_BODY, node)
 	caption.modulate = color
 	host._tips[BASE + 6] = label
@@ -382,12 +492,12 @@ func draw_tab_strip(host: Node, current: Dictionary) -> void:
 		close.node.position.z = 0.006
 		close.base_color = Color(0, 0, 0, 0)
 		close.node.material_override.set_shader_parameter("surface_color", close.base_color)
-		host._tips[BASE + 220 + i] = I18n.t("Close") + " · " + title
-	for item in [[14, 0.46, "plus", "New tab"], [7, 0.54, "chevron_down", "Tabs"], [5, 0.80, "close", "Close"]]:
+		host._tips[BASE + 220 + i] = I18n.t("Close tab") + " · " + title
+	for item in [[14, 0.46, "plus", "New tab"], [7, 0.54, "chevron_down", "Tabs"], [5, 0.80, "close", "Close window"]]:
 		host._button(BASE + int(item[0]), "", Vector2(item[1], 0.555), Vector2(0.065, 0.055), item[0] != 14 or data.get("tab_list", []).size() < 4, item[2])
 		host._tips[BASE + int(item[0])] = I18n.t(item[3])
 	# Reserve a visible drag target even with four tabs; grip can still grab anywhere.
-	host._button(host.MOVE, "", Vector2(0.655, 0.555), Vector2(0.14, 0.055), not host.on_screen())
+	host._button(host.MOVE, "", Vector2(0.655, 0.555), Vector2(0.14, 0.055))
 	var drag: Dictionary = host._buttons.back()
 	drag.base_color = Color(0, 0, 0, 0)
 	drag.node.material_override.set_shader_parameter("surface_color", drag.base_color)
@@ -398,8 +508,10 @@ func draw_tab_strip(host: Node, current: Dictionary) -> void:
 
 func draw_tabs(host: Node) -> void:
 	host._set_backdrop(Vector2(1.46, 1.12), Vector2(0.13, 0.04))
-	host._label(I18n.t("Tabs"), Vector3(-0.43, 0.48, 0.006), 28)
+	host._label(I18n.t("Tabs" if window_action.is_empty() else "Merge into…" if window_action.command == "merge_window" else "Move tab to…"), Vector3(-0.32, 0.48, 0.006), 26)
 	host._button(BASE + 7, I18n.t("Back"), Vector2(0.64, 0.48), Vector2(0.30, 0.07))
+	if not window_action.is_empty():
+		draw_window_targets(host); return
 	var entries: Array = data.get("tab_list", []).filter(func(item): return int(item.window) == host.window_id)
 	for i in entries.size():
 		var item: Dictionary = entries[i]; var y := 0.31 - i * 0.15
@@ -409,22 +521,59 @@ func draw_tabs(host: Node) -> void:
 		host._icon("pause" if item.get("sleeping", false) else "globe", Vector3(-0.41, 0, 0.004), 0.045, button.foreground, button.node)
 		var label: Label3D = host._label(host._fit_title(title, "", 0.76, 26), Vector3(-0.35, 0, 0.004), 26, button.node)
 		label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT; label.modulate = button.foreground
-		host._button(BASE + 210 + i, "", Vector2(0.53, y), Vector2(0.10, 0.08), true, "expand" if host.window_id == 1 else "collapse")
-		host._tips[BASE + 210 + i] = I18n.t("Move to new window" if host.window_id == 1 else "Move to main window")
+		host._button(BASE + 210 + i, "", Vector2(0.53, y), Vector2(0.10, 0.08), live_window_ids().size() > 1 or entries.size() > 1, "expand")
+		host._tips[BASE + 210 + i] = I18n.t("Move tab to…")
 		host._button(BASE + 220 + i, "", Vector2(0.73, y), Vector2(0.10, 0.08), true, "close")
-	host._button(BASE + 14, I18n.t("New tab"), Vector2(0.13, -0.38), Vector2(0.45, 0.07), data.get("tab_list", []).size() < 4, "plus")
+		host._tips[BASE + 220 + i] = I18n.t("Close tab")
+	var room: bool = data.get("tab_list", []).size() < 4
+	host._button(BASE + 14, I18n.t("New tab"), Vector2(-0.34, -0.32), Vector2(0.44, 0.08), room)
+	host._button(BASE + 17, I18n.t("New window"), Vector2(0.13, -0.32), Vector2(0.44, 0.08), room and live_window_ids().size() < max_windows())
+	if live_window_ids().size() > 1:
+		host._button(BASE + 16, I18n.t("Merge into…"), Vector2(0.60, -0.32), Vector2(0.44, 0.08))
+	var current := window_state(host.window_id)
+	if current.get("network_capture_available", false):
+		var enabled: bool = current.get("network_capture_enabled", false)
+		host._button(BASE + 15, I18n.t("Media detection on this site") + " · " + I18n.t("On" if enabled else "Off"), Vector2(0.13, -0.475), Vector2(0.86, 0.07), true, "", enabled)
+		host._tips[BASE + 15] = I18n.t("Replay the video after enabling")
+
+func draw_window_targets(host: Node) -> void:
+	var targets := live_window_ids().filter(func(id): return id != focused_window)
+	var entries: Array = data.get("tab_list", []).filter(func(item): return int(item.window) == focused_window)
+	if window_action.command == "move_tab" and entries.size() > 1 and targets.size() + 1 < max_windows(): targets.push_front(0)
+	for i in targets.size():
+		var id: int = targets[i]
+		var current := window_state(id) if id > 0 else {}
+		var title := str(current.get("title", ""))
+		if title.is_empty(): title = str(current.get("url", ""))
+		if title.is_empty() or title == "about:blank": title = I18n.t("New window" if id == 0 else "New tab")
+		var count: int = data.get("tab_list", []).filter(func(item): return int(item.window) == id).size()
+		host._button(WINDOW_TARGET + id, "", Vector2(0.13, 0.29 - i * 0.19), Vector2(1.18, 0.15), true)
+		var node: Node3D = host._buttons.back().node
+		host._icon("plus" if id == 0 else "cinema_screen" if windows.has(id) and windows[id].on_screen() else "floating_window", Vector3(-0.50, 0, 0.004), 0.045, host.ACCENT, node)
+		var label: Label3D = host._label(host._fit_title(title, "", 0.86, 24), Vector3(-0.43, 0, 0.004), 24, node)
+		label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+		if count > 1: host._label(str(count), Vector3(0.51, 0, 0.004), 20, node)
+		host._tips[WINDOW_TARGET + id] = str(current.get("url", title))
 
 func action(target: int) -> bool:
 	if not Distribution.web_browser_enabled(): return false
 	if library.action(target): return true
+	if start_page.action(target): return true
+	if active() and target >= WINDOW_TARGET and target <= WINDOW_TARGET + 4:
+		if window_action.is_empty(): return true
+		var destination := target - WINDOW_TARGET
+		if destination == focused_window or (destination > 0 and destination not in live_window_ids()): return true
+		tab_command(str(window_action.command), int(window_action.get("tab", 0)), destination)
+		refresh_windows(); return true
 	if active() and target == KEY_CONTROL + 7:
 		menu.platform.web_browser_input("close", ""); refresh_windows(); return true
 	if active() and target >= BASE + 200 and target < BASE + 224:
 		var entries: Array = data.get("tab_list", []).filter(func(item): return int(item.window) == focused_window)
 		var index := (target - BASE - 200) % 10
 		if index < entries.size():
-			var operation := "select" if target < BASE + 210 else ("detach" if focused_window == 1 else "merge") if target < BASE + 220 else "close"
-			tab_command(operation, int(entries[index].id))
+			if target >= BASE + 210 and target < BASE + 220:
+				window_action = {"command": "move_tab", "tab": int(entries[index].id)}; tabs_open = true; refresh_windows()
+			else: tab_command("select" if target < BASE + 210 else "close", int(entries[index].id))
 		return true
 	if not active() or target < BASE or target > WEB: return false
 	match target - BASE:
@@ -436,23 +585,36 @@ func action(target: int) -> bool:
 			menu.platform.web_browser_action("blur")
 			menu.system_text_input.begin("web_browser", draft, 4096, _edited, _navigate)
 		4: menu.platform.web_browser_action("bookmark"); saved_poll = 0; refresh_windows()
-		5:
-			if focused_window == 2:
-				for item in data.get("tab_list", []).filter(func(entry): return int(entry.window) == 2): tab_command("merge", int(item.id))
-			else: close(); menu.refresh()
+		5: tab_command("close_window")
 		7:
 			menu.system_text_input.cancel("web_browser")
 			menu.platform.web_browser_action("blur")
-			tabs_open = not tabs_open; refresh_windows()
+			if not window_action.is_empty(): window_action.clear()
+			else: tabs_open = not tabs_open
+			refresh_windows()
 		8:
 			if windows.has(focused_window):
 				var host: Node = windows[focused_window]
+				if host.cinema().is_empty(): return true
 				host.set_mode("floating" if host.on_screen() else "cinema")
 				if host.mode == "cinema":
 					for other in windows.values():
 						if other != host: other.set_mode("floating"); other.save_layout()
 				host.save_layout(); refresh_windows()
 		14: tab_command("new")
+		16:
+			if live_window_ids().size() > 1:
+				window_action = {"command": "merge_window"}; tabs_open = true; refresh_windows()
+		17:
+			if live_window_ids().size() < max_windows() and data.get("tab_list", []).size() < 4: tab_command("new_window")
+		15:
+			if not data.get("network_capture_available", false) or not Methods.supports(menu.platform, "web_browser_command"): return true
+			_cancel_handoff()
+			if menu.web_video.pending > 0: menu.web_video.close()
+			menu.web_video.result = {}
+			prefetch_uri = ""; prefetch_result = {}; prefetch_id = 0; playing_since = 0
+			menu.platform.web_browser_command(JSON.stringify({"action": "network_capture", "window": focused_window, "enabled": not data.get("network_capture_enabled", false)}))
+			next_poll = 0
 		6:
 			if handoff:
 				_handoff_failed(); menu.refresh()
@@ -492,7 +654,10 @@ func saved_rows() -> Array:
 	return library.rows()
 func uv(p: Vector3) -> Vector2:
 	return Vector2((p.x - RECT.position.x) / RECT.size.x, 1.0 - (p.y - RECT.position.y) / RECT.size.y)
-func input_host() -> Node: return windows.get(1, menu)
+func input_host() -> Node:
+	for item in windows.values():
+		if item.visible: return item
+	return windows.values()[0] if not windows.is_empty() else menu
 func _pointer(command: String, location: Vector2, scroll: float = 0.0) -> void:
 	if Methods.supports(menu.platform, "web_browser_window_pointer"):
 		menu.platform.web_browser_window_pointer(pointer_window, command, location.x, location.y, scroll)

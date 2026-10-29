@@ -1,5 +1,5 @@
 extends RefCounted
-## Blu-ray ISO titles of the playing disc. The longest title still plays first;
+## DVD/Blu-ray ISO titles of the playing disc. The longest title still plays first;
 ## the list lets the viewer switch to another playlist (extras, other cuts).
 const PlatformMethods := preload("res://scripts/platform_methods.gd")
 
@@ -10,10 +10,10 @@ var main := -1
 ## No playback record when this disc was opened: its list may open by itself.
 var first_view := false
 var playing := -1
-## The disc's top menu kind from its preflight ("hdmv" can be shown) and whether it is 3D.
+## The disc's menu kind from preflight ("hdmv" / "dvd") and whether it is 3D.
 var menu_kind := ""
 var stereo := false
-## This open plays the disc's own HDMV menu instead of a title.
+## This open plays the disc's own menu instead of a title.
 var menu_session := false
 const MENU := -2
 var _next := -1
@@ -31,9 +31,9 @@ func reset() -> void:
 func extra() -> bool:
 	return menu_session or (playing >= 0 and main >= 0 and playing != main)
 
-## The disc's own interactive menu can be played (HDMV top menu, not 3D).
+## The disc's own interactive menu can be played (DVD or 2D HDMV).
 func menu_available() -> bool:
-	return menu_kind == "hdmv" and not stereo and not uri.is_empty()
+	return menu_kind in ["hdmv", "dvd"] and not stereo and not uri.is_empty()
 
 ## The disc has a Java (BD-J) menu, or an HDMV one that turned out to need it.
 func menu_unsupported() -> bool:
@@ -95,6 +95,11 @@ func poll(platform: Object, session_id: int, now_ms: int) -> bool:
 ## playlists, duplicate cuts) are listed once.
 static func ordered(rows: Array, main_playlist: int) -> Array:
 	var valid := rows.filter(func(row): return row is Dictionary and int(row.get("playlist", -1)) >= 0)
+	# DVD title numbers identify authored episodes. Equal lengths and stream
+	# counts are common and must never collapse different titles into one.
+	if valid.any(func(row): return row.has("dvd_title")):
+		valid.sort_custom(func(a, b): return int(a.playlist) < int(b.playlist))
+		return valid
 	valid.sort_custom(func(a, b):
 		if (int(a.playlist) == main_playlist) != (int(b.playlist) == main_playlist): return int(a.playlist) == main_playlist
 		if int(a.get("duration_ms", 0)) != int(b.get("duration_ms", 0)): return int(a.get("duration_ms", 0)) > int(b.get("duration_ms", 0))

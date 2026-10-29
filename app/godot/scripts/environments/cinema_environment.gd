@@ -503,6 +503,11 @@ func _apply_lighting() -> void:
 	for entry in _light_materials:
 		entry.material.set_shader_parameter("cinema_light_mix", _light_mix)
 
+## Debug A/B of the hall's shading cost: 0 normal, 1 without sRGB conversions, 2 flat colour.
+func set_debug_shader_probe(value: int) -> void:
+	for entry in _light_materials:
+		if entry.material.shader != Description.FIXTURE_SHADER: entry.material.set_shader_parameter("debug_probe", value)
+
 ## Film colours (linear, normalised) for the left, centre and right screen strips.
 func set_film_light(colors: Array) -> void:
 	if colors.size() < 3: return

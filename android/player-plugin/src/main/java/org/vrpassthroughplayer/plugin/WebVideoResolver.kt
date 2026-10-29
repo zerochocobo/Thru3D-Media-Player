@@ -54,41 +54,64 @@ internal class WebVideoResolver(private val context: () -> Context?, private val
         if (closed) return 0
         cancel()
         val id = ++sequence
-        val page = try { WebVideoPage.parse(url) } catch (_: Exception) {
-            state = JSONObject().put("id", id).put("state", "error").put("error", "Choose a supported video URL").put("error_code", "unsupported_page")
-            return id
-        }
+        val publicPage = runCatching { WebVideoPage.parse(url) }.getOrNull()
         val attempt = Attempt(id); active = attempt
-        state = JSONObject().put("id", id).put("state", "resolving").put("uri", page.url)
+        state = JSONObject().put("id", id).put("state", "resolving")
         job = executor.submit {
             try {
                 val app = context() ?: error("Activity unavailable")
                 attempt.check()
                 val media = browserMedia(url)
                 if (media?.optBoolean("protected") == true) throw ExtractionFailure("protected_content")
-                attempt.stage = "session"
-                val session = cookies(page.url)
-                attempt.check()
-                val captured = media?.let { WebVideoBrowserCapture.formats(it, session) }
-                var info = if (captured != null && (page.site in setOf("weibo", "tiktok", "instagram", "facebook", "twitter", "reddit") || !media?.optString("layout").isNullOrEmpty())) captured
-                    else try { extract(app, page, attempt, session) } catch (error: Exception) { captured ?: throw error }
-                attempt.check()
-                val canonical = runCatching { WebVideoPage.parse(info.optString("webpage_url")) }.getOrNull()
-                    ?.takeIf { it.site == page.site } ?: page
-                attempt.stage = "selection"
-                var selected = try { WebVideoFormats.select(canonical, info, WebVideoCapabilities()::accepts) } catch (error: Exception) {
-                    // The extractor may only offer fragmented/HDR/unsupported formats while the
-                    // page itself plays a plain progressive file; that file is still a valid handoff.
-                    if (captured == null || info === captured) throw error
-                    info = captured
-                    WebVideoFormats.select(page, captured, WebVideoCapabilities()::accepts)
-                }
+                val page = publicPage ?: media?.let { WebVideoBrowserCapture.serverPage(url, it) ?: WebVideoNetworkCapture.page(url, it) }
+                    ?: throw ExtractionFailure("unsupported_page")
+                val networkEnabled = media?.optBoolean("network_enabled") == true
+                // The browser already selected this quality using the user's site session.
+                // Do not force its member/4K stream through the extractor's default 1080p cap.
+                val maxHeight = if (networkEnabled) maxOf(2160, minOf(media.optInt("width"), media.optInt("height"))).coerceAtMost(8192) else 1080
+                val capabilities = WebVideoCapabilities(maxHeight)::accepts
+                val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30)
+                val network = WebVideoNetworkCapture({ uri, headers, prefix ->
+                    readBrowserResource(uri, headers, prefix, attempt, deadline)
+                }, capabilities)
+                attempt.stage = "browser_capture"
+                var route = if (networkEnabled) "browser_network" else "browser_direct"
+                val session by lazy { attempt.stage = "session"; cookies(page.url) }
+                val legacy = if (!networkEnabled || media.optBoolean("server")) media?.let {
+                    WebVideoBrowserCapture.formats(it, if (it.optBoolean("server")) org.json.JSONArray() else session)
+                } else null
+                val (info, initial) = WebVideoResolution.select(page, {
+                    if (media?.optBoolean("server") == true) legacy
+                    else if (networkEnabled) network.resolve(page, media)
+                    else legacy?.takeIf { page.site in setOf("weibo", "tiktok", "instagram", "facebook", "twitter", "reddit") || !media?.optString("layout").isNullOrEmpty() }
+                }, {
+                    attempt.check()
+                    // Opt-in means keep the website's stream/quality. If that stream cannot be
+                    // transferred, do not silently replace a member stream with a public preview.
+                    if (networkEnabled || publicPage == null) throw ExtractionFailure("browser_playback_required")
+                    route = "extractor"
+                    attempt.stage = "session"
+                    val savedCookies = session
+                    attempt.check()
+                    try { extract(app, page, attempt, savedCookies) } catch (error: Exception) {
+                        val fallback = media?.let { WebVideoBrowserCapture.formats(it, savedCookies) } ?: throw error
+                        route = "browser_direct"; fallback
+                    }
+                }, capabilities, attempt::check, {
+                    if (networkEnabled) null else legacy?.also { route = "browser_direct" }
+                })
+                if (networkEnabled && !WebVideoNetworkCapture.keepsQuality(initial.video, media))
+                    throw ExtractionFailure("browser_playback_required")
+                var selected = initial
                 attempt.stage = "projection"
-                var projection = inspectProjection(selected.video, attempt) ?: WebVideoPageProjection.parse(selected.video.pageLayout)
-                if (projection != null) {
-                    val immersive = WebVideoFormats.select(canonical, info, WebVideoCapabilities(2160)::accepts)
+                fun projectionFor(track: WebVideoTrack): JSONObject? =
+                    (if (network.projections.containsKey(track.url)) network.projections[track.url] else inspectProjection(track, attempt))
+                        ?: WebVideoPageProjection.parse(track.pageLayout)
+                var projection = projectionFor(selected.video)
+                if (projection != null && !networkEnabled) {
+                    val immersive = WebVideoFormats.select(selected.page, info, WebVideoCapabilities(2160)::accepts)
                     if (immersive.video.formatId != selected.video.formatId) {
-                        val actual = inspectProjection(immersive.video, attempt) ?: WebVideoPageProjection.parse(immersive.video.pageLayout)
+                        val actual = projectionFor(immersive.video)
                         // A flat preview is not a replacement for a verified immersive representation.
                         if (actual != null) { selected = immersive; projection = actual }
                     }
@@ -97,10 +120,20 @@ internal class WebVideoResolver(private val context: () -> Context?, private val
                 require(selected.video.pageLayout.isEmpty() || projection != null) { "Unsupported page layout" }
                 val descriptor = WebVideoDescriptor(selected.page, selected.title, selected.video, selected.audio,
                     selected.durationSeconds, projection = projection, silent = selected.silent)
+                // EME or SPA replacement can arrive while network probes run. Never publish an
+                // old representation after the page switched content or acquired MediaKeys.
+                if (media != null) {
+                    val latest = browserMedia(url) ?: throw ExtractionFailure("browser_playback_required")
+                    if (latest.optBoolean("protected")) throw ExtractionFailure("protected_content")
+                    if (latest.optString("capture_identity") != media.optString("capture_identity") || latest.optBoolean("network_enabled") != networkEnabled)
+                        throw ExtractionFailure("browser_playback_required")
+                    if (networkEnabled && !WebVideoNetworkCapture.keepsQuality(selected.video, latest))
+                        throw ExtractionFailure("browser_playback_required")
+                }
                 synchronized(this) {
                     if (closed || active !== attempt || attempt.cancelled.get()) return@submit
                     ready(descriptor)
-                    state = descriptor.publicJson().put("id", id).put("state", "ready")
+                    state = descriptor.publicJson().put("id", id).put("state", "ready").put("resolution_route", route)
                 }
             } catch (error: Exception) {
                 synchronized(this) {
@@ -118,6 +151,42 @@ internal class WebVideoResolver(private val context: () -> Context?, private val
         state = JSONObject().put("state", "idle")
     }
     override fun close() { synchronized(this) { closed = true; cancel() }; executor.shutdownNow() }
+
+    private fun readBrowserResource(uri: java.net.URI, headers: Map<String, String>, prefix: Boolean,
+        attempt: Attempt, deadline: Long): Pair<java.net.URI, ByteArray> {
+        attempt.check(); check(System.nanoTime() < deadline)
+        val http = RemoteMediaHttp(); attempt.probe = http
+        try {
+            val limit = SphericalVideoMetadata.PREFIX_LIMIT
+            val c = http.open(uri, if (prefix) "bytes=0-${limit - 1}" else "", headers)
+            try {
+                c.readTimeout = 5000
+                if (c.responseCode == 206) require(c.getHeaderField("Content-Range").orEmpty().startsWith("bytes 0-"))
+                if (!prefix) require(c.contentLengthLong <= limit)
+                val bytes = c.inputStream.use { input ->
+                    val out = java.io.ByteArrayOutputStream(); val buffer = ByteArray(16384)
+                    while (out.size() < limit) {
+                        attempt.check(); check(System.nanoTime() < deadline)
+                        val count = input.read(buffer, 0, minOf(buffer.size, limit - out.size()))
+                        if (count < 0) break
+                        out.write(buffer, 0, count)
+                        if (prefix) {
+                            val data = out.toByteArray()
+                            if (SphericalVideoMetadata.headerComplete(data, data.size) && (WebVideoContainer.parse(data)?.duration ?: 0.0) > 0 ||
+                                WebVideoContainer.transportStream(data) != null) break
+                        }
+                    }
+                    if (!prefix) require(out.size() < limit || input.read() == -1)
+                    out.toByteArray()
+                }
+                if (!prefix && c.responseCode == 206) {
+                    val match = Regex("bytes 0-([0-9]+)/([0-9]+)").matchEntire(c.getHeaderField("Content-Range").orEmpty())
+                    require(match != null && match.groupValues[1].toLong() + 1 == bytes.size.toLong() && match.groupValues[2].toLong() == bytes.size.toLong())
+                }
+                return c.url.toURI() to bytes
+            } finally { http.release(c) }
+        } finally { attempt.probe = null; http.close() }
+    }
 
     /** Some headset network paths intermittently cut connections. Retry once; a stream that
      * declares no projection is then treated as flat rather than failing the whole handoff,
@@ -200,6 +269,11 @@ internal class WebVideoResolver(private val context: () -> Context?, private val
                 // Only a fixed category crosses into diagnostics; raw errors can contain credentials
                 // or signed CDN query strings and must never be copied into the UI/logs.
                 val diagnostic = runCatching { err.get(5, TimeUnit.SECONDS).lowercase() }.getOrDefault("")
+                if (BuildConfig.DEBUG) {
+                    // Debug builds name the failure type only: fixed tokens, never URLs or cookies.
+                    val kinds = Regex("\\[ssl: [a-z_]+]|timed out|http error [0-9]{3}|[a-z]+error\\b").findAll(diagnostic).map { it.value }.distinct().take(6)
+                    android.util.Log.w("WebVideoResolver", "extractor exit ${process.exitValue()}: ${kinds.joinToString()}")
+                }
                 throw ExtractionFailure(when {
                     "drm" in diagnostic -> "protected_content"
                     "impersonat" in diagnostic -> "browser_playback_required"
@@ -208,8 +282,10 @@ internal class WebVideoResolver(private val context: () -> Context?, private val
                     "geo" in diagnostic || "your country" in diagnostic -> "region_restricted"
                     "po token" in diagnostic -> "proof_token_required"
                     "http error 403" in diagnostic || "http error 412" in diagnostic -> "site_rejected"
-                    "timed out" in diagnostic || "name resolution" in diagnostic || "unable to download" in diagnostic -> "network_failed"
-                    "unavailable" in diagnostic || "private video" in diagnostic || "not found" in diagnostic -> "video_unavailable"
+                    "timed out" in diagnostic || "name resolution" in diagnostic || "unable to download" in diagnostic ||
+                        "[ssl: unexpected_eof" in diagnostic || "eof occurred" in diagnostic || "connection reset" in diagnostic ||
+                        "remote end closed" in diagnostic -> "network_failed"
+                    "unavailable" in diagnostic || "no longer available" in diagnostic || "private video" in diagnostic || "not found" in diagnostic -> "video_unavailable"
                     "javascript" in diagnostic || "quickjs" in diagnostic -> "javascript_failed"
                     else -> "extractor_failed"
                 })

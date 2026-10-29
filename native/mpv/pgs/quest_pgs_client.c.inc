@@ -37,7 +37,8 @@ MPV_EXPORT int mpv_quest_get_pgs(mpv_handle *ctx, int width, int height,
     struct track *track = ctx->mpctx->current_track[0][STREAM_SUB];
     struct sub_bitmaps *images = NULL;
     if (track && track->d_sub && track->stream &&
-        !strcmp(track->stream->codec->codec, "hdmv_pgs_subtitle"))
+        (!strcmp(track->stream->codec->codec, "hdmv_pgs_subtitle") ||
+         !strcmp(track->stream->codec->codec, "dvd_subtitle")))
     {
         frame.track_id = track->user_tid;
         // Hidden bitmap subtitles do not get VO redraws. A paused track switch

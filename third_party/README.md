@@ -43,3 +43,5 @@ The CodeLibs JCIFS jar is staged by Gradle with unused HTTP/HTTPS NTLM adapters 
 - Japanese comic synthesis uses Kuromoji/IPADIC 0.9.0, with Apache-2.0, IPADIC notice, contributor credits and exact artifact/dictionary checksums retained in `kuromoji`. No compiled jar/dictionary binary is published. The additional manga detector is metadata-only; see [comic resource preparation](../docs/COMIC_READING.md).
 
 - Browser/web media: pinned GeckoView ARM64 source/artifact and MPL-2.0 in `geckoview`; yt-dlp/Android wrapper pins and original notices in `web-video`; ICU4J charset detection pin and Unicode/ICU notices in `icu-charset`. No engine/extractor binary, browser profile, account cookie or sample video is published. See [browser scope](../docs/WEB_BROWSER.md).
+
+DVD ISO navigation: libdvdread 7.0.1 and libdvdnav 7.0.0 (GPL-2.0-or-later), pinned in `dvd/source-lock.json` with original license texts. Expanded runtime credits and notice provenance are in `player-licenses/additional-sources.json`; binary payloads are prepared separately.

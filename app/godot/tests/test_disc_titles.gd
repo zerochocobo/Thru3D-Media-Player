@@ -164,6 +164,19 @@ func _initialize() -> void:
 
 func _run() -> void:
 	preload("res://scripts/i18n.gd").use("en")
+	var dvd_rows := [{"playlist": 3, "dvd_title": 3, "duration_ms": 1200000},
+		{"playlist": 1, "dvd_title": 1, "duration_ms": 1200000}, {"playlist": 2, "dvd_title": 2, "duration_ms": 1200000}]
+	check(DiscTitles.ordered(dvd_rows, 2).map(func(row): return row.playlist) == [1, 2, 3],
+		"Equal-length DVD episodes keep their authored title numbers and are never deduplicated")
+	var dvd := DiscTitles.new()
+	dvd.uri = "file:///episodes.iso"; dvd.menu_kind = "dvd"
+	check(dvd.menu_available() and not dvd.menu_unsupported(), "DVD menus use the existing ray/trigger menu path")
+	dvd.menu_kind = "none"
+	check(not dvd.menu_available(), "A DVD with no menu does not advertise a menu action")
+	check(preload("res://scripts/mpv_subtitle_state.gd").supported_codec("dvd_subtitle", true, true),
+		"DVD bitmap subtitles use the verified flat-screen bitmap channel")
+	check(not preload("res://scripts/mpv_subtitle_state.gd").supported_codec("dvd_subtitle", false, true),
+		"DVD bitmap subtitles obey the same projection limit as PGS")
 	var ordered := DiscTitles.ordered(JSON.parse_string(report(100)).titles, 100)
 	check(ordered.map(func(row): return int(row.playlist)) == [100, 201, 202], "Main title first, then longer titles; a same-length copy is listed once")
 	check(DiscTitles.duration_text(5808928) == "1:36:48" and DiscTitles.duration_text(290056) == "4:50", "Durations read as clock times")

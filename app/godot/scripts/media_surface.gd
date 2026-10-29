@@ -116,6 +116,11 @@ func set_flat_world_pose(pose: Transform3D) -> void:
 func _apply_flat_pose() -> void:
 	panel.transform = flat_pose * Transform3D(Basis(Vector3.FORWARD, deg_to_rad(screen_rotation)), Vector3.ZERO)
 
+## Content centre after placement, independent of stereo packing and eye calibration.
+## A panorama's reference is its original forward direction, not the sphere origin.
+func picture_center_world() -> Vector3:
+	return panel.to_global(Vector3.ZERO if geometry == Geometry.Geometry.FLAT else Vector3.FORWARD * SPHERE_RADIUS)
+
 func _screen_dimensions(aspect: float) -> Vector2:
 	return Vector2(minf(1.9, aspect), minf(1.9, aspect) / aspect)
 

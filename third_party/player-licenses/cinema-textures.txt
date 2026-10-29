@@ -1,0 +1,23 @@
+Grand cinema texture sources
+
+ambientCG / Lennart Demes
+https://ambientcg.com
+License: Creative Commons CC0 1.0 Universal
+https://docs.ambientcg.com/license/
+
+Scanned surface textures used in the cinema material and lighting bake:
+https://ambientcg.com/a/Carpet006
+https://ambientcg.com/a/Carpet013
+https://ambientcg.com/a/Carpet016
+https://ambientcg.com/a/Fabric030
+https://ambientcg.com/a/Fabric039
+https://ambientcg.com/a/Fabric042
+https://ambientcg.com/a/Fabric063
+https://ambientcg.com/a/Leather030
+https://ambientcg.com/a/Metal009
+https://ambientcg.com/a/Plastic011
+https://ambientcg.com/a/Wood051
+
+Thru3D adjusts color, scale and material response and bakes lighting into
+the auditorium assets. The auditorium geometry and build scripts are project
+work; the referenced surface scans are supplied by ambientCG.

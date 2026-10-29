@@ -5,6 +5,9 @@ const ZOOMS := [1.0, 1.5, 2.0, 3.0, 4.0, 6.0, 8.0]
 const ASPECTS := [0.0, 16.0 / 9.0, 4.0 / 3.0, 1.0, 9.0 / 16.0]
 const ASPECT_LABELS := ["Source aspect", "16:9", "4:3", "1:1", "9:16"]
 const SOFT_EDGE_METRES := 0.012
+const RESIZE_CORNER := 3 # Bottom right; the opposite corner remains anchored.
+const RESIZE_EDGES := [3, 1] # Right and bottom, respectively.
+const HANDLE_HIT_RADIUS := 0.027
 const Edges := preload("res://scripts/video_pip_edges.gd")
 var slot := 1
 var zoom := 1.0
@@ -36,6 +39,10 @@ var image_material := ShaderMaterial.new()
 var capture_image: Dictionary = {} # Private preview lease, never a source URI or GPU readback.
 var pdf_document := {} # Runtime document lease and page index; never persisted.
 var _video_size := Vector2.ZERO
+var _resize_handles := {}
+var _resize_hover := {}
+var _resize_active := -1
+var _resize_available := true
 
 func show_image(texture: Texture2D) -> void:
 	if not image_mode: _video_size = size
@@ -121,27 +128,25 @@ func set_aspect(index: int) -> void:
 
 func _draw() -> void:
 	_clear_layout()
+	_resize_handles.clear()
 	if not frame: return
 	controls_root.visible = controls or selecting or zoom_open or shape_open
 	frame.mesh.size = size
 	picture.set_shader_parameter("pip_edge_feather", edge_feather())
 	image_material.set_shader_parameter("edge_feather", edge_feather())
 	_update_rim_mesh(_compositor_cut)
-	# Keep the resting picture borderless. Corner cues identify the target without
-	# drawing a permanent opaque outline across its feathered perimeter.
-	for corner in 4:
-		if not controls_root.visible and not identified: break
-		var p := corner_point(corner)
-		var handle := _quad(Vector2.ONE * 0.018, Vector3(p.x, p.y, 0.003), ACCENT, 4)
-		add_child(handle); _decorations.append(handle)
+	# Keep the resting picture borderless. Hidden handles can reveal themselves
+	# immediately on a ray hit, without rebuilding the toolbar on every hover.
+	_add_resize_handle(RESIZE_CORNER, corner_point(RESIZE_CORNER), Vector2.ONE * 0.018)
+	if not image_mode:
+		for edge in RESIZE_EDGES:
+			_add_resize_handle(4 + edge, edge_point(edge), Vector2(0.028, 0.008) if edge == 1 else Vector2(0.008, 0.028))
+	_update_resize_highlights()
 	if not controls_root.visible:
 		set_draw_order(draw_order); return
-	for edge in (0 if image_mode else 4):
-		var p := edge_point(edge)
-		var handle := _quad(Vector2(0.024, 0.008) if edge < 2 else Vector2(0.008, 0.024), Vector3(p.x, p.y, 0.003), ACCENT, 4)
-		add_child(handle); _decorations.append(handle)
 	var ui_start := _decorations.size()
-	var y := -size.y / 2 - 0.048
+	# Leave space below the bottom handle's forgiving hit area and highlight.
+	var y := -size.y / 2 - 0.078
 	var bar_width := 0.28 if image_mode else 0.48
 	var bar := _quad(Vector2(bar_width, 0.084), Vector3(0, y, 0.001), PANEL, 10)
 	add_child(bar); _decorations.append(bar); _block_rays(bar, bar.mesh.size)
@@ -239,6 +244,53 @@ func corner_point(index: int) -> Vector2:
 func edge_point(index: int) -> Vector2:
 	return [Vector2(0, size.y / 2), Vector2(0, -size.y / 2), Vector2(-size.x / 2, 0), Vector2(size.x / 2, 0)][index]
 
+func resize_handle(hit: Dictionary) -> int:
+	if int(hit.get("corner", -1)) == RESIZE_CORNER: return RESIZE_CORNER
+	var edge := int(hit.get("edge", -1))
+	return 4 + edge if not image_mode and edge in RESIZE_EDGES else -1
+
+func _add_resize_handle(index: int, point: Vector2, mark_size: Vector2) -> void:
+	var node := Node3D.new(); node.position = Vector3(point.x, point.y, 0)
+	add_child(node); _decorations.append(node)
+	var halo := _quad(Vector2.ONE * 0.048, Vector3(0, 0, 0.002), PANEL, 4)
+	halo.material_override.set_shader_parameter("hovered", true)
+	node.add_child(halo)
+	var mark := _quad(mark_size, Vector3(0, 0, 0.004), ACCENT, 4)
+	node.add_child(mark)
+	_resize_handles[index] = {"node": node, "halo": halo, "mark": mark}
+
+func _update_resize_highlights() -> void:
+	var hovered := _resize_hover.values()
+	for index in _resize_handles:
+		var handle: Dictionary = _resize_handles[index]
+		var held: bool = _resize_active == index
+		var over := _resize_available and hovered.has(index)
+		var shown := controls_root.visible or identified or over or held
+		var state := (4 if shown else 0) + (2 if held else (1 if over else 0))
+		if handle.get("state", -1) == state: continue
+		handle.state = state
+		handle.node.visible = shown
+		handle.halo.visible = over or held
+		handle.mark.scale = Vector3.ONE * (1.5 if held else (1.25 if over else 1.0))
+		handle.mark.material_override.set_shader_parameter("surface_color", Color(1.0, 0.78, 0.35) if held else (Color.WHITE if over else ACCENT))
+
+func set_resize_feedback(capture: Dictionary, available: bool) -> void:
+	_resize_active = resize_handle(capture)
+	_resize_available = available
+	if not available: _resize_hover.clear()
+	if _resize_active >= 0 and not controls:
+		controls = true; refresh()
+	else: _update_resize_highlights()
+
+func update_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: bool) -> void:
+	super.update_pointer(hand, origin, direction, tracked)
+	# Match press_pointer's toolbar priority, including non-clickable panel gaps.
+	var hit := window_hit(origin, direction) if tracked and _resize_available and ray_hit(origin, direction).is_empty() else {}
+	_resize_hover[hand] = resize_handle(hit)
+	_update_resize_highlights()
+	if int(_resize_hover[hand]) >= 0:
+		_draw_pointer(hand, origin, to_global(hit.point), true, true)
+
 func plane_point(origin: Vector3, direction: Vector3) -> Variant:
 	if not origin.is_finite() or not direction.is_finite(): return null
 	var inverse := global_transform.affine_inverse()
@@ -254,14 +306,13 @@ func window_hit(origin: Vector3, direction: Vector3) -> Dictionary:
 	if p == null: return {}
 	var point := Vector2(p.x, p.y)
 	var corner := -1
-	for i in 4:
-		if point.distance_to(corner_point(i)) < 0.027: corner = i
+	if point.distance_to(corner_point(RESIZE_CORNER)) < HANDLE_HIT_RADIUS: corner = RESIZE_CORNER
 	var edge := -1
-	if not image_mode and controls and corner < 0:
-		for i in 4:
-			if point.distance_to(edge_point(i)) < 0.027: edge = i
+	if not image_mode and corner < 0:
+		for i in RESIZE_EDGES:
+			if point.distance_to(edge_point(i)) < HANDLE_HIT_RADIUS: edge = i
 	# Includes the invisible corridor between picture, toolbar and zoom choices.
-	var below := 0.18 if zoom_open or shape_open or not pdf_document.is_empty() else 0.095
+	var below := 0.21 if zoom_open or shape_open or not pdf_document.is_empty() else 0.125
 	var width := maxf(size.x, 0.55)
 	if corner < 0 and edge < 0 and not Rect2(Vector2(-width / 2, -size.y / 2 - below), Vector2(width, size.y + below)).has_point(point): return {}
 	return {"point": p, "corner": corner, "edge": edge, "body": absf(p.x) <= size.x / 2 and absf(p.y) <= size.y / 2,
@@ -272,7 +323,7 @@ func hover(active: bool, now: int) -> void:
 		last_hover = now
 		if hover_since < 0: hover_since = now
 	else: hover_since = -1
-	var wanted := image_loading or image_error or selecting or zoom_open or shape_open or (active and now - hover_since >= 150) or (controls and now - last_hover < 600)
+	var wanted := _resize_active >= 0 or image_loading or image_error or selecting or zoom_open or shape_open or (active and now - hover_since >= 150) or (controls and now - last_hover < 600)
 	if wanted != controls:
 		controls = wanted; refresh()
 
