@@ -30,6 +30,9 @@ func _run() -> void:
 	else: menu.web_browser.open("https://www.bilibili.com/video/BV13x41117TL/")
 	platform.browser.title = "中文视频标题"
 	platform.browser.network_capture_available = true
+	if "--beta" in OS.get_cmdline_user_args():
+		platform.browser.bilibili_beta_available = true
+		platform.browser.network_capture_available = false
 	platform.browser.network_capture_enabled = "--capture" in OS.get_cmdline_user_args()
 	if "--tabs" in OS.get_cmdline_user_args():
 		platform.browser.tab_id = 2

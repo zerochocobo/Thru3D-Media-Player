@@ -18,6 +18,8 @@ param([string]$ToolRoot = $(if ($env:THRU3D_TOOL_ROOT) { $env:THRU3D_TOOL_ROOT }
     [ValidateSet('','com.wapok.thru3d.emulator')][string]$DebugApplicationId = '',
     # PICO China uses the same identity, with a distinct channel and upload build number.
     [switch]$PicoChinaStore,
+    # Optional Meta store identity, separate from the ordinary Quest application.
+    [switch]$QuestStore,
     # Comparison build: store native libraries without ZIP compression, retaining extraction.
     [switch]$UncompressedNativeLibraries,
     [ValidateRange(0,2100000000)][int]$AndroidVersionCode = 0)
@@ -26,7 +28,8 @@ if (($PicoChinaStore -or $AndroidVersionCode -gt 0) -and ($BuildType -ne 'Releas
     throw 'PicoChinaStore and AndroidVersionCode are limited to PICO Release builds.'
 }
 if ($PicoChinaStore -and $AndroidVersionCode -eq 0) { throw 'PICO China requires an explicit AndroidVersionCode greater than the last PICO upload.' }
-$distributionChannel = if ($PicoChinaStore) { 'pico_cn_store' } else { 'standard' }
+if ($QuestStore -and ($BuildType -ne 'Release' -or $XrVendor -ne 'Quest')) { throw 'QuestStore is limited to QUEST Release builds.' }
+$distributionChannel = if ($PicoChinaStore) { 'pico_cn_store' } elseif ($QuestStore) { 'quest_store' } else { 'standard' }
 if ($UncompressedNativeLibraries -and ($BuildType -ne 'Release' -or $XrVendor -ne 'Quest')) { throw 'UncompressedNativeLibraries is limited to QUEST Release comparison builds.' }
 $customApkName = [bool]$ApkName
 if (-not $ApkName) {
@@ -52,7 +55,7 @@ $exportPreset = switch ($XrVendor) {
 if ($XrVendor -eq 'OpenXR') {
     Write-Output 'Experimental standard OpenXR target: device runtime, full controller input and passthrough require device validation.'
 }
-$applicationId = 'com.wapok.thru3d'
+$applicationId = if ($QuestStore) { 'com.thru3d.quest' } else { 'com.wapok.thru3d' }
 if ($DebugApplicationId) {
     if ($BuildType -ne 'Debug' -or $XrVendor -ne 'Pico') { throw 'The emulator application id is limited to PICO Debug builds.' }
     $applicationId = $DebugApplicationId
@@ -60,6 +63,7 @@ if ($DebugApplicationId) {
 function Convert-HexString([byte[]]$Bytes) { -join ($Bytes | ForEach-Object { $_.ToString('X2') }) }
 $workspace = Split-Path -Parent $PSScriptRoot
 & "$PSScriptRoot\Assert-NarrationPackaged.ps1"
+& "$PSScriptRoot\Assert-VideoDepthModels.ps1" -Workspace $workspace
 # Gradle outputs, Godot's import cache and evidence paths belong to one checkout.
 # Concurrent builds can otherwise package another run's plugin or overwrite its tests.
 $buildMutex = [Threading.Mutex]::new($false, 'Local\VRPassthroughPlayer-Build')
@@ -111,6 +115,10 @@ if ($XrVendor -eq 'Pico' -and $BuildType -eq 'Release' -and -not $customApkName)
 if ($UncompressedNativeLibraries -and -not $customApkName) {
     $ApkName = "Thru3D-QUEST-$appVersion-NO-NATIVE-COMPRESSION-release-$(Get-Date -Format 'yyyyMMdd').apk"
 }
+if ($QuestStore -and -not $customApkName) {
+    $suffix = if ($UncompressedNativeLibraries) { '-NO-NATIVE-COMPRESSION' } else { '' }
+    $ApkName = "Thru3D-QUEST-META-STORE-$appVersion$suffix-release-$(Get-Date -Format 'yyyyMMdd').apk"
+}
 $originalProjectConfig = [IO.File]::ReadAllBytes($projectConfigPath)
 $projectText = [Text.Encoding]::UTF8.GetString($originalProjectConfig)
 if ($projectText -notmatch '(?m)^config/distribution_channel="standard"\r?$') { throw 'Source distribution channel must remain standard.' }
@@ -120,9 +128,9 @@ if ($AndroidVersionCode -gt 0) {
     $originalExportPresets = [IO.File]::ReadAllBytes($exportPresetsPath)
     [IO.File]::WriteAllText($exportPresetsPath, [regex]::Replace($presetText, '(?m)^version/code=\d+', "version/code=$expectedVersionCode"), [Text.UTF8Encoding]::new($false))
 }
-if ($DebugApplicationId) {
+if ($DebugApplicationId -or $QuestStore) {
     if ($null -eq $originalExportPresets) { $originalExportPresets = [IO.File]::ReadAllBytes($exportPresetsPath) }
-    $packagePresets = [Text.Encoding]::UTF8.GetString($originalExportPresets).Replace('package/unique_name="com.wapok.thru3d"', 'package/unique_name="' + $applicationId + '"')
+    $packagePresets = [IO.File]::ReadAllText($exportPresetsPath).Replace('package/unique_name="com.wapok.thru3d"', 'package/unique_name="' + $applicationId + '"')
     [IO.File]::WriteAllText($exportPresetsPath, $packagePresets, [Text.UTF8Encoding]::new($false))
 }
 if ($IncludeDiagnostics) {
@@ -461,9 +469,11 @@ try {
     }
     $mnnManifest = Get-Content (Join-Path $projectDirectory '..\..\android\player-plugin\src\main\assets\rvm-mnn\manifest.json') -Raw | ConvertFrom-Json
     $depthManifest = Get-Content (Join-Path $projectDirectory '..\..\android\player-plugin\src\main\assets\depth-mnn\manifest.json') -Raw | ConvertFrom-Json
+    $compatibleDepthManifest = Get-Content (Join-Path $workspace 'models/manifest/zipdepth_video_compat.json') -Raw | ConvertFrom-Json
     $photoDepthManifest = Get-Content (Join-Path $workspace 'android\player-plugin\src\main\assets\depth-mnn\photo_manifest.json') -Raw | ConvertFrom-Json
     if ($photoDepthManifest.width -ne 518 -or $photoDepthManifest.height -ne 518 -or $photoDepthManifest.usage -ne 'photo') { throw 'Photo depth model profile differs.' }
     $requiredModels = @(@('rvm-mnn/rvm.mnn', $mnnManifest.mnn_sha256), @('depth-mnn/depth.mnn', $depthManifest.mnn_sha256), @('depth-mnn/photo_depth.mnn', $photoDepthManifest.mnn_sha256))
+    $requiredModels += ,@('depth-mnn/depth_compat.mnn', $compatibleDepthManifest.mnn_sha256)
     if ($IncludeDiagnostics) { $requiredModels += ,@('rvm-mnn/rvm_quality.mnn', $mnnManifest.quality_mnn_sha256) }
     foreach ($model in $requiredModels) {
         $entry = $apkArchive.GetEntry('assets/' + $model[0])
@@ -677,6 +687,7 @@ if ($BuildType -eq 'Release') {
     $releaseDirectory = Join-Path $workspace ("releases/$appVersion/$releaseDate/" + $buildManifest.apk_sha256.Substring(0,12))
     New-Item -ItemType Directory -Path $releaseDirectory -Force | Out-Null
     if ($PicoChinaStore) { $platformName = 'PICO-CN-STORE' }
+    if ($QuestStore) { $platformName = 'QUEST-META-STORE' }
     $codeSuffix = if ($XrVendor -eq 'Pico') { "-vc$expectedVersionCode" } else { '' }
     $compressionSuffix = if ($UncompressedNativeLibraries) { '-NO-NATIVE-COMPRESSION' } else { '' }
     $releaseApk = Join-Path $releaseDirectory "Thru3D-$platformName-$appVersion$codeSuffix$compressionSuffix-release-$releaseDate.apk"

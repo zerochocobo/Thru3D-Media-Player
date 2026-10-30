@@ -80,6 +80,7 @@ func _run() -> void:
 				material.set_shader_parameter("viewing_eye", 0)
 				material.set_shader_parameter("swap_eyes", false)
 				material.set_shader_parameter("alpha_enabled", false)
+		await _independent_cutouts(variant)
 		_textures(false, 0)
 		material.set_shader_parameter("rotation_degrees", 0)
 		# Sample the actual controller's Apple-metadata uniform through both color shaders.
@@ -152,6 +153,27 @@ func _pixel(eye: int) -> Color:
 	await RenderingServer.frame_post_draw
 	await RenderingServer.frame_post_draw
 	return viewport.get_texture().get_image().get_pixel(32, 32)
+
+func _independent_cutouts(variant: String) -> void:
+	# A deliberately asymmetric matte detects accidental mono mask duplication or swapped eyes.
+	var alpha := Image.create(256,128,false,Image.FORMAT_R8)
+	alpha.fill(Color.BLACK); alpha.fill_rect(Rect2i(128,0,128,128),Color.WHITE)
+	material.set_shader_parameter("rotation_degrees",0)
+	material.set_shader_parameter("stereo_offset",Vector2.ZERO)
+	material.set_shader_parameter("viewing_eye",0)
+	material.set_shader_parameter("alpha_enabled",true)
+	for tb in [false,true]:
+		_textures(tb,0)
+		material.set_shader_parameter("alpha_texture",ImageTexture.create_from_image(alpha))
+		for swap in [false,true]:
+			material.set_shader_parameter("swap_eyes",swap)
+			var left := await _pixel(0); var right := await _pixel(1)
+			var cutout := right if swap else left
+			var visible := left if swap else right
+			check(cutout.a < .01 and visible.a > .99 and visible.b > .75,
+				variant + " independent SBS/TB cutouts and color follow eye swap: " + str([tb,swap]))
+	material.set_shader_parameter("swap_eyes",false)
+	material.set_shader_parameter("alpha_enabled",false)
 
 func _textures(tb: bool, rotation: int) -> void:
 	var size := Vector2i(128, 256) if tb else Vector2i(256, 128)

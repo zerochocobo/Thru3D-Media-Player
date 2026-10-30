@@ -9,7 +9,8 @@ Normal playback expects:
 ```text
 external-model-assets/
   rvm-mnn/rvm.mnn       modified/distilled RVM, RGBA uint8-range input
-  depth-mnn/depth.mnn   Depth Anything V2 Small, 364×210 input
+  depth-mnn/depth.mnn   ZipDepth video comparison profile, 512×288 input
+  depth-mnn/depth_compat.mnn   ZipDepth video default on every headset, 384×224 input
   depth-mnn/photo_depth.mnn   Independent still-photo Depth Anything V2 Small, 518×518 input
 ```
 
@@ -29,7 +30,8 @@ The importer checks every model against the committed catalog before copying, re
 | Model | Source | Project transformations |
 | --- | --- | --- |
 | RVM MobileNetV3 | [RVM v1.0.0](https://github.com/PeterL1n/RobustVideoMatting/releases/tag/v1.0.0); pinned ONNX in `rvm_mobilenetv3.json` | Ratio=1 specialization, unused output pruning, 0..255/RGBA input handling, operator fusion, sliced decoder and recurrent student distillation, MNN conversion. |
-| Depth Anything V2 Small | [ONNX model](https://huggingface.co/onnx-community/depth-anything-v2-small); source SHA256 in the runtime conversion manifest | Video: 364×210 with a late-upsample head. Photos: independent 518×518 model, aspect-preserving letterbox, content-only normalization. Both fold input normalization, rewrite patch embedding/attention, and use MNN FP16 weights. |
+| ZipDepth base | Fixed revision `91f3fd21e131641f51e8d35736d1958350180e3a` of https://github.com/fabiotosi92/ZipDepth; checkpoint/source pins in `zipdepth_video*.json` | Video/portrait: FP16 512×288 and 384×224. Default all-headset 384×224 at LOW GPU priority; equivalent dense 1×1 projections and clamped convex upsample rewrite, retaining learned global context. |
+| Depth Anything V2 Small | [ONNX model](https://huggingface.co/onnx-community/depth-anything-v2-small); source SHA256 in the runtime conversion manifest | Photos only: independent 518×518 model, aspect-preserving letterbox, content-only normalization. Folds input normalization, rewrite patch embedding/attention, and use MNN FP16 weights. |
 
 RVM uses four recurrent states independently for each eye. Runtime models are not generic arbitrary ONNX/MNN files; tensor names, dimensions, conventions and the patched MNN kernels are part of the interface contract.
 
@@ -39,7 +41,8 @@ Relevant tools:
 - `specialize_rvm_ratio_one.py`, `fuse_rvm_graph.py`, `slim_rvm_decoder.py`: graph modifications.
 - `distill_rvm_decoder.py`: train/export a student using explicitly supplied, licensed media. `data --sources` takes a JSON array of `{ "file": "path/to/your-video.mp4", "exclude_seconds": [[0, 5]] }`; no original training filenames are built in.
 - `prepare_rvm_mnn.py`: convert the matching student and upstream quality graph using `MNNCONVERT`.
-- `prepare_depth_mnn.py`: convert/check the video depth source with two user-provided sample images under `build/depth/sample_a.png` and `sample_b.png`. Run again with `--photo --install` to install the separate photo model; it never replaces the video asset.
+- `prepare_depth_mnn.py --photo --install`: prepare the independent photo graph with caller-supplied licensed sample images.
+- `prepare_zipdepth_mnn.py` and `zipdepth_mobile.py`: prepare/verify the pinned ZipDepth graph from caller-supplied source/checkpoint and at least four licensed images. Supply `--source`, `--images`, `--mnn-python`, `--mnnconvert`; run both default and `--compatible` profiles. Matching checkpoint/source hashes and `reviewed-commit.txt` are required; the script does not download or include weights. `Assert-VideoDepthModels.ps1` verifies both runtime graph contracts.
 - `tools/mnn/patch_mnn_vrpp.py`: reproduce the MNN OpenCL HardSwish changes required by the matting graph.
 
 For example, graph preparation begins with:
@@ -87,3 +90,11 @@ Two external PP-OCRv6 Small files are pinned in `third_party/comic-ocr/model.jso
 Three separately prepared Moonshine Tiny Streaming language bundles (24 pinned files) are required by normal Debug/Release builds. No ASR payload is committed. See [live subtitle preparation, privacy and limits](LIVE_SUBTITLES.md).
 
 0.14.1 requires a third, pinned auxiliary manga detector alongside the original two OCR files; the runtime does not use the compared manga recognizer. See [comic preparation and reading dictionary](COMIC_READING.md). No new weight or private sample is published.
+
+## ZipDepth and video strength in 0.16.0
+
+The two ZipDepth runtime graphs are separate from still-photo Depth Anything V2. All headsets currently choose the 384×224 compatibility graph; the 512×288 graph remains packaged for comparison. Relative inverse depth is normalized over content after edge-filled letterboxing. Inference and temporal stabilization overlap using bounded frame ownership. No universal FPS, fidelity or all-headset acceptance follows from source checks.
+
+Video 2D-to-3D defaults to Stretch edges, with Fill gaps as an alternative. The video slider is linear 0–100%, recommended 50%; its new maximum corresponds to the former 50%, with a one-time capped migration for saved choices. Photo strength retains 0–200%. These are rendering preferences, not a model selector.
+
+ZipDepth upstream is MIT; its deployment approach also references the GPL-3.0 xr-3d-viewer conversion, with retained attribution in `zipdepth_mobile.py` and third-party notices. Rewritten convex weights clamp centered logits at 8 for FP16 range; do not describe the whole deployment as bit-exact upstream inference. Public manifests retain contracts and hashes, excluding private sample evaluation records and weights. Reference assets and any APK distribution need their own matching input/license review.

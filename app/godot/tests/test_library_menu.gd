@@ -323,7 +323,11 @@ func _run() -> void:
 	choose_setting(menu, "show_fps", true)
 	check(settings_events.back() == ["show_fps", true], "FPS display can be switched on from Display settings")
 	menu._activate(Menu.TAB_BASE + Menu.SUBTITLES_TAB)
-	check(menu.tab == Menu.VIDEO_TAB and menu.rows.size() == 5 and menu.rows[2].get("key", "") == "memory_mode", "Legacy subtitle tab opens the compact video settings")
+	check(menu.tab == Menu.VIDEO_TAB and menu.rows.size() == 6 and menu.rows[3].get("key", "") == "memory_mode", "Legacy subtitle tab opens the compact video settings")
+	check(menu.rows[1].get("key", "") == "depth_render" and menu.rows[1].value == "stretch"
+		and menu.rows[1].choices.map(func(option): return option.value) == ["fill", "stretch"], "Video settings offer both 2D-to-3D views, edge stretching by default")
+	choose_setting(menu, "depth_render", "fill")
+	check(settings_events.back() == ["depth_render", "fill"], "2D-to-3D view choice is reported")
 	menu._choose(menu.rows.filter(func(row): return row.get("video_settings_group", "") == "subtitles")[0])
 	menu._choose(menu.rows.filter(func(row): return row.get("subtitle_settings_group", "") == "appearance")[0])
 	var subtitle_rows: Array = menu.rows.filter(func(row): return str(row.get("key", "")).begins_with("subtitle_") and row.get("key", "") not in ["subtitle_task_mode", "subtitle_task_policy"])

@@ -60,6 +60,7 @@ func settle(photo: Node, host: RefCounted, success := true) -> void:
 		await create_timer(.01).timeout
 	check(not photo.loading and not photo._depth_busy and photo.error.is_empty(),"Readable colour survives loading/conversion")
 	photo.finish_transition(); photo.gallery._process(1)
+	photo._process_presentation() # Static controls become available after the final display commits.
 func tap(menu: Node, target: int) -> void:
 	var found := false
 	for button in menu._buttons:
@@ -142,6 +143,11 @@ func run() -> void:
 	var until := Time.get_ticks_msec()+5000
 	while not photo.portrait_enabled and Time.get_ticks_msec()<until: await create_timer(.01).timeout
 	check(photo.portrait_enabled and photo._portrait_texture.get_size()==Vector2(640,100),"Full-spread matte is accepted by the actual portrait renderer")
+	tap(app.photo_menu,app.photo_menu.PHOTO_NEXT); await settle(photo,host); await process_frame
+	check(photo.index==2 and photo.depth_enabled and photo.portrait_requested and not photo.portrait_enabled and host.portraits.back().id==photo._display_request,"Next ray button converts and resumes portrait on the next registered spread without reusing its old matte")
+	check(not photo.snapshot().can_next and photo.snapshot().can_previous,"Portrait retains the magazine's final-spread navigation boundary")
+	tap(app.photo_menu,app.photo_menu.PHOTO_PREVIOUS); await settle(photo,host); await process_frame
+	check(photo.index==0 and photo.portrait_requested and host.portraits.back().id==photo._display_request,"Previous ray button can change spreads while the outgoing portrait is still preparing")
 	photo.set_portrait(false); photo.magazine.right_to_left = true; photo.magazine.reload(); await settle(photo,host)
 	native.load_png_from_buffer(FileAccess.get_file_as_bytes(host.held[photo._display_request]))
 	check(native.get_pixel(20,20).b>.9 and native.get_pixel(200,20).r>.9,"Right-to-left rebuilds the native conversion source in the selected order")
@@ -153,8 +159,10 @@ func run() -> void:
 		pages.append({"uri":uri,"title":entries[i].title,"kind":"image"})
 	photo.open_image(pages[0].uri,pages[0].title,pages); await settle(photo,host)
 	check(photo.archive_mode and photo.depth_enabled and photo.can_portrait() and photo._size==Vector2(320,100),"Archive spreads use the same 3D and portrait source registration")
-	photo.navigate(1); await settle(photo,host)
+	photo.set_portrait(true)
+	photo.navigate(1); await settle(photo,host); await process_frame
 	check(photo.index==2 and photo.depth_enabled and photo.can_portrait() and photo._size==Vector2(160,100),"An odd final page keeps 3D and portrait support without a second page")
+	check(photo.portrait_requested and host.portraits.back().id==photo._display_request,"Portrait automatically follows the newly registered odd final archive page")
 	photo.close_image(); photo.open_image(entries[0].uri,entries[0].title,entries); await settle(photo,host)
 	# A native registration error falls back to the readable spread; a late ready cannot resurrect a closed album.
 	host.registration_failure = true; photo.navigate(1); await settle(photo,host)
@@ -166,6 +174,48 @@ func run() -> void:
 	photo.close_image()
 	for delayed_id in host.delayed: photo._on_ready(delayed_id,JSON.stringify(host.delayed[delayed_id]))
 	check(photo._texture==null and not photo.loading and host.held.is_empty() and DirAccess.get_files_at(photo.magazine.cache_directory).is_empty(),"Closing cancels native registration and removes temporary joined pixels")
+	# Exercise every layout through actual source IO, decoding, conversion and ray actions.
+	host.registration_held = false; host.delayed.clear()
+	photo.mode_memory = preload("res://scripts/file_mode_memory.gd").new(folder.path_join("portrait-layout-modes")); photo.mode_memory.read_only = true
+	photo.mode_lock.clear()
+	for layout in 5:
+		var previous_failures := failures.size()
+		photo.set_layout_mode(layout)
+		photo.open_image(entries[0].uri,entries[0].title,entries)
+		photo.gallery._process(1)
+		if layout in [2,3]:
+			check(photo.gallery.overview() and not photo.can_portrait(),"Layout %d requires one selected photo before enabling portrait" % layout)
+			photo.gallery.activate(0)
+		await settle(photo,host)
+		check(photo.can_portrait() and photo.set_portrait(true),"Layout %d can enable portrait on its selected photo" % layout)
+		if not photo.portrait_requested: photo.close_image(); continue
+		id = photo._display_request
+		var colour_pair: Image = photo._display_depth_data.stereo_image
+		mask.resize(colour_pair.get_width()*colour_pair.get_height()); mask.fill(255)
+		FileAccess.open(mask_path,FileAccess.WRITE).store_buffer(mask)
+		photo._on_portrait(id,JSON.stringify({"state":"ready","token":photo._portrait_epoch,"format":"r8_sbs","strategy":"video_soft_shift_gpu","path":mask_path,"width":colour_pair.get_width(),"height":colour_pair.get_height(),"strength":photo.depth_strength}))
+		until = Time.get_ticks_msec()+5000
+		while not photo.portrait_enabled and Time.get_ticks_msec()<until: await create_timer(.01).timeout
+		check(photo.portrait_enabled,"Layout %d displays a completed portrait before switching" % layout)
+		app.photo_menu.visible = true; app.photo_menu.refresh()
+		tap(app.photo_menu,app.photo_menu.PHOTO_NEXT)
+		await settle(photo,host)
+		until = Time.get_ticks_msec()+1000
+		while not photo.portrait_requested and Time.get_ticks_msec()<until: await create_timer(.01).timeout
+		var target := 2 if layout==4 else 1
+		check(photo.index==target and photo.portrait_requested and not photo.portrait_enabled and photo._portrait_texture==null and host.portraits.back().id==photo._display_request,"Layout %d next image automatically requests a fresh portrait for the expected source" % layout)
+		app.photo_menu.refresh(); tap(app.photo_menu,app.photo_menu.PHOTO_PREVIOUS)
+		await settle(photo,host)
+		until = Time.get_ticks_msec()+1000
+		while not photo.portrait_requested and Time.get_ticks_msec()<until: await create_timer(.01).timeout
+		check(photo.index==0 and photo.portrait_requested and host.portraits.back().id==photo._display_request,"Layout %d previous image remains usable while portrait is preparing" % layout)
+		app.photo_menu.refresh(); tap(app.photo_menu,app.photo_menu.PHOTO_PORTRAIT)
+		app.photo_menu.refresh(); tap(app.photo_menu,app.photo_menu.PHOTO_NEXT)
+		await settle(photo,host); await process_frame
+		check(photo.index==target and not photo.auto_portrait and not photo.portrait_requested,"Layout %d respects an explicit portrait exit on the next image" % layout)
+		photo.close_image()
+		check(not photo.auto_portrait and host.held.is_empty(),"Layout %d closes without retaining portrait source leases or album preference" % layout)
+		print("Photo portrait navigation layout=%d failures=%d" % [layout,failures.size()-previous_failures])
 	app.free(); await process_frame
 	print("Photo recovery and magazine conversion: %d checks, %d failures" % [checks,failures.size()])
 	for failure in failures: push_error(failure)

@@ -6,6 +6,19 @@ import java.io.File
 import java.security.MessageDigest
 
 class WebBrowserNetworkPolicyTest {
+    @Test fun bilibiliAdapterIsIndependentOfHiddenGenericCaptureAndHonorsSavedOptOut() {
+        val page = "https://www.bilibili.com/video/BV1234567890/?p=2"
+        val policy = WebBrowserNetworkPolicy("{}", {})
+        assertTrue(policy.bilibiliEnabled(page)); assertFalse(policy.enabled(page))
+        assertTrue(policy.bilibiliEnabled("https://www.bilibili.com/bangumi/play/ep1"))
+        assertTrue(policy.bilibiliEnabled("https://www.bilibili.com/bangumi/play/ss456"))
+        for (url in listOf("https://www.bilibili.com/bangumi/play/ss0", "https://www.youtube.com/watch?v=fixture",
+            "https://www.bilibili.com.evil.test/video/BV1234567890/", "http://www.bilibili.com/video/BV1234567890/"))
+            assertFalse(policy.bilibiliEnabled(url))
+        val key = MessageDigest.getInstance("SHA-256").digest("https://www.bilibili.com".toByteArray())
+            .joinToString("") { "%02x".format(it) }
+        assertFalse(WebBrowserNetworkPolicy("{\"$key\":false}", {}).bilibiliEnabled(page))
+    }
     @Test fun unmarkedSitesDefaultOnAndExplicitChoiceSurvivesRestart() {
         var saved = "{}"
         val policy = WebBrowserNetworkPolicy(saved, { saved = it })

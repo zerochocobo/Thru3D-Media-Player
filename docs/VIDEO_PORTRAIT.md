@@ -7,3 +7,7 @@ Frame identity, calibrated source rays, mask/depth coordination, bounded work an
 VR grip/thumbstick adjustment uses existing controller interactions, with per-file viewing memory, recenter, live numeric/scale guidance and horizontal stereo alignment up to ±10%. These controls alter the view, not physical headset IPD. See [runtime settings](RUNTIME_SETTINGS.md) for AI memory limits and [model requirements](MODELS.md) for payload preparation.
 
 普通平面视频的人像立体透视受遮罩、片源与设备限制；自动距离默认关闭，精细层次可降帧。原始人物素材、模型权重和设备日志不公开。
+
+## Flat stereo videos and photo navigation (0.16.0)
+
+Compatible flat side-by-side/top-bottom stereo videos can use AI person matting while preserving source-eye stereo, with independent passthrough size/distance. Ordinary mono video uses the depth-based person path described above. Packed source masks retain their separate control. Photo portrait processing can continue to subsequent eligible album pictures across layouts; this does not promise every subject/mask or sustained frame rate. Video/portrait depth uses the separately supplied ZipDepth contract; still-photo depth remains independent.

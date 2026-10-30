@@ -24,7 +24,7 @@
     }
     return result;
   };
-  const kind = (u, mime, d) => {
+  const kind = (u, mime, d, bilibili = false) => {
     if (/mpegurl/.test(mime)) return "hls";
     if (mime === "application/dash+xml") return "dash";
     // A successful HTML/JSON error or API response is not a manifest, even with that suffix.
@@ -33,7 +33,7 @@
     if (/\.mpd$/i.test(u.pathname)) return "dash";
     if (/\.(?:ts|m2ts|aac|mp3|vtt|srt|key)$/i.test(u.pathname)) return "segment";
     if (/\.(?:m4s|cmfv|cmfa)$/i.test(u.pathname) || /(?:^|[/_-])(?:init|segment|chunk)[-_.\d]/i.test(u.pathname))
-      return /(?:^|\.)bilivideo\.(?:com|cn)$/.test(u.hostname) && /\/\d+-[^/]+\.m4s$/i.test(u.pathname) ? "file" : "segment";
+      return bilibili || /(?:^|\.)bilivideo\.(com|cn)$/.test(u.hostname) && typeof Thru3DBilibili !== 'undefined' && Thru3DBilibili.mediaCid(u.href) ? "file" : "segment";
     if (/^(?:video|audio)\/(?:mp4|webm|x-matroska|quicktime)$/.test(mime) ||
         /\.(?:mp4|m4v|m4a|webm|mkv|mov)$/i.test(u.pathname)) return "file";
     return "";
@@ -41,15 +41,17 @@
   const publish = state => {
     const now = Date.now();
     for (const [id, c] of state.items) if (now - c.at > TTL) state.items.delete(id);
-    while (JSON.stringify([...state.items.values()]).length > 192 * 1024) state.items.delete(state.items.keys().next().value);
-    try { state.port.postMessage({ type: "network", page: state.page, candidates: [...state.items.values()] }); } catch (_) {}
+    while (JSON.stringify([...state.items.values()]).length > (state.bilibili ? 96 : 192) * 1024) state.items.delete(state.items.keys().next().value);
+    try { state.port.postMessage({ type: "network", page: state.page, candidates: [...state.items.values()],
+      bilibili: [...(state.biliResponses?.values() || [])], bilibili_requested: [...(state.biliRequests?.keys() || [])],
+      bilibili_status: state.biliStatus || 'idle', bilibili_response_api: typeof browser.webRequest.filterResponseData === 'function' }); } catch (_) {}
   };
   browser.runtime.onConnect.addListener(port => {
     const s = port.sender;
     if (port.name !== "thru3d_network" || s?.id !== browser.runtime.id || !Number.isInteger(s.tab?.id) ||
         s.tab.id < 0 || !Number.isInteger(s.frameId) || !url(s.url, true)) return;
     const id = `${s.tab.id}:${s.frameId}`;
-    const state = { port, page: s.url, document: s.documentId, enabled: false, items: new Map(), timer: null };
+    const state = { port, page: s.url, document: s.documentId, enabled: false, bilibili: false, items: new Map(), timer: null };
     const old = frames.get(id);
     if (old) { clearTimeout(old.timer); old.port.disconnect(); }
     frames.set(id, state);
@@ -57,13 +59,20 @@
     port.onMessage.addListener(message => {
       if (frames.get(id) !== state || message?.type !== "context" || !url(message.page, true) ||
           new URL(message.page).origin !== new URL(s.url).origin) return;
-      if (message.page !== state.page || message.reset === true || (message.enabled === true) !== state.enabled) {
-        state.page = message.page; state.enabled = message.enabled === true; state.items.clear();
+      const bili = message.bilibili === true && typeof Thru3DBilibili !== 'undefined' && !!Thru3DBilibili.page(message.page);
+      if (message.page !== state.page || message.reset === true || (message.enabled === true) !== state.enabled || bili !== state.bilibili) {
+        // Bilibili can preload the next part before pushState. Retain only this document's
+        // bounded observations; the content script must bind CID to the current part map.
+        const sameBili = bili && state.bilibili && Thru3DBilibili.sameDocumentPage(message.page, state.page);
+        if (!sameBili) { responses?.cancel(state); state.biliStatus = 'idle'; state.biliResponses = new Map(); state.biliRequests = new Map(); state.items.clear(); }
+        state.bilibili = bili;
+        state.page = message.page; state.enabled = message.enabled === true;
         for (const [request, value] of pending) if (value.state === state) pending.delete(request);
         publish(state);
       }
     });
     port.onDisconnect.addListener(() => {
+      responses?.cancel(state);
       clearTimeout(state.timer);
       if (frames.get(id) === state) frames.delete(id);
       for (const [request, value] of pending) if (value.state === state) pending.delete(request);
@@ -71,10 +80,13 @@
   });
   const stateFor = d => {
     const state = frames.get(key(d));
-    if (!state || !state.enabled || d.tabId < 0 || (d.documentId && state.document && d.documentId !== state.document) ||
-        (d.documentUrl && d.documentUrl.split('#')[0] !== state.page.split('#')[0])) return null;
+    const sameBili = state?.bilibili && typeof Thru3DBilibili !== 'undefined' &&
+      Thru3DBilibili.sameDocumentPage(d.documentUrl, state.page);
+    if (!state || !(state.enabled || state.bilibili) || d.tabId < 0 || (d.documentId && state.document && d.documentId !== state.document) ||
+        (d.documentUrl && d.documentUrl.split('#')[0] !== state.page.split('#')[0] && !sameBili)) return null;
     return state;
   };
+  const responses = typeof Thru3DBilibiliResponses === 'undefined' ? null : Thru3DBilibiliResponses(stateFor, publish);
   browser.webRequest.onBeforeRequest.addListener(d => {
     if (d.type !== "main_frame" && d.type !== "sub_frame") return;
     for (const [id, state] of frames) if (id === key(d) || d.type === "main_frame" && id.startsWith(`${d.tabId}:`)) {
@@ -87,7 +99,7 @@
     const safe = headers(d.requestHeaders);
     if (!safe) return;
     const previous = pending.get(d.requestId);
-    pending.set(d.requestId, { state, url: d.url, original: previous?.state === state ? previous.original : d.url, headers: safe, at: Date.now() });
+    pending.set(d.requestId, { state, url: d.url, original: previous?.state === state ? previous.original : d.url, headers: safe, sent: true, at: Date.now() });
     for (const [id, p] of pending) if (Date.now() - p.at > 30000) pending.delete(id);
     while (pending.size > REQUESTS) pending.delete(pending.keys().next().value);
   }, filter, ["requestHeaders"]);
@@ -95,8 +107,13 @@
     const state = stateFor(d), u = url(d.url), request = pending.get(d.requestId);
     if (!state || !u || d.method !== "GET" || ![200, 206].includes(d.statusCode)) return;
     const mime = header(d.responseHeaders, "content-type").split(";")[0].trim().toLowerCase();
-    const type = kind(u, mime, d);
+    const type = kind(u, mime, d, state.bilibili);
     if (!type || type === "segment") return;
+    // Bilibili's paused cover can load a cached alternate audio URL without any
+    // onSendHeaders event. It cannot replace a replayable request with empty headers:
+    // the CDN rejects that native request (403). Keep the earlier exact observation;
+    // never borrow headers from another URL, or extend its lifetime from a cache hit.
+    if (state.bilibili && !(request?.state === state && request.url === d.url && request.sent === true)) return;
     // A cached response can have no onSendHeaders. Do not invent Cookie/Authorization.
     const safe = request?.state === state && request.url === d.url ? request.headers : {};
     const c = { url: d.url, kind: type, mime, headers: safe, at: Date.now(), cookies: [],
@@ -134,7 +151,7 @@
   browser.webRequest.onErrorOccurred.addListener(finish, filter);
   browser.webRequest.onBeforeRedirect.addListener(d => {
     const request = pending.get(d.requestId);
-    if (request && url(d.redirectUrl)) pending.set(d.requestId, { ...request, url: d.redirectUrl, headers: {} });
+    if (request && url(d.redirectUrl)) pending.set(d.requestId, { ...request, url: d.redirectUrl, headers: {}, sent: false });
     else finish(d);
   }, filter);
 })();

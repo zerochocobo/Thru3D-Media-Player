@@ -4,6 +4,15 @@
 
 Newest first, following product release milestones. Some development/source snapshots contained features before their product release. Original APK identifiers `0.2` and `0.4` are retained; `0.4` was also called `0.4.0` in release notes. Availability depends on device, server and media capabilities.
 
+## 0.16.0 — 2026-10-30
+
+- Replace video/portrait depth with ZipDepth GPU models, keeping still-photo depth independent. Default to the 384×224 FP16 graph at low GPU priority on all headsets; pipeline inference/stabilization, reduce readback work and use mobile-friendly model operators. Publish source recipes, pins and MIT/GPL attribution without weights or private evaluation inputs. Performance remains device/content dependent.
+- Add Fill gaps and Stretch edges modes for video 2D-to-3D, with Stretch edges as default and controls in playback/settings. Use a linear 0–100% video strength scale with a 50% recommendation, migrate saved strength once and correct depth letterbox/content normalization. Photo strength retains its separate range.
+- Enable AI portrait passthrough for compatible flat side-by-side/top-bottom stereo videos, preserving source-eye stereo and independent size/distance adjustment. Resume photo portrait processing when navigating eligible pictures within the album and across layouts.
+- Add a separate Bilibili Play (Beta) action alongside the existing route. Use the logged-in browser session, current UGC part/PGC episode metadata and actually observed video/audio requests; pause the source page before resolving. Improve cold-start, quality, CDN/header association and episode switching, without promising all member/region/DRM content or replacing the existing extractor.
+- Wait for final photo stereo presentation before reveal and retain the complete old stereo frame during page departure, avoiding early flat reveals and cut-out holes. Keep settings choice tiles free of overlapping value captions.
+- Further reduce cinema shader conversion work. Restore the explicit Meta store build target (`quest_store`, separate application ID), retaining the full browser/catalog. Update ZipDepth in-app notices and preparation guards; no store approval or fresh all-device acceptance is claimed by this source sync.
+
 ## 0.15.2 — 2026-10-30
 
 - Add supported unencrypted DVD ISO playback, title/chapter selection and interactive disc menus with controller rays and return-to-menu controls. Include pinned libdvdread/libdvdnav source recipes and notices; encrypted discs and universal disc compatibility are outside this scope.

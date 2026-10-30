@@ -32,6 +32,21 @@ static std::vector<float> texture(int w, int h, unsigned seed, int ox = 0, int o
 
 int main() {
     const int w = 252, h = 140;
+    // Actual video profiles, a portrait grid, then the original grid again: the
+    // thread-local FFT cache must survive resize and interleaved callers.
+    for (auto size : {std::pair<int, int>{256, 144}, {192, 112}, {70, 126}, {256, 144}}) {
+        const int sw = size.first, sh = size.second;
+        auto a = texture(sw, sh, 2), b = texture(sw, sh, 2, 3, -2), c = texture(sw, sh, 2, 5, 1);
+        float dx = 0, dy = 0, response = 0;
+        DepthStabilizer::phase_correlate(a, b, sw, sh, &dx, &dy, &response);
+        check(std::fabs(dx - 3) < .6f && std::fabs(dy + 2) < .6f && response > .05f, "profile grid finds translation");
+        DepthStabilizer::phase_correlate(b, c, sw, sh, &dx, &dy, &response);
+        check(std::fabs(dx - 2) < .6f && std::fabs(dy - 3) < .6f && response > .05f, "cached consecutive pair finds translation");
+        auto unrelated = texture(sw, sh, 91);
+        DepthStabilizer::phase_correlate(unrelated, c, sw, sh, &dx, &dy, &response);
+        DepthStabilizer::phase_correlate(a, b, sw, sh, &dx, &dy, &response);
+        check(std::fabs(dx - 3) < .6f && std::fabs(dy + 2) < .6f, "interleaved caller cannot reuse another image's spectrum");
+    }
     // Phase correlation recovers a translation (b(x) = a(x - d)).
     {
         const int sw = 126, sh = 70;
@@ -116,6 +131,24 @@ int main() {
         put(6); s.process(inv.data(), rgb.data(), 1, near.data());
         std::printf("pan: dx=%.2f dy=%.2f response=%.3f\n", s.last_dx(), s.last_dy(), s.last_response());
         check(std::fabs(s.last_dx() - 6.f) < 1.5f && std::fabs(s.last_dy()) < 1.f, "pan of 6 px measured");
+    }
+    // Letterbox: bars the model reads as near must not take the content's near band.
+    {
+        const int top = 20, rows = h - 2 * top;
+        scene(1.f, 7); depth(0.f, 1);
+        std::vector<float> plain(n);
+        { DepthStabilizer s(w, h); s.set_content(0, top, w, rows); s.process(inv.data(), rgb.data(), 1, plain.data()); }
+        for (int y = 0; y < h; ++y) if (y < top || y >= top + rows) for (int x = 0; x < w; ++x) inv[y * w + x] = 50.f;
+        std::vector<float> boxed(n), unboxed(n);
+        { DepthStabilizer s(w, h); s.set_content(0, top, w, rows); s.process(inv.data(), rgb.data(), 1, boxed.data()); }
+        { DepthStabilizer s(w, h); s.process(inv.data(), rgb.data(), 1, unboxed.data()); }
+        double same = 0, squeezed = 0;
+        for (int y = top + 2; y < top + rows - 2; ++y) for (int x = 0; x < w; ++x) {
+            same = std::max(same, double(std::fabs(boxed[y * w + x] - plain[y * w + x])));
+            squeezed = std::max(squeezed, double(std::fabs(unboxed[y * w + x] - plain[y * w + x])));
+        }
+        check(same < 1e-5, "content rect: near bars leave the picture's near map unchanged");
+        check(squeezed > 0.1, "without a content rect the bars change the picture's near map");
     }
     std::printf("depth stabilizer checks=%d failures=%d\n", checks, failures);
     return failures == 0 ? 0 : 1;

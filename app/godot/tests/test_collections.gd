@@ -29,13 +29,18 @@ class Platform extends RefCounted:
 class NarrationMemory extends RefCounted:
 	var memory := preload("res://scripts/file_narration_memory.gd").new()
 
+class ListeningMemory extends RefCounted:
+	var memory := preload("res://scripts/file_listening_memory.gd").new()
+
 class MigrationViewer extends Node3D:
 	var recent_files: RefCounted
 	var mode_memory := Memory.new()
 	var track_memory := Memory.new()
 	var subtitle_timing := Memory.new()
+	var subtitle_encoding := preload("res://scripts/file_subtitle_encoding.gd").new()
 	var whisper_memory := preload("res://scripts/file_whisper_memory.gd").new()
 	var narration := NarrationMemory.new()
+	var listening := ListeningMemory.new()
 
 func _legacy_recent(uri: String) -> Dictionary:
 	return {"uri":uri,"title":"Older playback","kind":"video","persisted":false,"opened":1,"opened_at":100.0,"position_ms":1234,"duration_ms":60000}
@@ -151,11 +156,12 @@ func _check_popup_layers() -> void:
 				if rail:
 					check(stars.is_empty() and not strengths.is_empty(), "Pressing the overlap adjusts depth without changing favorite state: " + context)
 					var span: Vector2 = control._depth_span()
-					var drag_y := lerpf(span.x, span.y, 0.625)
+					# Avoid a 1% rounding midpoint: oblique ray transforms introduce float noise.
+					var drag_y := lerpf(span.x, span.y, 0.6)
 					var endpoint: Vector3 = control.to_global(Vector3(control.DEPTH_X, drag_y, popup_z))
 					var drag_origin: Vector3 = endpoint + control.global_basis * Vector3(0.16, 0.12, 0.7)
 					control.update_pointer("right_hand", drag_origin, endpoint - drag_origin, true)
-					check(not strengths.is_empty() and is_equal_approx(float(strengths.back()), control.DepthStrength.from_fraction(0.625, control._depth_maximum())), "Oblique dragging uses the current mode's raised slider and actual range: " + context)
+					check(not strengths.is_empty() and is_equal_approx(float(strengths.back()), control.DepthStrength.from_fraction(0.6, control._depth_maximum())), "Oblique dragging uses the current mode's raised slider and actual range: " + context)
 					control.release_pointer("right_hand", drag_origin, endpoint - drag_origin, true)
 				else:
 					control.release_pointer("right_hand", origin, direction, true)

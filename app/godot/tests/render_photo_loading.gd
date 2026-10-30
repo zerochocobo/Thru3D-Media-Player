@@ -16,6 +16,7 @@ class SlowHost extends RefCounted:
 	func cancel_photo_preview(_id: int) -> void: pass
 	func release_photo(_id: int) -> void: pass
 	func cancel_photo(_id: int) -> void: pass
+	func prepare_photo_3d(_id: int, _strength: float) -> bool: return true
 
 func check(ok: bool, message: String) -> void:
 	checks += 1
@@ -89,12 +90,83 @@ func _run() -> void:
 		photo.material.set_shader_parameter("reveal_progress",progress)
 		photo._placeholder_material.set_shader_parameter("reveal_progress",progress)
 		await frame("animation-%02d" % i)
+	await stereo_waiting()
+	await departing_layer_photo()
 	await gallery_waiting()
 	FileAccess.open(output.path_join("verification.json"),FileAccess.WRITE).store_string(JSON.stringify({"state":"passed" if failures.is_empty() else "failed","checks":checks,"failures":failures,"physical_xr_verified":false}))
 	photo.free(); viewport.free()
 	for failure in failures: push_error(failure)
 	print("Photo loading pixels: %d checks, %d failures" % [checks,failures.size()])
 	quit(0 if failures.is_empty() else 1)
+
+func stereo_waiting() -> void:
+	photo.close_image(); photo.set_layout_mode(0); photo.auto_depth = true
+	photo.open_image("file://stereo-glass.png", "stereo-glass.png", [])
+	photo._process(.3)
+	var source := Image.create(400,200,false,Image.FORMAT_RGBA8); source.fill(Color.RED)
+	photo._accept({"image":source,"info":{"width":400,"height":200}}, {"id":10,"index":0,"instant":true})
+	photo._process(.3)
+	# Even an already-bound translated overlay must respect the covered photo's opacity.
+	var overlay := Image.create(1,1,false,Image.FORMAT_RGBA8); overlay.fill(Color.BLUE)
+	photo.material.set_shader_parameter("comic_overlay_texture", ImageTexture.create_from_image(overlay))
+	photo.material.set_shader_parameter("comic_overlay_enabled", true)
+	for eye in 2:
+		photo.material.set_shader_parameter("test_eye", eye)
+		var pending: Image = await frame("stereo-covered-eye-%d" % eye)
+		var pixel := at(pending, Vector2(.5,.5))
+		check(pixel.r > .4 and absf(pixel.r-pixel.g) < .12 and absf(pixel.r-pixel.b) < .15, "Pending 3D hides colour and translated ink in eye %d" % eye)
+	photo.material.set_shader_parameter("comic_overlay_enabled", false)
+	var near := Image.create(518,518,false,Image.FORMAT_RF); near.fill(Color(.7,0,0))
+	var pair := Image.create(800,200,false,Image.FORMAT_RGBA8); pair.fill(Color.GREEN)
+	pair.fill_rect(Rect2i(400,0,400,200), Color.BLUE)
+	photo._finish_depth(10,{"image":near,"rect":Vector4(0,0,1,1),"stereo_image":pair,"strength":photo.depth_strength},false)
+	var before_commit: Image = await frame("stereo-prepared-covered")
+	check(photo.placeholder_visible() and absf(at(before_commit,Vector2(.5,.5)).r-at(before_commit,Vector2(.5,.5)).g)<.12, "Texture creation alone cannot uncover the photo")
+	photo._process(.01)
+	for eye in 2:
+		photo.material.set_shader_parameter("test_eye", eye)
+		var final: Image = await frame("stereo-ready-eye-%d" % eye)
+		var pixel := at(final,Vector2(.5,.5))
+		check(not photo.placeholder_visible() and pixel.r < .1 and (pixel.g > .8 if eye == 0 else pixel.b > .8), "The first uncovered frame contains the final eye %d, never the red 2D source" % eye)
+	photo.auto_depth = false
+
+func departing_pixel(image: Image, uv: Vector2) -> Color:
+	var mesh: MeshInstance3D = photo._departing
+	var size: Vector2 = mesh.mesh.size
+	var world: Vector3 = mesh.global_transform * Vector3((uv.x-.5)*size.x,(.5-uv.y)*size.y,0)
+	return image.get_pixelv(Vector2i(camera.unproject_position(world)))
+
+func departing_layer_photo() -> void:
+	photo.close_image(); photo.set_layout_mode(0); photo.auto_depth = false
+	photo.open_image("file://old-layer.png", "old-layer.png", [
+		{"uri":"file://old-layer.png","title":"old"}, {"uri":"file://next-layer.png","title":"next"}])
+	photo._process(.3)
+	var source := Image.create(512,256,false,Image.FORMAT_RGBA8); source.fill(Color.RED)
+	photo._accept({"image":source,"info":{"width":4096,"height":2048}}, {"id":10,"index":0,"instant":true})
+	photo._size = Vector2(4096,2048); photo._texture_full = false
+	# Reproduce a large compositor photo: only its feathered rim is drawn by Godot.
+	# Distinct final eyes catch a fallback to the red colour proxy as well as a hole.
+	var pair := Image.create(4096,1024,false,Image.FORMAT_RGBA8); pair.fill(Color.GREEN)
+	pair.fill_rect(Rect2i(2048,0,2048,1024), Color.BLUE); pair.generate_mipmaps()
+	photo._display_depth_data = {"stereo_image":pair}; photo.depth_enabled = true
+	photo._stereo_texture = null; photo._layer_key = "stereo:10:1.000:0"
+	photo.material.set_shader_parameter("layer_cut",Vector4(.04,.04,.92,.92))
+	photo._hole.mesh = photo.panel.mesh; photo._hole.transform = photo.panel.transform
+	photo._hole.visible = true; photo.layer_shown = true
+	photo.navigate(1)
+	check(is_instance_valid(photo._departing) and not photo._hole.visible, "Selection retains a departing render and immediately removes the stationary compositor hole")
+	# Leave the next page blocked throughout the old photo's slide.
+	for progress in [.0, .25, .5]:
+		photo._transition_time = Photo.TRANSITION_SECONDS * progress; photo._update_transition()
+		for eye in 2:
+			photo._departing.material_override.set_shader_parameter("test_eye",eye)
+			var shown: Image = await frame("departing-layer-%02d-eye-%d" % [int(progress*100),eye])
+			for uv in [Vector2(.25,.5),Vector2(.5,.5),Vector2(.75,.5)]:
+				var pixel := departing_pixel(shown,uv)
+				check((pixel.g > .35 and pixel.g > pixel.r*2 if eye == 0 else pixel.b > .35 and pixel.b > pixel.r*2), "Departing eye %d remains filled at %s through slide %.2f" % [eye,uv,progress])
+	photo.finish_transition()
+	check(not is_instance_valid(photo._departing) and photo.placeholder_visible(), "Slide completion releases the prior render while the next page remains covered")
+	photo.close_image()
 
 func room() -> void:
 	# A simple synthetic room gives the user a safe approximation of passthrough contrast.

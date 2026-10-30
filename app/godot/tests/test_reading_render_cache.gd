@@ -92,10 +92,11 @@ func run() -> void:
 			if double: check(host.reading_uris.back().ends_with(".jpg" if scheme == "pdfpage" else ".png"), "PDF prefetch uses the foreground JPEG codec; other spread sources stay lossless")
 			photo._select(next, 1)
 			check(not photo.loading and photo.index == next, "Ready neighbour displays synchronously at selection")
-			check(not photo.depth_enabled and photo._stereo_texture == null and photo._texture == texture, "Cached colour appears immediately while current-page 3D starts")
+			check(not photo.depth_enabled and photo._stereo_texture == null and photo._texture == texture, "Cached colour is adopted while current-page 3D starts")
 			check(host.opens == opens and host.depth_calls == depth_calls + 1, "Cache hit reuses the source and starts exactly one current-page conversion")
 			check(host.reading_activations.back() == str(photo.queue[next].uri), "Promotion advances the original-file selection as well as the native source")
-			check(not photo.placeholder_visible() and not photo._transition_active and photo._reveal_seconds == 0, "Cache hit has no blank placeholder or reveal delay")
+			check(photo.placeholder_visible() and photo.snapshot().loading and photo._reveal_seconds == 0 \
+				and photo.material.get_shader_parameter("presentation_opacity") == 0.0, "Cached 3D spread stays under flowing glass until its final renderer is ready")
 			if double:
 				check(photo._size == Vector2(170,120), "Prepared spread contains both full-resolution pages")
 				var pixels: Image = photo._texture.get_image()
@@ -104,7 +105,7 @@ func run() -> void:
 			check(photo._prefetched.has(0), "Previous page/spread remains within the window")
 			photo._select(next * 2, 1)
 			check(not photo._prefetched.has(0) and photo._recent_files.is_empty(), "Outside spread is released without a hidden recent-file cache")
-			# Turning back immediately reuses the complete spread and its generated depth.
+			# Turning back reuses colour; regenerated 3D remains covered as on a forward turn.
 			opens = host.opens; depth_calls = host.depth_calls
 			photo._select(next, -1)
 			check(not photo.loading and not photo.depth_enabled and host.opens == opens and host.depth_calls == depth_calls + 1, "Reverse turn reuses colour and recomputes only its current-page 3D")

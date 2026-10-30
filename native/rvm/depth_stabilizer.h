@@ -31,11 +31,19 @@ public:
     float last_dy() const { return last_dy_; }
     float last_response() const { return last_response_; }
     uint64_t cuts() const { return cuts_; }
+    struct Timing { double scene_ms = 0, band_ms = 0, box_ms = 0, motion_ms = 0, blend_ms = 0, stabilize_ms = 0, dilation_ms = 0; };
+    const Timing& last_timing() const { return timing_; }
     /** Foreground dilation radius in model pixels; negative restores the default round(w/512), >= 1. */
     void set_dilation(int radius) { dilation_ = radius; }
     /** Temporal smoothing speed: per-frame rates of the depth base and of the near band are multiplied
      * by speed (1 = PTMediaServer defaults, 2 = settles twice as fast, at most rate 1). */
     void set_speed(float speed) { speed_ = speed > 0 ? speed : 1.f; }
+    /** Pixels of the picture inside a letterboxed model input; only they set the near band
+     * (empty or invalid: the whole map). */
+    void set_content(int x, int y, int width, int height) {
+        const bool valid = width > 0 && height > 0 && x >= 0 && y >= 0 && x + width <= w_ && y + height <= h_;
+        cx_ = valid ? x : 0; cy_ = valid ? y : 0; cw_ = valid ? width : w_; ch_ = valid ? height : h_;
+    }
 
     // Parameters (PTMediaServer defaults).
     static constexpr float kNormAlpha = 0.10f, kNormReset = 1.0f;
@@ -55,6 +63,7 @@ private:
     int w_, h_, sw_, sh_;
     bool have_band_ = false, initialized_ = false, have_small_ = false;
     float speed_ = 1.f;
+    int cx_ = 0, cy_ = 0, cw_ = 0, ch_ = 0; // content rectangle (cw_ 0: the whole map)
     float lo_ = 0, hi_ = 1;
     std::vector<float> near_, base_cur_, base_prev_, base_warp_, tmp_, alpha_;
     std::vector<uint8_t> gray_;
@@ -67,6 +76,7 @@ private:
     bool last_cut_ = false;
     float last_dx_ = 0, last_dy_ = 0, last_response_ = 0;
     uint64_t cuts_ = 0;
+    Timing timing_;
 
     bool scene_cut(const float* rgb, int frame_step);
     void band(const float* inv, int frame_step);

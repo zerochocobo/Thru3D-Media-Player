@@ -1,5 +1,5 @@
 // Offline 2D->3D tool: runs the device's near-map stabilizer over a sequence of model outputs.
-// Usage: depth_stabilizer_cli <dir> <width> <height> <count> [dilate=1]
+// Usage: depth_stabilizer_cli <dir> <width> <height> <count> [dilate=-1] [speed=1] [prefix=near]
 // Reads <dir>/inv_NNN.bin (float32 HxW inverse depth) and <dir>/rgb_NNN.bin (float32 CHW in [0,1])
 // with step_NNN.txt optional (source frames since the previous input, default 1); writes near_NNN.bin.
 // Build: tools/Test-DepthStabilizer.ps1 -Cli
@@ -25,6 +25,8 @@ int main(int argc, char** argv) {
     const size_t n = static_cast<size_t>(w) * h;
     quest::DepthStabilizer stabilizer(w, h);
     if (argc > 5) stabilizer.set_dilation(std::atoi(argv[5]));
+    if (argc > 6) stabilizer.set_speed(static_cast<float>(std::atof(argv[6])));
+    const std::string prefix = argc > 7 ? argv[7] : "near";
     std::vector<float> inv(n), rgb(3 * n), near(n);
     char name[64];
     for (int i = 0; i < count; ++i) {
@@ -36,7 +38,7 @@ int main(int argc, char** argv) {
         std::snprintf(name, sizeof(name), "/step_%03d.txt", i);
         if (FILE* file = std::fopen((dir + name).c_str(), "r")) { if (std::fscanf(file, "%d", &step) != 1) step = 1; std::fclose(file); }
         stabilizer.process(inv.data(), rgb.data(), step, near.data());
-        std::snprintf(name, sizeof(name), "/near_%03d.bin", i);
+        std::snprintf(name, sizeof(name), "/%s_%03d.bin", prefix.c_str(), i);
         FILE* out = std::fopen((dir + name).c_str(), "wb");
         if (!out) return 1;
         std::fwrite(near.data(), sizeof(float), n, out);

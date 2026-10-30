@@ -2,58 +2,129 @@
 
 #include <algorithm>
 #include <cmath>
-#include <complex>
+#include <chrono>
 #include <cstring>
 
 namespace quest {
 namespace {
-using cf = std::complex<float>;
+// Inputs to motion estimation are bounded grayscale. Explicit complex arithmetic
+// avoids libc++'s exceptional-value complex multiply path in every FFT butterfly.
+struct cf {
+    float r = 0, i = 0;
+    cf() = default;
+    cf(float real, float imag = 0) : r(real), i(imag) {}
+    cf operator+(cf b) const { return {r + b.r, i + b.i}; }
+    cf operator-(cf b) const { return {r - b.r, i - b.i}; }
+    cf operator*(cf b) const { return {r * b.r - i * b.i, r * b.i + i * b.r}; }
+    cf operator/(float b) const { return {r / b, i / b}; }
+};
 constexpr float kPi = 3.14159265358979f;
+using Clock = std::chrono::steady_clock;
+double elapsed(Clock::time_point since) { return std::chrono::duration<double, std::milli>(Clock::now() - since).count(); }
 
-float rate(float a, int k) { return 1.f - std::pow(1.f - a, static_cast<float>(std::max(1, k))); }
+float rate(float a, int k) {
+    // Source-frame gaps are integers. The common 1..8 cases need no per-pixel powf.
+    const float b = 1.f - a, b2 = b * b, b4 = b2 * b2;
+    switch (k) {
+        case 1: return a;
+        case 2: return 1.f - b2;
+        case 3: return 1.f - b2 * b;
+        case 4: return 1.f - b4;
+        case 5: return 1.f - b4 * b;
+        case 6: return 1.f - b4 * b2;
+        case 7: return 1.f - b4 * b2 * b;
+        case 8: return 1.f - b4 * b4;
+        default: return 1.f - std::pow(b, static_cast<float>(std::max(1, k)));
+    }
+}
 
 int pow2(int n) { int p = 1; while (p < n) p <<= 1; return p; }
 
-void fft(std::vector<cf>& data, int n, int stride, int offset, bool inverse) {
-    // In-place iterative radix-2 on data[offset + i * stride], i < n (n a power of two).
-    for (int i = 1, j = 0; i < n; ++i) {
-        int bit = n >> 1;
-        for (; j & bit; bit >>= 1) j ^= bit;
-        j ^= bit;
-        if (i < j) std::swap(data[offset + i * stride], data[offset + j * stride]);
+struct FftPlan {
+    int n = 0;
+    std::vector<int> reverse;
+    std::vector<cf> roots;
+    void prepare(int size) {
+        if (n == size) return;
+        n = size; reverse.resize(n); roots.resize(n);
+        reverse[0] = 0;
+        for (int i = 1, j = 0; i < n; ++i) {
+            int bit = n >> 1;
+            for (; j & bit; bit >>= 1) j ^= bit;
+            j ^= bit; reverse[i] = j;
+        }
+        for (int len = 2; len <= n; len <<= 1) {
+            const float angle = -2 * kPi / len;
+            const cf step(std::cos(angle), std::sin(angle));
+            cf root(1.f);
+            for (int k = 0; k < len / 2; ++k) { roots[len / 2 + k] = root; root = root * step; }
+        }
     }
-    for (int len = 2; len <= n; len <<= 1) {
-        const float angle = 2 * kPi / len * (inverse ? 1.f : -1.f);
-        const cf step(std::cos(angle), std::sin(angle));
-        for (int i = 0; i < n; i += len) {
-            cf w(1.f, 0.f);
-            for (int k = 0; k < len / 2; ++k) {
-                cf& a = data[offset + (i + k) * stride];
-                cf& b = data[offset + (i + k + len / 2) * stride];
-                const cf t = b * w;
-                b = a - t; a += t; w *= step;
+    void run(cf* data, bool inverse) const {
+        for (int i = 1; i < n; ++i) if (i < reverse[i]) std::swap(data[i], data[reverse[i]]);
+        for (int len = 2; len <= n; len <<= 1) {
+            for (int i = 0; i < n; i += len) for (int k = 0; k < len / 2; ++k) {
+                cf root = roots[len / 2 + k];
+                if (inverse) root.i = -root.i;
+                cf& a = data[i + k];
+                cf& b = data[i + k + len / 2];
+                const cf t = b * root;
+                b = a - t; a = a + t;
             }
         }
     }
-}
+};
 
-void fft2(std::vector<cf>& data, int w, int h, bool inverse) {
-    for (int y = 0; y < h; ++y) fft(data, w, 1, y * w, inverse);
-    for (int x = 0; x < w; ++x) fft(data, h, w, x, inverse);
-}
+struct PhaseWorkspace {
+    int w = 0, h = 0, pw = 0, ph = 0;
+    FftPlan rows, columns;
+    std::vector<float> window;
+    std::vector<float> previous_input;
+    std::vector<cf> a, b, transposed;
+    void prepare(int width, int height) {
+        if (w == width && h == height) return;
+        w = width; h = height; pw = pow2(w); ph = pow2(h);
+        previous_input.clear();
+        rows.prepare(pw); columns.prepare(ph);
+        a.resize(size_t(pw) * ph); b.resize(a.size()); transposed.resize(a.size());
+        window.resize(size_t(w) * h);
+        for (int y = 0; y < h; ++y) for (int x = 0; x < w; ++x)
+            window[y * w + x] = (0.5f * (1 - std::cos(2 * kPi * x / float(w - 1)))) *
+                                (0.5f * (1 - std::cos(2 * kPi * y / float(h - 1))));
+    }
+    void fft2(std::vector<cf>& data, bool inverse) {
+        for (int y = 0; y < ph; ++y) rows.run(data.data() + y * pw, inverse);
+        // Keep the column FFT contiguous, instead of repeatedly traversing a large stride.
+        for (int by = 0; by < ph; by += 16) for (int bx = 0; bx < pw; bx += 16)
+            for (int y = by; y < std::min(by + 16, ph); ++y) for (int x = bx; x < std::min(bx + 16, pw); ++x)
+                transposed[x * ph + y] = data[y * pw + x];
+        for (int x = 0; x < pw; ++x) columns.run(transposed.data() + x * ph, inverse);
+        for (int by = 0; by < ph; by += 16) for (int bx = 0; bx < pw; bx += 16)
+            for (int y = by; y < std::min(by + 16, ph); ++y) for (int x = bx; x < std::min(bx + 16, pw); ++x)
+                data[y * pw + x] = transposed[x * ph + y];
+    }
+};
 
 // Separable box blur, size k (odd), replicate border (cv2.blur).
 void box(const std::vector<float>& src, std::vector<float>& tmp, std::vector<float>& dst, int w, int h, int k) {
     const int r = k / 2;
-    for (int y = 0; y < h; ++y) for (int x = 0; x < w; ++x) {
-        float acc = 0;
-        for (int d = -r; d <= r; ++d) acc += src[y * w + std::clamp(x + d, 0, w - 1)];
-        tmp[y * w + x] = acc / k;
+    for (int y = 0; y < h; ++y) {
+        double acc = 0;
+        for (int d = -r; d <= r; ++d) acc += src[y * w + std::clamp(d, 0, w - 1)];
+        for (int x = 0; x < w; ++x) {
+            tmp[y * w + x] = static_cast<float>(acc / k);
+            acc += double(src[y * w + std::min(x + r + 1, w - 1)]) - src[y * w + std::max(x - r, 0)];
+        }
     }
-    for (int y = 0; y < h; ++y) for (int x = 0; x < w; ++x) {
-        float acc = 0;
-        for (int d = -r; d <= r; ++d) acc += tmp[std::clamp(y + d, 0, h - 1) * w + x];
-        dst[y * w + x] = acc / k;
+    std::vector<double> columns(w, 0.0);
+    for (int d = -r; d <= r; ++d) for (int x = 0; x < w; ++x) columns[x] += tmp[std::clamp(d, 0, h - 1) * w + x];
+    for (int y = 0; y < h; ++y) {
+        const float* add = tmp.data() + std::min(y + r + 1, h - 1) * w;
+        const float* sub = tmp.data() + std::max(y - r, 0) * w;
+        for (int x = 0; x < w; ++x) {
+            dst[y * w + x] = static_cast<float>(columns[x] / k);
+            columns[x] += double(add[x]) - sub[x];
+        }
     }
 }
 
@@ -148,10 +219,14 @@ bool DepthStabilizer::scene_cut(const float* rgb, int frame_step) {
 }
 
 void DepthStabilizer::band(const float* inv, int frame_step) {
-    const size_t n = static_cast<size_t>(w_) * h_;
+    // Letterbox bars are not picture: they must not take part of the near band.
+    const int x0 = cw_ > 0 ? cx_ : 0, y0 = cw_ > 0 ? cy_ : 0, x1 = cw_ > 0 ? cx_ + cw_ : w_, y1 = cw_ > 0 ? cy_ + ch_ : h_;
     std::vector<float> sorted;
-    sorted.reserve(n);
-    for (size_t p = 0; p < n; ++p) if (std::isfinite(inv[p])) sorted.push_back(inv[p]);
+    sorted.reserve(static_cast<size_t>(x1 - x0) * (y1 - y0));
+    for (int y = y0; y < y1; ++y) for (int x = x0; x < x1; ++x) {
+        const float v = inv[static_cast<size_t>(y) * w_ + x];
+        if (std::isfinite(v)) sorted.push_back(v);
+    }
     if (sorted.size() < 16) { have_band_ = false; return; }
     auto at = [&](float q) {
         auto nth = sorted.begin() + static_cast<long>(q * (sorted.size() - 1));
@@ -176,32 +251,41 @@ void DepthStabilizer::band(const float* inv, int frame_step) {
 
 void DepthStabilizer::phase_correlate(const std::vector<float>& a, const std::vector<float>& b, int w, int h,
                                       float* dx, float* dy, float* response) {
-    const int pw = pow2(w), ph = pow2(h);
-    std::vector<cf> fa(static_cast<size_t>(pw) * ph), fb(fa.size());
+    thread_local PhaseWorkspace workspace;
+    workspace.prepare(w, h);
+    const int pw = workspace.pw, ph = workspace.ph;
+    auto& fa = workspace.a; auto& fb = workspace.b;
+    // Consecutive pairs share one image. Reuse its exact spectrum; compare values,
+    // not addresses, because callers may swap buffers or interleave sessions.
+    const bool cached = workspace.previous_input == a;
+    if (cached) fa = fb; else std::fill(fa.begin(), fa.end(), cf());
+    std::fill(fb.begin(), fb.end(), cf());
     for (int y = 0; y < h; ++y) for (int x = 0; x < w; ++x) {
         // cv2.createHanningWindow: 0.5 * (1 - cos(2 pi i / (n - 1))) per axis.
-        const float win = (0.5f * (1 - std::cos(2 * kPi * x / float(w - 1)))) * (0.5f * (1 - std::cos(2 * kPi * y / float(h - 1))));
-        fa[y * pw + x] = a[y * w + x] * win;
+        const float win = workspace.window[y * w + x];
+        if (!cached) fa[y * pw + x] = a[y * w + x] * win;
         fb[y * pw + x] = b[y * w + x] * win;
     }
-    fft2(fa, pw, ph, false); fft2(fb, pw, ph, false);
+    if (!cached) workspace.fft2(fa, false);
+    workspace.fft2(fb, false);
+    workspace.previous_input = b;
     for (size_t i = 0; i < fa.size(); ++i) {
-        const cf c = fb[i] * std::conj(fa[i]);
-        const float mag = std::abs(c);
+        const cf c = fb[i] * cf(fa[i].r, -fa[i].i);
+        const float mag = std::sqrt(c.r * c.r + c.i * c.i);
         fa[i] = mag > 1e-12f ? c / mag : cf(0.f, 0.f);
     }
-    fft2(fa, pw, ph, true);
+    workspace.fft2(fa, true);
     const float scale = 1.f / (static_cast<float>(pw) * ph);
     int px = 0, py = 0; float best = -1e30f;
     for (int y = 0; y < ph; ++y) for (int x = 0; x < pw; ++x) {
-        const float v = fa[y * pw + x].real() * scale;
+        const float v = fa[y * pw + x].r * scale;
         if (v > best) { best = v; px = x; py = y; }
     }
     // 5 x 5 weighted centroid around the peak (cv2.phaseCorrelate), wrapping.
     float sum = 0, sx = 0, sy = 0;
     for (int oy = -2; oy <= 2; ++oy) for (int ox = -2; ox <= 2; ++ox) {
         const int x = (px + ox + pw) % pw, y = (py + oy + ph) % ph;
-        const float v = fa[y * pw + x].real() * scale;
+        const float v = fa[y * pw + x].r * scale;
         sum += v; sx += v * (px + ox); sy += v * (py + oy);
     }
     float cx = sum != 0 ? sx / sum : static_cast<float>(px);
@@ -216,7 +300,9 @@ void DepthStabilizer::stabilize(const float* rgb, int frame_step) {
     int k = static_cast<int>(std::lround(std::min(w_, h_) / 16.0));
     if (k < 3) k = 3;
     if (k % 2 == 0) ++k;
+    auto started = Clock::now();
     box(near_, tmp_, base_cur_, w_, h_, k);
+    timing_.box_ms = elapsed(started);
     // Gray of the model input, then the motion-comp grid.
     std::vector<float> gray(n);
     for (size_t p = 0; p < n; ++p) {
@@ -235,7 +321,9 @@ void DepthStabilizer::stabilize(const float* rgb, int frame_step) {
     last_dx_ = last_dy_ = 0; last_response_ = 0;
     if (have_small_) {
         float dxs = 0, dys = 0, response = 0;
+        started = Clock::now();
         phase_correlate(small_prev_, small, sw_, sh_, &dxs, &dys, &response);
+        timing_.motion_ms = elapsed(started);
         last_response_ = response;
         if (std::isfinite(response) && std::isfinite(dxs) && std::isfinite(dys) && response >= kMcMinResponse) {
             // Evidence gate on the small grid: residual between cur and the shifted previous gray.
@@ -275,6 +363,7 @@ void DepthStabilizer::stabilize(const float* rgb, int frame_step) {
         }
     }
     // Bounded affine match of the current base to the previous one (moments, as the GPU path).
+    started = Clock::now();
     double count = 0, sc = 0, sp = 0, sc2 = 0, sp2 = 0;
     for (size_t p = 0; p < n; ++p) {
         const float c = base_cur_[p], q = (*prev)[p];
@@ -301,28 +390,55 @@ void DepthStabilizer::stabilize(const float* rgb, int frame_step) {
     base_prev_.swap(next);
     small_prev_.swap(small);
     have_small_ = true;
+    timing_.blend_ms = elapsed(started);
 }
 
 void DepthStabilizer::process(const float* inv, const float* rgb, int frame_step, float* near) {
     const size_t n = static_cast<size_t>(w_) * h_;
     frame_step = std::max(1, frame_step);
+    timing_ = {};
+    auto started = Clock::now();
     last_cut_ = scene_cut(rgb, frame_step);
+    timing_.scene_ms = elapsed(started);
     if (last_cut_) { have_band_ = false; initialized_ = false; have_small_ = false; ++cuts_; }
+    started = Clock::now();
     band(inv, frame_step);
+    timing_.band_ms = elapsed(started);
     if (!have_band_) { std::fill(near, near + n, 0.f); initialized_ = false; return; }
     const float s = hi_ - lo_ > 1e-12f ? 1.f / (hi_ - lo_) : 0.f;
     for (size_t p = 0; p < n; ++p)
         near_[p] = std::isfinite(inv[p]) ? std::clamp((inv[p] - lo_) * s, 0.f, 1.f) : 0.f;
+    started = Clock::now();
     stabilize(rgb, frame_step);
+    timing_.stabilize_ms = elapsed(started);
     // soft_shift: grow the foreground by round(w / 512) (at least 1) so the gap is bounded by background.
     const int r = dilation_ >= 0 ? dilation_ : std::max(1, static_cast<int>(std::lround(w_ / 512.0)));
     if (r == 0) { std::copy(near_.begin(), near_.end(), near); return; }
+    started = Clock::now();
+    if (r == 1 && w_ >= 2) {
+        for (int y = 0; y < h_; ++y) {
+            const float* row = near_.data() + y * w_;
+            float* dst = tmp_.data() + y * w_;
+            dst[0] = std::max(row[0], row[1]);
+            for (int x = 1; x < w_ - 1; ++x) dst[x] = std::max(row[x - 1], std::max(row[x], row[x + 1]));
+            dst[w_ - 1] = std::max(row[w_ - 2], row[w_ - 1]);
+        }
+        for (int y = 0; y < h_; ++y) {
+            const float* top = tmp_.data() + std::max(y - 1, 0) * w_;
+            const float* row = tmp_.data() + y * w_;
+            const float* bottom = tmp_.data() + std::min(y + 1, h_ - 1) * w_;
+            for (int x = 0; x < w_; ++x) near[y * w_ + x] = std::max(top[x], std::max(row[x], bottom[x]));
+        }
+        timing_.dilation_ms = elapsed(started);
+        return;
+    }
     for (int y = 0; y < h_; ++y) for (int x = 0; x < w_; ++x) {
         float m = 0;
         for (int dy = -r; dy <= r; ++dy) for (int dx = -r; dx <= r; ++dx)
             m = std::max(m, near_[std::clamp(y + dy, 0, h_ - 1) * w_ + std::clamp(x + dx, 0, w_ - 1)]);
         near[y * w_ + x] = m;
     }
+    timing_.dilation_ms = elapsed(started);
 }
 
 } // namespace quest

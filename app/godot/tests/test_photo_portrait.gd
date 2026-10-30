@@ -11,6 +11,7 @@ class Host extends RefCounted:
 	var cancelled := []
 	var depth_requests := []
 	var fail_depth := false
+	var next_id := 1
 	func prepare_photo_portrait(id: int, token: int, strength: float) -> bool:
 		requests.append({"id":id,"token":token,"strength":strength}); return true
 	func cancel_photo_portrait(token: int) -> void: cancelled.append(token)
@@ -18,7 +19,8 @@ class Host extends RefCounted:
 	func release_photo(_id: int) -> void: pass
 	func prepare_photo_3d(id: int,strength: float) -> bool:
 		depth_requests.append({"id":id,"strength":strength}); return not fail_depth
-	func open_photo(_uri: String) -> int: return 2
+	func open_photo(_uri: String) -> int:
+		next_id += 1; return next_id
 
 func check(ok: bool, message: String) -> void:
 	checks += 1
@@ -63,13 +65,14 @@ func _run() -> void:
 	check(photo.portrait_requested and not photo.portrait_enabled and host.requests.size() == 1, "Portrait is an explicit pending request until its own matching mask arrives")
 	photo.gallery._process(0.1)
 	check(photo.panel.visible and not photo.gallery.visible and photo.screen_curve == 0, "Portrait temporarily presents one flat photo and hides surrounding cards")
-	check(not photo.navigate(1) and not photo.gallery.change_batch(1), "Quick navigation and batch gestures cannot change the portrait source")
+	check(photo.snapshot().can_previous and photo.snapshot().can_next and not photo.gallery.change_batch(1), "Portrait allows image navigation while overview batch gestures remain blocked")
 	check(not photo.select_image(0) and photo.portrait_requested, "Selecting the already displayed menu image keeps the portrait intact")
 	check(not photo._select(-1) and photo.portrait_requested, "An invalid selection cannot cancel the portrait")
 	photo.toggle_inspect(); check(not photo.inspect, "Portrait cannot open a second magnifier")
 	app.photo_menu.toggle()
-	var disabled := [app.photo_menu.PHOTO_NEXT,app.photo_menu.PHOTO_PREVIOUS,app.photo_menu.PHOTO_LAYOUT,app.photo_menu.MODE]
-	check(app.photo_menu._buttons.filter(func(button):return button.target in disabled).all(func(button):return not button.enabled), "Menus disable direct image and layout changes during portrait")
+	var disabled := [app.photo_menu.PHOTO_LAYOUT,app.photo_menu.MODE]
+	check(app.photo_menu._buttons.filter(func(button):return button.target in disabled).all(func(button):return not button.enabled), "Menus keep incompatible layout and source-mode changes disabled during portrait")
+	check(app.photo_menu._buttons.filter(func(button):return button.target in [app.photo_menu.PHOTO_NEXT,app.photo_menu.PHOTO_PREVIOUS]).all(func(button):return button.enabled), "Previous and next image controls remain enabled during portrait preparation")
 	check(app.photo_menu._buttons.any(func(button): return button.target == app.photo_menu.PHOTO_PORTRAIT and button.enabled), "The portrait button always remains available as an exit")
 	app._save_photo_adjustments()
 	check(is_equal_approx(float(app.settings.get_value("photo_screen","curve")),old_curve) and app.settings.get_value("photo_screen","layout") == 2, "Temporary flat portrait view never overwrites saved curve or layout")
@@ -132,11 +135,66 @@ func _run() -> void:
 	while not is_equal_approx(photo._portrait_strength,0) and Time.get_ticks_msec()<deadline: await create_timer(0.01).timeout
 	check(photo.portrait_enabled and float(photo.snapshot().render_strength) == 0.0, "The zero-disparity colour/matte pair also commits together")
 	photo.select_image(1)
-	check(not photo.portrait_requested and not photo.portrait_enabled and photo.pending_index == 1, "Menu image selection exits portrait before switching sources")
+	check(not photo.portrait_requested and not photo.portrait_enabled and photo.auto_portrait and photo.pending_index == 1, "Menu image selection clears the source mask and preserves portrait continuation")
 	photo._on_portrait(1,JSON.stringify(payload)); check(not photo.portrait_enabled, "Late completion after image change cannot cut out the next photo")
+	var new_id: int = photo._request
+	photo._accept({"image":image,"thumbnail":image,"info":{},"depth_data":zero},{"id":new_id,"index":1})
+	photo.finish_transition(); photo.gallery._process(1); photo._maybe_start_portrait()
+	check(photo.portrait_requested and not photo.portrait_enabled and photo.depth_strength == 0.0 and host.requests.back().id == new_id, "The next focused wall photo automatically requests its own portrait and preserves zero disparity")
+	check(photo._portrait_texture == null and photo._portrait_mask.is_empty(), "The next source starts without the departing photo's matte")
+	photo._on_portrait(1,JSON.stringify(payload))
+	var next_payload := zero_payload.duplicate(); next_payload.token = photo._portrait_epoch
+	var next_stale := next_payload.duplicate(); next_stale.token -= 1
+	photo._on_portrait(new_id,JSON.stringify(next_stale))
+	check(photo._portrait_next.is_empty(), "Neither the old source nor an old generation can supply the new photo's matte")
+	photo._on_portrait(new_id,JSON.stringify(next_payload))
+	deadline = Time.get_ticks_msec()+4000
+	while not photo.portrait_enabled and Time.get_ticks_msec()<deadline: await create_timer(0.01).timeout
+	check(photo.portrait_enabled and host.requests.back().id == new_id, "The next photo becomes transparent after its own matching matte arrives")
+	app.photo_menu._toggle_depth_slider(); app.photo_menu.refresh_values()
+	var next_button: Dictionary = app.photo_menu._buttons.filter(func(b):return b.target == app.photo_menu.PHOTO_NEXT)[0]
+	var ray_origin: Vector3 = next_button.node.global_position + next_button.node.global_basis.z
+	app.photo_menu.press_pointer("right_hand",ray_origin,-app.photo_menu.global_basis.z,true)
+	app.photo_menu.release_pointer("right_hand",ray_origin,-app.photo_menu.global_basis.z,true)
+	check(photo.loading and photo.pending_index == 0 and photo.auto_portrait, "The enabled next-image ray button switches directly from a finished portrait and wraps the album")
+	check(photo.navigate(1) and photo.pending_index == 1 and photo.navigate(-1) and photo.pending_index == 0, "Rapid next/previous requests follow the pending image while retaining portrait continuation")
+	new_id = photo._request
+	photo._on_portrait(2,JSON.stringify(next_payload))
+	photo._accept({"image":image,"thumbnail":image,"info":{},"depth_data":zero},{"id":new_id,"index":0})
+	photo.finish_transition(); photo.gallery._process(1); photo._maybe_start_portrait()
+	check(photo.portrait_requested and host.requests.back().id == new_id, "Only the final rapidly selected photo starts a new portrait inference")
+	photo._on_portrait(new_id,JSON.stringify({"state":"error","error":"PHOTO_NO_PERSON","token":photo._portrait_epoch}))
+	var failed_requests := host.requests.size()
+	photo._maybe_start_portrait(); photo._maybe_start_portrait()
+	check(not photo.portrait_requested and photo.auto_portrait and photo.portrait_error == "No person detected" and host.requests.size() == failed_requests, "A photo with no person remains readable without retrying and preserves continuation for later photos")
+	check(photo.navigate(1), "A no-person result does not block navigation")
+	new_id = photo._request
+	photo._accept({"image":image,"thumbnail":image,"info":{"native_stereo":true,"stereo_sbs":true}},{"id":new_id,"index":1})
+	photo.finish_transition(); photo.gallery._process(1); photo._maybe_start_portrait()
+	check(not photo.portrait_requested and photo.auto_portrait and host.requests.size() == failed_requests, "An incompatible native stereo source skips portrait inference without forgetting the album choice")
+	check(photo.navigate(-1), "Previous image remains available from an incompatible source")
+	new_id = photo._request
+	photo._accept({"image":image,"thumbnail":image,"info":{},"depth_data":zero},{"id":new_id,"index":0})
+	photo.finish_transition(); photo.gallery._process(1); photo._maybe_start_portrait()
+	check(photo.portrait_requested and host.requests.back().id == new_id, "Returning to a compatible photo automatically resumes portrait after no-person and incompatible photos")
+	photo.set_portrait(false)
+	check(photo.navigate(1), "Explicitly exiting portrait still allows image navigation")
+	new_id = photo._request
+	photo._accept({"image":image,"thumbnail":image,"info":{},"depth_data":zero},{"id":new_id,"index":1})
+	photo.finish_transition(); photo.gallery._process(1); photo._maybe_start_portrait()
+	check(not photo.auto_portrait and not photo.portrait_requested, "An explicit exit prevents the next photo from automatically enabling portrait")
+	photo.set_layout_mode(0); photo.set_portrait(true)
+	check(photo.navigate(-1) and photo.loading, "Single-photo layout also permits navigation during portrait preparation")
+	photo.set_portrait(false) # The request is already suspended for navigation; this still cancels the choice.
+	new_id = photo._request
+	photo._accept({"image":image,"thumbnail":image,"info":{},"depth_data":zero},{"id":new_id,"index":0})
+	photo.finish_transition(); photo._maybe_start_portrait()
+	check(not photo.portrait_requested and not photo.auto_portrait, "Turning portrait off during loading prevents delayed automatic activation")
+	photo.set_portrait(true); photo.close_image()
+	check(not photo.auto_portrait and not photo._portrait_auto_due and not photo.portrait_requested, "Closing the album clears automatic portrait continuation")
 	var pending := Photo.new(); root.add_child(pending); pending.platform = host; pending.history_enabled = false
 	pending.mode_memory = Memory.new(folder.path_join("pending-modes")); pending.auto_depth = false
-	pending.queue.assign([photo.queue[0]])
+	pending.queue.assign([{"uri":"file://"+ProjectSettings.globalize_path(source),"title":"source.png"}])
 	pending._accept({"image":image,"thumbnail":image,"info":{}},{"id":99,"index":0}); pending.finish_transition()
 	check(pending.set_portrait(true) and pending.depth_requested and not pending.portrait_enabled, "3D preparation can precede the initial portrait matte")
 	var cancelled_epoch: int = pending._portrait_epoch

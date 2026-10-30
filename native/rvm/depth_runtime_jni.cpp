@@ -1,4 +1,5 @@
-// Realtime 2D->3D depth: Depth Anything V2 Small on MNN OpenCL. The render bridge stages the
+// Video 2D->3D and portrait depth: ZipDepth base on MNN OpenCL. Still photos retain DA2 Small.
+// The render bridge stages the
 // frame as float32 CHW RGB in [0, 1]; the model returns relative inverse depth (larger = nearer).
 // DepthStabilizer turns it into the 0..1 near map exactly as PTMediaServer's realtime path does
 // (scene cut, smoothed percentile band, VVPS base/detail stabilizer, foreground dilation).
@@ -31,6 +32,7 @@ extern "C" void vrpp_set_cl_priority(int priority);
 
 namespace {
 constexpr const char* kModelAsset = "depth-mnn/depth.mnn";
+constexpr const char* kCompatibleModelAsset = "depth-mnn/depth_compat.mnn";
 constexpr const char* kPhotoModelAsset = "depth-mnn/photo_depth.mnn";
 
 void require(bool condition, const char* message) {
@@ -51,6 +53,12 @@ std::string text(JNIEnv* env, jstring value) {
     return out;
 }
 
+std::string video_asset(JNIEnv* env, jstring value) {
+    auto path = text(env, value);
+    require(path == kModelAsset || path == kCompatibleModelAsset, "Unknown video depth profile");
+    return path;
+}
+
 using AssetPtr = std::unique_ptr<AAsset, decltype(&AAsset_close)>;
 AssetPtr open_model(JNIEnv* env, jobject assets, const char* path = kModelAsset) {
     require(assets != nullptr, "Depth model needs assets");
@@ -60,13 +68,10 @@ AssetPtr open_model(JNIEnv* env, jobject assets, const char* path = kModelAsset)
     return asset;
 }
 // Compiled programs belong to one graph: the cache is named after the model bytes (as RVM's).
-// OpenCL memory mode. Buffers run ViT-S ~30% faster than images on Adreno 740 (MNN benchmark,
-// 252x140: 37 vs 54 ms): the linear layers use the GEMM/Strassen kernels and fewer rasters.
+// ZipDepth's convolution graph uses images; the independent photo ViT keeps buffers.
 // Debug builds can compare: adb shell setprop debug.vrpp.depth.gpumode <MNN_GPU_* bits>.
 int gpu_mode(bool photo = false) {
-    // A still photo must not wait for a wide search over the large attention graph.
-    // Video keeps its established throughput tuning; photo programs use a separate cache.
-    int mode = (photo ? MNN_GPU_TUNING_FAST : MNN_GPU_TUNING_WIDE) | MNN_GPU_MEMORY_BUFFER;
+    int mode = MNN_GPU_TUNING_FAST | (photo ? MNN_GPU_MEMORY_BUFFER : 0); // Default image mode.
     char value[PROP_VALUE_MAX] = {};
     if (__system_property_get("debug.vrpp.depth.gpumode", value) > 0) {
         const int requested = std::atoi(value);
@@ -75,7 +80,9 @@ int gpu_mode(bool photo = false) {
     return mode;
 }
 
-// OpenCL priority of the depth queue: 0 low (default), 1 normal, 2 high. Low for photos too: at
+// OpenCL priority: LOW for video too (user choice, 2026-10-30, replacing that day's NORMAL): with the
+// pipelined 384x224 model on Quest 3, NORMAL gave 25.6 depth maps/s but XR 56.5 fps, LOW 19.0/s with
+// XR 69 (depth off: 67). Independent still photos retain LOW: at
 // normal a 518x518 photo inference (0.38 s) held the XR frames back (42 stalls of 25-51 frames in
 // 187 s, 64.6 fps); at low it took 0.50 s with 1 stall in 394 s (71.9 fps, Quest 3 photo browsing).
 // Debug builds can compare: adb shell setprop debug.vrpp.depth.priority (video) or
@@ -116,9 +123,11 @@ struct Depth final {
     int width = 0, height = 0, gpu_ops = 0;
     std::vector<std::string> host_ops;
     double prepare_ms = 0, last_ms = 0, stabilize_ms = 0;
+    double upload_ms = 0, dispatch_ms = 0, readback_ms = 0;
     std::unique_ptr<quest::DepthStabilizer> stabilizer;
     uint64_t frames = 0, cuts = 0;
     std::mutex operation;
+    std::mutex post; // Stabilizer state: CPU stage, may overlap the next inference.
     std::atomic<bool> closed{false};
     bool photo = false;
     int mode = 0;
@@ -134,11 +143,15 @@ struct Depth final {
         config.backupType = MNN_FORWARD_CPU; // Only so placement can be audited and rejected.
         config.numThread = mode;
         MNN::BackendConfig backend;
+        // FP16 selected by normalized-depth/disparity and temporal comparison, not raw
+        // depth-scale error. Quest 3 384x224: ~19 ms, 0.4 px temporal difference P95
+        // at 1080p/50% strength on the short reference sequence (see ZipDepth review).
         backend.precision = MNN::BackendConfig::Precision_Low;
         backend.power = MNN::BackendConfig::Power_High;
         config.backendConfig = &backend;
-        // LOW GPU priority: depth runs ~70 ms at a time and must not hold back the video's GL copies.
-        // At NORMAL, 1080p30 lost ~3% of frames (29.2 fps); at LOW it shows all 30 (Quest 3, measured).
+        // Low-priority queue (see depth_priority): XR frames take precedence over depth.
+        // Throughput, frame age and XR pacing are measured together; priority alone
+        // does not establish that the 30 Hz target is met.
         vrpp_set_cl_priority(depth_priority(photo));
         session = net->createSession(config);
         vrpp_set_cl_priority(-1);
@@ -180,11 +193,18 @@ struct Depth final {
     }
 
     void infer(const float* rgb) {
+        const auto start = std::chrono::steady_clock::now();
         const size_t plane = static_cast<size_t>(width) * height;
         std::memcpy(src_host->host<float>(), rgb, plane * 3 * sizeof(float));
         src->copyFromHostTensor(src_host.get());
+        const auto uploaded = std::chrono::steady_clock::now();
         require(net->runSession(session) == MNN::NO_ERROR, "MNN depth inference failed");
+        const auto dispatched = std::chrono::steady_clock::now();
         out->copyToHostTensor(out_host.get()); // Blocking read completes the queue.
+        const auto finished = std::chrono::steady_clock::now();
+        upload_ms = std::chrono::duration<double, std::milli>(uploaded - start).count();
+        dispatch_ms = std::chrono::duration<double, std::milli>(dispatched - uploaded).count();
+        readback_ms = std::chrono::duration<double, std::milli>(finished - dispatched).count();
     }
 
     /** rgb: float32 CHW in [0, 1]. near: float32 HxW in [0, 1], 1 = nearest. */
@@ -192,23 +212,39 @@ struct Depth final {
         require(!photo, "Video processing needs the video depth model");
         const auto started = std::chrono::steady_clock::now();
         infer(rgb);
+        stabilize(out_host->host<float>(), rgb, near, reset, frame_step);
+        last_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+    }
+
+    /** GPU stage of the pipelined video path: raw relative inverse depth, HxW. */
+    void infer_raw(const float* rgb, float* raw) {
+        require(!photo, "Video processing needs the video depth model");
+        const auto started = std::chrono::steady_clock::now();
+        infer(rgb);
+        std::memcpy(raw, out_host->host<float>(), static_cast<size_t>(width) * height * sizeof(float));
+        last_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+    }
+
+    /** CPU stage: frames in source order (a skipped frame only counts in frame_step). */
+    void stabilize(const float* raw, const float* rgb, float* near, bool reset, int frame_step,
+                   int cx = 0, int cy = 0, int cw = 0, int ch = 0) {
         if (!stabilizer) {
             stabilizer = std::make_unique<quest::DepthStabilizer>(width, height);
-            // 1.5x the PTMediaServer smoothing rates: at 364x210 a map arrives only ~5 times a second and
-            // the default smoothing doubled the visible lag; 2x let edges shimmer (Quest 3 playback A/B).
+            // Preserve the validated video smoothing rate while replacing the model.
+            // Skipped source frames still count, so faster inference does not slow convergence.
             // Debug A/B: adb shell setprop debug.vrpp.depth.stab_speed <speed>.
             float speed = 1.5f;
             char value[PROP_VALUE_MAX] = {};
             if (__system_property_get("debug.vrpp.depth.stab_speed", value) > 0 && std::strtof(value, nullptr) > 0) speed = std::strtof(value, nullptr);
             stabilizer->set_speed(speed);
         }
+        stabilizer->set_content(cx, cy, cw, ch);
         if (reset) stabilizer->reset();
         const auto inferred = std::chrono::steady_clock::now();
-        stabilizer->process(out_host->host<float>(), rgb, frame_step, near);
+        stabilizer->process(raw, rgb, frame_step, near);
         stabilize_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - inferred).count();
         if (stabilizer->last_cut()) ++cuts;
         ++frames;
-        last_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
     }
 
     void process_crop(const float* rgb, float* near, int x, int y, int cw, int ch) {
@@ -240,21 +276,41 @@ float* direct(JNIEnv* env, jobject buffer, size_t floats) {
     require(data != nullptr, "Depth direct buffer inaccessible");
     return data;
 }
+const float* checked_rgb(JNIEnv* env, jobject rgb, size_t plane) {
+    const float* input = direct(env, rgb, plane * 3);
+    for (size_t p = 0; p < plane * 3; ++p)
+        if (!(input[p] >= 0.f && input[p] <= 1.f)) throw std::runtime_error("Depth RGB outside [0,1]");
+    return input;
+}
+// Wall times: dispatch may enqueue work; readback includes its GPU wait.
+std::string infer_stages(const Depth& depth) {
+    std::ostringstream json;
+    json << "\"upload_ms\":" << depth.upload_ms << ",\"dispatch_ms\":" << depth.dispatch_ms << ",\"readback_wait_ms\":" << depth.readback_ms;
+    return json.str();
+}
+std::string stabilize_stages(const Depth& depth) {
+    const auto& timing = depth.stabilizer->last_timing();
+    std::ostringstream json;
+    json << "\"scene_ms\":" << timing.scene_ms << ",\"band_ms\":" << timing.band_ms
+         << ",\"box_ms\":" << timing.box_ms << ",\"motion_ms\":" << timing.motion_ms
+         << ",\"blend_ms\":" << timing.blend_ms << ",\"dilation_ms\":" << timing.dilation_ms;
+    return json.str();
+}
 } // namespace
 
 extern "C" JNIEXPORT jstring JNICALL
-Java_org_vrpassthroughplayer_plugin_DepthNative_cachePath(JNIEnv* env, jclass, jobject assets, jstring directory) {
+Java_org_vrpassthroughplayer_plugin_DepthNative_cachePathAsset(JNIEnv* env, jclass, jobject assets, jstring directory, jstring modelAsset) {
     try {
-        const auto model = open_model(env, assets);
+        const auto model = open_model(env, assets, video_asset(env, modelAsset).c_str());
         return env->NewStringUTF(cache_path(AAsset_getBuffer(model.get()), static_cast<size_t>(AAsset_getLength64(model.get())),
                                             text(env, directory)).c_str());
     } catch (const std::exception& error) { fail(env, error.what()); return nullptr; }
 }
 
 extern "C" JNIEXPORT jlong JNICALL
-Java_org_vrpassthroughplayer_plugin_DepthNative_create(JNIEnv* env, jclass, jobject assets, jstring directory) {
+Java_org_vrpassthroughplayer_plugin_DepthNative_createAsset(JNIEnv* env, jclass, jobject assets, jstring directory, jstring modelAsset) {
     try {
-        const auto model = open_model(env, assets);
+        const auto model = open_model(env, assets, video_asset(env, modelAsset).c_str());
         const void* data = AAsset_getBuffer(model.get());
         const auto bytes = static_cast<size_t>(AAsset_getLength64(model.get()));
         auto depth = std::make_shared<Depth>(data, bytes, cache_path(data, bytes, text(env, directory)));
@@ -288,6 +344,7 @@ Java_org_vrpassthroughplayer_plugin_DepthNative_describe(JNIEnv* env, jclass, jl
         const auto depth = find(handle);
         std::ostringstream json;
         json << "{\"width\":" << depth->width << ",\"height\":" << depth->height << ",\"gpu_mode\":" << depth->mode << ",\"priority\":" << depth_priority(depth->photo) << ",\"prepare_ms\":" << depth->prepare_ms
+             << ",\"model\":\"" << (depth->photo ? "DA2 Small" : "ZipDepth base") << "\",\"precision\":\"fp16\""
              << ",\"gpu_ops\":" << depth->gpu_ops << ",\"cpu_fallback_ops\":" << depth->host_ops.size() << '}';
         return env->NewStringUTF(json.str().c_str());
     } catch (const std::exception& error) { fail(env, error.what()); return nullptr; }
@@ -349,17 +406,51 @@ Java_org_vrpassthroughplayer_plugin_DepthNative_process(JNIEnv* env, jclass, jlo
         const auto depth = find(handle);
         std::unique_lock<std::mutex> guard(depth->operation, std::try_to_lock);
         require(guard.owns_lock(), "Depth runtime busy; no requests queued");
+        std::lock_guard<std::mutex> post(depth->post);
         const size_t plane = static_cast<size_t>(depth->width) * depth->height;
-        const float* input = direct(env, rgb, plane * 3);
+        const float* input = checked_rgb(env, rgb, plane);
         float* output = direct(env, near, plane);
-        for (size_t p = 0; p < plane * 3; ++p)
-            if (!(input[p] >= 0.f && input[p] <= 1.f)) throw std::runtime_error("Depth RGB outside [0,1]");
         depth->process(input, output, reset == JNI_TRUE, frameStep < 1 ? 1 : frameStep);
         std::ostringstream json;
         json << "{\"state\":\"" << (depth->closed.load() ? "stale" : "ready") << "\",\"depth_ms\":" << depth->last_ms
-             << ",\"stabilize_ms\":" << depth->stabilize_ms << ",\"shift_x\":" << depth->stabilizer->last_dx() << ",\"shift_y\":" << depth->stabilizer->last_dy()
-             << ",\"frames\":" << depth->frames
-             << ",\"cuts\":" << depth->cuts << '}';
+             << ",\"stabilize_ms\":" << depth->stabilize_ms << ",\"frames\":" << depth->frames
+             << ",\"stages\":{" << infer_stages(*depth) << ',' << stabilize_stages(*depth) << "},\"cuts\":" << depth->cuts << '}';
+        return env->NewStringUTF(json.str().c_str());
+    } catch (const std::exception& error) { fail(env, error.what()); return nullptr; }
+}
+
+/** Pipelined video GPU stage: rgb -> raw inverse depth. One call at a time per handle. */
+extern "C" JNIEXPORT jstring JNICALL
+Java_org_vrpassthroughplayer_plugin_DepthNative_infer(JNIEnv* env, jclass, jlong handle, jobject rgb, jobject raw) {
+    try {
+        const auto depth = find(handle);
+        std::unique_lock<std::mutex> guard(depth->operation, std::try_to_lock);
+        require(guard.owns_lock(), "Depth runtime busy; no requests queued");
+        const size_t plane = static_cast<size_t>(depth->width) * depth->height;
+        const float* input = checked_rgb(env, rgb, plane);
+        depth->infer_raw(input, direct(env, raw, plane));
+        std::ostringstream json;
+        json << "{\"state\":\"" << (depth->closed.load() ? "stale" : "ready") << "\",\"depth_ms\":" << depth->last_ms
+             << ",\"stages\":{" << infer_stages(*depth) << "}}";
+        return env->NewStringUTF(json.str().c_str());
+    } catch (const std::exception& error) { fail(env, error.what()); return nullptr; }
+}
+
+/** Pipelined video CPU stage, in source order; may run while the next frame infers. */
+extern "C" JNIEXPORT jstring JNICALL
+Java_org_vrpassthroughplayer_plugin_DepthNative_stabilize(JNIEnv* env, jclass, jlong handle, jobject raw, jobject rgb, jobject near,
+                                                         jboolean reset, jint frameStep, jint x, jint y, jint width, jint height) {
+    try {
+        const auto depth = find(handle);
+        require(!depth->photo, "Video processing needs the video depth model");
+        std::lock_guard<std::mutex> post(depth->post);
+        const size_t plane = static_cast<size_t>(depth->width) * depth->height;
+        depth->stabilize(direct(env, raw, plane), direct(env, rgb, plane * 3), direct(env, near, plane),
+                         reset == JNI_TRUE, frameStep < 1 ? 1 : frameStep, x, y, width, height);
+        std::ostringstream json;
+        json << "{\"state\":\"" << (depth->closed.load() ? "stale" : "ready") << "\",\"stabilize_ms\":" << depth->stabilize_ms
+             << ",\"shift_x\":" << depth->stabilizer->last_dx() << ",\"shift_y\":" << depth->stabilizer->last_dy()
+             << ",\"frames\":" << depth->frames << ",\"stages\":{" << stabilize_stages(*depth) << "},\"cuts\":" << depth->cuts << '}';
         return env->NewStringUTF(json.str().c_str());
     } catch (const std::exception& error) { fail(env, error.what()); return nullptr; }
 }

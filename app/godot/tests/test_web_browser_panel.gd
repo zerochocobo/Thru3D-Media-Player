@@ -10,6 +10,10 @@ class Platform extends Fixture.Platform:
 	var library := {"bookmarks": [], "history": []}
 	var library_commands: Array = []
 	var browser_commands: Array = []
+	var beta_requests := 0
+	func web_video_resolve_beta(url: String) -> int:
+		beta_requests += 1
+		return web_video_resolve(url)
 	func web_browser_command(value: String) -> void:
 		var command: Dictionary = JSON.parse_string(value); browser_commands.append(command)
 		if command.action == "network_capture": browser.network_capture_enabled = bool(command.enabled)
@@ -36,6 +40,33 @@ func _run() -> void:
 	menu.web_browser.open("https://www.youtube.com/watch?v=jNQXAC9IVRw")
 	menu.web_browser.tick()
 	check(menu.web_browser.active(), "Browser is active inside web section")
+	check(not menu.web_browser.input_host()._buttons.any(func(button): return button.target == Browser.BASE + 18), "Beta is hidden on unadapted sites")
+	platform.browser.bilibili_beta_available = true
+	menu.web_browser.next_poll = 0; menu.web_browser.tick(); menu.refresh()
+	var beta_buttons: Array = menu.web_browser.input_host()._buttons.filter(func(button): return button.target in [Browser.BASE + 6, Browser.BASE + 18])
+	check(beta_buttons.size() == 2 and not beta_buttons[0].rect.intersects(beta_buttons[1].rect), "Legacy and Beta have separate non-overlapping targets")
+	menu.web_browser.prefetch_uri = platform.browser.url
+	menu.web_browser.prefetch_result = {"state": "ready", "uri": platform.browser.url}
+	menu.web_browser.prefetch_ms = Time.get_ticks_msec()
+	menu.web_browser.action(Browser.BASE + 18)
+	check(platform.beta_requests == 0 and menu.web_browser.handoff_waiting_pause and menu.web_video.pending == 0,
+		"Beta pauses the webpage before starting resolution")
+	platform.browser.playing = false; platform.browser.videos[0].playing = false
+	menu.web_browser.next_poll = 0; menu.web_browser.tick()
+	check(platform.beta_requests == 1 and menu.web_browser.handoff_beta and menu.web_video.pending > 0, "Beta starts its own resolver instead of reusing a ready legacy prefetch")
+	var beta_pending := menu.web_video.pending
+	menu.web_browser.action(Browser.BASE + 6)
+	check(menu.web_video.pending == beta_pending, "Disabled legacy target cannot cancel Beta")
+	menu.web_browser.action(Browser.BASE + 18)
+	check(not menu.web_browser.handoff and menu.web_video.pending == 0, "Beta button cancels its own pending request")
+	menu.web_browser.action(Browser.BASE + 6)
+	check(platform.beta_requests == 1 and not menu.web_browser.handoff_beta and menu.web_video.pending > 0, "Legacy button still starts only its original resolver")
+	menu.web_browser.action(Browser.BASE + 6)
+	platform.browser.bilibili_beta_available = false
+	menu.web_browser.next_poll = 0; menu.web_browser.tick(); menu.refresh()
+	menu.web_browser.action(Browser.BASE + 18)
+	check(platform.beta_requests == 1, "A stale Beta target cannot resolve an unavailable site")
+	platform.browser.playing = true; platform.browser.videos[0].playing = true
 	platform.browser.network_capture_available = false; platform.browser.network_capture_enabled = false
 	menu.web_browser.next_poll = 0; menu.web_browser.tick()
 	check(not menu.web_browser.input_host()._buttons.any(func(button): return button.target == Browser.BASE + 15), "Marked native sites hide the toolbar detection entry")

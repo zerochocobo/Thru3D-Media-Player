@@ -686,7 +686,7 @@ func _refresh_visibility() -> void:
 			card.node.visible = true; card.node.material_override.set_shader_parameter("brightness", 1.0)
 	else:
 		photo.panel.visible = focused_ready
-		if is_instance_valid(photo._placeholder): photo._placeholder.visible = focused_ready and photo.geometry == 0 and photo._reveal_seconds > 0
+		if is_instance_valid(photo._placeholder): photo._placeholder.visible = focused_ready and photo.geometry == 0 and (photo._presentation_pending or photo._reveal_seconds > 0)
 		for index in cards:
 			var card: Dictionary = cards[index]
 			card.node.visible = not (index == focus and focused_ready) and not (focused_ready and photo.geometry != 0)

@@ -9,6 +9,7 @@ import org.json.JSONObject
 
 /** Queries advertised codec support. Actual playback has a separate C03/C04 gate. */
 internal object DeviceCapabilities {
+    fun videoDepthProfile() = VideoDepthProfiles.forModel(Build.MODEL)
     fun collect(graphicsJson: String): JSONObject {
         val report = JSONObject()
             .put("schema_version", 1)

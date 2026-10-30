@@ -13,6 +13,11 @@ from yt_dlp.cookies import YoutubeDLCookieJar
 
 
 class CookieBoundaryTest(unittest.TestCase):
+    def test_bilibili_preview_and_drm_are_not_silently_exported(self):
+        for flag in ('is_preview', 'is_trial', 'is_drm', 'has_drm', 'drm_tech_type'):
+            with self.assertRaises(ValueError):
+                extract.bilibili_cdn_formats([], {flag: True})
+
     def test_declared_player_sources_keep_layout_without_inventing_dimensions(self):
         parser = extract.SpatialHtmlParser("https://example.test/videos/demo")
         parser.feed('<dl8-video title="Example" format="STEREO_180_LR"><source src="/movie.mp4" type="video/mp4" quality="4K"><source src="//cdn.test/next.mp4" type="video/mp4"><source src="javascript:bad" type="video/mp4"></dl8-video><source src="/outside.mp4" type="video/mp4">')

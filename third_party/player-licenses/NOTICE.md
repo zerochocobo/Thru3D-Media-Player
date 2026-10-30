@@ -8,7 +8,7 @@ They do not replace each dependency's original notices or source records.
 - MNN: the existing upstream 3.6.1 source plus the project's recorded patch.
 - ncnn: LICENSE.txt from the pinned 1.0.20260526 upstream wheel.
 - Godot OpenXR Vendors: all six original vendor license files from addon 5.1.0.
-- RVM and Depth Anything: the model license files already recorded in this repository.
+- RVM, Depth Anything and ZipDepth: the model license files recorded in this repository.
 - Hands and panorama: existing source/author notices beside the shipped assets.
 - Media3: the unmodified Apache 2.0 text; upstream is AndroidX Media3 1.11.1
   (https://github.com/androidx/media), licensed by The Android Open Source Project.

@@ -65,7 +65,7 @@ try {
     $generation = $current.media.generation
     $frames = $current.native_status.bridge.warp_frames
     $hashes = @()
-    foreach ($strength in @('0.5','1','2','4')) {
+    foreach ($strength in @('0.25','0.5','0.75','1')) {
         $tag = 'strength_' + $strength.Replace('.','_') + '_' + [guid]::NewGuid().ToString('N')
         & $adb -s $Serial shell setprop debug.vrpp.warp.dump $tag
         $receipt = Request $tag 'depth' @('--ef','strength',$strength)

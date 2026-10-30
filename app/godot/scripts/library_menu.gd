@@ -1832,6 +1832,9 @@ func _rebuild_rows() -> void:
 					[{"value": SeekPolicy.SPEED, "label": "Speed", "hint": "Faster jumps, less precise"},
 					{"value": SeekPolicy.EXACT, "label": "Precise", "hint": "Accurate jumps, may take longer"}], false,
 					"Faster jumps, less precise" if seek == SeekPolicy.SPEED else "Accurate jumps, may take longer"))
+				rows.append(_choice_row("2D to 3D effect", "depth_render", str(settings.get("depth_render", "stretch")),
+					[{"value": "fill", "label": "Fill gaps", "hint": "Fills the background behind moving edges"},
+					{"value": "stretch", "label": "Stretch edges", "hint": "Stretches edges, like spatial photos"}], true))
 				var outputs: Array = []
 				for option in [[Quality.AUTO_OUTPUT, "Auto"], [0, "Original size"], [5760, "6K"], [4096, "4K"]]:
 					outputs.append({"value": option[0], "label": option[1], "hint": Quality.OUTPUT_HINTS[option[0]]})

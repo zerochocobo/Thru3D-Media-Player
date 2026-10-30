@@ -9,7 +9,9 @@ function fixture(cookies = []) {
   let now = 100000; const timers = new Map(); let next = 0;
   const webRequest = Object.fromEntries(['onBeforeRequest', 'onSendHeaders', 'onHeadersReceived', 'onCompleted', 'onErrorOccurred', 'onBeforeRedirect'].map(name => [name, event()]));
   const browser = { runtime: { id: 'fixture', onConnect: event() }, webRequest, cookies: { getAll: async () => cookies } };
-  vm.runInNewContext(source, { browser, URL, Date: { now: () => now }, setTimeout(f) { timers.set(++next, f); return next; }, clearTimeout(id) { timers.delete(id); } });
+  const context = vm.createContext({ browser, URL, Date: { now: () => now }, setTimeout(f) { timers.set(++next, f); return next; }, clearTimeout(id) { timers.delete(id); } });
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../../main/assets/web-browser/bilibili.js'), 'utf8'), context);
+  vm.runInContext(source, context);
   function connect(tab = 1, frame = 0, page = 'https://page.test/watch', enabled = true) {
     const messages = [];
     const port = { name: 'thru3d_network', sender: { id: 'fixture', tab: { id: tab }, frameId: frame, url: page, documentId: `doc-${tab}-${frame}` },
@@ -41,6 +43,14 @@ test('POST, failed responses, HTML masquerading as media, and loose segments are
   for (const file of ['segment.m4s', 'init.mp4', 'chunk-1.mp4', 'stream.ts', 'key.key']) f.request(`https://cdn.test/${file}`);
   f.flush(); assert.equal(p.last().length, 0);
 });
+test('canonical Bilibili CID directories identify decorated full-file DASH audio', () => {
+  const f = fixture(), p = f.connect();
+  const url = 'https://upos-test.bilivideo.com/upgcxcode/45/23/12345/12345_nb3-1-30280.m4s';
+  f.request(url); f.request(url.replace('upgcxcode', 'unknown'));
+  f.request(url.replace('/12345/', '/999/').replace('12345_nb3', '12345'));
+  f.flush(); assert.equal(p.last().length, 1); assert.equal(p.last()[0].url, url);
+});
+
 test('actual credentials are exact-request-only, and protocol/range headers are discarded', () => {
   const f = fixture(), p = f.connect();
   f.request('https://cdn.test/movie.mp4', { requestHeaders: [

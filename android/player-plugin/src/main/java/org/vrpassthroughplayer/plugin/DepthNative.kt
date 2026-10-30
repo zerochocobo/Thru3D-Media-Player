@@ -5,20 +5,28 @@ import android.content.res.AssetManager
 import java.io.File
 import java.nio.ByteBuffer
 
-/** Realtime 2D->3D depth (Depth Anything V2 Small, MNN OpenCL) in libquest_rvm. Not thread-safe per handle. */
+/** Video/portrait ZipDepth and independent photo DA2, MNN OpenCL. Not thread-safe per handle. */
 internal object DepthNative {
     // Loads libquest_rvm on first use of this object.
     val unavailable: String? = RvmNative.unavailable
     /** Compiled-program cache this model uses under [cacheDirectory]. */
-    @JvmStatic external fun cachePath(assets: AssetManager, cacheDirectory: String?): String
+    fun cachePath(assets: AssetManager, cacheDirectory: String?): String = cachePathAsset(assets, cacheDirectory, bundledProfile.asset)
+    @JvmStatic private external fun cachePathAsset(assets: AssetManager, cacheDirectory: String?, modelAsset: String): String
     /** Builds the OpenCL session (a cold cache compiles for tens of seconds). */
-    @JvmStatic external fun create(assets: AssetManager, cacheDirectory: String?): Long
+    fun create(assets: AssetManager, cacheDirectory: String?): Long = createAsset(assets, cacheDirectory, bundledProfile.asset)
+    @JvmStatic private external fun createAsset(assets: AssetManager, cacheDirectory: String?, modelAsset: String): Long
     /** Independent still-photo model, same shared worker but separate compiled-program cache. */
     @JvmStatic external fun createPhoto(assets: AssetManager, cacheDirectory: String?): Long
     /** {"width","height","prepare_ms","gpu_ops","cpu_fallback_ops"} */
     @JvmStatic external fun describe(handle: Long): String
     /** rgb float32 CHW [0,1] -> near float32 HxW [0,1] (1 = nearest). reset restarts the shot's depth band. */
     @JvmStatic external fun process(handle: Long, rgb: ByteBuffer, near: ByteBuffer, reset: Boolean, frameStep: Int): String
+    /** Pipelined [process], GPU stage: rgb -> raw relative inverse depth (float32 HxW). */
+    @JvmStatic external fun infer(handle: Long, rgb: ByteBuffer, raw: ByteBuffer): String
+    /** Pipelined [process], CPU stage, in source order; may overlap the next [infer] of the same handle.
+     * x/y/width/height: the picture inside a letterboxed input (model pixels); only it sets the near band. */
+    @JvmStatic external fun stabilize(handle: Long, raw: ByteBuffer, rgb: ByteBuffer, near: ByteBuffer, reset: Boolean, frameStep: Int,
+                                      x: Int, y: Int, width: Int, height: Int): String
     /** No temporal history; padding outside the content rectangle never contributes to near depth. */
     @JvmStatic external fun processPhoto(handle: Long, rgb: ByteBuffer, near: ByteBuffer, x: Int, y: Int, width: Int, height: Int): String
     /** Video-model ROI without temporal history; distinct from the still-photo model entry point. */
@@ -39,7 +47,8 @@ internal object DepthNative {
     fun videoModelFile(context: Context): File? =
         videoModelOverride?.let { File(context.getExternalFilesDir(null), "depth-mnn/$it") }
 
-    /** Model input: 16:9 multiples of the 14 px patch, fixed in the converted graph (tools/models/prepare_depth_mnn.py). */
-    val PROFILE: String by lazy { videoModelOverride?.let { OVERRIDE.find(it)?.groupValues?.get(1) } ?: "364x210" }
+    /** ZipDepth base, multiples of 32 with aspect-preserving staging; prepare_zipdepth_mnn.py. */
+    private val bundledProfile by lazy { DeviceCapabilities.videoDepthProfile() }
+    val PROFILE: String by lazy { videoModelOverride?.let { OVERRIDE.find(it)?.groupValues?.get(1) } ?: bundledProfile.shape }
     private val OVERRIDE = Regex("""[A-Za-z0-9]+_(\d+x\d+)\.mnn""")
 }

@@ -4,12 +4,15 @@
 
 Standalone Android VR/MR media player for Meta Quest and PICO. Play videos and photos, explore media libraries, and combine supported content with passthrough and stereo effects directly on your headset.
 
-Current source version: **0.15.2** (Android versionCode **51**). An experimental standard OpenXR Android export is also available.
+Current source version: **0.16.0** (Android versionCode **53**). An experimental standard OpenXR Android export is also available.
 
 Minimum compatibility targets are **Quest 2** and **PICO Neo3**. Source/build compatibility does not establish hardware performance or interaction acceptance on every device.
 
 ## Features
 
+- ZipDepth video 2D-to-3D with Fill gaps/Stretch edges choices, linear strength and a 50% recommendation; still-photo depth stays independent. See [model preparation](docs/MODELS.md).
+- Portrait passthrough for compatible flat stereo videos, continuous photo portrait navigation and stable stereo-photo page transitions.
+- A separate Bilibili Play (Beta) route using the current logged-in browser session and observed media requests; account, site and format limits apply.
 - Supported unencrypted DVD ISOs with title/chapter selection and controller-ray disc menus; pinned source recipes and limits are in [disc playback](docs/BLURAY.md).
 - Browser peer windows (up to four on the higher tier), site/bookmark start pages and opt-in media detection with source-page-scoped handoff; unsupported/protected content stays in the website.
 - Dedicated compositor layers for eligible flat text subtitles, immersive-picture alignment guidance and clearer PiP resize feedback.

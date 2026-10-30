@@ -27,6 +27,7 @@ class WebVideoDiagnosticsReceiver : BroadcastReceiver() {
         try {
             val plugin = DiagnosticRequests.current() ?: error("Player not running")
             when (intent.getStringExtra("operation")) {
+                "bilibili_probe" -> plugin.configureBilibiliProbe(intent.getIntExtra("tab", -1), intent.getStringExtra("mode").orEmpty())
                 "resolve" -> result.put("id", plugin.web_video_resolve(intent.getStringExtra("url").orEmpty()))
                 "status" -> result.put("video", JSONObject(plugin.web_video_status()))
                 "cancel" -> plugin.web_video_cancel()
@@ -34,7 +35,7 @@ class WebVideoDiagnosticsReceiver : BroadcastReceiver() {
                     val source = JSONObject(plugin.web_browser_status())
                     val safe = JSONObject()
                     for (key in listOf("engine", "progress", "error", "active", "attached", "playing", "generation",
-                        "detached_through", "needs_surface", "extension", "videos", "tabs", "native_supported", "editing", "session_ready", "tab_id", "navigation", "focused_window", "operation_error", "live_tabs", "network_capture_enabled", "network_capture_available")) {
+                        "detached_through", "needs_surface", "extension", "videos", "tabs", "native_supported", "editing", "session_ready", "tab_id", "navigation", "focused_window", "operation_error", "live_tabs", "network_capture_enabled", "network_capture_available", "bilibili_beta_available")) {
                         if (source.has(key)) safe.put(key, source.get(key))
                     }
                     safe.put("page", runCatching { WebVideoPage.parse(source.optString("url")).url }.getOrDefault(""))

@@ -14,6 +14,7 @@ def prepare(tool_root: Path):
         "mnn.txt": tool_root / "mnn/source-3.6.1-vrpp/LICENSE.txt",
         "rvm.txt": root / "models/licenses/RVM_GPL-3.0.txt",
         "depth.txt": root / "models/licenses/DepthAnythingV2_Apache-2.0.txt",
+        "zipdepth.txt": root / "models/licenses/ZipDepth_MIT.txt",
         "media3.txt": root / "third_party/gradle/LICENSE.txt",
         "jcifs.txt": root / "third_party/mpv/LICENSE.LGPL",
         "panorama-notice.txt": root / "app/godot/backgrounds/NOTICE.txt",

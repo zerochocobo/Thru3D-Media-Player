@@ -62,8 +62,13 @@ internal class WebVideoNetworkCapture(
                 // Audio/video IDs can differ in their trailing representation suffix.
                 return "youtube:${id.substringBefore('.')}"
             }
-            if (Regex("(?:^|.*\\.)bilivideo\\.(com|cn)").matches(host))
-                return Regex("/(\\d+)-[^/]+\\.m4s$").find(uri.path)?.groupValues?.get(1)?.let { "bilibili:$it" }
+            if (Regex("(?:^|.*\\.)bilivideo\\.(com|cn)").matches(host)) {
+                val directory = Regex("^/(?:v1/resource/)?upgcxcode/\\d{1,3}/\\d{1,3}/([1-9][0-9]{0,19})/[A-Za-z0-9_-]{1,160}\\.m4s$")
+                    .find(uri.rawPath)?.groupValues?.get(1)
+                val filename = Regex("/([1-9][0-9]{0,19})-[^/]+\\.m4s$").find(uri.rawPath)?.groupValues?.get(1)
+                if (directory != null && filename != null && directory != filename) return null
+                return (directory ?: filename)?.let { "bilibili:$it" }
+            }
             null
         }.getOrNull()
     }

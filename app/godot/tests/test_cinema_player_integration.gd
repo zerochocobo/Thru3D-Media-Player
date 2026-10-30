@@ -686,6 +686,41 @@ func _context_routes() -> void:
 	check(is_equal_approx(loaded.get_value("portrait_screen", "distance", 0.0),7.0), "Portrait distance survives settings reload")
 	check(is_equal_approx(loaded.get_value("portrait_screen", "scale", 0.0),7.5), "Portrait size survives settings reload")
 	main.video.alpha_requested = false; main._update_background()
+	# A remembered mono auto-anchor must neither synthesize depth nor block stereo placement saves.
+	var pending_revision: Dictionary = main.video._pending_revision.duplicate(true)
+	var waiting_first: bool = main.video._waiting_first
+	main.video.portrait.automatic = true
+	for layout in [1, 2, 3, 4]:
+		main.video.set_stereo_layout(layout)
+		var stereo_screen: Transform3D = main.video.global_transform * main.video.flat_pose
+		var stereo_scale: float = main.video.screen_scale
+		main.video.set_alpha(true); main._update_background()
+		check(main.portrait_screen.active and main.display.applied_passthrough and not main._cinema_video_locked(),
+			"Native stereo enters adjustable passthrough: " + str(layout))
+		check(main._menu_state().flat_passthrough_requested and not main._menu_state().portrait_requested \
+			and not main.video.depth_requested, "Stereo cutout does not enter mono relief")
+		main._on_playback_adjustment("portrait_distance", 3.0 + layout)
+		main._on_playback_adjustment("portrait_scale", 200.0 + layout * 50.0)
+		main._save_playback_adjustments()
+		check(is_equal_approx(main.settings.get_value("portrait_screen", "distance", 0.0),3.0 + layout) \
+			and is_equal_approx(main.settings.get_value("portrait_screen", "scale", 0.0),2.0 + layout * .5),
+			"Stereo controls save independently despite remembered mono automatic distance")
+		check(_screen_preferences() == preferences_before, "Stereo passthrough leaves cinema preferences intact")
+		var cutout_pose: Transform3D = main.video.global_transform * main.video.flat_pose
+		main.video.set_stereo_layout(0); main._update_background()
+		main.video.set_stereo_layout(layout); main._update_background()
+		check((main.video.global_transform * main.video.flat_pose).is_equal_approx(cutout_pose),
+			"Switching 2D and 3D inside passthrough keeps its placement")
+		main.video.set_alpha(false); main._update_background()
+		check(not main.portrait_screen.active and main._cinema_scene_active() \
+			and (main.video.global_transform * main.video.flat_pose).is_equal_approx(stereo_screen) \
+			and is_equal_approx(main.video.screen_scale,stereo_scale) and main.video.stereo_layout() == layout,
+			"Closing stereo cutout restores cinema pose and size while retaining packing")
+	main.video.portrait.automatic = false
+	main.video.set_stereo_layout(0)
+	# The host double queues revisions but supplies no decoded frames; isolate later EOF cases.
+	main.video._pending_revision = pending_revision
+	main.video._waiting_first = waiting_first
 	main.temporary_passthrough = true; main._update_background()
 	check(not main._cinema_scene_active(), "Temporary passthrough hides cinema")
 	main.temporary_passthrough = false; main._update_background()

@@ -269,7 +269,8 @@ func check_current_only(entries: Array[Dictionary], baked: bool) -> void:
 	var calls: int = host.depth_calls
 	check(calls == 1 and host.background_depth.is_empty(), "Warming neighbours never runs 3D")
 	photo.navigate(-1)
-	check(photo.index == 3 and not photo.loading and not photo.depth_enabled and host.depth_calls == calls + 1, "Cached colour displays before current-page conversion")
+	check(photo.index == 3 and not photo.loading and not photo.depth_enabled and host.depth_calls == calls + 1, "Cached colour is adopted before current-page conversion")
+	check(photo.placeholder_visible() and photo.snapshot().loading and photo.material.get_shader_parameter("presentation_opacity") == 0.0, "Cached 3D selection stays covered while converting")
 	check(photo._stereo_texture == null and photo._depth_texture == null, "Old GPU depth/stereo are not used by incoming colour")
 	check(not host.depth_paths.has(previous_id) and not host.pair_paths.has(previous_id), "Previous generated files are discarded")
 	check(photo._prefetched.values().all(func(entry): return not entry.has("depth_data") and not entry.get("result", {}).has("depth_data")), "No neighbouring entry retains generated data")
@@ -288,6 +289,7 @@ func check_current_only(entries: Array[Dictionary], baked: bool) -> void:
 	calls = host.depth_calls
 	photo.navigate(1)
 	check(photo.index == 0 and not photo.loading and not photo.depth_enabled and host.depth_calls == calls+1, "Returning reuses colour but recomputes 3D")
+	check(photo.placeholder_visible() and photo.material.get_shader_parameter("presentation_opacity") == 0.0, "Returning also waits behind the cover for its own 3D")
 	host.complete_depth(photo._request,false); await process_frame
 	check(photo.panel.visible and not photo.loading and not photo.depth_enabled and photo.depth_error == "3D unavailable", "Failed current 3D leaves colour visible")
 	photo.close_image(); photo.queue_free(); await process_frame

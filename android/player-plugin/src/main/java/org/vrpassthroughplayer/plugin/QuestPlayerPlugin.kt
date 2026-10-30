@@ -197,11 +197,31 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     }
     @UsedByGodot fun web_browser_input(command: String, text: String) { if (!closed.get()) webBrowser.input(command, text) }
     fun captureWebBrowserForDiagnostics(done: (android.graphics.Bitmap?) -> Unit) = webBrowser.captureFrame(done)
+    fun configureBilibiliProbe(tab: Int, mode: String) {
+        check(BuildConfig.DEBUG)
+        webBrowser.configureBilibiliProbe(tab, mode)
+    }
     /** Worker-only, deliberately excludes media URLs, cookies and header values. */
     fun probeWebBrowserMediaForDiagnostics(): JSONObject {
         val page = JSONObject(webBrowser.snapshot()).optString("url")
         val media = webBrowser.mediaForExtraction(page) ?: return JSONObject().put("available", false)
         val result = JSONObject().put("available", true)
+            .put("bilibili_probe", media.optString("bilibili_probe"))
+            .put("bilibili_response_api", media.optBoolean("bilibili_response_api"))
+            .put("bilibili_api_count", media.optInt("bilibili_api_count").coerceIn(0, 4))
+            .put("bilibili_binding", media.optString("bilibili_binding").takeIf { it in setOf("off", "adapter_unavailable", "not_read",
+                "unsupported_page", "initial_json_missing", "video_data_missing", "page_map_mismatch", "part_missing", "mapped",
+                "protected", "multiple_players", "response_cid_missing", "video_id_mismatch", "full_duration_missing", "full_duration_mismatch",
+                "player_duration_mismatch", "matched") } ?: "unknown")
+            .put("bilibili_status", media.optString("bilibili_status").takeIf { it in setOf("idle", "observing", "normalized",
+                "unsupported_data", "unavailable", "invalid_json", "timeout", "oversize", "http_rejected", "stream_error", "cancelled", "context_changed") } ?: "unknown")
+            .put("bilibili_enabled", media.optBoolean("bilibili_enabled"))
+            .put("bilibili_metadata", media.optJSONObject("bilibili") != null)
+            .put("bilibili_pair_counts", WebVideoBilibiliCapture.diagnostics(media))
+            .put("bilibili_pair", runCatching {
+                val source = WebVideoPage.parse(page)
+                WebVideoBilibiliCapture.formats(WebVideoBilibiliCapture.episodePage(source, media) ?: source, media) != null
+            }.getOrDefault(false))
         for (key in listOf("id", "width", "height", "duration", "playing", "protected", "blob", "network_enabled", "network_epoch"))
             result.put(key, media.opt(key))
         val source = runCatching { java.net.URI(media.optString("source")) }.getOrNull()
@@ -227,6 +247,7 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
         if (!closed.get()) webBrowser.pointer(command, x, y, scroll)
     }
     @UsedByGodot fun web_video_resolve(url: String): Int = if (closed.get()) 0 else webVideoResolver.begin(url)
+    @UsedByGodot fun web_video_resolve_beta(url: String): Int = if (closed.get()) 0 else webVideoResolver.begin(url, bilibiliBeta = true)
     @UsedByGodot fun web_video_status(): String = if (closed.get()) "{}" else webVideoResolver.snapshot()
     @UsedByGodot fun web_video_projection(uri: String): String = if (closed.get()) "{}" else sources.webVideoProjection(uri)
     @UsedByGodot fun web_video_cancel() = webVideoResolver.cancel()
@@ -609,6 +630,12 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     }
     /** AI precision: FP32 for AI passthrough and photo portraits started afterwards (slower than FP16). */
     @UsedByGodot fun set_rvm_fp32(enabled: Boolean) { RvmNative.fp32 = enabled }
+    /** Video 2D->3D view: "fill" (forward warp with hole fill) or "stretch" (the shader's gather warp). */
+    @UsedByGodot fun set_depth_render_mode(mode: String): Boolean {
+        if (mode != "fill" && mode != "stretch") return false
+        MpvVideoBridge.depthStretch = mode == "stretch"
+        return true
+    }
     @Volatile private var rvmModel = "fast"
     /** "fast" (default) or "quality"; Alpha sessions opened afterwards use it. */
     @UsedByGodot fun set_rvm_model(model: String): Boolean {

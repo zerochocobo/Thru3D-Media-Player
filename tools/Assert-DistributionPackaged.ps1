@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory)][string]$ArchivePath,
-    [Parameter(Mandatory)][ValidateSet('standard','pico_cn_store')][string]$ExpectedChannel
+    [Parameter(Mandatory)][ValidateSet('standard','pico_cn_store','quest_store')][string]$ExpectedChannel
 )
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.IO.Compression.FileSystem

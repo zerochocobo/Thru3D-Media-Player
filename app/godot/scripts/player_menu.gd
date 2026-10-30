@@ -189,10 +189,10 @@ const TABS := ["Playback", "Settings", "Info"]
 const OPERATIONS := [
 	["recent", "previous_video", "play", "next_video", "alpha", "projection", "stereo", "stop", "recenter", "mute", "subtitles",
 		"audio", "depth"],
-	["color_grade", "loop", "seek_mode", "stereo_view"],
+	["color_grade", "loop", "seek_mode", "stereo_view", "depth_render"],
 	["capabilities"]]
-const HEADINGS := ["Color grading", "Playback mode", "Video time positioning", "Stereo viewing"]
-const SETTING_ICONS := ["light", "loop", "history", "eyes"]
+const HEADINGS := ["Color grading", "Playback mode", "Video time positioning", "Stereo viewing", "2D to 3D effect"]
+const SETTING_ICONS := ["light", "loop", "history", "eyes", "depth"]
 const Surface := preload("res://scripts/media_surface.gd")
 const SeekFeedback := preload("res://scripts/seek_feedback.gd")
 ## Flat screen curve steps (the video's CURVES) and their names.
@@ -597,7 +597,8 @@ func refresh_values() -> void:
 	for button in _buttons:
 		if button.target in [SCREEN_SET_DEFAULT, SCREEN_AUTO_DEFAULT]:
 			button.base_color = SELECTED if (button.target == SCREEN_SET_DEFAULT) == bool(_state.get("screen_default_locked", false)) else TILE
-		if section == 1 and button.target in [SETTINGS_TILE + OPERATIONS[1].find("seek_mode"), SETTINGS_TILE + OPERATIONS[1].find("loop")]: continue
+		# Tiles drawn with a choice field keep their value label empty: the field shows the value.
+		if section == 1 and _choice_tile(button.target): continue
 		if button.target == BookmarkMenu.ADD:
 			button.enabled = _state.get("bookmark_ready", false) and _seek_hand.is_empty()
 			button.node.get_child(1).material_override.albedo_color = button.foreground if button.enabled else MUTED
@@ -1437,6 +1438,12 @@ func _draw_depth() -> void:
 	for value in [1.0, 2.0, 3.0]:
 		if value > _depth_maximum(): continue
 		_decoration(Vector2(0.035, 0.003), Vector2(DEPTH_X, span.x + height * DepthStrength.to_fraction(value, _depth_maximum())), MUTED)
+	var recommended := _depth_recommended()
+	if recommended > 0.0:
+		var y := span.x + height * DepthStrength.to_fraction(recommended, _depth_maximum())
+		# A visual cue only (no text, no hit target): an accent tick across the rail and a star beside it.
+		_decoration(Vector2(0.05, 0.004), Vector2(DEPTH_X, y), ACCENT)
+		_icon("star_filled", Vector3(DEPTH_X - 0.048, y, 0.004), 0.022, ACCENT)
 	_depth_fill = _decoration(Vector2(0.012, height), Vector2(DEPTH_X, middle), ACCENT)
 	_depth_fill.material_override.render_priority = 13
 	_depth_knob = _decoration(Vector2(0.03, 0.03), Vector2(DEPTH_X, span.x), Color.WHITE)
@@ -1466,6 +1473,10 @@ func _depth_maximum() -> float:
 
 func _depth_default() -> float:
 	return 1.0 if _state.get("portrait_requested", false) else DepthStrength.VIDEO_DEFAULT
+
+## Video 2D->3D marks its default as the recommended strength; portrait and photos (overridden) do not.
+func _depth_recommended() -> float:
+	return -1.0 if _state.get("portrait_requested", false) else DepthStrength.VIDEO_DEFAULT
 
 func _depth_span() -> Vector2:
 	return DEPTH_SPAN
@@ -1872,7 +1883,7 @@ func _draw_panel() -> void:
 	var alpha_fps: bool = section == 1 and _enabled("alpha")
 	var height := 0.12 + tile_rows * 0.105 + (0.26 + ((0.085 + (0.27 if _alpha_expanded else 0.0)) if alpha_fps else 0.0) if section == 1 else 0.36)
 	if alpha_fps and _alpha_expanded and _state.get("portrait_requested", false): height += 0.17
-	if alpha_fps and _state.get("portrait_requested", false): height += 0.17
+	if alpha_fps and _state.get("flat_passthrough_requested", false): height += 0.17
 	var top := _settings_frame(height)
 	_draw_settings_tabs(top - 0.055)
 	var y := top - 0.165
@@ -1907,11 +1918,11 @@ func _draw_panel() -> void:
 		if alpha_fps:
 			y -= 0.085
 			_alpha_group_header(y)
-		if alpha_fps and _state.get("portrait_requested", false):
+		if alpha_fps and _state.get("flat_passthrough_requested", false):
 			y -= 0.085
-			_adjustment_row(457, "portrait_distance", "2D portrait passthrough distance", Vector3(Surface.DISTANCE_LIMITS.x, Surface.DISTANCE_LIMITS.y, 0.1), y)
+			_adjustment_row(457, "portrait_distance", "Passthrough distance", Vector3(Surface.DISTANCE_LIMITS.x, Surface.DISTANCE_LIMITS.y, 0.1), y)
 			y -= 0.085
-			_adjustment_row(PORTRAIT_SIZE, "portrait_scale", "2D portrait passthrough size", Vector3(Surface.SCALE_LIMITS.x * 100, Surface.SCALE_LIMITS.y * 100, 5), y)
+			_adjustment_row(PORTRAIT_SIZE, "portrait_scale", "Passthrough size", Vector3(Surface.SCALE_LIMITS.x * 100, Surface.SCALE_LIMITS.y * 100, 5), y)
 		if alpha_fps and _alpha_expanded:
 			y -= 0.085
 			_adjustment_row(454, "alpha_fps", "Alpha passthrough FPS limit", Vector3(10, 40, 1), y)
@@ -1989,10 +2000,15 @@ func _alpha_group_header(y: float) -> void:
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
 	_icon("chevron_down" if _alpha_expanded else "next", Vector3(0.475, 0, 0.004), 0.034, MUTED, node)
 
+## Settings tiles drawn with a choice field keep their value label empty: the field shows the value.
+func _choice_tile(target: int) -> bool:
+	if target < SETTINGS_TILE or target >= SETTINGS_TILE + OPERATIONS[1].size(): return false
+	return not _setting_choices(OPERATIONS[1][target - SETTINGS_TILE]).is_empty()
+
 func _settings_key() -> String:
 	return str([_state.get("cast", {})]) + str([_state.get("source_uri", ""), _state.get("has_video", false),
-		_state.get("portrait_requested", false), _state.get("portrait_auto", true), _state.get("portrait_enhanced", false),
-		_state.get("playback_mode", "single"), _state.get("screen_curve", 0.0), _state.get("seek_mode", "speed"), _state.get("stereo", false), _state.get("geometry", 0),
+		_state.get("portrait_requested", false), _state.get("flat_passthrough_requested", false), _state.get("portrait_auto", true), _state.get("portrait_enhanced", false),
+		_state.get("playback_mode", "single"), _state.get("screen_curve", 0.0), _state.get("seek_mode", "speed"), _state.get("depth_render", "stretch"), _state.get("stereo", false), _state.get("geometry", 0),
 		_state.get("show_fps", false), _state.get("viewing_eye", 0), _state.get("swap_eyes", false),
 		_state.get("spatial_metadata", {}), _state.get("spatial_auto_disparity", true),
 		_state.get("screen_cinema", false), _state.get("screen_scene_locked", false), _state.get("cinema_lights", "auto"),
@@ -2005,6 +2021,11 @@ func _setting_choices(operation: String) -> Dictionary:
 			return {"key": "seek_mode", "value": _state.get("seek_mode", "speed"), "choices": [
 				{"value": "speed", "label": "Speed", "hint": "Faster jumps, less precise"},
 				{"value": "exact", "label": "Precise", "hint": "Accurate jumps, may take longer"}]}
+		# The same global choice as Settings > Video; it applies to every video, never to photos.
+		"depth_render":
+			return {"key": "depth_render", "value": _state.get("depth_render", "stretch"), "choices": [
+				{"value": "fill", "label": "Fill gaps", "hint": "Fills the background behind moving edges"},
+				{"value": "stretch", "label": "Stretch edges", "hint": "Stretches edges, like spatial photos"}]}
 		"loop":
 			if _state.has("cast"): return {"key": "playback_mode", "value": _state.get("playback_mode", "single"), "choices": [{"value": "single", "label": "Single video"}, {"value": "repeat_one", "label": "Repeat video"}]}
 			return {"key": "playback_mode", "value": _state.get("playback_mode", "single"), "choices": [
@@ -2474,7 +2495,7 @@ func _enabled(operation: String) -> bool:
 		"play", "loop", "stop": return has_video
 		"previous_video", "next_video": return has_video and _state.get("has_" + operation, false)
 		# The video's own mask replaces live passthrough matting: one passthrough control at a time.
-		"alpha": return has_video and not _state.get("packed_mask", false) and (_state.get("spatial_video", false) or int(_state.get("geometry", 0)) in [1, 2] or (int(_state.get("geometry", 0)) == 0 and not _state.get("stereo", false)))
+		"alpha": return has_video and not _state.get("packed_mask", false) and (_state.get("spatial_video", false) or int(_state.get("geometry", 0)) in [0, 1, 2])
 		"eyes", "stereo_view": return has_video and _state.get("stereo", false)
 		"volume_down", "volume_up": return has_video and _state.get("audio_available", false) and _state.get("volume_writable", true)
 		"mute": return has_video and _state.get("audio_available", false)
@@ -2482,6 +2503,7 @@ func _enabled(operation: String) -> bool:
 		"clone_voice": return has_video and _state.get("clone_voice", false)
 		"depth": return has_video and not _state.get("spatial_video", false) and int(_state.get("geometry", 0)) == 0 and not _state.get("stereo", false)
 		"depth_strength": return _can_depth()
+		"depth_render": return has_video
 		"subtitles": return has_video
 		"capabilities": return _state.get("capabilities_available", false)
 		"screen_curve", "screen_distance": return has_video and int(_state.get("geometry", 0)) == 0
@@ -2506,6 +2528,7 @@ func _caption_text(operation: String) -> String:
 		"next_video": return "Next video"
 		"loop": return {"single": "Single video", "repeat_one": "Repeat video", "sequence": "Play in order", "repeat_all": "Repeat playlist"}.get(_state.get("playback_mode", "single"), "Single video")
 		"seek_mode": return "Precise" if _state.get("seek_mode", "speed") == "exact" else "Speed"
+		"depth_render": return "Fill gaps" if _state.get("depth_render", "stretch") == "fill" else "Stretch edges"
 		"stop": return "Close video"
 		"stereo": return ("TB" if _state.get("top_bottom", false) else "SBS") if _state.get("stereo", false) else "2D"
 		"stereo_view": return StereoView.MODES[clampi(int(_state.get("viewing_eye", 0)), 0, 2)]

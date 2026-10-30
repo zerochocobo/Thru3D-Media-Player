@@ -11,20 +11,27 @@
   let handoff = null;
   let networkPort, network = [], networkPage = location.href;
   let networkEnabled = false;
+  let bilibiliEnabled = false, bilibiliData = [], bilibiliRequested = [];
+  let bilibiliStatus = 'idle', bilibiliResponseApi = false;
+  let bilibiliInitial = null, bilibiliInitialPage = '', bilibiliScanAt = 0;
   const networkContext = (reset = false) => {
-    try { networkPort?.postMessage({ type: "context", page: location.href, enabled: networkEnabled, reset }); } catch (_) {}
+    try { networkPort?.postMessage({ type: "context", page: location.href, enabled: networkEnabled, bilibili: bilibiliEnabled, reset }); } catch (_) {}
   };
   const mediaEpoch = new WeakMap();
   const connectNetwork = () => {
     network = [];
+    bilibiliData = []; bilibiliRequested = [];
     networkPort = browser.runtime.connect({ name: "thru3d_network" });
     const connection = networkPort;
     networkPort.onMessage.addListener(message => {
       if (connection !== networkPort || message?.type !== "network" || message.page !== location.href) return;
       network = Array.isArray(message.candidates) ? message.candidates.slice(0, 24) : [];
+      bilibiliData = Array.isArray(message.bilibili) ? message.bilibili.slice(0, 4) : [];
+      bilibiliRequested = Array.isArray(message.bilibili_requested) ? message.bilibili_requested.slice(0, 8) : [];
+      bilibiliStatus = message.bilibili_status || 'idle'; bilibiliResponseApi = message.bilibili_response_api === true;
       changed();
     });
-    networkPort.onDisconnect.addListener(() => { if (connection === networkPort) { network = []; changed(); } });
+    networkPort.onDisconnect.addListener(() => { if (connection === networkPort) { network = []; bilibiliData = []; bilibiliInitial = null; changed(); } });
     networkContext();
   };
   // Both clients put the access token and selected media version on their video URL.
@@ -71,7 +78,13 @@
     if (closed) return;
     if (networkPage !== location.href) {
       networkPage = location.href; network = [];
+      bilibiliData = []; bilibiliRequested = []; bilibiliInitial = null;
       networkContext(true);
+    }
+    if (bilibiliEnabled && typeof Thru3DBilibili !== 'undefined' &&
+        (bilibiliInitialPage !== location.href || (!bilibiliInitial || bilibiliInitial.identity.pgc) && Date.now() - bilibiliScanAt >= 1000)) {
+      bilibiliInitialPage = location.href; bilibiliScanAt = Date.now();
+      bilibiliInitial = Thru3DBilibili.initial(document, location.href);
     }
     const items = [];
     const live = [...videos.keys()].filter(v => v.isConnected && !v.ended && (v.currentSrc || v.readyState > 0));
@@ -93,14 +106,36 @@
       const currentSource = video.currentSrc || '';
       // Exact URL matching works with several videos. Blob/MSE requests have no DOM id:
       // only associate them when this frame has one media element, within its load epoch.
-      const requests = protectedMedia || !networkEnabled ? [] : network.filter(c => c.url === currentSource || c.original_url === currentSource ||
-        currentSource.startsWith('blob:') && live.length === 1 && c.at >= epoch.since);
+      const requests = protectedMedia || !(networkEnabled || bilibiliEnabled) ? [] : network.filter(c => c.url === currentSource || c.original_url === currentSource ||
+        currentSource.startsWith('blob:') && live.length === 1 && (c.at >= epoch.since || bilibiliEnabled));
+      let biliIdentity = bilibiliInitial?.identity;
+      const bili = bilibiliRequested.length ? bilibiliData.find(d => biliIdentity?.pgc
+        ? d.ep === biliIdentity.ep && (!biliIdentity.id.startsWith('ss') || biliIdentity.id === 'ss' + d.season) : d.cid === biliIdentity?.cid) : bilibiliInitial?.data;
+      if (biliIdentity?.pgc && bili?.whole && bili.ep === biliIdentity.ep)
+        biliIdentity = {...biliIdentity, cid: bili.cid, aid: bili.aid, expected_duration: bili.duration};
+      const biliCid = biliIdentity?.cid;
+      const biliBinding = !bilibiliEnabled ? 'off' : typeof Thru3DBilibili === 'undefined' ? 'adapter_unavailable' :
+        !bilibiliInitial ? Thru3DBilibili.initialStatus() : protectedMedia ? 'protected' : live.length !== 1 ? 'multiple_players' :
+        !bili ? 'response_cid_missing' : (!biliIdentity.pgc && bili.id !== biliIdentity.id) || bili.avid && bili.avid !== biliIdentity.aid ? 'video_id_mismatch' :
+        !(biliIdentity.expected_duration > 0) ? 'full_duration_missing' :
+        Math.abs(bili.duration - biliIdentity.expected_duration) > Math.max(2, bili.duration * .01) ? 'full_duration_mismatch' :
+        Math.abs(bili.duration - video.duration) > Math.max(2, video.duration * .01) ? 'player_duration_mismatch' : 'matched';
+      const biliMatched = bilibiliEnabled && !protectedMedia && live.length === 1 && bili &&
+        (biliIdentity?.pgc || bili.id === biliIdentity?.id) && bili.cid === biliCid &&
+        (!bili.avid || bili.avid === biliIdentity.aid) &&
+        biliIdentity.expected_duration > 0 &&
+        Math.abs(bili.duration - biliIdentity.expected_duration) <= Math.max(2, bili.duration * .01) &&
+        Math.abs(bili.duration - video.duration) <= Math.max(2, video.duration * .01)
+          ? { ...bili, ...biliIdentity } : null;
       items.push({ id: videos.get(video), width: video.videoWidth, height: video.videoHeight,
         fullscreen: fullscreen(video) || !!owner && fullscreen(owner),
         source: !protectedMedia ? (resource ? resource.source : /^https?:\/\//i.test(video.currentSrc || '') ? video.currentSrc : '') : '',
         server_play: serverPlay,
         protected: protectedMedia, frame: location.href, agent: navigator.userAgent,
         network: requests, network_epoch: epoch.id, blob: currentSource.startsWith('blob:'),
+        bilibili: biliMatched,
+        bilibili_status: bilibiliStatus, bilibili_response_api: bilibiliResponseApi,
+        bilibili_binding: biliBinding, bilibili_api_count: bilibiliData.length,
         layout: owner?.getAttribute("format") || "",
         time: (Number.isFinite(video.currentTime) ? video.currentTime : 0) + (resource && Number.isFinite(resource.offset) ? resource.offset : 0),
         duration: Number.isFinite(video.duration) ? video.duration : 0,
@@ -194,6 +229,12 @@
     const connection = port;
     port.onMessage.addListener((message) => {
     if (message?.action === "network_policy") {
+      changed();
+      const bili = message.bilibili === true;
+      if (bili !== bilibiliEnabled) {
+        bilibiliEnabled = bili; bilibiliData = []; bilibiliRequested = []; network = [];
+        networkContext(true); changed();
+      }
       const enabled = message.enabled === true;
       if (enabled !== networkEnabled) { networkEnabled = enabled; network = []; networkContext(true); changed(); }
       else networkContext();

@@ -6,7 +6,7 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import kotlin.math.max
 
-/** Optional DA2 residual alongside RVM. One owned input/in-flight job and one immutable result;
+/** Optional ZipDepth residual alongside RVM. One owned input/in-flight job and one immutable result;
  * neither model waits for the other. All display/GL operations stay on the bridge's GL thread. */
 internal class PortraitDepth(private val context: () -> Context?, private val redraw: () -> Unit) : AutoCloseable {
     private val lock = Any()
@@ -184,7 +184,7 @@ internal class PortraitDepth(private val context: () -> Context?, private val re
             if (model == 0L) return
             val near = ByteBuffer.allocateDirect(dims[0]*dims[1]*4).order(ByteOrder.LITTLE_ENDIAN)
             val started = System.nanoTime(); val c = crop.content
-            // Video DA2 model, non-temporal normalization: changing ROIs cannot contaminate its
+            // Video ZipDepth model, non-temporal normalization: changing ROIs cannot contaminate its
             // temporal band. Virtual distance never reads this relative inverse-depth map.
             val result = JSONObject(DepthNative.processPortrait(model,rgb,near,c[0],c[1],c[2],c[3]))
             check(result.optString("state") == "ready") { "Portrait depth result unavailable" }

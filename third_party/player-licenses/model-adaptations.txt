@@ -13,5 +13,23 @@ https://github.com/DepthAnything/Depth-Anything-V2
 https://huggingface.co/depth-anything/Depth-Anything-V2-Small
 License: Apache-2.0 for the Small model; see depth.txt.
 Thru3D converts the Small model to MNN and adapts graph layout, input shape and
-upsampling for video and photo inference. This notice refers to Small, not
+upsampling for still-photo inference. This notice refers to Small, not
 the differently licensed Base, Large or Giant checkpoints.
+
+ZipDepth base
+Fabio Tosi and contributors
+https://github.com/fabiotosi92/ZipDepth
+Revision: 91f3fd21e131641f51e8d35736d1958350180e3a
+License: MIT; see zipdepth.txt.
+Thru3D uses the base checkpoint for video stereo and portrait fine depth,
+converted to MNN (FP16) at 384x224 and 512x288 input sizes.
+The MNN export fuses convolutions and retains the learned global-context
+weights. Convex upsampling is rewritten without a Softmax operator (per-subpixel
+mean folded into the mask convolution, then Exp and 1x1 sum convolutions; the
+centered logit is clamped at 8 for FP16 range), and grouped 1x1 projections run
+as equivalent dense convolutions. The bundled model is not an unmodified
+upstream checkpoint.
+The deployment approach also references NeoNatural/xr-3d-viewer (GPL-3.0),
+revision 283c0180af0f4a7c96e182bfcda7fdec12d7d143, tools/convert_zipdepth.py.
+Model/source hashes and numeric validation are in models/manifest/zipdepth_video.json
+and models/manifest/zipdepth_video_compat.json.

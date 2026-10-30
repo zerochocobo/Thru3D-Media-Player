@@ -72,6 +72,9 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
         var restoreThroughScript = false
         var restoreOrigin = ""
         var capturedFullscreenRequest = 0L
+        // P0 is per-tab and process-local. Production remains on the verified backend
+        // until the pinned Gecko response/SPA and device playback gates have passed.
+        var bilibiliProbe = "off"
         val sources = mutableMapOf<WebExtension.Port, JSONArray>()
         var fullScreen = false
     }
@@ -270,9 +273,24 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
             check(preferences.edit().putString("origins", value).commit())
         }).also { networkPolicy = it }
     }
-    private fun networkEnabled(tab: Tab) = networkPolicy()?.enabled(tab.url) == true
+    private fun bilibiliEligible(tab: Tab) = networkPolicy()?.bilibiliEnabled(tab.url) == true
+    // Prepare the explicitly selectable Beta route while the page loads; selection is
+    // separate from observation so the existing player button keeps its old backend.
+    private fun bilibiliEnabled(tab: Tab) = tab.bilibiliProbe !in setOf("uncapped", "network") && bilibiliEligible(tab)
+    private fun networkEnabled(tab: Tab) = networkPolicy()?.enabled(tab.url) == true || tab.bilibiliProbe == "network" && bilibiliEligible(tab)
+    /** Debug-only A/B/C/P0b comparison; no persistent preference, reload or account changes. */
+    fun configureBilibiliProbe(tabId: Int, mode: String) {
+        check(Looper.myLooper() == Looper.getMainLooper())
+        check((activity()?.applicationInfo?.flags ?: 0) and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0)
+        require(mode in setOf("off", "uncapped", "network", "adapter"))
+        val tab = current() ?: error("No focused tab")
+        require(tab.id == tabId && (mode == "off" || bilibiliEligible(tab)))
+        tab.bilibiliProbe = mode; tab.sources.clear(); tab.media.clear()
+        sendNetworkPolicy(tab); publish()
+    }
     private fun sendNetworkPolicy(tab: Tab) {
         val message = JSONObject().put("action", "network_policy").put("enabled", networkEnabled(tab))
+            .put("bilibili", bilibiliEnabled(tab))
         tab.ports.keys.forEach { runCatching { it.postMessage(message) } }
     }
     private fun dispatch(action: () -> Unit) {
@@ -484,7 +502,10 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                             val item = items.optJSONObject(index) ?: continue
                             val id = item.optString("id").take(64)
                             val networkEnabled = networkEnabled(tab)
-                            val network = if (networkEnabled) WebBrowserNetworkMedia.candidates(item) else JSONArray()
+                            val bilibiliEnabled = bilibiliEnabled(tab)
+                            val network = if (networkEnabled || bilibiliEnabled) WebBrowserNetworkMedia.candidates(item) else JSONArray()
+                            val bilibili = item.optJSONObject("bilibili")?.takeIf { bilibiliEnabled &&
+                                !item.optBoolean("protected") && it.toString().length <= 96 * 1024 && it.optString("page") == tab.url }
                             val server = !item.optBoolean("protected") && WebBrowserServerMedia.original(item.optString("source"), tab.url) != null
                             safe.put(JSONObject().put("width", item.optInt("width").coerceIn(0, 32768))
                                 .put("id", id).put("fullscreen", item.optBoolean("fullscreen") || server && item.optBoolean("server_play"))
@@ -502,7 +523,10 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                                 privateSources.put(JSONObject(item.toString()).put("source", source.take(16384)).put("server", server)
                                     .put("network", network)
                                     .put("network_enabled", networkEnabled)
-                                    .put("capture_identity", "${tab.id}:${tab.navigation}:${System.identityHashCode(port)}:$id:${item.optLong("network_epoch")}")
+                                    .put("bilibili_enabled", bilibiliEnabled).put("bilibili", bilibili)
+                                    .put("bilibili_probe", tab.bilibiliProbe)
+                                    .put("diagnostic_max_height", if (tab.bilibiliProbe == "uncapped" && bilibiliEligible(tab)) 2160 else 1080)
+                                    .put("capture_identity", "${tab.id}:${tab.navigation}:${System.identityHashCode(port)}:$id:${item.optLong("network_epoch")}:${tab.bilibiliProbe}")
                                     .put("fullscreen", item.optBoolean("fullscreen") || server && item.optBoolean("server_play")))
                             }
                         }
@@ -517,7 +541,8 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                     }
                 })
                 port.postMessage(JSONObject().put("action", if (displayed(tab)) "resume" else "suspend"))
-                port.postMessage(JSONObject().put("action", "network_policy").put("enabled", networkEnabled(tab)))
+                port.postMessage(JSONObject().put("action", "network_policy").put("enabled", networkEnabled(tab))
+                    .put("bilibili", bilibiliEnabled(tab)))
             }
         }, NATIVE_APP)
     }
@@ -1057,6 +1082,7 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
         return JSONObject().put("tab_id", tab?.id ?: 0).put("navigation", tab?.navigation ?: 0)
             .put("network_capture_available", tab != null && WebBrowserNetworkPolicy.available(tab.url))
             .put("network_capture_enabled", tab != null && networkEnabled(tab))
+            .put("bilibili_beta_available", tab != null && bilibiliEligible(tab))
             .put("fullscreen_request", tab?.fullscreen?.request ?: 0).put("fullscreen_video", tab?.fullscreen?.active == true)
             .put("captured_fullscreen_request", tab?.capturedFullscreenRequest ?: 0)
             .put("url", tab?.url ?: "about:blank").put("title", tab?.title.orEmpty())

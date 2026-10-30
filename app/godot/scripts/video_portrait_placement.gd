@@ -28,7 +28,7 @@ static func restore(host: Node, state: Dictionary) -> void:
 func prepare(host: Node) -> void:
 	var video: Node3D = host.video
 	var wanted: bool = video != null and not host.photo_active and video.has_active_presentation() \
-		and video.portrait_requested() and not (host.puzzle_game and host.puzzle_game.active)
+		and video.flat_passthrough_requested() and not (host.puzzle_game and host.puzzle_game.active)
 	if wanted == active: return
 	if wanted:
 		var head: Variant = host._head_pose()
@@ -74,7 +74,7 @@ func finish(host: Node) -> void:
 	video._apply_geometry()
 
 func remember(host: Node) -> void:
-	if not active or pending or host.video.portrait.automatic: return
+	if not active or pending or (host.video.portrait_requested() and host.video.portrait.automatic): return
 	# Each dimension is independent: changing one must not pin the other's inherited value.
 	# Saving sound/colour or moving one's head creates neither preference.
 	var value: float = host.video.screen_distance

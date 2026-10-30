@@ -125,9 +125,10 @@ func open_cast(uri: String, title: String, token: int, start_ms: int, playing: b
 	return opened
 const DEPTH_STRENGTHS := [0.5, 0.75, 1.0]
 const DepthStrength := preload("res://scripts/depth_strength.gd")
-## Eye-width fraction of the full parallax at strength 1 (PTMediaServer), and the near value kept on
-## the screen plane (nearer content comes out of the screen).
-const DEPTH_SHIFT := 0.035
+## Eye-width fraction of the full parallax at strength 1, and the near value kept on the screen
+## plane (nearer content comes out of the screen). 100% is the former 50% of PTMediaServer's 0.035
+## (user choice, 2026-10-30); the default 50% is therefore the former 25%.
+const DEPTH_SHIFT := 0.0175
 const DEPTH_CONVERGENCE := 0.35
 var _depth_view_sent := ""
 var _portrait_depth_sent := ""
@@ -3183,8 +3184,13 @@ func set_screen_distance(value: float) -> void:
 	if portrait.active and not is_equal_approx(value, screen_distance): manual_portrait_pose()
 	super.set_screen_distance(value)
 
+## Flat cutouts share placement controls; only mono sources synthesize portrait relief.
+## Native stereo keeps both authored views and the existing per-eye Alpha pipeline.
+func flat_passthrough_requested() -> bool:
+	return alpha_requested and geometry == Geometry.Geometry.FLAT and not packed_file
+
 func portrait_requested() -> bool:
-	return alpha_requested and geometry == Geometry.Geometry.FLAT and not stereo_sbs and not packed_file and not is_spatial_video()
+	return flat_passthrough_requested() and not stereo_sbs and not is_spatial_video()
 
 func portrait_world_pose() -> Transform3D:
 	var pose := global_transform * flat_pose

@@ -100,7 +100,6 @@ void fragment() {
 		mask_uv.x = (mask_uv.x + float(eye_index)) * 0.5;
 		ALPHA *= outside ? 0.0 : smoothstep(0.02, 0.98, texture(portrait_texture, mask_uv).r);
 	}
-	ALPHA *= presentation_opacity * photo_reveal_clear(UV, reveal_progress);
 	// OCR masks must cover the source ink even at the image's soft outer edge.
 	// Keep readable text on the screen plane while the photo uses generated stereo.
 	if (translated) {
@@ -108,4 +107,6 @@ void fragment() {
 		ALBEDO = clamp(comic.rgb / max(comic.a, 0.001), vec3(0.0), vec3(1.0));
 		ALPHA = 1.0;
 	}
+	// The loading cover also hides translated ink while the final stereo view is prepared.
+	ALPHA *= presentation_opacity * photo_reveal_clear(UV, reveal_progress);
 }

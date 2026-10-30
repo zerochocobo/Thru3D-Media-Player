@@ -256,6 +256,11 @@
       "path": "gradle/NOTICE.txt",
       "source": "Gradle 9.5.0 distribution/NOTICE",
       "sha256": "c2de5fd9adc7ccc4e1382a0e1f38ec6e14f8ca6e28d3c20289fe80353b019aa1"
+    },
+    {
+      "path": "player-licenses/zipdepth.txt",
+      "source": "https://raw.githubusercontent.com/fabiotosi92/ZipDepth/91f3fd21e131641f51e8d35736d1958350180e3a/LICENSE",
+      "sha256": "0007e2ff761f1b89ad89327870b807cd4de00cb657b442b62de2f92fdc87d508"
     }
   ],
   "text_normalization": "UTF-8, LF line endings, trailing whitespace removed; license wording unchanged."

@@ -18,7 +18,7 @@ Invoke-FixtureFfmpeg @('-i',"$fixtures/muxed.mp4",'-c:v','libvpx-vp9','-deadline
 Invoke-FixtureFfmpeg @('-i',"$fixtures/muxed.mp4",'-c:v','libx265','-preset','ultrafast','-x265-params','log-level=error','-pix_fmt','yuv420p','-c:a','copy','-movflags','+faststart',"$fixtures/hevc.mp4")
 Invoke-FixtureFfmpeg @('-i',"$fixtures/muxed.mp4",'-c:v','libx265','-preset','ultrafast','-x265-params','log-level=error','-pix_fmt','yuv420p10le','-c:a','copy','-movflags','+faststart',"$fixtures/hevc10.mp4")
 Invoke-FixtureFfmpeg @('-i',"$fixtures/muxed.mp4",'-c','copy','-f','hls','-hls_time','1','-hls_playlist_type','vod',"$fixtures/sample-network.m3u8")
-& node --test "$workspace/android/web-browser/src/test/js/network.test.cjs" "$workspace/android/web-browser/src/test/js/media.test.cjs" *> "$output/extension.log"
+& node --test "$workspace/android/web-browser/src/test/js/network.test.cjs" "$workspace/android/web-browser/src/test/js/media.test.cjs" "$workspace/android/web-browser/src/test/js/bilibili.test.cjs" *> "$output/extension.log"
 if ($LASTEXITCODE -ne 0) { throw "Extension verification failed: $output/extension.log" }
 $env:WEB_VIDEO_NETWORK_FIXTURES = $fixtures
 $env:WEB_VIDEO_FIXTURES = $fixtures

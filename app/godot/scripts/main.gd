@@ -334,6 +334,7 @@ func _ready() -> void:
 		Engine.get_singleton("QuestPlayer").set_rvm_model("fast")
 	video = _create_video_display()
 	video.name = "VideoDisplay"
+	if video.DepthStrength.migrate_video_scale(settings): settings.save(settings_path)
 	video.preferred_depth_strength = video.DepthStrength.load_preference(settings, false)
 	video.depth_strength = video.preferred_depth_strength
 	video.changed.connect(_on_video_changed)
@@ -458,6 +459,8 @@ func _ready() -> void:
 			plugin.set_mpv_alpha_fps(_alpha_fps())
 		if PlatformMethods.supports(plugin, "set_rvm_fp32"):
 			plugin.set_rvm_fp32(Quality.alpha_fp32(Quality.load_alpha_precision(settings)))
+		if PlatformMethods.supports(plugin, "set_depth_render_mode"):
+			plugin.set_depth_render_mode(_depth_render_mode())
 		video.set_alpha_edge(_alpha_edge_value("alpha_feather"), _alpha_edge_value("alpha_shrink"))
 	player_menu = PlayerMenu.new()
 	player_menu.state_provider = _menu_state
@@ -3583,6 +3586,15 @@ func _restore_subtitle_settings() -> void:
 	video.subtitle_flat_position = float(settings.get_value("subtitles", "flat_position", 0.0))
 	video.subtitle_direction = int(settings.get_value("subtitles", "direction", 0))
 
+## Video 2D->3D view: "fill" warps forward and fills the uncovered background; "stretch" samples
+## through the near map, stretching the background edge (no fill). "stretch" is the default (user
+## choice after headset tests, 2026-10-30).
+const DEPTH_RENDER_MODES := ["fill", "stretch"]
+const DEPTH_RENDER_DEFAULT := "stretch"
+func _depth_render_mode() -> String:
+	var mode := str(settings.get_value("video", "depth_render", DEPTH_RENDER_DEFAULT))
+	return mode if mode in DEPTH_RENDER_MODES else DEPTH_RENDER_DEFAULT
+
 ## Diagnostic log (Settings > General): the plugin's last result per action.
 var diagnostic_state := {}
 
@@ -3649,6 +3661,7 @@ func _library_settings() -> Dictionary:
 		"history": video.history_enabled, "privacy_mode": Privacy.mode, "file_settings_memory": Privacy.file_settings, "favorites_lock_level": favorites.lock_level if favorites else "relaxed",
 		"library_restore_position": bool(settings.get_value("library", "restore_position", true)),
 		"seek_mode": video.SeekPolicy.normalize(video.seek_mode),
+		"depth_render": _depth_render_mode(),
 		"subtitle_distance": video.subtitle_distance,
 		"subtitle_position": video.subtitle_position,
 		"subtitle_horizontal_position": video.subtitle_horizontal_position,
@@ -3731,6 +3744,11 @@ func _on_setting_changed(key: String, value: Variant) -> void:
 			video.seek_mode = video.SeekPolicy.normalize(value)
 			settings.set_value("video", "seek_mode", video.seek_mode)
 			settings.save(settings_path)
+		"depth_render":
+			if str(value) in DEPTH_RENDER_MODES:
+				settings.set_value("video", "depth_render", str(value)); settings.save(settings_path)
+				if platform_plugin and PlatformMethods.supports(platform_plugin, "set_depth_render_mode"):
+					platform_plugin.set_depth_render_mode(str(value))
 		"restart_app", "quit_app":
 			_finish_app(key == "restart_app")
 		"display_quality":
@@ -4033,7 +4051,7 @@ func _on_player_setting(key: String, value: Variant) -> void:
 		"subtitle_delay":
 			if value is Dictionary and not video.commit_subtitle_delay(float(value.value), str(value.source_uri), str(value.get("subtitle_key", "__current__"))):
 				if is_instance_valid(player_menu): player_menu.refresh()
-		"seek_mode", "subtitle_distance", "subtitle_position", "subtitle_horizontal_position", "subtitle_vertical_position", "subtitle_direction", "subtitle_style", "subtitle_line": _on_setting_changed(key, value)
+		"seek_mode", "depth_render", "subtitle_distance", "subtitle_position", "subtitle_horizontal_position", "subtitle_vertical_position", "subtitle_direction", "subtitle_style", "subtitle_line": _on_setting_changed(key, value)
 		"viewing_eye": video.set_viewing_eye(int(value))
 		"spatial_auto_disparity": video.set_spatial_auto_disparity(bool(value))
 		"spatial_match_fov":
@@ -4192,6 +4210,7 @@ func _menu_state() -> Dictionary:
 		"depth_enabled": video.portrait.active if video.portrait_requested() else video.depth_enabled,
 		"depth_strength": video.portrait.strength if video.portrait_requested() else video.depth_strength,
 		"portrait_requested": video.portrait_requested(), "portrait_auto": video.portrait.automatic,
+		"flat_passthrough_requested": video.flat_passthrough_requested(),
 		"portrait_distance": _surface_distance(video),
 		"portrait_scale": video.screen_scale * 100.0,
 		"portrait_enhanced": video.portrait.enhanced,
@@ -4239,6 +4258,7 @@ func _menu_state() -> Dictionary:
 	result.merge(video.bookmarks_snapshot())
 	if seek_feedback.phase in ["preview", "waiting"]: result["bookmark_ready"] = false
 	result["watch_available"] = wrist_watch != null
+	result["depth_render"] = _depth_render_mode()
 	result["watch_enabled"] = bool(settings.get_value("watch", "enabled", true))
 	result["capture"] = video.captures.snapshot()
 	result["pip_count"] = video.pip.windows.size()

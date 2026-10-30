@@ -233,7 +233,7 @@ func tick(rays: Array, allowed: bool, voice: String, volume: float, active_view:
 	var key := voice + "/" + str(volume)
 	var inactive: bool = not enabled or not allowed or voice.is_empty() or volume <= 0 or photo.loading or photo.inspect or photo.geometry != 0 or photo.stereo_sbs \
 		or photo.spatial_requested or photo.portrait_requested or not photo.gallery.mode in [0, 4] \
-		or not photo.panel.visible or photo._transition_active or photo._reveal_seconds > 0
+		or not photo.panel.visible or photo._presentation_pending or photo._transition_active or photo._reveal_seconds > 0
 	if key != voice_key: stop(); voice_key = key
 	if inactive:
 		if guide: guide.visible = false

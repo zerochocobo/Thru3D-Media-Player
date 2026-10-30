@@ -102,6 +102,9 @@ var _gallery_start := 0
 func _depth_maximum() -> float:
 	return DepthStrength.PHOTO_MAX
 
+func _depth_recommended() -> float:
+	return -1.0
+
 func _depth_default() -> float:
 	return DepthStrength.PHOTO_DEFAULT
 

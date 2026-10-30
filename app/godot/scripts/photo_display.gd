@@ -86,6 +86,8 @@ var _depth_texture: ImageTexture
 var placement_pending := true
 var portrait_requested := false
 var portrait_enabled := false
+var auto_portrait := false # Continue the user's choice within this album, including incompatible photos.
+var _portrait_auto_due := false
 var portrait_error := ""
 var _portrait_texture: ImageTexture
 ## The mask's level 0 bytes (R8, the pair's size): the picture layer's cutout is drawn from it.
@@ -150,6 +152,10 @@ var _placeholder_material: ShaderMaterial
 var _placeholder_size := Vector2(3.8, 2.1375)
 var _transition_active := false
 var _reveal_seconds := 0.0
+## A selected 3D photo stays covered until its final renderer can present it.
+## Separate from IO loading so layer uploads and spatial preparation can run underneath.
+var _presentation_pending := false
+var _presentation_layer_failed := false
 var _swipe_offset := 0.0
 ## Compositor picture layer (shared with the video player): the full photo goes to the compositor
 ## in slices across frames, mipmapped on the GPU, instead of one long full-resolution texture upload
@@ -391,7 +397,7 @@ func set_layout_mode(value: int) -> void:
 	var reload_spread: bool = magazine.active() or value == Gallery.Layout.MAGAZINE
 	magazine.cancel()
 	if spatial_requested: set_spatial(false, true)
-	if portrait_requested: set_portrait(false)
+	if portrait_requested or auto_portrait: set_portrait(false)
 	gallery.set_mode(value, "layout_selection")
 	if reload_spread:
 		magazine.reload()
@@ -425,18 +431,18 @@ func _replace_directory() -> void:
 	changed.emit()
 
 func navigate(direction: int) -> bool:
-	if portrait_requested or queue.size() <= 1 or direction == 0 or gallery._swap_phase != 0 or (_directory_reorder and directory.loading): return false
+	if queue.size() <= 1 or direction == 0 or gallery._swap_phase != 0 or (_directory_reorder and directory.loading): return false
 	if magazine.active(): return select_image(magazine.target(direction), 1 if direction > 0 else -1)
 	var target := (pending_index if pending_index >= 0 else index) + direction
 	if (geometry == Geometry.Geometry.FLAT or gallery.mode != 0) and queue_complete: target = posmod(target, queue.size())
 	return select_image(target, 1 if direction > 0 else -1)
 
 func select_image(target: int, direction: int = 0) -> bool:
+	if target < 0 or target >= queue.size(): return false
 	if spatial_requested: set_spatial(false, true)
 	if portrait_requested and target == index: return false
-	if portrait_requested and target != index and target >= 0 and target < queue.size(): set_portrait(false)
+	if portrait_requested: set_portrait(false, true)
 	var was_focused: bool = gallery.focus >= 0
-	if target < 0 or target >= queue.size(): return false
 	if was_focused: gallery.clear_focus()
 	var accepted := _select(target, direction)
 	if gallery.mode in [Gallery.Layout.WALL, Gallery.Layout.FRAGMENTS] and ((gallery.mode == Gallery.Layout.FRAGMENTS and not was_focused) or not gallery.cards.has(target)): gallery.new_window(target)
@@ -452,10 +458,11 @@ func _select(target: int, direction: int = 0) -> bool:
 		changed.emit()
 		return true
 	if target == index and not loading and _texture != null: return false
+	_portrait_auto_due = false
 	# Gallery cards already supply the outgoing preview. Do not hold an old full-size
 	# colour/pair/scene while another large comic is decoded and converted.
 	if gallery.mode in [Gallery.Layout.WALL, Gallery.Layout.FRAGMENTS]: _release_full_photo(false)
-	if portrait_requested: set_portrait(false)
+	if portrait_requested: set_portrait(false, true)
 	_portrait_texture = null; _portrait_mask = PackedByteArray(); _portrait_strength = -1.0; portrait_error = ""
 	if target < 0 or target >= queue.size(): return false
 	if target == index and not loading and _texture != null: return false
@@ -485,6 +492,7 @@ func _select(target: int, direction: int = 0) -> bool:
 		# The interrupted turn already cleared OCR. Restoring only the texture
 		# leaves this page permanently idle until another successful page load.
 		if not _display_result.is_empty(): comic.accept(_display_result)
+		_portrait_auto_due = auto_portrait
 		changed.emit()
 		return true
 	pending_index = target
@@ -593,11 +601,44 @@ func _size_placeholder(target: int, info: Dictionary) -> void:
 	if _transition_active: _update_transition()
 	else: _placeholder.transform = flat_pose
 
+func _departing_material(surface: MeshInstance3D) -> ShaderMaterial:
+	var copy := surface.material_override.duplicate() as ShaderMaterial
+	copy.set_shader_parameter("comic_overlay_enabled", false)
+	if surface == panel:
+		# The compositor supplied the centre of the old picture. Its moving copy must
+		# draw that centre itself once the stationary layer and its hole are hidden.
+		copy.set_shader_parameter("layer_cut", Vector4.ZERO)
+		if depth_enabled and _stereo_texture == null and _display_depth_data.has("stereo_image"):
+			var pair := _transition_pair(_display_depth_data.stereo_image)
+			copy.set_shader_parameter("stereo_texture", ImageTexture.create_from_image(pair))
+			copy.set_shader_parameter("photo_stereo", true)
+			copy.set_shader_parameter("generated_size", Vector2(pair.get_width() / 2.0, pair.get_height()))
+	return copy
+
+## Reuse the completed pair's mip chain: no full-size GPU upload or new depth warp
+## on a page turn. Only the departing material owns this bounded transition texture.
+static func _transition_pair(pair: Image) -> Image:
+	var level := 0
+	var size := pair.get_size()
+	while maxi(size.x, size.y) > PROXY_SIZE and level < pair.get_mipmap_count() and size.x >= 4:
+		level += 1
+		size = Vector2i(maxi(1, size.x / 2), maxi(1, size.y / 2))
+	if level > 0:
+		return Image.create_from_data(size.x, size.y, true, pair.get_format(), pair.get_data().slice(pair.get_mipmap_offset(level)))
+	if maxi(size.x, size.y) > PROXY_SIZE:
+		# Legacy/in-memory sources may not have mipmaps. Still bound the GPU copy.
+		var small := pair.duplicate() as Image
+		var scale := float(PROXY_SIZE) / maxi(size.x, size.y)
+		small.clear_mipmaps()
+		small.resize(maxi(2, int(size.x * scale) / 2 * 2), maxi(1, int(size.y * scale)), Image.INTERPOLATE_BILINEAR)
+		small.generate_mipmaps()
+		return small
+	return pair
+
 func _copy_departing(surface: MeshInstance3D) -> void:
 	_departing = MeshInstance3D.new()
 	_departing.mesh = surface.mesh.duplicate() as Mesh
-	_departing.material_override = surface.material_override.duplicate() as ShaderMaterial
-	_departing.material_override.set_shader_parameter("comic_overlay_enabled", false)
+	_departing.material_override = _departing_material(surface)
 	_departing.material_override.render_priority = -11
 	_departing.transform = surface.transform
 	add_child(_departing)
@@ -607,6 +648,7 @@ func _show_placeholder(target: int, info: Dictionary) -> void:
 	# Selection feedback starts before IO, colour decoding or conversion completes.
 	if placeholder_visible(): _copy_departing(_placeholder)
 	elif _texture != null and geometry == Geometry.Geometry.FLAT and panel.visible: _copy_departing(panel)
+	_hide_layer()
 	_size_placeholder(target, info)
 	_placeholder.visible = true
 	_placeholder_material.set_shader_parameter("reveal_progress", -1.0)
@@ -623,10 +665,18 @@ func _show_placeholder(target: int, info: Dictionary) -> void:
 
 func _restore_display() -> void:
 	finish_transition()
-	_placeholder.visible = false
+	_placeholder.visible = _presentation_pending
 	_reveal_seconds = 0.0; _swipe_offset = 0.0
-	material.set_shader_parameter("presentation_opacity", 1.0)
+	material.set_shader_parameter("presentation_opacity", 0.0 if _presentation_pending else 1.0)
 	material.set_shader_parameter("reveal_progress", 1.0)
+	if _presentation_pending:
+		_size_placeholder(index, _metadata)
+		_placeholder.transform = panel.transform
+		_placeholder_material.set_shader_parameter("reveal_progress", -1.0)
+		_spatial_auto_due = true
+		if depth_requested and not depth_enabled and not _depth_busy and depth_error.is_empty():
+			_depth_busy = _prepare_depth(_display_request)
+			if not _depth_busy: depth_error = "3D unavailable"
 
 func preview_navigation(offset: float) -> void:
 	if portrait_requested: return
@@ -634,7 +684,7 @@ func preview_navigation(offset: float) -> void:
 	var previous := _swipe_offset
 	_swipe_offset = clampf(offset / 0.09, -1.0, 1.0) * minf(_flat.size.x * 0.14, 0.5)
 	if _transition_active or geometry != Geometry.Geometry.FLAT or (previous == 0.0 and _swipe_offset == 0.0): return
-	var surface := _placeholder if loading and placeholder_visible() else panel
+	var surface := _placeholder if (loading or _presentation_pending) and placeholder_visible() else panel
 	surface.transform = flat_pose * Transform3D(Basis(Vector3.FORWARD, deg_to_rad(screen_rotation)), Vector3.ZERO)
 	surface.position += flat_pose.basis * Vector3(_swipe_offset, 0, 0)
 
@@ -751,7 +801,7 @@ func _process(delta: float) -> void:
 				_depth_busy = _prepare_depth(target_request)
 				if not _depth_busy:
 					depth_error = "3D unavailable"
-					if portrait_requested: set_portrait(false)
+					if portrait_requested: set_portrait(false, true)
 					changed.emit()
 	if _thread and not _thread.is_alive():
 		var result: Dictionary = _thread.wait_to_finish()
@@ -809,10 +859,12 @@ func _process(delta: float) -> void:
 		material.set_shader_parameter("reveal_progress", progress)
 		_placeholder_material.set_shader_parameter("reveal_progress", progress)
 		if _reveal_seconds == 0: _placeholder.visible = false
+	_maybe_start_portrait()
 	_maybe_start_spatial()
-	if not spatial_requested and not portrait_requested and not loading and not _transition_active and _reveal_seconds == 0 and not gallery.overview(): _pump_prefetch()
+	_process_presentation()
+	if not spatial_requested and not portrait_requested and not loading and not _presentation_pending and not _transition_active and _reveal_seconds == 0 and not gallery.overview(): _pump_prefetch()
 	reading_cache.sync(pending_index if loading else index, not loading and not _transition_active and _reveal_seconds == 0 \
-		and not _depth_busy and not spatial_requested and not portrait_requested and _thread == null and _depth_thread == null)
+		and not _presentation_pending and not _depth_busy and not spatial_requested and not portrait_requested and _thread == null and _depth_thread == null)
 
 func _cache_supported() -> bool:
 	if reading_render.active():
@@ -1022,6 +1074,8 @@ func _accept(result: Dictionary, job: Dictionary) -> void:
 	_hide_layer() # before the departing copy of the material: it slides out whole, in the eye buffers
 	if result.has("error"):
 		error = str(result.error); _restore_display(); changed.emit(); return
+	_presentation_pending = false
+	_presentation_layer_failed = false
 	var had_placeholder := placeholder_visible() or (gallery.focus == int(job.index) and not gallery.returning)
 	var placeholder_time := _transition_time
 	if gallery.focus == int(job.index) and not gallery.returning and gallery.progress >= 1:
@@ -1037,8 +1091,7 @@ func _accept(result: Dictionary, job: Dictionary) -> void:
 	if previous_flat and not had_placeholder:
 		old_surface = MeshInstance3D.new()
 		old_surface.mesh = panel.mesh.duplicate() as Mesh
-		old_surface.material_override = material.duplicate() as ShaderMaterial
-		old_surface.material_override.set_shader_parameter("comic_overlay_enabled", false)
+		old_surface.material_override = _departing_material(panel)
 		old_surface.transform = panel.transform
 	_display_request = int(job.id)
 	index = int(job.index)
@@ -1097,13 +1150,26 @@ func _accept(result: Dictionary, job: Dictionary) -> void:
 		_release_photo(previous_request)
 	_prune_prefetch()
 	if reading_render.active(): reading_render.trim()
+	_presentation_pending = not depth_failed and (_requires_depth(index, _metadata) or \
+		(spatial_preferred and bool(_metadata.get("native_stereo", false)) and geometry == Geometry.Geometry.FLAT \
+		and Methods.supports(platform, "prepare_photo_scene_depth")))
 	reset_view()
 	material.set_shader_parameter("photo_texture", _texture)
 	_detail_material.set_shader_parameter("sharpness", sharpness)
 	_detail_material.set_shader_parameter("photo_texture", _texture)
 	_apply_geometry()
 	panel.visible = true
-	if job.get("instant", false):
+	if _presentation_pending:
+		# Cache hits still avoid IO, but colour readiness does not reveal a 3D selection.
+		_size_placeholder(index, _metadata)
+		_placeholder.visible = true
+		_placeholder_material.set_shader_parameter("reveal_progress", -1.0)
+		_reveal_seconds = 0.0
+		material.set_shader_parameter("presentation_opacity", 0.0)
+		if _transition_active: _update_transition()
+		else: _placeholder.transform = panel.transform
+		if old_surface != null: old_surface.free()
+	elif job.get("instant", false):
 		finish_transition(); _placeholder.visible = false; _reveal_seconds = 0
 		if old_surface != null: old_surface.free()
 	elif had_placeholder:
@@ -1152,6 +1218,7 @@ func _accept(result: Dictionary, job: Dictionary) -> void:
 			catalog.set_location(local_uri, source_location if not source_location.is_empty() else preload("res://scripts/media_location.gd").infer(local_uri))
 		_catalog_save_ms = Time.get_ticks_msec() + 1000 # not in the frame that shows the photo
 	mark = _mark("catalog", mark)
+	_portrait_auto_due = auto_portrait and not depth_failed
 	changed.emit()
 	mark = _mark("changed", mark)
 	_spatial_auto_due=true
@@ -1164,7 +1231,7 @@ func _update_transition() -> void:
 	var fraction := clampf(_transition_time / TRANSITION_SECONDS, 0.0, 1.0)
 	var eased := fraction * fraction * (3.0 - 2.0 * fraction)
 	var travel := Vector3.RIGHT * _transition_width * float(_transition_direction)
-	var surface := _placeholder if loading and placeholder_visible() else panel
+	var surface := _placeholder if (loading or _presentation_pending) and placeholder_visible() else panel
 	surface.transform = flat_pose * Transform3D(Basis(Vector3.FORWARD, deg_to_rad(screen_rotation)), Vector3.ZERO)
 	surface.position += flat_pose.basis * travel * (1.0 - eased)
 	surface.material_override.set_shader_parameter("presentation_opacity", eased)
@@ -1186,7 +1253,40 @@ func finish_transition() -> void:
 	if panel and geometry == Geometry.Geometry.FLAT: _apply_flat_pose()
 	if _placeholder: _placeholder.transform = flat_pose * Transform3D(Basis(Vector3.FORWARD, deg_to_rad(screen_rotation)), Vector3.ZERO)
 	if _placeholder_material: _placeholder_material.set_shader_parameter("presentation_opacity", 1.0)
-	if material: material.set_shader_parameter("presentation_opacity", 0.0 if loading and placeholder_visible() else 1.0)
+	if material: material.set_shader_parameter("presentation_opacity", 0.0 if _presentation_pending or (loading and placeholder_visible()) else 1.0)
+
+## Conversion and automatic effects must agree before choosing the final display source.
+func _presentation_effects_ready() -> bool:
+	if depth_requested and (_depth_busy or _depth_rebuild_seconds > 0): return false
+	if depth_requested and depth_error.is_empty():
+		if not depth_enabled: return false
+		if Methods.supports(platform, "prepare_photo_3d") and (not _display_depth_data.has("stereo_image") \
+			or not is_equal_approx(float(_display_depth_data.get("strength", -1)), depth_strength)): return false
+	if (auto_portrait and _portrait_auto_due and can_portrait()) or (portrait_requested and not portrait_enabled): return false
+	if not auto_portrait and spatial_preferred and spatial_error.is_empty() and can_spatial(): return false
+	return true
+
+func _finish_presentation() -> void:
+	_presentation_pending = false
+	_placeholder.visible = false
+	_reveal_seconds = 0.0
+	material.set_shader_parameter("reveal_progress", 1.0)
+	material.set_shader_parameter("presentation_opacity", 1.0)
+	changed.emit()
+
+func _process_presentation() -> void:
+	if not _presentation_pending or loading or not panel.visible or _transition_active: return
+	if spatial_requested:
+		if _spatial.prepared:
+			_finish_presentation()
+			_process_spatial()
+		return
+	if not _presentation_effects_ready(): return
+	var source := _layer_source()
+	# The layer path finishes only after upload AND successful submission, under the cover.
+	if error.is_empty() and _layer_possible(geometry) and _origin() != null and not source.is_empty() and source.image != null: return
+	_ensure_full_texture()
+	_finish_presentation()
 
 func set_flat_world_pose(pose: Transform3D) -> void:
 	_set_flat_world_pose(pose, true)
@@ -1244,7 +1344,7 @@ func _apply_geometry() -> void:
 func set_projection(value: int) -> void:
 	if magazine.active(): return
 	if spatial_requested: set_spatial(false, true)
-	if portrait_requested: set_portrait(false)
+	if portrait_requested or auto_portrait: set_portrait(false)
 	if value not in [0, 1, 2, 3]: return
 	if value != geometry: _unlock_mode()
 	geometry = value
@@ -1258,7 +1358,7 @@ func cycle_projection() -> void:
 func set_stereo_layout(layout: int) -> void:
 	if magazine.active(): return
 	if spatial_requested: set_spatial(false, true)
-	if portrait_requested: set_portrait(false)
+	if portrait_requested or auto_portrait: set_portrait(false)
 	if layout not in [0, 1, 2]: return
 	if layout != current_lock().layout: _unlock_mode()
 	stereo_sbs = layout != 0; top_bottom = layout == 2
@@ -1306,6 +1406,7 @@ func load_mode_lock(value: Variant) -> void:
 		"depth": bool(value.depth) and int(value.layout) == 0 and int(value.geometry) == 0, "fisheye_fov": int(value.fisheye_fov)}
 
 func toggle_inspect() -> void:
+	if _presentation_pending: return
 	if spatial_requested: set_spatial(false, true)
 	if portrait_requested: return
 	if inspect:
@@ -1501,7 +1602,7 @@ func _update_inspect() -> void:
 func set_depth(enabled: bool) -> bool:
 	if enabled and _metadata.get("magazine_unregistered", false): return false
 	if spatial_requested: set_spatial(false, true)
-	if not enabled and portrait_requested: set_portrait(false)
+	if not enabled and (portrait_requested or auto_portrait): set_portrait(false)
 	if enabled and (_metadata.get("native_stereo", false) or stereo_sbs or geometry != 0 or not platform or _display_request <= 0): return false
 	# The global viewing-mode choice survives conversion Off/On and photo navigation.
 	if enabled != depth_requested: _unlock_mode()
@@ -1587,7 +1688,7 @@ func _finish_depth(id: int, data: Dictionary, background: bool) -> void:
 	_depth_busy = false
 	if data.is_empty():
 		depth_error = "3D unavailable"
-		if portrait_requested: set_portrait(false)
+		if portrait_requested: set_portrait(false, true)
 		changed.emit(); return
 	if portrait_requested:
 		# Keep the visible colour/matte pair until both replacements share the latest strength.
@@ -1704,13 +1805,13 @@ func snapshot() -> Dictionary:
 	var progress: Dictionary = _loading_status.duplicate()
 	progress.elapsed_ms = Time.get_ticks_msec() - _loading_started_ms
 	return {"spatial_preferred":spatial_preferred,"spatial_requested":spatial_requested,"spatial_ready":_spatial.prepared if is_instance_valid(_spatial) else false,"spatial_available":can_spatial(),"spatial_error":spatial_error,
-		"spatial_report":_spatial.report if is_instance_valid(_spatial) else {},"has_image": _texture != null, "loading": loading, "loading_caption": Loading.caption(progress) if loading else "", "placeholder": placeholder_visible(), "preparing_depth": not _pending_display.is_empty(), "title": title, "index": position, "count": queue.size(),
+		"spatial_report":_spatial.report if is_instance_valid(_spatial) else {},"has_image": _texture != null, "loading": loading or _presentation_pending, "loading_caption": Loading.caption(progress) if loading else "", "placeholder": placeholder_visible(), "preparing_depth": _presentation_pending or not _pending_display.is_empty(), "title": title, "index": position, "count": queue.size(),
 		"magazine_single": magazine.single(position), "magazine_pages": magazine.count(position) if magazine.active() else 1, "magazine_rtl": magazine.right_to_left,
 		"archive_mode": archive_mode, "source_uri": local_uri, "layout": gallery.mode, "gallery_overview": gallery.overview(), "wall_rows": gallery.wall_rows, "gallery_scale": gallery.view_scale, "gallery_distance": gallery.view_distance, "gallery_swapping": gallery._swap_phase != 0, "gallery_focus": gallery.focus, "directory_loading": directory.loading, "directory_error": directory_error, "queue_complete": queue_complete,
 		"can_save_pictures":can_save_pictures(), "pictures_save":pictures_status(),
 		"can_background": can_background(), "panorama_detail_error": panorama_tiles.error,
-		"can_previous": (position > 0) if magazine.active() else not portrait_requested and queue.size() > 1 and (((geometry == Geometry.Geometry.FLAT or gallery.mode != 0) and queue_complete) or position > 0),
-		"can_next": (position >= 0 and magazine.target(1) < queue.size()) if magazine.active() else not portrait_requested and queue.size() > 1 and (((geometry == Geometry.Geometry.FLAT or gallery.mode != 0) and queue_complete) or (position >= 0 and position < queue.size() - 1)),
+		"can_previous": (position > 0) if magazine.active() else queue.size() > 1 and (((geometry == Geometry.Geometry.FLAT or gallery.mode != 0) and queue_complete) or position > 0),
+		"can_next": (position >= 0 and magazine.target(1) < queue.size()) if magazine.active() else queue.size() > 1 and (((geometry == Geometry.Geometry.FLAT or gallery.mode != 0) and queue_complete) or (position >= 0 and position < queue.size() - 1)),
 		"geometry": geometry, "stereo": stereo_sbs, "top_bottom": top_bottom, "swap_eyes": swap_eyes, "fisheye_fov": fisheye_fov, "mode_lock": mode_lock.duplicate(),
 		"inspect": inspect, "zoom": magnification, "inspect_magnification": inspect_magnification,
 		"screen_distance": screen_distance, "screen_scale": screen_scale,
@@ -1738,6 +1839,7 @@ func can_spatial() -> bool:
 		and is_equal_approx(float(_display_depth_data.get("strength",-1)),depth_strength)))
 
 func _maybe_start_spatial() -> void:
+	if auto_portrait: return
 	if not _spatial_auto_due or not spatial_preferred or spatial_requested or not spatial_error.is_empty(): return
 	if loading or _transition_active or _reveal_seconds>0 or _depth_busy or _depth_rebuild_seconds>0: return
 	if not bool(_metadata.get("native_stereo",false)) and not depth_requested:
@@ -1746,6 +1848,7 @@ func _maybe_start_spatial() -> void:
 
 func set_spatial_mode(enabled: bool, enable_conversion: bool = false) -> bool:
 	if geometry!=0 or loading or _texture==null or portrait_requested or gallery.overview(): return false
+	set_portrait(false)
 	if not enabled:
 		set_spatial(false)
 		spatial_error=""
@@ -1817,6 +1920,9 @@ func _process_spatial() -> void:
 		or (not bool(_metadata.get("native_stereo",false)) and (not depth_requested or not depth_enabled)):
 		set_spatial(false, true); return
 	if not _spatial.prepared: return
+	if _presentation_pending:
+		_spatial.visible = false
+		return
 	var eye:=panel.global_transform.affine_inverse()*view_camera.global_position if view_camera else Vector3(0,0,screen_distance)
 	_spatial.sync(panel.transform,_flat.size,eye,material.render_priority)
 	_spatial.visible=_spatial.visible and panel.visible
@@ -1876,12 +1982,15 @@ func suspend_gallery_photo() -> void:
 ## Full-size colour, generated eyes and native leases belong only to the expanded photo.
 ## Album identity, the directory scan and bounded preview cards have independent lifetimes.
 func _release_full_photo(release_runtime: bool = true, release_reading_cache: bool = true) -> void:
+	_presentation_pending = false
+	_presentation_layer_failed = false
 	if release_reading_cache: reading_cache.clear()
 	magazine.cancel()
 	if spatial_requested: set_spatial(false, true)
 	_spatial_auto_due = false; spatial_error=""
 	panorama_tiles.clear()
-	if portrait_requested: set_portrait(false)
+	if portrait_requested: set_portrait(false, true)
+	_portrait_auto_due = false
 	_portrait_texture = null; _portrait_mask = PackedByteArray(); _portrait_strength = -1.0; portrait_error = ""; _portrait_next = {}
 	_restore_display()
 	_cache_epoch += 1
@@ -1914,6 +2023,7 @@ func _release_full_photo(release_runtime: bool = true, release_reading_cache: bo
 	hide_inspect_pointer()
 
 func close_image(notify: bool = true, next_online_uri: String = "") -> void:
+	auto_portrait = false; _portrait_auto_due = false
 	comic.end_batch()
 	magazine.reset()
 	var restore_archive_layout := archive_mode
@@ -1962,9 +2072,15 @@ func _invalidate_portrait_mask() -> void:
 	if Methods.supports(platform,"cancel_photo_portrait"): platform.cancel_photo_portrait(_portrait_epoch)
 	_portrait_epoch += 1; _portrait_next = {}; _portrait_pending_depth = {}; _portrait_sent_epoch = -1
 
-func set_portrait(enabled: bool) -> bool:
+func _maybe_start_portrait() -> void:
+	if not _portrait_auto_due or not auto_portrait or not error.is_empty() or not depth_error.is_empty(): return
+	if can_portrait(): set_portrait(true, true)
+
+func set_portrait(enabled: bool, automatic: bool = false) -> bool:
+	if enabled and not portrait_requested and not can_portrait(): return false
+	if not automatic: auto_portrait = enabled
+	_portrait_auto_due = false
 	if enabled == portrait_requested: return true
-	if enabled and not can_portrait(): return false
 	if not enabled and not _portrait_pending_depth.is_empty(): _commit_depth_data(_portrait_pending_depth)
 	_invalidate_portrait_mask(); portrait_error = ""
 	if not enabled:
@@ -1976,16 +2092,16 @@ func set_portrait(enabled: bool) -> bool:
 	_portrait_curve = screen_curve
 	portrait_requested = true; portrait_enabled = false; set_screen_curve(0)
 	gallery.visible = false; panel.visible = true; set_target_feedback(0)
-	depth_strength = DepthStrength.remembered(depth_strength,DepthStrength.PHOTO_MAX)
+	if not automatic: depth_strength = DepthStrength.remembered(depth_strength,DepthStrength.PHOTO_MAX)
 	if not set_depth(true):
-		set_portrait(false); portrait_error = "3D unavailable"; changed.emit(); return false
+		set_portrait(false, true); portrait_error = "3D unavailable"; changed.emit(); return false
 	var accepted := _request_portrait_mask()
 	_apply_geometry(); changed.emit(); return accepted
 
 func _request_portrait_mask() -> bool:
 	if not portrait_requested or _depth_busy or _depth_rebuild_seconds > 0: return true
 	if not depth_error.is_empty():
-		set_portrait(false); portrait_error = "3D unavailable"; changed.emit(); return false
+		set_portrait(false, true); portrait_error = "3D unavailable"; changed.emit(); return false
 	var data: Dictionary = _portrait_pending_depth if not _portrait_pending_depth.is_empty() else _display_depth_data
 	if not data.has("stereo_image") or not is_equal_approx(float(data.get("strength",-1)),depth_strength): return true
 	if _portrait_texture != null and is_equal_approx(_portrait_strength,depth_strength):
@@ -1994,14 +2110,14 @@ func _request_portrait_mask() -> bool:
 	elif _portrait_sent_epoch != _portrait_epoch:
 		_portrait_sent_epoch = _portrait_epoch
 		if not platform.prepare_photo_portrait(_display_request,_portrait_epoch,depth_strength):
-			set_portrait(false); portrait_error = "Portrait unavailable"; changed.emit(); return false
+			set_portrait(false, true); portrait_error = "Portrait unavailable"; changed.emit(); return false
 	return true
 
 func _on_portrait(id: int, payload: String) -> void:
 	var result: Variant = JSON.parse_string(payload)
 	if not result is Dictionary or not portrait_requested or id != _display_request or int(result.get("token",-1)) != _portrait_epoch: return
 	if result.get("state") != "ready":
-		set_portrait(false); portrait_error = "No person detected" if result.get("error") == "PHOTO_NO_PERSON" else "Portrait unavailable"; changed.emit(); return
+		set_portrait(false, true); portrait_error = "No person detected" if result.get("error") == "PHOTO_NO_PERSON" else "Portrait unavailable"; changed.emit(); return
 	_portrait_next = {"id":id,"token":_portrait_epoch,"payload":result}
 
 static func _read_portrait(result: Dictionary) -> Dictionary:
@@ -2024,7 +2140,7 @@ func _process_portrait() -> void:
 		if portrait_requested and id == _display_request and int(_portrait_job.token) == _portrait_epoch:
 			var pair: Image = _portrait_pending_depth.get("stereo_image",_display_depth_data.get("stereo_image"))
 			if data.is_empty() or pair == null or data.image.get_size() != pair.get_size() or not is_equal_approx(float(data.strength),depth_strength):
-				set_portrait(false); portrait_error = "Portrait unavailable"
+				set_portrait(false, true); portrait_error = "Portrait unavailable"
 			else:
 				if not _portrait_pending_depth.is_empty(): _commit_depth_data(_portrait_pending_depth); _portrait_pending_depth = {}
 				_portrait_texture = ImageTexture.create_from_image(data.image); _portrait_strength = float(data.strength); portrait_enabled = true
@@ -2035,11 +2151,11 @@ func _process_portrait() -> void:
 	if not _portrait_thread and not _portrait_next.is_empty():
 		_portrait_job = _portrait_next; _portrait_next = {}; _portrait_thread = Thread.new()
 		if _portrait_thread.start(_read_portrait.bind(_portrait_job.payload)) != OK:
-			_portrait_thread = null; set_portrait(false); portrait_error = "Portrait unavailable"; changed.emit()
+			_portrait_thread = null; set_portrait(false, true); portrait_error = "Portrait unavailable"; changed.emit()
 
 ## The layer can show this projection at all on this runtime.
 func _layer_possible(projection: int) -> bool:
-	return layer_enabled and video_layer != null and video_layer.available() and Methods.supports(platform, "copy_layer_band") \
+	return not _presentation_layer_failed and layer_enabled and video_layer != null and video_layer.available() and Methods.supports(platform, "copy_layer_band") \
 		and projection != Geometry.Geometry.FISHEYE and video_layer.supports(projection, screen_curve > 0.0)
 
 ## What the layer shows now: the generated stereo pair while 3D is on, else the photo itself.
@@ -2061,9 +2177,10 @@ func _layer_source() -> Dictionary:
 	return {"key": "color:%d" % _display_request, "image": _full_image, "stereo": -1}
 
 ## The layer can show the photo as the shader would now: no shader-only effects or transitions.
-func _layer_eligible() -> bool:
+func _layer_eligible(preparing: bool = false) -> bool:
 	return not spatial_requested and _display_request > 0 and _texture != null and panel.visible and not loading and error.is_empty() \
-		and not gallery.overview() and not _transition_active and _reveal_seconds == 0 and not placeholder_visible() \
+		and not gallery.overview() and ((_presentation_pending and preparing and _presentation_effects_ready()) or \
+		(not _presentation_pending and not _transition_active and _reveal_seconds == 0 and not placeholder_visible())) \
 		and _layer_possible(geometry)
 
 ## A spatial photo's disparity as the layer's per-eye UV shift: the photo shader's own shift of each
@@ -2087,13 +2204,17 @@ func _process_layer() -> void:
 			"eligible": _layer_eligible(), "source": str(source.get("key", "")), "texture_full": _texture_full,
 			"full_image": _full_image != null, "geometry": geometry, "curve": screen_curve, "depth": depth_enabled,
 			"panel": panel.visible, "transition": _transition_active, "placeholder": placeholder_visible()})
-	var eligible: bool = _layer_eligible() and not source.is_empty() and source.image != null
+	var eligible: bool = _layer_eligible(true) and not source.is_empty() and source.image != null
+	if _presentation_pending and not eligible:
+		_upload = {}
+		_hide_layer()
+		return
 	if eligible and _layer_key != source.key and str(_upload.get("key", "")) != source.key:
 		_upload = {"key": source.key, "image": source.image, "mask": source.get("mask"), "row": 0} # replaces an unfinished other picture
 	if not _upload.is_empty():
 		_continue_upload()
 	var origin := _origin()
-	var shown: bool = origin != null and eligible and _layer_key == str(source.key)
+	var shown: bool = origin != null and eligible and _layer_key == str(source.key) and not _transition_active
 	if shown:
 		var flat := geometry == Geometry.Geometry.FLAT
 		# Match the eye-buffer edge: reading pages use the full compositor image as well.
@@ -2108,6 +2229,9 @@ func _process_layer() -> void:
 		var image := Vector2(picture.get_width(), picture.get_height())
 		var magnifier := _magnifier_layers(origin, image, int(source.stereo))
 		shown = video_layer.show(self, origin, VideoLayer.PICTURE, image, int(source.stereo), inset, pano, int(source.get("blend", VideoLayer.OPAQUE)), magnifier.layers)
+		if _presentation_pending:
+			if shown: _finish_presentation()
+			else: _presentation_layer_failed = true
 		if shown:
 			_hole.mesh = panel.mesh
 			_hole.transform = panel.transform
@@ -2248,6 +2372,7 @@ func _continue_upload() -> void:
 		DiagnosticLog.record("photo_layer_upload", {"key": str(_upload.key), "size": [width, height], "levels": levels,
 			"created": created, "acquired": acquired > 0})
 		if acquired <= 0:
+			if _presentation_pending: _presentation_layer_failed = true
 			_upload = {}
 			return
 		_upload.started = true
@@ -2269,6 +2394,7 @@ func _continue_upload() -> void:
 	_upload.timing.slice_total_us = int(_upload.timing.slice_total_us) + slice_us
 	_upload.timing.slice_max_us = maxi(int(_upload.timing.slice_max_us), slice_us)
 	if not uploaded:
+		if _presentation_pending: _presentation_layer_failed = true
 		platform.destroy_layer_image(VideoLayer.PICTURE_SLOT)
 		video_layer.invalidate()
 		_upload = {}
@@ -2281,6 +2407,7 @@ func _continue_upload() -> void:
 		if released:
 			_layer_key = str(_upload.key)
 			if _layer_key.begins_with("stereo:"): _apply_geometry() # the pair is up: its edge takes the depth map
+		elif _presentation_pending: _presentation_layer_failed = true
 		DiagnosticLog.record("photo_layer_uploaded", {"key": str(_upload.key), "released": released, "timing": _upload.timing})
 		_upload = {}
 

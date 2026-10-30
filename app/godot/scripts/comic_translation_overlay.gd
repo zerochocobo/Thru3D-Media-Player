@@ -139,7 +139,7 @@ func sync(show: bool) -> void:
 			item.mask = item.cover.grow_individual(margin,0,margin,0).intersection(Rect2(Vector2.ZERO,Vector2(viewport.size)))
 			item.uv = Rect2(item.mask.position / Vector2(viewport.size),item.mask.size / Vector2(viewport.size))
 		_redraw()
-	visible(show and photo.panel.visible and not photo.loading and not photo.inspect \
+	visible(show and photo.panel.visible and not photo.loading and not photo._presentation_pending and not photo.inspect \
 		and photo.geometry == 0 and not photo.stereo_sbs and not photo.portrait_requested \
 		and not photo.spatial_requested and photo.gallery.mode in [0, 4] and not photo._transition_active and photo._reveal_seconds <= 0
 	)

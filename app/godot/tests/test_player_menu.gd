@@ -251,6 +251,18 @@ func _run() -> void:
 		and host.calls.filter(func(call): return call[0] == "revise").size() == portrait_revisions,
 		"Portrait relief restores without model revision")
 	check(click(menu,104) and not video.alpha_requested, "Leaving portrait restores ordinary 2D conversion controls")
+	for layout in [1, 2, 3, 4]:
+		video.set_stereo_layout(layout); menu.refresh()
+		check(click(menu,104) and video.alpha_requested and video._pending_revision.alpha,
+			"Flat stereo bar enables cutout: " + str(layout))
+		check(video._pending_revision.stereo and video._pending_revision.top_bottom == (layout in [2,4]) \
+			and not video._pending_revision.depth and video.stereo_layout() == layout,
+			"Cutout revision retains native eye packing without depth synthesis: " + str(layout))
+		check(main._menu_state().flat_passthrough_requested and not main._menu_state().portrait_requested \
+			and not click(menu,112), "Native stereo uses flat placement and excludes synthetic depth controls")
+		check(click(menu,104) and not video.alpha_requested and video.stereo_layout() == layout,
+			"Leaving cutout retains original stereo layout: " + str(layout))
+	video.set_stereo_layout(0); menu.refresh()
 	check(not menu._mode_open and click(menu, 112, "left_hand") and not video.depth_requested and menu._depth_open,
 		"Single 3D click opens adjustment without enabling inference")
 	menu.release_pointer("left_hand", Vector3.ZERO, Vector3.ZERO, true)
@@ -270,14 +282,26 @@ func _run() -> void:
 	video.depth_enabled = true # Native first depth pair accepted; exercise live bridge values.
 	menu.refresh_values()
 	check(not menu._depth_busy.visible, "The ring stops once depth frames arrive")
+	check(is_equal_approx(menu._depth_knob.position.y, lerpf(Menu.DEPTH_SPAN.x, Menu.DEPTH_SPAN.y, .5))
+		and is_equal_approx(menu._depth_fill.mesh.size.y, (Menu.DEPTH_SPAN.y - Menu.DEPTH_SPAN.x) * .5)
+		and menu._depth_label.text == "50%", "Restored 50% video strength occupies half of the slider")
 	var revisions := host.calls.filter(func(call): return call[0] == "revise").size()
-	var depth_y := func(value: float) -> float: return lerpf(Menu.DEPTH_SPAN.x, Menu.DEPTH_SPAN.y, Menu.DepthStrength.to_fraction(value))
+	# Use physical track positions, not the conversion helper: a wrong forward/inverse pair can agree.
+	var depth_y := func(fraction: float) -> float: return lerpf(Menu.DEPTH_SPAN.x, Menu.DEPTH_SPAN.y, fraction)
 	check(press_at(menu, Menu.DEPTH_X, depth_y.call(.75), "left_hand") and is_equal_approx(video.depth_strength, .75)
-		and host.calls.back()[0] == "depth_view" and is_equal_approx(host.calls.back()[2], .02625), "Slider sets 75% and sends actual native parallax")
+		and host.calls.back()[0] == "depth_view" and is_equal_approx(host.calls.back()[2], .013125), "Slider sets 75% and sends actual native parallax")
+	for sample in [[.25, "25%", .004375], [.5, "50%", .00875], [.75, "75%", .013125]]:
+		menu.update_pointer("left_hand", menu.to_global(Vector3(Menu.DEPTH_X, depth_y.call(sample[0]), 1)), -menu.global_basis.z, true)
+		check(is_equal_approx(video.depth_strength, sample[0]) and menu._depth_label.text == sample[1]
+			and is_equal_approx(menu._depth_knob.position.y, depth_y.call(sample[0]))
+			and is_equal_approx(menu._depth_fill.mesh.size.y, (Menu.DEPTH_SPAN.y - Menu.DEPTH_SPAN.x) * sample[0])
+			and host.calls.back()[0] == "depth_view" and is_equal_approx(host.calls.back()[2], sample[2])
+			and is_equal_approx(float(video.material.get_shader_parameter("depth_shift")), sample[2]),
+			"Video track position, label, fill and native/shader parallax agree at " + sample[1])
 	menu.update_pointer("right_hand", menu.to_global(Vector3(Menu.DEPTH_X, depth_y.call(1), 1)), -menu.global_basis.z, true)
 	check(is_equal_approx(video.depth_strength, .75) and not press_at(menu, Menu.DEPTH_X, depth_y.call(1)), "Other hand cannot move or steal an active depth drag")
 	menu.update_pointer("left_hand", menu.to_global(Vector3(Menu.DEPTH_X, Menu.DEPTH_SPAN.y + .2, 1)), -menu.global_basis.z, true)
-	check(video.depth_strength == 1.0 and menu._depth_label.text == "100%" and is_equal_approx(float(video.material.get_shader_parameter("depth_shift")), .035), "Drag beyond top clamps to 100% and updates shader")
+	check(video.depth_strength == 1.0 and menu._depth_label.text == "100%" and is_equal_approx(float(video.material.get_shader_parameter("depth_shift")), .0175), "Drag beyond top clamps to 100% and updates shader")
 	check(host.calls.filter(func(call): return call[0] == "revise").size() == revisions, "Nonzero drag never restarts depth inference or playback")
 	menu.update_pointer("left_hand", menu.to_global(Vector3(Menu.DEPTH_X, Menu.DEPTH_SPAN.x - .2, 1)), -menu.global_basis.z, true)
 	check(not video.depth_requested and not video.auto_depth and video.depth_strength == 1.0 and menu._depth_label.text == "Off", "Bottom disables 3D and retains last nonzero strength")
@@ -864,6 +888,13 @@ func _check_control_sticks(main: Node3D, video: Node3D, menu: Node3D, host: RefC
 	menu.bookmarks.opened = false
 	menu.section = 1
 	menu.refresh()
+	menu.refresh_values()
+	var captioned := []
+	for operation in ["depth_render", "seek_mode", "loop"]:
+		for button in menu._buttons:
+			if button.target == Menu.SETTINGS_TILE + Menu.OPERATIONS[1].find(operation) and not str(button.node.get_child(0).text).is_empty():
+				captioned.append(operation)
+	check(captioned.is_empty(), "Value refreshes leave no caption under choice-field tiles (it showed behind Fill gaps): %s" % [captioned])
 	main._process_sticks(Vector2(.99, 0), Vector2(.99, 0), 0.1)
 	check(host.calls.size() == calls, "Expanded settings cannot seek")
 	menu.section = 0

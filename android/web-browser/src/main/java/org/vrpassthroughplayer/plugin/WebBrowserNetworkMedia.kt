@@ -32,6 +32,7 @@ object WebBrowserNetworkMedia {
                 headers.put(name, value)
             }
             result.put(JSONObject().put("url", uri.toString()).put("kind", kind).put("headers", headers)
+                .put("at", source.optLong("at").coerceAtLeast(0))
                 .put("original_url", address(source.optString("original_url"))?.toString() ?: uri.toString())
                 .put("cookies", source.optJSONArray("cookies")?.takeIf { it.length() <= 128 && it.toString().length <= 24576 } ?: JSONArray())
                 .put("mime", source.optString("mime").take(128)))

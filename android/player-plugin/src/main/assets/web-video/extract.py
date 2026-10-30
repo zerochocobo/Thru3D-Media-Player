@@ -119,6 +119,10 @@ def scope_headers(info, jar):
 
 def bilibili_cdn_formats(formats, play_info):
     """Preserve the site's own backup URLs; never invent a CDN host or reuse a signature."""
+    if play_info.get("is_preview") or play_info.get("is_trial"):
+        raise ValueError("Bilibili preview requires browser playback")
+    if play_info.get("is_drm") or play_info.get("has_drm") or play_info.get("drm_tech_type"):
+        raise ValueError("Bilibili DRM requires browser playback")
     dash = play_info.get("dash") or {}
     representations = list(dash.get("video") or []) + list(dash.get("audio") or [])
     representations += list((dash.get("dolby") or {}).get("audio") or [])

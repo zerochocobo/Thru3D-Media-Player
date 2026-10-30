@@ -7,14 +7,19 @@
       "sha256": "aa04a77a43e2e47d62d6425c51aef965466a9179228284f920ed5b4266c07185"
     },
     {
-      "path": "depth-mnn/depth.mnn",
-      "bytes": 48971944,
-      "sha256": "a2688f9c9070ecd7cedb3b335d95bc820e12ac4df0a630c6d7b9dc11e9c76ac0"
-    },
-    {
       "path": "depth-mnn/photo_depth.mnn",
       "bytes": 49723816,
       "sha256": "17924969505831d83497f75f12e15b8649f1300ff35e8dfe17bb647f8d2ca0bd"
+    },
+    {
+      "path": "depth-mnn/depth.mnn",
+      "bytes": 12794216,
+      "sha256": "ce5c8cf31ef03ce76bb4269d83216ce7986cd429ac42785815d6882a2565b3a6"
+    },
+    {
+      "path": "depth-mnn/depth_compat.mnn",
+      "bytes": 12794216,
+      "sha256": "fe012ae0a47e471922194b6eb03d86660d84d1f3ac3f030543d2ec7333274fb2"
     }
   ],
   "manifests": {
@@ -138,27 +143,28 @@
       "branch": "ratio=1 upstream (refiner skipped), fgr pruned, u8 io for AHardwareBuffer zero-copy, bandwidth-fused graph with NC4HW4 inputs and HardSwish in the convolutions"
     },
     "depth-mnn": {
-      "schema_version": 2,
+      "schema_version": 3,
       "backend": "MNN 3.6.1 OpenCL",
-      "model": "Depth Anything V2 Small",
-      "head": "late-upsample",
-      "license": "Apache-2.0",
-      "source_onnx": "models\\source\\depth\\depth_anything_v2_small.onnx",
-      "source_sha256": "afb6a5c28f3b6bf1618c6e43f02073ef9dfdc70e937502d51603e57b0a1df10c",
-      "input": "src float32 1x3xHxW RGB 0..1 (ImageNet normalization folded)",
-      "output": "depth float32 1x1xHxW relative inverse depth (larger = nearer)",
-      "width": 364,
-      "height": 210,
-      "frozen_onnx_sha256": "f6e7ae4841ece9b33f6783ccaa64d2d218d81826b9d971edbb6635c07fccf3b1",
-      "mnn_sha256": "a2688f9c9070ecd7cedb3b335d95bc820e12ac4df0a630c6d7b9dc11e9c76ac0",
-      "mnn_file": "depth.mnn",
+      "model": "ZipDepth base",
+      "head": "convex-softmax-free-clamp8, dense-grouped-1x1",
+      "license": "MIT",
+      "upstream": "https://github.com/fabiotosi92/ZipDepth",
+      "revision": "91f3fd21e131641f51e8d35736d1958350180e3a",
+      "checkpoint_sha256": "a55910bb0b99c8c5e641cb9206e810b269690ad94e8a2ef08c827c4679391a65",
+      "architecture_sha256": "9fd74fa2053da5bd56b2f2eecfdc3a6bf5e5161da0df05c72da3b89f29b77521",
+      "model_utils_sha256": "cd396c8d4f1eeb93da564b879d2b62aee8025d11222188153a549457649ead5c",
+      "input": "src float32 1x3x288x512 RGB 0..1",
+      "output": "depth float32 1x1x288x512 relative inverse depth (larger = nearer)",
+      "width": 512,
+      "height": 288,
       "usage": "video",
-      "dynamic_ops_left": [
-        "Gather",
-        "Resize"
-      ],
-      "frozen_vs_source_rel_max": 6.50156516712741e-06,
-      "mnn_fp16_weights_vs_frozen_rel_max": 0.006531872320920229
+      "mnn_file": "depth.mnn",
+      "compute_precision": "fp16",
+      "weight_precision": "fp16",
+      "gpu_mode": 16,
+      "global_context": "learned softmax (not mean approximation)",
+      "frozen_onnx_sha256": "32911179083cfc4f62bdeded658e5282398d66553edbf497df68548e8283be6b",
+      "mnn_sha256": "ce5c8cf31ef03ce76bb4269d83216ce7986cd429ac42785815d6882a2565b3a6"
     },
     "photo-depth-mnn": {
       "schema_version": 2,
@@ -182,6 +188,30 @@
       ],
       "frozen_vs_source_rel_max": 3.5669847875396954e-06,
       "mnn_fp16_weights_vs_frozen_rel_max": 0.004773904103785753
+    },
+    "depth-compat-mnn": {
+      "schema_version": 3,
+      "backend": "MNN 3.6.1 OpenCL",
+      "model": "ZipDepth base",
+      "head": "convex-softmax-free-clamp8, dense-grouped-1x1",
+      "license": "MIT",
+      "upstream": "https://github.com/fabiotosi92/ZipDepth",
+      "revision": "91f3fd21e131641f51e8d35736d1958350180e3a",
+      "checkpoint_sha256": "a55910bb0b99c8c5e641cb9206e810b269690ad94e8a2ef08c827c4679391a65",
+      "architecture_sha256": "9fd74fa2053da5bd56b2f2eecfdc3a6bf5e5161da0df05c72da3b89f29b77521",
+      "model_utils_sha256": "cd396c8d4f1eeb93da564b879d2b62aee8025d11222188153a549457649ead5c",
+      "input": "src float32 1x3x224x384 RGB 0..1",
+      "output": "depth float32 1x1x224x384 relative inverse depth (larger = nearer)",
+      "width": 384,
+      "height": 224,
+      "usage": "video",
+      "mnn_file": "depth_compat.mnn",
+      "compute_precision": "fp16",
+      "weight_precision": "fp16",
+      "gpu_mode": 16,
+      "global_context": "learned softmax (not mean approximation)",
+      "frozen_onnx_sha256": "026c34b82504d591d6941fd5da664ccf94fe42594dcffa244874bf46e07c5fdf",
+      "mnn_sha256": "fe012ae0a47e471922194b6eb03d86660d84d1f3ac3f030543d2ec7333274fb2"
     }
   }
 }

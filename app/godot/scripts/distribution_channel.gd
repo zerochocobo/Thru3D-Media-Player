@@ -6,4 +6,4 @@ static func current() -> String:
 	return str(ProjectSettings.get_setting(KEY, "standard"))
 
 static func web_browser_enabled() -> bool:
-	return current() in ["standard", "pico_cn_store"]
+	return current() in ["standard", "pico_cn_store", "quest_store"]

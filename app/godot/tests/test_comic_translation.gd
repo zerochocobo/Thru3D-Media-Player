@@ -8,6 +8,7 @@ class FakePhoto extends Node3D:
 	var material := ShaderMaterial.new()
 	var _size := Vector2(800, 1000)
 	var loading := false
+	var _presentation_pending := false
 	var inspect := false
 	var geometry := 0
 	var stereo_sbs := false
@@ -257,6 +258,10 @@ func run() -> void:
 	check(item.mask.size.x > item.cover.size.x, "Stereo cover includes the displaced source ink from both eyes")
 	hover.depth_requested = false; hovered.tick([],true,"Xiaoyu",1.0)
 	check(item.mask == item.cover and hover.material.get_shader_parameter("comic_overlay_enabled") == true, "Returning to 2D restores normal coverage without toggling translation")
+	hover._presentation_pending = true; hovered.tick(rays,true,"Xiaoyu",1.0)
+	check(not hover.material.get_shader_parameter("comic_overlay_enabled") and hovered.blocked, "Pending final 3D hides translations and blocks dwell narration")
+	hover._presentation_pending = false; hovered.tick([],true,"Xiaoyu",1.0)
+	check(hover.material.get_shader_parameter("comic_overlay_enabled") and not hovered.blocked, "Presentation completion restores reading without clearing translations")
 	hovered.close(); hover.free()
 	var menu := Menu.new(); var ui := {"comic_supported":true,"has_image":true,"translation_enabled":true,"translation_target":"zh-Hans","translation_state":"translating","translation_count":1,"translation_total":3}
 	menu.state_provider = func(): return ui

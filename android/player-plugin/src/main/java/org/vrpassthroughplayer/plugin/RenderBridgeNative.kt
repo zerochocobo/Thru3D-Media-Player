@@ -25,6 +25,8 @@ internal object RenderBridgeNative {
     @JvmStatic external fun ready(handle: Long, token: Long): Boolean
     @JvmStatic external fun texture(handle: Long, token: Long): Int
     @JvmStatic external fun readInputs(handle: Long, token: Long, left: ByteBuffer, right: ByteBuffer): Boolean
+    /** Mono depth only: read the single staged eye without duplicating its CHW plane. */
+    @JvmStatic external fun readMonoInput(handle: Long, token: Long, rgb: ByteBuffer): Boolean
     /** ROI capture: model = rect.xy + eyeUv * rect.zw (zoom window when zw > 1). scout also stages the
      * full-eye input of the same color for readScoutInputs. */
     @JvmStatic external fun captureTextureRoi(handle: Long, texture: Int, rect: FloatArray, scout: Boolean): Long
@@ -38,6 +40,8 @@ internal object RenderBridgeNative {
     /** Captures keep the producer texture instead of a full-resolution copy; the caller holds the
      * producer lease until [retired] reports the slot free. */
     @JvmStatic external fun enableBorrowedColor(handle: Long): Boolean
+    /** 2D->3D: the model input's letterbox repeats the content edge instead of black. */
+    @JvmStatic external fun enableEdgeFill(handle: Long): Boolean
     /** Capture a decoder buffer (MPV direct mode): model input scaled from its YUV; the pair shows it. */
     @JvmStatic external fun captureBufferRoi(handle: Long, buffer: Long, bufferWidth: Int, bufferHeight: Int,
                                              rect: FloatArray, scout: Boolean): Long

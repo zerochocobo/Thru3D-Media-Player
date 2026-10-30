@@ -1299,6 +1299,7 @@ internal class MpvVideoBridge(
             if (session.renderer == 0L) {
                 session.owner = EGL14.eglGetCurrentContext()
                 session.renderer = RenderBridgeNative.create(width, height, session.dims[0], session.dims[1], session.stereo, session.topBottom)
+                if (session.depth) RenderBridgeNative.enableEdgeFill(session.renderer)
                 // Debug A/B only: 2D->3D keeps 6 of 7 slots busy (a full-size color each, 232 MB at 4K), but
                 // 5 slots skipped 11% of the frames and 4 slots 30% on Quest 3, so the saver leaves them.
                 val slotLimit = debugInt("debug.vrpp.bridge.slots", 0)
@@ -1379,6 +1380,7 @@ internal class MpvVideoBridge(
             if (session.renderer == 0L) {
                 session.owner = EGL14.eglGetCurrentContext()
                 session.renderer = RenderBridgeNative.create(width, height, session.dims[0], session.dims[1], session.stereo, session.topBottom)
+                if (session.depth) RenderBridgeNative.enableEdgeFill(session.renderer)
                 if (session.vulkan && !debugZeroCopyDisabled && RvmNative.zeroCopySupport() != 0)
                     session.zeroCopy = RenderBridgeNative.enableZeroCopy(session.renderer)
                 if (session.roiEnabled && !debugRoiDisabled) session.roi = RoiController(RenderBridgeNative.fullInputRect(session.renderer),
@@ -1539,10 +1541,10 @@ internal class MpvVideoBridge(
             } else null
             session.model!!.submit(copying.first, copying.second, buffers.first, buffers.second, pair, scout?.first, scout?.second)
         } else if (session.depth) {
-            // Mono: both staged eyes hold the same frame; the model reads one. Frames the model skips
+            // Mono: one staged eye is sufficient. Frames the model skips
             // were not staged: they show with the latest map and cost no readback.
             val staged = pair.optBoolean("depth_input_staged")
-            if (staged) check(RenderBridgeNative.readInputs(session.renderer, copying.second, buffers.first, buffers.second))
+            if (staged) check(RenderBridgeNative.readMonoInput(session.renderer, copying.second, buffers.first))
             session.depthModel!!.submit(copying.first, copying.second, if (staged) buffers.first else null, pair)
         } else {
             pair.put("model_generation", 1).put("inference_ran", false).put("pair_identity_verified", true)
@@ -1572,7 +1574,8 @@ internal class MpvVideoBridge(
         }
         if (session.alpha && !session.stereo && session.portraitFailed)
             pair.put("source_layout", "mono").put("presentation_mode", "portrait_flat").put("portrait_fallback", "shape_unavailable")
-        if (session.depth && pair.optBoolean("depth_ran")) {
+        // Stretch: no native stereo pair; the video shader samples the color through the near map instead.
+        if (session.depth && pair.optBoolean("depth_ran") && !depthStretch) {
             val stereo = RenderBridgeNative.warp(session.renderer, token, session.depthShift, session.depthConvergence)
             if (stereo > 0) pair.put("warp_texture_id", stereo) else pair.remove("warp_texture_id")
         }
@@ -1949,6 +1952,9 @@ internal class MpvVideoBridge(
      * adb shell setprop debug.vrpp.layer.alpha 0. */
     private fun layerAlpha() = !BuildConfig.DEBUG || debugProperty("debug.vrpp.layer.alpha") != "0"
     companion object {
+        /** Global video 2D->3D view (Settings > Video): true (the default, edge stretching) skips the
+         * native hole-filling warp. */
+        @Volatile var depthStretch = true
         /** Alpha plan B: masks shown so far in this Alpha layer session and the mask swapchain size, "count w h". */
         @Volatile var layerMask = "0 0 0"
         const val MASK_SLOT = 2 // the picture swapchain slot Godot shows as the mask layer

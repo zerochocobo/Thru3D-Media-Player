@@ -24,6 +24,7 @@ class MainHarness extends "res://scripts/main.gd":
 class VideoFixture extends Node3D:
 	var geometry := 0
 	var local_uri := ""
+	var media := {"session_id": 1}
 
 class EnvironmentFixture extends Node3D:
 	var active := true
@@ -194,6 +195,10 @@ func _run() -> void:
 	var depth_from := depth_surface.to_global(Vector3(menu.DEPTH_X, menu.DEPTH_SPAN.x + 0.02, 0.025))
 	var depth_to := depth_surface.to_global(Vector3(menu.DEPTH_X, menu.DEPTH_SPAN.y, 0.025))
 	menu.press_pointer("desktop", main.head.origin, (depth_from - main.head.origin).normalized(), true)
+	var depth_middle := depth_surface.to_global(Vector3(menu.DEPTH_X, lerpf(menu.DEPTH_SPAN.x, menu.DEPTH_SPAN.y, .5), 0.025))
+	menu.update_pointer("desktop", main.head.origin, (depth_middle - main.head.origin).normalized(), true)
+	check(not depths.is_empty() and is_equal_approx(float(depths.back()), .5) and menu._depth_label.text == "50%",
+		"Cinema depth slider midpoint means 50% in both value and caption")
 	menu.update_pointer("desktop", main.head.origin, (depth_to - main.head.origin).normalized(), true)
 	menu.release_pointer("desktop", main.head.origin, (depth_to - main.head.origin).normalized(), true)
 	check(not depths.is_empty() and is_equal_approx(float(depths.back()), menu.DepthStrength.MAX), "Relocated depth slider retains its full logical range")

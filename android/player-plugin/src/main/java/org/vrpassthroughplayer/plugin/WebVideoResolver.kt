@@ -50,7 +50,7 @@ internal class WebVideoResolver(private val context: () -> Context?, private val
         }
     }
 
-    @Synchronized fun begin(url: String): Int {
+    @Synchronized fun begin(url: String, bilibiliBeta: Boolean = false): Int {
         if (closed) return 0
         cancel()
         val id = ++sequence
@@ -63,44 +63,56 @@ internal class WebVideoResolver(private val context: () -> Context?, private val
                 attempt.check()
                 val media = browserMedia(url)
                 if (media?.optBoolean("protected") == true) throw ExtractionFailure("protected_content")
-                val page = publicPage ?: media?.let { WebVideoBrowserCapture.serverPage(url, it) ?: WebVideoNetworkCapture.page(url, it) }
+                val sourcePage = publicPage ?: media?.let { WebVideoBrowserCapture.serverPage(url, it) ?: WebVideoNetworkCapture.page(url, it) }
                     ?: throw ExtractionFailure("unsupported_page")
+                val pgc = sourcePage.site == "bilibili" && sourcePage.id.matches(Regex("(?:ep|ss)[1-9][0-9]{0,19}:1"))
+                val page = if (pgc) WebVideoBilibiliCapture.episodePage(sourcePage, media)
+                    ?: throw ExtractionFailure("browser_playback_required") else sourcePage
                 val networkEnabled = media?.optBoolean("network_enabled") == true
+                val bilibiliEnabled = bilibiliBeta && page.site == "bilibili" && media?.optBoolean("bilibili_enabled") == true
+                if (bilibiliBeta && !bilibiliEnabled)
+                    throw ExtractionFailure("browser_playback_required")
+                val browserQuality = networkEnabled || bilibiliEnabled
                 // The browser already selected this quality using the user's site session.
                 // Do not force its member/4K stream through the extractor's default 1080p cap.
-                val maxHeight = if (networkEnabled) maxOf(2160, minOf(media.optInt("width"), media.optInt("height"))).coerceAtMost(8192) else 1080
+                val maxHeight = if (browserQuality) maxOf(2160, minOf(media.optInt("width"), media.optInt("height"))).coerceAtMost(8192)
+                    else if (BuildConfig.DEBUG && media?.optInt("diagnostic_max_height") == 2160) 2160 else 1080
                 val capabilities = WebVideoCapabilities(maxHeight)::accepts
                 val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30)
                 val network = WebVideoNetworkCapture({ uri, headers, prefix ->
                     readBrowserResource(uri, headers, prefix, attempt, deadline)
                 }, capabilities)
                 attempt.stage = "browser_capture"
-                var route = if (networkEnabled) "browser_network" else "browser_direct"
+                var route = if (bilibiliEnabled) "browser_bilibili" else if (networkEnabled) "browser_network" else "browser_direct"
                 val session by lazy { attempt.stage = "session"; cookies(page.url) }
-                val legacy = if (!networkEnabled || media.optBoolean("server")) media?.let {
+                val legacy = if (!browserQuality || media.optBoolean("server")) media?.let {
                     WebVideoBrowserCapture.formats(it, if (it.optBoolean("server")) org.json.JSONArray() else session)
                 } else null
                 val (info, initial) = WebVideoResolution.select(page, {
                     if (media?.optBoolean("server") == true) legacy
+                    else if (bilibiliEnabled) WebVideoBilibiliCapture.formats(page, media)
                     else if (networkEnabled) network.resolve(page, media)
                     else legacy?.takeIf { page.site in setOf("weibo", "tiktok", "instagram", "facebook", "twitter", "reddit") || !media?.optString("layout").isNullOrEmpty() }
                 }, {
                     attempt.check()
                     // Opt-in means keep the website's stream/quality. If that stream cannot be
                     // transferred, do not silently replace a member stream with a public preview.
-                    if (networkEnabled || publicPage == null) throw ExtractionFailure("browser_playback_required")
+                    if (browserQuality || publicPage == null) throw ExtractionFailure("browser_playback_required")
                     route = "extractor"
                     attempt.stage = "session"
                     val savedCookies = session
                     attempt.check()
                     try { extract(app, page, attempt, savedCookies) } catch (error: Exception) {
+                        if (pgc) throw error
                         val fallback = media?.let { WebVideoBrowserCapture.formats(it, savedCookies) } ?: throw error
                         route = "browser_direct"; fallback
                     }
                 }, capabilities, attempt::check, {
-                    if (networkEnabled) null else legacy?.also { route = "browser_direct" }
+                    if (browserQuality) null else legacy?.also { route = "browser_direct" }
                 })
-                if (networkEnabled && !WebVideoNetworkCapture.keepsQuality(initial.video, media))
+                if (browserQuality && !WebVideoNetworkCapture.keepsQuality(initial.video, media))
+                    throw ExtractionFailure("browser_playback_required")
+                if (pgc && kotlin.math.abs(initial.durationSeconds - media!!.getDouble("duration")) > maxOf(2.0, initial.durationSeconds * .01))
                     throw ExtractionFailure("browser_playback_required")
                 var selected = initial
                 attempt.stage = "projection"
@@ -108,7 +120,7 @@ internal class WebVideoResolver(private val context: () -> Context?, private val
                     (if (network.projections.containsKey(track.url)) network.projections[track.url] else inspectProjection(track, attempt))
                         ?: WebVideoPageProjection.parse(track.pageLayout)
                 var projection = projectionFor(selected.video)
-                if (projection != null && !networkEnabled) {
+                if (projection != null && !browserQuality) {
                     val immersive = WebVideoFormats.select(selected.page, info, WebVideoCapabilities(2160)::accepts)
                     if (immersive.video.formatId != selected.video.formatId) {
                         val actual = projectionFor(immersive.video)
@@ -127,7 +139,15 @@ internal class WebVideoResolver(private val context: () -> Context?, private val
                     if (latest.optBoolean("protected")) throw ExtractionFailure("protected_content")
                     if (latest.optString("capture_identity") != media.optString("capture_identity") || latest.optBoolean("network_enabled") != networkEnabled)
                         throw ExtractionFailure("browser_playback_required")
-                    if (networkEnabled && !WebVideoNetworkCapture.keepsQuality(selected.video, latest))
+                    if (pgc && WebVideoBilibiliCapture.episodePage(sourcePage, latest) != page)
+                        throw ExtractionFailure("browser_playback_required")
+                    if (bilibiliEnabled) {
+                        val current = WebVideoBilibiliCapture.formats(page, latest) ?: throw ExtractionFailure("browser_playback_required")
+                        val pair = WebVideoFormats.select(page, current, capabilities)
+                        if (pair.video.url != selected.video.url || pair.audio?.url != selected.audio?.url)
+                            throw ExtractionFailure("browser_playback_required")
+                    }
+                    if (browserQuality && !WebVideoNetworkCapture.keepsQuality(selected.video, latest))
                         throw ExtractionFailure("browser_playback_required")
                 }
                 synchronized(this) {
@@ -276,6 +296,7 @@ internal class WebVideoResolver(private val context: () -> Context?, private val
                 }
                 throw ExtractionFailure(when {
                     "drm" in diagnostic -> "protected_content"
+                    "bilibili preview" in diagnostic -> "browser_playback_required"
                     "impersonat" in diagnostic -> "browser_playback_required"
                     "fresh cookies" in diagnostic || "cookies are needed" in diagnostic -> "browser_session_required"
                     "sign in" in diagnostic || "login" in diagnostic || "logged-in" in diagnostic || "authentication is required" in diagnostic -> "login_required"

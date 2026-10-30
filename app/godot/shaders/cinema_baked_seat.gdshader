@@ -11,12 +11,20 @@ uniform vec3 film_right = vec3(0.0);
 uniform int debug_probe = 0;
 varying vec3 baked_light;
 
+// sRGB transfer without pow(): pow is log2 + exp2 per channel on the special-function unit, and these
+// conversions were ~40% of the Quest 3 eye buffer in the hall. Exact linear segments; the curved
+// segments are least-squares polynomials (decode in v, encode in sqrt(v)). Through this shader's
+// math, 8-bit output stays within 1 level of the exact curves, dark range included.
 vec3 decode_srgb(vec3 v) {
-	return mix(v / 12.92, pow((v + vec3(0.055)) / 1.055, vec3(2.4)), step(vec3(0.04045), v));
+	vec3 curve = 0.00100836226 + v * (0.0297539691 + v * (0.549324115 + v * (0.553066506 - v * 0.134897133)));
+	return mix(v / 12.92, curve, step(vec3(0.04045), v));
 }
 vec3 encode_srgb(vec3 v) {
-	v = max(v, vec3(0.0));
-	return mix(v * 12.92, 1.055 * pow(v, vec3(1.0 / 2.4)) - vec3(0.055), step(vec3(0.0031308), v));
+	// Values above 1 saturate in the framebuffer either way.
+	v = clamp(v, 0.0, 1.0);
+	vec3 r = sqrt(v);
+	vec3 curve = -0.0360567687 + r * (1.43859379 + r * (-0.921595833 + r * (0.825391838 - r * 0.307939627)));
+	return mix(v * 12.92, curve, step(vec3(0.0031308), v));
 }
 
 void vertex() {

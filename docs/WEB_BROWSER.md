@@ -25,3 +25,9 @@ The pinned GeckoView ARM64 artifact/source revision, MPL-2.0, yt-dlp/Android wra
 Windows are peers with explicit close, merge and tab-transfer controls. New tabs offer paginated featured sites/bookmarks. Handoff state belongs to its source page; other windows stay available. Native handoffs do not add global playback history. Multiple visible windows do not promise concurrent native video playback.
 
 Per-site media detection is opt-in. Eligible captured streams can retain the selected website quality, including compatible server direct-play/resume. A failed quality-preserving transfer returns to the browser instead of silently substituting a lower-quality preview. DRM/EME and unsupported containers stay in the website. Signed links, request headers and cookies are ephemeral session data, excluded from source. This release retains the pinned extractor/Python/QuickJS fallback; a future Gecko-only architecture is not implemented here.
+
+The optional Meta store target uses `quest_store`, enables the full browser/catalog, and has the separate `com.thru3d.quest` application identity. Request it explicitly with Build-Player `-QuestStore`; it does not replace either PICO channel.
+
+## Bilibili Play (Beta), 0.16.0
+
+The separate Beta button preserves the original Play route. It reads the active logged-in browser session and current UGC part/PGC episode responses, binds declared full-file tracks to actually observed requests and retains origin-scoped headers. It pauses source-page playback before resolution. Stale/cross-episode responses, absent tracks, DRM, unavailable entitlement, unsupported formats or site changes can return the user to the browser; member access is not universally supported and permissions are not bypassed. No account import, cookie/profile export or live media URL is part of this repository. Python/QuickJS/yt-dlp remain prepared runtime dependencies.

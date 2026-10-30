@@ -20,12 +20,12 @@ func _run() -> void:
 	var menu := Menu.new()
 	root.add_child(menu)
 	menu.attach_platform(platform)
-	for channel in ["standard", "pico_cn_store", "unknown"]:
+	for channel in ["standard", "pico_cn_store", "quest_store", "unknown"]:
 		ProjectSettings.set_setting(Channel.KEY, channel)
 		menu.section = Menu.Section.RECENT
 		menu.visible = true
 		menu.refresh()
-		var enabled: bool = channel in ["standard", "pico_cn_store"]
+		var enabled: bool = channel in ["standard", "pico_cn_store", "quest_store"]
 		var args := OS.get_cmdline_user_args()
 		if not args.is_empty():
 			DirAccess.make_dir_recursive_absolute(args[0])

@@ -107,6 +107,9 @@ void main() { result = vec4(texture(source, (transform * vec4(uv.x, 1.0-uv.y, 0.
 // Model input: each output pixel averages a 4x4 grid over its source footprint (eye UV).
 // A single bilinear tap at 6-12x decimation aliases fine texture into noise that flickers
 // frame to frame; the box average matches the area-resampled offline reference.
+// Outside the content rectangle (letterbox) the input is black, or with edge_fill (2D->3D) the
+// nearest content edge: ZipDepth reads a black band as a near object, which compresses the
+// picture's relief and adds a false near line along its edge.
 constexpr const char* scale_fragment = R"(#version 300 es
 precision highp float;
 uniform sampler2D source;
@@ -114,6 +117,7 @@ uniform vec4 content_rect;
 uniform vec4 eye_rect;
 uniform vec2 eye_size;
 uniform vec2 footprint;
+uniform bool edge_fill;
 in highp vec2 uv;
 out vec4 result;
 vec3 tap(vec2 p) {
@@ -122,7 +126,8 @@ vec3 tap(vec2 p) {
 }
 void main() {
     vec2 p = (uv-content_rect.xy)/content_rect.zw;
-    if (any(lessThan(p,vec2(0.0))) || any(greaterThan(p,vec2(1.0)))) { result=vec4(0.0,0.0,0.0,1.0); return; }
+    if (edge_fill) p=clamp(p,vec2(0.0),vec2(1.0));
+    else if (any(lessThan(p,vec2(0.0))) || any(greaterThan(p,vec2(1.0)))) { result=vec4(0.0,0.0,0.0,1.0); return; }
     if (max(footprint.x*eye_size.x, footprint.y*eye_size.y) < 1.5) { result=vec4(tap(p),1.0); return; }
     vec3 sum=vec3(0.0);
     for (int j=0;j<4;++j) for (int i=0;i<4;++i) sum+=tap(p+(vec2(float(i),float(j))+0.5)*footprint*0.25-footprint*0.5);
@@ -139,6 +144,7 @@ uniform vec4 eye_rect;
 uniform vec2 eye_size;
 uniform vec2 footprint;
 uniform vec2 uv_scale;
+uniform bool edge_fill;
 in highp vec2 uv;
 out vec4 result;
 vec3 tap(vec2 p) {
@@ -147,7 +153,8 @@ vec3 tap(vec2 p) {
 }
 void main() {
     vec2 p = (uv-content_rect.xy)/content_rect.zw;
-    if (any(lessThan(p,vec2(0.0))) || any(greaterThan(p,vec2(1.0)))) { result=vec4(0.0,0.0,0.0,1.0); return; }
+    if (edge_fill) p=clamp(p,vec2(0.0),vec2(1.0));
+    else if (any(lessThan(p,vec2(0.0))) || any(greaterThan(p,vec2(1.0)))) { result=vec4(0.0,0.0,0.0,1.0); return; }
     if (max(footprint.x*eye_size.x, footprint.y*eye_size.y) < 1.5) { result=vec4(tap(p),1.0); return; }
     vec3 sum=vec3(0.0);
     for (int j=0;j<4;++j) for (int i=0;i<4;++i) sum+=tap(p+(vec2(float(i),float(j))+0.5)*footprint*0.25-footprint*0.5);
@@ -567,6 +574,7 @@ struct Bridge final {
     uint64_t input_stages = 0, copy_pending_polls = 0, retire_pending_polls = 0, slot_exhaustions = 0;
     std::array<float, 4> content_rect{{0, 0, 1, 1}};
     bool zero_copy = false;
+    bool edge_fill = false; // 2D->3D: letterbox in the model input repeats the content edge
     bool borrow = false; // capture_texture keeps the producer texture instead of copying it
     uint64_t borrows = 0, decoder_captures = 0;
     std::array<SharedImage, 2> zc_scout_out; // one scout runs at a time; read on the CPU right after
@@ -812,13 +820,16 @@ struct Bridge final {
         glUniform1i(glGetUniformLocation(prog, "source"), 0); glUniform4fv(glGetUniformLocation(prog, "content_rect"), 1, rect);
         glUniform2f(glGetUniformLocation(prog, "eye_size"), eye_width(), eye_height());
         glUniform2f(glGetUniformLocation(prog, "footprint"), 1.f / input_width / rect[2], 1.f / input_height / rect[3]);
+        glUniform1i(glGetUniformLocation(prog, "edge_fill"), edge_fill ? 1 : 0);
         return prog;
     }
     void stage_inputs(Slot& slot, const float* rect, const std::array<GLuint, 2>& pbos) {
         input_stages++;
         target(small, input_width, input_height);
         const GLuint prog = bind_scale(slot, rect);
-        for (int eye = 0; eye < 2; ++eye) {
+        // Mono eyes have identical model input. One draw/readback also serves RVM's
+        // second host plane; stereo keeps two independent captures.
+        for (int eye = 0; eye < (layout == 0 ? 1 : 2); ++eye) {
             eye_rect(prog, eye);
             glDrawArrays(GL_TRIANGLES, 0, 3); glBindBuffer(GL_PIXEL_PACK_BUFFER, pbos[eye]);
             // Only the model-size render target is ever read back. RGBA rows are 4-byte aligned.
@@ -1492,6 +1503,13 @@ Java_org_vrpassthroughplayer_plugin_RenderBridgeNative_enableBorrowedColor(JNIEn
         return JNI_TRUE;
     } catch (const std::exception& e) { error(env, e.what()); return JNI_FALSE; }
 }
+extern "C" JNIEXPORT jboolean JNICALL
+Java_org_vrpassthroughplayer_plugin_RenderBridgeNative_enableEdgeFill(JNIEnv* env, jclass, jlong id) {
+    try {
+        std::lock_guard<std::mutex> guard(registry_mutex); find(id).edge_fill = true;
+        return JNI_TRUE;
+    } catch (const std::exception& e) { error(env, e.what()); return JNI_FALSE; }
+}
 // {input L, input R, alpha L, alpha R} AHardwareBuffer handles of a held slot (or its scout set).
 extern "C" JNIEXPORT jlongArray JNICALL
 Java_org_vrpassthroughplayer_plugin_RenderBridgeNative_zeroCopyBuffers(JNIEnv* env, jclass, jlong id, jlong token, jboolean scout) {
@@ -1601,31 +1619,37 @@ Java_org_vrpassthroughplayer_plugin_RenderBridgeNative_stats(JNIEnv* env, jclass
         return env->NewStringUTF(json.c_str());
     } catch (const std::exception& e) { error(env, e.what()); return nullptr; }
 }
-static jboolean read_inputs(JNIEnv* env, jlong id, jlong token, jobject left, jobject right, bool scout) {
+static jboolean read_inputs(JNIEnv* env, jlong id, jlong token, jobject left, jobject right, bool scout, bool mono = false) {
     try {
         std::lock_guard<std::mutex> guard(registry_mutex); auto& bridge = find(id); auto& slot = bridge.find(token);
         if (slot.phase != Phase::held) return JNI_FALSE;
+        if (mono && bridge.layout != 0) throw std::runtime_error("Mono model input requires mono color");
         if (scout && !slot.scout_staged) throw std::runtime_error("No ROI scout input was staged for this color");
         const auto& pbos = scout ? slot.scout_pbo : slot.pbo;
         const size_t plane = static_cast<size_t>(bridge.input_width)*bridge.input_height;
         const size_t output_bytes = plane*3*sizeof(float);
-        std::array<float*, 2> outputs{{float_buffer(env, left, output_bytes), float_buffer(env, right, output_bytes)}};
+        std::array<float*, 2> outputs{{float_buffer(env, left, output_bytes), mono ? nullptr : float_buffer(env, right, output_bytes)}};
         const auto a = reinterpret_cast<uintptr_t>(outputs[0]), b = reinterpret_cast<uintptr_t>(outputs[1]);
-        if ((a <= b && b-a < output_bytes) || (b < a && a-b < output_bytes)) throw std::runtime_error("Render bridge CHW outputs overlap");
+        if (!mono && ((a <= b && b-a < output_bytes) || (b < a && a-b < output_bytes))) throw std::runtime_error("Render bridge CHW outputs overlap");
         State state;
-        for (int eye = 0; eye < 2; ++eye) {
+        for (int eye = 0; eye < (bridge.layout == 0 ? 1 : 2); ++eye) {
             glBindBuffer(GL_PIXEL_PACK_BUFFER, pbos[eye]);
             const auto* rgba = static_cast<const unsigned char*>(glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, plane*4, GL_MAP_READ_BIT));
             if (!rgba) throw std::runtime_error("Render bridge PBO map failed");
             for (int channel = 0; channel < 3; ++channel) for (size_t i = 0; i < plane; ++i) outputs[eye][channel*plane+i] = rgba[i*4+channel]/255.f;
             if (!glUnmapBuffer(GL_PIXEL_PACK_BUFFER)) throw std::runtime_error("Render bridge PBO storage corrupted");
         }
+        if (bridge.layout == 0 && !mono) std::memcpy(outputs[1], outputs[0], output_bytes);
         return JNI_TRUE;
     } catch (const std::exception& e) { error(env, e.what()); return JNI_FALSE; }
 }
 extern "C" JNIEXPORT jboolean JNICALL
 Java_org_vrpassthroughplayer_plugin_RenderBridgeNative_readInputs(JNIEnv* env, jclass, jlong id, jlong token, jobject left, jobject right) {
     return read_inputs(env, id, token, left, right, false);
+}
+extern "C" JNIEXPORT jboolean JNICALL
+Java_org_vrpassthroughplayer_plugin_RenderBridgeNative_readMonoInput(JNIEnv* env, jclass, jlong id, jlong token, jobject rgb) {
+    return read_inputs(env, id, token, rgb, nullptr, false, true);
 }
 extern "C" JNIEXPORT jboolean JNICALL
 Java_org_vrpassthroughplayer_plugin_RenderBridgeNative_readScoutInputs(JNIEnv* env, jclass, jlong id, jlong token, jobject left, jobject right) {

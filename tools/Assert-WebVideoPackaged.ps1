@@ -18,7 +18,7 @@ try {
     )
     $bootstrap = Join-Path $root 'android/player-plugin/src/main/assets/web-video/extract.py'
     $checks += @{ name='assets/web-video/extract.py'; bytes=(Get-Item $bootstrap).Length; sha256=(Get-FileHash $bootstrap).Hash }
-    foreach ($name in @('manifest.json', 'media.js', 'background.js', 'network.js')) {
+    foreach ($name in @('manifest.json', 'media.js', 'background.js', 'network.js', 'bilibili.js', 'bilibili-response.js')) {
         $path = Join-Path $root "android/web-browser/src/main/assets/web-browser/$name"
         $checks += @{ name="assets/web-browser/$name"; bytes=(Get-Item $path).Length; sha256=(Get-FileHash $path).Hash }
     }

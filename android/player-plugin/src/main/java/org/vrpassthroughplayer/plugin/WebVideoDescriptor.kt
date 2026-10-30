@@ -29,6 +29,10 @@ internal data class WebVideoPage(val site: String, val id: String, val url: Stri
                 return WebVideoPage("youtube", id, "https://www.youtube.com/watch?v=$id")
             }
             if (host in setOf("bilibili.com", "www.bilibili.com", "m.bilibili.com")) {
+                Regex("/bangumi/play/((?:ep|ss)[1-9][0-9]{0,19})/?").matchEntire(uri.path)?.let {
+                    val id = it.groupValues[1]
+                    return WebVideoPage("bilibili", "$id:1", "https://www.bilibili.com/bangumi/play/$id")
+                }
                 val match = Regex("/video/(BV[A-Za-z0-9]{10}|av[0-9]+)(?:/)?").matchEntire(uri.path)
                 require(match != null) { "Choose a Bilibili video" }
                 val id = match.groupValues[1]

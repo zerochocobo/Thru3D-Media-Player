@@ -5,7 +5,7 @@ import kotlin.math.ceil
 import kotlin.math.max
 import kotlin.math.min
 
-/** Coarse foreground observations. Base relief reuses low-frequency ROI readbacks; optional DA2
+/** Coarse foreground observations. Base relief reuses low-frequency ROI readbacks; optional ZipDepth
  * alignment passes a current 64-grid Alpha. ROI coordinates always map back to source UV. */
 internal object PortraitMask {
     data class Observation(val bounds: List<Double>, val subjects: Int, val cropped: Boolean)

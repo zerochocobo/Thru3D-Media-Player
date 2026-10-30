@@ -101,12 +101,21 @@ func run() -> void:
 	check(bridge.requests.back() == [3,false], "Turning off relief releases the second model")
 	video.platform = null; video.media.session_id = 0
 	video.stereo_sbs = true
-	check(not video.portrait_requested(), "Native stereo is unchanged")
+	check(video.flat_passthrough_requested() and not video.portrait_requested(), "Native stereo shares cutout placement without synthetic relief")
+	var requests_before := bridge.requests.size()
+	video.platform = bridge; video.media.session_id = 3
+	video._sync_portrait()
+	check(bridge.requests.size() == requests_before and not video.portrait.active, "Native stereo never requests mono depth enhancement")
+	video.platform = null; video.media.session_id = 0
 	var menu := Menu.new(); root.add_child(menu)
 	menu._state = {"has_video":true,"geometry":0,"stereo":false}
 	check(menu._enabled("alpha"), "Alpha offered on ordinary 2D")
 	menu._state.stereo = true
-	check(not menu._enabled("alpha"), "Flat stereo eligibility unchanged")
+	check(menu._enabled("alpha") and not menu._enabled("depth"), "Flat stereo offers cutout without 2D conversion")
+	menu._state.packed_mask = true
+	check(not menu._enabled("alpha"), "Packed masks still exclude live matting")
+	menu._state.packed_mask = false; menu._state.geometry = 3
+	check(not menu._enabled("alpha"), "Ordinary 360 eligibility unchanged")
 	var mode := {"profile":"320x320","geometry":0,"stereo_sbs":false,"swap_eyes":false,"alpha_requested":false,
 		"portrait_auto":false,"portrait_strength":.4,"portrait_enhanced":true}
 	check(Memory.valid_mode(mode), "Portrait preferences accepted")

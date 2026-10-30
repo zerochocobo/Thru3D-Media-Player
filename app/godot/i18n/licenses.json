@@ -105,6 +105,15 @@
     ]
   },
   {
+    "id": "zipdepth",
+    "name": "ZipDepth",
+    "license": "MIT",
+    "assets": [
+      "player-licenses/model-adaptations.txt",
+      "player-licenses/zipdepth.txt"
+    ]
+  },
+  {
     "id": "media3",
     "name": "AndroidX Media3 1.11.1",
     "license": "Apache-2.0",
