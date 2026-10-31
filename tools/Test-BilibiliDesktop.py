@@ -52,6 +52,7 @@ def main():
     parser.add_argument('--seconds', type=int, default=12)
     parser.add_argument('--inspect-pgc', action='store_true', help='Collect public DOM/endpoint shapes; this is not a playback pass')
     parser.add_argument('--single', action='store_true', help='Test first load and reload without selecting a second part')
+    parser.add_argument('--recommendations', type=int, choices=[0, 1, 2], default=0, help='Click visible sidebar recommendations without reloading')
     args = parser.parse_args()
     parsed = urllib.parse.urlparse(args.url)
     if parsed.scheme != 'https' or parsed.netloc != 'www.bilibili.com' or not re.fullmatch(r'/(?:video/(BV[A-Za-z0-9]+|av[0-9]+)|bangumi/play/(?:ss|ep)[1-9][0-9]*)/?', parsed.path):
@@ -87,10 +88,10 @@ def main():
     def command(path, data=None): return call('POST', '/session/' + session + path, data)
     def script(source): return command('/execute/sync', {'script': source, 'args': []})
     evidence = {'source_sha256': hashes, 'scope': 'anonymous desktop Firefox; no Android acceptance', 'stages': []}
-    def checkpoint(name, part):
+    def checkpoint(name, part, expected_path=None):
         started = time.monotonic()
         while time.monotonic() - started < max(20, args.seconds):
-            if reports and reports[-1].get('part') == part and reports[-1].get('captured_video', 0) > 0 and reports[-1].get('captured_audio', 0) > 0:
+            if reports and (expected_path is None or reports[-1].get('page_path') == expected_path) and reports[-1].get('part') == part and reports[-1].get('captured_video', 0) > 0 and reports[-1].get('captured_audio', 0) > 0:
                 break
             time.sleep(.25)
         evidence['stages'].append({'name': name, 'wait_seconds': round(time.monotonic() - started, 2),
@@ -119,8 +120,16 @@ def main():
             clicked_pgc = script("const a=[...document.querySelectorAll('button[class*=PlayerEpisodePanel_episodeRow__]')].find(e=>!e.className.includes('episodeRowActive')); if(a)a.click();return !!a;")
             if clicked_pgc:
                 time.sleep(6); checkpoint('pgc_selected', 1)
-        clicked = False if args.single else script("const a=[...document.querySelectorAll('a[href*=\"?p=\"]')].find(a=>new URL(a.href).searchParams.get('p')==='2') || document.querySelectorAll('.video-pod__item')[1]; if(a){a.click();return true} return false;")
-        if clicked:
+        clicked = False if args.single or args.recommendations else script("const a=[...document.querySelectorAll('a[href*=\"?p=\"]')].find(a=>new URL(a.href).searchParams.get('p')==='2') || document.querySelectorAll('.video-pod__item')[1]; if(a){a.click();return true} return false;")
+        if args.recommendations:
+            for index in range(args.recommendations):
+                reports.clear()
+                target = script("const a=[...document.querySelectorAll('a.video-awesome-img')].find(a=>a.getBoundingClientRect().width>0&&new URL(a.href).pathname!==location.pathname); if(!a)return null; a.scrollIntoView({block:'center'});const r=a.getBoundingClientRect();return {path:new URL(a.href).pathname,x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)};")
+                if not target: break
+                command('/actions', {'actions':[{'type':'pointer','id':'sidebar','parameters':{'pointerType':'mouse'},'actions':[
+                    {'type':'pointerMove','duration':100,'x':target['x'],'y':target['y']}, {'type':'pointerDown','button':0}, {'type':'pointerUp','button':0}]}]})
+                checkpoint('recommendation_' + str(index + 1), 1, target['path'])
+        elif clicked:
             checkpoint('part_two', 2)
             reports.clear()
             command('/refresh', {})
@@ -132,10 +141,12 @@ def main():
             script("document.querySelector('video')?.play().catch(()=>{}); return true;")
             checkpoint('reload', int(urllib.parse.parse_qs(parsed.query).get('p', ['1'])[0]))
         evidence['reports_received'] = len(reports)
-        evidence['passed'] = len(evidence['stages']) == (2 if args.single else 3) and all(
+        evidence['passed'] = len(evidence['stages']) == (1 + args.recommendations if args.recommendations else 2 if args.single else 3) and all(
             stage['latest'] and stage['latest'].get('binding') == 'matched' and
             stage['latest'].get('captured_video', 0) > 0 and stage['latest'].get('captured_audio', 0) > 0
             for stage in evidence['stages'])
+        if args.recommendations:
+            evidence['passed'] = evidence['passed'] and len({stage['latest'].get('document_sequence') for stage in evidence['stages'] if stage['latest']}) == 1
         (run / 'summary.json').write_text(json.dumps(evidence, ensure_ascii=False, indent=2), encoding='utf8')
         print(json.dumps({'browser_version': evidence['browser_version'], 'passed': evidence['passed'],
                           'stages': [{k: stage['latest'].get(k) for k in ['part', 'binding', 'response_status', 'captured_video', 'captured_audio']}

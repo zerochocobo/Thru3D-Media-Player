@@ -6,7 +6,8 @@ This directory retains upstream license texts, source locks, checksums and prove
 - `mpv`: headers/provenance, exact source archives, library reference receipt and GPL/LGPL texts. The project's source-frame modification is in `native/mpv/patches`.
 - `p115rsacipher`: original MIT notice and provenance for the Kotlin 115 RSA adaptation.
 - `gradle`: wrapper Apache-2.0 license and notice.
-- `polyhaven`: CC0 source and attribution for Belfast Sunset and the derived Morning Sky background; image notices and the conversion recipe accompany the source.
+- `polyhaven`: CC0 source and attribution for Belfast Sunset and the derived Morning Sky background; image notices, provenance and the conversion recipe accompany the source.
+- `eso`: [The Milky Way panorama](https://www.eso.org/public/images/eso0932a/) (eso0932a), credited to **ESO/S. Brunier** under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). The unmodified 6000 x 3000 image is the third panorama in global and photo background settings. Its [notice](eso/NOTICE.txt), full license and provenance retain this separate image license; both selection panels and the About reader include the credit.
 - `openlist`: AGPL-3.0 upstream license, Go/gomobile and dependency notices; the local Go adapter is in `cloud/openlist`, with the checksum-pinned build and source modification in `tools/environment/Prepare-OpenList.ps1`.
 
 Godot, Godot OpenXR Vendors, MNN, ncnn and Maven dependencies are prepared externally. Keep their exact-version notices with redistributed outputs. The MNN fork is built from upstream 3.6.1 plus `tools/mnn/patch_mnn_vrpp.py`; models use their separately recorded licenses.

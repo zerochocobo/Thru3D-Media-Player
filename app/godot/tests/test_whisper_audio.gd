@@ -90,7 +90,7 @@ func run() -> void:
 	var normal_span: Vector2 = menu.VOLUME_SPAN
 	check(menu._buttons.filter(func(b): return b.target == Menu.WHISPER).size() == 1, "Only one enhancement button; no small preset targets")
 	for button in menu._buttons:
-		if button.target == Menu.WHISPER: check(button.rect.size.y >= 0.08 and button.rect.size.x >= 0.085, "Enhancement keeps a tall ray hit target within the original slim popup")
+		if button.target == Menu.WHISPER: check(button.rect.size.y < 0.08 and button.rect.size.x < 0.085 and button.rect.size.x <= 0.1 - 0.02, "Compact enhancement stays within the slim popup with side margins")
 	check(tap(menu, Menu.WHISPER) and video.audio_whisper == 1 and host.writes.size() == writes, "Enhance expands rail at current volume without changing system volume")
 	check(menu.VOLUME_SPAN == normal_span and is_instance_valid(menu._boost_fill), "Expansion adds a yellow segment without rescaling the original rail")
 	check(video.whisper_memory.lookup(video.local_uri).is_empty(), "Do not save before native confirmation")

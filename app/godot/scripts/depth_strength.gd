@@ -1,6 +1,7 @@
 extends RefCounted
-## Shared parallax scale: videos stop at 100%, photos retain their 200% range.
+## Shared parallax scale. Video boost extends the normal 100% rail to 200%; photos keep their own mapping.
 const MAX := 1.0
+const VIDEO_MAX := 2.0
 const PHOTO_MAX := 2.0 # photo_limit_gradient keeps 200% hole fills clean
 const DEFAULT := 1.0
 const VIDEO_DEFAULT := 0.5
@@ -29,7 +30,7 @@ static func migrate_video_scale(settings: ConfigFile) -> bool:
 static func load_preference(settings: ConfigFile, for_photo: bool) -> float:
 	var fallback := PHOTO_DEFAULT if for_photo else VIDEO_DEFAULT
 	var value: Variant = settings.get_value("photo" if for_photo else "video", "depth_strength", fallback)
-	return remembered(float(value), PHOTO_MAX if for_photo else MAX, fallback) if value is float or value is int else fallback
+	return remembered(float(value), PHOTO_MAX if for_photo else VIDEO_MAX, fallback) if value is float or value is int else fallback
 
 ## Video uses the whole track linearly for 0..100%. Photos retain their wider
 ## range: the first fifth covers 0..50%, then the rest reaches 200% linearly.

@@ -34,14 +34,14 @@ func snapshot(name: String) -> void:
 		if menu._adjustment == "color_grade" and button.target in [440, Menu.GRADE_PAGE_RESET]:
 			var label: Label3D = button.node.get_child(0)
 			check(menu.text_width(label.text, label.font_size / menu.TEXT_RASTER_SCALE) < button.rect.size.x - 0.025, name + ": page/whole reset caption fits")
-		var reset: bool = button.has("reset_slider") or button.target == Menu.DEPTH_RESET or menu.choices.targets.get(button.target, {}).get("kind", "") == "reset"
+		var reset: bool = button.has("reset_slider") or button.target == Menu.DEPTH_OFF or menu.choices.targets.get(button.target, {}).get("kind", "") == "reset"
 		if not reset: continue
 		var origin: Vector3 = button.node.to_global(Vector3(0, 0, 1))
 		check(not button.enabled or menu.ray_hit(origin, -button.node.global_basis.z).get("target") == button.target, name + ": reset is reachable without touching another slider")
 		if button.has("reset_slider"):
 			var point: Vector3 = menu.to_local(button.node.global_position)
 			check(absf(point.x) + button.rect.size.x * 0.5 < menu._backdrop.mesh.size.x * 0.5, name + ": reset stays inside panel")
-		check(menu._tips.get(button.target) == I18n.t("Reset"), name + ": reset tooltip is translated")
+		check(menu._tips.get(button.target) == I18n.t("Turn off 3D" if button.target == Menu.DEPTH_OFF else "Reset"), name + ": action tooltip is translated")
 	for slider in menu.choices.sliders.values():
 		check(menu.text_width(slider.label.text, 18) <= 0.125, name + ": subtitle/FPS value fits beside the reset icon")
 	check(viewport.get_texture().get_image().save_png(output.path_join(name + ".png")) == OK, "Save " + name)

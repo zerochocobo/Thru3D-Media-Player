@@ -2,15 +2,35 @@ extends "res://scripts/ray_menu.gd"
 ## Independent browser chrome. Reuses RayMenu hit testing and InterfaceMove placement math.
 const Move := preload("res://scripts/interface_move.gd")
 const Surface := preload("res://scripts/web_browser_surface.gd")
+const Focus := preload("res://scripts/web_browser_focus.gd")
 const RECT := Rect2(-0.59, -0.48, 1.44, 0.90)
+const HEADER := Rect2(-0.60, 0.42, 1.46, 0.416)
+const TOOL_SIZE := Vector2(0.12, 0.12)
+const PLAY_Y := 0.50
+const NAV_Y := 0.632
+const TABS_Y := 0.764
+var toolbar_shown := true
 const MOVE := 986030
 const WEB := 986020
 const RESIZE := 986031
 const RESIZE_RIGHT := 986032
 const RESIZE_BOTTOM := 986033
+const SELECT := 986019
 const MIN_PAGE := Vector2(1.44, 1.44 / Surface.MAX_RATIO)
 const MAX_PAGE := Vector2(2.88, 1.80)
 var page_size := RECT.size
+var selecting := false
+var selection := Rect2()
+var _selection_context := Vector2i.ZERO
+var _feedback: Node3D
+var _press_uv := Vector2.ZERO
+var _press_until := 0
+var _progress: MeshInstance3D
+var _progress_value := 0.0
+var _was_loading := false
+var _progress_until := 0
+var _feedback_page := -1
+var _feedback_error := ""
 var CENTRE: Vector3:
 	get: return Vector3(0.13 + (page_size.x - RECT.size.x) / 2, -(page_size.y - RECT.size.y) / 2, 0)
 var controller: WeakRef
@@ -90,7 +110,7 @@ func cinema() -> Dictionary:
 	return browser.cinema_provider.call() if browser.cinema_provider.is_valid() else {}
 func on_screen() -> bool: return mode == "cinema" and not cinema().is_empty()
 func move_centre() -> Vector3:
-	return Vector3(0.13, 0.04 if (browser.tabs_open and browser.focused_window == window_id) or browser.start_page.active(window_id) else 0.505, 0) if on_screen() else CENTRE
+	return Vector3(0.13, 0.04 if browser.tabs_open and browser.focused_window == window_id else 0.158 if browser.start_page.active(window_id) else HEADER.get_center().y, 0) if on_screen() else CENTRE
 func move_target(key: String) -> Dictionary:
 	return {"node": self, "kind": "detail", "key": key, "pose": global_transform, "upright_facing": true, "face_center": move_centre()}
 func set_mode(value: String) -> void:
@@ -121,7 +141,7 @@ func _sync_presentation() -> void:
 		_near_applied = global_transform
 	elif _screen_attached:
 		global_transform = _floating_pose; _screen_attached = false; _near_pose = null; _near_applied = null
-func page_layout() -> Dictionary:
+func full_page_layout() -> Dictionary:
 	if on_screen():
 		var screen := cinema()
 		var size := page_size * minf(float(screen.width) / page_size.x, float(screen.height) / page_size.y)
@@ -133,6 +153,109 @@ func page_layout() -> Dictionary:
 	var size := page_size * Vector2(pose.basis.get_scale().x, pose.basis.get_scale().y)
 	pose.basis = pose.basis.orthonormalized()
 	return {"pose": pose, "size": size}
+func focus_tab() -> int:
+	return int(browser.window_state(window_id).get("tab_id", window_id))
+func focus_crop() -> Rect2:
+	return browser.focus_regions.get(focus_tab(), Focus.FULL)
+func is_focused() -> bool: return focus_crop() != Focus.FULL
+func source_point(uv: Vector2) -> Vector2:
+	return Focus.map_point(uv, focus_crop())
+func page_layout() -> Dictionary:
+	var layout := full_page_layout()
+	layout.size = Focus.fitted(layout.size, Vector2(Surface.pixels_for(page_size, browser.low_end)), focus_crop())
+	return layout
+func toggle_focus() -> void:
+	end_drag()
+	if selecting: selecting = false
+	elif is_focused(): browser.focus_regions.erase(focus_tab())
+	else:
+		selecting = true; selection = Rect2()
+		_selection_context = Vector2i(focus_tab(), int(browser.window_state(window_id).get("navigation", 0)))
+	refresh()
+func sync_page_state() -> void:
+	var context := Vector2i(focus_tab(), int(browser.window_state(window_id).get("navigation", 0)))
+	if selecting and context != _selection_context:
+		selecting = false; end_drag(); refresh()
+func show_press(uv: Vector2) -> void:
+	_press_uv = uv; _press_until = Time.get_ticks_msec() + 280
+func finish_selection() -> void:
+	if Focus.valid(selection):
+		browser.focus_regions[focus_tab()] = selection
+		selecting = false
+	end_drag(); refresh()
+func _create_feedback() -> void:
+	if is_instance_valid(_feedback): return
+	_feedback = Node3D.new(); _feedback.set_meta("menu_eye_buffer", true); add_child(_feedback)
+	# Persistent, inexpensive eye-buffer overlays; never rebuild the chrome for each progress tick.
+	for spec in [["background", Color("10141b"), 24], ["progress", ACCENT, 27], ["press", ACCENT, 27]]:
+		var mesh := _quad(Vector2.ONE, Vector3.ZERO, spec[1], spec[2])
+		mesh.name = spec[0]; mesh.visible = false
+		mesh.material_override.set_shader_parameter("corner_radius", 0.0)
+		_feedback.add_child(mesh)
+	for index in 8:
+		var mesh := _quad(Vector2.ONE, Vector3.ZERO, Color(0.02, 0.03, 0.04, 0.60) if index < 4 else ACCENT, 26)
+		mesh.name = "selection" + str(index); mesh.visible = false
+		mesh.material_override.set_shader_parameter("corner_radius", 0.0)
+		_feedback.add_child(mesh)
+	_progress = _feedback.get_node("progress")
+func _feedback_rect(mesh: MeshInstance3D, rect: Rect2, z: float = 0.003) -> void:
+	mesh.visible = rect.size.x > 0.00001 and rect.size.y > 0.00001
+	if not mesh.visible: return
+	if mesh.mesh.size != rect.size:
+		mesh.mesh.size = rect.size
+		mesh.material_override.set_shader_parameter("surface_size", rect.size)
+	mesh.position = Vector3(rect.get_center().x, rect.get_center().y, z)
+func _update_feedback() -> void:
+	_create_feedback()
+	_feedback.visible = visible and not browser.start_page.active(window_id) and not (browser.tabs_open and browser.focused_window == window_id)
+	if not _feedback.visible: return
+	var frame := full_page_layout()
+	_feedback.global_transform = frame.pose
+	var size: Vector2 = frame.size
+	var page: Vector2 = page_layout().size
+	var backing: MeshInstance3D = _feedback.get_node("background")
+	_feedback_rect(backing, Rect2(-size / 2, size), -0.001)
+	backing.visible = is_focused()
+	var state: Dictionary = browser.window_state(window_id)
+	var now := Time.get_ticks_msec()
+	if _feedback_page != focus_tab():
+		_feedback_page = focus_tab(); _was_loading = false; _progress_until = 0; _progress_value = 0; _press_until = 0; _feedback_error = ""
+	var loading: bool = state.get("loading", false)
+	var error := str(state.get("error", ""))
+	if loading:
+		if not _was_loading: _progress_value = 0
+		_progress_value = maxf(_progress_value, clampf(float(state.get("progress", 0)) / 100.0, 0.035, 0.97))
+	elif _was_loading: _progress_value = 1.0; _progress_until = now + (900 if not error.is_empty() else 250)
+	if not error.is_empty() and error != _feedback_error:
+		_progress_value = 1.0; _progress_until = now + 900
+	_was_loading = loading; _feedback_error = error
+	_feedback_rect(_progress, Rect2(-size.x / 2, -size.y / 2 - 0.004, size.x * _progress_value, 0.004))
+	_progress.material_override.set_shader_parameter("surface_color", Color("ef8d80") if not error.is_empty() else ACCENT)
+	_progress.visible = loading or now < _progress_until
+	var press: MeshInstance3D = _feedback.get_node("press")
+	var remaining := clampf(float(_press_until - now) / 280.0, 0, 1)
+	var diameter := minf(page.x, page.y) * (0.018 + 0.018 * (1.0 - remaining))
+	var centre := Vector2((_press_uv.x - 0.5) * page.x, (0.5 - _press_uv.y) * page.y)
+	_feedback_rect(press, Rect2(centre - Vector2.ONE * diameter / 2, Vector2.ONE * diameter))
+	press.material_override.set_shader_parameter("corner_radius", diameter / 2)
+	press.material_override.set_shader_parameter("surface_color", Color(ACCENT, remaining * 0.8))
+	press.visible = remaining > 0 and not selecting
+	if not selecting or not selection.has_area():
+		for index in 8: _feedback.get_node("selection" + str(index)).visible = false
+		return
+	# Dim only outside the selected rectangle; the content inside remains readable.
+	var box := Rect2(Vector2((selection.position.x - 0.5) * size.x, (0.5 - selection.end.y) * size.y), selection.size * size)
+	var masks := [Rect2(-size / 2, Vector2(box.position.x + size.x / 2, size.y)),
+		Rect2(Vector2(box.end.x, -size.y / 2), Vector2(size.x / 2 - box.end.x, size.y)),
+		Rect2(Vector2(box.position.x, -size.y / 2), Vector2(box.size.x, box.position.y + size.y / 2)),
+		Rect2(Vector2(box.position.x, box.end.y), Vector2(box.size.x, size.y / 2 - box.end.y))]
+	var thickness := minf(size.x, size.y) * 0.003
+	masks.append_array([Rect2(box.position, Vector2(box.size.x, thickness)), Rect2(Vector2(box.position.x, box.end.y - thickness), Vector2(box.size.x, thickness)),
+		Rect2(box.position, Vector2(thickness, box.size.y)), Rect2(Vector2(box.end.x - thickness, box.position.y), Vector2(thickness, box.size.y))])
+	for index in 8:
+		var mesh: MeshInstance3D = _feedback.get_node("selection" + str(index))
+		_feedback_rect(mesh, masks[index])
+		mesh.visible = mesh.visible and selecting and selection.has_area()
 func page_point(origin: Vector3, direction: Vector3) -> Variant:
 	var layout := page_layout()
 	var point: Variant = project_pointer(origin, direction, global_transform.affine_inverse() * layout.pose)
@@ -146,6 +269,7 @@ func _process(_delta: float) -> void:
 		return
 	if visible:
 		_sync_presentation()
+		_update_feedback()
 		if not _screen_attached and not global_transform.is_equal_approx(_last_pose):
 			_last_pose = global_transform; _save_at = Time.get_ticks_msec() + 700
 		if _save_at > 0 and drag.is_empty() and Time.get_ticks_msec() >= _save_at:
@@ -162,6 +286,9 @@ func _draw() -> void:
 	_clear_layout()
 	_sync_presentation()
 	if browser: browser.draw_window(self)
+	if browser:
+		_create_feedback()
+		_pointer_panels.append(_feedback.get_node("background"))
 	# Disabled controls still occlude other windows and the header drag surface.
 	for button in _buttons: button.hover_disabled = true
 	# Above the distant page's alpha hole (25) yet below MenuComposition.POPUP_PRIORITY (30):
@@ -177,6 +304,10 @@ func _draw() -> void:
 			if button.target != WEB: _raise_chrome(button.node)
 		for label in _labels: _raise_chrome(label)
 		for decoration in _decorations: _raise_chrome(decoration)
+
+func toolbar_bounds() -> Rect2:
+	return HEADER if on_screen() else Rect2(HEADER.position, Vector2(page_size.x + 0.02, HEADER.size.y))
+
 func _raise_chrome(node: Node) -> void:
 	if node is Label3D:
 		if not node.has_meta("browser_priority"): node.set_meta("browser_priority", node.render_priority)
@@ -222,14 +353,14 @@ func _local_grab_hit(origin: Vector3, direction: Vector3) -> Dictionary:
 	if not visible: return {}
 	var hit := local_hit(origin, direction)
 	# In cinema mode only the near controls move; the page stays on the far screen.
-	if on_screen() and int(hit.get("target", -1)) == WEB: return {}
+	if on_screen() and int(hit.get("target", -1)) in [WEB, NONE]: return {}
 	if not hit.is_empty(): hit.window = window_id
 	return hit
 func draw_frame_panels() -> void:
 	# The separate web layer sits below the menu layers. Capture a transparent
 	# centre rather than an opaque backdrop that would paint over the page.
 	var page := page_rect()
-	var header := Rect2(-0.60, 0.42, page.size.x + 0.02, 0.17)
+	var header := Rect2(HEADER.position, Vector2(page.size.x + 0.02, HEADER.size.y))
 	for bounds in [header, Rect2(-0.60, page.position.y - 0.02, page.size.x + 0.02, 0.02),
 		Rect2(-0.60, page.position.y, 0.01, page.size.y), Rect2(page.end.x, page.position.y, 0.01, page.size.y)]:
 		var centre: Vector2 = bounds.get_center()
@@ -237,6 +368,7 @@ func draw_frame_panels() -> void:
 		panel.material_override.set_shader_parameter("corner_radius", 0.004)
 		add_child(panel); _decorations.append(panel); _pointer_panels.append(panel)
 		if bounds == header:
+			panel.set_meta("browser_header", true)
 			# The existing header mesh doubles as a drag surface behind its controls.
 			_ray_blockers.append({"target": MOVE, "rect": bounds, "enabled": true, "node": panel, "radius": 0.004})
 func draw_resize_handles() -> void:
@@ -256,7 +388,7 @@ func draw_resize_handles() -> void:
 func end_drag() -> void:
 	drag.clear(); title_move.cancel()
 func dismiss() -> void:
-	end_drag(); super()
+	selecting = false; end_drag(); super()
 static func ray_pose(origin: Vector3, direction: Vector3) -> Transform3D:
 	var up := Vector3.FORWARD if absf(direction.normalized().dot(Vector3.UP)) > 0.99 else Vector3.UP
 	return Transform3D(Basis.looking_at(direction.normalized(), up), origin)
@@ -279,7 +411,14 @@ func press_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: b
 		if point != null:
 			peer.drag = {"hand": hand, "kind": int(hit.target), "pose": peer.global_transform, "start": point, "size": peer.page_size}
 		return true
-	if int(hit.target) == WEB: return browser.press(hand, origin, direction, tracked)
+	if int(hit.target) == WEB:
+		if peer.selecting:
+			var uv: Variant = peer.page_point(origin, direction)
+			if uv != null:
+				peer.selection = Rect2(uv, Vector2.ZERO)
+				peer.drag = {"hand": hand, "kind": SELECT, "start": uv}
+			return true
+		return browser.press(hand, origin, direction, tracked)
 	peer._activate(int(hit.target)); return true
 func update_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: bool) -> void:
 	browser.menu.clear_pointer_visuals()
@@ -293,6 +432,10 @@ func update_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: 
 			peer.title_move.update(ray_pose(origin, direction), peer.head(), null)
 			if peer.title_move.capture.is_empty(): peer.end_drag()
 			return
+		if peer.drag.kind == SELECT:
+			var uv: Variant = peer.page_point(origin, direction)
+			if uv != null: peer.selection = Focus.selection(peer.drag.start, uv)
+			return
 		var capture: Dictionary = peer.drag
 		var point: Variant = peer.project_pointer(origin, direction, peer.global_transform.affine_inverse() * capture.pose)
 		if point != null:
@@ -305,7 +448,14 @@ func update_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: 
 	browser.move(hand, origin, direction, tracked)
 func release_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: bool) -> void:
 	for peer in browser.windows.values():
-		if peer.drag.get("hand", "") == hand: peer.end_drag(); peer.save_layout(); return
+		if peer.drag.get("hand", "") == hand:
+			if peer.drag.kind == SELECT:
+				var uv: Variant = peer.page_point(origin, direction) if tracked else null
+				if uv != null:
+					peer.selection = Focus.selection(peer.drag.start, uv); peer.finish_selection()
+				else: peer.end_drag(); peer.selection = Rect2()
+			else: peer.end_drag(); peer.save_layout()
+			return
 	browser.release(hand, origin, direction, tracked)
 func cancel_pointer(hand: String) -> void:
 	for peer in browser.windows.values():

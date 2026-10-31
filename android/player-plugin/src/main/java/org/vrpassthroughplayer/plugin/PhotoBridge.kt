@@ -35,6 +35,25 @@ internal class PhotoBridge(
 ) : Closeable {
     private val current = AtomicInteger(0)
     private val files = ConcurrentHashMap<Int, PhotoSource>()
+    private var animationId=0
+    private var animation: AnimatedPhotoSession?=null
+    private val animationWorker=java.util.concurrent.Executors.newSingleThreadExecutor { task ->
+        Thread({android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND);task.run()},"PhotoAnimation")
+    }
+    fun animationFrame(id: Int): String = synchronized(PhotoCache.lock) {
+        if(closed||current.get()!=id||files[id]?.animation!=true)return ""
+        if(animationId!=id){animation?.close();val owner=files[id]!!;val session=AnimatedPhotoSession(owner,worker=animationWorker,ownsWorker=false)
+            animation=session;animationId=id;owner.animationSnapshot=session::snapshot}
+        animation?.poll()?:""
+    }
+    fun pauseAnimation(id: Int,paused: Boolean) = synchronized(PhotoCache.lock) {if(animationId==id)animation?.pause(paused)}
+    fun restartAnimation(id: Int) = synchronized(PhotoCache.lock) {if(animationId==id){animation?.close();animation=null;animationId=0}}
+    fun uploadAnimation(id: Int,token: Long,texture: Int,mipmaps: Boolean): Boolean = synchronized(PhotoCache.lock) {
+        animationId==id && animation?.upload(token,texture,mipmaps)==true
+    }
+    fun animationPixels(id: Int,token: Long): ByteArray = synchronized(PhotoCache.lock) {
+        if(animationId==id)animation?.pixels(token)?:ByteArray(0) else ByteArray(0)
+    }
     private class DepthJob(val id: Int, val source: PhotoSource, @Volatile var strength: Float, val stereo: Boolean, val sceneToken: Int,
                            @Volatile var owner: PhotoBridge, @Volatile var background: Boolean) {
         @Volatile var cancelled = false
@@ -66,7 +85,7 @@ internal class PhotoBridge(
 
     fun open(id: Int, uri: String, bounded: Boolean = false): Boolean {
         if (closed) return false
-        synchronized(PhotoCache.lock) { current.set(id) }
+        synchronized(PhotoCache.lock) { current.set(id);animation?.close();animation=null;animationId=0 }
         val state = Loading(id, Uri.parse(uri).scheme !in setOf("file", "content", "pdfpage"))
         loading = state
         cancelDepth(); connection?.disconnect()
@@ -138,6 +157,8 @@ internal class PhotoBridge(
                 } }
                 }
                 state.phase = "preparing"
+                // Decoder retirement is serialized before allocating the next full photo, off UI.
+                animationWorker.submit {}.get()
                 if (bounded) {
                     require(source.length() <= 32L * 1024 * 1024) { "PHOTO_TOO_LARGE" }
                     // Inspect original dimensions before NativePhoto/HEIF/downsample allocation.
@@ -151,7 +172,20 @@ internal class PhotoBridge(
                         }
                         PhotoHeader.read(bytes.copyOf(count))
                     }
-                    require(header != null && ReadingRenderPolicy.accepts(header.width, header.height)) { "PHOTO_TOO_LARGE" }
+                    val size=header ?: if(ExtendedPhoto.kind(source)!=0 || PhotoBitmap.isNative(source)) {
+                        val bounds=PhotoBitmap.bounds(source);PhotoHeader(bounds.outWidth,bounds.outHeight)
+                    } else null
+                    require(size != null && ReadingRenderPolicy.accepts(size.width, size.height)) { "PHOTO_TOO_LARGE" }
+                }
+                val extendedKind=ExtendedPhoto.kind(source)
+                if(extendedKind!=0) {
+                    val ready=ExtendedPhoto.prepare(source,directory,preload,{checkCurrent(id)},
+                        {metadata->emit("photo_ready",id,metadata.toString())})
+                    ready.put("preview_only",preload)
+                    checkCurrent(id);files[id]=PhotoSource(source).apply {animation=ready.optBoolean("animated")
+                        if(animation)animationSnapshot={check->ExtendedPhoto.posterSnapshot(source,check)}};published=true
+                    ready.put("cache_bytes",directory.listFiles()?.sumOf {it.length()}?:source.length())
+                    emit("photo_ready",id,ready.toString());return@execute
                 }
                 if (PhotoBitmap.isNative(source)) {
                     val ready = NativePhoto.prepare(source, directory, { checkCurrent(id) },
@@ -259,6 +293,7 @@ internal class PhotoBridge(
         release(id)
     }
     fun release(id: Int) = synchronized(PhotoCache.lock) {
+        if(animationId==id){animation?.close();animation=null;animationId=0}
         depthJobs.remove(id)?.cancelled = true
         portraitJobs.entries.filter { it.value.id == id }.forEach { it.value.cancelled = true; portraitJobs.remove(it.key) }
         files.remove(id)?.release()
@@ -282,6 +317,7 @@ internal class PhotoBridge(
     fun promoteTo(id: Int, target: PhotoBridge): Boolean = synchronized(PhotoCache.lock) {
         if (target.closed || files[id]?.file?.isFile != true) return@synchronized false
         target.cancelDepth()
+        target.animation?.close();target.animation=null;target.animationId=0
         val source = files.remove(id) ?: return@synchronized false
         target.files[id] = source
         target.current.set(id)
@@ -302,6 +338,7 @@ internal class PhotoBridge(
     fun activate(id: Int): Boolean {
         if (closed || files[id]?.file?.isFile != true) return false
         synchronized(PhotoCache.lock) {
+            if(animationId!=id){animation?.close();animation=null;animationId=0}
             depthJobs.entries.filter { it.key != id }.forEach { it.value.cancelled = true; depthJobs.remove(it.key) }
             depthJobs[id]?.background = false
             current.set(id)
@@ -342,13 +379,15 @@ internal class PhotoBridge(
                 inFlightSources[it] = source
             }
         }
-        val source = job.source.file
         fun checkDepth() { if (job.cancelled || job.owner.closed) throw InterruptedException() }
         // A new foreground selection passes cancelled background jobs still waiting in the queue.
         val work = Runnable {
             val started = System.nanoTime()
+            var snapshot: File?=null
             try {
                 checkDepth()
+                snapshot=job.source.effectSnapshot(::checkDepth)
+                val source=snapshot?:job.source.file
                 val app = context() ?: error("PHOTO_UNAVAILABLE")
                 val w = PhotoDepthInput.WIDTH; val h = PhotoDepthInput.HEIGHT
                 val near = ByteBuffer.allocateDirect(w * h * 4).order(ByteOrder.LITTLE_ENDIAN)
@@ -417,7 +456,7 @@ internal class PhotoBridge(
                     job.owner.emit(if (job.sceneToken > 0) "photo_scene_depth" else if (job.background) "photo_preload_depth" else "photo_depth", id, failure.toString())
                 } }
             }
-            finally { synchronized(PhotoCache.lock) {
+            finally { snapshot?.delete();synchronized(PhotoCache.lock) {
                 job.owner.depthJobs.remove(id,job)
                 inFlightSources.remove(job)
                 job.source.release()
@@ -448,10 +487,12 @@ internal class PhotoBridge(
         // Preparing and inference stay on the production RVM worker, behind retired video work.
         RvmWorkers.prepare.post { RvmWorkers.video.post {
             val started = System.nanoTime()
+            var snapshot: File?=null
             try {
                 checkJob()
+                snapshot=job.source.effectSnapshot(::checkJob)
                 val app = context() ?: error("PHOTO_UNAVAILABLE")
-                val result = PhotoPortrait.prepare(app, job.source.file, job.strength, token, ::checkJob)
+                val result = PhotoPortrait.prepare(app, snapshot?:job.source.file, job.strength, token, ::checkJob)
                 synchronized(PhotoCache.lock) {
                     checkJob()
                     emit("photo_portrait", id, result.put("token",token).put("state","ready")
@@ -464,7 +505,7 @@ internal class PhotoBridge(
                     emit("photo_portrait", id, JSONObject().put("state","error").put("token",token)
                         .put("error",if (error.message == "PHOTO_NO_PERSON") "PHOTO_NO_PERSON" else "PHOTO_PORTRAIT_FAILED").toString())
                 } }
-            } finally { synchronized(PhotoCache.lock) {
+            } finally { snapshot?.delete();synchronized(PhotoCache.lock) {
                 portraitJobs.remove(token,job); portraitSources.remove(job); job.source.release()
             } }
         } }
@@ -489,6 +530,7 @@ internal class PhotoBridge(
     override fun close() {
         closed = true; current.set(0); portraitJobs.values.forEach { it.cancelled = true }; portraitJobs.clear(); cancelDepth(); connection?.disconnect(); worker.shutdownNow()
         files.keys.toList().forEach(::release)
+        animationWorker.shutdown()
     }
     companion object {
         const val MAX_BYTES = 8L * 1024 * 1024 * 1024; const val MAX_PIXELS = 32L * 1024 * 1024

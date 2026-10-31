@@ -631,6 +631,35 @@ func _menu_and_capture_routes() -> void:
 	check(main.seek_feedback.phase.is_empty(), "Leaving MOVE with held stick cannot create deferred seek")
 	main.stick_controls.suspend(); _neutral()
 
+func _cutout_grip(label: String) -> void:
+	_close_menus()
+	var head: Transform3D = main._head_pose()
+	var flat: bool = main.video.geometry == 0
+	var before: Transform3D = main.video.flat_pose
+	var yaw: float = main.video.view_yaw
+	main.move_poses.right_hand = head
+	main.rays.right_hand = [head.origin, (main.video.panel.global_position - head.origin).normalized() if flat else -main.video.panel.global_basis.z.normalized()]
+	main.controller_bindings.reset_inputs()
+	main._on_controller_button("grip_click", "right_hand")
+	check(not main.interface_move.capture.is_empty() and main.interface_move.capture.targets.any(func(target): return target.node == main.video), label + " grip captures the actual cutout")
+	if main.interface_move.capture.is_empty(): return
+	main.move_poses.right_hand = Transform3D(Basis(Vector3.UP, .12) * head.basis, head.origin + Vector3(.12, .05, 0))
+	main._update_interface_move(); main._on_controller_release("grip_click", "right_hand")
+	check(not main.video.flat_pose.is_equal_approx(before) if flat else not is_equal_approx(main.video.view_yaw, yaw), label + " controller motion moves the cutout")
+	var moved: Transform3D = main.video.flat_pose
+	var moved_yaw: float = main.video.view_yaw
+	main._sync_cinema_screen(); main._update_background()
+	check(main.video.flat_pose.is_equal_approx(moved) and is_equal_approx(main.video.view_yaw, moved_yaw), label + " background refresh preserves the dragged placement")
+	if flat:
+		main._show_player_menu()
+		var corner: Vector3 = main.video.panel.to_global(main.video.screen_corner(0))
+		main.rays.right_hand = [head.origin, (corner - head.origin).normalized()]
+		main._update_corner_hover()
+		check(main.video.hovered_corner == 0, "Retained cinema portrait exposes the existing resize corner")
+		check(main._try_corner_resize("right_hand") and main._grab.has("resize"), "Retained cinema portrait accepts corner resizing")
+		main._grab.clear(); main.video.set_corner_hover(-1); _close_menus()
+	main.rays.clear(); main.move_poses.clear()
+
 func _context_routes() -> void:
 	_close_menus()
 	for geometry in [1, 2, 3]:
@@ -641,6 +670,16 @@ func _context_routes() -> void:
 		main._turn_picture(.1, 0); main._zoom_video(.1)
 		check(not is_equal_approx(yaw, main.video.view_yaw) and not is_equal_approx(zoom, main.video.view_zoom), "Hidden cinema does not block immersive view controls: " + str(geometry))
 		main._reset_picture()
+	main._on_setting_changed("alpha_keep_background", true)
+	for geometry in [1, 2]:
+		main.video.geometry = geometry; main.video.alpha_requested = true; main.video._apply_geometry(); main._update_background()
+		check(main._cinema_scene_active() and not main.display.applied_passthrough, "Cinema VR cutout keeps scenery: " + str(geometry))
+		_cutout_grip("Cinema VR " + str(geometry))
+		var zoom: float = main.video.view_zoom
+		main._zoom_video(.1)
+		check(not is_equal_approx(main.video.view_zoom, zoom), "Cinema VR cutout retains zoom: " + str(geometry))
+	main.video.alpha_requested = false
+	main._on_setting_changed("alpha_keep_background", false)
 	main.video.geometry = 0; main._update_background()
 	check(main._cinema_scene_active(), "Returning to flat video restores cinema")
 	main.video.stereo_sbs = false
@@ -664,6 +703,17 @@ func _context_routes() -> void:
 	main._on_playback_adjustment("portrait_distance", 9.0); main._save_playback_adjustments()
 	check(is_equal_approx(main.video.screen_scale,6.0), "Distance adjustment retains portrait size")
 	check(is_equal_approx(main._surface_distance(main.video), 9.0) and is_equal_approx(main.settings.get_value("portrait_screen", "distance", 0.0),9.0), "Portrait distance slider moves and independently saves the plane")
+	main._on_player_setting("alpha_keep_background", true)
+	check(main._cinema_scene_active() and not main.display.applied_passthrough, "Keep background presents the hall behind the portrait")
+	var retained_pose: Transform3D = main.video.flat_pose
+	main._sync_cinema_screen(); main._update_background()
+	check(main.video.flat_pose.is_equal_approx(retained_pose) and is_equal_approx(main.video.screen_scale, 6.0)
+		and is_equal_approx(main._surface_distance(main.video), 9.0), "Cinema updates do not pin portrait distance or size back onto its screen")
+	check(main.portrait_screen.active and not main._cinema_video_locked(), "Portrait remains adjustable with the hall visible")
+	_cutout_grip("Cinema 2D portrait")
+	main._on_player_setting("alpha_keep_background", false)
+	check(not main._cinema_scene_active() and main.display.applied_passthrough
+		and is_equal_approx(main._surface_distance(main.video), 9.0) and is_equal_approx(main.video.screen_scale, 6.0), "Background toggle preserves portrait placement")
 	var dragged: Transform3D = main.video.global_transform * main.video.flat_pose
 	dragged.origin += dragged.basis.z.normalized() * 2.0
 	main.video.set_flat_world_pose(dragged)
@@ -676,6 +726,15 @@ func _context_routes() -> void:
 	check(main._cinema_scene_active(), "Leaving Alpha restores cinema")
 	check((main.video.global_transform * main.video.flat_pose).is_equal_approx(screen_before), "Leaving portrait restores the fixed auditorium plane")
 	check(is_equal_approx(main.video.screen_scale,scale_before), "Leaving portrait restores auditorium size")
+	main._on_player_setting("alpha_keep_background", true)
+	main.video.alpha_requested = true; main._update_background()
+	check(main._cinema_scene_active() and main.portrait_screen.active and not main.display.applied_passthrough
+		and is_equal_approx(main._surface_distance(main.video), 7.0) and is_equal_approx(main.video.screen_scale, 7.5),
+		"Entering Alpha with retention already on preserves hall and saved portrait dimensions")
+	main.video.alpha_requested = false; main._update_background()
+	check((main.video.global_transform * main.video.flat_pose).is_equal_approx(screen_before)
+		and is_equal_approx(main.video.screen_scale, scale_before), "Leaving retained portrait restores auditorium screen")
+	main._on_player_setting("alpha_keep_background", false)
 	main.video.alpha_requested = true; main._update_background()
 	check(is_equal_approx(main._surface_distance(main.video), 7.0), "Next portrait entry restores its own last distance")
 	check(is_equal_approx(main.video.screen_scale,7.5), "Next portrait entry restores its own last size")

@@ -24,7 +24,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  * No Android dialog, separate Activity, shell launch or image files. OAuth credentials stay in native code. */
 @SuppressLint("SetJavaScriptEnabled")
 internal class InAppWebLogin(private val host: () -> Activity?, private val provider: String,
-    private val connected: (String) -> Boolean, private val authorized: ((OpenListAuth.Credential) -> Boolean)? = null) {
+    private val connected: (String) -> Boolean, private val authorized: ((OpenListAuth.Credential) -> Boolean)? = null) : AccountWebLogin {
     companion object { const val WIDTH = WebLoginViewport.WIDTH; const val HEIGHT = WebLoginViewport.HEIGHT }
     private val handler = Handler(Looper.getMainLooper())
     private val capturing = AtomicBoolean()
@@ -75,12 +75,12 @@ internal class InAppWebLogin(private val host: () -> Activity?, private val prov
         }
     }
 
-    fun snapshot() = JSONObject().put("status", status).put("editing", editing && !touchActive).put("progress", progress)
+    override fun snapshot() = JSONObject().put("status", status).put("editing", editing && !touchActive).put("progress", progress)
         .put("width", WIDTH).put("height", HEIGHT).put("scroll_y", scrollY).put("scroll_range", scrollRange)
         .put("failed", web == null && status != "Loading…")
         .apply { if (BuildConfig.DEBUG) put("debug_inputs", debugInputs).put("input_accepted", inputAccepted).put("oauth_probe", debugOAuthProbe).put("oauth_flow", oauthSession?.summary()) }
 
-    fun open() { handler.post {
+    override fun open() { handler.post {
         if (closed || web != null) return@post
         try {
             val activity = host() ?: error("Activity unavailable")
@@ -211,7 +211,7 @@ internal class InAppWebLogin(private val host: () -> Activity?, private val prov
     } }
 
     /** Polling is driven by the visible VR panel; invisible/paused panels have no capture loop. */
-    fun frame(): ByteArray {
+    override fun frame(): ByteArray {
         if (!closed && !paused && capturing.compareAndSet(false, true)) handler.post {
             try {
                 val view = web
@@ -338,7 +338,7 @@ internal class InAppWebLogin(private val host: () -> Activity?, private val prov
             }
         }
     }
-    fun action(action: String, x: Float, y: Float, text: String) {
+    override fun action(action: String, x: Float, y: Float, text: String) {
         if (closed || paused || !x.isFinite() || !y.isFinite() || text.length > 4096) return
         handler.post {
             val view = web
@@ -382,7 +382,7 @@ internal class InAppWebLogin(private val host: () -> Activity?, private val prov
         }
     }
 
-    fun pause(value: Boolean) {
+    override fun pause(value: Boolean) {
         paused = value
         handler.post { web?.let { view ->
             if (value) { actionCancel(view); editing = false; editor = null; view.onPause() } else view.onResume()
@@ -416,7 +416,7 @@ internal class InAppWebLogin(private val host: () -> Activity?, private val prov
         web = null; viewport = null; geometry = null; editor = null; editing = false; touchActive = false; frameBytes = ByteArray(0)
         bitmap?.recycle(); bitmap = null
     }
-    fun close() {
+    override fun close() {
         closed = true; frameBytes = ByteArray(0)
         handler.post { detach(); CookieManager.getInstance().removeAllCookies { CookieManager.getInstance().flush() }; WebStorage.getInstance().deleteAllData() }
     }

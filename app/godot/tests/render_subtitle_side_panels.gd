@@ -25,8 +25,11 @@ func run() -> void:
 	menu.toggle(); menu.position = Vector3(0, -0.40, -1.85); menu._activate(110)
 	for language in ["zh", "zh_Hant", "en", "ja"]:
 		I18n.use(language)
-		for mode in ["collapsed", "narration", "language", "appearance", "appearance-offset", "appearance-immersive", "listening", "files"]:
-			state.listening_enabled = mode == "listening"; state.narration_enabled = not state.listening_enabled
+		for mode in ["collapsed", "narration", "language", "appearance", "appearance-offset", "appearance-immersive", "appearance-pgs", "appearance-pgs-yellow", "listening", "files"]:
+			state.subtitle_options[0].codec = "hdmv_pgs_subtitle" if mode.begins_with("appearance-pgs") else "subrip"
+			state.subtitle_pgs_tint = "yellow" if mode == "appearance-pgs-yellow" else "original"
+			state.narration_available = not mode.begins_with("appearance-pgs")
+			state.listening_enabled = mode == "listening"; state.narration_enabled = state.narration_available and not state.listening_enabled
 			state.subtitle_delay = 1.5 if mode == "appearance-offset" else 0.0
 			state.geometry = 1 if mode == "appearance-immersive" else 0
 			state.listening_state = "catching_up"; state.listening_caption = I18n.t("Transcribing · %d s ahead") % 12
@@ -39,7 +42,8 @@ func run() -> void:
 				check(menu.text_width(text.text, text.font_size / menu.TEXT_RASTER_SCALE) <= entry.rect.size.x + 0.01, "Button text fits " + language + " / " + text.text)
 				if entry.node.position.y > 0.285:
 					check(entry.rect.position.x >= menu._subtitle_panel_bounds.position.x - 0.001 and entry.rect.end.x <= menu._subtitle_panel_bounds.end.x + 0.001, "Control fits the original total width " + language + " / " + text.text)
-			check(menu._subtitle_status_label != null and is_equal_approx(menu._subtitle_status_label.position.x, menu._subtitle_main_bounds.get_center().x), "Status stays in the original panel " + language)
+			if not mode.begins_with("appearance-pgs"):
+				check(menu._subtitle_status_label != null and is_equal_approx(menu._subtitle_status_label.position.x, menu._subtitle_main_bounds.get_center().x), "Status stays in the original panel " + language)
 			await shot(viewport, output.path_join(language + "-" + mode + ".png"))
 	menu.free()
 	var library := Library.new(); viewport.add_child(library); library.set_process(false)

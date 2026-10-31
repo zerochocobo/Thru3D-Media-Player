@@ -185,6 +185,41 @@ func _run() -> void:
 	check(b.gallery.library_start == 0 and menu.scroll == 0, "Settings blocks both stick axes from moving the underlying home")
 	check(not b.gallery.press("right_hand", Vector3.ZERO, Vector3.FORWARD, true), "Settings cannot capture a gallery drag")
 	b.back(); check(b.view == "home" and not b.settings_open, "Closing home settings preserves the page")
+	# Photo rows enter the existing image viewer directly, including extensionless server titles.
+	b.cancel(); b.server = {"id":"profile", "provider":"emby"}; b.view = "scenes"
+	b.library_id = "photos"; b.query = {"mode":"folders", "parent_id":"album", "sort":"title", "direction":"ASC"}
+	var photos: Array[Dictionary] = []
+	for i in 91: photos.append({"id":"p%d" % i, "kind":"image", "title":"Photo %d" % i, "uri":"medialib://profile/photo/p%d" % i})
+	b.entries = photos.slice(0,48); b.loaded_page = 1; b.total = 91; b.end_reached = false; menu.show(); menu.refresh()
+	check(menu.is_image_uri(photos[0].uri), "Photo rows retain explicit image kind")
+	check(preload("res://scripts/image_info.gd").is_image(photos[0].uri, photos[0].title), "Saved photo URI remains identifiable without a file extension")
+	check(menu.image_queue().size() == 48 and menu.video_queue().is_empty(), "Photo queue is independent of video queue")
+	var photo_context := menu.photo_directory_context()
+	check(photo_context.type == "server" and photo_context.query.parent_id == "album" and photo_context.query.library_id == "photos", "Photo directory captures server and album")
+	var opened_photos: Array = []
+	menu.chosen.connect(func(uri, title): opened_photos.append([uri,title]))
+	b.choose(b._node_row(photos[0]))
+	check(opened_photos == [[photos[0].uri,photos[0].title]] and b.view == "scenes", "Selecting a photo bypasses video details and emits image identity")
+	check(b.selection.kind == "image", "Photo selection preserves its metadata")
+	var directory := preload("res://scripts/photo_directory.gd").new(); root.add_child(directory); directory.platform = platform
+	var albums: Array = []
+	directory.completed.connect(func(items, complete, error): albums.append({"items":items,"complete":complete,"error":error}))
+	directory.start(photo_context)
+	var photo_request: int = platform.next
+	check(platform.requests[photo_request].page == 1 and platform.requests[photo_request].sort == "title", "Album starts at first page with captured order")
+	b.query.parent_id = "another-album"
+	platform.answer(photo_request, {"entries":photos.slice(0,48),"total":91,"page":1})
+	check(platform.requests[platform.next].page == 2 and platform.requests[platform.next].parent_id == "album", "Hidden browser changes cannot retarget photo paging")
+	platform.answer(platform.next, {"entries":photos.slice(48),"total":91,"page":2})
+	check(albums.size() == 1 and albums[0].complete and albums[0].items.size() == 91, "Photo navigation includes all 91 images across page boundary")
+	check(directory.cursor(photos[0].uri).is_empty(), "Server photo paging does not manufacture a cloud cursor")
+	directory.start(photo_context); var cancelled_photo: int = platform.next; directory.cancel()
+	platform.answer(cancelled_photo, {"entries":photos,"total":91,"page":1})
+	check(platform.cancelled.has(cancelled_photo) and albums.size() == 1, "Cancelled album request cannot replace active photo queue")
+	directory.start(photo_context)
+	platform.answer(platform.next, {"entries":[],"total":91,"page":1})
+	check(not albums.back().complete and not str(albums.back().error).is_empty(), "Unexpected empty page is incomplete rather than a successful empty album")
+	directory.free()
 	menu.free(); platform.free()
 	for failure in failures: push_error(failure)
 	print("common server browser checks=%d failures=%d" % [checks, failures.size()])

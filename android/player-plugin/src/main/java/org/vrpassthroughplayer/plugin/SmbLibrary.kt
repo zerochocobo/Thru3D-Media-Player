@@ -279,6 +279,12 @@ internal class SmbLibrary(private val context: Context, private val streams: () 
 
     fun stream(uri: String): String = streams().publish(source(uri), uri.substringAfterLast('/'))
 
+    fun pdfStream(uri: String): Pair<String, Long> {
+        val source = source(uri)
+        return try { streams().publish(source, "document.pdf") to source.size }
+        catch (error: Exception) { source.close(); throw error }
+    }
+
     private fun source(uri: String): StreamSource {
         val rest = uri.removePrefix("smb://")
         val server = server(rest.substringBefore('/'))

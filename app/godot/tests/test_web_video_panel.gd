@@ -42,8 +42,11 @@ func _run() -> void:
 	check(chosen == [[platform.web_state.uri, "测试视频"]], "Playback uses existing chosen signal and stable page identity")
 	check(not menu.visible, "Library closes when handing off to the existing player")
 	menu.web_video.result = {"state": "error", "error_code": "site_rejected"}
-	check(menu.web_video.error_hint() == preload("res://scripts/i18n.gd").t("Continue playing on the website"),
-		"A website rejection offers the browser instead of misreporting a parsing failure")
+	check(menu.web_video.error_hint() == "网站拒绝视频请求，请重试",
+		"A website rejection explains the cause")
+	for entry in [["browser_video_identity_unavailable", "未取得当前视频信息"], ["browser_audio_missing", "未采集到音轨"], ["browser_pause_timeout", "无法暂停网页视频"], ["protected_content", "加密视频"]]:
+		menu.web_video.result = {"error_code": entry[0]}
+		check(menu.web_video.error_hint().begins_with(entry[1]), "Specific capture failure has an actionable localized cause")
 	menu.free(); platform.free()
 	print("Web video panel: %d checks, %d failures" % [checks, failures.size()])
 	for failure in failures: push_error(failure)

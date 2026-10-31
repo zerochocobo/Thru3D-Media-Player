@@ -8,6 +8,6 @@ static func container_page(uri: String) -> bool: return page(uri) or uri.begins_
 static func session(uri: String) -> String: return uri.get_slice("/", 2) if page(uri) else ""
 
 static func error_text(code: String) -> String:
-	return {"PDF_NETWORK_UNAVAILABLE":"Cloud connection failed", "PDF_LOCATION_EXPIRED":"Archive location expired; refresh the folder", "PDF_CACHE_FULL":"Not enough storage", "PDF_PAGE_LIMIT":"PDF has too many pages",
+	return {"PDF_NETWORK_UNAVAILABLE":"Connection failed. Please retry.", "PDF_LOCATION_EXPIRED":"Archive location expired; refresh the folder", "PDF_CACHE_FULL":"Not enough storage", "PDF_PAGE_LIMIT":"PDF has too many pages",
 		"PDF_NOT_SEEKABLE":"PDF source does not support seeking", "PDF_PASSWORD_UNSUPPORTED":"Password-protected PDFs are not supported",
 		"PDF_UNAVAILABLE":"PDF could not be opened"}.get(code, code)

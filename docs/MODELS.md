@@ -98,3 +98,7 @@ The two ZipDepth runtime graphs are separate from still-photo Depth Anything V2.
 Video 2D-to-3D defaults to Stretch edges, with Fill gaps as an alternative. The video slider is linear 0–100%, recommended 50%; its new maximum corresponds to the former 50%, with a one-time capped migration for saved choices. Photo strength retains 0–200%. These are rendering preferences, not a model selector.
 
 ZipDepth upstream is MIT; its deployment approach also references the GPL-3.0 xr-3d-viewer conversion, with retained attribution in `zipdepth_mobile.py` and third-party notices. Rewritten convex weights clamp centered logits at 8 for FP16 range; do not describe the whole deployment as bit-exact upstream inference. Public manifests retain contracts and hashes, excluding private sample evaluation records and weights. Reference assets and any APK distribution need their own matching input/license review.
+
+## Video 3D boost (0.16.1)
+
+The normal video rail remains 0–100%, with an explicit boost extending to 200%. A click enables/restores remembered strength; Off is separate. Frames can be retained while changing AI presentation paths, but the picture/audio may briefly pause. Photo range/mapping remains independent. No new weight is included.

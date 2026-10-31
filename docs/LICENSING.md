@@ -31,6 +31,7 @@ The project license does not replace third-party notices or claim ownership of u
 | Gradle wrapper | Apache-2.0; license and notice in `third_party/gradle`. |
 | Belfast Sunset (Pure Sky) | Unmodified Poly Haven background, CC0-1.0; source and attribution are kept with the image. |
 | Morning Sky / Kloppenheim 06 Pure Sky | Derived Poly Haven CC0 background; conversion recipe, attribution and derived-file hash accompany the image. |
+| [The Milky Way panorama / ESO eso0932a](https://www.eso.org/public/images/eso0932a/) | Unmodified 6000 x 3000 image, [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/); full credit **ESO/S. Brunier** is shown in the background panels and About reader. The [image notice](../third_party/eso/NOTICE.txt), full license and provenance accompany the image. |
 | TIFF / HDR / OpenEXR decoders | Original libtiff, libjpeg-turbo (including IJG notices), OpenEXR, Imath and libdeflate terms retained with five pinned source archives in `third_party/tiff` and `third_party/openexr`. |
 | edge264-mvc | BSD-3-Clause; pinned source and original notice in `third_party/edge264-mvc`. |
 | libbluray / libudfread | LGPL-2.1-or-later; pinned sources, adapter/build modifications and original license texts are retained. |

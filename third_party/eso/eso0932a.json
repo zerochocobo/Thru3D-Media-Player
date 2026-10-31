@@ -1,0 +1,23 @@
+{
+  "asset": "The Milky Way panorama",
+  "asset_id": "eso0932a",
+  "background": "night",
+  "label": "Milky Way panorama",
+  "source": "https://www.eso.org/public/images/eso0932a/",
+  "credit": "ESO/S. Brunier",
+  "license": "CC-BY-4.0",
+  "license_url": "https://creativecommons.org/licenses/by/4.0/",
+  "usage_conditions": "https://www.eso.org/public/copyright/",
+  "verified_date": "2026-10-31",
+  "bundled_source": {
+    "path": "app/godot/backgrounds/eso0932a.jpg",
+    "url": "https://cdn.eso.org/images/large/eso0932a.jpg",
+    "dimensions": [6000, 3000],
+    "bytes": 8228817,
+    "md5": "1a2ad13e45d058f736ae3b40aafa9415",
+    "sha256": "60400c92c54b7c1bd12299c69e83b16e5b6256e7dabacc478c021758ecd28179",
+    "changes": "Source JPEG unchanged; Godot generates full-size ASTC/BPTC textures with mipmaps. No crop, upscaling, AI editing or exposure/color adjustment."
+  },
+  "attribution_display": ["global background panel", "photo background picker", "About license reader", "packaged panorama notice", "eso/NOTICE.txt"],
+  "original_800_megapixel_image_included": false
+}

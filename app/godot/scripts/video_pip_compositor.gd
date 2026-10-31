@@ -227,6 +227,10 @@ func prepare_main() -> bool:
 	main_cost_fallback = false
 	var video: Node3D = manager.owner
 	var layer: RefCounted = video.get("video_layer")
+	if video.alpha_over_scenery and needs_main():
+		# Keep needs_main() true so transparent PiP windows also take the sampled fallback.
+		# A compositor hole for the processed main would erase the selected scenery.
+		release_main(); return false
 	if (needs_main() and manager.video_windows().size() != manager.windows.size()) or not (needs_main() or prefers_main()) or not video.layer_enabled:
 		release_main(); return false
 	# Transparent native windows need the main video beneath them in the compositor;

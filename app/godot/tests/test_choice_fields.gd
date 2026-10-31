@@ -68,49 +68,49 @@ func _run() -> void:
 	check(events.size() == 1 and menu.choices.capture.is_empty() and menu.choices.opened.is_empty(), "Tab switch cancels old dropdown ownership and stale release")
 	check(menu.rows[0].key == "seek_mode" and menu.rows[0].choices.size() == 2 and menu.rows[1].key == "depth_render" and menu.rows[1].compact
 		and menu.rows[2].key == "output_width" and menu.rows[2].compact
-		and menu.rows[3].key == "memory_mode" and menu.rows.size() == 6 and menu.rows[4].video_settings_group == "alpha" and menu.rows[5].video_settings_group == "subtitles",
+		and menu.rows[3].key == "memory_mode" and menu.rows[4].key == "alpha_keep_background" and menu.rows.size() == 7 and menu.rows[5].video_settings_group == "alpha" and menu.rows[6].video_settings_group == "subtitles",
 		"Video starts with common choices and two collapsed groups")
-	check(menu.choices.targets.values().all(func(item): return item.get("key", "") in ["seek_mode", "depth_render", "output_width", "memory_mode"]), "Collapsed groups have no hidden ray controls")
-	var alpha_point := origin(menu, Library.ROW_BASE + 4)
+	check(menu.choices.targets.values().all(func(item): return item.get("key", "") in ["seek_mode", "depth_render", "output_width", "memory_mode", "alpha_keep_background"]), "Collapsed groups have no hidden ray controls")
+	var alpha_point := origin(menu, Library.ROW_BASE + 5)
 	menu.press_pointer("left_hand", alpha_point, -menu.global_basis.z, true)
-	check(menu.rows.size() == 6, "Group expansion waits for trigger release")
+	check(menu.rows.size() == 7, "Group expansion waits for trigger release")
 	menu.cancel_pointer("left_hand")
 	menu.release_pointer("left_hand", alpha_point, -menu.global_basis.z, true)
-	check(menu.rows.size() == 6, "Cancelled group click stays collapsed")
-	tap(menu, Library.ROW_BASE + 4)
-	check(menu.rows.size() == 10 and menu.rows[4].icon == "chevron_down" and not menu.collections.privacy_expanded,
+	check(menu.rows.size() == 7, "Cancelled group click stays collapsed")
+	tap(menu, Library.ROW_BASE + 5)
+	check(menu.rows.size() == 11 and menu.rows[5].icon == "chevron_down" and not menu.collections.privacy_expanded,
 		"Ray expands only Alpha without changing the privacy group")
-	var alpha_row: Dictionary = menu.rows[5]
+	var alpha_row: Dictionary = menu.rows[6]
 	check(alpha_row.key == "alpha_profile" and alpha_row.compact and alpha_row.value == "320x320"
 		and alpha_row.choices.map(func(o): return o.value) == ["256x256", "320x320", "384x384", "512x512"]
 		and str(alpha_row.get("hint", "")).is_empty() and not str(alpha_row.info).is_empty()
 		and alpha_row.choices.all(func(o): return o.hint == alpha_row.info),
 		"Alpha model size sits above the frame rate: four square sizes, 320 by default, larger slower and smaller rougher")
 	state.alpha_cold = ["512x512"]; state.alpha_warming = ["384x384"]; menu.refresh()
-	check(menu.rows[5].choices[3].get("hint", "") == "First use prepares the model, about 1 minute" and menu.rows[5].choices[2].get("hint", "") == "Preparing the model"
-		and menu.rows[5].choices[1].hint == menu.rows[5].info, "A cold or compiling size says so on its own option; ready ones keep the trade-off tooltip")
+	check(menu.rows[6].choices[3].get("hint", "") == "First use prepares the model, about 1 minute" and menu.rows[6].choices[2].get("hint", "") == "Preparing the model"
+		and menu.rows[6].choices[1].hint == menu.rows[6].info, "A cold or compiling size says so on its own option; ready ones keep the trade-off tooltip")
 	tap(menu, target(menu, "alpha_profile", "512x512"))
 	check(events.back() == ["alpha_profile", "512x512"], "Choosing a size reports it")
 	state.erase("alpha_cold"); state.erase("alpha_warming"); state.alpha_profile = "320x320"; menu.refresh()
-	check(menu.rows[6].key == "alpha_fps" and menu.rows[6].slider and menu.rows[6].span == Vector3(10, 40, 1) and menu.rows[6].value == 30 and not str(menu.rows[6].hint).is_empty(), "Alpha frame rate is a 10-40 FPS slider defaulting to 30 with a passthrough hint")
-	check(menu.rows[7].key == "alpha_feather" and menu.rows[7].value == 100 and menu.rows[8].key == "alpha_shrink" and menu.rows[8].value == 40
-		and menu.rows[8].span == Vector3(0, 100, 1), "Alpha feather and edge shrink follow the frame rate, as in the player settings")
+	check(menu.rows[7].key == "alpha_fps" and menu.rows[7].slider and menu.rows[7].span == Vector3(10, 40, 1) and menu.rows[7].value == 30 and not str(menu.rows[7].hint).is_empty(), "Alpha frame rate is a 10-40 FPS slider defaulting to 30 with a passthrough hint")
+	check(menu.rows[8].key == "alpha_feather" and menu.rows[8].value == 100 and menu.rows[9].key == "alpha_shrink" and menu.rows[9].value == 40
+		and menu.rows[9].span == Vector3(0, 100, 1), "Alpha feather and edge shrink follow the frame rate, as in the player settings")
 	check(not menu.rows.any(func(row): return row.get("key", "") == "alpha_precision"), "AI precision stays hidden")
 	check(alpha_row.choices[1].label.begins_with("320 ") and alpha_row.choices.filter(func(o): return o.label.contains(" ")).size() == 1,
 		"Only the 320 size is marked as the default")
 	menu._set_scroll(menu._max_scroll())
-	tap(menu, Library.ROW_BASE + 9 - menu._first_line())
-	check(menu.rows.size() == 12 and menu._video_settings_expanded.get("alpha") and menu._video_settings_expanded.get("subtitles"), "Subtitle group opens with two collapsed categories beside Alpha")
+	tap(menu, Library.ROW_BASE + 10 - menu._first_line())
+	check(menu.rows.size() == 13 and menu._video_settings_expanded.get("alpha") and menu._video_settings_expanded.get("subtitles"), "Subtitle group opens with two collapsed categories beside Alpha")
 	var saved_events := events.size()
-	menu._set_scroll(2.0); tap(menu, Library.ROW_BASE + 4 - menu._first_line())
-	check(menu.rows.size() == 8 and menu._video_settings_expanded.get("subtitles") and not menu._video_settings_expanded.get("alpha"), "Collapsing Alpha keeps the subtitle category entries visible")
-	menu._set_scroll(3.0); tap(menu, Library.ROW_BASE + 5 - menu._first_line())
-	check(menu.rows.size() == 6 and menu.scroll == 0 and not is_instance_valid(menu._settings_scroll_hint) and events.size() == saved_events,
-		"Collapsing both groups removes scrolling without changing preferences")
+	menu._set_scroll(2.0); tap(menu, Library.ROW_BASE + 5 - menu._first_line())
+	check(menu.rows.size() == 9 and menu._video_settings_expanded.get("subtitles") and not menu._video_settings_expanded.get("alpha"), "Collapsing Alpha keeps the subtitle category entries visible")
+	menu._set_scroll(3.0); tap(menu, Library.ROW_BASE + 6 - menu._first_line())
+	check(menu.rows.size() == 7 and menu.scroll <= menu._max_scroll() and is_instance_valid(menu._settings_scroll_hint) == (menu._max_scroll() > 0) and events.size() == saved_events,
+		"Collapsing both groups clamps scrolling to the common rows without changing preferences")
 	menu.settings_provider = func(): return state.merged({"voice_manager": {"narration_clone_supported": true}})
 	menu.refresh()
 	check(not menu.rows.any(func(row): return row.get("voice_manager", false)), "Narration management stays inside collapsed subtitles")
-	tap(menu, Library.ROW_BASE + 5)
+	tap(menu, Library.ROW_BASE + 6 - menu._first_line())
 	check(menu.rows.any(func(row): return row.get("subtitle_settings_group", "") == "narration"), "Expanding subtitles exposes the narration category")
 	menu._choose(menu.rows.filter(func(row): return row.get("subtitle_settings_group", "") == "narration")[0])
 	check(menu.rows.any(func(row): return row.get("voice_manager", false)), "Expanding narration exposes its unchanged voice manager")
@@ -195,11 +195,11 @@ func _run() -> void:
 	menu._activate(Library.TAB_BASE + Library.BACKGROUND_TAB)
 	check(menu._max_scroll() == 0 and not is_instance_valid(menu._settings_scroll_hint), "Short settings pages have no scrolling cue")
 	menu._activate(Library.TAB_BASE + Library.VIDEO_TAB)
-	tap(menu, Library.ROW_BASE + 4)
+	tap(menu, Library.ROW_BASE + 5)
 	menu.dismiss()
 	check(menu.choices.opened.is_empty() and menu.choices.capture.is_empty(), "Closing settings clears popup and capture")
 	menu.toggle()
-	check(menu.rows.size() == 6 and menu._video_settings_expanded.is_empty(), "Reopening settings restores the collapsed groups")
+	check(menu.rows.size() == 7 and menu._video_settings_expanded.is_empty(), "Reopening settings restores the collapsed groups and background preference")
 	menu.queue_free()
 	print("Choice field checks=%d failures=%d" % [checks, failures.size()])
 	for failure in failures: push_error(failure)

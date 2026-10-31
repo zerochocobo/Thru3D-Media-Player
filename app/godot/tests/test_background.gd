@@ -95,6 +95,9 @@ func check_png_backgrounds(main: Node, viewport: SubViewport) -> void:
 		check(FileAccess.file_exists(source), "PNG source survives import %d" % index)
 	# Deleting an active custom sky requires its own two trigger releases.
 	main._on_photo_action("global_background"); await settle(main.background)
+	check(main.photo_active and main.photo.panel.visible, "Global PNG import keeps viewing active")
+	main._close_current_media(false)
+	main._show_full_library(); main.recent_menu.section=main.recent_menu.Section.SETTINGS; main.recent_menu.tab=main.recent_menu.BACKGROUND_TAB; main.recent_menu.refresh()
 	if DisplayServer.get_name() != "headless": await frame(viewport,"custom-delete")
 	var saved := str(main.background.custom_path)
 	check(delete_target(main)>=0, "Custom background has a delete row")
@@ -262,9 +265,33 @@ func _run() -> void:
 		await frame(viewport,"morning-settings")
 		main.recent_menu.dismiss()
 		await frame(viewport,"morning")
+	main.recent_menu.visible = true; main.recent_menu.refresh()
+	check(main.recent_menu.rows[0].choices[2].value == "night", "Milky Way panorama is the third global background choice")
+	for target in main.recent_menu.choices.targets:
+		var item: Dictionary = main.recent_menu.choices.targets[target]
+		if item.kind == "open" and item.key == "background": field_tap(main.recent_menu, target); break
+	for target in main.recent_menu.choices.targets:
+		var item: Dictionary = main.recent_menu.choices.targets[target]
+		if item.kind == "choose" and item.key == "background" and item.value == "night": field_tap(main.recent_menu, target); break
+	await settle(main.background)
+	check(main.background.choice == "night" and main.background._builtin != null and main.background._builtin.resource_path == Background.NIGHT and
+		main.background._builtin.get_size() == Vector2(6000,3000), "Ray selection loads the original 6K Milky Way panorama")
+	check(main.recent_menu.find_children("*", "Label3D", true, false).any(func(label): return label.text.contains("ESO/S. Brunier")), "Global Milky Way panel visibly credits the photographer")
+	check(main.recent_menu.rows.any(func(row): return row.get("key") == "background_yaw") and
+		main.recent_menu.rows.any(func(row): return row.get("key") == "background_brightness"), "Night background exposes direction and brightness controls")
+	var night_config := ConfigFile.new(); night_config.load(main.settings_path)
+	var night_preset := Background.new(); night_preset.choice = str(night_config.get_value("appearance", "background"))
+	viewport.add_child(night_preset); await settle(night_preset)
+	check(night_preset.choice == "night" and night_preset._builtin != null and night_preset._builtin.resource_path == Background.NIGHT, "Saved night background loads in a fresh instance")
+	night_preset.free()
+	if DisplayServer.get_name() != "headless":
+		await frame(viewport,"night-settings")
+		main.recent_menu.dismiss()
+		await frame(viewport,"night")
 	# Switch while the next built-in request may still be pending; only the last choice wins.
 	main._on_setting_changed("background", "belfast")
 	main._on_setting_changed("background", "dark")
+	main._on_setting_changed("background", "night")
 	main._on_setting_changed("background", "morning")
 	await settle(main.background)
 	check(main.background.choice == "morning" and main.background._builtin.resource_path == Background.MORNING and
@@ -301,8 +328,10 @@ func _run() -> void:
 	check(main.display.environment.background_mode == Environment.BG_COLOR, "Immersive media temporarily hides scenery")
 	main._on_photo_action("global_background")
 	await settle(main.background)
-	check(main.background.choice == "custom" and not main.photo.panel.visible and main.display.environment.background_mode == Environment.BG_SKY, "Using panorama as background closes viewer and restores app sky")
-	check(not main.photo_active and not main.photo_menu.visible and not main._has_open_media(), "JPG import fully exits photo playback")
+	check(main.background.choice == "custom" and main.photo.panel.visible and main.display.environment.background_mode == Environment.BG_COLOR, "Global panorama import keeps the immersive photo displayed")
+	check(main.photo_active and main._has_open_media() and main.photo.local_uri == "file://"+source, "JPG import preserves the current photo link and playback session")
+	main._close_current_media(false)
+	check(not main.photo_active and main.display.environment.background_mode == Environment.BG_SKY, "Global scenery appears only after the user closes the photo")
 	var saved := str(main.background.custom_path)
 	check(FileAccess.file_exists(saved) and saved != source, "Background has independent private copy")
 	DirAccess.remove_absolute(source)

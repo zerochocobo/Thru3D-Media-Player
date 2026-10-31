@@ -39,11 +39,12 @@ func shared_parameters() -> Dictionary:
 	for name in _shared_uniforms: values[name] = material.get_shader_parameter(name)
 	return values
 
-func share_with(target: ShaderMaterial, parameters: Dictionary = {}, portrait: bool = false) -> void:
+func share_with(target: ShaderMaterial, parameters: Dictionary = {}, portrait: bool = false, shader_override: Shader = null) -> void:
 	if not material or layer: return
 	if not _consumers.has(target): _consumers.append(target)
 	if parameters.is_empty(): parameters = shared_parameters()
 	var shader := (PORTRAIT_DECODER_SHADER if material.shader == DECODER_SHADER else PORTRAIT_SHADER) if portrait else material.shader
+	if shader_override: shader = shader_override
 	if target.shader != shader:
 		target.shader = shader; _shared_values.erase(target.get_instance_id())
 	var values: Dictionary = _shared_values.get_or_add(target.get_instance_id(), {})

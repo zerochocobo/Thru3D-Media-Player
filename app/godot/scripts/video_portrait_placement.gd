@@ -9,6 +9,8 @@ var entry_scale := 1.0
 var entry_distance := 2.0
 var last_distance := 2.0
 var last_scale := 1.0
+var scenery_rig := Transform3D.IDENTITY
+var cinema_presented := false
 
 static func capture(video: Node3D, follow: bool) -> Dictionary:
 	return {"screen_distance": video.screen_distance, "screen_scale": video.screen_scale,
@@ -27,6 +29,9 @@ static func restore(host: Node, state: Dictionary) -> void:
 
 func prepare(host: Node) -> void:
 	var video: Node3D = host.video
+	if active and not pending and host._cinema_scene_active() == cinema_presented:
+		# Record any ordinary locomotion before a synchronous background switch.
+		scenery_rig = host.xr_camera.get_parent().global_transform
 	var wanted: bool = video != null and not host.photo_active and video.has_active_presentation() \
 		and video.flat_passthrough_requested() and not (host.puzzle_game and host.puzzle_game.active)
 	if wanted == active: return
@@ -48,10 +53,20 @@ func prepare(host: Node) -> void:
 	host.view_follow.forget(&"video_portrait")
 
 func finish(host: Node) -> void:
-	if not pending or not active: return
+	if not active: return
+	var rig: Transform3D = host.xr_camera.get_parent().global_transform
+	var cinema: bool = host._cinema_scene_active()
+	if not pending:
+		# Showing/hiding the hall seats/restores the XR rig, also after async loading.
+		# Carry the cutout into that coordinate system without changing its viewed pose.
+		if cinema != cinema_presented:
+			host.video.set_flat_world_pose(rig * scenery_rig.affine_inverse() * host.video.global_transform * host.video.flat_pose)
+		scenery_rig = rig; cinema_presented = cinema
+		return
 	var head: Variant = host._head_pose()
 	if not head is Transform3D: return
 	pending = false
+	scenery_rig = rig; cinema_presented = cinema
 	var video: Node3D = host.video
 	var value: Variant = host.settings.get_value("portrait_screen", "distance", entry_distance)
 	var distance := entry_distance
@@ -63,7 +78,12 @@ func finish(host: Node) -> void:
 	if (scale_value is float or scale_value is int) and is_finite(float(scale_value)) and float(scale_value) >= video.SCALE_LIMITS.x and float(scale_value) <= video.SCALE_LIMITS.y:
 		scale = float(scale_value)
 	var pose: Transform3D = head * entry_pose
-	pose.origin += pose.basis.z.normalized() * (entry_distance - distance)
+	if cinema and host._alpha_keep_background() and entry_distance > 0.001:
+		# The auditorium screen is elevated. Restoring a nearby, smaller portrait
+		# along its normal would leave it overhead and outside the field of view.
+		pose.origin = head.origin + (pose.origin - head.origin) * (distance / entry_distance)
+	else:
+		pose.origin += pose.basis.z.normalized() * (entry_distance - distance)
 	video.cinema.enabled = false; video.cinema.bottom = null
 	video.screen_preset = ""; video.screen_curve = 0.0
 	video.screen_scale = scale; video.screen_distance = distance

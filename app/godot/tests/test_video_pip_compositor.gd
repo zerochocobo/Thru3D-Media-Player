@@ -23,6 +23,7 @@ class Host extends RefCounted:
 	func count_calls(kind: String) -> int: return calls.filter(func(call): return call[0] == kind).size()
 
 class Surface extends "res://tests/test_video_pip.gd".Surface:
+	var alpha_over_scenery := false
 	var platform: RefCounted
 	var video_layer: RefCounted
 	var alpha_requested := false
@@ -238,6 +239,13 @@ func run() -> void:
 	layer.runtime_image_size = Vector2i(4096, 4096)
 	var before_main := host.count_calls("draw")
 	check(renderer.prepare_main() and renderer.main_size == Vector2i(4096, 1024), "Top-bottom main is processed once into a full-resolution SBS image")
+	video.alpha_over_scenery = true
+	check(not renderer.prepare_main() and not renderer.main_ready and renderer.main_size == Vector2i.ZERO,
+		"Keeping scenery retires the transparent main compositor copy")
+	check(renderer.needs_main() and renderer.prepare(origin, 3).is_empty(), "Transparent PiP windows cannot punch holes in retained scenery")
+	video.alpha_over_scenery = false
+	check(renderer.prepare_main(), "Returning to camera allows the processed main again")
+	before_main = host.count_calls("draw") - 1
 	var fish: PackedFloat32Array = renderer.parameters(video.material, renderer.COMMON)
 	fish[0] = 2; fish[1] = 1; fish[2] = 0; fish[7] = 180; fish[8] = 8192; fish[9] = 4096
 	check(renderer.main_dimensions(fish) == Vector2i(5760, 2880), "8K transparent fisheye reuses the established 16 pixels per degree main cache")

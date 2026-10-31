@@ -30,6 +30,12 @@ func run() -> void:
 	browser.windows[2]._activate(home.BASE + 16)
 	check(platform.browser.url == "http://192.168.31.185:8096/web/index.html#!/6" and browser.focused_window == 2, "A bookmark opens its exact LAN URL and route in the chosen new window")
 	check(platform.browser.windows[0].url == "about:blank", "Choosing a bookmark does not navigate the peer window")
+	check(not home.active(2), "Clicked start-page cards disappear while the native navigation snapshot is pending")
+	# Continue catalogue/channel tests in a genuinely new tab, not the departing page.
+	platform.browser.windows[1].tab_id = 3
+	platform.browser.tab_list[1].id = 3
+	platform.browser.focused_window = 2; platform.browser.tab_id = 3
+	browser.next_poll = 0; browser.tick()
 	ProjectSettings.set_setting(Sites.Channel.KEY, "pico_cn_store")
 	for language in ["zh", "en", "ja"]:
 		I18n.use(language); browser.refresh_windows()

@@ -42,6 +42,7 @@ func run() -> void:
 	check(command.action == "pause_tab" and command.window == 1 and command.tab == 11 and command.navigation == 3, "Successful extraction pauses only its exact source tab and navigation")
 	check(not platform.actions.has("pause") and selected.is_empty(), "No global pause is sent and playback waits for the source acknowledgement")
 	platform.browser.windows[0].playing = false
+	platform.browser.windows[0].pause_token = command.pause_token
 	# The aggregate flag must not block acknowledgement of this paused source.
 	platform.browser.playing = true
 	poll(browser)

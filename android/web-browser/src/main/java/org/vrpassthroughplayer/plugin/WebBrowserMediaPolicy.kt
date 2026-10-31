@@ -2,9 +2,15 @@ package org.vrpassthroughplayer.plugin
 
 import java.net.URI
 import java.util.Locale
+import org.json.JSONObject
 
 /** Website-owned EME playback. Keys and protected media never cross the native handoff. */
 internal object WebBrowserMediaPolicy {
+    /** Prefer the adapter's current-part binding over a playing sidebar preview. */
+    fun extractionCandidate(candidates: List<JSONObject>): JSONObject? = candidates.maxWithOrNull(
+        compareBy<JSONObject> { it.optBoolean("bilibili_enabled") && !it.optBoolean("protected") && it.optJSONObject("bilibili") != null }
+            .thenBy { it.optBoolean("fullscreen") }.thenBy { it.optBoolean("playing") }
+            .thenBy { it.optLong("width") * it.optLong("height") })
     private val sites = listOf(
         listOf("netflix.com"), listOf("primevideo.com", "amazon.com"), listOf("disneyplus.com"), listOf("max.com", "hbomax.com"),
         listOf("hulu.com"), listOf("paramountplus.com"), listOf("apple.com"), listOf("plex.tv"),

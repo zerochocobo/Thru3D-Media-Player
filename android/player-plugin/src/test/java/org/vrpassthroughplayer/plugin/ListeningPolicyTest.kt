@@ -4,6 +4,40 @@ import org.junit.Test
 import org.json.JSONObject
 
 class ListeningPolicyTest {
+    @Test fun splitWebAudioUsesItsOwnInputStreamAndClock() {
+        val video="http://127.0.0.1:32123/video.mp4"
+        val audio="http://127.0.0.1:32123/audio.webm"
+        val metadata=JSONObject().put("id",1).put("stream_index",0).put("external",true).put("filename",audio)
+        val selected=ListeningPolicy.audioInput(video,metadata,audio,7.5)!!
+        assertEquals(audio,selected.path);assertNotEquals(video,selected.path)
+        assertEquals(0,selected.stream);assertTrue(selected.external);assertTrue(selected.origin.isNaN())
+        val embedded=ListeningPolicy.audioInput(video,metadata.put("external",false),audio,7.5)!!
+        assertEquals(video,embedded.path);assertEquals(0,embedded.cacheTrack)
+        assertEquals(7.5,embedded.origin,0.0);assertFalse(embedded.external)
+        assertNotEquals(embedded.cacheTrack,selected.cacheTrack)
+    }
+    @Test fun splitAudioCacheIdentitySurvivesLeaseRenewalButSeparatesStreams() {
+        fun selected(path: String,stream: Int)=ListeningPolicy.audioInput("video",JSONObject()
+            .put("external",true).put("filename",path).put("stream_index",stream),path,0.0)!!
+        val first=selected("http://127.0.0.1:1234/first/audio.m4a",0)
+        val renewed=selected("http://127.0.0.1:4321/new/audio.m4a",0)
+        assertEquals(first.cacheTrack,renewed.cacheTrack)
+        assertNotEquals(first.cacheTrack,selected(first.path,1).cacheTrack)
+        fun key(track: Int)=ListeningCueCache.key("a".repeat(64),30.0,"en","model",track)
+        assertEquals(key(first.cacheTrack),key(renewed.cacheTrack))
+        assertNotEquals(key(0),key(first.cacheTrack))
+    }
+    @Test fun unownedExternalOrInvalidStreamsRemainUnsupported() {
+        val audio="http://127.0.0.1:1234/audio.m4a"
+        val metadata=JSONObject().put("external",true).put("filename",audio).put("stream_index",0)
+        assertNull(ListeningPolicy.audioInput("video",metadata,"",0.0))
+        assertNull(ListeningPolicy.audioInput("video",metadata,audio+"?other",0.0))
+        assertNull(ListeningPolicy.audioInput("video",metadata.put("filename","https://cdn.test/private"),audio,0.0))
+        metadata.put("filename",audio)
+        for(stream in listOf(-1,Int.MAX_VALUE))assertNull(ListeningPolicy.audioInput("video",metadata.put("stream_index",stream),audio,0.0))
+        metadata.remove("stream_index")
+        assertNull(ListeningPolicy.audioInput("video",metadata,audio,0.0))
+    }
     @Test fun progressUsesActualVerifiedBytesAndAudibleLookahead() {
         assertEquals(-1,ListeningPolicy.percent(0.0,0.0))
         assertEquals(25,ListeningPolicy.percent(3.0,12.0))

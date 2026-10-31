@@ -25,6 +25,7 @@ class VideoFixture extends Node3D:
 	var geometry := 0
 	var local_uri := ""
 	var media := {"session_id": 1}
+	func has_active_presentation() -> bool: return false # This input fixture has no decoded frame.
 
 class EnvironmentFixture extends Node3D:
 	var active := true

@@ -1,0 +1,24 @@
+The Milky Way panorama (ESO eso0932a)
+Source: https://www.eso.org/public/images/eso0932a/
+Credit: ESO/S. Brunier
+License: Creative Commons Attribution 4.0 International (CC BY 4.0).
+License text: third_party/eso/CC-BY-4.0.txt in the project source;
+eso/CC-BY-4.0.txt in the packaged About license reader.
+License URL: https://creativecommons.org/licenses/by/4.0/
+Usage conditions verified: 2026-10-31,
+https://www.eso.org/public/copyright/
+
+The included eso0932a.jpg is the official, unmodified Large JPEG,
+6000 x 3000 pixels (8,228,817 bytes).
+Download: https://cdn.eso.org/images/large/eso0932a.jpg
+MD5: 1a2ad13e45d058f736ae3b40aafa9415
+SHA256: 60400c92c54b7c1bd12299c69e83b16e5b6256e7dabacc478c021758ecd28179
+Godot generates full-size ASTC/BPTC textures with mipmaps; these technical
+format conversions do not change the source JPEG. No crop, AI editing,
+upscaling, exposure or color adjustment is applied to the supplied image.
+
+CC BY 4.0 permits commercial use, modification and redistribution with
+attribution, a license link and an indication of modifications.
+The exact credit is shown with this background in both selection panels.
+The image retains its own CC BY 4.0 license; the project's software license
+does not replace it. No endorsement by ESO or the photographer is implied.

@@ -4,6 +4,16 @@
 
 Newest first, following product release milestones. Some development/source snapshots contained features before their product release. Original APK identifiers `0.2` and `0.4` are retained; `0.4` was also called `0.4.0` in release notes. Availability depends on device, server and media capabilities.
 
+## 0.16.1 — 2026-10-31
+
+- Add video 3D boost up to 200%, click-to-enable/restore strength and a separate Off action. Retain frames while AI 2D/3D paths change to reduce black gaps; a short still frame/audio pause can remain. Preserve the picture's background during Alpha passthrough when requested, including panorama/cinema placement, with independent photo backgrounds and saved preferences.
+- Expand photos to static/animated AVIF, APNG, GIF, animated WebP and supported camera RAW families; animations can pause before compatible effects. Add Emby/Jellyfin original-photo browsing/album navigation. Preserve photo portrait intent across navigation, remove rectangular/feather rims and background flashes, and use transparent departure/loading presentation.
+- Add browser region focus, clearer loading/click feedback, persistent playback actions and compact toolbar ray reveal. Isolate retired Gecko sessions and release their media before native playback; improve Bilibili primary-media/part/episode association, readiness gating, cancellation, retry and restored capture. Website/account/format restrictions still apply.
+- Move supported cloud OAuth/login pages to in-headset Gecko windows with region focus and provider-specific desktop/touch modes. Retain authentication sessions and block ordinary controls behind them; improve refresh/input lifecycle and menu clarity. This does not establish that every real OneDrive authentication step or provider flow is fixed.
+- Add PGS foreground tint swatches while retaining outlines/colored content, optional VR adjustment gauges and controller hints. Support Japanese kana reading in subtitle narration, fix split web-audio input for live subtitles and add independently seekable SMB PDF access with filename fixes.
+- Add the ESO/S. Brunier Milky Way panorama as the third background, with retained CC-BY-4.0 attribution; keep photo viewing open after selecting a global background. Improve compatible HDR passthrough input, fallback input buffers, cinema cutout visibility and near placement. Do not infer native HDR output or all-headset acceptance.
+- Publish pinned image-decoder source/build recipes and notices without personal test media. Meta store builds temporarily use “Thru3D Media Player XR”; other channels retain the standard display name and source defaults are restored. Research plans for hard-subtitle protection, shared cinema and fully continuous transitions are not implemented features.
+
 ## 0.16.0 — 2026-10-30
 
 - Replace video/portrait depth with ZipDepth GPU models, keeping still-photo depth independent. Default to the 384×224 FP16 graph at low GPU priority on all headsets; pipeline inference/stabilization, reduce readback work and use mobile-friendly model operators. Publish source recipes, pins and MIT/GPL attribution without weights or private evaluation inputs. Performance remains device/content dependent.

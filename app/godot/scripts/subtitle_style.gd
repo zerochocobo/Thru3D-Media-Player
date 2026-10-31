@@ -1,6 +1,13 @@
 extends RefCounted
 ## Shared appearance for flat labels, projected patches and settings previews.
 const DEFAULT := "white_black"
+const PGS_DEFAULT := "original"
+const PGS_PRESETS := [
+	{"value": "original", "label": "Original colors", "rgb": 0xffffff},
+	{"value": "yellow", "label": "Pale yellow", "swatch": Color("ffe066"), "rgb": 0xffe066},
+	{"value": "cyan", "label": "Light cyan", "swatch": Color("80eaff"), "rgb": 0x80eaff},
+	{"value": "green", "label": "Light green", "swatch": Color("a7f08b"), "rgb": 0xa7f08b},
+	{"value": "pink", "label": "Light pink", "swatch": Color("ffa8cc"), "rgb": 0xffa8cc}]
 const LINE_CHOICES := [{"value": 0, "label": "All"}, {"value": 1, "label": "First line"}, {"value": 2, "label": "Second line"}]
 const PRESETS := [
 	{"value": "white_black", "label": "Subtitle sample", "hint": "White / black outline", "text_color": Color.WHITE, "outline_color": Color.BLACK},
@@ -20,6 +27,20 @@ static func colors(value: Variant) -> Dictionary:
 	for preset in PRESETS:
 		if preset.value == id: return preset
 	return PRESETS[0]
+
+static func normalize_pgs(value: Variant) -> String:
+	for preset in PGS_PRESETS:
+		if value is String and value == preset.value: return preset.value
+	return PGS_DEFAULT
+
+static func pgs_rgb(value: Variant) -> int:
+	var id := normalize_pgs(value)
+	for preset in PGS_PRESETS:
+		if preset.value == id: return preset.rgb
+	return 0xffffff
+
+static func pgs_row(value: Variant) -> Dictionary:
+	return {"key": "subtitle_pgs_tint", "value": normalize_pgs(value), "choices": PGS_PRESETS, "swatches": true}
 
 static func size_ratio(value: float) -> float:
 	return clampf(value, 0.5, 2.0) if is_finite(value) else 1.0

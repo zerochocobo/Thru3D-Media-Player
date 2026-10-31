@@ -56,6 +56,7 @@ if ($XrVendor -eq 'OpenXR') {
     Write-Output 'Experimental standard OpenXR target: device runtime, full controller input and passthrough require device validation.'
 }
 $applicationId = if ($QuestStore) { 'com.thru3d.quest' } else { 'com.wapok.thru3d' }
+$applicationName = if ($QuestStore) { 'Thru3D Media Player XR' } else { 'Thru3D Media Player' }
 if ($DebugApplicationId) {
     if ($BuildType -ne 'Debug' -or $XrVendor -ne 'Pico') { throw 'The emulator application id is limited to PICO Debug builds.' }
     $applicationId = $DebugApplicationId
@@ -122,7 +123,11 @@ if ($QuestStore -and -not $customApkName) {
 $originalProjectConfig = [IO.File]::ReadAllBytes($projectConfigPath)
 $projectText = [Text.Encoding]::UTF8.GetString($originalProjectConfig)
 if ($projectText -notmatch '(?m)^config/distribution_channel="standard"\r?$') { throw 'Source distribution channel must remain standard.' }
-$channelProjectConfig = [Text.UTF8Encoding]::new($false).GetBytes($projectText.Replace('config/distribution_channel="standard"', 'config/distribution_channel="' + $distributionChannel + '"'))
+$channelProjectText = $projectText.Replace('config/distribution_channel="standard"', 'config/distribution_channel="' + $distributionChannel + '"')
+if ($QuestStore) {
+    $channelProjectText = [regex]::Replace($channelProjectText, '(?m)^config/name="[^"]*"', 'config/name="' + $applicationName + '"')
+}
+$channelProjectConfig = [Text.UTF8Encoding]::new($false).GetBytes($channelProjectText)
 [IO.File]::WriteAllBytes($projectConfigPath, $channelProjectConfig)
 if ($AndroidVersionCode -gt 0) {
     $originalExportPresets = [IO.File]::ReadAllBytes($exportPresetsPath)
@@ -131,6 +136,9 @@ if ($AndroidVersionCode -gt 0) {
 if ($DebugApplicationId -or $QuestStore) {
     if ($null -eq $originalExportPresets) { $originalExportPresets = [IO.File]::ReadAllBytes($exportPresetsPath) }
     $packagePresets = [IO.File]::ReadAllText($exportPresetsPath).Replace('package/unique_name="com.wapok.thru3d"', 'package/unique_name="' + $applicationId + '"')
+    if ($QuestStore) {
+        $packagePresets = [regex]::Replace($packagePresets, '(?m)^package/name="[^"]*"', 'package/name="' + $applicationName + '"')
+    }
     [IO.File]::WriteAllText($exportPresetsPath, $packagePresets, [Text.UTF8Encoding]::new($false))
 }
 if ($IncludeDiagnostics) {
@@ -294,6 +302,12 @@ if ($LASTEXITCODE -ne 0) { throw 'APK signer certificate inspection failed.' }
 if ($LASTEXITCODE -ne 0) { throw 'APK alignment validation failed.' }
 & "$env:ANDROID_HOME\build-tools\36.1.0\aapt2.exe" dump xmltree $apkPath --file AndroidManifest.xml 2>&1 | Out-File (Join-Path $logDirectory 'apk-manifest.txt') -Encoding utf8
 if ($LASTEXITCODE -ne 0) { throw 'APK manifest inspection failed.' }
+& "$env:ANDROID_HOME\build-tools\36.1.0\aapt2.exe" dump badging $apkPath 2>&1 | Out-File (Join-Path $logDirectory 'apk-badging.txt') -Encoding utf8
+if ($LASTEXITCODE -ne 0) { throw 'APK display name inspection failed.' }
+$applicationLabels = [regex]::Matches((Get-Content (Join-Path $logDirectory 'apk-badging.txt') -Raw), "(?m)^application-label(?:-[^:]+)?:'([^']*)'")
+if ($applicationLabels.Count -eq 0 -or @($applicationLabels | Where-Object { $_.Groups[1].Value -cne $applicationName }).Count -gt 0) {
+    throw "APK application display name differs from $applicationName."
+}
 $manifestText = Get-Content (Join-Path $logDirectory 'apk-manifest.txt') -Raw
 if ($manifestText -notmatch ('(?m)^\s*A: package="' + [regex]::Escape($applicationId) + '"')) {
     throw 'APK application id differs from the requested package.'
@@ -365,6 +379,7 @@ try {
     if ($abis.Count -ne 1 -or $abis[0] -ne 'arm64-v8a') { throw 'APK has unexpected native architectures.' }
     if (@($apkArchive.Entries | Where-Object { $_.FullName -match '^lib/.*/libgodot_android\.so$' }).Count -ne 1) { throw 'APK must contain exactly one Godot engine library.' }
     if (-not $apkArchive.GetEntry('lib/arm64-v8a/libgojni.so')) { throw 'APK is missing the embedded OpenList core.' }
+    & "$PSScriptRoot/Assert-ImagePackaged.ps1" -ArchivePath $apkPath
     if (-not $apkArchive.GetEntry('assets/p115rsacipher/LICENSE')) { throw 'APK is missing the MIT 115 cipher license.' }
     $accountLicenses = Get-Content (Join-Path $workspace 'app/godot/i18n/licenses.json') -Raw | ConvertFrom-Json
     if (-not $apkArchive.GetEntry('assets/licenses.json')) { throw 'APK is missing the global About license index.' }
@@ -376,13 +391,15 @@ try {
     foreach ($notice in @('assets/backgrounds/CC0-1.0.txt', 'assets/backgrounds/NOTICE.txt')) {
         if (-not $apkArchive.GetEntry($notice)) { throw "APK is missing panorama attribution/license: $notice" }
     }
-    $panoramaImport = Get-Content (Join-Path $projectDirectory 'backgrounds\belfast_sunset_puresky.jpg.import') -Raw
-    if ($panoramaImport -notmatch 'compress/mode=2' -or $panoramaImport -notmatch 'mipmaps/generate=true' -or $panoramaImport -notmatch 'process/size_limit=0') {
-        throw 'Built-in panorama must keep full dimensions, mipmaps and GPU compression.'
-    }
-    $panoramaMatch = [regex]::Match($panoramaImport, '(?m)^path.astc="res://([^"]+)"')
-    if (-not $panoramaMatch.Success -or -not $apkArchive.GetEntry('assets/' + $panoramaMatch.Groups[1].Value)) {
-        throw 'APK is missing the full-resolution ASTC panorama texture.'
+    foreach ($panorama in @('belfast_sunset_puresky', 'kloppenheim_06_puresky', 'eso0932a')) {
+        $panoramaImport = Get-Content (Join-Path $projectDirectory ('backgrounds/' + $panorama + '.jpg.import')) -Raw
+        if ($panoramaImport -notmatch 'compress/mode=2' -or $panoramaImport -notmatch 'mipmaps/generate=true' -or $panoramaImport -notmatch 'process/size_limit=0') {
+            throw "Built-in panorama must keep full dimensions, mipmaps and GPU compression: $panorama"
+        }
+        $panoramaMatch = [regex]::Match($panoramaImport, '(?m)^path.astc="res://([^"]+)"')
+        if (-not $panoramaMatch.Success -or -not $apkArchive.GetEntry('assets/' + $panoramaMatch.Groups[1].Value)) {
+            throw "APK is missing the full-resolution ASTC panorama texture: $panorama"
+        }
     }
     if (-not ($apkArchive.Entries | Where-Object { $_.FullName -like '*openxr_action_map*' })) { throw 'APK is missing the fixed controller action map.' }
     $fixtureHash = $null
@@ -542,6 +559,7 @@ $audioMethod = Get-Content (Join-Path $logDirectory 'mpv-audio-plugin-method.log
 if (-not $audioMethod.Contains('.method public final set_mpv_audio(IIDZ)Z') -or -not $audioMethod.Contains('.annotation runtime Lorg/godotengine/godot/plugin/UsedByGodot;') -or -not $audioMethod.Contains('MpvVideoBridge;->setAudio(IIDZ)Z')) { throw 'APK MPV audio method/Godot annotation differs.' }
 & "$workspace\tools\Verify-MpvCandidate.ps1" -ToolRoot $ToolRoot -Candidate $MpvCandidate -ApkPath $apkPath
 foreach ($binding in @(@('set_mpv_subtitle(II)Z', 'setSubtitle(II)Z'), @('get_mpv_subtitles(IJ)Ljava/lang/String;', 'subtitles(IJ)Ljava/lang/String;'), @('get_mpv_subtitle_bitmap(IJ)[B', 'subtitleBitmap(IJ)[B'), @('set_mpv_narration(ILjava/lang/String;)Z', 'setNarration(ILjava/lang/String;)Z'),
+    @('get_mpv_subtitle_bitmap_tinted(IJI)[B', 'subtitleBitmap(IJI)[B'),
     @('mpv_voice_clone_request(ILjava/lang/String;)Z', 'voiceCloneRequest(ILjava/lang/String;)Z'), @('mpv_voice_clone_status(I)Ljava/lang/String;', 'voiceCloneStatus(I)Ljava/lang/String;'),
     @('narration_voice_manager_request(Ljava/lang/String;)Z', 'voiceManagerRequest(Ljava/lang/String;)Z'), @('narration_voice_manager_status()Ljava/lang/String;', 'voiceManagerStatus()Ljava/lang/String;'))) {
     $methodName = $binding[0].Split('(')[0]
@@ -574,6 +592,7 @@ $buildManifest = [ordered]@{
     schema_version = 1
     built_utc = [DateTime]::UtcNow.ToString('o')
     application_id = $applicationId
+    application_name = $applicationName
     distribution_channel = $distributionChannel
     native_library_compression = if ($UncompressedNativeLibraries) { 'stored' } else { 'deflate' }
     native_library_install_extraction = $true

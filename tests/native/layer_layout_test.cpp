@@ -25,6 +25,14 @@ int main() {
     check(next == &tail, "Unsupported extension is omitted without removing other extensions");
     check(quest::image_layout_next(layout, -1.0f, nullptr) == nullptr, "Unsupported extension has no struct");
     const float full[] = {0, 0, 4096, 4096};
+    const float browser_crop[] = {480, 225, 960, 600};
+    const auto quest_crop = quest::browser_image_rect(browser_crop, 1500, true);
+    const auto pico_crop = quest::browser_image_rect(browser_crop, 1500, false);
+    check(quest_crop.offset.x == 480 && quest_crop.offset.y == 675 && quest_crop.extent.width == 960 && quest_crop.extent.height == 600,
+          "Quest crop mirrors its origin within the producer before vertical flip");
+    check(pico_crop.offset.x == 480 && pico_crop.offset.y == 225 && pico_crop.extent.width == 960 && pico_crop.extent.height == 600,
+          "PICO crop uses top-left producer coordinates without vertical flip");
+    check(quest::browser_image_rect(full, 4096, true).offset.y == 0, "Exiting focus restores the full producer without changing its pixels");
     const float negative[] = {-20, 0, 2048, 4096};
     const float overflow[] = {2049, 0, 2048, 4096};
     const float vertical[] = {0, 1, 2048, 4096};

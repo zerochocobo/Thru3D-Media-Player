@@ -1,5 +1,5 @@
 {
-  "checked_on": "2026-10-29",
+  "checked_on": "2026-10-31",
   "files": [
     {
       "path": "comic-ocr/LICENSE.PaddleOCR",
@@ -261,6 +261,48 @@
       "path": "player-licenses/zipdepth.txt",
       "source": "https://raw.githubusercontent.com/fabiotosi92/ZipDepth/91f3fd21e131641f51e8d35736d1958350180e3a/LICENSE",
       "sha256": "0007e2ff761f1b89ad89327870b807cd4de00cb657b442b62de2f92fdc87d508"
+    },
+    {
+      "path": "image/lcms-LICENSE.txt",
+      "source": "https://codeload.github.com/mm2/Little-CMS/tar.gz/refs/tags/lcms2.19.1",
+      "sha256": "6dbd60437f8ef91d8de1f08ad75882547fd4931bfcc3566a0735f28db1484d31",
+      "archive_sha256": "267705e278e2f7c2fb886c259dadcbaeb2be52748bcbc71c79f08aacacb7a709"
+    },
+    {
+      "path": "image/libavif-LICENSE.txt",
+      "source": "https://codeload.github.com/AOMediaCodec/libavif/tar.gz/refs/tags/v1.4.2",
+      "sha256": "165abf92cc04b39e80d29cadea7a6a7e8fddf59407d4ad2616507a7ebe8216f9",
+      "archive_sha256": "2b645287340ba5a631d268b551dc2d72bd73ac33335962dd36dcdb6d8366921d"
+    },
+    {
+      "path": "image/libraw-COPYRIGHT.txt",
+      "source": "https://codeload.github.com/LibRaw/LibRaw/tar.gz/refs/tags/0.22.3",
+      "sha256": "574c88f5dd59414cfc896293a63defbc2d525a418ed413d7ab7dcc43cf79c509",
+      "archive_sha256": "7edf96c5b70cff88980a02ab0fc8af125cb6a4a377985573c654439d9d02355c"
+    },
+    {
+      "path": "image/libraw-LICENSE.CDDL.txt",
+      "source": "https://codeload.github.com/LibRaw/LibRaw/tar.gz/refs/tags/0.22.3",
+      "sha256": "0e3098d2d54a12434715f6679ea408d57da5e8d613c385c58ecc6fe5d30cc81f",
+      "archive_sha256": "7edf96c5b70cff88980a02ab0fc8af125cb6a4a377985573c654439d9d02355c"
+    },
+    {
+      "path": "image/libraw-LICENSE.LGPL.txt",
+      "source": "https://codeload.github.com/LibRaw/LibRaw/tar.gz/refs/tags/0.22.3",
+      "sha256": "eea173a556abac0370461e57e12aab266894ea6be3874c2be05fd87871f75449",
+      "archive_sha256": "7edf96c5b70cff88980a02ab0fc8af125cb6a4a377985573c654439d9d02355c"
+    },
+    {
+      "path": "image/libwebp-COPYING.txt",
+      "source": "https://codeload.github.com/webmproject/libwebp/tar.gz/refs/tags/v1.6.0",
+      "sha256": "5aec868f669e384a22372a4e8a1a6cd7d44c64cd451f960ca69cc170d1e13acf",
+      "archive_sha256": "93a852c2b3efafee3723efd4636de855b46f9fe1efddd607e1f42f60fc8f2136"
+    },
+    {
+      "path": "image/libwebp-PATENTS.txt",
+      "source": "https://codeload.github.com/webmproject/libwebp/tar.gz/refs/tags/v1.6.0",
+      "sha256": "cc3273e0694ea5896145e0677699b53471b03ea43021ddc50e7923fbb9f5023c",
+      "archive_sha256": "93a852c2b3efafee3723efd4636de855b46f9fe1efddd607e1f42f60fc8f2136"
     }
   ],
   "text_normalization": "UTF-8, LF line endings, trailing whitespace removed; license wording unchanged."

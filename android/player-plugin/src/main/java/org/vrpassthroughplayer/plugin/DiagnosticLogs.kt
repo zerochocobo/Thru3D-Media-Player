@@ -121,7 +121,7 @@ internal object DiagnosticLogs {
         .map { line -> redact(stamp.find(line)?.let { line.substring(it.range.last + 1) } ?: line).replace(Regex(" {2,}"), " ").trim() }
         .toList().takeLast(40)
 
-    private val mediaName = Regex("""([/\\])[^/\\\n"'<>]{1,200}\.(mp4|mkv|mov|avi|wmv|ts|m2ts|mts|iso|webm|flv|rmvb|m4v|jpg|jpeg|png|heic|heif|webp|gif|bmp|tif|tiff|pdf|cbz|cbr|zip|rar|7z|srt|ass|ssa|vtt|sup|mp3|flac|wav|m4a|aac|ogg)\b""", RegexOption.IGNORE_CASE)
+    private val mediaName = Regex("""([/\\])[^/\\\n"'<>]{1,200}\.(mp4|mkv|mov|avi|wmv|ts|m2ts|mts|iso|webm|flv|rmvb|m4v|jpg|jpeg|png|heic|heif|webp|gif|avif|avifs|apng|dng|cr2|cr3|nef|nrw|arw|raf|rw2|orf|pef|srw|hdr|rgbe|exr|bmp|tif|tiff|pdf|cbz|cbr|zip|rar|7z|srt|ass|ssa|vtt|sup|mp3|flac|wav|m4a|aac|ogg)\b""", RegexOption.IGNORE_CASE)
     private val credentials = Regex("""(\b[a-z][a-z0-9+.-]*://)[^/\s:@"']+(:[^/\s@"']*)?@""", RegexOption.IGNORE_CASE)
     private val query = Regex("""(\b[a-z][a-z0-9+.-]*://[^\s"'?#]*)\?[^\s"'#]*""", RegexOption.IGNORE_CASE)
     private val secretField = Regex("""("?\b(?:token|access_token|refresh_token|cookie|password|passwd|pwd|secret|authorization|sign|session|title|filename|file_name)"?\s*[:=]\s*)("[^"]*"|[^\s,;&}]+)""", RegexOption.IGNORE_CASE)

@@ -1,4 +1,4 @@
-add_library(quest_video_layer SHARED video_layer.cpp layer_extensions.cpp layer_copy.cpp)
+add_library(quest_video_layer SHARED video_layer.cpp layer_extensions.cpp layer_copy.cpp browser_layer.cpp)
 include("${CMAKE_CURRENT_LIST_DIR}/pip_shader.cmake")
 target_include_directories(quest_video_layer PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
 target_compile_features(quest_video_layer PRIVATE cxx_std_17)

@@ -96,6 +96,17 @@ test('unverified origins start disabled, and switching off immediately clears ob
   p.port.onMessage.fire({ type: 'context', page: 'https://page.test/watch', enabled: false });
   f.request('https://cdn.test/next.mp4'); f.flush(); assert.equal(p.last().length, 0);
 });
+
+test('Bilibili sidebar pushState preserves in-flight exact-request headers in the same document', () => {
+  const f=fixture(), first='https://www.bilibili.com/video/BV1234567890/', second='https://www.bilibili.com/video/BV0987654321/';
+  const p=f.connect(1,0,first,false); p.port.onMessage.fire({type:'context',page:first,bilibili:true});
+  const request={tabId:1,frameId:0,documentId:'doc-1-0',documentUrl:first,method:'GET',type:'xmlhttprequest',requestId:'switch',url:'https://cdn.test/new.m4s',requestHeaders:[{name:'Referer',value:first}]};
+  f.browser.webRequest.onSendHeaders.fire(request);
+  p.port.onMessage.fire({type:'context',page:second,bilibili:true,reset:true});
+  f.browser.webRequest.onHeadersReceived.fire({...request,statusCode:206,responseHeaders:[{name:'Content-Type',value:'video/mp4'}]});f.flush();
+  assert.equal(p.last()[0].headers.referer,first);
+  f.request('https://cdn.test/stale.m4s',{documentUrl:first,documentId:'old'});f.flush();assert.equal(p.last().length,1);
+});
 test('hash-routed pages can opt in while media addresses with fragments are rejected', () => {
   const f = fixture(), p = f.connect(1, 0, 'https://page.test/watch#/movie/1');
   f.request('https://cdn.test/movie.mp4'); f.flush(); assert.equal(p.last().length, 1);

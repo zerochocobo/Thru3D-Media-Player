@@ -7,10 +7,20 @@ const PAGE_SIZE := 6
 var owner: WeakRef
 var pages := {}
 var links := {}
+var departing := {} # Suppress immediately, before the Android UI-thread snapshot arrives.
 func _init(browser: RefCounted) -> void: owner = weakref(browser)
 func active(id: int) -> bool:
 	var browser: RefCounted = owner.get_ref()
-	return browser.active() and str(browser.window_state(id).get("url", "")) in ["", "about:blank"]
+	var state: Dictionary = browser.window_state(id)
+	var tab := int(state.get("tab_id", id))
+	var url := str(state.get("url", ""))
+	if state.get("loading", false) or not str(state.get("error", "")).is_empty() or url not in ["", "about:blank"]:
+		departing.erase(tab)
+		return false
+	return browser.active() and not departing.has(tab) and url == "about:blank" and state.get("start_page", true)
+func leave(id: int) -> void:
+	var browser: RefCounted = owner.get_ref()
+	departing[int(browser.window_state(id).get("tab_id", id))] = true
 func draw(host: Node) -> void:
 	var browser: RefCounted = owner.get_ref()
 	var bounds: Rect2 = browser.RECT if host.on_screen() else host.page_rect()

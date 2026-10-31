@@ -32,6 +32,7 @@ add_subdirectory("${CMAKE_CURRENT_LIST_DIR}/../render-bridge" "render-bridge")
 add_subdirectory("${CMAKE_CURRENT_LIST_DIR}/../mpv" "mpv")
 add_subdirectory("${CMAKE_CURRENT_LIST_DIR}/../tiff" "tiff")
 add_subdirectory("${CMAKE_CURRENT_LIST_DIR}/../hdr" "hdr")
+add_subdirectory("${CMAKE_CURRENT_LIST_DIR}/../image" "image")
 # Offline narration is a normal Debug and Release playback feature.
 if(QUEST_NARRATION_ENABLED)
     add_subdirectory("${CMAKE_CURRENT_LIST_DIR}/../narration" "narration")

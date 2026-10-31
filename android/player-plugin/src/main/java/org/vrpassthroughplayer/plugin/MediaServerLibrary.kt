@@ -150,6 +150,7 @@ internal class MediaServerLibrary(private val context: () -> Context?, private v
             ?: throw MediaServerFailure("Cover unavailable") } finally { decoder.recycle() }
     }
     fun playable(uri: String, captureReader: Boolean = false): String {
+        if (MediaLibraryUri.isPhoto(uri)) return photo(uri)
         val (server, scene, sourceId) = MediaLibraryUri.identity(uri)
         val account = getAccount(server)
         val source = HttpRangeStreamSource(account) { http ->
@@ -168,6 +169,21 @@ internal class MediaServerLibrary(private val context: () -> Context?, private v
                 return url
             }
         } catch (e: Exception) { source.close(); throw e }
+    }
+    private fun photo(uri: String): String {
+        val (server, id) = MediaLibraryUri.photoIdentity(uri)
+        val account = getAccount(server)
+        val source = HttpRangeStreamSource(account) { http -> mediaClient(account, http).photo(id) }
+        try {
+            synchronized(MediaServerStore) {
+                mediaRequire(!closed && getAccount(server) == account, "Server changed")
+                val local = streams()
+                val url = local.publish(source, "photo")
+                // Each open/preview/preload owns its lease; never replace video playback state.
+                leases[url] = server to local
+                return url
+            }
+        } catch (error: Exception) { source.close(); throw error }
     }
     fun sidecarAudio(uri: String): List<SidecarAudio.Track> {
         val selected = playback[uri] ?: return emptyList()

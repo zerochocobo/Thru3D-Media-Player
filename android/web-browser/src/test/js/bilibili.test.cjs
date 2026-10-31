@@ -14,6 +14,16 @@ const raw = (cid = '12345') => ({ code: 0, data: { quality: 80, timelength: 1200
 const context = vm.createContext({ URL });
 vm.runInContext(fs.readFileSync(path.join(root, 'bilibili.js'), 'utf8'), context);
 const api = vm.runInContext('Thru3DBilibili', context);
+
+test('pause readiness requires current dimensions and both exactly observed tracks', () => {
+  const data = api.normalize(raw(), identity);
+  const video = {kind:'file',url:mediaUrl(80)}, audio = {kind:'file',url:mediaUrl(30280)};
+  assert.equal(api.ready(data, [video], 1920, 1080), false);
+  assert.equal(api.ready(data, [video, {...audio,url:mediaUrl(30280,'999')}], 1920, 1080), false);
+  assert.equal(api.ready(data, [video, audio], 3840, 2160), false);
+  assert.equal(api.ready(null, [video, audio], 1920, 1080), false);
+  assert.equal(api.ready(data, [video, audio], 1920, 1080), true);
+});
 test('normalization keeps SDR representations for observed ABR selection and rational fps', () => {
   const data = api.normalize(raw(), identity);
   assert.equal(data.video.length, 2); assert.equal(data.audio.length, 1);
@@ -101,11 +111,11 @@ function fixture() {
   };
   return { webRequest, port, streams, timers, messages, update, begin, finish, last: () => messages.at(-1) };
 }
-test('only four explicit API patterns block; split UTF-8 response is forwarded unchanged before normalization', () => {
+test('only five explicit API patterns block; split UTF-8 response is forwarded unchanged before normalization', () => {
   const f = fixture(), capture = f.begin();
   const blocking = f.webRequest.onBeforeRequest.listeners.filter(l => l.flags?.includes('blocking'));
-  assert.equal(blocking.length, 1); assert.equal(blocking[0].filter.urls.length, 4);
-  assert.ok(blocking[0].filter.urls.every(u => /^https:\/\/api\.bilibili\.com\/(?:(?:x\/player\/(?:wbi\/)?|pgc\/player\/web\/v2\/)playurl|ogv\/player\/playview)\*$/.test(u)));
+  assert.equal(blocking.length, 1); assert.equal(blocking[0].filter.urls.length, 5);
+  assert.ok(blocking[0].filter.urls.every(u => /^https:\/\/api\.bilibili\.com\/(?:(?:x\/player\/(?:wbi\/)?|pgc\/player\/web\/v2\/)playurl|ogv\/player\/playview|x\/web-interface\/wbi\/view\/detail)\*$/.test(u)));
   f.finish(capture.stream); assert.equal(f.last().bilibili[0].cid, '12345'); assert.equal(f.timers.size, 0);
 });
 test('next-part response can start before pushState and finish after it, without reusing first-part metadata', () => {
@@ -113,6 +123,57 @@ test('next-part response can start before pushState and finish after it, without
   const next = f.begin('67890'); f.update(page + '?p=2'); f.finish(next.stream, raw('67890'));
   assert.equal(f.last().page, page + '?p=2');
   assert.equal(f.last().bilibili.find(d => d.cid === '67890').audio.length, 1);
+});
+
+test('recommended-video detail and playurl can straddle pushState in the original document', () => {
+  const f = fixture(), id = 'BV0987654321', next = `https://www.bilibili.com/video/${id}/`;
+  const play = f.begin('67890', {url:`https://api.bilibili.com/x/player/wbi/playurl?bvid=${id}&avid=2&cid=67890`});
+  const view = f.begin('', {url:`https://api.bilibili.com/x/web-interface/wbi/view/detail?bvid=${id}&aid=2`});
+  assert.ok(play.stream); assert.ok(view.stream);
+  f.update(next);
+  f.finish(play.stream, raw('67890'));
+  f.finish(view.stream, {code:0,data:{View:{bvid:id,aid:2,pages:[{page:1,cid:67890,duration:120}],owner:{token:'never-export'}},Card:{private:'never-export'}}});
+  assert.equal(f.last().bilibili[0].id,id);
+  assert.equal(f.last().bilibili_views[0].pages[0].cid,'67890');
+  assert.ok(!JSON.stringify(f.last()).includes('never-export'));
+  assert.deepEqual(Array.from(f.last().bilibili_requested),['67890']);
+  // Further requests keep documentUrl pointing at the initially loaded page.
+  const later = f.begin('67890', {url:`https://api.bilibili.com/x/player/wbi/playurl?bvid=${id}&cid=67890`});
+  assert.ok(later.stream);
+  assert.equal(f.begin('', {url:`https://api.bilibili.com/x/web-interface/wbi/view/detail?bvid=${id}`,documentId:'another'}).stream,undefined);
+});
+
+test('detail identity needs matching request IDs, valid public part maps and current page', () => {
+  const raw = {code:0,data:{View:{bvid:'BV0987654321',aid:2,pages:[{page:1,cid:67890,duration:120},{page:2,cid:67891,duration:90}]}}};
+  const result=api.view(raw,{bvid:'BV0987654321',aid:'2'});
+  assert.equal(api.viewIdentity([result],'https://www.bilibili.com/video/BV0987654321/?p=2').cid,'67891');
+  assert.equal(api.viewIdentity([result],page),null);
+  assert.equal(api.view(raw,{bvid:'BV1234567890'}),null);
+  assert.equal(api.view(raw,{bvid:'BV0987654321',aid:'3'}),null);
+  raw.data.View.pages[1].page=1; assert.equal(api.view(raw,{aid:'2'}),null);
+});
+
+test('public SSR recommendations can bind only their first part, without inheriting old playinfo', () => {
+  const state={cid:12345,videoData:{bvid:identity.id,aid:1,pages:[{page:1,cid:12345,duration:120}]},
+    related:[{bvid:'BV0987654321',aid:2,cid:67890,duration:200}]};
+  const doc={querySelectorAll:()=>[{textContent:'window.__INITIAL_STATE__='+JSON.stringify(state)+';window.__playinfo__='+JSON.stringify(raw())+';'}]};
+  const next='https://www.bilibili.com/video/BV0987654321/';
+  assert.equal(api.initial(doc,next).identity.cid,'67890');assert.equal(api.initial(doc,next).data,null);
+  assert.equal(api.initial(doc,next+'?p=2'),null);
+  state.related[0].cid=0;assert.equal(api.initial(doc,next),null);
+});
+
+test('new signed playurl responses retain declared addresses still used by the same audio track', () => {
+  const f=fixture(); f.finish(f.begin().stream);
+  const next=raw(); for(const key of ['video','audio']) for(const t of next.data.dash[key]) {
+    if(t.baseUrl)t.baseUrl+='&renewed=1'; if(t.base_url)t.base_url+='&renewed=1';
+  }
+  f.finish(f.begin().stream,next);
+  assert.equal(f.last().bilibili[0].audio[0].urls.length,2);
+  assert.ok(f.last().bilibili[0].audio[0].urls.includes(mediaUrl(30280)));
+  // Rejected/preview data invalidates this CID instead of reviving the older pair.
+  const invalid=raw(); invalid.data.is_preview=true; f.finish(f.begin().stream,invalid);
+  assert.equal(f.last().bilibili.length,0);
 });
 
 test('a body arriving before HTTP metadata is forwarded immediately and validated when headers arrive', () => {

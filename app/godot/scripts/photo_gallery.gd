@@ -148,7 +148,7 @@ func hide_pointer(hand: String) -> void:
 		_pointers[hand].line.visible = false; _pointers[hand].dot.visible = false
 
 func overview() -> bool:
-	return mode in [Layout.WALL, Layout.FRAGMENTS] and focus < 0 and not (photo and photo.portrait_requested)
+	return mode in [Layout.WALL, Layout.FRAGMENTS] and focus < 0 and not (photo and photo.portrait_presentation_active())
 
 func set_view_scale(value: float) -> void:
 	if not is_finite(value): return
@@ -299,7 +299,7 @@ func replace_indices(old: Array[Dictionary], entries: Array[Dictionary]) -> void
 func _process(delta: float) -> void:
 	if not photo: return
 	previews.platform = photo.platform
-	if photo.portrait_requested:
+	if photo.portrait_presentation_active():
 		visible = false; photo.panel.visible = true; return
 	if _swap_phase == 1:
 		_swap_alpha = move_toward(_swap_alpha, 0.0, delta / 0.22)
@@ -322,7 +322,7 @@ func _process(delta: float) -> void:
 	_refresh_visibility()
 
 func synchronize() -> void:
-	if photo and photo.portrait_requested:
+	if photo and photo.portrait_presentation_active():
 		visible = false; photo.panel.visible = true; return
 	if not photo or photo.queue.is_empty() or (photo.local_uri.is_empty() and not photo.loading):
 		if not cards.is_empty(): clear()
@@ -602,7 +602,7 @@ func _crop(index: int, size: Vector2) -> Vector4:
 	return Vector4((1.0 - extent.x) * 0.5, (1.0 - extent.y) * 0.5, extent.x, extent.y)
 
 func activate(index: int) -> void:
-	if (photo and photo.portrait_requested) or not cards.has(index): return
+	if (photo and photo.portrait_presentation_active()) or not cards.has(index): return
 	previews.retry(str(photo.queue[index].uri))
 	if focus == index:
 		return_focus(); return
@@ -639,7 +639,7 @@ func remember_focus_pose(pose: Transform3D) -> void:
 	focus_pose = pose; _viewing_offsets[mode] = _view_head().affine_inverse() * pose
 
 func return_focus() -> void:
-	if photo and photo.portrait_requested: return
+	if photo and photo.portrait_presentation_active(): return
 	if focus < 0: return
 	returning = true; cancel_all(); photo.close_inspect(); photo.changed.emit()
 	photo.suspend_gallery_photo()
@@ -672,7 +672,7 @@ func _animate_focus() -> void:
 			photo.apply_focus_world_pose(focus_pose)
 
 func _refresh_visibility() -> void:
-	if photo and photo.portrait_requested:
+	if photo and photo.portrait_presentation_active():
 		visible = false; photo.panel.visible = true; return
 	if mode in [Layout.SINGLE, Layout.MAGAZINE]: return
 	var focused_ready: bool = focus >= 0 and progress >= 1 and not returning and photo.index == focus and not photo.loading and photo._texture != null
@@ -713,7 +713,7 @@ func _refresh_visibility() -> void:
 		card.node.material_override.set_shader_parameter("opacity", _swap_alpha)
 
 func ray_hit(origin: Vector3, direction: Vector3) -> Dictionary:
-	if _swap_phase != 0 or not _dual.is_empty() or not photo or photo.portrait_requested or photo.inspect or not origin.is_finite() or not direction.is_finite() or direction.length_squared() < 0.00001: return {}
+	if _swap_phase != 0 or not _dual.is_empty() or not photo or photo.portrait_presentation_active() or photo.inspect or not origin.is_finite() or not direction.is_finite() or direction.length_squared() < 0.00001: return {}
 	var nearest := {}
 	if mode in [Layout.SINGLE, Layout.SIDES, Layout.MAGAZINE] and photo.panel.visible and photo.geometry == 0:
 		var point: Variant = photo.screen_point(origin, direction)

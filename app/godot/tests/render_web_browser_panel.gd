@@ -29,9 +29,13 @@ func _run() -> void:
 		if "--confirm" in OS.get_cmdline_user_args(): panel.action(panel.BASE + panel.Action.CLEAR)
 	else: menu.web_browser.open("https://www.bilibili.com/video/BV13x41117TL/")
 	platform.browser.title = "中文视频标题"
+	platform.browser.tab_id = 1
+	if "--loading" in OS.get_cmdline_user_args():
+		platform.browser.loading = true; platform.browser.progress = 42
 	platform.browser.network_capture_available = true
 	if "--beta" in OS.get_cmdline_user_args():
 		platform.browser.bilibili_beta_available = true
+		platform.browser.videos[0].bilibili_ready = "--unready" not in OS.get_cmdline_user_args()
 		platform.browser.network_capture_available = false
 	platform.browser.network_capture_enabled = "--capture" in OS.get_cmdline_user_args()
 	if "--tabs" in OS.get_cmdline_user_args():
@@ -66,9 +70,13 @@ func _run() -> void:
 		host.reparent(viewport); host.global_transform = Transform3D(Basis.IDENTITY, Vector3(-0.13, 0.0, -1.65))
 		if "--wide" in OS.get_cmdline_user_args() or "--tall" in OS.get_cmdline_user_args():
 			host.global_position = Vector3(-host.CENTRE.x, -host.CENTRE.y, -2.1)
+		if "--focus-select" in OS.get_cmdline_user_args():
+			host.toggle_focus(); host.selection = Rect2(0.18, 0.16, 0.55, 0.60)
+		elif "--focused" in OS.get_cmdline_user_args():
+			menu.web_browser.focus_regions[host.focus_tab()] = Rect2(0.18, 0.16, 0.30, 0.70)
 	menu.refresh()
 	for i in 4: await process_frame; await RenderingServer.frame_post_draw
-	var suffix := "-wide" if "--wide" in OS.get_cmdline_user_args() else "-tall" if "--tall" in OS.get_cmdline_user_args() else "-cinema" if "--cinema-available" in OS.get_cmdline_user_args() else ""
+	var suffix := "-focus-select" if "--focus-select" in OS.get_cmdline_user_args() else "-focused" if "--focused" in OS.get_cmdline_user_args() else "-loading" if "--loading" in OS.get_cmdline_user_args() else "-wide" if "--wide" in OS.get_cmdline_user_args() else "-tall" if "--tall" in OS.get_cmdline_user_args() else "-cinema" if "--cinema-available" in OS.get_cmdline_user_args() else ""
 	var code := viewport.get_texture().get_image().save_png(output.path_join("web-browser" + suffix + ".png" if not suffix.is_empty() else "web-browser-tabs.png" if "--tabs" in OS.get_cmdline_user_args() else "web-browser-keyboard.png" if platform.browser.editing else ("web-browser-history.png" if "--history" in OS.get_cmdline_user_args() else "web-browser-controls.png")))
 	print("Browser control preview saved; Android webpage Surface is absent on desktop: %s" % (code == OK))
 	menu.free(); platform.free(); viewport.free()

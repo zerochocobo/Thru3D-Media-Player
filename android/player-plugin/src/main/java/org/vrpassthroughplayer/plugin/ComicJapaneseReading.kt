@@ -4,7 +4,8 @@ import com.atilika.kuromoji.ipadic.Tokenizer
 
 /** MOSS Nano has no target-language input. Resolve known Japanese words before
  * chunking to reduce Mandarin pronunciation of Han prefixes; readings can err.
- * This is synthesis-only: OCR, translations and the selected voice stay intact. */
+ * Shared by comic and subtitle speech. This is synthesis-only: OCR, subtitles,
+ * translations and the selected voice stay intact. */
 internal object ComicJapaneseReading {
     // Only initialized on the speech worker for Japanese containing Han text.
     private val tokenizer by lazy { Tokenizer() }

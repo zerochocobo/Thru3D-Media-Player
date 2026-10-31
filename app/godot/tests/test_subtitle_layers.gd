@@ -112,10 +112,37 @@ func _run() -> void:
 	check(video._subtitle_layer_extras(origin).is_empty(), "No cue, no layer")
 	video.free()
 	_depth_layers(origin)
+	_tint_layers(origin)
 	origin.free()
 	print("Subtitle layers: %d checks, %d failures" % [checks, failures.size()])
 	for failure in failures: print("FAIL: " + failure)
 	quit(1 if failures.size() else 0)
+
+func _tint_layers(origin: XROrigin3D) -> void:
+	var video := Video.new(); origin.add_child(video); video.set_process(false)
+	var host := Host.new(); video.platform = host; video.video_layer = Layers.new(null)
+	video._layer_session = true; video.panel.visible = true
+	var cue := _cue(1, 4, 1)
+	var copies := 0
+	for rgb in [0xffffff, 0xffe066, 0x80eaff, 0xffffff]:
+		check(video.bitmap_subtitles.needs_pixels(cue, 1, rgb), "New tint invalidates the same paused cue")
+		var patch := Image.create_empty(4, 1, false, Image.FORMAT_RGBA8)
+		patch.fill(Color.hex((rgb << 8) | 255))
+		video.bitmap_subtitles.apply(video.material, cue, 1, patch.get_data(), 1, 0, rgb)
+		var texture := video.bitmap_subtitles.texture
+		check(video._subtitle_layer_extras(origin).size() == 1 and host.copies == copies + 1, "Changing color uploads the independent layer once")
+		copies = host.copies
+		check(video.bitmap_subtitles.image.get_pixel(0, 0).is_equal_approx(patch.get_pixel(0, 0)), "Layer copy input contains the new tint, including Original restoration")
+		if DisplayServer.get_name() != "headless":
+			check(video._subtitle_texture.get_image().get_pixel(0, 0).is_equal_approx(patch.get_pixel(0, 0)), "Actual GPU layer bucket contains the selected tint")
+		check(not video.bitmap_subtitles.needs_pixels(cue, 1, rgb), "Unchanged tint needs no new native pixels")
+		video.bitmap_subtitles.apply(video.material, cue, 1, PackedByteArray(), 1.5, 0.5, rgb)
+		video._subtitle_layer_extras(origin)
+		check(video.bitmap_subtitles.texture == texture and host.copies == copies, "Resizing, repositioning and paused frames reuse the tinted texture")
+	check(video.bitmap_subtitles.needs_pixels(cue, 2, 0xffffff), "A new source cannot reuse the same version's tint")
+	video.bitmap_subtitles.clear(video.material)
+	check(video._subtitle_layer_extras(origin).is_empty(), "Clearing a tinted cue removes its layer")
+	video.free()
 
 func _depth_layers(origin: XROrigin3D) -> void:
 	var camera := XRCamera3D.new()

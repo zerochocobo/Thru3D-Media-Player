@@ -275,7 +275,7 @@ internal class PanoramaBrowser(private val host: () -> Activity?, originals: Pan
             const images=Array.from(document.images).filter(i=>visible(i)&&i.getBoundingClientRect().width>200&&i.getBoundingClientRect().height>100)
                 .sort((a,b)=>b.getBoundingClientRect().width*b.getBoundingClientRect().height-a.getBoundingClientRect().width*a.getBoundingClientRect().height);
             const image=images[0];if(!image)return '';
-            const direct=u=>{try{const p=new URL(u,location.href).pathname;return !p.startsWith('/wiki/')&&/\.(jpg|jpeg|png|webp|tif|tiff)$/i.test(p);}catch(_){return false;}};
+            const direct=u=>{try{const p=new URL(u,location.href).pathname;return !p.startsWith('/wiki/')&&/\.(jpg|jpeg|png|webp|tif|tiff|hdr|rgbe|exr|heic|heif|avif|avifs|gif|apng|dng|cr2|cr3|nef|nrw|arw|raf|rw2|orf|pef|srw)$/i.test(p);}catch(_){return false;}};
             const anchor=image.closest('a[href]');if(anchor&&direct(anchor.href))return anchor.href;
             const original=Array.from(document.querySelectorAll('a[href]')).find(a=>visible(a)&&direct(a.href)&&key(a.href)===key(image.currentSrc));
             return original?original.href:image.currentSrc;

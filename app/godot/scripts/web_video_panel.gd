@@ -16,10 +16,23 @@ func error_hint() -> String:
 	var messages := {
 		"login_required": "Sign in on the website, then retry",
 		"browser_session_required": "Play the video on the website, then retry",
-		"browser_session_unavailable": "Play the video on the website, then retry",
-		"protected_content": "Continue playing on the website",
-		"browser_playback_required": "Continue playing on the website",
-		"site_rejected": "Continue playing on the website",
+		"browser_session_unavailable": "Browser playback information unavailable; retry",
+		"protected_content": "Encrypted video cannot be transferred",
+		"browser_playback_required": "No transferable video found; reload and retry",
+		"site_rejected": "Website rejected the video request; retry",
+		"browser_video_identity_unavailable": "Current video information missing; reload and retry",
+		"browser_playinfo_unavailable": "Playback addresses missing; play on the page first",
+		"browser_video_loading": "Web video is still loading; retry shortly",
+		"browser_video_missing": "Video track not captured; play on the page first",
+		"browser_audio_missing": "Audio track not captured; play on the page first",
+		"browser_multiple_videos": "Multiple web videos detected; keep one open",
+		"browser_quality_changing": "Video quality changed; retry",
+		"browser_stream_changed": "Playback addresses changed; retry",
+		"browser_page_changed": "Web video changed during transfer; retry",
+		"browser_observation_unavailable": "Browser capture unavailable; reload and retry",
+		"browser_capture_mismatch": "Video data does not match; reload and retry",
+		"browser_pause_timeout": "Could not pause web video; pause it and retry",
+		"timeout": "Video transfer timed out; retry",
 		"region_restricted": "Unavailable in this region"}
 	return I18n.t(messages.get(str(result.get("error_code", "")), "Video unavailable"))
 

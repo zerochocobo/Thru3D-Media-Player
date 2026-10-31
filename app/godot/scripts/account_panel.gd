@@ -2,6 +2,8 @@ extends RefCounted
 ## Account forms and web login share the existing VR library ray menu.
 const I18n := preload("res://scripts/i18n.gd")
 const Methods := preload("res://scripts/platform_methods.gd")
+const Focus := preload("res://scripts/web_browser_focus.gd")
+const PointerFilter := preload("res://scripts/web_pointer_filter.gd")
 const BASE := 2000
 const FIELD := 2100
 const KEY := 2200
@@ -34,12 +36,24 @@ var challenge_revision := -1
 var paused := false
 var license_lines: Array[String] = []
 var title := ""
+var web_focus := Focus.FULL
+var web_selecting := false
+var web_selection := Rect2()
+var web_selection_start := Vector2.ZERO
+var web_surface: Node3D
+var web_filters := {}
+var web_outline: Array[MeshInstance3D] = []
+var _web_navigation := ""
+var _web_surface_status := ""
 
 func _init(owner: Node) -> void: menu = owner
 func active() -> bool: return not view.is_empty()
 func supported() -> bool: return Methods.supports(menu.platform, "account_open")
 
 func close() -> void:
+	if session > 0:
+		preload("res://scripts/diagnostic_log.gd").record("account_session_closed", {"provider": provider, "view": view,
+			"paused": paused, "source": get_stack().slice(0, 5).map(func(frame): return str(frame.get("function", "")))})
 	if active(): menu.scroll = 0.0
 	web_cancel()
 	if session > 0 and menu.platform: menu.platform.account_cancel(session)
@@ -47,6 +61,8 @@ func close() -> void:
 	shift = false; symbols = false
 	prompt = null; choices = null; web_texture = null; web_node = null; selected.clear()
 	license_lines.clear(); revision = -1; challenge_revision = -1; paused = false; _defaults = {}
+	web_focus = Focus.FULL; web_selecting = false; web_selection = Rect2(); web_filters.clear(); _web_navigation = ""
+	_web_surface_status = ""
 
 func open(source: String, manage: bool = false) -> void:
 	close()
@@ -108,6 +124,10 @@ func poll() -> void:
 	if view == "plex_servers": items = data.get("result", {}).get("servers", [])
 	var changed := int(data.get("revision", 0)) != revision or previous_wait != int(data.get("sms_wait", 0)) or previous_pairing_expired != bool(data.get("pairing_expired", false))
 	if view == "web": changed = changed or str(data.get("web", {})) != _web_status
+	if web_gecko():
+		var context := str([data.web.get("surface_id", ""), data.web.get("navigation", 0), data.web.get("desktop", false)])
+		if context != _web_navigation:
+			web_cancel(); web_focus = Focus.FULL; web_selecting = false; web_filters.clear(); _web_navigation = context
 	_web_status = str(data.get("web", {}))
 	revision = int(data.get("revision", 0))
 	if changed: menu.refresh()
@@ -115,9 +135,13 @@ func poll() -> void:
 var _web_status := ""
 func tick(delta: float) -> void:
 	if not active() or paused: return
+	if web_gecko():
+		var next_status := str(web_surface.status) if is_instance_valid(web_surface) else ""
+		if next_status != _web_surface_status:
+			_web_surface_status = next_status; menu.refresh()
 	poll_time += delta; web_time += delta
 	if poll_time >= 0.2: poll_time = 0.0; poll()
-	if view == "web" and web_time >= 0.2 and menu.visible:
+	if view == "web" and not web_gecko() and web_time >= 0.2 and menu.visible:
 		web_time = 0.0
 		var bytes: PackedByteArray = menu.platform.account_web_frame(session)
 		if not bytes.is_empty():
@@ -133,6 +157,7 @@ func lifecycle(state: String) -> void:
 	paused = state == "pause"
 	if paused: web_cancel()
 	else: poll()
+	if session > 0 and view == "web": preload("res://scripts/diagnostic_log.gd").record("account_session_lifecycle", {"provider": provider, "event": state, "view": view})
 
 func decode(value: String) -> Texture2D:
 	if value.length() > 1500000: return null
@@ -232,6 +257,17 @@ func action(target: int) -> bool:
 		26: web_action("scroll", Vector2(0, 1))
 		27: command("plex_authorize")
 		28: command("plex_confirm")
+		29:
+			if not web_hand.is_empty(): return true
+			if web_selecting: web_selecting = false
+			elif web_focus != Focus.FULL: web_focus = Focus.FULL
+			else: web_selecting = true; web_selection = Rect2()
+			web_filters.clear(); menu.refresh()
+		30:
+			if data.get("web", {}).get("desktop_only", false): return true
+			if not web_hand.is_empty(): return true
+			web_selecting = false; web_focus = Focus.FULL; web_filters.clear()
+			web_action("mobile" if data.get("web", {}).get("desktop", false) else "desktop")
 	return true
 
 func input(action_name: String, text: String) -> void:
@@ -353,9 +389,21 @@ func draw_captcha(enabled: bool) -> void:
 	menu._button(BASE + 13, "", Vector2(0.13, -0.43), Vector2(0.12, 0.08), enabled, "refresh")
 	menu._button(BASE + 12, I18n.t("Continue"), Vector2(0.49, -0.43), Vector2(0.34, 0.08), enabled and selected.size() == 4, "", true)
 
+func web_gecko() -> bool: return view == "web" and data.get("web", {}).get("renderer", "") == "gecko"
+func web_frame_rect() -> Rect2:
+	if data.get("web", {}).get("desktop", false): return Rect2(-0.90, -0.54, 1.80, 1.08)
+	# Keep the phone layout independent of a comfortable physical interaction surface.
+	var info: Dictionary = data.get("web", {})
+	var size := Vector2(1.20, 1.20 * float(info.get("height", 600)) / maxf(1.0, float(info.get("width", 440))))
+	return Rect2(-size * 0.5, size)
 func web_rect() -> Rect2:
-	return Rect2(-0.87, -0.38, 1.72, 1.032)
+	if not web_gecko(): return Rect2(-0.87, -0.38, 1.72, 1.032)
+	var frame := web_frame_rect()
+	var info: Dictionary = data.get("web", {})
+	var size := Focus.fitted(frame.size, Vector2(info.get("width", 440), info.get("height", 600)), web_focus)
+	return Rect2(frame.get_center() - size * 0.5, size)
 func draw_web() -> void:
+	if web_gecko(): draw_gecko(); return
 	var editing: bool = data.get("web", {}).get("editing", false)
 	menu._set_backdrop(Vector2(1.94, 1.94 if editing else 1.38), Vector2(0, -0.12 if editing else 0.16))
 	menu._button(BASE, "", Vector2(-0.85, 0.75), Vector2(0.1, 0.08), true, "up")
@@ -391,29 +439,130 @@ func draw_web() -> void:
 	if not status.is_empty(): menu._label(I18n.t(status), Vector3(0, -0.56, 0.009), 17)
 
 func web_action(action_name: String, point: Vector2 = Vector2.ZERO, text: String = "") -> void:
+	if web_gecko() and action_name in ["back", "reload", "desktop", "mobile", "legacy"]:
+		if not web_hand.is_empty(): return
+		web_selecting = false; web_focus = Focus.FULL; web_filters.clear()
 	if session > 0 and menu.platform: menu.platform.account_web_action(session, action_name, point.x, point.y, text)
+
+func draw_gecko() -> void:
+	var info: Dictionary = data.get("web", {})
+	var frame := web_frame_rect()
+	var rect := web_rect()
+	var top := frame.end.y
+	var chrome_width := 1.98 if info.get("desktop", false) else 1.68
+	var pitch := 0.27 if info.get("desktop", false) else 0.23
+	menu._set_backdrop(Vector2(chrome_width, frame.size.y + 0.65), Vector2(0, 0.06))
+	# The account chrome is captured by MenuComposition, whose centre must stay transparent.
+	menu._backdrop.material_override.set_shader_parameter("surface_color", Color(0, 0, 0, 0))
+	for bounds in [Rect2(-chrome_width * 0.5, top + 0.02, chrome_width, 0.32), Rect2(-chrome_width * 0.5, frame.position.y - 0.27, chrome_width, 0.25)]:
+		var centre: Vector2 = bounds.get_center()
+		var background: MeshInstance3D = menu._quad(bounds.size, Vector3(centre.x, centre.y, 0), menu.PANEL, 10)
+		menu.add_child(background); menu._decorations.append(background); menu._pointer_panels.append(background)
+	menu._label(provider_name(provider), Vector3(0, top + 0.27, 0.009), 24)
+	var actions := [
+		[BASE, "up", "Back"], [BASE + 17, "back", "Back"], [BASE + 18, "refresh", "Reload"],
+		[BASE + 29, "close" if web_selecting else "expand" if web_focus != Focus.FULL else "region_focus", "Cancel selection" if web_selecting else "Exit focus" if web_focus != Focus.FULL else "Focus region"]]
+	if not info.get("desktop_only", false): actions.append([BASE + 30, "phone" if info.get("desktop", false) else "desktop", "Mobile site" if info.get("desktop", false) else "Desktop site"])
+	actions.append([menu.CLOSE, "close", "Close"])
+	for i in actions.size():
+		var item: Array = actions[i]
+		var focused: bool = item[0] == BASE + 29 and (web_selecting or web_focus != Focus.FULL)
+		menu._button(item[0], "", Vector2((i - (actions.size() - 1) * 0.5) * pitch, top + 0.115), Vector2(0.15, 0.15), web_hand.is_empty(), item[1], focused)
+		menu._tips[item[0]] = I18n.t(item[2])
+	menu._button(WEB, "", rect.get_center(), rect.size, not bool(info.get("failed", false)))
+	menu._buttons.back().node.set_meta("menu_eye_buffer", true)
+	menu._buttons.back().node.position.z = 0.007
+	if info.get("editing", false):
+		menu._button(BASE + 20, "", Vector2(chrome_width * 0.5 - 0.19, frame.position.y - 0.12), Vector2(0.15, 0.15), true, "keyboard_hide")
+	var message := str(info.get("status", ""))
+	if data.get("busy", false): message = "Connecting…"
+	elif not str(data.get("error", "")).is_empty(): message = str(data.error)
+	elif info.get("failed", false) and message.is_empty(): message = "Page unavailable. Try reloading."
+	elif not _web_surface_status.is_empty(): message = "Web sign-in is unavailable on this device."
+	if not message.is_empty(): menu._label(I18n.t(message), Vector3(0, frame.position.y - 0.12, 0.009), 18)
+	if info.get("loading", false):
+		var length := frame.size.x * clampf(float(info.get("progress", 0)) / 100, 0.02, 1.0)
+		menu._decoration(Vector2(length, 0.007), Vector2(frame.position.x + length * 0.5, frame.position.y - 0.012), menu.ACCENT)
+	menu._place_device_status(Vector2(0, frame.position.y - 0.36))
+	web_outline.clear()
+	for i in 4:
+		var line := MeshInstance3D.new(); line.mesh = QuadMesh.new()
+		line.material_override = menu._material(menu.ACCENT, 28); line.set_meta("menu_eye_buffer", true)
+		menu.add_child(line); menu._decorations.append(line); web_outline.append(line)
+	update_web_outline()
+	if not is_instance_valid(web_surface) and menu.is_inside_tree():
+		web_surface = preload("res://scripts/account_login_surface.gd").new(); web_surface.configure(menu)
+		menu.get_tree().root.add_child(web_surface)
+
+func update_web_outline() -> void:
+	var frame := web_rect()
+	var selection := Rect2(frame.position + Vector2(web_selection.position.x, 1.0 - web_selection.end.y) * frame.size, web_selection.size * frame.size)
+	for i in web_outline.size():
+		var node: MeshInstance3D = web_outline[i]
+		if not is_instance_valid(node): continue
+		node.visible = web_selecting and not web_hand.is_empty() and web_selection.has_area()
+		var horizontal := i < 2
+		node.mesh.size = Vector2(selection.size.x, 0.005) if horizontal else Vector2(0.005, selection.size.y)
+		var point := Vector2(selection.get_center().x, selection.position.y if i == 0 else selection.end.y) if horizontal else Vector2(selection.position.x if i == 2 else selection.end.x, selection.get_center().y)
+		node.position = Vector3(point.x, point.y, 0.025)
+
+func web_ray(hand: String, origin: Vector3, direction: Vector3, tracked: bool) -> Array:
+	if not web_gecko(): return [origin, direction]
+	if not tracked:
+		web_filters.erase(hand); return [origin, direction]
+	var hit: Dictionary = menu.ray_hit(origin, direction)
+	if web_hand != hand and int(hit.get("target", -1)) != WEB:
+		web_filters.erase(hand); return [origin, direction]
+	# The menu's optional mono projection already defines the shared angular reticle.
+	if not menu._mono_pointer_projection().is_empty(): return [origin, direction]
+	var point: Variant = web_project(origin, direction)
+	if point == null: web_filters.erase(hand); return [origin, direction]
+	if not web_filters.has(hand): web_filters[hand] = PointerFilter.new()
+	var stable: Vector2 = web_filters[hand].sample(Vector2(point.x, point.y), Time.get_ticks_usec())
+	if web_hand == hand: stable = stable.clamp(web_rect().position, web_rect().end)
+	var endpoint: Vector3 = menu.to_global(Vector3(stable.x, stable.y, point.z))
+	return [origin, (endpoint - origin).normalized()]
+
+func web_project(origin: Vector3, direction: Vector3) -> Variant:
+	if not web_gecko(): return menu._plane_point(origin, direction)
+	var plane := Transform3D(Basis.IDENTITY, Vector3(0, 0, 0.007))
+	var point: Variant = menu.project_pointer(origin, direction, plane)
+	return plane * Vector3(point) if point != null else null
 func web_uv(point: Vector3) -> Vector2:
 	var rect := web_rect()
-	return Vector2((point.x - rect.position.x) / rect.size.x, 1.0 - (point.y - rect.position.y) / rect.size.y)
+	var uv := Vector2((point.x - rect.position.x) / rect.size.x, 1.0 - (point.y - rect.position.y) / rect.size.y)
+	return Focus.map_point(uv.clamp(Vector2.ZERO, Vector2.ONE), web_focus) if web_gecko() else uv
 func web_press(hand: String, point: Vector3, scrolling: bool = false) -> void:
 	if not web_hand.is_empty(): return
 	web_hand = hand; web_drag_scroll = scrolling
+	if web_gecko() and web_selecting:
+		web_selection_start = web_uv(point); web_selection = Rect2(web_selection_start, Vector2.ZERO); return
 	if scrolling: web_scroll_to(point)
 	else: web_point = web_uv(point); web_action("down", web_point)
 func web_move(hand: String, point: Vector3) -> void:
 	if web_hand != hand: return
+	if web_gecko() and web_selecting:
+		web_selection = Focus.selection(web_selection_start, web_uv(point)); update_web_outline(); return
 	if web_drag_scroll: web_scroll_to(point)
 	else: web_point = web_uv(point); web_action("move", web_point)
 func web_release(hand: String, point: Variant) -> void:
 	if web_hand != hand: return
+	if web_gecko() and web_selecting:
+		if point != null:
+			web_selection = Focus.selection(web_selection_start, web_uv(point))
+			if Focus.valid(web_selection): web_focus = web_selection
+			else: web_focus = Rect2((web_selection_start - Vector2(0.25, 0.25)).clamp(Vector2.ZERO, Vector2(0.5, 0.5)), Vector2(0.5, 0.5))
+		web_hand = ""; web_selecting = false; web_filters.clear(); menu.refresh(); return
 	if web_drag_scroll:
 		if point != null: web_scroll_to(point)
 	elif point == null: web_action("cancel", web_point)
 	else: web_action("up", web_uv(point))
 	web_hand = ""; web_drag_scroll = false
 func web_cancel() -> void:
-	if not web_hand.is_empty() and not web_drag_scroll: web_action("cancel", web_point)
+	if not web_hand.is_empty() and not web_drag_scroll and not web_selecting: web_action("cancel", web_point)
 	web_hand = ""; web_drag_scroll = false
+	web_filters.clear()
+	update_web_outline()
 
 func web_scroll_to(point: Vector3) -> void:
 	web_action("scroll_to", Vector2(0, clampf((0.595 - point.y) / 0.92, 0, 1)))

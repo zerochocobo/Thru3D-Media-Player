@@ -108,7 +108,7 @@ internal class PanoramaDownload(private val context: () -> Context?, private val
                 val bounds = PhotoBitmap.bounds(partial!!)
                 require(bounds.outMimeType in PanoramaWebPolicy.imageTypes) { "Choose a supported image original" }
                 require(PanoramaWebPolicy.highResolution(bounds.outWidth, bounds.outHeight)) { "Choose an 8K or larger original" }
-                val actualExtension = when (bounds.outMimeType) { "image/png" -> "png"; "image/webp" -> "webp"; "image/tiff" -> "tif"; "image/vnd.radiance" -> "hdr"; "image/x-exr" -> "exr"; else -> "jpg" }
+                val actualExtension = PanoramaPictureName.extension(bounds.outMimeType,java.net.URI(next).path)
                 val target = File(directory, "${name}_${System.nanoTime()}.$actualExtension")
                 require(partial!!.renameTo(target)) { "Image download failed" }
                 partial = null

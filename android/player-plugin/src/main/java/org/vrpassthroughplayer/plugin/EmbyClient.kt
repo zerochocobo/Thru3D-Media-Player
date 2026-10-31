@@ -28,7 +28,7 @@ internal class EmbyClient(private val account: MediaServerAccount, private val h
         facets = listOf("genres", "tags", "performers", "studios"), navigation = listOf("genres", "tags", "folders"),
         filters = listOf("watched", "min_rating"), favoriteScope = "server", tree = true,
         excludes = if (account.provider == "emby") listOf("tags") else emptyList(), unclassified = listOf("genres", "tags"))
-        .put("home_layout", "libraries").put("artwork", true)
+        .put("home_layout", "libraries").put("artwork", true).put("photos", true)
     fun login(username: String, password: String): MediaServerAccount {
         val auth = get("Users/AuthenticateByName", body = JSONObject().put("Username", username).put("Pw", password))
         val token = auth.getString("AccessToken")
@@ -45,7 +45,7 @@ internal class EmbyClient(private val account: MediaServerAccount, private val h
     }
     override fun home(request: JSONObject): JSONObject {
         val libraries = get("Users/${user()}/Views").getJSONArray("Items").objects()
-            .filter { it.optString("CollectionType") !in setOf("music", "books", "games", "livetv", "channels", "photos", "audiobooks") }
+            .filter { it.optString("CollectionType") !in setOf("music", "books", "games", "livetv", "channels", "audiobooks") }
         val home = JSONObject().put("capabilities", capabilities()).put("total", libraries.size)
             .put("recent", JSONArray()).put("resume", JSONArray()).put("recent_opened", JSONArray())
             .put("libraries", JSONArray(libraries.map(::summary))).put("library_id", "")
@@ -70,7 +70,9 @@ internal class EmbyClient(private val account: MediaServerAccount, private val h
     }
     private fun browseArgs(request: JSONObject): LinkedHashMap<String, Any> {
         val page = request.optInt("page", 1).coerceIn(1, 100000)
-        val folders = request.optString("mode") == "folders"
+        val folders = request.optString("mode") == "folders" ||
+            (request.optString("mode") == "library" && request.optString("collection_type") in
+                setOf("", "homevideos", "photos", "mixed", "mixedcontent"))
         val libraryTypes = when (request.optString("collection_type")) {
             "tvshows" -> "Series"
             "movies" -> "Movie,Video,BoxSet"
@@ -78,15 +80,19 @@ internal class EmbyClient(private val account: MediaServerAccount, private val h
         }
         val args = linkedMapOf<String, Any>("Recursive" to !folders,
             "StartIndex" to (page - 1) * 48, "Limit" to 48, "EnableTotalRecordCount" to true,
-            "Fields" to "MediaSources,MediaStreams,Overview,People,Genres,Studios,Chapters,Tags,Path,ParentId,ChildCount,PrimaryImageAspectRatio",
+            "Fields" to "MediaSources,MediaStreams,Overview,People,Genres,Studios,Chapters,Tags,Path,ParentId,ChildCount,PrimaryImageAspectRatio,Width,Height",
             "SortBy" to (mapOf("title" to "SortName", "date" to "PremiereDate", "duration" to "Runtime", "rating100" to "CommunityRating")[request.optString("sort")] ?: "DateCreated"),
             "SortOrder" to if (request.optString("direction") == "ASC") "Ascending" else "Descending")
         if (folders) {
             // A container's Type need not be Folder (e.g. UserView or a plugin type).
             // Keep generic directory navigation and server counts intact; only exclude
-            // known non-video leaf types. summary() uses IsFolder for navigation.
-            args["ExcludeItemTypes"] = "Audio,AudioBook,Book,Game,Photo"
-        } else args["IncludeItemTypes"] = if (request.optString("mode") == "library") libraryTypes else "Movie,Episode,Video"
+            // unsupported leaf types. Photos use the existing image viewer.
+            args["ExcludeItemTypes"] = "Audio,AudioBook,Book,Game"
+        } else args["IncludeItemTypes"] = when (request.optString("mode")) {
+            "library" -> libraryTypes
+            "photos" -> "Photo"
+            else -> "Movie,Episode,Video,Photo"
+        }
         val parent = if (request.optBoolean("all_libraries")) "" else request.optString("parent_id").ifBlank { request.optString("library_id") }
         if (parent.isNotBlank()) args["ParentId"] = mediaId(parent)
         val q = request.optString("q").take(200)
@@ -203,12 +209,14 @@ internal class EmbyClient(private val account: MediaServerAccount, private val h
         val sources = data.optJSONArray("MediaSources") ?: JSONArray()
         val source = directSource(sources) ?: JSONObject()
         val video = (source.optJSONArray("MediaStreams") ?: data.optJSONArray("MediaStreams") ?: JSONArray()).objects().firstOrNull { it.optString("Type") == "Video" }
-        val container = data.optBoolean("IsFolder") || data.optString("Type") in setOf("CollectionFolder", "Folder", "Series", "Season", "BoxSet", "Playlist")
+        val container = data.optBoolean("IsFolder") || data.optString("Type") in setOf("CollectionFolder", "Folder", "PhotoAlbum", "Series", "Season", "BoxSet", "Playlist")
+        val photo = !container && (data.optString("MediaType").equals("Photo", true) || data.optString("Type").equals("Photo", true))
         val userData = data.optJSONObject("UserData") ?: JSONObject()
-        val result = JSONObject().put("id", id).put("kind", if (container) "container" else "video").put("container", container)
+        val result = JSONObject().put("id", id).put("kind", if (container) "container" else if (photo) "image" else "video").put("container", container)
             .put("title", data.optString("Name", "Video").take(256)).put("duration_ms", data.optLong("RunTimeTicks").coerceAtLeast(0) / 10000)
             .put("basename", basename(source.optString("Path").ifBlank { data.optString("Path").ifBlank { data.optString("FileName") } }))
-            .put("width", video?.optInt("Width") ?: 0).put("height", video?.optInt("Height") ?: 0)
+            .put("width", if (photo) data.optInt("Width") else video?.optInt("Width") ?: 0)
+            .put("height", if (photo) data.optInt("Height") else video?.optInt("Height") ?: 0)
             .put("description", data.optString("Overview").take(2000)).put("rating", (data.optDouble("CommunityRating", 0.0) * 10).toInt())
             .put("year", data.optInt("ProductionYear")).put("type", data.optString("Type"))
             .put("collection_type", data.optString("CollectionType"))
@@ -236,7 +244,7 @@ internal class EmbyClient(private val account: MediaServerAccount, private val h
         result.put("has_cover", coverType != null)
         if (coverType != null) result.put("cover_image", imageNode(id, coverType, 0,
             if (coverType == "Backdrop") data.optJSONArray("BackdropImageTags")?.optString(0).orEmpty() else tags.optString(coverType)))
-        if (!container) result.put("uri", MediaLibraryUri.scene(account.id, id))
+        if (!container) result.put("uri", if (photo) MediaLibraryUri.photo(account.id, id) else MediaLibraryUri.scene(account.id, id))
         return result
     }
     override fun detail(id: String): JSONObject {
@@ -353,6 +361,15 @@ internal class EmbyClient(private val account: MediaServerAccount, private val h
         else path.substringAfterLast('/').substringAfterLast('\\')
     private fun directSource(sources: JSONArray): JSONObject? = sources.objects().firstOrNull {
         it.optBoolean("SupportsDirectPlay", true) && it.optString("Protocol", "File").lowercase() in setOf("file", "http", "https") && !it.optBoolean("RequiresOpening") && !it.optBoolean("IsInfiniteStream")
+    }
+    override fun photo(id: String): MediaStreamLink {
+        val data = item(id)
+        mediaRequire(!data.optBoolean("IsFolder") &&
+            (data.optString("MediaType").equals("Photo", true) || data.optString("Type").equals("Photo", true)), "Photo unavailable")
+        // Fetch the original bytes: artwork endpoints resize/re-encode and can lose stereo/EXIF/alpha metadata.
+        return MediaStreamLink(account.endpoint("Items/${mediaId(id)}/File"),
+            "photo:$id:" + data.optString("Etag") + ":" + data.optString("DateModified"),
+            basename = basename(data.optString("Path")))
     }
     override fun stream(id: String): MediaStreamLink = stream(id, "")
     override fun stream(id: String, sourceId: String): MediaStreamLink {

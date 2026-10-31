@@ -3,6 +3,12 @@
 #include <cmath>
 
 namespace quest {
+// Top-left browser coordinates become bottom-up swapchain coordinates on flipped runtimes.
+inline XrRect2Di browser_image_rect(const float* p, int height, bool flipped) {
+    const auto x = static_cast<int32_t>(std::lround(p[0])), y = static_cast<int32_t>(std::lround(p[1]));
+    const auto w = static_cast<int32_t>(std::lround(p[2])), h = static_cast<int32_t>(std::lround(p[3]));
+    return {{x, flipped ? height - y - h : y}, {w, h}};
+}
 // Validate before converting floats or exposing any layer to xrEndFrame. A bad subimage
 // rejects the entire frame, including menus, and can recur from per-file saved alignment.
 inline bool image_rect_valid(const float* p, int width, int height) {

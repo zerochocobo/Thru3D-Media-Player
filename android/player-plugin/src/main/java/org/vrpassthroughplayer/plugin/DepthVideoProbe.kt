@@ -7,6 +7,7 @@ import org.json.JSONObject
 import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.util.Locale
 
 /** Realtime 2D->3D: every presented mono frame carries a near map in the pair's R8 mask (both
  * halves), sharing the color's immutable slot, fences and display gates with Alpha. The shader
@@ -58,6 +59,13 @@ internal class DepthVideoProbe(
     @Volatile private var stabilizeMs = 0.0      // CPU stage: near-map stabilizer
     @Volatile private var latencyMs = 0.0        // frame submitted -> its map ready
     @Volatile private var info = ""
+    // Diagnostic log window (lock): every LOG_INTERVAL_NS one QuestDepth line shows how far depth trails.
+    private var windowStartNs = 0L
+    private var windowFrames = 0L
+    private var windowShown = 0L
+    private var windowBehind = 0L
+    private var windowBehindMax = 0L
+    private var windowUpdates = 0L
     @Volatile private var inferStages = "{}"
     @Volatile private var postStages = "{}"
     fun stats(): Map<String, Any> = mapOf("depth_process_ms_avg" to processMs, "depth_infer_ms_avg" to inferMs,
@@ -135,11 +143,34 @@ internal class DepthVideoProbe(
             }
         }
         if (id == null) { release(token); return }
-        synchronized(lock) { near = latest ?: FLAT; nearFrame = latestFrame }
+        val line = synchronized(lock) {
+            near = latest ?: FLAT; nearFrame = latestFrame
+            observe(id.frameId, if (near !== FLAT) id.frameId - nearFrame else -1L)
+        }
+        line?.let { android.util.Log.i("QuestDepth", it) }
         val ran = near !== FLAT
         val kernel = JSONObject().put("near_frame_id", nearFrame).put("frames_behind", if (ran) id.frameId - nearFrame else -1)
         if (!publish(id, descriptor.toString(), near, ran, kernel)) release(token)
         start?.let { job -> worker.post { infer(job) } }
+    }
+
+    /** Counts one published frame (lock); every LOG_INTERVAL_NS returns the summary line for the
+     * diagnostic log: depth maps and video frames per second, and how many frames the shown map trails. */
+    private fun observe(frameId: Long, behind: Long): String? {
+        val now = System.nanoTime()
+        if (windowStartNs == 0L) { windowStartNs = now; windowUpdates = inferred }
+        windowFrames++
+        if (behind >= 0) { windowShown++; windowBehind += behind; windowBehindMax = maxOf(windowBehindMax, behind) }
+        val elapsed = now - windowStartNs
+        if (elapsed < LOG_INTERVAL_NS) return null
+        val seconds = elapsed / 1e9
+        val line = "video depth maps_per_s=%.1f frames_per_s=%.1f behind_avg=%s behind_max=%d latency_ms=%.0f infer_ms=%.0f stabilize_ms=%.0f replaced=%d profile=%s ready=%b error=%s frame=%d".format(
+            Locale.US, (inferred - windowUpdates) / seconds, windowFrames / seconds,
+            if (windowShown > 0) "%.1f".format(Locale.US, windowBehind.toDouble() / windowShown) else "-",
+            windowBehindMax, latencyMs, inferMs, stabilizeMs, replaced, DepthNative.PROFILE, handle > 0, error.ifEmpty { "-" }, frameId)
+        windowStartNs = now; windowUpdates = inferred
+        windowFrames = 0; windowShown = 0; windowBehind = 0; windowBehindMax = 0
+        return line
     }
 
     /** True hands the color lease to the GL uploader. */
@@ -269,6 +300,8 @@ internal class DepthVideoProbe(
         private const val INTERVAL_MS = 33L
         /** Input/raw buffers: one inferring, one pending, one being stabilized. */
         private const val JOBS = 3
+        /** Diagnostic log summary interval (kept by the compact log, which thins only listed periodic lines). */
+        private const val LOG_INTERVAL_NS = 10_000_000_000L
         private fun direct(bytes: Int): ByteBuffer = ByteBuffer.allocateDirect(bytes).order(ByteOrder.LITTLE_ENDIAN)
         private fun debugIntervalMs(): Long {
             if (!BuildConfig.DEBUG) return INTERVAL_MS

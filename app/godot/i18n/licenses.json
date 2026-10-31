@@ -635,5 +635,50 @@
     "assets": [
       "player-licenses/java/jetbrains-annotations.txt"
     ]
+  },
+  {
+    "id": "image-avif",
+    "name": "libavif 1.4.2",
+    "license": "BSD-2-Clause",
+    "assets": [
+      "image/libavif-LICENSE.txt"
+    ]
+  },
+  {
+    "id": "image-webp",
+    "name": "libwebp 1.6.0",
+    "license": "BSD-3-Clause and patent grant",
+    "assets": [
+      "image/libwebp-COPYING.txt",
+      "image/libwebp-PATENTS.txt"
+    ]
+  },
+  {
+    "id": "image-raw",
+    "name": "LibRaw 0.22.3",
+    "license": "LGPL-2.1 or CDDL-1.0",
+    "assets": [
+      "image/libraw-COPYRIGHT.txt",
+      "image/libraw-LICENSE.LGPL.txt",
+      "image/libraw-LICENSE.CDDL.txt"
+    ]
+  },
+  {
+    "id": "image-lcms",
+    "name": "Little CMS 2.19.1",
+    "license": "MIT",
+    "assets": [
+      "image/lcms-LICENSE.txt"
+    ]
+  },
+  {
+    "id": "eso-milky-way",
+    "name": "The Milky Way panorama (ESO eso0932a)",
+    "license": "CC-BY-4.0",
+    "assets": [
+      "eso/NOTICE.txt",
+      "eso/CC-BY-4.0.txt"
+    ],
+    "credit": "ESO/S. Brunier · CC BY 4.0 · https://www.eso.org/public/images/eso0932a/"
   }
 ]

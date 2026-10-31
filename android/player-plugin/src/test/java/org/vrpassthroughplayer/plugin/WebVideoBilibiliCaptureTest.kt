@@ -24,12 +24,60 @@ class WebVideoBilibiliCaptureTest {
             .put("height", if (video) 1080 else 0).put("fps", if (video) 30 else 0)
         fun request(id: Int) = JSONObject().put("url", url(id)).put("kind", "file").put("at", 1000)
             .put("headers", JSONObject().put("referer", page.url).put("cookie", "exact=synthetic"))
-        return JSONObject().put("bilibili_enabled", true).put("frame", page.url).put("duration", 120)
+        return JSONObject().put("capture_identity", "tab:document:port:video:epoch").put("bilibili_enabled", true).put("frame", page.url).put("duration", 120)
             .put("width", 1920).put("height", 1080).put("title", "Fixture")
             .put("network", JSONArray().put(request(80)).put(request(30280)))
             .put("bilibili", JSONObject().put("id", "BV1234567890").put("part", 1).put("cid", "12345")
                 .put("page", page.url).put("duration", 120).put("expected_duration", 120).put("quality", 80)
                 .put("video", JSONArray().put(track(80, true))).put("audio", JSONArray().put(track(30280, false))))
+    }
+    @Test fun restoredPageWaitsForDimensionsAndBothTracksWithoutReusingPreviousPair() {
+        val incomplete = fixture().put("width", 0).put("height", 0)
+        incomplete.getJSONArray("network").remove(1)
+        val states = listOf(null, incomplete, fixture().put("width", 0), fixture())
+        var reads = 0; var clock = 0L
+        val result = WebVideoBilibiliCapture.awaitReady(page, { states[reads++] }, {}, { clock }, { clock += it })
+        assertSame(states.last(), result)
+        assertEquals(4, reads); assertEquals(600L, clock)
+        // A later takeover must sample the newly restored document, not retain the result.
+        val next = fixture().put("capture_identity", "new-document")
+        assertSame(next, WebVideoBilibiliCapture.awaitReady(page, { next }, {}, { clock }, { fail("Ready pair should not wait") }))
+    }
+    @Test fun waitingNeverCrossesDocumentOrMediaReplacementEvenAtTheSamePageUrl() {
+        for (replacement in listOf(null, fixture().put("capture_identity", "new-document"))) {
+            var reads = 0
+            assertNull(WebVideoBilibiliCapture.awaitReady(page,
+                { if (reads++ == 0) fixture().put("width", 0) else replacement }, {}, { 0L }, {}))
+            assertEquals(2, reads)
+        }
+    }
+    @Test fun incompleteCaptureHasABoundedWaitAndChecksCancellationBeforeEveryRead() {
+        var clock = 0L; var reads = 0
+        assertNull(WebVideoBilibiliCapture.awaitReady(page, { reads++; fixture().put("width", 0) }, {},
+            { clock }, { clock += it }, timeoutMs = 500))
+        assertEquals(500L, clock); assertEquals(4, reads)
+        var cancelled = false; reads = 0
+        try {
+            WebVideoBilibiliCapture.awaitReady(page, { reads++; fixture().put("width", 0) },
+                { if (cancelled) throw InterruptedException() }, { 0L }, { cancelled = true })
+            fail("Cancellation should stop polling")
+        } catch (_: InterruptedException) { assertEquals(1, reads) }
+    }
+    @Test fun protectedDisabledAndUnscopedSnapshotsDoNotWaitOrQualify() {
+        val protected = fixture().put("protected", true)
+        assertSame(protected, WebVideoBilibiliCapture.awaitReady(page, { protected }, {}, { 0L }, { fail("Protected content should not wait") }))
+        for (media in listOf(fixture().put("bilibili_enabled", false), fixture().put("capture_identity", "")))
+            assertNull(WebVideoBilibiliCapture.awaitReady(page, { media }, {}, { 0L }, { fail("Invalid context should not wait") }))
+    }
+    @Test fun pgcRestoreWaitsForTheSelectedWholeEpisode() {
+        val source = WebVideoPage.parse("https://www.bilibili.com/bangumi/play/ss456")
+        val ready = fixture().put("frame", source.url)
+        ready.getJSONObject("bilibili").put("page", source.url).put("id", "ss456")
+            .put("pgc", true).put("whole", true).put("ep", "123").put("season", "456")
+        var reads = 0
+        assertSame(ready, WebVideoBilibiliCapture.awaitReady(source,
+            { if (reads++ == 0) JSONObject(ready.toString()).put("width", 0) else ready }, {}, { 0L }, {}))
+        assertEquals(2, reads)
     }
     @Test fun fullPairUsesExistingSelectorWithoutExtractorAndCredentialsStayPrivate() {
         val media = fixture()
@@ -41,6 +89,18 @@ class WebVideoBilibiliCaptureTest {
         assertFalse(descriptor.toString().contains("token"))
         val headers = descriptor.video.browserHeaders!!
         assertFalse(headers.forUrl(java.net.URI("https://other.bilivideo.com/12345-80.m4s"), descriptor.video.headers).containsKey("cookie"))
+    }
+    @Test fun timeoutReportsTheMissingEvidenceInsteadOfGenericWebsitePlayback() {
+        val cases = listOf(
+            fixture().put("bilibili_binding", "page_map_mismatch") to "browser_video_identity_unavailable",
+            fixture().put("bilibili", JSONObject.NULL) to "browser_playinfo_unavailable",
+            fixture().put("width", 0) to "browser_video_loading",
+            fixture().also { it.getJSONArray("network").remove(1) } to "browser_audio_missing",
+            fixture().also { it.getJSONArray("network").remove(0) } to "browser_video_missing")
+        for ((media, expected) in cases) assertEquals(expected, WebVideoBilibiliCapture.unavailableReason(media))
+        var code = ""
+        assertNull(WebVideoBilibiliCapture.awaitReady(page, { cases[2].first }, {}, { 0L }, {}, 0, { code = it }))
+        assertEquals("browser_video_loading", code)
     }
     @Test fun advertisedButUnrequestedBackupDoesNotQualify() {
         val media = fixture(); media.getJSONArray("network").remove(1)

@@ -75,24 +75,36 @@ func field(parent: Node3D, row: Dictionary, centre: Vector2, width: float, heigh
 	var options: Array = row.choices
 	var key: String = row.key
 	if row.get("swatches", false):
-		var pitch := minf(width / options.size(), height + 0.032)
+		var widths: Array[float] = []
+		var used := 0.0
+		for option in options:
+			var cell := height if option.has("swatch") else maxf(height * 2.1, menu.text_width(_option_label(option), menu.TEXT_BODY) + 0.03)
+			widths.append(cell); used += cell
+		var scale := minf(1, width / used)
+		var diameter := height * scale
+		var gap := minf(0.032, maxf(0, (width - used * scale) / maxi(1, options.size() - 1)))
+		var left := centre.x - width / 2
 		for index in options.size():
 			var option: Dictionary = options[index]
 			var selected := same(row.value, option.value)
-			var target := _button({"kind": "choose", "key": key, "value": option.value}, "",
-				centre + Vector2(-width / 2 + pitch / 2 + index * pitch, 0), Vector2.ONE * height, parent)
+			var swatch := option.has("swatch")
+			var cell_width := widths[index] * scale
+			var target := _button({"kind": "choose", "key": key, "value": option.value}, "" if swatch else _option_label(option),
+				Vector2(left + cell_width / 2, centre.y), Vector2(cell_width, diameter), parent, selected)
+			left += cell_width + gap
+			menu._tips[target] = menu.I18n.t(option.label)
+			if not swatch: continue
 			var button: Dictionary = menu._buttons.back()
 			button.base_color = Color.WHITE if selected else menu.TILE
 			button.hover_color = Color.WHITE
 			button.node.material_override.set_shader_parameter("surface_color", button.base_color)
-			button.node.material_override.set_shader_parameter("corner_radius", height / 2)
-			var disc: MeshInstance3D = menu._quad(Vector2.ONE * (height - 0.012), Vector3(0, 0, 0.004), option.swatch, 14)
-			disc.material_override.set_shader_parameter("corner_radius", height / 2)
+			button.node.material_override.set_shader_parameter("corner_radius", diameter / 2)
+			var disc: MeshInstance3D = menu._quad(Vector2.ONE * (diameter - 0.012), Vector3(0, 0, 0.004), option.swatch, 14)
+			disc.material_override.set_shader_parameter("corner_radius", diameter / 2)
 			button.node.add_child(disc)
 			if selected:
-				var mark: MeshInstance3D = menu._icon("check", Vector3(0, 0, 0.006), height * 0.44, Color("17232c"), button.node)
+				var mark: MeshInstance3D = menu._icon("check", Vector3(0, 0, 0.006), diameter * 0.44, Color("17232c"), button.node)
 				mark.material_override.render_priority = 15
-			menu._tips[target] = menu.I18n.t(option.label)
 		return
 	if row.get("switch", false):
 		var on := bool(row.value)

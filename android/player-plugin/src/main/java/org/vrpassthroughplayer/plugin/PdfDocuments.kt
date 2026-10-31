@@ -32,7 +32,8 @@ internal class PdfDocuments(private val openRenderer: (String, CloudCancellation
         worker.execute {
             if (!alive(key, session)) return@execute
             val result = try {
-                require(URI(uri).scheme in setOf("file", "content", "cloud")) { "PDF_UNAVAILABLE" }
+                require(if (uri.startsWith("smb://")) PdfSmbSource.supported(uri)
+                    else URI(uri).scheme in setOf("file", "content", "cloud")) { "PDF_UNAVAILABLE" }
                 val hint = if (identity.length <= 16384) runCatching { JSONObject(identity) }.getOrDefault(JSONObject()) else JSONObject()
                 val renderer = openRenderer(uri, session.cancellation, hint)
                 session.renderer = renderer

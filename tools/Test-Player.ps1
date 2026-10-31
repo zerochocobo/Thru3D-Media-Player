@@ -20,6 +20,7 @@ if ($RenderPreview) {
     if ($LASTEXITCODE -ne 0 -or (Get-Content $subtitlePanelRenderLog -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:)' -or (Get-Content $subtitlePanelRenderLog -Raw) -notmatch 'Subtitle side panel render: [0-9]+ checks, 0 failures') { throw 'Subtitle column render failed.' }
 }
 & "$PSScriptRoot\Test-VideoPip.ps1" -Godot $env:GODOT_EXE
+& "$PSScriptRoot\Test-VideoModeTransition.ps1" -ToolRoot $ToolRoot -SkipJvm
 & "$PSScriptRoot\Test-PictureCenterGuide.ps1" -Godot $env:GODOT_EXE -Focused
 $orderOutput = Join-Path $workspace 'build/output/media-browse-order'
 New-Item -ItemType Directory -Path $orderOutput -Force | Out-Null
@@ -82,6 +83,9 @@ foreach ($privacyMemoryTest in @('test_smb_stereo_memory', 'test_privacy_memory'
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'collections-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|ERROR:)' -or (Get-Content (Join-Path $logDirectory 'collections-host.log') -Raw) -notmatch 'Collections: [0-9]+ checks, 0 failures') { throw 'Favorites, source navigation and privacy regression failed.' }
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_collection_interactions.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'collection-interactions-host.log')
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'collection-interactions-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|ERROR:)' -or (Get-Content (Join-Path $logDirectory 'collection-interactions-host.log') -Raw) -notmatch 'Collection interactions: [0-9]+ checks, 0 failures') { throw 'Collection interaction regression failed.' }
+$alphaBackgroundLog = Join-Path $logDirectory 'alpha-background-host.log'
+& $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_alpha_background.gd 2>&1 | Tee-Object -FilePath $alphaBackgroundLog
+if ($LASTEXITCODE -ne 0 -or (Get-Content $alphaBackgroundLog -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)' -or (Get-Content $alphaBackgroundLog -Raw) -notmatch 'Alpha background: [0-9]+ checks, 0 failures') { throw 'Alpha background defaults, settings and presentation regression failed.' }
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_view_follow.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'view-follow-host.log')
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'view-follow-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)') { throw 'View follow and session footer regression failed.' }
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_interface_depth.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'interface-depth-host.log')
@@ -181,6 +185,11 @@ if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'alpha-profile
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'video-portrait-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)') { throw 'Mono portrait policy regression failed.' }
 & $env:GODOT_EXE --xr-mode off --rendering-method gl_compatibility --rendering-driver opengl3 --path $projectDirectory --quit-after 1800 --script res://tests/render_video_portrait.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'video-portrait-gles.log')
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'video-portrait-gles.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:)') { throw 'Mono portrait GLES regression failed.' }
+& $env:GODOT_EXE --xr-mode off --rendering-method gl_compatibility --rendering-driver opengl3 --path $projectDirectory --quit-after 1800 --script res://tests/render_cinema_alpha.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'cinema-alpha-gles.log')
+if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'cinema-alpha-gles.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)' -or (Get-Content (Join-Path $logDirectory 'cinema-alpha-gles.log') -Raw) -notmatch 'Cinema Alpha pixels: [0-9]+ checks, 0 failures') { throw 'Retained cinema cutout visibility and original material restoration failed.' }
+& $env:GODOT_EXE --xr-mode off --rendering-method gl_compatibility --rendering-driver opengl3 --path $projectDirectory --quit-after 1800 --script res://tests/render_video_color_paths.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'video-color-paths-gles.log')
+$videoColorLog = Get-Content (Join-Path $logDirectory 'video-color-paths-gles.log') -Raw
+if ($LASTEXITCODE -ne 0 -or $videoColorLog -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)' -or $videoColorLog -notmatch 'Video color paths GLES checks=[1-9][0-9]* failures=0') { throw '2D/RVM/portrait color regression failed.' }
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_packed_mask.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'packed-mask-host.log')
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'packed-mask-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)') { throw 'Built-in Alpha mask regression failed.' }
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_c05_playback.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'c05-host-regression.log')
@@ -300,6 +309,11 @@ if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'media-server-
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'cloud-accounts-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|ERROR:)') { throw 'Cloud account management regression failed.' }
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_account_panel.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'in-app-accounts-host.log')
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'in-app-accounts-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|ERROR:)') { throw 'In-app account UI regression failed.' }
+foreach ($suite in @('test_account_gecko', 'test_account_composition', 'test_account_modal_controls')) {
+    $loginLog = Join-Path $logDirectory ($suite + '.log')
+    & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script ("res://tests/$suite.gd") 2>&1 | Tee-Object -FilePath $loginLog
+    if ($LASTEXITCODE -ne 0 -or (Get-Content $loginLog -Raw) -match '(?m)^(SCRIPT ERROR:|ERROR:)') { throw "Account login regression failed: $suite" }
+}
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_plex_accounts.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'plex-accounts-host.log')
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'plex-accounts-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|ERROR:)') { throw 'Plex account UI regression failed.' }
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_media_naming.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'media-naming-host.log')

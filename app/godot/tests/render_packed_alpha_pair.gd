@@ -33,11 +33,18 @@ func _run() -> void:
 	viewport.add_child(quad)
 	var packed: Image = (load("res://media/c04_alpha_f180_rgb.png") as Texture2D).get_image()
 	var mask: Image = (load("res://media/c04_packed_mask_oracle.png") as Texture2D).get_image()
-	var code := FileAccess.get_file_as_string("res://shaders/video_rvm_pair.gdshader") \
+	var original := FileAccess.get_file_as_string("res://shaders/video_rvm_pair.gdshader")
+	var coordinate_lookup := "eye_uv(pip_uv(UV), sample_direction)"
+	if not original.contains(coordinate_lookup):
+		push_error("Packed Alpha probe cannot inject test UV into the current shader")
+		quit(1)
+		return
+	# Replace the lookup, preserving the projection-mesh branch around it.
+	var code := original \
 		.replace('#include "res://shaders/video_coordinates.gdshaderinc"', FileAccess.get_file_as_string("res://shaders/video_coordinates.gdshaderinc")) \
 		.replace("varying flat int eye_index;", "uniform int test_eye = 0;\nuniform vec2 test_uv = vec2(0.5);\nvarying flat int eye_index;") \
 		.replace("eye_index = int(VIEW_INDEX);", "eye_index = test_eye;") \
-		.replace("vec2 shown_uv = eye_uv(pip_uv(UV), sample_direction);", "vec2 shown_uv = test_uv;")
+		.replace(coordinate_lookup, "test_uv")
 	var shader := Shader.new()
 	shader.code = code
 	var material := ShaderMaterial.new()

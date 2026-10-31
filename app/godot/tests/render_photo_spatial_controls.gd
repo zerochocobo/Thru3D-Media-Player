@@ -50,8 +50,8 @@ func run() -> void:
 				var upper:=camera.unproject_position(button.node.to_global(Vector3(.145,.033,0)))
 				check(lower.x>=0 and upper.x<view.size.x and upper.y>=0 and lower.y<view.size.y,"Switch fits the viewport")
 			if has_rail:
-				check(menu._buttons.any(func(b):return b.target==Menu.DEPTH_RESET),"Original-mode reset is present")
-			else: check(menu._buttons.all(func(b):return b.target!=Menu.DEPTH_RESET),"Spatial/native modes contain no inactive depth reset")
+				check(menu._buttons.any(func(b):return b.target==Menu.DEPTH_OFF),"Original-mode 3D Off is present")
+			else: check(menu._buttons.all(func(b):return b.target!=Menu.DEPTH_OFF),"Spatial/native modes contain no inactive depth Off control")
 			for frame in 3: await RenderingServer.frame_post_draw
 			view.get_texture().get_image().save_png(output.path_join(lang+"-"+entry[0]+".png"))
 			menu.free()

@@ -79,6 +79,10 @@ var platform: Object
 var alpha_encoding := 1
 var alpha_enabled := false
 var alpha_requested := false
+## Native underlay holes erase the virtual scenery; cutouts over scenery use the existing shader path.
+var alpha_over_scenery := false
+var _cinema_alpha_overlay := false
+var _scene_overlay: RefCounted
 ## Alpha mask edge from the player settings (AlphaEdge.bounds): shader uniform and compositor mask alike.
 var alpha_edge := Vector2(0.0, 1.0)
 ## Realtime 2D->3D: a depth model drives per-eye parallax on mono sources (never with Alpha or SBS).
@@ -177,6 +181,10 @@ var subtitle_size := 1.0:
 	set(value): subtitle_size = SubtitleStyle.size_ratio(value)
 var subtitle_style := SubtitleStyle.DEFAULT:
 	set(value): subtitle_style = SubtitleStyle.normalize(value)
+var subtitle_pgs_tint := SubtitleStyle.PGS_DEFAULT:
+	set(value):
+		subtitle_pgs_tint = SubtitleStyle.normalize_pgs(value)
+		if is_inside_tree(): _poll_subtitles() # Paused cues change color immediately too.
 var subtitle_line := 0:
 	set(value): subtitle_line = SubtitleStyle.normalize_line(value)
 var subtitle_flat_position := 0.0:
@@ -273,6 +281,7 @@ var default_profile := AUTOMATIC_PROFILE
 ## A newly chosen size still compiling while Alpha plays: the session switches once it is ready.
 var _profile_pending := ""
 var _binding := Binding.new()
+var mode_transition := preload("res://scripts/video_mode_transition.gd").new(self)
 var pip := preload("res://scripts/video_pip.gd").new(self)
 var _pending_pair: Dictionary = {}
 var _pending_revision: Dictionary = {}
@@ -949,7 +958,7 @@ func open_local(uri: String, title: String, start_ms: int = 0, restore_mode: boo
 		platform.set_mpv_playing(id, false)
 		picker_error = ""
 	changed.emit()
-	if id <= 0: playback_failed.emit()
+	if id <= 0 and not mode_transition.active(): playback_failed.emit()
 	return id > 0
 
 func _unbind() -> void:
@@ -967,6 +976,7 @@ func _unbind() -> void:
 		caption.visible = false
 
 func close_video() -> void:
+	if not mode_transition.reopening: mode_transition.cancel()
 	if not pip.reopening: portrait.reset()
 	# Decoder reopens retain the same video; an actual close or file switch cancels its export.
 	if not pip.reopening: captures.cancel_export(local_uri)
@@ -1173,6 +1183,7 @@ func _abort_frozen_seek(reason: String) -> void:
 func _on_frozen_pair(id: int, payload: String) -> void:
 	var report: Variant = JSON.parse_string(payload)
 	if not report is Dictionary: return
+	if mode_transition.frozen(id, report): return
 	var pair: Dictionary = report.get("pair", {})
 	if id != media.session_id or int(report.get("request_id", 0)) != _freeze_request \
 			or _pending_revision.is_empty() or int(_pending_revision.position_ms) < 0:
@@ -1200,7 +1211,9 @@ func _on_frozen_pair(id: int, payload: String) -> void:
 func _try_revision() -> void:
 	if _pending_revision.is_empty() or _freeze_request > 0 or _pixel_busy or _thumbnail_busy:
 		return
-	if int(_pending_revision.position_ms) >= 0 and _start_seek_freeze(): return
+	if mode_transition.capturing() or (mode_transition.active() and mode_transition.stage == "preparing" and _waiting_first): return
+	if int(_pending_revision.position_ms) < 0 and mode_transition.guard_revision(): return
+	if int(_pending_revision.position_ms) >= 0 and not mode_transition.active() and _start_seek_freeze(): return
 	if int(_pending_revision.position_ms) >= 0 and Time.get_ticks_msec() < _debug_seek_delay_until_ms:
 		return
 	var request := _pending_revision
@@ -1227,6 +1240,7 @@ func _try_revision() -> void:
 	var held_format := media.format.duplicate()
 	_track_choices = _capture_track_choices()
 	media.begin(id)
+	mode_transition.preparing()
 	if _is_frozen() or _layer_seek_hold: media.format = held_format
 	platform.set_mpv_playing(id, false)
 	if int(request.position_ms) >= 0:
@@ -1348,7 +1362,7 @@ func set_depth_strength(value: float) -> bool:
 		changed.emit()
 		return true
 	if is_spatial_video(): return false
-	var strength := DepthStrength.clamp_value(value)
+	var strength := DepthStrength.clamp_value(value, DepthStrength.VIDEO_MAX)
 	if strength > 0.0 and (stereo_sbs or geometry != 0 or local_uri.is_empty() or media.state == "closed"): return false
 	if strength>0.0 and not is_equal_approx(strength,depth_strength): _mode_user_changed=true
 	if strength > 0.0:
@@ -1407,7 +1421,7 @@ func toggle_play() -> void:
 	if not requested_play:
 		_record_history(true)
 	if platform and media.accepts(media.session_id):
-		platform.set_mpv_playing(media.session_id, requested_play and not _waiting_first)
+		platform.set_mpv_playing(media.session_id, requested_play and not _waiting_first and not mode_transition.active())
 	changed.emit()
 
 func pause_for_voice_clone() -> void:
@@ -2162,10 +2176,12 @@ func _poll_subtitles() -> void:
 		return
 	if not listening.active() and geometry == Geometry.Geometry.FLAT and not subtitles.bitmap.is_empty():
 		var handle := int(subtitles.cue.get("mpv_source_handle", 0))
+		var rgb := SubtitleStyle.pgs_rgb(subtitle_pgs_tint)
 		var pixels := PackedByteArray()
-		if bitmap_subtitles.needs_pixels(subtitles.bitmap, handle):
-			pixels = platform.get_mpv_subtitle_bitmap(media.session_id, int(subtitles.bitmap.version))
-		bitmap_subtitles.apply(material, subtitles.bitmap, handle, pixels, subtitle_size, subtitle_flat_position)
+		if bitmap_subtitles.needs_pixels(subtitles.bitmap, handle, rgb):
+			if rgb == 0xffffff: pixels = platform.get_mpv_subtitle_bitmap(media.session_id, int(subtitles.bitmap.version))
+			else: pixels = platform.get_mpv_subtitle_bitmap_tinted(media.session_id, int(subtitles.bitmap.version), rgb)
+		bitmap_subtitles.apply(material, subtitles.bitmap, handle, pixels, subtitle_size, subtitle_flat_position, rgb)
 	else:
 		bitmap_subtitles.clear(material)
 		if _subtitle_surface: _subtitle_surface.visible = false
@@ -2623,7 +2639,9 @@ func _on_pair(id: int, payload: String) -> void:
 				"pixel_busy": _pixel_busy, "thumbnail_busy": _thumbnail_busy})
 
 func _present_pending() -> void:
-	if _pixel_busy or _thumbnail_busy or _pending_pair.is_empty() or not _pending_revision.is_empty():
+	if mode_transition.capturing(): return
+	if _pixel_busy or _thumbnail_busy or _pending_pair.is_empty() \
+			or (not _pending_revision.is_empty() and not mode_transition.active()):
 		return
 	var offered := _pending_pair
 	_pending_pair = {}
@@ -2671,6 +2689,7 @@ func _present_pending() -> void:
 	if not platform.acknowledge_mpv_pair(media.session_id, int(claimed.slot_token)):
 		_unbind()
 		return
+	mode_transition.target_ready(media.session_id)
 	if _waiting_first:
 		if control.in_flight > 0: _seek_event("target_presented")
 		_waiting_first = false
@@ -2682,7 +2701,7 @@ func _present_pending() -> void:
 			if control.first_frame(actual_position_ms): seek_presented.emit(seek_request, actual_position_ms)
 		else:
 			control.observe(actual_position_ms, control.duration_ms)
-		platform.set_mpv_playing(media.session_id, requested_play)
+		if not mode_transition.active(): platform.set_mpv_playing(media.session_id, requested_play)
 	else:
 		control.observe(int(int(claimed.pts_us) / 1000), control.duration_ms)
 	if media.frame_counter == 1:
@@ -2778,6 +2797,9 @@ func _on_error(id: int, payload: String) -> void:
 	if report.has("session_id") and int(report.session_id) != id: return
 	if media.logical_session_id > 0 and (report.has("logical_session_id") or report.has("generation")):
 		if int(report.get("logical_session_id", 0)) != media.logical_session_id or int(report.get("generation", 0)) != media.generation: return
+	# A failed replacement gets one attempt to restore the previous mode under the preserved image.
+	if str(report.get("code", "")) != "MPV_GL_CONTEXT_RECREATED" and mode_transition.recover(): return
+	mode_transition.cancel()
 	_cancel_embedded_cover()
 	_thumbnail_sequence += 1
 	var code := str(report.get("code", "")) if report is Dictionary else ""
@@ -3237,20 +3259,36 @@ func _send_portrait_depth() -> void:
 	if key != _portrait_depth_sent and platform.set_mpv_portrait_depth(media.session_id, enabled):
 		_portrait_depth_sent = key
 
+func set_cinema_alpha_overlay(enabled: bool) -> void:
+	if _cinema_alpha_overlay == enabled: return
+	_cinema_alpha_overlay = enabled
+	_sync_portrait()
+
+func _sync_scene_overlay() -> void:
+	if _cinema_alpha_overlay and panel.material_override in [material, portrait.material]:
+		if not _scene_overlay: _scene_overlay = preload("res://scripts/video_scene_overlay.gd").new()
+		_scene_overlay.apply(panel, _binding, panel.material_override == portrait.material)
+	elif _scene_overlay:
+		_scene_overlay.clear(panel, _binding)
+
 func _sync_portrait() -> void:
 	_send_portrait_depth()
 	if not panel or not material: return
+	if _scene_overlay: _scene_overlay.restore(panel)
 	var ready := portrait_requested() and screen_curve <= 0.0 and _rvm_alpha \
 		and _binding.portrait_rid.is_valid() and not _binding.layer and not _binding.warped
 	if ready:
 		var eye := panel.to_local(view_camera.global_position) if view_camera else Vector3(0, 0, screen_distance)
-		if portrait.update(_binding, panel, _flat.size, eye): return
+		if portrait.update(_binding, panel, _flat.size, eye):
+			_sync_scene_overlay()
+			return
 	portrait.active = false
 	portrait.fallback = "curved_screen" if screen_curve > 0.0 else ("shape_unavailable" if _rvm_alpha else "")
 	if panel.material_override == portrait.material:
 		panel.material_override = material
 		if geometry == Geometry.Geometry.FLAT: _shape_screen()
 		panel.custom_aabb = AABB()
+	_sync_scene_overlay()
 
 func portrait_error() -> String:
 	return I18n.t("Flat portrait") if portrait_requested() and not portrait.fallback.is_empty() else ""
@@ -3302,6 +3340,7 @@ func layout_snapshot() -> Dictionary:
 	playback["bookmark_seek_mode"] = SeekPolicy.bookmark_override(bookmark_seek_mode)
 	playback["source_frame_pts_verified"] = not media.last_pair.is_empty()
 	return {"geometry": ["flat", "half_equirect_180", "fisheye_180", "equirect_360"][geometry], "stereo_sbs": stereo_sbs,
+		"mode_transition": mode_transition.snapshot(),
 		"stream_projection": {"kind": _stream_projection.get("kind", "none"), "mesh_active": _stream_mesh_active(),
 			"mesh_count": _stream_projection.get("meshes", []).size(), "stereo_mode": _stream_projection.get("stereo_mode", 0),
 			"source": _stream_projection.get("source", "")},
@@ -3364,6 +3403,7 @@ func playback_end_ready() -> bool:
 		and (not alpha_requested or final_pair.get("inference_ran", false) or final_pair.get("color_target") == "layer")
 
 func _process(_delta: float) -> void:
+	mode_transition.poll()
 	system_volume.poll()
 	narration.apply()
 	listening.tick()
@@ -3389,6 +3429,7 @@ func _process(_delta: float) -> void:
 	pip.sync()
 	_poll_subtitles()
 	_update_layer()
+	mode_transition.finish_frame()
 	_maybe_capture_thumbnail()
 	bookmark_loop.tick()
 	_process_playback_end()
@@ -3527,12 +3568,13 @@ func _layer_presentation() -> bool:
 ## (XR_FB_composition_layer_alpha_blend). Without that blend the video layer would show uncut, so
 ## Alpha uses the eye buffers instead.
 func _layer_alpha() -> bool:
-	return not portrait_requested() and _layer_alpha_allowed and video_layer != null and video_layer.alpha_blend
+	return not alpha_over_scenery and not portrait_requested() and _layer_alpha_allowed and video_layer != null and video_layer.alpha_blend
 
 ## Short code for the FPS overlay: why playback is in the eye buffers ("" when on the layer).
 func layer_block_reason() -> String:
 	if video_layer_shown: return ""
 	if portrait_requested(): return "portrait"
+	if alpha_requested and alpha_over_scenery: return "background"
 	if not pip.video_windows().is_empty(): return "pip"
 	if video_layer == null or not video_layer.available(): return "xr"
 	# Alpha itself blocks the layer only where it may not use it; otherwise name the real blocker.
@@ -3957,6 +3999,7 @@ func _reopen_on_eye_buffer(position_ms: int) -> void:
 func _reopen_at(position_ms: int, layer: bool) -> void:
 	if local_uri.is_empty():
 		return
+	if mode_transition.guard_reopen(position_ms, layer): return
 	var position := position_ms if position_ms >= 0 else maxi(0, int(int(media.last_pair.get("pts_us", control.observed_position_ms * 1000)) / 1000))
 	if position_ms < 0 and media.last_pair.is_empty(): position = maxi(position, int(media.playback.get("source_start_ms", 0)))
 	var remember := _remember_file
@@ -3986,7 +4029,10 @@ func _reopen_at(position_ms: int, layer: bool) -> void:
 	if _network_interleave_compat and PlatformMethods.supports(platform, "set_mpv_interleave_compat"):
 		platform.set_mpv_interleave_compat(true)
 	pip.reopening = true
+	mode_transition.reopening = true
 	var capture_reopened := open_local(local_uri, display_name, position, false, alpha_wanted(), "", {"web_handoff": _web_handoff})
+	mode_transition.reopening = false
+	mode_transition.preparing()
 	pip.reopening = false
 	if not capture_reopened: pip.clear()
 	if not capture_reopened: captures.stop()
@@ -4020,6 +4066,10 @@ func _reopen_at(position_ms: int, layer: bool) -> void:
 		_apply_stereo_view()
 		_apply_geometry()
 	_layer_return_uri = return_uri
+	if not capture_reopened and mode_transition.active():
+		if not mode_transition.recover():
+			mode_transition.cancel()
+			playback_failed.emit()
 
 func _exit_tree() -> void:
 	close_video()

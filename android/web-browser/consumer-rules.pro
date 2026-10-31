@@ -1,1 +1,3 @@
 -keep class org.vrpassthroughplayer.plugin.WebBrowserSurfaceBridge { public static *; }
+-keep class org.vrpassthroughplayer.plugin.WebBrowserLayerNative { public static *; }
+-keep class org.vrpassthroughplayer.plugin.GeckoLoginSurfaceBridge { public static *; }

@@ -63,7 +63,7 @@ if ($process.ExitCode -ne 0) { throw 'PGS shader rendering failed.' }
 $log = (Get-Content $stdout -Raw) + (Get-Content $stderr -Raw)
 if ($log -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)') { throw 'PGS renderer reported errors.' }
 $render = Get-Content (Join-Path $env:QUEST_SUBTITLE_PREVIEW_DIR 'pgs-render-verification.json') -Raw | ConvertFrom-Json
-if ($render.state -ne 'passed' -or $render.pixel_fetches -ne 1 -or $render.white_pixels.normal -lt 100 -or
+if ($render.state -ne 'passed' -or $render.original_pixel_fetches -ne 1 -or @($render.tint_samples.PSObject.Properties).Count -ne 5 -or -not $render.disc_menu_original -or $render.white_pixels.normal -lt 100 -or
     $render.white_pixels.alpha_zero -lt 100 -or $render.white_pixels.gap -ne 0 -or $render.white_pixels.vr -ne 0 -or
     $render.white_pixels.off -ne 0) { throw 'PGS caption pixel evidence incomplete.' }
 Write-Output 'MPV subtitle native JSON/PGS pixels/fixture mux/flat and immersive text/flat PGS rendering checks passed.'

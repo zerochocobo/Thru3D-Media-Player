@@ -161,7 +161,7 @@ func _check_popup_layers() -> void:
 					var endpoint: Vector3 = control.to_global(Vector3(control.DEPTH_X, drag_y, popup_z))
 					var drag_origin: Vector3 = endpoint + control.global_basis * Vector3(0.16, 0.12, 0.7)
 					control.update_pointer("right_hand", drag_origin, endpoint - drag_origin, true)
-					check(not strengths.is_empty() and is_equal_approx(float(strengths.back()), control.DepthStrength.from_fraction(0.6, control._depth_maximum())), "Oblique dragging uses the current mode's raised slider and actual range: " + context)
+					check(not strengths.is_empty() and is_equal_approx(float(strengths.back()), control.DepthStrength.from_fraction(0.6, control._depth_track_maximum())), "Oblique dragging uses the current mode's raised slider and actual range: " + context)
 					control.release_pointer("right_hand", drag_origin, endpoint - drag_origin, true)
 				else:
 					control.release_pointer("right_hand", origin, direction, true)

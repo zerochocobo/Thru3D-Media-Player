@@ -2,8 +2,18 @@ package org.vrpassthroughplayer.plugin
 
 import org.junit.Assert.*
 import org.junit.Test
+import org.json.JSONObject
 
 class WebBrowserMediaPolicyTest {
+    @Test fun boundBilibiliPartWinsOverPlayingOrLargerPreviews() {
+        val main = JSONObject().put("bilibili_enabled", true).put("bilibili", JSONObject())
+            .put("width", 852).put("height", 480).put("playing", false)
+        val preview = JSONObject().put("width", 3840).put("height", 2160).put("playing", true).put("fullscreen", true)
+        assertSame(main, WebBrowserMediaPolicy.extractionCandidate(listOf(preview, main)))
+        main.remove("bilibili")
+        assertSame(preview, WebBrowserMediaPolicy.extractionCandidate(listOf(preview, main)))
+        assertNull(WebBrowserMediaPolicy.extractionCandidate(emptyList()))
+    }
     @Test fun subscriptionPlaybackUsesOnlyItsOwnSecureOrigins() {
         for (host in listOf("www.netflix.com", "www.disneyplus.com", "www.primevideo.com", "www.max.com",
             "play.hbomax.com", "www.hulu.com", "www.paramountplus.com", "tv.apple.com")) {

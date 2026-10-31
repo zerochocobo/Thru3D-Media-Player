@@ -91,7 +91,7 @@ func run() -> void:
 				if native:
 					check(menu._depth_open and menu._can_depth(),"Native Apple photos can open the viewing-mode popup: "+lang)
 					check(menu._buttons.any(func(b):return b.target==Menu.PHOTO_DEPTH and b.enabled),"Native Apple 2D-to-3D entry is enabled: "+lang)
-					check(menu._buttons.all(func(b):return b.target not in [Menu.DEPTH,Menu.DEPTH_RESET]),"Native Apple has no strength or reset controls in either viewing mode")
+					check(menu._buttons.all(func(b):return b.target not in [Menu.DEPTH,Menu.DEPTH_OFF]),"Native Apple has no strength or conversion Off controls in either viewing mode")
 				check(menu._buttons.any(func(b):return b.target==Menu.PHOTO_SPATIAL and b.enabled),"Photo mode switch remains reachable: %s/%s/%s"%[lang,native,spatial])
 				check(menu._buttons.filter(func(b):return b.get("photo_mode_selected",false)).size()==1,"Viewing modes always have exactly one selected radio")
 				var rail:=menu._buttons.any(func(b):return b.target==Menu.DEPTH)
@@ -102,7 +102,7 @@ func run() -> void:
 	check(not current.spatial_preferred and menu._depth_open and is_instance_valid(menu._depth_knob),"Mode switch reveals the original 0..200 rail without closing the popup")
 	var entry: Dictionary=menu._buttons.filter(func(b):return b.target==Menu.DEPTH)[0]
 	var span: Vector2=menu._depth_span()
-	var low_y: float=lerpf(span.x,span.y,Menu.DepthStrength.to_fraction(.01))
+	var low_y: float=lerpf(span.x,span.y,Menu.DepthStrength.to_fraction(.01, Menu.DepthStrength.PHOTO_MAX))
 	var low_origin: Vector3=entry.node.to_global(Vector3(0,low_y-entry.rect.get_center().y,1))
 	check(menu.press_pointer("right",low_origin,-entry.node.global_basis.z,true) and is_equal_approx(strengths.back(),.01),"Photo rail has no artificial bottom Off dead zone above 0%")
 	menu.release_pointer("right",low_origin,-entry.node.global_basis.z,true)

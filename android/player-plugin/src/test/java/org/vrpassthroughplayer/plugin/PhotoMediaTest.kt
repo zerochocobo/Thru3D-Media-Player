@@ -4,6 +4,15 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class PhotoMediaTest {
+    @Test fun newFormatsKeepTheirImageKindAcrossSourcesAndLiteralNames() {
+        for(ext in listOf("avif","avifs","gif","apng","dng","cr2","cr3","nef","nrw","arw","raf","rw2","orf","pef","srw")) {
+            assertTrue(MediaKinds.image("smb://host/photos/图.$ext?token=1"))
+            assertEquals("image",MediaKinds.fileNameKind("照片 #1?.${ext.uppercase()}"))
+            assertTrue(MediaKinds.supportedFileName("照片 #1?.${ext.uppercase()}"))
+            assertFalse(MediaKinds.image("image.$ext.exe"))
+        }
+        assertFalse(MediaKinds.image("unknown.raw"))
+    }
     @Test fun mixedSourcesKeepPhotoKinds() {
         for (name in listOf("photo.JPG", "portrait.jpeg", "alpha.png", "photo.webp?token=1#view", "spatial.HEIC", "camera.heif?token=1", "sky.TIF", "sky.tiff?token=1")) {
             assertTrue(name, MediaKinds.supported(name))

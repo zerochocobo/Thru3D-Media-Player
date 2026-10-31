@@ -6,6 +6,13 @@ var checks := 0
 var failures: Array[String] = []
 var folder := "user://photo_portrait_%d" % Time.get_ticks_usec()
 
+class SupportedDisplay extends XrDisplay:
+	var mode_calls: Array[bool] = []
+	func supports_passthrough() -> bool: return true
+	func set_passthrough(enabled: bool) -> bool:
+		mode_calls.append(enabled)
+		return super.set_passthrough(enabled)
+
 class Host extends RefCounted:
 	var requests := []
 	var cancelled := []
@@ -22,13 +29,19 @@ class Host extends RefCounted:
 	func open_photo(_uri: String) -> int:
 		next_id += 1; return next_id
 
+class CacheHost extends Host:
+	func preload_photo(_uri: String) -> int: return 0
+	func preload_reading_photo(_uri: String) -> int: return 0
+	func activate_photo(_id: int) -> bool: return true
+
 func check(ok: bool, message: String) -> void:
 	checks += 1
 	if not ok: failures.append(message)
 func _initialize() -> void: call_deferred("_run")
 func _run() -> void:
 	DirAccess.make_dir_recursive_absolute(folder)
-	var app := Main.new(); app.settings_path = folder.path_join("app.cfg"); root.add_child(app); app.set_process(false)
+	var app := Main.new(); app.display = SupportedDisplay.new(); app.settings_path = folder.path_join("app.cfg"); root.add_child(app); app.set_process(false)
+	app.settings.set_value("alpha", "keep_background", false)
 	app.recent_menu.dismiss(); app.photo_active = true; app.player_menu = app.photo_menu
 	app._update_background() # as opening a photo does: ends the flat-screen cinema presentation
 	app.photo.history_enabled = false; app.photo.mode_memory = Memory.new(folder.path_join("modes"))
@@ -134,11 +147,19 @@ func _run() -> void:
 	deadline = Time.get_ticks_msec()+4000
 	while not is_equal_approx(photo._portrait_strength,0) and Time.get_ticks_msec()<deadline: await create_timer(0.01).timeout
 	check(photo.portrait_enabled and float(photo.snapshot().render_strength) == 0.0, "The zero-disparity colour/matte pair also commits together")
+	app.display.mode_calls.clear()
 	photo.select_image(1)
+	check(app.display.applied_passthrough and app._person_passthrough() and not app.display.mode_calls.has(false), "Navigation keeps the room visible through every synchronous photo change callback")
 	check(not photo.portrait_requested and not photo.portrait_enabled and photo.auto_portrait and photo.pending_index == 1, "Menu image selection clears the source mask and preserves portrait continuation")
+	photo.gallery._process(0.1)
+	check(not photo.gallery.visible and photo.portrait_presentation_active(), "Navigation never restores the surrounding gallery or its selection rims")
+	check(is_instance_valid(photo._departing) and photo._departing.material_override.get_shader_parameter("portrait_enabled"), "Departure snapshots the old cutout before its mask is cleared")
+	check(photo._placeholder_material.get_shader_parameter("portrait_loading"), "Portrait navigation uses the compact transparent loading indicator")
 	photo._on_portrait(1,JSON.stringify(payload)); check(not photo.portrait_enabled, "Late completion after image change cannot cut out the next photo")
 	var new_id: int = photo._request
 	photo._accept({"image":image,"thumbnail":image,"info":{},"depth_data":zero},{"id":new_id,"index":1})
+	check(app.display.applied_passthrough and not app.display.mode_calls.has(false), "Accepting next colour does not restore the photo backdrop before its matte")
+	check(photo._presentation_pending and photo.material.get_shader_parameter("presentation_opacity") == 0.0, "A decoded next photo stays concealed until the new matte completes")
 	photo.finish_transition(); photo.gallery._process(1); photo._maybe_start_portrait()
 	check(photo.portrait_requested and not photo.portrait_enabled and photo.depth_strength == 0.0 and host.requests.back().id == new_id, "The next focused wall photo automatically requests its own portrait and preserves zero disparity")
 	check(photo._portrait_texture == null and photo._portrait_mask.is_empty(), "The next source starts without the departing photo's matte")
@@ -151,6 +172,7 @@ func _run() -> void:
 	deadline = Time.get_ticks_msec()+4000
 	while not photo.portrait_enabled and Time.get_ticks_msec()<deadline: await create_timer(0.01).timeout
 	check(photo.portrait_enabled and host.requests.back().id == new_id, "The next photo becomes transparent after its own matching matte arrives")
+	check(app.display.applied_passthrough and not app.display.mode_calls.has(false), "The complete cutout appears without toggling the room off and back on")
 	app.photo_menu._toggle_depth_slider(); app.photo_menu.refresh_values()
 	var next_button: Dictionary = app.photo_menu._buttons.filter(func(b):return b.target == app.photo_menu.PHOTO_NEXT)[0]
 	var ray_origin: Vector3 = next_button.node.global_position + next_button.node.global_basis.z
@@ -167,17 +189,19 @@ func _run() -> void:
 	var failed_requests := host.requests.size()
 	photo._maybe_start_portrait(); photo._maybe_start_portrait()
 	check(not photo.portrait_requested and photo.auto_portrait and photo.portrait_error == "No person detected" and host.requests.size() == failed_requests, "A photo with no person remains readable without retrying and preserves continuation for later photos")
+	check(app.display.applied_passthrough and app._person_passthrough(), "A no-person image keeps the album's chosen room background")
 	check(photo.navigate(1), "A no-person result does not block navigation")
 	new_id = photo._request
 	photo._accept({"image":image,"thumbnail":image,"info":{"native_stereo":true,"stereo_sbs":true}},{"id":new_id,"index":1})
 	photo.finish_transition(); photo.gallery._process(1); photo._maybe_start_portrait()
-	check(not photo.portrait_requested and photo.auto_portrait and host.requests.size() == failed_requests, "An incompatible native stereo source skips portrait inference without forgetting the album choice")
+	check(not photo.portrait_presentation_active() and photo.auto_portrait and host.requests.size() == failed_requests, "An incompatible native stereo source restores the ordinary presentation without forgetting the album choice")
 	check(photo.navigate(-1), "Previous image remains available from an incompatible source")
 	new_id = photo._request
 	photo._accept({"image":image,"thumbnail":image,"info":{},"depth_data":zero},{"id":new_id,"index":0})
 	photo.finish_transition(); photo.gallery._process(1); photo._maybe_start_portrait()
 	check(photo.portrait_requested and host.requests.back().id == new_id, "Returning to a compatible photo automatically resumes portrait after no-person and incompatible photos")
 	photo.set_portrait(false)
+	check(not app.display.applied_passthrough and not app._person_passthrough(), "Explicitly leaving portrait restores the photo backdrop")
 	check(photo.navigate(1), "Explicitly exiting portrait still allows image navigation")
 	new_id = photo._request
 	photo._accept({"image":image,"thumbnail":image,"info":{},"depth_data":zero},{"id":new_id,"index":1})
@@ -186,6 +210,8 @@ func _run() -> void:
 	photo.set_layout_mode(0); photo.set_portrait(true)
 	check(photo.navigate(-1) and photo.loading, "Single-photo layout also permits navigation during portrait preparation")
 	photo.set_portrait(false) # The request is already suspended for navigation; this still cancels the choice.
+	check(not app.display.applied_passthrough and not app._person_passthrough(), "Explicit exit during loading updates the background immediately without waiting for IO")
+	check(not photo.portrait_presentation_active() and not photo._placeholder_material.get_shader_parameter("portrait_loading"), "Explicit exit during loading restores the ordinary presentation immediately")
 	new_id = photo._request
 	photo._accept({"image":image,"thumbnail":image,"info":{},"depth_data":zero},{"id":new_id,"index":0})
 	photo.finish_transition(); photo._maybe_start_portrait()
@@ -206,6 +232,33 @@ func _run() -> void:
 	host.fail_depth = true
 	check(not pending.set_portrait(true) and not pending.portrait_requested and pending.portrait_error == "3D unavailable", "Unavailable 3D returns to the photo instead of leaving portrait stuck preparing")
 	host.fail_depth = false; pending.free()
+	for layout in [0, 1, 2, 3, 4]:
+		var switching := Photo.new(); switching.history_enabled = false; switching.platform = CacheHost.new()
+		switching.mode_memory = Memory.new(folder.path_join("layout-%d" % layout))
+		root.add_child(switching); switching.set_process(false); switching.gallery.set_process(false)
+		switching.queue.assign([{"uri":"file://"+ProjectSettings.globalize_path(source),"title":"one"},{"uri":"file://"+ProjectSettings.globalize_path(source),"title":"two"}])
+		switching._accept({"image":image,"info":{},"depth_data":depth_data},{"id":90,"index":0}); switching.finish_transition()
+		switching.gallery.set_mode(layout)
+		if layout in [2, 3]: switching.gallery.focus = 0; switching.gallery.progress = 1.0
+		switching._portrait_texture = ImageTexture.create_from_image(mask); switching._portrait_strength = switching.depth_strength
+		check(switching.set_portrait(true) and switching.portrait_enabled, "Layout %d begins with a complete portrait" % layout)
+		var fixed: Transform3D = switching.flat_pose
+		check(switching.select_image(1), "Layout %d allows direct portrait navigation" % layout)
+		switching.gallery._process(0.2); switching.finish_transition()
+		check(not switching.gallery.visible and switching.flat_pose.is_equal_approx(fixed), "Layout %d retains an isolated, stationary presentation during loading" % layout)
+		check(switching.gallery.ray_hit(Vector3(0, 1.6, 0), Vector3.FORWARD).is_empty(), "Layout %d prevents interaction with hidden gallery cards while switching" % layout)
+		if layout in [2, 3]: check(switching._texture == null and switching._display_depth_data.is_empty(), "Layout %d releases the old full source before loading its replacement" % layout)
+		check(switching.select_image(0) and switching.portrait_presentation_active(), "Layout %d keeps a rapid return isolated" % layout)
+		if switching._cache_supported():
+			check(not switching.loading, "Layout %d restores the current source directly from cache" % layout)
+		else:
+			switching._accept({"image":image,"info":{},"depth_data":depth_data},{"id":switching._request,"index":0}); switching.finish_transition()
+		check(switching._presentation_pending, "Layout %d covers the returned colour until its matte is ready" % layout)
+		switching._maybe_start_portrait()
+		check(switching.portrait_requested, "Layout %d automatically resumes portrait after a rapid return" % layout)
+		switching.set_portrait(false); switching.gallery._process(0.2)
+		check(switching.gallery.mode == layout and not switching.portrait_presentation_active(), "Layout %d restores its original presentation on explicit exit" % layout)
+		switching.free()
 	for bad in [{"width":8194},{"width":319},{"format":"rgba"},{"strength":3},{"height":5000}]:
 		var invalid := payload.duplicate(); invalid.merge(bad,true)
 		check(Photo._read_portrait(invalid).is_empty(), "Malformed mask metadata is rejected")

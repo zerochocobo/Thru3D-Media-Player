@@ -163,6 +163,8 @@ func receive(id: int, payload: String) -> bool:
 				var location: Dictionary = _location_pending.duplicate(true); _location_pending.clear()
 				library_id = str(location.get("library_id", "")); folder_path = location.get("folder_path", []).duplicate(true)
 				query = {"page": 1, "q": "", "mode": "library"}
+				for library in home_data.get("libraries", []):
+					if str(library.id) == library_id: query.collection_type = str(library.get("collection_type", ""))
 				if not folder_path.is_empty(): query.parent_id = str(folder_path.back().id); query.mode = "folders"
 				view = "scenes"; browse(); return true
 			entries = []
@@ -504,6 +506,7 @@ func rows() -> Array[Dictionary]:
 
 func _node_row(item: Dictionary) -> Dictionary:
 	if item.get("container", false): return {"title": str(item.title), "detail": str(item.get("child_count", "")) if int(item.get("child_count", -1)) >= 0 else "", "icon": "folder", "container_node": item}
+	if item.get("kind") == "image": return {"title": str(item.get("title", "")), "detail": "", "icon": "image", "kind": "image", "uri": str(item.get("uri", "")), "scene": item}
 	return {"title": str(item.get("title", "Video")), "detail": _time(int(item.get("duration_ms", 0))) if int(item.get("duration_ms", 0)) > 0 else "", "icon": "video", "scene": item}
 
 func _time(ms: int) -> String:
@@ -539,6 +542,8 @@ func choose(row: Dictionary) -> void:
 			query[category] = [str(item.id)]; query.erase("exclude_" + category); query.erase("unclassified"); labels[category + "/" + str(item.id)] = str(item.name)
 		query.erase("mode"); query.erase("parent_id"); folder_path.clear(); browse()
 	elif row.has("scene"):
+		if row.scene.get("kind") == "image":
+			_play(row.scene, -1); return
 		var args := {"scene_id": str(row.scene.id)}
 		if row.get("recent_opened", false):
 			args.recent_position_ms = int(row.scene.get("position_ms", 0)); args.recent_uri = str(row.scene.get("uri", "")); entries = home_recent_entries()
@@ -592,6 +597,15 @@ func playback_entries() -> Array:
 	if parts.any(func(part): return part.get("uri", "") == uri or part.get("versions", []).any(func(version): return version.get("uri", "") == uri)):
 		return parts.map(func(part): return gallery.version_node(part))
 	return entries.map(func(item): return selection if selection.has("source_id") and str(item.get("uri", "")).get_slice("?", 0) == str(selection.get("uri", "")).get_slice("?", 0) else item)
+
+func image_entries() -> Array:
+	return entries.filter(func(item): return item.get("kind") == "image" and not str(item.get("uri", "")).is_empty())
+
+func photo_directory_context() -> Dictionary:
+	if loaded_page <= 0 or server.is_empty(): return {}
+	var captured := query.duplicate(true)
+	captured.library_id = library_id
+	return {"type": "server", "server_id": str(server.id), "query": captured}
 
 func _is_favorite(node: Dictionary) -> bool:
 	if capabilities.get("favorite_scope", "local") == "server": return bool(node.get("favorite", false))

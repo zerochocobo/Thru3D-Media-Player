@@ -16,9 +16,10 @@ class PhotoHost extends RefCounted:
 	var depth_path := ""
 	var requests := 100
 	var inference := 0
+	var source_paths := {}
 	func open_photo(uri: String) -> int:
 		requests += 1
-		ready.call_deferred(requests, JSON.stringify({"state":"ready", "path":uri.trim_prefix("file://")}))
+		ready.call_deferred(requests, JSON.stringify({"state":"ready", "path":source_paths.get(uri, uri.trim_prefix("file://"))}))
 		return requests
 	func prepare_photo_depth(id: int) -> bool:
 		inference += 1
@@ -203,8 +204,8 @@ func _run() -> void:
 	var legacy_strength := ConfigFile.new()
 	legacy_strength.set_value("video", "depth_strength", 2.0)
 	legacy_strength.set_value("photo", "depth_strength", 2.0)
-	check(main.video.DepthStrength.load_preference(legacy_strength, false) == 1.0 and main.photo.DepthStrength.load_preference(legacy_strength, true) == 2.0,
-		"Legacy 200% preference clamps video to 100% while preserving photo 200%")
+	check(main.video.DepthStrength.load_preference(legacy_strength, false) == 2.0 and main.photo.DepthStrength.load_preference(legacy_strength, true) == 2.0,
+		"Video boost and photo independently retain 200% preferences")
 	legacy_strength.set_value("video", "depth_strength", .6)
 	check(main.video.DepthStrength.load_preference(legacy_strength, false) == .6, "An existing video preference within range survives the new default")
 	for invalid in [0, -1, NAN, INF, "bad"]:
@@ -270,16 +271,22 @@ func _run() -> void:
 	main._on_library_chosen(entries[0].uri, entries[0].title)
 	await settle(main.photo)
 	main.photo_menu._activate(Menu.PHOTO_DEPTH)
-	check(not main.photo.depth_requested and main.photo_menu._depth_open, "Single photo 3D click only opens adjustment")
+	check(main.photo.depth_requested and main.photo_menu._depth_open and main.photo.depth_strength == 1.0, "Single photo 3D click enables conversion at default 100% and opens adjustment")
 	var controls_origin: Vector3 = main.photo_menu.to_global(Vector3(Menu.DEPTH_X, 0.025, 1))
 	main.photo_menu.visible = true
 	main.photo_menu.press_pointer("right_hand", controls_origin, -main.photo_menu.global_basis.z, true)
 	main.photo_menu.release_pointer("right_hand", Vector3.ZERO, Vector3.ZERO, true)
 	main.photo_menu.press_pointer("right_hand", controls_origin, -main.photo_menu.global_basis.z, true)
 	main.photo_menu.release_pointer("right_hand", Vector3.ZERO, Vector3.ZERO, true)
-	main.photo_menu._activate(Menu.PHOTO_DEPTH)
+	check(main.photo.depth_requested, "Rapid photo 3D clicks never disable conversion")
+	if not main.photo_menu._depth_open: main.photo_menu._activate(Menu.PHOTO_DEPTH)
+	var initial_span: Vector2 = main.photo_menu._depth_span()
+	var initial_y: float = lerpf(initial_span.x, initial_span.y, main.photo.DepthStrength.to_fraction(1.0, main.photo.DepthStrength.PHOTO_MAX))
+	var initial_point: Vector3 = main.photo_menu.to_global(Vector3(Menu.DEPTH_X, initial_y, 1))
+	main.photo_menu.press_pointer("right_hand", initial_point, -main.photo_menu.global_basis.z, true)
+	main.photo_menu.release_pointer("right_hand", initial_point, -main.photo_menu.global_basis.z, true)
 	await process_frame
-	check(main.photo.depth_requested and main.photo.depth_enabled and main.photo.depth_strength == 1.0 and main.photo_menu._depth_open, "Photo double click prepares one depth map at 100%")
+	check(main.photo.depth_requested and main.photo.depth_enabled and main.photo.depth_strength == 1.0 and main.photo_menu._depth_open, "Photo rail prepares one depth map at 100%")
 	check(not main.photo.spatial_preferred and not main.photo.spatial_requested and is_instance_valid(main.photo_menu._depth_knob), "Default static 3D keeps the converted photo and exposes its strength rail")
 	main.photo_menu._activate(Menu.PHOTO_STATIC)
 	check(not main.photo.spatial_preferred and is_instance_valid(main.photo_menu._depth_knob), "Explicit Spatial Off exposes the original stereo depth rail")
@@ -293,6 +300,15 @@ func _run() -> void:
 	check(host.inference == 1 and main.photo._depth_texture == original_texture and controls._depth_knob == original_knob,
 		"Dragging reuses depth map and UI meshes (inference=%d, same_depth=%s, same_knob=%s)" % [host.inference, main.photo._depth_texture == original_texture, controls._depth_knob == original_knob])
 	controls.release_pointer("left_hand",Vector3.ZERO,Vector3.ZERO,false)
+	var off_button: Dictionary = controls._buttons.filter(func(b): return b.target == Menu.DEPTH_OFF)[0]
+	var off_point: Vector3 = off_button.node.to_global(Vector3(0,0,1))
+	var off_direction: Vector3 = -off_button.node.global_basis.z
+	controls.press_pointer("left_hand",off_point,off_direction,true)
+	controls.release_pointer("left_hand",off_point,off_direction,true)
+	check(not main.photo.depth_requested and not main.photo.depth_enabled and not main.photo.auto_depth and main.photo.depth_strength == 2.0
+		and not controls._depth_open and controls._depth_label == null, "Photo X disables real conversion, closes the rail and keeps the 200% global strength")
+	controls._activate(Menu.PHOTO_DEPTH)
+	check(main.photo.depth_requested and main.photo.depth_enabled and main.photo.depth_strength == 2.0 and controls._depth_open and host.inference == 1, "Photo icon re-enables cached 3D at its retained 200% strength and opens the rail")
 	controls._activate(Menu.PHOTO_SPATIAL)
 	check(main.photo.spatial_preferred and not is_instance_valid(controls._depth_knob), "Main routes the spatial radio to fixed-depth viewing")
 	controls._activate(Menu.PHOTO_STATIC)
@@ -325,7 +341,7 @@ func _run() -> void:
 	main.video._remember_file = true; main.video.stereo_sbs = false; main.video.geometry = 0
 	main._on_depth_strength(1.9, false); main._save_depth_strength(false)
 	var static_restart := Main.new(); static_restart.settings_path = main.settings_path; root.add_child(static_restart)
-	check(not static_restart.photo.spatial_preferred and is_equal_approx(static_restart.photo.depth_strength,1.5) and is_equal_approx(static_restart.video.depth_strength,1.0),
+	check(not static_restart.photo.spatial_preferred and is_equal_approx(static_restart.photo.depth_strength,1.5) and is_equal_approx(static_restart.video.depth_strength,1.9),
 		"Restart independently restores the video and static-photo strengths committed by their controls")
 	static_restart.queue_free(); await process_frame
 	main._on_photo_action("photo_spatial_on")
@@ -337,12 +353,27 @@ func _run() -> void:
 	var restored := Main.new()
 	restored.settings_path = main.settings_path
 	root.add_child(restored)
-	check(not restored.video.auto_depth and restored.photo.auto_depth and restored.photo.spatial_preferred and is_equal_approx(restored.photo.depth_strength, 1.5) and is_equal_approx(restored.video.depth_strength,1.0),
+	check(not restored.video.auto_depth and restored.photo.auto_depth and restored.photo.spatial_preferred and is_equal_approx(restored.photo.depth_strength, 1.5) and is_equal_approx(restored.video.depth_strength,1.9),
 		"Restart restores both global strengths while video conversion still awaits its own file record")
 	check(restored.photo.mode_lock.geometry == 3 and restored.video.mode_lock.is_empty(), "Restart restores panorama photo lock without locking videos")
 	main._on_photo_action("lock_mode"); saved.load(main.settings_path)
 	check(saved.get_value("photo", "mode_lock").is_empty(), "Unlock is saved across restarts")
 	restored.queue_free()
+	# Opaque server identities use the existing image viewer and its 3D controls.
+	var server_photo := "medialib://fixture/photo/1"
+	host.source_paths[server_photo] = paths[0]
+	main.recent_menu.section = Library.Section.MEDIA_SERVER
+	main.recent_menu.server_browser.entries = [{"uri":server_photo,"id":"1","title":"Without extension","kind":"image","basename":"original.jpg"}]
+	main.recent_menu.server_browser.loaded_page = 0
+	main.photo.load_mode_lock({}); main.photo.auto_depth = false
+	main._on_library_chosen(server_photo, "Without extension")
+	await settle(main.photo)
+	check(main.photo_active and main.player_menu == main.photo_menu and main.photo.local_uri == server_photo, "Emby photo selects the existing image mode and photo controls")
+	check(main.photo.queue.size() == 1 and main.photo.snapshot().depth_available, "Server photo retains the existing 2D-to-3D conversion capability")
+	main.photo.mode_memory = Memory.new(folder.path_join("server-hints"))
+	main.photo.queue[0].basename = "original_180_SBS.jpg"
+	var named_mode: Dictionary = main.photo._resolved_mode(0, {})
+	check(named_mode.stereo_sbs and named_mode.geometry == 1, "Server original filename supplies stereo/projection hints independently of its display title")
 	main.queue_free(); library.queue_free(); menu.queue_free(); photo.queue_free()
 	await process_frame
 	for failure in failures: push_error(failure)

@@ -13,6 +13,9 @@ class DispatchMain extends "res://scripts/main.gd":
 class Trace extends Node3D:
 	var calls: Array = []
 	var geometry := 1
+	var view_zoom := 0.0
+	var local_uri := "file:///stick-fixture.mp4"
+	var media := {"session_id": 1}
 	func seek_relative(delta: int) -> bool:
 		calls.append(["seek", delta])
 		return true
@@ -32,6 +35,7 @@ class Trace extends Node3D:
 		calls.append(["swap_eyes"])
 		return true
 	func zoom_view(amount: float) -> void:
+		view_zoom += amount
 		calls.append(["zoom", amount])
 
 func check(value: bool, message: String) -> void:

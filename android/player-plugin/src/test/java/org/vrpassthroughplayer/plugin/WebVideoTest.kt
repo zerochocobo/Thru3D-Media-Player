@@ -109,12 +109,15 @@ class WebVideoTest {
             assertTrue(streams.audio(page.url).single().requiredPrimary)
             assertFalse(SidecarAudio.Track("file:///optional.m4a", "Optional dub").requiredPrimary)
             val firstAudio = streams.audio(page.url).single().location
+            val listeningAudio = ListeningPolicy.audioInput(first, JSONObject().put("id",1).put("stream_index",0)
+                .put("external",true).put("filename",firstAudio),streams.audio(page.url).single().location,0.0)!!
+            assertEquals(firstAudio,listeningAudio.path)
             fun read(url: String) {
                 val c = URI(url).toURL().openConnection() as HttpURLConnection
                 try { c.setRequestProperty("Range", "bytes=2000-3500"); assertArrayEquals(bytes.copyOfRange(2000, 3501), c.inputStream.use { it.readBytes() }) }
                 finally { c.disconnect() }
             }
-            read(first); read(firstAudio)
+            read(first); read(listeningAudio.path)
             val next = streams.prepare(d)
             streams.release(first)
             assertFalse(server.hasSource(first)); assertFalse(server.hasSource(firstAudio))

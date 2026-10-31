@@ -52,8 +52,20 @@ class WebBookmarkShareTest {
                 val head = "${if (body == null) "GET" else "POST"} $path HTTP/1.1\r\nHost: ${host ?: url.rawAuthority}\r\nContent-Type: $type\r\nContent-Length: ${bytes.size}\r\n" +
                     (if (token != null) "Authorization: Bearer $token\r\n" else "") + extra + "\r\n"
                 socket.getOutputStream().apply { write(head.toByteArray()); write(bytes); flush() }
-                val response = socket.getInputStream().readBytes().toString(Charsets.UTF_8)
-                response.substringBefore("\r\n").split(' ')[1].toInt() to response.substringAfter("\r\n\r\n")
+                // Read the framed response, not TCP EOF: early rejection may close with unread
+                // request bytes, producing a reset after the complete HTTP reply on Windows.
+                val input = socket.getInputStream().buffered()
+                val header = StringBuilder()
+                while (!header.endsWith("\r\n\r\n")) {
+                    val byte = input.read()
+                    check(byte >= 0 && header.length < 8192) { "Incomplete HTTP response header" }
+                    header.append(byte.toChar())
+                }
+                val length = Regex("(?im)^Content-Length: ([0-9]+)\r?$").find(header)?.groupValues?.get(1)?.toInt()
+                    ?: error("Missing response length")
+                val payload = input.readNBytes(length)
+                check(payload.size == length) { "Incomplete HTTP response body" }
+                header.toString().substringBefore("\r\n").split(' ')[1].toInt() to payload.toString(Charsets.UTF_8)
             }
         }
         fun pair() = JSONObject(send("/pair", JSONObject().put("code", server.status().getString("code"))).second).getString("token")

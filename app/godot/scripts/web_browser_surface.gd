@@ -12,11 +12,11 @@ const PIXEL_UNITS := 5
 const LOW_END_PIXEL_UNITS := 4
 const PIXELS := Vector2i(2400, 1500)
 const LOW_END_PIXELS := Vector2i(1920, 1200)
-const HIDDEN := Vector2(0.0005, 0.0005)
 const HOLE := preload("res://shaders/web_browser_hole.gdshader")
+const Layer := preload("res://scripts/web_browser_layer.gd")
 var target: WeakRef
 var platform: Object
-var layer: OpenXRCompositionLayerQuad
+var layer: RefCounted
 var hole: MeshInstance3D
 var bridge: JavaClass
 var xr: OpenXRInterface
@@ -72,8 +72,8 @@ func _ready() -> void:
 	xr.session_loss_pending.connect(_session_stop)
 	xr.instance_exiting.connect(_session_stop)
 	xr.session_begun.connect(_session_start)
-	_create_layer()
-	if not layer: set_process(false); return
+	# Allocate the producer in _process once the session is running. Opening while
+	# XR is resuming must not permanently disable this window's processing.
 	hole = MeshInstance3D.new()
 	hole.mesh = QuadMesh.new()
 	var material := ShaderMaterial.new(); material.shader = HOLE; material.render_priority = 25
@@ -83,34 +83,33 @@ func _ready() -> void:
 	if menu: menu.set_meta("menu_browser_layer", true)
 
 func _create_layer() -> void:
-	layer = OpenXRCompositionLayerQuad.new()
-	layer.name = "WebBrowserLayer"
-	layer.use_android_surface = true
-	layer.android_surface_size = pixels
-	layer.sort_order = -7 # Behind sharp menu chrome, above ordinary video layers.
-	layer.quad_size = HIDDEN
-	var system: Dictionary = xr.get_system_info()
-	var flip := preload("res://scripts/video_layer.gd")._surface_vertical_flip(str(system.get("XRRuntimeName", "")),
-		RenderingServer.get_current_rendering_driver_name(), OS.has_feature("pico"))
-	layer.set("XR_FB_composition_layer_image_layout/vertical_flip", flip)
-	add_child(layer)
+	layer = Layer.new()
+	if not layer.create(window_id, pixels):
+		status = "surface_unavailable"; layer = null; return
 	var menu: Node = target.get_ref() if target else null
 	if menu: menu.set_meta("menu_browser_layer", true)
-	if not layer.is_natively_supported():
-		status = "surface_unavailable"; layer.queue_free(); layer = null
 
 func present(value: bool, bounds: Rect2) -> void:
 	shown = value; rect = bounds
 
 func _session_start() -> void:
+	if layer and layer.session != Layer.api.get_session():
+		layer.destroy(); layer = null
 	attached = false; ending = false; retry_at = 0; state = {}; _state_raw = ""; surface_retries = 0
 
 func _session_stop() -> void:
-	if not bridge or generation <= 0: return
+	if layer: layer.hide()
+	if not bridge or generation <= 0:
+		if layer: layer.destroy(); layer = null
+		ending = true
+		return
 	var stopped: bool = bridge.detachWindowBeforeSessionStop(window_id, generation)
 	var failed := JavaClassWrapper.get_exception() != null
 	if not stopped or failed: status = "surface_stop_timeout"
-	attached = false; ending = true
+	else:
+		attached = false
+		if layer: layer.destroy(); layer = null
+	ending = true
 	if hole: hole.visible = false
 
 func _process(_delta: float) -> void:
@@ -131,7 +130,7 @@ func _process(_delta: float) -> void:
 			var released: bool = bridge.releaseWindowForResize(window_id, generation)
 			if JavaClassWrapper.get_exception() or not released:
 				status = "surface_resize_timeout"; resize_at = Time.get_ticks_msec() + 2000; return
-		if layer: layer.free(); layer = null
+		if layer: layer.destroy(); layer = null
 		attached = false; pixels = requested_pixels; state = {}; _state_raw = ""; retry_at = 0
 		if hole: hole.visible = false
 	if not layer:
@@ -147,7 +146,7 @@ func _process(_delta: float) -> void:
 	layer.sort_order = -7 - nearer
 	var visible_now := shown and menu.is_visible_in_tree()
 	if not visible_now:
-		layer.quad_size = HIDDEN
+		layer.hide()
 		hole.visible = false
 		return
 	if ending: return
@@ -162,35 +161,35 @@ func _process(_delta: float) -> void:
 	if state.has("tab_id") and int(state.tab_id) == 0:
 		_release_idle_surface(); return
 	if int(state.get("generation", 0)) == generation and state.get("needs_surface", false):
-		hole.visible = false; layer.quad_size = HIDDEN
+		hole.visible = false; layer.hide()
 		if surface_retries >= 3: status = "surface_recreate_failed"; return
 		if Time.get_ticks_msec() < retry_at: return
 		var stopped: bool = bridge.detachWindowBeforeSessionStop(window_id, generation)
 		if JavaClassWrapper.get_exception() or not stopped: status = "surface_stop_timeout"; retry_at = Time.get_ticks_msec() + 2000; return
 		# Gecko has acknowledged release; only now destroy the OpenXR producer.
-		layer.free(); layer = null; attached = false; state = {}; _state_raw = ""; surface_retries += 1
+		layer.destroy(); layer = null; attached = false; state = {}; _state_raw = ""; surface_retries += 1
 		_create_layer(); retry_at = Time.get_ticks_msec() + 250
 		# The next attach binds the selected page. A global resume could recreate
 		# a blank tab if the user closed the last window during surface recovery.
 		return
 	if not attached and Time.get_ticks_msec() >= retry_at:
 		retry_at = Time.get_ticks_msec() + 500
-		var surface := layer.get_android_surface()
+		var surface: JavaObject = layer.surface
 		if surface:
 			generation += 1
 			attached = bool(bridge.attachWindow(window_id, surface, pixels.x, pixels.y, generation))
 			if JavaClassWrapper.get_exception(): attached = false; status = "surface_attach_failed"
 	if attached and int(state.get("generation", 0)) == generation and state.get("attached", false):
-		layer.quad_size = layout.size
+		var ready: bool = layer.present(layout.pose, layout.size, menu.focus_crop())
 		hole.mesh.size = layout.size
-		hole.visible = true
+		hole.visible = ready
 	else:
-		layer.quad_size = HIDDEN; hole.visible = false
+		layer.hide(); hole.visible = false
 
 func _release_idle_surface() -> void:
 	if hole: hole.visible = false
 	if not layer: return
-	layer.quad_size = HIDDEN
+	layer.hide()
 	if attached:
 		# Each attempt can block this thread for up to 1.5 s; never retry every frame.
 		if Time.get_ticks_msec() < retry_at: return
@@ -199,7 +198,7 @@ func _release_idle_surface() -> void:
 		if JavaClassWrapper.get_exception() or not stopped:
 			status = "surface_stop_timeout"; retry_at = Time.get_ticks_msec() + 2000; return
 	attached = false; state = {}; _state_raw = ""; surface_retries = 0
-	layer.free(); layer = null
+	layer.destroy(); layer = null
 	var menu: Node = target.get_ref() if target else null
 	if menu: menu.remove_meta("menu_browser_layer")
 

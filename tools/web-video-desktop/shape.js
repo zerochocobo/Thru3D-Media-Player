@@ -1,5 +1,13 @@
 /* Inspect normalization inputs as booleans/counts only; never retain the response. */
 const originalNormalize = Thru3DBilibili.normalize;
+const originalView = Thru3DBilibili.view;
+Thru3DBilibili.view = (raw, requested) => {
+  const result = originalView(raw, requested), v=raw?.data?.View;
+  normalizedShapes.push({view: true, accepted:!!result, bvid:result?.bvid, code:raw?.code, has_view:!!v, pages:v?.pages?.length,
+    bvid_matches:requested.bvid===v?.bvid, aid_matches:requested.aid===String(v?.aid)});
+  if(normalizedShapes.length>8)normalizedShapes.shift();
+  return result;
+};
 Thru3DBilibili.normalize = (raw, identity) => {
   const result = originalNormalize(raw, identity), d = raw?.data;
   const address = value => {

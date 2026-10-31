@@ -4,6 +4,12 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class PanoramaPictureNameTest {
+    @Test fun newOriginalsPreserveTheirRealFormat() {
+        for(ext in listOf("avif","apng","gif","heif","heic"))
+            assertEquals("motion.$ext",PanoramaPictureName.make("motion.jpg","image/$ext",false))
+        assertEquals("camera.cr3",PanoramaPictureName.make("camera.CR3","image/x-camera-raw",false))
+        assertEquals("camera.nef",PanoramaPictureName.make("camera.jpg","image/x-nikon-nef",false))
+    }
     @Test fun savingTiffOriginalKeepsItsFormatAndProjectionSuffix() {
         assertEquals("sky_360_2D.tif", PanoramaPictureName.make("sky.tiff", "image/tiff", true))
     }

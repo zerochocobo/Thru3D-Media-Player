@@ -42,8 +42,18 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
         private var runtimeViewport: WebBrowserViewport? = null
         @Synchronized private fun viewport(lowEnd: Boolean = false): WebBrowserViewport =
             runtimeViewport ?: WebBrowserViewport(lowEnd).also { runtimeViewport = it }
+        internal fun loginViewport(): WebBrowserViewport = viewport()
+        /** One process runtime; login sessions have a private context and no ordinary tab delegates. */
+        internal fun engine(owner: Activity): GeckoRuntime {
+            check(Looper.myLooper() == Looper.getMainLooper())
+            val profile = viewport()
+            return runtime ?: GeckoRuntime.create(owner.applicationContext,
+                GeckoRuntimeSettings.Builder().remoteDebuggingEnabled(false).consoleOutput(false)
+                    .displayDensityOverride(profile.density).displayDpiOverride(profile.dpi)
+                    .screenSizeOverride(profile.width, profile.height).build()).also { runtime = it }
+        }
     }
-    private class Tab(val id: Int, val session: GeckoSession, var window: Int, val opener: Int = 0) {
+    private class Tab(val id: Int, var session: GeckoSession, var window: Int, val opener: Int = 0) {
         var openerLinked = opener != 0
         var awake = true
         var savedState: GeckoSession.SessionState? = null
@@ -54,6 +64,8 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
         var url = "about:blank"
         var title = ""
         var progress = 0
+        var loading = false
+        var startPage = true
         var back = false
         var forward = false
         var editing = false
@@ -64,6 +76,9 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
         var playback: MediaSession? = null
         var playing = false
         var pauseToken = 0L
+        var pauseWasPlaying = false
+        var pauseHasDom = false
+        val pauseReports = mutableMapOf<WebExtension.Port, Pair<Long, Boolean>>()
         val ports = mutableMapOf<WebExtension.Port, Long>()
         val media = mutableMapOf<WebExtension.Port, JSONArray>()
         val fullscreen = WebBrowserFullscreen()
@@ -172,8 +187,7 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
             if (!closed.get() && active && tab?.url == url) tab.sources.values.forEach { list ->
                 for (i in 0 until list.length()) candidates.add(list.getJSONObject(i))
             }
-            val chosen = candidates.maxWithOrNull(compareBy<JSONObject> { it.optBoolean("fullscreen") }.thenBy { it.optBoolean("playing") }
-                .thenBy { it.optLong("width") * it.optLong("height") })
+            val chosen = WebBrowserMediaPolicy.extractionCandidate(candidates)
             result.complete(chosen?.let { JSONObject(it.toString()).put("title", tab?.title.orEmpty()) })
         }
         return result.get(5, TimeUnit.SECONDS)
@@ -316,11 +330,7 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
             return created
         }
         val owner = activity() ?: return null
-        val viewport = viewport()
-        val engine = runtime ?: GeckoRuntime.create(owner.applicationContext,
-            GeckoRuntimeSettings.Builder().remoteDebuggingEnabled(false).consoleOutput(false)
-                .displayDensityOverride(viewport.density).displayDpiOverride(viewport.dpi)
-                .screenSizeOverride(viewport.width, viewport.height).build()).also { runtime = it }
+        val engine = engine(owner)
         val tab = createTab(focusedWindow)
         tabs.add(tab); window().tab = tab.id; layoutRevision++
         tab.session.open(engine)
@@ -343,44 +353,70 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
         return tab
     }
 
-    private fun createTab(windowId: Int, opener: Int = 0): Tab {
-        val tab = Tab(++nextTabId, GeckoSession(GeckoSessionSettings.Builder()
+    private fun newSession() = GeckoSession(GeckoSessionSettings.Builder()
             // Keep the existing default Gecko profile across app launches. Session close/pause
             // must not clear site data; history preference controls only our URL history.
             .usePrivateMode(false)
             .userAgentMode(GeckoSessionSettings.USER_AGENT_MODE_DESKTOP)
             .viewportMode(GeckoSessionSettings.VIEWPORT_MODE_DESKTOP)
-            .suspendMediaWhenInactive(true).build()), windowId, opener)
+            .suspendMediaWhenInactive(true).build())
+    private fun createTab(windowId: Int, opener: Int = 0): Tab =
+        Tab(++nextTabId, newSession(), windowId, opener).also(::bindSession)
+    private fun ownsSession(tab: Tab, session: GeckoSession) = tab.awake && tab.session === session
+    private fun bindSession(tab: Tab) {
         val session = tab.session
         // Keep Gecko's default TextInputDelegate: it forwards composition, selection,
         // cursor and keyboard lifecycle to Android's InputMethodManager. A partial custom
         // delegate would suppress those notifications and break CJK input.
         session.mediaSessionDelegate = object : MediaSession.Delegate {
             override fun onActivated(session: GeckoSession, mediaSession: MediaSession) {
+                if (!ownsSession(tab, session)) return
                 tab.playback = mediaSession
                 if (!displayed(tab)) mediaSession.pause()
                 else restoreMedia(tab)
+
             }
-            override fun onDeactivated(session: GeckoSession, mediaSession: MediaSession) { tab.playback = null; tab.playing = false; publish() }
+            override fun onDeactivated(session: GeckoSession, mediaSession: MediaSession) {
+                if (!ownsSession(tab, session)) return
+                tab.playback = null; tab.playing = false; publish()
+            }
             override fun onPlay(session: GeckoSession, mediaSession: MediaSession) {
+                if (!ownsSession(tab, session)) return
                 tab.playing = true
-                if (!displayed(tab)) mediaSession.pause()
+                if (!displayed(tab) || tab.pauseToken > 0) mediaSession.pause()
                 publish()
+
             }
-            override fun onPause(session: GeckoSession, mediaSession: MediaSession) { tab.playing = false; publish() }
-            override fun onStop(session: GeckoSession, mediaSession: MediaSession) { tab.playing = false; publish() }
+            override fun onPause(session: GeckoSession, mediaSession: MediaSession) {
+                if (!ownsSession(tab, session)) return
+                tab.playing = false; publish()
+            }
+            override fun onStop(session: GeckoSession, mediaSession: MediaSession) {
+                if (!ownsSession(tab, session)) return
+                tab.playing = false; publish()
+            }
         }
         session.navigationDelegate = object : GeckoSession.NavigationDelegate {
             override fun onLocationChange(session: GeckoSession, url: String?,
                 perms: MutableList<GeckoSession.PermissionDelegate.ContentPermission>, hasUserGesture: Boolean) {
+                if (!ownsSession(tab, session)) return
                 if (tab.url != url) {
+                    tab.pauseToken = 0; tab.pauseReports.clear()
                     tab.sources.clear()
+                    // SPA navigation has no onPageStart. Do not leave the previous video's
+                    // handoff button enabled until the new document reports matching tracks.
+                    for (media in tab.media.values) for (i in 0 until media.length()) {
+                        media.optJSONObject(i)?.put("bilibili_ready", false)
+
+            }
                     // Single-page sites change location without onPageStart. Leaving the page
                     // that held a focused field ends its unsent-input protection; otherwise one
                     // search-box tap pins the tab forever and blocks every later popup.
                     if (!tab.editing) tab.protectedInput = false
-                }
-                tab.url = url ?: "about:blank"
+
+            }
+                if (url != null) tab.url = url
+                if (tab.url != "about:blank") tab.startPage = false
                 sendNetworkPolicy(tab)
                 // Re-evaluate the old automatic Netflix denial without clearing login data.
                 // Reset only this EME decision; the normal delegate still checks focus/origin.
@@ -389,17 +425,28 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                         perm.value == GeckoSession.PermissionDelegate.ContentPermission.VALUE_DENY &&
                         WebBrowserMediaPolicy.resetsLegacyDenial(tab.url, perm.uri, perm.thirdPartyOrigin)) {
                         runtime?.storageController?.setPermission(perm, GeckoSession.PermissionDelegate.ContentPermission.VALUE_PROMPT)
-                    }
+
+            }
                 }
                 publish()
+
             }
-            override fun onCanGoBack(session: GeckoSession, canGoBack: Boolean) { tab.back = canGoBack; publish() }
-            override fun onCanGoForward(session: GeckoSession, canGoForward: Boolean) { tab.forward = canGoForward; publish() }
+            override fun onCanGoBack(session: GeckoSession, canGoBack: Boolean) {
+                if (!ownsSession(tab, session)) return
+                tab.back = canGoBack; publish()
+            }
+            override fun onCanGoForward(session: GeckoSession, canGoForward: Boolean) {
+                if (!ownsSession(tab, session)) return
+                tab.forward = canGoForward; publish()
+            }
             override fun onLoadRequest(session: GeckoSession, request: GeckoSession.NavigationDelegate.LoadRequest): GeckoResult<AllowOrDeny> {
+                if (!ownsSession(tab, session)) return GeckoResult.fromValue(AllowOrDeny.DENY)
+
                 val newWindow = request.target == GeckoSession.NavigationDelegate.TARGET_WINDOW_NEW
                 if (!WebBrowserAddress.navigable(request.uri) || (newWindow && !request.hasUserGesture)) {
                     return GeckoResult.fromValue(AllowOrDeny.DENY)
-                }
+
+            }
                 if (active && current() === tab && WebBrowserNavigation.reusePage(tab.url, request.triggerUri,
                     request.uri, newWindow, request.hasUserGesture, request.isDirectNavigation, request.isRedirect)) {
                     val navigation = tab.navigation
@@ -408,73 +455,120 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                     ui.post {
                         if (!closed.get() && active && current() === tab && tab.navigation == navigation) {
                             hideInput(); operationError = ""
+                            beginNavigation(tab, request.uri)
                             session.load(GeckoSession.Loader().uri(request.uri).referrer(session))
                             publish()
-                        }
+
+            }
                     }
                     return GeckoResult.fromValue(AllowOrDeny.DENY)
-                }
+
+            }
+                // A same-document/hash request may never have onPageStop. Loading follows
+                // real progress callbacks; leaving the start page is immediate and sticky.
+                               if (!newWindow && request.uri != "about:blank") { tab.startPage = false; publish()
+            }
                 return GeckoResult.fromValue(AllowOrDeny.ALLOW)
+
             }
             override fun onNewSession(session: GeckoSession, uri: String): GeckoResult<GeckoSession>? {
+                if (!ownsSession(tab, session)) return null
+
                 if (current() !== tab || !WebBrowserAddress.navigable(uri) || !roomForTab(tab, true)) return null
                 hideInput(); suspendTab(tab); releaseDisplay(window(tab.window))
                 val child = createTab(tab.window, tab.id)
+                beginNavigation(child, uri)
                 tabs.add(child); window(tab.window).tab = child.id; layoutRevision++
                 bindExtension(child)
                 bindDisplay(child) // Gecko opens the returned session.
                 publish()
                 return GeckoResult.fromValue(child.session)
+
             }
 
             override fun onLoadError(session: GeckoSession, uri: String?, error: WebRequestError): GeckoResult<String>? {
-                tab.error = "page_load_failed"; publish(); return null // Never bypass certificate failures.
+                if (!ownsSession(tab, session)) return null
+
+                tab.error = "page_load_failed"; tab.loading = false; publish(); return null // Never bypass certificate failures.
+
             }
         }
         session.progressDelegate = object : GeckoSession.ProgressDelegate {
             override fun onSessionStateChange(session: GeckoSession, state: GeckoSession.SessionState) {
+                if (!ownsSession(tab, session)) return
                 if (tab.awake) tab.savedState = state
+
             }
             override fun onPageStart(session: GeckoSession, url: String) {
+                if (!ownsSession(tab, session)) return
                 if (!tab.awake) return
+                beginNavigation(tab, url)
+                tab.url = url
                 tab.protectedInput = false
                 tab.fullscreen.reset(); tab.fullscreenPort = null
-                if (tab.restoreOrigin != url) { tab.restorePosition = null; tab.restoreOrigin = "" }
+                               if (tab.restoreOrigin != url) { tab.restorePosition = null; tab.restoreOrigin = ""
+            }
                 if (tab.parkedReturn?.optString("origin") != url) tab.parkedReturn = null
                 tab.capturedFullscreenRequest = 0L
-                tab.navigation++; tab.media.clear(); tab.sources.clear(); tab.fullScreen = false; tab.editor = null; tab.editing = false
+                tab.navigation++; tab.pauseToken = 0; tab.pauseReports.clear()
+                tab.media.clear(); tab.sources.clear(); tab.fullScreen = false; tab.editor = null; tab.editing = false
                 tab.error = ""; tab.progress = 0; publish()
+
             }
             override fun onPageStop(session: GeckoSession, success: Boolean) {
+                if (!ownsSession(tab, session)) return
                 if (!tab.awake) return
+                tab.loading = false
                 tab.progress = 100
                 if (!success) tab.error = "page_load_failed"
-                if (success) { store()?.visit(tab.url, tab.title, System.currentTimeMillis()); publishLibrary() }
-                publish()
+                               if (success) { store()?.visit(tab.url, tab.title, System.currentTimeMillis()); publishLibrary()
             }
-            override fun onProgressChange(session: GeckoSession, progress: Int) { tab.progress = progress; publish() }
+                publish()
+
+            }
+            override fun onProgressChange(session: GeckoSession, progress: Int) {
+                if (!ownsSession(tab, session)) return
+                tab.progress = progress.coerceIn(0, 100); publish()
+            }
         }
         session.contentDelegate = object : GeckoSession.ContentDelegate {
-            override fun onTitleChange(session: GeckoSession, title: String?) { tab.title = title.orEmpty().take(512); publish() }
-            override fun onCloseRequest(session: GeckoSession) { if (tab.opener != 0) closeTab(tab) }
-            override fun onFullScreen(session: GeckoSession, fullScreen: Boolean) {
-                tab.fullScreen = fullScreen; updateFullscreen(tab); publish()
+            override fun onTitleChange(session: GeckoSession, title: String?) {
+                if (!ownsSession(tab, session)) return
+                tab.title = title.orEmpty().take(512); publish()
             }
-            override fun onCrash(session: GeckoSession) { stoppedTab(tab, "browser_crashed") }
-            override fun onKill(session: GeckoSession) { stoppedTab(tab, "browser_stopped") }
+            override fun onCloseRequest(session: GeckoSession) {
+                if (!ownsSession(tab, session)) return
+                if (tab.opener != 0) closeTab(tab)
+            }
+            override fun onFullScreen(session: GeckoSession, fullScreen: Boolean) {
+                if (!ownsSession(tab, session)) return
+                tab.fullScreen = fullScreen; updateFullscreen(tab); publish()
+
+            }
+            override fun onCrash(session: GeckoSession) {
+                if (!ownsSession(tab, session)) return
+                stoppedTab(tab, "browser_crashed")
+            }
+            override fun onKill(session: GeckoSession) {
+                if (!ownsSession(tab, session)) return
+                stoppedTab(tab, "browser_stopped")
+            }
         }
         session.permissionDelegate = object : GeckoSession.PermissionDelegate {
             override fun onContentPermissionRequest(session: GeckoSession,
                 perm: GeckoSession.PermissionDelegate.ContentPermission): GeckoResult<Int>? {
+                if (!ownsSession(tab, session)) return GeckoResult.fromValue(GeckoSession.PermissionDelegate.ContentPermission.VALUE_DENY)
+
                 if (perm.permission != GeckoSession.PermissionDelegate.PERMISSION_MEDIA_KEY_SYSTEM_ACCESS) return null
                 val allowed = active && current() === tab && WebBrowserMediaPolicy.permitsKeys(tab.url, perm.uri, perm.thirdPartyOrigin)
                 return GeckoResult.fromValue(if (allowed) GeckoSession.PermissionDelegate.ContentPermission.VALUE_ALLOW
                     else GeckoSession.PermissionDelegate.ContentPermission.VALUE_DENY)
+
             }
         }
         // Camera/microphone and other permissions retain Gecko's default rejection behavior.
-        return tab
-    }
+
+            }
 
     private fun bindExtension(tab: Tab) {
         val installed = extension ?: return
@@ -496,6 +590,9 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                         }
                         if (data.optString("type") != "media") return
                         val items = data.optJSONArray("videos") ?: return
+                        if (tab.pauseToken > 0 && data.optLong("pause_token") == tab.pauseToken && data.optBoolean("pause_held"))
+                            tab.pauseReports[port] = tab.pauseToken to data.optBoolean("pause_has_media")
+                        else tab.pauseReports.remove(port)
                         val safe = JSONArray()
                         val privateSources = JSONArray()
                         for (index in 0 until minOf(16, items.length())) {
@@ -511,6 +608,7 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                                 .put("id", id).put("fullscreen", item.optBoolean("fullscreen") || server && item.optBoolean("server_play"))
                                 .put("server_play", server && item.optBoolean("server_play"))
                                 .put("server_media", server)
+                                .put("bilibili_ready", bilibili != null && item.optBoolean("bilibili_ready"))
                                 .put("network_media", networkEnabled && (network.length() > 0 || !item.optBoolean("protected") && WebBrowserNetworkMedia.address(item.optString("source")) != null))
                                 .put("media_epoch", "${System.identityHashCode(port)}:$id:${item.optLong("network_epoch")}")
                                 .put("protected", item.optBoolean("protected"))
@@ -536,13 +634,14 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                         publish()
                     }
                     override fun onDisconnect(port: WebExtension.Port) {
-                        tab.ports.remove(port); tab.media.remove(port); tab.sources.remove(port)
+                        tab.ports.remove(port); tab.media.remove(port); tab.sources.remove(port); tab.pauseReports.remove(port)
                         updateFullscreen(tab); publish()
                     }
                 })
                 port.postMessage(JSONObject().put("action", if (displayed(tab)) "resume" else "suspend"))
                 port.postMessage(JSONObject().put("action", "network_policy").put("enabled", networkEnabled(tab))
                     .put("bilibili", bilibiliEnabled(tab)))
+                if (tab.pauseToken > 0) port.postMessage(JSONObject().put("action", "pause_media").put("token", tab.pauseToken))
             }
         }, NATIVE_APP)
     }
@@ -598,6 +697,13 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
         restoreMedia(tab)
     }
 
+    private fun beginNavigation(tab: Tab, url: String) {
+        if (url != "about:blank") tab.startPage = false
+        tab.loading = url != "about:blank"
+        tab.progress = 0
+        tab.error = ""
+    }
+
     fun navigate(value: String) = dispatch {
         val url = WebBrowserAddress.normalize(value)
         val tab = ensure() ?: return@dispatch
@@ -607,6 +713,7 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
         active = true
         tab.parkedReturn = null; tab.pendingUrl = null; tab.savedState = null
         tab.url = url; tab.title = ""
+        beginNavigation(tab, url)
         wakeTab(tab, restore = false)
         bindDisplay(tab)
         tab.session.setFocused(true)
@@ -696,13 +803,24 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
         tab.session.setActive(false)
     }
 
-    fun action(command: String) = dispatch {
-        // Global unload must work even while the focused display has no selected tab.
+    private val mediaRelease = WebBrowserMediaRelease()
+    /** Only the source worker waits. Never wait on Android UI from the frame thread. */
+    fun awaitMediaRelease(): Boolean = mediaRelease.await(5000)
+
+    fun action(command: String) {
         if (command == "hibernate") {
-            active = false; hideInput(); windows.forEach(::releaseDisplay)
-            tabs.forEach { parkTab(it, keepReturn = true) }
-            publish(); return@dispatch
-        }
+            val ticket = mediaRelease.begin()
+            dispatch {
+                var released = false
+                try {
+                    active = false; hideInput(); windows.forEach(::releaseDisplay)
+                    tabs.forEach { parkTab(it, keepReturn = true) }
+                    publish(); released = true
+                } finally { ticket.complete(released) }
+            }
+        } else actionWithoutRelease(command)
+    }
+    private fun actionWithoutRelease(command: String) = dispatch {
         val tab = current() ?: (if (command == "resume") ensure() else null) ?: return@dispatch
         if (command in setOf("reload", "back", "forward") && !tab.awake) {
             // Gecko closes a killed/crashed session. Reloading that closed instance is a no-op.
@@ -713,7 +831,7 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
             "back" -> if (tab.fullScreen) tab.session.exitFullScreen() else if (tab.back) tab.session.goBack()
             "forward" -> if (tab.forward) tab.session.goForward()
             "reload" -> tab.session.reload()
-            "stop" -> tab.session.stop()
+            "stop" -> { tab.session.stop(); tab.loading = false }
             "pause" -> { active = false; tabs.forEach(::suspendTab); hideInput(); windows.forEach(::releaseDisplay) }
             "resume" -> {
                 active = true
@@ -737,9 +855,10 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
         tabs.filter { it.opener == tab.id }.forEach { it.openerLinked = false }
     }
     private fun clearDocument(tab: Tab) {
+        tab.loading = false
         tab.navigation++
         tab.ports.keys.toList().forEach { runCatching { it.disconnect() } }
-        tab.ports.clear(); tab.media.clear(); tab.sources.clear()
+        tab.ports.clear(); tab.media.clear(); tab.sources.clear(); tab.pauseToken = 0; tab.pauseReports.clear()
         tab.fullscreen.reset(); tab.fullscreenPort = null; tab.capturedFullscreenRequest = 0
         tab.fullScreen = false; tab.playback = null; tab.playing = false
         tab.restorePosition = null; tab.restoreThroughScript = false; tab.restoreOrigin = ""
@@ -792,7 +911,11 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
     }
     private fun wakeTab(tab: Tab, restore: Boolean = true) {
         if (tab.awake) return
-        tab.session.open(runtime!!); tab.awake = true; tab.error = ""; operationError = ""; bindExtension(tab)
+        // Retired sessions can still have JNI/EventDispatcher work queued in Gecko.
+        // Reopening that same Java/native bridge lets old work race the replacement.
+        // Keep the tab/state/profile, but give every wake its own session and delegates.
+        tab.session = newSession(); tab.awake = true; bindSession(tab)
+        tab.session.open(runtime!!); tab.error = ""; operationError = ""; bindExtension(tab)
         if (restore) {
             val pending = tab.pendingUrl
             if (pending != null) {
@@ -895,12 +1018,28 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                 if (!tab.awake || window(id).tab != tab.id || tab.navigation != request.optLong("navigation", -1) ||
                     tab.url != request.optString("origin")) return@dispatch
                 if (request.optString("action") == "pause_tab") {
-                    tab.pauseToken = request.optLong("pause_token")
+                    val token = request.optLong("pause_token")
+                    if (token <= 0 || token <= tab.pauseToken) return@dispatch
+                    tab.pauseToken = token; tab.pauseReports.clear()
+                    val originals = tab.ports.filterValues { it == tab.navigation }.keys.associateWith { port ->
+                        val list = tab.media[port] ?: JSONArray()
+                        (0 until list.length()).map { list.getJSONObject(it) }
+                    }
+                    tab.pauseHasDom = originals.values.flatten().any { it.optString("id").toLongOrNull() != null }
+                    tab.pauseWasPlaying = tab.playing || originals.values.flatten().any { it.optBoolean("playing") }
                     tab.playback?.pause()
-                    tab.ports.keys.forEach { runCatching { it.postMessage(JSONObject().put("action", "pause_media")) } }
-                } else if (tab.pauseToken == request.optLong("pause_token")) {
-                    tab.pauseToken = 0
-                    if (request.optBoolean("was_playing")) tab.playback?.play()
+                    originals.forEach { (port, items) -> runCatching { port.postMessage(JSONObject().put("action", "pause_media").put("token", token)
+                        .put("playing_ids", JSONArray(items.filter { it.optBoolean("playing") }.map { it.optString("id") }))) } }
+                } else if (tab.pauseToken > 0 && tab.pauseToken == request.optLong("pause_token")) {
+                    // DOM videos restore their own saved state. MediaSession.play can arrive
+                    // after a subsequent pause; use it only for players without a DOM video.
+                    val dom = tab.pauseHasDom || tab.pauseReports.values.any { it.first == tab.pauseToken && it.second }
+                    val restore = request.optBoolean("restore_paused") || request.optBoolean("was_playing")
+                    tab.ports.keys.forEach { runCatching { it.postMessage(JSONObject().put("action", "release_pause_media")
+                        .put("token", tab.pauseToken).put("play", restore)) } }
+                    tab.pauseToken = 0; tab.pauseReports.clear()
+                    if (!dom && restore && tab.pauseWasPlaying) tab.playback?.play()
+                    tab.pauseWasPlaying = false; tab.pauseHasDom = false
                 }
             }
             "focus" -> focusWindow(id)
@@ -972,7 +1111,8 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
         var tab: Tab? = null
         init { isFocusable = true; isFocusableInTouchMode = true; importantForAutofill = IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS }
         override fun onCheckIsTextEditor(): Boolean = true
-        override fun getHandler(): Handler = tab?.session?.textInput?.getHandler(super.getHandler()) ?: super.getHandler()
+        // All supported Android versions use View's nullable handler (GeckoView's
+        // Android 24+ path), including late IME callbacks after detachment.
         override fun onCreateInputConnection(info: EditorInfo): InputConnection? {
             val owner = tab ?: return null
             val navigation = owner.navigation
@@ -1088,7 +1228,14 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
             .put("url", tab?.url ?: "about:blank").put("title", tab?.title.orEmpty())
             .put("bookmark_url", tab?.url?.let(WebBrowserAddress::recordable).orEmpty())
             .put("progress", tab?.progress ?: 0).put("back", tab?.back == true || tab?.fullScreen == true).put("forward", tab?.forward == true)
+            .put("loading", tab?.loading == true)
+            .put("start_page", tab != null && tab.startPage && !tab.loading && tab.url == "about:blank" && tab.error.isEmpty())
             .put("pause_token", tab?.pauseToken ?: 0)
+            .put("pause_confirmed", tab != null && tab.pauseToken > 0 &&
+                tab.ports.filterValues { it == tab.navigation }.keys.let { ports ->
+                    ports.isNotEmpty() && ports.all { tab.pauseReports[it]?.first == tab.pauseToken } &&
+                        (ports.any { tab.pauseReports[it]?.second == true } || !tab.playing)
+                })
             .put("playing", tab != null && (tab.playing || tab.media.values.any { list -> (0 until list.length()).any { i -> list.getJSONObject(i).optBoolean("playing") } }))
             .put("error", tab?.error.orEmpty()).put("editing", tab?.editing == true).put("videos", videos).put("fullscreen", tab?.fullScreen == true)
     }

@@ -55,6 +55,7 @@ func _supports_half_layouts() -> bool:
 	return false
 
 const PHOTO_NEXT := 401
+const PHOTO_ANIMATION := 433
 const PHOTO_INSPECT := 402
 const PHOTO_RESET := 403
 const PHOTO_MINUS := 404
@@ -66,7 +67,7 @@ const PHOTO_CURVE := 409
 const PHOTO_PAGE_BACK := 410
 const PHOTO_PAGE_NEXT := 411
 const PHOTO_BACKGROUND := 412
-const PHOTO_GLOBAL_BACKGROUND := 433
+const PHOTO_GLOBAL_BACKGROUND := 434
 const PHOTO_ADJUST := 413
 const PHOTO_ADJUST_BACK := 414
 const PHOTO_LAYOUT := 415
@@ -84,8 +85,8 @@ const PHOTO_SCENERY_LIGHT := 986021
 const PHOTO_SCENERY_IMPORT := 986022
 const PHOTO_SCENERY_BACK := 986023
 const PHOTO_MAGAZINE_ORDER := 986050
-const SCENERIES := ["belfast", "morning", "dark", "passthrough", "custom", "global_custom"]
-const SCENERY_NAMES := ["Belfast sunset", "Morning sky", "Dark background", "Passthrough", "Custom panorama", "Global custom panorama"]
+const SCENERIES := ["belfast", "morning", "night", "dark", "passthrough", "custom", "global_custom"]
+const SCENERY_NAMES := ["Belfast sunset", "Morning sky", "Milky Way panorama", "Dark background", "Passthrough", "Custom panorama", "Global custom panorama"]
 const LAYOUT_ORDER := [0, 4, 1, 2, 3]
 const LAYOUT_ICONS := ["image", "photo_sides", "photo_wall", "memory", "magazine"]
 var _scenery_open := false
@@ -101,6 +102,9 @@ var _gallery_start := 0
 
 func _depth_maximum() -> float:
 	return DepthStrength.PHOTO_MAX
+
+func _depth_boost_available() -> bool:
+	return false
 
 func _depth_recommended() -> float:
 	return -1.0
@@ -276,7 +280,11 @@ func _draw_bar() -> void:
 	var start := maxi(0, int(_state.get("index", -1)) + 1)
 	var pages := int(_state.get("magazine_pages", 1))
 	var counter := "%d–%d / %d" % [start, start + pages - 1, int(_state.get("count", 0))] if pages > 1 and start > 0 else "%d / %d" % [start, int(_state.get("count", 0))]
-	_label(counter, Vector3(0, 0.025, 0.004), 16 if pages > 1 else 18)
+	if _state.get("animated", false):
+		var play: bool = _state.get("animation_paused",false) or _state.get("animation_ended",false) or _state.get("animation_failed",false)
+		_glyph(PHOTO_ANIMATION, "play" if play else "pause", Vector2(0,0.025),0.075,has and not swapping,I18n.t("Play" if play else "Pause"))
+		_label(counter, Vector3(0,-0.028,0.004),13)
+	else: _label(counter, Vector3(0, 0.025, 0.004), 16 if pages > 1 else 18)
 	_glyph(PHOTO_NEXT, "next", Vector2(0.14, 0.025), 0.085, _state.get("can_next", false) and not swapping, I18n.t("Next image"))
 	_glyph(PHOTO_PORTRAIT, "alpha", Vector2(0.23, 0.025), 0.075, portrait or _state.get("portrait_available",false), I18n.t("Exit portrait" if portrait else "Portrait passthrough"))
 	if int(_state.get("geometry", 0)) == 0:
@@ -298,6 +306,7 @@ func _draw_bar() -> void:
 		_round(PHOTO_SAVE,"check" if saving=="saved" else "download",Vector2(_bar_action_x(PHOTO_SAVE),0.215),0.08,saving not in ["saving","saved"],saving=="saved",I18n.t("Saved to Pictures" if saving=="saved" else "Save to Pictures"))
 	_draw_favorite(Vector2(_bar_action_x(FAVORITE), 0.215))
 	_round(PHOTO_SCENERY, "panorama", Vector2(_bar_action_x(PHOTO_SCENERY), 0.215), 0.08, true, _scenery_open, I18n.t("Photo background"))
+	_tips[PHOTO_SCENERY] = I18n.t("Used for all photos. Saved separately from the global background.")
 	if not music_quick: music_quick = preload("res://scripts/music_quick_controls.gd").new(self, func(): action_requested.emit("music_toggle"))
 	music_quick.draw(PHOTO_AUDIO, Vector2(_bar_action_x(PHOTO_AUDIO), 0.215), _state)
 	var layout := clampi(int(_state.get("layout", 0)), 0, 4)
@@ -354,24 +363,26 @@ func _draw_layouts() -> void:
 			_icon("check", Vector3(0.105, 0.040, 0.006), 0.028, ACCENT, _buttons.back().node)
 
 func _draw_scenery() -> void:
-	var choices := [0, 1, 2, 3]
-	if _state.get("photo_background_custom", false): choices.append(4)
-	if _state.get("photo_global_custom", false): choices.append(5)
+	var choices := [0, 1, 2, 3, 4]
+	if _state.get("photo_background_custom", false): choices.append(5)
+	if _state.get("photo_global_custom", false): choices.append(6)
 	var rows := ceili(choices.size() / 2.0)
-	var bottom := 0.14 - (rows - 1) * 0.13
-	var sky: bool = _state.get("photo_background", "belfast") in ["belfast", "morning", "custom"]
+	var top := 0.14 + maxi(rows - 3, 0) * 0.13
+	var bottom := top - (rows - 1) * 0.13
+	var sky: bool = _state.get("photo_background", "belfast") in ["belfast", "morning", "night", "custom"]
 	if sky: bottom -= 0.14
 	var can_import: bool = _state.get("can_background", false)
 	if can_import: bottom -= 0.12
-	_set_backdrop(Vector2(1.16, 0.37 - bottom + 0.15), Vector2(0, (0.37 + bottom - 0.15) * 0.5))
-	_button(PHOTO_SCENERY_BACK, "", Vector2(-0.49, 0.29), Vector2(0.08, 0.065), true, "up")
-	_button(CLOSE, "", Vector2(0.49, 0.29), Vector2(0.08, 0.065), true, "close")
-	_label(I18n.t("Photo background"), Vector3(0, 0.29, 0.004), TEXT_PAGE_TITLE).font = ui_bold_font()
+	_set_backdrop(Vector2(1.16, top + 0.23 - bottom + 0.15), Vector2(0, (top + 0.23 + bottom - 0.15) * 0.5))
+	_button(PHOTO_SCENERY_BACK, "", Vector2(-0.49, top + 0.15), Vector2(0.08, 0.065), true, "up")
+	_button(CLOSE, "", Vector2(0.49, top + 0.15), Vector2(0.08, 0.065), true, "close")
+	_label(I18n.t("Photo background"), Vector3(0, top + 0.15, 0.004), TEXT_PAGE_TITLE).font = ui_bold_font()
 	for slot in choices.size():
 		var i: int = choices[slot]
-		_button(PHOTO_SCENERY_BASE + i, I18n.t(SCENERY_NAMES[i]), Vector2(-0.26 + (slot % 2) * 0.52, 0.14 - (slot / 2) * 0.13), Vector2(0.49, 0.105), i != 5 or not _state.get("photo_background_loading", false))
+		_button(PHOTO_SCENERY_BASE + i, I18n.t(SCENERY_NAMES[i]), Vector2(-0.26 + (slot % 2) * 0.52, top - (slot / 2) * 0.13), Vector2(0.49, 0.105), i != 6 or not _state.get("photo_background_loading", false))
 		if _state.get("photo_background", "belfast") == SCENERIES[i]: _buttons.back().base_color = SELECTED
-	var controls_y := 0.14 - (rows - 1) * 0.13 - 0.14
+		if i == 6: _tips[PHOTO_SCENERY_BASE + i] = I18n.t("Copy the global custom panorama for photo viewing. Later changes stay separate.")
+	var controls_y := top - (rows - 1) * 0.13 - 0.14
 	if sky:
 		_button(PHOTO_SCENERY_YAW, I18n.t("Direction") + "  %d°" % int(_state.get("photo_background_yaw", 0)), Vector2(-0.26, controls_y), Vector2(0.49, 0.075))
 		_button(PHOTO_SCENERY_LIGHT, I18n.t("Brightness") + "  %d%%" % roundi(float(_state.get("photo_background_brightness", 1.0)) * 100), Vector2(0.26, controls_y), Vector2(0.49, 0.075))
@@ -458,15 +469,19 @@ func _refresh_adjustments() -> void:
 		row.knob.position.x = 0.03 + fraction * 0.6
 	_refresh_slider_resets()
 
-func _photo_background_button(target: int, caption: String, centre: Vector2, size: Vector2) -> void:
-	var applied: bool = _state.get("photo_background_applied", false)
-	var busy: bool = _state.get("photo_background_saving", false)
+func _photo_background_button(target: int, caption: String, centre: Vector2, size: Vector2, global_background: bool = false) -> void:
+	var prefix := "photo_global_background" if global_background else "photo_background"
+	var applied: bool = _state.get(prefix + "_applied", false)
+	var busy: bool = _state.get(prefix + "_saving", false)
 	_button(target, I18n.t("Background set" if applied else ("Saving…" if busy else caption)), centre, size,
 		_state.get("can_background", false) and not applied and not busy, "check" if applied else "image")
 	if applied: _buttons.back().base_color = SELECTED
+	_buttons.back()["hover_disabled"] = true
+	_tips[target] = I18n.t("Use this panorama for videos and other app scenes. Keeps this photo open and leaves the photo background unchanged. Change it in Settings → Background." if global_background else "Use this panorama for all photos without changing the global background. Change it from the photo toolbar → Photo background.")
+	if not _state.get("can_background", false): _tips[target] += "\n" + I18n.t("Open a supported panorama to use it as a background.")
 
 func _draw_panel() -> void:
-	_set_backdrop(Vector2(1.16, 0.71), Vector2(0, -0.08))
+	_set_backdrop(Vector2(1.16, 0.80), Vector2(0, -0.125))
 	_button(10, "", Vector2(-0.48, 0.2), Vector2(0.085, 0.065), true, "up")
 	_label(I18n.t("Images"), Vector3(0, 0.2, 0.004), 21)
 	_button(PHOTO_STRENGTH, I18n.t("3D depth") + "  " + _depth_caption(), Vector2(-0.26, 0.035), Vector2(0.49, 0.105), _can_depth(), "depth")
@@ -474,12 +489,16 @@ func _draw_panel() -> void:
 	var curve := [0.0, 0.35, 0.7, 1.0].find(float(_state.get("screen_curve", 0)))
 	_button(PHOTO_CURVE, I18n.t("Screen curve") + "  " + I18n.t(names[maxi(0, curve)]), Vector2(0.26, 0.035), Vector2(0.49, 0.105), int(_state.get("geometry", 0)) == 0 and not _state.get("portrait_requested",false), "screen")
 	_photo_background_button(PHOTO_BACKGROUND, "Set photo background", Vector2(-0.26, -0.10), Vector2(0.49, 0.08))
-	_button(PHOTO_GLOBAL_BACKGROUND, I18n.t("Set global background"), Vector2(0.26, -0.10), Vector2(0.49, 0.08), _state.get("can_background", false), "image")
-	_button(PHOTO_COMIC, I18n.t("Comic reading") + "  " + I18n.t("On" if _state.get("comic_enabled", false) else "Off"), Vector2(-0.26, -0.235), Vector2(0.49, 0.08), _state.get("comic_supported", false), "comic_voice")
-	_button(PHOTO_COMIC_VOICE, I18n.t("Voice"), Vector2(0.26, -0.235), Vector2(0.49, 0.08), _state.get("comic_supported", false), "comic_voice")
-	_status = _label(_photo_status(), Vector3(0, -0.35, 0.004), 15)
+	_photo_background_button(PHOTO_GLOBAL_BACKGROUND, "Set global background", Vector2(0.26, -0.10), Vector2(0.49, 0.08), true)
+	_label(I18n.t("All photos"), Vector3(-0.26, -0.159, 0.004), TEXT_AUX).modulate = MUTED
+	_label(I18n.t("Videos & other scenes"), Vector3(0.26, -0.159, 0.004), TEXT_AUX).modulate = MUTED
+	_keep_background_row(-0.20)
+	_button(PHOTO_COMIC, I18n.t("Comic reading") + "  " + I18n.t("On" if _state.get("comic_enabled", false) else "Off"), Vector2(-0.26, -0.32), Vector2(0.49, 0.08), _state.get("comic_supported", false), "comic_voice")
+	_button(PHOTO_COMIC_VOICE, I18n.t("Voice"), Vector2(0.26, -0.32), Vector2(0.49, 0.08), _state.get("comic_supported", false), "comic_voice")
+	_status = _label(_photo_status(), Vector3(0, -0.435, 0.004), 15)
 	_status.modulate = MUTED
-	_place_device_status(Vector2(0, -0.48))
+	_place_device_status(Vector2(0, -0.565))
+	choices.finish()
 
 func _draw_gallery() -> void:
 	var entries: Array = queue_provider.call() if queue_provider.is_valid() else []
@@ -648,7 +667,7 @@ func _activate(target: int) -> void:
 		favorite_requested.emit(); refresh_values(); return
 	if _activate_footer(target): return
 	if _activate_slider_reset(target): return
-	if _activate_depth_reset(target): return
+	if _activate_depth_off(target): return
 	if target == PHOTO_AUDIO:
 		action_requested.emit("music_open"); return
 	if target > PHOTO_WALL_ROWS and target <= PHOTO_WALL_ROWS + 3:
@@ -716,6 +735,7 @@ func _activate(target: int) -> void:
 		10, 11: section = target - 10
 		MODE: _mode_open = not _mode_open; _gallery_open = false
 		PHOTO_PREVIOUS: action_requested.emit("photo_previous")
+		PHOTO_ANIMATION: action_requested.emit("photo_animation")
 		PHOTO_NEXT: action_requested.emit("photo_next")
 		PHOTO_INSPECT: action_requested.emit("photo_inspect")
 		PHOTO_RESET: action_requested.emit("photo_fit")
@@ -749,6 +769,10 @@ func _fitted_photo_status() -> String:
 	return _photo_status()
 
 func _photo_status() -> String:
+	if section == 1 and not _scenery_open and _adjustment.is_empty():
+		if _state.get("photo_global_background_saving", false): return I18n.t("Saving global background…")
+		if not str(_state.get("photo_global_background_error", "")).is_empty(): return I18n.t("Global background unavailable")
+		if _state.get("photo_global_background_applied", false): return I18n.t("Global background set. Change it in Settings → Background.")
 	if _adjustment == "comic_translation" or (_adjustment != "comic_voice" and _state.get("translation_enabled", false)):
 		return _translation_status()
 	if _adjustment == "comic_voice" or _state.get("comic_enabled", false):
@@ -758,7 +782,7 @@ func _photo_status() -> String:
 	if _scenery_open or section == 1:
 		if _state.get("photo_background_loading", false): return I18n.t("Loading…")
 		if not str(_state.get("photo_background_error", "")).is_empty(): return I18n.t(str(_state.photo_background_error))
-		if _scenery_open: return ""
+		if _scenery_open: return "ESO/S. Brunier · CC BY 4.0" if _state.get("photo_background", "belfast") == "night" else ""
 	if _state.get("comic_enabled", false):
 		if _state.get("comic_state") == "ready" and int(_state.get("comic_ready_audio", 0)) == 0: return I18n.t("Preparing speech…")
 		if _state.get("comic_state") == "ready": return I18n.t("Readable dialogues: %d") % int(_state.get("comic_readable", 0))
@@ -782,6 +806,8 @@ func _photo_status() -> String:
 	if not str(_state.get("error", "")).is_empty(): return I18n.t(str(_state.error))
 	if not str(_state.get("depth_error", "")).is_empty(): return I18n.t(str(_state.depth_error))
 	if not str(_state.get("panorama_detail_error", "")).is_empty(): return I18n.t(str(_state.panorama_detail_error))
+	if _state.get("animation_failed",false): return I18n.t("Animation unavailable")
+	if _state.get("raw_preview",false): return I18n.t("Preview")+" · "+str(_state.get("source_size",""))
 	if _state.get("native_stereo",false): return I18n.t("Static 3D")
 	if _state.get("depth_requested", false): return I18n.t("3D on" if _state.get("depth_enabled", false) else "Preparing 3D")
 	return str(_state.get("source_size", ""))

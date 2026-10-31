@@ -105,7 +105,7 @@ func matchesSearch(obj model.Obj, query, kind string) bool {
 		return kind == "all"
 	}
 	ext := strings.ToLower(path.Ext(obj.GetName()))
-	image := strings.Contains("|.jpg|.jpeg|.png|.webp|.heic|.heif|", "|"+ext+"|")
+	image := strings.Contains("|.jpg|.jpeg|.png|.webp|.heic|.heif|.tif|.tiff|.hdr|.rgbe|.exr|.avif|.avifs|.apng|.gif|.dng|.cr2|.cr3|.nef|.nrw|.arw|.raf|.rw2|.orf|.pef|.srw|", "|"+ext+"|")
 	video := strings.Contains("|.mp4|.mkv|.webm|.mov|.m4v|.avi|.ts|.m2ts|.mpg|.mpeg|.wmv|.flv|", "|"+ext+"|")
 	document := ext == ".pdf"
 	return kind == "all" && (image || video || document) || kind == "image" && image || kind == "video" && video

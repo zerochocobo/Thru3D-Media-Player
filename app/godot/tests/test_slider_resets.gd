@@ -119,11 +119,12 @@ func run() -> void:
 		check(state[key] == {"subtitle_vertical_position": 0.0, "subtitle_distance": 5.0, "subtitle_size": 100.0}[key] and settings_events.size() == saved_count + 1, "Subtitle reset changes once on release")
 	var depth_state := {"has_video": true, "geometry": 0, "depth_requested": true, "depth_strength": 1.8}
 	menu.state_provider = func(): return depth_state.duplicate(true)
-	menu.depth_strength_requested.connect(func(value): depth_state.depth_strength = value)
+	menu.action_requested.connect(func(action):
+		if action == "depth": depth_state.depth_requested = false)
 	menu._adjustment = ""; menu.section = 0; menu._depth_open = true; menu.refresh()
-	click(menu, menu._buttons.filter(func(button): return button.target == Menu.DEPTH_RESET)[0])
-	check(depth_state.depth_strength == .5 and depth_state.depth_requested and menu._depth_open, "Video strength reset restores 50 percent without disabling conversion")
-	check(not menu._buttons.filter(func(button): return button.target == Menu.DEPTH_RESET)[0].enabled, "Video reset disables at its own 50 percent default")
+	click(menu, menu._buttons.filter(func(button): return button.target == Menu.DEPTH_OFF)[0])
+	check(depth_state.depth_strength == 1.8 and not depth_state.depth_requested and not menu._depth_open, "Video X disables conversion, closes the rail and preserves its 180 percent preference")
+	check(menu._buttons.all(func(button): return button.target != Menu.DEPTH_OFF), "Closed video rail has no lingering X target")
 	menu.free()
 	var photo_state := {"has_image": true, "count": 12, "layout": 0, "gallery_focus": -1,
 		"screen_distance": 8.0, "screen_scale": 4.0, "inspect_magnification": 7.0,
@@ -143,12 +144,13 @@ func run() -> void:
 		check(photo_state.gallery_scale == 1.0, "Gallery size reset preserves distance")
 	photo_state.layout = 0; photo_state.depth_available = true; photo_state.depth_requested = true; photo_state.depth_strength = 1.8
 	photo._adjustment = ""; photo._depth_open = true
-	photo.depth_strength_requested.connect(func(value): photo_state.depth_strength = value)
+	photo.action_requested.connect(func(action):
+		if action == "depth": photo_state.depth_requested = false)
 	photo.refresh()
-	click(photo, photo._buttons.filter(func(button): return button.target == Menu.DEPTH_RESET)[0])
-	check(photo_state.depth_strength == 1.0 and photo_state.depth_requested and photo._depth_open, "Strength reset restores 100 percent without closing the popup or changing the 3D switch")
+	click(photo, photo._buttons.filter(func(button): return button.target == Menu.DEPTH_OFF)[0])
+	check(photo_state.depth_strength == 1.8 and not photo_state.depth_requested and not photo._depth_open, "Photo X disables conversion and closes the rail without changing strength")
 	photo_state.depth_requested = false; photo.refresh_values()
-	check(not photo._buttons.filter(func(button): return button.target == Menu.DEPTH_RESET)[0].enabled, "Reset cannot enable a disabled 3D effect")
+	check(photo._buttons.all(func(button): return button.target != Menu.DEPTH_OFF), "Closed photo rail has no lingering X target")
 	photo.free()
 	print("Slider reset checks=%d failures=%d" % [checks, failures.size()])
 	for failure in failures: push_error(failure)

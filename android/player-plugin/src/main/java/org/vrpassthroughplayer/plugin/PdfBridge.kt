@@ -11,7 +11,9 @@ import java.io.File
 import kotlin.math.roundToInt
 
 /** Android's platform renderer, with bounded pixels and disposable per-request output. */
-internal class PdfBridge(private val context: () -> Context?, emit: (Int, String) -> Unit) : Closeable {
+internal class PdfBridge(private val context: () -> Context?,
+    private val smbSource: (String, CloudCancellation) -> PdfNetworkSource,
+    emit: (Int, String) -> Unit) : Closeable {
     private var prepared = false // Only accessed by the document render worker.
     private var networkPrepared = false
     private val outputs = mutableSetOf<File>() // Guarded by the shared cache lock until copied.
@@ -19,7 +21,7 @@ internal class PdfBridge(private val context: () -> Context?, emit: (Int, String
     private val documents = PdfDocuments({ source, cancellation, hint ->
         val app = context() ?: error("PDF_UNAVAILABLE")
         val uri = Uri.parse(source)
-        val input = if (uri.scheme == "cloud") networkInput(app, source, cancellation, hint) else null
+        val input = if (uri.scheme in setOf("cloud", "smb")) networkInput(app, source, cancellation, hint) else null
         val proxy = input?.first
         val descriptor = proxy?.descriptor ?: if (uri.scheme == "file")
                 ParcelFileDescriptor.open(File(uri.path ?: error("PDF_UNAVAILABLE")), ParcelFileDescriptor.MODE_READ_ONLY)
@@ -85,8 +87,10 @@ internal class PdfBridge(private val context: () -> Context?, emit: (Int, String
     }, emit)
 
     private fun networkInput(app: Context, uri: String, cancellation: CloudCancellation, hint: org.json.JSONObject): Pair<PdfProxyInput, org.json.JSONObject> {
-        CloudLibrary.start(app)
-        val source = CloudLibrary.pdfSource(uri, cancellation, hint)
+        val source = if (uri.startsWith("smb://")) smbSource(uri, cancellation) else {
+            CloudLibrary.start(app)
+            CloudLibrary.pdfSource(uri, cancellation, hint)
+        }
         var file: File? = null
         try {
             require(source.source.size > 0) { "PDF_UNAVAILABLE" }

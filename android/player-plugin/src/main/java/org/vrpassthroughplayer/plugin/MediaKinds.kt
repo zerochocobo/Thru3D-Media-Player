@@ -2,7 +2,7 @@ package org.vrpassthroughplayer.plugin
 
 /** File type is independent from projection and stereo packing. */
 internal object MediaKinds {
-    val images = setOf("jpg", "jpeg", "png", "webp", "heic", "heif", "tif", "tiff", "hdr", "rgbe", "exr")
+    val images = setOf("jpg", "jpeg", "png", "webp", "heic", "heif", "tif", "tiff", "hdr", "rgbe", "exr", "avif", "avifs", "apng", "gif", "dng", "cr2", "cr3", "nef", "nrw", "arw", "raf", "rw2", "orf", "pef", "srw")
     val audio = BackgroundAudioFiles.extensions
     fun audio(name: String) = name.substringBefore('?').substringBefore('#').substringAfterLast('.', "").lowercase() in audio
     fun image(name: String) = name.substringBefore('?').substringBefore('#').substringAfterLast('.', "").lowercase() in images

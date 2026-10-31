@@ -4,6 +4,17 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class PanoramaWebPolicyTest {
+    @Test fun newImageOriginalsKeepMainFrameAndMimeBoundaries() {
+        for(ext in listOf("avif","avifs","apng","gif","dng","cr2","cr3","nef","nrw","arw","raf","rw2","orf","pef","srw")) {
+            val url="https://cdn.example.org/picture.$ext?token=1"
+            assertTrue(PanoramaWebPolicy.imageNavigation(url,true,"GET"))
+            assertFalse(PanoramaWebPolicy.imageNavigation(url,false,"GET"))
+        }
+        for(type in listOf("image/avif","image/apng","image/gif","image/x-camera-raw","image/x-canon-cr3"))
+            assertTrue(PanoramaWebPolicy.mime("$type; charset=binary") in PanoramaWebPolicy.imageTypes)
+        for(header in listOf("GIF89a000000","0000ftypavif","0000ftypavis","0000ftypcrx ","FUJIFILM0000"))
+            assertTrue(PanoramaWebPolicy.imageHeader(header.toByteArray()))
+    }
     @Test fun tiffOriginalsAndCommonsImageOverlaysAreRecognizedWithoutTreatingDescriptionPagesAsImages() {
         assertTrue(PanoramaWebPolicy.imageNavigation("https://storage.noirlab.edu/media/archives/images/original/sky.tif", true, "GET"))
         assertTrue(PanoramaWebPolicy.imageNavigation("https://cdn.example.org/sky.TIFF?download=1", true, "GET"))

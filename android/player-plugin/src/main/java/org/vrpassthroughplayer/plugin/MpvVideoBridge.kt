@@ -44,6 +44,7 @@ internal class MpvVideoBridge(
     private val prepareListeningSource: (String) -> Unit = {},
     private val retainListeningAudio: (String, LongArray) -> Unit = { _, _ -> },
     private val listeningInput: (String) -> ListeningInput? = { null },
+    private val awaitBrowserRelease: () -> Boolean = { true },
 ) {
     private val worker = RvmWorkers.video
     private val subtitleWorker = Executors.newSingleThreadExecutor { Thread(it, "QuestSubtitleFiles") }
@@ -181,6 +182,7 @@ internal class MpvVideoBridge(
         @Volatile var pipelineAudioDelay = 0.0
         @Volatile var audioMuted = false
         @Volatile var narrationPath = ""
+        @Volatile var listeningPrimaryAudio = ""
         @Volatile var listeningOutputReady = false
         @Volatile var listening: ListeningController? = null
         @Volatile var discInput = false
@@ -318,7 +320,7 @@ internal class MpvVideoBridge(
         // Host-copy model inputs: taken per capture, back when the lease retires. (Keyed by colour texture,
         // they grew by a pair per frame where each capture has a new texture, the layer path without
         // zero-copy: 256 MB of Java heap gone in seconds.)
-        val buffers = ArrayDeque<Pair<ByteBuffer, ByteBuffer>>()
+        val buffers by lazy { MpvInputBuffers(dims[0], dims[1]) }
         val scoutBuffers = ArrayList<Pair<ByteBuffer, ByteBuffer>>() // a small ring: scout inputs are read at once
         val alphaUploads = HashMap<Long, Alpha>()
         val pairs = HashMap<Long, JSONObject>()
@@ -424,6 +426,12 @@ internal class MpvVideoBridge(
             try {
                 host.markStartup("worker_started_ms")
                 if (host.closing || stopped) return@post
+                if (!awaitBrowserRelease()) {
+                    fail(session, "BROWSER_MEDIA_RELEASE_TIMEOUT", IllegalStateException("Browser session release did not finish"))
+                    return@post
+                }
+                if (host.closing || stopped) return@post
+                host.markStartup("browser_release_ms")
                 val app = context() ?: error("Activity unavailable")
                 val tlsCaFile = MpvTlsTrust.prepare(app)
                 // Keep Host.uri (history, modes and companions) on the shortcut, resolving only the input.
@@ -482,6 +490,7 @@ internal class MpvVideoBridge(
                 // Extra audio is optional: a failed lookup plays the video without it.
                 val deferCloud = Uri.parse(uri).scheme == "cloud"
                 val extra = if (audio && !deferCloud) sidecarAudio(uri) else emptyList()
+                host.listeningPrimaryAudio = extra.singleOrNull()?.takeIf { it.requiredPrimary }?.location.orEmpty()
                 host.markStartup("audio_sidecars_resolved_ms")
                 host.sidecars = extra.mapNotNull { it.descriptor }
                 host.audioLeases = extra.filter { it.location.startsWith("http://127.0.0.1:") }.map { it.location }
@@ -731,7 +740,7 @@ internal class MpvVideoBridge(
         if(host.listening==null&&!requested.enabled)return true
         val controller=synchronized(host){host.listening ?: ListeningController(context,{
             if(host.closing||stopped||host.handle<=0)null else ListeningController.Source(host.handle,host.narrationPath,host.narrationCa,
-                foreground&&host.listeningOutputReady&&!host.cloneHolding&&!globalVoiceHolding,host.discInput,host.discPlaylist,host.userAudioDelay,host.uri.startsWith("cloud://"))
+                foreground&&host.listeningOutputReady&&!host.cloneHolding&&!globalVoiceHolding,host.discInput,host.discPlaylist,host.userAudioDelay,host.uri.startsWith("cloud://"),host.listeningPrimaryAudio)
         },{refreshPlayback()},prepareListeningSource,networkFailure,retainListeningAudio,listeningInput).also {host.listening=it}}
         return controller.configure(json)
     }
@@ -746,7 +755,8 @@ internal class MpvVideoBridge(
         val selected=details.optString("audio_track_id").toIntOrNull() ?: -1
         val tracks=details.optJSONArray("audio_tracks") ?: JSONArray()
         val track=(0 until tracks.length()).map{tracks.getJSONObject(it)}.firstOrNull{it.optInt("id")==selected}
-        return request.put("track",track?.optInt("stream_index",-1) ?: -1).put("playlist",host.discPlaylist)
+        val cacheTrack=track?.let{ListeningPolicy.audioInput(host.narrationPath,it,host.listeningPrimaryAudio,Double.NaN)?.cacheTrack} ?: -1
+        return request.put("track",cacheTrack).put("playlist",host.discPlaylist)
     }
     fun listeningTask(id: Int,request: JSONObject): ListeningTaskSpec? = runCatching {
         val session=sessions[id] ?: return null
@@ -1091,10 +1101,12 @@ internal class MpvVideoBridge(
         }
         return true
     }
-    fun subtitleBitmap(id: Int, version: Long): ByteArray {
+    fun subtitleBitmap(id: Int, version: Long): ByteArray = subtitleBitmap(id, version, 0xffffff)
+    fun subtitleBitmap(id: Int, version: Long, rgb: Int): ByteArray {
         val session = sessions[id] ?: return ByteArray(0)
         if (!active(session) || session.host.handle <= 0 || version <= 0) return ByteArray(0)
-        val pixels = MpvSourceNative.subtitleBitmap(session.host.handle, version)
+        val pixels = if (rgb == 0xffffff) MpvSourceNative.subtitleBitmap(session.host.handle, version)
+            else MpvSourceNative.subtitleBitmapTinted(session.host.handle, version, rgb)
         return if (active(session)) pixels else ByteArray(0)
     }
     private fun refreshPlayback(explicit: Boolean = false) {
@@ -1513,9 +1525,9 @@ internal class MpvVideoBridge(
                 if (zoomed) { RenderBridgeNative.restagePortraitFull(session.renderer, copying.second); return }
             }
         }
-        // Decoder images get a new texture each frame and always use zero-copy: no CPU planes.
-        val buffers = if (pair.has("hardware_buffer")) NO_PLANES else session.buffers.removeFirstOrNull()
-            ?: (ByteBuffer.allocateDirect(bytes).order(ByteOrder.LITTLE_ENDIAN) to ByteBuffer.allocateDirect(bytes).order(ByteOrder.LITTLE_ENDIAN))
+        // Decoder HardwareBuffers can still need host readback when RVM's GPU sharing self-test fails.
+        // Use the same transport decision as submitShared/readInputs below, regardless of color source.
+        val buffers = session.buffers.acquire(sharedAlpha = session.alpha && session.zeroCopy)
         pair.put("color_texture_id", texture).put("consumer_copy_fence_ready", true)
         val image = RenderBridgeNative.colorImage(session.renderer, copying.second)
         // A string: Godot's JSON parses numbers as doubles, which cannot hold a 64-bit (tagged) pointer.
@@ -1783,7 +1795,7 @@ internal class MpvVideoBridge(
         check(!session.display.owns(token)) { "Cannot retire a Godot display claim" }
         val lease = session.leases.remove(token) ?: return
         session.pairs.remove(token)
-        if (lease.left.capacity() > 0) session.buffers.addLast(lease.left to lease.right)
+        session.buffers.release(lease.left, lease.right)
         if (session.renderer > 0 && lease.pair.optString("color_target") != "layer") {
             RenderBridgeNative.retire(session.renderer, token); session.retiring.add(token)
         }
@@ -1835,6 +1847,11 @@ internal class MpvVideoBridge(
         val session = sessions[id] ?: return 0
         if (!active(session) || !session.host.layer) return 0
         return LayerThumbnail.request(session.host.layerSurface, width, height, rotation, crop, outWidth, outHeight)
+    }
+    fun requestLayerSnapshot(id: Int, outWidth: Int, outHeight: Int): Int {
+        val session = sessions[id] ?: return 0
+        if (!active(session) || !session.host.layer) return 0
+        return runCatching { LayerThumbnail.snapshot(session.host.layerSurface, outWidth, outHeight) }.getOrDefault(0)
     }
     fun pinPair(id: Int, token: Long): Boolean {
         val session = sessions[id] ?: return false
@@ -1963,7 +1980,7 @@ internal class MpvVideoBridge(
         const val RVM_VIDEO_FPS = 30
         val ALPHA_FPS_RANGE = 10..40
         private const val SCOUT_BUFFERS = 4
-        private val NO_PLANES: Pair<ByteBuffer, ByteBuffer> = ByteBuffer.allocateDirect(0) to ByteBuffer.allocateDirect(0)
+        private val NO_PLANES = MpvInputBuffers.EMPTY
     }
     fun shutdown() {
         stopped = true

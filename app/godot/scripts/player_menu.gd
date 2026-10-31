@@ -93,9 +93,11 @@ const VOLUME_SPAN := Vector2(0.1, 0.34)
 const VOLUME_MUTE := 3
 const WHISPER := 163
 const BOOST_HEIGHT := 0.14
+const BOOST_BUTTON_SIZE := Vector2(0.078, 0.052)
 const DepthStrength := preload("res://scripts/depth_strength.gd")
 const DEPTH := 161
-const DEPTH_RESET := 162
+const DEPTH_OFF := 162
+const DEPTH_BOOST := 164
 const DEPTH_X := 0.32
 const DEPTH_SPAN := Vector2(0.2, 0.44)
 const LENS_FOVS := [180, 190, 200, 220]
@@ -141,6 +143,8 @@ const VR_HORIZONTAL := 610
 const VR_VERTICAL := 611
 const VR_ZOOM := 612
 const VR_RESET := 613
+const VR_GAUGES_ON := 614
+const VR_GAUGES_OFF := 615
 const SPATIAL_DISPARITY := 487
 const SPATIAL_FOV := 488
 ## Settings is a popup above the bar like subtitles: its own tab, tile and close targets keep the
@@ -284,6 +288,9 @@ var _depth_sent := -1
 var _depth_fill: MeshInstance3D
 var _depth_knob: MeshInstance3D
 var _depth_label: Label3D
+var _depth_boost := false
+var _depth_boost_source := ""
+var _depth_boost_fill: MeshInstance3D
 const ICON_DOUBLE_CLICK_MS := 350
 const MUTE_INK := Color(1.0, 0.45, 0.4)
 const MUTE_TINT := Color(0.42, 0.1, 0.1, 0.9)
@@ -582,6 +589,10 @@ func refresh_values() -> void:
 		return
 	_state = state_provider.call() if state_provider.is_valid() else {}
 	_state["bar_transparency"] = bar_transparency
+	if _depth_open and _depth_boost_available() and _state.get("depth_requested", false) and float(_state.get("depth_strength", 0.0)) > DepthStrength.MAX and not _depth_boost:
+		_depth_boost = true
+		refresh()
+		return
 	if _adjustment in ["screen", "stereo_view"] and _settings_drawn != _settings_key():
 		_finish_adjustment()
 		if _adjustment == "stereo_view" and not _enabled("stereo_view"): _adjustment = ""
@@ -695,6 +706,7 @@ func _draw() -> void:
 	_depth_fill = null
 	_depth_knob = null
 	_depth_label = null
+	_depth_boost_fill = null
 	_depth_busy = null
 	_narration_busy = null
 	_audio_ids = {}
@@ -1033,7 +1045,9 @@ func _subtitle_controls() -> Array:
 	else:
 		rows.append({"title": "Vertical position", "field": {"key": "subtitle_flat_position", "value": _state.get("subtitle_flat_position", 0.0), "slider": true, "span": Vector3(0, 100, 1), "unit": "%", "reset_value": 0.0}})
 	rows.append({"title": "Subtitle size", "field": SubtitleStyle.size_row(float(_state.get("subtitle_size", 100.0)))})
-	if not pgs:
+	if pgs:
+		rows.append({"title": "PGS tint", "field": SubtitleStyle.pgs_row(_state.get("subtitle_pgs_tint", SubtitleStyle.PGS_DEFAULT))})
+	else:
 		rows.append({"title": "Subtitle color style", "field": SubtitleStyle.style_row(_state.get("subtitle_style", SubtitleStyle.DEFAULT))})
 		rows.append({"title": "Subtitle display", "field": SubtitleStyle.line_row(_state.get("subtitle_line", 0))})
 	var encoding: Dictionary = _state.get("subtitle_encoding_row", {})
@@ -1380,7 +1394,7 @@ func _can_depth() -> bool:
 
 func _toggle_depth_slider() -> void:
 	if not _can_depth(): return
-	if _depth_open:
+	if _depth_open and (_state.get("depth_requested", false) or _state.get("native_stereo", false)):
 		_close_depth_slider()
 	else:
 		_depth_open = true
@@ -1388,6 +1402,9 @@ func _toggle_depth_slider() -> void:
 		_mode_open = false
 		_volume_open = false
 		_volume_hand = ""
+		if not _state.get("depth_requested", false) and not _state.get("native_stereo", false):
+			depth_strength_requested.emit(DepthStrength.remembered(float(_state.get("depth_strength", _depth_default())), _depth_maximum(), _depth_default()))
+			depth_strength_committed.emit()
 	refresh()
 
 func _depth_icon_target() -> int:
@@ -1395,13 +1412,14 @@ func _depth_icon_target() -> int:
 
 func _depth_tip() -> String:
 	if not _cast_allowed("depth"): return I18n.t("Available for seekable videos")
-	return I18n.t("Click to adjust · Double-click to disable 3D" if _state.get("depth_requested", false) else "Click to adjust · Double-click to enable 3D")
+	return I18n.t("Click to adjust 3D")
 
 func _volume_tip() -> String:
 	return I18n.t("Click to adjust · Double-click to unmute" if _state.get("muted", false) else "Click to adjust · Double-click to mute")
 
 func _press_quick_icon(hand: String, target: int) -> bool:
-	if target != _depth_icon_target() and target != 109:
+	# Only sound retains a double-click shortcut. Every 3D click opens/folds its rail.
+	if target != 109:
 		_icon_tap.clear(); return false
 	var now := Time.get_ticks_msec()
 	var source := str(_state.get("source_uri", ""))
@@ -1412,12 +1430,7 @@ func _press_quick_icon(hand: String, target: int) -> bool:
 		return false
 	_icon_tap.clear()
 	_close_depth_slider(); _volume_open = false
-	if target == _depth_icon_target():
-		if _state.get("depth_requested", false): action_requested.emit("depth")
-		else: depth_strength_requested.emit(DepthStrength.remembered(float(_state.get("depth_strength", _depth_default())), _depth_maximum(), _depth_default()))
-		depth_strength_committed.emit()
-	else:
-		volume_requested.emit(float(_state.get("volume", 100.0)), not _state.get("muted", false))
+	volume_requested.emit(float(_state.get("volume", 100.0)), not _state.get("muted", false))
 	refresh()
 	return true
 
@@ -1426,31 +1439,53 @@ func _draw_depth() -> void:
 	var span := _depth_span()
 	var height := span.y - span.x
 	var middle := (span.x + span.y) / 2
-	var panel := _quad(Vector2(0.13, height + 0.19), Vector3(DEPTH_X, middle, 0.001), Color(PANEL, 1.0), 10)
+	var boost_available := _depth_boost_available()
+	if boost_available:
+		var source := str(_state.get("source_uri", ""))
+		if _depth_boost_source != source:
+			_depth_boost_source = source
+			_depth_boost = float(_state.get("depth_strength", 0.0)) > DepthStrength.MAX
+		elif _state.get("depth_requested", false) and float(_state.get("depth_strength", 0.0)) > DepthStrength.MAX:
+			_depth_boost = true
+	var enhanced := boost_available and _depth_boost
+	var top := span.y + (BOOST_HEIGHT if enhanced else 0.0)
+	var cap_y := top + 0.09
+	var bottom := span.x - 0.095
+	var panel_top := cap_y + 0.038 if boost_available else span.y + 0.095
+	var panel := _quad(Vector2(0.13, panel_top - bottom), Vector3(DEPTH_X, (panel_top + bottom) / 2, 0.001), Color(PANEL, 1.0), 10)
 	panel.material_override.set_shader_parameter("corner_radius", 0.05)
 	add_child(panel)
 	_decorations.append(panel)
 	_block_rays(panel, panel.mesh.size, 0.05)
-	_button(DEPTH, "", Vector2(DEPTH_X, middle), Vector2(0.11, height + 0.04), _can_depth())
+	_button(DEPTH, "", Vector2(DEPTH_X, (span.x + top) / 2), Vector2(0.11, top - span.x + 0.04), _can_depth())
 	_buttons.back().base_color = Color(TILE, 0.0)
 	_decoration(Vector2(0.012, height), Vector2(DEPTH_X, middle), Color(0.3, 0.35, 0.4))
 	# Mark whole multiples of the original parallax within this media's range.
 	for value in [1.0, 2.0, 3.0]:
 		if value > _depth_maximum(): continue
-		_decoration(Vector2(0.035, 0.003), Vector2(DEPTH_X, span.x + height * DepthStrength.to_fraction(value, _depth_maximum())), MUTED)
+		if boost_available and value > DepthStrength.MAX: continue
+		_decoration(Vector2(0.035, 0.003), Vector2(DEPTH_X, span.x + height * DepthStrength.to_fraction(value, _depth_track_maximum())), MUTED)
 	var recommended := _depth_recommended()
 	if recommended > 0.0:
-		var y := span.x + height * DepthStrength.to_fraction(recommended, _depth_maximum())
+		var y := span.x + height * DepthStrength.to_fraction(recommended, _depth_track_maximum())
 		# A visual cue only (no text, no hit target): an accent tick across the rail and a star beside it.
 		_decoration(Vector2(0.05, 0.004), Vector2(DEPTH_X, y), ACCENT)
 		_icon("star_filled", Vector3(DEPTH_X - 0.048, y, 0.004), 0.022, ACCENT)
 	_depth_fill = _decoration(Vector2(0.012, height), Vector2(DEPTH_X, middle), ACCENT)
 	_depth_fill.material_override.render_priority = 13
+	if enhanced:
+		_decoration(Vector2(0.012, BOOST_HEIGHT), Vector2(DEPTH_X, span.y + BOOST_HEIGHT / 2), Color(WARNING, 0.35))
+		_depth_boost_fill = _decoration(Vector2(0.012, BOOST_HEIGHT), Vector2(DEPTH_X, span.y + BOOST_HEIGHT / 2), WARNING)
+		_depth_boost_fill.material_override.render_priority = 13
+		_decoration(Vector2(0.08, 0.004), Vector2(DEPTH_X, span.y), Color(0.7, 0.74, 0.78))
 	_depth_knob = _decoration(Vector2(0.03, 0.03), Vector2(DEPTH_X, span.x), Color.WHITE)
 	_depth_knob.material_override.set_shader_parameter("corner_radius", 0.015)
 	_depth_knob.material_override.render_priority = 14
-	_depth_label = _label("", Vector3(DEPTH_X, span.y + 0.045, 0.004), 16)
-	_glyph(DEPTH_RESET, "refresh", Vector2(DEPTH_X, span.x - 0.055), 0.06, false, I18n.t("Reset"))
+	_depth_label = _label("", Vector3(DEPTH_X, top + (0.038 if boost_available else 0.045), 0.004), 16)
+	if boost_available: _compact_boost_button(DEPTH_BOOST, Vector2(DEPTH_X, cap_y), _can_depth())
+	_round(DEPTH_OFF, "power", Vector2(DEPTH_X, span.x - 0.055), 0.075, false, false, I18n.t("Turn off 3D"))
+	_buttons.back().base_color = MUTE_TINT
+	_buttons.back().foreground = MUTE_INK
 	_refresh_depth()
 	_raise_quick_popup(before)
 
@@ -1469,7 +1504,13 @@ func _raise_quick_popup_materials(node: Node) -> void:
 	for child in node.get_children(): _raise_quick_popup_materials(child)
 
 func _depth_maximum() -> float:
-	return DepthStrength.MAX
+	return DepthStrength.VIDEO_MAX if _depth_boost_available() else DepthStrength.MAX
+
+func _depth_boost_available() -> bool:
+	return not _state.get("portrait_requested", false)
+
+func _depth_track_maximum() -> float:
+	return DepthStrength.MAX if _depth_boost_available() else _depth_maximum()
 
 func _depth_default() -> float:
 	return 1.0 if _state.get("portrait_requested", false) else DepthStrength.VIDEO_DEFAULT
@@ -1487,29 +1528,51 @@ func _depth_caption() -> String:
 func _refresh_depth() -> void:
 	if not is_instance_valid(_depth_fill): return
 	var span := _depth_span()
-	var fraction := DepthStrength.to_fraction(float(_state.get("depth_strength", _depth_default())), _depth_maximum()) if _state.get("depth_requested", false) else 0.0
+	var strength := float(_state.get("depth_strength", _depth_default())) if _state.get("depth_requested", false) else 0.0
+	var fraction := DepthStrength.to_fraction(strength, _depth_track_maximum())
+	var boost := clampf(strength - DepthStrength.MAX, 0.0, 1.0) if _depth_boost_available() and _depth_boost else 0.0
 	var height := span.y - span.x
 	_depth_fill.visible = fraction > 0
 	_depth_fill.mesh.size.y = maxf(0.001, height * fraction)
 	_depth_fill.position.y = span.x + height * fraction / 2
 	_depth_fill.material_override.set_shader_parameter("surface_size", _depth_fill.mesh.size)
-	_depth_knob.position.y = span.x + height * fraction
+	_depth_knob.position.y = span.y + BOOST_HEIGHT * boost if boost > 0.0 else span.x + height * fraction
+	_depth_knob.material_override.set_shader_parameter("surface_color", WARNING if boost > 0.0 else Color.WHITE)
 	_depth_label.text = _depth_caption()
+	_depth_label.modulate = WARNING if boost > 0.0 else Color.WHITE
+	if is_instance_valid(_depth_boost_fill):
+		_depth_boost_fill.visible = boost > 0.0
+		_depth_boost_fill.mesh.size.y = maxf(0.001, BOOST_HEIGHT * boost)
+		_depth_boost_fill.position.y = span.y + BOOST_HEIGHT * boost / 2
+		_depth_boost_fill.material_override.set_shader_parameter("surface_size", _depth_boost_fill.mesh.size)
 	for button in _buttons:
-		if button.target != DEPTH_RESET: continue
-		button.enabled = _can_depth() and _state.get("depth_requested", false) and not is_equal_approx(float(_state.get("depth_strength", _depth_default())), _depth_default())
-		button.node.get_child(1).material_override.albedo_color = ACCENT if button.enabled else MUTED
+		if button.target == DEPTH_BOOST:
+			button.base_color = SELECTED if _depth_boost else TILE
+			button.node.get_child(0).modulate = (WARNING if _depth_boost else Color.WHITE) if button.enabled else MUTED
+		if button.target == DEPTH_OFF:
+			button.enabled = _can_depth() and _state.get("depth_requested", false)
+			button.node.get_child(1).material_override.albedo_color = button.foreground if button.enabled else MUTED
 
 func _set_depth_at(y: float) -> void:
 	var span := _depth_span()
 	var fraction := (y - span.x) / (span.y - span.x)
-	var strength := DepthStrength.from_fraction(fraction, _depth_maximum())
+	var strength := DepthStrength.from_fraction(fraction, _depth_track_maximum())
+	if _depth_boost_available() and _depth_boost and y > span.y:
+		strength = DepthStrength.clamp_value(DepthStrength.MAX + (y - span.y) / BOOST_HEIGHT, DepthStrength.VIDEO_MAX)
 	if fraction < 0.02: strength = 0.0 # Small bottom dead zone makes Off easy to reach.
 	var level := roundi(strength * 100)
 	if level == _depth_sent: return
 	_depth_sent = level
 	depth_strength_requested.emit(strength)
 	refresh_values()
+
+## Compact cap shared by the sound and video-depth rails.
+func _compact_boost_button(target: int, centre: Vector2, enabled: bool) -> void:
+	_button(target, I18n.t("Boost"), centre, BOOST_BUTTON_SIZE, enabled)
+	var label: Label3D = _buttons.back().node.get_child(0)
+	var size := 13
+	while size > 10 and text_width(label.text, size) > BOOST_BUTTON_SIZE.x - 0.014: size -= 1
+	set_label_size(label, size)
 
 ## Volume: a slider rising from the sound icon; the bottom of the track is mute.
 func _draw_volume() -> void:
@@ -1519,10 +1582,10 @@ func _draw_volume() -> void:
 	var top := VOLUME_SPAN.y + (BOOST_HEIGHT if enhanced else 0.0)
 	var height := top - VOLUME_SPAN.x
 	var middle := (VOLUME_SPAN.x + top) / 2
-	var cap_y := top + 0.105
+	var cap_y := top + 0.09
 	# Leave a small gap above the sound button (row 0.025, diameter 0.075).
 	var bottom := VOLUME_SPAN.x - 0.025
-	var panel_top := cap_y + 0.055 if available else top + 0.09
+	var panel_top := cap_y + 0.038 if available else top + 0.09
 	var panel := _quad(Vector2(0.1, panel_top - bottom), Vector3(VOLUME_X, (panel_top + bottom) / 2, 0.001), Color(PANEL, 0.94), 10)
 	panel.material_override.set_shader_parameter("corner_radius", 0.05)
 	add_child(panel); _decorations.append(panel)
@@ -1546,7 +1609,7 @@ func _draw_volume() -> void:
 	_volume_knob.material_override.render_priority = 14
 	_volume_label = _label("", Vector3(VOLUME_X, top + 0.038, 0.004), 16)
 	if available:
-		_button(WHISPER, I18n.t("Boost"), Vector2(VOLUME_X, cap_y), Vector2(0.09, 0.085), _state.get("has_video", false) and _state.get("audio_available", false))
+		_compact_boost_button(WHISPER, Vector2(VOLUME_X, cap_y), _state.get("has_video", false) and _state.get("audio_available", false))
 		_tips[WHISPER] = I18n.t("Dialogue enhancement")
 	_refresh_volume()
 	_raise_quick_popup(before)
@@ -1653,7 +1716,7 @@ func press_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: b
 		_seek_start = _seek_at(_input_point(hit).x)
 		_seek_preview = _seek_start
 		return true
-	if not hit.is_empty() and _adjust_rows.has(int(hit.target)):
+	if not hit.is_empty() and hit.get("enabled", false) and _adjust_rows.has(int(hit.target)):
 		if not _adjust_hand.is_empty() and _adjust_hand != hand: return false
 		_adjust_hand = hand
 		_adjust_target = int(hit.target)
@@ -1765,10 +1828,10 @@ func _bar_key() -> String:
 
 func _base_bar_key() -> String:
 	return str([_state.get("subtitle_task", {}), _state.get("subtitle_task_mode"), _state.get("listening_cache_complete"), _state.get("listening_translation_complete")]) + str([_state.get("listening_available", false), _state.get("listening_enabled", false), _state.get("listening_source", "ja"), _state.get("listening_target", ""), _state.get("listening_lead", 12), _state.get("listening_state", "off")]) + str([_state.get("cast", {}), cast_state]) + str([_state.get("screen_scene_locked", false), _state.get("cinema_lights", "auto")]) + _capture_key() + str([_state.get("pip_slots", []), _state.get("pip_count", 0), _state.get("pip_available", true), int(_state.get("audio_whisper", 0)) > 0, _state.get("volume_writable", true), _state.get("whisper_available", false), _state.get("clone_voice", false), _state.get("geometry", 0), _state.get("has_video", false),
-		_state.get("spatial_video", false), _state.get("error", ""),
+		_state.get("spatial_video", false), _state.get("portrait_requested", false), _state.get("error", ""),
 		_state.get("source_uri", ""), _subtitle_tracks(), _state.get("subtitle_track", 0), bookmarks.key(), _state.get("audio_options", []), _state.get("audio_track_id", -1), _state.get("audio_delay", 0.0), _state.get("audio_timing_key", ""),
 		_state.get("subtitle_browse_available", false), _state.get("subtitle_files_available", false), _state.get("subtitle_files_revision", 0), _state.get("subtitle_files_state", "idle"), _state.get("subtitle_file_loading", ""), _state.get("subtitle_file_error", ""), _state.get("subtitle_timing_key", ""),
-		_state.get("subtitle_distance", SubtitleDepth.DEFAULT), _state.get("subtitle_position", SubtitleDepth.DEFAULT_POSITION), _state.get("subtitle_horizontal_position", 0.0), _state.get("subtitle_vertical_position", 0.0), _state.get("subtitle_direction", 0), _state.get("subtitle_size", 100), _state.get("subtitle_style", SubtitleStyle.DEFAULT), _state.get("subtitle_line", 0), _state.get("subtitle_flat_position", 0), _state.get("subtitle_auto_load", true), _state.get("subtitle_delay", 0.0),
+		_state.get("subtitle_distance", SubtitleDepth.DEFAULT), _state.get("subtitle_position", SubtitleDepth.DEFAULT_POSITION), _state.get("subtitle_horizontal_position", 0.0), _state.get("subtitle_vertical_position", 0.0), _state.get("subtitle_direction", 0), _state.get("subtitle_size", 100), _state.get("subtitle_style", SubtitleStyle.DEFAULT), _state.get("subtitle_pgs_tint", SubtitleStyle.PGS_DEFAULT), _state.get("subtitle_line", 0), _state.get("subtitle_flat_position", 0), _state.get("subtitle_auto_load", true), _state.get("subtitle_delay", 0.0),
 		_state.get("narration_enabled", false), _state.get("narration_source", -1), _state.get("narration_sources", []), _state.get("narration_language", "auto"), _state.get("narration_resolved_language", ""), _state.get("narration_voice", ""), _state.get("narration_status", "off"), _state.get("narration_preview_busy", false), _state.get("narration_missing", 0), _state.get("narration_timing", "continuous"), _state.get("narration_delay", 0), _state.get("narration_progress", -1), _state.get("narration_profile", ""), _state.get("narration_voice_origin", "default"), _state.get("narration_line", 0), _state.get("narration_hide_subtitles", true), _state.get("narration_miss_reason", ""), _state.get("narration_language_required", false), _state.get("narration_preview_progress", -1)])
 
 func _seek_at(x: float) -> int:
@@ -1881,7 +1944,7 @@ func _draw_panel() -> void:
 		tiles.append(index)
 	var tile_rows := ceili(tiles.size() / 2.0)
 	var alpha_fps: bool = section == 1 and _enabled("alpha")
-	var height := 0.12 + tile_rows * 0.105 + (0.26 + ((0.085 + (0.27 if _alpha_expanded else 0.0)) if alpha_fps else 0.0) if section == 1 else 0.36)
+	var height := 0.12 + tile_rows * 0.105 + (0.345 + ((0.085 + (0.27 if _alpha_expanded else 0.0)) if alpha_fps else 0.0) if section == 1 else 0.36)
 	if alpha_fps and _alpha_expanded and _state.get("portrait_requested", false): height += 0.17
 	if alpha_fps and _state.get("flat_passthrough_requested", false): height += 0.17
 	var top := _settings_frame(height)
@@ -1915,6 +1978,8 @@ func _draw_panel() -> void:
 			_adjustment_row(453, "playback_speed", "Playback speed", Vector3(0.25, 3.0, 0.05), y)
 			_inline_reset(SPEED_RESET, "Restore 1×", "playback_speed", 1.0, y)
 			_slider_tick(453, 1.0, "1×", y)
+		y -= 0.085
+		_keep_background_row(y)
 		if alpha_fps:
 			y -= 0.085
 			_alpha_group_header(y)
@@ -1993,6 +2058,12 @@ func _error_text_height(text: String, logical_size: int) -> float:
 	return ui_font().get_multiline_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, 0.98 / TEXT_PIXEL_SIZE,
 		logical_size * TEXT_RASTER_SCALE, -1, TextServer.BREAK_MANDATORY | TextServer.BREAK_WORD_BOUND | TextServer.BREAK_ADAPTIVE).y * TEXT_PIXEL_SIZE
 
+func _keep_background_row(y: float) -> void:
+	var heading := _label(I18n.t("Keep background during passthrough"), Vector3(-0.50, y, 0.004), TEXT_BODY)
+	heading.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+	choices.field(null, {"key": "alpha_keep_background", "value": _state.get("alpha_keep_background", false),
+		"choices": [{"value": false, "label": "Off"}, {"value": true, "label": "On"}]}, Vector2(0.21, y), 0.46, 0.05)
+
 func _alpha_group_header(y: float) -> void:
 	_button(ALPHA_GROUP, "", Vector2(0, y), Vector2(1.02, 0.06))
 	var node: MeshInstance3D = _buttons.back().node
@@ -2009,8 +2080,9 @@ func _settings_key() -> String:
 	return str([_state.get("cast", {})]) + str([_state.get("source_uri", ""), _state.get("has_video", false),
 		_state.get("portrait_requested", false), _state.get("flat_passthrough_requested", false), _state.get("portrait_auto", true), _state.get("portrait_enhanced", false),
 		_state.get("playback_mode", "single"), _state.get("screen_curve", 0.0), _state.get("seek_mode", "speed"), _state.get("depth_render", "stretch"), _state.get("stereo", false), _state.get("geometry", 0),
-		_state.get("show_fps", false), _state.get("viewing_eye", 0), _state.get("swap_eyes", false),
+		_state.get("show_fps", false), _state.get("alpha_keep_background", false), _state.get("viewing_eye", 0), _state.get("swap_eyes", false),
 		_state.get("spatial_metadata", {}), _state.get("spatial_auto_disparity", true),
+		_state.get("immersive_adjustment_gauges", true),
 		_state.get("screen_cinema", false), _state.get("screen_scene_locked", false), _state.get("cinema_lights", "auto"),
 		_state.get("error", ""), _state.get("error_report", {}), _alpha_expanded])
 
@@ -2167,6 +2239,14 @@ func _activate(target: int) -> void:
 		whisper_requested.emit(0 if int(_state.get("audio_whisper", 0)) > 0 else 1, str(_state.get("source_uri", "")))
 		refresh_values()
 		return
+	if target == DEPTH_BOOST:
+		if not _depth_hand.is_empty() or not _depth_open or not _can_depth() or not _depth_boost_available(): return
+		_depth_boost = not _depth_boost
+		if not _depth_boost and _state.get("depth_requested", false) and float(_state.get("depth_strength", 0.0)) > DepthStrength.MAX:
+			depth_strength_requested.emit(DepthStrength.MAX)
+			depth_strength_committed.emit()
+		refresh()
+		return
 	if target == FAVORITE:
 		favorite_requested.emit(); refresh_values(); return
 	if target == ERROR_OPEN and not str(_state.get("error", "")).is_empty():
@@ -2181,7 +2261,7 @@ func _activate(target: int) -> void:
 		return
 	if _activate_footer(target): return
 	if _activate_slider_reset(target): return
-	if _activate_depth_reset(target): return
+	if _activate_depth_off(target): return
 	if _state.get("spatial_video", false) and (target in range(MODE_PROJECTION, MODE_PROJECTION + 4) \
 		or target in [MODE_STEREO, MODE_STEREO + 1, MODE_STEREO + 3, MODE_STEREO + 4, MODE_STEREO + 5, MODE_STEREO + 6] \
 		or target in range(MODE_LENS, MODE_LENS + LENS_FOVS.size()) or target == MODE_PACKED): return
@@ -2436,8 +2516,12 @@ func _update_highlights() -> void:
 			button.node.material_override.set_shader_parameter("surface_color", Color(0.16, 0.31, 0.27))
 		if button.enabled and not _hover.values().has(button.target) and button.target == 104 and _state.get("alpha_requested", false):
 			button.node.material_override.set_shader_parameter("surface_color", Color(0.16, 0.31, 0.27))
-		if button.enabled and not _hover.values().has(button.target) and button.target == 112 and _state.get("depth_requested", false):
-			button.node.material_override.set_shader_parameter("surface_color", Color(0.16, 0.31, 0.27))
+		if button.target == _depth_icon_target() and button.enabled:
+			var active: bool = _state.get("depth_requested", false) or _state.get("native_stereo", false)
+			button.node.material_override.set_shader_parameter("surface_color", SELECTED if active else (Color(0.19, 0.22, 0.26) if _hover.values().has(button.target) else button.base_color))
+			button.node.get_child(1).material_override.albedo_color = ACCENT if active else button.foreground
+		if button.target == DEPTH_OFF and button.enabled:
+			button.node.material_override.set_shader_parameter("surface_color", Color(0.55, 0.14, 0.14, 0.95) if _hover.values().has(button.target) else button.base_color)
 		if button.target == 111:
 			button.node.get_child(1).material_override.albedo_color = ACCENT if _audio_open else (button.foreground if button.enabled else MUTED)
 			if button.enabled and not _hover.values().has(button.target) and _audio_open:
@@ -2738,23 +2822,40 @@ func _draw_adjustments() -> void:
 
 func _draw_immersive_settings() -> void:
 	var stereo: bool = _state.get("stereo", false)
-	var top := _settings_frame(0.72 if stereo else 0.63)
+	var top := _settings_frame(0.81 if stereo else 0.72)
 	_draw_settings_tabs(top - 0.055)
 	var y := top - 0.16
+	var title := _label(I18n.t("Show gauges while adjusting"), Vector3(-0.50, y, 0.004), TEXT_BODY)
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+	for option in [{"target": VR_GAUGES_ON, "value": true}, {"target": VR_GAUGES_OFF, "value": false}]:
+		_button(option.target, I18n.t("On" if option.value else "Off"), Vector2(0.16 + (-0.1685 if option.value else 0.1685), y), Vector2(0.323, 0.055))
+		set_label_size(_buttons.back().node.get_child(0), TEXT_BODY)
+		_buttons.back().base_color = SELECTED if bool(_state.get("immersive_adjustment_gauges", true)) == option.value else TILE
+		_tips[option.target] = I18n.t("Show value gauges while adjusting VR position, depth / zoom or stereo alignment with the controllers. Turn off to keep the view clear; controller shortcuts still work. Applies to all videos.")
+	y -= 0.09
 	for row in [[VR_HORIZONTAL, "view_horizontal", "Horizontal position"], [VR_VERTICAL, "view_vertical", "Vertical position"], [VR_ZOOM, "view_zoom", "Depth / zoom"]]:
 		var span := Surface.ImmersiveAdjustments.limits(row[1]) * 100.0
 		_adjustment_row(row[0], row[1], row[2], Vector3(span.x, span.y, 0.1), y)
+		_tips[row[0]] = I18n.t({
+			"view_horizontal": "Hold left Grip and move the left stick left / right to adjust horizontal position. Center the stick before changing axes.",
+			"view_vertical": "Hold left Grip and move the left stick up / down to adjust vertical position. Center the stick before changing axes.",
+			"view_zoom": "Hold right Grip and move the right stick up / down to adjust depth / zoom. Center the stick before changing axes."
+		}[row[1]])
 		_slider_tick(row[0], 0.0, "0", y)
 		y -= 0.09
 	if stereo:
 		_adjustment_row(ALIGNMENT_HORIZONTAL, "stereo_horizontal", "Stereo horizontal alignment", StereoView.HORIZONTAL, y)
 		_horizontal_alignment_ticks(y)
 		_adjust_rows[ALIGNMENT_HORIZONTAL].button.enabled = int(_state.get("viewing_eye", 0)) == 0
+		_adjust_rows[ALIGNMENT_HORIZONTAL].button["hover_disabled"] = true
+		_tips[ALIGNMENT_HORIZONTAL] = I18n.t("Hold right Grip and move the right stick left / right to adjust stereo horizontal alignment. Available only for stereo video viewed with both eyes. Center the stick before changing axes.")
 		y -= 0.09
 	_adjustment_row(452, "screen_rotation", "Screen rotation", Vector3(-90, 90, 1), y)
+	_tips[452] = I18n.t("Screen rotation has no controller shortcut. Point at this slider and hold the trigger to drag; Straighten restores 0 degrees.")
 	_slider_tick(452, 0.0, "0°", y)
 	_inline_reset(ROTATION_RESET, "Straighten", "screen_rotation", 0.0, y)
 	_button(VR_RESET, I18n.t("Reset VR adjustments"), Vector2(0, y - 0.10), Vector2(0.48, 0.055))
+	_tips[VR_RESET] = I18n.t("Hold either Grip and press the same controller's stick to reset horizontal position, vertical position, depth / zoom and stereo horizontal alignment.")
 	set_label_size(_buttons.back().node.get_child(0), TEXT_BODY)
 	_refresh_adjustments()
 	choices.finish()
@@ -2856,13 +2957,14 @@ func _activate_slider_reset(target: int) -> bool:
 		return true
 	return false
 
-func _activate_depth_reset(target: int) -> bool:
-	if target != DEPTH_RESET: return false
+func _activate_depth_off(target: int) -> bool:
+	if target != DEPTH_OFF: return false
 	refresh_values()
 	if _can_depth() and _state.get("depth_requested", false) and _buttons.any(func(button): return button.target == target and button.enabled):
-		depth_strength_requested.emit(_depth_default())
+		action_requested.emit("depth")
 		depth_strength_committed.emit()
-		refresh_values()
+		_close_depth_slider()
+		refresh()
 	return true
 
 func _grade_page_needs_reset() -> bool:
@@ -2963,6 +3065,8 @@ func _activate_adjustment(target: int) -> void:
 		return
 	if target == 400:
 		_adjustment = ""
+	elif _adjustment == "screen" and target in [VR_GAUGES_ON, VR_GAUGES_OFF] and int(_state.get("geometry", 0)) != 0:
+		setting_requested.emit("immersive_adjustment_gauges", target == VR_GAUGES_ON)
 	elif _adjustment == "screen" and target == VR_RESET:
 		adjustment_requested.emit("immersive_reset", true)
 		adjustment_committed.emit()

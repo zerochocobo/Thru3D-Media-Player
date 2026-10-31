@@ -44,6 +44,9 @@ class DebugDiagnosticsReceiver : BroadcastReceiver() {
                             intent.getStringExtra("profile") ?: "256x144")
                     } else if (intent.action == "com.wapok.thru3d.DEBUG_MUSIC_FORMATS") {
                         BackgroundAudioProbe.request(context.applicationContext)
+                    } else if (intent.action == "com.wapok.thru3d.DEBUG_LOGIN_INPUT") {
+                        report.put("login_input", LoginInputLifecycleProbe.run())
+                        1
                     } else if (intent.action == "com.wapok.thru3d.DEBUG_SMB_CRYPTO") {
                         report.put("smb", SmbCryptoProbe.run())
                         1

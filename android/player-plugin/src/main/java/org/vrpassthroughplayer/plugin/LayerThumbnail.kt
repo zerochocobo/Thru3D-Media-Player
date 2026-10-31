@@ -7,8 +7,6 @@ import android.os.HandlerThread
 import android.view.PixelCopy
 import android.view.Surface
 import java.nio.ByteBuffer
-import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -22,15 +20,19 @@ internal object LayerThumbnail {
     /** The copy is scaled to the crop's needs, at most this many pixels on its longer side. */
     private const val MAX_COPY = 2048
     private val handler by lazy { Handler(HandlerThread("LayerThumbnail").apply { start() }.looper) }
-    private val next = AtomicInteger()
     /** Finished requests: RGBA8 rows of the requested size, or "failed:<reason>". */
-    private val results = ConcurrentHashMap<Int, Any>()
+    private val results = FrameCopyResults()
+
+    /** A full coded frame for a mode transition, never a library crop or a single-eye view. */
+    fun snapshot(surface: Surface?, outWidth: Int, outHeight: Int): Int =
+        request(surface, outWidth, outHeight, 0, floatArrayOf(0f, 0f, 1f, 1f), outWidth, outHeight, MAX_COPY)
 
     /** [width] x [height] is the displayed frame (after [rotation], clockwise); [crop] is (x, y, w, h)
      * of it in UV, row 0 on top. Returns a request id for [take], or 0 when nothing was requested. */
-    fun request(surface: Surface?, width: Int, height: Int, rotation: Int, crop: FloatArray, outWidth: Int, outHeight: Int): Int {
+    fun request(surface: Surface?, width: Int, height: Int, rotation: Int, crop: FloatArray, outWidth: Int, outHeight: Int,
+                maxOutput: Int = 1024): Int {
         if (surface == null || !surface.isValid || width <= 0 || height <= 0 || crop.size != 4 ||
-            outWidth !in 1..1024 || outHeight !in 1..1024 || rotation % 90 != 0) return 0
+            outWidth !in 1..maxOutput || outHeight !in 1..maxOutput || rotation % 90 != 0) return 0
         val turned = rotation % 180 != 0
         val bufferWidth = if (turned) height else width
         val bufferHeight = if (turned) width else height
@@ -39,16 +41,17 @@ internal object LayerThumbnail {
             max(outWidth / (crop[2] * width).toDouble(), outHeight / (crop[3] * height).toDouble()))
         val copy = Bitmap.createBitmap(max(1, (bufferWidth * scale).roundToInt()), max(1, (bufferHeight * scale).roundToInt()),
             Bitmap.Config.ARGB_8888)
-        val id = next.incrementAndGet().coerceAtLeast(1)
-        while (results.size > 4) results.keys.minOrNull()?.let { results.remove(it) }
+        val id = results.reserve()
+        if (id == 0) { copy.recycle(); return 0 }
         try {
             PixelCopy.request(surface, copy, { result ->
-                results[id] = try {
+                val completed = try {
                     if (result == PixelCopy.SUCCESS) crop(copy, rotation, crop, outWidth, outHeight) else "failed:pixel_copy_$result"
                 } catch (failure: Throwable) { "failed:${failure.javaClass.simpleName}" } finally { copy.recycle() }
+                results.complete(id, completed)
             }, handler)
         } catch (failure: Throwable) {
-            copy.recycle(); results[id] = "failed:${failure.javaClass.simpleName}"
+            copy.recycle(); results.complete(id, "failed:${failure.javaClass.simpleName}")
         }
         return id
     }
@@ -69,11 +72,8 @@ internal object LayerThumbnail {
     }
 
     /** "pending", "ready" (pixels in [pixels]) or "failed:<reason>"; a finished result is handed out once. */
-    fun state(id: Int): String = when (val result = results[id]) {
-        null -> if (id in 1..next.get()) "pending" else "failed:unknown"
-        is ByteArray -> "ready"
-        else -> { results.remove(id); result.toString() }
-    }
+    fun state(id: Int): String = results.state(id)
 
-    fun pixels(id: Int): ByteArray = results.remove(id) as? ByteArray ?: ByteArray(0)
+    fun pixels(id: Int): ByteArray = results.take(id)
+    fun cancel(id: Int) = results.cancel(id)
 }

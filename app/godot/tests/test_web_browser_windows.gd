@@ -79,7 +79,7 @@ func run() -> void:
 			check(pixels.x * pixels.y <= (1920 * 1200 if low else 2560 * 1600) + 4096, "Viewport stays within the device pixel budget")
 	var close: Dictionary = primary._buttons.filter(func(button): return button.target == browser.BASE + 5)[0]
 	var address: Dictionary = primary._buttons.filter(func(button): return button.target == browser.BASE + 3)[0]
-	check(close.rect.get_center().y > address.rect.end.y and address.rect.size.x < 0.65, "Close occupies the narrow title row above a shorter URL field")
+	check(close.rect.position.y > address.rect.end.y and address.rect.size.x >= 0.7, "Window close is separated above a readable address row")
 	verify_title_drag(primary, primary)
 	var layout: Dictionary = primary.page_layout()
 	var start: Vector3 = layout.pose * Vector3(-layout.size.x * 0.49, layout.size.y * 0.49, 0.2)
@@ -269,7 +269,7 @@ func verify_window_occlusion(router: Node3D, secondary: Node3D) -> void:
 			browser.focus_window(rear.window_id); browser.refresh_windows()
 			for window in [front, rear]: window._process(0)
 			# These are blank parts of the header, outside the small dotted handle.
-			for local in [Vector3(0.13 + (front.page_size.x - front.RECT.size.x) / 2, 0.515, 0), Vector3(front.page_rect().end.x - 0.05, 0.555, 0)]:
+			for local in [Vector3(0.13 + (front.page_size.x - front.RECT.size.x) / 2, 0.698, 0), Vector3(front.page_rect().end.x - 0.05, 0.698, 0)]:
 				var point: Vector3 = front.to_global(local)
 				var direction := (point - eye).normalized()
 				var hit: Dictionary = router.ray_hit(eye, direction)

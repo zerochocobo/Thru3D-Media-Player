@@ -41,7 +41,7 @@ internal class AccountManager(private val host: () -> Activity?) {
         var auth: Cloud115Auth? = null
         @Volatile var http: MediaServerHttp? = null
         @Volatile var discovery: MediaServerDiscovery? = null
-        var web: InAppWebLogin? = null
+        var web: AccountWebLogin? = null
         @Volatile var plex: PlexAuth? = null
         var plexPin: PlexAuth.Pin? = null
         var plexExpiresAt = 0L
@@ -162,16 +162,18 @@ internal class AccountManager(private val host: () -> Activity?) {
             synchronized(s) {
                 if (s.busy || s.kind != "cloud" || (s.provider != CloudDrive.P115 && !OpenListAuth.supported(s.provider))) return
                 s.error = ""; s.state = "web"; s.revision++
-                if (s.web == null) s.web = InAppWebLogin(host, s.provider, { cookie ->
-                    task(s) { connect(s, cookie) }
-                }, { credential ->
-                    task(s) {
-                        CloudLibrary.connectOAuth(credential, s.value("name").ifBlank { CloudDrive.providerName(s.provider) }, s.accountId.ifEmpty { null },
-                            { block -> commit(s, block) })
-                        commit(s) { s.state = "done"; s.inputs.values.forEach { it.clear() } }
-                        s.web?.close()
+                if (s.web == null) {
+                    val authorized: (OpenListAuth.Credential) -> Boolean = { credential ->
+                        task(s) {
+                            CloudLibrary.connectOAuth(credential, s.value("name").ifBlank { CloudDrive.providerName(s.provider) }, s.accountId.ifEmpty { null },
+                                { block -> commit(s, block) })
+                            commit(s) { s.state = "done"; s.inputs.values.forEach { it.clear() } }
+                            s.web?.close()
+                        }
                     }
-                })
+                    s.web = if (OpenListAuth.supported(s.provider)) CloudWebLogin(host, s.provider, authorized)
+                        else InAppWebLogin(host, s.provider, { cookie -> task(s) { connect(s, cookie) } }, authorized)
+                }
                 s.web!!.open()
             }
             return

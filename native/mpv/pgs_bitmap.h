@@ -12,6 +12,9 @@ struct PgsImage {
     int x = 0, y = 0, width = 0, height = 0, canvas_width = 0, canvas_height = 0;
     std::vector<uint8_t> rgba; // top-first, premultiplied RGBA; only the occupied crop
 };
+// Tint neutral (white/gray) ink in premultiplied RGBA. Black outlines and alpha
+// stay intact; a soft chroma gate preserves authored colored captions.
+void tint_pgs_rgba(std::vector<uint8_t>& rgba, uint32_t rgb);
 inline PgsImage compose_pgs(const quest_mpv_pgs_frame& frame) {
     PgsImage out;
     if (frame.canvas_width < 1 || frame.canvas_height < 1 ||

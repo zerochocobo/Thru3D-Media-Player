@@ -8,6 +8,50 @@ import kotlin.math.abs
 /** Accept only a full UGC part or whole PGC episode and the pair actually requested by Gecko.
  * API URLs confer no authority to copy webpage cookies onto a CDN or a backup URL. */
 internal object WebVideoBilibiliCapture {
+    /** A restored Gecko document can report a paused video before decoded dimensions and
+     * both request observations arrive. Wait for those observations, never start the page,
+     * replay its API or carry a pair over from the previous native playback. */
+    fun awaitReady(page: WebVideoPage, snapshot: () -> JSONObject?, check: () -> Unit,
+        now: () -> Long = { System.nanoTime() / 1_000_000 },
+        pause: (Long) -> Unit = { Thread.sleep(it) }, timeoutMs: Long = 8000,
+        unavailable: (String) -> Unit = {}): JSONObject? {
+        val deadline = now() + timeoutMs
+        var identity: String? = null
+        while (true) {
+            check()
+            val media = snapshot()
+            check()
+            if (media != null) {
+                val current = media.optString("capture_identity")
+                if (current.isEmpty() || identity != null && identity != current) { unavailable("browser_page_changed"); return null }
+                identity = current
+                // Let the resolver report protected content immediately, without waiting.
+                if (media.optBoolean("protected")) return media
+                if (!media.optBoolean("bilibili_enabled")) { unavailable("browser_observation_unavailable"); return null }
+                val bound = if (page.id.matches(Regex("(?:ep|ss)[1-9][0-9]{0,19}:1"))) episodePage(page, media) else page
+                if (bound != null && formats(bound, media) != null) return media
+            } else if (identity != null) { unavailable("browser_page_changed"); return null }
+            val remaining = deadline - now()
+            if (remaining <= 0) { unavailable(unavailableReason(media)); return null }
+            pause(minOf(200, remaining))
+        }
+    }
+
+    fun unavailableReason(media: JSONObject?): String {
+        if (media == null) return "browser_session_unavailable"
+        when (media.optString("bilibili_binding")) {
+            "multiple_players" -> return "browser_multiple_videos"
+            "initial_json_missing", "video_data_missing", "page_map_mismatch", "part_missing", "video_id_mismatch", "episode_missing" -> return "browser_video_identity_unavailable"
+        }
+        if (media.optJSONObject("bilibili") == null) return "browser_playinfo_unavailable"
+        if (media.optInt("width") <= 0 || media.optInt("height") <= 0) return "browser_video_loading"
+        val counts = diagnostics(media)
+        if (counts.optJSONObject("video")?.optInt("exact_matches") == 0) return "browser_video_missing"
+        if (counts.optJSONObject("audio")?.optInt("exact_matches") == 0) return "browser_audio_missing"
+        if (counts.optJSONObject("video")?.optInt("dimension_matches") == 0) return "browser_quality_changing"
+        return "browser_capture_mismatch"
+    }
+
     /** Resolve a season landing page to the episode selected by the page, never a playlist. */
     fun episodePage(page: WebVideoPage, media: JSONObject?): WebVideoPage? = runCatching {
         require(page.site == "bilibili" && page.id.matches(Regex("(?:ep|ss)[1-9][0-9]{0,19}:1")))

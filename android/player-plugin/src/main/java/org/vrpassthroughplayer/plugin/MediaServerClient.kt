@@ -35,6 +35,18 @@ internal data class MediaServerAccount(val id: String, val name: String, val bas
 }
 
 internal object MediaLibraryUri {
+    fun photo(server: String, id: String): String {
+        mediaRequire(server.matches(Regex("[A-Za-z0-9-]{1,64}")) && id.matches(Regex("[A-Za-z0-9-]{1,64}")))
+        return "medialib://$server/photo/$id"
+    }
+    fun isPhoto(value: String): Boolean = value.startsWith("medialib://") &&
+        runCatching { URI(value).path.orEmpty().startsWith("/photo/") }.getOrDefault(false)
+    fun photoIdentity(value: String): Pair<String, String> {
+        val u = try { URI(value) } catch (_: Exception) { throw MediaServerFailure("Invalid media identity") }
+        val id = u.path.orEmpty().removePrefix("/photo/")
+        mediaRequire(u.host != null && photo(u.host, id) == value, "Invalid media identity")
+        return u.host to id
+    }
     fun scene(server: String, id: String, sourceId: String = ""): String {
         mediaRequire(server.matches(Regex("[A-Za-z0-9-]{1,64}")) && id.matches(Regex("[A-Za-z0-9-]{1,64}")))
         mediaRequire(sourceId.length <= 256 && sourceId.none { it.isISOControl() }, "Invalid media identity")
@@ -166,6 +178,7 @@ internal interface MediaLibraryClient {
         return cover(id)
     }
     fun coverFallback(id: String): MediaCover? = null
+    fun photo(id: String): MediaStreamLink = throw MediaServerFailure("Photo unavailable")
     fun stream(id: String): MediaStreamLink
     fun stream(id: String, sourceId: String): MediaStreamLink {
         mediaRequire(sourceId.isEmpty(), "Video unavailable")

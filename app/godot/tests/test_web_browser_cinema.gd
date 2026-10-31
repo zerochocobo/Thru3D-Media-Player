@@ -57,7 +57,7 @@ func _run() -> void:
 	for hand in ["left_hand", "right_hand"]:
 		main.hand_pointers[hand] = preload("res://scripts/hand_pointer.gd").new()
 		main.hand_pointers[hand].source = "hand"
-		for local in [Vector3(0.655, 0.555, 0.002), Vector3(0.13, 0.515, 0)]:
+		for local in [Vector3(0.79, host.PLAY_Y, 0.002), Vector3(0.13, 0.698, 0)]:
 			var before: Transform3D = host.global_transform
 			var origin: Vector3 = main.eye.origin + main.eye.basis * Vector3(-0.18 if hand == "left_hand" else 0.18, -0.25, -0.25)
 			var direction := (host.to_global(local) - origin).normalized()
@@ -74,7 +74,7 @@ func _run() -> void:
 			var settled: Transform3D = host.global_transform
 			main.eye.basis = main.eye.basis * Basis(Vector3.UP, 0.1); host._process(0)
 			check(host.global_transform.is_equal_approx(settled), "Released bar stays placed when the head turns")
-		main.hand_pointers[hand].ray = [main.eye.origin, (host.to_global(Vector3(0.655, 0.555, 0.002)) - main.eye.origin).normalized()]
+		main.hand_pointers[hand].ray = [main.eye.origin, (host.to_global(Vector3(0.79, host.PLAY_Y, 0.002)) - main.eye.origin).normalized()]
 		main._begin_interface_move(hand, "grip_click")
 		check(not main.interface_move.capture.is_empty(), "Grip captures the near cinema bar through Main")
 		main.hand_pointers[hand].ray[1] = Basis(Vector3.UP, -0.15) * main.hand_pointers[hand].ray[1]
@@ -82,7 +82,7 @@ func _run() -> void:
 		main.interface_move.cancel()
 	# Tracking loss cancels pinch ownership without moving the page.
 	var origin: Vector3 = main.eye.origin
-	var direction := (host.to_global(Vector3(0.655, 0.555, 0.002)) - origin).normalized()
+	var direction := (host.to_global(Vector3(0.79, host.PLAY_Y, 0.002)) - origin).normalized()
 	host.press_pointer("right_hand", origin, direction, true)
 	host.update_pointer("right_hand", origin, direction, false)
 	check(host.drag.is_empty(), "Tracking loss cancels near-bar capture")
@@ -113,7 +113,7 @@ func _run() -> void:
 	for failure in failures: push_error(failure)
 	quit(0 if failures.is_empty() else 1)
 func check_facing(host: Node3D, eye: Vector3) -> void:
-	var facing := (eye - host.to_global(Vector3(0.13, 0.505, 0))).normalized()
+	var facing := (eye - host.to_global(host.move_centre())).normalized()
 	check(host.global_basis.z.normalized().dot(facing) > 0.9999 and absf(host.global_basis.x.y) < 0.001, "Near bar normal faces the headset from its own centre without roll")
 func star_texture(host: Node3D) -> Texture2D:
 	var button: Dictionary = host._buttons.filter(func(item): return item.target == host.browser.BASE + 4)[0]

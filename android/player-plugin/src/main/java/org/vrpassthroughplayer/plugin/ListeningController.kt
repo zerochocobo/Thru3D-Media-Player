@@ -17,7 +17,8 @@ internal class ListeningController(private val context: ()->Context?,private val
                                    private val retainAudio: (String,LongArray)->Unit = {_,_->},
                                    private val input: (String)->ListeningInput? = {null}):AutoCloseable {
     data class Source(val handle: Long,val path: String,val ca: String,val allowed: Boolean,
-                      val disc: Boolean,val playlist: Int,val audioDelay: Double,val directAudio: Boolean=false)
+                      val disc: Boolean,val playlist: Int,val audioDelay: Double,val directAudio: Boolean=false,
+                      val primaryAudio: String="")
     private val lock=Any()
     private val clock=Executors.newSingleThreadScheduledExecutor {Thread(it,"ListeningClock")}
     private val worker=Executors.newSingleThreadExecutor {Thread(it,"ListeningAudio")}
@@ -136,8 +137,9 @@ internal class ListeningController(private val context: ()->Context?,private val
         val selected=details.optString("audio_track_id").toIntOrNull() ?: -1
         val tracks=details.optJSONArray("audio_tracks") ?: return@synchronized
         val metadata=(0 until tracks.length()).map {tracks.getJSONObject(it)}.find {it.optInt("id")==selected} ?: return@synchronized
-        val track=metadata.optInt("stream_index",-1)
-        if(track<0||metadata.optBoolean("external")){fail("unsupported_audio");return@synchronized}
+        val audio=ListeningPolicy.audioInput(current.path,metadata,current.primaryAudio,mediaOrigin)
+        if(audio==null){fail("unsupported_audio");return@synchronized}
+        val track=audio.cacheTrack
         if(cueCache?.revoked==true || cacheMedia!=config.media || cacheLanguage!=config.language || cacheTrack!=track || cachePlaylist!=current.playlist || cueCache?.persistent!=config.persist){
             val previous=cueCache;cueCache=null;cues.clear()
             if(previous!=null&&!previous.revoked&&previous.persistent==config.persist)worker.execute{previous.flush(true)}
@@ -208,20 +210,21 @@ internal class ListeningController(private val context: ()->Context?,private val
                         anchor=maxOf(0.0,position-.25);coverFrom=maxOf(anchor,cueCache?.coveredEnd(anchor) ?: anchor)
                         through=coverFrom;maxOf(0.0,coverFrom-ListeningCueCache.SETTLE_SECONDS).also{preroll=coverFrom-it}}
                     if(synchronized(lock){token==epoch&&through>=ListeningPolicy.workHorizon(anchor,position,preparing,speed,config.lead)}){phase="idle";return@execute}
-                    prepareAudio(current.path)
+                    prepareAudio(audio.path)
                     if(!synchronized(lock){
                         if(closed||token!=epoch)false else {
                             sharedHandle=current.handle;updateReadAhead(current)
                             ListeningNative.begin(engine);true
                         }
                     })return@execute
-                    val directInput=if(current.directAudio)input(current.path) else null
+                    val directAudio=current.directAudio&&!audio.external
+                    val directInput=if(directAudio)input(audio.path) else null
                     activeInput=directInput
                     try {
-                    synchronized(ListeningWorkGate.lock){ListeningNative.openWithClock(engine,current.path,track,current.ca,readingFrom,current.disc,current.playlist,mediaOrigin,current.directAudio,directInput)}
+                    synchronized(ListeningWorkGate.lock){ListeningNative.openWithClock(engine,audio.path,audio.stream,current.ca,readingFrom,current.disc&&!audio.external,if(audio.external)-1 else current.playlist,audio.origin,directAudio,directInput)}
                     readerThrough=readingFrom
                     } catch(error: Throwable){directInput?.close();throw error}
-                    val spans=ListeningNative.audioSpans(engine);retainAudio(current.path,spans)
+                    val spans=ListeningNative.audioSpans(engine);retainAudio(audio.path,spans)
                     var totalGap=0L;audioGapMax=0L
                     for(i in 2 until spans.size step 2){val gap=spans[i]-spans[i-1];totalGap+=gap;audioGapMax=maxOf(audioGapMax,gap)}
                     audioGapAverage=if(spans.size>2)totalGap/(spans.size/2-1) else 0L
@@ -248,7 +251,7 @@ internal class ListeningController(private val context: ()->Context?,private val
                     if(eof)cueCache?.finish(end,duration,result.optDouble("audio_end",0.0).takeIf{it>0} ?: duration)
                 }}
             }catch(error: Throwable){
-                val upstream=if(stage in setOf("audio_open","recognition")) runCatching {audioFailure(current.path)}.getOrNull() else null
+                val upstream=if(stage in setOf("audio_open","recognition")) runCatching {audioFailure(audio.path)}.getOrNull() else null
                 synchronized(lock){if(!closed&&token==epoch){diagnose(stage,error);fail(ListeningPolicy.failureState(stage,upstream))}}
             }
             finally {

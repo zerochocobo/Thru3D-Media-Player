@@ -383,15 +383,19 @@ internal class NarrationController(private val context: () -> Context?, private 
             rejectedLate++
             spoken+=cue.key;lateSkipped++;missingCues++;outcome(cue,"late_before_generation");return
         }
-        val speech=Speech(cue,epoch,previewActive);cache[cue.key]=speech;val model=engineLease ?: return;val token=epoch;val voice=config.voice(language)
-        val text=NarrationPolicy.speechText(cue.text,language)
+        val speech=Speech(cue,epoch,previewActive);cache[cue.key]=speech;val model=engineLease ?: return;val token=epoch
+        val speechLanguage=language;val voice=config.voice(speechLanguage)
         synthesizing=true;generating=speech
         val nativeToken=++synthesisToken
         model.cancel()
         synthesisStartedNs=System.nanoTime();firstChunkMs=0.0
         synthesis.execute {
+            // Reuse comic readings off the clock/lock; a dictionary failure must
+            // take the normal generation-error path rather than strand the queue.
+            val text=runCatching {SubtitleNarrationText.prepare(cue.text,speechLanguage)}.getOrNull()
             var result: JSONObject?=null
             for(attempt in 0..1) {
+              if(text==null)break
               lateinit var rhythm: NarrationRhythm
               val level=NarrationLevel {chunk->synchronized(lock){
                   check(!closed&&token==epoch&&cache[cue.key]===speech){"voice_cancelled"}
@@ -400,10 +404,10 @@ internal class NarrationController(private val context: () -> Context?, private 
                   speech.chunks+=chunk;speech.samples+=chunk.size
                   if(speech.preview||config.timing=="interrupt")prepared+=cue.key
               }}
-              rhythm=NarrationRhythm(text,language){level.append(it)}
+              rhythm=NarrationRhythm(text,speechLanguage){level.append(it)}
               synchronized(lock){speech.localTempo=rhythm.tempoCeiling}
               try {
-                val frames=NarrationPolicy.generationFrameBudget(text,language,cue.end-cue.start,if(attempt==0)48 else 64)
+                val frames=NarrationPolicy.generationFrameBudget(text,speechLanguage,cue.end-cue.start,if(attempt==0)48 else 64)
                 result=JSONObject(runtime.synthesize(model,text,voice,nativeToken,frames,attempt>0,
                     active={ synchronized(lock){!closed && token==epoch && synthesisToken==nativeToken && !cloneSuspended} },
                     codes={NarrationAssets.voices(context() ?: error("Unavailable")).load(voice)},sink=object: NarrationNative.Sink {
@@ -460,7 +464,7 @@ internal class NarrationController(private val context: () -> Context?, private 
                 } else {
                     prepared+=cue.key
                     if(speech.preview&&speech.samples<=96000*8) {
-                        previewCache["$language:$voice"]=speech.chunks.toList()
+                        previewCache["$speechLanguage:$voice"]=speech.chunks.toList()
                         while(previewCache.values.sumOf {chunks->chunks.sumOf {it.size}}>2_097_152)previewCache.remove(previewCache.keys.first())
                     }
                 }

@@ -396,7 +396,8 @@ func _set_backdrop(size: Vector2, centre: Vector2 = Vector2.ZERO) -> void:
 		_backdrop.remove_meta("control_bar"); _backdrop.remove_meta("menu_eye_buffer")
 		_backdrop.material_override.render_priority = 10
 		_backdrop.material_override.set_shader_parameter("keep_opacity", false)
-		_backdrop.material_override.set_shader_parameter("surface_color", PANEL)
+	# Every ordinary layout starts with a panel; embedded pages may opt out afterwards.
+	_backdrop.material_override.set_shader_parameter("surface_color", PANEL)
 	_backdrop.mesh.size = size
 	_backdrop.position = Vector3(centre.x, centre.y, 0)
 	_backdrop.material_override.set_shader_parameter("surface_size", size)

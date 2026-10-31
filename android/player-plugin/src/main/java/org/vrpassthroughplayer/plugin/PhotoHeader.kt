@@ -23,6 +23,7 @@ internal data class PhotoHeader(val width: Int, val height: Int, val orientation
             fun text(at: Int, count: Int) = String(b, at, count, Charsets.ISO_8859_1)
             fun result(w: Long, h: Long, orientation: Int = 1) =
                 if (w in 1..32768 && h in 1..32768) PhotoHeader(w.toInt(), h.toInt(), orientation) else null
+            if(text(0,6) in setOf("GIF87a","GIF89a"))return result(u16(6,true).toLong(),u16(8,true).toLong())
             if (u8(0) == 0x89 && text(1, 3) == "PNG") return result(u32(16), u32(20))
             if (text(0, 4) == "RIFF" && text(8, 4) == "WEBP") {
                 return when (text(12, 4)) {

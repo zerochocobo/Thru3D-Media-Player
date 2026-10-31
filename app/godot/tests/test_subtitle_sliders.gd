@@ -1,6 +1,7 @@
 extends SceneTree
 const Depth := preload("res://scripts/subtitle_depth.gd")
 const Menu := preload("res://scripts/player_menu.gd")
+const Style := preload("res://scripts/subtitle_style.gd")
 var failures: Array[String] = []
 var state := {"has_video": true, "geometry": 1, "subtitle_distance": 5.0, "subtitle_vertical_position": 0.0}
 var saves: Array = []
@@ -82,6 +83,29 @@ func _run() -> void:
 	menu.subtitle_requested.connect(func(id): state.subtitle_track = id)
 	menu.toggle(); menu._activate(110); menu._activate(Menu.SUBTITLE_APPEARANCE)
 	check(menu.choices.sliders.size() == 3 and not menu.choices.targets.values().any(func(item): return item.get("key") == "subtitle_style"), "PGS has sync, size and position with no text-only style")
+	var pgs_targets := menu.choices.targets.keys().filter(func(id): return menu.choices.targets[id].get("key") == "subtitle_pgs_tint")
+	check(pgs_targets.size() == 5 and menu.choices.opened.is_empty(), "PGS has original and four inline tint swatches")
+	for target_id in pgs_targets:
+		var item: Dictionary = menu.choices.targets[target_id]
+		var button: Dictionary = menu._buttons.filter(func(entry): return entry.target == target_id)[0]
+		var label: Label3D = button.node.get_child(0)
+		check((not label.text.is_empty()) == (item.value == "original"), "Only Original uses a text button")
+		if item.value != "original":
+			check(is_equal_approx(button.rect.size.x, button.rect.size.y), "Tint hit surface is square around its circular swatch")
+	var tint_target: int = pgs_targets.filter(func(id): return menu.choices.targets[id].value == "yellow")[0]
+	var tint_button: Dictionary = menu._buttons.filter(func(entry): return entry.target == tint_target)[0]
+	var tint_ray: Vector3 = tint_button.node.to_global(Vector3(0, 0, 1))
+	menu.press_pointer("right", tint_ray, -menu.global_basis.z, true)
+	check(not state.has("subtitle_pgs_tint"), "PGS color does not commit before trigger release")
+	menu.release_pointer("right", tint_ray, -menu.global_basis.z, true)
+	check(state.get("subtitle_pgs_tint") == "yellow" and saves.back() == ["subtitle_pgs_tint", "yellow"] and menu._subtitle_appearance_open, "Ray release saves tint and retains appearance panel")
+	check(Style.normalize_pgs("invalid") == "original" and Style.normalize_pgs(null) == "original", "Invalid saved colors restore Original")
+	state.subtitle_options[0].codec = "subrip"
+	menu.refresh()
+	check(menu.choices.targets.values().any(func(item): return item.get("key") == "subtitle_style") and not menu.choices.targets.values().any(func(item): return item.get("key") == "subtitle_pgs_tint"), "Switching to text restores text styles")
+	check(state.subtitle_pgs_tint == "yellow", "Text track does not overwrite PGS preference")
+	state.subtitle_options[0].codec = "hdmv_pgs_subtitle"
+	menu.refresh()
 	var blocker: Dictionary = menu._ray_blockers[0]
 	var top: float = blocker.node.position.y + blocker.rect.size.y / 2.0
 	var left_x: float = menu._subtitle_main_bounds.get_center().x
@@ -103,6 +127,27 @@ func _run() -> void:
 	menu._activate(Menu.SUBTITLE_CLOSE)
 	check(not menu._subtitle_open and menu.visible and menu.allows_playback_sticks(), "Explicit close returns to the normal transport bar")
 	menu.free()
+	_persist_tint()
 	for failure in failures: push_error(failure)
 	print("Subtitle slider checks=", checks, " failures=", failures.size())
 	quit(0 if failures.is_empty() else 1)
+
+func _persist_tint() -> void:
+	var main := preload("res://scripts/main.gd").new()
+	main.video = preload("res://scripts/mpv_video_display.gd").new()
+	var directory := ProjectSettings.globalize_path("res://../../build/output/pgs-tint")
+	DirAccess.make_dir_recursive_absolute(directory)
+	main.settings_path = directory.path_join("preference-fixture.cfg")
+	main._on_player_setting("subtitle_style", "cyan_black")
+	main._on_player_setting("subtitle_pgs_tint", "pink")
+	var saved := ConfigFile.new()
+	check(saved.load(main.settings_path) == OK and saved.get_value("subtitles", "pgs_tint") == "pink", "Production action routing saves PGS tint to settings")
+	main.settings = saved
+	main.video.subtitle_pgs_tint = "original"; main.video.subtitle_style = "white_black"
+	main._restore_subtitle_settings()
+	check(main.video.subtitle_pgs_tint == "pink" and main.video.subtitle_style == "cyan_black", "Production restart restore retains independent text and PGS colors")
+	main._on_player_setting("subtitle_pgs_tint", "original")
+	check(main.video.subtitle_style == "cyan_black" and main.settings.get_value("subtitles", "pgs_tint") == "original", "Restoring Original preserves the text style")
+	main.settings = ConfigFile.new(); main._restore_subtitle_settings()
+	check(main.video.subtitle_pgs_tint == "original", "New and legacy settings preserve authored PGS colors")
+	main.video.free(); main.free()

@@ -209,6 +209,7 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
             .put("bilibili_probe", media.optString("bilibili_probe"))
             .put("bilibili_response_api", media.optBoolean("bilibili_response_api"))
             .put("bilibili_api_count", media.optInt("bilibili_api_count").coerceIn(0, 4))
+            .put("bilibili_view_count", media.optInt("bilibili_view_count").coerceIn(0, 4))
             .put("bilibili_binding", media.optString("bilibili_binding").takeIf { it in setOf("off", "adapter_unavailable", "not_read",
                 "unsupported_page", "initial_json_missing", "video_data_missing", "page_map_mismatch", "part_missing", "mapped",
                 "protected", "multiple_players", "response_cid_missing", "video_id_mismatch", "full_duration_missing", "full_duration_mismatch",
@@ -256,7 +257,8 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     }, { name, id, json -> if (!closed.get()) emitSignal(name, id, json) }, sources::playable, sources::sidecarAudio,
         sources::releaseMediaStream, sources::sidecarSubtitles, sources::streamProgress, sources::streamFailure,
         sources::subtitleFiles, sources::openSubtitleFile, sources::subtitleIdentity, sources::enableInterleaveCache,
-        sources::finishIsoPreflight, sources::voiceReference, sources::openSubtitleUri, sources::playbackView, sources::prepareListening, sources::retainListeningAudio, sources::listeningInput)
+        sources::finishIsoPreflight, sources::voiceReference, sources::openSubtitleUri, sources::playbackView, sources::prepareListening, sources::retainListeningAudio, sources::listeningInput,
+        webBrowser::awaitMediaRelease)
     private val backgroundAudio = BackgroundAudioImport({ activity?.applicationContext }, sources::audioDownload, sources::releasePhotoStream) { id, json ->
         if (!closed.get()) emitSignal("background_audio_imported", id, json)
     }
@@ -277,7 +279,7 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     @UsedByGodot fun audio_preview_status(): String = musicPreview.status()
     @UsedByGodot fun stop_audio_preview() = musicPreview.stop()
 
-    private val pdfs = PdfBridge({ activity?.applicationContext }) { id, json ->
+    private val pdfs = PdfBridge({ activity?.applicationContext }, sources::pdfSmbSource) { id, json ->
         if (!closed.get()) emitSignal("archive_ready", id, json)
     }
     @UsedByGodot fun pdf_open(uri: String): Int = if (closed.get()) -1 else pdfs.open(sources.nextId(), uri)
@@ -327,6 +329,13 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
         return if (photos.open(id, uri)) id else -1
     }
     @UsedByGodot fun get_photo_loading_status(id: Int): String = if (closed.get()) "" else photos.loadingStatus(id)
+    @UsedByGodot fun get_photo_animation_frame(id: Int): String = if(closed.get()) "" else photos.animationFrame(id)
+    @UsedByGodot fun pause_photo_animation(id: Int,paused: Boolean) = photos.pauseAnimation(id,paused)
+    @UsedByGodot fun restart_photo_animation(id: Int) = photos.restartAnimation(id)
+    @UsedByGodot fun upload_photo_animation_frame(id: Int,token: Long,texture: Int,mipmaps: Boolean): Boolean =
+        !closed.get() && photos.uploadAnimation(id,token,texture,mipmaps)
+    @UsedByGodot fun photo_animation_pixels(id: Int,token: Long): ByteArray =
+        if(closed.get())ByteArray(0) else photos.animationPixels(id,token)
     private val photoPreviews = PhotoPreviewBridge({ activity?.applicationContext }, sources::playable, sources::releasePhotoStream) { id, json ->
         if (!closed.get()) emitSignal("photo_preview_ready", id, json)
     }
@@ -804,6 +813,7 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     @UsedByGodot fun get_mpv_subtitles(id: Int, afterSequence: Long): String = if (closed.get()) "" else mpv.subtitles(id, afterSequence)
     @UsedByGodot fun get_mpv_loading_status(id: Int): String = if (closed.get()) "" else mpv.loadingStatus(id)
     @UsedByGodot fun get_mpv_subtitle_bitmap(id: Int, version: Long): ByteArray = if (closed.get()) ByteArray(0) else mpv.subtitleBitmap(id, version)
+    @UsedByGodot fun get_mpv_subtitle_bitmap_tinted(id: Int, version: Long, rgb: Int): ByteArray = if (closed.get()) ByteArray(0) else mpv.subtitleBitmap(id, version, rgb)
     @UsedByGodot fun set_mpv_depth_view(id: Int, shift: Double, convergence: Double): Boolean =
         !closed.get() && mpv.setDepthView(id, shift, convergence)
     @UsedByGodot fun set_mpv_portrait_depth(id: Int, enabled: Boolean): Boolean =
@@ -819,6 +829,9 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     @UsedByGodot fun request_mpv_layer_thumbnail(id: Int, width: Int, height: Int, rotation: Int, crop: FloatArray, outWidth: Int, outHeight: Int): Int =
         if (closed.get()) 0 else mpv.requestLayerThumbnail(id, width, height, rotation, crop, outWidth, outHeight)
     @UsedByGodot fun get_mpv_layer_thumbnail_state(request: Int): String = LayerThumbnail.state(request)
+    @UsedByGodot fun request_mpv_layer_snapshot(id: Int, outWidth: Int, outHeight: Int): Int =
+        if (closed.get()) 0 else mpv.requestLayerSnapshot(id, outWidth, outHeight)
+    @UsedByGodot fun cancel_mpv_layer_snapshot(request: Int) { LayerThumbnail.cancel(request) }
     @UsedByGodot fun take_mpv_layer_thumbnail(request: Int): ByteArray = LayerThumbnail.pixels(request)
     @UsedByGodot fun close_mpv_video(id: Int) { mpv.close(id) }
     @UsedByGodot fun request_mpv_pixel_mask(request: Int, id: Int, token: Long): Boolean =

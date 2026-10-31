@@ -14,7 +14,37 @@ const Thru3DBilibili = (() => {
   };
   const sameDocumentPage = (a, b) => {
     const x = page(a), y = page(b);
-    return !!x && !!y && (x.id === y.id || x.pgc === true && y.pgc === true);
+    // SPA navigation keeps the document's original request documentUrl. The caller
+    // separately enforces the tab/frame/document; each video still needs its own map.
+    return !!x && !!y && !!x.pgc === !!y.pgc;
+  };
+  const view = (raw, requested) => {
+    const v = raw?.code === 0 && raw.data?.View;
+    const number = x => typeof x === 'number' ? Number.isSafeInteger(x) && x > 0 ? String(x) : '' : /^[1-9][0-9]{0,19}$/.test(x || '') ? x : '';
+    if (!v || !/^BV[A-Za-z0-9]+$/.test(v.bvid || '') || !number(v.aid) ||
+        requested.bvid && requested.bvid !== v.bvid || requested.aid && requested.aid !== number(v.aid) ||
+        !(requested.bvid || requested.aid) || !Array.isArray(v.pages) || !v.pages.length || v.pages.length > 10000) return null;
+    const pages = v.pages.map(p => ({page:p.page, cid:number(p.cid), duration:p.duration}));
+    if (pages.some(p => !Number.isInteger(p.page) || p.page < 1 || p.page > 10000 || !p.cid ||
+        !Number.isFinite(p.duration) || p.duration <= 0 || p.duration > 86400) || new Set(pages.map(p=>p.page)).size !== pages.length) return null;
+    const result = {bvid:v.bvid, aid:number(v.aid), pages};
+    return JSON.stringify(result).length <= 64 * 1024 ? result : null;
+  };
+  const viewIdentity = (views, value) => {
+    const p = page(value); if (!p || p.pgc) return null;
+    const v = views.find(v => v.bvid === p.id || 'av' + v.aid === p.id);
+    const part = v?.pages?.find(part => part.page === p.part);
+    return part ? {page:value, id:p.id, aid:v.aid, part:p.part, cid:part.cid, expected_duration:part.duration} : null;
+  };
+  // The initial public recommendation list can supply the first part before the
+  // detail XHR arrives. It grants no stream/entitlement: playurl, exact observed
+  // URLs and player duration must still agree before it can be handed off.
+  const relatedIdentity = (related, value) => {
+    const p = page(value); if (!p || p.pgc || p.part !== 1 || !Array.isArray(related)) return null;
+    const v = related.slice(0, 64).find(v => v.bvid === p.id || 'av' + v.aid === p.id);
+    if (!v || ![v.aid, v.cid].every(n => Number.isSafeInteger(n) && n > 0) ||
+        !Number.isFinite(v.duration) || v.duration <= 0 || v.duration > 86400) return null;
+    return {page:value,id:p.id,aid:String(v.aid),part:1,cid:String(v.cid),expected_duration:v.duration};
   };
   const mediaCid = value => {
     try {
@@ -92,6 +122,24 @@ const Thru3DBilibili = (() => {
         cid, aid, ep, season, pgc: true, whole: true, expected_duration: Number(info?.timelength) / 1000});
     } catch (_) { return null; }
   };
+  const merge = (previous, current) => {
+    if (!previous || !current || previous.id !== current.id || previous.cid !== current.cid ||
+        previous.ep !== current.ep || previous.duration !== current.duration || previous.avid !== current.avid) return current;
+    const result = {...current};
+    for (const key of ['video','audio']) result[key] = current[key].map(track => {
+      const old = previous[key].find(t => t.id === track.id && t.codec === track.codec && t.width === track.width && t.height === track.height && t.fps === track.fps);
+      return old ? {...track,urls:[...new Set([...old.urls,...track.urls])].slice(-9)} : track;
+    });
+    return JSON.stringify(result).length <= 96 * 1024 ? result : current;
+  };
+  // Scheduling hint only: wait for both observed tracks before pausing a loading
+  // player. Native validation still checks the complete pair after the pause.
+  const ready = (data, requests, width, height) => {
+    if (!data || width <= 0 || height <= 0) return false;
+    const urls = new Set(requests.filter(r => r.kind === 'file').map(r => r.url));
+    return data.video.some(t => t.width === width && t.height === height && t.urls.some(u => urls.has(u))) &&
+      data.audio.some(t => t.urls.some(u => urls.has(u)));
+  };
   const episode = (document, value) => {
     const p = page(value); if (!p?.pgc) return null;
     if (p.id.startsWith('ep')) return p.id.slice(2);
@@ -127,8 +175,9 @@ const Thru3DBilibili = (() => {
     const source = { querySelectorAll: () => scripts };
     const state = assignment(source, '__INITIAL_STATE__'), v = state?.videoData;
     if (v && Array.isArray(v.pages) && v.pages.length <= 10000) {
-      // Do not retain the account/recommendation data accompanying the public part map.
-      const reduced = { cid: state.cid, videoData: { bvid: v.bvid, aid: v.aid, cid: v.cid,
+      // Retain only public part/recommendation identities and durations, not account,
+      // creator, ranking or personalization fields accompanying them.
+      const reduced = { cid: state.cid, related: Array.isArray(state.related) ? state.related.slice(0,64).map(v=>({bvid:v.bvid,aid:v.aid,cid:v.cid,duration:v.duration})) : [], videoData: { bvid: v.bvid, aid: v.aid, cid: v.cid,
         pages: v.pages.map(p => ({ page: p.page, cid: p.cid, duration: p.duration })) } };
       if (JSON.stringify(reduced).length <= 256 * 1024) savedState = reduced;
     }
@@ -170,7 +219,11 @@ const Thru3DBilibili = (() => {
     }
     const state = assignment(document, '__INITIAL_STATE__') || savedState, v = state?.videoData;
     initialStatus = !state ? 'initial_json_missing' : !v ? 'video_data_missing' : 'page_map_mismatch';
-    if (!v || ![v.bvid, 'av' + v.aid].includes(p.id) || !Array.isArray(v.pages)) return null;
+    if (!v || ![v.bvid, 'av' + v.aid].includes(p.id) || !Array.isArray(v.pages)) {
+      const identity = relatedIdentity(state?.related, value);
+      if (identity) { initialStatus = 'mapped'; return {identity, data:null}; }
+      return null;
+    }
     const part = v.pages.find(part => part.page === p.part);
     const cid = String(part?.cid || '');
     initialStatus = 'part_missing';
@@ -182,5 +235,5 @@ const Thru3DBilibili = (() => {
     initialStatus = 'mapped';
     return { identity, data };
   };
-  return { page, sameDocumentPage, mediaCid, address, normalize, normalizePgc, episode, initial, initialStatus: () => initialStatus };
+  return { page, sameDocumentPage, view, viewIdentity, mediaCid, address, normalize, normalizePgc, merge, ready, episode, initial, initialStatus: () => initialStatus };
 })();

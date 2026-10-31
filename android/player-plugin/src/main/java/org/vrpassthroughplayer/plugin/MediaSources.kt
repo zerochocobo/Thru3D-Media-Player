@@ -51,7 +51,7 @@ internal class MediaSources(
     private fun context(): Context? = host()?.applicationContext
     @Synchronized fun streams(): LocalStreamServer = server ?: LocalStreamServer().also { server = it }
 
-    fun releasePhotoStream(uri: String) { if (uri.isNotEmpty()) { usb.forgetStream(uri); server?.revoke(uri) } }
+    fun releasePhotoStream(uri: String) { if (uri.isNotEmpty()) { mediaServers.release(uri); usb.forgetStream(uri); server?.revoke(uri) } }
     fun streamProgress(uri: String): TransferMeter.Snapshot? = server?.progress(uri)
     fun streamFailure(uri: String): PlaybackFailure? = server?.failure(uri)
     fun prepareListening(uri: String) { server?.shareReadAhead(uri) }
@@ -324,6 +324,8 @@ internal class MediaSources(
     }
 
     fun cachedArchive(uri: String): Boolean = streams().cachedArchive(uri)
+    fun pdfSmbSource(uri: String, cancellation: CloudCancellation): PdfNetworkSource =
+        PdfSmbSource.open(uri, cancellation, smb::pdfStream, ::releasePhotoStream, ::hasPhotoStream)
     fun hasPhotoStream(uri: String): Boolean = server?.hasSource(uri) == true
 
     /** Capture owns its reader; opening it must not revoke playback or its subtitle/audio leases. */

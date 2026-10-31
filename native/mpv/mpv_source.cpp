@@ -240,10 +240,13 @@ struct Source final {
     // Direct mode (Alpha): publish MPV's exported MediaCodec images; no full-resolution RGBA render.
     std::atomic<bool> direct{false};
     std::atomic<bool> dolby_profile5{false};
+    // Once HDR is observed, keep MPV's full color pass for this source session.
+    // This also covers HDR10, HLG and the HDR-compatible base of Dolby Profile 8.
+    std::atomic<bool> hdr_source{false};
     // A layer session whose decoder fell back to software: mediacodec_embed cannot show its frames.
     std::atomic<bool> software_fallback{false};
     std::atomic<bool> interleave_suspect{false};
-    std::atomic<bool> dolby_color_ready{false};
+    std::atomic<bool> color_conversion_ready{false};
     std::atomic<uint64_t> dolby_frames{0};
     std::atomic<bool> cadence_target_ns{false};
     uint64_t subtitle_requests = 0, desired_subtitle_command = 0; // commands_mutex
@@ -562,6 +565,9 @@ struct Source final {
             ",\"dolby_vision_profile\":" + quote(property(core, "current-tracks/video/dolby-vision-profile")) +
             ",\"dolby_profile5\":" + (dolby_profile5.load() ? "true" : "false") +
             ",\"dolby_color_path\":" + quote(dolby_profile5.load() ? "GPU_RPU_RGBA16F_PQ_to_SDR" : "existing") +
+            ",\"hdr_source\":" + (hdr_source.load() ? "true" : "false") +
+            ",\"sdr_color_conversion\":" + (!layer() && needs_color_conversion() ? "true" : "false") +
+            ",\"color_conversion_ready\":" + (color_conversion_ready.load() ? "true" : "false") +
             ",\"dolby_rendered_frames\":" + std::to_string(dolby_frames.load()) +
             ",\"capture_mode\":" + quote(capture_metadata(core)) +
             ",\"capture_audio_layout_applied\":" + (capture_audio_layout_applied?"true":"false") +
@@ -648,13 +654,15 @@ struct Source final {
             ",\"read_us\":" + std::to_string(us) + ",\"cues\":" + cues + "}";
         std::lock_guard<std::mutex> lock(status_mutex); narration_queue = json;
     }
-    void dolby_color_mode(mpv_handle* core) {
-        if (!dolby_profile5.load() || dolby_color_ready.load()) return;
-        // Dolby/PQ needs the full-precision HDR intermediate. The source GPU
-        // still performs every pixel operation; no software decode/readback.
-        // All other sources keep the existing single-pass dumb-mode policy.
-        checked(mpv_set_property_string(core, "gpu-dumb-mode", "no"), "Profile 5 HDR color mode");
-        dolby_color_ready.store(true);
+    bool needs_color_conversion() const { return dolby_profile5.load() || hdr_source.load(); }
+    void configure_color_conversion(mpv_handle* core) {
+        if (!needs_color_conversion() || color_conversion_ready.load()) return;
+        // Reuse the established Profile 5 full-precision MPV GPU path for PQ/HLG.
+        // Its SDR RGBA output feeds both the displayed color and RVM model input.
+        // SDR keeps its existing fast pass; Android compositor surfaces keep their
+        // own HDR handling (this option only affects MPV's GPU renderer).
+        checked(mpv_set_property_string(core, "gpu-dumb-mode", "no"), "HDR to SDR color mode");
+        color_conversion_ready.store(true);
         force_redraw.store(true); wake.notify_one();
     }
     bool format(mpv_handle* core) {
@@ -672,11 +680,14 @@ struct Source final {
         const int rotation = quest::frame_rotation(static_cast<int>(rotate));
         require(width > 0 && height > 0 && width <= 8192 && height <= 8192 && width*height <= 8192LL*4320,
                 "MPV source dimensions exceed the current GPU slot contract");
-        // Before publishing dimensions: an Alpha session must render converted
-        // RGBA for Profile 5 instead of handing unconverted decoder YUV to Godot.
+        // Before publishing dimensions, select the color path for the decoded
+        // transfer function, not just the Dolby profile/container label.
         if (property(core, "current-tracks/video/dolby-vision-profile") == "5")
             dolby_profile5.store(true);
-        dolby_color_mode(core);
+        if (quest::needs_sdr_color_conversion(property(core, "video-params/gamma"), false) ||
+            quest::needs_sdr_color_conversion(property(core, "video-out-params/gamma"), false))
+            hdr_source.store(true);
+        configure_color_conversion(core);
         const uint64_t size = (static_cast<uint64_t>(width) << 32) | static_cast<uint32_t>(height);
         double par = 1.0;
         if (mpv_get_property(core, "video-out-params/par", MPV_FORMAT_DOUBLE, &par) < 0 ||
@@ -780,7 +791,7 @@ struct Source final {
             // Godot selects exact-name SRT/ASS or restores the user's saved track.
             option("sub-auto", "no");
             option("scale", "bilinear"); option("cscale", "bilinear"); option("dscale", "bilinear");
-            // Non-Profile-5 sources: one direct OES -> RGBA8 pass instead of an 8K RGBA16F intermediate plus a
+            // SDR sources: one direct OES -> RGBA8 pass instead of an 8K RGBA16F intermediate plus a
             // second 8K pass: -65% video-path bandwidth on Quest 3 (ovrgpuprofiler).
             // Cost: no chroma-location/linear-light processing; R09 RGB mean 0.21/255,
             // p99 5/255, max 40/255 at high-contrast edges.
@@ -853,7 +864,7 @@ struct Source final {
                 return mpv_command(core, command.data());
             });
             while (!closing.load() && !render_failed.load()) {
-                dolby_color_mode(core);
+                configure_color_conversion(core);
                 bool set_play = false, play = false, set_audio = false, muted = false, set_subtitle = false, seek_exact = true, set_speed = false;
                 double speed = 1.0, subtitle_delay = 0.0;
                 bool set_listening_cache = false; double listening_cache = 0.0;
@@ -1213,7 +1224,7 @@ struct Source final {
                     std::unique_lock<std::mutex> lock(wait_mutex);
                     wake.wait_for(lock, std::chrono::milliseconds(2)); continue;
                 }
-                if (seek_in_progress.load()) {
+                if (seek_in_progress.load() || (needs_color_conversion() && !color_conversion_ready.load())) {
                     std::unique_lock<std::mutex> lock(wait_mutex);
                     wake.wait_for(lock, std::chrono::milliseconds(2)); continue;
                 }
@@ -1303,7 +1314,8 @@ struct Source final {
                 // A decoder image can only be exported once. An explicit portrait effect refresh
                 // renders the retained source into a new full-size immutable colour lease instead.
                 if (texture_redraw) force_texture_redraw.store(false);
-                const bool direct_render = direct.load() && !texture_redraw && rotation == 0 && !dolby_profile5.load() && hardware_decoding.load();
+                const bool direct_render = quest::can_export_decoder_image(direct.load(), texture_redraw, rotation,
+                    hardware_decoding.load(), needs_color_conversion());
                 if (direct_render) { out_width = 16; out_height = 8; } // MPV still selects and times the frame
                 if (target->color && (target->out_width != out_width || target->out_height != out_height)) {
                     glDeleteFramebuffers(1, &target->fbo); glDeleteTextures(1, &target->color); target->fbo = target->color = 0;
@@ -1322,7 +1334,7 @@ struct Source final {
                 mpv_render_context_report_swap(renderer);
                 if (ticket.flags & QUEST_MPV_DOVI_PROFILE5) {
                     dolby_profile5.store(true);
-                    if (!dolby_color_ready.load() || (direct_render && !exported.exported)) {
+                    if (!color_conversion_ready.load() || (direct_render && !exported.exported)) {
                         // The same-frame flag also covers streams without a
                         // container profile. Retain no tiny/unconverted output;
                         // redraw the selected frame at full size on the next pass.
@@ -1949,19 +1961,34 @@ Java_org_vrpassthroughplayer_plugin_MpvSourceNative_seek(JNIEnv* env, jclass, jl
         source->wake.notify_one(); return JNI_TRUE;
     } catch (const std::exception& failure) { error(env, failure); return JNI_FALSE; }
 }
-extern "C" JNIEXPORT jbyteArray JNICALL
-Java_org_vrpassthroughplayer_plugin_MpvSourceNative_subtitleBitmap(JNIEnv* env, jclass, jlong handle, jlong version) {
+static jbyteArray subtitle_bitmap(JNIEnv* env, jlong handle, jlong version, uint32_t rgb) {
     try {
-        auto source = find(handle); std::lock_guard<std::mutex> lock(source->status_mutex);
+        auto source = find(handle); std::unique_lock<std::mutex> lock(source->status_mutex);
         const auto& pixels = source->published_pgs_pixels;
         if (version <= 0 || source->closing.load() || source->seek_in_progress.load() ||
             source->last_epoch.load() < source->epoch_floor.load() ||
             static_cast<uint64_t>(version) != source->published_pgs_version) return env->NewByteArray(0);
-        auto result = env->NewByteArray(static_cast<jsize>(pixels.size()));
-        if (result && !pixels.empty()) env->SetByteArrayRegion(result, 0, static_cast<jsize>(pixels.size()),
-                                                             reinterpret_cast<const jbyte*>(pixels.data()));
+        std::vector<uint8_t> tinted;
+        const auto* output = &pixels;
+        if (rgb != 0xffffff) {
+            tinted = pixels; // Published source pixels remain pristine when changing colors.
+            lock.unlock();
+            quest::tint_pgs_rgba(tinted, rgb);
+            output = &tinted;
+        }
+        auto result = env->NewByteArray(static_cast<jsize>(output->size()));
+        if (result && !output->empty()) env->SetByteArrayRegion(result, 0, static_cast<jsize>(output->size()),
+                                                             reinterpret_cast<const jbyte*>(output->data()));
         return result;
     } catch (const std::exception& failure) { error(env, failure); return env->NewByteArray(0); }
+}
+extern "C" JNIEXPORT jbyteArray JNICALL
+Java_org_vrpassthroughplayer_plugin_MpvSourceNative_subtitleBitmap(JNIEnv* env, jclass, jlong handle, jlong version) {
+    return subtitle_bitmap(env, handle, version, 0xffffff);
+}
+extern "C" JNIEXPORT jbyteArray JNICALL
+Java_org_vrpassthroughplayer_plugin_MpvSourceNative_subtitleBitmapTinted(JNIEnv* env, jclass, jlong handle, jlong version, jint rgb) {
+    return subtitle_bitmap(env, handle, version, static_cast<uint32_t>(rgb) & 0xffffff);
 }
 extern "C" JNIEXPORT jstring JNICALL
 Java_org_vrpassthroughplayer_plugin_MpvSourceNative_status(JNIEnv* env, jclass, jlong handle) {

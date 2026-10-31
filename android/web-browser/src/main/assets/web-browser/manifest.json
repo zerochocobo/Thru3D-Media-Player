@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "Thru3D video handoff",
-  "version": "1.12",
+  "version": "1.19",
   "browser_specific_settings": { "gecko": { "id": "web-video@thru3d.local" } },
   "permissions": ["nativeMessaging", "nativeMessagingFromContent", "geckoViewAddons", "cookies", "webRequest", "webRequestBlocking", "http://*/*", "https://*/*",
     "https://*.youtube.com/*", "https://*.bilibili.com/*", "https://*.douyin.com/*", "https://*.iesdouyin.com/*",

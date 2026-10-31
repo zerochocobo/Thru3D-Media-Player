@@ -82,7 +82,10 @@ internal class PhotoPreviewBridge(
                 val heif = HeifPhotoInfo.read(source)
                 val metadata = JSONObject().put("state", "ready").put("orientation", 1)
                 var bitmap: Bitmap
-                if (PhotoBitmap.isNative(source)) {
+                if(ExtendedPhoto.kind(source)!=0) {
+                    val decoded=ExtendedPhoto.bitmap(source,edge,true,::checkCurrent)
+                    bitmap=decoded.first;metadata.put("orientation",decoded.second[5])
+                } else if (PhotoBitmap.isNative(source)) {
                     val bounds = PhotoBitmap.bounds(source)
                     var sample = 1
                     while (maxOf(bounds.outWidth, bounds.outHeight) / sample > edge * 2) sample *= 2

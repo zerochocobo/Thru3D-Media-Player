@@ -61,7 +61,12 @@ internal class WebVideoResolver(private val context: () -> Context?, private val
             try {
                 val app = context() ?: error("Activity unavailable")
                 attempt.check()
-                val media = browserMedia(url)
+                val media = if (bilibiliBeta && publicPage?.site == "bilibili") {
+                    attempt.stage = "browser_capture"
+                    var reason = "browser_session_unavailable"
+                    WebVideoBilibiliCapture.awaitReady(publicPage, { browserMedia(url) }, attempt::check, unavailable = { reason = it })
+                        ?: throw ExtractionFailure(reason)
+                } else browserMedia(url)
                 if (media?.optBoolean("protected") == true) throw ExtractionFailure("protected_content")
                 val sourcePage = publicPage ?: media?.let { WebVideoBrowserCapture.serverPage(url, it) ?: WebVideoNetworkCapture.page(url, it) }
                     ?: throw ExtractionFailure("unsupported_page")
@@ -135,20 +140,20 @@ internal class WebVideoResolver(private val context: () -> Context?, private val
                 // EME or SPA replacement can arrive while network probes run. Never publish an
                 // old representation after the page switched content or acquired MediaKeys.
                 if (media != null) {
-                    val latest = browserMedia(url) ?: throw ExtractionFailure("browser_playback_required")
+                    val latest = browserMedia(url) ?: throw ExtractionFailure("browser_page_changed")
                     if (latest.optBoolean("protected")) throw ExtractionFailure("protected_content")
                     if (latest.optString("capture_identity") != media.optString("capture_identity") || latest.optBoolean("network_enabled") != networkEnabled)
-                        throw ExtractionFailure("browser_playback_required")
+                        throw ExtractionFailure("browser_page_changed")
                     if (pgc && WebVideoBilibiliCapture.episodePage(sourcePage, latest) != page)
-                        throw ExtractionFailure("browser_playback_required")
+                        throw ExtractionFailure("browser_page_changed")
                     if (bilibiliEnabled) {
-                        val current = WebVideoBilibiliCapture.formats(page, latest) ?: throw ExtractionFailure("browser_playback_required")
+                        val current = WebVideoBilibiliCapture.formats(page, latest) ?: throw ExtractionFailure(WebVideoBilibiliCapture.unavailableReason(latest))
                         val pair = WebVideoFormats.select(page, current, capabilities)
                         if (pair.video.url != selected.video.url || pair.audio?.url != selected.audio?.url)
-                            throw ExtractionFailure("browser_playback_required")
+                            throw ExtractionFailure("browser_stream_changed")
                     }
                     if (browserQuality && !WebVideoNetworkCapture.keepsQuality(selected.video, latest))
-                        throw ExtractionFailure("browser_playback_required")
+                        throw ExtractionFailure("browser_quality_changing")
                 }
                 synchronized(this) {
                     if (closed || active !== attempt || attempt.cancelled.get()) return@submit

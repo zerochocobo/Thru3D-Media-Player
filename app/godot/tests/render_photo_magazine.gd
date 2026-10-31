@@ -38,7 +38,7 @@ func run() -> void:
 	camera.size = 1.9; camera.position = Vector3(0,.20,2); view.add_child(camera); camera.current = true
 	for language in ["en","zh","zh_Hant","ja"]:
 		I18n.use(language)
-		for scene in ["wall","layouts","rows","background","background-import","background-actions","background-actions-saving","background-actions-set","background-actions-error","background-set","magazine","archive","reading-order","magazine-rtl","magazine-depth","magazine-portrait","failed"]:
+		for scene in ["wall","layouts","rows","background","background-night","background-import","background-actions","background-actions-saving","background-actions-set","background-actions-error","background-actions-global-saving","background-actions-global-set","background-actions-global-error","background-set","magazine","archive","reading-order","magazine-rtl","magazine-depth","magazine-portrait","failed"]:
 			var state := {"has_image":scene != "failed","count":168,"index":16,"title":"Magazine / 017.png", "layout":4 if scene in ["magazine","archive","reading-order","magazine-rtl","magazine-depth","magazine-portrait"] else 2,
 				"depth_available":scene in ["magazine","magazine-depth"], "portrait_available":scene == "magazine", "depth_requested":scene in ["magazine-depth","magazine-portrait"],
 				"depth_enabled":scene in ["magazine-depth","magazine-portrait"], "depth_strength":1.0, "portrait_requested":scene == "magazine-portrait", "portrait_enabled":scene == "magazine-portrait", "render_strength":1.0,
@@ -46,21 +46,22 @@ func run() -> void:
 				"magazine_rtl":scene in ["reading-order","magazine-rtl"],
 				"geometry":0,"wall_rows":3,"can_previous":true,"can_next":true,"gallery_focus":-1,
 				"gallery_overview":scene == "wall", "archive_mode":scene == "archive", "magazine_pages":2 if scene == "magazine" else 1,
-				"photo_background":"morning","photo_background_yaw":45,"photo_background_brightness":.75,
+				"photo_background":"night" if scene == "background-night" else "morning","photo_background_yaw":45,"photo_background_brightness":.75,
 				"photo_global_custom":scene in ["background", "background-import"], "photo_background_custom":scene in ["background", "background-import"], "can_background":scene in ["background-import", "background-actions"], "audio_title":"", "source_size":"3000 × 2000"}
 			if scene.begins_with("background-actions") or scene == "background-set":
 				state.can_background = true
-				state["photo_background_applied"] = scene.ends_with("-set")
-				state["photo_background_saving"] = scene.ends_with("-saving")
-				state["photo_background_loading"] = scene.ends_with("-saving")
-				state["photo_background_error"] = "Background unavailable" if scene.ends_with("-error") else ""
+				var prefix := "photo_global_background" if scene.begins_with("background-actions-global") else "photo_background"
+				state[prefix + "_applied"] = scene.ends_with("-set")
+				state[prefix + "_saving"] = scene.ends_with("-saving")
+				state["photo_background_loading"] = prefix == "photo_background" and scene.ends_with("-saving")
+				state[prefix + "_error"] = "Background unavailable" if scene.ends_with("-error") else ""
 			var menu := Menu.new(); view.add_child(menu); menu.set_process(false); menu.state_provider = func(): return state
 			menu.favorite_provider = func(): return {"enabled":true,"favorite":false}
 			menu.visible = true; menu._layout_open = scene in ["layouts","rows","archive","reading-order"]; menu._wall_rows_open = scene == "rows"
 			menu._magazine_order_open = scene == "reading-order"
 			menu._depth_open = scene == "magazine-depth"
 			if scene.begins_with("background-actions"): menu.section = 1
-			menu._scenery_open = scene in ["background", "background-import", "background-set"]; menu.refresh()
+			menu._scenery_open = scene in ["background", "background-night", "background-import", "background-set"]; menu.refresh()
 			for b in menu._buttons:
 				var a := camera.unproject_position(b.node.to_global(Vector3(-b.rect.size.x*.5,-b.rect.size.y*.5,0)))
 				var z := camera.unproject_position(b.node.to_global(Vector3(b.rect.size.x*.5,b.rect.size.y*.5,0)))

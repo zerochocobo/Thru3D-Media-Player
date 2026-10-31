@@ -39,6 +39,7 @@ internal object PhotoBitmap {
     fun bounds(file: File): BitmapFactory.Options {
         val result = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         rawBounds(file)?.let { result.outWidth=it[0]; result.outHeight=it[1]; result.outMimeType="application/x-thru3d-rgba"; return result }
+        if(ExtendedPhoto.kind(file)!=0)return ExtendedPhoto.bounds(file)
         if (isHdr(file)) {
             val info=HdrPhotoNative.inspect(file.path) ?: error("PHOTO_FORMAT_UNSUPPORTED")
             result.outWidth=info[0]; result.outHeight=info[1]; result.outMimeType=if(info[3]==1) "image/vnd.radiance" else "image/x-exr"
@@ -48,7 +49,10 @@ internal object PhotoBitmap {
         } else BitmapFactory.decodeFile(file.path, result)
         return result
     }
-    fun orientation(file: File): Int = if(isHdr(file)) 1 else if (isTiff(file)) TiffPhotoNative.inspect(file.path)?.get(2) ?: 1
+    fun orientation(file: File): Int = if(ExtendedPhoto.kind(file)!=0) {
+        val id=ExtendedImageNative.open(file.path,512,true)
+        try {if(id>0)ExtendedImageNative.info(id)?.get(5)?.toInt()?:1 else 1}finally {if(id>0)ExtendedImageNative.close(id)}
+    } else if(isHdr(file)) 1 else if (isTiff(file)) TiffPhotoNative.inspect(file.path)?.get(2) ?: 1
         else runCatching { PhotoHeader.normalizedOrientation(ExifInterface(file.path).getAttributeInt(ExifInterface.TAG_ORIENTATION, 1)) }.getOrDefault(1)
     fun rawBounds(file: File): IntArray? {
         if (file.extension != "t3di") return null
@@ -86,6 +90,10 @@ internal object PhotoBitmap {
         catch (error: Throwable) { image.recycle(); throw error }
     }
     fun decode(file: File, options: BitmapFactory.Options, check: () -> Unit = {}): Bitmap? {
+        if(ExtendedPhoto.kind(file)!=0) {
+            val bounds=ExtendedPhoto.bounds(file)
+            return ExtendedPhoto.bitmap(file,(maxOf(bounds.outWidth,bounds.outHeight)/maxOf(1,options.inSampleSize)).coerceIn(64,8192),false,check).first
+        }
         if (!isNative(file)) return BitmapFactory.decodeFile(file.path, options)
         val info = bounds(file)
         var sample = maxOf(1, options.inSampleSize)

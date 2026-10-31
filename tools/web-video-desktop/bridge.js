@@ -3,12 +3,13 @@
 const requests = new Map();
 const apiEvents = [];
 const normalizedShapes = [];
+let documentSequence = 0;
 const endpoint = '__REPORT_ENDPOINT__';
-const apiPath = u => u.hostname === 'api.bilibili.com' && /\/(?:playurl|playview)$/.test(u.pathname);
+const apiPath = u => u.hostname === 'api.bilibili.com' && (/\/(?:playurl|playview)$/.test(u.pathname) || u.pathname.includes('/web-interface/') && u.pathname.includes('/view'));
 browser.webRequest.onHeadersReceived.addListener(d => {
   const u = new URL(d.url);
   if (apiPath(u)) {
-    apiEvents.push({path: u.pathname, query_keys: [...u.searchParams.keys()].filter(k => /^[a-z_0-9]{1,40}$/i.test(k)), status: d.statusCode, frame: d.frameId, type: d.type,
+    apiEvents.push({path: u.pathname, view_aid: u.searchParams.get('aid') === '0' ? 'zero' : /^[1-9][0-9]+$/.test(u.searchParams.get('aid') || '') ? 'positive' : 'absent', query_keys: [...u.searchParams.keys()].filter(k => /^[a-z_0-9]{1,40}$/i.test(k)), status: d.statusCode, frame: d.frameId, type: d.type,
       json: (d.responseHeaders || []).some(h => h.name.toLowerCase() === 'content-type' && /^application\/json(?:;|$)/i.test(h.value))});
     if (apiEvents.length > 16) apiEvents.shift();
   }
@@ -29,9 +30,9 @@ function summarize(item) {
     host: /(?:^|\.)bilivideo\.(com|cn)$/.test(new URL(value).hostname) ? 'bilivideo' : 'other',
     current_part: !!data && group(value) === data.cid,
     api_video: tracks('video').includes(value), api_audio: tracks('audio').includes(value)});
-  return {part: Number(new URL(item.frame).searchParams.get('p') || 1), width: item.width, height: item.height, duration: item.duration, playing: item.playing,
+  return {page_path: new URL(item.frame).pathname, part: Number(new URL(item.frame).searchParams.get('p') || 1), width: item.width, height: item.height, duration: item.duration, playing: item.playing,
     time: item.time, binding: item.bilibili_binding, response_status: item.bilibili_status,
-    api_count: item.bilibili_api_count, metadata: !!data, api_events: apiEvents, normalized_shapes: normalizedShapes,
+    api_count: item.bilibili_api_count, view_count: item.bilibili_view_count, metadata: !!data, api_events: apiEvents, normalized_shapes: normalizedShapes,
     video_representations: data?.video.length || 0, audio_representations: data?.audio.length || 0,
     captured_video: matching(observed, 'video'), captured_audio: matching(observed, 'audio'),
     original_video: matching(originals, 'video'), original_audio: matching(originals, 'audio'),
@@ -47,6 +48,7 @@ function summarize(item) {
 }
 browser.runtime.onConnect.addListener(port => {
   if (port.name !== 'thru3d_desktop_media') return;
+  const sequence = ++documentSequence;
   // Match Android's policy delivery without Android-only nativeMessaging permissions.
   port.postMessage({action: 'network_policy', enabled: false, bilibili: true});
   port.onMessage.addListener(message => {
@@ -54,7 +56,7 @@ browser.runtime.onConnect.addListener(port => {
     for (const item of message.videos) {
       if (!/^https:\/\/www\.bilibili\.com\/(?:video|bangumi\/play)\//.test(item.frame || '')) continue;
       fetch(endpoint, {method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify(summarize(item))}).catch(() => {});
+        body: JSON.stringify({...summarize(item), document_sequence: sequence})}).catch(() => {});
     }
   });
 });

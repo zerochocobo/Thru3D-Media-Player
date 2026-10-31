@@ -43,7 +43,8 @@
     for (const [id, c] of state.items) if (now - c.at > TTL) state.items.delete(id);
     while (JSON.stringify([...state.items.values()]).length > (state.bilibili ? 96 : 192) * 1024) state.items.delete(state.items.keys().next().value);
     try { state.port.postMessage({ type: "network", page: state.page, candidates: [...state.items.values()],
-      bilibili: [...(state.biliResponses?.values() || [])], bilibili_requested: [...(state.biliRequests?.keys() || [])],
+      bilibili: [...(state.biliResponses?.values() || [])], bilibili_requested: [...(state.biliRequests?.keys() || [])].filter(k => !k.startsWith('view:')),
+      bilibili_views: [...(state.biliViews?.values() || [])],
       bilibili_status: state.biliStatus || 'idle', bilibili_response_api: typeof browser.webRequest.filterResponseData === 'function' }); } catch (_) {}
   };
   browser.runtime.onConnect.addListener(port => {
@@ -51,7 +52,7 @@
     if (port.name !== "thru3d_network" || s?.id !== browser.runtime.id || !Number.isInteger(s.tab?.id) ||
         s.tab.id < 0 || !Number.isInteger(s.frameId) || !url(s.url, true)) return;
     const id = `${s.tab.id}:${s.frameId}`;
-    const state = { port, page: s.url, document: s.documentId, enabled: false, bilibili: false, items: new Map(), timer: null };
+    const state = { port, page: s.url, documentPage: s.url, document: s.documentId, enabled: false, bilibili: false, items: new Map(), timer: null };
     const old = frames.get(id);
     if (old) { clearTimeout(old.timer); old.port.disconnect(); }
     frames.set(id, state);
@@ -64,10 +65,10 @@
         // Bilibili can preload the next part before pushState. Retain only this document's
         // bounded observations; the content script must bind CID to the current part map.
         const sameBili = bili && state.bilibili && Thru3DBilibili.sameDocumentPage(message.page, state.page);
-        if (!sameBili) { responses?.cancel(state); state.biliStatus = 'idle'; state.biliResponses = new Map(); state.biliRequests = new Map(); state.items.clear(); }
+        if (!sameBili) { responses?.cancel(state); state.biliStatus = 'idle'; state.biliResponses = new Map(); state.biliRequests = new Map(); state.biliViews = new Map(); state.items.clear(); }
         state.bilibili = bili;
         state.page = message.page; state.enabled = message.enabled === true;
-        for (const [request, value] of pending) if (value.state === state) pending.delete(request);
+        if (!sameBili) for (const [request, value] of pending) if (value.state === state) pending.delete(request);
         publish(state);
       }
     });
@@ -81,7 +82,8 @@
   const stateFor = d => {
     const state = frames.get(key(d));
     const sameBili = state?.bilibili && typeof Thru3DBilibili !== 'undefined' &&
-      Thru3DBilibili.sameDocumentPage(d.documentUrl, state.page);
+      Thru3DBilibili.sameDocumentPage(d.documentUrl, state.page) &&
+      (d.documentId && state.document || d.documentUrl?.split('#')[0] === state.documentPage.split('#')[0]);
     if (!state || !(state.enabled || state.bilibili) || d.tabId < 0 || (d.documentId && state.document && d.documentId !== state.document) ||
         (d.documentUrl && d.documentUrl.split('#')[0] !== state.page.split('#')[0] && !sameBili)) return null;
     return state;

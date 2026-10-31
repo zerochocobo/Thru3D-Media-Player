@@ -19,6 +19,13 @@ class Host extends RefCounted:
 	func get_mpv_subtitle_bitmap(_id: int, _version: int) -> PackedByteArray:
 		reads += 1
 		return pixels
+	func get_mpv_subtitle_bitmap_tinted(_id: int, _version: int, rgb: int) -> PackedByteArray:
+		reads += 1
+		# Decoder mock supplies the expected colored crop; native math is checked
+		# by benchmarks/native_pgs using the production pgs_tint.cpp implementation.
+		var patch := Image.create_empty(1280, 160, false, Image.FORMAT_RGBA8)
+		patch.fill_rect(Rect2i(20, 20, 1240, 120), Color.hex((rgb << 8) | 255))
+		return patch.get_data()
 	func set_mpv_subtitle(_id: int, value: int) -> bool:
 		track = value
 		return true
@@ -148,8 +155,45 @@ func _run() -> void:
 		var reference: PackedInt32Array = masks.alpha_zero if mode == "depth_layer_fallback" else masks.normal
 		if masks[mode] != reference:
 			failures.append("Depth conversion and layer fallback must retain the PGS silhouette: " + mode)
+	var original_fetches := host.reads
+	var tint_samples := {}
+	video.geometry = 0; video._apply_geometry(); video.panel.visible = true
+	video.set_subtitle_track(5)
+	video.media.state = "paused"
+	video.material.set_shader_parameter("alpha_enabled", false)
+	video._poll_subtitles()
+	for preset in Video.SubtitleStyle.PGS_PRESETS:
+		var before := host.reads
+		video.subtitle_pgs_tint = preset.value
+		# The setter must refresh this paused cue without polling or advancing frames.
+		if video.bitmap_subtitles.tint != preset.rgb:
+			failures.append("Paused tint setter did not immediately update the bitmap")
+		var texture := video.bitmap_subtitles.texture
+		video._poll_subtitles()
+		if video.bitmap_subtitles.texture != texture or host.reads > before + 1:
+			failures.append("Unchanged tinted cue must reuse the uploaded texture")
+		await process_frame; await RenderingServer.frame_post_draw; await RenderingServer.frame_post_draw
+		var tinted := viewport.get_texture().get_image()
+		var target := Color.hex((int(preset.rgb) << 8) | 255)
+		var matching := 0
+		for y in tinted.get_height():
+			for x in tinted.get_width():
+				var pixel := tinted.get_pixel(x, y)
+				if absf(pixel.r - target.r) < 0.03 and absf(pixel.g - target.g) < 0.03 and absf(pixel.b - target.b) < 0.03: matching += 1
+		tint_samples[preset.value] = matching
+		if matching < 100: failures.append("Tinted pixels missing from production shader: " + preset.value)
+		tinted.save_png(output.path_join("pgs_tint_" + preset.value + ".png"))
+	video.subtitle_pgs_tint = "original"
+	if video.bitmap_subtitles.image.get_data() != host.pixels: failures.append("Original must restore exact source pixels after multiple color changes")
+	video.disc_menu.bitmap = video.subtitles.bitmap.duplicate()
+	video.disc_menu.pixels = host.pixels
+	video.disc.menu_session = true
+	video.subtitle_pgs_tint = "pink"
+	var menu_original := video.bitmap_subtitles.image.get_data() == host.pixels and video.bitmap_subtitles.tint == 0xffffff
+	if not menu_original: failures.append("Disc menu graphics must retain their source colors regardless of subtitle tint")
+	video.disc.menu_session = false
 	var report := {"state": "passed" if failures.is_empty() else "failed", "white_pixels": counts,
-		"pixel_fetches": host.reads, "failures": failures,
+		"pixel_fetches": host.reads, "original_pixel_fetches": original_fetches, "tint_samples": tint_samples, "disc_menu_original": menu_original, "failures": failures,
 		"scope": "Production Godot shader and PGS state/pixel bridge with mock RGBA, desktop OpenGL; native decoder tested separately"}
 	FileAccess.open(output.path_join("pgs-render-verification.json"), FileAccess.WRITE).store_string(JSON.stringify(report, "\t"))
 	viewport.queue_free()

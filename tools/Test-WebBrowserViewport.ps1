@@ -10,7 +10,7 @@ $api = Join-Path $ToolRoot 'godot-android-api/4.7.2/godot-lib.template_debug.aar
 if ($LASTEXITCODE -ne 0) { throw "Browser JVM verification failed: $output/jvm.log" }
 $godotConsole = Join-Path (Split-Path $env:GODOT_EXE) 'godot_console.exe'
 $runner = if (Test-Path -LiteralPath $godotConsole) { $godotConsole } else { $env:GODOT_EXE }
-foreach ($test in @('test_web_browser_viewport', 'test_web_browser_windows', 'test_web_browser_peers', 'test_web_browser_cinema', 'test_web_browser_panel', 'test_web_browser_start_page', 'test_web_browser_transfer', 'test_web_browser_composition', 'test_web_fullscreen_handoff')) {
+foreach ($test in @('test_web_browser_viewport', 'test_web_browser_windows', 'test_web_browser_peers', 'test_web_browser_cinema', 'test_web_browser_panel', 'test_web_browser_start_page', 'test_web_browser_focus', 'test_web_browser_transfer', 'test_web_browser_composition', 'test_web_fullscreen_handoff')) {
     $logPath = Join-Path $output "$test.log"
     & $runner --headless --xr-mode off --path "$workspace/app/godot" --quit-after 1800 --script "res://tests/$test.gd" *> $logPath
     $log = Get-Content -LiteralPath $logPath -Raw

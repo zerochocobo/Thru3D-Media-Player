@@ -80,7 +80,7 @@ if ($headerEnd -lt 0) { throw 'Build header not found.' }
 $header = [ScriptBlock]::Create($buildSource.Substring(0, $headerEnd))
 function Test-MetaResolution([bool]$Stored) {
     . $header -QuestStore -XrVendor Quest -BuildType Release -UncompressedNativeLibraries:$Stored
-    if ($applicationId -ne 'com.thru3d.quest' -or $distributionChannel -ne 'quest_store') { throw 'Meta identity/channel resolution failed.' }
+    if ($applicationId -ne 'com.thru3d.quest' -or $distributionChannel -ne 'quest_store' -or $applicationName -cne 'Thru3D Media Player XR') { throw 'Meta identity/channel/display name resolution failed.' }
     $exportPresetsPath = Join-Path $workspace 'app/godot/export_presets.cfg'
     $appVersion = '0.15.2'
     . $resolve
@@ -89,6 +89,34 @@ function Test-MetaResolution([bool]$Stored) {
 }
 Test-MetaResolution $false
 Test-MetaResolution $true
+
+# Exercise the real temporary settings block against disposable fixture files.
+$settingsStart = $buildSource.IndexOf('$originalProjectConfig = [IO.File]::ReadAllBytes')
+$settingsEnd = $buildSource.IndexOf('if ($IncludeDiagnostics)', $settingsStart)
+if ($settingsStart -lt 0 -or $settingsEnd -lt 0) { throw 'Channel settings block not found.' }
+$settings = [ScriptBlock]::Create($buildSource.Substring($settingsStart, $settingsEnd - $settingsStart))
+foreach ($meta in @($false, $true)) {
+    . $header -XrVendor Quest -BuildType Release -QuestStore:$meta
+    $fixture = Join-Path $output $(if ($meta) { 'meta-display-name' } else { 'standard-display-name' })
+    New-Item -ItemType Directory -Force $fixture | Out-Null
+    $projectConfigPath = Join-Path $fixture 'project.godot'
+    $exportPresetsPath = Join-Path $fixture 'export_presets.cfg'
+    Copy-Item (Join-Path $workspace 'app/godot/project.godot') $projectConfigPath -Force
+    Copy-Item (Join-Path $workspace 'app/godot/export_presets.cfg') $exportPresetsPath -Force
+    $presetText = [IO.File]::ReadAllText($exportPresetsPath)
+    $originalExportPresets = $null
+    . $settings
+    $expectedName = if ($meta) { 'Thru3D Media Player XR' } else { 'Thru3D Media Player' }
+    $project = [IO.File]::ReadAllText($projectConfigPath)
+    $presets = [IO.File]::ReadAllText($exportPresetsPath)
+    if ($project -notmatch ('(?m)^config/name="' + [regex]::Escape($expectedName) + '"\r?$')) { throw 'Project channel display name differs.' }
+    $names = [regex]::Matches($presets, '(?m)^package/name="([^"]*)"')
+    if ($names.Count -ne 3 -or @($names | Where-Object { $_.Groups[1].Value -cne $expectedName }).Count) { throw 'Android channel display name differs.' }
+    if ($project -notmatch ('config/distribution_channel="' + $distributionChannel + '"')) { throw 'Display name override lost the channel.' }
+    if ([regex]::Matches($presets, ('package/unique_name="' + [regex]::Escape($applicationId) + '"')).Count -ne 3) { throw 'Display name override lost the package identity.' }
+    if ($meta -and ($null -eq $originalExportPresets -or [Text.Encoding]::UTF8.GetString($originalExportPresets) -cne $presetText)) { throw 'Original presets not retained for restoration.' }
+    if ([Text.Encoding]::UTF8.GetString($originalProjectConfig) -notmatch 'config/name="Thru3D Media Player"') { throw 'Original project name not retained for restoration.' }
+}
 
 $tokens = $null; $errors = $null
 [void][Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'Build-Player.ps1'), [ref]$tokens, [ref]$errors)

@@ -16,6 +16,7 @@
 -keep class org.vrpassthroughplayer.plugin.LiveCaptureNative { *; }
 -keep class org.vrpassthroughplayer.plugin.TiffPhotoNative { *; }
 -keep class org.vrpassthroughplayer.plugin.HdrPhotoNative { *; }
+-keep class org.vrpassthroughplayer.plugin.ExtendedImageNative { *; }
 -keepclassmembers class * implements org.vrpassthroughplayer.plugin.NarrationNative$Sink {
     public boolean onChunk(long, float[]);
 }

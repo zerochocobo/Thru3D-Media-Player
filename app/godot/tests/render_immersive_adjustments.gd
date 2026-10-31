@@ -43,6 +43,20 @@ func _run() -> void:
 			var reset: Dictionary = menu._buttons.filter(func(button): return button.target == Menu.VR_RESET)[0]
 			var label: Label3D = reset.node.get_child(0)
 			check(menu.ui_font().get_string_size(label.text, HORIZONTAL_ALIGNMENT_LEFT, -1, label.font_size).x * label.pixel_size < reset.rect.size.x - .02, "Reset caption fits " + language)
+			check(menu.text_width(I18n.t("Show gauges while adjusting"), menu.TEXT_BODY) < .33, "Gauge caption fits before the switch " + language)
+			for target in [Menu.VR_GAUGES_ON, Menu.VR_GAUGES_OFF, Menu.VR_HORIZONTAL, Menu.VR_VERTICAL, Menu.VR_ZOOM, 452] + ([Menu.ALIGNMENT_HORIZONTAL] if stereo else []):
+				menu._hover = {"right": target}; menu._update_tooltip()
+				check(menu._tooltip.visible and menu._tooltip.get_child(0).text == menu._tips[target], "Localized tooltip appears " + language + str(target))
+			menu._hover.clear(); menu._update_tooltip()
+		state.immersive_adjustment_gauges = false; state.stereo = true; menu.refresh()
+		await RenderingServer.frame_post_draw; await RenderingServer.frame_post_draw
+		check(view.get_texture().get_image().save_png(output.path_join("settings_%s_gauges_off.png" % language)) == OK, "Render disabled gauge preference " + language)
+		state.viewing_eye = 1; menu.refresh()
+		menu._hover = {"right": Menu.ALIGNMENT_HORIZONTAL}; menu._update_tooltip()
+		check(not menu._adjust_rows[Menu.ALIGNMENT_HORIZONTAL].button.enabled and menu._tooltip.visible, "Unavailable alignment still explains its requirements " + language)
+		await RenderingServer.frame_post_draw; await RenderingServer.frame_post_draw
+		check(view.get_texture().get_image().save_png(output.path_join("settings_%s_alignment_tooltip.png" % language)) == OK, "Render controller tooltip " + language)
+		menu._hover.clear(); menu._update_tooltip(); state.viewing_eye = 0; state.immersive_adjustment_gauges = true
 		menu.visible = false; library.visible = true; library.controls_page.mode = 0; library.refresh()
 		var rows := library.controls_page.items()
 		var start := rows.find(rows.filter(func(row): return row.get("fixed", "") == "Left grip + stick ← / →")[0])

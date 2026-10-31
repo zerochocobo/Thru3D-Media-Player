@@ -301,6 +301,8 @@ func remember_playback_context(uri: String = "") -> void:
 			_playback_context.search[key] = value.duplicate(true) if value is Array or value is Dictionary else value
 
 func set_compact(value: bool, restore_playback: bool = false) -> void:
+	# A resumed layout may reapply the current mode while authentication is open.
+	if account_panel.view == "web" and value == compact and not restore_playback: return
 	if archives.browsing: restore_playback = false
 	if restore_playback and browse_memory.locked(): _playback_context = {}
 	if value: server_browser.sort_query.clear()
@@ -470,6 +472,11 @@ func toggle() -> void:
 			_load_cloud(); refresh()
 
 func dismiss() -> void:
+	# Website authentication is a modal workflow. Losing focus, an outside ray or
+	# another controls toggle must not discard a phone/MFA step in progress.
+	if account_panel.view == "web":
+		account_panel.web_cancel()
+		return
 	web_browser.close()
 	if voice_picker_mode: finish_voice_picker(); return
 	archives.hide()
@@ -718,6 +725,8 @@ func _in_list(point: Vector3) -> bool:
 		and point.y < span.x + 0.01 and point.y > span.x - span.y - 0.02
 
 func press_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: bool) -> bool:
+	var login_ray: Array = account_panel.web_ray(hand, origin, direction, tracked)
+	origin = login_ray[0]; direction = login_ray[1]
 	if web_browser.press(hand, origin, direction, tracked): return true
 	if voice_manager.opened and choices.press(hand, origin, direction, tracked): return true
 	if voice_manager.opened:
@@ -737,6 +746,8 @@ func press_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: b
 		if not account_panel.web_hand.is_empty(): return true
 		var web_hit := ray_hit(origin, direction) if tracked else {}
 		if int(web_hit.get("target", NONE)) in [AccountPanel.WEB, AccountPanel.WEB_SCROLL]:
+			if account_panel.web_gecko(): super.update_pointer(hand, origin, direction, tracked)
+			if not web_hit.get("enabled", false): return true
 			account_panel.web_press(hand, web_hit.point, int(web_hit.target) == AccountPanel.WEB_SCROLL)
 			return true
 	if not compact and section == Section.MEDIA_SERVER and not account_panel.active() and server_browser.gallery.press(hand, origin, direction, tracked):
@@ -781,6 +792,8 @@ func cancel_pointer(hand: String) -> void:
 	super(hand)
 
 func update_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: bool) -> void:
+	var login_ray: Array = account_panel.web_ray(hand, origin, direction, tracked)
+	origin = login_ray[0]; direction = login_ray[1]
 	super(hand, origin, direction, tracked)
 	web_browser.move(hand, origin, direction, tracked)
 	if web_browser.hand == hand: return
@@ -798,7 +811,7 @@ func update_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: 
 	choices.update(hand, origin, direction, tracked)
 	server_browser.gallery.move(hand, origin, direction, tracked)
 	if account_panel.web_hand == hand:
-		var point: Variant = _plane_point(origin, direction) if tracked else null
+		var point: Variant = account_panel.web_project(origin, direction) if tracked else null
 		if point == null: account_panel.web_cancel()
 		else: account_panel.web_move(hand, point)
 		return
@@ -827,6 +840,8 @@ func update_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: 
 		_drag.at_us = now
 
 func release_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: bool) -> void:
+	var login_ray: Array = account_panel.web_ray(hand, origin, direction, tracked)
+	origin = login_ray[0]; direction = login_ray[1]
 	if web_browser.release(hand, origin, direction, tracked): return
 	if voice_manager.opened and choices.capture.get("hand", "") == hand:
 		choices.release(hand, origin, direction, tracked); return
@@ -840,7 +855,8 @@ func release_pointer(hand: String, origin: Vector3, direction: Vector3, tracked:
 	if choices.capture.get("hand", "") == hand:
 		choices.release(hand, origin, direction, tracked); return
 	if account_panel.web_hand == hand:
-		account_panel.web_release(hand, _plane_point(origin, direction) if tracked else null)
+		if account_panel.web_gecko(): super.update_pointer(hand, origin, direction, tracked)
+		account_panel.web_release(hand, account_panel.web_project(origin, direction) if tracked else null)
 		return
 	if _drag.is_empty() or _drag.hand != hand:
 		return
@@ -1845,6 +1861,8 @@ func _rebuild_rows() -> void:
 					memories.append({"value": option[0], "label": option[1], "hint": Quality.MEMORY_HINTS[option[0]]})
 				var memory_row := _choice_row("Memory", "memory_mode", int(settings.get("memory_mode", Quality.MEMORY_AUTO)), memories, true)
 				memory_row.info = Quality.MEMORY_INFO; rows.append(memory_row)
+				rows.append(_choice_row("Keep background during passthrough", "alpha_keep_background", bool(settings.get("alpha_keep_background", false)),
+					[{"value": false, "label": "Off"}, {"value": true, "label": "On"}]))
 				rows.append(_video_settings_group("alpha", "AI portrait passthrough (Alpha)"))
 				if _video_settings_expanded.get("alpha", false):
 					rows.append(_alpha_size_row(settings))
@@ -1941,7 +1959,7 @@ func _rebuild_rows() -> void:
 			elif tab == BACKGROUND_TAB:
 				var selected := CinemaFeature.normalize_background(str(settings.get("background", "cinema")))
 				var backgrounds: Array = []
-				for option in [["belfast", "Belfast sunset", "image"], ["morning", "Morning sky", "image"], ["cinema", "Grand cinema", "video"], ["dark", "Dark background", "circle"], ["passthrough", "Passthrough", "eyes"]]:
+				for option in [["belfast", "Belfast sunset", "image"], ["morning", "Morning sky", "image"], ["night", "Milky Way panorama", "image"], ["cinema", "Grand cinema", "video"], ["dark", "Dark background", "circle"], ["passthrough", "Passthrough", "eyes"]]:
 					if option[0] == "cinema" and not CinemaFeature.enabled(): continue
 					backgrounds.append({"value": option[0], "label": option[1]})
 				if settings.get("background_custom", false):
@@ -1949,7 +1967,7 @@ func _rebuild_rows() -> void:
 				var background_row := _choice_row("Background", "background", selected, backgrounds)
 				background_row.info = "Photo mode saves its background separately. Change it from the photo toolbar."
 				rows.append(background_row)
-				if selected in ["belfast", "morning", "custom"]:
+				if selected in ["belfast", "morning", "night", "custom"]:
 					var directions: Array = []
 					for angle in range(0, 360, 45): directions.append({"value": angle, "label": str(angle) + "°"})
 					rows.append(_choice_row("Direction", "background_yaw", int(settings.get("background_yaw", 0)), directions))
@@ -2182,6 +2200,7 @@ func _entry_row(entry: Dictionary) -> Dictionary:
 
 func photo_directory_context() -> Dictionary:
 	if archives.browsing: return {}
+	if section == Section.MEDIA_SERVER: return server_browser.photo_directory_context()
 	if section == Section.CLOUD and not _cloud_stack.is_empty() and not cloud_search.active:
 		return {"path": _cloud_path(), "order": file_actions.cloud_order()}
 	return {}
@@ -2189,6 +2208,8 @@ func photo_directory_context() -> Dictionary:
 func image_queue() -> Array[Dictionary]:
 	if archives.browsing: return archives.image_queue()
 	var result: Array[Dictionary] = []
+	if section == Section.MEDIA_SERVER:
+		result.assign(server_browser.image_entries()); return result
 	for row in (_recent_all_rows if section == Section.RECENT and not _recent_all_rows.is_empty() else rows):
 		if row.get("kind") == "image" and row.has("uri"): result.append(row.duplicate(true))
 	return result
@@ -2252,6 +2273,8 @@ func _poll_cache_usage() -> void:
 	if visible and section == Section.SETTINGS and tab == GENERAL_TAB: refresh()
 
 func _exit_tree() -> void:
+	account_panel.close()
+	if is_instance_valid(account_panel.web_surface): account_panel.web_surface.queue_free()
 	web_browser.close()
 	web_video.close()
 	archives.close()
@@ -2309,6 +2332,7 @@ func _activate(target: int) -> void:
 	if not _row_target(target) and target != CLEAR_HISTORY:
 		_confirm = ""
 	if target == CLOSE:
+		account_panel.close()
 		dismiss()
 	elif target == RESTART_APP:
 		setting_changed.emit("restart_app", true)
@@ -2976,6 +3000,13 @@ func _draw_compact_rows() -> void:
 	_place_list()
 
 func _draw() -> void:
+	# Reuse the compositor's region key to retire login bounds when returning to the library.
+	# Same-page redraws keep grow-only bounds and all existing swapchains.
+	var login_region := ""
+	if account_panel.view == "web":
+		var web: Dictionary = account_panel.data.get("web", {})
+		login_region = "account-login-%s-%s" % [web.get("renderer", "legacy"), str(web.get("desktop", true))]
+	set_meta("menu_capture_region", login_region)
 	server_browser.backdrop.clear_surface()
 	_audio_storage_labels.clear()
 	_audio_preview_rows.clear(); _subtitle_task_buttons.clear()
@@ -3144,7 +3175,9 @@ func _draw() -> void:
 		_draw_about()
 	var background_settings: Dictionary = settings_provider.call() if settings_provider.is_valid() else {}
 	if section == Section.SETTINGS and tab == BACKGROUND_TAB and CinemaFeature.normalize_background(str(background_settings.get("background", "belfast"))) != "cinema":
-		var hint := _label(I18n.t("Photo mode saves its background separately. Change it from the photo toolbar."), Vector3(-0.38, -0.10, 0.004), 16)
+		var hint_text := I18n.t("Photo mode saves its background separately. Change it from the photo toolbar.")
+		if background_settings.get("background", "belfast") == "night": hint_text += "\nESO/S. Brunier · CC BY 4.0"
+		var hint := _label(hint_text, Vector3(-0.38, -0.10, 0.004), 16)
 		hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
 		hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		hint.width = 1.16 / hint.pixel_size

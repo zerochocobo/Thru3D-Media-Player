@@ -42,6 +42,7 @@ func _run() -> void:
 	check(menu.web_browser.active(), "Browser is active inside web section")
 	check(not menu.web_browser.input_host()._buttons.any(func(button): return button.target == Browser.BASE + 18), "Beta is hidden on unadapted sites")
 	platform.browser.bilibili_beta_available = true
+	platform.browser.videos[0].bilibili_ready = true
 	menu.web_browser.next_poll = 0; menu.web_browser.tick(); menu.refresh()
 	var beta_buttons: Array = menu.web_browser.input_host()._buttons.filter(func(button): return button.target in [Browser.BASE + 6, Browser.BASE + 18])
 	check(beta_buttons.size() == 2 and not beta_buttons[0].rect.intersects(beta_buttons[1].rect), "Legacy and Beta have separate non-overlapping targets")

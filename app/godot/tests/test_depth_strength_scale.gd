@@ -25,6 +25,14 @@ func _initialize() -> void:
 	var fresh := ConfigFile.new()
 	check(DepthStrength.migrate_video_scale(fresh) and not fresh.has_section_key("video", "depth_strength")
 		and is_equal_approx(DepthStrength.load_preference(fresh, false), 0.5), "A new install starts at the new 50%")
+	var boosted := ConfigFile.new()
+	boosted.set_value("video", "depth_strength_scale", 2)
+	boosted.set_value("video", "depth_strength", 1.8)
+	boosted.set_value("photo", "depth_strength", 1.5)
+	check(not DepthStrength.migrate_video_scale(boosted) and is_equal_approx(DepthStrength.load_preference(boosted, false), 1.8), "Boosted video strength survives restart without another migration")
+	check(is_equal_approx(DepthStrength.load_preference(boosted, true), 1.5), "Photo preference remains independent of video boost")
+	boosted.set_value("video", "depth_strength", 3.0)
+	check(DepthStrength.load_preference(boosted, false) == 2.0, "Video preference clamps at 200%")
 	# The player bar's Settings page offers the same global video choice, edge stretching by default.
 	var menu: Node = load("res://scripts/player_menu.gd").new()
 	menu._state = {"has_video": true}

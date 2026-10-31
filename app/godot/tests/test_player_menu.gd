@@ -88,6 +88,13 @@ func double_click(menu: Node3D, target: int, hand: String = "right_hand") -> boo
 	menu.release_pointer(hand, Vector3.ZERO, Vector3.ZERO, true)
 	return result
 
+func choose_depth(menu: Node3D, fraction: float) -> bool:
+	if not menu._depth_open and not click(menu, 112): return false
+	var point: Vector3 = menu.to_global(Vector3(Menu.DEPTH_X, lerpf(Menu.DEPTH_SPAN.x, Menu.DEPTH_SPAN.y, fraction), 1))
+	var result: bool = menu.press_pointer("left_hand", point, -menu.global_basis.z, true)
+	menu.release_pointer("left_hand", point, -menu.global_basis.z, true)
+	return result
+
 ## Battery and clock pill: text, 12/24 h, low and charging states, no battery on desktop.
 func _check_device_status() -> void:
 	var I18n := preload("res://scripts/i18n.gd")
@@ -245,9 +252,11 @@ func _run() -> void:
 	var portrait_revisions := host.calls.filter(func(call): return call[0] == "revise").size()
 	check(main._menu_state().portrait_requested and not main._menu_state().portrait_auto and main._menu_state().depth_strength == 1.0,
 		"Mono Alpha requests default relief while retaining screen distance")
-	check(double_click(menu,112) and is_zero_approx(video.portrait.strength) and video.alpha_requested and not video.depth_requested,
-		"Portrait double-click turns relief off while retaining Alpha")
-	check(double_click(menu,112) and video.portrait.strength == 1.0 and video.alpha_requested \
+	check(double_click(menu,112) and video.portrait.strength == 1.0, "Rapid portrait 3D clicks never toggle relief")
+	if not menu._depth_open: click(menu,112)
+	check(click(menu,Menu.DEPTH_OFF) and is_zero_approx(video.portrait.strength) and video.alpha_requested and not video.depth_requested,
+		"Portrait X turns relief off while retaining Alpha")
+	check(choose_depth(menu,1.0) and video.portrait.strength == 1.0 and video.alpha_requested \
 		and host.calls.filter(func(call): return call[0] == "revise").size() == portrait_revisions,
 		"Portrait relief restores without model revision")
 	check(click(menu,104) and not video.alpha_requested, "Leaving portrait restores ordinary 2D conversion controls")
@@ -263,14 +272,15 @@ func _run() -> void:
 		check(click(menu,104) and not video.alpha_requested and video.stereo_layout() == layout,
 			"Leaving cutout retains original stereo layout: " + str(layout))
 	video.set_stereo_layout(0); menu.refresh()
-	check(not menu._mode_open and click(menu, 112, "left_hand") and not video.depth_requested and menu._depth_open,
-		"Single 3D click opens adjustment without enabling inference")
+	check(not menu._mode_open and click(menu, 112, "left_hand") and video.depth_requested and video.depth_strength == .5 and menu._depth_open,
+		"Single 3D click enables conversion at default 50% and opens adjustment")
 	menu.release_pointer("left_hand", Vector3.ZERO, Vector3.ZERO, true)
-	check(click(menu, 112, "right_hand") and not video.depth_requested, "Two hands cannot combine their clicks into a 3D toggle")
+	check(click(menu, 112, "right_hand") and video.depth_requested, "A second hand cannot turn 3D off with its icon")
 	menu.release_pointer("right_hand", Vector3.ZERO, Vector3.ZERO, true)
-	menu._icon_tap.time -= Menu.ICON_DOUBLE_CLICK_MS + 1
-	check(click(menu, 112) and not video.depth_requested, "Separated clicks keep ordinary adjustment behavior")
-	check(double_click(menu, 112, "left_hand") and video.depth_requested and video._pending_revision.depth and video.depth_strength == .5 and not menu._depth_open, "Double click enables video 3D at the 50% initial strength")
+	check(click(menu, 112) and video.depth_requested, "Separated clicks preserve conversion")
+	check(double_click(menu, 112, "left_hand") and video.depth_requested, "Rapid 3D clicks only fold/open the rail")
+	check(choose_depth(menu, .5) and video.depth_requested and video._pending_revision.depth and video.depth_strength == .5, "Choosing 50% enables video 3D")
+	click(menu,112)
 	click(menu, 112)
 	menu.update_pointer("left_hand", Vector3.ZERO, Vector3.ZERO, false)
 	var depth_tile: Dictionary = menu._buttons.filter(func(b): return b.target == 112)[0]
@@ -302,7 +312,25 @@ func _run() -> void:
 	check(is_equal_approx(video.depth_strength, .75) and not press_at(menu, Menu.DEPTH_X, depth_y.call(1)), "Other hand cannot move or steal an active depth drag")
 	menu.update_pointer("left_hand", menu.to_global(Vector3(Menu.DEPTH_X, Menu.DEPTH_SPAN.y + .2, 1)), -menu.global_basis.z, true)
 	check(video.depth_strength == 1.0 and menu._depth_label.text == "100%" and is_equal_approx(float(video.material.get_shader_parameter("depth_shift")), .0175), "Drag beyond top clamps to 100% and updates shader")
+	menu.release_pointer("left_hand", Vector3.ZERO, Vector3.ZERO, false)
+	check(click(menu, Menu.DEPTH_BOOST) and video.depth_strength == 1.0 and is_instance_valid(menu._depth_boost_fill), "Boost expands the rail without changing strength")
+	check(press_at(menu, Menu.DEPTH_X, Menu.DEPTH_SPAN.y, "left_hand"), "Capture expanded depth rail")
+	for sample in [[1.25, .021875], [1.5, .02625], [1.75, .030625], [2.0, .035]]:
+		var y: float = Menu.DEPTH_SPAN.y + Menu.BOOST_HEIGHT * (sample[0] - 1.0)
+		menu.update_pointer("left_hand", menu.to_global(Vector3(Menu.DEPTH_X, y, 1)), -menu.global_basis.z, true)
+		check(is_equal_approx(video.depth_strength, sample[0]) and menu._depth_label.text == "%d%%" % roundi(sample[0] * 100)
+			and is_equal_approx(menu._depth_knob.position.y, y) and menu._depth_label.modulate == Menu.WARNING
+			and host.calls.back()[0] == "depth_view" and is_equal_approx(host.calls.back()[2], sample[1])
+			and is_equal_approx(float(video.material.get_shader_parameter("depth_shift")), sample[1]), "Boost position, label and real bridge/shader parallax are linear at " + str(sample[0]))
+	check(not click(menu, Menu.DEPTH_OFF, "right_hand") and not click(menu, Menu.DEPTH_BOOST, "right_hand") and video.depth_strength == 2.0, "Other hand cannot turn off or collapse a captured 3D rail")
+	menu.update_pointer("left_hand", menu.to_global(Vector3(Menu.DEPTH_X, Menu.DEPTH_SPAN.y + Menu.BOOST_HEIGHT + .2, 1)), -menu.global_basis.z, true)
+	check(video.depth_strength == 2.0, "Enhanced drag clamps at 200%")
 	check(host.calls.filter(func(call): return call[0] == "revise").size() == revisions, "Nonzero drag never restarts depth inference or playback")
+	menu.release_pointer("left_hand", Vector3.ZERO, Vector3.ZERO, false)
+	check(click(menu, Menu.DEPTH_OFF) and not video.depth_requested and video.depth_strength == 2.0 and not menu._depth_open, "X closes enhanced 3D and retains 200%")
+	check(click(menu,112) and video.depth_requested and video.depth_strength == 2.0 and menu._depth_open and is_instance_valid(menu._depth_boost_fill), "One 3D click restores 200% with the orange extension open")
+	check(click(menu, Menu.DEPTH_BOOST) and video.depth_strength == 1.0 and not is_instance_valid(menu._depth_boost_fill), "Turning boost off returns to 100% and removes the extension")
+	press_at(menu, Menu.DEPTH_X, Menu.DEPTH_SPAN.y, "left_hand")
 	menu.update_pointer("left_hand", menu.to_global(Vector3(Menu.DEPTH_X, Menu.DEPTH_SPAN.x - .2, 1)), -menu.global_basis.z, true)
 	check(not video.depth_requested and not video.auto_depth and video.depth_strength == 1.0 and menu._depth_label.text == "Off", "Bottom disables 3D and retains last nonzero strength")
 	menu.release_pointer("left_hand", Vector3.ZERO, Vector3.ZERO, false)
@@ -312,12 +340,14 @@ func _run() -> void:
 	var saved_strength := ConfigFile.new()
 	saved_strength.load(main.settings_path)
 	check(video.mode_memory.lookup(video.local_uri).is_empty() and not saved_strength.has_section_key("video","depth_strength") and not saved_strength.has_section_key("effects", "auto_3d"), "Diagnostic playback writes neither per-file nor global video/photo strength settings")
-	check(click(menu, 112) and not menu._depth_open, "Close disabled depth slider")
-	check(double_click(menu, 112) and video.depth_requested and video.depth_strength == 1.0, "Double click restores the previous 100% choice")
-	check(double_click(menu, 112) and not video.depth_requested and video.depth_strength == 1.0, "Double click disables conversion without erasing its strength")
+	check(click(menu, 112) and video.depth_requested and menu._depth_open, "Clicking the disabled 3D icon re-enables it and opens the rail")
+	check(double_click(menu, 112) and video.depth_requested and video.depth_strength == 1.0, "First click restores the saved 100%, second click never disables it")
+	check(choose_depth(menu,1.0) and video.depth_requested, "Rail explicitly enables conversion again")
+	check(click(menu,Menu.DEPTH_OFF) and not video.depth_requested and video.depth_strength == 1.0 and not menu._depth_open and menu._depth_label == null, "X disables conversion, preserves its strength and closes the rail")
 	var hint_button: Dictionary = menu._buttons.filter(func(button): return button.target == 112)[0]
 	menu.update_pointer("right_hand", hint_button.node.to_global(Vector3(0, 0, 1)), -menu.global_basis.z, true)
-	check(menu._tooltip.visible and menu._tooltip.get_child(0).text == Menu.I18n.t("Click to adjust · Double-click to enable 3D"), "Ray hover explains the disabled 3D icon's click and double-click behavior")
+	check(menu._tooltip.visible and menu._tooltip.get_child(0).text == Menu.I18n.t("Click to adjust 3D") and hint_button.node.get_child(1).material_override.albedo_color == hint_button.foreground
+		and hint_button.node.material_override.get_shader_parameter("surface_color") != Menu.SELECTED, "Disabled 3D stays neutral even under the pointer and only offers adjustment")
 	video.depth_enabled = false
 	video.set_projection(1)
 	menu.refresh()
@@ -336,7 +366,7 @@ func _run() -> void:
 	check(not shown.call(Menu.MODE_STEREO + 2) and not shown.call(Menu.MODE_STEREO + 3) and shown.call(112), "Video popup omits duplicate depth and eye-order controls, retaining bar depth")
 	check(menu._buttons.filter(func(b): return b.target >= Menu.MODE_PROJECTION and b.target < Menu.MODE_PROJECTION + 4).map(func(b): return b.target) == [Menu.MODE_PROJECTION, Menu.MODE_PROJECTION + 1, Menu.MODE_PROJECTION + 3, Menu.MODE_PROJECTION + 2], "Projection tiles place Fisheye after 360 without changing stored IDs")
 	check(click(menu, Menu.MODE_PROJECTION + 2) and video.geometry == 2 and not video.stereo_sbs, "Selecting fisheye preserves a mono source")
-	check(click(menu, Menu.MODE_PROJECTION) and double_click(menu, 112) and video.depth_requested and not menu._mode_open, "Mono depth remains available from the main bar")
+	check(click(menu, Menu.MODE_PROJECTION) and choose_depth(menu,.5) and video.depth_requested and not menu._mode_open, "Mono depth remains available from the main bar rail")
 	check(click(menu, Menu.MODE) and click(menu, Menu.MODE_STEREO) and not video.depth_requested, "2D tile ends depth from the bar")
 	check(click(menu, Menu.MODE), "Mode panel closes")
 	video.control.observe(20000, 60000)

@@ -349,7 +349,7 @@ var comicPending *comicSource
 
 func comicImage(name string) bool {
 	switch strings.ToLower(path.Ext(name)) {
-	case ".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif", ".tif", ".tiff", ".hdr", ".rgbe", ".exr":
+	case ".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif", ".tif", ".tiff", ".hdr", ".rgbe", ".exr", ".avif", ".avifs", ".apng", ".gif", ".dng", ".cr2", ".cr3", ".nef", ".nrw", ".arw", ".raf", ".rw2", ".orf", ".pef", ".srw":
 		return true
 	}
 	return false

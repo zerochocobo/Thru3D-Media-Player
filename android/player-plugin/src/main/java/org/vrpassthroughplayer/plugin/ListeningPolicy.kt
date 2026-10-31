@@ -4,6 +4,21 @@ import org.json.JSONObject
 
 /** Media-time policy, independent of Android/network/model execution. */
 internal object ListeningPolicy {
+    class AudioInput(val path: String,val stream: Int,val cacheTrack: Int,val origin: Double,val external: Boolean)
+    /** Split web playback attaches its required original audio through audio-add.
+     * ff-index belongs to that audio file, never to the video-only main input.
+     * Accept only the primary location retained by this playback host. */
+    fun audioInput(path: String,metadata: JSONObject,primaryAudio: String,origin: Double): AudioInput? {
+        val stream=metadata.optInt("stream_index",-1)
+        if(stream<0)return null
+        if(!metadata.optBoolean("external"))return AudioInput(path,stream,stream,origin,false)
+        if(stream==Int.MAX_VALUE||primaryAudio.isEmpty()||metadata.optString("filename")!=primaryAudio)return null
+        // MPV rebases an external file to its own start time. The native reader
+        // must probe that origin rather than inherit the video container's.
+        // Reserve negative identities so external stream 0 cannot reuse cues
+        // from embedded stream 0; local lease tokens never enter cache keys.
+        return AudioInput(primaryAudio,stream,-2-stream,Double.NaN,true)
+    }
     fun percent(done: Double,total: Double): Int =
         if(!done.isFinite()||!total.isFinite()||total<=0)-1 else (done/total*100).toInt().coerceIn(0,100)
     fun accept(cue: Cue,language: String): Boolean {

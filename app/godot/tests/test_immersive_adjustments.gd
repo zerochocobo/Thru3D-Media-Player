@@ -33,6 +33,13 @@ func release(main: Node, hand: String) -> void:
 	main._on_controller_release("grip_click", hand)
 	centre(main)
 
+func tap(menu: Node, target: int) -> void:
+	var button: Dictionary = menu._buttons.filter(func(item): return item.target == target)[0]
+	var origin: Vector3 = button.node.to_global(Vector3(0, 0, 1))
+	var direction: Vector3 = -button.node.global_basis.z
+	check(menu.press_pointer("right", origin, direction, true), "Ray selects gauge preference")
+	menu.release_pointer("right", origin, direction, true)
+
 func slide(menu: Node, key: String, fraction: float, main: Node) -> void:
 	var row: Dictionary = menu._adjust_rows.values().filter(func(item): return item.key == key)[0]
 	var point: Vector3 = row.knob.position
@@ -56,7 +63,11 @@ func _run() -> void:
 	var head := Camera3D.new(); root.add_child(head); head.position = Vector3(2, 1.6, -1)
 	video.view_camera = head
 	var main := Dispatch.new(); main.video = video; main.display.preview = true
+	main.immersive_adjustment_overlay = preload("res://scripts/immersive_adjustment_overlay.gd").new()
+	main.immersive_adjustment_overlay.source = main._immersive_adjustment_sample
+	root.add_child(main.immersive_adjustment_overlay); main.immersive_adjustment_overlay.set_process(false)
 	main.settings_path = path.path_join("settings.cfg")
+	check(main._menu_state().get("immersive_adjustment_gauges", false), "Existing and new preferences default to visible gauges")
 	check(video.open_local("file:///fixed_180_LR.mp4", "fixed_180_LR.mp4"), "Open VR180 stereo video")
 	check(video.geometry != 0 and video.stereo_sbs, "Fixture uses immersive projection")
 	centre(main)
@@ -124,6 +135,26 @@ func _run() -> void:
 	main._process_stick_input(Vector2(1, 0), Vector2(0, 1), .1)
 	check(video.view_horizontal > 0 and video.view_zoom > 0, "Both grips can adjust separate axes together")
 	check(main._immersive_adjustment_sample().size() == 2, "Two moving hands each retain a visible gauge")
+	main.immersive_adjustment_overlay.refresh()
+	check(main.immersive_adjustment_overlay.visible, "Real overlay displays current adjustments")
+	main._on_player_setting("immersive_adjustment_gauges", false)
+	check(not main.immersive_adjustment_overlay.visible and main.immersive_adjustment_overlay.rows.all(func(row): return not row.visible), "Disabling hides the actual overlay immediately")
+	check(main._immersive_adjustment_sample().is_empty() and main.immersive_sticks.feedback.is_empty(), "Disabling discards current gauges immediately")
+	var hidden_start := values(video)
+	centre(main); main._process_stick_input(Vector2(1, 0), Vector2(0, 1), .1)
+	centre(main); main._process_stick_input(Vector2(0, 1), Vector2(1, 0), .1)
+	var hidden_end := values(video)
+	check(hidden_end.x > hidden_start.x and hidden_end.y > hidden_start.y and hidden_end.z > hidden_start.z and hidden_end.w > hidden_start.w, "All four grip shortcuts still adjust with gauges disabled")
+	check(main._immersive_adjustment_sample().is_empty() and main.immersive_sticks.feedback.is_empty(), "Hidden shortcuts do not queue stale gauges")
+	var restarted := Dispatch.new(); restarted.video = video
+	check(restarted.settings.load(main.settings_path) == OK and not restarted._menu_state().immersive_adjustment_gauges, "Fresh settings load preserves disabled preference")
+	restarted._show_immersive_adjustment("view_zoom")
+	check(restarted._immersive_adjustment_sample().is_empty(), "Reloaded preference suppresses gauges")
+	restarted.free()
+	main._on_player_setting("immersive_adjustment_gauges", true)
+	check(main._immersive_adjustment_sample().is_empty(), "Reenabling does not resurrect old values")
+	centre(main); main._process_stick_input(Vector2(1, 0), Vector2(0, 1), .1)
+	check(main._immersive_adjustment_sample().size() == 2, "New movement shows gauges again")
 	main._on_controller_button("primary_click", "left_hand")
 	main._process_stick_input(Vector2(1, 0), Vector2(0, 1), .1)
 	check(values(video) == Vector4.ZERO, "Either reset suspends both held sticks")
@@ -142,9 +173,34 @@ func _run() -> void:
 	main.controller_bindings.release("right_hand", "trigger_click"); release(main, "right_hand")
 	var menu := Menu.new(); root.add_child(menu); menu.set_process(false)
 	menu.state_provider = main._menu_state
+	menu.setting_requested.connect(main._on_player_setting)
 	menu.adjustment_requested.connect(main._on_playback_adjustment)
 	menu.adjustment_committed.connect(main._save_playback_adjustments)
 	main.player_menu = menu; menu.visible = true; menu.section = 1; menu._adjustment = "screen"; menu.refresh()
+	var gauge_switch: Dictionary = menu._buttons.filter(func(item): return item.target == Menu.VR_GAUGES_ON)[0]
+	check(gauge_switch.base_color == menu.SELECTED and gauge_switch.rect.position.y > menu._adjust_rows[Menu.VR_HORIZONTAL].button.rect.position.y, "Enabled gauge switch sits above the VR sliders")
+	for target in [Menu.VR_GAUGES_ON, Menu.VR_GAUGES_OFF, Menu.VR_HORIZONTAL, Menu.VR_VERTICAL, Menu.VR_ZOOM, Menu.ALIGNMENT_HORIZONTAL, 452, Menu.VR_RESET]:
+		menu._hover = {"right": target}; menu._update_tooltip()
+		check(menu._tooltip != null and menu._tooltip.visible and not menu._tooltip.get_child(0).text.is_empty(), "Ray hover explains VR control " + str(target))
+	menu._hover.clear(); menu._update_tooltip()
+	tap(menu, Menu.VR_GAUGES_OFF)
+	check(not main._menu_state().immersive_adjustment_gauges and menu._state.immersive_adjustment_gauges == false, "Ray disables gauges and refreshes selection")
+	main._on_player_setting("immersive_adjustment_gauges", true); menu.refresh_values()
+	check(menu._buttons.filter(func(item): return item.target == Menu.VR_GAUGES_ON)[0].base_color == menu.SELECTED, "External preference change refreshes the open settings page")
+	tap(menu, Menu.VR_GAUGES_OFF); tap(menu, Menu.VR_GAUGES_ON)
+	var saved_settings := ConfigFile.new(); saved_settings.load(main.settings_path)
+	check(saved_settings.get_value("ui", "immersive_adjustment_gauges", false), "Ray preference is saved independently of per-movie settings")
+	video.set_viewing_eye(1); menu.refresh()
+	var disabled_row: Dictionary = menu._adjust_rows[Menu.ALIGNMENT_HORIZONTAL]
+	var disabled_origin: Vector3 = disabled_row.button.node.to_global(Vector3(disabled_row.width * .25, 0, 1))
+	var disabled_ray: Vector3 = -disabled_row.button.node.global_basis.z
+	menu.update_pointer("right", disabled_origin, disabled_ray, true)
+	check(menu._tooltip.visible, "Real ray can inspect the unavailable alignment shortcut")
+	var disabled_value: float = video.stereo_horizontal
+	menu.press_pointer("right", disabled_origin, disabled_ray, true)
+	check(not menu.has_pointer_capture() and video.stereo_horizontal == disabled_value, "Explaining an unavailable slider must not make it draggable")
+	menu.release_pointer("right", disabled_origin, disabled_ray, true)
+	video.set_viewing_eye(0); menu.refresh()
 	hold(main, "left_hand"); main._process_stick_input(Vector2(1, 0), Vector2.ZERO, .1)
 	check(values(video) == Vector4.ZERO, "Open VR settings own input instead of moving video")
 	check(main._immersive_adjustment_sample().is_empty(), "Settings with their own sliders hide passive gauges")
@@ -217,6 +273,7 @@ func _run() -> void:
 	check(feedback.feedback_snapshot("other", 3000).is_empty(), "Changing movie discards old gauges")
 	check(Controls.value_text("stereo_horizontal", -7.75) == "-7.75%" and Controls.value_text("view_horizontal", -.001) == "+0.0%", "Feedback keeps alignment precision and avoids negative zero")
 	library.free()
+	main.immersive_adjustment_overlay.free()
 	video.close_video(); main.player_menu = null; menu.free(); main.free(); video.free(); head.free(); origin.free()
 	Privacy.configure(Privacy.ALL)
 	for failure in failures: push_error(failure)

@@ -4,6 +4,7 @@ var texture: ImageTexture
 var image: Image # the cue's pixels, kept for the compositor layer's copy
 var version := 0
 var source := 0
+var tint := 0xffffff
 
 func clear(material: ShaderMaterial) -> void:
 	if material:
@@ -12,15 +13,16 @@ func clear(material: ShaderMaterial) -> void:
 	image = null
 	version = 0
 	source = 0
+	tint = 0xffffff
 
-func needs_pixels(bitmap: Dictionary, source_handle: int) -> bool:
-	return not texture or version != int(bitmap.get("version", 0)) or source != source_handle
+func needs_pixels(bitmap: Dictionary, source_handle: int, rgb: int = 0xffffff) -> bool:
+	return not texture or version != int(bitmap.get("version", 0)) or source != source_handle or tint != rgb
 
-func apply(material: ShaderMaterial, bitmap: Dictionary, source_handle: int, pixels: PackedByteArray, size: float = 1.0, position: float = 0.0) -> bool:
+func apply(material: ShaderMaterial, bitmap: Dictionary, source_handle: int, pixels: PackedByteArray, size: float = 1.0, position: float = 0.0, rgb: int = 0xffffff) -> bool:
 	if not material or bitmap.is_empty():
 		clear(material)
 		return false
-	if needs_pixels(bitmap, source_handle):
+	if needs_pixels(bitmap, source_handle, rgb):
 		var w := int(bitmap.get("width", 0))
 		var h := int(bitmap.get("height", 0))
 		if w <= 0 or h <= 0 or pixels.size() != w * h * 4:
@@ -31,6 +33,7 @@ func apply(material: ShaderMaterial, bitmap: Dictionary, source_handle: int, pix
 		texture = ImageTexture.create_from_image(cue)
 		version = int(bitmap.version)
 		source = source_handle
+		tint = rgb
 	var rect := adjusted_rect(bitmap, size, position)
 	material.set_shader_parameter("bitmap_subtitle_texture", texture)
 	material.set_shader_parameter("bitmap_subtitle_rect", rect)

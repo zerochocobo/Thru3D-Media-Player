@@ -7,6 +7,9 @@ static func provider(name: String, fallback: String = "cloud") -> String:
 
 # Original vector glyphs, generated once and shared by both ray menus.
 const PATHS := {
+	"region_focus": '<path d="M3 8V3H8M16 3H21V8M21 16V21H16M8 21H3V16"/><rect x="7" y="7" width="10" height="10" rx="1"/>',
+	"phone": '<rect x="6" y="2" width="12" height="20" rx="2"/><path d="M10 18H14"/>',
+	"desktop": '<rect x="2" y="3" width="20" height="14" rx="2"/><path d="M12 17V22M7 22H17"/>',
 	"cinema_screen": '<path d="M2 3Q12 5 22 3V13Q12 11 2 13ZM3 19V16H7V19M10 19V16H14V19M17 19V16H21V19M2 22V19H8V22M9 22V19H15V22M16 22V19H22V22"/>',
 	"floating_window": '<rect x="2" y="3" width="16" height="12" rx="1.5"/><rect x="8" y="10" width="14" height="11" rx="1.5"/><path d="M11 13H19"/>',
 	"site_tiktok": '<path d="M13 3V15.5A3.5 3.5 0 1 1 9.5 12M13 3Q14 7.5 19 8" stroke-width="2.4"/><path d="M15 5.5V16.5A3.5 3.5 0 0 1 11.5 20" stroke-width="1.2"/>',
@@ -104,6 +107,7 @@ const PATHS := {
 	"loop": '<path d="M4 9C4 3 20 3 20 9V11M17 8L20 11 23 8M20 15C20 21 4 21 4 15V13M1 16L4 13 7 16"/>',
 	"stop": '<rect x="6" y="6" width="12" height="12" rx="1"/>',
 	"close": '<path d="M6 6L18 18M18 6L6 18"/>',
+	"power": '<path d="M12 2V12M18.36 5.64a9 9 0 1 1-12.72 0"/>',
 	"stereo": '<rect x="2" y="5" width="20" height="14" rx="3"/><path d="M12 5V19"/>',
 	"eyes": '<path d="M3 7H21M17 3L21 7 17 11M21 17H3M7 13L3 17 7 21"/>',
 	"view_mode": '<path d="M5 6H19A3 3 0 0 1 22 9V15A3 3 0 0 1 19 18H16L13.5 15H10.5L8 18H5A3 3 0 0 1 2 15V9A3 3 0 0 1 5 6Z"/><circle cx="7.5" cy="11.5" r="2"/><circle cx="16.5" cy="11.5" r="2"/>',
