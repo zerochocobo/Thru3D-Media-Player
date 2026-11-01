@@ -4,6 +4,16 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class PhotoStereoTest {
+    @Test fun rotationCacheIdentityIncludesAngleAndStrength() {
+        val rotations = listOf(0,90,180,270)
+        assertEquals(4,rotations.map { PhotoStereo.cachePrefix(1f,it) }.toSet().size)
+        assertNotEquals(PhotoStereo.cachePrefix(1f,90),PhotoStereo.cachePrefix(2f,90))
+        assertTrue(PhotoStereo.cachePrefix(1f,0).startsWith("stereo-v3-r0-"))
+        for (rotation in listOf(-90,45,360,450)) {
+            assertFalse(PhotoStereo.validRotation(rotation))
+            try { PhotoStereo.cachePrefix(1f,rotation); fail("invalid rotation") } catch (_: IllegalArgumentException) { }
+        }
+    }
     @Test fun boundStereoAllocationWithoutUpscaling() {
         for ((w,h) in listOf(640 to 480,8192 to 8192,8192 to 4000,100 to 32000,32000 to 100)) {
             val (a,b)=PhotoStereo.size(w,h)

@@ -81,6 +81,7 @@ var _music_return_video := false
 var _audio_import_pending := false
 var _audio_import_playlist := ""
 var _audio_file_dialog: FileDialog
+var _subtitle_browse_secondary := false
 var _subtitle_browse_session := 0
 const ViewFollow := preload("res://scripts/view_follow.gd")
 const ControllerBindings := preload("res://scripts/controller_bindings.gd")
@@ -183,6 +184,8 @@ var _immersive_zoom_pending := false
 var _immersive_stick_media := ""
 var recent_menu: Node3D
 var cast_session := preload("res://scripts/cast_session.gd").new()
+var _external_video_uri := ""
+var _external_video_poll_ms := 0
 var player_menu: Node3D
 var settings := ConfigFile.new()
 var settings_path := SETTINGS_PATH
@@ -461,7 +464,10 @@ func _ready() -> void:
 			plugin.set_rvm_fp32(Quality.alpha_fp32(Quality.load_alpha_precision(settings)))
 		if PlatformMethods.supports(plugin, "set_depth_render_mode"):
 			plugin.set_depth_render_mode(_depth_render_mode())
+		if PlatformMethods.supports(plugin, "set_depth_text_protection"):
+			plugin.set_depth_text_protection(false)
 		video.set_alpha_edge(_alpha_edge_value("alpha_feather"), _alpha_edge_value("alpha_shrink"))
+	video.depth_text_protection = false
 	player_menu = PlayerMenu.new()
 	player_menu.state_provider = _menu_state
 	player_menu.favorite_provider = _favorite_state
@@ -480,8 +486,9 @@ func _ready() -> void:
 	player_menu.adjustment_requested.connect(_on_playback_adjustment)
 	player_menu.adjustment_committed.connect(_save_playback_adjustments)
 	player_menu.subtitle_requested.connect(video.set_subtitle_track)
+	player_menu.secondary_subtitle_requested.connect(video.dual_subtitles.select)
 	player_menu.subtitle_files_requested.connect(video.request_subtitle_files)
-	player_menu.subtitle_file_requested.connect(video.select_subtitle_file)
+	player_menu.subtitle_file_requested.connect(func(filename): video.select_subtitle_file(filename, false, video.dual_subtitles.editing_secondary))
 	player_menu.subtitle_browse_requested.connect(_begin_subtitle_browse)
 	player_menu.depth_strength_requested.connect(_on_depth_strength.bind(false))
 	player_menu.depth_strength_committed.connect(_save_depth_strength.bind(false))
@@ -540,6 +547,7 @@ func _ready() -> void:
 		add_child(cinema_environment)
 		cinema_environment.saved_seat = str(settings.get_value("appearance", "cinema_seat", ""))
 		cinema_environment.configure(xr_origin, xr_camera)
+		cinema_environment.view_relocated.connect(_on_cinema_view_relocated)
 		cinema_environment.changed.connect(_on_cinema_environment_changed)
 	add_child(background)
 	photo_background = Background.new()
@@ -1289,6 +1297,7 @@ func _process(delta: float) -> void:
 	if subtitle_tasks: subtitle_tasks.tick()
 	_guard_alpha_rate(delta)
 	cast_session.tick()
+	_poll_external_video()
 	if video:
 		if video.video_layer:
 			video.video_layer.reserved_layers = 2 + (menu_composition.layer_reservation() if menu_composition else 5)
@@ -2590,7 +2599,34 @@ func _prepare_cast_switch() -> void:
 	_grab.clear(); interface_move.cancel(); stick_controls.suspend()
 	photo_hands.cancel(); photo_swipe.cancel(); memory_swipe.cancel()
 
+func _poll_external_video() -> void:
+	if not video or not recent_menu or not _input_focused() or Time.get_ticks_msec() < _external_video_poll_ms: return
+	_external_video_poll_ms = Time.get_ticks_msec() + 200
+	if not video.PlatformMethods.supports(video.platform, "external_playback_poll"): return
+	# Keep drafts, locked favorites and pointer-owned interactions intact until they are released.
+	if favorites and favorites.locked: return
+	if recent_menu.text_entry_active() or recent_menu.has_pointer_capture() or (player_menu and player_menu.has_pointer_capture()): return
+	if not interface_move.capture.is_empty() or not _grab.is_empty(): return
+	if (puzzle_game and puzzle_game.active) or recent_menu.voice_manager.opened or not recent_menu.file_actions.modal.is_empty(): return
+	var request: Variant = JSON.parse_string(video.platform.external_playback_poll())
+	if not request is Dictionary or str(request.get("uri", "")).is_empty(): return
+	cast_session.local_selection()
+	if video_directory: video_directory.cancel()
+	_cancel_video_queue_wait()
+	video_queue_pages.cancel(); video_queue_pages.context = {}; video_queue.clear()
+	_prepare_cast_switch()
+	photo.close_image(); photo_active = false; player_menu = video_menu
+	recent_menu.dismiss(); video_menu.dismiss(); recent_menu.web_browser.close(true)
+	_external_video_uri = str(request.uri)
+	video.cast_token = 0; video.cast_navigation = {}
+	video.loop_enabled = false; video.requested_play = true
+	video.open_local(_external_video_uri, str(request.get("title", "Video")), int(request.get("start_ms", 0)),
+		true, false, "", {"external_temporary": bool(request.get("temporary", true))})
+	if not _external_video_uri.is_empty(): _show_player_menu()
+	Log.record("external_video_open", {"temporary": bool(request.get("temporary", true))})
+
 func _on_library_chosen(uri: String, title: String, retained_photo: Dictionary = {}) -> void:
+	_external_video_uri = ""
 	var keep_browser: bool = recent_menu != null and recent_menu.web_browser.active() and recent_menu.collections.selected_entry.get("uri", "") == uri and recent_menu.collections.selected_entry.get("web_handoff", false) and recent_menu.collections.selected_entry.get("keep_browser", false)
 	if recent_menu:
 		var selected: Dictionary = recent_menu.collections.selected_entry
@@ -2896,6 +2932,11 @@ func _on_photo_changed() -> void:
 	if calibration_board: calibration_board.visible = false
 
 func _on_photo_adjustment(key: String, value: Variant) -> void:
+	if key == "photo_cache_each":
+		if typeof(value) not in [TYPE_INT, TYPE_FLOAT] or not is_finite(float(value)): return
+		photo.set_cache_each(int(value))
+		settings.set_value("photo", "cache_each", photo.cache_each); settings.save(settings_path)
+		photo_menu.refresh(); return
 	if key == "alpha_keep_background": _on_setting_changed(key, value); return
 	if key.begins_with("translation_"):
 		if photo.comic.translation.option(key, value):
@@ -3070,6 +3111,12 @@ func _on_photo_action(operation: String) -> void:
 		"photo_return":
 			if photo.portrait_requested: photo.set_portrait(false)
 			else: photo.gallery.return_focus()
+		"photo_return_to_wall":
+			if photo.gallery.mode in [2, 3] and photo.gallery.focus >= 0:
+				if photo.portrait_presentation_active(): photo.set_portrait(false)
+				photo.gallery.return_focus()
+		"photo_rotate":
+			photo.rotate_clockwise()
 		"photo_previous":
 			photo.navigate(-1)
 		"photo_animation":
@@ -3563,6 +3610,7 @@ func _playback_browser_cursor() -> Dictionary:
 	return {}
 
 func _close_current_media(restore_browser: bool = true) -> void:
+	_external_video_uri = ""
 	if restore_browser and recent_menu and recent_menu.web_browser.has_playback_return(video.local_uri):
 		_return_to_web_video(false, video.local_uri); return
 	if not restore_browser and recent_menu: recent_menu.web_browser.playback_return.clear()
@@ -3679,6 +3727,7 @@ func _library_settings() -> Dictionary:
 		"library_restore_position": bool(settings.get_value("library", "restore_position", true)),
 		"seek_mode": video.SeekPolicy.normalize(video.seek_mode),
 		"depth_render": _depth_render_mode(),
+		"depth_text_protection": false,
 		"subtitle_distance": video.subtitle_distance,
 		"subtitle_position": video.subtitle_position,
 		"subtitle_horizontal_position": video.subtitle_horizontal_position,
@@ -3762,6 +3811,11 @@ func _on_setting_changed(key: String, value: Variant) -> void:
 			video.seek_mode = video.SeekPolicy.normalize(value)
 			settings.set_value("video", "seek_mode", video.seek_mode)
 			settings.save(settings_path)
+		"depth_text_protection":
+			# Temporarily unavailable for this release; retain the stored preference for later.
+			video.set_text_protection(false)
+			if platform_plugin and PlatformMethods.supports(platform_plugin, "set_depth_text_protection"):
+				platform_plugin.set_depth_text_protection(false)
 		"depth_render":
 			if str(value) in DEPTH_RENDER_MODES:
 				settings.set_value("video", "depth_render", str(value)); settings.save(settings_path)
@@ -4034,6 +4088,11 @@ func _on_menu_seek(position_ms: int) -> void:
 	video.seek_absolute(position_ms)
 
 func _on_player_setting(key: String, value: Variant) -> void:
+	if key == "dual_subtitles" and not photo_active:
+		video.dual_subtitles.set_enabled(bool(value)); return
+	if key == "subtitle_edit_secondary" and not photo_active:
+		video.dual_subtitles.editing_secondary = video.dual_subtitles.enabled and bool(value)
+		video.changed.emit(); return
 	if key == "immersive_adjustment_gauges":
 		if not value is bool: return
 		settings.set_value("ui", key, value); settings.save(settings_path)
@@ -4082,10 +4141,10 @@ func _on_player_setting(key: String, value: Variant) -> void:
 		"audio_delay":
 			if value is Dictionary and not video.commit_audio_delay(float(value.value), str(value.source_uri), str(value.audio_key)):
 				if is_instance_valid(player_menu): player_menu.refresh()
-		"subtitle_delay":
+		"subtitle_delay", "secondary_subtitle_delay":
 			if value is Dictionary and not video.commit_subtitle_delay(float(value.value), str(value.source_uri), str(value.get("subtitle_key", "__current__"))):
 				if is_instance_valid(player_menu): player_menu.refresh()
-		"alpha_keep_background", "seek_mode", "depth_render", "subtitle_distance", "subtitle_position", "subtitle_horizontal_position", "subtitle_vertical_position", "subtitle_direction", "subtitle_style", "subtitle_pgs_tint", "subtitle_line": _on_setting_changed(key, value)
+		"alpha_keep_background", "seek_mode", "depth_render", "depth_text_protection", "subtitle_distance", "subtitle_position", "subtitle_horizontal_position", "subtitle_vertical_position", "subtitle_direction", "subtitle_style", "subtitle_pgs_tint", "subtitle_line": _on_setting_changed(key, value)
 		"viewing_eye": video.set_viewing_eye(int(value))
 		"spatial_auto_disparity": video.set_spatial_auto_disparity(bool(value))
 		"spatial_match_fov":
@@ -4280,7 +4339,7 @@ func _menu_state() -> Dictionary:
 		"subtitle_auto_load": video.subtitle_auto_load,
 		"subtitle_delay": video.subtitle_delay,
 		"subtitle_timing_key": video.subtitle_timing_key(),
-		"subtitle_encoding_row": video.subtitle_encoding_row(),
+		"subtitle_encoding_row": video.subtitle_encoding_row(video.dual_subtitles.state.requested_track if video.dual_subtitles.editing_secondary else -1),
 		"subtitle_files_available": video.subtitle_files_available(), "subtitle_files": video.subtitle_files,
 		"subtitle_browse_available": video.PlatformMethods.supports(video.platform, "load_mpv_subtitle_uri"),
 		"subtitle_files_revision": video.subtitle_files_revision,
@@ -4296,11 +4355,13 @@ func _menu_state() -> Dictionary:
 	if seek_feedback.phase in ["preview", "waiting"]: result["bookmark_ready"] = false
 	result["watch_available"] = wrist_watch != null
 	result["depth_render"] = _depth_render_mode()
+	result["depth_text_protection"] = false
 	result["watch_enabled"] = bool(settings.get_value("watch", "enabled", true))
 	result["capture"] = video.captures.snapshot()
 	result["pip_count"] = video.pip.windows.size()
 	result["pip_slots"] = video.pip.windows.keys()
 	result["pip_available"] = video.pip_available()
+	result.merge(video.dual_subtitles.snapshot())
 	result.merge(video.narration.snapshot())
 	result.merge(video.listening.snapshot())
 	if subtitle_tasks: result.merge(subtitle_tasks.snapshot())
@@ -4460,6 +4521,12 @@ func _on_video_thumbnail_ready(_uri: String) -> void:
 	if recent_menu and recent_menu.visible: recent_menu.refresh()
 
 func _on_video_playback_failed() -> void:
+	if not _external_video_uri.is_empty() and video.local_uri == _external_video_uri:
+		_external_video_uri = ""
+		_close_current_media(false)
+		recent_menu.status = I18n.t("Cannot open media. Check the address and access permissions.")
+		recent_menu.refresh()
+		return
 	if recent_menu and recent_menu.web_browser.has_playback_return(video.local_uri):
 		_return_to_web_video.call_deferred(true, str(recent_menu.web_browser.playback_return.get("native_uri", ""))); return
 	_cancel_video_queue_wait()
@@ -4571,6 +4638,13 @@ func _process_cinema_move_stick(left: Vector2, right: Vector2, delta: float) -> 
 	if _cinema_stick_direction.x != 0: turn.x = _cinema_stick_direction.x
 	elif _cinema_stick_direction.y < 0: turn.y = -1
 	cinema_environment.poll_sticks(left, turn, delta)
+
+func _on_cinema_view_relocated(previous: Transform3D, current: Transform3D) -> void:
+	if not recent_menu is LibraryMenu: return
+	var browser: RefCounted = recent_menu.web_browser
+	if not interface_move.capture.is_empty() and interface_move.capture.targets.any(func(target): return browser.windows.values().has(target.get("node"))):
+		interface_move.cancel()
+	browser.relocate_view(previous, current)
 
 func _on_cinema_environment_changed() -> void:
 	if _cinema_scene_active():
@@ -5186,6 +5260,10 @@ func _on_playback_adjustment(key: String, value: Variant) -> void:
 	elif key == "audio_delay":
 		if value is Dictionary and str(value.source_uri) == video.local_uri and str(value.get("audio_key", "")) == video.audio_timing_key(): video.set_audio_delay(float(value.value))
 		return
+	elif key == "secondary_subtitle_delay":
+		if value is Dictionary and str(value.source_uri) == video.local_uri and str(value.get("subtitle_key", "")) == video.dual_subtitles.timing_key:
+			video.dual_subtitles.set_delay(float(value.value))
+		return
 	elif key == "subtitle_delay":
 		if value is Dictionary and str(value.source_uri) == video.local_uri and str(value.get("subtitle_key", video.subtitle_timing_key())) == video.subtitle_timing_key():
 			video.set_subtitle_delay(float(value.value))
@@ -5385,6 +5463,10 @@ func _on_display_debug_command(_id: int, payload: String) -> void:
 						"scale": item.global_basis.get_scale().x, "surface_status": item.surface.status})
 				var file := FileAccess.open("user://diagnostics/browser_windows.json", FileAccess.WRITE)
 				if file: file.store_string(JSON.stringify({"request": command.get("request_key", ""), "windows": entries,
+					"active": recent_menu.web_browser.active(), "opened": recent_menu.web_browser.opened,
+					"beta_available": recent_menu.web_browser.beta_available(recent_menu.web_browser.data),
+					"media_ready": recent_menu.web_browser.beta_media_ready(recent_menu.web_browser.data),
+					"handoff_error": recent_menu.web_browser.handoff_error.get("message", ""),
 					"handoff": recent_menu.web_browser.handoff,
 					"waiting_pause": recent_menu.web_browser.handoff_waiting_pause, "resolver_pending": recent_menu.web_video.pending,
 					"pause_token": recent_menu.web_browser.handoff_context.get("pause_token", 0)}))
@@ -5665,6 +5747,7 @@ func _on_pip_image_cancelled() -> void:
 func _begin_subtitle_browse() -> void:
 	if _subtitle_browse_session > 0 or not video or not recent_menu is LibraryMenu: return
 	_subtitle_browse_session = video.media.session_id
+	_subtitle_browse_secondary = video.dual_subtitles.editing_secondary
 	var location: Variant = settings.get_value("subtitles", "browse_location", {})
 	_show_full_library()
 	recent_menu.begin_subtitle_picker(location if location is Dictionary else {})
@@ -5674,7 +5757,7 @@ func _on_subtitle_selected(uri: String, _title: String, location: Dictionary) ->
 	if id <= 0: return
 	_subtitle_browse_session = 0
 	settings.set_value("subtitles", "browse_location", location); settings.save(settings_path)
-	if video and id == video.media.session_id: video.select_subtitle_uri(uri)
+	if video and id == video.media.session_id and (not _subtitle_browse_secondary or video.dual_subtitles.enabled): video.select_subtitle_uri(uri, false, _subtitle_browse_secondary)
 	_return_from_subtitle_picker()
 
 func _on_subtitle_picker_cancelled() -> void:

@@ -23,3 +23,7 @@ The global task panel queues original or optionally translated full-film subtitl
 Durable eligible jobs/caches follow the independent per-file settings policy (all/local/none). Session-only entries are not made durable later; account changes pause affected network work. Privacy locking and the existing clearing actions apply. Queue/cache files, original/translated transcripts and account locators are app-private user data, excluded from this Git repository. Optional translation still sends recognized text to the same online providers; no offline translation or universal speed claim is made.
 
 全片任务支持原文／双语、暂停继续、优先处理与重试，前台播放和隐私锁定可使任务等待。缓存与任务持久化遵循逐片配置策略；个人字幕、队列和账号位置均不公开。
+
+## Dual text tracks (0.16.2)
+
+An optional second text track has its own selection/timing and narration preference. The existing single-track route stays authoritative; bitmap tracks and active live recognition have separate availability limits. This is not hard-subtitle OCR or two arbitrary subtitle renderers. 3D text protection is hidden and forced off in this release, including persisted enabled settings.

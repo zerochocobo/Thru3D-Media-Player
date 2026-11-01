@@ -67,8 +67,10 @@ internal class LocalStreamServer : Closeable {
         pool.execute {
             while (!closed) {
                 val client = try { socket.accept() } catch (_: Throwable) { break }
-                clients.add(client)
-                pool.execute { serve(client) }
+                synchronized(this@LocalStreamServer) {
+                    if (closed) runCatching { client.close() }
+                    else { clients.add(client); pool.execute { serve(client) } }
+                }
             }
         }
     }
@@ -271,7 +273,10 @@ internal class LocalStreamServer : Closeable {
         closed = true
         try { socket.close() } catch (_: Throwable) {}
         pool.shutdownNow()
-        clients.toList().forEach { runCatching { it.close() } }; clients.clear()
+        // ConcurrentHashMap's weakly consistent size/iterator can disagree. Kotlin
+        // toList() optimizes size==1 by calling next() without hasNext(), racing a
+        // completed client. Iterate the concurrent set directly during shutdown.
+        clients.forEach { runCatching { it.close() } }; clients.clear()
         sources.values.distinct().forEach { runCatching { it.close() } }
         diagnostics.clear()
         sources.clear()

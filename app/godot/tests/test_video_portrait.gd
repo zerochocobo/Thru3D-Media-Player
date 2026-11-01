@@ -115,7 +115,18 @@ func run() -> void:
 	menu._state.packed_mask = true
 	check(not menu._enabled("alpha"), "Packed masks still exclude live matting")
 	menu._state.packed_mask = false; menu._state.geometry = 3
-	check(not menu._enabled("alpha"), "Ordinary 360 eligibility unchanged")
+	for layout in [0, 1, 2, 3, 4]:
+		menu._state.stereo = layout != 0
+		check(menu._enabled("alpha") and not menu._enabled("depth"), "360 mono/SBS/TB offers Alpha without depth synthesis: " + str(layout))
+		video.alpha_requested = false; video.geometry = 0; video.auto_depth = false
+		video.set_stereo_layout(layout)
+		check(video.set_alpha(true), "360 source can start Alpha before projection change: " + str(layout))
+		video.set_projection(3)
+		check(video.alpha_requested and video.stereo_layout() == layout and not video.depth_requested,
+			"Entering 360 retains Alpha and the authored mono/SBS/TB layout: " + str(layout))
+		check(not video.portrait_requested() and not video.flat_passthrough_requested(), "360 Alpha stays spherical without portrait placement: " + str(layout))
+		video.set_alpha(false); video.set_alpha(true)
+		check(video.alpha_requested and video.stereo_layout() == layout, "360 Alpha can be reenabled without changing layout: " + str(layout))
 	var mode := {"profile":"320x320","geometry":0,"stereo_sbs":false,"swap_eyes":false,"alpha_requested":false,
 		"portrait_auto":false,"portrait_strength":.4,"portrait_enhanced":true}
 	check(Memory.valid_mode(mode), "Portrait preferences accepted")

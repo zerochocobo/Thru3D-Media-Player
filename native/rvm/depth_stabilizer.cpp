@@ -239,9 +239,10 @@ void DepthStabilizer::band(const float* inv, int frame_step) {
     const float span = std::max(hi_ - lo_, 1e-6f);
     const float jump = std::max(std::fabs(plo - lo_), std::fabs(phi - hi_)) / span;
     if (jump >= kNormReset) {
-        // As TemporalDepthStabilizer.normalization_band: a whole-band jump restarts everything.
-        initialized_ = false; have_small_ = false;
-        lo_ = plo; hi_ = phi; ++cuts_;
+        // Relative model outputs can change scale/bias without a change of shot. Rebase the
+        // normalization immediately, but keep the already normalized temporal/motion history.
+        // Actual RGB scene cuts reset it in process(); a model range jump is not a scene cut.
+        lo_ = plo; hi_ = phi;
         return;
     }
     const float a = rate(std::min(1.f, kNormAlpha * speed_), frame_step);

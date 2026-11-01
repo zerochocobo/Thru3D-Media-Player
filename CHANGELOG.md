@@ -4,6 +4,15 @@
 
 Newest first, following product release milestones. Some development/source snapshots contained features before their product release. Original APK identifiers `0.2` and `0.4` are retained; `0.4` was also called `0.4.0` in release notes. Availability depends on device, server and media capabilities.
 
+## 0.16.2 — 2026-11-01
+
+- Add opt-in dual text subtitles with independent selection/timing and narration choice. PGS/bitmap subtitles and active live-subtitle paths retain their supported boundaries. 3D text protection is disabled and hidden in this release, including saved enabled settings; detector source/contracts remain for future review, but weights are excluded from Git.
+- Add adaptive photo/portrait neighbour caching and GPU preparation under measured frame/memory headroom, reuse prepared stereo textures and improve contextual photo controls, curved-surface clicks and rotation/disparity. Bound large-image/animation allocations and allow compatible previews or explicit failure instead of unbounded memory use; do not infer unlimited image sizes or uniform headset performance.
+- Add Android external-video opening for eligible VIEW/SEND content, transient URI leases and original-source streaming. Validate incoming launch controls before Godot starts, bound resources and strip playlist credentials across media origins. The caller must grant source access; arbitrary apps, DRM and every URI/provider are not guaranteed. See external playback scope.
+- Enable AI passthrough for eligible mono/stereo 360° video. Pace depth by source time and reduce repeated contours at strong stereo settings; preserve source stereo and existing fallback limits.
+- Improve controller ray edges/target feedback, menu-layer repaint scheduling and browser placement across cinema transitions. Fix Emby assigned-folder artwork while keeping movie walls film-only.
+- Keep Douyin native/Beta handoff unavailable in the current release despite retained adapter/diagnostic source. Do not advertise it as supported playback. Retain the Tiny detector package validation for complete builds while both Android detection and Godot 3D text protection remain forced off.
+
 ## 0.16.1 — 2026-10-31
 
 - Add video 3D boost up to 200%, click-to-enable/restore strength and a separate Off action. Retain frames while AI 2D/3D paths change to reduce black gaps; a short still frame/audio pause can remain. Preserve the picture's background during Alpha passthrough when requested, including panorama/cinema placement, with independent photo backgrounds and saved preferences.

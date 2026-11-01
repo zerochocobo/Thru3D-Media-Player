@@ -163,3 +163,5 @@ Release targets are QUEST, PICO, OpenXR and optional PICO-CN-STORE. Three-target
 Optional QUEST Release comparison builds can use -UncompressedNativeLibraries. The included alignment/signing/compression checks use caller-prepared signing environment variables; they generate no replacement key and publish no identity. This option is separate from normal release defaults.
 
 Meta `-QuestStore` builds temporarily use the application display name `Thru3D Media Player XR` in project and Android package labels, verified through APK metadata and recorded in build.json. Other channels keep `Thru3D Media Player`; original source settings are restored. This does not change package identity or signing requirements.
+
+0.16.2 complete builds still prepare/verify the separately supplied Tiny text-detector payload through `Prepare-TextProtection.ps1` and `Assert-TextProtectionModel.ps1`. The feature is disabled/hidden in both Godot and Android for this release; retained packaging is not permission to reopen it. No detector weight is stored in Git. External-video entry/host intent guards are verified by `Assert-ExternalPlaybackPackaged.ps1`.

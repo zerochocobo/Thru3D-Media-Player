@@ -22,15 +22,20 @@ internal object PhotoStereo {
         return maxOf(1,(width*ratio).toInt()) to maxOf(1,(height*ratio).toInt())
     }
 
-    fun prepare(source: File, near: ByteBuffer, rect: FloatArray, strength: Float, generation: Int): JSONObject {
+    fun validRotation(rotation: Int) = rotation in listOf(0, 90, 180, 270)
+    fun cachePrefix(strength: Float, rotation: Int): String {
         require(strength.isFinite() && strength in 0f..2f)
-        // v2 applies strength after the base disparity cap; old pairs above 100% are stale.
-        val prefix = "stereo-v2-${(strength*100).roundToInt()}-"
+        require(validRotation(rotation))
+        return "stereo-v3-r$rotation-${(strength*100).roundToInt()}-"
+    }
+
+    fun prepare(source: File, near: ByteBuffer, rect: FloatArray, strength: Float, generation: Int, rotation: Int = 0): JSONObject {
+        val prefix = cachePrefix(strength, rotation)
         // Raw RGBA pair named with its size: a hit is checked by length, with nothing to decode.
         source.parentFile?.listFiles()?.firstOrNull { it.name.startsWith(prefix) && it.extension == "rgba" }?.let { cached ->
             val size = Regex("""-(\d+)x(\d+)$""").find(cached.nameWithoutExtension)?.groupValues
             val w = size?.get(1)?.toIntOrNull() ?: 0; val h = size?.get(2)?.toIntOrNull() ?: 0
-            if (w > 0 && h > 0 && cached.length() == w.toLong()*h*4) return metadata(cached, w, h, strength, 0)
+            if (w > 0 && h > 0 && cached.length() == w.toLong()*h*4) return metadata(cached, w, h, strength, rotation, 0)
         }
         val bounds = PhotoBitmap.bounds(source)
         val targetSize = size(bounds.outWidth, bounds.outHeight)
@@ -53,7 +58,7 @@ internal object PhotoStereo {
             val rgba = ByteBuffer.allocateDirect(w*h*4).order(ByteOrder.LITTLE_ENDIAN)
             color.copyPixelsToBuffer(rgba); rgba.rewind(); near.rewind()
             val output = ByteBuffer.allocateDirect(w*h*8).order(ByteOrder.LITTLE_ENDIAN)
-            val micros = RenderBridgeNative.photoStereo(rgba,w,h,near,PhotoDepthInput.WIDTH,PhotoDepthInput.HEIGHT,rect,strength,output)
+            val micros = RenderBridgeNative.photoStereo(rgba,w,h,near,PhotoDepthInput.WIDTH,PhotoDepthInput.HEIGHT,rect,strength,rotation/90,output)
             require(micros > 0)
             // The GPU pair is already RGBA rows: hand it over raw. PNG encoding a 16.8 MP pair took
             // 4.2-6.4 s on Quest 3 (1.4-1.8 s for 5 MP), most of a large photo's wait.
@@ -67,7 +72,7 @@ internal object PhotoStereo {
             // Textures already decoded by Godot own their pixels. Retain the latest few disk pairs.
             source.parentFile?.listFiles()?.filter { it.name.startsWith("stereo-") && it.extension in setOf("png", "rgba") && it != target }
                 ?.sortedByDescending { it.lastModified() }?.drop(2)?.forEach { it.delete() }
-            return metadata(target,w*2,h,strength,micros)
+            return metadata(target,w*2,h,strength,rotation,micros)
         } finally {
             if (color !== upright && color !== original) color.recycle()
             if (upright !== original) upright.recycle()
@@ -75,8 +80,9 @@ internal object PhotoStereo {
         }
     }
 
-    private fun metadata(file: File, width: Int, height: Int, strength: Float, micros: Long) = JSONObject()
+    private fun metadata(file: File, width: Int, height: Int, strength: Float, rotation: Int, micros: Long) = JSONObject()
         .put("stereo_path",file.path).put("stereo_width",width).put("stereo_height",height)
         .put("stereo_strength",strength.toDouble()).put("stereo_render_us",micros)
+        .put("stereo_rotation",rotation)
         .put("stereo_strategy","video_soft_shift_gpu")
 }

@@ -20,6 +20,7 @@ internal class PhotoSource(val file: File, val nativeStereo: Boolean = false) {
         file.parentFile?.listFiles()?.filter {
             it.name in setOf("depth.bin", "depth.json") || it.name.startsWith("stereo-")
         }?.forEach { it.delete() }
+        file.parentFile?.resolve("portrait")?.deleteRecursively()
         discardDepthPending = false
     }
     @Synchronized fun retain(): PhotoSource {

@@ -35,8 +35,11 @@ class WebVideoDiagnosticsReceiver : BroadcastReceiver() {
                     val source = JSONObject(plugin.web_browser_status())
                     val safe = JSONObject()
                     for (key in listOf("engine", "progress", "error", "active", "attached", "playing", "generation",
-                        "detached_through", "needs_surface", "extension", "videos", "tabs", "native_supported", "editing", "session_ready", "tab_id", "navigation", "focused_window", "operation_error", "live_tabs", "network_capture_enabled", "network_capture_available", "bilibili_beta_available", "pause_token", "pause_confirmed")) {
+                        "detached_through", "needs_surface", "extension", "videos", "tabs", "native_supported", "editing", "session_ready", "tab_id", "navigation", "focused_window", "operation_error", "live_tabs", "network_capture_enabled", "network_capture_available", "bilibili_beta_available", "douyin_beta_available", "pause_token", "pause_confirmed")) {
                         if (source.has(key)) safe.put(key, source.get(key))
+                    }
+                    for (key in listOf("pause_ports", "pause_report_ports", "pause_media_ports", "pause_missing_media_ports", "media_report_age_ms")) {
+                        if (source.has(key)) safe.put(key, source.optLong(key))
                     }
                     safe.put("page", runCatching { WebVideoPage.parse(source.optString("url")).url }.getOrDefault(""))
                     val windows = org.json.JSONArray()

@@ -84,9 +84,9 @@ class PdfDocumentsTest {
         val results = LinkedBlockingQueue<String>(); val opened = mutableListOf<String>()
         val docs = PdfDocuments({ uri, _, _ -> opened.add(uri); Sheet() }) { _, result -> results.add(result) }
         try {
-            val names = listOf("サイトウ零央.pdf", "[weiphone][PDF电子书][龙珠]Vol.02.pdf", "Book #?%2F 01.pdf")
+            val names = listOf("サイトウ零央.pdf", "[fixture][PDF文档][示例]Vol.02.pdf", "Book #?%2F 01.pdf")
             names.forEachIndexed { index, name ->
-                val uri = "smb://saved-server/VRRecommend/TEST/$name"
+                val uri = "smb://saved-server/fixtures/pdf/$name"
                 docs.open(index, uri)
                 assertEquals("ready", JSONObject(results.poll(3, TimeUnit.SECONDS)!!).getString("state"))
                 assertEquals(uri, opened.last()); docs.release(index.toString())

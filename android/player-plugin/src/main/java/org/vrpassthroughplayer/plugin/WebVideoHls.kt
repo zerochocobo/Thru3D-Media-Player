@@ -5,7 +5,7 @@ import java.net.URI
 import java.util.LinkedHashMap
 
 /** VOD manifests and their resources remain behind the existing random-token loopback server. */
-internal class WebVideoHls(private val server: LocalStreamServer) : Closeable {
+internal class WebVideoHls(private val server: LocalStreamServer, private val strictOriginHeaders: Boolean = false) : Closeable {
     private val http = RemoteMediaHttp()
     private val published = ArrayList<String>()
     private val manifests = HashMap<URI, String>()
@@ -73,7 +73,9 @@ internal class WebVideoHls(private val server: LocalStreamServer) : Closeable {
         browserHeaders?.let { return it.forUrl(target, headers) }
         fun port(uri: URI) = if (uri.port >= 0) uri.port else if (uri.scheme == "https") 443 else 80
         val same = origin.scheme == target.scheme && origin.host.equals(target.host, true) && port(origin) == port(target)
-        return if (same) headers else headers.filterKeys { it.lowercase() in setOf("user-agent", "accept", "accept-language", "referer", "origin") }
+        val publicHeaders = if (strictOriginHeaders) setOf("user-agent", "accept", "accept-language")
+            else setOf("user-agent", "accept", "accept-language", "referer", "origin")
+        return if (same) headers else headers.filterKeys { it.lowercase() in publicHeaders }
     }
 
     private fun resolve(base: URI, value: String): URI = base.resolve(value).also {

@@ -1,0 +1,3 @@
+<resources>
+    <string name="external_video_unavailable">Cannot open video. Check file access.</string>
+</resources>

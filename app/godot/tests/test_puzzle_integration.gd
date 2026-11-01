@@ -31,6 +31,7 @@ func _run() -> void:
 	var original_layer: bool=app.photo.layer_enabled
 	check(app.puzzle_game!=null,"Normal application creates puzzle host")
 	app.photo_menu.refresh()
+	var original_menus: Array=app.menu_composition.menus.duplicate()
 	check(app.photo_menu._buttons.any(func(b):return b.target==app.photo_menu.PHOTO_PUZZLE and b.enabled),"Debug photo toolbar exposes playable puzzle entry")
 	app._on_photo_action("photo_puzzle")
 	check(app.puzzle_game.panel.mode=="hub","Photo action opens the global game entry")
@@ -49,7 +50,9 @@ func _run() -> void:
 	app._dispatch_hand_input({"right_hand":{"source":"hand","tracked":true,"down":true,"pressed":true}})
 	check(app.puzzle_game.session.captures.has("right_hand"),"Existing bare-hand dispatch acquires a real puzzle piece")
 	app.puzzle_game.tick(0.016)
-	check(app.controller_feedback.hands.right_hand.nodes.line.visible and app.controller_feedback.hands.right_hand.nodes.line.scale.y>0.8,"A held piece has a visible aiming ray extending beyond the hand")
+	var held_line: MeshInstance3D=app.controller_feedback.hands.right_hand.nodes.line
+	var held_vertices: PackedVector3Array=held_line.mesh.surface_get_arrays(0)[Mesh.ARRAY_VERTEX]
+	check(held_line.visible and held_line.to_global(held_vertices[0]).is_equal_approx(ray_origin) and held_vertices[0].distance_to(held_vertices[1])>0.1,"A held piece retains a full ray from the hand")
 	app._dispatch_hand_input({"right_hand":{"source":"hand","tracked":false,"cancelled":true}})
 	check(app.puzzle_game.session.captures.is_empty() and app.puzzle_game.session.completed()==0,"Bare-hand tracking loss cancels without committing progress")
 	app.hand_pointers.right_hand.ray=null; app.puzzle_game.tick(0.016)
@@ -78,7 +81,7 @@ func _run() -> void:
 	app._notification(Main.NOTIFICATION_APPLICATION_FOCUS_IN)
 	app.puzzle_game.finish()
 	check(not app.puzzle_game.active and app.photo.visible and app.photo.is_processing(),"Exit restores original viewer")
-	check(app.menu_composition.menus.size()==4,"Game exit unregisters its temporary menu without removing player or music menus")
+	check(app.menu_composition.menus==original_menus,"Game exit restores the registered media menus, including photo controls")
 	check(app.photo.layer_enabled==original_layer and app.photo.flat_pose==original_pose,"Photo pose and compositor policy survive the round trip")
 	check(app.photo.local_uri=="file://"+path,"Original source stays open")
 	app.photo.loading=true

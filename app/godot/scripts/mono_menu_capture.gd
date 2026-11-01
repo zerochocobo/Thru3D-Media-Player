@@ -178,15 +178,12 @@ func _mask(node: Node, nodes: Array[VisualInstance3D], plane: Node3D = null) -> 
 	if button_planes.has(node.get_instance_id()): plane = node
 	if node is VisualInstance3D:
 		var saved := {"node": node, "layers": node.layers}
-		# The ray stays in the eye buffer so its hand end remains correctly attached.
+		# The ray stays in the eye buffer and keeps the full ray's per-eye projection.
 		if node.has_meta("menu_pointer") and node is MeshInstance3D and node.mesh is ImmediateMesh:
-			saved["material"] = node.material_override
-			var material: ShaderMaterial = node.get_meta("mono_ray_material") if node.has_meta("mono_ray_material") else null
-			if not material:
-				material = ShaderMaterial.new(); material.shader = RAY_SHADER
-				material.render_priority = 126; node.set_meta("mono_ray_material", material)
-			material.set_shader_parameter("ray_color", node.material_override.albedo_color)
-			node.material_override = material
+			# Input may update the ray before _restore() on the following frame.
+			# Keep one material so restoring cannot discard those fresh endpoints.
+			saved["ray_shader"] = node.material_override.shader
+			node.material_override.shader = RAY_SHADER
 		else:
 			# The normal per-plane compositor is orthographic: tiny ink/plate Z offsets
 			# only set draw order. A perspective mono capture magnifies those offsets
@@ -211,7 +208,7 @@ func _restore() -> void:
 	for saved in originals:
 		if not is_instance_valid(saved.node): continue
 		saved.node.layers = saved.layers
-		if saved.has("material"): saved.node.material_override = saved.material
+		if saved.has("ray_shader"): saved.node.material_override.shader = saved.ray_shader
 	originals.clear()
 
 func stop() -> void:

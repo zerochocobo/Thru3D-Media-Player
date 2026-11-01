@@ -46,8 +46,8 @@ internal data class WebVideoPage(val site: String, val id: String, val url: Stri
             }
             val path = uri.path.orEmpty()
             WebVideoInternationalPages.parse(uri, query)?.let { return it }
-            // Douyin's web player keeps sound outside the <video> file and its extractor needs a
-            // cookie the site no longer sets: a handoff would be silent. Keep it in the browser.
+            // The legacy extractor cannot reliably recover Douyin's authorized audio/video.
+            // Observed muxed files use the separately validated browser Beta route.
             if (host in setOf("douyin.com", "www.douyin.com", "m.douyin.com", "www.iesdouyin.com", "iesdouyin.com", "v.douyin.com"))
                 error("Continue playing on the website")
             if (host in setOf("weibo.com", "www.weibo.com", "m.weibo.cn", "video.weibo.com")) {

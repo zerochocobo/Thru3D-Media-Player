@@ -33,6 +33,14 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     @UsedByGodot fun system_media_volume(): String = systemVolume.status()
     @UsedByGodot fun set_system_media_volume(percent: Double, showUi: Boolean): Long = systemVolume.set(percent, showUi)
     @Volatile private var signalsReady = false
+    @Volatile private var playbackPrivacyConfigured = false
+    internal fun externalPlaybackProbeHostReady(): Boolean =
+        signalsReady && playbackPrivacyConfigured && !closed.get() && activity?.hasWindowFocus() == true
+    @UsedByGodot fun external_playback_poll(): String {
+        if (!externalPlaybackProbeHostReady()) return "{}"
+        val pending = ExternalPlaybackPending.claim() ?: return "{}"
+        return runCatching { sources.externalPlayback(pending.first.request, pending.second) }.getOrDefault("{}")
+    }
     // The renderer (cast ownership/state) outlives the network receiver: backgrounding (e.g. the
     // headset taken off) stops LAN exposure, and resuming reopens it on the same port.
     private var dlnaRenderer: DlnaRenderer? = null
@@ -85,6 +93,7 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
         PlaybackPrivacy.protectedFavorites = protectedFavorites
         webBrowser.setHistoryEnabled(PlaybackPrivacy.mode == "all" && !protectedFavorites)
         runCatching { MpvSourceNative.setPrivacy(!PlaybackPrivacy.diagnostics) }
+        playbackPrivacyConfigured = true
     }
     /** Per-file settings cleanup of recognized live-subtitle text. */
     @UsedByGodot fun clear_listening_cache(networkOnly: Boolean): Boolean {
@@ -205,7 +214,15 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     fun probeWebBrowserMediaForDiagnostics(): JSONObject {
         val page = JSONObject(webBrowser.snapshot()).optString("url")
         val media = webBrowser.mediaForExtraction(page) ?: return JSONObject().put("available", false)
+        fun counts(key: String, allowed: List<String>): JSONObject {
+            val input = media.optJSONObject(key) ?: return JSONObject()
+            return JSONObject().also { result -> allowed.filter(input::has).forEach { result.put(it, input.optInt(it).coerceIn(-1, 4 * 1024 * 1024)) } }
+        }
         val result = JSONObject().put("available", true)
+            .put("douyin_enabled", media.optBoolean("douyin_enabled"))
+            .put("douyin_metadata", media.optJSONObject("douyin") != null)
+            .put("douyin_diagnostics", counts("douyin_diagnostics", listOf("metadata_count", "page_metadata", "source_id_matches", "dimension_matches", "duration_matches", "address_matches", "observed_source")))
+            .put("douyin_observation", counts("douyin_observation", listOf("started", "worker", "prefetch", "document_url_matches", "headers", "status", "body", "bytes", "parsed", "detail", "id_string", "id_matches", "normalized", "video", "ads", "images", "encrypted", "drm_zero_string", "tracks", "dimensioned_tracks", "https_addresses", "duration_valid", "data_detail", "response_code")))
             .put("bilibili_probe", media.optString("bilibili_probe"))
             .put("bilibili_response_api", media.optBoolean("bilibili_response_api"))
             .put("bilibili_api_count", media.optInt("bilibili_api_count").coerceIn(0, 4))
@@ -380,6 +397,14 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
         val id = requestId.incrementAndGet()
         return if (photoPreloads.open(id, uri, bounded = true)) id else -1
     }
+    @UsedByGodot fun background_resource_policy(): String {
+        val value = BackgroundResourceBudget.snapshot(if (closed.get()) null else activity?.applicationContext)
+        return JSONObject().put("spare_bytes", value.spare).put("retain", value.retain)
+            .put("work", value.work).put("cache_limit", value.cacheLimit).put("reserve_bytes", value.reserve).toString()
+    }
+    // Invoked only through RenderingServer.call_on_render_thread with its EGL context current.
+    @UsedByGodot fun background_gpu_timing(action: Int): Double =
+        if (closed.get()) -1.0 else runCatching { RenderBridgeNative.backgroundGpuTiming(action) }.getOrDefault(-1.0)
     @UsedByGodot fun activate_photo(id: Int): Boolean = synchronized(PhotoCache.lock) {
         if (closed.get()) return@synchronized false
         if (photos.activate(id)) return@synchronized true
@@ -395,13 +420,22 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     @UsedByGodot fun release_photo(id: Int) { photos.release(id); photoPreloads.release(id) }
     @UsedByGodot fun discard_photo_depth(id: Int) { photos.discardDepth(id); photoPreloads.discardDepth(id) }
     @UsedByGodot fun prepare_photo_portrait(id: Int, token: Int, strength: Double): Boolean = !closed.get() && photos.portrait(id,token,strength.toFloat())
+    @UsedByGodot fun prepare_preloaded_photo_portrait(id: Int, token: Int, strength: Double): Boolean = !closed.get() &&
+        (photoPreloads.portrait(id,token,strength.toFloat(),true) || photos.portrait(id,token,strength.toFloat(),true))
+    @UsedByGodot fun cancel_preloaded_photo_portrait() { photoPreloads.cancelBackgroundPortrait(); photos.cancelBackgroundPortrait() }
     @UsedByGodot fun cancel_photo_portrait(token: Int) = photos.cancelPortrait(token)
     @UsedByGodot fun prepare_photo_depth(id: Int): Boolean = !closed.get() && photos.depth(id)
     @UsedByGodot fun prepare_photo_scene_depth(id: Int, token: Int): Boolean = !closed.get() && token > 0 && photos.depth(id,sceneToken=token)
     @UsedByGodot fun cancel_photo_scene_depth(id: Int, token: Int) { photos.cancelSceneDepth(id,token) }
     @UsedByGodot fun prepare_preloaded_photo_depth(id: Int): Boolean = !closed.get() && (photoPreloads.depth(id) || photos.depth(id,background=true))
     @UsedByGodot fun prepare_photo_3d(id: Int, strength: Double): Boolean = !closed.get() && photos.depth(id,strength.toFloat(),true)
+    @UsedByGodot fun prepare_photo_3d_rotated(id: Int, strength: Double, rotation: Int): Boolean = !closed.get() && photos.depth(id,strength.toFloat(),true,rotation=rotation)
     @UsedByGodot fun prepare_preloaded_photo_3d(id: Int, strength: Double): Boolean = !closed.get() && (photoPreloads.depth(id,strength.toFloat(),true) || photos.depth(id,strength.toFloat(),true,true))
+    @UsedByGodot fun prepare_preloaded_photo_3d_rotated(id: Int, strength: Double, rotation: Int): Boolean = !closed.get() &&
+        (photoPreloads.depth(id,strength.toFloat(),true,rotation=rotation) || photos.depth(id,strength.toFloat(),true,true,rotation=rotation))
+    @UsedByGodot fun prepare_photo_portrait_rotated(id: Int, token: Int, strength: Double, rotation: Int): Boolean = !closed.get() && photos.portrait(id,token,strength.toFloat(),rotation=rotation)
+    @UsedByGodot fun prepare_preloaded_photo_portrait_rotated(id: Int, token: Int, strength: Double, rotation: Int): Boolean = !closed.get() &&
+        (photoPreloads.portrait(id,token,strength.toFloat(),true,rotation) || photos.portrait(id,token,strength.toFloat(),true,rotation))
     @UsedByGodot fun cancel_preloaded_photo_depth() { photoPreloads.cancelBackgroundDepth(); photos.cancelBackgroundDepth() }
     @UsedByGodot fun update_photo_3d_strength(strength: Double) { photos.updateDepthStrength(strength.toFloat()); photoPreloads.updateDepthStrength(strength.toFloat()) }
     @UsedByGodot fun release_photo_depth_runtime() { photos.cancelDepth(); photoPreloads.cancelDepth(); PhotoDepthRuntime.release() }
@@ -449,6 +483,7 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
         SignalInfo("photo_ready", Int::class.javaObjectType, String::class.java),
         SignalInfo("background_audio_imported", Int::class.javaObjectType, String::class.java),
         SignalInfo("photo_portrait", Int::class.javaObjectType, String::class.java),
+        SignalInfo("photo_preload_portrait", Int::class.javaObjectType, String::class.java),
         SignalInfo("photo_preview_ready", Int::class.javaObjectType, String::class.java),
         SignalInfo("photo_depth", Int::class.javaObjectType, String::class.java),
         SignalInfo("photo_scene_depth", Int::class.javaObjectType, String::class.java),
@@ -645,6 +680,7 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
         MpvVideoBridge.depthStretch = mode == "stretch"
         return true
     }
+    @UsedByGodot fun set_depth_text_protection(enabled: Boolean) { mpv.setTextProtection(enabled) }
     @Volatile private var rvmModel = "fast"
     /** "fast" (default) or "quality"; Alpha sessions opened afterwards use it. */
     @UsedByGodot fun set_rvm_model(model: String): Boolean {
@@ -803,6 +839,8 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     @UsedByGodot fun narration_supported(): Boolean = !closed.get() && NarrationPolicy.FEATURE_ENABLED && NarrationNative.supported()
     @UsedByGodot fun set_mpv_speed(id: Int, speed: Double): Boolean = !closed.get() && mpv.setSpeed(id, speed)
     @UsedByGodot fun set_mpv_subtitle(id: Int, trackId: Int): Boolean = !closed.get() && mpv.setSubtitle(id, trackId)
+    @UsedByGodot fun set_mpv_secondary_subtitle(id: Int, trackId: Int, seconds: Double): Boolean =
+        !closed.get() && mpv.setSecondarySubtitle(id, trackId, seconds)
     @UsedByGodot fun list_mpv_subtitle_files(id: Int, request: Int): Boolean = !closed.get() && mpv.listSubtitleFiles(id, request)
     @UsedByGodot fun load_mpv_subtitle_file(id: Int, request: Int, name: String): Boolean = !closed.get() && mpv.loadSubtitleFile(id, request, name)
     @UsedByGodot fun load_mpv_subtitle_uri(id: Int, request: Int, uri: String): Boolean = !closed.get() && mpv.loadSubtitleUri(id, request, uri)

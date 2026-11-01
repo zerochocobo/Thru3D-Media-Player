@@ -37,6 +37,7 @@ class Host extends RefCounted:
 	func set_mpv_subtitle(id: int, track: int) -> bool:
 		calls.append(["subtitle", id, track])
 		return true
+	func set_depth_text_protection(enabled: bool) -> void: calls.append(["text_protection", enabled])
 	func set_mpv_depth_view(id: int, shift: float, convergence: float) -> bool:
 		calls.append(["depth_view", id, shift, convergence])
 		return true
@@ -360,8 +361,17 @@ func _run() -> void:
 	check(alpha_tile.node.material_override.get_shader_parameter("surface_color") == Color(0.16, 0.31, 0.27), "Requested Alpha is shown on its bar button, not as status text")
 	video.set_projection(3)
 	menu.refresh()
-	check(shown.call(104) and shown.call(112) and not click(menu, 104) and not click(menu, 112) and not video.alpha_requested,
-		"360 keeps both bar effects visible but disabled, and stops the previous Alpha effect")
+	check(video.alpha_requested and video.stereo_sbs, "Switching from VR180 to 360 retains Alpha and source stereo")
+	for layout in [0, 1, 2, 3, 4]:
+		video.set_stereo_layout(layout); menu.refresh()
+		check(shown.call(104) and shown.call(112) and not click(menu, 112), "360 keeps depth synthesis disabled: " + str(layout))
+		check(click(menu, 104) and not video.alpha_requested, "360 mono/SBS/TB can turn Alpha off from the bar: " + str(layout))
+		check(click(menu, 104) and video.alpha_requested and video._pending_revision.alpha \
+			and video._pending_revision.stereo == (layout != 0) and video._pending_revision.top_bottom == (layout in [2, 4]) \
+			and not video._pending_revision.depth and video.stereo_layout() == layout,
+			"360 bar requests Alpha with the authored eye packing: " + str(layout))
+	check(click(menu, 104) and not video.alpha_requested, "360 Alpha can return to ordinary playback")
+	video.set_stereo_layout(0)
 	check(click(menu, Menu.MODE) and click(menu, Menu.MODE_PROJECTION) and video.geometry == 0 and not video.stereo_sbs, "Back to flat 2D through the mode tiles")
 	check(not shown.call(Menu.MODE_STEREO + 2) and not shown.call(Menu.MODE_STEREO + 3) and shown.call(112), "Video popup omits duplicate depth and eye-order controls, retaining bar depth")
 	check(menu._buttons.filter(func(b): return b.target >= Menu.MODE_PROJECTION and b.target < Menu.MODE_PROJECTION + 4).map(func(b): return b.target) == [Menu.MODE_PROJECTION, Menu.MODE_PROJECTION + 1, Menu.MODE_PROJECTION + 3, Menu.MODE_PROJECTION + 2], "Projection tiles place Fisheye after 360 without changing stored IDs")
@@ -710,6 +720,19 @@ func _run() -> void:
 	menu.refresh_values()
 	var navigation_calls := host.calls.size()
 	check(not click(menu, 101) and not click(menu, 103) and host.calls.size() == navigation_calls, "A video opened without a browse queue cannot navigate or seek via skip buttons")
+	var previous_platform := main.platform_plugin
+	main.platform_plugin = host
+	main.settings.set_value("video", "depth_text_protection", true)
+	check(not main._library_settings().depth_text_protection and not main._menu_state().depth_text_protection, "Legacy true preference remains inactive at both entry points")
+	video.depth_text_protection = true
+	check(not video.depth_text_protection, "Direct property writes cannot enable the release-held feature")
+	video.material.set_shader_parameter("depth_text_count", 1)
+	main._on_player_setting("depth_text_protection", true)
+	check(video.material.get_shader_parameter("depth_text_count") == 0 and not video.depth_text_protection and host.calls.back() == ["text_protection", false], "Legacy player action clears the held mask and sends only false to native")
+	main._on_setting_changed("depth_text_protection", true)
+	check(not main._menu_state().depth_text_protection and host.calls.back() == ["text_protection", false], "Legacy library action cannot reactivate text protection")
+	check(main.settings.get_value("video", "depth_text_protection") == true, "Release hold preserves the future preference without using it")
+	main.platform_plugin = previous_platform
 	_check_control_sticks(main, video, menu, host)
 	_check_transport_button(main, video, menu, host)
 	_check_seek_feedback(main, video, menu, host)

@@ -43,6 +43,7 @@ var hide_subtitles := false
 var video: Node
 var enabled := false
 var source := -1
+var source_secondary := false # Per-file only; never changes the global reading default.
 var language := "en"
 var zh_voice := "Xiaoyu"
 var en_voice := "Ava"
@@ -81,6 +82,7 @@ func load_settings(settings: ConfigFile) -> void:
 
 func _load_values(settings: ConfigFile, restore_enabled: bool = true) -> void:
 	enabled = FEATURE_ENABLED and restore_enabled and bool(settings.get_value("narration", "enabled", false))
+	source_secondary = restore_enabled and bool(settings.get_value("narration", "source_secondary", false))
 	profile = str(settings.get_value("narration", "profile", ""))
 	if profile not in PROFILES: profile = ""
 	voice_origin = str(settings.get_value("narration", "voice_origin", profile.get_slice("_", 0)))
@@ -109,7 +111,7 @@ func _load_values(settings: ConfigFile, restore_enabled: bool = true) -> void:
 func save(settings: ConfigFile) -> void:
 	settings.set_value("narration", "language_choice_version", 1)
 	for key in Memory.FIELDS:
-		if key != "enabled": settings.set_value("narration", key, _defaults[key])
+		if key not in ["enabled", "source_secondary"]: settings.set_value("narration", key, _defaults[key])
 	var uri := _video_source if not _video_source.is_empty() else (str(video.local_uri) if video.media.session_id > 0 else "")
 	if not video.get("cast_token") and memory.remember(uri, _values()): memory.save()
 
@@ -167,7 +169,7 @@ func current_text_subtitles() -> bool:
 	if not tracks.is_empty():
 		_text_tracks.clear()
 		for track in tracks: _text_tracks[int(track.id)] = video.SubtitleState.text_codec(str(track.get("codec", "")))
-	var id: int = video.subtitles.requested_track
+	var id: int = video.dual_subtitles.state.requested_track if source_secondary else video.subtitles.requested_track
 	if id < 0: id = int(video.media.playback.get("details", {}).get("subtitle", {}).get("track_id", 0))
 	return id > 0 and bool(_text_tracks.get(id, false))
 
@@ -200,10 +202,12 @@ func set_option(key: String, value: Variant, remember_defaults: bool = true) -> 
 			if not Memory.valid_custom_voice(str(value)): return false
 			custom_voice = str(value); voice_kind = "custom"
 		"narration_enabled":
-			enabled = bool(value); source = -1; _sync_profile()
+			enabled = bool(value); source = -1; source_secondary = false; _sync_profile()
 			if not enabled and _clone_preview_busy(): clone_command({"operation": "stop"})
-		"narration_current": enabled = bool(value); source = -1; _sync_profile()
-		"narration_source": source = maxi(-1, int(value))
+		"narration_current": enabled = bool(value); source = -1; source_secondary = false; _sync_profile()
+		"narration_source":
+			source = maxi(-1, int(value))
+			source_secondary = source > 0 and source == video.dual_subtitles.state.requested_track
 		"narration_language":
 			if str(value) != "auto" and str(value) not in Languages.NAMES: return false
 			language = str(value); _language_source = ""
@@ -254,7 +258,7 @@ func set_option(key: String, value: Variant, remember_defaults: bool = true) -> 
 	apply(); video.changed.emit(); return true
 
 func selected_track() -> Dictionary:
-	var id: int = video.subtitles.requested_track if source < 0 else source
+	var id: int = video.dual_subtitles.state.requested_track if source_secondary else (video.subtitles.requested_track if source < 0 else source)
 	if id < 0: id = int(video.media.playback.get("details", {}).get("subtitle", {}).get("track_id", 0))
 	for track in video.subtitle_tracks():
 		if int(track.id) == id: return track
@@ -303,8 +307,9 @@ func apply() -> void:
 	if not Methods.supports(video.platform, "set_mpv_narration") or video.media.session_id <= 0 or (not enabled and _last_payload.is_empty()): return
 	var payload := {"enabled": enabled and current_text_subtitles() and video.subtitle_encoding_ready(int(track.get("id", 0))), "source": source, "language": language, "zh_voice": zh_voice, "en_voice": en_voice, "ja_voice": ja_voice, "voice_override": selected_voice(), "line": line,
 		"duck": duck / 100.0, "volume": volume / 100.0, "offset": offset, "retry": retry, "preview": preview, "timing": timing}
-	if source >= 0:
-		payload.source_delay = video.subtitle_timing.for_track(video.local_uri, Timing.track_key(selected_track()))
+	if source_secondary: payload.source = video.dual_subtitles.state.requested_track
+	if int(payload.source) >= 0:
+		payload.source_delay = video.dual_subtitles.state.requested_delay if int(payload.source) == video.dual_subtitles.state.requested_track else video.subtitle_timing.for_track(video.local_uri, Timing.track_key(selected_track()))
 	var json := JSON.stringify(payload)
 	var key := str(video.media.session_id) + ":" + json
 	if key != _last_payload and video.platform.set_mpv_narration(video.media.session_id, json): _last_payload = key
@@ -320,8 +325,8 @@ func snapshot() -> Dictionary:
 		var title := str(track.get("title", "")).strip_edges()
 		if title.is_empty(): title = I18n.t("Subtitles") + " %d" % int(track.id)
 		options.append({"value": int(track.id), "label": title})
-	return {"narration_available": available(), "narration_enabled": enabled and available(), "narration_current": enabled and available() and source == -1,
-		"narration_source": source, "narration_sources": options, "narration_language": language,
+	return {"narration_available": available(), "narration_enabled": enabled and available(), "narration_current": enabled and available() and source == -1 and not source_secondary,
+		"narration_source": video.dual_subtitles.state.requested_track if source_secondary else source, "narration_sources": options, "narration_language": language,
 		"narration_source_uri": str(video.local_uri),
 		"narration_voice_kind": voice_kind, "narration_custom_voice": custom_voice, "narration_personal_voices": _personal_voices.duplicate(true),
 		"narration_clone_state": clone_state, "narration_clone_supported": Methods.supports(video.platform, "mpv_voice_clone_request"),
@@ -369,6 +374,9 @@ static func rows(state: Dictionary) -> Array:
 	if not FEATURE_ENABLED: return []
 	var result: Array = [{"title": "Subtitle narration", "field": toggle("narration_enabled", bool(state.get("narration_enabled", false)))}]
 	if not state.get("narration_enabled", false): return result
+	if state.get("dual_subtitles_enabled", false) and int(state.get("secondary_subtitle_track", 0)) > 0:
+		var sources: Array = [{"value": -1, "label": "Primary subtitles"}, {"value": int(state.secondary_subtitle_track), "label": "Secondary subtitles"}]
+		result.append({"title": "Read subtitles", "field": {"key": "narration_source", "value": state.get("narration_source", -1), "choices": sources, "compact": true}})
 	var default_lang := default_profile(I18n.language).get_slice("_", 0)
 	result.append({"title": "Reading language", "field": {"key": "narration_language", "value": state.get("narration_language", default_lang), "choices": Languages.choices(), "rows": 6, "heading": "Reading language"}})
 	var custom: bool = state.get("narration_voice_kind", "preset") == "custom"

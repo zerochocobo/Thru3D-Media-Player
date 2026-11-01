@@ -116,7 +116,8 @@ static func complete(stated: Dictionary, width: int, height: int, format: Dictio
 		# MPV uses sbs2/ab2 for container SBS/TB generally; the "2" is not proof
 		# of half-resolution packing. Compression is a separate user/name/shape choice.
 	var aspect := float(width) / maxf(1.0, float(height))
-	var square := absf(aspect - 1.0) <= 0.04
+	var shape_inference := not bool(stated.get("external_unknown", false))
+	var square := shape_inference and absf(aspect - 1.0) <= 0.04
 	var geometry := int(stated.get("geometry", -1))
 	var stacked := bool(stated.get("top_bottom", false)) or (not stated.has("stereo") and square and width >= 2880 		and geometry != Geometry.Geometry.FISHEYE)
 	if geometry < 0:
@@ -124,7 +125,7 @@ static func complete(stated: Dictionary, width: int, height: int, format: Dictio
 			geometry = Geometry.Geometry.EQUIRECT_360
 		elif stacked:
 			geometry = Geometry.Geometry.FLAT
-		elif width > 0 and height > 0 and width == height * 2 and not stated.has("stereo"):
+		elif shape_inference and width > 0 and height > 0 and width == height * 2 and not stated.has("stereo"):
 			geometry = Geometry.Geometry.HALF_EQUIRECT
 		else:
 			geometry = Geometry.Geometry.FLAT
@@ -134,7 +135,7 @@ static func complete(stated: Dictionary, width: int, height: int, format: Dictio
 	elif stated.has("stereo"):
 		stereo = stated.stereo
 	elif geometry == Geometry.Geometry.FLAT:
-		stereo = aspect >= 3.2
+		stereo = shape_inference and aspect >= 3.2
 	elif geometry == Geometry.Geometry.FISHEYE:
 		# Without an explicit layout, a single square lens is mono; a wide pair is SBS.
 		# Compressed/stacked pairs need their filename or container layout marker.

@@ -8,7 +8,7 @@ internal object RenderBridgeNative {
     /** Worker-only still-image path. RGBA row 0 is top, near is mono RF; output is packed SBS RGBA.
      * Reuses video's forward warp, z-buffer, hole fill, rim and sliver cleanup. Returns elapsed us. */
     @JvmStatic external fun photoStereo(rgba: ByteBuffer, width: Int, height: Int, near: ByteBuffer,
-        modelWidth: Int, modelHeight: Int, content: FloatArray, strength: Float, output: ByteBuffer): Long
+        modelWidth: Int, modelHeight: Int, content: FloatArray, strength: Float, turns: Int, output: ByteBuffer): Long
     /** stereo: two views, side by side unless topBottom (top half is the left eye). */
     fun create(width: Int, height: Int, inputWidth: Int, inputHeight: Int, stereo: Boolean, topBottom: Boolean = false): Long =
         createLayout(width, height, inputWidth, inputHeight, if (!stereo) 0 else if (topBottom) 2 else 1)
@@ -22,6 +22,9 @@ internal object RenderBridgeNative {
     /** Constant per-slot opaque R8 shares the color-copy fence; no inference readback. */
     @JvmStatic external fun captureOpaqueTexture(handle: Long, texture: Int): Long
     @JvmStatic external fun stats(handle: Long): String
+    /** Frame GPU timestamps on the creating GL thread: 1 begin/poll, 0 end, -1 dispose.
+     * Positive is a new measured ms value, zero is pending, negative is unavailable. */
+    @JvmStatic external fun backgroundGpuTiming(action: Int): Double
     @JvmStatic external fun ready(handle: Long, token: Long): Boolean
     @JvmStatic external fun texture(handle: Long, token: Long): Int
     @JvmStatic external fun readInputs(handle: Long, token: Long, left: ByteBuffer, right: ByteBuffer): Boolean
@@ -63,6 +66,9 @@ internal object RenderBridgeNative {
     @JvmStatic external fun commitZeroCopyAlpha(handle: Long, token: Long): Boolean
     /** Both eyes validated before upload. Never overwrite a mask still owned by this token. */
     @JvmStatic external fun uploadAlpha(handle: Long, token: Long, left: ByteBuffer, right: ByteBuffer): Boolean
+    /** 2D->3D: limit near-map falls for this shift on later uploads (0: none) and re-limit the held
+     * map of [token] (0: none), so neither the shader's gather warp nor the hole fill repeats a contour. */
+    @JvmStatic external fun limitNear(handle: Long, token: Long, shift: Float): Boolean
     @JvmStatic external fun alphaReady(handle: Long, token: Long): Boolean
     /** Mono R8 shape decoded by *1.5; optional 64x64 signed residual uses 128 as zero.
      * Resolves private mip levels before Godot's single-level import. */
@@ -76,6 +82,8 @@ internal object RenderBridgeNative {
     @JvmStatic external fun restagePortraitFull(handle: Long, token: Long)
     /** 2D->3D: renders the held mono color's stereo pair (2W x H) from the near map just uploaded
      * (PTMediaServer soft_shift with its hole fill); readiness follows alphaReady. 0: unsupported. */
+    @JvmStatic external fun textRegions(handle: Long, token: Long, regions: FloatArray, weights: FloatArray)
+    @JvmStatic external fun releaseTextInput(handle: Long)
     @JvmStatic external fun warp(handle: Long, token: Long, shift: Float, convergence: Float): Int
     @JvmStatic external fun alphaTexture(handle: Long, token: Long): Int
     /** Development only: exact-size model-height rows of left/right packed R8 bytes. */

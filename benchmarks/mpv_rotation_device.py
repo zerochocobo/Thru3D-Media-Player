@@ -32,7 +32,7 @@ def main():
     parser.add_argument('--ffmpeg', default='ffmpeg')
     parser.add_argument('--probe', type=Path, default=ROOT / 'build/rotation-native-probe')
     parser.add_argument('--out', type=Path, default=ROOT / 'build/output/rotation-fix-20261012')
-    parser.add_argument('--serial', default='2G0YC5ZF7V0664')
+    parser.add_argument('--serial', required=True)
     parser.add_argument('--hardware', action='store_true', help='Require actual MediaCodec; rejects software fallback (needs an Android VM)')
     args = parser.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)

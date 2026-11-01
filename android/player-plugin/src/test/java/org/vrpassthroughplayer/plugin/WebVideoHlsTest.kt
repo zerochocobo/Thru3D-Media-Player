@@ -63,11 +63,13 @@ class WebVideoHlsTest {
     @Test fun neverForwardsAccountHeadersToAnotherOriginAndHandlesAesIdentityKeys() {
         Fixture { _, headers, _ ->
             assertNull(headers["cookie"]); assertNull(headers["authorization"])
+            assertNull(headers["referer"]); assertNull(headers["x-emby-token"]); assertNull(headers["x-mediabrowser-token"])
             Reply(200, body = ByteArray(16) { 7 })
         }.use { cdn -> Fixture { _, _, _ ->
             Reply(200, body = "#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXT-X-KEY:METHOD=AES-128,URI=\"${cdn.url}/key\"\n#EXTINF:1,\n${cdn.url}/segment.ts\n#EXT-X-ENDLIST\n".toByteArray())
-        }.use { origin -> LocalStreamServer().use { local -> WebVideoHls(local).use { hls ->
-            val text = read(hls.prepare(track(origin.url + "/list", mapOf("Cookie" to "private", "Authorization" to "private")))).toString(Charsets.UTF_8)
+        }.use { origin -> LocalStreamServer().use { local -> WebVideoHls(local, strictOriginHeaders = true).use { hls ->
+            val text = read(hls.prepare(track(origin.url + "/list", mapOf("Cookie" to "private", "Authorization" to "private",
+                "Referer" to "https://private.example/?api_key=secret", "X-Emby-Token" to "private", "X-MediaBrowser-Token" to "private")))).toString(Charsets.UTF_8)
             val key = Regex("URI=\"([^\"]+)\"").find(text)!!.groupValues[1]
             assertEquals(16, read(key).size)
             assertEquals(16, read(text.lines().first { it.startsWith("http") }).size)

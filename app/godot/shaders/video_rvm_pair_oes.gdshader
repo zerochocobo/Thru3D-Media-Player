@@ -47,9 +47,11 @@ vec2 raw_eye_uv(vec2 displayed_uv) {
 	return p;
 }
 
+#include "res://shaders/text_protection.gdshaderinc"
+
 float near_at(vec2 uv) {
 	vec2 p = clamp(model_content_rect.xy + uv * model_content_rect.zw, vec2(0.5) / model_size, vec2(1.0) - vec2(0.5) / model_size);
-	return texture(alpha_texture, vec2(p.x * 0.5, p.y)).r;
+	return protected_near(texture(alpha_texture, vec2(p.x * 0.5, p.y)).r, uv);
 }
 
 // Inverse warp: find the source point whose own parallax lands here (fixed point, three steps),

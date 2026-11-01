@@ -32,6 +32,11 @@ public final class FixtureCommandReceiver extends BroadcastReceiver {
                 case "grant": context.grantUriPermission(TARGET,URI,Intent.FLAG_GRANT_READ_URI_PERMISSION); break;
                 case "offer_persistable": context.grantUriPermission(TARGET,URI,Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION); break;
                 case "revoke": context.revokeUriPermission(URI,Intent.FLAG_GRANT_READ_URI_PERMISSION); break;
+                case "open_external":
+                    context.startActivity(new Intent(Intent.ACTION_VIEW).setDataAndType(URI,"video/mp4")
+                        .setPackage(TARGET).putExtra(Intent.EXTRA_TITLE,"Thru3D external content test")
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_GRANT_READ_URI_PERMISSION));
+                    break;
                 default: throw new IllegalArgumentException("Unknown operation");
             }
             report.put("state","applied").put("clip_exists",FixtureDocumentsProvider.clip(context).isFile());

@@ -20,8 +20,10 @@
 #include <string>
 #include <thread>
 #include "../rvm/photo_depth.h"
+#include "../rvm/photo_rotation.h"
 #include <unordered_map>
 #include <vector>
+#include "frame_gpu_timing.h"
 
 namespace {
 void check_gl(const char* operation) {
@@ -190,6 +192,24 @@ uniform ivec2 size;               // eye width/height
 uniform ivec2 model;              // model width/height
 uniform vec4 content;             // model = content.xy + eye_uv * content.zw
 uniform vec2 shift;               // x: half the maximum parallax in px, y: screen-plane near
+uniform int text_count;
+uniform vec4 text_weights0;
+uniform vec4 text_weights1;
+uniform vec4 text_regions[8]; // source UV x0,y0,x1,y1; independent of the near-map grid
+float text_weight(vec2 uv) {
+    vec2 feather = vec2(2.0) / vec2(size);
+    float guard = abs(shift.x) * max(shift.y, 1.0-shift.y) / float(size.x);
+    float weight=0.0;
+    for(int i=0;i<8;++i) {
+        if(i>=text_count)break;
+        vec4 r=text_regions[i]+vec4(-guard,-feather.y,guard,feather.y);
+        vec2 d=min(uv-r.xy,r.zw-uv);
+        vec2 a=smoothstep(vec2(0.0),feather,d);
+        float opacity=i<4 ? text_weights0[i] : text_weights1[i-4];
+        weight=max(weight,a.x*a.y*opacity);
+    }
+    return weight;
+}
 float tap(int x, int y) { return texelFetch(near_map, ivec2(x, y), 0).r; }
 // PTMediaServer _near_at: bilinear between model centres inside the content; with snap, the
 // toggle sharpen picks the nearer of the local horizontal min/max so contours become hard edges.
@@ -199,7 +219,7 @@ float near_at(int x, int y, bool snap) {
     vec2 p = clamp((content.xy + (vec2(x, y) + 0.5) / vec2(size) * content.zw) * vec2(model) - 0.5, lo, hi);
     ivec2 a = ivec2(floor(p)); ivec2 b = min(a + 1, ivec2(hi)); vec2 f = p - vec2(a);
     float n = mix(mix(tap(a.x, a.y), tap(b.x, a.y), f.x), mix(tap(a.x, b.y), tap(b.x, b.y), f.x), f.y);
-    if (!snap) return n;
+    if (snap) {
     int win = max(1, int(ceil(6.0 * content.z * float(model.x) / float(size.x))));
     float l = n, h = n;
     for (int d = -win; d <= win; ++d) {
@@ -207,7 +227,9 @@ float near_at(int x, int y, bool snap) {
         float u = tap(xx, a.y), v = tap(xx, b.y);
         l = min(l, min(u, v)); h = max(h, max(u, v));
     }
-    return (n - l) >= (h - n) ? h : l;
+    n = (n - l) >= (h - n) ? h : l;
+    }
+    return mix(n,shift.y,text_weight((vec2(x,y)+0.5)/vec2(size)));
 }
 uint key_at(int x, int y) { return keys[y * 2 * size.x + x]; }
 float near_of(uint k) { return k == 0u ? -1.0 : float((k >> 12) - 1u) / 524287.0; }
@@ -299,13 +321,30 @@ constexpr const char* warp_frame_body = R"(
 uniform highp sampler2D map;
 uniform vec2 uv_scale;
 uniform ivec2 size;
+uniform int photo_rotation; // Still-only virtual clockwise turns; video always sets zero.
 out vec4 result;
 vec3 colour(ivec2 o, vec4 m) {
     int ex = o.x >= size.x ? o.x - size.x : o.x;
-    return texture(source, vec2((float(ex) + m.x + 0.5) / float(size.x), (float(o.y) + 0.5) / float(size.y)) * uv_scale).rgb;
+    vec2 p = vec2((float(ex) + m.x + 0.5) / float(size.x), (float(o.y) + 0.5) / float(size.y));
+    // Map the virtual rotated source back to the unchanged colour texture.
+    if (photo_rotation == 1) p = vec2(p.y, 1.0-p.x);
+    else if (photo_rotation == 2) p = vec2(1.0)-p;
+    else if (photo_rotation == 3) p = vec2(1.0-p.y, p.x);
+    return texture(source, p * uv_scale).rgb;
 }
 void main() {
     ivec2 o = ivec2(gl_FragCoord.xy);
+    // Store each eye in the original orientation, preserving SBS packing. The display's
+    // centre roll then turns the photo once while returning disparity to viewer-horizontal.
+    if (photo_rotation != 0) {
+        int original_width = (photo_rotation % 2 == 1) ? size.y : size.x;
+        int eye = o.x / original_width;
+        ivec2 p = ivec2(o.x - eye * original_width, o.y);
+        if (photo_rotation == 1) p = ivec2(size.x-1-p.y, p.x);
+        else if (photo_rotation == 2) p = size-ivec2(1)-p;
+        else if (photo_rotation == 3) p = ivec2(p.y, size.y-1-p.x);
+        o = p + ivec2(eye * size.x, 0);
+    }
     vec4 m = texelFetch(map, o, 0);
     if (m.w != 0.0) {
         ivec2 q = o + ivec2(int(m.w), 0);
@@ -454,6 +493,47 @@ struct TimerApi {
     bool available() const { return gen && begin && end && get && get64; }
 };
 const TimerApi& timers() { static const TimerApi api; return api; }
+// Godot's GLES renderer does not supply viewport GPU timestamps on Android.
+// Reuse the bridge's EXT timer approach, with asynchronous timestamp pairs for
+// the whole frame rather than a video pass. No glFinish or blocking result read.
+struct FrameTimerApi {
+    PFNGLGENQUERIESEXTPROC gen = nullptr;
+    PFNGLDELETEQUERIESEXTPROC remove = nullptr;
+    PFNGLQUERYCOUNTEREXTPROC counter = nullptr;
+    PFNGLGETQUERYOBJECTUIVEXTPROC get = nullptr;
+    PFNGLGETQUERYOBJECTUI64VEXTPROC get64 = nullptr;
+    void initialize() {
+        *this = {};
+        const auto* extensions = reinterpret_cast<const char*>(glGetString(GL_EXTENSIONS));
+        if (!extensions || !std::strstr(extensions, "GL_EXT_disjoint_timer_query")) return;
+        auto query = reinterpret_cast<PFNGLGETQUERYIVEXTPROC>(eglGetProcAddress("glGetQueryivEXT"));
+        GLint bits = 0;
+        if (query) query(GL_TIMESTAMP_EXT, GL_QUERY_COUNTER_BITS_EXT, &bits);
+        if (bits <= 0) return;
+        gen = reinterpret_cast<PFNGLGENQUERIESEXTPROC>(eglGetProcAddress("glGenQueriesEXT"));
+        remove = reinterpret_cast<PFNGLDELETEQUERIESEXTPROC>(eglGetProcAddress("glDeleteQueriesEXT"));
+        counter = reinterpret_cast<PFNGLQUERYCOUNTEREXTPROC>(eglGetProcAddress("glQueryCounterEXT"));
+        get = reinterpret_cast<PFNGLGETQUERYOBJECTUIVEXTPROC>(eglGetProcAddress("glGetQueryObjectuivEXT"));
+        get64 = reinterpret_cast<PFNGLGETQUERYOBJECTUI64VEXTPROC>(eglGetProcAddress("glGetQueryObjectui64vEXT"));
+    }
+    bool available() const { return gen && remove && counter && get && get64; }
+    bool disjoint() const { GLint value = 0; glGetIntegerv(GL_GPU_DISJOINT_EXT, &value); return value != 0; }
+    unsigned create() const { GLuint value = 0; gen(1, &value); return value; }
+    void destroy(unsigned value) const { remove(1, &value); }
+    void stamp(unsigned value) const { counter(value, GL_TIMESTAMP_EXT); }
+    bool ready(unsigned value) const { GLuint ready = 0; get(value, GL_QUERY_RESULT_AVAILABLE_EXT, &ready); return ready != 0; }
+    uint64_t result(unsigned value) const { GLuint64 value_ns = 0; get64(value, GL_QUERY_RESULT_EXT, &value_ns); return value_ns; }
+};
+struct FrameTimer {
+    FrameTimerApi api;
+    FrameGpuTimingSession<FrameTimerApi> session;
+    double update(int action) {
+        const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+        return session.update(api, action, reinterpret_cast<uintptr_t>(eglGetCurrentContext()), static_cast<uint64_t>(now));
+    }
+};
+thread_local FrameTimer background_frame_timer;
 // One query in flight per measured stage; a stage is skipped while its last result is pending.
 struct GpuTimer {
     GLuint query = 0;
@@ -547,6 +627,7 @@ struct Slot {
     GLsync fence = nullptr, alpha_fence = nullptr;
     bool alpha_valid = false;
     std::vector<unsigned char> near; // last uploaded mask bytes (2D->3D: the near map)
+    std::vector<float> text_regions, text_weights; // immutable source UV protection for this colour token
     GLuint warp = 0;                 // 2D->3D stereo pair (2W x H) of this color
     bool opaque_cached = false, opaque_pending = false;
     Phase phase = Phase::free;
@@ -585,7 +666,32 @@ struct Bridge final {
     bool warp_failed = false;
     std::vector<unsigned char> map_near; // near map the current `warp_map` was built from
     float map_half = -1.f, map_convergence = -1.f;
+    std::vector<float> map_text, map_text_weights;
     uint64_t warp_frames = 0, warp_maps = 0;
+    // Video 2D->3D: the near texture's falls are limited for the parallax being shown, as
+    // photo_limit_gradient. Steeper falls make the video shader's fixed-point lookup (edge stretch)
+    // fold back, and the warp's hole fill reach across the silhouette (fill); both repeat the
+    // subject's contour beside it. slot.near keeps the model's map.
+    float near_limit_shift = 0.f;
+    std::vector<unsigned char> limited_near(const std::vector<unsigned char>& packed) const {
+        const float half = near_limit_shift * 0.5f * content_rect[2] * input_width;
+        if (half <= 0.f) return packed;
+        const int w = input_width, h = input_height;
+        std::vector<float> plane(static_cast<size_t>(w) * h);
+        for (int y = 0; y < h; ++y) for (int x = 0; x < w; ++x)
+            plane[static_cast<size_t>(y)*w+x] = packed[static_cast<size_t>(y)*w*2+x] / 255.f;
+        const int cx = std::clamp(static_cast<int>(std::lround(content_rect[0] * w)), 0, w - 1);
+        const int cy = std::clamp(static_cast<int>(std::lround(content_rect[1] * h)), 0, h - 1);
+        const int cw = std::clamp(static_cast<int>(std::lround(content_rect[2] * w)), 1, w - cx);
+        const int ch = std::clamp(static_cast<int>(std::lround(content_rect[3] * h)), 1, h - cy);
+        quest::photo_limit_gradient(plane.data(), w, h, cx, cy, cw, ch, half);
+        std::vector<unsigned char> result(packed);
+        for (int y = 0; y < h; ++y) for (int x = 0; x < w; ++x) {
+            const auto value = static_cast<unsigned char>(std::lround(std::clamp(plane[static_cast<size_t>(y)*w+x], 0.f, 1.f) * 255.f));
+            result[static_cast<size_t>(y)*w*2+x] = value; result[static_cast<size_t>(y)*w*2+w+x] = value;
+        }
+        return result;
+    }
     GpuTimer map_timer, frame_timer, portrait_timer;
     uint64_t portrait_frames = 0;
     GLuint portrait_program = 0;
@@ -912,7 +1018,7 @@ struct Bridge final {
         check_gl("Render bridge copy/staging");
         slot.fence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
         if (!slot.fence) throw std::runtime_error("Render bridge copy fence unavailable");
-        slot.token = token; slot.phase = Phase::copying; glFlush();
+        slot.text_regions.clear();slot.text_weights.clear(); slot.token = token; slot.phase = Phase::copying; glFlush();
         return token;
     }
     void upload_alpha(jlong token, const float* left, const float* right) {
@@ -938,13 +1044,26 @@ struct Bridge final {
         slot.portrait_valid = false;
         if (!slot.alpha) image(slot.alpha, input_width*2, input_height, GL_R8);
         glBindTexture(GL_TEXTURE_2D, slot.alpha);
-        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, input_width*2, input_height, GL_RED, GL_UNSIGNED_BYTE, packed.data());
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, input_width*2, input_height, GL_RED, GL_UNSIGNED_BYTE, limited_near(packed).data());
         slot.near = std::move(packed);
         slot.opaque_cached = false;
         if (glGetError() != GL_NO_ERROR) throw std::runtime_error("Alpha upload GL error");
         slot.alpha_fence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
         if (!slot.alpha_fence) throw std::runtime_error("Alpha upload fence unavailable");
         alpha_uploads++;
+        glFlush();
+    }
+    // Sets the stretch limit for later uploads (0: none) and re-limits the held map of `token` (0:
+    // none), so a paused video follows the strength; like a rewarp, the shown texture is rewritten.
+    void limit_near(jlong token, float shift) {
+        near_limit_shift = shift;
+        if (!token) return;
+        current(); auto& slot = find(token);
+        if (slot.phase != Phase::held || !slot.alpha || slot.near.empty()) return;
+        State state;
+        glBindTexture(GL_TEXTURE_2D, slot.alpha);
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, input_width*2, input_height, GL_RED, GL_UNSIGNED_BYTE, limited_near(slot.near).data());
+        if (glGetError() != GL_NO_ERROR) throw std::runtime_error("Near limit GL error");
         glFlush();
     }
     // Extend the upload's completion fence: consumers never see a partially generated mip chain.
@@ -1066,6 +1185,16 @@ struct Bridge final {
         if (!valid) throw std::runtime_error("Portrait crop PBO invalidated");
         return true;
     }
+    void release_text_input() {
+        current();
+        if (portrait_input_fence) glDeleteSync(portrait_input_fence);
+        portrait_input_fence=nullptr;
+        if (portrait_input_pbo) glDeleteBuffers(1,&portrait_input_pbo);
+        portrait_input_pbo=0;
+        if (portrait_input_image) glDeleteTextures(1,&portrait_input_image);
+        portrait_input_image=0;portrait_input_width=portrait_input_height=0;
+        for(auto& slot:slots) {slot.text_regions.clear();slot.text_weights.clear();}
+    }
     // 2D->3D: renders the held color's stereo pair from its just-uploaded near map. shift is the
     // eye-width fraction of the full parallax, convergence the near value left on the screen plane.
     // Returns 0 when this GL or source cannot run it (the display keeps its shader parallax).
@@ -1110,7 +1239,9 @@ struct Bridge final {
             std::fclose(file);
         }
     }
-    GLuint render_warp(Slot& slot, float shift, float convergence, float photo_half = -1.f) {
+    GLuint render_warp(Slot& slot, float shift, float convergence, float photo_half = -1.f, int photo_rotation = 0) {
+        const auto& text_regions=slot.text_regions;
+        const auto& text_weights=slot.text_weights;
         GLint major = 0, minor = 0; glGetIntegerv(GL_MAJOR_VERSION, &major); glGetIntegerv(GL_MINOR_VERSION, &minor);
         if (major * 10 + minor < 31) throw std::runtime_error("OpenGL ES 3.1 compute unavailable");
         const int W2 = width * 2;
@@ -1126,7 +1257,7 @@ struct Bridge final {
         }
         // PTMediaServer _max_disparity_pixels: max(2, min(96, W * 0.035 * strength)); each eye moves half.
         const float half = photo_half >= 0.f ? photo_half : (shift > 0.f ? std::max(2.f, std::min(96.f, width * shift)) * 0.5f : 0.f);
-        if (slot.near != map_near || half != map_half || convergence != map_convergence) {
+        if (slot.near != map_near || half != map_half || convergence != map_convergence || map_text != text_regions || map_text_weights != text_weights) {
             map_timer.start();
             const auto uniforms = [&](GLuint prog) {
                 glUseProgram(prog);
@@ -1135,6 +1266,12 @@ struct Bridge final {
                 glUniform2i(glGetUniformLocation(prog, "model"), input_width, input_height);
                 glUniform4fv(glGetUniformLocation(prog, "content"), 1, content_rect.data());
                 glUniform2f(glGetUniformLocation(prog, "shift"), half, convergence);
+                glUniform1i(glGetUniformLocation(prog, "text_count"), static_cast<int>(text_regions.size()/4));
+                if (!text_regions.empty()) glUniform4fv(glGetUniformLocation(prog, "text_regions"), static_cast<GLsizei>(text_regions.size()/4), text_regions.data());
+                std::array<float,8> opacity;opacity.fill(1.f);
+                std::copy(text_weights.begin(),text_weights.end(),opacity.begin());
+                glUniform4fv(glGetUniformLocation(prog,"text_weights0"),1,opacity.data());
+                glUniform4fv(glGetUniformLocation(prog,"text_weights1"),1,opacity.data()+4);
             };
             glBindTexture(GL_TEXTURE_2D, slot.alpha);
             glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, warp_keys);
@@ -1153,14 +1290,16 @@ struct Bridge final {
             glMemoryBarrier(GL_TEXTURE_FETCH_BARRIER_BIT);
             map_timer.stop();
             if (glGetError() != GL_NO_ERROR) throw std::runtime_error("2D->3D warp map GL error");
-            map_near = slot.near; map_half = half; map_convergence = convergence; warp_maps++;
+            map_near = slot.near; map_text = text_regions; map_text_weights = text_weights; map_half = half; map_convergence = convergence; warp_maps++;
         }
+        const int output_width = photo_rotation % 2 ? height : width;
+        const int output_height = photo_rotation % 2 ? width : height;
         if (!slot.warp) {
-            image(slot.warp, W2, height);
+            image(slot.warp, output_width * 2, output_height);
             if (glGetError() != GL_NO_ERROR) throw std::runtime_error("2D->3D stereo allocation GL error");
         }
         frame_timer.start();
-        target(slot.warp, W2, height);
+        target(slot.warp, output_width * 2, output_height);
         const GLuint prog = slot.decoder_texture ? warp_frame_oes_prog : warp_frame_2d_prog;
         glUseProgram(prog);
         if (slot.decoder_texture) {
@@ -1173,6 +1312,7 @@ struct Bridge final {
         glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_2D, warp_map); glActiveTexture(GL_TEXTURE0);
         glUniform1i(glGetUniformLocation(prog, "source"), 0); glUniform1i(glGetUniformLocation(prog, "map"), 1);
         glUniform2i(glGetUniformLocation(prog, "size"), width, height);
+        glUniform1i(glGetUniformLocation(prog, "photo_rotation"), photo_rotation);
         glDrawArrays(GL_TRIANGLES, 0, 3);
         frame_timer.stop();
         dump_warp();
@@ -1274,37 +1414,44 @@ struct PhotoEgl final {
 };
 
 void photo_stereo(const unsigned char* rgba, int w, int h, const float* near, int mw, int mh,
-                  const std::array<float, 4>& rect, float strength, unsigned char* output) {
+                  const std::array<float, 4>& rect, float strength, unsigned char* output, int turns = 0) {
     if (w < 1 || h < 1 || w > 4096 || h > 4096 || static_cast<int64_t>(w) * h > 8LL * 1024 * 1024 ||
-        mw < 1 || mh < 1 || mw > 518 || mh > 518 || !std::isfinite(strength) || strength < 0.f || strength > 2.f)
+        mw < 1 || mh < 1 || mw > 518 || mh > 518 || turns < 0 || turns > 3 || !std::isfinite(strength) || strength < 0.f || strength > 2.f)
         throw std::runtime_error("Photo stereo dimensions/strength invalid");
     for (float v : rect) if (!std::isfinite(v)) throw std::runtime_error("Photo stereo content invalid");
     if (rect[0] < 0 || rect[1] < 0 || rect[2] <= 0 || rect[3] <= 0 || rect[0]+rect[2] > 1.000001f || rect[1]+rect[3] > 1.000001f)
         throw std::runtime_error("Photo stereo content out of bounds");
     PhotoEgl egl;
     GLint maximum = 0; glGetIntegerv(GL_MAX_TEXTURE_SIZE, &maximum);
-    if (w * 2 > maximum || h > maximum) throw std::runtime_error("Photo stereo exceeds GPU texture limit");
-    Bridge bridge(w, h, mw, mh, 0);
+    const int rw = turns % 2 ? h : w, rh = turns % 2 ? w : h;
+    const int rmw = turns % 2 ? mh : mw, rmh = turns % 2 ? mw : mh;
+    if (std::max(w, rw) * 2 > maximum || std::max(h, rh) > maximum) throw std::runtime_error("Photo stereo exceeds GPU texture limit");
+    Bridge bridge(rw, rh, rmw, rmh, 0);
     // Only the still's own colour, mask and warp are allocated; no video slots/decoder/model inputs.
     glGenVertexArrays(1, &bridge.vao); glGenFramebuffers(1, &bridge.fbo);
-    bridge.content_rect = rect;
+    const auto rotated_rect = quest::photo_rotated_rect(rect, turns);
+    bridge.content_rect = rotated_rect;
     auto& slot = bridge.slots[0]; slot.token = 1; slot.phase = Phase::held;
     image(slot.color, w, h);
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
     glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
     // Limit the near map's falls for this strength (render_warp's own half shift, in model columns),
     // so the unchanged hole fill cannot repeat the subject's contour outside it.
-    std::vector<float> limited(near, near + static_cast<size_t>(mw) * mh);
-    const float half = quest::photo_half_shift(w,strength);
-    const int cx = std::clamp(static_cast<int>(std::lround(rect[0] * mw)), 0, mw - 1);
-    const int cy = std::clamp(static_cast<int>(std::lround(rect[1] * mh)), 0, mh - 1);
-    const int cw = std::clamp(static_cast<int>(std::lround(rect[2] * mw)), 1, mw - cx);
-    const int ch = std::clamp(static_cast<int>(std::lround(rect[3] * mh)), 1, mh - cy);
-    quest::photo_limit_gradient(limited.data(), mw, mh, cx, cy, cw, ch, half * rect[2] * mw / w);
+    std::vector<float> limited(static_cast<size_t>(mw) * mh);
+    for (int y = 0; y < mh; ++y) for (int x = 0; x < mw; ++x) {
+        const auto p = quest::photo_rotated_pixel(x, y, mw, mh, turns);
+        limited[static_cast<size_t>(p.second) * rmw + p.first] = near[static_cast<size_t>(y) * mw + x];
+    }
+    const float half = quest::photo_half_shift(rw,strength);
+    const int cx = std::clamp(static_cast<int>(std::lround(rotated_rect[0] * rmw)), 0, rmw - 1);
+    const int cy = std::clamp(static_cast<int>(std::lround(rotated_rect[1] * rmh)), 0, rmh - 1);
+    const int cw = std::clamp(static_cast<int>(std::lround(rotated_rect[2] * rmw)), 1, rmw - cx);
+    const int ch = std::clamp(static_cast<int>(std::lround(rotated_rect[3] * rmh)), 1, rmh - cy);
+    quest::photo_limit_gradient(limited.data(), rmw, rmh, cx, cy, cw, ch, half * rotated_rect[2] * rmw / rw);
     std::vector<float> right(limited);
     bridge.upload_alpha(1, limited.data(), right.data());
     // Use render_warp directly: the video width cap is a realtime budget, not a still-photo cap.
-    bridge.render_warp(slot, 0.035f * strength, 0.35f, half);
+    bridge.render_warp(slot, 0.035f * strength, 0.35f, half, turns);
     glBindBuffer(GL_PIXEL_PACK_BUFFER, 0); glPixelStorei(GL_PACK_ALIGNMENT, 1);
     glReadPixels(0, 0, w * 2, h, GL_RGBA, GL_UNSIGNED_BYTE, output);
     check_gl("Photo stereo readback");
@@ -1313,7 +1460,7 @@ void photo_stereo(const unsigned char* rgba, int w, int h, const float* near, in
 
 extern "C" JNIEXPORT jlong JNICALL
 Java_org_vrpassthroughplayer_plugin_RenderBridgeNative_photoStereo(JNIEnv* env, jclass, jobject rgba, jint w, jint h,
-    jobject near, jint mw, jint mh, jfloatArray content, jfloat strength, jobject output) {
+    jobject near, jint mw, jint mh, jfloatArray content, jfloat strength, jint turns, jobject output) {
     try {
         // Validate dimensions before calculating buffer sizes or reading arrays.
         if (w < 1 || h < 1 || w > 4096 || h > 4096 || static_cast<int64_t>(w)*h > 8LL*1024*1024 ||
@@ -1325,7 +1472,7 @@ Java_org_vrpassthroughplayer_plugin_RenderBridgeNative_photoStereo(JNIEnv* env, 
         std::array<float, 4> rect{}; env->GetFloatArrayRegion(content, 0, 4, rect.data());
         if (env->ExceptionCheck()) return 0;
         const auto started = std::chrono::steady_clock::now();
-        photo_stereo(color, w, h, depth, mw, mh, rect, strength, result);
+        photo_stereo(color, w, h, depth, mw, mh, rect, strength, result, turns);
         return std::max<jlong>(1, std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-started).count());
     } catch (const std::exception& e) { error(env, e.what()); return 0; }
 }
@@ -1597,6 +1744,10 @@ Java_org_vrpassthroughplayer_plugin_RenderBridgeNative_captureOpaqueBuffer(JNIEn
                                        ++token_sequence, nullptr, false, true);
     } catch (const std::exception& e) { error(env, e.what()); return 0; }
 }
+extern "C" JNIEXPORT jdouble JNICALL
+Java_org_vrpassthroughplayer_plugin_RenderBridgeNative_backgroundGpuTiming(JNIEnv*, jclass, jint action) {
+    return background_frame_timer.update(action);
+}
 extern "C" JNIEXPORT jstring JNICALL
 Java_org_vrpassthroughplayer_plugin_RenderBridgeNative_stats(JNIEnv* env, jclass, jlong id) {
     try {
@@ -1686,6 +1837,13 @@ Java_org_vrpassthroughplayer_plugin_RenderBridgeNative_uploadAlpha(JNIEnv* env, 
         const size_t bytes = static_cast<size_t>(bridge.input_width)*bridge.input_height*sizeof(float);
         const auto* l = float_buffer(env, left, bytes, false); const auto* r = float_buffer(env, right, bytes, false);
         bridge.upload_alpha(token, l, r); return JNI_TRUE;
+    } catch (const std::exception& e) { error(env, e.what()); return JNI_FALSE; }
+}
+extern "C" JNIEXPORT jboolean JNICALL
+Java_org_vrpassthroughplayer_plugin_RenderBridgeNative_limitNear(JNIEnv* env, jclass, jlong id, jlong token, jfloat shift) {
+    try {
+        if (!std::isfinite(shift) || shift < 0.f || shift > 0.2f) throw std::runtime_error("Near limit shift invalid");
+        std::lock_guard<std::mutex> guard(registry_mutex); find(id).limit_near(token, shift); return JNI_TRUE;
     } catch (const std::exception& e) { error(env, e.what()); return JNI_FALSE; }
 }
 extern "C" JNIEXPORT jint JNICALL
@@ -1801,4 +1959,31 @@ Java_org_vrpassthroughplayer_plugin_RenderBridgeNative_abandon(JNIEnv*, jclass, 
     std::lock_guard<std::mutex> guard(registry_mutex);
     const auto it = registry.find(id);
     if (it != registry.end()) { it->second->abandoned = true; registry.erase(it); }
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_org_vrpassthroughplayer_plugin_RenderBridgeNative_textRegions(JNIEnv* env,jclass,jlong id,jlong token,jfloatArray regions,jfloatArray weights) {
+    try {
+        if(!regions||env->GetArrayLength(regions)>32||env->GetArrayLength(regions)%4)throw std::runtime_error("Text regions invalid");
+        if(!weights||env->GetArrayLength(weights)!=env->GetArrayLength(regions)/4)throw std::runtime_error("Text weights invalid");
+        std::vector<float> opacity(static_cast<size_t>(env->GetArrayLength(weights)));
+        if(!opacity.empty())env->GetFloatArrayRegion(weights,0,static_cast<jsize>(opacity.size()),opacity.data());
+        if(env->ExceptionCheck())return;
+        for(float value:opacity)if(!std::isfinite(value)||value<0||value>1)throw std::runtime_error("Text opacity invalid");
+        std::vector<float> data(static_cast<size_t>(env->GetArrayLength(regions)));
+        if(!data.empty())env->GetFloatArrayRegion(regions,0,static_cast<jsize>(data.size()),data.data());
+        if(env->ExceptionCheck())return;
+        for(size_t i=0;i<data.size();i+=4) {
+            for(size_t j=0;j<4;++j)if(!std::isfinite(data[i+j])||data[i+j]<0||data[i+j]>1)throw std::runtime_error("Text region range");
+            if(data[i+2]<=data[i]||data[i+3]<=data[i+1])throw std::runtime_error("Text region size");
+        }
+        std::lock_guard<std::mutex> guard(registry_mutex);auto& b=find(id);b.current();auto& slot=b.find(token);
+        if(slot.phase!=Phase::held)throw std::runtime_error("Text regions require a held colour");
+        slot.text_regions=std::move(data);slot.text_weights=std::move(opacity);
+    }catch(const std::exception& e){error(env,e.what());}
+}
+extern "C" JNIEXPORT void JNICALL
+Java_org_vrpassthroughplayer_plugin_RenderBridgeNative_releaseTextInput(JNIEnv* env,jclass,jlong id) {
+    try{std::lock_guard<std::mutex> guard(registry_mutex);find(id).release_text_input();}
+    catch(const std::exception& e){error(env,e.what());}
 }

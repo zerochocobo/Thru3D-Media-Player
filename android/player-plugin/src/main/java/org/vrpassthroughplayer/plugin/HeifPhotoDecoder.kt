@@ -12,7 +12,6 @@ import kotlin.math.sqrt
 /** Android 28+ primary-image decoding, including grid tiles, orientation and color conversion.
  * A private HEIF copy selects the explicit ster eye IDs, avoiding index-order assumptions. */
 internal object HeifPhotoDecoder {
-    private const val MAX_PIXELS = 16 * 1024 * 1024
     private const val MAX_EDGE = 8192
 
     /** High-bit-depth HEIF otherwise selects F16, which older Android HEIF codecs reject.
@@ -45,8 +44,10 @@ internal object HeifPhotoDecoder {
                 }
             } }
             val eyes = if (info.stereo) 2 else 1
+            val pixels=PhotoMemory.snapshot().output/4
+            require(pixels>0) { "PHOTO_OUT_OF_MEMORY" }
             val scale = minOf(1.0, MAX_EDGE.toDouble() / info.packedWidth, MAX_EDGE.toDouble() / info.height,
-                sqrt(MAX_PIXELS.toDouble() / info.width / info.height / eyes))
+                sqrt(pixels.toDouble() / info.width / info.height / eyes))
             val width = maxOf(1, (info.width * scale).toInt())
             val height = maxOf(1, (info.height * scale).toInt())
             fun decode(item: Int): Bitmap {

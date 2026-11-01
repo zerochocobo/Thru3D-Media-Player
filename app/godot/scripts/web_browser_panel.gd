@@ -210,9 +210,9 @@ func tick() -> void:
 	# Only fields the chrome draws. Window states also carry each video's advancing time;
 	# comparing those rebuilt every browser window four times a second during playback.
 	var chrome: Array = data.get("windows", []).map(func(item): return [item.get("id"), item.get("tab_id"), item.get("url"),
-		item.get("title"), item.get("back"), item.get("forward"), item.get("error"), item.get("editing"), item.get("loading"), item.get("start_page"), item.get("network_capture_available"), item.get("network_capture_enabled"), item.get("bilibili_beta_available"), beta_media_ready(item)])
+		item.get("title"), item.get("back"), item.get("forward"), item.get("error"), item.get("editing"), item.get("loading"), item.get("start_page"), item.get("network_capture_available"), item.get("network_capture_enabled"), beta_site_available(item), beta_media_ready(item)])
 	var signature := str([draft, data.get("back"), data.get("forward"), data.get("error"), handoff_error,
-		chrome, not (cinema_provider.call() if cinema_provider.is_valid() else {}).is_empty(), data.get("tab_list", []), data.get("operation_error", ""), data.get("loading"), data.get("start_page"), data.get("videos", []).size(), handoff, handoff_beta, data.get("editing", false), data.get("network_capture_available"), data.get("network_capture_enabled"), data.get("bilibili_beta_available"), beta_media_ready(data), menu.web_video.result.get("state", "")])
+		chrome, not (cinema_provider.call() if cinema_provider.is_valid() else {}).is_empty(), data.get("tab_list", []), data.get("operation_error", ""), data.get("loading"), data.get("start_page"), data.get("videos", []).size(), handoff, handoff_beta, data.get("editing", false), data.get("network_capture_available"), data.get("network_capture_enabled"), beta_site_available(data), beta_media_ready(data), menu.web_video.result.get("state", "")])
 	if signature != _signature and hand.is_empty():
 		# Do not consume changes while the page owns the pointer: release must redraw
 		# even if media readiness and the rest of the native snapshot stay unchanged.
@@ -241,7 +241,7 @@ func _begin_handoff(automatic: bool = false, beta: bool = false) -> void:
 		# The button snapshot can be one poll behind a sidebar navigation or media change.
 		# Revalidate before pausing or disturbing an existing resolver.
 		var fresh: Variant = JSON.parse_string(menu.platform.web_browser_status())
-		if not fresh is Dictionary or not fresh.get("bilibili_beta_available", false) or not beta_media_ready(fresh): return
+		if not fresh is Dictionary or not beta_site_available(fresh) or not beta_media_ready(fresh): return
 		if int(fresh.get("focused_window", 1)) != focused_window: return
 		for key in ["url", "tab_id", "navigation"]:
 			if fresh.get(key) != data.get(key): return
@@ -337,7 +337,10 @@ func _capture_ready() -> bool:
 	return false
 
 func beta_media_ready(current: Dictionary) -> bool:
-	return current.get("videos", []).any(func(item): return item.get("bilibili_ready", false) and not item.get("protected", false))
+	return current.get("videos", []).any(func(item): return (item.get("bilibili_ready", false) or item.get("douyin_ready", false)) and not item.get("protected", false))
+
+func beta_site_available(current: Dictionary) -> bool:
+	return current.get("bilibili_beta_available", false) or current.get("douyin_beta_available", false)
 
 func handoff_status() -> String:
 	if handoff_waiting_pause: return I18n.t("Pausing web video…")
@@ -439,6 +442,12 @@ func ensure_window(id: int, show: bool = true) -> void:
 func refresh_windows() -> void:
 	for item in windows.values():
 		if item.visible: item.refresh()
+func relocate_view(previous: Transform3D, current: Transform3D) -> void:
+	if previous.is_equal_approx(current): return
+	cancel()
+	var delta := current * previous.affine_inverse()
+	for item in windows.values():
+		if item.placed: item.relocate_view(delta)
 func window_state(id: int) -> Dictionary:
 	for item in data.get("windows", []):
 		if int(item.id) == id: return item
@@ -525,8 +534,8 @@ func draw_window(host: Node) -> void:
 ## muted on pages the player cannot take over.
 func beta_available(current: Dictionary) -> bool:
 	# This is presentation capability, not permission/readiness to hand off. A known
-	# Bilibili video keeps its action while transient native state is being rebuilt.
-	return Methods.supports(menu.platform, "web_video_resolve_beta") and (current.get("bilibili_beta_available", false) or _beta_page.search(str(current.get("url", ""))) != null)
+	# Keep the existing Bilibili action while transient native state is rebuilt.
+	return Methods.supports(menu.platform, "web_video_resolve_beta") and (beta_site_available(current) or _beta_page.search(str(current.get("url", ""))) != null)
 
 func toolbar_tools(host: Node, current: Dictionary) -> Array:
 	var result: Array = []
@@ -575,7 +584,7 @@ func draw_play_button(host: Node) -> void:
 	if beta:
 		var cancel_beta: bool = own and handoff_beta
 		var current := window_state(host.window_id)
-		var media_ready: bool = current.get("bilibili_beta_available", false) and beta_media_ready(current)
+		var media_ready: bool = beta_site_available(current) and beta_media_ready(current)
 		var beta_ready: bool = cancel_beta or (not handoff and focused_window == host.window_id and media_ready)
 		var beta_label := I18n.t("Cancel" if cancel_beta else "Play (Beta)")
 		host._button(BASE + 18, beta_label, Vector2(-0.59 + width * 1.5 + 0.008, host.PLAY_Y), Vector2(width, host.TOOL_SIZE.y), beta_ready, "", beta_ready)
@@ -748,7 +757,7 @@ func _playhead() -> int:
 	var best := {}; var score := -1.0
 	for item in data.get("videos", []):
 		var area := float(item.get("width", 0)) * float(item.get("height", 0))
-		var candidate := area + (1.0e12 if item.get("playing", false) else 0.0) + (1.0e15 if item.get("fullscreen", false) else 0.0) + (1.0e18 if handoff_beta and item.get("bilibili_ready", false) else 0.0)
+		var candidate := area + (1.0e12 if item.get("playing", false) else 0.0) + (1.0e15 if item.get("fullscreen", false) else 0.0) + (1.0e18 if handoff_beta and (item.get("bilibili_ready", false) or item.get("douyin_ready", false)) else 0.0)
 		if candidate > score: score = candidate; best = item
 	var seconds := float(best.get("time", 0.0))
 	return int(clampf(seconds, 0.0, 604800.0) * 1000.0) if is_finite(seconds) else 0

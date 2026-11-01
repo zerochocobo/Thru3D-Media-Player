@@ -25,6 +25,7 @@ const FOOTER_HIT_SIZE := 0.105
 const FOOTER_GAP := 0.025
 const STATUS_WIDTH := 0.30
 const SURFACE := preload("res://shaders/menu_surface.gdshader")
+const PointerRay := preload("res://scripts/pointer_ray.gd")
 const Icons := preload("res://scripts/menu_icons.gd")
 const I18n := preload("res://scripts/i18n.gd")
 const DeviceStatus := preload("res://scripts/device_status.gd")
@@ -348,14 +349,7 @@ func _draw_pointer(hand: String, origin: Vector3, endpoint: Vector3, valid: bool
 		# Mono capture already draws the reticle above the menu. Separate Z biases
 		# would move its angular centre away from the eye-buffer line's endpoint.
 		var line_tip := tip if mono else tip + Vector3(0, 0, 0.006)
-		var mesh: ImmediateMesh = pointer.line.mesh
-		mesh.clear_surfaces()
-		mesh.surface_begin(Mesh.PRIMITIVE_LINES)
-		mesh.surface_set_color(Color(1, 1, 1, 0))
-		mesh.surface_add_vertex(to_local(origin))
-		mesh.surface_set_color(Color.WHITE)
-		mesh.surface_add_vertex(line_tip)
-		mesh.surface_end()
+		PointerRay.draw(pointer.line, origin, to_global(line_tip))
 		if hit:
 			pointer.dot.position = tip if mono else tip + Vector3(0, 0, 0.008)
 
@@ -632,6 +626,9 @@ func apply_scene_overlay() -> void:
 	_apply_overlay_node(self)
 
 func _apply_overlay_node(node: Node) -> void:
+	# Pointers already bypass depth. Their mono shader is owned by the capture,
+	# not the cinema overlay's shader save/restore cycle.
+	if node.has_meta("menu_pointer"): return
 	if node is Label3D:
 		if scene_overlay:
 			if not node.has_meta("menu_original_label_depth"): node.set_meta("menu_original_label_depth", node.no_depth_test)
@@ -675,10 +672,8 @@ func _pointer(hand: String) -> Dictionary:
 	if _pointers.has(hand):
 		return _pointers[hand]
 	var color := Color(0.15, 0.9, 1.0) if hand == "left_hand" else Color(1.0, 0.65, 0.15)
-	var line := MeshInstance3D.new()
-	line.mesh = ImmediateMesh.new()
 	# Interaction feedback must draw after every popup, label and tooltip in the menu.
-	line.material_override = _material(color, POINTER_LINE_PRIORITY, true)
+	var line := PointerRay.create(Color(color, 0.5), POINTER_LINE_PRIORITY)
 	line.set_meta("menu_pointer", true)
 	add_child(line)
 	var dot := MeshInstance3D.new()
@@ -716,11 +711,18 @@ func _update_highlights() -> void:
 		var color: Color = button.base_color
 		if not button.enabled: color = Color(0.26, 0.44, 0.38) if button.get("hover_disabled", false) and button.base_color == ACCENT else Color(0.085, 0.095, 0.115, button.base_color.a)
 		elif hovered: color = button.get("hover_color", Color(0.67, 1.0, 0.86) if button.base_color == ACCENT else Color(0.23, 0.43, 0.38))
+		color = _surface_color(button, color)
 		if button.node.material_override.get_shader_parameter("surface_color") != color:
 			button.node.material_override.set_shader_parameter("surface_color", color)
 			changed = true
 	_update_tooltip()
 	if changed: composition_changed.emit()
+
+## Menus with state-driven surfaces (current section, active toggles) decide them here, inside the
+## single highlight write: a colour reapplied after this pass would differ from it on every pass and
+## repaint the menu layers each frame.
+func _surface_color(_button: Dictionary, color: Color) -> Color:
+	return color
 
 func _update_tooltip() -> void:
 	var shown := {}

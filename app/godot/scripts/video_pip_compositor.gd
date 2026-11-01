@@ -14,7 +14,7 @@ const COMMON := ["video_geometry", "stereo_sbs", "top_bottom", "stereo_half", "s
 	"rotation_degrees", "fisheye_fov", "source_size", "color_uv_scale", "stereo_offset", "alpha_enabled",
 	"depth_enabled", "depth_shift", "depth_convergence", "alpha_edge", "model_size", "model_content_rect",
 	"packed_alpha", "packed_size", "packed_color", "grade_enabled", "grade_gain", "grade_gamma", "grade_offset",
-	"grade_contrast", "grade_saturation", "sharpness"]
+	"grade_contrast", "grade_saturation", "sharpness", "depth_text_count", "depth_text_regions", "depth_text_weights0", "depth_text_weights1"]
 const WINDOW := ["pip_center", "pip_span", "pip_forward", "pip_right", "pip_up", "pip_tangent", "pip_viewing_eye"]
 var _manager_ref: WeakRef
 var manager: RefCounted:
@@ -59,7 +59,9 @@ func _init(pip: RefCounted) -> void:
 	_manager_ref = weakref(pip)
 
 static func append_value(output: PackedFloat32Array, value: Variant) -> void:
-	if value is Vector2: output.append_array(PackedFloat32Array([value.x, value.y]))
+	if value is PackedVector4Array:
+		for item in value: append_value(output, item)
+	elif value is Vector2: output.append_array(PackedFloat32Array([value.x, value.y]))
 	elif value is Vector3: output.append_array(PackedFloat32Array([value.x, value.y, value.z]))
 	elif value is Vector4: output.append_array(PackedFloat32Array([value.x, value.y, value.z, value.w]))
 	else: output.append(float(value))
@@ -71,6 +73,10 @@ static func parameters(material: ShaderMaterial, names: Array) -> PackedFloat32A
 		if key == "color_uv_scale" and value == null: value = Vector2.ONE
 		if value == null:
 			value = RenderingServer.shader_get_parameter_default(material.shader.get_rid(), key)
+		if key == "depth_text_regions":
+			var regions: PackedVector4Array = value.duplicate() if value is PackedVector4Array else PackedVector4Array()
+			regions.resize(8)
+			value = regions
 		if value == null: return PackedFloat32Array()
 		append_value(values, value)
 	return values
@@ -239,7 +245,7 @@ func prepare_main() -> bool:
 	if _main_failed_generation == layer.generation and Time.get_ticks_msec() < _main_retry_after: return false
 	if not layer.supports(1 if video.geometry == 2 else video.geometry, video.geometry == 0 and video.screen_curve > 0): return false
 	var common := parameters(video._binding.material, COMMON)
-	if common.size() != 43: return false
+	if common.size() != 84: return false
 	if _avoid_generation == layer.generation and _avoid_main == common:
 		main_cost_fallback = true; return false
 	# If the extra full-resolution pass is costly, keep the shared-frame main
@@ -331,7 +337,7 @@ func prepare(origin: Node3D, occupied: int) -> Array:
 	if needs_main() and not main_ready:
 		fallback = "transparent_cost" if main_cost_fallback else "transparent_main"; return []
 	var common := parameters(binding.material, COMMON)
-	if common.size() != 43:
+	if common.size() != 84:
 		fallback = "uniforms"; return []
 	_update_quality(common)
 	var eyes := 1
@@ -441,7 +447,7 @@ func _update_quality(common: PackedFloat32Array) -> void:
 
 func snapshot() -> Dictionary:
 	var sampling := {}
-	if OS.is_debug_build() and not _frame.is_empty() and _common.size() == 43:
+	if OS.is_debug_build() and not _frame.is_empty() and _common.size() == 84:
 		sampling = {"stereo": bool(_common[1]), "swap": bool(_common[4]), "eye": int(_common[5]),
 			"offset": [_common[12], _common[13]], "alpha_edge": [_common[18], _common[19]]}
 	var windows := []

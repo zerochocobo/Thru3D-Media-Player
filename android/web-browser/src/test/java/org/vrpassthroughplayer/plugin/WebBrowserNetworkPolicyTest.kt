@@ -49,7 +49,7 @@ class WebBrowserNetworkPolicyTest {
         assertEquals(0, writes)
         assertFalse(policy.enabled("https://www.youtube.com/watch"))
         assertTrue(policy.enabled("https://www.iqiyi.com/"))
-        assertTrue(policy.enabled("https://www.douyin.com/"))
+        assertFalse(policy.enabled("https://www.douyin.com/")) // Beta owns this site; no silent generic fallback.
         assertTrue(policy.enabled("https://qq.com/")) // Only Tencent Video, not all QQ properties.
         assertFalse(WebBrowserNetworkPolicy.available("about:blank"))
         assertFalse(policy.enabled("file:///movie.mp4"))
@@ -69,7 +69,7 @@ class WebBrowserNetworkPolicyTest {
         assertEquals(names, WebBrowserNetworkPolicy.NATIVE_PLAYBACK_HOSTS.keys)
         val featured = Regex("\\{\"name\": \"([^\"]+)\", \"url\": \"([^\"]+)\"").findAll(source).toList()
         assertTrue(featured.isNotEmpty())
-        for (entry in featured) assertEquals(entry.groupValues[1], entry.groupValues[1] !in names,
+        for (entry in featured) assertEquals(entry.groupValues[1], entry.groupValues[1] !in names && entry.groupValues[1] != "Douyin",
             WebBrowserNetworkPolicy.available(entry.groupValues[2]))
     }
 }

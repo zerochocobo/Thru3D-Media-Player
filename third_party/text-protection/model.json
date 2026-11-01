@@ -1,0 +1,13 @@
+{
+  "id": "v6-tiny",
+  "directory": "text-protection/v6-tiny",
+  "source": "RapidAI/RapidOCR v3.10.0; PP-OCRv6 Tiny ONNX",
+  "url": "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.10.0/onnx/PP-OCRv6/det/PP-OCRv6_det_tiny.onnx",
+  "configuration_source": "https://huggingface.co/PaddlePaddle/PP-OCRv6_tiny_det_onnx/resolve/main/inference.yml",
+  "files": {
+    "multi_PP-OCRv6_det_tiny.onnx": {
+      "bytes": 1829618,
+      "sha256": "f42c0fbd294d95eac1a550e131b277dac97462c8025fa4b6c3cec1b7894bd3d5"
+    }
+  }
+}

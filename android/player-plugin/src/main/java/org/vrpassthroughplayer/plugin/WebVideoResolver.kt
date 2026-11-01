@@ -54,7 +54,7 @@ internal class WebVideoResolver(private val context: () -> Context?, private val
         if (closed) return 0
         cancel()
         val id = ++sequence
-        val publicPage = runCatching { WebVideoPage.parse(url) }.getOrNull()
+        val publicPage = (if (bilibiliBeta) WebVideoDouyinCapture.page(url) else null) ?: runCatching { WebVideoPage.parse(url) }.getOrNull()
         val attempt = Attempt(id); active = attempt
         state = JSONObject().put("id", id).put("state", "resolving")
         job = executor.submit {
@@ -75,9 +75,10 @@ internal class WebVideoResolver(private val context: () -> Context?, private val
                     ?: throw ExtractionFailure("browser_playback_required") else sourcePage
                 val networkEnabled = media?.optBoolean("network_enabled") == true
                 val bilibiliEnabled = bilibiliBeta && page.site == "bilibili" && media?.optBoolean("bilibili_enabled") == true
-                if (bilibiliBeta && !bilibiliEnabled)
+                val douyinEnabled = bilibiliBeta && page.site == "douyin" && media?.optBoolean("douyin_enabled") == true
+                if (bilibiliBeta && !bilibiliEnabled && !douyinEnabled)
                     throw ExtractionFailure("browser_playback_required")
-                val browserQuality = networkEnabled || bilibiliEnabled
+                val browserQuality = networkEnabled || bilibiliEnabled || douyinEnabled
                 // The browser already selected this quality using the user's site session.
                 // Do not force its member/4K stream through the extractor's default 1080p cap.
                 val maxHeight = if (browserQuality) maxOf(2160, minOf(media.optInt("width"), media.optInt("height"))).coerceAtMost(8192)
@@ -88,7 +89,7 @@ internal class WebVideoResolver(private val context: () -> Context?, private val
                     readBrowserResource(uri, headers, prefix, attempt, deadline)
                 }, capabilities)
                 attempt.stage = "browser_capture"
-                var route = if (bilibiliEnabled) "browser_bilibili" else if (networkEnabled) "browser_network" else "browser_direct"
+                var route = if (douyinEnabled) "browser_douyin" else if (bilibiliEnabled) "browser_bilibili" else if (networkEnabled) "browser_network" else "browser_direct"
                 val session by lazy { attempt.stage = "session"; cookies(page.url) }
                 val legacy = if (!browserQuality || media.optBoolean("server")) media?.let {
                     WebVideoBrowserCapture.formats(it, if (it.optBoolean("server")) org.json.JSONArray() else session)
@@ -96,13 +97,18 @@ internal class WebVideoResolver(private val context: () -> Context?, private val
                 val (info, initial) = WebVideoResolution.select(page, {
                     if (media?.optBoolean("server") == true) legacy
                     else if (bilibiliEnabled) WebVideoBilibiliCapture.formats(page, media)
+                    else if (douyinEnabled) WebVideoDouyinCapture.resolve(page, media, network)
                     else if (networkEnabled) network.resolve(page, media)
                     else legacy?.takeIf { page.site in setOf("weibo", "tiktok", "instagram", "facebook", "twitter", "reddit") || !media?.optString("layout").isNullOrEmpty() }
                 }, {
                     attempt.check()
                     // Opt-in means keep the website's stream/quality. If that stream cannot be
                     // transferred, do not silently replace a member stream with a public preview.
-                    if (browserQuality || publicPage == null) throw ExtractionFailure("browser_playback_required")
+                    if (browserQuality || publicPage == null) {
+                        if (douyinEnabled && network.inspectedFiles > 0 && network.videoFiles > 0 && network.audioFiles == 0)
+                            throw ExtractionFailure("browser_audio_missing")
+                        throw ExtractionFailure("browser_playback_required")
+                    }
                     route = "extractor"
                     attempt.stage = "session"
                     val savedCookies = session
@@ -146,6 +152,12 @@ internal class WebVideoResolver(private val context: () -> Context?, private val
                         throw ExtractionFailure("browser_page_changed")
                     if (pgc && WebVideoBilibiliCapture.episodePage(sourcePage, latest) != page)
                         throw ExtractionFailure("browser_page_changed")
+                    if (douyinEnabled) {
+                        val current = WebVideoDouyinCapture.candidate(page, latest) ?: throw ExtractionFailure("browser_stream_changed")
+                        if (current.optString("source") != selected.video.url.toString()) throw ExtractionFailure("browser_stream_changed")
+                        if (current.getJSONObject("douyin").optString("observed_audio") != selected.audio?.url?.toString().orEmpty())
+                            throw ExtractionFailure("browser_stream_changed")
+                    }
                     if (bilibiliEnabled) {
                         val current = WebVideoBilibiliCapture.formats(page, latest) ?: throw ExtractionFailure(WebVideoBilibiliCapture.unavailableReason(latest))
                         val pair = WebVideoFormats.select(page, current, capabilities)
@@ -182,34 +194,9 @@ internal class WebVideoResolver(private val context: () -> Context?, private val
         attempt.check(); check(System.nanoTime() < deadline)
         val http = RemoteMediaHttp(); attempt.probe = http
         try {
-            val limit = SphericalVideoMetadata.PREFIX_LIMIT
-            val c = http.open(uri, if (prefix) "bytes=0-${limit - 1}" else "", headers)
-            try {
-                c.readTimeout = 5000
-                if (c.responseCode == 206) require(c.getHeaderField("Content-Range").orEmpty().startsWith("bytes 0-"))
-                if (!prefix) require(c.contentLengthLong <= limit)
-                val bytes = c.inputStream.use { input ->
-                    val out = java.io.ByteArrayOutputStream(); val buffer = ByteArray(16384)
-                    while (out.size() < limit) {
-                        attempt.check(); check(System.nanoTime() < deadline)
-                        val count = input.read(buffer, 0, minOf(buffer.size, limit - out.size()))
-                        if (count < 0) break
-                        out.write(buffer, 0, count)
-                        if (prefix) {
-                            val data = out.toByteArray()
-                            if (SphericalVideoMetadata.headerComplete(data, data.size) && (WebVideoContainer.parse(data)?.duration ?: 0.0) > 0 ||
-                                WebVideoContainer.transportStream(data) != null) break
-                        }
-                    }
-                    if (!prefix) require(out.size() < limit || input.read() == -1)
-                    out.toByteArray()
-                }
-                if (!prefix && c.responseCode == 206) {
-                    val match = Regex("bytes 0-([0-9]+)/([0-9]+)").matchEntire(c.getHeaderField("Content-Range").orEmpty())
-                    require(match != null && match.groupValues[1].toLong() + 1 == bytes.size.toLong() && match.groupValues[2].toLong() == bytes.size.toLong())
-                }
-                return c.url.toURI() to bytes
-            } finally { http.release(c) }
+            return WebVideoBrowserResourceReader.read(uri, headers, prefix, http) {
+                attempt.check(); check(System.nanoTime() < deadline)
+            }
         } finally { attempt.probe = null; http.close() }
     }
 

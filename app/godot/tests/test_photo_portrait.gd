@@ -265,6 +265,9 @@ func _run() -> void:
 	FileAccess.open(path,FileAccess.WRITE).store_8(0)
 	check(Photo._read_portrait(payload).is_empty(), "Truncated mask payload cannot become a texture")
 	app.queue_free(); await process_frame
+	call_deferred("finish")
+
+func finish() -> void:
 	for failure in failures: push_error(failure)
 	print("Photo portrait: %d checks, %d failures" % [checks,failures.size()])
 	quit(0 if failures.is_empty() else 1)

@@ -23,28 +23,35 @@
   let networkPort, network = [], networkPage = location.href;
   let networkEnabled = false;
   let bilibiliEnabled = false, bilibiliData = [];
+  // The first detail request can precede Android's policy reply. Observation is
+  // limited to this verified official document; native handoff still revalidates.
+  let douyinEnabled = typeof Thru3DDouyin !== 'undefined' && Thru3DDouyin.documentPage(location.href), douyinData = [];
+  let douyinDiagnostics = false, douyinObservation = {};
   let bilibiliViews = [];
   let bilibiliStatus = 'idle', bilibiliResponseApi = false;
   let bilibiliInitial = null, bilibiliInitialPage = '', bilibiliScanAt = 0;
   let bilibiliOwner = null;
   const networkContext = (reset = false) => {
-    try { networkPort?.postMessage({ type: "context", page: location.href, enabled: networkEnabled, bilibili: bilibiliEnabled, reset }); } catch (_) {}
+    try { networkPort?.postMessage({ type: "context", page: location.href, enabled: networkEnabled, bilibili: bilibiliEnabled, douyin: douyinEnabled, reset }); } catch (_) {}
   };
   const mediaEpoch = new WeakMap();
   const connectNetwork = () => {
     network = [];
+    douyinData = [];
     bilibiliData = []; bilibiliViews = [];
     networkPort = browser.runtime.connect({ name: "thru3d_network" });
     const connection = networkPort;
     networkPort.onMessage.addListener(message => {
       if (connection !== networkPort || message?.type !== "network" || message.page !== location.href) return;
       network = Array.isArray(message.candidates) ? message.candidates.slice(0, 24) : [];
+      douyinData = Array.isArray(message.douyin) ? message.douyin.slice(0,16) : [];
+      douyinObservation = message.douyin_observation || {};
       bilibiliData = Array.isArray(message.bilibili) ? message.bilibili.slice(0, 4) : [];
       bilibiliViews = Array.isArray(message.bilibili_views) ? message.bilibili_views.slice(0, 4) : [];
       bilibiliStatus = message.bilibili_status || 'idle'; bilibiliResponseApi = message.bilibili_response_api === true;
       changed();
     });
-    networkPort.onDisconnect.addListener(() => { if (connection === networkPort) { network = []; bilibiliData = []; bilibiliViews = []; bilibiliInitial = null; changed(); } });
+    networkPort.onDisconnect.addListener(() => { if (connection === networkPort) { network = []; douyinData = []; bilibiliData = []; bilibiliViews = []; bilibiliInitial = null; changed(); } });
     networkContext();
   };
   // Both clients put the access token and selected media version on their video URL.
@@ -139,10 +146,13 @@
       const remembered = matching.find(v => bilibiliOwner?.video === v && bilibiliOwner.page === location.href &&
         bilibiliOwner.cid === biliCid && bilibiliOwner.source === v.currentSrc && bilibiliOwner.epoch === mediaEpoch.get(v)?.id);
       const primary = remembered || (matching.length === 1 ? matching[0] : null);
-      // Generic MSE capture still requires a single player. Only the bound Bilibili
-      // owner may use its current-part observations in a page with preview players.
-      let requests = protectedMedia || !(networkEnabled || bilibiliEnabled) ? [] : network.filter(c => c.url === currentSource || c.original_url === currentSource ||
-        currentSource.startsWith('blob:') && (bilibiliEnabled ? primary === video : live.length === 1 && c.at >= epoch.since));
+      const douyinPrimary = douyinEnabled && typeof Thru3DDouyin !== 'undefined'
+        ? Thru3DDouyin.owner(douyinData, location.href, live.filter(v=>!encrypted.has(v))) : null;
+      // Generic MSE capture still requires a single player. Site-bound owners can
+      // use exact declared files even when MSE fetches before its loadstart event.
+      let requests = protectedMedia || !(networkEnabled || bilibiliEnabled || douyinEnabled) ? [] : network.filter(c => c.url === currentSource || c.original_url === currentSource ||
+        currentSource.startsWith('blob:') && (bilibiliEnabled ? primary === video :
+          douyinEnabled ? douyinPrimary === video : live.length === 1 && c.at >= epoch.since));
       const biliBinding = !bilibiliEnabled ? 'off' : typeof Thru3DBilibili === 'undefined' ? 'adapter_unavailable' :
         !biliIdentity ? Thru3DBilibili.initialStatus() : protectedMedia ? 'protected' : matching.length > 1 && !primary ? 'multiple_players' :
         !bili ? 'response_cid_missing' : !sameVideo || bili.avid && bili.avid !== biliIdentity.aid ? 'video_id_mismatch' :
@@ -170,6 +180,10 @@
       const biliReady = !!biliMatched && Thru3DBilibili.ready(biliMatched, requests, video.videoWidth, video.videoHeight);
       if (biliReady) bilibiliOwner = {video, page:location.href, cid:biliCid, source:currentSource, epoch:epoch.id,
         data:biliMatched,requests:requests.filter(c=>Number.isFinite(c.at))};
+      const douyin = douyinEnabled && !protectedMedia && typeof Thru3DDouyin !== 'undefined' &&
+        (douyinData.map(d=>Thru3DDouyin.binding(d,location.href,video,requests)).find(Boolean) ||
+          Thru3DDouyin.direct(douyinData,location.href,video,requests,douyinObservation));
+      const douyinReady = !!douyin && (!currentSource.startsWith('blob:') || !douyin.data.audio?.length || !!douyin.data.observed_audio);
       items.push({ id: videos.get(video), width: video.videoWidth, height: video.videoHeight,
         fullscreen: fullscreen(video) || !!owner && fullscreen(owner),
         source: !protectedMedia ? (resource ? resource.source : /^https?:\/\//i.test(video.currentSrc || '') ? video.currentSrc : '') : '',
@@ -178,6 +192,11 @@
         network: requests, network_epoch: epoch.id, blob: currentSource.startsWith('blob:'),
         bilibili: biliMatched,
         bilibili_ready: biliReady,
+        douyin: douyin ? {...douyin.data,page:location.href} : null,
+        douyin_ready: douyinReady,
+        douyin_diagnostics: douyinDiagnostics && douyinEnabled && typeof Thru3DDouyin !== 'undefined'
+          ? Thru3DDouyin.diagnostics(douyinData,location.href,video,requests) : null,
+        douyin_observation: douyinDiagnostics && douyinEnabled ? douyinObservation : null,
         bilibili_status: bilibiliStatus, bilibili_response_api: bilibiliResponseApi,
         bilibili_binding: biliBinding, bilibili_api_count: bilibiliData.length,
         bilibili_view_count: bilibiliViews.length,
@@ -278,6 +297,9 @@
     port.onMessage.addListener((message) => {
     if (message?.action === "network_policy") {
       changed();
+      douyinDiagnostics = message.diagnostics === true;
+      const douyin = message.douyin === true;
+      if (douyin !== douyinEnabled) { douyinEnabled = douyin; douyinData = []; network = []; networkContext(true); changed(); }
       const bili = message.bilibili === true;
       if (bili !== bilibiliEnabled) {
         bilibiliEnabled = bili; bilibiliData = []; bilibiliViews = []; network = []; bilibiliOwner = null;
@@ -357,10 +379,10 @@
   addEventListener("DOMContentLoaded", () => { bilibiliScanAt = 0; changed(); }, {once:true});
   addEventListener("fullscreenchange", () => { if (!closed) send(); }, true);
   addEventListener("pageshow", (event) => {
-    if (event.persisted) { port.disconnect(); connected(); networkPort.disconnect(); connectNetwork(); }
+    if (event.persisted) { if(!closed){closed=true;port.disconnect();} connected(); networkPort.disconnect(); connectNetwork(); }
   });
   addEventListener("pagehide", (event) => {
     network = []; networkPort.disconnect();
-    if (!event.persisted) { handoff = null; mutation.disconnect(); videos.clear(); port.disconnect(); }
+    if (!event.persisted) { handoff = null; mutation.disconnect(); videos.clear(); if(!closed){closed=true;port.disconnect();} }
   });
 })();

@@ -38,7 +38,7 @@ func run() -> void:
 	var texture := ImageTexture.create_from_image(source)
 	var material: ShaderMaterial = window.picture
 	check(preload("res://scripts/video_pip_compositor.gd").parameters(material,
-		preload("res://scripts/video_pip_compositor.gd").COMMON).size() == 43, "Unchanged material defaults are available to the native atlas")
+		preload("res://scripts/video_pip_compositor.gd").COMMON).size() == 84, "Material defaults including text protection are available to the native atlas")
 	material.set_shader_parameter("color_texture", texture)
 	material.set_shader_parameter("source_size", Vector2(512, 256))
 	material.set_shader_parameter("alpha_enabled", false)

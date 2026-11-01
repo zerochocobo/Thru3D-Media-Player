@@ -68,3 +68,5 @@ GeckoView retains MPL-2.0 and its pinned corresponding-source reference. yt-dlp 
 DVD navigation uses the pinned GPL-2.0-or-later libdvdread/libdvdnav sources and retained notices in `third_party/dvd/`. The root GPL-3.0 license text is unchanged. Additional in-app credits retain their upstream notices and provenance; TIFF IJG terms are published as `LIBJPEG-TURBO-IJG.txt`, without exporting internal README files.
 
 0.16.0 video/portrait depth uses pinned ZipDepth (MIT) with retained model/source attribution, plus the referenced GPL-3.0 deployment approach. Still-photo Depth Anything V2 Small remains Apache-2.0. See `models/licenses/ZipDepth_MIT.txt`, `third_party/player-licenses/zipdepth.txt`, and [model transformations](MODELS.md). No model weight or private sample is included.
+
+PP-OCRv6 Tiny text-detector metadata and the PaddleOCR/RapidOCR Apache-2.0 notices are retained under `third_party/text-protection` and `third_party/comic-ocr`. Weights are separately supplied and excluded. The 3D text-protection feature is disabled in 0.16.2; packaging does not grant rights to caller media or reopen the feature.

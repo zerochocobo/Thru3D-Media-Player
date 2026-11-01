@@ -9,7 +9,8 @@ namespace quest {
  * realtime path (offline/two_dvr_gpu.py _GpuNearPreprocessor + two_dvr_render.py
  * TemporalDepthStabilizer, utils/scene_detection.py):
  *  1. scene cut (HSV hue/saturation histogram, Bhattacharyya) resets all state;
- *  2. 5/95 percentile band, smoothed across frames (reset on a jump of a whole band);
+ *  2. 5/95 percentile band, smoothed across frames (rebase on a whole-band jump, preserving
+ *     temporal history within the same RGB shot);
  *  3. VVPS stabilizer: only the low-frequency base (box, min(h,w)/16) is smoothed in time and
  *     the current frame's detail is always re-added; the previous base is first moved by the
  *     global shift (phase correlation) and blended per tile by the motion-compensated gray

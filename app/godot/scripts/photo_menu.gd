@@ -56,6 +56,8 @@ func _supports_half_layouts() -> bool:
 
 const PHOTO_NEXT := 401
 const PHOTO_ANIMATION := 433
+const PHOTO_CACHE_ONE := 435
+const PHOTO_CACHE_TWO := 436
 const PHOTO_INSPECT := 402
 const PHOTO_RESET := 403
 const PHOTO_MINUS := 404
@@ -481,7 +483,7 @@ func _photo_background_button(target: int, caption: String, centre: Vector2, siz
 	if not _state.get("can_background", false): _tips[target] += "\n" + I18n.t("Open a supported panorama to use it as a background.")
 
 func _draw_panel() -> void:
-	_set_backdrop(Vector2(1.16, 0.80), Vector2(0, -0.125))
+	_set_backdrop(Vector2(1.16, 0.84), Vector2(0, -0.145))
 	_button(10, "", Vector2(-0.48, 0.2), Vector2(0.085, 0.065), true, "up")
 	_label(I18n.t("Images"), Vector3(0, 0.2, 0.004), 21)
 	_button(PHOTO_STRENGTH, I18n.t("3D depth") + "  " + _depth_caption(), Vector2(-0.26, 0.035), Vector2(0.49, 0.105), _can_depth(), "depth")
@@ -493,11 +495,17 @@ func _draw_panel() -> void:
 	_label(I18n.t("All photos"), Vector3(-0.26, -0.159, 0.004), TEXT_AUX).modulate = MUTED
 	_label(I18n.t("Videos & other scenes"), Vector3(0.26, -0.159, 0.004), TEXT_AUX).modulate = MUTED
 	_keep_background_row(-0.20)
-	_button(PHOTO_COMIC, I18n.t("Comic reading") + "  " + I18n.t("On" if _state.get("comic_enabled", false) else "Off"), Vector2(-0.26, -0.32), Vector2(0.49, 0.08), _state.get("comic_supported", false), "comic_voice")
-	_button(PHOTO_COMIC_VOICE, I18n.t("Voice"), Vector2(0.26, -0.32), Vector2(0.49, 0.08), _state.get("comic_supported", false), "comic_voice")
-	_status = _label(_photo_status(), Vector3(0, -0.435, 0.004), 15)
+	_button(PHOTO_COMIC, I18n.t("Comic reading") + "  " + I18n.t("On" if _state.get("comic_enabled", false) else "Off"), Vector2(-0.26, -0.30), Vector2(0.49, 0.08), _state.get("comic_supported", false), "comic_voice")
+	_button(PHOTO_COMIC_VOICE, I18n.t("Voice"), Vector2(0.26, -0.30), Vector2(0.49, 0.08), _state.get("comic_supported", false), "comic_voice")
+	_label(I18n.t("Adjacent cache"), Vector3(-0.29, -0.405, 0.004), TEXT_AUX)
+	for count in [1, 2]:
+		var target := PHOTO_CACHE_ONE if count == 1 else PHOTO_CACHE_TWO
+		_button(target, I18n.t("1 each" if count == 1 else "2 each"), Vector2(0.08 + (count - 1) * 0.28, -0.405), Vector2(0.25, 0.075))
+		if int(_state.get("cache_each", 1)) == count: _buttons.back().base_color = SELECTED
+		_tips[target] = I18n.t("Upper limit per side. Actual 3D and portrait caching adapts to memory and rendering headroom.")
+	_status = _label(_photo_status(), Vector3(0, -0.49, 0.004), 15)
 	_status.modulate = MUTED
-	_place_device_status(Vector2(0, -0.565))
+	_place_device_status(Vector2(0, -0.60))
 	choices.finish()
 
 func _draw_gallery() -> void:
@@ -657,6 +665,8 @@ func _activate(target: int) -> void:
 	if target==PHOTO_STATIC:
 		action_requested.emit("photo_static"); refresh()
 		return
+	if target in [PHOTO_CACHE_ONE, PHOTO_CACHE_TWO]:
+		setting_requested.emit("photo_cache_each", 1 if target == PHOTO_CACHE_ONE else 2); refresh(); return
 	if target==PHOTO_SPATIAL:
 		var operation:="photo_spatial_on" if _depth_open else "photo_spatial"
 		_mode_open=false; action_requested.emit(operation); refresh(); return
@@ -815,8 +825,10 @@ func _photo_status() -> String:
 func _update_highlights() -> void:
 	if _tips.has(PHOTO_INSPECT): _tips[PHOTO_INSPECT] = _inspect_tip()
 	super._update_highlights()
-	for button in _buttons:
-		if (button.target == PHOTO_INSPECT and _state.get("inspect", false)) or (button.target == PHOTO_DEPTH and (_state.get("depth_requested", false) or _state.get("native_stereo",false))):
-			button.node.material_override.set_shader_parameter("surface_color", SELECTED)
-		if button.target == PHOTO_PORTRAIT and button.enabled and _state.get("portrait_requested",false) and not _hover.values().has(button.target):
-			button.node.material_override.set_shader_parameter("surface_color", Color(0.16, 0.31, 0.27))
+
+func _surface_color(button: Dictionary, color: Color) -> Color:
+	if (button.target == PHOTO_INSPECT and _state.get("inspect", false)) or (button.target == PHOTO_DEPTH and (_state.get("depth_requested", false) or _state.get("native_stereo",false))):
+		return SELECTED
+	if button.target == PHOTO_PORTRAIT and button.enabled and _state.get("portrait_requested",false) and not _hover.values().has(button.target):
+		return Color(0.16, 0.31, 0.27)
+	return color

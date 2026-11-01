@@ -172,6 +172,7 @@ internal class MpvVideoBridge(
         @Volatile var discProbe = 0L
         @Volatile var owner: EGLContext? = null
         @Volatile var closing = false
+        @Volatile var closeStuckLogged = false
         @Volatile var playing = true
         var speed = 1.0 // synchronized(host), retained across processing revisions
         @Volatile var subtitleDelay = 0.0 // also read by the narration clock
@@ -227,6 +228,7 @@ internal class MpvVideoBridge(
             descriptor?.close(); descriptor = null
             sidecars.forEach { runCatching { it.close() } }; sidecars = emptyList()
         }
+        @Volatile var secondarySubtitleCommand = 0L
         @Volatile var subtitleCommand = 0L
         var nextStatusNs = 0L // GL only
     }
@@ -306,6 +308,8 @@ internal class MpvVideoBridge(
         var portraitFailed = false // Shape failures retain the ordinary mono Alpha path.
         val portraitShots = PortraitShotDetector()
         val portraitThumbnail = ByteBuffer.allocateDirect(PortraitShotDetector.WIDTH * PortraitShotDetector.HEIGHT * 4)
+        var textProtection: VideoTextProtection? = null
+        var textProtectionFailure = ""
         var portraitDepth: PortraitDepth? = null
         var portraitDepthAllowed: Boolean? = null
         var borrow = false // GL thread: pairs show the MPV slot itself; no 8K copy per captured frame
@@ -394,7 +398,7 @@ internal class MpvVideoBridge(
                            depth: Boolean = false, topBottom: Boolean = false, exactSeek: Boolean = false, layer: Boolean = false,
                            networkInterleaveCompat: Boolean = false, discPlaylist: Int = -1): Int {
         if (!supported() || sessions.size >= 2 || startMs < 0 || profile !in RvmProfiles.keys || (depth && (alpha || stereo)) ||
-            Uri.parse(uri).scheme !in setOf("content", "file", "usb", "smb", "cloud", "medialib", "dlna", "http", "https") ||
+            Uri.parse(uri).scheme !in setOf("content", "file", "usb", "smb", "cloud", "medialib", "dlna", "http", "https", "externalvideo") ||
             discPlaylist !in -2..99999) return -1
         val id = gate.begin(); if (id <= 0) return -1
         val pendingView = synchronized(playbackViewLock) { pendingPlaybackView.also { pendingPlaybackView = null } }
@@ -900,6 +904,17 @@ internal class MpvVideoBridge(
         session.host.narration?.timelineChanged()
         return true
     }
+    fun setSecondarySubtitle(id: Int, trackId: Int, seconds: Double): Boolean {
+        val session = sessions[id] ?: return false
+        if (trackId < 0 || !seconds.isFinite() || kotlin.math.abs(seconds) > 10.0) return false
+        synchronized(session.host) {
+            if (!active(session) || session.host.closing || session.host.handle <= 0) return false
+            val serial = MpvSourceNative.setSecondarySubtitle(session.host.handle, trackId, seconds)
+            if (serial <= 0) return false
+            session.host.secondarySubtitleCommand = maxOf(session.host.secondarySubtitleCommand, serial)
+        }
+        return true
+    }
     private fun prepareSubtitles(host: Host, tracks: List<SidecarSubtitles.Track>): List<SidecarSubtitles.Track> =
         tracks.mapNotNull { track ->
             try { if (host.closing || stopped) null else host.subtitleText.prepare(track) }
@@ -1082,7 +1097,8 @@ internal class MpvVideoBridge(
         val text = MpvSourceNative.subtitleStatus(session.host.handle, afterSequence)
         if (text.isEmpty() || !active(session)) return ""
         return JSONObject(text).put("session_id", session.id).put("generation", session.scope.generation)
-            .put("mpv_source_handle", session.host.handle).put("required_command_id", session.host.subtitleCommand).toString()
+            .put("mpv_source_handle", session.host.handle).put("required_command_id", session.host.subtitleCommand)
+            .put("required_secondary_command_id", session.host.secondarySubtitleCommand).toString()
     }
     fun setSubtitleDelay(id: Int, seconds: Double): Boolean {
         val session = sessions[id] ?: return false
@@ -1290,6 +1306,13 @@ internal class MpvVideoBridge(
                     if (host.layer && currentLayerSurface === host.layerSurface) {
                         VideoLayerNative.destroySurface(); currentLayerSurface = null
                     }
+                } else if (!host.closeStuckLogged) {
+                    // Diagnostics only: a source that does not finish closing keeps a native slot.
+                    val wait = JSONObject(MpvSourceNative.closeWait(host.handle))
+                    if (wait.optLong("closing_ms") >= 5000) {
+                        host.closeStuckLogged = true
+                        android.util.Log.w("QuestPlayer", "MPV source still closing: $wait")
+                    }
                 }
             } catch (_: Throwable) { /* Preserve ownership and retry; never close a descriptor still used by MPV. */ }
         }
@@ -1343,7 +1366,7 @@ internal class MpvVideoBridge(
                 RenderBridgeNative.captureTextureRoi(session.renderer, source.getInt("color_texture_id"), plan.rect, plan.scout)
             // 2D->3D stages (and later reads back) a model input only when the depth model will take it.
             else RenderBridgeNative.captureTexture(session.renderer, source.getInt("color_texture_id"),
-                session.alpha || (session.depth && session.depthModel?.wantsInput(source.getLong("frame_id")) == true).also { source.put("depth_input_staged", it) })
+                session.alpha || (session.depth && session.depthModel?.wantsInput(source.getLong("frame_id"), source.getLong("pts_us")) == true).also { source.put("depth_input_staged", it) })
             if (token == 0L) {
                 // A full consumer ring must not consume the only remaining EOF
                 // frame. Keep the immutable producer lease and retry next draw.
@@ -1556,7 +1579,10 @@ internal class MpvVideoBridge(
             // Mono: one staged eye is sufficient. Frames the model skips
             // were not staged: they show with the latest map and cost no readback.
             val staged = pair.optBoolean("depth_input_staged")
-            if (staged) check(RenderBridgeNative.readMonoInput(session.renderer, copying.second, buffers.first))
+            if (staged) {
+                check(RenderBridgeNative.readMonoInput(session.renderer, copying.second, buffers.first))
+                session.textProtection?.observe(buffers.first,session.dims[0],session.dims[1],pair)
+            }
             session.depthModel!!.submit(copying.first, copying.second, if (staged) buffers.first else null, pair)
         } else {
             pair.put("model_generation", 1).put("inference_ran", false).put("pair_identity_verified", true)
@@ -1567,10 +1593,33 @@ internal class MpvVideoBridge(
             } else upload(session, pair, session.opaque.first, session.opaque.second)
         }
     }
+    private fun textRegions(session: Session,pair: JSONObject) {
+        if(!session.depth || !depthTextProtection)return
+        if(depthTextProtection&&pair.optBoolean("depth_ran")&&session.textProtection==null&&session.textProtectionFailure.isEmpty()) {
+            session.textProtection=VideoTextProtection(context) {
+                render(Runnable { synchronized(session.lock) {
+                    if(active(session)&&session.host.handle>0&&!session.host.playing)
+                        MpvSourceNative.requestFrame(session.host.handle)
+                } })
+            }
+        }
+        val snapshot=try { session.textProtection?.frame(session.renderer,pair.getLong("slot_token"),pair) ?: TextProtectionTransition.Snapshot.EMPTY }
+        catch(failure: Throwable) {
+            session.textProtection?.failed(failure);session.textProtection?.close();session.textProtection=null
+            session.textProtectionFailure="text_detection_failed"
+            RenderBridgeNative.releaseTextInput(session.renderer);TextProtectionTransition.Snapshot.EMPTY
+        }
+        RenderBridgeNative.textRegions(session.renderer,pair.getLong("slot_token"),snapshot.regions,snapshot.weights)
+        pair.put("depth_text_regions",org.json.JSONArray(snapshot.regions.toList())).put("depth_text_weights",org.json.JSONArray(snapshot.weights.toList()))
+        val stats=session.textProtection?.let { JSONObject(it.stats()) }
+        if(stats!=null)pair.put("text_protection",stats.put("render_regions",snapshot.regions.size/4).put("transitioning",snapshot.animating))
+        pair.put("text_protection_error",if(session.textProtectionFailure.isNotEmpty())session.textProtectionFailure else stats?.optString("error","").orEmpty())
+    }
     private fun upload(session: Session, pair: JSONObject, left: ByteBuffer, right: ByteBuffer) {
         val token = pair.getLong("slot_token")
         if (pair.optBoolean("layer_alpha")) session.maskInFlightNs = 0L // the model is free for the next frame
         check(session.leases.containsKey(token)) { "Alpha color lease unavailable" }
+        if (session.depth) check(RenderBridgeNative.limitNear(session.renderer, 0L, session.depthShift))
         if (pair.optString("alpha_transport") == "zero_copy") check(RenderBridgeNative.commitZeroCopyAlpha(session.renderer, token))
         else check(RenderBridgeNative.uploadAlpha(session.renderer, token, left, right))
         var portraitPending = false
@@ -1586,6 +1635,7 @@ internal class MpvVideoBridge(
         }
         if (session.alpha && !session.stereo && session.portraitFailed)
             pair.put("source_layout", "mono").put("presentation_mode", "portrait_flat").put("portrait_fallback", "shape_unavailable")
+        if (session.depth) textRegions(session, pair)
         // Stretch: no native stereo pair; the video shader samples the color through the near map instead.
         if (session.depth && pair.optBoolean("depth_ran") && !depthStretch) {
             val stereo = RenderBridgeNative.warp(session.renderer, token, session.depthShift, session.depthConvergence)
@@ -1610,6 +1660,10 @@ internal class MpvVideoBridge(
     }
     private fun finishUploads(session: Session) {
         session.portraitDepth?.pollInput(session.renderer)
+        try { session.textProtection?.poll(session.renderer) } catch(failure: Throwable) {
+            session.textProtection?.failed(failure);session.textProtection?.close();session.textProtection=null
+            session.textProtectionFailure="text_readback_failed";RenderBridgeNative.releaseTextInput(session.renderer)
+        }
         val iterator = session.alphaUploads.iterator()
         while (iterator.hasNext()) {
             val (token, upload) = iterator.next()
@@ -1676,6 +1730,26 @@ internal class MpvVideoBridge(
         })
         return true
     }
+    fun setTextProtection(enabled: Boolean) {
+        // Release hold: legacy callers and saved preferences must not start the detector.
+        depthTextProtection=false
+        sessions.values.filter { it.depth }.forEach { session -> render(Runnable { synchronized(session.lock) {
+            if(!active(session))return@synchronized
+            session.textProtectionFailure=""
+            if(!depthTextProtection) {
+                session.textProtection?.close();session.textProtection=null
+                if(session.renderer>0)RenderBridgeNative.releaseTextInput(session.renderer)
+                val held=session.pairs.toMutableMap()
+                session.alphaUploads.forEach { (token,alpha) -> held[token]=alpha.pair }
+                held.forEach { (token,pair) ->
+                    pair.put("depth_text_regions",org.json.JSONArray()).put("depth_text_weights",org.json.JSONArray()).put("text_protection_error","")
+                    if(pair.optInt("warp_texture_id")>0)
+                        RenderBridgeNative.warp(session.renderer,token,session.depthShift,session.depthConvergence)
+                }
+            }
+            if(session.host.handle>0&&!session.host.layer)MpvSourceNative.requestFrame(session.host.handle)
+        } }) }
+    }
     fun setDepthView(id: Int, shift: Double, convergence: Double): Boolean {
         val session = sessions[id] ?: return false
         if (!session.depth || shift !in 0.0..0.2 || convergence !in 0.0..1.0) return false
@@ -1687,10 +1761,12 @@ internal class MpvVideoBridge(
             if (active(session) && session.renderer > 0 && session.owner == EGL14.eglGetCurrentContext()) {
                 val token = session.drawnToken
                 val pair = session.pairs[token]
-                if (pair != null && pair.optInt("warp_texture_id") > 0 && session.display.owns(token)) {
-                    runCatching { RenderBridgeNative.warp(session.renderer, token, session.depthShift, session.depthConvergence) }
-                        .onFailure { android.util.Log.w("QuestPlayer", "Depth view refresh failed", it) }
-                }
+                if (pair != null && session.display.owns(token)) runCatching {
+                    // Both views read the limited near texture: re-limit it before any rewarp.
+                    RenderBridgeNative.limitNear(session.renderer, token, session.depthShift)
+                    if (pair.optInt("warp_texture_id") > 0)
+                        RenderBridgeNative.warp(session.renderer, token, session.depthShift, session.depthConvergence)
+                }.onFailure { android.util.Log.w("QuestPlayer", "Depth view refresh failed", it) }
             }
         } })
         return true
@@ -1901,7 +1977,7 @@ internal class MpvVideoBridge(
     }
     private fun dispose(session: Session, closeHost: Boolean) {
         if (!session.disposed.compareAndSet(false, true)) return
-        session.model?.close(); session.depthModel?.close(); session.portraitDepth?.close(); session.normal.close()
+        session.model?.close(); session.depthModel?.close(); session.textProtection?.close(); session.portraitDepth?.close(); session.normal.close()
         synchronized(session.lock) { session.display.close() }
         if (closeHost) {
             session.host.narration?.close(); session.host.narration = null
@@ -1916,7 +1992,10 @@ internal class MpvVideoBridge(
     }
     private fun fail(session: Session, code: String, failure: Throwable) {
         if (session.disposed.get()) return
-        android.util.Log.w("QuestPlayer", "$code in session ${session.id}", failure) // the stack, for the diagnostic log
+        if (session.host.uri.startsWith("externalvideo://")) {
+            // Provider exceptions can embed the temporary locator, including credentials. No external stack/message.
+            android.util.Log.w("QuestPlayer", "$code in session ${session.id} (${failure.javaClass.simpleName})")
+        } else android.util.Log.w("QuestPlayer", "$code in session ${session.id}", failure)
         val stage = when (session.host.loadingPhase) {
             "connecting" -> "resolving"
             "reading_disc" -> "parsing"
@@ -1924,8 +2003,18 @@ internal class MpvVideoBridge(
             else -> "output"
         }
         val upstream = session.host.networkLease?.let(networkFailure)
-        event("mpv_error", session, PlaybackFailure.report(code, failure, stage, upstream))
+        val report = PlaybackFailure.report(code, failure, stage, upstream)
+        // Diagnostics only: which earlier sources still hold the native slots, and the teardown step each waits on.
+        if (failure.message?.contains("capacity exhausted") == true) report.put("held_sources", heldSources(session.host))
+        event("mpv_error", session, report)
         gate.invalidate(session.id); dispose(session, true)
+    }
+    private fun heldSources(except: Host) = JSONArray().also { held ->
+        for (host in hosts.toList()) if (host !== except && host.handle > 0) {
+            val wait = runCatching { JSONObject(MpvSourceNative.closeWait(host.handle)) }.getOrElse { JSONObject().put("error", it.message) }
+            held.put(wait.put("host_closing", host.closing).put("open_ms", host.elapsedMs())
+                .put("session_attached", sessions.values.any { it.host === host }))
+        }
     }
     fun close(id: Int) { sessions[id]?.let { gate.invalidate(id); dispose(it, true) } }
     /** File-management worker only. close() invalidates playback before GL retires its reader. */
@@ -1971,6 +2060,7 @@ internal class MpvVideoBridge(
     companion object {
         /** Global video 2D->3D view (Settings > Video): true (the default, edge stretching) skips the
          * native hole-filling warp. */
+        @Volatile private var depthTextProtection = false
         @Volatile var depthStretch = true
         /** Alpha plan B: masks shown so far in this Alpha layer session and the mask swapchain size, "count w h". */
         @Volatile var layerMask = "0 0 0"

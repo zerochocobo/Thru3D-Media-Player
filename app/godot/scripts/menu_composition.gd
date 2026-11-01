@@ -53,6 +53,10 @@ const KEEPALIVE_MS := 250
 ## Debug A/B only (0 disables the keepalive); read every frame.
 var keepalive_ms := KEEPALIVE_MS
 var _signature := 0
+## A menu refreshed its values without knowing whether anything visible changed: the next update
+## compares the signature instead of repainting blindly (playback state refreshes several times a
+## second, and each blind repaint re-renders the capture viewports for two or three frames).
+var _verify := false
 ## Shader uniform names, by shader instance id.
 var _uniforms := {}
 const HOLE_SHADER := preload("res://shaders/menu_layer_hole.gdshader")
@@ -148,6 +152,7 @@ func configure(target_origin: Node3D, target_camera: Camera3D, target_display: R
 	for menu in menus:
 		menu.composition_changed.connect(repaint)
 		menu.composition_layout_changed.connect(invalidate)
+		if menu.has_signal("composition_values_changed"): menu.composition_values_changed.connect(verify)
 		_watch_children(menu)
 	fallback_reason = ""
 
@@ -252,12 +257,16 @@ func invalidate() -> void:
 func repaint() -> void:
 	dirty = true
 
+func verify() -> void:
+	_verify = true
+
 ## Short-lived game panels share the existing fixed swapchains and capture policy.
 func register_menu(menu: Node3D) -> void:
 	if not is_instance_valid(menu) or menus.has(menu): return
 	menus.append(menu)
 	menu.composition_changed.connect(repaint)
 	menu.composition_layout_changed.connect(invalidate)
+	if menu.has_signal("composition_values_changed"): menu.composition_values_changed.connect(verify)
 	menu.tree_exiting.connect(unregister_menu.bind(menu))
 	_watch_children(menu); invalidate()
 
@@ -279,6 +288,7 @@ func unregister_menu(menu: Node3D) -> void:
 	menus.erase(menu)
 	if menu.composition_changed.is_connected(repaint): menu.composition_changed.disconnect(repaint)
 	if menu.composition_layout_changed.is_connected(invalidate): menu.composition_layout_changed.disconnect(invalidate)
+	if menu.has_signal("composition_values_changed") and menu.composition_values_changed.is_connected(verify): menu.composition_values_changed.disconnect(verify)
 	var exiting := unregister_menu.bind(menu)
 	if menu.tree_exiting.is_connected(exiting): menu.tree_exiting.disconnect(exiting)
 	_unwatch_children(menu); invalidate()
@@ -348,9 +358,11 @@ func update() -> void:
 	if geometry_dirty:
 		_collect(); geometry_dirty = false; dirty = true
 	var now := Time.get_ticks_msec()
-	if not dirty and keepalive_ms > 0 and now - _painted_ms >= keepalive_ms:
-		_painted_ms = now
+	var due := keepalive_ms > 0 and now - _painted_ms >= keepalive_ms
+	if not dirty and (due or _verify):
+		if due: _painted_ms = now
 		dirty = _visual_signature() != _signature
+	_verify = false
 	if dirty:
 		for slot in slots:
 			if slot.used: _measure(slot)

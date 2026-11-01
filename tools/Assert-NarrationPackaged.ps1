@@ -21,7 +21,7 @@ try {
         $entry = $zip.GetEntry($name)
         if (-not $entry -or $entry.Length -le 0) { throw "Narration package is missing: $name" }
     }
-    foreach ($bundle in @(@{ path=$ManifestPath; asset='model.json' }, @{ path=$CloneManifestPath; asset='clone_model.json' }, @{ path=$VadManifestPath; asset='vad_model.json' }, @{ path=$ComicManifestPath; asset='model.json'; prefix='comic-ocr' })) {
+    foreach ($bundle in @(@{ path=$ManifestPath; asset='model.json' }, @{ path=$CloneManifestPath; asset='clone_model.json' }, @{ path=$VadManifestPath; asset='vad_model.json' }, @{ path=$ComicManifestPath; asset='model.json'; prefix='comic-ocr' }, @{ path=(Join-Path $workspace 'third_party/text-protection/model.json'); asset='model.json'; prefix='text-protection' })) {
     $manifestBytes = [IO.File]::ReadAllBytes($bundle.path)
     $manifest = [Text.Encoding]::UTF8.GetString($manifestBytes) | ConvertFrom-Json
     if ($manifest.directory -match '(^/|\\|(^|/)\.\.(/|$)|:)') { throw 'Unsafe model directory.' }

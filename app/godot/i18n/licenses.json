@@ -680,5 +680,15 @@
       "eso/CC-BY-4.0.txt"
     ],
     "credit": "ESO/S. Brunier · CC BY 4.0 · https://www.eso.org/public/images/eso0932a/"
+  },
+  {
+    "id": "video-text-protection",
+    "name": "PP-OCRv6 Tiny text detector",
+    "license": "Apache-2.0",
+    "assets": [
+      "text-protection/NOTICE.txt",
+      "comic-ocr/LICENSE.PaddleOCR",
+      "comic-ocr/LICENSE.RapidOCR"
+    ]
   }
 ]

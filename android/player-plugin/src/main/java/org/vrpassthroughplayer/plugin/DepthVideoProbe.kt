@@ -46,10 +46,13 @@ internal class DepthVideoProbe(
     private var inferring = false          // lock: one GPU inference at a time
     private var pending: Job? = null       // lock: newest input waiting for the GPU
     private var replaced = 0L              // lock: pending inputs superseded by a newer frame
-    private var lastStartNs = 0L           // lock: start of the latest inference
-    /** Minimum time between inference starts from an idle GPU: the gap goes to decode and display. */
+    private var lastAcceptedPtsUs = -1L    // lock: source time of the latest frame taken for inference
+    /** Minimum source-time gap between frames taken for inference (caps the rate near 30 Hz). Measured
+     * in video time, not wall time: a frame that waited behind the GPU must not push the next one out
+     * (wall-time gaps made every other 30 fps frame miss the gate, ~19 maps/s on an idle GPU). */
     private val intervalNs = debugIntervalMs() * 1_000_000L
     private var count = 0L
+    @Volatile private var cuts = 0L
     private var lastInferred = -1L // post thread only: source frame of the previous stabilized map
     private var inferred = 0L
     private val dims = DepthNative.PROFILE.split('x').map { it.toInt() }
@@ -106,10 +109,14 @@ internal class DepthVideoProbe(
         pair.getLong("effect_revision"), pair.getLong("model_generation"), pair.getLong("slot_token"))
 
     /** The next frame's model input would be used: stage it (otherwise the bridge skips the readback).
-     * While the GPU is busy, every new frame is staged to replace the pending one. */
-    fun wantsInput(frameId: Long): Boolean = synchronized(lock) {
-        !closed && handle > 0L && latestFrame != frameId && pending?.frameId != frameId &&
-            (if (inferring) pending != null || available() else available() && System.nanoTime() - lastStartNs >= intervalNs)
+     * A frame is taken when its source time is at least the interval after the last one taken (or
+     * time went back: seek, loop); while the GPU is busy it replaces the pending one. */
+    fun wantsInput(frameId: Long, ptsUs: Long): Boolean = synchronized(lock) {
+        val due = lastAcceptedPtsUs < 0 || ptsUs < lastAcceptedPtsUs || (ptsUs - lastAcceptedPtsUs) * 1000 >= intervalNs
+        val wanted = due && !closed && handle > 0L && latestFrame != frameId && pending?.frameId != frameId &&
+            (if (inferring) pending != null || available() else available())
+        if (wanted) lastAcceptedPtsUs = ptsUs
+        wanted
     }
     private fun available() = free.isNotEmpty() || jobs < JOBS // lock
     private fun take(): Job? = free.removeFirstOrNull() // lock
@@ -136,7 +143,7 @@ internal class DepthVideoProbe(
                         job.rgb.clear(); job.rgb.put(rgb.duplicate().apply { clear() }); job.rgb.clear()
                         job.frameId = identity.frameId; job.submittedNs = System.nanoTime()
                         contentPixels(descriptor, job.content)
-                        if (!inferring) { inferring = true; lastStartNs = job.submittedNs; start = job }
+                        if (!inferring) { inferring = true; start = job }
                     }
                 }
                 identity
@@ -149,7 +156,7 @@ internal class DepthVideoProbe(
         }
         line?.let { android.util.Log.i("QuestDepth", it) }
         val ran = near !== FLAT
-        val kernel = JSONObject().put("near_frame_id", nearFrame).put("frames_behind", if (ran) id.frameId - nearFrame else -1)
+        val kernel = JSONObject().put("cuts", cuts).put("near_frame_id", nearFrame).put("frames_behind", if (ran) id.frameId - nearFrame else -1)
         if (!publish(id, descriptor.toString(), near, ran, kernel)) release(token)
         start?.let { job -> worker.post { infer(job) } }
     }
@@ -213,7 +220,7 @@ internal class DepthVideoProbe(
                 // A pending frame from before a seek was already dropped by submit.
                 val waiting = pending?.takeIf { !closed && handle > 0L }
                 pending = null
-                if (waiting != null) { inferring = true; lastStartNs = System.nanoTime() }
+                if (waiting != null) inferring = true
                 waiting
             }
             next?.let { worker.post { infer(it) } }
@@ -240,6 +247,7 @@ internal class DepthVideoProbe(
             processMs = processMs * 0.9 + (now - started) / 1e6 * 0.1
             latencyMs = latencyMs * 0.9 + (now - job.submittedNs) / 1e6 * 0.1
             stabilizeMs = stabilizeMs * 0.9 + kernel.optDouble("stabilize_ms", 0.0) * 0.1
+            cuts = kernel.optLong("cuts", cuts)
             postStages = kernel.optJSONObject("stages")?.toString() ?: "{}"
             if (kernel.optString("state") != "ready") return
             val updated = synchronized(lock) {
@@ -294,10 +302,10 @@ internal class DepthVideoProbe(
     }
 
     companion object {
-        /** Default gap between depth starts from an idle GPU. Debug builds: adb shell setprop debug.vrpp.depth.interval_ms N. */
-        // Cap idle starts near 30 Hz. A busy GPU starts the pending frame as soon as it finishes;
-        // jobs never accumulate beyond JOBS.
-        private const val INTERVAL_MS = 33L
+        /** Default source-time gap between frames taken for depth. Debug builds: adb shell setprop debug.vrpp.depth.interval_ms N. */
+        // 28 ms: every frame of 24/25/30 fps video, every other frame of 50/60 fps (at most ~30 maps/s).
+        // A busy GPU starts the pending frame as soon as it finishes; jobs never accumulate beyond JOBS.
+        private const val INTERVAL_MS = 28L
         /** Input/raw buffers: one inferring, one pending, one being stabilized. */
         private const val JOBS = 3
         /** Diagnostic log summary interval (kept by the compact log, which thins only listed periodic lines). */

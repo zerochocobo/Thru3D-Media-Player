@@ -46,6 +46,7 @@ internal class PhotoPreviewBridge(
             try {
                 checkCurrent()
                 val app = context() ?: error("PHOTO_UNAVAILABLE")
+                PhotoMemory.attach(app)
                 synchronized(lock) {
                     if (!prepared) {
                         File(app.cacheDir, cacheName).listFiles()?.forEach { it.deleteRecursively() }
@@ -65,6 +66,7 @@ internal class PhotoPreviewBridge(
                         val http = URL(resolved).openConnection() as HttpURLConnection
                         connection = http; http.connectTimeout = 10000; http.readTimeout = 15000
                         require(http.responseCode in 200..299 && http.contentLengthLong <= PhotoBridge.MAX_BYTES)
+                        require(http.contentLengthLong <= source.parentFile!!.usableSpace-64L*1024*1024) { "PHOTO_TOO_LARGE" }
                         http.inputStream
                     }
                     else -> error("PHOTO_UNAVAILABLE")
@@ -74,6 +76,8 @@ internal class PhotoPreviewBridge(
                     while (true) {
                         checkCurrent(); val count = stream.read(buffer); if (count < 0) break
                         bytes += count; require(bytes <= PhotoBridge.MAX_BYTES)
+                        if(bytes/(1024*1024)!=(bytes-count)/(1024*1024))
+                            require(source.parentFile!!.usableSpace>64L*1024*1024) { "PHOTO_TOO_LARGE" }
                         output.write(buffer, 0, count)
                     }
                 } }

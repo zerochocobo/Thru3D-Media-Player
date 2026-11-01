@@ -195,7 +195,7 @@ func _run() -> void:
 	menu._activate(Library.TAB_BASE + Library.BACKGROUND_TAB)
 	check(menu._max_scroll() == 0 and not is_instance_valid(menu._settings_scroll_hint), "Short settings pages have no scrolling cue")
 	menu._activate(Library.TAB_BASE + Library.VIDEO_TAB)
-	tap(menu, Library.ROW_BASE + 5)
+	tap(menu, Library.ROW_BASE + menu.rows.find(menu.rows.filter(func(row): return row.get("video_settings_group", "") == "alpha")[0]))
 	menu.dismiss()
 	check(menu.choices.opened.is_empty() and menu.choices.capture.is_empty(), "Closing settings clears popup and capture")
 	menu.toggle()

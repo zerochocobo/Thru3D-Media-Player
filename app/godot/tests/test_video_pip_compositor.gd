@@ -74,10 +74,10 @@ func run() -> void:
 	video.geometry = 3; video.stereo_sbs = true; video._apply_geometry()
 	var defaults := [3, true, false, false, false, 0, 0, 190.0, Vector2(4096, 2048), Vector2.ONE, Vector2.ZERO,
 		false, false, 0.035, 0.35, Vector2(0, 1), Vector2(32, 32), Vector4(0, 0, 1, 1), false,
-		Vector2(768, 432), false, false, Vector3.ONE, Vector3.ONE, Vector3.ZERO, 1.0, 1.0, 0.0]
+		Vector2(768, 432), false, false, Vector3.ONE, Vector3.ONE, Vector3.ZERO, 1.0, 1.0, 0.0, 0, PackedVector4Array([Vector4.ZERO,Vector4.ZERO,Vector4.ZERO,Vector4.ZERO,Vector4.ZERO,Vector4.ZERO,Vector4.ZERO,Vector4.ZERO]), Vector4.ONE, Vector4.ONE]
 	for i in Renderer.COMMON.size():
 		if Renderer.COMMON[i] != "color_uv_scale": video.material.set_shader_parameter(Renderer.COMMON[i], defaults[i])
-	check(Renderer.parameters(video.material, Renderer.COMMON).size() == 43, "Material request matches the native 43-float common ABI")
+	check(Renderer.parameters(video.material, Renderer.COMMON).size() == 84, "Material request matches the native 84-float common ABI including text regions")
 	var image := Image.create(16, 16, false, Image.FORMAT_RGBA8)
 	var color := ImageTexture.create_from_image(image)
 	video._binding.color_rid = color.get_rid(); video._binding.alpha_rid = color.get_rid()

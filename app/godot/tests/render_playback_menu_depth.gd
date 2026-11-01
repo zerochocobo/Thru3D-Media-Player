@@ -190,7 +190,7 @@ void fragment() {
 	material.shader = Mono.SHADER
 	target.menu = null; mono.update()
 	check(composition.is_processing() and composition.slots.map(func(slot): return slot.layer.layer_viewport) == bindings, "Exit resumes the same native layer providers")
-	check(menu._pointers.right_hand.line.material_override is StandardMaterial3D, "Exit restores original pointer material")
+	check(menu._pointers.right_hand.line.material_override is ShaderMaterial and menu._pointers.right_hand.line.material_override.shader != Mono.RAY_SHADER, "Exit restores the ordinary soft pointer material")
 	check(mono.submit.render_target_update_mode == SubViewport.UPDATE_DISABLED and not mono.hole.visible, "Exit stops native capture and removes its coverage mask")
 	composition.set_active(false); menu.hide(); library.show()
 	await pixels(view, "library-restored")

@@ -3,6 +3,7 @@ extends Node3D
 ## do not depend on opening the source GLB through FileAccess.
 
 signal changed
+signal view_relocated(previous: Transform3D, current: Transform3D)
 
 const Locomotion := preload("res://scripts/environments/cinema_locomotion.gd")
 const Feature := preload("res://scripts/environments/cinema_feature.gd")
@@ -57,10 +58,7 @@ func _ready() -> void:
 
 
 func configure(rig: Node3D, camera: Camera3D) -> void:
-	if _has_original_rig and is_instance_valid(_rig):
-		_rig.global_transform = _original_rig
-	_has_original_rig = false
-	_position_applied = false
+	_restore_original_rig()
 	_rig = rig
 	_camera = camera
 	_update_active()
@@ -77,10 +75,7 @@ func select(enabled: bool) -> void:
 	if not enabled:
 		suspend()
 		interaction = "watch"
-		if _has_original_rig and is_instance_valid(_rig):
-			_rig.global_transform = _original_rig
-		_has_original_rig = false
-		_position_applied = false
+		_restore_original_rig()
 	_update_active()
 	changed.emit()
 
@@ -572,14 +567,21 @@ func _process(_delta: float) -> void:
 		set_process(false)
 
 
+func _restore_original_rig() -> void:
+	var previous := _rig.global_transform if is_instance_valid(_rig) else Transform3D.IDENTITY
+	var moved := _has_original_rig and is_instance_valid(_rig)
+	if moved: _rig.global_transform = _original_rig
+	_has_original_rig = false; _position_applied = false
+	if moved and not previous.is_equal_approx(_rig.global_transform):
+		view_relocated.emit(previous, _rig.global_transform)
+
 func _update_active() -> void:
 	active = Feature.enabled() and selected and _presented and is_ready and is_instance_valid(_rig) and is_instance_valid(_camera)
 	if _model:
 		_model.visible = active
 	if not active:
 		suspend()
-		if _has_original_rig and is_instance_valid(_rig): _rig.global_transform = _original_rig
-		_has_original_rig = false; _position_applied = false
+		_restore_original_rig()
 		return
 	if not _has_original_rig:
 		_original_rig = _rig.global_transform
@@ -590,8 +592,11 @@ func _update_active() -> void:
 		if not _head_tracked():
 			set_process(true)
 			return
+		var previous := _rig.global_transform
 		_align_head(_movement.eye_position, _movement.yaw)
 		_position_applied = true
+		if not previous.is_equal_approx(_rig.global_transform):
+			view_relocated.emit(previous, _rig.global_transform)
 
 
 ## True on desktop and in tests (no running XR interface), or once the headset

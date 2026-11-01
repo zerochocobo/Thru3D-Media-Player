@@ -115,8 +115,10 @@ internal object NativePhoto {
         if(floating) metadata.put("tone_mapping","global-logmean-aces-srgb-v1")
         check(); publish(JSONObject(metadata.toString()))
         var sample = 1
+        val pixels=minOf(8L*1024*1024,PhotoMemory.snapshot().output/4)
+        require(pixels>0) { "PHOTO_OUT_OF_MEMORY" }
         while ((info.outWidth + sample - 1) / sample > 8192 || (info.outHeight + sample - 1) / sample > 8192 ||
-            ((info.outWidth + sample - 1) / sample).toLong() * ((info.outHeight + sample - 1) / sample) > 8 * 1024 * 1024) sample *= 2
+            ((info.outWidth + sample - 1) / sample).toLong() * ((info.outHeight + sample - 1) / sample) > pixels) sample *= 2
         val image = PhotoBitmap.region(source, 0, 0, info.outWidth, info.outHeight, sample, check, cache)
         try {
             val preview = File(directory, "preview.png")

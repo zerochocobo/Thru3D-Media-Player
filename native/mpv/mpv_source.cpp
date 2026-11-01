@@ -215,6 +215,11 @@ struct Source final {
     bool required_primary_audio = false; // fixed before start(); split A/V, not optional dubbing
     const std::vector<std::pair<std::string, std::string>> subtitle_files;
     std::atomic<bool> closing{false}, abandoned{false}, done{false}, render_ready{false};
+    // Diagnostics only: where a close is waiting, so a source that never finishes closing
+    // (it keeps its registry slot) names the step that hangs. Never read by playback logic.
+    std::atomic<int64_t> close_requested_us{-1};
+    std::atomic<const char*> close_stage{"open"}, render_stage{"open"};
+    void note_close_requested() { int64_t unset = -1; close_requested_us.compare_exchange_strong(unset, startup_us()); }
     std::atomic<bool> render_failed{false}, render_pending{true}, force_redraw{false};
     std::atomic<bool> force_texture_redraw{false};
     std::atomic<bool> core_eof{false};
@@ -257,6 +262,16 @@ struct Source final {
     double desired_subtitle_delay = 0.0, subtitle_delay_applied = 0.0;
     uint64_t desired_subtitle_delay_command = 0;
     bool subtitle_delay_dirty = false;
+    // Optional text-only companion. Its commands never invalidate the primary cue.
+    int desired_secondary_id = 0, secondary_id_applied = 0;
+    double desired_secondary_delay = 0.0, secondary_delay_applied = 0.0;
+    uint64_t secondary_requests = 0, desired_secondary_command = 0, secondary_command_applied = 0;
+    bool secondary_dirty = false;
+    std::vector<int64_t> text_subtitle_track_ids;
+    std::string secondary_narration_queue = "{}";
+    int64_t secondary_queue_poll_ns = 0;
+    uint64_t secondary_queue_sequence = 0, secondary_queue_epoch = 0, secondary_queue_command = 0;
+    std::string secondary_queue_track;
     struct SubtitleFile { uint64_t request = 0; std::string location, title; int replace_id = 0; };
     SubtitleFile pending_subtitle_file; // commands_mutex; one optional file at a time
     uint64_t subtitle_file_requests = 0;
@@ -441,6 +456,7 @@ struct Source final {
     }
     int add_subtitle_file(mpv_handle* core, const SubtitleFile& file) {
         const bool selected = file.replace_id > 0 && property(core, "sid") == std::to_string(file.replace_id);
+        const bool secondary_selected = file.replace_id > 0 && property(core, "secondary-sid") == std::to_string(file.replace_id);
         const char* add[] = {"sub-add", file.location.c_str(), "auto", file.title.c_str(), nullptr};
         const int result = mpv_command(core, add);
         int64_t id = 0;
@@ -465,6 +481,7 @@ struct Source final {
         // Add and validate first: a failed encoding change leaves the original track intact.
         if (id > 0 && file.replace_id > 0) {
             if (selected) mpv_set_property_string(core, "sid", std::to_string(id).c_str());
+            if (secondary_selected) mpv_set_property_string(core, "secondary-sid", std::to_string(id).c_str());
             const auto old = std::to_string(file.replace_id);
             const char* remove[] = {"sub-remove", old.c_str(), nullptr};
             mpv_command(core, remove);
@@ -506,7 +523,7 @@ struct Source final {
         const auto frame_number = property(core, "estimated-frame-number"), vo_drops = property(core, "frame-drop-count");
         const auto vo_delayed = property(core, "vo-delayed-frame-count");
         std::string tracks_json = "["; std::vector<int64_t> track_ids;
-        std::string subtitles_json = "["; std::vector<int64_t> subtitle_ids;
+        std::string subtitles_json = "["; std::vector<int64_t> subtitle_ids, text_subtitle_ids;
         OwnedNode tracks;
         if (mpv_get_property(core, "track-list", MPV_FORMAT_NODE, &tracks.value) >= 0 && tracks.value.format == MPV_FORMAT_NODE_ARRAY) {
             for (int i = 0; i < tracks.value.u.list->num; ++i) {
@@ -517,6 +534,10 @@ struct Source final {
                 auto& list = type == "audio" ? tracks_json : subtitles_json;
                 if (!ids.empty()) list += ',';
                 ids.push_back(id->u.int64);
+                const auto text_codec = node_text(track, "codec");
+                if (type == "sub" && (text_codec == "subrip" || text_codec == "ass" || text_codec == "ssa" ||
+                    text_codec == "webvtt" || text_codec == "mov_text" || text_codec == "text" || text_codec == "sami" ||
+                    text_codec == "microdvd" || text_codec == "subviewer" || text_codec == "ttml")) text_subtitle_ids.push_back(id->u.int64);
                 const auto* external = member(track, "external");
                 const auto* stream_index = member(track, "ff-index");
                 list += "{\"id\":" + std::to_string(id->u.int64) + ",\"title\":" + quote(node_text(track, "title")) +
@@ -528,12 +549,19 @@ struct Source final {
         }
         tracks_json += ']';
         subtitles_json += ']';
-        { std::lock_guard<std::mutex> lock(commands_mutex); audio_track_ids = std::move(track_ids); subtitle_track_ids = std::move(subtitle_ids); }
+        { std::lock_guard<std::mutex> lock(commands_mutex); audio_track_ids = std::move(track_ids); subtitle_track_ids = std::move(subtitle_ids); text_subtitle_track_ids = std::move(text_subtitle_ids); }
         const auto subtitle_id = property(core, "current-tracks/sub/id");
         const bool subtitle_timeline_valid = !awaiting_seek_event && !seek_in_progress.load() && last_epoch.load() >= epoch_floor.load();
         const auto subtitle_text = subtitle_timeline_valid ? property(core, "sub-text") : "";
         const auto subtitle_start = seconds_property(core, "sub-start"), subtitle_end = seconds_property(core, "sub-end");
         update_narration_queue(core, subtitle_id, subtitle_timeline_valid);
+        const auto secondary_id = secondary_id_applied > 0 ? property(core, "current-tracks/sub2/id") : "";
+        const bool secondary_active = !secondary_id.empty() && secondary_id != "no" && secondary_id != "0";
+        const auto secondary_text = secondary_active && subtitle_timeline_valid ? property(core, "secondary-sub-text") : "";
+        const auto secondary_start = secondary_active ? seconds_property(core, "secondary-sub-start") : "";
+        const auto secondary_end = secondary_active ? seconds_property(core, "secondary-sub-end") : "";
+        if (secondary_active) update_narration_queue(core, secondary_id, subtitle_timeline_valid, 1);
+        else { std::lock_guard<std::mutex> lock(status_mutex); secondary_narration_queue = "{}"; secondary_queue_poll_ns = 0; }
         update_pgs(core, subtitle_timeline_valid);
         const auto bitmap_json = "{\"version\":" + std::to_string(pgs_version) +
             ",\"visible\":" + (!pgs_image.rgba.empty() ? "true" : "false") +
@@ -550,11 +578,17 @@ struct Source final {
         const auto position = property(core, "time-pos");
         const auto observed_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
         const auto eof = property(core, "eof-reached");
+        const auto secondary_json = "{\"sequence\":" + std::to_string(subtitle_sequence + 1) +
+            ",\"command_id\":" + std::to_string(secondary_command_applied) + ",\"track_id\":" + quote(secondary_id) +
+            ",\"delay_seconds\":" + std::to_string(secondary_delay_applied) + ",\"text\":" + quote(secondary_text) +
+            ",\"start_seconds\":" + quote(secondary_start) + ",\"end_seconds\":" + quote(secondary_end) +
+            ",\"position_seconds\":" + quote(position) + ",\"source_epoch\":" + std::to_string(last_epoch.load()) +
+            ",\"timeline_valid\":" + (subtitle_timeline_valid ? "true" : "false") + "}";
         const auto subtitle_json = "{\"sequence\":" + std::to_string(++subtitle_sequence) +
             ",\"command_id\":" + std::to_string(subtitle_command_applied) + ",\"track_id\":" + quote(subtitle_id) +
             ",\"delay_seconds\":" + std::to_string(subtitle_delay_applied) +
             ",\"text\":" + quote(subtitle_text) + ",\"start_seconds\":" + quote(subtitle_start) +
-            ",\"bitmap\":" + bitmap_json +
+            ",\"bitmap\":" + bitmap_json + ",\"secondary\":" + secondary_json +
             ",\"end_seconds\":" + quote(subtitle_end) + ",\"position_seconds\":" + quote(position) +
             ",\"source_epoch\":" + std::to_string(last_epoch.load()) +
             ",\"timeline_valid\":" + (subtitle_timeline_valid ? "true" : "false") +
@@ -607,7 +641,15 @@ struct Source final {
         published_subtitle_ns = observed_ns;
         if (!codec.empty() && state != "failed") state = eof == "yes" ? "ended" : (paused == "yes" ? "paused" : "playing");
     }
-    void update_narration_queue(mpv_handle* core, const std::string& track, bool valid) {
+    void update_narration_queue(mpv_handle* core, const std::string& track, bool valid, int slot = 0) {
+        auto& queue_poll_ns = slot ? secondary_queue_poll_ns : this->queue_poll_ns;
+        auto& queue_sequence = slot ? secondary_queue_sequence : this->queue_sequence;
+        auto& queue_epoch = slot ? secondary_queue_epoch : this->queue_epoch;
+        auto& queue_command = slot ? secondary_queue_command : this->queue_command;
+        auto& queue_track = slot ? secondary_queue_track : this->queue_track;
+        auto& narration_queue = slot ? secondary_narration_queue : this->narration_queue;
+        const auto subtitle_command_applied = slot ? secondary_command_applied : this->subtitle_command_applied;
+        const auto subtitle_delay_applied = slot ? secondary_delay_applied : this->subtitle_delay_applied;
         const auto started = std::chrono::steady_clock::now();
         const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(started.time_since_epoch()).count();
         if (ns - narration_poll_ns.load() > 2000000000LL) return;
@@ -625,9 +667,9 @@ struct Source final {
         static const auto pump = reinterpret_cast<QueuePump>(dlsym(RTLD_DEFAULT, "mpv_quest_pump_text_queue"));
         static const auto queue_api = reinterpret_cast<uint32_t (*)()>(dlsym(RTLD_DEFAULT, "mpv_quest_text_queue_api_version"));
         const bool queue_supported = pump && queue_api && queue_api() == QUEST_MPV_TEXT_QUEUE_API_VERSION;
-        if (queue_supported) pump(core);
+        if (queue_supported && slot == 0) pump(core);
         OwnedNode lines;
-        const bool supported = queue_supported && mpv_get_property(core, "sub-lines", MPV_FORMAT_NODE, &lines.value) >= 0 &&
+        const bool supported = queue_supported && mpv_get_property(core, slot ? "secondary-sub-lines" : "sub-lines", MPV_FORMAT_NODE, &lines.value) >= 0 &&
             lines.value.format == MPV_FORMAT_NODE_ARRAY;
         double position = 0;
         const bool positioned = mpv_get_property(core, "time-pos", MPV_FORMAT_DOUBLE, &position) >= 0 && std::isfinite(position);
@@ -786,7 +828,7 @@ struct Source final {
             // passthrough) then stop playback a few seconds in. Bounded requests resume at the next byte.
             option("curl-max-request-size", "32MiB");
             option("user-agent", user_agent.c_str());
-            option("osd-level", "0"); option("sub", "no"); option("sub-visibility", "no"); option("interpolation", "no"); option("dither", "no");
+            option("osd-level", "0"); option("sub", "no"); option("sub-visibility", "no"); option("secondary-sub-visibility", "no"); option("secondary-sid", "no"); option("interpolation", "no"); option("dither", "no");
             // Our source discovery lists matching companions with stable filename titles;
             // Godot selects exact-name SRT/ASS or restores the user's saved track.
             option("sub-auto", "no");
@@ -878,6 +920,7 @@ struct Source final {
                 int audio_id = -1; double volume = 100; int64_t seek = -1;
                 bool set_whisper = false; int requested_whisper = 0; uint64_t requested_whisper_serial = 0;
                 bool set_narration_gain = false;
+                bool set_secondary = false; int secondary_id = 0; double secondary_delay = 0.0; uint64_t secondary_command = 0;
                 SubtitleFile subtitle_file;
                 std::vector<std::pair<std::string, std::string>> extra_audio, extra_captions;
                 {
@@ -900,6 +943,8 @@ struct Source final {
                         subtitle_id = desired_subtitle_id; subtitle_command = desired_subtitle_command;
                         set_subtitle_delay = subtitle_delay_dirty; subtitle_delay_dirty = false;
                         subtitle_delay = desired_subtitle_delay; subtitle_delay_command = desired_subtitle_delay_command;
+                        set_secondary = secondary_dirty; secondary_dirty = false;
+                        secondary_id = desired_secondary_id; secondary_delay = desired_secondary_delay; secondary_command = desired_secondary_command;
                         set_audio_delay = audio_delay_dirty; audio_delay_dirty = false; audio_delay = desired_audio_delay;
                         subtitle_file = std::move(pending_subtitle_file); pending_subtitle_file = {};
                         extra_audio.swap(pending_audio_files); extra_captions.swap(pending_caption_files);
@@ -963,6 +1008,13 @@ struct Source final {
                     next_snapshot = std::chrono::steady_clock::now();
                 }
                 if (set_audio_delay) checked(mpv_set_property(core, "audio-delay", MPV_FORMAT_DOUBLE, &audio_delay), "MPV audio delay");
+                if (set_secondary) {
+                    const auto selected = secondary_id == 0 ? "no" : std::to_string(secondary_id);
+                    checked(mpv_set_property_string(core, "secondary-sid", selected.c_str()), "MPV secondary subtitle track");
+                    checked(mpv_set_property(core, "secondary-sub-delay", MPV_FORMAT_DOUBLE, &secondary_delay), "MPV secondary subtitle delay");
+                    secondary_delay_applied = secondary_delay; secondary_id_applied = secondary_id;
+                    secondary_command_applied = secondary_command;
+                }
                 if (set_subtitle_delay) {
                     checked(mpv_set_property(core, "sub-delay", MPV_FORMAT_DOUBLE, &subtitle_delay), "MPV subtitle delay");
                     subtitle_delay_applied = subtitle_delay;
@@ -1137,12 +1189,16 @@ struct Source final {
             const auto diagnosis = quest::playback_exception_failure(failure.what());
             set_state("failed", failure.what(), 0, diagnosis.reason, diagnosis.stage);
         }
-        closing.store(true); wake.notify_all();
+        note_close_requested(); closing.store(true); wake.notify_all();
         // Rendering disposes its context before this ordinary API destroys the core.
+        close_stage.store("render_join");
         if (render_thread.joinable()) render_thread.join();
+        close_stage.store("core_terminate");
         quest::live::source_closing(capture_owner.load());
         if (core) mpv_terminate_destroy(core);
+        close_stage.store("capture_close");
         quest::live::source_close(capture_owner.exchange(0));
+        close_stage.store("done");
         done.store(true);
     }
     void allocate(Slot& slot, int width, int height) {
@@ -1174,6 +1230,7 @@ struct Source final {
     void render(mpv_handle* core) noexcept {
         EGLContext context = EGL_NO_CONTEXT; EGLSurface surface = EGL_NO_SURFACE;
         mpv_render_context* renderer = nullptr; void* library = nullptr;
+        render_stage.store("running");
         try {
             require(extension_available(), "MPV private source-frame handshake unavailable");
             require(eglBindAPI(EGL_OPENGL_ES_API), "MPV shared EGL GLES binding failed");
@@ -1407,9 +1464,11 @@ struct Source final {
             { std::lock_guard<std::mutex> lock(frames_mutex); render_error = failure.what(); }
             render_failed.store(true); wake.notify_all();
         }
+        render_stage.store("render_free");
         if (renderer) { mpv_render_context_set_update_callback(renderer, nullptr, nullptr); mpv_render_context_free(renderer); }
         // Closing after failure also waits for any previously issued consumer leases.
         if (context != EGL_NO_CONTEXT && eglGetCurrentContext() == context) {
+            render_stage.store("consumer_wait");
             while (!abandoned.load()) {
                 bool held = false;
                 try { std::lock_guard<std::mutex> lock(frames_mutex); poll_retirements(); held = consumer_holds(); }
@@ -1427,10 +1486,12 @@ struct Source final {
             if (glGetError() != GL_NO_ERROR) render_failed.store(true);
             if (!eglMakeCurrent(display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT)) render_failed.store(true);
         }
+        render_stage.store("egl_release");
         if (surface != EGL_NO_SURFACE && !eglDestroySurface(display, surface)) render_failed.store(true);
         if (context != EGL_NO_CONTEXT && !eglDestroyContext(display, context)) render_failed.store(true);
         if (library) dlclose(library);
         // The EGL display belongs to Godot: never eglTerminate it here.
+        render_stage.store("exited");
     }
     std::string acquire_layer() {
         std::lock_guard<std::mutex> lock(frames_mutex);
@@ -1560,11 +1621,20 @@ struct Source final {
         // The audio producer must not wait for renderer/GPU slot retirement.
         // Only the cached playback snapshot and atomic transport fences matter.
         narration_poll_ns.store(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
-        std::string snapshot, queue;
-        { std::lock_guard<std::mutex> lock(status_mutex); snapshot = details; queue = narration_queue; }
-        return "{\"details\":" + snapshot + ",\"subtitle_queue\":" + queue + ",\"last_source_epoch\":" + std::to_string(last_epoch.load()) +
+        std::string snapshot, queue, secondary_queue;
+        { std::lock_guard<std::mutex> lock(status_mutex); snapshot = details; queue = narration_queue; secondary_queue = secondary_narration_queue; }
+        return "{\"details\":" + snapshot + ",\"subtitle_queue\":" + queue + ",\"secondary_subtitle_queue\":" + secondary_queue + ",\"last_source_epoch\":" + std::to_string(last_epoch.load()) +
             ",\"epoch_floor\":" + std::to_string(epoch_floor.load()) + ",\"seeks_started\":" + std::to_string(seeks_started.load()) +
             ",\"seeks_completed\":" + std::to_string(seeks_completed.load()) + "}";
+    }
+    std::string close_wait() {
+        const int64_t requested = close_requested_us.load();
+        // Still in the control loop: the loop has not yet seen the close (a blocking MPV call).
+        const std::string stage = closing.load() && std::string(close_stage.load()) == "open" ? "control_loop" : close_stage.load();
+        return "{\"stage\":" + quote(stage) + ",\"render_stage\":" + quote(layer() ? "none" : render_stage.load()) +
+            ",\"closing_ms\":" + std::to_string(requested < 0 ? -1 : (startup_us() - requested) / 1000) +
+            ",\"layer\":" + (layer() ? "true" : "false") + ",\"hardware\":" + (hardware ? "true" : "false") +
+            ",\"decoder\":" + quote(hardware_decoding.load() ? "hardware" : "software") + "}";
     }
     std::string status() {
         std::string snapshot, state_copy, error_copy, reason_copy, stage_copy, render_error_copy, final_copy = "null"; int held = 0, retiring = 0, code_copy = 0;
@@ -1580,6 +1650,7 @@ struct Source final {
         return "{\"backend\":\"Android_libmpv\",\"state\":" + quote(state_copy) + ",\"error\":" + quote(error_copy) +
             ",\"mpv_code\":" + std::to_string(code_copy) + ",\"failure_reason\":" + quote(reason_copy) + ",\"failure_stage\":" + quote(stage_copy) +
             ",\"render_error\":" + quote(render_error_copy) + ",\"done\":" + (done.load() ? "true" : "false") +
+            ",\"close_wait\":" + close_wait() +
             ",\"render_failed\":" + (render_failed.load() ? "true" : "false") + ",\"closing\":" + (closing.load() ? "true" : "false") +
             ",\"rendered\":" + std::to_string(rendered.load()) + ",\"published\":" + std::to_string(published.load()) +
             ",\"skipped\":" + std::to_string(skipped.load()) + ",\"acquired\":" + std::to_string(acquired.load()) +
@@ -1776,6 +1847,12 @@ Java_org_vrpassthroughplayer_plugin_MpvSourceNative_create(JNIEnv* env, jclass, 
         source->iso_playlist = iso_playlist;
         source->network_cache_mib = network_cache_mib;
         std::lock_guard<std::mutex> lock(registry_mutex);
+        if (registry.size() >= 2) {
+            // Diagnostics only (the limit is unchanged): name what still holds each slot.
+            std::string held;
+            for (const auto& entry : registry) held += " #" + std::to_string(entry.first) + "=" + entry.second->close_wait();
+            __android_log_print(ANDROID_LOG_WARN, "QuestMpvSource", "Source capacity exhausted; held:%s", held.c_str());
+        }
         require(registry.size() < 2 && next_handle < std::numeric_limits<jlong>::max(), "MPV source capacity exhausted");
         const auto id = ++next_handle; source->start(); registry.emplace(id, std::move(source)); return id;
     } catch (const std::exception& failure) { error(env, failure); return 0; }
@@ -1912,6 +1989,21 @@ Java_org_vrpassthroughplayer_plugin_MpvSourceNative_setSubtitle(JNIEnv* env, jcl
         return static_cast<jlong>(source->desired_subtitle_command);
     } catch (const std::exception& failure) { error(env, failure); return 0; }
 }
+extern "C" JNIEXPORT jlong JNICALL
+Java_org_vrpassthroughplayer_plugin_MpvSourceNative_setSecondarySubtitle(JNIEnv* env, jclass, jlong handle, jint track, jdouble delay) {
+    try {
+        require(track >= 0 && std::isfinite(delay) && std::abs(delay) <= 10.0, "Secondary subtitle selection invalid");
+        auto source = find(handle);
+        std::lock_guard<std::mutex> lock(source->commands_mutex);
+        if (source->closing.load() || source->secondary_requests >= static_cast<uint64_t>(std::numeric_limits<jlong>::max()) ||
+            (track > 0 && std::find(source->text_subtitle_track_ids.begin(), source->text_subtitle_track_ids.end(), track) == source->text_subtitle_track_ids.end())) return 0;
+        source->desired_secondary_id = track; source->desired_secondary_delay = delay;
+        source->desired_secondary_command = ++source->secondary_requests;
+        source->secondary_dirty = true; source->wake.notify_one();
+        return static_cast<jlong>(source->desired_secondary_command);
+    } catch (const std::exception& failure) { error(env, failure); return 0; }
+}
+
 extern "C" JNIEXPORT jstring JNICALL
 Java_org_vrpassthroughplayer_plugin_MpvSourceNative_subtitleStatus(JNIEnv* env, jclass, jlong handle, jlong after_sequence) {
     try {
@@ -2039,16 +2131,21 @@ Java_org_vrpassthroughplayer_plugin_MpvSourceNative_readFrameCode(JNIEnv* env, j
 extern "C" JNIEXPORT jboolean JNICALL
 Java_org_vrpassthroughplayer_plugin_MpvSourceNative_close(JNIEnv* env, jclass, jlong handle, jboolean abandon) {
     try {
-        auto source = find(handle); source->closing.store(true);
+        auto source = find(handle); source->note_close_requested(); source->closing.store(true);
         if (abandon == JNI_TRUE) source->abandoned.store(true);
         source->wake.notify_all(); if (!source->done.load()) return JNI_FALSE;
         std::lock_guard<std::mutex> lock(registry_mutex); registry.erase(handle); return JNI_TRUE;
     } catch (const std::exception& failure) { error(env, failure); return JNI_FALSE; }
 }
 
+extern "C" JNIEXPORT jstring JNICALL
+Java_org_vrpassthroughplayer_plugin_MpvSourceNative_closeWait(JNIEnv* env, jclass, jlong handle) {
+    try { return env->NewStringUTF(find(handle)->close_wait().c_str()); }
+    catch (const std::exception& failure) { error(env, failure); return nullptr; }
+}
 extern "C" JNIEXPORT void JNICALL
 Java_org_vrpassthroughplayer_plugin_MpvSourceNative_requestClose(JNIEnv* env, jclass, jlong handle) {
-    try { auto source = find(handle); source->closing.store(true); source->wake.notify_all(); }
+    try { auto source = find(handle); source->note_close_requested(); source->closing.store(true); source->wake.notify_all(); }
     catch (const std::exception& failure) { error(env, failure); }
 }
 

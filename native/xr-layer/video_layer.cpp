@@ -678,7 +678,7 @@ Java_org_vrpassthroughplayer_plugin_VideoLayerNative_compositorLimits(JNIEnv* en
 
 namespace {
 struct PipUniform { const char* name; int components; bool integer; };
-// Packed request ABI: 43 common floats followed by three windows of 16 floats.
+// Packed request ABI: 84 common floats (original 43, text count, eight rectangles and opacity) followed by three windows of 16 floats.
 constexpr PipUniform pip_common[] = {
     {"video_geometry",1,true}, {"stereo_sbs",1,true}, {"top_bottom",1,true}, {"stereo_half",1,true},
     {"swap_eyes",1,true}, {"viewing_eye",1,true}, {"rotation_degrees",1,true}, {"fisheye_fov",1,false},
@@ -687,7 +687,11 @@ constexpr PipUniform pip_common[] = {
     {"alpha_edge",2,false}, {"model_size",2,false}, {"model_content_rect",4,false},
     {"packed_alpha",1,true}, {"packed_size",2,false}, {"packed_color",1,true}, {"grade_enabled",1,true},
     {"grade_gain",3,false}, {"grade_gamma",3,false}, {"grade_offset",3,false},
-    {"grade_contrast",1,false}, {"grade_saturation",1,false}, {"sharpness",1,false}
+    {"grade_contrast",1,false}, {"grade_saturation",1,false}, {"sharpness",1,false},
+    {"depth_text_count",1,true}, {"depth_text_regions[0]",4,false}, {"depth_text_regions[1]",4,false},
+    {"depth_text_regions[2]",4,false}, {"depth_text_regions[3]",4,false}, {"depth_text_regions[4]",4,false},
+    {"depth_text_regions[5]",4,false}, {"depth_text_regions[6]",4,false}, {"depth_text_regions[7]",4,false},
+    {"depth_text_weights0",4,false}, {"depth_text_weights1",4,false}
 };
 constexpr PipUniform pip_window[] = {
     {"pip_center",2,false}, {"pip_span",2,false}, {"pip_forward",3,false},
@@ -695,7 +699,7 @@ constexpr PipUniform pip_window[] = {
 };
 struct PipProgram {
     GLuint program = 0;
-    std::array<GLint, 28> common{};
+    std::array<GLint, 39> common{};
     std::array<GLint, 7> window{};
     GLint origin = -1, size = -1, eye = -1, raw = -1, whole = -1, span = -1, pip = -1;
     GLint make_map = -1, cached = -1;
@@ -826,7 +830,7 @@ void pip_uniform(GLint location, const PipUniform& descriptor, const float* v) {
 }
 // A small float UV map is generated once with the production projection itself.
 // Cache only the smooth 180..240-degree domain; other lenses use the analytic path.
-bool prepare_pip_projection(PipProgram& program, const std::array<float,43>& v, GLuint destination) {
+bool prepare_pip_projection(PipProgram& program, const std::array<float,84>& v, GLuint destination) {
     if (v[0]!=2 || v[7]<180 || v[7]>240) return false;
     const EGLContext current=eglGetCurrentContext();
     if (pip_projection.context!=current) { pip_projection=PipProjection{}; pip_projection.context=current; }
@@ -915,9 +919,9 @@ Java_org_vrpassthroughplayer_plugin_VideoLayerNative_renderPip(JNIEnv* env, jcla
     Picture* target = picture(slot);
     if (!target || !target->acquired || color <= 0 || !glIsTexture(static_cast<GLuint>(color)) ||
         active <= 0 || active > 8 || (eyes != 1 && eyes != 2) || !common || !windows ||
-        env->GetArrayLength(common) != 43 || env->GetArrayLength(windows) != 48) return JNI_FALSE;
-    std::array<float,43> v{}; std::array<float,48> w{};
-    env->GetFloatArrayRegion(common,0,43,v.data()); env->GetFloatArrayRegion(windows,0,48,w.data());
+        env->GetArrayLength(common) != 84 || env->GetArrayLength(windows) != 48) return JNI_FALSE;
+    std::array<float,84> v{}; std::array<float,48> w{};
+    env->GetFloatArrayRegion(common,0,84,v.data()); env->GetFloatArrayRegion(windows,0,48,w.data());
     for (float f:v) if (!std::isfinite(f)) return JNI_FALSE;
     for (float f:w) if (!std::isfinite(f)) return JNI_FALSE;
     if ((v[14] != 0 || v[15] != 0) && (mask <= 0 || !glIsTexture(static_cast<GLuint>(mask)))) return JNI_FALSE;

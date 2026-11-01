@@ -45,6 +45,8 @@
     try { state.port.postMessage({ type: "network", page: state.page, candidates: [...state.items.values()],
       bilibili: [...(state.biliResponses?.values() || [])], bilibili_requested: [...(state.biliRequests?.keys() || [])].filter(k => !k.startsWith('view:')),
       bilibili_views: [...(state.biliViews?.values() || [])],
+      douyin: [...(state.douyinData?.values() || [])],
+      douyin_observation: state.douyinObservation || {},
       bilibili_status: state.biliStatus || 'idle', bilibili_response_api: typeof browser.webRequest.filterResponseData === 'function' }); } catch (_) {}
   };
   browser.runtime.onConnect.addListener(port => {
@@ -52,43 +54,66 @@
     if (port.name !== "thru3d_network" || s?.id !== browser.runtime.id || !Number.isInteger(s.tab?.id) ||
         s.tab.id < 0 || !Number.isInteger(s.frameId) || !url(s.url, true)) return;
     const id = `${s.tab.id}:${s.frameId}`;
-    const state = { port, page: s.url, documentPage: s.url, document: s.documentId, enabled: false, bilibili: false, items: new Map(), timer: null };
+    const state = { key:id, port, page: s.url, documentPage: s.url, document: s.documentId, enabled: false, bilibili: false,
+      douyin: typeof Thru3DDouyin !== 'undefined' && Thru3DDouyin.documentPage(s.url), items: new Map(), timer: null };
     const old = frames.get(id);
     if (old) { clearTimeout(old.timer); old.port.disconnect(); }
     frames.set(id, state);
+    if(state.douyin)douyinResponses?.restore(state);
     while (frames.size > 64) { const oldest = frames.keys().next().value; frames.get(oldest).port.disconnect(); frames.delete(oldest); }
     port.onMessage.addListener(message => {
       if (frames.get(id) !== state || message?.type !== "context" || !url(message.page, true) ||
           new URL(message.page).origin !== new URL(s.url).origin) return;
       const bili = message.bilibili === true && typeof Thru3DBilibili !== 'undefined' && !!Thru3DBilibili.page(message.page);
-      if (message.page !== state.page || message.reset === true || (message.enabled === true) !== state.enabled || bili !== state.bilibili) {
+      const douyin = message.douyin === true && typeof Thru3DDouyin !== 'undefined' && Thru3DDouyin.documentPage(message.page);
+      if (message.page !== state.page || message.reset === true || (message.enabled === true) !== state.enabled || bili !== state.bilibili || douyin !== state.douyin) {
         // Bilibili can preload the next part before pushState. Retain only this document's
         // bounded observations; the content script must bind CID to the current part map.
         const sameBili = bili && state.bilibili && Thru3DBilibili.sameDocumentPage(message.page, state.page);
-        if (!sameBili) { responses?.cancel(state); state.biliStatus = 'idle'; state.biliResponses = new Map(); state.biliRequests = new Map(); state.biliViews = new Map(); state.items.clear(); }
+        const sameDouyin = douyin && state.douyin;
+        if (!sameBili) { responses?.cancel(state); state.biliStatus = 'idle'; state.biliResponses = new Map(); state.biliRequests = new Map(); state.biliViews = new Map(); }
+        if (!sameDouyin) { douyinResponses?.cancel(state); state.douyinData = new Map(); }
+        if (!sameBili && !sameDouyin) state.items.clear();
         state.bilibili = bili;
+        state.douyin = douyin;
         state.page = message.page; state.enabled = message.enabled === true;
-        if (!sameBili) for (const [request, value] of pending) if (value.state === state) pending.delete(request);
+        if (!sameBili && !sameDouyin) for (const [request, value] of pending) if (value.state === state) pending.delete(request);
         publish(state);
       }
     });
     port.onDisconnect.addListener(() => {
       responses?.cancel(state);
+      douyinResponses?.cancel(state);
       clearTimeout(state.timer);
       if (frames.get(id) === state) frames.delete(id);
       for (const [request, value] of pending) if (value.state === state) pending.delete(request);
     });
+    if(state.douyin&&state.douyinData?.size)publish(state);
   });
   const stateFor = d => {
     const state = frames.get(key(d));
     const sameBili = state?.bilibili && typeof Thru3DBilibili !== 'undefined' &&
       Thru3DBilibili.sameDocumentPage(d.documentUrl, state.page) &&
       (d.documentId && state.document || d.documentUrl?.split('#')[0] === state.documentPage.split('#')[0]);
-    if (!state || !(state.enabled || state.bilibili) || d.tabId < 0 || (d.documentId && state.document && d.documentId !== state.document) ||
-        (d.documentUrl && d.documentUrl.split('#')[0] !== state.page.split('#')[0] && !sameBili)) return null;
+    const sameDouyin = state?.douyin && typeof Thru3DDouyin !== 'undefined' && Thru3DDouyin.documentPage(d.documentUrl) &&
+      (d.documentId && state.document || d.documentUrl?.split('#')[0] === state.documentPage.split('#')[0]);
+    if (!state || !(state.enabled || state.bilibili || state.douyin) || d.tabId < 0 || (d.documentId && state.document && d.documentId !== state.document) ||
+        (d.documentUrl && d.documentUrl.split('#')[0] !== state.page.split('#')[0] && !sameBili && !sameDouyin)) return null;
     return state;
   };
   const responses = typeof Thru3DBilibiliResponses === 'undefined' ? null : Thru3DBilibiliResponses(stateFor, publish);
+  // Metadata is only a hint; it never supplies request credentials. Gecko can
+  // attribute the site's prefetch/worker API to frame -1 or to the original SPA
+  // document URL. Keep file-request ownership on the strict stateFor path above.
+  const douyinMetadataState = d => {
+    const direct=stateFor(d);if(direct)return direct;
+    const state=frames.get(`${d.tabId}:${d.frameId<0?0:d.frameId}`);
+    if(!state?.douyin||typeof Thru3DDouyin==='undefined'||
+      !(Thru3DDouyin.documentPage(d.documentUrl)||Thru3DDouyin.documentPage(d.originUrl))||
+      d.frameId>=0&&d.documentId&&state.document&&d.documentId!==state.document)return null;
+    return state;
+  };
+  const douyinResponses = typeof Thru3DDouyinResponses === 'undefined' ? null : Thru3DDouyinResponses(douyinMetadataState,publish,d=>frames.has(key(d)));
   browser.webRequest.onBeforeRequest.addListener(d => {
     if (d.type !== "main_frame" && d.type !== "sub_frame") return;
     for (const [id, state] of frames) if (id === key(d) || d.type === "main_frame" && id.startsWith(`${d.tabId}:`)) {
@@ -115,7 +140,7 @@
     // onSendHeaders event. It cannot replace a replayable request with empty headers:
     // the CDN rejects that native request (403). Keep the earlier exact observation;
     // never borrow headers from another URL, or extend its lifetime from a cache hit.
-    if (state.bilibili && !(request?.state === state && request.url === d.url && request.sent === true)) return;
+    if ((state.bilibili || state.douyin) && !(request?.state === state && request.url === d.url && request.sent === true)) return;
     // A cached response can have no onSendHeaders. Do not invent Cookie/Authorization.
     const safe = request?.state === state && request.url === d.url ? request.headers : {};
     const c = { url: d.url, kind: type, mime, headers: safe, at: Date.now(), cookies: [],

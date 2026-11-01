@@ -3,7 +3,7 @@ extends "res://scripts/file_mode_memory.gd"
 # Separate banks let track choices survive independently of projection and play history.
 # Only hashed original file identities and track metadata are persisted, never proxy URLs.
 const UNRESOLVED := -2
-const CHANNELS := ["audio", "subtitle"]
+const CHANNELS := ["audio", "subtitle", "secondary_subtitle"]
 const SubtitleSources := preload("res://scripts/subtitle_sources.gd")
 
 func _bank_path(bank: int) -> String:
@@ -15,7 +15,7 @@ func _value_field() -> String:
 func _max_bytes() -> int: return 2097152 # 128 videos, including explicit subtitle source URIs.
 
 func _valid_value(value: Variant) -> bool:
-	if not value is Dictionary or value.is_empty() or value.size() > 2: return false
+	if not value is Dictionary or value.is_empty() or value.size() > CHANNELS.size(): return false
 	for channel in value:
 		if channel not in CHANNELS or not valid_choice(value[channel]): return false
 	return true

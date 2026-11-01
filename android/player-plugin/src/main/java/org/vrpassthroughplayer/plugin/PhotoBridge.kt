@@ -31,6 +31,8 @@ internal class PhotoBridge(
     private val preload: Boolean = false,
     private val postDepth: ((Runnable, Boolean) -> Unit)? = null,
     private val resolveRequest: ((Int, String) -> String)? = null,
+    private val backgroundAllowed: ((File) -> Boolean)? = null,
+    private val postPortrait: ((Runnable) -> Unit)? = null,
     private val emit: (String, Int, String) -> Unit,
 ) : Closeable {
     private val current = AtomicInteger(0)
@@ -54,12 +56,12 @@ internal class PhotoBridge(
     fun animationPixels(id: Int,token: Long): ByteArray = synchronized(PhotoCache.lock) {
         if(animationId==id)animation?.pixels(token)?:ByteArray(0) else ByteArray(0)
     }
-    private class DepthJob(val id: Int, val source: PhotoSource, @Volatile var strength: Float, val stereo: Boolean, val sceneToken: Int,
+    private class DepthJob(val id: Int, val source: PhotoSource, @Volatile var strength: Float, val stereo: Boolean, val sceneToken: Int, val rotation: Int,
                            @Volatile var owner: PhotoBridge, @Volatile var background: Boolean) {
         @Volatile var cancelled = false
     }
     private val depthJobs = ConcurrentHashMap<Int, DepthJob>()
-    private class PortraitJob(val id: Int, val token: Int, val source: PhotoSource, val strength: Float) {
+    private class PortraitJob(val id: Int, val token: Int, val source: PhotoSource, val strength: Float, val background: Boolean, val rotation: Int) {
         @Volatile var cancelled = false
     }
     private val portraitJobs = ConcurrentHashMap<Int, PortraitJob>()
@@ -96,6 +98,7 @@ internal class PhotoBridge(
             var published = false
             try {
                 val app = context() ?: error("PHOTO_UNAVAILABLE")
+                PhotoMemory.attach(app)
                 if (!cachePrepared) {
                     File(app.cacheDir, cacheName).listFiles()?.forEach { it.deleteRecursively() }
                     cachePrepared = true
@@ -112,7 +115,7 @@ internal class PhotoBridge(
                 val linked = if (location.scheme == "file") runCatching {
                     val original = File(location.path ?: "").canonicalFile
                     val online = File(app.filesDir, "online-panoramas").canonicalFile
-                    if (original.parentFile == online && original.isFile && original.length() <= MAX_BYTES) {
+                    if (original.parentFile == online && original.isFile) {
                         android.system.Os.link(original.path, source.path); true
                     } else false
                 }.getOrDefault(false) else false
@@ -124,7 +127,6 @@ internal class PhotoBridge(
                         val http = URL(resolved).openConnection() as HttpURLConnection
                         connection = http; http.connectTimeout = 15000; http.readTimeout = 20000
                         require(http.responseCode in 200..299) { "PHOTO_UNAVAILABLE" }
-                        require(http.contentLengthLong <= MAX_BYTES) { "PHOTO_TOO_LARGE" }
                         require(http.contentLengthLong <= directory.usableSpace-64L*1024*1024) { "PHOTO_TOO_LARGE" }
                         http.inputStream
                     }
@@ -138,7 +140,7 @@ internal class PhotoBridge(
                     while (true) {
                         checkCurrent(id)
                         val count = input.read(bytes); if (count < 0) break
-                        total += count; require(total <= if (bounded) 32L * 1024 * 1024 else MAX_BYTES) { "PHOTO_TOO_LARGE" }
+                        total += count; if(bounded) require(total <= 32L * 1024 * 1024) { "PHOTO_TOO_LARGE" }
                         if(total/(1024*1024) != (total-count)/(1024*1024)) require(directory.usableSpace>64L*1024*1024) { "PHOTO_TOO_LARGE" }
                         if (state.remote) state.meter.add(count)
                         output.write(bytes, 0, count)
@@ -238,9 +240,11 @@ internal class PhotoBridge(
                 // Regions are activated only by an explicit full-sphere mode, never by aspect ratio alone.
                 val previewEdge = 8192
                 if (regionSource) metadata.put("region_source", source.path)
+                val pixelBudget=PhotoMemory.snapshot().output/4
+                require(pixelBudget>0) { "PHOTO_OUT_OF_MEMORY" }
                 var sample = 1
                 while (bounds.outWidth / sample > previewEdge || bounds.outHeight / sample > previewEdge ||
-                    bounds.outWidth.toLong() / sample * (bounds.outHeight / sample) > MAX_PIXELS) sample *= 2
+                    bounds.outWidth.toLong() / sample * (bounds.outHeight / sample) > pixelBudget) sample *= 2
                 var output = source
                 if (sample > 1) {
                     val bitmap = BitmapFactory.decodeFile(source.path, BitmapFactory.Options().apply { inSampleSize = sample }) ?: error("PHOTO_DECODE_FAILED")
@@ -277,6 +281,8 @@ internal class PhotoBridge(
                     "request=$id preload=$preload failure=${error.javaClass.simpleName}")
                 if (!closed && current.get() == id) emit("photo_ready", id, JSONObject().put("state", "error")
                     .put("error", if (uri.startsWith("comic://") && error is Exception) ArchiveBridge.safeError(error)
+                        else if (error is OutOfMemoryError || error.message == "PHOTO_OUT_OF_MEMORY") "PHOTO_OUT_OF_MEMORY"
+                        else if (error.message == "PHOTO_MEMORY_UNAVAILABLE") "PHOTO_MEMORY_UNAVAILABLE"
                         else if (error.message == "PHOTO_TOO_LARGE") "PHOTO_TOO_LARGE" else "PHOTO_DECODE_FAILED").toString())
             } finally {
                 connection?.disconnect(); connection = null
@@ -304,6 +310,9 @@ internal class PhotoBridge(
     }
     fun cancelBackgroundDepth() = synchronized(PhotoCache.lock) {
         depthJobs.entries.filter { it.value.background }.forEach { it.value.cancelled = true; depthJobs.remove(it.key) }
+    }
+    fun cancelBackgroundPortrait() = synchronized(PhotoCache.lock) {
+        portraitJobs.entries.filter { it.value.background }.forEach { it.value.cancelled = true; portraitJobs.remove(it.key) }
     }
     fun discardDepth(id: Int) = synchronized(PhotoCache.lock) {
         depthJobs.remove(id)?.cancelled = true
@@ -359,33 +368,36 @@ internal class PhotoBridge(
 
     /** One inference per photo on the shared model thread, using the independent photo model.
      * Color stays at source display resolution; only content contributes to depth normalization. */
-    fun depth(id: Int, strength: Float = 1f, stereo: Boolean = false, background: Boolean = preload, sceneToken: Int = 0): Boolean {
-        // Neighbour preparation is strictly colour/file-only, on every device.
-        if (background) return false
-        if (!strength.isFinite() || strength !in 0f..2f) return false
+    fun depth(id: Int, strength: Float = 1f, stereo: Boolean = false, background: Boolean = preload, sceneToken: Int = 0, rotation: Int = 0): Boolean {
+        if (!strength.isFinite() || strength !in 0f..2f || !PhotoStereo.validRotation(rotation)) return false
         val job = synchronized(PhotoCache.lock) {
             if (closed) return false
             val source = files[id] ?: return false
             if (source.nativeStereo && sceneToken == 0) return false
+            if (background && (sceneToken > 0 || source.animation || !allowBackground(source.file))) return false
             val existing = depthJobs[id]
-            if (existing != null && !existing.cancelled && existing.stereo == stereo && existing.sceneToken == sceneToken) {
+            if (existing != null && !existing.cancelled && existing.stereo == stereo && existing.sceneToken == sceneToken && existing.rotation == rotation) {
                 existing.strength = strength
                 existing.background = background
                 return true
             }
             depthJobs.remove(id)?.cancelled = true
-            DepthJob(id, source.retain(), strength, stereo, sceneToken, this, background).also {
+            DepthJob(id, source.retain(), strength, stereo, sceneToken, rotation, this, background).also {
                 depthJobs[id] = it
                 inFlightSources[it] = source
             }
         }
         fun checkDepth() { if (job.cancelled || job.owner.closed) throw InterruptedException() }
+        fun checkHeadroom(includeModel: Boolean = true) {
+            checkDepth()
+            if (job.background && !job.owner.allowBackground(job.source.file, includeModel)) throw BackgroundPressure()
+        }
         // A new foreground selection passes cancelled background jobs still waiting in the queue.
         val work = Runnable {
             val started = System.nanoTime()
             var snapshot: File?=null
             try {
-                checkDepth()
+                checkHeadroom()
                 snapshot=job.source.effectSnapshot(::checkDepth)
                 val source=snapshot?:job.source.file
                 val app = context() ?: error("PHOTO_UNAVAILABLE")
@@ -406,10 +418,11 @@ internal class PhotoBridge(
                     val inputMs = (System.nanoTime() - inputStarted) / 1_000_000.0
                     val content = input.content
                     checkDepth()
+                    checkHeadroom()
                     stage(id,"waiting_model")
                     val modelStarted = System.nanoTime()
                     result = PhotoDepthRuntime.run(app,::checkDepth) { handle, reused ->
-                        checkDepth()
+                        checkHeadroom(false)
                         val runtime = JSONObject(DepthNative.describe(handle)).put("session_reused", reused)
                         stage(id,"inference")
                         JSONObject(DepthNative.processPhoto(handle,input.rgb,near,content.x,content.y,content.width,content.height))
@@ -426,10 +439,11 @@ internal class PhotoBridge(
                 }
                 checkDepth()
                 if (stereo) {
+                    checkHeadroom(false)
                     stage(id,"stereo")
                     val stereoStarted = System.nanoTime()
                     val rect = result.getJSONArray("rect")
-                    val pair = PhotoStereo.prepare(source,near,FloatArray(4) { rect.getDouble(it).toFloat() },job.strength,id)
+                    val pair = PhotoStereo.prepare(source,near,FloatArray(4) { rect.getDouble(it).toFloat() },job.strength,id,job.rotation)
                     pair.keys().forEach { key -> result.put(key,pair.get(key)) }
                     result.put("stereo_total_ms",(System.nanoTime()-stereoStarted)/1_000_000.0)
                 }
@@ -450,9 +464,13 @@ internal class PhotoBridge(
             catch (error: Throwable) {
                 synchronized(PhotoCache.lock) { if (!job.cancelled && !job.owner.closed) {
                     job.owner.depthJobs.remove(id,job)
-                    job.owner.stage(id,"failed")
-                    android.util.Log.w("QuestPhotoDepth", "Photo depth failed", error)
+                    if (error !is BackgroundPressure) {
+                        job.owner.stage(id,"failed")
+                        android.util.Log.w("QuestPhotoDepth", "Photo depth failed", error)
+                    }
                     val failure = JSONObject().put("state","error").put("error","PHOTO_DEPTH_FAILED").put("scene_token",job.sceneToken)
+                        .put("stereo_rotation",job.rotation)
+                        .put("deferred", error is BackgroundPressure)
                     job.owner.emit(if (job.sceneToken > 0) "photo_scene_depth" else if (job.background) "photo_preload_depth" else "photo_depth", id, failure.toString())
                 } }
             }
@@ -462,8 +480,9 @@ internal class PhotoBridge(
                 job.source.release()
             } }
         }
-        if (postDepth != null) postDepth.invoke(work,!background)
-        else if (background) DepthWorker.handler.post(work) else DepthWorker.handler.postAtFrontOfQueue(work)
+        val serialized = Runnable { synchronized(BackgroundResourceBudget.photoWorkLock) { work.run() } }
+        if (postDepth != null) postDepth.invoke(serialized,!background)
+        else if (background) DepthWorker.handler.post(serialized) else DepthWorker.handler.postAtFrontOfQueue(serialized)
         return true
     }
 
@@ -471,44 +490,63 @@ internal class PhotoBridge(
         portraitJobs.remove(token)?.cancelled = true
     }
 
+    private class BackgroundPressure : RuntimeException("PHOTO_BACKGROUND_PRESSURE")
+    private fun allowBackground(source: File, includeModel: Boolean = true): Boolean = runCatching {
+        backgroundAllowed?.let { return@runCatching it(source) }
+        val budget = BackgroundResourceBudget.snapshot(context())
+        if (!budget.work) return@runCatching false
+        val bounds = PhotoBitmap.bounds(source)
+        budget.admits(BackgroundResourceBudget.photoPeak(bounds.outWidth, bounds.outHeight, includeModel))
+    }.getOrDefault(false)
+
     /** Still matting never consumes gallery previews or shares recurrent state with video. */
-    fun portrait(id: Int, token: Int, strength: Float): Boolean {
-        if (token <= 0 || !strength.isFinite() || strength !in 0f..2f) return false
+    fun portrait(id: Int, token: Int, strength: Float, background: Boolean = false, rotation: Int = 0): Boolean {
+        if (token <= 0 || !strength.isFinite() || strength !in 0f..2f || !PhotoStereo.validRotation(rotation)) return false
         val job = synchronized(PhotoCache.lock) {
-            if (closed || preload || current.get() != id) return false
+            if (closed || (!background && (preload || current.get() != id))) return false
             val source = files[id] ?: return false
             if (source.nativeStereo) return false
-            portraitJobs.values.forEach { it.cancelled = true }; portraitJobs.clear()
-            PortraitJob(id, token, source.retain(), strength).also {
+            if (background && (source.animation || !allowBackground(source.file))) return false
+            if (background && portraitJobs.values.any { !it.background && !it.cancelled }) return false
+            portraitJobs.entries.filter { !background || it.value.background }.forEach { it.value.cancelled = true; portraitJobs.remove(it.key) }
+            PortraitJob(id, token, source.retain(), strength, background, rotation).also {
                 portraitJobs[token] = it; portraitSources[it] = source
             }
         }
-        fun checkJob() { if (closed || job.cancelled) throw InterruptedException() }
+        fun checkJob() {
+            if (closed || job.cancelled) throw InterruptedException()
+            if (background && !(backgroundAllowed?.invoke(job.source.file) ?: BackgroundResourceBudget.snapshot(context()).work)) throw BackgroundPressure()
+        }
         // Preparing and inference stay on the production RVM worker, behind retired video work.
-        RvmWorkers.prepare.post { RvmWorkers.video.post {
+        val work = Runnable {
             val started = System.nanoTime()
             var snapshot: File?=null
             try {
                 checkJob()
+                if (background && !allowBackground(job.source.file)) throw BackgroundPressure()
                 snapshot=job.source.effectSnapshot(::checkJob)
                 val app = context() ?: error("PHOTO_UNAVAILABLE")
-                val result = PhotoPortrait.prepare(app, snapshot?:job.source.file, job.strength, token, ::checkJob)
+                val result = PhotoPortrait.prepare(app, snapshot?:job.source.file, job.strength, token, ::checkJob,job.rotation)
                 synchronized(PhotoCache.lock) {
                     checkJob()
-                    emit("photo_portrait", id, result.put("token",token).put("state","ready")
+                    emit(if (background) "photo_preload_portrait" else "photo_portrait", id, result.put("token",token).put("state","ready")
                         .put("strength",job.strength.toDouble()).put("total_ms",(System.nanoTime()-started)/1_000_000.0).toString())
                 }
             } catch (_: InterruptedException) { }
             catch (error: Throwable) {
                 synchronized(PhotoCache.lock) { if (!closed && !job.cancelled) {
-                    android.util.Log.w("QuestPhotoPortrait", "request=$id token=$token failure=${error.javaClass.simpleName}")
-                    emit("photo_portrait", id, JSONObject().put("state","error").put("token",token)
+                    if (error !is BackgroundPressure) android.util.Log.w("QuestPhotoPortrait", "request=$id token=$token failure=${error.javaClass.simpleName}")
+                    emit(if (background) "photo_preload_portrait" else "photo_portrait", id, JSONObject().put("state","error").put("token",token)
+                        .put("deferred", error is BackgroundPressure)
                         .put("error",if (error.message == "PHOTO_NO_PERSON") "PHOTO_NO_PERSON" else "PHOTO_PORTRAIT_FAILED").toString())
                 } }
             } finally { snapshot?.delete();synchronized(PhotoCache.lock) {
                 portraitJobs.remove(token,job); portraitSources.remove(job); job.source.release()
             } }
-        } }
+        }
+        val serialized = Runnable { synchronized(BackgroundResourceBudget.photoWorkLock) { work.run() } }
+        if (postPortrait != null) postPortrait.invoke(serialized)
+        else RvmWorkers.prepare.post { RvmWorkers.video.post(serialized) }
         return true
     }
 
@@ -533,7 +571,8 @@ internal class PhotoBridge(
         animationWorker.shutdown()
     }
     companion object {
-        const val MAX_BYTES = 8L * 1024 * 1024 * 1024; const val MAX_PIXELS = 32L * 1024 * 1024
+        // Streaming callers share this type bound; disk headroom controls real transfers.
+        const val MAX_BYTES = Long.MAX_VALUE
         private val inFlightSources = ConcurrentHashMap<DepthJob, PhotoSource>()
         private val portraitSources = ConcurrentHashMap<PortraitJob, PhotoSource>()
     }

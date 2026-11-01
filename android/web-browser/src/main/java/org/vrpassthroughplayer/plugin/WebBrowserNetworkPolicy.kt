@@ -28,6 +28,7 @@ internal class WebBrowserNetworkPolicy(saved: String, private val save: (String)
         fun available(url: String): Boolean {
             val origin = origin(url) ?: return false
             val host = URI(origin).host.removeSuffix(".")
+            if (host == "douyin.com" || host.endsWith(".douyin.com") || host == "iesdouyin.com" || host.endsWith(".iesdouyin.com")) return false
             return nativeHosts.none { host == it || host.endsWith(".$it") }
         }
         fun origin(value: String): String? = runCatching {

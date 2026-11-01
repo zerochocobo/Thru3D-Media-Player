@@ -21,6 +21,9 @@ internal class WebVideoNetworkCapture(
     val projections = HashMap<URI, JSONObject?>()
     private var reads = 0
     private var formatSequence = 0
+    var inspectedFiles = 0; private set
+    var videoFiles = 0; private set
+    var audioFiles = 0; private set
 
     companion object {
         fun keepsQuality(track: WebVideoTrack, media: JSONObject): Boolean {
@@ -96,7 +99,16 @@ internal class WebVideoNetworkCapture(
         .put("title", media.optString("title").take(1024)).put("duration", media.optDouble("duration", 0.0).takeIf { it.isFinite() && it >= 0 } ?: 0.0)
         .put("formats", JSONArray(list))
 
-    fun resolve(page: WebVideoPage, media: JSONObject): JSONObject? {
+    fun resolve(page: WebVideoPage, media: JSONObject): JSONObject? = resolve(page, media, null)
+
+    /** Site adapters must first bind both exact observed URLs to one content identity.
+     * This does not add a hostname/time-based pairing rule to generic capture. */
+    fun resolveBoundPair(page: WebVideoPage, media: JSONObject, video: URI, audio: URI): JSONObject? {
+        if (video == audio) return null
+        return resolve(page, JSONObject(media.toString()).put("source", ""), video to audio)
+    }
+
+    private fun resolve(page: WebVideoPage, media: JSONObject, boundPair: Pair<URI, URI>?): JSONObject? {
         if (media.optBoolean("protected")) return null
         val candidates = WebBrowserNetworkMedia.candidates(media)
         val scopedCookies = LinkedHashMap<String, JSONObject>()
@@ -134,6 +146,14 @@ internal class WebVideoNetworkCapture(
         val files = resources.values.filter { it.kind == "file" && (direct == null || direct == it.uri) }
         if (files.isEmpty() || files.size > 8) return null
         val probes = files.mapNotNull { resource -> runCatching { probe(resource, media) }.getOrNull() }
+        if (boundPair != null) {
+            if (files.size != 2 || files.map { it.uri }.toSet() != setOf(boundPair.first, boundPair.second) || probes.size != 2) return null
+            val expected = media.optDouble("duration", 0.0)
+            if (expected <= 0 || probes.any { it.info.duration <= 0 || kotlin.math.abs(it.info.duration - expected) > maxOf(.5, expected * .01) }) return null
+            val video = probes.singleOrNull { it.resource.uri == boundPair.first && it.info.video != "none" && it.info.audio == "none" } ?: return null
+            val audio = probes.singleOrNull { it.resource.uri == boundPair.second && it.info.video == "none" && it.info.audio != "none" } ?: return null
+            return info(media, listOf(video.format, audio.format))
+        }
         val muxed = probes.filter { it.info.video != "none" && it.info.audio != "none" }
         if (muxed.size == 1 && (direct != null || files.size == 1)) return info(media, listOf(muxed.single().format))
         // Only pair whole representations with a site-supplied common content identity.
@@ -167,6 +187,9 @@ internal class WebVideoNetworkCapture(
         val f = format(resource, checked.video, checked.audio, checked.width, checked.height)
             .put("web_layout", media.optString("layout").take(64))
         projections[uri]?.let { f.put("format_note", it.optString("kind")) }
+        inspectedFiles++
+        if (checked.video != "none") videoFiles++
+        if (checked.audio != "none") audioFiles++
         return Probed(resource, checked, f)
     }
 

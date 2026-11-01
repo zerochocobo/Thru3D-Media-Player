@@ -5,7 +5,7 @@ $project = Join-Path $workspace 'app/godot'
 $output = Join-Path $workspace 'build/output/stereo-passthrough'
 New-Item -ItemType Directory -Force -Path $output | Out-Null
 $env:SDL_JOYSTICK_HIDAPI = '0'
-$cases = @('test_video_portrait', 'test_player_menu', 'test_cinema_player_integration',
+$cases = @('test_video_portrait', 'test_player_menu', 'test_cinema_player_integration', 'test_alpha_background',
     'test_stereo_view', 'test_video_layer', 'test_file_mode_memory', 'test_i18n',
     'render_portrait_distance_menu', 'render_stereo_view')
 foreach ($case in $cases) {

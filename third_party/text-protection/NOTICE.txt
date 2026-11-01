@@ -1,0 +1,7 @@
+PP-OCRv6 Tiny text detector
+Copyright PaddlePaddle / PaddleOCR contributors.
+ONNX distribution: RapidAI / RapidOCR v3.10.0.
+https://github.com/PaddlePaddle/PaddleOCR
+https://github.com/RapidAI/RapidOCR
+Apache-2.0; unchanged weights. See comic-ocr/LICENSE.PaddleOCR and comic-ocr/LICENSE.RapidOCR.
+The detector locates video text only; no recognizer or vocabulary is used.

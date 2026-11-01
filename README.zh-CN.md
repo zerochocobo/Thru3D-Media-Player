@@ -4,12 +4,14 @@
 
 面向 Meta Quest 和 PICO 的独立 VR/MR 媒体播放器，可直接在头显中观看视频和照片、浏览媒体库，并使用支持内容的透视与立体效果。
 
-当前源码版本：**0.16.1**，Android versionCode **55**；另提供实验性的标准 OpenXR Android 导出目标。
+当前源码版本：**0.16.2**，Android versionCode **57**；另提供实验性的标准 OpenXR Android 导出目标。
 
 最低兼容目标为 **Quest 2、PICO Neo3**。源码和构建兼容不等于所有机型的性能、显示及交互均已实机验收。
 
 ## 功能
 
+- 可选双文本字幕、独立同步／朗读来源；兼容外部Android视频打开与受限URI访问，见[外部播放](docs/EXTERNAL_PLAYBACK.md)。
+- 自适应照片／人像邻图缓存、有界大图处理及情境控件，兼容单目／立体360° AI透视。
 - 扩展静态／动态图片与相机RAW，Emby／Jellyfin相册看图；见[格式与解码范围](docs/IMAGE_FORMAT_SUPPORT_CN.md)。
 - 浏览器区域聚焦、头显内网盘登录窗口、PGS换色、可选VR刻度和带署名的银河全景。
 - 视频3D最高200%增强、透视保留背景及切换模式保留画面。

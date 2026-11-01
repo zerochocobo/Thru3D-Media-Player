@@ -169,6 +169,39 @@ class EmbyFolderBrowseTest {
         }
     }
 
+    @Test fun moviePosterWallKeepsFilmResultsSeparateFromFolderBrowsing() {
+        val movie = JSONObject().put("Id", "movie").put("Name", "Movie").put("Type", "Movie")
+        val video = JSONObject().put("Id", "video").put("Name", "Video").put("Type", "Video")
+        val collection = folder(1, "BoxSet")
+        val physical = folder(2)
+        val album = folder(3, "PhotoAlbum")
+        for (provider in listOf("emby", "jellyfin")) {
+            val requests = mutableListOf<Map<String, String>>()
+            MediaServerClientTest.Fixture { request, _, _ ->
+                val args = query(request); requests.add(args)
+                reply(listOf(movie, video, collection, physical, album), args)
+            }.use { fixture ->
+                val account = MediaServerAccount("test", "Test", fixture.url, "fake", provider, "user1")
+                MediaServerHttp(account).use { http ->
+                    val client = EmbyClient(account, http)
+                    val request = JSONObject().put("mode", "library").put("collection_type", "movies").put("library_id", "library")
+                    val result = client.browse(request)
+                    assertEquals("true", requests.last()["Recursive"])
+                    assertEquals("false", requests.last()["GroupItemsIntoCollections"])
+                    assertEquals(2, result.getInt("total"))
+                    val nodes = result.getJSONArray("entries").objects()
+                    assertEquals(listOf("movie", "video"), nodes.map { it.getString("id") })
+                    assertTrue(nodes.none { it.getBoolean("container") })
+                    val folders = client.browse(request.put("mode", "folders"))
+                    assertEquals("false", requests.last()["Recursive"])
+                    assertFalse(requests.last().containsKey("GroupItemsIntoCollections"))
+                    assertEquals(5, folders.getInt("total"))
+                    assertTrue(folders.getJSONArray("entries").objects().any { it.getString("id") == "folder2" })
+                }
+            }
+        }
+    }
+
     @Test fun completeFolderPagingKeepsVideosAndExcludesUnsupportedLeafMedia() {
         val folders = (1..53).map { folder(it, if (it % 2 == 0) "UserView" else "Folder") }
         val videos = listOf("Movie", "Episode", "Video", "AdultVideo", "MusicVideo", "Trailer").map { type ->

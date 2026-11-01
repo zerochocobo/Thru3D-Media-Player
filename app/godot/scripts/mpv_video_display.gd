@@ -89,6 +89,10 @@ var alpha_edge := Vector2(0.0, 1.0)
 var depth_requested := false
 var auto_depth := false # This file's conversion choice, retained while changing its projection.
 var depth_enabled := false
+# Release hold: even a saved preference or direct caller cannot enable protection.
+var depth_text_protection := false:
+	set(_enabled):
+		depth_text_protection = false
 var cast_token := 0
 var cast_capability_cache := {}
 var cast_navigation := {}
@@ -168,6 +172,8 @@ var _whisper_restore_pending := false
 var _whisper_restore_remember := false
 var whisper_error := ""
 var subtitles := SubtitleState.new()
+var dual_subtitles := preload("res://scripts/dual_subtitles.gd").new(self)
+var _subtitle_load_secondary := false
 const NarrationSettings := preload("res://scripts/narration_settings.gd")
 var narration := NarrationSettings.new(self)
 var listening := preload("res://scripts/live_interpretation.gd").new(self)
@@ -796,6 +802,7 @@ func open_local(uri: String, title: String, start_ms: int = 0, restore_mode: boo
 	# Alpha-packed and Alpha-wanted files say so in their names (PTMediaServer / DeoVR markers).
 	_layout_basename = basename if not basename.is_empty() else (title if not title.is_empty() else uri.uri_decode().get_file())
 	var stated := Naming.from_metadata(_layout_basename, metadata)
+	if uri.begins_with("externalvideo://") or metadata.get("external_temporary", false): stated.external_unknown = true
 	if uri.begins_with("medialib://"): stated.erase("alpha")
 	packed_file = bool(stated.get("packed", false))
 	packed_alpha = packed_file and (alpha or restore_mode)
@@ -812,7 +819,7 @@ func open_local(uri: String, title: String, start_ms: int = 0, restore_mode: boo
 		if not saved.is_empty():
 			# The user's own choice for this file wins over its name and shape.
 			_restore_saved_mode(saved)
-		elif not mode_lock.is_empty() and not stated.has("geometry") and not stated.has("stereo"):
+		elif not uri.begins_with("externalvideo://") and not mode_lock.is_empty() and not stated.has("geometry") and not stated.has("stereo"):
 			geometry = int(mode_lock.geometry)
 			stereo_sbs = int(mode_lock.layout) != 0
 			top_bottom = int(mode_lock.layout) in [2, 4]
@@ -1068,6 +1075,7 @@ func close_video() -> void:
 	_mode_user_changed = false
 	_mode_memory_cleared = false
 	subtitles.clear(true)
+	dual_subtitles.reset()
 	bitmap_subtitles.clear(material)
 	if _subtitle_surface: _subtitle_surface.visible = false
 	changed.emit()
@@ -1138,6 +1146,7 @@ func _request_revision(position_ms: int = -1, mode: String = "") -> void:
 	_output_deadline_ms = Time.get_ticks_msec() + OUTPUT_TIMEOUT_MS
 	_loading_started_ms = Time.get_ticks_msec(); _loading_poll_ms = 0
 	subtitles.clear()
+	dual_subtitles.state.clear()
 	bitmap_subtitles.clear(material)
 	if _subtitle_surface: _subtitle_surface.visible = false
 	if caption:
@@ -1346,6 +1355,14 @@ func depth_model_ready() -> bool:
 	if OS.get_name() == "Android" and Engine.has_singleton("QuestPlayer"):
 		return bool(Engine.get_singleton("QuestPlayer").depth_ready())
 	return true
+
+func set_text_protection(enabled: bool) -> void:
+	depth_text_protection = false
+	if not depth_text_protection:
+		media.last_pair["depth_text_regions"] = []
+		if material: material.set_shader_parameter("depth_text_count", 0)
+	_picture_refresh = 6
+	changed.emit()
 
 func cycle_depth_strength() -> void:
 	if portrait_requested():
@@ -1696,6 +1713,9 @@ func set_subtitle_track(track_id: int, remember: bool = true) -> bool:
 		return false
 	if not platform.set_mpv_subtitle(media.session_id, track_id):
 		return false
+	if dual_subtitles.enabled:
+		var track_is_text := subtitle_tracks().any(func(t): return int(t.id) == track_id and SubtitleState.text_codec(str(t.get("codec", ""))))
+		if track_id == dual_subtitles.state.requested_track or not track_is_text: dual_subtitles.set_enabled(false)
 	if remember and listening.enabled:
 		listening.set_option("listening_enabled", false)
 		if listening.memory.remember(local_uri, {"enabled": false}): listening.memory.save()
@@ -1758,27 +1778,29 @@ func request_subtitle_files() -> void:
 		_subtitle_list_request = 0; subtitle_files_state = "error"; subtitle_file_error = "Unable to list subtitle files"
 	changed.emit()
 
-func select_subtitle_file(filename: String, restoring: bool = false) -> bool:
+func select_subtitle_file(filename: String, restoring: bool = false, secondary: bool = false) -> bool:
 	if not subtitle_files_available() or not TrackMemory.valid_file(filename) or not media.accepts(media.session_id) or _subtitle_load_request > 0: return false
 	_subtitle_file_sequence += 1; _subtitle_load_request = _subtitle_file_sequence
 	_subtitle_files_session = media.session_id
-	_subtitle_loaded_track = 0; _subtitle_load_restore = restoring
+	_subtitle_loaded_track = 0; _subtitle_load_restore = restoring; _subtitle_load_secondary = secondary
 	subtitle_file_loading = filename; subtitle_file_error = ""
 	if not restoring:
-		_track_restore.erase("subtitle"); _subtitle_auto_pending = false
+		_track_restore.erase(dual_subtitles.CHANNEL if secondary else "subtitle")
+		if not secondary: _subtitle_auto_pending = false
 	if not platform.load_mpv_subtitle_file(media.session_id, _subtitle_load_request, filename):
 		_subtitle_load_request = 0; subtitle_file_loading = ""; subtitle_file_error = "Unable to load subtitle"
 		changed.emit(); return false
 	changed.emit(); return true
 
-func select_subtitle_uri(uri: String, restoring: bool = false) -> bool:
+func select_subtitle_uri(uri: String, restoring: bool = false, secondary: bool = false) -> bool:
 	if not TrackMemory.SubtitleSources.valid_uri(uri) or not media.accepts(media.session_id) or _subtitle_load_request > 0 \
 		or not PlatformMethods.supports(platform, "load_mpv_subtitle_uri"): return false
 	_subtitle_file_sequence += 1; _subtitle_load_request = _subtitle_file_sequence
-	_subtitle_files_session = media.session_id; _subtitle_loaded_track = 0; _subtitle_load_restore = restoring
+	_subtitle_files_session = media.session_id; _subtitle_loaded_track = 0; _subtitle_load_restore = restoring; _subtitle_load_secondary = secondary
 	subtitle_file_loading = TrackMemory.SubtitleSources.filename(uri); subtitle_file_error = ""
 	if not restoring:
-		_track_restore.erase("subtitle"); _subtitle_auto_pending = false
+		_track_restore.erase(dual_subtitles.CHANNEL if secondary else "subtitle")
+		if not secondary: _subtitle_auto_pending = false
 	if not platform.load_mpv_subtitle_uri(media.session_id, _subtitle_load_request, uri):
 		_subtitle_load_request = 0; subtitle_file_loading = ""; subtitle_file_error = "Unable to load subtitle"
 		changed.emit(); return false
@@ -1820,19 +1842,23 @@ func _finish_subtitle_file() -> void:
 	if _encoding_pending.get("restoring", false): return
 	var selected := _subtitle_loaded_track
 	var restore := _subtitle_load_restore
+	var secondary := _subtitle_load_secondary
 	_subtitle_load_request = 0; _subtitle_loaded_track = 0; subtitle_file_loading = ""
-	if set_subtitle_track(selected, not restore):
+	var accepted: bool = dual_subtitles.select(selected, not restore) if secondary else set_subtitle_track(selected, not restore)
+	if accepted:
 		if restore:
-			_track_choices.subtitle = TrackMemory.describe(selected, _raw_tracks("subtitle"))
-			_track_restore.erase("subtitle"); _subtitle_auto_pending = false
+			var channel: String = dual_subtitles.CHANNEL if secondary else "subtitle"
+			_track_choices[channel] = TrackMemory.describe(selected, _raw_tracks("subtitle"))
+			_track_restore.erase(channel)
+			if not secondary: _subtitle_auto_pending = false
 	else: subtitle_file_error = "Unable to load subtitle"
 
 func subtitle_timing_key() -> String: return _subtitle_timing_key
 
-func subtitle_encoding_row() -> Dictionary:
+func subtitle_encoding_row(track_id: int = -1) -> Dictionary:
 	if not PlatformMethods.supports(platform, "set_mpv_subtitle_encoding"): return {}
 	for track in _raw_tracks("subtitle"):
-		if int(track.get("id", 0)) == subtitles.requested_track:
+		if int(track.get("id", 0)) == (subtitles.requested_track if track_id < 0 else track_id):
 			return SubtitleEncoding.row(track, local_uri)
 	return {}
 
@@ -1879,6 +1905,9 @@ func _finish_subtitle_encoding() -> void:
 	if subtitles.requested_track == int(pending.track_id):
 		set_subtitle_track(id, false)
 		if _track_choices.has("subtitle"): _track_choices.subtitle = TrackMemory.describe(id, _raw_tracks("subtitle"))
+	if dual_subtitles.state.requested_track == int(pending.track_id):
+		dual_subtitles.select(id, false)
+		if _track_choices.has(dual_subtitles.CHANNEL): _track_choices[dual_subtitles.CHANNEL] = TrackMemory.describe(id, _raw_tracks("subtitle"))
 	if narration.source == int(pending.track_id): narration.source = id
 	if pending.get("persist", false) and _remember_file and ModeMemory.Privacy.settings_allowed(local_uri):
 		if subtitle_encoding.remember_track(local_uri, pending.subtitle_key, pending.encoding) and not subtitle_encoding.save():
@@ -1896,7 +1925,7 @@ func _restore_subtitle_encodings() -> void:
 		if set_subtitle_encoding({"encoding": encoding, "source_uri": local_uri, "track_id": int(track.id), "subtitle_key": key}, true): return
 
 func _raw_tracks(channel: String) -> Array:
-	return media.playback.get("details", {}).get(channel + "_tracks", [])
+	return media.playback.get("details", {}).get(("subtitle" if channel == dual_subtitles.CHANNEL else channel) + "_tracks", [])
 
 func _remember_track(channel: String, id: int) -> void:
 	_track_restore.erase(channel) # A manual choice cancels any delayed restore.
@@ -1916,12 +1945,14 @@ func _capture_track_choices() -> Dictionary:
 		if _track_restore.has(channel): continue
 		# A still-pending automatic subtitle choice is not the user's "off".
 		if channel == "subtitle" and _subtitle_auto_pending and not _track_choices.has("subtitle"): continue
-		var id := audio_track_id if channel == "audio" else subtitles.requested_track
+		if channel == dual_subtitles.CHANNEL and not dual_subtitles.enabled and not _track_choices.has(channel): continue
+		var id: int = dual_subtitles.state.requested_track if channel == dual_subtitles.CHANNEL else (audio_track_id if channel == "audio" else subtitles.requested_track)
 		var choice := TrackMemory.describe(id, _raw_tracks(channel))
 		if not choice.is_empty(): choices[channel] = choice
 	return choices
 
 func _queue_track_restore(choices: Dictionary) -> void:
+	dual_subtitles.reset()
 	_track_restore = choices.duplicate(true)
 	_subtitle_restore_attempted = false
 	_track_choices = choices.duplicate(true)
@@ -1938,6 +1969,7 @@ func _restore_tracks() -> void:
 	_restore_subtitle_encodings()
 	_apply_subtitle_delay()
 	for channel in _track_restore.keys():
+		if channel == dual_subtitles.CHANNEL: continue
 		var id := TrackMemory.resolve(_track_restore[channel], _raw_tracks(channel))
 		if id == TrackMemory.UNRESOLVED:
 			# A remembered arbitrary sibling must be loaded again before its MPV id can resolve.
@@ -1956,6 +1988,7 @@ func _restore_tracks() -> void:
 				_subtitle_auto_pending = false
 				subtitle_file_error = ""
 	_auto_select_subtitle()
+	dual_subtitles.restore()
 
 func audio_timing_key() -> String: return _audio_timing_key
 
@@ -2020,6 +2053,7 @@ func commit_subtitle_delay(seconds: float, uri: String, key: String = "__current
 	# A release from a previous video's captured slider may save that video,
 	# but must never shift whichever file has since opened.
 	if uri == local_uri and key == _subtitle_timing_key and not set_subtitle_delay(seconds): return false
+	if uri == local_uri and not key.is_empty() and key == dual_subtitles.timing_key and not dual_subtitles.set_delay(seconds): return false
 	if not _remember_file: return true
 	if not subtitle_timing.remember_track(uri, key, seconds): return false
 	if not subtitle_timing.save():
@@ -2145,6 +2179,7 @@ func _poll_subtitles() -> void:
 		and not _waiting_first and _pending_revision.is_empty() and panel.visible
 	if not ready:
 		caption.visible = false
+		dual_subtitles.state.clear()
 		projected_subtitles.clear(material)
 		bitmap_subtitles.clear(material)
 		if _subtitle_surface: _subtitle_surface.visible = false
@@ -2156,8 +2191,10 @@ func _poll_subtitles() -> void:
 		var snapshot: Variant = JSON.parse_string(payload) if not payload.is_empty() else null
 		if snapshot is Dictionary and subtitles.observe(snapshot, media.session_id, media.last_pair):
 			_subtitle_received_ms = now
+			dual_subtitles.observe(snapshot)
 	if now - _subtitle_received_ms > 1000:
 		subtitles.clear()
+		dual_subtitles.state.clear()
 	# Keep the selected track and MPV text queue alive for narration.
 	if narration.hides_display():
 		caption.visible = false
@@ -2186,7 +2223,7 @@ func _poll_subtitles() -> void:
 		bitmap_subtitles.clear(material)
 		if _subtitle_surface: _subtitle_surface.visible = false
 	var text := listening.text_at(listening.playback_position(control.display_position_ms() / 1000.0 - audio_delay)) if listening.active() else subtitles.text
-	caption.text = SubtitleStyle.display_text(text, subtitle_line)
+	caption.text = dual_subtitles.compose(text, subtitle_line)
 	caption.visible = not caption.text.is_empty()
 	if caption.visible:
 		_place_caption()
@@ -2350,19 +2387,15 @@ func set_projection(value: int) -> void:
 	if value != geometry: _unlock_mode()
 	geometry = value
 	if _layout_pending is Dictionary: _layout_pending.geometry = value
-	# Fisheye is a projection, independent of mono/SBS/TB. Preserve the chosen eye layout.
-	var stereo := stereo_sbs if geometry == Geometry.Geometry.FISHEYE else geometry == Geometry.Geometry.HALF_EQUIRECT
+	# Fisheye and 360 are independent of mono/SBS/TB. Preserve the chosen eye layout.
+	var stereo := stereo_sbs if geometry in [Geometry.Geometry.FISHEYE, Geometry.Geometry.EQUIRECT_360] else geometry == Geometry.Geometry.HALF_EQUIRECT
 	var revise := false
 	if geometry != Geometry.Geometry.FLAT and stereo != stereo_sbs:
 		stereo_sbs = stereo
 		revise = true
-	# 2D -> 3D applies to the flat screen, Alpha to flat/VR180/fisheye: stop effects when switching
-	# to an unsupported projection, where their persistent bar buttons are disabled.
+	# 2D -> 3D applies only to the flat screen. Alpha keeps the source eye layout on every projection.
 	if geometry != Geometry.Geometry.FLAT and depth_requested:
 		depth_requested = false
-		revise = true
-	if geometry == Geometry.Geometry.EQUIRECT_360 and alpha_requested:
-		alpha_requested = false
 		revise = true
 	# The built-in mask belongs to the fisheye layout: other projections leave it.
 	if geometry != Geometry.Geometry.FISHEYE and packed_file:
@@ -2824,6 +2857,7 @@ func _on_error(id: int, payload: String) -> void:
 	_buffering_deadline_ms = 0
 	control.reject()
 	subtitles.clear()
+	dual_subtitles.state.clear()
 	_recover = code == "MPV_GL_CONTEXT_RECREATED"
 	_recover_ms = control.observed_position_ms
 	_unbind()
@@ -3328,6 +3362,18 @@ func _apply_geometry() -> void:
 	if caption and caption.visible: _place_caption()
 	_sync_subtitle_surface()
 	material.set_shader_parameter("stereo_sbs", stereo_sbs or _binding.warped)
+	var text_regions := PackedVector4Array()
+	var text_values: Array = media.last_pair.get("depth_text_regions", []) if depth_text_protection else []
+	for i in mini(8, text_values.size() / 4):
+		text_regions.append(Vector4(float(text_values[i*4]), float(text_values[i*4+1]), float(text_values[i*4+2]), float(text_values[i*4+3])))
+	material.set_shader_parameter("depth_text_count", text_regions.size())
+	var weights := PackedFloat32Array([1,1,1,1,1,1,1,1])
+	var text_weights: Array = media.last_pair.get("depth_text_weights", [])
+	for i in mini(8, text_weights.size()): weights[i] = clampf(float(text_weights[i]), 0.0, 1.0)
+	material.set_shader_parameter("depth_text_weights0", Vector4(weights[0],weights[1],weights[2],weights[3]))
+	material.set_shader_parameter("depth_text_weights1", Vector4(weights[4],weights[5],weights[6],weights[7]))
+	text_regions.resize(8)
+	material.set_shader_parameter("depth_text_regions", text_regions)
 	material.set_shader_parameter("depth_enabled", depth_enabled and not _binding.warped)
 	material.set_shader_parameter("depth_shift", DEPTH_SHIFT * depth_strength if depth_requested else 0.0)
 	_sync_portrait()
@@ -3340,6 +3386,7 @@ func layout_snapshot() -> Dictionary:
 	playback["bookmark_seek_mode"] = SeekPolicy.bookmark_override(bookmark_seek_mode)
 	playback["source_frame_pts_verified"] = not media.last_pair.is_empty()
 	return {"geometry": ["flat", "half_equirect_180", "fisheye_180", "equirect_360"][geometry], "stereo_sbs": stereo_sbs,
+		"text_protection_error": str(media.last_pair.get("text_protection_error", "")),
 		"mode_transition": mode_transition.snapshot(),
 		"stream_projection": {"kind": _stream_projection.get("kind", "none"), "mesh_active": _stream_mesh_active(),
 			"mesh_count": _stream_projection.get("meshes", []).size(), "stereo_mode": _stream_projection.get("stereo_mode", 0),

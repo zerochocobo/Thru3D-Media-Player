@@ -56,12 +56,19 @@ func button(menu: Node3D, target: int) -> Dictionary:
 	return {}
 
 func tap(menu: Node3D, target: int) -> void:
+	if menu.get_script() == preload("res://scripts/photo_magazine_controls.gd"): wake_controls(menu)
 	var b := button(menu, target)
 	check(not b.is_empty() and b.enabled, "Ray control available: %d" % target)
 	if b.is_empty() or not b.enabled: return
 	var origin: Vector3 = b.node.to_global(Vector3(0,0,1))
 	menu.press_pointer("right_hand", origin, -menu.global_basis.z, true)
 	menu.release_pointer("right_hand", origin, -menu.global_basis.z, true)
+
+func wake_controls(controls: Node3D) -> void:
+	var origin: Vector3 = controls.app.xr_camera.global_position
+	controls.app.test_rays = {"right_hand": [origin, (controls.app.photo.panel.global_position - origin).normalized()]}
+	var now := Time.get_ticks_msec()
+	controls.sync(now - controls.ENTER_MS); controls.sync(now)
 
 func single_to_magazine_checks(app: Node3D, source: String) -> void:
 	var menu: Node3D = app.photo_menu
@@ -377,7 +384,7 @@ func app_settings_path() -> String:
 
 func inline_checks(app: Node3D) -> void:
 	var controls: Node3D = app.photo_magazine_controls
-	controls.set_process(false); controls.sync()
+	controls.set_process(false); wake_controls(controls)
 	check(controls.visible and not app.photo_menu.visible, "Magazine controls are available without summoning the main menu")
 	check(app.menu_composition.menus.has(controls) and controls.get_meta("menu_companion",false), "Inline controls share the native high-resolution menu pool")
 	check(not button(controls,0).enabled, "First image cannot shift to a previous pairing")
@@ -398,12 +405,13 @@ func inline_checks(app: Node3D) -> void:
 	app.photo_hands.owners.clear(); controls.sync()
 	app.photo_menu.visible = true; app.photo_menu.online.hand = "left_hand"
 	check(app._active_menu() == app.photo_menu, "An existing menu pointer capture takes priority over floating actions")
-	app.photo_menu.online.hand = ""; app.photo_menu.dismiss()
+	app.photo_menu.online.hand = ""; app.photo_menu.dismiss(); wake_controls(controls)
+	app.test_rays = {"right_hand":ray}
 	check(not controls.press_pointer("left_hand",Vector3.ZERO,Vector3.UP,true), "The other hand cannot activate stale hover")
 	check(app._update_menu_pointer("right_hand",true), "Main trigger routing activates the distant next-pair button")
-	await settle(app.photo); controls.sync()
+	await settle(app.photo); wake_controls(controls)
 	check(app.photo.index == 1, "Next pairing shifts by one original image")
-	tap(controls,0); await settle(app.photo); controls.sync()
+	tap(controls,0); await settle(app.photo); wake_controls(controls)
 	check(app.photo.index == 0, "Previous pairing shifts back by one original image")
 	var single_button := button(controls,2)
 	controls.update_pointer("right_hand",single_button.node.to_global(Vector3(0,0,1)),-controls.global_basis.z,true)

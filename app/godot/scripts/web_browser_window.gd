@@ -57,6 +57,16 @@ func configure(owner: RefCounted, id: int) -> void:
 	set_meta("menu_browser_layer", true)
 	ray_max_distance = 100.0
 func composition_root() -> Node3D: return self
+func relocate_view(delta: Transform3D) -> void:
+	end_drag()
+	global_transform = delta * global_transform
+	_last_pose = delta * _last_pose
+	# Cinema controls and the saved floating page both belong to the old view frame.
+	# The far page itself remains anchored to the cinema's physical screen.
+	if _screen_attached: _floating_pose = delta * _floating_pose
+	if _near_pose != null: _near_pose = delta * _near_pose
+	if _near_applied != null: _near_applied = delta * _near_applied
+	if visible: refresh()
 func _ready() -> void:
 	super()
 	surface = Surface.new()
@@ -397,7 +407,9 @@ func has_pointer_capture() -> bool:
 func press_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: bool) -> bool:
 	if has_pointer_capture(): return true
 	var hit := ray_hit(origin, direction) if tracked else {}
-	if hit.is_empty(): return false
+	# Browser windows close explicitly. A generic menu dismiss would hide this
+	# window for one frame, then native tab synchronisation would reopen it.
+	if hit.is_empty(): return browser.active()
 	if not hit.get("enabled", true): return true
 	var peer: Node = browser.windows.get(int(hit.get("window", window_id)), self)
 	browser.focus_window(peer.window_id)

@@ -10,7 +10,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 
 class PdfSmbSourceTest {
-    private val uri = "smb://saved-server/VRRecommend/TEST/[weiphone][PDF电子书][龙珠]Vol.02.pdf"
+    private val uri = "smb://saved-server/fixtures/pdf/[fixture][PDF文档][示例]Vol.02.pdf"
     private val bytes = ByteArray(3 * PdfReadCache.BLOCK_BYTES + 197) { (it % 251).toByte() }
     private class Memory(val bytes: ByteArray) : StreamSource {
         val transferred = AtomicInteger(); val closes = AtomicInteger()

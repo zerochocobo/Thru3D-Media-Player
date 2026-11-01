@@ -162,16 +162,39 @@ func _independent_cutouts(variant: String) -> void:
 	material.set_shader_parameter("stereo_offset",Vector2.ZERO)
 	material.set_shader_parameter("viewing_eye",0)
 	material.set_shader_parameter("alpha_enabled",true)
-	for tb in [false,true]:
-		_textures(tb,0)
+	for geometry in [0,1,2,3]:
+		material.set_shader_parameter("video_geometry",geometry)
+		var directions := [Vector3(0,0,-1),Vector3(-1,0,0),Vector3(1,0,0),Vector3(-.001,0,1),Vector3(.001,0,1),Vector3(0,1,-1)] if geometry == 3 else [Vector3(0,0,-1)]
+		for direction in directions:
+			material.set_shader_parameter("test_direction",direction)
+			for tb in [false,true]:
+				_textures(tb,0)
+				material.set_shader_parameter("alpha_texture",ImageTexture.create_from_image(alpha))
+				for half in [false,true]:
+					material.set_shader_parameter("stereo_half",half)
+					for swap in [false,true]:
+						material.set_shader_parameter("swap_eyes",swap)
+						var left := await _pixel(0); var right := await _pixel(1)
+						var cutout := right if swap else left
+						var visible := left if swap else right
+						check(cutout.a < .01 and visible.a > .99 and visible.b > .75,
+							variant + " independent projected SBS/TB cutouts follow eye swap: " + str([geometry,direction,tb,half,swap]))
+	# Mono 360 uses its one inferred eye for both views, even when the unused mask differs.
+	material.set_shader_parameter("video_geometry",3)
+	material.set_shader_parameter("swap_eyes",false)
+	material.set_shader_parameter("stereo_sbs",false)
+	material.set_shader_parameter("stereo_half",false)
+	for opaque in [false,true]:
+		alpha.fill_rect(Rect2i(0,0,128,128),Color.WHITE if opaque else Color.BLACK)
 		material.set_shader_parameter("alpha_texture",ImageTexture.create_from_image(alpha))
-		for swap in [false,true]:
-			material.set_shader_parameter("swap_eyes",swap)
+		for direction in [Vector3(0,0,-1),Vector3(-1,0,0),Vector3(1,0,0),Vector3(.001,0,1)]:
+			material.set_shader_parameter("test_direction",direction)
 			var left := await _pixel(0); var right := await _pixel(1)
-			var cutout := right if swap else left
-			var visible := left if swap else right
-			check(cutout.a < .01 and visible.a > .99 and visible.b > .75,
-				variant + " independent SBS/TB cutouts and color follow eye swap: " + str([tb,swap]))
+			check(left.is_equal_approx(right) and (left.a > .99 if opaque else left.a < .01),
+				variant + " mono 360 shares its source mask across both eyes: " + str([direction,opaque]))
+	material.set_shader_parameter("stereo_sbs",true)
+	material.set_shader_parameter("test_direction",Vector3(0,0,-1))
+	material.set_shader_parameter("video_geometry",0)
 	material.set_shader_parameter("swap_eyes",false)
 	material.set_shader_parameter("alpha_enabled",false)
 

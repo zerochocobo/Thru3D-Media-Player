@@ -17,8 +17,12 @@ def narrationManifest = new groovy.json.JsonSlurper().parse(file('../../third_pa
 def cloneManifest = new groovy.json.JsonSlurper().parse(file('../../third_party/narration/clone_model.json'))
 def vadManifest = new groovy.json.JsonSlurper().parse(file('../../third_party/narration/vad_model.json'))
 def comicManifest = new groovy.json.JsonSlurper().parse(file('../../third_party/comic-ocr/model.json'))
+def textManifest = new groovy.json.JsonSlurper().parse(file('../../third_party/text-protection/model.json'))
+
 def narrationBundles = [narrationManifest, cloneManifest, vadManifest]
 def assetBundles = narrationBundles.collect { [bundle: it, root: "../../models/narration/${it.id}"] } + [[bundle: comicManifest, root: "../../models/comic-ocr/${comicManifest.id}"]]
+assetBundles += [[bundle: textManifest, root: "../../models/text-protection/${textManifest.id}"]]
+
 def listeningManifest = new groovy.json.JsonSlurper().parse(file('../../third_party/moonshine/model.json'))
 listeningManifest.models.each { language, bundle -> assetBundles += [[bundle: bundle, root: "../../models/listening/${language}"]] }
 def narrationModels = file("../../models/narration/${narrationManifest.id}")
@@ -105,6 +109,7 @@ android {
         consumerProguardFiles 'consumer-rules.pro'
         buildConfigField 'boolean', 'INCLUDE_DIAGNOSTIC_MODELS', includeDiagnostics.toString()
         buildConfigField 'boolean', 'NARRATION_ENABLED', 'true'
+        manifestPlaceholders.externalPlaybackProbeEnabled = includeDiagnostics.toString()
         ndk { abiFilters 'arm64-v8a' }
         externalNativeBuild {
             cmake {

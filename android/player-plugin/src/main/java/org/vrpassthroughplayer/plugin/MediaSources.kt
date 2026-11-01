@@ -34,6 +34,8 @@ internal class MediaSources(
     }
     @Volatile private var server: LocalStreamServer? = null
     private val webVideo = WebVideoStreams(::streams)
+    private val externalVideo = ExternalPlaybackStreams(::streams)
+    fun externalPlayback(request: ExternalPlaybackRequest, startMs: Int): String = externalVideo.receive(request, startMs)
     fun rememberWebVideo(descriptor: WebVideoDescriptor) = webVideo.remember(descriptor)
     fun webVideoProjection(uri: String): String = webVideo.descriptor(uri)?.projection?.toString() ?: "{}"
     private val smb by lazy { SmbLibrary(context() ?: error("Activity unavailable")) { streams() } }
@@ -42,6 +44,7 @@ internal class MediaSources(
     fun serverCancel(id: Int) = mediaServers.cancel(id)
     fun clearPlaybackReferences() { network.execute { runCatching { dlna.clearPlaybackReferences() } } }
     fun releaseMediaStream(uri: String) {
+        externalVideo.release(uri)
         webVideo.release(uri)
         usb.forgetStream(uri)
         mediaServers.release(uri)
@@ -343,6 +346,7 @@ internal class MediaSources(
         mediaServers.captureAudio(reader) ?: sidecarAudio(uri)
 
     private fun directPlayable(uri: String): String = when {
+        uri.startsWith("externalvideo://") -> externalVideo.playable(uri) ?: error("External video unavailable")
         webVideo.descriptor(uri) != null -> webVideo.prepare(webVideo.descriptor(uri)!!)
         runCatching { WebVideoPage.parse(uri) }.isSuccess -> error("Resolve this video from the browser before playing")
         uri.startsWith("dlna://") -> dlna.playable(uri)
@@ -517,6 +521,7 @@ internal class MediaSources(
     fun close() {
         stopped = true
         webVideo.close()
+        externalVideo.close()
         CloudAccountChanges.unsubscribe(cloudAccountChanged)
         mediaServers.close()
         cloudBrowseRequests.close(); photoDirectoryRequests.close()

@@ -59,6 +59,8 @@ func run() -> void:
 				menu.update_pointer(hand,start,direction,true); mono.update()
 				var pointer: Dictionary = menu._pointers[hand]
 				var vertices: PackedVector3Array = pointer.line.mesh.surface_get_arrays(0)[Mesh.ARRAY_VERTEX]
+				check((pointer.line.material_override.get_shader_parameter("ray_start") as Vector3).is_equal_approx(vertices[0]) \
+					and (pointer.line.material_override.get_shader_parameter("ray_end") as Vector3).is_equal_approx(vertices[1]),"Moving between targets keeps fresh ribbon endpoints through mono restore/capture")
 				var tip: Vector3 = pointer.line.to_global(vertices[1])
 				var delta := mono.camera.unproject_position(tip)-mono.camera.unproject_position(pointer.dot.global_position)
 				check(delta.length()<0.05,"Captured reticle centre and line tip share one screen pixel after head motion")
@@ -67,7 +69,11 @@ func run() -> void:
 		for saved in originals:
 			check(saved.node.transform.is_equal_approx(saved.pose),"Original button and ink transforms restored after drawing")
 	view.get_texture().get_image().save_png(output.path_join("mono-aligned.png"))
+	# Cinema toggles while a mono capture is active must not cache its temporary shader.
+	menu.set_scene_overlay(true)
 	mono.update(); mono.stop()
+	menu.set_scene_overlay(false)
+	check(menu._pointers.right_hand.line.material_override.shader != Mono.RAY_SHADER,"Leaving mono and cinema restores the finite-depth ray shader")
 	for saved in originals:
 		check(saved.node.transform.is_equal_approx(saved.pose),"Stopping mid-frame restores original UI transforms")
 	menu.dismiss(); compositor.set_active(false); view.queue_free(); await process_frame

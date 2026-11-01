@@ -21,7 +21,8 @@ internal object PhotoPortrait {
         return (value * 255).roundToInt().coerceIn(0,255)
     }
 
-    fun prepare(context: Context, source: File, strength: Float, token: Int, check: () -> Unit): JSONObject {
+    fun prepare(context: Context, source: File, strength: Float, token: Int, check: () -> Unit, rotation: Int = 0): JSONObject {
+        require(PhotoStereo.validRotation(rotation))
         val nearFile = File(source.parentFile,"depth.bin")
         val depth = JSONObject(File(source.parentFile,"depth.json").readText())
         require(depth.optString("photo_cache") == "da2-518-stretch-v2" && nearFile.length() == 518L*518*4)
@@ -71,14 +72,14 @@ internal object PhotoPortrait {
         BitmapFactory.decodeFile(sourceMask.path,maskBounds)
         val (eyeWidth,h) = PhotoStereo.size(maskBounds.outWidth,maskBounds.outHeight)
         val w = eyeWidth*2
-        val target = File(directory,"matte-${(strength*100).roundToInt()}-${w}x$h.r8")
+        val target = File(directory,"matte-v2-r$rotation-${(strength*100).roundToInt()}-${w}x$h.r8")
         // Repeated slider values reuse the per-eye matte, not another GPU colour warp.
-        if (target.length() == w.toLong()*h) return metadata(target,w,h)
+        if (target.length() == w.toLong()*h) return metadata(target,w,h,rotation)
         val near = ByteBuffer.allocateDirect(518*518*4).order(ByteOrder.LITTLE_ENDIAN)
         near.put(nearFile.readBytes()); near.rewind()
         val rect = depth.getJSONArray("rect")
         // Same oriented dimensions, gradient limits, convergence and disocclusion as colour.
-        val pair = PhotoStereo.prepare(sourceMask,near,FloatArray(4) { rect.getDouble(it).toFloat() },strength,token)
+        val pair = PhotoStereo.prepare(sourceMask,near,FloatArray(4) { rect.getDouble(it).toFloat() },strength,token,rotation)
         require(pair.getInt("stereo_width") == w && pair.getInt("stereo_height") == h)
         val raw = File(pair.getString("stereo_path"))
         if (target.length() != w.toLong()*h) {
@@ -89,7 +90,7 @@ internal object PhotoPortrait {
         raw.delete() // Godot retains only one byte per mask texel; no second full RGBA pair.
         check()
         retainRecentMattes(directory,target)
-        return metadata(target,w,h)
+        return metadata(target,w,h,rotation)
     }
 
     internal fun retainRecentMattes(directory: File, current: File) {
@@ -98,7 +99,8 @@ internal object PhotoPortrait {
             ?.sortedByDescending { it.lastModified() }?.drop(2)?.forEach { it.delete() }
     }
 
-    private fun metadata(file: File, width: Int, height: Int) = JSONObject()
+    private fun metadata(file: File, width: Int, height: Int, rotation: Int) = JSONObject()
         .put("path",file.path).put("width",width).put("height",height)
         .put("format","r8_sbs").put("strategy","video_soft_shift_gpu")
+        .put("rotation",rotation)
 }

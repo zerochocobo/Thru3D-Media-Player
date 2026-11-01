@@ -49,7 +49,7 @@ def metrics(ref, est):
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument('--serial', default='2G0YC5ZF7V0664')
+    p.add_argument('--serial', required=True)
     p.add_argument('--frames', type=int, default=60)
     p.add_argument('--iters', type=int, default=40)
     p.add_argument('--profiles', nargs='*', default=['512x512', '384x384', '320x320', '384x216', '256x144'])

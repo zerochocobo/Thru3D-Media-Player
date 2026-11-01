@@ -8,6 +8,8 @@ class InputMain extends Main:
 	func _cinema_scene_active() -> bool: return hall
 	func _cinema_interaction_owns() -> bool: return false
 	func _input_focused() -> bool: return true
+	func _disc_menu_press(_hand: String) -> bool: return false
+	func _capture_pointer_press(_hand: String) -> bool: return false
 	func _head_pose() -> Variant: return eye
 	func _move_pose(hand: String) -> Variant:
 		var ray: Variant = _ray(hand)
@@ -38,6 +40,23 @@ func _run() -> void:
 	browser.open("http://192.168.31.185:8096/web/index.html#!/home"); browser.tick()
 	var host: Node3D = browser.windows[1]
 	check(movie.requested_play and not host.on_screen(), "Opening floating web beside a cinema movie preserves playback")
+	# A missed trigger must not hide an independent window that tick() then reopens.
+	for hand in ["left_hand", "right_hand"]:
+		main.hand_pointers[hand] = preload("res://scripts/hand_pointer.gd").new()
+		main.hand_pointers[hand].source = "hand"
+		main.hand_pointers[hand].ray = [main.eye.origin, main.eye.basis.x]
+		var generation: int = host._buttons_generation
+		main._on_video_trigger(hand)
+		check(host.visible, "Physical trigger outside browser leaves it visible")
+		browser.next_poll = 0; browser.tick()
+		check(host._buttons_generation == generation, "Outside trigger never rebuilds the browser chrome")
+		main._controller_consumed.clear()
+		generation = host._buttons_generation
+		main._dispatch_hand_input({hand: {"source":"hand", "tracked":true, "down":true, "pressed":true}})
+		check(host.visible, "Hand pinch outside browser also leaves it visible")
+		browser.next_poll = 0; browser.tick()
+		check(host._buttons_generation == generation, "Outside pinch never hides and reopens browser")
+		main._dispatch_hand_input({hand: {"source":"hand", "tracked":true, "released":true}})
 	host.set_mode("cinema"); browser.open()
 	check(not host.on_screen() and movie.requested_play, "Reopening an old cinema web layout keeps the movie screen")
 	main.hall = false; browser.open()

@@ -7,7 +7,7 @@ foreach(pip_variant IN ITEMS video_rvm_pair video_rvm_pair_oes)
     set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${pip_path}")
     file(READ "${pip_path}" pip_code)
     string(REPLACE "\r\n" "\n" pip_code "${pip_code}")
-    foreach(pip_include IN ITEMS color_grade video_coordinates video_pip_coordinates sharpness)
+    foreach(pip_include IN ITEMS color_grade video_coordinates video_pip_coordinates sharpness text_protection)
         set(pip_include_path "${pip_shader_directory}/${pip_include}.gdshaderinc")
         set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${pip_include_path}")
         file(READ "${pip_include_path}" pip_include_code)
@@ -25,7 +25,9 @@ foreach(pip_variant IN ITEMS video_rvm_pair video_rvm_pair_oes)
     string(SUBSTRING "${pip_code}" ${pip_start} ${pip_length} pip_body)
     # Whole equirect/flat output already has the source's per-eye UV. Keep the
     # geometry flag for alignment wrapping, but avoid sin/cos -> atan/asin per pixel.
-    string(REPLACE "vec2 shown_uv = eye_uv(pip_uv(UV), sample_direction);"
+    # Atlas sampling has no stream-projection mesh or Godot COLOR vertex attribute.
+    string(REPLACE "\tif (projection_mesh && abs(COLOR.r - float(source_eye())) > 0.25) { discard; }" "" pip_body "${pip_body}")
+    string(REPLACE "vec2 shown_uv = projection_mesh ? UV : eye_uv(pip_uv(UV), sample_direction);"
         "vec2 shown_uv = atlas_cached ? texture(atlas_projection, (UV * 1024.0 + 0.5) / 1025.0).rg : (atlas_main && video_geometry != 2 ? UV : eye_uv(pip_uv(UV), sample_direction)); if (atlas_make_map) { result = vec4(shown_uv, 0.0, 1.0); return; }" pip_body "${pip_body}")
     # Use the small numeric mask first. Fully transparent pixels need no colour,
     # sharpening or gamma work. Derivatives must be evaluated before that return.
@@ -54,6 +56,7 @@ foreach(pip_variant IN ITEMS video_rvm_pair video_rvm_pair_oes)
     # GLSL ES uniforms have no Godot sampler hints or default initializers. The JNI
     # request explicitly supplies every active uniform from the currently bound material.
     string(REGEX REPLACE "uniform ([A-Za-z0-9_]+) ([A-Za-z0-9_]+)[ \t]*[^;]*;" "uniform \\1 \\2;" pip_prefix "${pip_prefix}")
+    string(REPLACE "uniform vec4 depth_text_regions;" "uniform vec4 depth_text_regions[8];" pip_prefix "${pip_prefix}")
     string(REPLACE "varying flat int eye_index;" "int eye_index;" pip_prefix "${pip_prefix}")
     string(REPLACE "varying vec3 media_direction;" "vec3 media_direction;" pip_prefix "${pip_prefix}")
     string(REPLACE "outside_lens(sample_direction)" "(!atlas_cached && outside_lens(sample_direction))" pip_body "${pip_body}")

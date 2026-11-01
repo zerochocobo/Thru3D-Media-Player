@@ -329,6 +329,7 @@ func _run() -> void:
 		and menu.rows[1].choices.map(func(option): return option.value) == ["fill", "stretch"], "Video settings offer both 2D-to-3D views, edge stretching by default")
 	choose_setting(menu, "depth_render", "fill")
 	check(settings_events.back() == ["depth_render", "fill"], "2D-to-3D view choice is reported")
+	check(not menu.rows.any(func(row): return row.get("key", "") == "depth_text_protection"), "Release hides 3D text protection in library settings")
 	menu._choose(menu.rows.filter(func(row): return row.get("video_settings_group", "") == "subtitles")[0])
 	menu._choose(menu.rows.filter(func(row): return row.get("subtitle_settings_group", "") == "appearance")[0])
 	var subtitle_rows: Array = menu.rows.filter(func(row): return str(row.get("key", "")).begins_with("subtitle_") and row.get("key", "") not in ["subtitle_task_mode", "subtitle_task_policy"])

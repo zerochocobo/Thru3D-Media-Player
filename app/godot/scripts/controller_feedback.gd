@@ -1,4 +1,5 @@
 extends Node3D
+const PointerRay := preload("res://scripts/pointer_ray.gd")
 ## Controller activity and world rays are independent of menu nodes and input ownership.
 ## Shared with the transport's auto-hide deadline; finish fading at that deadline.
 const IDLE_SECONDS := 5.0
@@ -112,10 +113,9 @@ func update_hand(hand: String, pose: Variant, ray: Variant, point: Variant, enga
 	var length := offset.length()
 	if length < 0.001: _hide(state); return state.opacity
 	nodes.line.visible = true
-	nodes.line.global_transform = Transform3D(Basis(Quaternion(Vector3.UP, offset / length)), (origin + endpoint) * 0.5)
-	nodes.line.scale = Vector3(1, length, 1)
+	PointerRay.draw(nodes.line, origin, endpoint)
 	var color := Color(1.0, 0.73, 0.24) if engaged else Color(0.85, 0.94, 1.0)
-	nodes.line.material_override.albedo_color = Color(color, pointer_opacity * 0.65)
+	nodes.line.material_override.set_shader_parameter("ray_color", Color(color, pointer_opacity * (0.5 if hit else 0.3)))
 	for key in ["rim", "dot"]:
 		nodes[key].visible = hit
 		if hit:
@@ -139,14 +139,13 @@ func _hide(state: Dictionary) -> void:
 func _make_pointer() -> Dictionary:
 	var result := {}
 	for key in ["line", "rim", "dot"]:
-		var node := MeshInstance3D.new()
 		if key == "line":
-			var mesh := CylinderMesh.new(); mesh.top_radius = 0.0007; mesh.bottom_radius = 0.0007
-			mesh.height = 1.0; mesh.radial_segments = 8; mesh.rings = 1
-			node.mesh = mesh
-		else:
-			var mesh := SphereMesh.new(); mesh.radius = 1.0; mesh.height = 2.0
-			mesh.radial_segments = 16; mesh.rings = 8; node.mesh = mesh
+			var line := PointerRay.create(Color.WHITE, 120)
+			add_child(line); result[key] = line
+			continue
+		var node := MeshInstance3D.new()
+		var mesh := SphereMesh.new(); mesh.radius = 1.0; mesh.height = 2.0
+		mesh.radial_segments = 16; mesh.rings = 8; node.mesh = mesh
 		var material := StandardMaterial3D.new()
 		material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 		material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA

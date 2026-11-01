@@ -9,9 +9,17 @@ import java.nio.ByteBuffer
 internal object ExtendedImageNative {
     init { System.loadLibrary("quest_image") }
     external fun kind(path: String, rawHint: Boolean): Int
-    external fun open(path: String, edge: Int, preview: Boolean): Long
+    private external fun openBudgeted(path: String, edge: Int, preview: Boolean, available: Long, output: Long): Long
+    fun open(path: String, edge: Int, preview: Boolean): Long {
+        val budget=PhotoMemory.snapshot()
+        return openBudgeted(path,edge,preview,budget.native,budget.output)
+    }
     external fun info(id: Long): LongArray?
-    external fun next(id: Long, checkpoint: Runnable): LongArray?
+    private external fun nextBudgeted(id: Long, checkpoint: Runnable, available: Long, output: Long): LongArray?
+    fun next(id: Long, checkpoint: Runnable): LongArray? {
+        val budget=PhotoMemory.snapshot()
+        return nextBudgeted(id,checkpoint,budget.native,budget.output)
+    }
     external fun pixels(token: Long): ByteArray?
     external fun reset(id: Long)
     external fun releaseFrame(token: Long)

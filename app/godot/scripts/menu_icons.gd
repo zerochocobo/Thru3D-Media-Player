@@ -7,6 +7,7 @@ static func provider(name: String, fallback: String = "cloud") -> String:
 
 # Original vector glyphs, generated once and shared by both ray menus.
 const PATHS := {
+	"photo_rotate": '<path d="M5 8A8 8 0 0 1 20 8M20 3V8H15"/><rect x="5" y="12" width="10" height="8" rx="1"/><path d="M20 12A8 8 0 0 1 18 18"/>',
 	"region_focus": '<path d="M3 8V3H8M16 3H21V8M21 16V21H16M8 21H3V16"/><rect x="7" y="7" width="10" height="10" rx="1"/>',
 	"phone": '<rect x="6" y="2" width="12" height="20" rx="2"/><path d="M10 18H14"/>',
 	"desktop": '<rect x="2" y="3" width="20" height="14" rx="2"/><path d="M12 17V22M7 22H17"/>',
@@ -123,6 +124,7 @@ const PATHS := {
 	"subtitle_voice": '<rect x="2" y="5" width="13" height="14" rx="2"/><path d="M10 9C5 7 5 17 10 15M17 9A4 4 0 0 1 17 15M20 6A8 8 0 0 1 20 18"/>',
 	"comic_voice": '<path d="M13 4H5A3 3 0 0 0 2 7V14A3 3 0 0 0 5 17V21L10 17H13A3 3 0 0 0 16 14V7A3 3 0 0 0 13 4ZM6 8H12M6 12H10M19 8Q22 11 19 14M21 5Q27 11 21 17"/>',
 	"subtitle": '<rect x="2" y="5" width="20" height="14" rx="3"/><path d="M10 9C5 7 5 17 10 15M18 9C13 7 13 17 18 15"/>',
+	"subtitle_dual": '<path d="M5.5 7.5C0.2 4.8 0.2 19.2 5.5 16.5M11.8 7.5C6.5 4.8 6.5 19.2 11.8 16.5M18.3 8.8C18.3 5.2 23.1 5.2 23.1 8.5C23.1 10.6 18.3 13 18.3 16.8H23.1" stroke-width="2"/><path d="M12.9 10L16.4 14M16.4 10L12.9 14" stroke-width="1.5"/>',
 	"info": '<circle cx="12" cy="12" r="9"/><path d="M12 11V17M12 7V7.1"/>',
 	"device": '<rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20H16M12 16V20"/>',
 	"server": '<rect x="3" y="3" width="18" height="7" rx="2"/><rect x="3" y="14" width="18" height="7" rx="2"/><path d="M7 6.5H7.1M7 17.5H7.1"/>',

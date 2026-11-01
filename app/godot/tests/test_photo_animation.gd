@@ -37,6 +37,7 @@ class Owner extends Node3D:
 	var _size := Vector2(2,2)
 	var archive_mode := false
 	var loading := false
+	var error := ""
 	var depth_requested := false
 	var portrait_requested := false
 	var spatial_requested := false
@@ -84,6 +85,9 @@ func run() -> void:
 	animation.freeze(); check(owner._full_image.get_pixel(0,0).g > 0.9,"Later AI snapshot follows the displayed green frame")
 	owner.platform.report.ended = true; animation.tick(); check(animation.ended,"Finite animation completion reaches UI")
 	animation.toggle(); check(owner.platform.restarts == 1 and not animation.ended,"Replay creates a new playback run")
+	owner.platform.report.failed = true; owner.platform.report.error = "PHOTO_OUT_OF_MEMORY"
+	animation.tick()
+	check(animation.failed and owner.error == "Not enough memory to open image", "Animation memory pressure reaches the photo error UI")
 	owner.archive_mode = true; check(not animation.available(),"Archive pages retain static presentation")
 	animation.tick(); check(owner.platform.pauses.back(),"Archive layout suspends the previous focused decoder")
 	owner.archive_mode = false; owner.gallery.mode = 4; check(not animation.available(),"Magazine pages retain static presentation")

@@ -65,6 +65,7 @@ function Convert-HexString([byte[]]$Bytes) { -join ($Bytes | ForEach-Object { $_
 $workspace = Split-Path -Parent $PSScriptRoot
 & "$PSScriptRoot\Assert-NarrationPackaged.ps1"
 & "$PSScriptRoot\Assert-VideoDepthModels.ps1" -Workspace $workspace
+& "$PSScriptRoot\Assert-TextProtectionModel.ps1" -Workspace $workspace
 # Gradle outputs, Godot's import cache and evidence paths belong to one checkout.
 # Concurrent builds can otherwise package another run's plugin or overwrite its tests.
 $buildMutex = [Threading.Mutex]::new($false, 'Local\VRPassthroughPlayer-Build')
@@ -254,6 +255,9 @@ if ($XrVendor -eq 'Pico') {
     & (Join-Path $workspace '.venv\Scripts\python.exe') (Join-Path $PSScriptRoot 'environment\prepare_pico_emulator_egl.py') --workspace $workspace --tool-root $ToolRoot
     if ($LASTEXITCODE -ne 0) { throw 'PICO emulator EGL compatibility overlay failed.' }
 }
+# Keep the reviewed external launch guard reproducible when Godot recreates its template.
+& (Join-Path $workspace '.venv\Scripts\python.exe') (Join-Path $PSScriptRoot 'environment\prepare_android_host.py') --workspace $workspace
+if ($LASTEXITCODE -ne 0) { throw 'Godot Android launch guard preparation failed.' }
 # The browser AAR declares SDK37.2, and Godot's generated build must use the same
 # compiler/runtime dependency versions as the plugin. Keep the device target unchanged.
 & "$workspace\tools\environment\Prepare-WebBrowserToolchain.ps1" -ToolRoot $ToolRoot -ForExport
@@ -309,6 +313,7 @@ if ($applicationLabels.Count -eq 0 -or @($applicationLabels | Where-Object { $_.
     throw "APK application display name differs from $applicationName."
 }
 $manifestText = Get-Content (Join-Path $logDirectory 'apk-manifest.txt') -Raw
+& "$PSScriptRoot/Assert-ExternalPlaybackPackaged.ps1" -ManifestText $manifestText
 if ($manifestText -notmatch ('(?m)^\s*A: package="' + [regex]::Escape($applicationId) + '"')) {
     throw 'APK application id differs from the requested package.'
 }
@@ -344,7 +349,7 @@ if ($manifestText -notmatch ('android:versionCode[^\r\n]*=' + $expectedVersionCo
 if ($manifestText -notmatch ('android:versionName[^\r\n]*="' + [regex]::Escape($appVersion) + '"')) {
     throw 'APK version differs from the project version.'
 }
-if ($BuildType -eq 'Release' -and ($manifestText -match 'android:debuggable[^\r\n]*=true' -or $manifestText -match 'DebugDiagnosticsReceiver|MpvDiagnosticActivity|LocalAccessTestProvider|DEBUG_RVM_STANDALONE')) {
+if ($BuildType -eq 'Release' -and ($manifestText -match 'android:debuggable[^\r\n]*=true' -or $manifestText -match 'DebugDiagnosticsReceiver|MpvDiagnosticActivity|ExternalPlaybackProbeActivity|LocalAccessTestProvider|DEBUG_RVM_STANDALONE')) {
     throw 'Distribution APK contains debugging or diagnostic entry points.'
 }
 $manifestLines = $manifestText -split "`n"
@@ -533,6 +538,25 @@ foreach ($symbol in @('Java_org_vrpassthroughplayer_plugin_RvmNative_runBenchmar
 & "$env:ANDROID_HOME\cmdline-tools\latest\bin\apkanalyzer.bat" dex packages --defined-only $apkPath 2>&1 | Out-File (Join-Path $logDirectory 'apk-dex-packages.log') -Encoding utf8
 if ($LASTEXITCODE -ne 0) { throw 'APK DEX inspection failed.' }
 $dexReport = Get-Content (Join-Path $logDirectory 'apk-dex-packages.log') -Raw
+foreach ($externalClass in @('ExternalPlaybackActivity','ExternalPlaybackStreams','ExternalPlaybackPending')) {
+    if ($dexReport -notmatch ('(?m)\sorg\.vrpassthroughplayer\.plugin\.' + $externalClass + '\r?$')) {
+        throw "APK is missing production external playback code: $externalClass"
+    }
+}
+if ($dexReport -notmatch '(?m)\scom\.godot\.game\.GodotLaunchIntentGuard\r?$') {
+    throw 'APK is missing the persistent Godot launch guard.'
+}
+foreach ($launchEntry in @('onCreate(Landroid/os/Bundle;)V','onNewIntent(Landroid/content/Intent;)V')) {
+    $launchEntryLog = Join-Path $logDirectory ($launchEntry.Split('(')[0] + '-launch-guard-dex.log')
+    & "$env:ANDROID_HOME\cmdline-tools\latest\bin\apkanalyzer.bat" dex code --class com.godot.game.GodotApp --method $launchEntry $apkPath 2>&1 | Out-File $launchEntryLog -Encoding utf8
+    if ($LASTEXITCODE -ne 0) { throw 'APK host launch entry inspection failed.' }
+    $launchEntryCode = Get-Content $launchEntryLog -Raw
+    $guardCall = $launchEntryCode.IndexOf('GodotLaunchIntentGuard;->sanitize(')
+    $parentCall = $launchEntryCode.IndexOf('GodotActivity;->' + $launchEntry.Split('(')[0] + '(')
+    if ($guardCall -lt 0 -or $parentCall -lt 0 -or $guardCall -ge $parentCall) {
+        throw 'APK host does not filter launch controls before GodotActivity.'
+    }
+}
 if ($dexReport -notmatch '(?m)\scom\.atilika\.kuromoji\.ipadic\.Tokenizer\r?$') { throw 'APK is missing the Japanese reading tokenizer.' }
 if ($dexReport -notmatch '(?m)\scom\.ibm\.icu\.text\.CharsetDetector\r?$') { throw 'APK is missing the subtitle charset detector.' }
 if ($dexReport -match 'org\.codelibs\.jcifs\.smb1?\.(http|https)(\.|\s|$)') {
@@ -560,6 +584,7 @@ if (-not $audioMethod.Contains('.method public final set_mpv_audio(IIDZ)Z') -or 
 & "$workspace\tools\Verify-MpvCandidate.ps1" -ToolRoot $ToolRoot -Candidate $MpvCandidate -ApkPath $apkPath
 foreach ($binding in @(@('set_mpv_subtitle(II)Z', 'setSubtitle(II)Z'), @('get_mpv_subtitles(IJ)Ljava/lang/String;', 'subtitles(IJ)Ljava/lang/String;'), @('get_mpv_subtitle_bitmap(IJ)[B', 'subtitleBitmap(IJ)[B'), @('set_mpv_narration(ILjava/lang/String;)Z', 'setNarration(ILjava/lang/String;)Z'),
     @('get_mpv_subtitle_bitmap_tinted(IJI)[B', 'subtitleBitmap(IJI)[B'),
+    @('set_mpv_secondary_subtitle(IID)Z', 'setSecondarySubtitle(IID)Z'),
     @('mpv_voice_clone_request(ILjava/lang/String;)Z', 'voiceCloneRequest(ILjava/lang/String;)Z'), @('mpv_voice_clone_status(I)Ljava/lang/String;', 'voiceCloneStatus(I)Ljava/lang/String;'),
     @('narration_voice_manager_request(Ljava/lang/String;)Z', 'voiceManagerRequest(Ljava/lang/String;)Z'), @('narration_voice_manager_status()Ljava/lang/String;', 'voiceManagerStatus()Ljava/lang/String;'))) {
     $methodName = $binding[0].Split('(')[0]

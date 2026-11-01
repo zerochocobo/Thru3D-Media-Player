@@ -1,4 +1,5 @@
 #include "../../native/rvm/photo_depth.h"
+#include "../../native/rvm/photo_rotation.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -9,6 +10,25 @@
 int main() {
     int failures = 0, checks = 0;
     auto check = [&](bool ok, const char* name) { ++checks; if (!ok) { ++failures; std::fprintf(stderr, "%s\n", name); } };
+    for (int turns : {0, 1, 2, 3}) {
+        const int w = 7, h = 4, rw = turns % 2 ? h : w, rh = turns % 2 ? w : h;
+        std::vector<int> counts(w*h);
+        bool roundtrip = true;
+        for (int y=0; y<h; ++y) for (int x=0; x<w; ++x) {
+            const auto p = quest::photo_rotated_pixel(x,y,w,h,turns);
+            check(p.first>=0 && p.first<rw && p.second>=0 && p.second<rh,"Rotated depth pixel stays in bounds");
+            ++counts[p.second*rw+p.first];
+            roundtrip &= quest::photo_rotated_pixel(p.first,p.second,rw,rh,(4-turns)%4)==std::make_pair(x,y);
+        }
+        check(roundtrip && std::all_of(counts.begin(),counts.end(),[](int n){return n==1;}),"Depth rotation is bijective with exact inverse");
+        const std::array<float,4> rect{{.125f,.25f,.5f,.625f}};
+        const auto rotated=quest::photo_rotated_rect(rect,turns);
+        const auto restored=quest::photo_rotated_rect(rotated,(4-turns)%4);
+        check(restored==rect,"Asymmetric padded content rect survives rotation/inverse");
+    }
+    bool invalid_rotation=false;
+    try { quest::photo_rotated_pixel(0,0,2,2,4); } catch (const std::invalid_argument&) { invalid_rotation=true; }
+    check(invalid_rotation,"Invalid rotation rejected");
     for (bool portrait : {false, true}) {
         const int w = 518, h = 518, x = portrait ? 76 : 0, y = portrait ? 0 : 76;
         const int cw = portrait ? 366 : w, ch = portrait ? h : 366;

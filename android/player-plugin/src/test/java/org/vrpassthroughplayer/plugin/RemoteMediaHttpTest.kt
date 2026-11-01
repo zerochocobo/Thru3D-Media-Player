@@ -4,10 +4,27 @@ import org.junit.Assert.*
 import org.junit.Test
 import java.net.URI
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.atomic.AtomicReference
 import org.vrpassthroughplayer.plugin.MediaServerClientTest.Fixture
 import org.vrpassthroughplayer.plugin.MediaServerClientTest.Reply
 
 class RemoteMediaHttpTest {
+    @Test fun releasingTheLastConnectionCanRaceClose() {
+        Fixture { _, _, _ -> Reply(body = byteArrayOf(1,2,3,4)) }.use { origin ->
+            repeat(80) {
+                RemoteMediaHttp().use { http ->
+                    val connection = http.open(URI(origin.url + "/clip.mp4"), "", emptyMap())
+                    val start = CountDownLatch(1); val failure = AtomicReference<Throwable?>()
+                    val release = Thread { start.await(); try { http.release(connection) } catch (error: Throwable) { failure.set(error) } }
+                    release.start(); start.countDown()
+                    try { http.close() } finally { release.join(2000); http.close() }
+                    assertFalse(release.isAlive); assertNull(failure.get())
+                    assertThrows(MediaServerFailure::class.java) { http.open(URI(origin.url + "/closed"), "", emptyMap()) }
+                }
+            }
+        }
+    }
     @Test fun sendsAgainAfterAConnectionCutWithoutAResponse() {
         // The host JDK silently resends a GET once after a closed connection; cut past that.
         val requests = AtomicInteger()

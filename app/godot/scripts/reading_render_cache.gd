@@ -1,6 +1,6 @@
 extends RefCounted
 ## Ready-to-display neighbours. Original files remain owned by ReadingPageWindow/Android.
-## Spreads prepare colour only. Generated depth/stereo belong exclusively to the displayed page.
+## This worker prepares colour; PhotoDisplay may separately admit one adjacent 3D task.
 const Pages := preload("res://scripts/pdf_pages.gd")
 const Methods := preload("res://scripts/platform_methods.gd")
 const IMAGE_BYTES := 64 * 1024 * 1024
@@ -164,7 +164,8 @@ func warm(at: int, entry: Dictionary) -> bool:
 	return false
 
 static func memory(value: Variant, seen: Dictionary) -> int:
-	if value is Image or value is ImageTexture:
+	if value is PackedByteArray: return value.size()
+	if value is Image or value is Texture2D:
 		var id: int = value.get_instance_id()
 		if seen.has(id): return 0
 		seen[id] = true

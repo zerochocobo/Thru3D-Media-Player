@@ -8,7 +8,8 @@ import org.json.JSONObject
 internal object WebBrowserMediaPolicy {
     /** Prefer the adapter's current-part binding over a playing sidebar preview. */
     fun extractionCandidate(candidates: List<JSONObject>): JSONObject? = candidates.maxWithOrNull(
-        compareBy<JSONObject> { it.optBoolean("bilibili_enabled") && !it.optBoolean("protected") && it.optJSONObject("bilibili") != null }
+        compareBy<JSONObject> { !it.optBoolean("protected") &&
+            (it.optBoolean("bilibili_enabled") && it.optJSONObject("bilibili") != null || it.optBoolean("douyin_enabled") && it.optJSONObject("douyin") != null) }
             .thenBy { it.optBoolean("fullscreen") }.thenBy { it.optBoolean("playing") }
             .thenBy { it.optLong("width") * it.optLong("height") })
     private val sites = listOf(

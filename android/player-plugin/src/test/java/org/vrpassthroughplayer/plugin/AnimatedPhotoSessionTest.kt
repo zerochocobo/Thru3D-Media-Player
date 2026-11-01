@@ -22,12 +22,13 @@ class AnimatedPhotoSessionTest {
     }
     private class Backend(val frameCount: Int=3,val plays: Long=1): PhotoAnimationBackend {
         var frame=0;var serial=0L;var resets=0;var closes=0;var maxLive=0;var failAt=-1
+        var failureMessage="decode failure"
         var onNext: (() -> Unit)?=null
         val live=mutableSetOf<Long>()
         override fun open(path: String)=1L
         override fun info(id: Long)=longArrayOf(3,2,2,frameCount.toLong(),plays,1,1,0)
         override fun next(id: Long,check: Runnable): LongArray {
-            check.run();if(frame==failAt)error("decode failure")
+            check.run();if(frame==failAt)error(failureMessage)
             if(frame++>=frameCount)return longArrayOf(0,0,0,0)
             val token=++serial;live.add(token);maxLive=maxOf(maxLive,live.size)
             onNext?.invoke();return longArrayOf(token,2,2,10000)
@@ -73,6 +74,12 @@ class AnimatedPhotoSessionTest {
     @Test fun failureRetainsOnlyValidFrameAndReportsFailure(){val f=Fixture(Backend().apply {failAt=1})
         try{f.work.drain();val state=f.poll();assertTrue(state.getBoolean("failed"));assertEquals(1,state.getLong("token"))
             assertEquals(1,f.backend.live.size)
+        }finally {f.close()}}
+    @Test fun memoryPressurePreservesLastGoodFrameAndReportsTheCause(){val f=Fixture(Backend().apply {
+        failAt=1;failureMessage="PHOTO_OUT_OF_MEMORY"
+    })
+        try{f.work.drain();val state=f.poll();assertTrue(state.getBoolean("failed"))
+            assertEquals("PHOTO_OUT_OF_MEMORY",state.getString("error"));assertEquals(1,state.getLong("token"))
         }finally {f.close()}}
     @Test fun longStallBoundsCatchupAndRebasesClock(){val f=Fixture(Backend(100,0))
         try{f.work.drain();f.poll();f.work.drain();f.time=5000000

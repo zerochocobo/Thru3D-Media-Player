@@ -1,6 +1,7 @@
 extends Node3D
 ## World-fixed layouts. All cards are bounded previews; the existing photo surface owns focus.
 const Previews := preload("res://scripts/photo_preview_cache.gd")
+const PointerRay := preload("res://scripts/pointer_ray.gd")
 const SHADER := preload("res://shaders/photo_gallery.gdshader")
 enum Layout { SINGLE, SIDES, WALL, FRAGMENTS, MAGAZINE }
 const NAMES := ["Single image", "Side previews", "Photo wall", "Memory fragments", "Magazine / Comics"]
@@ -16,6 +17,8 @@ const SCALE_LIMITS := Vector2(0.5, 2.0)
 const DISTANCE_LIMITS := Vector2(1.5, 8.0)
 const DEFAULT_DISTANCES := [3.0, 3.0, 4.0, 3.6, 3.0]
 const ANIMATION_SECONDS := 0.34
+const FOCUS_DRAG_START_METRES := 0.025
+const FOCUS_DRAG_START_RADIANS := deg_to_rad(1.0)
 var photo: Node3D
 var previews := Previews.new()
 var mode := Layout.SINGLE
@@ -716,15 +719,15 @@ func ray_hit(origin: Vector3, direction: Vector3) -> Dictionary:
 	if _swap_phase != 0 or not _dual.is_empty() or not photo or photo.portrait_presentation_active() or photo.inspect or not origin.is_finite() or not direction.is_finite() or direction.length_squared() < 0.00001: return {}
 	var nearest := {}
 	if mode in [Layout.SINGLE, Layout.SIDES, Layout.MAGAZINE] and photo.panel.visible and photo.geometry == 0:
-		var point: Variant = photo.screen_point(origin, direction)
-		if point != null and absf(point.x) <= photo._flat.size.x * 0.5 and absf(point.y) <= photo._flat.size.y * 0.5:
-			nearest = {"index": photo.index, "distance": origin.distance_to(photo.panel.global_transform * point), "point": photo.panel.global_transform * point}
+		var point: Variant = photo.screen_hit(origin, direction)
+		if point != null:
+			nearest = {"index": photo.index, "distance": origin.distance_to(point), "point": point}
 	if not visible and mode not in [Layout.SINGLE, Layout.MAGAZINE]: return {}
 	if focus >= 0 and progress >= 1 and not returning and photo.panel.visible:
 		if photo.geometry != 0: return {"index": focus, "distance": 2.0, "point": origin + direction.normalized() * 2.0}
-		var point: Variant = photo.screen_point(origin, direction)
-		if point != null and absf(point.x) <= photo._flat.size.x * 0.5 and absf(point.y) <= photo._flat.size.y * 0.5:
-			return {"index": focus, "distance": origin.distance_to(photo.panel.global_transform * point), "point": photo.panel.global_transform * point}
+		var point: Variant = photo.screen_hit(origin, direction)
+		if point != null:
+			return {"index": focus, "distance": origin.distance_to(point), "point": point}
 	for index in cards:
 		var card: Dictionary = cards[index]
 		if not card.node.visible: continue
@@ -755,7 +758,7 @@ func press_pointer(hand: String, origin: Vector3, direction: Vector3) -> bool:
 		var radius := focus_pose.origin.distance_to(eye)
 		var point: Variant = _drag_ray_point(origin, direction, eye, radius)
 		if point != null:
-			capture.merge({"focus_drag":true, "radius":radius, "start_angles":_direction_angles(point-eye),
+			capture.merge({"focus_drag":true, "eye":eye, "radius":radius, "start_angles":_direction_angles(point-eye),
 				"picture_angles":_direction_angles(focus_pose.origin-eye), "last_point":point})
 	return true
 
@@ -768,14 +771,24 @@ func update_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: 
 	if capture.get("hand", "") != hand: return
 	if capture.get("focus_drag", false):
 		var eye := _focus_eye()
-		var point: Variant = _drag_ray_point(origin, direction, eye, float(capture.radius))
+		if not eye.is_finite(): cancel_pointer(hand); return
+		# Only pointer motion can commit a drag. Moving the head must not cancel a click.
+		var reference_eye: Vector3 = capture.eye
+		var point: Variant = _drag_ray_point(origin, direction, reference_eye, float(capture.radius))
 		if point == null: cancel_pointer(hand); return
 		if point.distance_to(capture.last_point) > 0.6 * maxf(0.001, XRServer.world_scale): cancel_pointer(hand); return
 		capture.last_point = point
-		var offset := _direction_angles(point-eye) - Vector2(capture.start_angles)
+		var offset := _direction_angles(point-reference_eye) - Vector2(capture.start_angles)
 		offset.x = wrapf(offset.x, -PI, PI)
-		if offset.length() * float(capture.radius) >= 0.025 * maxf(0.001, XRServer.world_scale): capture.moved = true
+		# A fixed metre threshold becomes too sensitive to angular jitter on distant photos.
+		var threshold := maxf(FOCUS_DRAG_START_RADIANS, FOCUS_DRAG_START_METRES * maxf(0.001, XRServer.world_scale) / float(capture.radius))
+		if offset.length() >= threshold: capture.moved = true
 		if capture.moved:
+			# Committed dragging retains its live eye-centred, constant-distance placement.
+			point = _drag_ray_point(origin, direction, eye, float(capture.radius))
+			if point == null: cancel_pointer(hand); return
+			offset = _direction_angles(point-eye) - Vector2(capture.start_angles)
+			offset.x = wrapf(offset.x, -PI, PI)
 			var angles: Vector2 = Vector2(capture.picture_angles) + offset
 			var facing := Basis(Vector3.UP, angles.x) * Basis(Vector3.RIGHT, clampf(angles.y, -1.3, 1.3))
 			photo.set_flat_world_pose(Transform3D(facing, eye + facing * Vector3(0,0,-float(capture.radius))))
@@ -814,7 +827,10 @@ func release_pointer(hand: String, origin: Vector3, direction: Vector3, tracked:
 	if capture.is_empty(): return true
 	var pressed := capture.duplicate(); capture = {}
 	var hit := ray_hit(origin, direction)
-	if not pressed.moved and not hit.is_empty() and int(hit.index) == int(pressed.index): activate(int(hit.index))
+	# A captured full-photo click may drift just outside its rim within the drag dead zone.
+	var focused_click: bool = pressed.get("focus_drag", false) and int(pressed.index) == focus and progress >= 1 \
+		and not returning and photo.panel.visible and not photo.inspect
+	if not pressed.moved and (focused_click or (not hit.is_empty() and int(hit.index) == int(pressed.index))): activate(int(pressed.index))
 	elif pressed.moved and mode == Layout.WALL and focus < 0:
 		# Commit the closest visible exhibit as the next window centre, then refill off-screen slots.
 		var closest := -1; var angle := INF
@@ -830,9 +846,7 @@ func release_pointer(hand: String, origin: Vector3, direction: Vector3, tracked:
 
 func _show_pointer(hand: String, origin: Vector3, hit: Dictionary) -> void:
 	if not _pointers.has(hand):
-		var line := MeshInstance3D.new(); line.mesh = CylinderMesh.new()
-		line.mesh.top_radius = 1.0; line.mesh.bottom_radius = 1.0; line.mesh.height = 1.0; line.mesh.radial_segments = 6
-		line.material_override = _plain(Color(0.15, 0.9, 1.0, 0.65), 4); photo.add_child(line)
+		var line := PointerRay.create(Color(0.15, 0.9, 1.0, 0.5), 4, false); photo.add_child(line)
 		var dot := MeshInstance3D.new(); dot.mesh = SphereMesh.new(); dot.mesh.radius = 1.0; dot.mesh.height = 2.0
 		dot.mesh.radial_segments = 12; dot.mesh.rings = 6; dot.material_override = _plain(Color(0.85, 1.0, 1.0), 5)
 		dot.material_override.no_depth_test = true; photo.add_child(dot)
@@ -844,11 +858,7 @@ func _show_pointer(hand: String, origin: Vector3, hit: Dictionary) -> void:
 	var target: Vector3 = hit.point
 	var direction := (target - origin).normalized()
 	var length := origin.distance_to(target)
-	var right := direction.cross(Vector3.FORWARD)
-	if right.length_squared() < 0.001: right = direction.cross(Vector3.UP)
-	right = right.normalized()
-	pointer.line.global_transform = Transform3D(Basis(right, direction, right.cross(direction)), (origin + target) * 0.5)
-	pointer.line.scale = Vector3(0.0018, length, 0.0018)
+	PointerRay.draw(pointer.line, origin, target)
 	pointer.dot.global_position = target - direction * 0.012
 	pointer.dot.scale = Vector3.ONE * clampf(length * 0.0045, 0.008, 0.03)
 	pointer.dot.material_override.albedo_color = Color(1.0, 0.88, 0.55) if capture.get("hand", "") == hand else Color(0.8, 1.0, 1.0)

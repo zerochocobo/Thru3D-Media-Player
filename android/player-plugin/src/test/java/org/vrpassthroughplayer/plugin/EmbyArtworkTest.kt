@@ -31,6 +31,59 @@ class EmbyArtworkTest {
         .split('&').filter { it.contains('=') }.associate { val pair = it.split('=', limit = 2)
             URLDecoder.decode(pair[0], "UTF-8") to URLDecoder.decode(pair[1], "UTF-8") }
 
+    @Test fun serverAssignedFolderPrimaryCoversWorkWithOneOrManyChildren() {
+        for (provider in listOf("emby", "jellyfin")) for (count in listOf(1, 9)) {
+            val requests = mutableListOf<String>()
+            MediaServerClientTest.Fixture { request, _, _ ->
+                requests.add(request)
+                MediaServerClientTest.Reply(body = """{"Items":[{"Id":"folder","Name":"Album","Type":"Folder",
+                    "IsFolder":true,"ChildCount":$count,"ImageTags":{},"PrimaryImageItemId":"cover-source",
+                    "PrimaryImageTag":"assigned-tag"}],"TotalRecordCount":1}""".toByteArray())
+            }.use { fixture ->
+                val account = MediaServerAccount("test", "Test", fixture.url, "fake", provider, "user1")
+                MediaServerHttp(account).use { http ->
+                    val client = EmbyClient(account, http)
+                    val node = client.browse(JSONObject("""{"mode":"library","collection_type":"homevideos","library_id":"library"}"""))
+                        .getJSONArray("entries").getJSONObject(0)
+                    assertEquals("folder", node.getString("id")); assertTrue(node.getBoolean("container"))
+                    assertEquals(count, node.getInt("child_count")); assertFalse(node.has("uri"))
+                    assertTrue(node.getBoolean("has_cover"))
+                    val cover = node.getJSONObject("cover_image")
+                    assertEquals("cover-source", cover.getString("id"))
+                    assertEquals("Primary", cover.getString("image_type")); assertEquals("assigned-tag", cover.getString("image_tag"))
+                    assertEquals(cover.toString(), node.getJSONObject("image_variants").getJSONObject("Primary").toString())
+                    assertEquals("/Items/cover-source/Images/Primary/0", client.image(cover.getString("id"), "Primary", 0, cover.getString("image_tag"), 512).path)
+                    assertEquals(1, requests.size) // No child scan to choose a replacement image.
+                }
+            }
+        }
+    }
+
+    @Test fun assignedPrimaryFallbackPreservesOwnArtworkAndRejectsInvalidReferences() {
+        val cases = listOf(
+            Triple(""""ImageTags":{"Primary":"own"},"PrimaryImageItemId":"other","PrimaryImageTag":"assigned"""", "folder", "own"),
+            Triple(""""PrimaryImageTag":"same-item"""", "folder", "same-item"),
+            Triple(""""PrimaryImageItemId":"../outside","PrimaryImageTag":"bad","ImageTags":{"Thumb":"thumb"}""", "folder", "thumb"),
+            Triple(""""PrimaryImageItemId":"../outside","PrimaryImageTag":"bad"""", "", ""),
+            Triple(""""PrimaryImageItemId":"source"""", "", ""),
+            Triple("\"PrimaryImageItemId\":\"source\",\"PrimaryImageTag\":\"\"", "", "")
+        )
+        for ((fields, expectedId, expectedTag) in cases) MediaServerClientTest.Fixture { _, _, _ ->
+            MediaServerClientTest.Reply(body = """{"Items":[{"Id":"folder","Name":"Folder","Type":"Folder","IsFolder":true,$fields}],"TotalRecordCount":1}""".toByteArray())
+        }.use { fixture ->
+            val account = MediaServerAccount("test", "Test", fixture.url, "fake", "emby", "user1")
+            MediaServerHttp(account).use { http ->
+                val node = EmbyClient(account, http).browse(JSONObject().put("mode", "folders")).getJSONArray("entries").getJSONObject(0)
+                assertEquals(expectedId.isNotBlank(), node.getBoolean("has_cover"))
+                assertEquals("folder", node.getString("id")); assertFalse(node.has("uri"))
+                if (expectedId.isNotBlank()) {
+                    assertEquals(expectedId, node.getJSONObject("cover_image").getString("id"))
+                    assertEquals(expectedTag, node.getJSONObject("cover_image").getString("image_tag"))
+                } else assertFalse(node.has("cover_image"))
+            }
+        }
+    }
+
     @Test fun singleMovieFolderLendsOnlyHorizontalArtworkWithoutChangingIdentityOrScanning() {
         val requests = mutableListOf<String>()
         MediaServerClientTest.Fixture { request, _, _ ->

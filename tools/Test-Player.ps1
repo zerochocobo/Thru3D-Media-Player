@@ -14,10 +14,16 @@ New-Item -ItemType Directory -Path $subtitlePanelOutput -Force | Out-Null
 $subtitlePanelLog = Join-Path $subtitlePanelOutput 'side-panels.log'
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 3000 --script res://tests/test_subtitle_side_panels.gd 2>&1 | Tee-Object -FilePath $subtitlePanelLog
 if ($LASTEXITCODE -ne 0 -or (Get-Content $subtitlePanelLog -Raw) -match '(?m)^(SCRIPT ERROR:|ERROR:)' -or (Get-Content $subtitlePanelLog -Raw) -notmatch 'Subtitle side panels: [0-9]+ checks, 0 failures') { throw 'Subtitle column navigation and composition regression failed.' }
+$dualSubtitleLog = Join-Path $subtitlePanelOutput 'dual-subtitles.log'
+& $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_dual_subtitles.gd 2>&1 | Tee-Object -FilePath $dualSubtitleLog
+if ($LASTEXITCODE -ne 0 -or (Get-Content $dualSubtitleLog -Raw) -match '(?m)^(SCRIPT ERROR:|ERROR:)' -or (Get-Content $dualSubtitleLog -Raw) -notmatch 'Dual subtitles: [0-9]+ checks, 0 failures') { throw 'Optional dual subtitle regression failed.' }
 if ($RenderPreview) {
     $subtitlePanelRenderLog = Join-Path $subtitlePanelOutput 'render.log'
     & $env:GODOT_EXE --xr-mode off --rendering-method gl_compatibility --rendering-driver opengl3 --path $projectDirectory --quit-after 3000 --script res://tests/render_subtitle_side_panels.gd 2>&1 | Tee-Object -FilePath $subtitlePanelRenderLog
     if ($LASTEXITCODE -ne 0 -or (Get-Content $subtitlePanelRenderLog -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:)' -or (Get-Content $subtitlePanelRenderLog -Raw) -notmatch 'Subtitle side panel render: [0-9]+ checks, 0 failures') { throw 'Subtitle column render failed.' }
+    $dualSubtitleRenderLog = Join-Path $subtitlePanelOutput 'dual-subtitles-render.log'
+    & $env:GODOT_EXE --xr-mode off --rendering-method gl_compatibility --rendering-driver opengl3 --path $projectDirectory --quit-after 1800 --script res://tests/render_dual_subtitles.gd 2>&1 | Tee-Object -FilePath $dualSubtitleRenderLog
+    if ($LASTEXITCODE -ne 0 -or (Get-Content $dualSubtitleRenderLog -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:)' -or (Get-Content $dualSubtitleRenderLog -Raw) -notmatch 'Dual subtitle render: [0-9]+ checks, 0 failures') { throw 'Dual subtitle glyph and layout render failed.' }
 }
 & "$PSScriptRoot\Test-VideoPip.ps1" -Godot $env:GODOT_EXE
 & "$PSScriptRoot\Test-VideoModeTransition.ps1" -ToolRoot $ToolRoot -SkipJvm
@@ -54,6 +60,20 @@ if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $workspace 'build/output/con
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $workspace 'build/output/controller-feedback-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|ERROR:)' -or (Get-Content (Join-Path $workspace 'build/output/controller-feedback-host.log') -Raw) -notmatch 'Controller feedback: [0-9]+ checks, 0 failures') { throw 'World controller feedback and picture manipulation regression failed.' }
 & $env:GODOT_EXE --xr-mode off --rendering-method gl_compatibility --rendering-driver opengl3 --path $projectDirectory --quit-after 1800 --script res://tests/render_controller_feedback.gd 2>&1 | Tee-Object -FilePath (Join-Path $workspace 'build/output/controller-feedback-render.log')
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $workspace 'build/output/controller-feedback-render.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:)' -or (Get-Content (Join-Path $workspace 'build/output/controller-feedback-render.log') -Raw) -notmatch 'Controller feedback render: [0-9]+ checks, 0 failures') { throw 'World controller pointer pixels regression failed.' }
+$pointerOutput = Join-Path $workspace 'build/output/pointer-ray'
+New-Item -ItemType Directory -Path $pointerOutput -Force | Out-Null
+foreach ($pointerTest in @('test_pointer_ray', 'test_mono_menu_pointer')) {
+    $pointerLog = Join-Path $pointerOutput ($pointerTest + '.log')
+    & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script ('res://tests/' + $pointerTest + '.gd') 2>&1 | Tee-Object -FilePath $pointerLog
+    $pointerResult = Get-Content -LiteralPath $pointerLog -Raw
+    if ($LASTEXITCODE -ne 0 -or $pointerResult -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)' -or $pointerResult -notmatch '(Pointer ray|Mono menu pointer): [0-9]+ checks, 0 failures') { throw ('Pointer ray regression failed: ' + $pointerTest) }
+}
+if ($RenderPreview) {
+    $pointerLog = Join-Path $pointerOutput 'ray-render.log'
+    & $env:GODOT_EXE --xr-mode off --rendering-method gl_compatibility --rendering-driver opengl3 --path $projectDirectory --quit-after 1800 --script res://tests/test_pointer_ray.gd -- --render 2>&1 | Tee-Object -FilePath $pointerLog
+    $pointerResult = Get-Content -LiteralPath $pointerLog -Raw
+    if ($LASTEXITCODE -ne 0 -or $pointerResult -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)' -or $pointerResult -notmatch 'Pointer ray: [0-9]+ checks, 0 failures') { throw 'Pointer ray near/far and stereo rendering failed.' }
+}
 $watchOutput = Join-Path $workspace 'build/output/wrist-watch'
 New-Item -ItemType Directory -Path $watchOutput -Force | Out-Null
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_wrist_watch.gd 2>&1 | Tee-Object -FilePath (Join-Path $watchOutput 'host.log')
@@ -94,6 +114,16 @@ if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'interface-dep
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'library-distance-host.log') -Raw) -notmatch 'Library distance: [0-9]+ checks, 0 failures') { throw 'Library distance preference regression failed.' }
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 18000 --script res://tests/test_photo_layouts.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'photo-layouts-host.log')
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'photo-layouts-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|ERROR:)' -or (Get-Content (Join-Path $logDirectory 'photo-layouts-host.log') -Raw) -notmatch 'Photo layouts: [0-9]+ checks, 0 failures') { throw 'Photo layout regression failed.' }
+& $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 18000 --script res://tests/test_photo_gallery_click.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'photo-gallery-click-host.log')
+if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'photo-gallery-click-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|ERROR:)' -or (Get-Content (Join-Path $logDirectory 'photo-gallery-click-host.log') -Raw) -notmatch 'Photo gallery clicks: [0-9]+ checks, 0 failures') { throw 'Photo gallery click regression failed.' }
+& $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 12000 --script res://tests/test_photo_bottom_controls.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'photo-bottom-controls-host.log')
+if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'photo-bottom-controls-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|ERROR:)' -or (Get-Content (Join-Path $logDirectory 'photo-bottom-controls-host.log') -Raw) -notmatch 'Photo bottom controls: [0-9]+ checks, 0 failures') { throw 'Photo bottom controls regression failed.' }
+& $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 5000 --script res://tests/test_photo_stereo_rotation.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'photo-stereo-rotation-host.log')
+if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'photo-stereo-rotation-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|ERROR:)' -or (Get-Content (Join-Path $logDirectory 'photo-stereo-rotation-host.log') -Raw) -notmatch 'Photo stereo rotation: [0-9]+ checks, 0 failures') { throw 'Photo stereo rotation regression failed.' }
+if ($RenderPreview) {
+    & $env:GODOT_EXE --xr-mode off --rendering-method gl_compatibility --rendering-driver opengl3 --path $projectDirectory --quit-after 6000 --script res://tests/render_photo_magazine.gd -- --inline-only 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'photo-inline-render.log')
+    if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'photo-inline-render.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)' -or (Get-Content (Join-Path $logDirectory 'photo-inline-render.log') -Raw) -notmatch 'Photo inline renders: [0-9]+ checks, 0 failures') { throw 'Photo inline controls rendering failed.' }
+}
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_memory_swipe.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'memory-swipe-host.log')
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'memory-swipe-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|ERROR:)') { throw 'Memory displacement swipe regression failed.' }
 & $env:GODOT_EXE --xr-mode off --rendering-method gl_compatibility --rendering-driver opengl3 --path $projectDirectory --quit-after 18000 --script res://tests/render_photo_layouts.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'photo-layouts-render.log')
@@ -106,6 +136,10 @@ if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'spatial-photo
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'photo-loading-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|ERROR:)') { throw 'Photo loading feedback regression failed.' }
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_photo_presentation.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'photo-presentation-host.log')
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'photo-presentation-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|ERROR:)' -or (Get-Content (Join-Path $logDirectory 'photo-presentation-host.log') -Raw) -notmatch 'Photo presentation: [0-9]+ checks, 0 failures') { throw 'Photo presentation readiness regression failed.' }
+& "$PSScriptRoot/Test-FrameGpuTiming.ps1"
+& $env:GODOT_EXE --xr-mode off --rendering-method gl_compatibility --rendering-driver opengl3 --path $projectDirectory --quit-after 6000 --script res://tests/test_photo_render_cache.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'photo-render-cache.log')
+$photoRenderCacheLog = Get-Content (Join-Path $logDirectory 'photo-render-cache.log') -Raw
+if ($LASTEXITCODE -ne 0 -or $photoRenderCacheLog -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)' -or $photoRenderCacheLog -notmatch 'Photo render cache: [0-9]+ checks, 0 failures') { throw 'Photo GPU cache and immediate presentation regression failed.' }
 & $env:GODOT_EXE --xr-mode off --rendering-method gl_compatibility --rendering-driver opengl3 --path $projectDirectory --quit-after 1800 --script res://tests/render_photo_loading.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'photo-loading-render.log')
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'photo-loading-render.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)') { throw 'Photo loading pixels failed.' }
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_photo_depth_payload.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'photo-depth-payload.log')
@@ -156,6 +190,13 @@ if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'photo-input-v
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'photo-palm-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)') { throw 'Photo palm swipe regression failed.' }
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_photo_preload.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'photo-preload-host.log')
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'photo-preload-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)') { throw 'Photo preload/cycle regression failed.' }
+& $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_background_resource_budget.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'background-resource-budget.log')
+if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'background-resource-budget.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)' -or (Get-Content (Join-Path $logDirectory 'background-resource-budget.log') -Raw) -notmatch 'Background resource budget: [0-9]+ checks, 0 failures') { throw 'Adaptive photo cache budget regression failed.' }
+foreach ($cacheTest in @('test_photo_cache_settings', 'test_photo_portrait_cache')) {
+    $cacheLog = Join-Path $logDirectory ($cacheTest + '.log')
+    & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script ('res://tests/' + $cacheTest + '.gd') 2>&1 | Tee-Object -FilePath $cacheLog
+    if ($LASTEXITCODE -ne 0 -or (Get-Content $cacheLog -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)' -or (Get-Content $cacheLog -Raw) -notmatch 'Photo (cache settings|portrait cache): [0-9]+ checks, 0 failures') { throw ('Photo adaptive cache regression failed: ' + $cacheTest) }
+}
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_comic_depth_navigation.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'comic-depth-navigation-host.log')
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'comic-depth-navigation-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)' -or (Get-Content (Join-Path $logDirectory 'comic-depth-navigation-host.log') -Raw) -notmatch 'Comic depth navigation: [0-9]+ checks, 0 failures') { throw 'Comic depth navigation regression failed.' }
 & $env:GODOT_EXE --xr-mode off --rendering-method gl_compatibility --rendering-driver opengl3 --path $projectDirectory --quit-after 1800 --script res://tests/render_photo_immersive.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'photo-immersive-render.log')

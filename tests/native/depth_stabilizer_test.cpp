@@ -150,6 +150,28 @@ int main() {
         check(same < 1e-5, "content rect: near bars leave the picture's near map unchanged");
         check(squeezed > 0.1, "without a content rect the bars change the picture's near map");
     }
+    // Relative inverse-depth scale/bias can change while the RGB shot stays identical.
+    // Such a reband must not erase the low-frequency temporal history and snap the wall.
+    for(auto options : {std::pair<float,int>{1.f,1}, {1.5f,1}, {1.5f,3}}) {
+        DepthStabilizer control(w,h), rescaled(w,h);
+        control.set_speed(options.first);rescaled.set_speed(options.first);
+        control.set_dilation(0);rescaled.set_dilation(0);
+        scene(1.f,7);
+        for(int y=0;y<h;++y)for(int x=0;x<w;++x)inv[y*w+x]=float(x)/(w-1)+.05f*y/h;
+        std::vector<float> a(n),b(n),shifted(n);
+        for(int f=0;f<8;++f) {
+            if(f==6)for(int y=35;y<65;++y)for(int x=80;x<130;++x)inv[y*w+x]+=.1f;
+            control.process(inv.data(),rgb.data(),options.second,a.data());
+            rescaled.process(inv.data(),rgb.data(),options.second,b.data());
+        }
+        for(size_t p=0;p<n;++p)shifted[p]=inv[p]*1.7f+30.f;
+        control.process(inv.data(),rgb.data(),options.second,a.data());
+        rescaled.process(shifted.data(),rgb.data(),options.second,b.data());
+        double error=0;for(size_t p=0;p<n;++p)error=std::max(error,double(std::fabs(a[p]-b[p])));
+        std::printf("same-shot reband speed %.1f step %d max error %.6f\n",options.first,options.second,error);
+        check(error<1e-4,"same-shot affine reband preserves temporal history");
+        check(!rescaled.last_cut()&&rescaled.cuts()==control.cuts(),"a model range jump is not reported as a scene cut");
+    }
     std::printf("depth stabilizer checks=%d failures=%d\n", checks, failures);
     return failures == 0 ? 0 : 1;
 }

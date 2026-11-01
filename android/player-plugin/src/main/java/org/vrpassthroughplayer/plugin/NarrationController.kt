@@ -593,7 +593,11 @@ internal class NarrationController(private val context: () -> Context?, private 
                 (observation.optString("paused")=="yes"||observation.optString("paused_for_cache")=="yes")
             nextPoll=now+if(transition)20_000_000 else 100_000_000
         }
-        val subtitle=observation.optJSONObject("subtitle") ?: JSONObject()
+        val primarySubtitle=observation.optJSONObject("subtitle") ?: JSONObject()
+        val secondarySubtitle=primarySubtitle.optJSONObject("secondary")
+        val readingSecondary=config.source>0 && secondarySubtitle?.optString("track_id")?.toIntOrNull()==config.source
+        val subtitle=if(readingSecondary)secondarySubtitle!! else primarySubtitle
+        val subtitleCommand=if(readingSecondary)subtitle.optLong("command_id") else current.subtitleCommand
         val selected=if(config.source<0)subtitle.optString("track_id").toIntOrNull() ?: 0 else config.source
         val tracks=observation.optJSONArray("subtitle_tracks")
         val metadata=tracks?.let { (0 until it.length()).map { i -> it.getJSONObject(i) }.find { it.optInt("id")==selected } }
@@ -650,7 +654,7 @@ internal class NarrationController(private val context: () -> Context?, private 
         }
         // Text extraction is independent of ONNX model loading/speech generation.
         if(!preview&&readable&&clockValid&&lang.isNotEmpty()) {
-            sharedTimeline(outer.optJSONObject("subtitle_queue") ?: JSONObject(),mediaPosition,selected,lang,delay,current.subtitleCommand)
+            sharedTimeline(outer.optJSONObject(if(readingSecondary)"secondary_subtitle_queue" else "subtitle_queue") ?: JSONObject(),mediaPosition,selected,lang,delay,subtitleCommand)
             if(reuseAvailable)reuseDisplayed(subtitle,mediaPosition,selected,lang,delay)
         }
         if(state=="ready") {

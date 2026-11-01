@@ -75,7 +75,7 @@ internal class EmbyClient(private val account: MediaServerAccount, private val h
                 setOf("", "homevideos", "photos", "mixed", "mixedcontent"))
         val libraryTypes = when (request.optString("collection_type")) {
             "tvshows" -> "Series"
-            "movies" -> "Movie,Video,BoxSet"
+            "movies" -> "Movie,Video"
             else -> "Movie,Series,Video,BoxSet"
         }
         val args = linkedMapOf<String, Any>("Recursive" to !folders,
@@ -92,6 +92,10 @@ internal class EmbyClient(private val account: MediaServerAccount, private val h
             "library" -> libraryTypes
             "photos" -> "Photo"
             else -> "Movie,Episode,Video,Photo"
+        }
+        if (request.optString("mode") == "library" && request.optString("collection_type") == "movies") {
+            // The movie wall lists films; collections and physical directories remain in folder browsing.
+            args["GroupItemsIntoCollections"] = false
         }
         val parent = if (request.optBoolean("all_libraries")) "" else request.optString("parent_id").ifBlank { request.optString("library_id") }
         if (parent.isNotBlank()) args["ParentId"] = mediaId(parent)
@@ -238,12 +242,19 @@ internal class EmbyClient(private val account: MediaServerAccount, private val h
             val tag = if (type == "Backdrop") data.optJSONArray("BackdropImageTags")?.optString(0).orEmpty() else tags.optString(type)
             if (tag.isNotBlank()) variants.put(type, imageNode(id, type, 0, tag))
         }
+        // Emby can assign a folder another item's primary image instead of ImageTags.Primary.
+        // Follow the server's explicit reference, including for multi-video folders.
+        val primaryTag = data.optString("PrimaryImageTag")
+        if (!variants.has("Primary") && primaryTag.isNotBlank()) {
+            val primaryId = data.optString("PrimaryImageItemId").ifBlank { id }
+            runCatching { mediaId(primaryId) }.getOrNull()?.let {
+                variants.put("Primary", imageNode(it, "Primary", 0, primaryTag))
+            }
+        }
         result.put("image_variants", variants)
-        val coverType = listOf("Primary", "Thumb", "Backdrop").firstOrNull { tags.optString(it).isNotBlank() ||
-            (it == "Backdrop" && (data.optJSONArray("BackdropImageTags")?.length() ?: 0) > 0) }
+        val coverType = listOf("Primary", "Thumb", "Backdrop").firstOrNull { variants.has(it) }
         result.put("has_cover", coverType != null)
-        if (coverType != null) result.put("cover_image", imageNode(id, coverType, 0,
-            if (coverType == "Backdrop") data.optJSONArray("BackdropImageTags")?.optString(0).orEmpty() else tags.optString(coverType)))
+        if (coverType != null) result.put("cover_image", variants.getJSONObject(coverType))
         if (!container) result.put("uri", if (photo) MediaLibraryUri.photo(account.id, id) else MediaLibraryUri.scene(account.id, id))
         return result
     }

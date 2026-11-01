@@ -14,8 +14,9 @@ class InlineHost extends Node3D:
 	var interface_move := {"capture":{}}
 	var photo_hands := {"owners":{}}
 	var display := {"preview":false}
+	var test_ray: Variant
 	func _input_focused() -> bool: return true
-	func _ray(_hand: String) -> Variant: return null
+	func _ray(_hand: String) -> Variant: return test_ray
 
 var output := "res://../../build/output/photo-magazine/previews"
 var checks := 0
@@ -36,6 +37,13 @@ func run() -> void:
 	world.environment = environment; view.add_child(world)
 	var camera := Camera3D.new(); camera.projection = Camera3D.PROJECTION_ORTHOGONAL
 	camera.size = 1.9; camera.position = Vector3(0,.20,2); view.add_child(camera); camera.current = true
+	if OS.get_cmdline_user_args().has("--inline-only"):
+		await render_spread(view, camera)
+		view.free(); await process_frame
+		for failure in failures: push_error(failure)
+		print("Photo inline renders: %d checks, %d failures" % [checks, failures.size()])
+		quit(0 if failures.is_empty() else 1)
+		return
 	for language in ["en","zh","zh_Hant","ja"]:
 		I18n.use(language)
 		for scene in ["wall","layouts","rows","background","background-night","background-import","background-actions","background-actions-saving","background-actions-set","background-actions-error","background-actions-global-saving","background-actions-global-set","background-actions-global-error","background-set","magazine","archive","reading-order","magazine-rtl","magazine-depth","magazine-portrait","failed"]:
@@ -142,14 +150,31 @@ func render_inline_controls(view: SubViewport, camera: Camera3D, photo: Node3D) 
 	camera.projection = Camera3D.PROJECTION_PERSPECTIVE; camera.fov = 55; camera.position = Vector3(0,-.2,4)
 	for language in ["en","zh","zh_Hant","ja"]:
 		I18n.use(language)
-		for variant in ["normal","large","far"]:
+		for variant in ["normal","large","far","rotated"]:
+			camera.position.z = 5.2 if variant == "rotated" else 4.0
+			photo.screen_rotation = 0; photo._apply_geometry()
 			photo.set_screen_scale(1.5 if variant == "large" else 1.0)
 			photo.set_flat_world_pose(Transform3D(Basis.from_euler(Vector3(0,.18,.08)) if variant == "far" else Basis.IDENTITY,Vector3(0,0,-2 if variant == "far" else 0)))
+			if variant == "rotated":
+				var centre: Vector3 = photo.panel.global_position
+				check(photo.rotate_clockwise() and photo.panel.global_position.is_equal_approx(centre), "Rendered photo rotates about its centre")
 			controls.sync()
-			var b: Dictionary = controls._buttons[2]
+			host.test_ray = [camera.global_position, (photo.panel.global_position - camera.global_position).normalized()]
+			var now := Time.get_ticks_msec()
+			controls.sync(now - controls.ENTER_MS); controls.sync(now)
+			var b: Dictionary = controls._buttons.filter(func(item): return item.target == 2)[0]
 			controls.update_pointer("right_hand",b.node.to_global(Vector3(0,0,1)),-controls.global_basis.z,true)
 			for frame in 3: await RenderingServer.frame_post_draw
-			view.get_texture().get_image().save_png(output.path_join(language+"-inline-"+variant+".png"))
+			var pixels := view.get_texture().get_image()
+			pixels.save_png(output.path_join(language+"-inline-"+variant+".png"))
+			for side in [-1.0, 1.0]:
+				var point := Vector3(photo._flat.size.x * 0.25 * side, photo._flat.size.y * 0.23, 0)
+				if photo.screen_curve > 0:
+					var radius: float = photo._curve_radius()
+					var angle := point.x / radius
+					point.x = sin(angle) * radius; point.z = radius * (1.0 - cos(angle))
+				var pixel: Color = pixels.get_pixelv(Vector2i(camera.unproject_position(photo.panel.to_global(point))))
+				check(pixel.r > pixel.b if side < 0 else pixel.b > pixel.r, "Rendered source follows the central rotation and curved surface")
 			check(controls._tooltip.visible,language+"/"+variant+" shows a translated tooltip below the icons")
 			check(controls._tooltip.position.y + controls._tooltip.mesh.size.y*.5 < -.06, "Tooltip stays below the image and button row")
 	# Exercise the production high-resolution capture pool as well as the eye-buffer fallback.
@@ -165,4 +190,5 @@ func render_inline_controls(view: SubViewport, camera: Camera3D, photo: Node3D) 
 	photo.set_screen_scale(.65); controls.sync(); composition.update()
 	check(not composition.geometry_dirty and composition.active == controls, "Changing picture scale rebuilds native capture bounds")
 	composition.shutdown("fixture_complete")
+	photo.screen_rotation = 0; photo._apply_geometry()
 	host.free(); photo.set_screen_scale(1.0)

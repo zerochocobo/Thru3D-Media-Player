@@ -47,7 +47,9 @@ func run() -> void:
 					var pointer: Dictionary = menu._pointers[hand]
 					var vertices: PackedVector3Array = pointer.line.mesh.surface_get_arrays(0)[Mesh.ARRAY_VERTEX]
 					var line_tip: Vector3 = pointer.line.to_global(vertices[1])
-					check(pointer.line.to_global(vertices[0]).is_equal_approx(origin),"Mono line still starts at the tracked hand")
+					check(pointer.line.to_global(vertices[0]).is_equal_approx(origin),"Mono ray starts at the tracked hand")
+					var weights: PackedColorArray = pointer.line.mesh.surface_get_arrays(0)[Mesh.ARRAY_COLOR]
+					check(weights[0].a==0.0 and weights[1].a==1.0,"Full mono ray keeps the hand and reticle stereo projection weights")
 					check(line_tip.is_equal_approx(pointer.dot.global_position),"Mono line ends at the dot centre for %d/%s" % [target,hand])
 					check((pointer.dot.global_position-main.head_pose.origin).normalized().is_equal_approx((menu.to_global(hit.point)-main.head_pose.origin).normalized()),"Reticle keeps the hit's exact centre-eye direction")
 	for side in [-1,1]:

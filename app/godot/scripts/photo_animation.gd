@@ -74,6 +74,9 @@ func tick() -> void:
 	var finished := bool(report.get("ended", false))
 	var error := bool(report.get("failed", false))
 	if finished != ended or error != failed:
+		if error:
+			host.error = "Not enough memory to open image" if report.get("error") == "PHOTO_OUT_OF_MEMORY" else "Image unavailable"
+			if report.get("error") == "PHOTO_MEMORY_UNAVAILABLE": host.error = "Unable to check available memory"
 		ended = finished; failed = error; host.changed.emit()
 	if next_token <= 0 or next_token == token or suspended: return
 	host._ensure_full_texture()

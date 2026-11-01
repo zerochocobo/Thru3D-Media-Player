@@ -76,6 +76,7 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
         var playback: MediaSession? = null
         var playing = false
         var pauseToken = 0L
+        var lastMediaReport = 0L
         var pauseWasPlaying = false
         var pauseHasDom = false
         val pauseReports = mutableMapOf<WebExtension.Port, Pair<Long, Boolean>>()
@@ -291,6 +292,8 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
     // Prepare the explicitly selectable Beta route while the page loads; selection is
     // separate from observation so the existing player button keeps its old backend.
     private fun bilibiliEnabled(tab: Tab) = tab.bilibiliProbe !in setOf("uncapped", "network") && bilibiliEligible(tab)
+    // Unfinished route stays closed in the public release, including captured media.
+    private fun douyinEnabled(tab: Tab) = false
     private fun networkEnabled(tab: Tab) = networkPolicy()?.enabled(tab.url) == true || tab.bilibiliProbe == "network" && bilibiliEligible(tab)
     /** Debug-only A/B/C/P0b comparison; no persistent preference, reload or account changes. */
     fun configureBilibiliProbe(tabId: Int, mode: String) {
@@ -304,9 +307,10 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
     }
     private fun sendNetworkPolicy(tab: Tab) {
         val message = JSONObject().put("action", "network_policy").put("enabled", networkEnabled(tab))
-            .put("bilibili", bilibiliEnabled(tab))
+            .put("bilibili", bilibiliEnabled(tab)).put("douyin", douyinEnabled(tab)).put("diagnostics", mediaDiagnosticsEnabled())
         tab.ports.keys.forEach { runCatching { it.postMessage(message) } }
     }
+    private fun mediaDiagnosticsEnabled() = ((activity()?.applicationInfo?.flags ?: 0) and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
     private fun dispatch(action: () -> Unit) {
         if (closed.get()) return
         val runnable = Runnable {
@@ -407,8 +411,8 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                     // handoff button enabled until the new document reports matching tracks.
                     for (media in tab.media.values) for (i in 0 until media.length()) {
                         media.optJSONObject(i)?.put("bilibili_ready", false)
-
-            }
+                        media.optJSONObject(i)?.put("douyin_ready", false)
+                    }
                     // Single-page sites change location without onPageStart. Leaving the page
                     // that held a focused field ends its unsent-input protection; otherwise one
                     // search-box tap pins the tab forever and blocks every later popup.
@@ -590,6 +594,7 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                         }
                         if (data.optString("type") != "media") return
                         val items = data.optJSONArray("videos") ?: return
+                        tab.lastMediaReport = SystemClock.uptimeMillis()
                         if (tab.pauseToken > 0 && data.optLong("pause_token") == tab.pauseToken && data.optBoolean("pause_held"))
                             tab.pauseReports[port] = tab.pauseToken to data.optBoolean("pause_has_media")
                         else tab.pauseReports.remove(port)
@@ -600,15 +605,19 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                             val id = item.optString("id").take(64)
                             val networkEnabled = networkEnabled(tab)
                             val bilibiliEnabled = bilibiliEnabled(tab)
-                            val network = if (networkEnabled || bilibiliEnabled) WebBrowserNetworkMedia.candidates(item) else JSONArray()
+                            val douyinEnabled = douyinEnabled(tab)
+                            val network = if (networkEnabled || bilibiliEnabled || douyinEnabled) WebBrowserNetworkMedia.candidates(item) else JSONArray()
                             val bilibili = item.optJSONObject("bilibili")?.takeIf { bilibiliEnabled &&
                                 !item.optBoolean("protected") && it.toString().length <= 96 * 1024 && it.optString("page") == tab.url }
                             val server = !item.optBoolean("protected") && WebBrowserServerMedia.original(item.optString("source"), tab.url) != null
+                            val douyin = item.optJSONObject("douyin")?.takeIf { douyinEnabled && !item.optBoolean("protected") &&
+                                it.toString().length <= 96 * 1024 && it.optString("page") == tab.url && it.optString("id") == WebBrowserDouyin.pageId(tab.url) }
                             safe.put(JSONObject().put("width", item.optInt("width").coerceIn(0, 32768))
                                 .put("id", id).put("fullscreen", item.optBoolean("fullscreen") || server && item.optBoolean("server_play"))
                                 .put("server_play", server && item.optBoolean("server_play"))
                                 .put("server_media", server)
                                 .put("bilibili_ready", bilibili != null && item.optBoolean("bilibili_ready"))
+                                .put("douyin_ready", douyin != null && item.optBoolean("douyin_ready"))
                                 .put("network_media", networkEnabled && (network.length() > 0 || !item.optBoolean("protected") && WebBrowserNetworkMedia.address(item.optString("source")) != null))
                                 .put("media_epoch", "${System.identityHashCode(port)}:$id:${item.optLong("network_epoch")}")
                                 .put("protected", item.optBoolean("protected"))
@@ -622,6 +631,7 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                                     .put("network", network)
                                     .put("network_enabled", networkEnabled)
                                     .put("bilibili_enabled", bilibiliEnabled).put("bilibili", bilibili)
+                                    .put("douyin_enabled", douyinEnabled).put("douyin", douyin)
                                     .put("bilibili_probe", tab.bilibiliProbe)
                                     .put("diagnostic_max_height", if (tab.bilibiliProbe == "uncapped" && bilibiliEligible(tab)) 2160 else 1080)
                                     .put("capture_identity", "${tab.id}:${tab.navigation}:${System.identityHashCode(port)}:$id:${item.optLong("network_epoch")}:${tab.bilibiliProbe}")
@@ -640,7 +650,7 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                 })
                 port.postMessage(JSONObject().put("action", if (displayed(tab)) "resume" else "suspend"))
                 port.postMessage(JSONObject().put("action", "network_policy").put("enabled", networkEnabled(tab))
-                    .put("bilibili", bilibiliEnabled(tab)))
+                    .put("bilibili", bilibiliEnabled(tab)).put("douyin", douyinEnabled(tab)).put("diagnostics", mediaDiagnosticsEnabled()))
                 if (tab.pauseToken > 0) port.postMessage(JSONObject().put("action", "pause_media").put("token", tab.pauseToken))
             }
         }, NATIVE_APP)
@@ -1223,6 +1233,7 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
             .put("network_capture_available", tab != null && WebBrowserNetworkPolicy.available(tab.url))
             .put("network_capture_enabled", tab != null && networkEnabled(tab))
             .put("bilibili_beta_available", tab != null && bilibiliEligible(tab))
+            .put("douyin_beta_available", false)
             .put("fullscreen_request", tab?.fullscreen?.request ?: 0).put("fullscreen_video", tab?.fullscreen?.active == true)
             .put("captured_fullscreen_request", tab?.capturedFullscreenRequest ?: 0)
             .put("url", tab?.url ?: "about:blank").put("title", tab?.title.orEmpty())
@@ -1238,6 +1249,14 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                 })
             .put("playing", tab != null && (tab.playing || tab.media.values.any { list -> (0 until list.length()).any { i -> list.getJSONObject(i).optBoolean("playing") } }))
             .put("error", tab?.error.orEmpty()).put("editing", tab?.editing == true).put("videos", videos).put("fullscreen", tab?.fullScreen == true)
+            .also { result -> if (mediaDiagnosticsEnabled() && tab != null) {
+                val ports = tab.ports.filterValues { it == tab.navigation }.keys
+                result.put("pause_ports", ports.size)
+                    .put("pause_report_ports", ports.count { tab.pauseReports[it]?.first == tab.pauseToken })
+                    .put("pause_media_ports", ports.count { (tab.media[it]?.length() ?: 0) > 0 })
+                    .put("pause_missing_media_ports", ports.count { (tab.media[it]?.length() ?: 0) > 0 && tab.pauseReports[it]?.first != tab.pauseToken })
+                    .put("media_report_age_ms", if (tab.lastMediaReport > 0) (SystemClock.uptimeMillis() - tab.lastMediaReport).coerceIn(0, 3_600_000) else -1)
+            } }
     }
     private fun publish() {
         if (changingLayout) return

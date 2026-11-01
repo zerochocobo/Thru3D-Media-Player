@@ -259,7 +259,7 @@ def main() -> None:
     parser.add_argument('action', choices=('collect', 'verify', 'verify-gpu', 'verify-rgb'))
     parser.add_argument('report', type=Path)
     parser.add_argument('--adb', default=str(Path(os.environ.get('THRU3D_TOOL_ROOT', str(Path.home() / '.cache/thru3d-toolchain'))) / 'android-sdk/platform-tools/adb.exe'))
-    parser.add_argument('--serial', default='2G0YC5ZF7V0664')
+    parser.add_argument('--serial', required=True)
     parser.add_argument('--desktop-cpu', action='store_true', help='Add independent desktop ncnn FP32 analysis; keep original acceptance threshold')
     parser.add_argument('--ffmpeg',default=os.environ.get('THRU3D_FFMPEG', 'ffmpeg'))
     args = parser.parse_args()

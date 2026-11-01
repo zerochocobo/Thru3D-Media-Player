@@ -17,11 +17,14 @@ using Check=std::function<void()>;
 class Decoder {
 public:
     Info info;
+    // Refreshed from Android's current system and Java heap headroom before each frame.
+    uint64_t memory_budget=512ULL*1024*1024, output_budget=128ULL*1024*1024;
     virtual ~Decoder()=default;
     virtual bool next(Frame&,const Check&)=0;
     virtual void reset()=0;
 };
 Kind sniff(const std::string& path, bool raw_hint=false);
-std::unique_ptr<Decoder> open(const std::string& path, int edge, bool preview, const Check& check={});
+std::unique_ptr<Decoder> open(const std::string& path, int edge, bool preview, const Check& check={},
+    uint64_t memory_budget=512ULL*1024*1024,uint64_t output_budget=128ULL*1024*1024);
 Info raw_info(const std::string& path);
 }

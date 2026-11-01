@@ -104,7 +104,7 @@ func run() -> void:
 	while not main.background._builtin_requested.is_empty() and Time.get_ticks_msec() < deadline: await create_timer(.01).timeout
 	check(main.background._material.panorama != null, "Video background loads the production panorama")
 	main.video.alpha_requested = true
-	for geometry in [0, 1, 2]:
+	for geometry in [0, 1, 2, 3]:
 		main.video.geometry = geometry
 		main._update_background()
 		check(not main.display.applied_passthrough and main.display.scenery == main.background.sky, "Cutout retains selected sky: " + str(geometry))

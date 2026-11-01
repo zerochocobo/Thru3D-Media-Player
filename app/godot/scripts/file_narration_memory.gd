@@ -1,6 +1,6 @@
 extends "res://scripts/file_mode_memory.gd"
 ## Narration belongs to the original video, including its explicit Off choice.
-const FIELDS := ["enabled", "profile", "voice_origin", "voice_id", "zh_voice", "en_voice", "ja_voice", "language", "line", "hide_subtitles", "duck", "volume", "offset", "voice_kind", "custom_voice"]
+const FIELDS := ["enabled", "profile", "voice_origin", "voice_id", "zh_voice", "en_voice", "ja_voice", "language", "line", "hide_subtitles", "duck", "volume", "offset", "voice_kind", "custom_voice", "source_secondary"]
 const Languages := preload("res://scripts/narration_languages.gd")
 
 func _bank_path(bank: int) -> String:
@@ -9,9 +9,12 @@ func _bank_path(bank: int) -> String:
 func _value_field() -> String: return "narration"
 
 func _valid_value(value: Variant) -> bool:
-	if not value is Dictionary or value.size() not in [FIELDS.size(), FIELDS.size() - 2]: return false
+	if not value is Dictionary or value.size() not in [FIELDS.size(), FIELDS.size() - 1, FIELDS.size() - 2, FIELDS.size() - 3]: return false
+	for key in value:
+		if key not in FIELDS: return false
+	if not value.get("source_secondary", false) is bool: return false
 	for key in FIELDS:
-		if key in ["voice_kind", "custom_voice"]: continue
+		if key in ["voice_kind", "custom_voice", "source_secondary"]: continue
 		if not value.has(key): return false
 	if value.has("voice_kind") != value.has("custom_voice"): return false
 	if value.get("voice_kind", "preset") not in ["preset", "custom"]: return false
@@ -31,6 +34,7 @@ func _normalize_value(value: Dictionary) -> Dictionary:
 	result.line = int(result.line)
 	result.voice_kind = str(result.get("voice_kind", "preset"))
 	result.custom_voice = str(result.get("custom_voice", ""))
+	result.source_secondary = bool(result.get("source_secondary", false))
 	return result
 
 static func valid_custom_voice(value: String) -> bool:

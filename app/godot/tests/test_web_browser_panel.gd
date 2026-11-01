@@ -67,6 +67,18 @@ func _run() -> void:
 	menu.web_browser.next_poll = 0; menu.web_browser.tick(); menu.refresh()
 	menu.web_browser.action(Browser.BASE + 18)
 	check(platform.beta_requests == 1, "A stale Beta target cannot resolve an unavailable site")
+	platform.browser.douyin_beta_available = true
+	platform.browser.videos[0].bilibili_ready = false
+	platform.browser.videos[0].douyin_ready = true
+	platform.browser.url = "https://www.douyin.com/video/6961737553342991651"
+	platform.browser.native_supported = false
+	menu.web_browser.next_poll = 0; menu.web_browser.tick(); menu.refresh()
+	check(menu.web_browser.input_host()._buttons.any(func(button): return button.target == Browser.BASE + 18 and button.enabled), "Douyin exposes the same ready Beta action while legacy playback stays disabled")
+	check(menu.web_browser.beta_media_ready(platform.browser), "Douyin readiness selects the bound main video")
+	platform.browser.douyin_beta_available = false
+	platform.browser.videos[0].douyin_ready = false
+	platform.browser.native_supported = true
+	platform.browser.url = "https://www.youtube.com/watch?v=jNQXAC9IVRw"
 	platform.browser.playing = true; platform.browser.videos[0].playing = true
 	platform.browser.network_capture_available = false; platform.browser.network_capture_enabled = false
 	menu.web_browser.next_poll = 0; menu.web_browser.tick()

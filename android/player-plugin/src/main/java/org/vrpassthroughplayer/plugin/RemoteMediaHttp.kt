@@ -61,7 +61,7 @@ internal class RemoteMediaHttp : Closeable {
     }
 
     fun release(connection: HttpURLConnection) { live.remove(connection); connection.disconnect() }
-    override fun close() { synchronized(this) { closed = true }; live.toList().forEach(::release) }
+    override fun close() { synchronized(this) { closed = true }; live.forEach { runCatching { release(it) } } }
 
     private fun connectionCut(error: Exception): Boolean = when (error) {
         // A certificate the path presents is a real answer, not a cut.

@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <climits>
 #include <cstring>
 #include <fstream>
 #include <limits>
@@ -25,12 +26,28 @@ namespace thru::image {
 namespace {
 void require(bool value) { if (!value) throw std::runtime_error("PHOTO_FORMAT_UNSUPPORTED"); }
 void checkpoint(const Check& check) { if(check) check(); }
-void dimensions(int w,int h,int64_t limit=32*1024*1024) {
-    if(w<1 || h<1 || w>32768 || h>32768 || int64_t(w)*h>limit) throw std::runtime_error("PHOTO_TOO_LARGE");
+void dimensions(int w,int h,int64_t limit,int max_edge=INT32_MAX) {
+    if(w<1 || h<1 || w>max_edge || h>max_edge || int64_t(w)*h>limit) throw std::runtime_error("PHOTO_TOO_LARGE");
+}
+void memory_required(uint64_t bytes,uint64_t available) {
+    if(bytes>available)throw std::runtime_error("PHOTO_OUT_OF_MEMORY");
+}
+void avif_ok(avifResult result) {
+    if(result==AVIF_RESULT_OUT_OF_MEMORY)throw std::runtime_error("PHOTO_OUT_OF_MEMORY");
+    require(result==AVIF_RESULT_OK);
+}
+void raw_ok(int result) {
+    if(result==LIBRAW_UNSUFFICIENT_MEMORY)throw std::runtime_error("PHOTO_OUT_OF_MEMORY");
+    require(result==LIBRAW_SUCCESS);
+}
+std::pair<int,int> output_size(int width,int height,int edge,uint64_t budget) {
+    memory_required(4,budget);
+    const double ratio=std::min({1.,double(edge)/std::max(width,height),std::sqrt(double(budget)/4/width/height)});
+    return {std::max(1,int(width*ratio)),std::max(1,int(height*ratio))};
 }
 std::vector<uint8_t> bytes(const std::string& path,size_t max=128*1024*1024) {
     std::ifstream input(path,std::ios::binary|std::ios::ate); require(bool(input));
-    auto length=input.tellg(); require(length>0 && uint64_t(length)<=max);
+    auto length=input.tellg(); require(length>0);memory_required(uint64_t(length),max);
     std::vector<uint8_t> data(static_cast<size_t>(length)); input.seekg(0); input.read(reinterpret_cast<char*>(data.data()),length);
     require(bool(input)); return data;
 }
@@ -122,13 +139,13 @@ class Avif final:public Decoder {
     int edge;
 public:
     Avif(const std::string& path,int limit):edge(limit) {
-        decoder=avifDecoderCreate(); require(decoder!=nullptr);
+        decoder=avifDecoderCreate(); if(!decoder)throw std::bad_alloc();
         try {
-            decoder->maxThreads=2;decoder->imageSizeLimit=32*1024*1024;decoder->imageDimensionLimit=32768;
+            decoder->maxThreads=2;decoder->imageSizeLimit=AVIF_DEFAULT_IMAGE_SIZE_LIMIT;decoder->imageDimensionLimit=0;
             decoder->imageCountLimit=100000;decoder->allowProgressive=AVIF_FALSE;
-            require(avifDecoderSetIOFile(decoder,path.c_str())==AVIF_RESULT_OK);
-            require(avifDecoderParse(decoder)==AVIF_RESULT_OK);
-            auto* im=decoder->image; dimensions(int(im->width),int(im->height),decoder->imageCount>1?8*1024*1024:32*1024*1024);
+            avif_ok(avifDecoderSetIOFile(decoder,path.c_str()));
+            avif_ok(avifDecoderParse(decoder));
+            auto* im=decoder->image; dimensions(int(im->width),int(im->height),AVIF_DEFAULT_IMAGE_SIZE_LIMIT,INT32_MAX);
             info.kind=Kind::Avif;info.width=int(im->width);info.height=int(im->height);info.frames=decoder->imageCount;
             info.plays=decoder->repetitionCount==AVIF_REPETITION_COUNT_INFINITE?0:std::max<int64_t>(1,int64_t(decoder->repetitionCount)+1);
             info.alpha=decoder->alphaPresent;
@@ -139,41 +156,75 @@ public:
     }
     ~Avif() override {if(decoder) avifDecoderDestroy(decoder);}
     bool next(Frame& out,const Check& check) override {
+        if(decoder->imageIndex+1>=decoder->imageCount)return false;
+        // Keep the coded planes, but never allocate full-resolution RGBA16/RGBA8 copies.
+        // Account for decoder reference planes, bounded RGB bands and downstream bitmap copies.
+        const auto* header=decoder->image;avifPixelFormatInfo format{};avifGetPixelFormatInfo(header->yuvFormat,&format);
+        uint64_t planes=uint64_t(header->width)*header->height;
+        if(!format.monochrome)planes+=2*((uint64_t(header->width)+(1<<format.chromaShiftX)-1)>>format.chromaShiftX)*
+            ((uint64_t(header->height)+(1<<format.chromaShiftY)-1)>>format.chromaShiftY);
+        if(decoder->alphaPresent)planes+=uint64_t(header->width)*header->height;
+        planes*=header->depth>8?2:1;
+        const uint64_t working=planes*2+uint64_t(header->width)*36*12;
+        memory_required(working+12,memory_budget);
+        auto [target_w,target_h]=output_size(info.width,info.height,edge,std::min(output_budget,(memory_budget-working)/3));
         checkpoint(check);auto result=avifDecoderNextImage(decoder);if(result==AVIF_RESULT_NO_IMAGES_REMAINING) return false;
-        require(result==AVIF_RESULT_OK);checkpoint(check);const auto* im=decoder->image;
-        avifRGBImage rgb;avifRGBImageSetDefaults(&rgb,im);rgb.depth=16;rgb.format=AVIF_RGB_FORMAT_RGBA;rgb.alphaPremultiplied=AVIF_FALSE;
-        std::vector<uint16_t> pixels(size_t(im->width)*im->height*4);rgb.pixels=reinterpret_cast<uint8_t*>(pixels.data());rgb.rowBytes=im->width*8;
-        require(avifImageYUVToRGB(im,&rgb)==AVIF_RESULT_OK);checkpoint(check);
-        Frame converted;converted.width=int(im->width);converted.height=int(im->height);color_avif(im,pixels,converted);
-        std::vector<uint16_t>().swap(pixels);
+        avif_ok(result);checkpoint(check);const auto* im=decoder->image;
         avifCropRect crop{0,0,im->width,im->height};
         if(im->transformFlags&AVIF_TRANSFORM_CLAP) require(avifCropRectFromCleanApertureBox(&crop,&im->clap,im->width,im->height,&decoder->diag));
         const int angle=(im->transformFlags&AVIF_TRANSFORM_IROT)?im->irot.angle:0;
         const bool mirror=bool(im->transformFlags&AVIF_TRANSFORM_IMIR);
-        out.width=(angle&1)?int(crop.height):int(crop.width);out.height=(angle&1)?int(crop.width):int(crop.height);
+        const int width=(angle&1)?target_h:target_w,height=(angle&1)?target_w:target_h;
+        out.width=target_w;out.height=target_h;
         out.rgba.resize(size_t(out.width)*out.height*4);
-        for(int y=0;y<int(crop.height);y++) {checkpoint(check);for(int x=0;x<int(crop.width);x++) {
+        std::vector<uint16_t> pixels;Frame band;int band_top=-1,band_bottom=0;
+        auto rows=[&](int first,int last){
+            if(first>=band_top && last<band_bottom)return;
+            checkpoint(check);
+            band_top=std::max(0,(first/32)*32-2);band_bottom=std::min(int(im->height),band_top+36);
+            avifImage view{};avifCropRect rect{0,uint32_t(band_top),im->width,uint32_t(band_bottom-band_top)};
+            avif_ok(avifImageSetViewRect(&view,im,&rect));
+            avifRGBImage rgb;avifRGBImageSetDefaults(&rgb,&view);rgb.depth=16;rgb.format=AVIF_RGB_FORMAT_RGBA;rgb.alphaPremultiplied=AVIF_FALSE;
+            pixels.resize(size_t(view.width)*view.height*4);rgb.pixels=reinterpret_cast<uint8_t*>(pixels.data());rgb.rowBytes=view.width*8;
+            avif_ok(avifImageYUVToRGB(&view,&rgb));color_avif(im,pixels,band);
+        };
+        for(int y=0;y<height;y++) {checkpoint(check);
+            const double sy=(y+.5)*crop.height/height-.5;
+            const int y0=std::clamp(int(std::floor(sy)),0,int(crop.height)-1),y1=std::min(y0+1,int(crop.height)-1);
+            rows(int(crop.y)+y0,int(crop.y)+y1);const double fy=std::clamp(sy-y0,0.,1.);
+            for(int x=0;x<width;x++) {
+            const double sx=(x+.5)*crop.width/width-.5;
+            const int x0=std::clamp(int(std::floor(sx)),0,int(crop.width)-1),x1=std::min(x0+1,int(crop.width)-1);
+            const double fx=std::clamp(sx-x0,0.,1.);double c[4]={};
+            for(int i=0;i<4;i++) {
+                const auto* p=band.rgba.data()+(size_t(int(crop.y)+((i&2)?y1:y0)-band_top)*im->width+crop.x+((i&1)?x1:x0))*4;
+                const double weight=((i&1)?fx:1-fx)*((i&2)?fy:1-fy);
+                c[3]+=p[3]*weight;for(int k=0;k<3;k++)c[k]+=p[k]*p[3]*weight;
+            }
             int dx=x,dy=y;
-            if(angle==1){dx=y;dy=int(crop.width)-1-x;} else if(angle==2){dx=int(crop.width)-1-x;dy=int(crop.height)-1-y;} else if(angle==3){dx=int(crop.height)-1-y;dy=x;}
+            if(angle==1){dx=y;dy=width-1-x;} else if(angle==2){dx=width-1-x;dy=height-1-y;} else if(angle==3){dx=height-1-y;dy=x;}
             if(mirror){if(im->imir.axis==0)dy=out.height-1-dy;else dx=out.width-1-dx;}
-            std::memcpy(out.rgba.data()+(size_t(dy)*out.width+dx)*4,converted.rgba.data()+((size_t(crop.y)+y)*im->width+crop.x+x)*4,4);
+            auto* p=out.rgba.data()+(size_t(dy)*out.width+dx)*4;
+            for(int k=0;k<3;k++)p[k]=uint8_t(std::clamp(std::lround(c[3]>0?c[k]/c[3]:0),0L,255L));
+            p[3]=uint8_t(std::clamp(std::lround(c[3]),0L,255L));
         }}
-        out.duration_us=std::max<int64_t>(1000,int64_t(std::llround((decoder->imageTiming.pts+decoder->imageTiming.duration)*1e6))-int64_t(std::llround(decoder->imageTiming.pts*1e6)));resize(out,edge);return true;
+        out.duration_us=std::max<int64_t>(1000,int64_t(std::llround((decoder->imageTiming.pts+decoder->imageTiming.duration)*1e6))-int64_t(std::llround(decoder->imageTiming.pts*1e6)));return true;
     }
-    void reset() override {require(avifDecoderReset(decoder)==AVIF_RESULT_OK);}
+    void reset() override {avif_ok(avifDecoderReset(decoder));}
 };
 class Webp final:public Decoder {
     std::vector<uint8_t> source;
     WebPAnimDecoder* decoder=nullptr;
     int last=0,edge,orientation=1,canvas_width=0,canvas_height=0;
 public:
-    Webp(const std::string& path,int limit):source(bytes(path,32*1024*1024)),edge(limit) {
+    Webp(const std::string& path,int limit,uint64_t budget):source(bytes(path,size_t(budget/3))),edge(limit) {
         WebPBitstreamFeatures features{};require(WebPGetFeatures(source.data(),source.size(),&features)==VP8_STATUS_OK);
-        dimensions(features.width,features.height,16*1024*1024);
+        dimensions(features.width,features.height,UINT32_MAX);
+        memory_required(uint64_t(features.width)*features.height*16+source.size()*2,budget);
         WebPData data{source.data(),source.size()};WebPAnimDecoderOptions options;require(WebPAnimDecoderOptionsInit(&options));options.color_mode=MODE_RGBA;options.use_threads=0;
         decoder=WebPAnimDecoderNew(&data,&options);require(decoder!=nullptr);
         WebPAnimInfo meta{};
-        try {require(WebPAnimDecoderGetInfo(decoder,&meta));dimensions(int(meta.canvas_width),int(meta.canvas_height),16*1024*1024);require(meta.frame_count>0&&meta.frame_count<=100000);}
+        try {require(WebPAnimDecoderGetInfo(decoder,&meta));dimensions(int(meta.canvas_width),int(meta.canvas_height),UINT32_MAX);require(meta.frame_count>0&&meta.frame_count<=100000);}
         catch(...){WebPAnimDecoderDelete(decoder);decoder=nullptr;throw;}
         info.kind=Kind::Webp;info.width=int(meta.canvas_width);info.height=int(meta.canvas_height);info.frames=int(meta.frame_count);info.plays=meta.loop_count;info.alpha=true;
         canvas_width=info.width;canvas_height=info.height;
@@ -184,22 +235,30 @@ public:
     ~Webp() override {if(decoder) WebPAnimDecoderDelete(decoder);}
     bool next(Frame& frame,const Check& check) override {
         checkpoint(check);if(!WebPAnimDecoderHasMoreFrames(decoder))return false;
+        memory_required(uint64_t(canvas_width)*canvas_height*16+source.size()*2,memory_budget);
+        auto [w,h]=output_size(canvas_width,canvas_height,edge,output_budget);
         uint8_t* pixels=nullptr;int time=0;require(WebPAnimDecoderGetNext(decoder,&pixels,&time));checkpoint(check);
         frame.width=canvas_width;frame.height=canvas_height;frame.duration_us=std::max<int64_t>(10000,int64_t(time-last)*1000);last=time;
-        frame.rgba.assign(pixels,pixels+size_t(canvas_width)*canvas_height*4);orient(frame,orientation);resize(frame,edge);return true;
+        frame.rgba.assign(pixels,pixels+size_t(canvas_width)*canvas_height*4);resize(frame,std::max(w,h));orient(frame,orientation);return true;
     }
     void reset() override {WebPAnimDecoderReset(decoder);last=0;}
 };
 struct JpegFailure:jpeg_error_mgr {static void fail(j_common_ptr){throw std::runtime_error("PHOTO_DECODE_FAILED");}};
-Frame jpeg(const unsigned char* data,size_t length,int edge) {
+Frame jpeg(const unsigned char* data,size_t length,int edge,uint64_t budget,uint64_t output_budget) {
     jpeg_decompress_struct dec{};JpegFailure error{};dec.err=jpeg_std_error(&error);error.error_exit=JpegFailure::fail;
     jpeg_create_decompress(&dec);
     try {
         jpeg_mem_src(&dec,data,static_cast<unsigned long>(length));require(jpeg_read_header(&dec,TRUE)==JPEG_HEADER_OK);
-        dimensions(int(dec.image_width),int(dec.image_height),128*1024*1024);
+        dimensions(int(dec.image_width),int(dec.image_height),UINT32_MAX,65535);
         dec.out_color_space=JCS_RGB;dec.scale_num=1;dec.scale_denom=1;
-        while(dec.scale_denom<8 && std::max(dec.image_width,dec.image_height)/dec.scale_denom>unsigned(edge*2)) dec.scale_denom*=2;
-        jpeg_start_decompress(&dec);Frame out;out.width=int(dec.output_width);out.height=int(dec.output_height);dimensions(out.width,out.height);
+        auto [target_w,target_h]=output_size(int(dec.image_width),int(dec.image_height),edge,output_budget);
+        edge=std::max(target_w,target_h);
+        while(dec.scale_denom<8 && (std::max(dec.image_width,dec.image_height)/dec.scale_denom>unsigned(edge*2) ||
+            uint64_t(dec.image_width)*dec.image_height/(dec.scale_denom*dec.scale_denom)>budget/16)) dec.scale_denom*=2;
+        jpeg_calc_output_dimensions(&dec);
+        memory_required(uint64_t(dec.output_width)*dec.output_height*12,budget);
+        dec.mem->max_memory_to_use=long(std::min<uint64_t>(budget/2,LONG_MAX));
+        jpeg_start_decompress(&dec);Frame out;out.width=int(dec.output_width);out.height=int(dec.output_height);dimensions(out.width,out.height,UINT32_MAX,65535);
         out.rgba.resize(size_t(out.width)*out.height*4);std::vector<uint8_t> row(size_t(out.width)*3);
         while(dec.output_scanline<dec.output_height){const int y=int(dec.output_scanline);JSAMPROW scan=row.data();jpeg_read_scanlines(&dec,&scan,1);
             for(int x=0;x<out.width;x++){auto* p=out.rgba.data()+(size_t(y)*out.width+x)*4;std::memcpy(p,row.data()+size_t(x)*3,3);p[3]=255;}}
@@ -216,8 +275,8 @@ class Raw final:public Decoder {
 public:
     Raw(const std::string& path,int limit,bool thumb):edge(limit),preview(thumb) {
         raw.imgdata.rawparams.max_raw_memory_mb=192;
-        require(raw.open_file(path.c_str())==LIBRAW_SUCCESS && raw.imgdata.idata.raw_count>0);
-        auto& size=raw.imgdata.sizes;dimensions(size.width,size.height,128*1024*1024);
+        raw_ok(raw.open_file(path.c_str()));require(raw.imgdata.idata.raw_count>0);
+        auto& size=raw.imgdata.sizes;dimensions(size.width,size.height,UINT32_MAX,65535);
         info.kind=Kind::Raw;info.width=size.width;info.height=size.height;info.preview=preview;
         info.orientation=size.flip==3?3:size.flip==5?8:size.flip==6?6:1;
         raw.imgdata.rawparams.max_raw_memory_mb=192;raw.imgdata.params.output_bps=8;raw.imgdata.params.output_color=1;
@@ -225,29 +284,37 @@ public:
         raw.imgdata.params.user_qual=0;raw.set_progress_handler(progress,this);
     }
     bool next(Frame& out,const Check& check) override {
-        if(done)return false;checkpoint(check);active=&check;
+        if(done)return false;checkpoint(check);
+        memory_required(1,memory_budget);memory_required(4,output_budget);
+        active=&check;
         struct End {Raw* self;~End(){self->active=nullptr;}}end{this};
         const int64_t pixels=int64_t(raw.imgdata.sizes.raw_width)*raw.imgdata.sizes.raw_height;
         if(std::max(info.width,info.height)>edge*2)raw.imgdata.params.half_size=1;
-        if(pixels*18>384LL*1024*1024 && raw.imgdata.idata.filters)raw.imgdata.params.half_size=1;
+        if(uint64_t(pixels)*18>memory_budget && raw.imgdata.idata.filters)raw.imgdata.params.half_size=1;
         const bool reduced=raw.imgdata.params.half_size && raw.imgdata.idata.filters;
         const int64_t processed=reduced?(pixels+3)/4:pixels;
-        bool thumbnail=preview || pixels*4+processed*14>384LL*1024*1024;
+        raw.imgdata.rawparams.max_raw_memory_mb=int(std::min<uint64_t>(INT32_MAX,std::max<uint64_t>(1,memory_budget/(3*1024*1024))));
+        bool thumbnail=preview || uint64_t(pixels)*4+uint64_t(processed)*14>memory_budget;
+        auto [target_w,target_h]=output_size(info.width,info.height,edge,output_budget);
+        const int output_edge=std::max(target_w,target_h);
         if(thumbnail) {
-            require(raw.unpack_thumb()==LIBRAW_SUCCESS);int code=0;
+            const int status=raw.unpack_thumb();
+            if(status!=LIBRAW_SUCCESS && !preview)throw std::runtime_error("PHOTO_OUT_OF_MEMORY");
+            raw_ok(status);int code=0;
             std::unique_ptr<libraw_processed_image_t,decltype(&LibRaw::dcraw_clear_mem)> image(raw.dcraw_make_mem_thumb(&code),&LibRaw::dcraw_clear_mem);
-            require(image && code==0);
-            if(image->type==LIBRAW_IMAGE_JPEG) out=jpeg(image->data,image->data_size,edge);
-            else {require(image->bits==8 && image->colors==3);out.width=image->width;out.height=image->height;dimensions(out.width,out.height);
-                out.rgba.resize(size_t(out.width)*out.height*4);for(size_t i=0;i<size_t(out.width)*out.height;i++){std::memcpy(out.rgba.data()+i*4,image->data+i*3,3);out.rgba[i*4+3]=255;}resize(out,edge);}
+            raw_ok(code);require(image!=nullptr);
+            if(image->type==LIBRAW_IMAGE_JPEG) out=jpeg(image->data,image->data_size,output_edge,memory_budget,output_budget);
+            else {require(image->bits==8 && image->colors==3);out.width=image->width;out.height=image->height;dimensions(out.width,out.height,UINT32_MAX,65535);
+                memory_required(uint64_t(out.width)*out.height*11,memory_budget);
+                out.rgba.resize(size_t(out.width)*out.height*4);for(size_t i=0;i<size_t(out.width)*out.height;i++){std::memcpy(out.rgba.data()+i*4,image->data+i*3,3);out.rgba[i*4+3]=255;}resize(out,output_edge);}
             info.preview=true;
         } else {
-            require(raw.unpack()==LIBRAW_SUCCESS);checkpoint(check);require(raw.dcraw_process()==LIBRAW_SUCCESS);checkpoint(check);int code=0;
+            raw_ok(raw.unpack());checkpoint(check);raw_ok(raw.dcraw_process());checkpoint(check);int code=0;
             std::unique_ptr<libraw_processed_image_t,decltype(&LibRaw::dcraw_clear_mem)> image(raw.dcraw_make_mem_image(&code),&LibRaw::dcraw_clear_mem);
-            require(image && code==0 && image->type==LIBRAW_IMAGE_BITMAP && image->bits==8 && image->colors==3);
-            out.width=image->width;out.height=image->height;dimensions(out.width,out.height);out.rgba.resize(size_t(out.width)*out.height*4);
+            raw_ok(code);require(image && image->type==LIBRAW_IMAGE_BITMAP && image->bits==8 && image->colors==3);
+            out.width=image->width;out.height=image->height;dimensions(out.width,out.height,UINT32_MAX,65535);memory_required(uint64_t(out.width)*out.height*11,memory_budget);out.rgba.resize(size_t(out.width)*out.height*4);
             for(int y=0;y<out.height;y++){checkpoint(check);for(int x=0;x<out.width;x++){size_t i=size_t(y)*out.width+x;std::memcpy(out.rgba.data()+i*4,image->data+i*3,3);out.rgba[i*4+3]=255;}}
-            resize(out,edge);
+            resize(out,output_edge);
         }
         done=true;checkpoint(check);return true;
     }
@@ -260,16 +327,17 @@ class Ffmpeg final:public Decoder {
     bool draining=false;
     void clear(){sws_freeContext(scaler);scaler=nullptr;av_frame_free(&frame);av_packet_free(&packet);avcodec_free_context(&codec);avformat_close_input(&format);}
     void initialize() {
-        try {AVDictionary* options=nullptr;av_dict_set(&options,"ignore_loop","1",0);av_dict_set(&options,"max_pixels","16777216",0);
+        try {const auto max_pixels=std::to_string(std::min<uint64_t>(UINT32_MAX,memory_budget/16));AVDictionary* options=nullptr;av_dict_set(&options,"ignore_loop","1",0);av_dict_set(&options,"max_pixels",max_pixels.c_str(),0);
             int code=avformat_open_input(&format,path.c_str(),nullptr,&options);av_dict_free(&options);require(code>=0);
             std::vector<AVDictionary*> probe_options(format->nb_streams,nullptr);
-            for(auto& option:probe_options){av_dict_set(&option,"max_pixels","16777216",0);av_dict_set(&option,"threads","1",0);}
+            for(auto& option:probe_options){av_dict_set(&option,"max_pixels",max_pixels.c_str(),0);av_dict_set(&option,"threads","1",0);}
             code=avformat_find_stream_info(format,probe_options.data());for(auto& option:probe_options)av_dict_free(&option);require(code>=0);
             stream=av_find_best_stream(format,AVMEDIA_TYPE_VIDEO,-1,-1,nullptr,0);require(stream>=0);
-            auto* parameters=format->streams[stream]->codecpar;dimensions(parameters->width,parameters->height,16*1024*1024);
+            auto* parameters=format->streams[stream]->codecpar;dimensions(parameters->width,parameters->height,UINT32_MAX);
+            memory_required(uint64_t(parameters->width)*parameters->height*16,memory_budget);
             require(parameters->codec_id==AV_CODEC_ID_GIF || parameters->codec_id==AV_CODEC_ID_APNG);
             const AVCodec* decoder=avcodec_find_decoder(parameters->codec_id);require(decoder!=nullptr);codec=avcodec_alloc_context3(decoder);require(codec!=nullptr);
-            require(avcodec_parameters_to_context(codec,parameters)>=0);codec->thread_count=1;codec->max_pixels=16*1024*1024;
+            require(avcodec_parameters_to_context(codec,parameters)>=0);codec->thread_count=1;codec->max_pixels=memory_budget/16;
             require(avcodec_open2(codec,decoder,nullptr)>=0);packet=av_packet_alloc();frame=av_frame_alloc();require(packet&&frame);draining=false;
             info.width=parameters->width;info.height=parameters->height;info.alpha=true;
             info.frames=int(std::clamp<int64_t>(format->streams[stream]->nb_frames,0,100000));
@@ -277,11 +345,13 @@ class Ffmpeg final:public Decoder {
         }catch(...){clear();throw;}
     }
 public:
-    Ffmpeg(const std::string& source,int limit,Kind kind):path(source),edge(limit){try{info.kind=kind;
-        auto data=bytes(path,32*1024*1024);info.plays=1;
+    Ffmpeg(const std::string& source,int limit,Kind kind,uint64_t budget):path(source),edge(limit){try{info.kind=kind;memory_budget=budget;
+        auto data=bytes(path,size_t(budget/3));info.plays=1;
         // Validate canvas and animation structure before FFmpeg can probe/decode a frame.
-        if(kind==Kind::Gif){require(data.size()>=13);dimensions(int(data[6])|(int(data[7])<<8),int(data[8])|(int(data[9])<<8),16*1024*1024);}
-        else{require(data.size()>=24);dimensions(int(be32(data.data()+16)),int(be32(data.data()+20)),16*1024*1024);}
+        int w=0,h=0;
+        if(kind==Kind::Gif){require(data.size()>=13);w=int(data[6])|(int(data[7])<<8);h=int(data[8])|(int(data[9])<<8);}
+        else{require(data.size()>=24);w=int(be32(data.data()+16));h=int(be32(data.data()+20));}
+        dimensions(w,h,UINT32_MAX);memory_required(uint64_t(w)*h*16+data.size()*2,budget);
         if(kind==Kind::Apng){uint32_t sequence=0,frames=0;bool animation=false,ended=false;
             for(size_t at=8;at+12<=data.size();){uint32_t n=be32(data.data()+at);require(n<=data.size()-at-12);
                 const auto* tag=data.data()+at+4;const auto* payload=tag+4;
@@ -310,6 +380,7 @@ public:
     }catch(...){clear();throw;}}
     ~Ffmpeg() override {clear();}
     bool next(Frame& out,const Check& check) override {
+        memory_required(uint64_t(info.width)*info.height*16,memory_budget);
         for(;;){checkpoint(check);int code=avcodec_receive_frame(codec,frame);
             if(code>=0)break;if(code==AVERROR_EOF)return false;require(code==AVERROR(EAGAIN));
             if(draining)return false;
@@ -317,9 +388,9 @@ public:
             if(code<0){require(code==AVERROR_EOF);require(avcodec_send_packet(codec,nullptr)>=0);draining=true;}
             else {code=avcodec_send_packet(codec,packet);av_packet_unref(packet);require(code>=0);}
         }
-        dimensions(frame->width,frame->height,16*1024*1024);require(frame->width==info.width&&frame->height==info.height);
-        double ratio=std::min(1.,double(edge)/std::max(frame->width,frame->height));
-        out.width=std::max(1,int(frame->width*ratio));out.height=std::max(1,int(frame->height*ratio));out.rgba.resize(size_t(out.width)*out.height*4);
+        dimensions(frame->width,frame->height,UINT32_MAX);require(frame->width==info.width&&frame->height==info.height);
+        auto [w,h]=output_size(frame->width,frame->height,edge,output_budget);
+        out.width=w;out.height=h;out.rgba.resize(size_t(out.width)*out.height*4);
         scaler=sws_getCachedContext(scaler,frame->width,frame->height,static_cast<AVPixelFormat>(frame->format),out.width,out.height,AV_PIX_FMT_RGBA,SWS_BILINEAR,nullptr,nullptr,nullptr);require(scaler!=nullptr);
         uint8_t* planes[]={out.rgba.data(),nullptr,nullptr,nullptr};int strides[]={out.width*4,0,0,0};require(sws_scale(scaler,frame->data,frame->linesize,0,frame->height,planes,strides)==out.height);
         const AVRational timebase=format->streams[stream]->time_base;
@@ -353,16 +424,16 @@ Kind sniff(const std::string& path,bool raw_hint) {
     return Kind::Unknown;
 }
 Info raw_info(const std::string& path){Raw decoder(path,512,true);return decoder.info;}
-std::unique_ptr<Decoder> open(const std::string& path,int edge,bool preview,const Check& check){
-    require(edge>=64 && edge<=8192);checkpoint(check);switch(sniff(path,true)){
-        case Kind::Avif:return std::make_unique<Avif>(path,edge);
-        case Kind::Webp:return std::make_unique<Webp>(path,edge);
-        case Kind::Raw:return std::make_unique<Raw>(path,edge,preview);
+std::unique_ptr<Decoder> open(const std::string& path,int edge,bool preview,const Check& check,uint64_t budget,uint64_t output){
+    require(edge>=64 && edge<=8192);checkpoint(check);std::unique_ptr<Decoder> decoder;switch(sniff(path,true)){
+        case Kind::Avif:decoder=std::make_unique<Avif>(path,edge);break;
+        case Kind::Webp:decoder=std::make_unique<Webp>(path,edge,budget);break;
+        case Kind::Raw:decoder=std::make_unique<Raw>(path,edge,preview);break;
 #ifdef THRU_IMAGE_FFMPEG
-        case Kind::Gif:return std::make_unique<Ffmpeg>(path,edge,Kind::Gif);
-        case Kind::Apng:return std::make_unique<Ffmpeg>(path,edge,Kind::Apng);
+        case Kind::Gif:decoder=std::make_unique<Ffmpeg>(path,edge,Kind::Gif,budget);break;
+        case Kind::Apng:decoder=std::make_unique<Ffmpeg>(path,edge,Kind::Apng,budget);break;
 #endif
         default:throw std::runtime_error("PHOTO_FORMAT_UNSUPPORTED");
-    }
+    }decoder->memory_budget=budget;decoder->output_budget=output;return decoder;
 }
 }

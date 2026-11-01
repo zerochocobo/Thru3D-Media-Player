@@ -1,0 +1,3 @@
+<resources>
+    <string name="external_video_unavailable">无法打开视频，请检查文件访问权限。</string>
+</resources>

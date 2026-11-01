@@ -23,6 +23,7 @@ internal class AnimatedPhotoSession(private val source: PhotoSource,
     private var pumping=false
     private var eof=false
     private var failed=false
+    private var failureReason=""
     private var paused=false
     private var pausedAt=0L
     private var deadline=0L
@@ -54,7 +55,10 @@ internal class AnimatedPhotoSession(private val source: PhotoSource,
                     synchronized(lock){if(closed)backend.releaseFrame(frame[0]) else ready.addLast(frame)}
                 }
             }catch(_: InterruptedException){}
-            catch(_: Throwable){synchronized(lock){if(!closed)failed=true}}
+            catch(error: Throwable){synchronized(lock){if(!closed){failed=true
+                failureReason=if(error is OutOfMemoryError || error.message=="PHOTO_OUT_OF_MEMORY") "PHOTO_OUT_OF_MEMORY"
+                    else if(error.message=="PHOTO_MEMORY_UNAVAILABLE") "PHOTO_MEMORY_UNAVAILABLE" else "PHOTO_DECODE_FAILED"
+            }}}
             finally {synchronized(lock){pumping=false}}
         }
     }
@@ -76,7 +80,7 @@ internal class AnimatedPhotoSession(private val source: PhotoSource,
                 deadline=time+displayed!![3].coerceAtLeast(1000)
             if(!paused && eof&&ready.isEmpty()&&displayed!=null&&time>=deadline)ended=true
             JSONObject().put("token",displayed?.get(0)?:0).put("width",displayed?.get(1)?:0).put("height",displayed?.get(2)?:0)
-                .put("paused",paused).put("ended",ended).put("failed",failed).toString()
+                .put("paused",paused).put("ended",ended).put("failed",failed).put("error",failureReason).toString()
         }
         pump();return json
     }

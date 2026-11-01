@@ -221,6 +221,40 @@ func _run() -> void:
 	check(not albums.back().complete and not str(albums.back().error).is_empty(), "Unexpected empty page is incomplete rather than a successful empty album")
 	directory.free()
 	menu.free(); platform.free()
+	check_assigned_folder_covers()
 	for failure in failures: push_error(failure)
 	print("common server browser checks=%d failures=%d" % [checks, failures.size()])
 	quit(0 if failures.is_empty() else 1)
+
+func check_assigned_folder_covers() -> void:
+	var platform := Fixture.Platform.new()
+	var menu := Menu.new(); root.add_child(menu); menu.attach_platform(platform); menu.toggle(); menu.section = Menu.Section.MEDIA_SERVER
+	var b: RefCounted = menu.server_browser
+	b.cancel(); b.server = {"id": "cover-test", "provider": "emby"}; b.capabilities = {"artwork": true}
+	b.library_id = "homevideos"; b.display_preferences_path = "user://settings/assigned-cover-test.cfg"
+	var image := Image.create(2, 2, false, Image.FORMAT_RGBA8); image.fill(Color.RED)
+	var image_path := ProjectSettings.globalize_path("user://assigned-cover-test.png"); image.save_png(image_path)
+	for count in [1, 9]:
+		for mode in ["library", "folders"]:
+			for display in ["poster", "thumb", "list"]:
+				b.cancel(); b.covers.clear(); b.textures.clear(); b.failed_covers.clear(); b.history.clear(); b.folder_path.clear()
+				b.view = "scenes"; b.query = {"mode": mode, "collection_type": "homevideos"}
+				var cover := {"id": "server-selected-image", "image_type": "Primary", "image_tag": "assigned-tag"}
+				var folder := {"id": "parent-folder", "title": "Album", "container": true, "kind": "container", "type": "Folder", "child_count": count,
+					"has_cover": true, "cover_image": cover, "image_variants": {"Primary": cover}}
+				b.entries = [folder]; b.total = 1; menu.show(); menu._reset_navigation(); b.set_display(display)
+				var id := request_id(b, "cover")
+				check(id > 0, "Assigned folder cover is requested for %d children in %s/%s" % [count, mode, display])
+				if id <= 0: continue
+				var req: Dictionary = platform.requests[id]
+				check(req.scene_id == cover.id and req.image_type == "Primary" and req.image_tag == cover.image_tag, "Folder requests the server-assigned image identity")
+				check(req.max_width == (128 if display == "list" else 512), "Assigned cover follows the view's image resolution")
+				menu.refresh()
+				check(b.pending.has(id) and not platform.cancelled.has(id), "Visible folder keeps an image request whose identity differs from the folder")
+				platform.answer(id, {"path": image_path})
+				var texture: Texture2D = b.cover(menu.rows[0])
+				check(texture != null and texture.get_width() == 2, "Assigned image loads into the existing folder-cover texture cache")
+				check(menu.video_queue().is_empty() and b.entries[0].id == folder.id, "Folder artwork never turns the container into a playable child")
+				b.choose(menu.rows[0]); id = request_id(b, "browse")
+				check(id > 0 and platform.requests[id].parent_id == folder.id and platform.requests[id].mode == "folders", "Opening a decorated folder browses the parent identity")
+	menu.free(); platform.free()

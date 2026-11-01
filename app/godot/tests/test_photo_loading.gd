@@ -65,6 +65,11 @@ func _run() -> void:
 	photo._on_ready(photo._request, '{"state":"error"}')
 	check(not photo.loading and not photo.placeholder_visible() and photo._texture == original, "Load failure restores the last successful photo")
 	check(photo.material.get_shader_parameter("presentation_opacity") == 1.0, "Failure restores original opacity")
+	for reason in {"PHOTO_OUT_OF_MEMORY":"Not enough memory to open image", "PHOTO_MEMORY_UNAVAILABLE":"Unable to check available memory"}:
+		photo._select(0, -1)
+		photo._on_ready(photo._request, JSON.stringify({"state":"error","error":reason}))
+		check(not photo.loading and photo._texture == original and not photo.placeholder_visible(), "Memory rejection restores the displayed photo: "+reason)
+		check(photo.error == ({"PHOTO_OUT_OF_MEMORY":"Not enough memory to open image", "PHOTO_MEMORY_UNAVAILABLE":"Unable to check available memory"})[reason], "Memory failure reports its actual cause: "+reason)
 	photo._select(0, -1)
 	photo._on_metadata(photo._request, photo._serial, photo.pending_index, {"width":320,"height":640})
 	photo._process(0.3)

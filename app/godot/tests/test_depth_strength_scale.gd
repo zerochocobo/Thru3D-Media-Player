@@ -39,6 +39,9 @@ func _initialize() -> void:
 	var choice: Dictionary = menu._setting_choices("depth_render")
 	check("depth_render" in menu.OPERATIONS[1] and choice.get("key", "") == "depth_render" and choice.get("value", "") == "stretch"
 		and choice.choices.map(func(o): return o.value) == ["fill", "stretch"], "Player settings offer the video 2D-to-3D view")
+	check("depth_text_protection" not in menu.OPERATIONS[1] and menu._setting_choices("depth_text_protection").is_empty(), "Release hides 3D text protection")
+	menu._state["depth_text_protection"] = true
+	check(menu._setting_choices("depth_text_protection").is_empty(), "Legacy enabled preference cannot expose the release-held feature")
 	menu._state = {"has_video": false}
 	check(menu._setting_choices("depth_render").is_empty(), "Without a video the choice is not offered")
 	menu.free()

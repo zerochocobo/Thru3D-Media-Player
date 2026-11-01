@@ -89,6 +89,15 @@ func _run() -> void:
 	await snapshot("inspect-default-tip-zh", false)
 	if not menu._tooltip.get_child(0).text.contains("8.0×"): failures.append("Hover does not show saved magnification")
 	if menu._buttons.any(func(b): return b.target in [Menu.PHOTO_PLUS, Menu.PHOTO_MINUS]): failures.append("Live zoom controls remain on the photo bar")
+	menu.dismiss(); menu.toggle(); menu._activate(11)
+	for language in ["en", "zh", "zh_Hant", "ja"]:
+		I18n.use(language)
+		for count in [1, 2]:
+			state["cache_each"] = count; menu.refresh()
+			var cache_buttons: Array = menu._buttons.filter(func(b): return b.target in [Menu.PHOTO_CACHE_ONE,Menu.PHOTO_CACHE_TWO])
+			if cache_buttons.size() != 2 or cache_buttons.filter(func(b): return b.base_color == menu.SELECTED).size() != 1:
+				failures.append("Cache buttons/selection missing: %s/%d" % [language,count])
+			await snapshot("cache-%s-%d" % [language,count])
 	FileAccess.open(output.path_join("verification.json"), FileAccess.WRITE).store_string(JSON.stringify({
 		"state":"passed" if failures.is_empty() else "failed", "failures":failures,
 		"scope":"Production Godot photo menu on desktop OpenGL; four language layouts, slider extremes and panorama disabled controls",
