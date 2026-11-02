@@ -26,6 +26,7 @@ class RoutingMain extends "res://scripts/main.gd":
 	func _ready() -> void: pass
 	func _process(_delta: float) -> void: pass
 	func _input_focused() -> bool: return true
+	func _vr_passthrough_active() -> bool: return false # The routing fixture has no temporary-passthrough session.
 	func _active_menu() -> Node3D: return test_menu
 	func _ray(_hand: String) -> Variant: return test_ray
 	func _head_pose() -> Variant: return Transform3D(Basis.IDENTITY, Vector3(0, 1.5, 0))

@@ -18,6 +18,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <iterator>
 #include <mutex>
 #include <stdexcept>
 #include <string>
@@ -697,10 +698,30 @@ constexpr PipUniform pip_window[] = {
     {"pip_center",2,false}, {"pip_span",2,false}, {"pip_forward",3,false},
     {"pip_right",3,false}, {"pip_up",3,false}, {"pip_tangent",2,false}, {"pip_viewing_eye",1,true}
 };
+template <size_t N>
+constexpr size_t pip_components(const PipUniform (&uniforms)[N]) {
+    size_t count = 0;
+    for (const auto& uniform : uniforms) count += uniform.components;
+    return count;
+}
+constexpr size_t kPipWindowFloats = pip_components(pip_window);
+using PipCommon = std::array<float, pip_components(pip_common)>;
+using PipWindows = std::array<float, 3 * kPipWindowFloats>;
+// Keep the full request separate from output properties. A flattened, fixed-size
+// key previously overwrote DrawState when the common shader parameters grew.
+struct PipMainTimingKey {
+    PipCommon common{};
+    int width = 0, height = 0, eyes = 0;
+    bool external = false;
+    bool operator==(const PipMainTimingKey& other) const {
+        return common == other.common && width == other.width && height == other.height &&
+            eyes == other.eyes && external == other.external;
+    }
+};
 struct PipProgram {
     GLuint program = 0;
-    std::array<GLint, 39> common{};
-    std::array<GLint, 7> window{};
+    std::array<GLint, std::size(pip_common)> common{};
+    std::array<GLint, std::size(pip_window)> window{};
     GLint origin = -1, size = -1, eye = -1, raw = -1, whole = -1, span = -1, pip = -1;
     GLint make_map = -1, cached = -1;
 };
@@ -791,7 +812,7 @@ struct PipTimer {
         return sorted[std::min(count-1,(count*95)/100)];
     }
 } pip_timer, main_timer;
-std::array<float,47> main_timing_key{};
+PipMainTimingKey main_timing_key{};
 EGLContext main_timing_context=EGL_NO_CONTEXT;
 
 PipProgram* pip_program(bool external) {
@@ -830,7 +851,7 @@ void pip_uniform(GLint location, const PipUniform& descriptor, const float* v) {
 }
 // A small float UV map is generated once with the production projection itself.
 // Cache only the smooth 180..240-degree domain; other lenses use the analytic path.
-bool prepare_pip_projection(PipProgram& program, const std::array<float,84>& v, GLuint destination) {
+bool prepare_pip_projection(PipProgram& program, const PipCommon& v, GLuint destination) {
     if (v[0]!=2 || v[7]<180 || v[7]>240) return false;
     const EGLContext current=eglGetCurrentContext();
     if (pip_projection.context!=current) { pip_projection=PipProjection{}; pip_projection.context=current; }
@@ -919,9 +940,11 @@ Java_org_vrpassthroughplayer_plugin_VideoLayerNative_renderPip(JNIEnv* env, jcla
     Picture* target = picture(slot);
     if (!target || !target->acquired || color <= 0 || !glIsTexture(static_cast<GLuint>(color)) ||
         active <= 0 || active > 8 || (eyes != 1 && eyes != 2) || !common || !windows ||
-        env->GetArrayLength(common) != 84 || env->GetArrayLength(windows) != 48) return JNI_FALSE;
-    std::array<float,84> v{}; std::array<float,48> w{};
-    env->GetFloatArrayRegion(common,0,84,v.data()); env->GetFloatArrayRegion(windows,0,48,w.data());
+        env->GetArrayLength(common) != static_cast<jsize>(PipCommon{}.size()) ||
+        env->GetArrayLength(windows) != static_cast<jsize>(PipWindows{}.size())) return JNI_FALSE;
+    PipCommon v{}; PipWindows w{};
+    env->GetFloatArrayRegion(common,0,static_cast<jsize>(v.size()),v.data());
+    env->GetFloatArrayRegion(windows,0,static_cast<jsize>(w.size()),w.data());
     for (float f:v) if (!std::isfinite(f)) return JNI_FALSE;
     for (float f:w) if (!std::isfinite(f)) return JNI_FALSE;
     if ((v[14] != 0 || v[15] != 0) && (mask <= 0 || !glIsTexture(static_cast<GLuint>(mask)))) return JNI_FALSE;
@@ -972,16 +995,14 @@ Java_org_vrpassthroughplayer_plugin_VideoLayerNative_renderPip(JNIEnv* env, jcla
             int draws=0;
             auto& timer=whole ? main_timer : pip_timer;
             if (whole) {
-                std::array<float,47> key{};
-                std::copy(v.begin(),v.end(),key.begin());
-                key[43]=image.width; key[44]=image.height; key[45]=eyes; key[46]=external==JNI_TRUE ? 1.0f : 0.0f;
-                if (key!=main_timing_key || main_timing_context!=eglGetCurrentContext()) {
+                const PipMainTimingKey key{v, image.width, image.height, eyes, external==JNI_TRUE};
+                if (!(key==main_timing_key) || main_timing_context!=eglGetCurrentContext()) {
                     main_timer.restart_samples(); main_timing_key=key; main_timing_context=eglGetCurrentContext();
                 }
             }
             timer.begin();
             for(int index=0;index<(whole ? 1 : 3);++index) if (whole || (active & (1<<index))) {
-                offset=static_cast<size_t>(index)*16;
+                offset=static_cast<size_t>(index)*kPipWindowFloats;
                 for(size_t i=0;i<program->window.size();++i) { pip_uniform(program->window[i],pip_window[i],w.data()+offset); offset+=pip_window[i].components; }
                 for(int eye=0;eye<eyes;++eye) {
                     const int gutter=whole ? 0 : 4;

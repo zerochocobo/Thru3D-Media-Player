@@ -4,7 +4,7 @@
 
 面向 Meta Quest 和 PICO 的独立 VR/MR 媒体播放器，可直接在头显中观看视频和照片、浏览媒体库，并使用支持内容的透视与立体效果。
 
-当前源码版本：**0.16.3**，Android versionCode **61**；另提供实验性的标准 OpenXR Android 导出目标。
+当前源码版本：**0.16.4**，Android versionCode **64**；另提供实验性的标准 OpenXR Android 导出目标。
 
 最低兼容目标为 **Quest 2、PICO Neo3**。源码和构建兼容不等于所有机型的性能、显示及交互均已实机验收。
 

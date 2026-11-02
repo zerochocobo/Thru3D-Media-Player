@@ -4,6 +4,12 @@
 
 Newest first, following product release milestones. Some development/source snapshots contained features before their product release. Original APK identifiers `0.2` and `0.4` are retained; `0.4` was also called `0.4.0` in release notes. Availability depends on device, server and media capabilities.
 
+## 0.16.4 — 2026-11-03
+
+- Fix a native VR picture-in-picture timing-cache key overflow that could corrupt the caller's GL state, causing repeated image shaking, frozen playback or black menus on some VR videos. Store all common shader parameters separately from output dimensions/eye count/texture type; derive uniform and window capacities from their production descriptors.
+- Improve stability when displaying the main video and up to three PiP windows together, retaining the existing compositor and source routes. Add a production-JNI GLES memory/state regression with ASan/UBSan and a pre-fix negative control; host checks do not establish headset-driver, lifecycle or background-resume acceptance.
+- Keep 3D text protection and Douyin native/Beta handoff unavailable in the public export. Private logs, device captures, development records, model weights, signing material and personal backups remain excluded.
+
 ## 0.16.3 — 2026-11-02
 
 - Add opt-in below-screen text/bitmap subtitle placement for eligible flat/curved 2D, SBS/TB and spatial video, with per-file memory across flat-video modes. Keep it off by default and at the end of subtitle style controls; immersive projection keeps its existing subtitle path.

@@ -19,3 +19,13 @@ Optional device scripts require an explicitly selected device and a complete ins
 ## 中文说明
 
 最多三个画中画共享主视频当前帧，可选择区域、放大、移动、调距离及单独关闭，也可切换为静态图片窗口；不是多视频独立解码。图片加载、换源及关闭采用有界资源管理，支持设备上的合成层与图集优先保证主视频。宿主逻辑／像素检查不代表所有头显性能及交互均已验收。
+
+## Native memory/state regression (0.16.4)
+
+The native main-view timing key retains all shared shader parameters in a typed field, separately from output size, eye count and external-texture choice. Uniform locations and one/three-window array capacities derive from the same production descriptor tables. This avoids overwriting GL draw-state storage when the parameter list grows, while preserving the existing compositor.
+
+`tests/native/video_pip_host` includes production `video_layer.cpp` and generated shaders and calls JNI `renderPip` under AddressSanitizer/UBSan with a real headless GLES context. JNI arrays, Android logging and an already-acquired OpenXR texture are fixtures. Cases include VR180/360, mono/stereo, extended parameters, repeated draws, one/two/three crops, invalid inputs, output pixels and caller GL-state restoration.
+
+On Linux, supply EGL/GLES development/runtime libraries and a standalone compatible NDK JNI header directory. Configure `cmake -S tests/native/video_pip_host -B build/output/video-pip-native -DPIP_HOST_HEADERS=<headers>`, then build that directory and run `ctest --test-dir build/output/video-pip-native --output-on-failure`. `PIP_HOST_GLES_DIR` can select a separately prepared runtime. Disposable dependencies belong in `tmp/`, generated headers/binaries/logs in `build/`. An optional `VIDEO_LAYER_SOURCE` selects a caller-prepared pre-fix source copy for a negative control; it must fail, rather than being treated as a passed regression.
+
+修复计时键越界并保留调用方GL状态；宿主测试覆盖真实生产JNI／shader及内存检查，但不等于Quest/PICO驱动、后台恢复或全部片源的真机验收。真实日志、视频、设备画面及内部交接不进入公开源码。
