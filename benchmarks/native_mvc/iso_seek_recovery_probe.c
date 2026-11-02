@@ -4,6 +4,7 @@
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include "libavformat/avformat.h"
 #include "libavcodec/avcodec.h"
 #include "libavutil/crc.h"
@@ -92,7 +93,8 @@ int main(int argc, char **argv)
     AVCodecContext *codec = NULL;
     AVPacket *packet = av_packet_alloc();
     AVFrame *frame = av_frame_alloc();
-    int ret = avformat_open_input(&input, argv[1], av_find_input_format("bd_mvc"), NULL);
+    int mkv = argc > 3 && !strcmp(argv[2], "--matroska");
+    int ret = avformat_open_input(&input, argv[1], av_find_input_format(mkv ? "matroska" : "bd_mvc"), NULL);
     if (ret < 0) goto cleanup;
     if (!packet || !frame) { ret = AVERROR(ENOMEM); goto cleanup; }
     int stream = av_find_best_stream(input, AVMEDIA_TYPE_VIDEO, -1, -1, NULL, 0);
@@ -101,19 +103,20 @@ int main(int argc, char **argv)
     if (!codec) { ret = AVERROR(ENOMEM); goto cleanup; }
     if ((ret = avcodec_parameters_to_context(codec, input->streams[stream]->codecpar)) < 0 ||
         (ret = avcodec_open2(codec, codec->codec, NULL)) < 0) goto cleanup;
-    for (int arg = 2; arg < argc; arg++) {
+    const double ticks = 1.0 / av_q2d(input->streams[stream]->time_base);
+    for (int arg = mkv ? 3 : 2; arg < argc; arg++) {
         char *end;
         double target = strtod(argv[arg], &end);
         if (end == argv[arg] || *end || !isfinite(target) || target < 0) { ret = AVERROR(EINVAL); break; }
-        Window window = {.start = llround(fmax(0, target - 4) * 90000),
-            .end = llround((target + 2) * 90000), .target = llround(target * 90000)};
+        Window window = {.start = llround(fmax(0, target - 4) * ticks),
+            .end = llround((target + 2) * ticks), .target = llround(target * ticks)};
         ret = decode(input, codec, stream, fmax(0, target - 10), &window, packet, frame);
         if (ret < 0) break;
         window.mode = 1;
         ret = decode(input, codec, stream, target, &window, packet, frame);
         int passed = ret >= 0 && window.compared >= 24 && !window.mismatch;
         printf("{\"target\":%.3f,\"first_pts\":%.6f,\"compared\":%d,\"before_target\":%d,\"mismatch\":%d,\"rejected\":[%d,%d],\"passed\":%s}\n",
-            target, window.first / 90000., window.compared, window.before_target, window.mismatch,
+            target, window.first / ticks, window.compared, window.before_target, window.mismatch,
             window.rejected[0], window.rejected[1], passed ? "true" : "false");
         fflush(stdout);
         if (!passed) { ret = AVERROR_INVALIDDATA; break; }

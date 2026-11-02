@@ -35,6 +35,14 @@ func active() -> bool: return photo.archive_mode or photo.magazine.active()
 func complete(entry: Dictionary) -> bool:
 	return not entry.has("stage") or entry.stage == "done"
 
+func can_decode(job: Dictionary) -> bool:
+	if not policy.get("color", true) or Time.get_ticks_msec() < resume_at: return false
+	var first: Dictionary = job.get("magazine_first", {})
+	if first.is_empty() or not Methods.supports(photo.platform, "reading_render_policy"): return true
+	# Residents and the normal decoder reserve are already charged. This allowance
+	# covers the extra private first page (including a conservative proxy/thumbnail charge).
+	return memory(first, {}) <= int(policy.get("copy_headroom_bytes", 0))
+
 func activate(id: int, at: int) -> bool:
 	if not photo.platform: return true
 	if active() and Methods.supports(photo.platform, "activate_reading_photo"):
@@ -137,6 +145,7 @@ func pump() -> void:
 			if entry.get("stage") == "second":
 				job["magazine_first"] = entry.first.duplicate()
 				job["magazine_rtl"] = photo.magazine.right_to_left
+				if not can_decode(job): return # Retry this partial spread when headroom recovers.
 				if photo.platform:
 					DirAccess.make_dir_recursive_absolute(photo.magazine.cache_directory)
 					var codec := "jpg" if Pages.page(str(photo.queue[at].uri)) else "png"

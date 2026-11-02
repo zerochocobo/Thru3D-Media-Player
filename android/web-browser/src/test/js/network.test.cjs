@@ -11,6 +11,7 @@ function fixture(cookies = []) {
   const browser = { runtime: { id: 'fixture', onConnect: event() }, webRequest, cookies: { getAll: async () => cookies } };
   const context = vm.createContext({ browser, URL, Date: { now: () => now }, setTimeout(f) { timers.set(++next, f); return next; }, clearTimeout(id) { timers.delete(id); } });
   vm.runInContext(fs.readFileSync(path.join(__dirname, '../../main/assets/web-browser/bilibili.js'), 'utf8'), context);
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../../main/assets/web-browser/douyin.js'), 'utf8'), context);
   vm.runInContext(source, context);
   function connect(tab = 1, frame = 0, page = 'https://page.test/watch', enabled = true) {
     const messages = [];
@@ -121,4 +122,21 @@ test('cookie scope is exported only for cookies actually sent, never unrelated/p
   ]), p = f.connect();
   f.request('https://cdn.test/media/movie.mp4', { requestHeaders: [{ name: 'Cookie', value: 'session=synthetic; partitioned=private' }] });
   await Promise.resolve(); f.flush(); assert.equal(p.last()[0].cookies.length, 1); assert.equal(p.last()[0].cookies[0].path, '/media');
+});
+
+test('Douyin response diagnostics retain only bounded structural paths in the owning frame', () => {
+  const f=fixture(), page='https://www.douyin.com/video/6961737553342991651', p=f.connect(1,0,page,false);
+  p.port.onMessage.fire({type:'context',page,douyin:true});
+  const opts={documentUrl:page,responseHeaders:[{name:'Content-Type',value:'application/json'}]};
+  f.request('https://www.douyin.com/aweme/v1/web/mix/aweme/?token=private-fixture',opts);
+  f.request('https://www.douyin.com/aweme/v1/web/user/123456/info/?secret=private-fixture',opts);
+  f.request('https://www.douyin.com/aweme/v1/web/other/',{...opts,tabId:2});
+  f.flush();
+  assert.deepEqual(p.messages.at(-1).douyin_api_paths,['/aweme/v1/web/mix/aweme/','/aweme/v1/web/user/{id}/info/']);
+  assert.equal(p.last().length,0,'JSON diagnostics cannot become media candidates');
+  assert.ok(!JSON.stringify(p.messages).includes('private-fixture'));
+  for(let i=0;i<40;i++)f.request('https://www.douyin.com/aweme/v1/web/route_'+String.fromCharCode(97+Math.floor(i/26))+String.fromCharCode(97+i%26)+'/',opts);
+  f.flush();assert.equal(p.messages.at(-1).douyin_api_paths.length,32);
+  p.port.onMessage.fire({type:'context',page,douyin:false});f.flush();
+  assert.deepEqual(p.messages.at(-1).douyin_api_paths,[]);
 });

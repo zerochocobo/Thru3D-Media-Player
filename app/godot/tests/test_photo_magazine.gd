@@ -94,6 +94,7 @@ func single_to_magazine_checks(app: Node3D, source: String) -> void:
 
 func run() -> void:
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(folder))
+	await worker_ownership_checks()
 	for i in 7:
 		var image := Image.create(100 + 20 * i, 200, false, Image.FORMAT_RGBA8)
 		image.fill(Color.RED if i % 2 == 0 else Color.BLUE)
@@ -509,3 +510,18 @@ func reading_preference_checks() -> void:
 	legacy.restore_view_settings(config); legacy.open_image(pages[0].uri,pages[0].title,pages)
 	check(legacy.gallery.mode == 0, "Invalid saved reading layouts cannot enter wall or memories inside a container")
 	legacy.close_image(); legacy.free(); await process_frame
+
+func worker_ownership_checks() -> void:
+	var first := Image.create(320,600,false,Image.FORMAT_RGBA8)
+	first.fill(Color(.2,.3,.6)); first.generate_mipmaps()
+	var second := Image.create(800,1000,false,Image.FORMAT_RGBA8); second.fill(Color(.7,.3,.2))
+	var path := ProjectSettings.globalize_path(folder).path_join("ownership-second.jpg"); second.save_jpg(path)
+	var before := first.get_data()
+	var job := {"id":1,"serial":1,"index":0,"info":{"path":path},"magazine_first":{"image":first,"info":{}}}
+	var thread := Thread.new(); thread.start(Photo._decode.bind(job))
+	while thread.is_alive(): await process_frame
+	var result: Dictionary = thread.wait_to_finish()
+	check(result.has("image") and result.image.get_width()>1000,"The production worker creates the joined spread")
+	check(first.get_size()==Vector2i(320,600) and first.has_mipmaps() and first.get_data()==before,
+		"A cached first page remains immutable while its worker composes another spread")
+	check(is_equal_approx(result.comic_rects[0].size.x,533.0/1333.0),"Comic hit rectangles use the worker's resized first page")

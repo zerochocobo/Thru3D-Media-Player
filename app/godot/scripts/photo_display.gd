@@ -812,6 +812,8 @@ static func _decode(job: Dictionary) -> Dictionary:
 	var info: Dictionary = header.duplicate(true)
 	info.merge(job.info, true)
 	if job.has("metadata_ready"): job.metadata_ready.call_deferred(int(job.id), int(job.serial), int(job.index), info)
+	DiagnosticLog.trail("photo.image", "idx=%d %dx%d %s prefetch=%s spread=%s" % [int(job.get("index", -1)), int(header.width), int(header.height),
+		str(header.codec), job.get("prefetch", false), job.has("magazine_first")])
 	if int(header.width) > 8192 or int(header.height) > 8192 or int(header.width) * int(header.height) > 32 * 1024 * 1024:
 		return {"error": "Image too large"}
 	if job.get("prefetch", false):
@@ -842,6 +844,7 @@ static func _decode(job: Dictionary) -> Dictionary:
 		var code := image.load_jpg_from_buffer(bytes) if header.codec == "jpg" else (image.load_png_from_buffer(bytes) if header.codec == "png" else image.load_webp_from_buffer(bytes))
 		if code != OK or image.is_empty(): return {"error": "Image unavailable"}
 	Info.orient(image, int(info.get("orientation", 1)))
+	DiagnosticLog.trail("photo.image.done", "idx=%d" % int(job.get("index", -1)))
 	var thumbnail: Image = null
 	# PDF directory previews must not generate thumbnails from rendered pages.
 	if not job.get("skip_thumbnail", false):
@@ -856,9 +859,13 @@ static func _decode(job: Dictionary) -> Dictionary:
 	var source_info := info
 	var comic_rects := [Rect2(0, 0, 1, 1)]
 	if spread:
+		# The reading cache/main-thread memory counter may still own the first page.
+		# compose() clears mips/resizes in place: give the worker a separate Image
+		# object (its pixel buffer stays copy-on-write until modified).
+		var first_page := job.magazine_first.image.duplicate() as Image
 		var second_page := image
-		image = Magazine.compose(job.magazine_first.image, image, bool(job.get("magazine_rtl", false)))
-		var left_width: int = second_page.get_width() if job.get("magazine_rtl", false) else job.magazine_first.image.get_width()
+		image = Magazine.compose(first_page, image, bool(job.get("magazine_rtl", false)))
+		var left_width: int = second_page.get_width() if job.get("magazine_rtl", false) else first_page.get_width()
 		var split := float(left_width) / image.get_width()
 		comic_rects = [Rect2(0, 0, split, 1), Rect2(split, 0, 1 - split, 1)]
 		source_info = job.magazine_first.info
@@ -956,7 +963,9 @@ func _process(delta: float) -> void:
 			_release_photo(int(_decoding.id))
 		magazine.cleanup_job(_decoding)
 		_decoding = {}
-	if not _thread and (not _next_decode.is_empty() or not _prefetch_decode.is_empty()):
+	var background_ready: bool = not _prefetch_decode.is_empty() and (not _prefetch_decode.get("reading", false) \
+		or reading_render.can_decode(_prefetch_decode))
+	if not _thread and (not _next_decode.is_empty() or background_ready):
 		var foreground := not _next_decode.is_empty()
 		_decoding = _next_decode if foreground else _prefetch_decode
 		if foreground: _decoding["metadata_ready"] = _on_metadata
@@ -1307,7 +1316,12 @@ func _requires_depth(target: int, info: Dictionary) -> bool:
 
 func _prepare_display(result: Dictionary, job: Dictionary) -> void:
 	if magazine.prepare(result, job): return
-	if int(_incoming_depth_result.get("id", 0)) == int(job.id):
+	# A failed promoted decode has no info/image, even when the source job carried
+	# depth_data. Route it through normal restoration before inspecting that data.
+	if result.has("error"):
+		_accept(result, job)
+		return
+	if int(job.id) > 0 and int(_incoming_depth_result.get("id", 0)) == int(job.id):
 		# A promoted worker can finish before its colour decode, including instant file hits.
 		job["depth_data"] = _incoming_depth_result.data
 		if job.depth_data.is_empty(): result["depth_failed"] = true
@@ -1322,7 +1336,7 @@ func _prepare_display(result: Dictionary, job: Dictionary) -> void:
 	_pending_display = {"result": result, "job": job, "serial": _serial}
 	var depth_data: Dictionary = job.get("depth_data", {})
 	if depth_data.is_empty(): depth_data = result.get("depth_data", {})
-	if int(_incoming_depth_result.get("id", 0)) == int(job.id):
+	if int(job.id) > 0 and int(_incoming_depth_result.get("id", 0)) == int(job.id):
 		depth_data = _incoming_depth_result.data
 		_incoming_depth_result = {}
 		if depth_data.is_empty():
@@ -1333,7 +1347,7 @@ func _prepare_display(result: Dictionary, job: Dictionary) -> void:
 		_pending_display = {}
 		_accept(result, job)
 		return
-	if _promoted_depth_request == int(job.id): changed.emit()
+	if int(job.id) > 0 and _promoted_depth_request == int(job.id): changed.emit()
 	elif not _prepare_depth(int(job.id)): _fail_pending_depth()
 	else: changed.emit()
 
@@ -1369,6 +1383,10 @@ func _accept(result: Dictionary, job: Dictionary) -> void:
 	loading = false
 	_hide_layer() # before the departing copy of the material: it slides out whole, in the eye buffers
 	if result.has("error"):
+		# Release only this failed selection's promoted data; a different request owns
+		# any other result. Late background callbacks then fail their normal ID gate.
+		if _promoted_depth_request == int(job.id): _promoted_depth_request = 0
+		if int(_incoming_depth_result.get("id", 0)) == int(job.id): _incoming_depth_result = {}
 		error = str(result.error); _restore_display(); changed.emit(); return
 	_presentation_pending = false
 	_presentation_layer_failed = false
@@ -1421,6 +1439,8 @@ func _accept(result: Dictionary, job: Dictionary) -> void:
 	_depth_textures_pending = false
 	mark = _mark("before_texture", mark)
 	var proxy: Image = result.get("proxy")
+	DiagnosticLog.trail("photo.texture", "idx=%d %dx%d proxy=%s" % [index, result.image.get_width(), result.image.get_height(),
+		"%dx%d" % [proxy.get_width(), proxy.get_height()] if proxy else "-"])
 	_display_proxy = proxy
 	if proxy and (_layer_possible(int(mode.geometry)) or (job.get("render_ready", false) and result.has("depth_data"))):
 		_texture = result.ready_texture if result.get("ready_proxy", false) and result.has("ready_texture") else ImageTexture.create_from_image(proxy)
@@ -2733,6 +2753,7 @@ func _show_magnifier_hole(window: Rect2) -> void:
 
 func _ensure_full_texture() -> void:
 	if not _texture_full and _full_image != null and not (_cached_render_active and depth_requested and _stereo_texture != null):
+		DiagnosticLog.trail("photo.texture.full", "%dx%d" % [_full_image.get_width(), _full_image.get_height()])
 		_texture = ImageTexture.create_from_image(_full_image)
 		_texture_full = true
 		material.set_shader_parameter("photo_texture", _texture)
@@ -2759,6 +2780,7 @@ func _use_depth_textures() -> void:
 
 func _create_depth_textures() -> void:
 	_depth_textures_pending = false
+	DiagnosticLog.trail("photo.texture.depth", "stereo=%s" % _display_depth_data.has("stereo_image"))
 	_depth_texture = ImageTexture.create_from_image(_display_depth_data.image) if _display_depth_data.has("image") else null
 	_stereo_texture = ImageTexture.create_from_image(_display_depth_data.stereo_image) if _display_depth_data.has("stereo_image") else null
 
@@ -2774,6 +2796,7 @@ func _continue_upload() -> void:
 			image.convert(Image.FORMAT_RGBA8)
 			_upload.image = image
 		var levels := int(floor(log(maxf(width, height)) / log(2.0))) + 1
+		DiagnosticLog.trail("photo.layer", "%dx%d levels=%d" % [width, height, levels])
 		var started := Time.get_ticks_usec()
 		var created: bool = platform.create_layer_image(VideoLayer.PICTURE_SLOT, width, height, levels, true)
 		var created_us := Time.get_ticks_usec() - started

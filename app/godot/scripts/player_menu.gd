@@ -1051,7 +1051,7 @@ func _subtitle_controls() -> Array:
 			var key: String = "subtitle_" + axis + "_position"
 			rows.append({"title": "Horizontal position" if axis == "horizontal" else "Vertical position", "field": SubtitleDepth.slider_row(key, float(_state.get(key, 0.0)))})
 		rows.append({"title": "Distance", "field": SubtitleDepth.slider_row("subtitle_distance", float(_state.get("subtitle_distance", 5.0)))})
-	else:
+	elif not _state.get("subtitle_below_screen", false):
 		rows.append({"title": "Vertical position", "field": {"key": "subtitle_flat_position", "value": _state.get("subtitle_flat_position", 0.0), "slider": true, "span": Vector3(0, 100, 1), "unit": "%", "reset_value": 0.0}})
 	rows.append({"title": "Subtitle size", "field": SubtitleStyle.size_row(float(_state.get("subtitle_size", 100.0)))})
 	if pgs:
@@ -1061,6 +1061,8 @@ func _subtitle_controls() -> Array:
 		rows.append({"title": "Subtitle display", "field": SubtitleStyle.line_row(_state.get("subtitle_line", 0))})
 	var encoding: Dictionary = _state.get("subtitle_encoding_row", {})
 	if not listening and not encoding.is_empty(): rows.append({"title": "Subtitle encoding", "field": encoding})
+	if _state.get("subtitle_below_available", false):
+		rows.append({"title": "Below-screen subtitles", "field": {"key": "subtitle_below_screen", "value": bool(_state.get("subtitle_below_screen", false)), "switch": true, "choices": [], "hint": "Below-screen subtitles"}})
 	return rows
 
 func video_text_subtitle(track: Dictionary) -> bool:
@@ -1207,7 +1209,7 @@ func _subtitle_detail_row_height(row: Dictionary) -> float:
 	if not row.has("field"): return SUBTITLE_SETTING_PITCH
 	# The feature switch sits in the column heading; only its language picker takes a row.
 	if row.field.key in HEADING_SWITCHES: return SUBTITLE_SETTING_PITCH if row.has("language_field") else 0.0
-	if row.field.key == "narration_hide_subtitles": return SUBTITLE_SETTING_PITCH
+	if row.field.key in ["narration_hide_subtitles", "subtitle_below_screen"]: return SUBTITLE_SETTING_PITCH
 	return 0.115
 
 func _draw_subtitle_details(rows: Array, top: float, height: float) -> void:
@@ -1249,7 +1251,7 @@ func _draw_subtitle_details(rows: Array, top: float, height: float) -> void:
 				choices.field(null, language_field, Vector2(0, y), 0.58, SUBTITLE_SETTING_HEIGHT)
 			y -= pitch
 			continue
-		var toggle: bool = row.field.key == "narration_hide_subtitles"
+		var toggle: bool = row.field.key in ["narration_hide_subtitles", "subtitle_below_screen"]
 		var title := _label(_fit_title(I18n.t(row.title), "", 0.43 if toggle else 0.58, TEXT_BODY), Vector3(-0.285, y, 0.004), TEXT_BODY)
 		title.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
 		if field.key in ["subtitle_delay", "secondary_subtitle_delay"]: field["nudge_sides"] = true
@@ -1853,7 +1855,7 @@ func _bar_key() -> String:
 
 func _base_bar_key() -> String:
 	return str([_state.get("subtitle_task", {}), _state.get("subtitle_task_mode"), _state.get("listening_cache_complete"), _state.get("listening_translation_complete")]) + str([_state.get("listening_available", false), _state.get("listening_enabled", false), _state.get("listening_source", "ja"), _state.get("listening_target", ""), _state.get("listening_lead", 12), _state.get("listening_state", "off")]) + str([_state.get("cast", {}), cast_state]) + str([_state.get("screen_scene_locked", false), _state.get("cinema_lights", "auto")]) + _capture_key() + str([_state.get("pip_slots", []), _state.get("pip_count", 0), _state.get("pip_available", true), int(_state.get("audio_whisper", 0)) > 0, _state.get("volume_writable", true), _state.get("whisper_available", false), _state.get("clone_voice", false), _state.get("geometry", 0), _state.get("has_video", false),
-		_state.get("spatial_video", false), _state.get("portrait_requested", false), _state.get("error", ""),
+		_state.get("spatial_video", false), _state.get("portrait_requested", false), _state.get("subtitle_below_screen", false), _state.get("subtitle_below_available", false), _state.get("error", ""),
 		_state.get("dual_subtitles_available", false), _state.get("dual_subtitles_enabled", false), _state.get("subtitle_edit_secondary", false), _state.get("secondary_subtitle_track", 0), _state.get("secondary_subtitle_delay", 0.0),
 		_state.get("source_uri", ""), _subtitle_tracks(), _state.get("subtitle_track", 0), bookmarks.key(), _state.get("audio_options", []), _state.get("audio_track_id", -1), _state.get("audio_delay", 0.0), _state.get("audio_timing_key", ""),
 		_state.get("subtitle_browse_available", false), _state.get("subtitle_files_available", false), _state.get("subtitle_files_revision", 0), _state.get("subtitle_files_state", "idle"), _state.get("subtitle_file_loading", ""), _state.get("subtitle_file_error", ""), _state.get("subtitle_timing_key", ""),

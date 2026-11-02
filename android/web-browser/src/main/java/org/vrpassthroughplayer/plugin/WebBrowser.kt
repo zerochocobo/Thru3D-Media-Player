@@ -36,14 +36,14 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
     companion object {
         private const val EXTENSION_ID = "web-video@thru3d.local"
         private const val NATIVE_APP = "thru3d_video"
-        // Gecko owns a profile separate from Android WebView / the cloud account login flow.
+        // Gecko owns a profile separate from Android WebView; account login pages share it.
         // A process has one runtime; recreating an Activity closes its sessions, not Gecko itself.
         private var runtime: GeckoRuntime? = null
         private var runtimeViewport: WebBrowserViewport? = null
         @Synchronized private fun viewport(lowEnd: Boolean = false): WebBrowserViewport =
             runtimeViewport ?: WebBrowserViewport(lowEnd).also { runtimeViewport = it }
         internal fun loginViewport(): WebBrowserViewport = viewport()
-        /** One process runtime; login sessions have a private context and no ordinary tab delegates. */
+        /** One process runtime; login sessions share the profile but have no ordinary tab delegates. */
         internal fun engine(owner: Activity): GeckoRuntime {
             check(Looper.myLooper() == Looper.getMainLooper())
             val profile = viewport()
@@ -91,6 +91,7 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
         // P0 is per-tab and process-local. Production remains on the verified backend
         // until the pinned Gecko response/SPA and device playback gates have passed.
         var bilibiliProbe = "off"
+        var douyinProbe = false
         val sources = mutableMapOf<WebExtension.Port, JSONArray>()
         var fullScreen = false
     }
@@ -292,7 +293,7 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
     // Prepare the explicitly selectable Beta route while the page loads; selection is
     // separate from observation so the existing player button keeps its old backend.
     private fun bilibiliEnabled(tab: Tab) = tab.bilibiliProbe !in setOf("uncapped", "network") && bilibiliEligible(tab)
-    // Unfinished route stays closed in the public release, including captured media.
+    // Unfinished route stays closed in the public export, including Debug research capture.
     private fun douyinEnabled(tab: Tab) = false
     private fun networkEnabled(tab: Tab) = networkPolicy()?.enabled(tab.url) == true || tab.bilibiliProbe == "network" && bilibiliEligible(tab)
     /** Debug-only A/B/C/P0b comparison; no persistent preference, reload or account changes. */
@@ -303,6 +304,15 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
         val tab = current() ?: error("No focused tab")
         require(tab.id == tabId && (mode == "off" || bilibiliEligible(tab)))
         tab.bilibiliProbe = mode; tab.sources.clear(); tab.media.clear()
+        sendNetworkPolicy(tab); publish()
+    }
+    /** Process-local research switch; absent from Release receivers and normal UI. */
+    fun configureDouyinProbe(tabId: Int, enabled: Boolean) {
+        check(Looper.myLooper() == Looper.getMainLooper())
+        check((activity()?.applicationInfo?.flags ?: 0) and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0)
+        val tab = tabs.firstOrNull { it.id == tabId } ?: if (!enabled) return else error("Unknown tab")
+        require(!enabled || current() === tab && WebBrowserDouyin.document(tab.url))
+        tab.douyinProbe = enabled; tab.sources.clear(); tab.media.clear()
         sendNetworkPolicy(tab); publish()
     }
     private fun sendNetworkPolicy(tab: Tab) {
@@ -634,7 +644,7 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                                     .put("douyin_enabled", douyinEnabled).put("douyin", douyin)
                                     .put("bilibili_probe", tab.bilibiliProbe)
                                     .put("diagnostic_max_height", if (tab.bilibiliProbe == "uncapped" && bilibiliEligible(tab)) 2160 else 1080)
-                                    .put("capture_identity", "${tab.id}:${tab.navigation}:${System.identityHashCode(port)}:$id:${item.optLong("network_epoch")}:${tab.bilibiliProbe}")
+                                    .put("capture_identity", "${tab.id}:${tab.navigation}:${System.identityHashCode(port)}:$id:${item.optLong("network_epoch")}:${tab.bilibiliProbe}:${tab.douyinProbe}")
                                     .put("fullscreen", item.optBoolean("fullscreen") || server && item.optBoolean("server_play")))
                             }
                         }

@@ -127,20 +127,20 @@ test('content bridge exports readiness only for the bound video and invalidates 
  assert.ok(native.messages.at(-1).videos.every(v=>!v.douyin_ready));
 });
 const event=()=>{const listeners=[];return {listeners,addListener(fn,filter,flags){listeners.push({fn,filter,flags})},fire(d){listeners.forEach(l=>l.fn(d))}}};
-function fixture(connected=true){
+function fixture(connected=true,tabFields={}){
  const streams=new Map(),timers=new Map();let sequence=0;
  const webRequest=Object.fromEntries(['onBeforeRequest','onHeadersReceived','onSendHeaders','onBeforeRedirect','onErrorOccurred','onCompleted'].map(k=>[k,event()]));
  webRequest.filterResponseData=id=>{const s={written:[],write(b){this.written.push(Buffer.from(b))},close(){this.closed=true},disconnect(){this.disconnected=true}};streams.set(id,s);return s};
  const browser={runtime:{id:'test',onConnect:event()},webRequest,cookies:{getAll:async()=>[]}};
  const context=vm.createContext({browser,URL,TextDecoder,Uint8Array,Date,setTimeout(fn){timers.set(++sequence,fn);return sequence},clearTimeout(id){timers.delete(id)}});
  for(const name of ['douyin.js','douyin-response.js','network.js'])vm.runInContext(fs.readFileSync(path.join(root,name),'utf8'),context);
- const messages=[],port={name:'thru3d_network',sender:{id:'test',tab:{id:1},frameId:0,url:page,documentId:'doc'},onMessage:event(),onDisconnect:event(),postMessage(m){messages.push(m)},disconnect(){this.onDisconnect.fire()}};
+ const messages=[],port={name:'thru3d_network',sender:{id:'test',tab:{id:1,...tabFields},frameId:0,url:page,documentId:'doc'},onMessage:event(),onDisconnect:event(),postMessage(m){messages.push(m)},disconnect(){this.onDisconnect.fire()}};
  const update=(url=page,enabled=true)=>port.onMessage.fire({type:'context',page:url,enabled:false,douyin:enabled,reset:true});
  const connect=()=>{browser.runtime.onConnect.fire(port);update()};if(connected)connect();
  const begin=(extra={})=>{const d={requestId:String(++sequence),url:'https://www.douyin.com/aweme/v1/web/aweme/detail/?aweme_id='+id,method:'GET',tabId:1,frameId:0,documentId:'doc',documentUrl:page,type:'xmlhttprequest',...extra};webRequest.onBeforeRequest.fire(d);return {d,stream:streams.get(d.requestId)}};
  const header=d=>webRequest.onHeadersReceived.fire({...d,statusCode:200,responseHeaders:[{name:'Content-Type',value:'application/json'}]});
  const finish=(s,data={status_code:0,aweme_detail:raw()})=>{const body=Buffer.from(typeof data==='string'?data:JSON.stringify(data));s.ondata({data:body.buffer.slice(body.byteOffset,body.byteOffset+body.byteLength)});s.onstop();assert.deepEqual(Buffer.concat(s.written),body)};
- return {streams,timers,webRequest,messages,port,update,connect,begin,header,finish,last:()=>messages.at(-1)};
+ return {streams,timers,webRequest,browser,messages,port,update,connect,begin,header,finish,last:()=>messages.at(-1)};
 }
 test('a cold detail response before the content port retains metadata without borrowing request credentials',()=>{
  const f=fixture(false),e=f.begin();assert.ok(e.stream);f.header(e.d);f.finish(e.stream);
@@ -165,6 +165,28 @@ test('worker/prefetch metadata is usable but never gives worker media requests a
  const resource={...e.d,requestId:'worker-file',url,statusCode:200,type:'media',requestHeaders:[{name:'Cookie',value:'must-not-transfer'}],responseHeaders:[{name:'Content-Type',value:'video/mp4'}]};
  f.webRequest.onSendHeaders.fire(resource);f.webRequest.onHeadersReceived.fire(resource);
  assert.equal(f.last().candidates.length,0);
+});
+
+test('tabless service-worker detail metadata needs one exact current owner and never lends file credentials',()=>{
+ const f=fixture(),worker={tabId:-1,frameId:-1,parentFrameId:-1,documentId:undefined,documentUrl:undefined,originUrl:'https://www.douyin.com/service-worker.js',incognito:false};
+ const e=f.begin(worker);assert.ok(e.stream,'A service worker has no tab ID in Firefox');f.header(e.d);f.finish(e.stream);
+ assert.equal(f.last().douyin[0].id,id);assert.equal(f.last().douyin_observation.tabless_worker,1);
+ const media={...e.d,requestId:'unscoped-file',url,statusCode:200,requestHeaders:[{name:'Cookie',value:'private-worker-only'}],responseHeaders:[{name:'Content-Type',value:'video/mp4'}]};
+ f.webRequest.onSendHeaders.fire(media);f.webRequest.onHeadersReceived.fire(media);
+ assert.equal(f.last().candidates.length,0,'Worker media retains the strict original tab/frame requirement');
+ for(const extra of [{originUrl:'https://evil.test/worker.js'},{originUrl:undefined},{documentUrl:'https://evil.test/'},{incognito:true},{method:'POST'},
+  {url:e.d.url+'&aweme_id='+id},{url:e.d.url.replace(id,'7674225615168824549')}])
+  assert.equal(f.begin({...worker,...extra}).stream,undefined);
+ const scoped=fixture(true,{cookieStoreId:'container-a'});
+ assert.equal(scoped.begin({...worker,cookieStoreId:'container-b'}).stream,undefined,'Known cookie containers cannot cross');
+ const other={...f.port,sender:{...f.port.sender,tab:{id:2},documentId:'other-doc'},onMessage:event(),onDisconnect:event(),postMessage(){},disconnect(){this.onDisconnect.fire()}};
+ f.browser.runtime.onConnect.fire(other);other.onMessage.fire({type:'context',page,enabled:false,douyin:true});
+ assert.equal(f.begin(worker).stream,undefined,'Two same-content tabs are ambiguous');
+ other.disconnect();const stale=f.begin(worker);assert.ok(stale.stream);
+ f.update('https://www.douyin.com/video/7674225615168824549');f.header(stale.d);
+ const late=raw();late.video.play_addr.url_list=[url.replace('synthetic','late-worker')];f.finish(stale.stream,{status_code:0,aweme_detail:late});
+ assert.ok(!JSON.stringify(f.last().douyin).includes('late-worker'),'A late worker response cannot bind to the new page');
+ f.update(page,false);assert.equal(f.begin(worker).stream,undefined,'Disabled tabs cannot gain an implicit worker opt-in');
 });
 test('same-origin SPA metadata can use an older document URL when Gecko supplies no document ID',()=>{
  const f=fixture(),e=f.begin({documentId:undefined,documentUrl:'https://www.douyin.com/'});assert.ok(e.stream);f.header(e.d);f.finish(e.stream);

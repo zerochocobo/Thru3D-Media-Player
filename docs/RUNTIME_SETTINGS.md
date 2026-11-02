@@ -7,3 +7,7 @@ General settings expose recent warnings/errors and compact/full diagnostic detai
 自动／标准／省内存主要控制AI人像透视额外缓冲，不等同于所有模式内存减半。诊断日志由用户手动保存或临时Wi-Fi分享，保留已知字段脱敏；源码仓库不包含真实日志、设备数据和分享口令。
 
 0.15.x also adds per-track external-subtitle encoding detection/override and bounded UTF-8 conversion for playback/narration, retaining original bytes/files. Common UTF/Chinese/Japanese/Korean/Western choices use the externally prepared ICU detector. Browser data and optional LAN library sharing are described in [browser scope](WEB_BROWSER.md); video portrait limits are in [portrait scope](VIDEO_PORTRAIT.md).
+
+0.16.3 retains bounded, redacted crash breadcrumbs and eligible exit evidence across restarts. Pending crash reports may be saved on the next launch once the existing privacy mode permits it; nothing is automatically uploaded. Known-field redaction does not certify complete anonymity. Users' actual breadcrumbs, process logs, tombstones and saved reports are excluded from this repository.
+
+新增异常证据的跨重启保留，按隐私策略决定下次启动是否保存；不自动上传，不把字段脱敏等同于完全匿名。真实日志与崩溃记录不进入公开Git。

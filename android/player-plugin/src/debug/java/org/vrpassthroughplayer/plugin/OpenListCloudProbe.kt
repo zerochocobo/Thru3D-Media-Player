@@ -3,12 +3,14 @@ package org.vrpassthroughplayer.plugin
 import android.content.Context
 import org.json.JSONObject
 import java.io.File
+import java.security.MessageDigest
 
 /** Debug-only read/play probe. Reports counts and byte ranges, never filenames,
  * credentials, signed URLs, response bodies or screenshots of a logged-in account. */
 internal object OpenListCloudProbe {
-    fun request(context: Context, request: String, provider: String, play: Boolean): Int {
+    fun request(context: Context, request: String, provider: String, play: Boolean, rootFile: String = ""): Int {
         require(provider in setOf(CloudDrive.ALIYUN, CloudDrive.QUARK, CloudDrive.OPEN115))
+        require(rootFile.isEmpty() || (rootFile.length <= 255 && CloudPaths.validName(rootFile)))
         Thread {
             val report = JSONObject().put("provider", provider).put("state", "running").put("stage", "account")
             try {
@@ -22,7 +24,12 @@ internal object OpenListCloudProbe {
                 val pending = ArrayDeque<String>().apply { add("/") }
                 var selected: CloudFile? = null
                 var selectedPath = ""
-                if (provider == CloudDrive.OPEN115) {
+                if (rootFile.isNotEmpty()) {
+                    selectedPath = CloudPaths.child("/", rootFile)
+                    selected = client.find(selectedPath)
+                    require(!selected!!.folder && selected!!.size > 0 && MediaKinds.kind(selected!!.name) == "video")
+                    report.put("selection", "explicit_root")
+                } else if (provider == CloudDrive.OPEN115) {
                     // Existing recent video only: no exploratory cloud crawl or filename reporting.
                     val recent = (0..1).mapNotNull { bank -> runCatching {
                         val envelope = JSONObject(File(context.filesDir, "settings/recent_files_$bank.json").readText())
@@ -63,7 +70,9 @@ internal object OpenListCloudProbe {
                     source.open().use { reader ->
                         val buffer = ByteArray(65536)
                         val head = reader.read(0, buffer, buffer.size)
+                        if (head > 0) report.put("head_sha256", MessageDigest.getInstance("SHA-256").digest(buffer.copyOf(head)).joinToString("") { "%02x".format(it) })
                         val seek = reader.read(file.size / 2, buffer, buffer.size)
+                        if (seek > 0) report.put("seek_sha256", MessageDigest.getInstance("SHA-256").digest(buffer.copyOf(seek)).joinToString("") { "%02x".format(it) })
                         require(head > 0 && seek > 0)
                         report.put("head_bytes", head).put("seek_bytes", seek)
                         report.put("head_and_seek_ms", (System.nanoTime()-readStarted)/1_000_000)

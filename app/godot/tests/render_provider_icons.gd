@@ -26,12 +26,15 @@ func _run() -> void:
 		var used := mark.get_used_rect()
 		if used.size.x <= 0 or used.size.y <= 0 or used.position.x < 4 or used.position.y < 4 or used.end.x > 124 or used.end.y > 124:
 			push_error("Empty/clipped provider mark: " + key); quit(1); return
+		var colored := false
 		for y in mark.get_height():
 			for x in mark.get_width():
 				var pixel := mark.get_pixel(x, y)
 				if pixel.a > 0.01 and (absf(pixel.r - pixel.g) > 0.01 or absf(pixel.g - pixel.b) > 0.01):
-					push_error("Non-monochrome provider mark: " + key); quit(1); return
-	print("11 imported provider marks: transparent padding and monochrome pixels verified")
+					colored = true
+		if colored != (key in Icons.Providers.COLORED):
+			push_error("Unexpected provider mark colors: " + key); quit(1); return
+	print("11 imported provider marks: transparent padding, 5 colored server marks and 6 monochrome cloud marks verified")
 	preload("res://scripts/i18n.gd").use("zh")
 	viewport = SubViewport.new(); viewport.size = Vector2i(1600, 1100); viewport.own_world_3d = true
 	viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS; root.add_child(viewport)

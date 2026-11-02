@@ -2,33 +2,39 @@ extends SceneTree
 const Menu := preload("res://scripts/library_menu.gd")
 const Fixture := preload("res://tests/test_library_menu.gd")
 const Volume := preload("res://scripts/storage_volume.gd")
+const I18n := preload("res://scripts/i18n.gd")
 var checks := 0
 var failures: Array[String] = []
 const SYS := "/storage/1234-ABCD"
 const RAW := "usb://dual-partition"
 const TREE := "content://com.android.externalstorage.documents/tree/1234-ABCD%3AMovies/document/1234-ABCD%3AMovies"
+const DOCROOT := "content://com.android.externalstorage.documents/tree/1234-ABCD%3A/document/1234-ABCD%3A"
 class Platform extends Fixture.FakePlatform:
 	var directory_requests: Array[String] = []
 	var authorized := false
 	var raw_error := true
+	var raw_error_message := "USB device is in use; open a system-mounted entry"
 	var hold_stops := false
 	var held_stops := {}
+	var legacy_all_files := false
+	var document_only := false
+	var empty_after_grant := false
 	func storage_volumes() -> Array:
 		return [{"id":"/storage/emulated/0","title":"Internal storage","container":true,"volume":true},
-			{"id":SYS,"uuid":"1234-ABCD","title":"EXFAT","container":true,"volume":true,"removable":true,"storage_access":"system","read_only":true},
+			{"id":DOCROOT if document_only else SYS,"uuid":"1234-ABCD","title":"EXFAT","container":true,"volume":true,"removable":true,"storage_access":"system","read_only":true,"document_only":document_only},
 			{"id":"/storage/9876-DCBA","uuid":"9876-DCBA","title":"FAT32","container":true,"volume":true,"removable":true,"storage_access":"system","read_only":true},
 			{"id":RAW,"title":"Disk model","container":true,"volume":true,"removable":true,"managed_usb":true,"storage_access":"usb","read_only":true}]
 	func media_local_browse(path: String) -> int:
-		var reply := {"source":"local","state":"ready","path":path,"all_files":false,"volumes":storage_volumes(),"entries":[]}
+		var reply := {"source":"local","state":"ready","path":path,"all_files":legacy_all_files,"volumes":storage_volumes(),"entries":[]}
 		if path.is_empty(): reply.entries = storage_volumes()
-		elif path == SYS:
+		elif path in [SYS,DOCROOT]:
 			if authorized:
-				reply.entries = [{"id":TREE,"title":"Movies","container":true,"read_only":true,"can_delete":false,"can_rename":false}]
+				if not empty_after_grant: reply.entries = [{"id":TREE,"title":"Movies","container":true,"read_only":true,"can_delete":false,"can_rename":false}]
 			else: reply.merge({"state":"denied","error":"STORAGE_FOLDER_ACCESS_NEEDED","access_kind":"directory"}, true)
 		elif path == TREE:
 			reply.entries = [{"id":TREE+"%2Fmovie.mkv","uri":TREE+"%2Fmovie.mkv","title":"movie.mkv","container":false,"size":6000000000,"read_only":true,"can_delete":false,"can_rename":false}]
 		elif path == RAW:
-			if raw_error: reply.merge({"state":"error","error":"USB device is in use; open a system-mounted entry","usb_stage":"claim"}, true)
+			if raw_error: reply.merge({"state":"error","error":raw_error_message,"usb_stage":"claim"}, true)
 			else: reply.entries = [{"id":RAW+"/0-2048","title":"exFAT · 1","container":true},{"id":RAW+"/0-500000","title":"FAT32 · 2","container":true}]
 		return _reply(reply)
 	func media_local_grant_directory(path: String) -> void:
@@ -92,6 +98,38 @@ func _run() -> void:
 	menu.compact = false; menu.refresh(); menu._activate(Menu.ROW_BASE+3); await settle()
 	check(menu.status == "USB device is in use; open a system-mounted entry", "Claim failure is visible rather than an empty success")
 	check(menu._local_access_mode() == "none" and not menu._buttons.any(func(b): return b.target in [Menu.ALL_FILES,Menu.GRANT]), "Direct USB never offers shared-storage permission settings")
+	check(menu._buttons.any(func(b): return b.target == Menu.STORAGE_ROOT), "An occupied USB interface offers a way back to the explicit mounted volumes")
+	menu.compact = true; menu.refresh()
+	check(menu._buttons.any(func(b): return b.target == Menu.STORAGE_ROOT), "Compact mode retains the mounted-entry recovery")
+	var recovery: Dictionary = menu._buttons.filter(func(b): return b.target == Menu.STORAGE_ROOT)[0]
+	point = recovery.node.global_position
+	menu.press_pointer("left_hand",point+Vector3(0,0,1),Vector3(0,0,-1),true); await settle()
+	menu.press_pointer("left_hand",point+Vector3(0,0,1),Vector3(0,0,-1),false)
+	check(menu._local_path().is_empty() and menu.rows.size() == 4 and platform.grants == 0, "Recovery lists every partition without guessing a disk match or requesting internal permissions")
+	menu.compact = false; menu.refresh(); menu._activate(Menu.ROW_BASE+3); await settle()
+	menu._local_volumes.clear(); menu.compact = true; menu.refresh()
+	check(menu._buttons.any(func(b): return b.target == Menu.STORAGE_ROOT), "USB busy recovery remains available when quick-entry volume metadata is absent")
+	menu._activate(Menu.STORAGE_ROOT); await settle()
+	check(menu._local_path().is_empty() and menu.rows.size() == 4 and menu._local_volumes.size() == 4, "Recovery refreshes the actual volume list instead of relying on a stale cache")
+	menu.compact = false; menu.refresh(); menu._activate(Menu.ROW_BASE+3); await settle()
+	platform.raw_error_message = Menu.USB_BUSY_EJECT; menu._activate(Menu.REFRESH); await settle()
+	check(menu.status == Menu.USB_BUSY_EJECT and menu._buttons.any(func(b): return b.target == Menu.RETRY_USB) 		and not menu._buttons.any(func(b): return b.target == Menu.STORAGE_ROOT), "PICO busy USB offers retry after a system eject instead of the failing mounted entry")
+	menu.compact = true; menu.refresh()
+	var retry: Dictionary = menu._buttons.filter(func(b): return b.target == Menu.RETRY_USB)[0]
+	point = retry.node.global_position
+	platform.raw_error = false
+	menu.press_pointer("left_hand",point+Vector3(0,0,1),Vector3(0,0,-1),true); await settle()
+	menu.press_pointer("left_hand",point+Vector3(0,0,1),Vector3(0,0,-1),false)
+	check(menu._local_path().begins_with("usb://") and menu.rows.size() == 2 and not menu._buttons.any(func(b): return b.target == Menu.RETRY_USB), "Ray retry reopens the same USB entry after the system releases it")
+	var saved_language := I18n.language
+	for language in ["zh", "zh_Hant", "ja", "en"]:
+		I18n.language = language
+		var hint := I18n.t(Menu.USB_BUSY_EJECT)
+		check(hint != Menu.USB_BUSY_EJECT or language == "en", "%s translates the eject guidance" % language)
+		check(menu._fit_title(hint, "", 0.67, 17) == hint and menu._fit_title(hint, "", 0.94, 14) == hint, "%s eject guidance fits without truncation" % language)
+	I18n.language = saved_language
+	platform.raw_error = true; platform.raw_error_message = "USB device is in use; open a system-mounted entry"
+	menu.compact = false; menu.refresh()
 	platform.raw_error = false; menu._activate(Menu.REFRESH); await settle()
 	check(menu.rows.size() == 2 and menu.rows[0].title == "exFAT · 1" and menu.rows[1].title == "FAT32 · 2", "Both direct partitions survive normal listing and media filtering")
 	menu._request("local",899)
@@ -114,10 +152,10 @@ func _run() -> void:
 	var pending := platform.held_stops.duplicate()
 	for path in [SYS,RAW]:
 		platform.media_list.emit(int(pending[path]),JSON.stringify({"source":"local_eject","state":"released" if path == SYS else "stopped","volume_id":path,"unmounted":false})); await settle()
-	check(not menu._local_eject_pending.is_empty() and menu.status != "Storage access stopped", "Global completion waits for every partition and the native device")
+	check(not menu._local_eject_pending.is_empty() and menu.status != "USB storage access stopped", "Global completion waits for every partition and the native device")
 	var last := "/storage/9876-DCBA"
 	platform.media_list.emit(int(pending[last]),JSON.stringify({"source":"local_eject","state":"released","volume_id":last,"unmounted":false})); await settle()
-	check(menu._local_eject_pending.is_empty() and menu._local_path().is_empty() and menu.status == "Storage access stopped", "Whole-drive app stop has one short completion and no system UI")
+	check(menu._local_eject_pending.is_empty() and menu._local_path().is_empty() and menu.status == "USB storage access stopped", "Whole-drive app stop has one short completion and no system UI")
 	check(platform.grants == 0, "Stopping never requests storage or write permission")
 	menu._activate(Menu.NAV_BASE+Menu.Section.RECENT); await settle()
 	menu.set_compact(true); menu.refresh()
@@ -126,13 +164,33 @@ func _run() -> void:
 	point = stop_button.node.global_position
 	menu.press_pointer("left_hand",point+Vector3(0,0,1),Vector3(0,0,-1),true); await settle()
 	menu.press_pointer("left_hand",point+Vector3(0,0,1),Vector3(0,0,-1),false)
-	check(platform.held_stops.size() == 3 and menu.status == "Stopping storage…", "The compact Home ray target stops the complete disk without opening either partition")
+	check(platform.held_stops.size() == 3 and menu.status == "Stopping USB storage access…", "The compact Home ray target stops the complete disk without opening either partition")
 	pending = platform.held_stops.duplicate()
 	for path in [SYS,RAW,last]:
 		platform.media_list.emit(int(pending[path]),JSON.stringify({"source":"local_eject","state":"error" if path == RAW else "released","volume_id":path,"error":"USB stop failed" if path == RAW else "","unmounted":false})); await settle()
 	check(menu.status == "USB stop failed" and menu._local_eject_pending.is_empty(), "One failed device prevents a global success notice and releases the retry guard")
 	platform.hold_stops = false; menu._activate(Menu.EJECT_STORAGE); await settle()
-	check(menu._local_eject_pending.is_empty() and menu.status == "Storage access stopped", "A whole-disk retry remains entirely inside the app")
+	check(menu._local_eject_pending.is_empty() and menu.status == "USB storage access stopped", "A whole-disk retry remains entirely inside the app")
+	menu.queue_free(); await process_frame; platform.free()
+	platform = Platform.new(); platform.legacy_all_files = true; platform.document_only = true
+	menu = Menu.new(); root.add_child(menu); menu.attach_platform(platform); menu.toggle()
+	menu._activate(Menu.NAV_BASE+Menu.Section.LOCAL); await settle()
+	menu._activate(Menu.ROW_BASE+1); await settle()
+	check(menu._local_path() == DOCROOT and menu.status == "Folder access needed" and menu._buttons.any(func(b): return b.target == Menu.GRANT), "A pathless mounted volume has an explicit folder grant despite existing internal permission")
+	menu.compact = true; menu.refresh(); menu._activate(Menu.GRANT); await settle()
+	check(platform.directory_requests == [DOCROOT] and platform.grants == 0, "Document-only access requests the correct folder rather than internal permission")
+	platform.media_list.emit(0,JSON.stringify({"source":"local_access","state":"cancelled","path":DOCROOT,"error":"Folder access needed"})); await settle()
+	check(not menu._local_grant_pending and menu._local_grant_needed(), "Cancelling a pathless-volume picker leaves a usable retry")
+	menu._activate(Menu.GRANT); await settle()
+	platform.authorized = true
+	platform.media_list.emit(0,JSON.stringify({"source":"local_access","state":"granted","path":DOCROOT})); await settle()
+	check(menu.rows.size() == 1 and menu.rows[0].title == "Movies", "A granted subfolder remains explicit below the logical volume root")
+	menu._activate(Menu.ROW_BASE); await settle()
+	check(menu.rows[0].uri.begins_with("content://") and menu._eject_volume().id == DOCROOT and not menu.rows[0].get("can_delete",true), "Logical-volume files keep their owner and read-only playback path")
+	menu._local_stack.resize(1); platform.empty_after_grant = true; menu._load_section(); await settle()
+	check(menu.rows.is_empty() and not menu._local_grant_needed(), "A genuine empty granted folder is not turned into a permission failure")
+	var logical_volume: Dictionary = platform.storage_volumes()[1]
+	check(Volume.contains_uri(logical_volume,TREE+"%2Fmovie.mkv") and not Volume.contains_uri(logical_volume,"file:///storage/emulated/0/movie.mkv"), "Logical-volume cleanup matches its content UUID and preserves internal files")
 	menu.queue_free(); await process_frame; platform.free()
 	for failure in failures: push_error(failure)
 	print("Storage authorization: %d checks, %d failures" % [checks, failures.size()])

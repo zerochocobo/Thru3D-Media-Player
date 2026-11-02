@@ -7,6 +7,10 @@ internal object LocalStoragePermissions {
     fun allFiles(sdk: Int, manager: Boolean, legacy: Boolean, readGranted: Boolean): Boolean =
         if (sdk >= 30) manager else legacy && readGranted
 
+    /** Probe metadata only after a read grant usable by this Android version exists. */
+    fun canProbeDirectory(sdk: Int, manager: Boolean, readGranted: Boolean): Boolean =
+        (sdk >= 30 && manager) || (sdk <= 32 && readGranted)
+
     fun settingsActions(sdk: Int): List<String> = if (sdk >= 30) listOf(
         Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
         Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)

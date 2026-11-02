@@ -208,14 +208,15 @@ internal class LocalVideoLibrary(
         val epoch = browseEpoch.get()
         directoryValidating = true
         worker.execute {
+            var persistent: Boolean? = null
             val state = try {
                 if (closed || epoch != browseEpoch.get()) { directoryValidating = false; return@execute }
-                documents.accept(uri, flags, request.second)
+                persistent = documents.accept(uri, flags, request.second)
                 "granted" to ""
             } catch (_: IllegalArgumentException) { "error" to "Select a folder on this storage device" }
             catch (_: Exception) { "error" to "Folder access needed" }
             directoryValidating = false
-            if (!closed && epoch == browseEpoch.get()) accessEvent(state.first, state.second, request.first)
+            if (!closed && epoch == browseEpoch.get()) accessEvent(state.first, state.second, request.first, persistent)
         }
     }
 
@@ -228,8 +229,9 @@ internal class LocalVideoLibrary(
         accessEvent(if (opened) "settings_opened" else "error", if (opened) "" else "Permission settings unavailable")
     }
 
-    private fun accessEvent(state: String, error: String = "", path: String = "") = emit(0,
-        JSONObject().put("source", "local_access").put("state", state).put("error", error).put("path", path).toString())
+    private fun accessEvent(state: String, error: String = "", path: String = "", persistent: Boolean? = null) = emit(0,
+        JSONObject().put("source", "local_access").put("state", state).put("error", error).put("path", path)
+            .apply { persistent?.let { put("persistent", it) } }.toString())
 
     private fun systemVolume(path: String, volumes: JSONArray): JSONObject? {
         val document = if (path.startsWith("content://")) runCatching { StorageDocumentPolicy.parse(path).document }.getOrNull() else null
@@ -251,6 +253,8 @@ internal class LocalVideoLibrary(
                 mounted = volume?.optBoolean("removable") == true
                 val entries = when {
                     path.isEmpty() -> volumes
+                    mounted && volume!!.optBoolean("document_only") && path == volume.getString("id") ->
+                        documents.tree.root(volume.getString("uuid"), !subtitlesOnly)
                     path.startsWith("content://") -> {
                         check(mounted) { "Storage device unavailable" }
                         documents.tree.directory(path, !subtitlesOnly)
@@ -294,7 +298,7 @@ internal class LocalVideoLibrary(
         val uri = Uri.parse(request.getString("uri"))
         require(uri.scheme == "file" && uri.authority.isNullOrEmpty())
         val roots = LocalStorageVolumes.roots(activity)
-        val file = MediaDeletePolicy.local(File(uri.path ?: ""), (0 until roots.length()).map { File(roots.getJSONObject(it).getString("id")) })
+        val file = MediaDeletePolicy.local(File(uri.path ?: ""), fileRoots(roots))
         check(!removable(file)) { "USB storage is read-only" }
         check(writable() && MediaDeletePolicy.regular(file) && file.parentFile?.canWrite() == true) { "File deletion permission denied" }
         MediaDeletePolicy.unchanged(file.length(), file.lastModified(), request.getLong("size"), request.getLong("modified"))
@@ -338,7 +342,7 @@ internal class LocalVideoLibrary(
         require(uri.scheme == "file" && uri.authority.isNullOrEmpty())
         val roots = LocalStorageVolumes.roots(activity)
         val folder = request.optBoolean("folder")
-        val file = MediaDeletePolicy.local(File(uri.path ?: ""), (0 until roots.length()).map { File(roots.getJSONObject(it).getString("id")) }, folder)
+        val file = MediaDeletePolicy.local(File(uri.path ?: ""), fileRoots(roots), folder)
         check(!removable(file)) { "USB storage is read-only" }
         if (inspect) {
             val exists = try {
@@ -376,6 +380,9 @@ internal class LocalVideoLibrary(
         check(!file.exists()) { "Delete result needs checking" }
         return JSONObject().put("deleted", true)
     }
+
+    private fun fileRoots(roots: JSONArray): List<File> = (0 until roots.length())
+        .map { roots.getJSONObject(it).getString("id") }.filterNot { it.startsWith("content://") }.map(::File)
 
     private fun folder(path: String, subtitlesOnly: Boolean = false, alive: () -> Boolean): JSONArray {
         val directory = File(path)

@@ -55,8 +55,8 @@ class DebugDiagnosticsReceiver : BroadcastReceiver() {
                     } else if (intent.action == "com.wapok.thru3d.DEBUG_CLOUD") {
                         val provider = intent.getStringExtra("provider") ?: CloudDrive.P115
                         if (provider == "webdav_test") webDavTest(context.applicationContext, intent, report)
-                        else if (provider == CloudDrive.P115) CloudPlaybackProbe.request(context.applicationContext, request, intent.getBooleanExtra("play", false))
-                        else OpenListCloudProbe.request(context.applicationContext, request, provider, intent.getBooleanExtra("play", false))
+                        else if (provider == CloudDrive.P115) CloudPlaybackProbe.request(context.applicationContext, request, intent.getBooleanExtra("play", false), intent.getStringExtra("root_file").orEmpty())
+                        else OpenListCloudProbe.request(context.applicationContext, request, provider, intent.getBooleanExtra("play", false), intent.getStringExtra("root_file").orEmpty())
                     } else if (intent.action == "com.wapok.thru3d.DEBUG_PLEX_NETWORK") {
                         val raw = intent.getStringExtra("connections") ?: error("Missing connections")
                         report.put("plex_network", PlexNetworkProbe.run(context.applicationContext, request, raw))

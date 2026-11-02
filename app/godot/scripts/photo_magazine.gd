@@ -131,7 +131,8 @@ static func remove_file(path: String) -> void:
 static func compose(left: Image, right: Image, rtl: bool) -> Image:
 	var ratio := float(left.get_width()) / left.get_height() + float(right.get_width()) / right.get_height()
 	var height := maxi(1, mini(4096, mini(maxi(left.get_height(), right.get_height()), int(8192.0 / ratio))))
-	# These are uncached decoder-owned images; consume them without two full-size copies.
+	# Callers must supply worker-owned Image objects, never a cache-owned first page.
+	# Consume those private images without another two full-size copies here.
 	var pages: Array[Image] = [left, right]
 	for page in pages:
 		page.clear_mipmaps()

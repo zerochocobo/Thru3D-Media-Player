@@ -50,6 +50,11 @@ assert.equal(ports[0].messages.at(-1).videos.find(v=>v.width===576).douyin_ready
 networkPorts[0].onMessage.emit({type:'network',page,douyin:[pairData],candidates:[request,{kind:'file',url:audio,at:9970,headers:{referer:page}}]});flush();
 snapshot=ports[0].messages.at(-1).videos.find(v=>v.width===576);
 assert.equal(snapshot.douyin_ready,true);assert.equal(snapshot.douyin.observed_audio,audio);
+ports[0].onMessage.emit({action:'network_policy',douyin:true,diagnostics:true});
+networkPorts[0].onMessage.emit({type:'network',page,douyin:[pairData],douyin_api_paths:['/aweme/v1/web/mix/aweme/'],candidates:[request,{kind:'file',url:audio,at:9970,headers:{referer:page}}]});flush();
+snapshot=ports[0].messages.at(-1).videos.find(v=>v.width===576);
+assert.equal(snapshot.douyin_api_paths[0],'/aweme/v1/web/mix/aweme/');
+assert.equal(snapshot.douyin_dom.flight_scripts,0,'DOM diagnostics expose counts, not inline script text');
 const duplicate = video(576, 1024, 19.735); players.push(duplicate);
 observer([{addedNodes: [{nodeType: 1, querySelectorAll: () => [duplicate]}]}]); flush();
 assert.ok(ports[0].messages.at(-1).videos.every(v => !v.douyin_ready), 'Ambiguous decoded owners cannot adopt a request');

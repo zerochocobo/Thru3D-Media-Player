@@ -70,6 +70,27 @@ func _run() -> void:
 		photo._on_ready(photo._request, JSON.stringify({"state":"error","error":reason}))
 		check(not photo.loading and photo._texture == original and not photo.placeholder_visible(), "Memory rejection restores the displayed photo: "+reason)
 		check(photo.error == ({"PHOTO_OUT_OF_MEMORY":"Not enough memory to open image", "PHOTO_MEMORY_UNAVAILABLE":"Unable to check available memory"})[reason], "Memory failure reports its actual cause: "+reason)
+	for layout in [0,4]:
+		photo.set_layout_mode(layout)
+		photo._select(0,-1)
+		var available: Texture2D = photo._texture
+		photo._promoted_depth_request = photo._request
+		photo._incoming_depth_result = {"id":photo._request,"data":{"image":image}}
+		photo._prepare_display({"error":"Image unavailable"},{"id":photo._request,"serial":photo._serial,"index":photo.pending_index,"depth_data":{}})
+		check(not photo.loading and not photo.placeholder_visible() and photo._texture==available and photo.error=="Image unavailable",
+			"A failed promoted decode with depth metadata restores the photo in layout %d" % layout)
+		check(photo._promoted_depth_request == 0 and photo._incoming_depth_result.is_empty(),
+			"A failed promoted decode releases its conversion state in layout %d" % layout)
+		photo._on_prefetch_depth(photo._request, '{"state":"ready","stereo_path":"unused-late-pair.png"}')
+		check(photo._depth_queue.is_empty(), "A failed promoted decode ignores its late stereo payload in layout %d" % layout)
+	photo.set_layout_mode(0)
+	photo._select(0,-1)
+	var other_id: int = photo._request + 5000
+	photo._promoted_depth_request = other_id; photo._incoming_depth_result = {"id":other_id,"data":{"image":image}}
+	photo._prepare_display({"error":"Image unavailable"},{"id":photo._request,"serial":photo._serial,"index":photo.pending_index})
+	check(photo._promoted_depth_request == other_id and photo._incoming_depth_result.get("id") == other_id,
+		"Failure cleanup leaves another request's conversion state untouched")
+	photo._promoted_depth_request = 0; photo._incoming_depth_result = {}
 	photo._select(0, -1)
 	photo._on_metadata(photo._request, photo._serial, photo.pending_index, {"width":320,"height":640})
 	photo._process(0.3)
@@ -115,6 +136,15 @@ func _run() -> void:
 	check(photo.loading and photo.error.is_empty() and not photo._deferred_release_ids.has(blocked_id),
 		"Stale decode failure releases its lease without hiding the chosen placeholder")
 	photo.close_image(); photo.free()
+	# Defensive ID-zero input without the current magazine depth_failed shortcut.
+	var zero := Photo.new(); zero.history_enabled = false
+	zero.mode_memory = Memory.new("user://loading_zero_%d" % Time.get_ticks_usec())
+	root.add_child(zero); zero.set_process(false); zero.platform = SlowHost.new()
+	zero.queue.assign(entries); zero.auto_depth = true; zero.loading = true; zero.pending_index = 0
+	zero._prepare_display({"image":image,"info":{"width":64,"height":32}}, {"id":0,"serial":zero._serial,"index":0})
+	check(not zero.loading and zero.index == 0 and zero._texture != null and zero._pending_display.is_empty(),
+		"An ID-zero decode cannot match empty incoming/promoted IDs and wait forever")
+	zero.close_image(); zero.free()
 	var g := Gestures.new()
 	var origin := Vector3(0,1,-.5)
 	var hand := {"source":"hand","tracked":true,"position":origin,"down":true,"pressed":true}

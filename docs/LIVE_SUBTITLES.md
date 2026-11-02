@@ -27,3 +27,9 @@ Durable eligible jobs/caches follow the independent per-file settings policy (al
 ## Dual text tracks (0.16.2)
 
 An optional second text track has its own selection/timing and narration preference. The existing single-track route stays authoritative; bitmap tracks and active live recognition have separate availability limits. This is not hard-subtitle OCR or two arbitrary subtitle renderers. 3D text protection is hidden and forced off in this release, including persisted enabled settings.
+
+## Below-screen placement (0.16.3)
+
+Eligible flat and curved 2D, SBS/TB and spatial video can place text or bitmap subtitles below the screen. The opt-in control is last in subtitle styles and defaults off. It is remembered per file under the independent file-settings privacy policy and follows flat-video mode changes; immersive projection retains its existing subtitle route. It reuses track timing/styles and is separate from disabled 3D text protection or hard-subtitle detection.
+
+屏下字幕默认关闭并逐片保存，适用于兼容平面／曲面2D、SBS／TB与空间视频；沉浸投影沿用原路径。它不是本版关闭的3D文字保护或硬字幕OCR。

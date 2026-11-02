@@ -21,23 +21,23 @@ import java.util.UUID
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
-/** Private account-only producer. No browser history, media extension, URL snapshot or cookie export. */
+/** Normal-mode login producer using the browser profile. No login URLs or fields in snapshots. */
 class GeckoLoginSession(private val host: () -> Activity?, private val desktopOnly: Boolean = false,
     private val touchOnly: Boolean = false,
+    initialDesktop: Boolean = desktopOnly,
     private val navigate: (String, Boolean) -> String?) {
     val id = UUID.randomUUID().toString()
     private val ui = Handler(Looper.getMainLooper())
     @Volatile private var closed = false
     @Volatile private var state = "{}"
     private var session: GeckoSession? = null
-    private var runtime: GeckoRuntime? = null
     private var display: GeckoDisplay? = null
     private var surface: Surface? = null
     private var input: LoginInput? = null
     @Volatile private var editor: InputConnection? = null
     private var editing = false
     @Volatile private var paused = false
-    private var desktop = desktopOnly
+    private var desktop = desktopOnly || initialDesktop
     private var progress = 0
     private var loading = true
     private var failed = false
@@ -70,7 +70,8 @@ class GeckoLoginSession(private val host: () -> Activity?, private val desktopOn
             if (session != null) return@dispatch
             val activity = host() ?: error("Activity unavailable")
             diagnostics = activity.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0
-            val current = GeckoSession(GeckoSessionSettings.Builder().usePrivateMode(true).contextId("account-$id")
+            // Match ordinary browsing, including its font visibility and site-data behavior.
+            val current = GeckoSession(GeckoSessionSettings.Builder().usePrivateMode(false)
                 .userAgentMode(if (desktop) GeckoSessionSettings.USER_AGENT_MODE_DESKTOP else GeckoSessionSettings.USER_AGENT_MODE_MOBILE)
                 .viewportMode(if (desktop) GeckoSessionSettings.VIEWPORT_MODE_DESKTOP else GeckoSessionSettings.VIEWPORT_MODE_MOBILE).suspendMediaWhenInactive(true).build())
             session = current
@@ -80,7 +81,7 @@ class GeckoLoginSession(private val host: () -> Activity?, private val desktopOn
                         if (load.allowPlaceholderRequest()) AllowOrDeny.ALLOW else AllowOrDeny.DENY)
                     val next = permitted(request.uri, true)
                     if (next != null && (next != request.uri || request.target == GeckoSession.NavigationDelegate.TARGET_WINDOW_NEW)) {
-                        // Login popups stay in the same isolated session and under the same policy.
+                        // Login popups stay in the same session and under the same policy.
                         dispatch { current.loadUri(next) }
                         return GeckoResult.fromValue(AllowOrDeny.DENY)
                     }
@@ -120,8 +121,7 @@ class GeckoLoginSession(private val host: () -> Activity?, private val desktopOn
             }
             // Reuse the browser's default Gecko IME delegate and attached Android input host.
             // Passwords and field contents never enter the account snapshot.
-            runtime = WebBrowser.engine(activity)
-            current.open(runtime!!)
+            current.open(WebBrowser.engine(activity))
             input = LoginInput(activity).also { view ->
                 (activity.window.decorView as ViewGroup).addView(view, ViewGroup.LayoutParams(1, 1))
                 current.textInput.setView(view)
@@ -308,7 +308,6 @@ class GeckoLoginSession(private val host: () -> Activity?, private val desktopOn
             load.close()
             cancelTouch(); hideInput(); releaseDisplay(); surface = null
             session?.let { it.textInput.setView(null); if (it.isOpen) it.close() }; session = null
-            runtime?.storageController?.clearDataForSessionContext("account-$id")
             input?.let { (it.parent as? ViewGroup)?.removeView(it) }; input = null
             GeckoLoginSurfaceBridge.remove(this); publish()
         }

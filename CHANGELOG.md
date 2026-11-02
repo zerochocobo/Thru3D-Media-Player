@@ -4,6 +4,16 @@
 
 Newest first, following product release milestones. Some development/source snapshots contained features before their product release. Original APK identifiers `0.2` and `0.4` are retained; `0.4` was also called `0.4.0` in release notes. Availability depends on device, server and media capabilities.
 
+## 0.16.3 — 2026-11-02
+
+- Add opt-in below-screen text/bitmap subtitle placement for eligible flat/curved 2D, SBS/TB and spatial video, with per-file memory across flat-video modes. Keep it off by default and at the end of subtitle style controls; immersive projection keeps its existing subtitle path.
+- Add temporary passthrough while watching immersive video: pause the source into a small stereo globe, use a head-following exit control and short transitions, then restore the original view/play state. This is a session-only preview, not continued background video or a saved projection change.
+- Decode compatible H.264 MVC MKV with validated MVC configuration and bounded/cancellable header inspection; recognize MK3D in browsing and cloud search. Preserve full-resolution left-first stereo and ordinary AVC/HEVC/SBS/TB decoder selection. Seeking/range access and existing MVC format limits apply.
+- Add a global switch for filename-triggered passthrough. Improve media-server card icons, cloud-login font visibility and desktop/mobile retry behavior. Decode valid ZIP Unicode Path metadata while preserving archive path validation and legacy fallback.
+- Stabilize photo/comic/reading caches by separating mutable image ownership and reserving composition memory headroom. Keep bounded allocations and explicit failures; no unlimited image size or uniform device-performance claim.
+- Improve mounted-USB discovery, permission-aware reversible fallback, typed provider-failure handling and PICO system-eject/retry guidance. The in-app action stops this app's USB access; it does not unmount hardware. Some PICO provider/OS paths still fail, so this is not a universal USB playback fix.
+- Retain redacted crash breadcrumbs/evidence across restarts and offer eligible next-launch log saving under the existing privacy policy; no automatic upload. Keep 3D text protection and Douyin native/Beta playback unavailable in the public export, with model weights, private logs/media and development records excluded.
+
 ## 0.16.2 — 2026-11-01
 
 - Add opt-in dual text subtitles with independent selection/timing and narration choice. PGS/bitmap subtitles and active live-subtitle paths retain their supported boundaries. 3D text protection is disabled and hidden in this release, including saved enabled settings; detector source/contracts remain for future review, but weights are excluded from Git.

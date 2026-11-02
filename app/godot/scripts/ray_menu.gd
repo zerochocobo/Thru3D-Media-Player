@@ -551,8 +551,11 @@ func _decoration(size: Vector2, centre: Vector2, color: Color) -> MeshInstance3D
 
 func _icon(key: String, location: Vector3, size: float, color: Color, parent: Node = self) -> MeshInstance3D:
 	if Icons.Providers.TEXTURES.has(key):
-		var gray := maxf(color.r, maxf(color.g, color.b))
-		color = Color(gray, gray, gray, color.a)
+		if key in Icons.Providers.COLORED:
+			color = Color(1, 1, 1, color.a)
+		else:
+			var gray := maxf(color.r, maxf(color.g, color.b))
+			color = Color(gray, gray, gray, color.a)
 		size *= float(Icons.Providers.MARK_SCALE.get(key, 1.0))
 	var node := MeshInstance3D.new()
 	var mesh := QuadMesh.new()

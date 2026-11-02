@@ -1,5 +1,5 @@
 extends RefCounted
-## Monochrome vector provider marks. Aliases keep old accounts visually consistent.
+## Vector provider marks. Aliases keep old accounts visually consistent.
 const ALIASES := {
 	"115": "115", "115_open": "115", "baidu": "baidu",
 	"aliyun": "aliyun", "aliyun_open": "aliyun", "quark": "quark", "quark_open": "quark",
@@ -20,6 +20,7 @@ const TEXTURES := {
 	"provider_xbvr": preload("res://assets/provider-icons/xbvr.svg"),
 }
 const MARK_SCALE := {"provider_xbvr": 1.8}
+const COLORED := ["provider_emby", "provider_jellyfin", "provider_plex", "provider_stash", "provider_xbvr"]
 
 static func key(provider: String, fallback: String = "cloud") -> String:
 	var name: String = ALIASES.get(provider.strip_edges().to_lower(), "")

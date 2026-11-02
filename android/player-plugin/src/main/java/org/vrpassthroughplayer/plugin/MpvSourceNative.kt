@@ -36,6 +36,8 @@ internal object MpvSourceNative {
     /** Cancel a pending/running probe without waiting on its source worker. Idempotent. */
     @JvmStatic external fun closeDiscProbe(handle: Long)
     @JvmStatic external fun probeDisc(handle: Long, path: String, playlist: Int): String
+    /** MKV headers only, bounded to 8 MiB; same cancellation token/lease as ISO preflight. */
+    @JvmStatic external fun probeMkvMvc(handle: Long, path: String, tlsCaFile: String): String
     /** The playing HDMV menu session (isoPlaylist -2): navigation state JSON, {"active":false} without one. */
     @JvmStatic external fun discMenuState(): String
     /** Occupied premultiplied RGBA of the menu's button plane at [version]; rect gets x, y, w, h, plane w, plane h. */

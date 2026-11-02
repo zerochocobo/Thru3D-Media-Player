@@ -96,6 +96,31 @@ class StorageDocumentTreeTest {
         provider.denied = true
         try { tree.root("1234-ABCD"); fail("Denied reported as empty") } catch (_: AccessDeniedException) { }
     }
+    @Test fun documentOnlyRootRequiresItsOwnGrantAndPreservesSelectedSubfolder() {
+        val provider = Provider()
+        val access = LocalStorageVolumePolicy.access("mounted", null, "1234-ABCD", true)!!
+        val volume = StorageDocumentPolicy.parse(access.location).document.volume
+        val tree = StorageDocumentTree(provider)
+        try { tree.root(volume); fail("A logical root must not grant access") } catch (_: AccessDeniedException) { }
+        provider.allowed.add(uri("9876-DCBA:"))
+        try { tree.root(volume); fail("Another volume must not authorize this one") } catch (_: AccessDeniedException) { }
+        provider.allowed.add(uri("1234-ABCD:Movies"))
+        provider.rows[uri("1234-ABCD:Movies") to false] = listOf(StorageDocumentTree.Entry("1234-ABCD:Movies", "Movies", true))
+        val rows = tree.root(volume)
+        assertEquals("Movies", rows.getJSONObject(0).getString("title"))
+        assertTrue(rows.getJSONObject(0).getBoolean("read_only"))
+        assertFalse(rows.getJSONObject(0).getBoolean("can_delete"))
+        assertFalse(tree.authorized(access.location))
+    }
+    @Test fun grantedEmptyDocumentOnlyRootRemainsEmptyAndRevocationStillFails() {
+        val provider = Provider()
+        provider.allowed.add(uri("1234-ABCD:"))
+        provider.rows[uri("1234-ABCD:") to true] = emptyList()
+        val tree = StorageDocumentTree(provider)
+        assertEquals(0, tree.root("1234-ABCD").length())
+        provider.allowed.clear()
+        try { tree.root("1234-ABCD"); fail("A revoked empty tree must not appear accessible") } catch (_: AccessDeniedException) { }
+    }
     @Test fun subtitlesAndRelativeStrmStayWithinTheGrantedTree() {
         val root = "1234-ABCD:Movies"
         val movie = uri(root, "$root/sub/电影.strm")

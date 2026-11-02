@@ -110,6 +110,7 @@ internal class PhotoBridge(
                 checkCurrent(id)
                 val location = Uri.parse(resolved)
                 state.remote = state.remote || location.scheme in setOf("http", "https")
+                CrashTrail.mark("photo.fetch", "req=$id preload=$preload from=${Uri.parse(uri).scheme}/${location.scheme}")
                 // The online original already lives in our private files directory. A hard link
                 // gives the photo cache its own lifetime without copying another GB of pixels.
                 val linked = if (location.scheme == "file") runCatching {
@@ -198,6 +199,7 @@ internal class PhotoBridge(
                 }
                 val heif = HeifPhotoInfo.read(source)
                 if (heif != null) {
+                    CrashTrail.mark("photo.heif", "req=$id bytes=${source.length()} stereo=${heif.stereo}")
                     val ready = HeifPhotoDecoder.prepare(source, directory, heif, { checkCurrent(id) },
                         { metadata -> emit("photo_ready", id, metadata.toString()) })
                     checkCurrent(id)
@@ -245,6 +247,8 @@ internal class PhotoBridge(
                 var sample = 1
                 while (bounds.outWidth / sample > previewEdge || bounds.outHeight / sample > previewEdge ||
                     bounds.outWidth.toLong() / sample * (bounds.outHeight / sample) > pixelBudget) sample *= 2
+                CrashTrail.mark("photo.decode", "req=$id ${bounds.outWidth}x${bounds.outHeight} ${bounds.outMimeType} sample=$sample " +
+                    "bytes=${source.length()} budget=${pixelBudget / 1_000_000}MP cached=${files.size}")
                 var output = source
                 if (sample > 1) {
                     val bitmap = BitmapFactory.decodeFile(source.path, BitmapFactory.Options().apply { inSampleSize = sample }) ?: error("PHOTO_DECODE_FAILED")
@@ -273,6 +277,7 @@ internal class PhotoBridge(
                 published = true
                 metadata.put("path", output.path).put("sample", sample)
                     .put("cache_bytes",directory.listFiles()?.sumOf { it.length() } ?: source.length())
+                CrashTrail.mark("photo.ready", "req=$id")
                 emit("photo_ready", id, metadata.toString())
             } catch (_: InterruptedException) { }
             catch (error: Throwable) {
@@ -552,6 +557,7 @@ internal class PhotoBridge(
 
     private fun stage(id: Int, phase: String) {
         android.util.Log.i("QuestPhotoDepth","request=$id preload=$preload phase=$phase")
+        CrashTrail.mark("photo.depth", "req=$id preload=$preload phase=$phase")
         if (!BuildConfig.DEBUG) return
         runCatching {
             val app = context() ?: return@runCatching

@@ -140,6 +140,7 @@ func run() -> void:
 		"Releasing optional cache resources leaves the displayed photo intact")
 	dispose(photo)
 	await native_gate_case()
+	await small_color_case()
 	call_deferred("done")
 
 func native_gate_case() -> void:
@@ -193,3 +194,16 @@ func done() -> void:
 	for failure in failures: push_error(failure)
 	print("Photo render cache: %d checks, %d failures" % [checks,failures.size()])
 	quit(0 if failures.is_empty() else 1)
+
+func small_color_case() -> void:
+	var photo := make_photo()
+	photo.platform = CacheHost.new(); photo.video_layer.platform = photo.platform
+	cold(photo); finish(photo); prime(photo)
+	var small := Image.create(320,240,false,Image.FORMAT_RGBA8); small.fill(Color(.2,.6,.3)); small.generate_mipmaps()
+	var source := {"image":small,"proxy":null,"info":{"width":320,"height":240}}
+	var data := converted(photo.depth_strength); data["source_id"] = 81
+	var entry := {"id":81,"info":source.info,"result":source,"depth_data":data,"decoded":true}
+	photo._prefetched[1] = entry
+	await warm(photo,entry,1)
+	check(photo.render_cache.ready(entry,1),"A small photo with an explicit null proxy becomes display-ready")
+	dispose(photo)

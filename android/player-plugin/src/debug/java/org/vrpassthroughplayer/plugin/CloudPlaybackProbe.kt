@@ -4,11 +4,13 @@ import android.content.Context
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.security.MessageDigest
 import java.net.URI
 
 /** On-device only: never records credentials, filenames, signed URLs or media bytes. */
 internal object CloudPlaybackProbe {
-    fun request(context: Context, request: String, play: Boolean): Int {
+    fun request(context: Context, request: String, play: Boolean, rootFile: String = ""): Int {
+        require(rootFile.isEmpty() || (rootFile.length <= 255 && CloudPaths.validName(rootFile)))
         Thread {
             val report = JSONObject().put("state", "running")
             val calls = JSONArray()
@@ -38,11 +40,12 @@ internal object CloudPlaybackProbe {
                     val envelope = JSONObject(File(context.filesDir, "settings/recent_files_$bank.json").readText())
                     envelope.optLong("sequence") to JSONObject(envelope.getString("payload_json")).getJSONObject("entries")
                 }.getOrNull() }.maxByOrNull { it.first }?.second
-                var uri = recent?.keys()?.asSequence()?.map { recent.getJSONObject(it) }
+                var uri = if (rootFile.isNotEmpty()) CloudPaths.uri("/$mount" + CloudPaths.child("/", rootFile))
+                    else recent?.keys()?.asSequence()?.map { recent.getJSONObject(it) }
                     ?.filter { it.optString("uri").startsWith("cloud://$mount/") && it.optString("kind") != "image" }
                     ?.maxByOrNull { it.optLong("opened") }?.getString("uri")
                 val file = if (uri != null) {
-                    report.put("selection", "recent")
+                    report.put("selection", if (rootFile.isNotEmpty()) "explicit_root" else "recent")
                     drive.find(URI(uri).path)
                 } else {
                     report.put("selection", "bounded_search")
@@ -72,9 +75,13 @@ internal object CloudPlaybackProbe {
                     report.put("stage", "read_head")
                     source.open().use { reader ->
                         val buffer = ByteArray(65536)
-                        report.put("head_bytes", reader.read(0, buffer, buffer.size))
+                        val head = reader.read(0, buffer, buffer.size)
+                        require(head > 0)
+                        report.put("head_bytes", head).put("head_sha256", MessageDigest.getInstance("SHA-256").digest(buffer.copyOf(head)).joinToString("") { "%02x".format(it) })
                         report.put("stage", "read_seek")
-                        report.put("seek_bytes", reader.read((file.size / 2).coerceAtMost(file.size - 1), buffer, buffer.size))
+                        val seek = reader.read((file.size / 2).coerceAtMost(file.size - 1), buffer, buffer.size)
+                        require(seek > 0)
+                        report.put("seek_bytes", seek).put("seek_sha256", MessageDigest.getInstance("SHA-256").digest(buffer.copyOf(seek)).joinToString("") { "%02x".format(it) })
                     }
                 }
                 if (play) {

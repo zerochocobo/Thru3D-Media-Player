@@ -11,3 +11,5 @@ Solid archives and some algorithms are unsupported; maximum entry/page/index lim
 压缩漫画复用媒体库、缩略图和图片导航；支持兼容的ZIP／RAR／7z及部分加密格式，不支持固实压缩和所有算法。密码簿与成功解锁关联保存在应用私有加密存储，不随源码分发；远程读取仍受有界索引、随机读取和取消规则限制。
 
 From 0.13.3, RAR5 Quick Open can reduce scattered header reads for large non-solid comics. Optional index parsing stays bounded and falls back to normal capped reads for absent/unusable data; it is not universal RAR support. The pinned ZIP module is copied into a private build dependency directory by `Set-OpenListZipCompatibility.ps1`, then patched for conditional ZIP64 fields with an exact upstream hash check. Shared Go module sources are not modified.
+
+0.16.3 reads Info-ZIP Unicode Path metadata only with a supported version, a matching CRC over the original name and valid UTF-8. Explicit UTF-8 names remain authoritative; malformed metadata retains the legacy fallback and existing path checks. Comic/reading composition owns private mutable image copies and reserves memory headroom. No personal archive, password or page is supplied.

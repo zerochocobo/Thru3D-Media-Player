@@ -27,6 +27,22 @@
   // limited to this verified official document; native handoff still revalidates.
   let douyinEnabled = typeof Thru3DDouyin !== 'undefined' && Thru3DDouyin.documentPage(location.href), douyinData = [];
   let douyinDiagnostics = false, douyinObservation = {};
+  let douyinApiPaths = [], douyinDomAt = 0, douyinDomPage = '', douyinDom = {};
+  const douyinDomCounts = () => {
+    if (douyinDomPage === location.href && Date.now() - douyinDomAt < 1000) return douyinDom;
+    douyinDomPage = location.href; douyinDomAt = Date.now();
+    const id = Thru3DDouyin.page(location.href)?.id;
+    const counts = {render_data:0,render_current:0,flight_scripts:0,flight_current:0,flight_video:0,inline_current:0};
+    let size = 0;
+    for (const script of [...document.querySelectorAll('script:not([src])')].slice(0,128)) {
+      const text = script.textContent || ''; if ((size += text.length) > 2 * 1024 * 1024) break;
+      const current = !!id && text.includes(id), flight = text.includes('__pace_f');
+      if (current) counts.inline_current++;
+      if (script.id === 'RENDER_DATA') { counts.render_data++; if (current) counts.render_current++; }
+      if (flight) { counts.flight_scripts++; if (current) counts.flight_current++; if (/awemeId|aweme_id/.test(text)) counts.flight_video++; }
+    }
+    return douyinDom = counts;
+  };
   let bilibiliViews = [];
   let bilibiliStatus = 'idle', bilibiliResponseApi = false;
   let bilibiliInitial = null, bilibiliInitialPage = '', bilibiliScanAt = 0;
@@ -46,6 +62,7 @@
       network = Array.isArray(message.candidates) ? message.candidates.slice(0, 24) : [];
       douyinData = Array.isArray(message.douyin) ? message.douyin.slice(0,16) : [];
       douyinObservation = message.douyin_observation || {};
+      douyinApiPaths = Array.isArray(message.douyin_api_paths) ? message.douyin_api_paths.slice(0,32) : [];
       bilibiliData = Array.isArray(message.bilibili) ? message.bilibili.slice(0, 4) : [];
       bilibiliViews = Array.isArray(message.bilibili_views) ? message.bilibili_views.slice(0, 4) : [];
       bilibiliStatus = message.bilibili_status || 'idle'; bilibiliResponseApi = message.bilibili_response_api === true;
@@ -197,6 +214,8 @@
         douyin_diagnostics: douyinDiagnostics && douyinEnabled && typeof Thru3DDouyin !== 'undefined'
           ? Thru3DDouyin.diagnostics(douyinData,location.href,video,requests) : null,
         douyin_observation: douyinDiagnostics && douyinEnabled ? douyinObservation : null,
+        douyin_api_paths: douyinDiagnostics && douyinEnabled ? douyinApiPaths : [],
+        douyin_dom: douyinDiagnostics && douyinEnabled ? douyinDomCounts() : null,
         bilibili_status: bilibiliStatus, bilibili_response_api: bilibiliResponseApi,
         bilibili_binding: biliBinding, bilibili_api_count: bilibiliData.length,
         bilibili_view_count: bilibiliViews.length,

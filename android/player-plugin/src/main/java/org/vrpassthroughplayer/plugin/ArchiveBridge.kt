@@ -56,6 +56,8 @@ internal class ArchiveBridge(private val context: () -> Context?, private val so
                     val book = passwords("list", "").optJSONArray("passwords") ?: JSONArray()
                     unlocks.password(uri, (0 until book.length()).map { book.getString(it) }.toSet())
                 }.getOrDefault("")
+                CrashTrail.mark("archive.open", "kind=" + title.ifEmpty { Uri.parse(uri).lastPathSegment.orEmpty() }.substringAfterLast('.', "").lowercase().take(6) +
+                    " from=${Uri.parse(uri).scheme}")
                 val cache = File(app().cacheDir, "comic-pages")
                 if (!cacheCleaned) {
                     // Disposable extracted pages and downloaded copies, never the user's original.
@@ -114,6 +116,7 @@ internal class ArchiveBridge(private val context: () -> Context?, private val so
         val value = Uri.parse(uri)
         val page = value.path?.removePrefix("/")?.toIntOrNull() ?: error("Archive unavailable")
         val ticket = java.util.UUID.randomUUID().toString().replace("-", "")
+        CrashTrail.mark("archive.page", "page=$page")
         val result = try {
             core(JSONObject().put("op", "take-page").put("session", value.host).put("page", page).put("transfer", ticket), cancel)
         } catch (error: Exception) {
@@ -125,6 +128,7 @@ internal class ArchiveBridge(private val context: () -> Context?, private val so
             throw error
         }
         val file = File(result.getString("path"))
+        CrashTrail.mark("archive.page.done", "page=$page bytes=${file.length()}")
         try { validatePage(uri); return file }
         catch (error: Exception) { file.delete(); throw error }
     }

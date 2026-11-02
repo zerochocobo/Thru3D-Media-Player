@@ -8,6 +8,12 @@ const MAX_BYTES := 4 * 1024 * 1024
 static var path := EVENT_PATH
 static var rotated_path := ROTATED_PATH
 static var _dir_ready := ""
+## The Android crash ring; set once the plugin is known. Stage names, sizes and counts only.
+static var trail_sink: Object = null
+
+## A step kept across a crash (see CrashTrail.kt). Cheap and safe from worker threads.
+static func trail(stage: String, detail: String = "") -> void:
+	if trail_sink: trail_sink.crash_trail(stage, detail)
 
 static func record(event: String, details: Dictionary = {}) -> void:
 	var privacy := preload("res://scripts/media_privacy.gd")

@@ -1,7 +1,7 @@
 extends Node
 ## Read-only Windows/local browsing through the production LibraryMenu protocol.
 signal media_list(id: int, payload: String)
-const VIDEO_EXTENSIONS := ["mp4", "mkv", "mov", "m4v", "avi", "webm", "mpeg", "mpg", "ts", "m2ts", "mts", "wmv", "flv", "ogv", "ogg"]
+const VIDEO_EXTENSIONS := ["mp4", "mkv", "mk3d", "mov", "m4v", "avi", "webm", "mpeg", "mpg", "ts", "m2ts", "mts", "wmv", "flv", "ogv", "ogg"]
 const MAX_ENTRIES := 10000
 var _serial := 0
 var _workers := {}

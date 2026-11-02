@@ -98,7 +98,7 @@ func _begin() -> bool:
 	events.clear()
 	_event("capture_requested")
 	deadline = Time.get_ticks_msec() + CAPTURE_TIMEOUT_MS
-	video.platform.set_mpv_playing(source_session, false)
+	video._set_backend_playing(source_session, false)
 	if source_layer:
 		var rotation := int(pair.get("surface_rotation_degrees", 0))
 		var width := int(pair.width)
@@ -207,7 +207,7 @@ func finish_frame() -> void:
 	var id: int = video.media.session_id
 	_event("committed")
 	cancel()
-	video.platform.set_mpv_playing(id, video.requested_play)
+	video._set_backend_playing(id, video.requested_play)
 
 func recover() -> bool:
 	if stage == "held" and rolling_back: return true
@@ -243,7 +243,7 @@ func _capture_failed(reason: String) -> void:
 	video.picker_error = reason
 	var id := source_session
 	cancel()
-	video.platform.set_mpv_playing(id, video.requested_play)
+	video._set_backend_playing(id, video.requested_play)
 	video.changed.emit()
 
 func _release_pair(pair: Dictionary) -> void:

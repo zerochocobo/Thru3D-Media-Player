@@ -20,11 +20,15 @@ The retained `.svg` files are source material, not runtime downloads.
 
 `tools/Prepare-ProviderIcons.py` reproducibly creates the runtime vectors in
 `app/godot/assets/provider-icons/`. Changes: remove application tile backgrounds
-and editor/filter metadata, convert visible geometry to white, increase the
+and editor/filter metadata, convert cloud drive geometry to white, increase the
 three line-art marks' stroke width, and centre/scale each mark into a common
 128 x 128 transparent canvas. Plex uses the source's chevron cutout as a positive
 mark. XBVR's wordmark is reconstructed as paths, without its magenta tile.
-The existing ray-menu renderer supplies a neutral gray/white foreground and
+The five media server marks use color (updated 2026-11-02): green Emby,
+purple-to-cyan Jellyfin, gold Plex, Stash's retained source brown, and magenta
+XBVR. These are recolorings of the retained geometry, including a gradient
+adaptation of the flat Jellyfin mark. The ray-menu renderer preserves these
+colors, supplies a neutral gray/white foreground for cloud marks, and generates
 mipmaps; no raster matte or remote request is used at runtime.
 
 Upstream license texts are retained in the `LICENSE-*.txt` files in this directory.

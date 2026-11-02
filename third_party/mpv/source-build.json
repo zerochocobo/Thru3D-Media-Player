@@ -80,9 +80,9 @@
     },
     {
       "name": "libavcodec.so",
-      "sha256": "40c79f1a78392e51912dce18a180608c520deafce9bed30bfb3bcff4f4ccd3ab",
-      "bytes": 12561544,
-      "built_sha256": "bfc9da31345fc4602b230c15ff279b7c32226f6978d7c5aab5e21a0b3699d07c",
+      "sha256": "1f5499e2ebba0e7b55ba65d4bbbd6525258696927022c33484f5a074ab7c6dce",
+      "bytes": 12563880,
+      "built_sha256": "e79d5d96124ad2b3e3be1dfe91eb6e724eb8106c24b1a7b5a50f39d0b2ea8046",
       "needed": [
         "libswresample.so",
         "libavutil.so",
@@ -122,9 +122,9 @@
     },
     {
       "name": "libavformat.so",
-      "sha256": "c94f8b187416249429c4664f8a053298fcd2b81ddb358ef8e8f9f2df5386c290",
-      "bytes": 4549864,
-      "built_sha256": "593182360fb8acb094135628bff294010190aecd7cf9abf9392c3e590385ec5a",
+      "sha256": "f5f1d3ac8e87e7656967c420c3fcf128e9a9eaec35b8d1ea0a43082db3bdf1c1",
+      "bytes": 4551824,
+      "built_sha256": "1669537aa381defaf899f47f0349c4b1576426cf9f513168027c05b28237f364",
       "needed": [
         "libavcodec.so",
         "libavutil.so",
@@ -170,13 +170,13 @@
     }
   ],
   "host_packages_sha256": "0d42dd4ec021254111a439214a2681bf37ca44ba2af04a9d97af479f2bd1dd33",
-  "build_receipt_sha256": "51312ff092df76d9392130a16304ae504a45ed6430fafa4667f63470c3ce02f0",
+  "build_receipt_sha256": "55c6bb15e085b65cff98c80c865895d2b8343d2e48bc974a7ac8da0106296e26",
   "meson": "1.11.0",
   "ninja": "1.11.1",
   "mvc_inputs_sha256": {
     "third_party/edge264-mvc/manifest.json": "59d1c887ed3d5bd1fda6902ee5de0c8343c9a4ff0e93f2941f117aa894e32ebf",
     "third_party/bluray/source-lock.json": "7eabc13232bc1587c1baf21c836869afc8948fea1dde1f04af826c34a54e84f3",
-    "tools/environment/mpv-linux/mvc_patch.py": "8cbf2b3ff82331804cb7b1204e6d9e3c19db769ecda429b9060bc5b9fd8a70c6",
+    "tools/environment/mpv-linux/mvc_patch.py": "4bf017de2842f278c1a9bed12afc0b89e2d46d881495a5c406d53639a237bcde",
     "tools/environment/Prepare-MvcDecoder.py": "ac33805b5d397d14b8b78e6b9d65abdc7609d0ee375245b160c4968097eac52c",
     "tools/environment/Prepare-BluraySources.py": "1785866879b1c42abc32e596948dc898d1b09ff5c4942218eae8531b5865dc1e",
     "tools/environment/mpv-linux/build_bluray.sh": "be189cd78bdbb02081ac0b65aee99fc6f16b1650fd3648ae825832c3940e4815",
@@ -188,7 +188,9 @@
     "native/mpv/mvc/edge264mvc_all.c": "d23091d4f6559c828a5a8e70bb609487d484ea30176c6e60773f492661750382",
     "native/mpv/mvc/ffmpeg_bd_mvc.c": "ba260d9fe515f6e8a1ac0b8f47c0f4517b215535d64b1d2d8ebdf7765b431949",
     "native/mpv/mvc/ffmpeg_dvd_nav.c": "4bebd3f6cb04561d95a7d7e491bf9824fc2ab71ba07480d16b9df0a90def1aea",
-    "native/mpv/mvc/ffmpeg_h264_mvc.c": "cb1298e1430a6a282fd713ea338a9d7179a018340e5d3a78b4f02fbd6ae920a6",
+    "native/mpv/mvc/ffmpeg_h264_mvc.c": "75082a609c9f7b3cbcc2f3606d1eb08ba76ff5fb1d3c85966c9504540fbab9c5",
+    "native/mpv/mvc/matroska_mvc.h": "02f44f65329e29e02faa25665137e4c5885a3613afaa2b393c22702f088617ae",
+    "native/mpv/mvc/mvc_config.h": "d82033a4f937d3e243fc2c5e7a26d3156fa38a4a137182ecbe06baaf6fe907fa",
     "native/mpv/mvc/mvc_recovery.h": "8ee01cca57e2e807cfcaf5956652dc54b67d3ae5395993277c5ccefb45138fd5"
   },
   "cxx_runtime_policy": "Use the existing Godot/project libc++_shared; do not package a duplicate; device compatibility pending",
@@ -198,7 +200,7 @@
   "reference_mvc_inputs_sha256": {
     "third_party/edge264-mvc/manifest.json": "59d1c887ed3d5bd1fda6902ee5de0c8343c9a4ff0e93f2941f117aa894e32ebf",
     "third_party/bluray/source-lock.json": "7eabc13232bc1587c1baf21c836869afc8948fea1dde1f04af826c34a54e84f3",
-    "tools/environment/mpv-linux/mvc_patch.py": "8cbf2b3ff82331804cb7b1204e6d9e3c19db769ecda429b9060bc5b9fd8a70c6",
+    "tools/environment/mpv-linux/mvc_patch.py": "4bf017de2842f278c1a9bed12afc0b89e2d46d881495a5c406d53639a237bcde",
     "tools/environment/Prepare-MvcDecoder.py": "ac33805b5d397d14b8b78e6b9d65abdc7609d0ee375245b160c4968097eac52c",
     "tools/environment/Prepare-BluraySources.py": "1785866879b1c42abc32e596948dc898d1b09ff5c4942218eae8531b5865dc1e",
     "tools/environment/mpv-linux/build_bluray.sh": "276e35a7ccf1dff02cd6e317fe839e2afee9cbf7e644601bc05bf6469db3b3cd",
@@ -210,7 +212,9 @@
     "native/mpv/mvc/edge264mvc_all.c": "d23091d4f6559c828a5a8e70bb609487d484ea30176c6e60773f492661750382",
     "native/mpv/mvc/ffmpeg_bd_mvc.c": "ba260d9fe515f6e8a1ac0b8f47c0f4517b215535d64b1d2d8ebdf7765b431949",
     "native/mpv/mvc/ffmpeg_dvd_nav.c": "4bebd3f6cb04561d95a7d7e491bf9824fc2ab71ba07480d16b9df0a90def1aea",
-    "native/mpv/mvc/ffmpeg_h264_mvc.c": "cb1298e1430a6a282fd713ea338a9d7179a018340e5d3a78b4f02fbd6ae920a6",
+    "native/mpv/mvc/ffmpeg_h264_mvc.c": "75082a609c9f7b3cbcc2f3606d1eb08ba76ff5fb1d3c85966c9504540fbab9c5",
+    "native/mpv/mvc/matroska_mvc.h": "02f44f65329e29e02faa25665137e4c5885a3613afaa2b393c22702f088617ae",
+    "native/mpv/mvc/mvc_config.h": "d82033a4f937d3e243fc2c5e7a26d3156fa38a4a137182ecbe06baaf6fe907fa",
     "native/mpv/mvc/mvc_recovery.h": "8ee01cca57e2e807cfcaf5956652dc54b67d3ae5395993277c5ccefb45138fd5"
   }
 }

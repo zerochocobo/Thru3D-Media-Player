@@ -23,10 +23,15 @@ BOUNDS = {
     "quark": (2, 6, 44, 36), "xbvr": (0, 0, 444, 123),
     "webdav": (1, 1, 22, 22),
 }
+SERVER_COLORS = {
+    "emby": "#52b54b", "jellyfin": "url(#jellyfin-color)",
+    "plex": "#e5a00d", "stash": "#a08069", "xbvr": "#f72585",
+}
 
 
 def rebuild(name, bounds):
     source = ET.parse(SOURCE / (name + ".svg")).getroot()
+    foreground = SERVER_COLORS.get(name, "white")
     # Expand the three line-art styles before discarding editor/style metadata.
     outlined = name in {"baidu", "aliyun", "quark"}
     for parent in source.iter():
@@ -48,7 +53,7 @@ def rebuild(name, bounds):
                 if key in style:
                     attributes[key] = style[key]
             if attributes.get("fill", "none") != "none":
-                attributes["fill"] = "white"
+                attributes["fill"] = foreground
         element.attrib.clear()
         element.attrib.update(attributes)
     if name == "plex":
@@ -59,9 +64,15 @@ def rebuild(name, bounds):
     x, y, width, height = bounds
     scale = 104 / max(width, height)
     svg = ET.Element("svg", {"xmlns": NS, "width": "128", "height": "128", "viewBox": "0 0 128 128"})
+    if name == "jellyfin":
+        gradient = ET.SubElement(ET.SubElement(svg, "defs"), "linearGradient", {
+            "id": "jellyfin-color", "x1": "0%", "y1": "0%", "x2": "100%", "y2": "100%",
+        })
+        ET.SubElement(gradient, "stop", {"offset": "0%", "stop-color": "#aa5cc3"})
+        ET.SubElement(gradient, "stop", {"offset": "100%", "stop-color": "#00a4dc"})
     group = ET.SubElement(svg, "g", {
         "transform": f"translate({64 - width * scale / 2:.6f} {64 - height * scale / 2:.6f}) scale({scale:.6f}) translate({-x} {-y})",
-        "fill": "none" if outlined or name == "webdav" else "white",
+        "fill": "none" if outlined or name == "webdav" else foreground,
     })
     if outlined:
         group.attrib.update({"stroke": "white", "stroke-width": "2.6", "stroke-linecap": "round", "stroke-linejoin": "round"})

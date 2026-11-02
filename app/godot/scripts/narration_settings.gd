@@ -305,7 +305,7 @@ func apply() -> void:
 	# Voice profile stays explicit across subtitle track changes.
 	_language_source = identity
 	if not Methods.supports(video.platform, "set_mpv_narration") or video.media.session_id <= 0 or (not enabled and _last_payload.is_empty()): return
-	var payload := {"enabled": enabled and current_text_subtitles() and video.subtitle_encoding_ready(int(track.get("id", 0))), "source": source, "language": language, "zh_voice": zh_voice, "en_voice": en_voice, "ja_voice": ja_voice, "voice_override": selected_voice(), "line": line,
+	var payload := {"enabled": enabled and not video.vr_passthrough.active() and current_text_subtitles() and video.subtitle_encoding_ready(int(track.get("id", 0))), "source": source, "language": language, "zh_voice": zh_voice, "en_voice": en_voice, "ja_voice": ja_voice, "voice_override": selected_voice(), "line": line,
 		"duck": duck / 100.0, "volume": volume / 100.0, "offset": offset, "retry": retry, "preview": preview, "timing": timing}
 	if source_secondary: payload.source = video.dual_subtitles.state.requested_track
 	if int(payload.source) >= 0:

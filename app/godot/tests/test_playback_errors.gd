@@ -142,6 +142,10 @@ func _run() -> void:
 	check(video.media.error.is_empty() and video._buffering_deadline_ms == 0, "User pause never becomes a buffering error")
 	video.requested_play = true; video._check_playback_timeout(1000); video._check_playback_timeout(31000)
 	check(video.media.state == "failed" and host.closed.back() == 13, "Stalled buffering has a visible network error")
+	I18n.use("zh")
+	video.picker_error = "LOCAL_DOCUMENT_PROVIDER_FAILED"
+	check(main._menu_error() == "系统文件服务打开失败，请重试。", "Provider preflight failure stays distinct from missing or revoked access")
+	check(Errors.message({"reason":"storage_provider_failed"}) != Errors.REASONS.not_found, "Provider RPC failures do not claim the file was removed")
 	main.free(); menu.free(); video.free()
 	if failures.is_empty(): print("Playback error checks passed: ", checks); quit(0)
 	else:

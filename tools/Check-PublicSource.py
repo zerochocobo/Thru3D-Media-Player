@@ -69,6 +69,8 @@ def check_files(files):
             errors.append(f'{name}: excluded narration payload cache')
         if name.startswith(tuple('docs/' + item + '/' for item in ('store', 'branding', 'archive'))) or name.startswith('tools/record_'):
             errors.append(f'{name}: private development or promotion content')
+        if name.startswith('docs/') and re.search(r'(?:^|_)20\d{6}(?:_|\.|$)', path.name):
+            errors.append(f'{name}: dated development record excluded')
         if name.endswith('store_capture_debug.gd') or 'local.properties' == path.name:
             errors.append(f'{name}: local-only configuration/tool')
         if path.name.lower() in {'signing-identities.json', 'thru3d-signing.json', '.env'}:

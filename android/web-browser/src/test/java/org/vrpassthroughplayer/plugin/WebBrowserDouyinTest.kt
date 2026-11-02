@@ -5,6 +5,13 @@ import org.junit.Test
 
 class WebBrowserDouyinTest {
     private val id = "6961737553342991651"
+    @Test fun unreleasedHandoffRequiresDebugAndExplicitTabOptIn() {
+        val page = "https://www.douyin.com/video/$id"
+        assertTrue(WebBrowserDouyin.enabled(page, true, true))
+        for ((debug, optIn) in listOf(false to false, false to true, true to false))
+            assertFalse(WebBrowserDouyin.enabled(page, debug, optIn))
+        assertFalse(WebBrowserDouyin.enabled("https://www.douyin.com.evil/video/$id", true, true))
+    }
     @Test fun identityAndModalMatchWithoutBroadeningLegacyCapture() {
         for (page in listOf("https://www.douyin.com/video/$id", "https://www.douyin.com/?modal_id=$id")) {
             assertEquals(id, WebBrowserDouyin.pageId(page))

@@ -3,7 +3,8 @@ package org.vrpassthroughplayer.plugin
 /** Admission estimates, not a claim about driver/model peak PSS. Keep foreground unaffected. */
 internal object ReadingMemoryPolicy {
     const val MIB = 1024L * 1024
-    data class Policy(val budget: Long, val color: Boolean, val lowTier: Boolean, val retain: Boolean)
+    data class Policy(val budget: Long, val color: Boolean, val lowTier: Boolean, val retain: Boolean,
+                      val copyHeadroom: Long)
     fun evaluate(total: Long, available: Long, threshold: Long, lowMemory: Boolean,
                  lowRam: Boolean, double: Boolean): Policy {
         val low = lowRam || total <= 6L * 1024 * MIB
@@ -12,6 +13,9 @@ internal object ReadingMemoryPolicy {
         val floor = maxOf(512 * MIB, threshold.coerceAtLeast(0) * 2)
         val retain = total > 0 && !lowMemory && available >= floor
         val color = retain && available >= floor + 256 * MIB
-        return Policy(if (retain) budget else 0, color, low, retain)
+        // A private first-page Image keeps the cached source alive while compose mutates
+        // its copy. Charge that copy in addition to the existing decoder work reserve.
+        val copyHeadroom = if (color) (available - floor - 256 * MIB).coerceAtLeast(0) else 0
+        return Policy(if (retain) budget else 0, color, low, retain, copyHeadroom)
     }
 }

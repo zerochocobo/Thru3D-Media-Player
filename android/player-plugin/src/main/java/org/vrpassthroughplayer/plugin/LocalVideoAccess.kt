@@ -56,8 +56,7 @@ internal class LocalVideoAccess(private val context: () -> Context?, private val
                     val uri = Uri.parse(text)
                     if (grantFlags != null) LocalDocumentGrant.take(host, uri, grantFlags)
                     val persisted = if (uri.scheme == "content") {
-                        host.contentResolver.openFileDescriptor(uri, "r", request.cancellation)?.use { }
-                            ?: throw FileNotFoundException()
+                        StorageDocumentReader.open(host.contentResolver, uri, request.cancellation).use { }
                         host.contentResolver.persistedUriPermissions.any { it.uri == uri && it.isReadPermission }
                     } else {
                         val file = File(uri.path ?: throw FileNotFoundException())
@@ -83,7 +82,12 @@ internal class LocalVideoAccess(private val context: () -> Context?, private val
                     }
                     finish(id, request, "readable", persisted = persisted, displayName = name)
                 } catch (_: SecurityException) { finish(id, request, "error", "LOCAL_DOCUMENT_PERMISSION_LOST") }
-                catch (_: FileNotFoundException) {
+                catch (_: StorageProviderUnavailable) { finish(id, request, "error", "LOCAL_DOCUMENT_PROVIDER_FAILED") }
+                catch (error: FileNotFoundException) {
+                    if (StorageDocumentReadPolicy.providerFailure(error)) {
+                        finish(id, request, "error", "LOCAL_DOCUMENT_PROVIDER_FAILED")
+                        return@execute
+                    }
                     // Android may hide an ungranted external provider and throw
                     // FileNotFoundException before its read-permission check.
                     val host = context()

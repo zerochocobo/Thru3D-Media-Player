@@ -10,7 +10,7 @@ class Host extends Fixture.Host:
 	var available := true
 	var reading_uris: Array[String] = []
 	var reading_activations: Array[String] = []
-	var memory_policy := {"budget":192*1024*1024,"color":true,"retain":true}
+	var memory_policy := {"budget":192*1024*1024,"color":true,"retain":true,"copy_headroom_bytes":64*1024*1024}
 	func has_java_method(method: String) -> bool:
 		return method in ["reading_render_policy", "preload_reading_photo", "reading_page_cached", "reading_page_window", "activate_reading_photo"] or super.has_java_method(method)
 	func reading_render_policy(_double: bool) -> String: return JSON.stringify(memory_policy)
@@ -160,7 +160,7 @@ func run() -> void:
 	# Admission and eviction have different watermarks: using reserved working memory
 	# must not evict an already prepared page or cancel a running conversion.
 	pair = make_photo(true, "pdfpage"); photo = pair[0]; host = pair[1]
-	host.memory_policy = {"budget":96*1024*1024,"color":true,"retain":true}
+	host.memory_policy = {"budget":96*1024*1024,"color":true,"retain":true,"copy_headroom_bytes":64*1024*1024}
 	photo.auto_depth = true
 	photo._select(0); await settle(photo, host)
 	await settle(photo, host, 2)
@@ -184,5 +184,42 @@ func run() -> void:
 	photo._select(2, 1)
 	check(not photo.loading and not photo.depth_enabled, "Recovered low-memory cache promotes colour without a 3D cache")
 	photo.close_image(); photo.free()
+	await copy_headroom_checks()
 	print("Reading render cache: %d checks, %d failures" % [checks, failures.size()])
 	quit(0 if failures.is_empty() else 1)
+
+func copy_headroom_checks() -> void:
+	var pair := make_photo(true, "pdfpage")
+	var photo: Node3D = pair[0]; var host: Host = pair[1]
+	host.available = false; photo.auto_depth = true
+	photo._select(0); await settle(photo, host)
+	photo.set_process(false); photo.finish_transition(); photo._reveal_seconds = 0
+	var current: Texture2D = photo._texture
+	var first := Image.create(64,96,false,Image.FORMAT_RGBA8); first.generate_mipmaps()
+	var entry := {"id":777,"stage":"second","decoded":false,
+		"info":{"path":folder.path_join("original-3.png"),"width":86,"height":120},
+		"first":{"image":first,"info":{"width":64,"height":96}}}
+	photo._prefetched[2] = entry
+	var copy_bytes: int = photo.reading_render.memory(entry.first, {})
+	host.memory_policy.copy_headroom_bytes = copy_bytes - 1
+	photo.reading_render.policy_poll_at = 0; photo._pump_prefetch()
+	check(photo._prefetch_decode.is_empty(), "The private first-page copy needs headroom beyond the decoder's work reserve")
+	check(photo._prefetched.has(2) and not photo._prefetch_failed.has(2) and photo._texture == current,
+		"Copy pressure defers speculation without discarding the retained first page or current display")
+	photo._prefetch_decode = {}; host.memory_policy.erase("copy_headroom_bytes")
+	photo.reading_render.policy_poll_at = 0; photo._pump_prefetch()
+	check(photo._prefetch_decode.is_empty(), "Unknown Android copy headroom cannot start a spread")
+	host.memory_policy.copy_headroom_bytes = copy_bytes
+	photo.reading_render.policy_poll_at = 0; photo._pump_prefetch()
+	check(not photo._prefetch_decode.is_empty(), "Recovered copy headroom resumes the same partial spread")
+	host.memory_policy.copy_headroom_bytes = copy_bytes - 1
+	photo.reading_render.policy_poll_at = 0; photo.reading_render.refresh_policy(); photo._process(.01)
+	check(photo._thread == null and not photo._prefetch_decode.is_empty(),
+		"A queued spread rechecks copy headroom before starting its worker")
+	check(photo._texture == current and photo.depth_enabled, "Waiting for copy headroom preserves the current 3D photo")
+	photo._prefetch_decode = {}; host.memory_policy.color = false; host.memory_policy.copy_headroom_bytes = 0
+	photo.reading_render.policy_poll_at = 0; photo.reading_render.refresh_policy()
+	photo.set_process(true); photo._select(2,1); await settle(photo,host)
+	check(photo.index == 2 and photo.depth_enabled and photo.error.is_empty(),
+		"Foreground 3D opens normally while speculative copy admission is closed")
+	photo.close_image(); photo.free()

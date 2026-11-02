@@ -6,6 +6,23 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class DiagnosticLogsTest {
+    @Test fun compactExportRetainsReadRoutesAndSuppressedFramesWithoutMediaNames() {
+        val uri = "content://com.android.externalstorage.documents/tree/1234-ABCD%3A/document/1234-ABCD%3APrivateClip.mp4"
+        val lines = listOf(
+            "11-02 14:16:33.700 24905 28807 I ThruStorage: document_open stage=resolver_failed error=FileNotFoundException cause=none",
+            "11-02 14:16:33.701 24905 28807 I ThruStorage: document_open stage=direct_start",
+            "11-02 14:16:33.702 24905 28807 I ThruStorage: document_open stage=direct_failed error=FileNotFoundException cause=none",
+            "11-02 14:16:33.703 24905 28807 W QuestPlayer: at StorageDocumentReader.open(StorageDocumentReader.kt:70)",
+            "11-02 14:16:33.704 24905 28807 W QuestPlayer: Suppressed: java.io.FileNotFoundException: Failed opening content provider: $uri",
+            "11-02 14:16:33.705 24905 28807 W QuestPlayer: at StorageDocumentReadPolicy.open(StorageDocumentReader.kt:24)"
+        )
+        val exported = DiagnosticLogs.redact(DiagnosticLogs.condense(lines.joinToString("\n")))
+        for (stage in listOf("resolver_failed", "direct_start", "direct_failed")) assertTrue(exported.contains("stage=$stage"))
+        assertTrue(exported.contains("StorageDocumentReader.open"))
+        assertTrue(exported.contains("StorageDocumentReadPolicy.open"))
+        assertTrue(exported.contains("Suppressed: java.io.FileNotFoundException"))
+        assertFalse(exported.contains("PrivateClip"))
+    }
     @Test fun masksMediaNamesAccountsAndParameters() {
         val line = """I QuestPlayer: open smb://alice:secret@192.168.1.5/Movies/My Holiday 2025.mkv """ +
             """http://127.0.0.1:18889/stream.mp4?token=abc&sign=1 {"title":"Private clip","access_token":"xyz"} me@example.com"""

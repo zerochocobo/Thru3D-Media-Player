@@ -47,6 +47,7 @@
       bilibili_views: [...(state.biliViews?.values() || [])],
       douyin: [...(state.douyinData?.values() || [])],
       douyin_observation: state.douyinObservation || {},
+      douyin_api_paths: [...(state.douyinApiPaths || [])],
       bilibili_status: state.biliStatus || 'idle', bilibili_response_api: typeof browser.webRequest.filterResponseData === 'function' }); } catch (_) {}
   };
   browser.runtime.onConnect.addListener(port => {
@@ -55,7 +56,9 @@
         s.tab.id < 0 || !Number.isInteger(s.frameId) || !url(s.url, true)) return;
     const id = `${s.tab.id}:${s.frameId}`;
     const state = { key:id, port, page: s.url, documentPage: s.url, document: s.documentId, enabled: false, bilibili: false,
-      douyin: typeof Thru3DDouyin !== 'undefined' && Thru3DDouyin.documentPage(s.url), items: new Map(), timer: null };
+      douyin: typeof Thru3DDouyin !== 'undefined' && Thru3DDouyin.documentPage(s.url),
+      privateContext: s.tab.incognito === true, cookieStore: typeof s.tab.cookieStoreId === 'string' ? s.tab.cookieStoreId : '',
+      items: new Map(), timer: null };
     const old = frames.get(id);
     if (old) { clearTimeout(old.timer); old.port.disconnect(); }
     frames.set(id, state);
@@ -72,7 +75,7 @@
         const sameBili = bili && state.bilibili && Thru3DBilibili.sameDocumentPage(message.page, state.page);
         const sameDouyin = douyin && state.douyin;
         if (!sameBili) { responses?.cancel(state); state.biliStatus = 'idle'; state.biliResponses = new Map(); state.biliRequests = new Map(); state.biliViews = new Map(); }
-        if (!sameDouyin) { douyinResponses?.cancel(state); state.douyinData = new Map(); }
+        if (!sameDouyin) { douyinResponses?.cancel(state); state.douyinData = new Map(); state.douyinApiPaths = new Set(); }
         if (!sameBili && !sameDouyin) state.items.clear();
         state.bilibili = bili;
         state.douyin = douyin;
@@ -107,6 +110,23 @@
   // document URL. Keep file-request ownership on the strict stateFor path above.
   const douyinMetadataState = d => {
     const direct=stateFor(d);if(direct)return direct;
+    // Firefox service/shared workers have no tab/frame identity. Only their known
+    // detail response can supply metadata to one exact current content owner.
+    // File requests continue to use stateFor above and never inherit this scope.
+    if (d.tabId === -1 && d.frameId === -1) {
+      const request = url(d.url);
+      const origins = [d.documentUrl, d.originUrl].filter(Boolean);
+      if (d.method !== 'GET' || d.parentFrameId != null && d.parentFrameId !== -1 ||
+          request?.origin !== 'https://www.douyin.com' || request.pathname !== '/aweme/v1/web/aweme/detail/' ||
+          typeof Thru3DDouyin === 'undefined' || typeof d.incognito !== 'boolean' ||
+          !origins.length || origins.some(value => !Thru3DDouyin.documentPage(value))) return null;
+      const ids = request.searchParams.getAll('aweme_id');
+      if (ids.length !== 1 || !/^[1-9][0-9]{14,19}$/.test(ids[0])) return null;
+      const owners = [...frames.values()].filter(state => state.douyin && state.key.endsWith(':0') &&
+        state.privateContext === d.incognito && (!state.cookieStore || !d.cookieStoreId || state.cookieStore === d.cookieStoreId) &&
+        Thru3DDouyin.page(state.page)?.id === ids[0]);
+      return owners.length === 1 ? owners[0] : null;
+    }
     const state=frames.get(`${d.tabId}:${d.frameId<0?0:d.frameId}`);
     if(!state?.douyin||typeof Thru3DDouyin==='undefined'||
       !(Thru3DDouyin.documentPage(d.documentUrl)||Thru3DDouyin.documentPage(d.originUrl))||
@@ -131,6 +151,20 @@
     while (pending.size > REQUESTS) pending.delete(pending.keys().next().value);
   }, filter, ["requestHeaders"]);
   browser.webRequest.onHeadersReceived.addListener(d => {
+    // Structural diagnostics only: no query values, request headers or JSON bodies.
+    const observed = douyinMetadataState(d), address = url(d.url);
+    if (observed?.douyin && address?.origin === 'https://www.douyin.com' && d.method === 'GET' &&
+        /^\/aweme\/v1\/web\/[a-z0-9_/]{1,120}$/.test(address.pathname) &&
+        /^application\/json(?:;|$)/i.test(header(d.responseHeaders, 'content-type'))) {
+      const path = '/aweme/v1/web/' + address.pathname.slice('/aweme/v1/web/'.length).split('/')
+        .map(part => /^[a-z_]{0,40}$/.test(part) ? part : '{id}').join('/');
+      observed.douyinApiPaths ||= new Set();
+      if (!observed.douyinApiPaths.has(path)) {
+        observed.douyinApiPaths.add(path);
+        while (observed.douyinApiPaths.size > 32) observed.douyinApiPaths.delete(observed.douyinApiPaths.values().next().value);
+        publish(observed);
+      }
+    }
     const state = stateFor(d), u = url(d.url), request = pending.get(d.requestId);
     if (!state || !u || d.method !== "GET" || ![200, 206].includes(d.statusCode)) return;
     const mime = header(d.responseHeaders, "content-type").split(";")[0].trim().toLowerCase();

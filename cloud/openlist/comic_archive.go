@@ -438,23 +438,26 @@ func comicIndex(s *comicSource, name, password string) (*comicSession, error) {
 			return nil, errComicLimit
 		}
 		for _, f := range r.File {
+			// Decode only the listing name; File.Open/DataOffset retain the
+			// original header and byte offsets used for decryption/extraction.
+			name := comicZIPName(f.Name, f.Flags, f.Extra)
 			if f.FileInfo().IsDir() {
-				if e = addEntry(f.Name, 0, true); e != nil {
+				if e = addEntry(name, 0, true); e != nil {
 					return nil, e
 				}
 				continue
 			}
-			if comicImage(f.Name) && f.Method != 0 && f.Method != 8 {
+			if comicImage(name) && f.Method != 0 && f.Method != 8 {
 				return nil, errComicUnsupported
 			}
 			if f.IsEncrypted() {
 				f.SetPassword(password)
 			}
-			if comicImage(f.Name) && f.CompressedSize64 > comicMaxPage {
+			if comicImage(name) && f.CompressedSize64 > comicMaxPage {
 				return nil, errComicLimit
 			}
 			file := f
-			if e = add(f.Name, int64(f.UncompressedSize64), file.Open, func() error {
+			if e = add(name, int64(f.UncompressedSize64), file.Open, func() error {
 				offset, e := file.DataOffset()
 				if e != nil {
 					return e
@@ -463,7 +466,7 @@ func comicIndex(s *comicSource, name, password string) (*comicSession, error) {
 			}); e != nil {
 				return nil, e
 			}
-			if comicImage(f.Name) {
+			if comicImage(name) {
 				c.pages[len(c.pages)-1].encrypted = f.IsEncrypted()
 			}
 		}

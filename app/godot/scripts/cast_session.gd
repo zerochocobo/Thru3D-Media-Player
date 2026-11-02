@@ -58,6 +58,7 @@ func busy() -> bool:
 	return host.video.media.accepts(host.video.media.session_id) or host.photo_active or (host.puzzle_game and host.puzzle_game.active) or host.recent_menu.voice_manager.opened
 
 func _present_offer() -> void:
+	if (host.video != null and host.video.vr_passthrough.active()): return
 	if pending.is_empty() or _presented == int(pending.token): return
 	if (host.puzzle_game and host.puzzle_game.active) or host.recent_menu.voice_manager.opened or _typing(): return
 	if host.recent_menu.has_pointer_capture() or (host.player_menu and host.player_menu.has_pointer_capture()): return
@@ -88,6 +89,7 @@ func tick() -> void:
 			if int(event.get("token", 0)) == int(data.get("pending_token", 0)): pending = event
 		elif int(event.get("token", 0)) == token and token > 0:
 			var video: Node = host.video
+			if (host.video != null and host.video.vr_passthrough.active()) and event.get("action") != "stop": continue
 			match str(event.get("action")):
 				"play":
 					if not video.requested_play or video.media.state == "ended": video.toggle_play()
@@ -116,6 +118,7 @@ func _update_navigation(data: Dictionary) -> void:
 
 ## Query the renderer atomically; stale UI or a pending foreign offer must never trigger fallback.
 func navigate(direction: int) -> bool:
+	if (host.video != null and host.video.vr_passthrough.active()): return false
 	if token <= 0 or host.video.cast_token != token or direction not in [-1, 1]: return false
 	if Methods.supports(platform, "dlna_receiver_navigate"):
 		var result := int(platform.dlna_receiver_navigate(token, direction))
@@ -133,6 +136,7 @@ static func unmute_level(video: Node) -> float:
 	return video.system_volume.last_nonzero if video.audio_muted or video.audio_volume <= 0 else video.audio_volume
 
 func accept() -> void:
+	if (host.video != null and host.video.vr_passthrough.active()): return
 	if pending.is_empty(): return
 	# Independent editors/games must be closed by the user, never discarded by a LAN sender.
 	if (host.puzzle_game and host.puzzle_game.active) or host.recent_menu.voice_manager.opened or _typing(): return

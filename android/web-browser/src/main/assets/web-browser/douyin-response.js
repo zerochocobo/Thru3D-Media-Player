@@ -30,7 +30,7 @@ const Thru3DDouyinResponses = (stateFor,publish,hasFrame) => {
     let stream;try{stream=browser.webRequest.filterResponseData(d.requestId);}catch(_){return;}
     const requested=u.searchParams.get('aweme_id');
     const observation=u.pathname==='/aweme/v1/web/aweme/detail/'&&(!requested||requested===Thru3DDouyin.page(state.page)?.id)
-      ?{started:1,worker:d.frameId<0?1:0,prefetch:d.type==='other'?1:0,document_url_matches:d.documentUrl?.split('#')[0]===state.page.split('#')[0]?1:0,headers:0,status:0,body:0,bytes:0,parsed:0,detail:0,id_string:0,id_matches:0,normalized:0,video:0,ads:0,images:0,encrypted:0,drm_zero_string:0,tracks:0,dimensioned_tracks:0,https_addresses:0,duration_valid:0,data_detail:0,response_code:0}:null;
+      ?{started:1,worker:d.frameId<0?1:0,tabless_worker:d.tabId<0?1:0,prefetch:d.type==='other'?1:0,document_url_matches:d.documentUrl?.split('#')[0]===state.page.split('#')[0]?1:0,headers:0,status:0,body:0,bytes:0,parsed:0,detail:0,id_string:0,id_matches:0,normalized:0,video:0,ads:0,images:0,encrypted:0,drm_zero_string:0,tracks:0,dimensioned_tracks:0,https_addresses:0,duration_valid:0,data_detail:0,response_code:0}:null;
     if(observation){state.douyinObservation=observation;observations.delete(state.key);observations.set(state.key,{at:Date.now(),document:state.document,page:state.page,data:observation});while(observations.size>8)observations.delete(observations.keys().next().value);}
     const e={id:d.requestId,stream,state,observation,chunks:[],size:0,ok:null};active.set(e.id,e);
     e.timer=setTimeout(()=>stop(e),15000);

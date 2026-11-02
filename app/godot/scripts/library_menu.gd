@@ -175,6 +175,9 @@ const Presentation := preload("res://scripts/library_presentation.gd")
 const VIEW_LIST := 88
 const VIEW_GRID := 89
 const EXPAND_LIBRARY := 90
+const STORAGE_ROOT := 91
+const RETRY_USB := 92
+const USB_BUSY_EJECT := "USB device is in use; eject it in system settings, then retry"
 var view_mode := "grid"
 var _position_to_restore := {}
 var _return_uri := ""
@@ -268,6 +271,7 @@ var restore_directory_position := true
 var _browse_return_restore := false
 var _browse_parent_filters := {}
 const BROWSE_POSITION_HINT := "Resume where you left off, separately for each folder and file type filter. When off, folders open at the top; returning to a parent keeps its position. Position memory follows history privacy settings."
+const AUTO_PASSTHROUGH_HINT := "Automatically enable passthrough when the filename contains alpha or passthrough. When off, you can enable it manually from the playback menu."
 var _restore_folder_key := ""
 var _editor := {}                  # SMB or DLNA server; empty when not editing
 var _field := 1
@@ -1682,6 +1686,20 @@ func _local_access_mode() -> String:
 func _local_grant_needed() -> bool:
 	return section == Section.LOCAL and status in ["Video access needed", "Media access needed", "All files access needed", "Folder access needed", "Select a folder on this storage device"] and _local_access_mode() != "none"
 
+func _local_mount_recovery() -> bool:
+	return section == Section.LOCAL and _local_path().begins_with("usb://") \
+		and status == "USB device is in use; open a system-mounted entry"
+
+func _local_eject_retry() -> bool:
+	# PICO: the system mount cannot open files for apps; after a system eject this entry reads the disk.
+	return section == Section.LOCAL and _local_path().begins_with("usb://") and status == USB_BUSY_EJECT
+
+func _open_storage_root() -> void:
+	# Keep the partitions explicit; a USB product name cannot identify the mounted UUID.
+	file_actions.reset()
+	_local_stack.clear(); _local_entries = []; scroll = 0
+	_load_section(); refresh()
+
 func _external_volumes() -> Array:
 	return _local_volumes.filter(func(volume): return bool(volume.get("removable",false)))
 
@@ -1718,7 +1736,7 @@ func _begin_storage_stop(volumes: Array) -> void:
 	for id in _pending.keys():
 		if _pending[id] == "local": _pending.erase(id)
 	_cancel_covers()
-	status = "Stopping storage…"
+	status = "Stopping USB storage access…"
 
 func finish_storage_release(path: String) -> void:
 	if path != _local_eject_pending: return
@@ -1727,7 +1745,7 @@ func finish_storage_release(path: String) -> void:
 	if not _storage_stop_failures.is_empty():
 		status = _storage_stop_failures[0]; _storage_stop_targets.clear(); refresh(); return
 	var current := str(_local_volume().get("id", ""))
-	_local_release_notice = "Storage access stopped"
+	_local_release_notice = "USB storage access stopped"
 	if _storage_stop_targets.any(func(volume): return str(volume.id) == current):
 		_local_stack.clear(); _local_entries = []; scroll = 0
 	_storage_stop_targets.clear()
@@ -1749,12 +1767,12 @@ func stop_storage(volume: Dictionary) -> void:
 			_storage_stop_pending.erase(str(target.get("id", "")))
 			_storage_stop_failures.append("Storage stop failed")
 	if _storage_stop_pending.is_empty(): finish_storage_release(_local_eject_pending)
-	else: status = "Stopping storage…"; refresh()
+	else: status = "Stopping USB storage access…"; refresh()
 
 func _draw_storage_stop(centre: Vector2) -> void:
 	if _external_volumes().is_empty(): return
-	_button(EJECT_STORAGE, "", centre, Vector2(0.075, 0.065), _storage_stop_pending.is_empty(), "eject")
-	_tips[EJECT_STORAGE] = I18n.t("Stop using all USB storage")
+	_button(EJECT_STORAGE, "", centre, Vector2(0.075, 0.065), _storage_stop_pending.is_empty(), "stop")
+	_tips[EJECT_STORAGE] = I18n.t("Stop this app's access to all USB storage")
 
 func _browse_local() -> int:
 	return platform.media_subtitle_local_browse(_local_path()) if subtitle_picker_mode else platform.media_local_browse(_local_path())
@@ -1861,6 +1879,9 @@ func _rebuild_rows() -> void:
 					memories.append({"value": option[0], "label": option[1], "hint": Quality.MEMORY_HINTS[option[0]]})
 				var memory_row := _choice_row("Memory", "memory_mode", int(settings.get("memory_mode", Quality.MEMORY_AUTO)), memories, true)
 				memory_row.info = Quality.MEMORY_INFO; rows.append(memory_row)
+				var auto_passthrough_row := _choice_row("Auto passthrough from filename", "alpha_auto_from_filename", bool(settings.get("alpha_auto_from_filename", true)),
+					[{"value": false, "label": "Off", "hint": AUTO_PASSTHROUGH_HINT}, {"value": true, "label": "On", "hint": AUTO_PASSTHROUGH_HINT}])
+				auto_passthrough_row.info = AUTO_PASSTHROUGH_HINT; rows.append(auto_passthrough_row)
 				rows.append(_choice_row("Keep background during passthrough", "alpha_keep_background", bool(settings.get("alpha_keep_background", false)),
 					[{"value": false, "label": "Off"}, {"value": true, "label": "On"}]))
 				rows.append(_video_settings_group("alpha", "AI portrait passthrough (Alpha)"))
@@ -2412,6 +2433,10 @@ func _activate(target: int) -> void:
 		_quick_usb_storage()
 	elif target == EJECT_STORAGE:
 		_request_storage_eject()
+	elif target == STORAGE_ROOT:
+		_open_storage_root()
+	elif target == RETRY_USB:
+		_refresh_source()
 	elif target == CLEAR_HISTORY:
 		collections._remove_rows(catalog.list_recent(), true)
 	elif target >= CRUMB_BASE and target < CRUMB_BASE + 10:
@@ -2926,6 +2951,12 @@ func _draw_compact() -> void:
 	if not archives.browsing and section == Section.LOCAL and _local_grant_needed():
 		_button(GRANT, "", Vector2(-0.49, -0.365), Vector2(0.075, 0.065), not _local_grant_pending, "unlock")
 		_tips[GRANT] = I18n.t("Choose a folder" if _local_access_mode() == "directory" else "Grant")
+	elif not archives.browsing and _local_mount_recovery():
+		_button(STORAGE_ROOT, "", Vector2(-0.49, -0.365), Vector2(0.075, 0.065), true, "device")
+		_tips[STORAGE_ROOT] = I18n.t("Local files")
+	elif not archives.browsing and _local_eject_retry():
+		_button(RETRY_USB, "", Vector2(-0.49, -0.365), Vector2(0.075, 0.065), true, "refresh")
+		_tips[RETRY_USB] = I18n.t("Retry")
 	_button(EXPAND_LIBRARY, "", Vector2(0.28, -0.365), Vector2(0.09, 0.065), true, "expand")
 	_tips[EXPAND_LIBRARY] = I18n.t("Expand library")
 	_decoration(Vector2(1.04, 0.002), Vector2(0, 0.305), Color(0.17, 0.2, 0.24))
@@ -3189,7 +3220,11 @@ func _draw() -> void:
 		_button(RESTART_APP, I18n.t("Restart app"), Vector2(0.10, -0.515), Vector2(0.42, 0.07), true, "refresh")
 		_button(QUIT_APP, I18n.t("Close app"), Vector2(0.59, -0.515), Vector2(0.42, 0.07), true, "close")
 	if not archives.browsing and _local_grant_needed():
-		_button(GRANT, I18n.t("Grant"), Vector2(0.19, -0.34), Vector2(0.3, 0.07), not _local_grant_pending, "", true)
+		_button(GRANT, I18n.t("Choose a folder" if _local_access_mode() == "directory" else "Grant"), Vector2(0.19, -0.34), Vector2(0.3, 0.07), not _local_grant_pending, "", true)
+	elif not archives.browsing and _local_mount_recovery():
+		_button(STORAGE_ROOT, I18n.t("Local files"), Vector2(0.19, -0.34), Vector2(0.3, 0.07), true, "", true)
+	elif not archives.browsing and _local_eject_retry():
+		_button(RETRY_USB, I18n.t("Retry"), Vector2(0.19, -0.34), Vector2(0.3, 0.07), true, "", true)
 	if collections.has_selection():
 		collections.draw_footer()
 	elif file_actions.has_selection():

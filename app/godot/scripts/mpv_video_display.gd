@@ -79,6 +79,11 @@ var platform: Object
 var alpha_encoding := 1
 var alpha_enabled := false
 var alpha_requested := false
+## Global opening policy; changing it does not interrupt the current presentation.
+var auto_passthrough_from_filename := true
+var _auto_passthrough_on_open := true
+## Keep a suppressed packed-mask preference intact until the user changes the mask/layout.
+var _suppressed_packed_mask := false
 ## Native underlay holes erase the virtual scenery; cutouts over scenery use the existing shader path.
 var alpha_over_scenery := false
 var _cinema_alpha_overlay := false
@@ -107,6 +112,8 @@ func capture_cast_view() -> Dictionary:
 	for key in ["geometry", "stereo_sbs", "top_bottom", "stereo_half", "swap_eyes", "fisheye_fov", "depth_requested", "auto_depth", "depth_strength", "alpha_requested", "profile", "screen_rotation", "playback_speed", "viewing_eye", "stereo_horizontal", "stereo_vertical", "loop_enabled", "audio_track_id", "audio_delay", "subtitle_delay"]:
 		result[key] = get(key)
 	result.tracks = _capture_track_choices()
+	result.subtitle_below_screen = subtitle_below_screen
+	result._subtitle_layout_user_changed = _subtitle_layout_user_changed
 	return result
 
 func restore_cast_view(value: Dictionary) -> void:
@@ -120,6 +127,7 @@ func restore_cast_view(value: Dictionary) -> void:
 	set_playback_speed(playback_speed)
 
 func open_cast(uri: String, title: String, token: int, start_ms: int, playing: bool = true) -> bool:
+	if vr_passthrough.active(): return false
 	cast_token = token
 	cast_capability_cache = {}
 	cast_navigation = {}
@@ -155,7 +163,12 @@ var _layout_basename := ""
 var _rvm_alpha := false # the bound pair carries an inferred Alpha
 var _clone_applied := false
 var loop_enabled := false
-var requested_play := true
+var requested_play := true:
+	get:
+		return requested_play and not (vr_passthrough != null and vr_passthrough.active())
+	set(value):
+		if value and vr_passthrough != null and vr_passthrough.active(): return
+		requested_play = value
 var audio_track_id := -1
 var audio_volume := 100.0
 signal audio_options_changed(volume: float, muted: bool)
@@ -199,6 +212,11 @@ var _subtitle_surface: MeshInstance3D
 var _subtitle_patch: QuadMesh
 var _subtitle_material: ShaderMaterial
 var caption: Label3D
+const DepthSubtitles := preload("res://scripts/depth_subtitles.gd")
+var _depth_subtitles: Node3D
+var subtitle_below_screen := false # Explicit opt-in; legacy installations keep their original layout.
+var subtitle_layout_memory := preload("res://scripts/file_subtitle_layout_memory.gd").new()
+var _subtitle_layout_user_changed := false
 const ColorGrade := preload("res://scripts/color_grade.gd")
 var color_grade := ColorGrade.new()
 const SubtitleDepth := preload("res://scripts/subtitle_depth.gd")
@@ -288,6 +306,7 @@ var default_profile := AUTOMATIC_PROFILE
 var _profile_pending := ""
 var _binding := Binding.new()
 var mode_transition := preload("res://scripts/video_mode_transition.gd").new(self)
+var vr_passthrough := preload("res://scripts/vr_passthrough_view.gd").new(self)
 var pip := preload("res://scripts/video_pip.gd").new(self)
 var _pending_pair: Dictionary = {}
 var _pending_revision: Dictionary = {}
@@ -410,6 +429,7 @@ var _fisheye_checked_ms := 0
 func _ready() -> void:
 	mode_memory.load_saved()
 	track_memory.load_saved()
+	subtitle_layout_memory.load_saved()
 	subtitle_timing.load_saved()
 	subtitle_encoding.load_saved()
 	audio_timing.load_saved()
@@ -487,7 +507,7 @@ static func _thumbnail_source(uri: String) -> bool:
 var _cover_deadline := 0
 
 func _wants_embedded_cover() -> bool:
-	return display_name.get_extension().to_lower() == "mkv" or local_uri.get_slice("?", 0).get_extension().to_lower() == "mkv"
+	return display_name.get_extension().to_lower() in ["mkv", "mk3d"] or local_uri.get_slice("?", 0).get_extension().to_lower() in ["mkv", "mk3d"]
 
 func _cancel_embedded_cover() -> void:
 	if _cover_request > 0 and PlatformMethods.supports(platform, "cancel_embedded_cover"):
@@ -694,6 +714,7 @@ func cancel_pending_open() -> void:
 # Library selection: MediaStore content URIs are readable through the media permission;
 # network URIs (smb://, DLNA http) have no document grant to check.
 func open_library(uri: String, title: String, metadata: Dictionary = {}, from_start: bool = false) -> bool:
+	if vr_passthrough.active(): return false
 	cast_token = 0
 	var cover := str(metadata.get("cover", recent_files.lookup(uri).get("cover", "")))
 	var opened := false
@@ -713,6 +734,7 @@ func open_library(uri: String, title: String, metadata: Dictionary = {}, from_st
 	return opened
 
 func open_recent(uri: String, from_start: bool = false, metadata: Dictionary = {}) -> bool:
+	if vr_passthrough.active(): return false
 	var entry := recent_files.lookup(uri)
 	if entry.is_empty() or not platform:
 		return false
@@ -778,6 +800,7 @@ func play_calibration_clip() -> void:
 	open_local("file://" + ProjectSettings.globalize_path(path), filename, 0, false)
 
 func open_local(uri: String, title: String, start_ms: int = 0, restore_mode: bool = true, alpha: bool = false, basename: String = "", metadata: Dictionary = {}) -> bool:
+	if vr_passthrough.active() and not pip.reopening: return false
 	_completed_end = ""
 	var network_interleave := _network_interleave_next
 	_network_interleave_next = false
@@ -804,8 +827,13 @@ func open_local(uri: String, title: String, start_ms: int = 0, restore_mode: boo
 	var stated := Naming.from_metadata(_layout_basename, metadata)
 	if uri.begins_with("externalvideo://") or metadata.get("external_temporary", false): stated.external_unknown = true
 	if uri.begins_with("medialib://"): stated.erase("alpha")
-	packed_file = bool(stated.get("packed", false))
-	packed_alpha = packed_file and (alpha or restore_mode)
+	# Internal reopens retain the live mask choice, including renamed packed sources.
+	if not pip.reopening:
+		_auto_passthrough_on_open = auto_passthrough_from_filename or alpha
+		_suppressed_packed_mask = false
+		packed_file = bool(stated.get("packed", false))
+		packed_alpha = packed_file and (alpha or restore_mode)
+		_suppress_packed_autostart()
 	_layout_pending = null
 	if restore_mode:
 		portrait.automatic = false
@@ -846,7 +874,7 @@ func open_local(uri: String, title: String, start_ms: int = 0, restore_mode: boo
 			top_bottom = int(_stream_projection.stereo_mode) == 1
 			swap_eyes = int(_stream_projection.stereo_mode) == 4
 			stereo_half = false; depth_requested = false; auto_depth = false
-	# Manual Alpha is never restored from memory; explicit filename markers still opt in.
+	# Manual Alpha is never restored from memory; filename opt-in follows the opening policy.
 	if metadata.get("web_fullscreen", false):
 		# A fullscreen request follows the resolved video format, never a title guess,
 		# the previous video's lock or remembered conversion settings.
@@ -856,7 +884,7 @@ func open_local(uri: String, title: String, start_ms: int = 0, restore_mode: boo
 		top_bottom = int(_stream_projection.get("stereo_mode", 0)) == 1
 		swap_eyes = int(_stream_projection.get("stereo_mode", 0)) == 4
 		stereo_half = false; depth_requested = false; auto_depth = false
-	alpha_requested = (alpha or (restore_mode and bool(stated.get("alpha", false)))) and not packed_file
+	alpha_requested = (alpha or (restore_mode and _auto_passthrough_on_open and bool(stated.get("alpha", false)))) and not packed_file
 	_cancel_embedded_cover()
 	_cover_checked = false
 	_thumb_tries = 0
@@ -867,6 +895,7 @@ func open_local(uri: String, title: String, start_ms: int = 0, restore_mode: boo
 	if not _web_handoff and _thumbnail_source(uri) and Thumbnails.texture(uri) == null and not RecentFiles.valid_cover(server_cover):
 		_thumb_after_ms = 0
 	local_uri = uri
+	if not pip.reopening: _restore_subtitle_layout(uri, restore_mode)
 	var saved_whisper := whisper_memory.lookup(uri) if restore_mode else {}
 	audio_whisper = 1 if saved_whisper.get("enabled", false) else 0
 	audio_boost_saved = int(saved_whisper.get("boost", 0))
@@ -962,13 +991,14 @@ func open_local(uri: String, title: String, start_ms: int = 0, restore_mode: boo
 		_loading_status = {"remote": Loading.remote(uri), "phase": "connecting"}
 		_loading_poll_ms = 0
 		_loading_bytes = -1
-		platform.set_mpv_playing(id, false)
+		_set_backend_playing(id, false)
 		picker_error = ""
 	changed.emit()
 	if id <= 0 and not mode_transition.active(): playback_failed.emit()
 	return id > 0
 
 func _unbind() -> void:
+	if _depth_subtitles: _depth_subtitles.suspend()
 	var previous: Dictionary = _binding.unbind()
 	if platform and not previous.is_empty():
 		if int(previous.get("frozen_frame_id", 0)) > 0:
@@ -983,6 +1013,7 @@ func _unbind() -> void:
 		caption.visible = false
 
 func close_video() -> void:
+	if not pip.reopening: vr_passthrough.finish(false)
 	if not mode_transition.reopening: mode_transition.cancel()
 	if not pip.reopening: portrait.reset()
 	# Decoder reopens retain the same video; an actual close or file switch cancels its export.
@@ -1019,6 +1050,7 @@ func close_video() -> void:
 		mode_memory.save()
 	if track_memory.dirty:
 		track_memory.save()
+	if subtitle_layout_memory.dirty: subtitle_layout_memory.save()
 	if subtitle_timing.dirty:
 		subtitle_timing.save()
 	if subtitle_encoding.dirty: subtitle_encoding.save()
@@ -1071,6 +1103,9 @@ func close_video() -> void:
 	_reset_subtitle_files()
 	control.close()
 	_remember_file = false
+	if not pip.reopening:
+		subtitle_below_screen = false
+		_subtitle_layout_user_changed = false
 	_web_handoff = false
 	_mode_user_changed = false
 	_mode_memory_cleared = false
@@ -1098,6 +1133,8 @@ func discard_history_thumbnail() -> void:
 	_thumb_after_ms = -1
 
 func discard_file_settings() -> void:
+	_subtitle_layout_user_changed = true # A late USB identity must not restore a cleared choice.
+	set_subtitle_below_screen(false)
 	_encoding_choices.clear()
 	# A late successful conversion may remain active, but cannot undo an explicit clear.
 	if not _encoding_pending.is_empty(): _encoding_pending.persist = false
@@ -1141,7 +1178,7 @@ func _request_revision(position_ms: int = -1, mode: String = "") -> void:
 	_pending_revision = {"stereo": stereo_sbs, "alpha": alpha_requested, "profile": profile, "position_ms": position_ms,
 		"depth": depth_requested and not alpha_requested and not stereo_sbs, "top_bottom": stereo_sbs and top_bottom,
 		"seek_mode": SeekPolicy.normalize(seek_mode if mode.is_empty() else mode)}
-	platform.set_mpv_playing(media.session_id, false)
+	_set_backend_playing(media.session_id, false)
 	_waiting_first = true
 	_output_deadline_ms = Time.get_ticks_msec() + OUTPUT_TIMEOUT_MS
 	_loading_started_ms = Time.get_ticks_msec(); _loading_poll_ms = 0
@@ -1185,13 +1222,14 @@ func _abort_frozen_seek(reason: String) -> void:
 	_waiting_first = false
 	control.reject()
 	picker_error = reason
-	platform.set_mpv_playing(media.session_id, requested_play)
+	_set_backend_playing(media.session_id, requested_play)
 	_seek_event("capture_failed")
 	changed.emit()
 
 func _on_frozen_pair(id: int, payload: String) -> void:
 	var report: Variant = JSON.parse_string(payload)
 	if not report is Dictionary: return
+	if vr_passthrough.frozen(id, report): return
 	if mode_transition.frozen(id, report): return
 	var pair: Dictionary = report.get("pair", {})
 	if id != media.session_id or int(report.get("request_id", 0)) != _freeze_request \
@@ -1251,7 +1289,7 @@ func _try_revision() -> void:
 	media.begin(id)
 	mode_transition.preparing()
 	if _is_frozen() or _layer_seek_hold: media.format = held_format
-	platform.set_mpv_playing(id, false)
+	_set_backend_playing(id, false)
 	if int(request.position_ms) >= 0:
 		_last_seek_mode = request.seek_mode
 		control.take_pending()
@@ -1286,7 +1324,8 @@ func packed_mask_available() -> bool:
 ## marker): passthrough then uses that mask, and live matting stops. Off returns to a plain fisheye.
 func set_packed_mask(enabled: bool) -> void:
 	if enabled and not packed_mask_available(): return
-	if enabled == packed_mask_on(): return
+	if enabled == packed_mask_on() and not _suppressed_packed_mask: return
+	_suppressed_packed_mask = false
 	packed_file = enabled
 	packed_alpha = enabled
 	if enabled and alpha_requested:
@@ -1299,7 +1338,9 @@ func set_packed_mask(enabled: bool) -> void:
 func set_alpha(enabled: bool) -> bool:
 	if enabled and not cast_allows("alpha"): return false
 	if packed_file:
+		_suppressed_packed_mask = false
 		packed_alpha = enabled
+		if not _auto_passthrough_on_open: _remember_mode()
 		_apply_packed()
 		changed.emit()
 		return true
@@ -1428,7 +1469,11 @@ func set_playback_speed(value: float) -> bool:
 	changed.emit()
 	return true
 
+func _set_backend_playing(id: int, playing: bool) -> void:
+	if platform: platform.set_mpv_playing(id, playing and not vr_passthrough.active())
+
 func toggle_play() -> void:
+	if vr_passthrough.active(): return
 	if bool(narration.clone_state.get("opened", false)): return
 	if media.state == "ended":
 		requested_play = true
@@ -1438,7 +1483,7 @@ func toggle_play() -> void:
 	if not requested_play:
 		_record_history(true)
 	if platform and media.accepts(media.session_id):
-		platform.set_mpv_playing(media.session_id, requested_play and not _waiting_first and not mode_transition.active())
+		_set_backend_playing(media.session_id, requested_play and not _waiting_first and not mode_transition.active())
 	changed.emit()
 
 func pause_for_voice_clone() -> void:
@@ -1446,7 +1491,7 @@ func pause_for_voice_clone() -> void:
 
 func pause_playback() -> void:
 	requested_play = false
-	if platform and media.accepts(media.session_id): platform.set_mpv_playing(media.session_id, false)
+	if platform and media.accepts(media.session_id): _set_backend_playing(media.session_id, false)
 	changed.emit()
 
 func set_audio_whisper(level: int, remember: bool = true) -> bool:
@@ -1637,6 +1682,7 @@ func skip_cast_to_end() -> bool:
 	return accepted
 
 func seek_absolute(position_ms: int, mode: String = "", loop_return: bool = false) -> bool:
+	if vr_passthrough.active(): return false
 	if not cast_allows("seek"): return false
 	if not platform or not media.accepts(media.session_id):
 		return false
@@ -2178,6 +2224,7 @@ func _poll_subtitles() -> void:
 	var ready := platform != null and media.accepts(media.session_id) and not media.last_pair.is_empty() \
 		and not _waiting_first and _pending_revision.is_empty() and panel.visible
 	if not ready:
+		if _depth_subtitles: _depth_subtitles.suspend()
 		caption.visible = false
 		dual_subtitles.state.clear()
 		projected_subtitles.clear(material)
@@ -2197,6 +2244,7 @@ func _poll_subtitles() -> void:
 		dual_subtitles.state.clear()
 	# Keep the selected track and MPV text queue alive for narration.
 	if narration.hides_display():
+		if _depth_subtitles: _depth_subtitles.suspend()
 		caption.visible = false
 		projected_subtitles.clear(material)
 		bitmap_subtitles.clear(material)
@@ -2204,6 +2252,7 @@ func _poll_subtitles() -> void:
 		return
 	if disc.menu_session:
 		# The menu's button plane takes the PGS overlay; a menu has no captions.
+		if _depth_subtitles: _depth_subtitles.suspend()
 		if geometry == Geometry.Geometry.FLAT and not disc_menu.bitmap.is_empty():
 			bitmap_subtitles.apply(material, disc_menu.bitmap, -1, disc_menu.pixels)
 		else:
@@ -2381,6 +2430,7 @@ func cycle_projection() -> void:
 	set_projection((geometry + 1) % 4)
 
 func set_projection(value: int) -> void:
+	if vr_passthrough.active(): return
 	if is_spatial_video(): return
 	if value < 0 or value > 3:
 		return
@@ -2399,6 +2449,7 @@ func set_projection(value: int) -> void:
 		revise = true
 	# The built-in mask belongs to the fisheye layout: other projections leave it.
 	if geometry != Geometry.Geometry.FISHEYE and packed_file:
+		_suppressed_packed_mask = false
 		packed_file = false
 		packed_alpha = false
 		_apply_packed()
@@ -2619,6 +2670,13 @@ func _restore_saved_mode(saved: Dictionary) -> void:
 	if saved.has("packed_mask"):
 		packed_file = bool(saved.packed_mask) and geometry == Geometry.Geometry.FISHEYE
 		packed_alpha = packed_file
+		_suppressed_packed_mask = false
+		_suppress_packed_autostart()
+
+func _suppress_packed_autostart() -> void:
+	if packed_alpha and not _auto_passthrough_on_open:
+		_suppressed_packed_mask = true
+		packed_alpha = false
 
 func _restore_usb_mode(identity: String) -> void:
 	# USB connection URIs contain a random token. Android reports the stable
@@ -2656,7 +2714,7 @@ func _remember_mode(user_change: bool = true) -> void:
 		"spatial_auto_disparity": spatial_auto_disparity,
 		"alpha_requested": false, "profile": profile, "depth_requested": depth_requested,
 		"top_bottom": stereo_sbs and top_bottom, "stereo_half": stereo_sbs and stereo_half, "fisheye_fov": fisheye_fov,
-		"packed_mask": packed_mask_on()}
+		"packed_mask": packed_mask_on() or _suppressed_packed_mask}
 	if mode_memory.remember(local_uri, mode) and not mode_memory.save():
 		Log.record("file_mode_save_failed", {"error": mode_memory.last_error})
 
@@ -2672,6 +2730,7 @@ func _on_pair(id: int, payload: String) -> void:
 				"pixel_busy": _pixel_busy, "thumbnail_busy": _thumbnail_busy})
 
 func _present_pending() -> void:
+	if vr_passthrough.active() and vr_passthrough.source_session == media.session_id: return
 	if mode_transition.capturing(): return
 	if _pixel_busy or _thumbnail_busy or _pending_pair.is_empty() \
 			or (not _pending_revision.is_empty() and not mode_transition.active()):
@@ -2734,7 +2793,7 @@ func _present_pending() -> void:
 			if control.first_frame(actual_position_ms): seek_presented.emit(seek_request, actual_position_ms)
 		else:
 			control.observe(actual_position_ms, control.duration_ms)
-		if not mode_transition.active(): platform.set_mpv_playing(media.session_id, requested_play)
+		if not mode_transition.active(): _set_backend_playing(media.session_id, requested_play)
 	else:
 		control.observe(int(int(claimed.pts_us) / 1000), control.duration_ms)
 	if media.frame_counter == 1:
@@ -2768,6 +2827,7 @@ func _on_state(id: int, payload: String) -> void:
 	if media.frame_counter > 0: _restore_capture_layout()
 	var subtitle_identity := str(report.get("subtitle_memory_id", ""))
 	if not subtitle_identity.is_empty(): _restore_usb_mode(subtitle_identity)
+	if not subtitle_identity.is_empty(): _restore_usb_subtitle_layout(subtitle_identity)
 	if track_memory.register_usb_identity(local_uri, subtitle_identity):
 		subtitle_timing.register_usb_identity(local_uri, subtitle_identity)
 		subtitle_encoding.register_usb_identity(local_uri, subtitle_identity)
@@ -2836,6 +2896,7 @@ func _on_error(id: int, payload: String) -> void:
 	_cancel_embedded_cover()
 	_thumbnail_sequence += 1
 	var code := str(report.get("code", "")) if report is Dictionary else ""
+	if code == "MPV_GL_CONTEXT_RECREATED": vr_passthrough.context_lost()
 	if disc.menu_session and code != "MPV_GL_CONTEXT_RECREATED" and disc.main >= 0:
 		# A menu the player cannot run (an HDMV stub in front of BD-J): return to the
 		# main title where it was left and stop offering this disc's menu.
@@ -3178,7 +3239,57 @@ func _write_debug_report() -> void:
 func _source_size() -> Vector2:
 	return Vector2(float(media.format.width), float(media.format.height))
 
+## Mode-level policy, independent of intermittent model output. No subtitle preference is changed.
+func depth_subtitles_available() -> bool:
+	return geometry == Geometry.Geometry.FLAT and not portrait_requested() and not disc.menu_session
+
+func depth_subtitles_below() -> bool:
+	return subtitle_below_screen and depth_subtitles_available()
+
+func _restore_subtitle_layout(uri: String, restore: bool = true) -> void:
+	_subtitle_layout_user_changed = false
+	subtitle_below_screen = bool(subtitle_layout_memory.lookup(uri).get("below_screen", false)) if restore else false
+
+func remember_subtitle_layout(enabled: bool) -> void:
+	_subtitle_layout_user_changed = true
+	set_subtitle_below_screen(enabled)
+	if not _remember_file: return # Cast/diagnostic sources have no persistent file-settings session.
+	if subtitle_layout_memory.remember(local_uri, {"below_screen": enabled}) and not subtitle_layout_memory.save():
+		Log.record("file_subtitle_layout_save_failed", {"error": subtitle_layout_memory.last_error})
+
+func _restore_usb_subtitle_layout(identity: String) -> void:
+	var early := subtitle_layout_memory.lookup(local_uri)
+	if not subtitle_layout_memory.register_usb_identity(local_uri, identity): return
+	# Explicit choices made before stable USB identification win, even when persistence is off.
+	if _subtitle_layout_user_changed:
+		if not early.is_empty() and subtitle_layout_memory.remember(local_uri, early): subtitle_layout_memory.save()
+	elif _remember_file:
+		set_subtitle_below_screen(bool(subtitle_layout_memory.lookup(local_uri).get("below_screen", false)))
+
+func set_subtitle_below_screen(enabled: bool) -> void:
+	if subtitle_below_screen == enabled: return
+	subtitle_below_screen = enabled
+	if is_inside_tree() and caption and material:
+		_subtitle_on_layer = false; _flat_subtitle_on_layer = false
+		_sync_subtitle_surface()
+		_update_layer()
+	changed.emit()
+
+func _sync_depth_subtitles() -> void:
+	if not _depth_subtitles:
+		_depth_subtitles = DepthSubtitles.new(self)
+		add_child(_depth_subtitles)
+	_depth_subtitles.sync()
+
 func _sync_subtitle_surface() -> void:
+	if depth_subtitles_below():
+		_sync_depth_subtitles()
+		if caption: caption.layers = 0
+		material.set_shader_parameter("separate_subtitles", true)
+		if _subtitle_surface: _subtitle_surface.visible = false
+		_depth_subtitles.commit(_subtitle_on_layer)
+		return
+	if _depth_subtitles: _depth_subtitles.suspend()
 	# Hide the eye-buffer glyphs only after their exact current cue was submitted.
 	if caption and geometry == Geometry.Geometry.FLAT:
 		caption.layers = 0 if _flat_subtitle_on_layer and _flat_subtitle_canvas and _flat_subtitle_canvas.matches(caption) else 1
@@ -3436,6 +3547,7 @@ func _can_loop() -> bool:
 
 ## A natural EOF is actionable only after its final source frame was presented.
 func playback_end_ready() -> bool:
+	if vr_passthrough.active(): return false
 	if not requested_play or media.state != "ended" or _waiting_first or not _pending_revision.is_empty() or control.pending or control.in_flight > 0 or not media.error.is_empty():
 		return false
 	var end: Dictionary = media.playback
@@ -3450,6 +3562,14 @@ func playback_end_ready() -> bool:
 		and (not alpha_requested or final_pair.get("inference_ran", false) or final_pair.get("color_target") == "layer")
 
 func _process(_delta: float) -> void:
+	if vr_passthrough.active():
+		if vr_passthrough.source_session != media.session_id: _present_pending()
+		# A first-use shader compile must not skip the entire short roll on its next frame.
+		vr_passthrough.poll(minf(_delta, 1.0 / 30.0))
+		if vr_passthrough.active():
+			narration.apply()
+			_update_layer()
+			return
 	mode_transition.poll()
 	system_volume.poll()
 	narration.apply()
@@ -3679,6 +3799,12 @@ func set_browser_screen_owned(value: bool) -> void:
 	_update_layer()
 
 func _update_layer() -> void:
+	if vr_passthrough.active():
+		vr_passthrough.hide_source()
+		if video_layer: video_layer.hide(self)
+		video_layer_shown = false
+		_subtitle_on_layer = false; _flat_subtitle_on_layer = false
+		return
 	if not video_layer:
 		return
 	video_layer.update_session()
@@ -3732,7 +3858,7 @@ func _update_layer() -> void:
 	if _processed_picture: main_layers = pip.compositor.main_eyes
 	# Menu providers have already been reserved by main. A tight runtime budget drops
 	# only the new text overlay, leaving the original Label3D and the video available.
-	if _flat_subtitle_on_layer and main_layers + extras.size() > video_layer.capacity():
+	if (_flat_subtitle_on_layer or depth_subtitles_below()) and main_layers + extras.size() > video_layer.capacity():
 		extras = extras.filter(func(extra): return int(extra.values[26]) != VideoLayer.SUBTITLE_SLOT)
 		_subtitle_on_layer = false; _flat_subtitle_on_layer = false
 	var pip_layers: Array = pip.compositor.prepare(origin, main_layers + extras.size()) if pip.active() else []
@@ -3828,6 +3954,11 @@ func _alpha_probe_layers(origin: XROrigin3D, layer_size: Vector2, extras: Array)
 func _subtitle_layer_extras(origin: XROrigin3D) -> Array:
 	_subtitle_on_layer = false
 	_flat_subtitle_on_layer = false
+	if depth_subtitles_below():
+		_sync_depth_subtitles()
+		var extras: Array = _depth_subtitles.layer_extras(origin)
+		_subtitle_on_layer = not extras.is_empty()
+		return extras
 	if geometry == Geometry.Geometry.FLAT:
 		if caption and caption.visible and not caption.text.is_empty(): return _flat_text_layer_extras(origin)
 		return _bitmap_layer_extras(origin)

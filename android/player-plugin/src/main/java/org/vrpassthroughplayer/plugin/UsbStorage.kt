@@ -24,6 +24,21 @@ import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
+internal object UsbClaimPolicy {
+    const val BUSY = "USB device is in use"
+    const val BUSY_MOUNTED = "USB device is in use; open a system-mounted entry"
+    // PICO system mounts list folders through SAF but cannot hand file descriptors to apps;
+    // once the system ejects the disk, this app's own read-only backend can claim it.
+    const val BUSY_EJECT = "USB device is in use; eject it in system settings, then retry"
+    fun pico(manufacturer: String?, brand: String?) =
+        manufacturer.orEmpty().contains("pico", true) || brand.orEmpty().contains("pico", true)
+    fun busyMessage(systemMounted: Boolean, manufacturer: String?, brand: String?) = when {
+        !systemMounted -> BUSY
+        pico(manufacturer, brand) -> BUSY_EJECT
+        else -> BUSY_MOUNTED
+    }
+}
+
 /** USB sessions have private URIs, never writable file paths. Only explicit browsing opens/reopens one. */
 internal class UsbStorage(private val host: () -> Activity?, private val emit: (Int,String)->Unit, private val changed: ()->Unit) : Closeable {
     private val worker=Executors.newSingleThreadExecutor { Thread(it,"ThruUsbStorage") }
@@ -140,7 +155,7 @@ internal class UsbStorage(private val host: () -> Activity?, private val emit: (
             // Some kernels bind usb-storage even to an unmountable filesystem. Detach that
             // idle driver only after a conservative system-volume check, never a mounted one.
             if(!claimed && !busySystemStorage()) { Thread.sleep(350); if(!busySystemStorage()) claimed=c.claimInterface(f,true) }
-            if(!claimed) throw IOException(if(busySystemStorage()) "USB device is in use; open a system-mounted entry" else "USB device is in use")
+            if(!claimed) throw IOException(UsbClaimPolicy.busyMessage(busySystemStorage(), Build.MANUFACTURER, Build.BRAND))
             s.connection=c; s.face=f; s.active=true
             s.stage="lun"
             val value=ByteArray(1)

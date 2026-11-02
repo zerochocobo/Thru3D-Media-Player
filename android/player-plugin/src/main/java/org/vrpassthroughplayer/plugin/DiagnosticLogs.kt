@@ -41,8 +41,8 @@ internal object DiagnosticLogs {
             val result = JSONObject().put("action", action)
             try {
                 when (action) {
-                    "save" -> result.put("path", save(app, compose(header, full)))
-                    "share" -> result.put("url", share(compose(header, full))).put("expires_ms", shareUntil)
+                    "save" -> result.put("path", save(app, compose(app, header, full), fileName()))
+                    "share" -> result.put("url", share(compose(app, header, full))).put("expires_ms", shareUntil)
                     "stop" -> stop()
                     "recent" -> result.put("lines", JSONArray(recent()))
                     else -> error("Unknown log action")
@@ -55,24 +55,61 @@ internal object DiagnosticLogs {
         }
     }
 
-    private fun logcat(vararg extra: String): String {
-        val command = listOf("logcat", "-d", "-v", "threadtime", "--pid=${android.os.Process.myPid()}") + extra
+    /** This app's logcat: one process ([pid]), or every process of the app (null). Android returns only
+     * this app's own lines, including those of an earlier process still in the ring buffer. */
+    internal fun logcat(pid: Int?, vararg extra: String): String {
+        val command = listOf("logcat", "-d", "-v", "threadtime") + listOfNotNull(pid?.let { "--pid=$it" }) + extra
         val process = ProcessBuilder(command).redirectErrorStream(true).start()
         val text = process.inputStream.bufferedReader().readText()
         process.waitFor()
         return text
     }
 
-    private fun compose(header: String, full: Boolean): String = buildString {
-        append("Thru3D diagnostic log ").append(SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date())).append('\n')
+    private fun device(title: String) = buildString {
+        append(title).append(' ').append(SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date())).append('\n')
         append("Device: ").append(Build.MANUFACTURER).append(' ').append(Build.MODEL)
             .append(" · Android ").append(Build.VERSION.RELEASE).append(" (API ").append(Build.VERSION.SDK_INT).append(")\n")
         append("Build: ").append(Build.FINGERPRINT).append('\n')
+    }
+
+    /** Installed package identity, independent of the Godot display version in [header]. */
+    private fun installation(context: Context): String {
+        val app = runCatching { context.packageManager.getPackageInfo(context.packageName, 0) }.getOrNull()
+        return "App: ${context.packageName} ${app?.versionName ?: "?"} (versionCode=${app?.longVersionCode ?: -1})\n" +
+            "App updated (epoch_ms): ${app?.lastUpdateTime ?: -1}\n" +
+            "Storage reader: ${StorageDocumentReader.IMPLEMENTATION}\n"
+    }
+
+    private fun compose(context: Context, header: String, full: Boolean): String = buildString {
+        append(device("Thru3D diagnostic log"))
+        append(installation(context))
         append(redact(header)).append('\n')
         append(if (full) "Detail: full\n\n" else "Detail: compact (VrApi every 10 s and whenever frames, stale frames or free memory go wrong; " +
             "other periodic lines every 30 s; repeated messages merged)\n\n")
-        val log = logcat("-t", "30000")
+        append(redact(CrashRecords.exportSection(context))).append('\n')
+        append(events(context, if (full) 6000 else 1500)).append('\n')
+        append("== Log of this session ==\n")
+        val log = logcat(android.os.Process.myPid(), "-t", "30000")
         append(redact(if (full) log else condense(log)))
+    }
+
+    /** The crash report saved on the next launch; the player settings header is not known that early. */
+    internal fun crashFile(context: Context, report: String): String = buildString {
+        append(device("Thru3D crash report"))
+        val app = runCatching { context.packageManager.getPackageInfo(context.packageName, 0) }.getOrNull()
+        append("App: ").append(app?.versionName ?: "?").append(" (").append(app?.longVersionCode ?: 0).append(")\n\n")
+        append(report).append('\n')
+        append(events(context, 1500))
+    }
+
+    /** The newest player events across sessions (user://diagnostics; written only while history is recorded). */
+    private fun events(context: Context, lines: Int): String {
+        val directory = File(context.filesDir, "diagnostics")
+        val all = listOf("events.1.jsonl", "events.jsonl").flatMap { name ->
+            runCatching { File(directory, name).takeIf { it.isFile }?.readLines() }.getOrNull() ?: emptyList()
+        }
+        return "== Recent events (all sessions, newest last) ==\n" +
+            (if (all.isEmpty()) "(none recorded)\n" else redact(all.takeLast(lines).joinToString("\n", postfix = "\n")))
     }
 
     // Per-second or per-frame lines that bury the rest: kept at intervals, or always when they show trouble.
@@ -115,7 +152,7 @@ internal object DiagnosticLogs {
     }
 
     /** Warnings and errors of this process, newest last, for reading in the headset. */
-    private fun recent(): List<String> = logcat("-t", "4000", "*:W").lineSequence()
+    private fun recent(): List<String> = logcat(android.os.Process.myPid(), "-t", "4000", "*:W").lineSequence()
         .filter { it.length > 33 && !it.startsWith("-") }
         // Read in the headset: drop the date, time and process/thread numbers, keep level, tag and text.
         .map { line -> redact(stamp.find(line)?.let { line.substring(it.range.last + 1) } ?: line).replace(Regex(" {2,}"), " ").trim() }
@@ -138,8 +175,7 @@ internal object DiagnosticLogs {
     private fun fileName() = "thru3d-log-" + SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date()) + ".txt"
 
     /** Download/Thru3D/logs/<name> (MediaStore, so no storage permission); the shown path. */
-    private fun save(context: Context, text: String): String {
-        val name = fileName()
+    internal fun save(context: Context, text: String, name: String): String {
         if (Build.VERSION.SDK_INT >= 29) {
             val values = ContentValues().apply {
                 put(MediaStore.MediaColumns.DISPLAY_NAME, name)

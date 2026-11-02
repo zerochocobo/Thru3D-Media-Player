@@ -7,6 +7,17 @@ import java.io.IOException
 import java.net.SocketTimeoutException
 
 class PlaybackFailureTest {
+    @Test fun providerTransportFailureIsNotAMissingFile() {
+        val uri = "content://com.android.externalstorage.documents/tree/1234-ABCD%3A/document/1234-ABCD%3Amovie.mp4"
+        assertEquals("storage_provider_failed", PlaybackFailure.from(StorageProviderUnavailable(), "reading").reason)
+        val error = java.io.FileNotFoundException("Failed opening content provider: $uri")
+        val report = PlaybackFailure.report("MPV_LOCAL_SOURCE_FAILED", error, "reading")
+        assertEquals("storage_provider_failed", report.getString("reason"))
+        assertEquals("reading", report.getString("stage"))
+        assertFalse(report.toString().contains("1234-ABCD"))
+        assertEquals("not_found", PlaybackFailure.from(java.io.FileNotFoundException("missing"), "reading").reason)
+        assertEquals("access_denied", PlaybackFailure.from(SecurityException("denied"), "reading").reason)
+    }
     @Test fun rvmGpuFailureNamesTheEffectAndKeepsItsNativeCause() {
         val detail = "MNN OpenCL backend unavailable; refusing CPU execution; command_queue (-35)"
         val report = PlaybackFailure.report("MPV_RVM_FAILED", IllegalStateException(detail), "reading", PlaybackFailure.http(403))

@@ -28,4 +28,17 @@ class ReadingMemoryPolicyTest {
         assertFalse(ReadingMemoryPolicy.evaluate(0,4096*m,0,false,false,false).color)
         assertFalse(ReadingMemoryPolicy.evaluate(8192*m,1024*m,512*m,false,false,false).color)
     }
+    @Test fun PrivateFirstPageCopyNeedsHeadroomBeyondDecoderReserve() {
+        for (total in listOf(6144L, 8192L)) {
+            fun policy(available: Long) = ReadingMemoryPolicy.evaluate(total*m,available,128*m,false,false,true)
+            assertTrue(policy(768*m).color)
+            assertEquals(0L, policy(768*m).copyHeadroom)
+            assertEquals(64*m-1, policy(832*m-1).copyHeadroom)
+            assertEquals(64*m, policy(832*m).copyHeadroom)
+            assertEquals(0L, policy(767*m).copyHeadroom)
+        }
+        assertEquals(0L, ReadingMemoryPolicy.evaluate(8192*m,4096*m,128*m,true,false,true).copyHeadroom)
+        assertEquals(0L, ReadingMemoryPolicy.evaluate(0,4096*m,128*m,false,false,true).copyHeadroom)
+        assertEquals(0L, ReadingMemoryPolicy.evaluate(8192*m,1280*m,512*m,false,false,true).copyHeadroom)
+    }
 }

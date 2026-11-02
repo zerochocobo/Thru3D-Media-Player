@@ -17,7 +17,7 @@ internal class LocalStorageDocuments(private val context: () -> Context?) : Stor
     val tree = StorageDocumentTree(this)
     private fun resolver() = context()?.contentResolver ?: error("Storage device unavailable")
     override fun grants(): List<String> = (resolver().persistedUriPermissions.filter { it.isReadPermission }.map { it.uri.toString() } + temporary).distinct()
-    fun accept(uri: Uri, flags: Int, expectedVolume: String) {
+    fun accept(uri: Uri, flags: Int, expectedVolume: String): Boolean {
         val at = StorageDocumentPolicy.parse(uri.toString())
         require(at.tree.volume.equals(expectedVolume, true)) { "Select a folder on this storage device" }
         if (flags and Intent.FLAG_GRANT_READ_URI_PERMISSION == 0) throw AccessDeniedException("document")
@@ -26,8 +26,10 @@ internal class LocalStorageDocuments(private val context: () -> Context?) : Stor
             ?: throw NoSuchFileException("document")
         check(metadata.directory)
         query(doc, true) // Preflight the actual grant before reporting success.
-        context()?.let { LocalDocumentGrant.take(it, uri, flags) }
+        val persistent = context()?.let { LocalDocumentGrant.take(it, uri, flags) } == true
         temporary.add(StorageDocumentPolicy.tree(at.tree))
+        if (PlaybackPrivacy.diagnostics) android.util.Log.i("ThruStorage", "directory_grant persistent=$persistent")
+        return persistent
     }
     override fun query(uri: String, children: Boolean): List<StorageDocumentTree.Entry> {
         val at = StorageDocumentPolicy.parse(uri)

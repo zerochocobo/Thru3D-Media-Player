@@ -202,7 +202,7 @@ internal class MpvVideoBridge(
         var cloneGainApplied=false // playback worker only
         fun needsAudio() = (audioEnabled && audioAvailable) || narration?.wantsAudio == true || narration?.wantsPreview == true || narration?.wantsPauseDrain == true || voiceClone?.wantsAudio == true
         @Volatile var audioAvailable = audio
-        @Volatile var descriptor: ParcelFileDescriptor? = null
+        @Volatile var descriptor: StorageDocumentRead<ParcelFileDescriptor>? = null
         @Volatile var sidecars: List<ParcelFileDescriptor> = emptyList()
         @Volatile var networkLease: String? = null
         @Volatile var subtitleLeases: List<String> = emptyList()
@@ -446,17 +446,17 @@ internal class MpvVideoBridge(
                 if (resolved != uri || source.scheme in setOf("medialib", "cloud", "smb")) host.networkLease = resolved
                 val path = if (source.scheme == "file") source.path ?: error("Local file path unavailable")
                 else if (source.scheme in setOf("http", "https")) resolved else {
-                    val fd = app.contentResolver.openFileDescriptor(source, "r") ?: error("Local document descriptor unavailable")
-                    host.descriptor = fd
-                    "fd://${fd.fd}"
+                    val file = StorageDocumentReader.open(app.contentResolver, source)
+                    host.descriptor = file
+                    "fd://${file.descriptor.fd}"
                 }
                 host.markStartup("source_resolved_ms")
-                val iso = Uri.parse(path).path.orEmpty().lowercase().endsWith(".iso") ||
-                    source.path.orEmpty().lowercase().endsWith(".iso") ||
-                    (source.scheme == "content" && app.contentResolver.query(source,
+                val documentName = if (source.scheme == "content") app.contentResolver.query(source,
                         arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use {
-                            it.moveToFirst() && it.getString(0).orEmpty().lowercase().endsWith(".iso")
-                        } == true)
+                            if (it.moveToFirst()) it.getString(0).orEmpty() else ""
+                        }.orEmpty() else ""
+                val iso = Uri.parse(path).path.orEmpty().lowercase().endsWith(".iso") ||
+                    source.path.orEmpty().lowercase().endsWith(".iso") || documentName.lowercase().endsWith(".iso")
                 if (iso) host.loadingPhase = "reading_disc"
                 val disc = if (iso) {
                     // A menu session is sized and described by the disc's default preflight.
@@ -478,6 +478,19 @@ internal class MpvVideoBridge(
                     finishIsoPreflight(path)
                     result
                 } else null
+                val mkv = if (!iso && MkvMvcPreflight.candidate(uri, resolved, path, documentName)) {
+                    val probe = synchronized(host) {
+                        check(!host.closing && !stopped) { "MKV probe cancelled" }
+                        MpvSourceNative.beginDiscProbe().also { host.discProbe = it }
+                    }
+                    try { MkvMvcPreflight.parse(MpvSourceNative.probeMkvMvc(probe, path, tlsCaFile)) }
+                    finally {
+                        synchronized(host) { host.discProbe = 0 }
+                        MpvSourceNative.closeDiscProbe(probe)
+                    }
+                } else null
+                if (host.closing || stopped) return@post
+                host.markStartup("mvc_header_ms")
                 host.discInput=iso
                 if (disc != null && host.discPlaylist == -2) {
                     if (disc.mvc || JSONObject(disc.json).optString("menu") !in setOf("hdmv", "dvd")) error("Disc menu unavailable")
@@ -489,8 +502,8 @@ internal class MpvVideoBridge(
                 host.loadingPhase = "preparing"
                 val nativePath = if (iso && path.startsWith("fd://")) "/proc/self/fd/${path.removePrefix("fd://")}" else path
                 host.narrationPath = nativePath; host.narrationCa = tlsCaFile
-                val surfaceWidth = disc?.width ?: LAYER_SURFACE_SIZE
-                val surfaceHeight = disc?.height ?: LAYER_SURFACE_SIZE
+                val surfaceWidth = disc?.width ?: mkv?.width ?: LAYER_SURFACE_SIZE
+                val surfaceHeight = disc?.height ?: mkv?.height ?: LAYER_SURFACE_SIZE
                 // Extra audio is optional: a failed lookup plays the video without it.
                 val deferCloud = Uri.parse(uri).scheme == "cloud"
                 val extra = if (audio && !deferCloud) sidecarAudio(uri) else emptyList()
@@ -531,7 +544,7 @@ internal class MpvVideoBridge(
                         host.handle = MpvSourceNative.create(app, nativePath, startMs, hardware, audio, host.maxWidth,
                             extra.flatMap { listOf(it.location, it.title) }.toTypedArray(),
                             captions.flatMap { listOf(it.location, it.title) }.toTypedArray(), host.exactStart,
-                            if (host.layer) host.copy?.surface ?: host.fanout?.surface ?: host.layerSurface else null, disc?.mvc == true, surfaceWidth, surfaceHeight, iso, tlsCaFile,
+                            if (host.layer) host.copy?.surface ?: host.fanout?.surface ?: host.layerSurface else null, disc?.mvc == true || mkv != null, surfaceWidth, surfaceHeight, iso, tlsCaFile,
                             host.interleavePolicy.sequential, if (iso) host.discPlaylist else -1,
                             networkCacheMiB(app, host.remote, session.inference, host.memorySaver),
                             requiredPrimaryAudio = extra.any { it.requiredPrimary })

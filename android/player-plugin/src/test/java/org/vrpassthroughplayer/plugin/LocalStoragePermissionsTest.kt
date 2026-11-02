@@ -18,6 +18,19 @@ class LocalStoragePermissionsTest {
         }
     }
 
+    @Test fun directoryProbeRequiresAReadGrantSupportedByTheRunningSdk() {
+        assertFalse(LocalStoragePermissions.canProbeDirectory(29, false, false))
+        assertTrue(LocalStoragePermissions.canProbeDirectory(29, false, true))
+        for (sdk in listOf(30, 32)) {
+            assertFalse(LocalStoragePermissions.canProbeDirectory(sdk, false, false))
+            assertTrue(LocalStoragePermissions.canProbeDirectory(sdk, false, true))
+            assertTrue(LocalStoragePermissions.canProbeDirectory(sdk, true, false))
+        }
+        for (sdk in listOf(33, 34, 36)) {
+            assertFalse(LocalStoragePermissions.canProbeDirectory(sdk, false, true))
+            assertTrue(LocalStoragePermissions.canProbeDirectory(sdk, true, false))
+        }
+    }
     @Test fun oldPicoOsDoesNotLaunchNonexistentAllFilesSettings() {
         assertEquals(listOf(Settings.ACTION_APPLICATION_DETAILS_SETTINGS), LocalStoragePermissions.settingsActions(29))
     }

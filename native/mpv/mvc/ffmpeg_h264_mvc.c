@@ -11,6 +11,7 @@
 #include "internal.h"
 #include "edge264mvc/edge264mvc.h"
 #include "mvc_recovery.h"
+#include "mvc_config.h"
 
 typedef struct MvcDecoder {
     Edge264MvcDecoder *decoder;
@@ -22,7 +23,15 @@ typedef struct MvcDecoder {
     uint64_t pairs;
     MvcRecovery recovery;
     int base_picture_seen;
+    ThruMvcConfig config;
+    int length_size;
 } MvcDecoder;
+
+static int mvc_parameter(void *opaque, const uint8_t *nal, size_t size)
+{
+    MvcDecoder *s = opaque;
+    return edge264mvc_send_nal(s->decoder, nal, size, AV_NOPTS_VALUE, 0) == EDGE264MVC_OK ? 0 : -1;
+}
 
 static int mvc_open_decoder(MvcDecoder *s)
 {
@@ -30,12 +39,24 @@ static int mvc_open_decoder(MvcDecoder *s)
     edge264mvc_default_settings(&settings);
     settings.n_threads = 4;
     settings.max_frame_pixels = 4096 * 2160;
-    return edge264mvc_open(&s->decoder, &settings) == EDGE264MVC_OK ? 0 : AVERROR(ENOMEM);
+    if (edge264mvc_open(&s->decoder, &settings) != EDGE264MVC_OK) return AVERROR(ENOMEM);
+    if (s->length_size &&
+        (thru_mvc_record(s->config.avc, s->config.avc_size, 0, mvc_parameter, s, NULL) < 0 ||
+         thru_mvc_record(s->config.mvc, s->config.mvc_size, 1, mvc_parameter, s, NULL) < 0)) {
+        edge264mvc_close(&s->decoder);
+        return AVERROR_INVALIDDATA;
+    }
+    return 0;
 }
 
 static av_cold int mvc_init(AVCodecContext *avctx)
 {
     MvcDecoder *s = avctx->priv_data;
+    if (avctx->extradata_size > 1) {
+        if (thru_mvc_unpack(avctx->extradata, avctx->extradata_size, &s->config) < 0)
+            return AVERROR_INVALIDDATA;
+        s->length_size = s->config.length_size;
+    }
     int ret = mvc_open_decoder(s);
     if (ret < 0) return ret;
     s->packet = av_packet_alloc();
@@ -43,7 +64,7 @@ static av_cold int mvc_init(AVCodecContext *avctx)
         edge264mvc_close(&s->decoder);
         return AVERROR(ENOMEM);
     }
-    s->base_right = avctx->extradata_size == 1 && avctx->extradata[0] == 1;
+    s->base_right = s->length_size ? s->config.base_right : avctx->extradata_size == 1 && avctx->extradata[0] == 1;
     s->clip = -1;
     s->end = INT64_MAX;
     mvc_recovery_reset(&s->recovery);
@@ -218,15 +239,26 @@ static int mvc_receive(AVCodecContext *avctx, AVFrame *frame)
         }
         if (!s->packet->size)
             return AVERROR(EAGAIN);
+        size_t begin, end, next;
+        if (s->length_size) {
+            if (s->next + s->length_size > s->packet->size) return AVERROR_INVALIDDATA;
+            size_t length = 0;
+            for (int i = 0; i < s->length_size; ++i)
+                length = (length << 8) | s->packet->data[s->next + i];
+            begin = s->next + s->length_size;
+            if (!length || length > s->packet->size - begin) return AVERROR_INVALIDDATA;
+            end = next = begin + length;
+        } else {
         size_t offset = edge264mvc_find_start_code(s->packet->data + s->next, s->packet->size - s->next);
-        size_t begin = s->next + offset;
+        begin = s->next + offset;
         if (begin >= s->packet->size) {
             av_packet_unref(s->packet);
             continue;
         }
         begin += 3;
         size_t length = edge264mvc_find_start_code(s->packet->data + begin, s->packet->size - begin);
-        size_t end = begin + length;
+        end = begin + length;
+        next = end;
         /* The zero preceding a four-byte start code is Annex B trailing_zero_8bits. */
         while (end > begin && s->packet->data[end - 1] == 0)
             end--;
@@ -234,13 +266,14 @@ static int mvc_receive(AVCodecContext *avctx, AVFrame *frame)
             s->next = begin + length;
             continue;
         }
+        }
         /* SSIF stores per-view sequence terminators. A base-view EOS can
            precede the last dependent NAL in the same paired packet; letting
            it flush the decoder here would publish a one-eyed final frame.
            The paired clip marker / FFmpeg drain terminates both views. */
         int nal_type = s->packet->data[begin] & 31;
         if (nal_type == 10 || nal_type == 11) {
-            s->next = begin + length;
+            s->next = next;
             continue;
         }
         result = edge264mvc_send_nal(s->decoder, s->packet->data + begin, end - begin,
@@ -266,7 +299,7 @@ static int mvc_receive(AVCodecContext *avctx, AVFrame *frame)
             }
         }
         if (nal_type >= 1 && nal_type <= 5) s->base_picture_seen = 1;
-        s->next = begin + length;
+        s->next = next;
         if (s->next >= s->packet->size)
             av_packet_unref(s->packet);
     }

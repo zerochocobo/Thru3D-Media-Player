@@ -161,6 +161,8 @@ func _run() -> void:
 	video.set_subtitle_track(5)
 	video.media.state = "paused"
 	video.material.set_shader_parameter("alpha_enabled", false)
+	# Selecting the track clears the old cue; do not race the production 50 ms poll window.
+	video._subtitle_poll_ms = 0
 	video._poll_subtitles()
 	for preset in Video.SubtitleStyle.PGS_PRESETS:
 		var before := host.reads

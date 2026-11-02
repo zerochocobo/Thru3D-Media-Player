@@ -21,7 +21,8 @@ def once(text, old, new):
 def apply_mvc_patch(ffmpeg, archive):
     subprocess.run(['python3', str(ROOT / 'tools/environment/Prepare-MvcDecoder.py')], check=True)
     names = ['libavcodec/allcodecs.c', 'libavcodec/codec_id.h', 'libavcodec/codec_desc.c',
-             'libavcodec/Makefile', 'libavformat/allformats.c', 'libavformat/Makefile', 'libavformat/dvdvideodec.c']
+             'libavcodec/Makefile', 'libavformat/allformats.c', 'libavformat/Makefile',
+             'libavformat/dvdvideodec.c', 'libavformat/matroskadec.c']
     original = {}
     with tarfile.open(archive) as tar:
         for member in tar.getmembers():
@@ -51,6 +52,51 @@ def apply_mvc_patch(ffmpeg, archive):
     edited[p] = once(edited[p], 'extern const FFInputFormat  ff_mpegts_demuxer;',
                     'extern const FFInputFormat  ff_mpegts_demuxer;\nextern const FFInputFormat ff_bd_mvc_demuxer;')
     edited['libavformat/Makefile'] += '\nOBJS-$(CONFIG_BD_MVC_DEMUXER) += bd_mvc.o dvd_nav.o dvdclut.o\n'
+    p = 'libavformat/matroskadec.c'
+    edited[p] = once(edited[p], 'typedef struct MatroskaDemuxContext {\n    const AVClass *class;\n    AVFormatContext *ctx;',
+                    'typedef struct MatroskaDemuxContext {\n    const AVClass *class;\n    AVFormatContext *ctx;\n    int thru3d_header_only;')
+    edited[p] = once(edited[p], '    syntax = ebml_parse_id(syntax, id);',
+                    '''    syntax = ebml_parse_id(syntax, id);
+    /* Only the dedicated preflight format uses this profile. Do not fetch
+       attachments, tags or indexes just to select a video decoder. */
+    EbmlSyntax thru3d_skip = {.id = id, .type = EBML_NONE};
+    if (matroska->thru3d_header_only && syntax->type == EBML_LEVEL1 &&
+        id != MATROSKA_ID_INFO && id != MATROSKA_ID_TRACKS)
+        syntax = &thru3d_skip;''')
+    edited[p] = once(edited[p], '    matroska_execute_seekhead(matroska);',
+                    '    if (!matroska->thru3d_header_only) matroska_execute_seekhead(matroska);')
+    edited[p] = once(edited[p], 'static int mkv_parse_block_addition_mappings(',
+                    '#include "matroska_mvc.h"\n\nstatic int mkv_parse_block_addition_mappings(')
+    edited[p] = once(edited[p], '        case MATROSKA_BLOCK_ADD_ID_TYPE_DVCC:',
+                    '        case MKBETAG(\'m\',\'v\',\'c\',\'C\'):\n            break;\n'
+                    '        case MATROSKA_BLOCK_ADD_ID_TYPE_DVCC:')
+    anchor = '''        ret = mkv_parse_block_addition_mappings(s, st, track);
+        if (ret < 0)
+            return ret;'''
+    edited[p] = once(edited[p], anchor, anchor + '''
+        ret = thru3d_matroska_mvc(s, st, track);
+        if (ret < 0)
+            return ret;''')
+    edited[p] += '''
+/* Header-only format is intentionally not registered as a playback demuxer. */
+static int thru3d_mkv_header(AVFormatContext *s)
+{
+    ((MatroskaDemuxContext *)s->priv_data)->thru3d_header_only = 1;
+    return matroska_read_header(s);
+}
+const AVInputFormat *avformat_thru3d_mkv_header_format(void);
+const AVInputFormat *avformat_thru3d_mkv_header_format(void)
+{
+    static const FFInputFormat format = {
+        .p.name = "thru3d_mkv_header",
+        .priv_data_size = sizeof(MatroskaDemuxContext),
+        .flags_internal = FF_INFMT_FLAG_INIT_CLEANUP,
+        .read_header = thru3d_mkv_header,
+        .read_close = matroska_read_close,
+    };
+    return &format.p;
+}
+'''
     # Preserve upstream title/PGC/codec handling, adding per-reader cursors so
     # libdvdread and libdvdnav can share the caller's cached network AVIO safely.
     dvd = edited.pop('libavformat/dvdvideodec.c')
@@ -97,6 +143,8 @@ def apply_mvc_patch(ffmpeg, archive):
     desired = {name: content.encode() for name, content in edited.items()}
     for local, name in [('ffmpeg_h264_mvc.c','libavcodec/h264_mvc.c'),
                         ('mvc_recovery.h','libavcodec/mvc_recovery.h'),
+                        ('mvc_config.h','libavcodec/mvc_config.h'),
+                        ('matroska_mvc.h','libavformat/matroska_mvc.h'),
                         ('ffmpeg_bd_mvc.c','libavformat/bd_mvc.c'),
                         ('ffmpeg_dvd_nav.c','libavformat/dvd_nav.c'),
                         ('dvd_nav.h','libavformat/dvd_nav.h'),

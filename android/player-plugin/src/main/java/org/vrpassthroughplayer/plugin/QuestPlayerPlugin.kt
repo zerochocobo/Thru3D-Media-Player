@@ -94,6 +94,9 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
         webBrowser.setHistoryEnabled(PlaybackPrivacy.mode == "all" && !protectedFavorites)
         runCatching { MpvSourceNative.setPrivacy(!PlaybackPrivacy.diagnostics) }
         playbackPrivacyConfigured = true
+        activity?.let { host -> CrashRecords.privacyReady(host, PlaybackPrivacy.mode) { path ->
+            if (signalsReady && !closed.get()) emitSignal("diagnostic_log", JSONObject().put("action", "save").put("ok", true).put("path", path).put("crash", true).toString())
+        } }
     }
     /** Per-file settings cleanup of recognized live-subtitle text. */
     @UsedByGodot fun clear_listening_cache(networkOnly: Boolean): Boolean {
@@ -104,6 +107,7 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
         webBrowser.clearHistory()
         sources.clearPlaybackReferences()
         activity?.applicationContext?.let { app ->
+            CrashRecords.clear(app)
             File(app.filesDir, "diagnostics").listFiles()?.filter {
                 it.name == "capabilities.json" || it.name.matches(Regex("mpv_player_[0-9]+\\.json"))
             }?.forEach { it.delete() }
@@ -210,6 +214,10 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
         check(BuildConfig.DEBUG)
         webBrowser.configureBilibiliProbe(tab, mode)
     }
+    fun configureDouyinProbe(tab: Int, enabled: Boolean) {
+        check(BuildConfig.DEBUG)
+        webBrowser.configureDouyinProbe(tab, enabled)
+    }
     /** Worker-only, deliberately excludes media URLs, cookies and header values. */
     fun probeWebBrowserMediaForDiagnostics(): JSONObject {
         val page = JSONObject(webBrowser.snapshot()).optString("url")
@@ -219,10 +227,19 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
             return JSONObject().also { result -> allowed.filter(input::has).forEach { result.put(it, input.optInt(it).coerceIn(-1, 4 * 1024 * 1024)) } }
         }
         val result = JSONObject().put("available", true)
+            .put("douyin_page_id", WebBrowserDouyin.pageId(page).orEmpty())
             .put("douyin_enabled", media.optBoolean("douyin_enabled"))
             .put("douyin_metadata", media.optJSONObject("douyin") != null)
+            .put("douyin_api_paths", JSONArray().also { paths ->
+                val input = media.optJSONArray("douyin_api_paths") ?: JSONArray()
+                for (i in 0 until minOf(32, input.length())) {
+                    val value = input.optString(i)
+                    if (value.matches(Regex("/aweme/v1/web/[a-z_/{}]{1,160}"))) paths.put(value)
+                }
+            })
+            .put("douyin_dom", counts("douyin_dom", listOf("render_data", "render_current", "flight_scripts", "flight_current", "flight_video", "inline_current")))
             .put("douyin_diagnostics", counts("douyin_diagnostics", listOf("metadata_count", "page_metadata", "source_id_matches", "dimension_matches", "duration_matches", "address_matches", "observed_source")))
-            .put("douyin_observation", counts("douyin_observation", listOf("started", "worker", "prefetch", "document_url_matches", "headers", "status", "body", "bytes", "parsed", "detail", "id_string", "id_matches", "normalized", "video", "ads", "images", "encrypted", "drm_zero_string", "tracks", "dimensioned_tracks", "https_addresses", "duration_valid", "data_detail", "response_code")))
+            .put("douyin_observation", counts("douyin_observation", listOf("started", "worker", "tabless_worker", "prefetch", "document_url_matches", "headers", "status", "body", "bytes", "parsed", "detail", "id_string", "id_matches", "normalized", "video", "ads", "images", "encrypted", "drm_zero_string", "tracks", "dimensioned_tracks", "https_addresses", "duration_valid", "data_detail", "response_code")))
             .put("bilibili_probe", media.optString("bilibili_probe"))
             .put("bilibili_response_api", media.optBoolean("bilibili_response_api"))
             .put("bilibili_api_count", media.optInt("bilibili_api_count").coerceIn(0, 4))
@@ -390,7 +407,8 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     @UsedByGodot fun reading_render_policy(double: Boolean): String {
         val value = readingMemory(double)
         return JSONObject().put("budget", value.budget).put("color", value.color)
-            .put("low_tier", value.lowTier).put("retain", value.retain).toString()
+            .put("low_tier", value.lowTier).put("retain", value.retain)
+            .put("copy_headroom_bytes", value.copyHeadroom).toString()
     }
     @UsedByGodot fun preload_reading_photo(uri: String): Int {
         if (closed.get()) return -1
@@ -456,7 +474,10 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
             true
         }.getOrElse { Log.w("QuestPhotoCache", "Photo cache cleanup failed", it); false }
     }
-    init { DiagnosticRequests.attach(this) }
+    init {
+        DiagnosticRequests.attach(this)
+        runCatching { activity?.let(CrashRecords::start) }
+    }
 
     override fun getPluginName() = "QuestPlayer"
 
@@ -576,6 +597,8 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
         val host = activity ?: return
         if (!closed.get()) DiagnosticLogs.request(host, action, header, full) { emitSignal("diagnostic_log", it.toString()) }
     }
+    /** A Godot-side step for the crash ring (stage names and sizes only). */
+    @UsedByGodot fun crash_trail(stage: String, detail: String) { CrashTrail.mark(stage.take(40), detail.take(140)) }
     /** The headset's RAM in MiB (0 if unknown), for the automatic memory mode. */
     @UsedByGodot fun total_memory_mb(): Long = runCatching {
         val manager = activity?.getSystemService(android.content.Context.ACTIVITY_SERVICE) as? android.app.ActivityManager
@@ -997,13 +1020,14 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     }
 
     // Android can resume before Godot registers the plugin's native signals.
-    override fun onGodotSetupCompleted() { signalsReady = true; clear_photo_cache(); runCatching { panoramaOriginals.prepare() } }
-    override fun onMainPause() { if (!closed.get()) { webBrowser.action("pause"); listeningTasks.foreground(false); readingPages.foreground(false); dlnaForeground(false); systemVolume.foreground(false); musicPlayback.foreground(false); musicPreview.foreground(false); accounts.pause(true); panoramaBrowser.foreground(false); media.pause(); controlled.pause(); mpv.pause(); if (signalsReady) emitSignal("android_lifecycle", "pause") } }
-    override fun onMainResume() { if (!closed.get()) { activity?.volumeControlStream = AudioManager.STREAM_MUSIC; listeningTasks.foreground(true); readingPages.foreground(true); dlnaForeground(true); systemVolume.foreground(true); musicPlayback.foreground(true); musicPreview.foreground(true); accounts.pause(false); panoramaBrowser.foreground(true); media.resume(); controlled.resume(); mpv.resume(); if (signalsReady) { sources.refreshLocalStorage(); emitSignal("android_lifecycle", "resume") } } }
+    override fun onGodotSetupCompleted() { activity?.let(CrashRecords::start); signalsReady = true; clear_photo_cache(); runCatching { panoramaOriginals.prepare() } }
+    override fun onMainPause() { CrashRecords.foreground(false); if (!closed.get()) { webBrowser.action("pause"); listeningTasks.foreground(false); readingPages.foreground(false); dlnaForeground(false); systemVolume.foreground(false); musicPlayback.foreground(false); musicPreview.foreground(false); accounts.pause(true); panoramaBrowser.foreground(false); media.pause(); controlled.pause(); mpv.pause(); if (signalsReady) emitSignal("android_lifecycle", "pause") } }
+    override fun onMainResume() { CrashRecords.foreground(true); if (!closed.get()) { activity?.volumeControlStream = AudioManager.STREAM_MUSIC; listeningTasks.foreground(true); readingPages.foreground(true); dlnaForeground(true); systemVolume.foreground(true); musicPlayback.foreground(true); musicPreview.foreground(true); accounts.pause(false); panoramaBrowser.foreground(true); media.resume(); controlled.resume(); mpv.resume(); if (signalsReady) { sources.refreshLocalStorage(); emitSignal("android_lifecycle", "resume") } } }
     override fun onMainDestroy() { close() }
     override fun onGodotTerminating() { close() }
 
     private fun close() {
+        CrashRecords.cleanExit()
         webVideoResolver.close()
         webBrowser.close()
         if (closed.compareAndSet(false, true)) { dlna_receiver_enable(false); listeningTasks.close(); readingPages.close(); archives.close(); pdfs.close(); originalCapture.close(); embeddedCover.close(); systemVolume.close(); favoritesTasks.close(); accounts.close(); panoramaBrowser.close(); panoramaRegions.close(); panoramaPictures.close(); panoramaOriginals.close(); musicPlayback.close(); musicPreview.close(); backgroundAudio.close(); photos.close(); photoPreloads.close(); photoPreviews.close(); pipImages.close(); PhotoDepthRuntime.release(); picker.close(); localAccess.close(); probe.shutdownNow(); media.shutdown(); controlled.shutdown(); mpv.shutdown(); rvm.close(); sources.close() }

@@ -888,7 +888,10 @@ func tile(target: int, row: Dictionary, center: Vector2) -> void:
 	if texture:
 		var material = menu._material(Color.WHITE, 12); material.albedo_texture = texture; picture.material_override = material; _fit_picture(picture, texture, Vector2(0.278, 0.192))
 		gallery.style_hover_picture(picture)
-	else: menu._icon(str(row.get("icon", "video")), Vector3(0, 0.026, 0.006), 0.064, menu.MUTED, node)
+	else:
+		var glyph: MeshInstance3D = menu._icon(str(row.get("icon", "video")), Vector3(0, 0.026, 0.006), 0.14 if row.has("server_account") else 0.064, menu.MUTED, node)
+		# Keep the mark above the picture panel in the ordered transparent UI pass.
+		glyph.material_override.render_priority = 13
 	var title: Label3D = menu._label(menu._fit_title(str(row.title), "", 0.265, 22), Vector3(0, -0.087, 0.006), 22, node)
 	if title.text != str(row.title): menu._tips[target] = str(row.title)
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER

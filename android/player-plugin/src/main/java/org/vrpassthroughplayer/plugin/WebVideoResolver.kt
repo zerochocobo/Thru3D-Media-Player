@@ -75,7 +75,8 @@ internal class WebVideoResolver(private val context: () -> Context?, private val
                     ?: throw ExtractionFailure("browser_playback_required") else sourcePage
                 val networkEnabled = media?.optBoolean("network_enabled") == true
                 val bilibiliEnabled = bilibiliBeta && page.site == "bilibili" && media?.optBoolean("bilibili_enabled") == true
-                val douyinEnabled = bilibiliBeta && page.site == "douyin" && media?.optBoolean("douyin_enabled") == true
+                val douyinEnabled = bilibiliBeta && page.site == "douyin" && media != null &&
+                    WebBrowserDouyin.enabled(page.url, BuildConfig.DEBUG, media.optBoolean("douyin_enabled"))
                 if (bilibiliBeta && !bilibiliEnabled && !douyinEnabled)
                     throw ExtractionFailure("browser_playback_required")
                 val browserQuality = networkEnabled || bilibiliEnabled || douyinEnabled

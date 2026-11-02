@@ -4,11 +4,14 @@
 
 Standalone Android VR/MR media player for Meta Quest and PICO. Play videos and photos, explore media libraries, and combine supported content with passthrough and stereo effects directly on your headset.
 
-Current source version: **0.16.2** (Android versionCode **57**). An experimental standard OpenXR Android export is also available.
+Current source version: **0.16.3** (Android versionCode **61**). An experimental standard OpenXR Android export is also available.
 
 Minimum compatibility targets are **Quest 2** and **PICO Neo3**. Source/build compatibility does not establish hardware performance or interaction acceptance on every device.
 
 ## Features
+
+- Optional below-screen subtitles remembered per video; temporary immersive-video passthrough with a paused stereo globe and head-following exit. See [temporary passthrough](docs/VR_PASSTHROUGH.md).
+- A global switch controls filename-triggered passthrough.
 
 - Optional dual text subtitles with independent timing/narration selection; compatible external Android video opening with scoped URI access. See [external playback](docs/EXTERNAL_PLAYBACK.md).
 - Adaptive photo/portrait neighbour caching, bounded large-image processing and contextual photo controls; eligible mono/stereo 360° AI passthrough.
@@ -68,7 +71,8 @@ Minimum compatibility targets are **Quest 2** and **PICO Neo3**. Source/build co
 - Context-specific controller bindings, combinations, confirmed conflict swaps, interface movement and animated gesture guides.
 - Remembered per-video audio/subtitle selections, five text subtitle styles and anchored immersive stereo subtitles.
 - Double-click 3D/volume shortcuts, persistent volume/mute state and full-filename hover hints.
-- Direct main-feature playback of supported unencrypted standard/MVC 3D Blu-ray ISOs, including compatible multi-clip titles, with audio tracks and seeking; see [Blu-ray scope](docs/BLURAY.md).
+- Direct main-feature playback of supported unencrypted standard/MVC 3D Blu-ray ISOs, including compatible multi-clip titles, with audio tracks and seeking.
+- Development source adds compatible H.264 MVC 3D MKV (MVC MKV) stereo playback, separate from SBS/TB packed video. See [Blu-ray and MVC MKV scope](docs/BLURAY.md); released APK capabilities follow their version notes.
 - Provider-dependent cloud keyword search, scope and media-type filters without background whole-drive scanning.
 - Emby/Jellyfin poster walls, actor-related titles, detail artwork, multipart selection and home playback history.
 - Individual slider resets, color-page reset, and Original/Warm/Cool/Custom color choices.

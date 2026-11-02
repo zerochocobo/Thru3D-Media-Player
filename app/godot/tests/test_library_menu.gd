@@ -323,8 +323,8 @@ func _run() -> void:
 	choose_setting(menu, "show_fps", true)
 	check(settings_events.back() == ["show_fps", true], "FPS display can be switched on from Display settings")
 	menu._activate(Menu.TAB_BASE + Menu.SUBTITLES_TAB)
-	check(menu.tab == Menu.VIDEO_TAB and menu.rows.size() == 7 and menu.rows[3].get("key", "") == "memory_mode"
-		and menu.rows[4].get("key", "") == "alpha_keep_background", "Legacy subtitle tab opens the compact video settings with background retention")
+	check(menu.tab == Menu.VIDEO_TAB and menu.rows.size() == 8 and menu.rows[3].get("key", "") == "memory_mode"
+		and menu.rows[4].get("key", "") == "alpha_auto_from_filename" and menu.rows[5].get("key", "") == "alpha_keep_background", "Legacy subtitle tab opens the compact video settings with filename control and background retention")
 	check(menu.rows[1].get("key", "") == "depth_render" and menu.rows[1].value == "stretch"
 		and menu.rows[1].choices.map(func(option): return option.value) == ["fill", "stretch"], "Video settings offer both 2D-to-3D views, edge stretching by default")
 	choose_setting(menu, "depth_render", "fill")

@@ -45,7 +45,7 @@ internal data class PlaybackFailure(
             val chain = generateSequence(error) { it.cause?.takeIf { next -> next !== it } }.take(8).toList()
             chain.filterIsInstance<PlaybackFailureException>().firstOrNull()?.let { return it.failure }
             val typed = chain.firstOrNull { it is SocketTimeoutException || it is SSLException || it is UnknownHostException ||
-                it is ConnectException || it is SecurityException || it is FileNotFoundException }
+                it is ConnectException || it is SecurityException || it is StorageProviderUnavailable || it is FileNotFoundException }
                 ?: chain.firstOrNull { it is CloudFailure || it is MediaServerFailure } ?: error
             val cloud = chain.filterIsInstance<CloudFailure>().firstOrNull()
             val server = chain.filterIsInstance<MediaServerFailure>().firstOrNull()
@@ -56,6 +56,7 @@ internal data class PlaybackFailure(
                 typed is UnknownHostException -> "host_not_found"
                 typed is ConnectException -> "connection_failed"
                 typed is SecurityException -> "access_denied"
+                StorageDocumentReadPolicy.providerFailure(typed) -> "storage_provider_failed"
                 typed is FileNotFoundException && stage in setOf("opening", "resolving", "reading", "parsing") -> "not_found"
                 cloud?.reason == "cloud_login_required" -> "login_required"
                 cloud != null && cloud.httpStatus in 400..599 -> http(cloud.httpStatus).reason

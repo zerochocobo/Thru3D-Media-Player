@@ -28,6 +28,7 @@ class WebVideoDiagnosticsReceiver : BroadcastReceiver() {
             val plugin = DiagnosticRequests.current() ?: error("Player not running")
             when (intent.getStringExtra("operation")) {
                 "bilibili_probe" -> plugin.configureBilibiliProbe(intent.getIntExtra("tab", -1), intent.getStringExtra("mode").orEmpty())
+                "douyin_probe" -> plugin.configureDouyinProbe(intent.getIntExtra("tab", -1), intent.getBooleanExtra("enabled", false))
                 "resolve" -> result.put("id", plugin.web_video_resolve(intent.getStringExtra("url").orEmpty()))
                 "status" -> result.put("video", JSONObject(plugin.web_video_status()))
                 "cancel" -> plugin.web_video_cancel()
@@ -41,7 +42,8 @@ class WebVideoDiagnosticsReceiver : BroadcastReceiver() {
                     for (key in listOf("pause_ports", "pause_report_ports", "pause_media_ports", "pause_missing_media_ports", "media_report_age_ms")) {
                         if (source.has(key)) safe.put(key, source.optLong(key))
                     }
-                    safe.put("page", runCatching { WebVideoPage.parse(source.optString("url")).url }.getOrDefault(""))
+                    safe.put("page", runCatching { WebVideoPage.parse(source.optString("url")).url }.getOrNull()
+                        ?: WebVideoDouyinCapture.page(source.optString("url"))?.url.orEmpty())
                     val windows = org.json.JSONArray()
                     for (entry in source.optJSONArray("windows")?.let { array -> (0 until array.length()).map { array.getJSONObject(it) } }.orEmpty()) {
                         val item = JSONObject()
@@ -66,7 +68,8 @@ class WebVideoDiagnosticsReceiver : BroadcastReceiver() {
                     require(step in setOf("open", "handoff", "close", "click", "scroll", "key", "window_state"))
                     val url = intent.getStringExtra("url").orEmpty()
                     require(url.length <= 4096)
-                    if (step == "open") result.put("page", runCatching { WebVideoPage.parse(url).url }.getOrDefault(""))
+                    if (step == "open") result.put("page", runCatching { WebVideoPage.parse(url).url }.getOrNull()
+                        ?: WebVideoDouyinCapture.page(url)?.url.orEmpty())
                     result.put("id", plugin.requestMpvPlayerCommand(JSONObject().put("operation", "web_browser_ui")
                         .put("request_key", request).put("step", step).put("url", url)
                         .put("x", intent.getFloatExtra("x", 0.5f).toDouble())

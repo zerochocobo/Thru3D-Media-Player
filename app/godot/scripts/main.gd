@@ -195,6 +195,10 @@ var background: Node
 var photo_background: Node
 var view_follow := ViewFollow.new()
 var temporary_passthrough := false
+var vr_passthrough_menu: Node3D
+var _vr_source_key := ""
+var _vr_source_immersive := false
+var _vr_release_guard := {}
 var controlled_request := 0
 var controlled_report: Dictionary = {}
 var controlled_status := "Controlled decoder probe not run"
@@ -371,6 +375,7 @@ func _ready() -> void:
 	video.narration.voice_choice_changed.connect(func(): video.narration.save(settings); settings.save(settings_path))
 	video.history_enabled = Privacy.mode != Privacy.NONE
 	_restore_seek_settings()
+	video.auto_passthrough_from_filename = bool(settings.get_value("alpha", "auto_from_filename", true))
 	# The chosen Alpha model size, warmed now so Alpha starts without the first-use compile.
 	video.select_profile(_alpha_profile())
 	video.load_mode_lock(settings.get_value("video", "mode_lock", {}))
@@ -382,6 +387,12 @@ func _ready() -> void:
 	_update_thumbnail_protection()
 	video.sharpness = Quality.load_video_sharpness(settings)
 	video.view_camera = camera
+	vr_passthrough_menu = preload("res://scripts/vr_passthrough_menu.gd").new()
+	vr_passthrough_menu.name = "VrPassthroughExit"
+	add_child(vr_passthrough_menu)
+	vr_passthrough_menu.exit_requested.connect(_leave_vr_passthrough)
+	video.vr_passthrough.failed.connect(_vr_passthrough_failed)
+	video.vr_passthrough.exit_ready.connect(_complete_vr_passthrough_exit)
 	photo = PhotoDisplay.new()
 	photo.comic.preferences.load_settings(settings)
 	photo.comic.preferences.save(settings)
@@ -525,6 +536,7 @@ func _ready() -> void:
 		menu_composition.debug_pixel_scale = float(settings.get_value("debug", "menu_layer_scale", 0.0))
 		menu_composition.debug_bands = bool(settings.get_value("debug", "menu_layer_bands", false))
 	menu_composition.configure(origin, camera, display, [recent_menu, video_menu, photo_menu, music_menu], low_end_gpu)
+	menu_composition.register_companion(vr_passthrough_menu)
 	recent_menu.web_browser.configure_quality(low_end_gpu)
 	recent_menu.web_browser.window_created = menu_composition.register_companion
 	menu_composition.register_companion(disc_menu_bar)
@@ -564,6 +576,7 @@ func _ready() -> void:
 	add_child(photo_background)
 	if Engine.has_singleton("QuestPlayer"):
 		platform_plugin = Engine.get_singleton("QuestPlayer")
+		if PlatformMethods.supports(platform_plugin, "crash_trail"): DiagnosticLog.trail_sink = platform_plugin
 		_sync_native_privacy()
 		if PlatformMethods.supports(platform_plugin, "set_ui_language"):
 			platform_plugin.set_ui_language(I18n.choice)
@@ -598,6 +611,7 @@ func _ready() -> void:
 
 ## Desktop preview: dragging with the mouse moves the picture, the wheel zooms immersive views.
 func _unhandled_input(event: InputEvent) -> void:
+	if _vr_passthrough_active(): return
 	if _cinema_desktop_input(event): return
 	if puzzle_game and puzzle_game.active:
 		puzzle_game.desktop(event); get_viewport().set_input_as_handled(); return
@@ -640,6 +654,7 @@ func _unhandled_input(event: InputEvent) -> void:
 			_save_screen()
 
 func _unhandled_key_input(event: InputEvent) -> void:
+	if _vr_passthrough_active(): return
 	if _cinema_interaction_owns() and not _active_menu() and event is InputEventKey and event.pressed and not event.echo:
 		if event.keycode == KEY_ESCAPE:
 			_cinema_return_to_playback(); get_viewport().set_input_as_handled(); return
@@ -731,6 +746,9 @@ func _on_controller_release(action: String, hand: String = "") -> void:
 	if puzzle_game and puzzle_game.active:
 		puzzle_game.button(action, hand, true); return
 	controller_bindings.release(hand, action)
+	if action == "trigger_click" and _vr_release_guard.erase(hand):
+		_controller_consumed.erase(hand + "/" + action)
+		return
 	var consumed_key := hand + "/" + action
 	var consumed: bool = _controller_consumed.has(consumed_key)
 	_controller_consumed.erase(consumed_key)
@@ -767,6 +785,11 @@ func _finish_interface_move() -> void:
 	interface_move.cancel(); stick_controls.suspend()
 
 func _on_pointer_release(action: String, hand: String) -> void:
+	if action == "trigger_click" and _vr_release_guard.erase(hand):
+		_controller_consumed.erase(hand + "/" + action)
+		return
+	if _vr_passthrough_active():
+		_inspect_blocked.erase(hand); return
 	if video and video.get("pip") and video.pip.release(hand, action): stick_controls.suspend(); return
 	if action == "trigger_click" and _inspect_blocked.has(hand):
 		_inspect_blocked.erase(hand)
@@ -813,6 +836,10 @@ func _on_pointer_release(action: String, hand: String) -> void:
 
 func _on_controller_button(action: String, hand: String = "") -> void:
 	if hand not in ControllerBindings.HANDS or not _controller_allowed(hand): return
+	if _vr_passthrough_active():
+		if action == "trigger_click" and controller_bindings.press(hand, action): _on_pointer_button(action, hand)
+		_controller_consumed[hand + "/" + action] = true
+		return
 	if _watch_owned and hand == "right_hand" and action != "menu_button":
 		_controller_consumed[hand + "/" + action] = true; return
 	if puzzle_game and puzzle_game.active:
@@ -966,6 +993,7 @@ func _menu_captured(menu: Node3D) -> bool:
 	return false
 
 func _shortcut_allowed(id: String, chord: bool = false, chord_hand: String = "") -> bool:
+	if _vr_passthrough_active(): return false
 	if not photo_active and video and video.get("pip") and video.pip.blocked(): return false
 	if wrist_watch and (not wrist_watch.logic.scrub.is_empty() or not wrist_watch.logic.pressed.is_empty()): return false
 	if _cinema_interaction_owns() and not _active_menu(): return false
@@ -990,6 +1018,7 @@ func _shortcut_allowed(id: String, chord: bool = false, chord_hand: String = "")
 	return true
 
 func _execute_shortcut(id: String, hand: String = "right_hand", amount: float = 1.0, delta: float = 1.0 / 72.0) -> void:
+	if _vr_passthrough_active(): return
 	match id:
 		"play": video.toggle_play()
 		"library_video", "library_photo": _show_recent_menu()
@@ -1192,6 +1221,12 @@ func _update_interface_move() -> void:
 			photo._update_inspect()
 
 func _on_pointer_button(action: String, hand: String) -> void:
+	if _vr_passthrough_active():
+		if action == "trigger_click":
+			_update_menu_pointer(hand, true)
+			_controller_consumed[hand + "/" + action] = true
+			_vr_release_guard[hand] = true
+		return
 	if action == "trigger_click" and _capture_pointer_press(hand): return
 	if _pip_pointer_press(action, hand): return
 	if action == "by_button" and hand == "right_hand" and video and video.captures.stop(): return
@@ -1298,6 +1333,15 @@ func _process(delta: float) -> void:
 	_guard_alpha_rate(delta)
 	cast_session.tick()
 	_poll_external_video()
+	if _vr_passthrough_active():
+		_sync_vr_passthrough_menu()
+		_update_wrist_watch(delta)
+		_update_hand_input(delta)
+		stick_controls.suspend(); immersive_sticks.suspend()
+		_update_controller_feedback(delta)
+		display.set_video_layer(video.video_layer_shown)
+		_sync_display_policy()
+		return
 	if video:
 		if video.video_layer:
 			video.video_layer.reserved_layers = 2 + (menu_composition.layer_reservation() if menu_composition else 5)
@@ -1376,7 +1420,7 @@ var _refresh_since := 0
 
 ## Refresh rate follows the playing video's frame rate; CPU/GPU levels stay high while playing.
 func _sync_display_policy() -> void:
-	var playing: bool = video != null and not photo_active and not video.local_uri.is_empty() and video.media.state in ["playing", "paused"]
+	var playing: bool = not _vr_passthrough_active() and video != null and not photo_active and not video.local_uri.is_empty() and video.media.state in ["playing", "paused"]
 	# Playback keeps 0.12.5's sustained-high levels (network demux, decode, inference); menus, idle
 	# and power-saving playback without inference drop to sustained-low.
 	var inference: bool = playing and (video.alpha_requested or video.depth_requested)
@@ -1405,6 +1449,7 @@ func _sync_display_policy() -> void:
 	display.set_scene_relief(_cinema_scene_active() and not photo_active and display.refresh_preference > 90.5)
 
 func _process_sticks(left: Vector2, right: Vector2, delta: float) -> void:
+	if _vr_passthrough_active(): return
 	_cinema_adjusting = false
 	_process_stick_input(left, right, delta)
 	_update_cinema_guide()
@@ -1431,6 +1476,7 @@ func _stills_playback_priority(menu: Node3D) -> bool:
 	return menu == recent_menu or (menu == player_menu and _library_is_attached())
 
 func _process_stick_input(left: Vector2, right: Vector2, delta: float) -> void:
+	if _vr_passthrough_active(): return
 	if _immersive_zoom_pending and ((left.length() < 0.3 and right.length() < 0.3) or not _immersive_adjustment_context()):
 		_immersive_zoom_pending = false
 		if video: video.commit_stereo_view()
@@ -1781,6 +1827,7 @@ func _watch_media() -> Dictionary:
 		"bookmarks": video.bookmarks_snapshot().get("bookmarks", [])}
 
 func _apply_watch_action(action: Dictionary) -> void:
+	if _vr_passthrough_active(): return
 	var op := str(action.get("op", ""))
 	match op:
 		"play": video.toggle_play()
@@ -1870,6 +1917,7 @@ func _dispatch_hand_input(inputs: Dictionary, _delta: float = 1.0 / 72.0) -> voi
 		if inputs[hand].get("released", false): _on_pointer_release("trigger_click", hand)
 
 func _cancel_pointer(hand: String) -> void:
+	_vr_release_guard.erase(hand)
 	if video and video.get("pip"): video.pip.cancel_pointer(hand)
 	if cinema_environment: cinema_environment.cancel_pointer(hand)
 	controller_bindings.cancel_hand(hand)
@@ -2600,6 +2648,7 @@ func _prepare_cast_switch() -> void:
 	photo_hands.cancel(); photo_swipe.cancel(); memory_swipe.cancel()
 
 func _poll_external_video() -> void:
+	if _vr_passthrough_active(): return
 	if not video or not recent_menu or not _input_focused() or Time.get_ticks_msec() < _external_video_poll_ms: return
 	_external_video_poll_ms = Time.get_ticks_msec() + 200
 	if not video.PlatformMethods.supports(video.platform, "external_playback_poll"): return
@@ -2752,6 +2801,8 @@ func _relocate_file_records(old_uri: String, new_uri: String, title: String, siz
 	if not video.mode_memory.save(): recent_menu.file_actions.rename.migration_failed = true
 	video.track_memory.relocate(old_uri, new_uri)
 	if not video.track_memory.save(): recent_menu.file_actions.rename.migration_failed = true
+	video.subtitle_layout_memory.relocate(old_uri, new_uri)
+	if not video.subtitle_layout_memory.save(): recent_menu.file_actions.rename.migration_failed = true
 	video.whisper_memory.relocate(old_uri, new_uri)
 	if not video.whisper_memory.save(): recent_menu.file_actions.rename.migration_failed = true
 	video.subtitle_timing.relocate(old_uri, new_uri)
@@ -2856,6 +2907,7 @@ func _cycle_playback_mode() -> void:
 	_set_playback_mode(PLAYBACK_MODES[(PLAYBACK_MODES.find(playback_mode) + 1) % PLAYBACK_MODES.size()])
 
 func _on_video_completed() -> void:
+	if _vr_passthrough_active(): return
 	if recent_menu and recent_menu.web_browser.has_playback_return(video.local_uri):
 		_return_to_web_video.call_deferred(false, video.local_uri); return
 	if cast_session.token > 0: return
@@ -2872,6 +2924,7 @@ func _advance_completed_video(uri: String, session: int, sequence: int) -> void:
 	_advance_video_queue(true)
 
 func _advance_video_queue(automatic: bool) -> void:
+	if _vr_passthrough_active(): return
 	if not _video_queue_wait.is_empty() or photo_active or video.local_uri.is_empty(): return
 	if _video_directory_reorder and video_directory and video_directory.loading: return
 	if not video_queue.any(func(row): return row.uri == video.local_uri): return
@@ -3404,6 +3457,7 @@ func _disc_menu_hover() -> void:
 			return
 
 func _active_menu() -> Node3D:
+	if _vr_passthrough_active(): return vr_passthrough_menu
 	if puzzle_game and puzzle_game.active: return puzzle_game.input_menu()
 	if music_menu and music_menu.visible: return music_menu
 	if recent_menu and recent_menu.web_browser.active(): return recent_menu.web_browser.input_host()
@@ -3432,6 +3486,7 @@ func _has_open_media() -> bool:
 
 ## Return one visible layer at a time, even when the browser is attached to the player bar.
 func _navigate_back() -> void:
+	if _vr_passthrough_active(): return
 	if _bar_appearance_return and player_menu and player_menu._adjustment == "bar_transparency":
 		player_menu._finish_adjustment(); player_menu._adjustment = ""
 		_finish_bar_appearance(); return
@@ -3465,6 +3520,7 @@ func _navigate_back() -> void:
 		_show_full_library() # B alone is also a recovery entry for a right-controller-only user.
 
 func _toggle_player_menu() -> void:
+	if _vr_passthrough_active(): return
 	if recent_menu is LibraryMenu and recent_menu.account_panel.view == "web": return
 	if music_menu and music_menu.visible: _close_music_menu(); return
 	if photo_active and photo.inspect:
@@ -3476,6 +3532,7 @@ func _toggle_player_menu() -> void:
 		_show_player_menu()
 
 func _show_player_menu() -> void:
+	if _vr_passthrough_active(): return
 	if recent_menu is LibraryMenu and recent_menu.account_panel.view == "web": return
 	if _cinema_interaction_owns(): cinema_environment.suspend(); stick_controls.suspend()
 	if music_menu: music_menu.dismiss()
@@ -3495,6 +3552,7 @@ func _on_web_browser_opened() -> void:
 	if not _browser_keeps_cinema_video(): video.pause_playback()
 
 func _show_recent_menu() -> void:
+	if _vr_passthrough_active(): return
 	if recent_menu is LibraryMenu and recent_menu.account_panel.view == "web": return
 	memory_swipe.cancel()
 	if photo: photo.gallery.cancel_all()
@@ -3516,6 +3574,7 @@ func _show_recent_menu() -> void:
 	_show_full_library()
 
 func _show_full_library() -> void:
+	if _vr_passthrough_active(): return
 	if music_menu: music_menu.dismiss()
 	var was_attached := _library_is_attached()
 	if recent_menu is LibraryMenu: recent_menu.playback_expanded = false
@@ -3716,6 +3775,7 @@ func _library_settings() -> Dictionary:
 		"alpha_profile": video.default_profile, "alpha_profile_default": _alpha_profile_default(), "alpha_fps_default": _alpha_fps_default(),
 		"alpha_precision": Quality.load_alpha_precision(settings), "alpha_warming": video.warming.keys(),
 		"alpha_keep_background": _alpha_keep_background(),
+		"alpha_auto_from_filename": video.auto_passthrough_from_filename,
 		"alpha_cold": video.ALPHA_PROFILES.filter(func(p): return not video.profile_ready(p)),
 		"alpha_feather": _alpha_edge_value("alpha_feather"), "alpha_shrink": _alpha_edge_value("alpha_shrink"),
 		"show_fps": fps_overlay != null and fps_overlay.visible,
@@ -3875,6 +3935,10 @@ func _on_setting_changed(key: String, value: Variant) -> void:
 		"alpha_fps":
 			_apply_alpha_fps(value)
 			settings.save(settings_path)
+		"alpha_auto_from_filename":
+			video.auto_passthrough_from_filename = bool(value)
+			settings.set_value("alpha", "auto_from_filename", bool(value))
+			settings.save(settings_path)
 		"alpha_keep_background":
 			settings.set_value("alpha", "keep_background", bool(value))
 			settings.save(settings_path)
@@ -4004,6 +4068,7 @@ func _on_setting_changed(key: String, value: Variant) -> void:
 	Log.record("setting_changed", {"key": key, "value": value})
 
 func _on_menu_action(operation: String) -> void:
+	if _vr_passthrough_active(): return
 	if operation.begins_with("pip_focus_") and video and not photo_active:
 		video.pip.focus(operation.trim_prefix("pip_focus_").to_int()); return
 	if operation.begins_with("pip_slot_") and video and not photo_active:
@@ -4135,6 +4200,8 @@ func _on_player_setting(key: String, value: Variant) -> void:
 			video.set_subtitle_auto_load(bool(value))
 			settings.set_value("subtitles", "auto_load", video.subtitle_auto_load)
 			settings.save(settings_path)
+		"subtitle_below_screen":
+			if video.depth_subtitles_available(): video.remember_subtitle_layout(bool(value))
 		"subtitle_encoding":
 			if value is Dictionary and not video.set_subtitle_encoding(value):
 				if is_instance_valid(player_menu): player_menu.refresh()
@@ -4321,6 +4388,8 @@ func _menu_state() -> Dictionary:
 		"alpha_keep_background": _alpha_keep_background(),
 		"show_fps": fps_overlay != null and fps_overlay.visible,
 		"subtitle_size": video.subtitle_size * 100, "subtitle_flat_position": video.subtitle_flat_position * 100,
+		"subtitle_below_screen": video.depth_subtitles_below(),
+		"subtitle_below_available": video.depth_subtitles_available(),
 		"subtitle_style": video.subtitle_style,
 		"subtitle_pgs_tint": video.subtitle_pgs_tint,
 		"subtitle_line": video.subtitle_line,
@@ -4399,6 +4468,7 @@ func _menu_error() -> String:
 	match error:
 		"PERMISSION_LOST", "LOCAL_DOCUMENT_PERMISSION_LOST": error = "File access lost. Select the video again (PERMISSION_LOST)."
 		"MISSING", "LOCAL_DOCUMENT_MISSING": error = "Video no longer exists. Select another file (MISSING)."
+		"LOCAL_DOCUMENT_PROVIDER_FAILED": error = "The system file provider could not open this file. Try again."
 		"TIMEOUT", "LOCAL_DOCUMENT_TIMEOUT": error = "File access timed out. Try opening again."
 		"UNREADABLE": error = "Unable to read the video. Select another file."
 	return I18n.t(error)
@@ -4502,6 +4572,7 @@ func _toggle_display() -> void:
 	_save_report()
 
 func _on_video_changed() -> void:
+	_sync_vr_media_entry()
 	if not _video_queue_wait.is_empty() and not _valid_video_queue_wait(): _cancel_video_queue_wait()
 	_sync_background_audio()
 	_update_favorite_session()
@@ -4919,8 +4990,8 @@ func _person_passthrough() -> bool:
 
 func _session_controls_state() -> Dictionary:
 	return {"follow": view_follow.enabled,
-		"passthrough_visible": _active_background() != null and _active_background().choice != "passthrough" and display.supports_passthrough(),
-		"passthrough": display.applied_passthrough, "alpha": _person_passthrough(),
+		"passthrough_visible": _active_background() != null and (_active_background().choice != "passthrough" or _vr_video_present()) and display.supports_passthrough(),
+		"passthrough": _vr_passthrough_active() if _vr_video_present() and not _person_passthrough() else display.applied_passthrough, "alpha": _person_passthrough(),
 		"cinema_visible": _cinema_scene_active() and not photo_active, "cinema_moving": _cinema_interaction_owns(),
 		"cinema_lights": str(settings.get_value("appearance", "cinema_lights", "auto"))}
 
@@ -4929,6 +5000,7 @@ func _refresh_session_controls() -> void:
 		if menu and menu.visible: menu.refresh_session_controls()
 
 func _on_session_control(operation: String) -> void:
+	if _vr_passthrough_active(): return
 	if operation == "cinema_lights_cycle":
 		if not _cinema_scene_active() or photo_active: return
 		var modes := ["auto", "on", "off"]
@@ -4942,6 +5014,8 @@ func _on_session_control(operation: String) -> void:
 	if operation == "follow" and _cinema_scene_active() and not photo_active: return
 	_menu_touched_ms = Time.get_ticks_msec()
 	if operation == "temporary_passthrough":
+		if _vr_video_present() and not _person_passthrough():
+			_enter_vr_passthrough(); return
 		if _person_passthrough() or not _active_background() or _active_background().choice == "passthrough" or not display.supports_passthrough(): return
 		var previous := temporary_passthrough
 		temporary_passthrough = not previous
@@ -4983,6 +5057,79 @@ func _on_session_control(operation: String) -> void:
 					_place_screen(true)
 		Log.record("view_follow_changed", {"enabled": view_follow.enabled})
 	_refresh_session_controls()
+
+func _vr_video_present() -> bool:
+	return not photo_active and video != null and video.geometry != Geometry.Geometry.FLAT and video.has_active_presentation()
+
+func _vr_passthrough_active() -> bool:
+	return video != null and video.vr_passthrough.active()
+
+func _sync_vr_media_entry() -> void:
+	if not video or video.pip.reopening: return
+	if vr_passthrough_menu and vr_passthrough_menu.visible and not _vr_passthrough_active():
+		vr_passthrough_menu.dismiss()
+	if _vr_passthrough_active(): return
+	if not video.has_active_presentation():
+		_vr_source_key = ""; _vr_source_immersive = false; return
+	if video._waiting_first or video.media.frame_counter <= 0: return
+	var immersive: bool = video.geometry != Geometry.Geometry.FLAT
+	if immersive and (_vr_source_key != video.local_uri or not _vr_source_immersive):
+		temporary_passthrough = false
+	_vr_source_key = video.local_uri; _vr_source_immersive = immersive
+
+func _clear_vr_passthrough_input() -> void:
+	for hand in ControllerBindings.HANDS: _cancel_pointer(hand)
+	interface_move.cancel(); _grab.clear(); _video_control_tap.clear()
+	photo_hands.cancel(); photo_swipe.cancel(); memory_swipe.cancel()
+	stick_controls.suspend(); immersive_sticks.suspend(); immersive_sticks.clear_feedback()
+	_cancel_video_queue_wait()
+	video.pip.cancel_interaction()
+
+func _enter_vr_passthrough() -> void:
+	var head: Variant = _head_pose()
+	if head == null or not display.supports_passthrough() or not video.vr_passthrough.available():
+		video.picker_error = video.vr_passthrough.UNAVAILABLE; video.changed.emit(); return
+	var previous := temporary_passthrough
+	_vr_source_key = video.local_uri; _vr_source_immersive = true
+	temporary_passthrough = true
+	_update_background()
+	if not display.applied_passthrough or not video.vr_passthrough.begin(head):
+		temporary_passthrough = previous; _update_background()
+		video.picker_error = video.vr_passthrough.UNAVAILABLE; video.changed.emit(); return
+	if video.picker_error == video.vr_passthrough.UNAVAILABLE: video.picker_error = ""
+	_clear_vr_passthrough_input()
+	for menu in [recent_menu, video_menu, photo_menu, music_menu]:
+		if menu: menu.dismiss()
+	if mono_menu_capture: mono_menu_capture.stop()
+	vr_passthrough_menu.refresh()
+	vr_passthrough_menu.visible = true
+	_sync_vr_passthrough_menu()
+
+func _sync_vr_passthrough_menu() -> void:
+	var head: Variant = _head_pose()
+	if head != null: vr_passthrough_menu.follow_head(head)
+	vr_passthrough_menu.visible = true
+	for hand in ControllerBindings.HANDS: _update_menu_pointer(hand)
+
+func _leave_vr_passthrough() -> void:
+	video.vr_passthrough.request_exit()
+
+func _complete_vr_passthrough_exit() -> void:
+	if not _vr_passthrough_active(): return
+	temporary_passthrough = false
+	vr_passthrough_menu.dismiss()
+	video.vr_passthrough.finish(true)
+	_clear_vr_passthrough_input()
+	_update_background()
+	_show_player_menu()
+
+func _vr_passthrough_failed() -> void:
+	temporary_passthrough = false
+	video.picker_error = video.vr_passthrough.UNAVAILABLE
+	vr_passthrough_menu.dismiss()
+	_clear_vr_passthrough_input()
+	_update_background()
+	_show_player_menu()
 
 func _save_background() -> void:
 	settings.set_value("appearance", "background", background.choice)
@@ -5906,18 +6053,18 @@ func _migrate_protected_favorites() -> void:
 		var key := Video.ModeMemory.key_for(uri)
 		var success := true
 		var has_public_data := false
-		for memory in [video.mode_memory, video.track_memory, video.subtitle_timing, video.subtitle_encoding, video.whisper_memory, video.narration.memory, video.listening.memory, photo.mode_memory]:
+		for memory in [video.mode_memory, video.track_memory, video.subtitle_layout_memory, video.subtitle_timing, video.subtitle_encoding, video.whisper_memory, video.narration.memory, video.listening.memory, photo.mode_memory]:
 			var memory_key: String = memory.entry_key(uri)
 			if memory.entries.has(memory_key):
 				has_public_data = true
 				success = favorites.private_remember(uri, memory.directory.get_file() + "/" + memory._value_field(), memory.entries[memory_key].get(memory._value_field(), {})) and success
 		if success and has_public_data: keys.append(key); ThumbnailCache.forget(uri)
 		if success and has_public_data:
-			for memory in [video.track_memory, video.subtitle_timing, video.subtitle_encoding, video.whisper_memory, video.narration.memory, video.listening.memory]:
+			for memory in [video.track_memory, video.subtitle_layout_memory, video.subtitle_timing, video.subtitle_encoding, video.whisper_memory, video.narration.memory, video.listening.memory]:
 				var memory_key: String = memory.entry_key(uri)
 				if not keys.has(memory_key): keys.append(memory_key)
 	if not keys.is_empty():
-		for memory in [video.mode_memory, video.track_memory, video.subtitle_timing, video.subtitle_encoding, video.whisper_memory, video.narration.memory, video.listening.memory, photo.mode_memory]:
+		for memory in [video.mode_memory, video.track_memory, video.subtitle_layout_memory, video.subtitle_timing, video.subtitle_encoding, video.whisper_memory, video.narration.memory, video.listening.memory, photo.mode_memory]:
 			if not memory.purge_keys(keys):
 				favorites.last_error = "Privacy cleanup failed"
 				if recent_menu: recent_menu.status = favorites.last_error
@@ -5959,7 +6106,7 @@ func _clear_file_settings(network_only: bool) -> void:
 	# Commit a held preview first, so a later pointer release cannot restore deleted settings.
 	video.commit_stereo_view()
 	if not network_only or not Privacy.is_local(video.local_uri): video.discard_file_settings()
-	for memory in [video.mode_memory, video.track_memory, video.subtitle_timing, video.subtitle_encoding, video.audio_timing,
+	for memory in [video.mode_memory, video.track_memory, video.subtitle_layout_memory, video.subtitle_timing, video.subtitle_encoding, video.audio_timing,
 			video.whisper_memory, video.narration.memory, video.listening.memory, photo.mode_memory]:
 		var keys: Array = memory.entries.keys()
 		if network_only:

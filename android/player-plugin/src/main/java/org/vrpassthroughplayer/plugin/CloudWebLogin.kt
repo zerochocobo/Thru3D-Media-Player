@@ -5,7 +5,7 @@ import android.os.Handler
 import android.os.Looper
 import org.json.JSONObject
 
-/** Shared isolated login renderer; provider state/nonce/appId checks stay in OpenListOAuthSession. */
+/** Dedicated login renderer; provider state/nonce/appId checks stay in OpenListOAuthSession. */
 internal class CloudWebLogin(private val host: () -> Activity?, private val provider: String,
     private val authorized: (OpenListAuth.Credential) -> Boolean) : AccountWebLogin {
     private val ui = Handler(Looper.getMainLooper())
@@ -18,6 +18,7 @@ internal class CloudWebLogin(private val host: () -> Activity?, private val prov
     private var epoch = 0L
     private var exchanging = false
     private var started = false
+    private var desktop = provider == CloudDrive.BAIDU
     private var http = CloudCancellation()
     private var exchange = OpenListLoginExchange(http)
 
@@ -32,7 +33,7 @@ internal class CloudWebLogin(private val host: () -> Activity?, private val prov
         val attempt = epoch
         val connection = exchange
         val renderer = GeckoLoginSession(host, desktopOnly = provider == CloudDrive.BAIDU,
-            touchOnly = provider == CloudDrive.ONEDRIVE) { url, main -> navigation(attempt, url, main) }
+            touchOnly = provider == CloudDrive.ONEDRIVE, initialDesktop = desktop) { url, main -> navigation(attempt, url, main) }
         gecko = renderer
         Thread({
             val target = runCatching { connection.request(provider) }.getOrNull()
@@ -91,6 +92,12 @@ internal class CloudWebLogin(private val host: () -> Activity?, private val prov
             if (closed || paused) return@post
             when (action) {
                 "reload" -> restart()
+                "desktop", "mobile" -> if (!exchanging && !failed && provider != CloudDrive.BAIDU && desktop != (action == "desktop")) {
+                    desktop = action == "desktop"
+                    // Start at the authorization entry with the new UA/viewport already set;
+                    // reloading a mobile redirect can keep a provider on its mobile endpoint.
+                    restart()
+                }
                 else -> if (!exchanging && !failed) gecko?.action(action, x, y, text)
             }
         }

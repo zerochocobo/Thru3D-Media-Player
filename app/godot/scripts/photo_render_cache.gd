@@ -118,7 +118,11 @@ func pump() -> bool:
 		if not result.has("image"):
 			if _queue_color(at, entry): return true
 			continue
-		var stages: Array = [[result, "ready_texture", result.get("proxy", result.image) if photo._requires_depth(at, entry.info) else result.image]]
+		# Small photos deliberately store proxy=null. Dictionary.get's default only
+		# handles an absent key, so use the original image when no proxy was made.
+		var color: Image = result.image
+		if photo._requires_depth(at, entry.info) and result.get("proxy") is Image: color = result.proxy
+		var stages: Array = [[result, "ready_texture", color]]
 		if photo._requires_depth(at, entry.info):
 			stages.append([data, "ready_depth", data.image])
 			if data.has("stereo_image"): stages.append([data, "ready_stereo", data.stereo_image])
@@ -126,6 +130,7 @@ func pump() -> bool:
 		for stage in stages:
 			if stage[0].get(stage[1]) is Texture2D: continue
 			var image: Image = stage[2]
+			if image == null or image.is_empty(): continue
 			if stage[1] != "ready_depth" and image.get_format() not in [Image.FORMAT_RGB8, Image.FORMAT_RGBA8, Image.FORMAT_R8]: break
 			var bytes := int(image.get_width() * image.get_height() * 16.0 / 3.0)
 			if not _reserve(bytes, at) or not photo.resource_budget.can_start(WORK_BYTES, bytes): break

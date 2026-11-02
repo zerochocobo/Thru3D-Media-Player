@@ -34,6 +34,7 @@
 #include "frame_geometry.h"
 #include "playback_failure.h"
 #include "disc_probe.h"
+#include "mkv_mvc_probe.h"
 #include "whisper_audio.h"
 #include "capture_audio_layout.h"
 
@@ -734,7 +735,11 @@ struct Source final {
         double par = 1.0;
         if (mpv_get_property(core, "video-out-params/par", MPV_FORMAT_DOUBLE, &par) < 0 ||
             !std::isfinite(par) || par <= 0.0 || par > 16.0) par = 1.0;
-        const auto stereo = property(core, "video-out-params/stereo-in");
+        // The owned MVC adapter always returns full, left-first SBS (including
+        // base-right input). This mpv pin's lavf path does not transfer FFmpeg's
+        // Stereo3D side data to mp_image_params, so its property can say mono.
+        // Only the validated MVC route supplies this explicit packing contract.
+        const auto stereo = software_layer ? std::string("sbsl") : property(core, "video-out-params/stereo-in");
         hardware_decoding.store(property(core, "hwdec-current").find("mediacodec") == 0);
         { std::lock_guard<std::mutex> lock(status_mutex); pixel_aspect = par; stereo_mode = stereo; }
         const auto previous = dimensions.load();
@@ -756,6 +761,11 @@ struct Source final {
                 // Pre-roll AVC and MVC titles, then let exact seeking discard
                 // frames before the requested time. Speed seeks use the MVC
                 // decoder's recovery gate without this exact-seek pre-roll.
+                option("hr-seek-demuxer-offset", "5");
+            }
+            if (software_layer && !iso_input) {
+                // Confirmed MVC MKV only; ordinary MKV keeps mpv's normal demux.
+                option("demuxer", "lavf"); option("demuxer-lavf-format", "matroska");
                 option("hr-seek-demuxer-offset", "5");
             }
             if (layer()) {
@@ -1720,6 +1730,25 @@ Java_org_vrpassthroughplayer_plugin_MpvSourceNative_beginDiscProbe(JNIEnv* env, 
 extern "C" JNIEXPORT void JNICALL
 Java_org_vrpassthroughplayer_plugin_MpvSourceNative_closeDiscProbe(JNIEnv*, jclass, jlong handle) {
     disc_probes.close(handle);
+}
+extern "C" JNIEXPORT jstring JNICALL
+Java_org_vrpassthroughplayer_plugin_MpvSourceNative_probeMkvMvc(JNIEnv* env, jclass, jlong handle, jstring path, jstring ca) {
+    try {
+        const auto job = disc_probes.get(handle);
+        require(path && ca, "MKV header source missing");
+        const char *utf = env->GetStringUTFChars(path, nullptr);
+        require(utf != nullptr, "MKV header source unavailable");
+        std::string file(utf); env->ReleaseStringUTFChars(path, utf);
+        utf = env->GetStringUTFChars(ca, nullptr);
+        require(utf != nullptr, "MKV TLS configuration unavailable");
+        std::string trust(utf); env->ReleaseStringUTFChars(ca, utf);
+        if (file.rfind("fd://", 0) == 0) file = "/proc/self/fd/" + file.substr(5);
+        const auto info = quest::probe_mkv_mvc(file, trust, *job);
+        const auto json = std::string("{\"mvc\":") + (info.mvc ? "true" : "false") +
+            ",\"width\":" + std::to_string(info.width) + ",\"height\":" + std::to_string(info.height) +
+            ",\"header_bytes\":" + std::to_string(info.read_bytes) + "}";
+        return env->NewStringUTF(json.c_str());
+    } catch (const std::exception& failure) { error(env, failure); return nullptr; }
 }
 extern "C" JNIEXPORT jstring JNICALL
 Java_org_vrpassthroughplayer_plugin_MpvSourceNative_probeDisc(JNIEnv* env, jclass, jlong handle, jstring path, jint playlist) {

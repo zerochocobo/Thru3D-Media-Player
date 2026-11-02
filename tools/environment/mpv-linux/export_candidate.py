@@ -47,6 +47,10 @@ def main():
     if not re.search(r'\bT\s+mpv_quest_source_frame_api_version(?:@@?[^\s]+)?\s*$', exports, re.M):
         raise ValueError('Source-frame extension handshake is absent from libmpv')
     destination_base = DEST.parent
+    format_exports = subprocess.check_output([str(TOOLCHAIN/'llvm-nm'), '-D', '--defined-only',
+                                             str(BUILDER/'prefix/arm64/lib/libavformat.so')], text=True)
+    if not re.search(r'\bT\s+avformat_thru3d_mkv_header_format(?:@@?[^\s]+)?\s*$', format_exports, re.M):
+        raise ValueError('MVC MKV bounded header preflight is absent from libavformat')
     for symbol in ['mpv_quest_pgs_api_version', 'mpv_quest_get_pgs', 'mpv_quest_text_queue_api_version', 'mpv_quest_pump_text_queue',
                    'mpv_quest_capture_api_version', 'mpv_quest_capture_owner', 'mpv_quest_capture_observe']:
         if not re.search(r'\bT\s+' + symbol + r'(?:@@?[^\s]+)?\s*$', exports, re.M):

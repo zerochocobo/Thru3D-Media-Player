@@ -5,6 +5,9 @@ import java.net.URLDecoder
 
 /** The Beta route is independent of generic sniffing and the legacy extractor. */
 object WebBrowserDouyin {
+    /** Unreleased: only an explicitly opted-in Debug tab can expose native handoff. */
+    fun enabled(value: String, debuggable: Boolean, optedIn: Boolean): Boolean = debuggable && optedIn && document(value)
+
     fun document(value: String): Boolean = runCatching {
         val u = URI(value)
         u.scheme == "https" && u.host == "www.douyin.com" && u.port == -1 && u.rawUserInfo == null
