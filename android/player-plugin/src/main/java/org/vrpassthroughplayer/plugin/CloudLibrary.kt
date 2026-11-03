@@ -157,7 +157,7 @@ internal object CloudLibrary {
     fun search(path: String, query: String, scope: String, kind: String, cursor: String, refresh: Boolean, http: CloudTransport = CloudHttp): JSONObject {
         val (id, remote) = split(path)
         val account = credentials(id)
-        require(query.isNotBlank() && query.codePointCount(0, query.length) <= 128 && kind in setOf("all", "video", "image", "folder")) { "Invalid search" }
+        require(query.isNotBlank() && query.codePointCount(0, query.length) <= 128 && kind in setOf("all", "video", "image", "folder", "subtitle")) { "Invalid search" }
         require((0 until searchScopes(account.getString("provider")).length()).any { searchScopes(account.getString("provider")).getString(it) == scope }) { "Search scope unavailable" }
         // Legacy cookie accounts retain current-directory search through their bounded metadata cache.
         val data = if (OpenListBackend.supported(account.getString("provider"))) {
@@ -168,18 +168,22 @@ internal object CloudLibrary {
         val entries = JSONArray()
         val content = data.getJSONArray("content")
         for (i in 0 until content.length()) {
-            val item = content.getJSONObject(i)
-            val name = item.getString("name")
-            if (!item.getBoolean("is_dir") && !MediaKinds.supportedFileName(name)) continue
-            val remotePath = item.optString("path")
-            val location = if (remotePath.isEmpty()) "" else CloudPaths.child(remotePath.substringBeforeLast('/').ifEmpty { "/" }, name)
-            entries.put(JSONObject().put("title", name).put("container", item.getBoolean("is_dir"))
-                .put("kind", MediaKinds.fileNameKind(name)).put("search_token", item.getString("token"))
-                .put("search_path", path).put("relative_path", location).put("size", item.optLong("size")))
+            searchEntry(content.getJSONObject(i), path, kind)?.let { entries.put(it) }
         }
         return JSONObject().put("path", path).put("query", query.trim()).put("scope", scope).put("kind", kind)
             .put("cursor", cursor).put("next_cursor", data.optString("next_cursor")).put("limited", data.optBoolean("limited"))
             .put("entries", entries).put("search_scopes", searchScopes(account.getString("provider")))
+    }
+    internal fun searchEntry(item: JSONObject, path: String, kind: String): JSONObject? {
+        val name = item.getString("name")
+        if (kind == "subtitle") {
+            if (item.getBoolean("is_dir") || !SidecarSubtitles.supportedFile(name)) return null
+        } else if (!item.getBoolean("is_dir") && !MediaKinds.supportedFileName(name)) return null
+        val remotePath = item.optString("path")
+        val location = if (remotePath.isEmpty()) "" else CloudPaths.child(remotePath.substringBeforeLast('/').ifEmpty { "/" }, name)
+        return JSONObject().put("title", name).put("container", item.getBoolean("is_dir"))
+            .put("kind", if (kind == "subtitle") "subtitle" else MediaKinds.fileNameKind(name)).put("search_token", item.getString("token"))
+            .put("search_path", path).put("relative_path", location).put("size", item.optLong("size"))
     }
     private val legacySearch = CloudDirectorySearch()
     fun resolveSearch(path: String, token: String, cancellation: CloudCancellation? = null): JSONObject {

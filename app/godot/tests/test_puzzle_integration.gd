@@ -32,7 +32,7 @@ func _run() -> void:
 	check(app.puzzle_game!=null,"Normal application creates puzzle host")
 	app.photo_menu.refresh()
 	var original_menus: Array=app.menu_composition.menus.duplicate()
-	check(app.photo_menu._buttons.any(func(b):return b.target==app.photo_menu.PHOTO_PUZZLE and b.enabled),"Debug photo toolbar exposes playable puzzle entry")
+	check(not app.photo_menu._buttons.any(func(b):return b.target==app.photo_menu.PHOTO_PUZZLE),"Photo toolbar hides the floating puzzle entry")
 	app._on_photo_action("photo_puzzle")
 	check(app.puzzle_game.panel.mode=="hub","Photo action opens the global game entry")
 	check(app.menu_composition.menus.has(app.puzzle_game.panel),"Game entry registers its actual menu for the normal high-density compositor")

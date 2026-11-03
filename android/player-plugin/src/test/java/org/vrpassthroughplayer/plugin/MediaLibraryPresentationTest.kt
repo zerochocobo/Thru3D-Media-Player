@@ -27,6 +27,7 @@ class MediaLibraryPresentationTest {
             val data = when {
                 path.endsWith("/Views") -> JSONObject().put("Items", JSONArray().put(JSONObject().put("Id", "lib1").put("Name", "Movies").put("IsFolder", true).put("Type", "CollectionFolder").put("CollectionType", "movies")))
                 path.contains("/FavoriteItems/") -> { mutations.add(request.substringBefore(' ')); JSONObject().put("IsFavorite", request.substringBefore(' ') == "POST") }
+                path == "/Items/Filters2" -> JSONObject().put("Tags", JSONArray().put("Tag & A"))
                 path == "/Genres" || path == "/Tags" -> JSONObject().put("Items", JSONArray().put(JSONObject().put("Id", "facet1").put("Name", if (path == "/Tags") "Tag & A" else "Drama"))).put("TotalRecordCount", 1)
                 path.endsWith("/Items/1") -> movies[0]
                 else -> {

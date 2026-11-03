@@ -4,6 +4,7 @@
 // DepthStabilizer turns it into the 0..1 near map exactly as PTMediaServer's realtime path does
 // (scene cut, smoothed percentile band, VVPS base/detail stabilizer, foreground dilation).
 #include "depth_stabilizer.h"
+#include "picture_bars.h"
 #include "photo_depth.h"
 #include <MNN/Interpreter.hpp>
 #include <MNN/MNNForwardType.h>
@@ -125,6 +126,7 @@ struct Depth final {
     double prepare_ms = 0, last_ms = 0, stabilize_ms = 0;
     double upload_ms = 0, dispatch_ms = 0, readback_ms = 0;
     std::unique_ptr<quest::DepthStabilizer> stabilizer;
+    quest::PictureBars bars; // video only: burned-in letterbox of the model input (GPU stage)
     uint64_t frames = 0, cuts = 0;
     std::mutex operation;
     std::mutex post; // Stabilizer state: CPU stage, may overlap the next inference.
@@ -192,10 +194,11 @@ struct Depth final {
         }
     }
 
-    void infer(const float* rgb) {
+    void infer(const float* rgb, bool video = false) {
         const auto start = std::chrono::steady_clock::now();
         const size_t plane = static_cast<size_t>(width) * height;
         std::memcpy(src_host->host<float>(), rgb, plane * 3 * sizeof(float));
+        if (video) bars.apply(src_host->host<float>(), width, height);
         src->copyFromHostTensor(src_host.get());
         const auto uploaded = std::chrono::steady_clock::now();
         require(net->runSession(session) == MNN::NO_ERROR, "MNN depth inference failed");
@@ -211,8 +214,9 @@ struct Depth final {
     void process(const float* rgb, float* near, bool reset, int frame_step) {
         require(!photo, "Video processing needs the video depth model");
         const auto started = std::chrono::steady_clock::now();
-        infer(rgb);
-        stabilize(out_host->host<float>(), rgb, near, reset, frame_step);
+        infer(rgb, true);
+        const auto& picture = bars.picture();
+        stabilize(out_host->host<float>(), rgb, near, reset, frame_step, picture[0], picture[1], picture[2], picture[3]);
         last_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
     }
 
@@ -220,7 +224,7 @@ struct Depth final {
     void infer_raw(const float* rgb, float* raw) {
         require(!photo, "Video processing needs the video depth model");
         const auto started = std::chrono::steady_clock::now();
-        infer(rgb);
+        infer(rgb, true);
         std::memcpy(raw, out_host->host<float>(), static_cast<size_t>(width) * height * sizeof(float));
         last_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
     }
@@ -429,8 +433,10 @@ Java_org_vrpassthroughplayer_plugin_DepthNative_infer(JNIEnv* env, jclass, jlong
         const size_t plane = static_cast<size_t>(depth->width) * depth->height;
         const float* input = checked_rgb(env, rgb, plane);
         depth->infer_raw(input, direct(env, raw, plane));
+        const auto& picture = depth->bars.picture();
         std::ostringstream json;
         json << "{\"state\":\"" << (depth->closed.load() ? "stale" : "ready") << "\",\"depth_ms\":" << depth->last_ms
+             << ",\"picture\":[" << picture[0] << ',' << picture[1] << ',' << picture[2] << ',' << picture[3] << ']'
              << ",\"stages\":{" << infer_stages(*depth) << "}}";
         return env->NewStringUTF(json.str().c_str());
     } catch (const std::exception& error) { fail(env, error.what()); return nullptr; }

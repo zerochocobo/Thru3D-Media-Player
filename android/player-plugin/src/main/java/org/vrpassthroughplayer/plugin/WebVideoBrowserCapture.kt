@@ -6,17 +6,36 @@ import java.net.URI
 
 /** An already-playing HTML5 resource, captured inside the user's browser session. */
 internal object WebVideoBrowserCapture {
+    /** Authenticated server originals follow the normal local/network decoder path. A web
+     * transcode's dimensions do not describe its original file; website extraction caps
+     * must not silently reject an 8K media-server source. Actual decode remains device-owned. */
+    fun maximumHeight(media: JSONObject?, browserQuality: Boolean, diagnostics: Boolean): Int {
+        if (media != null && serverPage(media.optString("frame"), media) != null) return 8192
+        if (browserQuality) return maxOf(2160, minOf(media?.optInt("width") ?: 0, media?.optInt("height") ?: 0)).coerceAtMost(8192)
+        return if (diagnostics && media?.optInt("diagnostic_max_height") == 2160) 2160 else 1080
+    }
     fun serverPage(page: String, media: JSONObject): WebVideoPage? = runCatching {
         require(media.optBoolean("server") && !media.optBoolean("protected"))
-        val source = URI(WebBrowserServerMedia.original(media.optString("source"), page) ?: return null)
         val frame = URI(page)
+        val plex = WebBrowserPlexMedia.source(media.optString("source"), page, serverHeaders(media))
+        if (plex != null) return WebVideoPage("media_server", plex.identity,
+            "${frame.scheme}://${frame.rawAuthority}${frame.rawPath}#thru3d-plex=${plex.identity}")
+        val source = URI(WebBrowserServerMedia.original(media.optString("source"), page) ?: return null)
         // A stable in-memory identity without the signed media URL or site credentials.
         val item = source.path.substringBeforeLast('/').substringAfterLast('/')
         val version = source.rawQuery.split('&').first { it.startsWith("MediaSourceId=") }
         WebVideoPage("media_server", item, "${frame.scheme}://${frame.rawAuthority}${frame.rawPath}#thru3d-video=$item&$version")
     }.getOrNull()
-    fun formats(media: JSONObject, cookies: JSONArray = JSONArray()): JSONObject? = runCatching {
+    fun serverHeaders(media: JSONObject): Map<String, String> = media.optJSONObject("server_headers")?.let { data ->
+        data.keys().asSequence().take(4).associateWith { data.optString(it) }
+    }.orEmpty()
+
+    fun formats(media: JSONObject, cookies: JSONArray = JSONArray(),
+        readServer: ((URI, Map<String, String>) -> Pair<URI, ByteArray>)? = null): JSONObject? = runCatching {
         require(!media.optBoolean("protected"))
+        if (media.optBoolean("server")) WebBrowserPlexMedia.source(media.optString("source"), media.optString("frame"), serverHeaders(media))?.let {
+            return WebVideoPlexCapture.formats(media, it, readServer)
+        }
         val uri = URI(if (media.optBoolean("server")) WebBrowserServerMedia.original(media.getString("source"), media.getString("frame")) ?: return null
             else media.getString("source"))
         require(uri.scheme in setOf("https", "http") && !uri.host.isNullOrEmpty() && uri.rawUserInfo == null && uri.fragment == null)

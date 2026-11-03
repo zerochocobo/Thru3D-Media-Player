@@ -108,6 +108,18 @@ func _run() -> void:
 			menu.release_pointer("right_hand", Vector3.ZERO, Vector3.ZERO, true)
 			var saved := ConfigFile.new()
 			check(saved.load(main.settings_path) == OK and saved.get_value("screen", "distance") == 50, "Distance saves on release")
+			menu.press_pointer("right_hand", menu.to_global(Vector3(Menu.SLIDER_LEFT, distance_y, 1)), -menu.global_basis.z, true)
+			menu.release_pointer("right_hand", Vector3.ZERO, Vector3.ZERO, true)
+			check(is_equal_approx(video.screen_distance, 0.1) and is_equal_approx(video.panel.global_position.distance_to(eye), 0.1) and video.screen_scale == 1, "%s distance slider reaches 0.1m without resizing" % mode)
+			check(saved.load(main.settings_path) == OK and is_equal_approx(saved.get_value("screen", "distance"), 0.1), "0.1m distance saves on release")
+			var size_y: float = menu._adjust_rows[451].button.node.position.y
+			var aspect: float = video._flat.size.x / video._flat.size.y
+			menu.press_pointer("right_hand", menu.to_global(Vector3(Menu.SLIDER_LEFT, size_y, 1)), -menu.global_basis.z, true)
+			menu.release_pointer("right_hand", Vector3.ZERO, Vector3.ZERO, true)
+			check(is_equal_approx(video.screen_scale, 0.05) and menu._adjust_rows[451].label.text == "5%" and is_equal_approx(video.screen_distance, 0.1), "%s size slider reaches 5%% without moving distance" % mode)
+			check(is_equal_approx(video._flat.size.x / video._flat.size.y, aspect), "5% size preserves per-eye aspect")
+			check(saved.load(main.settings_path) == OK and is_equal_approx(saved.get_value("screen", "scale"), 0.05), "5% size saves on release")
+			video.set_screen_scale(1)
 			menu.press_pointer("right_hand", menu.to_global(Vector3(Menu.SLIDER_LEFT + Menu.SLIDER_WIDTH * Menu.ScreenPresets.slider_fraction(2.0, menu._adjust_rows[450].span), distance_y, 1)), -menu.global_basis.z, true)
 			menu.release_pointer("right_hand", Vector3.ZERO, Vector3.ZERO, true)
 			check(is_equal_approx(video.screen_distance, 2), "2m slider restores default distance")
@@ -117,6 +129,17 @@ func _run() -> void:
 	check(video.screen_distance == video.DISTANCE_LIMITS.y and video.screen_scale == 1, "Upper distance limit without scaling")
 	main._update_flat_grab_stick(Vector2.ZERO, Vector2(0, -1), 100)
 	check(video.screen_distance == video.DISTANCE_LIMITS.x and video.screen_scale == 1, "Lower distance limit without scaling")
+	# A rotated 0.1m placement can land just below the limit due to float precision.
+	video.set_flat_world_pose(Transform3D(Basis.IDENTITY, eye + Vector3(0.06, 0, -0.08) * 0.999999))
+	var close_position := video.panel.global_position
+	main._turn_picture(0.05, 0)
+	check(not video.panel.global_position.is_equal_approx(close_position) and is_equal_approx(video.panel.global_position.distance_to(eye), 0.1), "Screen can turn at the rounded 0.1m limit")
+	main._push_screen(0.1)
+	check(is_equal_approx(video.screen_distance, 0.2) and is_equal_approx(video.panel.global_position.distance_to(eye), 0.2), "Screen can move away again at the rounded 0.1m limit")
+	video.set_flat_world_pose(Transform3D(Basis.IDENTITY, eye + Vector3(0.06, 0, -0.08) * 0.999999))
+	video.set_screen_scale(0.05)
+	main._reset_picture()
+	check(is_equal_approx(video.panel.global_position.distance_to(eye), 2) and video.screen_distance == 2 and video.screen_scale == 1, "Reset at 0.1m and 5% restores both physical distance and size")
 	var distance_before: float = video.screen_distance
 	main._grab = {}
 	video.geometry = 1

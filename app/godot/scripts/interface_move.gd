@@ -5,6 +5,7 @@ const START_RADIANS := 0.035
 const MAX_TRACKING_STEP_METRES := 0.8
 const DEPTH_SPEED := 1.5
 const DEPTH_LIMITS := Vector2(0.6, 8.0)
+const MENU_DISTANCE_LIMITS := Vector2(0.6, 4.0)
 const MAX_MENU_PITCH := deg_to_rad(80.0)
 var capture := {}
 var placements := {}
@@ -28,7 +29,11 @@ func begin(hand: String, input: String, pose: Transform3D, targets: Array, ancho
 	for target in targets:
 		if target.get("cinema", false) and head is Transform3D:
 			var distance: float = (head.origin - target.pose.origin).dot(target.pose.basis.z)
-			capture.depth_limits = target.distance_limits - Vector2.ONE * distance
+			var limits: Vector2 = target.distance_limits - Vector2.ONE * distance
+			if targets.any(func(item): return item.kind == "menu"):
+				capture.depth_limits = Vector2(maxf(capture.depth_limits.x, limits.x), minf(capture.depth_limits.y, limits.y))
+			else:
+				capture.depth_limits = limits
 	for target in targets:
 		if target.kind == "menu" or target.get("upright_facing", false):
 			var up: Vector3 = head.basis.y if following and head is Transform3D else Vector3.UP
@@ -70,9 +75,11 @@ static func _depth_bounds(targets: Array, point: Vector3, head: Vector3) -> Vect
 	var bounds := Vector2(0.05 - point.distance_to(head), INF)
 	for target in targets:
 		if target.kind == "immersive": continue
-		var limits: Vector2 = target.get("distance_limits", DEPTH_LIMITS)
+		var limits: Vector2 = target.get("distance_limits", MENU_DISTANCE_LIMITS if target.kind == "menu" else DEPTH_LIMITS)
 		var centres: Array = [target.pose.origin]
-		if target.kind == "gallery":
+		if target.kind == "menu" and target.node.has_method("panel_centre"):
+			centres = [target.pose * target.node.panel_centre()]
+		elif target.kind == "gallery":
 			centres = target.node.cards.values().map(func(card): return card.pose.origin)
 			if centres.is_empty(): centres.append(point)
 		for centre: Vector3 in centres:

@@ -36,6 +36,7 @@ func _place_device_status(_centre: Vector2) -> void: pass
 
 func eligible() -> bool:
 	if not is_instance_valid(app): return false
+	if app.get("scenery_menu") and app.scenery_menu.visible: return false
 	var photo: Node3D = app.photo
 	return app.photo_active and photo.index >= 0 and photo.panel.visible and not photo.gallery.overview() \
 		and not photo.gallery.returning and not photo.inspect and app._input_focused() and not app._background_app_paused \

@@ -193,6 +193,8 @@ var directory_browse_memory := preload("res://scripts/directory_browse_memory.gd
 var _audio_save_after := 0
 var background: Node
 var photo_background: Node
+var scenery: Node
+var scenery_menu: Node3D
 var view_follow := ViewFollow.new()
 var temporary_passthrough := false
 var vr_passthrough_menu: Node3D
@@ -265,6 +267,7 @@ func _ready() -> void:
 	display.status_changed.connect(_on_input_session_changed)
 	display.status_changed.connect(_queue_report)
 	settings.load(settings_path)
+	_migrate_library_distance()
 	wrist_watch = WristWatch.new()
 	wrist_watch.set_color(WristWatch.Palette.load_choice(settings))
 	wrist_watch.name = "WristWatch"
@@ -344,6 +347,7 @@ func _ready() -> void:
 	if video.DepthStrength.migrate_video_scale(settings): settings.save(settings_path)
 	video.preferred_depth_strength = video.DepthStrength.load_preference(settings, false)
 	video.depth_strength = video.preferred_depth_strength
+	video.default_auto_depth = video.Auto3D.load_enabled(settings)
 	video.changed.connect(_on_video_changed)
 	video.playback_completed.connect(_on_video_completed)
 	playback_mode = str(settings.get_value("video", "playback_mode", "single"))
@@ -379,6 +383,9 @@ func _ready() -> void:
 	# The chosen Alpha model size, warmed now so Alpha starts without the first-use compile.
 	video.select_profile(_alpha_profile())
 	video.load_mode_lock(settings.get_value("video", "mode_lock", {}))
+	video.load_last_mode_preferences(settings)
+	video.last_mode_changed.connect(_on_last_video_mode_changed)
+	video.reuse_last_mode_changed.connect(_on_reuse_last_video_mode_changed)
 	_restore_subtitle_settings()
 	video.color_grade.restore(settings.get_value("video", "color_grade", {}))
 	_restore_flat_video_settings()
@@ -528,6 +535,9 @@ func _ready() -> void:
 	music_menu.close_requested.connect(_close_music_menu)
 	music_menu.import_requested.connect(_begin_audio_import)
 	_connect_session_controls(music_menu); add_child(music_menu)
+	scenery_menu = preload("res://scripts/scenery_menu.gd").new()
+	_connect_session_controls(scenery_menu); add_child(scenery_menu)
+	scenery = preload("res://scripts/scenery_controller.gd").new(); add_child(scenery)
 	video_menu.expanded_library = recent_menu
 	photo_menu.expanded_library = recent_menu
 	menu_composition = MenuComposition.new()
@@ -535,7 +545,7 @@ func _ready() -> void:
 	if OS.is_debug_build(): # capture-density experiments; applies at launch
 		menu_composition.debug_pixel_scale = float(settings.get_value("debug", "menu_layer_scale", 0.0))
 		menu_composition.debug_bands = bool(settings.get_value("debug", "menu_layer_bands", false))
-	menu_composition.configure(origin, camera, display, [recent_menu, video_menu, photo_menu, music_menu], low_end_gpu)
+	menu_composition.configure(origin, camera, display, [recent_menu, video_menu, photo_menu, music_menu, scenery_menu], low_end_gpu)
 	menu_composition.register_companion(vr_passthrough_menu)
 	recent_menu.web_browser.configure_quality(low_end_gpu)
 	recent_menu.web_browser.window_created = menu_composition.register_companion
@@ -574,6 +584,7 @@ func _ready() -> void:
 	photo_background.changed.connect(_on_background_changed)
 	photo_background.custom_saved.connect(_on_photo_background_saved)
 	add_child(photo_background)
+	scenery.setup(self, scenery_menu)
 	if Engine.has_singleton("QuestPlayer"):
 		platform_plugin = Engine.get_singleton("QuestPlayer")
 		if PlatformMethods.supports(platform_plugin, "crash_trail"): DiagnosticLog.trail_sink = platform_plugin
@@ -674,7 +685,7 @@ func _unhandled_key_input(event: InputEvent) -> void:
 			if OS.get_name() == "Android":
 				return
 			if event.keycode == KEY_ESCAPE:
-				if menu == music_menu: _navigate_back()
+				if menu == music_menu or menu == scenery_menu: _navigate_back()
 				else: menu.dismiss()
 			elif menu == recent_menu:
 				match event.keycode:
@@ -1119,7 +1130,7 @@ func _begin_interface_move(hand: String, input: String) -> void:
 	else: move_media = true
 	if fixed_cinema: move_media = false
 	if scope == "all":
-		for other in [recent_menu, video_menu, photo_menu, music_menu]:
+		for other in [recent_menu, video_menu, photo_menu, music_menu, scenery_menu]:
 			if other == recent_menu and _library_is_attached(): continue
 			if other and other != menu:
 				if not other.visible: _place_menu(other)
@@ -1930,7 +1941,7 @@ func _cancel_pointer(hand: String) -> void:
 		_grab = {}
 		_viewer().set_corner_hover(-1)
 	# Cancellation never becomes a tap, row selection, or fling.
-	for menu in [recent_menu, video_menu, photo_menu, music_menu]:
+	for menu in [recent_menu, video_menu, photo_menu, music_menu, scenery_menu]:
 		if is_instance_valid(menu) and menu.has_method("cancel_pointer"): menu.cancel_pointer(hand)
 
 func _on_input_session_changed() -> void:
@@ -2247,7 +2258,7 @@ func _turn_picture(yaw: float, pitch: float) -> void:
 	if view_follow.enabled and _flat_followable(_viewer()) and head != null:
 		var local: Transform3D = head.affine_inverse() * (_viewer().global_transform * _viewer().flat_pose)
 		var offset := local.origin
-		if offset.length() < 0.1: return
+		if offset.is_zero_approx(): return
 		var angles := _ray_angles(offset) + Vector2(yaw, pitch)
 		var direction := (Basis(Vector3.UP, angles.x) * Basis(Vector3.RIGHT, clampf(angles.y, -1.5, 1.5))) * Vector3.FORWARD
 		local.basis = Basis(Quaternion(offset.normalized(), direction)) * local.basis
@@ -2258,7 +2269,7 @@ func _turn_picture(yaw: float, pitch: float) -> void:
 	var eye := _eye()
 	var offset: Vector3 = (_viewer().global_transform * _viewer().flat_pose).origin - eye
 	var distance := offset.length()
-	if distance < 0.1:
+	if is_zero_approx(distance):
 		return
 	var angles := _ray_angles(offset) + Vector2(yaw, pitch)
 	var facing := Basis(Vector3.UP, angles.x) * Basis(Vector3.RIGHT, clampf(angles.y, -1.3, 1.3))
@@ -2294,7 +2305,7 @@ func _push_screen(amount: float) -> void:
 	var eye := _eye()
 	var world: Transform3D = _viewer().global_transform * _viewer().flat_pose
 	var offset: Vector3 = world.origin - eye
-	if offset.length() < 0.1:
+	if offset.is_zero_approx():
 		return
 	_viewer().set_screen_distance(offset.length() + amount)
 	var pose := Transform3D(world.basis, eye + offset.normalized() * _viewer().screen_distance)
@@ -2488,14 +2499,14 @@ func _reset_picture() -> void:
 	_viewer().set_screen_scale(1.0)
 	var offset: Vector3 = (_viewer().global_transform * _viewer().flat_pose).origin - _eye()
 	var distance: float = photo.DEFAULT_DISTANCE if photo_active else video.SCREEN_DISTANCE
-	if _viewer().geometry == Geometry.Geometry.FLAT and offset.length() >= 0.1:
+	if _viewer().geometry == Geometry.Geometry.FLAT and not offset.is_zero_approx():
 		_push_screen(distance - _surface_distance(_viewer()))
 	_viewer().set_screen_distance(distance)
 	_save_screen()
 
 func _update_menu_pointer(hand: String, pressed: bool = false) -> bool:
 	var menu := _active_menu()
-	for previous in [recent_menu, video_menu, photo_menu, music_menu]:
+	for previous in [recent_menu, video_menu, photo_menu, music_menu, scenery_menu]:
 		if is_instance_valid(previous) and previous != menu: previous.clear_pointer_visuals()
 	if not menu or hand not in ["left_hand", "right_hand"]:
 		return false
@@ -3198,6 +3209,8 @@ func _on_photo_action(operation: String) -> void:
 		"screen_curve": photo.cycle_screen_curve(); _save_screen(); photo.changed.emit()
 		"global_background":
 			var source: Dictionary = photo.background_source()
+			if scenery and not source.is_empty():
+				scenery.import_current(source,photo.display_name,"global"); return
 			if source.is_empty() or background.is_loading_custom() or background.matches_photo(source): return
 			_background_photo = {"uri": photo.local_uri, "serial": photo._serial}
 			background.import_photo(source, photo.display_name)
@@ -3325,7 +3338,7 @@ func _update_view_follow() -> void:
 	if not view_follow.enabled: return
 	var head: Variant = _head_pose()
 	if head == null: return
-	for menu in [recent_menu, video_menu, photo_menu, music_menu]:
+	for menu in [recent_menu, video_menu, photo_menu, music_menu, scenery_menu]:
 		if not menu or not menu.visible: continue
 		if menu.space_locked(): continue
 		if menu == recent_menu and _library_is_attached(): continue
@@ -3338,17 +3351,23 @@ func _update_view_follow() -> void:
 	if surface and _flat_followable(surface) and (not surface.local_uri.is_empty() or (surface == photo and photo.loading)):
 		surface.set_flat_world_pose(_follow_screen_pose(surface, head))
 
+func _migrate_library_distance() -> void:
+	var value: Variant = settings.get_value("ui", "library_distance", LIBRARY_DISTANCE_DEFAULT)
+	if (value is float or value is int) and is_finite(float(value)) and float(value) > InterfaceMove.MENU_DISTANCE_LIMITS.y:
+		settings.set_value("ui", "library_distance", LIBRARY_DISTANCE_DEFAULT)
+		settings.save(settings_path)
+
 func _library_distance() -> float:
 	var value: Variant = settings.get_value("ui", "library_distance", LIBRARY_DISTANCE_DEFAULT)
-	if not (value is float or value is int) or not is_finite(float(value)) or float(value) <= 0.0:
+	if not (value is float or value is int) or not is_finite(float(value)) or float(value) <= 0.0 or float(value) > InterfaceMove.MENU_DISTANCE_LIMITS.y:
 		return LIBRARY_DISTANCE_DEFAULT
-	return clampf(float(value), InterfaceMove.DEPTH_LIMITS.x, InterfaceMove.DEPTH_LIMITS.y)
+	return clampf(float(value), InterfaceMove.MENU_DISTANCE_LIMITS.x, InterfaceMove.MENU_DISTANCE_LIMITS.y)
 
 func _remember_library_distance(head: Variant) -> void:
 	if not head is Transform3D or not recent_menu is LibraryMenu or _library_is_attached() or not recent_menu.is_visible_in_tree(): return
 	var distance: float = recent_menu.to_global(recent_menu.panel_centre()).distance_to(head.origin)
 	if not is_finite(distance): return
-	distance = clampf(distance, InterfaceMove.DEPTH_LIMITS.x, InterfaceMove.DEPTH_LIMITS.y)
+	distance = clampf(distance, InterfaceMove.MENU_DISTANCE_LIMITS.x, InterfaceMove.MENU_DISTANCE_LIMITS.y)
 	if settings.has_section_key("ui", "library_distance") and is_equal_approx(_library_distance(), distance): return
 	settings.set_value("ui", "library_distance", distance)
 	settings.save(settings_path)
@@ -3457,6 +3476,7 @@ func _disc_menu_hover() -> void:
 			return
 
 func _active_menu() -> Node3D:
+	if scenery_menu and scenery_menu.visible: return scenery_menu
 	if _vr_passthrough_active(): return vr_passthrough_menu
 	if puzzle_game and puzzle_game.active: return puzzle_game.input_menu()
 	if music_menu and music_menu.visible: return music_menu
@@ -3499,6 +3519,9 @@ func _navigate_back() -> void:
 	if _menu_captured(menu):
 		for hand in ControllerBindings.HANDS: menu.cancel_pointer(hand)
 		return
+	if scenery_menu and scenery_menu.visible:
+		if not scenery_menu.navigate_back(): scenery_menu.dismiss()
+		return
 	if music_menu and music_menu.visible:
 		if not music_menu.navigate_back(): _close_music_menu()
 		return
@@ -3521,6 +3544,7 @@ func _navigate_back() -> void:
 
 func _toggle_player_menu() -> void:
 	if _vr_passthrough_active(): return
+	if scenery_menu and scenery_menu.visible: scenery_menu.dismiss(); return
 	if recent_menu is LibraryMenu and recent_menu.account_panel.view == "web": return
 	if music_menu and music_menu.visible: _close_music_menu(); return
 	if photo_active and photo.inspect:
@@ -3787,6 +3811,7 @@ func _library_settings() -> Dictionary:
 		"library_restore_position": bool(settings.get_value("library", "restore_position", true)),
 		"seek_mode": video.SeekPolicy.normalize(video.seek_mode),
 		"depth_render": _depth_render_mode(),
+		"video_auto_3d": video.default_auto_depth,
 		"depth_text_protection": false,
 		"subtitle_distance": video.subtitle_distance,
 		"subtitle_position": video.subtitle_position,
@@ -3876,6 +3901,11 @@ func _on_setting_changed(key: String, value: Variant) -> void:
 			video.set_text_protection(false)
 			if platform_plugin and PlatformMethods.supports(platform_plugin, "set_depth_text_protection"):
 				platform_plugin.set_depth_text_protection(false)
+		"video_auto_3d":
+			# Only the next normal open uses this default; leave the current file and photos alone.
+			video.default_auto_depth = bool(value)
+			settings.set_value("video", "auto_3d", video.default_auto_depth); settings.save(settings_path)
+			if recent_menu: recent_menu.refresh()
 		"depth_render":
 			if str(value) in DEPTH_RENDER_MODES:
 				settings.set_value("video", "depth_render", str(value)); settings.save(settings_path)
@@ -3902,6 +3932,8 @@ func _on_setting_changed(key: String, value: Variant) -> void:
 			if photo._detail_material: photo._detail_material.set_shader_parameter("sharpness", photo.sharpness)
 			settings.set_value("video", "sharpness", video.sharpness)
 			settings.save(settings_path)
+		"scene_open":
+			if scenery: scenery.open(recent_menu)
 		"background":
 			if background.select(str(value)): _save_background()
 		"background_remove":
@@ -4211,13 +4243,14 @@ func _on_player_setting(key: String, value: Variant) -> void:
 		"subtitle_delay", "secondary_subtitle_delay":
 			if value is Dictionary and not video.commit_subtitle_delay(float(value.value), str(value.source_uri), str(value.get("subtitle_key", "__current__"))):
 				if is_instance_valid(player_menu): player_menu.refresh()
-		"alpha_keep_background", "seek_mode", "depth_render", "depth_text_protection", "subtitle_distance", "subtitle_position", "subtitle_horizontal_position", "subtitle_vertical_position", "subtitle_direction", "subtitle_style", "subtitle_pgs_tint", "subtitle_line": _on_setting_changed(key, value)
+		"alpha_keep_background", "seek_mode", "depth_render", "video_auto_3d", "depth_text_protection", "subtitle_distance", "subtitle_position", "subtitle_horizontal_position", "subtitle_vertical_position", "subtitle_direction", "subtitle_style", "subtitle_pgs_tint", "subtitle_line": _on_setting_changed(key, value)
 		"viewing_eye": video.set_viewing_eye(int(value))
 		"spatial_auto_disparity": video.set_spatial_auto_disparity(bool(value))
 		"spatial_match_fov":
 			if video.match_spatial_fov(): _save_screen()
 		"subtitle_size", "subtitle_flat_position": _on_playback_adjustment(key, value); _save_playback_adjustments()
 		"loop": _set_playback_mode("repeat_one" if bool(value) else "single")
+		"reuse_last_mode": video.set_reuse_last_mode(bool(value))
 		"playback_mode": _set_playback_mode(str(value))
 		"show_fps": _on_setting_changed(key, value)
 		"screen_curve": video.set_screen_curve(float(value)); _save_screen(); video.changed.emit()
@@ -4309,6 +4342,14 @@ func _remember_photo_auto_depth(enabled: bool) -> void:
 	if settings.get_value("effects", "auto_3d", true) != enabled:
 		settings.set_value("effects", "auto_3d", enabled)
 		settings.save(settings_path)
+
+func _on_last_video_mode_changed(mode: Dictionary) -> void:
+	settings.set_value("video", "last_mode", mode)
+	settings.save(settings_path)
+
+func _on_reuse_last_video_mode_changed(enabled: bool) -> void:
+	settings.set_value("video", "reuse_last_mode", enabled)
+	settings.save(settings_path)
 
 func _on_mode_lock_changed(lock: Dictionary, media_kind: String) -> void:
 	settings.set_value(media_kind, "mode_lock", lock)
@@ -4424,6 +4465,8 @@ func _menu_state() -> Dictionary:
 	if seek_feedback.phase in ["preview", "waiting"]: result["bookmark_ready"] = false
 	result["watch_available"] = wrist_watch != null
 	result["depth_render"] = _depth_render_mode()
+	result["video_auto_3d"] = video.default_auto_depth
+	result["reuse_last_mode"] = video.reuse_last_mode
 	result["depth_text_protection"] = false
 	result["watch_enabled"] = bool(settings.get_value("watch", "enabled", true))
 	result["capture"] = video.captures.snapshot()
@@ -4647,7 +4690,7 @@ func _cinema_request_interaction(value: String) -> bool:
 	_suspend_cinema_move_stick()
 	interface_move.cancel(); _grab.clear(); _video_control_tap.clear(); stick_controls.suspend()
 	if value != "watch":
-		for menu in [recent_menu, video_menu, photo_menu, music_menu]:
+		for menu in [recent_menu, video_menu, photo_menu, music_menu, scenery_menu]:
 			if menu and menu.visible: menu.dismiss()
 	_refresh_session_controls()
 	return true
@@ -4735,7 +4778,7 @@ func _on_cinema_environment_changed() -> void:
 
 func _reposition_cinema_menus() -> void:
 	_sync_cinema_menu_overlays()
-	for menu in [recent_menu, video_menu, photo_menu, music_menu]:
+	for menu in [recent_menu, video_menu, photo_menu, music_menu, scenery_menu]:
 		if menu:
 			interface_move.placements.erase(_menu_key(menu)); view_follow.forget(_menu_key(menu))
 			if menu.visible: _place_menu(menu, true)
@@ -4817,8 +4860,9 @@ func _cinema_picture_size() -> float:
 
 func _sync_cinema_lights() -> void:
 	if not cinema_environment or not video: return
-	if _cinema_viewing_preview and not (_cinema_scene_active() and recent_menu and recent_menu.is_visible_in_tree() \
-		and recent_menu.section == recent_menu.Section.SETTINGS and recent_menu.tab == recent_menu.BACKGROUND_TAB):
+	var settings_preview: bool=recent_menu and recent_menu.is_visible_in_tree() and recent_menu.section==recent_menu.Section.SETTINGS and recent_menu.tab==recent_menu.BACKGROUND_TAB
+	var scene_preview: bool=scenery_menu and scenery_menu.visible and scenery_menu.mode=="global" and scenery_menu.view=="adjust" and scenery_menu.modal.is_empty()
+	if _cinema_viewing_preview and not (_cinema_scene_active() and (settings_preview or scene_preview)):
 		_cinema_viewing_preview = false
 	cinema_environment.set_viewing_brightness(str(settings.get_value("appearance", "cinema_viewing_brightness", "low")), _cinema_viewing_preview)
 	# Requested playback keeps the house dark, including while a newly opened file
@@ -4835,7 +4879,7 @@ func _sync_cinema_lights() -> void:
 	cinema_environment.set_lighting(str(settings.get_value("appearance", "cinema_lights", "auto")), dark)
 
 func _sync_cinema_menu_overlays() -> void:
-	for menu in [recent_menu, photo_menu, music_menu]:
+	for menu in [recent_menu, photo_menu, music_menu, scenery_menu]:
 		if not is_instance_valid(menu): continue
 		var id: int = menu.get_instance_id()
 		if _cinema_scene_active():
@@ -4975,7 +5019,11 @@ func _connect_session_controls(menu: Node3D) -> void:
 	if menu.has_method("set_bar_transparency"):
 		menu.set_bar_transparency(float(settings.get_value("ui", "bar_transparency", 14.0)))
 	menu.layout_head_provider = _head_pose
-	menu.session_controls_provider = _session_controls_state
+	menu.scenery_requested.connect(func(): if scenery: scenery.open(menu))
+	menu.session_controls_provider = func():
+		var state:=_session_controls_state()
+		if menu==recent_menu and (recent_menu.image_picker_mode or recent_menu.audio_import_mode or recent_menu.subtitle_picker_mode or recent_menu.voice_picker_mode): state["scenery_enabled"]=false
+		return state
 	menu.session_control_requested.connect(_on_session_control)
 	menu.placement_changed.connect(_on_menu_placement_changed.bind(menu))
 
@@ -4996,7 +5044,7 @@ func _session_controls_state() -> Dictionary:
 		"cinema_lights": str(settings.get_value("appearance", "cinema_lights", "auto"))}
 
 func _refresh_session_controls() -> void:
-	for menu in [recent_menu, video_menu, photo_menu, music_menu]:
+	for menu in [recent_menu, video_menu, photo_menu, music_menu, scenery_menu]:
 		if menu and menu.visible: menu.refresh_session_controls()
 
 func _on_session_control(operation: String) -> void:
@@ -5033,7 +5081,7 @@ func _on_session_control(operation: String) -> void:
 		photo_hands.cancel(); photo_swipe.cancel(); memory_swipe.cancel(); stick_controls.suspend()
 		var head: Variant = _head_pose()
 		if head != null:
-			for menu in [recent_menu, video_menu, photo_menu, music_menu]:
+			for menu in [recent_menu, video_menu, photo_menu, music_menu, scenery_menu]:
 				if menu == recent_menu and _library_is_attached(): continue
 				if not menu: continue
 				if menu.space_locked(): continue
@@ -5098,7 +5146,7 @@ func _enter_vr_passthrough() -> void:
 		video.picker_error = video.vr_passthrough.UNAVAILABLE; video.changed.emit(); return
 	if video.picker_error == video.vr_passthrough.UNAVAILABLE: video.picker_error = ""
 	_clear_vr_passthrough_input()
-	for menu in [recent_menu, video_menu, photo_menu, music_menu]:
+	for menu in [recent_menu, video_menu, photo_menu, music_menu, scenery_menu]:
 		if menu: menu.dismiss()
 	if mono_menu_capture: mono_menu_capture.stop()
 	vr_passthrough_menu.refresh()
@@ -5139,6 +5187,8 @@ func _save_background() -> void:
 
 func _import_photo_background() -> void:
 	var source: Dictionary = photo.background_source()
+	if scenery and not source.is_empty():
+		scenery.import_current(source,photo.display_name,"image"); return
 	if photo_background.is_loading_custom() or photo_background.matches_photo(source): return
 	photo_background.import_photo(source, photo.display_name)
 
@@ -5188,7 +5238,7 @@ func _recenter(restore_defaults: bool = true) -> void:
 			video.screen_preset = cinema_saved.preset
 			video.cinema.height = cinema_saved.height
 			video._apply_geometry()
-		for menu in [recent_menu, video_menu, photo_menu, music_menu]:
+		for menu in [recent_menu, video_menu, photo_menu, music_menu, scenery_menu]:
 			if menu:
 				interface_move.placements.erase(_menu_key(menu))
 				view_follow.forget(_menu_key(menu))
@@ -5844,6 +5894,7 @@ func _photo_menu_state() -> Dictionary:
 		state["photo_background_applied"] = photo_background.matches_photo(photo.background_source())
 		state["photo_background_saving"] = photo_background.is_loading_custom()
 		state.merge({"photo_background": photo_background.choice, "photo_background_custom": photo_background.has_custom(), "photo_background_yaw": photo_background.yaw, "photo_background_brightness": photo_background.brightness, "photo_background_loading": photo_background.loading, "photo_background_error": photo_background.error, "photo_global_custom": background.has_custom() if background else false})
+	if scenery and photo: state.merge(scenery.current_image_state(photo.background_source()),true)
 	return state
 
 func _sync_background_audio() -> void:
@@ -5897,7 +5948,7 @@ func _begin_subtitle_browse() -> void:
 	_subtitle_browse_secondary = video.dual_subtitles.editing_secondary
 	var location: Variant = settings.get_value("subtitles", "browse_location", {})
 	_show_full_library()
-	recent_menu.begin_subtitle_picker(location if location is Dictionary else {})
+	recent_menu.begin_subtitle_picker(location if location is Dictionary else {}, video.subtitle_picker_filename())
 
 func _on_subtitle_selected(uri: String, _title: String, location: Dictionary) -> void:
 	var id := _subtitle_browse_session

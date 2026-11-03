@@ -27,6 +27,7 @@ const Thru3DDouyin = (() => {
       u.protocol === 'https:' && !u.username && !u.password && !u.hash ? value : null; }
     catch (_) { return null; }
   };
+  const objectPath = u => /^\/(?:[a-fA-F0-9]{32}|[a-fA-F0-9]{64})\/[a-fA-F0-9]{8,16}(\/video\/tos\/cn\/tos-cn-[a-zA-Z0-9-]{1,96}\/[A-Za-z0-9_-]{8,240}(?:\/[A-Za-z0-9_-]{8,240})?\/?)$/.exec(u.pathname)?.[1];
   const sourceId = value => {
     if(!address(value))return null;
     try {
@@ -47,7 +48,6 @@ const Thru3DDouyin = (() => {
       // C-type CDN authentication prefixes rotate independently of the object.
       // Compare the exact TOS bucket/object suffix, then replay the observed URL
       // untouched. This is not a signature generator or URL-renewal mechanism.
-      const objectPath = u => /^\/(?:[a-fA-F0-9]{32}|[a-fA-F0-9]{64})\/[a-fA-F0-9]{8,16}(\/video\/tos\/cn\/tos-cn-[a-zA-Z0-9-]{1,96}\/[A-Za-z0-9_-]{8,240}(?:\/[A-Za-z0-9_-]{8,240})?\/?)$/.exec(u.pathname)?.[1];
       // Gecko's isolated content world does not expose iterable URLSearchParams.
       // Compare decoded entries (including duplicate counts), without rewriting
       // the observed URL that native playback must send verbatim.
@@ -59,15 +59,17 @@ const Thru3DDouyin = (() => {
       const received=query(b).filter(([key])=>keys.has(key)||!['temp','__vid','testst'].includes(key));
       // A new detail response rotates request tracing fields for the very same
       // signed file. Only the site's currentSrc __vid binding permits that case;
-      // origin/path, all other parameters and duplicate counts still agree.
+      // path/object, all other parameters and duplicate counts still agree.
       const ids=query(b).filter(p=>p[0]==='__vid');
       const bound=/^[1-9][0-9]{14,19}$/.test(contentId)&&ids.length===1&&ids[0][1]===contentId;
       const assetBound=/^[1-9][0-9]{14,19}$/.test(contentId)&&(!ids.length||bound)&&
-        a.origin===b.origin&&!!objectPath(a)&&objectPath(a)===objectPath(b);
+        !!objectPath(a)&&objectPath(a)===objectPath(b);
       const ignored=assetBound?['cquery','l','dy_q','btag']:bound?['cquery','l']:[];
       const stable=list=>list.filter(p=>!ignored.includes(p[0]));
       const ordered = list => list.map(p=>JSON.stringify(p)).sort();
-      return a.origin===b.origin && (a.pathname===b.pathname||assetBound) && JSON.stringify(ordered(stable(original)))===JSON.stringify(ordered(stable(received)));
+      // A related CDN may serve the same site-declared object. Its hostname is
+      // not a gate; retain the exact object or bound content ID plus query checks.
+      return (a.origin===b.origin||assetBound||bound) && (a.pathname===b.pathname||assetBound) && JSON.stringify(ordered(stable(original)))===JSON.stringify(ordered(stable(received)));
     } catch (_) { return false; }
   };
   const normalize = raw => {
@@ -87,6 +89,14 @@ const Thru3DDouyin = (() => {
     const result = {id,duration,video:tracks,...(audio.length?{audio}:{})};
     return tracks.length && JSON.stringify(result).length <= 96*1024 ? result : null;
   };
+  const proof = (data, video, source, sound = '') => {
+    const track = data.video.find(t => t.width === video.videoWidth && t.height === video.videoHeight && t.urls.some(u => matches(u,source,data.id)));
+    if (!track) return null;
+    const audio = sound ? (data.audio||[]).map(t=>({...t,urls:t.urls.filter(u=>matches(u,sound,data.id))})).filter(t=>t.urls.length) : data.audio;
+    return {id:data.id,duration:data.duration,
+      video:[{width:track.width,height:track.height,urls:track.urls.filter(u=>matches(u,source,data.id))}],
+      ...(audio?.length?{audio}:{})};
+  };
   const binding = (data, value, video, requests) => {
     const p = page(value);
     if (!p || !data || data.id !== p.id || video.mediaKeys || video.seeking || !(video.videoWidth > 0) || !(video.videoHeight > 0) ||
@@ -98,13 +108,17 @@ const Thru3DDouyin = (() => {
       const audio = [...new Set(requests.filter(r=>r.kind==='file'&&(data.audio||[]).some(t=>t.urls.some(u=>matches(u,r.url,data.id)))).map(r=>r.url))];
       // The caller nominates one decoded owner. MSE cannot identify an arbitrary
       // alternate request: require exactly one observed declared representation.
-      return unique.length === 1 && audio.length <= 1 && !audio.includes(unique[0])
-        ? {data:{...data,observed_file:unique[0],...(audio.length?{observed_audio:audio[0]}:{})},request:observed[0]} : null;
+      // MSE can demux one full MP4 into both SourceBuffers. The native reader
+      // still has to prove that this exact file contains real video and audio.
+      const muxed = unique.length === 1 && audio.length === 1 && audio[0] === unique[0];
+      const selected = unique.length === 1 && audio.length <= 1 ? proof(data,video,unique[0],audio[0]) : null;
+      return selected ? {data:{...selected,observed_file:unique[0],...(muxed?{observed_muxed:true}:audio.length?{observed_audio:audio[0]}:{})},request:observed[0]} : null;
     }
     const track = data.video.find(t => t.width === video.videoWidth && t.height === video.videoHeight && t.urls.some(u => matches(u,video.currentSrc,data.id)));
     if (!track) return null;
     const request = requests.find(r => r.kind === 'file' && r.url === video.currentSrc && track.urls.some(u=>matches(u,r.url,data.id)));
-    return request ? {data,request} : null;
+    const selected = request ? proof(data,video,request.url) : null;
+    return selected ? {data:selected,request} : null;
   };
   const owner = (list, value, videos) => {
     const p = page(value); if (!p) return null;
@@ -144,11 +158,20 @@ const Thru3DDouyin = (() => {
   const diagnostics = (list,value,video,requests) => {
     const p=page(value),data=list.filter(d=>d.id===p?.id);
     const tracks=data.flatMap(d=>d.video.map(t=>({d,t})));
-    return {metadata_count:list.length,page_metadata:data.length,source_id_matches:p&&sourceId(video.currentSrc)===p.id?1:0,
+    const files=requests.filter(r=>r.kind==='file');
+    return {metadata_count:list.length,page_metadata:data.length,metadata_chars:Math.max(0,...data.map(d=>JSON.stringify(d).length)),source_id_matches:p&&sourceId(video.currentSrc)===p.id?1:0,
       dimension_matches:tracks.filter(({t})=>t.width===video.videoWidth&&t.height===video.videoHeight).length,
       duration_matches:data.filter(d=>Number.isFinite(video.duration)&&Math.abs(video.duration-d.duration)<=Math.max(.5,d.duration*.01)).length,
       address_matches:tracks.filter(({d,t})=>t.urls.some(u=>matches(u,video.currentSrc,d.id))).length,
-      observed_source:requests.filter(r=>r.kind==='file'&&r.url===video.currentSrc).length};
+      observed_source:files.filter(r=>r.url===video.currentSrc).length,
+      request_files:files.length,
+      video_request_matches:files.filter(r=>tracks.some(({d,t})=>t.urls.some(u=>matches(u,r.url,d.id)))).length,
+      decoded_request_matches:files.filter(r=>tracks.some(({d,t})=>t.width===video.videoWidth&&t.height===video.videoHeight&&t.urls.some(u=>matches(u,r.url,d.id)))).length,
+      audio_request_matches:files.filter(r=>data.some(d=>(d.audio||[]).some(t=>t.urls.some(u=>matches(u,r.url,d.id))))).length,
+      audio_video_overlap:files.filter(r=>tracks.some(({d,t})=>t.width===video.videoWidth&&t.height===video.videoHeight&&t.urls.some(u=>matches(u,r.url,d.id)))&&
+        data.some(d=>(d.audio||[]).some(t=>t.urls.some(u=>matches(u,r.url,d.id))))).length,
+      object_request_matches:files.filter(r=>{try{const key=objectPath(new URL(r.url));return !!key&&tracks.some(({t})=>t.urls.some(u=>objectPath(new URL(u))===key));}catch(_){return false;}}).length,
+      request_id_matches:files.filter(r=>p&&sourceId(r.url)===p.id).length};
   };
   return {parse,page,documentPage,address,matches,sourceId,normalize,binding,owner,merge,direct,diagnostics};
 })();

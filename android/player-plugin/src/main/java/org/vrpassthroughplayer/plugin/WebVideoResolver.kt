@@ -76,14 +76,13 @@ internal class WebVideoResolver(private val context: () -> Context?, private val
                 val networkEnabled = media?.optBoolean("network_enabled") == true
                 val bilibiliEnabled = bilibiliBeta && page.site == "bilibili" && media?.optBoolean("bilibili_enabled") == true
                 val douyinEnabled = bilibiliBeta && page.site == "douyin" && media != null &&
-                    WebBrowserDouyin.enabled(page.url, BuildConfig.DEBUG, media.optBoolean("douyin_enabled"))
+                    WebBrowserDouyin.enabled(page.url, media.optBoolean("douyin_enabled"))
                 if (bilibiliBeta && !bilibiliEnabled && !douyinEnabled)
                     throw ExtractionFailure("browser_playback_required")
                 val browserQuality = networkEnabled || bilibiliEnabled || douyinEnabled
                 // The browser already selected this quality using the user's site session.
                 // Do not force its member/4K stream through the extractor's default 1080p cap.
-                val maxHeight = if (browserQuality) maxOf(2160, minOf(media.optInt("width"), media.optInt("height"))).coerceAtMost(8192)
-                    else if (BuildConfig.DEBUG && media?.optInt("diagnostic_max_height") == 2160) 2160 else 1080
+                val maxHeight = WebVideoBrowserCapture.maximumHeight(media, browserQuality, BuildConfig.DEBUG)
                 val capabilities = WebVideoCapabilities(maxHeight)::accepts
                 val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30)
                 val network = WebVideoNetworkCapture({ uri, headers, prefix ->
@@ -93,7 +92,9 @@ internal class WebVideoResolver(private val context: () -> Context?, private val
                 var route = if (douyinEnabled) "browser_douyin" else if (bilibiliEnabled) "browser_bilibili" else if (networkEnabled) "browser_network" else "browser_direct"
                 val session by lazy { attempt.stage = "session"; cookies(page.url) }
                 val legacy = if (!browserQuality || media.optBoolean("server")) media?.let {
-                    WebVideoBrowserCapture.formats(it, if (it.optBoolean("server")) org.json.JSONArray() else session)
+                    WebVideoBrowserCapture.formats(it, if (it.optBoolean("server")) org.json.JSONArray() else session) { uri, headers ->
+                        readBrowserResource(uri, headers, false, attempt, deadline)
+                    }
                 } else null
                 val (info, initial) = WebVideoResolution.select(page, {
                     if (media?.optBoolean("server") == true) legacy
@@ -133,7 +134,7 @@ internal class WebVideoResolver(private val context: () -> Context?, private val
                         ?: WebVideoPageProjection.parse(track.pageLayout)
                 var projection = projectionFor(selected.video)
                 if (projection != null && !browserQuality) {
-                    val immersive = WebVideoFormats.select(selected.page, info, WebVideoCapabilities(2160)::accepts)
+                    val immersive = WebVideoFormats.select(selected.page, info, WebVideoCapabilities(maxOf(2160, maxHeight))::accepts)
                     if (immersive.video.formatId != selected.video.formatId) {
                         val actual = projectionFor(immersive.video)
                         // A flat preview is not a replacement for a verified immersive representation.
@@ -151,6 +152,8 @@ internal class WebVideoResolver(private val context: () -> Context?, private val
                     if (latest.optBoolean("protected")) throw ExtractionFailure("protected_content")
                     if (latest.optString("capture_identity") != media.optString("capture_identity") || latest.optBoolean("network_enabled") != networkEnabled)
                         throw ExtractionFailure("browser_page_changed")
+                    if (media.optBoolean("server") && WebVideoBrowserCapture.serverPage(url, latest)?.url != page.url)
+                        throw ExtractionFailure("browser_stream_changed")
                     if (pgc && WebVideoBilibiliCapture.episodePage(sourcePage, latest) != page)
                         throw ExtractionFailure("browser_page_changed")
                     if (douyinEnabled) {

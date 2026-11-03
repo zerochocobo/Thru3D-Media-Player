@@ -75,8 +75,34 @@ func _run() -> void:
 		elif "--focused" in OS.get_cmdline_user_args():
 			menu.web_browser.focus_regions[host.focus_tab()] = Rect2(0.18, 0.16, 0.30, 0.70)
 	menu.refresh()
+	if "--portrait-drag" in OS.get_cmdline_user_args() and not library_preview:
+		var host: Node3D = menu.web_browser.windows[1]
+		var requested_height := 3.2 if "--portrait-tall" in OS.get_cmdline_user_args() else 2.56
+		var pose: Transform3D = host.global_transform
+		var handle: Dictionary = host._buttons.filter(func(button): return button.target == host.RESIZE_BOTTOM)[0]
+		var start := Vector3(handle.rect.get_center().x, handle.rect.get_center().y, 0.3)
+		host.press_pointer("left", pose * start, -pose.basis.z, true)
+		for step in range(1, 81):
+			host.update_pointer("left", pose * (start + Vector3(0, -(requested_height - 0.9) * step / 80.0, 0)), -pose.basis.z, true)
+		host.release_pointer("left", pose * start, -pose.basis.z, true)
+		var layout: Dictionary = host.full_page_layout()
+		if not layout.size.is_equal_approx(Vector2(1.44, requested_height)):
+			push_error("Portrait drag did not reach requested dimensions: " + str(layout.size)); quit(1); return
+		camera.position = layout.pose.origin + Vector3(0, 0.2, 3.1)
+		var evidence := {"input": "80 production pointer updates on bottom edge", "physical_width": layout.size.x, "physical_height": layout.size.y,
+			"css": str(host.Surface.logical_for(host.page_size)), "normal_pixels": str(host.Surface.pixels_for(host.page_size, false)), "low_pixels": str(host.Surface.pixels_for(host.page_size, true))}
+		FileAccess.open(output.path_join("portrait-drag-%s.json" % requested_height), FileAccess.WRITE).store_string(JSON.stringify(evidence, "\t"))
+	if "--minimum" in OS.get_cmdline_user_args() and not library_preview:
+		menu.web_browser.windows[1].adjust_size(-100)
+	if "--resize-hover" in OS.get_cmdline_user_args() and not library_preview:
+		var host: Node3D = menu.web_browser.windows[1]
+		var handle: Dictionary = host._buttons.filter(func(button): return button.target == host.RESIZE)[0]
+		host.update_pointer("left", handle.node.global_position + host.global_basis.z.normalized() * 0.3, -host.global_basis.z, true)
 	for i in 4: await process_frame; await RenderingServer.frame_post_draw
 	var suffix := "-focus-select" if "--focus-select" in OS.get_cmdline_user_args() else "-focused" if "--focused" in OS.get_cmdline_user_args() else "-loading" if "--loading" in OS.get_cmdline_user_args() else "-wide" if "--wide" in OS.get_cmdline_user_args() else "-tall" if "--tall" in OS.get_cmdline_user_args() else "-cinema" if "--cinema-available" in OS.get_cmdline_user_args() else ""
+	if "--minimum" in OS.get_cmdline_user_args(): suffix += "-minimum"
+	if "--resize-hover" in OS.get_cmdline_user_args(): suffix += "-resize-hover"
+	if "--portrait-drag" in OS.get_cmdline_user_args(): suffix += "-portrait-tall" if "--portrait-tall" in OS.get_cmdline_user_args() else "-portrait"
 	var code := viewport.get_texture().get_image().save_png(output.path_join("web-browser" + suffix + ".png" if not suffix.is_empty() else "web-browser-tabs.png" if "--tabs" in OS.get_cmdline_user_args() else "web-browser-keyboard.png" if platform.browser.editing else ("web-browser-history.png" if "--history" in OS.get_cmdline_user_args() else "web-browser-controls.png")))
 	print("Browser control preview saved; Android webpage Surface is absent on desktop: %s" % (code == OK))
 	menu.free(); platform.free(); viewport.free()

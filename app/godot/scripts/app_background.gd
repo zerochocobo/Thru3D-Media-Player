@@ -10,6 +10,7 @@ const NIGHT := "res://backgrounds/eso0932a.jpg"
 const BUILTINS := {"belfast": BELFAST, "morning": MORNING, "night": NIGHT}
 const CHOICES := ["belfast", "morning", "night", "dark", "passthrough", "custom", "cinema"]
 var directory := "user://backgrounds"
+var library_directory := "user://background_library"
 var choice := "belfast"
 var custom_path := ""
 var custom_title := ""
@@ -60,7 +61,7 @@ func _request_builtin() -> void:
 		error = "Background unavailable"
 
 func has_custom() -> bool:
-	return _custom != null or (_owns_custom(custom_path) and FileAccess.file_exists(custom_path))
+	return _custom != null or ((_owns_custom(custom_path) or _library_path(custom_path)) and FileAccess.file_exists(custom_path))
 
 func matches_photo(source: Dictionary) -> bool:
 	return not source.is_empty() and source == _custom_source and choice == "custom" and has_custom() and not loading and error.is_empty()
@@ -71,6 +72,28 @@ func is_loading_custom() -> bool:
 func _owns_custom(path: String) -> bool:
 	var clean := path.simplify_path()
 	return clean.get_base_dir() == directory.simplify_path() and clean.get_file().begins_with("custom_") and clean.ends_with(".image")
+
+func set_library_asset(path: String, title: String, orientation: int) -> void:
+	# The shared catalog owns deletion. This consumer only holds a selectable texture.
+	custom_path = path; custom_title = title; custom_orientation = orientation
+	library_directory = path.get_base_dir()
+	_custom = null; _custom_source.clear()
+
+func adopt(other: Node) -> void:
+	_generation += 1
+	choice = other.choice; custom_path = other.custom_path; custom_title = other.custom_title
+	custom_orientation = other.custom_orientation; yaw = other.yaw; brightness = other.brightness
+	library_directory = other.library_directory
+	_builtin = other._builtin; _custom = other._custom; _custom_source = other._custom_source.duplicate(true)
+	error = ""; _apply()
+
+func _library_path(path: String) -> bool:
+	var clean := path.simplify_path()
+	var filename := clean.get_file().trim_suffix(".image")
+	if ProjectSettings.globalize_path(clean.get_base_dir()).simplify_path() != ProjectSettings.globalize_path(library_directory).simplify_path() or not clean.ends_with(".image") or filename.length() != 64: return false
+	for c in filename:
+		if not c in "0123456789abcdef": return false
+	return true
 
 func remove_custom() -> bool:
 	if _thread: return false
@@ -120,6 +143,9 @@ static func _read_custom(input: FileAccess, job: Dictionary) -> Dictionary:
 			var bytes := input.get_buffer(mini(65536, input.get_length() - input.get_position()))
 			if bytes.is_empty(): return {}
 			output.store_buffer(bytes)
+			if output.get_error()!=OK: return {}
+		output.flush()
+		if output.get_error()!=OK: return {}
 		output.close()
 	input.close()
 	var header := Info.read_header(path)
@@ -164,7 +190,7 @@ static func _read_custom(input: FileAccess, job: Dictionary) -> Dictionary:
 	if job.copy and (job.stereo or half_sky):
 		if image.save_png(path) != OK: return {}
 	if absf(float(image.get_width()) / image.get_height() - 2.0) > 0.02: return {}
-	image.generate_mipmaps()
+	if job.get("mipmaps",true): image.generate_mipmaps()
 	return {"image": image, "orientation": 1 if job.copy and (job.stereo or half_sky) else int(job.orientation)}
 
 static func source_supported(size: Vector2, geometry: int, stereo: bool, top_bottom: bool) -> bool:
@@ -193,7 +219,7 @@ func _process(_delta: float) -> void:
 	if _thread and not _thread.is_alive():
 		var result: Dictionary = _thread.wait_to_finish()
 		_thread = null
-		if result.has("image"):
+		if result.has("image") and (_job.copy or int(_job.generation) == _generation):
 			_custom = ImageTexture.create_from_image(result.image)
 			_custom_source = _job.source
 			if _job.copy:
@@ -203,7 +229,7 @@ func _process(_delta: float) -> void:
 				# Persist the new reference before removing the old private copy.
 				custom_saved.emit(custom_path, custom_title, custom_orientation)
 				if _owns_custom(previous) and previous != custom_path: DirAccess.remove_absolute(previous)
-		else:
+		elif int(_job.generation) == _generation:
 			error = "Background unavailable"
 			if _job.copy: DirAccess.remove_absolute(str(_job.path))
 		_apply()

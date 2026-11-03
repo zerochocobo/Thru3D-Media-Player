@@ -260,6 +260,7 @@ func _run() -> void:
 	video._complete_layout()
 	check(video.geometry == 0 and not video.stereo_sbs and video._pending_revision.is_empty(),
 		"First 2:1 frame preserves the per-file choice over explicit VR naming")
+	check_auto_3d(video, host)
 	video.queue_free()
 	await process_frame
 	var half_uri := "file:///v/half.webm"
@@ -274,3 +275,60 @@ func _run() -> void:
 	for failure in failures:
 		push_error(failure)
 	quit(0 if failures.is_empty() else 1)
+
+func check_auto_3d(video: Node3D, host: RefCounted) -> void:
+	video.mode_memory = Memory.new(test_path.path_join("auto-3d"))
+	check(not video.default_auto_depth, "Video conversion defaults Off independently of earlier file choices")
+	video.open_local("file:///default-off.mp4", "default-off.mp4")
+	video.media.format = {"width": 1920, "height": 1080}; video._complete_layout()
+	check(not video.depth_requested, "New flat video remains 2D with the default disabled")
+	video.default_auto_depth = true
+	check(not video.depth_requested, "Changing the global default does not change the open video")
+	video.open_local("file:///default-on.mp4", "default-on.mp4")
+	check(not host.depths.back() and video.auto_depth, "Unknown layout is detected before starting default conversion")
+	video.media.format = {"width": 1920, "height": 1080}; video._complete_layout()
+	check(video.depth_requested and video._pending_revision.get("depth", false), "Detected flat video starts default conversion even when its provisional layout was already flat")
+	video.default_auto_depth = false
+	video._reopen_after_context_loss(video.local_uri, video.display_name, 1234, true)
+	check(video.depth_requested and host.depths.back(), "Internal recovery retains conversion after the global default changes")
+	video.set_depth(true)
+	video.open_local("file:///default-on.mp4", "default-on.mp4")
+	check(video.depth_requested and host.depths.back(), "Remembered On wins over global Off")
+	video.set_depth(false)
+	video.default_auto_depth = true
+	video.open_local("file:///default-on.mp4", "default-on.mp4")
+	check(not video.depth_requested and not video.auto_depth and not host.depths.back(), "Remembered Off wins over global On")
+	check(video.mode_memory.remember("file:///legacy-auto.mp4", {"geometry": 0, "stereo_sbs": false,
+		"swap_eyes": false, "alpha_requested": false, "profile": "320x320"}), "Legacy fixture has a valid pre-conversion mode record")
+	video.open_local("file:///legacy-auto.mp4", "legacy-auto.mp4")
+	check(not video.depth_requested and not video.auto_depth, "Existing file modes without a depth field retain their old Off choice")
+	for name in ["movie_180_LR.mp4", "movie_360_mono.mp4", "movie_FISHEYE_LR.mp4", "movie_flat_SBS.mp4", "movie_flat_TB.mp4"]:
+		video.open_local("file:///" + name, name)
+		check(not host.depths.back(), "Known VR/stereo source opens without conversion: " + name)
+		video.media.format = {"width": 3840, "height": 2160}; video._complete_layout()
+		check(not video.depth_requested, "Known VR/stereo source stays unconverted: " + name)
+	for sample in [{"width": 8192, "height": 4096}, {"width": 4096, "height": 4096},
+			{"width": 7680, "height": 2160}, {"width": 1920, "height": 1080, "stereo_mode": "sbs2l"},
+			{"width": 3840, "height": 1080, "spatial_video": true, "stereo_mode": "sbs2l"}]:
+		video.open_local("file:///detected-%d.mp4" % checks, "unmarked.mp4")
+		check(not host.depths.back(), "Pending source never starts default conversion before metadata")
+		video.media.format = sample; video._complete_layout()
+		check(not video.depth_requested, "Detected VR, native stereo or spatial video skips conversion: " + str(sample))
+	video.open_local("file:///manual-before-layout.mp4", "unmarked.mp4")
+	video.set_depth(false)
+	video.media.format = {"width": 1920, "height": 1080}; video._complete_layout()
+	check(not video.depth_requested, "Manual Off before detection survives delayed layout completion")
+	video.open_local("file:///default_alpha.mp4", "default_alpha.mp4")
+	video.media.format = {"width": 1920, "height": 1080}; video._complete_layout()
+	check(video.alpha_requested and not video.depth_requested, "Filename passthrough retains priority over automatic conversion")
+	for lock in [{"geometry": 0, "layout": 0}, {"geometry": 1, "layout": 1}, {"geometry": 0, "layout": 1}]:
+		lock.depth = false; lock.fisheye_fov = 180
+		video.load_mode_lock(lock)
+		video.open_local("file:///default-lock-%d.mp4" % checks, "unmarked.mp4")
+		check(video.depth_requested == (lock.geometry == 0 and lock.layout == 0), "Global conversion respects the locked projection and eye layout")
+	video.load_mode_lock({})
+	video.open_local("file:///web-default.mp4", "Misleading VR180 title", 0, true, false, "", {"web_fullscreen": true})
+	check(video.depth_requested and host.depths.back(), "Resolved flat web fullscreen follows the opted-in global default")
+	video.auto_depth = false; video.depth_requested = false
+	video.open_local("file:///diagnostic.mp4", "diagnostic.mp4", 0, false)
+	check(not video.depth_requested and not host.depths.back(), "Explicit diagnostic/internal mode does not apply the global default")

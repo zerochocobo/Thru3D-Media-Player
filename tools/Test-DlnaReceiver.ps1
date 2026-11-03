@@ -1,4 +1,4 @@
-param([switch]$Render, [string[]]$Cases = @('test_cast_receiver', 'test_dlna_menu', 'test_player_menu', 'test_file_mode_memory', 'test_video_capture', 'test_narration', 'test_privacy_memory', 'test_video_playback_modes'))
+param([switch]$Render, [string[]]$Cases = @('test_cast_receiver', 'test_cast_listening', 'test_dlna_menu', 'test_player_menu', 'test_file_mode_memory', 'test_video_capture', 'test_narration', 'test_privacy_memory', 'test_video_playback_modes'))
 $ErrorActionPreference = 'Stop'
 $workspace = Split-Path -Parent $PSScriptRoot
 $godotPath = $env:GODOT_EXE

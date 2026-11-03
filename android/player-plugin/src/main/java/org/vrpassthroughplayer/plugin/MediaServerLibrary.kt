@@ -46,7 +46,7 @@ internal class MediaServerLibrary(private val context: () -> Context?, private v
         MediaServerStore.accounts(context() ?: throw MediaServerFailure("Server unavailable"))
     }, private val getAccount: (String) -> MediaServerAccount = { id ->
         MediaServerStore.get(context() ?: throw MediaServerFailure("Server unavailable"), id)
-    }, private val emit: (Int, String) -> Unit) {
+    }, private val reports: MediaServerPlaybackReporter = MediaServerPlaybackReporter(), private val emit: (Int, String) -> Unit) {
     private val pool = ThreadPoolExecutor(3, 3, 0, TimeUnit.MILLISECONDS, ArrayBlockingQueue(24), { Thread(it, "QuestMediaServer") })
     private class Job(val server: String) { @Volatile var http: MediaServerHttp? = null; @Volatile var future: FutureTask<Unit>? = null }
     private val jobs = ConcurrentHashMap<Int, Job>()
@@ -57,6 +57,25 @@ internal class MediaServerLibrary(private val context: () -> Context?, private v
     private val captureReaders = ConcurrentHashMap<String, Playback>()
     @Volatile private var closed = false
     init { instances.add(this) }
+    fun playbackState(raw: String) {
+        if (closed || raw.length > 4096) return
+        runCatching {
+            val data = JSONObject(raw)
+            val token = data.getString("token")
+            if (data.optString("action") == "stop") { reports.stop(token); return }
+            mediaRequire(data.optString("action") == "state")
+            val selected = playback[data.getString("uri")] ?: return
+            val metadata = selected.stream.playback ?: return
+            fun index(name: String): Int? = if (data.has(name) && !data.isNull(name)) data.getInt(name) else null
+            reports.observe(token, selected.account, metadata, MediaServerPlaybackState(
+                data.getLong("position_ms"), data.getBoolean("paused"), data.optBoolean("can_seek"),
+                data.optBoolean("muted"), data.optInt("volume", 100), index("audio"), index("subtitle"),
+                data.optDouble("speed", 1.0), data.optLong("seek"), data.optString("audio_selection").take(32),
+                data.optString("subtitle_selection").take(32)))
+        }
+    }
+    fun playbackPrivacyChanged() = reports.privacyChanged()
+    fun playbackPaused() = reports.pause()
     fun request(raw: String): Int {
         if (closed || raw.length > 32768) return -1
         val req = runCatching { JSONObject(raw) }.getOrNull() ?: return -1
@@ -243,12 +262,13 @@ internal class MediaServerLibrary(private val context: () -> Context?, private v
         leases.remove(uri)?.second?.revoke(uri)
         playback.entries.filter { it.value.videoUrl == uri }.forEach { playback.remove(it.key, it.value) }
     }
-    fun close() { closed = true; jobs.keys.toList().forEach(::cancel); pool.shutdownNow(); instances.remove(this)
+    fun close() { closed = true; reports.close(); jobs.keys.toList().forEach(::cancel); pool.shutdownNow(); instances.remove(this)
         leases.keys.toList().forEach(::release) }
     companion object {
         private val instances = ConcurrentHashMap.newKeySet<MediaServerLibrary>()
         fun invalidate(server: String) {
             instances.forEach { instance ->
+                instance.reports.invalidate(server)
                 instance.jobs.filterValues { it.server == server }.keys.toList().forEach(instance::cancel)
                 instance.leases.filterValues { it.first == server }.keys.toList().forEach(instance::release)
                 // Quest can keep the player resumed behind the native account window.

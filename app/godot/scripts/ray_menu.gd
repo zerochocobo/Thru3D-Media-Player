@@ -1,6 +1,7 @@
 extends Node3D
 
 signal session_control_requested(operation: String)
+signal scenery_requested
 signal placement_changed
 signal composition_changed
 signal composition_layout_changed
@@ -18,6 +19,7 @@ const FOLLOW := -1001
 const TEMP_PASSTHROUGH := -1002
 const FREE_MOVEMENT := -1003
 const CINEMA_LIGHTS := -1004
+const SCENERY := -1005
 const LIGHT_ICONS := {"auto": "light_auto", "on": "light", "off": "light_off"}
 const LIGHT_TIPS := {"auto": "Auto lights: off while a film plays, on when it stops", "on": "Lights on", "off": "Lights off"}
 const FOOTER_DIAMETER := 0.09
@@ -372,6 +374,8 @@ func _activate_hit(hit: Dictionary) -> void:
 	_activate(int(hit.target))
 
 func _activate_footer(target: int) -> bool:
+	if target == SCENERY:
+		scenery_requested.emit(); return true
 	if target not in [FOLLOW, TEMP_PASSTHROUGH, FREE_MOVEMENT, CINEMA_LIGHTS]: return false
 	var state := _session_controls()
 	if target == CINEMA_LIGHTS:
@@ -506,18 +510,21 @@ func refresh_session_controls(force: bool = false) -> void:
 	if not force and state == _footer_state: return
 	_footer_state = state.duplicate()
 	for index in range(_buttons.size() - 1, -1, -1):
-		if _buttons[index].target in [FOLLOW, TEMP_PASSTHROUGH, FREE_MOVEMENT, CINEMA_LIGHTS]:
+		if _buttons[index].target in [FOLLOW, TEMP_PASSTHROUGH, FREE_MOVEMENT, CINEMA_LIGHTS, SCENERY]:
 			_buttons[index].node.free()
 			_buttons.remove_at(index)
 	var show_passthrough: bool = state.get("passthrough_visible", false)
-	var show_movement: bool = state.get("cinema_visible", false)
-	# In the cinema: lights, free movement, then follow and passthrough.
-	var count := 1 + int(show_passthrough) + 2 * int(show_movement)
-	var span := count * FOOTER_DIAMETER + (count - 1) * FOOTER_GAP
-	var width := span + FOOTER_GAP + STATUS_WIDTH
-	var left := _footer_centre.x - width * 0.5
-	var follow_left := left + (2.0 * (FOOTER_DIAMETER + FOOTER_GAP) if show_movement else 0.0)
-	device_status.position = Vector3(left + span + FOOTER_GAP + STATUS_WIDTH * 0.5, _footer_centre.y, 0.002)
+	# Status is the anchor. Optional controls never shift it or the scenery entry.
+	var left := _footer_centre.x - STATUS_WIDTH * 0.5 - FOOTER_GAP - 2 * (FOOTER_DIAMETER + FOOTER_GAP)
+	var follow_left := left
+	device_status.position = Vector3(_footer_centre.x, _footer_centre.y, 0.002)
+	var scene_centre := Vector2(_footer_centre.x + STATUS_WIDTH * 0.5 + FOOTER_GAP + .09, _footer_centre.y)
+	_button(SCENERY, "", scene_centre, Vector2(.18, FOOTER_DIAMETER), state.get("scenery_enabled", true))
+	var scenery_button: Node3D = _buttons.back().node
+	var scenery_ink:=Color.WHITE if state.get("scenery_enabled",true) else MUTED*Color(.7,.7,.7)
+	_icon("panorama",Vector3(-.053,0,.006),.034,scenery_ink,scenery_button)
+	_label(I18n.t("Scene"),Vector3(.024,0,.006),TEXT_BODY,scenery_button).modulate=scenery_ink
+	_buttons.back().node.material_override.set_shader_parameter("corner_radius", FOOTER_DIAMETER * .5)
 	_footer_button(FOLLOW, "head_follow", Vector2(follow_left + FOOTER_DIAMETER * 0.5, _footer_centre.y),
 		state.get("follow", false), true, I18n.t("Disable follow" if state.get("follow", false) else "Enable follow"))
 	if show_passthrough:
@@ -525,12 +532,6 @@ func refresh_session_controls(force: bool = false) -> void:
 		_footer_button(TEMP_PASSTHROUGH, "passthrough", Vector2(follow_left + FOOTER_DIAMETER * 1.5 + FOOTER_GAP, _footer_centre.y),
 			state.get("passthrough", false), not alpha, I18n.t("Cannot switch during person passthrough" if alpha else
 			("Disable temporary passthrough" if state.get("passthrough", false) else "Enable temporary passthrough")))
-	if show_movement:
-		var lights := str(state.get("cinema_lights", "auto"))
-		_footer_button(CINEMA_LIGHTS, LIGHT_ICONS.get(lights, "light_auto"), Vector2(left + FOOTER_DIAMETER * .5, _footer_centre.y),
-			false, true, I18n.t(LIGHT_TIPS.get(lights, LIGHT_TIPS.auto)))
-		_footer_button(FREE_MOVEMENT, "standing", Vector2(left + FOOTER_DIAMETER * 1.5 + FOOTER_GAP, _footer_centre.y),
-			state.get("cinema_moving", false), true, I18n.t("Free movement"))
 	_update_highlights()
 
 func _footer_button(target: int, icon: String, centre: Vector2, active: bool, enabled: bool, tip: String) -> void:

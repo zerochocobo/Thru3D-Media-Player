@@ -159,7 +159,7 @@ func run() -> void:
 	check(menu._buttons.any(func(b): return b.target == 103 and b.enabled), "Seekable cast shows the next-video ray button")
 	check(menu._buttons.any(func(b): return b.target == 112 and b.enabled), "2D to 3D remains on cast bar")
 	check(menu._buttons.any(func(b): return b.target == 100), "Library remains available")
-	check(menu._setting_choices("loop").get("choices", []).size() == 2, "Only single/repeat-one remain without cast queue")
+	check(menu._setting_choices("loop").is_empty(), "Cast playback uses the shared cycle control without the removed dropdown")
 	var main := preload("res://scripts/main.gd").new(); main.video = video; main.playback_mode = "single"; main.cast_session = session
 	main._cycle_playback_mode()
 	check(main.playback_mode == "repeat_one" and video.loop_enabled, "Cast loop shortcut enters repeat-one without a directory queue")

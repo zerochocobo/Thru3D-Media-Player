@@ -91,6 +91,7 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     @UsedByGodot fun set_playback_privacy(mode: String, protectedFavorites: Boolean) {
         PlaybackPrivacy.mode = mode.takeIf { it in setOf("all", "local", "none") } ?: "none"
         PlaybackPrivacy.protectedFavorites = protectedFavorites
+        sources.serverPlaybackPrivacyChanged()
         webBrowser.setHistoryEnabled(PlaybackPrivacy.mode == "all" && !protectedFavorites)
         runCatching { MpvSourceNative.setPrivacy(!PlaybackPrivacy.diagnostics) }
         playbackPrivacyConfigured = true
@@ -237,8 +238,12 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
                     if (value.matches(Regex("/aweme/v1/web/[a-z_/{}]{1,160}"))) paths.put(value)
                 }
             })
-            .put("douyin_dom", counts("douyin_dom", listOf("render_data", "render_current", "flight_scripts", "flight_current", "flight_video", "inline_current")))
-            .put("douyin_diagnostics", counts("douyin_diagnostics", listOf("metadata_count", "page_metadata", "source_id_matches", "dimension_matches", "duration_matches", "address_matches", "observed_source")))
+            .put("douyin_dom", counts("douyin_dom", listOf("render_data", "render_current", "flight_scripts", "flight_current", "flight_video", "inline_current",
+                "inline_model", "inline_audio", "resource_entries", "resource_api", "resource_related", "resource_detail",
+                "resource_detail_current", "resource_detail_other_host", "resource_detail_worker", "resource_detail_fetch")))
+            .put("douyin_diagnostics", counts("douyin_diagnostics", listOf("metadata_count", "page_metadata", "source_id_matches", "dimension_matches", "duration_matches", "address_matches", "observed_source",
+                "metadata_chars", "bound_chars", "request_files", "video_request_matches", "decoded_request_matches", "audio_request_matches", "audio_video_overlap", "object_request_matches", "request_id_matches")))
+            .put("douyin_boundary", counts("douyin_boundary", listOf("reported", "js_ready", "enabled", "protected", "chars", "size_ok", "exact_page", "same_video_page", "frame_ok", "id_ok", "accepted")))
             .put("douyin_observation", counts("douyin_observation", listOf("started", "worker", "tabless_worker", "prefetch", "document_url_matches", "headers", "status", "body", "bytes", "parsed", "detail", "id_string", "id_matches", "normalized", "video", "ads", "images", "encrypted", "drm_zero_string", "tracks", "dimensioned_tracks", "https_addresses", "duration_valid", "data_detail", "response_code")))
             .put("bilibili_probe", media.optString("bilibili_probe"))
             .put("bilibili_response_api", media.optBoolean("bilibili_response_api"))
@@ -390,6 +395,14 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     }
     @UsedByGodot fun cancel_pip_image(id: Int) = pipImages.cancel(id)
     @UsedByGodot fun release_pip_image(id: Int) = pipImages.release(id)
+    private val backgroundImages = PhotoPreviewBridge({ activity?.applicationContext }, { resolveImage(it, 8192) }, ::releaseImage,
+        "background-images", 8192, original = true) { id, json -> if (!closed.get()) emitSignal("background_image_ready", id, json) }
+    @UsedByGodot fun open_background_image(uri: String): Int {
+        if (closed.get()) return -1
+        val id = requestId.incrementAndGet()
+        return if (backgroundImages.open(id, uri)) id else -1
+    }
+    @UsedByGodot fun release_background_image(id: Int) = backgroundImages.release(id)
     @UsedByGodot fun preload_photo(uri: String): Int {
         if (closed.get()) return -1
         val id = requestId.incrementAndGet()
@@ -501,6 +514,7 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
         SignalInfo("rvm_warmup", String::class.java),
         SignalInfo("diagnostic_log", String::class.java),
         SignalInfo("pip_image_ready", Int::class.javaObjectType, String::class.java),
+        SignalInfo("background_image_ready", Int::class.javaObjectType, String::class.java),
         SignalInfo("photo_ready", Int::class.javaObjectType, String::class.java),
         SignalInfo("background_audio_imported", Int::class.javaObjectType, String::class.java),
         SignalInfo("photo_portrait", Int::class.javaObjectType, String::class.java),
@@ -671,6 +685,7 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     @UsedByGodot fun media_cloud_remove(id: String): Int = if (closed.get()) -1 else sources.cloudRemove(id)
     @UsedByGodot fun media_server_request(json: String): Int = if (closed.get()) -1 else sources.serverRequest(json)
     @UsedByGodot fun media_server_cancel(id: Int) { sources.serverCancel(id) }
+    @UsedByGodot fun media_server_playback(json: String) { if (!closed.get()) sources.serverPlayback(json) }
     /** Opens the system "All files access" page (folders beyond media ones, files beside videos). */
     @UsedByGodot fun media_local_grant_all_files() { if (!closed.get()) runOnHostThread { sources.grantAllFiles() } }
     @UsedByGodot fun media_local_grant_directory(path: String) { if (!closed.get()) runOnHostThread { sources.grantLocalDirectory(path) } }
@@ -1021,7 +1036,7 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
 
     // Android can resume before Godot registers the plugin's native signals.
     override fun onGodotSetupCompleted() { activity?.let(CrashRecords::start); signalsReady = true; clear_photo_cache(); runCatching { panoramaOriginals.prepare() } }
-    override fun onMainPause() { CrashRecords.foreground(false); if (!closed.get()) { webBrowser.action("pause"); listeningTasks.foreground(false); readingPages.foreground(false); dlnaForeground(false); systemVolume.foreground(false); musicPlayback.foreground(false); musicPreview.foreground(false); accounts.pause(true); panoramaBrowser.foreground(false); media.pause(); controlled.pause(); mpv.pause(); if (signalsReady) emitSignal("android_lifecycle", "pause") } }
+    override fun onMainPause() { CrashRecords.foreground(false); if (!closed.get()) { sources.serverPlaybackPaused(); webBrowser.action("pause"); listeningTasks.foreground(false); readingPages.foreground(false); dlnaForeground(false); systemVolume.foreground(false); musicPlayback.foreground(false); musicPreview.foreground(false); accounts.pause(true); panoramaBrowser.foreground(false); media.pause(); controlled.pause(); mpv.pause(); if (signalsReady) emitSignal("android_lifecycle", "pause") } }
     override fun onMainResume() { CrashRecords.foreground(true); if (!closed.get()) { activity?.volumeControlStream = AudioManager.STREAM_MUSIC; listeningTasks.foreground(true); readingPages.foreground(true); dlnaForeground(true); systemVolume.foreground(true); musicPlayback.foreground(true); musicPreview.foreground(true); accounts.pause(false); panoramaBrowser.foreground(true); media.resume(); controlled.resume(); mpv.resume(); if (signalsReady) { sources.refreshLocalStorage(); emitSignal("android_lifecycle", "resume") } } }
     override fun onMainDestroy() { close() }
     override fun onGodotTerminating() { close() }
@@ -1030,6 +1045,6 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
         CrashRecords.cleanExit()
         webVideoResolver.close()
         webBrowser.close()
-        if (closed.compareAndSet(false, true)) { dlna_receiver_enable(false); listeningTasks.close(); readingPages.close(); archives.close(); pdfs.close(); originalCapture.close(); embeddedCover.close(); systemVolume.close(); favoritesTasks.close(); accounts.close(); panoramaBrowser.close(); panoramaRegions.close(); panoramaPictures.close(); panoramaOriginals.close(); musicPlayback.close(); musicPreview.close(); backgroundAudio.close(); photos.close(); photoPreloads.close(); photoPreviews.close(); pipImages.close(); PhotoDepthRuntime.release(); picker.close(); localAccess.close(); probe.shutdownNow(); media.shutdown(); controlled.shutdown(); mpv.shutdown(); rvm.close(); sources.close() }
+        if (closed.compareAndSet(false, true)) { dlna_receiver_enable(false); listeningTasks.close(); readingPages.close(); archives.close(); pdfs.close(); originalCapture.close(); embeddedCover.close(); systemVolume.close(); favoritesTasks.close(); accounts.close(); panoramaBrowser.close(); panoramaRegions.close(); panoramaPictures.close(); panoramaOriginals.close(); musicPlayback.close(); musicPreview.close(); backgroundAudio.close(); photos.close(); photoPreloads.close(); photoPreviews.close(); pipImages.close(); backgroundImages.close(); PhotoDepthRuntime.release(); picker.close(); localAccess.close(); probe.shutdownNow(); media.shutdown(); controlled.shutdown(); mpv.shutdown(); rvm.close(); sources.close() }
     }
 }

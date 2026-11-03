@@ -187,8 +187,12 @@ void DepthStabilizer::reset() {
 bool DepthStabilizer::scene_cut(const float* rgb, int frame_step) {
     // OpenCV HSV of 8-bit RGB: H in [0, 180), S in [0, 255]; 30 x 32 bins, L1-normalized.
     const size_t n = static_cast<size_t>(w_) * h_;
+    // Picture only: letterbox bars are shared by every shot and would dilute the distance.
+    const int x0 = cw_ > 0 ? cx_ : 0, y0 = cw_ > 0 ? cy_ : 0, x1 = cw_ > 0 ? cx_ + cw_ : w_, y1 = cw_ > 0 ? cy_ + ch_ : h_;
+    const float pixels = static_cast<float>(x1 - x0) * (y1 - y0);
     std::vector<float> hist(30 * 32, 0.f);
-    for (size_t p = 0; p < n; ++p) {
+    for (int y = y0; y < y1; ++y) for (int x = x0; x < x1; ++x) {
+        const size_t p = static_cast<size_t>(y) * w_ + x;
         const float r = rgb[p] * 255.f, g = rgb[n + p] * 255.f, b = rgb[2 * n + p] * 255.f;
         const float v = std::max({r, g, b}), mn = std::min({r, g, b}), c = v - mn;
         const float s = v > 0 ? c / v * 255.f : 0.f;
@@ -203,7 +207,8 @@ bool DepthStabilizer::scene_cut(const float* rgb, int frame_step) {
         const int sb = std::min(31, static_cast<int>(s / 8.f));
         hist[hb * 32 + sb] += 1.f;
     }
-    for (auto& v : hist) v /= static_cast<float>(n);
+    for (auto& v : hist) v /= pixels;
+    hist_ = hist; hist_distance_ = 0;
     if (!have_ref_) { ref_hist_ = hist; have_ref_ = true; return false; }
     const float keep = std::pow(kCutRefEma, static_cast<float>(std::max(1, frame_step)));
     auto update = [&] { for (size_t i = 0; i < hist.size(); ++i) ref_hist_[i] = ref_hist_[i] * keep + hist[i] * (1 - keep); };
@@ -211,6 +216,7 @@ bool DepthStabilizer::scene_cut(const float* rgb, int frame_step) {
     float bc = 0;
     for (size_t i = 0; i < hist.size(); ++i) bc += std::sqrt(ref_hist_[i] * hist[i]);
     const float distance = std::sqrt(std::max(0.f, 1.f - bc));
+    hist_distance_ = distance;
     // A cut re-seeds the reference; PTMediaServer then resets the detector (and its cooldown) and
     // steps it again on the same frame, so no cooldown follows a cut.
     if (distance > kCutThreshold) { ref_hist_ = hist; cooldown_left_ = 0; return true; }
@@ -296,7 +302,39 @@ void DepthStabilizer::phase_correlate(const std::vector<float>& a, const std::ve
     *dx = cx; *dy = cy; *response = sum;
 }
 
-void DepthStabilizer::stabilize(const float* rgb, int frame_step) {
+void DepthStabilizer::motion(const float* rgb) {
+    const size_t n = static_cast<size_t>(w_) * h_;
+    // Gray of the model input, then the motion-comp grid.
+    std::vector<float> gray(n);
+    for (size_t p = 0; p < n; ++p) {
+        const float v = (0.299f * rgb[p] + 0.587f * rgb[n + p] + 0.114f * rgb[2 * n + p]) * 255.f;
+        gray[p] = std::floor(std::clamp(v, 0.f, 255.f) + 0.5f);
+    }
+    area(gray, w_, h_, small_cur_, sw_, sh_);
+    mc_valid_ = false; mc_residual_ = 0;
+    last_dx_ = last_dy_ = 0; last_response_ = 0;
+    if (!have_small_) return;
+    // Global shift prev -> cur; the residual against the shifted previous gray.
+    float dxs = 0, dys = 0, response = 0;
+    const auto started = Clock::now();
+    phase_correlate(small_prev_, small_cur_, sw_, sh_, &dxs, &dys, &response);
+    timing_.motion_ms = elapsed(started);
+    last_response_ = response;
+    mc_valid_ = std::isfinite(response) && std::isfinite(dxs) && std::isfinite(dys) && response >= kMcMinResponse;
+    std::vector<float> aligned = small_prev_;
+    if (mc_valid_ && (std::fabs(dxs) >= 0.5f || std::fabs(dys) >= 0.5f)) translate(small_prev_, aligned, sw_, sh_, dxs, dys);
+    resid_small_.resize(small_cur_.size());
+    for (size_t i = 0; i < small_cur_.size(); ++i) resid_small_[i] = std::fabs(small_cur_[i] - aligned[i]);
+    // The cut test averages the picture only (content rectangle on the small grid).
+    const int x0 = cw_ > 0 ? cx_ * sw_ / w_ : 0, y0 = cw_ > 0 ? cy_ * sh_ / h_ : 0;
+    const int x1 = cw_ > 0 ? std::max(x0 + 1, (cx_ + cw_) * sw_ / w_) : sw_, y1 = cw_ > 0 ? std::max(y0 + 1, (cy_ + ch_) * sh_ / h_) : sh_;
+    double total = 0;
+    for (int y = y0; y < y1; ++y) for (int x = x0; x < x1; ++x) total += resid_small_[static_cast<size_t>(y) * sw_ + x];
+    mc_residual_ = static_cast<float>(total / (static_cast<double>(x1 - x0) * (y1 - y0)));
+    mc_dx_ = dxs; mc_dy_ = dys;
+}
+
+void DepthStabilizer::stabilize(int frame_step) {
     const size_t n = static_cast<size_t>(w_) * h_;
     int k = static_cast<int>(std::lround(std::min(w_, h_) / 16.0));
     if (k < 3) k = 3;
@@ -304,34 +342,19 @@ void DepthStabilizer::stabilize(const float* rgb, int frame_step) {
     auto started = Clock::now();
     box(near_, tmp_, base_cur_, w_, h_, k);
     timing_.box_ms = elapsed(started);
-    // Gray of the model input, then the motion-comp grid.
-    std::vector<float> gray(n);
-    for (size_t p = 0; p < n; ++p) {
-        const float v = (0.299f * rgb[p] + 0.587f * rgb[n + p] + 0.114f * rgb[2 * n + p]) * 255.f;
-        gray[p] = std::floor(std::clamp(v, 0.f, 255.f) + 0.5f);
-    }
-    std::vector<float> small;
-    area(gray, w_, h_, small, sw_, sh_);
     if (!initialized_) {
-        base_prev_ = base_cur_; small_prev_ = small; have_small_ = true; initialized_ = true;
+        base_prev_ = base_cur_; small_prev_.swap(small_cur_); have_small_ = true; initialized_ = true;
         return; // first frame is identity: base + detail == near
     }
-    // Global shift prev -> cur, motion-compensated previous base, per-tile evidence alpha.
+    // Motion-compensated previous base, per-tile evidence alpha.
     const std::vector<float>* prev = &base_prev_;
     bool alpha_map = false;
-    last_dx_ = last_dy_ = 0; last_response_ = 0;
     if (have_small_) {
-        float dxs = 0, dys = 0, response = 0;
-        started = Clock::now();
-        phase_correlate(small_prev_, small, sw_, sh_, &dxs, &dys, &response);
-        timing_.motion_ms = elapsed(started);
-        last_response_ = response;
-        if (std::isfinite(response) && std::isfinite(dxs) && std::isfinite(dys) && response >= kMcMinResponse) {
+        const float dxs = mc_dx_, dys = mc_dy_;
+        if (mc_valid_) {
             // Evidence gate on the small grid: residual between cur and the shifted previous gray.
-            std::vector<float> aligned = small_prev_;
-            if (std::fabs(dxs) >= 0.5f || std::fabs(dys) >= 0.5f) translate(small_prev_, aligned, sw_, sh_, dxs, dys);
-            std::vector<float> resid(small.size());
-            for (size_t i = 0; i < small.size(); ++i) resid[i] = std::fabs(small[i] - aligned[i]);
+            const std::vector<float>& resid = resid_small_;
+            const auto& small = small_cur_;
             const int tile = 16 / 2; // _EVID_TILE // _MC_DOWNSAMPLE
             const int tw = std::max(1, sw_ / tile), th = std::max(1, sh_ / tile);
             std::vector<float> coarse, back(small.size());
@@ -389,7 +412,7 @@ void DepthStabilizer::stabilize(const float* rgb, int frame_step) {
         near_[p] = std::clamp(stable + (near_[p] - base_cur_[p]), 0.f, 1.f);
     }
     base_prev_.swap(next);
-    small_prev_.swap(small);
+    small_prev_.swap(small_cur_);
     have_small_ = true;
     timing_.blend_ms = elapsed(started);
 }
@@ -401,6 +424,12 @@ void DepthStabilizer::process(const float* inv, const float* rgb, int frame_step
     auto started = Clock::now();
     last_cut_ = scene_cut(rgb, frame_step);
     timing_.scene_ms = elapsed(started);
+    motion(rgb);
+    since_cut_ = std::min(since_cut_ + frame_step, 1 << 20);
+    if (!last_cut_ && since_cut_ > kCutResidualHold && mc_residual_ > kCutResidual && hist_distance_ > kCutResidualDistance) {
+        last_cut_ = true; ref_hist_ = hist_;
+    }
+    if (last_cut_) since_cut_ = 0;
     if (last_cut_) { have_band_ = false; initialized_ = false; have_small_ = false; ++cuts_; }
     started = Clock::now();
     band(inv, frame_step);
@@ -410,7 +439,7 @@ void DepthStabilizer::process(const float* inv, const float* rgb, int frame_step
     for (size_t p = 0; p < n; ++p)
         near_[p] = std::isfinite(inv[p]) ? std::clamp((inv[p] - lo_) * s, 0.f, 1.f) : 0.f;
     started = Clock::now();
-    stabilize(rgb, frame_step);
+    stabilize(frame_step);
     timing_.stabilize_ms = elapsed(started);
     // soft_shift: grow the foreground by round(w / 512) (at least 1) so the gap is bounded by background.
     const int r = dilation_ >= 0 ? dilation_ : std::max(1, static_cast<int>(std::lround(w_ / 512.0)));

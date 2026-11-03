@@ -100,7 +100,8 @@
       (d.documentId && state.document || d.documentUrl?.split('#')[0] === state.documentPage.split('#')[0]);
     const sameDouyin = state?.douyin && typeof Thru3DDouyin !== 'undefined' && Thru3DDouyin.documentPage(d.documentUrl) &&
       (d.documentId && state.document || d.documentUrl?.split('#')[0] === state.documentPage.split('#')[0]);
-    if (!state || !(state.enabled || state.bilibili || state.douyin) || d.tabId < 0 || (d.documentId && state.document && d.documentId !== state.document) ||
+    const plex = state && typeof Thru3DPlex !== 'undefined' && Thru3DPlex.address(d.url, state.page);
+    if (!state || !(state.enabled || state.bilibili || state.douyin || plex) || d.tabId < 0 || (d.documentId && state.document && d.documentId !== state.document) ||
         (d.documentUrl && d.documentUrl.split('#')[0] !== state.page.split('#')[0] && !sameBili && !sameDouyin)) return null;
     return state;
   };
@@ -117,7 +118,7 @@
       const request = url(d.url);
       const origins = [d.documentUrl, d.originUrl].filter(Boolean);
       if (d.method !== 'GET' || d.parentFrameId != null && d.parentFrameId !== -1 ||
-          request?.origin !== 'https://www.douyin.com' || request.pathname !== '/aweme/v1/web/aweme/detail/' ||
+          !(typeof Thru3DDouyin !== 'undefined' && Thru3DDouyin.address(d.url)) || request?.pathname !== '/aweme/v1/web/aweme/detail/' ||
           typeof Thru3DDouyin === 'undefined' || typeof d.incognito !== 'boolean' ||
           !origins.length || origins.some(value => !Thru3DDouyin.documentPage(value))) return null;
       const ids = request.searchParams.getAll('aweme_id');
@@ -153,7 +154,7 @@
   browser.webRequest.onHeadersReceived.addListener(d => {
     // Structural diagnostics only: no query values, request headers or JSON bodies.
     const observed = douyinMetadataState(d), address = url(d.url);
-    if (observed?.douyin && address?.origin === 'https://www.douyin.com' && d.method === 'GET' &&
+    if (observed?.douyin && address && Thru3DDouyin.address(address.href) && d.method === 'GET' &&
         /^\/aweme\/v1\/web\/[a-z0-9_/]{1,120}$/.test(address.pathname) &&
         /^application\/json(?:;|$)/i.test(header(d.responseHeaders, 'content-type'))) {
       const path = '/aweme/v1/web/' + address.pathname.slice('/aweme/v1/web/'.length).split('/')
@@ -177,6 +178,10 @@
     if ((state.bilibili || state.douyin) && !(request?.state === state && request.url === d.url && request.sent === true)) return;
     // A cached response can have no onSendHeaders. Do not invent Cookie/Authorization.
     const safe = request?.state === state && request.url === d.url ? request.headers : {};
+    // Plex Web sends its token in a request header. With generic capture disabled,
+    // retain only a successful, authenticated library request from this exact frame.
+    if (!(state.enabled || state.bilibili || state.douyin) &&
+        !(typeof Thru3DPlex !== 'undefined' && Thru3DPlex.source(d.url, state.page, safe))) return;
     const c = { url: d.url, kind: type, mime, headers: safe, at: Date.now(), cookies: [],
       original_url: request?.state === state ? request.original : d.url,
       length: header(d.responseHeaders, "content-length").slice(0, 24),

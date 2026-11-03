@@ -1,12 +1,13 @@
 # Host build and run of the 2D->3D near-map stabilizer test (MSVC Build Tools).
 # -Cli builds build\depth-stabilizer-test\depth_stabilizer_cli.exe (offline sequences) instead of testing.
-param([switch]$Cli)
+# -Bars runs the burned-in letterbox test (picture_bars.h) instead.
+param([switch]$Cli, [switch]$Bars)
 $ErrorActionPreference = 'Stop'
 $workspace = Split-Path -Parent $PSScriptRoot
 $out = Join-Path $workspace 'build\depth-stabilizer-test'
 New-Item -ItemType Directory -Path $out -Force | Out-Null
 $vcvars = 'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat'
-$main = if ($Cli) { 'depth_stabilizer_cli' } else { 'depth_stabilizer_test' }
+$main = if ($Cli) { 'depth_stabilizer_cli' } elseif ($Bars) { 'picture_bars_test' } else { 'depth_stabilizer_test' }
 $sources = "`"$workspace\tests\native\$main.cpp`" `"$workspace\native\rvm\depth_stabilizer.cpp`""
 # vcvars prints a harmless vswhere notice on stderr; only the exit code decides.
 $ErrorActionPreference = 'Continue'

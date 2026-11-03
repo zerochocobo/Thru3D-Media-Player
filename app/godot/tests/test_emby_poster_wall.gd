@@ -45,7 +45,7 @@ func _run() -> void:
 	platform.answer(request_id(b, "home"), {"capabilities": {"home_layout": "libraries", "artwork": true, "facets": ["genres", "tags", "performers"], "navigation": [], "favorite_scope": "server"}, "libraries": libraries})
 	check(menu.rows.size() == 9 and menu.rows.all(func(row): return row.has("library")), "home exposes libraries directly")
 	check(menu._max_scroll() == 0, "library carousel never creates a vertical scrollbar")
-	check(menu._buttons.filter(func(button): return button.target >= Gallery.LIBRARY).size() == 4, "four visible library cards")
+	check(menu._buttons.filter(func(button): return button.target >= Gallery.LIBRARY and button.target < Gallery.LIBRARY + libraries.size()).size() == 4, "four visible library cards")
 	menu.stick_scroll_horizontal(1, 0.1); check(b.gallery.library_start == 1 and b.pending.is_empty(), "horizontal stick scrolls without choosing a library")
 	menu.stick_scroll(1, 0.1); check(menu.scroll == 0, "vertical input does not select or move the fixed homepage")
 	b.gallery.library_start = 0; menu.refresh()
@@ -73,7 +73,14 @@ func _run() -> void:
 	b.action(Browser.ACTION + 162)
 	check(not menu._grid() and menu._cols() == 1 and b.scene_view() == "list", "Server list is independently selected")
 	check(menu.capture_position().key == first_key and menu.view_mode == original_view, "Server view conversion preserves item identity and the common folder preference")
-	check(menu._tips.get(Menu.ROW_BASE, "").begins_with("Film\n完整文件名_"), "List leads with the server title and retains the complete filename in its tooltip")
+	var first_row: Dictionary = menu._buttons.filter(func(button): return button.target == Menu.ROW_BASE)[0]
+	check(first_row.node.get_children().any(func(node): return node is Label3D and node.text == "Film"), "List leads with the complete short server title")
+	var long_title := "A journey through the mountains and along the distant coast. ".repeat(8)
+	for node in nodes: node.title = long_title
+	menu.refresh()
+	check(menu._tips.get(Menu.ROW_BASE, "").begins_with(long_title.strip_edges() + "\n完整文件名_"), "Truncated list titles retain the full server title and filename in the tooltip")
+	for node in nodes: node.title = "Film"
+	menu.refresh()
 	check(b.pending.values().filter(func(req): return req.action == "cover").size() == 2 and b.pending.values().filter(func(req): return req.action == "cover").all(func(req): return req.image_type == "Thumb" and req.max_width == 128), "List fetches only small horizontal images")
 	b.action(Browser.ACTION + 161)
 	check(menu._grid() and b.scene_view() == "thumb" and b.pending.values().filter(func(req): return req.action == "cover").all(func(req): return req.image_type == "Thumb" and req.max_width == 512), "Thumbnail mode switches image variant without per-film detail queries")

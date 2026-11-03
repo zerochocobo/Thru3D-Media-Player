@@ -20,6 +20,7 @@ class MainHarness extends "res://scripts/main.gd":
 	func _move_pose(_hand: String) -> Variant: return hand_pose
 	func _ray(_hand: String) -> Variant: return ray
 	func _input_focused() -> bool: return true
+	func _vr_passthrough_active() -> bool: return false # No VR presentation in this input fixture.
 
 class VideoFixture extends Node3D:
 	var geometry := 0

@@ -91,7 +91,7 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
         // P0 is per-tab and process-local. Production remains on the verified backend
         // until the pinned Gecko response/SPA and device playback gates have passed.
         var bilibiliProbe = "off"
-        var douyinProbe = false
+        var douyinCaptureEnabled = true
         val sources = mutableMapOf<WebExtension.Port, JSONArray>()
         var fullScreen = false
     }
@@ -293,8 +293,7 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
     // Prepare the explicitly selectable Beta route while the page loads; selection is
     // separate from observation so the existing player button keeps its old backend.
     private fun bilibiliEnabled(tab: Tab) = tab.bilibiliProbe !in setOf("uncapped", "network") && bilibiliEligible(tab)
-    // Unfinished route stays closed in the public export, including Debug research capture.
-    private fun douyinEnabled(tab: Tab) = false
+    private fun douyinEnabled(tab: Tab) = WebBrowserDouyin.enabled(tab.url, tab.douyinCaptureEnabled)
     private fun networkEnabled(tab: Tab) = networkPolicy()?.enabled(tab.url) == true || tab.bilibiliProbe == "network" && bilibiliEligible(tab)
     /** Debug-only A/B/C/P0b comparison; no persistent preference, reload or account changes. */
     fun configureBilibiliProbe(tabId: Int, mode: String) {
@@ -306,13 +305,13 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
         tab.bilibiliProbe = mode; tab.sources.clear(); tab.media.clear()
         sendNetworkPolicy(tab); publish()
     }
-    /** Process-local research switch; absent from Release receivers and normal UI. */
+    /** Debug-only process-local override; normal Beta capture is enabled by default. */
     fun configureDouyinProbe(tabId: Int, enabled: Boolean) {
         check(Looper.myLooper() == Looper.getMainLooper())
         check((activity()?.applicationInfo?.flags ?: 0) and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0)
         val tab = tabs.firstOrNull { it.id == tabId } ?: if (!enabled) return else error("Unknown tab")
         require(!enabled || current() === tab && WebBrowserDouyin.document(tab.url))
-        tab.douyinProbe = enabled; tab.sources.clear(); tab.media.clear()
+        tab.douyinCaptureEnabled = enabled; tab.sources.clear(); tab.media.clear()
         sendNetworkPolicy(tab); publish()
     }
     private fun sendNetworkPolicy(tab: Tab) {
@@ -619,9 +618,11 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                             val network = if (networkEnabled || bilibiliEnabled || douyinEnabled) WebBrowserNetworkMedia.candidates(item) else JSONArray()
                             val bilibili = item.optJSONObject("bilibili")?.takeIf { bilibiliEnabled &&
                                 !item.optBoolean("protected") && it.toString().length <= 96 * 1024 && it.optString("page") == tab.url }
-                            val server = !item.optBoolean("protected") && WebBrowserServerMedia.original(item.optString("source"), tab.url) != null
-                            val douyin = item.optJSONObject("douyin")?.takeIf { douyinEnabled && !item.optBoolean("protected") &&
-                                it.toString().length <= 96 * 1024 && it.optString("page") == tab.url && it.optString("id") == WebBrowserDouyin.pageId(tab.url) }
+                            val serverHeaders = item.optJSONObject("server_headers")?.let { data ->
+                                data.keys().asSequence().take(4).associateWith { data.optString(it) }
+                            }.orEmpty()
+                            val server = !item.optBoolean("protected") && WebBrowserServerMedia.recognizes(item.optString("source"), tab.url, serverHeaders)
+                            val douyin = WebBrowserDouyin.metadata(item, tab.url, douyinEnabled)
                             safe.put(JSONObject().put("width", item.optInt("width").coerceIn(0, 32768))
                                 .put("id", id).put("fullscreen", item.optBoolean("fullscreen") || server && item.optBoolean("server_play"))
                                 .put("server_play", server && item.optBoolean("server_play"))
@@ -642,9 +643,10 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                                     .put("network_enabled", networkEnabled)
                                     .put("bilibili_enabled", bilibiliEnabled).put("bilibili", bilibili)
                                     .put("douyin_enabled", douyinEnabled).put("douyin", douyin)
+                                    .put("douyin_boundary", if (mediaDiagnosticsEnabled()) WebBrowserDouyin.metadataDiagnostics(item,tab.url,douyinEnabled,douyin != null) else null)
                                     .put("bilibili_probe", tab.bilibiliProbe)
                                     .put("diagnostic_max_height", if (tab.bilibiliProbe == "uncapped" && bilibiliEligible(tab)) 2160 else 1080)
-                                    .put("capture_identity", "${tab.id}:${tab.navigation}:${System.identityHashCode(port)}:$id:${item.optLong("network_epoch")}:${tab.bilibiliProbe}:${tab.douyinProbe}")
+                                    .put("capture_identity", "${tab.id}:${tab.navigation}:${System.identityHashCode(port)}:$id:${item.optLong("network_epoch")}:${tab.bilibiliProbe}:${tab.douyinCaptureEnabled}")
                                     .put("fullscreen", item.optBoolean("fullscreen") || server && item.optBoolean("server_play")))
                             }
                         }
@@ -940,7 +942,13 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
             val pending = tab.pendingUrl
             if (pending != null) {
                 if (extensionState != "pending") { tab.pendingUrl = null; tab.session.loadUri(pending) }
-            } else tab.savedState?.let { tab.session.restoreState(it) } ?: tab.session.loadUri(tab.url)
+            } else {
+                val saved = tab.savedState
+                // setActive(false) flushes asynchronously; closing immediately can retain the
+                // snapshot before a same-document video switch. Never restore that old page.
+                if (WebBrowserSessionState.matches(saved, tab.url)) tab.session.restoreState(saved!!)
+                else tab.session.loadUri(tab.url)
+            }
         }
     }
     private fun selectTab(tab: Tab): Boolean {
@@ -1243,7 +1251,7 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
             .put("network_capture_available", tab != null && WebBrowserNetworkPolicy.available(tab.url))
             .put("network_capture_enabled", tab != null && networkEnabled(tab))
             .put("bilibili_beta_available", tab != null && bilibiliEligible(tab))
-            .put("douyin_beta_available", false)
+            .put("douyin_beta_available", tab != null && douyinEnabled(tab) && WebBrowserDouyin.pageId(tab.url) != null)
             .put("fullscreen_request", tab?.fullscreen?.request ?: 0).put("fullscreen_video", tab?.fullscreen?.active == true)
             .put("captured_fullscreen_request", tab?.capturedFullscreenRequest ?: 0)
             .put("url", tab?.url ?: "about:blank").put("title", tab?.title.orEmpty())

@@ -440,7 +440,7 @@ func comicIndex(s *comicSource, name, password string) (*comicSession, error) {
 		for _, f := range r.File {
 			// Decode only the listing name; File.Open/DataOffset retain the
 			// original header and byte offsets used for decryption/extraction.
-			name := comicZIPName(f.Name, f.Flags, f.Extra)
+			name := comicZIPLegacyName(comicZIPName(f.Name, f.Flags, f.Extra), f.Flags)
 			if f.FileInfo().IsDir() {
 				if e = addEntry(name, 0, true); e != nil {
 					return nil, e

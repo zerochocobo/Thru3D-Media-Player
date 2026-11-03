@@ -6,6 +6,36 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class CloudSearchTest {
+    @Test fun subtitleSearchKeepsAllTextFormatsAndNormalMediaSearchStillExcludesThem() {
+        val names = listOf("Film.zh.SRT", "Film.en.ass", "Film.ssa", "Film.vtt", "Film.smi", "Film.sami", "Film.sub", "Film.sup", ".Film.srt", "Film.mp4", "Film.txt")
+        val directory = Directory(names.mapIndexed { index, name -> CloudFile(name, false, 128, "$index") } + CloudFile("Film", true, 0, "folder"))
+        val search = CloudDirectorySearch()
+        val result = search.search("a", "id", directory, "/media", "film", "subtitle", "", false)
+        assertEquals(7, result.getJSONArray("content").length())
+        for (index in 0 until result.getJSONArray("content").length()) {
+            val item = result.getJSONArray("content").getJSONObject(index)
+            val entry = CloudLibrary.searchEntry(item, "/a/media", "subtitle")!!
+            assertEquals("subtitle", entry.getString("kind"))
+            assertEquals(item.getString("token"), entry.getString("search_token"))
+            assertEquals(item.getString("path"), search.resolve("a", "id", entry.getString("search_token")).getString("path"))
+            assertNull(CloudLibrary.searchEntry(item, "/a/media", "all"))
+        }
+        val normal = search.search("a", "id", directory, "/media", "film", "all", "", false).getJSONArray("content")
+        assertEquals(2, normal.length()) // video and folder
+        for (name in listOf("Film.mp4", "Film.sup", ".Film.srt", "Film\u0001.srt")) {
+            assertNull(CloudLibrary.searchEntry(JSONObject().put("name", name).put("is_dir", false).put("token", "bad"), "/a/media", "subtitle"))
+        }
+    }
+    @Test fun subtitleSearchCoversUnseenPagesAndCursorCannotChangeType() {
+        val directory = Directory((0 until 60).map { CloudFile("Film.$it.srt", false, 128, "$it") })
+        val search = CloudDirectorySearch()
+        val first = search.search("a", "id", directory, "/media", "Film", "subtitle", "", false)
+        assertEquals(48, first.getJSONArray("content").length())
+        val cursor = first.getString("next_cursor")
+        assertEquals(12, search.search("a", "id", directory, "/media", "Film", "subtitle", cursor, false).getJSONArray("content").length())
+        assertThrows(IllegalArgumentException::class.java) { search.search("a", "id", directory, "/media", "Film", "all", cursor, false) }
+        assertEquals(2, directory.reads)
+    }
     private class Directory(var files: List<CloudFile>) : CloudClient {
         var reads = 0
         var refreshes = 0

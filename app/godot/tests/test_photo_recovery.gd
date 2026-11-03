@@ -96,11 +96,26 @@ func run() -> void:
 	check(photo.gallery.mode == 0 and photo.panel.visible,"Wall-to-Single remains usable after 3D failure")
 	app.photo_menu.refresh(); tap(app.photo_menu,app.photo_menu.MODE); tap(app.photo_menu,app.photo_menu.MODE_PROJECTION+3)
 	check(photo.geometry == 3 and not photo.depth_requested,"User can select panorama projection after automatic 3D failure")
+	check(photo.depth_error.is_empty() and not photo._depth_busy and photo.auto_depth,"Panorama clears conversion failure but preserves the automatic 3D preference")
+	app.photo_menu.refresh()
+	check(app.photo_menu._photo_status()!=app.photo_menu.I18n.t("3D unavailable"),"Panorama controls do not keep displaying the flat conversion error")
+	var late_calls:=host.depth_calls
+	photo._on_depth(photo._display_request,'{"state":"error"}')
+	photo._on_depth(photo._display_request,'{"deferred":true}')
+	photo._finish_depth(photo._display_request,{"strength":photo.depth_strength+.1},false)
+	check(photo.depth_error.is_empty() and not photo._depth_busy and host.depth_calls==late_calls,"Late failures, deferrals and strength results cannot restart conversion on a panorama")
+	check(not photo.set_depth(true) and host.depth_calls==late_calls,"Explicit conversion also rejects panorama without a native request")
+	photo.set_projection(0); host.reject_depth=false; photo.set_depth(true)
+	check(photo._depth_busy,"Compatible flat projection can start conversion again")
+	photo.set_depth(false); photo._on_depth(photo._display_request,'{"state":"error"}')
+	check(not photo._depth_busy and photo.depth_error.is_empty() and not photo.auto_depth,"Turning conversion off cancels its pending state and ignores late failure")
+	photo.auto_depth=true; photo.set_projection(3)
 	# Recognized panoramas must never be sent through flat automatic depth.
 	photo.close_image(); photo.mode_lock.clear(); photo.gallery.set_mode(2); host.panorama = true
 	var before := host.depth_calls
 	photo.open_image(entries[1].uri,entries[1].title,entries); photo.gallery._process(.01); photo.gallery.activate(1); await settle(photo,host)
 	check(photo.geometry == 3 and host.depth_calls == before,"Panorama wall selection opens immersive projection without a 3D request")
+	check(not photo.snapshot().depth_available and photo.depth_error.is_empty(),"Recognized panoramas expose no conversion availability or failure")
 	photo.set_layout_mode(0); check(photo.geometry == 3 and photo.panel.visible,"Switching panorama from wall to Single preserves immersive projection")
 	# Async conversion failure uses the same fallback; source errors still expose Close and layouts.
 	photo.close_image(); host.panorama = false; host.reject_depth = false

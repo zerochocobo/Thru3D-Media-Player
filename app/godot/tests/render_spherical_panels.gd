@@ -37,30 +37,30 @@ func run() -> void:
 	world.environment.background_mode = Environment.BG_COLOR; world.environment.background_color = Color(0.035, 0.04, 0.05)
 	var display := preload("res://scripts/xr_display.gd").new(); display.configure(viewport, world.environment, null, true)
 	var menu := Player.new(); origin.add_child(menu); menu.set_process(false); menu.state_provider = func(): return state
+	menu.action_requested.connect(func(operation):
+		if operation == "loop": state.playback_mode = "repeat_one" if state.get("playback_mode", "single") == "single" else "single")
 	menu.position = Vector3(0, -0.45, -1.4); menu.set_layout_viewer(camera.global_transform); menu.toggle()
 	var library := Library.new(); origin.add_child(library); library.catalog = Catalog.new(); library.set_process(false)
 	menu.expanded_library = library; library.reparent(menu, false)
 	for language in ["en", "zh", "zh_Hant", "ja"]:
 		I18n.use(language)
-		for mode in ["bar", "settings", "settings-alpha", "screen", "playback-choices", "compact", "expanded", "error"]:
+		for mode in ["bar", "settings", "settings-alpha", "screen", "playback-cycle", "compact", "expanded", "error"]:
 			library.visible = false; menu._reset_navigation(); state.erase("error")
 			state.geometry = 1 if mode == "settings-alpha" else 0
-			if mode in ["settings", "settings-alpha", "playback-choices"]: menu.section = 1
+			if mode in ["settings", "settings-alpha", "playback-cycle"]: menu.section = 1
 			if mode == "screen": menu._adjustment = "screen"
 			if mode == "error": state.error = "The network connection was lost"; menu._failure_open = true
 			menu.refresh()
 			if mode == "screen":
 				check(menu._buttons.filter(func(item): return item.target >= Player.SCREEN_CURVE and item.target < Player.SCREEN_CURVE + Player.Surface.CURVES.size()).size() == Player.Surface.CURVES.size(), "Screen curves use the current inline options")
-			if mode == "playback-choices":
-				var openers: Array = menu.choices.targets.keys().filter(func(id): return menu.choices.targets[id].get("kind", "") == "open" and menu.choices.targets[id].get("key", "") == "playback_mode")
-				check(openers.size() == 1, "Playback mode has a dropdown entry")
-				if openers.size() == 1:
-					var item: Dictionary = menu._buttons.filter(func(button): return button.target == openers[0])[0]
-					var ray_origin: Vector3 = item.node.to_global(Vector3(0, 0, 0.4))
-					var ray_direction: Vector3 = -item.node.global_basis.z
-					menu.press_pointer("right_hand", ray_origin, ray_direction, true)
-					menu.release_pointer("right_hand", ray_origin, ray_direction, true)
-				check(not menu.choices.popup.is_empty() and menu.choices.targets.values().any(func(item): return item.get("kind", "") == "choose" and item.get("key", "") == "playback_mode"), "Ray opens the actual playback mode dropdown")
+			if mode == "playback-cycle":
+				var item: Dictionary = menu._buttons.filter(func(button): return button.target == Player.SETTINGS_TILE + Player.OPERATIONS[1].find("loop"))[0]
+				var before := str(state.get("playback_mode", "single"))
+				var ray_origin: Vector3 = item.node.to_global(Vector3(0, 0, 0.4))
+				var ray_direction: Vector3 = -item.node.global_basis.z
+				menu.press_pointer("right_hand", ray_origin, ray_direction, true)
+				menu.release_pointer("right_hand", ray_origin, ray_direction, true)
+				check(state.playback_mode != before and menu.choices.popup.is_empty(), "Ray cycles playback mode without a raised dropdown")
 			if mode in ["compact", "expanded"]:
 				library.playback_expanded = mode == "expanded"; library.set_compact(mode == "compact"); library.visible = true; library.refresh()
 			await frames()
@@ -79,7 +79,6 @@ func run() -> void:
 			capture.update(); await frames(); capture.update(); await frames()
 			check(capture.snapshot().active, "Compositor capture active for " + mode)
 			check(capture.snapshot().layers <= Capture.MAX_GROUPS, "Spherical layout respects the layer budget")
-			if mode == "playback-choices": check(capture.snapshot().layers >= 3, "Raised choices keep a separate compositor layer")
 			var surfaces: Array = [menu._backdrop]
 			for surface in menu._popup_surfaces: surfaces.append(surface.get_child(0))
 			if library.visible: surfaces.append(library._backdrop)
@@ -89,7 +88,10 @@ func run() -> void:
 					if slot.used and slot.nodes.has(surface):
 						found = true
 						check(slot.layer.global_basis.z.angle_to(surface.global_basis.z) < 0.01, "Compositor retains each surface's independent normal")
-				check(found, "%s/%s surface has a compositor layer" % [language, mode])
+				if surface.has_meta("menu_eye_buffer"):
+					check(not found, "%s/%s eye-buffer backing plate stays out of compositor capture" % [language, mode])
+				else:
+					check(found, "%s/%s surface has a compositor layer" % [language, mode])
 			capture.free(); await process_frame
 	var report := {"checks": checks, "failures": failures, "state": "passed" if failures.is_empty() else "failed", "headset_verified": false}
 	var file := FileAccess.open(output.path_join("verification.json"), FileAccess.WRITE); file.store_string(JSON.stringify(report, "  ")); file.close()

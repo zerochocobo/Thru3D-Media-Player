@@ -42,6 +42,9 @@ internal class MediaSources(
     private val mediaServers = MediaServerLibrary(::context, ::streams, ::nextId, emit = emit)
     fun serverRequest(json: String): Int = mediaServers.request(json)
     fun serverCancel(id: Int) = mediaServers.cancel(id)
+    fun serverPlayback(json: String) = mediaServers.playbackState(json)
+    fun serverPlaybackPrivacyChanged() = mediaServers.playbackPrivacyChanged()
+    fun serverPlaybackPaused() = mediaServers.playbackPaused()
     fun clearPlaybackReferences() { network.execute { runCatching { dlna.clearPlaybackReferences() } } }
     fun releaseMediaStream(uri: String) {
         externalVideo.release(uri)

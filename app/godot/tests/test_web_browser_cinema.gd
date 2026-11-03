@@ -7,6 +7,7 @@ class InputMain extends Main:
 	var eye := Transform3D(Basis(Vector3.UP, 0.25), Vector3(0.4, 1.7, 0.2))
 	func _cinema_scene_active() -> bool: return hall
 	func _cinema_interaction_owns() -> bool: return false
+	func _vr_passthrough_active() -> bool: return false # This fixture has no temporary-passthrough session.
 	func _input_focused() -> bool: return true
 	func _disc_menu_press(_hand: String) -> bool: return false
 	func _capture_pointer_press(_hand: String) -> bool: return false

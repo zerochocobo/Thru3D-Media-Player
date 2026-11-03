@@ -2,11 +2,41 @@ package org.vrpassthroughplayer.plugin
 
 import java.net.URI
 import java.net.URLDecoder
+import org.json.JSONObject
 
 /** The Beta route is independent of generic sniffing and the legacy extractor. */
 object WebBrowserDouyin {
-    /** Unreleased: only an explicitly opted-in Debug tab can expose native handoff. */
-    fun enabled(value: String, debuggable: Boolean, optedIn: Boolean): Boolean = debuggable && optedIn && document(value)
+    private const val METADATA_LIMIT = 96 * 1024
+    // User paused this feature on 2026-11-03 after the featured-entry regression.
+    // Reopen only after the user updates their version and authorizes more research.
+    private const val USER_BETA_AVAILABLE = false
+
+    fun metadata(item: JSONObject, currentPage: String, enabled: Boolean): JSONObject? {
+        if (!enabled || item.optBoolean("protected")) return null
+        val data = item.optJSONObject("douyin") ?: return null
+        val expected = pageId(currentPage) ?: return null
+        val frame = data.optString("page")
+        return data.takeIf { it.toString().length <= METADATA_LIMIT && frame == item.optString("frame") &&
+            pageId(frame) == expected && it.optString("id") == expected }
+    }
+
+    fun metadataDiagnostics(item: JSONObject, currentPage: String, enabled: Boolean, accepted: Boolean): JSONObject {
+        val data = item.optJSONObject("douyin")
+        val expected = pageId(currentPage)
+        val frame = data?.optString("page").orEmpty()
+        val size = data?.toString()?.length ?: 0
+        fun flag(value: Boolean) = if (value) 1 else 0
+        return JSONObject().put("reported",flag(data != null)).put("js_ready",flag(item.optBoolean("douyin_ready")))
+            .put("enabled",flag(enabled)).put("protected",flag(item.optBoolean("protected")))
+            .put("chars",size).put("size_ok",flag(data != null && size <= METADATA_LIMIT))
+            .put("exact_page",flag(data != null && frame == currentPage))
+            .put("same_video_page",flag(expected != null && pageId(frame) == expected))
+            .put("frame_ok",flag(data != null && frame == item.optString("frame")))
+            .put("id_ok",flag(expected != null && data?.optString("id") == expected)).put("accepted",flag(accepted))
+    }
+
+    /** Temporarily unavailable in ordinary builds and diagnostic overrides alike. */
+    fun enabled(value: String, captureEnabled: Boolean = true): Boolean = USER_BETA_AVAILABLE && captureEnabled && document(value)
 
     fun document(value: String): Boolean = runCatching {
         val u = URI(value)
@@ -49,11 +79,13 @@ object WebBrowserDouyin {
         fun objectPath(uri: URI) = Regex("/(?:[a-fA-F0-9]{32}|[a-fA-F0-9]{64})/[a-fA-F0-9]{8,16}(/video/tos/cn/tos-cn-[a-zA-Z0-9-]{1,96}/[A-Za-z0-9_-]{8,240}(?:/[A-Za-z0-9_-]{8,240})?/?)")
             .matchEntire(uri.rawPath)?.groupValues?.get(1)
         val assetBound = Regex("[1-9][0-9]{14,19}").matches(contentId) && (ids.isEmpty() || bound) &&
-            a.rawAuthority == b.rawAuthority && objectPath(a) != null && objectPath(a) == objectPath(b)
+            objectPath(a) != null && objectPath(a) == objectPath(b)
         val ignored = if (assetBound) setOf("cquery", "l", "dy_q", "btag") else if (bound) setOf("cquery", "l") else emptySet()
         fun stable(list: List<Pair<String, String>>) = list.filter { it.first !in ignored }
         val order = compareBy<Pair<String, String>> { it.first }.thenBy { it.second }
-        a.rawAuthority == b.rawAuthority && (a.rawPath == b.rawPath || assetBound) && stable(original).sortedWith(order) == stable(query(b).filter {
+        // CDN aliases follow the trusted document when object/content identity
+        // and the remaining query agree. Replay the observed request unchanged.
+        (a.rawAuthority == b.rawAuthority || assetBound || bound) && (a.rawPath == b.rawPath || assetBound) && stable(original).sortedWith(order) == stable(query(b).filter {
             val key = it.first
             key in keys || key !in setOf("temp", "__vid", "testst")
         }).sortedWith(order)

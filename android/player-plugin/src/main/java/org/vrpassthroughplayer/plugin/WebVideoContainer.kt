@@ -45,12 +45,18 @@ internal object WebVideoContainer {
             val end = start + 3 + length - 4
             if (end > p + 188) continue
             val descriptors = ((d[start + 10].toInt() and 15) shl 8) or (d[start + 11].toInt() and 255)
-            var cursor = start + 12 + descriptors; var video = "none"; var audio = "none"
+            var cursor = start + 12 + descriptors; var video = "none"; var audio = "none"; var videoPid = -1
             while (cursor + 5 <= end) {
-                when (d[cursor].toInt() and 255) { 0x1b -> video = "avc1"; 0x24 -> video = "hevc"; 0x0f, 0x11 -> audio = "mp4a.40.2"; 0x03, 0x04 -> audio = "mp3" }
+                when (d[cursor].toInt() and 255) {
+                    0x1b -> { video = "avc1"; videoPid = ((d[cursor + 1].toInt() and 31) shl 8) or (d[cursor + 2].toInt() and 255) }
+                    0x24 -> video = "hevc"
+                    0x0f, 0x11 -> audio = "mp4a.40.2"
+                    0x03, 0x04 -> audio = "mp3"
+                }
                 cursor += 5 + (((d[cursor + 3].toInt() and 15) shl 8) or (d[cursor + 4].toInt() and 255))
             }
-            if (video != "none" || audio != "none") return Info(video, audio, 0, 0, 0.0)
+            val dimensions = if (video == "avc1") WebVideoTsDimensions.avc(d, videoPid) else null
+            if (video != "none" || audio != "none") return Info(video, audio, dimensions?.first ?: 0, dimensions?.second ?: 0, 0.0)
         }
         null
     }.getOrNull()

@@ -40,7 +40,7 @@ func _run() -> void:
 	app.recent_menu.refresh()
 	check(not app.recent_menu._buttons.any(func(button):return button.target==app.recent_menu.PUZZLE_OPEN),"Home hides the resume shortcut before any placed progress")
 	app.recent_menu.media_filter=2; app.recent_menu.refresh()
-	check(app.recent_menu._buttons.any(func(button):return button.target==app.recent_menu.PUZZLE_OPEN and button.enabled),"Images expose puzzle mode before a first game or open image")
+	check(not app.recent_menu._buttons.any(func(button):return button.target==app.recent_menu.PUZZLE_OPEN and button.enabled),"Floating puzzle entry stays hidden in image browsing")
 	app.recent_menu.puzzle_requested.emit()
 	check(host.active and host.session==null and host.panel.mode=="hub" and not host.panel.can_start,"Empty global hub safely owns input before opening media")
 	host.tick(0.016); host.button("trigger_click","right_hand",true); host.button("by_button","right_hand")

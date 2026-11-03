@@ -3,8 +3,9 @@ extends Node3D
 ## the menu's visibility tree; a menu refresh/hide must not destroy a Surface still used by Gecko.
 const LOGICAL := Vector2i(1440, 900)
 const CSS_UNITS := 3
-# Keep at least 1280x720 CSS pixels; round upward to the shared raster grid.
-const MIN_COLUMNS := 427
+# Keep a 720 CSS-pixel short edge in either orientation. A fixed 1280-pixel
+# minimum width plus a fixed area budget would prohibit portrait viewports.
+const MIN_COLUMNS := 240
 const MIN_ROWS := 240
 const MIN_RATIO := float(MIN_COLUMNS * CSS_UNITS * MIN_COLUMNS * CSS_UNITS) / (LOGICAL.x * LOGICAL.y)
 const MAX_RATIO := float(LOGICAL.x * LOGICAL.y) / (MIN_ROWS * CSS_UNITS * MIN_ROWS * CSS_UNITS)

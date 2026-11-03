@@ -101,6 +101,9 @@ internal class WebVideoNetworkCapture(
 
     fun resolve(page: WebVideoPage, media: JSONObject): JSONObject? = resolve(page, media, null)
 
+    /** Explicit site Beta must preserve the decoded representation, including parallel HLS leaves. */
+    fun resolveCurrent(page: WebVideoPage, media: JSONObject): JSONObject? = resolve(page, media, null, true)
+
     /** Site adapters must first bind both exact observed URLs to one content identity.
      * This does not add a hostname/time-based pairing rule to generic capture. */
     fun resolveBoundPair(page: WebVideoPage, media: JSONObject, video: URI, audio: URI): JSONObject? {
@@ -108,7 +111,7 @@ internal class WebVideoNetworkCapture(
         return resolve(page, JSONObject(media.toString()).put("source", ""), video to audio)
     }
 
-    private fun resolve(page: WebVideoPage, media: JSONObject, boundPair: Pair<URI, URI>?): JSONObject? {
+    private fun resolve(page: WebVideoPage, media: JSONObject, boundPair: Pair<URI, URI>?, current: Boolean = false): JSONObject? {
         if (media.optBoolean("protected")) return null
         val candidates = WebBrowserNetworkMedia.candidates(media)
         val scopedCookies = LinkedHashMap<String, JSONObject>()
@@ -142,7 +145,7 @@ internal class WebVideoNetworkCapture(
         // Master+variant requests form one graph. Do not pick a leaf playlist which would
         // lose its external audio, or guess between unrelated players/ads in the same frame.
         val manifests = resources.values.filter { it.kind in setOf("hls", "dash") && (direct == null || direct == it.uri) }
-        if (manifests.isNotEmpty()) return runCatching { manifestInfo(page, media, manifests) }.getOrNull()
+        if (manifests.isNotEmpty()) return runCatching { manifestInfo(page, media, manifests, current) }.getOrNull()
         val files = resources.values.filter { it.kind == "file" && (direct == null || direct == it.uri) }
         if (files.isEmpty() || files.size > 8) return null
         val probes = files.mapNotNull { resource -> runCatching { probe(resource, media) }.getOrNull() }
@@ -206,7 +209,7 @@ internal class WebVideoNetworkCapture(
         val scoped = scoped(base, uri)
         return Resource(uri, kind, scoped.headers)
     }
-    private fun validateHls(resource: Resource) {
+    private fun validateHls(resource: Resource, expectedDuration: Double = 0.0) {
         val (_, body) = text(resource); val lines = body.lineSequence().map(String::trim).toList()
         require(lines.firstOrNull() == "#EXTM3U" && lines.contains("#EXT-X-ENDLIST"))
         require(lines.any { it.startsWith("#EXTINF:") })
@@ -215,11 +218,35 @@ internal class WebVideoNetworkCapture(
             val a = attrs(line)
             require(a["METHOD"] in setOf("NONE", "AES-128") && a["KEYFORMAT"] in setOf(null, "identity"))
         }
+        if (expectedDuration > 0) {
+            val durations = lines.filter { it.startsWith("#EXTINF:") }.map { it.substringAfter(':').substringBefore(',').toDouble() }
+            require(durations.all { it.isFinite() && it > 0 })
+            require(kotlin.math.abs(durations.sum() - expectedDuration) <= maxOf(.5, expectedDuration * .0001))
+        }
     }
-    private fun manifestInfo(page: WebVideoPage, media: JSONObject, manifests: List<Resource>): JSONObject {
+    private fun currentHlsLeaves(media: JSONObject, loaded: Map<Resource, Pair<Resource, String>>): JSONObject {
+        val width = media.optInt("width"); val height = media.optInt("height"); val duration = media.optDouble("duration")
+        require(width > 0 && height > 0 && duration.isFinite() && duration > 0)
+        val matched = loaded.values.mapNotNull { (base, body) -> runCatching {
+            validateHls(base, duration)
+            val lines = body.lineSequence().map(String::trim).toList()
+            val first = lines.first { it.isNotEmpty() && !it.startsWith('#') }
+            val init = lines.firstOrNull { it.startsWith("#EXT-X-MAP:") }?.let { attrs(it)["URI"] }
+            val sample = read(target(base, init ?: first, "file"), true).second
+            val container = WebVideoContainer.parse(sample) ?: WebVideoContainer.transportStream(sample) ?: error("Unknown HLS tracks")
+            require(container.video != "none" && container.audio != "none" && container.width == width && container.height == height)
+            format(base, container.video, container.audio, container.width, container.height)
+        }.getOrNull() }
+        // An equal-size unrelated player or two unbound aliases remain ambiguous.
+        require(matched.size == 1)
+        return info(media, matched)
+    }
+    private fun manifestInfo(page: WebVideoPage, media: JSONObject, manifests: List<Resource>, current: Boolean): JSONObject {
         require(manifests.size <= 6)
         if (manifests.any { it.kind == "dash" }) { require(manifests.size == 1); return dash(media, manifests.single()) }
         val loaded = manifests.associateWith { text(it) }
+        if (current && loaded.values.all { (_, body) -> body.lineSequence().none { it.startsWith("#EXT-X-STREAM-INF:") } })
+            return currentHlsLeaves(media, loaded)
         val referenced = HashSet<URI>()
         loaded.values.forEach { (base, body) -> body.lineSequence().map(String::trim).forEach { line ->
             if (line.isNotEmpty() && !line.startsWith('#')) referenced.add(base.uri.resolve(line))
@@ -265,11 +292,11 @@ internal class WebVideoNetworkCapture(
             val v = it.first.getJSONArray("formats").getJSONObject(0)
             v.optInt("width") == media.optInt("width") && v.optInt("height") == media.optInt("height")
         }
-        val pool = observed.ifEmpty { currentSize.ifEmpty { choices } }
+        val pool = if (current) observed.filter { it in currentSize } else observed.ifEmpty { currentSize.ifEmpty { choices } }
         val chosen = pool.maxWithOrNull(compareBy<Pair<JSONObject, List<Resource>>> {
             val v = it.first.getJSONArray("formats").getJSONObject(0); v.optLong("width") * v.optLong("height")
         }.thenBy { it.first.getJSONArray("formats").getJSONObject(0).optDouble("tbr") }) ?: error("No compatible HLS variant")
-        chosen.second.forEach(::validateHls)
+        chosen.second.forEach { validateHls(it, if (current) media.optDouble("duration") else 0.0) }
         return chosen.first
     }
 

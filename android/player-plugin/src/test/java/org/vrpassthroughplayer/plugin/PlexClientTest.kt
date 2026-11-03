@@ -34,7 +34,7 @@ class PlexClientTest {
                 val client = mediaClient(account, http)
                 assertEquals("1.43", client.probe())
                 val home = client.home(JSONObject()); assertEquals(2, home.getJSONArray("libraries").length())
-                assertEquals("1", home.getString("library_id"))
+                assertEquals("", home.getString("library_id"))
                 val page = client.browse(JSONObject("""{"library_id":"1","page":2,"q":"中&?","genres":["20"],"studios":["Studio with spaces"],"watched":false,"sort":"title","direction":"ASC"}"""))
                 assertEquals(97, page.getInt("total")); assertEquals(2, page.getInt("page"))
                 val entry = page.getJSONArray("entries").getJSONObject(0)

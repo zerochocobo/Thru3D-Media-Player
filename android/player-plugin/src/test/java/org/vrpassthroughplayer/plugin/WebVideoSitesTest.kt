@@ -5,6 +5,26 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class WebVideoSitesTest {
+    @Test fun jellyfinWebOriginalRetainsEightKWithoutRaisingUnrelatedWebsiteLimits() {
+        val page = "http://127.0.0.1:8096/web/#/video"
+        val media = JSONObject().put("server", true).put("frame", page).put("width", 8192).put("height", 4096)
+            .put("source", "http://127.0.0.1:8096/Videos/a123bc/stream.mp4?Static=true&mediaSourceId=version&deviceId=d&ApiKey=private&Tag=etag")
+        val serverPage = WebVideoBrowserCapture.serverPage(page, media)!!
+        val formats = WebVideoBrowserCapture.formats(media)!!
+        assertThrows(Exception::class.java) { WebVideoFormats.select(serverPage, formats, WebVideoCapabilities(1080)::accepts) }
+        val limit = WebVideoBrowserCapture.maximumHeight(media, false, false)
+        val selected = WebVideoFormats.select(serverPage, formats, WebVideoCapabilities(limit)::accepts)
+        assertEquals(8192, selected.video.width); assertEquals(4096, selected.video.height)
+        assertEquals("file", selected.video.transport)
+        assertEquals("Static=true&MediaSourceId=version&ApiKey=private", selected.video.url.rawQuery)
+        assertFalse(selected.publicJson().toString().contains("private"))
+        assertEquals(1080, WebVideoBrowserCapture.maximumHeight(null, false, false))
+        assertEquals(1080, WebVideoBrowserCapture.maximumHeight(JSONObject(media.toString()).put("server", false), false, false))
+        assertEquals(1080, WebVideoBrowserCapture.maximumHeight(JSONObject(media.toString()).put("protected", true), false, false))
+        assertEquals(1080, WebVideoBrowserCapture.maximumHeight(JSONObject(media.toString()).put("source", "https://other.test/video.mp4"), false, false))
+        assertEquals(2160, WebVideoBrowserCapture.maximumHeight(JSONObject().put("diagnostic_max_height", 2160), false, true))
+        assertEquals(4096, WebVideoBrowserCapture.maximumHeight(JSONObject().put("width", 8192).put("height", 4096), true, false))
+    }
     @Test fun serverPlaybackKeepsVersionAndCredentialsPrivate() {
         for ((base, id) in listOf("http://192.168.1.20:8096" to "21", "https://example.test/jellyfin" to "a123bc")) {
             val frame = "$base/web/index.html#!/videoosd?api_key=page-secret"

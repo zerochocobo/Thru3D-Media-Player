@@ -75,6 +75,7 @@ const SpatialMetadata := preload("res://scripts/spatial_video_metadata.gd")
 var _spatial_metadata: Dictionary = {}
 var spatial_auto_disparity := true
 var control := PlaybackControl.new()
+var server_playback := preload("res://scripts/media_server_playback.gd").new()
 var platform: Object
 var alpha_encoding := 1
 var alpha_enabled := false
@@ -93,6 +94,13 @@ var alpha_edge := Vector2(0.0, 1.0)
 ## Realtime 2D->3D: a depth model drives per-eye parallax on mono sources (never with Alpha or SBS).
 var depth_requested := false
 var auto_depth := false # This file's conversion choice, retained while changing its projection.
+const Auto3D := preload("res://scripts/video_auto_3d.gd")
+var default_auto_depth := false # Only seeds normal opens without a remembered per-file choice.
+const LastMode := preload("res://scripts/video_mode_default.gd")
+signal last_mode_changed(mode: Dictionary)
+signal reuse_last_mode_changed(enabled: bool)
+var reuse_last_mode := false
+var last_mode := {}
 var depth_enabled := false
 # Release hold: even a saved preference or direct caller cannot enable protection.
 var depth_text_protection := false:
@@ -153,8 +161,8 @@ var depth_strength := DepthStrength.VIDEO_DEFAULT
 var preferred_depth_strength := DepthStrength.VIDEO_DEFAULT # Global choice; diagnostic opens cannot replace it.
 ## Pick the clone-voice track (an extra M4A beside the video) whenever a video has one.
 var prefer_clone_voice := false
-## The file is an alpha-packed fisheye output (its name says so): the mask is in the frame and
-## the Alpha switch shows it instead of running RVM.
+## A six-tile SBS mask, selected by the user or a known fisheye filename convention.
+## The mask is in the frame; showing it does not run RVM.
 var packed_file := false
 var packed_alpha := false
 ## What the file name left open; filled from the first frame's shape, then cleared.
@@ -854,9 +862,16 @@ func open_local(uri: String, title: String, start_ms: int = 0, restore_mode: boo
 			stereo_half = int(mode_lock.layout) in [3, 4]
 			fisheye_fov = int(mode_lock.fisheye_fov)
 			swap_eyes = false
-			depth_requested = false # Projection/layout locks never enable conversion on other files.
+		elif reuse_last_mode and not last_mode.is_empty() and stated.is_empty() and not uri.begins_with("externalvideo://"):
+			geometry = int(last_mode.geometry)
+			stereo_sbs = int(last_mode.layout) != 0
+			top_bottom = int(last_mode.layout) in [2, 4]
+			stereo_half = int(last_mode.layout) in [3, 4]
+			fisheye_fov = int(last_mode.fisheye_fov)
+			swap_eyes = bool(last_mode.swap_eyes)
+			# Keep the fallback until the first frame so actual container/spatial metadata can win.
+			_layout_pending = {"last_mode": last_mode.duplicate()}
 		else:
-			depth_requested = false
 			geometry = int(stated.get("geometry", Geometry.Geometry.FLAT))
 			stereo_sbs = bool(stated.get("stereo", geometry in [Geometry.Geometry.HALF_EQUIRECT, Geometry.Geometry.FISHEYE]))
 			top_bottom = stereo_sbs and bool(stated.get("top_bottom", false))
@@ -865,6 +880,9 @@ func open_local(uri: String, title: String, start_ms: int = 0, restore_mode: boo
 			swap_eyes = bool(stated.get("swap", false))
 			if not stated.has("geometry") or not stated.has("stereo") or (geometry in [Geometry.Geometry.FLAT, Geometry.Geometry.FISHEYE] and not stated.has("stereo_half")):
 				_layout_pending = stated
+		if saved.is_empty():
+			# Layout locks and filename/metadata detection still decide what is a flat mono video.
+			depth_requested = default_auto_depth and geometry == Geometry.Geometry.FLAT and not stereo_sbs
 		auto_depth = depth_requested
 	if not _stream_projection.is_empty():
 		_layout_pending = null
@@ -884,6 +902,9 @@ func open_local(uri: String, title: String, start_ms: int = 0, restore_mode: boo
 		top_bottom = int(_stream_projection.get("stereo_mode", 0)) == 1
 		swap_eyes = int(_stream_projection.get("stereo_mode", 0)) == 4
 		stereo_half = false; depth_requested = false; auto_depth = false
+		# A normal flat web video follows the global default after its actual projection is resolved.
+		if restore_mode:
+			auto_depth = default_auto_depth and geometry == Geometry.Geometry.FLAT and not stereo_sbs
 	alpha_requested = (alpha or (restore_mode and _auto_passthrough_on_open and bool(stated.get("alpha", false)))) and not packed_file
 	_cancel_embedded_cover()
 	_cover_checked = false
@@ -895,6 +916,7 @@ func open_local(uri: String, title: String, start_ms: int = 0, restore_mode: boo
 	if not _web_handoff and _thumbnail_source(uri) and Thumbnails.texture(uri) == null and not RecentFiles.valid_cover(server_cover):
 		_thumb_after_ms = 0
 	local_uri = uri
+	server_playback.begin(uri)
 	if not pip.reopening: _restore_subtitle_layout(uri, restore_mode)
 	var saved_whisper := whisper_memory.lookup(uri) if restore_mode else {}
 	audio_whisper = 1 if saved_whisper.get("enabled", false) else 0
@@ -919,7 +941,9 @@ func open_local(uri: String, title: String, start_ms: int = 0, restore_mode: boo
 		var source := FileAccess.open(uri.trim_prefix("file://").uri_decode(), FileAccess.READ)
 		if source: _bookmark_metadata.size = source.get_length()
 	_bookmark_resolve()
-	depth_requested = auto_depth and geometry == Geometry.Geometry.FLAT and not stereo_sbs and not alpha_requested
+	# Unknown sources first complete the existing layout detection, so recognized VR/stereo never
+	# starts the conversion model just because the provisional layout is flat mono.
+	depth_requested = auto_depth and _layout_pending == null and geometry == Geometry.Geometry.FLAT and not stereo_sbs and not alpha_requested
 	if depth_requested and OS.get_name() == "Android" and Engine.has_singleton("QuestPlayer"):
 		Engine.get_singleton("QuestPlayer").warm_depth()
 	_last_seek_mode = SeekPolicy.normalize(seek_mode)
@@ -1013,6 +1037,9 @@ func _unbind() -> void:
 		caption.visible = false
 
 func close_video() -> void:
+	_remember_last_mode()
+	server_playback.poll(self, true)
+	server_playback.finish(platform, pip.reopening or mode_transition.reopening or _keep_interleave_during_close)
 	if not pip.reopening: vr_passthrough.finish(false)
 	if not mode_transition.reopening: mode_transition.cancel()
 	if not pip.reopening: portrait.reset()
@@ -1286,7 +1313,9 @@ func _try_revision() -> void:
 	_pending_revision = {}
 	var held_format := media.format.duplicate()
 	_track_choices = _capture_track_choices()
+	var previous_session := media.session_id
 	media.begin(id)
+	listening.processing_revised(previous_session, id)
 	mode_transition.preparing()
 	if _is_frozen() or _layer_seek_hold: media.format = held_format
 	_set_backend_playing(id, false)
@@ -1316,12 +1345,13 @@ func set_alpha_edge(feather: float, shrink: float) -> void:
 func packed_mask_on() -> bool:
 	return packed_file and packed_alpha
 
-## Only a full side-by-side fisheye frame carries the packed mask layout.
+## Projection and source mask packing are separate. Only full SBS packing is supported.
 func packed_mask_available() -> bool:
-	return not is_spatial_video() and geometry == Geometry.Geometry.FISHEYE and stereo_sbs and not top_bottom and not stereo_half
+	return not is_spatial_video() and geometry in [Geometry.Geometry.HALF_EQUIRECT, Geometry.Geometry.FISHEYE] \
+		and stereo_sbs and not top_bottom and not stereo_half
 
-## The user says this fisheye file carries its own mask (official releases renamed without the
-## marker): passthrough then uses that mask, and live matting stops. Off returns to a plain fisheye.
+## Manual selection also covers 180 SBS files without a recognized filename marker.
+## It changes the mask source, never the viewing projection.
 func set_packed_mask(enabled: bool) -> void:
 	if enabled and not packed_mask_available(): return
 	if enabled == packed_mask_on() and not _suppressed_packed_mask: return
@@ -1690,6 +1720,7 @@ func seek_absolute(position_ms: int, mode: String = "", loop_return: bool = fals
 	if bookmark_loop.active: mode = SeekPolicy.EXACT
 	captures.stop()
 	control.seek_absolute(position_ms)
+	server_playback.seek_serial += 1
 	_request_revision(control.target_ms, mode)
 	return true
 
@@ -1764,7 +1795,7 @@ func set_subtitle_track(track_id: int, remember: bool = true) -> bool:
 		if track_id == dual_subtitles.state.requested_track or not track_is_text: dual_subtitles.set_enabled(false)
 	if remember and listening.enabled:
 		listening.set_option("listening_enabled", false)
-		if listening.memory.remember(local_uri, {"enabled": false}): listening.memory.save()
+		if not listening.is_cast_source() and listening.memory.remember(local_uri, {"enabled": false}): listening.memory.save()
 	var track: Dictionary = {}
 	for item in _raw_tracks("subtitle"):
 		if int(item.get("id", 0)) == track_id: track = item; break
@@ -1808,6 +1839,12 @@ func _reset_subtitle_files() -> void:
 	subtitle_files.clear(); subtitle_files_state = "idle"; subtitle_file_error = ""; subtitle_file_loading = ""
 	_subtitle_list_request = 0; _subtitle_load_request = 0; _subtitle_loaded_track = 0
 	_subtitle_restore_attempted = false; _subtitle_files_session = media.session_id
+
+func subtitle_picker_filename() -> String:
+	var name := str(_bookmark_metadata.get("basename", ""))
+	if name.is_empty() and local_uri.get_slice("://", 0) in ["file", "smb", "cloud", "usb", "content"]:
+		name = TrackMemory.SubtitleSources.filename(local_uri)
+	return display_name if name.is_empty() else name
 
 func subtitle_files_available() -> bool:
 	if cast_token > 0: return false
@@ -2367,6 +2404,7 @@ func current_lock() -> Dictionary:
 ## Locks the current mode, or unlocks when it is the locked one.
 func toggle_mode_lock() -> void:
 	if is_spatial_video(): return
+	if reuse_last_mode: set_reuse_last_mode(false)
 	var current := current_lock()
 	mode_lock = {} if mode_lock == current else current
 	mode_lock_changed.emit(mode_lock.duplicate())
@@ -2382,6 +2420,30 @@ func load_mode_lock(value: Variant) -> void:
 		return
 	mode_lock = {"geometry": int(value.geometry), "layout": int(value.layout), "depth": false,
 		"fisheye_fov": int(value.fisheye_fov)}
+
+func load_last_mode_preferences(settings: ConfigFile) -> void:
+	reuse_last_mode = bool(settings.get_value("video", "reuse_last_mode", false))
+	last_mode = LastMode.clean(settings.get_value("video", "last_mode", {}))
+	if reuse_last_mode: mode_lock = {}
+
+func set_reuse_last_mode(enabled: bool) -> void:
+	if reuse_last_mode == enabled: return
+	reuse_last_mode = enabled
+	if enabled:
+		_unlock_mode()
+		_remember_last_mode()
+	reuse_last_mode_changed.emit(enabled)
+	changed.emit()
+
+func _remember_last_mode() -> void:
+	if not reuse_last_mode or not _remember_file or not media.accepts(media.session_id) or media.frame_counter == 0 \
+		or _layout_pending != null or cast_token > 0 or is_spatial_video(): return
+	var current := current_lock()
+	current.swap_eyes = swap_eyes
+	current = LastMode.clean(current)
+	if current == last_mode: return
+	last_mode = current
+	last_mode_changed.emit(last_mode.duplicate())
 
 func toggle_loop() -> void:
 	loop_enabled = not loop_enabled
@@ -2402,6 +2464,7 @@ func set_stereo_layout(layout: int) -> void:
 	stereo_sbs = layout != 0
 	top_bottom = layout in [2, 4]
 	stereo_half = layout in [3, 4]
+	_clear_incompatible_packed_mask()
 	var old_depth := depth_requested
 	if stereo_sbs:
 		depth_requested = false
@@ -2436,6 +2499,7 @@ func set_projection(value: int) -> void:
 		return
 	if value != geometry: _unlock_mode()
 	geometry = value
+	if _layout_pending is Dictionary and _layout_pending.has("last_mode"): _layout_pending = null
 	if _layout_pending is Dictionary: _layout_pending.geometry = value
 	# Fisheye and 360 are independent of mono/SBS/TB. Preserve the chosen eye layout.
 	var stereo := stereo_sbs if geometry in [Geometry.Geometry.FISHEYE, Geometry.Geometry.EQUIRECT_360] else geometry == Geometry.Geometry.HALF_EQUIRECT
@@ -2447,12 +2511,8 @@ func set_projection(value: int) -> void:
 	if geometry != Geometry.Geometry.FLAT and depth_requested:
 		depth_requested = false
 		revise = true
-	# The built-in mask belongs to the fisheye layout: other projections leave it.
-	if geometry != Geometry.Geometry.FISHEYE and packed_file:
-		_suppressed_packed_mask = false
-		packed_file = false
-		packed_alpha = false
-		_apply_packed()
+	# Keep the source mask when switching between 180 and fisheye. Hidden modes stop it.
+	_clear_incompatible_packed_mask()
 	if geometry == Geometry.Geometry.FLAT and not stereo_sbs and auto_depth and not depth_requested and not alpha_requested:
 		depth_requested = true
 		revise = true
@@ -2621,27 +2681,42 @@ func _complete_source_layout() -> void:
 		return
 	if _layout_pending == null:
 		return
-	var chosen := Naming.complete(_layout_pending, int(media.format.width), int(media.format.height), media.format, _layout_basename)
+	var stated: Dictionary = _layout_pending
+	if stated.has("last_mode"):
+		var container_stereo := str(media.format.get("stereo_mode", "")).to_lower()
+		if container_stereo in ["sbsl", "sbsr", "sbs2l", "sbs2r", "side_by_side", "left_right", "right_left", "abl", "abr", "ab2l", "ab2r", "top_bottom", "bottom_top"]:
+			stated = {} # Decoded stereo metadata is stronger than a default for unknown files.
+			fisheye_fov = 180
+		else:
+			stated = LastMode.naming(stated.last_mode)
+	var chosen := Naming.complete(stated, int(media.format.width), int(media.format.height), media.format, _layout_basename)
 	_layout_pending = null
 	swap_eyes = chosen.swap
 	stereo_half = chosen.stereo_half
 	var tb := bool(chosen.stereo) and bool(chosen.top_bottom)
-	if int(chosen.geometry) != geometry or bool(chosen.stereo) != stereo_sbs or tb != top_bottom:
-		geometry = int(chosen.geometry)
-		var revise := bool(chosen.stereo) != stereo_sbs or tb != top_bottom
-		stereo_sbs = chosen.stereo
-		top_bottom = tb
-		var wanted := auto_depth and geometry == Geometry.Geometry.FLAT and not stereo_sbs and not alpha_requested
-		revise = revise or depth_requested != wanted
-		depth_requested = wanted
-		if revise: _request_revision()
+	var revise := bool(chosen.stereo) != stereo_sbs or tb != top_bottom
+	geometry = int(chosen.geometry)
+	stereo_sbs = chosen.stereo
+	top_bottom = tb
+	var wanted := auto_depth and geometry == Geometry.Geometry.FLAT and not stereo_sbs and not alpha_requested
+	revise = revise or depth_requested != wanted
+	depth_requested = wanted
+	if revise: _request_revision()
 	_apply_geometry()
 	Log.record("auto_layout", {"geometry": geometry, "stereo_sbs": stereo_sbs, "swap_eyes": swap_eyes,
 		"width": media.format.width, "height": media.format.height})
 
-## Packed masks show only on the layout they were made for (fisheye side by side).
+func _clear_incompatible_packed_mask() -> void:
+	if packed_file and not packed_mask_available():
+		_suppressed_packed_mask = false
+		packed_file = false
+		packed_alpha = false
+		_apply_packed()
+
+## The same source-space six-tile mask works with either 180 or fisheye projection.
 func _apply_packed() -> void:
-	var shown := packed_file and packed_alpha and not media.last_pair.is_empty() 		and not top_bottom and not stereo_half and Geometry.legacy_compatible(media.format, stereo_sbs, geometry)
+	var shown := packed_mask_on() and packed_mask_available() and not media.last_pair.is_empty() \
+		and Geometry.packed_frame_compatible(media.format, stereo_sbs)
 	material.set_shader_parameter("packed_alpha", shown)
 	if shown:
 		material.set_shader_parameter("packed_size", Vector2(Geometry.packed_dimensions(int(media.format.width), int(media.format.height))))
@@ -2668,7 +2743,7 @@ func _restore_saved_mode(saved: Dictionary) -> void:
 	auto_depth = depth_requested
 	# The user's own word on a built-in mask wins over the name (renamed official releases).
 	if saved.has("packed_mask"):
-		packed_file = bool(saved.packed_mask) and geometry == Geometry.Geometry.FISHEYE
+		packed_file = bool(saved.packed_mask) and packed_mask_available()
 		packed_alpha = packed_file
 		_suppressed_packed_mask = false
 		_suppress_packed_autostart()
@@ -2703,6 +2778,7 @@ func _restore_usb_mode(identity: String) -> void:
 func _remember_mode(user_change: bool = true) -> void:
 	if not _remember_file or not media.accepts(media.session_id):
 		return
+	_remember_last_mode()
 	if not user_change and _mode_memory_cleared: return
 	if user_change: _mode_memory_cleared = false
 	_mode_user_changed = _mode_user_changed or user_change
@@ -3562,6 +3638,7 @@ func playback_end_ready() -> bool:
 		and (not alpha_requested or final_pair.get("inference_ran", false) or final_pair.get("color_target") == "layer")
 
 func _process(_delta: float) -> void:
+	server_playback.poll(self)
 	if vr_passthrough.active():
 		if vr_passthrough.source_session != media.session_id: _present_pending()
 		# A first-use shader compile must not skip the entire short roll on its next frame.

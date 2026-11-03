@@ -11,7 +11,7 @@ internal class CloudDirectorySearch(private val now: () -> Long = { System.nanoT
     private val snapshots = LinkedHashMap<String, Snapshot>()
     @Synchronized fun search(account: String, identity: String, client: CloudClient, path: String, query: String,
         kind: String, cursor: String, refresh: Boolean): JSONObject {
-        require(kind in setOf("all", "video", "image", "folder") && query.isNotBlank())
+        require(kind in setOf("all", "video", "image", "folder", "subtitle") && query.isNotBlank())
         val parts = cursor.split(':'); var key = parts.first(); var offset = 0
         val snapshot: Snapshot
         if (cursor.isEmpty()) {
@@ -28,7 +28,8 @@ internal class CloudDirectorySearch(private val now: () -> Long = { System.nanoT
                 require(page.nextOffset > next); next = page.nextOffset
             }
             val matches = files.filter { it.name.contains(query, ignoreCase = true) &&
-                if (it.folder) kind in setOf("all", "folder") else MediaKinds.supportedFileName(it.name) && (kind == "all" || MediaKinds.fileNameKind(it.name) == kind) }
+                if (it.folder) kind in setOf("all", "folder") else if (kind == "subtitle") SidecarSubtitles.supportedFile(it.name)
+                else MediaKinds.supportedFileName(it.name) && (kind == "all" || MediaKinds.fileNameKind(it.name) == kind) }
                 .sortedWith(CloudSortedPages.comparator("name_asc"))
             snapshot = Snapshot(account, identity, path, query, kind, matches, now() + 300_000)
             key = UUID.randomUUID().toString(); snapshots[key] = snapshot

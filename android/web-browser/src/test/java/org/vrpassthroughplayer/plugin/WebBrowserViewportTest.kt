@@ -20,14 +20,14 @@ class WebBrowserViewportTest {
 
     @Test fun rasterScalingCannotMoveResizedWindowsAcrossCssBreakpoints() {
         val profiles = listOf(WebBrowserViewport(false), WebBrowserViewport(true))
-        for (width in 1281..1920 step 3) {
+        for (width in 720..1920 step 3) {
             val cssWidths = profiles.map { profile ->
                 val pixels = width / 3 * profile.pixelUnits
                 pixels * (60f / profile.density).roundToInt() / 60f
             }
             assertEquals(width.toFloat(), cssWidths[0], 0f)
             assertEquals(cssWidths[0], cssWidths[1], 0f)
-            for (breakpoint in listOf(992, 1024, 1200, 1230, 1280, 1400, 1450, 1536)) {
+            for (breakpoint in listOf(720, 768, 800, 992, 1024, 1200, 1230, 1280, 1400, 1450, 1536)) {
                 assertEquals(cssWidths[0] >= breakpoint, cssWidths[1] >= breakpoint)
             }
         }

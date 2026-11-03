@@ -23,6 +23,7 @@ internal class PhotoPreviewBridge(
     private val releaseStream: (String) -> Unit,
     private val cacheName: String = "photo-gallery",
     private val edge: Int = EDGE,
+    private val original: Boolean = false,
     private val emit: (Int, String) -> Unit,
 ) : Closeable {
     private val worker = Executors.newSingleThreadExecutor { Thread(it, "PhotoGalleryPreview") }
@@ -82,6 +83,14 @@ internal class PhotoPreviewBridge(
                     }
                 } }
                 checkCurrent()
+                if (original) {
+                    // Backgrounds hash and preserve original bytes in their own persistent library.
+                    // Reuse the verified source resolver and isolated request/cancellation lifecycle.
+                    val metadata = JSONObject().put("state", "ready").put("path", source.path)
+                        .put("orientation", PhotoBitmap.orientation(source))
+                    checkCurrent(); published = true; emit(id, metadata.toString())
+                    return@execute
+                }
                 phase = "decode"
                 val heif = HeifPhotoInfo.read(source)
                 val metadata = JSONObject().put("state", "ready").put("orientation", 1)

@@ -19,6 +19,23 @@ import (
 	"time"
 )
 
+func TestSubtitleSearchTypes(t *testing.T) {
+	for _, name := range []string{"Film.zh.SRT", "Film.en.ass", "Film.ssa", "Film.vtt", "Film.smi", "Film.sami", "Film.sub", "电影.中文.srt"} {
+		obj := &model.Object{Name: name}
+		if !matchesSearch(obj, "", "subtitle") || matchesSearch(obj, "", "all") || matchesSearch(obj, "", "video") {
+			t.Fatal("subtitle type leaked or was lost", name)
+		}
+	}
+	for _, obj := range []*model.Object{{Name: "Film.srt", IsFolder: true}, {Name: "Film.mp4"}, {Name: "Film.sup"}, {Name: ".Film.srt"}, {Name: "Film\x01.srt"}, {Name: "nested/Film.srt"}} {
+		if matchesSearch(obj, "film", "subtitle") {
+			t.Fatal("invalid subtitle result", obj)
+		}
+	}
+	if matchesSearch(&model.Object{Name: "Film.srt"}, "*Film*", "subtitle") {
+		t.Fatal("subtitle query became a glob")
+	}
+}
+
 func TestCloudRequestCancellationBeforeDispatch(t *testing.T) {
 	key, err := NewRequest()
 	if err != nil {
@@ -75,6 +92,12 @@ func (d *searchFixture) Link(context.Context, model.Obj, model.LinkArgs) (*model
 }
 func (d *searchFixture) PlayerSearch(ctx context.Context, dir model.Obj, query, kind, cursor string) ([]model.Obj, string, int64, bool, error) {
 	d.calls++
+	if query == "captions" {
+		if cursor == "" {
+			return []model.Obj{&model.Object{ID: "not-subtitle", Name: "captions.txt", Path: "/captions.txt"}}, "captions-next", 2, false, nil
+		}
+		return []model.Obj{&model.Object{ID: "subtitle", Name: "captions.zh.SRT", Path: "/folder/captions.zh.SRT"}}, "", 2, false, nil
+	}
 	if query == "paged" {
 		offset, _ := strconv.Atoi(cursor)
 		items := make([]model.Obj, 48)
@@ -161,6 +184,21 @@ func assertCloudSearchCore(t *testing.T, call func(string, string, any) map[stri
 	if refreshed["total"] != float64(61) || metadata.Load() <= reads {
 		t.Fatal("refresh reused stale directory")
 	}
+	for _, name := range []string{"旅行.zh.SRT", "旅行.en.ass", "旅行.sup"} {
+		if err := os.WriteFile(filepath.Join(directory, name), []byte("subtitle fixture"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	subReq := map[string]any{"mount": mount, "path": "/", "query": "旅行", "scope": "current", "kind": "subtitle", "cursor": "", "refresh": true}
+	subPage := call("POST", "/search", subReq)["data"].(map[string]any)
+	if len(subPage["content"].([]any)) != 2 || media.Load() != 0 {
+		t.Fatal("standard subtitle search lost formats or downloaded content", subPage)
+	}
+	subToken := subPage["content"].([]any)[0].(map[string]any)["token"]
+	subResolved := call("POST", "/searchresolve", map[string]any{"mount": mount, "token": subToken})["data"].(map[string]any)
+	if !strings.HasSuffix(strings.ToLower(subResolved["path"].(string)), ".srt") && !strings.HasSuffix(subResolved["path"].(string), ".ass") {
+		t.Fatal("subtitle token did not resolve", subResolved)
+	}
 	req["query"] = "different"
 	req["cursor"] = first["next_cursor"]
 	req["refresh"] = false
@@ -230,6 +268,23 @@ func assertCloudSearchCore(t *testing.T, call func(string, string, any) map[stri
 	page = call("POST", "/search", req)["data"].(map[string]any)
 	if len(page["content"].([]any)) != 1 {
 		t.Fatal("next native page lost supported result")
+	}
+	req["query"] = "captions"
+	req["kind"] = "subtitle"
+	req["cursor"] = ""
+	page = call("POST", "/search", req)["data"].(map[string]any)
+	if len(page["content"].([]any)) != 0 || page["next_cursor"] == "" {
+		t.Fatal("native subtitle search dropped continuation", page)
+	}
+	req["cursor"] = page["next_cursor"]
+	page = call("POST", "/search", req)["data"].(map[string]any)
+	if len(page["content"].([]any)) != 1 || page["content"].([]any)[0].(map[string]any)["name"] != "captions.zh.SRT" {
+		t.Fatal("native subtitle search lost later-page caption", page)
+	}
+	token = page["content"].([]any)[0].(map[string]any)["token"]
+	resolved = call("POST", "/searchresolve", map[string]any{"mount": mount, "token": token})["data"].(map[string]any)
+	if resolved["path"] != "/folder/captions.zh.SRT" {
+		t.Fatal("native subtitle result resolved incorrectly", resolved)
 	}
 }
 func mustSearchJSON(value any) string { b, _ := json.Marshal(value); return string(b) }

@@ -61,6 +61,39 @@ func TestComicZIPUnicodeNameValidationAndExistingNames(t *testing.T) {
 	}
 }
 
+func TestComicZIPLegacyNamesPreserveUnicodeAndRejectLossyDecode(t *testing.T) {
+	for _, tc := range []struct {
+		name, raw, want string
+		flags           uint16
+	}{
+		{"unmarked GBK", "\xd6\xd0\xce\xc4/1.png", "中文/1.png", 0},
+		{"GBK trail byte is not a path separator", "\x81\x5c/1.png", "乗/1.png", 0},
+		{"marked UTF8", "中文/图片.png", "中文/图片.png", 0x800},
+		{"unmarked UTF8", "中文/图片.png", "中文/图片.png", 0},
+		{"Japanese UTF8", "日本語/あ.png", "日本語/あ.png", 0},
+		{"emoji UTF8", "相册/😀.png", "相册/😀.png", 0},
+		{"ASCII", "book/1.png", "book/1.png", 0},
+		{"valid UTF8 also decodable as GBK", "©.png", "©.png", 0},
+		{"UTF8 flag forbids guessing", "\xd6\xd0\xce\xc4/1.png", "\xd6\xd0\xce\xc4/1.png", 0x800},
+		{"truncated multibyte name", "\xd6/1.png", "\xd6/1.png", 0},
+		{"illegal byte", "\xff.png", "\xff.png", 0},
+		{"unmapped pair", "\xa1\x40.png", "\xa1\x40.png", 0},
+		{"CP437 accent not valid GBK", "caf\x82.png", "caf\x82.png", 0},
+		{"Windows accent not valid GBK", "caf\xe9.png", "caf\xe9.png", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := comicZIPLegacyName(tc.raw, tc.flags); got != tc.want {
+				t.Fatalf("legacy fallback changed name incorrectly: got %q want %q", got, tc.want)
+			}
+		})
+	}
+	raw := "\xd6\xd0\xce\xc4/1.png"
+	trusted := "Unicode名称/1.png"
+	if got := comicZIPLegacyName(comicZIPName(raw, 0, comicZIPTestUnicodePath(raw, trusted)), 0); got != trusted {
+		t.Fatal("legacy fallback overrode verified Unicode path", got)
+	}
+}
+
 func TestComicZIPUnicodeDirectoriesExtractionAndZIP64(t *testing.T) {
 	for _, encryption := range []zip.EncryptionMethod{0, zip.StandardEncryption, zip.AES256Encryption} {
 		var archive bytes.Buffer
@@ -68,15 +101,20 @@ func TestComicZIPUnicodeDirectoriesExtractionAndZIP64(t *testing.T) {
 		names := []struct {
 			raw, decoded string
 			flags        uint16
+			unicodePath  bool
 		}{
-			{"\xd6\xd0\xce\xc4/", "中文/", 0},
-			{"\xd6\xd0\xce\xc4/10.png", "中文/10.png", 0},
-			{"\xd6\xd0\xce\xc4/2.png", "中文/2.png", 0},
-			{"\xd6\xd0\xce\xc4/1.png", "中文/1.png", 0},
-			{"正常中文/图片.png", "正常中文/图片.png", 0x800},
-			{"日本語/あ.png", "日本語/あ.png", 0x800},
-			{"unmarked中文.png", "unmarked中文.png", 0},
-			{"English.png", "English.png", 0},
+			{"\xd6\xd0\xce\xc4/", "中文/", 0, true},
+			{"\xd6\xd0\xce\xc4/10.png", "中文/10.png", 0, true},
+			{"\xd6\xd0\xce\xc4/2.png", "中文/2.png", 0, true},
+			{"\xd6\xd0\xce\xc4/1.png", "中文/1.png", 0, true},
+			{"正常中文/图片.png", "正常中文/图片.png", 0x800, false},
+			{"日本語/あ.png", "日本語/あ.png", 0x800, false},
+			{"unmarked中文.png", "unmarked中文.png", 0, false},
+			{"English.png", "English.png", 0, false},
+			{"\xbe\xc9/", "旧/", 0, false},
+			{"\xbe\xc9/10.png", "旧/10.png", 0, false},
+			{"\xbe\xc9/2.png", "旧/2.png", 0, false},
+			{"\xbe\xc9/1.png", "旧/1.png", 0, false},
 		}
 		password := ""
 		if encryption != 0 {
@@ -84,7 +122,7 @@ func TestComicZIPUnicodeDirectoriesExtractionAndZIP64(t *testing.T) {
 		}
 		for _, name := range names {
 			header := &zip.FileHeader{Name: name.raw, Flags: name.flags, Method: zip.Deflate}
-			if name.raw != name.decoded {
+			if name.unicodePath {
 				header.Extra = comicZIPTestUnicodePath(name.raw, name.decoded)
 			}
 			if password != "" && !strings.HasSuffix(name.raw, "/") {
@@ -128,11 +166,14 @@ func TestComicZIPUnicodeDirectoriesExtractionAndZIP64(t *testing.T) {
 					t.Fatalf("name lost in JSON encryption=%d ZIP64=%v: %v", encryption, zip64, entries[i])
 				}
 			}
-			var numbered []string
+			var numbered, legacyNumbered []string
 			session.dir = t.TempDir()
 			for i, page := range session.pages {
 				if strings.HasPrefix(page.Name, "中文/") {
 					numbered = append(numbered, page.Name)
+				}
+				if strings.HasPrefix(page.Name, "旧/") {
+					legacyNumbered = append(legacyNumbered, page.Name)
 				}
 				file, err := session.page(i)
 				if err != nil {
@@ -145,6 +186,9 @@ func TestComicZIPUnicodeDirectoriesExtractionAndZIP64(t *testing.T) {
 			}
 			if strings.Join(numbered, ",") != "中文/1.png,中文/2.png,中文/10.png" {
 				t.Fatal("natural page order changed", numbered)
+			}
+			if strings.Join(legacyNumbered, ",") != "旧/1.png,旧/2.png,旧/10.png" {
+				t.Fatal("legacy natural page order changed", legacyNumbered)
 			}
 		}
 	}
@@ -163,6 +207,23 @@ func TestComicZIPUnicodePathRetainsSafetyChecks(t *testing.T) {
 		source := comicRARTestSource(t, comicRARSparse{size: int64(archive.Len()), blocks: []comicRange{{0, archive.Bytes()}}})
 		if _, err := comicIndex(source, "unsafe.zip", ""); !errors.Is(err, errComicDamaged) {
 			t.Fatalf("unsafe Unicode path accepted: %q: %v", name, err)
+		}
+	}
+}
+
+func TestComicZIPLegacyPathRetainsSafetyChecks(t *testing.T) {
+	for _, name := range []string{"../\xd6\xd0.png", "/\xd6\xd0.png", "folder/../\xd6\xd0.png", "folder\\\xd6\xd0.png", "folder/\x00\xd6\xd0.png", strings.Repeat("\xd6\xd0", 2100) + ".png"} {
+		var archive bytes.Buffer
+		writer := zip.NewWriter(&archive)
+		if _, err := writer.CreateHeader(&zip.FileHeader{Name: name}); err != nil {
+			t.Fatal(err)
+		}
+		if err := writer.Close(); err != nil {
+			t.Fatal(err)
+		}
+		source := comicRARTestSource(t, comicRARSparse{size: int64(archive.Len()), blocks: []comicRange{{0, archive.Bytes()}}})
+		if _, err := comicIndex(source, "unsafe.zip", ""); !errors.Is(err, errComicDamaged) {
+			t.Fatal("unsafe legacy path accepted", err)
 		}
 	}
 }

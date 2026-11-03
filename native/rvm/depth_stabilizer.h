@@ -8,7 +8,8 @@ namespace quest {
 /** 2D->3D near map from the depth model's relative inverse depth, ported from PTMediaServer's
  * realtime path (offline/two_dvr_gpu.py _GpuNearPreprocessor + two_dvr_render.py
  * TemporalDepthStabilizer, utils/scene_detection.py):
- *  1. scene cut (HSV hue/saturation histogram, Bhattacharyya) resets all state;
+ *  1. scene cut (HSV hue/saturation histogram, Bhattacharyya; or, beyond PTMediaServer, a large
+ *     motion-compensated gray residual with some colour change) resets all state;
  *  2. 5/95 percentile band, smoothed across frames (rebase on a whole-band jump, preserving
  *     temporal history within the same RGB shot);
  *  3. VVPS stabilizer: only the low-frequency base (box, min(h,w)/16) is smoothed in time and
@@ -54,6 +55,13 @@ public:
     static constexpr float kEvidLo = 6.0f, kEvidHi = 36.0f;
     static constexpr float kCutThreshold = 0.4f, kCutRefEma = 0.95f;
     static constexpr int kCutCooldown = 24;
+    // Second cut signal (not in PTMediaServer): a shot change inside one grade keeps its colours
+    // (distance 0.10-0.14, as ordinary motion) but not its picture. Mean gray residual after the
+    // global shift, 0-255 on the small grid: portrait_cuts cuts 10.7-11.8, its other frames <= 5.9.
+    // Quiet for kCutResidualHold source frames after any cut: right after a cut in an HDR10 action
+    // montage, fast motion and grain flicker repeated it 2-9 frames later.
+    static constexpr float kCutResidual = 8.5f, kCutResidualDistance = 0.08f;
+    static constexpr int kCutResidualHold = 12;
 
     // Exposed for tests: phase correlation of two equally sized float images (Hann windowed).
     // Returns the shift (dx, dy) that registers a onto b, b(x) ~ a(x - d); response in [0, 1].
@@ -68,20 +76,26 @@ private:
     float lo_ = 0, hi_ = 1;
     std::vector<float> near_, base_cur_, base_prev_, base_warp_, tmp_, alpha_;
     std::vector<uint8_t> gray_;
-    std::vector<float> small_cur_, small_prev_;
+    std::vector<float> small_cur_, small_prev_, resid_small_;
     // Scene cut detector.
-    std::vector<float> ref_hist_;
+    std::vector<float> ref_hist_, hist_;
+    float hist_distance_ = 0;
     bool have_ref_ = false;
     int cooldown_left_ = 0;
     int dilation_ = -1;
     bool last_cut_ = false;
+    int since_cut_ = 1 << 20; // source frames since the last cut
+    // Motion of this frame against the previous model input (small grid), shared by the cut test and the stabilizer.
+    bool mc_valid_ = false;
+    float mc_dx_ = 0, mc_dy_ = 0, mc_residual_ = 0;
     float last_dx_ = 0, last_dy_ = 0, last_response_ = 0;
     uint64_t cuts_ = 0;
     Timing timing_;
 
     bool scene_cut(const float* rgb, int frame_step);
+    void motion(const float* rgb);
     void band(const float* inv, int frame_step);
-    void stabilize(const float* rgb, int frame_step);
+    void stabilize(int frame_step);
 };
 
 } // namespace quest

@@ -1,5 +1,5 @@
 [CmdletBinding()]
-param([string]$ToolRoot = $(if ($env:THRU3D_TOOL_ROOT) { $env:THRU3D_TOOL_ROOT } else { Join-Path ([Environment]::GetFolderPath('UserProfile')) '.cache\thru3d-toolchain' }))
+param([string]$ToolRoot = $(if ($env:THRU3D_TOOL_ROOT) { $env:THRU3D_TOOL_ROOT } else { Join-Path ([Environment]::GetFolderPath('UserProfile')) '.cache\thru3d-toolchain' }), [switch]$IncludeDiagnostics)
 $ErrorActionPreference = 'Stop'
 $workspace = Split-Path -Parent $PSScriptRoot
 . "$PSScriptRoot/environment/Activate-QuestEnvironment.ps1" -ToolRoot $ToolRoot
@@ -20,7 +20,8 @@ gradle.afterProject { project ->
                 def binary = System.getProperty('os.name').toLowerCase().contains('windows') ? 'java.exe' : 'java'
                 def report = [java: new File(System.getProperty('java.home'), 'bin/' + binary).absolutePath,
                     classpath: paths.collect { it.absolutePath }.join(File.pathSeparator),
-                    main: 'org.vrpassthroughplayer.plugin.WebVideoDesktopProbe']
+                    main: 'org.vrpassthroughplayer.plugin.WebVideoDesktopProbe',
+                    cn_main: 'org.vrpassthroughplayer.plugin.WebVideoCnDesktopProbe']
                 new File('__RUNTIME__').text = groovy.json.JsonOutput.toJson(report)
             }
         }
@@ -38,12 +39,18 @@ $inputs = @(
     'android/player-plugin/src/main/java/org/vrpassthroughplayer/plugin/WebVideoNetworkCapture.kt',
     'android/player-plugin/src/main/java/org/vrpassthroughplayer/plugin/WebVideoDescriptor.kt',
     'android/player-plugin/src/main/java/org/vrpassthroughplayer/plugin/WebVideoContainer.kt',
+    'android/player-plugin/src/main/java/org/vrpassthroughplayer/plugin/WebVideoTsDimensions.kt',
+    'android/player-plugin/src/main/java/org/vrpassthroughplayer/plugin/WebVideoStreams.kt',
+    'android/player-plugin/src/main/java/org/vrpassthroughplayer/plugin/WebVideoHls.kt',
+    'android/player-plugin/src/main/java/org/vrpassthroughplayer/plugin/LocalStreamServer.kt',
+    'android/player-plugin/src/main/java/org/vrpassthroughplayer/plugin/HttpRangeStreamSource.kt',
     'android/player-plugin/src/main/java/org/vrpassthroughplayer/plugin/WebVideoRequestHeaders.kt',
     'android/player-plugin/src/main/java/org/vrpassthroughplayer/plugin/RemoteMediaHttp.kt',
     'android/player-plugin/src/main/java/org/vrpassthroughplayer/plugin/SphericalVideoMetadata.kt',
     'android/web-browser/src/main/java/org/vrpassthroughplayer/plugin/WebBrowserDouyin.kt',
     'android/web-browser/src/main/java/org/vrpassthroughplayer/plugin/WebBrowserNetworkMedia.kt',
-    'android/player-plugin/src/test/java/org/vrpassthroughplayer/plugin/WebVideoDesktopProbe.kt')
+    'android/player-plugin/src/test/java/org/vrpassthroughplayer/plugin/WebVideoDesktopProbe.kt',
+    'android/player-plugin/src/test/java/org/vrpassthroughplayer/plugin/WebVideoCnDesktopProbe.kt')
 function Measure-ProbeInputs {
     $hashes = [ordered]@{}
     foreach ($relative in $inputs) { $hashes[$relative] = (Get-FileHash -LiteralPath (Join-Path $workspace $relative) -Algorithm SHA256).Hash.ToLowerInvariant() }
@@ -56,12 +63,13 @@ try {
         try { $held = $mutex.WaitOne() } catch [Threading.AbandonedMutexException] { $held = $true }
     }
     $before = Measure-ProbeInputs
-    & "$workspace/android/gradlew.bat" -p "$workspace/android" -I $initPath "-PgodotAarPath=$godotApi" :player-plugin:prepareWebVideoDesktopRuntime --console=plain 2>&1 | Out-File (Join-Path $output 'prepare.log') -Encoding utf8
+    & "$workspace/android/gradlew.bat" -p "$workspace/android" -I $initPath "-PgodotAarPath=$godotApi" "-PincludeDiagnostics=$($IncludeDiagnostics.IsPresent.ToString().ToLowerInvariant())" :player-plugin:prepareWebVideoDesktopRuntime --console=plain 2>&1 | Out-File (Join-Path $output 'prepare.log') -Encoding utf8
     if ($LASTEXITCODE -ne 0) { throw 'Desktop media probe compile failed; see build/output/web-video-desktop-host/prepare.log.' }
     $after = Measure-ProbeInputs
     if (($before | ConvertTo-Json -Compress) -ne ($after | ConvertTo-Json -Compress)) { throw 'Media probe inputs changed while preparing; run preparation again.' }
     $runtime = Get-Content -LiteralPath $runtimePath -Raw | ConvertFrom-Json -AsHashtable
     $runtime['source_sha256'] = $after
+    $runtime['include_diagnostics'] = $IncludeDiagnostics.IsPresent
     [IO.File]::WriteAllText($runtimePath, ($runtime | ConvertTo-Json -Depth 6))
 } finally {
     if ($held) { $mutex.ReleaseMutex() }

@@ -26,7 +26,7 @@ const FEATURED := [
 
 # Positive sample evidence, not a promise for every video/account/quality on a site.
 # See docs/WEB_VIDEO_SITES_20261028_CN.md and the 2026-10-28/29 handovers.
-# iQIYI and Douyin remain browser entries; neither passed native audio/video acceptance.
+# iQIYI remains unverified; Douyin uses the separate Play Beta button.
 const NATIVE_PLAYBACK := ["Bilibili", "YouTube", "Weibo", "Tencent Video", "Mango TV", "Youku",
 	"Twitch", "TikTok", "Instagram Reels", "TED", "Niconico"]
 

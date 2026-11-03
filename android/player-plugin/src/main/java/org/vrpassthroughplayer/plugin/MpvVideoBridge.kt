@@ -612,7 +612,7 @@ internal class MpvVideoBridge(
                 if (progress != null) put("bytes", progress.bytes).put("bytes_per_second", progress.bytesPerSecond)
             }.toString()
     }
-    private fun prepareModel(session: Session) {
+    private fun prepareModel(session: Session, depthModel: Pair<Long, String>? = null) {
         if (session.depth) {
             // Depth never ends the session: until (or unless) the model runs, frames show in 2D.
             session.depthModel = DepthVideoProbe(session.scope, context, { token -> release(session, token) },
@@ -636,7 +636,7 @@ internal class MpvVideoBridge(
                             MpvSourceNative.requestFrame(session.host.handle)
                     })
                 })
-            session.depthModel!!.start()
+            session.depthModel!!.start(depthModel)
             return
         }
         if (!session.alpha) return
@@ -679,7 +679,8 @@ internal class MpvVideoBridge(
         val redecodeMs = if (positionMs < 0 && !host.layer && direct(old) && direct(session))
             synchronized(old.lock) { old.pairs[old.drawnToken]?.optLong("pts_us", -1L) ?: -1L }.let { if (it >= 0) it / 1000 else -1L }
         else -1L
-        sessions[next] = session; dispose(old, false); prepareModel(session)
+        val depthModel = if (depth) old.depthModel?.handOff() else null
+        sessions[next] = session; dispose(old, false); prepareModel(session, depthModel)
         if (host.handle > 0) MpvSourceNative.setFrameCap(host.handle, frameCap(session))
         if (host.handle > 0) MpvSourceNative.setDirect(host.handle, direct(session))
         if (host.handle > 0 && positionMs < 0 && (redecodeMs < 0 || !MpvSourceNative.seek(host.handle, redecodeMs, true)))

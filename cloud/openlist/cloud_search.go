@@ -105,6 +105,10 @@ func matchesSearch(obj model.Obj, query, kind string) bool {
 		return kind == "all"
 	}
 	ext := strings.ToLower(path.Ext(obj.GetName()))
+	if kind == "subtitle" {
+		return safeSearchName(obj.GetName()) && !strings.HasPrefix(obj.GetName(), ".") && utf8.RuneCountInString(obj.GetName()) <= 1024 &&
+			strings.IndexFunc(obj.GetName(), func(r rune) bool { return r < 32 }) < 0 && strings.Contains("|.srt|.ass|.ssa|.vtt|.smi|.sami|.sub|", "|"+ext+"|")
+	}
 	image := strings.Contains("|.jpg|.jpeg|.png|.webp|.heic|.heif|.tif|.tiff|.hdr|.rgbe|.exr|.avif|.avifs|.apng|.gif|.dng|.cr2|.cr3|.nef|.nrw|.arw|.raf|.rw2|.orf|.pef|.srw|", "|"+ext+"|")
 	video := strings.Contains("|.mp4|.mkv|.mk3d|.webm|.mov|.m4v|.avi|.ts|.m2ts|.mpg|.mpeg|.wmv|.flv|", "|"+ext+"|")
 	document := ext == ".pdf"
@@ -120,7 +124,7 @@ func searchCloud(c *gin.Context) {
 	req.Query = strings.TrimSpace(req.Query)
 	if req.Query == "" || utf8.RuneCountInString(req.Query) > 128 || strings.ContainsRune(req.Query, 0) ||
 		(req.Scope != "current" && req.Scope != "tree" && req.Scope != "all") ||
-		(req.Kind != "all" && req.Kind != "video" && req.Kind != "image" && req.Kind != "folder") {
+		(req.Kind != "all" && req.Kind != "video" && req.Kind != "image" && req.Kind != "folder" && req.Kind != "subtitle") {
 		searchError(c, "Invalid search")
 		return
 	}

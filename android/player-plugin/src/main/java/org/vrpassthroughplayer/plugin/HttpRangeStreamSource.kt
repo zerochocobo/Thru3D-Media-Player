@@ -9,7 +9,8 @@ internal data class MediaSubtitleLink(val url: URI, val title: String, val exten
 internal data class MediaAudioLink(val url: URI, val identity: String, val title: String)
 internal data class MediaStreamLink(val url: URI, val identity: String,
     val subtitles: List<MediaSubtitleLink> = emptyList(), val audio: List<MediaAudioLink> = emptyList(), val basename: String = "",
-    val remote: Boolean = false, val headers: Map<String, String> = emptyMap())
+    val remote: Boolean = false, val headers: Map<String, String> = emptyMap(),
+    val playback: MediaServerPlaybackContext? = null)
 
 /** Authenticated, seekable original-file streaming. Only the local token is given to MPV. */
 internal class HttpRangeStreamSource(

@@ -83,11 +83,13 @@ func run() -> void:
 	video.mode_memory = video.ModeMemory.new(folder + "/modes")
 	root.add_child(video); video.set_process(false)
 	video.local_uri = VIDEO_URI; video.media.begin(7); video._remember_file = true
+	video._bookmark_metadata = {"basename": "Film.Part.One.MKV"}
 	video.media.playback = {"details": {"subtitle_tracks": []}}
 	video.control.observed_position_ms = 42000; video.playback_speed = 1.5; video.requested_play = false
 	var main := Coordinator.new(); main.video = video; main.recent_menu = library; main.settings_path = folder + "/settings.cfg"
 	library.subtitle_selected.connect(main._on_subtitle_selected); library.subtitle_picker_cancelled.connect(main._on_subtitle_picker_cancelled)
 	main._begin_subtitle_browse()
+	check(library.subtitle_filter.seed == "Film.Part.One", "Coordinator prefills the real video filename without its final video extension")
 	check(library.subtitle_picker_mode and not library.audio_import_mode and not library._grid(), "Subtitle picker reuses the list browser independently of music import")
 	check(library._buttons.filter(func(button): return button.target >= Library.NAV_BASE and button.target < Library.NAV_BASE + Library.NAV.size()).size() == 3, "Only Local, SMB and Cloud navigation is visible")
 	reply(library, host, [{"id": "/storage/emulated/0/Subtitles", "title": "Subtitles", "container": true}])

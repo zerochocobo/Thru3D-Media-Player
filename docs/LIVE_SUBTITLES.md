@@ -33,3 +33,9 @@ An optional second text track has its own selection/timing and narration prefere
 Eligible flat and curved 2D, SBS/TB and spatial video can place text or bitmap subtitles below the screen. The opt-in control is last in subtitle styles and defaults off. It is remembered per file under the independent file-settings privacy policy and follows flat-video mode changes; immersive projection retains its existing subtitle route. It reuses track timing/styles and is separate from disabled 3D text protection or hard-subtitle detection.
 
 屏下字幕默认关闭并逐片保存，适用于兼容平面／曲面2D、SBS／TB与空间视频；沉浸投影沿用原路径。它不是本版关闭的3D文字保护或硬字幕OCR。
+
+## Ephemeral cast captions (0.16.5)
+
+Eligible seekable DLNA cast audio can enable live recognition/translation manually. A new cast defaults off; decoder/3D/passthrough revisions keep the same cast identity and its in-memory cues, including cues recovered after progress arrived before presentation. Casts do not become durable file history, full-film jobs or persistent cue caches. Existing language/runtime preparation, translation network and source-access limits remain; not every live stream or cast source is seekable.
+
+外挂字幕选择器支持默认带入片名的文件名过滤，并按网盘／目录能力搜索。投屏听译每次新会话默认关闭，字幕仅本会话；模式变化不应丢失当前会话，不写成逐片历史或持久全片任务。

@@ -35,7 +35,7 @@ func field_tap(menu: Node3D, target: int) -> void:
 func _initialize() -> void: call_deferred("_run")
 func settle(background: Node) -> void:
 	var deadline := Time.get_ticks_msec()+15000
-	while background.loading and Time.get_ticks_msec() < deadline: await create_timer(.01).timeout
+	while (background.loading or (background.get_parent() is Main and (background.get_parent().scenery.library.busy or not background.get_parent().scenery._pending.is_empty()))) and Time.get_ticks_msec() < deadline: await create_timer(.01).timeout
 	check(not background.loading, "Background loading completes")
 func photo_ready(main: Node) -> void:
 	var deadline := Time.get_ticks_msec()+5000
@@ -74,10 +74,12 @@ func check_png_backgrounds(main: Node, viewport: SubViewport) -> void:
 		await photo_ready(main)
 		check(main.photo.geometry == geometry and main.photo.stereo_sbs == item[1] and main.photo.can_background(), "Captured 180/360 mono/full/half stereo PNG enables background %d" % index)
 		main.photo_menu._activate(11)
-		var buttons: Array = main.photo_menu._buttons.filter(func(button): return button.target == main.photo_menu.PHOTO_BACKGROUND)
+		var buttons: Array = main.photo_menu._buttons.filter(func(button): return button.target == main.photo_menu.SCENERY)
 		check(buttons.size()==1 and buttons[0].enabled, "Screenshot settings expose an enabled background action %d" % index)
-		field_tap(main.photo_menu, main.photo_menu.PHOTO_BACKGROUND)
+		field_tap(main.photo_menu,main.photo_menu.SCENERY)
+		field_tap(main.scenery_menu,main.scenery_menu.CURRENT)
 		await settle(main.photo_background)
+		main.scenery_menu.dismiss()
 		check(main.photo_background.error.is_empty() and main.photo_background.choice == "custom", "PNG photo background import succeeds %d" % index)
 		check(main.photo_active and main.player_menu == main.photo_menu and main.photo.panel.visible, "Photo background import retains the current image and controls %d" % index)
 		check(main.background.choice == "passthrough", "Photo import leaves the global background unchanged %d" % index)
@@ -88,38 +90,37 @@ func check_png_backgrounds(main: Node, viewport: SubViewport) -> void:
 		var color := sky_image.get_pixel(sky_image.get_width()/2,sky_image.get_height()/2)
 		check(color.is_equal_approx(Color.BLUE if item[3] else Color.RED), "Sky respects selected left eye and swap %d" % index)
 		var restored := Background.new()
-		restored.directory = main.photo_background.directory; restored.choice = "custom"; restored.custom_path = saved; restored.custom_orientation = main.photo_background.custom_orientation
+		restored.directory = main.photo_background.directory; restored.choice = "custom"
+		restored.set_library_asset(saved,main.photo_background.custom_title,main.photo_background.custom_orientation)
 		root.add_child(restored); await settle(restored)
 		check(restored.error.is_empty() and restored.ready_sky()!=null and restored._custom.get_size() == main.photo_background._custom.get_size(), "Normalized PNG sky reloads without cropping twice %d" % index)
 		restored.free()
 		check(FileAccess.file_exists(source), "PNG source survives import %d" % index)
-	# Deleting an active custom sky requires its own two trigger releases.
-	main._on_photo_action("global_background"); await settle(main.background)
+	# Legacy consumer ownership remains safe; modal confirmation is covered by scenery integration.
+	main.background.import_photo(main.photo.background_source(),main.photo.display_name); await settle(main.background)
 	check(main.photo_active and main.photo.panel.visible, "Global PNG import keeps viewing active")
 	main._close_current_media(false)
 	main._show_full_library(); main.recent_menu.section=main.recent_menu.Section.SETTINGS; main.recent_menu.tab=main.recent_menu.BACKGROUND_TAB; main.recent_menu.refresh()
 	if DisplayServer.get_name() != "headless": await frame(viewport,"custom-delete")
 	var saved := str(main.background.custom_path)
-	check(delete_target(main)>=0, "Custom background has a delete row")
-	field_tap(main.recent_menu,delete_target(main))
-	check(main.background.has_custom() and FileAccess.file_exists(saved), "First delete tap only confirms")
+	check(main.background.has_custom(), "Legacy consumer retains its custom copy")
 	if DisplayServer.get_name() != "headless": await frame(viewport,"custom-delete-confirm")
-	field_tap(main.recent_menu,delete_target(main)); await settle(main.background)
+	main._on_setting_changed("background_remove",true); await settle(main.background)
 	check(not main.background.has_custom() and not FileAccess.file_exists(saved) and FileAccess.file_exists(source), "Confirmed deletion removes only the private sky copy")
 	check(main.background.choice=="belfast" and main.display.environment.background_mode==Environment.BG_SKY, "Deleting active sky restores built-in scenery")
 	config.load(main.settings_path)
 	check(config.get_value("appearance","custom_path")=="" and config.get_value("appearance","custom_title")=="" and config.get_value("appearance","background")=="belfast", "Deletion clears persisted reference and selection")
-	check(delete_target(main)<0 and not main.recent_menu.rows[0].choices.any(func(option):return option.value=="custom"), "Deleted background disappears from menu choices")
+	check(not main.background.has_custom(), "Deleted legacy background cannot be selected")
 	# A completed worker must not close another photo or override a later background choice.
 	host.mode = {"version":1,"geometry":3}
 	main._on_library_chosen("file://"+source,source.get_file()); await photo_ready(main)
 	var source_bytes := FileAccess.get_file_as_bytes(source)
 	FileAccess.open(source,FileAccess.WRITE).store_string("broken")
-	main._on_photo_action("global_background"); await settle(main.background)
+	main.background.import_photo(main.photo.background_source(),main.photo.display_name); await settle(main.background)
 	check(not main.background.error.is_empty() and main.photo_active and main.photo.panel.visible and main.background.choice=="belfast", "Failed background decode preserves the photo and previous sky")
 	FileAccess.open(source,FileAccess.WRITE).store_buffer(source_bytes)
 	main.background.set_process(false)
-	main._on_photo_action("global_background")
+	main.background.import_photo(main.photo.background_source(),main.photo.display_name)
 	check(not main.background.remove_custom(), "Deletion cannot race a pending background import")
 	main._on_setting_changed("background","dark")
 	main._on_library_chosen("file://"+source,source.get_file()); await photo_ready(main)
@@ -127,7 +128,7 @@ func check_png_backgrounds(main: Node, viewport: SubViewport) -> void:
 	check(main.photo_active and main.photo.panel.visible and main.background.choice=="dark" and main.background.error.is_empty(), "Retry clears failure and late import preserves reopened photo and newer preset")
 	saved = main.background.custom_path
 	main._show_full_library(); main.recent_menu.section=main.recent_menu.Section.SETTINGS; main.recent_menu.tab=main.recent_menu.BACKGROUND_TAB; main.recent_menu.refresh()
-	field_tap(main.recent_menu,delete_target(main)); field_tap(main.recent_menu,delete_target(main))
+	main._on_setting_changed("background_remove",true)
 	check(main.background.choice=="dark" and not FileAccess.file_exists(saved) and main.photo.panel.visible, "Deleting inactive custom sky preserves selected preset and open photo")
 	# Unsupported projections and cropped panoramas still do not offer a sky.
 	main.photo.set_projection(1); check(not main.photo.can_background(), "VR180 PNG cannot supply a complete background")
@@ -236,49 +237,21 @@ func _run() -> void:
 	main.recent_menu.section = main.recent_menu.Section.SETTINGS
 	main.recent_menu.tab = main.recent_menu.BACKGROUND_TAB
 	main.recent_menu.refresh()
-	check(main.recent_menu.rows[0].key == "background" and main.recent_menu.rows[0].value == "belfast", "Background selection is shown in one settings field")
-	main.recent_menu.stick_scroll(-1,.25)
-	check(main.background.choice == "belfast", "Menu stick scroll never changes background selection")
-	for target in main.recent_menu.choices.targets:
-		var item: Dictionary = main.recent_menu.choices.targets[target]
-		if item.kind == "open" and item.key == "background": field_tap(main.recent_menu, target); break
-	for target in main.recent_menu.choices.targets:
-		var item: Dictionary = main.recent_menu.choices.targets[target]
-		if item.kind == "choose" and item.key == "background" and item.value == "dark": field_tap(main.recent_menu, target); break
-	check(main.background.choice == "dark", "Same-hand ray/trigger switches background")
-	for target in main.recent_menu.choices.targets:
-		var item: Dictionary = main.recent_menu.choices.targets[target]
-		if item.kind == "open" and item.key == "background": field_tap(main.recent_menu, target); break
-	for target in main.recent_menu.choices.targets:
-		var item: Dictionary = main.recent_menu.choices.targets[target]
-		if item.kind == "choose" and item.key == "background" and item.value == "morning": field_tap(main.recent_menu, target); break
-	await settle(main.background)
-	check(main.background.choice == "morning" and main.background._builtin.resource_path == Background.MORNING,
-		"Same-hand ray/trigger selects the morning sky texture")
-	check(main.background._builtin.get_size() == Vector2(8192,4096) and main.display.environment.background_mode == Environment.BG_SKY,
-		"Morning sky renders at its full 8K dimensions")
-	check(main.recent_menu.rows.any(func(row): return row.get("key") == "background_yaw") and
-		main.recent_menu.rows.any(func(row): return row.get("key") == "background_brightness"), "Morning sky retains direction and brightness controls")
+	check(not main.recent_menu._buttons.any(func(item): return item.target==main.recent_menu.TAB_BASE+main.recent_menu.BACKGROUND_TAB), "Global settings omit the obsolete Background tab")
+	main.recent_menu._activate_footer(main.recent_menu.SCENERY)
+	check(main._active_menu()==main.scenery_menu,"Shared picker receives ray input")
+	for id in ["dark","morning","night"]:
+		for index in main.scenery_menu._cards.size():
+			if str(main.scenery_menu._cards[index].id)==id:
+				field_tap(main.scenery_menu,main.scenery_menu.CARD+index); break
+		await settle(main.background)
+		check(main.background.choice==id,"Same-hand ray selects "+id)
 	config.load(main.settings_path)
-	check(config.get_value("appearance","background") == "morning", "Morning sky selection persists")
-	if DisplayServer.get_name() != "headless":
-		await frame(viewport,"morning-settings")
-		main.recent_menu.dismiss()
-		await frame(viewport,"morning")
-	main.recent_menu.visible = true; main.recent_menu.refresh()
-	check(main.recent_menu.rows[0].choices[2].value == "night", "Milky Way panorama is the third global background choice")
-	for target in main.recent_menu.choices.targets:
-		var item: Dictionary = main.recent_menu.choices.targets[target]
-		if item.kind == "open" and item.key == "background": field_tap(main.recent_menu, target); break
-	for target in main.recent_menu.choices.targets:
-		var item: Dictionary = main.recent_menu.choices.targets[target]
-		if item.kind == "choose" and item.key == "background" and item.value == "night": field_tap(main.recent_menu, target); break
-	await settle(main.background)
-	check(main.background.choice == "night" and main.background._builtin != null and main.background._builtin.resource_path == Background.NIGHT and
-		main.background._builtin.get_size() == Vector2(6000,3000), "Ray selection loads the original 6K Milky Way panorama")
-	check(main.recent_menu.find_children("*", "Label3D", true, false).any(func(label): return label.text.contains("ESO/S. Brunier")), "Global Milky Way panel visibly credits the photographer")
-	check(main.recent_menu.rows.any(func(row): return row.get("key") == "background_yaw") and
-		main.recent_menu.rows.any(func(row): return row.get("key") == "background_brightness"), "Night background exposes direction and brightness controls")
+	check(main.background._builtin.resource_path==Background.NIGHT and main.background._builtin.get_size()==Vector2(6000,3000),"Picker loads original 6K Milky Way")
+	check(main.scenery_menu.find_children("*","Label3D",true,false).any(func(label): return label.text.contains("ESO/S. Brunier")),"Picker credits the photographer")
+	main.scenery_menu.view="adjust"; main.scenery_menu.refresh()
+	check(main.scenery_menu.choices.targets.values().any(func(row): return row.get("key")=="background_yaw") and main.scenery_menu.choices.targets.values().any(func(row): return row.get("key")=="background_brightness"),"Sky adjustments remain available")
+	main.scenery_menu.dismiss()
 	var night_config := ConfigFile.new(); night_config.load(main.settings_path)
 	var night_preset := Background.new(); night_preset.choice = str(night_config.get_value("appearance", "background"))
 	viewport.add_child(night_preset); await settle(night_preset)
@@ -296,6 +269,7 @@ func _run() -> void:
 	await settle(main.background)
 	check(main.background.choice == "morning" and main.background._builtin.resource_path == Background.MORNING and
 		main.background.error.is_empty(), "Rapid preset switches never apply a stale sky")
+	config.load(main.settings_path)
 	var preset := Background.new()
 	preset.choice = str(config.get_value("appearance", "background"))
 	viewport.add_child(preset)
@@ -326,7 +300,7 @@ func _run() -> void:
 	while main.photo.loading and Time.get_ticks_msec() < deadline: await create_timer(.01).timeout
 	check(main.photo.geometry == 3 and main.photo.can_background(), "Full mono panorama offers use-as-background")
 	check(main.display.environment.background_mode == Environment.BG_COLOR, "Immersive media temporarily hides scenery")
-	main._on_photo_action("global_background")
+	main.background.import_photo(main.photo.background_source(),main.photo.display_name)
 	await settle(main.background)
 	check(main.background.choice == "custom" and main.photo.panel.visible and main.display.environment.background_mode == Environment.BG_COLOR, "Global panorama import keeps the immersive photo displayed")
 	check(main.photo_active and main._has_open_media() and main.photo.local_uri == "file://"+source, "JPG import preserves the current photo link and playback session")
@@ -339,6 +313,7 @@ func _run() -> void:
 	check(config.get_value("appearance","custom_path") == saved and config.get_value("appearance","background") == "custom", "Custom background selection persists")
 	var restored := Background.new()
 	restored.directory = main.background.directory
+	restored.library_directory=main.background.library_directory
 	restored.choice = "custom"
 	restored.custom_path = saved
 	root.add_child(restored)

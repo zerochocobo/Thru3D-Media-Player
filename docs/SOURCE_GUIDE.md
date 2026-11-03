@@ -159,3 +159,7 @@ Cinema house lights are controlled from the footer; film-driven screen light and
 ## 0.13.5 reading and defaults
 
 Use [document controls](PDF_READING.md) for spreads, pairing and RTL. Enable [comic speech/translation](COMIC_READING.md) per batch; translation is online and non-reading hover reveals original text. New users start in Grand cinema; saved choices remain and photos independently default to Belfast Sunset. Picture pinch gestures can use left/right/both hands. Capture/loop export follows [output limits](CAPTURE.md).
+
+0.16.5 adds opt-in default3D for eligible flat video and opt-in reuse of the last projection/stereo mode for files without recognized formats or saved per-file settings. Both default off; existing recognition and file memory win. Ordinary flat screen minima are0.1m/5%, menus are capped at4m, and scenery transitions reposition hidden menus. Native Alpha now also accepts eligible full-SBS180° masked video manually; masks/format restrictions remain.
+
+Emby/Jellyfin media-library playback reports start/progress/pause/stop through a bounded writer under the existing network-history privacy policy. Saved service item/session identity is separate from transient decoder/proxy revisions. Server support, account permission and network limits remain; this is not generic browser reporting. Plex's library cards/details/artwork and settings-return state are improved independently of web adapters.

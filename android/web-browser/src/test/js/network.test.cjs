@@ -12,6 +12,7 @@ function fixture(cookies = []) {
   const context = vm.createContext({ browser, URL, Date: { now: () => now }, setTimeout(f) { timers.set(++next, f); return next; }, clearTimeout(id) { timers.delete(id); } });
   vm.runInContext(fs.readFileSync(path.join(__dirname, '../../main/assets/web-browser/bilibili.js'), 'utf8'), context);
   vm.runInContext(fs.readFileSync(path.join(__dirname, '../../main/assets/web-browser/douyin.js'), 'utf8'), context);
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../../main/assets/web-browser/plex.js'), 'utf8'), context);
   vm.runInContext(source, context);
   function connect(tab = 1, frame = 0, page = 'https://page.test/watch', enabled = true) {
     const messages = [];
@@ -30,6 +31,18 @@ function fixture(cookies = []) {
   const flush = () => { const batch = [...timers.values()]; timers.clear(); batch.forEach(f => f()); };
   return { connect, request, flush, browser, advance(ms) { now += ms; } };
 }
+test('Plex exact-frame authenticated media is observed with generic network capture disabled',()=>{
+  const f=fixture(),page='http://127.0.0.1:32400/web/index.html#!/server/local/details';const p=f.connect(1,0,page,false);
+  const url='http://127.0.0.1:32400/video/:/transcode/universal/start.mpd?path=%2Flibrary%2Fmetadata%2F4&mediaIndex=0&partIndex=0';
+  const options={documentUrl:page,requestHeaders:[{name:'X-Plex-Token',value:'synthetic'}],responseHeaders:[{name:'Content-Type',value:'application/dash+xml'}]};
+  f.request(url,options);f.flush();assert.equal(p.last().length,1);assert.equal(p.last()[0].headers['x-plex-token'],'synthetic');
+  for(const address of ['http://other.test'+new URL(url).pathname+new URL(url).search,'http://127.0.0.1:32400/movie.mp4',url.replace('metadata%2F4','metadata%2F5')])
+    f.request(address,{...options,requestHeaders:[]});
+  f.request(url.replace('metadata%2F4','metadata%2F6'),{...options,documentId:'old-document'});
+  f.request(url.replace('metadata%2F4','metadata%2F7'),{...options,frameId:3});
+  f.flush();assert.equal(p.last().length,1);
+  p.port.onMessage.fire({type:'context',page:page+'-next',reset:true});f.flush();assert.equal(p.last().length,0);
+});
 test('extensionless HLS, DASH, progressive MIME and file suffixes are observed without changing requests', () => {
   const f = fixture(), p = f.connect();
   for (const [url, mime] of [['hls?signature=private', 'application/vnd.apple.mpegurl'], ['dash', 'application/dash+xml'], ['movie', 'video/mp4'], ['movie.webm', 'application/octet-stream']])

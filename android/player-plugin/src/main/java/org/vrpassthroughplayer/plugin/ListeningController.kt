@@ -140,7 +140,11 @@ internal class ListeningController(private val context: ()->Context?,private val
         val audio=ListeningPolicy.audioInput(current.path,metadata,current.primaryAudio,mediaOrigin)
         if(audio==null){fail("unsupported_audio");return@synchronized}
         val track=audio.cacheTrack
-        if(cueCache?.revoked==true || cacheMedia!=config.media || cacheLanguage!=config.language || cacheTrack!=track || cachePlaylist!=current.playlist || cueCache?.persistent!=config.persist){
+        // An ephemeral cast intentionally has no shared cache identity. Its
+        // absence must not erase finalized ASR cues before every publish().
+        val cacheChanged=if(config.media.isEmpty())cueCache!=null else
+            cueCache?.revoked==true || cacheMedia!=config.media || cacheLanguage!=config.language || cacheTrack!=track || cachePlaylist!=current.playlist || cueCache?.persistent!=config.persist
+        if(cacheChanged){
             val previous=cueCache;cueCache=null;cues.clear()
             if(previous!=null&&!previous.revoked&&previous.persistent==config.persist)worker.execute{previous.flush(true)}
         }

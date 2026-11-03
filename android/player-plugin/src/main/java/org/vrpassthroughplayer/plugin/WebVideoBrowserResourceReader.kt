@@ -23,8 +23,9 @@ internal object WebVideoBrowserResourceReader {
                     output.write(buffer, 0, count)
                     if (prefix) {
                         val data = output.toByteArray()
+                        val ts = WebVideoContainer.transportStream(data)
                         if (SphericalVideoMetadata.headerComplete(data, data.size) && (WebVideoContainer.parse(data)?.duration ?: 0.0) > 0 ||
-                            WebVideoContainer.transportStream(data) != null) break
+                            ts != null && (ts.video == "none" || ts.width > 0 && ts.height > 0 || data.size >= 128 * 1024)) break
                     }
                 }
                 if (!prefix) require(output.size() < limit || input.read() == -1)

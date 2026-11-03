@@ -26,6 +26,7 @@ func run() -> void:
 	menu_inputs()
 	gallery_memory()
 	media_depth_limits()
+	linked_menu_limits()
 	video_recenter()
 	for failure in failures: push_error(failure)
 	print("Interface depth: %d checks, %d failures" % [checks, failures.size()])
@@ -102,7 +103,7 @@ func depth_geometry() -> void:
 	for direction in [1, -1]:
 		for step in 120:
 			move.adjust_distance(Vector2(0, direction), 0.1); move.update(pose, head, follow)
-		check(is_equal_approx(move.capture.anchor.distance_to(head.origin), Move.DEPTH_LIMITS.y if direction > 0 else Move.DEPTH_LIMITS.x), "Depth adjustment clamps at its finite limit")
+		check(is_equal_approx(move.capture.anchor.distance_to(head.origin), Move.MENU_DISTANCE_LIMITS.y if direction > 0 else Move.MENU_DISTANCE_LIMITS.x), "Menu depth adjustment clamps at its finite limit")
 	move.reset(); check(move.placements.is_empty() and move.capture.is_empty(), "Explicit helper reset clears session-only movement")
 	check(Move.new().placements.is_empty(), "A new runtime starts without remembered poses")
 	panel.free()
@@ -202,3 +203,27 @@ func media_depth_limits() -> void:
 			var distance := video.panel.global_position.distance_to(head.origin)
 			check(distance >= limits.x - 0.0001 and distance <= limits.y + 0.0001 and (is_equal_approx(distance, limits.y) if direction > 0 else distance < 2.0), "Off-centre grip respects actual video/photo centre distance limits: %s within %s" % [distance, limits])
 	video.free()
+
+func linked_menu_limits() -> void:
+	var video := preload("res://scripts/mpv_video_display.gd").new(); video.history_enabled = false
+	root.add_child(video); video.set_process(false)
+	var menu := preload("res://scripts/ray_menu.gd").new(); root.add_child(menu); menu.visible = true
+	menu._backdrop.position = Vector3(0.15, -0.08, 0)
+	var head := Transform3D(Basis.IDENTITY, Vector3(0, 1.6, 0))
+	var pose := Transform3D(Basis.IDENTITY, head.origin + Vector3(0, -0.2, -0.3))
+	for cinema in [false, true]:
+		var move := Move.new()
+		menu.global_transform = Transform3D(Basis.IDENTITY, head.origin + Vector3(0, -0.05, -1.4))
+		video.set_flat_world_pose(Transform3D(Basis.IDENTITY, head.origin + Vector3(0, 0, -2)))
+		var targets := [{"kind": "menu", "key": "menu", "node": menu, "pose": menu.global_transform},
+			{"kind": "screen", "key": "video", "node": video, "pose": video.global_transform * video.flat_pose, "distance_limits": video.DISTANCE_LIMITS, "cinema": cinema}]
+		var point: Vector3 = menu.to_global(menu.panel_centre() + Vector3(0.4, 0.1, 0))
+		move.begin("right_hand", "grip_click", pose, targets, point, head)
+		move.adjust_distance(Vector2.ZERO, 0.1)
+		for step in 120:
+			move.adjust_distance(Vector2(0, 1), 0.1); move.update(pose, head, preload("res://scripts/view_follow.gd").new())
+		var centre: Vector3 = menu.to_global(menu.panel_centre())
+		check(is_equal_approx(centre.distance_to(head.origin), 4.0), "Linked ordinary/cinema screen movement respects the real offset menu centre's four-metre limit")
+		move.cancel()
+		check(not menu.grab_hit(head.origin, (centre - head.origin).normalized()).is_empty(), "Linked movement leaves the released menu reachable with the original five-metre ray")
+	video.free(); menu.free()

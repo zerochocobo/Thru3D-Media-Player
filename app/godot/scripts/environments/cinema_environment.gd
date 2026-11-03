@@ -79,6 +79,9 @@ func select(enabled: bool) -> void:
 	_update_active()
 	changed.emit()
 
+func prepare() -> void:
+	if Feature.enabled() and not is_ready and not loading: _begin_loading()
+
 
 func set_presented(enabled: bool) -> void:
 	if _presented == enabled:

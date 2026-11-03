@@ -102,3 +102,5 @@ ZipDepth upstream is MIT; its deployment approach also references the GPL-3.0 xr
 ## Video 3D boost (0.16.1)
 
 The normal video rail remains 0–100%, with an explicit boost extending to 200%. A click enables/restores remembered strength; Off is separate. Frames can be retained while changing AI presentation paths, but the picture/audio may briefly pause. Photo range/mapping remains independent. No new weight is included.
+
+0.16.5 retains the compiled video depth model across seek revisions, adds same-grade shot-cut handling and bounds burned-in letterbox detection/fill before depth inference. The visible source video is preserved; this is a depth-input preparation step, not removal of content bars or a guarantee for every encoded border. No new weight or private evaluation sample/result is included.

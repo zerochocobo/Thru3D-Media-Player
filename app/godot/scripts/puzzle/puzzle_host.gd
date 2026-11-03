@@ -76,7 +76,9 @@ func _progress_from(records: Array) -> void:
 func _update_photo_entry() -> void:
 	if not is_instance_valid(photo_entry): return
 	_sync_mode()
+	var scene_open: bool=app.get("scenery_menu")!=null and app.scenery_menu.visible
 	var show: bool=mode_enabled and not active and app.photo_active and not app.photo.inspect \
+		and not scene_open \
 		and app._input_focused() and not app._background_app_paused and Source.availability(app.photo).is_empty() \
 		and not app.recent_menu.visible and not app.music_menu.visible and app._grab.is_empty() and app.interface_move.capture.is_empty()
 	if not show:

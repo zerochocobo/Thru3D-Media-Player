@@ -97,7 +97,7 @@ func _run() -> void:
 	check(menu._adjust_rows.size() == 3 and menu.text_snapshot().contains("Screen size"), "Flat panel includes distance, size and rotation")
 	check(not menu.text_snapshot().contains("Audio track") and not menu.text_snapshot().contains("Subtitles") and not menu.text_snapshot().contains("3D depth"), "Screen panel contains no duplicate controls")
 	check(not reset_shown(menu, Menu.ROTATION_RESET) and not click(menu, Menu.ROTATION_RESET), "Zero rotation hides and disables reset")
-	# Screen size spans the flat limits (100-3000% since f8bed45c) on the presets' slider scale.
+	# Screen size spans 5-3000% on the presets' slider scale.
 	var lowest: float = Video.SCALE_LIMITS.x * 100
 	var highest: float = Video.SCALE_LIMITS.y * 100
 	for scale in [Video.SCALE_LIMITS.x, 1.5, 3.0, Video.SCALE_LIMITS.y]:

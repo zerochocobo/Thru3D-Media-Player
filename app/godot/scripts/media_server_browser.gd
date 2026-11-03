@@ -55,8 +55,43 @@ var sources_open := false
 var settings_open := false
 var display_preferences_path := "user://settings/server_views.cfg"
 var _location_pending := {}
+# Same-run navigation only; never written to history or account preferences.
+var _section_return := {}
+
+func leave_section() -> void:
+	if menu.section != menu.Section.MEDIA_SERVER or not _section_return.is_empty(): return
+	if view in ["servers", "remove_servers", "confirm_remove"] or menu.browse_memory.locked():
+		cancel(); return
+	var reads: Array = []
+	for body in pending.values():
+		# Mutations must not be repeated when the user comes back from settings.
+		if body.action in ["home", "browse", "candidates", "detail"]:
+			var read: Dictionary = body.duplicate(true)
+			read.erase("generation"); read.erase("server_id")
+			reads.append(read)
+	_section_return = {"context": context_state(), "status": "" if busy and reads.is_empty() else menu.status, "reads": reads, "location": _location_pending.duplicate(true)}
+	cancel(); keyboard = ""
+
+func forget_section() -> void:
+	_section_return.clear()
+
+func open_section() -> void:
+	if _section_return.is_empty() or menu.browse_memory.locked():
+		load_servers(); return
+	var previous: Dictionary = _section_return
+	_section_return = {}
+	cancel(); restore_context(previous.context)
+	if not menu.restore_directory_position:
+		menu.scroll = 0.0; menu._position_to_restore = {}
+	menu.status = previous.status
+	_location_pending = previous.location
+	for read in previous.reads:
+		var action_name := str(read.action)
+		read.erase("action")
+		request(action_name, read)
 
 func open_location(location: Dictionary) -> void:
+	forget_section()
 	cancel(); server = {"id": str(location.server_id)}
 	var accounts: Array = servers
 	if Methods.supports(menu.platform, "account_list"):
@@ -94,6 +129,7 @@ func cancel() -> void:
 	busy = false
 
 func load_servers() -> void:
+	forget_section()
 	cancel(); view = "servers"; server = {}; history.clear(); keyboard = ""; sources_open = false
 	menu._reset_navigation()
 	request("servers")

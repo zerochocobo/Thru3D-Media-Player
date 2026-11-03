@@ -38,9 +38,9 @@ func run() -> void:
 	primary.adjust_distance(0.5)
 	check(primary.page_layout().pose.origin.distance_to(old_point) > 0.49, "Distance changes independent window pose")
 	primary.adjust_size(100)
-	check(is_equal_approx(primary.global_basis.get_scale().x, 2.5), "Size has an upper bound")
+	check(is_equal_approx(primary.global_basis.get_scale().x, primary.maximum_scale()), "Size stops at the cinema screen envelope")
 	primary.adjust_size(-100)
-	check(is_equal_approx(primary.global_basis.get_scale().x, 0.6), "Size has a lower bound")
+	check(is_equal_approx(primary.global_basis.get_scale().x, primary.minimum_scale()), "Size has a usable lower bound")
 	primary.recenter(); primary._process(0)
 	for corner in [primary.RESIZE_RIGHT, primary.RESIZE_BOTTOM, primary.RESIZE]:
 		var button: Dictionary = primary._buttons.filter(func(item): return item.target == corner)[0]
@@ -55,7 +55,9 @@ func run() -> void:
 		var expected := old_size + Vector2(0.0 if corner == primary.RESIZE_BOTTOM else 0.4, 0.0 if corner == primary.RESIZE_RIGHT else 0.3)
 		if corner == primary.RESIZE_BOTTOM: expected.y = minf(expected.y, expected.x / primary.Surface.MIN_RATIO)
 		check(primary.page_size.is_equal_approx(expected), "Right/bottom/corner independently resize width/height through ray input")
-		check(primary.global_transform.is_equal_approx(old_pose), "Resize keeps the top-left anchor and toolbar scale fixed")
+		var anchor := Vector3(primary.RECT.position.x, primary.RECT.end.y, 0)
+		check(primary.to_global(anchor).distance_to(old_pose * anchor) < 0.0001, "Resize keeps the top-left page anchor fixed")
+		check(primary.global_transform.is_equal_approx(old_pose), "Ordinary shape changes preserve toolbar scale")
 		var resized: Dictionary = primary.page_layout()
 		var bottom_right: Vector3 = resized.pose * Vector3(resized.size.x * 0.49, -resized.size.y * 0.49, 0.3)
 		check(primary.local_hit(bottom_right, -resized.pose.basis.z).get("target") == browser.WEB, "Website fullscreen corner remains clickable after resize")
@@ -63,8 +65,10 @@ func run() -> void:
 		primary.release_pointer("left", ray_start, -old_pose.basis.z, true)
 		check(primary.drag.is_empty(), "Release ends corner capture")
 		primary.page_size = primary.RECT.size; primary.recenter(); primary.refresh(); primary._process(0)
-	verify_minimum_width(primary)
-	verify_minimum_height(primary)
+	verify_resize_limits(primary)
+	verify_resize_continuity(primary)
+	verify_edge_reshape(primary)
+	verify_portrait_reshape(primary)
 	check(not primary._buttons.any(func(button): return button.target >= browser.BASE + 9 and button.target <= browser.BASE + 13), "No redundant bottom controls return")
 	for target in [browser.BASE + 2, browser.BASE + 4]:
 		check(primary._buttons.any(func(button): return button.target == target), "Refresh, bookmark and cinema are exposed without a menu")
@@ -196,59 +200,196 @@ func run() -> void:
 	check(not primary.visible and not secondary.visible, "Closing browser hides both windows")
 	check(menu._side.visible, "Closing browser restores library navigation")
 	menu.refresh_session_controls(true)
-	check(menu._buttons.any(func(button): return button.target == Menu.CINEMA_LIGHTS), "Library shortcuts return after closing browser")
+	check(menu._buttons.any(func(button): return button.target == Menu.SCENERY), "Shared scene entry returns after closing browser")
 	menu.free(); platform.free(); await process_frame
 	print("Browser windows: %d checks, %d failures" % [checks, failures.size()])
 	for failure in failures: push_error(failure)
 	quit(0 if failures.is_empty() else 1)
 
-func verify_minimum_width(window: Node3D) -> void:
-	for edge in [window.RESIZE_RIGHT, window.RESIZE_BOTTOM, window.RESIZE]:
-		window.page_size = Vector2(2.4, 1.8) if edge == window.RESIZE_RIGHT else window.RECT.size
-		window.refresh(); window._process(0)
-		var original: Vector2 = window.page_size
-		var button: Dictionary = window._buttons.filter(func(item): return item.target == edge)[0]
-		var pose: Transform3D = window.global_transform
-		var start := Vector3(button.rect.get_center().x, button.rect.get_center().y, 0.3)
-		check(window.press_pointer("left", pose * start, -pose.basis.z, true), "Edge captures before reaching desktop minimum")
-		window.update_pointer("left", pose * (start + Vector3(-10, -10, 0)), -pose.basis.z, true)
-		var bounded: Vector2 = window.page_size
-		var logical: Vector2i = window.Surface.logical_for(bounded)
-		check(logical.x >= 1280 and logical.x < 1283, "Right, bottom and corner drags stop at the shared desktop minimum")
-		check((is_equal_approx(bounded.y, original.y) if edge == window.RESIZE_RIGHT else is_equal_approx(bounded.x, original.x)), "Minimum-width stop preserves the untouched axis")
-		window.update_pointer("left", pose * (start + Vector3(-20, -20, 0)), -pose.basis.z, true)
-		check(window.page_size.is_equal_approx(bounded), "Further outward dragging cannot shrink the logical viewport")
-		check(window.global_transform.is_equal_approx(pose), "Minimum-width stop keeps the top-left anchor fixed")
-		window.release_pointer("left", pose * start, -pose.basis.z, true)
-	window.page_size = window.RECT.size; window.recenter(); window.refresh(); window._process(0)
-
-func verify_minimum_height(window: Node3D) -> void:
+func verify_resize_limits(window: Node3D) -> void:
 	for low in [false, true]:
 		window.browser.configure_quality(low)
-		for edge in [window.RESIZE_RIGHT, window.RESIZE_BOTTOM, window.RESIZE]:
+		for edge in [window.RESIZE]:
 			window.page_size = window.RECT.size
-			window.refresh(); window._process(0)
-			var original: Vector2 = window.page_size
+			window.recenter(); window.refresh(); window._process(0)
 			var button: Dictionary = window._buttons.filter(func(item): return item.target == edge)[0]
 			var pose: Transform3D = window.global_transform
+			var anchor := Vector3(window.RECT.position.x, window.RECT.end.y, 0)
+			check(not button.rect.intersects(window.page_rect()), "Enlarged handle stays outside website controls")
+			for handle in window._buttons.filter(func(item): return item.target in [window.RESIZE, window.RESIZE_RIGHT, window.RESIZE_BOTTOM]):
+				check(not handle.rect.intersects(window.page_rect()), "All corner extensions leave website controls uncovered")
+				for mark in handle.node.get_children():
+					if mark is MeshInstance3D:
+						var origin: Vector3 = mark.global_position + pose.basis.z.normalized() * 0.3
+						check(window.local_hit(origin, -pose.basis.z).get("target") == handle.target, "Every visible grip belongs to its enlarged hit area")
+			check(button.rect.size.x >= 0.14 and button.rect.size.y >= 0.14, "Resize targets have a generous minimum width and height")
+			# Probe near all four edges, including well outside the old 5 cm target.
+			for offset in [Vector2(-0.38, 0), Vector2(0.38, 0), Vector2(0, -0.38), Vector2(0, 0.38)]:
+				var point: Vector2 = button.rect.get_center() + button.rect.size * offset
+				var origin: Vector3 = pose * Vector3(point.x, point.y, 0.3)
+				check(window.local_hit(origin, -pose.basis.z).get("target") == edge, "Outer resize target accepts the ray")
+				check(window.press_pointer("left", origin, -pose.basis.z, true) and window.drag.get("kind") == edge, "Outer resize target starts capture")
+				window.release_pointer("left", origin, -pose.basis.z, true)
 			var start := Vector3(button.rect.get_center().x, button.rect.get_center().y, 0.3)
-			check(window.press_pointer("left", pose * start, -pose.basis.z, true), "Edge captures before reaching minimum height")
-			window.update_pointer("left", pose * (start + Vector3(10, 10, 0)), -pose.basis.z, true)
+			var movement := Vector3(4 if edge != window.RESIZE_BOTTOM else 0, -3 if edge != window.RESIZE_RIGHT else 0, 0)
+			window.press_pointer("left", pose * start, -pose.basis.z, true)
+			window.update_pointer("left", pose * (start + movement), -pose.basis.z, true)
 			var bounded: Vector2 = window.page_size
 			var logical: Vector2i = window.Surface.logical_for(bounded)
 			var pixels: Vector2i = window.Surface.pixels_for(bounded, low)
-			check(logical.y == 720 and pixels * (45 if low else 36) == logical * 60, "Each resize handle stops at the same 720 CSS height on both device tiers")
-			check(logical.x >= 1280 and pixels.x * pixels.y <= (1920 * 1200 if low else 2560 * 1600), "Minimum height preserves minimum width and raster budget")
-			if edge != window.RESIZE:
-				check((is_equal_approx(bounded.y, original.y) if edge == window.RESIZE_RIGHT else is_equal_approx(bounded.x, original.x)), "Minimum-height stop preserves the untouched axis")
-			window.update_pointer("left", pose * (start + Vector3(20, 20, 0)), -pose.basis.z, true)
-			check(window.page_size.is_equal_approx(bounded), "Further dragging cannot flatten the window below minimum height")
-			check(window.global_transform.is_equal_approx(pose), "Minimum-height stop keeps the top-left anchor fixed")
+			check(logical.x >= 720 and logical.y >= 720 and pixels * (45 if low else 36) == logical * 60, "Both tiers retain shared viewport geometry after crossing a boundary")
+			check(pixels.x * pixels.y <= (1920 * 1200 if low else 2560 * 1600), "Large physical windows retain the existing raster budget")
+			var previous_size: Vector2 = window.page_layout().size
+			window.update_pointer("left", pose * (start + movement * 1.2), -pose.basis.z, true)
+			check(window.page_layout().size.x > previous_size.x and window.page_layout().size.y > previous_size.y, "Continuing beyond the boundary enlarges both axes")
+			check(window.page_size.is_equal_approx(bounded) and window.Surface.pixels_for(window.page_size, low) == pixels, "Uniform enlargement freezes layout and exact Surface pixels")
+			check(window.to_global(anchor).distance_to(pose * anchor) < 0.0001, "Crossing the upper threshold preserves the anchor")
+			window.release_pointer("left", pose * start, -pose.basis.z, true)
+			# A new capture must preserve the frozen viewport and support reversing.
+			button = window._buttons.filter(func(item): return item.target == edge)[0]
+			pose = window.global_transform
+			start = Vector3(button.rect.get_center().x, button.rect.get_center().y, 0.3)
+			window.press_pointer("left", pose * start, -pose.basis.z, true)
+			previous_size = window.page_layout().size
+			window.update_pointer("left", pose * (start - movement * 0.01), -pose.basis.z, true)
+			check(window.page_size.is_equal_approx(bounded) and window.page_layout().size.x < previous_size.x, "Regrabbing and shrinking keeps the frozen viewport")
+			window.update_pointer("left", pose * (start + movement * 100), -pose.basis.z, true)
+			var largest: Vector2 = window.page_layout().size
+			check(largest.x <= window.MAX_DISPLAY.x + 0.0001 and largest.y <= window.MAX_DISPLAY.y + 0.0001, "Maximum page fits the real cinema screen")
+			check(is_equal_approx(largest.x, window.MAX_DISPLAY.x) or is_equal_approx(largest.y, window.MAX_DISPLAY.y), "Maximum is the largest proportional fit in the cinema screen")
+			window.update_pointer("left", pose * (start + movement * 200), -pose.basis.z, true)
+			check(window.page_layout().size.is_equal_approx(largest), "Further dragging stops at the cinema size limit")
+			window.release_pointer("left", pose * start, -pose.basis.z, true)
+			window.page_size = window.RECT.size; window.recenter(); window.refresh(); window._process(0)
+			button = window._buttons.filter(func(item): return item.target == edge)[0]
+			pose = window.global_transform
+			start = Vector3(button.rect.get_center().x, button.rect.get_center().y, 0.3)
+			window.press_pointer("left", pose * start, -pose.basis.z, true)
+			window.update_pointer("left", pose * (start - movement * 0.15), -pose.basis.z, true)
+			bounded = window.page_size; pixels = window.Surface.pixels_for(bounded, low)
+			check(window.global_basis.get_scale().x < 1.0, "Crossing the lower layout threshold starts uniform shrinking")
+			window.update_pointer("left", pose * (start - movement * 100), -pose.basis.z, true)
+			var smallest: Vector2 = window.page_layout().size
+			check(smallest.x >= window.MIN_DISPLAY.x - 0.0001 and smallest.y >= window.MIN_DISPLAY.y - 0.0001 and window.global_basis.get_scale().x >= 0.59999, "Minimum keeps both page dimensions and chrome usable")
+			check(window.page_size.is_equal_approx(bounded) and window.Surface.pixels_for(window.page_size, low) == pixels, "Uniform shrinking keeps exact layout and Surface pixels")
+			window.update_pointer("left", pose * (start - movement * 200), -pose.basis.z, true)
+			check(window.page_layout().size.is_equal_approx(smallest), "Further dragging stops at the minimum")
+			check(window.to_global(anchor).distance_to(pose * anchor) < 0.0001, "Lower threshold and minimum preserve the anchor")
 			var layout: Dictionary = window.page_layout()
 			var point: Vector3 = layout.pose * Vector3(layout.size.x * 0.49, -layout.size.y * 0.49, 0.3)
-			check(window.page_point(point, -layout.pose.basis.z).distance_to(Vector2(0.99, 0.99)) < 0.001, "Ray coordinates still cover the bottom-right corner at minimum height")
+			check(window.local_hit(point, -layout.pose.basis.z).get("target") == window.WEB and window.page_point(point, -layout.pose.basis.z).distance_to(Vector2(0.99, 0.99)) < 0.001, "Minimum-size fullscreen corner still belongs to the webpage")
+			# Reverse immediately at the hard stop, without an invisible overshoot zone.
+			window.update_pointer("left", pose * (start - movement * 200 + movement * 0.01), -pose.basis.z, true)
+			check(window.page_layout().size.x > smallest.x, "Reversing at the minimum responds immediately")
+			window.update_pointer("left", pose * (start - movement * 200 + movement * 0.5), -pose.basis.z, true)
+			check(not window.page_size.is_equal_approx(bounded), "Crossing back through normal scale resumes layout resizing")
 			window.release_pointer("left", pose * start, -pose.basis.z, true)
-			check(window.drag.is_empty(), "Release ends capture at the height limit")
+			check(window.drag.is_empty(), "Release ends resize capture")
+	window.browser.configure_quality(false)
+	window.page_size = window.RECT.size; window.recenter(); window.refresh(); window._process(0)
+
+func verify_resize_continuity(window: Node3D) -> void:
+	for edge in [window.RESIZE]:
+		for outward in [true, false]:
+			var change := Vector2(4, 3) if outward else Vector2(-0.2, -0.34)
+			if edge == window.RESIZE_RIGHT: change.y = 0
+			elif edge == window.RESIZE_BOTTOM: change.x = 0
+			window.page_size = window.RECT.size; window.recenter()
+			var initial_pose: Transform3D = window.global_transform
+			window.resize_by(change, edge)
+			var final_pose: Transform3D = window.global_transform
+			var final_size: Vector2 = window.page_size
+			window.page_size = window.RECT.size; window.global_transform = initial_pose
+			for step in 80: window.resize_by(change / 80.0, edge)
+			check(window.page_size.is_equal_approx(final_size) and window.global_transform.is_equal_approx(final_pose), "Crossing either threshold is independent of pointer update frequency")
+			for step in 80: window.resize_by(-change / 80.0, edge)
+			check(window.page_size.is_equal_approx(window.RECT.size) and window.global_transform.is_equal_approx(initial_pose), "Reversing through a threshold returns without a size or position jump")
+	window.page_size = window.RECT.size; window.recenter(); window.refresh(); window._process(0)
+
+func verify_edge_reshape(window: Node3D) -> void:
+	for low in [false, true]:
+		window.browser.configure_quality(low)
+		for scale_factor in [0.6, 1.0, 2.5, 8.0]:
+			for edge in [window.RESIZE_RIGHT, window.RESIZE_BOTTOM]:
+				window.page_size = Vector2(2.88, 1.8) if scale_factor > 1.0 else window.RECT.size
+				window.recenter(); window._scale_about_centre(scale_factor, window.global_transform)
+				window.refresh(); window._process(0)
+				var pose: Transform3D = window.global_transform
+				var original: Vector2 = window.page_layout().size
+				var pixels: Vector2i = window.Surface.pixels_for(window.page_size, low)
+				var button: Dictionary = window._buttons.filter(func(item): return item.target == edge)[0]
+				var start := Vector3(button.rect.get_center().x, button.rect.get_center().y, 0.3)
+				var movement := Vector3(window.page_size.x * 0.08, 0, 0) if edge == window.RESIZE_RIGHT else Vector3(0, -window.page_size.y * 0.08, 0)
+				check(window.press_pointer("left", pose * start, -pose.basis.z, true), "Edge captures an already uniformly scaled window")
+				window.update_pointer("left", pose * (start + movement), -pose.basis.z, true)
+				var resized: Vector2 = window.page_layout().size
+				var expected := original * (Vector2(1.08, 1) if edge == window.RESIZE_RIGHT else Vector2(1, 1.08))
+				check(resized.is_equal_approx(expected), "Edge changes only the requested physical dimension, at small/normal/large scales and old layout caps")
+				check(window.Surface.pixels_for(window.page_size, low) != pixels, "An intentional aspect change updates the viewport instead of locking it")
+				var logical: Vector2i = window.Surface.logical_for(window.page_size)
+				pixels = window.Surface.pixels_for(window.page_size, low)
+				check(logical.x >= 720 and logical.y >= 720 and pixels.x * pixels.y <= (1920 * 1200 if low else 2560 * 1600), "Reshaping retains short-edge minimums and raster budget")
+				var anchor := Vector3(window.RECT.position.x, window.RECT.end.y, 0)
+				check(window.to_global(anchor).distance_to(pose * anchor) < 0.0001, "Edge reshaping keeps the page's top-left anchor")
+				var final_pose: Transform3D = window.global_transform
+				var final_size: Vector2 = window.page_size
+				window.update_pointer("left", pose * start, -pose.basis.z, true)
+				check(window.page_layout().size.is_equal_approx(original) and window.global_transform.is_equal_approx(pose), "Reversing an edge drag restores physical size and chrome scale without drift")
+				for step in range(1, 81): window.update_pointer("left", pose * (start + movement * (step / 80.0)), -pose.basis.z, true)
+				check(window.page_size.is_equal_approx(final_size) and window.global_transform.is_equal_approx(final_pose), "Edge geometry and chrome scale are independent of pointer update frequency")
+				for step in range(79, -1, -1): window.update_pointer("left", pose * (start + movement * (step / 80.0)), -pose.basis.z, true)
+				check(window.page_layout().size.is_equal_approx(original) and window.global_transform.is_equal_approx(pose), "Repeated edge updates reverse without accumulating scale")
+				window.release_pointer("left", pose * start, -pose.basis.z, true)
+				window.resize_by(Vector2(1000, 0) if edge == window.RESIZE_RIGHT else Vector2(0, 1000), edge)
+				resized = window.page_layout().size
+				check((is_equal_approx(resized.y, original.y) if edge == window.RESIZE_RIGHT else is_equal_approx(resized.x, original.x)) and resized.x <= window.MAX_DISPLAY.x + 0.0001 and resized.y <= window.MAX_DISPLAY.y + 0.0001, "Growing an edge stops at physical/aspect limits without scaling the other axis")
+				window.resize_by(Vector2(-2000, 0) if edge == window.RESIZE_RIGHT else Vector2(0, -2000), edge)
+				resized = window.page_layout().size
+				check((is_equal_approx(resized.y, original.y) if edge == window.RESIZE_RIGHT else is_equal_approx(resized.x, original.x)) and resized.x >= window.MIN_DISPLAY.x - 0.0001 and resized.y >= window.MIN_DISPLAY.y - 0.0001, "Shrinking an edge stops at physical/aspect limits without scaling the other axis")
+				window.page_size = Vector2(2.88, 1.8) if scale_factor > 1.0 else window.RECT.size
+				window.global_transform = pose
+				# Grabbing a different handle must not inherit the previous proportional mode.
+				var other: int = window.RESIZE_BOTTOM if edge == window.RESIZE_RIGHT else window.RESIZE_RIGHT
+				window.resize_by(Vector2(0, original.y * 0.04) if other == window.RESIZE_BOTTOM else Vector2(original.x * 0.04, 0), other)
+				resized = window.page_layout().size
+				check(is_equal_approx(resized.x, original.x) if other == window.RESIZE_BOTTOM else is_equal_approx(resized.y, original.y), "Switching edges leaves the opposite dimension unchanged")
+	window.browser.configure_quality(false)
+	window.page_size = window.RECT.size; window.recenter(); window.refresh(); window._process(0)
+
+func verify_portrait_reshape(window: Node3D) -> void:
+	for low in [false, true]:
+		window.browser.configure_quality(low)
+		for scale_factor in [1.0, 2.5]:
+			for edge in [window.RESIZE_BOTTOM, window.RESIZE]:
+				if edge == window.RESIZE and scale_factor != 1.0: continue
+				window.page_size = window.RECT.size; window.recenter()
+				window._scale_about_centre(scale_factor, window.global_transform)
+				window.refresh(); window._process(0)
+				var pose: Transform3D = window.global_transform
+				var button: Dictionary = window._buttons.filter(func(item): return item.target == edge)[0]
+				var start := Vector3(button.rect.get_center().x, button.rect.get_center().y, 0.3)
+				window.press_pointer("left", pose * start, -pose.basis.z, true)
+				for height in [1.44, 1.80, 2.56, 3.20]:
+					window.update_pointer("left", pose * (start + Vector3(0, -(height - 0.90), 0)), -pose.basis.z, true)
+					window._process(0)
+					var physical: Vector2 = window.full_page_layout().size
+					check(physical.is_equal_approx(Vector2(1.44, height) * scale_factor), "Real bottom/corner drag passes square into portrait while width stays fixed: " + str(height))
+					var logical: Vector2i = window.Surface.logical_for(window.page_size)
+					check(absf(float(logical.x) / logical.y - 1.44 / height) < 0.005, "Portrait CSS aspect matches the requested physical shape")
+					check(window.clamp_page_size(window.page_size).is_equal_approx(window.page_size), "Saved portrait geometry is accepted unchanged")
+					var layout: Dictionary = window.page_layout()
+					var corner: Vector3 = layout.pose * Vector3(layout.size.x * 0.49, -layout.size.y * 0.49, 0.3)
+					check(window.local_hit(corner, -layout.pose.basis.z).get("target") == window.WEB and window.page_point(corner, -layout.pose.basis.z).distance_to(Vector2(0.99, 0.99)) < 0.001, "Portrait bottom-right input still reaches the page")
+				window.update_pointer("left", pose * (start + Vector3(0, -(3.6 - 0.9), 0)), -pose.basis.z, true)
+				var portrait_size: Vector2 = window.page_size
+				var portrait_pixels: Vector2i = window.Surface.pixels_for(portrait_size, low)
+				window.update_pointer("left", pose * (start + Vector3(0, -(4.5 - 0.9), 0)), -pose.basis.z, true)
+				if edge == window.RESIZE:
+					check(window.page_size.is_equal_approx(portrait_size) and window.Surface.pixels_for(window.page_size, low) == portrait_pixels, "Corner enlargement beyond the portrait threshold freezes the real portrait viewport")
+					check(window.full_page_layout().size.y > 3.6 and is_equal_approx(window.full_page_layout().size.x / window.full_page_layout().size.y, 0.4), "Corner threshold is reached only after a tall 1:2.5 portrait exists")
+				else:
+					check(window.full_page_layout().size.is_equal_approx(Vector2(1.44, 3.6) * scale_factor), "Bottom edge stops at the tall aspect boundary without widening the page")
+				window.release_pointer("left", pose * start, -pose.basis.z, true)
 	window.browser.configure_quality(false)
 	window.page_size = window.RECT.size; window.recenter(); window.refresh(); window._process(0)
 

@@ -13,6 +13,9 @@ func has_button(menu: Node, id: int) -> bool: return menu._buttons.any(func(butt
 func photo_ready(app: Node) -> void:
 	var deadline := Time.get_ticks_msec()+6000
 	while app.photo.loading and Time.get_ticks_msec()<deadline: await create_timer(0.01).timeout
+	# This fixture explicitly supplies tracked input; desktop focus notifications must
+	# not turn it into an application-pause scenario during an offscreen render.
+	app._background_app_paused=false
 	app.photo.finish_transition(); app.photo_menu.dismiss(); app.recent_menu.dismiss(); app.puzzle_game._update_photo_entry()
 func _run() -> void:
 	for name in ["puzzle_host","puzzle_photo_menu","puzzle_library_menu"]:
@@ -31,12 +34,12 @@ func _run() -> void:
 	app.recent_menu.refresh()
 	check(not has_button(app.recent_menu,app.recent_menu.PUZZLE_OPEN),"Home has no empty progress shortcut on a fresh profile")
 	app.recent_menu.media_filter=2; app.recent_menu.refresh()
-	check(has_button(app.recent_menu,app.recent_menu.PUZZLE_OPEN),"Images offer a first-time puzzle-mode entry with no progress")
+	check(not has_button(app.recent_menu,app.recent_menu.PUZZLE_OPEN),"Image browsing hides the floating puzzle entry")
 	app.recent_menu._activate(app.recent_menu.PUZZLE_OPEN)
 	check(host.active and not host.panel.can_start and not has_button(host.panel,14) and has_button(host.panel,13),"The default hub contains mode and progress without an image-browser link")
 	host.panel._activate(13)
 	check(host.mode_enabled and Store.new(host.store.directory).mode_enabled(),"Turning mode on is explicit and durable")
-	check(app.photo_menu._buttons.filter(func(b):return b.target==app.photo_menu.PHOTO_PUZZLE)[0].base_color==app.photo_menu.ACCENT,"Enabled mode uses the green status icon")
+	check(not has_button(app.photo_menu,app.photo_menu.PHOTO_PUZZLE),"Floating photo puzzle entry remains hidden while mode is enabled")
 	host.finish(); app._show_full_library()
 	check(not host.active and app.recent_menu.visible and app.recent_menu.media_filter==0,"Closing mode settings does not force the browser into an image filter")
 	app.recent_menu._choose({"uri":"file://"+path,"title":"mode.png","kind":"image"})
@@ -68,7 +71,7 @@ func _run() -> void:
 	app.hand_pointers.right_hand.source="none"; app.hand_pointers.right_hand.ray=null
 	check(host.has_progress() and host.store.get_game(id).snapshot.pieces[piece.piece_id].placed,"A real snapped piece makes a resumable Home entry")
 	host.finish(); app._show_full_library(); app.recent_menu.media_filter=0; app.recent_menu.refresh()
-	check(has_button(app.recent_menu,app.recent_menu.PUZZLE_OPEN),"Home shows the shortcut after actual progress is saved")
+	check(not has_button(app.recent_menu,app.recent_menu.PUZZLE_OPEN),"Saved progress does not restore the hidden floating shortcut")
 	app.recent_menu._activate(app.recent_menu.PUZZLE_OPEN); host.panel._activate(12)
 	check(not host.mode_enabled and not Store.new(host.store.directory).mode_enabled() and host.panel.records.size()==1,"Turning the mode off preserves the unfinished game")
 	host.finish(); app.recent_menu.dismiss(); app.photo_menu.dismiss(); host._update_photo_entry()
@@ -79,7 +82,7 @@ func _run() -> void:
 	check(not has_button(app.recent_menu,app.recent_menu.PUZZLE_OPEN),"Deleting the last progressed game immediately removes Home's shortcut")
 	app.recent_menu.media_filter=2; app.recent_menu.refresh(); app.recent_menu._activate(app.recent_menu.PUZZLE_OPEN)
 	host._action("undo"); host.finish(); app._show_full_library(); app.recent_menu.media_filter=0; app.recent_menu.refresh()
-	check(has_button(app.recent_menu,app.recent_menu.PUZZLE_OPEN),"Undo restores the existing progressed Home entry")
+	check(not has_button(app.recent_menu,app.recent_menu.PUZZLE_OPEN),"Undo retains progress without restoring the floating shortcut")
 	image=Image.create(320,160,false,Image.FORMAT_RGB8); image.fill(Color(0.5,0.3,0.2))
 	var panorama := output.path_join("panorama.png"); image.save_png(panorama)
 	app._on_library_chosen("file://"+panorama,"panorama.png"); await photo_ready(app); app.photo.set_projection(3); host._update_photo_entry()

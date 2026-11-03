@@ -53,11 +53,13 @@ func _run() -> void:
 	library.section = Library.Section.SETTINGS; library.tab = Library.BACKGROUND_TAB
 	get_tree().root.add_child(library); library.toggle(); library.set_process(false)
 	var background_row: Dictionary = library.rows[0]
-	check(background_row.choices.any(func(option): return option.value == "cinema") , "Both builds show the auditorium")
-	check(background_row.choices.any(func(option): return option.value == "cinema" and option.label == "Grand cinema"), "Cinema entry uses the final name")
-	check(str(background_row.value) == "cinema", "Background menu normalizes stale release settings")
-	check(library.rows.any(func(row): return row.get("key", "") == "cinema_interaction") , "Both builds provide movement settings")
-	check(library.rows.any(func(row): return row.get("setting", []) == ["cinema_home", true]) , "Both builds provide the return-to-start action")
+	check(background_row.get("setting",[])==["scene_open",true],"Legacy tab state delegates to the scene picker")
+	check(not Library.SETTING_ORDER.has(Library.BACKGROUND_TAB),"Global settings hide the obsolete Background category")
+	main.scenery_menu.open("global"); main.scenery_menu.view="adjust"; main.scenery_menu.refresh()
+	check(main.scenery.library.allowed("global","cinema"),"Both builds retain cinema capability")
+	check(main.scenery_menu.choices.targets.values().any(func(item): return item.get("key","")=="cinema_interaction"),"Both builds expose movement in scene adjustments")
+	check(main.scenery_menu._buttons.any(func(item): return item.target==main.scenery_menu.CURRENT),"Both builds expose return to start")
+	main.scenery_menu.dismiss()
 	var player := Player.new()
 	player.session_controls_provider = func(): return {"cinema_visible": true, "cinema_moving": true}
 	player.state_provider = func(): return {"has_video": true, "geometry": 0, "screen_scene_locked": true}
@@ -65,7 +67,7 @@ func _run() -> void:
 	var cinema_buttons := 0
 	for button in player._buttons:
 		if int(button.target) in [Player.FREE_MOVEMENT, Player.CINEMA_MOVE, Player.CINEMA_HOME, Player.CINEMA_LIGHT_AUTO, Player.CINEMA_LIGHT_ON, Player.CINEMA_LIGHT_OFF, Player.CINEMA_LIGHTS]: cinema_buttons += 1
-	check(cinema_buttons == 7, "Cinema settings and footer are available in both builds")
+	check(cinema_buttons == 5 and player._buttons.any(func(item): return item.target==Player.SCENERY), "Cinema settings remain available through the shared scene entry")
 	var actions: Array = []
 	player.action_requested.connect(func(action): actions.append(action))
 	player.session_control_requested.connect(func(operation): actions.append(operation))

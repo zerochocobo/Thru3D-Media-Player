@@ -6,7 +6,9 @@ const Memory := preload("res://scripts/file_listening_memory.gd")
 const Privacy := preload("res://scripts/media_privacy.gd")
 const I18n := preload("res://scripts/i18n.gd")
 const Tasks := preload("res://scripts/subtitle_tasks.gd")
+const CastCapabilities := preload("res://scripts/cast_capabilities.gd")
 const SECTION := "live_interpretation"
+const FAILURES := ["listening_error", "unsupported_audio", "source_busy", "source_error", "audio_error"]
 var video: Node3D
 var memory := Memory.new()
 var enabled := false
@@ -23,6 +25,10 @@ var _poll_at := 0
 var _received_at := 0
 var _stored := {}
 var _cache_instance := -1
+var _cast_token := 0
+var _source_session := 0
+var _failure_state := ""
+var _failure_until := 0
 
 func _init(owner: Node3D) -> void:
 	video = owner
@@ -42,29 +48,49 @@ func load_settings(settings: ConfigFile) -> void:
 func save(settings: ConfigFile) -> void:
 	for key in ["source", "target", "lead"]: settings.set_value(SECTION, key, get(key))
 	if settings.has_section_key(SECTION, "enabled"): settings.erase_section_key(SECTION, "enabled")
-	if not video.cast_token and memory.remember(_source, {"enabled": enabled}): memory.save()
+	if not is_cast_source() and memory.remember(_source, {"enabled": enabled}): memory.save()
+
+## The renderer clears ownership before closing its player. Keep the old source
+## ephemeral until reset_source, including any pending save in that interval.
+func is_cast_source() -> bool:
+	return _cast_token > 0 or video.cast_token > 0
 
 func reset_source(uri: String = "") -> void:
-	var same := not uri.is_empty() and uri == _source
+	var token := int(video.cast_token) if not uri.is_empty() else 0
+	var session := int(video.media.session_id) if not uri.is_empty() else 0
+	var same := not uri.is_empty() and uri == _source and token == _cast_token and (token == 0 or session == _source_session)
 	_source = uri; _payload = ""; _session = 0; _epoch = -1; report = {}
+	_cast_token = token; _source_session = session
+	_failure_state = ""; _failure_until = 0; _poll_at = 0; _received_at = 0; _cache_instance = -1
 	translator.reset(true)
 	_stored.clear()
-	if not same: enabled = not video.cast_token and bool(memory.lookup(uri).get("enabled", false))
+	if not same: enabled = not is_cast_source() and bool(memory.lookup(uri).get("enabled", false))
 
 func available() -> bool:
-	return _allowed() and not video.media.playback.get("details", {}).get("audio_tracks", []).is_empty()
+	if not _allowed() or video.media.playback.get("details", {}).get("audio_tracks", []).is_empty(): return false
+	if not is_cast_source(): return true
+	return (_source.begins_with("http://") or _source.begins_with("https://")) and CastCapabilities.capabilities(video).get("seek", false)
+
+## MPV processing revisions replace the presentation session over the same Host.
+## Only the successful player revision may transfer this binding; arbitrary new
+## sessions still fail _allowed() until reset_source establishes their identity.
+func processing_revised(previous_session: int, next_session: int) -> void:
+	if _cast_token > 0 and video.cast_token == _cast_token and _source_session == previous_session \
+		and _source == video.local_uri and next_session > 0 and video.media.session_id == next_session:
+		_source_session = next_session
 
 ## The track list is briefly empty while a seek restarts the demuxer. It gates
 ## switching on only, so a running session keeps its loaded speech model.
 func _allowed() -> bool:
-	return video.media.session_id > 0 and not video.cast_token and not video.disc.menu_session \
-		and Methods.supports(video.platform, "set_mpv_listening")
+	if video.media.session_id <= 0 or video.disc.menu_session or not Methods.supports(video.platform, "set_mpv_listening"): return false
+	return not is_cast_source() or (_cast_token > 0 and video.cast_token == _cast_token and video.media.session_id == _source_session)
 
 func set_option(key: String, value: Variant) -> bool:
 	match key:
 		"listening_enabled":
 			if not value is bool or (value and not available()): return false
 			enabled = value
+			if not value and is_cast_source(): translator.enabled = false
 		"listening_source":
 			if value not in ["zh", "en", "ja"]: return false
 			source = value
@@ -75,22 +101,38 @@ func set_option(key: String, value: Variant) -> bool:
 			if not (value is int or value is float) or float(value) not in [8.0, 12.0, 20.0]: return false
 			lead = int(value)
 		_: return false
+	_failure_state = ""; _failure_until = 0
 	translator.reset(true); _stored.clear(); report = {}; _epoch = -1; _payload = ""
 	return true
 
 func active() -> bool: return enabled and _allowed()
 
-func tick() -> void:
-	if not Methods.supports(video.platform, "set_mpv_listening") or video.media.session_id <= 0: return
-	var wanted := active()
+func _configure(wanted: bool) -> bool:
 	# Recognized original text is stored per video only where per-file settings may persist.
-	var media := Memory.key_for(_source)
+	var media := "" if is_cast_source() else Memory.key_for(_source)
 	var payload := JSON.stringify({"enabled": wanted, "language": source, "lead": lead, "target": target,
-		"media": media, "persist": not media.is_empty() and Privacy.persist_allowed(_source), "network": not Privacy.is_local(_source)})
+		"media": media, "persist": not media.is_empty() and Privacy.persist_allowed(_source), "network": is_cast_source() or not Privacy.is_local(_source)})
 	if payload != _payload or _session != video.media.session_id:
 		if _session != video.media.session_id: report = {}; translator.reset(true)
 		if video.platform.set_mpv_listening(video.media.session_id, payload):
 			_payload = payload; _session = video.media.session_id
+		else: return false
+	return true
+
+func _stop_cast(state: String = "") -> void:
+	set_option("listening_enabled", false)
+	_failure_state = state; _failure_until = Time.get_ticks_msec() + 6000
+	_configure(false)
+
+func _failure_notice() -> String:
+	return I18n.t(status_label(_failure_state)) if is_cast_source() and _allowed() and Time.get_ticks_msec() < _failure_until else ""
+
+func tick() -> void:
+	if not Methods.supports(video.platform, "set_mpv_listening") or video.media.session_id <= 0: return
+	if is_cast_source() and enabled and not _allowed(): _stop_cast()
+	var wanted := active()
+	if not _configure(wanted) and wanted and is_cast_source():
+		_stop_cast("listening_error"); return
 	if not wanted:
 		if translator.enabled: translator.enabled = false; translator.reset(true)
 		report = {}; return
@@ -99,6 +141,8 @@ func tick() -> void:
 	var incoming: Variant = JSON.parse_string(video.platform.get_mpv_listening(video.media.session_id))
 	if not incoming is Dictionary: return
 	report = incoming
+	if is_cast_source() and str(report.get("state", "")) in FAILURES:
+		_stop_cast(str(report.state)); return
 	if int(report.get("cache_instance", -1)) != _cache_instance:
 		_cache_instance = int(report.get("cache_instance", -1)); _stored.clear()
 	_received_at = Time.get_ticks_msec()
@@ -153,8 +197,16 @@ static func status_label(value: String) -> String:
 		"source_error": "Unable to read audio from the source", "audio_error": "Unable to open the audio track"}.get(value, "")
 
 func snapshot() -> Dictionary:
-	return {"listening_available": available() or active(), "listening_enabled": active(), "listening_source": source,
-		"listening_target": target, "listening_lead": lead, "listening_state": report.get("state", "off"),
+	var notice := _failure_notice()
+	var can_start := available() or active()
+	var cast_entry := is_cast_source() and _allowed() and (_source.begins_with("http://") or _source.begins_with("https://"))
+	var hint := ""
+	if cast_entry and not can_start:
+		hint = "Audio track unavailable" if video.media.playback.get("details", {}).get("audio_tracks", []).is_empty() else "Available for seekable videos"
+	return {"listening_available": can_start, "listening_visible": can_start or cast_entry, "listening_unavailable_hint": hint,
+		"listening_enabled": active(), "listening_source": source,
+		"listening_target": target, "listening_lead": lead, "listening_state": _failure_state if not notice.is_empty() else report.get("state", "off"),
+		"listening_notice": notice,
 		"listening_caption": preparation_caption(), "listening_cache_complete": report.get("cache_complete", false),
 		"listening_cache_persistent": report.get("cache_persistent", false), "listening_translation_complete": report.get("translation_complete", false)}
 
@@ -175,7 +227,7 @@ func preparation_caption() -> String:
 ## Head-locked status while the control bar is hidden: what is happening when
 ## no subtitle shows, and why a shown subtitle is still untranslated.
 func status_caption(position: float) -> String:
-	if not active(): return ""
+	if not active(): return _failure_notice()
 	var preparing := preparation_caption()
 	if not preparing.is_empty(): return preparing
 	var state := str(report.get("state", ""))

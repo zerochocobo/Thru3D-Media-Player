@@ -41,7 +41,7 @@ func option(key: String, value: Variant, settings: ConfigFile) -> bool:
 func supported() -> bool: return Methods.supports(video.platform, "subtitle_tasks_request")
 
 func command(value: Dictionary) -> bool:
-	if not supported(): return false
+	if not supported() or (value.get("operation") == "enqueue" and video.listening.is_cast_source()): return false
 	var accepted: bool = video.platform.subtitle_tasks_request(JSON.stringify(value))
 	notice = "" if accepted else I18n.t("Unable to add subtitle task")
 	_poll = 0
@@ -51,7 +51,7 @@ func effective_target() -> String:
 	return video.listening.target if mode == "translated" and Protocol.language(video.listening.source) != video.listening.target else ""
 
 func enqueue() -> bool:
-	if not video.listening.available(): return false
+	if video.listening.is_cast_source() or not video.listening.available(): return false
 	var uri: String = video.local_uri
 	return command({"operation": "enqueue", "session_id": video.media.session_id,
 		"media": Memory.key_for(uri), "title": video.display_name, "language": video.listening.source,
@@ -66,7 +66,7 @@ func tick() -> void:
 	for row: Dictionary in details.get("audio_tracks", []):
 		if int(row.get("id", -2)) == int(details.get("audio_track_id", -1)): track = int(row.get("stream_index", -1))
 	command_context({"operation": "context", "session_id": video.media.session_id, "policy": policy, "memory": Privacy.file_settings,
-		"media": Memory.key_for(video.local_uri), "network": not Privacy.is_local(video.local_uri),
+		"media": _current_media(), "network": video.listening.is_cast_source() or not Privacy.is_local(video.local_uri),
 		"playing": str(details.get("paused", "yes")) == "no", "buffering": str(details.get("paused_for_cache", "no")) == "yes",
 		"listening": video.listening.active(), "language": video.listening.source, "track": track,
 		"playlist": int(video.disc.playing), "position": video.listening.playback_position(float(details.get("position_seconds", 0))),
@@ -120,12 +120,16 @@ static func seed(cues: Array, client: RefCounted, source: String, target: String
 		var key := Protocol.cache_key(Protocol.normalize(str(cue.text), source), source, target)
 		client.cache[key] = {"text": translated, "provider": "cache"}
 
+func _current_media() -> String:
+	return "" if video.listening.is_cast_source() else Memory.key_for(video.local_uri)
+
 func snapshot() -> Dictionary:
 	var current := {}
+	var media := _current_media()
 	for job: Dictionary in report.get("jobs", []):
-		if job.media == Memory.key_for(video.local_uri) and job.language == video.listening.source and job.target == effective_target() and job.get("current", true) and job.state != "cancelled": current = job; break
+		if not media.is_empty() and job.media == media and job.language == video.listening.source and job.target == effective_target() and job.get("current", true) and job.state != "cancelled": current = job; break
 	return {"subtitle_tasks": report, "subtitle_task_mode": mode, "subtitle_task_policy": policy,
-		"subtitle_task": current, "subtitle_task_supported": supported(), "subtitle_task_notice": notice,
+		"subtitle_task": current, "subtitle_task_supported": supported() and not video.listening.is_cast_source(), "subtitle_task_notice": "" if video.listening.is_cast_source() else notice,
 		"listening_source": video.listening.source, "listening_target": video.listening.target, "listening_lead": video.listening.lead}
 
 static func caption(job: Dictionary) -> String:

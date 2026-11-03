@@ -143,6 +143,34 @@ class WebVideoNetworkCaptureTest {
         assertNotEquals(p, WebVideoNetworkCapture.page("https://server.test:8920/path?access_token=private#secret", JSONObject(m.toString()).put("network_epoch", 2)))
         assertNull(WebVideoNetworkCapture.page("https://page.test/watch", JSONObject(m.toString()).put("network_enabled", false)))
     }
+    @Test fun currentHlsChoosesTheActuallyDecodedLeafAcrossRelatedCdnHosts() {
+        val roots=listOf("https://a.cdn.test/low", "https://b.other.test/current", "https://c.hosted.test/high")
+        val sizes=listOf(320 to 180,704 to 396,1280 to 720)
+        val data=HashMap<String,ByteArray>()
+        roots.forEachIndexed { index,root ->
+            data[root]="#EXTM3U\n#EXT-X-MAP:URI=\"init.mp4\"\n#EXTINF:10,\nchunk.m4s\n#EXT-X-ENDLIST\n".toByteArray()
+            data[URI(root).resolve("init.mp4").toString()]=mp4(width=sizes[index].first,height=sizes[index].second)
+        }
+        val m=media(*roots.map { candidate(it,"hls") }.toTypedArray()).put("width",704).put("height",396)
+        assertNull(resolver(data).resolve(page,m)) // Generic ambiguity behavior is unchanged.
+        val selected=WebVideoFormats.select(page,resolver(data).resolveCurrent(page,m)!!){true}
+        assertEquals(roots[1],selected.video.url.toString());assertEquals(704,selected.video.width)
+        data[URI(roots[0]).resolve("init.mp4").toString()]=mp4(width=704,height=396)
+        assertNull(resolver(data).resolveCurrent(page,m))
+    }
+    @Test fun currentHlsRequiresWholeDurationRealDimensionsAndBothTracks() {
+        val root="https://cdn.test/vod"
+        val vod="#EXTM3U\n#EXT-X-MAP:URI=\"init.mp4\"\n#EXTINF:10,\nchunk.m4s\n#EXT-X-ENDLIST\n"
+        val m=media(candidate(root,"hls"))
+        for (bad in listOf(mp4(width=0,height=0),mp4(audio=false))) {
+            assertNull(resolver(mapOf(root to vod.toByteArray(),"https://cdn.test/init.mp4" to bad)).resolveCurrent(page,m))
+        }
+        val valid=mapOf(root to vod.toByteArray(),"https://cdn.test/init.mp4" to mp4())
+        assertNotNull(resolver(valid).resolveCurrent(page,m))
+        assertNull(resolver(valid+(root to vod.replace("EXTINF:10","EXTINF:5").toByteArray())).resolveCurrent(page,m))
+        assertNull(resolver(valid+(root to vod.replace("#EXT-X-ENDLIST","").toByteArray())).resolveCurrent(page,m))
+        assertNull(resolver(valid).resolveCurrent(page,JSONObject(m.toString()).put("protected",true)))
+    }
     @Test fun realHostContainersAreInspectedWhenFixtureDirectoryIsProvided() {
         val root = System.getenv("WEB_VIDEO_NETWORK_FIXTURES")
         org.junit.Assume.assumeTrue(root != null)

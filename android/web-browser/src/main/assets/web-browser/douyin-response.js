@@ -2,7 +2,9 @@
 const Thru3DDouyinResponses = (stateFor,publish,hasFrame) => {
   'use strict';
   const paths = ['/aweme/v1/web/aweme/detail/','/aweme/v1/web/aweme/related/','/aweme/v1/web/tab/feed/','/aweme/v1/web/aweme/post/'];
-  const filter = {urls:paths.map(p=>'https://www.douyin.com'+p+'*'),types:['xmlhttprequest','other']};
+  // Trust the verified main-site document and its actual requests, not a CDN/API
+  // hostname list. stateFor still owns tab/frame/document and metadata stays inert.
+  const filter = {urls:paths.map(p=>'https://*'+p+'*'),types:['xmlhttprequest','other']};
   const active = new Map();
   // Cached API bodies may not pass through StreamFilter on reload. Retain only
   // reduced metadata for the same tab/frame, never a request or its credentials.
@@ -26,7 +28,7 @@ const Thru3DDouyinResponses = (stateFor,publish,hasFrame) => {
     // credentials; publication still needs the matching live document port.
     if(!state&&!hasFrame(d)&&d.tabId>=0&&Number.isInteger(d.frameId)&&Thru3DDouyin.documentPage(d.documentUrl))
       state={key:`${d.tabId}:${d.frameId}`,page:d.documentUrl,document:d.documentId,douyin:true};
-    if(!state?.douyin || d.method!=='GET' || u.origin!=='https://www.douyin.com' || !paths.includes(u.pathname) || active.size>=4)return;
+    if(!state?.douyin || d.method!=='GET' || !Thru3DDouyin.address(u.href) || !paths.includes(u.pathname) || active.size>=4)return;
     let stream;try{stream=browser.webRequest.filterResponseData(d.requestId);}catch(_){return;}
     const requested=u.searchParams.get('aweme_id');
     const observation=u.pathname==='/aweme/v1/web/aweme/detail/'&&(!requested||requested===Thru3DDouyin.page(state.page)?.id)

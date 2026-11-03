@@ -899,7 +899,7 @@ static func _decode(job: Dictionary) -> Dictionary:
 var _catalog_save_ms := 0
 func _process(delta: float) -> void:
 	animation.tick()
-	resource_budget.tick(self, delta, auto_depth and index >= 0 and not _background_work_suspended \
+	resource_budget.tick(self, delta, auto_depth and geometry == 0 and not stereo_sbs and index >= 0 and not _background_work_suspended \
 		and not spatial_requested and not animation.available())
 	_trim_depth_cache()
 	render_cache.diagnose()
@@ -1191,7 +1191,7 @@ func _release_cache_for_foreground(except_id: int) -> void:
 		if int(_prefetched[at].id) != except_id: _drop_prefetch(int(at))
 
 func _pump_depth_prefetch() -> void:
-	if not auto_depth or (spatial_preferred and not auto_portrait) or animation.available() or not _cache_supported() \
+	if not auto_depth or geometry != 0 or stereo_sbs or (spatial_preferred and not auto_portrait) or animation.available() or not _cache_supported() \
 		or _depth_busy or _depth_thread or _thread or _prefetch_depth_request != 0 or _prefetch_request != 0 \
 		or _prefetch_portrait_request != 0 or _portrait_thread or not _portrait_next.is_empty() \
 		or (auto_portrait and not portrait_enabled) or _depth_rebuild_seconds > 0.0 or _display_depth_data.is_empty(): return
@@ -1432,6 +1432,7 @@ func _accept(result: Dictionary, job: Dictionary) -> void:
 			result["depth_data"] = {"image":retained.depth,"rect":retained.depth_rect,"strength":depth_strength}
 	queue[index]["photo_info"] = result.get("source_info", result.info)
 	var mode := _resolved_mode(index, _metadata)
+	depth_failed=depth_failed and int(mode.geometry)==Geometry.Geometry.FLAT and not bool(mode.stereo_sbs) and not _metadata.get("native_stereo",false)
 	_cached_render_active = bool(job.get("render_ready", false))
 	_hide_layer()
 	_upload = {}
@@ -1689,7 +1690,7 @@ func set_projection(value: int) -> void:
 	if value != geometry: _unlock_mode()
 	geometry = value
 	screen_rotation = float(_image_rotations.get(local_uri, 0.0)) if value == 0 else 0.0
-	if value != 0: depth_requested = false; depth_enabled = false
+	if value != 0: _suspend_conversion()
 	elif auto_depth and not stereo_sbs: set_depth(true)
 	reset_view(); _apply_geometry(); _remember_mode(); changed.emit()
 
@@ -1703,7 +1704,7 @@ func set_stereo_layout(layout: int) -> void:
 	if layout not in [0, 1, 2]: return
 	if layout != current_lock().layout: _unlock_mode()
 	stereo_sbs = layout != 0; top_bottom = layout == 2
-	if stereo_sbs: depth_requested = false; depth_enabled = false
+	if stereo_sbs: _suspend_conversion()
 	elif auto_depth and not magazine.active() and geometry == 0: set_depth(true)
 	_apply_geometry(); _remember_mode(); changed.emit()
 
@@ -1956,6 +1957,7 @@ func set_depth(enabled: bool) -> bool:
 	if enabled and not _rotation_matches(_display_depth_data): depth_enabled = false
 	depth_error = ""
 	_spatial_auto_due=enabled
+	if not enabled: _suspend_conversion()
 	if enabled and (not depth_enabled or (Methods.supports(platform, "prepare_photo_3d") and
 		 not _valid_cached_depth(_display_depth_data))) and not _depth_busy:
 		_depth_busy = _prepare_depth(_display_request)
@@ -1982,6 +1984,7 @@ func _on_prefetch_depth(id: int, payload: String) -> void:
 	_finish_depth(id, _read_depth(payload), true)
 
 func _prepare_depth(id: int, background: bool = false) -> bool:
+	if not _depth_source_allowed(id): return false
 	var rotation := _stereo_rotation(_depth_index(id))
 	if background:
 		if Methods.supports(platform, "prepare_preloaded_photo_3d_rotated"): return bool(platform.prepare_preloaded_photo_3d_rotated(id, depth_strength, rotation))
@@ -1998,6 +2001,24 @@ func _prepare_depth(id: int, background: bool = false) -> bool:
 	if rotation != 0: return false
 	if Methods.supports(platform, "prepare_photo_3d"): return bool(platform.prepare_photo_3d(id, depth_strength))
 	return Methods.supports(platform, "prepare_photo_depth") and bool(platform.prepare_photo_depth(id))
+
+func _depth_source_allowed(id: int) -> bool:
+	var target:=_depth_index(id)
+	if target<0 or target>=queue.size(): return false
+	if id==_display_request and not (id==_request and loading and pending_index>=0):
+		return depth_requested and geometry==0 and not stereo_sbs and not _metadata.get("native_stereo",false) and not animation.available()
+	var info: Dictionary=queue[target].get("photo_info",{})
+	if not _pending_display.is_empty() and int(_pending_display.job.id)==id: info=_pending_display.result.info
+	elif _prefetched.has(target): info=_prefetched[target].get("result",{}).get("info",_prefetched[target].get("info",info))
+	return _requires_depth(target,info)
+
+func _suspend_conversion() -> void:
+	# Keep the user's automatic 3D preference for the next compatible flat image.
+	depth_requested=false; depth_enabled=false; depth_error=""; _depth_busy=false; _depth_rebuild_seconds=0
+	_spatial_auto_due=false; _cancel_depth_prefetch()
+	_depth_queue=_depth_queue.filter(func(job): return int(job.id)!=_display_request)
+	if int(_incoming_depth_result.get("id",0))==_display_request: _incoming_depth_result={}
+	_discard_native_depth(_display_request)
 
 func _queue_depth_payload(id: int, payload: String, background: bool) -> bool:
 	var info: Variant = JSON.parse_string(payload)
@@ -2016,7 +2037,7 @@ func _process_depth_jobs() -> void:
 		if (bool(_depth_job.background) or int(_depth_job.serial) == _serial) \
 			and int(_depth_job.get("rotation", 0)) == _stereo_rotation(_depth_index(id)): _finish_depth(id, data, bool(_depth_job.background))
 		_depth_job = {}
-		if _deferred_depth_clear_ids.erase(id) and id != _display_request: _discard_native_depth(id)
+		if _deferred_depth_clear_ids.erase(id) and (id != _display_request or not depth_requested): _discard_native_depth(id)
 		if _deferred_release_ids.erase(id) and id not in [_request, _display_request]: _release_photo(id)
 	if _depth_thread: return
 	while not _depth_queue.is_empty():
@@ -2031,6 +2052,7 @@ func _process_depth_jobs() -> void:
 		break
 
 func _finish_depth(id: int, data: Dictionary, background: bool) -> void:
+	if not _depth_source_allowed(id): return
 	if not data.is_empty() and not _rotation_matches(data, _depth_index(id)): return
 	if not data.is_empty(): data["source_id"] = id
 	if background and id == _promoted_depth_request and id != 0: background = false
@@ -2088,6 +2110,7 @@ func _commit_depth_data(data: Dictionary) -> void:
 	_spatial_auto_due=depth_enabled
 
 func _on_depth(id: int, payload: String) -> void:
+	if not _depth_source_allowed(id): return
 	var info: Variant = JSON.parse_string(payload)
 	if info is Dictionary and int(info.get("stereo_rotation", 0)) != _stereo_rotation(_depth_index(id)): return
 	if info is Dictionary and info.get("deferred", false) and id in [_request, _display_request]:
@@ -2209,7 +2232,7 @@ func snapshot() -> Dictionary:
 		"screen_distance": screen_distance, "screen_scale": screen_scale,
 		"portrait_requested": portrait_requested, "portrait_enabled": portrait_enabled, "portrait_available": can_portrait(), "portrait_error": portrait_error,
 		"depth_requested": depth_requested, "depth_enabled": depth_enabled,
-		"depth_available": platform != null and not _metadata.get("magazine_unregistered", false) and not _metadata.get("native_stereo", false), "native_stereo": not magazine.active() and _metadata.get("native_stereo", false), "depth_strength": depth_strength, "depth_error": depth_error,
+		"depth_available": geometry==0 and not stereo_sbs and platform != null and not _metadata.get("magazine_unregistered", false) and not _metadata.get("native_stereo", false), "native_stereo": not magazine.active() and _metadata.get("native_stereo", false), "depth_strength": depth_strength, "depth_error": depth_error,
 		"spatial_metadata": spatial_metadata(), "spatial_fov_available": spatial_fov_scale() > 0.0,
 		"stereo_strategy":_display_depth_data.get("strategy", "inverse_shader"), "stereo_ready":_stereo_texture != null,
 		"render_strength":_display_depth_data.get("strength", depth_strength),

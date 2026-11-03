@@ -34,8 +34,12 @@ static func packed_dimensions(width: int, height: int) -> Vector2i:
 	return Vector2i(maxi(4, int(round(width * 0.4)) & ~3), maxi(2, int(round(height * 0.4)) & ~1))
 
 static func legacy_compatible(format: Dictionary, stereo: bool, geometry: int) -> bool:
+	return geometry == Geometry.FISHEYE and packed_frame_compatible(format, stereo)
+
+## Six tiles encode an SBS mask in source pixels, independently of the viewing projection.
+static func packed_frame_compatible(format: Dictionary, stereo: bool) -> bool:
 	var width := int(format.get("width", 0))
 	var height := int(format.get("height", 0))
-	return geometry == Geometry.FISHEYE and stereo and width >= 2 * height and height >= 10 \
+	return stereo and width >= 2 * height and height >= 10 \
 		and width % 2 == 0 and height % 2 == 0 and int(format.get("unapplied_rotation_degrees", -1)) == 0 \
 		and is_equal_approx(float(format.get("pixel_aspect", 0.0)), 1.0)

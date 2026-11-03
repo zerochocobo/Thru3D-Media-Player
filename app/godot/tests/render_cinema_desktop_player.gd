@@ -91,7 +91,7 @@ func _run() -> void:
 	check(transport.global_transform.is_equal_approx(bar_pose), "Playback operations preserve the fixed transport world pose")
 	main.xr_camera.look_at(transport.global_position, Vector3.UP)
 	await shot("02-production-controls-below-screen")
-	check(_tap(transport, transport.FREE_MOVEMENT), "Teleport is reachable directly from the playback bar")
+	check(_scene_movement("move"), "Teleport is reachable directly from the playback bar")
 	check(main.cinema_environment.interaction == "move" and main._active_menu() == null, "Quick action starts teleport and dismisses controls")
 	var before: Vector3 = main.xr_camera.global_position
 	main.cinema_environment.poll_sticks(Vector2.ZERO, Vector2.ZERO, 0.016)
@@ -121,7 +121,7 @@ func _run() -> void:
 	main._show_player_menu()
 	check(main.cinema_environment.interaction == "move", "Opening controls keeps free movement selected")
 	await shot("03-free-movement-footer")
-	check(_tap(transport, transport.FREE_MOVEMENT), "Shared footer turns off free movement")
+	check(_scene_movement("watch"), "Shared footer turns off free movement")
 	check(main.cinema_environment.interaction == "watch" and transport.visible, "Footer returns to playback with controls visible")
 	check(main.xr_camera.global_position.is_equal_approx(moved_eye), "Returning to playback keeps the chosen viewpoint")
 	check(transport.global_position.distance_to(main.xr_camera.global_position) < 2, "Reopened playback bar is near the new viewer position")
@@ -176,3 +176,14 @@ func _finish() -> void:
 		"scope": "Actual production Main/PlayerMenu/LibraryMenu mouse input, native FFmpeg software decode, and desktop GL Compatibility; no Android/OpenXR verification."}, "\t")); file.close()
 	print("Cinema desktop player: %d checks, %d failures" % [checks.size(), failures.size()])
 	quit(0 if failures.is_empty() else 1)
+
+func _scene_movement(value: String) -> bool:
+	if not _tap(main.player_menu,main.player_menu.SCENERY): return false
+	if not _tap(main.scenery_menu,main.scenery_menu.ADJUST): return false
+	for target in main.scenery_menu.choices.targets:
+		var item: Dictionary=main.scenery_menu.choices.targets[target]
+		if item.get("key","")=="cinema_interaction" and item.get("value","")==value:
+			var ok:=_tap(main.scenery_menu,target)
+			if value=="watch": main.scenery_menu.dismiss()
+			return ok
+	return false

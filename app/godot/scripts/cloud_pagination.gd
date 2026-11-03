@@ -245,6 +245,7 @@ func receive(id: int, payload: String) -> bool:
 		if at_page > 0 and count == 0 and next < 0:
 			_fail({"error": "Page unavailable"}); return true
 		menu._cloud_entries = entries
+		if menu.subtitle_picker_mode: menu._subtitle_cloud_listing = result.duplicate()
 		menu._cloud_page = at_page; menu._cloud_requested_page = at_page
 		menu._cloud_page_size = page_size(); menu._cloud_next = next
 		menu._cloud_offsets.resize(at_page + 1); menu._cloud_offsets[at_page] = int(request.offset)

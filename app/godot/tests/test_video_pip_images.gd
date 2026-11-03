@@ -92,7 +92,7 @@ func run() -> void:
 	library.puzzle_requested.connect(func(): puzzles.append(true))
 	library.puzzle_progress_provider = func(): return true
 	library.media_filter = 2; library.refresh()
-	check(library._buttons.any(func(b):return b.target==Library.PUZZLE_OPEN), "Normal image browsing retains its puzzle shortcut")
+	check(not library._buttons.any(func(b):return b.target==Library.PUZZLE_OPEN), "Normal image browsing hides the floating puzzle shortcut")
 	library._activate(Library.PUZZLE_OPEN)
 	check(puzzles.size()==1, "Normal image browsing can still open puzzle mode")
 	library.section = Library.Section.LOCAL; library._local_stack = [{"id":"/original","title":"Original"}]

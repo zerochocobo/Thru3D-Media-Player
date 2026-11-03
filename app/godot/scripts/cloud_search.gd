@@ -37,6 +37,7 @@ var committed_request := {}
 var resolving := false
 var resolve_token := ""
 var limited := false
+var subtitle_context := false
 
 func _init(owner: Node) -> void: menu = owner
 func supported() -> bool:
@@ -49,17 +50,25 @@ func cancel() -> void:
 func close(redraw: bool = false) -> void:
 	menu.system_text_input.cancel("cloud_search")
 	cancel(); active = false; editing = false; entries = []; query = ""; path = ""
+	subtitle_context = false
 	committed_request = {}
 	page = 0; next_cursor = ""; cursors.assign([""]); limited = false
 	if redraw: menu.status = ""; menu._reset_navigation(); menu.refresh()
 func open() -> void:
 	if not supported() or menu._cloud_stack.is_empty(): return
 	menu.file_actions.reset(); menu._cancel_cloud()
-	active = true; editing = true; path = menu._cloud_path(); query = ""; kind = "all"
+	active = true; editing = true; path = menu._cloud_path(); query = ""; kind = "all"; subtitle_context = false
 	scope = "all" if menu._cloud_stack.size() == 1 and "all" in scopes else ("tree" if "tree" in scopes else "current")
 	entries = []; cursors.assign([""]); page = 0; next_cursor = ""
 	menu.status = ""; menu._reset_navigation(); menu.refresh()
 	_begin_input()
+
+func open_subtitles(value: String) -> void:
+	if not supported() or not menu.subtitle_picker_mode or menu._cloud_stack.is_empty(): return
+	close(); menu._cancel_cloud()
+	active = true; subtitle_context = true; editing = false
+	path = menu._cloud_path(); query = value; kind = "subtitle"; scope = "current"
+	restart()
 
 func _begin_input() -> void:
 	menu.system_text_input.begin("cloud_search", query, 128, _draft_changed, _input_submitted, _input_cancelled)
@@ -116,6 +125,7 @@ func action(target: int) -> bool:
 			else: menu.refresh()
 		return true
 	if target >= KIND and target < KIND + KINDS.size():
+		if subtitle_context: return true
 		kind = KINDS[target - KIND]
 		if not editing and not query.is_empty(): restart()
 		else: menu.refresh()
@@ -132,8 +142,9 @@ func rows() -> Array[Dictionary]:
 	var result: Array[Dictionary] = []
 	if editing: return result
 	for item in entries:
+		if subtitle_context and (item.get("container", false) or not menu.SubtitleSources.supported(str(item.get("title", "")))): continue
 		var location := str(item.get("relative_path", "")).get_base_dir().trim_prefix("/")
-		result.append({"title": str(item.title), "detail": location, "icon": "folder" if item.get("container", false) else ("image" if item.get("kind") == "image" else "video"), "kind": item.get("kind", "video"), "folder": item.get("container", false), "search_result": item})
+		result.append({"title": str(item.title), "detail": location, "icon": "subtitle" if subtitle_context else "folder" if item.get("container", false) else ("image" if item.get("kind") == "image" else "video"), "kind": "subtitle" if subtitle_context else item.get("kind", "video"), "folder": item.get("container", false), "search_result": item})
 	return result
 func choose(row: Dictionary) -> bool:
 	if not active or not row.has("search_result"): return false
@@ -161,6 +172,8 @@ func receive(id: int, payload: String) -> bool:
 	if resolving:
 		if not data.get("entry") is Dictionary: menu.status = "Cloud search failed"; resolving = false; menu.refresh(); return true
 		var entry: Dictionary = data.entry
+		if subtitle_context and (entry.get("container", false) or not menu.SubtitleSources.valid_uri(str(entry.get("uri", "")))):
+			menu.status = "Cloud search failed"; resolving = false; menu.refresh(); return true
 		var account_name := str(menu._cloud_stack[0].title)
 		var account_entry: Dictionary = menu._cloud_stack[0].duplicate(true)
 		close()

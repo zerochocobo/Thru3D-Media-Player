@@ -15,6 +15,10 @@ const CastPanel := preload("res://scripts/cast_panel.gd")
 signal directory_order_changed
 signal audio_import_cancelled
 signal image_picker_cancelled
+signal background_images_selected(files: Array)
+signal background_picker_cancelled
+var background_picker_mode := false
+const BACKGROUND_PICKER_DONE := 987101
 signal image_selected(uri: String, title: String)
 var image_picker_mode := false
 var selected_pdf := {}
@@ -24,6 +28,9 @@ signal subtitle_picker_cancelled
 signal subtitle_selected(uri: String, title: String, location: Dictionary)
 var subtitle_picker_mode := false
 const SubtitleSources := preload("res://scripts/subtitle_sources.gd")
+const SubtitleFilter := preload("res://scripts/subtitle_picker_filter.gd")
+var subtitle_filter := SubtitleFilter.new(self)
+var _subtitle_cloud_listing := {}
 signal music_requested
 signal online_panoramas_requested
 const ONLINE_PANORAMAS := 985002
@@ -94,6 +101,7 @@ const Quality := preload("res://scripts/display_quality.gd")
 const WatchPalette := preload("res://scripts/watch_palette.gd")
 const PlaybackMenuDepth := preload("res://scripts/playback_menu_depth.gd")
 const SeekPolicy := preload("res://scripts/seek_policy.gd")
+const VideoAuto3D := preload("res://scripts/video_auto_3d.gd")
 const ChoiceFields := preload("res://scripts/choice_fields.gd")
 var choices := ChoiceFields.new(self)
 const VoiceManagerPanel := preload("res://scripts/narration_clone_panel.gd")
@@ -108,7 +116,7 @@ const ControlsPage := preload("res://scripts/controls_page.gd")
 var controls_page := ControlsPage.new(self)
 const SETTING_TABS := ["Video", "VR subtitles", "Background", "About", "Display", "General", "Controls"]
 const GENERAL_TAB := 5
-const SETTING_ORDER := [GENERAL_TAB, DISPLAY_TAB, 0, 2, 6, 3]
+const SETTING_ORDER := [GENERAL_TAB, DISPLAY_TAB, VIDEO_TAB, CONTROLS_TAB, ABOUT_TAB]
 const CONTROLS_TAB := 6
 const DISPLAY_TAB := 4
 const VIDEO_TAB := 0
@@ -201,7 +209,11 @@ var catalog: RefCounted            # recent files
 var platform: Object               # QuestPlayer singleton or a test double
 var settings_provider: Callable    # -> {"profile", "profiles", "output_width", "version"}
 
-var section := Section.RECENT
+var section := Section.RECENT:
+	set(value):
+		# Main can open settings directly, without activating a sidebar button.
+		if section == Section.MEDIA_SERVER and value != section: server_browser.leave_section()
+		section = value
 var tab := 0
 var scroll := 0.0                  # first visible line; fractional while moving, settles on a whole line
 var _drag := {}                    # hand, target, start_y, start_scroll, moved, last, at_us, velocity
@@ -326,6 +338,7 @@ func set_compact(value: bool, restore_playback: bool = false) -> void:
 				cloud_search.set(key, stored.duplicate(true) if stored is Array or stored is Dictionary else stored)
 			_media_filter_location = _filter_location()
 	compact = value
+	if section == Section.MEDIA_SERVER: server_browser.forget_section()
 	_drag = {}; _fling = 0.0; _hover.clear()
 	file_actions.reset(); choices.reset(); controls_page.reset(); account_panel.close(); _editor = {}; cloud_accounts.mode = ""
 	if compact and section == Section.MEDIA_SERVER and server_browser.view == "detail":
@@ -494,6 +507,7 @@ func dismiss() -> void:
 	_stop_audio_preview()
 	var cancel_audio := audio_import_mode
 	var cancel_subtitle := subtitle_picker_mode
+	var cancel_background := background_picker_mode
 	var cancel_image := image_picker_mode
 	collections.selection.clear()
 	if cloud_error.opened: cloud_error.close(); _rebuild_rows()
@@ -516,6 +530,7 @@ func dismiss() -> void:
 		_restore_audio_import_context()
 		if cancel_audio: audio_import_cancelled.emit()
 		elif cancel_subtitle: subtitle_picker_cancelled.emit()
+		elif cancel_background: background_picker_cancelled.emit()
 		else: image_picker_cancelled.emit()
 	composition_layout_changed.emit()
 
@@ -572,6 +587,10 @@ func begin_image_picker() -> void:
 	_position_to_restore = {}; _layout_anchor = {}; _return_uri = ""; _restore_folder_key = ""
 	_start_file_picker()
 
+func begin_background_picker() -> void:
+	begin_image_picker()
+	if image_picker_mode: background_picker_mode = true; refresh()
+
 const ImagePickerLocation := preload("res://scripts/image_picker_location.gd")
 
 func _image_picker_dlna_matches() -> bool:
@@ -590,10 +609,12 @@ func _remember_image_picker_location() -> void:
 		browse_memory.remember(ImagePickerLocation.SCOPE, section != Section.LOCAL, {"picker_location": location}, _browse_revision)
 		browse_memory.flush()
 
-func begin_subtitle_picker(location: Dictionary = {}) -> void:
+func begin_subtitle_picker(location: Dictionary = {}, filename: String = "") -> void:
 	if subtitle_picker_mode or audio_import_mode or image_picker_mode or voice_picker_mode: return
 	_capture_file_picker_context()
 	subtitle_picker_mode = true
+	subtitle_filter.reset(filename)
+	_subtitle_cloud_listing = {}
 	section = {"local": Section.LOCAL, "smb": Section.SMB, "cloud": Section.CLOUD}.get(str(location.get("source", "")), Section.LOCAL)
 	_local_stack.assign(_subtitle_folders(location.get("local", [])))
 	_cloud_stack.assign(_subtitle_folders(location.get("cloud", [])))
@@ -625,11 +646,13 @@ func _start_file_picker() -> void:
 	_load_section(); refresh()
 
 func _restore_audio_import_context() -> void:
+	subtitle_filter.reset()
 	if image_picker_mode and archives.pdf: archives.close()
 	_stop_audio_preview()
 	audio_import_mode = false
 	subtitle_picker_mode = false
 	image_picker_mode = false
+	background_picker_mode = false
 	voice_picker_mode = false
 	_image_picker_dlna_retry.clear()
 	audio_selection.clear()
@@ -1114,6 +1137,7 @@ func _cols() -> int:
 func _lines() -> int:
 	if compact: return 2 if _grid() else (4 if file_actions.needs_footer() or collections.has_selection() else 5)
 	if archives.browsing: return GRID_LINES if _grid() else VISIBLE_ROWS
+	if subtitle_filter.active(): return 6
 	if cloud_search.active: return 2 if _grid() else 5
 	if controls_page.active(): return 6
 	if account_panel.active(): return VISIBLE_ROWS
@@ -1135,6 +1159,7 @@ func _line_count() -> int:
 func _bar_span() -> Vector2:
 	if compact: return Vector2(0.265, _lines() * _pitch() - 0.012)
 	if archives.browsing: return Vector2(GRID_TOP if _grid() else LIST_TOP + 0.05, _lines() * _pitch() - 0.012)
+	if subtitle_filter.active(): return Vector2(0.27, _lines() * _pitch() - 0.012)
 	if cloud_search.active: return Vector2(0.095, 2 * GRID_PITCH.y - 0.012 if _grid() else 0.54)
 	if controls_page.active(): return Vector2(0.20, 0.60)
 	if section == Section.MEDIA_SERVER and not account_panel.active(): return server_browser.bar_span()
@@ -1230,6 +1255,7 @@ func browse_policy_changed() -> void:
 
 func clear_browse_history(network_only: bool) -> bool:
 	var ok := browse_memory.clear_history(network_only)
+	server_browser.forget_section()
 	_browse_save_at = 0
 	_fling = 0.0
 	_cloud_positions.clear()
@@ -1267,7 +1293,7 @@ func _saved_cloud_position() -> Dictionary:
 
 func _save_folder_position(opened_folder: Dictionary = {}) -> void:
 	if archives.browsing: archives.save_position(opened_folder); return
-	if cloud_search.active or account_panel.active() or not _editor.is_empty(): return
+	if cloud_search.active or subtitle_filter.active() or account_panel.active() or not _editor.is_empty(): return
 	if cloud_pagination.opened or cloud_error.opened or collections.active() or archives.opened or not file_actions.modal.is_empty(): return
 	if section == Section.CLOUD and not cloud_pagination.batch.is_empty(): return
 	if browse_memory.locked(): return
@@ -1340,6 +1366,7 @@ func _redraw_file_rows() -> void:
 	composition_layout_changed.emit()
 
 func refresh() -> void:
+	subtitle_filter.prepare()
 	if section == Section.WEB and not Distribution.web_browser_enabled():
 		web_browser.close()
 		section = Section.RECENT
@@ -1518,6 +1545,7 @@ func _on_media_list(id: int, payload: String) -> void:
 			return
 		if event is Dictionary and event.get("source") == "medialib" and event.get("state") == "accounts_changed":
 			server_browser.setup = false
+			server_browser.forget_section()
 			if section == Section.MEDIA_SERVER:
 				# Let a VR deletion finish its saved-filter cleanup before reloading.
 				if server_browser.pending.values().any(func(request): return request.action == "remove"): return
@@ -1615,6 +1643,7 @@ func _on_media_list(id: int, payload: String) -> void:
 				_cloud_next = int(result.get("next_offset", -1))
 				_cloud_total = int(result.get("total", -1))
 				_cloud_page_size = maxi(1, int(result.get("page_size", 48)))
+				if subtitle_picker_mode: _subtitle_cloud_listing = result.duplicate()
 				cloud_pagination.page_received(result)
 				_reset_navigation()
 				scroll = _cloud_requested_scroll
@@ -1782,7 +1811,7 @@ func _browse_smb(server: String, path: String) -> int:
 
 func _load_section() -> void:
 	if section == Section.MEDIA_SERVER:
-		server_browser.load_servers()
+		server_browser.open_section()
 		return
 	if not platform:
 		status = "Headset only" if section in [Section.LOCAL, Section.SMB, Section.DLNA, Section.CLOUD] else ""
@@ -1822,7 +1851,9 @@ func _rebuild_rows() -> void:
 	rows.clear()
 	if cloud_error.opened:
 		rows.assign(cloud_error.rows()); scroll = clampf(scroll, 0.0, _max_scroll()); return
-	if section == Section.CLOUD and not cloud_error.opened and not account_panel.active() and cloud_pagination.use_rows(): return
+	if section == Section.CLOUD and not cloud_error.opened and not account_panel.active() and cloud_pagination.use_rows():
+		subtitle_filter.filter_rows()
+		return
 	if account_panel.active():
 		rows.assign(account_panel.rows())
 		scroll = clampf(scroll, 0.0, _max_scroll())
@@ -1866,6 +1897,9 @@ func _rebuild_rows() -> void:
 					[{"value": SeekPolicy.SPEED, "label": "Speed", "hint": "Faster jumps, less precise"},
 					{"value": SeekPolicy.EXACT, "label": "Precise", "hint": "Accurate jumps, may take longer"}], false,
 					"Faster jumps, less precise" if seek == SeekPolicy.SPEED else "Accurate jumps, may take longer"))
+				var auto_3d := VideoAuto3D.choice(bool(settings.get("video_auto_3d", false)))
+				auto_3d.title = I18n.t(VideoAuto3D.TITLE); auto_3d.info = VideoAuto3D.HINT
+				rows.append(auto_3d)
 				rows.append(_choice_row("2D to 3D effect", "depth_render", str(settings.get("depth_render", "stretch")),
 					[{"value": "fill", "label": "Fill gaps", "hint": "Fills the background behind moving edges"},
 					{"value": "stretch", "label": "Stretch edges", "hint": "Stretches edges, like spatial photos"}], true))
@@ -1978,47 +2012,7 @@ func _rebuild_rows() -> void:
 				for option in seek_row.choices: option.hint = seek_row.info
 				rows.append(seek_row)
 			elif tab == BACKGROUND_TAB:
-				var selected := CinemaFeature.normalize_background(str(settings.get("background", "cinema")))
-				var backgrounds: Array = []
-				for option in [["belfast", "Belfast sunset", "image"], ["morning", "Morning sky", "image"], ["night", "Milky Way panorama", "image"], ["cinema", "Grand cinema", "video"], ["dark", "Dark background", "circle"], ["passthrough", "Passthrough", "eyes"]]:
-					if option[0] == "cinema" and not CinemaFeature.enabled(): continue
-					backgrounds.append({"value": option[0], "label": option[1]})
-				if settings.get("background_custom", false):
-					backgrounds.append({"value": "custom", "label": "Custom panorama"})
-				var background_row := _choice_row("Background", "background", selected, backgrounds)
-				background_row.info = "Photo mode saves its background separately. Change it from the photo toolbar."
-				rows.append(background_row)
-				if selected in ["belfast", "morning", "night", "custom"]:
-					var directions: Array = []
-					for angle in range(0, 360, 45): directions.append({"value": angle, "label": str(angle) + "°"})
-					rows.append(_choice_row("Direction", "background_yaw", int(settings.get("background_yaw", 0)), directions))
-					rows.append(_choice_row("Brightness", "background_brightness", float(settings.get("background_brightness", 1.0)),
-						[{"value": 0.5, "label": "50%"}, {"value": 0.75, "label": "75%"}, {"value": 1.0, "label": "100%"}, {"value": 1.25, "label": "125%"}], true))
-				if settings.get("background_custom", false):
-					var armed := _confirm == str(["background_remove", true])
-					rows.append({"title": I18n.t("Confirm deleting custom background" if armed else "Delete custom background"),
-						"icon": "check" if armed else "trash", "selected": armed, "setting": ["background_remove", true],
-						"enabled": not settings.get("background_loading", false)})
-				if selected == "cinema":
-					var ready := bool(settings.get("cinema_ready", false))
-					var interaction := str(settings.get("cinema_interaction", "watch"))
-					if interaction not in ["watch", "move"]: interaction = "watch"
-					var interaction_row := _choice_row("Cinema interaction", "cinema_interaction", interaction,
-						[{"value": "watch", "label": "Watch"}, {"value": "move", "label": "Free movement"}], true)
-					interaction_row.enabled = ready
-					rows.append(interaction_row)
-					rows.append({"title": I18n.t("Return to start"),
-						"icon": "refresh", "setting": ["cinema_home", true], "enabled": ready})
-					rows.append(_choice_row("Cinema lighting", "cinema_lights", str(settings.get("cinema_lights", "auto")),
-						[{"value": "auto", "label": "Auto lights"}, {"value": "on", "label": "Lights on"}, {"value": "off", "label": "Lights off"}], true))
-					rows.append(_choice_row("Viewing brightness", "cinema_viewing_brightness", str(settings.get("cinema_viewing_brightness", "low")),
-						[{"value": "soft", "label": "Soft light"}, {"value": "dim", "label": "Dim"}, {"value": "low", "label": "Low light"}], true))
-					rows.append(_choice_row("Screen ambient light", "cinema_screen_light", bool(settings.get("cinema_screen_light", true)),
-						[{"value": true, "label": "On"}, {"value": false, "label": "Off"}], true))
-					status = "Loading cinema…" if settings.get("cinema_loading", false) else str(settings.get("cinema_error", ""))
-					if not ready and status.is_empty(): status = "Cinema unavailable"
-				else:
-					status = "Loading…" if settings.get("background_loading", false) else str(settings.get("background_error", ""))
+				rows.append({"title":I18n.t("Scene"),"icon":"panorama","setting":["scene_open",true]})
 			elif tab == ABOUT_TAB:
 				if _about_page in [2, 3]:
 					var licenses: Variant = JSON.parse_string(FileAccess.get_file_as_string("res://i18n/licenses.json"))
@@ -2053,6 +2047,7 @@ func _rebuild_rows() -> void:
 			rows.assign(rows.filter(func(row): return not row.has("smb_found")))
 	if subtitle_picker_mode:
 		rows.assign(rows.filter(func(row): return row.get("folder", false) or not row.has("uri") or SubtitleSources.supported(str(row.get("title", "")))))
+		subtitle_filter.filter_rows()
 	elif audio_import_mode:
 		rows.assign(rows.filter(func(row): return not row.has("uri") or str(row.get("uri", "")).is_empty() or row.get("kind", "") == "folder" or AudioCatalog.supported(str(row.get("title", "")))))
 	elif voice_picker_mode:
@@ -2093,6 +2088,7 @@ func _cancel_cloud() -> void:
 	_cloud_busy = false
 
 func _load_cloud(reset: bool = true, force: bool = false, page: int = 0, restoring: bool = false) -> void:
+	_subtitle_cloud_listing = {}
 	_cancel_cloud()
 	if reset: _cloud_location = _cloud_path()
 	if not restoring: _browse_cloud_restore = {}
@@ -2314,6 +2310,11 @@ func _read_cache_usage() -> Vector2i:
 ## Video state changes arrive several times a second: redraw only when the Alpha profiles
 ## (current, compiling, cold) shown on the Alpha tab change.
 func _activate(target: int) -> void:
+	if target == BACKGROUND_PICKER_DONE and background_picker_mode:
+		var files: Array = audio_selection.values().duplicate(true)
+		_remember_image_picker_location()
+		background_picker_mode = false
+		_restore_audio_import_context(); dismiss(); background_images_selected.emit(files); return
 	if web_browser.action(target): return
 	if web_video.home.action(target): return
 	var cast_action := CastPanel.action(target)
@@ -2347,6 +2348,7 @@ func _activate(target: int) -> void:
 	if controls_page.action(target): return
 	if choices.action(target): return
 	if account_panel.action(target): return
+	if subtitle_filter.action(target): return
 	if section == Section.CLOUD and cloud_search.action(target): return
 	if section == Section.CLOUD and cloud_accounts.action(target): return
 	if section == Section.MEDIA_SERVER and server_browser.action(target): return
@@ -2361,6 +2363,8 @@ func _activate(target: int) -> void:
 		setting_changed.emit("quit_app", true)
 	elif target >= NAV_BASE and target < NAV_BASE + NAV.size():
 		if target == NAV_BASE + Section.WEB and not Distribution.web_browser_enabled(): return
+		# Capture before shared navigation cleanup cancels requests and resets scroll.
+		if target != NAV_BASE + section: server_browser.leave_section()
 		web_video.close()
 		web_browser.close()
 		subtitle_queue_open = false
@@ -2468,6 +2472,10 @@ func _choose(row: Dictionary) -> void:
 	if image_picker_mode and row.has("uri") and not str(row.uri).is_empty() and not row.get("folder", false) and row.get("kind", "") != "folder":
 		if row.get("kind", "") != "image" and not ImageInfo.is_image(str(row.uri), str(row.get("title", ""))): return
 		var uri := str(row.uri); var title := str(row.get("title", ""))
+		if background_picker_mode:
+			if audio_selection.has(uri): audio_selection.erase(uri)
+			else: audio_selection[uri] = {"uri":uri,"title":title}
+			refresh(); return
 		_save_folder_position(row)
 		_remember_image_picker_location()
 		_restore_audio_import_context(); dismiss(); image_selected.emit(uri, title)
@@ -2633,6 +2641,7 @@ func navigate_back() -> bool:
 		cloud_pagination.settings_expanded = false; refresh(); return true
 	if voice_manager.opened: voice_manager.back(); return true
 	if system_text_input.active(): system_text_input.cancel("", true); return true
+	if subtitle_filter.active(): subtitle_filter.close(); return true
 	if web_browser.active():
 		if web_browser.tabs_open: web_browser.tabs_open = false; web_browser.refresh_windows()
 		elif web_browser.data.get("editing", false): platform.web_browser_input("close", "")
@@ -3108,7 +3117,9 @@ func _draw() -> void:
 		if playback_expanded: _round(EXPAND_LIBRARY, "collapse", Vector2(0.13, footer_y), 0.08, true, false, I18n.t("Collapse library"))
 		# With no floating row left, the footer takes its place right under the browser.
 		if image_picker_mode or voice_picker_mode:
-			_button(CLOSE, I18n.t("Cancel" if voice_picker_mode else "Close"), Vector2(0.13, -0.65), Vector2(0.30, 0.075))
+			if background_picker_mode:
+				_button(BACKGROUND_PICKER_DONE, I18n.t("Add panorama") + " (%d)" % audio_selection.size(), Vector2(.55,-.65),Vector2(.48,.075),not audio_selection.is_empty(),"plus")
+			_button(CLOSE, I18n.t("Cancel" if voice_picker_mode else "Close"), Vector2(-.30 if background_picker_mode else .13, -.65), Vector2(.30,.075))
 			_place_device_status(Vector2(0.13, -0.79))
 		else:
 			_place_device_status(Vector2(0.13, footer_y + 0.025))
@@ -3118,7 +3129,7 @@ func _draw() -> void:
 	if web_browser.active():
 		web_browser.draw(); return
 	if web_video.home.draw(): return
-	if not archives.browsing and cloud_search.active:
+	if not archives.browsing and cloud_search.active and not cloud_search.subtitle_context:
 		cloud_search.draw()
 		return
 	if not archives.browsing and not _editor.is_empty():
@@ -3145,7 +3156,7 @@ func _draw() -> void:
 			_label(I18n.t("Open source licenses" if _about_page == 3 else "Credits"), Vector3(0.13, 0.46, 0.004), 24)
 		for position in (SETTING_ORDER.size() if not tabs.is_empty() else 0):
 			var i: int = SETTING_ORDER[position]
-			_button(TAB_BASE + i, I18n.t(tabs[i]), Vector2(-0.43 + position * 0.20, 0.46), Vector2(0.19, 0.07))
+			_button(TAB_BASE + i, I18n.t(tabs[i]), Vector2(.13 + (position - (SETTING_ORDER.size()-1)*.5)*.20, .46), Vector2(0.19, 0.07))
 			set_label_size(_buttons.back().node.get_child(0), 18)
 			_lit(i == tab)
 		if controls_page.active():
@@ -3195,18 +3206,22 @@ func _draw() -> void:
 		_button(EDIT, "", _action_position(0.69), Vector2(0.09, 0.065), true, "edit")
 	file_actions.draw_header()
 	web_browser.library.draw_header()
+	if subtitle_filter.available():
+		_button(SubtitleFilter.OPEN, "", _action_position(0.47), Vector2(0.09, 0.065), true, "search", subtitle_filter.enabled)
+		_tips[SubtitleFilter.OPEN] = I18n.t("Filter subtitles")
 	if browser_content() and not subtitle_picker_mode: draw_view_modes(_action_position(0.80).y)
 	_align_folder_tools()
 	if not archives.browsing and preload("res://scripts/online_panorama_panel.gd").AVAILABLE and media_filter==2 and section!=Section.SETTINGS and not audio_import_mode and not image_picker_mode:
 		_round(ONLINE_PANORAMAS,"globe",Vector2(0.80,0.58),0.08,true,false,I18n.t("Online panoramas"))
 	_decoration(Vector2(1.28, 0.002), Vector2(0.19, 0.405), Color(0.17, 0.2, 0.24))
+	subtitle_filter.draw()
 	_draw_rows()
 	web_browser.library.draw_footer()
 	if section == Section.SETTINGS and tab == ABOUT_TAB:
 		_draw_about()
 	var background_settings: Dictionary = settings_provider.call() if settings_provider.is_valid() else {}
 	if section == Section.SETTINGS and tab == BACKGROUND_TAB and CinemaFeature.normalize_background(str(background_settings.get("background", "belfast"))) != "cinema":
-		var hint_text := I18n.t("Photo mode saves its background separately. Change it from the photo toolbar.")
+		var hint_text := ""
 		if background_settings.get("background", "belfast") == "night": hint_text += "\nESO/S. Brunier · CC BY 4.0"
 		var hint := _label(hint_text, Vector3(-0.38, -0.10, 0.004), 16)
 		hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
@@ -3248,12 +3263,12 @@ func _draw() -> void:
 		_label("%d / %d" % [_recent_page + 1, _recent_page_count()], Vector3(-0.27, -0.515, 0.004), 18)
 		_button(RECENT_NEXT, "›", Vector2(-0.09, -0.515), Vector2(0.09, 0.07), _recent_page + 1 < _recent_page_count())
 	if cloud_paging:
-		if not cloud_pagination.draw_footer(cloud_page_y, false):
+		if not subtitle_filter.draw_paging(cloud_page_y) and not cloud_pagination.draw_footer(cloud_page_y, false):
 			_button(CLOUD_PREVIOUS, "‹", Vector2(-0.45, cloud_page_y), Vector2(0.09, 0.07), not _cloud_busy and _cloud_page > 0)
 			var pages := str(maxi(_cloud_page + 1, maxi(1, ceili(float(_cloud_total) / _cloud_page_size)))) if _cloud_total >= 0 else ("…" if _cloud_next >= 0 else str(_cloud_page + 1))
 			_label("%d / %s" % [_cloud_page + 1, pages], Vector3(-0.27, cloud_page_y, 0.004), 18)
 			_button(CLOUD_NEXT, "›", Vector2(-0.09, cloud_page_y), Vector2(0.09, 0.07), not _cloud_busy and _cloud_next >= 0)
-	var footer_status := cloud_error.summary_text() if not archives.browsing and section == Section.CLOUD else I18n.t(status)
+	var footer_status := I18n.t(subtitle_filter.status_text()) if subtitle_filter.active() and not cloud_error.opened else (cloud_error.summary_text() if not archives.browsing and section == Section.CLOUD else I18n.t(status))
 	if audio_import_mode and not str(_audio_preview_state.get("audio_preview_error", "")).is_empty(): footer_status = I18n.t(str(_audio_preview_state.audio_preview_error))
 	elif audio_import_mode and _audio_preview_state.get("audio_preview_loading", false): footer_status = I18n.t("Loading preview")
 	var line := _label(_fit_title(footer_status, "", 0.46 if audio_import_mode else 0.67, 17), Vector3(-0.45, -0.66 if cloud_paging and file_actions.has_selection() else -0.58 if cloud_paging or file_actions.folder() else -0.52, 0.004), 17)
@@ -3269,7 +3284,7 @@ func _draw() -> void:
 func _align_folder_tools() -> void:
 	if not browser_content() or (section == Section.RECENT and not archives.browsing): return
 	var tools: Array[Dictionary] = []
-	for target in [CastPanel.TOGGLE, FileActions.SORT, FileActions.EDIT_MODE, EJECT_STORAGE, USB_STORAGE, ALL_FILES, CloudSearch.OPEN, EDIT, REFRESH, VIEW_LIST, VIEW_GRID]:
+	for target in [CastPanel.TOGGLE, FileActions.SORT, FileActions.EDIT_MODE, EJECT_STORAGE, USB_STORAGE, ALL_FILES, CloudSearch.OPEN, SubtitleFilter.OPEN, EDIT, REFRESH, VIEW_LIST, VIEW_GRID]:
 		for button in _buttons:
 			if button.target == target and is_equal_approx(button.rect.get_center().y, 0.445): tools.append(button)
 	var right := 0.845
@@ -3312,7 +3327,7 @@ func _draw_crumbs(crumbs: Array, base: int = CRUMB_BASE) -> void:
 func _header_title() -> String:
 	if archives.browsing: return " / ".join(archives.crumbs())
 	if voice_picker_mode: return I18n.t("Choose audio or video")
-	if image_picker_mode: return I18n.t("Choose image")
+	if image_picker_mode: return I18n.t("Choose panorama images" if background_picker_mode else "Choose image")
 	if audio_import_mode: return I18n.t("Import audio")
 	match section:
 		Section.CLOUD:
@@ -3345,7 +3360,7 @@ func _draw_rows() -> void:
 	_decorations.append(_list)
 	_bar_thumb = null
 	var first := _first_line() * _cols()
-	var row_top: float = 0.045 if (cloud_search.active and not archives.browsing) else (server_browser.list_top() if (section == Section.MEDIA_SERVER and not archives.browsing) and not account_panel.active() else LIST_TOP)
+	var row_top: float = 0.22 if subtitle_filter.active() else 0.045 if (cloud_search.active and not archives.browsing) else (server_browser.list_top() if (section == Section.MEDIA_SERVER and not archives.browsing) and not account_panel.active() else LIST_TOP)
 	for i in range(first, mini(rows.size(), first + _drawn_slots())):
 		var row: Dictionary = rows[i]
 		var k := i - first
@@ -3359,6 +3374,7 @@ func _draw_rows() -> void:
 			else:
 				var center := Vector2(-0.36 + (k % COLS) * GRID_PITCH.x, (0.095 if (cloud_search.active and not archives.browsing) else GRID_TOP) - TILE_SIZE.y * 0.5 - (k / COLS) * GRID_PITCH.y)
 				_tile(ROW_BASE + k, row, center)
+				if background_picker_mode: _decorate_audio_selection(row)
 				if not archives.browsing: collections.decorate_row(k, row, center, true, _list)
 		else:
 			if (section == Section.MEDIA_SERVER and not archives.browsing) and server_browser.media_content():
@@ -3442,13 +3458,16 @@ func _draw_rows() -> void:
 	choices.finish()
 
 func _decorate_audio_selection(row: Dictionary) -> void:
-	if not audio_import_mode or not row.has("uri") or not AudioCatalog.supported(str(row.get("title", ""))): return
+	if not (audio_import_mode or background_picker_mode) or not row.has("uri") or (not background_picker_mode and not AudioCatalog.supported(str(row.get("title", "")))): return
 	var selected := audio_selection.has(str(row.uri))
 	var button: Dictionary = _buttons.back()
 	if selected:
 		button.base_color = SELECTED
 		button.node.material_override.set_shader_parameter("surface_color", SELECTED)
-	_icon("check" if selected else "circle", Vector3(0.53, 0, 0.006), 0.035, ACCENT if selected else MUTED, button.node)
+	var marker:=Vector3(.53,0,.006)
+	if background_picker_mode and _grid(): marker=Vector3(button.node.mesh.size.x/2-.03,button.node.mesh.size.y/2-.03,.015)
+	_icon("check" if selected else "circle", marker, 0.035, ACCENT if selected else MUTED, button.node)
+	if background_picker_mode: return
 	var target := AUDIO_PREVIEW_BASE + int(button.target) - ROW_BASE
 	_audio_preview_rows[target] = row
 	var playing := str(_audio_preview_state.get("audio_preview_uri", "")) == str(row.uri)

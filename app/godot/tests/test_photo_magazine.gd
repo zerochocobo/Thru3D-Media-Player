@@ -41,6 +41,15 @@ func check(ok: bool, message: String) -> void:
 
 func _initialize() -> void: call_deferred("run")
 
+func scenery_ready(app: Node3D) -> void:
+	var deadline:=Time.get_ticks_msec()+15000
+	while (app.scenery.library.busy or not app.scenery._pending.is_empty()) and Time.get_ticks_msec()<deadline: await create_timer(.01).timeout
+	check(not app.scenery.library.busy and app.scenery._pending.is_empty(),"Scene processing completes")
+
+func scene_card(app: Node3D,id: String) -> void:
+	for i in app.scenery_menu._cards.size():
+		if app.scenery_menu._cards[i].id==id: tap(app.scenery_menu,app.scenery_menu.CARD+i); return
+
 func settle(photo: Node3D) -> void:
 	var until := Time.get_ticks_msec() + 5000
 	while photo.loading and Time.get_ticks_msec() < until: await create_timer(.01).timeout
@@ -144,6 +153,8 @@ func run() -> void:
 	photo.free()
 	await app_checks()
 	await reading_preference_checks()
+	await process_frame
+	if DisplayServer.get_name()!="headless": await RenderingServer.frame_post_draw
 	print("Photo magazine: %d checks, %d failures" % [checks, failures.size()])
 	for failure in failures: push_error(failure)
 	quit(0 if failures.is_empty() else 1)
@@ -229,79 +240,20 @@ func app_checks() -> void:
 	var sky_path := ProjectSettings.globalize_path(folder.path_join("sky_360_2D.png")); sky.save_png(sky_path)
 	app.photo.open_image("file://"+sky_path,"sky_360_2D.png"); await settle(app.photo)
 	app.photo_menu.visible = true; app.photo_menu.section = 1; app.photo_menu.refresh()
-	tap(app.photo_menu, Menu.PHOTO_BACKGROUND)
-	check(not button(app.photo_menu, Menu.PHOTO_BACKGROUND).enabled and button(app.photo_menu, Menu.PHOTO_BACKGROUND).node.get_child(0).text == "Saving…", "Import disables repeat clicks while saving")
-	var until := Time.get_ticks_msec() + 5000
-	while app.photo_background.loading and Time.get_ticks_msec() < until: await create_timer(.01).timeout
-	var photo_copy: String = app.photo_background.custom_path
-	check(app.photo_background.choice == "custom" and FileAccess.file_exists(photo_copy) and photo_copy != sky_path, "Photo panorama uses its own private persistent copy")
-	check(app.background.choice == "belfast" and app.photo_active and app.photo.panel.visible, "Importing photo scenery leaves the current image usable and global scenery unchanged")
-	check(not button(app.photo_menu, Menu.PHOTO_BACKGROUND).enabled and button(app.photo_menu, Menu.PHOTO_BACKGROUND).node.get_child(0).text == "Background set", "Successful save refreshes the visible button and disables it")
-	app._on_photo_action("photo_background")
-	check(not app.photo_background.loading and app.photo_background.custom_path == photo_copy, "Repeated action cannot create another copy after success")
-	app.photo_menu.section = 0; app.photo_menu._scenery_open = true; app.photo_menu.refresh()
-	check(not button(app.photo_menu, Menu.PHOTO_SCENERY_IMPORT).enabled and button(app.photo_menu, Menu.PHOTO_SCENERY_IMPORT).node.get_child(0).text == "Background set", "Photo scenery import shares the completed state")
-	app._on_photo_action("photo_scenery_dark")
-	check(button(app.photo_menu, Menu.PHOTO_SCENERY_IMPORT).enabled, "Changing scenery permits setting the current photo again")
-	app._on_photo_action("photo_scenery_custom")
-	app.photo_menu._scenery_open = false; app.photo_menu.section = 1; app.photo_menu.refresh()
-	var other_source: Dictionary = app.photo.background_source(); other_source.swap_eyes = not other_source.swap_eyes
-	check(not app.photo_background.matches_photo(other_source), "Changed source eye selection is not mistaken for the applied panorama")
-	app.photo_background.import_photo({"path":folder.path_join("missing-panorama.png")}, "Missing")
-	check(button(app.photo_menu, Menu.PHOTO_BACKGROUND).enabled and app.photo_menu._status.text == "Background unavailable", "A failed import shows an error and permits retry rather than claiming success")
-	tap(app.photo_menu, Menu.PHOTO_BACKGROUND)
-	until = Time.get_ticks_msec() + 5000
-	while app.photo_background.loading and Time.get_ticks_msec() < until: await create_timer(.01).timeout
-	photo_copy = app.photo_background.custom_path
-	check(not button(app.photo_menu, Menu.PHOTO_BACKGROUND).enabled and app.photo_background.matches_photo(app.photo.background_source()), "Retry reaches the completed state only after saving")
-	app.recent_menu.dismiss()
-	var viewing_uri: String = app.photo.local_uri
-	var viewing_serial: int = app.photo._serial
-	var viewing_index: int = app.photo.index
-	var viewing_queue: Array = app.photo.queue.duplicate(true)
-	var panorama_bytes := FileAccess.get_file_as_bytes(sky_path)
-	FileAccess.open(sky_path, FileAccess.WRITE).store_string("broken")
-	tap(app.photo_menu, Menu.PHOTO_GLOBAL_BACKGROUND)
-	until = Time.get_ticks_msec() + 5000
-	while app.background.loading and Time.get_ticks_msec() < until: await create_timer(.01).timeout
-	check(app.photo_active and app.photo_menu.visible and not app.recent_menu.visible and app.photo.local_uri == viewing_uri,
-		"Failed global import keeps the same photo and menu open")
-	check(button(app.photo_menu, Menu.PHOTO_GLOBAL_BACKGROUND).enabled and app.photo_menu._status.text == "Global background unavailable",
-		"Global import failure is visible in place and allows retry")
-	FileAccess.open(sky_path, FileAccess.WRITE).store_buffer(panorama_bytes)
-	app.background.set_process(false)
-	tap(app.photo_menu, Menu.PHOTO_GLOBAL_BACKGROUND)
-	check(not button(app.photo_menu, Menu.PHOTO_GLOBAL_BACKGROUND).enabled and app.photo_menu._status.text == "Saving global background…",
-		"Global background shows saving in place and disables repeated clicks")
-	var pending_copy: String = app.background._job.path
-	app._on_photo_action("global_background")
-	check(app.background._job.path == pending_copy, "Repeated global action cannot start another pending copy")
-	app.background.set_process(true)
-	until = Time.get_ticks_msec() + 5000
-	while app.background.loading and Time.get_ticks_msec() < until: await create_timer(.01).timeout
-	check(app.background.choice == "custom" and app.background.custom_path != photo_copy and app.photo_active and app.photo.panel.visible,
-		"Global import saves its separate copy while keeping the photo open")
-	check(app.photo.local_uri == viewing_uri and app.photo._serial == viewing_serial and app.photo.queue == viewing_queue and app.photo.index == viewing_index,
-		"Global import preserves the current photo link, session and navigation queue")
-	check(app.photo_menu.visible and app.player_menu == app.photo_menu and not app.recent_menu.visible,
-		"Global import does not navigate to the library or settings")
-	check(not button(app.photo_menu, Menu.PHOTO_GLOBAL_BACKGROUND).enabled and button(app.photo_menu, Menu.PHOTO_GLOBAL_BACKGROUND).node.get_child(0).text == "Background set"
-		and app.photo_menu._status.text == "Global background set. Change it in Settings → Background.", "Successful global import confirms the result and its settings location")
-	app._on_photo_action("global_background")
-	check(not app.background.loading and app.background.custom_path == pending_copy, "Setting an already applied global panorama is idempotent")
-	app.photo_active = true; app.player_menu = app.photo_menu
-	var global_copy: String = app.background.custom_path
-	var background_menu: Node3D = app.photo_menu
-	background_menu.visible = true; background_menu.section = 0; background_menu._scenery_open = true; background_menu.refresh()
-	var global_custom_target := Menu.PHOTO_SCENERY_BASE + Menu.SCENERIES.find("global_custom")
-	check(not button(background_menu, global_custom_target).is_empty(), "Photo chooser includes the user's existing global custom background")
-	tap(background_menu, global_custom_target)
-	until = Time.get_ticks_msec() + 5000
-	while app.photo_background.loading and Time.get_ticks_msec() < until: await create_timer(.01).timeout
-	photo_copy = app.photo_background.custom_path
-	check(app.photo_background.choice == "custom" and FileAccess.file_exists(photo_copy) and photo_copy != global_copy, "Choosing existing custom scenery creates a separately owned photo copy")
-	app._on_setting_changed("background_remove",true)
-	check(FileAccess.file_exists(photo_copy) and app.photo_background.has_custom(), "Deleting the global custom sky cannot delete the photo sky")
+	tap(app.photo_menu,app.photo_menu.SCENERY)
+	check(app.scenery_menu.visible and app.scenery_menu.mode=="image","Image settings open the unified scene manager")
+	tap(app.scenery_menu,app.scenery_menu.CURRENT); await scenery_ready(app)
+	var photo_copy: String=app.photo_background.custom_path
+	check(app.photo_background.choice=="custom" and FileAccess.file_exists(photo_copy) and photo_copy!=sky_path,"Image mode uses a persistent private background")
+	check(app.background.choice=="belfast" and app.photo_active and app.photo.panel.visible,"Import preserves the open image and global choice")
+	var asset: String=app.scenery.library.bindings.image.id
+	app.scenery.import_current(app.photo.background_source(),app.photo.display_name,"image"); await scenery_ready(app)
+	check(app.scenery.library.assets.size()==1,"Repeated import does not create duplicate backgrounds")
+	app.scenery.select("global",asset); await scenery_ready(app)
+	check(app.background.custom_path==photo_copy and app.photo_background.custom_path==photo_copy,"Modes share one immutable background file")
+	app.scenery.select("global","belfast"); await scenery_ready(app)
+	check(app.photo_background.choice=="custom" and FileAccess.file_exists(photo_copy),"Changing global scene preserves the image-mode reference")
+	app.scenery_menu.dismiss()
 	app.photo_active = true; app.player_menu = app.photo_menu
 	app.photo.open_image(entries[0].uri,entries[0].title,entries); await settle(app.photo)
 	var menu: Node3D = app.photo_menu; menu.visible = true; menu.section = 0; menu._scenery_open = false; menu.refresh()
@@ -341,32 +293,30 @@ func app_checks() -> void:
 	menu.dismiss(); app.recent_menu.dismiss(); app.photo_magazine_controls.sync(); tap(app.photo_magazine_controls, 2); await settle(app.photo)
 	check(app.photo.magazine.single(0), "Real ray activation toggles standalone page")
 	await inline_checks(app)
-	menu.visible = true; menu.refresh(); tap(menu, Menu.PHOTO_SCENERY)
-	check(button(menu, Menu.PHOTO_NEXT).is_empty() and not button(menu, Menu.PHOTO_SCENERY_BACK).is_empty(), "Background opens in a standalone panel with a return control")
-	check(Menu.SCENERIES[2] == "night", "Milky Way panorama is the third photo background choice")
-	tap(menu, Menu.PHOTO_SCENERY_BASE + 2)
-	var night_deadline := Time.get_ticks_msec() + 15000
-	while app.photo_background.loading and Time.get_ticks_msec() < night_deadline: await create_timer(.01).timeout
-	check(app.photo_background.choice == "night" and app.photo_background.error.is_empty() and app.photo_background._builtin != null and
-		app.photo_background._builtin.get_size() == Vector2(6000,3000) and app.background.choice == "belfast", "Photo ray selects the original 6K Milky Way independently of global scenery")
-	check(menu._status.text.contains("ESO/S. Brunier"), "Photo Milky Way panel visibly credits the photographer")
-	check(not button(menu, Menu.PHOTO_SCENERY_YAW).is_empty() and not button(menu, Menu.PHOTO_SCENERY_LIGHT).is_empty(), "Photo night panorama retains direction and brightness controls")
-	tap(menu, Menu.PHOTO_SCENERY_YAW); tap(menu, Menu.PHOTO_SCENERY_LIGHT)
-	var night_saved := ConfigFile.new(); night_saved.load(app.settings_path)
-	check(night_saved.get_value("photo_background", "background") == "night" and
-		night_saved.get_value("photo_background", "background_yaw") == app.photo_background.yaw and
-		night_saved.get_value("photo_background", "background_brightness") == app.photo_background.brightness, "Photo night choice, direction and brightness persist")
-	app.photo_background.set_yaw(yaw); app.photo_background.set_brightness(brightness)
-	tap(menu, Menu.PHOTO_SCENERY_BASE + Menu.SCENERIES.find("dark"))
-	check(app.photo_background.choice == "dark" and app.background.choice == "belfast", "Real photo background ray action stays independent")
+	menu.visible=true; menu.refresh(); tap(menu,menu.SCENERY)
+	check(app.scenery_menu.visible and not menu.visible,"Shared footer opens a standalone scene surface")
+	scene_card(app,"night"); await scenery_ready(app)
+	check(app.photo_background.choice=="night" and app.photo_background._builtin.get_size()==Vector2(6000,3000) and app.background.choice=="belfast","Image scope selects the original night panorama independently")
+	check(app.scenery_menu.find_children("*","Label3D",true,false).any(func(label): return label.text.contains("ESO/S. Brunier")),"Night picker visibly credits its source")
+	tap(app.scenery_menu,app.scenery_menu.ADJUST)
+	check(app.scenery_menu.choices.targets.values().any(func(item): return item.get("key","")=="background_yaw"),"Image panorama retains direction controls")
+	app.scenery._command("adjust",{"mode":"image","key":"background_yaw","value":45})
+	app.scenery._command("adjust",{"mode":"image","key":"background_brightness","value":.75})
+	var night_saved:=ConfigFile.new(); night_saved.load(app.settings_path)
+	check(night_saved.get_value("photo_background","background")=="night" and night_saved.get_value("photo_background","background_yaw")==45,"Mode choice and direction persist")
+	app.scenery._command("adjust",{"mode":"image","key":"background_yaw","value":yaw})
+	app.scenery._command("adjust",{"mode":"image","key":"background_brightness","value":brightness})
+	app.scenery_menu.navigate_back(); scene_card(app,"dark"); await scenery_ready(app)
+	check(app.photo_background.choice=="dark" and app.background.choice=="belfast","Ray-selected dark background remains independent")
+	app.scenery_menu.dismiss()
 	app.photo.archive_mode = true; menu._scenery_open = false; menu._layout_open = true; menu.refresh()
 	check(not button(menu, Menu.PHOTO_LAYOUT_BASE + 4).is_empty() and button(menu, Menu.PHOTO_LAYOUT_BASE + 2).is_empty(), "Archive picker contains Single and Magazine")
 	app.photo.archive_mode = false
 	app.photo.set_layout_mode(2); app.photo.gallery.set_wall_rows(3); menu._layout_open = false; menu.refresh()
 	check(menu.find_children("*","Label3D",true,false).any(func(label):return label.text == "Photo wall · 3 rows"), "Current wall rows are visible without opening the picker")
-	var top := [107,100,108,Menu.FAVORITE,Menu.PHOTO_SCENERY,Menu.PHOTO_SHUFFLE]
+	var top := [107,100,108,Menu.FAVORITE,Menu.PHOTO_SHUFFLE]
 	for i in range(1,top.size()):
-		check(is_equal_approx(button(menu,top[i]).node.position.x-button(menu,top[i-1]).node.position.x,.11), "Top actions and conditional batch button use equal spacing")
+		check(is_equal_approx(button(menu,top[i]).node.position.x-button(menu,top[i-1]).node.position.x,.14), "Top actions and conditional batch button use equal spacing")
 	app.photo.close_image(); app.free(); await process_frame
 	var restored := Main.new(); restored.settings_path = folder.path_join("app.cfg"); root.add_child(restored); restored.set_process(false)
 	check(restored.photo_background.choice == "dark" and restored.background.choice == "belfast" and restored.photo_background.yaw == yaw, "Photo scenery survives a fresh application instance")

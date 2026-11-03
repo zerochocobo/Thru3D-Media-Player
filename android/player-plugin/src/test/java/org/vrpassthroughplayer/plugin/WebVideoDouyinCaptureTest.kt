@@ -82,6 +82,22 @@ class WebVideoDouyinCaptureTest {
         val generic=WebVideoDouyinCapture.candidate(page,pair())!!.put("source","")
         assertNull(network().resolve(page,generic)) // Generic capture still cannot pair these opaque URLs.
     }
+    @Test fun mseSharedContainerMustActuallyContainBothTracks() {
+        fun shared() = media().put("blob",true).put("source","").also { m ->
+            m.getJSONObject("douyin").put("observed_file",source).put("observed_muxed",true)
+                .put("audio",JSONArray().put(JSONObject().put("id","muxed-file").put("urls",JSONArray().put(declared))))
+        }
+        var reads=0
+        val full=WebVideoNetworkCapture({uri,headers,_->
+            reads++;assertEquals(source,uri.toString());assertEquals(page.url,headers["referer"])
+            uri to mp4(true)
+        },{true})
+        assertNotNull(WebVideoDouyinCapture.resolve(page,shared(),full));assertEquals(1,reads)
+        assertNull(WebVideoDouyinCapture.resolve(page,shared(),WebVideoNetworkCapture({uri,_,_->uri to mp4(false)},{true})))
+        assertNull(WebVideoDouyinCapture.resolve(page,shared(),WebVideoNetworkCapture({uri,_,_->uri to mp4(true,false)},{true})))
+        val duplicate=shared();duplicate.getJSONObject("douyin").put("observed_audio",source)
+        assertNull(WebVideoDouyinCapture.candidate(page,duplicate))
+    }
     @Test fun directObservedFileHasIndependentIdentityAndStillRequiresBothRealContainerTracks() {
         val directSource = source.replace("__vid=fixture", "__vid=${page.id}")
         fun direct() = media().also { m ->

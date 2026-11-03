@@ -97,6 +97,7 @@ func _run() -> void:
 	_movement_routes()
 	_menu_and_capture_routes()
 	_panel_lock_routes()
+	await _scenery_modal_routes()
 	_context_routes()
 	_immersive_completion_menu_routes()
 	_return_routes()
@@ -173,6 +174,75 @@ func _panel_lock_routes() -> void:
 	main.move_poses.clear(); main.rays.clear()
 	main.xr_camera.transform = camera
 	_close_menus(); main._reposition_cinema_menus()
+
+func _scenery_modal_routes() -> void:
+	_close_menus(); main._cinema_request_interaction("watch")
+	main.background.select("belfast"); main._update_background()
+	for choice in ["cinema","belfast","cinema"]:
+		main._show_full_library()
+		main.recent_menu.section=main.recent_menu.Section.SETTINGS
+		main.recent_menu.tab=main.recent_menu.GENERAL_TAB
+		main.recent_menu.scroll=.12; main.recent_menu.refresh()
+		var scroll: float=main.recent_menu.scroll
+		main.recent_menu._activate_footer(main.recent_menu.SCENERY)
+		var menu: Node3D=main.scenery_menu
+		check(menu.visible and not main.recent_menu.visible,"Scene modal hides its library without closing it: "+choice)
+		await _select_scene_backdrop(choice)
+		var head: Transform3D=main._head_pose()
+		check(menu.visible and menu.global_position.distance_to(head.origin)<3.0,"Open scene modal stays near the relocated viewer: "+choice,menu.global_position.distance_to(head.origin))
+		check(menu.scene_overlay==main._cinema_scene_active(),"Scene modal follows cinema chair-occlusion protection: "+choice)
+		_click_scene_target(menu.CLOSE)
+		var distance: float=main.recent_menu.to_global(main.recent_menu.panel_centre()).distance_to(head.origin)
+		check(main.recent_menu.visible and distance<3.0,"Closing scene restores the original library near the viewer without toggling it: "+choice,distance)
+		check(main.recent_menu.section==main.recent_menu.Section.SETTINGS and main.recent_menu.tab==main.recent_menu.GENERAL_TAB and is_equal_approx(main.recent_menu.scroll,scroll),"Relocation preserves the hidden library page and scroll: "+choice)
+		var tab: Dictionary=main.recent_menu._buttons.filter(func(item): return item.target==main.recent_menu.TAB_BASE+main.recent_menu.GENERAL_TAB)[0]
+		var ray: Vector3=(tab.node.global_position-head.origin).normalized()
+		check(int(main.recent_menu.ray_hit(head.origin,ray).get("target",-999))==int(tab.target),"Restored library accepts rays immediately: "+choice)
+		_close_menus()
+	# A hidden panel lock belongs to the departing view frame, not the old seat.
+	main.background.select("belfast"); main._update_background(); main._show_full_library()
+	var library: Node3D=main.recent_menu
+	var ordinary: Transform3D=library.global_transform
+	library.set_meta("space_locked",true); library.set_meta("space_pose",ordinary); library.set_meta("space_head",main._head_pose())
+	for choice in ["cinema","belfast"]:
+		library._activate_footer(library.SCENERY); await _select_scene_backdrop(choice)
+		main.scenery_menu.dismiss()
+		check(library.visible and library.space_locked() and library.global_position.distance_to(main.xr_camera.global_position)<3.0,"Hidden library lock follows the changed rig frame: "+choice)
+		var pose: Transform3D=library.global_transform
+		main._place_menu(library,true)
+		check(library.global_transform.is_equal_approx(pose) and library.get_meta("space_pose").is_equal_approx(pose),"Reopening keeps the relocated panel lock stable: "+choice)
+	check(library.global_transform.is_equal_approx(ordinary),"Locked library returns to its original frame after the cinema round trip")
+	for key in ["space_locked","space_pose","space_head"]: library.remove_meta(key)
+	# Playback and attached-library menus already have cinema transport placement.
+	for attached in [false,true]:
+		_close_menus(); main.background.select("belfast"); main._update_background(); main._show_player_menu()
+		if not main.video_menu.space_locked(): main._on_menu_action("space_lock")
+		if attached: main._show_recent_menu()
+		var source: Node3D=main.recent_menu if attached else main.video_menu
+		source._activate_footer(source.SCENERY); await _select_scene_backdrop("cinema"); main.scenery_menu.dismiss()
+		check(source.is_visible_in_tree() and source.to_global(source.panel_centre()).distance_to(main.xr_camera.global_position)<3.0,"Cinema transport returns near the viewer without a second rig transform: "+str(attached))
+		check(main.video_menu.space_locked(),"Scenery switch preserves the playback panel lock: "+str(attached))
+		if attached: check(main._library_is_attached(),"Scenery switch preserves the playback library attachment")
+		main._on_menu_action("space_lock"); _close_menus()
+	main.background.select("belfast"); main._update_background(); main._clear_controls_locks()
+	main.background.select("cinema"); main._update_background()
+
+func _select_scene_backdrop(choice: String) -> void:
+	var menu: Node3D=main.scenery_menu
+	var card: int=menu._cards.find_custom(func(item): return item.id==choice)
+	_click_scene_target(menu.CARD+card)
+	var deadline:=Time.get_ticks_msec()+20000
+	while not main.scenery._pending.is_empty() and Time.get_ticks_msec()<deadline: await process_frame
+	check(main.background.choice==choice and main.scenery._pending.is_empty(),"Ray selection commits the requested backdrop: "+choice)
+
+func _click_scene_target(target: int) -> void:
+	var menu: Node3D=main.scenery_menu
+	var buttons: Array=menu._buttons.filter(func(item): return item.target==target)
+	check(not buttons.is_empty() and buttons[0].enabled,"Scene action is available: %d"%target)
+	if buttons.is_empty(): return
+	var point: Vector3=buttons[0].node.global_position+buttons[0].node.global_basis.z*.4
+	menu.press_pointer("right_hand",point,-menu.global_basis.z,true)
+	menu.release_pointer("right_hand",point,-menu.global_basis.z,true)
 
 func _photo_close_routes() -> void:
 	main.video.close_video()
@@ -284,6 +354,7 @@ func _viewing_brightness_routes() -> void:
 	_close_menus(); main._show_full_library()
 	main.recent_menu.section = main.recent_menu.Section.SETTINGS
 	main.recent_menu.tab = main.recent_menu.BACKGROUND_TAB; main.recent_menu.refresh()
+	main.scenery.open(main.recent_menu); main.scenery_menu.view="adjust"; main.scenery_menu.refresh()
 	main._on_setting_changed("cinema_lights", "on")
 	for level in ["soft", "dim", "low"]:
 		main._on_setting_changed("cinema_viewing_brightness", level)
@@ -295,13 +366,13 @@ func _viewing_brightness_routes() -> void:
 	main._on_setting_changed("cinema_viewing_brightness", "soft")
 	var saved := ConfigFile.new(); saved.load(main.settings_path)
 	check(saved.get_value("appearance", "cinema_viewing_brightness") == "soft", "Selected viewing brightness persists to disk")
-	main.recent_menu.tab = main.recent_menu.GENERAL_TAB
+	main.scenery_menu.view="scene"; main.scenery_menu.refresh()
 	main._sync_cinema_lights(); main.cinema_environment._process(1.0)
 	check(not main._cinema_viewing_preview and main.cinema_environment._light_mix == 1,
 		"Leaving background settings ends preview and restores manual on")
 	main._on_setting_changed("cinema_lights", "auto"); main.cinema_environment._process(1.0)
 	check(main.cinema_environment._light_mix == .2, "Normal automatic playback retains the saved soft viewing level")
-	main.recent_menu.tab = main.recent_menu.BACKGROUND_TAB
+	main.scenery_menu.view="adjust"; main.scenery_menu.refresh()
 	main.video.media.state = "paused"
 	main._cinema_lights_idle_since = Time.get_ticks_msec() - main.CINEMA_LIGHTS_UP_DELAY_MS - 1
 	main._on_setting_changed("cinema_viewing_brightness", "dim")
@@ -399,6 +470,7 @@ func _picture_size_routes(full_screen: Transform3D, preferences: Dictionary) -> 
 		"Full size restores the original fixed cinema picture")
 
 func _close_menus() -> void:
+	if main.scenery_menu and main.scenery_menu.visible: main.scenery_menu.dismiss()
 	for menu in [main.recent_menu, main.video_menu, main.photo_menu, main.music_menu]:
 		if menu: menu.dismiss()
 	main.player_menu = main.video_menu
@@ -423,9 +495,9 @@ func _return_routes() -> void:
 	check(main.cinema_environment.snapshot().capture_hand.is_empty(), "Opening menu cancels held movement aim")
 	_release("right_hand")
 	check(main.xr_camera.global_position.is_equal_approx(eye), "Releasing stick over menu cannot teleport")
-	var button: Dictionary = main.player_menu._buttons.filter(func(item): return item.target == main.player_menu.FREE_MOVEMENT)[0]
+	var button: Dictionary = main.player_menu._buttons.filter(func(item): return item.target == main.player_menu.SCENERY)[0]
 	var follow: Dictionary = main.player_menu._buttons.filter(func(item): return item.target == main.player_menu.FOLLOW)[0]
-	check(button.node.position.x < follow.node.position.x, "Free movement appears to the left of Follow")
+	check(button.node.position.x > follow.node.position.x, "Scene entry appears to the right of Follow")
 	main.rays.right_hand = [eye, (button.node.global_position - eye).normalized()]
 	main._update_menu_pointer("right_hand")
 	check(main.player_menu._pointers.right_hand.line.visible, "Menu restores the normal straight right-hand ray")
@@ -435,7 +507,17 @@ func _return_routes() -> void:
 	check(main.cinema_environment.snapshot().capture_hand.is_empty(), "A is inert for movement while menus are visible")
 	main._on_controller_button("trigger_click", "right_hand")
 	main._on_controller_release("trigger_click", "right_hand")
-	check(main.cinema_environment.interaction == "watch" and main.player_menu.visible, "Right trigger switches off movement from the shared footer")
+	check(main.scenery_menu.visible,"Right trigger opens the shared scene panel")
+	main.scenery_menu._activate(main.scenery_menu.ADJUST)
+	var watch_target: int=-1
+	for target in main.scenery_menu.choices.targets:
+		var item: Dictionary=main.scenery_menu.choices.targets[target]
+		if item.get("key","")=="cinema_interaction" and item.get("value","")=="watch": watch_target=target
+	var watch: Dictionary=main.scenery_menu._buttons.filter(func(item): return item.target==watch_target)[0]
+	main.rays.right_hand=[eye,(watch.node.global_position-eye).normalized()]
+	main._on_controller_button("trigger_click","right_hand"); main._on_controller_release("trigger_click","right_hand")
+	main.scenery_menu.dismiss()
+	check(main.cinema_environment.interaction=="watch" and main.player_menu.visible,"Scene adjustment returns to watch mode with the original controls")
 	check(main.xr_camera.global_position.is_equal_approx(eye), "Switching to playback preserves the viewpoint")
 	check(not main._session_controls_state().cinema_moving, "Footer toggle state updates immediately")
 	_close_menus(); main._cinema_request_interaction("move")
@@ -473,7 +555,7 @@ func _playback_routes(label: String, zoom_expected: bool) -> void:
 			"Fixed cinema ignores physical screen scaling instead of distorting auditorium")
 		check(_screen_preferences() == preferences, "Ignored cinema scaling does not overwrite ordinary screen defaults")
 	main._show_player_menu()
-	check(main.player_menu._buttons.any(func(item): return item.target == main.player_menu.FREE_MOVEMENT) == main._cinema_scene_active(), "Movement footer appears only inside cinema: " + label)
+	check(not main.player_menu._buttons.any(func(item): return item.target == main.player_menu.FREE_MOVEMENT) and main.player_menu._buttons.any(func(item): return item.target==main.player_menu.SCENERY), "Scene entry replaces the floating movement control: " + label)
 	check(main.player_menu.allows_playback_sticks(), label + " ordinary control bar allows playback sticks")
 	before = main.video.audio_volume
 	main._process_sticks(Vector2(0, -0.99), Vector2.ZERO, 0.05)

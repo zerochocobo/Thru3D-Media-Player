@@ -49,6 +49,16 @@ func run() -> void:
 	video.listening.source = "en"; video.local_uri = "file:///other.mp4"
 	check(request.language == "ja" and request.media != Tasks.Memory.key_for(video.local_uri), "Changing film/defaults does not mutate queued request")
 	tasks.tick(); check(video.platform.commands.back().operation == "context", "App-wide context follows current film")
+	video.cast_token = 31
+	check(tasks.supported() and not tasks.enqueue(), "Cast isolation does not disable global task service")
+	var command_count: int = video.platform.commands.size()
+	check(not tasks.command({"operation": "enqueue", "session_id": 1}) and video.platform.commands.size() == command_count, "Generic command cannot enqueue ephemeral cast")
+	tasks.report = {"jobs": [{"id": "same-url", "media": Tasks.Memory.key_for(video.local_uri), "language": "en", "target": "zh-Hans", "state": "queued"}]}
+	check(tasks.snapshot().subtitle_task.is_empty() and not tasks.snapshot().subtitle_task_supported and tasks.snapshot().subtitle_tasks.jobs.size() == 1, "Cast hides same-URL current job but retains global queue")
+	tasks._poll = 0; tasks.tick()
+	check(video.platform.commands.back().media == "" and video.platform.commands.back().network, "Cast context carries no stable media identity")
+	check(tasks.command({"operation": "cancel", "id": "same-url"}), "Task management remains usable while casting")
+	video.cast_token = 0
 	var a := RefCounted.new(); var b := RefCounted.new()
 	Gate.owner = null; Gate.next_at = 0; Gate.demand.clear()
 	check(Gate.acquire(a, 2) and not Gate.acquire(b, 0), "Single translation owner")

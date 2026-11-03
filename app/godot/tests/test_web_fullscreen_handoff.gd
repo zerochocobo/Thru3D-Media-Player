@@ -137,19 +137,23 @@ func run() -> void:
 	quit(0 if failures.is_empty() else 1)
 
 func server_play_checks() -> void:
+	var origins := ["http://192.168.1.20:8096/web/index.html#!/videoosd", "http://192.168.1.20:8096/jellyfin/web/#/video",
+		"http://192.168.1.20:32400/web/index.html#!/server/local/details?key=%2Flibrary%2Fmetadata%2F4"]
+	for index in origins.size(): server_play_check(origins[index], index)
+
+func server_play_check(origin: String, index: int) -> void:
 	var browser: RefCounted = menu.web_browser
-	var origin := "http://192.168.1.20:8096/web/index.html#!/videoosd"
 	menu.visible = true; menu.section = Menu.Section.WEB
-	platform.browser.merge({"url": origin, "tab_id": 1, "navigation": 50, "focused_window": 1,
-		"fullscreen": false, "fullscreen_video": true, "fullscreen_request": 90, "active": true, "playing": true,
-		"videos": [{"id": "1", "server_play": true, "fullscreen": true, "playing": true, "time": 31.0}]}, true)
+	platform.browser.merge({"url": origin, "tab_id": 1, "navigation": 50 + index, "focused_window": 1,
+		"fullscreen": false, "fullscreen_video": true, "fullscreen_request": 90 + index, "active": true, "playing": true,
+		"videos": [{"id": str(1 + index), "server_media": true, "server_play": true, "fullscreen": true, "playing": true, "time": 31.0, "width": 8192, "height": 4096}]}, true)
 	browser.open()
 	browser.prefetch_uri = origin; browser.prefetch_ms = Time.get_ticks_msec()
 	browser.prefetch_result = {"state": "ready", "uri": "old-server-version"}
 	poll()
 	check(browser.handoff and browser.handoff_auto and menu.web_video.pending > 0, "Server play starts native resolution without a DOM fullscreen request")
 	check(menu.web_video.result.is_empty(), "A new server play cannot reuse another episode/version cached on the same page")
-	var native_uri := "http://192.168.1.20:8096/web/index.html#thru3d-video=21&MediaSourceId=version_2"
+	var native_uri := origin.get_slice("#", 0) + ("#thru3d-plex=plex:4:1:0" if index == 2 else "#thru3d-video=21&MediaSourceId=version_2")
 	platform.web_state = {"id": menu.web_video.pending, "state": "ready", "uri": native_uri, "title": "Server movie"}
 	menu.web_video.next_poll = 0; menu.web_video.tick(); poll(); poll(); acknowledge_pause()
 	check(browser.has_playback_return(native_uri), "Credential-free server identity retains its original webpage return")

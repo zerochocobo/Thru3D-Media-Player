@@ -17,7 +17,13 @@ const RESIZE_RIGHT := 986032
 const RESIZE_BOTTOM := 986033
 const SELECT := 986019
 const MIN_PAGE := Vector2(1.44, 1.44 / Surface.MAX_RATIO)
-const MAX_PAGE := Vector2(2.88, 1.80)
+const MAX_PAGE := Vector2(2.88, MIN_PAGE.x / Surface.MIN_RATIO)
+const CinemaBlueprint := preload("res://scripts/environments/cinema_blueprint.gd")
+const MIN_DISPLAY := RECT.size * 0.6
+const MAX_DISPLAY := Vector2(CinemaBlueprint.SCREEN_WIDTH, CinemaBlueprint.SCREEN_HEIGHT)
+const RESIZE_OFFSET := Vector2(0.09, 0.09)
+const RESIZE_EDGE_SIZE := Vector2(0.14, 0.26)
+const RESIZE_CORNER_SIZE := Vector2(0.18, 0.18)
 var page_size := RECT.size
 var selecting := false
 var selection := Rect2()
@@ -95,9 +101,10 @@ func recenter(load_saved: bool = false) -> void:
 			if not config.has_section(section): section = str(window_id)
 			var saved: Variant = config.get_value(section, "offset", offset)
 			if saved is Vector3 and saved.is_finite() and saved.length() >= 0.6 and saved.length() <= 8: offset = saved
-			factor = clampf(float(config.get_value(section, "scale", factor)), 0.6, 2.5)
 			var dimensions: Variant = config.get_value(section, "page_size", RECT.size)
 			page_size = clamp_page_size(dimensions) if dimensions is Vector2 and dimensions.is_finite() else RECT.size
+			var saved_scale := float(config.get_value(section, "scale", factor))
+			factor = clampf(saved_scale, minimum_scale(), maximum_scale()) if is_finite(saved_scale) else 1.0
 			mode = str(config.get_value(section, "mode", mode))
 			if mode not in ["floating", "cinema"]: mode = "floating"
 	var centre := frame * offset
@@ -131,13 +138,90 @@ func page_rect() -> Rect2:
 	return Rect2(Vector2(RECT.position.x, RECT.end.y - page_size.y), page_size)
 static func clamp_page_size(value: Vector2, edge: int = RESIZE) -> Vector2:
 	var dimensions := value.clamp(MIN_PAGE, MAX_PAGE)
-	# Stop the dragged edge before the CSS viewport falls below the desktop minimum.
+	# Stop the dragged edge at the shared portrait/landscape viewport bounds.
 	# Keep the other axis fixed, and apply the same bound when restoring old layouts.
 	if edge == RESIZE_RIGHT:
 		dimensions.x = clampf(dimensions.x, dimensions.y * Surface.MIN_RATIO, dimensions.y * Surface.MAX_RATIO)
 	else:
 		dimensions.y = clampf(dimensions.y, dimensions.x / Surface.MAX_RATIO, dimensions.x / Surface.MIN_RATIO)
 	return dimensions
+
+func minimum_scale() -> float:
+	# Keep both the page and its controls usable at the smallest physical size.
+	return maxf(0.6, maxf(MIN_DISPLAY.x / page_size.x, MIN_DISPLAY.y / page_size.y))
+
+func maximum_scale() -> float:
+	return minf(MAX_DISPLAY.x / page_size.x, MAX_DISPLAY.y / page_size.y)
+
+static func _resize_scale_delta(change: Vector2, size: Vector2) -> float:
+	var handle := size + RESIZE_OFFSET + Vector2.ONE * 0.01
+	return change.dot(handle) / handle.length_squared()
+
+static func _layout_resize_fraction(size: Vector2, change: Vector2) -> float:
+	# Intersect the drag with the shared portrait/landscape bounds. Stop at the
+	# first boundary, including aspect limits, before consuming the rest as zoom.
+	var fraction := 1.0
+	for bound in [Vector3(1, 0, MAX_PAGE.x), Vector3(-1, 0, -MIN_PAGE.x),
+		Vector3(0, 1, MAX_PAGE.y), Vector3(0, -1, -MIN_PAGE.y),
+		Vector3(1, -Surface.MAX_RATIO, 0), Vector3(-1, Surface.MIN_RATIO, 0)]:
+		var normal := Vector2(bound.x, bound.y)
+		var step := normal.dot(change)
+		if step > 0.000001:
+			fraction = minf(fraction, maxf(0.0, (bound.z - normal.dot(size)) / step))
+	return fraction
+
+func resize_by(change: Vector2, edge: int, reference_scale: float = -1.0) -> void:
+	if on_screen() or not change.is_finite(): return
+	if edge in [RESIZE_RIGHT, RESIZE_BOTTOM]:
+		_reshape_edge(change, edge, reference_scale)
+		return
+	var pose := global_transform
+	var factor := pose.basis.get_scale().x
+	# Corner drags keep a scaled window's viewport across releases and restores.
+	# Only crossing back through 1:1 resumes independent width/height changes.
+	if not is_equal_approx(factor, 1.0):
+		var step := _resize_scale_delta(change, page_size)
+		if (factor < 1.0 and factor + step >= 1.0) or (factor > 1.0 and factor + step <= 1.0):
+			change *= 1.0 - (1.0 - factor) / step
+			factor = 1.0
+		else:
+			factor += step
+			change = Vector2.ZERO
+	if not change.is_zero_approx():
+		var fraction := _layout_resize_fraction(page_size, change)
+		page_size += change * fraction
+		factor += _resize_scale_delta(change * (1.0 - fraction), page_size)
+	factor = clampf(factor, minimum_scale(), maximum_scale())
+	# Preserve the top-left page anchor through layout/zoom transitions.
+	var anchor := Vector3(RECT.position.x, RECT.end.y, 0)
+	var basis := pose.basis.orthonormalized().scaled(Vector3.ONE * factor)
+	global_transform = Transform3D(basis, pose * anchor - basis * anchor)
+
+func _reshape_edge(change: Vector2, edge: int, reference_scale: float) -> void:
+	var pose := global_transform
+	var factor := pose.basis.get_scale().x
+	var dimensions := page_size * factor
+	# Edge handles change shape at any zoom. Keep the opposite physical edge
+	# fixed, including when the local layout has already reached its old cap.
+	if edge == RESIZE_RIGHT:
+		dimensions.x = clampf(dimensions.x + change.x,
+			maxf(MIN_DISPLAY.x, dimensions.y * Surface.MIN_RATIO),
+			minf(MAX_DISPLAY.x, dimensions.y * Surface.MAX_RATIO))
+	else:
+		dimensions.y = clampf(dimensions.y + change.y,
+			maxf(MIN_DISPLAY.y, dimensions.x / Surface.MAX_RATIO),
+			minf(MAX_DISPLAY.y, dimensions.x / Surface.MIN_RATIO))
+	# Re-express the same physical rectangle using the existing saved layout
+	# bounds. A fixed per-drag reference avoids accumulating chrome scale on
+	# repeated pointer updates or reversing across a layout boundary.
+	var lower := maxf(0.6, maxf(dimensions.x / MAX_PAGE.x, dimensions.y / MAX_PAGE.y))
+	var upper := minf(dimensions.x / MIN_PAGE.x, dimensions.y / MIN_PAGE.y)
+	factor = clampf(reference_scale if reference_scale > 0.0 else factor, lower, upper)
+	page_size = dimensions / factor
+	var anchor := Vector3(RECT.position.x, RECT.end.y, 0)
+	var basis := pose.basis.orthonormalized().scaled(Vector3.ONE * factor)
+	global_transform = Transform3D(basis, pose * anchor - basis * anchor)
+
 func _sync_presentation() -> void:
 	if on_screen():
 		if not _screen_attached: _floating_pose = global_transform; _screen_attached = true
@@ -384,17 +468,25 @@ func draw_frame_panels() -> void:
 func draw_resize_handles() -> void:
 	# All three hit regions stay outside the webpage, including its fullscreen button.
 	var page := page_rect()
-	for spec in [[RESIZE_RIGHT, Vector2(page.end.x + 0.035, page.get_center().y), Vector2(0.05, 0.14)],
-		[RESIZE_BOTTOM, Vector2(page.get_center().x, page.position.y - 0.045), Vector2(0.14, 0.05)],
-		[RESIZE, Vector2(page.end.x + 0.035, page.position.y - 0.045), Vector2(0.05, 0.05)]]:
+	for spec in [[RESIZE_RIGHT, Vector2(page.end.x + RESIZE_OFFSET.x, page.get_center().y), RESIZE_EDGE_SIZE],
+		[RESIZE_BOTTOM, Vector2(page.get_center().x, page.position.y - RESIZE_OFFSET.y), Vector2(RESIZE_EDGE_SIZE.y, RESIZE_EDGE_SIZE.x)],
+		[RESIZE, Vector2(page.end.x + RESIZE_OFFSET.x + 0.01, page.position.y - RESIZE_OFFSET.y - 0.01), RESIZE_CORNER_SIZE]]:
 		_button(spec[0], "", spec[1], spec[2])
 		var tile: Dictionary = _buttons.back()
 		tile.node.position.z = 0.025
 		tile.base_color = Color(0, 0, 0, 0); tile.node.material_override.set_shader_parameter("surface_color", tile.base_color)
-		var marks := [Vector4(0, 0, 0.004, 0.06)] if spec[0] == RESIZE_RIGHT else [Vector4(0, 0, 0.06, 0.004)] if spec[0] == RESIZE_BOTTOM else [Vector4(0.009, 0.001, 0.004, 0.025), Vector4(-0.001, -0.009, 0.025, 0.004)]
+		# Keep the visible grips by the frame; the generous transparent targets
+		# extend outward so aiming need not be as precise as the glyph itself.
+		var mark_offset := Vector2(-0.065, 0) if spec[0] == RESIZE_RIGHT else Vector2(0, 0.065) if spec[0] == RESIZE_BOTTOM else Vector2(-RESIZE_OFFSET.x - 0.01, RESIZE_OFFSET.y + 0.01)
+		var marks := [Vector4(0, 0, 0.008, 0.12)] if spec[0] == RESIZE_RIGHT else [Vector4(0, 0, 0.12, 0.008)] if spec[0] == RESIZE_BOTTOM else [Vector4(0.025, 0, 0.009, 0.06), Vector4(0, -0.025, 0.06, 0.009)]
 		for edge in marks:
-			var mark := _quad(Vector2(edge.z, edge.w), Vector3(edge.x, edge.y, 0.005), Color(0.7, 0.85, 0.82), 12)
+			var mark := _quad(Vector2(edge.z, edge.w), Vector3(edge.x + mark_offset.x, edge.y + mark_offset.y, 0.005), Color(0.7, 0.85, 0.82), 12)
 			tile.node.add_child(mark)
+	# The corner glyph hugs both edges. Extend the same target along those edges
+	# without putting a rectangular hit area over the website's fullscreen button.
+	for bounds in [Rect2(page.end.x + 0.01, page.position.y - 0.02, 0.08, 0.10),
+		Rect2(page.end.x - 0.08, page.position.y - 0.10, 0.09, 0.08)]:
+		_text_button(RESIZE, "", bounds.get_center(), bounds.size)
 func end_drag() -> void:
 	drag.clear(); title_move.cancel()
 func dismiss() -> void:
@@ -421,7 +513,7 @@ func press_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: b
 	if int(hit.target) in [RESIZE_RIGHT, RESIZE_BOTTOM, RESIZE] and not peer.on_screen():
 		var point: Variant = peer.project_pointer(origin, direction, Transform3D.IDENTITY)
 		if point != null:
-			peer.drag = {"hand": hand, "kind": int(hit.target), "pose": peer.global_transform, "start": point, "size": peer.page_size}
+			peer.drag = {"hand": hand, "kind": int(hit.target), "pose": peer.global_transform, "previous": point}
 		return true
 	if int(hit.target) == WEB:
 		if peer.selecting:
@@ -451,11 +543,12 @@ func update_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: 
 		var capture: Dictionary = peer.drag
 		var point: Variant = peer.project_pointer(origin, direction, peer.global_transform.affine_inverse() * capture.pose)
 		if point != null:
-			var change: Vector3 = Vector3(point) - Vector3(capture.start)
-			var dimensions: Vector2 = capture.size + Vector2(0.0 if capture.kind == RESIZE_BOTTOM else change.x, 0.0 if capture.kind == RESIZE_RIGHT else -change.y)
-			dimensions = clamp_page_size(dimensions, capture.kind)
-			if not peer.page_size.is_equal_approx(dimensions):
-				peer.page_size = dimensions; peer.refresh()
+			var change: Vector3 = Vector3(point) - Vector3(capture.previous)
+			capture.previous = point
+			var old_size: Vector2 = peer.page_size
+			var old_pose: Transform3D = peer.global_transform
+			peer.resize_by(Vector2(change.x, -change.y) * capture.pose.basis.get_scale().x, capture.kind, capture.pose.basis.get_scale().x)
+			if not peer.page_size.is_equal_approx(old_size) or not peer.global_transform.is_equal_approx(old_pose): peer.refresh()
 		return
 	browser.move(hand, origin, direction, tracked)
 func release_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: bool) -> void:
@@ -484,7 +577,7 @@ func _scale_about_centre(factor: float, pose: Transform3D) -> void:
 	global_transform = Transform3D(basis, centre - basis * CENTRE)
 func adjust_size(amount: float) -> void:
 	if on_screen(): return
-	var factor := clampf(global_basis.get_scale().x + amount, 0.6, 2.5)
+	var factor := clampf(global_basis.get_scale().x + amount, minimum_scale(), maximum_scale())
 	_scale_about_centre(factor, global_transform); save_layout()
 func adjust_distance(amount: float) -> void:
 	var centre := to_global(CENTRE); var offset := centre - head().origin

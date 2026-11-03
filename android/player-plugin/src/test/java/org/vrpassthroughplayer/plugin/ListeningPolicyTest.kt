@@ -4,6 +4,16 @@ import org.junit.Test
 import org.json.JSONObject
 
 class ListeningPolicyTest {
+    @Test fun ephemeralCaptionsCannotEnableDiskCacheWithoutAMediaIdentity() {
+        val request=JSONObject().put("enabled",true).put("language","ja").put("lead",12)
+            .put("target","zh-Hans").put("media","").put("persist",true).put("network",true)
+        val cast=ListeningPolicy.Config.parse(request.toString())
+        assertTrue(cast.enabled);assertTrue(cast.translation);assertTrue(cast.network)
+        assertEquals("",cast.media);assertFalse(cast.persist)
+        val library=ListeningPolicy.Config.parse(request.put("media","a".repeat(64)).toString())
+        assertTrue(library.persist);assertEquals("a".repeat(64),library.media)
+    }
+
     @Test fun splitWebAudioUsesItsOwnInputStreamAndClock() {
         val video="http://127.0.0.1:32123/video.mp4"
         val audio="http://127.0.0.1:32123/audio.webm"

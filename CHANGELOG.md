@@ -4,6 +4,16 @@
 
 Newest first, following product release milestones. Some development/source snapshots contained features before their product release. Original APK identifiers `0.2` and `0.4` are retained; `0.4` was also called `0.4.0` in release notes. Availability depends on device, server and media capabilities.
 
+## 0.16.5 — 2026-11-03
+
+- Add a unified scenery picker and shared private panorama library with previews, batch import, rename/remove, progress and an action to use the current panorama as a background. Global and image modes share assets but remember choices independently; image backgrounds do not inherit the cinema. Improve menu placement after scenery transitions.
+- Add optional default 2D-to-3D for eligible flat video and reuse of the last projection/stereo mode for unrecognized files without per-file settings. Both default off, per-file/recognized-format choices take precedence and photo settings remain independent. Cycle playback order directly from its icon.
+- Expand manual native Alpha passthrough to compatible full-SBS 180° masked video while retaining fisheye support. Retain compiled video depth models across seek revisions, improve same-grade shot-cut handling and fill eligible burned-in letterbox bars before depth inference; these do not imply universal media or device compatibility.
+- Add manual live captions/translation for eligible seekable DLNA cast audio. New cast sessions default off and retain only ephemeral cues; mode/decoder revisions preserve the same cast session without turning it into file history or a persistent subtitle task. Improve missing-cue recovery and entry state after 3D/passthrough changes.
+- Add filename filtering to the external-subtitle picker, seeded from the media title and using directory search when supported. Add Emby/Jellyfin playback/progress/stop reporting under existing privacy controls, improve Plex library presentation and preserve server directory/detail/scroll state when returning from settings.
+- Improve browser resizing from small/portrait windows to larger screens: retain nominal layout bounds, zoom beyond them and preserve independent edge dragging within pixel budgets. Lower compatible flat-screen distance/size minima to 0.1 m/5% and cap menu distance at 4 m. Repair panorama-photo conversion state and legacy GBK ZIP file/directory names while preserving valid Unicode and path checks.
+- Douyin Play Beta is temporarily unavailable after the featured-entry regression; its ordinary/diagnostic source gates remain off and paused research is not restored. Jellyfin/Plex browser adapters remain technical source, not an advertised completed feature of this release. 3D text protection remains hidden/off; weights, personal backgrounds, credentials, logs and development material remain excluded.
+
 ## 0.16.4 — 2026-11-03
 
 - Fix a native VR picture-in-picture timing-cache key overflow that could corrupt the caller's GL state, causing repeated image shaking, frozen playback or black menus on some VR videos. Store all common shader parameters separately from output dimensions/eye count/texture type; derive uniform and window capacities from their production descriptors.

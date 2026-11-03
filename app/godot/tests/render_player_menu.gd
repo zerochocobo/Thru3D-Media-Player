@@ -168,13 +168,13 @@ func _run() -> void:
 	viewport.get_texture().get_image().save_png(output.path_join("playback_modes_fisheye.png"))
 	if menu._buttons.filter(func(b): return b.target >= menu.MODE_LENS and b.target < menu.MODE_LENS + 4).size() != 4:
 		failures.append("Fisheye shows four lens angles")
-	# The video's own Alpha mask beside the lens angles (full side-by-side fisheye); the bar's passthrough greys out.
+	# The independent source-mask switch beside projection choices; the bar's AI greys out.
 	state["top_bottom"] = false; state["mode_lock"] = {}; state["packed_mask_available"] = true; state["packed_mask"] = true
 	menu.refresh()
 	await RenderingServer.frame_post_draw
 	await RenderingServer.frame_post_draw
 	viewport.get_texture().get_image().save_png(output.path_join("playback_modes_fisheye_mask.png"))
-	if not menu._buttons.any(func(b): return b.target == Menu.MODE_PACKED and b.base_color == Menu.SELECTED): failures.append("The built-in mask button is shown on")
+	if not menu._buttons.any(func(b): return b.target == Menu.MODE_PACKED and b.node.get_child(1).get_child(0).position.x > 0): failures.append("The built-in mask switch is shown on")
 	if menu._buttons.any(func(b): return b.target == 104 and b.enabled): failures.append("The bar passthrough is greyed out with the built-in mask")
 	state["packed_mask"] = false; state["packed_mask_available"] = false; state["top_bottom"] = true
 	state["stereo_half"] = true

@@ -167,6 +167,18 @@ internal class EmbyClient(private val account: MediaServerAccount, private val h
     }
     override fun candidates(request: JSONObject): JSONObject {
         val kind = request.optString("kind")
+        if (kind == "tags" && account.provider == "jellyfin") {
+            val args = linkedMapOf<String, Any>("UserId" to user(), "IncludeItemTypes" to "Movie,Episode,Video")
+            request.optString("library_id").takeIf { it.isNotBlank() }?.let { args["ParentId"] = mediaId(it) }
+            val tags = get("Items/Filters2", args).optJSONArray("Tags") ?: throw MediaServerFailure("Invalid server response")
+            val q = request.optString("q").take(200)
+            val names = (0 until tags.length()).map { tags.getString(it).take(256) }.filter { it.isNotBlank() }
+                .distinct().filter { it.contains(q, ignoreCase = true) }.sortedWith(compareBy<String> { it.lowercase(java.util.Locale.ROOT) }.thenBy { it })
+            val page = request.optInt("page", 1).coerceIn(1, 100000)
+            return JSONObject().put("entries", JSONArray(names.drop((page - 1) * 48).take(48).map {
+                JSONObject().put("id", it).put("name", it).put("count", -1)
+            })).put("total", names.size).put("page", page)
+        }
         val path = mapOf("genres" to "Genres", "tags" to "Tags", "performers" to "Persons", "studios" to "Studios")[kind]
             ?: throw MediaServerFailure("Server query unsupported")
         val page = request.optInt("page", 1).coerceIn(1, 100000)
@@ -394,6 +406,12 @@ internal class EmbyClient(private val account: MediaServerAccount, private val h
             ?: throw MediaServerFailure("Original stream unavailable")
         val selectedId = source.getString("Id")
         mediaRequire(selectedId.length in 1..256)
+        val playback = MediaServerPlaybackContext(mediaId(id), selectedId,
+            data.optString("PlaySessionId").ifBlank { UUID.randomUUID().toString().replace("-", "") },
+            (source.optJSONArray("MediaStreams") ?: JSONArray()).objects().filter { it.optString("Type") == "Audio" && !it.optBoolean("IsExternal") }
+                .mapNotNull { it.optInt("Index", -1).takeIf { index -> index >= 0 } }.toSet(),
+            (source.optJSONArray("MediaStreams") ?: JSONArray()).objects().filter { it.optString("Type") == "Subtitle" && !it.optBoolean("IsExternal") }
+                .mapNotNull { it.optInt("Index", -1).takeIf { index -> index >= 0 } }.toSet())
         val protocol = source.optString("Protocol", "File").lowercase()
         if (protocol in setOf("http", "https") || source.optBoolean("IsRemote")) {
             val url = try { URI(source.getString("Path")) } catch (_: Exception) { throw MediaServerFailure("Invalid remote media address") }
@@ -402,16 +420,16 @@ internal class EmbyClient(private val account: MediaServerAccount, private val h
             val headers = headerData.keys().asSequence().associateWith { headerData.getString(it) }
             return MediaStreamLink(url, selectedId + ":" + source.optLong("Size") + ":" + source.optString("ETag"),
                 runCatching { subtitleLinks(id, source) }.getOrDefault(emptyList()), runCatching { audioLinks(source) }.getOrDefault(emptyList()),
-                url.path.substringAfterLast('/'), remote = true, headers = headers)
+                url.path.substringAfterLast('/'), remote = true, headers = headers, playback = playback)
         }
         val streamArgs = mapOf("Static" to true, "MediaSourceId" to selectedId,
-            "PlaySessionId" to data.optString("PlaySessionId").ifBlank { UUID.randomUUID().toString().replace("-", "") })
+            "PlaySessionId" to playback.playSessionId)
         val basename = source.optString("Path").ifBlank { source.optString("FileName") }
             .substringAfterLast('/').substringAfterLast('\\').ifBlank {
                 if (source.optString("Container").equals("iso", true)) "video.iso" else ""
             }
         return MediaStreamLink(account.endpoint("Videos/${mediaId(id)}/stream?" + mediaQuery(streamArgs)),
-            selectedId + ":" + source.optLong("Size") + ":" + source.optString("ETag"), runCatching { subtitleLinks(id, source) }.getOrDefault(emptyList()), runCatching { audioLinks(source) }.getOrDefault(emptyList()), basename)
+            selectedId + ":" + source.optLong("Size") + ":" + source.optString("ETag"), runCatching { subtitleLinks(id, source) }.getOrDefault(emptyList()), runCatching { audioLinks(source) }.getOrDefault(emptyList()), basename, playback = playback)
     }
     private fun audioLinks(source: JSONObject): List<MediaAudioLink> {
         val video = source.optString("Path").substringAfterLast('/').substringAfterLast('\\')

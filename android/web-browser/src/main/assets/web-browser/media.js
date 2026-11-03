@@ -32,15 +32,37 @@
     if (douyinDomPage === location.href && Date.now() - douyinDomAt < 1000) return douyinDom;
     douyinDomPage = location.href; douyinDomAt = Date.now();
     const id = Thru3DDouyin.page(location.href)?.id;
-    const counts = {render_data:0,render_current:0,flight_scripts:0,flight_current:0,flight_video:0,inline_current:0};
+    const counts = {render_data:0,render_current:0,flight_scripts:0,flight_current:0,flight_video:0,inline_current:0,
+      inline_model:0,inline_audio:0,resource_entries:0,resource_api:0,resource_related:0,resource_detail:0,
+      resource_detail_current:0,resource_detail_other_host:0,resource_detail_worker:0,resource_detail_fetch:0};
     let size = 0;
     for (const script of [...document.querySelectorAll('script:not([src])')].slice(0,128)) {
       const text = script.textContent || ''; if ((size += text.length) > 2 * 1024 * 1024) break;
       const current = !!id && text.includes(id), flight = text.includes('__pace_f');
       if (current) counts.inline_current++;
+      if (text.includes('video_model')) counts.inline_model++;
+      if (text.includes('bit_rate_audio')) counts.inline_audio++;
       if (script.id === 'RENDER_DATA') { counts.render_data++; if (current) counts.render_current++; }
       if (flight) { counts.flight_scripts++; if (current) counts.flight_current++; if (/awemeId|aweme_id/.test(text)) counts.flight_video++; }
     }
+    // Read this document's existing timing entries, retaining only numeric counts.
+    // This does not request an API, inspect a response or change handoff ownership.
+    try {
+      for (const entry of (typeof performance !== 'undefined' ? performance.getEntriesByType('resource') : []).slice(-512)) {
+        counts.resource_entries++;
+        const value = new URL(entry.name);
+        if (value.protocol !== 'https:' || value.username || value.password) continue;
+        if (value.pathname.startsWith('/aweme/v1/web/')) counts.resource_api++;
+        if (value.pathname === '/aweme/v1/web/aweme/related/') counts.resource_related++;
+        if (value.pathname !== '/aweme/v1/web/aweme/detail/') continue;
+        counts.resource_detail++;
+        const ids = value.searchParams.getAll('aweme_id');
+        if (ids.length === 1 && ids[0] === id) counts.resource_detail_current++;
+        if (value.hostname !== 'www.douyin.com') counts.resource_detail_other_host++;
+        if (entry.workerStart > 0) counts.resource_detail_worker++;
+        if (entry.initiatorType === 'fetch') counts.resource_detail_fetch++;
+      }
+    } catch (_) {}
     return douyinDom = counts;
   };
   let bilibiliViews = [];
@@ -77,7 +99,9 @@
   const serverState = new WeakMap();
   let gestureAt = -Infinity;
   let serverResource = null;
-  const serverSource = (value) => {
+  const serverSource = (value, headers = {}) => {
+    const plex = typeof Thru3DPlex !== 'undefined' && Thru3DPlex.source(value, location.href, headers);
+    if (plex) return plex;
     if (!/\/videos\/[^/]+\/(?:stream|original|master|main)/i.test(value)) return null;
     try {
       const url = new URL(value, location.href), page = new URL(location.href);
@@ -132,15 +156,18 @@
       const protectedMedia = encrypted.has(video) || !!video.mediaKeys;
       const owner = video.closest?.("dl8-video");
       const server = serverState.get(video);
-      const direct = serverSource(video.currentSrc || '');
-      const resource = direct || ((video.currentSrc || '').startsWith('blob:') && serverResource && server && serverResource.at >= server.started ? serverResource : null);
+      const epoch = mediaEpoch.get(video);
+      const direct = serverSource(video.currentSrc || '', network.find(c=>c.url === video.currentSrc)?.headers);
+      const plexResources = live.length === 1 ? network.filter(c=>c.at >= epoch.since)
+        .map(c=>serverSource(c.url,c.headers)).filter(c=>c?.plex) : [];
+      const resource = direct || ((video.currentSrc || '').startsWith('blob:') && server &&
+        (plexResources.at(-1) || serverResource && (!serverResource.plex || live.length === 1) && serverResource.at >= server.started && serverResource));
       if (server && resource && server.key !== resource.key) {
         server.key = resource.key; videos.set(video, ++nextId);
       }
       // Wait for the start position (resume fragment or seek) to settle before handing it off.
       const serverPlay = !!server?.intent && !!resource && !protectedMedia && video.readyState >= 2 && !video.seeking;
       if (serverPlay) server.offset = Number.isFinite(resource.offset) ? resource.offset : 0;
-      const epoch = mediaEpoch.get(video);
       const currentSource = video.currentSrc || '';
       const retained = bilibiliOwner?.video === video && bilibiliOwner.page === location.href &&
         bilibiliOwner.source === currentSource && bilibiliOwner.epoch === epoch.id ? bilibiliOwner : null;
@@ -200,10 +227,11 @@
       const douyin = douyinEnabled && !protectedMedia && typeof Thru3DDouyin !== 'undefined' &&
         (douyinData.map(d=>Thru3DDouyin.binding(d,location.href,video,requests)).find(Boolean) ||
           Thru3DDouyin.direct(douyinData,location.href,video,requests,douyinObservation));
-      const douyinReady = !!douyin && (!currentSource.startsWith('blob:') || !douyin.data.audio?.length || !!douyin.data.observed_audio);
+      const douyinReady = !!douyin && (!currentSource.startsWith('blob:') || !douyin.data.audio?.length || !!douyin.data.observed_audio || douyin.data.observed_muxed === true);
       items.push({ id: videos.get(video), width: video.videoWidth, height: video.videoHeight,
         fullscreen: fullscreen(video) || !!owner && fullscreen(owner),
         source: !protectedMedia ? (resource ? resource.source : /^https?:\/\//i.test(video.currentSrc || '') ? video.currentSrc : '') : '',
+        server_headers: !protectedMedia && resource?.plex ? resource.headers : undefined,
         server_play: serverPlay,
         protected: protectedMedia, frame: location.href, agent: navigator.userAgent,
         network: requests, network_epoch: epoch.id, blob: currentSource.startsWith('blob:'),
@@ -212,7 +240,7 @@
         douyin: douyin ? {...douyin.data,page:location.href} : null,
         douyin_ready: douyinReady,
         douyin_diagnostics: douyinDiagnostics && douyinEnabled && typeof Thru3DDouyin !== 'undefined'
-          ? Thru3DDouyin.diagnostics(douyinData,location.href,video,requests) : null,
+          ? {...Thru3DDouyin.diagnostics(douyinData,location.href,video,requests),bound_chars:douyin?JSON.stringify({...douyin.data,page:location.href}).length:0} : null,
         douyin_observation: douyinDiagnostics && douyinEnabled ? douyinObservation : null,
         douyin_api_paths: douyinDiagnostics && douyinEnabled ? douyinApiPaths : [],
         douyin_dom: douyinDiagnostics && douyinEnabled ? douyinDomCounts() : null,

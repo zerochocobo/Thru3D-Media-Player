@@ -50,6 +50,7 @@ class Video extends Node3D:
 	var valid_frame := true
 	var frame_reads := 0
 	var captures: RefCounted
+	var vr_passthrough := preload("res://scripts/vr_passthrough_view.gd").new(self)
 	func bookmark_snapshot() -> Dictionary:
 		frame_reads += 1
 		return {"position_ms": source_ms} if valid_frame else {}

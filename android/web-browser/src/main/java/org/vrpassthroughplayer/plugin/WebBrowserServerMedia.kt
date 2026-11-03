@@ -5,9 +5,12 @@ import java.net.URLDecoder
 import java.net.URLEncoder
 import java.util.Locale
 
-/** Emby/Jellyfin's authenticated video endpoints, scoped to the page's own server.
+/** Authenticated Emby/Jellyfin and Plex library endpoints, scoped to the page's own server.
  * Keep tokens in the private media snapshot; the public snapshot only has a boolean. */
 object WebBrowserServerMedia {
+    fun recognizes(source: String, page: String, headers: Map<String, String> = emptyMap()): Boolean =
+        original(source, page) != null || WebBrowserPlexMedia.source(source, page, headers) != null
+
     fun original(source: String, page: String): String? = runCatching {
         require(source.length in 1..16384 && page.length in 1..8192)
         val uri = URI(source); val frame = URI(page)

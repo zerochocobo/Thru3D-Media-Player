@@ -30,6 +30,7 @@ test('only observed player additions may differ; every original signature parame
  assert.equal(api.matches(url+'&temp=original',url+'&temp=changed'),false);
  const declared=url+'&cquery=old&l=old',observed=url+'&cquery=new&l=new&__vid='+id;
  assert.equal(api.matches(declared,observed),false);assert.equal(api.matches(declared,observed,id),true);
+ assert.equal(api.matches(declared,observed.replace('cdn.test','new-cdn.test'),id),true,'A bound player identity can use its actual CDN alias');
  assert.equal(api.matches(declared,observed.replace(id,'7674225615168824549'),id),false);
  assert.equal(api.matches(declared,observed+'&__vid='+id,id),false);
  assert.equal(api.matches(declared,observed.replace('synthetic','changed'),id),false);
@@ -40,7 +41,8 @@ test('known C-type authentication rotates only around the exact declared TOS obj
  const observed='https://cdn.test/'+'b'.repeat(32)+'/65000001'+suffix+'?a=6383&mime_type=video_mp4&btag=new&dy_q=new&cquery=new&l=new&temp=1';
  assert.equal(api.matches(declared,observed),false,'the site content identity is required');
  assert.equal(api.matches(declared,observed,id),true);
- for(const value of [observed.replace('cdn.test','other.test'),observed.replace('object-fixture','other-fixture'),
+ assert.equal(api.matches(declared,observed.replace('cdn.test','other.test'),id),true,'The exact declared object may be served by another related CDN');
+ for(const value of [observed.replace('object-fixture','other-fixture'),
   observed.replace('encoding-fixture','different-fixture'),observed.replace('tos-cn-ve-15','tos-cn-ve-16'),
   observed.replace('video_mp4','audio_mp4'),observed+'&unexpected=1',observed+'&__vid='+id+'&__vid='+id,
   observed.replace('b'.repeat(32),'not-a-signature')])assert.equal(api.matches(declared,value,id),false);
@@ -79,6 +81,27 @@ test('MSE audio comes from the current video audio metadata, never its music sou
  const noSound=api.binding(data,page,video,[request(),{kind:'file',url:sample.music.play_url.uri}]);
  assert.equal(noSound.data.observed_audio,undefined,'unrelated music cannot repair missing authorized audio');
 });
+
+test('MSE may demux the same observed full MP4 for its declared video and audio',()=>{
+ const sample=raw();sample.video.bit_rate_audio=[{audio_meta:{file_id:'muxed-file',url_list:{main_url:url}}}];
+ const data=api.normalize(sample),video={...player(),currentSrc:'blob:page'};
+ const result=api.binding(data,page,video,[request()]);
+ assert.ok(result);assert.equal(result.data.observed_file,request().url);
+ assert.equal(result.data.observed_muxed,true);assert.equal(result.data.observed_audio,undefined);
+ assert.equal(api.binding(data,page,video,[]),null);
+ const counts=api.diagnostics([data],page,video,[request()]);assert.equal(counts.audio_video_overlap,1);
+});
+
+test('handoff carries only the observed declared representation instead of the whole quality catalogue',()=>{
+ const sample=raw();sample.video.bit_rate=Array.from({length:32},(_,i)=>({play_addr:{width:1280+i,height:720,
+  url_list:['https://provider.test/other-'+i+'.mp4?opaque='+'x'.repeat(2000)]}}));
+ const data=api.normalize(sample);assert.ok(data);assert.ok(JSON.stringify(data).length>60000);
+ for(const video of [player(),{...player(),currentSrc:'blob:page'}]){
+  const result=api.binding(data,page,video,[request()]);assert.ok(result);
+  assert.equal(result.data.video.length,1);assert.ok(JSON.stringify(result.data).length<2000);
+  assert.equal(result.data.id,id);assert.equal(result.data.duration,data.duration);
+ }
+});
 test('repeated metadata preserves each declared variant and the currently observed signed files',()=>{
  const before={id,duration:20,video:Array.from({length:12},(_,i)=>({width:720,height:1280,urls:[url+'&variant='+i]})),
   audio:[{id:'sound',urls:['https://cdn.test/audio.mp4?signature=old']}]};
@@ -109,22 +132,40 @@ test('reject DRM, ads, image albums, invalid durations and unbounded track data'
 });
 test('content bridge exports readiness only for the bound video and invalidates SPA changes',()=>{
  const timers=[],ports=[],signal=()=>({listeners:[],addListener(fn){this.listeners.push(fn)},emit(m){this.listeners.forEach(fn=>fn(m))}});
- const main={...player(),isConnected:true,readyState:4,currentTime:3,paused:false,ended:false,addEventListener(){},pause(){this.paused=true},play(){this.paused=false}};
+ const main={...player(),currentSrc:'blob:page',isConnected:true,readyState:4,currentTime:3,paused:false,ended:false,addEventListener(){},pause(){this.paused=true},play(){this.paused=false}};
  const splash={...main,duration:2.6,videoWidth:1080,videoHeight:1920,currentSrc:'https://static.test/splash.mp4'};
  const context={URL,location:{href:page},navigator:{userAgent:'fixture'},setTimeout(fn){timers.push(fn)},addEventListener(){},
-  document:{nodeType:9,querySelectorAll(s){return s==='video'?[splash,main]:[]}},MutationObserver:class{observe(){} disconnect(){}},
+  performance:{now(){return 0},getEntriesByType(){return [
+   ...Array.from({length:600},()=>({name:'https://static.test/file'})),
+   {name:'https://www.douyin.com/aweme/v1/web/aweme/detail/?aweme_id='+id+'&token=private-timing-secret',workerStart:10,initiatorType:'fetch'},
+   {name:'https://www-hj.douyin.com/aweme/v1/web/aweme/detail/?aweme_id=7674225615168824549'},
+   {name:'https://new-video-api.test/aweme/v1/web/aweme/detail/?aweme_id='+id},
+   {name:'https://www.douyin.com/aweme/v1/web/aweme/related/?token=private-timing-secret'}]}},
+  document:{nodeType:9,querySelectorAll(s){return s==='video'?[splash,main]:s==='script:not([src])'?[{id:'RENDER_DATA',textContent:id+' video_model bit_rate_audio'}]:[]}},MutationObserver:class{observe(){} disconnect(){}},
   browser:{runtime:{connect(){const p={onMessage:signal(),onDisconnect:signal(),postMessage(){},disconnect(){}};ports.push(p);return p},
    connectNative(){const p={onMessage:signal(),onDisconnect:signal(),messages:[],postMessage(m){this.messages.push(m)},disconnect(){}};ports.push(p);return p}}}};
  vm.createContext(context);vm.runInContext(fs.readFileSync(path.join(root,'douyin.js'),'utf8'),context);
  vm.runInContext(fs.readFileSync(path.join(root,'media.js'),'utf8'),context);
  const flush=()=>{let n=0;while(timers.length){assert.ok(++n<100);timers.shift()()}};flush();
  const native=ports.find(p=>p.messages),network=ports.find(p=>!p.messages);
- native.onMessage.emit({action:'network_policy',douyin:true});flush();
+ native.onMessage.emit({action:'network_policy',douyin:true,diagnostics:true});flush();
+ const counts=native.messages.at(-1).videos[1].douyin_dom;
+ assert.equal(counts.resource_entries,512);assert.equal(counts.resource_api,4);assert.equal(counts.resource_detail,3);
+ assert.equal(counts.resource_detail_current,2);assert.equal(counts.resource_detail_other_host,2);
+ assert.equal(counts.resource_detail_worker,1);assert.equal(counts.resource_detail_fetch,1);assert.equal(counts.resource_related,1);
+ assert.equal(counts.inline_model,1);assert.equal(counts.inline_audio,1);
+ assert.ok(!JSON.stringify(counts).includes('private-timing-secret'));assert.ok(Object.values(counts).every(Number.isInteger));
  network.onMessage.emit({type:'network',page,candidates:[request()],douyin:[api.normalize(raw())]});flush();
  assert.equal(native.messages.at(-1).videos[0].douyin_ready,false);assert.equal(native.messages.at(-1).videos[1].douyin_ready,true);
+ const shared=raw();shared.video.bit_rate_audio=[{audio_meta:{file_id:'shared-file',url_list:{main_url:url}}}];
+ network.onMessage.emit({type:'network',page,candidates:[request()],douyin:[api.normalize(shared)]});flush();
+ assert.equal(native.messages.at(-1).videos[1].douyin.observed_muxed,true);
+ assert.equal(native.messages.at(-1).videos[1].douyin_ready,true);
  native.onMessage.emit({action:'pause_media',token:1});flush();assert.equal(native.messages.at(-1).videos[1].douyin_ready,true);
  context.location.href='https://www.douyin.com/video/7674225615168824549';native.onMessage.emit({action:'snapshot'});flush();
  assert.ok(native.messages.at(-1).videos.every(v=>!v.douyin_ready));
+ native.onMessage.emit({action:'network_policy',douyin:false,diagnostics:false});flush();
+ assert.ok(native.messages.at(-1).videos.every(v=>v.douyin_dom===null));
 });
 const event=()=>{const listeners=[];return {listeners,addListener(fn,filter,flags){listeners.push({fn,filter,flags})},fire(d){listeners.forEach(l=>l.fn(d))}}};
 function fixture(connected=true,tabFields={}){
@@ -155,6 +196,28 @@ test('numeric detail IDs remain exact while the response forwarded to the websit
  f.finish(e.stream,body);assert.equal(f.last().douyin[0].id,id);
  assert.equal(f.last().douyin_observation.id_matches,1);assert.equal(f.last().douyin_observation.normalized,1);
  assert.ok(!JSON.stringify(f.last().douyin_observation).includes(id));
+});
+
+test('trusted main-site requests accept related API domains while keeping document and credential ownership',()=>{
+ for(const origin of ['https://new-video-api.test','https://www-hj.douyin.com','https://video-provider.test:8443']){
+ const mirror=origin+'/aweme/v1/web/aweme/detail/?aweme_id='+id;
+ for(const mode of ['direct','cold','worker']){
+  const f=fixture(mode!=='cold'),extra=mode==='worker'?{tabId:-1,frameId:-1,parentFrameId:-1,documentId:undefined,
+   documentUrl:undefined,originUrl:page,incognito:false}:{};
+  const e=f.begin({url:mirror,...extra});assert.ok(e.stream,'The trusted document owns its actual cross-domain detail request');
+  f.header(e.d);f.finish(e.stream);if(mode==='cold')f.connect();
+  assert.equal(f.last().douyin[0].id,id);assert.equal(f.last().candidates.length,0);
+  const blocking=f.webRequest.onBeforeRequest.listeners.find(l=>l.flags?.includes('blocking'));
+  assert.ok(blocking.filter.urls.includes('https://*/aweme/v1/web/aweme/detail/*'));
+ }
+ }
+ const mirror='https://new-video-api.test/aweme/v1/web/aweme/detail/?aweme_id='+id;
+ for(const extra of [{documentUrl:'https://untrusted.test/'},{documentUrl:'https://www.douyin.com.evil.test/'},
+  {documentId:'different-document'},{tabId:2,documentUrl:'https://untrusted.test/'},
+  {url:mirror.replace('https:','http:')},{url:mirror.replace('https://','https://user@')}]){
+  const f=fixture(),e=f.begin({url:mirror,...extra});
+  assert.equal(e.stream,undefined,'Related hosts do not replace trusted document ownership or transport validation');
+ }
 });
 test('worker/prefetch metadata is usable but never gives worker media requests a parent-frame credential scope',()=>{
  const f=fixture(),e=f.begin({frameId:-1,documentId:'worker',documentUrl:undefined,originUrl:page,type:'other'});

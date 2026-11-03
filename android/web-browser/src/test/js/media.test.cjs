@@ -7,18 +7,20 @@ const script = fs.readFileSync(path.join(__dirname, '../../main/assets/web-brows
 function fixture(count = 1, blob = true, options = {}) {
   const event = () => { const listeners = []; return { addListener(f) { listeners.push(f); }, fire(value) { listeners.forEach(f => f(value)); } }; };
   const port = () => ({ messages: [], onMessage: event(), onDisconnect: event(), postMessage(m) { this.messages.push(JSON.parse(JSON.stringify(m))); }, disconnect() { this.onDisconnect.fire(); } });
-  const native = port(), network = port(); const timers = []; const events = {}, observers = [];
+  const native = port(), network = port(); const timers = []; const events = {}, observers = [], resourceObservers = [];
   const videos = Array.from({ length: count }, (_, i) => ({ currentSrc: blob ? `blob:video-${i}` : 'https://cdn.test/movie.mp4', isConnected: true,
     videoWidth: 3840, videoHeight: 2160, paused: false, ended: false, readyState: 4, currentTime: 3, duration: 100,
     events: {}, closest() { return null; }, addEventListener(name, f) { (this.events[name] ||= []).push(f); },
     emit(name) { (this.events[name] || []).forEach(f => f()); }, pause() { this.paused = true; },
     play() { this.playCalls = (this.playCalls || 0) + 1; if (!options.deferPlay) { this.paused = false; this.emit('play'); } return Promise.resolve(); } }));
-  const document = { nodeType: 9, querySelector: () => options.canonical ? {href: options.canonical} : null, querySelectorAll(s) { return s === 'video' ? videos : s === 'script:not([src])' ? options.scripts || [] : []; }, fullscreenElement: videos[0] };
+  const document = { nodeType: 9, querySelector: () => options.canonical ? {href: options.canonical} : null, querySelectorAll(s) { return s === 'video' ? videos : s === 'script:not([src])' ? options.scripts || [] : []; }, fullscreenElement: options.fullscreen === false ? null : videos[0] };
   const location = { href: options.page || 'https://page.test/watch' }, clock = {now:Date.now()};
   const context = vm.createContext({ document, location, navigator: { userAgent: 'Fixture' }, URL, Date:class extends Date {static now(){return clock.now;}},
     browser: { runtime: { connectNative: () => native, connect: () => network } }, MutationObserver: class { constructor(callback) { observers.push(callback); } observe() {} disconnect() {} },
-    performance: { now: () => 100 }, setTimeout(f) { timers.push(f); }, addEventListener(name, f) { (events[name] ||= []).push(f); } });
+    performance: { now: () => 100 }, PerformanceObserver: class {constructor(callback){resourceObservers.push(callback);} observe(){}},
+    setTimeout(f) { timers.push(f); }, addEventListener(name, f) { (events[name] ||= []).push(f); } });
   vm.runInContext(fs.readFileSync(path.join(__dirname, '../../main/assets/web-browser/bilibili.js'), 'utf8'), context);
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../../main/assets/web-browser/plex.js'), 'utf8'), context);
   vm.runInContext(script, context);
   const flush = () => { for (let n = 0; timers.length && n < 10; n++) timers.splice(0).forEach(f => f()); };
   const report = () => native.messages.filter(m => m.type === 'media').at(-1)?.videos;
@@ -29,8 +31,72 @@ function fixture(count = 1, blob = true, options = {}) {
     videos.push(v); observers.forEach(f=>f([{addedNodes:[v],removedNodes:[]}])); flush(); return v;
   };
   flush(); return { videos, native, network, capture, flush, report, location, addVideo, clock,
+    resources(entries) { resourceObservers.forEach(f=>f({getEntries:()=>entries})); },
     emit(name,value={}) { (events[name] || []).forEach(f=>f(value)); } };
 }
+test('Plex header-authenticated DASH binds the single Blob player and restores its timeline',()=>{
+  const page='http://127.0.0.1:32400/web/index.html#!/server/local/details?key=%2Flibrary%2Fmetadata%2F4';
+  const f=fixture(1,true,{page,fullscreen:false});const v=f.videos[0];
+  f.emit('pointerdown',{isTrusted:true});v.emit('loadstart');v.emit('play');
+  const source='http://127.0.0.1:32400/video/:/transcode/universal/start.mpd?path=%2Flibrary%2Fmetadata%2F4&mediaIndex=0&partIndex=0';
+  const observed={url:source,at:f.clock.now,headers:{'x-plex-token':'synthetic','x-plex-client-identifier':'web','cookie':'never-forward'}};
+  f.network.onMessage.fire({type:'network',page,candidates:[observed]});f.flush();
+  assert.equal(f.report()[0].server_play,true);assert.equal(f.report()[0].fullscreen,false);
+  assert.equal(f.report()[0].source,source);assert.deepEqual(f.report()[0].server_headers,{'X-Plex-Token':'synthetic','X-Plex-Client-Identifier':'web'});
+  const first=f.report()[0].id;
+  f.network.onMessage.fire({type:'network',page,candidates:[{...observed,url:source.replace('mediaIndex=0','mediaIndex=1')}]});f.flush();
+  assert.notEqual(f.report()[0].id,first);
+  v.emit('encrypted');f.flush();assert.equal(f.report()[0].server_play,false);assert.equal(f.report()[0].source,'');assert.equal(f.report()[0].server_headers,undefined);
+});
+test('Plex does not borrow header credentials across requests or ambiguous Blob players',()=>{
+  const page='http://127.0.0.1:32400/web/';const f=fixture(2,true,{page,fullscreen:false});
+  f.videos.forEach(v=>{v.emit('loadstart');v.emit('play');});
+  const url='http://127.0.0.1:32400/video/:/transcode/universal/start.mpd?path=%2Flibrary%2Fmetadata%2F4&mediaIndex=0&partIndex=0';
+  f.network.onMessage.fire({type:'network',page,candidates:[{url,at:f.clock.now,headers:{'x-plex-token':'synthetic'}}]});f.flush();
+  assert.ok(f.report().every(v=>!v.server_play));
+  const direct=fixture(1,false,{page,fullscreen:false});direct.videos[0].currentSrc='http://127.0.0.1:32400/library/parts/4/123/file.mp4';
+  direct.videos[0].emit('loadstart');direct.videos[0].emit('play');
+  direct.network.onMessage.fire({type:'network',page,candidates:[{url,at:direct.clock.now,headers:{'x-plex-token':'synthetic'}}]});direct.flush();
+  assert.equal(direct.report()[0].server_play,false);
+});
+test('Plex offset HLS returns to the same Blob player on the original movie timeline',()=>{
+  const page='http://127.0.0.1:32400/web/';const f=fixture(1,true,{page,fullscreen:false});const v=f.videos[0];
+  v.currentTime=5;v.emit('loadstart');v.emit('play');
+  const url='http://127.0.0.1:32400/video/:/transcode/universal/start.m3u8?path=%2Flibrary%2Fmetadata%2F4&mediaIndex=0&partIndex=0&copyts=0&offset=90';
+  f.network.onMessage.fire({type:'network',page,candidates:[{url,at:f.clock.now,headers:{'x-plex-token':'synthetic'}}]});f.flush();
+  assert.equal(f.report()[0].time,95);
+  f.native.onMessage.fire({action:'capture_video',request:8,id:String(f.report()[0].id)});
+  f.native.onMessage.fire({action:'restore_video',request:8,time:110,play:false});f.flush();
+  assert.equal(v.currentTime,20);assert.equal(f.report()[0].time,110);assert.equal(f.report()[0].server_play,false);
+});
+test('Jellyfin web ApiKey originals trigger the existing server handoff without fullscreen',()=>{
+  const page='http://127.0.0.1:8096/web/#/video';
+  const f=fixture(1,false,{page,fullscreen:false});
+  const v=f.videos[0];v.currentSrc='http://127.0.0.1:8096/Videos/a123bc/stream.mp4?Static=true&mediaSourceId=v1&deviceId=d&ApiKey=synthetic&Tag=e#t=120';
+  v.currentTime=120;v.videoWidth=8192;v.videoHeight=4096;
+  v.emit('loadstart');v.emit('play');f.flush();
+  const first=f.report()[0];assert.equal(first.server_play,true);assert.equal(first.fullscreen,false);
+  assert.equal(first.time,120);assert.ok(!first.source.includes('#t='));assert.ok(first.source.includes('ApiKey=synthetic'));
+  v.currentSrc=v.currentSrc.replace('v1','v2');v.emit('loadstart');v.emit('play');f.flush();
+  assert.notEqual(f.report()[0].id,first.id,'a different server version receives a fresh handoff identity');
+  v.seeking=true;v.emit('timeupdate');f.flush();assert.equal(f.report()[0].server_play,false);
+  v.seeking=false;v.emit('encrypted');f.flush();assert.equal(f.report()[0].server_play,false);assert.equal(f.report()[0].source,'');
+});
+test('Jellyfin HLS Blob players hand off the observed manifest on its original timeline',()=>{
+  const page='http://127.0.0.1:8096/jellyfin/web/#/video';const f=fixture(1,true,{page,fullscreen:false});
+  f.emit('pointerdown',{isTrusted:true});const v=f.videos[0];v.currentTime=95;v.emit('loadstart');v.emit('play');
+  f.resources([{name:'http://127.0.0.1:8096/jellyfin/Videos/a123bc/master.m3u8?MediaSourceId=v1&ApiKey=synthetic&StartTimeTicks=900000000',startTime:101}]);f.flush();
+  assert.equal(f.report()[0].server_play,true);assert.equal(f.report()[0].time,95);
+  assert.ok(f.report()[0].source.includes('master.m3u8'));
+});
+test('server handoff rejects another origin, live streams and missing media version',()=>{
+  const page='http://127.0.0.1:8096/web/#/video';const f=fixture(1,false,{page,fullscreen:false});const v=f.videos[0];
+  for(const source of ['https://other.test/Videos/a/stream.mp4?ApiKey=s&MediaSourceId=v',
+    'http://127.0.0.1:8096/Videos/a/stream.mp4?ApiKey=s&MediaSourceId=v&LiveStreamId=live',
+    'http://127.0.0.1:8096/Videos/a/stream.mp4?ApiKey=s']){
+    v.currentSrc=source;v.emit('loadstart');v.emit('play');f.flush();assert.equal(f.report()[0].server_play,false);
+  }
+});
 test('native per-site policy gates requests and disable clears private media observations', () => {
   const f = fixture();
   assert.equal(f.network.messages.at(-1).enabled, false);

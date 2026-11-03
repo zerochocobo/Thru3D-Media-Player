@@ -87,8 +87,10 @@ const SELECTED := Color(0.16, 0.31, 0.27)
 const MODE_PROJECTION := 130
 const MODE_STEREO := 140
 const MODE_LENS := 150
-## Fisheye: the video's own Alpha mask, after the lens angles.
+## The video's own Alpha mask: a separate switch beside the projection choices.
 const MODE_PACKED := 158
+const MODE_REUSE := 159
+const VideoModeDefault := preload("res://scripts/video_mode_default.gd")
 const VOLUME := 160
 ## Volume slider over the sound icon: track span (bottom, top) and its x; the lowest steps mute.
 const VOLUME_X := -0.5
@@ -98,6 +100,7 @@ const WHISPER := 163
 const BOOST_HEIGHT := 0.14
 const BOOST_BUTTON_SIZE := Vector2(0.078, 0.052)
 const DepthStrength := preload("res://scripts/depth_strength.gd")
+const VideoAuto3D := preload("res://scripts/video_auto_3d.gd")
 const DEPTH := 161
 const DEPTH_OFF := 162
 const DEPTH_BOOST := 164
@@ -199,10 +202,16 @@ const TABS := ["Playback", "Settings", "Info"]
 const OPERATIONS := [
 	["recent", "previous_video", "play", "next_video", "alpha", "projection", "stereo", "stop", "recenter", "mute", "subtitles",
 		"audio", "depth"],
-	["color_grade", "loop", "seek_mode", "stereo_view", "depth_render"],
+	["color_grade", "loop", "seek_mode", "stereo_view", "video_auto_3d", "depth_render"],
 	["capabilities"]]
-const HEADINGS := ["Color grading", "Playback mode", "Video time positioning", "Stereo viewing", "2D to 3D effect"]
-const SETTING_ICONS := ["light", "loop", "history", "eyes", "depth"]
+const HEADINGS := ["Color grading", "Playback mode", "Video time positioning", "Stereo viewing", VideoAuto3D.TITLE, "2D to 3D effect"]
+const SETTING_ICONS := ["light", "loop", "history", "eyes", "depth", "depth"]
+const PLAYBACK_MODE_ICONS := {"single": "play", "repeat_one": "repeat_one", "sequence": "sequence", "repeat_all": "repeat_all"}
+const PLAYBACK_MODE_TIPS := {
+	"single": "Single video: stop after the current video.",
+	"repeat_one": "Repeat video: loop the current video.",
+	"sequence": "Play in order: stop at the end of the current list.",
+	"repeat_all": "Repeat playlist: loop the current list."}
 const Surface := preload("res://scripts/media_surface.gd")
 const SeekFeedback := preload("res://scripts/seek_feedback.gd")
 ## Flat screen curve steps (the video's CURVES) and their names.
@@ -1006,8 +1015,10 @@ func _set_subtitle_detail(group: String) -> void:
 
 func _subtitle_groups() -> Array:
 	var groups: Array = []
-	if _state.get("listening_available", false):
-		groups.append({"group": "listening", "title": "Live captions", "target": SUBTITLE_LISTENING, "enabled": true, "state": bool(_state.get("listening_enabled", false))})
+	if _state.get("listening_visible", _state.get("listening_available", false)):
+		groups.append({"group": "listening", "title": "Live captions", "target": SUBTITLE_LISTENING,
+			"enabled": bool(_state.get("listening_available", false)), "state": bool(_state.get("listening_enabled", false)),
+			"hint": str(_state.get("listening_unavailable_hint", ""))})
 	var listening: bool = _state.get("listening_enabled", false)
 	var authored_text := _subtitle_tracks().any(func(track): return int(track.id) == int(_state.get("subtitle_track", 0)) and video_text_subtitle(track))
 	if NarrationSettings.FEATURE_ENABLED and (_state.get("narration_available", false) or (listening and authored_text)):
@@ -1158,6 +1169,7 @@ func _draw_subtitles() -> void:
 		var opened: bool = group.group == _subtitle_detail_group()
 		_button(int(group.target), _fit_title(I18n.t(group.title), "", 0.25 if group.has("state") else 0.30, TEXT_BODY), Vector2(0, y), Vector2(0.36, SUBTITLE_SETTING_HEIGHT), group.enabled)
 		var entry: Dictionary = _buttons.back()
+		if not group.enabled and not str(group.get("hint", "")).is_empty(): entry.hover_disabled = true
 		if opened:
 			entry.base_color = SELECTED
 		var title: Label3D = entry.node.get_child(0)
@@ -1169,6 +1181,7 @@ func _draw_subtitles() -> void:
 			state_label.modulate = ACCENT if group.state else MUTED
 			_subtitle_group_states[group.group] = state_label
 		_tips[int(group.target)] = I18n.t(group.title) + (" · " + I18n.t("On" if group.get("state", false) else "Off") if group.has("state") else "")
+		if not str(group.get("hint", "")).is_empty(): _tips[int(group.target)] = I18n.t(str(group.hint))
 		y -= SUBTITLE_ENTRY_PITCH
 	if has_status:
 		_subtitle_status_label = _label("", Vector3(0, 0.325, 0.004), TEXT_AUX)
@@ -1196,6 +1209,8 @@ func _update_subtitle_status() -> void:
 	if not is_instance_valid(_subtitle_status_label): return
 	var listening: bool = _state.get("listening_enabled", false)
 	var status := _listening_status_text() if listening else _narration_status()
+	if not str(_state.get("listening_notice", "")).is_empty(): status = str(_state.listening_notice)
+	if status.is_empty(): status = I18n.t(str(_state.get("listening_unavailable_hint", "")))
 	_subtitle_status_label.text = _fit_title(status, "", 0.62, TEXT_AUX)
 	_subtitle_status_label.modulate = ACCENT if (_listening_preparing() if listening else (_narration_preparing() or _state.get("narration_preview_busy", false))) else MUTED
 	if listening: _listening_status = _subtitle_status_label
@@ -1854,7 +1869,7 @@ func _bar_key() -> String:
 		_state.get("narration_voice_kind", "preset"), _state.get("narration_custom_voice", ""), _state.get("narration_personal_voices", []), _state.get("narration_voice_warning", ""), _state.get("narration_preview_status", ""), _state.get("narration_clone_state", {}).get("revision", 0)]) + _base_bar_key()
 
 func _base_bar_key() -> String:
-	return str([_state.get("subtitle_task", {}), _state.get("subtitle_task_mode"), _state.get("listening_cache_complete"), _state.get("listening_translation_complete")]) + str([_state.get("listening_available", false), _state.get("listening_enabled", false), _state.get("listening_source", "ja"), _state.get("listening_target", ""), _state.get("listening_lead", 12), _state.get("listening_state", "off")]) + str([_state.get("cast", {}), cast_state]) + str([_state.get("screen_scene_locked", false), _state.get("cinema_lights", "auto")]) + _capture_key() + str([_state.get("pip_slots", []), _state.get("pip_count", 0), _state.get("pip_available", true), int(_state.get("audio_whisper", 0)) > 0, _state.get("volume_writable", true), _state.get("whisper_available", false), _state.get("clone_voice", false), _state.get("geometry", 0), _state.get("has_video", false),
+	return str([_state.get("reuse_last_mode", false), _state.get("subtitle_task", {}), _state.get("subtitle_task_mode"), _state.get("listening_cache_complete"), _state.get("listening_translation_complete")]) + str([_state.get("listening_visible", _state.get("listening_available", false)), _state.get("listening_unavailable_hint", ""), _state.get("listening_available", false), _state.get("listening_enabled", false), _state.get("listening_source", "ja"), _state.get("listening_target", ""), _state.get("listening_lead", 12), _state.get("listening_state", "off")]) + str([_state.get("cast", {}), cast_state]) + str([_state.get("screen_scene_locked", false), _state.get("cinema_lights", "auto")]) + _capture_key() + str([_state.get("pip_slots", []), _state.get("pip_count", 0), _state.get("pip_available", true), int(_state.get("audio_whisper", 0)) > 0, _state.get("volume_writable", true), _state.get("whisper_available", false), _state.get("clone_voice", false), _state.get("geometry", 0), _state.get("has_video", false),
 		_state.get("spatial_video", false), _state.get("portrait_requested", false), _state.get("subtitle_below_screen", false), _state.get("subtitle_below_available", false), _state.get("error", ""),
 		_state.get("dual_subtitles_available", false), _state.get("dual_subtitles_enabled", false), _state.get("subtitle_edit_secondary", false), _state.get("secondary_subtitle_track", 0), _state.get("secondary_subtitle_delay", 0.0),
 		_state.get("source_uri", ""), _subtitle_tracks(), _state.get("subtitle_track", 0), bookmarks.key(), _state.get("audio_options", []), _state.get("audio_track_id", -1), _state.get("audio_delay", 0.0), _state.get("audio_timing_key", ""),
@@ -1866,6 +1881,9 @@ func _seek_at(x: float) -> int:
 	return roundi(clampf((x + BAR_SEEK / 2) / BAR_SEEK, 0.0, 1.0) * int(_state.get("duration_ms", 0)))
 
 func _supports_half_layouts() -> bool:
+	return true
+
+func _supports_native_passthrough() -> bool:
 	return true
 
 ## Video mode: every projection and stereo layout at once, the current ones lit (no cycling).
@@ -1881,16 +1899,21 @@ func _draw_modes() -> void:
 		locked[MODE_PROJECTION + int(lock.geometry)] = true
 		locked[MODE_STEREO + (3 if lock.depth and not half_choices else [0, 1, 4, 5, 6][int(lock.layout)])] = true
 	var fisheye := not fixed and int(_state.get("geometry", 0)) == 2
+	var native_control := _supports_native_passthrough()
+	var reuse_control := native_control and not fixed and not _state.has("cast")
 	# The lens row sits under the layouts: the panel rises to clear the floating round buttons.
 	var top := 0.61 if fisheye else 0.47
 	if half_choices: top = 0.465 if fisheye else 0.365
 	# Fisheye adds a row of lens angles under the layouts.
 	var height := (0.33 if fisheye else 0.24) if half_choices else (0.5 if fisheye else 0.36)
 	var centre_y := (0.44 if fisheye else 0.385) if half_choices else top - (0.07 if fisheye else 0.0)
+	var reuse_y := centre_y - height / 2.0 + 0.042
+	if reuse_control:
+		top += 0.09; height += 0.09; centre_y += 0.045
 	if fixed:
 		height += 0.08
 		centre_y += 0.04
-	var panel := _quad(Vector2(1.06, height), Vector3(0, centre_y, 0.001), Color(PANEL, 0.94), 10)
+	var panel := _quad(Vector2(1.22 if native_control else 1.06, height), Vector3(0, centre_y, 0.001), Color(PANEL, 0.94), 10)
 	_pointer_panels.append(panel)
 	panel.material_override.set_shader_parameter("corner_radius", 0.04)
 	add_child(panel)
@@ -1910,7 +1933,9 @@ func _draw_modes() -> void:
 	var projection_order := [0, 1, 3, 2]
 	for column in projection_order.size():
 		var g: int = projection_order[column]
-		_mode_tile(MODE_PROJECTION + g, I18n.t(names[g]), icons[g], Vector2(-0.3 + column * 0.2, top + 0.075), projection == g, not fixed)
+		_mode_tile(MODE_PROJECTION + g, I18n.t(names[g]), icons[g], Vector2((-0.48 if native_control else -0.3) + column * 0.2, top + 0.075), projection == g, not fixed)
+	if native_control and not fixed and projection in [1, 2]:
+		_draw_native_passthrough(Vector2(0.45, top + 0.075))
 	var stereo: bool = fixed or _state.get("stereo", false)
 	var depth: bool = _state.get("depth_requested", false)
 	var tb: bool = stereo and _state.get("top_bottom", false)
@@ -1934,15 +1959,50 @@ func _draw_modes() -> void:
 			_button(MODE_LENS + i, "%d°" % LENS_FOVS[i], Vector2(-0.4 + i * 0.2, lens_y), Vector2(0.18, lens_height))
 			if int(_state.get("fisheye_fov", 180)) == LENS_FOVS[i]:
 				_buttons.back().base_color = SELECTED
-		# The video's own mask (official packed Alpha): independent of the lens angle.
-		_button(MODE_PACKED, "", Vector2(0.4, lens_y), Vector2(0.18, lens_height), bool(_state.get("packed_mask_available", false)), "packed_mask")
-		_tips[MODE_PACKED] = I18n.t("Use the video's own Alpha mask")
-		if _state.get("packed_mask", false):
-			_buttons.back().base_color = SELECTED
+	if reuse_control: _draw_reuse_mode(reuse_y)
 	for button in _buttons:
 		if locked.has(button.target):
 			var half: Vector2 = button.rect.size / 2
 			_icon("lock", Vector3(half.x - 0.022, half.y - 0.022, 0.005), 0.026, ACCENT, button.node)
+
+func _draw_reuse_mode(y: float) -> void:
+	var on := bool(_state.get("reuse_last_mode", false))
+	_decoration(Vector2(1.08, 0.001), Vector2(0, y + 0.042), Color(MUTED, 0.25))
+	_button(MODE_REUSE, "", Vector2(0, y), Vector2(1.08, 0.066))
+	var button: Dictionary = _buttons.back()
+	button.base_color = Color(TILE, 0.0)
+	var caption: Label3D = button.node.get_child(0)
+	caption.text = _fit_title(I18n.t(VideoModeDefault.TITLE), "", 0.9, TEXT_BODY)
+	caption.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	caption.position.x = 0.39 # Fixed gap before the switch; longer translations extend left.
+	set_label_size(caption, TEXT_BODY)
+	var rail := _quad(Vector2(0.09, 0.038), Vector3(0.465, 0, 0.004), SELECTED if on else TILE, 13)
+	rail.material_override.set_shader_parameter("corner_radius", 0.019)
+	button.node.add_child(rail)
+	var knob := _quad(Vector2(0.028, 0.028), Vector3(0.024 if on else -0.024, 0, 0.002), ACCENT if on else MUTED, 14)
+	knob.material_override.set_shader_parameter("corner_radius", 0.014)
+	rail.add_child(knob)
+	_tips[MODE_REUSE] = I18n.t(VideoModeDefault.HINT)
+
+func _draw_native_passthrough(centre: Vector2) -> void:
+	_decoration(Vector2(0.002, 0.08), Vector2(0.265, centre.y), Color(MUTED, 0.35))
+	var enabled := bool(_state.get("has_video", false)) and bool(_state.get("packed_mask_available", false))
+	var on := bool(_state.get("packed_mask", false))
+	_button(MODE_PACKED, "", centre, Vector2(0.26, 0.10), enabled)
+	var button: Dictionary = _buttons.back()
+	button.base_color = Color(TILE, 0.0)
+	var caption: Label3D = button.node.get_child(0)
+	caption.text = I18n.t("Native passthrough")
+	set_label_size(caption, TEXT_BODY)
+	caption.position.y = 0.029
+	var rail := _quad(Vector2(0.09, 0.038), Vector3(0, -0.019, 0.004), SELECTED if on else TILE, 13)
+	rail.material_override.set_shader_parameter("corner_radius", 0.019)
+	button.node.add_child(rail)
+	var knob := _quad(Vector2(0.028, 0.028), Vector3(0.024 if on else -0.024, 0, 0.002), ACCENT if on else MUTED, 14)
+	knob.material_override.set_shader_parameter("corner_radius", 0.014)
+	if not enabled: knob.material_override.set_shader_parameter("surface_color", Color(MUTED, 0.4))
+	rail.add_child(knob)
+	_tips[MODE_PACKED] = I18n.t("Use the video's own Alpha mask" if enabled else "Requires full side-by-side video")
 
 func _mode_tile(target: int, text: String, icon: String, centre: Vector2, current: bool, enabled: bool = true) -> void:
 	var height := (0.08 if target in [MODE_STEREO + 2, MODE_STEREO + 3] else 0.1) if _supports_half_layouts() else 0.13
@@ -1969,6 +2029,8 @@ func _draw_panel() -> void:
 		if not _cast_allowed(operation): continue
 		if section == 2 and not str(_state.get("error", "")).is_empty(): continue
 		if operation == "stereo_view" and not _state.get("stereo", false): continue
+		# Keep the default and rendering choices together even when mono hides Stereo viewing.
+		if operation == "video_auto_3d" and tiles.size() % 2 != 0: tiles.append(-1)
 		tiles.append(index)
 	var tile_rows := ceili(tiles.size() / 2.0)
 	var alpha_fps: bool = section == 1 and _enabled("alpha")
@@ -1980,6 +2042,7 @@ func _draw_panel() -> void:
 	var y := top - 0.165
 	for shown in tiles.size():
 		var index: int = tiles[shown]
+		if index < 0: continue
 		var operation: String = operations[index]
 		_button(SETTINGS_TILE + index, _caption(operation), Vector2(-0.26 if shown % 2 == 0 else 0.26,
 			y - (shown / 2) * 0.105), Vector2(0.50, 0.09), _enabled(operation))
@@ -1994,7 +2057,12 @@ func _draw_panel() -> void:
 		var heading := _label(I18n.t(HEADINGS[index]), Vector3(-0.155, 0.02, 0.004), TEXT_AUX, node)
 		heading.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
 		heading.modulate = MUTED
-		_icon(SETTING_ICONS[index], Vector3(-0.205, 0, 0.004), 0.034, MUTED, node)
+		var icon: String = SETTING_ICONS[index]
+		if operation == "loop":
+			var mode := str(_state.get("playback_mode", "single"))
+			icon = PLAYBACK_MODE_ICONS.get(mode, "play")
+			_tips[SETTINGS_TILE + index] = I18n.t(PLAYBACK_MODE_TIPS.get(mode, PLAYBACK_MODE_TIPS.single))
+		_icon(icon, Vector3(-0.205, 0, 0.004), 0.034, MUTED, node)
 		var choice: Dictionary = _setting_choices(operation)
 		if not choice.is_empty():
 			_buttons.back().enabled = false
@@ -2053,6 +2121,8 @@ func _draw_panel() -> void:
 		_info.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		if not str(_state.get("error", "")).is_empty():
 			set_label_size(_info, 19)
+	# Choice lists share this settings surface; keep them above the transport and below the tabs.
+	choices.bounds = Vector2(POPUP_BOTTOM + 0.015, top - 0.10)
 	choices.finish()
 
 func _draw_failure_panel() -> void:
@@ -2110,13 +2180,15 @@ func _settings_key() -> String:
 		_state.get("playback_mode", "single"), _state.get("screen_curve", 0.0), _state.get("seek_mode", "speed"), _state.get("depth_render", "stretch"), _state.get("depth_text_protection", true), _state.get("stereo", false), _state.get("geometry", 0),
 		_state.get("show_fps", false), _state.get("alpha_keep_background", false), _state.get("viewing_eye", 0), _state.get("swap_eyes", false),
 		_state.get("spatial_metadata", {}), _state.get("spatial_auto_disparity", true),
-		_state.get("immersive_adjustment_gauges", true),
+		_state.get("immersive_adjustment_gauges", true), _state.get("video_auto_3d", false),
 		_state.get("screen_cinema", false), _state.get("screen_scene_locked", false), _state.get("cinema_lights", "auto"),
 		_state.get("error", ""), _state.get("error_report", {}), _alpha_expanded])
 
 func _setting_choices(operation: String) -> Dictionary:
 	if not _enabled(operation): return {}
 	match operation:
+		"video_auto_3d":
+			return VideoAuto3D.choice(bool(_state.get("video_auto_3d", false)))
 		"seek_mode":
 			return {"key": "seek_mode", "value": _state.get("seek_mode", "speed"), "choices": [
 				{"value": "speed", "label": "Speed", "hint": "Faster jumps, less precise"},
@@ -2131,11 +2203,6 @@ func _setting_choices(operation: String) -> Dictionary:
 			return {"key": "depth_render", "value": _state.get("depth_render", "stretch"), "choices": [
 				{"value": "fill", "label": "Fill gaps", "hint": "Fills the background behind moving edges"},
 				{"value": "stretch", "label": "Stretch edges", "hint": "Stretches edges, like spatial photos"}]}
-		"loop":
-			if _state.has("cast"): return {"key": "playback_mode", "value": _state.get("playback_mode", "single"), "choices": [{"value": "single", "label": "Single video"}, {"value": "repeat_one", "label": "Repeat video"}]}
-			return {"key": "playback_mode", "value": _state.get("playback_mode", "single"), "choices": [
-				{"value": "single", "label": "Single video"}, {"value": "repeat_one", "label": "Repeat video"},
-				{"value": "sequence", "label": "Play in order"}, {"value": "repeat_all", "label": "Repeat playlist"}]}
 		"screen_curve":
 			var values: Array = []
 			for i in Surface.CURVES.size(): values.append({"value": Surface.CURVES[i], "label": CURVE_NAMES[i]})
@@ -2424,7 +2491,7 @@ func _activate(target: int) -> void:
 		_toggle_depth_slider()
 		return
 	_close_depth_slider()
-	if target != MODE and target != MODE_PACKED and (target < MODE_PROJECTION or target >= MODE_LENS + LENS_FOVS.size()):
+	if target not in [MODE, MODE_PACKED, MODE_REUSE] and (target < MODE_PROJECTION or target >= MODE_LENS + LENS_FOVS.size()):
 		_mode_open = false
 	if target != 109:
 		_volume_open = false
@@ -2435,6 +2502,10 @@ func _activate(target: int) -> void:
 		refresh()
 	elif target == MODE:
 		_mode_open = not _mode_open
+		refresh()
+	elif target == MODE_REUSE:
+		if not _supports_native_passthrough() or _state.get("spatial_video", false) or _state.has("cast"): return
+		setting_requested.emit("reuse_last_mode", not bool(_state.get("reuse_last_mode", false)))
 		refresh()
 	elif _lit_modes.has(target):
 		action_requested.emit("lock_mode")
@@ -2458,6 +2529,8 @@ func _activate(target: int) -> void:
 		action_requested.emit("fov_%d" % LENS_FOVS[target - MODE_LENS])
 		refresh()
 	elif target == MODE_PACKED:
+		if not _supports_native_passthrough() or not _state.get("packed_mask_available", false) \
+			or int(_state.get("geometry", 0)) not in [1, 2]: return
 		action_requested.emit("packed_mask")
 		refresh()
 	elif target == MODE_STEREO + 3:
@@ -2647,13 +2720,14 @@ func _caption_text(operation: String) -> String:
 		"open_file": return "Open"
 		"recent": return "Library"
 		"play": return "Pause" if _pausable() else "Play"
-		# Live AI matting, unlike the video's own mask in the fisheye panel.
+		# Live AI matting, unlike the video's own mask in the mode panel.
 		"alpha": return "AI portrait passthrough"
 		"previous_video": return "Previous video"
 		"next_video": return "Next video"
 		"loop": return {"single": "Single video", "repeat_one": "Repeat video", "sequence": "Play in order", "repeat_all": "Repeat playlist"}.get(_state.get("playback_mode", "single"), "Single video")
 		"seek_mode": return "Precise" if _state.get("seek_mode", "speed") == "exact" else "Speed"
 		"depth_text_protection": return "On" if _state.get("depth_text_protection", true) else "Off"
+		"video_auto_3d": return "On" if _state.get("video_auto_3d", false) else "Off"
 		"depth_render": return "Fill gaps" if _state.get("depth_render", "stretch") == "fill" else "Stretch edges"
 		"stop": return "Close video"
 		"stereo": return ("TB" if _state.get("top_bottom", false) else "SBS") if _state.get("stereo", false) else "2D"

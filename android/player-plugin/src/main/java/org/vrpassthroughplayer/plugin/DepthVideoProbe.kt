@@ -79,7 +79,22 @@ internal class DepthVideoProbe(
         }.toString(),
         "depth_runtime" to info, "depth_ready" to (handle > 0), "depth_error" to error)
 
-    fun start() {
+    /** Gives this probe's compiled model to the next generation (seek, redraw) of the same video, so it
+     * does not reopen the OpenCL session and show 2D meanwhile. A later [close] leaves it open. */
+    fun handOff(): Pair<Long, String>? = synchronized(lock) {
+        if (closed || handle <= 0L || error.isNotEmpty()) null else (handle to info).also { handle = 0L; latest = null }
+    }
+
+    /** [adopted]: a model handed off by the previous generation. Its stabilizer restarts on the first map
+     * (latest is empty), and the worker orders this after the old generation's in-flight inference. */
+    fun start(adopted: Pair<Long, String>? = null) {
+        if (adopted != null) {
+            worker.post {
+                val kept = synchronized(lock) { if (closed) false else { handle = adopted.first; true } }
+                if (!kept) DepthNative.close(adopted.first) else { info = adopted.second; ready() }
+            }
+            return
+        }
         worker.post {
             try {
                 if (synchronized(lock) { closed }) return@post
@@ -171,10 +186,10 @@ internal class DepthVideoProbe(
         val elapsed = now - windowStartNs
         if (elapsed < LOG_INTERVAL_NS) return null
         val seconds = elapsed / 1e9
-        val line = "video depth maps_per_s=%.1f frames_per_s=%.1f behind_avg=%s behind_max=%d latency_ms=%.0f infer_ms=%.0f stabilize_ms=%.0f replaced=%d profile=%s ready=%b error=%s frame=%d".format(
+        val line = "video depth maps_per_s=%.1f frames_per_s=%.1f behind_avg=%s behind_max=%d latency_ms=%.0f infer_ms=%.0f stabilize_ms=%.0f replaced=%d cuts=%d profile=%s ready=%b error=%s frame=%d".format(
             Locale.US, (inferred - windowUpdates) / seconds, windowFrames / seconds,
             if (windowShown > 0) "%.1f".format(Locale.US, windowBehind.toDouble() / windowShown) else "-",
-            windowBehindMax, latencyMs, inferMs, stabilizeMs, replaced, DepthNative.PROFILE, handle > 0, error.ifEmpty { "-" }, frameId)
+            windowBehindMax, latencyMs, inferMs, stabilizeMs, replaced, cuts, DepthNative.PROFILE, handle > 0, error.ifEmpty { "-" }, frameId)
         windowStartNs = now; windowUpdates = inferred
         windowFrames = 0; windowShown = 0; windowBehind = 0; windowBehindMax = 0
         return line
@@ -210,6 +225,13 @@ internal class DepthVideoProbe(
             inferMs = inferMs * 0.9 + (System.nanoTime() - started) / 1e6 * 0.1
             inferStages = kernel.optJSONObject("stages")?.toString() ?: "{}"
             if (kernel.optString("state") != "ready") return
+            kernel.optJSONArray("picture")?.takeIf { it.length() == 4 && it.getInt(2) > 0 && it.getInt(3) > 0 }?.let { picture ->
+                // Bars burned into the frame (filled before inference) are no more picture than the letterbox.
+                val x0 = maxOf(job.content[0], picture.getInt(0)); val y0 = maxOf(job.content[1], picture.getInt(1))
+                val x1 = minOf(job.content[0] + job.content[2], picture.getInt(0) + picture.getInt(2))
+                val y1 = minOf(job.content[1] + job.content[3], picture.getInt(1) + picture.getInt(3))
+                if (x1 > x0 && y1 > y0) { job.content[0] = x0; job.content[1] = y0; job.content[2] = x1 - x0; job.content[3] = y1 - y0 }
+            }
             // Handler order keeps the stabilizer in source order.
             DepthPost.handler.post { stabilize(active, job, started) }
             handed = true

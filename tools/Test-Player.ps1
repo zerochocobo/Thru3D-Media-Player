@@ -3,12 +3,16 @@ $ErrorActionPreference = 'Stop'
 $workspace = Split-Path -Parent $PSScriptRoot
 . "$PSScriptRoot\environment\Activate-QuestEnvironment.ps1" -ToolRoot $ToolRoot
 $projectDirectory = Join-Path $workspace 'app\godot'
+& "$PSScriptRoot/Test-Scenery.ps1" -Godot $env:GODOT_EXE -RenderPreview:$RenderPreview
 & "$PSScriptRoot/Test-DistributionChannel.ps1" -ToolRoot $ToolRoot
 $listeningOutput = Join-Path $workspace 'build/output/live-interpretation'
 New-Item -ItemType Directory -Path $listeningOutput -Force | Out-Null
 $listeningLog = Join-Path $listeningOutput 'test-live_interpretation.log'
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_live_interpretation.gd 2>&1 | Tee-Object -FilePath $listeningLog
 if ($LASTEXITCODE -ne 0 -or (Get-Content $listeningLog -Raw) -match '(?m)^(SCRIPT ERROR:|ERROR:)' -or (Get-Content $listeningLog -Raw) -notmatch 'Live interpretation: [0-9]+ checks, 0 failures') { throw 'Live interpretation regression failed.' }
+$castListeningLog = Join-Path $listeningOutput 'test-cast-listening.log'
+& $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_cast_listening.gd 2>&1 | Tee-Object -FilePath $castListeningLog
+if ($LASTEXITCODE -ne 0 -or (Get-Content $castListeningLog -Raw) -match '(?m)^(SCRIPT ERROR:|ERROR:)' -or (Get-Content $castListeningLog -Raw) -notmatch 'Cast listening: [0-9]+ checks, 0 failures') { throw 'Cast listening isolation and recovery regression failed.' }
 $subtitlePanelOutput = Join-Path $workspace 'build/output/subtitle-side-panels'
 New-Item -ItemType Directory -Path $subtitlePanelOutput -Force | Out-Null
 $subtitlePanelLog = Join-Path $subtitlePanelOutput 'side-panels.log'
@@ -262,6 +266,12 @@ if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'subtitle-effe
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_file_mode_memory.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'file-mode-memory-host.log')
 if ($LASTEXITCODE -ne 0) { throw 'File mode memory host regression failed.' }
 if ((Get-Content (Join-Path $logDirectory 'file-mode-memory-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)') { throw 'File mode memory host regression reported runtime errors.' }
+& $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_video_mode_default.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'video-mode-default-host.log')
+if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'video-mode-default-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|ERROR:)' -or (Get-Content (Join-Path $logDirectory 'video-mode-default-host.log') -Raw) -notmatch 'Video mode default: [0-9]+ checks, 0 failures') { throw 'Last video mode default regression failed.' }
+& $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_video_auto_3d.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'video-auto-3d-host.log')
+if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'video-auto-3d-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)' -or (Get-Content (Join-Path $logDirectory 'video-auto-3d-host.log') -Raw) -notmatch 'Video auto 3D: \d+ checks, 0 failures') { throw 'Default video 2D-to-3D settings regression failed.' }
+& $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_playback_mode_menu.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'playback-mode-cycle-host.log')
+if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'playback-mode-cycle-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)' -or (Get-Content (Join-Path $logDirectory 'playback-mode-cycle-host.log') -Raw) -notmatch 'Playback mode cycle: \d+ checks, 0 failures') { throw 'Playback mode icon cycle regression failed.' }
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_file_track_memory.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'file-track-memory-host.log')
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'file-track-memory-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)') { throw 'Per-file audio and subtitle restoration regression failed.' }
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_player_sticks.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'player-sticks-host.log')
@@ -344,6 +354,12 @@ foreach ($pagingTest in @('test_cloud_native_paging', 'test_cloud_paging_options
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'media-servers-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|ERROR:)') { throw 'Media server host regression failed.' }
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_media_server_browser.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'media-server-browser-host.log')
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'media-server-browser-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|ERROR:)') { throw 'Media server browser regression failed.' }
+& $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_plex_library_ui.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'plex-library-ui-host.log')
+if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'plex-library-ui-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|ERROR:)') { throw 'Plex library UI regression failed.' }
+& $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_media_server_section_return.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'media-server-section-return-host.log')
+if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'media-server-section-return-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|ERROR:)' -or (Get-Content (Join-Path $logDirectory 'media-server-section-return-host.log') -Raw) -notmatch 'Media server section return: [0-9]+ checks, 0 failures') { throw 'Media server settings return regression failed.' }
+& $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_media_server_playback.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'media-server-playback-host.log')
+if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'media-server-playback-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|ERROR:)' -or (Get-Content (Join-Path $logDirectory 'media-server-playback-host.log') -Raw) -notmatch 'Media server playback: [0-9]+ checks, 0 failures') { throw 'Media server playback reporting regression failed.' }
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_media_server_management.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'media-server-management-host.log')
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'media-server-management-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|ERROR:)') { throw 'Media server management UI regression failed.' }
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_cloud_accounts.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'cloud-accounts-host.log')
