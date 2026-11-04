@@ -1,6 +1,16 @@
 extends RefCounted
 ## A viewing session survives decoder generations, seeks and internal close/open handoffs.
 const Methods := preload("res://scripts/platform_methods.gd")
+const INTERVAL_KEY := "server_report_interval_ms"
+const DEFAULT_INTERVAL_MS := 10000
+
+static func normalize_interval(value: Variant) -> int:
+	if not (value is int or value is float) or not is_finite(float(value)): return DEFAULT_INTERVAL_MS
+	return snappedi(int(clampf(float(value), 500, 20000)), 500)
+
+static func load_interval(settings: ConfigFile) -> int:
+	return normalize_interval(settings.get_value("media_server", "report_interval_ms", DEFAULT_INTERVAL_MS))
+
 var uri := ""
 var token := ""
 var next_poll := 0

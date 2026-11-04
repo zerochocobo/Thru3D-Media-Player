@@ -12,6 +12,7 @@ var _migrating_favorites := false
 var _playing_protected := false
 const Log := preload("res://scripts/diagnostic_log.gd")
 const Video := preload("res://scripts/mpv_video_display.gd")
+const ServerPlayback := preload("res://scripts/media_server_playback.gd")
 const AlphaEdge := preload("res://scripts/alpha_edge.gd")
 const StickControls := preload("res://scripts/player_stick_controls.gd")
 const HandPointer := preload("res://scripts/hand_pointer.gd")
@@ -24,6 +25,7 @@ var _watch_owned := false
 var _watch_probe_ms := 0
 const Geometry := preload("res://scripts/video_geometry.gd")
 const LibraryMenu := preload("res://scripts/library_menu.gd")
+const ChineseInput := preload("res://scripts/chinese_input.gd")
 const PuzzleLibraryMenu := preload("res://scripts/puzzle/puzzle_library_menu.gd")
 const StorageVolume := preload("res://scripts/storage_volume.gd")
 const Quality := preload("res://scripts/display_quality.gd")
@@ -43,21 +45,27 @@ const PlatformMethods := preload("res://scripts/platform_methods.gd")
 const FpsOverlay := preload("res://scripts/fps_overlay.gd")
 const PlaybackStatusOverlay := preload("res://scripts/playback_status_overlay.gd")
 const SeekFeedback := preload("res://scripts/seek_feedback.gd")
+const SeekStep := preload("res://scripts/seek_step.gd")
 const SeekOverlay := preload("res://scripts/seek_overlay.gd")
 const Background := preload("res://scripts/app_background.gd")
 const CinemaEnvironment := preload("res://scripts/environments/cinema_environment.gd")
 const CinemaFilmLight := preload("res://scripts/environments/cinema_film_light.gd")
+const CinemaScreenBorder := preload("res://scripts/environments/cinema_screen_border.gd")
 const CinemaFeature := preload("res://scripts/environments/cinema_feature.gd")
 const CinemaMenuLayout := preload("res://scripts/environments/cinema_menu_layout.gd")
 ## Picture size on the fixed cinema screen, as a fraction of the largest fit.
 const CINEMA_PICTURE_MIN := 0.4
 ## Shrinking moves the picture centre down by this share of the freed height.
 const CINEMA_PICTURE_DROP := 0.2
+## Cinema curve levels as fixed radii (metres): the edges come forward at most ~5 m, well short
+## of the stairs and seats; the centre stays on the wall. Full centres the arc on the default seat.
+const CINEMA_CURVE_RADII := {0.35: 50.0, 0.7: 35.0, 1.0: 24.0}
 ## Automatic house lights wait this long after playback stops before rising.
 const CINEMA_LIGHTS_UP_DELAY_MS := 1500
 ## -1 while playback is requested; otherwise when it stopped (0 = long ago).
 var _cinema_lights_idle_since := 0
 var cinema_environment: Node3D
+var cinema_screen_border: MeshInstance3D
 ## Samples the picture so the baked screen light follows the film.
 var cinema_film_light: Node
 var _cinema_screen_saved := {}
@@ -293,6 +301,7 @@ func _ready() -> void:
 	favorites.lock_changed.connect(_on_favorites_lock_changed)
 	controller_bindings.restore(settings.get_value("input", "controller_bindings", {}))
 	I18n.use(str(settings.get_value("ui", "language", "auto")))
+	ChineseInput.configure(bool(settings.get_value("ui", "quest_chinese_keyboard", false)))
 	fps_overlay = FpsOverlay.new()
 	fps_overlay.source = _fps_sample
 	camera.add_child(fps_overlay)
@@ -347,6 +356,7 @@ func _ready() -> void:
 	if video.DepthStrength.migrate_video_scale(settings): settings.save(settings_path)
 	video.preferred_depth_strength = video.DepthStrength.load_preference(settings, false)
 	video.depth_strength = video.preferred_depth_strength
+	video.set_depth_position(video.DepthPosition.load_value(settings))
 	video.default_auto_depth = video.Auto3D.load_enabled(settings)
 	video.changed.connect(_on_video_changed)
 	video.playback_completed.connect(_on_video_completed)
@@ -408,6 +418,7 @@ func _ready() -> void:
 	photo.comic.translation.save(settings)
 	photo.name = "PhotoDisplay"
 	photo.depth_strength = photo.DepthStrength.load_preference(settings, true)
+	photo.depth_position = photo.DepthPosition.load_value(settings, true)
 	photo.auto_depth = bool(settings.get_value("effects", "auto_3d", true))
 	photo.load_mode_lock(settings.get_value("photo", "mode_lock", {}))
 	photo.catalog = video.recent_files
@@ -547,6 +558,11 @@ func _ready() -> void:
 		menu_composition.debug_bands = bool(settings.get_value("debug", "menu_layer_bands", false))
 	menu_composition.configure(origin, camera, display, [recent_menu, video_menu, photo_menu, music_menu, scenery_menu], low_end_gpu)
 	menu_composition.register_companion(vr_passthrough_menu)
+	menu_composition.register_companion(ChineseInput.ensure(origin))
+	ChineseInput.head_provider = _head_pose
+	ChineseInput.on_open = func():
+		stick_controls.suspend(); interface_move.cancel(); _video_control_tap.clear()
+		for menu in [recent_menu, video_menu, photo_menu, music_menu, scenery_menu]: menu.clear_pointer_visuals()
 	recent_menu.web_browser.configure_quality(low_end_gpu)
 	recent_menu.web_browser.window_created = menu_composition.register_companion
 	menu_composition.register_companion(disc_menu_bar)
@@ -571,6 +587,7 @@ func _ready() -> void:
 		cinema_environment.configure(xr_origin, xr_camera)
 		cinema_environment.view_relocated.connect(_on_cinema_view_relocated)
 		cinema_environment.changed.connect(_on_cinema_environment_changed)
+		cinema_environment.seat_hovered.connect(_on_cinema_seat_hovered)
 	add_child(background)
 	photo_background = Background.new()
 	photo_background.directory = "user://photo_backgrounds"
@@ -589,6 +606,7 @@ func _ready() -> void:
 		platform_plugin = Engine.get_singleton("QuestPlayer")
 		if PlatformMethods.supports(platform_plugin, "crash_trail"): DiagnosticLog.trail_sink = platform_plugin
 		_sync_native_privacy()
+		_sync_server_report_interval()
 		if PlatformMethods.supports(platform_plugin, "set_ui_language"):
 			platform_plugin.set_ui_language(I18n.choice)
 		platform_plugin.connect("capabilities_ready", _on_capabilities_ready)
@@ -757,6 +775,10 @@ func _on_controller_release(action: String, hand: String = "") -> void:
 	if puzzle_game and puzzle_game.active:
 		puzzle_game.button(action, hand, true); return
 	controller_bindings.release(hand, action)
+	if ChineseInput.active():
+		if action == "trigger_click": ChineseInput.popup.release_pointer(hand, Vector3.ZERO, Vector3.ZERO, false)
+		_controller_consumed.erase(hand + "/" + action)
+		return
 	if action == "trigger_click" and _vr_release_guard.erase(hand):
 		_controller_consumed.erase(hand + "/" + action)
 		return
@@ -796,6 +818,9 @@ func _finish_interface_move() -> void:
 	interface_move.cancel(); stick_controls.suspend()
 
 func _on_pointer_release(action: String, hand: String) -> void:
+	if ChineseInput.active():
+		if action == "trigger_click": ChineseInput.popup.release_pointer(hand, Vector3.ZERO, Vector3.ZERO, false)
+		return
 	if action == "trigger_click" and _vr_release_guard.erase(hand):
 		_controller_consumed.erase(hand + "/" + action)
 		return
@@ -847,6 +872,11 @@ func _on_pointer_release(action: String, hand: String) -> void:
 
 func _on_controller_button(action: String, hand: String = "") -> void:
 	if hand not in ControllerBindings.HANDS or not _controller_allowed(hand): return
+	if ChineseInput.active():
+		if action == "menu_button" or (action in ControllerBindings.BUTTONS and controller_bindings.press(hand, action)):
+			_on_pointer_button(action, hand)
+		_controller_consumed[hand + "/" + action] = true
+		return
 	if _vr_passthrough_active():
 		if action == "trigger_click" and controller_bindings.press(hand, action): _on_pointer_button(action, hand)
 		_controller_consumed[hand + "/" + action] = true
@@ -1037,8 +1067,7 @@ func _execute_shortcut(id: String, hand: String = "right_hand", amount: float = 
 		"projection_video", "projection_photo": _viewer().cycle_projection()
 		"inspect": _toggle_photo_inspect(hand)
 		"back20", "forward20", "back10", "forward10":
-			var seconds := 20 if id.ends_with("20") else 10
-			video.seek_relative(seconds * 1000 * (-1 if id.begins_with("back") else 1))
+			video.seek_relative(SeekStep.milliseconds(settings) * (-1 if id.begins_with("back") else 1))
 		"volume_up", "flat_volume_up": video.change_volume(10)
 		"volume_down", "flat_volume_down": video.change_volume(-10)
 		"zoom_in", "zoom_out", "flat_zoom_in", "flat_zoom_out":
@@ -1148,6 +1177,7 @@ func _begin_interface_move(hand: String, input: String) -> void:
 		if target.kind == "screen":
 			target["distance_limits"] = photo.PHOTO_DISTANCE_LIMITS if photo_active else video.DISTANCE_LIMITS
 			target["cinema"] = target.node == video and video.cinema.active(video)
+			if target.node == photo: target["upright_facing"] = true
 		elif target.kind == "gallery": target["distance_limits"] = photo.gallery.DISTANCE_LIMITS
 	var anchor: Vector3 = menu.to_global(hit.point) if not hit.is_empty() else media_anchor
 	if interface_move.begin(hand, input, pose, targets, anchor, head, view_follow.enabled):
@@ -1232,6 +1262,11 @@ func _update_interface_move() -> void:
 			photo._update_inspect()
 
 func _on_pointer_button(action: String, hand: String) -> void:
+	if ChineseInput.active():
+		if action == "trigger_click": _update_menu_pointer(hand, true)
+		elif action in ["by_button", "menu_button"]: ChineseInput.popup.navigate_back()
+		stick_controls.suspend()
+		return
 	if _vr_passthrough_active():
 		if action == "trigger_click":
 			_update_menu_pointer(hand, true)
@@ -1487,6 +1522,10 @@ func _stills_playback_priority(menu: Node3D) -> bool:
 	return menu == recent_menu or (menu == player_menu and _library_is_attached())
 
 func _process_stick_input(left: Vector2, right: Vector2, delta: float) -> void:
+	if ChineseInput.active():
+		_update_menu_pointer("left_hand"); _update_menu_pointer("right_hand")
+		stick_controls.suspend(); immersive_sticks.suspend()
+		return
 	if _vr_passthrough_active(): return
 	if _immersive_zoom_pending and ((left.length() < 0.3 and right.length() < 0.3) or not _immersive_adjustment_context()):
 		_immersive_zoom_pending = false
@@ -1928,6 +1967,7 @@ func _dispatch_hand_input(inputs: Dictionary, _delta: float = 1.0 / 72.0) -> voi
 		if inputs[hand].get("released", false): _on_pointer_release("trigger_click", hand)
 
 func _cancel_pointer(hand: String) -> void:
+	if ChineseInput.active(): ChineseInput.popup.cancel_pointer(hand)
 	_vr_release_guard.erase(hand)
 	if video and video.get("pip"): video.pip.cancel_pointer(hand)
 	if cinema_environment: cinema_environment.cancel_pointer(hand)
@@ -2260,8 +2300,11 @@ func _turn_picture(yaw: float, pitch: float) -> void:
 		var offset := local.origin
 		if offset.is_zero_approx(): return
 		var angles := _ray_angles(offset) + Vector2(yaw, pitch)
-		var direction := (Basis(Vector3.UP, angles.x) * Basis(Vector3.RIGHT, clampf(angles.y, -1.5, 1.5))) * Vector3.FORWARD
-		local.basis = Basis(Quaternion(offset.normalized(), direction)) * local.basis
+		var facing := Basis(Vector3.UP, angles.x) * Basis(Vector3.RIGHT, clampf(angles.y, -1.5, 1.5))
+		var direction := facing * Vector3.FORWARD
+		# Photo trigger dragging uses head-relative yaw/pitch, just like the world
+		# path below. Transporting shortest-arc rotations accumulates roll sideways.
+		local.basis = facing if photo_active else Basis(Quaternion(offset.normalized(), direction)) * local.basis
 		local.origin = direction * offset.length()
 		_viewer().set_flat_world_pose(head * local)
 		_capture_follow_screen(_viewer(), head)
@@ -2601,6 +2644,8 @@ func _on_capture_saved(result: Dictionary) -> void:
 
 const CONTROLS_HIDE_MS := int(ControllerFeedback.IDLE_SECONDS * 1000.0)
 var _menu_touched_ms := 0
+const PLAYER_VALUES_MS := 100
+var _player_values_due := 0
 var _bar_appearance_return := false
 
 func _toggle_controls_lock() -> void:
@@ -2701,6 +2746,7 @@ func _on_library_chosen(uri: String, title: String, retained_photo: Dictionary =
 	_cancel_video_queue_wait()
 	var controls_pose: Variant = recent_menu.get_parent().global_transform if _library_is_attached() else null
 	var controls_depth := _playback_menu_depth_mode()
+	var controls_cinema := _cinema_scene_active()
 	if recent_menu is LibraryMenu: recent_menu.playback_expanded = false
 	var location: Dictionary = recent_menu.collections.selected_location.duplicate(true)
 	if location.is_empty() or not retained_photo.is_empty(): location = MediaLocation.infer(uri)
@@ -2769,8 +2815,9 @@ func _on_library_chosen(uri: String, title: String, retained_photo: Dictionary =
 		var context: Dictionary = recent_menu._playback_context.get("photo_directory", {}) if recent_menu._playback_context.get("uri", "") == uri else recent_menu.photo_directory_context()
 		if not context.is_empty(): _start_video_directory(context)
 	# Switching sources through the attached browser must not copy a VR depth pose
-	# over the flat/photo placement that the new source has just restored.
-	if controls_depth != _playback_menu_depth_mode(): controls_pose = null
+	# over the flat/photo placement that the new source has just restored. Entering or
+	# leaving the cinema moves the viewer, so a hall pose would land far off (and back).
+	if controls_depth != _playback_menu_depth_mode() or controls_cinema != _cinema_scene_active(): controls_pose = null
 	if controls_pose is Transform3D and not player_menu.space_locked() and not (_cinema_scene_active() and player_menu == video_menu):
 		player_menu.global_transform = controls_pose
 		var head: Variant = _head_pose()
@@ -2996,6 +3043,14 @@ func _on_photo_changed() -> void:
 	if calibration_board: calibration_board.visible = false
 
 func _on_photo_adjustment(key: String, value: Variant) -> void:
+	if key == "depth_position":
+		if value is Dictionary:
+			if str(value.get("source_uri", "")) != photo.local_uri: return
+			value = value.get("value")
+		if photo.set_depth_position(value):
+			settings.set_value("photo", key, photo.depth_position)
+			if not photo_menu.has_pointer_capture(): settings.save(settings_path)
+		return
 	if key == "photo_cache_each":
 		if typeof(value) not in [TYPE_INT, TYPE_FLOAT] or not is_finite(float(value)): return
 		photo.set_cache_each(int(value))
@@ -3034,12 +3089,15 @@ func _on_photo_adjustment(key: String, value: Variant) -> void:
 			photo.changed.emit()
 		"inspect_magnification":
 			photo.set_inspect_magnification(float(value))
+		"edge_feather_strength":
+			photo.set_edge_feather_strength(float(value))
 
 func _save_photo_adjustments() -> void:
 	settings.set_value("photo_screen", "distance", photo.screen_distance)
 	settings.set_value("photo_screen", "scale", photo.screen_scale)
 	settings.set_value("photo_screen", "curve", photo._portrait_curve if photo.portrait_requested else photo.screen_curve)
 	settings.set_value("photo_screen", "magnification", photo.inspect_magnification)
+	settings.set_value("photo_screen", "edge_feather_strength", photo.edge_feather_strength)
 	photo.save_layout_settings(settings)
 	_gallery_save_after = 0
 	_gallery_saved_state = "%d/%s/%s" % [photo.gallery.mode, str(photo.gallery._scales), str(photo.gallery._distances)]
@@ -3476,6 +3534,7 @@ func _disc_menu_hover() -> void:
 			return
 
 func _active_menu() -> Node3D:
+	if ChineseInput.active(): return ChineseInput.popup
 	if scenery_menu and scenery_menu.visible: return scenery_menu
 	if _vr_passthrough_active(): return vr_passthrough_menu
 	if puzzle_game and puzzle_game.active: return puzzle_game.input_menu()
@@ -3506,6 +3565,7 @@ func _has_open_media() -> bool:
 
 ## Return one visible layer at a time, even when the browser is attached to the player bar.
 func _navigate_back() -> void:
+	if ChineseInput.active(): ChineseInput.popup.navigate_back(); stick_controls.suspend(); return
 	if _vr_passthrough_active(): return
 	if _bar_appearance_return and player_menu and player_menu._adjustment == "bar_transparency":
 		player_menu._finish_adjustment(); player_menu._adjustment = ""
@@ -3543,6 +3603,7 @@ func _navigate_back() -> void:
 		_show_full_library() # B alone is also a recovery entry for a right-controller-only user.
 
 func _toggle_player_menu() -> void:
+	if ChineseInput.active(): ChineseInput.close("", true); return
 	if _vr_passthrough_active(): return
 	if scenery_menu and scenery_menu.visible: scenery_menu.dismiss(); return
 	if recent_menu is LibraryMenu and recent_menu.account_panel.view == "web": return
@@ -3704,6 +3765,9 @@ func _close_current_media(restore_browser: bool = true) -> void:
 		if puzzle_game.active: return
 	_grab = {}; interface_move.cancel(); stick_controls.suspend()
 	if player_menu: player_menu.dismiss()
+	# Restoring the browser rebuilds its rows immediately. Checkpoint first so
+	# returning within the history-save interval cannot draw the old resume point.
+	if not photo_active: video.checkpoint_playback()
 	if restore_browser and recent_menu is LibraryMenu and _has_open_media():
 		recent_menu.show_playback_files(true, _playback_browser_cursor())
 		recent_menu.collections.reveal_uri = _viewer().local_uri
@@ -3795,6 +3859,7 @@ func _library_settings() -> Dictionary:
 		"stick_seek_overlay": bool(settings.get_value("ui", "stick_seek_overlay", true)),
 		"bar_transparency": float(settings.get_value("ui", "bar_transparency", 14.0)),
 		"library_backdrop": str(settings.get_value("ui", "library_backdrop", "slideshow")),
+		ServerPlayback.INTERVAL_KEY: ServerPlayback.load_interval(settings),
 		"voice_manager": video.narration.voice_manager_snapshot(),
 		"alpha_profile": video.default_profile, "alpha_profile_default": _alpha_profile_default(), "alpha_fps_default": _alpha_fps_default(),
 		"alpha_precision": Quality.load_alpha_precision(settings), "alpha_warming": video.warming.keys(),
@@ -3810,7 +3875,9 @@ func _library_settings() -> Dictionary:
 		"history": video.history_enabled, "privacy_mode": Privacy.mode, "file_settings_memory": Privacy.file_settings, "favorites_lock_level": favorites.lock_level if favorites else "relaxed",
 		"library_restore_position": bool(settings.get_value("library", "restore_position", true)),
 		"seek_mode": video.SeekPolicy.normalize(video.seek_mode),
+		SeekStep.KEY: SeekStep.seconds(settings),
 		"depth_render": _depth_render_mode(),
+		"depth_position_default": video.depth_position,
 		"video_auto_3d": video.default_auto_depth,
 		"depth_text_protection": false,
 		"subtitle_distance": video.subtitle_distance,
@@ -3867,6 +3934,10 @@ func _on_setting_changed(key: String, value: Variant) -> void:
 			if str(value) not in ["off", "static", "slideshow"]: return
 			settings.set_value("ui", key, str(value)); settings.save(settings_path)
 			recent_menu.server_browser.backdrop.mode = str(value)
+		ServerPlayback.INTERVAL_KEY:
+			settings.set_value("media_server", "report_interval_ms", ServerPlayback.normalize_interval(value))
+			settings.save(settings_path)
+			_sync_server_report_interval()
 		"narration_voice_manager": video.narration.global_voice_command(value)
 		"controller_bindings":
 			controller_bindings.restore(value)
@@ -3896,6 +3967,11 @@ func _on_setting_changed(key: String, value: Variant) -> void:
 			video.seek_mode = video.SeekPolicy.normalize(value)
 			settings.set_value("video", "seek_mode", video.seek_mode)
 			settings.save(settings_path)
+		SeekStep.KEY:
+			value = SeekStep.normalize(value)
+			settings.set_value("video", SeekStep.KEY, value)
+			settings.save(settings_path)
+			if recent_menu: recent_menu.refresh()
 		"depth_text_protection":
 			# Temporarily unavailable for this release; retain the stored preference for later.
 			video.set_text_protection(false)
@@ -3906,6 +3982,9 @@ func _on_setting_changed(key: String, value: Variant) -> void:
 			video.default_auto_depth = bool(value)
 			settings.set_value("video", "auto_3d", video.default_auto_depth); settings.save(settings_path)
 			if recent_menu: recent_menu.refresh()
+		"depth_position_default":
+			video.set_depth_position(value)
+			settings.set_value("video", "depth_position", video.depth_position); settings.save(settings_path)
 		"depth_render":
 			if str(value) in DEPTH_RENDER_MODES:
 				settings.set_value("video", "depth_render", str(value)); settings.save(settings_path)
@@ -4054,10 +4133,15 @@ func _on_setting_changed(key: String, value: Variant) -> void:
 			_clear_private_history(str(value) == "network")
 		"file_settings_clear":
 			_clear_file_settings(str(value) == "network")
+		"quest_chinese_keyboard":
+			ChineseInput.configure(bool(value))
+			settings.set_value("ui", "quest_chinese_keyboard", bool(value))
+			settings.save(settings_path)
 		"language":
 			settings.set_value("ui", "language", str(value))
 			settings.save(settings_path)
 			I18n.use(str(value))
+			ChineseInput.configure(ChineseInput.selected)
 			if PlatformMethods.supports(platform_plugin, "set_ui_language"):
 				platform_plugin.set_ui_language(I18n.choice)
 			for menu in [recent_menu, player_menu, photo_menu, music_menu]:
@@ -4118,6 +4202,9 @@ func _on_menu_action(operation: String) -> void:
 		if operation == "capture_screenshot": video.captures.screenshot()
 		else: video.captures.toggle()
 		return
+	if operation == "screen_curve" and _cinema_video_locked():
+		var levels: Array = video.CURVES
+		_set_cinema_curve(levels[(levels.find(_cinema_curve()) + 1) % levels.size()]); return
 	if operation.begins_with("screen_") and _cinema_video_locked(): return
 	if operation == "cinema_seat": return # Retired action, including stale UI events.
 	if operation.begins_with("cinema_lights_"):
@@ -4185,6 +4272,13 @@ func _on_menu_seek(position_ms: int) -> void:
 	video.seek_absolute(position_ms)
 
 func _on_player_setting(key: String, value: Variant) -> void:
+	if key == "depth_position":
+		if value is Dictionary:
+			if str(value.get("source_uri", "")) != video.local_uri: return
+			value = value.get("value")
+		if not photo_active and video.cast_allows(key) and video.set_depth_position(value):
+			settings.set_value("video", key, video.depth_position); settings.save(settings_path)
+		return
 	if key == "dual_subtitles" and not photo_active:
 		video.dual_subtitles.set_enabled(bool(value)); return
 	if key == "subtitle_edit_secondary" and not photo_active:
@@ -4203,6 +4297,11 @@ func _on_player_setting(key: String, value: Variant) -> void:
 		recent_menu.subtitle_queue_open = true; recent_menu.scroll = 0; recent_menu.refresh(); return
 	if not photo_active and video and not video.cast_allows(key): return
 	if not photo_active and video and video.cast_token > 0 and key.begins_with("narration_clone"): return
+	if key == "video_aspect_preset":
+		if not photo_active and video:
+			_on_playback_adjustment(key, value)
+			video.commit_stereo_view()
+		return
 	if key == "playback_mode" and not photo_active and video and not video.cast_allows(str(value)): return
 	if key == "narration_add_voice":
 		_show_full_library()
@@ -4216,6 +4315,7 @@ func _on_player_setting(key: String, value: Variant) -> void:
 		settings.set_value("appearance", "cinema_picture_size", clampf(float(value) / 100.0, CINEMA_PICTURE_MIN, 1.0))
 		_sync_cinema_screen()
 		return
+	if key == "screen_curve" and _cinema_video_locked(): _set_cinema_curve(float(value)); return
 	if _cinema_video_locked() and key.begins_with("screen_"): return
 	if photo_active: return
 	if key.begins_with("listening_"):
@@ -4410,6 +4510,7 @@ func _menu_state() -> Dictionary:
 		"clone_voice": video.clone_voice_track() > 0, "clone_voice_active": video.clone_voice_active(),
 		"depth_requested": video.portrait.strength > 0.0 if video.portrait_requested() else video.depth_requested,
 		"depth_enabled": video.portrait.active if video.portrait_requested() else video.depth_enabled,
+		"depth_position": video.depth_position,
 		"depth_strength": video.portrait.strength if video.portrait_requested() else video.depth_strength,
 		"portrait_requested": video.portrait_requested(), "portrait_auto": video.portrait.automatic,
 		"flat_passthrough_requested": video.flat_passthrough_requested(),
@@ -4425,6 +4526,7 @@ func _menu_state() -> Dictionary:
 		"screen_preset": _active_screen_preset(), "screen_dimensions": video._flat.size,
 		"screen_eye_level": video.cinema.eye_level(video, _eye()),
 		"screen_scale": video.screen_scale * 100.0, "screen_rotation": video.screen_rotation, "playback_speed": video.playback_speed,
+		"video_aspect_preset": video.video_aspect_preset, "video_aspect_factor": video.video_aspect_factor,
 		"alpha_fps": _alpha_fps(), "alpha_feather": _alpha_edge_value("alpha_feather"), "alpha_shrink": _alpha_edge_value("alpha_shrink"),
 		"alpha_keep_background": _alpha_keep_background(),
 		"show_fps": fps_overlay != null and fps_overlay.visible,
@@ -4523,7 +4625,7 @@ func _apply_stick_actions(actions: Array[Dictionary], delta: float = 1.0 / 72.0)
 		if action.id in ["back10", "forward10", "back20", "forward20"] and not photo_active:
 			if _shortcut_allowed(action.id):
 				_begin_stick_seek(str(action.get("hand", "right_hand")), str(action.get("input", "stick_right")),
-					int(str(action.id).trim_prefix("back").trim_prefix("forward")) * 1000 * (-1 if str(action.id).begins_with("back") else 1), action.id)
+					SeekStep.milliseconds(settings) * (-1 if str(action.id).begins_with("back") else 1), action.id)
 		else:
 			_execute_shortcut(action.id, action.get("hand", "right_hand"), float(action.get("amount", 1.0)), delta)
 	if not mapped.is_empty(): actions = actions.filter(func(action): return action.operation != "shortcut")
@@ -4538,7 +4640,7 @@ func _apply_stick_actions(actions: Array[Dictionary], delta: float = 1.0 / 72.0)
 	for action in actions:
 		match action.operation:
 			"zoom": _zoom_video(float(action.amount) * ZOOM_SPEED * delta)
-			"seek": _begin_stick_seek(str(action.get("hand", "right")) + "_hand", "stick_right" if action.direction > 0 else "stick_left", int(action.get("delta_ms", int(action.direction) * 10000)))
+			"seek": _begin_stick_seek(str(action.get("hand", "right")) + "_hand", "stick_right" if action.direction > 0 else "stick_left", int(action.direction) * SeekStep.milliseconds(settings))
 			"volume": video.change_volume(float(action.direction) * 10)
 			"audio_track": video.cycle_audio_track(int(action.direction))
 			"mute": video.toggle_mute()
@@ -4627,7 +4729,11 @@ func _on_video_changed() -> void:
 	_update_background()
 	_update_status()
 	_queue_report()
-	if player_menu and player_menu.visible:
+	# Every presented frame reports a change (24-60 a second while the video is in the eye buffers,
+	# as with 2D->3D). A value refresh rebuilds the whole player state and has the menu layers compare
+	# their capture, ~3 ms on Quest 3; the controls refresh themselves every 250 ms and on input.
+	if player_menu and player_menu.visible and Time.get_ticks_msec() >= _player_values_due:
+		_player_values_due = Time.get_ticks_msec() + PLAYER_VALUES_MS
 		player_menu.refresh_values()
 	if recent_menu: recent_menu.refresh_alpha_sizes() # first-use compile of the Alpha model sizes
 
@@ -4709,6 +4815,13 @@ func _cinema_pointer_press(hand: String) -> bool:
 	_cinema_move_hands[hand] = true
 	cinema_environment.pointer_press(hand, ray[0], ray[1])
 	return true
+
+func _on_cinema_seat_hovered(hand: String) -> void:
+	if not _cinema_interaction_owns() or _cinema_input_blocked() or hand not in ["left_hand", "right_hand"]: return
+	if cinema_environment.snapshot().capture_hand != hand: return
+	var controller := left_controller if hand == "left_hand" else right_controller
+	if controller is XRController3D and _controller_allowed(hand) and controller.get_is_active() and controller.get_has_tracking_data():
+		controller.trigger_haptic_pulse("haptic", 0.0, .10, .018, 0.0)
 
 func _cinema_pointer_release(hand: String) -> bool:
 	if not _cinema_move_hands.has(hand): return false
@@ -4796,12 +4909,16 @@ func _sync_cinema_screen() -> void:
 		# Portrait placement already owns the ordinary screen snapshot. The hall may
 		# stay visible, but must not pin the cutout back onto its movie screen.
 		_cinema_screen_saved.clear()
+		video.curve_radius = 0.0
+		if cinema_screen_border: cinema_screen_border.update(Vector2.ZERO, 0.0)
 		return
 	var fixed: bool = _cinema_scene_active() and not photo_active and video.geometry == Geometry.Geometry.FLAT
 	if not fixed:
+		if cinema_screen_border: cinema_screen_border.update(Vector2.ZERO, 0.0)
 		if _cinema_screen_saved.is_empty(): return
 		var saved := _cinema_screen_saved
 		_cinema_screen_saved = {}
+		video.curve_radius = 0.0
 		for key in ["screen_distance", "screen_scale", "screen_rotation", "screen_curve", "screen_preset"]: video.set(key, saved[key])
 		for key in saved.cinema: video.cinema.set(key, saved.cinema[key])
 		view_follow.set_enabled(saved.follow)
@@ -4834,10 +4951,17 @@ func _sync_cinema_screen() -> void:
 	# A smaller picture settles a little below the screen centre: 30% of the freed
 	# height above it, 70% below, which is easier on the neck from the seats.
 	anchor.origin -= anchor.basis.y * (dimensions.y * (fit - scale) * CINEMA_PICTURE_DROP)
-	if not is_equal_approx(video.screen_scale, scale) or video.screen_curve != 0 or video.screen_rotation != 0:
-		video.screen_scale = scale; video.screen_curve = 0.0; video.screen_rotation = 0.0
+	var curve := _cinema_curve()
+	var radius: float = CINEMA_CURVE_RADII.get(curve, 0.0)
+	if not is_equal_approx(video.screen_scale, scale) or video.screen_curve != curve or video.curve_radius != radius or video.screen_rotation != 0:
+		video.screen_scale = scale; video.screen_curve = curve; video.curve_radius = radius; video.screen_rotation = 0.0
 		video._apply_geometry()
 	if not (video.global_transform * video.flat_pose).is_equal_approx(anchor): video.set_flat_world_pose(anchor)
+	if not cinema_screen_border:
+		cinema_screen_border = CinemaScreenBorder.new(); video.panel.add_child(cinema_screen_border)
+	# A cutout over the hall has no screen edge to frame.
+	var framed: bool = video.screen_curve > 0.0 and not video._cinema_alpha_overlay
+	cinema_screen_border.update(video._flat.size, video._curve_radius() if framed else 0.0)
 
 func _update_cinema_film_light(delta: float) -> void:
 	if not cinema_environment or not cinema_environment.active or not video: return
@@ -4854,6 +4978,16 @@ func _update_cinema_film_light(delta: float) -> void:
 		fraction = clampf(video._flat.size.x * video._flat.size.y / area, 0.0, 1.0)
 	if cinema_film_light.update(delta, video, _cinema_scene_active() and not photo_active, fraction):
 		cinema_environment.set_film_light(cinema_film_light.colors)
+
+func _cinema_curve() -> float:
+	var value := float(settings.get_value("appearance", "cinema_curve", 0.0))
+	return value if CINEMA_CURVE_RADII.has(value) else 0.0
+
+func _set_cinema_curve(value: float) -> void:
+	settings.set_value("appearance", "cinema_curve", value if CINEMA_CURVE_RADII.has(value) else 0.0)
+	settings.save(settings_path)
+	_sync_cinema_screen()
+	video.changed.emit()
 
 func _cinema_picture_size() -> float:
 	return clampf(float(settings.get_value("appearance", "cinema_picture_size", 1.0)), CINEMA_PICTURE_MIN, 1.0)
@@ -4908,6 +5042,9 @@ func _sync_cinema_transport(recenter: bool = false) -> void:
 				if saved.locks[key] == null:
 					if video_menu.has_meta(key): video_menu.remove_meta(key)
 				else: video_menu.set_meta(key, saved.locks[key])
+			# The saved pose dates from entering the hall. A transport still shown (a VR source
+			# chosen from the attached files) faces the viewer instead of reappearing there.
+			if video_menu.visible and not video_menu.space_locked(): _place_menu(video_menu, true)
 		return
 	var entering := _cinema_transport_saved.is_empty()
 	var head: Variant = null
@@ -5358,7 +5495,7 @@ func _update_status() -> void:
 	calibration_board.visible = status_label.visible and not (video and video.panel and video.panel.visible)
 	if not status_label.visible:
 		return
-	status_label.text = "Thru3D Media Player - MPV\n%s | %s\nLeft Menu / Tab: player menu\nPoint with a controller and press trigger to select\nX / O: open file   A / Space: play,pause   Grip: move interfaces\nLeft click / P: projection   Right click: reset view\nLeft stick: seek 20s, volume   Right stick / arrows: seek 10s   L: playback mode\nB / R: recenter   Trigger / T: Alpha,background\nV: fixture" % [mode, detail]
+	status_label.text = "Thru3D Media Player - MPV\n%s | %s\nLeft Menu / Tab: player menu\nPoint with a controller and press trigger to select\nX / O: open file   A / Space: play,pause   Grip: move interfaces\nLeft click / P: projection   Right click: reset view\nLeft stick: seek, volume   Right stick: seek, zoom   Arrows: seek 10s   L: playback mode\nB / R: recenter   Trigger / T: Alpha,background\nV: fixture" % [mode, detail]
 	if video:
 		status_label.text += "\n%s | %s | %s | %s\n%s | RVM %s" % [video.display_name.left(42), video.media.state, "SBS" if video.stereo_sbs else "2D", video.layout_snapshot().geometry, "Alpha on" if video.alpha_enabled else ("Preparing Alpha" if video.alpha_requested else "Normal playback"), video.profile]
 		status_label.text += "\n" + rvm_status
@@ -5376,8 +5513,19 @@ func _update_status() -> void:
 
 
 func _on_playback_adjustment(key: String, value: Variant) -> void:
+	if key == "depth_position_default":
+		video.set_depth_position(value); return
+	if key == "depth_position":
+		if value is Dictionary:
+			if str(value.get("source_uri", "")) != video.local_uri: return
+			value = value.get("value")
+		if not photo_active and video.cast_allows(key): video.set_depth_position(value)
+		return
 	if not photo_active and video and not video.cast_allows(key): return
 	if not photo_active and video and key.begins_with("grade_") and not video.cast_allows("color_grade"): return
+	if key in ["video_aspect_preset", "video_aspect_factor"]:
+		if not photo_active and video and video.set_video_aspect(key, value): _sync_cinema_screen()
+		return
 	if key == "bar_transparency":
 		_set_bar_transparency(float(value)); return
 	if key == "portrait_distance":
@@ -5489,6 +5637,7 @@ func _save_subtitle_centers() -> void:
 
 func _save_playback_adjustments() -> void:
 	video.commit_stereo_view()
+	settings.set_value("video", "depth_position", video.depth_position)
 	_remember_current_screen()
 	settings.set_value("subtitles", "size", video.subtitle_size)
 	settings.set_value("subtitles", "style", video.subtitle_style)
@@ -5857,6 +6006,13 @@ func _finish_app(restart: bool) -> void:
 		get_tree().quit()
 
 func _notification(what: int) -> void:
+	if what in [NOTIFICATION_APPLICATION_PAUSED, NOTIFICATION_APPLICATION_FOCUS_OUT]: ChineseInput.close("", true)
+	elif what in [NOTIFICATION_APPLICATION_RESUMED, NOTIFICATION_APPLICATION_FOCUS_IN] and I18n.choice == "auto":
+		var previous_language := I18n.language
+		I18n.use("auto"); ChineseInput.configure(ChineseInput.selected)
+		if previous_language != I18n.language:
+			for menu in [recent_menu, player_menu, photo_menu, music_menu]:
+				if is_instance_valid(menu) and menu.visible: menu.refresh()
 	if puzzle_game and puzzle_game.active and what in [NOTIFICATION_APPLICATION_PAUSED, NOTIFICATION_APPLICATION_FOCUS_OUT]:
 		puzzle_game.show_panel(true)
 	if what in [NOTIFICATION_APPLICATION_PAUSED, NOTIFICATION_APPLICATION_FOCUS_OUT]:
@@ -6170,6 +6326,10 @@ func _clear_file_settings(network_only: bool) -> void:
 
 func _privacy_cleanup_failed() -> void:
 	if recent_menu: recent_menu.status = I18n.t("Privacy cleanup failed")
+
+func _sync_server_report_interval() -> void:
+	if PlatformMethods.supports(platform_plugin, "set_media_server_report_interval"):
+		platform_plugin.set_media_server_report_interval(ServerPlayback.load_interval(settings))
 
 func _sync_native_privacy() -> void:
 	if PlatformMethods.supports(platform_plugin, "set_playback_privacy"):

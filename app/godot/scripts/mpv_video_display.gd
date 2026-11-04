@@ -69,6 +69,10 @@ const PROFILES := ["320x320", "384x216", "512x288", "384x384", "512x512", "256x1
 var cinema := preload("res://scripts/cinema_placement.gd").new()
 const ScreenPresets := preload("res://scripts/screen_presets.gd")
 var screen_preset := ""
+const VideoAspect := preload("res://scripts/video_aspect.gd")
+var video_aspect_preset := "original"
+var video_aspect_factor := 1.0
+var _video_aspect_dirty := false
 var media := State.new()
 var _spatial_video := false # Source type survives seek/effect session generations.
 const SpatialMetadata := preload("res://scripts/spatial_video_metadata.gd")
@@ -117,6 +121,7 @@ func cast_allows(operation: String) -> bool:
 func capture_cast_view() -> Dictionary:
 	var result := {}
 	for key in ImmersiveAdjustments.KEYS: result[key] = get(key)
+	for key in VideoAspect.FIELDS: result[key] = get(key)
 	for key in ["geometry", "stereo_sbs", "top_bottom", "stereo_half", "swap_eyes", "fisheye_fov", "depth_requested", "auto_depth", "depth_strength", "alpha_requested", "profile", "screen_rotation", "playback_speed", "viewing_eye", "stereo_horizontal", "stereo_vertical", "loop_enabled", "audio_track_id", "audio_delay", "subtitle_delay"]:
 		result[key] = get(key)
 	result.tracks = _capture_track_choices()
@@ -154,6 +159,8 @@ const DepthStrength := preload("res://scripts/depth_strength.gd")
 ## (user choice, 2026-10-30); the default 50% is therefore the former 25%.
 const DEPTH_SHIFT := 0.0175
 const DEPTH_CONVERGENCE := 0.35
+const DepthPosition := preload("res://scripts/depth_position.gd")
+var depth_position := 0.0
 var _depth_view_sent := ""
 var _portrait_depth_sent := ""
 var _debug_portrait_shots: Array[Dictionary] = []
@@ -825,6 +832,9 @@ func open_local(uri: String, title: String, start_ms: int = 0, restore_mode: boo
 	_keep_interleave_during_close = network_interleave
 	close_video()
 	_keep_interleave_during_close = false
+	if not pip.reopening:
+		video_aspect_preset = "original"
+		video_aspect_factor = 1.0
 	_web_handoff = bool(metadata.get("web_handoff", false))
 	_stream_projection = StreamProjection.read(platform, uri)
 	_stream_mesh = StreamProjection.mesh(_stream_projection)
@@ -916,6 +926,7 @@ func open_local(uri: String, title: String, start_ms: int = 0, restore_mode: boo
 	if not _web_handoff and _thumbnail_source(uri) and Thumbnails.texture(uri) == null and not RecentFiles.valid_cover(server_cover):
 		_thumb_after_ms = 0
 	local_uri = uri
+	if not pip.reopening: _stall_watch.forget()
 	server_playback.begin(uri)
 	if not pip.reopening: _restore_subtitle_layout(uri, restore_mode)
 	var saved_whisper := whisper_memory.lookup(uri) if restore_mode else {}
@@ -1160,6 +1171,11 @@ func discard_history_thumbnail() -> void:
 	_thumb_after_ms = -1
 
 func discard_file_settings() -> void:
+	video_aspect_preset = "original"
+	video_aspect_factor = 1.0
+	_video_aspect_dirty = false
+	_mode_user_changed = true
+	_apply_geometry()
 	_subtitle_layout_user_changed = true # A late USB identity must not restore a cleared choice.
 	set_subtitle_below_screen(false)
 	_encoding_choices.clear()
@@ -1408,15 +1424,24 @@ func set_depth(enabled: bool) -> bool:
 
 ## The bridge renders the stereo pair: tell it the strength once per session and change.
 func _send_depth_view() -> void:
+	if material: material.set_shader_parameter("depth_convergence", DepthPosition.convergence(depth_position))
 	if not depth_enabled or media.session_id <= 0 or not platform:
 		return
 	# JNISingleton.has_method() cannot see Java plugin methods. Only inspect host test doubles.
 	if not Engine.has_singleton("QuestPlayer") and not platform.has_method("set_mpv_depth_view"): return
 	var strength := depth_strength if depth_requested else 0.0
-	var key := "%d:%f" % [media.session_id, strength]
+	var key := "%d:%f:%f" % [media.session_id, strength, depth_position]
 	if key != _depth_view_sent and platform.set_mpv_depth_view(media.session_id,
-		DEPTH_SHIFT * strength, DEPTH_CONVERGENCE):
+		DEPTH_SHIFT * strength, DepthPosition.convergence(depth_position)):
 		_depth_view_sent = key
+
+func set_depth_position(value: Variant) -> bool:
+	depth_position = DepthPosition.normalize(value)
+	if material: material.set_shader_parameter("depth_convergence", DepthPosition.convergence(depth_position))
+	_send_depth_view()
+	_picture_refresh = 6
+	changed.emit()
+	return true
 
 func depth_ready() -> bool:
 	return depth_enabled and not media.last_pair.is_empty() and media.last_pair.get("depth_ran", false)
@@ -2393,7 +2418,7 @@ func match_spatial_fov() -> bool:
 func mode_action_allowed(operation: String) -> bool:
 	if not cast_allows(operation): return false
 	if not is_spatial_video(): return true
-	return operation not in ["stereo", "projection", "lock_mode", "depth", "depth_strength"] \
+	return operation not in ["stereo", "projection", "lock_mode", "depth", "depth_strength", "depth_position"] \
 		and not operation.begins_with("stereo_") and not operation.begins_with("projection_") \
 		and not operation.begins_with("fov_")
 
@@ -2585,10 +2610,23 @@ func reset_stereo_alignment() -> void:
 	changed.emit()
 
 func commit_stereo_view() -> void:
-	if not _stereo_view_dirty and not _immersive_view_dirty: return
+	if not _stereo_view_dirty and not _immersive_view_dirty and not _video_aspect_dirty: return
 	_stereo_view_dirty = false
 	_immersive_view_dirty = false
+	_video_aspect_dirty = false
 	_remember_mode()
+
+func set_video_aspect(key: String, value: Variant) -> bool:
+	if geometry != Geometry.Geometry.FLAT or key not in VideoAspect.FIELDS or not VideoAspect.valid({key: value}) or not cast_allows(key): return false
+	set(key, value)
+	if key == "video_aspect_preset": video_aspect_factor = 1.0
+	_video_aspect_dirty = true
+	_mode_user_changed = true # Late source/USB identity cannot undo a preview awaiting release.
+	_apply_geometry()
+	return true
+
+func _display_aspect(source_aspect: float) -> float:
+	return VideoAspect.display_ratio(source_aspect, video_aspect_preset, video_aspect_factor)
 
 func set_immersive_adjustment(key: String, value: float) -> bool:
 	if geometry == Geometry.Geometry.FLAT or key not in ImmersiveAdjustments.KEYS or not is_finite(value): return false
@@ -2723,6 +2761,10 @@ func _apply_packed() -> void:
 	alpha_enabled = _rvm_alpha or shown
 
 func _restore_saved_mode(saved: Dictionary) -> void:
+	var aspect_preset: Variant = saved.get("video_aspect_preset", "original")
+	var aspect_factor: Variant = saved.get("video_aspect_factor", 1.0)
+	video_aspect_preset = str(aspect_preset) if VideoAspect.valid({"video_aspect_preset": aspect_preset}) else "original"
+	video_aspect_factor = float(aspect_factor) if VideoAspect.valid({"video_aspect_factor": aspect_factor}) else 1.0
 	for key in ImmersiveAdjustments.KEYS: set(key, float(saved.get(key, 0.0)))
 	geometry = int(saved.geometry)
 	stereo_sbs = bool(saved.stereo_sbs)
@@ -2778,11 +2820,13 @@ func _restore_usb_mode(identity: String) -> void:
 func _remember_mode(user_change: bool = true) -> void:
 	if not _remember_file or not media.accepts(media.session_id):
 		return
+	if not user_change and _video_aspect_dirty: return
 	_remember_last_mode()
 	if not user_change and _mode_memory_cleared: return
 	if user_change: _mode_memory_cleared = false
 	_mode_user_changed = _mode_user_changed or user_change
 	var mode := {"geometry": geometry, "stereo_sbs": stereo_sbs, "swap_eyes": swap_eyes,
+		"video_aspect_preset": video_aspect_preset, "video_aspect_factor": video_aspect_factor,
 		"view_horizontal": view_horizontal, "view_vertical": view_vertical, "view_zoom": view_zoom,
 		"portrait_auto": portrait.automatic, "portrait_auto_explicit": _portrait_auto_explicit,
 		"portrait_strength": portrait.strength, "portrait_enhanced": portrait.enhanced,
@@ -3046,11 +3090,18 @@ func _check_playback_stall(now_ms: int) -> void:
 		and str(details.get("paused", "yes")) == "no" and str(details.get("paused_for_cache", "no")) != "yes" \
 		and str(details.get("eof_reached", "no")) != "yes"
 	var position := str(details.get("position_seconds", ""))
-	if not _stall_watch.observe(active, float(position) if position.is_valid_float() else NAN, now_ms): return
+	var verdict := _stall_watch.observe(active, float(position) if position.is_valid_float() else NAN, now_ms)
+	if verdict == StallWatch.NONE: return
 	var at := int(float(position) * 1000.0)
 	Log.record("mpv_playback_stall", {"session_id": media.session_id, "position_ms": at, "layer": _layer_session,
-		"decoder": media.decoder, "audio_pts_us": details.get("audio_pts_us", null)})
-	call_deferred("_reopen_at", at, _layer_session)
+		"decoder": media.decoder, "audio_pts_us": details.get("audio_pts_us", null), "verdict": verdict})
+	if verdict == StallWatch.RECOVER:
+		call_deferred("_reopen_at", at, _layer_session)
+		return
+	# The reopen froze at the same spot again: stop instead of reopening every minute.
+	var id: int = media.session_id
+	_on_error(id, JSON.stringify({"code": "MPV_PLAYBACK_STUCK", "stage": "output"}))
+	if platform: platform.close_mpv_video(id)
 
 func _on_released(id: int, _payload: String) -> void:
 	if id == media.session_id and _recover:
@@ -3562,6 +3613,7 @@ func _apply_geometry() -> void:
 	text_regions.resize(8)
 	material.set_shader_parameter("depth_text_regions", text_regions)
 	material.set_shader_parameter("depth_enabled", depth_enabled and not _binding.warped)
+	material.set_shader_parameter("depth_convergence", DepthPosition.convergence(depth_position))
 	material.set_shader_parameter("depth_shift", DEPTH_SHIFT * depth_strength if depth_requested else 0.0)
 	_sync_portrait()
 
@@ -3583,7 +3635,7 @@ func layout_snapshot() -> Dictionary:
 		"spatial_video": is_spatial_video(), "spatial_metadata": spatial_metadata(), "spatial_auto_disparity": spatial_auto_disparity,
 		"top_bottom": stereo_sbs and top_bottom, "stereo_half": stereo_sbs and stereo_half, "fisheye_fov": fisheye_fov,
 		"alpha_requested": alpha_requested, "alpha_enabled": alpha_enabled, "profile": profile,
-		"depth_requested": depth_requested, "depth_enabled": depth_enabled, "depth_strength": depth_strength, "auto_depth": auto_depth,
+		"depth_requested": depth_requested, "depth_enabled": depth_enabled, "depth_strength": depth_strength, "depth_position": depth_position, "auto_depth": auto_depth,
 		"screen_rotation": screen_rotation, "playback_speed": playback_speed,
 		"video_layer": {"shown": video_layer_shown, "surface": _layer_session, "picture_token": _picture_token,
 			"warped": _binding.warped, "layers": video_layer.debug_layers() if video_layer else []},

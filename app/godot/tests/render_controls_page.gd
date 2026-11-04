@@ -77,7 +77,7 @@ func run() -> void:
 		check_headers(menu)
 		await shot(viewport, menu, output.path_join(language + "-combinations-list.png"))
 		visible_text = "\n".join(menu.find_children("*", "Label3D", true, false).filter(func(label): return label.is_visible_in_tree()).map(func(label): return label.text))
-		check(["Turn 180° (360°)", "Previous video", "Next video"].all(func(text): return visible_text.contains(I18n.t(text))), "New media actions are visible on the combinations first page: " + language)
+		check(["Volume up", "Volume down", "Open media library"].all(func(text): return visible_text.contains(I18n.t(text))), "Video volume and file actions are visible on the combinations first page: " + language)
 		open_dropdown(menu, "control_binding/subtitles")
 		await shot(viewport, menu, output.path_join(language + "-combination.png"))
 		check(str(menu.controls_page.selection.prefix).ends_with("?") and str(menu.controls_page.selection.prefix) == menu.controls_page.combination_hint(), "Dialog identifies the missing third chord input")

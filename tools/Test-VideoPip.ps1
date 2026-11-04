@@ -9,7 +9,7 @@ $workspace = Split-Path -Parent $PSScriptRoot
 $project = Join-Path $workspace 'app/godot'
 $output = Join-Path $workspace 'build/output/video-pip'
 New-Item -ItemType Directory -Path $output -Force | Out-Null
-$cases = @('test_video_pip', 'test_video_pip_compositor', 'test_video_pip_refinements', 'test_video_pip_feedback', 'test_video_pip_images', 'test_video_pip_hands', 'test_image_picker_memory', 'test_pip_screenshot')
+$cases = @('test_video_pip', 'test_video_pip_rotation', 'test_video_pip_compositor', 'test_video_pip_refinements', 'test_video_pip_feedback', 'test_video_pip_images', 'test_video_pip_hands', 'test_image_picker_memory', 'test_pip_screenshot')
 if ($Regression) {
     $cases += @('test_grip_upright', 'test_video_layer', 'test_controller_bindings', 'test_controller_feedback', 'test_player_sticks',
         'test_video_idle_rays', 'test_video_playback_modes', 'test_spatial_videos', 'test_video_capture')

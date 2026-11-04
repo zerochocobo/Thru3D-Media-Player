@@ -164,6 +164,7 @@ func load(value: Dictionary) -> void:
 	orders = value.duplicate(true)
 
 func reset() -> void:
+	menu.system_text_input.cancel("file_rename")
 	editing = false; selection.clear(); modal = ""
 	_row_indices.clear()
 	cloud_requested_order = ""; cloud_rollback = {}

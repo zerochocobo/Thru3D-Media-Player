@@ -58,7 +58,7 @@ func run() -> void:
 			menu.set_layout_viewer(Transform3D.IDENTITY)
 			menu.set_cinema_world_anchor(cinema)
 			menu.toggle(); menu._activate(110)
-			check(menu._subtitle_detail_group().is_empty() and menu.choices.targets.is_empty(), "Details initially collapsed " + locale)
+			check(menu._subtitle_detail_group() == "narration" and not menu.choices.targets.is_empty(), "Active feature details initially expanded " + locale)
 			check(menu._subtitle_groups().map(func(group): return group.group) == ["listening", "narration", "appearance"], "Approved entry order")
 			check(menu._subtitle_group_states.listening.text == I18n.t("Off") and menu._subtitle_group_states.narration.text == I18n.t("On"), "Both states visible on the left before expanding")
 			var footer_position: Vector3 = menu._subtitle_status_label.global_position
@@ -123,6 +123,7 @@ func run() -> void:
 			var before := events.size()
 			check(tap(menu, Player.SUBTITLE_DETAIL_CLOSE) and menu._subtitle_detail_group().is_empty() and menu.choices.targets.is_empty(), "Right close removes all detail hit targets")
 			check(events.size() == before and state.narration_enabled and not menu._subtitle_status_label.text.is_empty(), "Collapsing does not stop narration or hide its status")
+			footer_position = menu._subtitle_status_label.global_position
 			state.narration_status = "preparing"; state.narration_progress = 50; menu.refresh_values()
 			check(menu._subtitle_status_label.text.contains("50%") and menu._subtitle_status_label.global_position.is_equal_approx(footer_position), "Collapsed footer updates progress without moving")
 			check(tap(menu, Player.SUBTITLE_FILES) and menu._subtitle_file_ids.size() == 1, "Original external subtitle disclosure still works")
@@ -140,7 +141,7 @@ func run() -> void:
 			check(tap(menu, field(menu, "listening_enabled", "choose")) and state.listening_enabled, "Original listening switch still emits its existing setting")
 			state.narration_enabled = false; state.narration_available = false; state.listening_state = "ready"; state.listening_caption = "Listening status"; menu.refresh()
 			check(menu._subtitle_group_states.listening.text == I18n.t("On") and menu._subtitle_group_states.narration.text == I18n.t("Off"), "Left states reflect real capability transitions")
-			check(not button(menu, Player.SUBTITLE_NARRATION).enabled and not tap(menu, Player.SUBTITLE_NARRATION), "Live subtitles never enable unsupported TTS")
+			check(tap(menu, Player.SUBTITLE_NARRATION) and not button(menu, field(menu, "narration_enabled")).enabled, "Live subtitles allow configuring narration but never enable unsupported TTS")
 			check(tap(menu, Player.SUBTITLE_DETAIL_CLOSE) and menu._subtitle_status_label.text == "Listening status", "Listening status remains visible after folding")
 			world.free()
 	var settings := {"subtitle_size": 125.0, "voice_manager": {"narration_clone_supported": true}, "subtitle_defaults": {"listening_source": "ja", "listening_target": "zh-Hans"}}

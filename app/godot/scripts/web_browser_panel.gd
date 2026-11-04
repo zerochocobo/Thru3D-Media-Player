@@ -1,4 +1,33 @@
 extends RefCounted
+const ChineseInput := preload("res://scripts/chinese_input.gd")
+var _chinese_mode := -1
+var _keyboard_seen := 0
+var _keyboard_target := {}
+
+func _sync_chinese_mode() -> void:
+	var mode := int(ChineseInput.enabled())
+	if mode == _chinese_mode or not is_instance_valid(menu.platform) or not Methods.supports(menu.platform, "web_browser_command"): return
+	_chinese_mode = mode
+	menu.platform.web_browser_command(JSON.stringify({"action": "keyboard_mode", "enabled": bool(mode)}))
+	if not mode: ChineseInput.close("browser"); _keyboard_seen = 0; _keyboard_target.clear()
+
+func _sync_chinese_keyboard() -> void:
+	var epoch := int(data.get("keyboard_epoch", 0))
+	if menu.system_text_input.active():
+		ChineseInput.close("browser"); _keyboard_seen = epoch; _keyboard_target.clear(); return
+	if not ChineseInput.enabled() or not data.get("custom_keyboard", false) or epoch <= 0:
+		ChineseInput.close("browser"); _keyboard_seen = 0; _keyboard_target.clear(); return
+	if epoch == _keyboard_seen: return
+	_keyboard_seen = epoch
+	_keyboard_target = {"window": focused_window, "tab": int(data.get("tab_id", 0)), "navigation": int(data.get("navigation", 0)), "epoch": epoch}
+	var target := _keyboard_target.duplicate()
+	ChineseInput.open(menu, "browser", func(operation, value):
+		if not active() or menu.system_text_input.active() or target != _keyboard_target: return false
+		var request := target.merged({"command": operation, "text": value}, true)
+		menu.platform.web_browser_input("custom", JSON.stringify(request))
+		return true,
+		func(): return active() and not menu.system_text_input.active() and ChineseInput.enabled() and target == _keyboard_target,
+		Callable(), bool(data.get("keyboard_latin", false)))
 
 const Distribution := preload("res://scripts/distribution_channel.gd")
 const I18n := preload("res://scripts/i18n.gd")
@@ -9,12 +38,19 @@ const KEY := BASE + 100
 const KEY_CONTROL := BASE + 40
 const WINDOW_TARGET := BASE + 300
 const RECT := Rect2(-0.59, -0.48, 1.44, 0.90)
+# Resting-hand jitter and per-frame rays make desktop pages run mousemove/hover
+# handlers (and hover video previews) every frame. Presses and drags stay exact.
+const HOVER_DEADZONE_CSS := 2.0
+const HOVER_INTERVAL_MS := 33
+const SCROLL_HOVER_HOLD_MS := 250
 var menu: Node
 var opened := false
 var data := {}
 var draft := ""
 var hand := ""
 var point := Vector2(0.5, 0.5)
+var _hover_sent_ms := -HOVER_INTERVAL_MS
+var _scroll_hover_until := 0
 var windows := {}
 var low_end := false
 var window_created: Callable
@@ -83,6 +119,7 @@ func cinema_video_active() -> bool:
 
 func open(url: String = "") -> void:
 	if not supported(): return
+	_sync_chinese_mode()
 	menu.browser_opened.emit()
 	if menu.compact: menu.layout_requested.emit()
 	opened = true
@@ -100,6 +137,7 @@ func open(url: String = "") -> void:
 	next_poll = 0; menu.refresh()
 
 func close(force_release: bool = false) -> void:
+	ChineseInput.close("browser"); _keyboard_seen = 0; _keyboard_target.clear()
 	cancel()
 	if handoff: _cancel_handoff()
 	library.reset()
@@ -114,6 +152,7 @@ func close(force_release: bool = false) -> void:
 	tabs_open = false
 
 func tick() -> void:
+	_sync_chinese_mode()
 	if menu.visible and menu.section == menu.Section.WEB and supported() and Time.get_ticks_msec() >= saved_poll:
 		saved_poll = Time.get_ticks_msec() + 1000
 		# Up to 1000 bookmarks: skip parsing and deep comparison when nothing changed.
@@ -143,6 +182,7 @@ func tick() -> void:
 		cancel(); menu.system_text_input.cancel("web_browser")
 		tabs_open = false; window_action.clear(); _signature = ""
 	focused_window = next_focus
+	_sync_chinese_keyboard()
 	if window_action.get("command") == "move_tab" and not data.get("tab_list", []).any(func(item): return int(item.id) == int(window_action.get("tab", 0)) and int(item.window) == focused_window):
 		window_action.clear()
 	var ids := live_window_ids()
@@ -703,6 +743,7 @@ func action(target: int) -> bool:
 		2: menu.platform.web_browser_action("reload"); refresh_windows()
 		3:
 			refresh_windows()
+			ChineseInput.close("browser"); _keyboard_target.clear()
 			menu.platform.web_browser_action("blur")
 			menu.system_text_input.begin("web_browser", draft, 4096, _edited, _navigate)
 		4: menu.platform.web_browser_action("bookmark"); saved_poll = 0; refresh_windows()
@@ -819,9 +860,13 @@ func move(owner: String, origin: Vector3, direction: Vector3, tracked: bool) -> 
 			if windows[id].selecting: return
 			if id == focused_window:
 				# A resting ray must not make Gecko hit-test the page every frame.
+				var now := Time.get_ticks_msec()
+				if now < _scroll_hover_until: return
 				var hover: Variant = windows[id].page_point(origin, direction)
-				if hover == null or (id == pointer_window and hover.distance_squared_to(point) < 1.0e-8): return
-				pointer_window = id; point = hover; _pointer("move", point)
+				if hover == null: return
+				if id == pointer_window and (((hover - point) * windows[id].page_css_scale()).length() < HOVER_DEADZONE_CSS
+						or now - _hover_sent_ms < HOVER_INTERVAL_MS): return
+				pointer_window = id; point = hover; _hover_sent_ms = now; _pointer("move", point)
 func release(owner: String, origin: Vector3, direction: Vector3, tracked: bool) -> bool:
 	if hand != owner: return false
 	var projected: Variant = windows[pointer_window].page_point(origin, direction) if tracked else null
@@ -838,4 +883,5 @@ func scroll(amount: float, delta: float) -> bool:
 	if windows.has(focused_window) and windows[focused_window].selecting: return true
 	if hand.is_empty() and is_finite(amount) and absf(amount) > 0.2:
 		pointer_window = focused_window; _pointer("scroll", point, amount * delta * 8.0)
+		_scroll_hover_until = Time.get_ticks_msec() + SCROLL_HOVER_HOLD_MS
 	return true

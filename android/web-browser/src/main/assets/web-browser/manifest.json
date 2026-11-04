@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "Thru3D video handoff",
-  "version": "1.35",
+  "version": "1.36",
   "browser_specific_settings": { "gecko": { "id": "web-video@thru3d.local" } },
   "permissions": ["nativeMessaging", "nativeMessagingFromContent", "geckoViewAddons", "cookies", "webRequest", "webRequestBlocking", "http://*/*", "https://*/*",
     "https://*.youtube.com/*", "https://*.bilibili.com/*", "https://*.douyin.com/*", "https://*.iesdouyin.com/*",
@@ -16,7 +16,7 @@
   "background": { "scripts": ["background.js", "bilibili.js", "bilibili-response.js", "douyin.js", "douyin-response.js", "plex.js", "network.js"], "persistent": true },
   "content_scripts": [{
     "matches": ["http://*/*", "https://*/*"],
-    "js": ["bilibili.js", "douyin.js", "plex.js", "media.js"],
+    "js": ["bilibili.js", "douyin.js", "plex.js", "danmaku.js", "media.js"],
     "run_at": "document_start",
     "all_frames": true
   }]

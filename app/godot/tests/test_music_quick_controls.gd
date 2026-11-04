@@ -84,6 +84,7 @@ func run() -> void:
 	audio.current = "yunhai"; audio._loaded = "yunhai"; audio.paused = false; audio.queue.assign(["yunhai"])
 	var platform := StoragePlatform.new(); audio.importer.platform = platform
 	var home := CountedHome.new(); root.add_child(home)
+	home.session_controls_provider = func(): return {"cinema_visible": true, "passthrough_visible": true}
 	home.background_audio_provider = audio.snapshot; home.visible = true; home.refresh()
 	var opened := []; home.music_requested.connect(func(): opened.append(true))
 	home.music_toggle_requested.connect(audio.toggle_pause)

@@ -359,7 +359,8 @@ func action(id: int) -> bool:
 	if pending > 0: return true
 	if id == INPUT:
 		menu.system_text_input.begin("archive_password", password, 512,
-			func(value): password = value; menu.refresh(), func(value): password = value; submit())
+			func(value): password = value; menu.refresh(), func(value): password = value; submit(), Callable(),
+			func(): return menu.visible and opened and pending == 0)
 	elif id == SUBMIT: submit()
 	elif id == SAVE: persist = not persist
 	elif id == HISTORY: history = not history; page = 0; book()

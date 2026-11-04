@@ -155,6 +155,7 @@ func _slider(parent: Node3D, row: Dictionary, centre: Vector2, width: float, hei
 	var field_centre := centre if nudge_sides else centre - Vector2((width - field_width) * 0.5, 0)
 	var rail_width := field_width - (0.03 if nudge_sides or row.get("hide_value", false) else 0.15)
 	var target := _button({"kind": "slider", "key": row.key, "span": row.span}, "", field_centre, Vector2(field_width, height), parent)
+	if row.has("hint"): menu._tips[target] = menu.I18n.t(str(row.hint))
 	if row.has("source_uri"): targets[target].source_uri = row.source_uri
 	if row.has("subtitle_key"): targets[target].subtitle_key = row.subtitle_key
 	if row.has("audio_key"): targets[target].audio_key = row.audio_key
@@ -227,6 +228,7 @@ func _refresh_slider(target: int, value: float) -> void:
 	slider.knob.position.x = slider.left + fraction * slider.width
 	slider.label.text = ("%.0f" % value if slider.unit in ["%", " FPS"] else ("%+.0f" % value if slider.unit == "°" and value != 0 else ("%.0f" % value if slider.unit == "°" else "%.1f" % value))) + slider.unit
 	if slider.get("signed", false): slider.label.text = ((("%+.2f" if not is_zero_approx(value) else "%.2f") if slider.get("decimals", 1) == 2 else ("%+.1f" if not is_zero_approx(value) else "%.1f")) % value) + slider.unit
+	if slider.get("decimals", 1) == 0: slider.label.text = (("%+.0f" if slider.get("signed", false) and not is_zero_approx(value) else "%.0f") % value) + slider.unit
 	if slider.has("reset"):
 		slider.reset.enabled = not same(value, slider.reset_value)
 		if slider.get("reset_when_changed", false): slider.reset.node.visible = slider.reset.enabled

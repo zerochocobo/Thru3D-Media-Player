@@ -191,10 +191,11 @@ func _run() -> void:
 	for unsupported in [0,4]:
 		video.subtitles.select(unsupported);video.narration.apply();menu.refresh()
 		check(not video.narration.available() and not menu._narration_on(),"Off/PGS removes active narration icon")
-		check(option(menu,"narration_enabled",true)<0 and button(menu,menu.NARRATION_PREVIEW).is_empty(),"Off/PGS hides switch and voice controls")
+		check(option(menu,"narration_enabled",true)<0 and not button(menu,menu.NARRATION_PREVIEW).enabled,"Off/PGS retains preferences but disables activation and preview")
 		check(not host.calls.back()[1].enabled,"Off/PGS sends runtime disable")
 		check(not video.narration.set_option("narration_preview",true),"Off/PGS rejects stale preview actions")
-	video.subtitles.select(3);video.narration.apply();menu.refresh(); menu._activate(menu.SUBTITLE_NARRATION)
+	video.subtitles.select(3);video.narration.apply();menu.refresh()
+	if menu._subtitle_detail_group() != "narration": menu._activate(menu.SUBTITLE_NARRATION)
 	check(video.narration.available() and host.calls.back()[1].enabled,"Text subtitle restores remembered narration preference")
 	var saved := ConfigFile.new();video.narration.save(saved)
 	video.narration.profile="";video.narration.load_settings(saved)
@@ -208,8 +209,8 @@ func _run() -> void:
 		check(menu._narration_on(),"Narration glyph active " + stage)
 		check(menu._narration_preparing()==(stage in ["verifying","model_loading","preparing"]),"Loading ring distinguishes working/error " + stage)
 	tap(menu,option(menu,"narration_enabled",false))
-	check(button(menu,menu.NARRATION_PREVIEW).is_empty() and not menu._narration_on(),"Off removes voice audition and restores the narration icon")
-	check(menu.choices.targets.values().all(func(item): return not str(item.get("key", "")).begins_with("narration_") or item.key == "narration_enabled"),"Off leaves only the narration switch, including no reading language")
+	check(not button(menu,menu.NARRATION_PREVIEW).is_empty() and not menu._narration_on(),"Off retains explicit voice audition without enabling narration")
+	check(menu.choices.targets.values().any(func(item): return item.get("key", "") == "narration_language"),"Off retains the reading language for configuration before startup")
 	var off_target: int = menu.choices.targets.keys().filter(func(target): return menu.choices.targets[target].get("key", "") == "narration_enabled")[0]
 	check(is_equal_approx(button(menu,off_target).rect.size.x,0.09),"Off keeps the compact switch size after hiding language")
 	for locale in ["zh","zh_Hant","ja","en"]:

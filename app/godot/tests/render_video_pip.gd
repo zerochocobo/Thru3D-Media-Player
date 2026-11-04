@@ -45,6 +45,7 @@ func run() -> void:
 	material.set_shader_parameter("stereo_sbs", true)
 	window.crop_parameters()
 	for geometry in [0, 1, 2, 3]:
+		window.panorama = geometry != 0
 		material.set_shader_parameter("video_geometry", geometry)
 		for view in [1, 2]:
 			for zoom in [1.0, 8.0]:
@@ -55,6 +56,7 @@ func run() -> void:
 				check((color.r > 0.9 and color.b < 0.1) if view == 1 else (color.b > 0.9 and color.r < 0.1), "Correct eye at projection %d, eye %d, zoom %.1f" % [geometry, view, zoom])
 				if geometry == 3 and view == 2 and zoom == 1: image.save_png(output.path_join("stereo-right.png"))
 	material.set_shader_parameter("video_geometry", 0)
+	window.panorama = false
 	material.set_shader_parameter("viewing_eye", 1); window.crop_parameters()
 	material.set_shader_parameter("swap_eyes", true)
 	var image: Image = await draw()
@@ -72,7 +74,7 @@ func run() -> void:
 	# Longitude endpoints use matching red edges, green interior; looking backwards crosses the seam.
 	source.fill(Color.GREEN); source.fill_rect(Rect2i(0, 0, 90, 256), Color.RED); source.fill_rect(Rect2i(422, 0, 90, 256), Color.RED)
 	texture.update(source)
-	window.zoom = 1; window.crop_basis = Basis(Vector3.UP, PI); window.crop_parameters()
+	window.panorama = true; window.zoom = 1; window.crop_basis = Basis(Vector3.UP, PI); window.crop_parameters()
 	material.set_shader_parameter("video_geometry", 3)
 	image = await draw(); image.save_png(output.path_join("panorama-seam.png"))
 	check(pixel(image, 0.2).r > 0.9 and pixel(image, 0.8).r > 0.9 and pixel(image, 0.5).g < 0.1, "360 crop crosses longitude seam continuously")
@@ -82,6 +84,7 @@ func run() -> void:
 		check(pixel(image, 0.5).r < 0.05 and pixel(image, 0.5).g < 0.05, "Invalid hemisphere/lens is black, not edge smear: %d" % geometry)
 	# Rotation and magnification use displayed per-eye coordinates.
 	material.set_shader_parameter("video_geometry", 0); material.set_shader_parameter("rotation_degrees", 90)
+	window.panorama = false
 	source.fill(Color.BLUE); source.fill_rect(Rect2i(0, 0, 256, 256), Color.RED); texture.update(source)
 	window.zoom = 1; window.crop_center = Vector2(0.5, 0.5); window.crop_parameters()
 	image = await draw()
@@ -130,6 +133,67 @@ func run() -> void:
 	group.pip.sync()
 	image = await draw(); check(image.save_png(output.path_join("panorama-three-windows.png")) == OK, "Three-window panoramic layout preview saved")
 	check(group._binding._consumers.size() == 3 and group.pip.windows.values().all(func(w): return w.frame.visible), "All three windows render from a single shared binding")
+	# Exercise actual manager updates against pixels: the selected centre stays on
+	# the source seam, but a rolled movie must turn a vertical split horizontal.
+	group.pip.set_count(1, camera.global_transform)
+	var tracked: Node3D = group.pip.windows[1]
+	tracked.global_transform = Transform3D(Basis.IDENTITY, Vector3(0, 0, -2))
+	tracked.set_size(Vector2(2.0, 1.125)); tracked.crop_basis = Basis.IDENTITY
+	viewport.size = Vector2i(800, 450); camera.position = Vector3.ZERO
+	camera.projection = Camera3D.PROJECTION_ORTHOGONAL; camera.size = 1.125
+	source.fill(Color.BLUE); source.fill_rect(Rect2i(0, 0, 256, 256), Color.RED); texture.update(source)
+	group.pip.sync(); image = await draw()
+	check(pixel(image, 0.25).r > 0.9 and pixel(image, 0.75).b > 0.9, "Unrotated panorama crop has the source's vertical split")
+	var tracked_pose: Transform3D = tracked.global_transform
+	group.set_screen_rotation(90); group.pip.sync(); image = await draw()
+	image.save_png(output.path_join("panorama-rotation-follow.png"))
+	check(pixel(image, 0.5, 0.25).r > 0.9 and pixel(image, 0.5, 0.75).b > 0.9, "Movie roll rotates the crop pixels without rotating the window")
+	check(tracked.global_transform == tracked_pose, "Rendered window remains fixed during movie rotation")
+	group.set_screen_rotation(-90); group.pip.sync(); image = await draw()
+	check(pixel(image, 0.5, 0.25).b > 0.9 and pixel(image, 0.5, 0.75).r > 0.9, "Opposite movie roll reverses the crop's horizontal split")
+	# The reported case is a flat movie: test the production manager, panel roll,
+	# shared texture and per-eye UV path together, including encoded rotation.
+	group.geometry = 0; group.set_screen_rotation(0); group.pip.sync()
+	tracked.crop_center = Vector2(0.5, 0.5); tracked.zoom = 1
+	group.pip.sync(); image = await draw()
+	check(pixel(image, 0.25).r > 0.9 and pixel(image, 0.75).b > 0.9, "Flat movie begins with a vertical source split")
+	for angle in [90, -90, 37]:
+		group.set_screen_rotation(angle); group.pip.sync(); image = await draw()
+		check((pixel(image, 0.5, 0.25).r > 0.9 and pixel(image, 0.5, 0.75).b > 0.9) if angle > 0 else (pixel(image, 0.5, 0.25).b > 0.9 and pixel(image, 0.5, 0.75).r > 0.9), "Flat movie roll changes crop pixels: %s degrees" % angle)
+		check(tracked.global_transform == tracked_pose, "Flat rotation never turns or moves the window")
+		image.save_png(output.path_join("flat-rotation-%d.png" % angle))
+	group.set_screen_rotation(90); group.material.set_shader_parameter("rotation_degrees", 90)
+	group.pip.sync(); image = await draw()
+	check(pixel(image, 0.25).b > 0.9 and pixel(image, 0.75).r > 0.9, "Flat screen roll composes with encoded source rotation exactly once")
+	group.material.set_shader_parameter("rotation_degrees", 0)
+	# A physical circle must stay circular even though the source UV is not square.
+	for y in source.get_height():
+		for x in source.get_width():
+			var delta := Vector2((x + 0.5) / source.get_width() - 0.5, (y + 0.5) / source.get_height() - 0.5)
+			delta.x *= tracked.source_aspect
+			# Subpixel coverage avoids magnifying the low-resolution fixture's stair steps.
+			var coverage := clampf((0.08 - delta.length()) * source.get_height() + 0.5, 0, 1)
+			source.set_pixel(x, y, Color(coverage, 0, 1 - coverage))
+	texture.update(source)
+	for angle in [0, 37, 90, -90]:
+		group.set_screen_rotation(angle); group.pip.sync(); image = await draw()
+		var width := 0; var height := 0
+		for x in image.get_width():
+			if image.get_pixel(x, image.get_height() / 2).r > 0.5: width += 1
+		for y in image.get_height():
+			if image.get_pixel(image.get_width() / 2, y).r > 0.5: height += 1
+		check(width > 150 and absi(width - height) <= 3, "Flat crop retains physical aspect at %s degrees (%s x %s)" % [angle, width, height])
+		if angle == 37: image.save_png(output.path_join("flat-rotation-circle.png"))
+	source.fill(Color.RED); texture.update(source)
+	tracked.crop_center = Vector2(0.99, 0.01)
+	group.set_screen_rotation(0); group.pip.sync(); image = await draw()
+	check(pixel(image, 0.85, 0.15).r > 0.9, "Unrotated edge crop stays on the selected source")
+	var edge_center: Vector2 = tracked.picture.get_shader_parameter("pip_center")
+	group.set_screen_rotation(45); group.pip.sync(); image = await draw()
+	var outside := pixel(image, 0.85, 0.15)
+	check(outside.r < 0.05 and outside.g < 0.05 and outside.b < 0.05 and pixel(image, 0.5).r > 0.9, "Rotated flat border is black instead of smearing source-edge pixels")
+	check((tracked.picture.get_shader_parameter("pip_center") as Vector2).is_equal_approx(edge_center), "Clipping a rotated edge never shifts the selected centre")
+	image.save_png(output.path_join("flat-rotation-border.png"))
 	group.pip.clear(); group._binding.color_rid = RID(); group._binding.unbind()
 	viewport.queue_free(); await process_frame
 	for failure in failures: push_error(failure)

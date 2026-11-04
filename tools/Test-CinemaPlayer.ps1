@@ -13,18 +13,24 @@ $cases = @(
     @('test_cinema_placement', 'Cinema placement: \d+ checks, 0 failures', $false),
     @('test_i18n', 'i18n checks=\d+ failures=0', $false),
     @('test_cinema_environment', 'Cinema environment: \d+ checks, 0 failures', $false),
+    @('test_cinema_seat_targeting', 'Cinema seat targeting: \d+ checks, 0 failures', $false),
+    @('test_cinema_landing_assist', 'Cinema landing assist: \d+ checks, 0 failures', $false),
     @('test_cinema_background_menu', 'CINEMA_BACKGROUND_MENU checks=\d+ failures=0', $true),
     @('test_cinema_player_integration', 'Cinema player integration: \d+ checks, 0 failures', $false),
     @('test_cinema_world_transport', 'CINEMA_WORLD_TRANSPORT checks=\d+ failures=0', $false),
+    @('test_cinema_source_switch_menu', 'Cinema source switch \(vr\): \d+ checks, 0 failures', $false, 'vr'),
+    @('test_cinema_source_switch_menu', 'Cinema source switch \(photo\): \d+ checks, 0 failures', $false, 'photo'),
     @('render_cinema_player', 'Cinema player render: \d+ checks, 0 failures', $true)
 )
 foreach ($case in $cases) {
     $name = $case[0]
-    $log = Join-Path $output "$name.log"
+    $variant = if ($case.Count -gt 3) { $case[3] } else { '' }
+    $log = Join-Path $output ($(if ($variant) { "$name-$variant" } else { $name }) + '.log')
     $arguments = @('--path', $project, '--xr-mode', 'off', '--log-file', $log, '--quit-after', '2400')
     if ($case[2]) { $arguments += @('--rendering-method', 'gl_compatibility', '--rendering-driver', 'opengl3', '--resolution', '1440x960', '--position', '-2400,-1200') }
     else { $arguments += '--headless' }
     $arguments += @('--script', "res://tests/$name.gd")
+    if ($variant) { $arguments += @('--', $variant) }
     & $Godot @arguments 2>&1 | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "$name exited with $LASTEXITCODE" }
     $lines = Get-Content -LiteralPath $log

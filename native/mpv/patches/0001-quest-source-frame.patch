@@ -431,7 +431,43 @@
          MP_ERR(vd, "CUDA frame without data. This is a FFmpeg bug.\n");
 --- a/video/out/hwdec/hwdec_aimagereader.c
 +++ b/video/out/hwdec/hwdec_aimagereader.c
-@@ -157,7 +157,8 @@
+@@ -35,6 +35,8 @@
+ typedef void *GLeglImageOES;
+ typedef void *EGLImageKHR;
+ #define EGL_NATIVE_BUFFER_ANDROID 0x3140
++typedef void *EGLSyncKHR;
++#define EGL_SYNC_NATIVE_FENCE_ANDROID 0x3144
+ 
+ struct priv_owner {
+     struct mp_hwdec_ctx hwctx;
+@@ -52,6 +54,7 @@
+     void (*AImageReader_delete)(AImageReader *);
+     media_status_t (*AImage_getHardwareBuffer)(const AImage *, AHardwareBuffer **);
+     void (*AImage_delete)(AImage *);
++    void (*AImage_deleteAsync)(AImage *, int); // optional: API 26
+     void (*AHardwareBuffer_describe)(const AHardwareBuffer *, AHardwareBuffer_Desc *);
+     jobject (*ANativeWindow_toSurface)(JNIEnv *, ANativeWindow *);
+ };
+@@ -73,6 +76,10 @@
+     EGLClientBuffer (EGLAPIENTRY *GetNativeClientBufferANDROID)(
+         const struct AHardwareBuffer *);
+     void (EGLAPIENTRY *EGLImageTargetTexture2DOES)(GLenum, GLeglImageOES);
++    // EGL_ANDROID_native_fence_sync: all NULL when unavailable.
++    EGLSyncKHR (EGLAPIENTRY *CreateSyncKHR)(EGLDisplay, EGLenum, const EGLint *);
++    EGLBoolean (EGLAPIENTRY *DestroySyncKHR)(EGLDisplay, EGLSyncKHR);
++    EGLint (EGLAPIENTRY *DupNativeFenceFDANDROID)(EGLDisplay, EGLSyncKHR);
+ };
+ 
+ static const struct { const char *symbol; int offset; } lib_functions[] = {
+@@ -144,6 +151,7 @@
+ 
+     if (!load_lib_functions(p, hw->log))
+         return -1;
++    p->AImage_deleteAsync = dlsym(p->lib_handle, "AImage_deleteAsync");
+ 
+     static const char *es2_exts[] = {"GL_OES_EGL_image_external", 0};
+     static const char *es3_exts[] = {"GL_OES_EGL_image_external_essl3", 0};
+@@ -157,7 +165,8 @@
      // (incl. ones currently queued) at the same time.
      // The documentation recommends a margin of 2 for acquireLatestImage to
      // work correctly.
@@ -441,14 +477,66 @@
      // dummy dimensions, AImageReader only transports hardware buffers
      media_status_t ret = p->AImageReader_newWithUsage(16, 16,
          AIMAGE_FORMAT_PRIVATE, AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE,
-@@ -324,9 +325,13 @@
+@@ -255,6 +264,17 @@
+     if (!p->CreateImageKHR || !p->DestroyImageKHR ||
+         !p->GetNativeClientBufferANDROID || !p->EGLImageTargetTexture2DOES)
+         return -1;
++
++    if (o->AImage_deleteAsync && gl_check_extension(
++            eglQueryString(eglGetCurrentDisplay(), EGL_EXTENSIONS), "EGL_ANDROID_native_fence_sync")) {
++        p->CreateSyncKHR = (void *)eglGetProcAddress("eglCreateSyncKHR");
++        p->DestroySyncKHR = (void *)eglGetProcAddress("eglDestroySyncKHR");
++        p->DupNativeFenceFDANDROID = (void *)eglGetProcAddress("eglDupNativeFenceFDANDROID");
++        if (!p->CreateSyncKHR || !p->DestroySyncKHR || !p->DupNativeFenceFDANDROID)
++            p->CreateSyncKHR = NULL;
++    }
++    MP_INFO(p, "Decoder images return %s\n",
++            p->CreateSyncKHR ? "with a GPU fence" : "after GPU completion");
+ 
+     AImageReader_ImageListener listener = {
+         .context = p,
+@@ -313,10 +333,32 @@
+     mp_cond_destroy(&p->cond);
+ }
+ 
+-static void mapper_unmap(struct ra_hwdec_mapper *mapper)
++static void release_image(struct ra_hwdec_mapper *mapper)
+ {
+     struct priv *p = mapper->priv;
+     struct priv_owner *o = mapper->owner->priv;
++    GL *gl = ra_gl_get(mapper->ra);
++    int fence = -1;
++    if (p->CreateSyncKHR) {
++        EGLDisplay display = eglGetCurrentDisplay();
++        EGLSyncKHR sync = p->CreateSyncKHR(display, EGL_SYNC_NATIVE_FENCE_ANDROID, NULL);
++        if (sync) {
++            gl->Flush(); // the fence has a descriptor only once submitted
++            fence = p->DupNativeFenceFDANDROID(display, sync);
++            p->DestroySyncKHR(display, sync);
++        }
++    }
++    if (fence >= 0) {
++        o->AImage_deleteAsync(p->image, fence); // takes the descriptor
++        return;
++    }
++    gl->Finish();
++    o->AImage_delete(p->image);
++}
++
++static void mapper_unmap(struct ra_hwdec_mapper *mapper)
++{
++    struct priv *p = mapper->priv;
+ 
+     if (p->egl_image) {
+         p->DestroyImageKHR(eglGetCurrentDisplay(), p->egl_image);
+@@ -324,9 +366,13 @@
      }
  
      if (p->image) {
 -        o->AImage_delete(p->image);
 +        // An exported image belongs to the libmpv caller, which deletes it.
 +        if (!mapper->quest_detached)
-+            o->AImage_delete(p->image);
++            release_image(mapper);
          p->image = NULL;
      }
 +    mapper->quest_image = mapper->quest_buffer = NULL;
@@ -456,7 +544,7 @@
  }
  
  static int mapper_map(struct ra_hwdec_mapper *mapper)
-@@ -348,10 +353,8 @@
+@@ -348,10 +394,8 @@
              char errstr[80];
              av_strerror(err, errstr, sizeof(errstr));
              MP_ERR(p, "Failed to render buffer: %s\n", errstr);
@@ -469,7 +557,7 @@
          }
      }
  
-@@ -369,9 +372,8 @@
+@@ -369,9 +413,8 @@
      media_status_t ret = o->AImageReader_acquireLatestImage(o->reader, &p->image);
      if (ret != AMEDIA_OK) {
          MP_ERR(p, "acquireLatestImage failed: %d\n", ret);
@@ -481,7 +569,7 @@
      }
      mp_assert(p->image);
  
-@@ -382,6 +384,9 @@
+@@ -382,6 +425,9 @@
          return -1;
      }
      mp_assert(hwbuf);

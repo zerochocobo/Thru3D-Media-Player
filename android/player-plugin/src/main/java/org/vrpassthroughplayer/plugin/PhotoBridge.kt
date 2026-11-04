@@ -56,7 +56,7 @@ internal class PhotoBridge(
     fun animationPixels(id: Int,token: Long): ByteArray = synchronized(PhotoCache.lock) {
         if(animationId==id)animation?.pixels(token)?:ByteArray(0) else ByteArray(0)
     }
-    private class DepthJob(val id: Int, val source: PhotoSource, @Volatile var strength: Float, val stereo: Boolean, val sceneToken: Int, val rotation: Int,
+    private class DepthJob(val id: Int, val source: PhotoSource, @Volatile var strength: Float, @Volatile var convergence: Float, val stereo: Boolean, val sceneToken: Int, val rotation: Int,
                            @Volatile var owner: PhotoBridge, @Volatile var background: Boolean) {
         @Volatile var cancelled = false
     }
@@ -373,8 +373,8 @@ internal class PhotoBridge(
 
     /** One inference per photo on the shared model thread, using the independent photo model.
      * Color stays at source display resolution; only content contributes to depth normalization. */
-    fun depth(id: Int, strength: Float = 1f, stereo: Boolean = false, background: Boolean = preload, sceneToken: Int = 0, rotation: Int = 0): Boolean {
-        if (!strength.isFinite() || strength !in 0f..2f || !PhotoStereo.validRotation(rotation)) return false
+    fun depth(id: Int, strength: Float = 1f, stereo: Boolean = false, background: Boolean = preload, sceneToken: Int = 0, rotation: Int = 0, convergence: Float = 0.35f): Boolean {
+        if (!strength.isFinite() || strength !in 0f..2f || !convergence.isFinite() || convergence !in 0f..1f || !PhotoStereo.validRotation(rotation)) return false
         val job = synchronized(PhotoCache.lock) {
             if (closed) return false
             val source = files[id] ?: return false
@@ -383,11 +383,12 @@ internal class PhotoBridge(
             val existing = depthJobs[id]
             if (existing != null && !existing.cancelled && existing.stereo == stereo && existing.sceneToken == sceneToken && existing.rotation == rotation) {
                 existing.strength = strength
+                existing.convergence = convergence
                 existing.background = background
                 return true
             }
             depthJobs.remove(id)?.cancelled = true
-            DepthJob(id, source.retain(), strength, stereo, sceneToken, rotation, this, background).also {
+            DepthJob(id, source.retain(), strength, convergence, stereo, sceneToken, rotation, this, background).also {
                 depthJobs[id] = it
                 inFlightSources[it] = source
             }
@@ -448,7 +449,7 @@ internal class PhotoBridge(
                     stage(id,"stereo")
                     val stereoStarted = System.nanoTime()
                     val rect = result.getJSONArray("rect")
-                    val pair = PhotoStereo.prepare(source,near,FloatArray(4) { rect.getDouble(it).toFloat() },job.strength,id,job.rotation)
+                    val pair = PhotoStereo.prepare(source,near,FloatArray(4) { rect.getDouble(it).toFloat() },job.strength,id,job.rotation,job.convergence)
                     pair.keys().forEach { key -> result.put(key,pair.get(key)) }
                     result.put("stereo_total_ms",(System.nanoTime()-stereoStarted)/1_000_000.0)
                 }

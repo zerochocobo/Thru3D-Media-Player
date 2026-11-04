@@ -39,3 +39,5 @@ Eligible flat and curved 2D, SBS/TB and spatial video can place text or bitmap s
 Eligible seekable DLNA cast audio can enable live recognition/translation manually. A new cast defaults off; decoder/3D/passthrough revisions keep the same cast identity and its in-memory cues, including cues recovered after progress arrived before presentation. Casts do not become durable file history, full-film jobs or persistent cue caches. Existing language/runtime preparation, translation network and source-access limits remain; not every live stream or cast source is seekable.
 
 外挂字幕选择器支持默认带入片名的文件名过滤，并按网盘／目录能力搜索。投屏听译每次新会话默认关闭，字幕仅本会话；模式变化不应丢失当前会话，不写成逐片历史或持久全片任务。
+
+0.16.7 allows configuring listening/narration preferences while off without starting inference or translation. Existing resource/source/interaction gates still control activation. Audio processed ahead and current/future cue counts are separate feedback; audio lead does not establish subtitle coverage. Waiting and sustained empty-result messages describe available cues, not inferred silence or repaired recognition accuracy.

@@ -5,6 +5,12 @@ AAudioStream_getTimestamp while the stream plays on. ao_aaudio then keeps a stal
 position, its reported delay grows by one second per second, the audio clock stops, and video
 (synced to it) freezes while sound continues. The patch follows the frames the stream consumed
 whenever no timestamp is available, offset by the gap last measured from a real one.
+
+reset() (seeks, track changes and the end of every file) waited without limit for the stream to
+leave a transitional state. On Quest 3 a stream whose start the system mixer never took stayed in
+STARTING: closing that file blocked the playback core in reset(), mpv_terminate_destroy waited on
+it forever, and the source never released its player slot ("source capacity exhausted"). Each
+wait is now bounded; a stream that does not settle is rebuilt through the existing reload path.
 """
 import difflib
 import hashlib
@@ -70,6 +76,16 @@ def edit(text):
 """, """        ao->samplerate, ao->channels.num, capture_format,
         presented + p->discarded, present_time);
 """)
+    # A stream stuck in a transitional state must not block the playback core (or its teardown).
+    rep("static void reset(struct ao *ao)\n{\n",
+        "// Quest AAudio can stay in a transitional state (STARTING seen) indefinitely: past this\n"
+        "// the stream is rebuilt instead of blocking the playback core and its teardown.\n"
+        "#define STATE_CHANGE_TIMEOUT_NS INT64_C(500000000)\n\n"
+        "static void reset(struct ao *ao)\n{\n")
+    rep("                                state, &state, INT64_MAX)) < 0) {\n",
+        "                                state, &state, STATE_CHANGE_TIMEOUT_NS)) < 0) {\n")
+    rep("                            AAUDIO_STREAM_STATE_PAUSING, &state, INT64_MAX)) < 0) {\n",
+        "                            AAUDIO_STREAM_STATE_PAUSING, &state, STATE_CHANGE_TIMEOUT_NS)) < 0) {\n")
     return text
 
 
@@ -88,7 +104,8 @@ def main():
     patch_path.write_text(patch, newline='\n')
     subprocess.run(['git', 'apply', '--check', str(patch_path)], cwd=mpv, check=True)
     record = {
-        'purpose': 'AAudio clock without timestamps after a flush (seek freeze: audio plays, video frozen)',
+        'purpose': 'AAudio clock without timestamps after a flush (seek freeze: audio plays, video frozen); '
+                   'bounded reset waits (a stream stuck in STARTING blocked teardown and leaked the player slot)',
         'capture_patch_sha256': capture['patch_sha256'],
         'base_files_sha256': {NAME: sha_bytes(source)},
         'patched_files_sha256': {NAME: sha_bytes(after.encode())},

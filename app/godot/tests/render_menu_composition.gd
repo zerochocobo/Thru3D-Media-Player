@@ -215,6 +215,9 @@ func run() -> void:
 	check(main_slot.raw.render_target_update_mode == SubViewport.UPDATE_DISABLED and main_slot.submit.render_target_update_mode == SubViewport.UPDATE_DISABLED, "Hidden capture stops rendering")
 	menu.visible = true; capture.update(); await frames()
 	check(menu._buttons[0].node.layers != 1, "Reopened menu returns to layers")
+	# A stopped XR session hides the layers while the same menu stays active.
+	capture._restore(); capture._hide(); capture.update()
+	check(not capture._any_placed and not display.menu_layers, "Layers hidden while the menu stays open are not reported as placed")
 	menu.set_scene_overlay(true)
 	capture.invalidate(); capture.update(); await frames()
 	check(slot_with(capture, menu._buttons[0].node).hole.material_override.shader == Capture.OVERLAY_HOLE_SHADER,

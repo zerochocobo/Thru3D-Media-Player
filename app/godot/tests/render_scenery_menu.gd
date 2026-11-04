@@ -28,6 +28,12 @@ func _run() -> void:
 		menu.view=view; menu.refresh()
 		await create_timer(.15).timeout; await RenderingServer.frame_post_draw
 		save_frame(viewport,camera,menu,output.path_join(view+".png"))
+	menu.view="scene"
+	menu.session_controls_provider=func(): return {"cinema_visible":true,"cinema_lights":"auto","cinema_moving":false,"passthrough_visible":true}
+	menu.refresh()
+	await create_timer(.15).timeout; await RenderingServer.frame_post_draw
+	save_frame(viewport,camera,menu,output.path_join("cinema-footer.png"))
+	menu.session_controls_provider=Callable()
 	menu.view="manage"; menu.modal="rename"; menu.draft="暮色全景"; menu.refresh()
 	await create_timer(.15).timeout; await RenderingServer.frame_post_draw
 	save_frame(viewport,camera,menu,output.path_join("rename.png"))

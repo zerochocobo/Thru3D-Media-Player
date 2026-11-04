@@ -1,0 +1,9 @@
+# Input and viewing controls
+
+Quest simplified-Chinese input is opt-in and offline. Its compact pinyin keyboard uses the fixed rime-pinyin-simp dictionary retained in third_party/pinyin_simp, plus the explicit project vocabulary in app/godot/input/pinyin_overrides.json. No user typing, learned dictionary, account or history is distributed. Candidate data and little-endian offsets are reproducible with `python tools/Build-ChineseLexicon.py --check`; source AUTHORS, Apache-2.0 LICENSE and modification notices are retained. This is app input UI, not an Android system IME. Address bars use the system keyboard; compatible webpage fields and app naming/search/configuration inputs use the optional keyboard. PICO and OpenXR keep their existing input routes.
+
+Video aspect settings adjust one eye's displayed ratio for supported flat/curved videos and save per video. Cinema curvature is stored separately from ordinary screen curvature and follows a matching bent border. Video and photo 3D position are separately global, not per-file overrides. Photo distance spans0.1–50m, size5–3000%, with separately remembered edge feathering including hard edges. These ranges are controls, not a guarantee of comfort or rendering quality at every extreme/device.
+
+Controller seek steps are shared between hands and configurable; ray/trigger selection remains authoritative. Media-server playback-report intervals are independent of privacy permission, which still decides whether reporting is allowed. Returning to a supported server library refreshes resume state rather than assuming the old list snapshot is current.
+
+听译／朗读关闭时可配置偏好，启动仍遵循资源、来源与互斥条件。音频提前处理和当前／后续字幕句数分别显示；配置与反馈改进不改变识别、翻译或朗读核心引擎。视频与照片的立体位置分别全局保存，影院曲面不覆盖普通曲面。

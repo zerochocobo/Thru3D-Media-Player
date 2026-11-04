@@ -45,6 +45,7 @@ internal class MediaSources(
     fun serverPlayback(json: String) = mediaServers.playbackState(json)
     fun serverPlaybackPrivacyChanged() = mediaServers.playbackPrivacyChanged()
     fun serverPlaybackPaused() = mediaServers.playbackPaused()
+    fun serverPlaybackReportInterval(value: Int) = mediaServers.playbackReportInterval(value)
     fun clearPlaybackReferences() { network.execute { runCatching { dlna.clearPlaybackReferences() } } }
     fun releaseMediaStream(uri: String) {
         externalVideo.release(uri)
@@ -79,6 +80,7 @@ internal class MediaSources(
     fun grantLocalDirectory(path: String) = local.grantDirectory(path)
     fun onActivityResult(requestCode: Int, resultCode: Int, data: android.content.Intent?) = local.onActivityResult(requestCode, resultCode, data)
     fun refreshLocalStorage(): Unit = local.refreshStorage()
+    fun takeoverUsb(id: Int, path: String) = usb.takeover(id, path)
     fun stopLocalStorage(id: Int, path: String) {
         if (path.startsWith("usb://")) usb.stop(id, path) else local.stopStorage(id,path)
     }

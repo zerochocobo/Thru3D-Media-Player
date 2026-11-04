@@ -7,10 +7,13 @@ const Main := preload("res://scripts/main.gd")
 var failures: Array[String] = []
 var checks := 0
 var directory := ProjectSettings.globalize_path("res://../../build/output/background-audio/test-data").simplify_path()
+class PassthroughStub extends RefCounted:
+	func active() -> bool: return false
 class VideoStub extends Node3D:
 	var local_uri := ""
 	var view_camera: Camera3D
 	var media := {"state": "playing"}
+	var vr_passthrough := PassthroughStub.new()
 func _initialize() -> void: call_deferred("_run")
 func check(ok: bool, message: String) -> void:
 	checks += 1

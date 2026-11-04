@@ -66,13 +66,13 @@ func _run() -> void:
 	get_tree().root.add_child(player); player.toggle(); player.section = 1; player._adjustment = "screen"; player.refresh()
 	var cinema_buttons := 0
 	for button in player._buttons:
-		if int(button.target) in [Player.FREE_MOVEMENT, Player.CINEMA_MOVE, Player.CINEMA_HOME, Player.CINEMA_LIGHT_AUTO, Player.CINEMA_LIGHT_ON, Player.CINEMA_LIGHT_OFF, Player.CINEMA_LIGHTS]: cinema_buttons += 1
-	check(cinema_buttons == 5 and player._buttons.any(func(item): return item.target==Player.SCENERY), "Cinema settings remain available through the shared scene entry")
+		if int(button.target) in [Player.FREE_MOVEMENT, Player.CINEMA_LIGHTS]: cinema_buttons += 1
+	check(cinema_buttons == 2 and player._buttons.any(func(item): return item.target==Player.SCENERY), "Cinema keeps both footer shortcuts alongside the shared scene entry")
 	var actions: Array = []
 	player.action_requested.connect(func(action): actions.append(action))
 	player.session_control_requested.connect(func(operation): actions.append(operation))
 	player._activate_footer(Player.CINEMA_LIGHTS)
-	player._activate(Player.CINEMA_MOVE)
+	player._activate_footer(Player.FREE_MOVEMENT)
 	check(actions.size() == 2, "Cinema controls act in both builds")
 	player.queue_free(); library.queue_free(); main.queue_free()
 	await get_tree().process_frame; await get_tree().process_frame

@@ -78,7 +78,7 @@ func _run() -> void:
 	photo.set_layout_mode(2); await load_previews(photo)
 	check(not photo.panel.visible and photo.gallery.cards.has(0) and photo.gallery.cards.has(95) and photo.gallery.cards.has(1), "Wall overview includes first, real last and second images")
 	for card in photo.gallery.cards.values():
-		check(card.node.material_override.get_shader_parameter("edge_feather").is_equal_approx(Vector2.ONE * photo.SOFT_EDGE_METRES / card.size) and not card.rim.visible, "Every unselected wall photo has a soft physical edge and no outline")
+		check(card.node.material_override.get_shader_parameter("edge_feather").is_equal_approx(Vector2.ONE * photo.soft_edge_metres(card.size) / card.size) and not card.rim.visible, "Every unselected wall photo has a size-bounded soft edge and no outline")
 	check(photo.gallery.cards[95].pose.origin.x < 0 and photo.gallery.cards[1].pose.origin.x > 0, "First photo's left neighbour is the directory last")
 	for row_count in [2, 3]:
 		photo.gallery.set_wall_rows(row_count); await load_previews(photo)

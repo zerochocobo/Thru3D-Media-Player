@@ -63,6 +63,8 @@ if ($DebugApplicationId) {
 }
 function Convert-HexString([byte[]]$Bytes) { -join ($Bytes | ForEach-Object { $_.ToString('X2') }) }
 $workspace = Split-Path -Parent $PSScriptRoot
+& (Join-Path $workspace '.venv/Scripts/python.exe') (Join-Path $PSScriptRoot 'Build-ChineseLexicon.py') --check
+if ($LASTEXITCODE -ne 0) { throw 'Chinese keyboard lexicon is missing or stale.' }
 & "$PSScriptRoot\Assert-NarrationPackaged.ps1"
 & "$PSScriptRoot\Assert-VideoDepthModels.ps1" -Workspace $workspace
 & "$PSScriptRoot\Assert-TextProtectionModel.ps1" -Workspace $workspace
@@ -514,6 +516,8 @@ try {
     & "$PSScriptRoot\Assert-ComicJapanesePackaged.ps1" -ArchivePath $apkPath
     & "$PSScriptRoot\Assert-ListeningPackaged.ps1" -ArchivePath $apkPath
     & "$PSScriptRoot\Assert-WebVideoPackaged.ps1" -ArchivePath $apkPath
+    & (Join-Path $workspace '.venv/Scripts/python.exe') (Join-Path $PSScriptRoot 'Build-ChineseLexicon.py') --check --archive $apkPath
+    if ($LASTEXITCODE -ne 0) { throw 'Packaged Chinese keyboard lexicon or notices differ.' }
     # Test auditorium is included in both Debug and Release (2026-10-23).
     & "$PSScriptRoot\Assert-CinemaPackaged.ps1" -ArchivePath $apkPath
     $rvmLibrary = Join-Path $nativeEvidenceDirectory 'libquest_rvm.so'

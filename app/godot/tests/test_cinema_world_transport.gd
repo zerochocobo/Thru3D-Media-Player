@@ -216,6 +216,17 @@ func _run() -> void:
 	check(menu.space_locked() and menu.get_meta("space_pose").is_equal_approx(ordinary_pose), "Leaving cinema restores the ordinary spatial lock")
 	check(menu._backdrop.material_override.shader == ordinary_shader and not menu._title.no_depth_test,
 		"Leaving cinema restores the original shader and label depth policy")
+	# A VR source picked from the files above the transport leaves the hall with the bar shown.
+	for key in ["space_locked", "space_pose", "space_head"]: menu.remove_meta(key)
+	environment.active = true
+	menu.toggle()
+	main._sync_cinema_transport()
+	main.head = Transform3D(Basis(Vector3.UP, PI), tracked_head.origin + Vector3(2.0, 0, -3.0))
+	environment.active = false
+	main._sync_cinema_transport()
+	var to_menu: Vector3 = menu.global_position - main.head.origin
+	check(menu.visible and to_menu.normalized().dot(-main.head.basis.z) > .8 and to_menu.length() < 2.5,
+		"A transport still shown when the hall closes faces the current viewer: %s" % to_menu)
 	main.free()
 	for failure in failures: push_error(failure)
 	print("CINEMA_WORLD_TRANSPORT checks=%d failures=%d" % [checks, failures.size()])

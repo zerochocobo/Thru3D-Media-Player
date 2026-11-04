@@ -74,10 +74,21 @@ func _run() -> void:
 	check(menu._cards.size()==3,"Manager shows multiple panoramas")
 	check(menu._buttons.any(func(button): return button.target==menu.BULK),"Manager supports bulk selection")
 	var anchor:=menu.device_status.position
+	var scene_anchor: Vector3=menu._buttons.filter(func(item): return item.target==menu.SCENERY)[0].node.position
 	menu.session_controls_provider=func(): return {"cinema_visible":true,"passthrough_visible":true}
 	menu.refresh_session_controls()
 	check(menu.device_status.position==anchor,"Footer status anchor stays fixed")
-	check(not menu._buttons.any(func(button): return button.target in [menu.CINEMA_LIGHTS,menu.FREE_MOVEMENT]),"Cinema actions leave footer")
+	check([menu.CINEMA_LIGHTS,menu.FREE_MOVEMENT].all(func(target): return menu._buttons.any(func(button): return button.target==target and button.enabled)),"Cinema restores both footer shortcuts")
+	check(menu._buttons.filter(func(item): return item.target==menu.SCENERY)[0].node.position==scene_anchor,"Cinema shortcuts do not shift the scene entry")
+	var footer: Array=menu._buttons.filter(func(item): return item.target in [menu.CINEMA_LIGHTS,menu.FREE_MOVEMENT,menu.FOLLOW,menu.TEMP_PASSTHROUGH,menu.SCENERY])
+	footer.sort_custom(func(a,b): return a.rect.position.x<b.rect.position.x)
+	check(footer.map(func(item): return item.target)==[menu.FOLLOW,menu.TEMP_PASSTHROUGH,menu.SCENERY,menu.CINEMA_LIGHTS,menu.FREE_MOVEMENT],"Cinema shortcuts sit to the right of Scene")
+	var clear:=true
+	for i in range(footer.size()-1): clear=clear and not footer[i].rect.intersects(footer[i+1].rect)
+	check(clear,"Footer shortcut ray areas do not overlap")
+	menu.session_controls_provider=func(): return {"cinema_visible":false}
+	menu.refresh_session_controls()
+	check(not menu._buttons.any(func(item): return item.target in [menu.CINEMA_LIGHTS,menu.FREE_MOVEMENT]),"Leaving cinema removes only cinema-specific shortcuts")
 	check(library.remove_assets([id]),"Remove selected background")
 	check(library.bindings.global.id=="cinema" and library.bindings.image.id=="belfast","All mode references fall back")
 	check(FileAccess.file_exists(source) and FileAccess.file_exists(duplicate),"Original files remain")

@@ -9,8 +9,11 @@ uniform bool portrait_loading = false;
 #include "res://shaders/photo_reveal.gdshaderinc"
 
 void fragment() {
-	vec2 fade = smoothstep(vec2(0.0), vec2(feather_metres) / surface_size, min(UV, vec2(1.0) - UV));
-	float edge = fade.x * fade.y;
+	float edge = 1.0;
+	if (feather_metres > 0.0) {
+		vec2 fade = smoothstep(vec2(0.0), vec2(feather_metres) / surface_size, min(UV, vec2(1.0) - UV));
+		edge = fade.x * fade.y;
+	}
 	float clock = flow_time >= 0.0 ? flow_time : TIME;
 	if (portrait_loading) {
 		// A compact indicator beneath the subject, with no picture-sized frosted surface.

@@ -46,3 +46,5 @@ The CodeLibs JCIFS jar is staged by Gradle with unused HTTP/HTTPS NTLM adapters 
 - Browser/web media: pinned GeckoView ARM64 source/artifact and MPL-2.0 in `geckoview`; yt-dlp/Android wrapper pins and original notices in `web-video`; ICU4J charset detection pin and Unicode/ICU notices in `icu-charset`. No engine/extractor binary, browser profile, account cookie or sample video is published. See [browser scope](../docs/WEB_BROWSER.md).
 
 DVD ISO navigation: libdvdread 7.0.1 and libdvdnav 7.0.0 (GPL-2.0-or-later), pinned in `dvd/source-lock.json` with original license texts. Expanded runtime credits and notice provenance are in `player-licenses/additional-sources.json`; binary payloads are prepared separately.
+
+Offline pinyin dictionary: pinned rime-pinyin-simp source, AUTHORS and Apache-2.0 LICENSE are retained in `third_party/pinyin_simp`; reproducible generated indices and modification notices are in `app/godot/input`. See `tools/Build-ChineseLexicon.py`. No user dictionary is included.

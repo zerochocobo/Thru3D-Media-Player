@@ -3,15 +3,19 @@ const Fixture := preload("res://tests/test_vr_passthrough.gd")
 const Follow := preload("res://tests/test_view_follow.gd")
 const Transition := preload("res://tests/test_video_mode_transition.gd")
 var output := ProjectSettings.globalize_path("res://../../build/output/vr-passthrough/previews")
+var frames := 0
 
 class Host extends Fixture.Host:
+	var top_bottom := false
 	func take_mpv_layer_thumbnail(_id: int) -> PackedByteArray:
 		var image := Image.create_empty(size.x, size.y, false, Image.FORMAT_RGBA8)
+		var eye_size := Vector2i(size.x, size.y / 2) if top_bottom else Vector2i(size.x / 2, size.y)
 		for y in size.y:
 			for x in size.x:
-				var u := float(x % (size.x / 2)) / (size.x / 2)
-				var v := float(y) / size.y
-				var color := Color(0.1 + 0.25 * u, 0.32 + 0.4 * (1-v), 0.75) if x < size.x / 2 else Color(0.85, 0.28 + 0.3 * (1-v), 0.1 + 0.2 * u)
+				var u := float(x % eye_size.x) / eye_size.x
+				var v := float(y % eye_size.y) / eye_size.y
+				var first_eye := y < eye_size.y if top_bottom else x < eye_size.x
+				var color := Color(0.1 + 0.25 * u, 0.32 + 0.4 * (1-v), 0.75) if first_eye else Color(0.85, 0.28 + 0.3 * (1-v), 0.1 + 0.2 * u)
 				if x % 160 < 3 or y % 160 < 3: color = Color(0.85, 0.9, 0.95)
 				image.set_pixel(x, y, color)
 		return image.get_data()
@@ -22,7 +26,17 @@ func capture_frame(viewport: SubViewport, name: String) -> Image:
 	await process_frame; await RenderingServer.frame_post_draw; await RenderingServer.frame_post_draw
 	var image := viewport.get_texture().get_image()
 	image.save_png(output.path_join(name + ".png"))
+	frames += 1
 	return image
+
+# Simulate the two display eyes without replacing the production source-eye selection.
+func simulate_display_eyes(material: ShaderMaterial) -> void:
+	var color: Variant = material.get_shader_parameter("color_texture")
+	var shader := Shader.new()
+	shader.code = material.shader.code.replace("void vertex() {", "uniform int preview_test_eye = 0;\nvoid vertex() {") \
+		.replace("eye_index = int(VIEW_INDEX);", "eye_index = preview_test_eye;")
+	Transition.Binding._use_shader(material, shader)
+	material.set_shader_parameter("color_texture", color)
 
 func run() -> void:
 	DirAccess.make_dir_recursive_absolute(output)
@@ -50,14 +64,14 @@ func run() -> void:
 	v._layer_session = true; v._layer_requested = true; v.requested_play = true
 	v._apply_geometry(); v.panel.visible = true
 	main._on_video_changed()
-	# Enter with a current centre direction, then render each source eye independently.
+	# Enter with a current centre direction, then render both display eyes.
 	v.view_yaw = 0; v.view_pitch = 0; v.view_zoom = 0; v.view_horizontal = 0; v._center_on_view()
 	main._on_session_control("temporary_passthrough")
 	v.platform.status = "ready"; v.vr_passthrough.poll()
 	viewport.transparent_bg = true
 	var failures := 0
-	v.vr_passthrough.material.set_shader_parameter("viewing_eye", 1)
-	v.vr_passthrough.release_material.set_shader_parameter("viewing_eye", 1)
+	simulate_display_eyes(v.vr_passthrough.material)
+	simulate_display_eyes(v.vr_passthrough.release_material)
 	var widths := []
 	for frame in 13:
 		if frame > 0: v.vr_passthrough.poll(0.02)
@@ -77,38 +91,67 @@ func run() -> void:
 		if image.get_pixel(650, 645).a < 0.9 or v.requested_play: failures += 1
 		if frame == 0 and image.get_pixel(50, 50).a > 0.01: failures += 1
 		if frame == 11 and image.get_pixel(50, 50).a < 0.9: failures += 1
+	# The returning full panorama must still use the original right-eye source.
+	v.vr_passthrough.release_material.set_shader_parameter("preview_test_eye", 1)
+	var release_right := await capture_frame(viewport, "roll-out-right-eye")
+	var release_color := release_right.get_pixel(50, 50)
+	if release_color.a < 0.9 or release_color.r <= release_color.b or v.requested_play: failures += 1
 	v.vr_passthrough.poll(0.03)
 	if v.vr_passthrough.active() or not v.requested_play: failures += 1
 	main._on_session_control("temporary_passthrough"); v.vr_passthrough.poll(1.0)
+	simulate_display_eyes(v.vr_passthrough.material)
 	for language in ["zh", "zh_Hant", "en", "ja"]:
 		main.vr_passthrough_menu.I18n.use(language); main.vr_passthrough_menu.refresh()
-		for eye in [1, 2]:
-			v.vr_passthrough.material.set_shader_parameter("viewing_eye", eye)
-			await process_frame; await RenderingServer.frame_post_draw; await RenderingServer.frame_post_draw
-			var image := viewport.get_texture().get_image()
-			image.save_png(output.path_join("%s-eye%d.png" % [language, eye]))
+		var first: Image
+		for eye in [0, 1]:
+			v.vr_passthrough.material.set_shader_parameter("preview_test_eye", eye)
+			var image := await capture_frame(viewport, "%s-eye%d" % [language, eye])
 			var center := image.get_pixel(700, 430)
-			if (eye == 1 and center.b <= center.r) or (eye == 2 and center.r <= center.b): failures += 1
+			if center.b <= center.r: failures += 1
+			if eye == 0: first = image
+			elif image.get_data() != first.get_data(): failures += 1
 			if image.get_pixel(50, 50).a > 0.01: failures += 1
 			if image.get_pixel(650, 645).a < 0.9: failures += 1
 			var label: Label3D = main.vr_passthrough_menu._buttons[0].node.find_children("*", "Label3D", true, false)[0]
 			if label.get_aabb().size.x * label.scale.x > 0.46: failures += 1
+	# Test real entry selection with deliberately different left/right source colours.
+	# Nonzero alignment must not introduce display-eye-dependent offsets on the globe.
+	for tb in [false, true]:
+		for selected in [0, 2]:
+			for swapped in [false, true]:
+				main._leave_vr_passthrough(); v.vr_passthrough.poll(1.0)
+				v.top_bottom = tb; v.platform.top_bottom = tb
+				v.viewing_eye = selected; v.swap_eyes = swapped; v._apply_geometry()
+				v.material.set_shader_parameter("stereo_offset", Vector2(0.08, 0.05))
+				main._on_session_control("temporary_passthrough"); v.vr_passthrough.poll(1.0)
+				simulate_display_eyes(v.vr_passthrough.material)
+				var first: Image
+				for eye in [0, 1]:
+					v.vr_passthrough.material.set_shader_parameter("preview_test_eye", eye)
+					var image := await capture_frame(viewport, "single-tb%d-selected%d-swap%d-eye%d" % [int(tb), selected, int(swapped), eye])
+					var center := image.get_pixel(700, 430)
+					var second_source: bool = (selected == 2) != swapped
+					if center.a < 0.9 or (center.r > center.b) != second_source: failures += 1
+					if eye == 0: first = image
+					elif image.get_data() != first.get_data(): failures += 1
 	main.xr_camera.global_transform = Transform3D(Basis.from_euler(Vector3(0.15, 0.9, -0.4)), Vector3(4, 1.8, 2))
 	main._sync_vr_passthrough_menu()
-	await process_frame; await RenderingServer.frame_post_draw; await RenderingServer.frame_post_draw
-	viewport.get_texture().get_image().save_png(output.path_join("moved-exit.png"))
-	if viewport.get_texture().get_image().get_pixel(650, 645).a < 0.9: failures += 1
+	var moved := await capture_frame(viewport, "moved-exit")
+	if moved.get_pixel(650, 645).a < 0.9: failures += 1
 	main._leave_vr_passthrough(); v.vr_passthrough.poll(1.0)
+	v.top_bottom = false; v.platform.top_bottom = false; v.viewing_eye = 0; v.swap_eyes = false
 	v._stream_projection = {"kind": "equirectangular", "geometry": 3, "pose": [25, 5, 2], "stereo_mode": 1}
 	v._stream_mesh = v.StreamProjection.mesh(v._stream_projection); v._apply_geometry()
 	main._on_session_control("temporary_passthrough"); v.vr_passthrough.poll(1.0)
-	for eye in [1, 2]:
-		v.vr_passthrough.material.set_shader_parameter("viewing_eye", eye)
-		await process_frame; await RenderingServer.frame_post_draw; await RenderingServer.frame_post_draw
-		var image := viewport.get_texture().get_image()
-		image.save_png(output.path_join("authored-eye%d.png" % eye))
+	simulate_display_eyes(v.vr_passthrough.material)
+	var authored_first: Image
+	for eye in [0, 1]:
+		v.vr_passthrough.material.set_shader_parameter("preview_test_eye", eye)
+		var image := await capture_frame(viewport, "authored-eye%d" % eye)
 		var center := image.get_pixel(700, 430)
-		if center.a < 0.9 or (eye == 1 and center.b <= center.r) or (eye == 2 and center.r <= center.b): failures += 1
+		if center.a < 0.9 or center.b <= center.r: failures += 1
+		if eye == 0: authored_first = image
+		elif image.get_data() != authored_first.get_data(): failures += 1
 		if image.get_pixel(650, 645).a < 0.9: failures += 1
 	# Exercise the same capture/quad grouping used on the headset, without a native XR session.
 	var capture := preload("res://scripts/menu_composition.gd").new()
@@ -117,8 +160,8 @@ func run() -> void:
 	await process_frame; await RenderingServer.frame_post_draw; await RenderingServer.frame_post_draw
 	var used: Array = capture.slots.filter(func(slot): return slot.used)
 	if capture.active != main.vr_passthrough_menu or used.size() != 1: failures += 1
-	if used.size() == 1: used[0].raw.get_texture().get_image().save_png(output.path_join("exit-composition.png"))
+	if used.size() == 1: await capture_frame(used[0].raw, "exit-composition")
 	capture.shutdown("test_finished")
 	main.free(); viewport.queue_free(); await process_frame; await RenderingServer.frame_post_draw
-	print("VR passthrough render: 37 frames, %d failures" % failures)
+	print("VR passthrough render: %d frames, %d failures" % [frames, failures])
 	quit(0 if failures == 0 else 1)

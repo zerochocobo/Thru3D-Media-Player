@@ -8,3 +8,7 @@
 *.jar binary
 *.bin binary
 *.otf binary
+third_party/pinyin_simp/* -text
+app/godot/input/pinyin.* -text
+app/godot/input/pinyin_manifest.json -text
+app/godot/input/*.txt -text

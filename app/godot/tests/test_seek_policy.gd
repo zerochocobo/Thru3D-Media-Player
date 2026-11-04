@@ -5,6 +5,7 @@ const Main := preload("res://scripts/main.gd")
 const Player := preload("res://scripts/player_menu.gd")
 const Library := preload("res://scripts/library_menu.gd")
 const Policy := preload("res://scripts/seek_policy.gd")
+const Step := preload("res://scripts/seek_step.gd")
 const Store := preload("res://scripts/bookmark_store.gd")
 var checks := 0
 var failures: Array[String] = []
@@ -63,6 +64,40 @@ func choose(menu: Node3D, key: String, value: Variant) -> void:
 
 func _initialize() -> void:
 	call_deferred("_run")
+
+func check_step_slider(library: Node3D, main: Node3D) -> void:
+	check(library.rows[1].key == Step.KEY and library.rows[1].span == Vector3(3, 30, 1) and library.rows[1].value == 10,
+		"Seek step appears immediately below precision, defaults to 10s and permits each second from 3 to 30")
+	for seconds in [3, 7, 30]:
+		var target: int = -1
+		for candidate in library.choices.targets:
+			var item: Dictionary = library.choices.targets[candidate]
+			if item.kind == "slider" and item.key == Step.KEY: target = candidate; break
+		check(target >= 0, "Seek step has a ray-operable slider")
+		if target < 0: return
+		var slider: Dictionary = library.choices.sliders[target]
+		var point: Vector3 = slider.node.to_global(Vector3(slider.left + slider.width * (seconds - 3.0) / 27.0, 0, 1))
+		library.press_pointer("left_hand", point, -library.global_basis.z, true)
+		check(library.has_pointer_capture(), "Adjusting step captures the pointer")
+		library.release_pointer("right_hand", point, -library.global_basis.z, true)
+		check(library.has_pointer_capture(), "Other hand cannot commit a captured step slider")
+		library.release_pointer("left_hand", point, -library.global_basis.z, true)
+		check(Step.seconds(main.settings) == seconds and library.rows[1].value == seconds, "Ray adjustment reaches settings and refreshed UI")
+		check(library.choices.sliders[target].label.text == "%d s" % seconds, "Step label displays whole seconds")
+		var saved := ConfigFile.new()
+		check(saved.load(main.settings_path) == OK and Step.seconds(saved) == seconds, "Configured step survives a config reload")
+	for target in library.choices.targets:
+		var item: Dictionary = library.choices.targets[target]
+		if item.kind == "reset" and item.key == Step.KEY:
+			tap(library, target); break
+	check(Step.seconds(main.settings) == 10 and library.rows[1].value == 10, "Reset restores the shared default")
+	for invalid in [null, "bad", NAN, INF, {}, true]:
+		main._on_setting_changed(Step.KEY, invalid)
+		check(Step.seconds(main.settings) == 10, "Malformed values safely fall back to default")
+	for pair in [[-20, 3], [300, 30], [6.6, 7]]:
+		main._on_setting_changed(Step.KEY, pair[0])
+		check(Step.seconds(main.settings) == pair[1], "Preference is bounded and rounded to whole seconds")
+	main._on_setting_changed(Step.KEY, 10)
 
 func _run() -> void:
 	preload("res://scripts/i18n.gd").use("zh")
@@ -162,14 +197,16 @@ func _run() -> void:
 		"Playback settings switch the shared global preference with user-facing labels")
 	var library := Library.new()
 	library.section = Library.Section.SETTINGS; library.tab = Library.VIDEO_TAB
-	library.settings_provider = func(): return {"seek_mode": video.seek_mode}
+	library.settings_provider = func(): return {"seek_mode": video.seek_mode, Step.KEY: Step.seconds(main.settings)}
 	library.setting_changed.connect(main._on_setting_changed)
 	root.add_child(library); library.toggle(); library.set_process(false)
+	main.recent_menu = library
 	check(library.rows[0].key == "seek_mode" and library.rows[0].choices.size() == 2 and library.rows.filter(func(row): return row.get("key") == "seek_mode").size() == 1 and library.rows.filter(func(row): return row.get("key") == "output_width").size() == 1,
 		"Global settings keep one seek selector and one resolution selector alongside other settings")
 	choose(library, "seek_mode", Policy.SPEED)
 	check(video.seek_mode == Policy.SPEED and library.rows[0].value == Policy.SPEED and labels(library).contains("时间可能有偏差"),
 		"Global settings ray selection applies speed and explains the precision tradeoff")
+	check_step_slider(library, main)
 
 	clear_pending(video)
 	video.control.observe(1000, 60000)

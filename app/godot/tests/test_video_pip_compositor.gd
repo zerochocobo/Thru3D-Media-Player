@@ -142,6 +142,17 @@ func run() -> void:
 	check(not renderer.direct_compatible(), "Virtual backgrounds require sampled feather rings")
 	renderer.surface_background = true; layer.alpha_blend = true
 	check(renderer.direct_compatible(), "Stereo main can retain direct Surface crops for mono cameras")
+	video.set_screen_rotation(45); pip.sync()
+	check(not renderer.direct_compatible() and renderer.prepare(origin, 3).is_empty(), "Rotated flat PiP cannot submit an unrotated direct Surface rectangle")
+	video._binding.layer = false; pip.sync()
+	var rotation_draws := host.count_calls("draw")
+	check(renderer.prepare(origin, 3).size() == 3 and host.count_calls("draw") == rotation_draws + 1, "Rotated flat PiP uses the shared-frame atlas")
+	video.set_screen_rotation(-45); pip.sync(); renderer.prepare(origin, 3)
+	check(host.count_calls("draw") == rotation_draws + 2, "Changing flat rotation redraws a paused atlas")
+	renderer.prepare(origin, 3)
+	check(host.count_calls("draw") == rotation_draws + 2, "Unchanged rotated flat crop reuses its paused atlas")
+	video.set_screen_rotation(0); video._binding.layer = true; pip.sync()
+	check(renderer.direct_compatible(), "Removing flat roll restores Surface crop eligibility")
 	for tb in [false, true]:
 		for swap in [false, true]:
 			for view in [0, 1, 2]:
@@ -373,6 +384,17 @@ func run() -> void:
 	check(actual._layer_presentation(), "A background transition cannot reopen the decoder owned by an active recording")
 	actual.captures.recording.clear()
 	check(not actual._layer_presentation(), "After recording ends an incompatible background may reopen for sampled edges")
+	actual.pip.compositor.surface_background = true; actual_layer.alpha_blend = true
+	actual.stereo_horizontal = 0; actual.stereo_vertical = 0
+	actual.set_screen_rotation(0)
+	check(actual._layer_presentation(), "An unrotated flat movie can keep direct Surface PiP")
+	actual.set_screen_rotation(45)
+	check(not actual._layer_presentation(), "Flat movie rotation requests the existing sampled decoder route")
+	actual.captures.recording = {"id": 77}
+	check(actual._layer_presentation(), "Rotating during recording preserves the existing decoder ownership guard")
+	actual.captures.recording.clear()
+	actual.pip.clear()
+	check(not actual.pip.compositor.direct_compatible(1), "First PiP on an already rotated flat movie cannot claim direct Surface support")
 	actual._layer_session = false
 	actual._binding.color_rid = RID(); actual._binding.alpha_rid = RID(); actual._binding.ticket.clear(); actual.media.close(); actual.queue_free(); xr_origin.queue_free(); await process_frame
 	for failure in failures: push_error(failure)

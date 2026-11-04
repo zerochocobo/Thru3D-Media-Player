@@ -13,11 +13,13 @@ static func capabilities(video: Node) -> Dictionary:
 
 static func allows(caps: Dictionary, operation: String) -> bool:
 	if operation in HIDDEN: return false
+	# Display geometry is available for live streams too; it does not seek or reconfigure decoding.
+	if operation in ["video_aspect_preset", "video_aspect_factor"]: return true
 	if operation in ["previous_video", "next_video"] and caps.get("navigation_pending", false): return false
 	if operation == "previous_video": return caps.get("has_previous", false)
 	if operation == "next_video": return caps.get("has_next", false) or caps.get("seek", false)
 	if operation in ["seek", "seek_mode", "playback_speed", "loop", "repeat_one"]: return caps.get("seek", false)
-	if operation in ["depth", "depth_strength", "alpha", "color_grade"]: return caps.get("effects", false)
+	if operation in ["depth", "depth_strength", "depth_position", "alpha", "color_grade"]: return caps.get("effects", false)
 	if operation in ["sequence", "repeat_all"]: return false
 	return true
 

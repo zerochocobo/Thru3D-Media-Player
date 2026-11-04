@@ -4,6 +4,7 @@ extends Node3D
 
 signal changed
 signal view_relocated(previous: Transform3D, current: Transform3D)
+signal seat_hovered(hand: String)
 
 const Locomotion := preload("res://scripts/environments/cinema_locomotion.gd")
 const Feature := preload("res://scripts/environments/cinema_feature.gd")
@@ -12,6 +13,7 @@ const MODEL_PATH := "res://environments/grand_cinema/cinema.glb"
 const MANIFEST_PATH := "res://environments/grand_cinema/manifest.json"
 const MAX_RAY_DISTANCE := 100.0
 const CHAIR_LANDING_TRIES := 24
+const SeatTargets := preload("res://scripts/environments/cinema_seat_targets.gd")
 const VIEWING_LIGHT_LEVELS := {"low": 0.0, "dim": 0.08, "soft": 0.20}
 ## Manual "off" with no film: a blank screen throws no light, so a little house
 ## light keeps the hall from going pitch black.
@@ -177,35 +179,55 @@ func poll_sticks(left: Vector2, right: Vector2, delta: float, blocked: bool = fa
 	return true
 
 
-func ray_hit(origin: Vector3, direction: Vector3) -> Dictionary:
+func ray_hit(origin: Vector3, direction: Vector3, held_seat: String = "") -> Dictionary:
 	if not active or interaction != "move" or not origin.is_finite() or not direction.is_finite() or direction.length_squared() < 0.000001:
 		return {}
 	var points := PackedVector3Array([origin])
 	var velocity := direction.normalized() * 8.5
 	var previous := origin
+	var candidates := {}
+	var hit := {}
 	for step in range(1, 41):
 		var t := step * 0.075
 		var point := origin + velocity * t + Vector3.DOWN * 4.9 * t * t
-		var hit := _arc_segment(previous, point)
-		if not hit.is_empty() and hit.kind in ["floor", "riser"]:
-			var seat_id: String = _movement.seat_at(hit.position)
-			if not seat_id.is_empty():
-				points.append(hit.position)
-				return _seat_target(seat_id, points, origin)
+		hit = _arc_segment(previous, point)
+		# Collect through chairs, but never through the first wall, rail or tier.
+		_movement.seat_targets.collect(previous, hit.position if not hit.is_empty() else point, points.size(), candidates, held_seat)
 		if not hit.is_empty():
 			points.append(hit.position)
-			var landing := _landing_destination(hit)
-			hit["valid"] = landing.is_finite()
-			hit["raw_position"] = hit.position
-			hit["snapped"] = landing.is_finite() and not landing.is_equal_approx(hit.position)
-			if landing.is_finite():
-				hit["position"] = landing
-				if hit.snapped: points.append(landing)
-			hit["points"] = points
-			hit["distance"] = origin.distance_to(hit.position)
-			return hit
+			break
 		points.append(point)
 		previous = point
+	# Assistance must not reach across a thin wall or into an unsafe head volume.
+	for id in candidates.keys():
+		var marker: Vector3 = _movement.seat_targets.marker(id)
+		# Aiming down at an upper row's passage must not attract the lower row's
+		# backrest protruding beside it, even when its assistance volume overlaps.
+		var lower_row: bool = hit.get("kind", "") in ["floor", "riser"] and marker.y - SeatTargets.CUSHION_HEIGHT < float(hit.floor_y) - .3
+		if lower_row or not _movement.can_select_seat(id) or not _arc_segment(candidates[id].point, marker).is_empty():
+			candidates.erase(id)
+	var candidate: Dictionary = _movement.seat_targets.choose(candidates, held_seat)
+	if not candidate.is_empty():
+		var seat_points := points.slice(0, int(candidate.point_count))
+		seat_points.append(candidate.point)
+		var target := _seat_target(candidate.id, seat_points, origin)
+		target["retained"] = candidate.get("retained", false)
+		return target
+	if not hit.is_empty():
+		if hit.kind in ["floor", "riser"]:
+			var seat_id: String = _movement.seat_at(hit.position)
+			if not seat_id.is_empty() and _movement.can_select_seat(seat_id):
+				return _seat_target(seat_id, points, origin)
+		var landing := _landing_destination(hit)
+		hit["valid"] = landing.is_finite()
+		hit["raw_position"] = hit.position
+		hit["snapped"] = landing.is_finite() and not landing.is_equal_approx(hit.position)
+		if landing.is_finite():
+			hit["position"] = landing
+			if hit.snapped: points.append(landing)
+		hit["points"] = points
+		hit["distance"] = origin.distance_to(hit.position)
+		return hit
 	return {"kind": "miss", "position": previous, "points": points, "valid": false, "distance": origin.distance_to(previous)}
 
 func _arc_segment(start: Vector3, end: Vector3) -> Dictionary:
@@ -248,11 +270,10 @@ func _arc_segment(start: Vector3, end: Vector3) -> Dictionary:
 
 ## Aiming at a chair: sit there, eyes at the seat, facing the screen.
 func _seat_target(seat_id: String, points: PackedVector3Array, origin: Vector3) -> Dictionary:
-	var eye := _vector(_movement._seats[seat_id].eye_position)
-	var seated := float(_movement._design.get("seated_eye_height", 1.2))
-	# Marker rests on the cushion, just in front of the seat line, top ~0.47 m.
-	var seat_line := eye.z + float(_movement._design.get("seat_line_from_eye", 0.10))
-	var cushion := Vector3(eye.x, eye.y - seated + 0.47, seat_line - 0.05)
+	var cushion: Vector3 = _movement.seat_targets.marker(seat_id)
+	# End on the displayed ring, not the hidden floor underneath the chair.
+	var endpoint := cushion + Vector3.UP * SeatTargets.MARKER_LIFT
+	points.append(endpoint)
 	return {"kind": "seat", "id": seat_id, "position": cushion, "points": points, "valid": true,
 		"distance": origin.distance_to(cushion)}
 
@@ -314,8 +335,8 @@ func pointer_press(hand: String, origin: Vector3, direction: Vector3) -> bool:
 
 func pointer_release(hand: String, origin: Vector3, direction: Vector3, valid: bool) -> bool:
 	if _capture_hand != hand or _capture.is_empty(): return false
+	var target := _pointer_target(origin, direction) if valid else {}
 	_capture = {}; _capture_hand = ""
-	var target := ray_hit(origin, direction) if valid else {}
 	hide_pointer(hand)
 	if target.get("kind", "") == "seat":
 		# Sitting ends free movement: the view settles facing the screen.
@@ -344,18 +365,26 @@ func cancel_pointer(hand: String) -> void:
 
 func update_pointer(hand: String, origin: Vector3, direction: Vector3, valid: bool = true) -> void:
 	if not valid or hand.is_empty() or hand != _capture_hand:
-		hide_pointer(hand); return
-	var hit := ray_hit(origin, direction)
+		cancel_pointer(hand); return
+	var hit := _pointer_target(origin, direction)
 	if hit.is_empty(): hide_pointer(hand); return
+	if hit.get("kind", "") == "seat" and _capture.get("feedback_id", "") != hit.id:
+		var now := Time.get_ticks_msec()
+		if now - int(_capture.get("feedback_at", -1000)) >= 180:
+			_capture["feedback_at"] = now
+			seat_hovered.emit(hand)
+		_capture["feedback_id"] = hit.id
 	var visual := _pointer_visual(hand)
 	var pointer: Node3D = visual.root
 	pointer.global_transform = Transform3D.IDENTITY
 	var material: StandardMaterial3D = visual.material
-	material.albedo_color = Color(.35, .95, .68) if hit.valid else Color(1, .18, .12)
-	visual.floor.position = Vector3(hit.position) + Vector3.UP * .025
+	material.albedo_color = Color(1.0, .78, .25) if hit.kind == "seat" else Color(.35, .95, .68) if hit.valid else Color(1, .18, .12)
+	visual.floor.position = Vector3(hit.position) + Vector3.UP * SeatTargets.MARKER_LIFT
 	# A seat target shows a wider ring on the cushion: release to sit.
 	visual.floor.scale = Vector3.ONE * (1.35 if hit.kind == "seat" else 1.0)
 	visual.floor.visible = hit.kind != "miss"
+	visual.seat.position = hit.position
+	visual.seat.visible = hit.kind == "seat"
 	var mesh := ImmediateMesh.new()
 	mesh.surface_begin(Mesh.PRIMITIVE_TRIANGLES)
 	var points: PackedVector3Array = hit.points
@@ -367,6 +396,18 @@ func update_pointer(hand: String, origin: Vector3, direction: Vector3, valid: bo
 	mesh.surface_end()
 	visual.arc.mesh = mesh
 	pointer.visible = true
+
+func _pointer_target(origin: Vector3, direction: Vector3, now: int = -1) -> Dictionary:
+	if now < 0: now = Time.get_ticks_msec()
+	var held := str(_capture.get("target_id", "")) if now - int(_capture.get("confirmed_at", -1000)) <= SeatTargets.HOLD_MS else ""
+	# Revalidate the current ray, including blockers, even during the brief hold.
+	var hit := ray_hit(origin, direction, held)
+	if hit.get("kind", "") == "seat":
+		_capture["target_id"] = hit.id
+		if not hit.get("retained", false): _capture["confirmed_at"] = now
+	else:
+		_capture.erase("target_id"); _capture.erase("confirmed_at")
+	return hit
 
 func hide_pointer(hand: String) -> void:
 	if _pointer_visuals.has(hand):
@@ -400,7 +441,22 @@ func _pointer_visual(hand: String) -> Dictionary:
 	floor_ring.material_override = material
 	floor_ring.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	pointer.add_child(floor_ring)
-	var visual := {"root": pointer, "floor": floor_ring, "arc": arc, "material": material}
+	# A compact chair outline distinguishes sitting from the circular floor target.
+	var seat_outline := MeshInstance3D.new()
+	seat_outline.name = "SeatOutline"
+	var outline := ImmediateMesh.new()
+	outline.surface_begin(Mesh.PRIMITIVE_TRIANGLES)
+	var corners := [Vector3(-.38, .04, -.30), Vector3(.38, .04, -.30), Vector3(.38, .04, .30),
+		Vector3(-.38, .04, .30), Vector3(-.38, .75, .30), Vector3(.38, .75, .30)]
+	for edge in [[0, 1], [1, 2], [2, 3], [3, 0], [3, 4], [4, 5], [5, 2]]:
+		var a: Vector3 = corners[edge[0]]; var b: Vector3 = corners[edge[1]]
+		var side := (b - a).cross(Vector3.UP if a.y == b.y and a.y < .1 else Vector3.FORWARD).normalized() * .012
+		for vertex in [a - side, a + side, b + side, a - side, b + side, b - side]: outline.surface_add_vertex(vertex)
+	outline.surface_end()
+	seat_outline.mesh = outline; seat_outline.material_override = material
+	seat_outline.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	pointer.add_child(seat_outline)
+	var visual := {"root": pointer, "floor": floor_ring, "arc": arc, "seat": seat_outline, "material": material}
 	_pointer_visuals[hand] = visual
 	return visual
 

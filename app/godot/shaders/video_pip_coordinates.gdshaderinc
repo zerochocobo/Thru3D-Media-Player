@@ -15,9 +15,12 @@ vec3 pip_direction(vec2 uv, vec3 original) {
 }
 
 vec2 pip_uv(vec2 uv) {
-	return pip_enabled && video_geometry == 0 ? pip_center + (uv - vec2(0.5)) * pip_span : uv;
+	if (!pip_enabled || video_geometry != 0) { return uv; }
+	vec2 delta = (uv - vec2(0.5)) * pip_span;
+	return pip_center + pip_right.xy * delta.x + pip_up.xy * delta.y;
 }
 
-bool pip_outside(vec3 d) {
-	return pip_enabled && ((video_geometry == 1 && d.z > 0.0) || outside_lens(d));
+bool pip_outside(vec3 d, vec2 uv) {
+	return pip_enabled && ((video_geometry == 0 && (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0)))))
+		|| (video_geometry == 1 && d.z > 0.0) || outside_lens(d));
 }

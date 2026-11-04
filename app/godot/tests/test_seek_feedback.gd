@@ -141,14 +141,37 @@ func run() -> void:
 				var left := Vector2(direction, 0) if hand == "left_hand" else Vector2.ZERO
 				var right := Vector2(direction, 0) if hand == "right_hand" else Vector2.ZERO
 				tick(main, left, right)
-				var step: int = (20000 if hand == "left_hand" else 10000) * direction
+				var step: int = 10000 * direction
 				check(host.revisions.is_empty() and video.control.display_position_ms() == 30000 and main.seek_feedback.target_ms == 30000 + step,
-					"A short push only previews the original hand step: %s/%s/%s" % [geometry, hand, direction])
+					"A short push only previews the shared default step: %s/%s/%s" % [geometry, hand, direction])
 				check(overlay.visible and overlay.clock.text.contains(Feedback.time(30000 + step)) and not menu.visible, "Hidden transport has passive progress feedback")
 				tick(main, Vector2.ZERO, Vector2.ZERO)
 				check(host.revisions.size() == 1 and host.revisions[0][1] == 30000 + step and main.seek_feedback.phase == "waiting", "Release submits exactly one absolute target")
 				tick(main, Vector2.ZERO, Vector2.ZERO)
 				check(host.revisions.size() == 1 and overlay.visible, "Waiting never resubmits or disappears before a frame")
+	# Exercise both default and saved/remapped paths with the same non-default preference.
+	for seconds in [3, 7, 30]:
+		main._on_setting_changed(main.SeekStep.KEY, seconds)
+		for mapped in [false, true]:
+			for hand in ["left_hand", "right_hand"]:
+				for direction in [-1, 1]:
+					reset(main, host, 100000)
+					var id: String = ("back" if direction < 0 else "forward") + ("20" if hand == "left_hand" else "10")
+					var input: String = "stick_left" if direction < 0 else "stick_right"
+					if mapped: check(main.controller_bindings.assign(id, Bindings.bind(hand, input), false, true).ok, "Saved seek binding remains valid")
+					var left := Vector2(direction, 0) if hand == "left_hand" else Vector2.ZERO
+					var right := Vector2(direction, 0) if hand == "right_hand" else Vector2.ZERO
+					tick(main, left, right)
+					check(main.seek_feedback.target_ms == 100000 + direction * seconds * 1000 and host.revisions.is_empty(), "Both input paths preview the configured step on either hand")
+					for frame in 9: tick(main, left, right)
+					check(main.seek_feedback.target_ms == 100000 + direction * seconds * 2000, "Holding repeats the configured step")
+					tick(main, Vector2.ZERO, Vector2.ZERO)
+					check(host.revisions.size() == 1 and host.revisions[0][1] == 100000 + direction * seconds * 2000, "Release submits the accumulated configured target once")
+		for id in ["back10", "back20", "forward10", "forward20"]:
+			reset(main, host, 100000)
+			main._execute_shortcut(id)
+			check(host.revisions.size() == 1 and host.revisions[0][1] == 100000 + seconds * 1000 * (-1 if id.begins_with("back") else 1), "Button-mapped legacy seek IDs also use the global step")
+	main._on_setting_changed(main.SeekStep.KEY, main.SeekStep.DEFAULT)
 	reset(main, host)
 	tick(main, Vector2.ZERO, Vector2(1, 0))
 	for frame in 19: tick(main, Vector2.ZERO, Vector2(1, 0))
@@ -230,9 +253,9 @@ func run() -> void:
 	reset(main, host); tick(main, Vector2.ZERO, Vector2(1, 0)); tick(main, Vector2.ZERO, Vector2(NAN, 0)); tick(main, Vector2.ZERO, Vector2.ZERO)
 	check(host.revisions.is_empty() and main.seek_feedback.phase.is_empty(), "Invalid axes cannot submit a preview")
 	reset(main, host); tick(main, Vector2(1, 0), Vector2(-1, 0))
-	check(main.seek_feedback.owner == "left_hand" and main.seek_feedback.target_ms == 50000, "Two simultaneous hands deterministically keep the first preview owner")
+	check(main.seek_feedback.owner == "left_hand" and main.seek_feedback.target_ms == 40000, "Two simultaneous hands deterministically keep the first preview owner")
 	tick(main, Vector2.ZERO, Vector2(-1, 0)); tick(main, Vector2.ZERO, Vector2.ZERO)
-	check(host.revisions.size() == 1 and host.revisions[0][1] == 50000, "Other-hand release cannot send a second jump")
+	check(host.revisions.size() == 1 and host.revisions[0][1] == 40000, "Other-hand release cannot send a second jump")
 	for input in ["stick_right", "stick_up"]:
 		reset(main, host)
 		check(main.controller_bindings.assign("forward10", Bindings.bind("left_hand", input), false, true).ok, "Custom seek axis can be assigned")

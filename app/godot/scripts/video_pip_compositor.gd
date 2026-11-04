@@ -91,6 +91,9 @@ func direct_compatible(count: int = -1) -> bool:
 	if manager.video_windows().size() != manager.windows.size(): return false
 	if layer.runtime_image_size.x < Edges.MASK_TILE + 4 or layer.runtime_image_size.y < (Edges.MASK_TILE + 4) * 3: return false
 	if video.geometry != 0 or video.alpha_requested or video.depth_requested or video.packed_file: return false
+	# A Surface sub-image can crop, but cannot rotate pixels inside a fixed quad.
+	# Use the existing shared-frame sampler, including when opening the first slot.
+	if not manager.PipWindow.flat_sampling_basis(video.panel).is_equal_approx(Basis.IDENTITY): return false
 	if int(video.media.format.get("source_rotation_degrees", 0)) != 0 or video.stereo_offset_uv() != Vector2.ZERO: return false
 	var eyes := 1
 	var total: int = manager.video_windows().size() if count < 0 else count

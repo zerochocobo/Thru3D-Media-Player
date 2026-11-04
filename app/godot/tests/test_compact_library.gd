@@ -11,7 +11,9 @@ var failures: Array[String] = []
 class Harness extends "res://scripts/main.gd":
 	var rays := {}
 	var move_pose := Transform3D.IDENTITY
-	func _ready() -> void: set_process(false)
+	func _ready() -> void:
+		set_process(false)
+		cast_session.bind(self, null)
 	func _ray(hand: String) -> Variant: return rays.get(hand)
 	func _head_pose() -> Variant: return Transform3D(Basis.IDENTITY, Vector3(0, 1.6, 0))
 	func _move_pose(_hand: String) -> Variant: return move_pose

@@ -211,7 +211,7 @@ func snapshot() -> Dictionary:
 
 
 func mode_action_allowed(operation: String) -> bool:
-	return operation not in ["alpha", "depth", "depth_strength", "clone_voice", "lock_mode", "stereo", "projection"] \
+	return operation not in ["alpha", "depth", "depth_strength", "depth_position", "clone_voice", "lock_mode", "stereo", "projection"] \
 		and not operation.begins_with("projection_") and not operation.begins_with("stereo_") and not operation.begins_with("fov_")
 
 

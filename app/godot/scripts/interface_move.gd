@@ -10,6 +10,11 @@ const MAX_MENU_PITCH := deg_to_rad(80.0)
 var capture := {}
 var placements := {}
 
+## Shared ray pose for trigger-dragged panels; keep a valid up axis near vertical.
+static func ray_pose(origin: Vector3, direction: Vector3) -> Transform3D:
+	var up := Vector3.FORWARD if absf(direction.normalized().dot(Vector3.UP)) > 0.99 else Vector3.UP
+	return Transform3D(Basis.looking_at(direction.normalized(), up), origin)
+
 func begin(hand: String, input: String, pose: Transform3D, targets: Array, anchor: Variant = null, head: Variant = null, following: bool = false) -> bool:
 	if not capture.is_empty() or targets.is_empty() or not pose.is_finite(): return false
 	var point: Vector3 = anchor if anchor is Vector3 else pose.origin

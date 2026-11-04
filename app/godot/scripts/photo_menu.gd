@@ -235,13 +235,14 @@ func refresh_values() -> void:
 		var new_layout := latest.duplicate()
 		# The music clock is not drawn here. Its regular updates must not rebuild
 		# photo buttons and clear the ray hover, pointer dot and tooltip.
-		for key in ["translation_state", "translation_count", "translation_total", "translation_provider", "comic_state", "comic_speech", "comic_ready_audio", "comic_readable", "comic_candidates", "depth_strength", "depth_requested", "depth_enabled", "depth_error", "stereo_strategy", "stereo_ready", "render_strength", "portrait_enabled", "loading_caption", "audio_storage", "audio_position", "audio_duration"]:
+		for key in ["translation_state", "translation_count", "translation_total", "translation_provider", "comic_state", "comic_speech", "comic_ready_audio", "comic_readable", "comic_candidates", "depth_strength", "depth_position", "depth_requested", "depth_enabled", "depth_error", "stereo_strategy", "stereo_ready", "render_strength", "portrait_enabled", "loading_caption", "audio_storage", "audio_position", "audio_duration"]:
 			old_layout.erase(key); new_layout.erase(key)
 		_state = latest
 		if old_layout != new_layout:
 			_draw()
 		else:
 			_refresh_depth()
+			_refresh_depth_position()
 			_tips[PHOTO_DEPTH] = _depth_tip()
 			if is_instance_valid(_status): _status.text = _fitted_photo_status()
 			for button in _buttons:
@@ -409,12 +410,14 @@ func _adjustment_row(target: int, key: String, title: String, span: Vector3, y: 
 	super._adjustment_row(target, key, title, span, y)
 	# The shared video row defaults to has_video; photo sliders use their own content.
 	_adjust_rows[target].button.enabled = int(_state.get("count", 0)) > 0 if key.begins_with("gallery_") else _state.get("has_image", false)
+	if key == "edge_feather_strength" and int(_state.get("layout", 0)) == Photo.Gallery.Layout.WALL and int(_state.get("gallery_focus", -1)) < 0:
+		_adjust_rows[target].button.enabled = int(_state.get("count", 0)) > 0
 
 func _adjustment_default(key: String) -> Variant:
 	if _adjustment != "photo_view": return super._adjustment_default(key)
 	if key == "gallery_distance": return Photo.Gallery.DEFAULT_DISTANCES[clampi(int(_state.get("layout", 0)), 0, 4)]
 	return {"screen_distance": Photo.DEFAULT_DISTANCE, "screen_scale": 1.0,
-		"gallery_scale": 1.0, "inspect_magnification": Photo.DEFAULT_MAGNIFICATION}.get(key)
+		"gallery_scale": 1.0, "inspect_magnification": Photo.DEFAULT_MAGNIFICATION, "edge_feather_strength": Photo.DEFAULT_EDGE_FEATHER}.get(key)
 
 func _draw_adjustments() -> void:
 	if _adjustment == "comic_translation":
@@ -425,23 +428,31 @@ func _draw_adjustments() -> void:
 		super._draw_adjustments()
 		return
 	if int(_state.get("layout", 0)) in [2, 3] and int(_state.get("gallery_focus", -1)) < 0:
-		_set_backdrop(Vector2(1.55, 0.50))
+		var wall := int(_state.layout) == Photo.Gallery.Layout.WALL
+		_set_backdrop(Vector2(1.55, 0.645 if wall else 0.50), Vector2(0, -0.0725 if wall else 0.0))
 		_button(PHOTO_ADJUST_BACK, "", Vector2(-0.66, 0.19), Vector2(0.09, 0.065), true, "up")
 		_button(CLOSE, "", Vector2(0.66, 0.19), Vector2(0.09, 0.065), true, "close")
 		_label(I18n.t(Photo.Gallery.NAMES[int(_state.layout)]), Vector3(0, 0.19, 0.004), TEXT_PAGE_TITLE).font = ui_bold_font()
 		_adjustment_row(450, "gallery_scale", "Image size", Vector3(Photo.Gallery.SCALE_LIMITS.x, Photo.Gallery.SCALE_LIMITS.y, 0.05), 0.02)
 		_adjustment_row(451, "gallery_distance", "Distance", Vector3(Photo.Gallery.DISTANCE_LIMITS.x, Photo.Gallery.DISTANCE_LIMITS.y, 0.1), -0.125)
+		if wall:
+			_adjustment_row(453, "edge_feather_strength", "Edge feather", Vector3(Photo.EDGE_FEATHER_LIMITS.x, Photo.EDGE_FEATHER_LIMITS.y, 0.05), -0.27)
+			_place_device_status(Vector2(0, -0.46))
 		_refresh_adjustments(); return
 	var spatial: bool = _state.get("has_image", false) and not _state.get("loading", false) and _state.get("native_stereo", false) and _state.get("spatial_metadata", {}).has("horizontal_fov_degrees")
-	_set_backdrop(Vector2(1.55, 0.74 if spatial else 0.64), Vector2(0, -0.05 if spatial else 0.0))
+	var feather := int(_state.get("layout", 0)) != Photo.Gallery.Layout.MAGAZINE
+	var extra := 0.145 if feather else 0.0
+	_set_backdrop(Vector2(1.55, (0.74 if spatial else 0.64) + extra), Vector2(0, (-0.05 if spatial else 0.0) - extra * 0.5))
 	_button(PHOTO_ADJUST_BACK, "", Vector2(-0.66, 0.25), Vector2(0.09, 0.065), true, "up")
 	_button(CLOSE, "", Vector2(0.66, 0.25), Vector2(0.09, 0.065), true, "close")
 	_label(I18n.t("Adjust image"), Vector3(0, 0.25, 0.004), TEXT_PAGE_TITLE).font = ui_bold_font()
 	_adjustment_row(450, "screen_distance", "Distance", Vector3(Photo.PHOTO_DISTANCE_LIMITS.x, Photo.PHOTO_DISTANCE_LIMITS.y, 0.1), 0.10)
-	_adjustment_row(451, "screen_scale", "Image size", Vector3(Photo.PHOTO_SCALE_LIMITS.x, Photo.PHOTO_SCALE_LIMITS.y, 0.1), -0.045)
+	_adjustment_row(451, "screen_scale", "Image size", Vector3(Photo.PHOTO_SCALE_LIMITS.x, Photo.PHOTO_SCALE_LIMITS.y, 0.05), -0.045)
 	_adjustment_row(452, "inspect_magnification", "Magnification", Vector3(Photo.INSPECT_LIMITS.x, Photo.INSPECT_LIMITS.y, 0.1), -0.19)
+	if feather:
+		_adjustment_row(453, "edge_feather_strength", "Edge feather", Vector3(Photo.EDGE_FEATHER_LIMITS.x, Photo.EDGE_FEATHER_LIMITS.y, 0.05), -0.335)
 	if spatial:
-		_button(SPATIAL_FOV, I18n.t("Match spatial photo capture FOV"), Vector2(0, -0.31), Vector2(1.12, 0.06), bool(_state.get("spatial_fov_available", false)))
+		_button(SPATIAL_FOV, I18n.t("Match spatial photo capture FOV"), Vector2(0, -0.31 - extra), Vector2(1.12, 0.06), bool(_state.get("spatial_fov_available", false)))
 		set_label_size(_buttons.back().node.get_child(0), 18)
 	for target in _adjust_rows:
 		var enabled: bool = _state.get("has_image", false) and (target != 452 or not _state.get("portrait_requested",false)) and (target == 452 or int(_state.get("geometry", 0)) == 0)
@@ -451,7 +462,7 @@ func _draw_adjustments() -> void:
 		row.label.modulate = Color.WHITE if enabled else MUTED
 		row.fill.material_override.set_shader_parameter("surface_color", ACCENT if enabled else MUTED)
 		row.knob.material_override.set_shader_parameter("surface_color", Color.WHITE if enabled else MUTED)
-	_place_device_status(Vector2(0, -0.485 if spatial else -0.385))
+	_place_device_status(Vector2(0, (-0.485 if spatial else -0.385) - extra))
 	_refresh_adjustments()
 
 func _refresh_adjustments() -> void:
@@ -461,11 +472,12 @@ func _refresh_adjustments() -> void:
 		return
 	_refresh_spatial_fov()
 	for row in _adjust_rows.values():
-		var fallback := Photo.DEFAULT_DISTANCE if row.key in ["screen_distance", "gallery_distance"] else (1.0 if row.key == "screen_scale" else Photo.DEFAULT_MAGNIFICATION)
+		var fallback: float = _adjustment_default(row.key)
 		var value := float(_state.get(row.key, fallback))
 		row["value"] = value
 		var fraction := clampf((value - row.span.x) / (row.span.y - row.span.x), 0.0, 1.0)
-		row.label.text = "%.1f m" % value if row.key in ["screen_distance", "gallery_distance"] else ("%d%%" % roundi(value * 100) if row.key in ["screen_scale", "gallery_scale"] else "%.1f×" % value)
+		if row.key in ["screen_distance", "screen_scale"]: fraction = ScreenPresets.slider_fraction(value, row.span)
+		row.label.text = "%.1f m" % value if row.key in ["screen_distance", "gallery_distance"] else ("%d%%" % roundi(value * 100) if row.key in ["screen_scale", "gallery_scale", "edge_feather_strength"] else "%.1f×" % value)
 		row.fill.visible = fraction > 0
 		row.fill.mesh.size.x = maxf(0.001, fraction * 0.6)
 		row.fill.position.x = 0.03 + fraction * 0.3
@@ -486,27 +498,33 @@ func _photo_background_button(target: int, caption: String, centre: Vector2, siz
 	if not _state.get("can_background", false): _tips[target] += "\n" + I18n.t("Open a supported panorama to use it as a background.")
 
 func _draw_panel() -> void:
-	_set_backdrop(Vector2(1.16, 0.84), Vector2(0, -0.145))
+	var position_available: bool = _state.get("has_image", false) and int(_state.get("geometry", 0)) == 0 and not _state.get("native_stereo", false) and not _state.get("portrait_requested", false) and not _state.get("stereo", false)
+	var extra := 0.14 if position_available else 0.0
+	_set_backdrop(Vector2(1.16, 0.84 + extra), Vector2(0, -0.145 - extra / 2))
 	_button(10, "", Vector2(-0.48, 0.2), Vector2(0.085, 0.065), true, "up")
 	_label(I18n.t("Images"), Vector3(0, 0.2, 0.004), 21)
 	_button(PHOTO_STRENGTH, I18n.t("3D depth") + "  " + _depth_caption(), Vector2(-0.26, 0.035), Vector2(0.49, 0.105), _can_depth(), "depth")
 	var names := ["Off", "Slight", "Medium", "Full"]
 	var curve := [0.0, 0.35, 0.7, 1.0].find(float(_state.get("screen_curve", 0)))
 	_button(PHOTO_CURVE, I18n.t("Screen curve") + "  " + I18n.t(names[maxi(0, curve)]), Vector2(0.26, 0.035), Vector2(0.49, 0.105), int(_state.get("geometry", 0)) == 0 and not _state.get("portrait_requested",false), "screen")
-	_photo_background_button(PHOTO_BACKGROUND, "Set as image background", Vector2(-0.26, -0.10), Vector2(0.49, 0.08))
-	_photo_background_button(PHOTO_GLOBAL_BACKGROUND, "Set global background", Vector2(0.26, -0.10), Vector2(0.49, 0.08), true)
-	_keep_background_row(-0.20)
-	_button(PHOTO_COMIC, I18n.t("Comic reading") + "  " + I18n.t("On" if _state.get("comic_enabled", false) else "Off"), Vector2(-0.26, -0.30), Vector2(0.49, 0.08), _state.get("comic_supported", false), "comic_voice")
-	_button(PHOTO_COMIC_VOICE, I18n.t("Voice"), Vector2(0.26, -0.30), Vector2(0.49, 0.08), _state.get("comic_supported", false), "comic_voice")
-	_label(I18n.t("Adjacent cache"), Vector3(-0.29, -0.405, 0.004), TEXT_AUX)
+	if position_available:
+		var title := _label(I18n.t(DepthPosition.TITLE), Vector3(-0.50, -0.09, 0.004), TEXT_BODY)
+		title.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+		_draw_depth_position_field(Vector2(0.18, -0.09), 0.66)
+	_photo_background_button(PHOTO_BACKGROUND, "Set as image background", Vector2(-0.26, -0.10 - extra), Vector2(0.49, 0.08))
+	_photo_background_button(PHOTO_GLOBAL_BACKGROUND, "Set global background", Vector2(0.26, -0.10 - extra), Vector2(0.49, 0.08), true)
+	_keep_background_row(-0.20 - extra)
+	_button(PHOTO_COMIC, I18n.t("Comic reading") + "  " + I18n.t("On" if _state.get("comic_enabled", false) else "Off"), Vector2(-0.26, -0.30 - extra), Vector2(0.49, 0.08), _state.get("comic_supported", false), "comic_voice")
+	_button(PHOTO_COMIC_VOICE, I18n.t("Voice"), Vector2(0.26, -0.30 - extra), Vector2(0.49, 0.08), _state.get("comic_supported", false), "comic_voice")
+	_label(I18n.t("Adjacent cache"), Vector3(-0.29, -0.405 - extra, 0.004), TEXT_AUX)
 	for count in [1, 2]:
 		var target := PHOTO_CACHE_ONE if count == 1 else PHOTO_CACHE_TWO
-		_button(target, I18n.t("1 each" if count == 1 else "2 each"), Vector2(0.08 + (count - 1) * 0.28, -0.405), Vector2(0.25, 0.075))
+		_button(target, I18n.t("1 each" if count == 1 else "2 each"), Vector2(0.08 + (count - 1) * 0.28, -0.405 - extra), Vector2(0.25, 0.075))
 		if int(_state.get("cache_each", 1)) == count: _buttons.back().base_color = SELECTED
 		_tips[target] = I18n.t("Upper limit per side. Actual 3D and portrait caching adapts to memory and rendering headroom.")
-	_status = _label(_photo_status(), Vector3(0, -0.49, 0.004), 15)
+	_status = _label(_photo_status(), Vector3(0, -0.49 - extra, 0.004), 15)
 	_status.modulate = MUTED
-	_place_device_status(Vector2(0, -0.60))
+	_place_device_status(Vector2(0, -0.60 - extra))
 	choices.finish()
 
 func _draw_gallery() -> void:

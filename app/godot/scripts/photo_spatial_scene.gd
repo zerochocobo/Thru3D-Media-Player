@@ -14,10 +14,10 @@ var surfaces: Array[MeshInstance3D] = []
 signal completed
 
 func begin(source: Image, depth: Image, rect: Vector4, eye: Vector3, size: Vector2, native_pair: bool,
-	strength: float = 1.0, fill_enabled: bool = true, eye_separation: float = 0.064) -> void:
+	strength: float = 1.0, fill_enabled: bool = true, eye_separation: float = 0.064, convergence: float = 0.35) -> void:
 	clear()
 	pending={"epoch":epoch,"source":source,"depth":depth,"rect":rect,"eye":eye,"size":size,"native":native_pair,
-		"strength":strength,"fill":fill_enabled,"eye_separation":eye_separation}
+		"strength":strength,"fill":fill_enabled,"eye_separation":eye_separation,"convergence":convergence}
 	set_process(true)
 
 func clear() -> void:
@@ -39,7 +39,7 @@ func _process(_delta: float) -> void:
 	if worker==null and pending.is_empty(): set_process(false)
 
 static func _prepare(job: Dictionary) -> Dictionary:
-	return {"epoch":job.epoch,"data":Geometry.prepare(job.source,job.depth,job.rect,job.eye,job.size,job.native,job.strength,job.fill,job.eye_separation)}
+	return {"epoch":job.epoch,"data":Geometry.prepare(job.source,job.depth,job.rect,job.eye,job.size,job.native,job.strength,job.fill,job.eye_separation,job.get("convergence",0.35))}
 
 func _accept(data: Dictionary) -> void:
 	reference=data.reference; reference_size=data.size

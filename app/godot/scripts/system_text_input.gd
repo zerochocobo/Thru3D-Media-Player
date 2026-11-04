@@ -1,4 +1,8 @@
 extends RefCounted
+const ChineseInput := preload("res://scripts/chinese_input.gd")
+const CUSTOM_CONTEXTS := ["cloud_search", "media_server_search", "web_library_search", "web_library_title", "subtitle_filter",
+	"voice-name", "background_name", "file_rename", "playlist_name", "smb_name", "smb_user", "account_name", "account_username", "archive_password"]
+const LATIN_CONTEXTS := ["smb_user", "account_username", "archive_password"]
 ## A standard engine editor supplies Unicode, selection and IME composition.
 ## Android's engine bridge opens the installed system keyboard; OpenXR has no
 ## portable keyboard API. The 3D menu displays the draft, not another key layout.
@@ -9,6 +13,13 @@ var generation := 0
 var changed: Callable
 var submitted: Callable
 var cancelled: Callable
+var custom := false
+var current: Callable
+
+static func uses_custom(tag: String) -> bool:
+	return ChineseInput.enabled() and tag in CUSTOM_CONTEXTS
+
+func keyboard_id() -> String: return "text:" + str(get_instance_id())
 
 func _init(owner: Node) -> void: host = owner
 
@@ -18,7 +29,7 @@ func active(tag: String = "") -> bool:
 static func clean(value: String, limit: int) -> String:
 	return value.replace("\r", " ").replace("\n", " ").strip_escapes().left(limit)
 
-func begin(tag: String, value: String, limit: int, on_change: Callable, on_submit: Callable, on_cancel: Callable = Callable()) -> void:
+func begin(tag: String, value: String, limit: int, on_change: Callable, on_submit: Callable, on_cancel: Callable = Callable(), is_current: Callable = Callable()) -> void:
 	cancel()
 	if not is_instance_valid(editor):
 		editor = LineEdit.new()
@@ -34,8 +45,11 @@ func begin(tag: String, value: String, limit: int, on_change: Callable, on_submi
 		editor.gui_input.connect(_gui_input)
 		host.add_child(editor)
 	context = tag; changed = on_change; submitted = on_submit; cancelled = on_cancel
+	current = is_current
+	custom = uses_custom(tag)
 	editor.focus_mode = Control.FOCUS_ALL
-	editor.virtual_keyboard_enabled = true
+	editor.virtual_keyboard_enabled = not custom
+	editor.virtual_keyboard_show_on_focus = not custom
 	editor.show()
 	editor.max_length = clampi(limit, 1, 4096)
 	editor.text = clean(value, editor.max_length)
@@ -47,8 +61,22 @@ func begin(tag: String, value: String, limit: int, on_change: Callable, on_submi
 
 func _focus(id: int) -> void:
 	if id != generation or not active() or not is_instance_valid(editor) or not host.is_inside_tree(): return
+	if custom:
+		# The ray popup owns keys; retain the standard editor's caret/selection model.
+		if not _custom_alive(id): return
+		ChineseInput.open(host, keyboard_id(),
+			func(operation, value): return _custom_action(operation, value) if _custom_alive(id) else false,
+			func(): return _custom_alive(id),
+			func(): return editor.text.insert(editor.caret_column, "│"), context in LATIN_CONTEXTS)
+		return
 	editor.grab_focus()
 	editor.edit()
+
+func _custom_alive(id: int) -> bool:
+	if id != generation or not active() or not custom: return false
+	if not is_instance_valid(host) or not host.is_inside_tree() or not ChineseInput.enabled() or (current.is_valid() and not current.call()):
+		cancel(); return false
+	return true
 
 func set_text(tag: String, value: String) -> void:
 	if not active(tag): return
@@ -56,6 +84,9 @@ func set_text(tag: String, value: String) -> void:
 	editor.text = clean(value, editor.max_length)
 	editor.caret_column = editor.text.length()
 	_changed(editor.text)
+	if custom:
+		if ChineseInput.active() and ChineseInput.popup.owner_id == keyboard_id(): ChineseInput.popup.ime.clear(); ChineseInput.popup.refresh()
+		return
 	# Explicit paste/clear must also replace the Android input connection's text.
 	# Reopening on every edit would break the IME's composing/candidate state.
 	editor.release_focus()
@@ -80,8 +111,11 @@ func cancel(tag: String = "", notify: bool = false) -> void:
 	if notify and callback.is_valid(): callback.call(value)
 
 func _end() -> void:
+	ChineseInput.close(keyboard_id())
 	context = ""; generation += 1
+	custom = false
 	changed = Callable(); submitted = Callable(); cancelled = Callable()
+	current = Callable()
 	if is_instance_valid(editor):
 		if editor.is_inside_tree():
 			editor.cancel_ime()
@@ -107,3 +141,22 @@ func _gui_input(event: InputEvent) -> void:
 	if editor.has_ime_text(): return # The first Escape belongs to composition.
 	editor.accept_event()
 	cancel("", true)
+
+func _custom_action(operation: String, value: String) -> bool:
+	if not active() or not custom: return false
+	match operation:
+		"close": cancel("", true); return true
+		"enter": _submitted(editor.text); return true
+		"text", "backspace":
+			var start := editor.get_selection_from_column() if editor.has_selection() else editor.caret_column
+			var end := editor.get_selection_to_column() if editor.has_selection() else editor.caret_column
+			if operation == "text" and editor.text.length() - (end - start) + value.length() > editor.max_length: return false
+			if operation == "backspace" and start == end: start = maxi(0, start - 1)
+			var replacement := clean(value, editor.max_length) if operation == "text" else ""
+			editor.text = editor.text.left(start) + replacement + editor.text.substr(end)
+			editor.deselect(); editor.caret_column = start + replacement.length()
+			_changed(editor.text)
+		"left", "right":
+			editor.caret_column = clampi(editor.caret_column + (-1 if operation == "left" else 1), 0, editor.text.length())
+			editor.deselect()
+	return true

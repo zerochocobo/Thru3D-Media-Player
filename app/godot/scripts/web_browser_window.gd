@@ -254,6 +254,9 @@ func focus_crop() -> Rect2:
 func is_focused() -> bool: return focus_crop() != Focus.FULL
 func source_point(uv: Vector2) -> Vector2:
 	return Focus.map_point(uv, focus_crop())
+# CSS pixels covered by one unit of page_point() UV, including focus zoom.
+func page_css_scale() -> Vector2:
+	return Vector2(Surface.logical_for(page_size)) * focus_crop().size
 func page_layout() -> Dictionary:
 	var layout := full_page_layout()
 	layout.size = Focus.fitted(layout.size, Vector2(Surface.pixels_for(page_size, browser.low_end)), focus_crop())
@@ -465,6 +468,9 @@ func draw_frame_panels() -> void:
 			panel.set_meta("browser_header", true)
 			# The existing header mesh doubles as a drag surface behind its controls.
 			_ray_blockers.append({"target": MOVE, "rect": bounds, "enabled": true, "node": panel, "radius": 0.004})
+		else:
+			# Long, plain frame strips must not stretch the fixed-pixel chrome capture.
+			panel.set_meta("menu_eye_buffer", true)
 func draw_resize_handles() -> void:
 	# All three hit regions stay outside the webpage, including its fullscreen button.
 	var page := page_rect()
@@ -473,6 +479,9 @@ func draw_resize_handles() -> void:
 		[RESIZE, Vector2(page.end.x + RESIZE_OFFSET.x + 0.01, page.position.y - RESIZE_OFFSET.y - 0.01), RESIZE_CORNER_SIZE]]:
 		_button(spec[0], "", spec[1], spec[2])
 		var tile: Dictionary = _buttons.back()
+		# Simple resize marks remain in the eye buffer; the distant bottom grip
+		# must not lower the title bar's compositor pixels per metre.
+		tile.node.set_meta("menu_eye_buffer", true)
 		tile.node.position.z = 0.025
 		tile.base_color = Color(0, 0, 0, 0); tile.node.material_override.set_shader_parameter("surface_color", tile.base_color)
 		# Keep the visible grips by the frame; the generous transparent targets

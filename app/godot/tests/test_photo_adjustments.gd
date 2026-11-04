@@ -51,10 +51,12 @@ func _run() -> void:
 	check(entry.rect.get_center().x < 0, "Adjustment icon is on the left of the photo transport")
 	menu.press_pointer("right_hand", entry.node.global_position + Vector3(0, 0, 1), -menu.global_basis.z, true)
 	menu.release_pointer("right_hand", Vector3.ZERO, Vector3.ZERO, false)
-	check(menu._adjustment == "photo_view" and menu._adjust_rows.size() == 3, "Real ray/trigger opens three adjustment sliders")
+	check(menu._adjustment == "photo_view" and menu._adjust_rows.size() == 4, "Real ray/trigger opens four adjustment sliders")
+	check(photo.edge_feather_strength == 1.0 and menu._adjust_rows[453].label.text == "100%", "Default feather preserves the current effect")
+	check(is_equal_approx(menu._adjust_rows[450].span.z, 0.1) and is_equal_approx(menu._adjust_rows[451].span.z * 100, 5.0), "Photo adjustment steps match video: 0.1 metres and 5 percent")
 	check(not menu.allows_playback_sticks(), "Image adjustment panel isolates playback shortcuts")
 	menu.adjustment_committed.connect(func(): commits.append(true))
-	for target in [450, 451, 452]:
+	for target in [450, 451, 452, 453]:
 		var row: Dictionary = menu._adjust_rows[target]
 		var y: float = row.knob.position.y
 		var knob: Object = row.knob
@@ -80,13 +82,26 @@ func _run() -> void:
 		check(stored.load(main.settings_path) == OK, "Slider release saves configuration")
 		var stored_key: String = "magnification" if row.key == "inspect_magnification" else row.key.trim_prefix("screen_")
 		check(is_equal_approx(float(stored.get_value("photo_screen", stored_key)), row.span.y), "Saved value matches live preview: " + row.key)
-	check(is_equal_approx(photo.panel.global_position.distance_to(main._eye()), 10.0), "Distance slider moves the actual screen to 10m")
-	check(photo._flat.size.is_equal_approx(photo._screen_base * 6.0), "Size slider enlarges the complete screen mesh sixfold")
+	var feather_config := ConfigFile.new(); feather_config.load(main.settings_path)
+	var feather_restored := Photo.new(); feather_restored.restore_view_settings(feather_config)
+	check(feather_restored.edge_feather_strength == 3.0, "Global feather preference survives restarting")
+	feather_restored.free()
+	menu._activate(menu._adjust_rows[453].reset.target)
+	check(photo.edge_feather_strength == 1.0 and not menu._adjust_rows[453].reset.enabled, "Feather reset restores the current default")
+	main._on_photo_adjustment("edge_feather_strength", 0.0); main._save_photo_adjustments()
+	feather_config.load(main.settings_path)
+	feather_restored = Photo.new(); feather_restored.restore_view_settings(feather_config)
+	check(feather_restored.edge_feather_strength == 0.0 and photo._edge_feather() == Vector2.ZERO, "Hard-edge zero is saved explicitly, not treated as a missing preference")
+	feather_restored.free()
+	main._on_photo_adjustment("edge_feather_strength", 1.0); main._save_photo_adjustments()
+	check(Photo.PHOTO_DISTANCE_LIMITS == main.video.DISTANCE_LIMITS and Photo.PHOTO_SCALE_LIMITS == main.video.SCALE_LIMITS, "Photo and video share distance and size limits")
+	check(is_equal_approx(photo.panel.global_position.distance_to(main._eye()), 50.0), "Distance slider moves the actual screen to 50m")
+	check(photo._flat.size.is_equal_approx(photo._screen_base * 30.0), "Size slider enlarges the complete screen mesh thirtyfold")
 	check(not photo.inspect and not photo._detail.visible and photo.material.get_shader_parameter("content_zoom") == 1.0
 		and photo.inspect_magnification == 8.0, "Magnification slider changes only the saved default and never opens a window")
 	check(Vector2(main.video.screen_distance, main.video.screen_scale) == video_before, "Photo adjustments preserve separate video parameters")
-	photo.set_screen_distance(0.3)
-	photo.set_screen_scale(6.0)
+	photo.set_screen_distance(Photo.PHOTO_DISTANCE_LIMITS.x)
+	photo.set_screen_scale(Photo.PHOTO_SCALE_LIMITS.y)
 	photo.set_screen_curve(1.0)
 	for corner in 4:
 		check(photo.screen_corner(corner).z < photo.screen_distance, "Largest curved image stays in front at closest distance")
@@ -100,7 +115,7 @@ func _run() -> void:
 	var config := ConfigFile.new(); config.load(main.settings_path)
 	var restored := Photo.new()
 	restored.restore_view_settings(config)
-	check(restored.screen_distance == photo.screen_distance and restored.screen_scale == photo.screen_scale and restored.inspect_magnification == 8.0,
+	check(is_equal_approx(restored.screen_distance, photo.screen_distance) and is_equal_approx(restored.screen_scale, photo.screen_scale) and restored.inspect_magnification == 8.0,
 		"Restart restores all three image preferences")
 	restored.free()
 	photo.toggle_inspect()
@@ -180,12 +195,15 @@ func gallery_sliders(main: Node3D, image: Image) -> void:
 	photo.history_enabled = false; photo.auto_depth = false
 	photo.mode_memory = preload("res://scripts/file_mode_memory.gd").new(output.path_join("modes"))
 	menu.dismiss(); photo.set_projection(0); photo.set_screen_scale(1); photo.set_screen_distance(3)
+	main._on_photo_adjustment("edge_feather_strength", 0.0); main._save_photo_adjustments()
 	photo.set_process(true)
 	photo.open_image(str(items[0].uri), "slider.png", items)
 	var deadline := Time.get_ticks_msec() + 5000
 	while photo.loading and Time.get_ticks_msec() < deadline: await create_timer(.01).timeout
 	check(not photo.loading and photo.error.is_empty(), "Gallery slider fixture loads a real photo")
 	photo.finish_transition(); photo.set_process(false); photo.gallery.set_process(false)
+	check(photo.edge_feather_strength == 0.0 and photo._edge_feather() == Vector2.ZERO, "Opening another photo with history disabled retains the global hard-edge preference")
+	main._on_photo_adjustment("edge_feather_strength", 1.0); main._save_photo_adjustments()
 	for layout in [2,3]:
 		photo.set_layout_mode(layout); photo.gallery._process(.02)
 		for expanded in [false,true]:

@@ -92,6 +92,7 @@ static func level_head(head: Transform3D) -> Transform3D:
 func _open(slot: int, head: Transform3D) -> void:
 	if anchor == null: anchor = level_head(head)
 	var window := PipWindow.new()
+	window.source_panel = owner.panel
 	window.slot = slot; window.zoom = preferences[slot]
 	window.source_aspect = _aspect()
 	window.panorama = owner.geometry != 0
@@ -127,9 +128,7 @@ func _default_basis() -> Basis:
 	return view_basis(direction)
 
 static func view_basis(direction: Vector3) -> Basis:
-	var forward := direction.normalized()
-	var up := Vector3.FORWARD if absf(forward.dot(Vector3.UP)) > 0.999 else Vector3.UP
-	return Basis.looking_at(forward, up)
+	return PipWindow.view_basis(direction)
 
 func close(slot: int) -> void:
 	if not windows.has(slot): return
@@ -363,6 +362,8 @@ func _draw_selection() -> void:
 	_outline.visible = not candidate.is_empty()
 	if candidate.is_empty(): return
 	var window: Node3D = windows[selecting]
+	var sampling: Basis = window.sampling_basis(candidate)
+	var flat: Dictionary = window.flat_crop(candidate) if owner.geometry == 0 else {}
 	var mesh: ImmediateMesh = _outline.mesh
 	mesh.clear_surfaces(); mesh.surface_begin(Mesh.PRIMITIVE_LINE_STRIP)
 	var points := [Vector2(0, 0), Vector2(1, 0), Vector2(1, 1), Vector2(0, 1), Vector2(0, 0)]
@@ -371,16 +372,15 @@ func _draw_selection() -> void:
 			var uv: Vector2 = points[edge].lerp(points[edge + 1], step / 16.0)
 			var p: Vector3
 			if owner.geometry == 0:
-				var span: Vector2 = window.crop_span()
-				var center: Vector2 = candidate.center.clamp(span / 2, Vector2.ONE - span / 2)
-				uv = center + (uv - Vector2.ONE * 0.5) * span
+				var delta: Vector2 = (uv - Vector2.ONE * 0.5) * (flat.span as Vector2)
+				uv = flat.center + flat.right * delta.x + flat.down * delta.y
 				p = Vector3((uv.x - 0.5) * owner._flat.size.x, (0.5 - uv.y) * owner._flat.size.y, 0.004)
 				if owner.screen_curve > 0:
 					var radius: float = owner._curve_radius()
 					p = Vector3(sin(p.x / radius) * radius, p.y, (1 - cos(p.x / radius)) * radius + 0.004)
 			else:
 				var tangent: Vector2 = window.tangent()
-				var d: Vector3 = (candidate.basis as Basis) * Vector3((uv.x - 0.5) * 2 * tangent.x, (0.5 - uv.y) * 2 * tangent.y, -1)
+				var d: Vector3 = sampling * Vector3((uv.x - 0.5) * 2 * tangent.x, (0.5 - uv.y) * 2 * tangent.y, -1)
 				p = d.normalized() * (owner.SPHERE_RADIUS - 0.01)
 			mesh.surface_add_vertex(owner.to_local(owner.panel.to_global(p)))
 	mesh.surface_end()

@@ -23,7 +23,7 @@
     "video/out/gpu/video.c": "ab98d223e9d9643226761dec1363252af310fc35965600c4906117456dbc178a",
     "video/out/gpu/video.h": "dda1d2b0a982e1ea68ce06803c86f82ea70130128a856573d1faac9c5aca89f7",
     "video/decode/vd_lavc.c": "71eafde2c57e77038534b140261131da5345a79ce371c3e7c3d20fa7047fe220",
-    "video/out/hwdec/hwdec_aimagereader.c": "fbf5bdd1823fd7c9d3afa37976f66b494007470ebe24d3eb4fc19dd824255ae6",
+    "video/out/hwdec/hwdec_aimagereader.c": "690dec182633fd99fbc6f9d9a8e5073a393fe4f4a1cb9c4788eedf60fd295141",
     "audio/out/buffer.c": "9d769290eb499906a43181997f2721ec1548b923db2e6851bdad7c48b0f32d67",
     "video/out/gpu/hwdec.h": "40cbc32baae4f5e55654f89b8acad46b5d484f4b5ff0decd0596e25fd8dc6d8f",
     "video/out/gpu/shader_cache.c": "902285bd7bd38878909f1d46b96109983eacd507fd09a69cf69097573db930cb",
@@ -39,7 +39,7 @@
     "video/quest_spatial_metadata.h": "67e9d348aa304289110af726e8249f91aa67fceebb5a70a0bcc37e1c747e56ae",
     "include/mpv/quest_frame.h": "3c680fed7e92a8f5f52345825de42cac2e56a155f5c4fc47756839559a4b94fa"
   },
-  "patch_sha256": "960b6ad8d1cc4c5d690a5143a2a20879907c02ab63b676e2f058aae2502d2f80",
+  "patch_sha256": "c3f125020a5de1e357d9dda5d610d88001ef19d0cd3ad38f4fa04f42a3b094e6",
   "private_header_sha256": "3c680fed7e92a8f5f52345825de42cac2e56a155f5c4fc47756839559a4b94fa",
   "api_version": 2,
   "state": "source_patch_generated; build_and_device_validation_pending"

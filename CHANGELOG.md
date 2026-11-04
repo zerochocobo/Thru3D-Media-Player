@@ -4,6 +4,28 @@
 
 Newest first, following product release milestones. Some development/source snapshots contained features before their product release. Original APK identifiers `0.2` and `0.4` are retained; `0.4` was also called `0.4.0` in release notes. Availability depends on device, server and media capabilities.
 
+## 0.16.7 — 2026-11-04
+
+- Reduce per-frame menu/compositor work during eye-buffer playback and restore optimized native render-bridge compilation in Debug builds. Add GPU-fenced decoder-image return to prevent reuse before sampling completes, addressing intermittent future-frame flashes under depth inference; device/content limits remain.
+- Add separate globally remembered 3D position controls for videos and photos. Video controls live in playback settings; photo controls are independent. Expand photo distance to 0.1–50 m and size to 5–3000%, correct sideways-drag roll and add remembered edge-feather strength including hard edges.
+- Add configurable shared controller seek steps, media-server playback-report intervals and fresh resume-position lookup when returning to server libraries. Keep ray/trigger file selection; the experimental A-button confirmation was reverted.
+- Allow live-subtitle/narration preferences to be configured while their features are off, retain runtime readiness gates, and improve detail expansion and cue/wait feedback. Audio processing lead is no longer described as completed subtitle coverage; this does not claim to repair recognition omissions or change the recognition/translation engine.
+- Correct rotated flat/VR PiP orientation, aspect and cropping. Use a single source eye for both eyes in the paused temporary VR globe. Restore visible playback controls when leaving the cinema through a new source and refresh hidden menu-layer placement.
+- Extend opt-in Quest Chinese input to supported naming/configuration/password forms. Reduce redundant browser hover events and compatible danmaku outline work. Bound abnormal audio reset waits; if playback freezes again at the same recovered position, stop reopening it indefinitely and show an error instead. Underlying system-audio failures are not claimed fixed.
+- Preserve paused Douyin/Mango/Youku research, temporarily unavailable Douyin Beta and disabled 3D text protection. No model weights, personal dictionary/history, private media, credentials, signing material or development records are included.
+
+## 0.16.6.1 — 2026-11-04
+
+- PICO standard test release: add explicit user-triggered USB takeover for system-held disks, independent cinema curvature with a matching curved border, GPU-completion-safe decoder-image release and bounded AAudio reset waits. Automatic USB discovery does not force takeover; system remount/eject behavior and hardware acceptance are not established by source/build checks.
+- Retain matching mpv patch generators, input receipts and source notices. This test release is distinct from the five-channel 0.16.6 release and is not a claim that every PICO playback or system-audio failure is resolved.
+
+## 0.16.6 — 2026-11-04
+
+- Add per-eye aspect-ratio presets and fine adjustment for flat/curved video, including cinema, remembered per video; immersive video and photos keep their independent behavior.
+- Add opt-in offline simplified-Chinese pinyin input on Quest, with candidate paging, English/symbol input, a compact draggable keyboard and a pinned Apache-2.0 dictionary. Default off; PICO/OpenXR retain their existing input paths. Address bars use the system keyboard after the layout revision; compatible webpage text fields and app search remain supported.
+- Improve cinema seat targeting, gold selection/seat feedback and light haptics; restore lighting/movement shortcuts beside Scene. Add configurable video volume and playback-library shortcuts without overwriting existing bindings.
+- Keep browser chrome sharper on tall windows. Preserve minimum compatibility targets and existing paused-feature boundaries; build/startup checks do not establish acceptance on every headset.
+
 ## 0.16.5 — 2026-11-03
 
 - Add a unified scenery picker and shared private panorama library with previews, batch import, rename/remove, progress and an action to use the current panorama as a background. Global and image modes share assets but remember choices independently; image backgrounds do not inherit the cinema. Improve menu placement after scenery transitions.

@@ -61,13 +61,19 @@ func playback_node() -> Dictionary:
 	return version_node(base_playback_node())
 func version_node(base: Dictionary) -> Dictionary:
 	var choices: Array = base.get("versions", [])
-	if choices.size() < 2: return base
+	if choices.size() < 2: return _current_progress(base)
 	var wanted := str(selected_versions.get(str(base.get("id", "")), ""))
 	for version in choices:
-		if str(version.source_id) == wanted: return base.merged(version, true)
+		if str(version.source_id) == wanted: return _current_progress(base.merged(version, true))
 	for version in choices:
-		if version.get("default_version", false): return base.merged(version, true)
-	return base.merged(choices[0], true)
+		if version.get("default_version", false): return _current_progress(base.merged(version, true))
+	return _current_progress(base.merged(choices[0], true))
+
+func _current_progress(node: Dictionary) -> Dictionary:
+	# Retained detail pages can predate the current viewing session. Use the
+	# selected version's latest local record for both its caption and Play action.
+	var local: Dictionary = browser.menu.Presentation.local_record(browser.menu.catalog, str(node.get("uri", "")))
+	return node.merged({"position_ms": int(local.get("position_ms", 0))}, true) if not local.is_empty() else node
 func part_picture(part: Dictionary) -> Dictionary:
 	return part.merged({"cover_image": part.get("part_image", part.get("cover_image", {}))}, true)
 

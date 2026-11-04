@@ -85,7 +85,7 @@ func run() -> void:
 		entries.append({"key":str(i),"id":i,"page":0,"target":"en","block":{"rect":[box.position.x,box.position.y,box.end.x,box.end.y]},"size":Vector2(1000,750),"region":Rect2(0,0,1,1)})
 		cache[str(i)] = {"text":"Keep this whole text box opaque.","provider":"Bing"}
 	overlay.update(entries,cache,1.0)
-	var keep: Vector2 = Vector2.ONE * (photo.SOFT_EDGE_METRES + photo.LAYER_OVERLAP_METRES) / photo._flat.size
+	var keep: Vector2 = photo._layer_keep()
 	var cut := Vector4(keep.x,keep.y,1-keep.x*2,1-keep.y*2)
 	photo.material.set_shader_parameter("layer_cut",cut)
 	photo._hole.mesh = photo.panel.mesh; photo._hole.transform = photo.panel.transform

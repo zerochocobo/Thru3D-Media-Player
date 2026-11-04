@@ -78,6 +78,8 @@ var auto_depth := false # User choice survives image navigation and incompatible
 var depth_enabled := false
 const DepthStrength := preload("res://scripts/depth_strength.gd")
 var depth_strength := DepthStrength.PHOTO_DEFAULT
+const DepthPosition := preload("res://scripts/depth_position.gd")
+var depth_position := 0.0
 var depth_error := ""
 var spatial_requested := false
 var spatial_preferred := false # Global photo preference; navigation and automatic cleanup never change it.
@@ -142,13 +144,17 @@ var panorama_tiles := preload("res://scripts/panorama_tiles.gd").new()
 
 const DEFAULT_CURVE := 0.35
 const DEFAULT_DISTANCE := 3.0
-const PHOTO_DISTANCE_LIMITS := Vector2(0.3, 10.0)
-const PHOTO_SCALE_LIMITS := Vector2(0.4, 6.0)
+const PHOTO_DISTANCE_LIMITS := DISTANCE_LIMITS
+const PHOTO_SCALE_LIMITS := SCALE_LIMITS
 const INSPECT_LIMITS := Vector2(2.0, 8.0)
 const DEFAULT_MAGNIFICATION := 2.0
 var inspect_magnification := DEFAULT_MAGNIFICATION
 const IMMERSIVE_SIZE := Vector2(3.8, 2.6)
 const SOFT_EDGE_METRES := 0.07
+const SOFT_EDGE_SHORT_SIDE_RATIO := 0.03
+const EDGE_FEATHER_LIMITS := Vector2(0.0, 3.0)
+const DEFAULT_EDGE_FEATHER := 1.0
+var edge_feather_strength := DEFAULT_EDGE_FEATHER
 const LAYER_OVERLAP_METRES := 0.01
 const TRANSITION_SECONDS := 0.24
 const REVEAL_SECONDS := 0.30
@@ -208,10 +214,12 @@ func restore_view_settings(settings: ConfigFile) -> void:
 	var scale := float(settings.get_value("photo_screen", "scale", 1.0))
 	var curve := float(settings.get_value("photo_screen", "curve", DEFAULT_CURVE))
 	var zoom := float(settings.get_value("photo_screen", "magnification", DEFAULT_MAGNIFICATION))
+	var feather := float(settings.get_value("photo_screen", "edge_feather_strength", DEFAULT_EDGE_FEATHER))
 	screen_distance = clampf(distance, PHOTO_DISTANCE_LIMITS.x, PHOTO_DISTANCE_LIMITS.y) if is_finite(distance) else DEFAULT_DISTANCE
 	screen_scale = clampf(scale, PHOTO_SCALE_LIMITS.x, PHOTO_SCALE_LIMITS.y) if is_finite(scale) else 1.0
 	screen_curve = clampf(curve, 0.0, 1.0) if is_finite(curve) else DEFAULT_CURVE
 	inspect_magnification = clampf(zoom, INSPECT_LIMITS.x, INSPECT_LIMITS.y) if is_finite(zoom) else DEFAULT_MAGNIFICATION
+	edge_feather_strength = clampf(feather, EDGE_FEATHER_LIMITS.x, EDGE_FEATHER_LIMITS.y) if is_finite(feather) else DEFAULT_EDGE_FEATHER
 	gallery.restore_settings(settings)
 
 func save_layout_settings(settings: ConfigFile) -> void:
@@ -245,9 +253,27 @@ func _curve_radius() -> float:
 	# Keep the edges in front even when a large photo reaches the shared arc limit.
 	return maxf(super._curve_radius(), _flat.size.x * _flat.size.x / (4.0 * screen_distance))
 
+func set_edge_feather_strength(value: float) -> void:
+	if not is_finite(value): return
+	edge_feather_strength = clampf(value, EDGE_FEATHER_LIMITS.x, EDGE_FEATHER_LIMITS.y)
+	_shape_screen()
+	gallery.refresh_feather()
+	changed.emit()
+
+## 100% preserves the bounded default; 0 is hard-edged, even on tiny photos.
+## Reading mode never inherits the globally remembered photographic feather.
+func soft_edge_metres(size: Vector2) -> float:
+	return 0.0 if magazine.active() else minf(SOFT_EDGE_METRES, minf(size.x, size.y) * SOFT_EDGE_SHORT_SIDE_RATIO) * edge_feather_strength
+
 func _edge_feather() -> Vector2:
 	# Only Magazine / Comics disables feathering, including its standalone cover and last page.
-	return Vector2.ZERO if magazine.active() else Vector2.ONE * SOFT_EDGE_METRES / _flat.size
+	return Vector2.ZERO if magazine.active() else Vector2.ONE * soft_edge_metres(_flat.size) / _flat.size
+
+func _layer_keep() -> Vector2:
+	# Shrink the opaque seam overlap with the soft edge, so tiny/narrow photos
+	# retain a valid compositor centre instead of an inverted hole rectangle.
+	var overlap := minf(LAYER_OVERLAP_METRES, minf(_flat.size.x, _flat.size.y) * SOFT_EDGE_SHORT_SIDE_RATIO * LAYER_OVERLAP_METRES / SOFT_EDGE_METRES)
+	return _edge_feather() + Vector2.ONE * overlap / _flat.size
 
 func _shape_screen() -> void:
 	super._shape_screen()
@@ -696,7 +722,7 @@ func _size_placeholder(target: int, info: Dictionary) -> void:
 	else:
 		var quad := QuadMesh.new(); quad.size = _placeholder_size; _placeholder.mesh = quad
 	_placeholder_material.set_shader_parameter("surface_size", _placeholder_size)
-	_placeholder_material.set_shader_parameter("feather_metres", SOFT_EDGE_METRES)
+	_placeholder_material.set_shader_parameter("feather_metres", soft_edge_metres(_placeholder_size))
 	if _transition_active: _update_transition()
 	else: _placeholder.transform = flat_pose
 
@@ -1277,7 +1303,7 @@ func _on_prefetch_portrait(id: int, payload: String) -> void:
 
 func _valid_cached_depth(data: Dictionary, at: int = -1) -> bool:
 	return data.has("image") and (not Methods.supports(platform, "prepare_photo_3d") or \
-		(data.has("stereo_image") and is_equal_approx(float(data.get("strength", -1)), depth_strength) and _rotation_matches(data, at)))
+		(data.has("stereo_image") and is_equal_approx(float(data.get("strength", -1)), depth_strength) and is_equal_approx(float(data.get("convergence", 0.35)), DepthPosition.convergence(depth_position)) and _rotation_matches(data, at)))
 
 func _resolved_mode(target: int, info: Dictionary) -> Dictionary:
 	if magazine.active(): return {"geometry": 0, "stereo_sbs": false, "top_bottom": false, "swap_eyes": false, "fisheye_fov": 180}
@@ -1673,6 +1699,7 @@ func _apply_geometry() -> void:
 		target.set_shader_parameter("spatial_disparity", clampf(float(_metadata.get("spatial_disparity", 0)), -1.0, 1.0))
 		target.set_shader_parameter("photo_depth", depth_enabled and not pair_pending and not stereo_sbs and geometry == Geometry.Geometry.FLAT)
 		target.set_shader_parameter("depth_strength", depth_strength)
+		target.set_shader_parameter("depth_convergence", DepthPosition.convergence(depth_position))
 		target.set_shader_parameter("depth_texture", _depth_texture)
 		target.set_shader_parameter("depth_rect", _depth_rect)
 		target.set_shader_parameter("photo_stereo", depth_enabled and _stereo_texture != null and not stereo_sbs and geometry == Geometry.Geometry.FLAT)
@@ -1987,6 +2014,7 @@ func _prepare_depth(id: int, background: bool = false) -> bool:
 	if not _depth_source_allowed(id): return false
 	var rotation := _stereo_rotation(_depth_index(id))
 	if background:
+		if Methods.supports(platform, "prepare_preloaded_photo_3d_view"): return bool(platform.prepare_preloaded_photo_3d_view(id, depth_strength, DepthPosition.convergence(depth_position), rotation))
 		if Methods.supports(platform, "prepare_preloaded_photo_3d_rotated"): return bool(platform.prepare_preloaded_photo_3d_rotated(id, depth_strength, rotation))
 		if rotation != 0: return false
 		if Methods.supports(platform, "prepare_preloaded_photo_3d"): return bool(platform.prepare_preloaded_photo_3d(id, depth_strength))
@@ -1997,6 +2025,7 @@ func _prepare_depth(id: int, background: bool = false) -> bool:
 	_cancel_depth_prefetch()
 	_release_cache_for_foreground(id)
 	_depth_rebuild_seconds = 0.0
+	if Methods.supports(platform, "prepare_photo_3d_view"): return bool(platform.prepare_photo_3d_view(id, depth_strength, DepthPosition.convergence(depth_position), rotation))
 	if Methods.supports(platform, "prepare_photo_3d_rotated"): return bool(platform.prepare_photo_3d_rotated(id, depth_strength, rotation))
 	if rotation != 0: return false
 	if Methods.supports(platform, "prepare_photo_3d"): return bool(platform.prepare_photo_3d(id, depth_strength))
@@ -2058,7 +2087,7 @@ func _finish_depth(id: int, data: Dictionary, background: bool) -> void:
 	if background and id == _promoted_depth_request and id != 0: background = false
 	if not background and id not in [_request, _display_request]: return
 	if not background and id == _promoted_depth_request: _promoted_depth_request = 0
-	if not background and data.has("strength") and not is_equal_approx(float(data.strength), depth_strength):
+	if not background and data.has("strength") and (not is_equal_approx(float(data.strength), depth_strength) or not is_equal_approx(float(data.get("convergence", 0.35)), DepthPosition.convergence(depth_position))):
 		_depth_busy = _prepare_depth(id)
 		return
 	if not background and data.has("strength"): _depth_rebuild_seconds = 0.0
@@ -2137,6 +2166,8 @@ static func _read_depth(payload: String) -> Dictionary:
 	if result.has("stereo_path"):
 		if not (result.get("stereo_strength") is float or result.get("stereo_strength") is int): return {}
 		var strength := float(result.get("stereo_strength", -1))
+		var plane: Variant = result.get("stereo_convergence", 0.35)
+		if not (plane is float or plane is int) or not is_finite(float(plane)) or float(plane) < 0 or float(plane) > 1: return {}
 		var sw := int(result.get("stereo_width", 0)); var sh := int(result.get("stereo_height", 0))
 		if result.get("stereo_strategy", "") != "video_soft_shift_gpu" or not is_finite(strength) or strength < 0 or strength > 2 \
 			or sw < 2 or sw % 2 != 0 or sw > 8192 or sh < 1 or sh > 4096 or sw * sh > 16 * 1024 * 1024: return {}
@@ -2153,8 +2184,24 @@ static func _read_depth(payload: String) -> Dictionary:
 		stereo.generate_mipmaps()
 		var rotation := int(result.get("stereo_rotation", 0))
 		if rotation not in [0, 90, 180, 270]: return {}
-		data.merge({"stereo_image":stereo, "strength":strength, "strategy":str(result.stereo_strategy), "rotation":rotation})
+		data.merge({"stereo_image":stereo, "strength":strength, "strategy":str(result.stereo_strategy), "rotation":rotation, "convergence":float(plane)})
 	return data
+
+func set_depth_position(value: Variant) -> bool:
+	if _metadata.get("native_stereo", false) or portrait_requested or stereo_sbs or geometry != 0: return false
+	var next := DepthPosition.normalize(value)
+	if is_equal_approx(next, depth_position): return true
+	depth_position = next
+	render_cache.cancel()
+	for entry in _prefetched.values(): entry.erase("depth_failed")
+	if material: material.set_shader_parameter("depth_convergence", DepthPosition.convergence(depth_position))
+	if _detail_material: _detail_material.set_shader_parameter("depth_convergence", DepthPosition.convergence(depth_position))
+	if depth_requested:
+		if spatial_requested: set_spatial(false, true)
+		if Methods.supports(platform, "prepare_photo_3d"): _depth_rebuild_seconds = 0.15
+		_spatial_auto_due = true
+	changed.emit()
+	return true
 
 func cycle_depth_strength() -> void:
 	set_depth_strength(0.5 if depth_strength >= DepthStrength.PHOTO_MAX else depth_strength + 0.5)
@@ -2229,10 +2276,10 @@ func snapshot() -> Dictionary:
 		"can_next": (position >= 0 and magazine.target(1) < queue.size()) if magazine.active() else queue.size() > 1 and (((geometry == Geometry.Geometry.FLAT or gallery.mode != 0) and queue_complete) or (position >= 0 and position < queue.size() - 1)),
 		"geometry": geometry, "stereo": stereo_sbs, "top_bottom": top_bottom, "swap_eyes": swap_eyes, "fisheye_fov": fisheye_fov, "mode_lock": mode_lock.duplicate(),
 		"inspect": inspect, "zoom": magnification, "inspect_magnification": inspect_magnification,
-		"screen_distance": screen_distance, "screen_scale": screen_scale,
+		"screen_distance": screen_distance, "screen_scale": screen_scale, "edge_feather_strength": edge_feather_strength,
 		"portrait_requested": portrait_requested, "portrait_enabled": portrait_enabled, "portrait_available": can_portrait(), "portrait_error": portrait_error,
 		"depth_requested": depth_requested, "depth_enabled": depth_enabled,
-		"depth_available": geometry==0 and not stereo_sbs and platform != null and not _metadata.get("magazine_unregistered", false) and not _metadata.get("native_stereo", false), "native_stereo": not magazine.active() and _metadata.get("native_stereo", false), "depth_strength": depth_strength, "depth_error": depth_error,
+		"depth_available": geometry==0 and not stereo_sbs and platform != null and not _metadata.get("magazine_unregistered", false) and not _metadata.get("native_stereo", false), "native_stereo": not magazine.active() and _metadata.get("native_stereo", false), "depth_strength": depth_strength, "depth_position": depth_position, "depth_error": depth_error,
 		"spatial_metadata": spatial_metadata(), "spatial_fov_available": spatial_fov_scale() > 0.0,
 		"stereo_strategy":_display_depth_data.get("strategy", "inverse_shader"), "stereo_ready":_stereo_texture != null,
 		"render_strength":_display_depth_data.get("strength", depth_strength),
@@ -2322,7 +2369,7 @@ func _start_spatial(data: Dictionary) -> void:
 		eye-=right*separation*0.5
 	_spatial.begin(source,data.image,data.rect,eye,_flat.size,bool(_metadata.get("native_stereo",false)),
 		1.0, # Fixed spatial relief for both inputs, independent of the original SBS slider.
-		true,separation)
+		true,separation,0.35 if bool(_metadata.get("native_stereo",false)) else DepthPosition.convergence(depth_position))
 
 func _spatial_completed() -> void:
 	if not spatial_requested: return
@@ -2624,7 +2671,7 @@ func _layer_source() -> Dictionary:
 			"stereo": 1, "blend": VideoLayer.SOURCE_ALPHA}
 	if depth_enabled and _display_depth_data.has("stereo_image"):
 		var pair: Image = _display_depth_data.stereo_image
-		return {"key": "stereo:%d:%.3f:%dx%d:r%d" % [_display_request, float(_display_depth_data.get("strength", 0)), pair.get_width(), pair.get_height(), int(_display_depth_data.get("rotation", 0))],
+		return {"key": "stereo:%d:%.3f:%dx%d:r%d:c%.4f" % [_display_request, float(_display_depth_data.get("strength", 0)), pair.get_width(), pair.get_height(), int(_display_depth_data.get("rotation", 0)), float(_display_depth_data.get("convergence", 0.35))],
 			"image": _display_depth_data.stereo_image, "stereo": 1}
 	if depth_enabled:
 		return {} # the shader's own depth parallax
@@ -2678,7 +2725,7 @@ func _process_layer() -> void:
 		# The opaque edge covers the layer's outer rim: the compositor's filtered quad edge and the
 		# antialiased hole edge are both part transparent, and meeting on one line they showed a
 		# see-through frame between the soft edge and the picture.
-		var keep := inset + Vector2.ONE * LAYER_OVERLAP_METRES / _flat.size if opaque_flat else Vector2.ZERO
+		var keep := _layer_keep() if opaque_flat else Vector2.ZERO
 		var cut := Vector4(keep.x, keep.y, 1.0 - 2.0 * keep.x, 1.0 - 2.0 * keep.y)
 		var pano := Info.panorama_rect(_metadata) if geometry == Geometry.Geometry.EQUIRECT_360 and not stereo_sbs else Vector4(0, 0, 1, 1)
 		var picture: Image = source.image

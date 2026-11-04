@@ -52,3 +52,32 @@
      ao_read_data(ao, &data, nframes, end_time, NULL, true, true);
      mpv_quest_capture_audio_feed(atomic_load(&ao->global->quest_capture_id), data, nframes,
          ao->samplerate, ao->channels.num, capture_format, written, 0);
+@@ -458,6 +468,10 @@
+     return true;
+ }
+ 
++// Quest AAudio can stay in a transitional state (STARTING seen) indefinitely: past this
++// the stream is rebuilt instead of blocking the playback core and its teardown.
++#define STATE_CHANGE_TIMEOUT_NS INT64_C(500000000)
++
+ static void reset(struct ao *ao)
+ {
+     struct priv *p = ao->priv;
+@@ -471,7 +485,7 @@
+         case AAUDIO_STREAM_STATE_PAUSING:
+         case AAUDIO_STREAM_STATE_FLUSHING:
+             if ((result = p->AAudioStream_waitForStateChange(p->stream,
+-                                state, &state, INT64_MAX)) < 0) {
++                                state, &state, STATE_CHANGE_TIMEOUT_NS)) < 0) {
+                 MP_ERR(ao, "AAudioStream_waitForStateChange() returned %s\n",
+                        p->AAudio_convertResultToText(result));
+                 return ao_request_reload(ao);
+@@ -486,7 +500,7 @@
+         }
+ 
+         if ((result = p->AAudioStream_waitForStateChange(p->stream,
+-                            AAUDIO_STREAM_STATE_PAUSING, &state, INT64_MAX)) < 0) {
++                            AAUDIO_STREAM_STATE_PAUSING, &state, STATE_CHANGE_TIMEOUT_NS)) < 0) {
+             MP_ERR(ao, "AAudioStream_waitForStateChange() returned %s\n",
+                    p->AAudio_convertResultToText(result));
+             return ao_request_reload(ao);

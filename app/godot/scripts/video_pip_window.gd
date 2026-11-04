@@ -14,6 +14,7 @@ var zoom := 1.0
 var size := Vector2(0.48, 0.27)
 var crop_center := Vector2(0.5, 0.5)
 var crop_basis := Basis.IDENTITY
+var source_panel: Node3D
 var panorama := false
 var controls := false
 var zoom_open := false
@@ -358,11 +359,46 @@ func pointer_hit(origin: Vector3, direction: Vector3) -> Dictionary:
 	if not body.is_empty(): body["target"] = NONE
 	return body
 
+static func view_basis(direction: Vector3) -> Basis:
+	var forward := direction.normalized()
+	var up := Vector3.FORWARD if absf(forward.dot(Vector3.UP)) > 0.999 else Vector3.UP
+	return Basis.looking_at(forward, up)
+
+static func flat_sampling_basis(panel: Node3D) -> Basis:
+	if not is_instance_valid(panel): return Basis.IDENTITY
+	var source := panel.global_basis.orthonormalized()
+	return source.inverse() * view_basis(-source.z)
+
+func sampling_basis(candidate: Dictionary = {}) -> Basis:
+	if not panorama: return flat_sampling_basis(source_panel)
+	var selected: Basis = candidate.get("basis", crop_basis)
+	if not is_instance_valid(source_panel): return selected
+	# Keep the selected source point, but aim an upright world-space camera at its
+	# current direction. Freezing all three source-local axes cancels movie rotation.
+	var source := source_panel.global_basis.orthonormalized()
+	return source.inverse() * view_basis(source * -selected.z)
+
+func flat_crop(candidate: Dictionary = {}) -> Dictionary:
+	var span := crop_span()
+	var center: Vector2 = candidate.get("center", crop_center)
+	var basis := flat_sampling_basis(source_panel)
+	var aspect := maxf(0.05, source_aspect)
+	# Rotate in physical per-eye screen units, then convert back to UV. Rotating
+	# raw UV would stretch non-square sources. Keep the centre independent of roll;
+	# newly exposed corners outside the source are clipped by the video shader.
+	return {"center": center.clamp(span / 2, Vector2.ONE - span / 2), "span": span,
+		"right": Vector2(basis.x.x, -basis.x.y * aspect),
+		"down": Vector2(-basis.y.x / aspect, basis.y.y)}
+
 func crop_parameters(candidate: Dictionary = {}) -> void:
 	var center: Vector2 = candidate.get("center", crop_center)
-	var basis: Basis = candidate.get("basis", crop_basis)
+	var basis := sampling_basis(candidate) if panorama else Basis.IDENTITY
 	var span := crop_span()
 	center = center.clamp(span / 2, Vector2.ONE - span / 2)
+	if not panorama:
+		var crop := flat_crop(candidate)
+		center = crop.center; span = crop.span
+		basis = Basis(Vector3(crop.right.x, crop.right.y, 0), Vector3(crop.down.x, crop.down.y, 0), Vector3.BACK)
 	picture.set_shader_parameter("pip_enabled", true)
 	picture.set_shader_parameter("pip_edge_feather", edge_feather())
 	picture.set_shader_parameter("pip_center", center)

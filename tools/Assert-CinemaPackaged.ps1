@@ -33,7 +33,7 @@ try {
         $relative = "shaders/$shader.gdshader"
         if ((Read-EntryText $relative) -ne [IO.File]::ReadAllText((Join-Path $project $relative))) { throw "Packaged cinema shader differs: $shader" }
     }
-    foreach ($script in @('cinema_environment','cinema_feature','cinema_film_light','cinema_loader','cinema_locomotion')) {
+    foreach ($script in @('cinema_environment','cinema_feature','cinema_film_light','cinema_loader','cinema_locomotion','cinema_seat_targets')) {
         $mapping = Read-EntryText "scripts/environments/$script.gd.remap"
         $match = [regex]::Match($mapping, 'path="res://([^"]+)"')
         if (-not $match.Success) { throw "Cinema script remap is missing: $script" }

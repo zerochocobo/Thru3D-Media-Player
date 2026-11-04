@@ -197,12 +197,79 @@ void gl_video_screenshot(struct gl_video *p, struct vo_frame *frame,
     edited[p] = replace_once(edited[p], '    const int max_images = 3;\n',
         '    // Quest: the libmpv caller may hold several exported images (display + RVM).\n'
         '    const int max_images = 10;\n')
+    # A returned image goes straight back to MediaCodec, which writes a frame decoded ~0.6 s
+    # ahead into it, often before the GPU has run the draws that sample it (2D->3D inference keeps
+    # the GPU busy on XR2 Gen 1): that frame then shows the later picture. Return it with a native
+    # fence on the reads issued so far (AImage_deleteAsync, API 26), or wait for them.
+    edited[p] = replace_once(edited[p], '#define EGL_NATIVE_BUFFER_ANDROID 0x3140\n',
+        '#define EGL_NATIVE_BUFFER_ANDROID 0x3140\n'
+        'typedef void *EGLSyncKHR;\n'
+        '#define EGL_SYNC_NATIVE_FENCE_ANDROID 0x3144\n')
+    edited[p] = replace_once(edited[p],
+        '    void (*AImage_delete)(AImage *);\n',
+        '    void (*AImage_delete)(AImage *);\n'
+        '    void (*AImage_deleteAsync)(AImage *, int); // optional: API 26\n')
+    edited[p] = replace_once(edited[p],
+        '    if (!load_lib_functions(p, hw->log))\n        return -1;\n',
+        '    if (!load_lib_functions(p, hw->log))\n        return -1;\n'
+        '    p->AImage_deleteAsync = dlsym(p->lib_handle, "AImage_deleteAsync");\n')
+    edited[p] = replace_once(edited[p],
+        '    void (EGLAPIENTRY *EGLImageTargetTexture2DOES)(GLenum, GLeglImageOES);\n};\n',
+        '    void (EGLAPIENTRY *EGLImageTargetTexture2DOES)(GLenum, GLeglImageOES);\n'
+        '    // EGL_ANDROID_native_fence_sync: all NULL when unavailable.\n'
+        '    EGLSyncKHR (EGLAPIENTRY *CreateSyncKHR)(EGLDisplay, EGLenum, const EGLint *);\n'
+        '    EGLBoolean (EGLAPIENTRY *DestroySyncKHR)(EGLDisplay, EGLSyncKHR);\n'
+        '    EGLint (EGLAPIENTRY *DupNativeFenceFDANDROID)(EGLDisplay, EGLSyncKHR);\n'
+        '};\n')
+    edited[p] = replace_once(edited[p],
+        '    AImageReader_ImageListener listener = {\n',
+        '    if (o->AImage_deleteAsync && gl_check_extension(\n'
+        '            eglQueryString(eglGetCurrentDisplay(), EGL_EXTENSIONS), "EGL_ANDROID_native_fence_sync")) {\n'
+        '        p->CreateSyncKHR = (void *)eglGetProcAddress("eglCreateSyncKHR");\n'
+        '        p->DestroySyncKHR = (void *)eglGetProcAddress("eglDestroySyncKHR");\n'
+        '        p->DupNativeFenceFDANDROID = (void *)eglGetProcAddress("eglDupNativeFenceFDANDROID");\n'
+        '        if (!p->CreateSyncKHR || !p->DestroySyncKHR || !p->DupNativeFenceFDANDROID)\n'
+        '            p->CreateSyncKHR = NULL;\n'
+        '    }\n'
+        '    MP_INFO(p, "Decoder images return %s\\n",\n'
+        '            p->CreateSyncKHR ? "with a GPU fence" : "after GPU completion");\n\n'
+        '    AImageReader_ImageListener listener = {\n')
+    edited[p] = replace_once(edited[p],
+        'static void mapper_unmap(struct ra_hwdec_mapper *mapper)\n{\n',
+        'static void release_image(struct ra_hwdec_mapper *mapper)\n'
+        '{\n'
+        '    struct priv *p = mapper->priv;\n'
+        '    struct priv_owner *o = mapper->owner->priv;\n'
+        '    GL *gl = ra_gl_get(mapper->ra);\n'
+        '    int fence = -1;\n'
+        '    if (p->CreateSyncKHR) {\n'
+        '        EGLDisplay display = eglGetCurrentDisplay();\n'
+        '        EGLSyncKHR sync = p->CreateSyncKHR(display, EGL_SYNC_NATIVE_FENCE_ANDROID, NULL);\n'
+        '        if (sync) {\n'
+        '            gl->Flush(); // the fence has a descriptor only once submitted\n'
+        '            fence = p->DupNativeFenceFDANDROID(display, sync);\n'
+        '            p->DestroySyncKHR(display, sync);\n'
+        '        }\n'
+        '    }\n'
+        '    if (fence >= 0) {\n'
+        '        o->AImage_deleteAsync(p->image, fence); // takes the descriptor\n'
+        '        return;\n'
+        '    }\n'
+        '    gl->Finish();\n'
+        '    o->AImage_delete(p->image);\n'
+        '}\n\n'
+        'static void mapper_unmap(struct ra_hwdec_mapper *mapper)\n{\n')
+    edited[p] = replace_once(edited[p],
+        'static void mapper_unmap(struct ra_hwdec_mapper *mapper)\n{\n'
+        '    struct priv *p = mapper->priv;\n    struct priv_owner *o = mapper->owner->priv;\n',
+        'static void mapper_unmap(struct ra_hwdec_mapper *mapper)\n{\n'
+        '    struct priv *p = mapper->priv;\n')
     edited[p] = replace_once(edited[p],
         '    if (p->image) {\n        o->AImage_delete(p->image);\n        p->image = NULL;\n    }\n',
         '    if (p->image) {\n'
         '        // An exported image belongs to the libmpv caller, which deletes it.\n'
         '        if (!mapper->quest_detached)\n'
-        '            o->AImage_delete(p->image);\n'
+        '            release_image(mapper);\n'
         '        p->image = NULL;\n'
         '    }\n'
         '    mapper->quest_image = mapper->quest_buffer = NULL;\n'

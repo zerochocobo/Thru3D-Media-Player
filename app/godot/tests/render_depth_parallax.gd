@@ -55,16 +55,20 @@ func _run() -> void:
 	quad.material_override = material
 	var reference := await _row_values(viewport, material, false, 0)
 	# Rows: 32 lies in the near half, 96 in the far half. Column 128 is far from the edges.
-	for eye in 2:
-		var shifted := await _row_values(viewport, material, true, eye)
-		for row in [32, 96]:
-			var near := 1.0 if row == 32 else 0.0
-			var side := 1.0 if eye == 0 else -1.0
-			var expected := -side * (near - CONVERGENCE) * SHIFT * 0.5 * WIDTH
-			var source := _locate(reference[row], shifted[row][128])
-			var actual := source - 128.0
-			if absf(actual - expected) > 2.0:
-				failures.append("eye %d row %d: source offset %.1f px, expected %.1f" % [eye, row, actual, expected])
+	for plane in [0.05, 0.35, 0.65]:
+		for shift in [0.0, 0.00875, 0.035, SHIFT]:
+			material.set_shader_parameter("depth_convergence", plane)
+			material.set_shader_parameter("depth_shift", shift)
+			for eye in 2:
+				var shifted := await _row_values(viewport, material, true, eye)
+				for row in [32, 96]:
+					var near := 1.0 if row == 32 else 0.0
+					var side := 1.0 if eye == 0 else -1.0
+					var expected: float = -side * (near - plane) * shift * 0.5 * WIDTH
+					var source := _locate(reference[row], shifted[row][128])
+					var actual := source - 128.0
+					if absf(actual - expected) > 2.0:
+						failures.append("eye %d row %d: source offset %.1f px, expected %.1f" % [eye, row, actual, expected])
 	for failure in failures:
 		push_error(failure)
 	print("Depth parallax desktop render: %s (%d failures). XR multiview and Android not tested." % ["passed" if failures.is_empty() else "FAILED", failures.size()])

@@ -93,6 +93,7 @@ func _run() -> void:
 	main.xr_camera.transform = original_camera_local
 	_picture_size_routes(world_screen, preferences)
 	_playback_routes("cinema-watch", false)
+	_footer_shortcut_routes()
 	await _seat_routes()
 	_movement_routes()
 	_menu_and_capture_routes()
@@ -115,6 +116,7 @@ func _run() -> void:
 		check(main._cinema_screen_saved.is_empty() and is_equal_approx(main.video.screen_scale, float(expected.screen_scale)), "Background switch restores ordinary scale: " + choice)
 		main._on_setting_changed("screen_scale", 999)
 		main.background.select("cinema"); main._update_background()
+	_curve_routes(world_screen, preferences)
 	main._sync_cinema_lights()
 	check(not main.cinema_environment.lights_on, "Playing defaults to dark auditorium")
 	main._on_setting_changed("cinema_lights", "on")
@@ -469,6 +471,38 @@ func _picture_size_routes(full_screen: Transform3D, preferences: Dictionary) -> 
 	check((main.video.global_transform * main.video.flat_pose).is_equal_approx(full_screen) and is_equal_approx(main.video.screen_scale, full_scale),
 		"Full size restores the original fixed cinema picture")
 
+func _curve_routes(full_screen: Transform3D, preferences: Dictionary) -> void:
+	var ordinary_curve: float = main._cinema_screen_saved.screen_curve
+	var manifest: Dictionary = main.cinema_environment._manifest
+	var wall_z := float(manifest.screen.position[2])
+	for level in [0.35, 0.7, 1.0]:
+		main._on_player_setting("screen_curve", level)
+		var edge: Vector3 = main.video.panel.global_transform * main.video.screen_corner(2)
+		check(is_equal_approx(main.video.screen_curve, level) and is_equal_approx(main.video.curve_radius, main.CINEMA_CURVE_RADII[level]),
+			"Cinema curve level uses its fixed radius", level)
+		check((main.video.global_transform * main.video.flat_pose).is_equal_approx(full_screen) and edge.z > wall_z + 0.5 and edge.z < wall_z + 5.3
+			and edge.z < float(manifest.design.stair_start_z) - 1.0, "Curved cinema edges come forward clear of the stairs", edge)
+		check(is_equal_approx(float(main._menu_state().get("screen_curve", -1)), level), "Menu state reports the cinema curve", level)
+		var border: MeshInstance3D = main.cinema_screen_border
+		var bounds: AABB = border.mesh.get_aabb() if border and border.mesh else AABB()
+		var width: float = border.WIDTH if border else 0.0
+		var outer_edge: Vector3 = border.at(main.video._curve_radius(), (main.video._flat.size.x * 0.5 + width) / main.video._curve_radius(), 0) if border else Vector3.ZERO
+		check(border and border.visible and border.get_parent() == main.video.panel and is_equal_approx(bounds.size.y, main.video._flat.size.y + width * 2.0)
+			and is_equal_approx(bounds.end.z, outer_edge.z) and bounds.position.z >= -0.0001, "Curved picture gets a border bent to the same arc", bounds)
+	check(is_equal_approx(float(main.settings.get_value("appearance", "cinema_curve")), 1.0) and _screen_preferences() == preferences
+		and is_equal_approx(main._cinema_screen_saved.screen_curve, ordinary_curve), "Cinema curve is stored apart from the ordinary screen curve")
+	main._on_menu_action("screen_curve")
+	check(main.video.screen_curve == 0.0 and main.video.curve_radius == 0.0, "Curve shortcut cycles cinema levels back to flat")
+	check(not main.cinema_screen_border.visible, "A flat cinema picture keeps the baked wall frame only")
+	main._on_player_setting("screen_curve", 0.7)
+	main.background.select("dark"); main._update_background()
+	check(is_equal_approx(main.video.screen_curve, ordinary_curve) and main.video.curve_radius == 0.0 and not main.cinema_screen_border.visible,
+		"Leaving cinema restores the ordinary curve and drops the border")
+	main.background.select("cinema"); main._update_background()
+	check(is_equal_approx(main.video.screen_curve, 0.7) and is_equal_approx(main.video.curve_radius, 35.0) and main.cinema_screen_border.visible,
+		"Returning to cinema restores its own curve and border")
+	main._on_player_setting("screen_curve", 0.0)
+
 func _close_menus() -> void:
 	if main.scenery_menu and main.scenery_menu.visible: main.scenery_menu.dismiss()
 	for menu in [main.recent_menu, main.video_menu, main.photo_menu, main.music_menu]:
@@ -555,7 +589,7 @@ func _playback_routes(label: String, zoom_expected: bool) -> void:
 			"Fixed cinema ignores physical screen scaling instead of distorting auditorium")
 		check(_screen_preferences() == preferences, "Ignored cinema scaling does not overwrite ordinary screen defaults")
 	main._show_player_menu()
-	check(not main.player_menu._buttons.any(func(item): return item.target == main.player_menu.FREE_MOVEMENT) and main.player_menu._buttons.any(func(item): return item.target==main.player_menu.SCENERY), "Scene entry replaces the floating movement control: " + label)
+	check(main.player_menu._buttons.any(func(item): return item.target==main.player_menu.FREE_MOVEMENT)==main._cinema_scene_active() and main.player_menu._buttons.any(func(item): return item.target==main.player_menu.CINEMA_LIGHTS)==main._cinema_scene_active() and main.player_menu._buttons.any(func(item): return item.target==main.player_menu.SCENERY), "Cinema shortcuts and scene entry coexist in the footer: " + label)
 	check(main.player_menu.allows_playback_sticks(), label + " ordinary control bar allows playback sticks")
 	before = main.video.audio_volume
 	main._process_sticks(Vector2(0, -0.99), Vector2.ZERO, 0.05)
@@ -578,6 +612,30 @@ func _release(hand: String, optical: bool = false) -> void:
 	if optical: main._on_pointer_release("trigger_click", hand)
 	elif hand == "right_hand": _neutral()
 	else: main._on_controller_release("ax_button", hand)
+
+func _footer_shortcut_routes() -> void:
+	_close_menus(); main._cinema_request_interaction("watch"); main._on_setting_changed("cinema_lights","auto"); main._show_player_menu()
+	for expected in ["on","off","auto"]:
+		_tap_footer(main.player_menu.CINEMA_LIGHTS)
+		check(str(main.settings.get_value("appearance","cinema_lights",""))==expected,"Bottom light shortcut cycles the actual cinema lighting: "+expected)
+		check(main.player_menu.visible and not main.scenery_menu.visible,"Light shortcut acts directly without opening scene settings: "+expected)
+	_tap_footer(main.player_menu.FREE_MOVEMENT)
+	check(main.cinema_environment.interaction=="move" and main._active_menu()==null,"Bottom movement shortcut enters free movement and closes the menu")
+	main._show_player_menu()
+	var movement: Array=main.player_menu._buttons.filter(func(item): return item.target==main.player_menu.FREE_MOVEMENT)
+	check(not movement.is_empty() and movement[0].base_color==main.player_menu.ACCENT,"Reopened movement shortcut shows its active state")
+	_tap_footer(main.player_menu.FREE_MOVEMENT)
+	check(main.cinema_environment.interaction=="watch" and main.player_menu.visible,"Bottom movement shortcut returns directly to watching")
+	_close_menus(); main.rays.clear()
+
+func _tap_footer(target: int) -> void:
+	var buttons: Array=main.player_menu._buttons.filter(func(item): return item.target==target)
+	check(not buttons.is_empty() and buttons[0].enabled,"Cinema footer action is visible and enabled: %d"%target)
+	if buttons.is_empty(): return
+	var head: Transform3D=main._head_pose()
+	main.rays.right_hand=[head.origin,(buttons[0].node.global_position-head.origin).normalized()]
+	main._on_controller_button("trigger_click","right_hand")
+	main._on_controller_release("trigger_click","right_hand")
 
 func _seat_routes() -> void:
 	check(not main._cinema_request_interaction("seat"), "Stale seat mode is rejected")

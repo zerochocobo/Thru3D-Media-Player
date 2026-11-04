@@ -70,7 +70,8 @@ def main():
         if geometry == 0:
             if v["atlas_main"]:
                 return np.array(uv), False
-            return np.array(v["pip_center"]) + (uv - .5) * v["pip_span"], False
+            delta = (uv - .5) * v["pip_span"]
+            return np.array(v["pip_center"]) + np.array(v["pip_right"][:2]) * delta[0] + np.array(v["pip_up"][:2]) * delta[1], False
         if v["atlas_main"]:
             lon, lat = (uv[0] - .5) * v["atlas_span"][0], (.5 - uv[1]) * v["atlas_span"][1]
             d = np.array((math.cos(lat) * math.sin(lon), math.sin(lat), -math.cos(lat) * math.cos(lon)))
@@ -97,6 +98,8 @@ def main():
             if v["video_geometry"] == 3 and v["stereo_offset"][0]:
                 p[0] %= 1
         clipped = bool(np.any(p < 0) or np.any(p > 1))
+        if v["video_geometry"] == 0 and v["pip_enabled"]:
+            outside = clipped
         if v["rotation_degrees"] == 90: p = np.array((p[1], 1-p[0]))
         elif v["rotation_degrees"] == 180: p = 1-p
         elif v["rotation_degrees"] == 270: p = np.array((1-p[1], p[0]))
@@ -175,6 +178,18 @@ def main():
         variants += [dict(video_geometry=g,top_bottom=tb,atlas_eye=e,pip_viewing_eye=selected,
             stereo_offset=(.08,.03),swap_eyes=swap,alpha_enabled=True)
             for g in (0,1,2,3) for tb in (False,True) for e in (0,1) for selected in (1,2) for swap in (False,True)]
+        # Flat physical-screen roll, separately from encoded metadata rotation.
+        # Include edge crops, portrait pixels, both source eyes and alpha borders.
+        for angle in (0, 37, -53, 90, -90):
+            c, s = math.cos(math.radians(angle)), math.sin(math.radians(angle))
+            for aspect in (16/9, 9/16, 1):
+                for layout in (0, 1, 2):
+                    for center in ((.5, .5), (.95, .05)):
+                        for selected in (1, 2):
+                            variants.append(dict(video_geometry=0, stereo_sbs=layout!=0, top_bottom=layout==2,
+                                pip_center=center, pip_viewing_eye=selected, rotation_degrees=90 if selected==2 else 0,
+                                pip_right=(c, -s*aspect, 0), pip_up=(s/aspect, c, 0),
+                                alpha_enabled=center[0]>.9))
         for changed in variants:
             v = defaults | changed
             v["color_uv_scale"] = (.8,.8) if external else (1.,1.)

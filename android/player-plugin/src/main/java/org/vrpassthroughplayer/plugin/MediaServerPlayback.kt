@@ -39,7 +39,7 @@ internal class MediaServerPlaybackReporter(
         var latest: MediaServerPlaybackState) {
         var startAttempted = false
         var sent: MediaServerPlaybackState? = null
-        var nextReport = 0L
+        var lastReportAt = 0L
         var terminal = false
     }
     private val worker = Executors.newSingleThreadExecutor { Thread(it, "Thru3DPlaybackReports").apply { isDaemon = true } }
@@ -49,6 +49,15 @@ internal class MediaServerPlaybackReporter(
     private var lastToken = 0L
     private var scheduled = false
     private var closed = false
+    private var intervalMs = 10000L
+
+    @Synchronized fun setIntervalMs(value: Int) {
+        if (closed) return
+        val normalized = ((value.coerceIn(500, 20000) + 250) / 500 * 500).toLong()
+        if (intervalMs == normalized) return
+        intervalMs = normalized
+        schedule()
+    }
 
     @Synchronized fun observe(token: String, account: MediaServerAccount, context: MediaServerPlaybackContext, state: MediaServerPlaybackState) {
         val sequence = token.toLongOrNull()?.takeIf { it > 0 } ?: return
@@ -122,7 +131,7 @@ internal class MediaServerPlaybackReporter(
                 slot.startAttempted = true
                 return Report(slot, slot.latest, "Playing")
             }
-            if (slot.latest.changed(slot.sent) || clock() >= slot.nextReport) return Report(slot, slot.latest, "Progress")
+            if (slot.latest.changed(slot.sent) || clock() - slot.lastReportAt >= intervalMs) return Report(slot, slot.latest, "Progress")
         }
         scheduled = false
         return null
@@ -134,7 +143,7 @@ internal class MediaServerPlaybackReporter(
             val path = if (report.action == "Playing") "Sessions/Playing" else "Sessions/Playing/${report.action}"
             // Pin the attempted snapshot before IO so failures cannot spin or grow a retry queue.
             val previous = synchronized(this) {
-                slot.sent.also { slot.sent = state; slot.nextReport = clock() + 10000 }
+                slot.sent.also { slot.sent = state; slot.lastReportAt = clock() }
             }
             runCatching { send(slot.account, path, body(slot, state, report.action, previous)) }
         }

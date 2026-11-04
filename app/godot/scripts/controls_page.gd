@@ -13,6 +13,7 @@ const PINCH_HAND := 7071
 const PINCH_HANDS := ["left_hand", "right_hand", "both"]
 const BINDING_KEY := "control_binding/"
 const SCOPE_KEY := "control_move_scope"
+const COMBINATION_BASE_ACTIONS := ["volume_up", "volume_down", "library_video"]
 const GESTURES := [
 	{"title": "Pinch to select", "kind": "select", "scope": "Menus", "hint": "Point, pinch, release"},
 	{"title": "Show controls", "kind": "controls", "scope": "Menus hidden", "hint": "Pinch and release"},
@@ -54,7 +55,7 @@ func items() -> Array[Dictionary]:
 			{"title": "Close video and return", "fixed": "B / Y", "scope": "Video"}]: result.append(fixed)
 	for item in bindings.definitions():
 		if mode == 0 and not all_actions and item.defaults.is_empty() and not item.id.begins_with("move_"): continue
-		if mode == 2 and (item.hold or not item.defaults.is_empty() or item.id in ["flat_volume_up", "flat_volume_down"]): continue
+		if mode == 2 and (item.hold or (not item.defaults.is_empty() and item.id not in COMBINATION_BASE_ACTIONS) or item.id in ["flat_volume_up", "flat_volume_down"]): continue
 		var row: Dictionary = item.duplicate()
 		if bindings.is_fixed(item.id): row["fixed"] = bindings.label(item.id)
 		result.append(row)

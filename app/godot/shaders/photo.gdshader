@@ -22,6 +22,7 @@ uniform vec3 detail_right = vec3(1.0, 0.0, 0.0);
 uniform vec3 detail_up = vec3(0.0, 1.0, 0.0);
 uniform bool photo_depth = false;
 uniform bool spatial_hidden = false;
+uniform float depth_convergence = 0.35;
 uniform float depth_strength = 1.0;
 uniform vec4 depth_rect = vec4(0.0, 0.0, 1.0, 1.0);
 uniform int test_eye = -1;
@@ -70,7 +71,7 @@ void fragment() {
 		vec2 fixed_uv = shown;
 		for (int i = 0; i < 4; i++) {
 			float near_value = texture(depth_texture, clamp(depth_rect.xy + shown * depth_rect.zw, depth_rect.xy, depth_rect.xy + depth_rect.zw)).r;
-			shown.x = fixed_uv.x - (eye_index == 0 ? 1.0 : -1.0) * (near_value - 0.35) * 0.0175 * depth_strength;
+			shown.x = fixed_uv.x - (eye_index == 0 ? 1.0 : -1.0) * (near_value - depth_convergence) * 0.0175 * depth_strength;
 		}
 	}
 	if (video_geometry == 3 && !stereo_sbs) { shown = (shown - pano_rect.xy) / pano_rect.zw; }
@@ -89,7 +90,7 @@ void fragment() {
 			photo_color(shown - vec2(step_uv.x, 0.0)).rgb);
 	}
 	ALBEDO = outside ? vec3(0.0) : color.rgb;
-	ALPHA = outside ? 1.0 : color.a;
+	ALPHA = outside ? (video_geometry == 0 ? 0.0 : 1.0) : color.a;
 	if (video_geometry == 0 && any(greaterThan(edge_feather, vec2(0.0)))) {
 		// Surface UV is per eye, independent of packed SBS/TB and depth reprojection.
 		vec2 fade = smoothstep(vec2(0.0), max(edge_feather, vec2(0.00001)), min(native_stereo ? shown : UV, vec2(1.0) - (native_stereo ? shown : UV)));

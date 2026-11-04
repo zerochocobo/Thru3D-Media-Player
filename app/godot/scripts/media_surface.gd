@@ -34,6 +34,8 @@ var screen_distance := SCREEN_DISTANCE
 var screen_scale := 1.0
 var screen_rotation := 0.0
 var screen_curve := 0.0
+## Fixed bend radius in metres (a wall-mounted cinema screen); 0 bends round the viewing distance.
+var curve_radius := 0.0
 var _screen_base := Vector2(1.9, 1.07)
 var _curved: ArrayMesh
 var _curved_key := Vector4.ZERO
@@ -85,6 +87,7 @@ func _apply_geometry() -> void:
 		# Half layouts restore the packed axis explicitly; container PAR may already describe
 		# that same stretch, so applying both would double it.
 		aspect *= (0.5 if top_bottom else 2.0) if stereo_sbs and stereo_half else _pixel_aspect()
+		aspect = _display_aspect(aspect)
 		if aspect > 0:
 			_screen_base = _screen_dimensions(aspect)
 			_flat.size = _screen_base * screen_scale
@@ -124,6 +127,10 @@ func picture_center_world() -> Vector3:
 func _screen_dimensions(aspect: float) -> Vector2:
 	return Vector2(minf(1.9, aspect), minf(1.9, aspect) / aspect)
 
+## Video may override the restored single-eye ratio; photos retain their source proportions.
+func _display_aspect(source_aspect: float) -> float:
+	return source_aspect
+
 ## Share one head-relative sphere pose across both eyes and every presented frame.
 ## Picture-relative offsets must also apply here so frame updates cannot undo them.
 func _center_on_view() -> void:
@@ -156,7 +163,7 @@ func _shape_screen() -> void:
 	if screen_curve <= 0.0:
 		panel.mesh = _flat
 	else:
-		var key := Vector4(_flat.size.x, _flat.size.y, screen_curve, screen_distance)
+		var key := Vector4(_flat.size.x, _flat.size.y, screen_curve, _curve_radius())
 		if not _curved or key != _curved_key:
 			_curved_key = key
 			_curved = _cylinder(_flat.size, _curve_radius())
@@ -165,6 +172,7 @@ func _shape_screen() -> void:
 
 func _curve_radius() -> float:
 	# At most ~140 degrees of arc, however wide the screen.
+	if curve_radius > 0.0 and screen_curve > 0.0: return maxf(curve_radius, _flat.size.x / 2.4)
 	return maxf(screen_distance / screen_curve, _flat.size.x / 2.4) if screen_curve > 0.0 else INF
 
 static func _cylinder(size: Vector2, radius: float, columns: int = 48) -> ArrayMesh:

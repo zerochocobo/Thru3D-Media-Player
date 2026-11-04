@@ -64,7 +64,11 @@ func run() -> void:
 				var hit: Dictionary = env.ray_hit(Vector3(x, y + .4, z + offset), Vector3.DOWN)
 				check(hit.get("valid", false), "Jitter still lands in row %d at %.2f" % [row + 1, offset])
 				if hit.get("valid", false):
-					check(env._valid_destination(hit.position), "Snapped point retains full body support")
+					if offset == -.89:
+						check(hit.kind == "seat" and int(env._movement._seats[hit.id].row) == row + 1,
+							"Within 7 cm of the cushion edge selects only this row's seat")
+					else:
+						check(hit.kind != "seat" and env._valid_destination(hit.position), "Passage retains full body support without attracting the preceding row")
 	var sample_us := Time.get_ticks_usec() - started
 	# An actual chair, tall tier face, outer wall and rail must remain blocked.
 	# The rail probe starts above the handrail, which rises with the stairs.

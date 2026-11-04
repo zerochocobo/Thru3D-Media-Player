@@ -1414,10 +1414,11 @@ struct PhotoEgl final {
 };
 
 void photo_stereo(const unsigned char* rgba, int w, int h, const float* near, int mw, int mh,
-                  const std::array<float, 4>& rect, float strength, unsigned char* output, int turns = 0) {
+                  const std::array<float, 4>& rect, float strength, unsigned char* output, int turns = 0, float convergence = 0.35f) {
     if (w < 1 || h < 1 || w > 4096 || h > 4096 || static_cast<int64_t>(w) * h > 8LL * 1024 * 1024 ||
         mw < 1 || mh < 1 || mw > 518 || mh > 518 || turns < 0 || turns > 3 || !std::isfinite(strength) || strength < 0.f || strength > 2.f)
         throw std::runtime_error("Photo stereo dimensions/strength invalid");
+    if (!std::isfinite(convergence) || convergence < 0.f || convergence > 1.f) throw std::runtime_error("Photo stereo convergence invalid");
     for (float v : rect) if (!std::isfinite(v)) throw std::runtime_error("Photo stereo content invalid");
     if (rect[0] < 0 || rect[1] < 0 || rect[2] <= 0 || rect[3] <= 0 || rect[0]+rect[2] > 1.000001f || rect[1]+rect[3] > 1.000001f)
         throw std::runtime_error("Photo stereo content out of bounds");
@@ -1451,7 +1452,7 @@ void photo_stereo(const unsigned char* rgba, int w, int h, const float* near, in
     std::vector<float> right(limited);
     bridge.upload_alpha(1, limited.data(), right.data());
     // Use render_warp directly: the video width cap is a realtime budget, not a still-photo cap.
-    bridge.render_warp(slot, 0.035f * strength, 0.35f, half, turns);
+    bridge.render_warp(slot, 0.035f * strength, convergence, half, turns);
     glBindBuffer(GL_PIXEL_PACK_BUFFER, 0); glPixelStorei(GL_PACK_ALIGNMENT, 1);
     glReadPixels(0, 0, w * 2, h, GL_RGBA, GL_UNSIGNED_BYTE, output);
     check_gl("Photo stereo readback");
@@ -1460,7 +1461,7 @@ void photo_stereo(const unsigned char* rgba, int w, int h, const float* near, in
 
 extern "C" JNIEXPORT jlong JNICALL
 Java_org_vrpassthroughplayer_plugin_RenderBridgeNative_photoStereo(JNIEnv* env, jclass, jobject rgba, jint w, jint h,
-    jobject near, jint mw, jint mh, jfloatArray content, jfloat strength, jint turns, jobject output) {
+    jobject near, jint mw, jint mh, jfloatArray content, jfloat strength, jfloat convergence, jint turns, jobject output) {
     try {
         // Validate dimensions before calculating buffer sizes or reading arrays.
         if (w < 1 || h < 1 || w > 4096 || h > 4096 || static_cast<int64_t>(w)*h > 8LL*1024*1024 ||
@@ -1472,7 +1473,7 @@ Java_org_vrpassthroughplayer_plugin_RenderBridgeNative_photoStereo(JNIEnv* env, 
         std::array<float, 4> rect{}; env->GetFloatArrayRegion(content, 0, 4, rect.data());
         if (env->ExceptionCheck()) return 0;
         const auto started = std::chrono::steady_clock::now();
-        photo_stereo(color, w, h, depth, mw, mh, rect, strength, result, turns);
+        photo_stereo(color, w, h, depth, mw, mh, rect, strength, result, turns, convergence);
         return std::max<jlong>(1, std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-started).count());
     } catch (const std::exception& e) { error(env, e.what()); return 0; }
 }

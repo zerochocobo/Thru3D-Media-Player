@@ -12,6 +12,12 @@ class UsbClaimPolicyTest {
         assertEquals(UsbClaimPolicy.BUSY_MOUNTED, UsbClaimPolicy.busyMessage(true, "Oculus", "oculus"))
         assertEquals(UsbClaimPolicy.BUSY_MOUNTED, UsbClaimPolicy.busyMessage(true, null, null))
     }
+    @Test fun forcedTakeoverNeedsAnExplicitRequestOnPico() {
+        assertTrue(UsbClaimPolicy.userTakeover(true, "Pico", "Pico"))
+        assertFalse(UsbClaimPolicy.userTakeover(false, "Pico", "Pico"))
+        assertFalse(UsbClaimPolicy.userTakeover(true, "Oculus", "oculus"))
+        assertFalse(UsbClaimPolicy.userTakeover(true, null, null))
+    }
     @Test fun noSystemVolumeNeverSuggestsMountedEntryOrEject() {
         assertEquals(UsbClaimPolicy.BUSY, UsbClaimPolicy.busyMessage(false, "Pico", "Pico"))
         assertEquals(UsbClaimPolicy.BUSY, UsbClaimPolicy.busyMessage(false, "Oculus", "oculus"))

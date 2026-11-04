@@ -55,8 +55,10 @@ func _run() -> void:
 	main.video.material.set_shader_parameter("color_texture", _original_video_texture())
 	main.video.material.set_shader_parameter("source_size", Vector2(640, 360))
 	main.video.material.set_shader_parameter("alpha_enabled", false)
-	_background_page()
-	check(_choice("background", "cinema"), "Production background choice selects cinema through controller press/release")
+	# Background selection moved to the shared scenery picker; render tests use
+	# the same model entry point as the player integration test, not retired UI.
+	check(main.background.select("cinema"), "Production background selector enables cinema")
+	main._update_background()
 	var deadline := Time.get_ticks_msec() + 20000
 	while main.cinema_environment.loading and Time.get_ticks_msec() < deadline: await create_timer(0.01).timeout
 	main._update_background(); main._sync_cinema_screen()
@@ -104,6 +106,16 @@ func _run() -> void:
 	main.xr_camera.global_position = Vector3(0, 7.0, -2.5)
 	main.xr_camera.look_at(Vector3(0, 12, 25), Vector3.UP)
 	await _shot("01-GT-auditorium-reverse")
+	for level in [1.0, 0.35]:
+		main._on_player_setting("screen_curve", level)
+		check(main.cinema_screen_border.visible, "Curved cinema picture shows its border", level)
+		main.xr_camera.global_position = Vector3(13, 14.0, 25.5)
+		main.xr_camera.look_at(Vector3(0, 8, 9), Vector3.UP)
+		await _shot("01-GT-curve-%d-overview" % roundi(level * 100))
+		main.xr_camera.global_position = Vector3(-10.35, 1.84, 5.7)
+		main.xr_camera.look_at(Vector3(0, 9, -4), Vector3.UP)
+		await _shot("01-GT-curve-%d-front-left" % roundi(level * 100))
+	main._on_player_setting("screen_curve", 0.0)
 	main.xr_origin.global_transform = rig_before; main.xr_camera.transform = tracked_before
 	for language in ["en", "zh", "zh_Hant", "ja"]:
 		I18n.use(language)
@@ -116,8 +128,11 @@ func _run() -> void:
 		main._place_menu(main.player_menu, true)
 		check(main.player_menu._state.get("screen_scene_locked", false), "Scene-locked screen state reaches player menu " + language)
 		var targets: Array = main.player_menu._buttons.map(func(button): return button.target)
-		check([main.player_menu.CINEMA_MOVE, main.player_menu.CINEMA_HOME, main.player_menu.CINEMA_LIGHT_AUTO, main.player_menu.CINEMA_LIGHT_ON, main.player_menu.CINEMA_LIGHT_OFF, main.player_menu.CINEMA_PICTURE_SIZE].all(func(target): return target in targets),
-			"Scene page exposes teleport, home, lighting and picture size " + language)
+		var curve_targets: Array = range(main.player_menu.SCREEN_CURVE, main.player_menu.SCREEN_CURVE + main.video.CURVES.size())
+		check(main.player_menu.CINEMA_PICTURE_SIZE in targets and curve_targets.all(func(target): return target in targets),
+			"Scene screen page exposes picture size and every curve level " + language)
+		check(main.player_menu.FREE_MOVEMENT in targets and main.player_menu.CINEMA_LIGHTS in targets and targets.filter(func(target): return target >= 9102 and target <= 9107).is_empty(),
+			"Movement and lights stay in the footer, not repeated on the screen page " + language)
 		check(450 not in targets and 451 not in targets, "Scene screen page omits incompatible distance/size sliders " + language)
 		_check_label_fit(main.player_menu, language)
 		main.rays.clear(); main._update_controller_feedback(0.01)
@@ -128,8 +143,10 @@ func _run() -> void:
 		await _shot("03-background-page-" + language)
 	await _check_menu_occlusion()
 	I18n.use("en")
-	_background_page()
-	check(_choice("cinema_interaction", "move"), "Background interaction choice activates free movement through actual controller release")
+	_close_menus(); main._show_player_menu()
+	main.player_menu._adjustment = "screen"; main.player_menu.refresh(); main._place_menu(main.player_menu, true)
+	check(_tap(main.player_menu, main.player_menu.FREE_MOVEMENT) and main.cinema_environment.interaction == "move",
+		"Playback scene action activates free movement through actual controller release")
 	_look_at_screen()
 	var head: Vector3 = main.xr_camera.global_position
 	var floor_ray: Array = []
@@ -151,6 +168,7 @@ func _run() -> void:
 	check(visual != null and visual.is_visible_in_tree() and visual.get_node("FloorRing").is_visible_in_tree(), "Production floor feedback ring is visible")
 	check(_green_pixels(floor_frame) > 400, "Valid floor ring produces real visible pixels")
 	main._process_sticks(Vector2.ZERO, Vector2.ZERO, .016)
+	await _check_seat_feedback()
 	_close_menus(); main._cinema_request_interaction("watch")
 	main.xr_camera.look_at(Vector3(8, 7, 20), Vector3.UP)
 	main._on_setting_changed("cinema_lights", "on")
@@ -161,6 +179,38 @@ func _run() -> void:
 	await _shot("07-lights-off")
 	main._on_setting_changed("cinema_lights", "auto")
 	await _finish()
+
+func _check_seat_feedback() -> void:
+	main.cinema_environment.home()
+	main._cinema_request_interaction("move")
+	var marker: Vector3 = main.cinema_environment._movement.seat_targets.marker("I13")
+	var source: Vector3 = main.xr_camera.global_position + Vector3(.1, -.45, -.1)
+	var delta := marker - source
+	var horizontal := Vector3(delta.x, 0, delta.z)
+	var r := horizontal.length()
+	var pitch := atan((8.5 * 8.5 - sqrt(pow(8.5, 4) - 9.8 * (9.8 * r * r + 2 * delta.y * 8.5 * 8.5))) / (9.8 * r))
+	main.rays.right_hand = [source, horizontal.normalized() * cos(pitch) + Vector3.UP * sin(pitch)]
+	main._process_sticks(Vector2.ZERO, Vector2.ZERO, .016)
+	main._process_sticks(Vector2.ZERO, Vector2(0, 1), .016)
+	main.xr_camera.look_at(marker + Vector3.UP * .3, Vector3.UP)
+	var visual: Dictionary = main.cinema_environment._pointer_visuals.right_hand
+	for light in ["off", "on"]:
+		main._on_setting_changed("cinema_lights", light)
+		for frame in 90: await process_frame
+		visual.root.visible = false
+		var before := await _shot("05-seat-" + light + "-reference")
+		main._update_controller_feedback(.016)
+		check(main.cinema_environment._capture.get("target_id", "") == "I13", "Real player previews intended neighbouring seat")
+		var after := await _shot("05-seat-" + light + "-feedback")
+		var colored := 0
+		for y in range(0, after.get_height(), 2):
+			for x in range(0, after.get_width(), 2):
+				var a := after.get_pixel(x, y); var b := before.get_pixel(x, y)
+				if a.r > .8 and a.g > .5 and a.b < .6 and a.r - b.r > .2: colored += 1
+		check(colored > 150, "Seat feedback remains visible with lights " + light, colored)
+		check(visual.seat.is_visible_in_tree(), "Rendered chair outline distinguishes the seat target")
+	main._process_sticks(Vector2.ZERO, Vector2.ZERO, .016)
+	check(main.cinema_environment.saved_seat == "I13", "Rendered highlight and release use the same seat")
 
 func _close_menus() -> void:
 	for menu in [main.recent_menu, main.video_menu, main.photo_menu, main.music_menu]:
@@ -300,7 +350,7 @@ func _shot(label: String) -> Image:
 
 func _check_label_fit(menu: Node3D, language: String) -> void:
 	for button in menu._buttons:
-		if button.target not in [menu.CINEMA_SEAT, menu.CINEMA_MOVE, menu.CINEMA_HOME]: continue
+		if button.target < menu.SCREEN_CURVE or button.target >= menu.SCREEN_CURVE + main.video.CURVES.size(): continue
 		for label in button.node.find_children("*", "Label3D", true, false):
 			var width: float = menu.ui_font().get_string_size(label.text, HORIZONTAL_ALIGNMENT_LEFT, -1, label.font_size).x * label.pixel_size
 			check(width < button.rect.size.x - 0.02, "Translated scene action fits " + language + ": " + label.text, width)

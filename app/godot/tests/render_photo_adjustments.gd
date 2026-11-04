@@ -28,7 +28,7 @@ func snapshot(name: String, guard_text: bool = true) -> void:
 	var pill_lower := camera.unproject_position(pill.to_global(Vector3(pill_half.x, -pill_half.y, 0)))
 	var footer_bounds: Array[Rect2] = []
 	for button in menu._buttons:
-		if button.target not in [menu.FOLLOW, menu.TEMP_PASSTHROUGH]: continue
+		if button.target not in [menu.FOLLOW, menu.TEMP_PASSTHROUGH, menu.SCENERY, menu.FREE_MOVEMENT, menu.CINEMA_LIGHTS]: continue
 		var rect: Rect2 = button.rect
 		var start := camera.unproject_position(menu.to_global(Vector3(rect.position.x,rect.end.y,0)))
 		var end := camera.unproject_position(menu.to_global(Vector3(rect.end.x,rect.position.y,0)))
@@ -52,6 +52,7 @@ func _run() -> void:
 	root.add_child(viewport)
 	camera = Camera3D.new()
 	camera.fov = 48
+	camera.position.y = -0.08 # Include the taller four-row panel and its footer.
 	viewport.add_child(camera)
 	menu = Menu.new()
 	menu.state_provider = func(): return state.duplicate()
@@ -67,6 +68,15 @@ func _run() -> void:
 	for language in ["zh", "zh_Hant", "en", "ja"]:
 		I18n.use(language); menu.refresh()
 		await snapshot("adjustments-" + language)
+	for strength in [0.0, 3.0]:
+		state.edge_feather_strength = strength; I18n.use("zh"); menu.refresh()
+		await snapshot("feather-%s-zh" % strength)
+	state.edge_feather_strength = 1.0
+	for layout in [2, 4]:
+		state.layout = layout; state.gallery_focus = -1; menu.refresh()
+		await snapshot("feather-layout-%s-zh" % layout)
+		if menu._adjust_rows.has(453) != (layout == 2): failures.append("Feather appears only for photographic layouts")
+	state.layout = 0
 	state.native_stereo = true; state.spatial_metadata = {"horizontal_fov_degrees":90.0}; state.spatial_fov_available = true
 	for language in ["zh", "zh_Hant", "en", "ja"]:
 		I18n.use(language); menu.refresh()
@@ -76,7 +86,7 @@ func _run() -> void:
 		var width: float = menu.ui_font().get_string_size(label.text,HORIZONTAL_ALIGNMENT_LEFT,-1,label.font_size).x * label.pixel_size
 		if width >= button.rect.size.x - .025: failures.append("Spatial-photo label overflows " + language)
 	state.erase("native_stereo"); state.erase("spatial_metadata"); state.erase("spatial_fov_available")
-	state.screen_distance = 10.0; state.screen_scale = 6.0; state.inspect_magnification = 8.0
+	state.screen_distance = 50.0; state.screen_scale = 30.0; state.inspect_magnification = 8.0
 	I18n.use("zh"); menu.refresh()
 	await snapshot("adjustments-maximum-zh")
 	state.geometry = 3

@@ -5,7 +5,7 @@
   "source_lock_sha256": "7036a7bf793e00607d7b65f3c4c98428a3004d3584423116d91fe0b4c22273cd",
   "builder_revision": "fdf74f6830c47dbaa8a22ac79726e8303f1db5af",
   "mpv_revision": "0b7ed670f7c353dd3dd4f8ae0fc788a181a15aa6",
-  "patch_sha256": "960b6ad8d1cc4c5d690a5143a2a20879907c02ab63b676e2f058aae2502d2f80",
+  "patch_sha256": "c3f125020a5de1e357d9dda5d610d88001ef19d0cd3ad38f4fa04f42a3b094e6",
   "private_header_sha256": "3c680fed7e92a8f5f52345825de42cac2e56a155f5c4fc47756839559a4b94fa",
   "api_version": 2,
   "ndk": "30.0.16248370",
@@ -14,7 +14,7 @@
   "pgs_bitmap_header_sha256": "d5f16d18dbef6042570adad52c42cee9df6cd35a27ddf067611ff4c0addb7261",
   "live_capture_patch_sha256": "c7167a9835038c375ef991eac5229082f83c0ee44cfd6e2fa162e87609e5dd4a",
   "live_capture_header_sha256": "7cb1040bb604f0e7c2a2ce47b7b3d869da1f81c3cd0d32eded9e5e9b388c648f",
-  "aaudio_clock_patch_sha256": "394eda7da3d4d81196c1708a458cf78b677163cf7007ceed89696f659ea55451",
+  "aaudio_clock_patch_sha256": "4ae501cf04fef8bd30fbf7efa597da4f5100160e6151203cb1a7aa41b0c8a58b",
   "layer_cadence_patch_sha256": "fc2d1907643af88c949b430fc2dafb2c46a9b082021668716253bcc0bc18d448",
   "mediacodec_priority_patch_sha256": "df1b36c3dcdf97ce273f0ef13adffe3d565c99ce8f94334acb1533f6b271ee11",
   "dovi_rpu_patch_sha256": "ac25f48b5dce159a0cdf5880500dbe13055b8b72bf03fd8763971ddd0367ad3a",
@@ -57,9 +57,9 @@
   "libraries": [
     {
       "name": "libmpv.so",
-      "sha256": "3beec06babdb97f211cac460a536f12ca5ddcb52de4902358ebb983c517245f0",
-      "bytes": 8268272,
-      "built_sha256": "73082e05eafc2fdd19ae2177fd530865aba7a59db6b9467dfe666249aea427b2",
+      "sha256": "f3d637ceef1613a474d708ecea59539f4fa819871379fdb4a8afeb66d4087373",
+      "bytes": 8268800,
+      "built_sha256": "853339644f60e1770b49e71bc8cb6e4ff0660bf4748277a8ca0556af6cf790f8",
       "needed": [
         "libm.so",
         "libz.so",
@@ -170,7 +170,7 @@
     }
   ],
   "host_packages_sha256": "0d42dd4ec021254111a439214a2681bf37ca44ba2af04a9d97af479f2bd1dd33",
-  "build_receipt_sha256": "55c6bb15e085b65cff98c80c865895d2b8343d2e48bc974a7ac8da0106296e26",
+  "build_receipt_sha256": "03e5a77913d7957a79bb1d080858de69b9709cc19dcdee98e4c9672eb8b0e7ec",
   "meson": "1.11.0",
   "ninja": "1.11.1",
   "mvc_inputs_sha256": {

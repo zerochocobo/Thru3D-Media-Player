@@ -88,6 +88,7 @@ func capture_current() -> Dictionary:
 
 func _valid_target() -> bool:
 	if job.is_empty() or int(job.epoch) != photo._cache_epoch or not is_equal_approx(float(job.strength), photo.depth_strength): return false
+	if not is_equal_approx(float(job.get("convergence", 0.35)), photo.DepthPosition.convergence(photo.depth_position)): return false
 	if int(job.get("rotation", 0)) != photo._stereo_rotation(int(job.index)): return false
 	var entry: Dictionary = job.entry
 	var id := int(entry.get("id", 0))
@@ -135,7 +136,7 @@ func pump() -> bool:
 			var bytes := int(image.get_width() * image.get_height() * 16.0 / 3.0)
 			if not _reserve(bytes, at) or not photo.resource_budget.can_start(WORK_BYTES, bytes): break
 			job = {"entry":entry,"index":at,"holder":stage[0],"key":stage[1],"image":image,"row":0,"level":0,
-				"epoch":photo._cache_epoch,"strength":photo.depth_strength,"rotation":photo._stereo_rotation(at)}
+				"epoch":photo._cache_epoch,"strength":photo.depth_strength,"convergence":photo.DepthPosition.convergence(photo.depth_position),"rotation":photo._stereo_rotation(at)}
 			if current: photo._display_result = result
 			return _step()
 	return false

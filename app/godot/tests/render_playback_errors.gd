@@ -34,7 +34,7 @@ func _run() -> void:
 	camera.add_child(photo); photo.position.z = -1.55; photo.visible = false
 	for language in ["zh", "en", "zh_Hant", "ja"]:
 		I18n.use(language)
-		for code in ["STRM_MULTIPLE_TARGETS", "STRM_WINDOWS_PATH", "STRM_READ_TIMEOUT", "STRM_TARGET_UNAVAILABLE", "MPV_OPEN_TIMEOUT", "MPV_OUTPUT_TIMEOUT", "MPV_BUFFER_TIMEOUT"]:
+		for code in ["STRM_MULTIPLE_TARGETS", "STRM_WINDOWS_PATH", "STRM_READ_TIMEOUT", "STRM_TARGET_UNAVAILABLE", "MPV_OPEN_TIMEOUT", "MPV_OUTPUT_TIMEOUT", "MPV_BUFFER_TIMEOUT", "MPV_PLAYBACK_STUCK"]:
 			state = {"title": "电影.SBS.strm" if code.begins_with("STRM") else "电影.mkv", "error": I18n.t(Errors.MESSAGES[code])}
 			menu.show_playback_error()
 			check(menu.visible and menu._failure_open and menu.section == 0, "Error dialog is visible without entering Info")

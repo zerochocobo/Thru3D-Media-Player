@@ -7,9 +7,49 @@
 #include <stdexcept>
 #include <vector>
 
+// The original per-reach scan, kept as the reference for the vectorized limit.
+static void reference_limit_gradient(float* near, int width, int x, int y, int cw, int ch, float half_columns) {
+    if (half_columns <= 0.f) return;
+    const float slope = 0.9f / half_columns;
+    const int reach = static_cast<int>(std::ceil(1.f / slope));
+    std::vector<float> line(static_cast<size_t>(cw));
+    for (int row = y; row < y + ch; ++row) {
+        float* r = near + static_cast<size_t>(row) * width + x;
+        std::copy(r, r + cw, line.begin());
+        for (int col = 0; col < cw; ++col)
+            for (int d = 1; d <= reach; ++d) {
+                const float fall = line[col] - slope * d;
+                if (fall <= 0.f) break;
+                if (col - d >= 0) r[col - d] = std::max(r[col - d], fall);
+                if (col + d < cw) r[col + d] = std::max(r[col + d], fall);
+            }
+    }
+}
+
 int main() {
     int failures = 0, checks = 0;
     auto check = [&](bool ok, const char* name) { ++checks; if (!ok) { ++failures; std::fprintf(stderr, "%s\n", name); } };
+    {
+        // Vectorized limit == per-reach scan inside the content, on video-sized maps and edge cases.
+        unsigned seed = 12345;
+        auto next = [&]() { seed = seed * 1664525u + 1013904223u; return (seed >> 8) / 16777216.f; };
+        bool same = true;
+        for (int round = 0; round < 24; ++round) {
+            const int w = round < 20 ? 384 : 7 + round, h = round < 20 ? 224 : 3, x = round % 3, y = round % 2;
+            const int cw = w - x - round % 2, ch = h - y;
+            std::vector<float> map(static_cast<size_t>(w) * h);
+            for (auto& v : map) v = round % 4 == 0 ? (next() > .7f ? 1.f : 0.f) : next();
+            if (round == 21) std::fill(map.begin(), map.end(), 0.f);
+            if (round == 22) std::fill(map.begin(), map.end(), 1.f);
+            const float half = round == 23 ? 0.3f : 0.0175f * (0.25f + round * 0.4f) * cw;
+            std::vector<float> expect(map), got(map);
+            reference_limit_gradient(expect.data(), w, x, y, cw, ch, half);
+            quest::photo_limit_gradient(got.data(), w, h, x, y, cw, ch, half);
+            for (int row = y; row < y + ch; ++row) for (int col = x; col < x + cw; ++col)
+                same &= got[static_cast<size_t>(row) * w + col] == expect[static_cast<size_t>(row) * w + col];
+        }
+        check(same, "Vectorized gradient limit matches the per-reach scan exactly");
+    }
     for (int turns : {0, 1, 2, 3}) {
         const int w = 7, h = 4, rw = turns % 2 ? h : w, rh = turns % 2 ? w : h;
         std::vector<int> counts(w*h);

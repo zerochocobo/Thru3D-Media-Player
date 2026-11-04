@@ -36,17 +36,19 @@ inline void photo_limit_gradient(float* near, int width, int height,
     if (half_columns <= 0.f) return;
     const float slope = 0.9f / half_columns;
     const int reach = static_cast<int>(std::ceil(1.f / slope));
+    // Distance outside, columns inside: branch-free loops the compiler vectorizes (2D->3D limits
+    // every video depth map). Near values are in [0, 1], so falls that reach zero leave the max
+    // unchanged and the result equals stopping at the first non-positive fall.
     std::vector<float> line(static_cast<size_t>(cw));
     for (int row = y; row < y + ch; ++row) {
         float* r = near + static_cast<size_t>(row) * width + x;
         std::copy(r, r + cw, line.begin());
-        for (int col = 0; col < cw; ++col)
-            for (int d = 1; d <= reach; ++d) {
-                const float fall = line[col] - slope * d;
-                if (fall <= 0.f) break;
-                if (col - d >= 0) r[col - d] = std::max(r[col - d], fall);
-                if (col + d < cw) r[col + d] = std::max(r[col + d], fall);
-            }
+        const float* l = line.data();
+        for (int d = 1; d <= reach && d < cw; ++d) {
+            const float drop = slope * d;
+            for (int col = d; col < cw; ++col) r[col - d] = std::max(r[col - d], l[col] - drop);
+            for (int col = 0; col + d < cw; ++col) r[col + d] = std::max(r[col + d], l[col] - drop);
+        }
     }
     for (int row = 0; row < height; ++row) for (int col = 0; col < width; ++col)
         if (row < y || row >= y + ch || col < x || col >= x + cw)

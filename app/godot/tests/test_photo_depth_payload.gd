@@ -23,7 +23,11 @@ func _initialize() -> void:
 	decoded = Photo._read_depth(JSON.stringify(stereo_payload))
 	check(decoded.has("stereo_image") and decoded.stereo_image.get_pixel(4,4).r > .9 and decoded.stereo_image.get_pixel(40,4).g > .9, "Preserve generated eye packing and colors")
 	check(decoded.get("strength",0) == 1.25 and decoded.stereo_image.has_mipmaps(), "Carry render strength and generate mips")
-	for invalid in [{"stereo_strength":3},{"stereo_strategy":"inverse"},{"stereo_width":8194},{"stereo_height":2},{"stereo_strength":"bad"}]:
+	check(is_equal_approx(decoded.convergence, 0.35), "Legacy pair retains default convergence")
+	stereo_payload.stereo_convergence = 0.05
+	decoded = Photo._read_depth(JSON.stringify(stereo_payload))
+	check(is_equal_approx(decoded.convergence, 0.05), "Carry actual generated screen plane")
+	for invalid in [{"stereo_convergence":"bad"},{"stereo_convergence":-0.1},{"stereo_convergence":1.1},{"stereo_strength":3},{"stereo_strategy":"inverse"},{"stereo_width":8194},{"stereo_height":2},{"stereo_strength":"bad"}]:
 		var broken := stereo_payload.duplicate(true); broken.merge(invalid,true)
 		check(Photo._read_depth(JSON.stringify(broken)).is_empty(), "Reject incompatible or malformed generated pair")
 	DirAccess.remove_absolute(pair_path)

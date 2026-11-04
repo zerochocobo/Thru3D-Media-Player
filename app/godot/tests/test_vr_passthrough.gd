@@ -49,6 +49,7 @@ func prepare(main: Node3D, geometry := 1, stereo := true, tb := false, playing :
 		"stereo_sbs": stereo, "top_bottom": tb, "color_target": "layer" if layer else "texture"})
 	v.media.last_pair = v._binding.ticket.duplicate(true)
 	v.geometry = geometry; v.stereo_sbs = stereo; v.top_bottom = tb
+	v.viewing_eye = 0; v.swap_eyes = false
 	v.alpha_requested = false; v.alpha_enabled = false; v.packed_alpha = false; v.packed_file = false
 	v._layer_session = layer; v._layer_requested = layer; v.requested_play = playing
 	v._apply_geometry(); v.panel.visible = true
@@ -91,7 +92,7 @@ func run() -> void:
 				check(v.vr_passthrough.motion.is_empty() and is_equal_approx(v.vr_passthrough.roll, 1.0), "The short roll finishes at the stationary globe")
 				check(v.vr_passthrough.held() and v.vr_passthrough.preview.visible and v.panel.layers == 0 and not v.video_layer_shown, "The frozen preview replaces both the eye-buffer surface and native video layer")
 				check(v.vr_passthrough.preview.mesh is SphereMesh and is_equal_approx(v.vr_passthrough.preview.mesh.radius, 0.36), "The paused picture wraps onto a compact exterior globe")
-				check(v.vr_passthrough.material.get_shader_parameter("pip_viewing_eye") == 0 and v.vr_passthrough.material.get_shader_parameter("stereo_sbs") == (eyes != 0) and v.vr_passthrough.material.get_shader_parameter("top_bottom") == (eyes == 2), "Preview preserves mono/SBS/TB packing without forcing one eye")
+				check(v.vr_passthrough.material.get_shader_parameter("pip_viewing_eye") == 1 and v.vr_passthrough.material.get_shader_parameter("stereo_sbs") == (eyes != 0) and v.vr_passthrough.material.get_shader_parameter("top_bottom") == (eyes == 2), "Preview selects one source eye while preserving mono/SBS/TB packing")
 				var preview_pose: Transform3D = v.vr_passthrough.preview.global_transform
 				main.xr_camera.global_transform = Transform3D(Basis.from_euler(Vector3(0.6, 1.2, -0.4)), Vector3(5, 1.1, 3))
 				main._sync_vr_passthrough_menu()
@@ -115,6 +116,22 @@ func run() -> void:
 				check(original == [v.geometry, v.view_yaw, v.view_pitch, v.view_zoom, v.view_horizontal, v._view_basis, v.stereo_sbs, v.top_bottom] and stored == v.mode_memory.lookup(v.local_uri), "Original view and file preferences remain unchanged")
 				main.test_ray = null
 				await process_frame
+	# The globe override is private, including frozen-texture and native-layer snapshots.
+	for layer in [false, true]:
+		for selected in [0, 1, 2]:
+			for swapped in [false, true]:
+				prepare(main, 3, true, false, true, layer)
+				v.viewing_eye = selected; v.swap_eyes = swapped; v._apply_geometry()
+				var original_override: Variant = v.material.get_shader_parameter("pip_viewing_eye")
+				main._on_session_control("temporary_passthrough")
+				if layer:
+					host.status = "ready"; v.vr_passthrough.poll()
+				else:
+					v._on_frozen_pair(7, JSON.stringify({"request_id": v.vr_passthrough.request, "state": "ready", "pair": {"frozen_frame_id": 400 + checks, "stereo_sbs": true}}))
+				check(v.vr_passthrough.material.get_shader_parameter("pip_viewing_eye") == maxi(1, selected) and v.vr_passthrough.material.get_shader_parameter("swap_eyes") == swapped, "Globe uses the selected logical eye and honours eye swap")
+				check(v.vr_passthrough.release_material.get_shader_parameter("pip_viewing_eye") == original_override and v.vr_passthrough.release_material.get_shader_parameter("viewing_eye") == selected, "Unfolding panorama retains the source viewing mode")
+				main._leave_vr_passthrough(); v.vr_passthrough.poll(1.0)
+				check(v.viewing_eye == selected and v.swap_eyes == swapped and v.material.get_shader_parameter("pip_viewing_eye") == original_override and v.requested_play, "Exit restores playback without changing the main eye selection")
 	# Default camera background still exposes a non-selected collapse button.
 	prepare(main); main.background.select("passthrough"); main._update_background()
 	check(main._session_controls_state().passthrough_visible and not main._session_controls_state().passthrough, "Saved passthrough does not hide the VR collapse control")

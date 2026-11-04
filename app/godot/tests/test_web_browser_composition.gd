@@ -58,9 +58,19 @@ func run() -> void:
 					var y := int((0.5 - local.y / slot.layer.quad_size.y) * pixels.get_height())
 					check(pixels.get_pixel(x, y).a < 0.01, "Native webpage centre remains transparent in the HD chrome texture")
 				check(clear > 100 and ink > 10, "Rendered texture %d/%d contains transparency=%d and glyphs=%d" % [count, slot.index, clear, ink])
+	var portrait: Node3D = browser.windows[1]
+	var minimum_chrome_density := INF
+	for height in [0.9, 1.8, 2.56, 3.2, 3.6]:
+		portrait.page_size = Vector2(1.44, height); portrait.refresh(); capture.update()
+		var address: Node = portrait._buttons.filter(func(button): return button.target == browser.BASE + 3)[0].node
+		var chrome: Dictionary = capture.slots.filter(func(slot): return slot.used and slot.nodes.has(address))[0]
+		var chrome_density: float = float(chrome.raw.size.x) / chrome.layer.quad_size.x
+		minimum_chrome_density = minf(minimum_chrome_density, chrome_density)
+		check(chrome_density >= 900.0, "Portrait %.2f m keeps title and button capture above 900 px/m: %.1f" % [height, chrome_density])
+		check(chrome.layer.quad_size.y < 0.9, "Portrait %.2f m chrome capture covers only its header: %.2f" % [height, chrome.layer.quad_size.y])
 	browser.close(); menu.visible = false; capture.update()
 	check(capture.slots.all(func(slot): return not slot.used), "Leaving retires chrome captures")
 	world.free(); platform.free(); await process_frame
-	print("Browser composition: %d checks, %d failures" % [checks, failures.size()])
+	print("Browser composition: %d checks, %d failures; portrait chrome minimum %.1f px/m" % [checks, failures.size(), minimum_chrome_density])
 	for failure in failures: push_error(failure)
 	quit(0 if failures.is_empty() else 1)

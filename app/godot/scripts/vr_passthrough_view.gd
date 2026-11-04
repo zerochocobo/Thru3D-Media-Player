@@ -1,5 +1,5 @@
 extends RefCounted
-## A session-only, paused stereo preview. Never changes the source projection or saved view.
+## A session-only, paused single-eye preview. Never changes the source projection or saved view.
 signal failed
 signal exit_ready
 const Binding := preload("res://scripts/pair_texture_binding.gd")
@@ -221,8 +221,10 @@ func _show() -> void:
 	material.set_shader_parameter("packed_alpha", false)
 	# projection_mesh/UV packing remain as authored for stream-specific projections.
 	material.set_shader_parameter("pip_enabled", false)
-	# Unlike PiP, retain both source eyes, their order, and the selected viewing eye.
-	material.set_shader_parameter("pip_viewing_eye", 0)
+	# Like PiP, show one source eye to both eyes on the small physical surface.
+	# Keep eye packing/swap intact; the release panorama retains the original stereo view.
+	var eye: Variant = material.get_shader_parameter("viewing_eye")
+	material.set_shader_parameter("pip_viewing_eye", maxi(1, int(eye) if eye != null else 0))
 	material.set_shader_parameter("pip_forward", -crop_basis.z)
 	material.set_shader_parameter("pip_right", crop_basis.x)
 	material.set_shader_parameter("pip_up", crop_basis.y)

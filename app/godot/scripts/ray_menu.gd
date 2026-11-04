@@ -117,10 +117,14 @@ var _layout_up := Vector3.UP
 var layout_head_provider: Callable
 var _layout_following := false
 var music_quick: RefCounted
-## Bumped whenever the buttons are rebuilt; with the frame and hover it lets both hands share one
-## highlight pass per frame.
+## Bumped whenever the buttons are rebuilt; with the hover it decides when the highlight pass reruns.
 var _buttons_generation := 0
 var _highlight_pass := []
+## The colour pass walks every button and reads its shader parameters, a cost proportional to the
+## page. It reruns when the hover or the buttons change; colours that follow menu state without a
+## rebuild (refresh_values calls the pass itself) show within this interval otherwise.
+const HIGHLIGHT_REFRESH_MS := 100
+var _highlight_due := 0
 
 func panel_centre() -> Vector3:
 	return _backdrop.position if is_instance_valid(_backdrop) else Vector3.ZERO
@@ -327,11 +331,12 @@ func update_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: 
 	var endpoint := Vector3.ZERO
 	if valid: endpoint = to_global(hit.point) if not hit.is_empty() else origin + direction.normalized() * ray_max_distance
 	_draw_pointer(hand, origin, endpoint, valid, not hit.is_empty())
-	# Both hands update every frame; the second colour pass would repeat the first unless something
-	# changed. The tooltip (cheap) always follows the current tips.
-	var pass_key := [Engine.get_process_frames(), _buttons_generation, _hover.duplicate()]
-	if pass_key != _highlight_pass:
-		_highlight_pass = pass_key
+	# Both hands update every frame; the colour pass reruns only for a change (or the refresh
+	# interval). The tooltip (cheap) always follows the current tips.
+	var now := Time.get_ticks_msec()
+	var pass_key := [_buttons_generation, _hover.duplicate()]
+	if pass_key != _highlight_pass or now >= _highlight_due:
+		_highlight_pass = pass_key; _highlight_due = now + HIGHLIGHT_REFRESH_MS
 		_update_highlights()
 	else:
 		_update_tooltip()
@@ -525,6 +530,15 @@ func refresh_session_controls(force: bool = false) -> void:
 	_icon("panorama",Vector3(-.053,0,.006),.034,scenery_ink,scenery_button)
 	_label(I18n.t("Scene"),Vector3(.024,0,.006),TEXT_BODY,scenery_button).modulate=scenery_ink
 	_buttons.back().node.material_override.set_shader_parameter("corner_radius", FOOTER_DIAMETER * .5)
+	if state.get("cinema_visible", false):
+		# Keep cinema controls beside Scene, clear of the music entry on the left.
+		var cinema_left:=scene_centre.x+.09+FOOTER_GAP
+		var pitch:=FOOTER_DIAMETER+FOOTER_GAP
+		var lights:=str(state.get("cinema_lights","auto"))
+		_footer_button(CINEMA_LIGHTS,LIGHT_ICONS.get(lights,"light_auto"),Vector2(cinema_left+FOOTER_DIAMETER*.5,_footer_centre.y),
+			false,true,I18n.t(LIGHT_TIPS.get(lights,LIGHT_TIPS.auto)))
+		_footer_button(FREE_MOVEMENT,"standing",Vector2(cinema_left+pitch+FOOTER_DIAMETER*.5,_footer_centre.y),
+			state.get("cinema_moving",false),true,I18n.t("Free movement"))
 	_footer_button(FOLLOW, "head_follow", Vector2(follow_left + FOOTER_DIAMETER * 0.5, _footer_centre.y),
 		state.get("follow", false), true, I18n.t("Disable follow" if state.get("follow", false) else "Enable follow"))
 	if show_passthrough:

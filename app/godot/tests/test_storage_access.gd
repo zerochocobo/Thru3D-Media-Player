@@ -40,6 +40,10 @@ class Platform extends Fixture.FakePlatform:
 	func media_local_grant_directory(path: String) -> void:
 		directory_requests.append(path)
 		(func(): media_list.emit(0, JSON.stringify({"source":"local_access","state":"requested","path":path}))).call_deferred()
+	var takeovers: Array[String] = []
+	func media_local_usb_takeover(path: String) -> int:
+		takeovers.append(path); raw_error = false
+		return media_local_browse(path)
 	func media_local_stop_storage(path: String) -> int:
 		storage_settings.append(path)
 		if hold_stops:
@@ -113,7 +117,9 @@ func _run() -> void:
 	check(menu._local_path().is_empty() and menu.rows.size() == 4 and menu._local_volumes.size() == 4, "Recovery refreshes the actual volume list instead of relying on a stale cache")
 	menu.compact = false; menu.refresh(); menu._activate(Menu.ROW_BASE+3); await settle()
 	platform.raw_error_message = Menu.USB_BUSY_EJECT; menu._activate(Menu.REFRESH); await settle()
-	check(menu.status == Menu.USB_BUSY_EJECT and menu._buttons.any(func(b): return b.target == Menu.RETRY_USB) 		and not menu._buttons.any(func(b): return b.target == Menu.STORAGE_ROOT), "PICO busy USB offers retry after a system eject instead of the failing mounted entry")
+	check(menu.status == Menu.USB_BUSY_EJECT and menu._buttons.any(func(b): return b.target == Menu.RETRY_USB) \
+		and not menu._buttons.any(func(b): return b.target == Menu.STORAGE_ROOT), "PICO busy USB offers retry after a system eject instead of the failing mounted entry")
+	check(menu._buttons.any(func(b): return b.target == Menu.TAKEOVER_USB) and platform.takeovers.is_empty(), "PICO busy USB also offers an explicit direct-open takeover without taking over automatically")
 	menu.compact = true; menu.refresh()
 	var retry: Dictionary = menu._buttons.filter(func(b): return b.target == Menu.RETRY_USB)[0]
 	point = retry.node.global_position
@@ -128,7 +134,18 @@ func _run() -> void:
 		check(hint != Menu.USB_BUSY_EJECT or language == "en", "%s translates the eject guidance" % language)
 		check(menu._fit_title(hint, "", 0.67, 17) == hint and menu._fit_title(hint, "", 0.94, 14) == hint, "%s eject guidance fits without truncation" % language)
 	I18n.language = saved_language
+	platform.raw_error = true; menu._activate(Menu.REFRESH); await settle()
+	menu.compact = true; menu.refresh()
+	var takeover: Dictionary = menu._buttons.filter(func(b): return b.target == Menu.TAKEOVER_USB)[0]
+	var compact_retry: Dictionary = menu._buttons.filter(func(b): return b.target == Menu.RETRY_USB)[0]
+	check(takeover.node.global_position.distance_to(compact_retry.node.global_position) > 0.07, "Compact takeover and retry icons stay separate")
+	point = takeover.node.global_position
+	menu.press_pointer("left_hand",point+Vector3(0,0,1),Vector3(0,0,-1),true); await settle()
+	menu.press_pointer("left_hand",point+Vector3(0,0,1),Vector3(0,0,-1),false)
+	check(platform.takeovers == [RAW] and menu.rows.size() == 2 and menu.status != Menu.USB_BUSY_EJECT, "Ray takeover opens the same USB entry once, only on explicit request")
 	platform.raw_error = true; platform.raw_error_message = "USB device is in use; open a system-mounted entry"
+	menu._activate(Menu.REFRESH); await settle()
+	check(not menu._buttons.any(func(b): return b.target == Menu.TAKEOVER_USB), "Headsets without the PICO guidance never show takeover")
 	menu.compact = false; menu.refresh()
 	platform.raw_error = false; menu._activate(Menu.REFRESH); await settle()
 	check(menu.rows.size() == 2 and menu.rows[0].title == "exFAT · 1" and menu.rows[1].title == "FAT32 · 2", "Both direct partitions survive normal listing and media filtering")

@@ -4,6 +4,7 @@ signal close_requested
 signal import_requested(destination: String)
 const ChoiceFields := preload("res://scripts/choice_fields.gd")
 const StorageView := preload("res://scripts/audio_storage_view.gd")
+const TextInput := preload("res://scripts/system_text_input.gd")
 const SELECTED := Color(0.16, 0.31, 0.27)
 const ROW := 100
 const MORE := 200
@@ -42,12 +43,14 @@ const LIST_OPTIONS := 429
 const DONE := 430
 const FROM_LIBRARY := 431
 const CANCEL := 432
+const EDIT_NAME := 435
 const INLINE_UP := 600
 const INLINE_DOWN := 610
 const INLINE_REMOVE := 620
 const LIST_ROWS := 5
 const KEYS := ["1234567890", "qwertyuiop", "asdfghjkl-", "zxcvbnm_.+"]
 var choices := ChoiceFields.new(self)
+var editor := TextInput.new(self)
 var audio: Node
 var compact := false
 var _volume_open := false
@@ -83,18 +86,32 @@ func _ready() -> void:
 	choices.previewed.connect(_choice_previewed)
 
 func open(_mini: bool) -> void:
+	editor.cancel()
 	compact = true; _volume_open = false; modal = ""; editing = false; _modal_history.clear(); choices.reset(); _drag.clear()
 	if view == "add": view = "tracks"; offset = _add_return_offset
 	selected_tracks.clear()
 	visible = true; refresh()
 
 func dismiss() -> void:
+	editor.cancel()
 	choices.reset(); _drag.clear(); super()
+
+func _exit_tree() -> void: editor.cancel()
+func text_entry_active() -> bool: return editor.active()
+
+func _edit_name() -> void:
+	if modal != "name" or not TextInput.uses_custom("playlist_name"): return
+	var target := target_playlist
+	editor.begin("playlist_name", name_text, 80, func(value): name_text = value; refresh(),
+		func(value): name_text = value; _activate(SAVE_NAME), Callable(),
+		func(): return visible and modal == "name" and target_playlist == target)
+	editor.editor.select_all()
 
 func has_pointer_capture() -> bool: return not choices.capture.is_empty() or not _drag.is_empty()
 func allows_playback_sticks() -> bool: return false
 
 func navigate_back() -> bool:
+	if editor.active(): editor.cancel(); return true
 	if has_pointer_capture():
 		for hand in ["left_hand", "right_hand"]: cancel_pointer(hand)
 	elif not choices.opened.is_empty(): choices.reset()
@@ -108,10 +125,13 @@ func navigate_back() -> bool:
 	refresh(); return true
 
 func _open_modal(value: String) -> void:
+	editor.cancel()
 	_modal_history.append({"modal": modal, "offset": offset})
 	modal = value; offset = 0
+	if value == "name": _edit_name()
 
 func _close_modal(all: bool = false) -> void:
+	editor.cancel()
 	if _modal_history.is_empty(): modal = ""; return
 	var previous: Dictionary = _modal_history[0] if all else _modal_history.back()
 	if all: _modal_history.clear()
@@ -197,12 +217,15 @@ func _draw() -> void:
 	var panel_size := Vector2(1.14, 0.54) if compact else Vector2(1.42, 1.22)
 	if not modal.is_empty(): panel_size = Vector2(1.42, 1.12) if modal == "name" else Vector2(1.20, 1.0 if modal == "choose_list" else 0.90)
 	if modal == "settings": panel_size = Vector2(1.14, 0.60)
-	_set_backdrop(panel_size, Vector2.ZERO)
+	var panel_offset := Vector2.ZERO
+	if modal == "name" and TextInput.uses_custom("playlist_name"):
+		panel_size.y = 0.49; panel_offset.y = 0.305
+	_set_backdrop(panel_size, panel_offset)
 	_block_rays(_backdrop, _backdrop.mesh.size)
 	if not modal.is_empty():
-		_glyph(BACK, "up", Vector2(-panel_size.x / 2 + 0.09, panel_size.y / 2 - 0.075), 0.075, true, I18n.t("Back"))
-		_glyph(CLOSE, "close", Vector2(panel_size.x / 2 - 0.09, panel_size.y / 2 - 0.075), 0.075, true, I18n.t("Close"))
-		_draw_modal(); _draw_status(-panel_size.y / 2 + 0.035); choices.finish(); return
+		_glyph(BACK, "up", Vector2(-panel_size.x / 2 + 0.09, panel_size.y / 2 - 0.075) + panel_offset, 0.075, true, I18n.t("Back"))
+		_glyph(CLOSE, "close", Vector2(panel_size.x / 2 - 0.09, panel_size.y / 2 - 0.075) + panel_offset, 0.075, true, I18n.t("Close"))
+		_draw_modal(); _draw_status(-panel_size.y / 2 + 0.035 + panel_offset.y); choices.finish(); return
 	if compact:
 		_text_button(SOURCE, "", Vector2(-0.18, 0.205), Vector2(0.68, 0.075))
 		_caption(_source_caption(), Vector2(-0.49, 0.205), 0.62, 16)
@@ -410,6 +433,11 @@ func _draw_modal() -> void:
 		_storage_labels = StorageView.draw(self, _state, Vector2(0, -0.09), 0.96, true, true)
 		return
 	if modal == "name":
+		if TextInput.uses_custom("playlist_name"):
+			_button(EDIT_NAME, _fit_title(name_text + "│", "", 1.08, TEXT_BODY), Vector2(0, 0.36), Vector2(1.16, 0.085))
+			_pill(CANCEL, "Cancel", Vector2(-0.25, 0.16), 0.40)
+			_pill(SAVE_NAME, "Save", Vector2(0.25, 0.16), 0.40, not name_text.strip_edges().is_empty(), true)
+			return
 		var input := _quad(Vector2(1.16, 0.085), Vector3(0, 0.36, 0.002), TILE, 11)
 		add_child(input); _decorations.append(input)
 		_label(_fit_title(name_text + "│", "", 1.08, TEXT_BODY), Vector3(0, 0.36, 0.004), TEXT_BODY)
@@ -465,19 +493,22 @@ func _draw_modal() -> void:
 func _activate(id: int) -> void:
 	if choices.action(id): return
 	if id in [CLOSE, BACK, CANCEL]:
-		if id == CLOSE or not navigate_back(): close_requested.emit()
+		if id == CLOSE or not navigate_back(): editor.cancel(); close_requested.emit()
 		return
 	if id == SETTINGS and modal.is_empty():
 		_volume_open = false; _open_modal("settings"); refresh(); return
 	if id in [PREVIOUS, NEXT]:
 		offset = clampi(offset + (-_capacity() if id == PREVIOUS else _capacity()), 0, maxi(0, _rows.size() - _capacity())); refresh(); return
 	if modal == "name":
-		if id >= KEY and id < KEY + 40:
+		if id == EDIT_NAME: _edit_name()
+		elif TextInput.uses_custom("playlist_name") and (id in [ERASE, SHIFT, SPACE] or (id >= KEY and id < KEY + 40)): return
+		elif id >= KEY and id < KEY + 40:
 			var ch: String = KEYS[(id - KEY) / 10][(id - KEY) % 10]; name_text = (name_text + (ch.to_upper() if shift else ch)).left(80)
 		elif id == ERASE: name_text = name_text.left(-1)
 		elif id == SHIFT: shift = not shift
 		elif id == SPACE: name_text = (name_text + " ").left(80)
 		elif id == SAVE_NAME:
+			name_text = editor.finish("playlist_name", name_text)
 			if target_playlist.is_empty():
 				var created: String = audio.library.create_playlist(name_text, [target_track] if not target_track.is_empty() else [])
 				if not created.is_empty():

@@ -76,6 +76,7 @@ internal class MediaServerLibrary(private val context: () -> Context?, private v
     }
     fun playbackPrivacyChanged() = reports.privacyChanged()
     fun playbackPaused() = reports.pause()
+    fun playbackReportInterval(value: Int) = reports.setIntervalMs(value)
     fun request(raw: String): Int {
         if (closed || raw.length > 32768) return -1
         val req = runCatching { JSONObject(raw) }.getOrNull() ?: return -1

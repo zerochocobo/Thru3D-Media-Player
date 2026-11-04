@@ -2,6 +2,7 @@ extends RefCounted
 ## One ray-driven browser; native clients supply capabilities and normalized nodes.
 const I18n := preload("res://scripts/i18n.gd")
 const Methods := preload("res://scripts/platform_methods.gd")
+const Reports := preload("res://scripts/media_server_playback.gd")
 const ACTION := 1000
 const KEY := 1400
 const SORTS := ["created_at", "title", "date", "duration", "rating100"]
@@ -755,6 +756,9 @@ func action(target: int) -> bool:
 		elif target >= ACTION + 182 and target <= ACTION + 184:
 			backdrop.mode = ["off", "static", "slideshow"][target - ACTION - 182]
 			menu.setting_changed.emit("library_backdrop", backdrop.mode)
+		elif target in [ACTION + 185, ACTION + 186, ACTION + 187]:
+			var interval := Reports.DEFAULT_INTERVAL_MS if target == ACTION + 187 else report_interval_ms() + (-500 if target == ACTION + 185 else 500)
+			menu.setting_changed.emit(Reports.INTERVAL_KEY, Reports.normalize_interval(interval))
 		menu.refresh(); return true
 	if target == ACTION + 180 and view in ["servers", "home"] and keyboard.is_empty():
 		settings_open = true; gallery.capture.clear(); menu._drag.clear(); menu._fling = 0.0
@@ -1061,15 +1065,28 @@ func draw() -> void:
 	if sorting(): _draw_sort()
 	elif settings_open: _draw_settings()
 
+func report_interval_ms() -> int:
+	var preferences: Dictionary = menu.settings_provider.call() if menu.settings_provider.is_valid() else {}
+	return Reports.normalize_interval(preferences.get(Reports.INTERVAL_KEY, Reports.DEFAULT_INTERVAL_MS))
+
 func _draw_settings() -> void:
-	_dialog_panel(Vector2(1.02, 0.40), Vector2(0.12, 0.11), ACTION + 181)
+	_dialog_panel(Vector2(1.02, 0.66), Vector2(0.12, 0.015), ACTION + 181)
 	var title: Label3D = menu._label(I18n.t("Settings"), Vector3(-0.325, 0.25, 0.043), 21)
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT; title.render_priority = 32
 	_dialog_button(ACTION + 181, "", Vector2(0.56, 0.25), Vector2(0.06, 0.06), false, "close")
-	var label: Label3D = menu._label(I18n.t("Library background"), Vector3(-0.325, 0.14, 0.043), 18)
+	var interval := report_interval_ms()
+	var label: Label3D = menu._label(I18n.t("Playback report interval"), Vector3(-0.325, 0.14, 0.043), 18)
 	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT; label.render_priority = 32
+	_dialog_button(ACTION + 185, "−", Vector2(-0.28, 0.035), Vector2(0.09, 0.08), false, "", interval > 500)
+	var value: Label3D = menu._label(I18n.t("%.1f s") % (interval / 1000.0), Vector3(0.08, 0.035, 0.043), 23)
+	value.render_priority = 32
+	_dialog_button(ACTION + 186, "+", Vector2(0.44, 0.035), Vector2(0.09, 0.08), false, "", interval < 20000)
+	_dialog_button(ACTION + 187, "", Vector2(0.56, 0.035), Vector2(0.06, 0.06), false, "refresh", interval != Reports.DEFAULT_INTERVAL_MS)
+	menu._tips[ACTION + 187] = I18n.t("Reset")
+	var background: Label3D = menu._label(I18n.t("Library background"), Vector3(-0.325, -0.12, 0.043), 18)
+	background.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT; background.render_priority = 32
 	for i in 3:
-		_dialog_button(ACTION + 182 + i, I18n.t(["Off", "Still image", "Slideshow"][i]), Vector2(-0.19 + i * 0.31, 0.02), Vector2(0.29, 0.08), backdrop.mode == ["off", "static", "slideshow"][i])
+		_dialog_button(ACTION + 182 + i, I18n.t(["Off", "Still image", "Slideshow"][i]), Vector2(-0.19 + i * 0.31, -0.23), Vector2(0.29, 0.08), backdrop.mode == ["off", "static", "slideshow"][i])
 
 func _draw_sources_button() -> void:
 	menu._button(ACTION + 19, "", Vector2(-0.59, 0.62), Vector2(0.16, 0.07), true, "menu")
@@ -1101,8 +1118,8 @@ func _draw_sort() -> void:
 		_dialog_button(ACTION + 175 + i, I18n.t("Ascending" if i == 0 else "Descending") + (" ↑" if i == 0 else " ↓"), Vector2(-0.115 + i * 0.46, direction_y), Vector2(0.42, 0.065), sort_query.direction == ("ASC" if i == 0 else "DESC"))
 	_dialog_button(ACTION + 11, I18n.t("Apply"), Vector2(0.12, apply_y), Vector2(0.30, 0.065))
 
-func _dialog_button(target: int, text_value: String, center: Vector2, size: Vector2, selected: bool = false, icon: String = "") -> void:
-	menu._button(target, text_value, center, size, true, icon)
+func _dialog_button(target: int, text_value: String, center: Vector2, size: Vector2, selected: bool = false, icon: String = "", enabled: bool = true) -> void:
+	menu._button(target, text_value, center, size, enabled, icon)
 	menu._lit(selected)
 	var node: MeshInstance3D = menu._buttons.back().node
 	node.position.z = 0.04; node.material_override.render_priority = 31

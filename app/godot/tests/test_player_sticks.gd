@@ -61,8 +61,8 @@ func _initialize() -> void:
 	for _sample in 100:
 		main._apply_stick_actions(controls.poll(Vector2(0, .99), Vector2(.99, 0)))
 	check(video.calls.size() == 3, "Holding both sticks cannot repeat commands every XR frame")
-	var cases := [[Vector2(.99, 0), Vector2.ZERO, ["seek", 20000]],
-		[Vector2(-.99, 0), Vector2.ZERO, ["seek", -20000]],
+	var cases := [[Vector2(.99, 0), Vector2.ZERO, ["seek", 10000]],
+		[Vector2(-.99, 0), Vector2.ZERO, ["seek", -10000]],
 		[Vector2(0, .99), Vector2.ZERO, ["volume", 10.0]],
 		[Vector2(0, -.99), Vector2.ZERO, ["volume", -10.0]],
 		[Vector2.ZERO, Vector2(.99, 0), ["seek", 10000]],
@@ -93,7 +93,7 @@ func _initialize() -> void:
 	check(video.calls.back() == ["volume", 10.0], "The left stick keeps the volume in immersive views")
 	controls.poll(Vector2.ZERO, Vector2.ZERO, true)
 	main._apply_stick_actions(controls.poll(Vector2(-0.99, 0), Vector2(0.99, 0), true))
-	check(video.calls.slice(-2) == [["seek", -20000], ["seek", 10000]], "Immersive playback keeps independent left 20s and right 10s seeking")
+	check(video.calls.slice(-2) == [["seek", -10000], ["seek", 10000]], "Immersive playback keeps the shared 10s step on both hands")
 	# Mapped continuous actions must release per hand on neutral, then allow another
 	# direction or a discrete action without erasing the other hand's held action.
 	controls = Controls.new()

@@ -544,7 +544,14 @@ func _add(index: int, pose: Transform3D, size: Vector2, shape: Array) -> void:
 	_mesh(card, shape, size)
 
 func _card_feather(size: Vector2) -> Vector2:
-	return Vector2.ONE * photo.SOFT_EDGE_METRES / size if mode == Layout.WALL else Vector2.ZERO
+	return Vector2.ONE * photo.soft_edge_metres(size) / size if mode == Layout.WALL else Vector2.ZERO
+
+func refresh_feather() -> void:
+	for index in cards:
+		if index == focus: continue
+		var card: Dictionary = cards[index]
+		card.node.material_override.set_shader_parameter("edge_feather", _card_feather(card.size))
+	if focus >= 0: _animate_focus()
 
 static func _mesh(card: Dictionary, shape: Array, size: Vector2) -> void:
 	if card.node.mesh != null and card.shown_shape == shape and card.shown_size == size: return
@@ -665,7 +672,7 @@ func _animate_focus() -> void:
 	for i in 4: shape.append(card.shape[i] if eased <= 0 else (RECT[i] if eased >= 1 else card.shape[i].lerp(RECT[i], eased)))
 	var shown_size: Vector2 = card.size if eased <= 0 else (size if eased >= 1 else card.size.lerp(size, eased))
 	_mesh(card, shape, shown_size)
-	var feather: float = photo.SOFT_EDGE_METRES if mode == Layout.WALL else photo.SOFT_EDGE_METRES * eased
+	var feather: float = photo.soft_edge_metres(shown_size) * (1.0 if mode == Layout.WALL else eased)
 	card.node.material_override.set_shader_parameter("edge_feather", Vector2.ONE * feather / shown_size)
 	var crop := _crop(focus, card.size) if mode == Layout.FRAGMENTS else Vector4(0, 0, 1, 1)
 	card.node.material_override.set_shader_parameter("crop_rect", crop if eased <= 0 else (Vector4(0, 0, 1, 1) if eased >= 1 else crop.lerp(Vector4(0, 0, 1, 1), eased)))

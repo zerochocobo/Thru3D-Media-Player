@@ -1,17 +1,17 @@
 {
-  "purpose": "AAudio clock without timestamps after a flush (seek freeze: audio plays, video frozen)",
+  "purpose": "AAudio clock without timestamps after a flush (seek freeze: audio plays, video frozen); bounded reset waits (a stream stuck in STARTING blocked teardown and leaked the player slot)",
   "capture_patch_sha256": "c7167a9835038c375ef991eac5229082f83c0ee44cfd6e2fa162e87609e5dd4a",
   "base_files_sha256": {
     "audio/out/ao_aaudio.c": "835a416f398d2fc37d9ad51b23bbad959dae25a92a5c4c47d94001b16777f445"
   },
   "patched_files_sha256": {
-    "audio/out/ao_aaudio.c": "830c24344076ca852069e99315c705aeb33c241beb55616ce8c31f6a6e2d29d9"
+    "audio/out/ao_aaudio.c": "763443e66a7d523ba0a19f4aabfe4623fb318927d6dd9c38b971194e5c002ac9"
   },
-  "patch_sha256": "394eda7da3d4d81196c1708a458cf78b677163cf7007ceed89696f659ea55451",
+  "patch_sha256": "4ae501cf04fef8bd30fbf7efa597da4f5100160e6151203cb1a7aa41b0c8a58b",
   "inputs_sha256": {
-    "tools/environment/mpv-linux/create_aaudio_patch.py": "dd8998b336ed0ce73a1465e305644a38385cbd3d5a2f0ea2c67414e6832fa6f7"
+    "tools/environment/mpv-linux/create_aaudio_patch.py": "ea0bb5ecc1afdc4b51fe309a06b2e65079d1fab051f03cf83375948c703ed22f"
   },
   "reference_inputs_sha256": {
-    "tools/environment/mpv-linux/create_aaudio_patch.py": "59824eb9b186f1aa7374debf838a1e9e3888c145734e50b0cb9e9d709248e565"
+    "tools/environment/mpv-linux/create_aaudio_patch.py": "f3db80171ed4d23e58de64f854ed370f7c897df1a5915ddab3b223802a625f68"
   }
 }

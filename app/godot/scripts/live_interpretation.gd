@@ -29,6 +29,10 @@ var _cast_token := 0
 var _source_session := 0
 var _failure_state := ""
 var _failure_until := 0
+# Presentation-only debounce; never participates in recognition or readiness.
+var _empty_caption_since := -1
+var _caption_epoch := -1
+var _caption_position := -1.0
 
 func _init(owner: Node3D) -> void:
 	video = owner
@@ -203,11 +207,13 @@ func snapshot() -> Dictionary:
 	var hint := ""
 	if cast_entry and not can_start:
 		hint = "Audio track unavailable" if video.media.playback.get("details", {}).get("audio_tracks", []).is_empty() else "Available for seekable videos"
+	var position := playback_position(float(report.get("position", 0.0)))
 	return {"listening_available": can_start, "listening_visible": can_start or cast_entry, "listening_unavailable_hint": hint,
 		"listening_enabled": active(), "listening_source": source,
 		"listening_target": target, "listening_lead": lead, "listening_state": _failure_state if not notice.is_empty() else report.get("state", "off"),
 		"listening_notice": notice,
-		"listening_caption": preparation_caption(), "listening_cache_complete": report.get("cache_complete", false),
+		"listening_caption": preparation_caption(), "listening_status_caption": status_caption(position),
+		"listening_detail_caption": detail_caption(position), "listening_cache_complete": report.get("cache_complete", false),
 		"listening_cache_persistent": report.get("cache_persistent", false), "listening_translation_complete": report.get("translation_complete", false)}
 
 func preparation_caption() -> String:
@@ -222,41 +228,74 @@ func preparation_caption() -> String:
 	if report.get("buffered", false) and not target.is_empty() and Protocol.language(source) != target:
 		var queued: int = translator.pending_count()
 		return I18n.t("Translating · %d pending") % queued if queued > 0 else I18n.t("Preparing translation…")
-	return I18n.t("Preparing live subtitles…") + " · %d%%" % clampi(int(report.get("buffer_progress", 0)), 0, 100)
+	return I18n.t("Recognizing speech…")
 
 ## Head-locked status while the control bar is hidden: what is happening when
 ## no subtitle shows, and why a shown subtitle is still untranslated.
 func status_caption(position: float) -> String:
-	if not active(): return _failure_notice()
-	var preparing := preparation_caption()
-	if not preparing.is_empty(): return preparing
+	if not active():
+		_empty_caption_since = -1
+		return _failure_notice()
+	var epoch := int(report.get("epoch", -1))
+	if epoch != _caption_epoch or absf(position - _caption_position) > 2.0:
+		_empty_caption_since = -1
+	_caption_epoch = epoch; _caption_position = position
 	var state := str(report.get("state", ""))
-	if state not in ["ready", "catching_up"]: return I18n.t(status_label(state))
+	if state in FAILURES:
+		_empty_caption_since = -1
+		return I18n.t(status_label(state))
+	var shown := translation_at(position)
+	if shown >= 0: _empty_caption_since = -1
+	# Current text wins over preparation of future lines. These observations do
+	# not change the native ready handshake, queue, or subtitle display timing.
+	if shown == 1 or (shown == 0 and (target.is_empty() or Protocol.language(source) == target)): return ""
+	if shown < 0:
+		var preparing := preparation_caption()
+		if not preparing.is_empty():
+			_empty_caption_since = -1
+			return preparing
+		if state != "ready": return I18n.t(status_label(state))
+		for cue: Dictionary in report.get("cues", []):
+			if float(cue.get("start", -1)) > position and not str(cue.get("text", "")).is_empty():
+				_empty_caption_since = -1
+				return I18n.t("Waiting for next subtitle")
+		if _empty_caption_since == -1: _empty_caption_since = Time.get_ticks_msec()
+		return I18n.t("No text recognized for this segment") if Time.get_ticks_msec() - _empty_caption_since >= 4000 else ""
 	if not target.is_empty() and Protocol.language(source) != target:
 		var waiting: int = translator.cooldown_ms()
 		if waiting > 0 and translator.pending_count() > 0:
 			return I18n.t("Translation busy · retrying in %d s, showing original") % ceili(waiting / 1000.0)
 		if translator.failing(): return I18n.t("Some lines untranslated · showing original")
-		# A shown line hides the status only once it is translated; otherwise say why not.
-		var shown := translation_at(position)
-		if shown == 1: return ""
 		var pending: int = translator.pending_count()
 		if pending > 0: return I18n.t("Translating · %d pending") % pending
 		if shown == 0: return I18n.t("Some lines untranslated · showing original")
-	elif not text_at(position).is_empty(): return ""
-	return I18n.t("Pre-generated · %d s ahead" if report.get("phase", "") == "task" else "Transcribing · %d s ahead") % maxi(0, int(report.get("ahead", 0.0)))
+	return ""
+
+## Read-only report summary. Audio progress is not a promise of subtitle coverage.
+func detail_caption(position: float) -> String:
+	if not active(): return ""
+	var originals := 0
+	var translations := 0
+	var translate := not target.is_empty() and Protocol.language(source) != target
+	for cue: Dictionary in report.get("cues", []):
+		if float(cue.get("end", -1)) <= position or str(cue.get("text", "")).is_empty(): continue
+		originals += 1
+		var key := Protocol.cache_key(Protocol.normalize(str(cue.text), Protocol.language(source)), Protocol.language(source), target)
+		if translate and not str(translator.cache.get(key, {}).get("text", "")).is_empty(): translations += 1
+	var lines := I18n.t("Upcoming · %d original / %d translated") % [originals, translations] if translate else I18n.t("Upcoming · %d original") % originals
+	return I18n.t("Audio processed · %d s ahead") % maxi(0, int(report.get("ahead", 0.0))) + "\n" + lines
 
 static func rows(state: Dictionary) -> Array:
-	if not state.get("listening_available", false): return []
+	if not state.get("listening_visible", state.get("listening_available", false)): return []
 	var result := [{"title": "Live captions", "field": {"key": "listening_enabled", "value": state.get("listening_enabled", false), "switch": true, "hint": "Live captions",
 		"choices": [{"value": false, "label": "Off"}, {"value": true, "label": "On"}]}}]
-	if not state.get("listening_enabled", false): return result
 	result.append({"title": "Original language", "field": {"key": "listening_source", "value": state.get("listening_source", "ja"), "choices": [
 		{"value": "ja", "label": "Japanese"}, {"value": "zh", "label": "Chinese"}, {"value": "en", "label": "English"}]}})
 	result.append({"title": "Translation", "field": {"key": "listening_target", "value": state.get("listening_target", ""), "hint": "Recognized text is sent to Microsoft", "choices": [{"value": "", "label": "No translation"}] + Protocol.target_choices()}})
 	result.append({"title": "Audio lookahead", "field": {"key": "listening_lead", "value": state.get("listening_lead", 12), "choices": [
 		{"value": 8, "label": "8 s"}, {"value": 12, "label": "12 s"}, {"value": 20, "label": "20 s"}]}})
-	if state.get("subtitle_task_supported", false):
+	if state.get("listening_enabled", false) and state.has("listening_detail_caption"): result.append({"listening_detail": true})
+	if state.get("subtitle_task_supported", false) and state.get("listening_enabled", false):
 		result.append({"subtitle_task": true})
 		if not state.get("subtitle_task", {}).is_empty() or state.get("listening_cache_complete", false) or not str(state.get("subtitle_task_notice", "")).is_empty(): result.append({"subtitle_task_status": true})
 	return result

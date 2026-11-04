@@ -459,6 +459,11 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     @UsedByGodot fun prepare_photo_scene_depth(id: Int, token: Int): Boolean = !closed.get() && token > 0 && photos.depth(id,sceneToken=token)
     @UsedByGodot fun cancel_photo_scene_depth(id: Int, token: Int) { photos.cancelSceneDepth(id,token) }
     @UsedByGodot fun prepare_preloaded_photo_depth(id: Int): Boolean = !closed.get() && (photoPreloads.depth(id) || photos.depth(id,background=true))
+    @UsedByGodot fun prepare_photo_3d_view(id: Int, strength: Double, convergence: Double, rotation: Int): Boolean =
+        !closed.get() && photos.depth(id,strength.toFloat(),true,rotation=rotation,convergence=convergence.toFloat())
+    @UsedByGodot fun prepare_preloaded_photo_3d_view(id: Int, strength: Double, convergence: Double, rotation: Int): Boolean =
+        !closed.get() && (photoPreloads.depth(id,strength.toFloat(),true,rotation=rotation,convergence=convergence.toFloat()) ||
+            photos.depth(id,strength.toFloat(),true,true,rotation=rotation,convergence=convergence.toFloat()))
     @UsedByGodot fun prepare_photo_3d(id: Int, strength: Double): Boolean = !closed.get() && photos.depth(id,strength.toFloat(),true)
     @UsedByGodot fun prepare_photo_3d_rotated(id: Int, strength: Double, rotation: Int): Boolean = !closed.get() && photos.depth(id,strength.toFloat(),true,rotation=rotation)
     @UsedByGodot fun prepare_preloaded_photo_3d(id: Int, strength: Double): Boolean = !closed.get() && (photoPreloads.depth(id,strength.toFloat(),true) || photos.depth(id,strength.toFloat(),true,true))
@@ -642,6 +647,13 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     @UsedByGodot fun media_subtitle_smb_browse(server: String, path: String): Int = if (closed.get()) -1 else sources.smbBrowse(server, path, true)
     @UsedByGodot fun media_subtitle_cloud_page(path: String, offset: Int, refresh: Boolean, order: String, folderId: String): Int =
         if (closed.get()) -1 else sources.cloudBrowse(path, refresh, offset, order, folderId, true)
+    /** PICO only: explicitly take a busy USB disk from the system mount, then browse it. */
+    @UsedByGodot fun media_local_usb_takeover(path: String): Int {
+        if (closed.get() || !path.startsWith("usb://")) return -1
+        val id = sources.nextId()
+        runOnHostThread { if (!closed.get()) sources.takeoverUsb(id, path) }
+        return id
+    }
     @UsedByGodot fun media_local_stop_storage(path: String): Int {
         if (closed.get()) return -1
         val id = sources.nextId()
@@ -686,6 +698,7 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     @UsedByGodot fun media_server_request(json: String): Int = if (closed.get()) -1 else sources.serverRequest(json)
     @UsedByGodot fun media_server_cancel(id: Int) { sources.serverCancel(id) }
     @UsedByGodot fun media_server_playback(json: String) { if (!closed.get()) sources.serverPlayback(json) }
+    @UsedByGodot fun set_media_server_report_interval(intervalMs: Int) { if (!closed.get()) sources.serverPlaybackReportInterval(intervalMs) }
     /** Opens the system "All files access" page (folders beyond media ones, files beside videos). */
     @UsedByGodot fun media_local_grant_all_files() { if (!closed.get()) runOnHostThread { sources.grantAllFiles() } }
     @UsedByGodot fun media_local_grant_directory(path: String) { if (!closed.get()) runOnHostThread { sources.grantLocalDirectory(path) } }

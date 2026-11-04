@@ -12,10 +12,11 @@ const BORDER_BAND := 0.08
 const HEAD_ENVELOPE_METRES := 0.25
 
 static func prepare(source: Image, depth: Image, rect: Vector4, reference: Vector3, size: Vector2, native_pair: bool = false,
-	strength: float = 1.0, fill_enabled: bool = true, eye_separation: float = 0.064) -> Dictionary:
+	strength: float = 1.0, fill_enabled: bool = true, eye_separation: float = 0.064, convergence: float = 0.35) -> Dictionary:
 	if source == null or depth == null or source.is_empty() or depth.is_empty() or not reference.is_finite() \
 		or reference.z < 0.15 or not size.is_finite() or minf(size.x,size.y) <= 0.0 or not is_finite(strength) or strength<0 or strength>2 \
 		or not rect.is_finite() or rect.x<0 or rect.y<0 or rect.z<=0 or rect.w<=0 or rect.x+rect.z>1.000001 or rect.y+rect.w>1.000001 \
+		or not is_finite(convergence) or convergence < 0 or convergence > 1 \
 		or not is_finite(eye_separation) or eye_separation<0.045 or eye_separation>0.085: return {}
 	var color: Image = source.get_region(Rect2i(0,0,source.get_width()/2,source.get_height())) if native_pair else source.duplicate()
 	var factor := minf(1.0,minf(float(MAX_EDGE)/maxi(color.get_width(),color.get_height()),sqrt(float(MAX_PIXELS)/(color.get_width()*color.get_height()))))
@@ -44,7 +45,7 @@ static func prepare(source: Image, depth: Image, rect: Vector4, reference: Vecto
 	var cols := GRID if aspect >= 1.0 else maxi(24,roundi(GRID*aspect))
 	var rows := GRID if aspect < 1.0 else maxi(24,roundi(GRID/aspect))
 	var data := {"vertices":PackedVector3Array(),"uv":PackedVector2Array()}
-	var config := {"map":map,"rect":rect,"reference":reference,"size":size,"span":span,"fill":fill_enabled}
+	var config := {"map":map,"rect":rect,"reference":reference,"size":size,"span":span,"fill":fill_enabled,"convergence":convergence}
 	# A uniform grid shares every interior edge exactly. Independent 4x cell refinement
 	# left T-junctions against coarse neighbours, opening hairline cracks around real leaves.
 	# 192x192 is at most 73,728 triangles and needs no per-frame topology repair.
@@ -98,11 +99,11 @@ static func sample(map: Image, uv: Vector2, rect: Vector4) -> float:
 static func relief_limit(reference: Vector3, size: Vector2) -> float:
 	return minf(MAX_RELIEF_METRES,minf(minf(size.x,size.y)*0.16,reference.z*0.12))
 
-static func point(uv: Vector2, near_value: float, reference: Vector3, size: Vector2, span: float) -> Vector3:
+static func point(uv: Vector2, near_value: float, reference: Vector3, size: Vector2, span: float, convergence: float = 0.35) -> Vector3:
 	var edge:=minf(minf(uv.x,1.0-uv.x),minf(uv.y,1.0-uv.y))
 	# Anchor every boundary vertex to the original rectangle; ease the interior relief into
 	# that fixed portal instead of allowing near-valued bottom edges to bulge with the ground.
-	var z:=relief_limit(reference,size)*tanh((near_value-0.35)*span)*smoothstep(0.0,BORDER_BAND,edge)
+	var z:=relief_limit(reference,size)*tanh((near_value-convergence)*span)*smoothstep(0.0,BORDER_BAND,edge)
 	var p := Vector2(uv.x-0.5,0.5-uv.y)*size
 	# Preserve the original reference image: each vertex stays on its original camera ray.
 	p = Vector2(reference.x,reference.y)+(p-Vector2(reference.x,reference.y))*(1.0-z/reference.z)
@@ -113,5 +114,5 @@ static func triangle(data: Dictionary, a: Vector2, b: Vector2, c: Vector2, confi
 	# Only the desktop diagnostic can disable our foreground-safe background stretch.
 	if not config.fill and maxf(values.x,maxf(values.y,values.z))-minf(values.x,minf(values.y,values.z)) > EDGE_JUMP: return
 	for entry in [[a,values.x],[c,values.z],[b,values.y]]:
-		data.vertices.append(point(entry[0],entry[1],config.reference,config.size,config.span))
+		data.vertices.append(point(entry[0],entry[1],config.reference,config.size,config.span,config.get("convergence",0.35)))
 		data.uv.append(entry[0])

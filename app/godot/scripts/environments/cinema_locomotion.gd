@@ -18,6 +18,8 @@ const LANDING_SNAP_RADIUS := 0.40
 const LANDING_SNAP_HEIGHT := 0.18
 # Floor under a chair moves to the nearest free floor of that row's passage.
 const CHAIR_LANDING_RADIUS := 1.0
+const SeatTargets := preload("res://scripts/environments/cinema_seat_targets.gd")
+var seat_targets := SeatTargets.new()
 
 var eye_position := Vector3.ZERO
 var yaw := 0.0
@@ -89,6 +91,7 @@ func configure(manifest: Dictionary) -> void:
 			if str(value.get("id", "")).begins_with("seat_"):
 				_chair_colliders[_colliders.size()] = true
 			_add_collider(AABB(minimum, maximum - minimum))
+	seat_targets.configure(_seats, _design)
 	# Do static navigation work while the scene is loading, never on a user's
 	# teleport click. Each component includes body clearance and stair limits.
 	var navigation_started := Time.get_ticks_msec()
@@ -103,6 +106,17 @@ func configure(manifest: Dictionary) -> void:
 
 
 func select_seat(id: String) -> bool:
+	if not can_select_seat(id): return false
+	var seat: Dictionary = _seats[id]
+	eye_position = _vector(seat.eye_position)
+	yaw = float(seat.get("yaw", 0.0))
+	selected_seat = id
+	mode = Mode.WATCH
+	_has_position = true
+	suspend()
+	return true
+
+func can_select_seat(id: String) -> bool:
 	if not _seats.has(id):
 		return false
 	var seat: Dictionary = _seats[id]
@@ -112,12 +126,6 @@ func select_seat(id: String) -> bool:
 	# clearance; movement uses a full standing body and a separate aisle exit.
 	if not position.is_finite() or not is_finite(heading) or _body_blocked(position, position.y - 0.10, position.y + HEAD_CLEARANCE):
 		return false
-	eye_position = position
-	yaw = heading
-	selected_seat = id
-	mode = Mode.WATCH
-	_has_position = true
-	suspend()
 	return true
 
 

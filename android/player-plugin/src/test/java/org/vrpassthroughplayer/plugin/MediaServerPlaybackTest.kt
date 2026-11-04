@@ -57,6 +57,51 @@ class MediaServerPlaybackTest {
             assertEquals(setOf("ItemId", "MediaSourceId", "PlaySessionId", "PositionTicks"), sent.last().body.keys().asSequence().toSet())
         }
     }
+
+    @Test fun configurableCadenceIsGlobalAndChangesWithoutRestartingPlayback() {
+        val now = AtomicLong(100); val sent = CopyOnWriteArrayList<Sent>()
+        MediaServerPlaybackReporter({ true }, now::get, { a, p, b -> sent += Sent(a, p, b) }).use { reporter ->
+            reporter.observe("1", account(), context, state()); reporter.awaitIdle()
+            // Shortening the interval uses the previous attempt's time, not a fresh ten-second delay.
+            now.addAndGet(500); reporter.setIntervalMs(500); reporter.awaitIdle()
+            assertEquals(listOf("Sessions/Playing", "Sessions/Playing/Progress"), sent.map { it.path })
+            now.addAndGet(499); reporter.observe("1", account(), context, state(999)); reporter.awaitIdle()
+            assertEquals(2, sent.size)
+            now.incrementAndGet(); reporter.observe("1", account(), context, state(1000)); reporter.awaitIdle()
+            assertEquals(3, sent.size)
+            reporter.setIntervalMs(20000); reporter.awaitIdle()
+            now.addAndGet(19999); reporter.observe("1", account(), context, state(20999)); reporter.awaitIdle()
+            assertEquals(3, sent.size)
+            now.incrementAndGet(); reporter.observe("1", account(), context, state(21000)); reporter.awaitIdle()
+            assertEquals(4, sent.size)
+            // User events still report immediately even at the longest interval.
+            reporter.observe("1", account(), context, state(21000).copy(paused = true)); reporter.awaitIdle()
+            assertEquals("Pause", sent.last().body.getString("EventName"))
+            reporter.stop("1"); reporter.awaitIdle()
+            reporter.observe("2", account("jellyfin"), context, state()); reporter.awaitIdle()
+            val count = sent.size
+            now.addAndGet(19999); reporter.observe("2", account("jellyfin"), context, state(19999)); reporter.awaitIdle()
+            assertEquals(count, sent.size)
+            now.incrementAndGet(); reporter.observe("2", account("jellyfin"), context, state(20000)); reporter.awaitIdle()
+            assertEquals(count + 1, sent.size)
+            assertEquals(1, sent.count { it.path == "Sessions/Playing" && it.account.provider == "jellyfin" })
+        }
+    }
+
+    @Test fun intervalInputsStayOnHalfSecondStepsWithinBounds() {
+        for ((input, expected) in listOf(-1 to 500L, 0 to 500L, 749 to 500L, 750 to 1000L,
+            1500 to 1500L, 20000 to 20000L, Int.MAX_VALUE to 20000L)) {
+            val now = AtomicLong(100); val sent = CopyOnWriteArrayList<Sent>()
+            MediaServerPlaybackReporter({ true }, now::get, { a, p, b -> sent += Sent(a, p, b) }).use { reporter ->
+                reporter.setIntervalMs(input)
+                reporter.observe("1", account(), context, state()); reporter.awaitIdle()
+                now.addAndGet(expected - 1); reporter.observe("1", account(), context, state(1)); reporter.awaitIdle()
+                assertEquals("Before interval for $input", 1, sent.size)
+                now.incrementAndGet(); reporter.observe("1", account(), context, state(2)); reporter.awaitIdle()
+                assertEquals("At interval for $input", 2, sent.size)
+            }
+        }
+    }
     @Test fun localExternalTrackChangesReportWithoutInventingServerIndexes() {
         val sent = CopyOnWriteArrayList<Sent>()
         MediaServerPlaybackReporter({ true }, send = { a, p, b -> sent += Sent(a, p, b) }).use { reporter ->

@@ -94,7 +94,7 @@ func _run() -> void:
 	menu.toggle()
 	check(click(menu, 11) and menu.section == 1 and menu._adjustment.is_empty() and click(menu, Menu.SCREEN_SETTINGS) and menu._adjustment == "screen", "Settings opens Playback; Screen is the second tab")
 	check(menu._buttons.any(func(b): return b.target == 102), "The bar stays under the settings popup")
-	check(menu._adjust_rows.size() == 3 and menu.text_snapshot().contains("Screen size"), "Flat panel includes distance, size and rotation")
+	check(menu._adjust_rows.size() == 4 and menu.text_snapshot().contains("Screen size") and menu._adjust_rows[Menu.VIDEO_ASPECT_FACTOR].key == "video_aspect_factor", "Flat panel includes distance, size, ratio and rotation")
 	check(not menu.text_snapshot().contains("Audio track") and not menu.text_snapshot().contains("Subtitles") and not menu.text_snapshot().contains("3D depth"), "Screen panel contains no duplicate controls")
 	check(not reset_shown(menu, Menu.ROTATION_RESET) and not click(menu, Menu.ROTATION_RESET), "Zero rotation hides and disables reset")
 	# Screen size spans 5-3000% on the presets' slider scale.

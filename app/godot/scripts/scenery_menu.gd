@@ -371,7 +371,10 @@ func _activate(target: int) -> void:
 	refresh()
 
 func _edit_name() -> void:
-	editor.begin("background_name",draft,80,func(value): draft=value; refresh(),func(value): draft=value; _save_name())
+	var target := rename_id
+	editor.begin("background_name",draft,80,func(value): draft=value; refresh(),func(value): draft=value; _save_name(), Callable(),
+		func(): return visible and modal == "rename" and rename_id == target)
+	if editor.custom: editor.editor.select_all()
 
 func _save_name() -> void:
 	draft=editor.finish("background_name",draft).strip_edges()

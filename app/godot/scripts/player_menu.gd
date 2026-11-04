@@ -99,6 +99,7 @@ const VOLUME_MUTE := 3
 const WHISPER := 163
 const BOOST_HEIGHT := 0.14
 const BOOST_BUTTON_SIZE := Vector2(0.078, 0.052)
+const DepthPosition := preload("res://scripts/depth_position.gd")
 const DepthStrength := preload("res://scripts/depth_strength.gd")
 const VideoAuto3D := preload("res://scripts/video_auto_3d.gd")
 const DEPTH := 161
@@ -160,12 +161,6 @@ const SPATIAL_FOV := 488
 ## bar's controls (100+) usable while it is open.
 const SCREEN_SETTINGS := 473
 const CINEMA_SEAT := 9101
-const CINEMA_MOVE := 9102
-const CINEMA_HOME := 9103
-const CINEMA_LIGHT_AUTO := 9104
-const CINEMA_LIGHT_ON := 9105
-const CINEMA_LIGHT_OFF := 9106
-const CINEMA_LIGHT_CYCLE := 9107
 const CINEMA_PICTURE_SIZE := 9108
 const SETTINGS_CLOSE := 474
 const SCREEN_SET_DEFAULT := 475
@@ -177,6 +172,8 @@ const SCREEN_EYE_LEVEL := 530
 const SCREEN_CURVE := 540
 const EYE_LEVELS := [1.0 / 3.0, 0.5]
 const ScreenPresets := preload("res://scripts/screen_presets.gd")
+const VideoAspect := preload("res://scripts/video_aspect.gd")
+const VIDEO_ASPECT_FACTOR := 616
 var _screen_measurement: Label3D
 const ERROR_DETAILS := 496
 const ERROR_OPEN := 499
@@ -187,6 +184,7 @@ var _error_identity := ""
 const SETTINGS_TILE := 560
 const ALPHA_GROUP := 458
 const PORTRAIT_SIZE := 459
+const DEPTH_POSITION := 460
 ## The three Alpha sliders fold under one header, as in the library's video settings; closed each time.
 var _alpha_expanded := false
 const EYE_BUFFER_NOTE := 7000
@@ -315,6 +313,8 @@ var _depth_busy: MeshInstance3D
 static var _busy_shader: Shader
 var _subtitle_open := false
 var _subtitle_detail := ""
+var _subtitle_last_detail := ""
+var _listening_detail_label: Label3D
 ## Older callers address the appearance column by its former disclosure flag.
 var _subtitle_appearance_open: bool:
 	get: return _subtitle_detail == "appearance"
@@ -678,6 +678,7 @@ func refresh_values() -> void:
 	_refresh_volume()
 	_refresh_depth()
 	_refresh_adjustments()
+	_refresh_depth_position()
 	_update_highlights()
 
 func _process(_delta: float) -> void:
@@ -1012,17 +1013,26 @@ func _subtitle_detail_group() -> String:
 func _set_subtitle_detail(group: String) -> void:
 	choices.reset()
 	_subtitle_detail = group
+	if not group.is_empty(): _subtitle_last_detail = group
+
+func _default_subtitle_detail() -> String:
+	var groups := _subtitle_groups().map(func(group): return group.group)
+	if _subtitle_last_detail in groups: return _subtitle_last_detail
+	if _state.get("listening_enabled", false) and "listening" in groups: return "listening"
+	if _narration_on() and "narration" in groups: return "narration"
+	if int(_state.get("subtitle_track", 0)) > 0 and "appearance" in groups: return "appearance"
+	return str(groups[0]) if not groups.is_empty() else ""
 
 func _subtitle_groups() -> Array:
 	var groups: Array = []
 	if _state.get("listening_visible", _state.get("listening_available", false)):
 		groups.append({"group": "listening", "title": "Live captions", "target": SUBTITLE_LISTENING,
-			"enabled": bool(_state.get("listening_available", false)), "state": bool(_state.get("listening_enabled", false)),
+			"enabled": true, "state": bool(_state.get("listening_enabled", false)),
 			"hint": str(_state.get("listening_unavailable_hint", ""))})
 	var listening: bool = _state.get("listening_enabled", false)
 	var authored_text := _subtitle_tracks().any(func(track): return int(track.id) == int(_state.get("subtitle_track", 0)) and video_text_subtitle(track))
-	if NarrationSettings.FEATURE_ENABLED and (_state.get("narration_available", false) or (listening and authored_text)):
-		groups.append({"group": "narration", "title": "Subtitle narration", "target": SUBTITLE_NARRATION, "enabled": bool(_state.get("narration_available", false)) and not listening, "state": _narration_on()})
+	if NarrationSettings.FEATURE_ENABLED and _state.get("narration_configurable", _state.get("narration_available", false) or (listening and authored_text)):
+		groups.append({"group": "narration", "title": "Subtitle narration", "target": SUBTITLE_NARRATION, "enabled": true, "state": _narration_on()})
 	# Retain the existing no-subtitle/PGS capability checks; appearance itself is independent of narration.
 	if not _state.get("listening_available", false) or _state.get("listening_enabled", false) or not _subtitle_tracks().is_empty():
 		groups.append({"group": "appearance", "title": "Subtitle adjustments", "target": SUBTITLE_APPEARANCE, "enabled": true})
@@ -1034,13 +1044,13 @@ func _subtitle_controls() -> Array:
 	var pgs := not listening and _subtitle_tracks().any(func(track): return int(track.id) == int(_state.get("subtitle_track", 0)) and str(track.get("codec", "")) in ["hdmv_pgs_subtitle", "dvd_subtitle"])
 	var rows: Array = []
 	if group == "listening": return Listening.rows(_state)
-	if group == "narration" and not listening and NarrationSettings.FEATURE_ENABLED and _state.get("narration_available", false):
+	if group == "narration" and NarrationSettings.FEATURE_ENABLED:
 		var narration_rows := NarrationSettings.rows(_state)
 		var language_field: Dictionary = {}
-		if _narration_on():
-			language_field = narration_rows[1].field
-			language_field.hint = "Reading language"
-			language_field.display_format = "Read: %s"
+		for row in narration_rows:
+			if row.field.key == "narration_language": language_field = row.field
+		language_field.hint = "Reading language"
+		language_field.display_format = "Read: %s"
 		var clone_after := "narration_voice_kind" if _state.get("narration_personal_voices", []).is_empty() else "narration_custom_voice"
 		for row in narration_rows:
 			if row.field.key == "narration_language": continue
@@ -1048,7 +1058,7 @@ func _subtitle_controls() -> Array:
 				if not language_field.is_empty(): row.language_field = language_field
 				row.field["switch"] = true; row.field.hint = "Subtitle narration"
 			rows.append(row)
-			if row.field.key == clone_after and _state.get("narration_voice_kind", "preset") == "custom" and _state.get("narration_clone_supported", false): rows.append({"clone_actions": true})
+			if _narration_on() and row.field.key == clone_after and _state.get("narration_voice_kind", "preset") == "custom" and _state.get("narration_clone_supported", false): rows.append({"clone_actions": true})
 		return rows
 	if group != "appearance": return rows
 	if not _state.get("listening_enabled", false):
@@ -1195,6 +1205,7 @@ func _draw_subtitles() -> void:
 		if child is Node3D and not before.has(child): child.set_meta("menu_capture_region", "subtitle_main")
 	if not rows.is_empty(): _draw_subtitle_details(rows, top, height)
 	else: choices.finish()
+	_update_subtitle_status()
 	# The left column keeps one position whether or not details are open, so the entry
 	# under the ray stays put; the expanded plate is centered over the playback bar.
 	var shift := SUBTITLE_DETAIL_WIDTH / 2
@@ -1211,9 +1222,16 @@ func _update_subtitle_status() -> void:
 	var status := _listening_status_text() if listening else _narration_status()
 	if not str(_state.get("listening_notice", "")).is_empty(): status = str(_state.listening_notice)
 	if status.is_empty(): status = I18n.t(str(_state.get("listening_unavailable_hint", "")))
+	if status.is_empty() and _subtitle_detail_group() == "narration" and not _state.get("narration_available", false):
+		status = I18n.t("Turn off live captions to narrate" if listening else "Select text subtitles to narrate")
 	_subtitle_status_label.text = _fit_title(status, "", 0.62, TEXT_AUX)
 	_subtitle_status_label.modulate = ACCENT if (_listening_preparing() if listening else (_narration_preparing() or _state.get("narration_preview_busy", false))) else MUTED
 	if listening: _listening_status = _subtitle_status_label
+	if is_instance_valid(_listening_detail_label):
+		var lines := PackedStringArray()
+		for line in str(_state.get("listening_detail_caption", "")).split("\n"):
+			lines.append(_fit_title(line, "", 0.58, TEXT_AUX))
+		_listening_detail_label.text = "\n".join(lines)
 	for group in _subtitle_group_states:
 		var label: Label3D = _subtitle_group_states[group]
 		var on: bool = listening if group == "listening" else _narration_on()
@@ -1221,6 +1239,7 @@ func _update_subtitle_status() -> void:
 		label.modulate = ACCENT if on else MUTED
 
 func _subtitle_detail_row_height(row: Dictionary) -> float:
+	if row.get("listening_detail", false): return 0.10
 	if not row.has("field"): return SUBTITLE_SETTING_PITCH
 	# The feature switch sits in the column heading; only its language picker takes a row.
 	if row.field.key in HEADING_SWITCHES: return SUBTITLE_SETTING_PITCH if row.has("language_field") else 0.0
@@ -1241,6 +1260,12 @@ func _draw_subtitle_details(rows: Array, top: float, height: float) -> void:
 	var y := top - 0.13
 	for row in rows:
 		var pitch := _subtitle_detail_row_height(row)
+		if row.get("listening_detail", false):
+			_listening_detail_label = _label("", Vector3(-0.285, y, 0.004), TEXT_AUX)
+			_listening_detail_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+			_listening_detail_label.modulate = MUTED
+			y -= pitch
+			continue
 		if row.get("clone_actions", false):
 			if _state.get("narration_personal_voices", []).is_empty():
 				_button(NARRATION_CLONE_START, I18n.t("Start cloning"), Vector2(0, y), Vector2(0.58, SUBTITLE_SETTING_HEIGHT), not str(_state.get("narration_resolved_language", "")).is_empty())
@@ -1260,6 +1285,14 @@ func _draw_subtitle_details(rows: Array, top: float, height: float) -> void:
 		field["width"] = 0.58
 		if field.key in HEADING_SWITCHES:
 			choices.field(null, field, Vector2(0.185, top - 0.05), 0.09, SUBTITLE_SETTING_HEIGHT)
+			# Configuration remains accessible; only activation uses the existing capability gate.
+			var can_start: bool = _state.get("listening_available", false) if field.key == "listening_enabled" else (_state.get("narration_available", false) and not _state.get("listening_enabled", false))
+			if not can_start and not bool(field.value):
+				var toggle_button: Dictionary = _buttons.back()
+				toggle_button.enabled = false; toggle_button.hover_disabled = true
+				choices.targets[toggle_button.target].kind = "unavailable"
+				var reason := str(_state.get("listening_unavailable_hint", "")) if field.key == "listening_enabled" else ("Turn off live captions to narrate" if _state.get("listening_enabled", false) else "Select text subtitles to narrate")
+				_tips[toggle_button.target] = I18n.t(reason)
 			if row.has("language_field"):
 				var language_field: Dictionary = row.language_field.duplicate()
 				language_field["width"] = 0.58
@@ -1330,7 +1363,7 @@ func _draw_subtitle_task(y: float, status: bool) -> void:
 func _draw_narration_preview(y: float) -> void:
 	var busy := bool(_state.get("narration_preview_busy", false))
 	var voice_available: bool = _state.get("narration_voice_kind", "preset") != "custom" or not str(_state.get("narration_custom_voice", "")).is_empty()
-	_draw_voice_preview(NARRATION_PREVIEW, y, busy, voice_available and not str(_state.get("narration_resolved_language", "")).is_empty())
+	_draw_voice_preview(NARRATION_PREVIEW, y, busy, _state.get("narration_available", false) and voice_available and not str(_state.get("narration_resolved_language", "")).is_empty())
 
 func _draw_voice_preview(target: int, y: float, busy: bool, available: bool) -> void:
 	_button(target, "", Vector2(0.26, y), Vector2.ONE * SUBTITLE_SETTING_HEIGHT, busy or available, "stop" if busy else "play")
@@ -1530,6 +1563,17 @@ func _draw_depth() -> void:
 	_buttons.back().foreground = MUTE_INK
 	_refresh_depth()
 	_raise_quick_popup(before)
+
+func _refresh_depth_position() -> void:
+	if choices.capture.is_empty():
+		for target in choices.sliders:
+			if choices.targets.get(target, {}).get("key", "") == DepthPosition.KEY: choices._refresh_slider(target, float(_state.get(DepthPosition.KEY, 0)))
+
+func _draw_depth_position_field(centre: Vector2, width: float) -> void:
+	var row := DepthPosition.row(_state.get(DepthPosition.KEY, 0))
+	choices.field(null, row, centre, width, 0.065)
+	_label(I18n.t("Into screen"), Vector3(centre.x - width * 0.34, centre.y - 0.055, 0.004), TEXT_AUX)
+	_label(I18n.t("Out of screen"), Vector3(centre.x + width * 0.05, centre.y - 0.055, 0.004), TEXT_AUX)
 
 ## Quick sliders cover floating actions in the UI pass and in ray hit testing.
 func _raise_quick_popup(before: Array) -> void:
@@ -1875,7 +1919,7 @@ func _base_bar_key() -> String:
 		_state.get("source_uri", ""), _subtitle_tracks(), _state.get("subtitle_track", 0), bookmarks.key(), _state.get("audio_options", []), _state.get("audio_track_id", -1), _state.get("audio_delay", 0.0), _state.get("audio_timing_key", ""),
 		_state.get("subtitle_browse_available", false), _state.get("subtitle_files_available", false), _state.get("subtitle_files_revision", 0), _state.get("subtitle_files_state", "idle"), _state.get("subtitle_file_loading", ""), _state.get("subtitle_file_error", ""), _state.get("subtitle_timing_key", ""),
 		_state.get("subtitle_distance", SubtitleDepth.DEFAULT), _state.get("subtitle_position", SubtitleDepth.DEFAULT_POSITION), _state.get("subtitle_horizontal_position", 0.0), _state.get("subtitle_vertical_position", 0.0), _state.get("subtitle_direction", 0), _state.get("subtitle_size", 100), _state.get("subtitle_style", SubtitleStyle.DEFAULT), _state.get("subtitle_pgs_tint", SubtitleStyle.PGS_DEFAULT), _state.get("subtitle_line", 0), _state.get("subtitle_flat_position", 0), _state.get("subtitle_auto_load", true), _state.get("subtitle_delay", 0.0),
-		_state.get("narration_enabled", false), _state.get("narration_source", -1), _state.get("narration_sources", []), _state.get("narration_language", "auto"), _state.get("narration_resolved_language", ""), _state.get("narration_voice", ""), _state.get("narration_status", "off"), _state.get("narration_preview_busy", false), _state.get("narration_missing", 0), _state.get("narration_timing", "continuous"), _state.get("narration_delay", 0), _state.get("narration_progress", -1), _state.get("narration_profile", ""), _state.get("narration_voice_origin", "default"), _state.get("narration_line", 0), _state.get("narration_hide_subtitles", true), _state.get("narration_miss_reason", ""), _state.get("narration_language_required", false), _state.get("narration_preview_progress", -1)])
+		_state.get("narration_configurable", false), _state.get("narration_available", false), _state.get("narration_enabled", false), _state.get("narration_source", -1), _state.get("narration_sources", []), _state.get("narration_language", "auto"), _state.get("narration_resolved_language", ""), _state.get("narration_voice", ""), _state.get("narration_status", "off"), _state.get("narration_preview_busy", false), _state.get("narration_missing", 0), _state.get("narration_timing", "continuous"), _state.get("narration_delay", 0), _state.get("narration_progress", -1), _state.get("narration_profile", ""), _state.get("narration_voice_origin", "default"), _state.get("narration_line", 0), _state.get("narration_hide_subtitles", true), _state.get("narration_miss_reason", ""), _state.get("narration_language_required", false), _state.get("narration_preview_progress", -1)])
 
 func _seek_at(x: float) -> int:
 	return roundi(clampf((x + BAR_SEEK / 2) / BAR_SEEK, 0.0, 1.0) * int(_state.get("duration_ms", 0)))
@@ -2034,7 +2078,9 @@ func _draw_panel() -> void:
 		tiles.append(index)
 	var tile_rows := ceili(tiles.size() / 2.0)
 	var alpha_fps: bool = section == 1 and _enabled("alpha")
+	var depth_position_setting: bool = section == 1 and _cast_allowed(DepthPosition.KEY)
 	var height := 0.12 + tile_rows * 0.105 + (0.345 + ((0.085 + (0.27 if _alpha_expanded else 0.0)) if alpha_fps else 0.0) if section == 1 else 0.36)
+	if depth_position_setting: height += 0.085
 	if alpha_fps and _alpha_expanded and _state.get("portrait_requested", false): height += 0.17
 	if alpha_fps and _state.get("flat_passthrough_requested", false): height += 0.17
 	var top := _settings_frame(height)
@@ -2070,9 +2116,13 @@ func _draw_panel() -> void:
 			choices.field(node, choice, Vector2(0.055, -0.017), 0.36, 0.04)
 	y -= tile_rows * 0.105 + 0.02
 	if section == 1:
+		if depth_position_setting:
+			_adjustment_row(DEPTH_POSITION, DepthPosition.KEY, DepthPosition.TITLE, DepthPosition.LIMITS, y)
+			_tips[DEPTH_POSITION] = I18n.t(DepthPosition.HINT)
+			_slider_tick(DEPTH_POSITION, 0, "0", y)
+			y -= 0.085
 		if _cast_allowed("playback_speed"):
 			_adjustment_row(453, "playback_speed", "Playback speed", Vector3(0.25, 3.0, 0.05), y)
-			_inline_reset(SPEED_RESET, "Restore 1×", "playback_speed", 1.0, y)
 			_slider_tick(453, 1.0, "1×", y)
 		y -= 0.085
 		_keep_background_row(y)
@@ -2182,6 +2232,7 @@ func _settings_key() -> String:
 		_state.get("spatial_metadata", {}), _state.get("spatial_auto_disparity", true),
 		_state.get("immersive_adjustment_gauges", true), _state.get("video_auto_3d", false),
 		_state.get("screen_cinema", false), _state.get("screen_scene_locked", false), _state.get("cinema_lights", "auto"),
+		_state.get("video_aspect_preset", "original"), _state.get("depth_requested", false),
 		_state.get("error", ""), _state.get("error_report", {}), _alpha_expanded])
 
 func _setting_choices(operation: String) -> Dictionary:
@@ -2327,13 +2378,6 @@ func _activate(target: int) -> void:
 	if _subtitle_open and target in [NARRATION_CLONE_START, NARRATION_VOICES]:
 		if not _narration_on() or _state.get("narration_voice_kind", "preset") != "custom" or not _state.get("narration_clone_supported", false): return
 		clone_panel.open(target == NARRATION_VOICES); return
-	if CinemaFeature.enabled() and _state.get("screen_scene_locked", false):
-		if target in [CINEMA_MOVE, CINEMA_HOME]:
-			action_requested.emit("cinema_move" if target == CINEMA_MOVE else "cinema_home"); return
-		if target in [CINEMA_LIGHT_AUTO, CINEMA_LIGHT_ON, CINEMA_LIGHT_OFF, CINEMA_LIGHT_CYCLE]:
-			var modes := ["auto", "on", "off"]
-			var index: int = (modes.find(str(_state.get("cinema_lights", "auto"))) + 1) % 3 if target == CINEMA_LIGHT_CYCLE else target - CINEMA_LIGHT_AUTO
-			action_requested.emit("cinema_lights_" + modes[index]); return
 	if target == WHISPER:
 		if not _volume_hand.is_empty() or not _volume_open or not _state.get("has_video", false) or not _state.get("audio_available", false) or not _state.get("whisper_available", false): return
 		whisper_requested.emit(0 if int(_state.get("audio_whisper", 0)) > 0 else 1, str(_state.get("source_uri", "")))
@@ -2431,7 +2475,7 @@ func _activate(target: int) -> void:
 	if section == 0 and target == 110:
 		if not _enabled("subtitles"): return
 		_subtitle_open = not _subtitle_open
-		_subtitle_detail = ""
+		_set_subtitle_detail(_default_subtitle_detail() if _subtitle_open else "")
 		_subtitle_offset = 0
 		_subtitle_files_open = false; _subtitle_files_offset = 0
 		_subtitle_scroll = 0.0
@@ -2650,6 +2694,7 @@ func _listening_preparing() -> bool:
 	return _state.get("listening_enabled", false) and str(_state.get("listening_state", "off")) in ["preparing", "catching_up"]
 
 func _listening_status_text() -> String:
+	if _state.has("listening_status_caption"): return str(_state.listening_status_caption)
 	var caption := str(_state.get("listening_caption", ""))
 	return caption if not caption.is_empty() else I18n.t(Listening.status_label(str(_state.get("listening_state", "off"))))
 
@@ -2811,7 +2856,8 @@ func _draw_settings_tabs(y: float) -> void:
 
 func _slider_tick(target: int, value: float, label: String, y: float) -> void:
 	var row: Dictionary = _adjust_rows[target]
-	var x: float = row.left + inverse_lerp(row.span.x, row.span.y, value) * row.width
+	var fraction := VideoAspect.slider_fraction(value) if row.key == "video_aspect_factor" else inverse_lerp(row.span.x, row.span.y, value)
+	var x: float = row.left + fraction * row.width
 	_decoration(Vector2(0.003, 0.02), Vector2(x, y), Color.WHITE)
 	_label(label, Vector3(x, y + 0.03, 0.004), 11)
 
@@ -2821,28 +2867,21 @@ func _draw_screen_settings() -> void:
 		_draw_immersive_settings()
 		return
 	if CinemaFeature.enabled() and _state.get("screen_scene_locked", false):
-		var top := _settings_frame(0.58)
+		# Movement and lights live in the scene settings and footer; this page shapes the picture.
+		var top := _settings_frame(0.56)
 		_draw_settings_tabs(top - 0.055)
-		_label(I18n.t("Grand cinema"), Vector3(0, top - 0.16, 0.004), 20)
-		for index in 2:
-			var target: int = [CINEMA_MOVE, CINEMA_HOME][index]
-			_button(target, I18n.t(["Free movement", "Return to start"][index]), Vector2(-.22 + index * .44, top - .25), Vector2(.40, .06))
-			set_label_size(_buttons.back().node.get_child(0), TEXT_BODY)
-			if target == CINEMA_MOVE: _tips[target] = I18n.t("Hold the right stick forward to aim, release to move. Red targets are blocked.")
-		for index in 3:
-			var mode: String = ["auto", "on", "off"][index]
-			_button(CINEMA_LIGHT_AUTO + index, I18n.t(["Auto lights", "Lights on", "Lights off"][index]), Vector2(-.34 + index * .34, top - .35), Vector2(.31, .06))
-			set_label_size(_buttons.back().node.get_child(0), TEXT_BODY)
-			_buttons.back().base_color = SELECTED if _state.get("cinema_lights", "auto") == mode else TILE
 		# The fixed cinema screen keeps its wall; only the picture inside it scales.
-		_adjustment_row(CINEMA_PICTURE_SIZE, "cinema_picture_size", "Picture size", Vector3(40, 100, 5), top - .46)
+		_adjustment_row(CINEMA_PICTURE_SIZE, "cinema_picture_size", "Picture size", Vector3(40, 100, 5), top - .16)
+		_draw_video_aspect(top - .25)
+		_draw_curve_choices(top - .45)
+		choices.bounds = Vector2(POPUP_BOTTOM + 0.015, top - 0.10)
 		choices.finish()
 		refresh_values()
 		return
 	var flat: bool = _state.get("has_video", false) and int(_state.get("geometry", 0)) == 0
 	var spatial_fov: bool = flat and _state.get("spatial_video", false) and _state.get("spatial_metadata", {}).has("horizontal_fov_degrees")
 	var cinema: bool = flat and _state.get("screen_cinema", false)
-	var top := _settings_frame(0.24 + (0.465 if flat else 0.0) + (0.10 if cinema else 0.0) + (0.08 if spatial_fov else 0.0))
+	var top := _settings_frame(0.24 + (0.665 if flat else 0.0) + (0.10 if cinema else 0.0) + (0.08 if spatial_fov else 0.0))
 	_draw_settings_tabs(top - 0.055)
 	var y := top - 0.16
 	if flat:
@@ -2875,6 +2914,8 @@ func _draw_screen_settings() -> void:
 		_screen_measurement.modulate = MUTED
 		y -= 0.035
 		y -= 0.075
+		_draw_video_aspect(y)
+		y -= 0.20
 		for option in [{"target": SCREEN_AUTO_DEFAULT, "label": "Use latest adjustments", "locked": false}, {"target": SCREEN_SET_DEFAULT, "label": "Lock current settings", "locked": true}]:
 			_button(option.target, I18n.t(option.label), Vector2(0.16 + (0.1685 if option.locked else -0.1685), y), Vector2(0.323, 0.055))
 			set_label_size(_buttons.back().node.get_child(0), TEXT_BODY)
@@ -2883,12 +2924,7 @@ func _draw_screen_settings() -> void:
 		_tips[SCREEN_SET_DEFAULT] = I18n.t("Lock the current size, distance, cinema mode and viewing height. Controller recenter and player Center restore them after temporary adjustments. Click again to replace the locked settings with the current ones.")
 		y -= 0.005
 		y -= 0.09
-		var title := _label(I18n.t("Screen curve"), Vector3(-0.50, y, 0.004), TEXT_BODY)
-		title.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
-		for index in Surface.CURVES.size():
-			_button(SCREEN_CURVE + index, I18n.t(CURVE_NAMES[index]), Vector2(-0.092 + index * 0.168, y), Vector2(0.156, 0.05))
-			set_label_size(_buttons.back().node.get_child(0), TEXT_BODY)
-			_buttons.back().base_color = SELECTED if is_equal_approx(float(_state.get("screen_curve", 0.0)), Surface.CURVES[index]) else TILE
+		_draw_curve_choices(y)
 		y -= 0.09
 	if not cinema:
 		_adjustment_row(452, "screen_rotation", "Screen rotation", Vector3(-90, 90, 1), y)
@@ -2899,7 +2935,25 @@ func _draw_screen_settings() -> void:
 		_button(SPATIAL_FOV, I18n.t("Match spatial video capture FOV"), Vector2(0, y - 0.09), Vector2(0.86, 0.055), bool(_state.get("spatial_fov_available", false)))
 		set_label_size(_buttons.back().node.get_child(0), TEXT_BODY)
 	_refresh_adjustments()
+	choices.bounds = Vector2(POPUP_BOTTOM + 0.015, top - 0.10)
 	choices.finish()
+
+func _draw_curve_choices(y: float) -> void:
+	var title := _label(I18n.t("Screen curve"), Vector3(-0.50, y, 0.004), TEXT_BODY)
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+	for index in Surface.CURVES.size():
+		_button(SCREEN_CURVE + index, I18n.t(CURVE_NAMES[index]), Vector2(-0.092 + index * 0.168, y), Vector2(0.156, 0.05))
+		set_label_size(_buttons.back().node.get_child(0), TEXT_BODY)
+		_buttons.back().base_color = SELECTED if is_equal_approx(float(_state.get("screen_curve", 0.0)), Surface.CURVES[index]) else TILE
+
+func _draw_video_aspect(y: float) -> void:
+	var stereo: bool = _state.get("stereo", false) or _state.get("depth_requested", false)
+	var title := _label(I18n.t("Per-eye ratio" if stereo else "Video ratio"), Vector3(-0.50, y, 0.004), TEXT_BODY)
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+	choices.field(null, {"key": "video_aspect_preset", "value": _state.get("video_aspect_preset", "original"),
+		"choices": VideoAspect.choices(), "width": 0.64}, Vector2(0.16, y), 0.646, 0.055)
+	_adjustment_row(VIDEO_ASPECT_FACTOR, "video_aspect_factor", "Ratio adjustment", VideoAspect.LIMITS, y - 0.10)
+	for factor in [0.5, 1.0, 2.0]: _slider_tick(VIDEO_ASPECT_FACTOR, factor, "%.2f×" % factor, y - 0.10)
 
 func _draw_adjustments() -> void:
 	if _adjustment == "bar_transparency":
@@ -3041,9 +3095,9 @@ func _adjustment_row(target: int, key: String, title: String, span: Vector3, y: 
 	_adjust_rows[target] = {"key": key, "span": span, "label": value, "fill": fill, "knob": knob, "button": _buttons.back(),
 		"left": left, "width": width}
 	var default_value: Variant = _adjustment_default(key)
-	# Rotation and speed already have named reset buttons; keep those familiar labels.
-	if default_value != null and key not in ["screen_rotation", "playback_speed"]:
-		_glyph(SLIDER_RESET_BASE + target, "refresh", Vector2(g.reset_x, y), g.reset_size, false, I18n.t("Reset"))
+	# Rotation retains its named reset; settings sliders share the right-hand reset column.
+	if default_value != null and key != "screen_rotation":
+		_glyph(SPEED_RESET if key == "playback_speed" else SLIDER_RESET_BASE + target, "refresh", Vector2(g.reset_x, y), g.reset_size, false, I18n.t("Restore 1×" if key == "playback_speed" else "Reset"))
 		var reset: Dictionary = _buttons.back()
 		reset["reset_slider"] = target
 		reset["reset_value"] = float(default_value)
@@ -3056,9 +3110,10 @@ func _leaves_layer(key: String) -> bool:
 	return key in EYE_BUFFER_GRADES or not _state.get("grade_on_layer", true)
 
 func _adjustment_default(key: String) -> Variant:
+	if key == DepthPosition.KEY: return 0.0
 	if key == "bar_transparency": return 14.0
 	if Grade.DEFAULTS.has(key): return Grade.DEFAULTS[key]
-	return {"screen_distance": Surface.SCREEN_DISTANCE, "screen_scale": 100.0, "cinema_picture_size": 100.0,
+	return {"screen_distance": Surface.SCREEN_DISTANCE, "screen_scale": 100.0, "cinema_picture_size": 100.0, "video_aspect_factor": 1.0,
 		"view_horizontal": 0.0, "view_vertical": 0.0, "view_zoom": 0.0,
 		"screen_rotation": 0.0, "playback_speed": 1.0, "alpha_fps": 30.0, "alpha_feather": 100.0, "alpha_shrink": 40.0,
 		"stereo_horizontal": 0.0, "stereo_vertical": 0.0}.get(key)
@@ -3126,12 +3181,15 @@ func _refresh_adjustments() -> void:
 		var position: bool = row.key == "subtitle_position"
 		var defaults := {"screen_scale": 100.0, "cinema_picture_size": 100.0, "screen_rotation": 0.0, "playback_speed": 1.0, "alpha_fps": 30.0, "alpha_feather": 100.0, "alpha_shrink": 40.0, "stereo_horizontal": 0.0, "stereo_vertical": 0.0}
 		defaults["bar_transparency"] = 14.0
+		defaults[DepthPosition.KEY] = 0.0
 		for key in Surface.ImmersiveAdjustments.KEYS: defaults[key] = 0.0
 		defaults["portrait_scale"] = 100.0
+		defaults["video_aspect_factor"] = 1.0
 		var value := float(_state.get(row.key, defaults[row.key])) if defaults.has(row.key) else (float(_state.get(row.key, 5.0 if row.key == "subtitle_distance" else Surface.SCREEN_DISTANCE)) if distance else (float(_state.get(row.key, SubtitleDepth.DEFAULT_POSITION)) if position else float(values.get(row.key, Grade.DEFAULTS[row.key]))))
 		row["value"] = value
 		var fraction := clampf((value - row.span.x) / (row.span.y - row.span.x), 0, 1)
 		if row.key == "subtitle_distance": fraction = SubtitleDepth.slider_fraction(value)
+		if row.key == "video_aspect_factor": fraction = VideoAspect.slider_fraction(value)
 		if _adjustment == "screen" and row.key in ["screen_distance", "screen_scale"]: fraction = ScreenPresets.slider_fraction(value, row.span)
 		if row.key in ["portrait_distance", "portrait_scale"]: fraction = ScreenPresets.slider_fraction(value, row.span)
 		row.label.text = "%.1f m" % value if distance else ("%+.0f°" % value if position else ("%d K" % value if row.key == "temperature" else ("%+.2f EV" % value if row.key == "exposure" else "%.3f" % value)))
@@ -3140,6 +3198,8 @@ func _refresh_adjustments() -> void:
 		if row.key in ["screen_scale", "cinema_picture_size", "portrait_scale"]: row.label.text = "%d%%" % roundi(value)
 		elif row.key == "screen_rotation": row.label.text = "%+.0f°" % value if value != 0 else "0°"
 		elif row.key == "playback_speed": row.label.text = "%.2f×" % value
+		elif row.key == DepthPosition.KEY: row.label.text = "%+.0f" % value if value != 0 else "0"
+		elif row.key == "video_aspect_factor": row.label.text = "%.3f×" % value
 		elif row.key == "alpha_fps": row.label.text = "%d FPS" % roundi(value)
 		elif row.key in ["alpha_feather", "alpha_shrink", "bar_transparency"]: row.label.text = "%d%%" % roundi(value)
 		elif row.key in ["stereo_horizontal", "stereo_vertical"]: row.label.text = "%+.2f%%" % value if value != 0 else "0.00%"
@@ -3168,7 +3228,8 @@ func _set_adjustment_at(x: float) -> void:
 	var row: Dictionary = _adjust_rows[_adjust_target]
 	var value := clampf(snappedf(lerpf(row.span.x, row.span.y, clampf((x - row.left) / row.width, 0, 1)), row.span.z), row.span.x, row.span.y)
 	if row.key == "subtitle_distance": value = SubtitleDepth.slider_distance((x - row.left) / row.width)
-	if _adjustment == "screen" and row.key in ["screen_distance", "screen_scale"]: value = ScreenPresets.slider_value((x - row.left) / row.width, row.span)
+	if row.key == "video_aspect_factor": value = VideoAspect.slider_value((x - row.left) / row.width)
+	if _adjustment in ["screen", "photo_view"] and row.key in ["screen_distance", "screen_scale"]: value = ScreenPresets.slider_value((x - row.left) / row.width, row.span)
 	if row.key in ["portrait_distance", "portrait_scale"]: value = ScreenPresets.slider_value((x - row.left) / row.width, row.span)
 	if row.key == "screen_rotation" and absf(value) <= 1: value = 0.0
 	if row.key == "playback_speed" and absf(value - 1.0) < 0.03: value = 1.0

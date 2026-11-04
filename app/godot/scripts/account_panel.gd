@@ -51,6 +51,7 @@ func active() -> bool: return not view.is_empty()
 func supported() -> bool: return Methods.supports(menu.platform, "account_open")
 
 func close() -> void:
+	_end_field_input()
 	if session > 0:
 		preload("res://scripts/diagnostic_log.gd").record("account_session_closed", {"provider": provider, "view": view,
 			"paused": paused, "source": get_stack().slice(0, 5).map(func(frame): return str(frame.get("function", "")))})
@@ -97,6 +98,7 @@ func start(type: String, selected_provider: String = "", id: String = "", defaul
 	_defaults = {}
 	data = {}; revision = -1; challenge_revision = -1; title = "WebDAV" if type == "dav" else ("Search local network" if type == "discover" else provider_name(provider))
 	menu.scroll = 0.0; poll(); menu.refresh()
+	_begin_field_input()
 
 func provider_name(value: String) -> String:
 	return {"115": "115", "115_open": "115", "onedrive": "OneDrive", "webdav": "WebDAV", "baidu": I18n.t("Baidu Netdisk"), "aliyun_open": I18n.t("Aliyun Drive"), "quark_open": I18n.t("Quark Netdisk"), "emby": "Emby", "jellyfin": "Jellyfin", "stash": "Stash", "xbvr": "XBVR", "plex": "Plex"}.get(value, value)
@@ -120,6 +122,7 @@ func poll() -> void:
 		prompt = decode(str(data.get("prompt", ""))); choices = decode(str(data.get("choices", ""))); selected.clear()
 		challenge_revision = int(data.get("challenge_revision", 0))
 	if view == "sms": fields.assign(["sms"]); field = "sms"
+	if view != "form" or data.get("busy", false): _end_field_input()
 	if view == "discover": items = data.get("result", {}).get("servers", [])
 	if view == "plex_servers": items = data.get("result", {}).get("servers", [])
 	var changed := int(data.get("revision", 0)) != revision or previous_wait != int(data.get("sms_wait", 0)) or previous_pairing_expired != bool(data.get("pairing_expired", false))
@@ -155,7 +158,7 @@ func tick(delta: float) -> void:
 
 func lifecycle(state: String) -> void:
 	paused = state == "pause"
-	if paused: web_cancel()
+	if paused: _end_field_input(); web_cancel()
 	else: poll()
 	if session > 0 and view == "web": preload("res://scripts/diagnostic_log.gd").record("account_session_lifecycle", {"provider": provider, "event": state, "view": view})
 
@@ -169,7 +172,29 @@ func decode(value: String) -> Texture2D:
 	return ImageTexture.create_from_image(image)
 
 func command(action: String, extra: Dictionary = {}) -> void:
+	_end_field_input()
 	if session > 0: menu.platform.account_action(session, action, JSON.stringify(extra)); poll()
+
+func _field_context() -> String:
+	var tag := "account_" + field
+	return tag if view == "form" and menu.SystemTextInput.uses_custom(tag) else ""
+
+func _end_field_input() -> void:
+	menu.system_text_input.cancel("account_name")
+	menu.system_text_input.cancel("account_username")
+
+func _begin_field_input() -> void:
+	_end_field_input()
+	var tag := _field_context()
+	if tag.is_empty() or session <= 0 or paused or data.get("busy", false): return
+	var id := session
+	var key := field
+	var valid := func(): return menu.visible and session == id and field == key and view == "form" and not paused and not data.get("busy", false)
+	menu.system_text_input.begin(tag, str(data.get("fields", {}).get(key, "")), 80 if key == "name" else 256,
+		func(value):
+			if valid.call(): menu.platform.account_input(id, key, "replace", value); poll(),
+		func(_value): menu.refresh(), Callable(), valid)
+	menu.system_text_input.editor.select_all()
 
 func rows() -> Array[Dictionary]:
 	var result: Array[Dictionary] = []
@@ -210,11 +235,14 @@ func action(target: int) -> bool:
 	if paused: return true
 	if target == BASE:
 		close(); menu._load_section(); menu.refresh(); return true
-	if target >= FIELD and target < FIELD + fields.size(): field = fields[target - FIELD]; menu.refresh(); return true
+	if target >= FIELD and target < FIELD + fields.size():
+		if data.get("busy", false): return true
+		_end_field_input(); field = fields[target - FIELD]; _begin_field_input(); menu.refresh(); return true
 	if target >= CAPTCHA and target < CAPTCHA + 10:
 		if not data.get("busy", false) and selected.size() < 4: selected.append(target - CAPTCHA); menu.refresh()
 		return true
 	if target >= KEY and target < KEY + 40:
+		if not _field_context().is_empty(): return true
 		if data.get("busy", false): return true
 		var layer: Array = menu.SYMBOLS if symbols else menu.KEYS
 		var value: String = layer[(target - KEY) / 10][(target - KEY) % 10]
@@ -249,6 +277,7 @@ func action(target: int) -> bool:
 		20: web_action("keyboard_close")
 		21: web_action("finish")
 		22:
+			_end_field_input()
 			if session > 0: menu.platform.account_cancel(session); session = 0
 			view = "choose"; menu.scroll = 0.0; menu.refresh()
 		23: web_action("zoom_in")
@@ -272,6 +301,10 @@ func action(target: int) -> bool:
 
 func input(action_name: String, text: String) -> void:
 	if data.get("busy", false): return
+	if not _field_context().is_empty():
+		# The native clipboard can replace a field; revoke its old editor first.
+		if action_name != "paste": return
+		_end_field_input()
 	if view == "web": web_action("text" if action_name == "append" else action_name, Vector2.ZERO, text)
 	else: menu.platform.account_input(session, field, action_name, text); poll()
 
@@ -289,8 +322,13 @@ func _draw_server_choices() -> void:
 func draw() -> void:
 	if view == "web":
 		draw_web(); return
-	menu._button(BASE, "", Vector2(-0.52, 0.46), Vector2(0.09, 0.07), true, "up")
-	menu._label(I18n.t(title), Vector3(0.13, 0.46, 0.004), 24)
+	var compact := not _field_context().is_empty()
+	var header := 0.62 if compact else 0.46
+	var actions := 0.10 if compact else -0.51
+	var login_y := 0.10 if compact else 0.012
+	if compact: menu._set_backdrop(Vector2(1.46, 0.68), Vector2(0.13, 0.38))
+	menu._button(BASE, "", Vector2(-0.52, header), Vector2(0.09, 0.07), true, "up")
+	menu._label(I18n.t(title), Vector3(0.13, header, 0.004), 24)
 	var enabled := not bool(data.get("busy", false))
 	if view in ["choose", "accounts", "discover", "license", "plex_servers"]:
 		if view == "choose" and kind == "server": _draw_server_choices()
@@ -305,16 +343,16 @@ func draw() -> void:
 			menu._button(BASE + 10, I18n.t("Verify and sign in"), Vector2(0.4, 0.15), Vector2(0.48, 0.07), enabled and bool(data.get("sms_sent", false)))
 		else:
 			if kind == "server" and provider == "plex":
-				menu._button(BASE + 27, I18n.t("Authorize"), Vector2(0.17, 0.012), Vector2(0.7, 0.077), enabled, "", true)
-				if _editing_id(): menu._button(BASE + 6, I18n.t("Test and save"), Vector2(0.3, -0.51), Vector2(0.4, 0.07), enabled)
-			elif kind == "server" or provider == "webdav": menu._button(BASE + 6, I18n.t("Test and save"), Vector2(0.3, -0.51), Vector2(0.4, 0.07), enabled, "", true)
+				menu._button(BASE + 27, I18n.t("Authorize"), Vector2(-0.10 if compact and _editing_id() else 0.17, login_y), Vector2(0.7, 0.077), enabled, "", true)
+				if _editing_id(): menu._button(BASE + 6, I18n.t("Test and save"), Vector2(0.55 if compact else 0.3, actions), Vector2(0.4, 0.07), enabled)
+			elif kind == "server" or provider == "webdav": menu._button(BASE + 6, I18n.t("Test and save"), Vector2(0.3, actions), Vector2(0.4, 0.07), enabled, "", true)
 			else:
 				if provider == "115":
-					menu._button(BASE + 7, I18n.t("Sign in on website"), Vector2(-0.15, 0.012), Vector2(0.54, 0.077), enabled)
-					menu._button(BASE + 6, I18n.t("Sign in"), Vector2(0.46, 0.012), Vector2(0.54, 0.077), enabled and not str(data.get("fields", {}).get("username", "")).is_empty() and int(data.get("password_length", 0)) > 0, "", true)
-				else: menu._button(BASE + 7, I18n.t("Authorize" if provider in ["115_open", "baidu", "aliyun_open", "quark_open", "onedrive"] else "Sign in on website"), Vector2(0.17, 0.012), Vector2(0.7, 0.077), enabled, "", true)
+					menu._button(BASE + 7, I18n.t("Sign in on website"), Vector2(-0.15, login_y), Vector2(0.54, 0.077), enabled)
+					menu._button(BASE + 6, I18n.t("Sign in"), Vector2(0.46, login_y), Vector2(0.54, 0.077), enabled and not str(data.get("fields", {}).get("username", "")).is_empty() and int(data.get("password_length", 0)) > 0, "", true)
+				else: menu._button(BASE + 7, I18n.t("Authorize" if provider in ["115_open", "baidu", "aliyun_open", "quark_open", "onedrive"] else "Sign in on website"), Vector2(0.17, login_y), Vector2(0.7, 0.077), enabled, "", true)
 				if _editing_id():
-					menu._button(BASE + 8, "", Vector2(0.73, -0.51), Vector2(0.1, 0.07), enabled and not str(data.get("fields", {}).get("name", "")).strip_edges().is_empty(), "check")
+					menu._button(BASE + 8, "", Vector2(0.73, header if compact else -0.51), Vector2(0.1, 0.07), enabled and not str(data.get("fields", {}).get("name", "")).strip_edges().is_empty(), "check")
 					menu._tips[BASE + 8] = I18n.t("Save name")
 	elif view == "plex_link":
 		menu._label("plex.tv/link", Vector3(0.15, 0.22, 0.008), 30)
@@ -340,7 +378,7 @@ func draw() -> void:
 		error = I18n.t("Sign-in declined (%s).").replace("%s", error.trim_prefix("Sign-in declined (").trim_suffix(")."))
 	else: error = I18n.t(error)
 	if bool(data.get("busy", false)) and view != "plex_link": error = I18n.t("Connecting…")
-	if not error.is_empty(): menu._label(error, Vector3(0.15, 0.375, 0.006), 17)
+	if not error.is_empty(): menu._label(error, Vector3(0.15, 0.56 if compact else 0.375, 0.006), 17)
 
 func _editing_id() -> bool: return bool(data.get("editing_account", false))
 func draw_fields(enabled: bool) -> void:
@@ -354,7 +392,7 @@ func draw_fields(enabled: bool) -> void:
 		if key in ["password", "sms"]:
 			value = "•".repeat(mini(int(data.get(key + "_length", 0)), 32))
 			if key == "password" and value.is_empty() and data.get("has_password", false): value = I18n.t("Keep saved login")
-		var y := 0.30 - i * 0.087
+		var y := (0.48 if not _field_context().is_empty() else 0.30) - i * 0.087
 		menu._button(FIELD + i, "", Vector2(0.17, y), Vector2(1.2, 0.077), enabled, "", key == field)
 		var node: MeshInstance3D = menu._buttons.back().node
 		var label: Label3D = node.get_child(0)
@@ -364,6 +402,7 @@ func draw_fields(enabled: bool) -> void:
 		detail.modulate = Color(0.04, 0.10, 0.08) if key == field else Color.WHITE
 
 func draw_keyboard(enabled: bool, offset: Vector2 = Vector2.ZERO) -> void:
+	if not _field_context().is_empty(): return
 	preload("res://scripts/ray_keyboard_layout.gd").draw(menu, BASE, KEY, enabled, shift, symbols, offset)
 
 func texture_node(texture: Texture2D, centre: Vector2, size: Vector2) -> MeshInstance3D:

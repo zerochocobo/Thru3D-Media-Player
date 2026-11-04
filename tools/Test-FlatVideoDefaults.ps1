@@ -4,7 +4,7 @@ $env:SDL_JOYSTICK_HIDAPI = '0'
 $workspace = Split-Path -Parent $PSScriptRoot
 $output = Join-Path $workspace 'build/output/flat-video-defaults'
 New-Item -ItemType Directory -Path $output -Force | Out-Null
-$tests = @('test_flat_video_defaults', 'test_flat_screen_controls', 'test_interface_depth', 'test_library_distance',
+$tests = @('test_flat_video_defaults', 'test_flat_screen_controls', 'test_video_aspect', 'test_interface_depth', 'test_library_distance',
     'test_view_follow', 'test_immersive_lifecycle', 'test_photo_frame', 'test_player_menu', 'test_controller_feedback', 'test_i18n')
 foreach ($test in $tests) {
     $log = Join-Path $output ($test + '.log')

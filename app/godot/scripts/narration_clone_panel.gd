@@ -206,7 +206,9 @@ func _draw_name() -> void:
 	if not message.is_empty(): label(menu.I18n.t(message), Vector2(0, 0.85), menu.TEXT_AUX).horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 
 func edit() -> void:
-	editor.begin("voice-name", draft, 32, func(value: String): draft = value; menu.refresh(), func(value: String): draft = value; submit())
+	editor.begin("voice-name", draft, 32, func(value: String): draft = value; menu.refresh(), func(value: String): draft = value; submit(), Callable(),
+		func(): return menu.visible and opened and not naming.is_empty() and source == str(menu._state.get("source_uri", "")))
+	if editor.custom: editor.editor.select_all()
 
 func submit() -> void:
 	draft = editor.finish("voice-name", draft).strip_edges()

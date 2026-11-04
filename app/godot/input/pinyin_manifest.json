@@ -1,0 +1,20 @@
+{
+  "format": 1,
+  "source_sha256": "e341598343a0f0f2035bb1aafc34a7f3bb7887deeecb3f60796262aaa2983e6b",
+  "entries": 65128,
+  "keys": 39002,
+  "files": {
+    "pinyin.keys": {
+      "bytes": 345811,
+      "sha256": "53938c96a0b52bc8d9fa078c62bbd5785d78497490469438e1d0624b2bb8343f"
+    },
+    "pinyin.offsets": {
+      "bytes": 156012,
+      "sha256": "b08b450e20a90b1b548494b6329b3fef8765c4da75f293318ab87c4910d7cffc"
+    },
+    "pinyin.words": {
+      "bytes": 1016943,
+      "sha256": "d1d40f6d77d407a5a74649c61e6509f61edff8a1f057670992e0659346d48f15"
+    }
+  }
+}

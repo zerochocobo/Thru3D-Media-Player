@@ -148,7 +148,7 @@ void fragment() {
 	}
 	// Crop correction borders rather than stretching an edge or reading the other eye.
 	if (outside_alignment(shown_uv)) { ALBEDO = vec3(0.0); ALPHA = alpha_enabled || packed_alpha ? 0.0 : 1.0; }
-	if (pip_outside(sample_direction)) { ALBEDO = vec3(0.0); ALPHA = alpha_enabled || packed_alpha ? 0.0 : 1.0; }
+	if (pip_outside(sample_direction, shown_uv)) { ALBEDO = vec3(0.0); ALPHA = alpha_enabled || packed_alpha ? 0.0 : 1.0; }
 	if (!separate_subtitles) {
 	vec4 composed = caption_composite(ALBEDO, ALPHA, projected_caption());
 	composed = caption_composite(composed.rgb, composed.a, bitmap_caption(raw_eye_uv(eye_uv(UV, media_direction))));

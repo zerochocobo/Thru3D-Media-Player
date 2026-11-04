@@ -101,6 +101,7 @@ const Quality := preload("res://scripts/display_quality.gd")
 const WatchPalette := preload("res://scripts/watch_palette.gd")
 const PlaybackMenuDepth := preload("res://scripts/playback_menu_depth.gd")
 const SeekPolicy := preload("res://scripts/seek_policy.gd")
+const SeekStep := preload("res://scripts/seek_step.gd")
 const VideoAuto3D := preload("res://scripts/video_auto_3d.gd")
 const ChoiceFields := preload("res://scripts/choice_fields.gd")
 var choices := ChoiceFields.new(self)
@@ -185,6 +186,7 @@ const VIEW_GRID := 89
 const EXPAND_LIBRARY := 90
 const STORAGE_ROOT := 91
 const RETRY_USB := 92
+const TAKEOVER_USB := 93
 const USB_BUSY_EJECT := "USB device is in use; eject it in system settings, then retry"
 var view_mode := "grid"
 var _position_to_restore := {}
@@ -1723,6 +1725,16 @@ func _local_eject_retry() -> bool:
 	# PICO: the system mount cannot open files for apps; after a system eject this entry reads the disk.
 	return section == Section.LOCAL and _local_path().begins_with("usb://") and status == USB_BUSY_EJECT
 
+func _can_takeover_usb() -> bool:
+	return _local_eject_retry() and PlatformMethods.supports(platform, "media_local_usb_takeover")
+
+func _takeover_usb() -> void:
+	# Explicit user action: the system treats the detached disk as removed while this app reads it.
+	if not _can_takeover_usb(): return
+	file_actions.reset()
+	_request("local", platform.media_local_usb_takeover(_local_path()))
+	refresh()
+
 func _open_storage_root() -> void:
 	# Keep the partitions explicit; a USB product name cannot identify the mounted UUID.
 	file_actions.reset()
@@ -1897,12 +1909,18 @@ func _rebuild_rows() -> void:
 					[{"value": SeekPolicy.SPEED, "label": "Speed", "hint": "Faster jumps, less precise"},
 					{"value": SeekPolicy.EXACT, "label": "Precise", "hint": "Accurate jumps, may take longer"}], false,
 					"Faster jumps, less precise" if seek == SeekPolicy.SPEED else "Accurate jumps, may take longer"))
+				rows.append({"title": I18n.t("Seek step"), "key": SeekStep.KEY,
+					"value": SeekStep.normalize(settings.get(SeekStep.KEY, SeekStep.DEFAULT)),
+					"slider": true, "span": Vector3(SeekStep.MIN, SeekStep.MAX, 1), "unit": " s", "decimals": 0, "reset_value": float(SeekStep.DEFAULT)})
 				var auto_3d := VideoAuto3D.choice(bool(settings.get("video_auto_3d", false)))
 				auto_3d.title = I18n.t(VideoAuto3D.TITLE); auto_3d.info = VideoAuto3D.HINT
 				rows.append(auto_3d)
 				rows.append(_choice_row("2D to 3D effect", "depth_render", str(settings.get("depth_render", "stretch")),
 					[{"value": "fill", "label": "Fill gaps", "hint": "Fills the background behind moving edges"},
 					{"value": "stretch", "label": "Stretch edges", "hint": "Stretches edges, like spatial photos"}], true))
+				var position := preload("res://scripts/depth_position.gd").row(settings.get("depth_position_default", 0), "depth_position_default")
+				position.title = I18n.t("3D position"); position.info = position.hint; position.erase("hint")
+				rows.append(position)
 				var outputs: Array = []
 				for option in [[Quality.AUTO_OUTPUT, "Auto"], [0, "Original size"], [5760, "6K"], [4096, "4K"]]:
 					outputs.append({"value": option[0], "label": option[1], "hint": Quality.OUTPUT_HINTS[option[0]]})
@@ -1941,6 +1959,9 @@ func _rebuild_rows() -> void:
 				var languages: Array = []
 				for value in I18n.CHOICES: languages.append({"value": value, "label": LANGUAGE_NAMES[value]})
 				rows.append(_choice_row("Language", "language", I18n.choice, languages))
+				if preload("res://scripts/chinese_input.gd").available():
+					rows.append(_choice_row("中文输入法", "quest_chinese_keyboard", preload("res://scripts/chinese_input.gd").selected,
+						[{"value": false, "label": "Off"}, {"value": true, "label": "On"}]))
 				var management_hint := "Delete or rename files in supported library sections. Managing files is easier in list view. Available actions depend on the source and permissions."
 				rows.append(_choice_row("Allow file management", "file_editing", file_actions.enabled,
 					[{"value": false, "label": "Off", "hint": management_hint}, {"value": true, "label": "On", "hint": management_hint}]))
@@ -2441,6 +2462,8 @@ func _activate(target: int) -> void:
 		_open_storage_root()
 	elif target == RETRY_USB:
 		_refresh_source()
+	elif target == TAKEOVER_USB:
+		_takeover_usb()
 	elif target == CLEAR_HISTORY:
 		collections._remove_rows(catalog.list_recent(), true)
 	elif target >= CRUMB_BASE and target < CRUMB_BASE + 10:
@@ -2865,19 +2888,43 @@ func _open_editor(server: Dictionary) -> void:
 	_shift = false
 	_symbols = false
 	refresh()
+	_begin_editor_input()
 
 func _editor_fields() -> Array:
 	return ["host", "port"] if section == Section.DLNA else FIELDS
+
+func _editor_custom_context() -> String:
+	if _editor.is_empty() or section == Section.DLNA: return ""
+	var tag := "smb_" + str(_editor_fields()[_field])
+	return tag if SystemTextInput.uses_custom(tag) else ""
+
+func _end_editor_input() -> void:
+	system_text_input.cancel("smb_name"); system_text_input.cancel("smb_user")
+
+func _begin_editor_input() -> void:
+	_end_editor_input()
+	var tag := _editor_custom_context()
+	if tag.is_empty() or _editor_busy(): return
+	var draft := _editor
+	var key: String = _editor_fields()[_field]
+	system_text_input.begin(tag, str(_editor[key]), 80 if key == "name" else 256,
+		func(value): _editor[key] = value; refresh(), func(_value): refresh(), Callable(),
+		func(): return visible and is_same(_editor, draft) and _editor_custom_context() == tag and not _editor_busy())
+	system_text_input.editor.select_all()
 
 func _editor_busy() -> bool:
 	return _pending.has(int(_editor.get("request_id", -1)))
 
 func _editor_input(target: int) -> void:
 	if _editor_busy() and target != CANCEL: return
+	if target in [CANCEL, SAVE, DELETE]: _end_editor_input()
 	var fields := _editor_fields()
 	var key: String = fields[_field]
 	if target >= FIELD_BASE and target < FIELD_BASE + fields.size():
+		_end_editor_input()
 		_field = target - FIELD_BASE
+		_begin_editor_input()
+	elif not _editor_custom_context().is_empty() and (target in [SHIFT, SYMBOL_LAYER, SPACE, BACKSPACE] or (target >= KEY_BASE and target < KEY_BASE + 40)): return
 	elif target >= KEY_BASE and target < KEY_BASE + 40:
 		var layer: Array = SYMBOLS if _symbols else KEYS
 		var character: String = layer[(target - KEY_BASE) / 10][(target - KEY_BASE) % 10]
@@ -2964,7 +3011,12 @@ func _draw_compact() -> void:
 		_button(STORAGE_ROOT, "", Vector2(-0.49, -0.365), Vector2(0.075, 0.065), true, "device")
 		_tips[STORAGE_ROOT] = I18n.t("Local files")
 	elif not archives.browsing and _local_eject_retry():
-		_button(RETRY_USB, "", Vector2(-0.49, -0.365), Vector2(0.075, 0.065), true, "refresh")
+		var retry_x := -0.49
+		if _can_takeover_usb():
+			_button(TAKEOVER_USB, "", Vector2(-0.49, -0.365), Vector2(0.075, 0.065), true, "usb", true)
+			_tips[TAKEOVER_USB] = I18n.t("Open directly")
+			retry_x = -0.40
+		_button(RETRY_USB, "", Vector2(retry_x, -0.365), Vector2(0.075, 0.065), true, "refresh")
 		_tips[RETRY_USB] = I18n.t("Retry")
 	_button(EXPAND_LIBRARY, "", Vector2(0.28, -0.365), Vector2(0.09, 0.065), true, "expand")
 	_tips[EXPAND_LIBRARY] = I18n.t("Expand library")
@@ -3239,7 +3291,11 @@ func _draw() -> void:
 	elif not archives.browsing and _local_mount_recovery():
 		_button(STORAGE_ROOT, I18n.t("Local files"), Vector2(0.19, -0.34), Vector2(0.3, 0.07), true, "", true)
 	elif not archives.browsing and _local_eject_retry():
-		_button(RETRY_USB, I18n.t("Retry"), Vector2(0.19, -0.34), Vector2(0.3, 0.07), true, "", true)
+		if _can_takeover_usb():
+			_button(TAKEOVER_USB, I18n.t("Open directly"), Vector2(0.19, -0.34), Vector2(0.3, 0.07), true, "", true)
+			_button(RETRY_USB, I18n.t("Retry"), Vector2(0.52, -0.34), Vector2(0.3, 0.07), true)
+		else:
+			_button(RETRY_USB, I18n.t("Retry"), Vector2(0.19, -0.34), Vector2(0.3, 0.07), true, "", true)
 	if collections.has_selection():
 		collections.draw_footer()
 	elif file_actions.has_selection():
@@ -3896,6 +3952,8 @@ func _engine_notices() -> String:
 
 func _draw_editor() -> void:
 	var dlna_editor := section == Section.DLNA
+	var custom := not _editor_custom_context().is_empty()
+	if custom: _set_backdrop(Vector2(1.46, 0.52), Vector2(0.13, 0.30))
 	var fields := _editor_fields()
 	var title := _label("DLNA" if dlna_editor else "SMB", Vector3(-0.42, 0.46, 0.004), 24)
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
@@ -3914,18 +3972,19 @@ func _draw_editor() -> void:
 		var name := _label(I18n.t("IP address" if i == 0 else "Port") if dlna_editor else I18n.t(FIELD_NAMES[i]), Vector3(-field_width * 0.5 + 0.03 if dlna_editor else -0.28, 0.02 if dlna_editor else 0.0, 0.004), 17, node)
 		name.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
 		name.modulate = Color(0.06, 0.18, 0.14) if dlna_editor and i == _field else MUTED
-	var layer: Array = SYMBOLS if _symbols else KEYS
-	for r in layer.size():
-		for c in 10:
-			var character: String = layer[r][c]
-			_button(KEY_BASE + r * 10 + c, character.to_upper() if _shift else character,
-				Vector2(-0.38 + c * 0.126, 0.1 - r * 0.098), Vector2(0.115, 0.085))
-	var y := 0.1 - 4 * 0.098
-	_button(SHIFT, "⇧", Vector2(-0.32, y), Vector2(0.18, 0.085), true, "", _shift)
-	_button(SYMBOL_LAYER, "#+=" if not _symbols else "abc", Vector2(-0.13, y), Vector2(0.18, 0.085), true, "", _symbols)
-	_button(SPACE, "␣", Vector2(0.15, y), Vector2(0.34, 0.085))
-	_button(BACKSPACE, "", Vector2(0.43, y), Vector2(0.18, 0.085), true, "backspace")
-	var actions := -0.44
+	if _editor_custom_context().is_empty():
+		var layer: Array = SYMBOLS if _symbols else KEYS
+		for r in layer.size():
+			for c in 10:
+				var character: String = layer[r][c]
+				_button(KEY_BASE + r * 10 + c, character.to_upper() if _shift else character,
+					Vector2(-0.38 + c * 0.126, 0.1 - r * 0.098), Vector2(0.115, 0.085))
+		var y := 0.1 - 4 * 0.098
+		_button(SHIFT, "⇧", Vector2(-0.32, y), Vector2(0.18, 0.085), true, "", _shift)
+		_button(SYMBOL_LAYER, "#+=" if not _symbols else "abc", Vector2(-0.13, y), Vector2(0.18, 0.085), true, "", _symbols)
+		_button(SPACE, "␣", Vector2(0.15, y), Vector2(0.34, 0.085))
+		_button(BACKSPACE, "", Vector2(0.43, y), Vector2(0.18, 0.085), true, "backspace")
+	var actions := 0.10 if custom else -0.44
 	_button(SAVE, "", Vector2(0.73, actions), Vector2(0.18, 0.08), not _editor_busy() and not str(_editor.get("host", "")).strip_edges().is_empty() and (not dlna_editor or not str(_editor.port).strip_edges().is_empty()), "check", true)
 	_button(CANCEL, "", Vector2(0.52, actions), Vector2(0.18, 0.08), true, "close")
 	if not str(_editor.id).is_empty():

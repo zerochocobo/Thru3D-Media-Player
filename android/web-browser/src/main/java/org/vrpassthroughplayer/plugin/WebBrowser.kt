@@ -71,6 +71,7 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
         var editing = false
         var editor: InputConnection? = null
         var editorAction = EditorInfo.IME_ACTION_UNSPECIFIED
+        var editorType = 0
         var error = ""
         var navigation = 0L
         var playback: MediaSession? = null
@@ -128,6 +129,8 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
     private var active = false
     private var downTime = 0L
     private var input: BrowserInput? = null
+    @Volatile private var customKeyboard = false
+    private val keyboardSession = WebBrowserKeyboardSession()
     private var library: WebBrowserLibrary? = null
     private var networkPolicy: WebBrowserNetworkPolicy? = null
     private var recordHistory = false
@@ -381,6 +384,7 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
         // Keep Gecko's default TextInputDelegate: it forwards composition, selection,
         // cursor and keyboard lifecycle to Android's InputMethodManager. A partial custom
         // delegate would suppress those notifications and break CJK input.
+        installKeyboardDelegate(tab)
         session.mediaSessionDelegate = object : MediaSession.Delegate {
             override fun onActivated(session: GeckoSession, mediaSession: MediaSession) {
                 if (!ownsSession(tab, session)) return
@@ -1027,6 +1031,25 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
     fun command(value: String) = dispatch {
         if (value.length > 8192) return@dispatch
         val request = JSONObject(value)
+        if (request.optString("action") == "keyboard_mode") {
+            val enabled = request.optBoolean("enabled")
+            if (customKeyboard != enabled) {
+                hideInput()
+                customKeyboard = enabled
+                tabs.filter { it.awake }.forEach(::installKeyboardDelegate)
+                current()?.let { tab ->
+                    if (active) {
+                        attachInput(tab)
+                        if (enabled) captureKeyboardEditor(tab)
+                        else input?.let { view ->
+                            (view.context.getSystemService(android.content.Context.INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager).restartInput(view)
+                        }
+                    }
+                }
+                publish()
+            }
+            return@dispatch
+        }
         val id = request.optInt("window", focusedWindow)
         if (id !in 1..windowLimit) return@dispatch
         operationError = ""
@@ -1135,13 +1158,80 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
         if (code == MotionEvent.ACTION_UP || code == MotionEvent.ACTION_CANCEL) downTime = 0
     }
 
+    private fun installKeyboardDelegate(tab: Tab) {
+        // null restores Gecko's complete system-IME delegate when the feature is off.
+        tab.session.textInput.setDelegate(if (!customKeyboard) null else object : GeckoSession.TextInputDelegate {
+            override fun restartInput(session: GeckoSession, reason: Int) {
+                if (!customKeyboard || !ownsSession(tab, session) || current() !== tab) return
+                if (reason == GeckoSession.TextInputDelegate.RESTART_REASON_BLUR) {
+                    keyboardSession.close(); tab.editing = false; tab.editor = null; publish()
+                } else captureKeyboardEditor(tab)
+            }
+            override fun showSoftInput(session: GeckoSession) {
+                if (!customKeyboard || !ownsSession(tab, session) || current() !== tab) return
+                if (keyboardSession.target?.tab != tab.id || tab.editor == null) captureKeyboardEditor(tab)
+            }
+            override fun hideSoftInput(session: GeckoSession) {
+                if (!customKeyboard || !ownsSession(tab, session) || current() !== tab) return
+                keyboardSession.close(); tab.editing = false; tab.editor = null; publish()
+            }
+            // Our popup keeps preedit locally and never requests extracted field contents.
+            // Selection/cursor edits continue to be owned by Gecko's InputConnection.
+        })
+    }
+
+    private fun captureKeyboardEditor(tab: Tab) {
+        if (!customKeyboard || !active || current() !== tab || input?.tab !== tab) return
+        keyboardSession.close()
+        val info = EditorInfo()
+        val connection = tab.session.textInput.onCreateInputConnection(info)
+        tab.editor = connection
+        tab.editorType = info.inputType
+        tab.editorAction = info.imeOptions and EditorInfo.IME_MASK_ACTION
+        tab.editing = connection != null && info.inputType != 0
+        if (tab.editing) {
+            tab.protectedInput = true
+            keyboardSession.open(tab.window, tab.id, tab.navigation)
+        }
+        publish()
+    }
+
+    private fun editKeyboard(target: WebBrowserKeyboardSession.Target, command: String, value: String) {
+        val tab = current() ?: return
+        val editor = tab.editor ?: return
+        if (!active || !tab.editing || tab.id != target.tab || tab.window != target.window || tab.navigation != target.navigation) return
+        if (command == "close") {
+            tab.session.setFocused(false); hideInput(); publish(); return
+        }
+        if (value.length > 2048 || '\u0000' in value) return
+        val action = tab.editorAction
+        (editor.handler ?: ui).post {
+            if (!customKeyboard || !keyboardSession.accepts(target) || input?.tab !== tab || tab.editor !== editor ||
+                current() !== tab || tab.navigation != target.navigation || tab.window != target.window) return@post
+            fun key(code: Int) {
+                editor.sendKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, code))
+                editor.sendKeyEvent(KeyEvent(KeyEvent.ACTION_UP, code))
+            }
+            when (command) {
+                "text" -> editor.commitText(value, 1)
+                "backspace" -> if (!editor.getSelectedText(0).isNullOrEmpty()) editor.commitText("", 1)
+                    else editor.deleteSurroundingTextInCodePoints(1, 0)
+                "left" -> key(KeyEvent.KEYCODE_DPAD_LEFT)
+                "right" -> key(KeyEvent.KEYCODE_DPAD_RIGHT)
+                "enter" -> if (action in setOf(EditorInfo.IME_ACTION_NONE, EditorInfo.IME_ACTION_UNSPECIFIED) ||
+                    !editor.performEditorAction(action)) key(KeyEvent.KEYCODE_ENTER)
+            }
+        }
+    }
+
     private inner class BrowserInput(owner: Activity) : View(owner) {
         var tab: Tab? = null
         init { isFocusable = true; isFocusableInTouchMode = true; importantForAutofill = IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS }
-        override fun onCheckIsTextEditor(): Boolean = true
+        override fun onCheckIsTextEditor(): Boolean = !customKeyboard
         // All supported Android versions use View's nullable handler (GeckoView's
         // Android 24+ path), including late IME callbacks after detachment.
         override fun onCreateInputConnection(info: EditorInfo): InputConnection? {
+            if (customKeyboard) return null // Only our Gecko delegate creates the private connection.
             val owner = tab ?: return null
             val navigation = owner.navigation
             val connection = owner.session.textInput.onCreateInputConnection(info)
@@ -1189,6 +1279,14 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
     }
 
     fun input(command: String, text: String) = dispatch {
+        if (command == "custom") {
+            if (!customKeyboard || text.length > 8192) return@dispatch
+            val request = runCatching { JSONObject(text) }.getOrNull() ?: return@dispatch
+            val target = WebBrowserKeyboardSession.Target(request.optInt("window"), request.optInt("tab"), request.optLong("navigation"), request.optLong("epoch"))
+            if (!keyboardSession.accepts(target)) return@dispatch
+            editKeyboard(target, request.optString("command"), request.optString("text"))
+            return@dispatch
+        }
         val tab = current() ?: return@dispatch
         if (!active || !tab.editing) return@dispatch
         val editor = tab.editor ?: return@dispatch
@@ -1232,6 +1330,7 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
     }
 
     private fun hideInput() {
+        keyboardSession.close()
         tabs.forEach { tab ->
             tab.editor?.let { editor -> (editor.handler ?: ui).post { editor.finishComposingText() } }
             tab.editing = false; tab.editor = null
@@ -1267,6 +1366,15 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                 })
             .put("playing", tab != null && (tab.playing || tab.media.values.any { list -> (0 until list.length()).any { i -> list.getJSONObject(i).optBoolean("playing") } }))
             .put("error", tab?.error.orEmpty()).put("editing", tab?.editing == true).put("videos", videos).put("fullscreen", tab?.fullScreen == true)
+            .put("custom_keyboard", customKeyboard && tab != null && keyboardSession.target?.tab == tab.id && tab.editing)
+            .put("keyboard_epoch", if (customKeyboard && tab != null && keyboardSession.target?.tab == tab.id) keyboardSession.target?.epoch ?: 0 else 0)
+            .put("keyboard_latin", tab?.editorType?.let { type ->
+                val variation = type and android.text.InputType.TYPE_MASK_VARIATION
+                (type and android.text.InputType.TYPE_MASK_CLASS) != android.text.InputType.TYPE_CLASS_TEXT ||
+                    variation in setOf(android.text.InputType.TYPE_TEXT_VARIATION_URI, android.text.InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS,
+                        android.text.InputType.TYPE_TEXT_VARIATION_WEB_EMAIL_ADDRESS, android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD,
+                        android.text.InputType.TYPE_TEXT_VARIATION_WEB_PASSWORD, android.text.InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD)
+            } ?: false)
             .also { result -> if (mediaDiagnosticsEnabled() && tab != null) {
                 val ports = tab.ports.filterValues { it == tab.navigation }.keys
                 result.put("pause_ports", ports.size)

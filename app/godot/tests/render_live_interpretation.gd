@@ -58,7 +58,7 @@ func run() -> void:
 				if not is_instance_valid(menu._subtitle_status_label) or menu._subtitle_status_label.text != state.listening_notice: failures.append("Failure notice missing " + locale)
 			if unavailable:
 				checks += 2
-				if not menu._buttons.any(func(button): return button.target == menu.SUBTITLE_LISTENING and not button.enabled): failures.append("Disabled entry missing " + locale)
+				if not menu._buttons.any(func(button): return button.target == menu.SUBTITLE_LISTENING and button.enabled): failures.append("Configuration entry missing " + locale)
 				if not is_instance_valid(menu._subtitle_status_label) or menu._subtitle_status_label.text.is_empty(): failures.append("Unavailable reason missing " + locale)
 	menu.free(); viewport.free()
 	print("Listening render: %d checks, %d failures" % [checks, failures.size()])

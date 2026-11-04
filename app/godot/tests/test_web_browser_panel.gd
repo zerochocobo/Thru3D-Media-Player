@@ -123,6 +123,31 @@ func _run() -> void:
 	check(not menu.has_pointer_capture() and platform.pointers.back()[0] == "up", "Pointer release reaches native")
 	menu.stick_scroll(1, 0.1)
 	check(platform.pointers.back()[0] == "scroll", "Stick scrolls the page after release")
+	var page_host: Node3D = menu.web_browser.windows[menu.web_browser.focused_window]
+	var css: Vector2 = page_host.page_css_scale()
+	var hover_direction := direction
+	var hover_ray := func(dx_m: float) -> Vector3: return host.to_global(Vector3(center.x + dx_m, center.y, 1))
+	# Metres of host space per CSS pixel along x, measured through the real projection.
+	var probe_uv: Variant = page_host.page_point(hover_ray.call(0.1), direction)
+	var base_uv: Variant = page_host.page_point(hover_ray.call(0.0), direction)
+	check(probe_uv != null and base_uv != null, "Hover test rays land on the page")
+	var metre_per_css: float = 0.1 / absf((probe_uv.x - base_uv.x) * css.x)
+	var sent := platform.pointers.size()
+	menu.web_browser.move("right", hover_ray.call(0.0), hover_direction, true)
+	check(platform.pointers.size() == sent, "Hover waits while the stick is scrolling")
+	menu.web_browser._scroll_hover_until = 0; menu.web_browser._hover_sent_ms = -1000
+	menu.web_browser.move("right", hover_ray.call(10 * metre_per_css), hover_direction, true)
+	check(platform.pointers.size() == sent + 1 and platform.pointers.back()[0] == "move", "Hover resumes after scrolling")
+	menu.web_browser._hover_sent_ms = -1000
+	menu.web_browser.move("right", hover_ray.call(11 * metre_per_css), hover_direction, true)
+	check(platform.pointers.size() == sent + 1, "Sub-2-CSS-pixel ray jitter does not reach the page")
+	menu.web_browser.move("right", hover_ray.call(30 * metre_per_css), hover_direction, true)
+	check(platform.pointers.size() == sent + 2, "Real hover movement reaches the page")
+	menu.web_browser.move("right", hover_ray.call(50 * metre_per_css), hover_direction, true)
+	check(platform.pointers.size() == sent + 2, "Hover is limited to about 30 updates per second")
+	menu.web_browser._hover_sent_ms = -1000
+	menu.web_browser.move("right", hover_ray.call(50 * metre_per_css), hover_direction, true)
+	check(platform.pointers.size() == sent + 3 and is_equal_approx(platform.pointers.back()[1], page_host.source_point(page_host.page_point(hover_ray.call(50 * metre_per_css), direction)).x), "The latest hover position is delivered once the interval passes")
 	menu.web_browser.action(Browser.BASE + 6)
 	check(menu.web_browser.handoff and menu.web_video.pending > 0, "Play in player resolves asynchronously")
 	platform.browser.url = "https://www.youtube.com/"

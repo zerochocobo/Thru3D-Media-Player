@@ -23,6 +23,7 @@ const MESSAGES := {
 	"MPV_OPEN_TIMEOUT": "Opening media timed out. Check the link and connection.",
 	"MPV_OUTPUT_TIMEOUT": "Video output timed out. Try opening the video again.",
 	"MPV_BUFFER_TIMEOUT": "Media buffering timed out. Check the connection.",
+	"MPV_PLAYBACK_STUCK": "Playback is stuck here. Restart the app or skip ahead.",
 	"MPV_RVM_FAILED": "AI passthrough failed. Turn it off to play the video."
 }
 

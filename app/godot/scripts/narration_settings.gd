@@ -325,7 +325,8 @@ func snapshot() -> Dictionary:
 		var title := str(track.get("title", "")).strip_edges()
 		if title.is_empty(): title = I18n.t("Subtitles") + " %d" % int(track.id)
 		options.append({"value": int(track.id), "label": title})
-	return {"narration_available": available(), "narration_enabled": enabled and available(), "narration_current": enabled and available() and source == -1 and not source_secondary,
+	return {"narration_configurable": Methods.supports(video.platform, "set_mpv_narration"),
+		"narration_available": available(), "narration_enabled": enabled and available(), "narration_current": enabled and available() and source == -1 and not source_secondary,
 		"narration_source": video.dual_subtitles.state.requested_track if source_secondary else source, "narration_sources": options, "narration_language": language,
 		"narration_source_uri": str(video.local_uri),
 		"narration_voice_kind": voice_kind, "narration_custom_voice": custom_voice, "narration_personal_voices": _personal_voices.duplicate(true),
@@ -373,8 +374,9 @@ static func toggle(key: String, value: bool) -> Dictionary:
 static func rows(state: Dictionary) -> Array:
 	if not FEATURE_ENABLED: return []
 	var result: Array = [{"title": "Subtitle narration", "field": toggle("narration_enabled", bool(state.get("narration_enabled", false)))}]
-	if not state.get("narration_enabled", false): return result
-	if state.get("dual_subtitles_enabled", false) and int(state.get("secondary_subtitle_track", 0)) > 0:
+	# Enabling narration still selects the current primary track. Keep this
+	# runtime source action gated, so pre-start choices are not silently reset.
+	if state.get("narration_enabled", false) and state.get("dual_subtitles_enabled", false) and int(state.get("secondary_subtitle_track", 0)) > 0:
 		var sources: Array = [{"value": -1, "label": "Primary subtitles"}, {"value": int(state.secondary_subtitle_track), "label": "Secondary subtitles"}]
 		result.append({"title": "Read subtitles", "field": {"key": "narration_source", "value": state.get("narration_source", -1), "choices": sources, "compact": true}})
 	var default_lang := default_profile(I18n.language).get_slice("_", 0)

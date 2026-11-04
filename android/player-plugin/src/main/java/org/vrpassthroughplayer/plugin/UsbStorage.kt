@@ -32,6 +32,8 @@ internal object UsbClaimPolicy {
     const val BUSY_EJECT = "USB device is in use; eject it in system settings, then retry"
     fun pico(manufacturer: String?, brand: String?) =
         manufacturer.orEmpty().contains("pico", true) || brand.orEmpty().contains("pico", true)
+    /** A forced claim on a system-held disk needs both the user's request and a PICO device. */
+    fun userTakeover(requested: Boolean, manufacturer: String?, brand: String?) = requested && pico(manufacturer, brand)
     fun busyMessage(systemMounted: Boolean, manufacturer: String?, brand: String?) = when {
         !systemMounted -> BUSY
         pico(manufacturer, brand) -> BUSY_EJECT
@@ -57,6 +59,8 @@ internal class UsbStorage(private val host: () -> Activity?, private val emit: (
         val generation=AtomicInteger()
         @Volatile var active=false
         @Volatile var stopping=false
+        /** One user-confirmed takeover of an interface the PICO system still holds. */
+        @Volatile var takeover=false
         var connection: UsbDeviceConnection?=null
         var face: UsbInterface?=null
         val blocks=linkedMapOf<Int,UsbBulkDevice>()
@@ -141,6 +145,8 @@ internal class UsbStorage(private val host: () -> Activity?, private val emit: (
         it.isRemovable && it.state !in listOf("unmounted","unmountable","removed","bad_removal")
     } ?: true
     private fun connect(s: Session) = synchronized(s) {
+        // Consume the request before any early return so it never forces a later reconnect.
+        val takeover=s.takeover.also { s.takeover=false }
         check(!s.stopping && !closed) { "USB access stopped" }
         if(s.active && s.connection!=null) return@synchronized
         s.scan=JSONObject(); s.stage="permission"
@@ -152,6 +158,9 @@ internal class UsbStorage(private val host: () -> Activity?, private val emit: (
         try {
             s.stage="claim"
             claimed=c.claimInterface(f,false)
+            // PICO system mounts list folders but cannot hand files to apps. Only an explicit user
+            // takeover detaches the system driver there, which the system treats as a removal.
+            if(!claimed && UsbClaimPolicy.userTakeover(takeover, Build.MANUFACTURER, Build.BRAND)) claimed=c.claimInterface(f,true)
             // Some kernels bind usb-storage even to an unmountable filesystem. Detach that
             // idle driver only after a conservative system-volume check, never a mounted one.
             if(!claimed && !busySystemStorage()) { Thread.sleep(350); if(!busySystemStorage()) claimed=c.claimInterface(f,true) }
@@ -191,6 +200,12 @@ internal class UsbStorage(private val host: () -> Activity?, private val emit: (
                 queued.forEach { (request,where)->replyError(request,where,"USB access denied") }
             }
         }
+    }
+    /** User action on PICO: the next connection may detach the system driver from this disk. */
+    fun takeover(id: Int,path: String) {
+        if(closed) return
+        if(UsbClaimPolicy.pico(Build.MANUFACTURER, Build.BRAND)) runCatching { session(path) }.getOrNull()?.takeover=true
+        browse(id,path)
     }
     fun browse(id: Int,path: String,subtitlesOnly:Boolean=false) {
         if(closed) return

@@ -57,6 +57,11 @@ var _signature := 0
 ## compares the signature instead of repainting blindly (playback state refreshes several times a
 ## second, and each blind repaint re-renders the capture viewports for two or three frames).
 var _verify := false
+## Last placement: the layers hang under the XR origin and track the menu, so they are re-posed only
+## when the menu or the origin moves, after a repaint or collect, or while a capture tail runs.
+var _placed_poses := []
+var _place_pending := true
+var _any_placed := false
 ## Shader uniform names, by shader instance id.
 var _uniforms := {}
 const HOLE_SHADER := preload("res://shaders/menu_layer_hole.gdshader")
@@ -252,7 +257,7 @@ static func clear_environment() -> Environment:
 	return environment
 
 func invalidate() -> void:
-	dirty = true; geometry_dirty = true
+	dirty = true; geometry_dirty = true; _place_pending = true
 
 func repaint() -> void:
 	dirty = true
@@ -367,15 +372,18 @@ func update() -> void:
 		for slot in slots:
 			if slot.used: _measure(slot)
 		for kind in banded: _measure_bands(kind)
-		dirty = false; _painted_ms = now; repaints += 1
+		dirty = false; _painted_ms = now; repaints += 1; _place_pending = true
 		_signature = _visual_signature()
 	var root := _root_pose()
-	var any := false
-	for slot in slots + bands:
-		_place(slot, root)
-		any = any or (slot.used and not slot.empty)
-	if display: display.set_menu_layers(any and not force_capture)
-	fallback_reason = "" if any else "no_planar_surfaces"
+	var poses := [root, origin.global_transform]
+	if _place_pending or poses != _placed_poses or (slots + bands).any(func(slot): return slot.tail > 0):
+		_place_pending = false; _placed_poses = poses
+		_any_placed = false
+		for slot in slots + bands:
+			_place(slot, root)
+			_any_placed = _any_placed or (slot.used and not slot.empty)
+	if display: display.set_menu_layers(_any_placed and not force_capture)
+	fallback_reason = "" if _any_placed else "no_planar_surfaces"
 
 ## Everything a capture shows of its nodes: visibility, pose in the menu, text, colours, textures
 ## and shader parameters. Equal signatures mean an identical repaint.
@@ -756,6 +764,8 @@ func _hide() -> void:
 	for slot in slots + bands:
 		slot.used = false; slot.nodes = []
 		_hide_slot(slot)
+	# The cached placement no longer describes the layers; place them again on the next update.
+	_any_placed = false; _place_pending = true
 	if display: display.set_menu_layers(false)
 
 func snapshot() -> Dictionary:

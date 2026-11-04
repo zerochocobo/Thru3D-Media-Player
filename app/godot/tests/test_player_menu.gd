@@ -510,10 +510,11 @@ func _run() -> void:
 	check(click(menu, Menu.MODE_PROJECTION + 1) and video.geometry == 1, "Projection tile sets actual video geometry")
 	check(click(menu, 108), "Recenter routed through preview-safe Main")
 	var layout_calls := host.calls.size()
-	check(click(menu, 110) and menu._subtitle_open and menu.choices.sliders.is_empty(),
-		"VR CC popup focuses on subtitle selection with appearance collapsed")
-	check(click(menu, Menu.SUBTITLE_APPEARANCE) and menu._subtitle_open and menu.choices.sliders.size() == 5,
-		"Appearance disclosure opens distance, angle, size and styles")
+	check(click(menu, 110) and menu._subtitle_open and not menu._subtitle_detail_group().is_empty(),
+		"VR CC popup opens its relevant detail pane")
+	if not menu._subtitle_appearance_open: click(menu, Menu.SUBTITLE_APPEARANCE)
+	check(menu._subtitle_open and menu.choices.sliders.size() == 5,
+		"Appearance provides distance, angle, size and styles")
 	check(choose_setting(menu, "subtitle_vertical_position", -60) and video.subtitle_vertical_position == -60 and main.settings.get_value("subtitles", "horizontal_center_y_degrees") == -60 and menu._subtitle_open,
 		"CC angle applies and persists while keeping the popup open")
 	check(choose_setting(menu, "subtitle_distance", 2.0) and is_equal_approx(video.subtitle_distance, 2.0) and menu._subtitle_open,
@@ -768,7 +769,7 @@ func _check_seek_feedback(main: Node3D, video: Node3D, menu: Node3D, host: RefCo
 					var axis := Vector2(0.99 * direction, 0)
 					main._process_sticks(axis if hand == "left" else Vector2.ZERO, axis if hand == "right" else Vector2.ZERO, 0.1)
 					video.changed.emit() # The next native progress report also uses this handler.
-					var expected: int = 40000 + direction * (20000 if hand == "left" else 10000)
+					var expected: int = 40000 + direction * 10000
 					check(video.control.display_position_ms() == 40000 and main.seek_feedback.target_ms == expected and not menu.visible,
 						"Stick preview preserves hidden controls: remote=%s revision=%d %s %d" % [remote, revision_id, hand, direction])
 					main._process_sticks(Vector2.ZERO, Vector2.ZERO, 0.1)
@@ -895,13 +896,13 @@ func _check_control_sticks(main: Node3D, video: Node3D, menu: Node3D, host: RefC
 	main._menu_touched_ms = Time.get_ticks_msec()
 	main._process_sticks(Vector2.ZERO, Vector2.ZERO, 0.1)
 	main._process_sticks(Vector2(.99, 0), Vector2(-.99, 0), 0.1)
-	check(video.control.display_position_ms() == 40000 and main.seek_feedback.target_ms == 60000 and menu._elapsed.text == "01:00", "Visible transport previews the first hand's +20s without committing either stick")
+	check(video.control.display_position_ms() == 40000 and main.seek_feedback.target_ms == 50000 and menu._elapsed.text == "00:50", "Visible transport previews the first hand's +10s without committing either stick")
 	var calls: int = host.calls.size()
 	main._process_sticks(Vector2(.99, 0), Vector2(-.99, 0), 0.1)
 	check(host.calls.size() == calls, "Holding visible-bar sticks does not repeat seeks")
 	main._process_sticks(Vector2.ZERO, Vector2.ZERO, 0.1)
 	main._process_sticks(Vector2(-.99, 0), Vector2(.99, 0), 0.1)
-	check(video.control.target_ms == 60000 and main.seek_feedback.target_ms == 40000 and menu._elapsed.text == "00:40", "Recenter commits once, then the next gesture previews the reverse step")
+	check(video.control.target_ms == 50000 and main.seek_feedback.target_ms == 40000 and menu._elapsed.text == "00:40", "Recenter commits once, then the next gesture previews the reverse step")
 	main._process_sticks(Vector2.ZERO, Vector2.ZERO, 0.1)
 	video.audio_volume = 50.0
 	main._process_sticks(Vector2(0, .99), Vector2.ZERO, 0.1)
@@ -1010,7 +1011,7 @@ func _check_control_sticks(main: Node3D, video: Node3D, menu: Node3D, host: RefC
 	menu.dismiss()
 	main._process_sticks(Vector2.ZERO, Vector2.ZERO, 0.1)
 	main._process_sticks(Vector2(-.99, 0), Vector2.ZERO, 0.1)
-	check(main.seek_feedback.target_ms == 50000 and video.control.target_ms == 70000, "Hidden transport previews the same left -20s before release")
+	check(main.seek_feedback.target_ms == 60000 and video.control.target_ms == 70000, "Hidden transport previews the same left -10s before release")
 	main._process_sticks(Vector2.ZERO, Vector2.ZERO, 0.1)
 	# Hover misses are not interaction, paused/awaiting seeks keep their controls visible.
 	menu.toggle()

@@ -107,7 +107,7 @@ func run() -> void:
 	item.report.state = "preparing"; item.report.phase = "models"; item.report.model_progress = 25
 	check(item.preparation_caption().ends_with("25%"), "Model verification shows measured progress")
 	item.report.phase = "recognition"; item.report.buffer_progress = 40; item.report.buffered = false
-	check(item.preparation_caption().ends_with("40%"), "Ahead buffer shows measured progress")
+	check(item.preparation_caption() == Listening.I18n.t("Recognizing speech…"), "Audio progress is not presented as subtitle completion")
 	item.report.phase = "task"; item.report.cache_progress = 48
 	check(item.preparation_caption() == Listening.I18n.t("Pre-generating · %d%%") % 48, "A pre-generation task for this film shows its progress, not a model check")
 	item.report.phase = "model_load"
@@ -141,19 +141,21 @@ func run() -> void:
 	# Head-locked status without opening the control bar.
 	var saved_target: String = item.target; var saved_report: Dictionary = item.report
 	item.target = ""; item.report = {"state": "ready", "buffered": true, "ahead": 12.4, "cues": []}
-	check(item.status_caption(100.0) == Listening.I18n.t("Transcribing · %d s ahead") % 12, "Silent stretches show that transcription is running")
+	check(item.status_caption(100.0).is_empty(), "Brief caption gaps do not flash a status")
+	item._empty_caption_since = Time.get_ticks_msec() - 4001
+	check(item.status_caption(100.0) == Listening.I18n.t("No text recognized for this segment"), "Sustained empty result does not claim audio or subtitles are ready")
 	item.report.phase = "task"
-	check(item.status_caption(100.0) == Listening.I18n.t("Pre-generated · %d s ahead") % 12, "Subtitles read from a pre-generation task say so")
+	check(item.status_caption(100.0) == Listening.I18n.t("No text recognized for this segment"), "Pre-generation does not promise nonexistent current text")
 	item.report.erase("phase")
 	item.report.cues = [{"start": 99.0, "end": 101.0, "text": "Hello"}]
 	check(item.status_caption(100.0).is_empty(), "A shown subtitle needs no status")
 	item.target = "zh-Hans"; item.report.cues = []
 	client.entries = [{"key": key}]; client.jobs = [[{"key": key}]]
-	check(item.status_caption(100.0) == Listening.I18n.t("Translating · %d pending") % 1, "Queued translation is visible")
+	check(item.status_caption(100.0).is_empty(), "Unrelated queued translations do not mislabel an empty current segment")
 	client._cooldown = {"Bing": Time.get_ticks_msec() + 30000, "Edge": Time.get_ticks_msec() + 45000}
-	check(item.status_caption(100.0) == Listening.I18n.t("Translation busy · retrying in %d s, showing original") % 30, "Provider cooldown explains the original text")
+	check(item.status_caption(100.0).is_empty(), "Cooldown does not claim an original is showing when no cue exists")
 	client._cooldown = {"Bing": 0, "Edge": 0}; client.jobs.clear(); client.failed[key] = Time.get_ticks_msec()
-	check(item.status_caption(100.0) == Listening.I18n.t("Some lines untranslated · showing original"), "Failed lines are explained")
+	check(item.status_caption(100.0).is_empty(), "Failed future translations do not claim visible original text")
 	client.failed.clear(); item.report.cues = [{"start": 99.0, "end": 101.0, "text": "Hello"}]
 	var shown_key: String = item.Protocol.cache_key(item.Protocol.normalize("Hello", item.Protocol.language(item.source)), item.Protocol.language(item.source), item.target)
 	client.cache[shown_key] = {"text": "你好"}
@@ -196,7 +198,7 @@ func run() -> void:
 	menu.refresh()
 	check(choose(menu, "listening_enabled", false) and not item.enabled, "Ray switch disables listening")
 	menu.refresh(); controls = menu._subtitle_controls()
-	check(controls.size() == 1 and controls[0].field.key == "listening_enabled", "Appearance is offered only after enabling listening")
+	check(controls.size() == 4 and controls[0].field.key == "listening_enabled", "All listening preferences remain available while switched off")
 	check(menu._buttons.all(func(button): return button.target != menu.SUBTITLE_ROW), "Disabled listening does not add a redundant Off row")
 	var with_subtitles := {"has_video": true, "subtitle_options": [{"id": 1, "title": "English", "codec": "subrip"}], "subtitle_track": 1,
 		"listening_available": true, "listening_enabled": false, "narration_available": true,
