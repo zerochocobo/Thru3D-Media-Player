@@ -23,17 +23,22 @@ internal class NarrationPcm(speed: Double) {
     fun update(source: List<FloatArray>, ended: Boolean) {
         check(!done || inputChunks==source.size)
         while(inputChunks<source.size) {
-            val chunk=source[inputChunks++]
-            if(processor==null) append(chunk) // Preserve the approved 1x PCM exactly.
-            else {
-                if(input.capacity()<chunk.size*2)input=ByteBuffer.allocateDirect(chunk.size*2).order(ByteOrder.nativeOrder())
-                input.clear();input.limit(chunk.size*2)
-                for(value in chunk)input.putShort((value*32768f).toInt().coerceIn(-32768,32767).toShort())
-                input.flip();processor.queueInput(input);check(!input.hasRemaining());drain()
-            }
+            push(source[inputChunks++])
         }
-        if(ended&&!done) {processor?.queueEndOfStream();drain();done=true}
+        if(ended) finish()
     }
+    /** Streaming consumers drain chunks between pushes without retaining source PCM. */
+    fun push(chunk: FloatArray) {
+        check(!done)
+        if(processor==null) append(chunk) // Preserve the approved 1x PCM exactly.
+        else {
+            if(input.capacity()<chunk.size*2)input=ByteBuffer.allocateDirect(chunk.size*2).order(ByteOrder.nativeOrder())
+            input.clear();input.limit(chunk.size*2)
+            for(value in chunk)input.putShort((value*32768f).toInt().coerceIn(-32768,32767).toShort())
+            input.flip();processor.queueInput(input);check(!input.hasRemaining());drain()
+        }
+    }
+    fun finish() {if(!done){processor?.queueEndOfStream();drain();done=true}}
     private fun append(chunk: FloatArray) { if(chunk.isNotEmpty()){chunks+=chunk;samples+=chunk.size} }
     private fun drain() {
         val value=processor?.output ?: return

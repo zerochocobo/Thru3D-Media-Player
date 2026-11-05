@@ -59,6 +59,7 @@ func set_enabled(value: bool) -> void:
 
 func configure() -> void:
 	if not supported(): return
+	if Methods.supports(photo.platform, "comic_reader_speed"): photo.platform.comic_reader_speed(preferences.speed)
 	var mode := str([translation.target, translation.source, translation.generation]) if translation.enabled else "original"
 	if mode != _speech_mode:
 		stop(); _speech_ready.clear(); _speech_payload = ""; _speech_sync_at = 0

@@ -7,6 +7,19 @@ import kotlin.math.abs
 import kotlin.math.sin
 
 class NarrationPcmTest {
+    @Test fun comicStreamingSpeedsPreservePitchAndFlushWithoutRetainingChunks() {
+        for(speed in listOf(.5,1.0,1.6,2.0)) {
+            val pcm=NarrationPcm(speed);val output=mutableListOf<Float>()
+            repeat(100){pcm.push(tone(.02));pcm.chunks.forEach {output.addAll(it.toList())};pcm.chunks.clear()}
+            pcm.finish();pcm.chunks.forEach {output.addAll(it.toList())};pcm.chunks.clear()
+            val duration=output.size/96000.0
+            assertEquals(2.0/speed,duration,.05)
+            var crossings=0
+            for(i in 2 until output.size step 2)if(output[i-2]<=0&&output[i]>0)crossings++
+            assertEquals(440.0,crossings/duration,15.0)
+            assertTrue(pcm.done);assertTrue(pcm.chunks.isEmpty());pcm.close()
+        }
+    }
     private fun tone(seconds: Double): FloatArray = FloatArray((48000*seconds).toInt()*2) { (.1*sin(2*PI*440*(it/2)/48000)).toFloat() }
     @Test fun normalSpeedKeepsApprovedSamplesExactly() {
         val input=tone(.5);val pcm=NarrationPcm(1.0)

@@ -105,6 +105,7 @@ const SeekStep := preload("res://scripts/seek_step.gd")
 const VideoAuto3D := preload("res://scripts/video_auto_3d.gd")
 const ChoiceFields := preload("res://scripts/choice_fields.gd")
 var choices := ChoiceFields.new(self)
+var theme_editor := preload("res://scripts/theme_editor.gd").new(self)
 const VoiceManagerPanel := preload("res://scripts/narration_clone_panel.gd")
 var voice_manager := VoiceManagerPanel.new(self)
 var subtitle_queue_open := false
@@ -199,10 +200,12 @@ const RECENT_PAGE_SIZE := COLS * GRID_LINES
 const TILE_SIZE := Vector2(0.3, 0.27)
 const GRID_PITCH := Vector2(0.33, 0.29)
 const GRID_TOP := 0.375
-const SELECTED := Color(0.16, 0.31, 0.27)
+static var SELECTED: Color:
+	get: return UiTheme.color("selected")
 const Thumbnails := preload("res://scripts/thumbnail_cache.gd")
 const COVER_BYTES := 2 * 1024 * 1024
-const FOLDER := Color(0.98, 0.78, 0.36)
+static var FOLDER: Color:
+	get: return UiTheme.color("folder")
 const ROW_BASE := 100
 const FIELD_BASE := 200
 const KEY_BASE := 300
@@ -449,10 +452,10 @@ func _align_playback_panel() -> void:
 	transform = Transform3D(Basis.IDENTITY, Vector3(0, top + 0.08 - bottom, 0))
 
 func has_pointer_capture() -> bool:
-	return not web_browser.hand.is_empty() or not _voice_drag.is_empty() or not audio_preview_seek.capture.is_empty() or not _drag.is_empty() or not choices.capture.is_empty() or not account_panel.web_hand.is_empty()
+	return not theme_editor.capture.is_empty() or not web_browser.hand.is_empty() or not _voice_drag.is_empty() or not audio_preview_seek.capture.is_empty() or not _drag.is_empty() or not choices.capture.is_empty() or not account_panel.web_hand.is_empty()
 
 func _place_device_status(centre: Vector2) -> void:
-	if compact or playback_expanded:
+	if theme_editor.opened or compact or playback_expanded:
 		if device_status: device_status.visible = false
 		return
 	super(centre)
@@ -491,6 +494,7 @@ func toggle() -> void:
 			_load_cloud(); refresh()
 
 func dismiss() -> void:
+	if theme_editor.opened: theme_editor.close(false)
 	# Website authentication is a modal workflow. Losing focus, an outside ray or
 	# another controls toggle must not discard a phone/MFA step in progress.
 	if account_panel.view == "web":
@@ -670,6 +674,7 @@ func _restore_audio_import_context() -> void:
 	_rebuild_rows()
 
 func _on_choice_changed(key: String, value: Variant) -> void:
+	if key == UiTheme.EDIT_CUSTOM: theme_editor.open(); return
 	if voice_manager.sample.choose(key, value): return
 	if controls_page.choose(key, value): return
 	setting_changed.emit(key, value)
@@ -754,6 +759,7 @@ func _in_list(point: Vector3) -> bool:
 		and point.y < span.x + 0.01 and point.y > span.x - span.y - 0.02
 
 func press_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: bool) -> bool:
+	if theme_editor.press(hand, origin, direction, tracked): return true
 	var login_ray: Array = account_panel.web_ray(hand, origin, direction, tracked)
 	origin = login_ray[0]; direction = login_ray[1]
 	if web_browser.press(hand, origin, direction, tracked): return true
@@ -809,6 +815,7 @@ func press_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: b
 	return true
 
 func cancel_pointer(hand: String) -> void:
+	theme_editor.cancel(hand)
 	if web_browser.hand == hand: web_browser.cancel()
 	if _voice_drag.get("hand", "") == hand: _voice_drag.clear()
 	audio_preview_seek.cancel(hand)
@@ -824,6 +831,8 @@ func update_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: 
 	var login_ray: Array = account_panel.web_ray(hand, origin, direction, tracked)
 	origin = login_ray[0]; direction = login_ray[1]
 	super(hand, origin, direction, tracked)
+	if theme_editor.opened:
+		theme_editor.update(hand, origin, direction, tracked); return
 	web_browser.move(hand, origin, direction, tracked)
 	if web_browser.hand == hand: return
 	if voice_manager.opened:
@@ -869,6 +878,8 @@ func update_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: 
 		_drag.at_us = now
 
 func release_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: bool) -> void:
+	if theme_editor.opened:
+		theme_editor.release(hand, origin, direction, tracked); return
 	var login_ray: Array = account_panel.web_ray(hand, origin, direction, tracked)
 	origin = login_ray[0]; direction = login_ray[1]
 	if web_browser.release(hand, origin, direction, tracked): return
@@ -907,6 +918,7 @@ func release_pointer(hand: String, origin: Vector3, direction: Vector3, tracked:
 
 ## Thumbstick y (up positive) scrolls the list; it never selects.
 func stick_scroll(y: float, delta: float) -> void:
+	if theme_editor.opened: return
 	if web_browser.scroll(y, delta): return
 	if cloud_pagination.opened: return
 	if voice_manager.opened:
@@ -1372,7 +1384,7 @@ func refresh() -> void:
 	if section == Section.WEB and not Distribution.web_browser_enabled():
 		web_browser.close()
 		section = Section.RECENT
-	if not voice_manager.opened: _rebuild_rows()
+	if not voice_manager.opened and not theme_editor.opened: _rebuild_rows()
 	_draw()
 	_align_playback_panel()
 
@@ -1381,7 +1393,7 @@ func _update_highlights() -> void:
 	var media := section == Section.MEDIA_SERVER
 	for button in _buttons:
 		if media and button.has("hover_picture"): button["hover_color"] = button.base_color
-		elif media and button.base_color != ACCENT: button["hover_color"] = Color(0.09, 0.17, 0.18)
+		elif media and button.base_color != ACCENT: button["hover_color"] = UiTheme.color("media_hover")
 		else: button.erase("hover_color")
 	super._update_highlights()
 	var changed := false
@@ -1999,6 +2011,10 @@ func _rebuild_rows() -> void:
 					rows.append({"title": I18n.t("Confirm clearing network file settings" if _confirm == str(["file_settings_clear", "network"]) else "Clear network file settings"), "icon": "check" if _confirm == str(["file_settings_clear", "network"]) else "trash", "selected": _confirm == str(["file_settings_clear", "network"]), "setting": ["file_settings_clear", "network"]})
 				rows.append_array(_diagnostic_rows(settings.get("diagnostic_log", {})))
 			elif tab == DISPLAY_TAB:
+				var theme_row := UiTheme.row(settings.get(UiTheme.KEY, UiTheme.current))
+				theme_row.title = I18n.t(theme_row.title); rows.append(theme_row)
+				var watch_row := WatchPalette.row(settings.get("watch_color", WatchPalette.DEFAULT))
+				watch_row.title = I18n.t(watch_row.title); rows.append(watch_row)
 				rows.append({"title": I18n.t("Control bar transparency"), "icon": "settings", "setting": ["bar_transparency", true]})
 				var quality_choices: Array = [{"value": Quality.AUTO, "label": "Auto", "hint": Quality.SCALE_AUTO_HINT}]
 				for i in Quality.SCALES.size():
@@ -2023,8 +2039,6 @@ func _rebuild_rows() -> void:
 				sharpness_row.info = Quality.SHARPNESS_INFO; rows.append(sharpness_row)
 				rows.append(_choice_row("Show FPS", "show_fps", bool(settings.get("show_fps", false)),
 					[{"value": false, "label": "Off"}, {"value": true, "label": "On"}]))
-				var watch_row := WatchPalette.row(settings.get("watch_color", WatchPalette.DEFAULT))
-				watch_row.title = I18n.t(watch_row.title); rows.append(watch_row)
 				rows.append(_choice_row(PlaybackMenuDepth.TITLE, PlaybackMenuDepth.KEY,
 					str(settings.get(PlaybackMenuDepth.KEY, PlaybackMenuDepth.DEFAULT)), PlaybackMenuDepth.choices(), true))
 				var seek_row := _choice_row("Thumbstick progress bar", "stick_seek_overlay", bool(settings.get("stick_seek_overlay", true)),
@@ -2342,6 +2356,7 @@ func _activate(target: int) -> void:
 	if not cast_action.is_empty(): cast_requested.emit(cast_action); return
 	if (image_picker_mode or voice_picker_mode) and target == CLOSE: dismiss(); return
 	if cloud_pagination.action(target): return
+	if theme_editor.opened: theme_editor.activate(target); return
 	if voice_manager.opened: voice_manager.activate(target); return
 	if target==ONLINE_PANORAMAS: online_panoramas_requested.emit(); return
 	if _subtitle_task_buttons.has(target):
@@ -2662,6 +2677,7 @@ func navigate_back() -> bool:
 	if section == Section.SETTINGS and tab == GENERAL_TAB and cloud_pagination.settings_expanded:
 		if not choices.opened.is_empty(): choices.reset(); refresh(); return true
 		cloud_pagination.settings_expanded = false; refresh(); return true
+	if theme_editor.opened: theme_editor.close(); return true
 	if voice_manager.opened: voice_manager.back(); return true
 	if system_text_input.active(): system_text_input.cancel("", true); return true
 	if subtitle_filter.active(): subtitle_filter.close(); return true
@@ -2994,7 +3010,7 @@ func _draw_compact() -> void:
 		var title_width := 0.53 if usb else 0.65
 		var provider_icon := _header_provider_icon()
 		if not provider_icon.is_empty():
-			_icon(provider_icon, Vector3(title_x + 0.022, 0.36, 0.004), 0.048, Color(0.9, 0.9, 0.9))
+			_icon(provider_icon, Vector3(title_x + 0.022, 0.36, 0.004), 0.048, UiTheme.color("provider_ink"))
 			title_x += 0.060; title_width -= 0.060
 		var title := _label(_fit_title(heading, "", title_width, 19), Vector3(title_x, 0.36, 0.004), 19)
 		title.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
@@ -3020,7 +3036,7 @@ func _draw_compact() -> void:
 		_tips[RETRY_USB] = I18n.t("Retry")
 	_button(EXPAND_LIBRARY, "", Vector2(0.28, -0.365), Vector2(0.09, 0.065), true, "expand")
 	_tips[EXPAND_LIBRARY] = I18n.t("Expand library")
-	_decoration(Vector2(1.04, 0.002), Vector2(0, 0.305), Color(0.17, 0.2, 0.24))
+	_decoration(Vector2(1.04, 0.002), Vector2(0, 0.305), UiTheme.color("divider"))
 	if not image_picker_mode and (archives.browsing or section != Section.RECENT): collections.draw_folder_header(true)
 	file_actions.draw_entry(Vector2(0.0, -0.365))
 	_draw_rows()
@@ -3106,6 +3122,8 @@ func _draw() -> void:
 	_audio_preview_state = background_audio_provider.call() if audio_import_mode and background_audio_provider.is_valid() else {}
 	_clear_layout()
 	_settings_scroll_hint = null
+	if theme_editor.opened:
+		_side.visible = false; _backdrop.visible = true; theme_editor.draw(); return
 	if web_browser.active():
 		_side.visible = false; _backdrop.visible = false
 		if is_instance_valid(device_status): device_status.visible = false
@@ -3265,7 +3283,7 @@ func _draw() -> void:
 	_align_folder_tools()
 	if not archives.browsing and preload("res://scripts/online_panorama_panel.gd").AVAILABLE and media_filter==2 and section!=Section.SETTINGS and not audio_import_mode and not image_picker_mode:
 		_round(ONLINE_PANORAMAS,"globe",Vector2(0.80,0.58),0.08,true,false,I18n.t("Online panoramas"))
-	_decoration(Vector2(1.28, 0.002), Vector2(0.19, 0.405), Color(0.17, 0.2, 0.24))
+	_decoration(Vector2(1.28, 0.002), Vector2(0.19, 0.405), UiTheme.color("divider"))
 	subtitle_filter.draw()
 	_draw_rows()
 	web_browser.library.draw_footer()
@@ -3365,7 +3383,7 @@ func _draw_crumbs(crumbs: Array, base: int = CRUMB_BASE) -> void:
 	var first := maxi(0, crumbs.size() - (2 if section in [Section.CLOUD, Section.LOCAL] or file_actions.sortable() else 4))
 	for i in range(first, crumbs.size()):
 		if not archives.browsing and section == Section.CLOUD and not _cloud_stack.is_empty() and i == maxi(1, first):
-			_icon(Icons.provider(cloud_pagination.provider()), Vector3(x + 0.025, _header_y(), 0.004), 0.055, Color(0.9, 0.9, 0.9))
+			_icon(Icons.provider(cloud_pagination.provider()), Vector3(x + 0.025, _header_y(), 0.004), 0.055, UiTheme.color("provider_ink"))
 			x += 0.070
 		var text := _fit_title(str(crumbs[i]), "", 0.24, 19)
 		var width := text_width(text, 19) + 0.05
@@ -3486,7 +3504,7 @@ func _draw_rows() -> void:
 					node.material_override.set_shader_parameter("surface_color", Color(0, 0, 0, 0))
 					node.get_child(1).visible = false
 					title.position.x = -0.58; detail.position.x = -0.58
-					set_label_size(title, 19); set_label_size(detail, 19); detail.modulate = Color.WHITE
+					set_label_size(title, 19); set_label_size(detail, 19); detail.modulate = UiTheme.color("label")
 					title.text = str(row.title); detail.text = str(row.detail)
 	if _max_scroll() > 0:
 		# Scrollbar: the thumb shows position and length; pointing at the track jumps there.
@@ -3572,6 +3590,8 @@ func _setting_field(row: Dictionary, centre: Vector2, target: int) -> void:
 		# Pointing at the title explains the setting; the row itself stays inert.
 		button.hover_disabled = true; _tips[target] = I18n.t(row.info)
 		_icon("info", Vector3(-0.55 + minf(text_width(title.text, 18), 0.43) + 0.022, title.position.y, 0.004), 0.026, MUTED, node)
+	elif not str(row.get("tooltip", "")).is_empty():
+		button.hover_disabled = true; _tips[target] = I18n.t(row.tooltip)
 	if row.has("task_progress"): _progress_on(node, float(row.task_progress), Vector2(0, -0.038), 1.1)
 	var first_field := _buttons.size()
 	choices.field(node, row, Vector2(0.54, 0) if row.get("switch", false) else Vector2(0.225, 0), 0.09 if row.get("switch", false) else 0.72)
@@ -3749,7 +3769,7 @@ func _tile(target: int, row: Dictionary, centre: Vector2) -> void:
 	name.vertical_alignment = VERTICAL_ALIGNMENT_TOP
 	name.position = Vector3(0, -0.06, 0.004)
 	var picture := icon in ["video", "image"]
-	var area := _quad(Vector2(TILE_SIZE.x - 0.02, 0.165), Vector3(0, 0.04, 0.003), Color(0.13, 0.15, 0.18) if picture else Color(TILE, 0.0), 12)
+	var area := _quad(Vector2(TILE_SIZE.x - 0.02, 0.165), Vector3(0, 0.04, 0.003), UiTheme.color("placeholder") if picture else Color(TILE, 0.0), 12)
 	node.add_child(area)
 	var shown: Texture2D = _picture(row) if picture else null
 	if shown:
@@ -3757,7 +3777,7 @@ func _tile(target: int, row: Dictionary, centre: Vector2) -> void:
 		frame.albedo_texture = shown
 		area.material_override = frame
 	else:
-		var glyph := _icon(icon, Vector3(0, 0.04, 0.005), 0.065 if picture else 0.1, MUTED if picture else (FOLDER if icon == "folder" else Color(0.93, 0.95, 0.98)), node)
+		var glyph := _icon(icon, Vector3(0, 0.04, 0.005), 0.065 if picture else 0.1, MUTED if picture else (FOLDER if icon == "folder" else UiTheme.color("text")), node)
 		glyph.material_override.render_priority = 13
 	if file_actions.editing and not file_actions.row_uri(row).is_empty():
 		var marker := _icon("check" if file_actions.is_selected(row) else "circle", Vector3(-0.115, 0.095, 0.009), 0.035, ACCENT, node)
@@ -3846,7 +3866,7 @@ func _turn_recent_page(step: int) -> void:
 
 func _progress_on(parent: Node3D, ratio: float, center: Vector2, width: float) -> void:
 	if ratio < 0.0: return
-	var track := _quad(Vector2(width, 0.003), Vector3(center.x, center.y, 0.008), Color(0.22, 0.29, 0.30), 14)
+	var track := _quad(Vector2(width, 0.003), Vector3(center.x, center.y, 0.008), UiTheme.color("preview_track"), 14)
 	parent.add_child(track)
 	if ratio <= 0.0: return
 	var filled := width * ratio
@@ -3908,10 +3928,16 @@ func _nav_button(target: int, text: String, icon: String, centre: Vector2, selec
 	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
 	label.modulate = ACCENT if selected else button.foreground
 	if not badge.is_empty():
-		label.position.y = 0.018
-		var status := _label(badge, Vector3(-0.08, -0.025, 0.004), 14, node)
+		var status := _label(badge, Vector3(0, 0, 0.004), 14, node)
 		status.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
 		status.modulate = MUTED
+		var badge_width := FONT.get_string_size(badge, HORIZONTAL_ALIGNMENT_LEFT, -1, status.font_size).x * status.pixel_size
+		var title_width := FONT.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, label.font_size).x * label.pixel_size
+		var available := 0.25 - badge_width - 0.012
+		if title_width > available:
+			label.pixel_size *= available / title_width
+			title_width = available
+		status.position.x = label.position.x + title_width + 0.012
 	_icon(icon, Vector3(-0.13, 0, 0.004), 0.05, ACCENT if selected else button.foreground, node)
 
 func _draw_about() -> void:
@@ -3971,7 +3997,7 @@ func _draw_editor() -> void:
 		label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
 		var name := _label(I18n.t("IP address" if i == 0 else "Port") if dlna_editor else I18n.t(FIELD_NAMES[i]), Vector3(-field_width * 0.5 + 0.03 if dlna_editor else -0.28, 0.02 if dlna_editor else 0.0, 0.004), 17, node)
 		name.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
-		name.modulate = Color(0.06, 0.18, 0.14) if dlna_editor and i == _field else MUTED
+		name.modulate = UiTheme.color("editor_ink") if dlna_editor and i == _field else MUTED
 	if _editor_custom_context().is_empty():
 		var layer: Array = SYMBOLS if _symbols else KEYS
 		for r in layer.size():

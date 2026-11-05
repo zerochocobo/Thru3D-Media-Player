@@ -92,9 +92,7 @@ func decorate(job: Dictionary) -> void:
 	job["magazine_rtl"] = right_to_left
 	if photo.Methods.supports(photo.platform, "prepare_photo_3d") or photo.Methods.supports(photo.platform, "prepare_photo_depth"):
 		DirAccess.make_dir_recursive_absolute(cache_directory)
-		var at := int(job.get("index", -1))
-		var pdf: bool = at >= 0 and at < photo.queue.size() and preload("res://scripts/pdf_pages.gd").page(str(photo.queue[at].uri))
-		job["magazine_path"] = cache_directory.path_join("spread-%d-%d-%d.%s" % [Time.get_ticks_usec(), photo.get_instance_id(), photo._serial, "jpg" if pdf else "png"])
+		job["magazine_path"] = cache_directory.path_join("spread-%d-%d-%d.t3di" % [Time.get_ticks_usec(), photo.get_instance_id(), photo._serial])
 
 func ready(id: int, info: Variant) -> bool:
 	if transfer.is_empty() or id != int(transfer.id): return false
@@ -126,6 +124,19 @@ func cleanup_job(job: Dictionary) -> void:
 
 static func remove_file(path: String) -> void:
 	if not path.is_empty() and FileAccess.file_exists(path): DirAccess.remove_absolute(path)
+
+## Native depth/stereo read the joined spread as raw RGBA rows. Encoding it as PNG/JPEG cost
+## 0.5 s for a 3.6 MP spread on Quest 3 (seconds for PDF spreads), and Android decoded it twice more.
+static func save_raw(image: Image, path: String) -> bool:
+	if image.get_format() != Image.FORMAT_RGBA8 or image.has_mipmaps():
+		image = image.duplicate() as Image
+		image.clear_mipmaps(); image.convert(Image.FORMAT_RGBA8)
+	var file := FileAccess.open(path, FileAccess.WRITE)
+	if file == null: return false
+	file.store_buffer("T3DI".to_ascii_buffer())
+	file.store_32(image.get_width()); file.store_32(image.get_height()); file.store_32(1)
+	file.store_buffer(image.get_data())
+	return file.get_error() == OK
 
 ## Equal-height pages with no crop or gap. Bound the finished spread to 8192 x 4096.
 static func compose(left: Image, right: Image, rtl: bool) -> Image:

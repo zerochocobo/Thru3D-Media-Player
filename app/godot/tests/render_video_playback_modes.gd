@@ -1,7 +1,7 @@
 extends SceneTree
 const Menu := preload("res://scripts/player_menu.gd")
 const I18n := preload("res://scripts/i18n.gd")
-const MODES := ["single", "repeat_one", "sequence", "repeat_all"]
+const MODES := ["single", "repeat_one", "sequence", "repeat_all", "shuffle"]
 var state := {"has_video": true, "geometry": 0, "playing": true, "playback_state": "playing", "playback_mode": "single", "duration_ms": 60000, "position_ms": 1000}
 var checks := 0
 var failures: Array[String] = []

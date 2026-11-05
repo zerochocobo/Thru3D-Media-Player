@@ -1,4 +1,5 @@
 extends RefCounted
+const UiTheme := preload("res://scripts/ui_theme.gd")
 
 const I18n := preload("res://scripts/i18n.gd")
 const Sites := preload("res://scripts/web_video_sites.gd")
@@ -47,15 +48,15 @@ func draw() -> bool:
 	var menu: Node = panel.menu
 	var frame := backdrop()
 	menu._set_backdrop(frame[0], frame[1])
-	_caption(I18n.t("Browser"), Vector2(-0.49, 0.435), 29, Color("f0f5fa")).horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
-	menu._icon("globe", Vector3(0.73, 0.435, 0.009), 0.054, Color("77bba9"))
+	_caption(I18n.t("Browser"), Vector2(-0.49, 0.435), 29, UiTheme.color("web_title")).horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+	menu._icon("globe", Vector3(0.73, 0.435, 0.009), 0.054, UiTheme.color("web_icon"))
 	menu._button(BASE, "", Vector2(0.055, 0.27), Vector2(1.13, 0.115))
 	var field: Dictionary = menu._buttons.back()
-	field.base_color = Color("172535")
+	field.base_color = UiTheme.color("web_input")
 	field.node.material_override.set_shader_parameter("surface_color", field.base_color)
-	menu._icon("search", Vector3(-0.505, 0, 0.006), 0.04, Color("8fa4b8"), field.node)
+	menu._icon("search", Vector3(-0.505, 0, 0.006), 0.04, UiTheme.color("web_search"), field.node)
 	var text: String = panel.address if not panel.address.is_empty() else I18n.t("Website or video link")
-	var input := _caption(menu._fit_title(text, "", 0.95, 21), Vector2(-0.46, 0), 21, Color("dce9f2") if not panel.address.is_empty() else Color("91a4b7"), field.node)
+	var input := _caption(menu._fit_title(text, "", 0.95, 21), Vector2(-0.46, 0), 21, UiTheme.color("web_input_ink") if not panel.address.is_empty() else UiTheme.color("web_hint"), field.node)
 	input.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
 	menu._button(BASE + 1, "", Vector2(0.725, 0.27), Vector2(0.12, 0.115), not panel.address.strip_edges().is_empty(), "next", true)
 	menu._tips[BASE + 1] = I18n.t("Open")
@@ -67,7 +68,7 @@ func draw() -> bool:
 	var resume: Node3D = menu._buttons.back().node
 	menu._icon("globe", Vector3(-0.455, 0, 0.006), 0.036, menu.MUTED, resume)
 	var page_name: String = title if not title.is_empty() else (I18n.t("New tab") if url in ["", "about:blank"] else menu.web_browser.library.display_address(url))
-	_caption(menu._fit_title(I18n.t("Continue browsing") + " · " + page_name, "", 0.86, 19), Vector2(-0.41, 0), 19, Color("d9e1eb"), resume).horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+	_caption(menu._fit_title(I18n.t("Continue browsing") + " · " + page_name, "", 0.86, 19), Vector2(-0.41, 0), 19, UiTheme.color("web_resume"), resume).horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
 	menu._tips[BASE + 2] = url if not url.is_empty() else I18n.t("New tab")
 	menu._button(BASE + 3, "", Vector2(0.585, 0.135), Vector2(0.12, 0.10), true, "bookmark")
 	menu._tips[BASE + 3] = I18n.t("Bookmarks")
@@ -78,13 +79,13 @@ func draw() -> bool:
 	var paged := expanded and pages > 1
 	menu._text_button(BASE + 5, "", Vector2(-0.10 if paged else 0.13, 0.0), Vector2(0.83 if paged else 1.29, 0.095))
 	var fold: Node3D = menu._buttons.back().node
-	var fold_caption := _caption(I18n.t("Featured sites"), Vector2(-0.38 if paged else -0.61, 0), 21, Color("c7d5e3"), fold)
+	var fold_caption := _caption(I18n.t("Featured sites"), Vector2(-0.38 if paged else -0.61, 0), 21, UiTheme.color("web_heading"), fold)
 	fold_caption.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
 	menu._buttons.back().hover_labels.append(fold_caption)
-	menu._buttons.back().select_arrow = menu._icon("chevron_up" if expanded else "chevron_down", Vector3(0.36 if paged else 0.60, 0, 0.009), 0.032, Color("8da5b7"), fold)
+	menu._buttons.back().select_arrow = menu._icon("chevron_up" if expanded else "chevron_down", Vector3(0.36 if paged else 0.60, 0, 0.009), 0.032, UiTheme.color("web_arrow"), fold)
 	if paged:
 		menu._button(BASE + 6, "", Vector2(0.43, 0.0), Vector2(0.075, 0.07), site_page > 0, "previous")
-		_caption("%d / %d" % [site_page + 1, pages], Vector2(0.585, 0.0), 16, Color("91a4b7"))
+		_caption("%d / %d" % [site_page + 1, pages], Vector2(0.585, 0.0), 16, UiTheme.color("web_hint"))
 		menu._button(BASE + 7, "", Vector2(0.74, 0.0), Vector2(0.075, 0.07), site_page + 1 < pages, "next")
 	if expanded:
 		for slot in order.size():
@@ -93,16 +94,17 @@ func draw() -> bool:
 			var center := Vector2(-0.30 + (slot % COLUMNS) * 0.435, -0.11 - floori(slot / float(COLUMNS)) * 0.09)
 			menu._button(SITE_BASE + index, "", center, Vector2(0.40, 0.076))
 			var card: Dictionary = menu._buttons.back()
-			card.base_color = Color("15212e"); card.hover_color = Color("253e4a")
+			card.base_color = UiTheme.color("web_card"); card.hover_color = UiTheme.color("web_card_hover")
 			card.node.material_override.set_shader_parameter("surface_color", card.base_color)
 			card.node.material_override.set_shader_parameter("corner_radius", 0.014)
-			menu._icon(str(site.icon), Vector3(-0.158, 0, 0.009), 0.044, site.color, card.node)
+			var site_ink: Color = UiTheme.site_icon_color(str(site.icon), site.color)
+			menu._icon(str(site.icon), Vector3(-0.158, 0, 0.009), 0.044, site_ink, card.node)
 			var native_playback := Sites.supports_native(site)
 			var name := I18n.t(site.name)
-			var label := _caption(menu._fit_title(name, "", 0.244 if native_playback else 0.292, 18), Vector2(-0.116, 0), 18, Color("dbe6ef"), card.node)
+			var label := _caption(menu._fit_title(name, "", 0.244 if native_playback else 0.292, 18), Vector2(-0.116, 0), 18, UiTheme.color("web_caption"), card.node)
 			label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
 			if native_playback:
-				var badge: Node = menu._icon("player_supported", Vector3(0.166, 0, 0.009), 0.03, Color("70dfb6"), card.node)
+				var badge: Node = menu._icon("player_supported", Vector3(0.166, 0, 0.009), 0.03, UiTheme.color("web_supported"), card.node)
 				badge.name = "NativePlaybackBadge"
 			menu._tips[SITE_BASE + index] = name + "\n" + (I18n.t(NATIVE_TIP) if native_playback else str(site.url))
 	menu._update_highlights()

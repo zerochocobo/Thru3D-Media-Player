@@ -1,4 +1,4 @@
-extends "res://tests/test_photo_presentation.gd"
+﻿extends "res://tests/test_photo_presentation.gd"
 ## Production GPU preparation and the first frame after selecting a cache hit.
 var output := ProjectSettings.globalize_path("res://../../build/output/photo-cache-presentation-20261101")
 const Fixture := preload("res://tests/test_photo_presentation.gd")
@@ -162,7 +162,7 @@ func native_gate_case() -> void:
 	while Time.get_ticks_msec() < deadline and not photo.render_cache.ready(entry,1):
 		await create_timer(.05).timeout
 	photo.set_process(false)
-	check(host.starts > 60 and host.ends > 60,"The fallback brackets real render frames through the render-thread API")
+	check(host.starts >= Budget.MIN_SAMPLES and host.ends >= Budget.MIN_SAMPLES,"The fallback brackets real render frames through the render-thread API")
 	check(photo.resource_budget.gpu_source == "gles_timer" and photo.resource_budget.can_start(1),
 		"Normal settling admits the controlled frame profile when Godot GPU readings stay zero but EXT samples are valid")
 	check(photo.render_cache.ready(entry,1),"Normal scheduler processing reaches GPU-ready without manually priming the budget")

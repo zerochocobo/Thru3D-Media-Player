@@ -33,6 +33,11 @@ func sync(shown: bool) -> void:
 	_round(RESTART, "restart", Vector2(0.05, 0), 0.075, true, false, I18n.t("Play from the start"))
 	_round(EJECT, "eject", Vector2(0.15, 0), 0.075, true, false, I18n.t("Eject disc"))
 
+func _redraw_theme() -> void:
+	_key = ""
+	_backdrop.material_override.set_shader_parameter("surface_color", PANEL)
+	sync(visible)
+
 ## Captured into its own sharp compositor plane like the other ray panels.
 func composition_root() -> Node3D:
 	return self

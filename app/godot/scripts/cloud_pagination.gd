@@ -3,8 +3,8 @@ extends RefCounted
 ## Rows are prepared in small frame budgets; drawing still uses LibraryMenu's viewport.
 const Methods := preload("res://scripts/platform_methods.gd")
 const Preferences := preload("res://scripts/cloud_paging_preferences.gd")
-const DEFAULTS := {"115_open": 200, "baidu": 1000, "aliyun_open": 200, "quark_open": 100, "onedrive": 200, "webdav": 200}
-const NAMES := {"115_open": "115", "baidu": "Baidu", "aliyun_open": "Aliyun", "quark_open": "Quark", "onedrive": "OneDrive", "webdav": "WebDAV"}
+const DEFAULTS := {"115_open": 200, "baidu": 1000, "aliyun_open": 200, "quark_open": 100, "123_open": 100, "onedrive": 200, "webdav": 200}
+const NAMES := {"115_open": "115", "baidu": "Baidu", "aliyun_open": "Aliyun", "quark_open": "Quark", "123_open": "123 Cloud Drive", "onedrive": "OneDrive", "webdav": "WebDAV"}
 const MAX_RAW := 12000
 const MAX_BYTES := 12 * 1024 * 1024
 const MAX_PAGE := 100000
@@ -65,7 +65,7 @@ func _init(owner: Node) -> void: menu = owner
 
 static func choices(provider: String) -> Array:
 	var result: Array = [{"value": 0, "label": "Auto (%d)" % int(DEFAULTS.get(provider, 200))}]
-	var cap := 1000 if provider in ["baidu", "webdav"] else (100 if provider == "quark_open" else 200)
+	var cap := 1000 if provider in ["baidu", "webdav"] else (100 if provider in ["quark_open", "123_open"] else 200)
 	for value in [48, 100, 200, 500, 1000]:
 		if value <= cap: result.append({"value": value, "label": str(value)})
 	return result

@@ -75,6 +75,21 @@ func run() -> void:
 	var pip: RefCounted = video.pip
 	var window: Node3D = pip.windows[1]
 	check_resize_feedback(pip, window, head)
+	window.controls = true; window.refresh()
+	for target in [2, 3, 4, 5]:
+		var button: Dictionary = window._buttons.filter(func(b): return b.target == target)[0]
+		var ray := [button.node.to_global(Vector3(0, 0, 0.8)), -window.global_basis.z]
+		window.update_pointer("right_hand", ray[0], ray[1], true)
+		check(window._hover.right_hand == target and window._pointers.right_hand.dot.visible, "Toolbar ray identifies each button")
+		check(button.node.material_override.get_shader_parameter("surface_color").a > 0, "Toolbar hover lights a visible surface")
+		if target == 5: continue # Opens the image picker in the full application.
+		check(pip.press("right_hand", "trigger_click", ray, null, head), "Toolbar trigger is handled")
+		button = window._buttons.filter(func(b): return b.target == target)[0]
+		check(button.node.material_override.get_shader_parameter("surface_color") == window.UiTheme.color("pip_held"), "Toolbar down has distinct held feedback")
+		check(pip.release("right_hand", "trigger_click"), "Toolbar up clears held state")
+		window.update_pointer("right_hand", Vector3.ZERO, Vector3.ZERO, false)
+		check(button.base_color == window.UiTheme.color("pip_selected"), "Selection and open options stay visibly selected after the ray leaves")
+		pip.cancel_interaction(); window.controls = true; window.refresh()
 	window.global_basis *= Basis(Vector3.FORWARD, 0.4)
 	var direction: Vector3 = (window.global_position - head.origin).normalized()
 	var pose := Transform3D(Basis.looking_at(direction), head.origin)

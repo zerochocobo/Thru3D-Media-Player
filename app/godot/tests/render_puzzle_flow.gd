@@ -10,6 +10,7 @@ const LibraryMenu := preload("res://scripts/puzzle/puzzle_library_menu.gd")
 const PhotoEntry := preload("res://scripts/puzzle/puzzle_photo_entry.gd")
 const Reference := preload("res://scripts/puzzle/puzzle_reference.gd")
 const Dock := preload("res://scripts/puzzle/puzzle_dock.gd")
+const Palette := preload("res://scripts/ui_theme.gd")
 class HintHost extends "res://scripts/puzzle/puzzle_host.gd":
 	func _ready() -> void: set_process(false)
 class HintApp extends Node:
@@ -154,10 +155,20 @@ func _run() -> void:
 				var name_value: String="12-hd-"+("low-" if low_end else "standard-")+language+"-"+mode_value
 				rendered.save_png(output.path_join(name_value+".png"))
 				var ink := 0
+				var paper := Palette.color("panel")
+				var foreground := Palette.color("label")
+				var ink_axis := Vector3(foreground.r-paper.r,foreground.g-paper.g,foreground.b-paper.b)
 				for y in range(0,rendered.get_height(),3):
 					for x in range(0,rendered.get_width(),3):
 						var pixel := rendered.get_pixel(x,y)
-						if pixel.a>0.5 and minf(pixel.r,minf(pixel.g,pixel.b))>0.65: ink+=1
+						if Palette.current == Palette.DEFAULT:
+							if pixel.a>0.5 and minf(pixel.r,minf(pixel.g,pixel.b))>0.65: ink+=1
+						else:
+							# Count antialiased strokes along the actual paper-to-ink blend,
+							# rather than assume that every theme has white glyphs.
+							var relative := Vector3(pixel.r-paper.r,pixel.g-paper.g,pixel.b-paper.b)
+							var coverage := relative.dot(ink_axis)/ink_axis.length_squared()
+							if pixel.a>0.5 and coverage>0.65 and (relative-ink_axis*coverage).length()<0.10: ink+=1
 				check(ink>100,"Captured page contains visible text strokes: "+name_value)
 				var density: float=slot.raw.size.y/slot.layer.quad_size.y
 				check(density>=Composition.DENSITY*(Composition.LOW_END_SCALE if low_end else 1.0)*0.9,"Game menu retains the normal capture density")

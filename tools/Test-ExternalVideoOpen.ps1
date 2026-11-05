@@ -10,11 +10,28 @@ $ErrorActionPreference = 'Stop'
 $workspace = Split-Path -Parent $PSScriptRoot
 $adb = Join-Path $ToolRoot 'android-sdk/platform-tools/adb.exe'
 $uri = "file:///sdcard/Download/Thru3D-External-Test/Thru3D-External-$Fixture.mp4"
-$candidates = (& $adb -s $Serial shell cmd package query-activities --brief -a android.intent.action.VIEW -t video/mp4 -d $uri) -join "`n"
 $entry = "$ApplicationId/org.vrpassthroughplayer.plugin.ExternalPlaybackActivity"
-if ($LASTEXITCODE -ne 0 -or -not $candidates.Contains($entry)) { throw 'Production external video association is missing.' }
-if ($candidates.Contains("$ApplicationId/org.vrpassthroughplayer.plugin.ExternalPlaybackProbeActivity")) { throw 'Diagnostic probe must not appear in the chooser.' }
-$evidence = [ordered]@{ mode=$Mode; registered=$true; component=$entry; fixture=$Fixture }
+$registration = @()
+# Read-only queries: these synthetic addresses are never opened or fetched. Use the
+# same default-only filtering as the chooser; an unrestricted query hides HTTP(S) bugs.
+foreach ($scheme in @('file', 'content', 'http', 'https')) {
+    $queryUri = if ($scheme -eq 'file') { $uri } else { "${scheme}://example.com/thru3d-registration.mp4" }
+    $categories = @('android.intent.category.DEFAULT')
+    if ($scheme -in @('http', 'https')) { $categories += 'android.intent.category.BROWSABLE' }
+    foreach ($category in $categories) {
+        foreach ($mime in @('video/mp4', 'application/vnd.apple.mpegurl', 'application/x-mpegURL')) {
+            $candidates = (& $adb -s $Serial shell cmd package query-activities --brief --query-flags 65536 -a android.intent.action.VIEW -c $category -t $mime -d $queryUri) -join "`n"
+            if ($LASTEXITCODE -ne 0 -or -not $candidates.Contains($entry)) { throw "Production external video association is missing: $scheme $mime $category" }
+            if ($candidates.Contains("$ApplicationId/org.vrpassthroughplayer.plugin.ExternalPlaybackProbeActivity")) { throw 'Diagnostic probe must not appear in the chooser.' }
+            $registration += [ordered]@{ scheme=$scheme; mime=$mime; category=$category; registered=$true }
+        }
+    }
+}
+foreach ($scheme in @('http', 'https')) {
+    $candidates = (& $adb -s $Serial shell cmd package query-activities --brief --query-flags 65536 -a android.intent.action.VIEW -t text/html -d "${scheme}://example.com/") -join "`n"
+    if ($LASTEXITCODE -ne 0 -or $candidates.Contains($entry)) { throw 'External video entry must not claim ordinary HTML pages.' }
+}
+$evidence = [ordered]@{ mode=$Mode; registered=$true; component=$entry; fixture=$Fixture; registration=$registration; html_excluded=$true }
 if ($Mode -ne 'Registration') {
     # Public, synthetic fixtures only. No authenticated URI or user media appears in shell/log output.
     & $adb -s $Serial shell mkdir -p /sdcard/Download/Thru3D-External-Test | Out-Null

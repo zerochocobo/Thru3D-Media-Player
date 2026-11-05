@@ -62,7 +62,7 @@ func _draw() -> void:
 	var pages := _label("%d / %d" % [page + 1, _page_count()], Vector3(0.66, 0.365, 0.004), 18)
 	pages.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	pages.modulate = MUTED
-	_decoration(Vector2(1.4, 0.002), Vector2(0, 0.315), Color(0.17, 0.2, 0.24))
+	_decoration(Vector2(1.4, 0.002), Vector2(0, 0.315), UiTheme.color("divider"))
 	var first := page * PAGE_SIZE
 	for index in range(first, mini(rows.size() + 1, first + PAGE_SIZE)):
 		var text := "Open video"

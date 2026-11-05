@@ -5,6 +5,8 @@ uniform sampler2D upcoming : source_color, filter_linear;
 uniform float transition = 0.0;
 uniform vec2 surface_size = vec2(1.0);
 uniform float corner_radius = 0.028;
+uniform bool light_theme = false;
+uniform vec4 panel_tint : source_color = vec4(1.0);
 vec2 cover_uv(vec2 uv, ivec2 pixels) {
     float image_aspect = float(pixels.x) / max(1.0, float(pixels.y));
     float panel_aspect = surface_size.x / surface_size.y;
@@ -22,6 +24,7 @@ void fragment() {
 	float shade = mix(0.16, 0.272, smoothstep(0.1, 0.9, UV.x));
     shade *= mix(1.0, 0.42, smoothstep(0.45, 1.0, UV.y));
     ALBEDO = color * shade;
+    if (light_theme) ALBEDO = mix(panel_tint.rgb, color, 0.045);
     vec2 q = abs((UV - vec2(0.5)) * surface_size) - (surface_size * 0.5 - vec2(corner_radius));
     float distance = length(max(q, vec2(0.0))) + min(max(q.x, q.y), 0.0) - corner_radius;
     ALPHA = 1.0 - smoothstep(-0.001, 0.001, distance);

@@ -66,7 +66,7 @@ func run() -> void:
 			check(app.photo.navigate(step), "PDF spread navigation succeeds")
 			await settle(app.photo); await idle(app)
 			check(app.photo.gallery.mode == 4 and app.photo._size == Vector2(200, 200), "Navigation and idle prefetch retain a real two-page spread")
-			check(host.window.keep.size() >= 4 and host.window.keep.size() <= 6, "Native reading cache window follows adjacent spreads")
+			check(host.window.keep.size() >= 4 and host.window.keep.size() <= 8, "Native reading cache window follows adjacent spreads and the one beyond")
 		app._show_player_menu()
 		check(app.photo_menu._state.layout == 4, "Menu still reports Magazine after multiple spreads")
 		config.load(app.settings_path)

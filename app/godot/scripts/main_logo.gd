@@ -2,6 +2,7 @@ extends MeshInstance3D
 
 ## One transparent icon + wordmark asset shared by the startup and library.
 const TEXTURE := preload("res://branding/thru3d-logo-transparent.png")
+const UiTheme := preload("res://scripts/ui_theme.gd")
 
 func _init(width: float = 0.9) -> void:
 	name = "MainLogo"
@@ -36,6 +37,8 @@ func align_navigation(icon_centre: float, text_left: float) -> void:
 	var material := material_override.duplicate() as StandardMaterial3D
 	material.uv1_scale.x = (TEXTURE.get_width() - 800.0) / TEXTURE.get_width()
 	material.uv1_offset.x = 800.0 / TEXTURE.get_width()
+	# Keep the colored mark; the separate pale wordmark needs dark ink on light panels.
+	if UiTheme.light(): material.albedo_color = UiTheme.color("brand_ink")
 	wordmark.material_override = material
 	wordmark.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	add_child(wordmark)

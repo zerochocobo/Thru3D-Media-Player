@@ -1,9 +1,11 @@
 extends RefCounted
+const UiTheme := preload("res://scripts/ui_theme.gd")
 ## Fixed library and detail carousels, operated by rays and scroll input.
 const I18n := preload("res://scripts/i18n.gd")
 const BUTTON_OUTLINE := preload("res://shaders/menu_outline.gdshader")
 const HOVER_PICTURE := preload("res://shaders/media_picture.gdshader")
-const FAVORITE_COLOR := Color(1.0, 0.23, 0.30)
+static var FAVORITE_COLOR: Color:
+	get: return UiTheme.color("favorite")
 const ACTORS_VISIBLE := 5
 const DETAIL_TITLE_SIZE := 30
 const OVERVIEW_SIZE := 28
@@ -333,7 +335,7 @@ func draw_detail() -> void:
 	var play_button: Dictionary = menu._buttons.back()
 	play_button.node.material_override.shader = BUTTON_OUTLINE
 	play_button.node.material_override.render_priority = 12
-	play_button.base_color = Color(0.72, 0.79, 0.82, 0.85)
+	play_button.base_color = UiTheme.color("outline")
 	play_button.node.material_override.set_shader_parameter("surface_color", play_button.base_color)
 	if play_button.node.has_meta("menu_original_shader"): play_button.node.remove_meta("menu_original_shader")
 	menu._apply_overlay_node(play_button.node)
@@ -344,7 +346,7 @@ func draw_detail() -> void:
 		var favorite_button: Dictionary = menu._buttons.back()
 		favorite_button.node.get_child(1).material_override.albedo_color = FAVORITE_COLOR
 		var caption: Label3D = menu._label(I18n.t("Favorited"), Vector3(0, -0.05, 0.004), 16, favorite_button.node)
-		caption.modulate = Color(0.93, 0.95, 0.98)
+		caption.modulate = UiTheme.color("text")
 	menu._button(browser.ACTION + 38, "", Vector2(0.64, 0.135), Vector2(0.09, 0.075), true, "info")
 	for strip in visible_sections():
 		var y := section_y(strip)
@@ -357,7 +359,7 @@ func draw_detail() -> void:
 					var card: MeshInstance3D = menu._buttons.back().node
 					_picture(part_picture(parts()[i]), Vector2(0, 0.014), Vector2(0.31, 0.207), card)
 					var caption: Label3D = menu._label(str(parts()[i].get("part_label", "#%d" % (i + 1))), Vector3(0, -0.108, 0.009), 16, card)
-					caption.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER; caption.modulate = menu.ACCENT if i == selected_part else Color.WHITE
+					caption.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER; caption.modulate = menu.ACCENT if i == selected_part else UiTheme.color("label")
 					menu._tips[PART + i] = str(parts()[i].get("title", ""))
 				if parts().size() > 2:
 					menu._button(browser.ACTION + 41, "‹", Vector2(-0.027, y), Vector2(0.04, 0.06), part_start > 0)

@@ -1,4 +1,5 @@
 extends RefCounted
+const UiTheme := preload("res://scripts/ui_theme.gd")
 ## Account forms and web login share the existing VR library ray menu.
 const I18n := preload("res://scripts/i18n.gd")
 const Methods := preload("res://scripts/platform_methods.gd")
@@ -101,7 +102,7 @@ func start(type: String, selected_provider: String = "", id: String = "", defaul
 	_begin_field_input()
 
 func provider_name(value: String) -> String:
-	return {"115": "115", "115_open": "115", "onedrive": "OneDrive", "webdav": "WebDAV", "baidu": I18n.t("Baidu Netdisk"), "aliyun_open": I18n.t("Aliyun Drive"), "quark_open": I18n.t("Quark Netdisk"), "emby": "Emby", "jellyfin": "Jellyfin", "stash": "Stash", "xbvr": "XBVR", "plex": "Plex"}.get(value, value)
+	return {"115": "115", "115_open": "115", "onedrive": "OneDrive", "webdav": "WebDAV", "baidu": I18n.t("Baidu Netdisk"), "aliyun_open": I18n.t("Aliyun Drive"), "quark_open": I18n.t("Quark Netdisk"), "123_open": I18n.t("123 Cloud Drive"), "emby": "Emby", "jellyfin": "Jellyfin", "stash": "Stash", "xbvr": "XBVR", "plex": "Plex"}.get(value, value)
 
 func poll() -> void:
 	if session <= 0 or not menu.platform: return
@@ -200,7 +201,7 @@ func rows() -> Array[Dictionary]:
 	var result: Array[Dictionary] = []
 	if view == "choose":
 		if kind == "cloud":
-			for p in ["115_open", "baidu", "aliyun_open", "quark_open", "onedrive", "webdav"]: result.append({"title": provider_name(p), "icon": menu.Icons.provider(p), "account_provider": p})
+			for p in ["115_open", "baidu", "aliyun_open", "quark_open", "123_open", "onedrive", "webdav"]: result.append({"title": provider_name(p), "icon": menu.Icons.provider(p), "account_provider": p})
 		else:
 			result.append({"title": I18n.t("Search local network"), "icon": "refresh", "account_discover": true})
 			for p in ["emby", "jellyfin", "plex", "stash", "xbvr"]: result.append({"title": provider_name(p), "icon": menu.Icons.provider(p, "server"), "account_provider": p})
@@ -315,7 +316,7 @@ func _draw_server_choices() -> void:
 		menu._button(menu.ROW_BASE + i, str(row.title), Vector2(-0.17 + (k % 2) * 0.65, 0.24 - (k / 2) * 0.19), Vector2(0.60, 0.16), true, "", false, menu._list)
 		var card: MeshInstance3D = menu._buttons.back().node
 		card.get_child(0).position.y = -0.048
-		menu._icon(str(row.icon), Vector3(0, 0.028, 0.004), 0.078, Color(0.9, 0.9, 0.9), card)
+		menu._icon(str(row.icon), Vector3(0, 0.028, 0.004), 0.078, UiTheme.color("provider_ink"), card)
 	if not menu.rows.is_empty():
 		menu._button(menu.ROW_BASE, str(menu.rows[0].title), Vector2(0.155, -0.36), Vector2(1.25, 0.095), true, "", false, menu._list)
 
@@ -350,7 +351,7 @@ func draw() -> void:
 				if provider == "115":
 					menu._button(BASE + 7, I18n.t("Sign in on website"), Vector2(-0.15, login_y), Vector2(0.54, 0.077), enabled)
 					menu._button(BASE + 6, I18n.t("Sign in"), Vector2(0.46, login_y), Vector2(0.54, 0.077), enabled and not str(data.get("fields", {}).get("username", "")).is_empty() and int(data.get("password_length", 0)) > 0, "", true)
-				else: menu._button(BASE + 7, I18n.t("Authorize" if provider in ["115_open", "baidu", "aliyun_open", "quark_open", "onedrive"] else "Sign in on website"), Vector2(0.17, login_y), Vector2(0.7, 0.077), enabled, "", true)
+				else: menu._button(BASE + 7, I18n.t("Authorize" if provider in ["115_open", "baidu", "aliyun_open", "quark_open", "123_open", "onedrive"] else "Sign in on website"), Vector2(0.17, login_y), Vector2(0.7, 0.077), enabled, "", true)
 				if _editing_id():
 					menu._button(BASE + 8, "", Vector2(0.73, header if compact else -0.51), Vector2(0.1, 0.07), enabled and not str(data.get("fields", {}).get("name", "")).strip_edges().is_empty(), "check")
 					menu._tips[BASE + 8] = I18n.t("Save name")
@@ -399,7 +400,7 @@ func draw_fields(enabled: bool) -> void:
 		label.text = I18n.t(names[key]); menu.set_label_size(label, 16); label.position = Vector3(-0.57, 0.012, 0.004); label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
 		var detail: Label3D = menu._label(menu._fit_title(value, "", 1.1, 19), Vector3(-0.57, -0.018, 0.004), 19, node)
 		detail.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
-		detail.modulate = Color(0.04, 0.10, 0.08) if key == field else Color.WHITE
+		detail.modulate = UiTheme.color("account_editor_ink") if key == field else UiTheme.color("label")
 
 func draw_keyboard(enabled: bool, offset: Vector2 = Vector2.ZERO) -> void:
 	if not _field_context().is_empty(): return
@@ -462,7 +463,7 @@ func draw_web() -> void:
 	menu._button(WEB_SCROLL, "", Vector2(0.91, 0.135), Vector2(0.045, 0.92), can_scroll)
 	var thumb := clampf(page_px / range_px, 0.08, 1.0) * 0.92
 	var fraction := clampf(float(info.get("scroll_y", 0)) / maxf(1.0, range_px - page_px), 0, 1)
-	menu._decoration(Vector2(0.025, thumb), Vector2(0.91, 0.595 - thumb * 0.5 - fraction * (0.92 - thumb)), menu.ACCENT if can_scroll else Color(0.4, 0.45, 0.5))
+	menu._decoration(Vector2(0.025, thumb), Vector2(0.91, 0.595 - thumb * 0.5 - fraction * (0.92 - thumb)), menu.ACCENT if can_scroll else UiTheme.color("inactive_scroll"))
 	menu._button(BASE + 25, "", Vector2(0.91, 0.63), Vector2(0.06, 0.06), can_scroll, "arrow_up")
 	menu._button(BASE + 26, "", Vector2(0.91, -0.36), Vector2(0.06, 0.06), can_scroll, "arrow_down")
 	menu._button(BASE + 21, I18n.t("Finish sign-in"), Vector2(0, -0.48), Vector2(0.45, 0.08), true, "", true)

@@ -346,7 +346,7 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
         runCatching {
             val data = JSONObject(payload)
             fun list(key: String): List<String> = data.optJSONArray(key)?.let { values ->
-                (0 until minOf(values.length(), 6)).map { values.getString(it) }
+                (0 until minOf(values.length(), 8)).map { values.getString(it) } // ReadingPageCache bounds the window itself
             } ?: emptyList()
             readingPages.window(list("keep"), list("ahead"))
         }
@@ -431,7 +431,8 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     @UsedByGodot fun background_resource_policy(): String {
         val value = BackgroundResourceBudget.snapshot(if (closed.get()) null else activity?.applicationContext)
         return JSONObject().put("spare_bytes", value.spare).put("retain", value.retain)
-            .put("work", value.work).put("cache_limit", value.cacheLimit).put("reserve_bytes", value.reserve).toString()
+            .put("work", value.work).put("cache_limit", value.cacheLimit).put("reserve_bytes", value.reserve)
+            .put("photo_model_ready", PhotoDepthRuntime.alive()).toString()
     }
     // Invoked only through RenderingServer.call_on_render_thread with its EGL context current.
     @UsedByGodot fun background_gpu_timing(action: Int): Double =
@@ -474,6 +475,10 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
         (photoPreloads.portrait(id,token,strength.toFloat(),true,rotation) || photos.portrait(id,token,strength.toFloat(),true,rotation))
     @UsedByGodot fun cancel_preloaded_photo_depth() { photoPreloads.cancelBackgroundDepth(); photos.cancelBackgroundDepth() }
     @UsedByGodot fun update_photo_3d_strength(strength: Double) { photos.updateDepthStrength(strength.toFloat()); photoPreloads.updateDepthStrength(strength.toFloat()) }
+    @UsedByGodot fun warm_photo_depth_runtime() {
+        val app = activity?.applicationContext ?: return
+        PhotoDepthRuntime.warm(app) { photos.depthPending() || photoPreloads.depthPending() }
+    }
     @UsedByGodot fun release_photo_depth_runtime() { photos.cancelDepth(); photoPreloads.cancelDepth(); PhotoDepthRuntime.release() }
     @UsedByGodot fun photo_cache_usage(): String {
         val app = activity?.applicationContext ?: return "{}"
@@ -873,6 +878,7 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     @UsedByGodot fun narration_voice_manager_request(options: String): Boolean = !closed.get() && mpv.voiceManagerRequest(options)
     @UsedByGodot fun narration_voice_manager_status(): String = if(closed.get()) "{}" else mpv.voiceManagerStatus()
     @UsedByGodot fun comic_reader_configure(voice: String,language: String): Boolean = !closed.get() && mpv.comicConfigure(voice,language)
+    @UsedByGodot fun comic_reader_speed(speed: Double): Boolean = !closed.get() && mpv.comicSpeed(speed)
     @UsedByGodot fun comic_reader_speech_enabled(enabled: Boolean) { if(!closed.get())mpv.comicSpeechEnabled(enabled) }
     @UsedByGodot fun comic_reader_translation_mode(mode: String,language: String): Boolean = !closed.get() && mpv.comicTranslationMode(mode,language)
     @UsedByGodot fun comic_reader_translations(epoch: Long,mode: String,json: String): Boolean = !closed.get() && mpv.comicTranslations(epoch,mode,json)

@@ -28,6 +28,8 @@ func check(value: bool, name: String) -> void:
 func _initialize() -> void: call_deferred("_run")
 
 func _run() -> void:
+	check(Paging.DEFAULTS["123_open"] == 100, "123 defaults to the official 100-row limit")
+	check(Paging.choices("123_open").all(func(choice): return choice.value <= 100), "123 paging options respect official limit")
 	preload("res://scripts/i18n.gd").use("en")
 	var platform := Platform.new()
 	var menu := Menu.new()
@@ -170,7 +172,7 @@ func _run() -> void:
 	var closed_nodes: int = menu.get_child_count()
 	menu._choose(header)
 	var fields: Array = menu.rows.filter(func(row): return str(row.get("key", "")).begins_with("cloud_page_size/"))
-	check(fields.size() == 6 and fields.all(func(row): return row.choices.size() == 1), "Expanded group builds summaries without constructing any option lists")
+	check(fields.size() == Paging.DEFAULTS.size() and fields.all(func(row): return row.choices.size() == 1), "Expanded group builds summaries without constructing any option lists")
 	var target := -1
 	for id in menu.choices.targets:
 		if menu.choices.targets[id].get("key") == "cloud_page_size/115_open": target = int(id); break

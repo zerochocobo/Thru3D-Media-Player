@@ -5,6 +5,7 @@ from pathlib import Path
 import argparse
 import json
 import os
+import re
 import subprocess
 import zipfile
 
@@ -30,9 +31,10 @@ def main():
             target.write_bytes(z.read('classes.jar'))
         return target
 
-    stdlib = jar('org.jetbrains.kotlin', 'kotlin-stdlib', '2.1.21')
-    compiler = [jar('org.jetbrains.kotlin', 'kotlin-compiler-embeddable', '2.1.21'), stdlib,
-                jar('org.jetbrains.kotlin', 'kotlin-script-runtime', '2.1.21'), jar('org.jetbrains.kotlin', 'kotlin-reflect'),
+    kotlin_version = re.search(r"id 'org.jetbrains.kotlin.android' version '([^']+)'", (root / 'android/settings.gradle').read_text()).group(1)
+    stdlib = jar('org.jetbrains.kotlin', 'kotlin-stdlib', kotlin_version)
+    compiler = [jar('org.jetbrains.kotlin', 'kotlin-compiler-embeddable', kotlin_version), stdlib,
+                jar('org.jetbrains.kotlin', 'kotlin-script-runtime', kotlin_version), jar('org.jetbrains.kotlin', 'kotlin-reflect'),
                 jar('org.jetbrains.intellij.deps', 'trove4j'), jar('org.jetbrains', 'annotations'),
                 jar('org.jetbrains.kotlinx', 'kotlinx-coroutines-core-jvm')]
     junit = jar('junit', 'junit', '4.13.2')
@@ -56,17 +58,23 @@ def main():
     extras += [(options.japanese_dependencies / (name + '-0.9.0.jar') if options.japanese_dependencies
                 else jar('com.atilika.kuromoji', name, '0.9.0')) for name in ['kuromoji-core', 'kuromoji-ipadic']]
     cp = [android, stdlib, baseline, godot, junit, hamcrest, *extras]
+    browser = root / 'android/web-browser/build/intermediates/compile_library_classes_jar/debug/bundleLibCompileToJarDebug/classes.jar'
+    if not options.speech_only:
+        if not browser.is_file():
+            raise RuntimeError('Existing web-browser compile classes required for plugin integration checks.')
+        cp.append(browser)
     package = Path('org/vrpassthroughplayer/plugin')
     source = root / 'android/player-plugin/src/main/java' / package
     tests = root / 'android/player-plugin/src/test/java' / package
     changed = ['ComicJapaneseReading', 'ComicSpeechRouting', 'ComicSpeechPrefetch', 'ComicOcrNative', 'ComicReaderController', 'ComicNarrationSession', 'MpvVideoBridge', 'QuestPlayerPlugin', 'SharedNarrationEngine', 'NarrationNative', 'NarrationPolicy', 'NarrationRhythm', 'NarrationLevel', 'VoicePreviewStream']
     test_names = [name for name in ['ComicSpeechRoutingTest', 'ComicSpeechPrefetchTest', 'ComicNarrationSessionTest', 'SharedNarrationEngineTest'] if (tests / (name + '.kt')).exists()]
-    changed += ['MpvSourceNative']
+    changed += ['MpvSourceNative', 'NarrationPcm']
     if options.speech_only:
         changed = [name for name in changed if name not in ['MpvVideoBridge', 'QuestPlayerPlugin', 'MpvSourceNative']]
     sources = [source / (name + '.kt') for name in changed] + [tests / (name + '.kt') for name in test_names]
     classes = output / 'comic-reader-check.jar'
-    args = ['-no-stdlib', '-no-reflect', '-jvm-target', '17', '-Xfriend-paths=' + str(baseline),
+    friends = [baseline] + ([browser] if not options.speech_only else [])
+    args = ['-no-stdlib', '-no-reflect', '-jvm-target', '17', '-Xfriend-paths=' + ','.join(map(str, friends)),
             '-classpath', os.pathsep.join(map(str, cp)), '-d', str(classes), *map(str, sources)]
     arguments = output / 'compiler.args'
     arguments.write_text('\n'.join('"' + arg.replace('\\', '/') + '"' for arg in args), encoding='utf-8')

@@ -89,7 +89,7 @@ func run() -> void:
 			check(not entry.has("depth_data") and host.background_depth.is_empty(), "Neighbour prepares no depth or stereo")
 			var opens := host.opens; var depth_calls := host.depth_calls
 			check(host.reading_uris.size() == (3 if double else 1), "Spread prepares two original pages and one joined source")
-			if double: check(host.reading_uris.back().ends_with(".jpg" if scheme == "pdfpage" else ".png"), "PDF prefetch uses the foreground JPEG codec; other spread sources stay lossless")
+			if double: check(host.reading_uris.back().ends_with(".t3di"), "Spread prefetch hands the joined rows over raw, as the foreground does")
 			photo._select(next, 1)
 			check(not photo.loading and photo.index == next, "Ready neighbour displays synchronously at selection")
 			check(not photo.depth_enabled and photo._stereo_texture == null and photo._texture == texture, "Cached colour is adopted while current-page 3D starts")
@@ -183,6 +183,14 @@ func run() -> void:
 	await settle(photo, host, 2)
 	photo._select(2, 1)
 	check(not photo.loading and not photo.depth_enabled, "Recovered low-memory cache promotes colour without a 3D cache")
+	photo.finish_transition(); photo._reveal_seconds = 0
+	await settle(photo, host, 4)
+	# A finished neighbour 3D pair (here 128 MiB) lives under the separate depth resident limit.
+	var depth_map := Image.create(4096, 4096, false, Image.FORMAT_RGBA8); var depth_pair := Image.create(4096, 4096, false, Image.FORMAT_RGBA8)
+	photo._prefetched[4]["depth_data"] = {"image":depth_map, "stereo_image":depth_pair}
+	photo.reading_render.trim()
+	check(photo._prefetched.has(4) and photo._prefetched[4].has("depth_data") and not photo._prefetch_failed.has(4),
+		"The colour reading budget never evicts a neighbour for its prepared 3D pair")
 	photo.close_image(); photo.free()
 	await copy_headroom_checks()
 	print("Reading render cache: %d checks, %d failures" % [checks, failures.size()])

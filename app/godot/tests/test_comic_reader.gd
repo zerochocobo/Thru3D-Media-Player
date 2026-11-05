@@ -5,6 +5,8 @@ const Menu := preload("res://scripts/photo_menu.gd")
 class FakePlatform extends RefCounted:
 	var epoch := 0
 	var submitted := []
+	var speed := 1.0
+	func comic_reader_speed(value: float) -> bool: speed = value; return true
 	func narration_supported() -> bool: return true
 	func comic_reader_configure(_voice: String, _language: String) -> bool: return true
 	func comic_reader_begin(value: int) -> bool: epoch = value; return true
@@ -62,6 +64,19 @@ func run() -> void:
 	config.set_value("narration", "voice_id", "Mia"); preferences.load_settings(config)
 	check(preferences.voice == "Xiaoyu" and config.get_value("narration", "voice_id") == "Mia", "Comic and subtitle preferences remain independent")
 	check(not preferences.set_option("comic_volume", NAN), "Reject invalid gain")
+	check(preferences.speed == 1.0, "Comic reading starts at normal speed independently of subtitle settings")
+	check(preferences.set_option("comic_speed", 1.6), "Reading speed accepts a valid multiplier")
+	preferences.save(config); preferences.load_settings(config)
+	check(is_equal_approx(preferences.speed, 1.6), "Reading speed persists across reloads")
+	check(not preferences.set_option("comic_speed", NAN) and not preferences.set_option("comic_speed", "fast"), "Invalid reading speeds are rejected")
+	preferences.set_option("comic_speed", 8.0); check(preferences.speed == 2.0, "Reading speed is bounded at 2x")
+	preferences.set_option("comic_speed", 0.1); check(preferences.speed == 0.5, "Reading speed is bounded at 0.5x")
+	var speed_photo := FakePhoto.new(); var speed_reader := Reader.new(speed_photo)
+	speed_reader.preferences.speed = 1.6; speed_reader.configure()
+	check(is_equal_approx(speed_photo.platform.speed, 1.6), "Production reader forwards speed even when voice configuration is unchanged")
+	speed_reader.preferences.speed = 0.8; speed_reader.configure()
+	check(is_equal_approx(speed_photo.platform.speed, 0.8), "Speed-only changes reach native playback")
+	speed_photo.free()
 	check(not preferences.set_option("comic_language", "invalid"), "Reject unsupported language")
 	var saved_id := "custom:12345678-1234-1234-1234-123456789abc"
 	preferences.set_option("comic_voice_kind", "custom", [{"id": saved_id}])

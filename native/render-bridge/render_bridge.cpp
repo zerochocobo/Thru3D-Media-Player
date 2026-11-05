@@ -260,6 +260,33 @@ layout(local_size_x = 8, local_size_y = 8) in;
 layout(rgba16f, binding = 0) writeonly uniform highp image2D map;
 uniform int rim;     // background-side rim cleanup width (fw_hole_from_inv)
 uniform int fg_win;  // sliver window (fw_fg_bad_local)
+// Stills only. A stretched band (gradient-limited ramp) leaves 1-2 px gaps between winners; the
+// inverse lookup there uses the unsnapped near, reads other columns and shreds hair and text into
+// streaks. Bridged pixels instead take their source column from the nearest kept winners on the row:
+// interpolated across one surface, the far side's edge texel across a depth step (gate = -3).
+uniform int bridge;
+bool wide_hole(int x, int y, int lo, int hi) {
+    if (key_at(x, y) != 0u) return false;
+    int n = 1;
+    for (int s = 1; s <= 2 && x - s >= lo && key_at(x - s, y) == 0u; ++s) ++n;
+    for (int s = 1; s <= 2 && x + s < hi && key_at(x + s, y) == 0u; ++s) ++n;
+    return n >= 3;
+}
+bool rim_at(int x, int y, int eye, int lo, int hi, uint k) {
+    if (k == 0u || rim <= 0 || near_of(k) >= 0.5) return false;
+    int dir = eye == 0 ? 1 : -1; // toward the gap
+    for (int s = 1; s <= rim; ++s) {
+        int nx = x + dir * s;
+        if (nx < lo || nx >= hi) break;
+        // Bridged stills clean the rim of disocclusions only, not of every stretch gap.
+        if (bridge != 0 ? wide_hole(nx, y, lo, hi) : key_at(nx, y) == 0u) return true;
+    }
+    return false;
+}
+bool kept(int x, int y, int eye, int lo, int hi) {
+    uint k = key_at(x, y);
+    return k != 0u && !rim_at(x, y, eye, lo, hi, k);
+}
 void main() {
     ivec2 o = ivec2(gl_GlobalInvocationID.xy);
     int W = size.x;
@@ -268,15 +295,7 @@ void main() {
     uint k = key_at(o.x, o.y);
     float z = near_of(k);
     float src = float(k & 4095u);
-    bool inv = k == 0u;
-    if (!inv && rim > 0 && z < 0.5) {
-        int dir = eye == 0 ? 1 : -1; // toward the gap
-        for (int s = 1; s <= rim; ++s) {
-            int nx = o.x + dir * s;
-            if (nx < lo || nx >= hi) break;
-            if (key_at(nx, o.y) == 0u) { inv = true; break; }
-        }
-    }
+    bool inv = k == 0u || rim_at(o.x, o.y, eye, lo, hi, k);
     if (inv) {
         float n = near_at(ex, o.y, false);
         src = clamp(float(ex) + (eye == 0 ? -1.0 : 1.0) * (n - shift.y) * shift.x, 0.0, float(W - 1));
@@ -309,6 +328,22 @@ void main() {
             if (nk != 0u && near_of(nk) >= 0.5) { r = nx; break; }
         }
         if (l >= 0 && r >= 0) pick = float(((o.x - l) <= (r - o.x) ? l : r) - o.x);
+    }
+    if (bridge != 0 && inv) {
+        int reach = int(ceil(shift.x * 1.25)) + 12;
+        int l = -1, r = -1;
+        for (int s = 1; s <= reach && o.x - s >= lo; ++s) if (kept(o.x - s, o.y, eye, lo, hi)) { l = o.x - s; break; }
+        for (int s = 1; s <= reach && o.x + s < hi; ++s) if (kept(o.x + s, o.y, eye, lo, hi)) { r = o.x + s; break; }
+        if (l >= 0 || r >= 0) {
+            uint kl = l >= 0 ? key_at(l, o.y) : 0u, kr = r >= 0 ? key_at(r, o.y) : 0u;
+            float sl = float(kl & 4095u), sr = float(kr & 4095u), zl = near_of(kl), zr = near_of(kr);
+            if (l >= 0 && r >= 0 && abs(zl - zr) <= 0.08) src = mix(sl, sr, float(o.x - l) / float(r - l));
+            // Across a step, hold the far side's texel two columns clear of its edge: mirroring
+            // or the 1:1 inverse warp copy letters or the occluder's contour into the gap.
+            else src = (l >= 0 && (r < 0 || zl <= zr)) ? sl - 2.0 : sr + 2.0;
+            src = clamp(src, 0.0, float(W - 1));
+        }
+        gate = -3.0; pick = 0.0;
     }
     imageStore(map, o, vec4(src - float(ex), z, gate, pick));
 }
@@ -346,6 +381,23 @@ void main() {
         o = p + ivec2(eye * size.x, 0);
     }
     vec4 m = texelFetch(map, o, 0);
+    if (m.z < -2.5) {
+        // Bridged still pixels: mean over bridged neighbours (5x9), so one row's choice cannot
+        // show as a line across the band.
+        int lo = o.x >= size.x ? size.x : 0, hi = lo + size.x;
+        vec3 sum = vec3(0.0); float n = 0.0;
+        for (int dy = -4; dy <= 4; ++dy) {
+            int ny = clamp(o.y + dy, 0, size.y - 1);
+            for (int dx = -2; dx <= 2; ++dx) {
+                int nx = o.x + dx;
+                if (nx < lo || nx >= hi) continue;
+                vec4 nm = texelFetch(map, ivec2(nx, ny), 0);
+                if (nm.z < -2.5) { sum += colour(ivec2(nx, ny), nm); n += 1.0; }
+            }
+        }
+        result = vec4(sum / n, 1.0);
+        return;
+    }
     if (m.w != 0.0) {
         ivec2 q = o + ivec2(int(m.w), 0);
         result = vec4(colour(q, texelFetch(map, q, 0)), 1.0);
@@ -1285,6 +1337,7 @@ struct Bridge final {
             uniforms(warp_classify_prog);
             glUniform1i(glGetUniformLocation(warp_classify_prog, "rim"), std::max(2, static_cast<int>(std::lround(width / 120.0))));
             glUniform1i(glGetUniformLocation(warp_classify_prog, "fg_win"), std::max(2, static_cast<int>(std::lround(width / 240.0))));
+            glUniform1i(glGetUniformLocation(warp_classify_prog, "bridge"), photo_half >= 0.f ? 1 : 0);
             glBindImageTexture(0, warp_map, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA16F);
             glDispatchCompute(static_cast<GLuint>((W2 + 7) / 8), static_cast<GLuint>((height + 7) / 8), 1);
             glMemoryBarrier(GL_TEXTURE_FETCH_BARRIER_BIT);

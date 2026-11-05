@@ -32,3 +32,5 @@ Packaged attribution is in
 `third_party/player-licenses/provider-icons.txt`. Product names and marks remain
 associated with their respective owners; collection licenses do not transfer
 trademark rights or imply endorsement.
+
+The123 cloud entry uses a project-drawn numeric glyph through provider_icons.gd/ray_menu.gd; no new image source or license is introduced. OAuth credentials, account records and personal provider data are excluded.

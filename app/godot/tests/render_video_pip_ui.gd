@@ -1,6 +1,7 @@
 extends SceneTree
 const PipTest := preload("res://tests/test_video_pip.gd")
 const Capture := preload("res://scripts/menu_composition.gd")
+const Palette := preload("res://scripts/ui_theme.gd")
 var checks := 0
 var failures: Array[String] = []
 var output := ProjectSettings.globalize_path("res://../../build/output/video-pip")
@@ -47,7 +48,12 @@ func run() -> void:
 			var ink := 0
 			for y in range(area.position.y,area.end.y):
 				for x in range(area.position.x,area.end.x):
-					if pixels.get_pixel(x,y).r > 0.8: ink += 1
+					var pixel := pixels.get_pixel(x,y)
+					if Palette.current == Palette.DEFAULT:
+						if pixel.r > 0.8: ink += 1
+					else:
+						var expected := Palette.color("text")
+						if pixel.a > 0.5 and Vector3(pixel.r, pixel.g, pixel.b).distance_to(Vector3(expected.r, expected.g, expected.b)) < 0.18: ink += 1
 			check(ink > 20, "HD capture contains camera %d control at %s: %d ink pixels" % [slot,point,ink])
 	capture.set_active(false)
 	var first: Node3D = video.pip.windows[1]

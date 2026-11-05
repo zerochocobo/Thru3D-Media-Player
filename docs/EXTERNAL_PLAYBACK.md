@@ -5,3 +5,5 @@
 The Godot host launch guard removes untrusted engine/restart controls before engine startup, retaining only the narrow permitted route. Cross-origin playlist/media requests cannot inherit the source origin's credentials; explicit account authorization, media rights and codec support still apply. Debug contract fixtures are separate from production opening. Build-Player prepares the host guard and verifies actual packaged entry/intent metadata with `Assert-ExternalPlaybackPackaged.ps1`.
 
 Public source includes synthetic contract tests and generic launch preparation, not user intents, provider accounts, signed URLs, credentials, private probe logs or media. Do not infer cross-app/device acceptance from desktop tests alone.
+
+0.16.8 adds the Android BROWSABLE category to compatible HTTP(S) video VIEW associations so default chooser filtering can discover the player. Complete filter checks retain schemes/MIME/action/category grouping; this does not broaden protected-content support or remove caller URI access/validation requirements.

@@ -27,7 +27,7 @@ internal object PhotoStereo {
         require(strength.isFinite() && strength in 0f..2f)
         require(validRotation(rotation))
         require(convergence.isFinite() && convergence in 0f..1f)
-        return "stereo-v4-r$rotation-${(strength*100).roundToInt()}-c${(convergence*10000).roundToInt()}-"
+        return "stereo-v5-r$rotation-${(strength*100).roundToInt()}-c${(convergence*10000).roundToInt()}-"
     }
 
     fun prepare(source: File, near: ByteBuffer, rect: FloatArray, strength: Float, generation: Int, rotation: Int = 0, convergence: Float = 0.35f): JSONObject {

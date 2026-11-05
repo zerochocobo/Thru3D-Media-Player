@@ -26,6 +26,7 @@ import (
 
 	"github.com/OpenListTeam/OpenList/v4/cmd/flags"
 	_ "github.com/OpenListTeam/OpenList/v4/drivers/115_open"
+	_ "github.com/OpenListTeam/OpenList/v4/drivers/123_open"
 	_ "github.com/OpenListTeam/OpenList/v4/drivers/aliyundrive_open"
 	_ "github.com/OpenListTeam/OpenList/v4/drivers/baidu_netdisk"
 	_ "github.com/OpenListTeam/OpenList/v4/drivers/onedrive"

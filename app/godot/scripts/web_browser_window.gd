@@ -284,13 +284,13 @@ func _create_feedback() -> void:
 	if is_instance_valid(_feedback): return
 	_feedback = Node3D.new(); _feedback.set_meta("menu_eye_buffer", true); add_child(_feedback)
 	# Persistent, inexpensive eye-buffer overlays; never rebuild the chrome for each progress tick.
-	for spec in [["background", Color("10141b"), 24], ["progress", ACCENT, 27], ["press", ACCENT, 27]]:
+	for spec in [["background", UiTheme.color("browser_feedback"), 24], ["progress", ACCENT, 27], ["press", ACCENT, 27]]:
 		var mesh := _quad(Vector2.ONE, Vector3.ZERO, spec[1], spec[2])
 		mesh.name = spec[0]; mesh.visible = false
 		mesh.material_override.set_shader_parameter("corner_radius", 0.0)
 		_feedback.add_child(mesh)
 	for index in 8:
-		var mesh := _quad(Vector2.ONE, Vector3.ZERO, Color(0.02, 0.03, 0.04, 0.60) if index < 4 else ACCENT, 26)
+		var mesh := _quad(Vector2.ONE, Vector3.ZERO, UiTheme.color("browser_rim") if index < 4 else ACCENT, 26)
 		mesh.name = "selection" + str(index); mesh.visible = false
 		mesh.material_override.set_shader_parameter("corner_radius", 0.0)
 		_feedback.add_child(mesh)
@@ -327,7 +327,7 @@ func _update_feedback() -> void:
 		_progress_value = 1.0; _progress_until = now + 900
 	_was_loading = loading; _feedback_error = error
 	_feedback_rect(_progress, Rect2(-size.x / 2, -size.y / 2 - 0.004, size.x * _progress_value, 0.004))
-	_progress.material_override.set_shader_parameter("surface_color", Color("ef8d80") if not error.is_empty() else ACCENT)
+	_progress.material_override.set_shader_parameter("surface_color", UiTheme.color("browser_error") if not error.is_empty() else ACCENT)
 	_progress.visible = loading or now < _progress_until
 	var press: MeshInstance3D = _feedback.get_node("press")
 	var remaining := clampf(float(_press_until - now) / 280.0, 0, 1)
@@ -379,6 +379,15 @@ func _process(_delta: float) -> void:
 				button.rect.size = layout.size
 	if surface: surface.present(visible and not browser.start_page.active(window_id) and not (browser.tabs_open and browser.focused_window == window_id), RECT)
 func _place_device_status(_centre: Vector2) -> void: pass
+func _redraw_theme() -> void:
+	super._redraw_theme()
+	if not is_instance_valid(_feedback): return
+	# These eye-buffer overlays intentionally survive chrome redraws.
+	_feedback.get_node("background").material_override.set_shader_parameter("surface_color", UiTheme.color("browser_feedback"))
+	for index in 8:
+		_feedback.get_node("selection" + str(index)).material_override.set_shader_parameter("surface_color", UiTheme.color("browser_rim") if index < 4 else ACCENT)
+	_update_feedback()
+
 func _draw() -> void:
 	_clear_layout()
 	_sync_presentation()
@@ -489,7 +498,7 @@ func draw_resize_handles() -> void:
 		var mark_offset := Vector2(-0.065, 0) if spec[0] == RESIZE_RIGHT else Vector2(0, 0.065) if spec[0] == RESIZE_BOTTOM else Vector2(-RESIZE_OFFSET.x - 0.01, RESIZE_OFFSET.y + 0.01)
 		var marks := [Vector4(0, 0, 0.008, 0.12)] if spec[0] == RESIZE_RIGHT else [Vector4(0, 0, 0.12, 0.008)] if spec[0] == RESIZE_BOTTOM else [Vector4(0.025, 0, 0.009, 0.06), Vector4(0, -0.025, 0.06, 0.009)]
 		for edge in marks:
-			var mark := _quad(Vector2(edge.z, edge.w), Vector3(edge.x + mark_offset.x, edge.y + mark_offset.y, 0.005), Color(0.7, 0.85, 0.82), 12)
+			var mark := _quad(Vector2(edge.z, edge.w), Vector3(edge.x + mark_offset.x, edge.y + mark_offset.y, 0.005), UiTheme.color("browser_mark"), 12)
 			tile.node.add_child(mark)
 	# The corner glyph hugs both edges. Extend the same target along those edges
 	# without putting a rectangular hit area over the website's fullscreen button.

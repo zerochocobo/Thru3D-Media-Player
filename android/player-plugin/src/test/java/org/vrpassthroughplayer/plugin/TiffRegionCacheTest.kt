@@ -29,6 +29,10 @@ class TiffRegionCacheTest {
         for (file in listOf(partial,cache(640,320,2),cache(-1,320),cache(Int.MAX_VALUE,Int.MAX_VALUE)))
             assertTrue(file.name,runCatching { PhotoBitmap.rawBounds(file) }.isFailure)
     }
+    @Test fun extensionlessSpreadSourceCopiesAreRecognisedByContent() {
+        val source=temporary.newFile("source").apply { writeBytes(cache(64,32).readBytes()) }
+        assertArrayEquals(intArrayOf(64,32),PhotoBitmap.rawBounds(source))
+    }
     @Test fun normalOriginalsAreNotMistakenForInternalRegionCaches() {
         val original=temporary.newFile("picture.tif").apply { writeBytes("T3DI".toByteArray()) }
         assertNull(PhotoBitmap.rawBounds(original))

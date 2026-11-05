@@ -8,6 +8,7 @@ var voice_kind := "preset"
 var voice := "Xiaoyu"
 var custom_voice := ""
 var volume := 100.0
+var speed := 1.0
 var duck := 75.0
 
 func load_settings(settings: ConfigFile) -> void:
@@ -27,6 +28,8 @@ func load_settings(settings: ConfigFile) -> void:
 	if not valid_preset(voice): voice = Narration.VOICES[default_lang][0]
 	volume = number(settings.get_value(source, "volume", 100), 100)
 	duck = number(settings.get_value(source, "duck", 75), 75)
+	var saved_speed: Variant = settings.get_value(SECTION, "speed", 1.0)
+	speed = clampf(float(saved_speed), 0.5, 2.0) if (saved_speed is float or saved_speed is int) and is_finite(float(saved_speed)) else 1.0
 	# Activation belongs to the open reading batch, never to saved preferences.
 	enabled = false
 
@@ -62,17 +65,20 @@ func set_option(key: String, value: Variant, catalog: Array = []) -> bool:
 		"comic_volume", "comic_duck":
 			if not (value is float or value is int) or not is_finite(float(value)): return false
 			set(key.trim_prefix("comic_"), clampf(float(value), 0, 100))
+		"comic_speed":
+			if not (value is float or value is int) or not is_finite(float(value)): return false
+			speed = clampf(float(value), 0.5, 2.0)
 		_: return false
 	return true
 
 func save(settings: ConfigFile) -> void:
 	if settings.has_section_key(SECTION, "enabled"): settings.erase_section_key(SECTION, "enabled")
-	for key in ["language", "voice_kind", "voice", "custom_voice", "volume", "duck"]:
+	for key in ["language", "voice_kind", "voice", "custom_voice", "volume", "duck", "speed"]:
 		settings.set_value(SECTION, key, get(key))
 
 func snapshot(catalog: Array) -> Dictionary:
 	return {"comic_enabled": enabled, "comic_language": language, "comic_voice_kind": voice_kind,
-		"comic_voice": voice, "comic_custom_voice": custom_voice, "comic_volume": volume, "comic_duck": duck,
+		"comic_voice": voice, "comic_custom_voice": custom_voice, "comic_volume": volume, "comic_duck": duck, "comic_speed": speed,
 		"comic_personal_voices": catalog}
 
 static func rows(state: Dictionary) -> Array:
@@ -88,4 +94,5 @@ static func rows(state: Dictionary) -> Array:
 		item = item.duplicate(true); item.field.key = str(item.field.key).replace("narration_", "comic_")
 		item.field.erase("source_uri")
 		result.append(item)
+	result.append({"title": "Reading speed", "field": {"key": "comic_speed", "value": state.get("comic_speed", 1.0), "slider": true, "span": Vector3(0.5, 2.0, 0.1), "unit": "x"}})
 	return result

@@ -1,4 +1,5 @@
 extends RefCounted
+const UiTheme := preload("res://scripts/ui_theme.gd")
 ## One ray-driven browser; native clients supply capabilities and normalized nodes.
 const I18n := preload("res://scripts/i18n.gd")
 const Methods := preload("res://scripts/platform_methods.gd")
@@ -999,7 +1000,7 @@ func draw() -> void:
 	var heading_x := -0.32 if focused() else -0.43
 	var heading_width := 0.64 if view == "servers" else (0.73 if focused() else 0.77)
 	if not management:
-		menu._icon(menu.Icons.provider(str(server.get("provider", "")), "media_library"), Vector3(heading_x + 0.025, top, 0.004), 0.055, Color(0.9, 0.9, 0.9))
+		menu._icon(menu.Icons.provider(str(server.get("provider", "")), "media_library"), Vector3(heading_x + 0.025, top, 0.004), 0.055, UiTheme.color("provider_ink"))
 		heading_x += 0.070; heading_width -= 0.070
 	var heading: Label3D = menu._label(menu._fit_title(caption, "", heading_width, 22), Vector3(heading_x, top, 0.004), 22); heading.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
 	if view == "servers":

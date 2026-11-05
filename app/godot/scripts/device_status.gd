@@ -1,4 +1,5 @@
 extends Node3D
+const UiTheme := preload("res://scripts/ui_theme.gd")
 signal visual_changed
 ## Brand, headset battery and clock in an equal-height footer card. Reads the platform's
 ## device_status() itself; without one (desktop preview) only the clock shows.
@@ -13,11 +14,14 @@ const STATUS_Y := -0.021
 const BRAND_Y := 0.020
 const BRAND_ICON_HEIGHT := 0.032
 const GRAY_ICON := preload("res://branding/thru3d-icon-gray.png")
+const BRAND_SHADER := preload("res://shaders/footer_brand.gdshader")
 const ICON := 0.036
 const FONT_SIZE := 16
 const LOW := 20
-const LOW_COLOR := Color(1.0, 0.42, 0.38)
-const POWER_COLOR := Color(1.0, 0.76, 0.36)
+static var LOW_COLOR: Color:
+	get: return UiTheme.color("low_power")
+static var POWER_COLOR: Color:
+	get: return UiTheme.color("plugged")
 const POLL_MS := 1000
 
 ## -> {"level": 0..100 or -1, "charging", "plugged", "clock24"}; tests inject one, otherwise the QuestPlayer singleton.
@@ -35,6 +39,7 @@ var _fill: MeshInstance3D
 var _bolt: MeshInstance3D
 var _label: Label3D
 var _brand_icon: MeshInstance3D
+var _classic_brand: StandardMaterial3D
 var _wordmark: Label3D
 var _domain: Label3D
 var _brand_width := 0.0
@@ -48,12 +53,15 @@ func _ready() -> void:
 				return parsed if parsed is Dictionary else {}
 	_pill = _quad(Vector2(0.2, HEIGHT), Vector3.ZERO, Color(Menu.PANEL, 0.86), 10)
 	_pill.material_override.set_shader_parameter("corner_radius", 0.022)
-	_brand_icon = _icon("brand", Color.WHITE)
-	_wordmark = _brand_label("Thru3D", 18, Color(0.87, 0.92, 0.94))
-	_domain = _brand_label(".com", 14, Color(0.66, 0.73, 0.78))
-	_battery = _icon("battery", Color(0.93, 0.95, 0.98))
+	_brand_icon = _icon("brand", UiTheme.color("label"))
+	_brand_icon.set_meta("menu_capture_detail", true)
+	_classic_brand = _brand_icon.material_override
+	_refresh_brand()
+	_wordmark = _brand_label("Thru3D", 18, UiTheme.color("brand_ink"))
+	_domain = _brand_label(".com", 14, UiTheme.color("domain_ink"))
+	_battery = _icon("battery", UiTheme.color("text"))
 	# Inside of the battery outline (icon units 8.5..15.5 x 5.5..20.5 of 24), filled from the bottom.
-	_fill = _quad(Vector2(ICON * 7.0 / 24, ICON * 15.0 / 24), Vector3.ZERO, Color.WHITE, 12)
+	_fill = _quad(Vector2(ICON * 7.0 / 24, ICON * 15.0 / 24), Vector3.ZERO, UiTheme.color("label"), 12)
 	_fill.material_override.set_shader_parameter("corner_radius", 0.002)
 	_bolt = _icon("bolt", Menu.ACCENT)
 	_label = Label3D.new()
@@ -63,8 +71,10 @@ func _ready() -> void:
 	_label.no_depth_test = false
 	_label.render_priority = 12
 	_label.outline_size = 0
+	_label.modulate = UiTheme.color("label")
 	_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
 	add_child(_label)
+	UiTheme.events.changed.connect(_theme_changed)
 	refresh(true)
 
 func _process(_delta: float) -> void:
@@ -111,7 +121,7 @@ func refresh(force: bool = false) -> void:
 	# Outline interior spans y 5.5..20.5 of 24 (top to bottom); grow upwards from the bottom.
 	_fill.position = Vector3(_battery.position.x, STATUS_Y + ICON * (0.5 - 20.5 / 24) + height / 2, 0.003)
 	var low := has_battery and level < LOW and not charging
-	var foreground := Color(0.93, 0.95, 0.98)
+	var foreground := UiTheme.color("text")
 	_fill.material_override.set_shader_parameter("surface_color", Menu.ACCENT if charging else (LOW_COLOR if low else foreground))
 	_battery.material_override.albedo_color = Menu.ACCENT if charging else (LOW_COLOR if low else foreground)
 	_label.position = Vector3(left + battery_slot + bolt_slot + gap, STATUS_Y, 0.003)
@@ -185,3 +195,31 @@ func _quad(size: Vector2, location: Vector3, color: Color, priority: int) -> Mes
 	node.material_override = surface
 	add_child(node)
 	return node
+
+func _theme_changed() -> void:
+	_pill.material_override.set_shader_parameter("surface_color", Color(Menu.PANEL, 0.86))
+	_refresh_brand()
+	_wordmark.modulate = UiTheme.color("brand_ink")
+	_domain.modulate = UiTheme.color("domain_ink")
+	_label.modulate = UiTheme.color("label")
+	refresh(true)
+
+func _refresh_brand() -> void:
+	if UiTheme.light():
+		var material := ShaderMaterial.new()
+		material.shader = BRAND_SHADER; material.render_priority = 12
+		material.set_shader_parameter("gray_icon", GRAY_ICON)
+		# The brightest graphite face stays readable, including custom light colors.
+		var highlight := UiTheme.Custom.fit(Color("707070"), [Color(Menu.PANEL, 1)], Color.BLACK, 3.0)
+		material.set_shader_parameter("highlight_ink", highlight)
+		material.set_shader_parameter("shadow_ink", highlight.darkened(0.75))
+		_brand_icon.material_override = material
+	else:
+		var material := _classic_brand.duplicate() as StandardMaterial3D
+		material.albedo_color = UiTheme.color("label")
+		_brand_icon.material_override = material
+	# Reapply the parent menu's cinema depth policy to the new material type.
+	for key in ["menu_original_shader", "menu_original_material_depth"]:
+		if _brand_icon.has_meta(key): _brand_icon.remove_meta(key)
+	if get_parent().has_method("_apply_overlay_node"):
+		get_parent()._apply_overlay_node(_brand_icon)

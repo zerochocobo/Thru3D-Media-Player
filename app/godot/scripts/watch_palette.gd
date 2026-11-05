@@ -1,6 +1,7 @@
 extends RefCounted
 ## One hue for the dial, projection and controls. IDs are persisted in watch/color.
 const DEFAULT := "mint"
+const USAGE := "Left-wrist watch style for hand tracking during video playback."
 const OPTIONS := [
 	{"value": "mint", "label": "Mint", "swatch": Color("8aedc4")},
 	{"value": "blue", "label": "Sky blue", "swatch": Color("78caff")},
@@ -24,5 +25,5 @@ static func load_choice(settings: ConfigFile) -> String:
 	return normalize(settings.get_value("watch", "color", DEFAULT))
 
 static func row(value: Variant) -> Dictionary:
-	return {"title": "Watch color", "key": "watch_color", "value": normalize(value),
-		"choices": OPTIONS, "swatches": true}
+	return {"title": "Watch style", "key": "watch_color", "value": normalize(value),
+		"choices": OPTIONS, "swatches": true, "tooltip": USAGE}

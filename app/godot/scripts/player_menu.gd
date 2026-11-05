@@ -83,7 +83,8 @@ var _audio_source := ""
 var choices := ChoiceFields.new(self)
 signal setting_requested(key: String, value: Variant)
 const MODE := 120
-const SELECTED := Color(0.16, 0.31, 0.27)
+static var SELECTED: Color:
+	get: return UiTheme.color("selected")
 const MODE_PROJECTION := 130
 const MODE_STEREO := 140
 const MODE_LENS := 150
@@ -190,7 +191,8 @@ var _alpha_expanded := false
 const EYE_BUFFER_NOTE := 7000
 const POPUP_WIDTH := 1.10
 const POPUP_BOTTOM := 0.285
-const WARNING := Color(0.86, 0.74, 0.42, 0.9)
+static var WARNING: Color:
+	get: return UiTheme.color("warning")
 ## Grade sliders the compositor layer cannot apply: they move playback to the eye buffers.
 const EYE_BUFFER_GRADES := ["gamma", "saturation", "red_gamma", "green_gamma", "blue_gamma"]
 
@@ -204,12 +206,13 @@ const OPERATIONS := [
 	["capabilities"]]
 const HEADINGS := ["Color grading", "Playback mode", "Video time positioning", "Stereo viewing", VideoAuto3D.TITLE, "2D to 3D effect"]
 const SETTING_ICONS := ["light", "loop", "history", "eyes", "depth", "depth"]
-const PLAYBACK_MODE_ICONS := {"single": "play", "repeat_one": "repeat_one", "sequence": "sequence", "repeat_all": "repeat_all"}
+const PLAYBACK_MODE_ICONS := {"single": "play", "repeat_one": "repeat_one", "sequence": "sequence", "repeat_all": "repeat_all", "shuffle": "shuffle"}
 const PLAYBACK_MODE_TIPS := {
 	"single": "Single video: stop after the current video.",
 	"repeat_one": "Repeat video: loop the current video.",
 	"sequence": "Play in order: stop at the end of the current list.",
-	"repeat_all": "Repeat playlist: loop the current list."}
+	"repeat_all": "Repeat playlist: loop the current list.",
+	"shuffle": "Shuffle: play videos in random order."}
 const Surface := preload("res://scripts/media_surface.gd")
 const SeekFeedback := preload("res://scripts/seek_feedback.gd")
 ## Flat screen curve steps (the video's CURVES) and their names.
@@ -246,12 +249,12 @@ func _style_control_bar() -> void:
 	_backdrop.material_override.set_shader_parameter("surface_color", Color(PANEL, 1.0 - bar_transparency / 100.0))
 	_glyph(SPACE_LOCK, "lock" if space_locked() else "unlock", Vector2(0.535, 0.10), 0.065, true,
 		I18n.t("Unlock spatial position" if space_locked() else "Lock spatial position"))
-	_buttons.back().foreground = Color(0.75, 0.78, 0.80) if space_locked() else MUTED
+	_buttons.back().foreground = UiTheme.color("active_ink") if space_locked() else MUTED
 	if _state.get("watch_available", false):
 		var watch_on: bool = _state.get("watch_enabled", true)
 		_glyph(WATCH, "watch" if watch_on else "watch_off", Vector2(0.465, 0.10), 0.06, true,
 			I18n.t("Show a watch on the left wrist in hand tracking") + ": " + I18n.t("On" if watch_on else "Off"))
-		_buttons.back().foreground = Color(0.75, 0.78, 0.80) if watch_on else MUTED
+		_buttons.back().foreground = UiTheme.color("active_ink") if watch_on else MUTED
 
 func show_bar_appearance() -> void:
 	_reset_navigation()
@@ -305,8 +308,10 @@ var _depth_boost := false
 var _depth_boost_source := ""
 var _depth_boost_fill: MeshInstance3D
 const ICON_DOUBLE_CLICK_MS := 350
-const MUTE_INK := Color(1.0, 0.45, 0.4)
-const MUTE_TINT := Color(0.42, 0.1, 0.1, 0.9)
+static var MUTE_INK: Color:
+	get: return UiTheme.color("danger")
+static var MUTE_TINT: Color:
+	get: return UiTheme.color("danger_surface")
 var _icon_tap := {}
 ## Comet arc around the bar's 3D icon while depth is requested but not yet running (cold model compile).
 var _depth_busy: MeshInstance3D
@@ -646,7 +651,7 @@ func refresh_values() -> void:
 		label.text = "" if bar else _caption(operation)
 		if _modes.has(button.target):
 			_modes[button.target].text = _caption(operation)
-		label.modulate = button.foreground if button.enabled else MUTED * Color(0.7, 0.7, 0.7)
+		label.modulate = button.foreground if button.enabled else UiTheme.color("disabled_ink")
 		if bar and button.target in [104, 110, 112]:
 			button.node.get_child(1).material_override.albedo_color = button.foreground if button.enabled else MUTED
 		if bar and button.target == 102:
@@ -1534,7 +1539,7 @@ func _draw_depth() -> void:
 	_block_rays(panel, panel.mesh.size, 0.05)
 	_button(DEPTH, "", Vector2(DEPTH_X, (span.x + top) / 2), Vector2(0.11, top - span.x + 0.04), _can_depth())
 	_buttons.back().base_color = Color(TILE, 0.0)
-	_decoration(Vector2(0.012, height), Vector2(DEPTH_X, middle), Color(0.3, 0.35, 0.4))
+	_decoration(Vector2(0.012, height), Vector2(DEPTH_X, middle), UiTheme.color("track"))
 	# Mark whole multiples of the original parallax within this media's range.
 	for value in [1.0, 2.0, 3.0]:
 		if value > _depth_maximum(): continue
@@ -1552,8 +1557,9 @@ func _draw_depth() -> void:
 		_decoration(Vector2(0.012, BOOST_HEIGHT), Vector2(DEPTH_X, span.y + BOOST_HEIGHT / 2), Color(WARNING, 0.35))
 		_depth_boost_fill = _decoration(Vector2(0.012, BOOST_HEIGHT), Vector2(DEPTH_X, span.y + BOOST_HEIGHT / 2), WARNING)
 		_depth_boost_fill.material_override.render_priority = 13
-		_decoration(Vector2(0.08, 0.004), Vector2(DEPTH_X, span.y), Color(0.7, 0.74, 0.78))
-	_depth_knob = _decoration(Vector2(0.03, 0.03), Vector2(DEPTH_X, span.x), Color.WHITE)
+		_decoration(Vector2(0.08, 0.004), Vector2(DEPTH_X, span.y), UiTheme.color("track_tick"))
+	_depth_knob = _decoration(Vector2(0.03, 0.03), Vector2(DEPTH_X, span.x), UiTheme.color("knob"))
+	_style_slider_marker(_depth_knob)
 	_depth_knob.material_override.set_shader_parameter("corner_radius", 0.015)
 	_depth_knob.material_override.render_priority = 14
 	_depth_label = _label("", Vector3(DEPTH_X, top + (0.038 if boost_available else 0.045), 0.004), 16)
@@ -1623,9 +1629,9 @@ func _refresh_depth() -> void:
 	_depth_fill.position.y = span.x + height * fraction / 2
 	_depth_fill.material_override.set_shader_parameter("surface_size", _depth_fill.mesh.size)
 	_depth_knob.position.y = span.y + BOOST_HEIGHT * boost if boost > 0.0 else span.x + height * fraction
-	_depth_knob.material_override.set_shader_parameter("surface_color", WARNING if boost > 0.0 else Color.WHITE)
+	_depth_knob.material_override.set_shader_parameter("surface_color", WARNING if boost > 0.0 else UiTheme.color("knob"))
 	_depth_label.text = _depth_caption()
-	_depth_label.modulate = WARNING if boost > 0.0 else Color.WHITE
+	_depth_label.modulate = WARNING if boost > 0.0 else UiTheme.color("label")
 	if is_instance_valid(_depth_boost_fill):
 		_depth_boost_fill.visible = boost > 0.0
 		_depth_boost_fill.mesh.size.y = maxf(0.001, BOOST_HEIGHT * boost)
@@ -1634,7 +1640,7 @@ func _refresh_depth() -> void:
 	for button in _buttons:
 		if button.target == DEPTH_BOOST:
 			button.base_color = SELECTED if _depth_boost else TILE
-			button.node.get_child(0).modulate = (WARNING if _depth_boost else Color.WHITE) if button.enabled else MUTED
+			button.node.get_child(0).modulate = (WARNING if _depth_boost else UiTheme.color("label")) if button.enabled else MUTED
 		if button.target == DEPTH_OFF:
 			button.enabled = _can_depth() and _state.get("depth_requested", false)
 			button.node.get_child(1).material_override.albedo_color = button.foreground if button.enabled else MUTED
@@ -1680,7 +1686,7 @@ func _draw_volume() -> void:
 	_buttons.back().base_color = Color(TILE, 0.0)
 	var normal_height := VOLUME_SPAN.y - VOLUME_SPAN.x
 	var normal_mid := (VOLUME_SPAN.y + VOLUME_SPAN.x) / 2
-	_decoration(Vector2(0.012, normal_height), Vector2(VOLUME_X, normal_mid), Color(0.3, 0.35, 0.4))
+	_decoration(Vector2(0.012, normal_height), Vector2(VOLUME_X, normal_mid), UiTheme.color("track"))
 	_volume_fill = _decoration(Vector2(0.012, normal_height), Vector2(VOLUME_X, normal_mid), ACCENT)
 	_volume_fill.material_override.render_priority = 13
 	_boost_fill = null; _boost_mark = null
@@ -1688,9 +1694,10 @@ func _draw_volume() -> void:
 		_decoration(Vector2(0.012, BOOST_HEIGHT), Vector2(VOLUME_X, VOLUME_SPAN.y + BOOST_HEIGHT / 2), Color(WARNING, 0.35))
 		_boost_fill = _decoration(Vector2(0.012, BOOST_HEIGHT), Vector2(VOLUME_X, VOLUME_SPAN.y + BOOST_HEIGHT / 2), WARNING)
 		_boost_fill.material_override.render_priority = 13
-		_decoration(Vector2(0.08, 0.004), Vector2(VOLUME_X, VOLUME_SPAN.y), Color(0.7, 0.74, 0.78))
+		_decoration(Vector2(0.08, 0.004), Vector2(VOLUME_X, VOLUME_SPAN.y), UiTheme.color("track_tick"))
 		_boost_mark = _decoration(Vector2(0.035, 0.004), Vector2(VOLUME_X, top), Color(WARNING, 0.55))
-	_volume_knob = _decoration(Vector2(0.03, 0.03), Vector2(VOLUME_X, VOLUME_SPAN.x), Color.WHITE)
+	_volume_knob = _decoration(Vector2(0.03, 0.03), Vector2(VOLUME_X, VOLUME_SPAN.x), UiTheme.color("knob"))
+	_style_slider_marker(_volume_knob)
 	_volume_knob.material_override.set_shader_parameter("corner_radius", 0.015)
 	_volume_knob.material_override.render_priority = 14
 	_volume_label = _label("", Vector3(VOLUME_X, top + 0.038, 0.004), 16)
@@ -1727,9 +1734,9 @@ func _refresh_volume() -> void:
 	var enhanced := int(_state.get("audio_whisper", 0)) > 0
 	var boost := clampf((level - 100.0) / 50.0, 0.0, 1.0) if enhanced else 0.0
 	_volume_knob.position.y = VOLUME_SPAN.y + BOOST_HEIGHT * boost if boost > 0 else VOLUME_SPAN.x + height * fraction
-	_volume_knob.material_override.set_shader_parameter("surface_color", WARNING if boost > 0 else Color.WHITE)
+	_volume_knob.material_override.set_shader_parameter("surface_color", WARNING if boost > 0 else UiTheme.color("knob"))
 	_volume_label.text = "%d%%" % level
-	_volume_label.modulate = WARNING if boost > 0 else Color.WHITE
+	_volume_label.modulate = WARNING if boost > 0 else UiTheme.color("label")
 	if is_instance_valid(_boost_fill):
 		_boost_fill.visible = boost > 0
 		_boost_fill.mesh.size.y = maxf(0.001, BOOST_HEIGHT * boost)
@@ -1742,7 +1749,7 @@ func _refresh_volume() -> void:
 	for button in _buttons:
 		if button.target != WHISPER: continue
 		button.base_color = SELECTED if enhanced else TILE
-		button.node.get_child(0).modulate = (WARNING if enhanced else Color.WHITE) if button.enabled else MUTED
+		button.node.get_child(0).modulate = (WARNING if enhanced else UiTheme.color("label")) if button.enabled else MUTED
 		_tips[WHISPER] = I18n.t("Whisper enhancement unavailable" if not str(_state.get("whisper_error", "")).is_empty() else "Dialogue enhancement")
 	_update_highlights()
 
@@ -2272,9 +2279,10 @@ func _ready() -> void:
 func _seek_bar(y: float) -> void:
 	_button(SEEK, "", Vector2(0, y), Vector2(BAR_SEEK + 0.06, 0.05), _can_seek())
 	_buttons.back().base_color = Color(TILE, 0.0) # the track itself is the visible part
-	_decoration(Vector2(BAR_SEEK, 0.007), Vector2(0, y), Color(0.3, 0.35, 0.4))
+	_decoration(Vector2(BAR_SEEK, 0.007), Vector2(0, y), UiTheme.color("track"))
 	_progress = _decoration(Vector2(BAR_SEEK, 0.007), Vector2(0, y), ACCENT)
-	_thumb = _decoration(Vector2(0.023, 0.023), Vector2(0, y), Color.WHITE)
+	_thumb = _decoration(Vector2(0.023, 0.023), Vector2(0, y), UiTheme.color("knob"))
+	_style_slider_marker(_thumb)
 	_seek_origin = _decoration(Vector2(0.006, 0.021), Vector2(0, y), MUTED)
 	_seek_origin.material_override.render_priority = 14
 	_progress.material_override.render_priority = 13
@@ -2639,14 +2647,14 @@ func _draw_capture_action() -> void:
 	if not value.get("available", false): return
 	var recording := bool(value.get("recording", false))
 	_round(CAPTURE, "camera_recording" if recording else "camera", Vector2(0.42, 0.215), 0.08, true, recording)
-	if recording: _buttons.back().node.get_child(1).material_override.albedo_color = Color(1.0, 0.30, 0.28)
+	if recording: _buttons.back().node.get_child(1).material_override.albedo_color = UiTheme.color("record")
 	if not _capture_popup_allowed() or not (_capture_open or recording): return
 	var panel := _quad(Vector2(0.25, 0.17), Vector3(0.42, 0.36, 0.001), Color(PANEL, 0.98), 10)
 	add_child(panel); _decorations.append(panel); _block_rays(panel, Vector2(0.25, 0.17))
 	_glyph(CAPTURE_PICTURE, "camera", Vector2(0.36, 0.33), 0.075, value.get("ready", false) and not value.get("picture_busy", false), I18n.t("Take screenshot"))
 	var record_hint := "Record with picture in picture · up to 4K/30 · B to stop" if value.get("pip", false) else "Record source clip · B to stop"
 	_glyph(CAPTURE_RECORD, "stop" if recording else "record", Vector2(0.48, 0.33), 0.075, recording or (value.get("ready", false) and not value.get("clip_busy", false)), I18n.t("Stop recording · B" if recording else record_hint))
-	_buttons.back().node.get_child(1).material_override.albedo_color = Color(1.0, 0.30, 0.28)
+	_buttons.back().node.get_child(1).material_override.albedo_color = UiTheme.color("record")
 	_capture_time = _label(preload("res://scripts/capture_overlay.gd").clock_text(int(value.get("duration_ms", 0))) if recording else "", Vector3(0.42, 0.41, 0.008), 16)
 
 func show_favorite_feedback(message: String) -> void:
@@ -2675,12 +2683,12 @@ func _surface_color(button: Dictionary, color: Color) -> Color:
 	if button.get("fixed_current", false): return button.base_color
 	if button.target == 110 and not hovered and button.enabled and (int(_state.get("subtitle_track", 0)) != 0 or _state.get("listening_enabled", false)):
 		return SELECTED
-	if button.target == 10 + section and not hovered: return Color(0.16, 0.31, 0.27)
-	if button.target == 104 and button.enabled and not hovered and _state.get("alpha_requested", false): return Color(0.16, 0.31, 0.27)
+	if button.target == 10 + section and not hovered: return UiTheme.color("selected")
+	if button.target == 104 and button.enabled and not hovered and _state.get("alpha_requested", false): return UiTheme.color("selected")
 	if button.target == _depth_icon_target() and button.enabled:
 		var active: bool = _state.get("depth_requested", false) or _state.get("native_stereo", false)
-		return SELECTED if active else (Color(0.19, 0.22, 0.26) if hovered else button.base_color)
-	if button.target == DEPTH_OFF and button.enabled: return Color(0.55, 0.14, 0.14, 0.95) if hovered else button.base_color
+		return SELECTED if active else (UiTheme.color("muted_hover") if hovered else button.base_color)
+	if button.target == DEPTH_OFF and button.enabled: return UiTheme.color("danger_hover") if hovered else button.base_color
 	if button.target == 111 and button.enabled and not hovered and _audio_open: return SELECTED
 	return color
 
@@ -2769,7 +2777,7 @@ func _caption_text(operation: String) -> String:
 		"alpha": return "AI portrait passthrough"
 		"previous_video": return "Previous video"
 		"next_video": return "Next video"
-		"loop": return {"single": "Single video", "repeat_one": "Repeat video", "sequence": "Play in order", "repeat_all": "Repeat playlist"}.get(_state.get("playback_mode", "single"), "Single video")
+		"loop": return {"single": "Single video", "repeat_one": "Repeat video", "sequence": "Play in order", "repeat_all": "Repeat playlist", "shuffle": "Shuffle"}.get(_state.get("playback_mode", "single"), "Single video")
 		"seek_mode": return "Precise" if _state.get("seek_mode", "speed") == "exact" else "Speed"
 		"depth_text_protection": return "On" if _state.get("depth_text_protection", true) else "Off"
 		"video_auto_3d": return "On" if _state.get("video_auto_3d", false) else "Off"
@@ -2858,7 +2866,8 @@ func _slider_tick(target: int, value: float, label: String, y: float) -> void:
 	var row: Dictionary = _adjust_rows[target]
 	var fraction := VideoAspect.slider_fraction(value) if row.key == "video_aspect_factor" else inverse_lerp(row.span.x, row.span.y, value)
 	var x: float = row.left + fraction * row.width
-	_decoration(Vector2(0.003, 0.02), Vector2(x, y), Color.WHITE)
+	var tick := _decoration(Vector2(0.003, 0.02), Vector2(x, y), UiTheme.color("knob"))
+	_style_slider_marker(tick)
 	_label(label, Vector3(x, y + 0.03, 0.004), 11)
 
 func _draw_screen_settings() -> void:
@@ -3090,7 +3099,8 @@ func _adjustment_row(target: int, key: String, title: String, span: Vector3, y: 
 	_decoration(Vector2(width, g.thickness), Vector2(centre, y), MUTED)
 	var fill := _decoration(Vector2(width, g.thickness), Vector2(centre, y), ACCENT)
 	fill.material_override.render_priority = 13
-	var knob := _decoration(Vector2.ONE * g.knob, Vector2(left, y), Color.WHITE)
+	var knob := _decoration(Vector2.ONE * g.knob, Vector2(left, y), UiTheme.color("knob"))
+	_style_slider_marker(knob)
 	knob.material_override.render_priority = 14
 	_adjust_rows[target] = {"key": key, "span": span, "label": value, "fill": fill, "knob": knob, "button": _buttons.back(),
 		"left": left, "width": width}

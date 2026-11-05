@@ -50,14 +50,23 @@ float near_at(vec2 uv) {
 	return protected_near(texture(alpha_texture, vec2(p.x * 0.5, p.y)).r, uv);
 }
 
-// Inverse warp: find the source point whose own parallax lands here (fixed point, three steps),
-// so near edges move with their object instead of with whatever lies beside them.
+// Inverse warp: find the source point whose own parallax lands here, so near edges move with
+// their object instead of with whatever lies beside them. The limited near map makes the landing
+// position monotone in the source, so bisect its bracket (near 0..1): three fixed-point steps
+// oscillated beside edges and, by step parity, streaked or smeared hair at the position extremes.
 vec2 depth_parallax(vec2 shown, int view) {
 	float side = view == 0 ? 1.0 : -1.0; // left eye: near content moves right, in front of the screen
+	float k = depth_shift * 0.5;
+	float a = shown.x - side * (1.0 - depth_convergence) * k, b = shown.x + side * depth_convergence * k;
+	float lo = min(a, b), hi = max(a, b);
 	vec2 p = shown;
-	for (int i = 0; i < 3; i++) {
-		p.x = shown.x - side * (near_at(raw_eye_uv(p)) - depth_convergence) * depth_shift * 0.5;
+	for (int i = 0; i < 6; i++) {
+		p.x = 0.5 * (lo + hi);
+		if (p.x + side * (near_at(raw_eye_uv(p)) - depth_convergence) * k > shown.x) { hi = p.x; } else { lo = p.x; }
 	}
+	// One fixed-point step from beside the root: exact where text protection holds the screen plane.
+	p.x = 0.5 * (lo + hi);
+	p.x = shown.x - side * (near_at(raw_eye_uv(p)) - depth_convergence) * k;
 	return p;
 }
 

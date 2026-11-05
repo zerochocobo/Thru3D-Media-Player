@@ -459,9 +459,9 @@ func _draw_adjustments() -> void:
 		for button in _buttons:
 			if button.target == target: button.enabled = enabled
 		var row: Dictionary = _adjust_rows[target]
-		row.label.modulate = Color.WHITE if enabled else MUTED
+		row.label.modulate = UiTheme.color("label") if enabled else MUTED
 		row.fill.material_override.set_shader_parameter("surface_color", ACCENT if enabled else MUTED)
-		row.knob.material_override.set_shader_parameter("surface_color", Color.WHITE if enabled else MUTED)
+		row.knob.material_override.set_shader_parameter("surface_color", UiTheme.color("knob") if enabled else MUTED)
 	_place_device_status(Vector2(0, (-0.485 if spatial else -0.385) - extra))
 	_refresh_adjustments()
 
@@ -578,7 +578,7 @@ func _draw_comic_settings() -> void:
 	var rows := ComicSettings.rows(_state)
 	var custom: bool = _state.get("comic_voice_kind", "preset") == "custom"
 	var has_voice_row: bool = rows.any(func(row): return row.field.key in ["comic_voice", "comic_custom_voice"])
-	var count := rows.size() - 1 + (1 if custom else 0)
+	var count := rows.size() + (1 if custom else 0)
 	var height := 0.24 + count * SUBTITLE_SETTING_PITCH
 	var top := height / 2.0
 	_set_backdrop(Vector2(1.08, height))
@@ -603,11 +603,14 @@ func _draw_comic_settings() -> void:
 			else: choices.field(null, rows[1].field, Vector2(0.21, y), 0.50, SUBTITLE_SETTING_HEIGHT)
 		else:
 			choices.field(null, row.field, Vector2(0.09 if voice_row else 0.14, y), 0.54 if voice_row else 0.64, SUBTITLE_SETTING_HEIGHT)
-			if voice_row: _draw_voice_preview(PHOTO_COMIC_PREVIEW, y, _comic_preview_busy(_state), _state.get("comic_supported", false) and (not custom or not str(_state.get("comic_custom_voice", "")).is_empty()))
 		y -= SUBTITLE_SETTING_PITCH
 		if custom and (voice_row or (not has_voice_row and row.field.key == "comic_voice_kind")):
 			_button(PHOTO_COMIC_MANAGE, I18n.t("My cloned voices"), Vector2(0.14, y), Vector2(0.64, SUBTITLE_SETTING_HEIGHT))
 			y -= SUBTITLE_SETTING_PITCH
+	var busy := _comic_preview_busy(_state)
+	var preview_available: bool = _state.get("comic_supported", false) and (not custom or not str(_state.get("comic_custom_voice", "")).is_empty())
+	_button(PHOTO_COMIC_PREVIEW, I18n.t("Stop preview" if busy else "Preview voice"), Vector2(0.14, y), Vector2(0.64, SUBTITLE_SETTING_HEIGHT), busy or preview_available)
+	_tips[PHOTO_COMIC_PREVIEW] = I18n.t("Stop preview" if busy else "Preview voice")
 	_status = _label(_fit_title(_photo_status(), "", 0.94, TEXT_AUX), Vector3(0, -top + 0.035, 0.004), TEXT_AUX)
 	_status.modulate = MUTED
 	choices.finish()
@@ -843,5 +846,5 @@ func _surface_color(button: Dictionary, color: Color) -> Color:
 	if (button.target == PHOTO_INSPECT and _state.get("inspect", false)) or (button.target == PHOTO_DEPTH and (_state.get("depth_requested", false) or _state.get("native_stereo",false))):
 		return SELECTED
 	if button.target == PHOTO_PORTRAIT and button.enabled and _state.get("portrait_requested",false) and not _hover.values().has(button.target):
-		return Color(0.16, 0.31, 0.27)
+		return UiTheme.color("selected")
 	return color

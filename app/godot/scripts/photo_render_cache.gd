@@ -10,6 +10,11 @@ var _report_request := 0
 var _report_at := 0
 var last_upload := {}
 var max_upload_us := 0
+## One picture's colour, depth and pair uploads run back to back. Each large upload stalls a frame
+## and restarted the settle, so a 115 comic spread finished ~1.6 s after its 3D, after the turn.
+const CHAIN_MS := 250
+var _chain_index := -1
+var _chain_until := 0
 
 func _init(owner: Node3D) -> void: photo = owner
 
@@ -98,15 +103,19 @@ func _valid_target() -> bool:
 
 func pump() -> bool:
 	if not photo._cache_supported() or photo.geometry != Geometry.Geometry.FLAT: return false
-	if not photo.resource_budget.can_start(WORK_BYTES) or photo._depth_busy or photo._depth_thread or photo._thread \
+	var chained := Time.get_ticks_msec() < _chain_until
+	if not (photo.resource_budget.can_start(WORK_BYTES) or (chained and photo.resource_budget.can_continue(WORK_BYTES))) \
+		or photo._depth_busy or photo._depth_thread or photo._thread \
 		or not photo._upload.is_empty() or photo._prefetch_request != 0 or photo._prefetch_depth_request != 0 \
 		or photo._prefetch_portrait_request != 0 or photo._portrait_thread: return false
 	if not job.is_empty():
 		if not _valid_target(): cancel(); return false
 		return _step()
 	if photo.spatial_requested or (photo.spatial_preferred and not photo.auto_portrait): return false
-	var targets: Array = [photo.index]
-	targets.append_array(photo._neighbors(photo.index))
+	# Neighbours first: the next page needs its GPU copy to turn instantly, while the current one's
+	# copy only matters when returning to it (115 comics: the next spread missed it by ~0.3 s per turn).
+	var targets: Array = photo._neighbors(photo.index)
+	targets.append(photo.index)
 	for at in targets:
 		var current: bool = at == photo.index
 		var entry: Dictionary = capture_current() if current else photo._prefetched.get(at, {})
@@ -134,7 +143,9 @@ func pump() -> bool:
 			if image == null or image.is_empty(): continue
 			if stage[1] != "ready_depth" and image.get_format() not in [Image.FORMAT_RGB8, Image.FORMAT_RGBA8, Image.FORMAT_R8]: break
 			var bytes := int(image.get_width() * image.get_height() * 16.0 / 3.0)
-			if not _reserve(bytes, at) or not photo.resource_budget.can_start(WORK_BYTES, bytes): break
+			var admitted: bool = photo.resource_budget.can_start(WORK_BYTES, bytes) \
+				or (chained and at == _chain_index and photo.resource_budget.can_continue(WORK_BYTES, bytes))
+			if not _reserve(bytes, at) or not admitted: break
 			job = {"entry":entry,"index":at,"holder":stage[0],"key":stage[1],"image":image,"row":0,"level":0,
 				"epoch":photo._cache_epoch,"strength":photo.depth_strength,"convergence":photo.DepthPosition.convergence(photo.depth_position),"rotation":photo._stereo_rotation(at)}
 			if current: photo._display_result = result
@@ -191,7 +202,9 @@ func _upload_step() -> bool:
 	job.holder.erase("warming_texture")
 	if job.key == "ready_texture" and job.holder == job.entry.get("result", {}):
 		job.holder["ready_proxy"] = job.image == job.holder.get("proxy")
+	_chain_index = int(job.index); _chain_until = Time.get_ticks_msec() + CHAIN_MS
 	if ready(job.entry, int(job.index)):
+		_chain_until = 0
 		job.entry["render_ready_us"] = Time.get_ticks_usec()
 		DiagnosticLog.record("photo_cache_render_ready", {"request":int(job.entry.id),"index":int(job.index),"portrait":photo.auto_portrait})
 	cancel()

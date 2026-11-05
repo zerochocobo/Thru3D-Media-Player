@@ -4,6 +4,16 @@
 
 Newest first, following product release milestones. Some development/source snapshots contained features before their product release. Original APK identifiers `0.2` and `0.4` are retained; `0.4` was also called `0.4.0` in release notes. Availability depends on device, server and media capabilities.
 
+## 0.16.8 — 2026-11-05
+
+- Add six UI palettes and custom background/accent/text colors, with preview, apply/cancel, quick switching and saved preferences. Improve light-theme text, icons, swatches and footer-logo grayscale; retain media/subtitle colors and the classic palette. Glass menus remain research, not a released feature.
+- Reduce photo/comic/PDF 3D and page-turn waits through earlier neighbour preparation, overlapped color/depth work, bounded measured-memory caching and grouped GPU copies. Improve photo hole bridging and video stretch lookup at strong depth settings; this does not guarantee instant loads or artifact-free reconstruction on every device/source.
+- Keep ordinary flat/curved video upright during sideways dragging, and make grip-plus-stick photo/video distance adjustments radial to the headset without introducing roll, pitch or yaw. Preserve explicit content rotation, supported follow behavior and cinema/immersive route boundaries.
+- Add 123 cloud drive through official OpenList OAuth, browsing/search/range playback where supported, and accepted official login redirects to avoid a blank authorization page. Source tests use intercepted requests, not distributed accounts/tokens; account permissions and provider restrictions still apply.
+- Add video shuffle with round-based repeat avoidance and actual previous-play history. Add remembered 0.5–2.0× comic narration and audition speed, with an independent accessible audition button for available voices; narration/model/translation prerequisites remain.
+- Double the maximum PiP window size and improve hover, pressed and selected feedback. Honor opt-in default video 3D for eligible flat DLNA casts as soon as format/first-frame readiness is known; a missing duration/seek flag alone no longer blocks it. Preserve native stereo, partial-cast and explicit manual-choice gates.
+- Restore Android HTTP(S) video chooser eligibility for compatible external apps while retaining URI/source validation. Keep the browser Beta label on the title line across languages. Douyin Beta remains temporarily unavailable and 3D text protection remains off; private media, personal settings, credentials, keys, weights and development/promotion material remain excluded.
+
 ## 0.16.7 — 2026-11-04
 
 - Reduce per-frame menu/compositor work during eye-buffer playback and restore optimized native render-bridge compilation in Debug builds. Add GPU-fenced decoder-image return to prevent reuse before sampling completes, addressing intermittent future-frame flashes under depth inference; device/content limits remain.

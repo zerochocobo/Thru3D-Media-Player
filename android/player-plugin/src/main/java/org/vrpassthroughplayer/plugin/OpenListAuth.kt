@@ -8,11 +8,11 @@ import java.util.Base64
 internal object OpenListAuth {
     const val ORIGIN = "https://api.oplist.org"
     val drivers = mapOf(CloudDrive.OPEN115 to "115 Open", CloudDrive.BAIDU to "BaiduNetdisk", CloudDrive.ONEDRIVE to "Onedrive",
-        CloudDrive.ALIYUN to "AliyundriveOpen", CloudDrive.QUARK to "QuarkOpen")
+        CloudDrive.ALIYUN to "AliyundriveOpen", CloudDrive.QUARK to "QuarkOpen", CloudDrive.OPEN123 to "123 Open")
     private val variants = mapOf(CloudDrive.OPEN115 to setOf("115cloud_go"), CloudDrive.BAIDU to setOf("baiduyun_go"), CloudDrive.ONEDRIVE to setOf("onedrive_pr", "onedrive_go"),
-        CloudDrive.ALIYUN to setOf("alicloud_go"), CloudDrive.QUARK to setOf("quarkyun_fn"))
+        CloudDrive.ALIYUN to setOf("alicloud_go"), CloudDrive.QUARK to setOf("quarkyun_fn"), CloudDrive.OPEN123 to setOf("123cloud_oa"))
     private val callbacks = mapOf(CloudDrive.OPEN115 to "/115cloud/callback", CloudDrive.BAIDU to "/baiduyun/callback", CloudDrive.ONEDRIVE to "/onedrive/callback",
-        CloudDrive.ALIYUN to "/alicloud/callback", CloudDrive.QUARK to "/quarkyun/callback")
+        CloudDrive.ALIYUN to "/alicloud/callback", CloudDrive.QUARK to "/quarkyun/callback", CloudDrive.OPEN123 to "/123cloud/callback")
     fun supported(provider: String) = provider in drivers && (provider !in CloudDrive.TRIAL_PROVIDERS || BuildConfig.DEBUG)
     fun requestUrl(provider: String): String {
         val variant = variants.getValue(provider).first()
@@ -42,6 +42,10 @@ internal object OpenListAuth {
             CloudDrive.BAIDU -> listOf("baidu.com")
             CloudDrive.ALIYUN -> listOf("aliyundrive.com", "alipan.com", "aliyun.com", "taobao.com")
             CloudDrive.QUARK -> listOf("quark.cn", "uc.cn")
+            // The official grant starts at yun.123pan.com, then getLogin.js
+            // sends anonymous sessions through user.123pan.cn token verification
+            // and centerlogin. Both are first-party navigation, not OAuth returns.
+            CloudDrive.OPEN123 -> listOf("123pan.com", "123pan.cn")
             else -> listOf("microsoftonline.com", "live.com", "microsoft.com", "msauth.net", "msftauth.net")
         }
         return domains.any { CloudDrive.within(uri.host, it) } || (provider == CloudDrive.QUARK && uri.host == "oauth.fnnas.com")
@@ -64,6 +68,10 @@ internal object OpenListAuth {
         else if (provider == CloudDrive.QUARK) JSONObject().put("root_folder_id", "0").put("refresh_token", refresh)
             .put("access_token", access).put("use_online_api", true).put("api_url_address", "$ORIGIN/quarkyun/renewapi")
             .put("app_id", clientId).put("sign_key", clientSecret).put("order_by", "file_name").put("order_direction", "asc")
+        else if (provider == CloudDrive.OPEN123) JSONObject().put("root_folder_id", "0")
+            .put("AccessToken", access).put("RefreshToken", refresh).put("ClientID", "").put("ClientSecret", "")
+            .put("use_online_api", true).put("api_url_address", "$ORIGIN/123cloud/renewapi")
+            .put("DirectLink", false).put("UploadThread", 3)
         else JSONObject().put("root_folder_path", "/").put("region", "global").put("refresh_token", refresh)
             .put("use_online_api", online).put("client_id", clientId).put("client_secret", clientSecret)
             .put("redirect_uri", "$ORIGIN/onedrive/callback").put("api_url_address", "$ORIGIN/onedrive/renewapi")
@@ -89,10 +97,10 @@ internal object OpenListAuth {
         val access = data.optString("access_token")
         val refresh = data.optString("refresh_token")
         require(validToken(refresh))
-        if (provider in setOf(CloudDrive.OPEN115, CloudDrive.BAIDU, CloudDrive.ALIYUN, CloudDrive.QUARK)) require(validToken(access))
+        if (provider in setOf(CloudDrive.OPEN115, CloudDrive.BAIDU, CloudDrive.ALIYUN, CloudDrive.QUARK, CloudDrive.OPEN123)) require(validToken(access))
         // APIpage's Baidu public callback omits server_use, and uses client_key /
         // secret_key for custom applications. This selected flow is public only.
-        val online = if (provider in setOf(CloudDrive.BAIDU, CloudDrive.ALIYUN)) {
+        val online = if (provider in setOf(CloudDrive.BAIDU, CloudDrive.ALIYUN, CloudDrive.OPEN123)) {
             require(data.optString("client_uid").isEmpty() && data.optString("client_key").isEmpty() && data.optString("secret_key").isEmpty())
             require(!data.has("server_use") || data.opt("server_use") == true || data.optString("server_use") == "true")
             true

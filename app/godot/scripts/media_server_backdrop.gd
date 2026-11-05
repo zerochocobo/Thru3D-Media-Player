@@ -68,6 +68,8 @@ func draw() -> void:
 	material.set_shader_parameter("transition", progress / FADE)
 	material.set_shader_parameter("surface_size", area)
 	material.set_shader_parameter("corner_radius", _panel_material.get_shader_parameter("corner_radius"))
+	material.set_shader_parameter("light_theme", menu.UiTheme.light())
+	material.set_shader_parameter("panel_tint", menu.PANEL)
 	surface.material_override = material
 	menu._apply_overlay_node(surface)
 

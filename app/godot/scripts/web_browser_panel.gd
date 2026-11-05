@@ -1,4 +1,5 @@
 extends RefCounted
+const UiTheme := preload("res://scripts/ui_theme.gd")
 const ChineseInput := preload("res://scripts/chinese_input.gd")
 var _chinese_mode := -1
 var _keyboard_seen := 0
@@ -646,7 +647,7 @@ func draw_tab_strip(host: Node, current: Dictionary) -> void:
 		var title_width := width - 0.128
 		host._button(BASE + 200 + i, "", Vector2(left + title_width / 2, host.TABS_Y), Vector2(title_width, host.TOOL_SIZE.y), id > 0)
 		var tab: Dictionary = host._buttons.back()
-		tab.base_color = Color("294b42") if selected else Color("141a22")
+		tab.base_color = UiTheme.color("browser_tab_selected") if selected else UiTheme.color("browser_tab")
 		tab.node.position.z = 0.004
 		tab.node.material_override.set_shader_parameter("surface_color", tab.base_color)
 		var label: Label3D = host._label(host._fit_title(title, "", title_width - 0.024, 22), Vector3(-title_width / 2 + 0.012, 0, 0.004), 22, tab.node)

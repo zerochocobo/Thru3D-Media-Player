@@ -148,8 +148,7 @@ func pump() -> void:
 				if not can_decode(job): return # Retry this partial spread when headroom recovers.
 				if photo.platform:
 					DirAccess.make_dir_recursive_absolute(photo.magazine.cache_directory)
-					var codec := "jpg" if Pages.page(str(photo.queue[at].uri)) else "png"
-					entry["spread_path"] = photo.magazine.cache_directory.path_join("ahead-%d-%d.%s" % [photo.get_instance_id(), Time.get_ticks_usec(), codec])
+					entry["spread_path"] = photo.magazine.cache_directory.path_join("ahead-%d-%d.t3di" % [photo.get_instance_id(), Time.get_ticks_usec()])
 					job["magazine_path"] = entry.spread_path
 			photo._prefetch_decode = job
 			return
@@ -172,6 +171,20 @@ func warm(at: int, entry: Dictionary) -> bool:
 		return true
 	return false
 
+## The reading budget covers colour only. A 3072 px page with its 3D pair and GPU copies is
+## ~170 MB, so counting depth here evicted every finished neighbour before it could be shown.
+## Depth residents stay under PhotoDisplay._trim_depth_cache's own limit.
+static func color_memory(entries: Dictionary, seen: Dictionary) -> int:
+	var total := 0
+	for entry: Dictionary in entries.values():
+		for key in entry:
+			if key == "depth_data": continue
+			var value: Variant = entry[key]
+			if value is Dictionary and value.has("depth_data"):
+				value = value.duplicate(); value.erase("depth_data")
+			total += memory(value, seen)
+	return total
+
 static func memory(value: Variant, seen: Dictionary) -> int:
 	if value is PackedByteArray: return value.size()
 	if value is Image or value is Texture2D:
@@ -188,7 +201,7 @@ static func memory(value: Variant, seen: Dictionary) -> int:
 
 func trim(reserve: int = 0, protect: int = -1) -> void:
 	var budget := budget_bytes()
-	var seen := {}; var total := memory(photo._prefetched, seen)
+	var seen := {}; var total := color_memory(photo._prefetched, seen)
 	var targets: Array = photo._neighbors(photo.index)
 	targets.reverse() # Keep the forward spread first when the previous one cannot fit.
 	if protect in targets: targets.erase(protect); targets.append(protect)
@@ -196,4 +209,4 @@ func trim(reserve: int = 0, protect: int = -1) -> void:
 		if total + reserve <= budget: break
 		if not photo._prefetched.has(at): continue
 		fail(at)
-		seen.clear(); total = memory(photo._prefetched, seen)
+		seen.clear(); total = color_memory(photo._prefetched, seen)

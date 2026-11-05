@@ -30,7 +30,17 @@ func begin(hand: String, input: String, pose: Transform3D, targets: Array, ancho
 		"local_anchor": pose.affine_inverse() * point, "anchor": point, "last_pose": pose,
 		"head": head, "last_motion": Transform3D.IDENTITY, "depth": 0.0, "depth_ready": false,
 		"last_angles": Vector2.ZERO, "last_displacement": Vector3.ZERO}
-	if head is Transform3D: capture["depth_limits"] = _depth_bounds(targets, point, head.origin)
+	if head is Transform3D:
+		var depth_point := point
+		for target in targets:
+			if target.kind == "screen" and not target.get("cinema", false):
+				# Flat media moves radially from the eyes through its centre, even
+				# when the controller is low or the grabbed pixel is off-centre.
+				depth_point = target.pose.origin
+				capture["depth_axis"] = (depth_point - head.origin).normalized()
+				capture["aim_anchor"] = point
+				break
+		capture["depth_limits"] = _depth_bounds(targets, depth_point, head.origin)
 	for target in targets:
 		if target.get("cinema", false) and head is Transform3D:
 			var distance: float = (head.origin - target.pose.origin).dot(target.pose.basis.z)
@@ -137,18 +147,27 @@ func update(pose: Transform3D, head: Variant, follow: RefCounted) -> bool:
 	if capture.head is Transform3D:
 		if not head is Transform3D or not head.is_finite(): cancel(); return false
 		var initial: Vector3 = capture.pose * capture.local_anchor - capture.head.origin
-		anchor = _sphere_point(pose.origin, pose.basis * capture.local_anchor, head.origin, initial.length() + capture.depth, capture.anchor)
+		# Solve real hand motion on the original sphere. Shrinking that sphere
+		# with the stick changes a low controller's aim even when it is stationary.
+		var radial_depth := capture.has("depth_axis")
+		var radius: float = initial.length() if radial_depth else initial.length() + capture.depth
+		anchor = _sphere_point(pose.origin, pose.basis * capture.local_anchor, head.origin, radius, capture.get("aim_anchor", capture.anchor))
 		var swing := Basis.IDENTITY
 		if capture.has("upright_basis"):
 			swing = _menu_swing(initial, anchor - head.origin)
 			# At vertical limits the live grab stops with the menu instead of flipping.
-			anchor = head.origin + (swing * initial).normalized() * (initial.length() + capture.depth)
+			anchor = head.origin + (swing * initial).normalized() * radius
 		else:
 			swing = Basis(Quaternion(initial.normalized(), (anchor - head.origin).normalized()))
 		# Rotation preserves distance and group layout. Only an explicit stick push
 		# adds radial translation; physical panel sizes stay unchanged.
 		motion = Transform3D(swing, head.origin - swing * capture.head.origin)
-		motion.origin += (anchor - head.origin).normalized() * capture.depth
+		var depth_direction: Vector3 = swing * capture.depth_axis if radial_depth else (anchor - head.origin).normalized()
+		motion.origin += depth_direction * capture.depth
+		if radial_depth:
+			capture.aim_anchor = anchor
+			# The visible grab marker remains on the captured pixel after translation.
+			anchor += depth_direction * capture.depth
 	var before: Vector3 = -capture.pose.basis.z
 	var after: Vector3 = -pose.basis.z
 	var angles := Vector2(wrapf(atan2(-after.x, -after.z) - atan2(-before.x, -before.z), -PI, PI),

@@ -30,6 +30,12 @@ func _run() -> void:
 	var platform := Platform.new()
 	var menu := Menu.new(); root.add_child(menu); menu.attach_platform(platform); menu.toggle()
 	var a: RefCounted = menu.cloud_accounts
+	menu.account_panel.kind = "cloud"; menu.account_panel.view = "choose"
+	check(menu.account_panel.rows().any(func(row): return row.get("account_provider", "") == "123_open"), "123 official cloud entry is available")
+	for language in ["zh", "en", "ja", "ru"]:
+		preload("res://scripts/i18n.gd").use(language)
+		check(menu.account_panel.provider_name("123_open") != "123_open", "123 localized name: " + language)
+	menu.account_panel.close()
 	menu._activate(Menu.NAV_BASE + Menu.Section.CLOUD)
 	var mounts := [{"id": "/first", "title": "115 home", "container": true}, {"id": "/second", "title": "Baidu", "container": true}]
 	platform.answer(mounts)

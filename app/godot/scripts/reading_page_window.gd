@@ -1,5 +1,7 @@
 extends RefCounted
-## Container files only: current spread plus one real spread on either side.
+## Container files only: current spread, one real spread on either side and the one beyond in the
+## reading direction. Rendering that second one while the next spread is decoded and converted keeps
+## 3 s page turns from waiting on PDF/archive pages (two 3072 px PDF pages took ~1 s on 115).
 ## No wraparound, thumbnails, decoded pixels, joined images or generated 3D.
 const Methods := preload("res://scripts/platform_methods.gd")
 const Pages := preload("res://scripts/pdf_pages.gd")
@@ -20,7 +22,10 @@ func plan(at: int, ready: bool) -> Dictionary:
 	var following := at + current_count
 	var preferred: int = previous if photo._navigation_direction < 0 else following
 	var other: int = following if photo._navigation_direction < 0 else previous
-	for start in [at, preferred, other]:
+	var beyond: int = -1
+	if preferred >= 0 and preferred < photo.queue.size():
+		beyond = photo.magazine.target_from(preferred, photo._navigation_direction) if double else preferred + photo._navigation_direction
+	for start in [at, preferred, other, beyond]:
 		if start < 0 or start >= photo.queue.size(): continue
 		var count: int = photo.magazine.count(start) if double else 1
 		for page in range(start, mini(start + count, photo.queue.size())):
@@ -29,7 +34,7 @@ func plan(at: int, ready: bool) -> Dictionary:
 			if not Pages.container_page(uri) or uri.get_slice("/", 2) != str(photo.queue[at].uri).get_slice("/", 2): continue
 			if uri not in result.keep: result.keep.append(uri)
 			# Keep the last spread if visited; do not fetch an unseen trailing spread on a jump.
-			if ready and start == preferred and page not in range(at, at + current_count) and int(item.get("size", 0)) <= PAGE_BYTES:
+			if ready and start in [preferred, beyond] and page not in range(at, at + current_count) and int(item.get("size", 0)) <= PAGE_BYTES:
 				result.ahead.append(uri)
 	return result
 

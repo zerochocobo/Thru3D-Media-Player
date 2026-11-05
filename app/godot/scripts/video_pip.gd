@@ -252,11 +252,14 @@ func press(hand: String, action: String, ray: Variant, pose: Variant, head: Vari
 	return false
 
 func release(hand: String, action: String) -> bool:
+	var toolbar := false
+	if action == "trigger_click":
+		for window in windows.values(): toolbar = window.release_toolbar(hand) or toolbar
 	if action == "trigger_click" and resize.get("hand", "") == hand:
 		resize.clear(); _update_resize_feedback(); return true
 	if movement.capture.get("hand", "") == hand and movement.capture.get("input", "") == action:
 		movement.cancel(); return true
-	return false
+	return toolbar
 
 func adjust_distance(hand: String, stick: Vector2, delta: float, pose: Variant, head: Variant) -> bool:
 	if movement.capture.get("hand", "") != hand or not pose is Transform3D or not head is Transform3D: return false
@@ -311,7 +314,7 @@ func _resize_to(origin: Vector3, direction: Vector3) -> void:
 		var axis := 1 if edge < 2 else 0
 		var sign_axis := 1.0 if edge in [0, 3] else -1.0
 		var next := size
-		next[axis] = clampf(size[axis] + (point[axis] - (resize.point as Vector2)[axis]) * sign_axis, 0.18, 1.2)
+		next[axis] = clampf(size[axis] + (point[axis] - (resize.point as Vector2)[axis]) * sign_axis, 0.18, PipWindow.MAX_SIZE)
 		if next.is_equal_approx(size): return
 		var shift := Vector3.ZERO; shift[axis] = (next[axis] - size[axis]) * sign_axis / 2
 		window.custom_shape = true; window.set_size(next)
@@ -322,7 +325,7 @@ func _resize_to(origin: Vector3, direction: Vector3) -> void:
 	var delta := Vector2(point.x, point.y) - (resize.point as Vector2)
 	# Bound the long edge for images so portrait images cannot grow arbitrarily tall.
 	var extent := maxf(size.x, size.y) if window.image_mode else size.x
-	var factor := clampf(1.0 + delta.dot(diagonal) / diagonal.length_squared(), 0.22 / extent, 1.2 / extent)
+	var factor := clampf(1.0 + delta.dot(diagonal) / diagonal.length_squared(), 0.22 / extent, PipWindow.MAX_SIZE / extent)
 	window.set_size(size * factor)
 	window.global_transform = initial * Transform3D(Basis.IDENTITY, Vector3(diagonal.x, diagonal.y, 0) * (factor - 1.0) / 2)
 

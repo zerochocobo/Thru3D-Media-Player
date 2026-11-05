@@ -5,6 +5,7 @@ const Test := preload("res://tests/test_media_server_browser.gd")
 const Capture := preload("res://scripts/menu_composition.gd")
 const Display := preload("res://scripts/xr_display.gd")
 const Browser := preload("res://scripts/media_server_browser.gd")
+const Palette := preload("res://scripts/ui_theme.gd")
 var checks := 0
 var failures: Array[String] = []
 func check(ok: bool, message: String) -> void:
@@ -72,9 +73,25 @@ func _check_hover_sweep(menu: Node, page: String, viewport: SubViewport, camera:
 		for y in range(-2, 3):
 			var a := after.get_pixelv(edge + Vector2i(x, y)); var b := before.get_pixelv(edge + Vector2i(x, y))
 			delta = maxf(delta, maxf(absf(a.r-b.r), maxf(absf(a.g-b.g), absf(a.b-b.b))))
-	check(delta > 0.12, "Hover feedback is visible in rendered pixels: " + page)
+	# A poster can match a theme's paper at the single edge probe. In new
+	# palettes also measure actual changed pixels inside that card, excluding tips.
+	check(delta > 0.12 or (Palette.current != Palette.DEFAULT and _card_hover_pixels(before, after, sample, camera) > 40), "Hover feedback is visible in rendered pixels: " + page)
 	after.save_png(output.path_join("hover-" + page + ".png"))
 	menu.update_pointer("right_hand", Vector3.ZERO, Vector3.FORWARD, false)
+
+func _card_hover_pixels(before: Image, after: Image, button: Dictionary, camera: Camera3D) -> int:
+	var low := Vector2(INF, INF); var high := Vector2(-INF, -INF)
+	for x in [-0.5, 0.5]:
+		for y in [-0.5, 0.5]:
+			var point := camera.unproject_position(button.node.to_global(Vector3(button.rect.size.x*x, button.rect.size.y*y, 0)))
+			low = low.min(point); high = high.max(point)
+	var area := Rect2i(Vector2i(low.floor()), Vector2i((high-low).ceil())).intersection(Rect2i(Vector2i.ZERO, after.get_size()))
+	var count := 0
+	for y in range(area.position.y, area.end.y, 2):
+		for x in range(area.position.x, area.end.x, 2):
+			var a := before.get_pixel(x,y); var b := after.get_pixel(x,y)
+			if maxf(absf(a.r-b.r),maxf(absf(a.g-b.g),absf(a.b-b.b))) > 0.035: count += 1
+	return count
 
 func _check_play_outline(image: Image, camera: Camera3D, menu: Node) -> void:
 	var border := Vector2i(camera.unproject_position(menu.to_global(Vector3(0.19, 0.1715, 0.002))))
@@ -86,7 +103,11 @@ func _check_play_outline(image: Image, camera: Camera3D, menu: Node) -> void:
 	check(brightness > 0.35, "Play outline remains visible over detail artwork")
 	var centre := Vector2i(camera.unproject_position(menu.to_global(Vector3(0.40, 0.135, 0.002))))
 	var inside := image.get_pixelv(centre)
-	check(maxf(inside.r, maxf(inside.g, inside.b)) < 0.20, "Play outline keeps its centre transparent over dark artwork")
+	if Palette.light():
+		var background := Palette.color("panel")
+		check(Vector3(inside.r, inside.g, inside.b).distance_to(Vector3(background.r, background.g, background.b)) < 0.12, "Play outline keeps its centre transparent over light artwork")
+	else:
+		check(maxf(inside.r, maxf(inside.g, inside.b)) < 0.20, "Play outline keeps its centre transparent over dark artwork")
 
 func _check_native_hover(capture: Node, menu: Node, page: String, output: String) -> void:
 	var target: int = Menu.ROW_BASE if page == "scenes" else (menu.server_browser.gallery.PART + 1 if page == "detail_favorite" else Browser.ACTION + 170)
@@ -135,8 +156,13 @@ func _check_artwork_capture(capture: Node, menu: Node) -> void:
 			var slot: Dictionary = capture.slots.filter(func(item): return item.used and item.nodes.has(menu._backdrop))[0]
 			var pixel := Vector2i(slot.camera.unproject_position(menu.to_global(Vector3(0.75, 0.54, 0))))
 			var color: Color = slot.raw.get_texture().get_image().get_pixelv(pixel)
-			check(color.r > color.b + 0.15 if tint == Color.RED else color.b > color.r + 0.15,
-				"Artwork remains visible in actual capture, overlay=%s tint=%s" % [overlay, tint])
+			if Palette.light():
+				var expected := Palette.color("panel").lerp(tint, 0.045)
+				check(Vector3(color.r, color.g, color.b).distance_to(Vector3(expected.r, expected.g, expected.b)) < 0.06,
+					"Light artwork preserves theme text contrast, overlay=%s tint=%s" % [overlay, tint])
+			else:
+				check(color.r > color.b + 0.15 if tint == Color.RED else color.b > color.r + 0.15,
+					"Artwork remains visible in actual capture, overlay=%s tint=%s" % [overlay, tint])
 		menu._backdrop.material_override.set_shader_parameter("picture", original)
 	menu.set_scene_overlay(false)
 	menu.composition_changed.emit(); capture.update()

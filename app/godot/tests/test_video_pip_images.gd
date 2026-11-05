@@ -59,7 +59,7 @@ func run() -> void:
 				check(pip.press("right_hand","trigger_click",ray_to(window,point),null,head) and not pip.resize.is_empty(), "The bottom-right image corner captures the trigger")
 				var drag := ray_to(window,point + 2 * point * (requested_scale - 1))
 				pip.update_input({"right_hand":drag},{},head,1000)
-				check(is_equal_approx(window.size.x / window.size.y, before.x / before.y) and maxf(window.size.x,window.size.y) >= 0.2199 and maxf(window.size.x,window.size.y) <= 1.2001, "Portrait and landscape corner resizing preserve aspect and bound the long edge")
+				check(is_equal_approx(window.size.x / window.size.y, before.x / before.y) and maxf(window.size.x,window.size.y) >= 0.2199 and maxf(window.size.x,window.size.y) <= 2.4001, "Portrait and landscape corner resizing preserve aspect and bound the long edge")
 				var opposite: Vector2 = -window.corner_point(corner)
 				check(window.to_global(Vector3(opposite.x,opposite.y,0)).distance_to(anchor) < 0.0001, "The opposite corner stays fixed during image resizing")
 				pip.release("right_hand","trigger_click")

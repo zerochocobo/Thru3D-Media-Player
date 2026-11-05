@@ -183,8 +183,8 @@ func _run() -> void:
 		hint.visible = true
 	menu._set_scroll(0)
 	tap(menu, target(menu, "watch_color", "violet"))
-	check(state.watch_color == "violet" and menu._settings_scroll_hint.visible, "Last visible row remains operable beside the scroll cue")
-	menu._set_scroll(menu._max_scroll())
+	check(state.watch_color == "violet" and menu._settings_scroll_hint.visible, "Top watch swatch remains operable while the page shows its scroll cue")
+	menu._set_scroll(0)
 	point = origin(menu, target(menu, "watch_color", "blue"))
 	before = events.size()
 	menu.press_pointer("right_hand", point, -menu.global_basis.z, true)

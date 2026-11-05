@@ -31,10 +31,17 @@ const PointerRay := preload("res://scripts/pointer_ray.gd")
 const Icons := preload("res://scripts/menu_icons.gd")
 const I18n := preload("res://scripts/i18n.gd")
 const DeviceStatus := preload("res://scripts/device_status.gd")
-const PANEL := Color(0.065, 0.075, 0.095, 0.98)
-const TILE := Color(0.105, 0.12, 0.15, 1.0)
-const ACCENT := Color(0.54, 0.93, 0.77)
-const MUTED := Color(0.56, 0.62, 0.69)
+const UiTheme := preload("res://scripts/ui_theme.gd")
+static var PANEL: Color:
+	get: return UiTheme.color("panel")
+static var TILE: Color:
+	get: return UiTheme.color("tile")
+static var ACCENT: Color:
+	get: return UiTheme.color("accent")
+static var MUTED: Color:
+	get: return UiTheme.color("muted")
+var _theme_pending := false
+var _theme_queued := false
 ## Rasterize twice as large, then prefilter when projected into an eye buffer. The logical
 ## typography and physical dimensions stay the same, including labels resized after creation.
 const TEXT_RASTER_SCALE := 2
@@ -201,10 +208,48 @@ func project_pointer(origin: Vector3, direction: Vector3, plane: Transform3D) ->
 	return start + delta * (-start.z / delta.z)
 
 func _ready() -> void:
+	_connect_theme()
 	position = Vector3(0, -0.03, -1.55)
 	_backdrop = _quad(Vector2(1.55, 1.08), Vector3.ZERO, PANEL, 10)
 	add_child(_backdrop)
 	visible = false
+
+func _connect_theme() -> void:
+	if not UiTheme.events.changed.is_connected(_on_theme_changed):
+		UiTheme.events.changed.connect(_on_theme_changed)
+		visibility_changed.connect(_queue_theme_refresh)
+
+func _on_theme_changed() -> void:
+	_theme_pending = true
+	_queue_theme_refresh()
+
+func _queue_theme_refresh() -> void:
+	if not _theme_pending or _theme_queued or not is_inside_tree() or not is_visible_in_tree(): return
+	_theme_queued = true
+	_refresh_theme.call_deferred()
+
+func _refresh_theme() -> void:
+	_theme_queued = false
+	if not _theme_pending or not is_inside_tree() or not is_visible_in_tree(): return
+	if has_method("has_pointer_capture") and call("has_pointer_capture"):
+		await get_tree().process_frame
+		_queue_theme_refresh()
+		return
+	_theme_pending = false
+	var pose := transform
+	var hover := _hover.duplicate()
+	# The tooltip and footer outlive ordinary layouts, so refresh them explicitly.
+	if is_instance_valid(_tooltip): _tooltip.free()
+	_tooltip = null
+	_redraw_theme()
+	transform = pose
+	_hover = hover
+	_update_highlights()
+	if is_instance_valid(device_status): device_status.refresh(true)
+	composition_layout_changed.emit()
+
+func _redraw_theme() -> void:
+	refresh()
 
 func toggle() -> void:
 	if visible:
@@ -434,11 +479,11 @@ func _clear_layout() -> void:
 func _button(target: int, text: String, centre: Vector2, size: Vector2, enabled: bool = true,
 		icon: String = "", primary: bool = false, parent: Node3D = null) -> void:
 	var base := ACCENT if primary else TILE
-	var foreground := Color(0.045, 0.1, 0.085) if primary else Color(0.93, 0.95, 0.98)
+	var foreground := UiTheme.color("primary_ink") if primary else UiTheme.color("text")
 	var node := _quad(size, Vector3(centre.x, centre.y, 0.002), base, 11)
 	(parent if parent else self).add_child(node)
 	var label := _label(text, Vector3(0, -size.y * 0.26 if not icon.is_empty() else 0, 0.004), TEXT_BODY, node)
-	label.modulate = foreground if enabled else MUTED * Color(0.7, 0.7, 0.7)
+	label.modulate = foreground if enabled else UiTheme.color("disabled_ink")
 	if not icon.is_empty():
 		# Icon-only buttons centre a larger glyph; captioned buttons stack icon over text.
 		var alone := text.is_empty()
@@ -453,7 +498,7 @@ func _text_button(target: int, text: String, centre: Vector2, size: Vector2, ena
 	var node := Node3D.new()
 	node.position = Vector3(centre.x, centre.y, 0.006)
 	(parent if parent else self).add_child(node)
-	var foreground := Color(0.93, 0.95, 0.98)
+	var foreground := UiTheme.color("text")
 	var hover_labels: Array[Label3D] = []
 	if not text.is_empty():
 		var caption := _label(text, Vector3.ZERO, TEXT_BODY, node)
@@ -526,7 +571,7 @@ func refresh_session_controls(force: bool = false) -> void:
 	var scene_centre := Vector2(_footer_centre.x + STATUS_WIDTH * 0.5 + FOOTER_GAP + .09, _footer_centre.y)
 	_button(SCENERY, "", scene_centre, Vector2(.18, FOOTER_DIAMETER), state.get("scenery_enabled", true))
 	var scenery_button: Node3D = _buttons.back().node
-	var scenery_ink:=Color.WHITE if state.get("scenery_enabled",true) else MUTED*Color(.7,.7,.7)
+	var scenery_ink:=UiTheme.color("label") if state.get("scenery_enabled",true) else UiTheme.color("disabled_ink")
 	_icon("panorama",Vector3(-.053,0,.006),.034,scenery_ink,scenery_button)
 	_label(I18n.t("Scene"),Vector3(.024,0,.006),TEXT_BODY,scenery_button).modulate=scenery_ink
 	_buttons.back().node.material_override.set_shader_parameter("corner_radius", FOOTER_DIAMETER * .5)
@@ -568,6 +613,9 @@ func _icon(key: String, location: Vector3, size: float, color: Color, parent: No
 	if Icons.Providers.TEXTURES.has(key):
 		if key in Icons.Providers.COLORED:
 			color = Color(1, 1, 1, color.a)
+		elif UiTheme.light() and Icons.Providers.LIGHT_COLORS.has(key):
+			var brand: Color = Icons.Providers.LIGHT_COLORS[key]
+			color = UiTheme.site_icon_color(key, Color(brand, color.a))
 		else:
 			var gray := maxf(color.r, maxf(color.g, color.b))
 			color = Color(gray, gray, gray, color.a)
@@ -595,11 +643,17 @@ func _quad(size: Vector2, location: Vector3, color: Color, priority: int) -> Mes
 	surface.shader = SURFACE
 	surface.render_priority = priority
 	surface.set_shader_parameter("surface_color", color)
+	var edge_color := UiTheme.color("hover_border")
+	surface.set_shader_parameter("hover_border", Vector3(edge_color.r, edge_color.g, edge_color.b))
 	surface.set_shader_parameter("surface_size", size)
 	surface.set_shader_parameter("corner_radius", 0.028 if priority == 10 else 0.012)
 	node.material_override = surface
 	_apply_overlay_node(node)
 	return node
+
+func _style_slider_marker(node: MeshInstance3D) -> void:
+	if not UiTheme.original():
+		node.material_override.set_shader_parameter("marker_outline", UiTheme.slider_outline())
 
 func _material(color: Color, priority: int, overlay: bool = false) -> StandardMaterial3D:
 	var material := StandardMaterial3D.new()
@@ -628,6 +682,7 @@ func _label(text: String, location: Vector3, size: int, parent: Node = self) -> 
 	label.no_depth_test = false
 	label.render_priority = 12
 	label.outline_size = 0
+	label.modulate = UiTheme.color("label")
 	parent.add_child(label)
 	if parent == self:
 		_labels.append(label)
@@ -716,8 +771,8 @@ func _update_highlights() -> void:
 			if button.select_arrow.material_override.albedo_color != ink:
 				button.select_arrow.material_override.albedo_color = ink; changed = true
 		if button.has("select_surface"):
-			var fill := Color(0.23, 0.43, 0.38) if hovered else TILE
-			if not button.enabled: fill = Color(0.085, 0.095, 0.115)
+			var fill := UiTheme.color("hover") if hovered else TILE
+			if not button.enabled: fill = UiTheme.color("disabled")
 			if button.select_surface.material_override.get_shader_parameter("surface_color") != fill:
 				button.select_surface.material_override.set_shader_parameter("surface_color", fill); changed = true
 		if button.has("hover_labels"):
@@ -727,8 +782,11 @@ func _update_highlights() -> void:
 				if caption.modulate != ink: caption.modulate = ink; changed = true
 			continue
 		var color: Color = button.base_color
-		if not button.enabled: color = Color(0.26, 0.44, 0.38) if button.get("hover_disabled", false) and button.base_color == ACCENT else Color(0.085, 0.095, 0.115, button.base_color.a)
-		elif hovered: color = button.get("hover_color", Color(0.67, 1.0, 0.86) if button.base_color == ACCENT else Color(0.23, 0.43, 0.38))
+		# Callers may change an initially primary button into a selected/quiet tile.
+		# Classify its final surface exactly as before; palette accents stay distinct.
+		var primary: bool = button.base_color == ACCENT
+		if not button.enabled: color = UiTheme.color("primary_disabled") if button.get("hover_disabled", false) and primary else Color(UiTheme.color("disabled"), button.base_color.a)
+		elif hovered: color = button.get("hover_color", UiTheme.color("primary_hover") if primary else UiTheme.color("hover"))
 		color = _surface_color(button, color)
 		if button.node.material_override.get_shader_parameter("surface_color") != color:
 			button.node.material_override.set_shader_parameter("surface_color", color)
@@ -759,7 +817,7 @@ func _update_tooltip() -> void:
 		_hide_tooltip()
 		return
 	if not _tooltip:
-		_tooltip = _quad(Vector2(0.2, 0.05), Vector3.ZERO, Color(0.02, 0.025, 0.03, 0.92), 40)
+		_tooltip = _quad(Vector2(0.2, 0.05), Vector3.ZERO, UiTheme.color("tooltip"), 40)
 		_tooltip.set_meta("menu_tooltip", true)
 		add_child(_tooltip)
 		var text := _label("", Vector3(0, 0, 0.002), TEXT_BODY, _tooltip)

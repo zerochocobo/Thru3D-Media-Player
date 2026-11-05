@@ -199,11 +199,12 @@ internal object CloudLibrary {
             .put("kind", MediaKinds.fileNameKind(name)).put("uri", if (data.getBoolean("is_dir")) "" else CloudPaths.uri(full))
     }
     fun sortOrders(provider: String): JSONArray {
+        if (provider == CloudDrive.OPEN123) return JSONArray(listOf("source"))
         val orders = (CloudSortedPages.ORDERS + "source").filter { provider != CloudDrive.QUARK || !it.startsWith("size_") }
         return JSONArray(if (provider in setOf(CloudDrive.OPEN115, CloudDrive.WEBDAV)) orders + orders.map { "mixed_$it" } else orders)
     }
     fun effectiveOrder(provider: String, order: String): String =
-        if (provider == CloudDrive.QUARK && order.startsWith("size_")) "name_asc" else order
+        if (provider == CloudDrive.OPEN123) "source" else if (provider == CloudDrive.QUARK && order.startsWith("size_")) "name_asc" else order
 
     fun browse(path: String, refresh: Boolean, offset: Int = 0, http: CloudTransport = CloudHttp, order: String = "", folderId: String = "", subtitlesOnly: Boolean = false, requestedSize: Int = CloudDrive.PAGE_SIZE): JSONObject = safe {
         val entries = JSONArray()

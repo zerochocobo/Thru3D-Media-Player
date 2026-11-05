@@ -3,7 +3,8 @@ extends "res://scripts/ray_menu.gd"
 signal close_requested
 signal command(operation: String, value: Variant)
 const Fields := preload("res://scripts/choice_fields.gd")
-const SELECTED := Color(0.16,0.31,0.27)
+static var SELECTED: Color:
+	get: return UiTheme.color("selected")
 const TextInput := preload("res://scripts/system_text_input.gd")
 const BUILTINS := [["cinema","Grand cinema"],["belfast","Belfast sunset"],["morning","Morning sky"],
 	["night","Milky Way panorama"],["dark","Dark background"],["passthrough","Passthrough"]]
@@ -51,11 +52,11 @@ const LEFT := -.67
 const RIGHT := .67
 const CARD_SIZE := Vector2(.43,.28)
 
-func _left(text: String, point: Vector2, size: int = TEXT_BODY, width: float = 1.30, ink: Color = Color.WHITE, parent: Node = self) -> Label3D:
+func _left(text: String, point: Vector2, size: int = TEXT_BODY, width: float = 1.30, ink: Color = Color(-1, -1, -1, -1), parent: Node = self) -> Label3D:
 	var label:=_label(_fit_title(text,"",width,size),Vector3(point.x,point.y,.009),size,parent)
 	label.horizontal_alignment=HORIZONTAL_ALIGNMENT_LEFT
 	label.render_priority=13
-	label.modulate=ink
+	label.modulate=UiTheme.color("label") if ink.a < 0 else ink
 	return label
 
 func _selected_title() -> String:
@@ -68,8 +69,8 @@ func _selected_title() -> String:
 func _danger(target: int,text: String,centre: Vector2,size: Vector2,enabled: bool) -> void:
 	_button(target,text,centre,size,enabled)
 	var button: Dictionary=_buttons.back()
-	button.base_color=Color(.24,.10,.12) if enabled else TILE
-	button.foreground=Color(1,.63,.63) if enabled else MUTED
+	button.base_color=UiTheme.color("remove_surface") if enabled else TILE
+	button.foreground=UiTheme.color("remove_ink") if enabled else MUTED
 	button.node.material_override.set_shader_parameter("surface_color",button.base_color)
 	for child in button.node.get_children():
 		if child is Label3D: child.modulate=button.foreground
@@ -218,7 +219,7 @@ func _draw_cards() -> void:
 		_button(ADD,"",Vector2(.47,-.39),CARD_SIZE,not _state.get("busy",false))
 		var add_card: Node3D=_buttons.back().node
 		_icon("plus",Vector3(0,.018,.007),.06,MUTED,add_card)
-		_left(I18n.t("Add panorama"),Vector2(-.185,-.114),TEXT_AUX,.37,MUTED if _state.get("busy",false) else Color.WHITE,add_card)
+		_left(I18n.t("Add panorama"),Vector2(-.185,-.114),TEXT_AUX,.37,MUTED if _state.get("busy",false) else UiTheme.color("label"),add_card)
 		if _state.get("choice","") not in ["dark","passthrough"]: _button(ADJUST,I18n.t("Adjust"),Vector2(.52,-.58),Vector2(.30,.065))
 		if not library.reviews.is_empty(): _button(REVIEW,I18n.t("Review")+" (%d)"%library.reviews.size(),Vector2(-.16,-.58),Vector2(.52,.065))
 		elif _state.get("can_import",false): _button(CURRENT,I18n.t("Use current panorama"),Vector2(-.16,-.58),Vector2(.70,.065),not _state.get("busy",false))
@@ -265,12 +266,12 @@ func _card(item: Dictionary,index: int,point: Vector2) -> void:
 	var caption:=str(item.title)
 	if view=="review": caption+=" · "+("VR180" if item.get("geometry",3)==1 else "360°")
 	var has_actions:=view=="manage" and not bulk
-	_left(caption,Vector2(-.185,-.114),TEXT_AUX,.25 if has_actions else .37,Color.WHITE,node)
+	_left(caption,Vector2(-.185,-.114),TEXT_AUX,.25 if has_actions else .37,UiTheme.color("label"),node)
 	_tips[CARD+index]=str(item.title)
 	if active:
 		var badge:=_quad(Vector2(.035,.035),Vector3(.17,.095,.012),ACCENT,14)
 		badge.material_override.set_shader_parameter("corner_radius",.0175); node.add_child(badge)
-		_icon("check",Vector3(.17,.095,.015),.024,Color(.04,.1,.08),node).material_override.render_priority=16
+		_icon("check",Vector3(.17,.095,.015),.024,UiTheme.color("scene_check"),node).material_override.render_priority=16
 	if has_actions:
 		for action in [[RENAMES+index,"edit",.11,"Rename"],[REMOVES+index,"trash",.18,"Remove"]]:
 			var centre:=point+Vector2(float(action[2]),-.114)

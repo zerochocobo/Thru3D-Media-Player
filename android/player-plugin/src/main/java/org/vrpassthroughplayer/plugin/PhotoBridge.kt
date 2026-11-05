@@ -116,7 +116,11 @@ internal class PhotoBridge(
                 val linked = if (location.scheme == "file") runCatching {
                     val original = File(location.path ?: "").canonicalFile
                     val online = File(app.filesDir, "online-panoramas").canonicalFile
-                    if (original.parentFile == online && original.isFile) {
+                    // Godot's joined magazine spread (tens of MB of raw rows) is deleted by its writer after ready:
+                    // take the file over. Quest's SELinux denies app hard links, and a copy hit the reading 32 MB cap.
+                    val spreads = File(app.cacheDir, "thru3d-photo-spreads").canonicalFile
+                    if (original.parentFile == spreads && original.isFile && original.renameTo(source)) true
+                    else if (original.parentFile == online && original.isFile) {
                         android.system.Os.link(original.path, source.path); true
                     } else false
                 }.getOrDefault(false) else false
@@ -162,6 +166,17 @@ internal class PhotoBridge(
                 state.phase = "preparing"
                 // Decoder retirement is serialized before allocating the next full photo, off UI.
                 animationWorker.submit {}.get()
+                PhotoBitmap.rawBounds(source)?.let { size ->
+                    // A joined magazine spread: Godot already holds its pixels, native depth/stereo read the rows.
+                    // Its composer bounds it to 8192x4096; the reading gate below is for encoded originals.
+                    require(size[0] <= 8192 && size[1] <= 4096) { "PHOTO_TOO_LARGE" }
+                    checkCurrent(id); files[id] = PhotoSource(source); published = true
+                    emit("photo_ready", id, JSONObject().put("state", "ready").put("width", size[0]).put("height", size[1])
+                        .put("orientation", 1).put("panorama", false).put("path", source.path).put("raw_rgba", true)
+                        .put("decoded_width", size[0]).put("decoded_height", size[1]).put("sample", 1)
+                        .put("cache_bytes", source.length()).toString())
+                    return@execute
+                }
                 if (bounded) {
                     require(source.length() <= 32L * 1024 * 1024) { "PHOTO_TOO_LARGE" }
                     // Inspect original dimensions before NativePhoto/HEIF/downsample allocation.
@@ -299,6 +314,7 @@ internal class PhotoBridge(
         return true
     }
 
+    fun depthPending(): Boolean = depthJobs.isNotEmpty()
     fun cancel(id: Int) {
         if (current.compareAndSet(id, 0)) connection?.disconnect()
         release(id)
@@ -379,7 +395,7 @@ internal class PhotoBridge(
             if (closed) return false
             val source = files[id] ?: return false
             if (source.nativeStereo && sceneToken == 0) return false
-            if (background && (sceneToken > 0 || source.animation || !allowBackground(source.file))) return false
+            if (background && (sceneToken > 0 || source.animation || !allowBackground(source.file, !PhotoDepthRuntime.alive()))) return false
             val existing = depthJobs[id]
             if (existing != null && !existing.cancelled && existing.stereo == stereo && existing.sceneToken == sceneToken && existing.rotation == rotation) {
                 existing.strength = strength
@@ -403,7 +419,8 @@ internal class PhotoBridge(
             val started = System.nanoTime()
             var snapshot: File?=null
             try {
-                checkHeadroom()
+                // A resident photo session needs no cold-model allowance (512 MiB of a 1.5 GiB spread estimate).
+                checkHeadroom(!PhotoDepthRuntime.alive())
                 snapshot=job.source.effectSnapshot(::checkDepth)
                 val source=snapshot?:job.source.file
                 val app = context() ?: error("PHOTO_UNAVAILABLE")
@@ -424,7 +441,7 @@ internal class PhotoBridge(
                     val inputMs = (System.nanoTime() - inputStarted) / 1_000_000.0
                     val content = input.content
                     checkDepth()
-                    checkHeadroom()
+                    checkHeadroom(!PhotoDepthRuntime.alive())
                     stage(id,"waiting_model")
                     val modelStarted = System.nanoTime()
                     result = PhotoDepthRuntime.run(app,::checkDepth) { handle, reused ->

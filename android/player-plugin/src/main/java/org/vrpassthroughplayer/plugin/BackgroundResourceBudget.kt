@@ -49,6 +49,8 @@ internal object BackgroundResourceBudget {
     fun photoPeak(width: Int, height: Int, includeModel: Boolean = true): Long {
         if (width <= 0 || height <= 0) return Long.MAX_VALUE
         val (w, h) = PhotoStereo.size(width, height)
-        return (if (includeModel) 512 * MIB else 0) + w.toLong() * h * 128
+        // Measured on Quest 3 (PSS sampled every 250 ms): a 3368x2384 spread conversion added ~130 MB
+        // transiently. 48 bytes per work pixel keeps 2-3x of that; 128 (1 GB) blocked every spread.
+        return (if (includeModel) 512 * MIB else 0) + w.toLong() * h * 48
     }
 }

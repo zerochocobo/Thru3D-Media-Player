@@ -21,6 +21,13 @@ const TEXTURES := {
 }
 const MARK_SCALE := {"provider_xbvr": 1.8}
 const COLORED := ["provider_emby", "provider_jellyfin", "provider_plex", "provider_stash", "provider_xbvr"]
+# Readable color adaptations of the retained white vectors, not replacement artwork.
+# 115's blue comes from its retained source; the remaining hues identify each service.
+const LIGHT_COLORS := {
+	"provider_115": Color("224888"), "provider_baidu": Color("2864d8"),
+	"provider_aliyun": Color("6251c5"), "provider_quark": Color("3165d0"),
+	"provider_onedrive": Color("0078d4"), "provider_webdav": Color("247b89"),
+}
 
 static func key(provider: String, fallback: String = "cloud") -> String:
 	var name: String = ALIASES.get(provider.strip_edges().to_lower(), "")

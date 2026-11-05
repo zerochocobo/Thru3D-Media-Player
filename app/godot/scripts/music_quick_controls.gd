@@ -1,4 +1,5 @@
 extends RefCounted
+const UiTheme := preload("res://scripts/ui_theme.gd")
 ## The entry stays in place when its compact transport opens beside it.
 const PLAY := -5401
 const ENTER_MS := 120
@@ -49,8 +50,8 @@ func draw(target: int, point: Vector2, state: Dictionary) -> void:
 	if not expanded:
 		host._round(target, "music", point, 0.08, true, false, host.I18n.t("Music"))
 		if state.get("audio_active", false):
-			host._buttons.back().base_color = Color(0.16, 0.31, 0.27)
-			host._buttons.back().node.material_override.set_shader_parameter("surface_color", Color(0.16, 0.31, 0.27))
+			host._buttons.back().base_color = UiTheme.color("selected")
+			host._buttons.back().node.material_override.set_shader_parameter("surface_color", UiTheme.color("selected"))
 		return
 	var centre := point - Vector2((WIDTH - 0.08) / 2, 0)
 	# This is a popup plane: growing the main panel's capture to include this leftward

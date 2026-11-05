@@ -13,7 +13,7 @@ class Gauge extends "res://scripts/seek_overlay.gd":
 	func _ready() -> void:
 		super()
 		for fraction in [0.0, 0.25, 0.5, 0.75, 1.0]:
-			_quad(Vector2(0.002, 0.010), Vector3(WIDTH * (fraction - 0.5), 0, 0.003), Color(0.55, 0.62, 0.68, 0.85), 122)
+			_quad(Vector2(0.002, 0.010), Vector3(WIDTH * (fraction - 0.5), 0, 0.003), UiTheme.color("gauge_tick"), 122, "gauge_tick")
 		clock.font_size = 30; detail.font_size = 22
 		minimum = _label(-0.036, 22); minimum.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
 		maximum = _label(-0.036, 22); maximum.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
@@ -41,8 +41,8 @@ class Gauge extends "res://scripts/seek_overlay.gd":
 			else: _surfaces[i].material_override.albedo_color = tint
 		for label in [clock, detail, minimum, maximum]:
 			label.font = Ui.ui_font()
-			label.modulate = Color(0.9, 0.95, 0.97, alpha)
-			label.outline_modulate = Color(0.015, 0.02, 0.03, alpha * 0.7)
+			label.modulate = Color(UiTheme.color("hud_text"), alpha)
+			label.outline_modulate = Color(UiTheme.color("hud_outline"), alpha * 0.7)
 		clock.pixel_size = minf(0.0008, WIDTH / maxf(1.0, clock.font.get_string_size(clock.text, HORIZONTAL_ALIGNMENT_LEFT, -1, clock.font_size).x))
 
 func _ready() -> void:

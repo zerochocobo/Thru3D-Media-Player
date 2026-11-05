@@ -54,11 +54,13 @@ internal object PhotoBitmap {
         try {if(id>0)ExtendedImageNative.info(id)?.get(5)?.toInt()?:1 else 1}finally {if(id>0)ExtendedImageNative.close(id)}
     } else if(isHdr(file)) 1 else if (isTiff(file)) TiffPhotoNative.inspect(file.path)?.get(2) ?: 1
         else runCatching { PhotoHeader.normalizedOrientation(ExifInterface(file.path).getAttributeInt(ExifInterface.TAG_ORIENTATION, 1)) }.getOrDefault(1)
+    /** Raw RGBA rows behind a 16-byte header: region caches and Godot's joined magazine spreads.
+     * Recognised by content, since PhotoBridge keeps its source copy without an extension. */
     fun rawBounds(file: File): IntArray? {
-        if (file.extension != "t3di") return null
+        if (file.length() < 16) return null
         return RandomAccessFile(file, "r").use { input ->
             val header = ByteArray(16); input.readFully(header)
-            require(String(header, 0, 4, Charsets.US_ASCII)=="T3DI")
+            if (String(header, 0, 4, Charsets.US_ASCII) != "T3DI") return null
             val words = ByteBuffer.wrap(header).order(ByteOrder.LITTLE_ENDIAN)
             val w=words.getInt(4); val h=words.getInt(8)
             require(words.getInt(12)==1 && w in 1..65535 && h in 1..65535 && w.toLong()*h<=1_000_000_000L && input.length()==16+w.toLong()*h*4)
@@ -68,9 +70,17 @@ internal object PhotoBitmap {
     private fun rawPixels(file: File, size: IntArray, left: Int, top: Int, width: Int, height: Int, sample: Int, check: () -> Unit): ByteArray {
         require(sample in 1..65535 && left>=0 && top>=0 && width>0 && height>0 && left.toLong()+width<=size[0] && top.toLong()+height<=size[1])
         val ow=(width+sample-1)/sample; val oh=(height+sample-1)/sample
-        require(ow.toLong()*oh<=8*1024*1024)
+        require(ow.toLong()*oh<=8192L*4096) // the largest joined spread
         val output=ByteArray(ow*oh*4); val row=ByteArray(width*4)
         RandomAccessFile(file,"r").use { input ->
+            if (sample == 1) {
+                // Whole rows straight into the output: a 13 MP spread is read, not copied pixel by pixel.
+                for (y in 0 until height) {
+                    if (y % 256 == 0) check()
+                    input.seek(16L+(top+y).toLong()*size[0]*4+left.toLong()*4); input.readFully(output, y*width*4, width*4)
+                }
+                return output
+            }
             for (y in 0 until height step sample) {
                 check(); input.seek(16L+(top+y).toLong()*size[0]*4+left.toLong()*4); input.readFully(row)
                 for (x in 0 until width step sample) row.copyInto(output,((y/sample)*ow+x/sample)*4,x*4,x*4+4)
@@ -94,10 +104,12 @@ internal object PhotoBitmap {
             val bounds=ExtendedPhoto.bounds(file)
             return ExtendedPhoto.bitmap(file,(maxOf(bounds.outWidth,bounds.outHeight)/maxOf(1,options.inSampleSize)).coerceIn(64,8192),false,check).first
         }
-        if (!isNative(file)) return BitmapFactory.decodeFile(file.path, options)
+        val raw = rawBounds(file) != null
+        if (!raw && !isNative(file)) return BitmapFactory.decodeFile(file.path, options)
         val info = bounds(file)
         var sample = maxOf(1, options.inSampleSize)
-        while (((info.outWidth + sample - 1) / sample).toLong() * ((info.outHeight + sample - 1) / sample) > 8 * 1024 * 1024) sample *= 2
+        // Raw spreads are bounded by their composer; callers subsample them as they would a JPEG.
+        if (!raw) while (((info.outWidth + sample - 1) / sample).toLong() * ((info.outHeight + sample - 1) / sample) > 8 * 1024 * 1024) sample *= 2
         return region(file, 0, 0, info.outWidth, info.outHeight, sample, check)
     }
 }

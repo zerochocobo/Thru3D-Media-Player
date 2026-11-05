@@ -7,3 +7,5 @@ Video aspect settings adjust one eye's displayed ratio for supported flat/curved
 Controller seek steps are shared between hands and configurable; ray/trigger selection remains authoritative. Media-server playback-report intervals are independent of privacy permission, which still decides whether reporting is allowed. Returning to a supported server library refreshes resume state rather than assuming the old list snapshot is current.
 
 听译／朗读关闭时可配置偏好，启动仍遵循资源、来源与互斥条件。音频提前处理和当前／后续字幕句数分别显示；配置与反馈改进不改变识别、翻译或朗读核心引擎。视频与照片的立体位置分别全局保存，影院曲面不覆盖普通曲面。
+
+0.16.8 adds round-based video shuffle and grip-plus-stick radial photo/video distance adjustment relative to the headset, preserving explicit content rotation. Eligible flat DLNA casts can apply default 3D at format/first-frame readiness even if duration or seekability metadata is missing; native stereo, partial-source and manual-choice boundaries remain.

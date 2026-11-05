@@ -3,6 +3,7 @@ $ErrorActionPreference = 'Stop'
 $workspace = Split-Path -Parent $PSScriptRoot
 . "$PSScriptRoot\environment\Activate-QuestEnvironment.ps1" -ToolRoot $ToolRoot
 $projectDirectory = Join-Path $workspace 'app\godot'
+& "$PSScriptRoot/Test-UiThemes.ps1" -Godot $env:GODOT_EXE
 & "$PSScriptRoot/Test-DepthPosition.ps1" -Godot $env:GODOT_EXE -RenderPreview:$RenderPreview
 & "$PSScriptRoot/Test-Scenery.ps1" -Godot $env:GODOT_EXE -RenderPreview:$RenderPreview
 & "$PSScriptRoot/Test-DistributionChannel.ps1" -ToolRoot $ToolRoot
@@ -43,10 +44,10 @@ $orderLog = Join-Path $orderOutput 'test_media_browse_order.log'
 if ($LASTEXITCODE -ne 0 -or (Get-Content $orderLog -Raw) -match '(?m)^(SCRIPT ERROR:|ERROR:)' -or (Get-Content $orderLog -Raw) -notmatch 'Media browse order: [0-9]+ checks, 0 failures') { throw 'Media browse order / return position regression failed.' }
 $videoUxOutput = Join-Path $workspace 'build/output/video-modes-ray'
 New-Item -ItemType Directory -Path $videoUxOutput -Force | Out-Null
-foreach ($videoUxTest in @('test_video_playback_modes', 'test_video_idle_rays')) {
+foreach ($videoUxTest in @('test_video_playback_modes', 'test_video_idle_rays', 'test_reader_menu_updates')) {
     $videoUxLog = Join-Path $videoUxOutput ($videoUxTest + '.log')
     & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script ('res://tests/' + $videoUxTest + '.gd') 2>&1 | Tee-Object -FilePath $videoUxLog
-    if ($LASTEXITCODE -ne 0 -or (Get-Content $videoUxLog -Raw) -match '(?m)^(SCRIPT ERROR:|ERROR:)' -or (Get-Content $videoUxLog -Raw) -notmatch 'Video (playback modes|idle rays): [0-9]+ checks, 0 failures') { throw ('Video playback mode / idle pointer regression failed: ' + $videoUxTest) }
+    if ($LASTEXITCODE -ne 0 -or (Get-Content $videoUxLog -Raw) -match '(?m)^(SCRIPT ERROR:|ERROR:)' -or (Get-Content $videoUxLog -Raw) -notmatch '(Video (playback modes|idle rays)|Reader menu updates): [0-9]+ checks, 0 failures') { throw ('Video playback mode / idle pointer regression failed: ' + $videoUxTest) }
 }
 & $env:GODOT_EXE --xr-mode off --rendering-method gl_compatibility --rendering-driver opengl3 --path $projectDirectory --quit-after 1800 --script res://tests/render_video_playback_modes.gd 2>&1 | Tee-Object -FilePath (Join-Path $videoUxOutput 'visuals.log')
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $videoUxOutput 'visuals.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:)' -or (Get-Content (Join-Path $videoUxOutput 'visuals.log') -Raw) -notmatch 'Video playback modes render: [0-9]+ checks, 0 failures') { throw 'Video playback mode visual and ray regression failed.' }
@@ -412,6 +413,8 @@ if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'bookmark-loop
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'audio-popup-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)') { throw 'Audio popup and bookmark entry regression failed.' }
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_flat_screen_controls.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'flat-screen-host.log')
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'flat-screen-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|ERROR:)') { throw 'Flat screen controls regression failed.' }
+& $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 2500 --script res://tests/test_video_movement.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'video-movement-host.log')
+if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'video-movement-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|ERROR:)' -or (Get-Content (Join-Path $logDirectory 'video-movement-host.log') -Raw) -notmatch 'Video movement: [0-9]+ checks, 0 failures') { throw 'Video sideways movement regression failed.' }
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 2500 --script res://tests/test_photos.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'photos-host.log')
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'photos-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)') { throw 'Photo host regression failed.' }
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 2500 --script res://tests/test_photo_adjustments.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'photo-adjustments-host.log')

@@ -5,6 +5,7 @@ const Home := preload("res://scripts/library_menu.gd")
 const Photo := preload("res://scripts/photo_menu.gd")
 const Video := preload("res://scripts/player_menu.gd")
 const I18n := preload("res://scripts/i18n.gd")
+const Palette := preload("res://scripts/ui_theme.gd")
 class RenderPlatform extends RefCounted:
 	func background_audio_storage() -> String: return JSON.stringify({"used_bytes": 256 * 1024 * 1024, "free_bytes": 78 * 1024 * 1024 * 1024, "total_bytes": 128 * 1024 * 1024 * 1024, "max_file_bytes": 512 * 1024 * 1024})
 	func preview_background_audio(_uri: String) -> int: return 1
@@ -116,7 +117,7 @@ func _run() -> void:
 				for x in range(int(a.x), int(b.x)):
 					for y in range(int(a.y) - 3, int(a.y) + 4):
 						var color := frame.get_pixel(x, y)
-						if color.g > color.r + 0.10 and color.g > 0.60: mint += 1
+						if _accent_pixel(color, false): mint += 1
 				check(mint > 35, "Audition progress renders above the row: " + language + view)
 			if "hover" in view or view.begins_with("import-preview"):
 				var target := Home.AUDIO_PREVIEW_BASE if view.begins_with("import-preview") else -5401
@@ -127,7 +128,7 @@ func _run() -> void:
 					for x in range(int(centre.x) - 14, int(centre.x) + 15):
 						for y in range(int(centre.y) - 14, int(centre.y) + 15):
 							var color := frame.get_pixel(x, y)
-							if color.g > 0.60 and color.r > 0.35 and color.b > 0.45 and color.g > color.r + 0.10: mint += 1
+							if _accent_pixel(color, true): mint += 1
 					check(mint > 100, "Transport remains visible above its plate: " + language + view)
 			for label in shown.find_children("*", "Label3D", true, false):
 				if label.has_meta("music_text_width"):
@@ -145,3 +146,9 @@ func _run() -> void:
 	await process_frame
 	for failure in failures: push_error(failure)
 	print("Background audio render: %d checks, %d failures" % [checks, failures.size()]); quit(0 if failures.is_empty() else 1)
+
+func _accent_pixel(color: Color, transport: bool) -> bool:
+	if Palette.current == Palette.DEFAULT:
+		return color.g > 0.60 and color.r > 0.35 and color.b > 0.45 and color.g > color.r + 0.10 if transport else color.g > color.r + 0.10 and color.g > 0.60
+	var ink := Palette.color("accent")
+	return Vector3(color.r, color.g, color.b).distance_to(Vector3(ink.r, ink.g, ink.b)) < 0.16

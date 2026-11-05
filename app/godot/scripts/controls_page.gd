@@ -1,8 +1,10 @@
 extends RefCounted
+const UiTheme := preload("res://scripts/ui_theme.gd")
 const Bindings := preload("res://scripts/controller_bindings.gd")
 const Demo := preload("res://scripts/gesture_demo.gd")
 const I18n := preload("res://scripts/i18n.gd")
-const INK := Color(0.93, 0.95, 0.98)
+static var INK: Color:
+	get: return UiTheme.color("text")
 const MODE := 7000
 const FILTER := 7010
 const RESET_ALL := 7011
@@ -341,7 +343,7 @@ func label(text: String, point: Vector2, size: int, color: Color, parent: Node3D
 
 func draw_gesture() -> void:
 	var row: Dictionary = GESTURES[selected_gesture]
-	menu._decoration(Vector2(0.68, 0.49), Vector2(0.38, -0.02), Color(0.045, 0.075, 0.085))
+	menu._decoration(Vector2(0.68, 0.49), Vector2(0.38, -0.02), UiTheme.color("gesture_surface"))
 	demo = Demo.new(); demo.kind = row.kind; demo.position = Vector3(0.38, 0.0, 0.015)
 	if row.kind in ["controls", "drag"] and bindings.pinch_hand == "left_hand": demo.scale.x = -1
 	menu.add_child(demo); menu._decorations.append(demo)

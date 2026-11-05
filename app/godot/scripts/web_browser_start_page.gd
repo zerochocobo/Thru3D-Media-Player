@@ -2,6 +2,7 @@ extends RefCounted
 ## The browser's existing site catalogue and bookmarks, rendered inside each new tab.
 const I18n := preload("res://scripts/i18n.gd")
 const Sites := preload("res://scripts/web_video_sites.gd")
+const UiTheme := preload("res://scripts/ui_theme.gd")
 const BASE := 986400
 const PAGE_SIZE := 6
 var owner: WeakRef
@@ -55,7 +56,8 @@ func draw(host: Node) -> void:
 			var point := Vector2(bounds.position.x + 0.04 + width * (0.5 + slot % 3) + 0.02 * (slot % 3), top - bounds.size.y * (0.16 + 0.16 * (slot / 3)))
 			host._button(target, "", point, Vector2(width, minf(0.105, bounds.size.y * 0.14)))
 			var card: Node3D = host._buttons.back().node
-			host._icon(str(item.get("icon", "bookmark")), Vector3(-width * 0.5 + 0.035, 0, 0.006), 0.038, item.get("color", host.ACCENT), card)
+			var icon := str(item.get("icon", "bookmark"))
+			host._icon(icon, Vector3(-width * 0.5 + 0.035, 0, 0.006), 0.038, UiTheme.site_icon_color(icon, item.get("color", host.ACCENT)), card)
 			var label: Label3D = host._label(host._fit_title(title, "", width - 0.085, 20), Vector3(-width * 0.5 + 0.065, 0, 0.006), 20, card)
 			label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
 			host._tips[target] = str(item.url)

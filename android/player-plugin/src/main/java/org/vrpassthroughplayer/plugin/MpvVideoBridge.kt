@@ -840,6 +840,7 @@ internal class MpvVideoBridge(
         return comicReader ?: ComicReaderController(context,{foreground&&!stopped&&!globalVoiceHolding&&!hosts.any {it.cloneHolding}},narrationRuntime,{refreshPlayback(explicit=true)}).also {comicReader=it}
     }
     fun comicConfigure(voice: String,language: String)=comicController()?.configure(voice,language) ?: false
+    fun comicSpeed(speed: Double)=comicController()?.setSpeed(speed) ?: false
     fun comicSpeechEnabled(value: Boolean){comicController()?.setSpeechEnabled(value)}
     fun comicTranslationMode(mode: String,language: String)=comicController()?.translationMode(mode,language) ?: false
     fun comicTranslations(epoch: Long,mode: String,json: String)=comicController()?.translations(epoch,mode,json) ?: false

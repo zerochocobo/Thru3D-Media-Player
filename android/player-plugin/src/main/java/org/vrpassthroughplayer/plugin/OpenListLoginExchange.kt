@@ -72,6 +72,17 @@ internal class OpenListLoginExchange(private val cancellation: CloudCancellation
                 require(uri.host == "pan.quark.cn" && uri.path == "/open/v1/oauth/authorize")
                 OpenListOAuthSession(provider).providerNavigation(target, "")
             }
+            if (provider == CloudDrive.OPEN123) {
+                val uri = URI(target)
+                require(uri.host == "yun.123pan.com" && uri.path == "/auth")
+                val query = uri.rawQuery.orEmpty().split('&').map {
+                    java.net.URLDecoder.decode(it.substringBefore('='), "UTF-8") to
+                        java.net.URLDecoder.decode(it.substringAfter('=', ""), "UTF-8")
+                }
+                require(query.map { it.first }.toSet().size == query.size)
+                require(query.toMap()["redirect_uri"] == OpenListAuth.ORIGIN + "/123cloud/callback")
+                require(!query.toMap()["client_id"].isNullOrBlank())
+            }
             return target
         }
 

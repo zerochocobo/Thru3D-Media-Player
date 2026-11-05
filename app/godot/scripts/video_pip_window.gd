@@ -2,6 +2,7 @@ extends "res://scripts/ray_menu.gd"
 ## A world-fixed crop of the current video. Controls use the same ray UI as playback.
 signal requested(slot: int, operation: String, value: float)
 const ZOOMS := [1.0, 1.5, 2.0, 3.0, 4.0, 6.0, 8.0]
+const MAX_SIZE := 2.4
 const ASPECTS := [0.0, 16.0 / 9.0, 4.0 / 3.0, 1.0, 9.0 / 16.0]
 const ASPECT_LABELS := ["Source aspect", "16:9", "4:3", "1:1", "9:16"]
 const SOFT_EDGE_METRES := 0.012
@@ -22,6 +23,7 @@ var shape_open := false
 var custom_shape := false
 var source_aspect := 16.0 / 9.0
 var selecting := false
+var _held_buttons := {}
 var identified := false
 var draw_order := 0
 var hover_since := -1
@@ -67,6 +69,7 @@ func restore_video() -> void:
 var controls_root: Node3D
 
 func _ready() -> void:
+	_connect_theme()
 	# Deliberately do not create ray_menu's full-size library backdrop.
 	top_level = true
 	frame = MeshInstance3D.new()
@@ -113,18 +116,18 @@ func _option(target: int, text: String, centre: Vector2, button_size: Vector2, s
 	var button: Dictionary = _buttons.back()
 	button["selected"] = selected
 	if not selected: return
-	button.base_color = Color(0.12, 0.25, 0.23)
+	button.base_color = UiTheme.color("pip_selected")
 	button.node.material_override.set_shader_parameter("surface_color", button.base_color)
 	for edge in [Vector4(0, button_size.y / 2, button_size.x, 0.003), Vector4(0, -button_size.y / 2, button_size.x, 0.003),
 		Vector4(-button_size.x / 2, 0, 0.003, button_size.y), Vector4(button_size.x / 2, 0, 0.003, button_size.y)]:
 		button.node.add_child(_quad(Vector2(edge.z, edge.w), Vector3(edge.x, edge.y, 0.002), ACCENT, 12))
-	_icon("check", Vector3(button_size.x / 2 - 0.008, button_size.y / 2 - 0.008, 0.005), 0.015, Color.WHITE, button.node)
+	_icon("check", Vector3(button_size.x / 2 - 0.008, button_size.y / 2 - 0.008, 0.005), 0.015, UiTheme.color("label"), button.node)
 
 func set_aspect(index: int) -> void:
 	if image_mode or index < 0 or index >= ASPECTS.size(): return
 	custom_shape = index != 0
 	var ratio: float = ASPECTS[index] if custom_shape else source_aspect
-	var width := minf(size.x, 1.2 * ratio)
+	var width := minf(size.x, MAX_SIZE * ratio)
 	set_size(Vector2(width, width / ratio)); crop_parameters()
 
 func _draw() -> void:
@@ -175,6 +178,11 @@ func _draw() -> void:
 		_glyph(2, "pick_region", Vector2(-0.10, y), 0.064, true, I18n.t("Select region"))
 		_glyph(4, "aspect", Vector2(0.10, y), 0.064, true, I18n.t("Aspect ratio"))
 		_button(3, "%.1f×" % zoom, Vector2(0.19, y), Vector2(0.09, 0.055))
+	for button in _buttons:
+		var selected: bool = (button.target == 2 and selecting) or (button.target == 3 and zoom_open) or (button.target == 4 and shape_open)
+		if selected:
+			button.base_color = UiTheme.color("pip_selected")
+			_icon("check", Vector3(0.022, 0.022, 0.007), 0.018, ACCENT, button.node)
 	if image_loading or image_error:
 		_label(I18n.t("Loading…" if image_loading else "Image unavailable"), Vector3(0, y - (0.16 if not pdf_document.is_empty() else 0.07), 0.004), 18)
 	if zoom_open:
@@ -193,7 +201,44 @@ func _draw() -> void:
 	for node in _decorations.slice(ui_start) + _labels:
 		node.reparent(controls_root, false)
 	for button in _buttons: button.node.reparent(controls_root, false)
+	_update_highlights()
 	set_draw_order(draw_order)
+
+func _surface_color(button: Dictionary, color: Color) -> Color:
+	if _held_buttons.values().has(button.target): return UiTheme.color("pip_held")
+	return color
+
+func _update_highlights() -> void:
+	super._update_highlights()
+	var changed := false
+	for button in _buttons:
+		var hovered: bool = button.enabled and _hover.values().has(button.target)
+		var material: ShaderMaterial = button.node.material_override
+		if material.get_shader_parameter("hovered") != hovered:
+			material.set_shader_parameter("hovered", hovered)
+			material.set_shader_parameter("hover_border", Vector3(ACCENT.r, ACCENT.g, ACCENT.b))
+			changed = true
+	if changed: composition_changed.emit()
+
+func press_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: bool) -> bool:
+	var hit := ray_hit(origin, direction) if tracked else {}
+	if hit.is_empty() or not hit.get("enabled", true): return false
+	_held_buttons[hand] = int(hit.target)
+	var result := super.press_pointer(hand, origin, direction, tracked)
+	# Entering selection clears other captures; retain this physical trigger's feedback.
+	if result: _held_buttons[hand] = int(hit.target)
+	_update_highlights()
+	return result
+
+func release_toolbar(hand: String) -> bool:
+	var held := _held_buttons.has(hand)
+	_held_buttons.erase(hand)
+	_update_highlights()
+	return held
+
+func cancel_pointer(hand: String) -> void:
+	release_toolbar(hand)
+	super.cancel_pointer(hand)
 
 ## Keep each window's picture and controls together, below the main ray menus (10+).
 func set_draw_order(order: int) -> void:
@@ -273,7 +318,7 @@ func _update_resize_highlights() -> void:
 		handle.node.visible = shown
 		handle.halo.visible = over or held
 		handle.mark.scale = Vector3.ONE * (1.5 if held else (1.25 if over else 1.0))
-		handle.mark.material_override.set_shader_parameter("surface_color", Color(1.0, 0.78, 0.35) if held else (Color.WHITE if over else ACCENT))
+		handle.mark.material_override.set_shader_parameter("surface_color", UiTheme.color("pip_held") if held else (UiTheme.color("label") if over else ACCENT))
 
 func set_resize_feedback(capture: Dictionary, available: bool) -> void:
 	_resize_active = resize_handle(capture)
@@ -284,6 +329,7 @@ func set_resize_feedback(capture: Dictionary, available: bool) -> void:
 	else: _update_resize_highlights()
 
 func update_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: bool) -> void:
+	if not tracked: _held_buttons.erase(hand)
 	super.update_pointer(hand, origin, direction, tracked)
 	# Match press_pointer's toolbar priority, including non-clickable panel gaps.
 	var hit := window_hit(origin, direction) if tracked and _resize_available and ray_hit(origin, direction).is_empty() else {}

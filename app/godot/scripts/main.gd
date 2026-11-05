@@ -1,6 +1,7 @@
 extends Node3D
 
 const ScreenPresets := preload("res://scripts/screen_presets.gd")
+const UiTheme := preload("res://scripts/ui_theme.gd")
 
 const DisplayController := preload("res://scripts/xr_display.gd")
 const Board := preload("res://scripts/calibration_board.gd")
@@ -140,9 +141,11 @@ var photo_menu: Node3D
 var video: Node3D
 var video_queue: Array[Dictionary] = []
 const VideoQueuePages := preload("res://scripts/video_queue_pages.gd")
-const PLAYBACK_MODES := ["single", "repeat_one", "sequence", "repeat_all"]
-const PLAYBACK_NAMES := {"single": "Single video", "repeat_one": "Repeat video", "sequence": "Play in order", "repeat_all": "Repeat playlist"}
+const PLAYBACK_MODES := ["single", "repeat_one", "sequence", "repeat_all", "shuffle"]
+const PLAYBACK_NAMES := {"single": "Single video", "repeat_one": "Repeat video", "sequence": "Play in order", "repeat_all": "Repeat playlist", "shuffle": "Shuffle"}
 var playback_mode := "single"
+var _video_shuffle_seen := {}
+var _video_shuffle_history: Array[String] = []
 var video_queue_pages := VideoQueuePages.new()
 var video_directory: Node
 var _video_directory_reorder := false
@@ -275,6 +278,7 @@ func _ready() -> void:
 	display.status_changed.connect(_on_input_session_changed)
 	display.status_changed.connect(_queue_report)
 	settings.load(settings_path)
+	UiTheme.use(UiTheme.load_choice(settings))
 	_migrate_library_distance()
 	wrist_watch = WristWatch.new()
 	wrist_watch.set_color(WristWatch.Palette.load_choice(settings))
@@ -1177,7 +1181,9 @@ func _begin_interface_move(hand: String, input: String) -> void:
 		if target.kind == "screen":
 			target["distance_limits"] = photo.PHOTO_DISTANCE_LIMITS if photo_active else video.DISTANCE_LIMITS
 			target["cinema"] = target.node == video and video.cinema.active(video)
-			if target.node == photo: target["upright_facing"] = true
+			# Floating photos and videos share the same yaw/pitch constraint.
+			# Shortest-arc transport banks a raised screen during sideways grabs.
+			if not target.cinema: target["upright_facing"] = true
 		elif target.kind == "gallery": target["distance_limits"] = photo.gallery.DISTANCE_LIMITS
 	var anchor: Vector3 = menu.to_global(hit.point) if not hit.is_empty() else media_anchor
 	if interface_move.begin(hand, input, pose, targets, anchor, head, view_follow.enabled):
@@ -2302,9 +2308,9 @@ func _turn_picture(yaw: float, pitch: float) -> void:
 		var angles := _ray_angles(offset) + Vector2(yaw, pitch)
 		var facing := Basis(Vector3.UP, angles.x) * Basis(Vector3.RIGHT, clampf(angles.y, -1.5, 1.5))
 		var direction := facing * Vector3.FORWARD
-		# Photo trigger dragging uses head-relative yaw/pitch, just like the world
-		# path below. Transporting shortest-arc rotations accumulates roll sideways.
-		local.basis = facing if photo_active else Basis(Quaternion(offset.normalized(), direction)) * local.basis
+		# Both flat media types use head-relative yaw/pitch, just like the world
+		# path below. Content rotation remains separate from placement orientation.
+		local.basis = facing
 		local.origin = direction * offset.length()
 		_viewer().set_flat_world_pose(head * local)
 		_capture_follow_screen(_viewer(), head)
@@ -2789,6 +2795,7 @@ func _on_library_chosen(uri: String, title: String, retained_photo: Dictionary =
 		player_menu = video_menu
 		video_queue.clear()
 		video_queue.assign(recent_menu.video_queue())
+		_reset_video_shuffle()
 		var metadata: Dictionary = recent_menu.server_browser.selection.duplicate(true) if uri.begins_with("medialib://") else {}
 		if not uri.begins_with("medialib://"):
 			for row in recent_menu.rows:
@@ -2921,6 +2928,13 @@ func _release_storage_readers(volume: Dictionary) -> void:
 
 func _adjacent_video(direction: int) -> Dictionary:
 	if photo_active or not video or direction == 0 or (_video_directory_reorder and video_directory and video_directory.loading): return {}
+	if playback_mode == "shuffle":
+		if not video_queue.any(func(row): return row.uri == video.local_uri): return {}
+		if direction > 0: return video_queue[0] if not video_queue.is_empty() else {}
+		for index in range(_video_shuffle_history.size() - 1, -1, -1):
+			for row in video_queue:
+				if row.uri == _video_shuffle_history[index] and row.uri != video.local_uri: return row
+		return {}
 	for index in video_queue.size():
 		if str(video_queue[index].uri) != video.local_uri: continue
 		var target := index + (1 if direction > 0 else -1)
@@ -2934,6 +2948,16 @@ func _navigate_video(direction: int) -> void:
 			video.changed.emit()
 		return
 	_cancel_video_queue_wait()
+	if playback_mode == "shuffle":
+		if direction > 0: _advance_video_queue(false)
+		elif direction < 0:
+			var previous := _adjacent_video(-1)
+			if not previous.is_empty():
+				while not _video_shuffle_history.is_empty():
+					if _video_shuffle_history.pop_back() == previous.uri: break
+				_video_shuffle_seen.erase(video.local_uri)
+				_open_queued_video(previous, false)
+		return
 	var item := _adjacent_video(direction)
 	if item.is_empty():
 		if direction > 0: _advance_video_queue(false)
@@ -2954,6 +2978,7 @@ func _set_playback_mode(value: String) -> void:
 		if not video.cast_allows(value): return
 		playback_mode = value; video.loop_enabled = value == "repeat_one"; video.changed.emit(); return
 	_cancel_video_queue_wait()
+	if playback_mode != value: _reset_video_shuffle()
 	playback_mode = value
 	video.loop_enabled = value == "repeat_one"
 	settings.set_value("video", "playback_mode", value); settings.save(settings_path)
@@ -2969,11 +2994,11 @@ func _on_video_completed() -> void:
 	if recent_menu and recent_menu.web_browser.has_playback_return(video.local_uri):
 		_return_to_web_video.call_deferred(false, video.local_uri); return
 	if cast_session.token > 0: return
-	if photo_active or playback_mode not in ["sequence", "repeat_all"]: return
+	if photo_active or playback_mode not in ["sequence", "repeat_all", "shuffle"]: return
 	_advance_completed_video.call_deferred(video.local_uri, video.media.session_id, video.control.sequence)
 
 func _advance_completed_video(uri: String, session: int, sequence: int) -> void:
-	if photo_active or playback_mode not in ["sequence", "repeat_all"] or video.local_uri != uri or video.media.session_id != session or video.control.sequence != sequence or not video.playback_end_ready():
+	if photo_active or playback_mode not in ["sequence", "repeat_all", "shuffle"] or video.local_uri != uri or video.media.session_id != session or video.control.sequence != sequence or not video.playback_end_ready():
 		_pending_video_end.clear(); return
 	var menu := _active_menu()
 	if (menu and _menu_captured(menu)) or not _grab.is_empty() or not interface_move.capture.is_empty():
@@ -2986,6 +3011,7 @@ func _advance_video_queue(automatic: bool) -> void:
 	if not _video_queue_wait.is_empty() or photo_active or video.local_uri.is_empty(): return
 	if _video_directory_reorder and video_directory and video_directory.loading: return
 	if not video_queue.any(func(row): return row.uri == video.local_uri): return
+	if playback_mode == "shuffle": _advance_shuffled_video(automatic); return
 	var item := _adjacent_video(1)
 	if not item.is_empty(): _open_queued_video(item, automatic); return
 	var repeat_list := playback_mode == "repeat_all"
@@ -2994,6 +3020,28 @@ func _advance_video_queue(automatic: bool) -> void:
 		video_queue_pages.start(not video_queue_pages.has_more())
 	elif repeat_list and not video_queue.is_empty() and video_queue.any(func(row): return row.uri == video.local_uri):
 		_open_queued_video(video_queue[0], automatic)
+
+func _reset_video_shuffle() -> void:
+	_video_shuffle_seen.clear(); _video_shuffle_history.clear()
+
+func _advance_shuffled_video(automatic: bool) -> void:
+	# Like music shuffle, exhaust unseen entries before starting another round.
+	_video_shuffle_seen[video.local_uri] = true
+	var candidates := video_queue.filter(func(row): return not _video_shuffle_seen.has(str(row.uri)))
+	if candidates.is_empty() and (video_queue_pages.has_more() or video_queue_pages.needs_first_page()):
+		_video_queue_wait = {"uri": video.local_uri, "session": video.media.session_id, "sequence": video.control.sequence, "automatic": automatic, "page_context": video_queue_pages.context.duplicate(true)}
+		video_queue_pages.start(not video_queue_pages.has_more()); return
+	if candidates.is_empty():
+		_video_shuffle_seen.clear(); _video_shuffle_seen[video.local_uri] = true
+		candidates = video_queue.filter(func(row): return row.uri != video.local_uri)
+	if candidates.is_empty(): candidates = video_queue.duplicate()
+	if candidates.is_empty(): return
+	var item: Dictionary = candidates.pick_random()
+	if item.uri != video.local_uri:
+		_video_shuffle_history.append(video.local_uri)
+		if _video_shuffle_history.size() > 512: _video_shuffle_history.pop_front()
+	_video_shuffle_seen[str(item.uri)] = true
+	_open_queued_video(item, automatic)
 
 func _cancel_video_queue_wait() -> void:
 	_pending_video_end.clear()
@@ -3008,15 +3056,16 @@ func _on_video_queue_page(items: Array[Dictionary], restart: bool) -> void:
 	if not _valid_video_queue_wait(): _cancel_video_queue_wait(); return
 	var automatic: bool = _video_queue_wait.automatic
 	_video_queue_wait.clear()
-	if restart: video_queue.clear()
+	if restart and playback_mode != "shuffle": video_queue.clear()
 	var existing := {}
 	for row in video_queue: existing[str(row.uri)] = true
 	var added: Array[Dictionary] = []
 	for item in items:
 		if not existing.has(str(item.uri)):
 			existing[str(item.uri)] = true; added.append(item)
-	if not items.is_empty() and added.is_empty(): _on_video_queue_failed("Unable to load next video"); return
+	if playback_mode != "shuffle" and not items.is_empty() and added.is_empty(): _on_video_queue_failed("Unable to load next video"); return
 	video_queue.append_array(added)
+	if playback_mode == "shuffle": _advance_video_queue(automatic); return
 	if not added.is_empty(): _open_queued_video(added[0], automatic)
 	elif playback_mode == "repeat_all" and not video_queue.is_empty():
 		if video_queue_pages.needs_first_page(): _advance_video_queue(automatic)
@@ -3855,6 +3904,7 @@ func _restore_seek_settings() -> void:
 func _library_settings() -> Dictionary:
 	return {"subtitle_defaults": subtitle_tasks.snapshot() if subtitle_tasks else {},"cloud_page_sizes": settings.get_value("library", "cloud_page_sizes", {}), "output_width": Quality.load_output_choice(settings), "memory_mode": Quality.load_memory_choice(settings), "diagnostic_log": diagnostic_state, "alpha_fps": _alpha_fps(),
 		"watch_color": WristWatch.Palette.load_choice(settings),
+		"color_theme": UiTheme.current,
 		"playback_menu_depth": PlaybackMenuDepth.load_mode(settings),
 		"stick_seek_overlay": bool(settings.get_value("ui", "stick_seek_overlay", true)),
 		"bar_transparency": float(settings.get_value("ui", "bar_transparency", 14.0)),
@@ -3907,6 +3957,14 @@ func _library_settings() -> Dictionary:
 		"version": str(ProjectSettings.get_setting("application/config/version", ""))}
 
 func _on_setting_changed(key: String, value: Variant) -> void:
+	if key == UiTheme.CUSTOM_KEY:
+		UiTheme.save_custom(settings, value)
+		settings.save(settings_path)
+		return
+	if key == "color_theme":
+		UiTheme.save_choice(settings, value)
+		settings.save(settings_path)
+		return
 	if key.begins_with("listening_"):
 		if video.listening.set_option(key, value): video.listening.save(settings); settings.save(settings_path)
 		recent_menu.refresh(); video.changed.emit(); return
@@ -5878,6 +5936,17 @@ func _on_display_debug_command(_id: int, payload: String) -> void:
 		photo.open_image("file://" + folder.path_join(str(command.get("name", ""))), str(command.get("name", "")), entries)
 		# Debug layout for this session only; the saved layout changes only through the menu.
 		if int(command.get("layout", -1)) >= 0: photo.set_layout_mode(int(command.layout))
+	elif operation == "archive_open" and OS.is_debug_build():
+		# Comic archive/PDF probes: open the container (uri), later its [page]th image as the library does.
+		var archives = recent_menu.archives
+		if command.has("uri"):
+			recent_menu.show(); archives.open({"uri": str(command.uri), "title": str(command.get("title", str(command.uri).get_file().uri_decode()))})
+		var pages: Array = archives.image_queue()
+		var page := int(command.get("page", -1))
+		if page >= 0 and page < pages.size():
+			_on_library_chosen(str(pages[page].uri), str(pages[page].get("title", "")))
+			if int(command.get("layout", -1)) >= 0: photo.set_layout_mode(int(command.layout))
+		print("ARCHIVE_PROBE ", JSON.stringify({"pages": pages.size(), "opened": page >= 0 and page < pages.size(), "message": archives.message}))
 	elif operation == "layer_flip" and OS.is_debug_build() and video.video_layer:
 		video.video_layer.debug_image_layout = int(command.get("value", -2))
 	elif operation == "alpha_blend_probe" and OS.is_debug_build():

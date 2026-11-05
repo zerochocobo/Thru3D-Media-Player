@@ -31,6 +31,15 @@ adaptation of the flat Jellyfin mark. The ray-menu renderer preserves these
 colors, supplies a neutral gray/white foreground for cloud marks, and generates
 mipmaps; no raster matte or remote request is used at runtime.
 
+Light UI themes additionally tint the six retained white cloud/WebDAV vectors
+at draw time (2026-11-05). 115 uses the blue in its retained source; Baidu,
+Aliyun, Quark, OneDrive and the original WebDAV pictogram use identifying blue,
+violet or teal adaptations, darkened as needed for card contrast. These are
+readability adaptations, not newly sourced official full-color artwork. Geometry,
+source files, existing colored server marks, classic and dark theme rendering are
+unchanged. The implementation and color mapping are in `provider_icons.gd` and
+`ray_menu.gd`; no new image source or license is introduced.
+
 Upstream license texts are retained in the `LICENSE-*.txt` files in this directory.
 Packaged attribution is in
 `third_party/player-licenses/provider-icons.txt`. Product names and marks remain

@@ -27,7 +27,9 @@ func draw(row: Node3D, state: Dictionary) -> void:
 	node.add_child(track)
 	var fill: MeshInstance3D = host._quad(Vector2(WIDTH, 0.006), Vector3(0, 0, 0.001), host.ACCENT if enabled else host.MUTED, 14)
 	node.add_child(fill)
-	var thumb: MeshInstance3D = host._quad(Vector2.ONE * 0.016, Vector3(0, 0, 0.002), host.ACCENT, 15)
+	var thumb_ink: Color = host.ACCENT if host.UiTheme.original() else host.UiTheme.color("knob")
+	var thumb: MeshInstance3D = host._quad(Vector2.ONE * 0.016, Vector3(0, 0, 0.002), thumb_ink, 15)
+	host._style_slider_marker(thumb)
 	node.add_child(thumb); thumb.visible = enabled
 	var elapsed: Label3D = host._label("", Vector3(-0.48, -0.024, 0.020), 13, row)
 	elapsed.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT; elapsed.modulate = host.MUTED; elapsed.render_priority = 14

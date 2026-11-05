@@ -4,7 +4,7 @@ const Menu := preload("res://scripts/library_menu.gd")
 const Icons := preload("res://scripts/menu_icons.gd")
 const CloudFixture := preload("res://tests/test_cloud_accounts.gd")
 const Servers := ["emby", "jellyfin", "plex", "stash", "xbvr"]
-const Clouds := ["115_open", "baidu", "aliyun_open", "quark_open", "onedrive", "webdav"]
+const Clouds := ["115_open", "baidu", "aliyun_open", "quark_open", "123_open", "onedrive", "webdav"]
 var output := ""
 var viewport: SubViewport
 var menu: Node

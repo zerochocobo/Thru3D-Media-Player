@@ -152,6 +152,7 @@ func TestBrowseAndRangeStream(t *testing.T) {
 	}
 	assertBaiduCore(t,call)
 	assertAliyunCore(t,call)
+	assert123Core(t,call)
 }
 
 func fmtInt(value int) string { b, _ := json.Marshal(value); return string(b) }

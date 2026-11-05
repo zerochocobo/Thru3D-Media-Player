@@ -80,7 +80,7 @@ func run() -> void:
 		var stored := ConfigFile.new(); stored.load(main.settings_path)
 		check(stored.get_value("video", "playback_mode") == mode, "Stored playback mode matches the selected mode: " + mode)
 	main._set_playback_mode("bad")
-	check(main.playback_mode == "repeat_all", "Invalid mode leaves the current selection intact")
+	check(main.playback_mode == "shuffle", "Invalid mode leaves the current selection intact")
 	for mode in ["sequence", "repeat_all"]:
 		main._set_playback_mode(mode); main.opened.clear(); video.local_uri = item("a").uri; video._completed_end = ""; eof(video)
 		video._process_playback_end(); await process_frame
@@ -118,11 +118,35 @@ func run() -> void:
 	opener.open_library("medialib://s/scene/a", "a", {"start_ms": 8000}, true)
 	check(opener.opens.back()[1] == 0, "Automatic server playback ignores saved start offsets")
 	opener.free()
+	await shuffle(main, video)
 	pages(main, video)
 	main.video_queue_pages.dispose(); main.free(); video.free()
 	for failure in failures: push_error(failure)
 	print("Video playback modes: %d checks, %d failures" % [checks, failures.size()])
 	quit(0 if failures.is_empty() else 1)
+
+func shuffle(main: Node3D, video: Node3D) -> void:
+	main._set_playback_mode("shuffle")
+	main.video_queue.assign([item("a"), item("b"), item("c"), item("d")])
+	video.local_uri = item("a").uri; main.opened.clear()
+	var visited := [video.local_uri]
+	for index in 3:
+		eof(video); main._on_video_completed(); await process_frame
+		check(not visited.has(video.local_uri), "Shuffle plays each remaining video once per round")
+		visited.append(video.local_uri)
+	check(main.opened.size() == 3 and main.opened.all(func(row): return row[1]), "Shuffled EOF opens from the start exactly once")
+	var last: String = video.local_uri
+	main._navigate_video(-1)
+	check(video.local_uri == visited[2] and not main.opened.back()[1], "Previous follows actual shuffle history")
+	main._navigate_video(1)
+	check(video.local_uri == last, "Going forward after previous resumes the unplayed selection")
+	main._navigate_video(1)
+	check(video.local_uri != last, "New shuffle round does not immediately repeat current video")
+	main.video_queue.assign([item("a")]); video.local_uri = item("a").uri
+	main._advance_video_queue(true)
+	check(video.local_uri == item("a").uri, "Single-item shuffle repeats safely")
+	main.video_queue.clear(); main.opened.clear(); main._advance_video_queue(true)
+	check(main.opened.is_empty(), "Empty shuffle queue stays stopped")
 
 func pages(main: Node3D, video: Node3D) -> void:
 	var host := Host.new(); var pager: RefCounted = main.video_queue_pages
@@ -162,6 +186,17 @@ func pages(main: Node3D, video: Node3D) -> void:
 	video.requested_play = false
 	cloud_result(host, pager, [{"uri": item("a").uri, "title": "a.mp4"}])
 	check(main.opened.is_empty() and pager.context.next == 48, "Pausing during a page read discards the result without skipping that page later")
+	main._set_playback_mode("shuffle"); main.video_queue.assign([item("a")]); video.local_uri = item("a").uri
+	pager.context = cloud_context(); video.requested_play = true; main.opened.clear()
+	main._advance_video_queue(true)
+	cloud_result(host, pager, [{"uri": item("b").uri, "title": "b.mp4"}, {"uri": item("c").uri, "title": "c.mp4"}], -1)
+	check(main.opened.size() == 1 and video.local_uri in [item("b").uri, item("c").uri], "Shuffle lazily loads and chooses from the next cloud page")
+	var first: String = video.local_uri; main._advance_video_queue(true)
+	check(video.local_uri != first and video.local_uri != item("a").uri, "Both newly loaded videos play before the round repeats")
+	pager.context.from_first = false; main.opened.clear(); main._advance_video_queue(true)
+	check(host.requests.back().offset == 0, "Partial shuffle eventually includes earlier pages")
+	cloud_result(host, pager, [{"uri": item("a").uri, "title": "a.mp4"}], -1)
+	check(main.opened.size() == 1 and main.video_queue.size() == 3, "Overlapping first page merges without losing current identity or getting stuck")
 	pager.completed.disconnect(main._on_video_queue_page); pager.failed.disconnect(main._on_video_queue_failed)
 	pager.context = cloud_context(); var errors: Array = []; pager.failed.connect(func(message): errors.append(message))
 	pager.start(); cloud_result(host, pager, [], 48)

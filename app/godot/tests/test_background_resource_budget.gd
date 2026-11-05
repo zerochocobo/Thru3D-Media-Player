@@ -47,14 +47,17 @@ func run() -> void:
 	check(not budget.can_start(1), "CPU reserve is enforced independently")
 	prime(budget, policy); budget.observe(2, 2, 25, 1000.0 / 90.0, 1.0 / 90.0)
 	check(not budget.can_start(1), "Missed frame starts a cooldown")
-	for i in range(60): budget.observe(2, 2, 11.1, 1000.0 / 90.0, 1.0 / 90.0)
+	check(budget.can_continue(1) and not budget.can_continue(int(policy.spare_bytes), 1),
+		"An admitted picture's next upload stage checks memory, not the settle its own upload reset")
+	for i in range(20): budget.observe(2, 2, 11.1, 1000.0 / 90.0, 1.0 / 90.0)
 	check(not budget.can_start(1), "A brief recovery does not immediately restart background work")
 	for i in range(300): budget.observe(2, 2, 11.1, 1000.0 / 90.0, 1.0 / 90.0)
 	check(budget.can_start(1), "Sustained recovery permits another attempt")
 	budget.policy["retain"] = false
 	check(budget.resident_limit(100) == 0, "Memory pressure requests cache eviction")
 	var cost := Budget.photo_cost(640, 480)
-	check(int(cost.peak) == 512 * Budget.MIB + 640 * 480 * 128, "Cost includes cold model and transient working buffers")
+	check(int(cost.peak) == 512 * Budget.MIB + 640 * 480 * 48, "Cost includes cold model and transient working buffers")
+	check(int(Budget.photo_cost(640, 480, false).peak) == 640 * 480 * 48, "A resident photo model is not charged again")
 	check(Budget.photo_cost(0, 100).is_empty(), "Unknown dimensions are never speculatively allocated")
 	cost = Budget.photo_cost(2147483647, 2147483647)
 	check(int(cost.peak) <= 1536 * Budget.MIB, "Source dimensions cannot overflow the work estimate")
@@ -106,6 +109,13 @@ func photo_cache(entries: Array[Dictionary]) -> void:
 	await wait_color(photo, host)
 	check(photo.depth_enabled and host.background_depth.is_empty(), "Missing GPU readings leave normal 3D accessible")
 	photo.set_process(false)
+	photo.resource_budget.policy = host.policy.duplicate(); photo.resource_budget.defer_work()
+	photo.resource_budget.reason = "frame_budget"
+	photo._pump_depth_prefetch()
+	check(host.background_depth.is_empty(), "Sustained frame overload still holds the next photo's 3D")
+	photo.resource_budget.reason = "frame_stall"
+	photo._pump_depth_prefetch()
+	check(host.background_depth.size() == 1, "A page turn's own frame stall does not delay the next photo's 3D")
 	prime(photo.resource_budget, host.policy)
 	photo._pump_depth_prefetch()
 	var next_id: int = photo._prefetched[1].id

@@ -63,7 +63,9 @@ internal class OpenListOAuthSession(private val provider: String, private val no
         val params = query(uri)
         if (params["redirect_uri"]?.let { OpenListAuth.callback(it, provider) } == true) {
             val state = params["state"].orEmpty()
-            if (expectedState.isEmpty()) expectedState = state.ifEmpty { nonce }
+            // 123's public broker returns the constant "OpenList". Replace it
+            // with a per-attempt state before opening the official grant page.
+            if (expectedState.isEmpty()) expectedState = if (provider == CloudDrive.OPEN123) nonce else state.ifEmpty { nonce }
             if (state == expectedState) return value
             // Preserve the first initiated state through provider login redirects.
             return replaceQuery(uri, "state", expectedState)

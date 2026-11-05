@@ -4,8 +4,11 @@ extends RefCounted
 const Methods := preload("res://scripts/platform_methods.gd")
 const MIB := 1024 * 1024
 var frame_reserve := 0.30
-var stable_seconds := 2.0
-var cooldown_seconds := 1.0 # Work still waits for two seconds of measured stable headroom.
+# A page change stalls one frame by itself; measured background photo inference on Quest 3 left
+# stale frames at the idle level, so a short settle is enough and 2 s + 1 s only delayed every page.
+var stable_seconds := 0.5
+var cooldown_seconds := 0.25
+const MIN_SAMPLES := 30
 var policy := {}
 var poll_at := 0
 var stable := 0.0
@@ -118,7 +121,7 @@ func observe(cpu_ms: float, gpu_ms: float, frame_ms: float, target_ms: float, de
 	if _cpu.size() > 90:
 		_cpu.remove_at(0); _gpu.remove_at(0); _frames.remove_at(0)
 	_assess_seconds += delta; samples += 1
-	if _cpu.size() < 60 or _assess_seconds < 0.25: return
+	if _cpu.size() < MIN_SAMPLES or _assess_seconds < 0.25: return
 	# A rolling p95 tolerates an isolated scheduling blip without admitting sustained overload.
 	var safe := _p95(_cpu) <= 1.0 - frame_reserve and _p95(_gpu) <= 1.0 - frame_reserve and _p95(_frames) <= 1.25
 	if safe:
@@ -134,8 +137,12 @@ static func _p95(values: PackedFloat32Array) -> float:
 func defer_work() -> void:
 	stable = 0.0; samples = 0; cooldown = cooldown_seconds
 
+## Memory admission only: for the next stage of work already admitted moments ago.
+func can_continue(peak_bytes: int, resident_addition: int = 0) -> bool:
+	return policy.get("work", false) and peak_bytes > 0 and int(policy.get("spare_bytes", 0)) >= peak_bytes + resident_addition
+
 func can_start(peak_bytes: int, resident_addition: int = 0) -> bool:
-	return policy.get("work", false) and stable >= stable_seconds and samples >= 60 and cooldown <= 0.0 \
+	return policy.get("work", false) and stable >= stable_seconds and samples >= MIN_SAMPLES and cooldown <= 0.0 \
 		and peak_bytes > 0 and int(policy.get("spare_bytes", 0)) >= peak_bytes + resident_addition
 
 func resident_limit(current_bytes: int) -> int:
@@ -150,11 +157,13 @@ func report() -> Dictionary:
 		"frame_p95":_p95(_frames) if not _frames.is_empty() else 0,
 		"spare_bytes":int(policy.get("spare_bytes",0)),"work":bool(policy.get("work",false)),"retain":bool(policy.get("retain",false))}
 
-static func photo_cost(width: int, height: int) -> Dictionary:
+## [model]: charge building the photo model; Android reports photo_model_ready while it is resident.
+static func photo_cost(width: int, height: int, model: bool = true) -> Dictionary:
 	if width <= 0 or height <= 0: return {}
 	var ratio := minf(1.0, minf(4096.0 / maxi(width, height), sqrt(8.0 * MIB / float(width) / height)))
 	var pixels := maxi(1, int(width * ratio)) * maxi(1, int(height * ratio))
-	return {"peak":512 * MIB + pixels * 128, "resident":ceili(pixels * 32.0 / 3.0) + 2 * MIB}
+	# Matches BackgroundResourceBudget.photoPeak: measured ~130 MB for an 8 MP spread, charged 2-3x.
+	return {"peak":(512 * MIB if model else 0) + pixels * 48, "resident":ceili(pixels * 32.0 / 3.0) + 2 * MIB}
 
 func stop_measurement() -> void:
 	_stop_native()

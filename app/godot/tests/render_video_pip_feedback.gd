@@ -48,6 +48,28 @@ func run() -> void:
 	window.frame.visible = true
 	window.frame.material_override = window._material(Color(0.12, 0.22, 0.28), 1)
 	window.controls = true; window.refresh()
+	for target in [1, 2, 3, 4, 5]:
+		window.cancel_pointer("right_hand"); window.selecting = false; window.zoom_open = false; window.shape_open = false; window.refresh()
+		var button: Dictionary = window._buttons.filter(func(b): return b.target == target)[0]
+		var origin: Vector3 = button.node.to_global(Vector3(0, 0, 0.8))
+		var direction: Vector3 = -window.global_basis.z
+		var normal: Image = await draw()
+		window.update_pointer("right_hand", origin, direction, true)
+		var hover: Image = await draw()
+		hover.save_png(output.path_join("toolbar-hover-%d.png" % target))
+		var centre := Vector2i(camera.unproject_position(button.node.global_position))
+		var changed := 0
+		for y in range(centre.y - 18, centre.y + 18):
+			for x in range(centre.x - 18, centre.x + 18):
+				if normal.get_pixel(x, y) != hover.get_pixel(x, y): changed += 1
+		check(changed > 40, "Each actual toolbar hover changes visible pixels: %d" % target)
+		window.press_pointer("right_hand", origin, direction, true)
+		var held: Image = await draw(); held.save_png(output.path_join("toolbar-held-%d.png" % target))
+		window.release_toolbar("right_hand")
+	window.cancel_pointer("right_hand"); window.zoom_open = false; window.shape_open = false
+	window.selecting = true; window.refresh()
+	var selection: Image = await draw(); selection.save_png(output.path_join("toolbar-select-active.png"))
+	window.selecting = false; window.refresh()
 	for state_name in ["rest", "right", "bottom", "corner", "held"]:
 		window.set_resize_feedback({}, true)
 		window.cancel_pointer("right_hand")

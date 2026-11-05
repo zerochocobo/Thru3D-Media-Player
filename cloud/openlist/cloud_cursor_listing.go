@@ -64,7 +64,7 @@ func cursorDirectory(c *gin.Context) {
 		return
 	}
 	switch storage.Config().Name {
-	case "BaiduNetdisk", "AliyundriveOpen", "QuarkOpen", "Onedrive", "WebDav":
+	case "BaiduNetdisk", "AliyundriveOpen", "QuarkOpen", "123 Open", "Onedrive", "WebDav":
 	default:
 		cloudListError(c, "directory.driver", errors.New("native directory paging unavailable"))
 		return

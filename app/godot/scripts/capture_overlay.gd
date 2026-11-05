@@ -7,6 +7,7 @@ const CANCEL := 2
 var _key := ""
 var _time: Label3D
 var _progress: MeshInstance3D
+var _theme_state := {}
 
 static func saving_text(state: Dictionary) -> String:
 	if state.get("export_cancelling", false): return I18n.t("Cancelling…")
@@ -29,6 +30,7 @@ static func clock_text(milliseconds: int) -> String:
 	return "%02d:%02d:%02d" % [seconds / 3600, (seconds / 60) % 60, seconds % 60] if seconds >= 3600 else "%02d:%02d" % [seconds / 60, seconds % 60]
 
 func sync(state: Dictionary) -> void:
+	_theme_state = state.duplicate()
 	var recording := bool(state.get("recording", false))
 	var saving := bool(state.get("clip_busy", false)) or bool(state.get("picture_busy", false))
 	var message := str(state.get("notice", ""))
@@ -47,7 +49,7 @@ func sync(state: Dictionary) -> void:
 			_set_backdrop(Vector2(0.30 if recording else (0.42 if cancellable else 0.32), 0.062), Vector2.ZERO)
 			var icon: String = ("pause" if state.get("paused", false) else "record") if recording else ("film_cut" if state.get("clip_busy", false) else "camera")
 			_glyph(0, icon, Vector2(-0.175 if cancellable and not recording else -0.105, 0), 0.04, false)
-			_buttons.back().node.get_child(1).material_override.albedo_color = Color(1.0, 0.30, 0.28) if recording else ACCENT
+			_buttons.back().node.get_child(1).material_override.albedo_color = UiTheme.color("record") if recording else ACCENT
 			_time = _label("", Vector3(-0.012, 0, 0.004), 17 if recording else 14)
 			if recording: _glyph(STOP, "stop", Vector2(0.105, 0), 0.052, true, I18n.t("Stop recording · B"))
 			else:
@@ -70,6 +72,11 @@ func sync(state: Dictionary) -> void:
 		_progress.mesh.size.x = maxf(0.001, 0.28 * fraction)
 		_progress.position.x = -0.14 + 0.14 * fraction
 		_progress.material_override.set_shader_parameter("surface_size", _progress.mesh.size)
+
+func _redraw_theme() -> void:
+	_key = ""
+	_backdrop.material_override.set_shader_parameter("surface_color", PANEL)
+	sync(_theme_state)
 
 func _activate(target: int) -> void:
 	if target == STOP: stop_requested.emit()

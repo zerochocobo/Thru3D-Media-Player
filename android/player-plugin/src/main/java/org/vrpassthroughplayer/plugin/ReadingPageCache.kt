@@ -37,7 +37,8 @@ internal class ReadingPageCache(
     fun window(keep: List<String>, prefetch: List<String>) {
         val cancel = synchronized(lock) {
             if (closed) return
-            val next = keep.filter(::supported).distinct().take(6)
+            // Current, previous and next spread plus the one beyond it in the reading direction.
+            val next = keep.filter(::supported).distinct().take(8)
             val pending = prefetch.filter { it in next }.distinct().take(4)
             if (next == wanted && pending == ahead) return
             wanted = next; ahead = pending

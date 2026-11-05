@@ -42,6 +42,7 @@ internal class ComicReaderController(private val context: ()->Context?,private v
     private var speechState="idle"
     private var voice="Xiaoyu"
     private var language="auto"
+    @Volatile private var speed=1.0
     @Volatile private var speechEnabled=true
     private val routing=ComicSpeechRouting()
     private var hoverKey=""
@@ -59,6 +60,11 @@ internal class ComicReaderController(private val context: ()->Context?,private v
         if(closed||!allowed()||!validVoice(selectedVoice)||(selectedLanguage!="auto"&&selectedLanguage !in NarrationPolicy.languages))return false
         val changed=synchronized(lock){if(voice==selectedVoice&&language==selectedLanguage)false else {voice=selectedVoice;language=selectedLanguage;true}}
         if(changed){cancelSpeech();prefetch.clear();synchronized(lock){aheadAudioKeys.clear()};schedulePageAudio()}
+        return true
+    }
+    fun setSpeed(value: Double): Boolean {
+        if(closed||!allowed()||!value.isFinite()||value !in 0.5..2.0)return false
+        if(speed!=value){speed=value;cancelSpeech()}
         return true
     }
     private fun validVoice(id: String)=PersonalVoiceStore.isVoice(id)||id in NarrationPolicy.voices.values.flatten()
@@ -201,13 +207,28 @@ internal class ComicReaderController(private val context: ()->Context?,private v
     }
     private fun play(request: ComicSpeechPrefetch.Request,volume: Double,epoch: Long): Boolean {
         cancelSpeech();val token=speechToken.get()
+        val tempo=speed
         synchronized(lock){triggerAt=System.nanoTime();firstAudioMs=-1;hoverAudioMs=-1;warmHit=prefetch.ready(request.key);if(hoverKey!=request.key)hoverAt=triggerAt}
         val buffer=prefetch.prepare(request,true)
         speechWorker.execute {
             fun active()=!closed&&allowed()&&document==epoch&&speechToken.get()==token
             try {
                 check(active());speechStatus("preparing")
-                VoicePreviewStream(::active,output(token,volume,::active),9600).use {stream->buffer.read(::active){stream.append(it)};stream.complete()}
+                val pcm=NarrationPcm(tempo)
+                try {
+                    VoicePreviewStream(::active,output(token,volume,::active),9600).use {stream->
+                        fun drain(){
+                            for(chunk in pcm.chunks){
+                                var at=0
+                                while(at<chunk.size){val end=minOf(at+VoicePreviewStream.BLOCK_LIMIT,chunk.size)
+                                    stream.append(if(at==0&&end==chunk.size)chunk else chunk.copyOfRange(at,end));at=end}
+                            }
+                            pcm.chunks.clear()
+                        }
+                        buffer.read(::active){pcm.push(it);drain()}
+                        pcm.finish();drain();stream.complete()
+                    }
+                } finally {pcm.close()}
                 if(active())speechStatus("idle")
             } catch(_: Throwable){if(active())speechStatus("error")}
         }

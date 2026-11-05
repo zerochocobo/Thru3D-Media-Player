@@ -259,8 +259,32 @@ func run() -> void:
 	video.loop_enabled = false; video.media.state = "failed"; poll(session)
 	check(not bridge.published.ended and bridge.published.error, "Playback failure cannot consume the preset as natural EOF")
 	session.finish()
+	cast_default_depth(video, bridge)
 	session.close(); menu.free(); library.free(); video.free(); owner.dispose()
 	await process_frame
 	for message in failures: push_error(message)
 	print("Cast receiver: %d checks, %d failures" % [checks, failures.size()])
 	quit(0 if failures.is_empty() else 1)
+
+func cast_default_depth(video: Node3D, bridge: RefCounted) -> void:
+	video.default_auto_depth = true
+	for kind in ["mono", "stereo", "spatial", "live", "partial", "manual_off", "strength_off", "format_first", "opening_unknown", "no_duration", "no_state"]:
+		video.open_cast("http://192.168.1.20/auto.mp4", "Phone video", 80, 12000, false)
+		check(not video.depth_requested and video._cast_auto_depth_pending, "Cast waits for actual format and capabilities: " + kind)
+		video.media.format = {"width": 1920, "height": 1080, "stereo_mode": "sbsl" if kind == "stereo" else "mono", "spatial_video": kind == "spatial"}
+		var before: int = bridge.revisions.size()
+		if kind == "format_first": video._complete_layout()
+		if kind == "manual_off": video.set_depth(false)
+		if kind == "strength_off": video.set_depth_strength(0)
+		if kind == "opening_unknown":
+			video._on_state(video.media.session_id, JSON.stringify({"state": "opening", "details": {"seekable": "no"}}))
+			check(video._cast_auto_depth_pending, "Incomplete opening capabilities cannot discard the default")
+		if kind != "no_state": video._on_state(video.media.session_id, JSON.stringify({"state": "paused", "details": {"position_seconds": "12", "duration_seconds": "0" if kind == "no_duration" else "120", "seekable": "no" if kind == "live" else "yes", "partially_seekable": "yes" if kind == "partial" else "no"}}))
+		video._complete_layout()
+		var expected: bool = kind in ["mono", "live", "partial", "format_first", "opening_unknown", "no_duration", "no_state"]
+		check(video.depth_requested == expected and video.auto_depth == expected, "Cast default obeys format, capability and manual override: " + kind)
+		check(not video.requested_play and not video._remember_file, "Default conversion preserves paused intent and ephemeral privacy: " + kind)
+		check(video._pending_revision.get("depth", false) == expected or (expected and bridge.revisions.size() > before and bridge.revisions.back().depth), "Eligible cast requests native depth conversion: " + kind)
+	video.default_auto_depth = false
+	video.open_cast("http://192.168.1.20/auto.mp4", "Phone video", 81, 0)
+	check(not video._cast_auto_depth_pending and not video.depth_requested, "Disabled global default retains 2D casts")

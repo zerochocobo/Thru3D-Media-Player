@@ -34,7 +34,7 @@ class BackgroundResourceBudgetTest {
     }
 
     @Test fun photoPeakScalesWithWorkPixelsAndBoundsExtremeDimensions() {
-        assertEquals(512 * mib + 640L * 480 * 128, BackgroundResourceBudget.photoPeak(640, 480))
+        assertEquals(512 * mib + 640L * 480 * 48, BackgroundResourceBudget.photoPeak(640, 480))
         assertEquals(Long.MAX_VALUE, BackgroundResourceBudget.photoPeak(0, 100))
         val huge = BackgroundResourceBudget.photoPeak(Int.MAX_VALUE, Int.MAX_VALUE)
         assertTrue(huge in (512 * mib + 1)..(1536 * mib))

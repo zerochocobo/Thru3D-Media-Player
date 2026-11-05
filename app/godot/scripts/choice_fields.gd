@@ -1,4 +1,5 @@
 extends RefCounted
+const UiTheme := preload("res://scripts/ui_theme.gd")
 ## One setting per field. Choice actions commit on the owning hand's release.
 signal changed(key: String, value: Variant)
 signal previewed(key: String, value: Variant)
@@ -57,6 +58,17 @@ func _option_label(option: Dictionary) -> String:
 	return menu.I18n.t(option.label)
 
 func _appearance(option: Dictionary) -> void:
+	if option.has("theme_preview"):
+		var button: Dictionary = menu._buttons.back()
+		var caption: Label3D = button.node.get_child(0)
+		var size: Vector2 = button.rect.size
+		caption.text = menu._fit_title(caption.text, "", size.x - 0.19, menu.TEXT_BODY)
+		caption.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+		caption.position.x = -size.x / 2 + 0.02
+		for index in 3:
+			var tile: MeshInstance3D = menu._quad(Vector2(0.025, 0.028), Vector3(size.x / 2 - 0.16 + index * 0.028, 0, 0.007), option.theme_preview[index], caption.render_priority + 1)
+			tile.material_override.set_shader_parameter("corner_radius", 0.006)
+			button.node.add_child(tile)
 	if not option.has("text_color"): return
 	var label: Label3D = menu._buttons.back().node.get_child(0)
 	label.modulate = option.text_color
@@ -76,13 +88,15 @@ func field(parent: Node3D, row: Dictionary, centre: Vector2, width: float, heigh
 	var key: String = row.key
 	if row.get("swatches", false):
 		var widths: Array[float] = []
-		var used := 0.0
+		var edit: Dictionary = row.get("edit", {})
+		var edit_width := maxf(0.11, menu.text_width(menu.I18n.t(str(edit.get("label", ""))), menu.TEXT_BODY) + 0.025) if not edit.is_empty() else 0.0
+		var used := edit_width
 		for option in options:
 			var cell := height if option.has("swatch") else maxf(height * 2.1, menu.text_width(_option_label(option), menu.TEXT_BODY) + 0.03)
 			widths.append(cell); used += cell
 		var scale := minf(1, width / used)
 		var diameter := height * scale
-		var gap := minf(0.032, maxf(0, (width - used * scale) / maxi(1, options.size() - 1)))
+		var gap := minf(0.032, maxf(0, (width - used * scale) / maxi(1, options.size() - (1 if edit.is_empty() else 0))))
 		var left := centre.x - width / 2
 		for index in options.size():
 			var option: Dictionary = options[index]
@@ -93,18 +107,32 @@ func field(parent: Node3D, row: Dictionary, centre: Vector2, width: float, heigh
 				Vector2(left + cell_width / 2, centre.y), Vector2(cell_width, diameter), parent, selected)
 			left += cell_width + gap
 			menu._tips[target] = menu.I18n.t(option.label)
+			var tip := str(option.get("hint", row.get("tooltip", "")))
+			if not tip.is_empty(): menu._tips[target] += "\n" + menu.I18n.t(tip)
 			if not swatch: continue
 			var button: Dictionary = menu._buttons.back()
-			button.base_color = Color.WHITE if selected else menu.TILE
-			button.hover_color = Color.WHITE
+			button.base_color = UiTheme.color("swatch_ring") if selected else menu.TILE
+			button.hover_color = UiTheme.color("swatch_ring")
 			button.node.material_override.set_shader_parameter("surface_color", button.base_color)
 			button.node.material_override.set_shader_parameter("corner_radius", diameter / 2)
 			var disc: MeshInstance3D = menu._quad(Vector2.ONE * (diameter - 0.012), Vector3(0, 0, 0.004), option.swatch, 14)
+			disc.name = "ColorSwatch"
 			disc.material_override.set_shader_parameter("corner_radius", diameter / 2)
+			disc.material_override.set_shader_parameter("marker_outline", UiTheme.color("muted"))
+			disc.material_override.set_shader_parameter("marker_outline_width", 0.0015)
+			var split := option.has("swatch_accent")
+			if split:
+				disc.material_override.set_shader_parameter("swatch_split", true)
+				disc.material_override.set_shader_parameter("swatch_accent", option.swatch_accent)
 			button.node.add_child(disc)
 			if selected:
-				var mark: MeshInstance3D = menu._icon("check", Vector3(0, 0, 0.006), diameter * 0.44, Color("17232c"), button.node)
+				# Keep the check inside the panel half, with ink chosen for that surface.
+				var mark: MeshInstance3D = menu._icon("check", Vector3(-diameter * 0.15 if split else 0.0, 0, 0.006), diameter * (0.34 if split else 0.44), UiTheme.swatch_ink(option.swatch), button.node)
 				mark.material_override.render_priority = 15
+		if not edit.is_empty():
+			var target := _button({"kind": "choose", "key": edit.key, "value": true}, menu.I18n.t(str(edit.label)),
+				Vector2(left + edit_width * scale / 2, centre.y), Vector2(edit_width * scale, diameter), parent)
+			menu._tips[target] = menu.I18n.t("Edit custom theme")
 		return
 	if row.get("switch", false):
 		var on := bool(row.value)
@@ -170,11 +198,13 @@ func _slider(parent: Node3D, row: Dictionary, centre: Vector2, width: float, hei
 	var fill: MeshInstance3D = menu._quad(Vector2(rail_width, 0.007), rail.position, menu.ACCENT, 15)
 	node.add_child(fill)
 	if row.get("midpoint", false):
-		var tick: MeshInstance3D = menu._quad(Vector2(0.003, 0.023), Vector3(left + rail_width / 2, y, 0.005), Color.WHITE, 16)
+		var tick: MeshInstance3D = menu._quad(Vector2(0.003, 0.023), Vector3(left + rail_width / 2, y, 0.005), UiTheme.color("knob"), 16)
+		menu._style_slider_marker(tick)
 		node.add_child(tick)
 		var middle: Label3D = menu._label(menu.I18n.t("Middle"), Vector3(left + rail_width / 2, 0.023, 0.006), 12, node)
 		middle.render_priority = 16
-	var knob: MeshInstance3D = menu._quad(Vector2(0.022, 0.022), Vector3(left, y, 0.006), Color.WHITE, 17)
+	var knob: MeshInstance3D = menu._quad(Vector2(0.022, 0.022), Vector3(left, y, 0.006), UiTheme.color("knob"), 17)
+	menu._style_slider_marker(knob)
 	node.add_child(knob)
 	var label: Label3D = node.get_child(0)
 	label.visible = not row.get("hide_value", false)
@@ -256,7 +286,8 @@ func _range_slider(parent: Node3D, row: Dictionary, centre: Vector2, width: floa
 		node.add_child(bar); bars.append(bar)
 	var handles: Array = []
 	for i in 2:
-		var knob: MeshInstance3D = menu._quad(Vector2(0.018, 0.050), Vector3(left + i * rail_width, 0, 0.008), Color.WHITE, 17)
+		var knob: MeshInstance3D = menu._quad(Vector2(0.018, 0.050), Vector3(left + i * rail_width, 0, 0.008), UiTheme.color("knob"), 17)
+		menu._style_slider_marker(knob)
 		node.add_child(knob); handles.append(knob)
 	sliders[target] = {"span": row.span, "left": left, "width": rail_width, "fill": fill, "handles": handles, "bars": bars}
 	var value: Vector2 = capture.value if capture.get("item", {}).get("key", "") == row.key and capture.has("value") else row.value

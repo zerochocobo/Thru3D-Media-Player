@@ -2,7 +2,8 @@ package org.vrpassthroughplayer.plugin
 
 /** Worker-confined: one model/session, with no temporal state between still photos. */
 internal class PhotoDepthSession(private val destroy: (Long) -> Unit) {
-    private var handle = 0L
+    @Volatile private var handle = 0L
+    fun alive(): Boolean = handle != 0L
 
     fun <T> use(create: () -> Long, process: (Long, Boolean) -> T): T {
         val reused = handle != 0L

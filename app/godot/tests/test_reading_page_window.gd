@@ -22,30 +22,30 @@ func run() -> void:
 	for i in 9: photo.queue.append({"uri":"pdfpage://book/%d" % i, "size":1024})
 	photo.archive_mode = true
 	var window: Dictionary = photo.reading_cache.plan(4, true)
-	check(pages(window.keep) == [4,5,3] and pages(window.ahead) == [5], "Single page retains three files and reads ahead one")
+	check(pages(window.keep) == [4,5,3,6] and pages(window.ahead) == [5,6], "Single page retains four files and reads ahead two")
 	photo.gallery.mode = photo.Gallery.Layout.MAGAZINE
 	window = photo.reading_cache.plan(4, true)
-	check(pages(window.keep) == [4,5,6,7,2,3], "Double spread owns six original page files")
-	check(pages(window.ahead) == [6,7], "Double spread prepares both next pages")
+	check(pages(window.keep) == [4,5,6,7,2,3,8], "Double spread owns its neighbours and the spread beyond in reading order")
+	check(pages(window.ahead) == [6,7,8], "Double spread prepares the next spread, then the one beyond")
 	check(not photo._cache_supported(), "Older native hosts keep the file cache without enabling unsupported render prefetch")
 	check(photo.reading_cache.plan(4, false).ahead.is_empty(), "Foreground spread stops speculative scheduling")
 	window = photo.reading_cache.plan(0, true)
-	check(pages(window.keep) == [0,1,2,3], "First spread never wraps to the end")
+	check(pages(window.keep) == [0,1,2,3,4,5], "First spread never wraps to the end")
 	window = photo.reading_cache.plan(8, true)
 	check(pages(window.keep) == [8,6,7] and window.ahead.is_empty(), "Odd last page has no nonexistent forward page")
 	photo._navigation_direction = -1
 	window = photo.reading_cache.plan(4, true)
-	check(pages(window.keep) == [4,5,2,3,6,7] and pages(window.ahead) == [2,3], "Reverse navigation changes prefetch priority")
+	check(pages(window.keep) == [4,5,2,3,6,7,0,1] and pages(window.ahead) == [2,3,0,1], "Reverse navigation changes prefetch priority")
 	photo._navigation_direction = 1
 	photo.magazine.single_pages["pdfpage://book/4"] = true
 	window = photo.reading_cache.plan(4, true)
-	check(pages(window.keep) == [4,5,6,2,3] and pages(window.ahead) == [5,6], "Single-page override keeps true adjacent pair")
+	check(pages(window.keep) == [4,5,6,2,3,7,8] and pages(window.ahead) == [5,6,7,8], "Single-page override keeps true adjacent pair")
 	photo.magazine.single_pages.clear()
 	window = photo.reading_cache.plan(3, true)
-	check(pages(window.keep) == [3,4,5,6,1,2], "Manually shifted pairing follows actual spread positions")
+	check(pages(window.keep) == [3,4,5,6,1,2,7,8], "Manually shifted pairing follows actual spread positions")
 	photo.queue[5].size = 33 * 1024 * 1024
 	window = photo.reading_cache.plan(3, true)
-	check(pages(window.ahead) == [6], "Oversized encoded archive page is not fetched speculatively")
+	check(pages(window.ahead) == [6,7,8], "Oversized encoded archive page is not fetched speculatively")
 	photo.reading_cache.sync(3, true); photo.reading_cache.sync(3, true)
 	check(host.windows.size() == 1, "Unchanged frame does not cross JNI again")
 	photo.reading_cache.clear()

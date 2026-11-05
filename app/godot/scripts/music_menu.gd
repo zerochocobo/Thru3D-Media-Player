@@ -5,7 +5,8 @@ signal import_requested(destination: String)
 const ChoiceFields := preload("res://scripts/choice_fields.gd")
 const StorageView := preload("res://scripts/audio_storage_view.gd")
 const TextInput := preload("res://scripts/system_text_input.gd")
-const SELECTED := Color(0.16, 0.31, 0.27)
+static var SELECTED: Color:
+	get: return UiTheme.color("selected")
 const ROW := 100
 const MORE := 200
 const TAB := 300
@@ -201,7 +202,8 @@ func _text_action(id: int, title: String, y: float, enabled: bool = true) -> voi
 	_button(id, _fit_title(I18n.t(title), "", 1.02, TEXT_BODY), Vector2(0, y), Vector2(1.10, 0.085), enabled)
 	set_label_size(_buttons.back().node.get_child(0), TEXT_BODY)
 
-func _caption(text: String, point: Vector2, width: float, font_size: int = 18, ink: Color = MUTED) -> Label3D:
+func _caption(text: String, point: Vector2, width: float, font_size: int = 18, ink: Color = Color(-1, -1, -1, -1)) -> Label3D:
+	if ink.a < 0: ink = MUTED
 	var label := _label(_fit_title(text, "", width, font_size), Vector3(point.x, point.y, 0.004), font_size)
 	label.set_meta("music_text_width", width)
 	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT; label.modulate = ink
@@ -240,7 +242,7 @@ func _draw() -> void:
 	_glyph(SETTINGS, "settings", Vector2(0.47, 0.52), 0.075, true, I18n.t("Settings"))
 	_glyph(CLOSE, "close", Vector2(0.60, 0.52), 0.075, true, I18n.t("Close"))
 	if view == "add":
-		_caption(I18n.t("Add tracks") + " · " + _playlist_label(audio.library.playlist(playlist_id)), Vector2(-0.60, 0.40), 0.91, 21, Color.WHITE)
+		_caption(I18n.t("Add tracks") + " · " + _playlist_label(audio.library.playlist(playlist_id)), Vector2(-0.60, 0.40), 0.91, 21, UiTheme.color("label"))
 		_pill(DONE, "Done", Vector2(0.51, 0.40), 0.22, true, true)
 	else:
 		for i in 3:
@@ -301,7 +303,7 @@ func _draw_toolbar() -> void:
 		_caption("%d / %d" % [maxi(0, audio.queue.find(audio.current) + 1), _rows.size()], Vector2(0.40, y), 0.22, 16)
 	else:
 		var list: Dictionary = audio.library.playlist(playlist_id)
-		_caption(_playlist_label(list), Vector2(-0.60, y + 0.018), 0.66, 21, Color.WHITE)
+		_caption(_playlist_label(list), Vector2(-0.60, y + 0.018), 0.66, 21, UiTheme.color("label"))
 		_caption(I18n.t("%d sounds" if playlist_id == "ambience" else "%d tracks") % _rows.size(), Vector2(-0.60, y - 0.022), 0.50, 14)
 		if editing: _pill(EDIT_LIST, "Done", Vector2(0.49, y), 0.26, true, true)
 		else:
@@ -337,7 +339,7 @@ func _draw_track_rows() -> void:
 		var width := 0.94 if editing else 1.12
 		_button(ROW + i, "", Vector2(-0.62 + width / 2, y), Vector2(width, 0.088), not editing)
 		var node: MeshInstance3D = _buttons.back().node
-		var ink := ACCENT if marked else Color.WHITE
+		var ink := ACCENT if marked else UiTheme.color("label")
 		if marked:
 			_buttons.back().base_color = SELECTED; node.material_override.set_shader_parameter("surface_color", SELECTED)
 		var leading := "check" if view == "add" and marked else ("checkbox" if view == "add" else ("pause" if marked and not audio.paused else _track_icon(row)))
@@ -369,7 +371,7 @@ func _draw_dock() -> void:
 	var line := _quad(Vector2(1.24, 0.002), Vector3(0, -0.405, 0.004), TILE, 12)
 	add_child(line); _decorations.append(line)
 	_text_button(DOCK, "", Vector2(-0.23, -0.48), Vector2(0.78, 0.12), view != "add")
-	_caption(I18n.t(str(_state.audio_title)), Vector2(-0.59, -0.455), 0.72, 20, Color.WHITE)
+	_caption(I18n.t(str(_state.audio_title)), Vector2(-0.59, -0.455), 0.72, 20, UiTheme.color("label"))
 	_caption(_source_caption(), Vector2(-0.59, -0.505), 0.72, 14)
 	_tips[DOCK] = I18n.t("Now playing")
 	_glyph(PREV_TRACK, "previous_video", Vector2(0.24, -0.48), 0.080, audio.can_advance(-1), I18n.t("Previous"))
@@ -471,7 +473,7 @@ func _draw_modal() -> void:
 			_label(_fit_title(", ".join(names), "", 1.04, 16), Vector3(0, -0.06, 0.004), 16).modulate = MUTED
 		_pill(CANCEL, "Cancel", Vector2(-0.25, -0.24), 0.40)
 		_pill(CONFIRM, "Delete", Vector2(0.25, -0.24), 0.40)
-		_buttons.back().node.get_child(0).modulate = Color(1, 0.48, 0.46); return
+		_buttons.back().node.get_child(0).modulate = UiTheme.color("music_danger"); return
 	if modal == "add_source":
 		_text_action(FROM_LIBRARY, "From audio library", 0.12)
 		_text_action(ADD_FILES, "Import audio", -0.01)
@@ -480,14 +482,14 @@ func _draw_modal() -> void:
 	if modal == "playlist":
 		_text_action(RENAME, "Rename", 0.12)
 		_text_action(DELETE_LIST, "Delete playlist", -0.01)
-		_buttons.back().node.get_child(0).modulate = Color(1, 0.48, 0.46)
+		_buttons.back().node.get_child(0).modulate = UiTheme.color("music_danger")
 		_pill(CANCEL, "Cancel", Vector2(0, -0.25), 0.40); return
 	_text_action(ADD_TO_LIST, "Add to playlist", 0.12)
 	var custom: Dictionary = audio.library.playlist(target_playlist)
 	if not custom.is_empty() and not custom.builtin: _text_action(REMOVE_TRACK, "Remove from playlist", -0.01)
 	if target_track.begins_with("import_"):
 		_text_action(DELETE_FILE, "Delete local audio", -0.14)
-		_buttons.back().node.get_child(0).modulate = Color(1, 0.48, 0.46)
+		_buttons.back().node.get_child(0).modulate = UiTheme.color("music_danger")
 	_pill(CANCEL, "Cancel", Vector2(0, -0.29), 0.40)
 
 func _activate(id: int) -> void:

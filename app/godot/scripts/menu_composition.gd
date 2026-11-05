@@ -579,6 +579,7 @@ func _assign_bands(kind: String, group: Dictionary) -> void:
 
 ## Text and icons need the layer density; flat shader surfaces render fine in the eye buffer.
 static func _is_detail(node: VisualInstance3D) -> bool:
+	if node.get_meta("menu_capture_detail", false): return true
 	if node is Label3D: return not (node as Label3D).text.strip_edges().is_empty()
 	if node is GeometryInstance3D and node.material_override is StandardMaterial3D:
 		return (node.material_override as StandardMaterial3D).albedo_texture != null

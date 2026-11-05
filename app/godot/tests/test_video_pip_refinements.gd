@@ -57,6 +57,17 @@ func run() -> void:
 	check(window.size.x > before.x and is_equal_approx(window.size.y, before.y) and is_equal_approx(window.zoom, zoom), "Changing width preserves height and per-camera magnification")
 	check(window.to_global(Vector3(-window.size.x / 2, 0, 0)).distance_to(opposite) < 0.0001, "The opposite side stays fixed while changing width")
 	pip.release("right_hand", "trigger_click")
+	for edge in [3, 1]:
+		var edge_point: Vector2 = window.edge_point(edge)
+		var axis := 0 if edge == 3 else 1
+		var fixed_side: Vector3 = window.to_global(Vector3(-edge_point.x, -edge_point.y, 0))
+		check(pip.press("right_hand", "trigger_click", ray_to(window, edge_point), null, head), "Capture enlarged window edge")
+		var delta := Vector2(5, 0) if edge == 3 else Vector2(0, -5)
+		pip.update_input({"right_hand": ray_to(window, edge_point + delta)}, {}, head, 1000)
+		check(is_equal_approx(window.size[axis], 2.4), "Window can reach twice the previous maximum on either axis")
+		var opposite_point: Vector2 = -window.edge_point(edge)
+		check(window.to_global(Vector3(opposite_point.x, opposite_point.y, 0)).distance_to(fixed_side) < 0.0001, "Enlarged window keeps the opposite edge anchored")
+		pip.release("right_hand", "trigger_click")
 	for button in window._buttons:
 		check(window.controls_root.is_ancestor_of(button.node), "Toolbar controls belong to the HD capture root")
 	check(not window.controls_root.is_ancestor_of(window.frame), "Video never enters the menu capture")

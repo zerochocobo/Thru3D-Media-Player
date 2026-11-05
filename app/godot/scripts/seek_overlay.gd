@@ -2,6 +2,7 @@ extends Node3D
 ## Passive, camera-relative seek feedback. It never captures rays or opens the transport.
 const Feedback := preload("res://scripts/seek_feedback.gd")
 const Ui := preload("res://scripts/ray_menu.gd")
+const UiTheme := preload("res://scripts/ui_theme.gd")
 const BACKGROUND := preload("res://shaders/seek_overlay.gdshader")
 const DEPTH := 1.2
 const WIDTH := 0.60
@@ -13,17 +14,24 @@ var origin: MeshInstance3D
 var thumb: MeshInstance3D
 var _surfaces: Array[MeshInstance3D] = []
 var _colors: Array[Color] = []
+var _roles: Array[String] = []
 
 func _ready() -> void:
-	var plate := _quad(Vector2(0.67, 0.135), Vector3.ZERO, Color(0.025, 0.035, 0.045, 0.78), 120)
+	var plate := _quad(Vector2(0.67, 0.135), Vector3.ZERO, UiTheme.color("seek_panel"), 120, "seek_panel")
 	plate.material_override = ShaderMaterial.new(); plate.material_override.shader = BACKGROUND
 	plate.material_override.render_priority = 120
-	_quad(Vector2(WIDTH, 0.004), Vector3(0, 0, 0.001), Color(0.42, 0.47, 0.52, 0.85), 121)
-	fill = _quad(Vector2(WIDTH, 0.004), Vector3(0, 0, 0.002), Ui.ACCENT, 122)
-	origin = _quad(Vector2(0.005, 0.014), Vector3(0, 0, 0.003), Color(0.75, 0.78, 0.82, 0.8), 123)
-	thumb = _quad(Vector2(0.012, 0.018), Vector3(0, 0, 0.004), Ui.ACCENT, 124)
+	_quad(Vector2(WIDTH, 0.004), Vector3(0, 0, 0.001), UiTheme.color("seek_track"), 121, "seek_track")
+	fill = _quad(Vector2(WIDTH, 0.004), Vector3(0, 0, 0.002), UiTheme.playback_color("accent"), 122, "accent")
+	origin = _quad(Vector2(0.005, 0.014), Vector3(0, 0, 0.003), UiTheme.color("seek_origin"), 123, "seek_origin")
+	thumb = _quad(Vector2(0.012, 0.018), Vector3(0, 0, 0.004), UiTheme.playback_color("knob"), 124, "knob")
 	clock = _label(0.035, 36)
 	detail = _label(-0.036, 30)
+	UiTheme.events.changed.connect(_theme_changed)
+	refresh()
+
+func _theme_changed() -> void:
+	for index in _roles.size():
+		if not _roles[index].is_empty(): _colors[index] = UiTheme.playback_color(_roles[index])
 	refresh()
 
 func _process(_delta: float) -> void: refresh()
@@ -57,8 +65,8 @@ func refresh() -> void:
 			_surfaces[i].material_override.albedo_color = tint
 	for label in [clock, detail]:
 		label.font = Ui.ui_font()
-		label.modulate = Color(0.9, 0.95, 0.97, alpha)
-		label.outline_modulate = Color(0.015, 0.02, 0.03, alpha * 0.7)
+		label.modulate = Color(UiTheme.color("hud_text"), alpha)
+		label.outline_modulate = Color(UiTheme.color("hud_outline"), alpha * 0.7)
 		# Keep long-hour counters and localized network feedback inside the strip.
 		label.pixel_size = minf(0.0008, WIDTH / maxf(1.0, label.font.get_string_size(label.text, HORIZONTAL_ALIGNMENT_LEFT, -1, label.font_size).x))
 
@@ -74,7 +82,7 @@ static func placement(sample: Dictionary) -> Vector3:
 		result.y = -0.44 if absf(-0.44 - float(sample.subtitle_y)) > absf(-0.16 - float(sample.subtitle_y)) else -0.16
 	return result
 
-func _quad(size: Vector2, location: Vector3, tint: Color, priority: int) -> MeshInstance3D:
+func _quad(size: Vector2, location: Vector3, tint: Color, priority: int, role: String = "") -> MeshInstance3D:
 	var node := MeshInstance3D.new(); node.mesh = QuadMesh.new(); node.mesh.size = size
 	node.position = location
 	var material := StandardMaterial3D.new()
@@ -83,7 +91,7 @@ func _quad(size: Vector2, location: Vector3, tint: Color, priority: int) -> Mesh
 	material.no_depth_test = true; material.cull_mode = BaseMaterial3D.CULL_DISABLED
 	material.render_priority = priority; material.albedo_color = tint
 	node.material_override = material
-	add_child(node); _surfaces.append(node); _colors.append(tint)
+	add_child(node); _surfaces.append(node); _colors.append(tint); _roles.append(role)
 	return node
 
 func _label(y: float, size: int) -> Label3D:

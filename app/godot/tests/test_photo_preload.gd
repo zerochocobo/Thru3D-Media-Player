@@ -262,7 +262,12 @@ func check_current_only(entries: Array[Dictionary], baked: bool) -> void:
 	var host := Host.new(); host.use_stereo = baked; host.folder = ProjectSettings.globalize_path(folder)
 	host.ready = photo._on_ready; host.depth = photo._on_depth; host.preload_depth = photo._on_prefetch_depth; photo.platform = host
 	photo.open_image(entries[0].uri,entries[0].title,entries)
-	await wait_depth(photo); host.complete_depth(photo._request); await settle(photo)
+	await process_frame
+	check(host.depth_calls == 1 and photo._promoted_depth_request == photo._request and photo.loading,
+		"Conversion starts from the ready source file, beside the colour decode")
+	await wait_depth(photo)
+	check(host.depth_calls == 1, "The decoded colour joins that conversion instead of starting another")
+	host.complete_depth(photo._request); await settle(photo)
 	check(photo.depth_enabled, "First selected photo still supports 3D")
 	await warm(photo,host)
 	var previous_id: int = photo._display_request

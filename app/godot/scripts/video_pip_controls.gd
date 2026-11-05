@@ -59,7 +59,7 @@ func draw() -> void:
 		menu._button(SLOT + slot, str(slot), centre, Vector2.ONE * 0.072)
 		var number: Dictionary = menu._buttons.back()
 		var caption: Label3D = number.node.get_child(0)
-		var icon: MeshInstance3D = menu._icon("close", Vector3(0, 0, 0.004), 0.048, Color.WHITE, number.node)
+		var icon: MeshInstance3D = menu._icon("close", Vector3(0, 0, 0.004), 0.048, menu.UiTheme.color("label"), number.node)
 		icon.visible = false
 		menu._tips[SLOT + slot] = I18n.t("Close window %d") % slot
 		_faces.append({"slot": slot, "number": caption, "icon": icon})

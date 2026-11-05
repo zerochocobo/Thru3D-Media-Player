@@ -393,6 +393,8 @@ func open_image(uri: String, title: String, entries: Array = [], location: Dicti
 	source_location = location.duplicate(true) if not location.is_empty() else preload("res://scripts/media_location.gd").infer(uri)
 	var retain_frame := not local_uri.is_empty() and geometry == Geometry.Geometry.FLAT and gallery.mode in [Gallery.Layout.SINGLE, Gallery.Layout.SIDES] and not portrait_requested
 	close_image(true, uri if source_location.has("online_source") else "")
+	# Closing released the depth model; reopening keeps it, built while the first file loads.
+	if auto_depth and Methods.supports(platform, "warm_photo_depth_runtime"): platform.warm_photo_depth_runtime()
 	_pdf_session = pdf_key
 	archive_mode = preload("res://scripts/pdf_pages.gd").container_page(uri)
 	archive_entry = container.duplicate(true) if archive_mode else {}
@@ -686,8 +688,15 @@ func _on_ready(id: int, payload: String) -> void:
 		_restore_display()
 		changed.emit(); return
 	_on_metadata(id, _serial, pending_index, info)
+	DiagnosticLog.record("photo_source_ready", {"request":id, "index":pending_index, "wait_ms":Time.get_ticks_msec() - _loading_started_ms,
+		"remote":bool(_loading_status.get("remote", false))})
 	_next_decode = {"id": id, "serial": _serial, "index": pending_index, "info": info, "direction": _requested_direction}
 	magazine.decorate(_next_decode)
+	# Native depth reads the source file itself: run it beside the colour decode rather than after it.
+	# _prepare_display then waits for this promoted request instead of starting another one.
+	if not magazine.active() and _requires_depth(pending_index, info):
+		if _prepare_depth(id): _promoted_depth_request = id
+		else: _next_decode["depth_rejected"] = true # one attempt per selection, as before
 
 func _on_metadata(id: int, serial: int, target: int, info: Dictionary) -> void:
 	if serial != _serial or id != _request or not loading or target != pending_index: return
@@ -864,6 +873,8 @@ static func _decode(job: Dictionary) -> Dictionary:
 	var image := Image.new()
 	var bytes := FileAccess.get_file_as_bytes(path)
 	if raw:
+		# A registered magazine spread keeps its 16-byte T3DI header (see Magazine.save_raw).
+		if bytes.size() == int(header.width) * int(header.height) * 4 + 16 and bytes.slice(0, 4).get_string_from_ascii() == "T3DI": bytes = bytes.slice(16)
 		if bytes.size() != int(header.width) * int(header.height) * 4: return {"error": "Image unavailable"}
 		image = Image.create_from_data(int(header.width), int(header.height), false, Image.FORMAT_RGBA8, bytes)
 	else:
@@ -899,8 +910,7 @@ static func _decode(job: Dictionary) -> Dictionary:
 		thumbnail = job.magazine_first.get("thumbnail")
 		if job.has("magazine_path"):
 			var encode_started := Time.get_ticks_usec()
-			if str(job.magazine_path).get_extension() == "jpg": image.save_jpg(str(job.magazine_path), 0.98)
-			else: image.save_png(str(job.magazine_path))
+			Magazine.save_raw(image, str(job.magazine_path))
 			spread_encode_ms = (Time.get_ticks_usec() - encode_started) / 1000.0
 	# RGBA here, off the render thread: the picture layer copies RGBA bands on the GPU (RGB textures
 	# cannot be copied into its RGBA swapchain), and RGBA textures upload without conversion.
@@ -1020,11 +1030,30 @@ func _process(delta: float) -> void:
 	_maybe_start_spatial()
 	_process_presentation()
 	if not spatial_requested and not loading and not _presentation_pending and not _transition_active and _reveal_seconds == 0 and (portrait_requested or not gallery.overview()):
-		if not render_cache.pump():
-			_pump_depth_prefetch()
-			_pump_prefetch()
+		# The next picture's 3D comes before the GPU copy kept for returning to this one: on 115 comics
+		# that copy took ~2 s (each large upload restarts the settle) and the next spread waited for it.
+		if _forward_depth_pending(): _pump_depth_prefetch()
+		var uploading: bool = render_cache.pump()
+		if not uploading: _pump_depth_prefetch()
+		# Reading colour decodes on its own thread. Waiting for the current page's GPU copy held the
+		# next spread's colour back ~1.4 s after each turn on 115 comics.
+		if not uploading or reading_render.active(): _pump_prefetch()
 	reading_cache.sync(pending_index if loading else index, not loading and not _transition_active and _reveal_seconds == 0 \
-		and not _presentation_pending and not _depth_busy and not spatial_requested and not portrait_requested and _thread == null and _depth_thread == null)
+		and not _presentation_pending and not _depth_busy and not spatial_requested and not portrait_requested and not _foreground_thread())
+
+func _forward_depth_pending() -> bool:
+	var neighbors := _neighbors(index)
+	if neighbors.is_empty() or _prefetch_depth_request != 0: return false
+	var entry: Dictionary = _prefetched.get(neighbors[0], {})
+	return entry.get("decoded", false) and reading_render.complete(entry) and entry.has("info") \
+		and _requires_depth(neighbors[0], entry.info) and not entry.get("depth_failed", false) \
+		and not _valid_cached_depth(entry.get("depth_data", {}), neighbors[0])
+
+## Only foreground work pauses page rendering. Neighbour decode and depth reads run on their own
+## threads; pausing for them made Android page rendering and Godot colour work take turns.
+func _foreground_thread() -> bool:
+	return (_thread != null and not _decoding.get("prefetch", false)) \
+		or (_depth_thread != null and not bool(_depth_job.get("background", false)))
 
 func _cache_supported() -> bool:
 	if reading_render.active():
@@ -1183,8 +1212,9 @@ func _drop_cached_depth(target: int) -> void:
 
 func _trim_depth_cache() -> void:
 	if not resource_budget.policy.get("retain", false): render_cache.cancel()
-	if not resource_budget.policy.get("work", false) or resource_budget.cooldown > 0.0:
-		_cancel_depth_prefetch()
+	# A frame stall only delays new work. Cancelling running inference threw away up to a
+	# second of finished GPU work and restarted it after the next settle.
+	if not resource_budget.policy.get("work", false): _cancel_depth_prefetch()
 	var seen := {}
 	var bytes: int = reading_render.memory(_prefetched, seen) + render_cache.optional_memory(seen)
 	var limit: int = resource_budget.resident_limit(bytes)
@@ -1239,8 +1269,14 @@ func _prepare_cached_effect(target: int, neighbors: Array[int]) -> bool:
 	var image: Image = entry.get("result", {}).get("image")
 	var width: int = image.get_width() if image else int(entry.info.get("width", 0))
 	var height: int = image.get_height() if image else int(entry.info.get("height", 0))
-	var cost: Dictionary = resource_budget.photo_cost(width, height)
-	if cost.is_empty() or not resource_budget.can_start(int(cost.peak), int(cost.resident)): return false
+	var cost: Dictionary = resource_budget.photo_cost(width, height, not resource_budget.policy.get("photo_model_ready", false))
+	# The next picture in the reading direction skips the settle after a page turn: that turn's own
+	# frame stall delayed it ~0.5 s, and measured inference left stale frames at the idle level.
+	# Sustained overload (frame_budget) and memory admission still apply.
+	var forward: bool = not neighbors.is_empty() and target == neighbors[0] \
+		and resource_budget.reason in ["frame_stall", "settling", "ready"]
+	if cost.is_empty() or not (resource_budget.can_start(int(cost.peak), int(cost.resident)) \
+		or (forward and resource_budget.can_continue(int(cost.peak), int(cost.resident)))): return false
 	var bytes: int = render_cache.total_memory()
 	if bytes + int(cost.resident) > resource_budget.resident_limit(bytes):
 		# Never evict an earlier candidate to prepare a later one: that would churn forever
@@ -1374,7 +1410,7 @@ func _prepare_display(result: Dictionary, job: Dictionary) -> void:
 		_accept(result, job)
 		return
 	if int(job.id) > 0 and _promoted_depth_request == int(job.id): changed.emit()
-	elif not _prepare_depth(int(job.id)): _fail_pending_depth()
+	elif job.get("depth_rejected", false) or not _prepare_depth(int(job.id)): _fail_pending_depth()
 	else: changed.emit()
 
 func _fail_pending_depth() -> void:
@@ -1634,6 +1670,9 @@ func _presentation_effects_ready() -> bool:
 
 func _finish_presentation() -> void:
 	_presented_us = Time.get_ticks_usec()
+	# Selection to final picture: the wait the reader actually sees.
+	DiagnosticLog.record("photo_presented", {"index":index, "request":_display_request, "depth":depth_enabled,
+		"magazine":magazine.active(), "wait_ms":Time.get_ticks_msec() - _loading_started_ms})
 	_presentation_pending = false
 	_placeholder.visible = false
 	_reveal_seconds = 0.0

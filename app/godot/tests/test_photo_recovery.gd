@@ -35,10 +35,17 @@ class Host extends Fixture.Host:
 		portraits.append({"id":id,"token":token,"strength":strength})
 		return held.has(id)
 	func cancel_photo_portrait(_token: int) -> void: pass
+	## The native side reads joined spreads as raw T3DI rows and other sources as encoded files.
+	static func native_image(path: String) -> Image:
+		var bytes := FileAccess.get_file_as_bytes(path)
+		if bytes.size() >= 16 and bytes.slice(0, 4).get_string_from_ascii() == "T3DI":
+			return Image.create_from_data(bytes.decode_u32(4), bytes.decode_u32(8), false, Image.FORMAT_RGBA8, bytes.slice(16))
+		var image := Image.new(); image.load_png_from_buffer(bytes)
+		return image
 	func complete_depth(id: int, success: bool = true) -> void:
 		if not success: super.complete_depth(id, false); return
 		depth_pending.erase(id)
-		var source := Image.new(); source.load_png_from_buffer(FileAccess.get_file_as_bytes(held[id]))
+		var source := Image.new(); source.copy_from(native_image(held[id]))
 		var pair := Image.create(source.get_width()*2,source.get_height(),false,Image.FORMAT_RGBA8)
 		source.convert(Image.FORMAT_RGBA8)
 		pair.blit_rect(source,Rect2i(Vector2i.ZERO,source.get_size()),Vector2i.ZERO)
@@ -137,7 +144,7 @@ func run() -> void:
 	photo.open_image(entries[0].uri,entries[0].title,entries); await settle(photo,host)
 	var id: int = photo._display_request
 	check(photo.depth_enabled and photo._size == Vector2(320,100),"Magazine supports automatic 2D-to-3D for the full spread")
-	var native := Image.new(); native.load_png_from_buffer(FileAccess.get_file_as_bytes(host.held[id]))
+	var native := Image.new(); native.copy_from(Host.native_image(host.held[id]))
 	check(native.get_size()==Vector2i(320,100) and native.get_pixel(20,20).r>.9 and native.get_pixel(200,20).b>.9,"Native converter source contains both pages in reading order")
 	check(host.held.size()==1 and photo.magazine.transfer.is_empty() and DirAccess.get_files_at(photo.magazine.cache_directory).is_empty(),"Only the native spread lease remains; source pages and handoff file are released")
 	app.photo_menu.visible = true; app.photo_menu.refresh(); tap(app.photo_menu,app.photo_menu.PHOTO_DEPTH)
@@ -164,7 +171,7 @@ func run() -> void:
 	tap(app.photo_menu,app.photo_menu.PHOTO_PREVIOUS); await settle(photo,host); await process_frame
 	check(photo.index==0 and photo.portrait_requested and host.portraits.back().id==photo._display_request,"Previous ray button can change spreads while the outgoing portrait is still preparing")
 	photo.set_portrait(false); photo.magazine.right_to_left = true; photo.magazine.reload(); await settle(photo,host)
-	native.load_png_from_buffer(FileAccess.get_file_as_bytes(host.held[photo._display_request]))
+	native.copy_from(Host.native_image(host.held[photo._display_request]))
 	check(native.get_pixel(20,20).b>.9 and native.get_pixel(200,20).r>.9,"Right-to-left rebuilds the native conversion source in the selected order")
 	photo.close_image()
 	var pages: Array[Dictionary] = []

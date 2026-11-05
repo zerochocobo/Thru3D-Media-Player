@@ -99,7 +99,8 @@ var alpha_edge := Vector2(0.0, 1.0)
 var depth_requested := false
 var auto_depth := false # This file's conversion choice, retained while changing its projection.
 const Auto3D := preload("res://scripts/video_auto_3d.gd")
-var default_auto_depth := false # Only seeds normal opens without a remembered per-file choice.
+var default_auto_depth := false # Seeds normal opens and eligible ephemeral casts.
+var _cast_auto_depth_pending := false
 const LastMode := preload("res://scripts/video_mode_default.gd")
 signal last_mode_changed(mode: Dictionary)
 signal reuse_last_mode_changed(enabled: bool)
@@ -149,9 +150,22 @@ func open_cast(uri: String, title: String, token: int, start_ms: int, playing: b
 	depth_strength = preferred_depth_strength; loop_enabled = false; requested_play = playing
 	_layer_return_uri = ""; _eye_buffer_only = true
 	var opened := open_local(uri, title, start_ms, false)
+	_cast_auto_depth_pending = opened and default_auto_depth
+	if _cast_auto_depth_pending and _stream_projection.is_empty(): _layout_pending = {} # Resolve actual stereo/VR metadata before conversion.
 	# Ephemeral URLs have no durable media identity. Never reuse unrelated cached file settings.
 	_subtitle_auto_pending = subtitle_auto_load
 	return opened
+
+func _apply_cast_default_depth() -> void:
+	if not _cast_auto_depth_pending or cast_token <= 0: return
+	if _layout_pending != null or int(media.format.get("width", 0)) <= 0: return
+	# The presented frame resolves layout. DLNA URLs often have no duration or
+	# seek support; neither is required to process their decoded frames in 3D.
+	_cast_auto_depth_pending = false
+	if geometry != Geometry.Geometry.FLAT or stereo_sbs or alpha_requested or is_spatial_video(): return
+	auto_depth = true; depth_requested = true
+	_request_revision()
+	changed.emit()
 const DEPTH_STRENGTHS := [0.5, 0.75, 1.0]
 const DepthStrength := preload("res://scripts/depth_strength.gd")
 ## Eye-width fraction of the full parallax at strength 1, and the near value kept on the screen
@@ -1048,6 +1062,7 @@ func _unbind() -> void:
 		caption.visible = false
 
 func close_video() -> void:
+	_cast_auto_depth_pending = false
 	_remember_last_mode()
 	server_playback.poll(self, true)
 	server_playback.finish(platform, pip.reopening or mode_transition.reopening or _keep_interleave_during_close)
@@ -1404,6 +1419,7 @@ func toggle_depth() -> bool:
 	return set_depth(is_zero_approx(portrait.strength) if portrait_requested() else not depth_requested)
 
 func set_depth(enabled: bool) -> bool:
+	_cast_auto_depth_pending = false
 	if portrait_requested():
 		var applied := set_depth_strength(1.0 if enabled else 0.0)
 		_remember_mode()
@@ -1477,6 +1493,7 @@ func set_depth_strength(value: float) -> bool:
 	if is_spatial_video(): return false
 	var strength := DepthStrength.clamp_value(value, DepthStrength.VIDEO_MAX)
 	if strength > 0.0 and (stereo_sbs or geometry != 0 or local_uri.is_empty() or media.state == "closed"): return false
+	_cast_auto_depth_pending = false
 	if strength>0.0 and not is_equal_approx(strength,depth_strength): _mode_user_changed=true
 	if strength > 0.0:
 		depth_strength = strength
@@ -2681,6 +2698,7 @@ func _apply_stereo_view() -> void:
 func _complete_layout() -> void:
 	if _restore_capture_layout(): return
 	_complete_source_layout()
+	_apply_cast_default_depth()
 
 func _restore_capture_layout() -> bool:
 	if not _capture_layout_pending: return false
@@ -2994,6 +3012,7 @@ func _on_state(id: int, payload: String) -> void:
 	# bridge may already have queued mpv_error, which must belong to the retired id.
 	if _recover_layer_output(): return
 	media.state = str(report.get("state", "opening"))
+	_apply_cast_default_depth()
 	_restore_tracks()
 	if media.state == "ended":
 		_record_history(true)
