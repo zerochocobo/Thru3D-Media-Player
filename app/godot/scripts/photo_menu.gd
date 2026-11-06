@@ -495,7 +495,8 @@ func _photo_background_button(target: int, caption: String, centre: Vector2, siz
 	if applied: _buttons.back().base_color = SELECTED
 	_buttons.back()["hover_disabled"] = true
 	_tips[target] = I18n.t("Use this panorama for videos and other scenes without changing the image mode background." if global_background else "Use this panorama for all images without changing the global background.")
-	if not _state.get("can_background", false): _tips[target] += "\n" + I18n.t("Open a supported panorama to use it as a background.")
+	if not _state.get("can_background", false):
+		_tips[target] += "\n" + I18n.t(str(_state.get("background_issue",preload("res://scripts/panorama_background_rules.gd").OPEN)))
 
 func _draw_panel() -> void:
 	var position_available: bool = _state.get("has_image", false) and int(_state.get("geometry", 0)) == 0 and not _state.get("native_stereo", false) and not _state.get("portrait_requested", false) and not _state.get("stereo", false)

@@ -1,5 +1,5 @@
 [CmdletBinding()]
-param([string]$ToolRoot = $(if ($env:THRU3D_TOOL_ROOT) { $env:THRU3D_TOOL_ROOT } else { Join-Path ([Environment]::GetFolderPath('UserProfile')) '.cache\thru3d-toolchain' }), [switch]$IncludeDiagnostics)
+param([string]$ToolRoot = $(if ($env:THRU3D_TOOL_ROOT) { $env:THRU3D_TOOL_ROOT } else { Join-Path ([Environment]::GetFolderPath('UserProfile')) '.cache\thru3d-toolchain' }), [switch]$IncludeDiagnostics, [string[]]$TestFilter = @())
 $ErrorActionPreference = 'Stop'
 $workspace = Split-Path -Parent $PSScriptRoot
 . "$PSScriptRoot/environment/Activate-QuestEnvironment.ps1" -ToolRoot $ToolRoot
@@ -25,6 +25,10 @@ gradle.afterProject { project ->
                 new File('__RUNTIME__').text = groovy.json.JsonOutput.toJson(report)
             }
         }
+        def selected = project.findProperty('webVideoProbeTests')?.toString()?.split(',')?.toList() ?: []
+        if (selected) project.tasks.withType(org.gradle.api.tasks.testing.Test).configureEach {
+            if (name == 'testDebugUnitTest') filter { selected.each { includeTestsMatching(it) } }
+        }
     }
 }
 '@
@@ -36,6 +40,15 @@ $held = $false
 $inputs = @(
     'android/player-plugin/src/main/java/org/vrpassthroughplayer/plugin/WebVideoBrowserResourceReader.kt',
     'android/player-plugin/src/main/java/org/vrpassthroughplayer/plugin/WebVideoDouyinCapture.kt',
+    'android/player-plugin/src/main/java/org/vrpassthroughplayer/plugin/WebVideoWeiboCapture.kt',
+    'android/player-plugin/src/main/java/org/vrpassthroughplayer/plugin/WebVideoTencentCapture.kt',
+    'android/player-plugin/src/main/java/org/vrpassthroughplayer/plugin/WebVideoMangoCapture.kt',
+    'android/web-browser/src/main/java/org/vrpassthroughplayer/plugin/WebBrowserMango.kt',
+    'android/web-browser/src/main/java/org/vrpassthroughplayer/plugin/WebBrowser.kt',
+    'android/web-browser/src/main/java/org/vrpassthroughplayer/plugin/WebBrowserPlaybackHold.kt',
+    'app/godot/scripts/web_browser_panel.gd',
+    'android/web-browser/src/main/java/org/vrpassthroughplayer/plugin/WebBrowserWeibo.kt',
+    'android/web-browser/src/main/java/org/vrpassthroughplayer/plugin/WebBrowserTencent.kt',
     'android/player-plugin/src/main/java/org/vrpassthroughplayer/plugin/WebVideoNetworkCapture.kt',
     'android/player-plugin/src/main/java/org/vrpassthroughplayer/plugin/WebVideoDescriptor.kt',
     'android/player-plugin/src/main/java/org/vrpassthroughplayer/plugin/WebVideoContainer.kt',
@@ -63,13 +76,17 @@ try {
         try { $held = $mutex.WaitOne() } catch [Threading.AbandonedMutexException] { $held = $true }
     }
     $before = Measure-ProbeInputs
-    & "$workspace/android/gradlew.bat" -p "$workspace/android" -I $initPath "-PgodotAarPath=$godotApi" "-PincludeDiagnostics=$($IncludeDiagnostics.IsPresent.ToString().ToLowerInvariant())" :player-plugin:prepareWebVideoDesktopRuntime --console=plain 2>&1 | Out-File (Join-Path $output 'prepare.log') -Encoding utf8
+    foreach($test in $TestFilter) { if($test -notmatch '^org\.vrpassthroughplayer\.plugin\.[A-Za-z0-9_.*$]+$') { throw 'Probe test filters must name project test classes.' } }
+    $selection=@()
+    if($TestFilter.Count) { $selection+="-PwebVideoProbeTests=$($TestFilter -join ',')" }
+    & "$workspace/android/gradlew.bat" -p "$workspace/android" -I $initPath "-PgodotAarPath=$godotApi" "-PincludeDiagnostics=$($IncludeDiagnostics.IsPresent.ToString().ToLowerInvariant())" @selection :player-plugin:prepareWebVideoDesktopRuntime --console=plain 2>&1 | Out-File (Join-Path $output 'prepare.log') -Encoding utf8
     if ($LASTEXITCODE -ne 0) { throw 'Desktop media probe compile failed; see build/output/web-video-desktop-host/prepare.log.' }
     $after = Measure-ProbeInputs
     if (($before | ConvertTo-Json -Compress) -ne ($after | ConvertTo-Json -Compress)) { throw 'Media probe inputs changed while preparing; run preparation again.' }
     $runtime = Get-Content -LiteralPath $runtimePath -Raw | ConvertFrom-Json -AsHashtable
     $runtime['source_sha256'] = $after
     $runtime['include_diagnostics'] = $IncludeDiagnostics.IsPresent
+    $runtime['unit_test_filter'] = @($TestFilter)
     [IO.File]::WriteAllText($runtimePath, ($runtime | ConvertTo-Json -Depth 6))
 } finally {
     if ($held) { $mutex.ReleaseMutex() }

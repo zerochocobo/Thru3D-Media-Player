@@ -10,6 +10,7 @@ bool fail_create = false;
 XrSwapchainCreateInfo last_info{};
 struct Floats { jsize length = 14; std::array<float, 14> data{}; };
 jobject JNICALL new_ref(JNIEnv*, jobject value) { ++global_refs; return value; }
+jobject JNICALL new_local(JNIEnv*, jobject value) { return value; }
 void JNICALL delete_ref(JNIEnv*, jobject) { --global_refs; }
 void JNICALL delete_local(JNIEnv*, jobject) {}
 jboolean JNICALL exception(JNIEnv*) { return false; }
@@ -39,6 +40,7 @@ int main() {
     auto check = [&](bool ok, const char* message) { ++checks; if (!ok) { ++failures; std::cerr << message << '\n'; } };
     JNINativeInterface_ table{};
     table.NewGlobalRef = fixture::new_ref; table.DeleteGlobalRef = fixture::delete_ref; table.DeleteLocalRef = fixture::delete_local;
+    table.NewLocalRef = fixture::new_local;
     table.ExceptionCheck = fixture::exception; table.GetArrayLength = fixture::length; table.GetFloatArrayRegion = fixture::read;
     JNIEnv env{&table};
     auto create = [&](int id, int session = 2) {
@@ -51,7 +53,7 @@ int main() {
         return reinterpret_cast<const XrCompositionLayerQuad*>(Java_org_vrpassthroughplayer_plugin_WebBrowserLayerNative_update(
             &env, nullptr, id, 3, reinterpret_cast<jfloatArray>(&values)));
     };
-    check(!create(0) && !create(6) && fixture::created == 0, "Invalid window cannot create a producer");
+    check(!create(0) && !create(8) && fixture::created == 0, "Invalid window cannot create a producer");
     check(create(1) && fixture::created == 1 && fixture::global_refs == 1, "Creating holds exactly one Surface reference");
     check(fixture::last_info.width == 2400 && fixture::last_info.height == 1500 && fixture::last_info.format == 0 && fixture::last_info.sampleCount == 0,
         "Browser retains its original raster and Android Surface creation requirements");
@@ -60,6 +62,29 @@ int main() {
     check(layer && layer->subImage.imageRect.offset.y == 675 && layer->subImage.imageRect.extent.width == 960, "Production JNI submits the selected source pixels");
     check(layer && layer->pose.orientation.w == 1 && layer->space == reinterpret_cast<XrSpace>(3), "Pose is normalized in the supplied reference space");
     auto swapchain = layer->subImage.swapchain;
+    values.data[9] = 0; values.data[10] = 0; values.data[11] = 2400; values.data[12] = 1500;
+    auto eye = [&](int side) {
+        return reinterpret_cast<const XrCompositionLayerQuad*>(Java_org_vrpassthroughplayer_plugin_WebBrowserLayerNative_updateEye(
+            &env, nullptr, 1, 3, reinterpret_cast<jfloatArray>(&values), side));
+    };
+    const auto* left = eye(1); const auto* right = eye(2);
+    check(left && right && left != right && left->eyeVisibility == XR_EYE_VISIBILITY_LEFT && right->eyeVisibility == XR_EYE_VISIBILITY_RIGHT,
+        "Processed browser eyes retain independent persistent layer storage");
+    check(left->subImage.imageRect.extent.width == 1200 && left->subImage.imageRect.offset.x == 0 && right->subImage.imageRect.offset.x == 1200,
+        "SBS halves are submitted to the matching eye without recropping the focus region");
+    check(!eye(0) && !eye(3), "Invalid eye cannot submit a composition layer");
+    auto alpha_eye = [&](int side, bool alpha) {
+        return reinterpret_cast<const XrCompositionLayerQuad*>(Java_org_vrpassthroughplayer_plugin_WebBrowserLayerNative_updateEyeAlpha(
+            &env, nullptr, 1, 3, reinterpret_cast<jfloatArray>(&values), side, alpha));
+    };
+    left = alpha_eye(1, true); right = alpha_eye(2, true);
+    check(left && right && left->layerFlags == XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT && right->layerFlags == left->layerFlags,
+        "Both person layers blend premultiplied source Alpha without UNPREMULTIPLIED");
+    check(alpha_eye(1, false)->layerFlags == 0 && alpha_eye(2, false)->layerFlags == 0,
+        "Returning to opaque depth clears the Alpha flags in both eyes");
+    check(!alpha_eye(0,true) && !alpha_eye(3,true), "Alpha cannot bypass eye validation");
+    values.data[11] = 2399; check(!eye(1), "Odd packed width cannot leak a neighboring eye");
+    values.data[9] = 480; values.data[10] = 225; values.data[11] = 960; values.data[12] = 600;
     values.data[13] = 0;
     check(update(1)->subImage.imageRect.offset.y == 225, "No-flip runtime retains top-left crop origin");
     values.data[9] = 0; values.data[10] = 0; values.data[11] = 2400; values.data[12] = 1500;
@@ -83,6 +108,30 @@ int main() {
     destroy(5);
     check(update(1) && !update(5), "Closing an account cannot destroy the ordinary browser");
     destroy(1);
+    check(create(1) && create(6), "AirPlay owns a separate producer while a browser remains alive");
+    auto borrowed = Java_org_vrpassthroughplayer_plugin_WebBrowserLayerNative_surface(&env, nullptr, 6);
+    check(borrowed && !Java_org_vrpassthroughplayer_plugin_WebBrowserLayerNative_surface(&env, nullptr, 1), "AirPlay cannot borrow the browser's producer");
+    auto producer_size = [&](int id, int width, int height) {
+        return Java_org_vrpassthroughplayer_plugin_WebBrowserLayerNative_producerSize(&env, nullptr, id, width, height);
+    };
+    check(!producer_size(1, 886, 1920) && !producer_size(6, 0, 1920) && !producer_size(6, 1921, 1920), "Only valid AirPlay producer extents can change");
+    check(producer_size(6, 886, 1920), "Portrait decoder output updates producer bounds");
+    values.data[9] = 0; values.data[10] = 0; values.data[11] = 886; values.data[12] = 1920; values.data[13] = 1;
+    check(update(6) && update(6)->subImage.imageRect.offset.y == 0 && update(6)->subImage.imageRect.extent.height == 1920, "Portrait crop uses the actual producer height on flipped runtimes");
+    check(producer_size(6, 1920, 886), "Landscape decoder output updates producer bounds without reopening");
+    values.data[11] = 1920; values.data[12] = 886;
+    check(update(6) && update(6)->subImage.imageRect.offset.y == 0 && update(6)->subImage.imageRect.extent.width == 1920, "Landscape crop follows the same live swapchain");
+    check(create(7), "Rotation can prepare another AirPlay producer while the first remains alive");
+    check(Java_org_vrpassthroughplayer_plugin_WebBrowserLayerNative_surface(&env, nullptr, 7) != borrowed,
+        "AirPlay rotation receives an independent Surface");
+    check(producer_size(7, 886, 1920), "Replacement producer owns its own portrait bounds");
+    destroy(6);
+    const bool browser_alive = update(1) != nullptr;
+    values.data[11] = 886; values.data[12] = 1920;
+    check(browser_alive && !update(6) && update(7), "Acknowledged rotation leaves the new AirPlay and ordinary browser producers alive");
+    destroy(7);
+    destroy(1);
+    check(fixture::global_refs == 0, "AirPlay teardown releases all producer references");
     fixture::fail_create = true;
     check(!create(1) && fixture::global_refs == 0 && !update(1), "Failed creation cannot expose a dangling layer");
     std::cout << "Browser native layer: " << checks << " checks, " << failures << " failures\n";

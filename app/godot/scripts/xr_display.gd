@@ -18,6 +18,8 @@ var scenery_rotation := Vector3.ZERO
 var video_layer := false
 var menu_layers := false
 var backdrop: MeshInstance3D
+var _panorama_backdrop: ShaderMaterial
+var _spatial_backdrop: ShaderMaterial
 const BACKDROP_RADIUS := 900.0
 
 ## parent: the XR camera, so the backdrop sphere stays centred on the eyes.
@@ -29,6 +31,7 @@ func attach_backdrop(parent: Node3D) -> void:
 	backdrop.mesh = sphere
 	var material := ShaderMaterial.new()
 	material.shader = preload("res://shaders/layer_backdrop.gdshader")
+	_panorama_backdrop = material
 	backdrop.material_override = material
 	backdrop.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	backdrop.visible = false
@@ -44,11 +47,12 @@ func set_menu_layers(active: bool) -> void:
 	menu_layers = active
 	if environment: _set_background(applied_passthrough)
 
-func set_scenery(value: Sky, yaw_degrees: float = 0.0) -> void:
+func set_scenery(value: Sky, yaw_degrees: float = 0.0, spatial_backdrop: ShaderMaterial = null) -> void:
 	scenery = value
+	_spatial_backdrop = spatial_backdrop
 	# PanoramaSkyMaterial puts the texture seam along the viewer's default -Z axis.
 	# Treat 0 degrees as the image centre facing forward; keep user rotation relative to it.
-	scenery_rotation = Vector3(0, deg_to_rad(yaw_degrees) + PI, 0)
+	scenery_rotation = Vector3(0, deg_to_rad(yaw_degrees) + (0.0 if spatial_backdrop else PI), 0)
 	if environment: _set_background(applied_passthrough)
 
 func configure(target_viewport: Viewport, target_environment: Environment, interface: XRInterface, desktop_preview: bool) -> bool:
@@ -120,7 +124,10 @@ func _set_background(transparent: bool) -> void:
 	environment.background_color = Color(0, 0, 0, 0) if transparent or layer else Color(0.035, 0.045, 0.06, 1.0)
 	if backdrop:
 		backdrop.visible = layer and not transparent
+		backdrop.material_override = _spatial_backdrop if _spatial_backdrop else _panorama_backdrop
 		var material := backdrop.material_override as ShaderMaterial
+		material.set_shader_parameter("orientation", Basis.from_euler(scenery_rotation).inverse())
+		if _spatial_backdrop: return
 		var sky_material := scenery.sky_material as PanoramaSkyMaterial if scenery else null
 		var panorama: Texture2D = sky_material.panorama if sky_material else null
 		material.set_shader_parameter("has_panorama", panorama != null)

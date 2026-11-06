@@ -85,6 +85,8 @@ internal object RenderBridgeNative {
     @JvmStatic external fun textRegions(handle: Long, token: Long, regions: FloatArray, weights: FloatArray)
     @JvmStatic external fun releaseTextInput(handle: Long)
     @JvmStatic external fun warp(handle: Long, token: Long, shift: Float, convergence: Float): Int
+    /** Browser combined mode: warp matching color and matte together; output is premultiplied RGBA. */
+    @JvmStatic external fun warpAlpha(handle: Long, token: Long, shift: Float, convergence: Float, matte: Int, content: FloatArray): Int
     @JvmStatic external fun alphaTexture(handle: Long, token: Long): Int
     /** Development only: exact-size model-height rows of left/right packed R8 bytes. */
     @JvmStatic external fun readAlpha(handle: Long, token: Long, output: ByteBuffer): Boolean

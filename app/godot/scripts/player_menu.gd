@@ -315,7 +315,6 @@ static var MUTE_TINT: Color:
 var _icon_tap := {}
 ## Comet arc around the bar's 3D icon while depth is requested but not yet running (cold model compile).
 var _depth_busy: MeshInstance3D
-static var _busy_shader: Shader
 var _subtitle_open := false
 var _subtitle_detail := ""
 var _subtitle_last_detail := ""
@@ -2238,7 +2237,7 @@ func _settings_key() -> String:
 		_state.get("show_fps", false), _state.get("alpha_keep_background", false), _state.get("viewing_eye", 0), _state.get("swap_eyes", false),
 		_state.get("spatial_metadata", {}), _state.get("spatial_auto_disparity", true),
 		_state.get("immersive_adjustment_gauges", true), _state.get("video_auto_3d", false),
-		_state.get("screen_cinema", false), _state.get("screen_scene_locked", false), _state.get("cinema_lights", "auto"),
+		_state.get("screen_cinema", false), _state.get("screen_scene_locked", false), _state.get("screen_scene_curve", true), _state.get("cinema_lights", "auto"),
 		_state.get("video_aspect_preset", "original"), _state.get("depth_requested", false),
 		_state.get("error", ""), _state.get("error_report", {}), _alpha_expanded])
 
@@ -2711,32 +2710,7 @@ func _depth_preparing() -> bool:
 
 ## Rotating arc over a round icon; animated by the shader clock, so it costs no per-frame script.
 func _busy_ring(parent: Node3D, diameter: float) -> MeshInstance3D:
-	if not _busy_shader:
-		_busy_shader = Shader.new()
-		_busy_shader.code = """shader_type spatial;
-render_mode unshaded, depth_draw_never, cull_disabled;
-uniform vec4 tint : source_color;
-void fragment() {
-	vec2 p = UV * 2.0 - 1.0;
-	float r = length(p);
-	float lag = mod(atan(p.y, p.x) + TIME * 5.0, 6.2831853);
-	float ring = smoothstep(0.78, 0.83, r) * (1.0 - smoothstep(0.93, 0.98, r));
-	ALBEDO = tint.rgb;
-	ALPHA = tint.a * ring * clamp(1.0 - lag / 4.2, 0.0, 1.0);
-}"""
-	var node := MeshInstance3D.new()
-	var mesh := QuadMesh.new()
-	mesh.size = Vector2.ONE * diameter * 1.15
-	node.mesh = mesh
-	node.position = Vector3(0, 0, 0.005)
-	var material := ShaderMaterial.new()
-	material.shader = _busy_shader
-	material.set_shader_parameter("tint", ACCENT)
-	material.render_priority = 13
-	node.material_override = material
-	node.visible = false
-	parent.add_child(node)
-	return node
+	return preload("res://scripts/ui_busy_ring.gd").create(parent,diameter,ACCENT)
 
 func _enabled(operation: String) -> bool:
 	if not _cast_allowed(operation): return false
@@ -2877,12 +2851,13 @@ func _draw_screen_settings() -> void:
 		return
 	if CinemaFeature.enabled() and _state.get("screen_scene_locked", false):
 		# Movement and lights live in the scene settings and footer; this page shapes the picture.
-		var top := _settings_frame(0.56)
+		var scene_curve: bool = _state.get("screen_scene_curve", true)
+		var top := _settings_frame(0.56 if scene_curve else 0.40)
 		_draw_settings_tabs(top - 0.055)
 		# The fixed cinema screen keeps its wall; only the picture inside it scales.
 		_adjustment_row(CINEMA_PICTURE_SIZE, "cinema_picture_size", "Picture size", Vector3(40, 100, 5), top - .16)
 		_draw_video_aspect(top - .25)
-		_draw_curve_choices(top - .45)
+		if scene_curve: _draw_curve_choices(top - .45)
 		choices.bounds = Vector2(POPUP_BOTTOM + 0.015, top - 0.10)
 		choices.finish()
 		refresh_values()
@@ -2936,7 +2911,8 @@ func _draw_screen_settings() -> void:
 		_draw_curve_choices(y)
 		y -= 0.09
 	if not cinema:
-		_adjustment_row(452, "screen_rotation", "Screen rotation", Vector3(-90, 90, 1), y)
+		_adjustment_row(452, "screen_rotation", "Screen rotation", Vector3(-180, 180, 1), y)
+		if flat: _tips[452] = I18n.t("Point at the screen's lower-left corner to show the curved arrows; hold either end to keep turning, or drag to rotate, then release to snap to the nearest 90°.")
 		_slider_tick(452, 0, "0°", y)
 		_inline_reset(ROTATION_RESET, "Straighten", "screen_rotation", 0.0, y)
 	else: y += 0.09

@@ -14,7 +14,7 @@
   "pgs_bitmap_header_sha256": "d5f16d18dbef6042570adad52c42cee9df6cd35a27ddf067611ff4c0addb7261",
   "live_capture_patch_sha256": "c7167a9835038c375ef991eac5229082f83c0ee44cfd6e2fa162e87609e5dd4a",
   "live_capture_header_sha256": "7cb1040bb604f0e7c2a2ce47b7b3d869da1f81c3cd0d32eded9e5e9b388c648f",
-  "aaudio_clock_patch_sha256": "4ae501cf04fef8bd30fbf7efa597da4f5100160e6151203cb1a7aa41b0c8a58b",
+  "aaudio_clock_patch_sha256": "13ea52f8aea8f4e110a43989de56b813f59245d75af01a1f0e34f57e26d906cc",
   "layer_cadence_patch_sha256": "fc2d1907643af88c949b430fc2dafb2c46a9b082021668716253bcc0bc18d448",
   "mediacodec_priority_patch_sha256": "df1b36c3dcdf97ce273f0ef13adffe3d565c99ce8f94334acb1533f6b271ee11",
   "dovi_rpu_patch_sha256": "ac25f48b5dce159a0cdf5880500dbe13055b8b72bf03fd8763971ddd0367ad3a",
@@ -57,9 +57,9 @@
   "libraries": [
     {
       "name": "libmpv.so",
-      "sha256": "f3d637ceef1613a474d708ecea59539f4fa819871379fdb4a8afeb66d4087373",
-      "bytes": 8268800,
-      "built_sha256": "853339644f60e1770b49e71bc8cb6e4ff0660bf4748277a8ca0556af6cf790f8",
+      "sha256": "a19fa607b8c503ac058231b667e54134717db39a775bcb4e296a20565af3def8",
+      "bytes": 8268960,
+      "built_sha256": "69f108f270b4d081670239d08d297cd488d73a43e2626b088b186c27738e48a0",
       "needed": [
         "libm.so",
         "libz.so",
@@ -122,9 +122,9 @@
     },
     {
       "name": "libavformat.so",
-      "sha256": "f5f1d3ac8e87e7656967c420c3fcf128e9a9eaec35b8d1ea0a43082db3bdf1c1",
-      "bytes": 4551824,
-      "built_sha256": "1669537aa381defaf899f47f0349c4b1576426cf9f513168027c05b28237f364",
+      "sha256": "8fe8e8b843afd222ad671a04e91aafa876ce0dae5e15184f75909c7243604522",
+      "bytes": 4551872,
+      "built_sha256": "6bbf917b5044f74ce3a6192a567915f6dcdc6bd847ebe6b784d84effa2d341c5",
       "needed": [
         "libavcodec.so",
         "libavutil.so",
@@ -170,7 +170,7 @@
     }
   ],
   "host_packages_sha256": "0d42dd4ec021254111a439214a2681bf37ca44ba2af04a9d97af479f2bd1dd33",
-  "build_receipt_sha256": "03e5a77913d7957a79bb1d080858de69b9709cc19dcdee98e4c9672eb8b0e7ec",
+  "build_receipt_sha256": "0aa600f9e244d96e9beae7e3fc71bda3e003a7150eaf4b4467c0d27661d482b8",
   "meson": "1.11.0",
   "ninja": "1.11.1",
   "mvc_inputs_sha256": {
@@ -179,7 +179,8 @@
     "tools/environment/mpv-linux/mvc_patch.py": "4bf017de2842f278c1a9bed12afc0b89e2d46d881495a5c406d53639a237bcde",
     "tools/environment/Prepare-MvcDecoder.py": "ac33805b5d397d14b8b78e6b9d65abdc7609d0ee375245b160c4968097eac52c",
     "tools/environment/Prepare-BluraySources.py": "1785866879b1c42abc32e596948dc898d1b09ff5c4942218eae8531b5865dc1e",
-    "tools/environment/mpv-linux/build_bluray.sh": "be189cd78bdbb02081ac0b65aee99fc6f16b1650fd3648ae825832c3940e4815",
+    "tools/environment/mpv-linux/build_bluray.sh": "0014a0bf3c20655cc101ce337ad2a756767e3912d43654d0025220a470082b76",
+    "native/mpv/patches/libudfread-metadata-file-entry.patch": "1f35b6b847bfd34088fa9df04cd67d2d7b689561ca4a59aa99ccf5c4c51a48e7",
     "third_party/dvd/source-lock.json": "77a80c79129cac630a3b2c22db1d5a9a32e8360e2e210aa2eecf6e9f9468719a",
     "tools/environment/Prepare-DvdSources.py": "79aa6d55c1575f7cc2426a098c2474d3e4b0f1ef8b757dcbb50e6a99474e2972",
     "tools/environment/mpv-linux/build_dvd.sh": "82858a86bf686cdfdd575cf407984623f7c04aebc4846372d72717fd6e86908d",
@@ -203,7 +204,8 @@
     "tools/environment/mpv-linux/mvc_patch.py": "4bf017de2842f278c1a9bed12afc0b89e2d46d881495a5c406d53639a237bcde",
     "tools/environment/Prepare-MvcDecoder.py": "ac33805b5d397d14b8b78e6b9d65abdc7609d0ee375245b160c4968097eac52c",
     "tools/environment/Prepare-BluraySources.py": "1785866879b1c42abc32e596948dc898d1b09ff5c4942218eae8531b5865dc1e",
-    "tools/environment/mpv-linux/build_bluray.sh": "276e35a7ccf1dff02cd6e317fe839e2afee9cbf7e644601bc05bf6469db3b3cd",
+    "tools/environment/mpv-linux/build_bluray.sh": "83f3d95277c8ddebf006c93eac2e3537fec38231ed4753b5592613b9bf63bbf3",
+    "native/mpv/patches/libudfread-metadata-file-entry.patch": "1f35b6b847bfd34088fa9df04cd67d2d7b689561ca4a59aa99ccf5c4c51a48e7",
     "third_party/dvd/source-lock.json": "77a80c79129cac630a3b2c22db1d5a9a32e8360e2e210aa2eecf6e9f9468719a",
     "tools/environment/Prepare-DvdSources.py": "79aa6d55c1575f7cc2426a098c2474d3e4b0f1ef8b757dcbb50e6a99474e2972",
     "tools/environment/mpv-linux/build_dvd.sh": "68145331e16be3a84f848e93aeebcb4517445e366b8a261182e522feeb6c8de6",

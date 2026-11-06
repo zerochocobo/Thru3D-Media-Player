@@ -47,7 +47,17 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     private var dlnaReceiver: DlnaReceiver? = null
     private var dlnaLock: android.net.wifi.WifiManager.MulticastLock? = null
     private var dlnaPort = 0
+    private val airplayReceiver = AirplayReceiver({ activity?.applicationContext }, { runOnRenderThread(it) })
+    @UsedByGodot fun airplay_receiver_poll(): String = airplayReceiver.poll()
+    @UsedByGodot fun airplay_receiver_attach(epoch: Long, texture: Int): Boolean = !closed.get() && airplayReceiver.attach(epoch, texture)
+    @UsedByGodot fun airplay_receiver_attach_layer(epoch: Long, slot: Int, width: Int, height: Int): Boolean = !closed.get() && slot in 6..7 &&
+        WebBrowserLayerNative.surface(slot)?.let { airplayReceiver.attachLayer(epoch, it, slot, width, height) } == true
+    @UsedByGodot fun airplay_receiver_detach_layer(epoch: Long): Boolean = airplayReceiver.detachLayer(epoch)
+    @UsedByGodot fun airplay_receiver_suspend(epoch: Long): Boolean = airplayReceiver.suspend(epoch)
+    @UsedByGodot fun airplay_receiver_disconnect(epoch: Long) { airplayReceiver.disconnect(epoch) }
+    @UsedByGodot fun airplay_receiver_muted(value: Boolean) { airplayReceiver.muted(value) }
     @UsedByGodot @Synchronized fun dlna_receiver_enable(enabled: Boolean): Boolean {
+        airplayReceiver.enable(enabled && !closed.get())
         stopDlnaNetwork(); dlnaRenderer?.detach(); dlnaRenderer = null; dlnaPort = 0
         if (!enabled || closed.get()) return !enabled
         dlnaRenderer = DlnaRenderer()
@@ -69,6 +79,7 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
         runCatching { if (dlnaLock?.isHeld == true) dlnaLock?.release() }; dlnaLock = null
     }
     @Synchronized private fun dlnaForeground(foreground: Boolean) {
+        airplayReceiver.foreground(foreground)
         if (dlnaRenderer == null) return
         if (!foreground) stopDlnaNetwork() else if (dlnaReceiver == null) startDlnaNetwork()
     }
@@ -187,7 +198,7 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     @UsedByGodot fun panorama_regions_request(id: Int, column: Int, row: Int): Boolean = !closed.get() && panoramaRegions.request(id, column, row)
     @UsedByGodot fun panorama_regions_close(id: Int) { if (!closed.get()) panoramaRegions.release(id) }
     private val webBrowser = WebBrowser { activity }
-    private val webVideoResolver = WebVideoResolver({ activity?.applicationContext }, sources::rememberWebVideo, webBrowser::cookiesForExtraction, webBrowser::mediaForExtraction)
+    private val webVideoResolver = WebVideoResolver({ activity?.applicationContext }, sources::rememberWebVideo, webBrowser::cookiesForExtraction, webBrowser::mediaForExtraction, webBrowser::mediaForSelectedExtraction)
     @UsedByGodot fun web_browser_navigate(url: String) { if (!closed.get()) webBrowser.navigate(url) }
     @UsedByGodot fun web_browser_status(): String {
         if (closed.get()) return "{}"
@@ -221,13 +232,28 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     }
     /** Worker-only, deliberately excludes media URLs, cookies and header values. */
     fun probeWebBrowserMediaForDiagnostics(): JSONObject {
-        val page = JSONObject(webBrowser.snapshot()).optString("url")
-        val media = webBrowser.mediaForExtraction(page) ?: return JSONObject().put("available", false)
+        val snapshot = JSONObject(webBrowser.snapshot())
+        val page = snapshot.optString("url")
+        val players = snapshot.optJSONArray("videos") ?: JSONArray()
+        val weibo = (0 until players.length()).map { players.getJSONObject(it) }.filter { it.optBoolean("weibo_ready") }
+        val chosen = weibo.singleOrNull { it.optBoolean("weibo_selected") } ?: weibo.singleOrNull()
+        val media = (if (chosen != null) webBrowser.mediaForSelectedExtraction(page,chosen.optString("selection")) else webBrowser.mediaForExtraction(page))
+            ?: return JSONObject().put("available", false)
         fun counts(key: String, allowed: List<String>): JSONObject {
             val input = media.optJSONObject(key) ?: return JSONObject()
             return JSONObject().also { result -> allowed.filter(input::has).forEach { result.put(it, input.optInt(it).coerceIn(-1, 4 * 1024 * 1024)) } }
         }
         val result = JSONObject().put("available", true)
+            .put("tencent_enabled",media.optBoolean("tencent_enabled"))
+            .put("tencent_ready",media.optBoolean("tencent_ready"))
+            .put("tencent_id",media.optJSONObject("tencent")?.optString("id").orEmpty())
+            .put("tencent_inline_chars",media.optJSONObject("tencent")?.optString("playlist")?.length ?: 0)
+            .put("tencent_shape",WebBrowserTencent.diagnosticShape(media.optJSONArray("tencent_shape")))
+            .put("tencent_capture",counts("tencent_capture",listOf("metadata","requests","api_resources","api_before_policy","api_script","api_xhr","api_fetch",
+                "response_seen","early_responses","json_ok","json_vinfo","json_vi","json_code_ok","json_id","json_size","json_duration","json_filename")))
+            .put("tencent_status",media.optString("tencent_status").takeIf { it in setOf("idle","observing","normalized","unsupported_data","invalid_data","http_rejected","stream_error","context_changed","timeout","oversize","redirected","cancelled") } ?: "unknown")
+            .put("weibo_ready", media.optBoolean("weibo_ready"))
+            .put("weibo_page", media.optJSONObject("weibo")?.optString("page").orEmpty())
             .put("douyin_page_id", WebBrowserDouyin.pageId(page).orEmpty())
             .put("douyin_enabled", media.optBoolean("douyin_enabled"))
             .put("douyin_metadata", media.optJSONObject("douyin") != null)
@@ -288,6 +314,8 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     }
     @UsedByGodot fun web_video_resolve(url: String): Int = if (closed.get()) 0 else webVideoResolver.begin(url)
     @UsedByGodot fun web_video_resolve_beta(url: String): Int = if (closed.get()) 0 else webVideoResolver.begin(url, bilibiliBeta = true)
+    @UsedByGodot fun web_video_resolve_selected(url: String, selection: String): Int =
+        if (closed.get() || selection.isEmpty() || selection.length > 512) 0 else webVideoResolver.begin(url, bilibiliBeta = true, selection = selection)
     @UsedByGodot fun web_video_status(): String = if (closed.get()) "{}" else webVideoResolver.snapshot()
     @UsedByGodot fun web_video_projection(uri: String): String = if (closed.get()) "{}" else sources.webVideoProjection(uri)
     @UsedByGodot fun web_video_cancel() = webVideoResolver.cancel()
@@ -1054,7 +1082,7 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
     }
 
     // Android can resume before Godot registers the plugin's native signals.
-    override fun onGodotSetupCompleted() { activity?.let(CrashRecords::start); signalsReady = true; clear_photo_cache(); runCatching { panoramaOriginals.prepare() } }
+    override fun onGodotSetupCompleted() { activity?.let { CrashRecords.start(it); WebBrowserDepthBridge.install(it) }; signalsReady = true; clear_photo_cache(); runCatching { panoramaOriginals.prepare() } }
     override fun onMainPause() { CrashRecords.foreground(false); if (!closed.get()) { sources.serverPlaybackPaused(); webBrowser.action("pause"); listeningTasks.foreground(false); readingPages.foreground(false); dlnaForeground(false); systemVolume.foreground(false); musicPlayback.foreground(false); musicPreview.foreground(false); accounts.pause(true); panoramaBrowser.foreground(false); media.pause(); controlled.pause(); mpv.pause(); if (signalsReady) emitSignal("android_lifecycle", "pause") } }
     override fun onMainResume() { CrashRecords.foreground(true); if (!closed.get()) { activity?.volumeControlStream = AudioManager.STREAM_MUSIC; listeningTasks.foreground(true); readingPages.foreground(true); dlnaForeground(true); systemVolume.foreground(true); musicPlayback.foreground(true); musicPreview.foreground(true); accounts.pause(false); panoramaBrowser.foreground(true); media.resume(); controlled.resume(); mpv.resume(); if (signalsReady) { sources.refreshLocalStorage(); emitSignal("android_lifecycle", "resume") } } }
     override fun onMainDestroy() { close() }
@@ -1064,6 +1092,7 @@ class QuestPlayerPlugin(godot: Godot) : GodotPlugin(godot) {
         CrashRecords.cleanExit()
         webVideoResolver.close()
         webBrowser.close()
-        if (closed.compareAndSet(false, true)) { dlna_receiver_enable(false); listeningTasks.close(); readingPages.close(); archives.close(); pdfs.close(); originalCapture.close(); embeddedCover.close(); systemVolume.close(); favoritesTasks.close(); accounts.close(); panoramaBrowser.close(); panoramaRegions.close(); panoramaPictures.close(); panoramaOriginals.close(); musicPlayback.close(); musicPreview.close(); backgroundAudio.close(); photos.close(); photoPreloads.close(); photoPreviews.close(); pipImages.close(); backgroundImages.close(); PhotoDepthRuntime.release(); picker.close(); localAccess.close(); probe.shutdownNow(); media.shutdown(); controlled.shutdown(); mpv.shutdown(); rvm.close(); sources.close() }
+        WebBrowserDepthBridge.closeAll()
+        if (closed.compareAndSet(false, true)) { dlna_receiver_enable(false); airplayReceiver.close(); listeningTasks.close(); readingPages.close(); archives.close(); pdfs.close(); originalCapture.close(); embeddedCover.close(); systemVolume.close(); favoritesTasks.close(); accounts.close(); panoramaBrowser.close(); panoramaRegions.close(); panoramaPictures.close(); panoramaOriginals.close(); musicPlayback.close(); musicPreview.close(); backgroundAudio.close(); photos.close(); photoPreloads.close(); photoPreviews.close(); pipImages.close(); backgroundImages.close(); PhotoDepthRuntime.release(); picker.close(); localAccess.close(); probe.shutdownNow(); media.shutdown(); controlled.shutdown(); mpv.shutdown(); rvm.close(); sources.close() }
     }
 }

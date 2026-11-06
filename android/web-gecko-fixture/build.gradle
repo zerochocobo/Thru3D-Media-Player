@@ -1,0 +1,111 @@
+plugins {
+    id 'com.android.application'
+    id 'org.jetbrains.kotlin.android'
+}
+layout.buildDirectory = rootProject.layout.projectDirectory.dir('../build/web-gecko-fixture')
+def workspace = rootProject.projectDir.parentFile
+def pinFile = new File(workspace, 'tools/web-video-desktop/gecko-android-x86.json')
+def pin = new groovy.json.JsonSlurper().parse(pinFile)
+def mangoTrace = providers.gradleProperty('fixtureMangoTrace').orNull == 'true'
+def sha256 = { File f ->
+    def digest = java.security.MessageDigest.getInstance('SHA-256')
+    f.withInputStream { stream ->
+        byte[] bytes = new byte[131072]; int count
+        while ((count = stream.read(bytes)) > 0) { digest.update(bytes, 0, count) }
+    }
+    digest.digest().encodeHex().toString()
+}
+def shared = ['WebBrowserViewport.kt', 'WebBrowserNetworkMedia.kt', 'WebBrowserMango.kt']
+def stage = tasks.register('stageGeckoFixtureInputs') {
+    inputs.file(pinFile)
+    inputs.property('mangoTrace', mangoTrace)
+    inputs.dir('../web-browser/src/main/assets/web-browser')
+    shared.each { inputs.file("../web-browser/src/main/java/org/vrpassthroughplayer/plugin/$it") }
+    inputs.file('../web-browser/src/main/java/org/vrpassthroughplayer/plugin/WebBrowser.kt')
+    inputs.dir('src/main/java')
+    outputs.dir(layout.buildDirectory.dir('shared'))
+    doLast {
+        def target = layout.buildDirectory.dir('shared').get().asFile
+        copy { from '../web-browser/src/main/assets/web-browser'; into new File(target, 'assets/web-browser') }
+        if (mangoTrace) {
+            def response = new File(target,'assets/web-browser/mango-response.js')
+            def marker = 'state.mangoFiles=Thru3DMango.files(raw,p.id,state.mangoMeta);'
+            if (response.text.count(marker)!=2) throw new GradleException('Mango observation hook changed.')
+            response.text = response.text.replace(marker,marker+'''
+              state.__fixtureFiles=Object.fromEntries(['stream','stream_h265','stream_av01'].map(k=>[k,
+                (Array.isArray(raw.data?.[k])?raw.data[k]:[]).slice(0,16).map(v=>v?.fileHash)
+                .filter(v=>typeof v==='string'&&/^[a-f0-9]{32,64}$/i.test(v)).map(v=>v.toLowerCase())]));
+            ''').replace("'mangoGeneration','mangoFiles']","'mangoGeneration','mangoFiles','__fixtureFiles']")
+            def network = new File(target,'assets/web-browser/network.js')
+            def field = 'declared_files:state.mangoFiles?.length||0,'
+            if (network.text.count(field)!=1) throw new GradleException('Mango publication hook changed.')
+            def traceFunction = '''
+              const Thru3DFixtureMangoTrace=s=>{
+                const hls=[...s.items.values()].filter(c=>c.kind==='hls'),result={observed_hls:hls.length};
+                for(const family of ['stream','stream_h265','stream_av01']){
+                  const files=s.__fixtureFiles?.[family]||[];
+                  result[family+'_files']=files.length;
+                  result['matched_'+family]=hls.filter(c=>[c.original_url,c.url].some(u=>Thru3DMango.matchFile(files,u))).length;
+                }
+                return result;
+              };
+            '''
+            network.text = traceFunction + network.text.replace(field,field+'fixture_trace:Thru3DFixtureMangoTrace(state),')
+            def manifest = new File(target,'assets/web-browser/manifest.json')
+            def value = new groovy.json.JsonSlurper().parse(manifest)
+            long seconds = System.currentTimeMillis().intdiv(1000)
+            value.version += ".${seconds.intdiv(60)%65536}.${seconds%60}"
+            manifest.text = groovy.json.JsonOutput.toJson(value)
+        }
+        shared.each { name -> copy { from "../web-browser/src/main/java/org/vrpassthroughplayer/plugin/$name"; into new File(target, 'java') } }
+        def files = fileTree('../web-browser/src/main/assets/web-browser').files +
+            shared.collect { file("../web-browser/src/main/java/org/vrpassthroughplayer/plugin/$it") } +
+            [file('../web-browser/src/main/java/org/vrpassthroughplayer/plugin/WebBrowser.kt')] + fileTree('src/main/java').files
+        def hashes = files.sort { a,b -> a.path <=> b.path }.collectEntries { f -> [(workspace.canonicalFile.toPath().relativize(f.canonicalFile.toPath()).toString().replace('\\','/')):sha256(f)] }
+        def packaged = fileTree(new File(target,'assets/web-browser')).files.collectEntries { f -> [(f.name):sha256(f)] }
+        def report = [scope:'android_gecko_diagnostics_not_device_acceptance', mode:mangoTrace?'passive_mango_trace':'production_assets',
+                      engine:pin.version, artifact:pin.artifact, engine_sha256:pin.sha256, sources:hashes, packaged_assets:packaged]
+        new File(target,'assets/fixture-inputs.json').text = groovy.json.JsonOutput.toJson(report)
+    }
+}
+android {
+    namespace 'org.vrpassthroughplayer.geckofixture'
+    compileSdkVersion 'android-37.2'
+    buildToolsVersion '36.1.0'
+    defaultConfig {
+        applicationId 'org.vrpassthroughplayer.geckofixture'
+        minSdk 29; targetSdk 32
+        versionCode 1; versionName '0.1-local-qa'
+        ndk { abiFilters 'x86_64' }
+    }
+    signingConfigs {
+        debug {
+            def env = System.getenv()
+            if (!env.GODOT_ANDROID_KEYSTORE_DEBUG_PATH || !env.GODOT_ANDROID_KEYSTORE_DEBUG_PASSWORD || !env.GODOT_ANDROID_KEYSTORE_DEBUG_USER)
+                throw new GradleException('Verified Debug signing environment is required for the local fixture.')
+            storeFile file(env.GODOT_ANDROID_KEYSTORE_DEBUG_PATH)
+            storePassword env.GODOT_ANDROID_KEYSTORE_DEBUG_PASSWORD
+            keyAlias env.GODOT_ANDROID_KEYSTORE_DEBUG_USER
+            keyPassword env.GODOT_ANDROID_KEYSTORE_DEBUG_PASSWORD
+        }
+    }
+    sourceSets.main.java.srcDir layout.buildDirectory.dir('shared/java').get().asFile
+    sourceSets.main.assets.srcDir layout.buildDirectory.dir('shared/assets').get().asFile
+    compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
+    kotlinOptions { jvmTarget = '17' }
+}
+configurations { fixtureEngine { canBeConsumed = false; transitive = false } }
+dependencies {
+    implementation "${pin.artifact}:${pin.version}"
+    fixtureEngine "${pin.artifact}:${pin.version}"
+}
+def verify = tasks.register('verifyGeckoFixtureEngine') {
+    inputs.file(pinFile); inputs.files(configurations.fixtureEngine)
+    doLast {
+        def expected = new groovy.json.JsonSlurper().parse(new File(workspace,'third_party/geckoview/runtime.json'))
+        if (pin.version != expected.version) throw new GradleException('Local Gecko must match the player engine version/build ID.')
+        def engine = configurations.fixtureEngine.singleFile
+        if (engine.length() != pin.bytes || sha256(engine) != pin.sha256) throw new GradleException('Local Gecko differs from the reviewed official x86-64 artifact.')
+    }
+}
+tasks.named('preBuild').configure { dependsOn stage,verify }

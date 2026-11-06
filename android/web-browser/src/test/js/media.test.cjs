@@ -9,11 +9,14 @@ function fixture(count = 1, blob = true, options = {}) {
   const port = () => ({ messages: [], onMessage: event(), onDisconnect: event(), postMessage(m) { this.messages.push(JSON.parse(JSON.stringify(m))); }, disconnect() { this.onDisconnect.fire(); } });
   const native = port(), network = port(); const timers = []; const events = {}, observers = [], resourceObservers = [];
   const videos = Array.from({ length: count }, (_, i) => ({ currentSrc: blob ? `blob:video-${i}` : 'https://cdn.test/movie.mp4', isConnected: true,
+    parentElement: {},
     videoWidth: 3840, videoHeight: 2160, paused: false, ended: false, readyState: 4, currentTime: 3, duration: 100,
     events: {}, closest() { return null; }, addEventListener(name, f) { (this.events[name] ||= []).push(f); },
     emit(name) { (this.events[name] || []).forEach(f => f()); }, pause() { this.paused = true; },
     play() { this.playCalls = (this.playCalls || 0) + 1; if (!options.deferPlay) { this.paused = false; this.emit('play'); } return Promise.resolve(); } }));
   const document = { nodeType: 9, querySelector: () => options.canonical ? {href: options.canonical} : null, querySelectorAll(s) { return s === 'video' ? videos : s === 'script:not([src])' ? options.scripts || [] : []; }, fullscreenElement: options.fullscreen === false ? null : videos[0] };
+  if(options.siteState)document.defaultView={wrappedJSObject:options.siteState};
+  if(options.tencent){document.body={append(node){node.parentElement=this;}};document.createElement=()=>({style:{},dataset:{},remove(){this.parentElement=null;}});}
   const location = { href: options.page || 'https://page.test/watch' }, clock = {now:Date.now()};
   const context = vm.createContext({ document, location, navigator: { userAgent: 'Fixture' }, URL, Date:class extends Date {static now(){return clock.now;}},
     browser: { runtime: { connectNative: () => native, connect: () => network } }, MutationObserver: class { constructor(callback) { observers.push(callback); } observe() {} disconnect() {} },
@@ -21,6 +24,19 @@ function fixture(count = 1, blob = true, options = {}) {
     setTimeout(f) { timers.push(f); }, addEventListener(name, f) { (events[name] ||= []).push(f); } });
   vm.runInContext(fs.readFileSync(path.join(__dirname, '../../main/assets/web-browser/bilibili.js'), 'utf8'), context);
   vm.runInContext(fs.readFileSync(path.join(__dirname, '../../main/assets/web-browser/plex.js'), 'utf8'), context);
+  if(options.tencent)vm.runInContext(fs.readFileSync(path.join(__dirname,'../../main/assets/web-browser/tencent.js'),'utf8')+';globalThis.tencent=Thru3DTencent;',context);
+  let selectWeibo;
+  const playButtons=[];
+  if(options.playButtons)context.Thru3DPlayButton={visible:()=>true,create:(_,box,site,click)=>{
+    const control={box,site,click,host:{dataset:{}}};
+    control.enabled=value=>{control.ready=value;};control.dispose=()=>{control.disposed=true;};
+    playButtons.push(control);return control;
+  }};
+  if (options.weibo) context.Thru3DWeibo = {
+    documentPage:()=>true,visible:v=>!!v.visible,
+    controls:(_,choose)=>{selectWeibo=choose;return {sync(){}};},
+    binding:(v,requests)=>requests.some(r=>r.kind==='file'&&r.url===v.currentSrc) ? {page:v.publicPage||'https://weibo.com/123456/ABCDE',id:'ABCDE',source:v.currentSrc} : null
+  };
   vm.runInContext(script, context);
   const flush = () => { for (let n = 0; timers.length && n < 10; n++) timers.splice(0).forEach(f => f()); };
   const report = () => native.messages.filter(m => m.type === 'media').at(-1)?.videos;
@@ -30,10 +46,99 @@ function fixture(count = 1, blob = true, options = {}) {
     const v = {...videos[0], events:{}, nodeType:1, matches:s=>s==='video', querySelectorAll:()=>[], ...values};
     videos.push(v); observers.forEach(f=>f([{addedNodes:[v],removedNodes:[]}])); flush(); return v;
   };
-  flush(); return { videos, native, network, capture, flush, report, location, addVideo, clock,
+  flush(); return { videos, native, network, capture, flush, report, location, addVideo, clock, selectWeibo, playButtons,tencent:context.tencent,
     resources(entries) { resourceObservers.forEach(f=>f({getEntries:()=>entries})); },
     emit(name,value={}) { (events[name] || []).forEach(f=>f(value)); } };
 }
+
+test('retained suspension preserves the exact pause lease and failure restores original playing videos', async()=>{
+  const f=fixture(2);f.videos[1].pause();
+  f.native.onMessage.fire({action:'pause_media',token:91,playing_ids:['1']});
+  f.native.onMessage.fire({action:'suspend',keep_pause:true,pause_token:91});
+  assert.equal(f.native.messages.at(-1).pause_token,91);
+  assert.equal(f.native.messages.at(-1).suspended,true,'The native start barrier can observe actual content suspension');
+  assert(f.videos.every(v=>v.paused));
+  f.native.onMessage.fire({action:'release_pause_media',token:90,play:true});
+  assert.equal(f.native.messages.at(-1).pause_token,91,'An old return cannot release this lease');
+  f.native.onMessage.fire({action:'resume'});
+  assert.equal(f.native.messages.at(-1).suspended,false);
+  f.native.onMessage.fire({action:'release_pause_media',token:91,play:true});
+  await Promise.resolve();
+  assert.equal(f.videos[0].playCalls,1);
+  assert.equal(f.videos[1].playCalls,undefined,'An originally paused neighbour stays paused');
+  assert.equal(f.native.messages.at(-1).pause_token,0);
+});
+
+test('ordinary or stale-token suspension never retains a pause lease',()=>{
+  for(const message of [{action:'suspend'},{action:'suspend',keep_pause:true,pause_token:90}]){
+    const f=fixture();f.native.onMessage.fire({action:'pause_media',token:91,playing_ids:['1']});
+    f.native.onMessage.fire(message);
+    assert.equal(f.native.messages.at(-1).pause_token,0);
+  }
+});
+
+test('Tencent player button selects its exact main stream, survives pause and retires on replacement',()=>{
+  const page='https://v.qq.com/x/page/q326831cny0.html',source='https://new-related.test/opaque.mp4?token=synthetic';
+  const f=fixture(2,false,{page,tencent:true,playButtons:true,fullscreen:false}),v=f.videos[0],box={getBoundingClientRect:()=>({left:0,top:0,width:600,height:400})};
+  Object.assign(v,{currentSrc:source,videoWidth:1280,videoHeight:720,duration:216,closest:s=>['#main-player .txp_videos_container','#main-player'].includes(s)?box:null});
+  assert.equal(f.network.messages[0].tencent,true,'The initial context observes metadata before asynchronous Android policy');
+  v.emit('loadstart');
+  const data=f.tencent.normalize({code:0,preview:216,vl:{vi:[{vid:'q326831cny0',enc:'0',drm:0,isprevid:0,vw:1280,vh:720,td:216,fn:'opaque.mp4',ul:{ui:[]}}]}});
+  f.network.onMessage.fire({type:'network',page,tencent:[data],candidates:[{url:source,kind:'file',at:f.clock.now}]});f.flush();
+  f.native.onMessage.fire({action:'network_policy',tencent:true});f.flush();
+  const main=f.report().find(i=>i.tencent_ready);assert(main);assert.equal(f.report().filter(i=>i.tencent_ready).length,1);
+  const button=f.playButtons.find(b=>b.site==='tencent');assert(button.ready);button.click();f.flush();
+  assert.equal(f.report().find(i=>i.id===main.id).tencent_request,1);
+  let reserved=false;
+  f.emit('click',{isTrusted:true,composedPath:()=>[button.host],preventDefault(){},stopImmediatePropagation(){reserved=true;}});f.flush();
+  assert(reserved);assert.equal(f.report().find(i=>i.id===main.id).tencent_request,2);
+  f.native.onMessage.fire({action:'pause_media',token:7});f.flush();
+  assert.equal(f.report().find(i=>i.id===main.id).tencent_request,2);
+  f.native.onMessage.fire({action:'release_pause_media',token:7,play:false});f.flush();
+  v.currentSrc=source.replace('opaque.mp4','replacement.mp4');v.emit('loadstart');f.flush();
+  assert(button.disposed);assert(f.report().every(i=>!i.tencent_request));
+  f.native.onDisconnect.fire();assert(f.playButtons.every(b=>b.disposed));
+});
+
+test('Tencent site-processed metadata needs its observed envelope and a fresh source binding; flow changes retire the click',()=>{
+  const page='https://v.qq.com/x/page/q326831cny0.html',id='q326831cny0',source='https://related.test/opaque.mp4';
+  const raw={code:0,preview:216,vl:{vi:[{vid:id,enc:'0',drm:0,isprevid:0,vw:1280,vh:720,td:216,fn:'opaque.mp4',ul:{ui:[]}}]}};
+  const first='synthetic-flow-00000000001',second='synthetic-flow-00000000002';
+  const site={__VINFO_DATA__:{flowid:first,playInfo:{vid:id},proxyhttp:{vinfo:JSON.stringify(raw)}}};
+  const f=fixture(1,false,{page,tencent:true,playButtons:true,fullscreen:false,siteState:site}),v=f.videos[0],box={getBoundingClientRect:()=>({left:0,top:0,width:600,height:400})};
+  Object.assign(v,{currentSrc:source,videoWidth:1280,videoHeight:720,duration:216,closest:s=>['#main-player .txp_videos_container','#main-player'].includes(s)?box:null});v.emit('loadstart');
+  const legacy=f.tencent.normalize(raw);
+  const publish=(hints,http=[legacy])=>{f.network.onMessage.fire({type:'network',page,tencent:http,tencent_envelopes:hints,candidates:[{url:source,kind:'file',at:f.clock.now}]});f.flush();};
+  publish([],[]);assert(f.report().every(i=>!i.tencent_ready),'Page state alone cannot supply a Beta target');
+  publish([{id,flowid:first}]);const ready=f.report().find(i=>i.tencent_ready);assert(ready);
+  const old=f.playButtons.at(-1);old.click();f.flush();assert.equal(f.report()[0].tencent_request,1);
+  site.__VINFO_DATA__.flowid=second;publish([{id,flowid:first},{id,flowid:second}]);
+  assert(old.disposed);assert(f.report()[0].tencent_ready);assert.equal(f.report()[0].tencent_request,0);
+  assert.notEqual(ready.tencent.revision,f.report()[0].tencent.revision);
+  raw.vl.vi[0].drm=1;site.__VINFO_DATA__.proxyhttp.vinfo=JSON.stringify(raw);publish([{id,flowid:second}]);
+  assert(f.report().every(i=>!i.tencent_ready),'A protected current page result cannot fall back to the old clear HTTP record');
+  site.__VINFO_DATA__.proxyhttp.vinfo='opaque';publish([{id,flowid:second}]);
+  assert(f.report().every(i=>!i.tencent_ready),'An unsupported current page result also retires the old clear HTTP record');
+});
+
+test('Weibo selected late card is published before the 16-player limit and stays bound through pause and eviction',()=>{
+  const page='https://weibo.com/newlogin',f=fixture(20,false,{page,weibo:true,fullscreen:false});
+  f.videos.forEach((v,i)=>{v.currentSrc='https://cdn.test/'+i+'.mp4';v.publicPage='https://weibo.com/123456/POST'+i;});
+  const target=f.videos[19];target.visible=true;
+  f.selectWeibo(target,{page:target.publicPage},true);
+  f.network.onMessage.fire({type:'network',page,candidates:[{url:target.currentSrc,kind:'file',at:f.clock.now,headers:{authorization:'chosen-only'}}]});f.flush();
+  const chosen=f.report()[0];
+  assert.equal(f.report().length,16);assert.equal(chosen.weibo_selected,true);assert.equal(chosen.weibo_request,1);
+  assert.equal(chosen.weibo.page,target.publicPage);assert.equal(chosen.network[0].headers.authorization,'chosen-only');
+  f.native.onMessage.fire({action:'pause_media',token:8});f.flush();
+  assert.equal(f.report()[0].id,chosen.id);assert.equal(f.report()[0].weibo_selected,true);assert.equal(f.report()[0].playing,false);
+  f.network.onMessage.fire({type:'network',page,candidates:[]});f.flush();
+  assert.equal(f.report()[0].weibo_ready,true,'Bound exact request survives unrelated feed prefetch eviction');
+  target.publicPage='https://weibo.com/123456/RECYCLED';target.emit('timeupdate');f.flush();
+  assert.equal(f.report()[0].weibo_selected,false);assert.equal(f.report()[0].weibo_request,0,'A recycled card cannot repeat the old click');
+  target.currentSrc='https://cdn.test/changed.mp4';target.emit('loadstart');f.flush();
+  assert.equal(f.report()[0].weibo_ready,false,'A new source cannot borrow the previous request');
+});
 test('Plex header-authenticated DASH binds the single Blob player and restores its timeline',()=>{
   const page='http://127.0.0.1:32400/web/index.html#!/server/local/details?key=%2Flibrary%2Fmetadata%2F4';
   const f=fixture(1,true,{page,fullscreen:false});const v=f.videos[0];
@@ -239,6 +344,24 @@ test('paused video readiness updates on track arrival and resize without a playb
   v.videoWidth = 3840; v.videoHeight = 2160; v.emit('resize'); f.flush();
   assert.equal(f.report()[0].bilibili_ready, true);
   assert.equal(v.playCalls || 0, 0);
+});
+
+test('Bilibili webpage button selects the verified owner and retires its click after source replacement',()=>{
+  const page='https://www.bilibili.com/video/BV1234567890/';
+  const state={cid:123,videoData:{bvid:'BV1234567890',aid:1,pages:[{page:1,cid:123,duration:100}]}};
+  const f=fixture(2,true,{page,playButtons:true,scripts:[{textContent:'window.__INITIAL_STATE__='+JSON.stringify(state)+';'}]});
+  f.videos[1].duration=10;
+  f.native.onMessage.fire({action:'network_policy',bilibili:true});f.flush();
+  const data={id:'BV1234567890',page,part:1,cid:'123',duration:100,
+    video:[{width:3840,height:2160,urls:['https://cdn.test/video.m4s']}],audio:[{urls:['https://cdn.test/audio.m4s']}]};
+  f.network.onMessage.fire({type:'network',page,bilibili:[data],candidates:['video','audio'].map(x=>({url:'https://cdn.test/'+x+'.m4s',kind:'file',at:Date.now()}))});f.flush();
+  const control=f.playButtons.at(-1);assert.equal(control.site,'bilibili');assert.equal(control.ready,true);
+  assert.equal(f.playButtons.length,1,'No action is attached to the preview player');
+  control.click();f.flush();assert.equal(f.report()[0].bilibili_request,1);assert.equal(f.report()[1].bilibili_request,0);
+  f.native.onMessage.fire({action:'pause_media',token:1});f.flush();assert.equal(f.report()[0].bilibili_request,1);
+  f.videos[0].currentSrc='blob:replacement';f.videos[0].emit('loadstart');f.flush();
+  assert.equal(f.report()[0].bilibili_request,0);
+  f.native.onDisconnect.fire();assert.equal(f.playButtons.at(-1).disposed,true);
 });
 
 test('Bilibili verified tracks survive rolling capture eviction but not a new source or protection', () => {

@@ -29,6 +29,16 @@ const FEATURED := [
 # iQIYI remains unverified; Douyin uses the separate Play Beta button.
 const NATIVE_PLAYBACK := ["Bilibili", "YouTube", "Weibo", "Tencent Video", "Mango TV", "Youku",
 	"Twitch", "TikTok", "Instagram Reels", "TED", "Niconico"]
+const BETA_PLAYBACK := ["Bilibili", "Weibo", "Tencent Video", "Mango TV"]
+const BETA_ICON := "play" # Same triangle as the page's Play Beta action.
+static var _beta_site := RegEx.create_from_string("(?i)^https://(?:(?:www\\.)?bilibili\\.com|(?:www\\.)?weibo\\.com|v\\.qq\\.com|(?:www\\.|w\\.)?mgtv\\.com)(?::443)?(?:[/?#]|$)")
+
+static func supports_beta(site: Dictionary) -> bool:
+	return str(site.get("name", "")) in BETA_PLAYBACK
+
+## Presentation only: the native current-video checks still decide whether Beta is enabled.
+static func supports_beta_url(url: String) -> bool:
+	return _beta_site.search(url) != null
 
 static func supports_native(site: Dictionary) -> bool:
 	return str(site.get("name", "")) in NATIVE_PLAYBACK

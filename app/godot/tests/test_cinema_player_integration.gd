@@ -92,6 +92,7 @@ func _run() -> void:
 	check((main.video.global_transform * main.video.flat_pose).is_equal_approx(world_screen), "Room-scale head movement and screen placement keep cinema screen fixed")
 	main.xr_camera.transform = original_camera_local
 	_picture_size_routes(world_screen, preferences)
+	_picture_gesture_routes(world_screen, preferences)
 	_playback_routes("cinema-watch", false)
 	_footer_shortcut_routes()
 	await _seat_routes()
@@ -470,6 +471,81 @@ func _picture_size_routes(full_screen: Transform3D, preferences: Dictionary) -> 
 	main._on_playback_adjustment("cinema_picture_size", 100.0)
 	check((main.video.global_transform * main.video.flat_pose).is_equal_approx(full_screen) and is_equal_approx(main.video.screen_scale, full_scale),
 		"Full size restores the original fixed cinema picture")
+
+func _picture_gesture_routes(full_screen: Transform3D, preferences: Dictionary) -> void:
+	var head: Transform3D = main._head_pose()
+	for level in [0.0, 0.35, 0.7, 1.0]:
+		main._set_cinema_curve(level)
+		for corner in 4:
+			_close_menus()
+			main.rays.clear()
+			var hand := "left_hand" if corner % 2 == 1 else "right_hand"
+			main._on_playback_adjustment("cinema_picture_size", 60.0)
+			var smaller_corner: Vector3 = main.video.panel.to_global(main.video.screen_corner(corner))
+			main._on_playback_adjustment("cinema_picture_size", 100.0)
+			main._show_player_menu()
+			# Keep these geometry rays clear of real UI targets, which must retain priority.
+			main.player_menu.global_position += head.basis.x * 3.0
+			var point: Vector3 = main.video.panel.to_global(main.video.screen_corner(corner))
+			var full_corner := point
+			main.rays[hand] = [head.origin, (point - head.origin).normalized()]
+			main._update_corner_hover()
+			check(main.video.hovered_corner == corner, "Cinema corner bracket follows the ray: %s/%s" % [level, corner])
+			check(is_equal_approx(absf(main.video._handles[corner].global_basis.get_scale().x) * main.video.SCREEN_DISTANCE, point.distance_to(head.origin)),
+				"Cinema bracket stays readable from the actual seat distance")
+			main._on_controller_button("trigger_click", hand)
+			check(main._grab.get("resize", {}).has("scene_picture") and main._grab.get("resize_only", false),
+				"Controller trigger captures cinema picture resize: %s/%s" % [level, corner])
+			if not main._grab.get("resize", {}).has("scene_picture"):
+				main._on_controller_release("trigger_click", hand); continue
+			# Aim at the actual 60% corner produced by the existing slider, including
+			# the curved mesh's depth and centre bias; do not derive rays from drag internals.
+			main.rays[hand] = [head.origin, (smaller_corner - head.origin).normalized()]
+			main._update_grab(); main._sync_cinema_screen()
+			check(is_equal_approx(main._cinema_picture_size(), 0.6), "Corner drag changes the cinema size preference: %s/%s" % [level, corner])
+			var pose: Transform3D = main.video.global_transform * main.video.flat_pose
+			check(is_equal_approx(pose.origin.x, full_screen.origin.x) and is_equal_approx(pose.origin.z, full_screen.origin.z),
+				"Corner drag keeps the picture on the cinema wall")
+			main._on_controller_release("trigger_click", hand)
+			var saved := ConfigFile.new()
+			check(main._grab.is_empty() and main.player_menu.visible and saved.load(main.settings_path) == OK
+				and is_equal_approx(float(saved.get_value("appearance", "cinema_picture_size", 0)), 0.6),
+				"Resize release saves the cinema preference and leaves the controls open")
+			check(_screen_preferences() == preferences, "Corner resize never overwrites ordinary screen defaults")
+			# Begin from a smaller picture and drag beyond each endpoint.
+			point = main.video.panel.to_global(main.video.screen_corner(corner))
+			main.rays[hand] = [head.origin, (point - head.origin).normalized()]
+			main._on_controller_button("trigger_click", hand)
+			var resize: Dictionary = main._grab.get("resize", {}).get("scene_picture", {})
+			check(not resize.is_empty(), "A resized cinema picture remains draggable: %s/%s" % [level, corner])
+			if not resize.is_empty():
+				var pivot: Vector3 = full_screen.origin - full_screen.basis.y * main.video._flat.size.y / main._cinema_picture_size() * main.CINEMA_PICTURE_DROP
+				for factor in [3.0, 0.1]:
+					point = pivot + (full_corner - pivot) * factor
+					main.rays[hand] = [head.origin, (point - head.origin).normalized()]
+					main._update_grab()
+					check(is_equal_approx(main._cinema_picture_size(), 1.0 if factor > 1 else main.CINEMA_PICTURE_MIN),
+						"Corner resize clamps to the settings limits")
+				main._cancel_pointer(hand)
+				check(main._grab.is_empty() and main.video.hovered_corner == -1, "Tracking cancellation releases the resize bracket")
+			main._on_controller_release("trigger_click", hand)
+	main._set_cinema_curve(0.0)
+	main._on_playback_adjustment("cinema_picture_size", 100.0)
+	_close_menus()
+	main.rays.right_hand = [head.origin, (full_screen.origin - head.origin).normalized()]
+	main.move_poses.right_hand = head
+	main._on_controller_button("grip_click", "right_hand")
+	check(main.interface_move.capture.is_empty() and main._playback_status_sample().get("caption", "") == "Screen fixed · switch background to move",
+		"Blocked controller movement explains the fixed screen in the upper-left HUD")
+	main._on_controller_release("grip_click", "right_hand")
+	main._show_player_menu()
+	main._zoom_video(0.1)
+	main.playback_status_overlay.refresh()
+	check(main.playback_status_overlay.visible and main.playback_status_overlay.text == "Drag screen corners to resize",
+		"Blocked stick zoom points to corner resizing even with the transport open")
+	main._cinema_gesture_hint_until = Time.get_ticks_msec() - 1
+	check(main._playback_status_sample().get("caption", "") != "Drag screen corners to resize", "Cinema gesture hints expire")
+	main.rays.clear(); main.move_poses.clear(); _close_menus()
 
 func _curve_routes(full_screen: Transform3D, preferences: Dictionary) -> void:
 	var ordinary_curve: float = main._cinema_screen_saved.screen_curve

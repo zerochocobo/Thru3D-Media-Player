@@ -4,6 +4,7 @@ Firefox/geckodriver are explicit paths; output contains numeric/enum diagnostics
 This is a desktop parser test, not Android playback or release acceptance.
 """
 import argparse
+import base64
 import hashlib
 import http.server
 import json
@@ -14,6 +15,7 @@ import shutil
 import socket
 import subprocess
 import threading
+import tempfile
 import time
 import urllib.request
 import urllib.parse
@@ -24,7 +26,7 @@ SOURCE = ROOT / 'android/web-browser/src/main/assets/web-browser'
 def extension(target, endpoint):
     target.mkdir(parents=True, exist_ok=True)
     hashes = {}
-    for name in ['bilibili.js', 'bilibili-response.js', 'network.js', 'media.js']:
+    for name in ['bilibili.js', 'bilibili-response.js', 'play-button.js', 'network.js', 'media.js']:
         data = (SOURCE / name).read_bytes()
         hashes[name] = hashlib.sha256(data).hexdigest()
         if name == 'media.js':
@@ -40,7 +42,7 @@ def extension(target, endpoint):
                 'permissions': ['webRequest', 'webRequestBlocking', 'cookies', 'https://*/*', 'http://127.0.0.1/*'],
                 'background': {'scripts': ['bridge.js', 'bilibili.js', 'bilibili-response.js', 'network.js', 'shape.js']},
                 'content_scripts': [{'matches': ['https://www.bilibili.com/video/*', 'https://www.bilibili.com/bangumi/play/*'],
-                                     'js': ['bilibili.js', 'media.js'], 'run_at': 'document_start'}]}
+                                     'js': ['bilibili.js', 'play-button.js', 'media.js'], 'run_at': 'document_start'}]}
     (target / 'manifest.json').write_text(json.dumps(manifest), encoding='utf8')
     return hashes
 
@@ -52,6 +54,7 @@ def main():
     parser.add_argument('--seconds', type=int, default=12)
     parser.add_argument('--inspect-pgc', action='store_true', help='Collect public DOM/endpoint shapes; this is not a playback pass')
     parser.add_argument('--single', action='store_true', help='Test first load and reload without selecting a second part')
+    parser.add_argument('--buttons', action='store_true', help='Click the large in-player Beta button at every checkpoint')
     parser.add_argument('--recommendations', type=int, choices=[0, 1, 2], default=0, help='Click visible sidebar recommendations without reloading')
     args = parser.parse_args()
     parsed = urllib.parse.urlparse(args.url)
@@ -76,7 +79,10 @@ def main():
     hashes = extension(run / 'extension', f'http://127.0.0.1:{server.server_port}/{token}')
     with socket.socket() as probe:
         probe.bind(('127.0.0.1', 0)); port = probe.getsockname()[1]
-    driver = subprocess.Popen([str(args.geckodriver.resolve()), '--host', '127.0.0.1', '--port', str(port), '--log', 'fatal'],
+    profile_root = ROOT / 'tmp/bilibili-desktop'
+    profile_root.mkdir(parents=True, exist_ok=True)
+    profiles = tempfile.mkdtemp(prefix='profiles-',dir=profile_root)
+    driver = subprocess.Popen([str(args.geckodriver.resolve()), '--allow-system-access', '--profile-root', profiles, '--host', '127.0.0.1', '--port', str(port), '--log', 'fatal'],
                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                               creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, 'CREATE_NO_WINDOW') else 0)
     session = None
@@ -87,7 +93,7 @@ def main():
         with urllib.request.urlopen(req, timeout=70) as response: return json.load(response)['value']
     def command(path, data=None): return call('POST', '/session/' + session + path, data)
     def script(source): return command('/execute/sync', {'script': source, 'args': []})
-    evidence = {'source_sha256': hashes, 'scope': 'anonymous desktop Firefox; no Android acceptance', 'stages': []}
+    evidence = {'source_sha256': hashes, 'scope': 'anonymous desktop Firefox; no Android acceptance', 'stages': [], 'button_stages': []}
     def checkpoint(name, part, expected_path=None):
         started = time.monotonic()
         while time.monotonic() - started < max(20, args.seconds):
@@ -96,6 +102,24 @@ def main():
             time.sleep(.25)
         evidence['stages'].append({'name': name, 'wait_seconds': round(time.monotonic() - started, 2),
                                    'latest': reports[-1] if reports else None})
+        if args.buttons:
+            current = reports[-1] if reports else {}
+            target = script("""const h=document.querySelector('[data-thru3d-bilibili=beta]');if(!h||h.hidden)return null;
+                const r=h.getBoundingClientRect();return {x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2),width:r.width,height:r.height};""")
+            if not target: raise RuntimeError('Bound Bilibili player button missing')
+            (run / ('button-'+name+'.png')).write_bytes(base64.b64decode(call('GET','/session/'+session+'/screenshot')))
+            command('/actions', {'actions':[{'type':'pointer','id':'beta','parameters':{'pointerType':'mouse'},'actions':[
+                {'type':'pointerMove','duration':100,'x':target['x'],'y':target['y']},{'type':'pointerDown','button':0},{'type':'pointerUp','button':0}]}]})
+            deadline = time.monotonic() + 8
+            clicked = None
+            while time.monotonic() < deadline:
+                clicked = next((r for r in reversed(reports) if r.get('document_sequence') == current.get('document_sequence') and
+                    r.get('cid') == current.get('cid') and r.get('part') == part and r.get('beta_click',0) > current.get('beta_click',0)),None)
+                if clicked: break
+                time.sleep(.2)
+            evidence['button_stages'].append({'name':name,'target':target,'cid':clicked.get('cid') if clicked else None,
+                'passed':bool(clicked) and target['height'] >= 68 and target['width'] >= 180})
+            if not evidence['button_stages'][-1]['passed']:raise RuntimeError('In-player Beta click was not bound to the current part')
     try:
         for _ in range(100):
             try: call('GET', '/status'); break
@@ -147,6 +171,7 @@ def main():
             for stage in evidence['stages'])
         if args.recommendations:
             evidence['passed'] = evidence['passed'] and len({stage['latest'].get('document_sequence') for stage in evidence['stages'] if stage['latest']}) == 1
+        if args.buttons: evidence['passed'] = evidence['passed'] and all(s['passed'] for s in evidence['button_stages'])
         (run / 'summary.json').write_text(json.dumps(evidence, ensure_ascii=False, indent=2), encoding='utf8')
         print(json.dumps({'browser_version': evidence['browser_version'], 'passed': evidence['passed'],
                           'stages': [{k: stage['latest'].get(k) for k in ['part', 'binding', 'response_status', 'captured_video', 'captured_audio']}

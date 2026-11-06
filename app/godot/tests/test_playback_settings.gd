@@ -114,7 +114,7 @@ func _run() -> void:
 	drag(menu, 451, 1)
 	check(is_equal_approx(video.screen_scale, Video.SCALE_LIMITS.y) and is_equal_approx(video._flat.size.x / video._flat.size.y, 16.0 / 9), "Maximum screen size preserves aspect")
 	check(menu._adjust_rows[451].label.text == "%d%%" % roundi(highest) and is_equal_approx(menu._adjust_rows[451].knob.position.x, Menu.SLIDER_LEFT + Menu.SLIDER_WIDTH), "Maximum drag displays the highest size at the end")
-	drag(menu, 452, 1)
+	drag(menu, 452, 0.75)
 	check(video.screen_rotation == 90 and absf(video.panel.global_basis.x.y) > 0.99, "Rotation slider reaches clockwise 90 degrees")
 	check(reset_shown(menu, Menu.ROTATION_RESET) and is_equal_approx(button(menu, Menu.ROTATION_RESET).rect.get_center().y, button(menu, 452).rect.get_center().y), "Rotation reset appears on its slider row")
 	check(not button(menu, Menu.ROTATION_RESET).rect.intersects(button(menu, 452).rect), "Rotation reset does not overlap slider hit area")

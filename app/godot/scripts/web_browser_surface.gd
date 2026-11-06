@@ -19,7 +19,7 @@ var target: WeakRef
 var platform: Object
 var layer: RefCounted
 var hole: MeshInstance3D
-var bridge: JavaClass
+var bridge: Object
 var xr: OpenXRInterface
 var window_id := 1
 var generation := 0
@@ -36,6 +36,16 @@ var surface_retries := 0
 var pixels := PIXELS
 var resize_at := 0
 var requested_pixels := PIXELS
+var preparation_api: Object
+
+func _release_for_transition() -> bool:
+	if not attached: return true
+	var complete := int(bridge.windowReleaseState(window_id,generation)) == 1
+	if OS.get_name()=="Android" and JavaClassWrapper.get_exception(): status="surface_release_failed";return false
+	if not complete:
+		bridge.requestWindowRelease(window_id,generation)
+		if OS.get_name()=="Android": JavaClassWrapper.get_exception()
+	return complete
 
 static func logical_for(size: Vector2) -> Vector2i:
 	var ratio := clampf(size.x / size.y, MIN_RATIO, MAX_RATIO)
@@ -85,9 +95,14 @@ func _ready() -> void:
 
 func _create_layer() -> void:
 	layer = Layer.new()
-	if not layer.create(window_id, pixels):
-		status = "surface_unavailable"; layer = null; return
 	var menu: Node = target.get_ref() if target else null
+	var convert: bool = menu != null and (menu.depth.enabled or menu.depth.matte) and not menu.selecting
+	var matte: bool = menu != null and menu.depth.matte and not menu.selecting
+	var crop: Rect2 = menu.focus_crop() if menu else Rect2(0, 0, 1, 1)
+	if not layer.create(window_id, pixels, convert, crop, 1024 if menu and menu.browser.low_end else 1536, matte):
+		if convert and menu:
+			menu.depth.enabled = false; menu.depth.matte = false; menu.depth.error = "3D unavailable"; menu.refresh(); menu.browser.effects_changed.emit()
+		status = "surface_unavailable"; layer = null; return
 	if menu: menu.set_meta("menu_browser_layer", true)
 
 func present(value: bool, bounds: Rect2) -> void:
@@ -95,13 +110,16 @@ func present(value: bool, bounds: Rect2) -> void:
 
 func _session_start() -> void:
 	if layer and layer.session != Layer.api.get_session():
-		layer.destroy(); layer = null
+		if not layer.destroy(): status = "surface_stop_timeout"; return
+		layer = null
 	attached = false; ending = false; retry_at = 0; state = {}; _state_raw = ""; surface_retries = 0
 
 func _session_stop() -> void:
 	if layer: layer.hide()
 	if not bridge or generation <= 0:
-		if layer: layer.destroy(); layer = null
+		if layer:
+			if not layer.destroy(): status = "surface_stop_timeout"; return
+			layer = null
 		ending = true
 		return
 	var stopped: bool = bridge.detachWindowBeforeSessionStop(window_id, generation)
@@ -109,7 +127,9 @@ func _session_stop() -> void:
 	if not stopped or failed: status = "surface_stop_timeout"
 	else:
 		attached = false
-		if layer: layer.destroy(); layer = null
+		if layer:
+			if not layer.destroy(): status = "surface_stop_timeout"; return
+			layer = null
 	ending = true
 	if hole: hole.visible = false
 
@@ -121,6 +141,25 @@ func _process(_delta: float) -> void:
 		_release_idle_surface()
 		return
 	if ending: return
+	var conversion: bool = (menu.depth.enabled or menu.depth.matte) and not menu.selecting
+	var matte: bool = menu.depth.matte and not menu.selecting
+	var preparation_pending := false
+	if conversion and (not layer or not layer.stereo or layer.alpha != matte):
+		if not preparation_api: preparation_api = JavaClassWrapper.wrap("org.vrpassthroughplayer.plugin.WebBrowserDepthBridge")
+		var prepared: Variant = JSON.parse_string(str(preparation_api.prepare(window_id,menu.depth.enabled,matte))) if preparation_api else null
+		if OS.get_name()=="Android": JavaClassWrapper.get_exception()
+		preparation_pending = not prepared is Dictionary or prepared.get("state") != "ready"
+		if prepared is Dictionary and prepared.get("state") == "failed":
+			menu.depth.enabled=false;menu.depth.matte=false;menu.depth.error="3D unavailable";menu.refresh();menu.browser.effects_changed.emit()
+		if preparation_pending: menu.depth.state="preparing"
+	elif not conversion and preparation_api:
+		preparation_api.clearPreparation(window_id)
+		if OS.get_name()=="Android": JavaClassWrapper.get_exception()
+	if layer and not preparation_pending and (layer.stereo != conversion or layer.alpha != matte or (conversion and layer.source_crop != menu.focus_crop())):
+		if attached:
+			if not _release_for_transition(): status="surface_switch_pending";return
+		if not layer.destroy(true): status = "surface_switch_pending"; return
+		layer = null; attached = false; state = {}; _state_raw = ""; retry_at = 0
 	# Recreate only after a completed drag, with Gecko's release acknowledgement.
 	# Keep the pixel budget bounded even for an extremely wide or tall window.
 	var desired := pixels_for(menu.page_size, menu.browser.low_end)
@@ -128,16 +167,25 @@ func _process(_delta: float) -> void:
 		requested_pixels = desired; resize_at = Time.get_ticks_msec() + 250
 	if pixels != requested_pixels and menu.drag.is_empty() and Time.get_ticks_msec() >= resize_at:
 		if attached:
-			var released: bool = bridge.releaseWindowForResize(window_id, generation)
-			if JavaClassWrapper.get_exception() or not released:
-				status = "surface_resize_timeout"; resize_at = Time.get_ticks_msec() + 2000; return
-		if layer: layer.destroy(); layer = null
+			if not _release_for_transition(): status="surface_resize_pending";return
+		if layer:
+			if not layer.destroy(true): status="surface_resize_pending";return
+			layer = null
 		attached = false; pixels = requested_pixels; state = {}; _state_raw = ""; retry_at = 0
 		if hole: hole.visible = false
 	if not layer:
+		if preparation_pending: return
 		if Time.get_ticks_msec() < retry_at: return
 		_create_layer(); retry_at = Time.get_ticks_msec() + 500
 		if not layer: return
+	if layer.stereo:
+		var current: Dictionary = menu.browser.window_state(window_id)
+		var issue: String = layer.configure_effect(menu.depth.strength, menu.depth.position,
+			str(current.get("tab_id", 0)) + ":" + str(current.get("navigation", 0)), menu.depth.render_mode == "fill", menu.depth.enabled)
+		if menu.depth.state != layer.effect_state:
+			menu.depth.state = layer.effect_state; menu.refresh()
+		if not issue.is_empty():
+			status = issue; menu.depth.enabled = false; menu.depth.matte = false; menu.depth.error = "3D unavailable"; menu.refresh(); menu.browser.effects_changed.emit(); layer.hide(); hole.visible = false; return
 	var layout: Dictionary = menu.page_layout()
 	global_transform = layout.pose
 	var distance: float = global_position.distance_to(menu.head().origin)
@@ -168,14 +216,15 @@ func _process(_delta: float) -> void:
 		var stopped: bool = bridge.detachWindowBeforeSessionStop(window_id, generation)
 		if JavaClassWrapper.get_exception() or not stopped: status = "surface_stop_timeout"; retry_at = Time.get_ticks_msec() + 2000; return
 		# Gecko has acknowledged release; only now destroy the OpenXR producer.
-		layer.destroy(); layer = null; attached = false; state = {}; _state_raw = ""; surface_retries += 1
+		if not layer.destroy(): status = "surface_stop_timeout"; return
+		layer = null; attached = false; state = {}; _state_raw = ""; surface_retries += 1
 		_create_layer(); retry_at = Time.get_ticks_msec() + 250
 		# The next attach binds the selected page. A global resume could recreate
 		# a blank tab if the user closed the last window during surface recovery.
 		return
 	if not attached and Time.get_ticks_msec() >= retry_at:
 		retry_at = Time.get_ticks_msec() + 500
-		var surface: JavaObject = layer.surface
+		var surface: JavaObject = layer.input_surface()
 		if surface:
 			generation += 1
 			attached = bool(bridge.attachWindow(window_id, surface, pixels.x, pixels.y, generation))
@@ -199,7 +248,8 @@ func _release_idle_surface() -> void:
 		if JavaClassWrapper.get_exception() or not stopped:
 			status = "surface_stop_timeout"; retry_at = Time.get_ticks_msec() + 2000; return
 	attached = false; state = {}; _state_raw = ""; surface_retries = 0
-	layer.destroy(); layer = null
+	if not layer.destroy(): status = "surface_stop_timeout"; return
+	layer = null
 	var menu: Node = target.get_ref() if target else null
 	if menu: menu.remove_meta("menu_browser_layer")
 

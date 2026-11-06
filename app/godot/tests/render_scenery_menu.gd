@@ -28,6 +28,13 @@ func _run() -> void:
 		menu.view=view; menu.refresh()
 		await create_timer(.15).timeout; await RenderingServer.frame_post_draw
 		save_frame(viewport,camera,menu,output.path_join(view+".png"))
+	menu.view="manage"; menu._activate(menu.HELP)
+	await create_timer(.15).timeout; await RenderingServer.frame_post_draw
+	save_frame(viewport,camera,menu,output.path_join("requirements.png"))
+	I18n.use("en"); menu.refresh()
+	await create_timer(.15).timeout; await RenderingServer.frame_post_draw
+	save_frame(viewport,camera,menu,output.path_join("requirements-en.png"))
+	I18n.use("zh"); menu.navigate_back()
 	menu.view="scene"
 	menu.session_controls_provider=func(): return {"cinema_visible":true,"cinema_lights":"auto","cinema_moving":false,"passthrough_visible":true}
 	menu.refresh()
@@ -59,6 +66,29 @@ func _run() -> void:
 	menu.finish_import(library.import_progress)
 	await create_timer(.15).timeout; await RenderingServer.frame_post_draw
 	save_frame(viewport,camera,menu,output.path_join("review.png"))
+	library.approve_reviews(library.reviews.keys())
+	var ordinary:=output.path_join("ordinary-error.png")
+	picture.resize(640,480); picture.save_png(ordinary)
+	library.import_files([{"uri":ordinary,"title":"普通图片.png"}])
+	while library.busy: await process_frame
+	menu.finish_import(library.import_progress)
+	await create_timer(.15).timeout; await RenderingServer.frame_post_draw
+	save_frame(viewport,camera,menu,output.path_join("import-error-ratio.png"))
+	var large:=output.path_join("large-error.png")
+	var bytes:=FileAccess.get_file_as_bytes(ordinary)
+	for pair in [[16,16384],[20,8192]]:
+		for i in range(4): bytes[pair[0]+i]=(pair[1]>>(24-8*i))&255
+	FileAccess.open(large,FileAccess.WRITE).store_buffer(bytes)
+	library.import_files([{"uri":large,"title":"超大全景.png"}])
+	while library.busy: await process_frame
+	menu.finish_import(library.import_progress)
+	await create_timer(.15).timeout; await RenderingServer.frame_post_draw
+	save_frame(viewport,camera,menu,output.path_join("import-error-size.png"))
+	library.import_files([{"uri":unmarked,"title":"暮色全景.png"},{"uri":output.path_join("missing.png"),"title":"无法读取的图片.png"}])
+	while library.busy: await process_frame
+	menu.finish_import(library.import_progress)
+	await create_timer(.15).timeout; await RenderingServer.frame_post_draw
+	save_frame(viewport,camera,menu,output.path_join("partial-import.png"))
 	menu.free()
 	var controls:=preload("res://scripts/photo_menu.gd").new()
 	controls.state_provider=func(): return {"has_image":true,"title":"暮色全景","geometry":3,"can_background":true,"count":1,"index":0,"source_size":"8192 × 4096"}
@@ -72,4 +102,12 @@ func _run() -> void:
 	a=camera.unproject_position(controls.to_global(Vector3(-.68,.32,0)))
 	b=camera.unproject_position(controls.to_global(Vector3(.68,-.78,0)))
 	viewport.get_texture().get_image().get_region(Rect2i(Vector2i(a.floor()),Vector2i((b-a).ceil()))).save_png(output.path_join("panorama-settings.png"))
+	controls.state_provider=func(): return {"has_image":true,"title":"暮色全景","geometry":0,"can_background":false,"background_issue":preload("res://scripts/panorama_background_rules.gd").PROJECTION,"count":1,"index":0,"source_size":"8192 × 4096"}
+	controls.refresh()
+	var button: Dictionary=controls._buttons.filter(func(item): return item.target==controls.PHOTO_BACKGROUND)[0]
+	controls.update_pointer("right_hand",button.node.global_position+button.node.global_basis.z*.4,-controls.global_basis.z,true)
+	await create_timer(.15).timeout; await RenderingServer.frame_post_draw
+	a=camera.unproject_position(controls.to_global(Vector3(-.68,.32,0)))
+	b=camera.unproject_position(controls.to_global(Vector3(.68,-.94,0)))
+	viewport.get_texture().get_image().get_region(Rect2i(Vector2i(a.floor()),Vector2i((b-a).ceil()))).save_png(output.path_join("image-background-guidance.png"))
 	viewport.free(); print("SCENERY_UI_RENDER_OK"); quit()

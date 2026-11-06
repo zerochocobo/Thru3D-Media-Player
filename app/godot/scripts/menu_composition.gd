@@ -448,14 +448,19 @@ func _collect() -> void:
 		for group in groups:
 			if group.region == item.region and group.tooltip == item.tooltip and group.popup == item.popup and group.normal.dot(item.normal) > NORMAL_DOT and item.offset - group.last <= PLANE_GAP:
 				group.nodes.append(item); group.last = item.offset
+				group.tight = group.tight and item.tight
+				group.priority = maxi(group.priority,item.priority)
 				group.shown += int(item.shown)
 				group.owners[item.owner]=true
 				joined = true; break
 		if not joined:
 			groups.append({"normal": item.normal, "basis": item.basis, "first": item.offset, "last": item.offset,
-				"nodes": [item], "region": item.region, "popup": item.popup, "tooltip": item.tooltip, "shown": int(item.shown),"owners":{item.owner:true}})
+				"nodes": [item], "region": item.region, "tight": item.tight, "priority": item.priority, "popup": item.popup, "tooltip": item.tooltip, "shown": int(item.shown),"owners":{item.owner:true}})
 	# Visible, larger groups claim slots first; any surplus geometry stays in the eye buffer.
-	groups.sort_custom(func(a, b): return a.shown > b.shown or (a.shown == b.shown and a.nodes.size() > b.nodes.size()))
+	groups.sort_custom(func(a, b):
+		var pa:int=a.priority if a.shown>0 else 0
+		var pb:int=b.priority if b.shown>0 else 0
+		return pa>pb if pa!=pb else a.shown>b.shown or (a.shown==b.shown and a.nodes.size()>b.nodes.size()))
 	# A small companion caption must not lose all HD slots to a large menu's
 	# extra planes. Reserve its main visible plane, then fill remaining slots.
 	var selected: Array[Dictionary]=[]
@@ -463,6 +468,10 @@ func _collect() -> void:
 	# several angled planes. Reserve one existing slot; never add XR layers.
 	for group in groups:
 		if group.tooltip and group.shown > 0: selected.append(group); break
+	# Transient controls under the user's ray keep HD capture before idle peer chrome.
+	for group in groups:
+		if selected.size()==MAX_GROUPS:break
+		if group.priority>0 and group.shown>0 and not selected.has(group):selected.append(group)
 	for owner in owners:
 		for group in groups:
 			if group.shown>0 and group.owners.has(owner):
@@ -543,6 +552,7 @@ func _assign(slot: Dictionary, group: Dictionary, root: Transform3D, bit: int) -
 		var node: Object = instance_from_id(id)
 		return is_instance_valid(node) and node.get_meta("menu_companion", false))
 	slot["tooltip"] = group.tooltip
+	slot["tight_bounds"] = group.tight
 	slot.camera.cull_mask = bit
 	if slot.layer.layer_viewport == null: slot.layer.layer_viewport = slot.submit
 	var plane := (float(group.first) + float(group.last)) * 0.5
@@ -666,9 +676,11 @@ func _capture_band(band: Dictionary, rect: Rect2) -> void:
 	band.submit.render_target_update_mode = SubViewport.UPDATE_ALWAYS
 	band.tail = 2
 
-func _gather(node: Node, items: Array[Dictionary], inverse: Transform3D, popup: bool, tooltip: bool = false, region: String = "") -> void:
+func _gather(node: Node, items: Array[Dictionary], inverse: Transform3D, popup: bool, tooltip: bool = false, region: String = "", tight: bool = false, priority: int = 0) -> void:
 	# Wide subtitle plates opt into per-column captures without adding XR providers.
 	region = str(node.get_meta("menu_capture_region", region))
+	tight = bool(node.get_meta("menu_capture_tight",tight))
+	priority = int(node.get_meta("menu_capture_priority",priority))
 	tooltip = tooltip or node.get_meta("menu_tooltip", false)
 	if node.has_meta("menu_pointer") or node.has_meta("menu_eye_buffer"): return
 	if node is CanvasItem or node is Viewport: return
@@ -682,8 +694,8 @@ func _gather(node: Node, items: Array[Dictionary], inverse: Transform3D, popup: 
 		var normal := basis.z
 		popup = popup or _priority(node) >= POPUP_PRIORITY
 		items.append({"node": node, "normal": normal, "basis": basis, "offset": normal.dot(local.origin), "popup": popup,
-			"region": region, "tooltip": tooltip, "shown": node.is_visible_in_tree()})
-	for child in node.get_children(): _gather(child, items, inverse, popup, tooltip, region)
+			"region": region, "tight": tight, "priority": priority, "tooltip": tooltip, "shown": node.is_visible_in_tree()})
+	for child in node.get_children(): _gather(child, items, inverse, popup, tooltip, region, tight, priority)
 
 static func _priority(node: VisualInstance3D) -> int:
 	if node is Label3D: return node.render_priority
@@ -711,9 +723,9 @@ func _measure(slot: Dictionary) -> void:
 	hi = ((hi + Vector2.ONE * MARGIN) / GRID).ceil() * GRID
 	var rect := Rect2(lo, hi - lo)
 	var previous: Rect2 = slot.rect
-	# A moving tooltip replaces its bounds. Unioning every hovered card position
-	# spreads fixed capture pixels across an ever larger, mostly empty rectangle.
-	slot.rect = rect if slot.get("tooltip", false) or not previous.has_area() else previous.merge(rect)
+	# Tooltips and independently moving attached controls replace their bounds.
+	# Unioning old positions would spread fixed pixels across empty space.
+	slot.rect = rect if slot.get("tooltip", false) or slot.get("tight_bounds",false) or not previous.has_area() else previous.merge(rect)
 	slot.raw.render_target_update_mode = SubViewport.UPDATE_ONCE
 	slot.submit.render_target_update_mode = SubViewport.UPDATE_ALWAYS
 	# New floating controls change render masks immediately after creating glyphs.

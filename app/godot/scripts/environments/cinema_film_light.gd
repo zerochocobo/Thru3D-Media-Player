@@ -12,11 +12,17 @@ const Binding := preload("res://scripts/pair_texture_binding.gd")
 const Thumbnails := preload("res://scripts/thumbnail_cache.gd")
 
 const ZONES := 3
-const SAMPLE_SIZE := Vector2i(32, 18)
-const LAYER_INTERVAL_MS := 100
+## Three zone averages need few pixels, and this runs on the main thread at each sample.
+const SAMPLE_SIZE := Vector2i(16, 9)
+const LAYER_INTERVAL_MS := 80
 const EYE_BUFFER_INTERVAL_MS := 250
-## Seconds for colours to settle: fast enough for cuts, slow enough not to flicker.
-const SMOOTHING := 0.3
+## Reflected light has no delay of its own: a lagging hall reads as someone working
+## a dimmer. Smoothing only hides sample steps, so it gives way as the gap grows.
+const TAU_STEADY := 0.12
+const TAU_CUT := 0.03
+## Gap in sqrt(linear), roughly as seen, where smoothing starts and stops giving way.
+const JUMP_STEADY := 0.02
+const JUMP_CUT := 0.10
 ## Linear grey that throws the full baked screen light. Twice a typical frame:
 ## real halls reflect far less than the bake, so a mid-grey frame lights at half.
 const REFERENCE := 0.36
@@ -57,13 +63,19 @@ func update(delta: float, video: Node, active: bool, picture_fraction: float) ->
 		_target = [IDLE_GLOW, IDLE_GLOW, IDLE_GLOW]; _last_pts = -1
 	elif not _busy and Time.get_ticks_msec() >= _next_ms:
 		_sample(video, clampf(picture_fraction, 0.0, 1.0))
-	var blend := 1.0 - exp(-maxf(delta, 0.0) / SMOOTHING)
 	var changed := false
 	for zone in ZONES:
-		var next := colors[zone].lerp(_target[zone], blend)
+		var next := settle(colors[zone], _target[zone], delta)
 		if not next.is_equal_approx(colors[zone]): changed = true
 		colors[zone] = next
 	return changed
+
+
+## One smoothing step: a cut lands within a frame or two, small changes stay soft.
+static func settle(current: Color, target: Color, delta: float) -> Color:
+	var jump := maxf(absf(sqrt(current.r) - sqrt(target.r)), maxf(absf(sqrt(current.g) - sqrt(target.g)), absf(sqrt(current.b) - sqrt(target.b))))
+	var tau := lerpf(TAU_STEADY, TAU_CUT, smoothstep(JUMP_STEADY, JUMP_CUT, jump))
+	return current.lerp(target, 1.0 - exp(-maxf(delta, 0.0) / tau))
 
 
 func snapshot() -> Dictionary:
@@ -109,7 +121,9 @@ static func zone_colors(image: Image, picture_fraction: float) -> Array[Color]:
 	for zone in ZONES:
 		var average: Color = sums[zone] / maxf(1.0, counts[zone])
 		var scale := picture_fraction / REFERENCE
-		result.append(Color(minf(average.r * scale, MAX_GAIN), minf(average.g * scale, MAX_GAIN), minf(average.b * scale, MAX_GAIN)))
+		# Limit by the strongest channel so a bright saturated frame keeps its hue.
+		var limit := minf(1.0, MAX_GAIN / maxf(maxf(average.r, maxf(average.g, average.b)) * scale, 0.001))
+		result.append(Color(average.r * scale * limit, average.g * scale * limit, average.b * scale * limit))
 	return result
 
 

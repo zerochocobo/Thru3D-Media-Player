@@ -17,6 +17,7 @@ internal class WebVideoNetworkCapture(
     private class Probed(val resource: Resource, val info: WebVideoContainer.Info, val format: JSONObject)
     private val resources = LinkedHashMap<URI, Resource>()
     private val bodies = HashMap<URI, Pair<URI, ByteArray>>()
+    private val inlineManifests = HashMap<URI, String>()
     private val cookieJar = JSONArray()
     val projections = HashMap<URI, JSONObject?>()
     private var reads = 0
@@ -94,7 +95,8 @@ internal class WebVideoNetworkCapture(
         .put("ext", if (resource.uri.path.endsWith(".webm", true)) "webm" else if (video == "none") "m4a" else "mp4")
         .put("vcodec", video).put("acodec", audio).put("width", width).put("height", height)
         .also { if (resource.kind == "hls") it.put("browser_headers", JSONObject(resources.values.associate { entry -> entry.uri.toString() to JSONObject(entry.headers) }))
-            .put("browser_cookies", cookieJar) }
+            .put("browser_cookies", cookieJar)
+            .also { format -> inlineManifests[resource.uri]?.let { body -> format.put("browser_manifest", body) } } }
     private fun info(media: JSONObject, list: List<JSONObject>): JSONObject = JSONObject()
         .put("title", media.optString("title").take(1024)).put("duration", media.optDouble("duration", 0.0).takeIf { it.isFinite() && it >= 0 } ?: 0.0)
         .put("formats", JSONArray(list))
@@ -104,6 +106,24 @@ internal class WebVideoNetworkCapture(
     /** Explicit site Beta must preserve the decoded representation, including parallel HLS leaves. */
     fun resolveCurrent(page: WebVideoPage, media: JSONObject): JSONObject? = resolve(page, media, null, true)
 
+    /** The site already returned this VOD body in its observed metadata response.
+     * Its adapter must bind actual segment requests first. Never refetch the root:
+     * a fresh server-side ad decision could change the selected video's timeline. */
+    fun resolveObservedHls(page: WebVideoPage, media: JSONObject, base: URI, body: String): JSONObject? = runCatching {
+        require(body.startsWith("#EXTM3U") && body.toByteArray(Charsets.UTF_8).size <= 160 * 1024)
+        require(WebBrowserNetworkMedia.address(base.toString()) != null)
+        val observed = WebBrowserNetworkMedia.candidates(media, includeSegments = true)
+        require((0 until observed.length()).any { observed.getJSONObject(it).optString("kind") == "segment" })
+        val requests = JSONArray((0 until minOf(23,observed.length())).map { observed.getJSONObject(it) })
+        val first = observed.getJSONObject(0).getJSONObject("headers")
+        val common = JSONObject()
+        for (name in listOf("user-agent", "referer", "origin", "accept", "accept-language"))
+            if (first.has(name)) common.put(name, first.getString(name))
+        requests.put(JSONObject().put("url",base.toString()).put("kind","hls").put("headers",common))
+        inlineManifests[base] = body; bodies[base] = base to body.toByteArray(Charsets.UTF_8)
+        resolve(page, JSONObject(media.toString()).put("source", "").put("network",requests), null, true, true)
+    }.getOrNull()
+
     /** Site adapters must first bind both exact observed URLs to one content identity.
      * This does not add a hostname/time-based pairing rule to generic capture. */
     fun resolveBoundPair(page: WebVideoPage, media: JSONObject, video: URI, audio: URI): JSONObject? {
@@ -111,9 +131,9 @@ internal class WebVideoNetworkCapture(
         return resolve(page, JSONObject(media.toString()).put("source", ""), video to audio)
     }
 
-    private fun resolve(page: WebVideoPage, media: JSONObject, boundPair: Pair<URI, URI>?, current: Boolean = false): JSONObject? {
+    private fun resolve(page: WebVideoPage, media: JSONObject, boundPair: Pair<URI, URI>?, current: Boolean = false, segments: Boolean = false): JSONObject? {
         if (media.optBoolean("protected")) return null
-        val candidates = WebBrowserNetworkMedia.candidates(media)
+        val candidates = WebBrowserNetworkMedia.candidates(media, includeSegments = segments)
         val scopedCookies = LinkedHashMap<String, JSONObject>()
         for (i in 0 until candidates.length()) {
             val c = candidates.getJSONObject(i); val uri = URI(c.getString("url"))

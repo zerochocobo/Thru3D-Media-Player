@@ -36,6 +36,8 @@ var picture := ShaderMaterial.new()
 var hole := ShaderMaterial.new()
 var on_compositor := false
 var image_mode := false
+var live_source := false
+var source_muted := true
 var image_loading := false
 var image_error := false
 var image_material := ShaderMaterial.new()
@@ -151,18 +153,21 @@ func _draw() -> void:
 	var ui_start := _decorations.size()
 	# Leave space below the bottom handle's forgiving hit area and highlight.
 	var y := -size.y / 2 - 0.078
-	var bar_width := 0.28 if image_mode else 0.48
+	var bar_width := 0.24 if live_source else 0.28 if image_mode else 0.48
 	var bar := _quad(Vector2(bar_width, 0.084), Vector3(0, y, 0.001), PANEL, 10)
 	add_child(bar); _decorations.append(bar); _block_rays(bar, bar.mesh.size)
 	controls_root.set_meta("menu_surface_bounds", Rect2(Vector2(-bar_width / 2, y - 0.045), Vector2(bar_width, 0.09)))
-	var badge := _label(str(slot), Vector3(-bar_width / 2 - 0.025, y, 0.004), 20)
+	var badge := _label("AirPlay" if live_source else str(slot), Vector3(-bar_width / 2 - (0.065 if live_source else 0.025), y, 0.004), 16 if live_source else 20)
 	# Glyph meshes can arrive after the initial capture bounds are measured.
 	badge.set_meta("menu_capture_bounds", AABB(Vector3(-0.02,-0.02,0),Vector3(0.04,0.04,0.001)))
-	_glyph(1, "close", Vector2(-0.09 if image_mode else -0.195, y), 0.064, true, I18n.t("Close window %d") % slot)
+	_glyph(1, "close", Vector2(-0.055 if live_source else -0.09 if image_mode else -0.195, y), 0.064, true, I18n.t("Close window") if live_source else I18n.t("Close window %d") % slot)
+	if live_source: _glyph(9, "mute" if source_muted else "volume_low", Vector2(0.055, y), 0.064, true, I18n.t("Unmute" if source_muted else "Mute"))
 	# The mode switch stays at the same point when the toolbar changes mode.
-	_glyph(6 if image_mode else 5, "video" if image_mode else "image", Vector2(0, y), 0.064,
-		image_mode or not image_loading, I18n.t("Switch to video mode" if image_mode else "Switch to image mode"))
-	if image_mode:
+	if not live_source:
+		_glyph(6 if image_mode else 5, "video" if image_mode else "image", Vector2(0, y), 0.064,
+			image_mode or not image_loading, I18n.t("Switch to video mode" if image_mode else "Switch to image mode"))
+	if live_source: pass
+	elif image_mode:
 		_glyph(5, "image", Vector2(0.09, y), 0.064, not image_loading, I18n.t("Replace image"))
 		if not pdf_document.is_empty():
 			var page_y := y - 0.085
@@ -251,13 +256,13 @@ func set_draw_order(order: int) -> void:
 	for button in _buttons: _paint_order(button.node)
 
 func set_compositor(value: bool, cut := Rect2(Vector2.ZERO, Vector2.ONE), ring := false) -> void:
-	on_compositor = value and not image_mode
+	on_compositor = value and (not image_mode or live_source)
 	_compositor_cut = cut if on_compositor else Rect2(Vector2.ZERO, Vector2.ONE)
 	hole.set_shader_parameter("keep_rect", Edges.vector(_compositor_cut))
 	if soft_rim:
 		soft_rim.visible = on_compositor and ring and frame.visible
 		if soft_rim.visible: _update_rim_mesh(_compositor_cut)
-	if frame: frame.material_override = image_material if image_mode else (hole if value else picture)
+	if frame: frame.material_override = hole if on_compositor else (image_material if image_mode else picture)
 
 func _paint_order(node: Node3D) -> void:
 	if node is Label3D: node.render_priority = draw_order * 3 + 2
@@ -267,6 +272,9 @@ func _paint_order(node: Node3D) -> void:
 		if child is Node3D: _paint_order(child)
 
 func _activate(target: int) -> void:
+	if live_source:
+		if target == 9: requested.emit(slot, "mute", 0.0 if source_muted else 1.0)
+		if target != 1: return
 	if image_mode and target not in [1, 5, 6, 7, 8]: return
 	match target:
 		7, 8:

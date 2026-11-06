@@ -18,6 +18,7 @@ func check(ok: bool, message: String) -> void:
 	if not ok: failures.append(message)
 
 func _initialize() -> void: call_deferred("run")
+func ground_fixture(_x: float,_z: float) -> float: return 1.0
 
 func poll(video: Node3D, host: Host, changes: Dictionary = {}) -> void:
 	host.snapshot.sequence += 1
@@ -72,6 +73,12 @@ func run() -> void:
 	check(text_top.y < -video._flat.size.y * 0.5,
 		"Multiline text including the top line lies entirely below the screen")
 	var below_pose: Transform3D = below.text.global_transform
+	video.subtitle_ground_provider=ground_fixture
+	below.sync()
+	var cleared_text: Vector3=below.text.global_transform*below.text.get_aabb().position
+	check(cleared_text.y>=1.024 and video.subtitle_below_screen and below.text.font_size==video.caption.font_size,"Physical ground lifts the complete cue without changing preference or font size")
+	video.subtitle_ground_provider=Callable(); below.sync()
+	check(below.text.global_transform.is_equal_approx(below_pose),"Removing physical ground restores the requested below-screen anchor")
 	video.depth_enabled = false; poll(video, host)
 	video.depth_enabled = true; poll(video, host)
 	check(below.text.global_transform.is_equal_approx(below_pose), "Transient model readiness does not move subtitles")
@@ -104,6 +111,10 @@ func run() -> void:
 	var picture := {"visible": true, "version": 1, "width": 300, "height": 50, "x": 810, "y": 950, "canvas_width": 1920, "canvas_height": 1080}
 	poll(video, host, {"bitmap": picture, "text": ""})
 	var texture: Texture2D = video.bitmap_subtitles.texture
+	video.subtitle_ground_provider=ground_fixture; below.sync()
+	var bitmap_bottom: Vector3=below.bitmap.global_transform*Vector3(-below.bitmap.mesh.size.x*.5,-below.bitmap.mesh.size.y*.5,0)
+	check(bitmap_bottom.y>=1.024 and video.bitmap_subtitles.texture==texture,"Physical ground lifts bitmap subtitles without replacing decoded pixels")
+	video.subtitle_ground_provider=Callable(); below.sync()
 	var rect: Vector4 = video.material.get_shader_parameter("bitmap_subtitle_rect")
 	check(below.bitmap.visible and not below.text.visible and not video._subtitle_surface.visible, "PGS has one independent below-screen fallback")
 	check(below.bitmap.material_override.get_shader_parameter("bitmap_subtitle_texture") == texture, "PGS reuses the original decoded texture without OCR or redecoding")
@@ -164,6 +175,20 @@ func run() -> void:
 	menu._state.geometry = 1; menu._state.subtitle_below_available = false; menu._state.subtitle_below_screen = false
 	check(not menu._subtitle_controls().any(func(row): return row.field.key == "subtitle_below_screen"), "Immersive appearance never contains the screen-down toggle")
 	check(menu._subtitle_controls().any(func(row): return row.field.key == "subtitle_distance"), "Immersive distance control stays available")
+	var bitmap_shader: Shader=below.bitmap.material_override.shader
+	var hole_shader: Shader=below.hole.material_override.shader
+	video.set_surface_front_only(true)
+	check(not video.caption.no_depth_test and not video.caption.double_sided
+		and not below.text.no_depth_test and not below.text.double_sided,"Physical media applies depth and front-face policy to both text labels")
+	for surface in [below.bitmap,below.hole]:
+		var code: String=surface.material_override.shader.code
+		check("cull_back" in code and not "depth_test_disabled" in code,"Below-screen bitmap and hole use physical surface variants")
+	video.set_surface_front_only(false)
+	check(video.caption.no_depth_test and video.caption.double_sided and below.text.no_depth_test and below.text.double_sided,"Ordinary media restores both text label policies")
+	check(below.bitmap.material_override.shader==bitmap_shader and below.hole.material_override.shader==hole_shader,"Ordinary media restores the original bitmap and hole shaders")
+	var early := Video.new(); early.set_surface_front_only(true); root.add_child(early); early.set_process(false)
+	check(not early.caption.no_depth_test and not early.caption.double_sided,"Front-face policy selected before ready reaches the newly created label")
+	early.free()
 	menu.free(); origin.free()
 	for failure in failures: print("FAIL: " + failure)
 	print("Depth subtitle isolation: %d checks, %d failures" % [checks, failures.size()])

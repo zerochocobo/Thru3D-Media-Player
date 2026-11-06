@@ -2,6 +2,7 @@ extends SceneTree
 const Catalog := preload("res://scripts/background_library.gd")
 const Menu := preload("res://scripts/scenery_menu.gd")
 const Main := preload("res://scripts/main.gd")
+const Rules := preload("res://scripts/panorama_background_rules.gd")
 var checks:=0
 var failures: Array=[]
 func check(value: bool,message: String) -> void:
@@ -63,6 +64,20 @@ func _run() -> void:
 	var ordinary:=base.path_join("ordinary.png"); var ordinary_image:=Image.create(100,75,false,Image.FORMAT_RGB8); ordinary_image.fill(Color.RED); ordinary_image.save_png(ordinary)
 	library.import_source({"path":ordinary},"Ordinary image"); await _wait(library)
 	check(library.assets.size()==3 and not library.error.is_empty(),"Ordinary aspect ratios are rejected")
+	check(library.error==Rules.RATIO and library.import_progress.errors[0].title=="Ordinary image","Rejected images retain their filename and corrective ratio advice")
+	var unsupported:=base.path_join("unsupported.heic")
+	FileAccess.open(unsupported,FileAccess.WRITE).store_string("Not a supported background file format")
+	library.import_files([{"uri":unsupported,"title":"Unsupported.heic"}]); await _wait(library)
+	check(library.error==Rules.FORMAT,"Unsupported background files explain which formats to use")
+	var too_large:=base.path_join("large.png")
+	var large_header:=FileAccess.get_file_as_bytes(source)
+	for pair in [[16,16384],[20,8192]]:
+		for i in range(4): large_header[pair[0]+i]=(pair[1]>>(24-8*i))&255
+	FileAccess.open(too_large,FileAccess.WRITE).store_buffer(large_header)
+	library.import_files([{"uri":too_large,"title":"Large.png"}]); await _wait(library)
+	check(library.error==Rules.DIMENSIONS,"Oversized images explain how to reduce resolution before pixel decoding")
+	check(Rules.file_issue(Rules.MAX_BYTES+1,{})==Rules.FILE_SIZE,"Oversized files explain the file-size limit")
+	check(Rules.size_issue(Vector2(8192,4096)).is_empty() and Rules.size_issue(Vector2(8192,8192))==Rules.DIMENSIONS,"An 8K panorama fits while an 8K square exceeds the total-pixel limit")
 	var menu:=Menu.new(); menu.library=library; menu.state_provider=func(_mode): return {"selected":id,"choice":"custom","busy":false}
 	root.add_child(menu); menu.open("image")
 	var scene_height: float=menu._backdrop.mesh.size.y

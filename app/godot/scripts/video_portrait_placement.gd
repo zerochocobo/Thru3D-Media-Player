@@ -59,7 +59,7 @@ func finish(host: Node) -> void:
 	if not pending:
 		# Showing/hiding the hall seats/restores the XR rig, also after async loading.
 		# Carry the cutout into that coordinate system without changing its viewed pose.
-		if cinema != cinema_presented:
+		if cinema != cinema_presented or not rig.is_equal_approx(scenery_rig):
 			host.video.set_flat_world_pose(rig * scenery_rig.affine_inverse() * host.video.global_transform * host.video.flat_pose)
 		scenery_rig = rig; cinema_presented = cinema
 		return

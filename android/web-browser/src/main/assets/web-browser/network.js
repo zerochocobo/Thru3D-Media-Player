@@ -46,6 +46,11 @@
       bilibili: [...(state.biliResponses?.values() || [])], bilibili_requested: [...(state.biliRequests?.keys() || [])].filter(k => !k.startsWith('view:')),
       bilibili_views: [...(state.biliViews?.values() || [])],
       douyin: [...(state.douyinData?.values() || [])],
+      mango: [...(state.mangoData?.values() || [])],mango_capture:{status:state.mangoStatus||'idle',metadata:!!state.mangoMeta,clear:state.mangoMeta?.clear===true,
+        id:state.mangoMeta?.id||'',duration:state.mangoMeta?.duration||0,declared_dispatches:state.mangoDeclared?.length||0,manifests:state.mangoManifests?.size||0,
+        declared_files:state.mangoFiles?.length||0,
+        bound_hls:[...state.items.values()].filter(r=>r.kind==='hls'&&(state.mangoManifests?.has(r.url)||state.mangoManifests?.has(r.original_url))).length},
+      tencent: [...(state.tencentData?.values() || [])], tencent_envelopes:[...(state.tencentEnvelopes?.values()||[])],tencent_status: state.tencentStatus || 'idle',tencent_capture:state.tencentCapture||{},tencent_shape:state.tencentShape||[],
       douyin_observation: state.douyinObservation || {},
       douyin_api_paths: [...(state.douyinApiPaths || [])],
       bilibili_status: state.biliStatus || 'idle', bilibili_response_api: typeof browser.webRequest.filterResponseData === 'function' }); } catch (_) {}
@@ -57,11 +62,16 @@
     const id = `${s.tab.id}:${s.frameId}`;
     const state = { key:id, port, page: s.url, documentPage: s.url, document: s.documentId, enabled: false, bilibili: false,
       douyin: typeof Thru3DDouyin !== 'undefined' && Thru3DDouyin.documentPage(s.url),
+      weibo: typeof Thru3DWeibo !== 'undefined' && Thru3DWeibo.documentPage(s.url),
+      tencent: typeof Thru3DTencent !== 'undefined' && !!Thru3DTencent.page(s.url),
+      mango: typeof Thru3DMango !== 'undefined' && !!Thru3DMango.page(s.url),
       privateContext: s.tab.incognito === true, cookieStore: typeof s.tab.cookieStoreId === 'string' ? s.tab.cookieStoreId : '',
       items: new Map(), timer: null };
     const old = frames.get(id);
     if (old) { clearTimeout(old.timer); old.port.disconnect(); }
     frames.set(id, state);
+    if(state.tencent)tencentResponses?.attach(state);
+    if(state.mango)mangoResponses?.attach(state);
     if(state.douyin)douyinResponses?.restore(state);
     while (frames.size > 64) { const oldest = frames.keys().next().value; frames.get(oldest).port.disconnect(); frames.delete(oldest); }
     port.onMessage.addListener(message => {
@@ -69,24 +79,36 @@
           new URL(message.page).origin !== new URL(s.url).origin) return;
       const bili = message.bilibili === true && typeof Thru3DBilibili !== 'undefined' && !!Thru3DBilibili.page(message.page);
       const douyin = message.douyin === true && typeof Thru3DDouyin !== 'undefined' && Thru3DDouyin.documentPage(message.page);
-      if (message.page !== state.page || message.reset === true || (message.enabled === true) !== state.enabled || bili !== state.bilibili || douyin !== state.douyin) {
+      const weibo = message.weibo === true && typeof Thru3DWeibo !== 'undefined' && Thru3DWeibo.documentPage(message.page);
+      const tencent = message.tencent === true && typeof Thru3DTencent !== 'undefined' && !!Thru3DTencent.page(message.page);
+      const mango = message.mango === true && typeof Thru3DMango !== 'undefined' && !!Thru3DMango.page(message.page);
+      if (message.page !== state.page || message.reset === true || (message.enabled === true) !== state.enabled || bili !== state.bilibili || douyin !== state.douyin || weibo !== state.weibo || tencent !== state.tencent || mango !== state.mango) {
         // Bilibili can preload the next part before pushState. Retain only this document's
         // bounded observations; the content script must bind CID to the current part map.
         const sameBili = bili && state.bilibili && Thru3DBilibili.sameDocumentPage(message.page, state.page);
         const sameDouyin = douyin && state.douyin;
+        const sameTencent = tencent && state.tencent;
+        const sameMango = mango && state.mango && Thru3DMango.page(message.page)?.id===Thru3DMango.page(state.page)?.id;
         if (!sameBili) { responses?.cancel(state); state.biliStatus = 'idle'; state.biliResponses = new Map(); state.biliRequests = new Map(); state.biliViews = new Map(); }
         if (!sameDouyin) { douyinResponses?.cancel(state); state.douyinData = new Map(); state.douyinApiPaths = new Set(); }
-        if (!sameBili && !sameDouyin) state.items.clear();
+        if (!sameTencent) { tencentResponses?.cancel(state); state.tencentData = new Map();state.tencentEnvelopes=new Map(); }
+        if (!sameMango) mangoResponses?.cancel(state);
+        if (!sameBili && !sameDouyin && !sameTencent && !sameMango) state.items.clear();
         state.bilibili = bili;
         state.douyin = douyin;
+        state.weibo = weibo;
+        state.tencent = tencent;
+        state.mango = mango;
         state.page = message.page; state.enabled = message.enabled === true;
-        if (!sameBili && !sameDouyin) for (const [request, value] of pending) if (value.state === state) pending.delete(request);
+        if (!sameBili && !sameDouyin && !sameTencent && !sameMango) for (const [request, value] of pending) if (value.state === state) pending.delete(request);
         publish(state);
       }
     });
     port.onDisconnect.addListener(() => {
       responses?.cancel(state);
       douyinResponses?.cancel(state);
+      tencentResponses?.cancel(state);
+      mangoResponses?.cancel(state);
       clearTimeout(state.timer);
       if (frames.get(id) === state) frames.delete(id);
       for (const [request, value] of pending) if (value.state === state) pending.delete(request);
@@ -101,11 +123,19 @@
     const sameDouyin = state?.douyin && typeof Thru3DDouyin !== 'undefined' && Thru3DDouyin.documentPage(d.documentUrl) &&
       (d.documentId && state.document || d.documentUrl?.split('#')[0] === state.documentPage.split('#')[0]);
     const plex = state && typeof Thru3DPlex !== 'undefined' && Thru3DPlex.address(d.url, state.page);
-    if (!state || !(state.enabled || state.bilibili || state.douyin || plex) || d.tabId < 0 || (d.documentId && state.document && d.documentId !== state.document) ||
-        (d.documentUrl && d.documentUrl.split('#')[0] !== state.page.split('#')[0] && !sameBili && !sameDouyin)) return null;
+    const sameWeibo = state?.weibo && typeof Thru3DWeibo !== 'undefined' && Thru3DWeibo.documentPage(d.documentUrl) &&
+      (d.documentId && state.document || d.documentUrl?.split('#')[0] === state.documentPage.split('#')[0]);
+    const sameTencent = state?.tencent && typeof Thru3DTencent !== 'undefined' && Thru3DTencent.page(d.documentUrl) &&
+      (d.documentId && state.document || d.documentUrl?.split('#')[0] === state.documentPage.split('#')[0]);
+    const sameMango = state?.mango && typeof Thru3DMango !== 'undefined' && Thru3DMango.page(d.documentUrl)?.id===Thru3DMango.page(state.page)?.id &&
+      (d.documentId && state.document || d.documentUrl?.split('#')[0] === state.documentPage.split('#')[0]);
+    if (!state || !(state.enabled || state.bilibili || state.douyin || state.weibo || state.tencent || state.mango || plex) || d.tabId < 0 || (d.documentId && state.document && d.documentId !== state.document) ||
+        (d.documentUrl && d.documentUrl.split('#')[0] !== state.page.split('#')[0] && !sameBili && !sameDouyin && !sameWeibo && !sameTencent && !sameMango)) return null;
     return state;
   };
   const responses = typeof Thru3DBilibiliResponses === 'undefined' ? null : Thru3DBilibiliResponses(stateFor, publish);
+  const tencentResponses = typeof Thru3DTencentResponses === 'undefined' ? null : Thru3DTencentResponses(stateFor,publish,d=>frames.has(key(d)));
+  const mangoResponses = typeof Thru3DMangoResponses === 'undefined' ? null : Thru3DMangoResponses(stateFor,publish,d=>frames.has(key(d)));
   // Metadata is only a hint; it never supplies request credentials. Gecko can
   // attribute the site's prefetch/worker API to frame -1 or to the original SPA
   // document URL. Keep file-request ownership on the strict stateFor path above.
@@ -137,6 +167,8 @@
   const douyinResponses = typeof Thru3DDouyinResponses === 'undefined' ? null : Thru3DDouyinResponses(douyinMetadataState,publish,d=>frames.has(key(d)));
   browser.webRequest.onBeforeRequest.addListener(d => {
     if (d.type !== "main_frame" && d.type !== "sub_frame") return;
+    tencentResponses?.navigate(d);
+    mangoResponses?.navigate(d);
     for (const [id, state] of frames) if (id === key(d) || d.type === "main_frame" && id.startsWith(`${d.tabId}:`)) {
       state.port.disconnect(); frames.delete(id);
     }
@@ -170,17 +202,17 @@
     if (!state || !u || d.method !== "GET" || ![200, 206].includes(d.statusCode)) return;
     const mime = header(d.responseHeaders, "content-type").split(";")[0].trim().toLowerCase();
     const type = kind(u, mime, d, state.bilibili);
-    if (!type || type === "segment") return;
+    if (!type || type === "segment" && !state.tencent) return;
     // Bilibili's paused cover can load a cached alternate audio URL without any
     // onSendHeaders event. It cannot replace a replayable request with empty headers:
     // the CDN rejects that native request (403). Keep the earlier exact observation;
     // never borrow headers from another URL, or extend its lifetime from a cache hit.
-    if ((state.bilibili || state.douyin) && !(request?.state === state && request.url === d.url && request.sent === true)) return;
+    if ((state.bilibili || state.douyin || state.weibo || state.tencent || state.mango) && !(request?.state === state && request.url === d.url && request.sent === true)) return;
     // A cached response can have no onSendHeaders. Do not invent Cookie/Authorization.
     const safe = request?.state === state && request.url === d.url ? request.headers : {};
     // Plex Web sends its token in a request header. With generic capture disabled,
     // retain only a successful, authenticated library request from this exact frame.
-    if (!(state.enabled || state.bilibili || state.douyin) &&
+    if (!(state.enabled || state.bilibili || state.douyin || state.weibo || state.tencent || state.mango) &&
         !(typeof Thru3DPlex !== 'undefined' && Thru3DPlex.source(d.url, state.page, safe))) return;
     const c = { url: d.url, kind: type, mime, headers: safe, at: Date.now(), cookies: [],
       original_url: request?.state === state ? request.original : d.url,
@@ -189,6 +221,7 @@
     const previous = state.items.get(d.url);
     c.cookies = previous && previous.headers.cookie === safe.cookie ? previous.cookies : [];
     state.items.delete(d.url); state.items.set(d.url, c);
+    mangoResponses?.observeMedia(state,c);
     while (state.items.size > MAX || JSON.stringify([...state.items.values()]).length > 192 * 1024)
       state.items.delete(state.items.keys().next().value);
     // Range traffic often repeats several times a second. Report changed credentials/resources,

@@ -3,10 +3,13 @@ package org.vrpassthroughplayer.plugin
 import androidx.media3.container.NalUnitUtil
 import java.io.ByteArrayOutputStream
 
-/** Reassemble only the PMT-selected video PID; use the pinned Media3 H.264 SPS parser. */
+/** Reassemble only the PMT-selected video PID; reuse the pinned Media3 SPS parsers. */
 internal object WebVideoTsDimensions {
+    fun avc(data: ByteArray, pid: Int): Pair<Int, Int>? = dimensions(data,pid,false)
+    fun hevc(data: ByteArray, pid: Int): Pair<Int, Int>? = dimensions(data,pid,true)
+
     @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
-    fun avc(data: ByteArray, pid: Int): Pair<Int, Int>? = runCatching {
+    private fun dimensions(data: ByteArray, pid: Int, hevc: Boolean): Pair<Int, Int>? = runCatching {
         require(pid in 0..8190)
         val elementary = ByteArrayOutputStream()
         var continuity = -1
@@ -43,9 +46,19 @@ internal object WebVideoTsDimensions {
         for (index in starts.indices) {
             val begin = starts[index].second
             val end = starts.getOrNull(index + 1)?.first ?: bytes.size
-            if (begin >= end || bytes[begin].toInt() and 31 != 7) continue
-            val sps = NalUnitUtil.parseSpsNalUnit(bytes, begin, end)
-            if (sps.width in 1..16384 && sps.height in 1..16384) return@runCatching sps.width to sps.height
+            if (begin >= end) continue
+            val size = if(hevc) {
+                if(begin+1>=end || (bytes[begin].toInt() ushr 1) and 63 != 33) continue
+                // Inspect the base-layer SPS only, with a valid HEVC NAL header.
+                if(bytes[begin].toInt() and 0x81 != 0 || bytes[begin+1].toInt() and 0xf8 != 0 || bytes[begin+1].toInt() and 7 == 0) continue
+                val sps=NalUnitUtil.parseH265SpsNalUnit(bytes,begin,end,null)
+                sps.width to sps.height
+            } else {
+                if(bytes[begin].toInt() and 31 != 7) continue
+                val sps=NalUnitUtil.parseSpsNalUnit(bytes,begin,end)
+                sps.width to sps.height
+            }
+            if (size.first in 1..16384 && size.second in 1..16384) return@runCatching size
         }
         null
     }.getOrNull()

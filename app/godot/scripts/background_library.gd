@@ -7,6 +7,7 @@ signal import_finished(result: Dictionary)
 var import_progress := {}
 const Background := preload("res://scripts/app_background.gd")
 const Info := preload("res://scripts/image_info.gd")
+const Rules := preload("res://scripts/panorama_background_rules.gd")
 const Methods := preload("res://scripts/platform_methods.gd")
 const MODES := [{"id":"global", "label":"Global", "default":"cinema", "hidden":false,"section":"appearance","cinema":true},
 	{"id":"image", "label":"Image mode", "default":"belfast", "hidden":false,"section":"photo_background","cinema":false},
@@ -104,7 +105,8 @@ func bind(mode: String, id: String, yaw: float = 0, brightness: float = 1) -> bo
 	changed.emit(); return true
 
 func allowed(mode: String, id: String) -> bool:
-	return valid_mode(mode) and (assets.has(id) or id in ["belfast","morning","night","dark","passthrough"] or (mode_definition(mode).get("cinema",false) and id == "cinema"))
+	if id == "private_beach" and not Background.private_beach_available(): return false
+	return valid_mode(mode) and (assets.has(id) or id in ["belfast","morning","night","dark","passthrough"] or (mode_definition(mode).get("cinema",false) and id in ["cinema","private_beach"]))
 
 func rows() -> Array:
 	var result: Array = []
@@ -182,9 +184,9 @@ func import_source(source: Dictionary, title: String, mode: String = "", activat
 		# Pin a displayed image's cache file before navigation can release its path.
 		var input:=FileAccess.open(str(source.path),FileAccess.READ)
 		if not input:
-			error="Background unavailable"; import_failed.emit(mode,error); changed.emit(); return false
+			error=Rules.READ; import_failed.emit(mode,error); changed.emit(); return false
 		job["input"]=input
-	if not busy: import_progress={"total":0,"completed":0,"added":0,"existing":0,"review":0,"failed":0,"title":"","ids":[]}
+	if not busy: import_progress={"total":0,"completed":0,"added":0,"existing":0,"review":0,"failed":0,"title":"","ids":[],"errors":[]}
 	import_progress.total+=1
 	_queue.append(job)
 	busy = true; changed.emit()
@@ -200,7 +202,7 @@ func _process(_delta: float) -> void:
 		var accepted:=false
 		var needs_review:=false
 		var existed:=false
-		if not result.is_empty():
+		if result.has("id"):
 			var id := str(result.id)
 			var fresh := not assets.has(id)
 			existed=not fresh
@@ -211,9 +213,9 @@ func _process(_delta: float) -> void:
 			elif not fresh or save_catalog():
 				accepted=true; imported.emit(id, str(_job.mode), bool(_job.activate))
 			else:
-				assets.erase(id); error = "Could not save background"
+				assets.erase(id); error = Rules.SAVE
 				DirAccess.remove_absolute(image_path(id)); DirAccess.remove_absolute(thumbnail_path(id))
-		else: error = "Use a supported panorama image"
+		else: error = str(result.get("error", Rules.DECODE))
 		_finish_import_job(accepted,needs_review,str(result.get("id","")),existed)
 	if not _job.is_empty() or _thread: return
 	if _queue.is_empty():
@@ -233,40 +235,43 @@ func _process(_delta: float) -> void:
 	else:
 		var path := uri.trim_prefix("file://").uri_decode() if uri.begins_with("file://") else uri
 		if FileAccess.file_exists(path): _start_copy({"path":path}); return
-	error = "Background unavailable"; _finish_import_job(false)
+	error = Rules.READ; _finish_import_job(false)
 
 func _finish_import_job(accepted: bool, review: bool = false, id: String = "", existing: bool = false) -> void:
 	import_progress.completed+=1
 	var kind: String="review" if review else ("existing" if accepted and existing else ("added" if accepted else "failed"))
 	import_progress[kind]+=1
 	if accepted: import_progress.ids.append(id)
-	else: import_failed.emit(str(_job.get("mode","")),error)
+	else:
+		import_progress.errors.append({"title":str(_job.get("title","")),"reason":error})
+		import_failed.emit(str(_job.get("mode","")),error)
 	_release_request(); _job.clear(); changed.emit()
 
 func _on_ready(id: int, payload: String) -> void:
 	if id != _request or _job.is_empty(): return
 	var info: Variant = JSON.parse_string(payload)
 	if not info is Dictionary or info.get("state", "") != "ready":
-		error = "Background unavailable"; _finish_import_job(false); return
+		error = Rules.READ; _finish_import_job(false); return
 	_start_copy(info)
 
 func _start_copy(source: Dictionary,pinned: FileAccess = null) -> void:
 	var input := pinned if pinned else FileAccess.open(str(source.get("path","")), FileAccess.READ)
 	if not input:
-		error = "Background unavailable"; _finish_import_job(false); return
+		error = Rules.READ; _finish_import_job(false); return
 	_thread = Thread.new()
 	if _thread.start(_copy.bind(input, source.duplicate(true), str(_job.title))) != OK:
 		_thread = null; error = "Background unavailable"; _finish_import_job(false)
 
 func _copy(input: FileAccess, source: Dictionary, title: String) -> Dictionary:
 	var bytes := input.get_length()
-	if bytes <= 0 or bytes > 256 * 1024 * 1024: return {}
-	if DirAccess.make_dir_recursive_absolute(directory)!=OK: return {}
+	if bytes > Rules.MAX_BYTES: return {"error":Rules.FILE_SIZE}
+	if bytes <= 0: return {"error":Rules.FORMAT}
+	if DirAccess.make_dir_recursive_absolute(directory)!=OK: return {"error":Rules.SAVE}
 	# Hash precisely the bytes in our private snapshot, in one pass. The source may be
 	# renamed, unlinked from a media cache, or replaced while the user navigates away.
 	var snapshot:=directory.path_join("source_%d.pending"%Time.get_ticks_usec())
 	var output:=FileAccess.open(snapshot,FileAccess.WRITE)
-	if not output: return {}
+	if not output: return {"error":Rules.SAVE}
 	var hash := HashingContext.new(); hash.start(HashingContext.HASH_SHA256)
 	var ok:=true
 	while input.get_position() < bytes:
@@ -275,25 +280,26 @@ func _copy(input: FileAccess, source: Dictionary, title: String) -> Dictionary:
 		hash.update(chunk); output.store_buffer(chunk)
 		if output.get_error()!=OK: ok=false; break
 	output.flush(); ok=ok and output.get_error()==OK; output.close(); input.close()
-	if not ok: DirAccess.remove_absolute(snapshot); return {}
+	if not ok: DirAccess.remove_absolute(snapshot); return {"error":Rules.SAVE}
 	var result:=_decode_snapshot(snapshot,source,title,bytes,hash.finish().hex_encode())
 	DirAccess.remove_absolute(snapshot)
 	return result
 
 func _decode_snapshot(path: String,source: Dictionary,title: String,bytes: int,digest: String) -> Dictionary:
 	var input:=FileAccess.open(path,FileAccess.READ)
-	if not input: return {}
+	if not input: return {"error":Rules.READ}
 	var header := Info.read_header(path)
-	if header.is_empty(): return {}
+	var issue := Rules.file_issue(bytes,header)
+	if not issue.is_empty(): return {"error":issue}
 	var size := Vector2(header.width,header.height)
 	var orientation := int(source.get("orientation", header.get("orientation",1)))
 	if orientation not in range(1,9): return {}
 	if orientation >= 5: size = Vector2(size.y,size.x)
 	var geometry := int(source.get("geometry",1 if is_equal_approx(size.x/size.y,1.0) and not header.get("panorama",false) else 3))
-	if not Info.panorama_rect(header).is_equal_approx(Vector4(0,0,1,1)): return {}
+	if not Info.panorama_rect(header).is_equal_approx(Vector4(0,0,1,1)): return {"error":Rules.CROP}
 	var review: bool=not source.has("geometry") and not header.get("panorama",false)
 	var stereo := bool(source.get("stereo",false)); var top_bottom := bool(source.get("top_bottom",false))
-	if not Background.source_supported(size,geometry,stereo,top_bottom): return {}
+	if not Background.source_supported(size,geometry,stereo,top_bottom): return {"error":Rules.RATIO}
 	var recipe := [orientation,geometry,stereo,top_bottom,bool(source.get("swap_eyes",false)),1]
 	var id := (str(bytes)+":"+digest+":"+JSON.stringify(recipe)).sha256_text()
 	var entry: Dictionary={"title":title.get_basename().left(80),"bytes":bytes,"sha256":digest,"recipe":recipe,
@@ -305,12 +311,12 @@ func _decode_snapshot(path: String,source: Dictionary,title: String,bytes: int,d
 	var job := {"path":partial,"orientation":orientation,"copy":true,"title":title,"generation":0,"source":source,
 		"geometry":geometry,"stereo":stereo,"top_bottom":top_bottom,"swap_eyes":bool(source.get("swap_eyes",false)),"mipmaps":false}
 	var decoded := Background._read_custom(input,job)
-	if not decoded.has("image"): DirAccess.remove_absolute(partial); return {}
+	if not decoded.has("image"): DirAccess.remove_absolute(partial); return {"error":str(decoded.get("error",Rules.DECODE))}
 	var image: Image = decoded.image
 	image.clear_mipmaps(); image.resize(512,256,Image.INTERPOLATE_LANCZOS)
 	var stored: bool=FileAccess.file_exists(image_path(id))
 	if image.save_jpg(thumbnail_path(id),0.85) != OK or (not stored and DirAccess.rename_absolute(partial,image_path(id)) != OK):
-		DirAccess.remove_absolute(partial); DirAccess.remove_absolute(thumbnail_path(id)); return {}
+		DirAccess.remove_absolute(partial); DirAccess.remove_absolute(thumbnail_path(id)); return {"error":Rules.SAVE}
 	if stored: DirAccess.remove_absolute(partial)
 	entry.orientation=int(decoded.orientation)
 	return {"id":id,"entry":entry,"review":review}

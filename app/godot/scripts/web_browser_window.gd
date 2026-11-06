@@ -26,6 +26,11 @@ const RESIZE_EDGE_SIZE := Vector2(0.14, 0.26)
 const RESIZE_CORNER_SIZE := Vector2(0.18, 0.18)
 var page_size := RECT.size
 var selecting := false
+var depth := preload("res://scripts/web_browser_depth.gd").new()
+var depth_settings := false
+var depth_choices := preload("res://scripts/choice_fields.gd").new(self)
+var SELECTED: Color:
+	get: return UiTheme.color("selected")
 var selection := Rect2()
 var _selection_context := Vector2i.ZERO
 var _feedback: Node3D
@@ -43,6 +48,7 @@ var controller: WeakRef
 var window_id := 1
 var mode := "floating"
 var surface: Node3D
+var effect_controls: Node3D
 var drag := {}
 var title_move := Move.new()
 var placed := false
@@ -75,9 +81,17 @@ func relocate_view(delta: Transform3D) -> void:
 	if visible: refresh()
 func _ready() -> void:
 	super()
+	depth.load_preferences()
+	depth_choices.changed.connect(_depth_changed)
+	depth_choices.previewed.connect(_depth_preview)
 	surface = Surface.new()
 	surface.configure(self, browser.menu.platform, window_id)
 	get_tree().root.add_child(surface)
+	effect_controls = preload("res://scripts/web_browser_effect_controls.gd").new()
+	effect_controls.configure(self); add_child(effect_controls)
+	effect_controls.composition_changed.connect(func(): composition_changed.emit())
+	effect_controls.composition_layout_changed.connect(func(): composition_layout_changed.emit())
+func chrome_hidden() -> bool: return depth.matte and not selecting
 func head() -> Transform3D:
 	var provider: Callable = browser.menu.layout_head_provider
 	var value: Variant = provider.call() if provider.is_valid() else null
@@ -240,6 +254,7 @@ func full_page_layout() -> Dictionary:
 		var screen := cinema()
 		var size := page_size * minf(float(screen.width) / page_size.x, float(screen.height) / page_size.y)
 		var basis := Basis(Vector3.UP, float(screen.get("yaw", 0.0)))
+		basis *= Basis(Vector3.RIGHT, float(screen.get("pitch", 0.0)))
 		var pose := Transform3D(basis, Vector3(float(screen.position[0]), float(screen.position[1]), float(screen.position[2])) + basis.z * 0.06)
 		return {"pose": pose, "size": size}
 	var bounds := page_rect()
@@ -269,6 +284,7 @@ func toggle_focus() -> void:
 		selecting = true; selection = Rect2()
 		_selection_context = Vector2i(focus_tab(), int(browser.window_state(window_id).get("navigation", 0)))
 	refresh()
+	browser.effects_changed.emit()
 func sync_page_state() -> void:
 	var context := Vector2i(focus_tab(), int(browser.window_state(window_id).get("navigation", 0)))
 	if selecting and context != _selection_context:
@@ -280,9 +296,10 @@ func finish_selection() -> void:
 		browser.focus_regions[focus_tab()] = selection
 		selecting = false
 	end_drag(); refresh()
+	browser.effects_changed.emit()
 func _create_feedback() -> void:
 	if is_instance_valid(_feedback): return
-	_feedback = Node3D.new(); _feedback.set_meta("menu_eye_buffer", true); add_child(_feedback)
+	_feedback = Node3D.new(); _feedback.set_meta("menu_eye_buffer", true); _feedback.set_meta("browser_world_pointer", true); add_child(_feedback)
 	# Persistent, inexpensive eye-buffer overlays; never rebuild the chrome for each progress tick.
 	for spec in [["background", UiTheme.color("browser_feedback"), 24], ["progress", ACCENT, 27], ["press", ACCENT, 27]]:
 		var mesh := _quad(Vector2.ONE, Vector3.ZERO, spec[1], spec[2])
@@ -304,7 +321,7 @@ func _feedback_rect(mesh: MeshInstance3D, rect: Rect2, z: float = 0.003) -> void
 	mesh.position = Vector3(rect.get_center().x, rect.get_center().y, z)
 func _update_feedback() -> void:
 	_create_feedback()
-	_feedback.visible = visible and not browser.start_page.active(window_id) and not (browser.tabs_open and browser.focused_window == window_id)
+	_feedback.visible = visible and not chrome_hidden() and not browser.start_page.active(window_id) and not (browser.tabs_open and browser.focused_window == window_id)
 	if not _feedback.visible: return
 	var frame := full_page_layout()
 	_feedback.global_transform = frame.pose
@@ -355,11 +372,13 @@ func _update_feedback() -> void:
 		mesh.visible = mesh.visible and selecting and selection.has_area()
 func page_point(origin: Vector3, direction: Vector3) -> Variant:
 	var layout := page_layout()
-	var point: Variant = project_pointer(origin, direction, global_transform.affine_inverse() * layout.pose)
+	# The page is its own XR surface, outside the mono toolbar capture.
+	var point: Variant = project_pointer(origin, direction, global_transform.affine_inverse() * layout.pose, false)
 	if point == null: return null
 	return Vector2(point.x / layout.size.x + 0.5, 0.5 - point.y / layout.size.y)
 func _process(_delta: float) -> void:
 	if not browser: queue_free(); return
+	if effect_controls: effect_controls.sync()
 	if not browser.active():
 		if visible: dismiss()
 		if surface: surface.present(false, RECT)
@@ -391,10 +410,15 @@ func _redraw_theme() -> void:
 func _draw() -> void:
 	_clear_layout()
 	_sync_presentation()
-	if browser: browser.draw_window(self)
+	_backdrop.visible = not chrome_hidden()
+	if browser and not chrome_hidden(): browser.draw_window(self)
+	depth_choices.begin("browser_depth_" + str(window_id))
+	if depth_settings and not chrome_hidden(): _draw_depth_settings()
 	if browser:
 		_create_feedback()
 		_pointer_panels.append(_feedback.get_node("background"))
+	if chrome_hidden():
+		_feedback.visible = false; _pointer_panels.clear(); _ray_blockers.clear()
 	# Disabled controls still occlude other windows and the header drag surface.
 	for button in _buttons: button.hover_disabled = true
 	# Above the distant page's alpha hole (25) yet below MenuComposition.POPUP_PRIORITY (30):
@@ -425,7 +449,71 @@ func _raise_chrome(node: Node) -> void:
 	for child in node.get_children(): _raise_chrome(child)
 func _activate(target: int) -> void:
 	browser.focus_window(window_id)
+	if depth_choices.action(target): return
+	if target == browser.BASE + 21:
+		depth.matte = not depth.matte; depth.error = ""; depth.state = "preparing"; depth_settings = false
+		refresh(); browser.effects_changed.emit(); return
+	if target == browser.BASE + 16:
+		depth.error = ""; depth.state = "preparing"
+		if not depth.enabled and depth.strength <= 0.0: depth.strength = depth.Strength.VIDEO_DEFAULT
+		depth.enabled = not depth.enabled
+		if effect_controls: effect_controls.set_strength_open(depth.enabled)
+		refresh(); return
+	if target == browser.BASE + 17:
+		depth_settings = not depth_settings; depth_choices.reset(); refresh(); return
 	browser.action(target)
+
+func _depth_preview(key: String, value: Variant) -> void:
+	if key == "strength": depth.strength = float(value) / 100.0
+	elif key == "position": depth.position = depth.Position.normalize(value)
+
+func _depth_changed(key: String, value: Variant) -> void:
+	depth.change(key, float(value) / 100.0 if key == "strength" else value)
+	if key == "matte": depth.error = ""; depth.state = "preparing"
+	if key == "strength" and depth.strength <= 0.0: depth.enabled = false
+	refresh()
+	browser.effects_changed.emit()
+
+func _draw_depth_settings() -> void:
+	var panel := _quad(Vector2(1.20, 0.43), Vector3(0.13, 0.16, 0.028), PANEL, 30)
+	add_child(panel); _decorations.append(panel); _pointer_panels.append(panel)
+	var title := _label(I18n.t("Browser effects"), Vector3(-0.39, 0.325, 0.04), 24)
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT; title.render_priority = 32
+	_button(browser.BASE + 17, "", Vector2(0.65, 0.325), Vector2(0.08, 0.08), true, "close")
+	_buttons.back().node.position.z = 0.04
+	_depth_overlay_priority(_buttons.back().node)
+	var rows: Array = depth.rows()
+	for index in 2:
+		var y := 0.21 - index * 0.13
+		var label := _label(I18n.t([depth.Position.TITLE, "3D rendering"][index]), Vector3(-0.39, y, 0.04), 20)
+		label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT; label.render_priority = 32
+		var first := _buttons.size()
+		depth_choices.field(null, rows[index + 1], Vector2(0.32, y), 0.60, 0.055)
+		for button in _buttons.slice(first):
+			button.node.position.z += 0.038
+			_depth_overlay_priority(button.node)
+	var popup_buttons := _buttons.size()
+	var popup_panels := _decorations.size()
+	var popup_labels := _labels.size()
+	depth_choices.finish()
+	for button in _buttons.slice(popup_buttons):
+		button.node.position.z += 0.04; _depth_overlay_priority(button.node, 35)
+	for decoration in _decorations.slice(popup_panels):
+		decoration.position.z += 0.04
+		decoration.material_override.render_priority = 34
+	for label in _labels.slice(popup_labels):
+		label.position.z += 0.04; label.render_priority = 36
+
+func _depth_overlay_priority(node: Node, priority: int = 31, base: int = -1000) -> void:
+	var original := int(node.get_meta("browser_effect_priority", node.material_override.render_priority if node is MeshInstance3D and node.material_override else node.render_priority if node is Label3D else 0))
+	node.set_meta("browser_effect_priority", original)
+	if base == -1000: base = original
+	# Preserve the icon/rail/fill/knob order when raising the whole field above its panel.
+	if node is MeshInstance3D and node.material_override: node.material_override.render_priority = priority + maxi(0, original - base)
+	if node is Label3D:
+		node.render_priority = priority + maxi(1, original - base)
+		node.outline_render_priority = node.render_priority - 1
+	for child in node.get_children(): _depth_overlay_priority(child, priority, base)
 func _activate_hit(hit: Dictionary) -> void:
 	if not hit.get("enabled", true): return
 	var peer: Node = browser.windows.get(int(hit.get("window", window_id)), self)
@@ -434,7 +522,11 @@ func _activate_hit(hit: Dictionary) -> void:
 func local_hit(origin: Vector3, direction: Vector3) -> Dictionary:
 	# Include the whole visible frame before choosing the nearest window. Otherwise
 	# the secondary's empty chrome is invisible to both the ray and trigger routing.
-	var hit := _pointer_hit_over(origin, direction, super.ray_hit(origin, direction))
+	var hit := {} if chrome_hidden() else _pointer_hit_over(origin, direction, super.ray_hit(origin, direction))
+	if effect_controls:
+		var footer: Dictionary = effect_controls.ray_hit(origin,direction)
+		if not footer.is_empty() and (hit.is_empty() or footer.distance < hit.distance):
+			footer.point = to_local(effect_controls.to_global(footer.point)); footer.footer = true; hit = footer
 	if not hit.is_empty(): hit.window = window_id
 	return hit
 func ray_hit(origin: Vector3, direction: Vector3) -> Dictionary:
@@ -480,6 +572,7 @@ func draw_frame_panels() -> void:
 		else:
 			# Long, plain frame strips must not stretch the fixed-pixel chrome capture.
 			panel.set_meta("menu_eye_buffer", true)
+			panel.set_meta("browser_world_pointer", true)
 func draw_resize_handles() -> void:
 	# All three hit regions stay outside the webpage, including its fullscreen button.
 	var page := page_rect()
@@ -491,6 +584,7 @@ func draw_resize_handles() -> void:
 		# Simple resize marks remain in the eye buffer; the distant bottom grip
 		# must not lower the title bar's compositor pixels per metre.
 		tile.node.set_meta("menu_eye_buffer", true)
+		tile.node.set_meta("browser_world_pointer", true)
 		tile.node.position.z = 0.025
 		tile.base_color = Color(0, 0, 0, 0); tile.node.material_override.set_shader_parameter("surface_color", tile.base_color)
 		# Keep the visible grips by the frame; the generous transparent targets
@@ -508,12 +602,14 @@ func draw_resize_handles() -> void:
 func end_drag() -> void:
 	drag.clear(); title_move.cancel()
 func dismiss() -> void:
+	depth_choices.reset(); depth_settings = false
 	selecting = false; end_drag(); super()
+	if browser: browser.effects_changed.emit()
 static func ray_pose(origin: Vector3, direction: Vector3) -> Transform3D:
 	var up := Vector3.FORWARD if absf(direction.normalized().dot(Vector3.UP)) > 0.99 else Vector3.UP
 	return Transform3D(Basis.looking_at(direction.normalized(), up), origin)
 func has_pointer_capture() -> bool:
-	return not browser.hand.is_empty() or browser.windows.values().any(func(item): return not item.drag.is_empty())
+	return not browser.hand.is_empty() or browser.windows.values().any(func(item): return not item.drag.is_empty() or not item.depth_choices.capture.is_empty() or (item.effect_controls and item.effect_controls.has_pointer_capture()))
 func press_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: bool) -> bool:
 	if has_pointer_capture(): return true
 	var hit := ray_hit(origin, direction) if tracked else {}
@@ -523,6 +619,8 @@ func press_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: b
 	if not hit.get("enabled", true): return true
 	var peer: Node = browser.windows.get(int(hit.get("window", window_id)), self)
 	browser.focus_window(peer.window_id)
+	if hit.get("footer", false): return peer.effect_controls.press_pointer(hand,origin,direction,tracked)
+	if peer.depth_choices.press(hand, origin, direction, tracked): return true
 	if int(hit.target) == MOVE:
 		if peer.title_move.begin(hand, "trigger", ray_pose(origin, direction),
 			[peer.move_target("browser")], to_global(hit.point), peer.head()):
@@ -543,10 +641,15 @@ func press_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: b
 		return browser.press(hand, origin, direction, tracked)
 	peer._activate(int(hit.target)); return true
 func update_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: bool) -> void:
+	for peer in browser.windows.values():
+		if peer.effect_controls:
+			peer.effect_controls.observe_ray(hand,origin,direction,tracked)
+			peer.effect_controls.drag_pointer(hand,origin,direction,tracked)
 	browser.menu.clear_pointer_visuals()
 	for peer in browser.windows.values():
 		if peer != self: peer.clear_pointer_visuals()
 	super(hand, origin, direction, tracked)
+	for peer in browser.windows.values(): peer.depth_choices.update(hand, origin, direction, tracked)
 	for peer in browser.windows.values():
 		if peer.drag.get("hand", "") != hand: continue
 		if not tracked or not origin.is_finite() or not direction.is_finite() or direction.length_squared() < 0.00001: peer.end_drag(); return
@@ -571,6 +674,12 @@ func update_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: 
 	browser.move(hand, origin, direction, tracked)
 func release_pointer(hand: String, origin: Vector3, direction: Vector3, tracked: bool) -> void:
 	for peer in browser.windows.values():
+		if peer.effect_controls and peer.effect_controls.capture_hand == hand:
+			peer.effect_controls.release_pointer(hand,origin,direction,tracked); return
+	for peer in browser.windows.values():
+		if peer.depth_choices.capture.get("hand", "") == hand:
+			peer.depth_choices.release(hand, origin, direction, tracked); return
+	for peer in browser.windows.values():
 		if peer.drag.get("hand", "") == hand:
 			if peer.drag.kind == SELECT:
 				var uv: Variant = peer.page_point(origin, direction) if tracked else null
@@ -582,10 +691,13 @@ func release_pointer(hand: String, origin: Vector3, direction: Vector3, tracked:
 	browser.release(hand, origin, direction, tracked)
 func cancel_pointer(hand: String) -> void:
 	for peer in browser.windows.values():
+		if peer.effect_controls: peer.effect_controls.cancel_pointer(hand)
+		peer.depth_choices.cancel(hand)
 		if peer.drag.get("hand", "") == hand: peer.end_drag()
 	if browser.hand == hand: browser.cancel()
 	super(hand)
 func stick_scroll(amount: float, delta: float) -> void:
+	if chrome_hidden() or has_pointer_capture(): return
 	for peer in browser.windows.values():
 		if not peer.drag.is_empty(): return
 	browser.scroll(amount, delta)

@@ -42,6 +42,8 @@ var _curved_key := Vector4.ZERO
 ## Corner brackets shown while a ray points at a corner (or drags one to resize).
 var _handles: Array[MeshInstance3D] = []
 var hovered_corner := -1
+## Fixed-world screens use the viewer's actual distance for readable corner brackets.
+var _corner_view_distance := 0.0
 var _hemisphere: ArrayMesh
 var _sphere: ArrayMesh
 const SPHERE_RADIUS := 50.0
@@ -258,7 +260,8 @@ func screen_hit(origin: Vector3, direction: Vector3) -> Variant:
 
 func set_screen_rotation(value: float) -> void:
 	if not is_finite(value): return
-	screen_rotation = clampf(value, -90.0, 90.0)
+	# Flat video supports all four orientations; immersive adjustment keeps its existing range.
+	screen_rotation = (value if absf(value) <= 180.0 else wrapf(value, -180.0, 180.0)) if geometry == Geometry.Geometry.FLAT else clampf(value, -90.0, 90.0)
 	_apply_geometry()
 
 func subtitle_transform() -> Transform3D:
@@ -315,7 +318,8 @@ func _show_handles(index: int) -> void:
 		if bracket.visible:
 			var turn := 0.0 if screen_curve <= 0.0 else _flat.size.x * 0.5 / _curve_radius() * (1.0 if corner % 2 == 1 else -1.0)
 			var mirror := Vector3(1.0 if corner % 2 == 1 else -1.0, 1.0 if corner < 2 else -1.0, 1.0)
-			bracket.transform = Transform3D(Basis(Vector3.UP, -turn) * Basis.from_scale(mirror * screen_distance / SCREEN_DISTANCE),
+			var distance := _corner_view_distance if _corner_view_distance > 0.0 else screen_distance
+			bracket.transform = Transform3D(Basis(Vector3.UP, -turn) * Basis.from_scale(mirror * distance / SCREEN_DISTANCE),
 				screen_corner(corner) + Vector3(0, 0, 0.01).rotated(Vector3.UP, -turn))
 
 ## An L outside a top-right corner (mirrored for the others).
@@ -340,8 +344,10 @@ static func _bracket() -> ArrayMesh:
 	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
 	return mesh
 
-func set_corner_hover(index: int) -> void:
-	if index != hovered_corner:
+func set_corner_hover(index: int, view_distance: float = 0.0) -> void:
+	var distance := view_distance if is_finite(view_distance) and view_distance > 0 else 0.0
+	if index != hovered_corner or not is_equal_approx(distance, _corner_view_distance):
+		_corner_view_distance = distance
 		_show_handles(index)
 
 func _unlock_mode() -> void:

@@ -93,6 +93,10 @@ var _suppressed_packed_mask := false
 var alpha_over_scenery := false
 var _cinema_alpha_overlay := false
 var _scene_overlay: RefCounted
+var _surface_front_only := false
+## Optional physical ground for screen-down captions; ordinary media has none.
+var subtitle_ground_provider: Callable
+const SurfaceFacing := preload("res://scripts/surface_facing.gd")
 ## Alpha mask edge from the player settings (AlphaEdge.bounds): shader uniform and compositor mask alike.
 var alpha_edge := Vector2(0.0, 1.0)
 ## Realtime 2D->3D: a depth model drives per-eye parallax on mono sources (never with Alpha or SBS).
@@ -123,7 +127,7 @@ func capture_cast_view() -> Dictionary:
 	var result := {}
 	for key in ImmersiveAdjustments.KEYS: result[key] = get(key)
 	for key in VideoAspect.FIELDS: result[key] = get(key)
-	for key in ["geometry", "stereo_sbs", "top_bottom", "stereo_half", "swap_eyes", "fisheye_fov", "depth_requested", "auto_depth", "depth_strength", "alpha_requested", "profile", "screen_rotation", "playback_speed", "viewing_eye", "stereo_horizontal", "stereo_vertical", "loop_enabled", "audio_track_id", "audio_delay", "subtitle_delay"]:
+	for key in ["geometry", "stereo_sbs", "top_bottom", "stereo_half", "swap_eyes", "fisheye_fov", "depth_requested", "auto_depth", "depth_strength", "alpha_requested", "profile", "screen_rotation", "viewing_eye", "stereo_horizontal", "stereo_vertical", "loop_enabled", "audio_track_id", "audio_delay", "subtitle_delay"]:
 		result[key] = get(key)
 	result.tracks = _capture_track_choices()
 	result.subtitle_below_screen = subtitle_below_screen
@@ -138,7 +142,6 @@ func restore_cast_view(value: Dictionary) -> void:
 	subtitles.set_delay(subtitle_delay)
 	_audio_delay_pending = true; _subtitle_delay_pending = true
 	_apply_geometry(); _request_revision()
-	set_playback_speed(playback_speed)
 
 func open_cast(uri: String, title: String, token: int, start_ms: int, playing: bool = true) -> bool:
 	if vr_passthrough.active(): return false
@@ -221,9 +224,12 @@ var narration := NarrationSettings.new(self)
 var listening := preload("res://scripts/live_interpretation.gd").new(self)
 var subtitle_auto_load := true
 var _subtitle_auto_pending := false
+var playback_speed := 1.0
+## Global choice survives file switches, including streams that temporarily require 1x.
+var preferred_playback_speed := 1.0
+var _cast_speed_pending := false
 ## Text subtitles: on the flat screen near its lower edge; in immersive modes floating at
 ## a video-local plane at [subtitle_distance], projected from each physical XR eye.
-var playback_speed := 1.0
 const SubtitleStyle := preload("res://scripts/subtitle_style.gd")
 var subtitle_size := 1.0:
 	set(value): subtitle_size = SubtitleStyle.size_ratio(value)
@@ -516,6 +522,7 @@ func _ready() -> void:
 	_alignment_border.render_priority = -127
 	# First photo use should not queue behind unrelated video-model cold compilation.
 	_apply_geometry()
+	_sync_surface_facing()
 
 # First use of an Alpha profile compiles/tunes GPU kernels; start it before playback.
 var rvm_warmup := {}
@@ -857,8 +864,10 @@ func open_local(uri: String, title: String, start_ms: int = 0, restore_mode: boo
 	# Alpha-packed and Alpha-wanted files say so in their names (PTMediaServer / DeoVR markers).
 	_layout_basename = basename if not basename.is_empty() else (title if not title.is_empty() else uri.uri_decode().get_file())
 	var stated := Naming.from_metadata(_layout_basename, metadata)
-	if uri.begins_with("externalvideo://") or metadata.get("external_temporary", false): stated.external_unknown = true
 	if uri.begins_with("medialib://"): stated.erase("alpha")
+	# A transient transport marker is not a recognized video format.
+	var unmarked := stated.is_empty()
+	if uri.begins_with("externalvideo://") or metadata.get("external_temporary", false): stated.external_unknown = true
 	# Internal reopens retain the live mask choice, including renamed packed sources.
 	if not pip.reopening:
 		_auto_passthrough_on_open = auto_passthrough_from_filename or alpha
@@ -879,14 +888,14 @@ func open_local(uri: String, title: String, start_ms: int = 0, restore_mode: boo
 		if not saved.is_empty():
 			# The user's own choice for this file wins over its name and shape.
 			_restore_saved_mode(saved)
-		elif not uri.begins_with("externalvideo://") and not mode_lock.is_empty() and not stated.has("geometry") and not stated.has("stereo"):
+		elif not mode_lock.is_empty() and not stated.has("geometry") and not stated.has("stereo"):
 			geometry = int(mode_lock.geometry)
 			stereo_sbs = int(mode_lock.layout) != 0
 			top_bottom = int(mode_lock.layout) in [2, 4]
 			stereo_half = int(mode_lock.layout) in [3, 4]
 			fisheye_fov = int(mode_lock.fisheye_fov)
 			swap_eyes = false
-		elif reuse_last_mode and not last_mode.is_empty() and stated.is_empty() and not uri.begins_with("externalvideo://"):
+		elif reuse_last_mode and not last_mode.is_empty() and unmarked:
 			geometry = int(last_mode.geometry)
 			stereo_sbs = int(last_mode.layout) != 0
 			top_bottom = int(last_mode.layout) in [2, 4]
@@ -894,7 +903,8 @@ func open_local(uri: String, title: String, start_ms: int = 0, restore_mode: boo
 			fisheye_fov = int(last_mode.fisheye_fov)
 			swap_eyes = bool(last_mode.swap_eyes)
 			# Keep the fallback until the first frame so actual container/spatial metadata can win.
-			_layout_pending = {"last_mode": last_mode.duplicate()}
+			_layout_pending = stated.duplicate()
+			_layout_pending.last_mode = last_mode.duplicate()
 		else:
 			geometry = int(stated.get("geometry", Geometry.Geometry.FLAT))
 			stereo_sbs = bool(stated.get("stereo", geometry in [Geometry.Geometry.HALF_EQUIRECT, Geometry.Geometry.FISHEYE]))
@@ -1007,7 +1017,10 @@ func open_local(uri: String, title: String, start_ms: int = 0, restore_mode: boo
 	listening.reset_source(uri)
 	playback_speed = 1.0
 	screen_rotation = 0.0
-	if PlatformMethods.supports(platform, "set_mpv_speed"): platform.set_mpv_speed(id, playback_speed)
+	var opening_speed := preferred_playback_speed if cast_allows("playback_speed") else 1.0
+	if media.accepts(id) and PlatformMethods.supports(platform, "set_mpv_speed") and platform.set_mpv_speed(id, opening_speed):
+		playback_speed = opening_speed
+	_cast_speed_pending = cast_token > 0 and not is_equal_approx(preferred_playback_speed, 1.0) and not cast_allows("playback_speed")
 	_open_trace.append({"stage": "dispatched", "time_ms": Time.get_ticks_msec(), "session_id": id})
 	_remember_file = restore_mode and id > 0
 	_history_started = false
@@ -1062,6 +1075,7 @@ func _unbind() -> void:
 		caption.visible = false
 
 func close_video() -> void:
+	_cast_speed_pending = false
 	_cast_auto_depth_pending = false
 	_remember_last_mode()
 	server_playback.poll(self, true)
@@ -1532,12 +1546,15 @@ func toggle_clone_voice() -> bool:
 func alpha_ready() -> bool:
 	return alpha_enabled and not media.last_pair.is_empty() and media.last_pair.get("inference_ran", false)
 
-func set_playback_speed(value: float) -> bool:
+func set_playback_speed(value: float, remember: bool = true) -> bool:
 	if not is_equal_approx(value, 1.0) and not cast_allows("playback_speed"): return false
 	if not is_finite(value) or value < 0.25 or value > 3.0 or not media.accepts(media.session_id): return false
 	if not is_equal_approx(playback_speed, value): captures.stop()
 	if not PlatformMethods.supports(platform, "set_mpv_speed") or not platform.set_mpv_speed(media.session_id, value): return false
 	playback_speed = value
+	if remember:
+		preferred_playback_speed = value
+		_cast_speed_pending = false
 	changed.emit()
 	return true
 
@@ -2739,12 +2756,14 @@ func _complete_source_layout() -> void:
 		return
 	var stated: Dictionary = _layout_pending
 	if stated.has("last_mode"):
+		var external_unknown := bool(stated.get("external_unknown", false))
 		var container_stereo := str(media.format.get("stereo_mode", "")).to_lower()
 		if container_stereo in ["sbsl", "sbsr", "sbs2l", "sbs2r", "side_by_side", "left_right", "right_left", "abl", "abr", "ab2l", "ab2r", "top_bottom", "bottom_top"]:
 			stated = {} # Decoded stereo metadata is stronger than a default for unknown files.
 			fisheye_fov = 180
 		else:
 			stated = LastMode.naming(stated.last_mode)
+		if external_unknown: stated.external_unknown = true
 	var chosen := Naming.complete(stated, int(media.format.width), int(media.format.height), media.format, _layout_basename)
 	_layout_pending = null
 	swap_eyes = chosen.swap
@@ -3012,6 +3031,9 @@ func _on_state(id: int, payload: String) -> void:
 	# bridge may already have queued mpv_error, which must belong to the retired id.
 	if _recover_layer_output(): return
 	media.state = str(report.get("state", "opening"))
+	if _cast_speed_pending and cast_allows("playback_speed"):
+		_cast_speed_pending = false
+		set_playback_speed(preferred_playback_speed, false)
 	_apply_cast_default_depth()
 	_restore_tracks()
 	if media.state == "ended":
@@ -3555,12 +3577,30 @@ func set_cinema_alpha_overlay(enabled: bool) -> void:
 	_cinema_alpha_overlay = enabled
 	_sync_portrait()
 
+## A physical outdoor screen has an opaque back. Opt in only while mounted on
+## that screen; normal media and the indoor cinema retain their original shaders.
+func set_surface_front_only(enabled: bool) -> void:
+	if _surface_front_only==enabled: return
+	_surface_front_only=enabled
+	_sync_surface_facing()
+	if panel and material: _sync_portrait()
+
+func _sync_surface_facing() -> void:
+	if caption:
+		caption.no_depth_test=not _surface_front_only
+		caption.double_sided=not _surface_front_only
+	if _depth_subtitles: _depth_subtitles.sync_surface_facing(_surface_front_only)
+	for target in [material,portrait.material,_hole_material,_alignment_border,_subtitle_material]:
+		SurfaceFacing.apply(target,_surface_front_only)
+	if _scene_overlay: SurfaceFacing.apply(_scene_overlay.material,_surface_front_only)
+
 func _sync_scene_overlay() -> void:
 	if _cinema_alpha_overlay and panel.material_override in [material, portrait.material]:
 		if not _scene_overlay: _scene_overlay = preload("res://scripts/video_scene_overlay.gd").new()
 		_scene_overlay.apply(panel, _binding, panel.material_override == portrait.material)
 	elif _scene_overlay:
 		_scene_overlay.clear(panel, _binding)
+	_sync_surface_facing()
 
 func _sync_portrait() -> void:
 	_send_portrait_depth()
@@ -4388,7 +4428,7 @@ func _reopen_at(position_ms: int, layer: bool) -> void:
 		view_horizontal = view[4]
 		view_vertical = view[5]
 		screen_rotation = rotation
-		set_playback_speed(speed)
+		set_playback_speed(speed, false)
 		_apply_stereo_view()
 		_apply_geometry()
 	_layer_return_uri = return_uri

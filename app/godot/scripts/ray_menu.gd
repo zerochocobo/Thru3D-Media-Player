@@ -197,9 +197,9 @@ func _interaction_ray(origin: Vector3, direction: Vector3) -> Array[Vector3]:
 		return [projection.eye.global_position, (endpoint - projection.eye.global_position).normalized()]
 	return [origin, direction]
 
-func project_pointer(origin: Vector3, direction: Vector3, plane: Transform3D) -> Variant:
+func project_pointer(origin: Vector3, direction: Vector3, plane: Transform3D, mono: bool = true) -> Variant:
 	if not origin.is_finite() or not direction.is_finite() or direction.length_squared() < 0.000001: return null
-	var input := _interaction_ray(origin, direction)
+	var input: Array = _interaction_ray(origin, direction) if mono else [origin, direction]
 	origin = input[0]; direction = input[1]
 	var inverse := (global_transform * plane).affine_inverse()
 	var start := inverse * origin
@@ -296,14 +296,13 @@ func _nearest_hit(origin: Vector3, direction: Vector3, surfaces: Array, best: Di
 	if not visible or not origin.is_finite() or not direction.is_finite() or direction.length_squared() < 0.000001:
 		return {}
 	var input := _interaction_ray(origin, direction)
-	origin = input[0]; direction = input[1]
-	var ray := direction.normalized()
 	for button in surfaces:
 		if (not button.enabled and not button.get("hover_disabled", false)) or not button.node.is_visible_in_tree():
 			continue
 		var inverse: Transform3D = button.node.global_transform.affine_inverse()
-		var start: Vector3 = inverse * origin
-		var delta: Vector3 = inverse.basis * ray
+		var world_pointer := _eye_buffer_pointer(button.node)
+		var start: Vector3 = inverse * (origin if world_pointer else input[0])
+		var delta: Vector3 = inverse.basis * (direction if world_pointer else input[1]).normalized()
 		# Only the front face accepts input; parallel, rear and behind-origin hits fail.
 		if delta.z >= -0.00001 or start.z <= 0.0:
 			continue
@@ -314,11 +313,18 @@ func _nearest_hit(origin: Vector3, direction: Vector3, surfaces: Array, best: Di
 		if corner.x > radius or corner.y > radius or corner.max(Vector2.ZERO).length() > radius:
 			continue
 		var world: Vector3 = button.node.global_transform * Vector3(local.x, local.y, 0)
-		var distance := origin.distance_to(world)
+		var distance := (origin if world_pointer else input[0]).distance_to(world)
 		if distance > ray_max_distance or (not best.is_empty() and distance >= float(best.distance)):
 			continue
 		best = {"target": button.target, "point": to_local(world), "distance": distance, "enabled": button.enabled}
 	return best
+
+func _eye_buffer_pointer(node: Node) -> bool:
+	while node != null:
+		if node.get_meta("browser_world_pointer", false): return true
+		if node == self: break
+		node = node.get_parent()
+	return false
 
 ## Use the current mesh size/radius: backgrounds can resize or move on every refresh.
 func pointer_hit(origin: Vector3, direction: Vector3) -> Dictionary:
@@ -581,7 +587,7 @@ func refresh_session_controls(force: bool = false) -> void:
 		var pitch:=FOOTER_DIAMETER+FOOTER_GAP
 		var lights:=str(state.get("cinema_lights","auto"))
 		_footer_button(CINEMA_LIGHTS,LIGHT_ICONS.get(lights,"light_auto"),Vector2(cinema_left+FOOTER_DIAMETER*.5,_footer_centre.y),
-			false,true,I18n.t(LIGHT_TIPS.get(lights,LIGHT_TIPS.auto)))
+			false,true,I18n.t(state.get("cinema_light_tip",LIGHT_TIPS.get(lights,LIGHT_TIPS.auto))))
 		_footer_button(FREE_MOVEMENT,"standing",Vector2(cinema_left+pitch+FOOTER_DIAMETER*.5,_footer_centre.y),
 			state.get("cinema_moving",false),true,I18n.t("Free movement"))
 	_footer_button(FOLLOW, "head_follow", Vector2(follow_left + FOOTER_DIAMETER * 0.5, _footer_centre.y),

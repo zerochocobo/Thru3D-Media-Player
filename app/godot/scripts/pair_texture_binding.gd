@@ -7,6 +7,7 @@ const PAIR_SHADER := preload("res://shaders/video_rvm_pair.gdshader")
 const DECODER_SHADER := preload("res://shaders/video_rvm_pair_oes.gdshader")
 const PORTRAIT_SHADER := preload("res://shaders/video_portrait.gdshader")
 const PORTRAIT_DECODER_SHADER := preload("res://shaders/video_portrait_oes.gdshader")
+const Facing := preload("res://scripts/surface_facing.gd")
 
 var material: ShaderMaterial
 var color_rid := RID()
@@ -43,8 +44,10 @@ func share_with(target: ShaderMaterial, parameters: Dictionary = {}, portrait: b
 	if not material or layer: return
 	if not _consumers.has(target): _consumers.append(target)
 	if parameters.is_empty(): parameters = shared_parameters()
-	var shader := (PORTRAIT_DECODER_SHADER if material.shader == DECODER_SHADER else PORTRAIT_SHADER) if portrait else material.shader
+	var canonical := Facing.source(material.shader)
+	var shader := (PORTRAIT_DECODER_SHADER if canonical == DECODER_SHADER else PORTRAIT_SHADER) if portrait else canonical
 	if shader_override: shader = shader_override
+	shader = Facing.for_material(target, shader)
 	if target.shader != shader:
 		target.shader = shader; _shared_values.erase(target.get_instance_id())
 	var values: Dictionary = _shared_values.get_or_add(target.get_instance_id(), {})
@@ -149,6 +152,7 @@ func unbind() -> Dictionary:
 
 ## Switch between the RGBA and decoder-image shader, keeping every uniform the display set.
 static func _use_shader(target: ShaderMaterial, shader: Shader) -> void:
+	shader = Facing.for_material(target, shader)
 	if target.shader == shader:
 		return
 	var values := {}

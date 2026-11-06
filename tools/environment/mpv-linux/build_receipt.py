@@ -30,6 +30,7 @@ def inputs():
     files += ['third_party/edge264-mvc/manifest.json', 'third_party/bluray/source-lock.json',
               'tools/environment/mpv-linux/mvc_patch.py', 'tools/environment/Prepare-MvcDecoder.py',
               'tools/environment/Prepare-BluraySources.py', 'tools/environment/mpv-linux/build_bluray.sh',
+              'native/mpv/patches/libudfread-metadata-file-entry.patch',
               'third_party/dvd/source-lock.json', 'tools/environment/Prepare-DvdSources.py',
               'tools/environment/mpv-linux/build_dvd.sh']
     files += [str(p.relative_to(ROOT)) for p in sorted((ROOT/'native/mpv/mvc').glob('*')) if p.suffix in ('.c', '.h')]

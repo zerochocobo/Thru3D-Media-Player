@@ -7,6 +7,100 @@ import org.vrpassthroughplayer.plugin.MediaServerClientTest.Fixture
 import org.vrpassthroughplayer.plugin.MediaServerClientTest.Reply
 
 class WebVideoHlsTest {
+    private fun clearInit(protected: Boolean=false,width: Int=1920): ByteArray {
+        fun box(type: String,data: ByteArray) = java.nio.ByteBuffer.allocate(8+data.size).putInt(8+data.size).put(type.toByteArray()).put(data).array()
+        fun trak(video: Boolean): ByteArray {
+            val sample=if(video) ByteArray(78).also { java.nio.ByteBuffer.wrap(it).putShort(24,width.toShort()).putShort(26,1080.toShort()) }+box("avcC",byteArrayOf(1,100,0,40)) else ByteArray(28)
+            val type=if(video) if(protected) "encv" else "avc1" else "mp4a"
+            val stsd=box("stsd",java.nio.ByteBuffer.allocate(8).putInt(0).putInt(1).array()+box(type,sample))
+            val mdhd=java.nio.ByteBuffer.allocate(24).putInt(12,1000).putInt(16,1000).array()
+            val hdlr=ByteArray(24).also { (if(video) "vide" else "soun").toByteArray().copyInto(it,8) }
+            return box("trak",box("mdia",box("mdhd",mdhd)+box("hdlr",hdlr)+box("minf",box("stbl",stsd))))
+        }
+        return box("ftyp","isom0000isom".toByteArray())+box("moov",trak(true)+trak(false))
+    }
+    @Test fun publishesObservedInlineMangoInitOnlyThroughARevocableLocalMap() {
+        val init=clearInit();val encoded=java.util.Base64.getEncoder().encodeToString(init)
+        Fixture { _, _, _ -> Reply(200,body=("#EXTM3U\n#EXT-X-MAP:URI=\"init.mp4\"\n"+
+            "#EXT-MGTV-X-MAP:URI=\"data:video/mp4;base64,$encoded\"\n#EXTINF:1,\nsegment.m4s\n#EXT-X-ENDLIST\n").toByteArray()) }.use { origin ->
+            LocalStreamServer().use { local ->
+                val hls=WebVideoHls(local);val url=hls.prepare(track(origin.url+"/list"));val text=read(url).toString(Charsets.UTF_8)
+                assertFalse(text.contains("data:"));assertFalse(text.contains(encoded))
+                val reference=Regex("#EXT-MGTV-X-MAP:URI=\"([^\"]+)\"").find(text)!!.groupValues[1]
+                assertArrayEquals(init,read(reference));hls.close();assertFalse(local.hasSource(reference));assertFalse(local.hasSource(url))
+            }
+        }
+    }
+    @Test fun refusesInvalidProtectedOversizedOrMismatchedInlineMangoInit() {
+        fun data(bytes: ByteArray)="data:video/mp4;base64,"+java.util.Base64.getEncoder().encodeToString(bytes)
+        val cases=listOf("data:video/mp4;base64,!!invalid",data(byteArrayOf(1,2,3)),data(clearInit(true)),data(clearInit(width=1280)),
+            data(ByteArray(256*1024+1)),data(clearInit()).replace("video/mp4","text/html"))
+        for(value in cases) {
+            Fixture { _, _, _ -> Reply(200,body=("#EXTM3U\n#EXT-MGTV-X-MAP:URI=\"$value\"\n#EXTINF:1,\nsegment.m4s\n#EXT-X-ENDLIST\n").toByteArray()) }.use { origin ->
+                LocalStreamServer().use { local -> WebVideoHls(local).use { hls ->
+                    assertThrows(Exception::class.java) { hls.prepare(track(origin.url+"/list")) }
+                } }
+            }
+        }
+    }
+
+    @Test fun rewritesObservedMangoMapReferencesAndRevokesTheirCapabilities() {
+        val init=byteArrayOf(1,3,5,7)
+        Fixture { _, headers, _ ->
+            assertNull(headers["cookie"]);assertNull(headers["authorization"])
+            Reply(200,body=init)
+        }.use { cdn -> Fixture { request, _, _ ->
+            when {
+                request.contains("/list") -> Reply(200,body=("#EXTM3U\n#EXT-X-MAP:URI=\"init.mp4?private=one\"\n"+
+                    "#EXT-MGTV-X-MAP:URI=\"${cdn.url}/alternate.mp4?private=two\"\n#EXTINF:1,\nsegment.m4s\n#EXT-X-ENDLIST\n").toByteArray())
+                else -> Reply(200,body=init)
+            }
+        }.use { origin -> LocalStreamServer().use { local ->
+            val hls=WebVideoHls(local)
+            val url=hls.prepare(track(origin.url+"/list",mapOf("Cookie" to "own=only","Authorization" to "own-only")))
+            val manifest=read(url).toString(Charsets.UTF_8)
+            assertTrue(manifest.contains("#EXT-MGTV-X-MAP:URI=\"http://127.0.0.1:"))
+            assertFalse(manifest.contains("private="));assertFalse(manifest.contains(cdn.url));assertFalse(manifest.contains(origin.url))
+            val references=Regex("URI=\"([^\"]+)\"").findAll(manifest).map { it.groupValues[1] }.toList()+manifest.lines().filter { it.startsWith("http") }
+            assertEquals(3,references.size);references.forEach { assertArrayEquals(init,read(it)) }
+            hls.close();(references+url).forEach { assertFalse(local.hasSource(it)) }
+        } } }
+    }
+
+    @Test fun mangoMapSupportKeepsUnknownAndNonHttpReferencesRejected() {
+        for(tag in listOf("#EXT-MGTV-X-MAP:URI=\"file:///private\"","#EXT-UNKNOWN:URI=\"https://example.test/unhandled\"")) {
+            Fixture { _, _, _ -> Reply(200,body=("#EXTM3U\n$tag\n#EXTINF:1,\nsegment.m4s\n#EXT-X-ENDLIST\n").toByteArray()) }.use { origin ->
+                LocalStreamServer().use { local -> WebVideoHls(local).use { hls ->
+                    assertThrows(Exception::class.java) { hls.prepare(track(origin.url+"/list")) }
+                } }
+            }
+        }
+    }
+
+    @Test fun observedInlineBodyKeepsItsTimelineWithoutFetchingAnotherAdDecision() {
+        val requests = ArrayList<String>()
+        Fixture { request, headers, _ ->
+            val path = request.split(' ')[1]
+            synchronized(requests) { requests.add(path) }
+            assertFalse("The root must come from the observed response", path.contains("playlist"))
+            if (path == "/first.ts") { assertEquals("first=only",headers["cookie"]);assertNull(headers["authorization"]) }
+            else { assertNull(headers["cookie"]);assertNull(headers["authorization"]) }
+            Reply(200,body=byteArrayOf(1,2,3,4))
+        }.use { origin -> LocalStreamServer().use { local ->
+            val headers = WebVideoRequestHeaders(mapOf(origin.url+"/first.ts" to mapOf("cookie" to "first=only")),org.json.JSONArray())
+            val body = "#EXTM3U\n#EXT-X-TARGETDURATION:30\n#EXTINF:30,\nfirst.ts\n#EXT-X-DISCONTINUITY\n#EXTINF:10,\nsecond.ts\n#EXT-X-ENDLIST\n"
+            val input = WebVideoTrack("observed",URI(origin.url+"/playlist.m3u8"),mapOf("cookie" to "api=must-not-spread"),
+                "mp4","avc1","mp4a",1280,720,24.0,transport="hls",browserHeaders=headers,browserManifest=body)
+            val hls = WebVideoHls(local)
+            val url = hls.prepare(input)
+            val text = read(url).toString(Charsets.UTF_8)
+            assertTrue(text.contains("#EXTINF:30,"));assertTrue(text.contains("#EXT-X-DISCONTINUITY"));assertTrue(text.contains("#EXTINF:10,"))
+            val resources = text.lines().filter { it.startsWith("http") }
+            assertEquals(2,resources.size);resources.forEach { assertArrayEquals(byteArrayOf(1,2,3,4),read(it)) }
+            hls.close();assertFalse(local.hasSource(url));resources.forEach { assertFalse(local.hasSource(it)) }
+            assertEquals(listOf("/first.ts","/second.ts"),requests)
+        } }
+    }
     private fun track(url: String, headers: Map<String, String> = emptyMap()) = WebVideoTrack("hls", URI(url), headers,
         "mp4", "avc1.640028", "mp4a.40.2", 1920, 1080, 30.0, transport = "hls")
     private fun read(url: String) = URI(url).toURL().openStream().use { it.readBytes() }

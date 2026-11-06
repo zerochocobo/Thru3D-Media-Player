@@ -3,6 +3,9 @@ const Chinese := preload("res://scripts/chinese_input.gd")
 const Editor := preload("res://scripts/system_text_input.gd")
 const I18n := preload("res://scripts/i18n.gd")
 const Capture := preload("res://scripts/menu_composition.gd")
+class HookOwner extends Node:
+	func head() -> Transform3D: return Transform3D.IDENTITY
+	func opened() -> void: pass
 class InputMain extends "res://scripts/main.gd":
 	var aim: Variant = null
 	func _ready() -> void: pass
@@ -94,7 +97,17 @@ func run() -> void:
 		var glyphs: Array = button.node.get_children().filter(func(node): return node is MeshInstance3D)
 		check(glyphs.size() == 1 and is_equal_approx(glyphs[0].mesh.size.x, Chinese.Keyboard.KEY_ICON_SIZE), "Function key uses the same vector size: %d" % target)
 	check(Chinese.popup.find_children("*", "Label3D", true, false).all(func(label): return label.font_size == Chinese.Keyboard.KEY_FONT_SIZE * Chinese.popup.TEXT_RASTER_SCALE), "Latin, Hanzi and preedit share one font size")
-	Chinese.configure(false); Chinese.head_provider = Callable(); Chinese.popup.free()
+	var old_owner := HookOwner.new(); var new_owner := HookOwner.new()
+	Chinese.head_provider=new_owner.head; Chinese.on_open=new_owner.opened
+	Chinese.popup.head_provider=old_owner.head
+	Chinese.release_host(old_owner)
+	check(Chinese.head_provider==new_owner.head and Chinese.on_open==new_owner.opened,"Disposing an older host preserves the newer host's static hooks")
+	check(not Chinese.popup.head_provider.is_valid(),"Popup releases its old host's head callback")
+	Chinese.popup.head_provider=new_owner.head
+	Chinese.release_host(new_owner)
+	check(not Chinese.head_provider.is_valid() and not Chinese.on_open.is_valid() and not Chinese.popup.head_provider.is_valid(),"Disposing the current host clears all owned callbacks")
+	old_owner.free(); new_owner.free()
+	Chinese.configure(false); Chinese.popup.free()
 	check(capture.menus.is_empty(), "Freeing the keyboard unregisters its composition callbacks")
 	host.queue_free(); main.queue_free(); await process_frame
 	print("Chinese keyboard controls checks=%d failures=%d" % [checks, failures.size()])

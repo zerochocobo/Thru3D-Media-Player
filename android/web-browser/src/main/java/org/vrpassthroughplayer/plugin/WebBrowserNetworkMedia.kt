@@ -12,7 +12,7 @@ object WebBrowserNetworkMedia {
         URI(value).also { require(it.scheme in setOf("http", "https") && !it.host.isNullOrEmpty() && it.rawUserInfo == null && it.fragment == null) }
     }.getOrNull()
 
-    fun candidates(item: JSONObject): JSONArray {
+    fun candidates(item: JSONObject, includeSegments: Boolean = false): JSONArray {
         val result = JSONArray()
         if (item.optBoolean("protected")) return result
         val list = item.optJSONArray("network") ?: return result
@@ -21,7 +21,7 @@ object WebBrowserNetworkMedia {
             val source = list.optJSONObject(i) ?: continue
             val uri = address(source.optString("url")) ?: continue
             val kind = source.optString("kind")
-            if (kind !in setOf("file", "hls", "dash")) continue
+            if (kind !in setOf("file", "hls", "dash") && !(includeSegments && kind == "segment")) continue
             val input = source.optJSONObject("headers") ?: JSONObject()
             if (input.length() > 24 || input.toString().length > 32768) continue
             val headers = JSONObject()

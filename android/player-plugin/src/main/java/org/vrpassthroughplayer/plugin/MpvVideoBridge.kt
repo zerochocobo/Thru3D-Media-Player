@@ -479,15 +479,17 @@ internal class MpvVideoBridge(
                     result
                 } else null
                 val mkv = if (!iso && MkvMvcPreflight.candidate(uri, resolved, path, documentName)) {
-                    val probe = synchronized(host) {
-                        check(!host.closing && !stopped) { "MKV probe cancelled" }
-                        MpvSourceNative.beginDiscProbe().also { host.discProbe = it }
-                    }
-                    try { MkvMvcPreflight.parse(MpvSourceNative.probeMkvMvc(probe, path, tlsCaFile)) }
-                    finally {
-                        synchronized(host) { host.discProbe = 0 }
-                        MpvSourceNative.closeDiscProbe(probe)
-                    }
+                    MkvMvcPreflight.inspect({
+                        val probe = synchronized(host) {
+                            check(!host.closing && !stopped) { "MKV probe cancelled" }
+                            MpvSourceNative.beginDiscProbe().also { host.discProbe = it }
+                        }
+                        try { MpvSourceNative.probeMkvMvc(probe, path, tlsCaFile) }
+                        finally {
+                            synchronized(host) { host.discProbe = 0 }
+                            MpvSourceNative.closeDiscProbe(probe)
+                        }
+                    }) { android.util.Log.w("QuestPlayer", "MKV header unavailable; using ordinary playback", it) }
                 } else null
                 if (host.closing || stopped) return@post
                 host.markStartup("mvc_header_ms")

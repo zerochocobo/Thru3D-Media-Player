@@ -149,6 +149,10 @@ if ($IncludeDiagnostics) {
     $diagnosticPresets = [IO.File]::ReadAllText($exportPresetsPath).Replace('exclude_filter="tests/*,media/*"', 'exclude_filter="tests/*"').Replace('include_filter="i18n/*.json,', 'include_filter="media/*.mp4,i18n/*.json,')
     [IO.File]::WriteAllText($exportPresetsPath, $diagnosticPresets, [Text.UTF8Encoding]::new($false))
 }
+if ($BuildType -eq 'Debug') {
+    if ($null -eq $originalExportPresets) { $originalExportPresets = [IO.File]::ReadAllBytes($exportPresetsPath) }
+    & "$PSScriptRoot/environment/Prepare-DebugModelExport.ps1" -PresetsPath $exportPresetsPath
+}
 $artifactDirectory = Join-Path $workspace 'build/output'
 $logDirectory = Join-Path $artifactDirectory 'logs'
 New-Item -ItemType Directory -Path $logDirectory -Force | Out-Null
@@ -161,6 +165,7 @@ if ($UsePreparedModelAssets) {
     & "$workspace\tools\models\Prepare-RvmCandidate.ps1" -ToolRoot $ToolRoot
 }
 & "$workspace\tools\environment\Prepare-MpvAndroid.ps1" -ToolRoot $ToolRoot -Candidate $MpvCandidate
+& "$workspace\tools\environment\Prepare-Airplay.ps1" -ToolRoot $ToolRoot
 & "$workspace\tools\environment\Prepare-Narration.ps1"
 & "$workspace\tools\environment\Prepare-NarrationModels.ps1"
 & "$workspace\tools\environment\Prepare-Listening.ps1"
@@ -190,6 +195,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Android plugin build failed; inspect build/out
 $pluginDirectory = Join-Path $projectDirectory 'addons\quest_player\bin'
 New-Item -ItemType Directory -Path $pluginDirectory -Force | Out-Null
 foreach ($variant in @('debug','release')) {
+    & "$PSScriptRoot\Assert-AirplayPackaged.ps1" -ArchivePath "$workspace\android\player-plugin\build\outputs\aar\player-plugin-$variant.aar"
     & "$PSScriptRoot\Assert-NarrationPackaged.ps1" -ArchivePath "$workspace\android\player-plugin\build\outputs\aar\player-plugin-$variant.aar"
     & "$PSScriptRoot\Assert-ComicJapanesePackaged.ps1" -ArchivePath "$workspace\android\player-plugin\build\outputs\aar\player-plugin-$variant.aar"
     & "$PSScriptRoot\Assert-ListeningPackaged.ps1" -ArchivePath "$workspace\android\player-plugin\build\outputs\aar\player-plugin-$variant.aar"
@@ -249,8 +255,8 @@ $exportArguments = @('--headless','--xr-mode','off','--path',$projectDirectory)
 $androidBuildScript = Join-Path $projectDirectory 'android\build\build.gradle'
 $androidTemplateVersion = Join-Path $projectDirectory 'android\.build_version'
 if (-not (Test-Path -LiteralPath $androidBuildScript) -or -not (Test-Path -LiteralPath $androidTemplateVersion)) {
-    & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --install-android-build-template --editor --quit-after 600 2>&1 | Out-File (Join-Path $logDirectory 'android-template.log') -Encoding utf8
-    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $androidBuildScript) -or -not (Test-Path -LiteralPath $androidTemplateVersion)) { throw 'Android build template installation failed.' }
+    & "$PSScriptRoot/environment/Prepare-GodotAndroidTemplate.ps1" -ToolRoot $ToolRoot -ProjectDirectory $projectDirectory | Out-File (Join-Path $logDirectory 'android-template.log') -Encoding utf8
+    if (-not (Test-Path -LiteralPath $androidBuildScript) -or -not (Test-Path -LiteralPath $androidTemplateVersion)) { throw 'Android build template installation failed.' }
 }
 if ($XrVendor -eq 'Pico') {
     # Stock selection remains first; the extra candidate path is gated to the PICO ranchu emulator.
@@ -518,8 +524,9 @@ try {
     & "$PSScriptRoot\Assert-WebVideoPackaged.ps1" -ArchivePath $apkPath
     & (Join-Path $workspace '.venv/Scripts/python.exe') (Join-Path $PSScriptRoot 'Build-ChineseLexicon.py') --check --archive $apkPath
     if ($LASTEXITCODE -ne 0) { throw 'Packaged Chinese keyboard lexicon or notices differ.' }
-    # Test auditorium is included in both Debug and Release (2026-10-23).
+    # Beach modeling is kept out of ordinary/diagnostic Debug packages.
     & "$PSScriptRoot\Assert-CinemaPackaged.ps1" -ArchivePath $apkPath
+    & "$PSScriptRoot\Assert-PrivateBeachPackaged.ps1" -ArchivePath $apkPath -ExpectExcluded:($BuildType -eq 'Debug')
     $rvmLibrary = Join-Path $nativeEvidenceDirectory 'libquest_rvm.so'
     [IO.Compression.ZipFileExtensions]::ExtractToFile($nativeEntry, $rvmLibrary, $true)
 } finally { $apkArchive.Dispose() }

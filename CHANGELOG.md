@@ -4,6 +4,17 @@
 
 Newest first, following product release milestones. Some development/source snapshots contained features before their product release. Original APK identifiers `0.2` and `0.4` are retained; `0.4` was also called `0.4.0` in release notes. Availability depends on device, server and media capabilities.
 
+## 0.17.0 — 2026-11-07
+
+- Add experimental browser-page/focused-region 2D-to-3D and person passthrough, separately or combined, with depth strength/position/render controls. Improve focused picking, lower-page control placement, sharpness, cold-start feedback and automatic collapse of idle strength popups. Device, page, protection and performance limits apply.
+- Add experimental AirPlay mirror reception in an independent movable/resizable window with distance and audio controls. Improve PIN pairing validation, image clarity, audio, persisted reception state, portrait/landscape surface transitions and initial placement. Collect DLNA/AirPlay reception switches and statuses at the bottom of the library sidebar; no certification, DRM or universal phone compatibility claim.
+- Add compatible Weibo, Tencent Video and Mango TV Play Beta handoffs alongside Bilibili, prefer Beta on adapted sites and provide larger in-page actions. Bind actually observed current-media responses, including supported HEVC/transport-stream/inline initialization, retain original browser documents where supported and restore playhead on return. This does not establish support for all programmes, subscription/region/protected streams or unchanged-URL cases. Douyin remains temporarily unavailable.
+- Add a hover-only lower-left flat-video rotation control: drag or hold either arrow and release to the nearest 90°; the other three corners resize. Allow cinema picture resizing from corners with concise blocked-operation feedback; improve film-light sampling and cut response.
+- Remember playback speed globally across videos/restarts and apply last/fixed projection preferences when opening external videos. Explain panorama format/aspect/size requirements and surface individual/batch import failures.
+- Project intermittent AAudio timestamps to the current clock to improve video pacing after the Quest v29 update; retain bounded reset waits. Tested observations do not establish all-device, all-speed, headset-audio or absolute lip-sync acceptance, and high-load 8K accelerated playback remains limited.
+- Fall back to ordinary playback when bounded MKV header inspection fails, retaining the possibility that an unidentified MVC file opens as 2D; read eligible UDF metadata stored as a plain File Entry in Blu-ray images. Reduce panorama texture growth across background changes and release player-owned keyboard callbacks on exit.
+- Version 0.16.9 was skipped. Private-beach modeling/desktop studies, scene/texture payloads and new photo-model research are not advertised released features or included assets. Model weights, signing material, credentials, private media/backups/settings and internal development/promotion material remain excluded; 3D text protection remains off.
+
 ## 0.16.8 — 2026-11-05
 
 - Add six UI palettes and custom background/accent/text colors, with preview, apply/cancel, quick switching and saved preferences. Improve light-theme text, icons, swatches and footer-logo grayscale; retain media/subtitle colors and the classic palette. Glass menus remain research, not a released feature.

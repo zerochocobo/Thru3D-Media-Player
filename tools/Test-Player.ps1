@@ -171,6 +171,8 @@ if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'playback-stal
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'refresh-policy.log') -Raw) -notmatch 'Refresh policy: [0-9]+ checks, 0 failures') { throw 'Video refresh-rate policy regression failed.' }
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_diagnostic_log_rotation.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'diagnostic-log-rotation.log')
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'diagnostic-log-rotation.log') -Raw) -notmatch 'Diagnostic log rotation: [0-9]+ checks, 0 failures') { throw 'Diagnostic event log rotation regression failed.' }
+& $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_playback_diagnostics.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'playback-diagnostics.log')
+if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'playback-diagnostics.log') -Raw) -notmatch 'Playback diagnostics: [0-9]+ checks, 0 failures') { throw 'Playback diagnostic window regression failed.' }
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_layer_cadence.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'layer-cadence.log')
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'layer-cadence.log') -Raw) -notmatch 'Layer cadence: [0-9]+ checks, 0 failures') { throw 'Layer cadence runtime gate regression failed.' }
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 2400 --script res://tests/test_dropdown_composition.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'dropdown-composition.log')
@@ -388,6 +390,8 @@ if ($LASTEXITCODE -ne 0) { throw 'Media naming host regression failed.' }
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'spatial-videos-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|ERROR:)') { throw 'Spatial video layout regression failed.' }
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_spatial_video_metadata.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'spatial-video-metadata-host.log')
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'spatial-video-metadata-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)') { throw 'Spatial video metadata regression failed.' }
+& $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_playback_speed_memory.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'playback-speed-memory-host.log')
+if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'playback-speed-memory-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)') { throw 'Global playback speed memory regression failed.' }
 & $env:GODOT_EXE --headless --xr-mode off --path $projectDirectory --quit-after 1800 --script res://tests/test_playback_settings.gd 2>&1 | Tee-Object -FilePath (Join-Path $logDirectory 'playback-settings-host.log')
 if ($LASTEXITCODE -ne 0 -or (Get-Content (Join-Path $logDirectory 'playback-settings-host.log') -Raw) -match '(?m)^(SCRIPT ERROR:|SHADER ERROR:|ERROR:)') { throw 'Playback settings regression failed.' }
 # Alpha-packed fisheye files decoded by the MPV pair shader (desktop OpenGL).

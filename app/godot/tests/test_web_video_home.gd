@@ -37,10 +37,11 @@ func _run() -> void:
 	check(first_cards.size() == 15, "Compact featured page holds fifteen sites")
 	for card in first_cards:
 		var site: Dictionary = Sites.FEATURED[card.target - Home.SITE_BASE]
-		check(card.node.has_node("NativePlaybackBadge") == Sites.supports_native(site), "Only supported sites show the player badge: " + site.name)
+		check(card.node.has_node("PlayBetaBadge") == Sites.supports_beta(site), "Adapted sites show the Beta triangle: " + site.name)
+		check(card.node.has_node("NativePlaybackBadge") == (Sites.supports_native(site) and not Sites.supports_beta(site)), "Other supported sites retain their original badge: " + site.name)
 		var labels: Array = card.node.get_children().filter(func(node): return node is Label3D and not node.text.is_empty())
 		check(labels.size() == 1 and is_zero_approx(labels[0].position.y) and labels[0].horizontal_alignment == HORIZONTAL_ALIGNMENT_LEFT, "Site name sits beside the icon")
-		check(menu._tips[card.target] == I18n.t(site.name) + "\n" + (I18n.t(Home.NATIVE_TIP) if Sites.supports_native(site) else str(site.url)), "Hover describes partial native support or the site address")
+		check(menu._tips[card.target] == I18n.t(site.name) + "\n" + (I18n.t("Play in player (Beta)") if Sites.supports_beta(site) else I18n.t(Home.NATIVE_TIP) if Sites.supports_native(site) else str(site.url)), "Hover describes the correct playback path or site address")
 	check(not Sites.supports_native(Sites.FEATURED[17]) and not Sites.supports_native(Sites.FEATURED[18]), "iQIYI and Douyin are browser entries without a native support claim")
 	menu._activate(Home.SITE_BASE + 18)
 	check(menu.web_browser.opened and platform.browser.url == "https://www.douyin.com/", "Douyin card opens its website")

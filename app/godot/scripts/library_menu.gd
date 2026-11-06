@@ -3129,6 +3129,10 @@ func _draw() -> void:
 		if is_instance_valid(device_status): device_status.visible = false
 		web_browser.refresh_windows(); return
 	if is_instance_valid(device_status): device_status.visible = true
+	if not str(cast_state.get("airplay_pin", "")).is_empty():
+		_side.visible = false; _backdrop.visible = true
+		_set_backdrop(Vector2(1.16, 0.34), Vector2.ZERO)
+		CastPanel.draw_pairing(self, str(cast_state.airplay_pin)); return
 	if not cast_state.get("pending", {}).is_empty() or cast_state.get("return_available", false):
 		_side.visible = false; _backdrop.visible = true
 		_set_backdrop(Vector2(1.16, 0.34), Vector2.ZERO)
@@ -3174,9 +3178,12 @@ func _draw() -> void:
 		_block_rays(column, Vector2(0.42, 1.12))
 		var navigation: Array = [Section.LOCAL, Section.SMB, Section.DLNA, Section.CLOUD] if image_picker_mode or voice_picker_mode else [Section.LOCAL, Section.SMB, Section.CLOUD] if audio_import_mode or subtitle_picker_mode else NAV_ORDER
 		if not Distribution.web_browser_enabled(): navigation = navigation.filter(func(item): return item != Section.WEB)
+		var receive_toggle := not (image_picker_mode or voice_picker_mode or audio_import_mode or subtitle_picker_mode) and PlatformMethods.supports(platform, "dlna_receiver_enable")
+		var navigation_span := 0.70 if receive_toggle else 0.80
 		for position in navigation.size():
 			var i: int = navigation[position]
-			_nav_button(NAV_BASE + i, I18n.t(NAV[i]), NAV_ICONS[i], Vector2(0, 0.36 - position * minf(0.13, 0.80 / maxf(1, navigation.size() - 1))), i == section, "Beta" if i == Section.WEB else "")
+			_nav_button(NAV_BASE + i, I18n.t(NAV[i]), NAV_ICONS[i], Vector2(0, 0.36 - position * minf(0.13, navigation_span / maxf(1, navigation.size() - 1))), i == section, "Beta" if i == Section.WEB else "", 0.088 if receive_toggle else 0.11)
+		if receive_toggle: CastPanel.draw_sidebar_toggle(self, cast_state, _side)
 	if not controls_page.active():
 		var footer_y := -0.80 if (section == Section.MEDIA_SERVER and not archives.browsing) and server_browser.focused() else -0.65
 		if web_video.home.active(): footer_y = web_video.home.footer_y()
@@ -3261,9 +3268,6 @@ func _draw() -> void:
 		_tips[CLEAR_HISTORY] = I18n.t("Clear history")
 	if not archives.browsing and section == Section.DLNA:
 		if not subtitle_picker_mode and not image_picker_mode and not audio_import_mode and not voice_picker_mode and PlatformMethods.supports(platform, "dlna_receiver_enable"):
-			var receiving: bool = cast_state.get("enabled", false)
-			_button(CastPanel.TOGGLE, I18n.t("Receiving casts" if receiving else "Receive video"), _action_position(0.43), Vector2(0.32, 0.07), true, "", receiving)
-			_tips[CastPanel.TOGGLE] = I18n.t("Cast reception is on.\nChoose %s from your phone's cast list. Click to turn off." if receiving else "Enable cast reception, then choose %s from your phone's cast list.") % str(cast_state.get("name", "Thru3D"))
 			CastPanel.draw(self, cast_state, -0.79)
 		if _dlna_server.is_empty():
 			_button(ADD, "", Vector2(0.69, 0.46), Vector2(0.09, 0.07), PlatformMethods.supports(platform, "media_dlna_save"), "plus")
@@ -3358,7 +3362,7 @@ func _draw() -> void:
 func _align_folder_tools() -> void:
 	if not browser_content() or (section == Section.RECENT and not archives.browsing): return
 	var tools: Array[Dictionary] = []
-	for target in [CastPanel.TOGGLE, FileActions.SORT, FileActions.EDIT_MODE, EJECT_STORAGE, USB_STORAGE, ALL_FILES, CloudSearch.OPEN, SubtitleFilter.OPEN, EDIT, REFRESH, VIEW_LIST, VIEW_GRID]:
+	for target in [FileActions.SORT, FileActions.EDIT_MODE, EJECT_STORAGE, USB_STORAGE, ALL_FILES, CloudSearch.OPEN, SubtitleFilter.OPEN, EDIT, REFRESH, VIEW_LIST, VIEW_GRID]:
 		for button in _buttons:
 			if button.target == target and is_equal_approx(button.rect.get_center().y, 0.445): tools.append(button)
 	var right := 0.845
@@ -3918,8 +3922,8 @@ func _row_button(target: int, title: String, detail: String, icon: String, centr
 		info.modulate = MUTED
 
 ## Navigation entry on the angled column: the current one is lit by colour, not a solid fill.
-func _nav_button(target: int, text: String, icon: String, centre: Vector2, selected: bool, badge: String = "") -> void:
-	_button(target, text, centre, Vector2(0.36, 0.11), true, "", false, _side)
+func _nav_button(target: int, text: String, icon: String, centre: Vector2, selected: bool, badge: String = "", height: float = 0.11) -> void:
+	_button(target, text, centre, Vector2(0.36, height), true, "", false, _side)
 	var button: Dictionary = _buttons.back()
 	button.base_color = SELECTED if selected else Color(TILE, 0.0)
 	var node: MeshInstance3D = button.node

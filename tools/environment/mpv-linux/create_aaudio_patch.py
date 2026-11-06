@@ -6,6 +6,11 @@ position, its reported delay grows by one second per second, the audio clock sto
 (synced to it) freezes while sound continues. The patch follows the frames the stream consumed
 whenever no timestamp is available, offset by the gap last measured from a real one.
 
+A timestamp is the position at present_time, not now. Quest v29 publishes it only every 50 ms, so
+using the position alone made the delay a 68-114 ms sawtooth that jumped up to 50 ms; video synced
+to that clock was released late or in pairs and dropped (41 latched frames/s for 60 fps). The
+position is projected to the current time: 64.0-65.6 ms in the same measurement.
+
 reset() (seeks, track changes and the end of every file) waited without limit for the stream to
 leave a transitional state. On Quest 3 a stream whose start the system mixer never took stayed in
 STARTING: closing that file blocked the playback core in reset(), mpv_terminate_destroy waited on
@@ -37,7 +42,15 @@ def edit(text):
     rep("    int64_t presented;\n    int64_t discarded;\n",
         "    int64_t presented;\n    int64_t discarded;\n"
         "    // Frames read by the stream but not yet presented, from the last valid timestamp.\n"
-        "    int64_t read_gap;\n")
+        "    int64_t read_gap;\n"
+        "    // CLOCK_MONOTONIC time of the last start or resume request.\n"
+        "    int64_t started_ns;\n")
+    rep("    p->discarded = p->AAudioStream_getFramesWritten(p->stream) - p->presented;\n",
+        "    p->discarded = p->AAudioStream_getFramesWritten(p->stream) - p->presented;\n"
+        "    p->started_ns = monotonic_ns();\n")
+    rep("    aaudio_result_t result = paused\n",
+        "    if (!paused)\n        p->started_ns = monotonic_ns();\n\n"
+        "    aaudio_result_t result = paused\n")
     rep("""    int64_t written = p->AAudioStream_getFramesWritten(stream);
 
     if ((result = p->AAudioStream_getTimestamp(stream, CLOCK_MONOTONIC, &presented, &present_time)) < 0) {
@@ -51,21 +64,39 @@ def edit(text):
     // AAudio counts flushed frames as read; the timestamp position excludes them.
     int64_t read = p->AAudioStream_getFramesRead(stream);
 
-    if ((result = p->AAudioStream_getTimestamp(stream, CLOCK_MONOTONIC, &presented, &present_time)) < 0) {
+    result = p->AAudioStream_getTimestamp(stream, CLOCK_MONOTONIC, &presented, &present_time);
+    int64_t now_ns = monotonic_ns();
+    if (result < 0) {
         MP_TRACE(ao, "AAudioStream_getTimestamp() returned %s\\n",
                  p->AAudio_convertResultToText(result));
         // Some devices never report a timestamp again after a flush while the stream keeps
         // playing. A stale position would grow the delay with every write and stop the audio
         // clock (video then freezes on it). Follow the frames the stream consumed instead.
         presented = MPMAX(p->presented, read - p->discarded - p->read_gap);
-        struct timespec now;
-        clock_gettime(CLOCK_MONOTONIC, &now);
-        present_time = now.tv_sec * INT64_C(1000000000) + now.tv_nsec;
-    } else {
-        p->read_gap = MPCLAMP(read - (presented + p->discarded), 0, ao->samplerate);
+        present_time = now_ns;
     }
     p->presented = presented;
+
+    // The position belongs to present_time, which can be tens of ms old: project it to now, or
+    // the delay below is a sawtooth at the timestamp's update rate and video judders on it. Only a
+    // timestamp taken since this stream (re)started and close to now is projected: an older one
+    // describes a stream that was not moving, and a far-off one is not a usable clock reading.
+    int64_t age = now_ns - present_time;
+    if (present_time < p->started_ns || llabs(age) > MAX_TIMESTAMP_PROJECTION_NS)
+        age = 0;
+    int64_t played = MPMIN(presented + age * ao->samplerate / INT64_C(1000000000), written - p->discarded);
+    if (result >= 0)
+        p->read_gap = MPCLAMP(read - (played + p->discarded), 0, ao->samplerate);
 """)
+    rep("    end_time += MP_TIME_S_TO_NS(written - (presented + p->discarded)) / ao->samplerate;\n",
+        "    end_time += MP_TIME_S_TO_NS(written - (played + p->discarded)) / ao->samplerate;\n")
+    rep("static aaudio_data_callback_result_t data_callback(AAudioStream *stream, void *context,\n",
+        "#define MAX_TIMESTAMP_PROJECTION_NS INT64_C(200000000)\n\n"
+        "static int64_t monotonic_ns(void)\n{\n"
+        "    struct timespec now;\n"
+        "    clock_gettime(CLOCK_MONOTONIC, &now);\n"
+        "    return now.tv_sec * INT64_C(1000000000) + now.tv_nsec;\n}\n\n"
+        "static aaudio_data_callback_result_t data_callback(AAudioStream *stream, void *context,\n")
     # The recording watermark: an estimated position keeps a recording's audio flowing too.
     rep("""    // Only the hardware presentation watermark releases submitted samples to a recording.
     if (result >= 0)
@@ -105,7 +136,8 @@ def main():
     subprocess.run(['git', 'apply', '--check', str(patch_path)], cwd=mpv, check=True)
     record = {
         'purpose': 'AAudio clock without timestamps after a flush (seek freeze: audio plays, video frozen); '
-                   'bounded reset waits (a stream stuck in STARTING blocked teardown and leaked the player slot)',
+                   'bounded reset waits (a stream stuck in STARTING blocked teardown and leaked the player slot); '
+                   'timestamp position projected to now (Quest v29 updates it every 50 ms: clock sawtooth, video judder)',
         'capture_patch_sha256': capture['patch_sha256'],
         'base_files_sha256': {NAME: sha_bytes(source)},
         'patched_files_sha256': {NAME: sha_bytes(after.encode())},

@@ -5,6 +5,20 @@ import org.junit.Test
 import org.json.JSONObject
 
 class WebBrowserMediaPolicyTest {
+    @Test fun explicitBilibiliButtonKeepsItsExactReadyPartAcrossPause() {
+        val page="https://www.bilibili.com/video/BV1234567890/"
+        val main=JSONObject().put("capture_identity","clicked:cid123").put("frame",page)
+            .put("bilibili_enabled",true).put("bilibili_ready",true)
+            .put("bilibili",JSONObject().put("page",page).put("cid","123"))
+        val preview=JSONObject(main.toString()).put("capture_identity","preview").put("playing",true).put("fullscreen",true)
+        assertSame(main,WebBrowserMediaPolicy.selectedCandidate(listOf(preview,main),"clicked:cid123"))
+        main.put("playing",false)
+        assertSame(main,WebBrowserMediaPolicy.selectedCandidate(listOf(preview,main),"clicked:cid123"))
+        for (item in listOf(JSONObject(main.toString()).put("bilibili_ready",false),
+            JSONObject(main.toString()).put("protected",true),JSONObject(main.toString()).put("bilibili_enabled",false),
+            JSONObject(main.toString()).put("capture_identity","changed:cid456"),JSONObject(main.toString()).put("frame",page+"?p=2")))
+            assertNull(WebBrowserMediaPolicy.selectedCandidate(listOf(item,preview),"clicked:cid123"))
+    }
     @Test fun boundBilibiliPartWinsOverPlayingOrLargerPreviews() {
         val main = JSONObject().put("bilibili_enabled", true).put("bilibili", JSONObject())
             .put("width", 852).put("height", 480).put("playing", false)

@@ -31,3 +31,6 @@ if (providers.gradleProperty('includeUriFixture').orNull == 'true') { include ':
 
 // Local-only WebView regression APK; shares the production viewport without XR/native libraries.
 if (providers.gradleProperty('includeWebLoginFixture').orNull == 'true') { include ':web-login-fixture' }
+
+// Local emulator-only Gecko diagnostics; never a player dependency or distribution target.
+if (providers.gradleProperty('includeWebGeckoFixture').orNull == 'true') { include ':web-gecko-fixture' }

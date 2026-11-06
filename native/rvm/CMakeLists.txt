@@ -39,6 +39,7 @@ if(QUEST_NARRATION_ENABLED)
 endif()
 add_subdirectory("${CMAKE_CURRENT_LIST_DIR}/../xr-layer" "xr-layer")
 add_subdirectory("${CMAKE_CURRENT_LIST_DIR}/../usb" "usb")
+add_subdirectory("${CMAKE_CURRENT_LIST_DIR}/../airplay" "airplay")
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     # Standalone diagnostic target, never packaged in the library/APK.
     add_executable(photo_depth_probe EXCLUDE_FROM_ALL ../../tests/native/photo_depth_probe.cpp photo_depth.cpp depth_stabilizer.cpp)

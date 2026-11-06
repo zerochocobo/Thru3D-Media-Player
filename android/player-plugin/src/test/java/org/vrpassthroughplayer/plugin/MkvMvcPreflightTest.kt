@@ -21,4 +21,16 @@ class MkvMvcPreflightTest {
         }
         assertTrue(runCatching { MkvMvcPreflight.parse("""{"mvc":true}""") }.isFailure)
     }
+    @Test fun failedInspectionKeepsOrdinaryPlayback() {
+        val failures = mutableListOf<Throwable>()
+        val unreadable = IllegalStateException("MKV header preflight failed: -1094995529")
+        assertNull(MkvMvcPreflight.inspect({ throw unreadable }, failures::add))
+        assertNull(MkvMvcPreflight.inspect({ """{"mvc":true,"width":7680,"height":2160}""" }, failures::add))
+        assertSame(unreadable, failures.first())
+        assertEquals(2, failures.size)
+    }
+    @Test fun confirmedMvcStillSelectsItsRoute() {
+        assertEquals(MkvMvcPreflight.Result(3840,1080), MkvMvcPreflight.inspect({ """{"mvc":true,"width":3840,"height":1080}""" }) { throw it })
+        assertNull(MkvMvcPreflight.inspect({ """{"mvc":false,"width":0,"height":0}""" }) { throw it })
+    }
 }

@@ -31,6 +31,7 @@ function summarize(item) {
     current_part: !!data && group(value) === data.cid,
     api_video: tracks('video').includes(value), api_audio: tracks('audio').includes(value)});
   return {page_path: new URL(item.frame).pathname, part: Number(new URL(item.frame).searchParams.get('p') || 1), width: item.width, height: item.height, duration: item.duration, playing: item.playing,
+    id:item.id,epoch:item.network_epoch,cid:data?.cid,ready:item.bilibili_ready,beta_click:item.bilibili_request || 0,
     time: item.time, binding: item.bilibili_binding, response_status: item.bilibili_status,
     api_count: item.bilibili_api_count, view_count: item.bilibili_view_count, metadata: !!data, api_events: apiEvents, normalized_shapes: normalizedShapes,
     video_representations: data?.video.length || 0, audio_representations: data?.audio.length || 0,

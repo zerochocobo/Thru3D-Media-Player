@@ -43,5 +43,15 @@
     "meson": "1.11.0",
     "ninja": "1.11.1",
     "sources": "third_party/mpv/source-lock.json"
-  }
+  },
+  "downloads": [
+    {
+      "name": "Godot Android templates",
+      "version": "4.7.2.stable",
+      "bytes": 1281349702,
+      "sha256": "f298490b8d44d934be425a5a65a51bf15f422428b229a06a6e11d9ffea248011",
+      "url": "https://github.com/godotengine/godot-builds/releases/download/4.7.2-stable/Godot_v4.7.2-stable_export_templates.tpz",
+      "path": "Godot_v4.7.2-stable_export_templates.tpz"
+    }
+  ]
 }

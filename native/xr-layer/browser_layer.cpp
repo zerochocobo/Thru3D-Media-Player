@@ -16,24 +16,27 @@ struct BrowserLayer {
     jobject surface = nullptr;
     int width = 0, height = 0;
     XrCompositionLayerQuad quad{};
+    std::array<XrCompositionLayerQuad, 2> eyes{};
     XrCompositionLayerImageLayoutFB layout{};
 };
 // Accessed only on Godot's frame thread, like VideoLayer's provider addresses.
-// Four ordinary browser slots plus one isolated account-login surface.
-std::array<BrowserLayer, 5> layers;
-BrowserLayer* slot(int id) { return id >= 1 && id <= 5 ? &layers[id - 1] : nullptr; }
+// Four browser slots, one login surface, and two alternating producers for one AirPlay window.
+std::array<BrowserLayer, 7> layers;
+BrowserLayer* slot(int id) { return id >= 1 && id <= 7 ? &layers[id - 1] : nullptr; }
 void release(JNIEnv* env, BrowserLayer& layer, bool destroy) {
     if (destroy && layer.swapchain && layer.destroy) layer.destroy(layer.swapchain);
     if (layer.surface) env->DeleteGlobalRef(layer.surface);
     layer = {};
 }
+
+
 }
 
 extern "C" JNIEXPORT jobject JNICALL
 Java_org_vrpassthroughplayer_plugin_WebBrowserLayerNative_create(JNIEnv* env, jclass, jint id,
         jlong instance, jlong session, jlong get_proc, jint width, jint height) {
     auto* layer = slot(id);
-    if (!layer || !instance || !session || !get_proc || width < 256 || height < 256 || width > 4096 || height > 4096) return nullptr;
+    if (!layer || !instance || !session || !get_proc || width < 16 || height < 16 || width > 4096 || height > 4096) return nullptr;
     auto xr_session = reinterpret_cast<XrSession>(static_cast<uintptr_t>(session));
     // A destroyed session already destroyed its children. Never destroy an old handle again.
     if (layer->swapchain && layer->session != xr_session) release(env, *layer, false);
@@ -68,6 +71,22 @@ Java_org_vrpassthroughplayer_plugin_WebBrowserLayerNative_destroy(JNIEnv* env, j
     if (auto* layer = slot(id)) release(env, *layer, true);
 }
 
+// Borrow only on Godot's frame thread; stop the decoder before destroying its swapchain.
+extern "C" JNIEXPORT jobject JNICALL
+Java_org_vrpassthroughplayer_plugin_WebBrowserLayerNative_surface(JNIEnv* env, jclass, jint id) {
+    auto* layer = slot(id);
+    return id >= 6 && id <= 7 && layer && layer->surface ? env->NewLocalRef(layer->surface) : nullptr;
+}
+
+// Android decoder producers can change buffer dimensions without replacing their swapchain.
+extern "C" JNIEXPORT jboolean JNICALL
+Java_org_vrpassthroughplayer_plugin_WebBrowserLayerNative_producerSize(JNIEnv*, jclass, jint id, jint width, jint height) {
+    auto* layer = slot(id);
+    if (id < 6 || id > 7 || !layer || !layer->swapchain || width < 16 || height < 16 || width > 1920 || height > 1920) return false;
+    layer->width = width; layer->height = height;
+    return true;
+}
+
 // xyz, quaternion xyzw, size xy, crop xywh in top-left producer pixels, image-layout mode.
 extern "C" JNIEXPORT jlong JNICALL
 Java_org_vrpassthroughplayer_plugin_WebBrowserLayerNative_update(JNIEnv* env, jclass, jint id, jlong space, jfloatArray values) {
@@ -89,4 +108,31 @@ Java_org_vrpassthroughplayer_plugin_WebBrowserLayerNative_update(JNIEnv* env, jc
     quad.subImage.imageRect = quest::browser_image_rect(v.data() + 9, layer->height, v[13] > 0.5f);
     quad.next = quest::image_layout_next(layer->layout, v[13], nullptr);
     return static_cast<jlong>(reinterpret_cast<uintptr_t>(&quad));
+}
+
+// Processed browser producer packs both eyes into a single Android Surface.
+extern "C" JNIEXPORT jlong JNICALL
+Java_org_vrpassthroughplayer_plugin_WebBrowserLayerNative_updateEye(JNIEnv* env, jclass cls, jint id, jlong space, jfloatArray values, jint eye) {
+    if (eye != 1 && eye != 2) return 0;
+    auto address = Java_org_vrpassthroughplayer_plugin_WebBrowserLayerNative_update(env, cls, id, space, values);
+    if (!address) return 0;
+    auto* layer = slot(id);
+    const auto& rect = layer->quad.subImage.imageRect;
+    if (rect.extent.width % 2 != 0) return 0;
+    auto& quad = layer->eyes[static_cast<size_t>(eye - 1)];
+    quad = layer->quad;
+    quad.eyeVisibility = eye == 1 ? XR_EYE_VISIBILITY_LEFT : XR_EYE_VISIBILITY_RIGHT;
+    quad.subImage.imageRect.extent.width /= 2;
+    quad.subImage.imageRect.offset.x += (eye - 1) * quad.subImage.imageRect.extent.width;
+    return static_cast<jlong>(reinterpret_cast<uintptr_t>(&quad));
+}
+extern "C" JNIEXPORT jlong JNICALL
+Java_org_vrpassthroughplayer_plugin_WebBrowserLayerNative_updateEyeAlpha(JNIEnv* env, jclass cls, jint id, jlong space, jfloatArray values, jint eye, jboolean alpha) {
+    auto address = Java_org_vrpassthroughplayer_plugin_WebBrowserLayerNative_updateEye(env,cls,id,space,values,eye);
+    if (address && alpha) {
+        auto* quad = reinterpret_cast<XrCompositionLayerQuad*>(static_cast<uintptr_t>(address));
+        // Browser effects write premultiplied RGBA, including feathered human silhouettes.
+        quad->layerFlags |= XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
+    }
+    return address;
 }

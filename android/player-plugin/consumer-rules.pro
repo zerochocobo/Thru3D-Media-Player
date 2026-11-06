@@ -15,6 +15,9 @@
 -keep class org.vrpassthroughplayer.plugin.PipClipNative { *; }
 -keep class org.vrpassthroughplayer.plugin.LiveCaptureNative { *; }
 -keep class org.vrpassthroughplayer.plugin.TiffPhotoNative { *; }
+-keep class org.vrpassthroughplayer.plugin.AirplayNative { *; }
+-keep class org.vrpassthroughplayer.plugin.WebBrowserDepthBridge { *; }
+-keep class * implements org.vrpassthroughplayer.plugin.AirplayNative$Listener { *; }
 -keep class org.vrpassthroughplayer.plugin.HdrPhotoNative { *; }
 -keep class org.vrpassthroughplayer.plugin.ExtendedImageNative { *; }
 -keepclassmembers class * implements org.vrpassthroughplayer.plugin.NarrationNative$Sink {

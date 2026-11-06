@@ -13,6 +13,7 @@ function fixture(cookies = []) {
   vm.runInContext(fs.readFileSync(path.join(__dirname, '../../main/assets/web-browser/bilibili.js'), 'utf8'), context);
   vm.runInContext(fs.readFileSync(path.join(__dirname, '../../main/assets/web-browser/douyin.js'), 'utf8'), context);
   vm.runInContext(fs.readFileSync(path.join(__dirname, '../../main/assets/web-browser/plex.js'), 'utf8'), context);
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../../main/assets/web-browser/weibo.js'), 'utf8'), context);
   vm.runInContext(source, context);
   function connect(tab = 1, frame = 0, page = 'https://page.test/watch', enabled = true) {
     const messages = [];
@@ -31,6 +32,19 @@ function fixture(cookies = []) {
   const flush = () => { const batch = [...timers.values()]; timers.clear(); batch.forEach(f => f()); };
   return { connect, request, flush, browser, advance(ms) { now += ms; } };
 }
+
+test('Weibo Beta observes only its document requests independently of generic sniffing and never invents cached credentials',()=>{
+  const f=fixture(),page='https://weibo.com/newlogin',p=f.connect(1,0,page,false);
+  const source='https://new-trusted-cdn.test/whole.mp4?signature=synthetic';
+  f.request(source,{documentUrl:page,requestHeaders:[{name:'Authorization',value:'only-this-file'}]});
+  f.request(source,{documentUrl:page,cache:true});
+  f.request('https://new-trusted-cdn.test/foreign.mp4',{documentUrl:page,documentId:'different-document'});
+  f.request('https://new-trusted-cdn.test/tab.mp4',{documentUrl:page,tabId:2});
+  f.flush();assert.equal(p.last().length,1);assert.equal(p.last()[0].headers.authorization,'only-this-file');
+  p.port.onMessage.fire({type:'context',page,enabled:false,weibo:false});f.flush();
+  assert.equal(p.last().length,0);
+  f.request(source,{documentUrl:page});f.flush();assert.equal(p.last().length,0);
+});
 test('Plex exact-frame authenticated media is observed with generic network capture disabled',()=>{
   const f=fixture(),page='http://127.0.0.1:32400/web/index.html#!/server/local/details';const p=f.connect(1,0,page,false);
   const url='http://127.0.0.1:32400/video/:/transcode/universal/start.mpd?path=%2Flibrary%2Fmetadata%2F4&mediaIndex=0&partIndex=0';

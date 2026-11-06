@@ -4,6 +4,7 @@ extends Node3D
 const Canvas := preload("res://scripts/flat_subtitle_canvas.gd")
 const Layer := preload("res://scripts/video_layer.gd")
 const Methods := preload("res://scripts/platform_methods.gd")
+const Facing := preload("res://scripts/surface_facing.gd")
 var video: Node3D
 var text: Label3D
 var bitmap: MeshInstance3D
@@ -48,6 +49,14 @@ func _ready() -> void:
 	hole.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	hole.visible = false
 	add_child(hole)
+	sync_surface_facing(video._surface_front_only)
+
+func sync_surface_facing(front_only: bool) -> void:
+	if text:
+		text.no_depth_test=not front_only
+		text.double_sided=not front_only
+	if bitmap: Facing.apply(bitmap.material_override,front_only)
+	if hole: Facing.apply(hole.material_override,front_only)
 
 func suspend() -> void:
 	active = false
@@ -97,6 +106,7 @@ func sync() -> void:
 		# Top alignment grows down; reserve the enlarged outline above the glyph box as well.
 		var text_top := top - (source.outline_size + 1) * source.pixel_size
 		text.global_transform = Transform3D(pose.basis, pose * Vector3(0, text_top, 0.01))
+		_clear_ground(text,text.get_aabb())
 	elif kind == "bitmap":
 		var extent := Vector2(rect.z, rect.w) * screen
 		if rotation in [90, 270]: extent = Vector2(extent.y, extent.x)
@@ -104,9 +114,27 @@ func sync() -> void:
 		extent *= minf(1.0, screen.x * 0.9 / maxf(extent.x, 0.0001))
 		bitmap.mesh.size = extent
 		bitmap.global_transform = Transform3D(pose.basis, pose * Vector3(0, top - extent.y * 0.5, 0.01))
+		_clear_ground(bitmap,AABB(Vector3(-extent.x*.5,-extent.y*.5,0),Vector3(extent.x,extent.y,0)))
 		bitmap.material_override.set_shader_parameter("bitmap_subtitle_texture", texture)
 		bitmap.material_override.set_shader_parameter("bitmap_subtitle_enabled", true)
 		bitmap.material_override.set_shader_parameter("rotation_degrees", rotation)
+
+func _clear_ground(surface: Node3D,bounds: AABB) -> void:
+	if not video.subtitle_ground_provider.is_valid(): return
+	# Keep the requested below-screen anchor where it fits. On a low physical
+	# screen, lift the complete cue above the sand, even if it overlaps the lower
+	# image. Font size, timing and the user's below-screen preference stay intact.
+	var up := surface.global_basis.y
+	if up.y<=.25: return
+	for attempt in 4:
+		var lift := 0.0
+		for x in [0.0,.25,.5,.75,1.0]:
+			for y in [0.0,1.0]:
+				var point: Vector3=surface.global_transform*(bounds.position+Vector3(bounds.size.x*x,bounds.size.y*y,0))
+				var floor_y: float=video.subtitle_ground_provider.call(point.x,point.z)
+				if is_finite(floor_y): lift=maxf(lift,floor_y+.025-point.y)
+		if lift<=.0001: return
+		surface.global_position+=up*(lift/up.y)
 
 func commit(submitted: bool) -> void:
 	var on_layer := active and prepared and submitted

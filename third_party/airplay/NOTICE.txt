@@ -1,0 +1,22 @@
+Thru3D AirPlay mirror receiver
+
+Protocol core: UxPlay 1.73.7, commit df67c212a433cf6dda3676dd40c097900d24e645
+https://github.com/FDH2/UxPlay
+Includes earlier ShairPlay/RPiPlay work and embedded llhttp/playfair sources.
+Keep each source's original copyright and license notices. See UxPlay-LICENSE.txt.
+
+Android DNS-SD shim (android_dnssd_shim.c/.h) and PIN proof-length patch:
+https://github.com/jqssun/android-airplay-server
+commit a46cca0a6a1274e9e33c0e750f0f1c1eb1d881ea, GPL-3.0.
+The Android implementation also informed the MediaCodec configuration and JNI adaptation.
+Thru3D's 2026-11-06 revision enforces the 20-byte SRP-SHA1 PIN proof and frees
+rejected request data; prepared patch output hashes are recorded in sources.json.
+Thru3D's JNI callbacks, independent decoder lifecycle, and Godot window integration are project code.
+
+libplist: commit f41b1ea67045e0c09339974d83e389972d84f166
+https://github.com/libimobiledevice/libplist (LGPL-2.1-or-later; see libplist-LICENSE.txt)
+OpenSSL 3.5.9: https://github.com/openssl/openssl (Apache-2.0; see OpenSSL-LICENSE.txt)
+
+Exact source URLs and archive SHA256 values are in sources.json. Rebuild with
+tools/environment/Prepare-Airplay.ps1 and the normal tools/Build-Player.ps1 entry.
+No Apple certification, DRM compatibility, or whole-device casting is claimed.

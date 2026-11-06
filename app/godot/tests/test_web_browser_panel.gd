@@ -11,6 +11,9 @@ class Platform extends Fixture.Platform:
 	var library_commands: Array = []
 	var browser_commands: Array = []
 	var beta_requests := 0
+	var selected_requests: Array = []
+	func web_video_resolve_selected(url: String, selection: String) -> int:
+		selected_requests.append([url, selection]); return web_video_resolve(url)
 	func web_video_resolve_beta(url: String) -> int:
 		beta_requests += 1
 		return web_video_resolve(url)
@@ -45,7 +48,7 @@ func _run() -> void:
 	platform.browser.videos[0].bilibili_ready = true
 	menu.web_browser.next_poll = 0; menu.web_browser.tick(); menu.refresh()
 	var beta_buttons: Array = menu.web_browser.input_host()._buttons.filter(func(button): return button.target in [Browser.BASE + 6, Browser.BASE + 18])
-	check(beta_buttons.size() == 2 and not beta_buttons[0].rect.intersects(beta_buttons[1].rect), "Legacy and Beta have separate non-overlapping targets")
+	check(beta_buttons.size() == 1 and beta_buttons[0].target == Browser.BASE + 18, "Adapted sites show Beta without the legacy target")
 	menu.web_browser.prefetch_uri = platform.browser.url
 	menu.web_browser.prefetch_result = {"state": "ready", "uri": platform.browser.url}
 	menu.web_browser.prefetch_ms = Time.get_ticks_msec()
@@ -77,6 +80,83 @@ func _run() -> void:
 	check(menu.web_browser.beta_media_ready(platform.browser), "Douyin readiness selects the bound main video")
 	platform.browser.douyin_beta_available = false
 	platform.browser.videos[0].douyin_ready = false
+	var previous := platform.browser.duplicate(true)
+	platform.browser = {"url": "https://weibo.com/newlogin", "tab_id": 9, "navigation": 1, "focused_window": 1,
+		"active": true, "native_supported": false, "weibo_beta_available": true,
+		"pause_confirmed": true,
+		"videos": [{"weibo_ready": true, "selection": "first", "time": 2.0, "width": 3840, "height": 2160, "playing": true},
+			{"weibo_ready": true, "weibo_selected": true, "selection": "second", "time": 37.0, "width": 1280, "height": 720, "playing": false}]}
+	menu.web_browser.next_poll = 0; menu.web_browser.tick()
+	check(menu.web_browser.weibo_target(platform.browser).selection == "second", "Weibo toolbar follows the selected card over a larger playing neighbour")
+	platform.browser.weibo_request = 1; platform.browser.weibo_selection = "second"
+	menu.web_browser.next_poll = 0; menu.web_browser.tick()
+	check(menu.web_browser.handoff_waiting_pause and platform.selected_requests.is_empty(), "A DOM card click starts the existing pause handshake")
+	menu.web_browser.next_poll = 0; menu.web_browser.tick()
+	check(platform.selected_requests == [[platform.browser.url, "second"]], "The exact selection reaches the resolver after pause")
+	check(menu.web_browser.handoff_start_ms == 37000, "Weibo starts from the clicked card's playhead")
+	platform.browser.videos.pop_back()
+	menu.web_browser.next_poll = 0; menu.web_browser.tick()
+	check(not menu.web_browser.handoff and menu.web_video.pending == 0, "A removed selected video cancels without selecting its neighbour")
+	menu.web_browser.next_poll = 0; menu.web_browser.tick()
+	check(platform.selected_requests.size() == 1, "Repeated status of an old click cannot reopen playback")
+	platform.browser.videos.append({"weibo_ready": true, "selection": "third", "time": 8.0})
+	check(menu.web_browser.weibo_target(platform.browser).is_empty(), "Several unselected Weibo videos disable the ambiguous toolbar action")
+	menu.web_browser.playback_return = {"tab": 9, "window": 1, "navigation": 1, "origin": platform.browser.url, "selection": "second"}
+	menu.web_browser.restore_playback(false, 42000)
+	check(platform.browser_commands.back().action == "restore_weibo" and platform.browser_commands.back().selection == "second" and platform.browser_commands.back().position_ms == 42000,
+		"Returning addresses only the original inline selection without reloading the timeline")
+	platform.browser = previous
+	previous = platform.browser.duplicate(true)
+	platform.browser = {"url":"https://www.bilibili.com/video/BV1234567890/", "tab_id":10,"navigation":1,"focused_window":1,
+		"active":true,"bilibili_beta_available":true,"pause_confirmed":true,"beta_request":2,"beta_selection":"bili:cid123",
+		"videos":[{"bilibili_ready":true,"selection":"bili:cid123","time":19.0}]}
+	menu.web_browser.next_poll=0;menu.web_browser.tick()
+	check(menu.web_browser.handoff_waiting_pause,"Bilibili webpage button uses the same pause handshake")
+	menu.web_browser.next_poll=0;menu.web_browser.tick()
+	check(platform.selected_requests.back()==[platform.browser.url,"bili:cid123"] and menu.web_browser.handoff_start_ms==19000,
+		"Bilibili DOM selection reaches the selected resolver with the current video's playhead")
+	platform.browser.videos[0].selection="bili:cid456"
+	menu.web_browser.next_poll=0;menu.web_browser.tick()
+	check(not menu.web_browser.handoff,"Replacing the Bilibili part rejects the old DOM click")
+	platform.browser=previous
+	previous=platform.browser.duplicate(true)
+	platform.browser={"url":"https://v.qq.com/x/page/q326831cny0.html","tab_id":11,"navigation":1,"focused_window":1,"active":true,
+		"tencent_beta_available":true,"pause_confirmed":true,"beta_request":3,"beta_selection":"tencent:main:manifest1",
+		"videos":[{"tencent_ready":true,"selection":"tencent:main:manifest1","time":43.0},
+			{"tencent_ready":true,"selection":"tencent:preload","time":0.0,"playing":true}]}
+	check(not menu.web_browser.beta_media_ready(platform.browser) and menu.web_browser.beta_media_ready(platform.browser,"tencent:main:manifest1"),
+		"An explicit Tencent DOM choice remains ready when an unrelated frame is also ready")
+	menu.web_browser.next_poll=0;menu.web_browser.tick()
+	check(menu.web_browser.handoff_waiting_pause,"Tencent DOM action waits for the shared pause acknowledgement")
+	menu.web_browser.next_poll=0;menu.web_browser.tick()
+	check(platform.selected_requests.back()==[platform.browser.url,"tencent:main:manifest1"] and menu.web_browser.handoff_start_ms==43000,
+		"Tencent uses the exact selected main-player timeline")
+	platform.browser.videos[0].selection="tencent:main:manifest2"
+	menu.web_browser.next_poll=0;menu.web_browser.tick()
+	check(not menu.web_browser.handoff,"A changed Tencent playlist cancels the old click")
+	platform.browser.videos.append({"tencent_ready":true,"selection":"tencent:other"})
+	check(menu.web_browser.tencent_target(platform.browser).is_empty(),"Ambiguous Tencent players cannot choose a toolbar target")
+	platform.browser=previous
+	previous=platform.browser.duplicate(true)
+	platform.browser={"url":"https://www.mgtv.com/s/15588271.html","tab_id":12,"navigation":1,"focused_window":1,"active":true,
+		"mango_beta_available":true,"pause_confirmed":true,"beta_request":4,"beta_selection":"mango:main:revision1",
+		"videos":[{"mango_ready":true,"selection":"mango:main:revision1","time":27.0},
+			{"width":3840,"height":2160,"playing":true,"time":3.0}]}
+	check(menu.web_browser.beta_site_available(platform.browser) and menu.web_browser.beta_media_ready(platform.browser),
+		"Mango exposes the bound main while a larger unrelated preview is playing")
+	menu.web_browser.next_poll=0;menu.web_browser.tick()
+	check(menu.web_browser.handoff_waiting_pause,"Mango waits for the shared pause acknowledgement")
+	menu.web_browser.next_poll=0;menu.web_browser.tick()
+	check(platform.selected_requests.back()==[platform.browser.url,"mango:main:revision1"] and menu.web_browser.handoff_start_ms==27000,
+		"Mango starts from the selected programme timeline")
+	platform.browser.videos[0].selection="mango:main:revision2"
+	menu.web_browser.next_poll=0;menu.web_browser.tick()
+	check(not menu.web_browser.handoff,"Replacing Mango metadata cancels the stale selection")
+	menu.web_browser.playback_return={"tab":12,"window":1,"navigation":1,"origin":platform.browser.url,"selection":"mango:main:revision1","mango":true}
+	menu.web_browser.restore_playback(false,47000)
+	check(platform.browser_commands.back().action=="restore_mango" and platform.browser_commands.back().position_ms==47000,
+		"Returning Mango restores its selected timeline through the matching adapter")
+	platform.browser=previous
 	platform.browser.native_supported = true
 	platform.browser.url = "https://www.youtube.com/watch?v=jNQXAC9IVRw"
 	platform.browser.playing = true; platform.browser.videos[0].playing = true

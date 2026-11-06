@@ -2310,7 +2310,7 @@ func snapshot() -> Dictionary:
 		"magazine_single": magazine.single(position), "magazine_pages": magazine.count(position) if magazine.active() else 1, "magazine_rtl": magazine.right_to_left,
 		"archive_mode": archive_mode, "source_uri": local_uri, "layout": gallery.mode, "gallery_overview": gallery.overview(), "wall_rows": gallery.wall_rows, "gallery_scale": gallery.view_scale, "gallery_distance": gallery.view_distance, "gallery_swapping": gallery._swap_phase != 0, "gallery_focus": gallery.focus, "directory_loading": directory.loading, "directory_error": directory_error, "queue_complete": queue_complete,
 		"can_save_pictures":can_save_pictures(), "pictures_save":pictures_status(),
-		"can_background": can_background(), "panorama_detail_error": panorama_tiles.error,
+		"can_background": can_background(), "background_issue":background_issue(), "panorama_detail_error": panorama_tiles.error,
 		"can_previous": (position > 0) if magazine.active() else queue.size() > 1 and (((geometry == Geometry.Geometry.FLAT or gallery.mode != 0) and queue_complete) or position > 0),
 		"can_next": (position >= 0 and magazine.target(1) < queue.size()) if magazine.active() else queue.size() > 1 and (((geometry == Geometry.Geometry.FLAT or gallery.mode != 0) and queue_complete) or (position >= 0 and position < queue.size() - 1)),
 		"geometry": geometry, "stereo": stereo_sbs, "top_bottom": top_bottom, "swap_eyes": swap_eyes, "fisheye_fov": fisheye_fov, "mode_lock": mode_lock.duplicate(),
@@ -2325,9 +2325,20 @@ func snapshot() -> Dictionary:
 		"source_size": "%d × %d" % [int(shown_size.x), int(shown_size.y)], "error": error, "screen_curve": screen_curve}
 
 func can_background() -> bool:
-	if _texture == null or _metadata.get("raw_rgba", false) or loading or not error.is_empty() \
-		or _size.x <= 0 or _size.y <= 0 or not Info.panorama_rect(_metadata).is_equal_approx(Vector4(0,0,1,1)): return false
-	return preload("res://scripts/app_background.gd").source_supported(_size, geometry, stereo_sbs, top_bottom)
+	return background_issue().is_empty()
+
+func background_issue() -> String:
+	var rules = preload("res://scripts/panorama_background_rules.gd")
+	if loading: return rules.LOADING
+	if not error.is_empty(): return rules.READ
+	if _texture == null or _size.x <= 0 or _size.y <= 0: return rules.OPEN
+	if _metadata.get("raw_rgba", false): return rules.EXPORT
+	if not Info.panorama_rect(_metadata).is_equal_approx(Vector4(0,0,1,1)): return rules.CROP
+	if not rules.size_issue(_size).is_empty(): return rules.DIMENSIONS
+	if geometry not in [1,3]:
+		return rules.PROJECTION if rules.source_supported(_size,3,stereo_sbs,top_bottom) or rules.source_supported(_size,1,stereo_sbs,top_bottom) else rules.RATIO
+	if not rules.source_supported(_size,geometry,stereo_sbs,top_bottom): return rules.LAYOUT
+	return ""
 
 func can_spatial() -> bool:
 	if not is_instance_valid(_spatial) or _texture==null or loading or not error.is_empty() or geometry!=0 or portrait_requested or inspect \

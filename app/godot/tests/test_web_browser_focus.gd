@@ -23,12 +23,37 @@ func run() -> void:
 	var size: Vector2 = host.page_size
 	var direction: Vector3 = -host.page_layout().pose.basis.z
 	var before: Array = platform.actions.duplicate()
+	# The menu capture's mono cursor projection must not remap an independent XR page.
+	var eye := Node3D.new(); root.add_child(eye)
+	host.set_meta("menu_mono_pointer", {"eye": eye, "distance": 0.7})
+	var wanted := Vector2(0.73, 0.22)
+	var actual_page: Dictionary = host.page_layout()
+	var actual_target: Vector3 = actual_page.pose * Vector3((wanted.x - 0.5) * actual_page.size.x, (0.5 - wanted.y) * actual_page.size.y, 0)
+	var controller_origin: Vector3 = actual_page.pose * Vector3(0.35, -0.2, 0.8)
+	check(not host._mono_pointer_projection().is_empty(), "Fixture carries the real mono toolbar projection")
+	check(host.page_point(controller_origin, actual_target - controller_origin).distance_to(wanted) < 0.001,
+		"Independent webpage uses the controller ray rather than the toolbar's mono capture ray")
+	host.set_meta("menu_mono_pointer", {"eye": eye, "distance": 100.0})
+	check(host.page_point(controller_origin, actual_target - controller_origin).distance_to(wanted) < 0.001,
+		"The real distant toolbar cursor endpoint does not shift page coordinates")
+	host.toggle_focus()
+	var select_start := Vector2(0.2, 0.2)
+	var select_end := Vector2(0.65, 0.65)
+	var select_a: Vector3 = actual_page.pose * Vector3((select_start.x - 0.5) * actual_page.size.x, (0.5 - select_start.y) * actual_page.size.y, 0)
+	var select_b: Vector3 = actual_page.pose * Vector3((select_end.x - 0.5) * actual_page.size.x, (0.5 - select_end.y) * actual_page.size.y, 0)
+	host.press_pointer("left", controller_origin, select_a - controller_origin, true)
+	host.update_pointer("left", controller_origin, select_b - controller_origin, true)
+	host.release_pointer("left", controller_origin, select_b - controller_origin, true)
+	check(host.focus_crop().is_equal_approx(Rect2(select_start, select_end - select_start)), "Actual off-axis trigger drag retains the rectangle drawn on the independent page")
+	host.toggle_focus()
+	host.remove_meta("menu_mono_pointer"); eye.free()
 	for beta in [false, true]:
 		platform.browser.bilibili_beta_available = beta
 		browser.next_poll = 0; browser.tick(); host.refresh()
-		var button: Dictionary = host._buttons.filter(func(item): return item.target == host.SELECT)[0]
+		host.effect_controls.sync(); host.effect_controls.visible = true
+		var button: Dictionary = host.effect_controls._buttons.filter(func(item): return item.target == host.SELECT)[0]
 		check(button.enabled, "Focus is available with both toolbar variants")
-		for peer in host._buttons:
+		for peer in host.effect_controls._buttons:
 			if peer != button: check(not peer.rect.intersects(button.rect), "Focus control does not overlap another target")
 	browser.action(host.SELECT)
 	check(host.selecting and not host.is_focused(), "Focus enters selection without altering the page")

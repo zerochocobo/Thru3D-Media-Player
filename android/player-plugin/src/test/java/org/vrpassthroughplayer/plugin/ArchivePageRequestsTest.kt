@@ -49,7 +49,9 @@ class ArchivePageRequestsTest {
     }
 
     @Test fun aSelectionDuringTheQuietPeriodCancelsBeforeAnyRead() {
-        val requests=ArchivePageRequests(300_000_000)
+        // Exercise cancellation, not expiry: a busy build host can deschedule the
+        // selecting thread for longer than a 300 ms production-style quiet period.
+        val requests=ArchivePageRequests(TimeUnit.DAYS.toNanos(1))
         val worker=Executors.newSingleThreadExecutor();val started=CountDownLatch(1)
         requests.select(1,"comic://book/0")
         try {

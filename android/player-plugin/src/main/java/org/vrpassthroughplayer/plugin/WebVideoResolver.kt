@@ -14,7 +14,8 @@ import java.util.concurrent.atomic.AtomicBoolean
 /** Local extraction only; no remote parsing service or user credential files. */
 internal class WebVideoResolver(private val context: () -> Context?, private val ready: (WebVideoDescriptor) -> Unit,
     private val cookies: (String) -> org.json.JSONArray = { org.json.JSONArray() },
-    private val browserMedia: (String) -> JSONObject? = { null }) : Closeable {
+    private val browserMedia: (String) -> JSONObject? = { null },
+    private val selectedMedia: (String, String) -> JSONObject? = { _, _ -> null }) : Closeable {
     private val executor = Executors.newSingleThreadExecutor { Thread(it, "WebVideoResolver") }
     private var job: Future<*>? = null
     private var active: Attempt? = null
@@ -50,12 +51,13 @@ internal class WebVideoResolver(private val context: () -> Context?, private val
         }
     }
 
-    @Synchronized fun begin(url: String, bilibiliBeta: Boolean = false): Int {
+    @Synchronized fun begin(url: String, bilibiliBeta: Boolean = false, selection: String = ""): Int {
         if (closed) return 0
         cancel()
         val id = ++sequence
         val publicPage = (if (bilibiliBeta) WebVideoDouyinCapture.page(url) else null) ?: runCatching { WebVideoPage.parse(url) }.getOrNull()
         val attempt = Attempt(id); active = attempt
+        fun currentMedia() = if (selection.isEmpty()) browserMedia(url) else selectedMedia(url, selection)
         state = JSONObject().put("id", id).put("state", "resolving")
         job = executor.submit {
             try {
@@ -64,11 +66,11 @@ internal class WebVideoResolver(private val context: () -> Context?, private val
                 val media = if (bilibiliBeta && publicPage?.site == "bilibili") {
                     attempt.stage = "browser_capture"
                     var reason = "browser_session_unavailable"
-                    WebVideoBilibiliCapture.awaitReady(publicPage, { browserMedia(url) }, attempt::check, unavailable = { reason = it })
+                    WebVideoBilibiliCapture.awaitReady(publicPage, { currentMedia() }, attempt::check, unavailable = { reason = it })
                         ?: throw ExtractionFailure(reason)
-                } else browserMedia(url)
+                } else currentMedia()
                 if (media?.optBoolean("protected") == true) throw ExtractionFailure("protected_content")
-                val sourcePage = publicPage ?: media?.let { WebVideoBrowserCapture.serverPage(url, it) ?: WebVideoNetworkCapture.page(url, it) }
+                val sourcePage = (if (selection.isNotEmpty()) publicPage?.takeIf { it.site == "bilibili" } ?: WebVideoMangoCapture.page(url,media) ?: WebVideoTencentCapture.page(url,media) ?: WebVideoWeiboCapture.page(url, media) else publicPage ?: media?.let { WebVideoBrowserCapture.serverPage(url, it) ?: WebVideoNetworkCapture.page(url, it) })
                     ?: throw ExtractionFailure("unsupported_page")
                 val pgc = sourcePage.site == "bilibili" && sourcePage.id.matches(Regex("(?:ep|ss)[1-9][0-9]{0,19}:1"))
                 val page = if (pgc) WebVideoBilibiliCapture.episodePage(sourcePage, media)
@@ -77,9 +79,15 @@ internal class WebVideoResolver(private val context: () -> Context?, private val
                 val bilibiliEnabled = bilibiliBeta && page.site == "bilibili" && media?.optBoolean("bilibili_enabled") == true
                 val douyinEnabled = bilibiliBeta && page.site == "douyin" && media != null &&
                     WebBrowserDouyin.enabled(page.url, media.optBoolean("douyin_enabled"))
-                if (bilibiliBeta && !bilibiliEnabled && !douyinEnabled)
+                val weiboEnabled = bilibiliBeta && selection.isNotEmpty() && page.site == "weibo" && media != null &&
+                    media.optString("capture_identity") == selection && WebVideoWeiboCapture.page(url,media) == page
+                val tencentEnabled = bilibiliBeta && selection.isNotEmpty() && page.site == "tencent" && media != null &&
+                    media.optString("capture_identity") == selection && WebVideoTencentCapture.page(url,media) == page
+                val mangoEnabled = bilibiliBeta && selection.isNotEmpty() && page.site == "mgtv" && media != null &&
+                    media.optString("capture_identity") == selection && WebVideoMangoCapture.page(url,media) == page
+                if (bilibiliBeta && !bilibiliEnabled && !douyinEnabled && !weiboEnabled && !tencentEnabled && !mangoEnabled)
                     throw ExtractionFailure("browser_playback_required")
-                val browserQuality = networkEnabled || bilibiliEnabled || douyinEnabled
+                val browserQuality = networkEnabled || bilibiliEnabled || douyinEnabled || weiboEnabled || tencentEnabled || mangoEnabled
                 // The browser already selected this quality using the user's site session.
                 // Do not force its member/4K stream through the extractor's default 1080p cap.
                 val maxHeight = WebVideoBrowserCapture.maximumHeight(media, browserQuality, BuildConfig.DEBUG)
@@ -89,7 +97,7 @@ internal class WebVideoResolver(private val context: () -> Context?, private val
                     readBrowserResource(uri, headers, prefix, attempt, deadline)
                 }, capabilities)
                 attempt.stage = "browser_capture"
-                var route = if (douyinEnabled) "browser_douyin" else if (bilibiliEnabled) "browser_bilibili" else if (networkEnabled) "browser_network" else "browser_direct"
+                var route = if (mangoEnabled) "browser_mgtv" else if (tencentEnabled) "browser_tencent" else if (weiboEnabled) "browser_weibo" else if (douyinEnabled) "browser_douyin" else if (bilibiliEnabled) "browser_bilibili" else if (networkEnabled) "browser_network" else "browser_direct"
                 val session by lazy { attempt.stage = "session"; cookies(page.url) }
                 val legacy = if (!browserQuality || media.optBoolean("server")) media?.let {
                     WebVideoBrowserCapture.formats(it, if (it.optBoolean("server")) org.json.JSONArray() else session) { uri, headers ->
@@ -100,6 +108,9 @@ internal class WebVideoResolver(private val context: () -> Context?, private val
                     if (media?.optBoolean("server") == true) legacy
                     else if (bilibiliEnabled) WebVideoBilibiliCapture.formats(page, media)
                     else if (douyinEnabled) WebVideoDouyinCapture.resolve(page, media, network)
+                    else if (weiboEnabled) WebVideoWeiboCapture.resolve(page, media, network)
+                    else if (tencentEnabled) WebVideoTencentCapture.resolve(page,media,network)
+                    else if (mangoEnabled) WebVideoMangoCapture.resolve(page,media,network)
                     else if (networkEnabled) network.resolve(page, media)
                     else legacy?.takeIf { page.site in setOf("weibo", "tiktok", "instagram", "facebook", "twitter", "reddit") || !media?.optString("layout").isNullOrEmpty() }
                 }, {
@@ -148,7 +159,7 @@ internal class WebVideoResolver(private val context: () -> Context?, private val
                 // EME or SPA replacement can arrive while network probes run. Never publish an
                 // old representation after the page switched content or acquired MediaKeys.
                 if (media != null) {
-                    val latest = browserMedia(url) ?: throw ExtractionFailure("browser_page_changed")
+                    val latest = currentMedia() ?: throw ExtractionFailure("browser_page_changed")
                     if (latest.optBoolean("protected")) throw ExtractionFailure("protected_content")
                     if (latest.optString("capture_identity") != media.optString("capture_identity") || latest.optBoolean("network_enabled") != networkEnabled)
                         throw ExtractionFailure("browser_page_changed")
@@ -156,6 +167,23 @@ internal class WebVideoResolver(private val context: () -> Context?, private val
                         throw ExtractionFailure("browser_stream_changed")
                     if (pgc && WebVideoBilibiliCapture.episodePage(sourcePage, latest) != page)
                         throw ExtractionFailure("browser_page_changed")
+                    if (weiboEnabled) {
+                        val current = WebVideoWeiboCapture.candidate(page,latest) ?: throw ExtractionFailure("browser_stream_changed")
+                        if (current.optString("source") != media.optString("source") ||
+                            current.getJSONArray("network").getJSONObject(0).getString("url") != selected.video.url.toString() ||
+                            current.optInt("width") != selected.video.width || current.optInt("height") != selected.video.height)
+                            throw ExtractionFailure("browser_stream_changed")
+                    }
+                    if (mangoEnabled && !WebVideoMangoCapture.keeps(page,media,latest,selected.video))
+                        throw ExtractionFailure("browser_stream_changed")
+                    if (tencentEnabled) {
+                        val current = WebVideoTencentCapture.candidate(page,latest) ?: throw ExtractionFailure("browser_stream_changed")
+                        val data = current.getJSONObject("tencent")
+                        if (current.optString("source") != media.optString("source") || data.optString("playlist") != media.getJSONObject("tencent").optString("playlist") ||
+                            (if(data.optString("playlist").isEmpty()) current.getJSONArray("network").getJSONObject(0).getString("url") else data.getString("manifest_url")) != selected.video.url.toString() ||
+                            current.optInt("width") != selected.video.width || current.optInt("height") != selected.video.height)
+                            throw ExtractionFailure("browser_stream_changed")
+                    }
                     if (douyinEnabled) {
                         val current = WebVideoDouyinCapture.candidate(page, latest) ?: throw ExtractionFailure("browser_stream_changed")
                         if (current.optString("source") != selected.video.url.toString()) throw ExtractionFailure("browser_stream_changed")

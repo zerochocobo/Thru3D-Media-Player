@@ -4,11 +4,14 @@
 
 面向 Meta Quest 和 PICO 的独立 VR/MR 媒体播放器，可直接在头显中观看视频和照片、浏览媒体库，并使用支持内容的透视与立体效果。
 
-当前源码版本：**0.16.8**，Android versionCode **73**；另提供实验性的标准 OpenXR Android 导出目标。
+当前源码版本：**0.17.0**，Android versionCode **75**；另提供实验性的标准 OpenXR Android 导出目标。
 
 最低兼容目标为 **Quest 2、PICO Neo3**。源码和构建兼容不等于所有机型的性能、显示及交互均已实机验收。
 
 ## 功能
+
+- 浏览器整页／聚焦区域3D与人物透视测试，AirPlay独立镜像窗口及统一DLNA／AirPlay接收开关，见[网页特效](docs/WEB_BROWSER.md)与[AirPlay范围](docs/AIRPLAY.md)。
+- 兼容B站／微博／腾讯／芒果播放Beta，全局倍速记忆、角落旋转与影院四角缩放。
 
 - 六套界面配色与自定义背景／强调／文字色，支持预览、快速切换和记忆，媒体及字幕颜色保持独立，见[界面配色](docs/APPEARANCE.md)。
 - 官方OAuth接入123云盘，按轮次随机播放视频、漫画朗读／试听变速，以及照片和阅读更早的邻页3D准备。

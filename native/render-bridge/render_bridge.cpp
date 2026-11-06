@@ -357,15 +357,24 @@ uniform highp sampler2D map;
 uniform vec2 uv_scale;
 uniform ivec2 size;
 uniform int photo_rotation; // Still-only virtual clockwise turns; video always sets zero.
+uniform bool source_alpha_enabled;
+uniform sampler2D source_alpha;
+uniform vec4 alpha_content;
 out vec4 result;
-vec3 colour(ivec2 o, vec4 m) {
+vec4 colour(ivec2 o, vec4 m) {
     int ex = o.x >= size.x ? o.x - size.x : o.x;
     vec2 p = vec2((float(ex) + m.x + 0.5) / float(size.x), (float(o.y) + 0.5) / float(size.y));
     // Map the virtual rotated source back to the unchanged colour texture.
     if (photo_rotation == 1) p = vec2(p.y, 1.0-p.x);
     else if (photo_rotation == 2) p = vec2(1.0)-p;
     else if (photo_rotation == 3) p = vec2(1.0-p.y, p.x);
-    return texture(source, p * uv_scale).rgb;
+    float a = 1.0;
+    if (source_alpha_enabled) {
+        vec2 half_pixel = 0.5 / vec2(textureSize(source_alpha, 0));
+        vec2 q = clamp(alpha_content.xy + p * alpha_content.zw, half_pixel, 1.0 - half_pixel);
+        a = texture(source_alpha, q).r;
+    }
+    return vec4(texture(source, p * uv_scale).rgb * a, a);
 }
 void main() {
     ivec2 o = ivec2(gl_FragCoord.xy);
@@ -385,7 +394,7 @@ void main() {
         // Bridged still pixels: mean over bridged neighbours (5x9), so one row's choice cannot
         // show as a line across the band.
         int lo = o.x >= size.x ? size.x : 0, hi = lo + size.x;
-        vec3 sum = vec3(0.0); float n = 0.0;
+        vec4 sum = vec4(0.0); float n = 0.0;
         for (int dy = -4; dy <= 4; ++dy) {
             int ny = clamp(o.y + dy, 0, size.y - 1);
             for (int dx = -2; dx <= 2; ++dx) {
@@ -395,18 +404,18 @@ void main() {
                 if (nm.z < -2.5) { sum += colour(ivec2(nx, ny), nm); n += 1.0; }
             }
         }
-        result = vec4(sum / n, 1.0);
+        result = sum / n;
         return;
     }
     if (m.w != 0.0) {
         ivec2 q = o + ivec2(int(m.w), 0);
-        result = vec4(colour(q, texelFetch(map, q, 0)), 1.0);
+        result = colour(q, texelFetch(map, q, 0));
         return;
     }
-    vec3 c = colour(o, m);
-    if (m.y >= 0.0) { result = vec4(c, 1.0); return; }
+    vec4 c = colour(o, m);
+    if (m.y >= 0.0) { result = c; return; }
     int lo = o.x >= size.x ? size.x : 0, hi = lo + size.x;
-    vec3 sum = vec3(0.0); float n = 0.0;
+    vec4 sum = vec4(0.0); float n = 0.0;
     for (int dy = -2; dy <= 2; ++dy) {
         int ny = clamp(o.y + dy, 0, size.y - 1);
         for (int dx = -3; dx <= 3; ++dx) {
@@ -417,8 +426,8 @@ void main() {
             sum += colour(ivec2(nx, ny), nm); n += 1.0;
         }
     }
-    vec3 blur = n > 0.0 ? sum / n : c;
-    result = vec4(c * 0.65 + blur * 0.35, 1.0);
+    vec4 blur = n > 0.0 ? sum / n : c;
+    result = c * 0.65 + blur * 0.35;
 })";
 constexpr const char* warp_frame_2d = R"(#version 300 es
 precision highp float; precision highp int;
@@ -1250,7 +1259,7 @@ struct Bridge final {
     // 2D->3D: renders the held color's stereo pair from its just-uploaded near map. shift is the
     // eye-width fraction of the full parallax, convergence the near value left on the screen plane.
     // Returns 0 when this GL or source cannot run it (the display keeps its shader parallax).
-    GLuint warp(jlong token, float shift, float convergence) {
+    GLuint warp(jlong token, float shift, float convergence, GLuint matte = 0, const float* matte_content = nullptr) {
         current(); auto& slot = find(token);
         if (slot.phase != Phase::held || (!slot.alpha_fence && !slot.alpha_valid) || slot.near.empty())
             throw std::runtime_error("2D->3D warp requires a held color with a fresh near map");
@@ -1261,8 +1270,11 @@ struct Bridge final {
         glBindSampler(1, 0); glActiveTexture(GL_TEXTURE0);
         glGetIntegerv(GL_SHADER_STORAGE_BUFFER_BINDING, &ssbo); glGetIntegeri_v(GL_SHADER_STORAGE_BUFFER_BINDING, 0, &ssbo0);
         glGetIntegeri_v(GL_IMAGE_BINDING_NAME, 0, &image0);
+        GLint unit2_2d = 0, unit2_sampler = 0;
+        glActiveTexture(GL_TEXTURE2); glGetIntegerv(GL_TEXTURE_BINDING_2D, &unit2_2d); glGetIntegerv(GL_SAMPLER_BINDING, &unit2_sampler);
+        glBindSampler(2, 0); glActiveTexture(GL_TEXTURE0);
         GLuint result = 0;
-        try { result = render_warp(slot, shift, convergence); }
+        try { result = render_warp(slot, shift, convergence, -1.f, 0, matte, matte_content); }
         catch (const std::exception& failure) {
             warp_failed = true;
             __android_log_print(ANDROID_LOG_WARN, "QuestRenderBridge", "2D->3D warp unavailable: %s", failure.what());
@@ -1271,6 +1283,8 @@ struct Bridge final {
         if (!image0) glBindImageTexture(0, 0, 0, GL_FALSE, 0, GL_READ_ONLY, GL_RGBA8);
         glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_2D, static_cast<GLuint>(unit1_2d));
         glBindSampler(1, static_cast<GLuint>(unit1_sampler)); glActiveTexture(GL_TEXTURE0);
+        glActiveTexture(GL_TEXTURE2); glBindTexture(GL_TEXTURE_2D, static_cast<GLuint>(unit2_2d));
+        glBindSampler(2, static_cast<GLuint>(unit2_sampler)); glActiveTexture(GL_TEXTURE0);
         while (glGetError() != GL_NO_ERROR) {}
         return result;
     }
@@ -1291,7 +1305,8 @@ struct Bridge final {
             std::fclose(file);
         }
     }
-    GLuint render_warp(Slot& slot, float shift, float convergence, float photo_half = -1.f, int photo_rotation = 0) {
+    GLuint render_warp(Slot& slot, float shift, float convergence, float photo_half = -1.f, int photo_rotation = 0,
+                       GLuint matte = 0, const float* matte_content = nullptr) {
         const auto& text_regions=slot.text_regions;
         const auto& text_weights=slot.text_weights;
         GLint major = 0, minor = 0; glGetIntegerv(GL_MAJOR_VERSION, &major); glGetIntegerv(GL_MINOR_VERSION, &minor);
@@ -1366,6 +1381,12 @@ struct Bridge final {
         glUniform1i(glGetUniformLocation(prog, "source"), 0); glUniform1i(glGetUniformLocation(prog, "map"), 1);
         glUniform2i(glGetUniformLocation(prog, "size"), width, height);
         glUniform1i(glGetUniformLocation(prog, "photo_rotation"), photo_rotation);
+        glUniform1i(glGetUniformLocation(prog, "source_alpha_enabled"), matte ? 1 : 0);
+        glUniform1i(glGetUniformLocation(prog, "source_alpha"), 2);
+        if (matte) {
+            glActiveTexture(GL_TEXTURE2); glBindTexture(GL_TEXTURE_2D, matte); glActiveTexture(GL_TEXTURE0);
+            glUniform4fv(glGetUniformLocation(prog, "alpha_content"), 1, matte_content);
+        }
         glDrawArrays(GL_TRIANGLES, 0, 3);
         frame_timer.stop();
         dump_warp();
@@ -1912,6 +1933,21 @@ extern "C" JNIEXPORT jboolean JNICALL
 Java_org_vrpassthroughplayer_plugin_RenderBridgeNative_alphaReady(JNIEnv* env, jclass, jlong id, jlong token) {
     try { std::lock_guard<std::mutex> guard(registry_mutex); auto& bridge = find(id); return bridge.alpha_ready(bridge.find(token)) ? JNI_TRUE : JNI_FALSE; }
     catch (const std::exception& e) { error(env, e.what()); return JNI_FALSE; }
+}
+extern "C" JNIEXPORT jint JNICALL
+Java_org_vrpassthroughplayer_plugin_RenderBridgeNative_warpAlpha(JNIEnv* env, jclass, jlong id, jlong token,
+                                                               jfloat shift, jfloat convergence, jint matte, jfloatArray content) {
+    try {
+        if (!std::isfinite(shift) || !std::isfinite(convergence) || shift < 0.f || shift > 0.2f || convergence < 0.f || convergence > 1.f || matte <= 0 ||
+            !content || env->GetArrayLength(content) != 4) throw std::runtime_error("Browser matte warp parameters invalid");
+        std::array<float, 4> rect{}; env->GetFloatArrayRegion(content, 0, 4, rect.data());
+        if (env->ExceptionCheck()) return 0;
+        for (auto value : rect) if (!std::isfinite(value)) throw std::runtime_error("Browser matte rectangle nonfinite");
+        if (rect[0] < 0 || rect[1] < 0 || rect[2] <= 0 || rect[3] <= 0 || rect[0]+rect[2] > 1.00001f || rect[1]+rect[3] > 1.00001f)
+            throw std::runtime_error("Browser matte rectangle invalid");
+        std::lock_guard<std::mutex> guard(registry_mutex);
+        return static_cast<jint>(find(id).warp(token, shift, convergence, static_cast<GLuint>(matte), rect.data()));
+    } catch (const std::exception& e) { error(env, e.what()); return 0; }
 }
 extern "C" JNIEXPORT jint JNICALL
 Java_org_vrpassthroughplayer_plugin_RenderBridgeNative_preparePortrait(JNIEnv* env, jclass, jlong id, jlong token, jfloat lod_bias, jobject residual) {

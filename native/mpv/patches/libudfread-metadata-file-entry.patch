@@ -1,0 +1,23 @@
+Accept a plain File Entry for the UDF metadata file and its mirror.
+
+Some Blu-ray images record these two entries with tag 261 instead of 266. The
+entry's file type and allocation descriptors are decoded identically.
+
+--- a/src/udfread.c
++++ b/src/udfread.c
+@@ -526,12 +526,13 @@
+             tag_id = _read_descriptor_block(input, pd->start_block + mirror_lba, buf);
+         }
+
+-        if (tag_id != ECMA_ExtendedFileEntry) {
++        if (tag_id != ECMA_ExtendedFileEntry && tag_id != ECMA_FileEntry) {
+             udf_error("read metadata file %u: unexpected tag %d\n", i, tag_id);
+             continue;
+         }
+
+-        fe = decode_ext_file_entry(buf, UDF_BLOCK_SIZE, pd->number);
++        fe = tag_id == ECMA_FileEntry ? decode_file_entry(buf, UDF_BLOCK_SIZE, pd->number)
++                                      : decode_ext_file_entry(buf, UDF_BLOCK_SIZE, pd->number);
+         if (!fe) {
+             udf_error("parsing metadata file entry %u failed\n", i);
+             continue;

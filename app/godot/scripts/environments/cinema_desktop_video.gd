@@ -111,7 +111,7 @@ func toggle_play() -> void:
 	_update_desktop_state(true)
 
 
-func set_playback_speed(_value: float) -> bool:
+func set_playback_speed(_value: float, _remember: bool = true) -> bool:
 	# 4.7 exposes a video speed_scale, but this extension's real audio mixing at
 	# other rates has not been validated. Keep the decoder at the tested 1x.
 	return false

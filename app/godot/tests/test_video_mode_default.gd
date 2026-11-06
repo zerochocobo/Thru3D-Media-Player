@@ -115,7 +115,7 @@ func _run() -> void:
 	video.set_projection(0)
 	check(video.last_mode == expected, "Diagnostic opens do not overwrite last normal mode")
 	video.open_local("externalvideo://temporary", "Clip", 0, true, false, "", {"external_temporary": true}); complete()
-	check(video.geometry == 0, "External unknown source retains its existing safe format policy")
+	check(current() == expected, "External unknown source follows the explicitly enabled last-mode preference")
 	video.set_projection(1); expected = current()
 	host.next_id = -1
 	video.open_local("file:///failed.mp4", "flat_2d.mp4")

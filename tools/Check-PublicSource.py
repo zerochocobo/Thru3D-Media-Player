@@ -48,7 +48,7 @@ def check_files(files):
             errors.append(f'{name}: unsafe path')
         if path.name.lower() in {'voice.json', 'voice.new', 'reference.wav'} or ('narration' in path.parts and 'voices' in path.parts) or data.startswith(b'T3VOICE1'):
             errors.append(f'{name}: excluded personal voice data')
-        if name.startswith('app/godot/environments/grand_cinema/'):
+        if name.startswith(('app/godot/environments/grand_cinema/', 'app/godot/environments/private_beach/', 'tools/beach/', 'app/godot/tests/render_private_beach', 'app/godot/tests/test_private_beach')):
             errors.append(f'{name}: excluded generated scene model')
         approved_mesh = name in HAND_BUFFER_PINS
         approved_font = name in FONT_PINS

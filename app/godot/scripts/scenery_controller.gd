@@ -58,6 +58,10 @@ func setup(owner: Node, target: Node3D) -> void:
 		else:
 			library.bind(mode.id,choice if library.allowed(mode.id,choice) else library.fallback(mode.id),background.yaw,background.brightness)
 
+func _environment(id: String) -> Node:
+	if app.has_method("environment_for_background"): return app.environment_for_background(id)
+	return app.cinema_environment if id=="cinema" else null
+
 func _background(mode: String) -> Node:
 	return _targets.get(mode)
 
@@ -113,9 +117,10 @@ func select(mode: String,id: String,advance: bool = true) -> void:
 		candidate.set_library_asset(library.image_path(id),str(asset.title),int(asset.orientation))
 	add_child(candidate)
 	_pending[mode]={"id":id,"next":id,"candidate":candidate,"started":Time.get_ticks_msec()}
-	if id=="cinema" and app.cinema_environment:
+	var environment := _environment(id)
+	if environment:
 		# Preload without presenting or relocating the rig before commit.
-		app.cinema_environment.prepare()
+		environment.prepare()
 	menu.refresh()
 
 func _process(_delta: float) -> void:
@@ -128,9 +133,10 @@ func _process(_delta: float) -> void:
 			candidate.queue_free(); _pending.erase(mode); select(mode,str(job.next),false); continue
 		var wanted: String="custom" if library.assets.has(str(job.id)) else str(job.id)
 		var failed: bool=not candidate.error.is_empty() or timed_out or candidate.choice!=wanted
-		if job.id=="cinema" and app.cinema_environment:
-			if app.cinema_environment.loading and not timed_out: continue
-			failed=not app.cinema_environment.is_ready
+		var environment := _environment(str(job.id))
+		if environment:
+			if environment.loading and not timed_out: continue
+			failed=failed or not environment.is_ready
 		if Time.get_ticks_msec()-int(job.started)>60000: failed=true
 		var committed:=false
 		if failed: _error="Background unavailable"; _delete.clear()
@@ -201,10 +207,12 @@ func snapshot(mode: String) -> Dictionary:
 	var selected: String=str(library.bindings.get(mode,{}).get("id",background.choice))
 	var status:=_error if not _error.is_empty() else library.error
 	if library.busy or _pending.has(mode): status="Loading…"
-	elif background.choice=="cinema" and app.cinema_environment and not app.cinema_environment.is_ready:
+	elif background.choice in ["cinema","private_beach"] and app.cinema_environment and not app.cinema_environment.is_ready:
 		status="Loading cinema…" if app.cinema_environment.loading else str(app.cinema_environment.error)
 	elif status.is_empty():
-		if mode!=("image" if app.photo_active else "global"): status="Saved for this mode"
+		if background.choice=="private_beach" and app.beach_environment.screen_restore_failed: status="Saved screen placement unavailable"
+		elif background.choice=="private_beach" and app.beach_environment.view_restore_failed: status="Saved viewing position unavailable"
+		elif mode!=("image" if app.photo_active else "global"): status="Saved for this mode"
 		elif app.temporary_passthrough: status="Temporary passthrough active"
 		elif (app.photo_active and app.photo.geometry!=0) or (not app.photo_active and app.video.geometry!=0): status="Saved; visible after immersive viewing"
 	state.merge({"selected":selected,"choice":background.choice,"yaw":background.yaw,"brightness":background.brightness,
@@ -217,13 +225,19 @@ func _command(operation: String,value: Variant) -> void:
 		"use_current": import_current(app.photo.background_source(),app.photo.display_name,str(value))
 		"add": _begin_import()
 		"home": app._on_setting_changed("cinema_home",true)
+		"edit_beach_screen":
+			if app.background.choice=="private_beach" and app.beach_environment.is_ready:
+				menu.begin_beach_screen(app._beach_edit_pose())
+		"apply_beach_screen":
+			if app.background.choice=="private_beach" and value is Dictionary:
+				app.beach_environment.request_screen(value)
 		"remove":
 			_delete=value.duplicate()
 			for mode in library.bindings:
 				if value.has(library.bindings[mode].get("id","")) and library.valid_mode(mode): select(mode,library.fallback(mode))
 		"adjust":
 			var mode:=str(value.mode); var key:=str(value.key)
-			if key.begins_with("cinema_"): app._on_setting_changed(key,value.value)
+			if key.begins_with("cinema_") or key.begins_with("beach_"): app._on_setting_changed(key,value.value)
 			else:
 				var background: Node=_background(mode)
 				if key=="background_yaw": background.set_yaw(float(value.value))

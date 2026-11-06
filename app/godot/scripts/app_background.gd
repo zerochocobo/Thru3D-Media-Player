@@ -1,4 +1,5 @@
 extends Node
+const Rules := preload("res://scripts/panorama_background_rules.gd")
 ## Application scenery owns its texture independently of the image viewer's current photo.
 signal changed
 signal custom_saved(path: String, title: String, orientation: int)
@@ -8,7 +9,7 @@ const BELFAST := "res://backgrounds/belfast_sunset_puresky.jpg"
 const MORNING := "res://backgrounds/kloppenheim_06_puresky.jpg"
 const NIGHT := "res://backgrounds/eso0932a.jpg"
 const BUILTINS := {"belfast": BELFAST, "morning": MORNING, "night": NIGHT}
-const CHOICES := ["belfast", "morning", "night", "dark", "passthrough", "custom", "cinema"]
+const CHOICES := ["belfast", "morning", "night", "dark", "passthrough", "custom", "cinema", "private_beach"]
 var directory := "user://backgrounds"
 var library_directory := "user://background_library"
 var choice := "belfast"
@@ -19,7 +20,7 @@ var yaw := 0.0
 var brightness := 1.0
 var loading := false
 var error := ""
-var sky := Sky.new()
+var sky: Sky
 var _material := PanoramaSkyMaterial.new()
 var _builtin: Texture2D
 var _custom: Texture2D
@@ -30,14 +31,20 @@ var _job := {}
 var _generation := 0
 
 func _ready() -> void:
-	sky.sky_material = _material
-	# Background only; no need for a large reflection cubemap.
-	sky.radiance_size = Sky.RADIANCE_SIZE_32
 	_material.filter = true
+	choice = normalize_choice(choice)
 	if not select(choice): select("belfast")
+
+static func private_beach_available() -> bool:
+	return ResourceLoader.exists("res://environments/private_beach/beach_bundle.res")
+
+static func normalize_choice(value: String) -> String:
+	if value == "private_beach" and not private_beach_available(): value = "cinema"
+	return CinemaFeature.normalize_background(value)
 
 func select(value: String) -> bool:
 	if value not in CHOICES: return false
+	if value == "private_beach" and not private_beach_available(): return false
 	if value == "cinema" and not CinemaFeature.enabled(): return false
 	if value == "custom" and not has_custom(): return false
 	_generation += 1
@@ -117,8 +124,8 @@ func import_photo(source: Dictionary, title: String) -> bool:
 func _start_custom(path: String, orientation: int, copy: bool, title: String, source: Dictionary = {}) -> bool:
 	# Open before dispatch: an Android photo cache may be unlinked on the next selection.
 	var input := FileAccess.open(path, FileAccess.READ)
-	if not input or input.get_length() > 256 * 1024 * 1024:
-		error = "Background unavailable"; changed.emit(); return false
+	if not input or input.get_length() > Rules.MAX_BYTES:
+		error = Rules.READ if not input else Rules.FILE_SIZE; changed.emit(); return false
 	var destination := directory.path_join("custom_%d_%d.image" % [int(Time.get_unix_time_from_system()), Time.get_ticks_usec()]) if copy else path
 	_job = {"path": destination, "orientation": orientation, "copy": copy, "title": title, "generation": _generation}
 	_job["source"] = source.duplicate(true)
@@ -135,6 +142,7 @@ func _start_custom(path: String, orientation: int, copy: bool, title: String, so
 
 static func _read_custom(input: FileAccess, job: Dictionary) -> Dictionary:
 	var path := str(job.path)
+	var source_bytes := input.get_length()
 	if job.copy:
 		DirAccess.make_dir_recursive_absolute(path.get_base_dir())
 		var output := FileAccess.open(path, FileAccess.WRITE)
@@ -149,11 +157,12 @@ static func _read_custom(input: FileAccess, job: Dictionary) -> Dictionary:
 		output.close()
 	input.close()
 	var header := Info.read_header(path)
-	if header.is_empty() or header.width > 8192 or header.height > 8192 or int(header.width) * int(header.height) > 32 * 1024 * 1024: return {}
+	var issue := Rules.file_issue(source_bytes, header)
+	if not issue.is_empty(): return {"error": issue}
 	var data := FileAccess.get_file_as_bytes(path)
 	var image := Image.new()
 	var result := image.load_jpg_from_buffer(data) if header.codec == "jpg" else (image.load_png_from_buffer(data) if header.codec == "png" else image.load_webp_from_buffer(data))
-	if result != OK: return {}
+	if result != OK: return {"error": Rules.DECODE}
 	Info.orient(image, int(job.orientation))
 	var half_sky: bool = job.copy and int(job.get("geometry", 3)) == 1
 	if job.copy and not source_supported(image.get_size(), int(job.get("geometry", 3)), job.stereo, job.top_bottom): return {}
@@ -194,12 +203,7 @@ static func _read_custom(input: FileAccess, job: Dictionary) -> Dictionary:
 	return {"image": image, "orientation": 1 if job.copy and (job.stereo or half_sky) else int(job.orientation)}
 
 static func source_supported(size: Vector2, geometry: int, stereo: bool, top_bottom: bool) -> bool:
-	if geometry not in [1, 3] or size.x <= 0 or size.y <= 0: return false
-	var aspect := size.x / size.y
-	var eye_aspect := aspect * (2.0 if top_bottom else 0.5) if stereo else aspect
-	var wanted := 1.0 if geometry == 1 else 2.0
-	# Full eyes, or a half-resolution pair whose packed aspect matches one eye.
-	return absf(eye_aspect - wanted) < 0.02 or (stereo and absf(aspect - wanted) < 0.02)
+	return Rules.source_supported(size, geometry, stereo, top_bottom)
 
 func _process(_delta: float) -> void:
 	if not _builtin_requested.is_empty():
@@ -230,7 +234,7 @@ func _process(_delta: float) -> void:
 				custom_saved.emit(custom_path, custom_title, custom_orientation)
 				if _owns_custom(previous) and previous != custom_path: DirAccess.remove_absolute(previous)
 		elif int(_job.generation) == _generation:
-			error = "Background unavailable"
+			error = str(result.get("error", Rules.READ))
 			if _job.copy: DirAccess.remove_absolute(str(_job.path))
 		_apply()
 
@@ -241,7 +245,16 @@ func _apply() -> void:
 	changed.emit()
 
 func ready_sky() -> Sky:
-	return sky if _material.panorama != null else null
+	if _material.panorama == null: return null
+	# Transaction candidates only load/adopt image data. Creating their unused
+	# Sky and freeing it before the first render leaks textures in our 4.7.2
+	# desktop GLES3 lifecycle probe.
+	# The displayed background owns one lazily created sky for its lifetime.
+	if sky == null:
+		sky=Sky.new()
+		sky.sky_material=_material
+		sky.radiance_size=Sky.RADIANCE_SIZE_32
+	return sky
 
 func rotate_sky() -> void:
 	yaw = fposmod(yaw + 45.0, 360.0)

@@ -1,5 +1,6 @@
 extends SceneTree
 const Main:=preload("res://scripts/main.gd")
+const Rules:=preload("res://scripts/panorama_background_rules.gd")
 var checks:=0
 var failures: Array=[]
 var app: Node
@@ -40,6 +41,13 @@ func _run() -> void:
 	check(not menu._buttons.any(func(item): return item.target in [menu.PHOTO_BACKGROUND,menu.PHOTO_GLOBAL_BACKGROUND]),"Playback control bar does not add background-setting actions")
 	tap(menu,11)
 	check(menu.section==1,"Current panorama background actions belong to the existing player settings panel")
+	main.photo.set_projection(0); menu.refresh()
+	check(main.photo.background_issue()==Rules.PROJECTION and not main.photo.can_background(),"Flat panorama viewing explains how to choose a supported projection")
+	var disabled: Dictionary=menu._buttons.filter(func(item): return item.target==menu.PHOTO_BACKGROUND)[0]
+	menu.update_pointer("right_hand",disabled.node.global_position+disabled.node.global_basis.z*.4,-menu.global_basis.z,true)
+	check(not disabled.enabled and menu._tooltip.visible and menu._tooltip.get_child(0).text.contains(menu.I18n.t(Rules.PROJECTION)),"Disabled background action exposes corrective guidance to a real ray")
+	main.photo.set_projection(3); menu.refresh()
+	check(main.photo.background_issue().is_empty() and main.photo.can_background(),"Choosing 360 degrees immediately clears the restriction")
 	var uri: String=main.photo.local_uri
 	tap(menu,menu.PHOTO_BACKGROUND)
 	check(main._photo_menu_state().photo_background_saving,"Current-image button shows saving immediately")
@@ -52,7 +60,12 @@ func _run() -> void:
 	check(controller.library.bindings.global.id==id and controller.library.assets.size()==1,"Global action reuses the same content asset")
 	check(main._photo_menu_state().photo_global_background_applied,"Global action reports its own scope")
 	check(main.photo.local_uri==uri and main.photo.geometry==3 and main.photo_active and menu.visible,"Direct actions preserve the viewed panorama and its menu")
-	controller.open(menu); controller.use_native_dialogs=false; controller._begin_import()
+	controller.open(menu)
+	tap(main.scenery_menu,main.scenery_menu.HELP)
+	check(main.scenery_menu.modal=="requirements" and controller.library.bindings.image.id==id,"Requirements open on demand without changing the selected background")
+	tap(main.scenery_menu,main.scenery_menu.BACK)
+	check(main.scenery_menu.modal.is_empty() and main.scenery_menu.mode=="image","Closing help preserves the image-mode context")
+	controller.use_native_dialogs=false; controller._begin_import()
 	var unmarked:=directory.path_join("unmarked.png"); image.fill(Color(.6,.3,.1)); image.save_png(unmarked)
 	var square:=directory.path_join("square.png"); image.resize(128,128); image.save_png(square)
 	main.recent_menu.audio_selection={unmarked:{"uri":unmarked,"title":"Panorama 360"},square:{"uri":square,"title":"Panorama 180"}}
@@ -74,8 +87,15 @@ func _run() -> void:
 	controller._import_files([{"uri":ordinary,"title":"Ordinary image"}]); await settle(controller)
 	check(scenery.view=="import_error" and controller.library.import_progress.failed==1,"Rejected input has a clear error step")
 	check(scenery._buttons.any(func(item): return item.target==scenery.ADD and item.enabled),"Error step offers choosing another image")
+	check(controller.library.error==Rules.RATIO and controller.library.import_progress.errors[0].reason==Rules.RATIO,"Import failure names the ratio requirement instead of saying unsupported")
 	controller._import_files([{"uri":unmarked,"title":"Known panorama"},{"uri":directory.path_join("missing.png"),"title":"Missing image"}]); await settle(controller)
 	check(scenery.view=="manage" and controller.library.import_progress.existing==1 and controller.library.import_progress.added==0 and controller.library.import_progress.failed==1,"Mixed results distinguish existing content from failed input")
+	tap(scenery,scenery.ISSUES)
+	check(scenery.modal=="issues" and controller.library.import_progress.errors[0].reason==Rules.READ,"Mixed results retain a readable per-file failure reason")
+	tap(scenery,scenery.HELP); tap(scenery,scenery.BACK)
+	check(scenery.modal=="issues","Requirements return to the failure detail they were opened from")
+	tap(scenery,scenery.BACK)
+	check(scenery.modal.is_empty() and scenery.view=="manage","Failure details return to the added backgrounds")
 	scenery.dismiss()
 	check(menu.visible and main.photo.local_uri==uri,"Closing management restores the original viewing context")
 	main.free(); await process_frame

@@ -24,6 +24,11 @@ try {
     if ($LASTEXITCODE -ne 0 -or $revision -ne $manifest.revision) { throw 'Moonshine source revision differs from the reviewed pin.' }
     & git -C $source sparse-checkout set --no-cone '/core/*' '!/core/third-party/onnxruntime/lib/' '!/core/third-party/onnxruntime/lib-static/' '!/core/moonshine-tts/data/' '/language-bindings/android/moonshine-jni/' '/LICENSE' '/.gitattributes'
     if ($LASTEXITCODE -ne 0) { throw 'Moonshine sparse source preparation failed.' }
+    # A --no-checkout clone has no index yet; setting sparse patterns alone
+    # does not materialize its sources. Re-select the already verified commit.
+    # With an existing checkout this preserves the verified local patches.
+    & git -C $source checkout --detach $revision
+    if ($LASTEXITCODE -ne 0) { throw 'Moonshine sparse source checkout failed.' }
     # Fetch just the two compiled LFS objects. `git lfs pull` enumerates all blob
     # sizes and defeats the sparse/partial clone by fetching unrelated model trees.
     foreach ($relative in @('core/moonshine-tts/src/zipvoice-voices-data.cpp', 'core/cpp-annote/src/community1_cpp_annote_embedded.cpp')) {

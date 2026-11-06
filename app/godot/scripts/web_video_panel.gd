@@ -89,13 +89,14 @@ func _changed(value: String) -> void:
 	result = {}; menu.refresh()
 func _submitted(value: String) -> void:
 	address = value; resolve()
-func resolve(beta: bool = false) -> void:
+func resolve(beta: bool = false, selection: String = "") -> void:
 	if not supported(): return
 	if beta and not Methods.supports(menu.platform, "web_video_resolve_beta"): return
+	if not selection.is_empty() and not Methods.supports(menu.platform, "web_video_resolve_selected"): return
 	address = menu.system_text_input.finish("web_video", address).strip_edges()
 	if address.is_empty(): return
 	result = {}
-	pending = int(menu.platform.web_video_resolve_beta(address) if beta else menu.platform.web_video_resolve(address))
+	pending = int(menu.platform.web_video_resolve_selected(address, selection) if not selection.is_empty() else menu.platform.web_video_resolve_beta(address) if beta else menu.platform.web_video_resolve(address))
 	next_poll = 0; menu.refresh()
 func tick() -> void:
 	if not active():

@@ -7,6 +7,14 @@ static var popup: Node3D
 static var head_provider: Callable
 static var on_open: Callable
 
+## Static hooks must not retain a closure over a player after its tree exits.
+## An older player's disposal must not detach a newer player's bindings.
+static func release_host(host: Node) -> void:
+	if head_provider.get_object()==host: head_provider=Callable()
+	if on_open.get_object()==host: on_open=Callable()
+	if is_instance_valid(popup) and popup.head_provider.get_object()==host:
+		popup.head_provider=Callable()
+
 static func available() -> bool: return quest and I18n.language == "zh"
 static func enabled() -> bool: return selected and available()
 static func active() -> bool: return is_instance_valid(popup) and popup.visible

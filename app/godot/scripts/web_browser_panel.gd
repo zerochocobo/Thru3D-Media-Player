@@ -1,5 +1,17 @@
 extends RefCounted
+signal effects_changed
+var _effects_active := false
+
+func person_passthrough_active() -> bool:
+	return active() and windows.values().any(func(window): return window.visible and window.depth.matte and not window.selecting and not start_page.active(window.window_id))
+
+func sync_effects() -> void:
+	var current := person_passthrough_active()
+	if current != _effects_active:
+		_effects_active = current
+		effects_changed.emit()
 const UiTheme := preload("res://scripts/ui_theme.gd")
+const Sites := preload("res://scripts/web_video_sites.gd")
 const ChineseInput := preload("res://scripts/chinese_input.gd")
 var _chinese_mode := -1
 var _keyboard_seen := 0
@@ -74,6 +86,7 @@ var last_pause_token := 0
 var handoff_start_ms := 0
 var handoff_auto := false
 var handoff_beta := false
+var beta_button_seen := {}
 var handoff_waiting_pause := false
 var handoff_started_ms := 0
 var capture_started_ms := 0
@@ -97,7 +110,6 @@ var saved := {}
 var saved_poll := 0
 var _saved_raw := ""
 var _status_raw := ""
-var _beta_page := RegEx.create_from_string("^https://www\\.bilibili\\.com/(?:video/(?:BV[A-Za-z0-9]+|av[0-9]+)|bangumi/play/(?:ep|ss)[1-9][0-9]{0,19})/?(?:[?#].*)?$")
 var library := preload("res://scripts/web_browser_library_panel.gd").new(self)
 var start_page := preload("res://scripts/web_browser_start_page.gd").new(self)
 var focus_regions := {} # Session-local, follows a tab when moved to another window.
@@ -118,7 +130,7 @@ func active() -> bool: return opened and menu.visible and menu.section == menu.S
 func cinema_video_active() -> bool:
 	return cinema_video_provider.is_valid() and bool(cinema_video_provider.call())
 
-func open(url: String = "") -> void:
+func open(url: String = "", retained: Dictionary = {}) -> void:
 	if not supported(): return
 	_sync_chinese_mode()
 	menu.browser_opened.emit()
@@ -134,10 +146,12 @@ func open(url: String = "") -> void:
 		for item in windows.values(): item.set_mode("floating")
 	if not url.is_empty():
 		draft = url; menu.platform.web_browser_navigate(url)
+	elif not retained.is_empty(): _video_command("resume_retained_page", retained)
 	else: menu.platform.web_browser_action("resume")
 	next_poll = 0; menu.refresh()
 
 func close(force_release: bool = false) -> void:
+	var retaining: bool = playback_return.get("retained", false) and playback_return.get("opening", false)
 	ChineseInput.close("browser"); _keyboard_seen = 0; _keyboard_target.clear()
 	cancel()
 	if handoff: _cancel_handoff()
@@ -145,7 +159,7 @@ func close(force_release: bool = false) -> void:
 	if handoff or (prefetch_id > 0 and menu.web_video.pending == prefetch_id): menu.web_video.close()
 	prefetch_id = 0; playing_since = 0
 	menu.system_text_input.cancel("web_browser")
-	if (opened or force_release) and supported(): menu.platform.web_browser_action("hibernate")
+	if (opened or force_release) and supported() and not retaining: menu.platform.web_browser_action("hibernate")
 	opened = false; handoff = false; handoff_waiting_pause = false; pause_started = 0
 	opening = false; window_action.clear()
 	handoff_auto = false; handoff_context.clear()
@@ -153,6 +167,7 @@ func close(force_release: bool = false) -> void:
 	tabs_open = false
 
 func tick() -> void:
+	sync_effects()
 	_sync_chinese_mode()
 	if menu.visible and menu.section == menu.Section.WEB and supported() and Time.get_ticks_msec() >= saved_poll:
 		saved_poll = Time.get_ticks_msec() + 1000
@@ -205,10 +220,14 @@ func tick() -> void:
 		if (created and windows.values().any(func(item): return item.window_id != id and item.visible and item.on_screen())) or force_floating_on_open:
 			windows[id].set_mode("floating")
 	if not opening: force_floating_on_open = false
+	sync_effects()
 	if handoff and (str(data.get("url", "")) != handoff_uri or int(data.get("tab_id", 0)) != handoff_tab or int(data.get("navigation", 0)) != handoff_navigation):
 		_cancel_handoff()
+	if handoff and not str(handoff_context.get("selection", "")).is_empty() and selected_beta_target(data, str(handoff_context.selection)).is_empty():
+		menu.web_video.result = {"error_code": "browser_page_changed"}; _handoff_failed()
 	if not menu.system_text_input.active("web_browser"):
 		draft = "" if data.get("url", "") == "about:blank" else str(data.get("url", ""))
+	_poll_beta_button()
 	_poll_prefetch()
 	_poll_fullscreen()
 	if handoff and Time.get_ticks_msec() - handoff_started_ms > (30000 if handoff_beta else 90000):
@@ -219,7 +238,7 @@ func tick() -> void:
 			handoff_waiting_pause = false
 			handoff_start_ms = _playhead()
 			handoff_context.position_ms = handoff_start_ms
-			menu.web_video.resolve(true)
+			menu.web_video.resolve(true, str(handoff_context.get("selection", "")))
 			if menu.web_video.pending == 0: _handoff_failed()
 		elif Time.get_ticks_msec() - pause_started > 5000:
 			menu.web_video.result = {"error_code": "browser_pause_timeout"}
@@ -236,14 +255,22 @@ func tick() -> void:
 			elif _pause_confirmed():
 				var automatic := handoff_auto
 				if not handoff_beta: _keep_prefetch(handoff_uri, menu.web_video.result)
+				_discard_playback_return()
 				playback_return = handoff_context.duplicate(true)
 				playback_return.native_uri = str(menu.web_video.result.get("uri", ""))
-				# Complete the hold without resuming; parked/peer pages must accept
-				# later deliberate user playback after returning from the player.
-				_video_command("resume_tab", handoff_context.merged({"was_playing": false}, true))
+				playback_return.retained = handoff_beta
+				var keep_browser := live_window_ids().size() > 1
+				if handoff_beta:
+					# Arm before choose() dismisses the menu. Dismiss and the main
+					# player may both call close(); neither may unload this document.
+					playback_return.opening = true
+					_video_command("retain_page", playback_return.merged({"hide": not keep_browser}, true))
+				else:
+					# Legacy transfers complete their temporary pause before choosing.
+					_video_command("resume_tab", handoff_context.merged({"was_playing": false}, true))
 				handoff = false; pause_started = 0
 				handoff_auto = false
-				menu.web_video.choose({"web_video": "play", "start_ms": handoff_start_ms, "web_fullscreen": automatic, "keep_browser": live_window_ids().size() > 1}); return
+				menu.web_video.choose({"web_video": "play", "start_ms": handoff_start_ms, "web_fullscreen": automatic, "keep_browser": keep_browser}); return
 			elif Time.get_ticks_msec() - pause_started > 5000:
 				menu.web_video.result = {"error_code": "browser_pause_timeout"}
 				_handoff_failed()
@@ -277,15 +304,57 @@ func _poll_fullscreen() -> void:
 	if data.get("videos", []).any(func(item): return item.get("fullscreen", false) and item.get("protected", false)): return
 	_begin_handoff(true)
 
-func _begin_handoff(automatic: bool = false, beta: bool = false) -> void:
+func _poll_beta_button() -> void:
+	var serial := int(data.get("beta_request", data.get("weibo_request", 0)))
+	var tab := int(data.get("tab_id", 0))
+	if serial <= int(beta_button_seen.get(tab, 0)) or not data.get("active", false): return
+	beta_button_seen[tab] = serial
+	var selection := str(data.get("beta_selection", data.get("weibo_selection", "")))
+	if not selection.is_empty() and not selected_beta_target(data, selection).is_empty(): _begin_handoff(false, true, selection)
+
+func selected_beta_target(current: Dictionary, selection: String) -> Dictionary:
+	var candidates: Array = current.get("videos", []).filter(func(item): return (item.get("weibo_ready", false) or item.get("bilibili_ready", false) or item.get("tencent_ready", false) or item.get("mango_ready", false)) and not item.get("protected", false) and str(item.get("selection", "")) == selection)
+	return candidates[0] if not selection.is_empty() and candidates.size() == 1 else {}
+
+func weibo_target(current: Dictionary, selection: String = "") -> Dictionary:
+	var candidates: Array = current.get("videos", []).filter(func(item): return item.get("weibo_ready", false) and not item.get("protected", false) and not str(item.get("selection", "")).is_empty())
+	if not selection.is_empty():
+		candidates = candidates.filter(func(item): return str(item.get("selection", "")) == selection)
+	else:
+		var selected: Array = candidates.filter(func(item): return item.get("weibo_selected", false))
+		if not selected.is_empty(): candidates = selected
+	return candidates[0] if candidates.size() == 1 else {}
+
+func tencent_target(current: Dictionary, selection: String = "") -> Dictionary:
+	var candidates: Array = current.get("videos", []).filter(func(item): return item.get("tencent_ready", false) and not item.get("protected", false) and not str(item.get("selection", "")).is_empty() and (selection.is_empty() or str(item.selection) == selection))
+	return candidates[0] if candidates.size() == 1 else {}
+
+func mango_target(current: Dictionary, selection: String = "") -> Dictionary:
+	var candidates: Array = current.get("videos", []).filter(func(item): return item.get("mango_ready", false) and not item.get("protected", false) and not str(item.get("selection", "")).is_empty() and (selection.is_empty() or str(item.selection) == selection))
+	return candidates[0] if candidates.size() == 1 else {}
+
+func _begin_handoff(automatic: bool = false, beta: bool = false, selection: String = "") -> void:
 	if beta:
 		# The button snapshot can be one poll behind a sidebar navigation or media change.
 		# Revalidate before pausing or disturbing an existing resolver.
 		var fresh: Variant = JSON.parse_string(menu.platform.web_browser_status())
-		if not fresh is Dictionary or not beta_site_available(fresh) or not beta_media_ready(fresh): return
+		if not fresh is Dictionary or not beta_site_available(fresh) or not beta_media_ready(fresh, selection): return
 		if int(fresh.get("focused_window", 1)) != focused_window: return
 		for key in ["url", "tab_id", "navigation"]:
 			if fresh.get(key) != data.get(key): return
+		if not selection.is_empty() and selected_beta_target(fresh, selection).is_empty(): return
+		if fresh.get("weibo_beta_available", false):
+			var target := weibo_target(fresh, selection)
+			if target.is_empty(): return
+			selection = str(target.selection)
+		if fresh.get("tencent_beta_available", false):
+			var target := tencent_target(fresh, selection)
+			if target.is_empty(): return
+			selection = str(target.selection)
+		if fresh.get("mango_beta_available", false):
+			var target := mango_target(fresh, selection)
+			if target.is_empty(): return
+			selection = str(target.selection)
 		data = fresh; _status_raw = ""
 	if handoff: _cancel_handoff()
 	handoff_error.clear()
@@ -297,8 +366,9 @@ func _begin_handoff(automatic: bool = false, beta: bool = false) -> void:
 	handoff_tab = int(data.get("tab_id", 0)); handoff_navigation = int(data.get("navigation", 0))
 	handoff_context = {"tab": handoff_tab, "window": focused_window, "navigation": handoff_navigation,
 		"fullscreen": automatic,
-		"origin": handoff_uri, "request": int(data.get("fullscreen_request", 0)), "position_ms": _playhead(),
-		"was_playing": data.get("videos", []).any(func(item): return (not automatic or item.get("fullscreen", false)) and item.get("playing", false))}
+		"mango": data.get("mango_beta_available", false), "origin": handoff_uri, "request": int(data.get("fullscreen_request", 0)), "selection": selection,
+		"was_playing": data.get("videos", []).any(func(item): return (selection.is_empty() or str(item.get("selection", "")) == selection) and (not automatic or item.get("fullscreen", false)) and item.get("playing", false))}
+	handoff_context.position_ms = _playhead()
 	menu.web_video.address = handoff_uri
 	_refresh_media_key()
 	if beta:
@@ -377,11 +447,12 @@ func _capture_ready() -> bool:
 	elif Time.get_ticks_msec() - capture_started_ms > 1500: _handoff_failed()
 	return false
 
-func beta_media_ready(current: Dictionary) -> bool:
-	return current.get("videos", []).any(func(item): return (item.get("bilibili_ready", false) or item.get("douyin_ready", false)) and not item.get("protected", false))
+func beta_media_ready(current: Dictionary, selection: String = "") -> bool:
+	if not selection.is_empty(): return not selected_beta_target(current, selection).is_empty()
+	return not weibo_target(current).is_empty() or not tencent_target(current).is_empty() or not mango_target(current).is_empty() or current.get("videos", []).any(func(item): return (item.get("bilibili_ready", false) or item.get("douyin_ready", false)) and not item.get("protected", false))
 
 func beta_site_available(current: Dictionary) -> bool:
-	return current.get("bilibili_beta_available", false) or current.get("douyin_beta_available", false)
+	return current.get("bilibili_beta_available", false) or current.get("douyin_beta_available", false) or current.get("weibo_beta_available", false) or current.get("tencent_beta_available", false) or current.get("mango_beta_available", false)
 
 func handoff_status() -> String:
 	if handoff_waiting_pause: return I18n.t("Pausing web video…")
@@ -439,7 +510,11 @@ func has_playback_return(uri: String) -> bool:
 	return not playback_return.is_empty() and (playback_return.get("opening", false) or str(playback_return.get("native_uri", "")) == uri)
 
 func playback_selected(uri: String, browser_handoff: bool = false) -> void:
-	if not browser_handoff or str(playback_return.get("native_uri", "")) != uri: playback_return.clear()
+	if not browser_handoff or str(playback_return.get("native_uri", "")) != uri: _discard_playback_return()
+
+func _discard_playback_return() -> void:
+	if playback_return.get("retained", false): _video_command("release_retained_page", playback_return)
+	playback_return.clear()
 
 func restore_playback(failed: bool, position_ms: int = -1) -> void:
 	if playback_return.is_empty(): return
@@ -448,12 +523,16 @@ func restore_playback(failed: bool, position_ms: int = -1) -> void:
 	context.play = failed and bool(context.get("was_playing", false))
 	context.exit_fullscreen = not failed
 	menu.section = menu.Section.WEB; list_mode = ""; tabs_open = false
-	open() # Restore displayed tabs; sleeping sessions recover their saved navigation.
+	# Retained returns never wake a replacement session after a crash/navigation.
+	open("", context if context.get("retained", false) else {})
+	if context.get("retained", false):
+		_video_command("resume_tab", context.merged({"was_playing": false, "restore_paused": failed}, true))
 	if context.get("fullscreen", false): _video_command("restore_video", context)
 	else:
 		# The button can hand off without a fullscreen video capture. Restore the
 		# original tab/window without navigating again or addressing stale media.
-		_video_command("select", context)
+		if not context.get("retained", false): _video_command("select", context)
+		if not str(context.get("selection", "")).is_empty(): _video_command("restore_mango" if context.get("mango", false) else "restore_weibo", context)
 	menu.web_video.result = {}; next_poll = 0
 
 func live_window_ids() -> Array:
@@ -565,6 +644,7 @@ func draw_window(host: Node) -> void:
 	else:
 		host._button(WEB, "", bounds.get_center(), bounds.size)
 		host._buttons.back().node.set_meta("menu_eye_buffer", true)
+		host._buttons.back().node.set_meta("browser_world_pointer", true)
 		var page: Dictionary = host.page_layout()
 		host._buttons.back().node.global_transform = page.pose
 		host._buttons.back().node.mesh.size = page.size
@@ -574,14 +654,14 @@ func draw_window(host: Node) -> void:
 ## The native handoff is the browser's main action: an accent pill with icon and words,
 ## muted on pages the player cannot take over.
 func beta_available(current: Dictionary) -> bool:
-	# This is presentation capability, not permission/readiness to hand off. A known
-	# Keep the existing Bilibili action while transient native state is rebuilt.
-	return Methods.supports(menu.platform, "web_video_resolve_beta") and (beta_site_available(current) or _beta_page.search(str(current.get("url", ""))) != null)
+	# Site-level presentation survives homepage/loading snapshots. Current-video
+	# identity and media readiness still gate the actual handoff.
+	return Methods.supports(menu.platform, "web_video_resolve_beta") and (beta_site_available(current) or Sites.supports_beta_url(str(current.get("url", ""))))
 
 func toolbar_tools(host: Node, current: Dictionary) -> Array:
 	var result: Array = []
 	if not host.cinema().is_empty(): result.append(BASE + 8)
-	result.append(BASE + 19)
+	result.append(BASE + 17)
 	if current.get("editing", false): result.append(KEY_CONTROL + 7)
 	elif current.get("network_capture_available", false): result.append(BASE + 15)
 	result.append(host.MOVE)
@@ -591,15 +671,20 @@ func draw_toolbar_tools(host: Node, current: Dictionary) -> void:
 	var entries := toolbar_tools(host, current)
 	var icons := {BASE + 8: "floating_window" if host.on_screen() else "cinema_screen",
 		BASE + 19: "close" if host.selecting else "expand" if host.is_focused() else "region_focus",
+		BASE + 16: "depth", BASE + 17: "settings",
 		KEY_CONTROL + 7: "keyboard_hide", BASE + 15: "media_detect", host.MOVE: ""}
 	var tips := {BASE + 8: "Floating window" if host.on_screen() else "Cinema screen",
 		BASE + 19: "Cancel selection" if host.selecting else "Exit focus" if host.is_focused() else "Focus region",
+		BASE + 16: "2D to 3D effect", BASE + 17: "Settings",
 		KEY_CONTROL + 7: "Close keyboard", BASE + 15: "Media detection on this site", host.MOVE: "Move window"}
 	for i in entries.size():
 		var target: int = entries[i]
-		var selected: bool = (host.is_focused() or host.selecting) if target == BASE + 19 else current.get("network_capture_enabled", false) if target == BASE + 15 else false
+		var selected: bool = host.depth.enabled if target == BASE + 16 else host.depth_settings if target == BASE + 17 else (host.is_focused() or host.selecting) if target == BASE + 19 else current.get("network_capture_enabled", false) if target == BASE + 15 else false
 		host._button(target, "", Vector2(0.79 - (entries.size() - 1 - i) * 0.128, host.PLAY_Y), host.TOOL_SIZE, not start_page.active(host.window_id) if target == BASE + 19 else true, icons[target], selected)
 		host._tips[target] = I18n.t(tips[target])
+		if target == BASE + 16:
+			if not host.depth.error.is_empty(): host._tips[target] += "\n" + I18n.t(host.depth.error)
+			elif host.depth.enabled: host._tips[target] += "\n" + I18n.t("3D on" if host.depth.state == "ready" else "Preparing 3D")
 		if target == BASE + 15: host._tips[target] += " · " + I18n.t("On" if selected else "Off") + "\n" + I18n.t("Replay the video after enabling")
 		if target == host.MOVE:
 			for x in [-0.012, 0.012]:
@@ -613,7 +698,22 @@ func draw_play_button(host: Node) -> void:
 	var ready: bool = cancel_old or (not handoff and data.get("native_supported", false) and focused_window == host.window_id)
 	var label := I18n.t("Cancel" if cancel_old else "Play in player")
 	var space := 1.44 - toolbar_tools(host, window_state(host.window_id)).size() * 0.128
-	var width := (space - 0.008) / 2 if beta else space
+	if (beta or (own and handoff_beta)) and not cancel_old:
+		var cancel_beta: bool = own and handoff_beta
+		var current := window_state(host.window_id)
+		var media_ready: bool = beta_site_available(current) and beta_media_ready(current)
+		var beta_ready: bool = cancel_beta or (not handoff and focused_window == host.window_id and media_ready)
+		var beta_label := I18n.t("Cancel" if cancel_beta else "Play (Beta)")
+		host._button(BASE + 18, "", Vector2(-0.59 + space / 2, host.PLAY_Y), Vector2(space, host.TOOL_SIZE.y), beta_ready, "", beta_ready)
+		var button: Node3D = host._buttons.back().node
+		button.material_override.set_shader_parameter("corner_radius", 0.035)
+		var ink: Color = host._buttons.back().foreground if beta_ready else host.MUTED
+		host._icon("stop" if cancel_beta else Sites.BETA_ICON, Vector3(-space / 2 + 0.045, 0, 0.004), 0.05, ink, button)
+		var text: Label3D = host._label(host._fit_title(beta_label, "", space - 0.10, 22), Vector3(0.025, 0, 0.004), 22, button)
+		text.modulate = ink
+		host._tips[BASE + 18] = I18n.t("Cancel" if cancel_beta else ("Play in player (Beta)" if media_ready else "Video not ready"))
+		return
+	var width := space
 	host._button(BASE + 6, "", Vector2(-0.59 + width / 2, host.PLAY_Y), Vector2(width, host.TOOL_SIZE.y), ready, "", ready)
 	var node: Node3D = host._buttons.back().node
 	node.material_override.set_shader_parameter("corner_radius", 0.035)
@@ -622,14 +722,6 @@ func draw_play_button(host: Node) -> void:
 	var caption: Label3D = host._label(host._fit_title(label, "", width - 0.10, 22), Vector3(0.025, 0, 0.004), 22, node)
 	caption.modulate = color
 	host._tips[BASE + 6] = label
-	if beta:
-		var cancel_beta: bool = own and handoff_beta
-		var current := window_state(host.window_id)
-		var media_ready: bool = beta_site_available(current) and beta_media_ready(current)
-		var beta_ready: bool = cancel_beta or (not handoff and focused_window == host.window_id and media_ready)
-		var beta_label := I18n.t("Cancel" if cancel_beta else "Play (Beta)")
-		host._button(BASE + 18, beta_label, Vector2(-0.59 + width * 1.5 + 0.008, host.PLAY_Y), Vector2(width, host.TOOL_SIZE.y), beta_ready, "", beta_ready)
-		host._tips[BASE + 18] = I18n.t("Cancel" if cancel_beta else ("Play in player (Beta)" if media_ready else "Video not ready"))
 
 func draw_tab_strip(host: Node, current: Dictionary) -> void:
 	var entries: Array = data.get("tab_list", []).filter(func(item): return int(item.window) == host.window_id)
@@ -797,7 +889,9 @@ func action(target: int) -> bool:
 
 func _playhead() -> int:
 	var best := {}; var score := -1.0
+	var selection := str(handoff_context.get("selection", "")) if handoff_beta else ""
 	for item in data.get("videos", []):
+		if not selection.is_empty() and str(item.get("selection", "")) != selection: continue
 		var area := float(item.get("width", 0)) * float(item.get("height", 0))
 		var candidate := area + (1.0e12 if item.get("playing", false) else 0.0) + (1.0e15 if item.get("fullscreen", false) else 0.0) + (1.0e18 if handoff_beta and (item.get("bilibili_ready", false) or item.get("douyin_ready", false)) else 0.0)
 		if candidate > score: score = candidate; best = item

@@ -11,6 +11,9 @@ internal object MkvMvcPreflight {
         val path = runCatching { URI(location).path }.getOrNull() ?: location.substringBefore('?').substringBefore('#')
         path.lowercase(Locale.ROOT).let { it.endsWith(".mkv") || it.endsWith(".mk3d") }
     }
+    /** Inspection only selects the MVC route: mpv's own probing still decides everything else. */
+    fun inspect(probe: () -> String, failed: (Throwable) -> Unit): Result? =
+        runCatching { parse(probe()) }.onFailure(failed).getOrNull()
     fun parse(json: String): Result? {
         val value = JSONObject(json)
         if (!value.getBoolean("mvc")) return null

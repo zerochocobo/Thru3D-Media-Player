@@ -8,6 +8,47 @@ import java.net.URI
 import java.nio.ByteBuffer
 
 class WebVideoNetworkCaptureTest {
+    @Test fun inlineHlsKeepsObservedBodyAndPerSegmentHeadersWithoutFetchingTheRoot() {
+        val base = URI("https://new-cdn.test/play/current.m3u8?decision=synthetic")
+        val init = "https://new-cdn.test/play/init.mp4"
+        val chunk = "https://new-cdn.test/play/chunk.m4s"
+        val body = "#EXTM3U\n#EXT-X-MAP:URI=\"init.mp4\"\n#EXTINF:10,\nchunk.m4s\n#EXT-X-ENDLIST\n"
+        val reads = mutableListOf<Pair<URI,Map<String,String>>>()
+        val input = media(candidate(init,"segment",JSONObject().put("Cookie","init=only")),
+            candidate(chunk,"segment",JSONObject().put("Authorization","chunk-only")))
+        val capture = resolver(mapOf(init to mp4()),reads)
+        val info = capture.resolveObservedHls(page,input,base,body)!!
+        val selected = WebVideoFormats.select(page,info){true}
+        assertEquals(listOf(URI(init)),reads.map { it.first })
+        assertEquals("init=only",reads.single().second["cookie"])
+        assertEquals(body,selected.video.browserManifest)
+        assertEquals("chunk-only",selected.video.browserHeaders!!.forUrl(URI(chunk),emptyMap())["authorization"])
+        assertFalse(selected.publicJson().toString().contains("decision="))
+        assertNull(resolver(mapOf(init to mp4())).resolveObservedHls(page,media(),base,body))
+        assertNull(resolver(mapOf(init to mp4())).resolveObservedHls(page,input,base,body.replace("#EXT-X-ENDLIST","")))
+        assertNull(resolver(mapOf(init to mp4())).resolveObservedHls(page,input,base,body.replace("EXTINF:10","EXTINF:5")))
+    }
+    @Test fun weiboCardUsesOnlyItsObservedMuxedFileAndItsOwnCredentials() {
+        val source="https://arbitrary-cdn.test/chosen.mp4?signature=synthetic"
+        val other="https://arbitrary-cdn.test/neighbour.mp4"
+        val document="https://weibo.com/newlogin"
+        val canonical="https://weibo.com/7827771738/N4xlMvjhI"
+        val item=media(candidate(other),candidate(source,headers=JSONObject().put("Authorization","only-this-request")),direct=source)
+            .put("frame",document).put("weibo_enabled",true).put("weibo_ready",true).put("capture_identity","selected")
+            .put("weibo",JSONObject().put("page",canonical).put("id","N4xlMvjhI").put("source",source))
+        val page=WebVideoWeiboCapture.page(document,item)!!
+        assertEquals(canonical,page.url)
+        val reads=mutableListOf<Pair<URI,Map<String,String>>>()
+        val info=WebVideoWeiboCapture.resolve(page,item,resolver(mapOf(source to mp4()),reads))!!
+        assertEquals(listOf(URI(source)),reads.map{it.first})
+        assertEquals("only-this-request",reads.single().second["authorization"])
+        assertEquals(source,WebVideoFormats.select(page,info){true}.video.url.toString())
+        for (data in listOf(mp4(audio=false),mp4(width=1280,height=720),mp4(duration=30),mp4(protected=true)))
+            assertNull(WebVideoWeiboCapture.resolve(page,item,resolver(mapOf(source to data))))
+        assertNull(WebVideoWeiboCapture.page(document,JSONObject(item.toString()).put("capture_identity","")))
+        assertNull(WebVideoWeiboCapture.candidate(page,JSONObject(item.toString()).put("source",other)))
+        assertNull(WebVideoWeiboCapture.page("https://weibo.com/another-document",item))
+    }
     private val page = WebVideoPage("browser", "fixture", "webvideo://capture/fixture")
     private fun box(type: String, data: ByteArray) = ByteBuffer.allocate(8 + data.size).putInt(data.size + 8).put(type.toByteArray()).put(data).array()
     private fun mp4(video: Boolean = true, audio: Boolean = true, duration: Int = 10, protected: Boolean = false, width: Int = 1920, height: Int = 1080): ByteArray {

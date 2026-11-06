@@ -114,7 +114,7 @@ android {
         externalNativeBuild {
             cmake {
                 // Normal playback includes offline subtitle narration.
-                targets 'quest_rvm', 'quest_render_bridge', 'quest_mpv', 'quest_video_layer', 'quest_usb', 'quest_narration', 'quest_listening', 'quest_tiff', 'quest_hdr', 'quest_image'
+                targets 'quest_rvm', 'quest_render_bridge', 'quest_mpv', 'quest_video_layer', 'quest_usb', 'quest_narration', 'quest_listening', 'quest_tiff', 'quest_hdr', 'quest_image', 'quest_airplay'
                 arguments "-Dncnn_DIR=${ncnnRoot.get().replace('\\', '/')}/lib/cmake/ncnn", '-DANDROID_STL=c++_shared',
                 '-DQUEST_NARRATION_ENABLED=ON',
                 "-DQUEST_DIAGNOSTIC_MODELS=${includeDiagnostics ? 'ON' : 'OFF'}",

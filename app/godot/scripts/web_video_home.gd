@@ -100,13 +100,14 @@ func draw() -> bool:
 			var site_ink: Color = UiTheme.site_icon_color(str(site.icon), site.color)
 			menu._icon(str(site.icon), Vector3(-0.158, 0, 0.009), 0.044, site_ink, card.node)
 			var native_playback := Sites.supports_native(site)
+			var beta_playback := Sites.supports_beta(site)
 			var name := I18n.t(site.name)
 			var label := _caption(menu._fit_title(name, "", 0.244 if native_playback else 0.292, 18), Vector2(-0.116, 0), 18, UiTheme.color("web_caption"), card.node)
 			label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
 			if native_playback:
-				var badge: Node = menu._icon("player_supported", Vector3(0.166, 0, 0.009), 0.03, UiTheme.color("web_supported"), card.node)
-				badge.name = "NativePlaybackBadge"
-			menu._tips[SITE_BASE + index] = name + "\n" + (I18n.t(NATIVE_TIP) if native_playback else str(site.url))
+				var badge: Node = menu._icon(Sites.BETA_ICON if beta_playback else "player_supported", Vector3(0.166, 0, 0.009), 0.03, UiTheme.color("web_supported"), card.node)
+				badge.name = "PlayBetaBadge" if beta_playback else "NativePlaybackBadge"
+			menu._tips[SITE_BASE + index] = name + "\n" + (I18n.t("Play in player (Beta)") if beta_playback else I18n.t(NATIVE_TIP) if native_playback else str(site.url))
 	menu._update_highlights()
 	return true
 

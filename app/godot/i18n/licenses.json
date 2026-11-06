@@ -690,5 +690,33 @@
       "comic-ocr/LICENSE.PaddleOCR",
       "comic-ocr/LICENSE.RapidOCR"
     ]
+  },
+  {
+    "id": "airplay-receiver",
+    "name": "AirPlay mirror receiver (UxPlay and Android DNS-SD adapter)",
+    "license": "GPL-3.0-or-later",
+    "assets": [
+      "airplay/NOTICE.txt",
+      "airplay/UxPlay-LICENSE.txt",
+      "airplay/android-airplay-server-LICENSE.txt",
+      "airplay/llhttp-LICENSE.txt",
+      "airplay/playfair-LICENSE.txt"
+    ]
+  },
+  {
+    "id": "airplay-plist",
+    "name": "libplist",
+    "license": "LGPL-2.1-or-later",
+    "assets": [
+      "airplay/libplist-LICENSE.txt"
+    ]
+  },
+  {
+    "id": "airplay-openssl",
+    "name": "OpenSSL 3.5.9",
+    "license": "Apache-2.0",
+    "assets": [
+      "airplay/OpenSSL-LICENSE.txt"
+    ]
   }
 ]

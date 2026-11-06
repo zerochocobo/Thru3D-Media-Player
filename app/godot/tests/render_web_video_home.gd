@@ -13,6 +13,9 @@ func _run() -> void:
 	viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS; root.add_child(viewport)
 	var camera := Camera3D.new(); camera.fov = 60; viewport.add_child(camera)
 	var menu := Menu.new(); camera.add_child(menu)
+	var catalogue:bool="--catalogue-preview" in OS.get_cmdline_user_args()
+	if catalogue:
+		viewport.size=Vector2i(1600,900);camera.fov=28;menu.position=Vector3(-.13,.24,-1.55)
 	var platform := Test.Platform.new(); menu.attach_platform(platform); menu.toggle()
 	menu._activate(Menu.NAV_BASE + Menu.Section.WEB)
 	for language in ["zh", "en", "zh_Hant", "ja"]:
@@ -20,7 +23,7 @@ func _run() -> void:
 		for expanded in [false, true]:
 			menu.web_video.home.expanded = expanded; menu.refresh()
 			for i in 4: await process_frame; await RenderingServer.frame_post_draw
-			var code := viewport.get_texture().get_image().save_png(output.path_join("web-home-%s-%s.png" % [language, "expanded" if expanded else "collapsed"]))
+			var code := viewport.get_texture().get_image().save_png(output.path_join(("site-catalogue" if catalogue else "web-home")+"-%s-%s.png" % [language, "expanded" if expanded else "collapsed"]))
 			if code != OK: quit(1); return
 		var first_site: int = menu.web_video.home.visible_sites()[0]
 		var card: Dictionary = menu._buttons.filter(func(button): return button.target == menu.web_video.home.SITE_BASE + first_site)[0]

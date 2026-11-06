@@ -24,12 +24,16 @@ mkdir -p "$output" "$prefix"
 export PKG_CONFIG_SYSROOT_DIR="$prefix"
 export PKG_CONFIG_LIBDIR="$prefix/usr/local/lib/pkgconfig"
 unset PKG_CONFIG_PATH
-udf="$repo/tmp/bluray-sources/libudfread-1.2.0"
 bd="$repo/tmp/bluray-sources/libbluray-1.4.1"
-meson setup "$output/udf" "$udf" "${cross[@]}" --prefix=/usr/local --libdir=lib \
+# Patch a build-owned copy: the verified source cache stays unmodified.
+udf="$output/udf-source"
+rm -rf "$udf"
+cp -R "$repo/tmp/bluray-sources/libudfread-1.2.0" "$udf"
+patch -d "$udf" -p1 --fuzz=0 <"$repo/native/mpv/patches/libudfread-metadata-file-entry.patch"
+meson setup "$output/udf-patched" "$udf" "${cross[@]}" --prefix=/usr/local --libdir=lib \
     --default-library=static -Dbuildtype=release -Db_staticpic=true -Dembed_udfread=false -Denable_examples=false
-ninja -C "$output/udf" -j4
-DESTDIR="$prefix" ninja -C "$output/udf" install
+ninja -C "$output/udf-patched" -j4
+DESTDIR="$prefix" ninja -C "$output/udf-patched" install
 meson setup "$output/bluray" "$bd" "${cross[@]}" --prefix=/usr/local --libdir=lib \
     --default-library=static -Dbuildtype=release -Db_staticpic=true -Dbdj_jar=disabled \
     -Denable_tools=false -Denable_examples=false -Dfreetype=disabled -Dfontconfig=disabled -Dlibxml2=disabled

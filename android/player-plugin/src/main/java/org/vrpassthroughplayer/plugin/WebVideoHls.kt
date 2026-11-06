@@ -15,13 +15,19 @@ internal class WebVideoHls(private val server: LocalStreamServer, private val st
     private val transfers = java.util.concurrent.Semaphore(2)
     @Volatile private var closed = false
     private var browserHeaders: WebVideoRequestHeaders? = null
+    private var initialManifest: Pair<URI, ByteArray>? = null
+    private var selectedTrack: WebVideoTrack? = null
 
     fun prepare(track: WebVideoTrack): String {
+        selectedTrack = track
         browserHeaders = track.browserHeaders
+        initialManifest = track.browserManifest?.let { track.url to it.toByteArray(Charsets.UTF_8) }
         return manifest(track.url, track.headers, 0)
     }
 
     private fun bytes(uri: URI, headers: Map<String, String>, limit: Int): Pair<URI, ByteArray> {
+        check(!closed)
+        initialManifest?.takeIf { it.first == uri }?.let { require(it.second.size <= limit); return it }
         check(transfers.tryAcquire(30, java.util.concurrent.TimeUnit.SECONDS)) { "Media transfer busy" }
         try { return fetch(uri, headers, limit) } finally { transfers.release() }
     }
@@ -153,6 +159,10 @@ internal class WebVideoHls(private val server: LocalStreamServer, private val st
                         rewriteUris(line, base) { target -> manifest(target, headersFor(base, target, safeHeaders), depth + 1) }
                     line.startsWith("#EXT-X-MAP:") ->
                         rewriteUris(line, base) { target -> resource(target, headersFor(base, target, safeHeaders)) }
+                    // Observed Mango HEVC adds an inline MP4 init beside the standard
+                    // map. Decode only this vendor field, behind the same local lease.
+                    line.startsWith("#EXT-MGTV-X-MAP:") ->
+                        rewriteUris(line, base, inlineMap=true) { target -> resource(target, headersFor(base, target, safeHeaders)) }
                     line.startsWith('#') -> {
                         // Never leave unhandled network locations for FFmpeg to fetch directly.
                         require(!line.contains("URI=")) { "Unsupported manifest reference" }; line
@@ -170,10 +180,26 @@ internal class WebVideoHls(private val server: LocalStreamServer, private val st
         } finally { visiting.remove(uri) }
     }
 
-    private fun rewriteUris(line: String, base: URI, rewrite: (URI) -> String): String {
+    private fun inlineInitialization(value: String): String {
+        val prefix="data:video/mp4;base64,"
+        require(value.startsWith(prefix) && value.length<=350000) { "Unsupported inline initialization" }
+        val encoded=value.removePrefix(prefix)
+        val data=java.util.Base64.getDecoder().decode(encoded)
+        require(data.isNotEmpty() && data.size<=256*1024 && java.util.Base64.getEncoder().encodeToString(data)==encoded) { "Invalid inline initialization" }
+        val container=WebVideoContainer.parse(data) ?: error("Unverified inline initialization")
+        val expected=selectedTrack ?: error("Missing selected track")
+        require(container.video!="none" && container.width==expected.width && container.height==expected.height &&
+            container.video==expected.videoCodec && container.audio==expected.audioCodec) { "Inline initialization differs from selected track" }
+        return publish(ByteSource(data),"init.mp4")
+    }
+    private fun rewriteUris(line: String, base: URI, inlineMap: Boolean=false, rewrite: (URI) -> String): String {
         val pattern = Regex("URI=\"([^\"]+)\"")
         require(!line.contains("URI=") || pattern.containsMatchIn(line)) { "Invalid manifest URI" }
-        return pattern.replace(line) { "URI=\"${rewrite(resolve(base, it.groupValues[1]))}\"" }
+        return pattern.replace(line) {
+            val value=it.groupValues[1]
+            val local=if(inlineMap && value.startsWith("data:")) inlineInitialization(value) else rewrite(resolve(base,value))
+            "URI=\"$local\""
+        }
     }
 
     private class ByteSource(private val data: ByteArray) : StreamSource {
@@ -188,6 +214,8 @@ internal class WebVideoHls(private val server: LocalStreamServer, private val st
         }
     }
     override fun close() {
+        selectedTrack = null
+        initialManifest = null
         val leases = synchronized(this) { closed = true; published.toList().also { published.clear() } }
         http.close()
         leases.forEach(server::revoke)

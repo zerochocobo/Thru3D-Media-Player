@@ -94,12 +94,28 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
         var bilibiliProbe = "off"
         var douyinCaptureEnabled = true
         val sources = mutableMapOf<WebExtension.Port, JSONArray>()
+        val weiboClicks = mutableMapOf<WebExtension.Port, Long>()
+        var weiboRequest = 0L
+        var weiboSelection = ""
+        val bilibiliClicks = mutableMapOf<WebExtension.Port, Long>()
+        val tencentClicks = mutableMapOf<WebExtension.Port, Long>()
+        val mangoClicks = mutableMapOf<WebExtension.Port, Long>()
+        var betaRequest = 0L
+        var betaSelection = ""
         var fullScreen = false
     }
     private val ui = Handler(Looper.getMainLooper())
     private val closed = AtomicBoolean(false)
     private val exiting = AtomicBoolean(false)
     private val tabs = mutableListOf<Tab>()
+    private val playbackHold = WebBrowserPlaybackHold()
+    private class PendingRetention(val owner: WebBrowserPlaybackHold.Owner, val ports: Set<WebExtension.Port>,
+        val ticket: WebBrowserMediaRelease.Ticket) { val suspended = mutableSetOf<WebExtension.Port>() }
+    private var pendingRetention: PendingRetention? = null
+    private fun invalidatePlaybackHold(tab: Tab) {
+        playbackHold.invalidate(tab.id)
+        pendingRetention?.takeIf { it.owner.tab == tab.id }?.let { it.ticket.complete(false); pendingRetention = null }
+    }
     private var extension: WebExtension? = null
     private val cookies = WebBrowserCookies()
     private var extensionState = "pending"
@@ -122,6 +138,7 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
     private fun freeWindow(): Int? = (1..windowLimit).firstOrNull { id -> tabs.none { it.window == id } }
     private var focusedWindow = 1
     private var nextTabId = 0
+    private var nextBetaRequest = 0L
     private var operationError = ""
     private fun window(id: Int = focusedWindow) = windows.first { it.id == id }
     private fun current(): Tab? = tabs.firstOrNull { it.id == window().tab }
@@ -184,6 +201,9 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
     fun snapshot(): String = state.dropLast(1) + (if (state.length > 2) "," else "") + "\"session_ready\":" + cookies.isReady() + ",\"memory_tight\":" + memoryTight() + "}"
     /** Worker-only snapshot. Signed media locations never enter publish()/Godot/history. */
     fun mediaForExtraction(url: String): JSONObject? {
+        return mediaForSelectedExtraction(url, "")
+    }
+    fun mediaForSelectedExtraction(url: String, selection: String): JSONObject? {
         check(Looper.myLooper() != Looper.getMainLooper())
         val result = java.util.concurrent.CompletableFuture<JSONObject?>()
         ui.post {
@@ -192,7 +212,8 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
             if (!closed.get() && active && tab?.url == url) tab.sources.values.forEach { list ->
                 for (i in 0 until list.length()) candidates.add(list.getJSONObject(i))
             }
-            val chosen = WebBrowserMediaPolicy.extractionCandidate(candidates)
+            val chosen = if (selection.isEmpty()) WebBrowserMediaPolicy.extractionCandidate(candidates)
+                else WebBrowserMediaPolicy.selectedCandidate(candidates, selection)
             result.complete(chosen?.let { JSONObject(it.toString()).put("title", tab?.title.orEmpty()) })
         }
         return result.get(5, TimeUnit.SECONDS)
@@ -319,7 +340,8 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
     }
     private fun sendNetworkPolicy(tab: Tab) {
         val message = JSONObject().put("action", "network_policy").put("enabled", networkEnabled(tab))
-            .put("bilibili", bilibiliEnabled(tab)).put("douyin", douyinEnabled(tab)).put("diagnostics", mediaDiagnosticsEnabled())
+            .put("tencent",WebBrowserTencent.enabled(tab.url)).put("mango",WebBrowserMango.enabled(tab.url))
+            .put("bilibili", bilibiliEnabled(tab)).put("douyin", douyinEnabled(tab)).put("weibo", WebBrowserWeibo.document(tab.url)).put("diagnostics", mediaDiagnosticsEnabled())
         tab.ports.keys.forEach { runCatching { it.postMessage(message) } }
     }
     private fun mediaDiagnosticsEnabled() = ((activity()?.applicationInfo?.flags ?: 0) and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
@@ -425,6 +447,7 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                     for (media in tab.media.values) for (i in 0 until media.length()) {
                         media.optJSONObject(i)?.put("bilibili_ready", false)
                         media.optJSONObject(i)?.put("douyin_ready", false)
+                        media.optJSONObject(i)?.put("weibo_ready", false)
                     }
                     // Single-page sites change location without onPageStart. Leaving the page
                     // that held a focused field ends its unsent-input protection; otherwise one
@@ -527,7 +550,11 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
             }
                 if (tab.parkedReturn?.optString("origin") != url) tab.parkedReturn = null
                 tab.capturedFullscreenRequest = 0L
+                invalidatePlaybackHold(tab)
                 tab.navigation++; tab.pauseToken = 0; tab.pauseReports.clear()
+                tab.weiboRequest = 0; tab.weiboSelection = ""; tab.weiboClicks.clear()
+                tab.betaRequest = 0; tab.betaSelection = ""; tab.bilibiliClicks.clear()
+                tab.tencentClicks.clear();tab.mangoClicks.clear()
                 tab.media.clear(); tab.sources.clear(); tab.fullScreen = false; tab.editor = null; tab.editing = false
                 tab.error = ""; tab.progress = 0; publish()
 
@@ -611,6 +638,15 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                         if (tab.pauseToken > 0 && data.optLong("pause_token") == tab.pauseToken && data.optBoolean("pause_held"))
                             tab.pauseReports[port] = tab.pauseToken to data.optBoolean("pause_has_media")
                         else tab.pauseReports.remove(port)
+                        pendingRetention?.takeIf { it.owner.tab == tab.id && port in it.ports }?.let { pending ->
+                            if (data.optBoolean("suspended") && data.optBoolean("pause_held") && data.optLong("pause_token") == pending.owner.token)
+                                pending.suspended.add(port) else pending.suspended.remove(port)
+                            if (pending.suspended.containsAll(pending.ports)) {
+                                pendingRetention = null
+                                pending.ticket.complete(tab.awake && WebBrowserPlaybackHold.Owner(tab.id, tab.navigation, tab.url, tab.pauseToken) == pending.owner &&
+                                    tab.ports.filterValues { it == tab.navigation }.keys.containsAll(pending.ports))
+                            }
+                        }
                         val safe = JSONArray()
                         val privateSources = JSONArray()
                         for (index in 0 until minOf(16, items.length())) {
@@ -619,7 +655,10 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                             val networkEnabled = networkEnabled(tab)
                             val bilibiliEnabled = bilibiliEnabled(tab)
                             val douyinEnabled = douyinEnabled(tab)
-                            val network = if (networkEnabled || bilibiliEnabled || douyinEnabled) WebBrowserNetworkMedia.candidates(item) else JSONArray()
+                            val weiboEnabled = WebBrowserWeibo.document(tab.url)
+                            val tencentEnabled = WebBrowserTencent.enabled(tab.url)
+                            val mangoEnabled = WebBrowserMango.enabled(tab.url)
+                            val network = if (networkEnabled || bilibiliEnabled || douyinEnabled || weiboEnabled || tencentEnabled || mangoEnabled) WebBrowserNetworkMedia.candidates(item,includeSegments=tencentEnabled) else JSONArray()
                             val bilibili = item.optJSONObject("bilibili")?.takeIf { bilibiliEnabled &&
                                 !item.optBoolean("protected") && it.toString().length <= 96 * 1024 && it.optString("page") == tab.url }
                             val serverHeaders = item.optJSONObject("server_headers")?.let { data ->
@@ -627,12 +666,29 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                             }.orEmpty()
                             val server = !item.optBoolean("protected") && WebBrowserServerMedia.recognizes(item.optString("source"), tab.url, serverHeaders)
                             val douyin = WebBrowserDouyin.metadata(item, tab.url, douyinEnabled)
+                            val weibo = WebBrowserWeibo.metadata(item, tab.url)
+                            val tencent = if(tencentEnabled) WebBrowserTencent.metadata(item,tab.url) else null
+                            val mango = if(mangoEnabled) WebBrowserMango.metadata(item,tab.url) else null
+                            val biliIdentity = bilibili?.let { "${it.optString("id")}:${it.optString("cid")}:${it.optInt("part")}:${it.optString("ep")}" }.orEmpty()
+                            val captureIdentity = "${tab.id}:${tab.navigation}:${System.identityHashCode(port)}:$id:${item.optLong("network_epoch")}:${tab.bilibiliProbe}:${tab.douyinCaptureEnabled}:${weibo?.optString("page").orEmpty()}:$biliIdentity" +
+                                (tencent?.let { ":tencent:${it.optString("id")}:${it.optString("revision")}" } ?: "") +
+                                (mango?.let { ":mango:${it.optString("id")}:${it.optString("revision")}" } ?: "")
                             safe.put(JSONObject().put("width", item.optInt("width").coerceIn(0, 32768))
                                 .put("id", id).put("fullscreen", item.optBoolean("fullscreen") || server && item.optBoolean("server_play"))
                                 .put("server_play", server && item.optBoolean("server_play"))
                                 .put("server_media", server)
                                 .put("bilibili_ready", bilibili != null && item.optBoolean("bilibili_ready"))
                                 .put("douyin_ready", douyin != null && item.optBoolean("douyin_ready"))
+                                .put("weibo_ready", weibo != null && item.optBoolean("weibo_ready"))
+                                .put("weibo_selected", weibo != null && item.optBoolean("weibo_selected"))
+                                .put("weibo_page", weibo?.optString("page").orEmpty())
+                                .put("tencent_ready",tencent != null && item.optBoolean("tencent_ready"))
+                                .put("tencent_page",tencent?.optString("page").orEmpty())
+                                .put("mango_ready",mango != null && item.optBoolean("mango_ready"))
+                                .put("mango_capture", if (mangoEnabled) WebBrowserMango.captureDiagnostics(data)
+                                    .put("frame_matches", item.optString("frame") == tab.url).put("binding_valid", mango != null) else null)
+                                .put("mango_page",mango?.let { "https://www.mgtv.com/b/${it.optString("id")}.html" }.orEmpty())
+                                .put("selection", if (weibo != null || bilibili != null || tencent != null || mango != null) captureIdentity else "")
                                 .put("network_media", networkEnabled && (network.length() > 0 || !item.optBoolean("protected") && WebBrowserNetworkMedia.address(item.optString("source")) != null))
                                 .put("media_epoch", "${System.identityHashCode(port)}:$id:${item.optLong("network_epoch")}")
                                 .put("protected", item.optBoolean("protected"))
@@ -647,11 +703,39 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                                     .put("network_enabled", networkEnabled)
                                     .put("bilibili_enabled", bilibiliEnabled).put("bilibili", bilibili)
                                     .put("douyin_enabled", douyinEnabled).put("douyin", douyin)
+                                    .put("weibo_enabled", weiboEnabled).put("weibo", weibo)
+                                    .put("tencent_enabled",tencentEnabled).put("tencent",tencent)
+                                    .put("mango_enabled",mangoEnabled).put("mango",mango)
                                     .put("douyin_boundary", if (mediaDiagnosticsEnabled()) WebBrowserDouyin.metadataDiagnostics(item,tab.url,douyinEnabled,douyin != null) else null)
                                     .put("bilibili_probe", tab.bilibiliProbe)
                                     .put("diagnostic_max_height", if (tab.bilibiliProbe == "uncapped" && bilibiliEligible(tab)) 2160 else 1080)
-                                    .put("capture_identity", "${tab.id}:${tab.navigation}:${System.identityHashCode(port)}:$id:${item.optLong("network_epoch")}:${tab.bilibiliProbe}:${tab.douyinCaptureEnabled}")
+                                    .put("capture_identity", captureIdentity)
                                     .put("fullscreen", item.optBoolean("fullscreen") || server && item.optBoolean("server_play")))
+                                val click = item.optLong("weibo_request")
+                                if (weibo != null && item.optBoolean("weibo_selected") && click > (tab.weiboClicks[port] ?: 0) &&
+                                    click in 1..Int.MAX_VALUE.toLong() && active && current() === tab && tab.pauseToken == 0L) {
+                                    tab.weiboClicks[port] = click
+                                    tab.weiboRequest = ++nextBetaRequest; tab.weiboSelection = captureIdentity
+                                    tab.betaRequest = tab.weiboRequest; tab.betaSelection = captureIdentity
+                                }
+                                val biliClick = item.optLong("bilibili_request")
+                                if (bilibili != null && item.optBoolean("bilibili_ready") && biliClick > (tab.bilibiliClicks[port] ?: 0) &&
+                                    biliClick in 1..Int.MAX_VALUE.toLong() && active && current() === tab && tab.pauseToken == 0L) {
+                                    tab.bilibiliClicks[port] = biliClick
+                                    tab.betaRequest = ++nextBetaRequest; tab.betaSelection = captureIdentity
+                                }
+                                val tencentClick = item.optLong("tencent_request")
+                                if (tencent != null && item.optBoolean("tencent_ready") && tencentClick > (tab.tencentClicks[port] ?: 0) &&
+                                    tencentClick in 1..Int.MAX_VALUE.toLong() && active && current() === tab && tab.pauseToken == 0L) {
+                                    tab.tencentClicks[port] = tencentClick
+                                    tab.betaRequest = ++nextBetaRequest; tab.betaSelection = captureIdentity
+                                }
+                                val mangoClick = item.optLong("mango_request")
+                                if (mango != null && item.optBoolean("mango_ready") && mangoClick > (tab.mangoClicks[port] ?: 0) &&
+                                    mangoClick in 1..Int.MAX_VALUE.toLong() && active && current() === tab && tab.pauseToken == 0L) {
+                                    tab.mangoClicks[port] = mangoClick
+                                    tab.betaRequest = ++nextBetaRequest; tab.betaSelection = captureIdentity
+                                }
                             }
                         }
                         tab.media[port] = safe
@@ -660,13 +744,16 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                         publish()
                     }
                     override fun onDisconnect(port: WebExtension.Port) {
-                        tab.ports.remove(port); tab.media.remove(port); tab.sources.remove(port); tab.pauseReports.remove(port)
+                        tab.ports.remove(port); tab.media.remove(port); tab.sources.remove(port); tab.pauseReports.remove(port); tab.weiboClicks.remove(port)
+                        tab.bilibiliClicks.remove(port)
+                        tab.tencentClicks.remove(port);tab.mangoClicks.remove(port)
                         updateFullscreen(tab); publish()
                     }
                 })
                 port.postMessage(JSONObject().put("action", if (displayed(tab)) "resume" else "suspend"))
                 port.postMessage(JSONObject().put("action", "network_policy").put("enabled", networkEnabled(tab))
-                    .put("bilibili", bilibiliEnabled(tab)).put("douyin", douyinEnabled(tab)).put("diagnostics", mediaDiagnosticsEnabled()))
+                    .put("tencent",WebBrowserTencent.enabled(tab.url)).put("mango",WebBrowserMango.enabled(tab.url))
+                    .put("bilibili", bilibiliEnabled(tab)).put("douyin", douyinEnabled(tab)).put("weibo", WebBrowserWeibo.document(tab.url)).put("diagnostics", mediaDiagnosticsEnabled()))
                 if (tab.pauseToken > 0) port.postMessage(JSONObject().put("action", "pause_media").put("token", tab.pauseToken))
             }
         }, NATIVE_APP)
@@ -823,7 +910,8 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
         if (!tab.awake) return
         tab.restorePosition = null; tab.restoreOrigin = ""; tab.restoreThroughScript = false
         tab.editor?.finishComposingText(); tab.editor = null; tab.editing = false
-        tab.ports.keys.forEach { runCatching { it.postMessage(JSONObject().put("action", "suspend")) } }
+        tab.ports.keys.forEach { runCatching { it.postMessage(JSONObject().put("action", "suspend")
+            .put("keep_pause", playbackHold.protects(tab.id, tab.navigation)).put("pause_token", tab.pauseToken)) } }
         tab.playback?.pause()
         tab.session.setFocused(false)
         tab.session.setActive(false)
@@ -832,6 +920,50 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
     private val mediaRelease = WebBrowserMediaRelease()
     /** Only the source worker waits. Never wait on Android UI from the frame thread. */
     fun awaitMediaRelease(): Boolean = mediaRelease.await(5000)
+
+    private fun holdOwner(request: JSONObject) = WebBrowserPlaybackHold.Owner(request.optInt("tab"),
+        request.optLong("navigation", -1), request.optString("origin"), request.optLong("pause_token"))
+    private fun pauseConfirmed(tab: Tab): Boolean = tab.pauseToken > 0 &&
+        tab.ports.filterValues { it == tab.navigation }.keys.let { ports ->
+            ports.isNotEmpty() && ports.all { tab.pauseReports[it]?.first == tab.pauseToken } &&
+                (ports.any { tab.pauseReports[it]?.second == true } || !tab.playing)
+        }
+    /** Keep docshell/DOM/ports. The ticket confirms the pause acknowledgement and
+     * UI inactivity, not synchronous reclamation of Android hardware decoders. */
+    private fun retainPage(request: JSONObject, ticket: WebBrowserMediaRelease.Ticket) {
+        var suspended = false
+        var awaitingReport = false
+        try {
+            val tab = tabs.firstOrNull { it.id == request.optInt("tab") && it.window == request.optInt("window") }
+                ?: return
+            if (!tab.awake || window(tab.window).tab != tab.id || memoryTight()) return
+            val current = WebBrowserPlaybackHold.Owner(tab.id, tab.navigation, tab.url, tab.pauseToken)
+            if (!playbackHold.retain(holdOwner(request), current, pauseConfirmed(tab))) return
+            if (request.optBoolean("hide")) {
+                pendingRetention?.ticket?.complete(false)
+                val pending = PendingRetention(current, tab.ports.filterValues { it == tab.navigation }.keys.toSet(), ticket)
+                pendingRetention = pending; awaitingReport = true
+                ui.postDelayed({
+                    if (pendingRetention === pending) { pendingRetention = null; pending.ticket.complete(false) }
+                }, 4500)
+                active = false; hideInput(); tabs.forEach(::suspendTab); windows.forEach(::releaseDisplay)
+            }
+            // Peer-window transfers retain the source lease without hiding peers.
+            publish(); suspended = true
+        } finally { if (!awaitingReport) ticket.complete(suspended) }
+    }
+
+    private fun resumeRetainedPage(request: JSONObject) {
+        val tab = tabs.firstOrNull { it.id == request.optInt("tab") && it.window == request.optInt("window") }
+        if (tab == null || !tab.awake || tab.navigation != request.optLong("navigation", -1) || tab.url != request.optString("origin")) {
+            // A killed/navigated document cannot be reconstructed as a successful return.
+            // Show surviving live windows; only an explicit user action may reload.
+            active = true
+            windows.forEach { slot -> tabs.firstOrNull { it.id == slot.tab && it.awake }?.let(::bindDisplay) }
+            operationError = "browser_page_changed"; publish(); return
+        }
+        selectTab(tab)
+    }
 
     fun action(command: String) {
         if (command == "hibernate") {
@@ -881,6 +1013,7 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
         tabs.filter { it.opener == tab.id }.forEach { it.openerLinked = false }
     }
     private fun clearDocument(tab: Tab) {
+        invalidatePlaybackHold(tab)
         tab.loading = false
         tab.navigation++
         tab.ports.keys.toList().forEach { runCatching { it.disconnect() } }
@@ -912,7 +1045,7 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
     }
     private fun roomForSession(replacing: Tab?, popup: Boolean = false, limit: Int = liveLimit()): Boolean {
         if (tabs.count { it.awake } < limit) return true
-        val candidate = tabs.filter { it.awake && !it.protectedInput && !linked(it) &&
+        val candidate = tabs.filter { it.awake && !playbackHold.protects(it.id, it.navigation) && !it.protectedInput && !linked(it) &&
             (windows.none { slot -> slot.tab == it.id } || (!popup && it === replacing)) &&
             (it.savedState != null || it.url == "about:blank") }.minByOrNull { it.touched }
         if (candidate == null) { operationError = "tabs_busy"; publish(); return false }
@@ -923,7 +1056,7 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
      * history/form/scroll snapshot and our tab identity. Never clear the profile or
      * shut down the shared runtime: doing so would disrupt cookies and LAN sharing. */
     private fun parkTab(tab: Tab, keepReturn: Boolean = false) {
-        if (!tab.awake) return
+        if (!tab.awake || playbackHold.protects(tab.id, tab.navigation)) return
         if (keepReturn && tab.fullscreen.active) tab.parkedReturn = JSONObject()
             .put("navigation", tab.navigation).put("request", tab.fullscreen.request).put("origin", tab.url)
         suspendTab(tab)
@@ -990,7 +1123,7 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
         val visible = plan.selected.values.toSet()
         val required = tabs.count { it.id in retained && (it.awake || it.id in visible) }
         val limit = liveLimit(plan.selected.size)
-        val reclaimable = tabs.filter { it.id in retained && it.awake && it.id !in visible && !it.protectedInput && !linked(it) &&
+        val reclaimable = tabs.filter { it.id in retained && it.awake && !playbackHold.protects(it.id, it.navigation) && it.id !in visible && !it.protectedInput && !linked(it) &&
             (it.savedState != null || it.url == "about:blank") }.sortedBy { it.touched }
         // Merging must not discard unsent fields or opener chains to meet the smaller
         // background target. Keep those sessions within the device's hard window budget.
@@ -1006,6 +1139,7 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
             val removed = tabs.filter { it.id !in retained }
             tabs.removeAll(removed.toSet())
             removed.forEach { tab ->
+                invalidatePlaybackHold(tab)
                 val wasAwake = tab.awake; tab.awake = false
                 unlinkSession(tab)
                 tab.ports.keys.toList().forEach { runCatching { it.disconnect() } }; tab.ports.clear()
@@ -1028,9 +1162,16 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
         publish(); return true
     }
     private fun closeTab(tab: Tab) { applyLayout(layout().close(setOf(tab.id))) }
-    fun command(value: String) = dispatch {
-        if (value.length > 8192) return@dispatch
-        val request = JSONObject(value)
+    fun command(value: String) {
+        if (closed.get() || value.length > 8192) return
+        val request = runCatching { JSONObject(value) }.getOrNull() ?: return
+        if (request.optString("action") == "retain_page") {
+            // Begin before posting UI work so the source worker cannot pass an old ticket.
+            val ticket = mediaRelease.begin()
+            dispatch { retainPage(request, ticket) }
+        } else commandOnUi(request)
+    }
+    private fun commandOnUi(request: JSONObject) = dispatch {
         if (request.optString("action") == "keyboard_mode") {
             val enabled = request.optBoolean("enabled")
             if (customKeyboard != enabled) {
@@ -1064,6 +1205,32 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                 }
             }
             "capture_video", "restore_video" -> videoReturn(request)
+            "resume_retained_page" -> resumeRetainedPage(request)
+            "release_retained_page" -> {
+                if (playbackHold.release(holdOwner(request))) {
+                    tabs.firstOrNull { it.id == request.optInt("tab") && it.navigation == request.optLong("navigation", -1) &&
+                        it.url == request.optString("origin") && it.pauseToken == request.optLong("pause_token") }?.let { tab ->
+                        tab.ports.keys.forEach { runCatching { it.postMessage(JSONObject().put("action", "release_pause_media")
+                            .put("token", tab.pauseToken).put("play", false)) } }
+                        tab.pauseToken = 0; tab.pauseReports.clear(); tab.pauseWasPlaying = false; tab.pauseHasDom = false
+                    }
+                }
+            }
+            "restore_weibo", "restore_mango" -> {
+                val tab = tabs.firstOrNull { it.id == request.optInt("tab") && it.window == id } ?: return@dispatch
+                if (!tab.awake || window(id).tab != tab.id || tab.navigation != request.optLong("navigation", -1) ||
+                    tab.url != request.optString("origin")) return@dispatch
+                val selection = request.optString("selection")
+                val kind=if(request.optString("action")=="restore_mango") "mango" else "weibo"
+                for ((port,list) in tab.sources) for (index in 0 until list.length()) {
+                    val item = list.getJSONObject(index)
+                    val data=item.optJSONObject(kind) ?: continue
+                    if (WebBrowserMediaPolicy.selectedCandidate(listOf(item),selection) == null) continue
+                    port.postMessage(JSONObject().put("action","restore_$kind").put("id",item.optString("id"))
+                        .put("epoch",item.optLong("network_epoch")).put("page",data.getString("page")).put("revision",data.optString("revision"))
+                        .put("time",request.optLong("position_ms").coerceAtLeast(0)/1000.0).put("play",request.optBoolean("play")))
+                }
+            }
             "pause_tab", "resume_tab" -> {
                 val tab = tabs.firstOrNull { it.id == request.optInt("tab") && it.window == id } ?: return@dispatch
                 if (!tab.awake || window(id).tab != tab.id || tab.navigation != request.optLong("navigation", -1) ||
@@ -1082,6 +1249,7 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
                     originals.forEach { (port, items) -> runCatching { port.postMessage(JSONObject().put("action", "pause_media").put("token", token)
                         .put("playing_ids", JSONArray(items.filter { it.optBoolean("playing") }.map { it.optString("id") }))) } }
                 } else if (tab.pauseToken > 0 && tab.pauseToken == request.optLong("pause_token")) {
+                    playbackHold.release(holdOwner(request))
                     // DOM videos restore their own saved state. MediaSession.play can arrive
                     // after a subsequent pause; use it only for players without a DOM video.
                     val dom = tab.pauseHasDom || tab.pauseReports.values.any { it.first == tab.pauseToken && it.second }
@@ -1345,12 +1513,18 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
 
     private fun tabState(tab: Tab?): JSONObject {
         val videos = JSONArray()
-        tab?.media?.values?.forEach { list -> for (index in 0 until list.length()) if (videos.length() < 16) videos.put(list.getJSONObject(index)) }
+        tab?.media?.values?.flatMap { list -> (0 until list.length()).map { list.getJSONObject(it) } }
+            ?.sortedByDescending { it.optBoolean("weibo_selected") }?.take(16)?.forEach(videos::put)
         return JSONObject().put("tab_id", tab?.id ?: 0).put("navigation", tab?.navigation ?: 0)
             .put("network_capture_available", tab != null && WebBrowserNetworkPolicy.available(tab.url))
             .put("network_capture_enabled", tab != null && networkEnabled(tab))
             .put("bilibili_beta_available", tab != null && bilibiliEligible(tab))
             .put("douyin_beta_available", tab != null && douyinEnabled(tab) && WebBrowserDouyin.pageId(tab.url) != null)
+            .put("weibo_beta_available", tab != null && WebBrowserWeibo.document(tab.url))
+            .put("tencent_beta_available",tab != null && WebBrowserTencent.enabled(tab.url))
+            .put("mango_beta_available",tab != null && WebBrowserMango.enabled(tab.url))
+            .put("weibo_request", tab?.weiboRequest ?: 0).put("weibo_selection", tab?.weiboSelection.orEmpty())
+            .put("beta_request", tab?.betaRequest ?: 0).put("beta_selection", tab?.betaSelection.orEmpty())
             .put("fullscreen_request", tab?.fullscreen?.request ?: 0).put("fullscreen_video", tab?.fullscreen?.active == true)
             .put("captured_fullscreen_request", tab?.capturedFullscreenRequest ?: 0)
             .put("url", tab?.url ?: "about:blank").put("title", tab?.title.orEmpty())
@@ -1359,11 +1533,8 @@ class WebBrowser(private val activity: () -> Activity?) : AutoCloseable {
             .put("loading", tab?.loading == true)
             .put("start_page", tab != null && tab.startPage && !tab.loading && tab.url == "about:blank" && tab.error.isEmpty())
             .put("pause_token", tab?.pauseToken ?: 0)
-            .put("pause_confirmed", tab != null && tab.pauseToken > 0 &&
-                tab.ports.filterValues { it == tab.navigation }.keys.let { ports ->
-                    ports.isNotEmpty() && ports.all { tab.pauseReports[it]?.first == tab.pauseToken } &&
-                        (ports.any { tab.pauseReports[it]?.second == true } || !tab.playing)
-                })
+            .put("pause_confirmed", tab != null && pauseConfirmed(tab))
+            .put("retained_for_playback", tab != null && playbackHold.protects(tab.id, tab.navigation))
             .put("playing", tab != null && (tab.playing || tab.media.values.any { list -> (0 until list.length()).any { i -> list.getJSONObject(i).optBoolean("playing") } }))
             .put("error", tab?.error.orEmpty()).put("editing", tab?.editing == true).put("videos", videos).put("fullscreen", tab?.fullScreen == true)
             .put("custom_keyboard", customKeyboard && tab != null && keyboardSession.target?.tab == tab.id && tab.editing)

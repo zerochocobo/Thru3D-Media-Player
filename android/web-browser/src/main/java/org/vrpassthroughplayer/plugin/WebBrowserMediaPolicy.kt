@@ -6,10 +6,20 @@ import org.json.JSONObject
 
 /** Website-owned EME playback. Keys and protected media never cross the native handoff. */
 internal object WebBrowserMediaPolicy {
+    fun selectedCandidate(candidates: List<JSONObject>, selection: String): JSONObject? =
+        candidates.singleOrNull { selection.isNotEmpty() && selection.length <= 512 &&
+            it.optString("capture_identity") == selection && !it.optBoolean("protected") &&
+            (it.optBoolean("weibo_enabled") && it.optBoolean("weibo_ready") && WebBrowserWeibo.metadata(it, it.optString("frame")) != null ||
+                it.optBoolean("bilibili_enabled") && it.optBoolean("bilibili_ready") && it.optJSONObject("bilibili")?.let { data ->
+                    data.optString("page") == it.optString("frame") && Regex("[1-9][0-9]{0,19}").matches(data.optString("cid"))
+                } == true || it.optBoolean("tencent_enabled") && it.optBoolean("tencent_ready") && WebBrowserTencent.metadata(it,it.optString("frame")) != null ||
+                it.optBoolean("mango_enabled") && it.optBoolean("mango_ready") && WebBrowserMango.metadata(it,it.optString("frame")) != null) }
+
     /** Prefer the adapter's current-part binding over a playing sidebar preview. */
     fun extractionCandidate(candidates: List<JSONObject>): JSONObject? = candidates.maxWithOrNull(
         compareBy<JSONObject> { !it.optBoolean("protected") &&
-            (it.optBoolean("bilibili_enabled") && it.optJSONObject("bilibili") != null || it.optBoolean("douyin_enabled") && it.optJSONObject("douyin") != null) }
+            (it.optBoolean("bilibili_enabled") && it.optJSONObject("bilibili") != null || it.optBoolean("douyin_enabled") && it.optJSONObject("douyin") != null ||
+                it.optBoolean("tencent_enabled") && it.optJSONObject("tencent") != null || it.optBoolean("mango_enabled") && it.optJSONObject("mango") != null) }
             .thenBy { it.optBoolean("fullscreen") }.thenBy { it.optBoolean("playing") }
             .thenBy { it.optLong("width") * it.optLong("height") })
     private val sites = listOf(

@@ -98,9 +98,43 @@ func _run() -> void:
 		var host: Node3D = menu.web_browser.windows[1]
 		var handle: Dictionary = host._buttons.filter(func(button): return button.target == host.RESIZE)[0]
 		host.update_pointer("left", handle.node.global_position + host.global_basis.z.normalized() * 0.3, -host.global_basis.z, true)
+	if "--depth" in OS.get_cmdline_user_args():
+		menu.web_browser.windows[1].depth.enabled = true
+		menu.web_browser.windows[1].depth.state = "ready"
+		menu.web_browser.windows[1].refresh()
+	if "--depth-settings" in OS.get_cmdline_user_args():
+		menu.web_browser.windows[1].depth_settings = true
+		menu.web_browser.windows[1].refresh()
+	if "--matte" in OS.get_cmdline_user_args():
+		menu.web_browser.windows[1].depth.matte = true
+		menu.web_browser.windows[1].refresh()
+	if "--effect-controls" in OS.get_cmdline_user_args():
+		var host: Node3D = menu.web_browser.windows[1]
+		if "--depth-boost" in OS.get_cmdline_user_args(): host.depth.strength=1.5
+		var page: Dictionary = host.page_layout()
+		var origin: Vector3 = page.pose * Vector3(0,0,0.4)
+		host.effect_controls.observe_ray("right",origin,-page.pose.basis.z,true,1000)
+		host.effect_controls.observe_ray("right",origin,-page.pose.basis.z,true,1125)
+		host.effect_controls.set_strength_open(true)
+		if "--depth-startup" in OS.get_cmdline_user_args():
+			host.depth.state="preparing"
+			var button: Dictionary = host.effect_controls._buttons.filter(func(b): return b.target==host.effect_controls.DEPTH)[0]
+			var ray: Vector3 = button.node.global_position+host.effect_controls.global_basis.z.normalized()*.2
+			host.effect_controls.observe_ray("right",ray,-host.effect_controls.global_basis.z.normalized(),true,1150)
+		host.set_process(false)
+		camera.position = Vector3(0,-0.3,0.3)
+	if "--toolbar-preview" in OS.get_cmdline_user_args():
+		viewport.size=Vector2i(1600,600);camera.fov=24;camera.position=Vector3(0,.626,0)
 	for i in 4: await process_frame; await RenderingServer.frame_post_draw
 	var suffix := "-focus-select" if "--focus-select" in OS.get_cmdline_user_args() else "-focused" if "--focused" in OS.get_cmdline_user_args() else "-loading" if "--loading" in OS.get_cmdline_user_args() else "-wide" if "--wide" in OS.get_cmdline_user_args() else "-tall" if "--tall" in OS.get_cmdline_user_args() else "-cinema" if "--cinema-available" in OS.get_cmdline_user_args() else ""
 	if "--minimum" in OS.get_cmdline_user_args(): suffix += "-minimum"
+	if "--depth-settings" in OS.get_cmdline_user_args(): suffix += "-depth-settings"
+	elif "--depth" in OS.get_cmdline_user_args(): suffix += "-depth"
+	if "--matte" in OS.get_cmdline_user_args(): suffix += "-matte"
+	if "--effect-controls" in OS.get_cmdline_user_args(): suffix += "-effect-controls"
+	if "--depth-boost" in OS.get_cmdline_user_args(): suffix += "-boost"
+	if "--depth-startup" in OS.get_cmdline_user_args(): suffix += "-startup"
+	if "--toolbar-preview" in OS.get_cmdline_user_args(): suffix += "-toolbar"
 	if "--resize-hover" in OS.get_cmdline_user_args(): suffix += "-resize-hover"
 	if "--portrait-drag" in OS.get_cmdline_user_args(): suffix += "-portrait-tall" if "--portrait-tall" in OS.get_cmdline_user_args() else "-portrait"
 	var code := viewport.get_texture().get_image().save_png(output.path_join("web-browser" + suffix + ".png" if not suffix.is_empty() else "web-browser-tabs.png" if "--tabs" in OS.get_cmdline_user_args() else "web-browser-keyboard.png" if platform.browser.editing else ("web-browser-history.png" if "--history" in OS.get_cmdline_user_args() else "web-browser-controls.png")))

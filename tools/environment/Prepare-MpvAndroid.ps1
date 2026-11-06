@@ -17,7 +17,8 @@ if ($Candidate -eq 'SourceFrame') {
                   'native/mpv/mvc/bluray_clpi_reader.c','native/mpv/mvc/mvc_recovery.h',
                   'native/mpv/mvc/mvc_config.h','native/mpv/mvc/matroska_mvc.h','tools/environment/Prepare-MvcDecoder.py',
                   'tools/environment/Prepare-BluraySources.py','tools/environment/mpv-linux/mvc_patch.py',
-                  'tools/environment/mpv-linux/build_bluray.sh','third_party/dvd/source-lock.json',
+                  'tools/environment/mpv-linux/build_bluray.sh','native/mpv/patches/libudfread-metadata-file-entry.patch',
+                  'third_party/dvd/source-lock.json',
                   'native/mpv/mvc/ffmpeg_dvd_nav.c','native/mpv/mvc/dvd_nav.h',
                   'tools/environment/Prepare-DvdSources.py','tools/environment/mpv-linux/build_dvd.sh')
     foreach ($name in $mvcNames) {

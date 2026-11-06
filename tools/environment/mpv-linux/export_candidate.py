@@ -111,6 +111,7 @@ def main():
                                          'tools/environment/Prepare-BluraySources.py',
                                          'tools/environment/mpv-linux/mvc_patch.py',
                                          'tools/environment/mpv-linux/build_bluray.sh',
+                                         'native/mpv/patches/libudfread-metadata-file-entry.patch',
                                          'tools/environment/Prepare-DvdSources.py',
                                          'tools/environment/mpv-linux/build_dvd.sh')},
         'cxx_runtime_policy': 'Use the existing Godot/project libc++_shared; do not package a duplicate; device compatibility pending',
